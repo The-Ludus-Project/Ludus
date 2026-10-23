@@ -27,13 +27,16 @@ struct GpuPreviewGraphBuffer final
     rhi::BufferHandle Buffer{}; ///< Ready Storage buffer, retained by the immutable binding set.
     foundation::usize Size = 0; ///< Full byte range, a positive multiple of sixteen.
 };
-/// One node's selection in an extended cooked ray kernel. Consumed during BeginGpuPreview.
+/// One graph node's sampling policy and cooked callback selection; consumed during BeginGpuPreview.
 struct GpuPreviewGraphInvocation final
 {
     foundation::uint32 Program = 0; ///< Cooked callback-set index below RenderGraphFormat::MAX_RAY_PASSES.
     /// Zero or two slots. A null Buffer with zero Size requests a private zeroed dummy.
     /// Non-null storage remains owned by the caller through job release and submitted completion.
     foundation::BorrowedView<const GpuPreviewGraphBuffer> Buffers{};
+    /// Zero outputs individual samples; a positive value up to RenderGraphFormat::MAX_ACCUMULATION_SAMPLES
+    /// averages linear radiance before display conversion. Camera/scene replacement restarts the mean.
+    foundation::uint32 AccumulationSamples = 0;
 };
 namespace internal
 {
@@ -423,9 +426,11 @@ public:
     /// Ready/Pending publish ownership into a null output; rejection preserves it. All caller
     /// owners may detach after success. Changing camera/content/exposure creates a
     /// new job and restarts accumulation. Setup can allocate/upload; never shades.
-    /// @param invocationOrNull Optional extended-kernel program/storage selection; requires the persistent ABI.
     /// @param graphSceneOrNull Optional graph scene, consumed synchronously instead of Snapshot.
     /// Requires EnableTriangleRayPipeline. Material defaults/errors follow its declared policy.
+    /// @param invocationOrNull Optional graph-only sample limit, callback and borrowed buffers.
+    /// Requires EnableTriangleRayPipeline; null retains the capture description's sample limit.
+    /// A nonzero Program or nonempty Buffers requires the persistent ABI.
     [[nodiscard]] rhi::RasterStatus
     BeginGpuPreview(Snapshot,
                     const ReferenceCaptureDescription&,

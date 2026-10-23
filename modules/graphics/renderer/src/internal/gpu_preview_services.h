@@ -997,17 +997,22 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     {
         return Status::InvalidState;
     }
-    if (description.MaxDepth > LUDUS_GPU_PREVIEW_MAX_DEPTH || description.TargetSamples > 4096 ||
+    if (description.MaxDepth > LUDUS_GPU_PREVIEW_MAX_DEPTH ||
+        description.TargetSamples > content::render_graph_format::MAX_ACCUMULATION_SAMPLES ||
         uint64(description.Width) * description.Height > (uint64{1} << 24))
     {
         return Status::Unsupported;
     }
     internal::GpuPreviewState& state = *mState->GpuPreview;
-    if (invocationOrNull != nullptr && (state.HasPersistentBuffers == false ||
-                                        invocationOrNull->Program >= content::render_graph_format::MAX_RAY_PASSES ||
-                                        invocationOrNull->Buffers.IsValid() == false ||
-                                        (invocationOrNull->Buffers.GetSize() != 0 &&
-                                         invocationOrNull->Buffers.GetSize() != internal::GPU_GRAPH_BUFFER_COUNT)))
+    if (invocationOrNull != nullptr &&
+        (state.IsGraphRayScene == false ||
+         (state.HasPersistentBuffers == false &&
+          (invocationOrNull->Program != 0 || invocationOrNull->Buffers.IsEmpty() == false)) ||
+         invocationOrNull->AccumulationSamples > content::render_graph_format::MAX_ACCUMULATION_SAMPLES ||
+         invocationOrNull->Program >= content::render_graph_format::MAX_RAY_PASSES ||
+         invocationOrNull->Buffers.IsValid() == false ||
+         (invocationOrNull->Buffers.GetSize() != 0 &&
+          invocationOrNull->Buffers.GetSize() != internal::GPU_GRAPH_BUFFER_COUNT)))
     {
         return Status::InvalidDescription;
     }
@@ -1226,6 +1231,8 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     if (invocationOrNull != nullptr)
     {
         uniform.Sampling[2] |= invocationOrNull->Program << LUDUS_GRAPH_PASS_INDEX_SHIFT;
+        constexpr usize SAMPLE_LIMIT_COMPONENT = 3;
+        uniform.Sampling[SAMPLE_LIMIT_COMPONENT] = invocationOrNull->AccumulationSamples;
     }
     uniform.Options.Y = state.Options.Exposure;
     job.Uniform = uniform;

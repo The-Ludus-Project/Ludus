@@ -38,6 +38,7 @@ MAX_EDGES = 512
 MAX_EXPANDED_NODES = 1024
 MAX_PASSES = 256
 MAX_TARGET_EXTENT = 16384
+MAX_ACCUMULATION_SAMPLES = 4096
 TYPES = ("Scene", "View", "ColorTexture", "DepthTexture")
 TEXTURES = TYPES[2:]
 MODES = ("ColorAndDepth", "DepthOnly")
@@ -141,9 +142,11 @@ def _validate_node(node, where):
     if kind in pipeline.KINDS:
         pipeline.validate(node, where, sys.modules[__name__])
         return
-    _enum(kind, ("Scene", "Camera", "Target", "Buffer", "RenderSize", "Raster", "Subgraph", "Export", "Present"), where)
+    _enum(kind, ("Scene", "Camera", "Target", "Buffer", "RenderSize", "Raster", "Accumulate", "Subgraph", "Export", "Present"), where)
     fields = {"id", "kind"}
-    if kind == "Camera":
+    if kind == "Accumulate":
+        fields.add("samples")
+    elif kind == "Camera":
         fields |= {"active", "role", "target_type"}
     elif kind == "Buffer":
         fields |= ({"bytes_per_pixel", "extent"} if "bytes_per_pixel" in node else {"bytes"})
@@ -162,7 +165,9 @@ def _validate_node(node, where):
     _keys(node, fields, where)
     _identifier(node["id"], where)
     _require(node["id"] != "input", "Schema", where, "input is reserved for interface ports")
-    if kind == "Camera":
+    if kind == "Accumulate":
+        _integer(node["samples"], 1, MAX_ACCUMULATION_SAMPLES, where)
+    elif kind == "Camera":
         _boolean(node["active"], where)
         _enum(node["role"], ("Presentation", "Offscreen"), where)
         _enum(node["target_type"], TEXTURES, where)
@@ -447,6 +452,8 @@ class _Library:
         if kind in pipeline.KINDS:
             return (scene_bundle.ports({p["id"]: p["type"] for p in node["inputs"]}),
                     {p["id"]: p["type"] for p in node["outputs"]})
+        if kind == "Accumulate":
+            return {"color": "ColorTexture"}, {"color": "ColorTexture"}
         if kind == "Scene":
             return {}, {"scene": "Scene", **scene_bundle.TYPES}
         if kind == "Camera":
@@ -846,6 +853,21 @@ class _Compiler:
                     'attachments': {'color': {'resource': value.resource, 'input_version': inputs['color'].version,
                         'output_version': value.version, 'defined': value.defined, 'load': 'Clear', 'store': 'Store'}}})
                 outputs = {output_mapping['color']: value, **buffer_outputs, **storage_outputs}
+            elif kind == "Accumulate":
+                source = inputs['color']
+                producer = next((operation for operation in self.passes if operation['id'] == source.producer), None)
+                _require(producer is not None and producer['kind'] == 'RayTracing', 'Capability', where,
+                         'Accumulate requires a ray color output. Connect a RayTracingPipeline color output; raster and already accumulated images are unsupported.')
+                _require('accumulation' not in producer, 'MultipleWriters', where,
+                         'A ray output can feed only one Accumulate node. Chain consumers after its color output.')
+                value = self.write(source, {'color_load': 'Load', 'color_store': 'Store'}, 'color', where, source.cameras)
+                producer['accumulation'] = {'id': where, 'samples': node['samples']}
+                self.add_pass({'id': where, 'kind': 'Accumulate', 'samples': node['samples'],
+                    'source': self.library.label(path), 'asset': self.library.assets[path]['id'],
+                    'asset_configuration': config['id'], 'dependencies': [source.producer],
+                    'attachments': {'color': {'resource': value.resource, 'input_version': source.version,
+                        'output_version': value.version, 'defined': value.defined, 'load': 'Load', 'store': 'Store'}}})
+                outputs['color'] = value
             elif kind == "Raster":
                 _require(inputs["view"].cameras, "CameraTarget", where, "raster requires an active camera",
                          port=input_mapping['view'] if authored_pipeline is not None else 'view', direction='input',
@@ -922,6 +944,17 @@ class _Compiler:
                            "version": value.version, "cameras": list(value.cameras)})
 
     def finish(self):
+        for average in (operation for operation in self.passes if operation['kind'] == 'Accumulate'):
+            source = average['attachments']['color']
+            for operation in self.passes:
+                if operation['id'] == average['id']:
+                    continue
+                reads = [*operation.get('attachments', {}).values(),
+                         *(operation[key] for key in ('visibility', 'visibility_depth') if key in operation)]
+                _require(not any(read['resource'] == source['resource'] and
+                                 read['input_version'] == source['input_version'] for read in reads),
+                         'Capability', average['id'],
+                         'Accumulate owns the ray color version. Connect other readers after its output, or use a separate ray target for raw output.')
         for root in self.roots:
             _require(root["version"] == self.latest[root["resource"]], "StaleVersion", root["id"],
                      "export/presentation must consume the final physical resource version")
@@ -1033,6 +1066,8 @@ def dump_plan(plan):
         lines.append(f"{ordinal:03} {entry['id']} {entry['kind']}{detail} [{entry['source']}#{entry['asset_configuration']}]")
         if entry["kind"] == "Raster":
             lines.append(f"    scene: {entry['scene']}; view: {entry['view']}; technique: {entry['technique']}")
+        if entry['kind'] == 'Accumulate':
+            lines.append(f"    compensated linear RGB mean; samples: {entry['samples']}; reset: camera/scene/extent/shaders")
         if entry['kind'] == 'RayTracing':
             lines.append(f"    launch: {entry['dimensions']}; color target: {entry['attachments']['color']['resource']}")
         for name, use in entry.get('buffers', {}).items():

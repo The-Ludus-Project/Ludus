@@ -1372,3 +1372,71 @@ TEST_CASE("Built-in visibility templates preserve IDs and reconstruct reflected 
     CHECK(fixture.Pixels[center] == 0);
     CHECK(fixture.Pixels[center + 2] == 188);
 }
+
+TEST_CASE("Explicit Accumulate averages linear ray output and stops at its authored limit",
+          "[render-graph][gpu][accumulation]")
+{
+    GraphGpuFixture fixture;
+    const renderer::RenderGraphPrograms programs =
+        packages::rg2_ordered_ray::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                shaders::renderer_composite::Fragment());
+    renderer::RenderGraphPlan plan = packages::rg2_ordered_ray::MakePlan();
+    StaticArray<format::Pass, format::MAX_RAY_PASSES> passes{};
+    REQUIRE(plan.Passes.GetSize() <= passes.GetSize());
+    for (usize pass = 0; pass < plan.Passes.GetSize(); ++pass)
+    {
+        passes[pass] = plan.Passes[pass];
+    }
+    constexpr uint32 SAMPLE_LIMIT = 2;
+    passes[plan.Passes.GetSize() - 1].AccumulationSamples = SAMPLE_LIMIT;
+    plan.Passes = {passes.GetData(), plan.Passes.GetSize()};
+    const auto finish = [&fixture](rhi::RasterStatus status) {
+        const uint64 beginning = time::NowTicks();
+        constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
+        while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+        {
+            status = fixture.Graph.Poll();
+        }
+        REQUIRE(status == rhi::RasterStatus::Ready);
+    };
+    finish(fixture.Graph.Initialize(fixture.Device, plan, programs));
+    fixture.Cameras[0].OrthographicCamera = true;
+    renderer::RenderGraphReport report;
+    finish(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                1,
+                                renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                report,
+                                nullptr,
+                                1));
+    uint32 output = 0;
+    for (uint32 resource = 0; resource < plan.Resources.GetSize(); ++resource)
+    {
+        if (plan.Resources[resource].IsExported == 1)
+        {
+            output = resource;
+        }
+    }
+    REQUIRE(fixture.Graph.HasPendingSamples() == true);
+    ReadGraphFrame(fixture, output);
+    const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+    CHECK(fixture.Pixels[center] == 188); // Reinhard/sRGB of linear sample 1.
+    CHECK(fixture.Graph.HasPendingSamples() == true);
+    ReadGraphFrame(fixture, output);
+    CHECK(fixture.Pixels[center] == 203); // Display conversion of mean(1, 2) = 1.5.
+    CHECK(fixture.Pixels[center + 1] == 0);
+    CHECK(fixture.Graph.HasPendingSamples() == false);
+    ReadGraphFrame(fixture, output);
+    CHECK(fixture.Pixels[center] == 203);
+    // An accepted camera revision restarts the averaging budget without clearing shared buffers.
+    finish(fixture.Graph.Update({},
+                                {},
+                                {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                2,
+                                renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                report,
+                                nullptr,
+                                1));
+    CHECK(fixture.Graph.HasPendingSamples() == true);
+}

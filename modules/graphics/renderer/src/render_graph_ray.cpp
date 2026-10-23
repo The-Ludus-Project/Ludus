@@ -139,7 +139,9 @@ rhi::RasterStatus RenderGraphRayPass::Initialize(Renderer& inoutContext,
     description.OrthographicCamera = camera.OrthographicCamera;
     description.Width = width;
     description.Height = height;
-    description.TargetSamples = LUDUS_GRAPH_SAMPLE_TARGET;
+    description.TargetSamples = invocationOrNull != nullptr && invocationOrNull->AccumulationSamples != 0
+                                    ? invocationOrNull->AccumulationSamples
+                                    : content::render_graph_format::MAX_ACCUMULATION_SAMPLES;
     description.MaxDepth = 1;
     description.RouletteDepth = 1;
     description.CenterRays = true;

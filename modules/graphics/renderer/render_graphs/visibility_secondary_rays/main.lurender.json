@@ -61,6 +61,11 @@
           "kind": "Subgraph",
           "asset": "library.lurender.json",
           "configuration": "VisibilitySecondaryRays"
+        },
+        {
+          "id": "accumulate",
+          "kind": "Accumulate",
+          "samples": 4096
         }
       ],
       "edges": [
@@ -85,7 +90,7 @@
           "to": "color.size"
         },
         {
-          "from": "transport.color",
+          "from": "accumulate.color",
           "to": "output.texture"
         },
         {
@@ -95,6 +100,10 @@
         {
           "from": "transport.depth",
           "to": "depthOutput.texture"
+        },
+        {
+          "from": "transport.color",
+          "to": "accumulate.color"
         }
       ]
     }
