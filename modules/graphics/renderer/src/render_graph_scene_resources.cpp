@@ -30,7 +30,7 @@ constexpr usize MATERIAL_TEXTURE_COUNT = 3;
 constexpr usize CACHE_TEXTURE_COUNT = format::MAX_ITEMS * MATERIAL_TEXTURE_COUNT * RETAINED_GENERATION_COUNT;
 constexpr usize CHANNEL_COUNT = 4;
 constexpr usize TRIANGLE_CORNER_COUNT = 3;
-enum MeshKeyPart : usize
+enum MeshKeyPart : uint8
 {
     POSITIONS,
     INDICES,

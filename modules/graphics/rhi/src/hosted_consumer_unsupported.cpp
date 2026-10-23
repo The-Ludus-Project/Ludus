@@ -46,6 +46,8 @@ void DestroyHostedGeneration([[maybe_unused]] HostedConsumerBackend& inoutBacken
 {
 }
 
+// The stubs keep the backend contract: slot selects a generation, image an image inside it.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
 bool AcquireHostedImage([[maybe_unused]] HostedConsumerBackend& inoutBackend,
                         [[maybe_unused]] foundation::usize slot,
                         [[maybe_unused]] foundation::uint32 image,
@@ -73,4 +75,5 @@ void CompleteHostedRelease([[maybe_unused]] HostedConsumerBackend& inoutBackend,
                            [[maybe_unused]] foundation::uint32 image) noexcept
 {
 }
+// NOLINTEND(bugprone-easily-swappable-parameters)
 } // namespace ludus::graphics::rhi::internal

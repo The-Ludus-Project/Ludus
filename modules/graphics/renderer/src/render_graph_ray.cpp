@@ -117,6 +117,8 @@ RenderGraphRayPass::~RenderGraphRayPass() noexcept
         static_cast<void>(mContextOrNull->Release(mJob));
     }
 }
+// Width and height are an ordered pixel extent.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
 rhi::RasterStatus RenderGraphRayPass::Initialize(Renderer& inoutContext,
                                                  Snapshot snapshot,
                                                  const ViewDescription& camera,
@@ -124,6 +126,7 @@ rhi::RasterStatus RenderGraphRayPass::Initialize(Renderer& inoutContext,
                                                  foundation::uint32 height,
                                                  const RenderGraphSceneDescription* sceneOrNull,
                                                  const GpuPreviewGraphInvocation* invocationOrNull) noexcept
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     if (mContextOrNull != nullptr)
     {

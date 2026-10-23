@@ -57,8 +57,10 @@ class SetupTests(unittest.TestCase):
                          patch("ludus_tools.create.create_project"):
                         self.assertEqual(operation._execute_setup(descriptor).outcome, "success")
                         self.assertEqual(os.environ["SDKROOT"], "/incompatible/MacOSX27.sdk")
-                    self.assertEqual(len(commands), 4)
-                    self.assertEqual(Path(commands[0][0][0]).name, "init")
+                    # init, the Metal shader tool bootstraps, build, install and SDK bundling.
+                    self.assertEqual([Path(argv[1] if Path(argv[0]).name == "python" else argv[0]).name
+                                      for argv, _ in commands],
+                                     ["init", "shader-probe", "bootstrap-spirv-cross", "build", "cmake", "engine.py"])
                     for _, env in commands:
                         self.assertEqual(env.get("SDKROOT"), str(sdk.resolve()) if prepared else None)
                         self.assertNotIn("LUDUS_INIT_SHELL_SDKROOT", env)

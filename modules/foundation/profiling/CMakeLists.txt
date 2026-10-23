@@ -74,8 +74,9 @@ target_include_directories(
 )
 
 # Dependency direction (AGENTS.md): FoundationProfiling may use FoundationTime/Base
-# (types, defines) and FoundationMemory (the aligned trace slab and the
-# allocation-domain gauges of memory_gauges.hpp), never a
+# (types, defines), FoundationMemory (the aligned trace slab and the
+# allocation-domain gauges of memory_gauges.hpp) and FoundationStrings (UTF-8
+# validation of exported pass names), never a
 # higher-level module. It deliberately does NOT depend
 # on FoundationLogging — it keeps its own thread identity so the ubiquitous
 # instrumentation header stays minimal and the layering clean.

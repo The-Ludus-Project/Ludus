@@ -41,6 +41,8 @@ struct RenderGraphPlan final
     foundation::BorrowedView<const content::render_graph_format::UniformField> UniformFields;
     /// Optional authored names, one per Passes entry, copied during Initialize. Nonempty UTF-8,
     /// shorter than rhi::GPU_SCOPE_NAME_BYTES. Empty table uses a generic label with a stable ordinal identity.
+    // Explicit default preserves partial aggregate callers under -Wmissing-field-initializers.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
     foundation::BorrowedView<const foundation::BorrowedView<const char>> PassNames{};
     /// Native ray storage descriptors, copied during Initialize. Empty for legacy/raster plans.
     // Keep partial aggregate callers warning-clean when this optional field is omitted.
@@ -147,8 +149,12 @@ struct RenderGraphMesh final
     foundation::math::Aabb3 BoundsMesh{}; ///< Explicit finite bounds for an unknown-position diagnostic proxy.
     bool HasDiagnosticBounds = false;     ///< Whether BoundsMesh is authoritative and may be rendered as a proxy.
     /// Triangle-to-material-slot map; empty means slot zero. Must have IndexCount/3 entries.
+    // Explicit default preserves partial aggregate callers under -Wmissing-field-initializers.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
     foundation::BorrowedView<const foundation::uint32> MaterialSlots{};
     /// Slot-to-global-material mapping; unassigned slots use DEFAULT_SCENE_MATERIAL.
+    // Explicit default preserves partial aggregate callers under -Wmissing-field-initializers.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
     foundation::BorrowedView<const foundation::uint32> MaterialBindings{};
 };
 /// One intended draw item/submesh/material slot extracted by the World adapter.
@@ -169,6 +175,8 @@ struct RenderGraphItem final
     // NOLINTNEXTLINE(readability-redundant-member-init)
     foundation::BorrowedView<const foundation::float32> Uniforms{};
     /// Per-instance slot overrides; INHERIT_SCENE_MATERIAL retains the mesh binding.
+    // Explicit default preserves partial aggregate callers under -Wmissing-field-initializers.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
     foundation::BorrowedView<const foundation::uint32> MaterialOverrides{};
     foundation::math::Vector4 SurfaceTint{1, 1, 1, 1}; ///< Instance multiplier for the scene material profile.
 };
@@ -176,11 +184,14 @@ struct RenderGraphItem final
 /// scene/material GPU resources belong to Renderer and retain exact incarnations.
 struct RenderGraphSceneDescription final
 {
+    // Explicit default preserves partial aggregate callers under -Wmissing-field-initializers.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
     foundation::BorrowedView<const RenderGraphMesh> Meshes{}; ///< Geometry and slot bindings.
-    foundation::BorrowedView<const RenderGraphItem> Items{};  ///< Instances and overrides.
-    SceneShaderInputs Inputs{};                               ///< Materials, analytic sources and constant environment.
-    bool HasMaterialInterface = false;                        ///< False preserves legacy flat-color submissions.
-    bool AreErrorsAllowed = false;                            ///< Preview uses an explicit non-emissive error material.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
+    foundation::BorrowedView<const RenderGraphItem> Items{}; ///< Instances and overrides.
+    SceneShaderInputs Inputs{};                              ///< Materials, analytic sources and constant environment.
+    bool HasMaterialInterface = false;                       ///< False preserves legacy flat-color submissions.
+    bool AreErrorsAllowed = false;                           ///< Preview uses an explicit non-emissive error material.
     SceneShaderDiagnostics* DiagnosticsOrNull = nullptr; ///< Optional candidate diagnostic output, including rejection.
     /// Caller scene revision; also seeds graph sampling when a new extraction starts history.
     /// Zero is reserved for standalone diagnostic preparation. Different revisions select different streams.

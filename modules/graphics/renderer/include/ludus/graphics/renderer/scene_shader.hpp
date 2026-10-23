@@ -39,11 +39,16 @@ struct SceneShaderMaterial final
 /// submit real mesh emitters instead to avoid duplicate illumination.
 struct SceneShaderInputs final
 {
+    // Explicit default preserves partial aggregate callers under -Wmissing-field-initializers.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
     foundation::BorrowedView<const SceneShaderMaterial> Materials{}; ///< Global material table.
-    foundation::BorrowedView<const DirectLight> Lights{};            ///< Directional, point and spot sources.
-    foundation::math::Vector3 Environment{};  ///< Constant RGB, or HDR pixel multiplier, [0,10000].
-    foundation::uint32 EnvironmentWidth = 0;  ///< Equirectangular width, zero for a constant.
-    foundation::uint32 EnvironmentHeight = 0; ///< Equirectangular height, zero for a constant.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
+    foundation::BorrowedView<const DirectLight> Lights{}; ///< Directional, point and spot sources.
+    foundation::math::Vector3 Environment{};              ///< Constant RGB, or HDR pixel multiplier, [0,10000].
+    foundation::uint32 EnvironmentWidth = 0;              ///< Equirectangular width, zero for a constant.
+    foundation::uint32 EnvironmentHeight = 0;             ///< Equirectangular height, zero for a constant.
+    // Explicit default preserves partial aggregate callers under -Wmissing-field-initializers.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
     foundation::BorrowedView<const foundation::math::Vector3> EnvironmentPixels{}; ///< North-to-south HDR texels.
 };
 /// Ray preparation byte ceiling that rejected a candidate; independent of allocator failure.

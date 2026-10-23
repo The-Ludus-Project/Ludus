@@ -33,6 +33,8 @@ struct GpuPreviewGraphInvocation final
     foundation::uint32 Program = 0; ///< Cooked callback-set index below RenderGraphFormat::MAX_RAY_PASSES.
     /// Zero or two slots. A null Buffer with zero Size requests a private zeroed dummy.
     /// Non-null storage remains owned by the caller through job release and submitted completion.
+    // Explicit default preserves partial aggregate callers under -Wmissing-field-initializers.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
     foundation::BorrowedView<const GpuPreviewGraphBuffer> Buffers{};
     /// Zero outputs individual samples; a positive value up to RenderGraphFormat::MAX_ACCUMULATION_SAMPLES
     /// averages linear radiance before display conversion. Camera/scene replacement restarts the mean.
@@ -732,10 +734,10 @@ private:
     /// Grants graph camera transactions access to staged GPU preview parameters.
     friend class internal::RenderGraphRayPass;
     [[nodiscard]] rhi::RasterStatus
-    prepareGpuPreviewCamera(GpuPreview job, const ViewDescription& camera, foundation::uint64 revision) noexcept;
-    [[nodiscard]] rhi::RasterStatus pollGpuPreviewCamera(GpuPreview job) noexcept;
-    void commitGpuPreviewCamera(GpuPreview job) noexcept;
-    void discardGpuPreviewCamera(GpuPreview job) noexcept;
+    prepareGpuPreviewCamera(GpuPreview handle, const ViewDescription& camera, foundation::uint64 revision) noexcept;
+    [[nodiscard]] rhi::RasterStatus pollGpuPreviewCamera(GpuPreview handle) noexcept;
+    void commitGpuPreviewCamera(GpuPreview handle) noexcept;
+    void discardGpuPreviewCamera(GpuPreview handle) noexcept;
     struct State;
     ludus::foundation::core::UniquePtr<State> mState;
 };

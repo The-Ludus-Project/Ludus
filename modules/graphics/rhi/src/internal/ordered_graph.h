@@ -2450,9 +2450,9 @@ RasterStatus ExecuteOrderedGraph(DeviceHandle device,
 {
     return ExecuteGraphCommands(device, surface, inoutHandle, outCompletion, true);
 }
-RasterStatus EncodeOrderedGraph(DeviceHandle device, SurfaceHandle surface, OrderedGraph& inoutHandle) noexcept
+RasterStatus EncodeOrderedGraph(DeviceHandle device, SurfaceHandle surface, OrderedGraph& inoutGraph) noexcept
 {
     SubmissionToken completion;
-    return ExecuteGraphCommands(device, surface, inoutHandle, completion, false);
+    return ExecuteGraphCommands(device, surface, inoutGraph, completion, false);
 }
 } // namespace ludus::graphics::rhi

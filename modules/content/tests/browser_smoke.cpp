@@ -14,12 +14,13 @@ int main()
     using namespace ludus;
     using foundation::uint8;
     namespace filesystem = foundation::filesystem;
-    constexpr std::string_view ROOT = "/browser-content";
+    constexpr char ROOT_PATH[] = "/browser-content";
+    constexpr std::string_view ROOT = ROOT_PATH;
     constexpr std::string_view PATH = "catalog.json";
     constexpr uint8 ORIGINAL[] = {'o', 'l', 'd'};
     constexpr uint8 REPLACEMENT[] = {'n', 'e', 'w'};
     constexpr foundation::usize READ_CAP = 16;
-    assert(mkdir(ROOT.data(), S_IRWXU) == 0);
+    assert(mkdir(ROOT_PATH, S_IRWXU) == 0);
     assert(content::SaveFile(ROOT, PATH, ORIGINAL, nullptr) == content::Status::Ok);
     assert(content::SaveFile(ROOT, PATH, REPLACEMENT, nullptr) == content::Status::Conflict);
     filesystem::Watcher watcher;

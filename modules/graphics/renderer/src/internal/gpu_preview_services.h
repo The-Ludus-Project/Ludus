@@ -107,7 +107,7 @@ Status PackGpuScene(const ReferenceJob& job,
     {
         return textureCount * sizeof(usize) > budget ? internal::RejectSceneMemory(diagnosticsOrNull,
                                                                                    SceneMemoryBudget::CpuScratch,
-                                                                                   textureCount * sizeof(usize),
+                                                                                   uint64{textureCount} * sizeof(usize),
                                                                                    budget)
                                                      : Status::OutOfMemory;
     }
@@ -148,7 +148,8 @@ Status PackGpuScene(const ReferenceJob& job,
     {
         return Status::CapacityExceeded;
     }
-    const uint64 requiredBytes = (uint64{size} + dataSize) * sizeof(math::Vector4) + textures.GetSize() * sizeof(usize);
+    const uint64 requiredBytes =
+        (uint64{size} + dataSize) * sizeof(math::Vector4) + uint64{textures.GetSize()} * sizeof(usize);
     if (requiredBytes > budget)
     {
         return internal::RejectSceneMemory(diagnosticsOrNull, SceneMemoryBudget::CpuScratch, requiredBytes, budget);

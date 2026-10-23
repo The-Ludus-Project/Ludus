@@ -117,7 +117,7 @@ struct GpuGraphResources final
         }
         return status;
     }
-    Status AddRoots(rhi::DeviceHandle device, rhi::OrderedGraph graph) const noexcept
+    [[nodiscard]] Status AddRoots(rhi::DeviceHandle device, rhi::OrderedGraph graph) const noexcept
     {
         for (usize index = 0; index < BufferCount; ++index)
         {
@@ -203,6 +203,9 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
         return status;
     }
     const usize pixels = usize(job.Width) * job.Height;
+    // Unlisted uses take GraphUse's default member initializers (a valid Visibility); the
+    // loop below fills them before computeUseCount admits them.
+    // NOLINTBEGIN(bugprone-invalid-enum-default-initialization)
     StaticArray<rhi::GraphUse, LUDUS_GRAPH_COMPUTE_BINDING_COUNT> computeUses{
         {{versions[0], rhi::GraphAccessMode::StorageRead, 0, job.DataBytes, rhi::RasterVisibility::Compute},
          {versions[1],
@@ -225,6 +228,7 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
           0,
           job.TexelBytes,
           rhi::RasterVisibility::Compute}}};
+    // NOLINTEND(bugprone-invalid-enum-default-initialization)
     usize computeUseCount = BASE_COMPUTE_USE_COUNT;
     for (usize slot = 0; state.HasPersistentBuffers == true && slot < GPU_GRAPH_BUFFER_COUNT; ++slot)
     {
