@@ -127,6 +127,11 @@ void BrowserViewport::ClearFrame()
     releaseFrame();
     service();
 }
+void BrowserViewport::SetFixedDrawableSize(const QSize& sizeOrEmpty)
+{
+    mFixedDrawableSize = sizeOrEmpty;
+    service();
+}
 uint64 BrowserViewport::GetPresentedFrames() const noexcept
 {
     return mPresentedFrames;
@@ -155,8 +160,12 @@ void BrowserViewport::service()
     const QRect rectangleScreenLogical = screen->geometry();
     const QPoint positionScreenLogical = mapToGlobal(QPoint{}) - rectangleScreenLogical.topLeft();
     const float64 pixelRatio = devicePixelRatioF();
-    const int32 widthPhysical = math::Max(1, static_cast<int32>(static_cast<float64>(width()) * pixelRatio));
-    const int32 heightPhysical = math::Max(1, static_cast<int32>(static_cast<float64>(height()) * pixelRatio));
+    const int32 widthPhysical = mFixedDrawableSize.isEmpty() == false
+                                    ? mFixedDrawableSize.width()
+                                    : math::Max(1, static_cast<int32>(static_cast<float64>(width()) * pixelRatio));
+    const int32 heightPhysical = mFixedDrawableSize.isEmpty() == false
+                                     ? mFixedDrawableSize.height()
+                                     : math::Max(1, static_cast<int32>(static_cast<float64>(height()) * pixelRatio));
     if (widthPhysical != mRequestedWidth || heightPhysical != mRequestedHeight)
     {
         mRequestedWidth = widthPhysical;

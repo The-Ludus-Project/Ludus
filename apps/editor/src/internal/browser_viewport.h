@@ -7,6 +7,7 @@
 
 #include <QByteArray>
 #include <QPointer>
+#include <QSize>
 #include <QTimer>
 #include <QWidget>
 
@@ -23,6 +24,9 @@ public:
     [[nodiscard]] bool Start();
     void ShowFrame();
     void ClearFrame();
+    /// Request exactly this drawable from the preview instead of the proxy's physical pixels;
+    /// an empty size follows the proxy again. The canvas still covers the proxy's rectangle.
+    void SetFixedDrawableSize(const QSize& sizeOrEmpty);
     [[nodiscard]] foundation::uint64 GetPresentedFrames() const noexcept;
 
 private:
@@ -35,6 +39,7 @@ private:
     foundation::uint64 mPresentedFrames = 0;
     foundation::int32 mRequestedWidth = 0;
     foundation::int32 mRequestedHeight = 0;
+    QSize mFixedDrawableSize;
     bool mHasFrame = false;
     bool mHasPresentedImage = false;
     bool mCanPresent = false;

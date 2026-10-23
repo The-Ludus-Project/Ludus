@@ -212,6 +212,37 @@ void PreviewViewport::keyPressEvent(QKeyEvent* event)
             return;
         }
     }
+    // Thanks to the Blender Foundation: numpad view keys follow the Blender Manual, "Viewpoint"
+    // (https://docs.blender.org/manual/en/latest/editors/3dview/navigate/viewpoint.html).
+    // Ctrl selects the opposite side; numpad 5 switches projection.
+    const Qt::KeyboardModifiers viewModifiers = event->modifiers() & ~(Qt::KeypadModifier | Qt::ControlModifier);
+    if (mIsFlying == false && event->modifiers().testFlag(Qt::KeypadModifier) == true &&
+        viewModifiers == Qt::NoModifier)
+    {
+        const bool isOpposite = event->modifiers().testFlag(Qt::ControlModifier);
+        switch (event->key())
+        {
+            case Qt::Key_7:
+                Preview_->SetAxisView(isOpposite == true ? EditorAxisView::Bottom : EditorAxisView::Top);
+                event->accept();
+                return;
+            case Qt::Key_1:
+                Preview_->SetAxisView(isOpposite == true ? EditorAxisView::Back : EditorAxisView::Front);
+                event->accept();
+                return;
+            case Qt::Key_3:
+                Preview_->SetAxisView(isOpposite == true ? EditorAxisView::Left : EditorAxisView::Right);
+                event->accept();
+                return;
+            case Qt::Key_5:
+                Preview_->SetOrthographic(Preview_->GetVisibleCameraSample().Lens.Projection !=
+                                          gameplay::camera::CameraProjection::OrthographicFinite);
+                event->accept();
+                return;
+            default:
+                break;
+        }
+    }
     QWidget::keyPressEvent(event);
 }
 void PreviewViewport::keyReleaseEvent(QKeyEvent* event)
