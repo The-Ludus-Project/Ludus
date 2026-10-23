@@ -78,15 +78,50 @@ QVector<math::Vector3> ComputeVertexNormals(const PreviewMesh& mesh)
     }
     return normals;
 }
+/// Indices of the triangles with a nonzero mesh-space area. RT1 admission rejects a zero-area
+/// triangle, while the raster viewport draws it as nothing; it has no area to hit or emit from,
+/// so omitting it leaves the reference integral unchanged.
+QVector<uint32> CollectNondegenerateIndices(const resources::SceneMesh& mesh)
+{
+    QVector<uint32> indices;
+    indices.reserve(static_cast<qsizetype>(mesh.Indices.GetSize()));
+    for (usize i = 0; i + 2 < mesh.Indices.GetSize(); i += static_cast<usize>(TRIANGLE_INDEX_COUNT))
+    {
+        const uint32 first = mesh.Indices[i];
+        const uint32 second = mesh.Indices[i + 1];
+        const uint32 third = mesh.Indices[i + 2];
+        const usize vertexCount = mesh.Positions.GetSize();
+        if (first < vertexCount && second < vertexCount && third < vertexCount)
+        {
+            const math::Vector3 areaMesh = math::Cross(mesh.Positions[second] - mesh.Positions[first],
+                                                       mesh.Positions[third] - mesh.Positions[first]);
+            if (areaMesh.X == 0 && areaMesh.Y == 0 && areaMesh.Z == 0)
+            {
+                continue;
+            }
+        }
+        // Out-of-range corners stay so CreateMesh rejects the mesh rather than this filter hiding it.
+        indices.append(first);
+        indices.append(second);
+        indices.append(third);
+    }
+    return indices;
+}
 #endif
 } // namespace
 
 PreviewGpuGeneration::PreviewGpuGeneration(rhi::DeviceHandle device,
                                            const RenderScene& source,
                                            PreviewShading shading,
-                                           const PreviewShaderSet& shaders)
-    : Device(device), Source(source), Shading(shading), Shaders(shaders), LightingKey(preview_lighting::MakeKey(source))
+                                           const PreviewShaderSet& shaders,
+                                           const PreviewReferenceSetup* referenceOrNull)
+    : Device(device), Source(source), Shading(shading), Shaders(shaders),
+      LightingKey(preview_lighting::MakeKey(source)), IsReference(referenceOrNull != nullptr)
 {
+    if (referenceOrNull != nullptr)
+    {
+        mReference = *referenceOrNull;
+    }
 }
 PreviewGpuGeneration::~PreviewGpuGeneration() noexcept
 {
@@ -157,7 +192,7 @@ bool PreviewGpuGeneration::prepareResources(rhi::SurfaceHandle surface, QString&
         case PreparationStage::Materials:
             return prepareMaterials();
         case PreparationStage::Assets:
-            return prepareAssets();
+            return prepareAssets(outError);
         case PreparationStage::Snapshot:
             return prepareSnapshot(surface, outError);
         case PreparationStage::Ready:
@@ -282,7 +317,30 @@ bool PreviewGpuGeneration::prepareMaterials() noexcept
 #endif
 }
 
-bool PreviewGpuGeneration::prepareAssets() noexcept
+bool PreviewGpuGeneration::enableReferenceRendering(QString& outError) noexcept
+{
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
+    if (shouldUseAuthoredLighting() == false || Shading != PreviewShading::Lit)
+    {
+        outError = QStringLiteral("Reference capture needs a lit scene: add a light or an emissive surface.");
+        return false;
+    }
+    // Must precede every mesh and material version, so RT1 retains their CPU copies.
+    const rhi::RasterStatus status = Renderer.EnableReferenceRendering(mReference.QueryShader, mReference.Options);
+    if (status != rhi::RasterStatus::Ready)
+    {
+        outError = QStringLiteral("Reference rendering could not be enabled on this device (status %1).")
+                       .arg(static_cast<uint32>(status));
+        return false;
+    }
+    return true;
+#else
+    static_cast<void>(outError);
+    return false;
+#endif
+}
+
+bool PreviewGpuGeneration::prepareAssets(QString& outError) noexcept
 {
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
     const rhi::RasterStatus programStatus = Renderer.GetStatus(mProgram);
@@ -296,6 +354,10 @@ bool PreviewGpuGeneration::prepareAssets() noexcept
     }
     if (mAreAssetsCreated == false)
     {
+        if (IsReference == true && enableReferenceRendering(outError) == false)
+        {
+            return false;
+        }
         for (int32 i = 0; i < Source.Meshes.size(); ++i)
         {
             const PreviewMesh& mesh = Source.Meshes[i];
@@ -312,8 +374,15 @@ bool PreviewGpuGeneration::prepareAssets() noexcept
                 // Cooked v6 tangent frames; vertices without one (W = 0) use the UV-derived frame.
                 description.Tangents = {source.Tangents.GetData(), source.Tangents.GetSize()};
             }
-            // CreateMesh copies the normals, so derived storage only lives for this call.
+            // CreateMesh copies normals and indices, so derived storage only lives for this call.
             QVector<math::Vector3> derivedNormals;
+            QVector<uint32> referenceIndices;
+            if (Source.Lit == true && IsReference == true)
+            {
+                referenceIndices = CollectNondegenerateIndices(Source.Definition->Meshes[static_cast<usize>(i)]);
+                description.Indices = referenceIndices.constData();
+                description.IndexCount = static_cast<usize>(referenceIndices.size());
+            }
             if (Source.Lit == false)
             {
                 description.Positions = mesh.Positions.constData();
@@ -344,7 +413,7 @@ bool PreviewGpuGeneration::prepareAssets() noexcept
                                                   .Width = static_cast<uint32>(image.width()),
                                                   .Height = static_cast<uint32>(image.height()),
                                                   .Format = format,
-                                                  .RetainCpuContent = false,
+                                                  .RetainCpuContent = IsReference,
                                               },
                                               {
                                                   .Bytes = {image.constBits(), static_cast<usize>(image.sizeInBytes())},
@@ -615,8 +684,10 @@ bool PreviewGpuGeneration::prepareLighting(rhi::SurfaceHandle surface, QString& 
     const usize count = resources.Source.Definition->Objects.GetSize();
     if (resources.LightingStage == PreviewLightingStage::Inputs)
     {
-        const rhi::RasterStatus status =
-            preview_lighting::BuildInputs(resources.Source, resources.LightingKey, resources.Lighting);
+        const rhi::RasterStatus status = preview_lighting::BuildInputs(resources.Source,
+                                                                       resources.LightingKey,
+                                                                       resources.Lighting,
+                                                                       IsReference == false);
         if (status != rhi::RasterStatus::Ready)
         {
             outError = QStringLiteral("Authored lighting admission failed (%1); no lights were dropped.")
@@ -651,7 +722,8 @@ bool PreviewGpuGeneration::prepareLighting(rhi::SurfaceHandle surface, QString& 
             }
             resources.HasEnvironment = true;
         }
-        resources.LightingStage = PreviewLightingStage::Casters;
+        // Reference transport traces its own visibility, so it needs no casters or shadow atlas.
+        resources.LightingStage = IsReference == true ? PreviewLightingStage::Materials : PreviewLightingStage::Casters;
     }
     if (resources.HasEnvironment == true)
     {

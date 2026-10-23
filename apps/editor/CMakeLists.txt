@@ -162,6 +162,15 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
         src/internal/preview_shader_reload.h src/preview_shader_reload.cpp)
 endif()
 
+# Viewport reference capture offers native RT1 traversal only with the fixed query kernel, which
+# needs the pinned SPIR-V Cross translator; without it the editor offers the CPU oracle alone.
+function(ludus_editor_enable_reference_queries target)
+    if(LUDUS_SPIRV_CROSS)
+        ludus_compile_ray_queries(TARGET ${target} NAME ray_query)
+        target_compile_definitions(${target} PRIVATE LUDUS_EDITOR_REFERENCE_NATIVE_QUERIES=1)
+    endif()
+endfunction()
+
 # RG3b: the editor host compiles the checked-in RendererStatic offscreen fixture.
 # Its generated header supplies the CPU interface identity every previewed runtime
 # generation must match, and the same frozen fixture (header and .lurgrt) is the
@@ -319,6 +328,10 @@ qt_add_executable(ludus_editor
     src/render_preview.cpp
     src/preview_gpu_generation.cpp
     src/internal/preview_gpu_generation.h
+    src/viewport_reference_capture.cpp
+    src/internal/viewport_reference_capture.h
+    src/reference_capture_window.cpp
+    src/internal/reference_capture_window.h
     src/internal/preview_shader_set.h
     src/preview_shader_set.cpp
     src/internal/preview_shading.h
@@ -536,6 +549,7 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
         renderer_clustered_authored_debug renderer_clustered_authored_debug_shadow)
     ludus_editor_compile_render_graph_host(ludus_editor)
     ludus_editor_enable_shader_reload(ludus_editor)
+    ludus_editor_enable_reference_queries(ludus_editor)
 endif()
 
 # The editor is a developer tool, never part of the installed SDK: no install()
@@ -610,6 +624,10 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/render_preview.cpp
         src/preview_gpu_generation.cpp
         src/internal/preview_gpu_generation.h
+        src/viewport_reference_capture.cpp
+        src/internal/viewport_reference_capture.h
+        src/reference_capture_window.cpp
+        src/internal/reference_capture_window.h
         src/internal/preview_shader_set.h
         src/preview_shader_set.cpp
         src/internal/preview_shading.h
@@ -814,7 +832,9 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             renderer_clustered_authored_debug renderer_clustered_authored_debug_shadow)
         ludus_editor_compile_render_graph_host(ludus_editor_tests)
         ludus_editor_enable_shader_reload(ludus_editor_tests)
+        ludus_editor_enable_reference_queries(ludus_editor_tests)
         target_sources(ludus_editor_tests PRIVATE tests/preview_shader_reload_tests.cpp)
+        target_sources(ludus_editor_tests PRIVATE tests/viewport_reference_capture_tests.cpp)
         target_sources(ludus_editor_tests PRIVATE tests/render_graph_preview_tests.cpp)
         target_compile_definitions(ludus_editor_tests PRIVATE
             "LUDUS_EDITOR_RENDER_GRAPH_FIXTURE=\"${editor_renderer_static_RUNTIME_PACKAGE}\"")

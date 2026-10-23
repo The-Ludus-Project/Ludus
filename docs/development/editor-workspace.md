@@ -1276,7 +1276,8 @@ concave sources can exceed this proxy profile. The viewport does not calculate
 static indirect transport, soft area shadows or spectral PBRT parity. See the
 owning [renderer contract](../architecture/renderer-systems.md) for the separate
 static-lighting transport API.
-Optional GPU path tracing remains a separate renderer API.
+Optional GPU path tracing remains a separate renderer API. For a path-traced ground
+truth of the current view, use [reference capture](#reference-capture-of-the-viewport).
 
 Qt Quick's native surface is embedded in the World splitter and uses the basic
 owner-thread render loop. The adapter admits the device and queue Qt Quick renders with, imports
@@ -1374,6 +1375,50 @@ an interchange packet without calling the source importer. The owning
 documents schemas, identities, capacities and ownership; the
 [staircase2 prototype guide](../examples/reference-scene.md) retains its original
 conversion/visual limitations and higher-quality offline capture evidence.
+
+### Reference capture of the viewport
+
+**Reference…** in a World viewport's toolbar opens a window that path-traces the
+viewport's current camera with the renderer's RT1 progressive reference integrator.
+Use the result as ground truth for the raster image. Set the image's long side
+(the short side follows the viewport's aspect), the samples per pixel, the maximum
+scattering depth and the traversal, then choose **Capture viewport**.
+
+The capture uses the scene and camera as they were when you clicked. Later
+navigation or edits do not change it; capture again to include them. The window
+shows the image as it fills in, the minimum samples reached per pixel, the number
+of analytic lights and the elapsed time. **Stop** discards the capture. **Save…**
+writes the linear `LUHDR01` capture and, beside it, a PNG with the same base name.
+A capture saved before it finishes is marked partial and keeps exact per-pixel
+sample counts. Convert the HDR file with
+[`scripts/reference-hdr`](../architecture/renderer-systems.md#reference-workflow-and-frozen-profile).
+The PNG uses the viewport's display transform: exposure one, Reinhard, then sRGB.
+
+The capture builds its own renderer on the viewport's GPU device. It loads the
+same meshes, textures and Lit materials as the viewport, but no shadow atlas. The
+scene's authored analytic lights and its environment (map or constant) are
+supplied to the integrator. Emissive surfaces light the scene as true area
+emitters. The raster viewport's area-light proxies are not passed, which would
+count that light twice. Indirect light, soft shadows and inter-reflection
+therefore appear here and not in Lit. Comparing the two images shows what the
+raster profile approximates. Zero-area triangles are left out of the reference
+geometry. They have no area to hit or emit from.
+
+| Traversal | Use |
+| --- | --- |
+| CPU oracle | Default. Traces a CPU BVH on every platform and admits masked materials. |
+| Native ray queries | Uses the GPU's ray tracing hardware when the device and build support it, otherwise the option is disabled. Masked materials are rejected. Dense scenes have an open precision qualification item. |
+
+Neither traversal falls back to the other. Work runs on the editor's GUI thread
+in short slices, so large images at high sample counts take minutes with the CPU
+oracle. The editor stays responsive while it runs. A capture needs a lit scene
+(an authored light or an emissive surface). Content outside the reference
+profile fails with an explanation and keeps any samples already taken. Examples
+are a shading normal facing away from its triangle, or a texture format the
+profile does not retain. The integrator's declared limits apply: RGB only, no
+transmission or volumes, a fixed texture mip and a truncated depth. See the
+[reference workflow and frozen profile](../architecture/renderer-systems.md#reference-workflow-and-frozen-profile).
+Stopping the viewport's device cancels a running capture.
 
 ## S4 scene authoring
 
