@@ -1,6 +1,7 @@
 #include <ludus/graphics/renderer/render_graph.hpp>
 
 #include "../shaders/renderer_gpu_preview_layout.h"
+#include "internal/gpu_denoiser.h"
 #include "internal/render_graph_metalfx.h"
 #include "internal/render_graph_pool.h"
 #include "internal/render_graph_ray.h"
@@ -1576,6 +1577,11 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
             {
                 return Status::Unsupported;
             }
+        }
+        // Denoising is an optional build feature: reject it here, not later at scene preparation.
+        if (pass.DenoisingQuality != 0 && internal::IsGpuDenoisingAvailable() == false)
+        {
+            return Status::Unsupported;
         }
     }
     StaticArray<bool, format::TECHNIQUE_COUNT> isUsed{};

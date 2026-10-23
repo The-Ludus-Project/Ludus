@@ -723,6 +723,43 @@ TEST_CASE("RG3b failed and pending candidates keep the last drawable view", "[ed
     CHECK(preview.GetStatus().contains(QStringLiteral("last presented frame")) == true);
 }
 
+TEST_CASE("Editors without OIDN refuse a denoising graph at load and name the remedy",
+          "[editor][render-graph][preview][denoising]")
+{
+    if (renderer::IsDenoisingAvailable() == true)
+    {
+        SKIP("This editor build has the OIDN denoiser");
+    }
+    QFile file(QStringLiteral(LUDUS_EDITOR_PROGRESSIVE_RAY_FIXTURE));
+    REQUIRE(file.open(QIODevice::ReadOnly) == true);
+    QByteArray bytes = file.readAll();
+    const auto readWord = [&bytes](usize offset) {
+        uint32 word = 0;
+        std::memcpy(&word, bytes.constData() + offset, sizeof(word));
+        return word;
+    };
+    constexpr usize RESOURCE_COUNT_FIELD = 2;
+    constexpr usize PASS_COUNT_FIELD = 3;
+    constexpr usize CAMERA_COUNT_FIELD = 4;
+    const usize passesAt = format::HEADER_BYTES +
+                           readWord(RESOURCE_COUNT_FIELD * sizeof(uint32)) * format::RESOURCE_RECORD_BYTES +
+                           readWord(CAMERA_COUNT_FIELD * sizeof(uint32)) * format::CAMERA_RECORD_BYTES;
+    REQUIRE(readWord(PASS_COUNT_FIELD * sizeof(uint32)) != 0);
+    REQUIRE(readWord(passesAt) == static_cast<uint32>(format::Technique::RayTracing));
+    // DenoisingQuality is the last word of a pass record: what a Denoise node after this ray pass cooks to.
+    const uint32 quality = static_cast<uint32>(format::ProcessingQuality::Balanced);
+    std::memcpy(bytes.data() + passesAt + format::PASS_RECORD_BYTES - sizeof(uint32), &quality, sizeof(quality));
+    QTemporaryDir directory;
+    RenderGraphPreview preview = MakePreview();
+    CHECK(preview.Load(WriteBytes(directory, QStringLiteral("denoised.lurgrt"), bytes)) ==
+          RenderGraphPreviewLoad::Unsupported);
+    CHECK(preview.GetDisplayStatus().contains(QStringLiteral("Denoise node")) == true);
+    CHECK(preview.GetDisplayStatus().contains(QStringLiteral("LUDUS_ENABLE_OIDN=OFF")) == true);
+    CHECK(preview.GetReport().CandidateGeneration == 0);
+    // The same graph without denoising still decodes and waits for the viewport device.
+    CHECK(preview.Load(QStringLiteral(LUDUS_EDITOR_PROGRESSIVE_RAY_FIXTURE)) == RenderGraphPreviewLoad::Waiting);
+}
+
 TEST_CASE("Rejected ray extractions name their measured memory ceiling", "[editor][render-graph][preview]")
 {
     renderer::SceneShaderDiagnostics diagnostics;

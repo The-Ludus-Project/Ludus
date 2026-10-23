@@ -98,6 +98,11 @@ enum class RenderGraphRenderer : foundation::uint8
 };
 /// Whether a validated plan contains any raytracing pass. No allocation or GPU work.
 [[nodiscard]] bool RequiresHardwareRayTracing(const RenderGraphPlan& plan) noexcept;
+/// Whether a validated plan denoises any ray pass (an authored Denoise node). No allocation or GPU work.
+[[nodiscard]] bool RequiresDenoising(const RenderGraphPlan& plan) noexcept;
+/// Whether this renderer build includes the optional OIDN denoiser (LUDUS_ENABLE_OIDN). Without it,
+/// RenderGraph::Initialize rejects any plan for which RequiresDenoising is true with Unsupported.
+[[nodiscard]] bool IsDenoisingAvailable() noexcept;
 /// Select using the current logical device's enabled native ray and compute capabilities.
 /// Unsupported ray/compute APIs select Raster with Ready, including browser backends.
 /// ForceRaster also selects Raster; it never enables ray features or submits GPU work.
