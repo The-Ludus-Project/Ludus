@@ -152,6 +152,35 @@ struct GpuGraphResources final
         }
     }
 };
+// Record the raster producer once; every ray pass of the graph samples the version it writes.
+Status AppendVisibilityProducer(rhi::DeviceHandle device,
+                                const GpuPreviewRecord& job,
+                                rhi::OrderedGraph graph,
+                                const VisibilityRasterPass& visibility,
+                                rhi::GraphVersion& outWritten) noexcept
+{
+    rhi::RasterTextureState visibilityState;
+    rhi::GraphVersion previous;
+    Status status = rhi::GetTextureState(device, job.VisibilityTexture, visibilityState);
+    if (status == Status::Ready)
+    {
+        status = rhi::ImportGraphTexture(device,
+                                         graph,
+                                         job.VisibilityTexture,
+                                         visibilityState,
+                                         rhi::RasterTextureUse::SampledCompute,
+                                         previous);
+    }
+    if (status == Status::Ready)
+    {
+        status = visibility.ProducerOrNull->AppendVisibilityView(visibility.View,
+                                                                 graph,
+                                                                 visibility.Attachment,
+                                                                 previous,
+                                                                 outWritten);
+    }
+    return status;
+}
 Status AppendGpuGraph(rhi::DeviceHandle device,
                       const GpuPreviewState& state,
                       const GpuPreviewRecord& job,
@@ -159,7 +188,7 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
                       rhi::OrderedGraph graph,
                       GpuGraphResources& inoutResources,
                       const rhi::TextureHandle* targetOrNull = nullptr,
-                      const VisibilityRasterPass* visibilityOrNull = nullptr) noexcept
+                      const rhi::GraphVersion* visibilityVersionOrNull = nullptr) noexcept
 {
     constexpr usize COLOR_BUFFER_INDEX = 3;
     Status status = Status::Ready;
@@ -258,34 +287,13 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
         return status;
     }
     computeUseCount += job.Storage.GetCount();
-    if (visibilityOrNull != nullptr)
+    if (visibilityVersionOrNull != nullptr)
     {
-        rhi::RasterTextureState visibilityState;
-        rhi::GraphVersion previous;
-        rhi::GraphVersion written;
-        status = rhi::GetTextureState(device, job.VisibilityTexture, visibilityState);
-        if (status == Status::Ready)
-        {
-            status = rhi::ImportGraphTexture(device,
-                                             graph,
-                                             job.VisibilityTexture,
-                                             visibilityState,
-                                             rhi::RasterTextureUse::SampledCompute,
-                                             previous);
-        }
-        if (status == Status::Ready)
-        {
-            status = visibilityOrNull->ProducerOrNull->AppendVisibilityView(visibilityOrNull->View,
-                                                                            graph,
-                                                                            visibilityOrNull->Attachment,
-                                                                            previous,
-                                                                            written);
-        }
-        if (status != Status::Ready)
-        {
-            return status;
-        }
-        computeUses[computeUseCount++] = {written, rhi::GraphAccessMode::Sampled, 0, 0, rhi::RasterVisibility::Compute};
+        computeUses[computeUseCount++] = {*visibilityVersionOrNull,
+                                          rhi::GraphAccessMode::Sampled,
+                                          0,
+                                          0,
+                                          rhi::RasterVisibility::Compute};
     }
     const rhi::ComputeDispatch dispatch{
         state.ComputePipeline,
@@ -374,17 +382,30 @@ Status BuildGpuGraphSequence(rhi::DeviceHandle device,
                              const GpuPreviewState& state,
                              BorrowedView<const GpuPreviewRecord*> jobs,
                              BorrowedView<const rhi::TextureHandle> targets,
-                             rhi::OrderedGraph& outGraph) noexcept
+                             rhi::OrderedGraph& outGraph,
+                             const VisibilityRasterPass* visibilityOrNull) noexcept
 {
     Status status = rhi::CreateOrderedGraph(device, outGraph);
     if (status != Status::Ready)
     {
         return status;
     }
+    rhi::GraphVersion visibility;
+    if (visibilityOrNull != nullptr)
+    {
+        status = AppendVisibilityProducer(device, *jobs[0], outGraph, *visibilityOrNull, visibility);
+    }
     GpuGraphResources resources;
     for (usize index = 0; status == Status::Ready && index < jobs.GetSize(); ++index)
     {
-        status = AppendGpuGraph(device, state, *jobs[index], 0, outGraph, resources, &targets[index]);
+        status = AppendGpuGraph(device,
+                                state,
+                                *jobs[index],
+                                0,
+                                outGraph,
+                                resources,
+                                &targets[index],
+                                visibilityOrNull != nullptr ? &visibility : nullptr);
     }
     if (status == Status::Ready)
     {
@@ -410,10 +431,22 @@ Status BuildGpuGraph(rhi::DeviceHandle device,
                      const VisibilityRasterPass* visibilityOrNull) noexcept
 {
     Status status = targetOrNull == nullptr ? rhi::CreateOrderedGraph(device, outGraph) : Status::Ready;
+    rhi::GraphVersion visibility;
+    if (status == Status::Ready && visibilityOrNull != nullptr)
+    {
+        status = AppendVisibilityProducer(device, job, outGraph, *visibilityOrNull, visibility);
+    }
     GpuGraphResources resources;
     if (status == Status::Ready)
     {
-        status = AppendGpuGraph(device, state, job, image, outGraph, resources, targetOrNull, visibilityOrNull);
+        status = AppendGpuGraph(device,
+                                state,
+                                job,
+                                image,
+                                outGraph,
+                                resources,
+                                targetOrNull,
+                                visibilityOrNull != nullptr ? &visibility : nullptr);
     }
     if (status == Status::Ready)
     {

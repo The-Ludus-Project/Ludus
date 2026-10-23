@@ -160,16 +160,25 @@ def lower_plan(package, configuration):
                 producer = operations[operations.index(operation) - 1] if operations.index(operation) != 0 else {}
                 visibility = operation['visibility']['resource']
                 visibility_depth = operation['visibility_depth']['resource']
-                color_output = producer.get('attachments', {}).get('color', {})
-                depth_output = producer.get('attachments', {}).get('depth', {})
-                build.require(producer.get('kind') == 'Raster' and producer.get('material') == 'DefaultOpaque' and
-                              producer.get('view') == operation['view'] and
-                              color_output.get('resource') == visibility and depth_output.get('resource') == visibility_depth and
-                              color_output.get('output_version') == operation['visibility']['input_version'] and
-                              depth_output.get('output_version') == operation['visibility_depth']['input_version'] and
-                              all(item.get('load') == 'Clear' and item.get('store') == 'Store' for item in (color_output, depth_output)),
-                              'Configuration', operation['id'],
-                              'visibility/depth must come from the immediately preceding opaque Clear/Store raster using the same view')
+                build.require(operation['attachments']['color']['resource'] not in (visibility, visibility_depth),
+                              'Configuration', operation['id'], 'a ray pass cannot write the visibility image it reads')
+                if producer.get('kind') == 'RayTracing':
+                    # Later passes of one ray sequence reread the first pass's raster image.
+                    build.require(producer.get('view') == operation['view'] and
+                                  all(producer.get(key) == operation[key] for key in ('visibility', 'visibility_depth')),
+                                  'Configuration', operation['id'],
+                                  'consecutive ray passes must read the same visibility/depth versions using the same view')
+                else:
+                    color_output = producer.get('attachments', {}).get('color', {})
+                    depth_output = producer.get('attachments', {}).get('depth', {})
+                    build.require(producer.get('kind') == 'Raster' and producer.get('material') == 'DefaultOpaque' and
+                                  producer.get('view') == operation['view'] and
+                                  color_output.get('resource') == visibility and depth_output.get('resource') == visibility_depth and
+                                  color_output.get('output_version') == operation['visibility']['input_version'] and
+                                  depth_output.get('output_version') == operation['visibility_depth']['input_version'] and
+                                  all(item.get('load') == 'Clear' and item.get('store') == 'Store' for item in (color_output, depth_output)),
+                                  'Configuration', operation['id'],
+                                  'visibility/depth must come from the immediately preceding opaque Clear/Store raster using the same view')
             color = operation['attachments']['color']
             recipes = [recipe for recipe in package.get('recipes', []) if recipe['technique'] == ray.TECHNIQUE and
                        recipe.get('visibility_buffer', False) == ('visibility' in operation)]
@@ -445,9 +454,10 @@ def _runtime_contents(path, configuration):
     scene_versions = {r.get('scene_interface_version', 0) for r in ray_recipes}
     build.require(all(type(version) is int for version in scene_versions) and scene_versions <= {0, 1} and len(scene_versions) <= 1, 'Package', 'ray interface', 'inconsistent scene callback profile')
     visibility_profiles = {r.get('visibility_buffer', False) for r in ray_recipes}
-    ray_pass_count = sum(p['Program'] == 'RayTracing' for p in passes)
-    build.require(not has_visibility or ray_pass_count == 1, 'Capability', 'visibility',
-                  'visibility reconstruction currently admits one ray invocation per configuration')
+    ray_passes = [p for p in passes if p['Program'] == 'RayTracing']
+    ray_pass_count = len(ray_passes)
+    build.require(not has_visibility or all(p['Visibility'] != ABSENT for p in ray_passes), 'Capability', 'visibility',
+                  'ordinary and visibility ray passes require separate configurations')
     has_ray = ray_pass_count != 0
     build.require(not has_ray or visibility_profiles == {has_visibility}, 'Configuration', 'visibility',
                   'ray visibility inputs must match scene_interface.visibility_buffer')
@@ -611,8 +621,10 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
                 lines += [f'    renderer::SetRenderGraphForwardInterface(result.{member}, format::StageRole::{member});']
             stage_bindings = _stage_bindings(program_name, stage, contents['bindings'])
             if program_name == 'RayTracing' and stage == 'compute':
+                # Slot order, as the runtime package decodes it; reflection order follows declaration order.
                 stage_bindings = [{'slot': entry['binding'], 'kind': entry['kind'], 'visibility': 'Compute', 'size': entry['size']}
-                                  for entry in contents['artifacts'][keys[0]]['descriptor']['interface']['entries']]
+                                  for entry in sorted(contents['artifacts'][keys[0]]['descriptor']['interface']['entries'],
+                                                      key=lambda entry: entry['binding'])]
             if stage_bindings:
                 constant = declaration.upper() + '_BINDING_COUNT'
                 lines += [f'    static constexpr foundation::usize {constant} = {len(stage_bindings)};',

@@ -16,5 +16,6 @@ namespace ludus::graphics::renderer::internal
                                                       const GpuPreviewState& state,
                                                       foundation::BorrowedView<const GpuPreviewRecord*> jobs,
                                                       foundation::BorrowedView<const rhi::TextureHandle> targets,
-                                                      rhi::OrderedGraph& outGraph) noexcept;
+                                                      rhi::OrderedGraph& outGraph,
+                                                      const VisibilityRasterPass* visibilityOrNull = nullptr) noexcept;
 } // namespace ludus::graphics::renderer::internal

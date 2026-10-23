@@ -1293,9 +1293,16 @@ Add `"visibility_buffer": true` to the ray technique's existing `scene_interface
 On the ray node, add one read-only ColorTexture and one DepthTexture input and wire
 them from the raster's color/depth outputs. Their port names are authored. The ray
 node's color output still names its **separate** writable color input as `target`.
-The initial visibility profile admits one ray invocation per configuration and requires its producer to be the immediately
+The first visibility ray invocation requires its producer to be the immediately
 preceding opaque ColorAndDepth operation, using the same View and matching fixed
-or view-relative extents. Both producer aspects must Clear/Store. Its visibility
+or view-relative extents. Both producer aspects must Clear/Store. Up to three
+further ray invocations of the same ordered sequence (for example ReSTIR DI's
+initial, temporal and shade passes sharing persistent Buffer nodes) may wire the
+same raster color/depth outputs; each must follow the previous one directly and
+read the same View. The producer rasterizes once per frame and every invocation
+samples that image, so a ray invocation cannot target the visibility image. The
+[sequence fixture](../../tests/sdk_consumer/rg2/visibility_sequence/main.lurender.json)
+reconstructs one raster image in three passes. Its visibility
 shader pair has no authored uniform bindings. Masked/transmissive/deformed geometry,
 world-grid/overlay packets, multisampling and reverse/infinite depth remain outside
 this initial profile. The technique flag enables visibility support for the
@@ -1337,6 +1344,14 @@ depth or reconstruction latch query failure and return FAILURE. Reconstruction
 uses no ray query budget. `EvaluateMaterial` applies the triangle's slot and
 instance overrides; material identity is not duplicated in the image. Material
 sampling retains the scene interface's fixed-mip policy.
+
+`LoadVisibilityAndShade(scene, queries, launch, payload)` is the visibility
+counterpart of `TraceAndShade`: it reconstructs the first hit, then runs the
+current pass's closest-hit callback for a surface or its miss callback with
+`launch.CameraRay` for background, and returns the same status. A raygen shared
+by an ordered sequence, such as ReSTIR DI's, can replace
+`TraceAndShade(scene, queries, launch.CameraRay, payload)` with it and keep each
+pass's callbacks unchanged.
 
 SDK hosts should set
 `DeviceDescription.Storage.ResourcesPerGraph` to at least
