@@ -129,6 +129,15 @@
       "bindings": []
     },
     {
+      "id": "OrdinaryGenerate",
+      "stage": "ray_generation",
+      "source": "main_shaders/ordinary_generate.slang",
+      "function": "GenerateOrdinaryRay",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
       "id": "Generate",
       "stage": "ray_generation",
       "source": "main_shaders/generate.slang",

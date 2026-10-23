@@ -836,15 +836,11 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                     'no authored recipe matches the complete node-owned pipeline state')
     variants = sorted({ray.program_tuple(operation['pipeline']) for plan in plans
                        for operation in plan['passes'] if operation['kind'] == 'RayTracing'})
-    persistent = len(variants) > 1 or any(sum(operation['kind'] == 'RayTracing' for operation in plan['passes']) > 1 or
-                     any(resource['type'] == 'Buffer' and 'stride' not in resource for resource in plan['resources'].values()) for plan in plans)
     require(len(variants) <= ray.MAX_RAY_PASSES, 'Capacity', 'ray programs', 'at most four distinct ray callback sets')
     for variant in variants:
         for stage, program_identity in zip(ray.STAGES, variant):
             require(program_identity in programs and programs[program_identity]['stage'] == stage, 'ShaderInterface', program_identity,
                     'unknown or wrong node-owned ray stage program')
-    require(not persistent or not any(operation.get('buffers') for plan in plans for operation in plan['passes']),
-            'Capability', 'ray storage', 'ordered ray passes use shared Buffer nodes; StructuredBuffer nodes remain private to one ray job')
     selected_programs = {technique[stage] for technique in techniques.values()
                          for stage in (ray.STAGES if technique['id'] == ray.TECHNIQUE else ('vertex', 'fragment'))}
     selected_programs.update(identity for variant in variants for identity in variant)
@@ -854,10 +850,21 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                 'Hardware raytracing requires native Metal or Vulkan; select an authored raster configuration on unsupported APIs')
         require('metal' not in value['profiles'] or spirv_cross, 'Tools', 'profiles',
                 'Metal hardware raytracing requires the pinned --spirv-cross translator')
-        programs = ray.expand_programs(programs, techniques[ray.TECHNIQUE], snapshot, helper, sys.modules[__name__], variants, persistent, schemas)
-        for program_identity in (ray.COMPUTE_ID, ray.IMAGE_VERTEX_ID, ray.IMAGE_FRAGMENT_ID):
-            closures[program_identity] = ray.capture_program_closure(programs[program_identity], snapshot,
-                                                                    sys.modules[__name__])
+        ray_profiles = ray.group_profiles(plans, techniques[ray.TECHNIQUE], sys.modules[__name__])
+        authored_programs = programs
+        linked_programs = {}
+        for profile in ray_profiles:
+            technique = deepcopy(techniques[ray.TECHNIQUE])
+            if 'scene_interface' in technique:
+                technique['scene_interface']['visibility_buffer'] = profile['visibility_buffer']
+            expanded = ray.expand_programs(authored_programs, technique, snapshot, helper, sys.modules[__name__],
+                                          profile['variants'], profile['persistent'], schemas, profile['compute'])
+            linked_programs.update(expanded)
+        programs = linked_programs
+        for program_identity in (*ray.COMPUTE_IDS, ray.IMAGE_VERTEX_ID, ray.IMAGE_FRAGMENT_ID):
+            if program_identity in programs:
+                closures[program_identity] = ray.capture_program_closure(programs[program_identity], snapshot,
+                                                                        sys.modules[__name__])
     programs = forward.expand(programs, techniques, snapshot, helper, sys.modules[__name__])
     for program_identity, program in programs.items():
         if 'forward_wrapper' in program:
@@ -922,16 +929,17 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                     if tid == ray.TECHNIQUE:
                         if target not in ('metal', 'spirv'):
                             continue
-                        record = {'technique': tid, 'profile': target, 'state': ray.resolve_state(technique['recipes'][0]),
-                            'compute': entries[(ray.COMPUTE_ID, target)], 'vertex': entries[(ray.IMAGE_VERTEX_ID, target)],
-                            'fragment': entries[(ray.IMAGE_FRAGMENT_ID, target)], 'bindings': {'vertex': [], 'fragment': []}}
-                        record['ray_programs'] = [list(variant) for variant in variants]
-                        record['persistent_buffers'] = persistent
-                        record['scene_interface_version'] = technique.get('scene_interface', {}).get('version', 0)
-                        record['visibility_buffer'] = technique.get('scene_interface', {}).get('visibility_buffer', False)
-                        record['canonical'] = deepcopy(record)
-                        record['key'] = identity(record['canonical'])
-                        recipes.append(record)
+                        for profile in ray_profiles:
+                            record = {'technique': tid, 'profile': target, 'state': ray.resolve_state(technique['recipes'][0]),
+                                'compute': entries[(profile['compute'], target)], 'vertex': entries[(ray.IMAGE_VERTEX_ID, target)],
+                                'fragment': entries[(ray.IMAGE_FRAGMENT_ID, target)], 'bindings': {'vertex': [], 'fragment': []}}
+                            record['ray_programs'] = [list(variant) for variant in profile['variants']]
+                            record['persistent_buffers'] = profile['persistent']
+                            record['scene_interface_version'] = technique.get('scene_interface', {}).get('version', 0)
+                            record['visibility_buffer'] = profile['visibility_buffer']
+                            record['canonical'] = deepcopy(record)
+                            record['key'] = identity(record['canonical'])
+                            recipes.append(record)
                         continue
                     if forward.is_forward(technique):
                         record = {'technique': tid, 'profile': target, 'state': technique['recipes'][0],
