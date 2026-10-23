@@ -1,4 +1,6 @@
 #include "reservoir.slang"
+
+// The selector consumes emitter modes and helpers declared by reservoir.slang.
 #include "initial_emitter_sampling.slang"
 
 void ShadeClosest(SceneContext scene, SurfaceHit hit, inout RayQueryContext queries, inout ScenePayload payload)

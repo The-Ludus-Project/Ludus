@@ -66,9 +66,7 @@ uint SampleSceneRandom(inout RayQueryContext queries, uint minimumInclusive, uin
 }
 #include "initial_emitter_sampling.slang"
 
-[numthreads(64, 1, 1)]
-void ComputeMain(uint3 dispatchThreadId : SV_DispatchThreadID)
-{
+[numthreads(64, 1, 1)] void ComputeMain(uint3 dispatchThreadId : SV_DispatchThreadID) {
     SceneContext scene;
     scene.Invocation = dispatchThreadId.x;
     scene.EmitterCount = scene.Invocation % 5 == 4 ? 17 : 5;
@@ -81,7 +79,7 @@ void ComputeMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     Results[address].xyz = uint3(hasSelections ? 1 : 0, queries.HasFailed ? 1 : 0, queries.Dimension);
     for (uint candidate = 0; candidate < RESTIR_INITIAL_CANDIDATE_COUNT; ++candidate)
     {
-        Results[address + candidate + 1] = uint4(selections[candidate].EmitterIndex,
-                                               asuint(selections[candidate].SelectionPmf), 0, 0);
+        Results[address + candidate + 1] =
+            uint4(selections[candidate].EmitterIndex, asuint(selections[candidate].SelectionPmf), 0, 0);
     }
 }

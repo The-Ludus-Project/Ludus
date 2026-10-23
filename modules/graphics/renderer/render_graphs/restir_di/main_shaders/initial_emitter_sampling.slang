@@ -24,10 +24,10 @@ static const uint INITIAL_EMITTER_ALIAS_CAPACITY = 16;
 // Adapt the small/large work lists to bounded GPU-local storage and use separate
 // bounded-index and threshold draws. The table uses binary32 for at most 16 bins.
 bool TrySelectInitialEmitterAlias(SceneContext scene,
-                                 SurfaceHit receiver,
-                                 uint emitterCount,
-                                 inout RayQueryContext queries,
-                                 out InitialEmitterSelection outSelections[RESTIR_INITIAL_CANDIDATE_COUNT])
+                                  SurfaceHit receiver,
+                                  uint emitterCount,
+                                  inout RayQueryContext queries,
+                                  out InitialEmitterSelection outSelections[RESTIR_INITIAL_CANDIDATE_COUNT])
 {
     float weights[INITIAL_EMITTER_ALIAS_CAPACITY];
     float probabilities[INITIAL_EMITTER_ALIAS_CAPACITY];
@@ -111,9 +111,9 @@ bool TrySelectInitialEmitterAlias(SceneContext scene,
 #endif
 
 bool TrySelectInitialEmitters(SceneContext scene,
-                             SurfaceHit receiver,
-                             inout RayQueryContext queries,
-                             out InitialEmitterSelection outSelections[RESTIR_INITIAL_CANDIDATE_COUNT])
+                              SurfaceHit receiver,
+                              inout RayQueryContext queries,
+                              out InitialEmitterSelection outSelections[RESTIR_INITIAL_CANDIDATE_COUNT])
 {
     [unroll] for (uint candidate = 0; candidate < RESTIR_INITIAL_CANDIDATE_COUNT; ++candidate)
     {
