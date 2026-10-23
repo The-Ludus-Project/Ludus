@@ -39,6 +39,11 @@ using ludus::foundation::uint64;
 using ludus::foundation::uint8;
 using ludus::foundation::usize;
 constexpr ludus::foundation::logging::LogCategory kConfigurationLog{"Configuration"};
+/// Smallest and largest authored configuration file the host reads, in bytes.
+constexpr off_t MIN_AUTHORED_FILE_BYTES = 20;
+constexpr off_t MAX_AUTHORED_FILE_BYTES = 262144;
+/// Largest control descriptor accepted from the command line: it must fit an int.
+constexpr uint64 MAX_FILE_DESCRIPTOR = 0x7fffffffU;
 
 struct AuthoredBytes final
 {
@@ -64,7 +69,8 @@ struct AuthoredBytes final
             }
         } closeFd{fd};
         struct stat info = {};
-        if (::fstat(fd, &info) != 0 || S_ISREG(info.st_mode) == false || info.st_size < 20 || info.st_size > 262144)
+        if (::fstat(fd, &info) != 0 || S_ISREG(info.st_mode) == false || info.st_size < MIN_AUTHORED_FILE_BYTES ||
+            info.st_size > MAX_AUTHORED_FILE_BYTES)
         {
             return false;
         }
@@ -213,7 +219,7 @@ ludus::runtime::game_host::RunMain(ludus::foundation::int32 argc, const char* co
         {
             std::string_view value;
             uint64 fd = 0;
-            if (nextValue(value) == false || ParseU64(value, fd) == false || fd > 0x7fffffffU)
+            if (nextValue(value) == false || ParseU64(value, fd) == false || fd > MAX_FILE_DESCRIPTOR)
             {
                 return static_cast<int>(ludus::runtime::game_host::RunResult::BadArguments);
             }

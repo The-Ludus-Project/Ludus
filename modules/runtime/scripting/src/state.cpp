@@ -16,6 +16,12 @@ namespace ludus::runtime::scripting
 namespace
 {
 constexpr uint32 MAGIC = 0x3253544c;
+/// Encoded state header: magic, version, schema and field count, then 12-byte field records.
+constexpr usize STATE_VERSION_OFFSET = 4;
+constexpr usize STATE_SCHEMA_OFFSET = 8;
+constexpr usize STATE_COUNT_OFFSET = 12;
+constexpr usize STATE_HEADER_BYTES = 16;
+constexpr usize FIELD_RECORD_BYTES = 12;
 bool Valid(const StateRecord& record) noexcept
 {
     if (record.Schema == 0 || record.Count > 16)
@@ -44,15 +50,15 @@ bool Valid(const StateRecord& record) noexcept
 
 bool EncodeState(const StateRecord& record, std::span<uint8> output, usize& written) noexcept
 {
-    const usize size = 16 + static_cast<usize>(record.Count) * 12;
+    const usize size = STATE_HEADER_BYTES + static_cast<usize>(record.Count) * FIELD_RECORD_BYTES;
     if (Valid(record) == false || output.size() < size)
     {
         return false;
     }
     (void)TryWriteLittleEndian(MAGIC, output);
-    (void)TryWriteLittleEndian(uint32{1}, output.subspan(4));
-    (void)TryWriteLittleEndian(record.Schema, output.subspan(8));
-    (void)TryWriteLittleEndian(record.Count, output.subspan(12));
+    (void)TryWriteLittleEndian(uint32{1}, output.subspan(STATE_VERSION_OFFSET));
+    (void)TryWriteLittleEndian(record.Schema, output.subspan(STATE_SCHEMA_OFFSET));
+    (void)TryWriteLittleEndian(record.Count, output.subspan(STATE_COUNT_OFFSET));
     for (uint32 i = 0; i < record.Count; ++i)
     {
         auto bytes = output.subspan(16 + static_cast<usize>(i) * 12, 12);
@@ -69,11 +75,12 @@ bool DecodeState(std::span<const uint8> bytes, StateRecord& output) noexcept
     uint32 magic = 0;
     uint32 version = 0;
     StateRecord result;
-    if (bytes.size() < 16 || TryReadLittleEndian(bytes, magic) == false || magic != MAGIC ||
-        TryReadLittleEndian(bytes.subspan(4), version) == false || version != 1 ||
-        TryReadLittleEndian(bytes.subspan(8), result.Schema) == false ||
-        TryReadLittleEndian(bytes.subspan(12), result.Count) == false || result.Count > 16 ||
-        bytes.size() != 16 + static_cast<usize>(result.Count) * 12)
+    if (bytes.size() < STATE_HEADER_BYTES || TryReadLittleEndian(bytes, magic) == false || magic != MAGIC ||
+        TryReadLittleEndian(bytes.subspan(STATE_VERSION_OFFSET), version) == false || version != 1 ||
+        TryReadLittleEndian(bytes.subspan(STATE_SCHEMA_OFFSET), result.Schema) == false ||
+        TryReadLittleEndian(bytes.subspan(STATE_COUNT_OFFSET), result.Count) == false ||
+        result.Count > MAX_STATE_FIELDS ||
+        bytes.size() != STATE_HEADER_BYTES + static_cast<usize>(result.Count) * FIELD_RECORD_BYTES)
     {
         return false;
     }
@@ -103,7 +110,7 @@ bool MigrateState(const StateRecord& source,
                   std::span<const FieldSpec> fields,
                   StateRecord& output) noexcept
 {
-    if (Valid(source) == false || schema == 0 || fields.empty() || fields.size() > 16)
+    if (Valid(source) == false || schema == 0 || fields.empty() || fields.size() > MAX_STATE_FIELDS)
     {
         return false;
     }
