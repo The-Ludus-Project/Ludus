@@ -8,6 +8,10 @@ namespace ludus::foundation::reflection
 {
 namespace
 {
+/// Longest schema name, in bytes.
+constexpr usize MAX_SCHEMA_NAME_BYTES = 256;
+/// Longest field key or label, in bytes.
+constexpr usize MAX_FIELD_TEXT_BYTES = 64;
 Status Fail(Diagnostic& error, Status status, uint32 id = 0) noexcept
 {
     error = { .Code = status, .FieldId = id };
@@ -81,7 +85,7 @@ Status ValidateSchema(const Schema& schema, Diagnostic& error) noexcept
     {
         hasId |= byte != 0;
     }
-    if (hasId == false || schema.Version == 0 || schema.Name.empty() || schema.Name.size() > 256 ||
+    if (hasId == false || schema.Version == 0 || schema.Name.empty() || schema.Name.size() > MAX_SCHEMA_NAME_BYTES ||
         ValidText(schema.Name) == false || schema.Fields.empty() || schema.Fields.size() > MAX_FIELDS)
     {
         return Fail(error, Status::InvalidSchema);
@@ -89,9 +93,10 @@ Status ValidateSchema(const Schema& schema, Diagnostic& error) noexcept
     for (usize index = 0; index < schema.Fields.size(); ++index)
     {
         const auto& field = schema.Fields[index];
-        if (field.Id == 0 || field.Key.empty() || field.Key.size() > 64 || field.Label.empty() ||
-            field.Label.size() > 64 || ValidText(field.Key) == false || ValidText(field.Label) == false ||
-            Ordered(field.Min, field.Max) == false || ValidateValue(field, field.Default) != Status::Ok)
+        if (field.Id == 0 || field.Key.empty() || field.Key.size() > MAX_FIELD_TEXT_BYTES || field.Label.empty() ||
+            field.Label.size() > MAX_FIELD_TEXT_BYTES || ValidText(field.Key) == false ||
+            ValidText(field.Label) == false || Ordered(field.Min, field.Max) == false ||
+            ValidateValue(field, field.Default) != Status::Ok)
         {
             return Fail(error, Status::InvalidSchema, field.Id);
         }

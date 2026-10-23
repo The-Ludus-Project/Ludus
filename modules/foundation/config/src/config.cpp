@@ -22,6 +22,14 @@ namespace
 {
 constexpr usize kMaxSettings = 4096;
 constexpr usize kGroups = 32;
+/// Longest descriptor help text, in bytes.
+constexpr usize MAX_HELP_BYTES = 4096;
+/// Longest descriptor units label, in bytes.
+constexpr usize MAX_UNITS_BYTES = 64;
+/// Most choices one enum descriptor may declare.
+constexpr usize MAX_ENUM_CHOICES = 32;
+/// Values stored per setting beside its layer cells: requested, candidate and active.
+constexpr usize VALUES_PER_SETTING = 3;
 std::atomic<uint64> gNextContext{1};
 
 Status Fail(Diagnostic& error, Status status, std::string_view name = {}, usize record = 0) noexcept
@@ -269,7 +277,7 @@ Value Value::FromFloat64(float64 value) noexcept
 }
 Status Value::FromText(Type kind, std::string_view text, Value& output) noexcept
 {
-    if ((kind != Type::String && kind != Type::Enum) || ValidText(text, 256) == false)
+    if ((kind != Type::String && kind != Type::Enum) || ValidText(text, MAX_TEXT_VALUE_BYTES) == false)
     {
         return Status::InvalidValue;
     }
@@ -336,7 +344,7 @@ Status Context::Initialize(std::span<const Descriptor> schema,
     usize bytesPerSetting{};
     usize storageBytes{};
     if (TryMultiply(sizeof(Impl::Cell), LAYER_COUNT * 2, bytesPerSetting) == false ||
-        TryAdd(bytesPerSetting, sizeof(Value) * 3 + sizeof(uint32), bytesPerSetting) == false ||
+        TryAdd(bytesPerSetting, sizeof(Value) * VALUES_PER_SETTING + sizeof(uint32), bytesPerSetting) == false ||
         TryMultiply(bytesPerSetting, schema.size(), storageBytes) == false ||
         TryAdd(storageBytes, sizeof(Impl), storageBytes) == false || storageBytes > limits.MaxStorageBytes)
     {
@@ -346,16 +354,17 @@ Status Context::Initialize(std::span<const Descriptor> schema,
     {
         const auto& descriptor = schema[i];
         Value normalized;
-        if (ValidName(descriptor.Name) == false || descriptor.Group >= kGroups || descriptor.MaxTextBytes > 256 ||
-            descriptor.Application > Apply::NextLaunch || descriptor.AllowedSources == 0 ||
-            (descriptor.AllowedSources & ~ALL_SOURCES) != 0 ||
+        if (ValidName(descriptor.Name) == false || descriptor.Group >= kGroups ||
+            descriptor.MaxTextBytes > MAX_TEXT_VALUE_BYTES || descriptor.Application > Apply::NextLaunch ||
+            descriptor.AllowedSources == 0 || (descriptor.AllowedSources & ~ALL_SOURCES) != 0 ||
             (descriptor.Persistent && (descriptor.AllowedSources & SourceMask(Layer::Preference)) == 0) ||
             descriptor.MinSigned > descriptor.MaxSigned || descriptor.MinUnsigned > descriptor.MaxUnsigned ||
             math::IsFinite(descriptor.MinReal) == false || math::IsFinite(descriptor.MaxReal) == false ||
-            descriptor.MinReal > descriptor.MaxReal || ValidText(descriptor.Help, 4096) == false ||
-            ValidText(descriptor.Units, 64) == false ||
+            descriptor.MinReal > descriptor.MaxReal || ValidText(descriptor.Help, MAX_HELP_BYTES) == false ||
+            ValidText(descriptor.Units, MAX_UNITS_BYTES) == false ||
             (descriptor.Default.Kind != Type::Enum && descriptor.Choices.empty() == false) ||
-            descriptor.Choices.size() > 32 || Normalize(descriptor, descriptor.Default, normalized) != Status::Ok ||
+            descriptor.Choices.size() > MAX_ENUM_CHOICES ||
+            Normalize(descriptor, descriptor.Default, normalized) != Status::Ok ||
             (normalized == descriptor.Default) == false)
         {
             return Fail(error, Status::InvalidSchema, descriptor.Name, i);
@@ -580,7 +589,7 @@ Status Context::Prepare(Layer layer,
         {
             return Fail(error, Status::InvalidSource, edit.Name, i);
         }
-        if (ValidText(edit.From.Source.GetView(), 128) == false)
+        if (ValidText(edit.From.Source.GetView(), MAX_ORIGIN_SOURCE_BYTES) == false)
         {
             return Fail(error, Status::InvalidValue, edit.Name, i);
         }

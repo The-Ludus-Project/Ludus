@@ -7,6 +7,8 @@ namespace ludus::foundation::math
 namespace
 {
 using core::usize;
+/// Control points of a cubic Bezier curve.
+constexpr usize CUBIC_CONTROL_POINT_COUNT = 4;
 
 template <class Curve>
 [[nodiscard]] MathStatus Load(const Curve& curve, float64 u, Vector3d* control) noexcept
@@ -36,7 +38,7 @@ template <class Curve, class Value>
         return status;
     }
     Value result{};
-    if (internal::Narrow(internal::Evaluate(4, control, u), result) == false)
+    if (internal::Narrow(internal::Evaluate(CUBIC_CONTROL_POINT_COUNT, control, u), result) == false)
     {
         return MathStatus::OutOfRange;
     }
@@ -53,7 +55,7 @@ template <class Curve, class Sample>
         return status;
     }
     Sample result;
-    if (internal::Narrow(internal::Evaluate(4, control, u), result.Position) == false ||
+    if (internal::Narrow(internal::Evaluate(CUBIC_CONTROL_POINT_COUNT, control, u), result.Position) == false ||
         internal::Narrow(internal::EvaluateDerivative(control, u, 1), result.FirstDerivative) == false ||
         internal::Narrow(internal::EvaluateDerivative(control, u, 2), result.SecondDerivative) == false)
     {

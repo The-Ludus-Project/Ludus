@@ -13,6 +13,13 @@ namespace ludus::foundation::config
 {
 namespace
 {
+/// Radix of the decimal integer spelling in configuration documents.
+constexpr uint64 DECIMAL_RADIX = 10;
+/// Longest configuration document identity, in bytes.
+constexpr usize MAX_IDENTITY_BYTES = 128;
+/// Smallest int64, and its magnitude, which has no positive int64 spelling.
+constexpr int64 MIN_INT64_VALUE = -9223372036854775807LL - 1;
+constexpr uint64 MIN_INT64_MAGNITUDE = uint64{1} << 63;
 Status Fail(Diagnostic& error, Status status, std::string_view key = {}, usize record = 0) noexcept
 {
     error = {};
@@ -31,7 +38,7 @@ bool ParseDecimal(std::string_view text, uint64& output) noexcept
     for (char character : text)
     {
         uint64 next{};
-        if (character < '0' || character > '9' || TryMultiply(value, uint64{10}, next) == false ||
+        if (character < '0' || character > '9' || TryMultiply(value, DECIMAL_RADIX, next) == false ||
             TryAdd(next, static_cast<uint64>(character - '0'), value) == false)
         {
             return false;
@@ -77,7 +84,8 @@ void Header(parsing::JsonWriter& writer, std::string_view identity) noexcept
 }
 bool ValidIdentity(std::string_view identity) noexcept
 {
-    return identity.empty() == false && identity.size() <= 128 && ValidateCString(identity) == StringStatus::Ok;
+    return identity.empty() == false && identity.size() <= MAX_IDENTITY_BYTES &&
+           ValidateCString(identity) == StringStatus::Ok;
 }
 } // namespace
 Status DecodeValue(parsing::JsonValue input, Type type, Value& output) noexcept
@@ -108,12 +116,12 @@ Status DecodeValue(parsing::JsonValue input, Type type, Value& output) noexcept
             {
                 break;
             }
-            const bool negative = text.empty() == false && text.front() == '-';
-            if (negative && type == Type::Uint64)
+            const bool isNegative = text.empty() == false && text.front() == '-';
+            if (isNegative && type == Type::Uint64)
             {
                 break;
             }
-            if (ParseDecimal(negative ? text.substr(1) : text, magnitude) == false || (negative && magnitude == 0))
+            if (ParseDecimal(isNegative ? text.substr(1) : text, magnitude) == false || (isNegative && magnitude == 0))
             {
                 break;
             }
@@ -122,14 +130,14 @@ Status DecodeValue(parsing::JsonValue input, Type type, Value& output) noexcept
                 result.Unsigned = magnitude;
                 ok = true;
             }
-            else if (negative && magnitude == (uint64{1} << 63))
+            else if (isNegative && magnitude == MIN_INT64_MAGNITUDE)
             {
-                result.Signed = -9223372036854775807LL - 1;
+                result.Signed = MIN_INT64_VALUE;
                 ok = true;
             }
             else if (TryIntegerCast(magnitude, result.Signed))
             {
-                if (negative)
+                if (isNegative)
                 {
                     result.Signed = -result.Signed;
                 }
@@ -273,7 +281,7 @@ Status PrepareJson(Context& context,
         std::string_view type, source;
         if (record.Fields({"key", "type", "value", "source", "line"}) == false ||
             record.Get("key").String(assignment.Name) == false || record.Get("type").String(type) == false ||
-            record.Get("source").String(source) == false || source.size() > 128 ||
+            record.Get("source").String(source) == false || source.size() > MAX_ORIGIN_SOURCE_BYTES ||
             ValidateCString(source) != StringStatus::Ok || assignment.From.Source.TryAssign(source) != StringStatus::Ok)
         {
             return Fail(error, Status::InvalidBundle, assignment.Name, i);

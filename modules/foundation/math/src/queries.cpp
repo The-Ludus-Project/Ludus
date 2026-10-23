@@ -11,6 +11,8 @@ namespace ludus::foundation::math
 namespace
 {
 constexpr float64 kInf = std::numeric_limits<float64>::infinity();
+/// Largest normal length of an infinite far plane candidate still treated as zero.
+constexpr float64 INFINITE_FAR_PLANE_NORMAL_TOLERANCE = 1e-5;
 
 // Robustly normalize a float32 vector in double; false for zero / non-finite.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (ox, oy, oz) are the x/y/z out components.
@@ -710,7 +712,7 @@ MathStatus TryExtractFrustum(const Matrix4& worldToClip, FrustumMode mode, Frust
             // depthLower must have zero xyz and a positive constant; mark inactive.
             const float64 xyzLen =
                 std::sqrt(cands[i].nx * cands[i].nx + cands[i].ny * cands[i].ny + cands[i].nz * cands[i].nz);
-            if (xyzLen > 1e-5 || (cands[i].d > 0.0) == false)
+            if (xyzLen > INFINITE_FAR_PLANE_NORMAL_TOLERANCE || (cands[i].d > 0.0) == false)
             {
                 return MathStatus::Degenerate;
             }
