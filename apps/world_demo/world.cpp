@@ -30,6 +30,8 @@ static_assert(sizeof(Level::Entities) / sizeof(Recipe) + MAX_WORLD_COLLISION <= 
 static_assert(sizeof(Level::Collision) / sizeof(Box) == MAX_WORLD_COLLISION);
 /// Event of every presentation sample; cosmetic draws never advance an event.
 constexpr uint32 COSMETIC_EVENT = 0;
+/// Largest velocity component a movement completion may report, in world units per second.
+constexpr float32 MAX_COMPLETION_VELOCITY = 32.0F;
 /// Cosmetic-domain dimension of the brightness tint applied to a drawn placement.
 constexpr uint16 COSMETIC_TINT_DIMENSION = 0;
 /// Darkest cosmetic tint; the tint lies in [COSMETIC_TINT_FLOOR, 1].
@@ -565,8 +567,8 @@ Status GameWorld::SubmitCompletion(Completion completion) noexcept
     {
         return Status::InvalidConfiguration;
     }
-    if (Finite(completion.Velocity) == false || std::abs(completion.Velocity.X) > 32 ||
-        std::abs(completion.Velocity.Y) > 32)
+    if (Finite(completion.Velocity) == false || std::abs(completion.Velocity.X) > MAX_COMPLETION_VELOCITY ||
+        std::abs(completion.Velocity.Y) > MAX_COMPLETION_VELOCITY)
     {
         return Status::InvalidConfiguration;
     }

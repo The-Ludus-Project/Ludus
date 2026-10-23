@@ -12,6 +12,9 @@ namespace
 {
 namespace rhi = graphics::rhi;
 using input::Key;
+/// Initial size of the world reference window, in logical pixels.
+constexpr uint32 WINDOW_WIDTH = 960;
+constexpr uint32 WINDOW_HEIGHT = 640;
 void Record(void* context, const input::KeyboardRecord& record) noexcept
 {
     (void)static_cast<input::InputSystem*>(context)->Ingest(record);
@@ -89,7 +92,8 @@ bool Application::Start(rhi::BackendSelection selection, const char* levelBytes,
     }
     platform::WindowManager manager;
     if (manager.Initialize({}) == false ||
-        manager.CreateWindow({ .Name = "Ludus world reference", .Width = 960, .Height = 640 }, mWindow) == false)
+        manager.CreateWindow({ .Name = "Ludus world reference", .Width = WINDOW_WIDTH, .Height = WINDOW_HEIGHT },
+                             mWindow) == false)
     {
         mState = AppState::Failed;
         return false;

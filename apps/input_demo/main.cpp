@@ -46,6 +46,8 @@ using ludus::input::ResetReason;
 
 namespace
 {
+/// Bound on native event-loop iterations, since a headless window never closes.
+constexpr int MAX_NATIVE_LOOP_ITERATIONS = 100000;
 // Application-owned action identities and the default bindings. These are a
 // DEMO policy, not an engine default.
 constexpr ActionId ACTION_JUMP = 0;
@@ -273,7 +275,7 @@ int main()
             ludus::foundation::uint64 step = 1;
             int iterations = 0;
             bool quit = false;
-            while (window->HandleEvent({}) && quit == false && iterations < 100000)
+            while (window->HandleEvent({}) && quit == false && iterations < MAX_NATIVE_LOOP_ITERATIONS)
             {
                 (void)system.ConsumeStep(step++);
                 ActionState quitAction;
