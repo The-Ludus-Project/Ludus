@@ -117,3 +117,13 @@ def failure(text: str, painter: Painter) -> str:
 def error_line(message: str, painter: Painter) -> str:
     """``error: message``; the prefix stays plain text so the setup window can parse it."""
     return f"{painter.paint('error:', 'bold', 'error')} {message}"
+
+
+CHECK_MARKERS = {"passed": ("ok", "success"), "warning": ("warning", "warning"), "failed": ("failed", "error")}
+
+
+def check_line(label: str, status: str, message: str, painter: Painter, *, width: int = 0) -> str:
+    """``  [ok]       Free disk space  120.0 GB free``: one preflight result with a coloured status marker."""
+    marker, style = CHECK_MARKERS[status]
+    padded = f"[{marker}]".ljust(max(len(f"[{text}]") for text, _style in CHECK_MARKERS.values()))
+    return f"  {painter.paint(padded, 'bold', style)} {painter.paint(label.ljust(width), 'dim')}  {message}"

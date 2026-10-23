@@ -168,7 +168,7 @@ class PlanTests(unittest.TestCase):
     def run_init(self, args):
         """Run command_init with every action stubbed below its progress announcements."""
         with contextlib.ExitStack() as stack:
-            for name in ("check_current_python", "configure_system_tool_shims", "install_ubuntu_system_prerequisites",
+            for name in ("check_current_python", "run_init_preflight", "configure_system_tool_shims", "install_ubuntu_system_prerequisites",
                          "validate_required_system_tools", "create_or_update_venv", "install_managed_tools",
                          "validate_managed_tools", "export_local_recipes", "create_conan_lock",
                          "conan_install_for_preset", "repair_existing_cmake_caches", "command_setup_rad_debugger",
