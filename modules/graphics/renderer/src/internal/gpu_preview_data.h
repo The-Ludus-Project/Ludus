@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../shaders/renderer_gpu_preview_layout.h"
+#include "gpu_denoiser.h"
 #include "gpu_preview_camera.h"
 #include "reference_data.h"
 #include "render_graph_storage.h"
@@ -68,6 +69,8 @@ struct GpuPreviewRecord final
     GpuPreviewInfo Info;
     GpuPreviewUniform Uniform{};
     GpuPreviewCameraUpdate CameraUpdate;
+    GpuDenoiser Denoiser;
+    uint32 DenoisingQuality = 0;
     bool HasPendingCamera = false;
     uint32 Width = 0;
     uint32 Height = 0;

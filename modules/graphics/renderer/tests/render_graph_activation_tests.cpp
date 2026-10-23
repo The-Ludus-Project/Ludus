@@ -91,6 +91,7 @@ struct PackageOptions final
     uint32 AccumulationSamples = 0;
     uint32 SourceColor = format::ABSENT;
     float32 ToneMappingExposure = 0;
+    uint32 DenoisingQuality = 0;
     format::Technique Program = format::Technique::ColorAndDepth;
     std::string_view PassName = "Scene/Opaque";
     bool HasDepthStages = true;
@@ -205,9 +206,13 @@ void WritePlan(PackageWriter& inoutWriter, const PackageOptions& options, uint32
         std::memcpy(&exposureBits, &options.ToneMappingExposure, sizeof(exposureBits));
         inoutWriter.WriteWord(exposureBits);
     }
-    if (options.Version >= format::PACKAGE_VERSION)
+    if (options.Version >= format::BILINEAR_PACKAGE_VERSION)
     {
         inoutWriter.WriteWord(options.SourceColor);
+    }
+    if (options.Version >= format::DENOISING_PACKAGE_VERSION)
+    {
+        inoutWriter.WriteWord(options.DenoisingQuality);
     }
     if (options.HasUniforms == false)
     {
@@ -990,6 +995,7 @@ TEST_CASE("runtime packages preserve relative policies and decode fixed legacy v
                                  format::FORWARD_PACKAGE_VERSION,
                                  format::ACCUMULATION_PACKAGE_VERSION,
                                  format::TONE_MAPPING_PACKAGE_VERSION,
+                                 format::BILINEAR_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         PackageOptions options;
@@ -1137,6 +1143,7 @@ TEST_CASE("runtime independent shader pairs decode with their own stage and bind
                                  format::FORWARD_PACKAGE_VERSION,
                                  format::ACCUMULATION_PACKAGE_VERSION,
                                  format::TONE_MAPPING_PACKAGE_VERSION,
+                                 format::BILINEAR_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         constexpr format::Technique GBUFFER_PROGRAM = static_cast<format::Technique>(format::LEGACY_TECHNIQUE_COUNT);
@@ -1151,10 +1158,11 @@ TEST_CASE("runtime independent shader pairs decode with their own stage and bind
         // that serialized binding explicitly; the rest of its layout is unchanged.
         constexpr usize LEGACY_PASS_FIELDS = 10;
         const usize passBytes = (version >= format::PACKAGE_VERSION                ? format::PASS_FIELD_COUNT
-                                 : version >= format::TONE_MAPPING_PACKAGE_VERSION ? format::PASS_FIELD_COUNT - 1
-                                 : version >= format::ACCUMULATION_PACKAGE_VERSION ? format::PASS_FIELD_COUNT - 2
-                                 : version >= format::VISIBILITY_PACKAGE_VERSION   ? format::PASS_FIELD_COUNT - 3
-                                 : version >= format::ORDERED_PACKAGE_VERSION      ? format::PASS_FIELD_COUNT - 5
+                                 : version >= format::BILINEAR_PACKAGE_VERSION     ? format::PASS_FIELD_COUNT - 1
+                                 : version >= format::TONE_MAPPING_PACKAGE_VERSION ? format::PASS_FIELD_COUNT - 2
+                                 : version >= format::ACCUMULATION_PACKAGE_VERSION ? format::PASS_FIELD_COUNT - 3
+                                 : version >= format::VISIBILITY_PACKAGE_VERSION   ? format::PASS_FIELD_COUNT - 4
+                                 : version >= format::ORDERED_PACKAGE_VERSION      ? format::PASS_FIELD_COUNT - 6
                                                                                    : LEGACY_PASS_FIELDS) *
                                 sizeof(uint32);
         const usize bindingOffset =
@@ -1248,6 +1256,7 @@ TEST_CASE("legacy scene-ray packages preserve implicit tone mapping independentl
     for (const uint32 version : {format::FORWARD_PACKAGE_VERSION,
                                  format::ACCUMULATION_PACKAGE_VERSION,
                                  format::TONE_MAPPING_PACKAGE_VERSION,
+                                 format::BILINEAR_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         for (const format::StageRole compute : {format::StageRole::RayCompute,
@@ -1323,4 +1332,27 @@ TEST_CASE("runtime packages preserve bilinear source indices without scene unifo
     const core::UniquePtr<renderer::RenderGraphPackage> toneMapped = MakePackage(options);
     CHECK(toneMapped->GetPlan().Passes[0].ToneMappingExposure == 2);
     CHECK(toneMapped->GetPlan().Passes[0].SourceColor == format::ABSENT);
+}
+
+TEST_CASE("runtime denoising fields preserve modes and reject invalid raster use",
+          "[render-graph][activation][denoising]")
+{
+    PackageOptions options;
+    options.DenoisingQuality = static_cast<uint32>(format::ProcessingQuality::Balanced);
+    CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
+    options.Program = format::Technique::RayTracing;
+    options.HasDepthStages = false;
+    for (const format::ProcessingQuality quality :
+         {format::ProcessingQuality::Fast, format::ProcessingQuality::Balanced, format::ProcessingQuality::High})
+    {
+        options.DenoisingQuality = static_cast<uint32>(quality);
+        const core::UniquePtr<renderer::RenderGraphPackage> package = MakePackage(options);
+        CHECK(package->GetPlan().Passes[0].DenoisingQuality == static_cast<uint32>(quality));
+    }
+    options.Version = format::BILINEAR_PACKAGE_VERSION;
+    const core::UniquePtr<renderer::RenderGraphPackage> legacy = MakePackage(options);
+    CHECK(legacy->GetPlan().Passes[0].DenoisingQuality == 0);
+    options.Version = format::PACKAGE_VERSION;
+    options.DenoisingQuality = static_cast<uint32>(format::ProcessingQuality::High) + 1;
+    CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
 }

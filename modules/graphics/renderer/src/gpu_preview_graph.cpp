@@ -301,6 +301,32 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
     {
         return status;
     }
+    if (job.DenoisingQuality != 0)
+    {
+        rhi::GraphVersion denoised;
+        status = rhi::NextGraphVersion(device, graph, colors, denoised);
+        if (status != Status::Ready)
+        {
+            return status;
+        }
+        const rhi::GraphUse use{denoised,
+                                rhi::GraphAccessMode::StorageReadWrite,
+                                0,
+                                pixels * LUDUS_GPU_PREVIEW_VECTOR_BYTES,
+                                rhi::RasterVisibility::Compute};
+        const rhi::ComputeDispatch denoising = job.Denoiser.GetDispatch();
+        rhi::GraphPassDescription pass;
+        pass.Name = "OIDN HDR denoising";
+        pass.Uses = &use;
+        pass.UseCount = 1;
+        pass.Dispatch = &denoising;
+        status = rhi::AddGraphPass(device, graph, pass);
+        if (status != Status::Ready)
+        {
+            return status;
+        }
+        colors = denoised;
+    }
     const StaticArray<rhi::RasterVertexSlice, IMAGE_VERTEX_SLICE_COUNT> slices{{{state.Quad, 0, QUAD_BYTES}}};
     const rhi::RasterDraw draw{state.ImagePipeline,
                                job.ImageBindings,

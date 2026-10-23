@@ -653,6 +653,14 @@ LUDUS_GPU_PREVIEW_COMPUTE_ENTRY void ComputeMain(uint3 positionPixel : SV_Dispat
         accumulation[pixel * 2 + 1] = compensation;
     }
     float3 mean = hasAccumulation == true && sampleCount > 0 ? sum.xyz / float(sampleCount) : sum.xyz;
+    // OIDN filters linear HDR in place, preserving accumulation and the error tag.
+    // Its consumer applies display conversion only after the native denoising pass.
+    if ((Sampling.z & LUDUS_GPU_PREVIEW_DENOISING_FLAG) != 0)
+    {
+        colors[pixel] = float4(compensation.w != historyTag ? float3(1, 0, 1) : mean,
+                               compensation.w != historyTag ? -1 : float(pixel));
+        return;
+    }
     static const uint TONE_MAPPING_CHANNEL_COUNT = 3;
     static const float SRGB_LINEAR_THRESHOLD = .0031308;
     static const float SRGB_POWER_SCALE = 1.055;

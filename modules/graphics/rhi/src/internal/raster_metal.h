@@ -51,6 +51,9 @@ struct MetalComputePipeline final
 {
     id<MTLComputePipelineState> ObjectOrNull = nil;
     bool HasBufferSizeTable = false;
+    id<MTLCommandQueue> NativeQueueOrNull = nil;
+    id<MTLSharedEvent> NativeEventOrNull = nil;
+    uint64 NativeEventValue = 0;
 };
 internal::StorageTable<MetalComputePipeline> gComputePipelines;
 internal::StorageTable<internal::ComputePipelineInfo> gComputeInfos;
@@ -405,6 +408,38 @@ RasterStatus MetalComputePreparation::Build() noexcept
 }
 RasterStatus ComputeCreatePipeline(usize slot, const internal::ComputePipelineInfo& info, uint32 request) noexcept
 {
+    if (info.Native.SubmitOrNull != nullptr)
+    {
+        MetalComputePipeline& pipeline = gComputePipelines[slot];
+        if (pipeline.NativeQueueOrNull == nil)
+        {
+            pipeline.NativeQueueOrNull = [gDevice newCommandQueue];
+            pipeline.NativeEventOrNull = [gDevice newSharedEvent];
+        }
+        if (pipeline.NativeQueueOrNull == nil || pipeline.NativeEventOrNull == nil)
+        {
+            return RasterStatus::OutOfMemory;
+        }
+        const internal::RasterSet& set = gRasterSets[info.NativeSet];
+        StaticArray<NativeComputeBuffer, internal::RASTER_BINDINGS> buffers{};
+        for (usize index = 0; index < set.Description.Count; ++index)
+        {
+            buffers[index] = {(__bridge void*)gRasterBuffers[set.Slots[index]], set.Offsets[index], set.Sizes[index]};
+        }
+        const NativeDeviceIdentity identity
+        {
+            .Api = Backend::Metal,
+            .Device = NativeLogicalDevice{(__bridge void*)gDevice},
+            .CommandQueue = NativeCommandQueue{(__bridge void*)pipeline.NativeQueueOrNull},
+        };
+        const RasterStatus status =
+            info.Native.PrepareOrNull(info.Native.ContextOrNull, identity, {buffers.GetData(), set.Description.Count});
+        if (status == RasterStatus::Ready || status == RasterStatus::Pending)
+        {
+            gComputeInfos[slot] = info;
+        }
+        return status;
+    }
     UniquePtr<MetalComputePreparation> task = MakePreparationTask<MetalComputePreparation>();
     if (task.Get() == nullptr)
     {
@@ -427,6 +462,62 @@ struct RayMetalSceneBinding final
 void BindRayMetalScene(id<MTLComputeCommandEncoder> encoder, const RayMetalSceneBinding& description) noexcept;
 RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
 {
+    const internal::ComputePipelineInfo& info = gComputeInfos[packet.Pipeline];
+    if (info.Native.SubmitOrNull != nullptr)
+    {
+        MetalComputePipeline& pipeline = gComputePipelines[packet.Pipeline];
+        MetalCommandPrefixes& prefixes = gCommandPrefixes[gSlot];
+        if (MAX_NATIVE_COMPUTE_PREFIXES - prefixes.Count < PREFIXES_PER_NATIVE_COMPUTE)
+        {
+            return RasterStatus::CapacityExceeded;
+        }
+        constexpr uint64 EVENT_STEPS = 2;
+        if (pipeline.NativeEventValue > ~uint64{0} - EVENT_STEPS)
+        {
+            return RasterStatus::IdentityExhausted;
+        }
+        id<MTLCommandBuffer> nextOrNull = [gQueue commandBuffer];
+        id<MTLCommandBuffer> waitOrNull = [pipeline.NativeQueueOrNull commandBuffer];
+        id<MTLCommandBuffer> completedOrNull = [pipeline.NativeQueueOrNull commandBuffer];
+        if (nextOrNull == nil || waitOrNull == nil || completedOrNull == nil)
+        {
+            return RasterStatus::OutOfMemory;
+        }
+        const uint64 producerValue = pipeline.NativeEventValue + 1;
+        const uint64 completionValue = pipeline.NativeEventValue + EVENT_STEPS;
+        pipeline.NativeEventValue = completionValue;
+        if (gPassLabelOrNull != nil)
+        {
+            [gCommand popDebugGroup];
+        }
+        // The private queue can initialize models off-thread without submitting on
+        // a borrowed framework queue. Native events order access to the shared data.
+        [gCommand encodeSignalEvent:pipeline.NativeEventOrNull value:producerValue];
+        prefixes.CommandsOrNull[prefixes.Count++] = gCommand;
+        [gCommand commit];
+        [waitOrNull encodeWaitForEvent:pipeline.NativeEventOrNull value:producerValue];
+        prefixes.CommandsOrNull[prefixes.Count++] = waitOrNull;
+        [waitOrNull commit];
+        const RasterStatus status = info.Native.SubmitOrNull(info.Native.ContextOrNull);
+        [completedOrNull encodeSignalEvent:pipeline.NativeEventOrNull value:completionValue];
+        prefixes.CommandsOrNull[prefixes.Count++] = completedOrNull;
+        [completedOrNull commit];
+        gCommand = nextOrNull;
+        [gCommand encodeWaitForEvent:pipeline.NativeEventOrNull value:completionValue];
+        hasNativeComputeSplit = true;
+        if (status != RasterStatus::Ready)
+        {
+            // Fence partial library work even when the graph cannot publish output.
+            [gCommand commit];
+            gSubmitted[gSlot] = gCommand;
+            gCommand = nil;
+        }
+        else if (gPassLabelOrNull != nil)
+        {
+            [gCommand pushDebugGroup:gPassLabelOrNull];
+        }
+        return status;
+    }
     const MetalComputePipeline& pipeline = gComputePipelines[packet.Pipeline];
     const internal::RasterSet& bindings = gRasterSets[packet.Set];
     MetalBufferSizeTable bufferSizes{};
@@ -475,7 +566,6 @@ RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
                        atIndex:layout.Entries[i].Binding];
         }
     }
-    const auto& info = gComputeInfos[packet.Pipeline];
     [encoder dispatchThreadgroups:MTLSizeMake(packet.Groups[0], packet.Groups[1], packet.Groups[2])
             threadsPerThreadgroup:MTLSizeMake(info.WorkgroupSize[0], info.WorkgroupSize[1], info.WorkgroupSize[2])];
     [encoder endEncoding];
@@ -1068,6 +1158,13 @@ uint64 RasterCompleted() noexcept
     PollNativePreparation();
     for (usize i = 0; i < FRAMES; ++i)
     {
+        for (usize prefix = 0; prefix < gCommandPrefixes[i].Count; ++prefix)
+        {
+            if (CheckCommand(gCommandPrefixes[i].CommandsOrNull[prefix]) == false)
+            {
+                return gRasterCompleted;
+            }
+        }
         if (gSubmitted[i] != nil && CheckCommand(gSubmitted[i]) == false)
         {
             return gRasterCompleted;
@@ -1082,6 +1179,33 @@ uint64 RasterCompleted() noexcept
 }
 void RasterReset() noexcept
 {
+    // Foreign work may already be queued when a later graph encoder fails.
+    // Submit the trailing RHI buffer before waiting/releasing any retained context.
+    if (hasNativeComputeSplit == true && gCommand != nil)
+    {
+        [gEncoder endEncoding];
+        gEncoder = nil;
+        if (gPassLabelOrNull != nil)
+        {
+            [gCommand popDebugGroup];
+        }
+        [gCommand commit];
+        gSubmitted[gSlot] = gCommand;
+        gCommand = nil;
+    }
+    // Failed producers may never execute their GPU signal. Unblock joins during
+    // fault cleanup, then wait every private completion before releasing storage.
+    const StartupState startup = GetStartup().State;
+    if (startup == StartupState::Failed || startup == StartupState::DeviceLost)
+    {
+        for (MetalComputePipeline& pipeline : gComputePipelines)
+        {
+            if (pipeline.NativeEventOrNull != nil)
+            {
+                pipeline.NativeEventOrNull.signaledValue = pipeline.NativeEventValue;
+            }
+        }
+    }
     DrainNativePreparation();
     for (auto command : gSubmitted)
     {
@@ -1092,6 +1216,14 @@ void RasterReset() noexcept
         ordinal = 0;
     }
     gRasterCompleted = 0;
+    for (MetalCommandPrefixes& prefixes : gCommandPrefixes)
+    {
+        for (usize index = 0; index < prefixes.Count; ++index)
+        {
+            [prefixes.CommandsOrNull[index] waitUntilCompleted];
+        }
+        prefixes = {};
+    }
 }
 void RasterShutdown() noexcept {}
 

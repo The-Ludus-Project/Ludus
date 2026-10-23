@@ -47,6 +47,9 @@ if(NOT "@CMAKE_SYSTEM_NAME@" STREQUAL "Emscripten")
 endif()
 
 # Threads is a system dependency pulled in by the assertion/concurrency paths.
+if(@LUDUS_ENABLE_OIDN@)
+    find_dependency(OpenImageDenoise 2.5.1 EXACT CONFIG)
+endif()
 find_dependency(Threads)
 
 if(@LUDUS_PLATFORM_ENABLE_WAYLAND@)

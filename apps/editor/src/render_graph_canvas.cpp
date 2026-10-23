@@ -249,7 +249,8 @@ bool GetRenderGraphNodePorts(const RenderGraphDocument& document,
         AppendSceneBundleInputs(ports.Inputs);
         ports.Outputs = ReadInterface(node.value(QStringLiteral("outputs")).toArray());
     }
-    else if (kind == QStringLiteral("Accumulate") || kind == QStringLiteral("ToneMap"))
+    else if (kind == QStringLiteral("Accumulate") || kind == QStringLiteral("ToneMap") ||
+             kind == QStringLiteral("Denoise"))
     {
         ports.Inputs = {{QStringLiteral("color"), QStringLiteral("ColorTexture")}};
         ports.Outputs = {{QStringLiteral("color"), QStringLiteral("ColorTexture")}};
@@ -1013,6 +1014,13 @@ void RenderGraphCanvas::refreshFeedback()
             resources.append(QStringLiteral("Linear RGB accumulation before display conversion. "
                                             "Resets on camera, scene, size or shader replacement. "
                                             "Bypass this node for individual samples."));
+        }
+        if (view->Kind == QStringLiteral("Denoise"))
+        {
+            const QJsonObject node = FindNode(configuration(), view->Id);
+            sizeLabel = QStringLiteral("OIDN · %1").arg(node.value(QStringLiteral("quality")).toString());
+            resources.append(QStringLiteral("Linear HDR denoising before ToneMap. Requires OIDN and Metal. "
+                                            "Fast favors previews; Balanced favors interaction; High favors quality."));
         }
         if (view->Kind == QStringLiteral("ToneMap"))
         {

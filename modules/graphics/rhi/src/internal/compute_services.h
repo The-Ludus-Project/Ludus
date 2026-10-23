@@ -41,6 +41,12 @@ RasterStatus ValidateCompute(DeviceHandle device, const ComputeDispatch& dispatc
             return record->Status == RasterStatus::Pending ? RasterStatus::NotReady : record->Status;
         }
     }
+    if (pipeline->Compute.Native.SubmitOrNull != nullptr &&
+        (pipeline->Compute.NativeSet != RasterAccess::Slot(dispatch.Bindings) || dispatch.Groups[0] != 1 ||
+         dispatch.Groups[1] != 1 || dispatch.Groups[2] != 1))
+    {
+        return RasterStatus::InvalidDescription;
+    }
     if (pipeline->Compute.Layout != set->Set.Layout)
     {
         return RasterStatus::InvalidDescription;
@@ -94,6 +100,14 @@ RasterStatus ComputePacketStatus(const ComputePacket& packet) noexcept
 }
 RasterStatus EncodeCompute(const ComputePacket& packet) noexcept
 {
+    if (At(RasterKind::ComputePipeline, packet.Pipeline).Compute.Native.SubmitOrNull != nullptr)
+    {
+        if (gNativeComputePassCount == MAX_NATIVE_COMPUTE_PASSES_PER_FRAME)
+        {
+            return RasterStatus::CapacityExceeded;
+        }
+        ++gNativeComputePassCount;
+    }
     FrameRetain(RasterKind::ComputePipeline, packet.Pipeline);
     FrameRetain(RasterKind::Set, packet.Set);
     const auto& set = At(RasterKind::Set, packet.Set).Set;
@@ -174,6 +188,63 @@ RasterStatus CreateComputePipeline(DeviceHandle device,
             record.Compute.WorkgroupSize[i] = shader->Shader.WorkgroupSize[i];
         }
         return backend::ComputeCreatePipeline(slot, record.Compute, record.Request);
+    });
+}
+RasterStatus CreateNativeComputePipeline(DeviceHandle device,
+                                         const NativeComputePipelineDescription& description,
+                                         ComputePipelineHandle& outPipeline) noexcept
+{
+    const RasterStatus admission = ComputeAdmission(device);
+    if (admission != RasterStatus::Ready)
+    {
+        return admission;
+    }
+    NativeDeviceInfo native;
+    if (backend::NativeInteropSupported() == false)
+    {
+        return RasterStatus::Unsupported;
+    }
+    const RasterStatus nativeStatus = backend::NativeDeviceSnapshot(native);
+    if (nativeStatus != RasterStatus::Ready)
+    {
+        return nativeStatus;
+    }
+    if (native.Identity.Api != Backend::Metal)
+    {
+        return RasterStatus::Unsupported;
+    }
+    if (description.PrepareOrNull == nullptr || description.SubmitOrNull == nullptr ||
+        description.RetainOrNull == nullptr || description.ReleaseOrNull == nullptr ||
+        description.DrainOrNull == nullptr)
+    {
+        return RasterStatus::InvalidDescription;
+    }
+    const Record* setOrNull = Resolve(description.Bindings, RasterKind::Set);
+    if (setOrNull == nullptr)
+    {
+        return RasterStatus::InvalidHandle;
+    }
+    if (setOrNull->Status != RasterStatus::Ready)
+    {
+        return setOrNull->Status;
+    }
+    const RasterLayout& layout = setOrNull->Set.Description;
+    for (usize index = 0; index < layout.Count; ++index)
+    {
+        const RasterBinding& entry = layout.Entries[index];
+        if (entry.Visibility != RasterVisibility::Compute || entry.HasDynamicOffset == true || entry.Count != 1 ||
+            entry.IsRuntimeSized == true || entry.HasPartialBinding == true ||
+            entry.Indexing != RasterBindingIndexing::Constant ||
+            (entry.Kind != RasterBindingKind::StorageRead && entry.Kind != RasterBindingKind::StorageReadWrite))
+        {
+            return RasterStatus::InvalidDescription;
+        }
+    }
+    return Publish(RasterKind::ComputePipeline, outPipeline, [&](usize slot, Record& inoutRecord) noexcept {
+        inoutRecord.Compute.Layout = setOrNull->Set.Layout;
+        inoutRecord.Compute.Native = description;
+        inoutRecord.Compute.NativeSet = RasterAccess::Slot(description.Bindings);
+        return backend::ComputeCreatePipeline(slot, inoutRecord.Compute, inoutRecord.Request);
     });
 }
 RasterStatus GetStatus(DeviceHandle device, ComputePipelineHandle handle) noexcept

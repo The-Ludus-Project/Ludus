@@ -2165,6 +2165,20 @@ RasterStatus ExecuteGraphCommands(DeviceHandle device,
     {
         return RasterStatus::InvalidState;
     }
+    usize nativePassCount = 0;
+    for (usize index = 0; index < graph->PassCount; ++index)
+    {
+        const GraphPassRecord& pass = graph->Passes[index];
+        if (graph->Report.Passes[index].Culled == false && pass.IsCompute == true &&
+            At(RasterKind::ComputePipeline, pass.Dispatch.Pipeline).Compute.Native.SubmitOrNull != nullptr)
+        {
+            ++nativePassCount;
+        }
+    }
+    if (nativePassCount > MAX_NATIVE_COMPUTE_PASSES_PER_FRAME - (shouldSubmit == true ? 0 : gNativeComputePassCount))
+    {
+        return RasterStatus::CapacityExceeded;
+    }
     if (graph->Report.Summary.DrawCount >
         CurrentDeviceProfile().Raster.DrawsPerFrame - (shouldSubmit == true ? 0 : gDrawCount))
     {
