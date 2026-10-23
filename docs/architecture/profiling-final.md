@@ -211,7 +211,7 @@ CPU-only recording leaves the GPU recording gates disabled. Timing currently
 covers raster/compute operations in the acquired frame command buffer; separate
 ray-query batch command buffers are excluded. Do not interpret an image resolve
 pass as the duration of its ray computation. Hosted recording transport and
-calibrated GPU execution lanes remain separate follow-ups.
+Vulkan execution lanes remain separate follow-ups.
 
 WebGPU/WebGL **per-pass** sampling is explicitly unsupported in this increment.
 Their frame timing retains backend feature/privacy/disjoint constraints and is
@@ -225,6 +225,27 @@ timestamps are one capability-dependent route; Metal needs its own documented
 mapping. Recalibrate at bounded intervals and invalidate the mapping after a
 clock/session discontinuity. If unavailable or too uncertain, retain duration
 counters. Hosted-process clocks need a separate offset/error contract.
+
+Metal implements this mapping per pass batch. It samples
+`sampleTimestamps:gpuTimestamp:` between two `NowTicks` reads just before the
+frame command buffer commits and again when the poll observes completion. Pass
+timestamps inside that window are linearly interpolated onto `NowTicks`, so
+each batch recalibrates and no mapping outlives one command buffer. The batch is
+rejected (duration counters only) when either read gap exceeds 50 µs or the two
+CPU clocks' elapsed times disagree by more than those gaps, which detects sleep:
+Metal's CPU timestamps exclude it while `NowTicks` includes it. The recorded
+uncertainty is half the larger read gap; it excludes drift between the two
+samples, which share one hardware counter on Apple silicon. `GpuPassTiming`
+reports the mapped interval and `GpuPassTimings::ClockUncertaintyNanoseconds`
+the bound. Vulkan reports no interval until calibrated timestamps are admitted.
+
+The exporter writes calibrated passes as `X` slices named `<pass> (<kind>)` under
+a `GPU` process. Slices are assigned in start order to the first lane whose last
+slice has ended, so overlapping stage envelopes occupy separate
+`GPU execution (calibrated[, overlap N])` tracks and no parentage is invented.
+Each slice records its frame/scope identity, device duration and uncertainty;
+`ludusGpuTiming` adds slice, lane and maximum uncertainty totals. Frame probes
+and uncalibrated passes stay duration counters at their submission markers.
 
 Use distinct process/track identities and legal nesting for Chrome `B`/`E` or
 `X` slices. Queue overlap belongs on separate tracks; collection-thread order
@@ -255,7 +276,9 @@ Thanks to Khronos Group, [Timestamp queries](https://docs.vulkan.org/samples/lat
 and [Queries](https://docs.vulkan.org/spec/latest/chapters/queries.html), for the
 query support, units and availability contract; to Apple, [GPUStartTime](https://developer.apple.com/documentation/metal/mtlcommandbuffer/gpustarttime)
 and [GPUEndTime](https://developer.apple.com/documentation/metal/mtlcommandbuffer/gpuendtime),
-for completion-only command-buffer timing; and to Perfetto contributors,
+for completion-only command-buffer timing; to Apple,
+[Converting GPU timestamps into CPU time](https://developer.apple.com/documentation/metal/converting-gpu-timestamps-into-cpu-time),
+for the two-sample interpolation adopted by the Metal pass calibration; and to Perfetto contributors,
 [Visualizing external trace formats](https://perfetto.dev/docs/getting-started/other-formats),
 for JSON counter/duration conventions and slice nesting. Duration-only placement,
 coverage policy and the staged delivery are Ludus decisions. Retain relevant

@@ -1,11 +1,18 @@
 #pragma once
 
 #include "gpu_pass_timing_buffer.h"
+#include <ludus/foundation/time/time.hpp>
 
 // Thanks to Apple, "Sampling GPU data into counter sample buffers", Metal:
 // https://developer.apple.com/documentation/metal/sampling-gpu-data-into-counter-sample-buffers
 // Stage-boundary attachments measure physical encoder stages. Overlapping render
-// stages form one elapsed envelope, never a sum or a CPU-aligned execution slice.
+// stages form one elapsed envelope, never a sum.
+// Thanks also to Apple, "Converting GPU timestamps into CPU time", Metal:
+// https://developer.apple.com/documentation/metal/converting-gpu-timestamps-into-cpu-time
+// Adopted: interpolate counter timestamps between two sampleTimestamps:gpuTimestamp:
+// pairs. Ludus departs by mapping onto the NowTicks clock (CLOCK_MONOTONIC_RAW-based),
+// whose epoch differs from Metal's CPU timestamps, and rejects calibrations whose
+// bracketing reads are too slow or span a sleep.
 namespace ludus::graphics::rhi::backend
 {
 namespace
@@ -13,16 +20,78 @@ namespace
 constexpr usize PASS_SAMPLE_STRIDE = 4;
 constexpr usize FRAGMENT_END_SAMPLE = PASS_SAMPLE_STRIDE - 1;
 constexpr usize PASS_SAMPLE_COUNT = MAX_GPU_TIMED_PASSES * PASS_SAMPLE_STRIDE;
+/// Larger calibration read gaps leave the batch duration-only rather than misplacing slices.
+constexpr uint64 MAX_CLOCK_UNCERTAINTY_NANOSECONDS = 50'000;
+/// One device/CPU timestamp pair bracketed by NowTicks reads.
+struct ClockSample final
+{
+    uint64 Ticks = 0;
+    uint64 ReadGapNanoseconds = 0;
+    MTLTimestamp CpuTimestamp = 0;
+    MTLTimestamp DeviceTimestamp = 0;
+};
 internal::GpuPassTimingBuffer gPassTimings;
 id<MTLCounterSampleBuffer> gPassSamplesOrNull = nil;
 id<MTLCommandBuffer> gPassCommandOrNull = nil;
 NSString* gPassLabelOrNull = nil;
+ClockSample gPassSubmitClock;
+bool hasPassSubmitClock = false;
+bool SampleClocks(ClockSample& outSample) noexcept
+{
+    const uint64 before = foundation::time::NowTicks();
+    MTLTimestamp cpu = 0;
+    MTLTimestamp device = 0;
+    [gDevice sampleTimestamps:&cpu gpuTimestamp:&device];
+    const uint64 after = foundation::time::NowTicks();
+    if (after < before || device == 0)
+    {
+        return false;
+    }
+    outSample =
+    {
+        .Ticks = before + (after - before) / 2,
+        .ReadGapNanoseconds = after - before,
+        .CpuTimestamp = cpu,
+        .DeviceTimestamp = device,
+    };
+    return true;
+}
+/// Validates the submit/completion pair. Metal CPU timestamps exclude sleep while NowTicks
+/// includes it, so differing elapsed times identify a discontinuity between the samples.
+bool IsCalibrationValid(const ClockSample& first, const ClockSample& last, uint64& outUncertainty) noexcept
+{
+    if (last.Ticks <= first.Ticks || last.DeviceTimestamp <= first.DeviceTimestamp ||
+        last.CpuTimestamp < first.CpuTimestamp)
+    {
+        return false;
+    }
+    const uint64 elapsedTicks = last.Ticks - first.Ticks;
+    const uint64 elapsedCpu = last.CpuTimestamp - first.CpuTimestamp;
+    const uint64 difference = elapsedTicks > elapsedCpu ? elapsedTicks - elapsedCpu : elapsedCpu - elapsedTicks;
+    const uint64 largerGap =
+        first.ReadGapNanoseconds > last.ReadGapNanoseconds ? first.ReadGapNanoseconds : last.ReadGapNanoseconds;
+    if (difference > first.ReadGapNanoseconds + last.ReadGapNanoseconds ||
+        largerGap > MAX_CLOCK_UNCERTAINTY_NANOSECONDS)
+    {
+        return false;
+    }
+    outUncertainty = (largerGap + 1) / 2;
+    return true;
+}
+/// Linear device-to-NowTicks interpolation; timestamp must lie inside the calibration window.
+uint64 MapDeviceTimestamp(const ClockSample& first, const ClockSample& last, uint64 timestamp) noexcept
+{
+    const float64 rate = static_cast<float64>(last.Ticks - first.Ticks) /
+                         static_cast<float64>(last.DeviceTimestamp - first.DeviceTimestamp);
+    return first.Ticks + static_cast<uint64>(static_cast<float64>(timestamp - first.DeviceTimestamp) * rate + 0.5);
+}
 } // namespace
 void ResetPassTimings() noexcept
 {
     gPassSamplesOrNull = nil;
     gPassCommandOrNull = nil;
     gPassLabelOrNull = nil;
+    hasPassSubmitClock = false;
     gPassTimings.Reset();
 }
 GpuPassTimings PollPassTimings() noexcept
@@ -39,11 +108,16 @@ GpuPassTimings PollPassTimings() noexcept
         {
             report.Passes[index].Timing.State = GpuTimingState::Failed;
         }
+        hasPassSubmitClock = false;
         static_cast<void>(CheckCommand(gPassCommandOrNull));
     }
     else if (gPassCommandOrNull.status == MTLCommandBufferStatusCompleted)
     {
         NSData* dataOrNull = [gPassSamplesOrNull resolveCounterRange:NSMakeRange(0, report.Count * PASS_SAMPLE_STRIDE)];
+        ClockSample completionClock;
+        uint64 uncertainty = 0;
+        const bool isCalibrated = hasPassSubmitClock == true && SampleClocks(completionClock) == true &&
+                                  IsCalibrationValid(gPassSubmitClock, completionClock, uncertainty) == true;
         for (usize index = 0; index < report.Count; ++index)
         {
             GpuTiming& timing = report.Passes[index].Timing;
@@ -72,10 +146,20 @@ GpuPassTimings PollPassTimings() noexcept
             {
                 timing.DurationNanoseconds = static_cast<float64>(end - start);
                 timing.State = GpuTimingState::Available;
+                GpuPassTiming& pass = report.Passes[index];
+                if (isCalibrated == true && start >= gPassSubmitClock.DeviceTimestamp &&
+                    end <= completionClock.DeviceTimestamp)
+                {
+                    pass.HasCpuInterval = true;
+                    pass.StartTicks = MapDeviceTimestamp(gPassSubmitClock, completionClock, start);
+                    pass.EndTicks = MapDeviceTimestamp(gPassSubmitClock, completionClock, end);
+                    report.ClockUncertaintyNanoseconds = uncertainty;
+                }
             }
         }
         report.State = GpuTimingState::Available;
         gPassCommandOrNull = nil;
+        hasPassSubmitClock = false;
     }
     return report;
 }
@@ -168,6 +252,8 @@ void SubmitPassTimings() noexcept
     if (gPassTimings.GetReport().State == GpuTimingState::Pending && gPassCommandOrNull == nil)
     {
         gPassCommandOrNull = gCommand;
+        // Sampled before commit, so no operation of this command buffer can precede it.
+        hasPassSubmitClock = SampleClocks(gPassSubmitClock);
     }
 }
 void ConfigurePassTiming(MTLRenderPassDescriptor* description) noexcept

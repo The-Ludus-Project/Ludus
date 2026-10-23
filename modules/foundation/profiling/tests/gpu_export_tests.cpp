@@ -2,6 +2,8 @@
 #include <ludus/foundation/profiling/profiling.hpp>
 #include <ludus/foundation/profiling/trace_system.hpp>
 
+#include <ludus/foundation/containers/static_array.hpp>
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <string>
@@ -99,6 +101,73 @@ TEST_CASE("named GPU pass counters escape names and retain physical group identi
     sample.ScopeIdentity = 1;
     sample.PassName = {nullptr, 1};
     CHECK(SerializePerfettoTrace(bytes, {&sample, 1}, coverage, false) == false);
+    CHECK(bytes.GetSize() == originalSize);
+}
+
+TEST_CASE("calibrated GPU passes export named slices on non-overlapping lanes", "[profiling][gpu-export]")
+{
+    constexpr char TRACE[] = "Main/raytracing/\"trace\"";
+    constexpr char BLIT[] = "Main/raytracing/blit";
+    const auto makePass = [](const char* name, usize length, uint64 start, uint64 end, bool isCompute) {
+        return GpuTraceSample
+        {
+            .SubmissionTicks = 500,
+            .CollectionTicks = 9000,
+            .DurationNanoseconds = end - start,
+            .FrameId = 4,
+            .DeviceSession = 1,
+            .PassName = {name, length},
+            .ScopeIdentity = 7,
+            .ScopePassIndex = isCompute == true ? 0U : 1U,
+            .IsCompute = isCompute,
+            .HasExecutionInterval = true,
+            .ExecutionStartTicks = start,
+            .ExecutionEndTicks = end,
+            .ClockUncertaintyNanoseconds = 3,
+        };
+    };
+    StaticArray<GpuTraceSample, 4> samples{
+        makePass(TRACE, sizeof(TRACE) - 1, 1000, 5000, true),
+        makePass(BLIT, sizeof(BLIT) - 1, 2000, 6000, false),
+        makePass(BLIT, sizeof(BLIT) - 1, 6000, 7000, false),
+        GpuTraceSample
+        {
+            .SubmissionTicks = 500,
+            .CollectionTicks = 9000,
+            .DurationNanoseconds = 6500,
+            .FrameId = 4,
+            .DeviceSession = 1,
+            .PassName = {},
+        },
+    };
+    samples[2].ClockUncertaintyNanoseconds = 9;
+    Array<uint8> bytes;
+    const GpuTraceCoverage coverage{ .IsGpuRequested = true, .IsPassTimingSupported = true };
+    REQUIRE(SerializePerfettoTrace(bytes, {samples.GetData(), samples.GetSize()}, coverage, false) == true);
+    const std::string json(reinterpret_cast<const char*>(bytes.GetData()), bytes.GetSize());
+    CHECK(json.find("{\"pid\":2,\"tid\":2,\"ph\":\"X\",\"cat\":\"gpu.compute\",\"name\":\"Main/raytracing/"
+                    "\\\"trace\\\" (Compute)\",\"ts\":1.000,\"dur\":4.000") != std::string::npos);
+    // The overlapping raster pass moves to a second lane; the later one reuses the first.
+    CHECK(json.find("{\"pid\":2,\"tid\":3,\"ph\":\"X\",\"cat\":\"gpu.raster\",\"name\":\"Main/raytracing/blit "
+                    "(Raster)\",\"ts\":2.000,\"dur\":4.000") != std::string::npos);
+    CHECK(json.find("{\"pid\":2,\"tid\":2,\"ph\":\"X\",\"cat\":\"gpu.raster\",\"name\":\"Main/raytracing/blit "
+                    "(Raster)\",\"ts\":6.000,\"dur\":1.000") != std::string::npos);
+    CHECK(json.find("\"args\":{\"name\":\"GPU execution (calibrated)\"}") != std::string::npos);
+    CHECK(json.find("\"args\":{\"name\":\"GPU execution (calibrated, overlap 1)\"}") != std::string::npos);
+    CHECK(json.find("\"name\":\"process_name\",\"args\":{\"name\":\"GPU\"}") != std::string::npos);
+    CHECK(json.find("\"executionSliceCount\":3") != std::string::npos);
+    CHECK(json.find("\"executionLaneCount\":2") != std::string::npos);
+    CHECK(json.find("\"maxClockUncertaintyNanoseconds\":9") != std::string::npos);
+    // The frame probe has no calibrated interval and stays a duration counter only.
+    CHECK(json.find("GPU/FrameDurationNanoseconds") != std::string::npos);
+    CHECK(json.find("\"frameSampleCount\":1") != std::string::npos);
+
+    const usize originalSize = bytes.GetSize();
+    samples[1].ExecutionEndTicks = samples[1].ExecutionStartTicks - 1;
+    CHECK(SerializePerfettoTrace(bytes, {samples.GetData(), samples.GetSize()}, coverage, false) == false);
+    samples[1].ExecutionEndTicks = 6000;
+    samples[3].HasExecutionInterval = true;
+    CHECK(SerializePerfettoTrace(bytes, {samples.GetData(), samples.GetSize()}, coverage, false) == false);
     CHECK(bytes.GetSize() == originalSize);
 }
 #endif

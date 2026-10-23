@@ -30,6 +30,16 @@ struct GpuTraceSample final
     uint32 LogicalPassCount = 1;
     /// True for a compute encoder/dispatch, false for a render encoder/pass.
     bool IsCompute = false;
+    /// True when ExecutionStartTicks/ExecutionEndTicks place a named pass on the CPU trace clock
+    /// through a validated backend calibration. Only such samples become execution slices;
+    /// frame probes and uncalibrated passes remain duration counters.
+    bool HasExecutionInterval = false;
+    /// Calibrated device execution start, in the CPU trace clock's nanoseconds.
+    uint64 ExecutionStartTicks = 0;
+    /// Calibrated device execution end, not before ExecutionStartTicks.
+    uint64 ExecutionEndTicks = 0;
+    /// Calibration error bound for the execution interval, in nanoseconds.
+    uint64 ClockUncertaintyNanoseconds = 0;
 };
 
 /// Coverage of the GPU sampling window. Missing results never become zero-duration samples.
@@ -57,7 +67,10 @@ struct GpuTraceCoverage final
 /// @param outBytes Receives the complete file bytes only on success; unchanged on failure.
 /// @param samples Borrowed completed GPU samples, consumed during this call. IDs must be nonzero
 /// and CollectionTicks must not precede SubmissionTicks. PassName must be valid UTF-8 without
-/// embedded zero; ScopeIdentity must be nonzero exactly when PassName is nonempty. No native objects are retained.
+/// embedded zero; ScopeIdentity must be nonzero exactly when PassName is nonempty. An execution
+/// interval requires a named pass and must not end before it starts. Calibrated passes are also
+/// emitted as named "X" slices on GPU execution lanes; overlapping passes use separate lanes
+/// rather than inventing nesting. No native objects are retained.
 /// @param coverage GPU sampling coverage included in the exported artifact.
 /// @param shouldIncludeCpu When true, drains the most recent stopped CPU recording. When false,
 /// does not drain CPU events or serialize CPU thread metadata, allowing GPU-only export

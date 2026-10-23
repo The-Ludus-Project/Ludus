@@ -50,6 +50,16 @@ struct GpuPassTiming final
     foundation::uint32 ScopePassIndex = 0;
     /// Available, Disjoint or Failed after the enclosing batch becomes terminal.
     GpuTiming Timing{};
+    /// True when StartTicks/EndTicks place this operation on the foundation::time::NowTicks
+    /// clock through the batch's validated device-clock calibration. False whenever the
+    /// backend has no calibration, the calibration was rejected, or Timing is not Available.
+    bool HasCpuInterval = false;
+    /// Calibrated operation start in NowTicks nanoseconds; meaningful only with HasCpuInterval.
+    foundation::uint64 StartTicks = 0;
+    /// Calibrated operation end in NowTicks nanoseconds, not before StartTicks; meaningful
+    /// only with HasCpuInterval. EndTicks - StartTicks may differ from Timing's raw duration
+    /// by the calibrated clock rate.
+    foundation::uint64 EndTicks = 0;
 };
 /// Copied bounded batch. Terminal results persist until rearmed; polling never consumes them.
 struct GpuPassTimings final
@@ -60,6 +70,10 @@ struct GpuPassTimings final
     foundation::usize Count = 0;
     /// Physical operations omitted due to query capacity; never fabricated as zero durations.
     foundation::uint64 DroppedPasses = 0;
+    /// Bound, in nanoseconds, on the CPU-clock error of every pass with HasCpuInterval: the
+    /// larger CPU read gap around the two device/CPU calibration samples bracketing the batch.
+    /// Zero when no pass has a CPU interval. Metal only; other backends stay duration-only.
+    foundation::uint64 ClockUncertaintyNanoseconds = 0;
     /// Initialized prefix contains identities and explicit per-operation validity.
     foundation::StaticArray<GpuPassTiming, MAX_GPU_TIMED_PASSES> Passes{};
 };

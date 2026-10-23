@@ -52,6 +52,8 @@
 //              whose args are that sample's metrics; the coverage manifest goes
 //              in the top-level "metadata" object (memory profiling phase 1)
 //   registered thread names -> metadata "M" thread_name records
+//   calibrated GpuTraceSample passes -> phase "X" complete slices on GPU execution
+//              lanes (pid 2); uncalibrated samples stay duration counters
 //
 // Incomplete scopes (a Begin with no End when the capture ends, or a dropped
 // chunk) are closed with a synthesized "E" carrying an "incomplete" arg so the
@@ -228,6 +230,124 @@ struct GaugeGroup
 
 using SeenDomains = foundation::StaticArray<bool, MAX_ALLOCATION_DOMAINS + 1>;
 
+/// GPU process thread ids: duration counters, then one id per execution lane.
+constexpr uint32 GPU_COUNTER_THREAD = 1;
+constexpr uint32 GPU_FIRST_EXECUTION_THREAD = 2;
+
+void AppendGpuThreadMetadata(std::string& inoutJson, uint32 threadId, std::string_view name) noexcept
+{
+    inoutJson += ",\n{\"pid\":2,\"tid\":";
+    AppendUint(inoutJson, threadId);
+    inoutJson += ",\"ph\":\"M\",\"name\":\"thread_name\",\"args\":{\"name\":\"";
+    AppendJsonEscaped(inoutJson, name);
+    inoutJson += "\"}},\n{\"pid\":2,\"tid\":";
+    AppendUint(inoutJson, threadId);
+    inoutJson += ",\"ph\":\"M\",\"name\":\"thread_sort_index\",\"args\":{\"sort_index\":";
+    AppendUint(inoutJson, threadId);
+    inoutJson += "}}";
+}
+
+std::string_view GetPassName(const GpuTraceSample& sample) noexcept
+{
+    return {sample.PassName.GetDataOrNull(), sample.PassName.GetSize()};
+}
+
+/// Totals of the emitted execution slices, bundled so the counts cannot be transposed.
+struct GpuExecutionSummary
+{
+    usize LaneCount = 0;
+    usize SliceCount = 0;
+    uint64 MaxClockUncertaintyNanoseconds = 0;
+};
+
+/// Emits calibrated passes as complete slices. Greedy lane assignment in start order keeps
+/// each lane's slices disjoint, so overlapping GPU work sits on separate tracks instead of
+/// receiving invented parentage. Returns false only on allocation failure.
+bool AppendGpuExecutionSlices(std::string& inoutJson,
+                              BorrowedView<const GpuTraceSample> samples,
+                              GpuExecutionSummary& outSummary) noexcept
+{
+    foundation::Array<usize> order;
+    for (usize index = 0; index < samples.GetSize(); ++index)
+    {
+        if (samples[index].HasExecutionInterval == true && order.TryAdd(index) == false)
+        {
+            return false;
+        }
+    }
+    foundation::Array<usize> scratch;
+    if (scratch.TryResize(order.GetSize()) == false ||
+        foundation::StableSort(order.GetData(),
+                               scratch.GetData(),
+                               order.GetSize(),
+                               [samples](usize a, usize b) noexcept {
+                                   return samples[a].ExecutionStartTicks < samples[b].ExecutionStartTicks;
+                               }) == false)
+    {
+        return false;
+    }
+    foundation::Array<uint64> laneEnds;
+    uint64 maxUncertainty = 0;
+    for (const usize index : order)
+    {
+        const GpuTraceSample& sample = samples[index];
+        usize lane = 0;
+        while (lane < laneEnds.GetSize() && laneEnds[lane] > sample.ExecutionStartTicks)
+        {
+            ++lane;
+        }
+        if (lane == laneEnds.GetSize() && laneEnds.TryAdd(0) == false)
+        {
+            return false;
+        }
+        laneEnds[lane] = sample.ExecutionEndTicks;
+        maxUncertainty =
+            sample.ClockUncertaintyNanoseconds > maxUncertainty ? sample.ClockUncertaintyNanoseconds : maxUncertainty;
+        inoutJson += ",\n{\"pid\":2,\"tid\":";
+        AppendUint(inoutJson, GPU_FIRST_EXECUTION_THREAD + lane);
+        inoutJson += ",\"ph\":\"X\",\"cat\":\"";
+        inoutJson += sample.IsCompute == true ? "gpu.compute" : "gpu.raster";
+        inoutJson += "\",\"name\":\"";
+        AppendJsonEscaped(inoutJson, GetPassName(sample));
+        inoutJson += sample.IsCompute == true ? " (Compute)" : " (Raster)";
+        inoutJson += "\",\"ts\":";
+        AppendMicros(inoutJson, sample.ExecutionStartTicks);
+        inoutJson += ",\"dur\":";
+        AppendMicros(inoutJson, sample.ExecutionEndTicks - sample.ExecutionStartTicks);
+        inoutJson += ",\"args\":{\"frameId\":";
+        AppendUint(inoutJson, sample.FrameId);
+        inoutJson += ",\"scopeIdentity\":";
+        AppendUint(inoutJson, sample.ScopeIdentity);
+        inoutJson += ",\"scopePassIndex\":";
+        AppendUint(inoutJson, sample.ScopePassIndex);
+        inoutJson += ",\"logicalPassCount\":";
+        AppendUint(inoutJson, sample.LogicalPassCount);
+        inoutJson += ",\"deviceDurationNanoseconds\":";
+        AppendUint(inoutJson, sample.DurationNanoseconds);
+        inoutJson += ",\"clockUncertaintyNanoseconds\":";
+        AppendUint(inoutJson, sample.ClockUncertaintyNanoseconds);
+        inoutJson += "}}";
+    }
+    for (usize lane = 0; lane < laneEnds.GetSize(); ++lane)
+    {
+        std::string name = "GPU execution (calibrated)";
+        if (lane != 0)
+        {
+            name = "GPU execution (calibrated, overlap ";
+            AppendUint(name, lane);
+            name += ')';
+        }
+        AppendGpuThreadMetadata(inoutJson, GPU_FIRST_EXECUTION_THREAD + static_cast<uint32>(lane), name);
+    }
+    outSummary =
+    {
+        .LaneCount = laneEnds.GetSize(),
+        .SliceCount = order.GetSize(),
+        .MaxClockUncertaintyNanoseconds = maxUncertainty,
+    };
+    return true;
+}
+
 void CloseGaugeGroup(std::string& inoutJson, GaugeGroup& inoutGroup) noexcept
 {
     if (inoutGroup.IsOpen == true)
@@ -366,7 +486,9 @@ bool SerializePerfettoTrace(Array<uint8>& outBytes,
         const GpuTraceSample& sample = samples[index];
         if (sample.FrameId == 0 || sample.DeviceSession == 0 || sample.CollectionTicks < sample.SubmissionTicks ||
             sample.PassName.IsValid() == false || sample.LogicalPassCount == 0 ||
-            ((sample.ScopeIdentity == 0) != sample.PassName.IsEmpty()))
+            ((sample.ScopeIdentity == 0) != sample.PassName.IsEmpty()) ||
+            (sample.HasExecutionInterval == true &&
+             (sample.PassName.IsEmpty() == true || sample.ExecutionEndTicks < sample.ExecutionStartTicks)))
         {
             return false;
         }
@@ -561,17 +683,19 @@ bool SerializePerfettoTrace(Array<uint8>& outBytes,
 
     // Thanks to Perfetto contributors, "Visualizing external trace formats", Chrome JSON:
     // https://perfetto.dev/docs/getting-started/other-formats
-    // Counters carry durations at a submission attribution marker, not GPU execution slices.
+    // Counters carry durations at a submission attribution marker. Only passes with a
+    // validated CPU-clock calibration also become execution slices (profiling-final.md P3).
     usize frameSampleCount = 0;
     usize passSampleCount = 0;
+    GpuExecutionSummary executionSummary;
     if (samples.IsEmpty() == false)
     {
         if (first == false)
         {
             out += ",\n";
         }
-        out += "{\"pid\":2,\"tid\":1,\"ph\":\"M\",\"name\":\"thread_name\",\"args\":{\"name\":\"GPU viewport durations "
-               "(submission attribution)\"}}";
+        out += "{\"pid\":2,\"ph\":\"M\",\"name\":\"process_name\",\"args\":{\"name\":\"GPU\"}}";
+        AppendGpuThreadMetadata(out, GPU_COUNTER_THREAD, "GPU viewport durations (submission attribution)");
         for (usize index = 0; index < samples.GetSize(); ++index)
         {
             const GpuTraceSample& sample = samples[index];
@@ -616,6 +740,10 @@ bool SerializePerfettoTrace(Array<uint8>& outBytes,
             AppendUint(out, sample.CollectionTicks);
             out += "}}";
         }
+        if (AppendGpuExecutionSlices(out, samples, executionSummary) == false)
+        {
+            return false;
+        }
     }
     out += "\n]";
     if (hasMemoryGauges == true)
@@ -647,6 +775,13 @@ bool SerializePerfettoTrace(Array<uint8>& outBytes,
     AppendUint(out, coverage.QueryDroppedPasses);
     out += ",\"unresolvedPassBatches\":";
     AppendUint(out, coverage.UnresolvedPassBatches);
+    out += ",\"executionClock\":\"calibrated device-to-CPU mapping; each slice records clockUncertaintyNanoseconds\"";
+    out += ",\"executionSliceCount\":";
+    AppendUint(out, executionSummary.SliceCount);
+    out += ",\"executionLaneCount\":";
+    AppendUint(out, executionSummary.LaneCount);
+    out += ",\"maxClockUncertaintyNanoseconds\":";
+    AppendUint(out, executionSummary.MaxClockUncertaintyNanoseconds);
     out += "},\"displayTimeUnit\":\"ns\"}\n";
 
     Array<uint8> bytes;

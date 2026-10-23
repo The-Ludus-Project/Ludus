@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ludus/foundation/base/config.h>
 #include <ludus/foundation/base/types.h>
 #include <ludus/graphics/rhi/compute.h>
 #include <ludus/graphics/rhi/gpu_scope.h>
@@ -440,15 +441,23 @@ TEST_CASE("Portable indexed instances preserve texture origin, depth and detache
         const rhi::RasterStatus passesArmed =
             description.EnableGpuTiming == true ? rhi::ArmGpuPassTimings(device) : rhi::RasterStatus::Unsupported;
         REQUIRE((passesArmed == rhi::RasterStatus::Ready || passesArmed == rhi::RasterStatus::Unsupported));
+        // NowTicks reads steady_clock nanoseconds; calibrated passes must lie inside this window.
+        const auto toTicks = [](std::chrono::steady_clock::time_point point) {
+            return static_cast<uint64>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(point.time_since_epoch()).count());
+        };
+        const uint64 executeTicks = toTicks(std::chrono::steady_clock::now());
         REQUIRE(rhi::ExecuteOrderedGraph(device, surface, graph, completion) == rhi::RasterStatus::Ready);
         if (passesArmed == rhi::RasterStatus::Ready)
         {
             REQUIRE(rhi::backend::ReadHeadlessPixels(computePixels));
             rhi::GpuPassTimings passes;
             REQUIRE(rhi::GetGpuPassTimings(device, passes) == rhi::RasterStatus::Ready);
+            const uint64 pollTicks = toTicks(std::chrono::steady_clock::now());
             REQUIRE(passes.State == rhi::GpuTimingState::Available);
             CHECK(passes.Count == report.RasterPasses + report.ComputePasses);
             uint32 computePassCount = 0;
+            usize calibratedPassCount = 0;
             for (usize passIndex = 0; passIndex < passes.Count; ++passIndex)
             {
                 const rhi::GpuPassTiming& passTiming = passes.Passes[passIndex];
@@ -457,8 +466,21 @@ TEST_CASE("Portable indexed instances preserve texture origin, depth and detache
                 {
                     ++computePassCount;
                 }
+                if (passTiming.HasCpuInterval == true)
+                {
+                    ++calibratedPassCount;
+                    CHECK(passTiming.StartTicks + passes.ClockUncertaintyNanoseconds >= executeTicks);
+                    CHECK(passTiming.StartTicks <= passTiming.EndTicks);
+                    CHECK(passTiming.EndTicks <= pollTicks + passes.ClockUncertaintyNanoseconds);
+                }
             }
             CHECK(computePassCount == report.ComputePasses);
+#if defined(LUDUS_PLATFORM_MACOS)
+            // Metal maps stage-boundary counters onto the CPU trace clock.
+            CHECK(calibratedPassCount == passes.Count);
+#else
+            CHECK(calibratedPassCount == 0);
+#endif
         }
         if (computeMode)
         {
