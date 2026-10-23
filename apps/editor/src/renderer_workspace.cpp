@@ -3021,6 +3021,10 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
     createConfiguration->setObjectName(QStringLiteral("renderGraphAddConfiguration"));
     createConfiguration->setEnabled(mDocument.IsLoaded() == true);
     connect(createConfiguration, &QAction::triggered, this, &RendererWorkspace::promptCreateConfiguration);
+    QAction* configurationTemplate = menu.addAction(QStringLiteral("Apply Configuration Template..."));
+    configurationTemplate->setObjectName(QStringLiteral("renderGraphApplyConfigurationTemplate"));
+    configurationTemplate->setEnabled(CanCreateSubgraph());
+    connect(configurationTemplate, &QAction::triggered, this, &RendererWorkspace::promptRestirTemplate);
     QAction* removeConfiguration = menu.addAction(QStringLiteral("Delete Configuration"));
     removeConfiguration->setObjectName(QStringLiteral("renderGraphDeleteConfiguration"));
     removeConfiguration->setEnabled(CanCreateSubgraph() == true && selectedConfiguration().isEmpty() == false);

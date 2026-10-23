@@ -3,84 +3,28 @@
     {
       "edges": [
         {
+          "from": "renderSize.size",
+          "to": "color.size"
+        },
+        {
           "from": "color.texture",
           "to": "camera.target"
         },
         {
           "from": "scene.scene",
-          "to": "initial.scene"
+          "to": "lighting.scene"
         },
         {
           "from": "camera.view",
-          "to": "initial.view"
+          "to": "lighting.view"
         },
         {
           "from": "color.texture",
-          "to": "initial.color"
+          "to": "lighting.color"
         },
         {
-          "from": "history.buffer",
-          "to": "initial.history"
-        },
-        {
-          "from": "reservoir.buffer",
-          "to": "initial.reservoir"
-        },
-        {
-          "from": "scene.scene",
-          "to": "temporal.scene"
-        },
-        {
-          "from": "camera.view",
-          "to": "temporal.view"
-        },
-        {
-          "from": "initial.color",
-          "to": "temporal.color"
-        },
-        {
-          "from": "initial.history",
-          "to": "temporal.history"
-        },
-        {
-          "from": "initial.reservoir",
-          "to": "temporal.reservoir"
-        },
-        {
-          "from": "scene.scene",
-          "to": "shade.scene"
-        },
-        {
-          "from": "camera.view",
-          "to": "shade.view"
-        },
-        {
-          "from": "temporal.color",
-          "to": "shade.color"
-        },
-        {
-          "from": "temporal.history",
-          "to": "shade.history"
-        },
-        {
-          "from": "temporal.reservoir",
-          "to": "shade.reservoir"
-        },
-        {
-          "from": "shade.color",
+          "from": "lighting.color",
           "to": "output.texture"
-        },
-        {
-          "from": "renderSize.size",
-          "to": "color.size"
-        },
-        {
-          "from": "renderSize.size",
-          "to": "history.size"
-        },
-        {
-          "from": "renderSize.size",
-          "to": "reservoir.size"
         }
       ],
       "id": "Default",
@@ -114,261 +58,21 @@
           "type": "ColorTexture"
         },
         {
-          "id": "history",
-          "kind": "Buffer",
-          "bytes_per_pixel": 64,
-          "extent": "RenderSize"
-        },
-        {
-          "id": "reservoir",
-          "kind": "Buffer",
-          "bytes_per_pixel": 64,
-          "extent": "RenderSize"
-        },
-        {
-          "id": "initial",
-          "kind": "RayTracingPipeline",
-          "inputs": [
-            {
-              "id": "scene",
-              "type": "Scene",
-              "required": true
-            },
-            {
-              "id": "view",
-              "type": "View",
-              "required": true
-            },
-            {
-              "id": "color",
-              "type": "ColorTexture",
-              "required": true
-            },
-            {
-              "id": "history",
-              "type": "Buffer",
-              "required": true
-            },
-            {
-              "id": "reservoir",
-              "type": "Buffer",
-              "required": true
-            }
-          ],
-          "outputs": [
-            {
-              "id": "color",
-              "type": "ColorTexture",
-              "target": "color",
-              "format": "RGBA8Unorm",
-              "load": "Clear",
-              "store": "Store"
-            },
-            {
-              "id": "history",
-              "type": "Buffer",
-              "target": "history",
-              "format": "Bytes",
-              "load": "Load",
-              "store": "Store"
-            },
-            {
-              "id": "reservoir",
-              "type": "Buffer",
-              "target": "reservoir",
-              "format": "Bytes",
-              "load": "Load",
-              "store": "Store"
-            }
-          ],
-          "shaders": [
-            {
-              "id": "ray_generation",
-              "stage": "ray_generation",
-              "program": "Generate"
-            },
-            {
-              "id": "miss",
-              "stage": "miss",
-              "program": "Miss"
-            },
-            {
-              "id": "closest_hit",
-              "stage": "closest_hit",
-              "program": "InitialClosest"
-            }
-          ],
-          "state": {},
-          "invocation": {
-            "dimensions": "ColorTarget"
-          }
-        },
-        {
-          "id": "temporal",
-          "kind": "RayTracingPipeline",
-          "inputs": [
-            {
-              "id": "scene",
-              "type": "Scene",
-              "required": true
-            },
-            {
-              "id": "view",
-              "type": "View",
-              "required": true
-            },
-            {
-              "id": "color",
-              "type": "ColorTexture",
-              "required": true
-            },
-            {
-              "id": "history",
-              "type": "Buffer",
-              "required": true
-            },
-            {
-              "id": "reservoir",
-              "type": "Buffer",
-              "required": true
-            }
-          ],
-          "outputs": [
-            {
-              "id": "color",
-              "type": "ColorTexture",
-              "target": "color",
-              "format": "RGBA8Unorm",
-              "load": "Clear",
-              "store": "Store"
-            },
-            {
-              "id": "history",
-              "type": "Buffer",
-              "target": "history",
-              "format": "Bytes",
-              "load": "Load",
-              "store": "Store"
-            },
-            {
-              "id": "reservoir",
-              "type": "Buffer",
-              "target": "reservoir",
-              "format": "Bytes",
-              "load": "Load",
-              "store": "Store"
-            }
-          ],
-          "shaders": [
-            {
-              "id": "ray_generation",
-              "stage": "ray_generation",
-              "program": "Generate"
-            },
-            {
-              "id": "miss",
-              "stage": "miss",
-              "program": "Miss"
-            },
-            {
-              "id": "closest_hit",
-              "stage": "closest_hit",
-              "program": "TemporalClosest"
-            }
-          ],
-          "state": {},
-          "invocation": {
-            "dimensions": "ColorTarget"
-          }
-        },
-        {
-          "id": "shade",
-          "kind": "RayTracingPipeline",
-          "inputs": [
-            {
-              "id": "scene",
-              "type": "Scene",
-              "required": true
-            },
-            {
-              "id": "view",
-              "type": "View",
-              "required": true
-            },
-            {
-              "id": "color",
-              "type": "ColorTexture",
-              "required": true
-            },
-            {
-              "id": "history",
-              "type": "Buffer",
-              "required": true
-            },
-            {
-              "id": "reservoir",
-              "type": "Buffer",
-              "required": true
-            }
-          ],
-          "outputs": [
-            {
-              "id": "color",
-              "type": "ColorTexture",
-              "target": "color",
-              "format": "RGBA8Unorm",
-              "load": "Clear",
-              "store": "Store"
-            },
-            {
-              "id": "history",
-              "type": "Buffer",
-              "target": "history",
-              "format": "Bytes",
-              "load": "Load",
-              "store": "Store"
-            },
-            {
-              "id": "reservoir",
-              "type": "Buffer",
-              "target": "reservoir",
-              "format": "Bytes",
-              "load": "Load",
-              "store": "Store"
-            }
-          ],
-          "shaders": [
-            {
-              "id": "ray_generation",
-              "stage": "ray_generation",
-              "program": "Generate"
-            },
-            {
-              "id": "miss",
-              "stage": "miss",
-              "program": "Miss"
-            },
-            {
-              "id": "closest_hit",
-              "stage": "closest_hit",
-              "program": "SpatialClosest"
-            }
-          ],
-          "state": {},
-          "invocation": {
-            "dimensions": "ColorTarget"
-          }
-        },
-        {
           "id": "renderSize",
           "kind": "RenderSize",
           "extent": {
+            "reference": "View",
             "scale": [
               1,
               1
-            ],
-            "reference": "View"
+            ]
           }
+        },
+        {
+          "id": "lighting",
+          "kind": "Subgraph",
+          "asset": "library.lurender.json",
+          "configuration": "RestirDi"
         }
       ],
       "outputs": []

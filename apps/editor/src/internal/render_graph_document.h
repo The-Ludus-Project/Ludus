@@ -190,6 +190,14 @@ public:
     [[nodiscard]] RenderGraphDocumentStatus PrepareTechniques(QString& outError);
     [[nodiscard]] RenderGraphDocumentStatus
     AddNode(const QString& file, const QString& configuration, const QJsonObject& node);
+    /// Add or fill an empty library configuration from ReSTIR DI, including shaders/settings.
+    /// For the root graph, create a new library and Subgraph node in parentConfiguration instead;
+    /// an empty parent identity selects the root default. Existing files/nodes are never replaced.
+    /// One undo step, no disk writes. Incompatible inputs/capacities preserve the complete draft.
+    [[nodiscard]] RenderGraphDocumentStatus ApplyRestirTemplate(const QString& file,
+                                                                const QString& configuration,
+                                                                QString& outError,
+                                                                const QString& parentConfiguration = {});
     /// Add an empty named configuration to an existing file without changing its default.
     /// Unique ASCII identifiers are required. One undo step; failure preserves the draft.
     [[nodiscard]] RenderGraphDocumentStatus AddConfiguration(const QString& file, const QString& name);

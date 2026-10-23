@@ -585,11 +585,44 @@ remain shader policy.
 
 ### Use the built-in ReSTIR DI template
 
-Choose **New Render Graph → Template → ReSTIR DI — mesh emitter lighting**.
-The editor creates a complete editable package under `graphs/<name>/`, opens it,
-and uses your World and camera when you build/preview or select it for rendering.
-The default New Render Graph choice remains Raster. ReSTIR DI requires native
-Metal or Vulkan ray tracing; it cannot execute in the browser.
+In an open graph, right-click the canvas or a configuration in **Graph sources**
+and choose **Apply Configuration Template... → ReSTIR DI — mesh emitter lighting**.
+In a library such as `raytracing.lurender.json`, enter `RestirDi` to add that
+configuration or populate an existing empty `#RestirDi`. Existing nonempty
+configurations are never overwritten. In the root graph, the same action creates
+a new library file and inserts a Subgraph node into the selected parent
+configuration. Cancellation and failed imports preserve all authored files.
+
+The reusable configuration exposes these ports:
+
+| Parent connection | ReSTIR Subgraph port |
+| --- | --- |
+| Scene output | `scene: Scene` input |
+| Camera view (camera targets the same color texture) | `view: View` input |
+| Initialized or writable RGBA8 color target | `color: ColorTexture` input |
+| Subgraph `color: ColorTexture` output | Next pass or Export input |
+
+For an existing Subgraph node, choose `raytracing.lurender.json` and configuration
+`RestirDi` in its fields; the same field editor is available from its canvas
+context menu. Connect the three inputs and route its color output. The library
+contains the initial, temporal and spatial/shading pipeline nodes, both reservoir
+buffers and a texture-derived RenderSize node. Opening `#RestirDi` shows the full
+editable wiring. Import, shader/manifest changes and any inserted Subgraph are
+one undo step; **Save** publishes them together. New shader programs have `Restir`
+prefixed IDs and sources under `restir_di/main_shaders/`. No shader copying or
+pasting is required. Existing callbacks remain unchanged; a shared custom payload
+keeps its fields and gains `RayLaunch Launch`. An incompatible payload, visibility
+ray profile, source/setting collision or insufficient admission budget reports a
+repair and preserves the draft. Settings are shared by this package's ReSTIR
+configurations. Keep explicit payload byte caps large enough for the extended
+payload; the compiler remains authoritative for that admission check.
+
+To start a whole package instead, choose **New Render Graph → Template → ReSTIR DI**.
+It creates `graphs/<name>/` with a root graph instantiating the same reusable
+[library](../../modules/graphics/renderer/render_graphs/restir_di/library.lurender.json).
+The default New Render Graph choice remains Raster. Both workflows use your
+World and camera when built/selected. ReSTIR DI requires native Metal or Vulkan
+ray tracing; it cannot execute in the browser.
 
 Change **Graph settings** in Properties, or right-click the canvas and choose
 **Edit Graph Settings...** with Properties hidden. Both use the same controls and
@@ -652,14 +685,17 @@ The graph always connects **history first** and **scratch second**, binding them
 to `GraphBuffer0` and `GraphBuffer1` respectively. Its exact buffer-version wires
 are `history.buffer → initial.history → temporal.history → shade.history` and
 `reservoir.buffer → initial.reservoir → temporal.reservoir → shade.reservoir`.
-The equivalent color chain ends at `output.texture`. History persists through the
+The library color chain ends at its `color` output, connected by the parent to
+`output.texture` or a later pass. History persists through the
 frame boundary in the same allocation; no cyclic graph wire is needed. Do not
 swap the two buffer input positions between these particular passes. Temporal
 reuse writes only each invocation's own scratch record; spatial reuse reads only
 scratch while writing history. Thus neither pass races a neighbouring reader.
 
-The template connects one view-relative **RenderSize** node to the output Target
-and both Buffer nodes. Each buffer declares `"extent": "RenderSize"` and
+The standalone root connects a view-relative **RenderSize** to its output Target.
+Inside the reusable library, a texture-derived **RenderSize** reads the parent's
+`input.color` and sizes both Buffer nodes. Its extent and scale therefore follow
+the connected target, including a parent's view-relative policy. Each buffer declares `"extent": "RenderSize"` and
 `"bytes_per_pixel": 64`, with a `size` input; it has no fixed `bytes` field.
 The runtime computes **each** capacity as `ceil(width × scale) × ceil(height × scale) × 64`.
 For 1920 × 1080 at full scale this is 132,710,400 bytes per buffer. Change the

@@ -1007,6 +1007,18 @@ See [native worker setup, limits, workflow and measurements](../development/rend
 
 ## Ordered ray sequences and persistent storage
 
+The editor's ReSTIR configuration importer owns one unpublished package snapshot:
+canonical renderer library data supplies its passes/ports; prefixed program/source
+records and typed settings merge into the shared manifest. Root insertion also
+creates the library and a Subgraph reference. The document owns the single history
+commit and subsequent Save transaction. Existing callbacks remain byte-identical;
+legacy signatures use the builder's adapters and a custom payload retains fields
+while gaining the launch state required by ReSTIR. Collisions/nonempty destinations
+fail before publication. Source-tree and canvas menus call this same operation.
+The whole-package creator instantiates that same canonical library, avoiding a
+second maintained copy of the three-pass wiring. See the
+[editor workflow and ports](../development/render-graph-authoring.md#use-the-built-in-restir-di-template).
+
 Numeric plan version 6 and runtime package version 9 append a callback-set index
 and two persistent buffer-resource indices to each pass. Buffer resources use the
 existing resource table with an explicit Buffer aspect: Width is byte capacity,
