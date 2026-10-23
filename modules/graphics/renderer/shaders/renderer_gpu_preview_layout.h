@@ -41,7 +41,6 @@
 #define LUDUS_GRAPH_EMITTER_WORD 9
 #define LUDUS_GRAPH_LIGHT_SOURCE_WORD 3
 #define LUDUS_GRAPH_SOURCE_HIGH_SHIFT 32
-#define LUDUS_GRAPH_SAMPLE_TARGET 4096
 #define LUDUS_GRAPH_TEXTURE_CHANNELS 4
 
 // Preserve camera/kernel flags and ordered invocation bits below camera history.

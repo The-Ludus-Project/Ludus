@@ -402,7 +402,7 @@ float3 EvaluateGraphRay(uint pixel)
     launch.CameraClipToWorld = ClipToWorld;
     launch.CameraPositionWorld = CameraPositionWorld.xyz;
     launch.IsOrthographic = CameraPositionWorld.w != 0;
-    launch.SampleIndex = uint(accumulation[pixel * 2].w);
+    launch.SampleIndex = asuint(accumulation[pixel * 2].w);
     launch.Seed = Sampling.xy;
     queries.RandomSeed = launch.Seed;
     queries.RandomPixel = pixel;
@@ -563,5 +563,4 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, c
     # Preserve both fixed slots under optimization even for callback sets without storage uses.
     body = body.replace('    SceneContext scene;\n',
                         '    if (Dimensions.z == 0) { GraphBuffer0[0] = GraphBuffer1[0]; GraphBuffer1[0] = uint4(0); }\n    SceneContext scene;\n')
-    body = body.replace('uint(accumulation[pixel * 2].w)', 'asuint(accumulation[pixel * 2].w)')
     return prefix + dispatch_function + body

@@ -288,7 +288,7 @@ stages an owned attachment set and a fresh scene using the existing pipeline
 contexts. They publish together only after readiness; the old scene/output remains
 available while pending or on failure. A newer request discards the unactivated
 set and its scene. GPU retirement and pooling remain in their existing owners.
-Fresh legacy ray jobs reset accumulation. Ordered ray sequences may bind graph-owned
+Fresh ray jobs reset any explicitly authored color accumulation. Ordered ray sequences may bind graph-owned
 persistent uint4 buffers. Fixed capacities and their contents survive scene/camera/size
 replacement. Pixel-sized buffers follow a connected RenderSize policy and stage zeroed
 replacements when capacity changes. Their shaders own history validation; external texture/history imports
@@ -1059,7 +1059,8 @@ selector into one compute kernel. Engine interface/payload types and reusable
 headers are global; unique callback sources occupy distinct namespaces. A job's
 immutable parameters select its callback set without changing shader artifacts
 or descriptor layouts per frame. The extended kernel writes current-frame
-radiance and advances a uint32 counter without a progressive-sampling stop.
+radiance and advances a uint32 counter. Color averaging and its stop limit require
+an explicit [Accumulate node](../development/render-graph-authoring.md#accumulate-ray-samples-explicitly).
 
 RenderGraph owns zero-initialized storage allocations alongside its attachment
 ledger. Scene candidates borrow those allocations during preparation, which does

@@ -664,11 +664,11 @@ to scene generation, camera, extent or reservoir layout. A previous-frame resour
 is the persistent allocation's contents; do not draw a cyclic edge back into the
 same frame's first pass.
 
-This profile executes every frame and presents that frame's radiance, without
-progressive averaging or a 4096-sample stop. `launch.SampleIndex` is a bit-preserved
+Without an [Accumulate node](#accumulate-ray-samples-explicitly), this profile
+executes every frame and presents that frame's radiance without color averaging. `launch.SampleIndex` is a bit-preserved
 32-bit invocation counter that starts at zero with each new scene job and wraps;
 it is not a persistent-buffer validity flag. `HasPendingSamples()` stays true for
-this profile, so the editor continues to submit unchanged scenes. Finish the
+individual-sample output; an explicit final Accumulate node supplies a stop limit. Finish the
 previous producer and export consumers before the next frame. Pending or failed
 candidate preparation cannot write the live buffers; GPU shader writes in an
 encoded frame are ordinary persistent effects and are not rolled back.
@@ -1316,24 +1316,52 @@ Your shader decides how to combine light samples with BSDF samples. In particula
 the terminal surface's NEE contribution has weight one if you never sample a
 competing BSDF continuation there. The engine does not apply that weight for you.
 
-Scene callbacks return unclamped linear RGB. For a single invocation without persistent
-buffers, GPU history accumulates it before
-the preview's exposure-one Reinhard/sRGB display conversion. Each scene/camera or
-shader generation starts new history, advancing up to 4096 samples. The editor
-continues submitting ray frames for an unchanged drawable extraction until that
-budget is reached. Each completed render advances the sample index, so automatic
-float and integer draws change across successive samples without scene edits.
-Camera and scene edits start a new history whose seed derives from the extraction
-revision, so restarting at sample zero does not replay the previous per-pixel
-draws. Replaying the same revision and inputs remains deterministic. Raster-only
-graphs remain on demand. `RenderGraph::HasPendingSamples()` lets
-other hosts schedule the same bounded progression; it tracks accepted submissions,
-including pending producers, and never waits or submits work. Hosts still finish
-the previous producer and all export consumers before rendering again. Pending
-or failed replacement scenes preserve the current drawable history. Persistent
-history remains graph-owned and completion-tracked; no radiance is read back for
-rendering. Exposure is currently fixed by the graph preview profile. Selective
-history preservation when only a stop target changes remains a future extension.
+Scene callbacks return unclamped linear RGB. Without an **Accumulate** node, each
+ray frame displays its individual sample using the preview's exposure-one
+Reinhard/sRGB conversion. Holding the camera still does not implicitly average
+these colors. ReSTIR reservoir reuse remains an independent, shader-authored
+operation that can also reduce noise.
+
+### Accumulate ray samples explicitly
+
+Add **Accumulate** from the canvas's Add Node menu or Properties. Connect the ray
+pipeline's color output to `accumulate.color`, then connect `accumulate.color` to
+Export or the containing configuration's color output. The node has one required
+ColorTexture input and one ColorTexture output, both named `color`:
+
+```json
+{"id": "accumulate", "kind": "Accumulate", "samples": 4096}
+```
+
+**Sample limit** is a positive integer from 1 to 4096, editable through either
+Properties or the canvas's **Edit Node** action, with shared undo and Save. The
+canvas displays the limit and explains reset behavior on hover. Bypass the node
+to display individual samples. An unused Accumulate draft does not enable averaging.
+The Visibility + Secondary Rays template includes this node explicitly; ReSTIR DI
+keeps its reservoir reuse without color averaging unless you add it.
+
+The operation computes a compensated running mean of linear radiance before
+exposure and display conversion. The offline plan retains the Accumulate operation
+and its resource version; the GPU backend fuses it into its producing ray dispatch.
+It does not average quantized RGBA8 pixels or allocate an extra display pass.
+It accepts ray output, including the final ray output of a subgraph or a persistent
+sequence. Raster inputs and already accumulated images are rejected. The input
+version belongs to this operation: route its other consumers through its output.
+For simultaneous raw and averaged images, author separate ray targets.
+
+Accepted camera, scene, extent or shader replacement starts a new mean and sample
+budget. Pending or failed replacements preserve the drawable history. Camera and
+scene revisions also reseed sampling; replaying identical revisions and inputs
+remains deterministic. `RenderGraph::HasPendingSamples()` schedules another frame
+when a final ray writer has unfinished averaging or outputs individual samples.
+An averaged final output stops at its limit, even when earlier reservoir passes
+share its target. Finish the previous producer and export consumers before
+rendering again. Raster-only graphs remain on demand. History and presentation
+stay on the GPU; exposure is fixed by this profile.
+
+Recook source graphs to use this explicit policy. Runtime packages before version
+13 retain their historical implicit averaging or persistent-sequence behavior.
+Selective history preservation when changing only the stop limit remains unsupported.
 
 See the [installed-consumer scene ray fixture](../../tests/sdk_consumer/rg2/scene_ray/main.lushader.json.in)
 and its [raygen source](../../tests/sdk_consumer/rg2/scene_ray/main_shaders/generate.slang).
@@ -1682,6 +1710,7 @@ Root execution configurations cannot contain unbound interface inputs.
 | StructuredBuffer (version 2) | `stride` in bytes, `count` as a positive integer or `"ColorTarget"` | Outputs zero-initialized `buffer: Buffer`; native ray storage follows the [reservoir workflow](#create-structured-reservoir-buffers) |
 | RenderSize (version 2) | Fixed `extent`, `"Texture"`, or `{"reference":"View","scale":[numerator,denominator]}` | Optional color/depth `texture` metadata input; outputs graph-only `size: RenderSize` |
 | Raster | `mode`, `vertex_layout: RendererStatic`, `material` (`DefaultOpaque` or `DefaultMasked`), `depth_load`, `depth_store`; also `color_load`, `color_store` for ColorAndDepth | Inputs Scene/View/DepthTexture, plus ColorTexture for ColorAndDepth; outputs written depth/color versions |
+| Accumulate | `samples` (1..4096) | Required `color: ColorTexture` input and written `color: ColorTexture` output; [linear ray mean](#accumulate-ray-samples-explicitly) |
 | Subgraph | `asset`, `configuration` | Selected asset interface defines its input/output ports |
 | Export | `type` | Input `texture` matching ColorTexture or DepthTexture; external output root |
 | Present | None | Input `color: ColorTexture`; root for the written version of an imported presentation target |

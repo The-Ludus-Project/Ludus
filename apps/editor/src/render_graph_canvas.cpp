@@ -246,6 +246,11 @@ bool GetRenderGraphNodePorts(const RenderGraphDocument& document,
         AppendSceneBundleInputs(ports.Inputs);
         ports.Outputs = ReadInterface(node.value(QStringLiteral("outputs")).toArray());
     }
+    else if (kind == QStringLiteral("Accumulate"))
+    {
+        ports.Inputs = {{QStringLiteral("color"), QStringLiteral("ColorTexture")}};
+        ports.Outputs = {{QStringLiteral("color"), QStringLiteral("ColorTexture")}};
+    }
     else if (kind == QStringLiteral("Scene"))
     {
         ports.Outputs = {{QStringLiteral("scene"), QStringLiteral("Scene")},
@@ -991,6 +996,14 @@ void RenderGraphCanvas::refreshFeedback()
         if (sizes.size() > 1)
         {
             sizeLabel = QStringLiteral("Mixed sizes (hover ports)");
+        }
+        if (view->Kind == QStringLiteral("Accumulate"))
+        {
+            const QJsonObject node = FindNode(configuration(), view->Id);
+            sizeLabel = QStringLiteral("Mean · %1 samples").arg(node.value(QStringLiteral("samples")).toInt());
+            resources.append(QStringLiteral("Linear RGB accumulation before display conversion. "
+                                            "Resets on camera, scene, size or shader replacement. "
+                                            "Bypass this node for individual samples."));
         }
         view->Frame->setToolTip(view->Id + QStringLiteral(" : ") + view->Kind + QStringLiteral("\n") + explanation +
                                 QLatin1Char('\n') + resources.join(QLatin1Char('\n')));

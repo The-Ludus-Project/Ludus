@@ -274,6 +274,11 @@ QJsonObject MakeNode(const QString& kind, const QString& identity)
         node.insert(QStringLiteral("role"), QStringLiteral("Offscreen"));
         node.insert(QStringLiteral("target_type"), QStringLiteral("ColorTexture"));
     }
+    else if (kind == QStringLiteral("Accumulate"))
+    {
+        node.insert(QStringLiteral("samples"),
+                    static_cast<int32>(content::render_graph_format::MAX_ACCUMULATION_SAMPLES));
+    }
     else if (kind == QStringLiteral("Buffer"))
     {
         node.insert(QStringLiteral("bytes"), static_cast<int32>(content::render_graph_format::RAY_BUFFER_WORD_BYTES));
@@ -487,6 +492,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
                         QStringLiteral("GraphicsPipeline"),
                         QStringLiteral("ComputePipeline"),
                         QStringLiteral("RayTracingPipeline"),
+                        QStringLiteral("Accumulate"),
                         QStringLiteral("Subgraph"),
                         QStringLiteral("Export"),
                         QStringLiteral("Present")});
@@ -2312,6 +2318,21 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
                 replaceSelectedField(name, combo->currentText());
             });
             outFields.addRow(name, combo);
+        }
+        else if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Accumulate") &&
+                 name == QStringLiteral("samples"))
+        {
+            QSpinBox* samples = new QSpinBox(&inoutParent);
+            samples->setObjectName(QStringLiteral("renderGraphField_samples"));
+            samples->setRange(1, static_cast<int32>(content::render_graph_format::MAX_ACCUMULATION_SAMPLES));
+            samples->setValue(field.value().toInt());
+            samples->setToolTip(QStringLiteral("Compensated linear RGB mean before display conversion. "
+                                               "Resets on camera, scene, size or shader replacement. "
+                                               "Bypass this node to display individual samples."));
+            connect(samples, &QSpinBox::editingFinished, this, [this, samples]() {
+                replaceSelectedField(QStringLiteral("samples"), samples->value());
+            });
+            outFields.addRow(QStringLiteral("Sample limit"), samples);
         }
         else if (field.value().isBool() == true)
         {

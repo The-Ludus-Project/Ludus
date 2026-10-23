@@ -38,12 +38,16 @@
 /// texture-name count after block names, then (texture slot, sampler slot, byte count,
 /// padded name) records. Non-GLSL targets carry zero texture names; older roles keep
 /// their existing stage record layout. Sampler slot ABSENT means no paired sampler.
+/// Version 13 appends AccumulationSamples to every pass. Older ray packages retain
+/// their implicit averaging; new packages require an authored Accumulate node.
 namespace ludus::content::render_graph_format
 {
 /// "LURG" read as a little-endian uint32.
 inline constexpr foundation::uint32 PACKAGE_MAGIC = 0x4752554CU;
 /// Runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = 12;
+inline constexpr foundation::uint32 PACKAGE_VERSION = 13;
+/// First generation carrying the six forward support roles and texture names.
+inline constexpr foundation::uint32 FORWARD_PACKAGE_VERSION = 12;
 /// Last generation before forward material stages; adds pixel-derived storage.
 inline constexpr foundation::uint32 PIXEL_BUFFER_PACKAGE_VERSION = 11;
 /// First generation carrying visibility color/depth resource indices in pass records.

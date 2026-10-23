@@ -13,7 +13,7 @@ namespace ludus::content::render_graph_format
 {
 /// Static triangle execution profile: opaque/masked raster with per-draw uniforms,
 /// and authored primary triangle ray functions with flat opaque World inputs.
-inline constexpr foundation::uint32 VERSION = 8;
+inline constexpr foundation::uint32 VERSION = 9;
 /// Opt-in portable raster ABI: static inputs plus primitive halves and draw/instance references.
 inline constexpr foundation::usize VISIBILITY_INPUT_COUNT = 8;
 /// Maximum authored passes in one admitted configuration.
@@ -68,7 +68,9 @@ inline constexpr foundation::usize MAX_UNIFORM_BLOCK_BYTES = 1024;
 /// Largest number of distinct per-draw uniform value sets one technique prepares per extraction.
 inline constexpr foundation::usize MAX_UNIFORM_SETS = 16;
 /// Number of explicitly serialized uint32 fields in a current pass record.
-inline constexpr foundation::usize PASS_FIELD_COUNT = 15;
+inline constexpr foundation::usize PASS_FIELD_COUNT = 16;
+/// Maximum samples in an authored Accumulate operation; zero selects individual ray samples.
+inline constexpr foundation::uint32 MAX_ACCUMULATION_SAMPLES = 4096;
 /// Resource or input index absent from the declared plan.
 inline constexpr foundation::uint32 ABSENT = ~foundation::uint32{0};
 /// Compiled shader-pair role, independent of graph instance and viewport size.
@@ -196,6 +198,10 @@ struct Pass final
     foundation::uint32 Visibility = ABSENT;
     /// Optional Depth32Float read, sharing Visibility's backing allocation, camera and scene generation.
     foundation::uint32 VisibilityDepth = ABSENT;
+    /// Authored Accumulate sample limit, bounded by MAX_ACCUMULATION_SAMPLES. Zero outputs
+    /// individual samples indefinitely. Positive values average linear radiance before display
+    /// conversion and reset on accepted camera, scene, extent or shader replacement.
+    foundation::uint32 AccumulationSamples = 0;
 };
 /// One read-only uniform binding of a technique, filled per draw from logical values.
 /// Its values occupy [ValueOffset, ValueOffset + ValueCount) of each item's float32

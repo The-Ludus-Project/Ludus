@@ -424,9 +424,9 @@ public:
     [[nodiscard]] RenderGraphReport GetReport() const noexcept;
     /// Return the revision of the last Ready extraction, or zero when none exists.
     [[nodiscard]] foundation::uint64 GetDrawableSceneRevision() const noexcept;
-    /// True when the current drawable ray scene has not reached its submission sample budget.
-    /// Persistent ray sequences always return true so temporal work continues each frame.
-    /// False for an empty/raster-only graph or after a legacy ray history target is reached.
+    /// True when the last ray writer of any color target outputs individual samples or has an
+    /// unfinished authored Accumulate sample limit. False for an empty/raster-only graph or
+    /// when every final ray writer has reached its positive limit. Reservoir reuse does not average color.
     /// Accepted submissions count even while their producer is pending; finish producers and
     /// export consumers before rendering again. This owner-thread query never waits or submits.
     /// A published scene/camera/size replacement starts new progress; pending/failed candidates

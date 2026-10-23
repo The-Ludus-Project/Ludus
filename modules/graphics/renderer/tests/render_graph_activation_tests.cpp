@@ -86,6 +86,7 @@ struct PackageOptions final
     uint32 ViewDenominator = 1;
     uint32 Backing = 0;
     uint32 SceneData = ::ludus::content::render_graph_format::SCENE_DATA_ALL;
+    uint32 AccumulationSamples = 0;
     format::Technique Program = format::Technique::ColorAndDepth;
     std::string_view PassName = "Scene/Opaque";
     bool HasDepthStages = true;
@@ -157,7 +158,7 @@ void WritePlan(PackageWriter& inoutWriter, const PackageOptions& options, uint32
             inoutWriter.WriteWord(options.ViewNumerator);
             inoutWriter.WriteWord(options.ViewDenominator);
         }
-        if (options.Version >= format::PACKAGE_VERSION)
+        if (options.Version >= format::PIXEL_BUFFER_PACKAGE_VERSION)
         {
             inoutWriter.WriteWord(0);
         }
@@ -189,6 +190,10 @@ void WritePlan(PackageWriter& inoutWriter, const PackageOptions& options, uint32
     {
         inoutWriter.WriteWord(format::ABSENT);
         inoutWriter.WriteWord(format::ABSENT);
+    }
+    if (options.Version >= format::PACKAGE_VERSION)
+    {
+        inoutWriter.WriteWord(options.AccumulationSamples);
     }
     if (options.HasUniforms == false)
     {
@@ -1125,14 +1130,16 @@ TEST_CASE("runtime independent shader pairs decode with their own stage and bind
         // WritePlan's uniform fixture starts with the legacy color program. Retarget
         // that serialized binding explicitly; the rest of its layout is unchanged.
         constexpr usize LEGACY_PASS_FIELDS = 10;
-        const usize passBytes = (version >= format::VISIBILITY_PACKAGE_VERSION ? format::PASS_FIELD_COUNT
-                                 : version >= format::ORDERED_PACKAGE_VERSION  ? format::PASS_FIELD_COUNT - 2
-                                                                               : LEGACY_PASS_FIELDS) *
+        const usize passBytes = (version >= format::PACKAGE_VERSION              ? format::PASS_FIELD_COUNT
+                                 : version >= format::VISIBILITY_PACKAGE_VERSION ? format::PASS_FIELD_COUNT - 1
+                                 : version >= format::ORDERED_PACKAGE_VERSION    ? format::PASS_FIELD_COUNT - 3
+                                                                                 : LEGACY_PASS_FIELDS) *
                                 sizeof(uint32);
-        const usize bindingOffset = format::HEADER_BYTES +
-                                    2 * (version >= format::PACKAGE_VERSION ? format::RESOURCE_RECORD_BYTES
-                                                                            : format::RELATIVE_RESOURCE_RECORD_BYTES) +
-                                    format::CAMERA_RECORD_BYTES + passBytes;
+        const usize bindingOffset =
+            format::HEADER_BYTES +
+            2 * (version >= format::PIXEL_BUFFER_PACKAGE_VERSION ? format::RESOURCE_RECORD_BYTES
+                                                                 : format::RELATIVE_RESOURCE_RECORD_BYTES) +
+            format::CAMERA_RECORD_BYTES + passBytes;
         writer.Bytes[bindingOffset] = static_cast<uint8>(format::LEGACY_TECHNIQUE_COUNT);
         const format::StageRole vertexRole =
             static_cast<format::StageRole>(format::GetRasterStageRole(GBUFFER_PROGRAM, 0));
@@ -1166,4 +1173,19 @@ TEST_CASE("runtime independent shader pairs decode with their own stage and bind
               renderer::RenderGraphPackageStatus::Malformed);
         CHECK(legacy.IsLoaded() == false);
     }
+}
+
+TEST_CASE("runtime packages validate explicit accumulation and preserve legacy ray defaults",
+          "[render-graph][activation][accumulation]")
+{
+    PackageOptions options;
+    options.AccumulationSamples = 2;
+    CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
+    options.Program = format::Technique::RayTracing;
+    options.HasDepthStages = false;
+    CHECK(MakePackage(options)->GetPlan().Passes[0].AccumulationSamples == 2);
+    options.AccumulationSamples = format::MAX_ACCUMULATION_SAMPLES + 1;
+    CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
+    options.Version = format::FORWARD_PACKAGE_VERSION;
+    CHECK(MakePackage(options)->GetPlan().Passes[0].AccumulationSamples == format::MAX_ACCUMULATION_SAMPLES);
 }

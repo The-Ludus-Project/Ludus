@@ -19,8 +19,12 @@
           "to": "camera.target"
         },
         {
-          "from": "trace.color",
+          "from": "accumulate.color",
           "to": "output.texture"
+        },
+        {
+          "from": "trace.color",
+          "to": "accumulate.color"
         }
       ],
       "id": "Default",
@@ -111,6 +115,11 @@
               1
             ]
           }
+        },
+        {
+          "id": "accumulate",
+          "kind": "Accumulate",
+          "samples": 4096
         }
       ],
       "outputs": []

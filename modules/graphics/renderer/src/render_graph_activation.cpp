@@ -154,6 +154,7 @@ struct RenderGraphPackage::State final
     bool HasVisibilityFields = false;
     bool HasPersistentBuffers = false;
     bool HasForwardStages = false;
+    bool HasExplicitAccumulation = false;
     // DecodeUniforms validates and writes every active stage before any binding is published.
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     StaticArray<format::UniformBinding, format::MAX_UNIFORM_BINDINGS> UniformBindings{};
@@ -523,8 +524,15 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeRecords(ByteReader& in
         }
         pass.Visibility = HasVisibilityFields == true ? inoutReader.ReadWord() : format::ABSENT;
         pass.VisibilityDepth = HasVisibilityFields == true ? inoutReader.ReadWord() : format::ABSENT;
+        pass.AccumulationSamples =
+            HasExplicitAccumulation == true
+                ? inoutReader.ReadWord()
+                : (program == static_cast<uint32>(format::Technique::RayTracing) ? format::MAX_ACCUMULATION_SAMPLES
+                                                                                 : 0);
         if (program > MAX_TECHNIQUE || (HasIndependentPrograms == false && program >= format::LEGACY_TECHNIQUE_COUNT) ||
             colorLoad > MAX_LOAD || depthLoad > MAX_LOAD || colorStore > MAX_STORE || depthStore > MAX_STORE ||
+            pass.AccumulationSamples > format::MAX_ACCUMULATION_SAMPLES ||
+            (program != static_cast<uint32>(format::Technique::RayTracing) && pass.AccumulationSamples != 0) ||
             (pass.SceneData & ~::ludus::content::render_graph_format::SCENE_DATA_ALL) != 0 ||
             (pass.SceneData & ::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY) == 0)
         {
@@ -571,12 +579,12 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != format::PACKAGE_MAGIC ||
-        (version != format::PACKAGE_VERSION && version != format::PIXEL_BUFFER_PACKAGE_VERSION &&
-         version != format::VISIBILITY_PACKAGE_VERSION && version != format::ORDERED_PACKAGE_VERSION &&
-         version != format::STORAGE_PACKAGE_VERSION && version != format::INDEPENDENT_PROGRAM_PACKAGE_VERSION &&
-         version != format::NATIVE_RAY_PACKAGE_VERSION && version != format::SCENE_PACKAGE_VERSION &&
-         version != format::VIEW_PACKAGE_VERSION && version != format::NAMED_PACKAGE_VERSION &&
-         version != format::LEGACY_PACKAGE_VERSION))
+        (version != format::PACKAGE_VERSION && version != format::FORWARD_PACKAGE_VERSION &&
+         version != format::PIXEL_BUFFER_PACKAGE_VERSION && version != format::VISIBILITY_PACKAGE_VERSION &&
+         version != format::ORDERED_PACKAGE_VERSION && version != format::STORAGE_PACKAGE_VERSION &&
+         version != format::INDEPENDENT_PROGRAM_PACKAGE_VERSION && version != format::NATIVE_RAY_PACKAGE_VERSION &&
+         version != format::SCENE_PACKAGE_VERSION && version != format::VIEW_PACKAGE_VERSION &&
+         version != format::NAMED_PACKAGE_VERSION && version != format::LEGACY_PACKAGE_VERSION))
     {
         return RenderGraphPackageStatus::UnsupportedVersion;
     }
@@ -584,7 +592,8 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
     candidate->HasSceneData = version >= format::SCENE_PACKAGE_VERSION;
     candidate->HasPersistentBuffers = version >= format::ORDERED_PACKAGE_VERSION;
     candidate->HasPixelBuffers = version >= format::PIXEL_BUFFER_PACKAGE_VERSION;
-    candidate->HasForwardStages = version >= format::PACKAGE_VERSION;
+    candidate->HasForwardStages = version >= format::FORWARD_PACKAGE_VERSION;
+    candidate->HasExplicitAccumulation = version >= format::PACKAGE_VERSION;
     candidate->HasNativeRay = version >= format::NATIVE_RAY_PACKAGE_VERSION;
     candidate->HasIndependentPrograms = version >= format::INDEPENDENT_PROGRAM_PACKAGE_VERSION;
     candidate->HasVisibilityFields = version >= format::VISIBILITY_PACKAGE_VERSION;
@@ -743,6 +752,22 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
             if (candidate->Passes[pass].Program == format::Technique::RayTracing)
             {
                 return RenderGraphPackageStatus::UnsupportedVersion;
+            }
+        }
+    }
+    if (candidate->HasExplicitAccumulation == false)
+    {
+        const usize persistentRole = static_cast<usize>(format::StageRole::PersistentRayCompute);
+        bool hasPersistentKernel = false;
+        for (usize target = 0; target < format::SHADER_TARGET_COUNT; ++target)
+        {
+            hasPersistentKernel = hasPersistentKernel == true || candidate->Stages[persistentRole][target].IsPresent;
+        }
+        if (hasPersistentKernel == true)
+        {
+            for (usize pass = 0; pass < candidate->Header.PassCount; ++pass)
+            {
+                candidate->Passes[pass].AccumulationSamples = 0;
             }
         }
     }
