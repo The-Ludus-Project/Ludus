@@ -88,7 +88,7 @@ def identifier_words(name):
 
 
 # Established engine type names and C/C++ entry-point conventions.
-ABBREVIATION_ALLOWED = {"UniquePtr", "argc", "argv"}
+ABBREVIATION_ALLOWED = {"UniquePtr", "SharedPtr", "WeakPtr", "argc", "argv"}
 
 
 def abbreviation_findings(code):

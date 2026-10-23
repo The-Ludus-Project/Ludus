@@ -265,9 +265,13 @@ def violations(path: str, source: str, changed: set[int]) -> list[tuple[int, str
         # int64 is long on Linux and long long on macOS. QJsonValue has int,
         # qint64 and double constructors, so a long argument is ambiguous there
         # and only the Linux editor build fails. Pass JSON integers as qint64.
+        # Only Qt sources can build a QJsonValue; elsewhere `append` and `insert`
+        # are ordinary engine or local functions that take int64 directly.
+        uses_qt_json = path.startswith("apps/editor/") or re.search(r"\bQJson\w*", code) is not None
         json_value = (r"(?:\bQJsonValue\s*\(|\{\s*QStringLiteral\s*\([^()]*\)\s*,"
                       r"|\b(?:insert|append|contains)\s*\((?:\s*QStringLiteral\s*\([^()]*\)\s*,)?)")
-        for match in re.finditer(json_value + r"\s*(static_cast<\s*(?:foundation::)?u?int64\s*>)", code):
+        for match in re.finditer(json_value + r"\s*(static_cast<\s*(?:foundation::)?u?int64\s*>)",
+                                 code if uses_qt_json else ""):
             report(match.start(1), "convert JSON integers with static_cast<qint64>; int64 is ambiguous for QJsonValue on Linux")
         for offset, _, message in pointer_findings(code):
             report(offset, message)
