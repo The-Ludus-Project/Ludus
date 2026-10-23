@@ -120,6 +120,7 @@ RenderGraphRayPass::~RenderGraphRayPass() noexcept
 rhi::RasterStatus RenderGraphRayPass::Initialize(Renderer& inoutContext,
                                                  Snapshot snapshot,
                                                  const ViewDescription& camera,
+                                                 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): extent
                                                  foundation::uint32 width,
                                                  foundation::uint32 height,
                                                  const RenderGraphSceneDescription* sceneOrNull,
