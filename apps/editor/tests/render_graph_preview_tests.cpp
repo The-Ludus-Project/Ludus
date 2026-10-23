@@ -723,7 +723,7 @@ TEST_CASE("RG3b failed and pending candidates keep the last drawable view", "[ed
     CHECK(preview.GetStatus().contains(QStringLiteral("last presented frame")) == true);
 }
 
-TEST_CASE("Editors without OIDN refuse a denoising graph at load and name the remedy",
+TEST_CASE("Editors without OIDN preview a denoising graph unfiltered and say so",
           "[editor][render-graph][preview][denoising]")
 {
     if (renderer::IsDenoisingAvailable() == true)
@@ -750,14 +750,42 @@ TEST_CASE("Editors without OIDN refuse a denoising graph at load and name the re
     const uint32 quality = static_cast<uint32>(format::ProcessingQuality::Balanced);
     std::memcpy(bytes.data() + passesAt + format::PASS_RECORD_BYTES - sizeof(uint32), &quality, sizeof(quality));
     QTemporaryDir directory;
+    const QString denoised = WriteBytes(directory, QStringLiteral("denoised.lurgrt"), bytes);
+    DeviceFixture device({}, true);
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    renderer::RenderGraphRenderer automatic;
+    REQUIRE(renderer::SelectRenderGraphRenderer(device.Device, renderer::RenderGraphPreference::Automatic, automatic) ==
+            rhi::RasterStatus::Ready);
+    if (automatic != renderer::RenderGraphRenderer::HardwareRayTracing)
+    {
+        SKIP("Native ray queries are unavailable on this host");
+    }
     RenderGraphPreview preview = MakePreview();
-    CHECK(preview.Load(WriteBytes(directory, QStringLiteral("denoised.lurgrt"), bytes)) ==
-          RenderGraphPreviewLoad::Unsupported);
-    CHECK(preview.GetDisplayStatus().contains(QStringLiteral("Denoise node")) == true);
-    CHECK(preview.GetDisplayStatus().contains(QStringLiteral("LUDUS_ENABLE_OIDN=OFF")) == true);
-    CHECK(preview.GetReport().CandidateGeneration == 0);
-    // The same graph without denoising still decodes and waits for the viewport device.
-    CHECK(preview.Load(QStringLiteral(LUDUS_EDITOR_PROGRESSIVE_RAY_FIXTURE)) == RenderGraphPreviewLoad::Waiting);
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    RenderGraphExtraction extraction = MakeExtraction({1, 0, 0, 1}, 1);
+    extraction.View.OrthographicCamera = true;
+    preview.SetExtraction(extraction);
+    QSignalSpy presented(&preview, &RenderGraphPreview::FramePresented);
+    // The graph previews as if its Denoise node were disabled, instead of failing at World extraction.
+    REQUIRE(preview.Load(denoised) == RenderGraphPreviewLoad::Staged);
+    constexpr int64 PIPELINE_PREPARATION_TIMEOUT_MILLISECONDS = 10000;
+    constexpr uint32 PREPARATION_POLL_MICROSECONDS = 200;
+    QElapsedTimer preparation;
+    preparation.start();
+    while (presented.count() == 0 && preparation.elapsed() < PIPELINE_PREPARATION_TIMEOUT_MILLISECONDS)
+    {
+        preview.Tick();
+        QThread::usleep(PREPARATION_POLL_MICROSECONDS);
+    }
+    INFO(preview.GetStatus().toStdString());
+    REQUIRE(presented.count() >= 1);
+    CHECK(preview.GetImage().isNull() == false);
+    CHECK(preview.GetStatus().contains(QStringLiteral("Denoise skipped")) == true);
+    CHECK(preview.GetStatus().contains(QStringLiteral("rejected")) == false);
+    preview.Detach();
 }
 
 TEST_CASE("Rejected ray extractions name their measured memory ceiling", "[editor][render-graph][preview]")

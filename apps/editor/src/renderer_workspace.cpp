@@ -225,9 +225,9 @@ QString GetDenoiseUnavailableMessage()
     }
 #endif
     return QStringLiteral(
-        "This editor was built without the OIDN denoiser (LUDUS_ENABLE_OIDN=OFF), so a graph with "
-        "an enabled Denoise node cannot preview here. Disable or remove the node, or use an editor and SDK "
-        "built with denoising.");
+        "This editor was set up without the optional OIDN denoiser, so the preview skips this node and "
+        "shows unfiltered color. Games built with denoising still apply it. See \"Denoise ray output with "
+        "OIDN\" in the render-graph authoring guide to add the denoiser.");
 }
 
 /// Choices for a Subgraph reference: every other draft graph for `asset`, and the

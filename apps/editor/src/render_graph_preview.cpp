@@ -616,14 +616,13 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
             rendererStatus = QStringLiteral("Hardware raytracing renderer.");
         }
     }
-    // An optional feature missing from this build is reported here with its remedy; staging
-    // would reject it anyway, and the World viewport must never be the first to find out.
+    // Denoising only filters the image. Without the optional denoiser, preview the graph as if its
+    // Denoise nodes were disabled rather than show nothing; staging would otherwise reject it.
     if (renderer::RequiresDenoising(package->GetPlan()) == true && renderer::IsDenoisingAvailable() == false)
     {
-        setStatus(QStringLiteral("This graph has a Denoise node, but this editor was built without the OIDN "
-                                 "denoiser (LUDUS_ENABLE_OIDN=OFF). Disable or remove the Denoise node, or use an "
-                                 "editor and SDK built with denoising. The shown frame is kept."));
-        return RenderGraphPreviewLoad::Unsupported;
+        package->BypassDenoising();
+        rendererStatus += QStringLiteral(" Denoise skipped: this editor was set up without the optional OIDN "
+                                         "denoiser, so the preview is unfiltered.");
     }
     // The editor shows an exported color result; presentation surfaces belong to the game host.
     const renderer::RenderGraphPlan plan = package->GetPlan();

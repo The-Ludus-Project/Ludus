@@ -1380,6 +1380,11 @@ TEST_CASE("runtime denoising fields preserve modes and reject invalid raster use
         options.DenoisingQuality = static_cast<uint32>(quality);
         const core::UniquePtr<renderer::RenderGraphPackage> package = MakePackage(options);
         CHECK(package->GetPlan().Passes[0].DenoisingQuality == static_cast<uint32>(quality));
+        CHECK(renderer::RequiresDenoising(package->GetPlan()) == true);
+        // Bypassing leaves the plan a disabled Denoise node would have cooked.
+        package->BypassDenoising();
+        CHECK(package->GetPlan().Passes[0].DenoisingQuality == 0);
+        CHECK(renderer::RequiresDenoising(package->GetPlan()) == false);
     }
     options.Version = format::BILINEAR_PACKAGE_VERSION;
     const core::UniquePtr<renderer::RenderGraphPackage> legacy = MakePackage(options);
