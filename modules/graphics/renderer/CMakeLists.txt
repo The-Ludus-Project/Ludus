@@ -16,7 +16,6 @@ target_sources(ludus_graphics_renderer PUBLIC FILE_SET public_headers TYPE HEADE
     include/ludus/graphics/renderer/render_graph.hpp
     include/ludus/graphics/renderer/render_graph_activation.hpp
     include/ludus/graphics/renderer/renderer.hpp
-    include/ludus/graphics/renderer/view_description.hpp
     include/ludus/graphics/renderer/world_grid.hpp
     include/ludus/graphics/renderer/views.hpp
     include/ludus/graphics/renderer/overlays.hpp

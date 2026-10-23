@@ -2,7 +2,7 @@
 
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/graphics/renderer/lighting.hpp>
-#include <ludus/graphics/renderer/view_description.hpp>
+#include <ludus/graphics/renderer/renderer.hpp>
 
 namespace ludus::editor
 {

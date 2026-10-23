@@ -9,6 +9,15 @@
 
 namespace ludus::graphics::renderer
 {
+/// Most lights one LightSelection holds and the light admission functions accept.
+inline constexpr ludus::foundation::uint32 MAX_DIRECT_LIGHTS = 128;
+/// Default point/spot range in meters for a new DirectLight.
+inline constexpr ludus::foundation::float32 DEFAULT_LIGHT_RANGE_METERS = 10;
+/// Default spot inner half-angle cosine for a new DirectLight.
+inline constexpr ludus::foundation::float32 DEFAULT_SPOT_INNER_COSINE = 0.9F;
+/// Default spot outer half-angle cosine for a new DirectLight.
+inline constexpr ludus::foundation::float32 DEFAULT_SPOT_OUTER_COSINE = 0.8F;
+
 /// Punctual RGB light model; distances and positions use meters.
 enum class LightKind : ludus::foundation::uint8
 {
@@ -40,17 +49,17 @@ struct DirectLight final
     /// Nonzero finite direction for directional/spot/area; normalized during admission.
     ludus::foundation::math::Vector3 Direction{0, 0, -1};
     /// Point/spot range in meters, [0.01,1000000]; attenuation becomes zero at range.
-    ludus::foundation::float32 Range = 10;
+    ludus::foundation::float32 Range = DEFAULT_LIGHT_RANGE_METERS;
     /// Spot inner half-angle cosine; -1 < OuterCos < InnerCos <= 1.
-    ludus::foundation::float32 InnerCos = 0.9F;
+    ludus::foundation::float32 InnerCos = DEFAULT_SPOT_INNER_COSINE;
     /// Spot outer half-angle cosine, distinct from InnerCos.
-    ludus::foundation::float32 OuterCos = 0.8F;
+    ludus::foundation::float32 OuterCos = DEFAULT_SPOT_OUTER_COSINE;
 };
 /// Stable bounded forward list; entries sorted by SourceId, not brightness or opaque depth.
 struct LightSelection final
 {
     /// L4 selects at most eight; L5 clustered materials report all admitted lights (up to 128).
-    DirectLight Lights[128]{};
+    DirectLight Lights[MAX_DIRECT_LIGHTS]{};
     /// Number of initialized entries in Lights.
     ludus::foundation::uint32 Count = 0;
     /// Submitted count minus Count; positive means a declared quality reduction.

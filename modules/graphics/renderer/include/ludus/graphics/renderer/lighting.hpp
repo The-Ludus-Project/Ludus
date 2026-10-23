@@ -130,7 +130,7 @@ struct LightClusterDescription final
 struct LightClusters final
 {
     /// All admitted normalized lights in ascending SourceId order, at most 128.
-    DirectLight Lights[128]{};
+    DirectLight Lights[MAX_DIRECT_LIGHTS]{};
     /// Initialized light count; assignment never drops admitted lights.
     ludus::foundation::uint32 Count = 0;
     /// Cell counts, capped at 32; x varies fastest, then y, then z.
