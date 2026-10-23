@@ -857,6 +857,9 @@ void RasterDestroy(internal::RasterKind kind, usize slot) noexcept
             gComputePipelines[slot] = {};
             gComputeInfos[slot] = {};
             break;
+        case internal::RasterKind::SpatialUpscaler:
+            SpatialUpscaleDestroy(slot);
+            break;
         case internal::RasterKind::RayGeometry:
         case internal::RasterKind::RayScene:
         case internal::RasterKind::RayProgram:

@@ -2093,6 +2093,7 @@ void RasterDestroy(internal::RasterKind kind, usize slot) noexcept
         case internal::RasterKind::RayBatch:
             RayDestroy(kind, slot);
             break;
+        case internal::RasterKind::SpatialUpscaler:
         case internal::RasterKind::Count:
             break;
     }

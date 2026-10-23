@@ -3,6 +3,7 @@
 #include "internal/lifecycle.h"
 #include "internal/native_interop.h"
 #include "internal/profile.h"
+#include "internal/spatial_upscale_backend.h"
 #include <cstring>
 namespace ludus::graphics::rhi::reference
 {
@@ -15,6 +16,8 @@ void Reset() noexcept
     ProfileAvailable = true;
     HdrAvailable = true;
     ComputeAvailable = true;
+    IsSpatialUpscaleAvailable = false;
+    SpatialUpscaleEncodes = 0;
     FormatBlendUnavailable = false;
     OverrideRasterLimits = false;
     HasBindingLimitOverride = false;
@@ -649,4 +652,27 @@ void ResetPassTimings() noexcept
 {
     gReferenceScopes.Reset();
 }
+} // namespace ludus::graphics::rhi::backend
+
+namespace ludus::graphics::rhi::backend
+{
+bool IsMetalFxSpatialSupported() noexcept
+{
+    return reference::IsSpatialUpscaleAvailable;
+}
+RasterStatus SpatialUpscaleGrow(foundation::usize) noexcept
+{
+    return RasterStatus::Ready;
+}
+RasterStatus SpatialUpscaleCreate(foundation::usize, const SpatialUpscalerDescription&) noexcept
+{
+    ++reference::Creates[static_cast<foundation::usize>(internal::RasterKind::SpatialUpscaler)];
+    return RasterStatus::Ready;
+}
+RasterStatus SpatialUpscaleEncode(foundation::usize, foundation::usize, foundation::usize) noexcept
+{
+    ++reference::SpatialUpscaleEncodes;
+    return RasterStatus::Ready;
+}
+void SpatialUpscaleDestroy(foundation::usize) noexcept {}
 } // namespace ludus::graphics::rhi::backend

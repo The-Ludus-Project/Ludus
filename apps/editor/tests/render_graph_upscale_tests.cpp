@@ -98,7 +98,7 @@ TEST_CASE("upscaling presets use the document transaction and persist without sh
         QLabel* availability = workspace.findChild<QLabel*>(QStringLiteral("renderGraphUpscaleAvailability"));
         REQUIRE(availability != nullptr);
         CHECK(availability->text().contains(QStringLiteral("backend is unavailable")) ==
-              (algorithm != QStringLiteral("bilinear")));
+              (algorithm != QStringLiteral("bilinear") && algorithm != QStringLiteral("metalfx-spatial")));
         workspace.Undo();
         CHECK(document.GetDraft(ROOT) == original);
         workspace.Redo();
@@ -427,4 +427,86 @@ TEST_CASE("sized preset admission is atomic at graph capacity", "[editor][upscal
     const QJsonObject before = configuration;
     CHECK(AppendUpscalePreset(configuration, QStringLiteral("fsr-1"), QStringLiteral("upscale")) == false);
     CHECK(configuration == before);
+}
+
+TEST_CASE("MetalFX color interpretation edits work with Properties hidden", "[editor][upscale][canvas][metalfx]")
+{
+    QTemporaryDir project;
+    const QString package = MakeUpscaleTestPackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT)) == true);
+    workspace.SetLivePreview(false);
+    QWidget* properties = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
+    REQUIRE(properties != nullptr);
+    constexpr int32 WINDOW_WIDTH = 1200;
+    constexpr int32 WINDOW_HEIGHT = 800;
+    workspace.resize(WINDOW_WIDTH, WINDOW_HEIGHT);
+    workspace.show();
+    properties->hide();
+    QApplication::processEvents();
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    QTimer::singleShot(0, &canvas, []() {
+        QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        REQUIRE(menuOrNull != nullptr);
+        QMenu* createOrNull = menuOrNull->findChild<QMenu*>(QStringLiteral("renderGraphCreateNodeMenu"));
+        REQUIRE(createOrNull != nullptr);
+        for (QAction* action : createOrNull->actions())
+        {
+            if (action->text().contains(QStringLiteral("MetalFX Spatial")) == true)
+            {
+                menuOrNull->close();
+                action->trigger();
+                return;
+            }
+        }
+        FAIL("MetalFX Spatial preset missing from the canvas menu");
+    });
+    const QPoint emptyPoint = canvas.viewport()->rect().bottomRight();
+    QContextMenuEvent createContext(QContextMenuEvent::Mouse, emptyPoint, canvas.viewport()->mapToGlobal(emptyPoint));
+    QApplication::sendEvent(canvas.viewport(), &createContext);
+    REQUIRE(canvas.HasNode(QStringLiteral("metalfx-spatial")) == true);
+    QTimer::singleShot(0, &canvas, [&canvas, properties]() {
+        QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        REQUIRE(menuOrNull != nullptr);
+        QAction* editOrNull = menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphEditNodeAction"));
+        REQUIRE(editOrNull != nullptr);
+        QTimer::singleShot(0, &canvas, [properties]() {
+            QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            REQUIRE(dialogOrNull != nullptr);
+            CHECK(properties->isVisible() == false);
+            QComboBox* colorProcessingOrNull =
+                dialogOrNull->findChild<QComboBox*>(QStringLiteral("renderGraphField_color_processing"));
+            REQUIRE(colorProcessingOrNull != nullptr);
+            colorProcessingOrNull->setCurrentText(QStringLiteral("Perceptual"));
+            colorProcessingOrNull->activated(colorProcessingOrNull->currentIndex());
+            dialogOrNull->reject();
+        });
+        menuOrNull->close();
+        editOrNull->trigger();
+    });
+    constexpr int32 HEADER_X = 20;
+    constexpr int32 HEADER_Y = 10;
+    const QPoint point =
+        canvas.mapFromScene(canvas.GetNodePosition(QStringLiteral("metalfx-spatial")) + QPointF(HEADER_X, HEADER_Y));
+    QContextMenuEvent editContext(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
+    QApplication::sendEvent(canvas.viewport(), &editContext);
+    CHECK(GetUpscaleTestNode(workspace.GetDocument(), QStringLiteral("metalfx-spatial"))
+              .value(QStringLiteral("color_processing")) == QStringLiteral("Perceptual"));
+    CHECK(GetUpscaleTestNode(workspace.GetDocument(), QStringLiteral("metalfx-spatial"))
+              .value(QStringLiteral("algorithm")) == QStringLiteral("metalfx-spatial"));
+    workspace.Undo();
+    CHECK(GetUpscaleTestNode(workspace.GetDocument(), QStringLiteral("metalfx-spatial"))
+              .value(QStringLiteral("color_processing")) == QStringLiteral("Linear"));
+    workspace.Redo();
+    REQUIRE(workspace.Save() == true);
+    QJsonObject changed = GetUpscaleTestNode(workspace.GetDocument(), QStringLiteral("metalfx-spatial"));
+    changed.insert(QStringLiteral("algorithm"), QStringLiteral("bilinear"));
+    REQUIRE(workspace.GetDocument().ReplaceNode(ROOT, CONFIGURATION, changed) == RenderGraphDocumentStatus::Ok);
+    CHECK(GetUpscaleTestNode(workspace.GetDocument(), QStringLiteral("metalfx-spatial"))
+              .contains(QStringLiteral("color_processing")) == false);
+    workspace.Undo();
+    CHECK(GetUpscaleTestNode(workspace.GetDocument(), QStringLiteral("metalfx-spatial"))
+              .value(QStringLiteral("color_processing")) == QStringLiteral("Perceptual"));
+    REQUIRE(workspace.Save() == true);
 }

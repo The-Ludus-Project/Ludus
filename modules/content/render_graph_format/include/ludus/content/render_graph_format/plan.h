@@ -13,7 +13,7 @@ namespace ludus::content::render_graph_format
 {
 /// Static triangle execution profile: opaque/masked raster with per-draw uniforms,
 /// and authored primary triangle ray functions with flat opaque World inputs.
-inline constexpr foundation::uint32 VERSION = 11;
+inline constexpr foundation::uint32 VERSION = 12;
 /// Opt-in portable raster ABI: static inputs plus primitive halves and draw/instance references.
 inline constexpr foundation::usize VISIBILITY_INPUT_COUNT = 8;
 /// Maximum authored passes in one admitted configuration.
@@ -39,8 +39,10 @@ inline constexpr foundation::usize ADDITIONAL_RASTER_TECHNIQUE_COUNT =
     RASTER_TECHNIQUE_COUNT * ADDITIONAL_VARIANTS_PER_FAMILY;
 /// Bounded shader-pair slots, independent of how many graph passes reuse a pair.
 inline constexpr foundation::usize SCENE_TECHNIQUE_COUNT = LEGACY_TECHNIQUE_COUNT + ADDITIONAL_RASTER_TECHNIQUE_COUNT;
-/// Scene shader-pair slots plus the renderer-owned bilinear image operation.
-inline constexpr foundation::usize TECHNIQUE_COUNT = SCENE_TECHNIQUE_COUNT + 1;
+/// Renderer-owned image roles: bilinear and two MetalFX Spatial color interpretations.
+inline constexpr foundation::usize IMAGE_TECHNIQUE_COUNT = 3;
+/// All scene shader pairs and image operations.
+inline constexpr foundation::usize TECHNIQUE_COUNT = SCENE_TECHNIQUE_COUNT + IMAGE_TECHNIQUE_COUNT;
 /// Maximum consecutive ray invocations in one configuration.
 inline constexpr foundation::usize MAX_RAY_PASSES = 4;
 /// Read/write uint4 storage slots per ray invocation; shared across passes and frames.
@@ -82,7 +84,7 @@ inline constexpr foundation::uint32 ABSENT = ~foundation::uint32{0};
 /// Compiled scene shader-pair or renderer-owned image operation, independent of graph instance and viewport size.
 /// Values below LEGACY_TECHNIQUE_COUNT name the historical pairs. Additional
 /// raster pairs occupy [LEGACY_TECHNIQUE_COUNT, SCENE_TECHNIQUE_COUNT); GetTechniqueFamily
-/// returns their coverage family and preserves BilinearUpscale. Numeric plans select these bounded values explicitly.
+/// returns their coverage family and preserves image operations. Numeric plans select these bounded values explicitly.
 // NOLINTNEXTLINE(performance-enum-size): versioned numeric fields have explicit 32-bit widths.
 enum class Technique : foundation::uint32
 {
@@ -93,13 +95,23 @@ enum class Technique : foundation::uint32
     RayTracing,          ///< Authored triangle ray generation/miss/closest-hit functions, lowered to GPU BVH traversal.
     /// Full-target bilinear RGBA8 reconstruction using renderer-owned composition shaders; no scene draw.
     BilinearUpscale = SCENE_TECHNIQUE_COUNT,
+    /// MetalFX Spatial, single-sample RGBA8 linear-light reconstruction on supported Metal devices.
+    MetalFxSpatialUpscale,
+    /// MetalFX Spatial, RGBA8 perceptual tone-mapped reconstruction on supported Metal devices.
+    MetalFxSpatialPerceptualUpscale,
 };
-/// Return a scene coverage family, or BilinearUpscale unchanged; no allocation.
+/// Whether this is a valid renderer-owned image operation without scene shader stages.
+[[nodiscard]] LUDUS_INLINE constexpr bool IsImageTechnique(Technique technique) noexcept
+{
+    const foundation::usize index = static_cast<foundation::usize>(technique);
+    return index >= SCENE_TECHNIQUE_COUNT && index < TECHNIQUE_COUNT;
+}
+/// Return a scene coverage family, or an image operation unchanged; no allocation.
 /// @pre The numeric role is less than TECHNIQUE_COUNT.
 [[nodiscard]] LUDUS_INLINE constexpr Technique GetTechniqueFamily(Technique technique) noexcept
 {
     const foundation::usize index = static_cast<foundation::usize>(technique);
-    return index < LEGACY_TECHNIQUE_COUNT || technique == Technique::BilinearUpscale
+    return index < LEGACY_TECHNIQUE_COUNT || index >= SCENE_TECHNIQUE_COUNT
                ? technique
                : static_cast<Technique>((index - LEGACY_TECHNIQUE_COUNT) % RASTER_TECHNIQUE_COUNT);
 }
@@ -214,7 +226,7 @@ struct Pass final
     /// [MIN_TONE_MAPPING_EXPOSURE, MAX_TONE_MAPPING_EXPOSURE] applies exposure, per-channel
     /// Reinhard compression and sRGB encoding after the optional linear RGB mean. Ray passes only.
     foundation::float32 ToneMappingExposure = 0;
-    /// Offscreen initialized RGBA8 source for BilinearUpscale; ABSENT for scene techniques.
+    /// Offscreen initialized RGBA8 source for image operations; ABSENT for scene techniques.
     /// Color is a distinct output allocation; sampling uses linear clamp at normalized pixel centers.
     foundation::uint32 SourceColor = ABSENT;
 };

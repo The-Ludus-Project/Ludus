@@ -863,24 +863,31 @@ class _Compiler:
             elif kind == "Upscale":
                 source = inputs['color']
                 destination = inputs['destination']
+                label = upscale.ALGORITHMS[node['algorithm']][0]
                 _require(source.defined, 'Initialization', where,
-                         'Bilinear color must be produced by a preceding pass that stores initialized contents.',
+                         f'{label} color must be produced by a preceding pass that stores initialized contents.',
                          port='color', direction='input')
                 _require(source.version == self.latest[source.resource], 'StaleVersion', where,
-                         'Bilinear color must consume the latest stored source version.', port='color', direction='input')
+                         f'{label} color must consume the latest stored source version.', port='color', direction='input')
                 _require(source.resource != destination.resource, 'AttachmentMismatch', where,
-                         'Bilinear color and destination must be distinct textures.', port='destination', direction='input')
+                         f'{label} color and destination must be distinct textures.', port='destination', direction='input')
                 _require(len(source.cameras) == 1, 'Capability', where,
-                         'Bilinear requires one rendered camera route on its color input.')
+                         f'{label} requires one rendered camera route on its color input.')
                 for port, value in inputs.items():
                     target = self.resources[value.resource]
                     _require(target['format'] == 'RGBA8Unorm' and target['samples'] == 1 and
                              (port != 'color' or not target['presentation']), 'Capability', where,
-                             'Bilinear supports single-sample RGBA8 color; its source must be offscreen.',
+                             f'{label} supports single-sample RGBA8 color; its source must be offscreen.',
                              port=port, direction='input')
+                if node['algorithm'] == 'metalfx-spatial':
+                    source_extent = self.resources[source.resource]['extent']
+                    output_extent = self.resources[destination.resource]['extent']
+                    _require(all(output >= render for output, render in zip(output_extent, source_extent)),
+                             'Capability', where, 'MetalFX Spatial output dimensions must be at least the render dimensions.')
                 value = self.write(destination, {'color_load': 'Clear', 'color_store': 'Store'},
                                    'color', where, source.cameras)
-                self.add_pass({'id': where, 'kind': 'Upscale', 'algorithm': 'bilinear',
+                self.add_pass({'id': where, 'kind': 'Upscale', 'algorithm': node['algorithm'],
+                    'color_processing': node.get('color_processing', 'Linear'),
                     'source': self.library.label(path), 'asset': self.library.assets[path]['id'],
                     'asset_configuration': config['id'], 'view': source.cameras[0], 'cameras': list(source.cameras),
                     'dependencies': sorted({v.producer for v in inputs.values() if v.producer}),

@@ -1,3 +1,4 @@
+#include "../src/internal/render_graph_metalfx.h"
 #include "../src/internal/render_graph_upscale.h"
 #include "internal/readback.h"
 #include "renderer_composite.h"
@@ -26,6 +27,8 @@
 #include <ludus/runtime/shader_development/reload.hpp>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
+#include <ludus/graphics/rhi/spatial_upscale.h>
 
 #include <chrono>
 #include <cstdlib>
@@ -1202,9 +1205,21 @@ TEST_CASE("bilinear GPU sampling matches pixel centers and clamps source edges",
     }
 }
 
-TEST_CASE("bilinear graph executes rendered scene color and responds to camera edits", "[render-graph][gpu][bilinear]")
+TEST_CASE("spatial graph executes rendered scene color and responds to camera edits", "[render-graph][gpu][bilinear]")
 {
+    const format::Technique technique = GENERATE(format::Technique::BilinearUpscale,
+                                                 format::Technique::MetalFxSpatialUpscale,
+                                                 format::Technique::MetalFxSpatialPerceptualUpscale);
     GraphGpuFixture fixture;
+    if (technique != format::Technique::BilinearUpscale)
+    {
+        rhi::SpatialUpscaleCapabilities capabilities;
+        REQUIRE(rhi::GetSpatialUpscaleCapabilities(fixture.Device, capabilities) == rhi::RasterStatus::Ready);
+        if (capabilities.IsMetalFxSpatialSupported == false)
+        {
+            SKIP("MetalFX Spatial unsupported on this device");
+        }
+    }
     constexpr usize UPSCALE_RESOURCE_COUNT = 3;
     constexpr usize UPSCALE_PASS_COUNT = 2;
     const StaticArray<format::Resource, UPSCALE_RESOURCE_COUNT> resources{
@@ -1212,7 +1227,7 @@ TEST_CASE("bilinear graph executes rendered scene color and responds to camera e
          {WIDTH / 2, HEIGHT / 2, format::Aspect::Depth, 0, 0, 0},
          {WIDTH, HEIGHT, format::Aspect::Color, 2, 1, 0}}};
     StaticArray<format::Pass, UPSCALE_PASS_COUNT> passes{{packages::rg2_offscreen::PASSES[0],
-                                                          {format::Technique::BilinearUpscale,
+                                                          {technique,
                                                            0,
                                                            2,
                                                            format::ABSENT,
@@ -1255,4 +1270,60 @@ TEST_CASE("bilinear graph executes rendered scene color and responds to camera e
         hasChanged = hasChanged == true || before[index] != fixture.Pixels[index];
     }
     CHECK(hasChanged == true);
+}
+
+TEST_CASE("MetalFX preserves constant RGB through its private output and surface copy", "[render-graph][gpu][metalfx]")
+{
+    const rhi::SpatialUpscaleColorProcessing mode =
+        GENERATE(rhi::SpatialUpscaleColorProcessing::Linear, rhi::SpatialUpscaleColorProcessing::Perceptual);
+    GraphGpuFixture fixture;
+    rhi::SpatialUpscaleCapabilities capabilities;
+    REQUIRE(rhi::GetSpatialUpscaleCapabilities(fixture.Device, capabilities) == rhi::RasterStatus::Ready);
+    if (capabilities.IsMetalFxSpatialSupported == false)
+    {
+        SKIP("MetalFX Spatial unsupported on this device");
+    }
+    constexpr uint32 SOURCE_WIDTH = WIDTH / 2;
+    constexpr uint32 SOURCE_HEIGHT = HEIGHT / 2;
+    constexpr usize SOURCE_BYTES = static_cast<usize>(SOURCE_WIDTH) * SOURCE_HEIGHT * TEXEL_BYTES;
+    StaticArray<uint8, SOURCE_BYTES> pixels{};
+    for (usize pixel = 0; pixel < SOURCE_BYTES; pixel += TEXEL_BYTES)
+    {
+        pixels[pixel] = 64;
+        pixels[pixel + 1] = 128;
+        pixels[pixel + 2] = 192;
+        pixels[pixel + TEXEL_BYTES - 1] = 255;
+    }
+    rhi::TextureDescription sourceDescription;
+    sourceDescription.Width = SOURCE_WIDTH;
+    sourceDescription.Height = SOURCE_HEIGHT;
+    rhi::TextureHandle source;
+    REQUIRE(
+        rhi::CreateTexture(fixture.Device, sourceDescription, {pixels.AsSpan(), SOURCE_WIDTH * TEXEL_BYTES}, source) ==
+        rhi::RasterStatus::Ready);
+    renderer::internal::RenderGraphUpscaleProgram program;
+    REQUIRE(program.Initialize(fixture.Device,
+                               shaders::renderer_composite::Vertex(),
+                               shaders::renderer_composite::Fragment(),
+                               true) == rhi::RasterStatus::Ready);
+    renderer::internal::RenderGraphMetalFxPass pass;
+    REQUIRE(pass.Initialize(fixture.Device, {SOURCE_WIDTH, SOURCE_HEIGHT, WIDTH, HEIGHT, mode}, source, {}, &program) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(pass.Poll() == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::BeginFrame(fixture.Device, fixture.Surface) == rhi::DeviceStatus::Ready);
+    REQUIRE(pass.Draw() == rhi::RasterStatus::Ready);
+    rhi::SubmissionToken completion;
+    REQUIRE(rhi::EndFrame(fixture.Device, completion) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::backend::ReadHeadlessPixels(fixture.Pixels.AsSpan()) == true);
+    for (usize pixel = 0; pixel < PIXEL_BYTES; pixel += TEXEL_BYTES)
+    {
+        for (usize channel = 0; channel < TEXEL_BYTES - 1; ++channel)
+        {
+            const int32 actual = fixture.Pixels[pixel + channel];
+            const int32 expected = pixels[channel];
+            CHECK(actual >= expected - 2);
+            CHECK(actual <= expected + 2);
+        }
+    }
+    REQUIRE(rhi::Destroy(fixture.Device, source) == rhi::RasterStatus::Ready);
 }

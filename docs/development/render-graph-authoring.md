@@ -205,15 +205,15 @@ node; separate state blocks and stream output are deferred.
 
 ## Upscaling presets
 
-**Bilinear is executable** in the current single-sample RGBA8 renderer profile.
-The seven vendor presets remain authoring-only: selecting one reports a mapped
-`Capability` diagnostic. No vendor SDK is downloaded or executed, and no
-algorithm is substituted automatically. An unused preset can remain in a graph
+**Bilinear and MetalFX Spatial are executable** in the single-sample RGBA8
+renderer profile. MetalFX Spatial requires a supported Metal device and the
+system MetalFX framework. Other vendor presets remain authoring-only and report
+a mapped `Capability` diagnostic when selected. No algorithm is substituted automatically. An unused preset can remain in a graph
 without blocking its existing render path. Validation/build failure retains the
 previously drawable generation.
 
-Use **Create Node → Upscale — Bilinear** on the canvas, or **Upscale — … (draft)**
-for a vendor preset. The same choices are available in
+Use **Create Node → Upscale — Bilinear** or **Upscale — MetalFX Spatial**
+on the canvas, or **Upscale — … (draft)** for an unavailable vendor preset. The same choices are available in
 Properties' Add Node picker. Both create the same version-2 supporting operation:
 
 ```json
@@ -222,7 +222,7 @@ Properties' Add Node picker. Both create the same version-2 supporting operation
 
 These are **node presets**, not complete renderer configuration templates. Each
 preset inserts an unused, sized target group around the fixed interface for one algorithm; vendor work is owned by a
-future SDK/backend adapter rather than a user-authored ComputePipeline shader.
+Renderer/RHI adapter rather than a user-authored ComputePipeline shader.
 Select **Edit Node…** on the canvas or use Properties to change `algorithm`.
 Changing temporal to spatial requires disconnecting any ports that would disappear;
 the editor rejects the edit and preserves wires until that is done. Creation,
@@ -236,7 +236,7 @@ operations. Properties may stay hidden throughout canvas authoring.
 | `fsr-1` | FSR 1 spatial | Spatial |
 | `fsr-2` | FSR 2 temporal | Temporal |
 | `fsr-3` | FSR 3 upscaling | Temporal |
-| `metalfx-spatial` | MetalFX Spatial | Spatial |
+| `metalfx-spatial` | MetalFX Spatial (implemented on supported Metal devices) | Spatial |
 | `metalfx-temporal` | MetalFX Temporal | Temporal |
 | `xess-sr` | XeSS Super Resolution | Temporal |
 
@@ -276,6 +276,48 @@ and Intel, [XeSS Super Resolution Developer Guide](https://github.com/intel/xess
 for the spatial/temporal input distinction. Ludus adapts that distinction into a
 shared draft interface; it does not copy their SDK implementations or imply
 that their native contracts are interchangeable.
+
+### Run MetalFX Spatial
+
+Create **Upscale — MetalFX Spatial**, then wire the source renderer's stored color
+output to `color` and the distinct output-sized target to `destination`. Route the
+camera target and final presentation/export through that destination, as in the
+bilinear workflow below. Its OutputSize and RenderSize providers use the same
+**Project → Project Settings → Rendering resolution** output resolution and render scale controls.
+Output width and height must each be at least the render dimensions; equal sizes
+are allowed. Odd viewport dimensions follow the existing size-provider rounding.
+
+Edit `color_processing` through **Edit Node…** on the canvas or Properties:
+
+- **Linear** (default, including older nodes without this field): stored RGBA8
+  channels represent linear light in [0,1]. Use with the ordinary linear raster path.
+- **Perceptual**: stored channels already represent tone-mapped perceptual/sRGB
+  values in [0,1]. Choose it when the source producer performs that encoding.
+
+```json
+{"id": "upscale", "kind": "Upscale", "algorithm": "metalfx-spatial", "color_processing": "Linear"}
+```
+
+Neither mode inserts tone mapping, display conversion or anti-aliasing. Apple
+recommends perceptual input after tone mapping and an anti-aliased, noise-free
+source; Spatial does not reconstruct temporal history or provide temporal AA.
+The current graph adapter supports RGBA8 only, with one mip, layer and sample;
+HDR formats and temporal inputs are outside this profile. Temporal MetalFX stays
+an unavailable authoring preset.
+
+Scaler setup can compile vendor pipelines, so Ludus prepares and reuses it between
+frames. Scene and camera edits reuse the scaler; dimension changes prepare a new
+attachment/effect generation before publication. Pending or failed replacements
+retain the previous drawable view. Offscreen output is written directly; surface
+output uses a private RGBA8 intermediate and the existing fullscreen composition
+pass. There is no CPU image transfer or per-frame scaler creation. Framework-private
+GPU allocation sizes are opaque; RHI resource-instance limits still apply.
+Unsupported devices/backends report `Unsupported` at runtime without fallback.
+
+Thanks to Kelvin Chiu / Apple, [“Boost performance with MetalFX Upscaling”,
+WWDC22 session 10103](https://developer.apple.com/videos/play/wwdc2022/10103/),
+spatial setup and frame encoding (3:39 and 9:16), for the integration, color
+interpretation and effect-reuse guidance. MetalFX owns the reconstruction algorithm.
 
 ### Run a bilinear upscale
 

@@ -44,7 +44,7 @@ class UpscaleTests(unittest.TestCase):
 
     def test_selected_presets_report_node_availability_even_when_inputs_are_missing(self):
         for algorithm in upscale.ALGORITHMS:
-            if algorithm == 'bilinear':
+            if algorithm in ('bilinear', 'metalfx-spatial'):
                 continue
             with self.subTest(algorithm=algorithm):
                 value = self.document(algorithm)
@@ -65,7 +65,7 @@ class UpscaleTests(unittest.TestCase):
                 self.assertEqual(before, self.path.read_bytes())
 
     def test_complete_spatial_route_still_rejects_instead_of_copying_or_dispatching(self):
-        value = self.document('metalfx-spatial')
+        value = self.document('fsr-1')
         configuration = value['configurations'][0]
         for identity in ('source', 'destination'):
             target = graph._target(identity, 'ColorTexture')

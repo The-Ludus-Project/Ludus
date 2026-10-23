@@ -40,9 +40,14 @@ QJsonObject MakeUpscaleNode(const QString& algorithm, const QString& identity)
     {
         return {};
     }
-    return {{QStringLiteral("id"), identity},
-            {QStringLiteral("kind"), QStringLiteral("Upscale")},
-            {QStringLiteral("algorithm"), algorithm}};
+    QJsonObject node{{QStringLiteral("id"), identity},
+                     {QStringLiteral("kind"), QStringLiteral("Upscale")},
+                     {QStringLiteral("algorithm"), algorithm}};
+    if (algorithm == QStringLiteral("metalfx-spatial"))
+    {
+        node.insert(QStringLiteral("color_processing"), QStringLiteral("Linear"));
+    }
+    return node;
 }
 
 bool AppendUpscalePreset(QJsonObject& inoutConfiguration, const QString& algorithm, const QString& identity)
@@ -153,6 +158,14 @@ QString GetUpscaleAvailabilityMessage(const QJsonObject& node)
         return QStringLiteral("Bilinear upscaling is implemented for single-sample RGBA8 color. Connect an initialized "
                               "render-sized color output and a distinct output-sized destination. OutputSize and "
                               "RenderSize control dimensions; no temporal inputs or history are required.");
+    }
+    if (node.value(QStringLiteral("algorithm")) == QStringLiteral("metalfx-spatial"))
+    {
+        return QStringLiteral(
+            "MetalFX Spatial executes on supported Metal devices; other devices report Unsupported. "
+            "Connect initialized single-sample RGBA8 render color and a distinct output-sized target. "
+            "Output dimensions must be at least render dimensions. Linear interprets linear light; "
+            "Perceptual expects tone-mapped sRGB values. No automatic tone mapping or anti-aliasing.");
     }
     return QStringLiteral("%1 is an authoring preset only. Its backend is unavailable on all current Ludus "
                           "execution profiles. Keep it as an unused draft to retain the current color path. "

@@ -205,7 +205,7 @@ void WritePlan(PackageWriter& inoutWriter, const PackageOptions& options, uint32
         std::memcpy(&exposureBits, &options.ToneMappingExposure, sizeof(exposureBits));
         inoutWriter.WriteWord(exposureBits);
     }
-    if (options.Version >= format::PACKAGE_VERSION)
+    if (options.Version >= format::BILINEAR_UPSCALE_PACKAGE_VERSION)
     {
         inoutWriter.WriteWord(options.SourceColor);
     }
@@ -1150,12 +1150,12 @@ TEST_CASE("runtime independent shader pairs decode with their own stage and bind
         // WritePlan's uniform fixture starts with the legacy color program. Retarget
         // that serialized binding explicitly; the rest of its layout is unchanged.
         constexpr usize LEGACY_PASS_FIELDS = 10;
-        const usize passBytes = (version >= format::PACKAGE_VERSION                ? format::PASS_FIELD_COUNT
-                                 : version >= format::TONE_MAPPING_PACKAGE_VERSION ? format::PASS_FIELD_COUNT - 1
-                                 : version >= format::ACCUMULATION_PACKAGE_VERSION ? format::PASS_FIELD_COUNT - 2
-                                 : version >= format::VISIBILITY_PACKAGE_VERSION   ? format::PASS_FIELD_COUNT - 3
-                                 : version >= format::ORDERED_PACKAGE_VERSION      ? format::PASS_FIELD_COUNT - 5
-                                                                                   : LEGACY_PASS_FIELDS) *
+        const usize passBytes = (version >= format::BILINEAR_UPSCALE_PACKAGE_VERSION ? format::PASS_FIELD_COUNT
+                                 : version >= format::TONE_MAPPING_PACKAGE_VERSION   ? format::PASS_FIELD_COUNT - 1
+                                 : version >= format::ACCUMULATION_PACKAGE_VERSION   ? format::PASS_FIELD_COUNT - 2
+                                 : version >= format::VISIBILITY_PACKAGE_VERSION     ? format::PASS_FIELD_COUNT - 3
+                                 : version >= format::ORDERED_PACKAGE_VERSION        ? format::PASS_FIELD_COUNT - 5
+                                                                                     : LEGACY_PASS_FIELDS) *
                                 sizeof(uint32);
         const usize bindingOffset =
             format::HEADER_BYTES +
@@ -1323,4 +1323,27 @@ TEST_CASE("runtime packages preserve bilinear source indices without scene unifo
     const core::UniquePtr<renderer::RenderGraphPackage> toneMapped = MakePackage(options);
     CHECK(toneMapped->GetPlan().Passes[0].ToneMappingExposure == 2);
     CHECK(toneMapped->GetPlan().Passes[0].SourceColor == format::ABSENT);
+}
+
+TEST_CASE("MetalFX image roles require package version sixteen and preserve bilinear version fifteen",
+          "[render-graph][activation][metalfx]")
+{
+    PackageOptions options;
+    options.SceneData = 0;
+    options.SourceColor = 1;
+    for (const format::Technique technique :
+         {format::Technique::MetalFxSpatialUpscale, format::Technique::MetalFxSpatialPerceptualUpscale})
+    {
+        options.Program = technique;
+        options.Version = format::METALFX_SPATIAL_PACKAGE_VERSION;
+        const core::UniquePtr<renderer::RenderGraphPackage> package = MakePackage(options);
+        CHECK(package->GetPlan().Passes[0].Program == technique);
+        CHECK(package->GetPlan().Passes[0].SourceColor == 1);
+        options.Version = format::BILINEAR_UPSCALE_PACKAGE_VERSION;
+        CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
+    }
+    options.Program = format::Technique::BilinearUpscale;
+    const core::UniquePtr<renderer::RenderGraphPackage> package = MakePackage(options);
+    CHECK(package->GetPlan().Passes[0].Program == format::Technique::BilinearUpscale);
+    CHECK(package->GetPlan().Passes[0].SourceColor == 1);
 }

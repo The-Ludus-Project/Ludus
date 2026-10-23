@@ -7,6 +7,7 @@
 
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/graphics/rhi/lifetime.h>
+#include <ludus/graphics/rhi/spatial_upscale.h>
 
 #include <cstring>
 #include <span>
@@ -1580,6 +1581,7 @@ TEST_CASE("R6 pages grow every general resource kind without invalidating earlie
     limits.ResourcesPerKind = 96;
     Session session(limits);
     Scene scene(session.Device);
+    reference::IsSpatialUpscaleAvailable = true;
     const RasterBinding binding{0, RasterBindingKind::UniformBuffer, RasterVisibility::Both, 16};
     const RasterBinding computeBinding{0, RasterBindingKind::UniformBuffer, RasterVisibility::Compute, 16};
     BindingLayoutHandle computeLayout;
@@ -1610,10 +1612,12 @@ TEST_CASE("R6 pages grow every general resource kind without invalidating earlie
     Array<BindingSetHandle> sets(80);
     Array<RasterPipelineHandle> pipelines(80);
     Array<ComputePipelineHandle> kernels(80);
+    Array<SpatialUpscalerHandle> upscalers(80);
     const uint8 bytes[16]{};
     const uint8 texel[4]{1, 2, 3, 255};
     for (usize i = 0; i < 80; ++i)
     {
+        REQUIRE(CreateSpatialUpscaler(session.Device, {1, 1, 2, 2}, upscalers[i]) == RasterStatus::Ready);
         REQUIRE(CreateBuffer(session.Device, {BufferRole::Uniform, 16}, bytes, buffers[i]) == RasterStatus::Ready);
         REQUIRE(CreateTexture(session.Device, {1, 1}, {texel, 4}, textures[i]) == RasterStatus::Ready);
         REQUIRE(CreateTextureView(session.Device, textures[i], views[i]) == RasterStatus::Ready);
@@ -1634,6 +1638,8 @@ TEST_CASE("R6 pages grow every general resource kind without invalidating earlie
     CHECK(info.Profile.Storage.ResourcesPerKind == 96);
     CHECK(GetStatus(session.Device, scene.Vertex) == RasterStatus::Ready);
     CHECK(GetStatus(session.Device, textures[0]) == RasterStatus::Ready);
+    CHECK(GetStatus(session.Device, upscalers[0]) == RasterStatus::Ready);
+    CHECK(GetStatus(session.Device, upscalers[79]) == RasterStatus::Ready);
     REQUIRE(BeginFrame(session.Device, session.Surface) == DeviceStatus::Ready);
     REQUIRE(DrawIndexed(session.Device, scene.Draw()) == RasterStatus::Ready);
     REQUIRE(EndFrame(session.Device) == DeviceStatus::Ready);
@@ -3302,4 +3308,70 @@ TEST_CASE("Ordered graph encoding preserves the caller frame and retains submitt
     reference::Completed = reference::Submitted;
     REQUIRE(PollLifetime(session.Device) == RasterStatus::Ready);
     CHECK(reference::Destroys[1] == 1);
+}
+
+TEST_CASE("spatial upscalers reject unsupported devices and invalid descriptions without publishing", "[rhi][upscale]")
+{
+    Session session;
+    SpatialUpscaleCapabilities capabilities;
+    REQUIRE(GetSpatialUpscaleCapabilities(session.Device, capabilities) == RasterStatus::Ready);
+    CHECK(capabilities.IsMetalFxSpatialSupported == false);
+    SpatialUpscalerHandle effect;
+    SpatialUpscalerDescription description{2, 2, 4, 4, SpatialUpscaleColorProcessing::Linear};
+    CHECK(CreateSpatialUpscaler(session.Device, description, effect) == RasterStatus::Unsupported);
+    CHECK(effect == SpatialUpscalerHandle{});
+    reference::IsSpatialUpscaleAvailable = true;
+    description.OutputWidth = 1;
+    CHECK(CreateSpatialUpscaler(session.Device, description, effect) == RasterStatus::InvalidDescription);
+    CHECK(effect == SpatialUpscalerHandle{});
+    description.OutputWidth = 4;
+    REQUIRE(CreateSpatialUpscaler(session.Device, description, effect) == RasterStatus::Ready);
+    const SpatialUpscalerHandle borrowed = effect;
+    CHECK(CreateSpatialUpscaler(session.Device, description, effect) == RasterStatus::InvalidState);
+    REQUIRE(Destroy(session.Device, effect) == RasterStatus::Ready);
+    CHECK(GetStatus(session.Device, borrowed) == RasterStatus::InvalidHandle);
+}
+
+TEST_CASE("spatial encoding validates inputs and retains submitted effects and textures", "[rhi][upscale]")
+{
+    Session session;
+    Scene scene(session.Device);
+    reference::IsSpatialUpscaleAvailable = true;
+    SpatialUpscalerHandle effect;
+    REQUIRE(CreateSpatialUpscaler(session.Device, {2, 2, 4, 4}, effect) == RasterStatus::Ready);
+    TextureHandle source;
+    TextureHandle destination;
+    TextureHandle wrongSize;
+    REQUIRE(CreateTexture(session.Device, {2, 2, RasterFormat::Rgba8Unorm, true}, {}, source) == RasterStatus::Ready);
+    REQUIRE(CreateTexture(session.Device, {4, 4, RasterFormat::Rgba8Unorm, true}, {}, destination) ==
+            RasterStatus::Ready);
+    REQUIRE(CreateTexture(session.Device, {2, 2, RasterFormat::Rgba8Unorm, true}, {}, wrongSize) ==
+            RasterStatus::Ready);
+    CHECK(EncodeSpatialUpscale(session.Device, effect, source, destination) == RasterStatus::InvalidState);
+    REQUIRE(BeginFrame(session.Device, session.Surface) == DeviceStatus::Ready);
+    CHECK(EncodeSpatialUpscale(session.Device, effect, source, source) == RasterStatus::InvalidDescription);
+    CHECK(EncodeSpatialUpscale(session.Device, effect, source, wrongSize) == RasterStatus::InvalidDescription);
+    CHECK(EncodeSpatialUpscale(session.Device, effect, source, destination) == RasterStatus::InvalidState);
+    CHECK(reference::SpatialUpscaleEncodes == 0);
+    RasterPassDescription pass;
+    pass.Color = source;
+    REQUIRE(BeginRasterPass(session.Device, pass) == RasterStatus::Ready);
+    REQUIRE(EncodeSpatialUpscale(session.Device, effect, source, destination) == RasterStatus::Ready);
+    CHECK(reference::SpatialUpscaleEncodes == 1);
+    CHECK(DrawIndexed(session.Device, scene.Draw()) == RasterStatus::InvalidState);
+    REQUIRE(BeginRasterPass(session.Device, {}) == RasterStatus::Ready);
+    CHECK(DrawIndexed(session.Device, scene.Draw()) == RasterStatus::Ready);
+    CHECK(Destroy(session.Device, effect) == RasterStatus::InvalidState);
+    SubmissionToken completion;
+    REQUIRE(EndFrame(session.Device, completion) == RasterStatus::Ready);
+    const SpatialUpscalerHandle borrowed = effect;
+    REQUIRE(Destroy(session.Device, effect) == RasterStatus::Ready);
+    REQUIRE(Destroy(session.Device, source) == RasterStatus::Ready);
+    REQUIRE(Destroy(session.Device, destination) == RasterStatus::Ready);
+    const usize kind = static_cast<usize>(internal::RasterKind::SpatialUpscaler);
+    CHECK(reference::Destroys[kind] == 0);
+    CHECK(GetStatus(session.Device, borrowed) == RasterStatus::InvalidHandle);
+    reference::Completed = reference::Submitted;
+    static_cast<void>(GetStatus(session.Device, wrongSize));
+    CHECK(reference::Destroys[kind] == 1);
 }

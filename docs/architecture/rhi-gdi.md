@@ -1036,3 +1036,23 @@ ray requests reject unsupported startup; preferred requests preserve raster.
 Browser backends return Unsupported and never silently select CPU traversal.
 Texture CPU content is separately opt-in for initialized RGBA8 mips; retained
 views keep the upload shadow alive after the texture owner detaches.
+
+## Native spatial reconstruction
+
+`spatial_upscale.h` prepares device-scoped MetalFX Spatial effects outside frames.
+The current profile accepts distinct single-sample RGBA8 D2 textures with one mip
+and layer, exact configured dimensions, initialized source color and an offscreen
+private attachment destination. Output dimensions cannot be smaller than input.
+Linear and Perceptual modes describe stored channel interpretation; no implicit
+AA, tone mapping or display conversion occurs. GetSpatialUpscaleCapabilities
+reports device support; unsupported backends do not create substitute effects.
+
+Effects use the existing raster resource generations, per-kind instance bound,
+frame retention and completion retirement. Encoding uses the current Metal command
+buffer after ending the raster encoder. Validation failures leave the current pass
+intact; a successful native operation defines destination color, invalidates private
+depth/stencil, and requires BeginRasterPass before subsequent raster draws.
+Framework-private GPU allocations are opaque, and cannot be reported as measured
+texture bytes. Prepare/reuse effects outside frames because creation may compile
+vendor pipelines. See [graph integration](render-graph-authoring.md#upscaling-operations-and-presets)
+and the [authoring workflow](../development/render-graph-authoring.md#run-metalfx-spatial).

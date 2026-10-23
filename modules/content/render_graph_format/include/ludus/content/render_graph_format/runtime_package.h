@@ -47,8 +47,12 @@ namespace ludus::content::render_graph_format
 {
 /// "LURG" read as a little-endian uint32.
 inline constexpr foundation::uint32 PACKAGE_MAGIC = 0x4752554CU;
-/// Runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = 15;
+/// First generation admitting MetalFX Spatial image roles; the version 15 pass layout is unchanged.
+inline constexpr foundation::uint32 METALFX_SPATIAL_PACKAGE_VERSION = 16;
+/// Current runtime generation layout version.
+inline constexpr foundation::uint32 PACKAGE_VERSION = METALFX_SPATIAL_PACKAGE_VERSION;
+/// First package carrying SourceColor and bilinear image operations.
+inline constexpr foundation::uint32 BILINEAR_UPSCALE_PACKAGE_VERSION = 15;
 /// First generation carrying explicit ToneMap exposure multipliers.
 inline constexpr foundation::uint32 TONE_MAPPING_PACKAGE_VERSION = 14;
 /// First generation requiring explicit Accumulate operations in the source graph.

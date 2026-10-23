@@ -44,6 +44,7 @@ enum class RasterKind : foundation::uint8
     Set,
     Pipeline,
     ComputePipeline,
+    SpatialUpscaler,
     RayGeometry,
     RayScene,
     RayProgram,
