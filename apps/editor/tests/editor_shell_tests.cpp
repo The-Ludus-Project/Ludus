@@ -41,6 +41,7 @@
 #include <QScrollArea>
 #include <QSignalSpy>
 #include <QSize>
+#include <QSpinBox>
 #include <QStackedWidget>
 #include <QTabWidget>
 #include <QTableWidget>
@@ -1157,4 +1158,59 @@ TEST_CASE("Remove Unused Shaders is available in Edit and on the canvas with Pro
     renderer->Redo();
     REQUIRE(renderer->Save() == true);
     CHECK(QFileInfo::exists(sourcePath) == false);
+}
+
+TEST_CASE("Project Settings saves rendering edits and routes their undo to the graph", "[editor][shell][resolution]")
+{
+    QTemporaryDir directory;
+    QTemporaryDir settings;
+    EditorController controller(ToolingPaths{}, nullptr, QDir(settings.path()).filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, QDir(settings.path()).filePath(QStringLiteral("workspace.json")));
+    window.show();
+    window.activateWindow();
+    const QString descriptor = WriteProject(directory);
+    const QByteArray descriptorBefore = ReadBytes(descriptor);
+    controller.OpenProject(descriptor);
+    Settle();
+    RendererWorkspace* renderer = window.findChild<RendererWorkspace*>();
+    REQUIRE(renderer != nullptr);
+    REQUIRE(renderer->OpenGraph(QDir(directory.path()).filePath(QStringLiteral("renderer/main.lurender.json"))) ==
+            true);
+    renderer->SetLivePreview(false);
+    REQUIRE(Well(window).OpenDocument(Document(window, QStringLiteral("projectSettingsScroll"))) == true);
+    Dock(window, QStringLiteral("propertiesDock"))->hide();
+    QPushButton* enable = window.findChild<QPushButton*>(QStringLiteral("projectEnableResolution"));
+    QSpinBox* width = window.findChild<QSpinBox*>(QStringLiteral("projectOutputWidth"));
+    QPushButton* save = window.findChild<QPushButton*>(QStringLiteral("projectSaveSettings"));
+    REQUIRE(enable != nullptr);
+    REQUIRE(width != nullptr);
+    REQUIRE(save != nullptr);
+    enable->click();
+    width->setValue(1920);
+    width->setFocus();
+    Settle();
+    QAction* undo = Action(window, QStringLiteral("document.undo"));
+    REQUIRE(undo->isEnabled() == true);
+    undo->trigger();
+    CHECK(width->value() == 96);
+    QAction* redo = Action(window, QStringLiteral("document.redo"));
+    REQUIRE(redo->isEnabled() == true);
+    redo->trigger();
+    CHECK(width->value() == 1920);
+    REQUIRE(save->isEnabled() == true);
+    // Keyboard Save must commit a spin box's pending text even without focus loss.
+    QLineEdit* input = width->findChild<QLineEdit*>();
+    REQUIRE(input != nullptr);
+    input->setText(QStringLiteral("2560"));
+    Action(window, QStringLiteral("document.save"))->trigger();
+    CHECK(renderer->IsDirty() == false);
+    CHECK(width->value() == 2560);
+    CHECK(ReadBytes(descriptor) == descriptorBefore);
+    RenderGraphDocument reopened;
+    REQUIRE(reopened.Load(QDir(directory.path()).filePath(QStringLiteral("renderer")),
+                          QStringLiteral("main.lurender.json")) == RenderGraphDocumentStatus::Ok);
+    QJsonObject graph;
+    REQUIRE(reopened.GetGraph(QStringLiteral("main.lurender.json"), graph) == true);
+    CHECK(QJsonDocument(graph).toJson().contains("2560") == true);
+    REQUIRE(controller.CloseProject() == true);
 }

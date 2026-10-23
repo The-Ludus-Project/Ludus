@@ -952,6 +952,20 @@ foreach(target IN ITEMS ludus_editor ludus_editor_tests ludus_render_graph_confi
     endif()
 endforeach()
 
+# Project Settings proxies the graph document rather than storing a second resolution model.
+foreach(target IN ITEMS ludus_editor ludus_editor_tests ludus_render_graph_configuration_tests)
+    if(TARGET ${target})
+        target_sources(${target} PRIVATE
+            src/internal/render_graph_resolution_settings.h src/render_graph_resolution_settings.cpp
+            src/internal/project_rendering_settings.h src/project_rendering_settings.cpp
+            src/renderer_workspace_resolution.cpp)
+    endif()
+endforeach()
+
+if(TARGET ludus_render_graph_configuration_tests)
+    target_sources(ludus_render_graph_configuration_tests PRIVATE tests/render_graph_resolution_tests.cpp)
+endif()
+
 # Precompiled Qt Core and standard headers; see cmake/EditorPrecompiledHeaders.cmake.
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/EditorPrecompiledHeaders.cmake")
 ludus_editor_apply_precompiled_headers(

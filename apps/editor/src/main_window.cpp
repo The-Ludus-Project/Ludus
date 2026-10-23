@@ -10,6 +10,7 @@
 #include "internal/profiling_panel.h"
 #include "internal/project_creation_dialog.h"
 #include "internal/project_explorer.h"
+#include "internal/project_rendering_settings.h"
 #include "internal/project_setup_dialog.h"
 #include "internal/renderer_workspace.h"
 #include "internal/script_workspace.h"
@@ -159,6 +160,7 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
     connect(Scripts_, &ScriptWorkspace::DocumentChanged, this, &MainWindow::RenderDocumentActions);
     connect(Renderer_, &RendererWorkspace::DocumentChanged, this, &MainWindow::RenderDocumentActions);
     connect(Renderer_, &RendererWorkspace::DocumentChanged, this, &MainWindow::renderGraphCommands);
+    connect(Renderer_, &RendererWorkspace::DocumentChanged, this, &MainWindow::RenderCapabilities);
     connect(Renderer_, &RendererWorkspace::JobFinished, this, &MainWindow::renderGraphErrors);
     connect(Renderer_, &RendererWorkspace::CommandsChanged, this, &MainWindow::renderGraphCommands);
     connect(Renderer_, &RendererWorkspace::CommandsChanged, this, &MainWindow::RenderDocumentActions);
@@ -797,6 +799,11 @@ bool MainWindow::SaveProjectSettings()
     {
         return false;
     }
+    if (state.Draft.SourceDir == state.Saved.SourceDir && Renderer_->IsDirty() == true && Renderer_->Save() == false)
+    {
+        StatusLabel_->setText(QStringLiteral("The renderer could not be saved. Resolution edits remain in its draft."));
+        return false;
+    }
     Controller_->Save();
 #if defined(Q_OS_WASM)
     if (Controller_->State().Dirty() == false)
@@ -1182,7 +1189,10 @@ void MainWindow::RenderCapabilities()
     const bool shouldOfferEditorEngine = ShouldOfferEditorEngine(Controller_->State().EnginePin);
     mUseEditorEngineButtonOrNull->setVisible(shouldOfferEditorEngine);
     mUseEditorEngineButtonOrNull->setEnabled(shouldOfferEditorEngine && SetupProjectAction_->isEnabled());
-    ProjectSaveButton_->setEnabled(caps.CanSave && Content_->Importing() == false);
+    const bool canSaveRendering = caps.CanEdit == true && Renderer_->IsDirty() == true && Renderer_->CanSave() == true;
+    ProjectSaveButton_->setEnabled((caps.CanSave == true || canSaveRendering == true) &&
+                                   Content_->Importing() == false);
+    mRenderingSettingsOrNull->SetProjectEditable(caps.CanEdit);
 #if defined(Q_OS_WASM)
     ProjectSaveButton_->setText(QStringLiteral("Save and download"));
 #endif

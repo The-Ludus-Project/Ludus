@@ -7,6 +7,7 @@
 #include "internal/item_selection.h"
 #include "internal/main_window.h"
 #include "internal/project_explorer.h"
+#include "internal/project_rendering_settings.h"
 #include "internal/renderer_workspace.h"
 #include "internal/script_workspace.h"
 #include "internal/timing_panel.h"
@@ -263,6 +264,8 @@ void MainWindow::BuildUi()
     World_->setFocusPolicy(Qt::StrongFocus);
     Scripts_ = new ScriptWorkspace(Controller_, mDocuments);
     Renderer_ = new RendererWorkspace(Controller_->Tooling(), mDocuments);
+    mRenderingSettingsOrNull = new ProjectRenderingSettings(*Renderer_, form);
+    projectLayout->insertWidget(projectLayout->indexOf(advanced), mRenderingSettingsOrNull);
     // The render-graph preview borrows the device and extraction of whichever viewport the
     // World shows (its imported scene or its schema-bound panel) and follows it when it changes.
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
