@@ -860,6 +860,34 @@ class _Compiler:
                     'attachments': {'color': {'resource': value.resource, 'input_version': inputs['color'].version,
                         'output_version': value.version, 'defined': value.defined, 'load': 'Clear', 'store': 'Store'}}})
                 outputs = {output_mapping['color']: value, **buffer_outputs, **storage_outputs}
+            elif kind == "Upscale":
+                source = inputs['color']
+                destination = inputs['destination']
+                _require(source.defined, 'Initialization', where,
+                         'Bilinear color must be produced by a preceding pass that stores initialized contents.',
+                         port='color', direction='input')
+                _require(source.version == self.latest[source.resource], 'StaleVersion', where,
+                         'Bilinear color must consume the latest stored source version.', port='color', direction='input')
+                _require(source.resource != destination.resource, 'AttachmentMismatch', where,
+                         'Bilinear color and destination must be distinct textures.', port='destination', direction='input')
+                _require(len(source.cameras) == 1, 'Capability', where,
+                         'Bilinear requires one rendered camera route on its color input.')
+                for port, value in inputs.items():
+                    target = self.resources[value.resource]
+                    _require(target['format'] == 'RGBA8Unorm' and target['samples'] == 1 and
+                             (port != 'color' or not target['presentation']), 'Capability', where,
+                             'Bilinear supports single-sample RGBA8 color; its source must be offscreen.',
+                             port=port, direction='input')
+                value = self.write(destination, {'color_load': 'Clear', 'color_store': 'Store'},
+                                   'color', where, source.cameras)
+                self.add_pass({'id': where, 'kind': 'Upscale', 'algorithm': 'bilinear',
+                    'source': self.library.label(path), 'asset': self.library.assets[path]['id'],
+                    'asset_configuration': config['id'], 'view': source.cameras[0], 'cameras': list(source.cameras),
+                    'dependencies': sorted({v.producer for v in inputs.values() if v.producer}),
+                    'source_color': {'resource': source.resource, 'input_version': source.version},
+                    'attachments': {'color': {'resource': value.resource, 'input_version': destination.version,
+                        'output_version': value.version, 'defined': value.defined, 'load': 'Clear', 'store': 'Store'}}})
+                outputs['color'] = value
             elif kind == "Accumulate":
                 source = inputs['color']
                 producer = next((operation for operation in self.passes if operation['id'] == source.producer), None)
@@ -974,7 +1002,7 @@ class _Compiler:
                 if operation['id'] == average['id']:
                     continue
                 reads = [*operation.get('attachments', {}).values(),
-                         *(operation[key] for key in ('visibility', 'visibility_depth') if key in operation)]
+                         *(operation[key] for key in ('visibility', 'visibility_depth', 'source_color') if key in operation)]
                 _require(not any(read['resource'] == source['resource'] and
                                  read['input_version'] == source['input_version'] for read in reads),
                          'Capability', average['id'],
@@ -994,7 +1022,7 @@ class _Compiler:
         used_resources = {root['resource'] for root in self.roots}
         used_resources.update(attachment['resource'] for operation in self.passes
                               for attachment in (*operation.get('attachments', {}).values(),
-                                                 *(operation[key] for key in ('visibility', 'visibility_depth') if key in operation)))
+                                                 *(operation[key] for key in ('visibility', 'visibility_depth', 'source_color') if key in operation)))
         used_resources.update(use['resource'] for operation in self.passes for use in operation.get('persistent_buffers', []))
         used_resources.update(use['resource'] for operation in self.passes for use in operation.get('buffers', {}).values())
         self.resources = {identity: resource for identity, resource in self.resources.items() if identity in used_resources}
@@ -1090,6 +1118,9 @@ def dump_plan(plan):
         lines.append(f"{ordinal:03} {entry['id']} {entry['kind']}{detail} [{entry['source']}#{entry['asset_configuration']}]")
         if entry["kind"] == "Raster":
             lines.append(f"    scene: {entry['scene']}; view: {entry['view']}; technique: {entry['technique']}")
+        if entry['kind'] == 'Upscale':
+            source = entry['source_color']
+            lines.append(f"    bilinear source: {source['resource']}@{source['input_version']}")
         if entry['kind'] == 'Accumulate':
             lines.append(f"    compensated linear RGB mean; samples: {entry['samples']}; reset: camera/scene/extent/shaders")
         if entry['kind'] == 'ToneMap':

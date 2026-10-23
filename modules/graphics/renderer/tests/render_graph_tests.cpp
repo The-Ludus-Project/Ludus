@@ -1258,3 +1258,125 @@ TEST_CASE("forward scene generations publish together and retain reusable resour
     REQUIRE(settle(update(9)) == rhi::RasterStatus::Ready);
     CHECK(fixture.Graph.GetDrawableSceneRevision() == 9);
 }
+
+TEST_CASE("bilinear graph passes retain resize and camera transactions without scene coverage",
+          "[render-graph][bilinear]")
+{
+    GraphFixture fixture;
+    constexpr usize UPSCALE_RESOURCE_COUNT = 3;
+    constexpr usize UPSCALE_PASS_COUNT = 2;
+    StaticArray<format::Resource, UPSCALE_RESOURCE_COUNT> resources{
+        {fixture.Resources[0], fixture.Resources[1], {192, 128, format::Aspect::Color, 2, 0, 1}}};
+    resources[0].IsExported = 0;
+    for (usize index = 0; index < RESOURCE_COUNT; ++index)
+    {
+        resources[index].ViewNumerator = 1;
+        resources[index].ViewDenominator = 2;
+    }
+    resources[2].ViewNumerator = 1;
+    resources[2].ViewDenominator = 1;
+    StaticArray<format::Pass, UPSCALE_PASS_COUNT> passes{{fixture.Passes[0],
+                                                          {format::Technique::BilinearUpscale,
+                                                           0,
+                                                           2,
+                                                           format::ABSENT,
+                                                           format::Load::Clear,
+                                                           format::Store::Store,
+                                                           format::Load::Discard,
+                                                           format::Store::Discard,
+                                                           0}}};
+    passes[1].SceneData = 0;
+    passes[1].SourceColor = 0;
+    fixture.Targets[0].Target = 2;
+    renderer::RenderGraphPlan plan = fixture.MakePlan();
+    plan.Description.ResourceCount = UPSCALE_RESOURCE_COUNT;
+    plan.Description.PassCount = UPSCALE_PASS_COUNT;
+    plan.Resources = {resources.GetData(), resources.GetSize()};
+    plan.Passes = {passes.GetData(), passes.GetSize()};
+    REQUIRE(fixture.Graph.Initialize(fixture.Device, plan, fixture.MakePrograms(), nullptr, 192, 128) ==
+            rhi::RasterStatus::Ready);
+    renderer::RenderGraphReport report;
+    REQUIRE(fixture.Update(report) == rhi::RasterStatus::Ready);
+    CHECK(report.Covered == 2);
+    const usize shaders = rhi::reference::Creates[static_cast<usize>(rhi::internal::RasterKind::Shader)];
+    const usize pipelines = rhi::reference::Creates[static_cast<usize>(rhi::internal::RasterKind::Pipeline)];
+    rhi::SubmissionToken completion;
+    REQUIRE(fixture.Graph.Render(fixture.Surface, 96, 64, completion) == rhi::RasterStatus::Ready);
+    CHECK(rhi::reference::Draws == 2);
+    rhi::reference::Completed = rhi::reference::Submitted;
+    rhi::TextureHandle oldOutput;
+    rhi::TextureAspect aspect;
+    REQUIRE(fixture.Graph.GetExport(2, oldOutput, aspect) == rhi::RasterStatus::Ready);
+    REQUIRE(fixture.Graph.Resize(193, 129) == rhi::RasterStatus::Pending);
+    CHECK(fixture.Graph.GetDrawableSceneRevision() == 1);
+    REQUIRE(fixture.Graph.GetExport(2, oldOutput, aspect) == rhi::RasterStatus::Ready);
+    REQUIRE(fixture.Update(report) == rhi::RasterStatus::Ready);
+    format::Resource description{};
+    REQUIRE(fixture.Graph.GetResourceDescription(0, description) == true);
+    CHECK(description.Width == 97);
+    CHECK(description.Height == 65);
+    REQUIRE(fixture.Graph.GetResourceDescription(2, description) == true);
+    CHECK(description.Width == 193);
+    CHECK(description.Height == 129);
+    fixture.Cameras[0].WorldToClip.Columns[3].X = .1F;
+    REQUIRE(fixture.Update(report, renderer::RenderGraphCoveragePolicy::RejectIncomplete, 2) ==
+            rhi::RasterStatus::Ready);
+    completion = {};
+    REQUIRE(fixture.Graph.Render(fixture.Surface, 96, 64, completion) == rhi::RasterStatus::Ready);
+    CHECK(rhi::reference::Creates[static_cast<usize>(rhi::internal::RasterKind::Shader)] == shaders);
+    CHECK(rhi::reference::Creates[static_cast<usize>(rhi::internal::RasterKind::Pipeline)] == pipelines);
+    rhi::reference::Completed = rhi::reference::Submitted;
+    REQUIRE(fixture.Graph.Resize(257, 193) == rhi::RasterStatus::Pending);
+    rhi::reference::Next = rhi::RasterStatus::Pending;
+    REQUIRE(fixture.Update(report, renderer::RenderGraphCoveragePolicy::RejectIncomplete, 3) ==
+            rhi::RasterStatus::Pending);
+    CHECK(fixture.Graph.GetDrawableSceneRevision() == 2);
+    rhi::reference::Next = rhi::RasterStatus::Ready;
+    for (usize request = 0; request < rhi::reference::PendingCount; ++request)
+    {
+        rhi::internal::RasterComplete(rhi::reference::PendingRequests[request], rhi::RasterStatus::Failed);
+    }
+    REQUIRE(fixture.Graph.Poll() == rhi::RasterStatus::Failed);
+    CHECK(fixture.Graph.GetDrawableSceneRevision() == 2);
+    REQUIRE(fixture.Graph.GetResourceDescription(2, description) == true);
+    CHECK(description.Width == 193);
+    completion = {};
+    REQUIRE(fixture.Graph.Render(fixture.Surface, 96, 64, completion) == rhi::RasterStatus::Ready);
+}
+
+TEST_CASE("bilinear numeric plans reject aliasing and uninitialized reads before GPU creation",
+          "[render-graph][bilinear]")
+{
+    GraphFixture fixture;
+    constexpr usize UPSCALE_RESOURCE_COUNT = 3;
+    constexpr usize UPSCALE_PASS_COUNT = 2;
+    StaticArray<format::Resource, UPSCALE_RESOURCE_COUNT> resources{
+        {fixture.Resources[0], fixture.Resources[1], {192, 128, format::Aspect::Color, 2, 0, 1}}};
+    resources[0].IsExported = 0;
+    StaticArray<format::Pass, UPSCALE_PASS_COUNT> passes{{fixture.Passes[0],
+                                                          {format::Technique::BilinearUpscale,
+                                                           0,
+                                                           2,
+                                                           format::ABSENT,
+                                                           format::Load::Clear,
+                                                           format::Store::Store,
+                                                           format::Load::Discard,
+                                                           format::Store::Discard,
+                                                           0}}};
+    passes[1].SceneData = 0;
+    passes[1].SourceColor = 2;
+    fixture.Targets[0].Target = 2;
+    renderer::RenderGraphPlan plan = fixture.MakePlan();
+    plan.Description.ResourceCount = UPSCALE_RESOURCE_COUNT;
+    plan.Description.PassCount = UPSCALE_PASS_COUNT;
+    plan.Resources = {resources.GetData(), resources.GetSize()};
+    plan.Passes = {passes.GetData(), passes.GetSize()};
+    const usize shaders = rhi::reference::Creates[static_cast<usize>(rhi::internal::RasterKind::Shader)];
+    CHECK(fixture.Graph.Initialize(fixture.Device, plan, fixture.MakePrograms()) ==
+          rhi::RasterStatus::InvalidDescription);
+    passes[1].SourceColor = 0;
+    passes[0].ColorStore = format::Store::Discard;
+    CHECK(fixture.Graph.Initialize(fixture.Device, plan, fixture.MakePrograms()) ==
+          rhi::RasterStatus::InvalidDescription);
+    CHECK(rhi::reference::Creates[static_cast<usize>(rhi::internal::RasterKind::Shader)] == shaders);
+}

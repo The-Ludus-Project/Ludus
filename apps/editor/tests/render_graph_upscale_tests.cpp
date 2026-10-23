@@ -88,7 +88,8 @@ TEST_CASE("upscaling presets use the document transaction and persist without sh
         CHECK(QJsonDocument::fromJson(document.GetDraft(ROOT)).object().value(QStringLiteral("version")).toInt() == 2);
         RenderGraphNodePorts ports;
         REQUIRE(GetRenderGraphNodePorts(document, node, ports) == true);
-        const bool isSpatial = algorithm == QStringLiteral("fsr-1") || algorithm == QStringLiteral("metalfx-spatial");
+        const bool isSpatial = algorithm == QStringLiteral("bilinear") || algorithm == QStringLiteral("fsr-1") ||
+                               algorithm == QStringLiteral("metalfx-spatial");
         constexpr int32 TEMPORAL_INPUT_COUNT = 8;
         CHECK(ports.Inputs.size() == (isSpatial == true ? 2 : TEMPORAL_INPUT_COUNT));
         CHECK(ports.Outputs.size() == 1);
@@ -96,7 +97,8 @@ TEST_CASE("upscaling presets use the document transaction and persist without sh
               false);
         QLabel* availability = workspace.findChild<QLabel*>(QStringLiteral("renderGraphUpscaleAvailability"));
         REQUIRE(availability != nullptr);
-        CHECK(availability->text().contains(QStringLiteral("backend is unavailable")) == true);
+        CHECK(availability->text().contains(QStringLiteral("backend is unavailable")) ==
+              (algorithm != QStringLiteral("bilinear")));
         workspace.Undo();
         CHECK(document.GetDraft(ROOT) == original);
         workspace.Redo();
@@ -134,19 +136,19 @@ TEST_CASE("upscaler creation and algorithm editing work with Properties hidden",
         REQUIRE(createOrNull != nullptr);
         for (QAction* action : createOrNull->actions())
         {
-            if (action->text().contains(QStringLiteral("DLSS Super Resolution")) == true)
+            if (action->text().contains(QStringLiteral("Bilinear")) == true)
             {
                 menuOrNull->close();
                 action->trigger();
                 return;
             }
         }
-        FAIL("DLSS preset missing from the canvas menu");
+        FAIL("Bilinear preset missing from the canvas menu");
     });
     const QPoint emptyPoint = canvas.viewport()->rect().bottomRight();
     QContextMenuEvent createContext(QContextMenuEvent::Mouse, emptyPoint, canvas.viewport()->mapToGlobal(emptyPoint));
     QApplication::sendEvent(canvas.viewport(), &createContext);
-    REQUIRE(canvas.HasNode(QStringLiteral("dlss-sr")) == true);
+    REQUIRE(canvas.HasNode(QStringLiteral("bilinear")) == true);
     QTimer::singleShot(0, &canvas, [&canvas, properties]() {
         QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
         REQUIRE(menuOrNull != nullptr);
@@ -169,14 +171,14 @@ TEST_CASE("upscaler creation and algorithm editing work with Properties hidden",
     constexpr int32 HEADER_X = 20;
     constexpr int32 HEADER_Y = 10;
     const QPoint point =
-        canvas.mapFromScene(canvas.GetNodePosition(QStringLiteral("dlss-sr")) + QPointF(HEADER_X, HEADER_Y));
+        canvas.mapFromScene(canvas.GetNodePosition(QStringLiteral("bilinear")) + QPointF(HEADER_X, HEADER_Y));
     QContextMenuEvent editContext(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
     QApplication::sendEvent(canvas.viewport(), &editContext);
-    CHECK(GetUpscaleTestNode(workspace.GetDocument(), QStringLiteral("dlss-sr")).value(QStringLiteral("algorithm")) ==
+    CHECK(GetUpscaleTestNode(workspace.GetDocument(), QStringLiteral("bilinear")).value(QStringLiteral("algorithm")) ==
           QStringLiteral("xess-sr"));
-    CHECK(canvas.GetPortPosition(QStringLiteral("dlss-sr.motion"), false).isNull() == false);
+    CHECK(canvas.GetPortPosition(QStringLiteral("bilinear.motion"), false).isNull() == false);
     workspace.Undo();
-    CHECK(canvas.GetPortPosition(QStringLiteral("dlss-sr.motion"), false).isNull() == false);
+    CHECK(canvas.GetPortPosition(QStringLiteral("bilinear.motion"), false).isNull() == true);
     workspace.Redo();
     REQUIRE(workspace.Save() == true);
 }
@@ -271,7 +273,8 @@ TEST_CASE("upscaling presets own output and render providers in one undo transac
                                         QSize(1921, 1081));
         CHECK(color.SizeLabel.contains(QStringLiteral("961 × 541")) == true);
         CHECK(destination.SizeLabel.contains(QStringLiteral("1921 × 1081")) == true);
-        if (algorithm != QStringLiteral("fsr-1") && algorithm != QStringLiteral("metalfx-spatial"))
+        if (algorithm != QStringLiteral("bilinear") && algorithm != QStringLiteral("fsr-1") &&
+            algorithm != QStringLiteral("metalfx-spatial"))
         {
             const RenderGraphResourceFeedback depth =
                 DescribeRenderGraphResource(document,

@@ -9,7 +9,8 @@ namespace ludus::editor
 // and departures: docs/development/render-graph-authoring.md#upscaling-presets.
 QStringList GetUpscaleAlgorithms()
 {
-    return {QStringLiteral("dlss-sr"),
+    return {QStringLiteral("bilinear"),
+            QStringLiteral("dlss-sr"),
             QStringLiteral("fsr-1"),
             QStringLiteral("fsr-2"),
             QStringLiteral("fsr-3"),
@@ -21,7 +22,8 @@ QStringList GetUpscaleAlgorithms()
 QString GetUpscaleLabel(const QString& algorithm)
 {
     const QStringList algorithms = GetUpscaleAlgorithms();
-    const QStringList labels{QStringLiteral("DLSS Super Resolution"),
+    const QStringList labels{QStringLiteral("Bilinear"),
+                             QStringLiteral("DLSS Super Resolution"),
                              QStringLiteral("FSR 1 spatial"),
                              QStringLiteral("FSR 2 temporal"),
                              QStringLiteral("FSR 3 upscaling"),
@@ -131,7 +133,8 @@ QJsonArray GetUpscaleInputPorts(const QJsonObject& node)
     };
     append(QStringLiteral("color"), QStringLiteral("ColorTexture"));
     append(QStringLiteral("destination"), QStringLiteral("ColorTexture"));
-    if (algorithm != QStringLiteral("fsr-1") && algorithm != QStringLiteral("metalfx-spatial"))
+    if (algorithm != QStringLiteral("bilinear") && algorithm != QStringLiteral("fsr-1") &&
+        algorithm != QStringLiteral("metalfx-spatial"))
     {
         append(QStringLiteral("depth"), QStringLiteral("DepthTexture"));
         append(QStringLiteral("motion"), QStringLiteral("ColorTexture"));
@@ -145,6 +148,12 @@ QJsonArray GetUpscaleInputPorts(const QJsonObject& node)
 
 QString GetUpscaleAvailabilityMessage(const QJsonObject& node)
 {
+    if (node.value(QStringLiteral("algorithm")) == QStringLiteral("bilinear"))
+    {
+        return QStringLiteral("Bilinear upscaling is implemented for single-sample RGBA8 color. Connect an initialized "
+                              "render-sized color output and a distinct output-sized destination. OutputSize and "
+                              "RenderSize control dimensions; no temporal inputs or history are required.");
+    }
     return QStringLiteral("%1 is an authoring preset only. Its backend is unavailable on all current Ludus "
                           "execution profiles. Keep it as an unused draft to retain the current color path. "
                           "Edit the preset's OutputSize node for viewport or fixed output pixels, and its RenderSize "

@@ -7,7 +7,7 @@
 
 namespace ludus::editor
 {
-/// Stable upscaling preset identities; all are authoring-only on current execution profiles.
+/// Stable upscaling identities: executable bilinear and authoring-only vendor presets.
 [[nodiscard]] QStringList GetUpscaleAlgorithms();
 /// Human-readable name for a stable algorithm identity; empty for unknown identities.
 [[nodiscard]] QString GetUpscaleLabel(const QString& algorithm);

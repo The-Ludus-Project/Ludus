@@ -510,7 +510,10 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
                         QStringLiteral("Present")});
     for (const QString& algorithm : GetUpscaleAlgorithms())
     {
-        mNewKind->addItem(QStringLiteral("Upscale — %1 (draft)").arg(GetUpscaleLabel(algorithm)), algorithm);
+        mNewKind->addItem((algorithm == QStringLiteral("bilinear") ? QStringLiteral("Upscale — %1")
+                                                                   : QStringLiteral("Upscale — %1 (draft)"))
+                              .arg(GetUpscaleLabel(algorithm)),
+                          algorithm);
     }
     mNewKind->setAccessibleName(QStringLiteral("New node type"));
     QPushButton* add = new QPushButton(QStringLiteral("Add Node"), mInspector);
