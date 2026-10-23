@@ -1492,6 +1492,33 @@ RenderGraphDocumentStatus RenderGraphDocument::Save(QStringList& outSavedFiles)
         }
         dirty.append(file.key());
     }
+    // Templates add nested shader sources to existing packages. Prepare every
+    // parent directory before publishing manifests that can refer to those files.
+    // Reject linked parents so source creation cannot escape the package root.
+    for (const QString& file : dirty)
+    {
+        QDir directory(mPackageRoot);
+        const QStringList components = QFileInfo(file).path().split(QLatin1Char('/'), Qt::SkipEmptyParts);
+        for (const QString& component : components)
+        {
+            if (component == QStringLiteral("."))
+            {
+                continue;
+            }
+            const QString path = directory.filePath(component);
+            const QFileInfo parent(path);
+            if (component == QStringLiteral("..") || parent.isSymLink() == true)
+            {
+                return RenderGraphDocumentStatus::Conflict;
+            }
+            if ((parent.exists() == true && parent.isDir() == false) ||
+                (parent.exists() == false && directory.mkdir(component) == false))
+            {
+                return RenderGraphDocumentStatus::WriteFailed;
+            }
+            directory.setPath(path);
+        }
+    }
     for (const QString& file : dirty)
     {
         const QString path = QDir(mPackageRoot).filePath(file);

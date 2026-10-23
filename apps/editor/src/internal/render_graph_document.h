@@ -352,8 +352,10 @@ public:
                                                           RenderGraphSource source = RenderGraphSource::Draft) const;
     /// Replace existing dirty files atomically, create new files without replacement, and
     /// remove saved files absent from the draft (Undo), after checking saved disk bytes.
-    /// Conflict or Locked writes nothing. A write failure keeps remaining
-    /// files dirty; outSavedFiles names completed writes/removals. New files use exclusive creation.
+    /// Conflict or Locked writes nothing. Existing packages prepare nested source directories
+    /// before writing any files; blocked/linked parents preserve every saved file and the draft.
+    /// Other write failures keep remaining files dirty; outSavedFiles names completed
+    /// writes/removals. New files use exclusive creation.
     /// For a built-in document, Save creates every file below the destination, even when
     /// nothing was edited, and then becomes an ordinary project package. Any existing file
     /// there is a Conflict; a failed creation removes the files it wrote and stays built-in.
