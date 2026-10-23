@@ -64,41 +64,9 @@ set(LUDUS_EDITOR_PRECOMPILED_HEADER_NAMES
     QTimer
 )
 
-# ccache reuses objects compiled against a precompiled header only with these
-# sloppiness settings; Clang must also omit the header's timestamp. Thanks to
-# the ccache manual, "Precompiled headers":
-# https://ccache.dev/manual/latest.html#_precompiled_headers
-set(LUDUS_EDITOR_PRECOMPILED_HEADER_CCACHE_SLOPPINESS "sloppiness=pch_defines,time_macros")
-# Configuration settings on the ccache command line need ccache 4.8 or newer.
-set(LUDUS_EDITOR_PRECOMPILED_HEADER_CCACHE_MINIMUM_VERSION "4.8")
-
-# Returns the compiler launcher for editor targets: the project's ccache launcher
-# plus the settings above, or the unchanged launcher when ccache is not in use or
-# too old to accept settings on its command line.
-function(ludus_editor_precompiled_header_launcher out_launcher)
-    set(launcher "${CMAKE_CXX_COMPILER_LAUNCHER}")
-    if(NOT LUDUS_CCACHE_PROGRAM OR NOT launcher)
-        set(${out_launcher} "${launcher}" PARENT_SCOPE)
-        return()
-    endif()
-    list(FIND launcher "${LUDUS_CCACHE_PROGRAM}" ccache_index)
-    if(ccache_index LESS 0)
-        set(${out_launcher} "${launcher}" PARENT_SCOPE)
-        return()
-    endif()
-    execute_process(COMMAND "${LUDUS_CCACHE_PROGRAM}" --version
-        OUTPUT_VARIABLE ccache_version_text ERROR_QUIET)
-    string(REGEX MATCH "version ([0-9]+\\.[0-9]+)" ccache_version_match "${ccache_version_text}")
-    if("${CMAKE_MATCH_1}" VERSION_LESS LUDUS_EDITOR_PRECOMPILED_HEADER_CCACHE_MINIMUM_VERSION)
-        message(STATUS "ccache '${ccache_version_match}' cannot take settings on its command line; editor "
-            "objects compiled with precompiled headers will not be cached (needs "
-            "${LUDUS_EDITOR_PRECOMPILED_HEADER_CCACHE_MINIMUM_VERSION} or newer)")
-        set(${out_launcher} "${launcher}" PARENT_SCOPE)
-        return()
-    endif()
-    list(APPEND launcher "${LUDUS_EDITOR_PRECOMPILED_HEADER_CCACHE_SLOPPINESS}")
-    set(${out_launcher} "${launcher}" PARENT_SCOPE)
-endfunction()
+# ccache settings for targets with a precompiled header; see
+# cmake/PrecompiledHeaderCcache.cmake.
+include(PrecompiledHeaderCcache)
 
 # ludus_editor_apply_precompiled_headers(<target>...)
 #   Gives each existing target its own precompiled header of the names above.
@@ -113,19 +81,11 @@ function(ludus_editor_apply_precompiled_headers)
         # expression that limits the header to C++ (not Objective-C++) sources.
         list(APPEND headers "$<$<COMPILE_LANGUAGE:CXX>:<${name}$<ANGLE-R>>")
     endforeach()
-    ludus_editor_precompiled_header_launcher(launcher)
     foreach(target IN LISTS ARGN)
         if(NOT TARGET ${target})
             continue()
         endif()
         target_precompile_headers(${target} PRIVATE ${headers})
-        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-            # Without the timestamp, a rebuilt but identical header keeps its
-            # dependants' ccache entries valid.
-            target_compile_options(${target} PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:SHELL:-Xclang -fno-pch-timestamp>")
-        endif()
-        if(launcher)
-            set_target_properties(${target} PROPERTIES CXX_COMPILER_LAUNCHER "${launcher}")
-        endif()
+        ludus_precompiled_header_ccache(${target})
     endforeach()
 endfunction()
