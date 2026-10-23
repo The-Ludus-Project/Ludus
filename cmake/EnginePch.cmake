@@ -21,6 +21,8 @@
 # repeated parse of the ubiquitous foundational vocabulary without coupling any
 # TU to a heavy facility.
 
+include(PrecompiledHeaderCcache)
+
 option(LUDUS_ENABLE_PCH "Precompile the foundational header (build accelerator; see cmake/EnginePch.cmake)" OFF)
 
 # Apply the foundational PCH to a target. No-op unless LUDUS_ENABLE_PCH is ON.
@@ -37,6 +39,8 @@ function(ludus_apply_pch target_name)
     # normal #include <ludus/foundation/base/core.h> in any consumer.
     target_precompile_headers(${target_name} PRIVATE
         "$<$<COMPILE_LANGUAGE:CXX>:ludus/foundation/base/core.h>")
+    # Keep these objects cacheable by ccache, as for the editor's headers.
+    ludus_precompiled_header_ccache(${target_name})
 
     # Ensure the include search path and the generated Band 0 headers
     # (assert_config.hpp) are visible to the target that precompiles core.h.

@@ -935,7 +935,9 @@ cmake --preset linux-clang-development -DLUDUS_ENABLE_PCH=ON
 
 The PCH only ever mirrors `core.h` (never containers/strings/logging), and the
 default build (PCH off) is the guarantee that no file depends on a PCH-only
-symbol. See `cmake/EnginePch.cmake` and ADR 0007.
+symbol. See `cmake/EnginePch.cmake` and ADR 0007. With ccache 4.8 or newer,
+these targets get the same ccache settings as the editor's precompiled headers
+below (`cmake/PrecompiledHeaderCcache.cmake`), so their objects stay cacheable.
 
 ### Editor precompiled headers
 
