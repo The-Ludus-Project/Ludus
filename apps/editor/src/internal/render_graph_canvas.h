@@ -67,6 +67,14 @@ struct RenderGraphLinkCheck final
 /// Domain of a node kind; unknown kinds are Execution so they remain visible.
 [[nodiscard]] RenderGraphDomain GetRenderGraphDomain(const QString& kind);
 
+/// True for kinds whose authored record may set `"enabled": false` (Accumulate, Denoise, ToneMap).
+/// Mirrors ludus_tools.render_graph `BYPASS_PORTS`; the shared validator still owns legality.
+[[nodiscard]] bool CanDisableRenderGraphNode(const QString& kind);
+
+/// False only when a node that can be disabled is authored with `"enabled": false`. The compiler
+/// then forwards its color input to its consumers; the node, its wires and settings stay in the draft.
+[[nodiscard]] bool IsRenderGraphNodeEnabled(const QJsonObject& node);
+
 /// Ports of one node, mirroring ludus_tools.render_graph `node_ports`. A Subgraph's ports
 /// are its referenced configuration's interface, resolved from the package draft.
 /// @return False when a Subgraph's asset or configuration is not in the draft.

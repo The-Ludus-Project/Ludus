@@ -50,6 +50,9 @@ MODES = ("ColorAndDepth", "DepthOnly")
 # Authored material families; each selects its own explicitly declared technique set.
 MATERIALS = {"DefaultOpaque": "DefaultStaticOpaque", "DefaultMasked": "DefaultStaticMasked"}
 FORMATS = {"ColorTexture": ("RGBA8Unorm",), "DepthTexture": ("Depth32Float",)}
+# Kinds that may be authored with `"enabled": false`, and the (input, output) port a
+# disabled node forwards unchanged. Both ports share one type, so rewiring preserves typing.
+BYPASS_PORTS = {"Accumulate": ("color", "color"), "Denoise": ("color", "color"), "ToneMap": ("color", "color")}
 IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,62}\Z")
 
 
@@ -141,6 +144,8 @@ def _validate_extent(extent, where):
 def _validate_node(node, where):
     _require(type(node) is dict, "Schema", where, "node object required")
     kind = node.get("kind")
+    _require("enabled" not in node or kind in BYPASS_PORTS, "Schema", where,
+             f"only {', '.join(BYPASS_PORTS)} nodes can be disabled; remove the enabled field")
     if kind in sizes.KINDS:
         sizes.validate(node, where, sys.modules[__name__])
         return
@@ -175,9 +180,11 @@ def _validate_node(node, where):
         fields |= {"asset", "configuration"}
     elif kind == "Export":
         fields |= {"type"}
-    _keys(node, fields, where)
+    _keys(node, fields, where, ("enabled",) if kind in BYPASS_PORTS else ())
     _identifier(node["id"], where)
     _require(node["id"] != "input", "Schema", where, "input is reserved for interface ports")
+    if "enabled" in node:
+        _boolean(node["enabled"], where)
     if kind == "Denoise":
         _enum(node["quality"], tuple(quality.QUALITY_CODES), where + "/quality")
     elif kind == "Accumulate":
@@ -332,6 +339,54 @@ def _configuration(asset, identity, where):
     _fail("Configuration", where, f"configuration {identity} is not declared by {asset['id']}")
 
 
+def _bypass_disabled(asset, where):
+    """Return the execution view of a validated asset without its disabled nodes.
+
+    Each consumer of a disabled node's output receives that node's input source, as
+    though the node and its two wires were one wire; chains of disabled nodes collapse
+    to the first enabled source. Wires into a disabled node are dropped. The caller's
+    document is not mutated, so source bytes, layout and canonical form are unchanged.
+    A consumed disabled output whose input is unconnected raises UnboundInput.
+    """
+    configurations = []
+    for config in asset["configurations"]:
+        disabled = {node["id"]: BYPASS_PORTS[node["kind"]]
+                    for node in config["nodes"] if node.get("enabled") is False}
+        if not disabled:
+            configurations.append(config)
+            continue
+        location = where + "#" + config["id"]
+        sources = {}
+        for edge in config["edges"]:
+            node, port = edge["to"].split(".")
+            if node in disabled and port == disabled[node][0]:
+                sources[node] = edge["from"]
+
+        def forward(endpoint, consumer):
+            visited = set()
+            node, port = endpoint.split(".")
+            while node in disabled and port == disabled[node][1]:
+                _require(node not in visited, "Cycle", location + "/" + node,
+                         "Disabled nodes forward each other's outputs in a cycle. Remove a feedback wire.")
+                visited.add(node)
+                _require(node in sources, "UnboundInput", location + "/" + node,
+                         f"Disabled node '{node}' would pass its {disabled[node][0]} input to {consumer}, but that "
+                         "input is unconnected. Connect its input, enable the node, or disconnect its output.",
+                         port=disabled[node][0], direction='input', expected='connected input of a disabled node',
+                         actual='unconnected', repair='Connect the input, enable the node, or remove its output wires.')
+                endpoint = sources[node]
+                node, port = endpoint.split(".")
+            return endpoint
+
+        edges = [{"from": forward(edge["from"], edge["to"]), "to": edge["to"]}
+                 for edge in config["edges"] if edge["to"].split(".")[0] not in disabled]
+        outputs = [{**output, "source": forward(output["source"], "output " + output["id"])}
+                   for output in config["outputs"]]
+        configurations.append({**config, "nodes": [node for node in config["nodes"] if node["id"] not in disabled],
+                               "edges": edges, "outputs": outputs})
+    return {**asset, "configurations": configurations}
+
+
 def _locate_one(error, library, instances=None):
     """Map a validator location to its authored package-relative owner.
 
@@ -446,7 +501,8 @@ class _Library:
         data = _read(path)
         self.total += len(data)
         _require(self.total <= MAX_TOTAL_BYTES, "Capacity", where, "package exceeds 2 MiB of graph sources")
-        asset = _parse(data, where)
+        # Disabled nodes are validated as authored, then forwarded out of every later stage.
+        asset = _bypass_disabled(_parse(data, where), where)
         _require(asset["id"] not in self.identities, "DuplicateIdentity", where,
                  f"asset identity {asset['id']} is already owned by another file")
         self.identities[asset["id"]] = path

@@ -150,6 +150,12 @@ void CheckCompilerSelection(RenderGraphDocument& inoutDocument, const QString& p
          node != actual.constEnd();
          ++node)
     {
+        if (node.value().Activity == RenderGraphActivity::Disabled)
+        {
+            // The compiler forwards disabled nodes out of execution entirely.
+            CHECK(expected.contains(node.key()) == false);
+            continue;
+        }
         CHECK(node.value().Activity ==
               (expected.contains(node.key()) == true ? RenderGraphActivity::Retained : RenderGraphActivity::Inactive));
     }
@@ -212,6 +218,43 @@ TEST_CASE("canvas draft activity matches compiler selection and preserves explic
     CHECK(feedback.value(QStringLiteral("half")).Activity == RenderGraphActivity::Retained);
     CHECK(document.GetRevision() == revision);
     CHECK(document.GetDraft(ROOT_GRAPH) == original);
+    CheckCompilerSelection(document, project.path());
+}
+
+TEST_CASE("disabled nodes are labeled and keep their upstream route", "[editor][render-graph][canvas-feedback]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakeFeedbackPackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    QJsonObject record = ReadRecord(document);
+    QJsonArray nodes = record.value(QStringLiteral("nodes")).toArray();
+    nodes.append(QJsonObject{{QStringLiteral("id"), QStringLiteral("display")},
+                             {QStringLiteral("kind"), QStringLiteral("ToneMap")},
+                             {QStringLiteral("exposure"), 1},
+                             {QStringLiteral("enabled"), false}});
+    record.insert(QStringLiteral("nodes"), nodes);
+    QJsonArray edges = record.value(QStringLiteral("edges")).toArray();
+    for (qsizetype index = 0; index < edges.size(); ++index)
+    {
+        if (edges.at(index).toObject().value(QStringLiteral("to")).toString() == QStringLiteral("output.texture"))
+        {
+            edges.replace(index,
+                          QJsonObject{{QStringLiteral("from"), QStringLiteral("display.color")},
+                                      {QStringLiteral("to"), QStringLiteral("output.texture")}});
+        }
+    }
+    edges.append(QJsonObject{{QStringLiteral("from"), QStringLiteral("color.texture")},
+                             {QStringLiteral("to"), QStringLiteral("display.color")}});
+    record.insert(QStringLiteral("edges"), edges);
+    WriteRecord(document, record);
+    const uint64 revision = document.GetRevision();
+    const QHash<QString, RenderGraphActivityFeedback> feedback =
+        InspectRenderGraphActivity(document, ROOT_GRAPH, DEFAULT_CONFIGURATION);
+    CHECK(feedback.value(QStringLiteral("display")).Activity == RenderGraphActivity::Disabled);
+    CHECK(feedback.value(QStringLiteral("display")).Label == QStringLiteral("Disabled · bypassed"));
+    CHECK(feedback.value(QStringLiteral("color")).Activity == RenderGraphActivity::Retained);
+    CHECK(feedback.value(QStringLiteral("output")).Activity == RenderGraphActivity::Retained);
+    CHECK(document.GetRevision() == revision);
     CheckCompilerSelection(document, project.path());
 }
 
