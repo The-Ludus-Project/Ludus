@@ -452,6 +452,11 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
         {
             return Status::InvalidDescription;
         }
+        if (pass.AccumulationSamples > format::MAX_ACCUMULATION_SAMPLES ||
+            (pass.Program != format::Technique::RayTracing && pass.AccumulationSamples != 0))
+        {
+            return Status::InvalidDescription;
+        }
         if (pass.Program == format::Technique::RayTracing)
         {
             if (hasEndedRaySequence == true || pass.RayProgram >= format::MAX_RAY_PASSES)
@@ -1103,12 +1108,15 @@ struct RenderGraph::State final
             {
                 if (inoutScene.HasViews[i] == false)
                 {
+                    const GpuPreviewGraphInvocation invocation{0, {}, Passes[i].AccumulationSamples};
                     const Status created =
                         inoutScene.RayPasses[i].Initialize(context,
                                                            inoutScene.Snapshots[i],
                                                            inoutScene.Cameras[Passes[i].Camera],
                                                            preparingResources[Passes[i].Color].Width,
-                                                           preparingResources[Passes[i].Color].Height);
+                                                           preparingResources[Passes[i].Color].Height,
+                                                           nullptr,
+                                                           &invocation);
                     if (IsAccepted(created) == false)
                     {
                         return created;
@@ -1228,7 +1236,7 @@ struct RenderGraph::State final
             HasValidOutput = submitted == Status::Ready && RecordingStatus == Status::Ready;
             OutputRevision = HasValidOutput == true ? RecordingRevision : 0;
             if (HasValidOutput == true && HasRaySetup == true &&
-                Current->SubmittedRaySamples < LUDUS_GRAPH_SAMPLE_TARGET)
+                Current->SubmittedRaySamples < format::MAX_ACCUMULATION_SAMPLES)
             {
                 ++Current->SubmittedRaySamples;
             }
@@ -2277,15 +2285,20 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
                 buffers[slot] = {buffer, preparingResources[index].Width};
             }
         }
-        const GpuPreviewGraphInvocation invocation{operation.RayProgram, {buffers.GetData(), buffers.GetSize()}};
-        const Status created = candidate->RayPasses[pass].Initialize(
-            state.Contexts[static_cast<usize>(operation.Program)],
-            {},
-            cameras[operation.Camera],
-            preparingResources[operation.Color].Width,
-            preparingResources[operation.Color].Height,
-            &rayScene,
-            state.Programs.HasPersistentRayBuffers == true ? &invocation : nullptr);
+        const GpuPreviewGraphInvocation invocation{
+            operation.RayProgram,
+            state.Programs.HasPersistentRayBuffers == true
+                ? BorrowedView<const GpuPreviewGraphBuffer>{buffers.GetData(), buffers.GetSize()}
+                : BorrowedView<const GpuPreviewGraphBuffer>{},
+            operation.AccumulationSamples};
+        const Status created =
+            candidate->RayPasses[pass].Initialize(state.Contexts[static_cast<usize>(operation.Program)],
+                                                  {},
+                                                  cameras[operation.Camera],
+                                                  preparingResources[operation.Color].Width,
+                                                  preparingResources[operation.Color].Height,
+                                                  &rayScene,
+                                                  &invocation);
         if (IsAccepted(created) == false)
         {
             outReport = state.Report;
@@ -2341,9 +2354,27 @@ uint64 RenderGraph::GetDrawableSceneRevision() const noexcept
 }
 bool RenderGraph::HasPendingSamples() const noexcept
 {
-    return mState.Get() != nullptr && mState->Current.Get() != nullptr && mState->HasRaySetup == true &&
-           (mState->Programs.HasPersistentRayBuffers == true ||
-            mState->Current->SubmittedRaySamples < LUDUS_GRAPH_SAMPLE_TARGET);
+    if (mState.Get() == nullptr || mState->Current.Get() == nullptr || mState->HasRaySetup == false)
+    {
+        return false;
+    }
+    const State& state = *mState;
+    for (usize pass = 0; pass < state.Header.PassCount; ++pass)
+    {
+        const format::Pass& operation = state.Passes[pass];
+        bool hasLaterWriter = false;
+        for (usize next = pass + 1; next < state.Header.PassCount; ++next)
+        {
+            hasLaterWriter = hasLaterWriter == true || (state.Passes[next].Program == format::Technique::RayTracing &&
+                                                        state.Passes[next].Color == operation.Color);
+        }
+        if (hasLaterWriter == false && operation.Program == format::Technique::RayTracing &&
+            (operation.AccumulationSamples == 0 || state.Current->SubmittedRaySamples < operation.AccumulationSamples))
+        {
+            return true;
+        }
+    }
+    return false;
 }
 uint64 RenderGraph::GetOutputSceneRevision() const noexcept
 {
@@ -2551,7 +2582,7 @@ Status RenderGraph::ConfirmSubmission(rhi::SubmissionToken completion) noexcept
         state.HasValidOutput = state.RecordingStatus == Status::Ready && submitted != Status::Failed;
         state.OutputRevision = state.HasValidOutput == true ? state.RecordingRevision : 0;
         if (state.HasValidOutput == true && state.HasRaySetup == true &&
-            state.Current->SubmittedRaySamples < LUDUS_GRAPH_SAMPLE_TARGET)
+            state.Current->SubmittedRaySamples < format::MAX_ACCUMULATION_SAMPLES)
         {
             ++state.Current->SubmittedRaySamples;
         }

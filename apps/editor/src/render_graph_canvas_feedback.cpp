@@ -130,9 +130,9 @@ InspectRenderGraphActivity(const RenderGraphDocument& document, const QString& f
         const QJsonObject node = value.toObject();
         const QString identity = node.value(QStringLiteral("id")).toString();
         const QString kind = node.value(QStringLiteral("kind")).toString();
-        hasUnknown = hasUnknown == true ||
-                     (GetRenderGraphDomain(kind) == RenderGraphDomain::Execution && kind != QStringLiteral("Raster") &&
-                      kind != QStringLiteral("Present") && IsPipelineNode(kind) == false);
+        hasUnknown = hasUnknown == true || (GetRenderGraphDomain(kind) == RenderGraphDomain::Execution &&
+                                            kind != QStringLiteral("Raster") && kind != QStringLiteral("Present") &&
+                                            kind != QStringLiteral("Accumulate") && IsPipelineNode(kind) == false);
         hasUnknown = hasUnknown == true || identity.isEmpty() == true || dependencies.contains(identity) == true;
         dependencies.insert(identity, {});
         RenderGraphNodePorts ports;

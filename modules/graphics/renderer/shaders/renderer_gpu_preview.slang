@@ -606,40 +606,52 @@ LUDUS_GPU_PREVIEW_COMPUTE_ENTRY void ComputeMain(uint3 positionPixel : SV_Dispat
         accumulation[pixel * 2] = 0; // Scene callbacks read the sample index from this buffer.
         compensation = float4(0, 0, 0, historyTag);
     }
-#if defined(LUDUS_GRAPH_PERSISTENT_PIPELINE)
-    float3 sample = EvaluateGraphRay(pixel);
-    compensation.w = any(isfinite(sample) == false) || any(sample < 0) ? historyTag + 1 : historyTag;
-    accumulation[pixel * 2] = float4(sample, asfloat(asuint(sum.w) + 1));
-    accumulation[pixel * 2 + 1] = compensation;
-    float3 mean = sample;
+#if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE)
+    uint sampleCount = asuint(sum.w);
 #else
-    if (sum.w < float(Sampling.w) && compensation.w == historyTag)
+    uint sampleCount = uint(sum.w);
+#endif
+    // Graphs average only when an authored Accumulate operation supplies a positive limit.
+    bool hasAccumulation = Sampling.w != 0;
+    bool shouldSample = hasAccumulation == false || (sampleCount < Sampling.w && compensation.w == historyTag);
+    if (shouldSample == true)
     {
-#    if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE)
+#if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE)
+        // Keep one callback invocation: duplicating it for raw/mean output expands large estimators twice.
         float3 sample = EvaluateGraphRay(pixel);
-#    else
-        float3 sample = Integrate(pixel, uint(sum.w));
-#    endif
-        if (any(!isfinite(sample)) || any(sample < 0))
+#else
+        float3 sample = Integrate(pixel, sampleCount);
+#endif
+        if (hasAccumulation == false)
+        {
+            sum.xyz = sample;
+            sampleCount += 1;
+            compensation.w = any(isfinite(sample) == false) || any(sample < 0) ? historyTag + 1 : historyTag;
+        }
+        else if (any(isfinite(sample) == false) || any(sample < 0))
             compensation.w = historyTag + 1;
         else
         {
             float3 adjusted = sample - compensation.xyz;
             float3 next = sum.xyz + adjusted;
             compensation.xyz = (next - sum.xyz) - adjusted;
-            if (any(!isfinite(next)) || any(!isfinite(compensation.xyz)))
+            if (any(isfinite(next) == false) || any(isfinite(compensation.xyz) == false))
                 compensation.w = historyTag + 1;
             else
             {
                 sum.xyz = next;
-                sum.w += 1;
+                sampleCount += 1;
             }
         }
+#if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE)
+        sum.w = asfloat(sampleCount);
+#else
+        sum.w = float(sampleCount);
+#endif
         accumulation[pixel * 2] = sum;
         accumulation[pixel * 2 + 1] = compensation;
     }
-    float3 mean = sum.w > 0 ? sum.xyz / sum.w : float3(0);
-#endif
+    float3 mean = hasAccumulation == true && sampleCount > 0 ? sum.xyz / float(sampleCount) : sum.xyz;
 #if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE) && !defined(LUDUS_SCENE_RAY_INTERFACE)
     colors[pixel] = float4(compensation.w != historyTag ? float3(1, 0, 1) : saturate(mean), float(pixel));
 #else

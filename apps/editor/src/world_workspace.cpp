@@ -1100,7 +1100,10 @@ void WorldWorkspace::Render()
     // World-demo Worlds render in the same bound viewport as every other scene-less World.
     BoundViewport_->setVisible(scene == false);
     Render_->setVisible(scene == false);
-    PlayButton_->setVisible(IsWorldDemo(Document_));
+    const bool isPlayable = IsWorldDemo(Document_);
+    PlayButton_->setVisible(isPlayable);
+    // The box only configures Play saved World; without the button it would be an unexplained control.
+    mPlayModeBox->setVisible(isPlayable);
     updateShownRenderPreview(scene);
 }
 void WorldWorkspace::updateShownRenderPreview(bool isSceneShown)

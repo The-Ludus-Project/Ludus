@@ -853,7 +853,8 @@ class OrderedRayTests(unittest.TestCase):
         self.assertEqual(3, len(parsed['passes']))
         self.assertEqual({0, 1, 2}, {record[10] for record in parsed['passes']})
         self.assertEqual({(1, 2)}, {record[11:13] for record in parsed['passes']})
-        self.assertEqual({(execution.ABSENT, execution.ABSENT)}, {record[13:] for record in parsed['passes']})
+        self.assertEqual({(execution.ABSENT, execution.ABSENT)}, {record[13:15] for record in parsed['passes']})
+        self.assertEqual({0}, {record[15] for record in parsed['passes']})
         self.assertIn(execution.PERSISTENT_RAY_STAGE_ROLE, {stage['role'] for stage in parsed['stages']})
         header = self.root / 'ordered.h'
         execution.emit_runtime(result['package'], header)
