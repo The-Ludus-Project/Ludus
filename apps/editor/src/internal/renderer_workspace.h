@@ -113,6 +113,11 @@ public:
     [[nodiscard]] bool PasteNodes(QPointF position);
     /// Remove selected authored nodes and their incident connections in one undo step.
     void RemoveSelectedNodes();
+    /// True with a loaded document, no job and no external source conflict. GUI thread only.
+    [[nodiscard]] bool CanRemoveUnusedShaders() const;
+    /// Remove unused shader registrations and exclusive sources in one undoable draft edit.
+    /// Checks the whole loaded package; reports counts or repair details. Save publishes deletions.
+    [[nodiscard]] bool RemoveUnusedShaders();
     /// Shader sources mapped by the root manifest to the selected pipeline's program references
     /// or a legacy Raster's technique.
     /// Empty for resource/scene nodes or missing mappings. Never guesses from filenames.

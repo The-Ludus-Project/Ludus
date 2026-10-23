@@ -200,6 +200,7 @@ private:
     QToolBar* mRenderGraphToolbar;
     QAction* mNewGraphAction;
     QAction* mOpenGraphAction;
+    QAction* mRemoveUnusedShadersAction;
     QAction* mValidateGraphAction;
     QAction* mBuildGraphAction;
     QAction* mBuildPreviewGraphAction;

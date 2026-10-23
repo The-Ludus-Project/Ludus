@@ -208,6 +208,7 @@ void MainWindow::renderDocumentTitles()
 
 void MainWindow::renderGraphCommands()
 {
+    mRemoveUnusedShadersAction->setEnabled(Renderer_->CanRemoveUnusedShaders());
     const bool canBuild = Renderer_->CanBuild();
     for (QAction* action : {mValidateGraphAction, mBuildGraphAction, mBuildPreviewGraphAction, mCookGraphAction})
     {

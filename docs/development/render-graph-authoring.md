@@ -91,6 +91,27 @@ register separate programs in the manifest with the same `source` and different
 these choices in both compiled headers and runtime packages. Exhausted manifest
 budgets preserve the draft and explain the repair. Ray callbacks still share the
 single bounded ray technique.
+To clean up the open package, choose **Edit → Remove Unused Shaders**, or
+**Remove Unused Shaders** in the canvas context menu. The command checks every
+loaded graph file and configuration (including disconnected nodes and unselected
+subgraphs), and every technique in every loaded shader manifest. Techniques remain
+authored build roots even when no node currently selects them; their programs survive.
+Remove an unwanted technique explicitly in **Source** before running cleanup.
+
+Unused program registrations are removed in one undoable draft edit. Their `.slang`
+files are removed only when exclusive to one registration and unmentioned by other
+loaded shader sources. Shared sources, includes, transitive includes, Slang imports
+and loose unregistered files are retained. Include/import protection is conservative:
+filename or module-name mentions, including comments, can retain an otherwise unused
+source. A computed include or an include outside the tracked snapshot retains all
+source files while still removing unused registrations. Programs with the same ID in different manifests are conservatively retained
+if that ID is referenced anywhere in the loaded package. References outside the open
+package are outside this scan; keep cross-package shared code outside package-owned
+shader files. Malformed graphs/manifests or missing subgraphs stop cleanup without
+changing the draft. The status line reports removed program/file counts.
+**Undo** restores the edit; **Save** publishes removals after checking for external
+file changes. Nothing is deleted from disk until Save.
+
 Incomplete shader tables remain authoring drafts. Name/file conflicts or incompatible references
 preserve the draft. Templates are starting points: vertex/fragment interfaces use
 the manifest schemas; ray-generation, miss and closest-hit functions use the
