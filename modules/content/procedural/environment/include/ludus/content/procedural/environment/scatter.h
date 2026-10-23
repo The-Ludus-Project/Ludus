@@ -34,6 +34,16 @@ inline constexpr usize MAX_SCATTER_VARIANTS = 64;
 inline constexpr uint16 MAX_SCATTER_CANDIDATES_PER_CELL = 64;
 /// Cells searched in each direction for conflicts; follows from exclusion radius <= cell size.
 inline constexpr int32 SCATTER_NEIGHBOR_CELLS = 2;
+/// Bit position of the room in a packed address scope.
+inline constexpr uint32 SCATTER_SCOPE_ROOM_SHIFT = 48U;
+/// Bit position of the layer in a packed address scope.
+inline constexpr uint32 SCATTER_SCOPE_LAYER_SHIFT = 40U;
+/// Bit position of the candidate in a packed address scope.
+inline constexpr uint32 SCATTER_SCOPE_CANDIDATE_SHIFT = 32U;
+/// Bit position of cell X in a packed address scope; cell Y occupies the low 16 bits.
+inline constexpr uint32 SCATTER_SCOPE_CELL_X_SHIFT = 16U;
+/// Default layer scale: one in thousandths, the example unit of ScatterLayer::MinimumScale.
+inline constexpr uint16 DEFAULT_SCATTER_SCALE = 1000;
 
 /// @brief Persistent identity of one placement candidate.
 ///
@@ -58,9 +68,10 @@ struct ScatterIdentity final
 /// @brief Pack an identity into an address scope: room, layer, candidate, cell X, cell Y from the high bits.
 [[nodiscard]] constexpr uint64 PackScatterScope(ScatterIdentity identity) noexcept
 {
-    return (static_cast<uint64>(identity.Room) << 48u) | (static_cast<uint64>(identity.Layer) << 40u) |
-           (static_cast<uint64>(identity.Candidate) << 32u) |
-           (static_cast<uint64>(static_cast<uint16>(identity.CellX)) << 16u) |
+    return (static_cast<uint64>(identity.Room) << SCATTER_SCOPE_ROOM_SHIFT) |
+           (static_cast<uint64>(identity.Layer) << SCATTER_SCOPE_LAYER_SHIFT) |
+           (static_cast<uint64>(identity.Candidate) << SCATTER_SCOPE_CANDIDATE_SHIFT) |
+           (static_cast<uint64>(static_cast<uint16>(identity.CellX)) << SCATTER_SCOPE_CELL_X_SHIFT) |
            static_cast<uint64>(static_cast<uint16>(identity.CellY));
 }
 
@@ -68,10 +79,10 @@ struct ScatterIdentity final
 [[nodiscard]] constexpr ScatterIdentity UnpackScatterScope(uint64 scope) noexcept
 {
     ScatterIdentity identity;
-    identity.Room = static_cast<uint16>(scope >> 48u);
-    identity.Layer = static_cast<uint8>(scope >> 40u);
-    identity.Candidate = static_cast<uint8>(scope >> 32u);
-    identity.CellX = static_cast<int16>(static_cast<uint16>(scope >> 16u));
+    identity.Room = static_cast<uint16>(scope >> SCATTER_SCOPE_ROOM_SHIFT);
+    identity.Layer = static_cast<uint8>(scope >> SCATTER_SCOPE_LAYER_SHIFT);
+    identity.Candidate = static_cast<uint8>(scope >> SCATTER_SCOPE_CANDIDATE_SHIFT);
+    identity.CellX = static_cast<int16>(static_cast<uint16>(scope >> SCATTER_SCOPE_CELL_X_SHIFT));
     identity.CellY = static_cast<int16>(static_cast<uint16>(scope));
     return identity;
 }
@@ -121,9 +132,9 @@ struct ScatterLayer final
     /// Equally likely variants, 1 through MAX_SCATTER_VARIANTS. Storage is borrowed from the caller.
     foundation::BorrowedView<const ScatterVariant> Variants;
     /// Smallest scale, in units the game chooses (for example thousandths).
-    uint16 MinimumScale = 1000;
+    uint16 MinimumScale = DEFAULT_SCATTER_SCALE;
     /// Largest scale, at least MinimumScale.
-    uint16 MaximumScale = 1000;
+    uint16 MaximumScale = DEFAULT_SCATTER_SCALE;
 };
 
 /// @brief Validated input for one room. The recipe borrows its arrays; the caller keeps them alive.

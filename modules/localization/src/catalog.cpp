@@ -43,6 +43,16 @@ constexpr usize RECORD_KIND = 16;
 constexpr usize RECORD_PROVIDER = 20;
 constexpr usize RECORD_FIRST_ARGUMENT = 24;
 constexpr usize RECORD_ARGUMENT_COUNT = 28;
+// Version 2 record text slice (offset and length), as a byte offset inside one record.
+constexpr usize RECORD_TEXT = 8;
+// Argument record fields, as byte offsets inside one record; the name slice is first.
+constexpr usize ARGUMENT_TYPE = 8;
+constexpr usize ARGUMENT_POLICY = 12;
+constexpr usize ARGUMENT_MAX_BYTES = 16;
+constexpr usize ARGUMENT_MINIMUM = 20;
+constexpr usize ARGUMENT_MAXIMUM = 24;
+constexpr usize ARGUMENT_FIRST_VALUE = 28;
+constexpr usize ARGUMENT_VALUE_COUNT = 32;
 std::atomic<uint64> gNextToken{1};
 
 uint32 ReadWord(std::span<const uint8> bytes, usize offset) noexcept
@@ -341,8 +351,8 @@ bool Catalog::isSchemaEqual(uint32 index, std::span<const ArgumentDescriptor> ar
     {
         const ArgumentDescriptor& expected = arguments[i];
         const usize argument = mLayout.Arguments + (static_cast<usize>(first) + i) * ARGUMENT_RECORD_BYTES;
-        const uint32 type = readWord(argument + 8);
-        const uint32 policy = readWord(argument + 12);
+        const uint32 type = readWord(argument + ARGUMENT_TYPE);
+        const uint32 policy = readWord(argument + ARGUMENT_POLICY);
         if (getSliceAt(argument) != expected.Name || type != static_cast<uint32>(expected.Type))
         {
             return false;
@@ -351,18 +361,19 @@ bool Catalog::isSchemaEqual(uint32 index, std::span<const ArgumentDescriptor> ar
         switch (expected.Type)
         {
             case ArgumentType::Text:
-                isEqual =
-                    policy == static_cast<uint32>(expected.Origin) && readWord(argument + 16) == expected.MaxBytes;
+                isEqual = policy == static_cast<uint32>(expected.Origin) &&
+                          readWord(argument + ARGUMENT_MAX_BYTES) == expected.MaxBytes;
                 break;
             case ArgumentType::Count:
             case ArgumentType::Number:
-                isEqual = static_cast<int64>(static_cast<int32>(readWord(argument + 20))) == expected.Minimum &&
-                          static_cast<int64>(static_cast<int32>(readWord(argument + 24))) == expected.Maximum;
+                isEqual =
+                    static_cast<int64>(static_cast<int32>(readWord(argument + ARGUMENT_MINIMUM))) == expected.Minimum &&
+                    static_cast<int64>(static_cast<int32>(readWord(argument + ARGUMENT_MAXIMUM))) == expected.Maximum;
                 break;
             case ArgumentType::Enum: {
-                const uint32 firstValue = readWord(argument + 28);
+                const uint32 firstValue = readWord(argument + ARGUMENT_FIRST_VALUE);
                 isEqual = policy == static_cast<uint32>(expected.Unknown) &&
-                          readWord(argument + 32) == expected.Values.size();
+                          readWord(argument + ARGUMENT_VALUE_COUNT) == expected.Values.size();
                 for (usize j = 0; isEqual == true && j < expected.Values.size(); ++j)
                 {
                     isEqual = getSliceAt(mLayout.Values + (static_cast<usize>(firstValue) + j) * SLICE_BYTES) ==
@@ -468,7 +479,7 @@ detail::MessageRecord detail::CatalogAccess::GetMessage(const Catalog& catalog, 
     {
         return
         {
-            .Value = catalog.getSliceAt(record + 8),
+            .Value = catalog.getSliceAt(record + RECORD_TEXT),
             .IsDynamic = false,
             .Provider = 0,
             .FirstArgument = 0,
@@ -477,7 +488,7 @@ detail::MessageRecord detail::CatalogAccess::GetMessage(const Catalog& catalog, 
     }
     return
     {
-        .Value = catalog.getSliceAt(record + 8),
+        .Value = catalog.getSliceAt(record + RECORD_TEXT),
         .IsDynamic = catalog.readWord(record + RECORD_KIND) == KIND_DYNAMIC,
         .Provider = catalog.readWord(record + RECORD_PROVIDER),
         .FirstArgument = catalog.readWord(record + RECORD_FIRST_ARGUMENT),
@@ -488,18 +499,18 @@ detail::MessageRecord detail::CatalogAccess::GetMessage(const Catalog& catalog, 
 detail::ArgumentRecord detail::CatalogAccess::GetArgument(const Catalog& catalog, uint32 argument) noexcept
 {
     const usize entry = catalog.mLayout.Arguments + static_cast<usize>(argument) * ARGUMENT_RECORD_BYTES;
-    const uint32 policy = catalog.readWord(entry + 12);
+    const uint32 policy = catalog.readWord(entry + ARGUMENT_POLICY);
     return
     {
         .Name = catalog.getSliceAt(entry),
-        .Type = static_cast<ArgumentType>(catalog.readWord(entry + 8)),
+        .Type = static_cast<ArgumentType>(catalog.readWord(entry + ARGUMENT_TYPE)),
         .Origin = policy == 1 ? TextOrigin::User : TextOrigin::Game,
         .Unknown = policy == 0 ? UnknownPolicy::Other : UnknownPolicy::Reject,
-        .MaxBytes = catalog.readWord(entry + 16),
-        .Minimum = static_cast<int64>(static_cast<int32>(catalog.readWord(entry + 20))),
-        .Maximum = static_cast<int64>(static_cast<int32>(catalog.readWord(entry + 24))),
-        .FirstValue = catalog.readWord(entry + 28),
-        .ValueCount = catalog.readWord(entry + 32),
+        .MaxBytes = catalog.readWord(entry + ARGUMENT_MAX_BYTES),
+        .Minimum = static_cast<int64>(static_cast<int32>(catalog.readWord(entry + ARGUMENT_MINIMUM))),
+        .Maximum = static_cast<int64>(static_cast<int32>(catalog.readWord(entry + ARGUMENT_MAXIMUM))),
+        .FirstValue = catalog.readWord(entry + ARGUMENT_FIRST_VALUE),
+        .ValueCount = catalog.readWord(entry + ARGUMENT_VALUE_COUNT),
     };
 }
 
@@ -624,13 +635,13 @@ Status ValidateArgument(std::span<const uint8> bytes,
     {
         return Fail(outDiagnostic, taken, argument);
     }
-    const uint32 type = ReadWord(bytes, argument + 8);
-    const uint32 policy = ReadWord(bytes, argument + 12);
-    const uint32 maxBytes = ReadWord(bytes, argument + 16);
-    const int64 minimum = static_cast<int32>(ReadWord(bytes, argument + 20));
-    const int64 maximum = static_cast<int32>(ReadWord(bytes, argument + 24));
-    const uint32 firstValue = ReadWord(bytes, argument + 28);
-    const uint32 values = ReadWord(bytes, argument + 32);
+    const uint32 type = ReadWord(bytes, argument + ARGUMENT_TYPE);
+    const uint32 policy = ReadWord(bytes, argument + ARGUMENT_POLICY);
+    const uint32 maxBytes = ReadWord(bytes, argument + ARGUMENT_MAX_BYTES);
+    const int64 minimum = static_cast<int32>(ReadWord(bytes, argument + ARGUMENT_MINIMUM));
+    const int64 maximum = static_cast<int32>(ReadWord(bytes, argument + ARGUMENT_MAXIMUM));
+    const uint32 firstValue = ReadWord(bytes, argument + ARGUMENT_FIRST_VALUE);
+    const uint32 values = ReadWord(bytes, argument + ARGUMENT_VALUE_COUNT);
     const bool isText = type == static_cast<uint32>(ArgumentType::Text);
     const bool isEnum = type == static_cast<uint32>(ArgumentType::Enum);
     const bool isBounded =

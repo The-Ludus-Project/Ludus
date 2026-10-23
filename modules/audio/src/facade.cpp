@@ -24,6 +24,11 @@
 
 namespace ludus::audio
 {
+namespace
+{
+/// A stream slot whose generation reached this value is retired, so handles never wrap.
+constexpr uint32 LAST_REUSABLE_GENERATION = 0xFFFFFFFEU;
+} // namespace
 using internal::QueuedCommand;
 
 // ===========================================================================
@@ -272,7 +277,7 @@ Status AudioSystem::PrepareStream(std::span<const uint8> encoded,
     uint32 index = state.StreamInstances;
     for (uint32 i = 0; i < state.StreamInstances; ++i)
     {
-        if (state.Streams[i].InUse == false && state.Streams[i].Generation < 0xFFFFFFFEU)
+        if (state.Streams[i].InUse == false && state.Streams[i].Generation < LAST_REUSABLE_GENERATION)
         {
             index = i;
             break;
@@ -323,7 +328,7 @@ Status AudioSystem::PrepareStream(foundation::core::UniquePtr<StreamInput> input
     uint32 index = state.StreamInstances;
     for (uint32 i = 0; i < state.StreamInstances; ++i)
     {
-        if (state.Streams[i].InUse == false && state.Streams[i].Generation < 0xFFFFFFFEU)
+        if (state.Streams[i].InUse == false && state.Streams[i].Generation < LAST_REUSABLE_GENERATION)
         {
             index = i;
             break;
@@ -853,7 +858,7 @@ Status AudioSystem::PlayStream(StreamHandle stream,
     {
         return Status::NotReady;
     }
-    if (busIndex >= s.BusCount || priority > 7 || std::isfinite(gain) == false || gain < 0 || gain > 1)
+    if (busIndex >= s.BusCount || priority > PRIORITY_MAX || std::isfinite(gain) == false || gain < 0 || gain > 1)
     {
         return Status::InvalidArgument;
     }

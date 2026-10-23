@@ -19,6 +19,17 @@ namespace math = foundation::math;
 using foundation::core::Array;
 namespace
 {
+/// Largest initial height magnitude, as a multiple of the rest depth.
+constexpr float64 MAX_INITIAL_HEIGHT_DEPTHS = 16.0;
+/// Largest initial horizontal displacement magnitude, per axis.
+constexpr float64 MAX_INITIAL_DISPLACEMENT = 12.0;
+/// Smallest and largest stroke radius or spacing, in metres.
+constexpr float64 MIN_STROKE_EXTENT = 1e-6;
+constexpr float64 MAX_STROKE_EXTENT = 2000.0;
+/// Largest stroke strength magnitude, as a velocity change per metre of stroke.
+constexpr float64 MAX_STROKE_STRENGTH = 1000.0;
+/// Longest single advance, in seconds.
+constexpr float64 MAX_ADVANCE_SECONDS = 0.25;
 using Cell = CellState;
 struct GridSize final
 {
@@ -463,9 +474,10 @@ Status Field::TryReset(std::span<const uint8> solids, std::span<const CellState>
     for (const auto& c : initial)
     {
         if (math::IsFinite(c.Height) == false || c.Height + s.Settings.Depth < s.Settings.MinimumDepth ||
-            math::Abs(c.Height) > s.Settings.Depth * 16.0 || math::IsFinite(c.Foam) == false || c.Foam < 0.0 ||
-            c.Foam > 1.0 || math::IsFinite(c.DisplacementX) == false || math::Abs(c.DisplacementX) > 12.0 ||
-            math::IsFinite(c.DisplacementY) == false || math::Abs(c.DisplacementY) > 12.0)
+            math::Abs(c.Height) > s.Settings.Depth * MAX_INITIAL_HEIGHT_DEPTHS || math::IsFinite(c.Foam) == false ||
+            c.Foam < 0.0 || c.Foam > 1.0 || math::IsFinite(c.DisplacementX) == false ||
+            math::Abs(c.DisplacementX) > MAX_INITIAL_DISPLACEMENT || math::IsFinite(c.DisplacementY) == false ||
+            math::Abs(c.DisplacementY) > MAX_INITIAL_DISPLACEMENT)
         {
             return Status::InvalidArgument;
         }
@@ -565,9 +577,10 @@ Status Field::TryAddStroke(const Stroke& stroke) noexcept
         return Status::NotReady;
     }
     auto& s = *mStorage;
-    if (math::IsFinite(stroke.Radius) == false || stroke.Radius < 1e-6 || stroke.Radius > 2000.0 ||
-        math::IsFinite(stroke.Spacing) == false || stroke.Spacing < 1e-6 || stroke.Spacing > 2000.0 ||
-        math::IsFinite(stroke.Strength) == false || math::Abs(stroke.Strength) > 1000.0 ||
+    if (math::IsFinite(stroke.Radius) == false || stroke.Radius < MIN_STROKE_EXTENT ||
+        stroke.Radius > MAX_STROKE_EXTENT || math::IsFinite(stroke.Spacing) == false ||
+        stroke.Spacing < MIN_STROKE_EXTENT || stroke.Spacing > MAX_STROKE_EXTENT ||
+        math::IsFinite(stroke.Strength) == false || math::Abs(stroke.Strength) > MAX_STROKE_STRENGTH ||
         math::IsFinite(stroke.Start.X) == false || math::IsFinite(stroke.Start.Y) == false ||
         math::IsFinite(stroke.End.X) == false || math::IsFinite(stroke.End.Y) == false)
     {
@@ -674,7 +687,7 @@ Status Field::TryAdvance(float64 seconds, StepInfo& info) noexcept
     {
         return Status::NotReady;
     }
-    if (math::IsFinite(seconds) == false || seconds < 0.0 || seconds > 0.25)
+    if (math::IsFinite(seconds) == false || seconds < 0.0 || seconds > MAX_ADVANCE_SECONDS)
     {
         return Status::InvalidArgument;
     }

@@ -114,7 +114,8 @@ struct Fd final
 };
 Status Parent(std::string_view root, std::string_view path, Fd& directory, Text<1024>& leaf) noexcept
 {
-    if (root.empty() || root.size() > 4096 || root.find('\0') != std::string_view::npos || ValidPath(path) == false)
+    if (root.empty() || root.size() > MAX_ROOT_BYTES || root.find('\0') != std::string_view::npos ||
+        ValidPath(path) == false)
     {
         return Status::Invalid;
     }

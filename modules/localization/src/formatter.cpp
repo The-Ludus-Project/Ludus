@@ -27,6 +27,19 @@ using detail::MessageRecord;
 using detail::ResolvedArgument;
 
 constexpr std::string_view OTHER_TOKEN = "other";
+/// UTF-8 lead bytes from which a sequence has four, three or two bytes, and the
+/// scalar payload bits each lead and every continuation byte carries.
+constexpr uint8 UTF8_FOUR_BYTE_LEAD = 0xf0;
+constexpr uint8 UTF8_THREE_BYTE_LEAD = 0xe0;
+constexpr uint8 UTF8_TWO_BYTE_LEAD = 0xc0;
+constexpr uint32 UTF8_FOUR_BYTE_LEAD_PAYLOAD = 0x07U;
+constexpr uint32 UTF8_THREE_BYTE_LEAD_PAYLOAD = 0x0fU;
+constexpr uint32 UTF8_TWO_BYTE_LEAD_PAYLOAD = 0x1fU;
+constexpr uint32 UTF8_CONTINUATION_PAYLOAD = 0x3fU;
+constexpr uint32 UTF8_CONTINUATION_PAYLOAD_BITS = 6;
+constexpr usize UTF8_FOUR_BYTE_LENGTH = 4;
+constexpr usize UTF8_THREE_BYTE_LENGTH = 3;
+constexpr usize UTF8_TWO_BYTE_LENGTH = 2;
 
 /// Decodes one scalar of already validated UTF-8 starting at inoutOffset.
 uint32 DecodeScalar(std::string_view text, usize& inoutOffset) noexcept
@@ -34,24 +47,25 @@ uint32 DecodeScalar(std::string_view text, usize& inoutOffset) noexcept
     const uint8 lead = static_cast<uint8>(text[inoutOffset]);
     usize length = 1;
     uint32 scalar = lead;
-    if (lead >= 0xf0)
+    if (lead >= UTF8_FOUR_BYTE_LEAD)
     {
-        length = 4;
-        scalar = lead & 0x07u;
+        length = UTF8_FOUR_BYTE_LENGTH;
+        scalar = lead & UTF8_FOUR_BYTE_LEAD_PAYLOAD;
     }
-    else if (lead >= 0xe0)
+    else if (lead >= UTF8_THREE_BYTE_LEAD)
     {
-        length = 3;
-        scalar = lead & 0x0fu;
+        length = UTF8_THREE_BYTE_LENGTH;
+        scalar = lead & UTF8_THREE_BYTE_LEAD_PAYLOAD;
     }
-    else if (lead >= 0xc0)
+    else if (lead >= UTF8_TWO_BYTE_LEAD)
     {
-        length = 2;
-        scalar = lead & 0x1fu;
+        length = UTF8_TWO_BYTE_LENGTH;
+        scalar = lead & UTF8_TWO_BYTE_LEAD_PAYLOAD;
     }
     for (usize i = 1; i < length; ++i)
     {
-        scalar = (scalar << 6) | (static_cast<uint8>(text[inoutOffset + i]) & 0x3fu);
+        scalar = (scalar << UTF8_CONTINUATION_PAYLOAD_BITS) |
+                 (static_cast<uint8>(text[inoutOffset + i]) & UTF8_CONTINUATION_PAYLOAD);
     }
     inoutOffset += length;
     return scalar;
