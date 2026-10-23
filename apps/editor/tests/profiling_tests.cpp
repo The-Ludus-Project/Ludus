@@ -91,6 +91,7 @@ TEST_CASE("GPU-only Perfetto export preserves CPU data and attributes zero durat
         .DurationNanoseconds = 0,
         .FrameId = 7,
         .DeviceSession = 3,
+        .PassName = {},
     };
     Array<uint8> bytes;
     REQUIRE(profile::SerializePerfettoTrace(bytes, {&sample, 1}, { .EligibleFrames = 4 }, false) == true);
