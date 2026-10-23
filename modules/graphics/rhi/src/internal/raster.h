@@ -3,6 +3,7 @@
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/graphics/rhi/graph.h>
+#include <ludus/graphics/rhi/native_compute.h>
 
 #include "storage.h"
 #include "texture.h"
@@ -17,6 +18,8 @@ inline constexpr foundation::usize LIFETIME_BATCHES = 4;
 inline constexpr foundation::usize LIFETIME_BATCH_DRAWS = 256;
 inline constexpr foundation::usize LIFETIME_TRANSFERS = 4;
 inline constexpr foundation::usize LIFETIME_TRANSFER_BYTES = foundation::usize{256} * 1024;
+/// Buffer slice offsets and sizes are whole 32-bit words.
+inline constexpr foundation::usize BUFFER_ALIGNMENT_BYTES = 4;
 // Shared by callback requests and submission ordinals; zero stays exhausted.
 template <typename T>
 struct RasterSequence final
@@ -181,6 +184,8 @@ struct RasterPipelineInfo final
 };
 struct ComputePipelineInfo final
 {
+    NativeComputePipelineDescription Native{};
+    foundation::usize NativeSet = 0;
     foundation::usize Shader = 0;
     foundation::usize Layout = 0;
     foundation::uint32 WorkgroupSize[3]{1, 1, 1};

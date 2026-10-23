@@ -4,6 +4,8 @@ namespace ludus::text::internal
 {
 namespace
 {
+/// Offset of the last byte of a four-byte sequence from its lead byte.
+constexpr usize FOUR_BYTE_SEQUENCE_LAST_OFFSET = 3;
 [[nodiscard]] bool IsContinuation(unsigned char byte) noexcept
 {
     return (byte & 0xC0U) == 0x80U;
@@ -70,8 +72,9 @@ usize DecodeUtf8(std::string_view text, usize offset, uint32* outCodePoint) noex
     // 4-byte sequence (0xF0..0xF4). Reject overlong and > U+10FFFF.
     if (lead >= 0xF0U && lead <= 0xF4U)
     {
-        if (offset + 3 >= size || IsContinuation(bytes[offset + 1]) == false ||
-            IsContinuation(bytes[offset + 2]) == false || IsContinuation(bytes[offset + 3]) == false)
+        if (offset + FOUR_BYTE_SEQUENCE_LAST_OFFSET >= size || IsContinuation(bytes[offset + 1]) == false ||
+            IsContinuation(bytes[offset + 2]) == false ||
+            IsContinuation(bytes[offset + FOUR_BYTE_SEQUENCE_LAST_OFFSET]) == false)
         {
             return 0;
         }

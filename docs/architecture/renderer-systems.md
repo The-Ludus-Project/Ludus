@@ -1514,7 +1514,10 @@ scene/pose, lights, materials/textures, origin, sampler and integrator versions.
 Reset on any change that alters the sampled integral; changing only display
 exposure need not reset unexposed data. Overlays never enter accumulated radiance.
 Raw, independently sampled accumulation is the validation output; a denoised
-preview is an additional image. Measure convergence across multiple seeds.
+preview is an additional image. The optional graph
+[Denoise operation](../development/render-graph-authoring.md#denoise-ray-output-with-oidn)
+uses OIDN on linear HDR color before display conversion and leaves the accumulation
+unfiltered. Its initial native sharing profile is Metal on Apple silicon. Measure convergence across multiple seeds.
 Nonfinite contributions or broken density invariants invalidate a reference
 batch and report the offending sample; replacing them with black silently would
 bias the result. Capture jobs reserve a bounded residency budget for their pinned

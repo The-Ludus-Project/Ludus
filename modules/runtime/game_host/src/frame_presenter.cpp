@@ -18,6 +18,9 @@ namespace
 using ludus::foundation::float32;
 using ludus::foundation::float64;
 using ludus::foundation::uint32;
+/// Initial size of the game window, in logical pixels.
+constexpr uint32 WINDOW_WIDTH = 800;
+constexpr uint32 WINDOW_HEIGHT = 600;
 [[nodiscard]] bool Finite(float32 value) noexcept
 {
     uint32 bits = 0;
@@ -66,8 +69,8 @@ RunResult FramePresenter::Start(Presentation mode) noexcept
     if (manager.Initialize({}) == false || manager.CreateWindow(
                                                {
                                                    .Name = "Ludus game",
-                                                   .Width = 800,
-                                                   .Height = 600,
+                                                   .Width = WINDOW_WIDTH,
+                                                   .Height = WINDOW_HEIGHT,
                                                },
                                                Window_) == false)
     {

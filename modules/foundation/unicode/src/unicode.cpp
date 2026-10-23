@@ -38,22 +38,27 @@
 
 namespace ludus::foundation::unicode
 {
+/// Alignment ICU requires of its common data and of every block it allocates.
+constexpr usize ICU_ALIGNMENT = 16;
+
 namespace detail
 {
-alignas(16) extern const uint8 ICU_DATA[];
+alignas(ICU_ALIGNMENT) extern const uint8 ICU_DATA[];
 extern const usize ICU_DATA_BYTES;
 } // namespace detail
 
 namespace
 {
 /// Every ICU block carries its size so reallocation and release can use the domain's sized API.
-struct alignas(16) BlockHeader final
+struct alignas(ICU_ALIGNMENT) BlockHeader final
 {
     usize Bytes{};
 };
 
 constexpr usize BLOCK_ALIGNMENT = alignof(BlockHeader);
 constexpr usize MAX_LABEL_BYTES = 128;
+/// Longest CLDR version string accepted from the ICU data, in characters.
+constexpr int32 MAX_CLDR_VERSION_CHARACTERS = 16;
 constexpr std::string_view PINNED_LABEL = LUDUS_UNICODE_PINNED_LABEL;
 constexpr const char* ALLOCATION_FAILURE =
     "ICU4C allocation failed; ICU 78.3 cannot recover from it (docs/architecture/localization-l0.md)";
@@ -183,11 +188,11 @@ bool BuildLabel(HostState& inoutHost, UErrorCode& inoutStatus) noexcept
     icu::LocalUResourceBundlePointer bundle(ures_openDirect(nullptr, "icuver", &inoutStatus));
     int32 length = 0;
     const UChar* cldr = ures_getStringByKey(bundle.getAlias(), "CLDRVersion", &length, &inoutStatus);
-    if (U_FAILURE(inoutStatus) || cldr == nullptr || length <= 0 || length > 16)
+    if (U_FAILURE(inoutStatus) || cldr == nullptr || length <= 0 || length > MAX_CLDR_VERSION_CHARACTERS)
     {
         return false;
     }
-    char cldrVersion[16]{};
+    char cldrVersion[MAX_CLDR_VERSION_CHARACTERS]{};
     for (int32 i = 0; i < length; ++i)
     {
         if (cldr[i] < u'!' || cldr[i] > u'~')

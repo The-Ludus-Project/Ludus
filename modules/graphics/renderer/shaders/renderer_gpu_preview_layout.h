@@ -45,6 +45,7 @@
 
 // Preserve camera/kernel flags and ordered invocation bits below camera history.
 #define LUDUS_GPU_PREVIEW_OPAQUE_FLAG 8
+#define LUDUS_GPU_PREVIEW_DENOISING_FLAG 16
 #define LUDUS_GPU_PREVIEW_FLAGS_MASK 0x3ff
 #define LUDUS_GPU_PREVIEW_HISTORY_SHIFT 10
 #define LUDUS_GPU_PREVIEW_MAX_HISTORY_EPOCH 0x1fffff

@@ -57,8 +57,10 @@ class MetalFxExecutionTests(unittest.TestCase):
             contents = execution._runtime_contents(package, 'Default')
             self.assertEqual(program, contents['passes'][1]['Program'])
             parsed = codec.parse_runtime(execution.encode_runtime_package(contents))
-            self.assertEqual(16, parsed['version'])
+            self.assertEqual(17, parsed['version'])
             self.assertEqual(execution.PROGRAM_CODES[program], parsed['passes'][1][0])
+            self.assertEqual(contents['passes'][1]['SourceColor'], parsed['passes'][1][-2])
+            self.assertEqual(0, parsed['passes'][1][-1])
             header = self.root / 'metalfx.h'
             execution.emit_runtime(package, header, configuration='Default')
             self.assertIn('static_cast<format::Technique>(' + str(execution.PROGRAM_CODES[program]) + ')', header.read_text())

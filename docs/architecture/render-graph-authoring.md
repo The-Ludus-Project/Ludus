@@ -225,9 +225,9 @@ BilinearUpscale after all existing scene technique IDs; shader-stage IDs remain
 unchanged. Older runtime versions decode with no image source, including version
 14's independent explicit ToneMap policy. Both compiled headers and runtime
 packages carry the same serialized source resource and authored pass name.
-Numeric plan version 12 and runtime package version 16 append two MetalFX Spatial
+Numeric plan version 13 and runtime package version 17 append two MetalFX Spatial
 roles (Linear and Perceptual) after BilinearUpscale, preserving scene/stage IDs and
-the 18-field version-15 pass layout. Version 15 still decodes bilinear; older
+the 19-field version-16 pass layout, including OIDN denoising quality. Versions 15/16 still decode bilinear; older
 versions cannot select MetalFX roles. `color_processing` is optional only on
 `metalfx-spatial` and defaults to Linear. The compiler records its interpretation
 explicitly in the chosen image role. Both roles use the same distinct initialized

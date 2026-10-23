@@ -10,6 +10,12 @@
 
 namespace ludus::editor
 {
+namespace
+{
+/// Largest `ludus.play.json` sidecar the source watch reads.
+constexpr qint64 MAX_PLAY_SIDECAR_BYTES = 262144;
+} // namespace
+
 SourceWatch::SourceWatch(QObject* parent) : QObject(parent)
 {
     Debounce_.setSingleShot(true);
@@ -60,7 +66,7 @@ void SourceWatch::SetBusy(bool busy)
 bool SourceWatch::Rearm()
 {
     QFile sidecar(QDir(Project_).filePath(QStringLiteral("ludus.play.json")));
-    if (sidecar.open(QIODevice::ReadOnly) == false || sidecar.size() > 262144)
+    if (sidecar.open(QIODevice::ReadOnly) == false || sidecar.size() > MAX_PLAY_SIDECAR_BYTES)
     {
         return false;
     }

@@ -8,10 +8,16 @@
 
 namespace ludus::editor
 {
+namespace
+{
+/// Largest accepted `ludus.web.json` browser player descriptor.
+constexpr qint64 MAX_WEB_DESCRIPTOR_BYTES = 1024;
+} // namespace
+
 QString BrowserPlayer(const QString& descriptor)
 {
     QFile file(QDir(QFileInfo(descriptor).absolutePath()).filePath(QStringLiteral("ludus.web.json")));
-    if (file.open(QIODevice::ReadOnly) == false || file.size() > 1024)
+    if (file.open(QIODevice::ReadOnly) == false || file.size() > MAX_WEB_DESCRIPTOR_BYTES)
     {
         return {};
     }

@@ -42,6 +42,15 @@ constexpr foundation::int32 ENTRY_ROLE = Qt::UserRole;
 constexpr qsizetype MAX_DIAGNOSTIC_LINE_CHARACTERS = 4096;
 constexpr foundation::int32 MAX_DETAILS_HEIGHT = 100;
 constexpr foundation::int32 MINIMUM_TABLE_ROWS = 2;
+// Horizontal space a table cell keeps around its text; wider descriptions are elided.
+constexpr foundation::int32 DESCRIPTION_CELL_PADDING_PIXELS = 8;
+
+[[nodiscard]] bool AreEntriesEqual(const ErrorListEntry& left, const ErrorListEntry& right)
+{
+    return left.Severity == right.Severity && left.Producer == right.Producer && left.Code == right.Code &&
+           left.Description == right.Description && left.File == right.File && left.Location == right.Location &&
+           left.Origin == right.Origin && left.SourceIndex == right.SourceIndex;
+}
 
 [[nodiscard]] ErrorListSeverity ParseSeverity(const QString& text)
 {
@@ -265,6 +274,7 @@ ErrorList::ErrorList(QWidget* parentOrNull)
         mDetails->setPlainText(index >= 0 && index < mEntries.size() ? mEntries.at(index).Description : QString());
         updateDetailsHeight();
     });
+    connect(mTable->horizontalHeader(), &QHeaderView::sectionResized, this, &ErrorList::updateDetailsHeight);
     connect(mTable, &QTableWidget::itemActivated, this, [this](QTableWidgetItem* item) {
         static_cast<void>(ActivateVisibleRow(item->row()));
     });
@@ -287,22 +297,45 @@ void ErrorList::updateDetailsHeight()
     const foundation::int32 detailsHeight =
         availableHeight < 0 ? 0 : (availableHeight > MAX_DETAILS_HEIGHT ? MAX_DETAILS_HEIGHT : availableHeight);
     mDetails->setMaximumHeight(detailsHeight);
-    mDetails->setVisible(mTable->currentRow() >= 0 && detailsHeight > 0);
+    // A description that fits its row would only be shown twice.
+    const QString description = mDetails->toPlainText();
+    const bool isDescriptionTruncated =
+        description.contains(QLatin1Char('\n')) == true ||
+        mTable->fontMetrics().horizontalAdvance(description) + DESCRIPTION_CELL_PADDING_PIXELS >
+            mTable->horizontalHeader()->sectionSize(DESCRIPTION_COLUMN);
+    mDetails->setVisible(mTable->currentRow() >= 0 && detailsHeight > 0 && isDescriptionTruncated == true);
 }
 
 void ErrorList::ReplaceEntries(ErrorListProducer producer, const QList<ErrorListEntry>& entries)
 {
     QList<ErrorListEntry> kept;
+    QList<ErrorListEntry> previous;
     for (const ErrorListEntry& entry : mEntries)
     {
         if (entry.Producer != producer)
         {
             kept.append(entry);
         }
+        else
+        {
+            previous.append(entry);
+        }
+    }
+    bool isChanged = previous.size() != entries.size();
+    bool hasProblem = false;
+    for (qsizetype index = 0; index < entries.size(); ++index)
+    {
+        const ErrorListEntry& entry = entries.at(index);
+        isChanged = isChanged == true || AreEntriesEqual(entry, previous.at(index)) == false;
+        hasProblem = hasProblem == true || entry.Severity != ErrorListSeverity::Message;
     }
     kept.append(entries);
     mEntries = foundation::Move(kept);
     render();
+    if (isChanged == true && hasProblem == true)
+    {
+        Q_EMIT ProblemsReported();
+    }
 }
 
 foundation::int32 ErrorList::GetCount(ErrorListSeverity severity) const

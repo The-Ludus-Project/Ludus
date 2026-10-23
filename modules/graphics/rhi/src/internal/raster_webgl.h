@@ -895,9 +895,9 @@ RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
     const GLenum comparisons[]{GL_LESS, GL_LEQUAL, GL_GREATER, GL_GEQUAL, GL_ALWAYS};
     internal::RasterArea area;
     const auto& pass = gRasterGlPass;
-    const bool surface = gRasterGlPassOpen == false || pass.Texture == internal::RASTER_INVALID;
-    const auto width = surface ? gTarget.Width : gRasterTextureDescriptions[pass.Texture].Width;
-    const auto height = surface ? gTarget.Height : gRasterTextureDescriptions[pass.Texture].Height;
+    const bool isSurface = gRasterGlPassOpen == false || pass.Texture == internal::RASTER_INVALID;
+    const uint32 width = isSurface ? gTarget.Width : gRasterTextureDescriptions[pass.Texture].Width;
+    const uint32 height = isSurface ? gTarget.Height : gRasterTextureDescriptions[pass.Texture].Height;
     if (internal::RasterResolveArea(gRasterGlPassOpen ? pass.Description : RasterPassDescription{},
                                     width,
                                     height,

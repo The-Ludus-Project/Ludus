@@ -13,7 +13,7 @@ namespace ludus::content::render_graph_format
 {
 /// Static triangle execution profile: opaque/masked raster with per-draw uniforms,
 /// and authored primary triangle ray functions with flat opaque World inputs.
-inline constexpr foundation::uint32 VERSION = 12;
+inline constexpr foundation::uint32 VERSION = 13;
 /// Opt-in portable raster ABI: static inputs plus primitive halves and draw/instance references.
 inline constexpr foundation::usize VISIBILITY_INPUT_COUNT = 8;
 /// Maximum authored passes in one admitted configuration.
@@ -72,13 +72,21 @@ inline constexpr foundation::usize MAX_UNIFORM_BLOCK_BYTES = 1024;
 /// Largest number of distinct per-draw uniform value sets one technique prepares per extraction.
 inline constexpr foundation::usize MAX_UNIFORM_SETS = 16;
 /// Number of explicitly serialized four-byte fields in a current pass record (uint32 or float32).
-inline constexpr foundation::usize PASS_FIELD_COUNT = 18;
+inline constexpr foundation::usize PASS_FIELD_COUNT = 19;
 /// Maximum samples in an authored Accumulate operation; zero selects individual ray samples.
 inline constexpr foundation::uint32 MAX_ACCUMULATION_SAMPLES = 4096;
 /// Smallest admitted positive linear exposure multiplier for an authored ToneMap operation.
 inline constexpr foundation::float32 MIN_TONE_MAPPING_EXPOSURE = .01F;
 /// Largest admitted linear exposure multiplier; zero bypasses tone mapping and display encoding.
 inline constexpr foundation::float32 MAX_TONE_MAPPING_EXPOSURE = 64;
+/// Quality/cost preference for image processing. Serialized values are stable; zero is reserved.
+// NOLINTNEXTLINE(performance-enum-size): serialized fields use explicit 32-bit widths.
+enum class ProcessingQuality : foundation::uint32
+{
+    Fast = 1, ///< Favor throughput and lower memory use; suitable for previews.
+    Balanced, ///< Trade quality for interactive rendering cost.
+    High,     ///< Favor reconstruction quality; suitable for final images.
+};
 /// Resource or input index absent from the declared plan.
 inline constexpr foundation::uint32 ABSENT = ~foundation::uint32{0};
 /// Compiled scene shader-pair or renderer-owned image operation, independent of graph instance and viewport size.
@@ -119,7 +127,7 @@ enum class Technique : foundation::uint32
 // NOLINTNEXTLINE(performance-enum-size): versioned numeric fields have explicit 32-bit widths.
 enum class Aspect : foundation::uint32
 {
-    Color,  ///< Linear RGBA8 color.
+    Color,  ///< RGBA8 color; stored channel interpretation belongs to its producing technique.
     Depth,  ///< Depth32Float private depth aspect.
     Buffer, ///< Zero-initialized persistent uint4 storage; Width is bytes and Height is one.
 };
@@ -227,8 +235,11 @@ struct Pass final
     /// Reinhard compression and sRGB encoding after the optional linear RGB mean. Ray passes only.
     foundation::float32 ToneMappingExposure = 0;
     /// Offscreen initialized RGBA8 source for image operations; ABSENT for scene techniques.
-    /// Color is a distinct output allocation; sampling uses linear clamp at normalized pixel centers.
+    /// Color is a distinct output allocation; Program selects reconstruction and color interpretation.
     foundation::uint32 SourceColor = ABSENT;
+    /// Zero bypasses denoising; otherwise ProcessingQuality selects OIDN RT HDR filtering
+    /// after accumulation and before display conversion. Requires an enabled native OIDN profile.
+    foundation::uint32 DenoisingQuality = 0;
 };
 /// One read-only uniform binding of a technique, filled per draw from logical values.
 /// Its values occupy [ValueOffset, ValueOffset + ValueCount) of each item's float32

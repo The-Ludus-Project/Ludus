@@ -285,11 +285,11 @@ QString ContentWorkspace::SelectedId() const
 }
 void ContentWorkspace::RenderActions()
 {
-    const bool available = Root_.isEmpty() == false && Busy() == false && Closing_ == false;
-    Refresh_->setEnabled(available);
-    Import_->setEnabled(available);
+    const bool isAvailable = Root_.isEmpty() == false && Busy() == false && Closing_ == false;
+    Refresh_->setEnabled(isAvailable);
+    Import_->setEnabled(isAvailable);
     const auto* row = Model_->Row(Proxy_->mapToSource(Table_->currentIndex()));
-    Reimport_->setEnabled(available && row != nullptr && row->Kind == content::Kind::AudioSource);
+    Reimport_->setEnabled(isAvailable && row != nullptr && row->Kind == content::Kind::AudioSource);
     Cancel_->setEnabled(Busy() && Closing_ == false);
 }
 void ContentWorkspace::Cancel()

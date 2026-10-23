@@ -148,7 +148,8 @@ struct ScratchShape final
                                   format::ABSENT,
                                   0U,
                                   0U,
-                                  format::ABSENT})
+                                  format::ABSENT,
+                                  0U})
         {
             WriteWord(bytes, word);
         }

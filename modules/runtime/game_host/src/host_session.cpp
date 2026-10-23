@@ -21,6 +21,8 @@ namespace ludus::runtime::game_host
 namespace
 {
 LUDUS_DEFINE_LOG_CATEGORY(LOG_SESSION, "GameHost");
+/// Longest script debugger request payload forwarded to a game, in bytes.
+constexpr usize MAX_SCRIPT_DEBUG_PAYLOAD_BYTES = 4096;
 
 using game_api::ByteSpan;
 using game_api::ByteView;
@@ -746,8 +748,8 @@ void HostSession::Dispatch(const Message& command) noexcept
         uint64 extension = 0;
         std::string payload;
         if (State_ != PlayState::Running || command.GetUint("extension", extension) == false || extension != 1 ||
-            command.GetString("payload", payload) == false || payload.empty() || payload.size() > 4096 ||
-            protocol::ValidUtf8(payload) == false ||
+            command.GetString("payload", payload) == false || payload.empty() ||
+            payload.size() > MAX_SCRIPT_DEBUG_PAYLOAD_BYTES || protocol::ValidUtf8(payload) == false ||
             game_api::HasCapability(Active_.Metadata().Capabilities, game_api::Capability::ScriptDebug) == false)
         {
             EmitCommandResult(requestId,

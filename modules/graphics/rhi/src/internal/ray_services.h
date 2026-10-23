@@ -5,6 +5,10 @@ namespace ludus::graphics::rhi
 {
 namespace
 {
+/// Components in one ray geometry vertex position.
+constexpr usize RAY_POSITION_COMPONENT_COUNT = 3;
+/// Ray visibility masks use the low eight bits.
+constexpr uint32 MAX_RAY_INSTANCE_MASK = 255;
 float32 RayScalar(const void* data, usize index) noexcept
 {
     float32 value = 0;
@@ -178,9 +182,9 @@ CreateRayGeometry(DeviceHandle device, const RayGeometryDescription& description
     }
     for (usize i = 0; i < d.VertexCount; ++i)
     {
-        for (usize axis = 0; axis < 3; ++axis)
+        for (usize axis = 0; axis < RAY_POSITION_COMPONENT_COUNT; ++axis)
         {
-            if (RayPosition(RayScalar(d.Positions, i * 3 + axis)) == false)
+            if (RayPosition(RayScalar(d.Positions, i * RAY_POSITION_COMPONENT_COUNT + axis)) == false)
             {
                 return RasterStatus::InvalidDescription;
             }
@@ -284,7 +288,7 @@ CreateRayScene(DeviceHandle device, const RaySceneDescription& description, RayS
         {
             return geometry->Status == RasterStatus::Pending ? RasterStatus::NotReady : geometry->Status;
         }
-        if (RayTransform(input.Transform) == false || input.Mask == 0 || input.Mask > 255 ||
+        if (RayTransform(input.Transform) == false || input.Mask == 0 || input.Mask > MAX_RAY_INSTANCE_MASK ||
             RayUnitInterval(input.Opacity) == false || RayUnitInterval(input.AlphaCutoff) == false)
         {
             return RasterStatus::InvalidDescription;

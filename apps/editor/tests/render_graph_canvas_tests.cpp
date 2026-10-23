@@ -365,7 +365,7 @@ TEST_CASE("Graph pinch zoom keeps its focal point and never edits the draft", "[
     CHECK(document.CanUndo() == false);
 }
 
-TEST_CASE("Graph wheel and pixel scrolling zoom smoothly without a pinch", "[editor][render-graph][canvas]")
+TEST_CASE("Graph wheel and Ctrl+scroll zoom smoothly without a pinch", "[editor][render-graph][canvas]")
 {
     RenderGraphDocument document;
     RenderGraphCanvas canvas(document);
@@ -375,12 +375,90 @@ TEST_CASE("Graph wheel and pixel scrolling zoom smoothly without a pinch", "[edi
     CHECK(wheel.isAccepted() == true);
     CHECK(canvas.transform().m11() > 1);
     const float64 before = canvas.transform().m11();
-    QWheelEvent pixels(position, position, QPoint(0, 12), {}, Qt::NoButton, Qt::NoModifier, Qt::ScrollUpdate, false);
+    QWheelEvent
+        pixels(position, position, QPoint(0, 12), {}, Qt::NoButton, Qt::ControlModifier, Qt::ScrollUpdate, false);
     QCoreApplication::sendEvent(canvas.viewport(), &pixels);
     CHECK(canvas.transform().m11() > before);
-    QWheelEvent reverse(position, position, QPoint(0, -12), {}, Qt::NoButton, Qt::NoModifier, Qt::ScrollUpdate, false);
+    QWheelEvent
+        reverse(position, position, QPoint(0, -12), {}, Qt::NoButton, Qt::ControlModifier, Qt::ScrollUpdate, false);
     QCoreApplication::sendEvent(canvas.viewport(), &reverse);
     CHECK(qAbs(canvas.transform().m11() - before) < 0.000001);
+    CHECK(document.GetRevision() == 0);
+}
+
+TEST_CASE("Graph two-finger touchpad scroll pans without zooming or editing", "[editor][render-graph][canvas]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakePackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    RenderGraphCanvas canvas(document);
+    canvas.resize(300, 200);
+    canvas.ShowConfiguration(ROOT_GRAPH, DEFAULT_CONFIGURATION);
+    canvas.show();
+    QCoreApplication::processEvents();
+    canvas.resetTransform();
+    canvas.centerOn(canvas.sceneRect().center());
+    canvas.SelectNode(QStringLiteral("raster"));
+    const QStringList selected = canvas.GetSelectedNodes();
+    const QByteArray original = document.GetDraft(ROOT_GRAPH);
+    const QPointF position(120, 90);
+    const QPointF before = canvas.viewportTransform().inverted().map(position);
+    QWheelEvent begin(position, position, {}, {}, Qt::NoButton, Qt::NoModifier, Qt::ScrollBegin, false);
+    QCoreApplication::sendEvent(canvas.viewport(), &begin);
+    // Fingers moving right/down drag the content with them, as middle-drag does.
+    QWheelEvent scroll(position,
+                       position,
+                       QPoint(30, 20),
+                       QPoint(90, 60),
+                       Qt::NoButton,
+                       Qt::NoModifier,
+                       Qt::ScrollUpdate,
+                       false);
+    QCoreApplication::sendEvent(canvas.viewport(), &scroll);
+    CHECK(scroll.isAccepted() == true);
+    CHECK(canvas.transform().m11() == 1);
+    const QPointF after = canvas.viewportTransform().inverted().map(position);
+    CHECK((before - after - QPointF(30, 20)).manhattanLength() < 2);
+    QWheelEvent momentum(position,
+                         position,
+                         QPoint(-10, 0),
+                         QPoint(-30, 0),
+                         Qt::NoButton,
+                         Qt::NoModifier,
+                         Qt::ScrollMomentum,
+                         false);
+    QCoreApplication::sendEvent(canvas.viewport(), &momentum);
+    const QPointF coasted = canvas.viewportTransform().inverted().map(position);
+    CHECK((coasted - after - QPointF(10, 0)).manhattanLength() < 2);
+    QWheelEvent end(position, position, {}, {}, Qt::NoButton, Qt::NoModifier, Qt::ScrollEnd, false);
+    QCoreApplication::sendEvent(canvas.viewport(), &end);
+    CHECK(canvas.transform().m11() == 1);
+    CHECK(canvas.GetSelectedNodes() == selected);
+    CHECK(document.GetDraft(ROOT_GRAPH) == original);
+    CHECK(document.GetRevision() == 0);
+    CHECK(document.CanUndo() == false);
+}
+
+TEST_CASE("Graph two-finger double-tap frames the whole graph", "[editor][render-graph][canvas]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakePackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    RenderGraphCanvas canvas(document);
+    canvas.resize(900, 600);
+    canvas.ShowConfiguration(ROOT_GRAPH, DEFAULT_CONFIGURATION);
+    canvas.show();
+    QCoreApplication::processEvents();
+    canvas.resetTransform();
+    canvas.scale(6, 6);
+    const QRectF graph = canvas.scene()->itemsBoundingRect();
+    CHECK(canvas.mapToScene(canvas.viewport()->rect()).boundingRect().contains(graph) == false);
+    const QPointF position(170, 220);
+    const QPointingDevice* device = QPointingDevice::primaryPointingDevice();
+    QNativeGestureEvent smartZoom(Qt::SmartZoomNativeGesture, device, 2, position, position, position, 1, {});
+    QCoreApplication::sendEvent(canvas.viewport(), &smartZoom);
+    CHECK(smartZoom.isAccepted() == true);
+    CHECK(canvas.mapToScene(canvas.viewport()->rect()).boundingRect().contains(graph) == true);
     CHECK(document.GetRevision() == 0);
 }
 
@@ -1463,6 +1541,77 @@ TEST_CASE("tone mapping exposure edits through canvas and Properties with undo a
             edit->trigger();
         });
         const QPoint point = canvas.mapFromScene(canvas.GetNodePosition(QStringLiteral("tonemap")) + QPointF(20, 10));
+        QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
+        QApplication::sendEvent(canvas.viewport(), &context);
+    }
+    RenderGraphDocument reopened;
+    REQUIRE(reopened.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    CHECK(reopened.GetDraft(ROOT_GRAPH) == workspace.GetDocument().GetDraft(ROOT_GRAPH));
+}
+
+TEST_CASE("OIDN processing quality edits through canvas and Properties with undo and save",
+          "[editor][render-graph][denoising]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    QComboBox* kinds = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphNewKind"));
+    QPushButton* add = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"));
+    REQUIRE(kinds != nullptr);
+    REQUIRE(add != nullptr);
+    kinds->setCurrentText(QStringLiteral("Denoise"));
+    add->click();
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, QStringLiteral("denoise")) == true);
+    CHECK(workspace.GetCanvas().GetPortPosition(QStringLiteral("denoise.color"), true).isNull() == false);
+    CHECK(workspace.GetCanvas().GetPortPosition(QStringLiteral("denoise.color"), false).isNull() == false);
+    const auto exercise = [&workspace](QWidget& inoutFields) {
+        QComboBox* qualityOrNull = inoutFields.findChild<QComboBox*>(QStringLiteral("renderGraphField_quality"));
+        REQUIRE(qualityOrNull != nullptr);
+        CHECK(qualityOrNull->count() == 3);
+        const uint64 revision = workspace.GetDocument().GetRevision();
+        qualityOrNull->setCurrentText(QStringLiteral("High"));
+        Q_EMIT qualityOrNull->activated(qualityOrNull->currentIndex());
+        CHECK(workspace.GetDocument().GetRevision() == revision + 1);
+        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("High") == true);
+        workspace.Undo();
+        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("High") == false);
+        workspace.Redo();
+        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("High") == true);
+        REQUIRE(workspace.Save() == true);
+    };
+    QWidget* properties = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
+    REQUIRE(properties != nullptr);
+    SECTION("Properties")
+    {
+        exercise(*properties);
+    }
+    SECTION("canvas with Properties hidden")
+    {
+        workspace.resize(1200, 800);
+        workspace.show();
+        properties->hide();
+        QCoreApplication::processEvents();
+        RenderGraphCanvas& canvas = workspace.GetCanvas();
+        canvas.Rebuild();
+        QTimer::singleShot(0, &canvas, [&canvas, &exercise, properties]() {
+            QMenu* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            REQUIRE(menu != nullptr);
+            QAction* edit = menu->findChild<QAction*>(QStringLiteral("renderGraphEditNodeAction"));
+            REQUIRE(edit != nullptr);
+            QTimer::singleShot(0, &canvas, [&exercise, properties]() {
+                QDialog* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+                REQUIRE(dialog != nullptr);
+                CHECK(properties->isVisible() == false);
+                exercise(*dialog);
+                dialog->reject();
+            });
+            menu->close();
+            edit->trigger();
+        });
+        const QPoint point = canvas.mapFromScene(canvas.GetNodePosition(QStringLiteral("denoise")) + QPointF(20, 10));
         QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
         QApplication::sendEvent(canvas.viewport(), &context);
     }

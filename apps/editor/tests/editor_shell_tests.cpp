@@ -57,6 +57,9 @@ using ludus::foundation::int32;
 
 namespace
 {
+/// MainWindow's short-window threshold below which the bottom tool windows start closed.
+constexpr int SHORT_WINDOW_HEIGHT_PIXELS = 1000;
+
 /// objectNames of every tool window the shell creates.
 QStringList GetToolWindows()
 {
@@ -170,11 +173,23 @@ void Settle()
 void CheckDefaultToolWindows(const MainWindow& window)
 {
     CHECK(window.centralWidget() == &Well(window));
+    // Short windows start with the bottom group closed; View reopens it at the default height.
+    const bool isShortWindow = window.height() < SHORT_WINDOW_HEIGHT_PIXELS;
     for (const QString& name : GetToolWindows())
     {
         INFO(name.toStdString());
-        CHECK(Dock(window, name)->isHidden() == false);
+        const bool isBottom = window.dockWidgetArea(Dock(window, name)) == Qt::BottomDockWidgetArea;
+        CHECK(Dock(window, name)->isHidden() == (isShortWindow == true && isBottom == true));
         CHECK(Dock(window, name)->isFloating() == false);
+    }
+    if (isShortWindow == true)
+    {
+        for (const QString& command :
+             {QStringLiteral("view.output"), QStringLiteral("view.timing"), QStringLiteral("view.errorList")})
+        {
+            Action(window, command)->trigger();
+        }
+        Settle();
     }
     QDockWidget* explorer = Dock(window, QStringLiteral("projectExplorerDock"));
     QDockWidget* properties = Dock(window, QStringLiteral("propertiesDock"));
@@ -386,6 +401,8 @@ TEST_CASE("Window menu shows hides and resets every tool window", "[editor][layo
     QTemporaryDir settings;
     EditorController controller(ToolingPaths{}, nullptr, QDir(settings.path()).filePath(QStringLiteral("recent.json")));
     MainWindow window(&controller, nullptr, QDir(settings.path()).filePath(QStringLiteral("workspace.json")));
+    // Tall enough that the default arrangement opens every tool window.
+    window.resize(1600, 1100);
     window.show();
     Settle();
     QMenu* menu = window.findChild<QMenu*>(QStringLiteral("windowMenu"));
@@ -1076,6 +1093,49 @@ TEST_CASE("Missing rendering tools offer project repair directly above the viewp
     REQUIRE(dialogOrNull != nullptr);
     CHECK(dialogOrNull->isVisible() == true);
     dialogOrNull->reject();
+}
+
+TEST_CASE("The setup notice is one dismissible line and the status bar keeps one line", "[editor][setup][layout]")
+{
+    QTemporaryDir directory;
+    const QString descriptor = WriteProject(directory);
+    WriteBytes(descriptor,
+               ReadBytes(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/apps/editor/tests/fixtures/valid_v2_cmake.json")));
+    EditorController controller(ToolingPaths{});
+    MainWindow window(&controller);
+    window.show();
+    controller.OpenProject(descriptor);
+    Settle();
+    QToolBar* noticeOrNull = window.findChild<QToolBar*>(QStringLiteral("projectSetupNotice"));
+    QLabel* textOrNull = window.findChild<QLabel*>(QStringLiteral("projectSetupNoticeText"));
+    QToolButton* dismissOrNull = window.findChild<QToolButton*>(QStringLiteral("projectSetupNoticeDismiss"));
+    QLabel* statusOrNull = window.findChild<QLabel*>(QStringLiteral("workspaceStatus"));
+    REQUIRE(noticeOrNull != nullptr);
+    REQUIRE(textOrNull != nullptr);
+    REQUIRE(dismissOrNull != nullptr);
+    REQUIRE(statusOrNull != nullptr);
+    controller.ReportProjectSetupProblem(QStringLiteral("Rendering tools need preparation.\nslangc was not found."));
+    Settle();
+    CHECK(noticeOrNull->isVisible() == true);
+    CHECK(textOrNull->text().contains(QLatin1Char('\n')) == false);
+    CHECK(textOrNull->text().contains(QStringLiteral("Rendering tools need preparation.")) == true);
+    CHECK(textOrNull->toolTip().contains(QStringLiteral("slangc was not found.")) == true);
+    CHECK(noticeOrNull->height() <=
+          2 * window.findChild<QPushButton*>(QStringLiteral("projectSetupNoticeRepair"))->sizeHint().height());
+    CHECK(statusOrNull->text().contains(QLatin1Char('\n')) == false);
+    CHECK(statusOrNull->text().count(QStringLiteral("Rendering tools need preparation.")) == 1);
+
+    dismissOrNull->click();
+    CHECK(noticeOrNull->isVisible() == false);
+    CHECK(Action(window, QStringLiteral("checkSetupAction"))->isVisible() == true);
+    CHECK(statusOrNull->text().contains(QStringLiteral("Rendering tools need preparation.")) == true);
+    // The same problem stays dismissed; a different one is shown again.
+    controller.ReportProjectSetupProblem(QStringLiteral("Rendering tools need preparation.\nslangc was not found."));
+    Settle();
+    CHECK(noticeOrNull->isVisible() == false);
+    controller.ReportProjectSetupProblem(QStringLiteral("SDK or tool inputs changed; run repair"));
+    Settle();
+    CHECK(noticeOrNull->isVisible() == true);
 }
 
 TEST_CASE("Remove Unused Shaders is available in Edit and on the canvas with Properties hidden",

@@ -90,6 +90,22 @@ math::Vector3 ComputeLinearMeanRgb(const resources::SceneTexture& texture) noexc
 }
 /// Corners of an axis-aligned box.
 constexpr usize AABB_CORNER_COUNT = 8;
+/// Largest magnitude of an authored preview coordinate, UV or transformed vertex.
+constexpr float64 MAX_PREVIEW_COORDINATE = 1e6;
+/// MAX_PREVIEW_COORDINATE for single-precision transformed geometry.
+constexpr float32 MAX_PREVIEW_COORDINATE_FLOAT = 1e6F;
+/// Members of a preview mesh document: version, positions, uvs and indices.
+constexpr usize PREVIEW_MESH_FIELD_COUNT = 4;
+/// Most positions one preview mesh may declare.
+constexpr usize MAX_PREVIEW_MESH_POSITIONS = 4096;
+/// Most triangle indices one preview mesh may declare.
+constexpr usize MAX_PREVIEW_MESH_INDICES = 12288;
+/// Indices per triangle in a preview mesh index list.
+constexpr usize TRIANGLE_INDEX_COUNT = 3;
+/// Components of a preview mesh position (X, Y and Z).
+constexpr usize POSITION_COMPONENT_COUNT = 3;
+/// Largest width or height of a PNG preview texture, in pixels.
+constexpr int MAX_PREVIEW_TEXTURE_EXTENT = 2048;
 /// Unitless scale on the farthest scene-bound corner distance, so geometry on the bound is not
 /// clipped by rounding at a finite far plane.
 constexpr float32 FINITE_FAR_MARGIN = 1.01F;
@@ -348,8 +364,8 @@ bool Fields(const QJsonObject& object, const QStringList& fields)
 }
 bool Number(const QJsonValue& value, float32& output)
 {
-    if (value.isDouble() == false || math::IsFinite(value.toDouble()) == false || value.toDouble() < -1e6 ||
-        value.toDouble() > 1e6)
+    if (value.isDouble() == false || math::IsFinite(value.toDouble()) == false ||
+        value.toDouble() < -MAX_PREVIEW_COORDINATE || value.toDouble() > MAX_PREVIEW_COORDINATE)
     {
         return false;
     }
@@ -366,17 +382,19 @@ bool Mesh(const QByteArray& bytes, PreviewMesh& mesh, QString& error)
     const auto object = document.Root();
     const auto positions = object.Get("positions"), uvs = object.Get("uvs"), indices = object.Get("indices");
     uint64 version = 0;
-    if (object.Fields({"version", "positions", "uvs", "indices"}) == false || object.MemberCount() != 4 ||
-        object.Get("version").Integer(version) == false || version != 1 || positions.Array() == false ||
-        positions.Count() == 0 || positions.Count() > 4096 || uvs.Array() == false ||
-        uvs.Count() != positions.Count() || indices.Array() == false || indices.Count() == 0 ||
-        indices.Count() > 12288 || indices.Count() % 3 != 0)
+    if (object.Fields({"version", "positions", "uvs", "indices"}) == false ||
+        object.MemberCount() != PREVIEW_MESH_FIELD_COUNT || object.Get("version").Integer(version) == false ||
+        version != 1 || positions.Array() == false || positions.Count() == 0 ||
+        positions.Count() > MAX_PREVIEW_MESH_POSITIONS || uvs.Array() == false || uvs.Count() != positions.Count() ||
+        indices.Array() == false || indices.Count() == 0 || indices.Count() > MAX_PREVIEW_MESH_INDICES ||
+        indices.Count() % TRIANGLE_INDEX_COUNT != 0)
     {
         return Fail(error, QStringLiteral("Mesh needs v1, 1–4096 XYZ positions, matching UVs and triangle indices."));
     }
     const auto number = [](parsing::JsonValue source, float32& output) {
         float64 value = 0;
-        if (source.Number(value) == false || math::IsFinite(value) == false || value < -1e6 || value > 1e6)
+        if (source.Number(value) == false || math::IsFinite(value) == false || value < -MAX_PREVIEW_COORDINATE ||
+            value > MAX_PREVIEW_COORDINATE)
         {
             return false;
         }
@@ -388,7 +406,7 @@ bool Mesh(const QByteArray& bytes, PreviewMesh& mesh, QString& error)
         const auto xyz = positions.At(i), uv = uvs.At(i);
         math::Vector3 p;
         math::Vector2 t;
-        if (xyz.Array() == false || xyz.Count() != 3 || uv.Array() == false || uv.Count() != 2 ||
+        if (xyz.Array() == false || xyz.Count() != POSITION_COMPONENT_COUNT || uv.Array() == false || uv.Count() != 2 ||
             number(xyz.At(0), p.X) == false || number(xyz.At(1), p.Y) == false || number(xyz.At(2), p.Z) == false ||
             number(uv.At(0), t.X) == false || number(uv.At(1), t.Y) == false)
         {
@@ -674,7 +692,8 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
                 (void)buffer.open(QIODevice::ReadOnly);
                 QImageReader reader(&buffer, QByteArrayLiteral("png"));
                 const auto size = reader.size();
-                if (size.isValid() == false || size.width() > 2048 || size.height() > 2048)
+                if (size.isValid() == false || size.width() > MAX_PREVIEW_TEXTURE_EXTENT ||
+                    size.height() > MAX_PREVIEW_TEXTURE_EXTENT)
                 {
                     return Fail(error, QStringLiteral("%1: PNG preview must be 1–2048 pixels per axis.").arg(id));
                 }
@@ -810,8 +829,8 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
                 for (const auto vertex : candidate.Meshes[object.Mesh].Positions)
                 {
                     const auto p = math::TransformPoint(object.Transform, vertex);
-                    if (math::IsFinite(p) == false || math::Abs(p.X) > 1e6F || math::Abs(p.Y) > 1e6F ||
-                        math::Abs(p.Z) > 1e6F)
+                    if (math::IsFinite(p) == false || math::Abs(p.X) > MAX_PREVIEW_COORDINATE_FLOAT ||
+                        math::Abs(p.Y) > MAX_PREVIEW_COORDINATE_FLOAT || math::Abs(p.Z) > MAX_PREVIEW_COORDINATE_FLOAT)
                     {
                         return Fail(error, name + QStringLiteral(": transformed geometry exceeds preview bounds."));
                     }

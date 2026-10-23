@@ -70,6 +70,11 @@ RasterStatus TimingArm() noexcept
 void TimingBegin() noexcept {}
 void TimingEnd() noexcept
 {
+    if (gTiming.State == GpuTimingState::Armed && hasNativeComputeSplit == true)
+    {
+        gTiming.State = GpuTimingState::Disjoint;
+        return;
+    }
     if (gTiming.State == GpuTimingState::Armed)
     {
         gTimingCommand = gCommand;

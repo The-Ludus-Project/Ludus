@@ -1,6 +1,7 @@
 #include "internal/file_input.hpp"
 #include <ludus/audio/audio_source.h>
 #include <ludus/audio/content/loader.h>
+#include <ludus/content/limits.h>
 #include <ludus/foundation/base/config.h>
 
 #include <atomic>
@@ -16,6 +17,8 @@ namespace ludus::audio::content
 {
 namespace
 {
+/// A revision slot whose generation reached this value is retired, so handles never wrap.
+constexpr uint32 LAST_REUSABLE_GENERATION = 0xFFFFFFFEU;
 // Owner provenance is process-local and never reused, including after destruction.
 std::atomic<uint64> NEXT_OWNER{1};
 uint64 ReserveOwner() noexcept
@@ -319,7 +322,8 @@ ContentStatus Loader::Begin(std::string_view root,
     {
         return ContentStatus::Pending;
     }
-    if (ludus::content::ValidId(id) == false || root.size() > 4096 || (draft != nullptr && musicDraft != nullptr))
+    if (ludus::content::ValidId(id) == false || root.size() > ludus::content::MAX_ROOT_BYTES ||
+        (draft != nullptr && musicDraft != nullptr))
     {
         return ContentStatus::Invalid;
     }
@@ -480,7 +484,7 @@ ContentStatus Loader::Poll(const Routing& routing, Lease& output, Diagnostic& di
     uint32 index = 64;
     for (uint32 i = 0; i < 64; ++i)
     {
-        if (mImpl->Revisions[i].InUse == false && mImpl->Revisions[i].Generation < 0xFFFFFFFEU)
+        if (mImpl->Revisions[i].InUse == false && mImpl->Revisions[i].Generation < LAST_REUSABLE_GENERATION)
         {
             index = i;
             break;

@@ -12,6 +12,13 @@ namespace ludus::runtime::game_host::protocol
 namespace
 {
 using ludus::foundation::uint8;
+/// UTF-16 surrogate ranges in `\\u` escapes: a high surrogate must be followed by a low one.
+constexpr uint32 HIGH_SURROGATE_FIRST = 0xD800;
+constexpr uint32 HIGH_SURROGATE_LAST = 0xDBFF;
+constexpr uint32 LOW_SURROGATE_FIRST = 0xDC00;
+constexpr uint32 LOW_SURROGATE_LAST = 0xDFFF;
+/// Hexadecimal characters of a 64-bit identifier.
+constexpr usize HEX_ID_CHARACTERS = 16;
 
 void AppendEscaped(std::string& out, std::string_view value)
 {
@@ -174,7 +181,7 @@ struct Scanner
                         {
                             return false;
                         }
-                        if (code >= 0xD800 && code <= 0xDBFF)
+                        if (code >= HIGH_SURROGATE_FIRST && code <= HIGH_SURROGATE_LAST)
                         {
                             if (pos + 2 > text.size() || text.substr(pos, 2) != "\\u")
                             {
@@ -182,7 +189,7 @@ struct Scanner
                             }
                             pos += 2;
                             uint32 low = 0;
-                            if (ParseHexQuad(low) == false || low < 0xDC00 || low > 0xDFFF)
+                            if (ParseHexQuad(low) == false || low < LOW_SURROGATE_FIRST || low > LOW_SURROGATE_LAST)
                             {
                                 return false;
                             }
@@ -611,7 +618,7 @@ bool Message::GetBool(std::string_view key, bool& out) const
 bool Message::GetHexId(std::string_view key, uint64& out) const
 {
     std::string text;
-    if (GetString(key, text) == false || text.size() != 16)
+    if (GetString(key, text) == false || text.size() != HEX_ID_CHARACTERS)
     {
         return false;
     }

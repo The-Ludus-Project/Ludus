@@ -1414,8 +1414,8 @@ RasterStatus CompileGraph(GraphRecord& graph, FullGraphReport& report, bool refe
         report.Summary.ErrorPass = static_cast<uint32>(p);
         const auto& pass = graph.Passes[p];
         live[p] = reference || pass.SideEffect || (pass.IsCompute == false && pass.Info.Texture == RASTER_INVALID);
-        bool attachment = pass.IsCompute == false && pass.Info.Texture == RASTER_INVALID;
-        if (attachment)
+        bool isAttachment = pass.IsCompute == false && pass.Info.Texture == RASTER_INVALID;
+        if (isAttachment)
         {
             const auto& state = pass.Info.Description;
             if ((state.ColorLoad == RasterLoad::Load && surfaceColor == false) ||
@@ -1548,7 +1548,7 @@ RasterStatus CompileGraph(GraphRecord& graph, FullGraphReport& report, bool refe
             }
             else
             {
-                attachment = true;
+                isAttachment = true;
                 const auto& texture = At(RasterKind::Texture, resource.Slot);
                 const auto index = SubresourceIndex(texture.Texture,
                                                     resolve ? selected->ResolveMip : selected->Mip,
@@ -1694,7 +1694,7 @@ RasterStatus CompileGraph(GraphRecord& graph, FullGraphReport& report, bool refe
                 }
             }
         }
-        if (attachment == false && pass.IsCompute == false)
+        if (isAttachment == false && pass.IsCompute == false)
         {
             return RasterStatus::InvalidDescription;
         }
@@ -2166,6 +2166,20 @@ RasterStatus ExecuteGraphCommands(DeviceHandle device,
     {
         return RasterStatus::InvalidState;
     }
+    usize nativePassCount = 0;
+    for (usize index = 0; index < graph->PassCount; ++index)
+    {
+        const GraphPassRecord& pass = graph->Passes[index];
+        if (graph->Report.Passes[index].Culled == false && pass.IsCompute == true &&
+            At(RasterKind::ComputePipeline, pass.Dispatch.Pipeline).Compute.Native.SubmitOrNull != nullptr)
+        {
+            ++nativePassCount;
+        }
+    }
+    if (nativePassCount > MAX_NATIVE_COMPUTE_PASSES_PER_FRAME - (shouldSubmit == true ? 0 : gNativeComputePassCount))
+    {
+        return RasterStatus::CapacityExceeded;
+    }
     if (graph->Report.Summary.DrawCount >
         CurrentDeviceProfile().Raster.DrawsPerFrame - (shouldSubmit == true ? 0 : gDrawCount))
     {
@@ -2283,8 +2297,8 @@ RasterStatus ExecuteGraphCommands(DeviceHandle device,
             continue;
         }
         const auto& pass = graph->Passes[p];
-        const bool continuation = pass.IsCompute == false && graph->Report.Passes[p].RasterGroup != p;
-        if (continuation == false)
+        const bool isContinuation = pass.IsCompute == false && graph->Report.Passes[p].RasterGroup != p;
+        if (isContinuation == false)
         {
             backend::RasterEndPass();
             gpuScope.End();

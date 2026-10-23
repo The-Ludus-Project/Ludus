@@ -25,11 +25,13 @@ struct FieldSpec
     uint32 Max = 0;
     uint32 Default = 0;
 };
+/// Most fields one script state record holds.
+inline constexpr uint32 MAX_STATE_FIELDS = 16;
 struct StateRecord
 {
     uint32 Schema = 0;
     uint32 Count = 0;
-    FieldValue Fields[16];
+    FieldValue Fields[MAX_STATE_FIELDS];
 };
 // Versioned LE tagged records: no native layout, pointer, VM object or hidden
 // upvalue. All functions preserve output on failure. Missing new fields use the

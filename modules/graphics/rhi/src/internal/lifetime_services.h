@@ -907,7 +907,8 @@ RasterStatus RequestBufferReadback(DeviceHandle device,
     {
         return buffer->Status;
     }
-    if (size == 0 || size % 4 != 0 || offset % 4 != 0 || Fits(offset, size, buffer->Buffer.Size) == false)
+    if (size == 0 || size % internal::BUFFER_ALIGNMENT_BYTES != 0 || offset % internal::BUFFER_ALIGNMENT_BYTES != 0 ||
+        Fits(offset, size, buffer->Buffer.Size) == false)
     {
         return RasterStatus::InvalidDescription;
     }

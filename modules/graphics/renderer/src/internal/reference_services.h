@@ -764,8 +764,8 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
                 triangle.Colors[corner] =
                     instance.Surface->AreAuthoredInputsEnabled ? mesh.Colors[vertex] : math::Vector4{1, 1, 1, 1};
                 const auto p = triangle.Positions[corner];
-                if (math::IsFinite(p) == false || math::Abs(p.X) > 1000000 || math::Abs(p.Y) > 1000000 ||
-                    math::Abs(p.Z) > 1000000)
+                if (math::IsFinite(p) == false || math::Abs(p.X) > internal::MAX_WORLD_COORDINATE ||
+                    math::Abs(p.Y) > internal::MAX_WORLD_COORDINATE || math::Abs(p.Z) > internal::MAX_WORLD_COORDINATE)
                 {
                     return Status::Unsupported;
                 }
@@ -1094,8 +1094,9 @@ ReferenceQuery(ReferenceJob& job, rhi::RayQueryProgram program, ReferenceTravers
     for (usize i = 0; i < job.QueryCount; ++i)
     {
         const auto origin = internal::ReferenceOrigin(job.Rays[i]);
-        if (math::IsFinite(origin) == false || math::Abs(origin.X) > 1000000 || math::Abs(origin.Y) > 1000000 ||
-            math::Abs(origin.Z) > 1000000)
+        if (math::IsFinite(origin) == false || math::Abs(origin.X) > internal::MAX_WORLD_COORDINATE ||
+            math::Abs(origin.Y) > internal::MAX_WORLD_COORDINATE ||
+            math::Abs(origin.Z) > internal::MAX_WORLD_COORDINATE)
         {
             ++job.Info.InvalidContributions;
             for (usize path = 0; path < job.PathCount; ++path)

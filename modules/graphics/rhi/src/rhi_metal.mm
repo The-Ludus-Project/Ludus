@@ -105,6 +105,15 @@ struct Pipeline final
 id<MTLDevice> gDevice = nil;
 id<MTLCommandQueue> gQueue = nil;
 id<MTLCommandBuffer> gSubmitted[FRAMES]{};
+constexpr usize PREFIXES_PER_NATIVE_COMPUTE = 3;
+constexpr usize MAX_NATIVE_COMPUTE_PREFIXES = MAX_NATIVE_COMPUTE_PASSES_PER_FRAME * PREFIXES_PER_NATIVE_COMPUTE;
+struct MetalCommandPrefixes final
+{
+    id<MTLCommandBuffer> CommandsOrNull[MAX_NATIVE_COMPUTE_PREFIXES]{};
+    usize Count = 0;
+};
+MetalCommandPrefixes gCommandPrefixes[FRAMES]{};
+bool hasNativeComputeSplit = false;
 id<MTLCommandBuffer> gCommand = nil;
 id<MTLRenderCommandEncoder> gEncoder = nil;
 id<MTLTexture> gHeadless = nil;
@@ -437,6 +446,8 @@ FrameStatus Begin() noexcept
             return FrameStatus::Failed;
         }
         gSubmitted[gSlot] = nil;
+        gCommandPrefixes[gSlot] = {};
+        hasNativeComputeSplit = false;
         id<MTLTexture> texture = nil;
         if (gHosted.IsConnected() == true)
         {

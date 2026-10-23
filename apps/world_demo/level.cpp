@@ -9,6 +9,12 @@ namespace ludus::world_demo
 {
 namespace
 {
+/// Fastest movement speed a level may give an actor, in world units per second.
+constexpr float32 MAX_ACTOR_SPEED = 32.0F;
+/// Largest starting health a level may give an actor.
+constexpr uint32 MAX_ACTOR_HEALTH = 100000;
+/// Initial capacity of the canonical level text buffers, in bytes.
+constexpr usize LEVEL_TEXT_CAPACITY_BYTES = 65536;
 class Reader final
 {
 public:
@@ -790,7 +796,8 @@ LevelError ValidateLevel(const Level& level) noexcept
         }
         else
         {
-            if ((recipe.Speed > 0) == false || recipe.Speed > 32 || recipe.Health == 0 || recipe.Health > 100000)
+            if ((recipe.Speed > 0) == false || recipe.Speed > MAX_ACTOR_SPEED || recipe.Health == 0 ||
+                recipe.Health > MAX_ACTOR_HEALTH)
             {
                 return LevelError::InvalidValue;
             }
@@ -885,7 +892,7 @@ bool WriteLevel(const Level& level, core::Array<char>& output) noexcept
         return false;
     }
     Writer writer;
-    if (writer.Data.TryEnsureCapacity(65536) == false)
+    if (writer.Data.TryEnsureCapacity(LEVEL_TEXT_CAPACITY_BYTES) == false)
     {
         return false;
     }
@@ -983,7 +990,7 @@ bool WriteLevel(const Level& level, core::Array<char>& output) noexcept
     // Formatting is cold-path work. Names are validated ASCII identifiers, so
     // the canonical compact stream has no escaped quotes to interpret here.
     core::Array<char> formatted;
-    if (formatted.TryEnsureCapacity(65536) == false)
+    if (formatted.TryEnsureCapacity(LEVEL_TEXT_CAPACITY_BYTES) == false)
     {
         return false;
     }

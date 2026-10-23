@@ -41,11 +41,11 @@ struct SequentialEntropy final
 };
 
 /// Deterministic source that fills each request with one byte value, then increments it,
-/// so successive UUIDs differ. `state` must outlive every use of the returned source.
-inline foundation::identity::EntropySource MakeSequentialEntropySource(SequentialEntropy& state) noexcept
+/// so successive UUIDs differ. `inoutState` must outlive every use of the returned source.
+inline foundation::identity::EntropySource MakeSequentialEntropySource(SequentialEntropy& inoutState) noexcept
 {
     foundation::identity::EntropySource source;
-    source.ContextOrNull = &state;
+    source.ContextOrNull = &inoutState;
     source.FillBytesOrNull = [](void* contextOrNull, foundation::uint8* outBytes, foundation::usize size) noexcept {
         if (contextOrNull == nullptr)
         {

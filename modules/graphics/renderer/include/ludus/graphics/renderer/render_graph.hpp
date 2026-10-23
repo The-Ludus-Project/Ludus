@@ -41,7 +41,7 @@ struct RenderGraphPlan final
     foundation::BorrowedView<const content::render_graph_format::UniformField> UniformFields;
     /// Optional authored names, one per Passes entry, copied during Initialize. Nonempty UTF-8,
     /// shorter than rhi::GPU_SCOPE_NAME_BYTES. Empty table uses a generic label with a stable ordinal identity.
-    // Keep optional names compatible with positional aggregate callers.
+    // Preserve warning-clean aggregate callers that omit this optional table.
     // NOLINTNEXTLINE(readability-redundant-member-init)
     foundation::BorrowedView<const foundation::BorrowedView<const char>> PassNames{};
     /// Native ray storage descriptors, copied during Initialize. Empty for legacy/raster plans.

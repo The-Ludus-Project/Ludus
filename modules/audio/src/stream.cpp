@@ -11,6 +11,11 @@
 
 namespace ludus::audio::internal
 {
+namespace
+{
+/// Chunks decoded before a stream starts playing: half of its ring.
+constexpr uint32 PRIMED_CHUNK_COUNT = static_cast<uint32>(STREAM_CHUNK_COUNT / 2);
+} // namespace
 StreamData::~StreamData() noexcept
 {
     auto* decoder = static_cast<ma_decoder*>(Decoder);
@@ -115,7 +120,7 @@ Status StreamData::Configure(const StreamDescriptor& descriptor, uint32 rate) no
             return Status::InvalidArgument;
         }
     }
-    for (uint32 i = 0; i < 4 && WorkerEof == false; ++i)
+    for (uint32 i = 0; i < PRIMED_CHUNK_COUNT && WorkerEof == false; ++i)
     {
         Refill();
     }

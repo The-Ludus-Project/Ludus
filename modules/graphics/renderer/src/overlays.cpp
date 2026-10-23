@@ -15,6 +15,9 @@ using Status = rhi::RasterStatus;
 static_assert(sizeof(OverlayVertex) == 48);
 namespace
 {
+/// Overlay shaders take three Float4 vertex inputs and sample one texture with one sampler.
+constexpr usize OVERLAY_VERTEX_INPUT_COUNT = 3;
+constexpr usize OVERLAY_FRAGMENT_BINDING_COUNT = 2;
 bool Accepted(Status status) noexcept
 {
     return status == Status::Ready || status == Status::Pending;
@@ -375,13 +378,13 @@ Status OverlayRenderer::Initialize(rhi::DeviceHandle device,
     {
         return Status::InvalidState;
     }
-    if (vertex.Inputs.size() != 3 || vertex.Bindings.empty() == false || fragment.Inputs.empty() == false ||
-        fragment.Bindings.size() != 2 || vertex.Artifact.Stage != rhi::ShaderStage::Vertex ||
-        fragment.Artifact.Stage != rhi::ShaderStage::Fragment)
+    if (vertex.Inputs.size() != OVERLAY_VERTEX_INPUT_COUNT || vertex.Bindings.empty() == false ||
+        fragment.Inputs.empty() == false || fragment.Bindings.size() != OVERLAY_FRAGMENT_BINDING_COUNT ||
+        vertex.Artifact.Stage != rhi::ShaderStage::Vertex || fragment.Artifact.Stage != rhi::ShaderStage::Fragment)
     {
         return Status::InvalidDescription;
     }
-    for (usize i = 0; i < 3; ++i)
+    for (usize i = 0; i < OVERLAY_VERTEX_INPUT_COUNT; ++i)
     {
         if (vertex.Inputs[i].Location != i || vertex.Inputs[i].Format != rhi::RasterVertexFormat::Float4)
         {
@@ -390,7 +393,7 @@ Status OverlayRenderer::Initialize(rhi::DeviceHandle device,
     }
     const rhi::RasterBinding expected[]{{0, rhi::RasterBindingKind::Texture2D, rhi::RasterVisibility::Fragment, 0},
                                         {1, rhi::RasterBindingKind::Sampler, rhi::RasterVisibility::Fragment, 0}};
-    for (usize i = 0; i < 2; ++i)
+    for (usize i = 0; i < OVERLAY_FRAGMENT_BINDING_COUNT; ++i)
     {
         const auto& binding = fragment.Bindings[i];
         if (binding.Binding != expected[i].Binding || binding.Kind != expected[i].Kind ||

@@ -124,6 +124,8 @@ namespace
 using namespace foundation;
 using namespace internal;
 constexpr usize KINDS = static_cast<usize>(RasterKind::Count);
+/// Uniform members start on a 32-bit word.
+constexpr usize UNIFORM_MEMBER_ALIGNMENT_BYTES = 4;
 struct CpuTextureRecord final
 {
     StorageArray<uint8> Bytes;
@@ -186,6 +188,7 @@ uint64 gFrameSubmission = 0;
 uint64 gFirstAcceptedSubmission = 0;
 uint64 gLastAcceptedSubmission = 0;
 usize gDrawCount = 0;
+usize gNativeComputePassCount = 0;
 RasterPassInfo gRasterPass;
 bool gSurfaceColorDefined = true;
 bool gSurfaceDepthDefined = false;
@@ -277,7 +280,22 @@ void Dependencies(Record& record, RasterKind kind, bool retain) noexcept
     }
     else if (kind == RasterKind::ComputePipeline)
     {
-        reference(RasterKind::Shader, record.Compute.Shader);
+        if (record.Compute.Native.SubmitOrNull != nullptr)
+        {
+            reference(RasterKind::Set, RasterAccess::Slot(record.Compute.Native.Bindings));
+            if (retain == true)
+            {
+                record.Compute.Native.RetainOrNull(record.Compute.Native.ContextOrNull);
+            }
+            else
+            {
+                record.Compute.Native.ReleaseOrNull(record.Compute.Native.ContextOrNull);
+            }
+        }
+        else
+        {
+            reference(RasterKind::Shader, record.Compute.Shader);
+        }
         reference(RasterKind::Layout, record.Compute.Layout);
     }
     else if (kind == RasterKind::RayScene)
@@ -320,6 +338,16 @@ void Collect() noexcept
             {
                 record.Status = backend::RayPoll(static_cast<RasterKind>(kind), slot);
             }
+        }
+    }
+    StorageTable<Record>& nativePipelines = gRecords[static_cast<usize>(RasterKind::ComputePipeline)];
+    for (usize slot = 0; slot < nativePipelines.GetSize(); ++slot)
+    {
+        Record& pipeline = nativePipelines[slot];
+        if (pipeline.Owner != 0 && pipeline.Status == RasterStatus::Pending &&
+            pipeline.Compute.Native.SubmitOrNull != nullptr)
+        {
+            pipeline.Status = backend::ComputeCreatePipeline(slot, pipeline.Compute, pipeline.Request);
         }
     }
     // Acyclic dependencies can expose another detached record in each pass.
@@ -1361,7 +1389,8 @@ CreateRasterShader(DeviceHandle device, const RasterShaderDescription& descripti
             valid |= binding.Binding == member.Binding && binding.Kind == RasterBindingKind::UniformBuffer &&
                      member.Offset < binding.MinSize;
         }
-        if (valid == false || member.Offset % 4 != 0 || member.Name.empty() || CopyName(member.Name, name) == false ||
+        if (valid == false || member.Offset % UNIFORM_MEMBER_ALIGNMENT_BYTES != 0 || member.Name.empty() ||
+            CopyName(member.Name, name) == false ||
             static_cast<uint8>(member.Shape) > static_cast<uint8>(RasterUniformShape::Float4x4Array))
         {
             return RasterStatus::InvalidDescription;
@@ -2176,8 +2205,8 @@ RasterStatus ValidateDraw(DeviceHandle device, const RasterDraw& draw, RasterPac
         }
         const usize count = info.Streams[i].PerInstance ? draw.InstanceCount : draw.VertexCount;
         if ((buffer->Buffer.Role != BufferRole::Vertex && buffer->Buffer.Role != BufferRole::StorageVertex) ||
-            slice.Offset % 4 != 0 || Fits(slice.Offset, slice.Size, buffer->Buffer.Size) == false ||
-            count > slice.Size / info.Streams[i].Stride)
+            slice.Offset % internal::BUFFER_ALIGNMENT_BYTES != 0 ||
+            Fits(slice.Offset, slice.Size, buffer->Buffer.Size) == false || count > slice.Size / info.Streams[i].Stride)
         {
             return RasterStatus::InvalidDescription;
         }
@@ -2326,6 +2355,7 @@ void RasterBeginFrame() noexcept
 {
     gFrameSubmission = 0;
     gDrawCount = 0;
+    gNativeComputePassCount = 0;
     gRasterPass = {};
     gGraphExecuting = false;
     shouldBeginRasterPassAfterSpatialUpscale = false;
@@ -2405,6 +2435,12 @@ void ReleaseRasterResources() noexcept
             {
                 continue;
             }
+            if (static_cast<RasterKind>(kind) == RasterKind::ComputePipeline &&
+                record.Compute.Native.SubmitOrNull != nullptr)
+            {
+                record.Compute.Native.DrainOrNull(record.Compute.Native.ContextOrNull);
+                record.Compute.Native.ReleaseOrNull(record.Compute.Native.ContextOrNull);
+            }
             backend::RasterDestroy(static_cast<RasterKind>(kind), slot);
             ReleaseResourceStorage(record.StorageBytes);
             const auto generation = RasterNextGeneration(record.Generation);
@@ -2420,6 +2456,7 @@ void ReleaseRasterResources() noexcept
     gLastAcceptedSubmission = 0;
     gFrameSubmission = 0;
     gDrawCount = 0;
+    gNativeComputePassCount = 0;
 }
 } // namespace internal
 RasterStatus GetAllocationTelemetry(DeviceHandle device, AllocationTelemetry& output) noexcept

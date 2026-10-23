@@ -40,6 +40,9 @@ struct GpuPreviewGraphInvocation final
     /// Graph-owned display conversion: zero bypasses it; a finite multiplier in the RenderGraphFormat
     /// tone-mapping exposure range applies Reinhard and sRGB after optional accumulation.
     foundation::float32 ToneMappingExposure = 0;
+    /// Zero bypasses OIDN. Otherwise RenderGraphFormat::ProcessingQuality selects RT HDR
+    /// filtering before display conversion. Metal GPU only; unavailable builds reject explicitly.
+    foundation::uint32 DenoisingQuality = 0;
 };
 namespace internal
 {

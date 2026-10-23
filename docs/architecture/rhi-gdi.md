@@ -1037,6 +1037,32 @@ Browser backends return Unsupported and never silently select CPU traversal.
 Texture CPU content is separately opt-in for initialized RGBA8 mips; retained
 views keep the upload shadow alive after the texture owner detaches.
 
+
+### Native compute library adapters
+
+`CreateNativeComputePipeline` admits a storage-buffer-only adapter into the ordinary
+compute registry. The immutable binding snapshot, layout and context are retained
+through graph and GPU completion. Prepare runs between frames and can return
+Pending while a worker initializes
+private resources, without touching bound buffer contents. Context and bindings
+remain retained until preparation completes, including cancellation; shutdown
+drains pending setup before native resources disappear. Submit must use the exact
+prepared private queue without waiting or reentering RHI.
+Dispatch uses the exact snapshot and unit workgroup counts. The shared
+`MAX_NATIVE_COMPUTE_PASSES_PER_FRAME` limit is checked before encoding, so excess
+work preserves the graph and completion output. The initial Metal
+implementation commits the preceding RHI encoder, signals a native event,
+orders the library's private queue after that event, and orders subsequent RHI
+work after the library's completion event. Completion of the last RHI command
+buffer covers all preceding operations. Private preparation never submits on a
+borrowed framework queue. The shutdown-only Drain callback completes private
+preparation before buffers or the private queue are destroyed. Prefix command
+buffers remain
+retained for error checks. The renderer owns OIDN policy and library objects; RHI
+contains no denoising dependency. Vulkan/browser adapters are unsupported.
+See the [OIDN graph contract](../development/render-graph-authoring.md#denoise-ray-output-with-oidn)
+for quality, signal and accounting limitations.
+
 ## Native spatial reconstruction
 
 `spatial_upscale.h` prepares device-scoped MetalFX Spatial effects outside frames.

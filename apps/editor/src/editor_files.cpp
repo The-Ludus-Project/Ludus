@@ -33,6 +33,12 @@ namespace ludus::editor
 {
 namespace
 {
+/// Most files one imported project may contain.
+constexpr qsizetype MAX_IMPORTED_PROJECT_FILES = 4096;
+/// Archive bytes one entry may add beyond its data: a 512-byte ustar header,
+/// up to 511 bytes of block padding and the 1024-byte end-of-archive marker.
+constexpr foundation::int64 ARCHIVE_ENTRY_OVERHEAD_BYTES = 2048;
+
 bool IsGeneratedProjectPath(const QString& relative)
 {
     for (const auto& name : {QStringLiteral("out"),
@@ -69,6 +75,8 @@ namespace
 {
 constexpr foundation::int64 MAX_DOCUMENT_BYTES = 1024LL * 1024;
 constexpr foundation::int64 MAX_IMPORT_BYTES = 32 * MAX_DOCUMENT_BYTES;
+/// Most entries accepted from the browser picker before generated folders are skipped.
+constexpr foundation::uint32 MAX_PICKED_BROWSER_FILES = 100000;
 foundation::int64 ImportedBytes = 0;
 foundation::uint32 ImportSerial = 0;
 
@@ -184,7 +192,7 @@ void OpenEditorDocument(QWidget* owner,
             }
             const auto files = state->Input["files"];
             const auto count = files["length"].as<foundation::uint32>();
-            if (count == 0 || count > 100000 || (state->Folder == false && count != 1))
+            if (count == 0 || count > MAX_PICKED_BROWSER_FILES || (state->Folder == false && count != 1))
             {
                 Report(state->Owner,
                        QStringLiteral("Choose a source project folder with at most 4096 imported files."));
@@ -598,7 +606,7 @@ void OpenBrowserSceneImport(QWidget* owner, bool isFolder, const std::function<v
 
 bool ValidateEditorImportPaths(const QStringList& paths, bool folder, QString& descriptor)
 {
-    if (paths.isEmpty() || paths.size() > 4096 || (folder == false && paths.size() != 1))
+    if (paths.isEmpty() || paths.size() > MAX_IMPORTED_PROJECT_FILES || (folder == false && paths.size() != 1))
     {
         return false;
     }
@@ -669,8 +677,9 @@ bool EncodeEditorProjectArchive(const QString& directory, QByteArray& archive)
             continue;
         }
         QFile input(path);
-        if (++count > 4096 || QFileInfo(path).isSymLink() || input.open(QIODevice::ReadOnly) == false ||
-            input.size() > maxBytes || result.size() + input.size() + 2048 > maxBytes)
+        if (++count > MAX_IMPORTED_PROJECT_FILES || QFileInfo(path).isSymLink() ||
+            input.open(QIODevice::ReadOnly) == false || input.size() > maxBytes ||
+            result.size() + input.size() + ARCHIVE_ENTRY_OVERHEAD_BYTES > maxBytes)
         {
             return false;
         }

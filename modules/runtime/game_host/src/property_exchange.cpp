@@ -16,6 +16,10 @@ using namespace game_api;
 using ludus::foundation::Array;
 using protocol::CommandStatus;
 using protocol::Message;
+/// Range of an Int32 property edit, and the largest Enum value (a non-negative int32).
+constexpr protocol::int64 MIN_INT32_VALUE = -2147483648LL;
+constexpr protocol::int64 MAX_INT32_VALUE = 2147483647LL;
+constexpr uint64 MAX_ENUM_VALUE = 2147483647ULL;
 
 [[nodiscard]] uint32 FloatBits(float32 value) noexcept
 {
@@ -198,7 +202,7 @@ struct Snapshot
         }
         case PropertyKind::Int32: {
             protocol::int64 value = 0;
-            if (record.GetInt("value", value) == false || value < -2147483648LL || value > 2147483647LL)
+            if (record.GetInt("value", value) == false || value < MIN_INT32_VALUE || value > MAX_INT32_VALUE)
             {
                 return false;
             }
@@ -208,7 +212,7 @@ struct Snapshot
         }
         case PropertyKind::Enum: {
             uint64 value = 0;
-            if (record.GetUint("value", value) == false || value > 2147483647ULL)
+            if (record.GetUint("value", value) == false || value > MAX_ENUM_VALUE)
             {
                 return false;
             }

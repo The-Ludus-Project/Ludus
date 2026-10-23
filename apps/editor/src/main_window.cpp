@@ -99,7 +99,8 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
       mCancelGraphAction(CreateEditorCommand(RENDER_GRAPH_CANCEL_COMMAND, this)),
       mOptionsAction(CreateEditorCommand(TOOLS_OPTIONS_COMMAND, this)),
       mProjectSettingsAction(CreateEditorCommand(PROJECT_SETTINGS_COMMAND, this)),
-      mResetLayoutAction(CreateEditorCommand(WINDOW_RESET_LAYOUT_COMMAND, this))
+      mResetLayoutAction(CreateEditorCommand(WINDOW_RESET_LAYOUT_COMMAND, this)),
+      mFocusViewportAction(CreateEditorCommand(VIEW_FOCUS_VIEWPORT_COMMAND, this))
 {
     setWindowTitle(QStringLiteral("Ludus Editor"));
     setWindowIcon(QIcon(QStringLiteral(":/ludus/ludus-icon.png")));
@@ -112,6 +113,7 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
     connect(mDocuments, &DocumentWell::ActiveDocumentChanged, this, &MainWindow::renderActiveDocument);
     connect(mProjectExplorer, &ProjectExplorer::OpenRequested, this, &MainWindow::openProjectItem);
     connect(mErrorList, &ErrorList::EntryActivated, this, &MainWindow::activateErrorEntry);
+    connect(mErrorList, &ErrorList::ProblemsReported, this, &MainWindow::revealErrorList);
     mBuildErrorsTimer.setSingleShot(true);
     mBuildErrorsTimer.setInterval(BUILD_ERRORS_DELAY_MILLISECONDS);
     connect(&mBuildErrorsTimer, &QTimer::timeout, this, &MainWindow::renderBuildErrors);
@@ -520,6 +522,9 @@ void MainWindow::BuildMenus()
     {
         toolbars->addAction(toolbar->toggleViewAction());
     }
+    viewMenu->addSeparator();
+    viewMenu->addAction(mFocusViewportAction);
+    connect(mFocusViewportAction, &QAction::toggled, this, &MainWindow::setViewportFocused);
 
     // Visual Studio keeps editor-wide preferences in Tools > Options.
     QMenu* toolsMenu = menuBar()->addMenu(QStringLiteral("&Tools"));
@@ -991,8 +996,8 @@ void MainWindow::RenderRecentProjects()
     RecentMenu_->clear();
     for (const RecentProject& project : projects)
     {
-        const bool missing = QFileInfo(project.DescriptorPath).isFile() == false;
-        const QString name = missing ? QStringLiteral("%1 (missing)").arg(project.Name) : project.Name;
+        const bool isMissing = QFileInfo(project.DescriptorPath).isFile() == false;
+        const QString name = isMissing ? QStringLiteral("%1 (missing)").arg(project.Name) : project.Name;
         auto* item = new QListWidgetItem(name + QStringLiteral("\n") + project.DescriptorPath, RecentList_);
         item->setIcon(windowIcon());
         item->setData(Qt::UserRole, project.DescriptorPath);
@@ -1237,14 +1242,21 @@ void MainWindow::RenderStatus()
     ProjectSetupStatus_->setText(setupStatus);
     const bool hasSetupProblem =
         state.Document == DocumentState::ProjectLoaded && state.SetupProblem.isEmpty() == false;
-    mSetupNoticeOrNull->setVisible(hasSetupProblem);
-    mSetupNoticeTextOrNull->setToolTip(state.SetupProblem);
+    if (hasSetupProblem == false)
+    {
+        mDismissedSetupProblem.clear();
+    }
+    // Dismissed and Focus Viewport keep the notice hidden; the status bar still reports setup state.
+    mSetupNoticeOrNull->setVisible(hasSetupProblem == true && state.SetupProblem != mDismissedSetupProblem &&
+                                   mIsViewportFocused == false);
+    mSetupNoticeTextOrNull->setToolTip(
+        QStringLiteral("%1\n\nRepair now, or keep editing and repair later. Repair updates local build settings "
+                       "and verifies a build and tests.")
+            .arg(state.SetupProblem));
     mSetupNoticeTextOrNull->setText(
-        QStringLiteral("Project setup needs attention: %1\nRepair now, or keep editing and repair later. %2")
+        QStringLiteral("Setup needs attention: %1%2")
             .arg(state.SetupProblem.section(QLatin1Char('\n'), 0, 0),
-                 state.Dirty() == true
-                     ? QStringLiteral("Save project settings to enable repair.")
-                     : QStringLiteral("Repair updates local build settings and verifies a build and tests.")));
+                 state.Dirty() == true ? QStringLiteral(" Save project settings to enable repair.") : QString()));
 
     QString next;
 #if defined(Q_OS_WASM)
@@ -1333,9 +1345,11 @@ void MainWindow::RenderStatus()
     {
         status += QStringLiteral("  —  operator recovery required; see Copy Job Details");
     }
-    if (state.SetupStatus.isEmpty() == false)
+    // One status line: setup state is appended unless the last result already said it.
+    const QString setupSummary = state.SetupStatus.section(QLatin1Char('\n'), 0, 0);
+    if (setupSummary.isEmpty() == false && setupSummary != state.Result.Message.section(QLatin1Char('\n'), 0, 0))
     {
-        status += QStringLiteral("\n") + state.SetupStatus.section(QLatin1Char('\n'), 0, 0);
+        status += QStringLiteral("  —  ") + setupSummary;
     }
     StatusLabel_->setText(status);
     StatusLabel_->setToolTip(status + QStringLiteral("\n") + state.Result.Message + QStringLiteral("\n") +
@@ -1652,8 +1666,8 @@ void MainWindow::closeEvent(QCloseEvent* event)
             event->ignore();
             return;
         }
-        const bool busy = Controller_->Caps().CanCloseImmediately == false || Content_->Importing();
-        if (busy && CloseConfirmed_ == false)
+        const bool isBusy = Controller_->Caps().CanCloseImmediately == false || Content_->Importing();
+        if (isBusy && CloseConfirmed_ == false)
         {
             const auto choice = QMessageBox::question(
                 this,

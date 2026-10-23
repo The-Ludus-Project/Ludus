@@ -20,6 +20,8 @@ namespace ludus::editor
 {
 namespace
 {
+/// How long a save waits for another editor's project lock before reporting Busy.
+constexpr int PROJECT_LOCK_WAIT_MILLISECONDS = 250;
 
 // A validation failure carries a code and a field-specific message. Returned by
 // value so no exception path is involved.
@@ -741,7 +743,7 @@ ProjectStore::Save(const QString& descriptorPath, const ProjectDescriptor& draft
     QDir().mkpath(lockDirPath);
     QLockFile lock(QDir(lockDirPath).filePath(info.fileName() + QStringLiteral(".lock")));
     lock.setStaleLockTime(0);
-    if (lock.tryLock(250) == false)
+    if (lock.tryLock(PROJECT_LOCK_WAIT_MILLISECONDS) == false)
     {
         outcome.Code = ResultCode::Busy;
         outcome.Message = QStringLiteral("another editor holds the project settings lock");

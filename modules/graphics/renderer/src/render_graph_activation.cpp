@@ -159,6 +159,7 @@ struct RenderGraphPackage::State final
     bool HasExplicitToneMapping = false;
     bool HasBilinearUpscale = false;
     bool HasMetalFxSpatialUpscale = false;
+    bool HasDenoising = false;
     // DecodeUniforms validates and writes every active stage before any binding is published.
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     StaticArray<format::UniformBinding, format::MAX_UNIFORM_BINDINGS> UniformBindings{};
@@ -541,8 +542,10 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeRecords(ByteReader& in
             std::memcpy(&pass.ToneMappingExposure, &exposureBits, sizeof(exposureBits));
         }
         pass.SourceColor = HasBilinearUpscale == true ? inoutReader.ReadWord() : format::ABSENT;
+        pass.DenoisingQuality = HasDenoising == true ? inoutReader.ReadWord() : 0;
         const bool isUpscale = format::IsImageTechnique(static_cast<format::Technique>(program)) == true;
-        if ((isUpscale == true && (HasBilinearUpscale == false || pass.SceneData != 0)) ||
+        if (pass.DenoisingQuality > static_cast<uint32>(format::ProcessingQuality::High) ||
+            (isUpscale == true && (HasBilinearUpscale == false || pass.SceneData != 0)) ||
             (program > static_cast<uint32>(format::Technique::BilinearUpscale) && HasMetalFxSpatialUpscale == false) ||
             (isUpscale == false && pass.SourceColor != format::ABSENT) || program > MAX_TECHNIQUE ||
             (HasIndependentPrograms == false && program >= format::LEGACY_TECHNIQUE_COUNT) || colorLoad > MAX_LOAD ||
@@ -552,7 +555,7 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeRecords(ByteReader& in
              (pass.ToneMappingExposure >= format::MIN_TONE_MAPPING_EXPOSURE &&
               pass.ToneMappingExposure <= format::MAX_TONE_MAPPING_EXPOSURE) == false) ||
             (program != static_cast<uint32>(format::Technique::RayTracing) &&
-             (pass.AccumulationSamples != 0 || pass.ToneMappingExposure != 0)) ||
+             (pass.AccumulationSamples != 0 || pass.ToneMappingExposure != 0 || pass.DenoisingQuality != 0)) ||
             (pass.SceneData & ~::ludus::content::render_graph_format::SCENE_DATA_ALL) != 0 ||
             (isUpscale == false && (pass.SceneData & ::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY) == 0))
         {
@@ -599,14 +602,14 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != format::PACKAGE_MAGIC ||
-        (version != format::METALFX_SPATIAL_PACKAGE_VERSION && version != format::BILINEAR_UPSCALE_PACKAGE_VERSION &&
-         version != format::TONE_MAPPING_PACKAGE_VERSION && version != format::ACCUMULATION_PACKAGE_VERSION &&
-         version != format::FORWARD_PACKAGE_VERSION && version != format::PIXEL_BUFFER_PACKAGE_VERSION &&
-         version != format::VISIBILITY_PACKAGE_VERSION && version != format::ORDERED_PACKAGE_VERSION &&
-         version != format::STORAGE_PACKAGE_VERSION && version != format::INDEPENDENT_PROGRAM_PACKAGE_VERSION &&
-         version != format::NATIVE_RAY_PACKAGE_VERSION && version != format::SCENE_PACKAGE_VERSION &&
-         version != format::VIEW_PACKAGE_VERSION && version != format::NAMED_PACKAGE_VERSION &&
-         version != format::LEGACY_PACKAGE_VERSION))
+        (version != format::METALFX_SPATIAL_PACKAGE_VERSION && version != format::DENOISING_PACKAGE_VERSION &&
+         version != format::BILINEAR_PACKAGE_VERSION && version != format::TONE_MAPPING_PACKAGE_VERSION &&
+         version != format::ACCUMULATION_PACKAGE_VERSION && version != format::FORWARD_PACKAGE_VERSION &&
+         version != format::PIXEL_BUFFER_PACKAGE_VERSION && version != format::VISIBILITY_PACKAGE_VERSION &&
+         version != format::ORDERED_PACKAGE_VERSION && version != format::STORAGE_PACKAGE_VERSION &&
+         version != format::INDEPENDENT_PROGRAM_PACKAGE_VERSION && version != format::NATIVE_RAY_PACKAGE_VERSION &&
+         version != format::SCENE_PACKAGE_VERSION && version != format::VIEW_PACKAGE_VERSION &&
+         version != format::NAMED_PACKAGE_VERSION && version != format::LEGACY_PACKAGE_VERSION))
     {
         return RenderGraphPackageStatus::UnsupportedVersion;
     }
@@ -617,8 +620,9 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
     candidate->HasForwardStages = version >= format::FORWARD_PACKAGE_VERSION;
     candidate->HasExplicitAccumulation = version >= format::ACCUMULATION_PACKAGE_VERSION;
     candidate->HasExplicitToneMapping = version >= format::TONE_MAPPING_PACKAGE_VERSION;
-    candidate->HasBilinearUpscale = version >= format::BILINEAR_UPSCALE_PACKAGE_VERSION;
+    candidate->HasBilinearUpscale = version >= format::BILINEAR_PACKAGE_VERSION;
     candidate->HasMetalFxSpatialUpscale = version >= format::METALFX_SPATIAL_PACKAGE_VERSION;
+    candidate->HasDenoising = version >= format::DENOISING_PACKAGE_VERSION;
     candidate->HasNativeRay = version >= format::NATIVE_RAY_PACKAGE_VERSION;
     candidate->HasIndependentPrograms = version >= format::INDEPENDENT_PROGRAM_PACKAGE_VERSION;
     candidate->HasVisibilityFields = version >= format::VISIBILITY_PACKAGE_VERSION;

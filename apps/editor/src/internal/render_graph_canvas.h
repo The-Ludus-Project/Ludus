@@ -204,6 +204,8 @@ private:
     void refreshFeedback();
     void updateLinkFeedback(QPointF position);
     void fitGraph();
+    /// Scroll the view so its content moves by a viewport-pixel delta; never edits the draft.
+    void panBy(QPoint delta);
     void zoomAt(foundation::float64 factor, QPointF position);
 
     const RenderGraphDocument& mDocument;

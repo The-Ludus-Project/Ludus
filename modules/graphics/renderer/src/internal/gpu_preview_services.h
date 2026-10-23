@@ -22,6 +22,12 @@ namespace
 using internal::GpuPreviewRecord;
 using internal::GpuPreviewState;
 using internal::ReferenceJob;
+/// Bytes in one RGBA8 texel read from an authored preview image.
+constexpr usize RGBA8_TEXEL_BYTES = 4;
+/// Largest exposure multiplier a GPU preview accepts.
+constexpr float32 MAX_GPU_PREVIEW_EXPOSURE = 10000;
+/// GPU working memory charged per preview pixel: accumulation, sample and output images.
+constexpr usize GPU_PREVIEW_BYTES_PER_PIXEL = 64;
 static_assert(LUDUS_GRAPH_VISIBILITY_BINDING ==
               content::render_graph_format::FIRST_STORAGE_SLOT + content::render_graph_format::MAX_STORAGE_BUFFERS);
 // Shared cold serializer is defined by reference_services.h in this translation unit.
@@ -287,7 +293,9 @@ Status PackGpuScene(const ReferenceJob& job,
             for (usize x = 0; x < image.Width; ++x)
             {
                 uint32 word = 0;
-                if (foundation::TryReadLittleEndian({image.Bytes + y * image.RowPitch + x * 4, 4}, word) == false)
+                if (foundation::TryReadLittleEndian(
+                        {image.Bytes + y * image.RowPitch + x * RGBA8_TEXEL_BYTES, RGBA8_TEXEL_BYTES},
+                        word) == false)
                 {
                     return Status::InvalidDescription;
                 }
@@ -534,6 +542,18 @@ Status PollGpuJob(rhi::DeviceHandle device, GpuPreviewState& inoutState, GpuPrev
         {
             return Accepted(status) ? Status::Pending : (inoutJob.Setup = status);
         }
+        if (inoutJob.DenoisingQuality != 0)
+        {
+            const Status denoising = inoutJob.Denoiser.Prepare(device,
+                                                               inoutJob.Colors,
+                                                               inoutJob.Width,
+                                                               inoutJob.Height,
+                                                               inoutJob.DenoisingQuality);
+            if (denoising != Status::Ready)
+            {
+                return inoutJob.Setup = denoising;
+            }
+        }
         inoutJob.Setup = Status::Ready;
     }
     if (inoutJob.Setup != Status::Ready)
@@ -566,6 +586,8 @@ void Renderer::State::DropGpuPreview(usize slot) noexcept
 {
     GpuPreviewRecord& job = GpuPreview->Jobs[slot];
     job.CameraUpdate.Reset();
+    job.Denoiser.Reset();
+    job.DenoisingQuality = 0;
     job.HasPendingCamera = false;
     static_cast<void>(rhi::Destroy(Device, job.ComputeBindings));
     for (usize bufferIndex = 0; bufferIndex < internal::GPU_GRAPH_BUFFER_COUNT; ++bufferIndex)
@@ -670,7 +692,8 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
         return status;
     }
     if (options.CpuByteBudget <= sizeof(GpuPreviewState) || options.GpuByteBudget < 44 ||
-        math::IsFinite(options.Exposure) == false || options.Exposure <= 0 || options.Exposure > 10000)
+        math::IsFinite(options.Exposure) == false || options.Exposure <= 0 ||
+        options.Exposure > MAX_GPU_PREVIEW_EXPOSURE)
     {
         return Status::InvalidDescription;
     }
@@ -1014,6 +1037,8 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
           (invocationOrNull->ToneMappingExposure >= content::render_graph_format::MIN_TONE_MAPPING_EXPOSURE &&
            invocationOrNull->ToneMappingExposure <= content::render_graph_format::MAX_TONE_MAPPING_EXPOSURE) ==
               false) ||
+         invocationOrNull->DenoisingQuality >
+             static_cast<uint32>(content::render_graph_format::ProcessingQuality::High) ||
          invocationOrNull->AccumulationSamples > content::render_graph_format::MAX_ACCUMULATION_SAMPLES ||
          invocationOrNull->Program >= content::render_graph_format::MAX_RAY_PASSES ||
          invocationOrNull->Buffers.IsValid() == false ||
@@ -1021,6 +1046,11 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
           invocationOrNull->Buffers.GetSize() != internal::GPU_GRAPH_BUFFER_COUNT)))
     {
         return Status::InvalidDescription;
+    }
+    if (invocationOrNull != nullptr && invocationOrNull->DenoisingQuality != 0 &&
+        internal::IsGpuDenoisingAvailable() == false)
+    {
+        return Status::Unsupported;
     }
     usize slot = 0;
     status = FreeSlot(state.Jobs, slot);
@@ -1140,7 +1170,7 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     const usize texelBytes = texels.GetSize() * sizeof(math::Vector4);
     const usize uploadBytes = dataBytes + texelBytes;
     usize gpuBytes = 0;
-    if (foundation::TryMultiply(pixels, usize{64}, gpuBytes) == false ||
+    if (foundation::TryMultiply(pixels, GPU_PREVIEW_BYTES_PER_PIXEL, gpuBytes) == false ||
         foundation::TryAdd(gpuBytes, uploadBytes, gpuBytes) == false ||
         foundation::TryAdd(gpuBytes, sizeof(uniform) + sizeof(math::Vector4), gpuBytes) == false)
     {
@@ -1241,8 +1271,13 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
         uniform.Sampling[SAMPLE_LIMIT_COMPONENT] = invocationOrNull->AccumulationSamples;
     }
     uniform.Options.Y = invocationOrNull != nullptr ? invocationOrNull->ToneMappingExposure : state.Options.Exposure;
+    job.DenoisingQuality = invocationOrNull != nullptr ? invocationOrNull->DenoisingQuality : 0;
+    uniform.Sampling[2] |= job.DenoisingQuality != 0 ? LUDUS_GPU_PREVIEW_DENOISING_FLAG : 0;
     job.Uniform = uniform;
-    const math::Vector4 dimensions{float32(job.Width), float32(job.Height), 0, 0};
+    const math::Vector4 dimensions{float32(job.Width),
+                                   float32(job.Height),
+                                   job.DenoisingQuality != 0 ? uniform.Options.Y : 0,
+                                   0};
     status = rhi::CreateBuffer(mState->Device,
                                {rhi::BufferRole::Storage, dataBytes},
                                {reinterpret_cast<const uint8*>(data.GetData()), dataBytes},
@@ -1538,7 +1573,7 @@ Status Renderer::PrepareGpuPreviewGraphSequence(BorrowedView<const renderer::Gpu
 }
 Status Renderer::AdvanceGpuPreview(renderer::GpuPreview handle,
                                    rhi::SurfaceHandle surface,
-                                   rhi::SubmissionToken& completion) noexcept
+                                   rhi::SubmissionToken& outCompletion) noexcept
 {
     if (mState.Get() == nullptr || mState->GpuPreview.Get() == nullptr)
     {
@@ -1581,7 +1616,7 @@ Status Renderer::AdvanceGpuPreview(renderer::GpuPreview handle,
     status = internal::BuildGpuGraph(mState->Device, state, *job, frame, graph);
     if (status == Status::Ready)
     {
-        status = rhi::ExecuteOrderedGraph(mState->Device, surface, graph, completion);
+        status = rhi::ExecuteOrderedGraph(mState->Device, surface, graph, outCompletion);
     }
     static_cast<void>(rhi::DiscardOrderedGraph(mState->Device, graph));
     if (status != Status::Ready)
@@ -1589,7 +1624,7 @@ Status Renderer::AdvanceGpuPreview(renderer::GpuPreview handle,
         return status;
     }
     job->PendingFrame = frame;
-    job->Frames[frame].Producer = completion;
+    job->Frames[frame].Producer = outCompletion;
     job->Info.Pending = true;
     if (job->HasImage && job->LatestFrame == frame)
     {

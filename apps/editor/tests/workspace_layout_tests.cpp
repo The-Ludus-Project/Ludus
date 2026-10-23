@@ -1,6 +1,7 @@
 #include "internal/browser_player.h"
 #include "internal/controller.h"
 #include "internal/document_well.h"
+#include "internal/error_list.h"
 #include "internal/main_window.h"
 #include "internal/world_workspace.h"
 
@@ -15,9 +16,11 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QKeySequence>
 #include <QPixmap>
 #include <QScrollArea>
 #include <QSize>
+#include <QStatusBar>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QToolBar>
@@ -53,6 +56,9 @@ TEST_CASE("Browser players admit only shipped sample identifiers", "[editor][bro
 
 namespace
 {
+/// MainWindow's short-window threshold for opening the bottom tool-window group by default.
+constexpr int SHORT_WINDOW_HEIGHT_PIXELS = 1000;
+
 QDockWidget* Dock(MainWindow& window, const QString& name)
 {
     auto* dock = window.findChild<QDockWidget*>(name);
@@ -90,6 +96,14 @@ void CheckDefaultPanels(MainWindow& window)
     QDockWidget* errors = Dock(window, QStringLiteral("errorListDock"));
     CHECK(window.dockWidgetArea(inspector) == Qt::RightDockWidgetArea);
     CHECK(window.dockWidgetArea(output) == Qt::BottomDockWidgetArea);
+    // Short windows start with the bottom group closed; it is still arranged under the documents.
+    const bool isBottomOpen = errors->isHidden() == false;
+    CHECK(isBottomOpen == (window.height() >= SHORT_WINDOW_HEIGHT_PIXELS));
+    for (QDockWidget* dock : {output, errors, Dock(window, QStringLiteral("timingDock"))})
+    {
+        CHECK(dock->isHidden() == (isBottomOpen == false));
+        dock->show();
+    }
     for (QDockWidget* dock : {inspector, output, errors, Dock(window, QStringLiteral("projectExplorerDock"))})
     {
         CHECK_FALSE(dock->isHidden());
@@ -385,4 +399,203 @@ TEST_CASE("World stays visible beside tool windows and receives focused document
     CHECK(world->isVisible() == true);
     Reset(window);
     CHECK(world->isVisible() == true);
+}
+
+TEST_CASE("Focus Viewport hides chrome around the World viewport and restores the arrangement exactly",
+          "[editor][layout][focus-viewport]")
+{
+    QTemporaryDir directory;
+    const QString preferences = directory.filePath(QStringLiteral("workspace.json"));
+    EditorController controller(ToolingPaths{}, nullptr, directory.filePath(QStringLiteral("recent.json")));
+    QFile descriptor(directory.filePath(QStringLiteral("ludus.project.json")));
+    REQUIRE(descriptor.open(QIODevice::WriteOnly) == true);
+    descriptor.write(QByteArrayLiteral(R"json({"version":1,"name":"demo","provider":"cmake",
+"source_dir":".","preset":"linux-clang-debug","target":"app","run":{"cwd":".","args":[]}})json"));
+    descriptor.close();
+    {
+        MainWindow window(&controller, nullptr, preferences);
+        window.resize(1470, 920);
+        window.show();
+        controller.OpenProject(descriptor.fileName());
+        REQUIRE(controller.State().Document == DocumentState::ProjectLoaded);
+        QApplication::processEvents();
+        DocumentWell& well = window.GetDocumentWell();
+        WorldWorkspace* world = window.findChild<WorldWorkspace*>();
+        QWidget* project = window.findChild<QWidget*>(QStringLiteral("projectSettingsScroll"));
+        REQUIRE(world != nullptr);
+        REQUIRE(project != nullptr);
+        REQUIRE(well.OpenDocument(project) == true);
+        // A personal arrangement: one tool window moved, one closed, one toolbar hidden.
+        window.addDockWidget(Qt::LeftDockWidgetArea, Dock(window, QStringLiteral("outputDock")));
+        Dock(window, QStringLiteral("liveInspectorDock"))->hide();
+        window.findChild<QToolBar*>(QStringLiteral("renderGraphToolbar"))->hide();
+        QApplication::processEvents();
+
+        QAction* focus = window.findChild<QAction*>(QStringLiteral("view.focusViewport"));
+        REQUIRE(focus != nullptr);
+        CHECK(focus->isCheckable() == true);
+        CHECK(focus->shortcut() == QKeySequence(QStringLiteral("Shift+Alt+Return")));
+        QWidget* viewport = world->findChild<QWidget*>(QStringLiteral("worldViewport"));
+        REQUIRE(viewport != nullptr);
+        QWidget* viewportParent = viewport->parentWidget();
+        focus->trigger();
+        QApplication::processEvents();
+        CHECK(focus->isChecked() == true);
+        CHECK(well.GetActiveDocumentOrNull() == world);
+        for (QDockWidget* dock : window.findChildren<QDockWidget*>())
+        {
+            INFO(dock->objectName().toStdString());
+            CHECK(dock->isHidden() == true);
+        }
+        for (QToolBar* toolbar : window.findChildren<QToolBar*>(Qt::FindDirectChildrenOnly))
+        {
+            INFO(toolbar->objectName().toStdString());
+            CHECK(toolbar->isHidden() == true);
+        }
+        CHECK(world->IsChromeVisible() == false);
+        CHECK(world->findChild<QWidget*>(QStringLiteral("worldHeader"))->isHidden() == true);
+        CHECK(world->findChild<QWidget*>(QStringLiteral("worldHierarchyScroll"))->isHidden() == true);
+        CHECK(world->findChild<QWidget*>(QStringLiteral("worldStatus"))->isHidden() == true);
+        // The native viewport is neither hidden nor moved; it takes most of the window.
+        CHECK(viewport->isHidden() == false);
+        CHECK(viewport->parentWidget() == viewportParent);
+        CHECK(viewport->height() * 100 >= window.height() * 75);
+        CHECK(viewport->width() * 100 >= window.width() * 90);
+
+        // Closing while focused persists the arrangement Focus Viewport returns to.
+        REQUIRE(window.close() == true);
+    }
+    MainWindow window(&controller, nullptr, preferences);
+    window.show();
+    QApplication::processEvents();
+    CHECK(window.dockWidgetArea(Dock(window, QStringLiteral("outputDock"))) == Qt::LeftDockWidgetArea);
+    CHECK(Dock(window, QStringLiteral("liveInspectorDock"))->isHidden() == true);
+    CHECK(Dock(window, QStringLiteral("projectExplorerDock"))->isHidden() == false);
+    CHECK(window.findChild<QToolBar*>(QStringLiteral("renderGraphToolbar"))->isHidden() == true);
+    CHECK(window.findChild<QToolBar*>(QStringLiteral("standardToolbar"))->isHidden() == false);
+
+    // Leaving Focus Viewport returns the exact dock state and the previously active document.
+    DocumentWell& well = window.GetDocumentWell();
+    WorldWorkspace* world = window.findChild<WorldWorkspace*>();
+    QWidget* project = window.findChild<QWidget*>(QStringLiteral("projectSettingsScroll"));
+    REQUIRE(well.OpenDocument(project) == true);
+    QApplication::processEvents();
+    const QByteArray before = window.saveState();
+    QAction* focus = window.findChild<QAction*>(QStringLiteral("view.focusViewport"));
+    focus->trigger();
+    QApplication::processEvents();
+    CHECK(Dock(window, QStringLiteral("projectExplorerDock"))->isHidden() == true);
+    focus->trigger();
+    QApplication::processEvents();
+    CHECK(focus->isChecked() == false);
+    CHECK(window.saveState() == before);
+    CHECK(world->IsChromeVisible() == true);
+    CHECK(world->findChild<QWidget*>(QStringLiteral("worldHeader"))->isHidden() == false);
+    CHECK(world->findChild<QWidget*>(QStringLiteral("worldHierarchyScroll"))->isHidden() == false);
+    CHECK(well.GetActiveDocumentOrNull() == project);
+
+    // Reset Window Layout also leaves Focus Viewport.
+    focus->trigger();
+    Reset(window);
+    CHECK(focus->isChecked() == false);
+    CheckDefaultPanels(window);
+    CHECK(world->IsChromeVisible() == true);
+}
+
+TEST_CASE("Short windows start with the bottom tool windows closed until a problem is reported",
+          "[editor][layout][error-list]")
+{
+    QTemporaryDir directory;
+    EditorController controller(ToolingPaths{}, nullptr, directory.filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, directory.filePath(QStringLiteral("workspace.json")));
+    window.resize(1470, 920);
+    window.show();
+    QApplication::processEvents();
+    Reset(window);
+    QDockWidget* errors = Dock(window, QStringLiteral("errorListDock"));
+    for (const QString& name : {QStringLiteral("errorListDock"),
+                                QStringLiteral("outputDock"),
+                                QStringLiteral("timingDock"),
+                                QStringLiteral("profilingDock")})
+    {
+        INFO(name.toStdString());
+        CHECK(Dock(window, name)->isHidden() == true);
+    }
+    ErrorList* list = window.findChild<ErrorList*>();
+    REQUIRE(list != nullptr);
+    ErrorListEntry message;
+    message.Severity = ErrorListSeverity::Message;
+    message.Producer = ErrorListProducer::Build;
+    message.Description = QStringLiteral("Build finished.");
+    list->ReplaceEntries(ErrorListProducer::Build, {message});
+    QApplication::processEvents();
+    CHECK(errors->isHidden() == true);
+
+    // Focus Viewport stays in place; the status bar announces the problem instead.
+    QAction* focus = window.findChild<QAction*>(QStringLiteral("view.focusViewport"));
+    REQUIRE(focus != nullptr);
+    focus->trigger();
+    ErrorListEntry warning = message;
+    warning.Severity = ErrorListSeverity::Warning;
+    warning.Description = QStringLiteral("unused variable");
+    list->ReplaceEntries(ErrorListProducer::Build, {warning});
+    QApplication::processEvents();
+    CHECK(errors->isHidden() == true);
+    CHECK(window.statusBar()->currentMessage().contains(QStringLiteral("Error List")) == true);
+    focus->trigger();
+    QApplication::processEvents();
+    CHECK(errors->isHidden() == true);
+
+    ErrorListEntry error = warning;
+    error.Severity = ErrorListSeverity::Error;
+    list->ReplaceEntries(ErrorListProducer::Build, {error});
+    QApplication::processEvents();
+    CHECK(errors->isHidden() == false);
+    CHECK(window.dockWidgetArea(errors) == Qt::BottomDockWidgetArea);
+    CHECK(errors->height() <= window.height() / 3);
+
+    // Taller windows keep the bottom group open by default.
+    window.resize(1600, 1100);
+    Reset(window);
+    QApplication::processEvents();
+    if (window.height() >= SHORT_WINDOW_HEIGHT_PIXELS)
+    {
+        CHECK(errors->isHidden() == false);
+    }
+}
+
+TEST_CASE("The World viewport keeps most of a MacBook Air-sized editor window", "[editor][layout][world]")
+{
+    QTemporaryDir directory;
+    EditorController controller(ToolingPaths{}, nullptr, directory.filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, directory.filePath(QStringLiteral("workspace.json")));
+    QFile descriptor(directory.filePath(QStringLiteral("ludus.project.json")));
+    REQUIRE(descriptor.open(QIODevice::WriteOnly) == true);
+    descriptor.write(QByteArrayLiteral(R"json({"version":1,"name":"demo","provider":"cmake",
+"source_dir":".","preset":"linux-clang-debug","target":"app","run":{"cwd":".","args":[]}})json"));
+    descriptor.close();
+    // A 13-inch MacBook Air's default scale: about 1470 x 920 points for a maximized window.
+    window.resize(1470, 920);
+    window.show();
+    controller.OpenProject(descriptor.fileName());
+    QApplication::processEvents();
+    Reset(window);
+    WorldWorkspace* world = window.findChild<WorldWorkspace*>();
+    REQUIRE(world != nullptr);
+    REQUIRE(world->Create(QFileInfo(directory.path()).canonicalFilePath() + QStringLiteral("/air.world.json")) == true);
+    REQUIRE(window.GetDocumentWell().OpenDocument(world) == true);
+    QApplication::processEvents();
+    QWidget* viewport = world->findChild<QWidget*>(QStringLiteral("worldViewport"));
+    REQUIRE(viewport != nullptr);
+    REQUIRE(viewport->isVisible() == true);
+    INFO("window " << window.width() << "x" << window.height() << ", viewport " << viewport->width() << "x"
+                   << viewport->height());
+    // Before these limits the viewport had about 135 of 950 pixels of height.
+    CHECK(viewport->height() * 100 >= window.height() * 55);
+    CHECK(viewport->width() * 100 >= window.width() * 50);
+    const QString captures = qEnvironmentVariable("LUDUS_EDITOR_LAYOUT_CAPTURE");
+    if (captures.isEmpty() == false)
+    {
+        REQUIRE(window.grab().save(captures + QStringLiteral("-macbook-air.png")));
+    }
 }
