@@ -390,8 +390,20 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
 - **Window → Reset Window Layout** restores the default documents-first
   arrangement, all tool windows and toolbars, sized for the current window
   (the right column takes about a fifth of the width and the bottom group about
-  a quarter of the height, enough for several Error List rows). It never changes
+  a quarter of the height, enough for several Error List rows). Windows shorter
+  than 1000 pixels, such as a maximized window on a 13-inch laptop, start with the
+  bottom group closed so documents keep their height; new errors or warnings
+  open it, and **View** reopens any of its tool windows. Reset never changes
   drafts, saved files or a Play session.
+- **View → Focus Viewport** (Shift+Alt+Enter; Shift+Option+Return on macOS)
+  hides every tool window, the toolbars, the setup notice and the World's own
+  controls (file commands, render controls, hierarchy and status line) so the
+  World viewport fills the window; it switches to the World document if another
+  one is active. Run it again to restore the previous tool-window arrangement,
+  sizes, toolbars and active document exactly. The viewport is never moved or
+  recreated, only resized. Closing the editor while focused saves the arrangement
+  Focus Viewport returns to, and Reset Window Layout also leaves it. New errors
+  or warnings do not interrupt it; the status bar announces them instead.
 - **Save, Undo and Redo follow the active document tab.** Focus in a tool
   window does not change the active document: editing a World entity in
   Properties and pressing Ctrl+S saves the World. Focus entering another
@@ -410,8 +422,11 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   shader diagnostics) and compiler/CMake diagnostics found in build output.
   Toggle Errors, Warnings and Messages to filter. Double-click a render-graph
   row to select its graph node or open its source line in the Render Graph
-  document; double-click a build row to select its line in Output. A failed
-  render-graph job brings the Error List forward without taking focus.
+  document; double-click a build row to select its line in Output. New errors or
+  warnings from either source bring the Error List forward, opening it if it was
+  closed, without taking focus; repeating an unchanged result does not, so a list
+  you closed stays closed. A details pane under the table shows the selected
+  description only when its row cannot: multi-line or elided descriptions.
 - **Toolbars** share the menus' commands: Standard (Open, Save, Undo, Redo),
   Game (build, run, debug and Play controls) and Render Graph (Validate, Build
   Graph, Build & Preview, Live Preview, Cancel). Toolbar buttons use short labels
@@ -438,8 +453,15 @@ records the libraries that would provide them.
 
 The World hierarchy flanks the viewport inside the World document; the entity
 inspector is the Properties tool window. Component actions stay below the
-scrollable inspector fields. The render surface receives the remaining height
-below its shading, framing and navigation controls, including after resize.
+scrollable inspector fields: the component choice beside **Add Component**, and
+**Apply Changes** beside **Reset Fields**. **Add Entity**, **Duplicate** and
+**Delete** share one row under the hierarchy. Above the viewport, one row holds
+the World's path (hover for the full path) and its commands; **Restore
+Recovery**, **Cancel scene operation** and **Play saved World** appear only
+while they apply. The viewport's render controls share one row, and its
+navigation help is the **?** button's tooltip (click it to show it at once).
+The render surface receives the remaining height below its shading, framing and
+navigation controls, including after resize.
 
 Native World viewports now use the [project render graph](render-graph-authoring.md#start-customizing-the-renderer),
 falling back to the engine default only when the project has none. Shader edits update
@@ -584,6 +606,7 @@ keeps the window and its draft open.
 | Ctrl+Break | Cancel the running render-graph job (also turns Live Preview off) |
 | Ctrl+Alt+L / F4 | Show Project Explorer / Properties |
 | Ctrl+Alt+E / Ctrl+Alt+O | Show Error List / Output |
+| Shift+Alt+Enter | Focus Viewport on or off |
 | F1 | Keyboard Shortcuts help |
 
 The help dialog reads the same QAction bindings used by menus/toolbars. Qt's
@@ -775,7 +798,8 @@ racing the final filesystem rename. New World refuses existing destinations.
 
 Applied edits to an existing saved world produce a sibling `.ludus-recovery`
 snapshot with schema/base and payload digests. Opening never applies it. Restore
-Recovery is available on a clean document and validates the current disk source,
+Recovery appears beside the World's file commands on a clean document with such a
+snapshot, and validates the current disk source,
 schema and entire recovery payload before creating one Undo item. Save removes
 recovery. Undo back to the saved baseline removes matching recovery. Unapplied
 text and never-saved new worlds do not have crash recovery; Save is required to
