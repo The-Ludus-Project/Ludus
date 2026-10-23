@@ -185,9 +185,9 @@ SessionResult InitializeDiagnosticSession(Interactivity requested) noexcept
         opt_out = true; // Local headless Debug opts out explicitly.
     }
 
-    const bool interactive_intended = BUILD_ELIGIBLE && result.DetectedCi == false && opt_out == false;
+    const bool isInteractiveIntended = BUILD_ELIGIBLE && result.DetectedCi == false && opt_out == false;
 
-    if (interactive_intended)
+    if (isInteractiveIntended)
     {
         // 3) Configure the control endpoint only when interactive is intended.
         const int control_fd = ReadDescriptor(CONTROL_FD_ENV);

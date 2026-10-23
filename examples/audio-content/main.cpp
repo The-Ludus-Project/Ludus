@@ -14,6 +14,8 @@
 namespace
 {
 using namespace sample;
+/// Quietest peak level that shows the offline mix produced audible output.
+constexpr float32 MIN_AUDIBLE_PEAK = 0.05F;
 bool Acquire(audio::content::Loader& loader,
              std::string_view root,
              std::string_view id,
@@ -234,7 +236,7 @@ bool Run(std::string_view root, bool native) noexcept
         const timespec wait{0, native ? 16666667L : 1000000L};
         nanosleep(&wait, nullptr);
     }
-    if (native == false && peak < 0.05F)
+    if (native == false && peak < MIN_AUDIBLE_PEAK)
     {
         return false;
     }

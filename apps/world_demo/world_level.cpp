@@ -19,6 +19,8 @@ constexpr uint64 WORLD_VERSION_SCOPED_IDS = 1;
 constexpr uint64 WORLD_VERSION_UUID_RECORDS = 2;
 /// Most authoring entities in one World: actors, collision boxes and the settings entity.
 constexpr usize MAX_WORLD_ENTITIES = 49;
+/// Largest magnitude of a number read from a World level document.
+constexpr float64 MAX_LEVEL_NUMBER = 100000.0;
 bool IdentityValue(JsonValue value, Uuid& output) noexcept
 {
     std::string_view text;
@@ -49,8 +51,8 @@ bool NameValue(JsonValue value, Name& output, bool empty = false) noexcept
 bool Number(JsonValue value, float32& output) noexcept
 {
     float64 number = 0;
-    if (value.Number(number) == false || foundation::math::IsFinite(number) == false || number < -100000 ||
-        number > 100000)
+    if (value.Number(number) == false || foundation::math::IsFinite(number) == false || number < -MAX_LEVEL_NUMBER ||
+        number > MAX_LEVEL_NUMBER)
     {
         return false;
     }

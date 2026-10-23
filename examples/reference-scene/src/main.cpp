@@ -35,6 +35,32 @@ using namespace ludus::foundation;
 namespace rr = ludus::graphics::renderer;
 namespace rhi = ludus::graphics::rhi;
 using Status = rhi::RasterStatus;
+/// Bytes of one RGBA8 readback pixel.
+constexpr usize RGBA8_PIXEL_BYTES = 4;
+/// LUSAC01 acceptance evidence: an 8-byte magic, then fixed uint64 values and source IDs.
+constexpr usize ACCEPTANCE_MAGIC_BYTES = 8;
+/// Fixed LUSAC01 values: seven scene counts, six submission counters and the backend.
+constexpr usize ACCEPTANCE_FIXED_VALUE_COUNT = 14;
+/// Longest wait for a progressive GPU preview or reference capture to converge.
+constexpr uint64 CAPTURE_TIMEOUT_SECONDS = 1800;
+/// `gpu-preview.bin` layout: width, height and samples, then the scene fingerprint.
+constexpr usize GPU_PREVIEW_HEIGHT_OFFSET = 4;
+constexpr usize GPU_PREVIEW_SAMPLES_OFFSET = 8;
+constexpr usize GPU_PREVIEW_FINGERPRINT_LOW_OFFSET = 16;
+constexpr usize GPU_PREVIEW_FINGERPRINT_HIGH_OFFSET = 24;
+/// Command-line arguments: root, output, extent and samples, plus an optional mode.
+constexpr int ARGUMENT_COUNT = 5;
+constexpr int ARGUMENT_COUNT_WITH_MODE = 6;
+constexpr int EXTENT_ARGUMENT = 3;
+constexpr int SAMPLES_ARGUMENT = 4;
+constexpr int MODE_ARGUMENT = 5;
+/// Largest square capture extent, in pixels.
+constexpr uint32 MAX_CAPTURE_EXTENT = 1024;
+/// Most samples per pixel one capture may target.
+constexpr uint32 MAX_TARGET_SAMPLES = 4096;
+/// Encoded reference HDR: header room plus one RGBA float32 pixel per texel.
+constexpr usize HDR_HEADER_BYTES = 256;
+constexpr usize HDR_PIXEL_BYTES = 16;
 LUDUS_DEFINE_LOG_CATEGORY(LOG_SCENE, "ReferenceScene");
 
 struct SceneEvidence final
@@ -278,7 +304,8 @@ bool RasterEvidence(rr::Renderer& renderer,
             status = rhi::GetStatus(device, readback);
         }
         Array<uint8> pixels;
-        if (status != Status::Ready || pixels.TryResize(usize(capture.Width) * capture.Height * 4) == false ||
+        if (status != Status::Ready ||
+            pixels.TryResize(usize(capture.Width) * capture.Height * RGBA8_PIXEL_BYTES) == false ||
             rhi::CopyReadback(device, readback, pixels.GetData(), pixels.GetSize()) != Status::Ready ||
             directory.Publish(name, {pixels.GetData(), pixels.GetSize()}).Outcome.Succeeded() == false ||
             rhi::Release(device, readback) != Status::Ready || renderer.Release(views[i]) != Status::Ready ||
@@ -294,7 +321,8 @@ bool RasterEvidence(rr::Renderer& renderer,
     rhi::MeasurementAdapter adapter;
     if (rhi::GetDeviceInfo(device, deviceInfo) != rhi::DeviceStatus::Ready ||
         rhi::GetMeasurementAdapter(device, adapter) != Status::Ready ||
-        bytes.TryResize(8 + 14 * 8 + usize(reports[0].Reported + reports[1].Reported) * 8) == false)
+        bytes.TryResize(ACCEPTANCE_MAGIC_BYTES + ACCEPTANCE_FIXED_VALUE_COUNT * sizeof(uint64) +
+                        usize(reports[0].Reported + reports[1].Reported) * sizeof(uint64)) == false)
     {
         return false;
     }
@@ -413,7 +441,7 @@ bool ViewportEvidence(rr::Renderer& renderer,
         status = rhi::GetStatus(device, ticket);
     }
     Array<uint8> bytes;
-    if (status != Status::Ready || bytes.TryResize(usize(image.Width) * image.Height * 4) == false ||
+    if (status != Status::Ready || bytes.TryResize(usize(image.Width) * image.Height * RGBA8_PIXEL_BYTES) == false ||
         rhi::CopyReadback(device, ticket, bytes.GetData(), bytes.GetSize()) != Status::Ready ||
         directory.Publish("viewport.rgba", {bytes.GetData(), bytes.GetSize()}).Outcome.Succeeded() == false)
     {
@@ -437,7 +465,8 @@ bool GpuEvidence(rr::Renderer& renderer,
     }
     rr::GpuPreviewInfo info;
     const uint64 started = time::NowTicks();
-    while (info.Complete == false && time::NowTicks() - started < 1800 * time::NANOSECONDS_PER_SECOND)
+    while (info.Complete == false &&
+           time::NowTicks() - started < CAPTURE_TIMEOUT_SECONDS * time::NANOSECONDS_PER_SECOND)
     {
         status = renderer.GetGpuPreviewInfo(preview, info);
         if (status == Status::Pending)
@@ -481,18 +510,22 @@ bool GpuEvidence(rr::Renderer& renderer,
         status = rhi::GetStatus(device, ticket);
     }
     Array<uint8> bytes;
-    if (status != Status::Ready || bytes.TryResize(usize(image.Width) * image.Height * 4) == false ||
+    if (status != Status::Ready || bytes.TryResize(usize(image.Width) * image.Height * RGBA8_PIXEL_BYTES) == false ||
         rhi::CopyReadback(device, ticket, bytes.GetData(), bytes.GetSize()) != Status::Ready ||
         directory.Publish("gpu-preview.rgba", {bytes.GetData(), bytes.GetSize()}).Outcome.Succeeded() == false)
     {
         return false;
     }
     uint8 metadata[32]{};
-    if (core::TryWriteLittleEndian<uint32>(image.Width, {metadata, 4}) == false ||
-        core::TryWriteLittleEndian<uint32>(image.Height, {metadata + 4, 4}) == false ||
-        core::TryWriteLittleEndian<uint32>(image.Samples, {metadata + 8, 4}) == false ||
-        core::TryWriteLittleEndian<uint64>(info.SceneFingerprintLow, {metadata + 16, 8}) == false ||
-        core::TryWriteLittleEndian<uint64>(info.SceneFingerprintHigh, {metadata + 24, 8}) == false ||
+    if (core::TryWriteLittleEndian<uint32>(image.Width, {metadata, sizeof(uint32)}) == false ||
+        core::TryWriteLittleEndian<uint32>(image.Height, {metadata + GPU_PREVIEW_HEIGHT_OFFSET, sizeof(uint32)}) ==
+            false ||
+        core::TryWriteLittleEndian<uint32>(image.Samples, {metadata + GPU_PREVIEW_SAMPLES_OFFSET, sizeof(uint32)}) ==
+            false ||
+        core::TryWriteLittleEndian<uint64>(info.SceneFingerprintLow,
+                                           {metadata + GPU_PREVIEW_FINGERPRINT_LOW_OFFSET, sizeof(uint64)}) == false ||
+        core::TryWriteLittleEndian<uint64>(info.SceneFingerprintHigh,
+                                           {metadata + GPU_PREVIEW_FINGERPRINT_HIGH_OFFSET, sizeof(uint64)}) == false ||
         directory.Publish("gpu-preview.bin", {metadata, sizeof(metadata)}).Outcome.Succeeded() == false)
     {
         return false;
@@ -523,20 +556,22 @@ bool Number(const char* text, uint32 maximum, uint32& output) noexcept
 
 int Run(int argc, char** argv) noexcept
 {
-    if (argc != 5 && argc != 6)
+    if (argc != ARGUMENT_COUNT && argc != ARGUMENT_COUNT_WITH_MODE)
     {
         return 1; // root-directory, output-directory, square extent, samples
     }
-    const bool viewport = argc == 6 && std::string_view(argv[5]) == "viewport";
-    const bool gpu = argc == 6 && std::string_view(argv[5]) == "gpu";
-    const bool native = argc == 6 && std::string_view(argv[5]) == "native";
-    const bool acceptance = argc == 6 && (native || std::string_view(argv[5]) == "acceptance");
-    if (argc == 6 && acceptance == false && gpu == false && viewport == false)
+    const bool hasMode = argc == ARGUMENT_COUNT_WITH_MODE;
+    const bool isViewportMode = hasMode && std::string_view(argv[MODE_ARGUMENT]) == "viewport";
+    const bool isGpuMode = hasMode && std::string_view(argv[MODE_ARGUMENT]) == "gpu";
+    const bool isNativeMode = hasMode && std::string_view(argv[MODE_ARGUMENT]) == "native";
+    const bool isAcceptanceMode = hasMode && (isNativeMode || std::string_view(argv[MODE_ARGUMENT]) == "acceptance");
+    if (hasMode && isAcceptanceMode == false && isGpuMode == false && isViewportMode == false)
     {
         return 1;
     }
     rr::ReferenceCaptureDescription description;
-    if (Number(argv[3], 1024, description.Width) == false || Number(argv[4], 4096, description.TargetSamples) == false)
+    if (Number(argv[EXTENT_ARGUMENT], MAX_CAPTURE_EXTENT, description.Width) == false ||
+        Number(argv[SAMPLES_ARGUMENT], MAX_TARGET_SAMPLES, description.TargetSamples) == false)
     {
         return 2;
     }
@@ -551,8 +586,8 @@ int Run(int argc, char** argv) noexcept
     }
     rhi::DeviceDescription request;
     request.Required.PortableRaster = true;
-    request.Required.RayQueries = native == true || gpu == true;
-    request.Required.Compute = gpu;
+    request.Required.RayQueries = isNativeMode == true || isGpuMode == true;
+    request.Required.Compute = isGpuMode;
     rhi::DeviceHandle device;
     rhi::SurfaceHandle surface;
     if (rhi::CreateDevice({}, { .Width = 8, .Height = 8 }, request, device, surface) != rhi::DeviceStatus::Ready)
@@ -578,17 +613,18 @@ int Run(int argc, char** argv) noexcept
     {
         return 5;
     }
-    const rr::ReferenceRenderingOptions options{native ? rr::ReferenceTraversal::NativeQueries
-                                                       : rr::ReferenceTraversal::CpuOracle,
+    const rr::ReferenceRenderingOptions options{isNativeMode ? rr::ReferenceTraversal::NativeQueries
+                                                             : rr::ReferenceTraversal::CpuOracle,
                                                 usize{128} * 1024 * 1024,
                                                 usize{128} * 1024 * 1024,
                                                 512};
-    const Status enabled = viewport ? Status::Ready
-                           : gpu    ? renderer.EnableGpuPreview(ludus::shaders::renderer_gpu_preview::Compute(),
-                                                                ludus::shaders::renderer_gpu_preview_image::Vertex(),
-                                                                ludus::shaders::renderer_gpu_preview_image::Fragment(),
-                                                                {usize{128} * 1024 * 1024, usize{128} * 1024 * 1024, 1})
-                                    : renderer.EnableReferenceRendering(ludus::shaders::ray_query::Query(), options);
+    const Status enabled = isViewportMode ? Status::Ready
+                           : isGpuMode
+                               ? renderer.EnableGpuPreview(ludus::shaders::renderer_gpu_preview::Compute(),
+                                                           ludus::shaders::renderer_gpu_preview_image::Vertex(),
+                                                           ludus::shaders::renderer_gpu_preview_image::Fragment(),
+                                                           {usize{128} * 1024 * 1024, usize{128} * 1024 * 1024, 1})
+                               : renderer.EnableReferenceRendering(ludus::shaders::ray_query::Query(), options);
     if (enabled != Status::Ready)
     {
         return 6;
@@ -614,7 +650,7 @@ int Run(int argc, char** argv) noexcept
              snapshot,
              description,
              evidence,
-             acceptance ? &identitySnapshot : nullptr) == false)
+             isAcceptanceMode ? &identitySnapshot : nullptr) == false)
     {
         return 8;
     }
@@ -623,21 +659,22 @@ int Run(int argc, char** argv) noexcept
     {
         return 14;
     }
-    if (acceptance && RasterEvidence(renderer, device, surface, snapshot, description, evidence, directory) == false)
+    if (isAcceptanceMode &&
+        RasterEvidence(renderer, device, surface, snapshot, description, evidence, directory) == false)
     {
         return 15;
     }
-    if (acceptance &&
+    if (isAcceptanceMode &&
         (RasterEvidence(renderer, device, surface, identitySnapshot, description, evidence, directory, true) == false ||
          renderer.Release(identitySnapshot) != Status::Ready))
     {
         return 15;
     }
-    if (viewport)
+    if (isViewportMode)
     {
         return ViewportEvidence(renderer, device, surface, snapshot, description, directory) ? 0 : 17;
     }
-    if (gpu)
+    if (isGpuMode)
     {
         return GpuEvidence(renderer, device, surface, snapshot, description, directory) ? 0 : 16;
     }
@@ -653,7 +690,8 @@ int Run(int argc, char** argv) noexcept
     }
     const auto started = time::NowTicks();
     status = Status::Pending;
-    while (status == Status::Pending && time::NowTicks() - started < 1800 * time::NANOSECONDS_PER_SECOND)
+    while (status == Status::Pending &&
+           time::NowTicks() - started < CAPTURE_TIMEOUT_SECONDS * time::NANOSECONDS_PER_SECOND)
     {
         status = renderer.AdvanceReferenceCapture(capture);
     }
@@ -670,7 +708,7 @@ int Run(int argc, char** argv) noexcept
         return 11;
     }
     Array<uint8> bytes;
-    if (bytes.TryResize(256 + usize(description.Width) * description.Height * 16) == false)
+    if (bytes.TryResize(HDR_HEADER_BYTES + usize(description.Width) * description.Height * HDR_PIXEL_BYTES) == false)
     {
         return 12;
     }

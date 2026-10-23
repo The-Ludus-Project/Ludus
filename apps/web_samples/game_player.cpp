@@ -17,6 +17,9 @@ namespace
 using namespace ludus::foundation;
 namespace game = ludus::runtime::game_api;
 namespace rhi = ludus::graphics::rhi;
+/// Initial size of the browser sample canvas, in CSS pixels.
+constexpr uint32 WINDOW_WIDTH = 800;
+constexpr uint32 WINDOW_HEIGHT = 600;
 core::UniquePtr<ludus::platform::Window> gWindow;
 game::GameApiTable gApi;
 game::GameInstance* gInstance = nullptr;
@@ -138,7 +141,8 @@ int main()
     ludus::platform::WindowManager manager;
     if (LudusGetGameApi(game::kAbiMajor, game::kAbiMinor, &gApi) != game::Status::Ok ||
         gApi.Create(&info, &gInstance) != game::Status::Ok || manager.Initialize({}) == false ||
-        manager.CreateWindow({ .Name = "Ludus web sample", .Width = 800, .Height = 600 }, gWindow) == false)
+        manager.CreateWindow({ .Name = "Ludus web sample", .Width = WINDOW_WIDTH, .Height = WINDOW_HEIGHT }, gWindow) ==
+            false)
     {
         Fail();
         return 1;

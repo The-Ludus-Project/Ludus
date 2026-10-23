@@ -264,6 +264,14 @@ bool ReadScalar(ByteView payload, T& value) noexcept
 }
 
 constexpr usize kCheckpointBytes = 68;
+/// Checkpoint record tags, one per persisted field; REVISION is the highest tag.
+constexpr uint32 CHECKPOINT_TAG_POSITION_X = 1;
+constexpr uint32 CHECKPOINT_TAG_VELOCITY = 2;
+constexpr uint32 CHECKPOINT_TAG_SPEED = 3;
+constexpr uint32 CHECKPOINT_TAG_BOUNCES = 4;
+constexpr uint32 CHECKPOINT_TAG_RANDOM_STATE = 5;
+constexpr uint32 CHECKPOINT_TAG_SIMULATION_TIME = 6;
+constexpr uint32 CHECKPOINT_TAG_REVISION = 7;
 
 Status GameCheckpointSize(GameInstance* instance, usize* outBodySize) noexcept
 {
@@ -285,13 +293,13 @@ GameWriteCheckpoint(GameInstance* instance, CheckpointHeader* outHeader, ByteSpa
     }
     CheckpointWriter writer{body};
     bool ok = true;
-    ok = WriteScalar(writer, 1, state->Sim.PositionX) && ok;
-    ok = WriteScalar(writer, 2, state->Sim.Velocity) && ok;
-    ok = WriteScalar(writer, 3, state->Sim.Speed) && ok;
-    ok = WriteScalar(writer, 4, state->Sim.Bounces) && ok;
-    ok = WriteScalar(writer, 5, state->Sim.Rng) && ok;
-    ok = WriteScalar(writer, 6, state->Sim.SimTime) && ok;
-    ok = WriteScalar(writer, 7, state->Revision) && ok;
+    ok = WriteScalar(writer, CHECKPOINT_TAG_POSITION_X, state->Sim.PositionX) && ok;
+    ok = WriteScalar(writer, CHECKPOINT_TAG_VELOCITY, state->Sim.Velocity) && ok;
+    ok = WriteScalar(writer, CHECKPOINT_TAG_SPEED, state->Sim.Speed) && ok;
+    ok = WriteScalar(writer, CHECKPOINT_TAG_BOUNCES, state->Sim.Bounces) && ok;
+    ok = WriteScalar(writer, CHECKPOINT_TAG_RANDOM_STATE, state->Sim.Rng) && ok;
+    ok = WriteScalar(writer, CHECKPOINT_TAG_SIMULATION_TIME, state->Sim.SimTime) && ok;
+    ok = WriteScalar(writer, CHECKPOINT_TAG_REVISION, state->Revision) && ok;
     if (ok == false)
     {
         return Status::BufferTooSmall;
@@ -337,7 +345,7 @@ Status GameCreateCandidate(const CreateInfo* info,
     {
         uint32 tag = 0;
         ByteView payload = {};
-        if (reader.Next(tag, payload) == false || tag > 7 || (seen & (1U << tag)) != 0)
+        if (reader.Next(tag, payload) == false || tag > CHECKPOINT_TAG_REVISION || (seen & (1U << tag)) != 0)
         {
             ok = false;
             break;
@@ -345,25 +353,25 @@ Status GameCreateCandidate(const CreateInfo* info,
         seen |= 1U << tag;
         switch (tag)
         {
-            case 1:
+            case CHECKPOINT_TAG_POSITION_X:
                 ok = ReadScalar(payload, state->Sim.PositionX);
                 break;
-            case 2:
+            case CHECKPOINT_TAG_VELOCITY:
                 ok = ReadScalar(payload, state->Sim.Velocity);
                 break;
-            case 3:
+            case CHECKPOINT_TAG_SPEED:
                 ok = ReadScalar(payload, state->Sim.Speed);
                 break;
-            case 4:
+            case CHECKPOINT_TAG_BOUNCES:
                 ok = ReadScalar(payload, state->Sim.Bounces);
                 break;
-            case 5:
+            case CHECKPOINT_TAG_RANDOM_STATE:
                 ok = ReadScalar(payload, state->Sim.Rng);
                 break;
-            case 6:
+            case CHECKPOINT_TAG_SIMULATION_TIME:
                 ok = ReadScalar(payload, state->Sim.SimTime);
                 break;
-            case 7:
+            case CHECKPOINT_TAG_REVISION:
                 ok = ReadScalar(payload, state->Revision);
                 break;
             default:

@@ -11,6 +11,9 @@ namespace
 {
 constexpr usize RhiProviders[]{0};
 constexpr usize RendererProviders[]{1};
+/// Initial size of the demo window, in logical pixels.
+constexpr uint32 WINDOW_WIDTH = 800;
+constexpr uint32 WINDOW_HEIGHT = 600;
 } // namespace
 Application::Application() noexcept : mLifecycle(mNodes, mRecords, mJournal)
 {
@@ -61,8 +64,8 @@ lifecycle::StartResult Application::StartWindow(void* context) noexcept
     if (manager.Initialize({}) == false || manager.CreateWindow(
                                                {
                                                    .Name = "Ludus demo",
-                                                   .Width = 800,
-                                                   .Height = 600,
+                                                   .Width = WINDOW_WIDTH,
+                                                   .Height = WINDOW_HEIGHT,
                                                },
                                                app.mWindow) == false)
     {

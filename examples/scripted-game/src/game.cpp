@@ -27,6 +27,16 @@ using namespace ludus::foundation;
 using namespace ludus::runtime::game_api;
 namespace behavior = ludus::runtime::behavior;
 namespace project = ludus::sample;
+/// Checkpoint body layout: tick, applied, previous actions and execution as
+/// little-endian uint64 values, then the encoded behavior state.
+constexpr usize CHECKPOINT_APPLIED_OFFSET = 8;
+constexpr usize CHECKPOINT_PREVIOUS_ACTIONS_OFFSET = 16;
+constexpr usize CHECKPOINT_EXECUTION_OFFSET = 24;
+constexpr usize CHECKPOINT_STATE_OFFSET = 32;
+/// Highest script line a breakpoint request may name.
+constexpr uint64 MAX_BREAKPOINT_LINE = 65536;
+/// Largest amount one interact request may apply.
+constexpr uint64 MAX_INTERACT_AMOUNT = 10;
 struct Owner
 {
     behavior::LuauProvider Scripts;
@@ -272,27 +282,28 @@ Status Size(GameInstance* instance, usize* out) noexcept
     {
         return Status::Internal;
     }
-    *out = 32 + written;
+    *out = CHECKPOINT_STATE_OFFSET + written;
     return Status::Ok;
 }
 Status Write(GameInstance* instance, CheckpointHeader* header, ByteSpan body, usize* written) noexcept
 {
-    if (instance == nullptr || header == nullptr || body.Data == nullptr || written == nullptr || body.Capacity < 32)
+    if (instance == nullptr || header == nullptr || body.Data == nullptr || written == nullptr ||
+        body.Capacity < CHECKPOINT_STATE_OFFSET)
     {
         return Status::InvalidArgument;
     }
     auto& owner = *AsOwner(instance);
     usize encoded = 0;
     auto bytes = std::span<uint8>(body.Data, body.Capacity);
-    if (behavior::EncodeState(project::SCHEMA, owner.State, bytes.subspan(32), encoded) == false)
+    if (behavior::EncodeState(project::SCHEMA, owner.State, bytes.subspan(CHECKPOINT_STATE_OFFSET), encoded) == false)
     {
         return Status::Internal;
     }
     (void)TryWriteLittleEndian(owner.Tick, bytes);
-    (void)TryWriteLittleEndian(owner.Applied, bytes.subspan(8));
-    (void)TryWriteLittleEndian(owner.PreviousActions, bytes.subspan(16));
-    (void)TryWriteLittleEndian(owner.Execution, bytes.subspan(24));
-    *written = encoded + 32;
+    (void)TryWriteLittleEndian(owner.Applied, bytes.subspan(CHECKPOINT_APPLIED_OFFSET));
+    (void)TryWriteLittleEndian(owner.PreviousActions, bytes.subspan(CHECKPOINT_PREVIOUS_ACTIONS_OFFSET));
+    (void)TryWriteLittleEndian(owner.Execution, bytes.subspan(CHECKPOINT_EXECUTION_OFFSET));
+    *written = encoded + CHECKPOINT_STATE_OFFSET;
     *header =
     {
         .FormatVersion = 1,
@@ -307,9 +318,10 @@ Status Write(GameInstance* instance, CheckpointHeader* header, ByteSpan body, us
 }
 Status Candidate(const CreateInfo* info, const CheckpointHeader* header, ByteView body, GameCandidate** out) noexcept
 {
-    if (info == nullptr || header == nullptr || out == nullptr || body.Data == nullptr || body.Size < 32 ||
-        header->FormatVersion != 1 || header->SchemaVersion != 1 || header->ProjectId != info->ProjectId ||
-        header->GameId != info->GameId || header->BodyLength != body.Size || header->BodyDigest != Digest(body))
+    if (info == nullptr || header == nullptr || out == nullptr || body.Data == nullptr ||
+        body.Size < CHECKPOINT_STATE_OFFSET || header->FormatVersion != 1 || header->SchemaVersion != 1 ||
+        header->ProjectId != info->ProjectId || header->GameId != info->GameId || header->BodyLength != body.Size ||
+        header->BodyDigest != Digest(body))
     {
         return Status::InvalidArgument;
     }
@@ -320,11 +332,12 @@ Status Candidate(const CreateInfo* info, const CheckpointHeader* header, ByteVie
     }
     const auto bytes = std::span<const uint8>(body.Data, body.Size);
     uint64 previous_execution = 0;
-    if (behavior::DecodeState(project::SCHEMA, bytes.subspan(32), owner->State) == false ||
+    if (behavior::DecodeState(project::SCHEMA, bytes.subspan(CHECKPOINT_STATE_OFFSET), owner->State) == false ||
         TryReadLittleEndian(bytes, owner->Tick) == false ||
-        TryReadLittleEndian(bytes.subspan(8), owner->Applied) == false ||
-        TryReadLittleEndian(bytes.subspan(16), owner->PreviousActions) == false ||
-        TryReadLittleEndian(bytes.subspan(24), previous_execution) == false || previous_execution == ~uint64{0})
+        TryReadLittleEndian(bytes.subspan(CHECKPOINT_APPLIED_OFFSET), owner->Applied) == false ||
+        TryReadLittleEndian(bytes.subspan(CHECKPOINT_PREVIOUS_ACTIONS_OFFSET), owner->PreviousActions) == false ||
+        TryReadLittleEndian(bytes.subspan(CHECKPOINT_EXECUTION_OFFSET), previous_execution) == false ||
+        previous_execution == ~uint64{0})
     {
         Destroy(reinterpret_cast<GameInstance*>(owner));
         return Status::MigrationUnsupported;
@@ -424,7 +437,7 @@ Status Control(GameInstance* instance, ByteView bytes, ByteSpan response, usize*
             if (request.Fields({"version", "action", "session", "execution", "stop", "asset", "line", "enabled"}) ==
                     false ||
                 request.Get("asset").String(asset_text) == false || Hex(asset_text, asset) == false ||
-                request.Get("line").Integer(line) == false || line == 0 || line > 65536 ||
+                request.Get("line").Integer(line) == false || line == 0 || line > MAX_BREAKPOINT_LINE ||
                 request.Get("enabled").Boolean(enabled) == false ||
                 owner.Scripts.Breakpoint(asset, static_cast<int32>(line), enabled) < 0)
             {
@@ -458,7 +471,7 @@ Status Control(GameInstance* instance, ByteView bytes, ByteSpan response, usize*
                 if (request.Fields({"version", "action", "session", "execution", "stop", "asset", "amount"}) == false ||
                     snapshot.Paused || owner.Quiesced || request.Get("asset").String(asset_text) == false ||
                     Hex(asset_text, asset) == false || request.Get("amount").Integer(amount) == false || amount == 0 ||
-                    amount > 10)
+                    amount > MAX_INTERACT_AMOUNT)
                 {
                     return Status::InvalidArgument;
                 }
