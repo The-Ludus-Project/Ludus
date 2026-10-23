@@ -15,6 +15,7 @@
 #include "internal/render_graph_resources.h"
 #include "internal/render_graph_shader_creation.h"
 #include "internal/render_graph_shader_interface.h"
+#include "internal/render_graph_upscale_node.h"
 #include "internal/renderer_workspace.h"
 
 #include <ludus/foundation/base/core.h>
@@ -169,6 +170,10 @@ bool AreMatricesEqual(const math::Matrix4& left, const math::Matrix4& right)
 
 QStringList GetChoices(const QString& field)
 {
+    if (field == QStringLiteral("algorithm"))
+    {
+        return GetUpscaleAlgorithms();
+    }
     if (field == QStringLiteral("mode"))
     {
         return {QStringLiteral("ColorAndDepth"), QStringLiteral("DepthOnly")};
@@ -485,6 +490,10 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
                         QStringLiteral("Subgraph"),
                         QStringLiteral("Export"),
                         QStringLiteral("Present")});
+    for (const QString& algorithm : GetUpscaleAlgorithms())
+    {
+        mNewKind->addItem(QStringLiteral("Upscale — %1 (draft)").arg(GetUpscaleLabel(algorithm)), algorithm);
+    }
     mNewKind->setAccessibleName(QStringLiteral("New node type"));
     QPushButton* add = new QPushButton(QStringLiteral("Add Node"), mInspector);
     add->setObjectName(QStringLiteral("renderGraphAddNode"));
@@ -2193,6 +2202,13 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
     const QJsonObject node = selectedNode();
     populateNodeNameFields(outFields, inoutParent);
     outFields.addRow(QStringLiteral("Kind"), new QLabel(node.value(QStringLiteral("kind")).toString(), &inoutParent));
+    if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Upscale"))
+    {
+        QLabel* availability = new QLabel(GetUpscaleAvailabilityMessage(node), &inoutParent);
+        availability->setObjectName(QStringLiteral("renderGraphUpscaleAvailability"));
+        availability->setWordWrap(true);
+        outFields.addRow(availability);
+    }
     if (HasSceneBundle(node) == true)
     {
         QPushButton* expand = new QPushButton(QStringLiteral("Expand Scene Bundle"), &inoutParent);
@@ -3285,14 +3301,17 @@ void RendererWorkspace::addNode()
     {
         identities.append(node.toObject().value(QStringLiteral("id")).toString());
     }
-    const QString kind = mNewKind->currentText();
-    const QString stem = kind.toLower();
+    const QString algorithm = mNewKind->currentData().toString();
+    const bool isUpscalePreset = algorithm.isEmpty() == false;
+    const QString kind = isUpscalePreset == true ? QStringLiteral("Upscale") : mNewKind->currentText();
+    const QString stem = isUpscalePreset == true ? algorithm : kind.toLower();
     QString identity = stem;
     for (qsizetype suffix = 2; identities.contains(identity) == true; ++suffix)
     {
         identity = stem + QString::number(suffix);
     }
-    const RenderGraphDocumentStatus status = mDocument.AddNode(file, configuration, MakeNode(kind, identity));
+    const QJsonObject node = isUpscalePreset == true ? MakeUpscaleNode(algorithm, identity) : MakeNode(kind, identity);
+    const RenderGraphDocumentStatus status = mDocument.AddNode(file, configuration, node);
     if (status != RenderGraphDocumentStatus::Ok)
     {
         report(QStringLiteral("Cannot add %1 to %2#%3: %4").arg(kind, file, configuration, DescribeStatus(status)));

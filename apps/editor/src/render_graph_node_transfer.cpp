@@ -516,7 +516,8 @@ RenderGraphDocumentStatus RenderGraphDocument::PasteNodes(const QString& file,
         created.append(identity);
         node.insert(QStringLiteral("id"), identity);
         nodes.append(node);
-        if (IsPipelineNode(node.value(QStringLiteral("kind")).toString()) == true)
+        if (IsPipelineNode(node.value(QStringLiteral("kind")).toString()) == true ||
+            node.value(QStringLiteral("kind")).toString() == QStringLiteral("Upscale"))
         {
             graph.insert(QStringLiteral("version"), 2);
         }

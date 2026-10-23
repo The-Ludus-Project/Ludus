@@ -203,6 +203,76 @@ produce IncompletePipeline; an invalid/pending candidate leaves the current
 viewport generation intact. Blending/rasterization remain fields inside the
 node; separate state blocks and stream output are deferred.
 
+## Upscaling presets
+
+**Authoring only:** all current execution profiles reject a selected `Upscale`
+node with a mapped `Capability` diagnostic. No vendor SDK is downloaded or
+executed. An unused preset can remain in a graph without blocking its existing
+render path. Validation/build failure retains the previously drawable generation.
+
+Use **Create Node → Upscale — … (draft)** on the canvas, or the same preset in
+Properties' Add Node picker. Both create the same version-2 supporting operation:
+
+```json
+{"id": "upscale", "kind": "Upscale", "algorithm": "dlss-sr"}
+```
+
+These are **node presets**, not complete renderer configuration templates. Each
+preset supplies the fixed interface for one algorithm; vendor work is owned by a
+future SDK/backend adapter rather than a user-authored ComputePipeline shader.
+Select **Edit Node…** on the canvas or use Properties to change `algorithm`.
+Changing temporal to spatial requires disconnecting any ports that would disappear;
+the editor rejects the edit and preserves wires until that is done. Creation,
+changes, wiring, removal, copy/paste, undo/redo and Save use the ordinary document
+operations. Properties may stay hidden throughout canvas authoring.
+
+| Algorithm identity | Preset | Interface |
+| --- | --- | --- |
+| `dlss-sr` | DLSS Super Resolution | Temporal |
+| `fsr-1` | FSR 1 spatial | Spatial |
+| `fsr-2` | FSR 2 temporal | Temporal |
+| `fsr-3` | FSR 3 upscaling | Temporal |
+| `metalfx-spatial` | MetalFX Spatial | Spatial |
+| `metalfx-temporal` | MetalFX Temporal | Temporal |
+| `xess-sr` | XeSS Super Resolution | Temporal |
+
+All presets consume `color: ColorTexture` and
+`destination: ColorTexture`, and expose `color: ColorTexture` as the written
+version of the destination. The source texture determines input resolution; the
+separate destination determines output resolution. Targets can use the existing
+fixed or shared RenderSize policies. The canvas infers the output descriptor
+from destination storage. No quality preset silently changes either resolution.
+
+Temporal presets additionally declare the following required per-frame inputs:
+
+| Input | Graph type | Intended adapter contract |
+| --- | --- | --- |
+| `depth` | DepthTexture | Current frame depth |
+| `motion` | ColorTexture | Current-to-previous motion in RG; multiply by `motion_scale` to obtain render pixels, excluding projection jitter |
+| `jitter_pixel` | Float2 | Current projection jitter in render pixels |
+| `motion_scale` | Float2 | Per-axis conversion from encoded motion to render pixels |
+| `exposure` | Float32 | Positive linear exposure multiplier |
+| `reset` | UInt32 | Zero retains history; nonzero resets it, including camera cuts |
+
+These names record a draft interface, **not an implemented native texture ABI**.
+The current RGBA8 graph texture vocabulary cannot establish HDR or motion-vector
+precision. Typed wiring checks remain active, including on unused branches, but
+no upscaling resource/content validation or history allocation occurs. A future
+adapter must qualify texture formats, color/exposure and depth conventions,
+initialization, resource aliasing, dynamic extents, jitter/motion producers and
+history lifetime before execution is admitted. The current raster profile does
+not manufacture these temporal inputs. There is no automatic algorithm fallback.
+Frame generation, ray reconstruction, driver overrides and SDK version selection
+are separate work and are not represented by these super-resolution presets.
+
+Thanks to NVIDIA, [DLSS Programming Guide](https://github.com/NVIDIA/DLSS/tree/main/doc),
+AMD, [FidelityFX Super Resolution 2.3.3, Inputs](https://gpuopen.com/manuals/fidelityfx_sdk/techniques/super-resolution-temporal/),
+Apple, [MTLFXTemporalScaler](https://developer.apple.com/documentation/metalfx/mtlfxtemporalscaler),
+and Intel, [XeSS Super Resolution Developer Guide](https://github.com/intel/xess/blob/main/doc/xess_sr_developer_guide_english.md),
+for the spatial/temporal input distinction. Ludus adapts that distinction into a
+shared draft interface; it does not copy their SDK implementations or imply
+that their native contracts are interchangeable.
+
 ## Share render sizes
 
 Use a **RenderSize** node when targets should share a resolution. Its default

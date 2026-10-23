@@ -164,11 +164,31 @@ class BuildTests(unittest.TestCase):
                 self.assertEqual('RenderGraphBuildTools', caught.exception.code)
                 self.assertEqual(pointer, self.pointer())
 
+    def test_selected_upscaler_preserves_the_published_package_and_compiler_cache(self):
+        from ludus_tools import render_graph_upscale as upscale
+        self.run_build()
+        pointer = self.pointer()
+        value = json.loads(self.graph.read_text())
+        value['version'] = 2
+        configuration = value['configurations'][0]
+        configuration['nodes'].append(upscale.new_node('fsr-1', 'upscale'))
+        output = next(edge for edge in configuration['edges'] if edge['to'] == 'output.color')
+        configuration['edges'].append({'from': output['from'], 'to': 'upscale.color'})
+        configuration['edges'].append({'from': 'color.texture', 'to': 'upscale.destination'})
+        output['from'] = 'upscale.color'
+        self.graph.write_text(json.dumps(value))
+        self.calls.clear()
+        with self.assertRaisesRegex(ToolingError, 'backend is unavailable'):
+            self.run_build()
+        self.assertEqual(pointer, self.pointer())
+        self.assertEqual([], self.calls)
+
     def test_native_client_is_hashed_when_worker_is_selected(self):
         client = self.helper / build.NATIVE_WORKER_HELPER
         client.write_text('native client')
         first, _ = build.tool_identity(self.helper, self.compiler, None, None, worker_socket='/unused/compiler.sock')
         self.assertIn('generator/render_graph_diagnostics.py', first)
+        self.assertIn('generator/render_graph_upscale.py', first)
         client.write_text('changed native client')
         second, _ = build.tool_identity(self.helper, self.compiler, None, None, worker_socket='/unused/compiler.sock')
         self.assertNotEqual(first['helper/' + build.NATIVE_WORKER_HELPER],
