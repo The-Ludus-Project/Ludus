@@ -24,8 +24,11 @@ namespace
 using namespace foundation;
 constexpr int32 FORMAT_TIMEOUT_MILLISECONDS = 10000;
 constexpr int64 DECODE_SLICE_MILLISECONDS = 2;
+#if !defined(Q_OS_WASM)
+// Transport limits for the clang-format child process; the browser has none.
 constexpr isize MAX_WIRE_BYTES = isize{8} * 1024 * 1024;
 constexpr isize MAX_ERROR_BYTES = isize{8} * 1024;
+#endif
 constexpr int32 VERSION_COMPONENTS = 3;
 const QString FORMATTER_SETTING = QStringLiteral("codeEditor/clangFormat");
 
