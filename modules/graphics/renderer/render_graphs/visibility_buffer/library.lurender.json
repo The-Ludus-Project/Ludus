@@ -1,0 +1,134 @@
+{
+  "version": 2,
+  "id": "VisibilityBufferLibrary",
+  "default": "VisibilityBuffer",
+  "configurations": [
+    {
+      "id": "VisibilityBuffer",
+      "inputs": [
+        {
+          "id": "scene",
+          "type": "Scene"
+        },
+        {
+          "id": "view",
+          "type": "View"
+        },
+        {
+          "id": "visibility",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "depth",
+          "type": "DepthTexture"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "visibility",
+          "type": "ColorTexture",
+          "source": "raster.color",
+          "required": true
+        },
+        {
+          "id": "depth",
+          "type": "DepthTexture",
+          "source": "raster.depth",
+          "required": false
+        }
+      ],
+      "nodes": [
+        {
+          "id": "raster",
+          "kind": "GraphicsPipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "depth",
+              "type": "DepthTexture",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "depth",
+              "type": "DepthTexture",
+              "target": "depth",
+              "format": "Depth32Float",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "vertex",
+              "stage": "vertex",
+              "program": "Geometry"
+            },
+            {
+              "id": "fragment",
+              "stage": "fragment",
+              "program": "Color"
+            }
+          ],
+          "state": {
+            "topology": "TriangleList",
+            "cull": "None",
+            "front": "CounterClockwise",
+            "depth_compare": "Less",
+            "depth_write": true,
+            "blend": "Opaque",
+            "samples": 1
+          },
+          "invocation": {
+            "mode": "ColorAndDepth",
+            "vertex_layout": "RendererStatic",
+            "material": "DefaultOpaque",
+            "scene": "scene",
+            "view": "view"
+          }
+        }
+      ],
+      "edges": [
+        {
+          "from": "input.scene",
+          "to": "raster.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "raster.view"
+        },
+        {
+          "from": "input.visibility",
+          "to": "raster.color"
+        },
+        {
+          "from": "input.depth",
+          "to": "raster.depth"
+        }
+      ]
+    }
+  ]
+}

@@ -332,13 +332,14 @@ RenderGraphDocumentStatus PrepareRestirConfiguration(RenderGraphSnapshot& inoutS
 }
 // All paths and configuration identities describe distinct parts of one insertion transaction.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-RenderGraphDocumentStatus PrepareRestirTemplate(RenderGraphSnapshot& inoutSnapshot,
-                                                const QString& rootGraph,
-                                                const QString& file,
-                                                const QString& configuration,
-                                                const QString& parentConfiguration,
-                                                const QString& packageRoot,
-                                                QString& outError)
+RenderGraphDocumentStatus PrepareConfigurationTemplate(RenderGraphSnapshot& inoutSnapshot,
+                                                       const QString& rootGraph,
+                                                       const QString& file,
+                                                       const QString& configuration,
+                                                       const QString& parentConfiguration,
+                                                       const QString& packageRoot,
+                                                       const QString& templateIdentity,
+                                                       QString& outError)
 {
     QString targetFile = file;
     if (file == rootGraph)
@@ -410,6 +411,32 @@ RenderGraphDocumentStatus PrepareRestirTemplate(RenderGraphSnapshot& inoutSnapsh
                                                                    {QStringLiteral("default"), configuration},
                                                                    {QStringLiteral("configurations"), QJsonArray{}}}));
     }
-    return PrepareRestirConfiguration(inoutSnapshot, rootGraph, targetFile, configuration, outError);
+    return templateIdentity == QStringLiteral("restir-di")
+               ? PrepareRestirConfiguration(inoutSnapshot, rootGraph, targetFile, configuration, outError)
+               : PrepareVisibilityConfiguration(inoutSnapshot,
+                                                rootGraph,
+                                                targetFile,
+                                                configuration,
+                                                templateIdentity,
+                                                outError);
+}
+// Paths and configuration identities describe distinct parts of the insertion transaction.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+RenderGraphDocumentStatus PrepareRestirTemplate(RenderGraphSnapshot& inoutSnapshot,
+                                                const QString& rootGraph,
+                                                const QString& file,
+                                                const QString& configuration,
+                                                const QString& parentConfiguration,
+                                                const QString& packageRoot,
+                                                QString& outError)
+{
+    return PrepareConfigurationTemplate(inoutSnapshot,
+                                        rootGraph,
+                                        file,
+                                        configuration,
+                                        parentConfiguration,
+                                        packageRoot,
+                                        QStringLiteral("restir-di"),
+                                        outError);
 }
 } // namespace ludus::editor

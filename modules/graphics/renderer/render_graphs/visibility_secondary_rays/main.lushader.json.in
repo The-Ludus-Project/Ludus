@@ -58,7 +58,7 @@
       ]
     },
     {
-      "id": "RasterVarying",
+      "id": "VisibilityRasterVarying",
       "role": "Varying",
       "fields": [
         {
@@ -97,7 +97,7 @@
       "source": "main_shaders/geometry.slang",
       "function": "TransformGeometry",
       "input": "RendererStatic",
-      "output": "RasterVarying",
+      "output": "VisibilityRasterVarying",
       "bindings": []
     },
     {
@@ -105,7 +105,7 @@
       "stage": "fragment",
       "source": "main_shaders/color.slang",
       "function": "ShadeColor",
-      "input": "RasterVarying",
+      "input": "VisibilityRasterVarying",
       "output": "Color",
       "bindings": []
     },
@@ -114,7 +114,7 @@
       "stage": "fragment",
       "source": "main_shaders/depth.slang",
       "function": "WriteDepth",
-      "input": "RasterVarying",
+      "input": "VisibilityRasterVarying",
       "output": "Depth",
       "bindings": []
     },

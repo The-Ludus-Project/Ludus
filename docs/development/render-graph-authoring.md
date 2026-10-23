@@ -969,6 +969,35 @@ Depth32Float aspect are sufficient. This follows the indirection in Christopher 
 Burns and Warren A. Hunt, [*The Visibility Buffer: A Cache-Friendly Approach to
 Deferred Shading*, JCGT 2(2), 2013](https://jcgt.org/published/0002/02/04/).
 
+In an open graph, right-click the canvas or a configuration in **Graph sources**
+and choose **Apply Configuration Template...**, then **Visibility buffer + depth**
+or **Visibility + secondary rays**. Enter a new configuration name or select an
+existing empty one. In a library asset, this fills that configuration. On the root
+canvas, it creates a library asset and inserts a Subgraph node into the selected
+parent configuration. Existing nonempty configurations are preserved.
+
+| Configuration template | Parent inputs | Outputs |
+| --- | --- | --- |
+| Visibility buffer + depth | `scene: Scene`, `view: View`, `visibility: ColorTexture`, `depth: DepthTexture` | `visibility: ColorTexture`, optional `depth: DepthTexture` |
+| Visibility + secondary rays | `scene: Scene`, `view: View`, `color: ColorTexture` | `color: ColorTexture`, optional `visibility: ColorTexture` and `depth: DepthTexture` |
+
+Connect the first template's two attachment inputs to matching single-sample
+RGBA8/Depth32Float targets. For the second, connect a separate shaded color target;
+its internal visibility/depth targets derive their size from that color input.
+Both use the parent's camera view. Route the primary output to the next pass or
+Export; inspection outputs need connections only when consumed.
+
+Applying a template adds its graph, shader sources, compatible identity attributes
+and manifest records in one undo step. **Save** publishes the complete edit.
+Ordinary raster shader bytes are retained; the shared `RendererStatic` schema gains
+its two visibility attributes, and a separate flat varying/graphics technique
+keeps visibility shaders distinct. Secondary rays require a native profile and a
+visibility-compatible shared ray interface with the starter's `ScenePayload`
+definition and at least one surface query. An incompatible ray ABI, changed
+reserved shader/schema, source collision or exceeded budget preserves the draft
+and reports a repair. The same canonical libraries back the New Render Graph
+starters and are included in installed SDK packages.
+
 Choose either starter in **New Render Graph → Template**. The editor copies the
 complete editable graph, manifest and shaders into `graphs/<name>/` and opens it.
 Both use explicit GraphicsPipeline nodes and a shared view-relative **RenderSize**

@@ -191,11 +191,11 @@ TEST_CASE("Visibility templates are created from the editor picker with Properti
     CHECK(manifest.contains("Flat") == true);
     const bool hasSecondaryRays = identity == QStringLiteral("visibility-secondary-rays");
     CHECK(manifest.contains("visibility_buffer") == hasSecondaryRays);
-    const QByteArray graph = workspace.GetDocument().GetDraft(ROOT_GRAPH);
+    const QByteArray graph = workspace.GetDocument().GetDraft(QStringLiteral("library.lurender.json"));
     CHECK(graph.contains("GraphicsPipeline") == true);
     CHECK(graph.contains("RayTracingPipeline") == hasSecondaryRays);
-    CHECK(graph.contains("visibilityOutput") == true);
-    CHECK(graph.contains("depthOutput") == true);
+    CHECK(graph.contains("visibility") == true);
+    CHECK(graph.contains("depth") == true);
     REQUIRE(workspace.Validate() == true);
     REQUIRE(finished.wait(TEMPLATE_JOB_TIMEOUT_MILLISECONDS) == true);
     INFO(workspace.GetLastResult().Message.toStdString());
@@ -465,4 +465,241 @@ TEST_CASE("ReSTIR library import preserves legacy callbacks and extends a custom
     {
         REQUIRE(document.WriteSnapshot(fixture) == RenderGraphDocumentStatus::Ok);
     }
+}
+
+TEST_CASE("Visibility configurations apply from the canvas and preserve authored sources",
+          "[editor][render-graph][visibility-configuration]")
+{
+    QString identity;
+    SECTION("visibility buffer and depth")
+    {
+        identity = QStringLiteral("visibility-buffer");
+    }
+    SECTION("visibility and secondary rays")
+    {
+        identity = QStringLiteral("visibility-secondary-rays");
+    }
+    const bool hasSecondaryRays = identity == QStringLiteral("visibility-secondary-rays");
+    QTemporaryDir project;
+    QWidget properties;
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    QWidget* inspector = workspace.TakeInspectorPanel(&properties);
+    inspector->hide();
+    properties.hide();
+    workspace.show();
+    const QJsonObject originalRoot = QJsonDocument::fromJson(workspace.GetDocument().GetDraft(ROOT_GRAPH)).object();
+    REQUIRE(workspace.CreateSubgraph(QStringLiteral("VisibilityLibrary")) == true);
+    REQUIRE(workspace.CreateConfiguration(QStringLiteral("Visibility")) == true);
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QString library = QStringLiteral("VisibilityLibrary.lurender.json");
+    const QString manifest = QStringLiteral("main.lushader.json");
+    const QByteArray beforeLibrary = document.GetDraft(library);
+    const QByteArray beforeManifest = document.GetDraft(manifest);
+    const QByteArray beforeGeometry = document.GetDraft(QStringLiteral("main_shaders/geometry.slang"));
+    const QStringList beforeFiles = document.GetFiles();
+    QTimer::singleShot(0, &workspace, [&workspace, &identity]() {
+        QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        REQUIRE(menuOrNull != nullptr);
+        QAction* actionOrNull =
+            menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphApplyConfigurationTemplate"));
+        REQUIRE(actionOrNull != nullptr);
+        menuOrNull->close();
+        QTimer::singleShot(0, &workspace, [&identity]() {
+            QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            REQUIRE(dialogOrNull != nullptr);
+            QComboBox* choiceOrNull =
+                dialogOrNull->findChild<QComboBox*>(QStringLiteral("renderGraphConfigurationTemplate"));
+            REQUIRE(choiceOrNull != nullptr);
+            const int32 selected = choiceOrNull->findData(identity);
+            REQUIRE(selected >= 0);
+            choiceOrNull->setCurrentIndex(selected);
+            QLineEdit* nameOrNull =
+                dialogOrNull->findChild<QLineEdit*>(QStringLiteral("renderGraphTemplateConfiguration"));
+            REQUIRE(nameOrNull != nullptr);
+            CHECK(nameOrNull->text() == QStringLiteral("Visibility"));
+            QDialogButtonBox* buttonsOrNull = dialogOrNull->findChild<QDialogButtonBox*>();
+            REQUIRE(buttonsOrNull != nullptr);
+            buttonsOrNull->button(QDialogButtonBox::Apply)->click();
+            CHECK(dialogOrNull->isVisible() == false);
+            dialogOrNull->reject();
+        });
+        actionOrNull->trigger();
+    });
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    QContextMenuEvent context(QContextMenuEvent::Mouse,
+                              canvas.viewport()->rect().center(),
+                              canvas.viewport()->mapToGlobal(canvas.viewport()->rect().center()));
+    QApplication::sendEvent(canvas.viewport(), &context);
+    CHECK(inspector->isVisible() == false);
+    CHECK(canvas.GetConfiguration() == QStringLiteral("Visibility"));
+    REQUIRE(document.GetDraft(library).contains("VisibilityGeometry") == true);
+    CHECK(document.GetDraft(library).contains("VisibilitySecondaryGenerate") == hasSecondaryRays);
+    CHECK(document.GetDraft(QStringLiteral("main_shaders/geometry.slang")) == beforeGeometry);
+    CHECK(
+        document.GetDraft(QStringLiteral("visibility_buffer/main_shaders/color.slang")).contains("EncodeVisibility") ==
+        true);
+    const QByteArray afterLibrary = document.GetDraft(library);
+    const QByteArray afterManifest = document.GetDraft(manifest);
+    workspace.Undo();
+    CHECK(document.GetDraft(library) == beforeLibrary);
+    CHECK(document.GetDraft(manifest) == beforeManifest);
+    CHECK(document.GetFiles() == beforeFiles);
+    workspace.Redo();
+    CHECK(document.GetDraft(library) == afterLibrary);
+    CHECK(document.GetDraft(manifest) == afterManifest);
+    CHECK(workspace.ApplyConfigurationTemplate(QStringLiteral("Visibility"), identity) == false);
+    CHECK(document.GetDraft(library) == afterLibrary);
+    CHECK(document.GetDraft(manifest) == afterManifest);
+
+    // Wire the selected reusable configuration through the parent's existing raster node.
+    QJsonObject root;
+    REQUIRE(document.GetGraph(ROOT_GRAPH, root) == true);
+    QJsonArray configurations = root.value(QStringLiteral("configurations")).toArray();
+    QJsonObject parent = configurations.first().toObject();
+    QJsonArray nodes;
+    for (const QJsonValueConstRef value : parent.value(QStringLiteral("nodes")).toArray())
+    {
+        QJsonObject node = value.toObject();
+        if (node.value(QStringLiteral("kind")) == QStringLiteral("Subgraph"))
+        {
+            if (node.value(QStringLiteral("id")) != QStringLiteral("raster"))
+            {
+                continue;
+            }
+            node.insert(QStringLiteral("asset"), library);
+            node.insert(QStringLiteral("configuration"), QStringLiteral("Visibility"));
+        }
+        nodes.append(node);
+    }
+    QJsonArray edges;
+    for (const QJsonValueConstRef value : parent.value(QStringLiteral("edges")).toArray())
+    {
+        QJsonObject edge = value.toObject();
+        if (hasSecondaryRays == true && edge.value(QStringLiteral("to")) == QStringLiteral("raster.depth"))
+        {
+            continue;
+        }
+        if (hasSecondaryRays == false)
+        {
+            if (edge.value(QStringLiteral("to")) == QStringLiteral("raster.color"))
+                edge.insert(QStringLiteral("to"), QStringLiteral("raster.visibility"));
+            if (edge.value(QStringLiteral("from")) == QStringLiteral("raster.color"))
+                edge.insert(QStringLiteral("from"), QStringLiteral("raster.visibility"));
+        }
+        edges.append(edge);
+    }
+    parent.insert(QStringLiteral("nodes"), nodes);
+    parent.insert(QStringLiteral("edges"), edges);
+    configurations.replace(0, parent);
+    QJsonObject originalConfiguration =
+        originalRoot.value(QStringLiteral("configurations")).toArray().first().toObject();
+    originalConfiguration.insert(QStringLiteral("id"), QStringLiteral("Original"));
+    configurations.append(originalConfiguration);
+    root.insert(QStringLiteral("configurations"), configurations);
+    REQUIRE(document.SetText(ROOT_GRAPH, EncodeCanonicalJson(root)) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(workspace.Save() == true);
+    QSignalSpy finished(&workspace, &RendererWorkspace::JobFinished);
+    REQUIRE(workspace.Validate() == true);
+    REQUIRE(finished.wait(TEMPLATE_JOB_TIMEOUT_MILLISECONDS) == true);
+    INFO(workspace.GetLastResult().Message.toStdString());
+    CHECK(workspace.GetLastResult().IsSuccessful == true);
+    RenderGraphDocument reloaded;
+    REQUIRE(reloaded.Load(document.GetPackageRoot(), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    CHECK(reloaded.GetDraft(library) == afterLibrary);
+    const QString fixture = qEnvironmentVariable("LUDUS_VISIBILITY_CONFIGURATION_FIXTURE");
+    if (fixture.isEmpty() == false)
+    {
+        const QString destination = QDir(fixture).filePath(identity);
+        REQUIRE(QDir().mkpath(destination) == true);
+        REQUIRE(document.WriteSnapshot(destination) == RenderGraphDocumentStatus::Ok);
+    }
+}
+
+TEST_CASE("Root visibility insertion is atomic on library collisions and incompatible ray ABIs",
+          "[editor][render-graph][visibility-configuration]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QByteArray beforeRoot = document.GetDraft(ROOT_GRAPH);
+    const QByteArray beforeManifest = document.GetDraft(QStringLiteral("main.lushader.json"));
+    REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("Visibility"), QStringLiteral("visibility-buffer")) ==
+            true);
+    CHECK(document.GetDraft(ROOT_GRAPH).contains("Visibility.lurender.json") == true);
+    CHECK(document.GetDraft(QStringLiteral("Visibility.lurender.json")).contains("VisibilityGeometry") == true);
+    workspace.Undo();
+    CHECK(document.GetDraft(ROOT_GRAPH) == beforeRoot);
+    CHECK(document.GetDraft(QStringLiteral("main.lushader.json")) == beforeManifest);
+    workspace.Redo();
+    const QByteArray insertedRoot = document.GetDraft(ROOT_GRAPH);
+    QString error;
+    CHECK(document.ApplyConfigurationTemplate(ROOT_GRAPH,
+                                              QStringLiteral("Visibility"),
+                                              QStringLiteral("visibility-buffer"),
+                                              error) == RenderGraphDocumentStatus::Conflict);
+    CHECK(document.GetDraft(ROOT_GRAPH) == insertedRoot);
+    workspace.Undo();
+    REQUIRE(workspace.ApplyRestirTemplate(QStringLiteral("Lighting")) == true);
+    const QStringList files = document.GetFiles();
+    const QByteArray restirManifest = document.GetDraft(QStringLiteral("main.lushader.json"));
+    CHECK(document.ApplyConfigurationTemplate(ROOT_GRAPH,
+                                              QStringLiteral("Reflections"),
+                                              QStringLiteral("visibility-secondary-rays"),
+                                              error) == RenderGraphDocumentStatus::Conflict);
+    CHECK(error.contains(QStringLiteral("ray interface")) == true);
+    CHECK(document.GetDraft(QStringLiteral("main.lushader.json")) == restirManifest);
+    CHECK(document.GetFiles() == files);
+}
+
+TEST_CASE("Visibility imports reuse compatible shader records and preserve conflicting edits",
+          "[editor][render-graph][visibility-configuration]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    RenderGraphDocument& document = workspace.GetDocument();
+    QString error;
+    REQUIRE(document.ApplyConfigurationTemplate(ROOT_GRAPH,
+                                                QStringLiteral("Visibility"),
+                                                QStringLiteral("visibility-buffer"),
+                                                error) == RenderGraphDocumentStatus::Ok);
+    const QString shader = QStringLiteral("visibility_buffer/main_shaders/color.slang");
+    const QByteArray original = document.GetDraft(shader);
+    REQUIRE(document.ApplyConfigurationTemplate(ROOT_GRAPH,
+                                                QStringLiteral("Reflections"),
+                                                QStringLiteral("visibility-secondary-rays"),
+                                                error) == RenderGraphDocumentStatus::Ok);
+    CHECK(document.GetDraft(shader) == original);
+    REQUIRE(document.ApplyConfigurationTemplate(ROOT_GRAPH,
+                                                QStringLiteral("MoreReflections"),
+                                                QStringLiteral("visibility-secondary-rays"),
+                                                error) == RenderGraphDocumentStatus::Ok);
+    SECTION("changed reserved source")
+    {
+        REQUIRE(document.SetText(shader, original + QByteArray("\n// Authored edit.\n")) ==
+                RenderGraphDocumentStatus::Ok);
+    }
+    SECTION("incompatible shared payload")
+    {
+        REQUIRE(document.SetText(QStringLiteral("visibility_secondary_rays/main_shaders/payload.slang"),
+                                 QByteArray("struct ScenePayload { float3 Changed; };\n")) ==
+                RenderGraphDocumentStatus::Ok);
+    }
+    const QByteArray beforeRoot = document.GetDraft(ROOT_GRAPH);
+    const QByteArray beforeManifest = document.GetDraft(QStringLiteral("main.lushader.json"));
+    const QByteArray beforeShader = document.GetDraft(shader);
+    const QStringList beforeFiles = document.GetFiles();
+    CHECK(document.ApplyConfigurationTemplate(ROOT_GRAPH,
+                                              QStringLiteral("Conflicting"),
+                                              QStringLiteral("visibility-secondary-rays"),
+                                              error) == RenderGraphDocumentStatus::Conflict);
+    CHECK(document.GetDraft(ROOT_GRAPH) == beforeRoot);
+    CHECK(document.GetDraft(QStringLiteral("main.lushader.json")) == beforeManifest);
+    CHECK(document.GetDraft(shader) == beforeShader);
+    CHECK(document.GetFiles() == beforeFiles);
 }

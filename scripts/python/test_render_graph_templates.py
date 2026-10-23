@@ -125,7 +125,7 @@ class VisibilityTemplateTests(unittest.TestCase):
                 root = self.create(identity)
                 asset = json.loads(root.read_text())
                 self.assertEqual(asset['version'], 2)
-                nodes = asset['configurations'][0]['nodes']
+                nodes = json.loads(root.with_name('library.lurender.json').read_text())['configurations'][0]['nodes']
                 self.assertTrue(any(node['kind'] == 'GraphicsPipeline' for node in nodes))
                 self.assertFalse(any(node['kind'] == 'Raster' for node in nodes))
                 plan = graph.compile_graph(root)
