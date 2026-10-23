@@ -463,7 +463,10 @@ TEST_CASE("Focus Viewport hides chrome around the World viewport and restores th
         CHECK(viewport->width() * 100 >= window.width() * 90);
 
         // Closing while focused persists the arrangement Focus Viewport returns to.
-        REQUIRE(window.close() == true);
+        // Preview and content workers can finish asynchronously; closeEvent retries
+        // after they retire, and only then publishes the saved arrangement.
+        static_cast<void>(window.close());
+        REQUIRE(QTest::qWaitFor([&window]() { return window.isVisible() == false; }) == true);
     }
     MainWindow window(&controller, nullptr, preferences);
     window.show();

@@ -340,11 +340,17 @@ print(json.dumps(dict(protocol=1, type='result', job=request['job'],
     check->click();
     const QString renderingProblem = QStringLiteral("Rendering tools need preparation.");
     controller.ReportProjectSetupProblem(renderingProblem);
-    REQUIRE(QTest::qWaitFor([&controller]() { return controller.Caps().CanCloseImmediately; }, 10000));
+    // ToolProcess retires before its queued Finished notification refreshes the
+    // controls. Wait for the button too, so the next click cannot be ignored.
+    REQUIRE(QTest::qWaitFor(
+        [&controller, check]() { return controller.Caps().CanCloseImmediately == true && check->isEnabled() == true; },
+        10000));
     CHECK(controller.State().SetupProblem == renderingProblem);
     CHECK(notice->isVisible() == true);
     check->click();
-    REQUIRE(QTest::qWaitFor([&controller]() { return controller.Caps().CanCloseImmediately; }, 10000));
+    REQUIRE(QTest::qWaitFor(
+        [&controller, check]() { return controller.Caps().CanCloseImmediately == true && check->isEnabled() == true; },
+        10000));
     CHECK(controller.State().SetupProblem.isEmpty() == true);
     CHECK(notice->isVisible() == false);
 
