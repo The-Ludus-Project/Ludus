@@ -639,7 +639,11 @@ buffers and a texture-derived RenderSize node. Opening `#RestirDi` shows the ful
 editable wiring. Import, shader/manifest changes and any inserted Subgraph are
 one undo step; **Save** publishes them together. New shader programs have `Restir`
 prefixed IDs and sources under `restir_di/main_shaders/`. No shader copying or
-pasting is required. Existing callbacks remain unchanged; a shared custom payload
+pasting is required. Import captures every declared ray shader and its transitive
+local includes before committing the draft. If an embedded source is missing,
+application fails with its path instead of publishing a manifest that cannot build.
+Explicit **Build Graph** includes these new files in its immutable draft snapshot
+before Save; building does not publish them to the project. Existing callbacks remain unchanged; a shared custom payload
 keeps its fields and gains `RayLaunch Launch`. Importing upgrades unchanged Raster
 admission defaults to the ReSTIR template capacities (16 programs and 64 artifacts),
 so an existing ray pipeline can coexist with the five imported programs. Custom
@@ -722,7 +726,14 @@ are `history.buffer → initial.history → temporal.history → shade.history` 
 `reservoir.buffer → initial.reservoir → temporal.reservoir → shade.reservoir`.
 The library color chain ends at its `color` output, connected by the parent to
 `output.texture` or a later pass. History persists through the
-frame boundary in the same allocation; no cyclic graph wire is needed. Do not
+frame boundary in the same allocation; no cyclic graph wire is needed.
+The final `shade.history` and `shade.reservoir` outputs may remain unconnected:
+those output ports name the updated logical resource versions; they do not allocate
+copies or control retention. All declared pass reads/writes and their resource
+hazards remain in the execution plan. The graph owns both persistent allocations
+through the frame boundary, until their generation is replaced or destroyed.
+Expose a Buffer output from the library only when a later parent pass needs it;
+that consumer must connect to the updated version. Do not
 swap the two buffer input positions between these particular passes. Temporal
 reuse writes only each invocation's own scratch record; spatial reuse reads only
 scratch while writing history. Thus neither pass races a neighbouring reader.
