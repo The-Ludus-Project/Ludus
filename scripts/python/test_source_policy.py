@@ -48,6 +48,10 @@ class SourcePolicyTests(unittest.TestCase):
                        "items.append(static_cast<int32>(index));"]:
             with self.subTest(source=source):
                 self.assertFalse(violations(path, source, {1}))
+        # Outside Qt sources, append is an ordinary function that takes int64.
+        native = "examples/reference-scene/src/main.cpp"
+        self.assertFalse(violations(native, "if (append(static_cast<uint64>(backend)) == false) {}", {1}))
+        self.assertTrue(violations(native, "QJsonArray tracks; tracks.append(static_cast<uint64>(trackId));", {1}))
 
     def test_nullable_variables_and_move_parameters(self):
         for source in ["Thing* value = nullptr;", "struct A { Thing* mValue{}; };", "Thing* const value = nullptr;",
@@ -86,6 +90,7 @@ class SourcePolicyTests(unittest.TestCase):
         for source in ["void F(Thing& outThing, Other& inoutOther, const Thing& thing);",
                        "bool isReady = true; bool mHasItems = false;", "void F(bool& outIsDegenerate);",
                        "int main(int argc, char** argv) { return 0; }", "UniquePtr<Thing> owner;",
+                       "template <typename T> class SharedPtr; template <typename T> class WeakPtr;",
                        "QString parameterText; Source source; usize count = 0;",
                        "for (Thing& thing : things) {}",
                        "int vkArgs = 0; // ludus-style: abbreviation mirrors the Vulkan field name"]:
