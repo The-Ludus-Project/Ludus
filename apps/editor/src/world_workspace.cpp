@@ -107,9 +107,16 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
 {
     setObjectName(QStringLiteral("worldWorkspace"));
     auto* layout = new QVBoxLayout(this);
+    // Everything above the viewport shares one container, so focusing the viewport hides it
+    // without disturbing the visibility each control derives from the document.
+    mHeader = new QWidget(this);
+    mHeader->setObjectName(QStringLiteral("worldHeader"));
+    QVBoxLayout* header = new QVBoxLayout(mHeader);
+    header->setContentsMargins(0, 0, 0, 0);
+    layout->addWidget(mHeader);
     auto* intro = new QLabel(QStringLiteral("World — entities and project-defined components"), this);
     intro->setWordWrap(true);
-    layout->addWidget(intro);
+    header->addWidget(intro);
     intro->setToolTip(
         QStringLiteral("Create or open a world, import a scene, and edit placement and components together. "
                        "Projects may supply authoring/world.schema.json for gameplay fields. Runtime "
@@ -209,7 +216,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
         }
     });
     files->setColumnStretch(4, 1);
-    layout->addLayout(files);
+    header->addLayout(files);
     QHBoxLayout* previewRow = new QHBoxLayout;
     ImportPreview_ = new QPlainTextEdit(this);
     ImportPreview_->setObjectName(QStringLiteral("worldImportPreview"));
@@ -229,7 +236,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     previewActions->addStretch();
     previewRow->addWidget(ImportPreview_, 1);
     previewRow->addLayout(previewActions);
-    layout->addLayout(previewRow);
+    header->addLayout(previewRow);
     connect(ConfirmImport_, &QPushButton::clicked, this, [this]() { (void)ConfirmImportPreview(); });
     connect(DiscardImport_, &QPushButton::clicked, this, [this]() {
         PreviewedSource_.clear();
@@ -257,13 +264,13 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     mImportReportToggleOrNull->setArrowType(Qt::RightArrow);
     mImportReportToggleOrNull->hide();
     documentRow->addWidget(mImportReportToggleOrNull);
-    layout->addLayout(documentRow);
+    header->addLayout(documentRow);
     connect(mImportReportToggleOrNull, &QToolButton::toggled, this, [this](bool isExpanded) {
         ImportReport_->setVisible(isExpanded);
         mImportReportToggleOrNull->setArrowType(isExpanded == true ? Qt::DownArrow : Qt::RightArrow);
     });
     Render_ = new RenderPanel(this);
-    layout->addWidget(Render_);
+    header->addWidget(Render_);
     connect(Render_, &RenderPanel::Starting, this, [this]() {
         updateShownRenderPreview(false);
         Q_EMIT PreviewStarting();
@@ -281,6 +288,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     split->setObjectName(QStringLiteral("worldSplitter"));
     layout->addWidget(split, 1);
     QScrollArea* hierarchyScroll = new QScrollArea(split);
+    mHierarchy = hierarchyScroll;
     hierarchyScroll->setObjectName(QStringLiteral("worldHierarchyScroll"));
     hierarchyScroll->setWidgetResizable(true);
     hierarchyScroll->setMinimumWidth(130);
@@ -1590,12 +1598,39 @@ QWidget* WorldWorkspace::TakePropertiesPanel(QWidget* newParent)
     mPropertiesPanel->setParent(newParent);
     return mPropertiesPanel;
 }
+void WorldWorkspace::SetChromeVisible(bool isVisible)
+{
+    if (isVisible == mIsChromeVisible)
+    {
+        return;
+    }
+    mIsChromeVisible = isVisible;
+    if (isVisible == false)
+    {
+        mSplitterStateBeforeChromeHidden = Split_->saveState();
+    }
+    mHeader->setVisible(isVisible);
+    mHierarchy->setVisible(isVisible);
+    Status_->setVisible(isVisible);
+    // A Properties tool window owns the inspector once taken; only an embedded one is chrome.
+    if (mPropertiesPanel->parentWidget() == Split_)
+    {
+        mPropertiesPanel->setVisible(isVisible);
+    }
+    if (isVisible == true)
+    {
+        (void)Split_->restoreState(mSplitterStateBeforeChromeHidden);
+        mSplitterStateBeforeChromeHidden.clear();
+    }
+}
 QJsonObject WorldWorkspace::Session() const
 {
+    // Sessions saved while the viewport is focused record the arrangement it returns to.
+    const QByteArray splitter = mIsChromeVisible == true ? Split_->saveState() : mSplitterStateBeforeChromeHidden;
     return {{QStringLiteral("world"), Path_.isEmpty() ? QString() : QDir(Root_).relativeFilePath(Path_)},
             {QStringLiteral("selection"), Selected_},
             {QStringLiteral("selections"), QJsonArray::fromStringList(mSelectedEntities)},
-            {QStringLiteral("splitter"), QString::fromLatin1(Split_->saveState().toBase64())},
+            {QStringLiteral("splitter"), QString::fromLatin1(splitter.toBase64())},
             {QStringLiteral("boundCamera"), Render_->Preview().Navigation()},
             {QStringLiteral("sceneCamera"), Scene_->Navigation()}};
 }

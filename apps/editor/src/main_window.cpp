@@ -96,7 +96,8 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
       mCancelGraphAction(CreateEditorCommand(RENDER_GRAPH_CANCEL_COMMAND, this)),
       mOptionsAction(CreateEditorCommand(TOOLS_OPTIONS_COMMAND, this)),
       mProjectSettingsAction(CreateEditorCommand(PROJECT_SETTINGS_COMMAND, this)),
-      mResetLayoutAction(CreateEditorCommand(WINDOW_RESET_LAYOUT_COMMAND, this))
+      mResetLayoutAction(CreateEditorCommand(WINDOW_RESET_LAYOUT_COMMAND, this)),
+      mFocusViewportAction(CreateEditorCommand(VIEW_FOCUS_VIEWPORT_COMMAND, this))
 {
     setWindowTitle(QStringLiteral("Ludus Editor"));
     setWindowIcon(QIcon(QStringLiteral(":/ludus/ludus-icon.png")));
@@ -517,6 +518,9 @@ void MainWindow::BuildMenus()
     {
         toolbars->addAction(toolbar->toggleViewAction());
     }
+    viewMenu->addSeparator();
+    viewMenu->addAction(mFocusViewportAction);
+    connect(mFocusViewportAction, &QAction::toggled, this, &MainWindow::setViewportFocused);
 
     // Visual Studio keeps editor-wide preferences in Tools > Options.
     QMenu* toolsMenu = menuBar()->addMenu(QStringLiteral("&Tools"));
@@ -1229,7 +1233,8 @@ void MainWindow::RenderStatus()
     ProjectSetupStatus_->setText(setupStatus);
     const bool hasSetupProblem =
         state.Document == DocumentState::ProjectLoaded && state.SetupProblem.isEmpty() == false;
-    mSetupNoticeOrNull->setVisible(hasSetupProblem);
+    // Focus Viewport keeps the notice hidden; the status bar still reports setup state.
+    mSetupNoticeOrNull->setVisible(hasSetupProblem == true && mIsViewportFocused == false);
     mSetupNoticeTextOrNull->setToolTip(state.SetupProblem);
     mSetupNoticeTextOrNull->setText(
         QStringLiteral("Project setup needs attention: %1\nRepair now, or keep editing and repair later. %2")

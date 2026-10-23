@@ -15,6 +15,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QKeySequence>
 #include <QPixmap>
 #include <QScrollArea>
 #include <QSize>
@@ -385,4 +386,105 @@ TEST_CASE("World stays visible beside tool windows and receives focused document
     CHECK(world->isVisible() == true);
     Reset(window);
     CHECK(world->isVisible() == true);
+}
+
+TEST_CASE("Focus Viewport hides chrome around the World viewport and restores the arrangement exactly",
+          "[editor][layout][focus-viewport]")
+{
+    QTemporaryDir directory;
+    const QString preferences = directory.filePath(QStringLiteral("workspace.json"));
+    EditorController controller(ToolingPaths{}, nullptr, directory.filePath(QStringLiteral("recent.json")));
+    QFile descriptor(directory.filePath(QStringLiteral("ludus.project.json")));
+    REQUIRE(descriptor.open(QIODevice::WriteOnly) == true);
+    descriptor.write(QByteArrayLiteral(R"json({"version":1,"name":"demo","provider":"cmake",
+"source_dir":".","preset":"linux-clang-debug","target":"app","run":{"cwd":".","args":[]}})json"));
+    descriptor.close();
+    {
+        MainWindow window(&controller, nullptr, preferences);
+        window.resize(1470, 920);
+        window.show();
+        controller.OpenProject(descriptor.fileName());
+        REQUIRE(controller.State().Document == DocumentState::ProjectLoaded);
+        QApplication::processEvents();
+        DocumentWell& well = window.GetDocumentWell();
+        WorldWorkspace* world = window.findChild<WorldWorkspace*>();
+        QWidget* project = window.findChild<QWidget*>(QStringLiteral("projectSettingsScroll"));
+        REQUIRE(world != nullptr);
+        REQUIRE(project != nullptr);
+        REQUIRE(well.OpenDocument(project) == true);
+        // A personal arrangement: one tool window moved, one closed, one toolbar hidden.
+        window.addDockWidget(Qt::LeftDockWidgetArea, Dock(window, QStringLiteral("outputDock")));
+        Dock(window, QStringLiteral("liveInspectorDock"))->hide();
+        window.findChild<QToolBar*>(QStringLiteral("renderGraphToolbar"))->hide();
+        QApplication::processEvents();
+
+        QAction* focus = window.findChild<QAction*>(QStringLiteral("view.focusViewport"));
+        REQUIRE(focus != nullptr);
+        CHECK(focus->isCheckable() == true);
+        CHECK(focus->shortcut() == QKeySequence(QStringLiteral("Shift+Alt+Return")));
+        QWidget* viewport = world->findChild<QWidget*>(QStringLiteral("worldViewport"));
+        REQUIRE(viewport != nullptr);
+        QWidget* viewportParent = viewport->parentWidget();
+        focus->trigger();
+        QApplication::processEvents();
+        CHECK(focus->isChecked() == true);
+        CHECK(well.GetActiveDocumentOrNull() == world);
+        for (QDockWidget* dock : window.findChildren<QDockWidget*>())
+        {
+            INFO(dock->objectName().toStdString());
+            CHECK(dock->isHidden() == true);
+        }
+        for (QToolBar* toolbar : window.findChildren<QToolBar*>(Qt::FindDirectChildrenOnly))
+        {
+            INFO(toolbar->objectName().toStdString());
+            CHECK(toolbar->isHidden() == true);
+        }
+        CHECK(world->IsChromeVisible() == false);
+        CHECK(world->findChild<QWidget*>(QStringLiteral("worldHeader"))->isHidden() == true);
+        CHECK(world->findChild<QWidget*>(QStringLiteral("worldHierarchyScroll"))->isHidden() == true);
+        CHECK(world->findChild<QWidget*>(QStringLiteral("worldStatus"))->isHidden() == true);
+        // The native viewport is neither hidden nor moved; it takes most of the window.
+        CHECK(viewport->isHidden() == false);
+        CHECK(viewport->parentWidget() == viewportParent);
+        CHECK(viewport->height() * 100 >= window.height() * 75);
+        CHECK(viewport->width() * 100 >= window.width() * 90);
+
+        // Closing while focused persists the arrangement Focus Viewport returns to.
+        REQUIRE(window.close() == true);
+    }
+    MainWindow window(&controller, nullptr, preferences);
+    window.show();
+    QApplication::processEvents();
+    CHECK(window.dockWidgetArea(Dock(window, QStringLiteral("outputDock"))) == Qt::LeftDockWidgetArea);
+    CHECK(Dock(window, QStringLiteral("liveInspectorDock"))->isHidden() == true);
+    CHECK(Dock(window, QStringLiteral("projectExplorerDock"))->isHidden() == false);
+    CHECK(window.findChild<QToolBar*>(QStringLiteral("renderGraphToolbar"))->isHidden() == true);
+    CHECK(window.findChild<QToolBar*>(QStringLiteral("standardToolbar"))->isHidden() == false);
+
+    // Leaving Focus Viewport returns the exact dock state and the previously active document.
+    DocumentWell& well = window.GetDocumentWell();
+    WorldWorkspace* world = window.findChild<WorldWorkspace*>();
+    QWidget* project = window.findChild<QWidget*>(QStringLiteral("projectSettingsScroll"));
+    REQUIRE(well.OpenDocument(project) == true);
+    QApplication::processEvents();
+    const QByteArray before = window.saveState();
+    QAction* focus = window.findChild<QAction*>(QStringLiteral("view.focusViewport"));
+    focus->trigger();
+    QApplication::processEvents();
+    CHECK(Dock(window, QStringLiteral("projectExplorerDock"))->isHidden() == true);
+    focus->trigger();
+    QApplication::processEvents();
+    CHECK(focus->isChecked() == false);
+    CHECK(window.saveState() == before);
+    CHECK(world->IsChromeVisible() == true);
+    CHECK(world->findChild<QWidget*>(QStringLiteral("worldHeader"))->isHidden() == false);
+    CHECK(world->findChild<QWidget*>(QStringLiteral("worldHierarchyScroll"))->isHidden() == false);
+    CHECK(well.GetActiveDocumentOrNull() == project);
+
+    // Reset Window Layout also leaves Focus Viewport.
+    focus->trigger();
+    Reset(window);
+    CHECK(focus->isChecked() == false);
+    CheckDefaultPanels(window);
+    CHECK(world->IsChromeVisible() == true);
 }

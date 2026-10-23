@@ -115,6 +115,13 @@ private:
     void ResetWorkspaceLayout();
     void arrangeDefaultDocks();
     void applyDefaultDockSizes();
+    /// Every tool window, in the default arrangement's order.
+    [[nodiscard]] QList<QDockWidget*> getToolWindows() const;
+    /// Focus Viewport: hide tool windows, toolbars and World chrome, or restore the exact
+    /// arrangement captured on entry (dock state and the previously active document).
+    void setViewportFocused(bool isFocused);
+    /// The arrangement to persist: the one Focus Viewport returns to while it is active.
+    [[nodiscard]] QByteArray getPersistentLayoutState() const;
     void showToolWindow(QDockWidget* dock);
     void buildWindowMenu(QMenu* menu);
     void renderWindowDocuments(QMenu* menu);
@@ -212,6 +219,12 @@ private:
     QAction* mOptionsAction;
     QAction* mProjectSettingsAction;
     QAction* mResetLayoutAction;
+    QAction* mFocusViewportAction;
+    /// Main-window state captured when Focus Viewport started; empty otherwise.
+    QByteArray mFocusRestoreState;
+    /// Document that was active when Focus Viewport started; reactivated on exit.
+    QWidget* mFocusRestoreDocumentOrNull = nullptr;
+    bool mIsViewportFocused = false;
     QToolBar* GameToolbar_ = nullptr;
     // Build output is parsed for the Error List after it stops changing briefly.
     QTimer mBuildErrorsTimer;
