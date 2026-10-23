@@ -27,7 +27,7 @@ MAX_UNIFORM_BINDINGS = 16
 MAX_UNIFORM_FIELDS = 256
 MAX_UNIFORM_BLOCK_BYTES = 1024
 UNIFORM_SLOT_COUNT = 8
-FORMAT_VERSION = 9
+FORMAT_VERSION = 10
 ABSENT = 0xFFFFFFFF
 # Exact technique identities and their numeric program roles, in format order.
 PROGRAMS = {'DefaultStaticOpaque.ColorAndDepth': 'ColorAndDepth', 'DefaultStaticOpaque.DepthOnly': 'DepthOnly',
@@ -96,7 +96,7 @@ def lower_plan(package, configuration):
     cameras = sorted({p['view'] for p in rasters})
     build.require(sum(p['kind'] == 'RayTracing' for p in rasters) <= MAX_RAY_PASSES, 'Capacity', configuration,
                   'at most four triangle ray passes are admitted per configuration')
-    build.require(all(p['kind'] in ('Raster', 'RayTracing', 'Accumulate', 'Export', 'Present') for p in plan['passes']) and
+    build.require(all(p['kind'] in ('Raster', 'RayTracing', 'Accumulate', 'ToneMap', 'Export', 'Present') for p in plan['passes']) and
                   all((p['kind'] == 'RayTracing' and p['technique'] == ray.TECHNIQUE) or (p['configuration'] in graph.MODES and p['material'] in graph.MATERIALS and
                       (p['technique'] == graph.MATERIALS[p['material']] + '.' + p['configuration'] or
                        p['technique'].startswith(graph.MATERIALS[p['material']] + '.' + p['configuration'] + '.')) and
@@ -171,7 +171,8 @@ def lower_plan(package, configuration):
                 'RayProgram': variants.index(variant), 'Buffer0': persistent_slots[0], 'Buffer1': persistent_slots[1],
                 'Visibility': resources.index(operation['visibility']['resource']) if 'visibility' in operation else ABSENT,
                 'VisibilityDepth': resources.index(operation['visibility_depth']['resource']) if 'visibility_depth' in operation else ABSENT,
-                'AccumulationSamples': operation.get('accumulation', {}).get('samples', 0)})
+                'AccumulationSamples': operation.get('accumulation', {}).get('samples', 0),
+                'ToneMappingExposure': float(operation.get('tone_mapping', {}).get('exposure', 0))})
             continue
         choices = [r for r in package['recipes'] if r['technique'] == operation['technique'] and
                    ('pipeline' not in operation or all(r['state'][key] == value
@@ -193,7 +194,7 @@ def lower_plan(package, configuration):
                              'DepthLoad': attachment['depth']['load'], 'DepthStore': attachment['depth']['store'],
                              'AllowsRepeatedCoverage': 0, 'SceneData': operation.get('scene_data', graph.scene_bundle.ALL_DATA),
                              'RayProgram': 0, 'Buffer0': ABSENT, 'Buffer1': ABSENT,
-                             'Visibility': ABSENT, 'VisibilityDepth': ABSENT, 'AccumulationSamples': 0})
+                             'Visibility': ABSENT, 'VisibilityDepth': ABSENT, 'AccumulationSamples': 0, 'ToneMappingExposure': 0.0})
     # Distinct explicitly authored shader pairs represent deliberate passes (for
     # example GBuffer and beauty), rather than an accidental duplicate scene route.
     for operation, record in zip(rasters, pass_records):
@@ -220,7 +221,7 @@ def stage_inputs(item):
 TARGET_FIELDS = {'metal': 'Msl', 'spirv': 'Spirv', 'wgsl': 'Wgsl', 'glsl': 'GlslEs'}
 # Serialized runtime generation (RG3); mirrors render_graph_format/runtime_package.h.
 PACKAGE_MAGIC = 0x4752554C
-PACKAGE_VERSION = 13
+PACKAGE_VERSION = 14
 RESOURCE_FIELD_COUNT = 9
 RESOURCE_RECORD_BYTES = RESOURCE_FIELD_COUNT * 4
 MAX_PASS_NAME_BYTES = 127
@@ -509,6 +510,8 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
                     cells.append('format::ShaderTarget::' + TARGET_NAMES[item])
                 elif field == 'Program' and PROGRAM_CODES[item] >= LEGACY_PROGRAM_COUNT:
                     cells.append('static_cast<format::Technique>(' + str(PROGRAM_CODES[item]) + ')')
+                elif field == 'ToneMappingExposure':
+                    cells.append(str(item) + 'F')
                 elif isinstance(item, str):
                     cells.append('format::' + kinds[field] + '::' + item)
                 else:
@@ -646,6 +649,7 @@ def encode_runtime_package(contents):
     for p in contents['passes']:
         data += u32(PROGRAM_CODES[p['Program']], p['Camera'], p['Color'], p['Depth'], loads[p['ColorLoad']],
                     stores[p['ColorStore']], loads[p['DepthLoad']], stores[p['DepthStore']], p['AllowsRepeatedCoverage'], p.get('SceneData', graph.scene_bundle.ALL_DATA), p['RayProgram'], p['Buffer0'], p['Buffer1'], p.get('Visibility', ABSENT), p.get('VisibilityDepth', ABSENT), p.get('AccumulationSamples', 0))
+        data += struct.pack('<f', p.get('ToneMappingExposure', 0))
     for b in contents['bindings']:
         data += u32(PROGRAM_CODES[b['Program']], b['Slot'], VISIBILITY[b['Stages']], b['ValueOffset'], b['ValueCount'])
     for b in contents['blocks']:
@@ -713,7 +717,7 @@ def encode_resource_names(contents):
     # Expanded operation IDs let a canvas node (Raster, Subgraph, Export, Present) find what it wrote or read.
     operations = []
     for operation in plan['passes']:
-        if operation['kind'] in ('Raster', 'RayTracing', 'Accumulate'):
+        if operation['kind'] in ('Raster', 'RayTracing', 'Accumulate', 'ToneMap'):
             attachments = {aspect: {'resource': value['resource'], 'load': value['load'], 'store': value['store']}
                            for aspect, value in sorted(operation['attachments'].items())}
         else:

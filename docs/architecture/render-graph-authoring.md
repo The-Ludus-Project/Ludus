@@ -1084,6 +1084,23 @@ immutable parameters select its callback set without changing shader artifacts
 or descriptor layouts per frame. The extended kernel writes current-frame
 radiance and advances a uint32 counter. Color averaging and its stop limit require
 an explicit [Accumulate node](../development/render-graph-authoring.md#accumulate-ray-samples-explicitly).
+Display conversion likewise requires an explicit
+[ToneMap node](../development/render-graph-authoring.md#tone-map-ray-output-explicitly).
+The logical plan retains both operations and their color resource versions;
+execution fuses them into the ray producer in linear-mean, exposure, Reinhard,
+sRGB order before the RGBA8 write. Without ToneMap, the graph clamps linear RGB
+at that write. In-place version ownership rejects readers of an intermediate
+raw version alongside a transformed version. This bounded profile accepts ray
+color only; it does not promise a general HDR raster post-processing pipeline.
+
+Numeric plan version 10 and runtime package version 14 append the float32
+ToneMappingExposure field after AccumulationSamples. Zero bypasses conversion;
+a finite positive multiplier in the format owner's range selects Reinhard and
+sRGB. The existing shader parameter exposure component carries that policy,
+without a shader ABI expansion. Older packages preserve scene-ray display
+conversion at unit exposure and ordinary-ray clamping. Version 13's explicit
+accumulation field remains independently decoded; earlier versions keep their
+historical accumulation defaults.
 
 RenderGraph owns zero-initialized storage allocations alongside its attachment
 ledger. Scene candidates borrow those allocations during preparation, which does

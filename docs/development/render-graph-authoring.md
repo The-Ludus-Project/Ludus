@@ -1369,16 +1369,58 @@ the terminal surface's NEE contribution has weight one if you never sample a
 competing BSDF continuation there. The engine does not apply that weight for you.
 
 Scene callbacks return unclamped linear RGB. Without an **Accumulate** node, each
-ray frame displays its individual sample using the preview's exposure-one
-Reinhard/sRGB conversion. Holding the camera still does not implicitly average
+ray frame displays its individual sample. Exposure, Reinhard compression and sRGB
+encoding require an explicit [ToneMap node](#tone-map-ray-output-explicitly). Without it,
+the RGBA8 output clamps linear RGB to [0, 1]. Holding the camera still does not implicitly average
 these colors. ReSTIR reservoir reuse remains an independent, shader-authored
 operation that can also reduce noise.
+
+### Tone map ray output explicitly
+
+Add **ToneMap** from the canvas's **Add Node** menu or Properties. Connect its
+required `color: ColorTexture` input to a ray pipeline's color output, or to an
+Accumulate output, then connect its `color: ColorTexture` output to Export,
+Present or the containing subgraph's output:
+
+```text
+RayTracingPipeline → Accumulate → ToneMap → Export / Present
+```
+
+```json
+{"id": "tonemap", "kind": "ToneMap", "exposure": 1}
+```
+
+**Exposure multiplier** is a finite linear multiplier from 0.01 to 64; one leaves
+exposure unchanged, two doubles it, and 0.5 halves it. Edit it in Properties or
+through the canvas's **Edit Node** action. Both use the same validation, undo,
+redo and Save operations. The canvas displays the exposure and Reinhard operator.
+The conversion applies exposure to linear RGB, compresses each channel with
+`x / (1 + x)`, then encodes sRGB. Connect Accumulate before ToneMap so averaging
+uses linear radiance. Accumulating already mapped colors is rejected.
+
+Bypass ToneMap by connecting its input's source directly to its consumer. An
+unused draft does not enable conversion. With no connected ToneMap, the graph
+writes clamped linear RGB to RGBA8; this is useful for inspecting raw samples,
+but does not preserve HDR values in the exported texture. The ReSTIR DI and
+Visibility + Secondary Rays templates include explicit ToneMap nodes at unit
+exposure. Existing source graphs need this node added when recooked to retain
+historical scene-ray display conversion. Cooked packages before version 14 keep
+their historical display behavior until recooked.
+
+This initial operation accepts ray output (including subgraphs and persistent
+sequences), optionally through one Accumulate. Raster and already tone-mapped
+inputs are rejected. The offline plan retains the node, exposure, ordering and
+resource version; the GPU backend fuses conversion into the producing ray
+dispatch, after optional accumulation and before quantizing RGBA8. It does not
+allocate another texture or GPU pass. Route other consumers through its output;
+simultaneous raw and mapped images require separate ray targets. Editing exposure
+recooks the graph and restarts its sample history through normal graph activation.
 
 ### Accumulate ray samples explicitly
 
 Add **Accumulate** from the canvas's Add Node menu or Properties. Connect the ray
 pipeline's color output to `accumulate.color`, then connect `accumulate.color` to
-Export or the containing configuration's color output. The node has one required
+ToneMap, Export or the containing configuration's color output. The node has one required
 ColorTexture input and one ColorTexture output, both named `color`:
 
 ```json
@@ -1409,7 +1451,7 @@ when a final ray writer has unfinished averaging or outputs individual samples.
 An averaged final output stops at its limit, even when earlier reservoir passes
 share its target. Finish the previous producer and export consumers before
 rendering again. Raster-only graphs remain on demand. History and presentation
-stay on the GPU; exposure is fixed by this profile.
+stay on the GPU; an optional ToneMap node owns exposure and display conversion.
 
 Recook source graphs to use this explicit policy. Runtime packages before version
 13 retain their historical implicit averaging or persistent-sequence behavior.
@@ -1764,6 +1806,7 @@ Root execution configurations cannot contain unbound interface inputs.
 | RenderSize (version 2) | `extent: "OutputSize"` with `scale: [numerator,denominator]`, fixed `extent`, `"Texture"`, or `{"reference":"View","scale":[numerator,denominator]}` | `output: RenderSize` for output-derived scaling, or optional color/depth `texture` metadata input; outputs graph-only `size: RenderSize` |
 | Raster | `mode`, `vertex_layout: RendererStatic`, `material` (`DefaultOpaque` or `DefaultMasked`), `depth_load`, `depth_store`; also `color_load`, `color_store` for ColorAndDepth | Inputs Scene/View/DepthTexture, plus ColorTexture for ColorAndDepth; outputs written depth/color versions |
 | Accumulate | `samples` (1..4096) | Required `color: ColorTexture` input and written `color: ColorTexture` output; [linear ray mean](#accumulate-ray-samples-explicitly) |
+| ToneMap | `exposure` (0.01..64 linear multiplier) | Required `color: ColorTexture` input and written `color: ColorTexture` output; [Reinhard and sRGB conversion](#tone-map-ray-output-explicitly) |
 | Subgraph | `asset`, `configuration` | Selected asset interface defines its input/output ports |
 | Export | `type` | Input `texture` matching ColorTexture or DepthTexture; external output root |
 | Present | None | Input `color: ColorTexture`; root for the written version of an imported presentation target |

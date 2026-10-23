@@ -19,7 +19,7 @@
           "to": "camera.target"
         },
         {
-          "from": "trace.color",
+          "from": "tonemap.color",
           "to": "output.texture"
         },
         {
@@ -29,6 +29,10 @@
         {
           "from": "ReservoirB.buffer",
           "to": "trace.ReservoirB"
+        },
+        {
+          "from": "trace.color",
+          "to": "tonemap.color"
         }
       ],
       "id": "Default",
@@ -157,6 +161,11 @@
           "kind": "StructuredBuffer",
           "stride": 32,
           "count": "ColorTarget"
+        },
+        {
+          "id": "tonemap",
+          "kind": "ToneMap",
+          "exposure": 1
         }
       ],
       "outputs": []

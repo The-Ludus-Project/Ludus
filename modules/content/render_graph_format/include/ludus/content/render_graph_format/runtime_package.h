@@ -40,12 +40,16 @@
 /// their existing stage record layout. Sampler slot ABSENT means no paired sampler.
 /// Version 13 appends AccumulationSamples to every pass. Older ray packages retain
 /// their implicit averaging; new packages require an authored Accumulate node.
+/// Version 14 appends float32 ToneMappingExposure to every pass. Older scene-ray packages
+/// retain Reinhard/sRGB conversion at unit exposure; new packages require an authored ToneMap.
 namespace ludus::content::render_graph_format
 {
 /// "LURG" read as a little-endian uint32.
 inline constexpr foundation::uint32 PACKAGE_MAGIC = 0x4752554CU;
 /// Runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = 13;
+inline constexpr foundation::uint32 PACKAGE_VERSION = 14;
+/// First generation requiring explicit Accumulate operations in the source graph.
+inline constexpr foundation::uint32 ACCUMULATION_PACKAGE_VERSION = 13;
 /// First generation carrying the six forward support roles and texture names.
 inline constexpr foundation::uint32 FORWARD_PACKAGE_VERSION = 12;
 /// Last generation before forward material stages; adds pixel-derived storage.

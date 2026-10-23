@@ -66,6 +66,11 @@
           "id": "accumulate",
           "kind": "Accumulate",
           "samples": 4096
+        },
+        {
+          "id": "tonemap",
+          "kind": "ToneMap",
+          "exposure": 1
         }
       ],
       "edges": [
@@ -90,7 +95,7 @@
           "to": "color.size"
         },
         {
-          "from": "accumulate.color",
+          "from": "tonemap.color",
           "to": "output.texture"
         },
         {
@@ -104,6 +109,10 @@
         {
           "from": "transport.color",
           "to": "accumulate.color"
+        },
+        {
+          "from": "accumulate.color",
+          "to": "tonemap.color"
         }
       ]
     }

@@ -67,8 +67,12 @@
           "to": "shade.reservoir"
         },
         {
-          "from": "shade.color",
+          "from": "tonemap.color",
           "to": "output.texture"
+        },
+        {
+          "from": "shade.color",
+          "to": "tonemap.color"
         }
       ],
       "id": "Default",
@@ -359,6 +363,11 @@
               1
             ]
           }
+        },
+        {
+          "id": "tonemap",
+          "kind": "ToneMap",
+          "exposure": 1
         }
       ],
       "outputs": []

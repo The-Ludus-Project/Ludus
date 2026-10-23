@@ -11,6 +11,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstring>
+#include <limits>
 #include <new>
 #include <string_view>
 
@@ -87,6 +89,7 @@ struct PackageOptions final
     uint32 Backing = 0;
     uint32 SceneData = ::ludus::content::render_graph_format::SCENE_DATA_ALL;
     uint32 AccumulationSamples = 0;
+    float32 ToneMappingExposure = 0;
     format::Technique Program = format::Technique::ColorAndDepth;
     std::string_view PassName = "Scene/Opaque";
     bool HasDepthStages = true;
@@ -191,9 +194,15 @@ void WritePlan(PackageWriter& inoutWriter, const PackageOptions& options, uint32
         inoutWriter.WriteWord(format::ABSENT);
         inoutWriter.WriteWord(format::ABSENT);
     }
-    if (options.Version >= format::PACKAGE_VERSION)
+    if (options.Version >= format::ACCUMULATION_PACKAGE_VERSION)
     {
         inoutWriter.WriteWord(options.AccumulationSamples);
+    }
+    if (options.Version >= format::PACKAGE_VERSION)
+    {
+        uint32 exposureBits = 0;
+        std::memcpy(&exposureBits, &options.ToneMappingExposure, sizeof(exposureBits));
+        inoutWriter.WriteWord(exposureBits);
     }
     if (options.HasUniforms == false)
     {
@@ -973,6 +982,8 @@ TEST_CASE("runtime packages preserve relative policies and decode fixed legacy v
                                  format::STORAGE_PACKAGE_VERSION,
                                  format::ORDERED_PACKAGE_VERSION,
                                  format::VISIBILITY_PACKAGE_VERSION,
+                                 format::FORWARD_PACKAGE_VERSION,
+                                 format::ACCUMULATION_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         PackageOptions options;
@@ -1117,6 +1128,8 @@ TEST_CASE("runtime independent shader pairs decode with their own stage and bind
                                  format::STORAGE_PACKAGE_VERSION,
                                  format::ORDERED_PACKAGE_VERSION,
                                  format::VISIBILITY_PACKAGE_VERSION,
+                                 format::FORWARD_PACKAGE_VERSION,
+                                 format::ACCUMULATION_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         constexpr format::Technique GBUFFER_PROGRAM = static_cast<format::Technique>(format::LEGACY_TECHNIQUE_COUNT);
@@ -1130,10 +1143,11 @@ TEST_CASE("runtime independent shader pairs decode with their own stage and bind
         // WritePlan's uniform fixture starts with the legacy color program. Retarget
         // that serialized binding explicitly; the rest of its layout is unchanged.
         constexpr usize LEGACY_PASS_FIELDS = 10;
-        const usize passBytes = (version >= format::PACKAGE_VERSION              ? format::PASS_FIELD_COUNT
-                                 : version >= format::VISIBILITY_PACKAGE_VERSION ? format::PASS_FIELD_COUNT - 1
-                                 : version >= format::ORDERED_PACKAGE_VERSION    ? format::PASS_FIELD_COUNT - 3
-                                                                                 : LEGACY_PASS_FIELDS) *
+        const usize passBytes = (version >= format::PACKAGE_VERSION                ? format::PASS_FIELD_COUNT
+                                 : version >= format::ACCUMULATION_PACKAGE_VERSION ? format::PASS_FIELD_COUNT - 1
+                                 : version >= format::VISIBILITY_PACKAGE_VERSION   ? format::PASS_FIELD_COUNT - 2
+                                 : version >= format::ORDERED_PACKAGE_VERSION      ? format::PASS_FIELD_COUNT - 4
+                                                                                   : LEGACY_PASS_FIELDS) *
                                 sizeof(uint32);
         const usize bindingOffset =
             format::HEADER_BYTES +
@@ -1188,4 +1202,86 @@ TEST_CASE("runtime packages validate explicit accumulation and preserve legacy r
     CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
     options.Version = format::FORWARD_PACKAGE_VERSION;
     CHECK(MakePackage(options)->GetPlan().Passes[0].AccumulationSamples == format::MAX_ACCUMULATION_SAMPLES);
+}
+
+TEST_CASE("runtime packages validate explicit tone mapping and retain the version 13 pass layout",
+          "[render-graph][activation][tone-mapping]")
+{
+    PackageOptions options;
+    options.ToneMappingExposure = 2;
+    CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
+    options.Program = format::Technique::RayTracing;
+    options.HasDepthStages = false;
+    CHECK(MakePackage(options)->GetPlan().Passes[0].ToneMappingExposure == 2);
+    for (const float32 exposure : {0.F, format::MIN_TONE_MAPPING_EXPOSURE, format::MAX_TONE_MAPPING_EXPOSURE})
+    {
+        options.ToneMappingExposure = exposure;
+        CHECK(MakePackage(options)->GetPlan().Passes[0].ToneMappingExposure == exposure);
+    }
+    for (const float32 exposure : {-1.F,
+                                   .001F,
+                                   format::MAX_TONE_MAPPING_EXPOSURE + 1,
+                                   std::numeric_limits<float32>::infinity(),
+                                   std::numeric_limits<float32>::quiet_NaN()})
+    {
+        options.ToneMappingExposure = exposure;
+        CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
+    }
+    options.Version = format::ACCUMULATION_PACKAGE_VERSION;
+    options.AccumulationSamples = 2;
+    const core::UniquePtr<renderer::RenderGraphPackage> legacy = MakePackage(options);
+    CHECK(legacy->GetPlan().Passes[0].AccumulationSamples == 2);
+    CHECK(legacy->GetPlan().Passes[0].ToneMappingExposure == 0);
+}
+
+TEST_CASE("legacy scene-ray packages preserve implicit tone mapping independently of accumulation",
+          "[render-graph][activation][tone-mapping]")
+{
+    for (const uint32 version :
+         {format::FORWARD_PACKAGE_VERSION, format::ACCUMULATION_PACKAGE_VERSION, format::PACKAGE_VERSION})
+    {
+        for (const format::StageRole compute : {format::StageRole::RayCompute,
+                                                format::StageRole::SceneRayCompute,
+                                                format::StageRole::PersistentRayCompute})
+        {
+            PackageOptions options;
+            options.Version = version;
+            options.Program = format::Technique::RayTracing;
+            options.AccumulationSamples = 2;
+            PackageWriter writer;
+            WritePlan(writer, options, 3);
+            for (const format::StageRole role :
+                 {compute, format::StageRole::RayImageVertex, format::StageRole::RayImageFragment})
+            {
+                const bool isImageVertex = role == format::StageRole::RayImageVertex;
+                writer.WriteWord(static_cast<uint32>(role));
+                writer.WriteWord(static_cast<uint32>(format::ShaderTarget::Wgsl));
+                writer.WriteWord(isImageVertex == true ? 1 : 0);
+                constexpr std::string_view ENTRY = "Main";
+                writer.WriteWord(static_cast<uint32>(ENTRY.size()));
+                writer.WriteWord(static_cast<uint32>(FRAGMENT_TEXT.size()));
+                writer.WriteWord(0);
+                if (isImageVertex == true)
+                {
+                    writer.WriteWord(0);
+                    writer.WriteWord(static_cast<uint32>(format::InputFormat::Float2));
+                }
+                writer.WritePadded(ENTRY);
+                writer.WritePadded(FRAGMENT_TEXT);
+            }
+            writer.WriteWord(0); // Structured storage count.
+            writer.WriteWord(static_cast<uint32>(options.PassName.size()));
+            writer.WritePadded(options.PassName);
+            renderer::RenderGraphPackage package;
+            REQUIRE(package.Decode({writer.Bytes.GetData(), writer.Bytes.GetSize()}) ==
+                    renderer::RenderGraphPackageStatus::Ready);
+            CHECK(package.GetPlan().Passes[0].ToneMappingExposure ==
+                  (version < format::PACKAGE_VERSION && compute != format::StageRole::RayCompute ? 1 : 0));
+            const uint32 expectedSamples = version >= format::ACCUMULATION_PACKAGE_VERSION ? 2
+                                           : compute == format::StageRole::PersistentRayCompute
+                                               ? 0
+                                               : format::MAX_ACCUMULATION_SAMPLES;
+            CHECK(package.GetPlan().Passes[0].AccumulationSamples == expectedSamples);
+        }
+    }
 }
