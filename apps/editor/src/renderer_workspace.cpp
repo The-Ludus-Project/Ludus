@@ -216,11 +216,16 @@ QStringList GetChoices(const QString& field)
 /// it unchanged; the shared validator still owns legality, including cycles.
 // File and field are distinct authored identities.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-QStringList GetSubgraphChoices(const RenderGraphDocument& document,
-                               const QString& file,
-                               const QJsonObject& node,
-                               const QString& field)
+QStringList GetNodeFieldChoices(const RenderGraphDocument& document,
+                                const QString& file,
+                                const QJsonObject& node,
+                                const QString& field)
 {
+    if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Denoise") &&
+        field == QStringLiteral("quality"))
+    {
+        return {QStringLiteral("Fast"), QStringLiteral("Balanced"), QStringLiteral("High")};
+    }
     if (node.value(QStringLiteral("kind")).toString() != QStringLiteral("Subgraph"))
     {
         return {};
@@ -274,6 +279,10 @@ QJsonObject MakeNode(const QString& kind, const QString& identity)
         node.insert(QStringLiteral("active"), true);
         node.insert(QStringLiteral("role"), QStringLiteral("Offscreen"));
         node.insert(QStringLiteral("target_type"), QStringLiteral("ColorTexture"));
+    }
+    else if (kind == QStringLiteral("Denoise"))
+    {
+        node.insert(QStringLiteral("quality"), QStringLiteral("Balanced"));
     }
     else if (kind == QStringLiteral("ToneMap"))
     {
@@ -505,6 +514,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
                         QStringLiteral("RayTracingPipeline"),
                         QStringLiteral("Accumulate"),
                         QStringLiteral("ToneMap"),
+                        QStringLiteral("Denoise"),
                         QStringLiteral("Subgraph"),
                         QStringLiteral("Export"),
                         QStringLiteral("Present")});
@@ -2323,7 +2333,7 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
         QStringList choices = GetChoices(name);
         if (choices.isEmpty() == true)
         {
-            choices = GetSubgraphChoices(mDocument, mSelectedFile, node, name);
+            choices = GetNodeFieldChoices(mDocument, mSelectedFile, node, name);
         }
         if (choices.isEmpty() == false)
         {

@@ -17,6 +17,7 @@ from . import render_graph_build as build
 from . import render_graph_ray as ray
 from . import render_graph_forward as forward
 from . import render_graph_buffers as buffers
+from . import render_graph_quality as quality
 
 MAX_PASSES = 16
 MAX_RESOURCES = 32
@@ -27,7 +28,7 @@ MAX_UNIFORM_BINDINGS = 16
 MAX_UNIFORM_FIELDS = 256
 MAX_UNIFORM_BLOCK_BYTES = 1024
 UNIFORM_SLOT_COUNT = 8
-FORMAT_VERSION = 11
+FORMAT_VERSION = 12
 ABSENT = 0xFFFFFFFF
 # Exact technique identities and their numeric program roles, in format order.
 PROGRAMS = {'DefaultStaticOpaque.ColorAndDepth': 'ColorAndDepth', 'DefaultStaticOpaque.DepthOnly': 'DepthOnly',
@@ -98,7 +99,7 @@ def lower_plan(package, configuration):
     cameras = sorted({p['view'] for p in rasters})
     build.require(sum(p['kind'] == 'RayTracing' for p in rasters) <= MAX_RAY_PASSES, 'Capacity', configuration,
                   'at most four triangle ray passes are admitted per configuration')
-    build.require(all(p['kind'] in ('Raster', 'RayTracing', 'Upscale', 'Accumulate', 'ToneMap', 'Export', 'Present') for p in plan['passes']) and
+    build.require(all(p['kind'] in ('Raster', 'RayTracing', 'Upscale', 'Accumulate', 'ToneMap', 'Denoise', 'Export', 'Present') for p in plan['passes']) and
                   all((p['kind'] == 'RayTracing' and p['technique'] == ray.TECHNIQUE) or (p['configuration'] in graph.MODES and p['material'] in graph.MATERIALS and
                       (p['technique'] == graph.MATERIALS[p['material']] + '.' + p['configuration'] or
                        p['technique'].startswith(graph.MATERIALS[p['material']] + '.' + p['configuration'] + '.')) and
@@ -223,8 +224,9 @@ def lower_plan(package, configuration):
         if record.get('Visibility', ABSENT) != ABSENT:
             record['AllowsRepeatedCoverage'] = 1
             pass_records[index - 1]['AllowsRepeatedCoverage'] = 1
-    for record in pass_records:
+    for operation, record in zip(operations, pass_records):
         record.setdefault('SourceColor', ABSENT)
+        record['DenoisingQuality'] = quality.QUALITY_CODES[operation['denoising']['quality']] if 'denoising' in operation else 0
     return plan, resource_records, pass_records, cameras
 
 
@@ -237,7 +239,7 @@ def stage_inputs(item):
 TARGET_FIELDS = {'metal': 'Msl', 'spirv': 'Spirv', 'wgsl': 'Wgsl', 'glsl': 'GlslEs'}
 # Serialized runtime generation (RG3); mirrors render_graph_format/runtime_package.h.
 PACKAGE_MAGIC = 0x4752554C
-PACKAGE_VERSION = 15
+PACKAGE_VERSION = 16
 RESOURCE_FIELD_COUNT = 9
 RESOURCE_RECORD_BYTES = RESOURCE_FIELD_COUNT * 4
 MAX_PASS_NAME_BYTES = 127
@@ -667,6 +669,7 @@ def encode_runtime_package(contents):
                     stores[p['ColorStore']], loads[p['DepthLoad']], stores[p['DepthStore']], p['AllowsRepeatedCoverage'], p.get('SceneData', graph.scene_bundle.ALL_DATA), p['RayProgram'], p['Buffer0'], p['Buffer1'], p.get('Visibility', ABSENT), p.get('VisibilityDepth', ABSENT), p.get('AccumulationSamples', 0))
         data += struct.pack('<f', p.get('ToneMappingExposure', 0))
         data += u32(p.get('SourceColor', ABSENT))
+        data += u32(p.get('DenoisingQuality', 0))
     for b in contents['bindings']:
         data += u32(PROGRAM_CODES[b['Program']], b['Slot'], VISIBILITY[b['Stages']], b['ValueOffset'], b['ValueCount'])
     for b in contents['blocks']:
@@ -734,7 +737,7 @@ def encode_resource_names(contents):
     # Expanded operation IDs let a canvas node (Raster, Subgraph, Export, Present) find what it wrote or read.
     operations = []
     for operation in plan['passes']:
-        if operation['kind'] in ('Raster', 'RayTracing', 'Upscale', 'Accumulate', 'ToneMap'):
+        if operation['kind'] in ('Raster', 'RayTracing', 'Upscale', 'Accumulate', 'ToneMap', 'Denoise'):
             attachments = {aspect: {'resource': value['resource'], 'load': value['load'], 'store': value['store']}
                            for aspect, value in sorted(operation['attachments'].items())}
         else:

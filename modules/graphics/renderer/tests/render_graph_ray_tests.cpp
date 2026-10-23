@@ -1,3 +1,5 @@
+#include "../src/internal/gpu_denoiser.h"
+
 #include "renderer_composite.h"
 #include "rg2_ordered_ray.h"
 #include "rg2_raytracing.h"
@@ -14,6 +16,7 @@
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/filesystem/filesystem.hpp>
+#include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/renderer/reference.hpp>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
@@ -1478,4 +1481,147 @@ TEST_CASE("ToneMap applies exposure after linear accumulation and can be bypasse
                                 nullptr,
                                 1));
     CHECK(fixture.Graph.HasPendingSamples() == true);
+}
+
+TEST_CASE("OIDN presents stable accumulation after sampling stops", "[render-graph][gpu][accumulation][denoising]")
+{
+    if (renderer::internal::IsGpuDenoisingAvailable() == false)
+    {
+        SKIP("This build has no native OIDN adapter");
+    }
+    GraphGpuFixture fixture;
+    const renderer::RenderGraphPrograms programs =
+        packages::rg2_ordered_ray::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                shaders::renderer_composite::Fragment());
+    renderer::RenderGraphPlan plan = packages::rg2_ordered_ray::MakePlan();
+    StaticArray<format::Pass, format::MAX_RAY_PASSES> passes{};
+    REQUIRE(plan.Passes.GetSize() <= passes.GetSize());
+    for (usize pass = 0; pass < plan.Passes.GetSize(); ++pass)
+    {
+        passes[pass] = plan.Passes[pass];
+    }
+    constexpr uint32 SAMPLE_LIMIT = 2;
+    float32 exposure = 1;
+    SECTION("unit exposure") {}
+    SECTION("bypass")
+    {
+        exposure = 0;
+    }
+    SECTION("double exposure")
+    {
+        exposure = 2;
+    }
+    passes[plan.Passes.GetSize() - 1].AccumulationSamples = SAMPLE_LIMIT;
+    passes[plan.Passes.GetSize() - 1].ToneMappingExposure = exposure;
+    passes[plan.Passes.GetSize() - 1].DenoisingQuality = static_cast<uint32>(format::ProcessingQuality::Balanced);
+    plan.Passes = {passes.GetData(), plan.Passes.GetSize()};
+    const auto finish = [&fixture](rhi::RasterStatus status) {
+        const uint64 beginning = time::NowTicks();
+        constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
+        while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+        {
+            status = fixture.Graph.Poll();
+        }
+        REQUIRE(status == rhi::RasterStatus::Ready);
+    };
+    finish(fixture.Graph.Initialize(fixture.Device, plan, programs));
+    fixture.Cameras[0].OrthographicCamera = true;
+    renderer::RenderGraphReport report;
+    finish(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                1,
+                                renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                report,
+                                nullptr,
+                                1));
+    uint32 output = 0;
+    for (uint32 resource = 0; resource < plan.Resources.GetSize(); ++resource)
+    {
+        if (plan.Resources[resource].IsExported == 1)
+        {
+            output = resource;
+        }
+    }
+    REQUIRE(fixture.Graph.HasPendingSamples() == true);
+    ReadGraphFrame(fixture, output);
+    const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+    const uint8 firstFiltered = fixture.Pixels[center];
+    CHECK(firstFiltered > 0);
+    CHECK(fixture.Pixels[center + 1] <= 2);
+    CHECK(fixture.Pixels[center + 2] <= 2);
+    CHECK(fixture.Graph.HasPendingSamples() == true);
+    ReadGraphFrame(fixture, output);
+    const uint8 meanFiltered = fixture.Pixels[center];
+    CHECK(meanFiltered > 0);
+    CHECK(fixture.Pixels[center + 1] <= 2);
+    CHECK(fixture.Graph.HasPendingSamples() == false);
+    ReadGraphFrame(fixture, output);
+    // The filter may change radiance. Repeated presentation must still start from the raw mean,
+    // rather than feed its previous output back into accumulation or denoising.
+    CHECK(fixture.Pixels[center] == meanFiltered);
+    // An accepted camera revision restarts the averaging budget without clearing shared buffers.
+    finish(fixture.Graph.Update({},
+                                {},
+                                {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                2,
+                                renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                report,
+                                nullptr,
+                                1));
+    CHECK(fixture.Graph.HasPendingSamples() == true);
+}
+
+TEST_CASE("OIDN preserves scene material metadata and accepts material replacements", "[render-graph][gpu][denoising]")
+{
+    if (renderer::internal::IsGpuDenoisingAvailable() == false)
+    {
+        SKIP("This build has no native OIDN adapter");
+    }
+    GraphGpuFixture fixture;
+    const renderer::RenderGraphPrograms programs =
+        packages::rg2_scene_ray::MakePrograms(shaders::renderer_composite::Vertex(),
+                                              shaders::renderer_composite::Fragment());
+    renderer::RenderGraphPlan plan = packages::rg2_scene_ray::MakePlan();
+    format::Pass operation = plan.Passes[0];
+    operation.DenoisingQuality = static_cast<uint32>(format::ProcessingQuality::Balanced);
+    operation.ToneMappingExposure = 1;
+    operation.AccumulationSamples = 2;
+    plan.Passes = {&operation, 1};
+    const auto finish = [&fixture](rhi::RasterStatus status) {
+        const uint64 start = time::NowTicks();
+        while (status == rhi::RasterStatus::Pending && time::NowTicks() - start < 30 * time::NANOSECONDS_PER_SECOND)
+        {
+            status = fixture.Graph.Poll();
+        }
+        REQUIRE(status == rhi::RasterStatus::Ready);
+    };
+    finish(fixture.Graph.Initialize(fixture.Device, plan, programs));
+    fixture.Cameras[0].OrthographicCamera = true;
+    uint32 binding = 0;
+    fixture.Meshes[0].MaterialBindings = {&binding, 1};
+    renderer::SceneShaderMaterial material;
+    renderer::SceneShaderInputs inputs;
+    inputs.Materials = {&material, 1};
+    for (uint64 revision = 1; revision <= 2; ++revision)
+    {
+        material.BaseColor = revision == 1 ? math::Vector3{1, 0, 0} : math::Vector3{0, 1, 0};
+        renderer::RenderGraphReport report;
+        finish(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                    {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                    {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                    revision,
+                                    renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                    report,
+                                    &inputs,
+                                    revision));
+        ReadGraphFrame(fixture, operation.Color);
+        const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+        const usize selectedChannel = revision == 1 ? 0 : 1;
+        // OIDN may alter intensity; material replacement must preserve the selected color,
+        // and must never turn a valid hit into the magenta invalid-scene diagnostic.
+        CHECK(fixture.Pixels[center + selectedChannel] > 0);
+        CHECK(fixture.Pixels[center + 1 - selectedChannel] <= 2);
+        CHECK(fixture.Pixels[center + 2] <= 2);
+    }
 }

@@ -1440,6 +1440,91 @@ the RGBA8 output clamps linear RGB to [0, 1]. Holding the camera still does not 
 these colors. ReSTIR reservoir reuse remains an independent, shader-authored
 operation that can also reduce noise.
 
+### Denoise ray output with OIDN
+
+Add **Denoise** from the canvas's **Add Node** menu or Properties. Connect its
+`color: ColorTexture` input to a Ray Tracing Pipeline output, or to an Accumulate
+output. Connect its color output to ToneMap, Export or Present:
+
+```text
+RayTracingPipeline → Accumulate (optional) → Denoise → ToneMap → Export / Present
+```
+
+```json
+{"id": "denoise", "kind": "Denoise", "quality": "Balanced"}
+```
+
+Denoise uses Intel Open Image Denoise (OIDN)'s `RT` filter with HDR enabled.
+The graph retains linear float32 radiance until filtering finishes. A connected
+ToneMap applies exposure, Reinhard compression and sRGB encoding after filtering,
+followed by RGBA8 presentation. Without ToneMap, RGBA8 output clamps raw radiance.
+The compensated accumulation buffer remains unfiltered. An unused draft has no
+runtime effect; bypass the node to disable filtering. A ray output admits one
+Denoise operation. Raster RGBA8 inputs, filtering after ToneMap, repeated filtering
+and accumulation after filtering are rejected during graph validation.
+
+| Quality | Intended preference |
+| --- | --- |
+| **Fast** | Lower cost and memory use for previews; lower reconstruction quality. |
+| **Balanced** (new-node default) | Quality/cost tradeoff for interactive rendering. |
+| **High** | Favor final-image quality over filter cost. |
+
+These are explicit processing-quality values, not shader permutations or promises
+of a frame rate. OIDN can share model weights between quality modes depending on
+the supplied features; distinct settings do not guarantee distinct cost or output.
+The shared `ProcessingQuality` format enum and authoring quality vocabulary provide the same policy pattern for future image-processing nodes.
+Changing quality changes the cooked graph generation. There is no automatic
+hardware-dependent selection. Edit quality through Properties or the canvas's
+**Edit Node** action; both use the same validation, undo, redo and Save path.
+
+#### Build and platform requirements
+
+OIDN is optional and is not downloaded by configuration or graph loading. Obtain
+the official **OIDN 2.5.1** SDK from the
+[RenderKit releases](https://github.com/RenderKit/oidn/releases/tag/v2.5.1), then add
+the following options to the existing native engine configuration:
+
+```text
+-DLUDUS_ENABLE_OIDN=ON
+-DCMAKE_PREFIX_PATH=/path/to/oidn-2.5.1
+```
+
+Append the prefix to existing dependency prefixes when necessary. The installed
+Ludus SDK also requires this OIDN package when the engine was built with support
+enabled. Redistribute OIDN's runtime libraries/device modules and their license
+notices according to the upstream SDK; the engine's static library does not embed
+the neural models or device modules. OIDN headers stay private to Renderer.
+The integration uses OIDN's C API and explicit status results; it does not enable
+C++ exceptions in engine translation units.
+
+This initial execution profile requires an OIDN-supported **Apple silicon Metal
+GPU**. It shares the renderer's native buffers on the same Metal device, caches one
+filter per immutable ray job, and submits filtering on a dedicated queue. Native
+events order the ray producer, filtering and presentation without CPU waits.
+This keeps model initialization off the renderer/framework queue. Filtering runs
+between ray transport and presentation. There is no CPU pixel readback, CPU filter fallback,
+or alternate-device selection. Builds without OIDN reject a connected node with
+`Unsupported`. Vulkan and browser execution are not yet supported; enabling the
+build option on those platforms is a configuration error. Libraries advertise
+broader hardware support, but that does not establish engine interoperability.
+
+The initial filter uses **color only**. Albedo/normal guide ports and temporal
+reprojection are not implemented. Measure moving-image stability and fine-detail
+preservation on the intended content; a clean still image does not establish
+stable motion. OIDN's internal model/scratch allocations are outside Renderer/RHI
+resource byte accounting. The adapter requests a 256 MiB scratch target through
+`maxMemoryMB`; upstream treats this as a target, not a hard memory ceiling.
+Filter allocation, model uploads and initialization run on a dedicated worker;
+preparation remains Pending until that task completes. Shutdown drains outstanding
+initialization before releasing native resources. Frame GPU wall timing is reported as disjoint when the native queue is split; ordinary
+measured RHI passes retain their own timings, which exclude OIDN's internal work.
+
+Thanks to Intel and the RenderKit contributors for the
+[*Open Image Denoise API*](https://www.openimagedenoise.org/documentation.html),
+particularly the RT filter's quality modes, Metal buffer sharing and asynchronous
+execution contracts. OIDN filters each image; this integration adds no temporal
+history reconstruction.
+
 ### Tone map ray output explicitly
 
 Add **ToneMap** from the canvas's **Add Node** menu or Properties. Connect its

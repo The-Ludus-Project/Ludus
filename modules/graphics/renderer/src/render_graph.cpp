@@ -448,7 +448,7 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
                 pass.AllowsRepeatedCoverage != 0 || pass.SceneData != 0 || pass.RayProgram != 0 ||
                 pass.Buffer0 != format::ABSENT || pass.Buffer1 != format::ABSENT || pass.Visibility != format::ABSENT ||
                 pass.VisibilityDepth != format::ABSENT || pass.AccumulationSamples != 0 ||
-                pass.ToneMappingExposure != 0)
+                pass.ToneMappingExposure != 0 || pass.DenoisingQuality != 0)
             {
                 return Status::InvalidDescription;
             }
@@ -482,12 +482,13 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
         {
             return Status::InvalidDescription;
         }
-        if (pass.AccumulationSamples > format::MAX_ACCUMULATION_SAMPLES ||
+        if (pass.DenoisingQuality > static_cast<uint32>(format::ProcessingQuality::High) ||
+            pass.AccumulationSamples > format::MAX_ACCUMULATION_SAMPLES ||
             (pass.ToneMappingExposure != 0 &&
              (pass.ToneMappingExposure >= format::MIN_TONE_MAPPING_EXPOSURE &&
               pass.ToneMappingExposure <= format::MAX_TONE_MAPPING_EXPOSURE) == false) ||
             (pass.Program != format::Technique::RayTracing &&
-             (pass.AccumulationSamples != 0 || pass.ToneMappingExposure != 0)))
+             (pass.AccumulationSamples != 0 || pass.ToneMappingExposure != 0 || pass.DenoisingQuality != 0)))
         {
             return Status::InvalidDescription;
         }
@@ -1200,7 +1201,8 @@ struct RenderGraph::State final
                     const GpuPreviewGraphInvocation invocation{0,
                                                                {},
                                                                Passes[i].AccumulationSamples,
-                                                               Passes[i].ToneMappingExposure};
+                                                               Passes[i].ToneMappingExposure,
+                                                               Passes[i].DenoisingQuality};
                     const Status created =
                         inoutScene.RayPasses[i].Initialize(context,
                                                            inoutScene.Snapshots[i],
@@ -2396,7 +2398,8 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
                 ? BorrowedView<const GpuPreviewGraphBuffer>{buffers.GetData(), buffers.GetSize()}
                 : BorrowedView<const GpuPreviewGraphBuffer>{},
             operation.AccumulationSamples,
-            operation.ToneMappingExposure};
+            operation.ToneMappingExposure,
+            operation.DenoisingQuality};
         const Status created =
             candidate->RayPasses[pass].Initialize(state.Contexts[static_cast<usize>(operation.Program)],
                                                   {},

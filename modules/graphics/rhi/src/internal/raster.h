@@ -3,6 +3,7 @@
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/graphics/rhi/graph.h>
+#include <ludus/graphics/rhi/native_compute.h>
 
 #include "storage.h"
 #include "texture.h"
@@ -182,6 +183,8 @@ struct RasterPipelineInfo final
 };
 struct ComputePipelineInfo final
 {
+    NativeComputePipelineDescription Native{};
+    foundation::usize NativeSet = 0;
     foundation::usize Shader = 0;
     foundation::usize Layout = 0;
     foundation::uint32 WorkgroupSize[3]{1, 1, 1};

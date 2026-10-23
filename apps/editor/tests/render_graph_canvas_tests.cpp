@@ -1548,3 +1548,74 @@ TEST_CASE("tone mapping exposure edits through canvas and Properties with undo a
     REQUIRE(reopened.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
     CHECK(reopened.GetDraft(ROOT_GRAPH) == workspace.GetDocument().GetDraft(ROOT_GRAPH));
 }
+
+TEST_CASE("OIDN processing quality edits through canvas and Properties with undo and save",
+          "[editor][render-graph][denoising]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    QComboBox* kinds = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphNewKind"));
+    QPushButton* add = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"));
+    REQUIRE(kinds != nullptr);
+    REQUIRE(add != nullptr);
+    kinds->setCurrentText(QStringLiteral("Denoise"));
+    add->click();
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, QStringLiteral("denoise")) == true);
+    CHECK(workspace.GetCanvas().GetPortPosition(QStringLiteral("denoise.color"), true).isNull() == false);
+    CHECK(workspace.GetCanvas().GetPortPosition(QStringLiteral("denoise.color"), false).isNull() == false);
+    const auto exercise = [&workspace](QWidget& inoutFields) {
+        QComboBox* qualityOrNull = inoutFields.findChild<QComboBox*>(QStringLiteral("renderGraphField_quality"));
+        REQUIRE(qualityOrNull != nullptr);
+        CHECK(qualityOrNull->count() == 3);
+        const uint64 revision = workspace.GetDocument().GetRevision();
+        qualityOrNull->setCurrentText(QStringLiteral("High"));
+        Q_EMIT qualityOrNull->activated(qualityOrNull->currentIndex());
+        CHECK(workspace.GetDocument().GetRevision() == revision + 1);
+        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("High") == true);
+        workspace.Undo();
+        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("High") == false);
+        workspace.Redo();
+        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("High") == true);
+        REQUIRE(workspace.Save() == true);
+    };
+    QWidget* properties = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
+    REQUIRE(properties != nullptr);
+    SECTION("Properties")
+    {
+        exercise(*properties);
+    }
+    SECTION("canvas with Properties hidden")
+    {
+        workspace.resize(1200, 800);
+        workspace.show();
+        properties->hide();
+        QCoreApplication::processEvents();
+        RenderGraphCanvas& canvas = workspace.GetCanvas();
+        canvas.Rebuild();
+        QTimer::singleShot(0, &canvas, [&canvas, &exercise, properties]() {
+            QMenu* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            REQUIRE(menu != nullptr);
+            QAction* edit = menu->findChild<QAction*>(QStringLiteral("renderGraphEditNodeAction"));
+            REQUIRE(edit != nullptr);
+            QTimer::singleShot(0, &canvas, [&exercise, properties]() {
+                QDialog* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+                REQUIRE(dialog != nullptr);
+                CHECK(properties->isVisible() == false);
+                exercise(*dialog);
+                dialog->reject();
+            });
+            menu->close();
+            edit->trigger();
+        });
+        const QPoint point = canvas.mapFromScene(canvas.GetNodePosition(QStringLiteral("denoise")) + QPointF(20, 10));
+        QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
+        QApplication::sendEvent(canvas.viewport(), &context);
+    }
+    RenderGraphDocument reopened;
+    REQUIRE(reopened.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    CHECK(reopened.GetDraft(ROOT_GRAPH) == workspace.GetDocument().GetDraft(ROOT_GRAPH));
+}

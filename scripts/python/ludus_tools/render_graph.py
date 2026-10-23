@@ -28,6 +28,7 @@ from . import render_graph_buffers as buffers
 from . import render_graph_scene as scene_bundle
 from . import render_graph_ray as ray
 from . import render_graph_upscale as upscale
+from . import render_graph_quality as quality
 from . import render_graph_sizes as sizes
 
 MAX_ASSET_BYTES = 128 * 1024
@@ -152,9 +153,11 @@ def _validate_node(node, where):
     if kind in pipeline.KINDS:
         pipeline.validate(node, where, sys.modules[__name__])
         return
-    _enum(kind, ("Scene", "Camera", "Target", "Buffer", "Raster", "Accumulate", "ToneMap", "Subgraph", "Export", "Present"), where)
+    _enum(kind, ("Scene", "Camera", "Target", "Buffer", "Raster", "Accumulate", "ToneMap", "Denoise", "Subgraph", "Export", "Present"), where)
     fields = {"id", "kind"}
-    if kind == "Accumulate":
+    if kind == "Denoise":
+        fields.add("quality")
+    elif kind == "Accumulate":
         fields.add("samples")
     elif kind == "ToneMap":
         fields.add("exposure")
@@ -175,7 +178,9 @@ def _validate_node(node, where):
     _keys(node, fields, where)
     _identifier(node["id"], where)
     _require(node["id"] != "input", "Schema", where, "input is reserved for interface ports")
-    if kind == "Accumulate":
+    if kind == "Denoise":
+        _enum(node["quality"], tuple(quality.QUALITY_CODES), where + "/quality")
+    elif kind == "Accumulate":
         _integer(node["samples"], 1, MAX_ACCUMULATION_SAMPLES, where)
     elif kind == "ToneMap":
         exposure = node["exposure"]
@@ -465,7 +470,7 @@ class _Library:
         if kind in pipeline.KINDS:
             return (scene_bundle.ports({p["id"]: p["type"] for p in node["inputs"]}),
                     {p["id"]: p["type"] for p in node["outputs"]})
-        if kind in ("Accumulate", "ToneMap"):
+        if kind in ("Accumulate", "ToneMap", "Denoise"):
             return {"color": "ColorTexture"}, {"color": "ColorTexture"}
         if kind == "Scene":
             return {}, {"scene": "Scene", **scene_bundle.TYPES}
@@ -903,10 +908,27 @@ class _Compiler:
                     'attachments': {'color': {'resource': value.resource, 'input_version': source.version,
                         'output_version': value.version, 'defined': value.defined, 'load': 'Load', 'store': 'Store'}}})
                 outputs['color'] = value
-            elif kind == "ToneMap":
+            elif kind == "Denoise":
                 source = inputs['color']
                 producer = next((operation for operation in self.passes if operation['id'] == source.producer), None)
                 if producer is not None and producer['kind'] == 'Accumulate':
+                    producer = next(operation for operation in self.passes if operation['id'] == producer['dependencies'][0])
+                _require(producer is not None and producer['kind'] == 'RayTracing', 'Capability', where,
+                         'Denoise requires linear ray color, optionally through Accumulate, before ToneMap. Raster, already denoised and display-encoded inputs are unsupported.')
+                _require('denoising' not in producer, 'MultipleWriters', where,
+                         'A ray output can feed only one Denoise node. Chain consumers after its color output.')
+                value = self.write(source, {'color_load': 'Load', 'color_store': 'Store'}, 'color', where, source.cameras)
+                producer['denoising'] = {'id': where, 'quality': node['quality']}
+                self.add_pass({'id': where, 'kind': 'Denoise', 'quality': node['quality'],
+                    'source': self.library.label(path), 'asset': self.library.assets[path]['id'],
+                    'asset_configuration': config['id'], 'dependencies': [source.producer],
+                    'attachments': {'color': {'resource': value.resource, 'input_version': source.version,
+                        'output_version': value.version, 'defined': value.defined, 'load': 'Load', 'store': 'Store'}}})
+                outputs['color'] = value
+            elif kind == "ToneMap":
+                source = inputs['color']
+                producer = next((operation for operation in self.passes if operation['id'] == source.producer), None)
+                while producer is not None and producer['kind'] in ('Accumulate', 'Denoise'):
                     producer = next(operation for operation in self.passes if operation['id'] == producer['dependencies'][0])
                 _require(producer is not None and producer['kind'] == 'RayTracing', 'Capability', where,
                          'ToneMap requires a ray color output, optionally through Accumulate. Raster and already tone-mapped images are unsupported.')
@@ -996,7 +1018,7 @@ class _Compiler:
                            "version": value.version, "cameras": list(value.cameras)})
 
     def finish(self):
-        for average in (operation for operation in self.passes if operation['kind'] in ('Accumulate', 'ToneMap')):
+        for average in (operation for operation in self.passes if operation['kind'] in ('Accumulate', 'ToneMap', 'Denoise')):
             source = average['attachments']['color']
             for operation in self.passes:
                 if operation['id'] == average['id']:
@@ -1123,6 +1145,8 @@ def dump_plan(plan):
             lines.append(f"    bilinear source: {source['resource']}@{source['input_version']}")
         if entry['kind'] == 'Accumulate':
             lines.append(f"    compensated linear RGB mean; samples: {entry['samples']}; reset: camera/scene/extent/shaders")
+        if entry['kind'] == 'Denoise':
+            lines.append(f"    OIDN RT HDR; quality: {entry['quality']}; before display conversion")
         if entry['kind'] == 'ToneMap':
             lines.append(f"    Reinhard + sRGB; exposure multiplier: {entry['exposure']}")
         if entry['kind'] == 'RayTracing':

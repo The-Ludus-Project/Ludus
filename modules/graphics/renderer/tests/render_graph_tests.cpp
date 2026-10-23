@@ -1378,5 +1378,9 @@ TEST_CASE("bilinear numeric plans reject aliasing and uninitialized reads before
     passes[0].ColorStore = format::Store::Discard;
     CHECK(fixture.Graph.Initialize(fixture.Device, plan, fixture.MakePrograms()) ==
           rhi::RasterStatus::InvalidDescription);
+    passes[0].ColorStore = format::Store::Store;
+    passes[1].DenoisingQuality = static_cast<uint32>(format::ProcessingQuality::Balanced);
+    CHECK(fixture.Graph.Initialize(fixture.Device, plan, fixture.MakePrograms()) ==
+          rhi::RasterStatus::InvalidDescription);
     CHECK(rhi::reference::Creates[static_cast<usize>(rhi::internal::RasterKind::Shader)] == shaders);
 }
