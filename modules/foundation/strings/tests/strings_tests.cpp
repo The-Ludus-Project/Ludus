@@ -1038,7 +1038,7 @@ void CheckResolve(const Lookup& lookup, const ReferenceTable& reference, NameId 
     REQUIRE(resolved.data() == reference.Views[id.Index.Value]);
     REQUIRE(resolved.data()[resolved.size()] == '\0');
 }
-void CheckIntern(StringTable& table,
+void CheckIntern(StringTable& inoutTable,
                  const FaultHeap& heap,
                  const DifferentialScenario& scenario,
                  ReferenceTable& inoutReference,
@@ -1050,7 +1050,7 @@ void CheckIntern(StringTable& table,
     const usize attempts = heap.Attempts;
     const usize count = inoutReference.Spellings.GetSize();
     NameId id = SENTINEL_ID;
-    const StringStatus status = table.TryIntern(spelling.Bytes, id);
+    const StringStatus status = inoutTable.TryIntern(spelling.Bytes, id);
     if (expected != StringStatus::Ok)
     {
         REQUIRE(status == expected);
@@ -1083,7 +1083,7 @@ void CheckIntern(StringTable& table,
         REQUIRE((heap.FailAt == 0 || heap.Attempts < heap.FailAt));
         REQUIRE(id == NameId{token, StringIndex{static_cast<uint32>(count)}});
         std::string_view view;
-        REQUIRE(table.TryResolve(id, view) == StringStatus::Ok);
+        REQUIRE(inoutTable.TryResolve(id, view) == StringStatus::Ok);
         REQUIRE(inoutReference.Spellings.TryAdd(spelling.Bytes) == true);
         inoutReference.Indices.emplace(spelling.Bytes, static_cast<uint32>(count));
         REQUIRE(inoutReference.Views.TryAdd(view.data()) == true);
@@ -1105,7 +1105,7 @@ void CheckIntern(StringTable& table,
         ++inoutCoverage.CapacityExceeded;
     }
     NameId found = SENTINEL_ID;
-    REQUIRE(table.TryFind(spelling.Bytes, found) == StringStatus::NotFound);
+    REQUIRE(inoutTable.TryFind(spelling.Bytes, found) == StringStatus::NotFound);
     REQUIRE(found == SENTINEL_ID);
 }
 DifferentialCoverage RunDifferentialSequence(const DifferentialScenario& scenario)

@@ -73,6 +73,11 @@ enum class Apply : uint8
     NextLaunch,
 };
 
+/// Capacity of a text setting value, in bytes.
+inline constexpr usize MAX_TEXT_VALUE_BYTES = 256;
+/// Capacity of an assignment's source name, in bytes.
+inline constexpr usize MAX_ORIGIN_SOURCE_BYTES = 128;
+
 /// @brief Owned bounded text.
 ///
 /// Only the field selected by Kind has semantic meaning.
@@ -84,7 +89,7 @@ struct Value final
     int64 Signed = 0;
     uint64 Unsigned = 0;
     float64 Real = 0;
-    StaticString<256> Text{};
+    StaticString<MAX_TEXT_VALUE_BYTES> Text{};
     [[nodiscard]] static Value FromBool(bool value) noexcept;
     [[nodiscard]] static Value FromInt32(int32 value) noexcept;
     [[nodiscard]] static Value FromUint32(uint32 value) noexcept;
@@ -129,7 +134,7 @@ struct Diagnostic final
 };
 struct Origin final
 {
-    StaticString<128> Source{};
+    StaticString<MAX_ORIGIN_SOURCE_BYTES> Source{};
     uint32 Line = 0; ///< Zero means unavailable; never fabricate a location.
 };
 struct Assignment final

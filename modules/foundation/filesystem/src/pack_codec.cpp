@@ -32,6 +32,12 @@ uint32 Crc32(std::span<const uint8> bytes) noexcept
 }
 namespace
 {
+/// LZ4 block end conditions: the last sequence carries at least five literals,
+/// and the last match starts at least twelve bytes before the end of the block.
+constexpr usize LZ4_MIN_FINAL_LITERALS = 5;
+constexpr usize LZ4_LAST_MATCH_END_DISTANCE = 12;
+/// Shortest LZ4 match; a token's match length field counts bytes beyond it.
+constexpr usize LZ4_MIN_MATCH_BYTES = 4;
 bool Length(usize& cursor, std::span<const uint8> source, usize& length) noexcept
 {
     if (length != 15)
@@ -78,7 +84,8 @@ bool DecodeLz4(std::span<const uint8> stored, std::span<uint8> decoded) noexcept
             // The final sequence has no offset/match. Require the LZ4 final
             // literals and last-match-before-end conditions.
             return output == decoded.size() &&
-                   (matched == false || (literals >= 5 && decoded.size() - lastMatch >= 12));
+                   (matched == false ||
+                    (literals >= LZ4_MIN_FINAL_LITERALS && decoded.size() - lastMatch >= LZ4_LAST_MATCH_END_DISTANCE));
         }
         if (stored.size() - input < 2)
         {
@@ -91,7 +98,7 @@ bool DecodeLz4(std::span<const uint8> stored, std::span<uint8> decoded) noexcept
             return false;
         }
         usize match = token & 15U;
-        if (Length(input, stored, match) == false || TryAdd(match, usize{4}, match) == false ||
+        if (Length(input, stored, match) == false || TryAdd(match, LZ4_MIN_MATCH_BYTES, match) == false ||
             match > decoded.size() - output)
         {
             return false;
