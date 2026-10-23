@@ -370,6 +370,7 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
     uint32 surfaceOwner = format::ABSENT;
     usize rayPassCount = 0;
     bool hasEndedRaySequence = false;
+    bool isVisibilitySequence = false;
     StaticArray<bool, format::MAX_RESOURCES> colorDefined{};
     StaticArray<bool, format::MAX_RESOURCES> depthDefined{};
     StaticArray<bool, format::MAX_CAMERAS> hasCameraRoute{};
@@ -533,27 +534,47 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
             {
                 return Status::InvalidDescription;
             }
-            if (pass.Visibility != format::ABSENT)
+            // One ray sequence is either wholly ordinary or wholly visibility-driven.
+            const bool hasVisibility = pass.Visibility != format::ABSENT;
+            if (rayPassCount > 1 && hasVisibility != isVisibilitySequence)
+            {
+                return Status::Unsupported;
+            }
+            isVisibilitySequence = hasVisibility;
+            if (hasVisibility == true)
             {
                 if (passIndex == 0 || pass.Visibility >= plan.Resources.GetSize() ||
                     pass.VisibilityDepth >= plan.Resources.GetSize() || pass.Visibility == pass.Color)
                 {
                     return Status::InvalidDescription;
                 }
-                const format::Pass& producer = plan.Passes[passIndex - 1];
+                const format::Pass& previous = plan.Passes[passIndex - 1];
                 const format::Resource& visibility = plan.Resources[pass.Visibility];
                 const format::Resource& depth = plan.Resources[pass.VisibilityDepth];
                 const format::Resource& target = plan.Resources[pass.Color];
-                if (format::GetTechniqueFamily(producer.Program) != format::Technique::ColorAndDepth ||
-                    producer.Camera != pass.Camera || producer.Color != pass.Visibility ||
-                    producer.Depth != pass.VisibilityDepth || visibility.Kind != format::Aspect::Color ||
-                    depth.Kind != format::Aspect::Depth || depth.Backing != pass.Visibility ||
-                    visibility.IsSurface != 0 || visibility.Width != target.Width ||
+                if (visibility.Kind != format::Aspect::Color || depth.Kind != format::Aspect::Depth ||
+                    depth.Backing != pass.Visibility || visibility.IsSurface != 0 || visibility.Width != target.Width ||
                     visibility.Height != target.Height || visibility.ViewNumerator != target.ViewNumerator ||
-                    visibility.ViewDenominator != target.ViewDenominator || producer.ColorLoad != format::Load::Clear ||
-                    producer.DepthLoad != format::Load::Clear || producer.ColorStore != format::Store::Store ||
-                    producer.DepthStore != format::Store::Store || colorDefined[pass.Visibility] == false ||
+                    visibility.ViewDenominator != target.ViewDenominator || colorDefined[pass.Visibility] == false ||
                     depthDefined[pass.Visibility] == false)
+                {
+                    return Status::Unsupported;
+                }
+                // Later passes reread the image the sequence's raster producer wrote; ray passes
+                // write only their own color and buffers, so no pass in between can change it.
+                if (previous.Program == format::Technique::RayTracing)
+                {
+                    if (previous.Camera != pass.Camera || previous.Visibility != pass.Visibility ||
+                        previous.VisibilityDepth != pass.VisibilityDepth)
+                    {
+                        return Status::Unsupported;
+                    }
+                }
+                else if (format::GetTechniqueFamily(previous.Program) != format::Technique::ColorAndDepth ||
+                         previous.Camera != pass.Camera || previous.Color != pass.Visibility ||
+                         previous.Depth != pass.VisibilityDepth || previous.ColorLoad != format::Load::Clear ||
+                         previous.DepthLoad != format::Load::Clear || previous.ColorStore != format::Store::Store ||
+                         previous.DepthStore != format::Store::Store)
                 {
                     return Status::Unsupported;
                 }
@@ -1611,12 +1632,11 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
         }
     }
     bool hasVisibility = false;
-    usize visibilityRayPassCount = 0;
     for (usize index = 0; index < plan.Passes.GetSize(); ++index)
     {
         const format::Pass& pass = plan.Passes[index];
-        visibilityRayPassCount += pass.Program == format::Technique::RayTracing ? 1 : 0;
-        if (pass.Visibility != format::ABSENT)
+        // ValidatePlan pairs later sequence passes with the first pass's raster producer.
+        if (pass.Visibility != format::ABSENT && plan.Passes[index - 1].Program != format::Technique::RayTracing)
         {
             hasVisibility = true;
             const format::Technique producer = plan.Passes[index - 1].Program;
@@ -1628,10 +1648,6 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
                 return Status::Unsupported;
             }
         }
-    }
-    if (hasVisibility == true && visibilityRayPassCount != 1)
-    {
-        return Status::Unsupported;
     }
     if (hasVisibility != programs.HasVisibilityBuffer ||
         (hasVisibility == true && programs.HasSceneShaderInterface == false))
@@ -2629,7 +2645,8 @@ Status RenderGraph::PrepareEncoding() noexcept
             continue;
         }
         const format::Pass& operation = state.Passes[pass];
-        if (operation.Visibility != format::ABSENT)
+        // The raster producer precedes the first pass; later passes share its image.
+        if (operation.Visibility != format::ABSENT && visibilityOrNull == nullptr)
         {
             const format::Pass& producer = state.Passes[pass - 1];
             visibility.ProducerOrNull = &state.Contexts[static_cast<usize>(producer.Program)];

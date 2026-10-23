@@ -581,6 +581,57 @@ Status PollGpuJob(rhi::DeviceHandle device, GpuPreviewState& inoutState, GpuPrev
     }
     return Status::Ready;
 }
+// Create one job's views of the producer's color/depth image; Ready once its compute bindings read them.
+Status PrepareVisibilityInput(rhi::DeviceHandle device,
+                              GpuPreviewState& inoutState,
+                              GpuPreviewRecord& inoutJob,
+                              const VisibilityRasterPass& visibility) noexcept
+{
+    if (visibility.ProducerOrNull == nullptr || rhi::IsNull(visibility.Attachment.Color) == true)
+    {
+        return Status::InvalidDescription;
+    }
+    rhi::TextureDescription inputDescription;
+    Status status = rhi::GetTextureDescription(device, visibility.Attachment.Color, inputDescription);
+    if (status != Status::Ready || inputDescription.Width != inoutJob.Width ||
+        inputDescription.Height != inoutJob.Height || inputDescription.Attachment == false ||
+        inputDescription.Format != rhi::RasterFormat::Rgba8Unorm || inputDescription.SampleCount != 1)
+    {
+        return status == Status::Ready ? Status::InvalidDescription : status;
+    }
+    if (rhi::IsNull(inoutJob.VisibilityTexture) == true)
+    {
+        rhi::TextureViewHandle colorView;
+        rhi::TextureViewHandle depthView;
+        status = rhi::CreateTextureView(device, visibility.Attachment.Color, colorView);
+        if (Accepted(status) == true)
+        {
+            rhi::TextureViewDescription depth;
+            depth.Aspect = rhi::TextureAspect::Depth;
+            status = rhi::CreateTextureView(device, visibility.Attachment.Color, depth, depthView);
+        }
+        if (Accepted(status) == false)
+        {
+            static_cast<void>(rhi::Destroy(device, colorView));
+            static_cast<void>(rhi::Destroy(device, depthView));
+            return status;
+        }
+        inoutJob.VisibilityTexture = visibility.Attachment.Color;
+        inoutJob.VisibilityView = colorView;
+        inoutJob.VisibilityDepthView = depthView;
+        inoutJob.Setup = Status::Pending;
+    }
+    status = rhi::GetStatus(device, inoutJob.VisibilityView);
+    if (status == Status::Ready)
+    {
+        status = rhi::GetStatus(device, inoutJob.VisibilityDepthView);
+    }
+    if (status != Status::Ready)
+    {
+        return status;
+    }
+    return PollGpuJob(device, inoutState, inoutJob);
+}
 } // namespace
 void Renderer::State::DropGpuPreview(usize slot) noexcept
 {
@@ -1436,50 +1487,7 @@ Status Renderer::PrepareGpuPreviewGraph(renderer::GpuPreview job,
     }
     if (visibilityOrNull != nullptr)
     {
-        if (visibilityOrNull->ProducerOrNull == nullptr || rhi::IsNull(visibilityOrNull->Attachment.Color) == true)
-        {
-            return Status::InvalidDescription;
-        }
-        rhi::TextureDescription inputDescription;
-        status = rhi::GetTextureDescription(mState->Device, visibilityOrNull->Attachment.Color, inputDescription);
-        if (status != Status::Ready || inputDescription.Width != jobOrNull->Width ||
-            inputDescription.Height != jobOrNull->Height || inputDescription.Attachment == false ||
-            inputDescription.Format != rhi::RasterFormat::Rgba8Unorm || inputDescription.SampleCount != 1)
-        {
-            return status == Status::Ready ? Status::InvalidDescription : status;
-        }
-        if (rhi::IsNull(jobOrNull->VisibilityTexture) == true)
-        {
-            rhi::TextureViewHandle colorView;
-            rhi::TextureViewHandle depthView;
-            status = rhi::CreateTextureView(mState->Device, visibilityOrNull->Attachment.Color, colorView);
-            if (Accepted(status) == true)
-            {
-                rhi::TextureViewDescription depth;
-                depth.Aspect = rhi::TextureAspect::Depth;
-                status = rhi::CreateTextureView(mState->Device, visibilityOrNull->Attachment.Color, depth, depthView);
-            }
-            if (Accepted(status) == false)
-            {
-                static_cast<void>(rhi::Destroy(mState->Device, colorView));
-                static_cast<void>(rhi::Destroy(mState->Device, depthView));
-                return status;
-            }
-            jobOrNull->VisibilityTexture = visibilityOrNull->Attachment.Color;
-            jobOrNull->VisibilityView = colorView;
-            jobOrNull->VisibilityDepthView = depthView;
-            jobOrNull->Setup = Status::Pending;
-        }
-        status = rhi::GetStatus(mState->Device, jobOrNull->VisibilityView);
-        if (status == Status::Ready)
-        {
-            status = rhi::GetStatus(mState->Device, jobOrNull->VisibilityDepthView);
-        }
-        if (status != Status::Ready)
-        {
-            return status;
-        }
-        status = PollGpuJob(mState->Device, state, *jobOrNull);
+        status = PrepareVisibilityInput(mState->Device, state, *jobOrNull, *visibilityOrNull);
         if (status != Status::Ready)
         {
             return status;
@@ -1518,15 +1526,7 @@ Status Renderer::PrepareGpuPreviewGraphSequence(BorrowedView<const renderer::Gpu
     {
         return Status::InvalidDescription;
     }
-    if (visibilityOrNull != nullptr)
-    {
-        if (jobs.GetSize() != 1)
-        {
-            return Status::Unsupported;
-        }
-        return PrepareGpuPreviewGraph(jobs[0], targets[0], outGraph, visibilityOrNull);
-    }
-    if (mState->GpuPreview->HasVisibilityBuffer == true)
+    if (mState->GpuPreview->HasVisibilityBuffer != (visibilityOrNull != nullptr))
     {
         return Status::InvalidDescription;
     }
@@ -1547,6 +1547,10 @@ Status Renderer::PrepareGpuPreviewGraphSequence(BorrowedView<const renderer::Gpu
             }
         }
         status = PollGpuJob(mState->Device, state, *jobOrNull);
+        if (status == Status::Ready && visibilityOrNull != nullptr)
+        {
+            status = PrepareVisibilityInput(mState->Device, state, *jobOrNull, *visibilityOrNull);
+        }
         if (status != Status::Ready)
         {
             return status;
@@ -1559,7 +1563,8 @@ Status Renderer::PrepareGpuPreviewGraphSequence(BorrowedView<const renderer::Gpu
         }
         if (description.Width != jobOrNull->Width || description.Height != jobOrNull->Height ||
             description.Attachment == false || description.Format != rhi::RasterFormat::Rgba8Unorm ||
-            description.SampleCount != 1)
+            description.SampleCount != 1 ||
+            (visibilityOrNull != nullptr && targets[index] == visibilityOrNull->Attachment.Color))
         {
             return Status::InvalidDescription;
         }
@@ -1569,7 +1574,8 @@ Status Renderer::PrepareGpuPreviewGraphSequence(BorrowedView<const renderer::Gpu
                                            state,
                                            {records.GetData(), jobs.GetSize()},
                                            targets,
-                                           outGraph);
+                                           outGraph,
+                                           visibilityOrNull);
 }
 Status Renderer::AdvanceGpuPreview(renderer::GpuPreview handle,
                                    rhi::SurfaceHandle surface,

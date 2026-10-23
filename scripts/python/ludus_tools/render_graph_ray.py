@@ -352,6 +352,25 @@ def check_interface(program, result, build):
                       'ShaderInterface', program['id'], 'ray image fragment resources differ from renderer ABI')
 
 
+# The visibility counterpart of TraceAndShade: the raster first hit replaces the camera-ray query and
+# runs the same per-pass closest-hit or miss callback. The callback calls keep TraceAndShade's
+# spelling so persistent_wrapper's pass dispatch rewrites both functions.
+VISIBILITY_SHADE_DECLARATION = ('uint LoadVisibilityAndShade(SceneContext scene, inout RayQueryContext queries, '
+                                'RayLaunch launch, inout ScenePayload payload);\n')
+VISIBILITY_SHADE = '''uint LoadVisibilityAndShade(SceneContext scene, inout RayQueryContext queries, RayLaunch launch, inout ScenePayload payload)
+{
+    SurfaceHit hit;
+    Ray ray = launch.CameraRay;
+    uint status = LoadVisibilitySurface(scene, launch, queries, hit);
+    if (status == SCENE_QUERY_SURFACE)
+        RAY_CLOSEST_HIT(scene, hit, queries, payload);
+    else if (status == SCENE_QUERY_MISS)
+        RAY_MISS(scene, ray, queries, payload);
+    return queries.HasFailed ? SCENE_QUERY_FAILURE : status;
+}
+'''
+
+
 def scene_wrapper(selected, interface, snapshot, build, recipe, storage_source='', compatibility=None):
     """Link ordinary callbacks; the user raygen is the only sample/integrator driver."""
     payload = interface.get('payload', DEFAULT_PAYLOAD)
@@ -373,6 +392,9 @@ def scene_wrapper(selected, interface, snapshot, build, recipe, storage_source='
     wrapper += '#include "' + payload + '"\n'
     for source in sorted(compatibility['sources']):
         wrapper += '#include "' + source + '"\n'
+    if interface.get('visibility_buffer', False):
+        # Declared before the split point so persistent wrappers keep it ahead of namespaced sources.
+        wrapper += VISIBILITY_SHADE_DECLARATION
     wrapper += 'uint TraceAndShade(SceneContext scene, inout RayQueryContext queries, Ray ray, inout ScenePayload payload);\n'
     for source in sorted({program['source'] for program in selected.values()} | set(compatibility['callbacks'])):
         wrapper += '#include "' + source + '"\n'
@@ -425,6 +447,8 @@ float3 EvaluateGraphRay(uint pixel)
     ComputeMain(positionPixel);
 }
 '''
+    if interface.get('visibility_buffer', False):
+        wrapper = wrapper.replace('float3 EvaluateGraphRay(uint pixel)\n{', VISIBILITY_SHADE + 'float3 EvaluateGraphRay(uint pixel)\n{', 1)
     wrapper = wrapper.replace('MAX_SURFACE_QUERIES', str(interface['surface_queries']))
     wrapper = wrapper.replace('MAX_VISIBILITY_QUERIES', str(interface['visibility_queries']))
     for token, stage in (('RAY_GENERATION', 'ray_generation'), ('RAY_MISS', 'miss'), ('RAY_CLOSEST_HIT', 'closest_hit')):

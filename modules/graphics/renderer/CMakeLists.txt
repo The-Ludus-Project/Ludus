@@ -248,6 +248,16 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_ordered_ray_RUNTIME_PACKAGE PARENT_PATH ordered_ray_package_directory)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_ORDERED_RAY_DIRECTORY="${ordered_ray_package_directory}")
+    set(visibility_sequence_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/visibility_sequence")
+    set(visibility_sequence_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/visibility_sequence")
+    file(COPY "${visibility_sequence_source}/" DESTINATION "${visibility_sequence_staged}" PATTERN "*.in" EXCLUDE)
+    configure_file("${visibility_sequence_source}/main.lushader.json.in"
+        "${visibility_sequence_staged}/main.lushader.json" @ONLY)
+    ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_visibility_sequence
+        MANIFEST "${visibility_sequence_staged}/main.lushader.json" RUNTIME_PACKAGE)
+    cmake_path(GET rg2_visibility_sequence_RUNTIME_PACKAGE PARENT_PATH visibility_sequence_package_directory)
+    target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+        LUDUS_RG3_VISIBILITY_SEQUENCE_DIRECTORY="${visibility_sequence_package_directory}")
     set(restir_source "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/restir_di")
     set(restir_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/restir_di")
     file(COPY "${restir_source}/" DESTINATION "${restir_staged}" PATTERN "*.in" EXCLUDE)

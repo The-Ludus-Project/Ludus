@@ -10,6 +10,7 @@
 #include "rg2_visibility_buffer_template.h"
 #include "rg2_visibility_ordinary.h"
 #include "rg2_visibility_secondary_rays_template.h"
+#include "rg2_visibility_sequence.h"
 
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/compiler.h>
@@ -1063,6 +1064,113 @@ TEST_CASE("Visibility raster IDs reconstruct instance materials and launch secon
     CHECK(fixture.Graph.GetDrawableSceneRevision() == 4);
     read();
     CHECK(fixture.Pixels[rightBottom + 1] == 188);
+}
+
+TEST_CASE("One visibility raster feeds every pass of an ordered ray sequence",
+          "[render-graph][gpu][ray-history][visibility]")
+{
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_VISIBILITY_SEQUENCE_DIRECTORY, "rg2_visibility_sequence.lurgrt"});
+    const renderer::RenderGraphPrograms decoded =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    const renderer::RenderGraphPrograms compiled =
+        packages::rg2_visibility_sequence::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                        shaders::renderer_composite::Fragment());
+    CheckSameStage(decoded.ColorVertex, compiled.ColorVertex);
+    CheckSameStage(decoded.RayCompute, compiled.RayCompute);
+    REQUIRE(decoded.HasVisibilityBuffer == true);
+    REQUIRE(decoded.HasPersistentRayBuffers == true);
+    // One raster producer, then three ray passes that all read its visibility/depth image.
+    constexpr usize PASS_COUNT = 4;
+    const renderer::RenderGraphPlan& source = package->GetPlan();
+    REQUIRE(source.Passes.GetSize() == PASS_COUNT);
+    StaticArray<format::Pass, PASS_COUNT> passes{};
+    for (usize i = 0; i < PASS_COUNT; ++i)
+    {
+        passes[i] = source.Passes[i];
+    }
+    for (usize i = 1; i < PASS_COUNT; ++i)
+    {
+        REQUIRE(passes[i].Program == format::Technique::RayTracing);
+        REQUIRE(passes[i].Visibility == passes[0].Color);
+        REQUIRE(passes[i].VisibilityDepth == passes[0].Depth);
+    }
+    renderer::RenderGraphPlan plan = source;
+    plan.Passes = {passes.GetData(), passes.GetSize()};
+    bool isMixed = false;
+    SECTION("every pass reads the shared image") {}
+    SECTION("an ordinary pass inside the sequence is rejected")
+    {
+        isMixed = true;
+        passes[2].Visibility = format::ABSENT;
+        passes[2].VisibilityDepth = format::ABSENT;
+    }
+    rhi::RasterStatus status = fixture.Graph.Initialize(fixture.Device, plan, decoded);
+    if (isMixed == true)
+    {
+        CHECK(status == rhi::RasterStatus::Unsupported);
+        return;
+    }
+    const uint64 started = time::NowTicks();
+    while (status == rhi::RasterStatus::Pending && time::NowTicks() - started < 10 * time::NANOSECONDS_PER_SECOND)
+    {
+        status = fixture.Graph.Poll();
+    }
+    REQUIRE(status == rhi::RasterStatus::Ready);
+    StaticArray<uint32, 1> slots{{0}};
+    StaticArray<uint32, 1> bindings{{0}};
+    fixture.Meshes[0].MaterialSlots = {slots.GetData(), slots.GetSize()};
+    fixture.Meshes[0].MaterialBindings = {bindings.GetData(), bindings.GetSize()};
+    StaticArray<renderer::SceneShaderMaterial, 1> materials{};
+    materials[0].BaseColor = {0, 1, 0};
+    renderer::SceneShaderInputs inputs;
+    inputs.Materials = {materials.GetData(), materials.GetSize()};
+    fixture.Cameras[0].OrthographicCamera = true;
+    const auto update = [&fixture, &inputs](uint64 revision, bool isCameraOnly) {
+        renderer::RenderGraphReport report;
+        rhi::RasterStatus result = fixture.Graph.Update(
+            isCameraOnly == true
+                ? BorrowedView<const renderer::RenderGraphMesh>{}
+                : BorrowedView<const renderer::RenderGraphMesh>{fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+            isCameraOnly == true
+                ? BorrowedView<const renderer::RenderGraphItem>{}
+                : BorrowedView<const renderer::RenderGraphItem>{fixture.Items.GetData(), fixture.Items.GetSize()},
+            {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+            revision,
+            renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+            report,
+            isCameraOnly == true ? nullptr : &inputs,
+            1);
+        const uint64 beginning = time::NowTicks();
+        while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < 10 * time::NANOSECONDS_PER_SECOND)
+        {
+            result = fixture.Graph.Poll();
+        }
+        REQUIRE(result == rhi::RasterStatus::Ready);
+    };
+    // Tone-mapped unit radiance; magenta would mean a pass reconstructed a different surface.
+    constexpr uint8 UNIT = 188;
+    const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+    const usize corner = GetPixel(0, 0);
+    const auto checkFrame = [&fixture, corner](usize surface) {
+        ReadGraphFrame(fixture);
+        CHECK(fixture.Pixels[surface] == 0);
+        CHECK(fixture.Pixels[surface + 1] == UNIT);
+        CHECK(fixture.Pixels[surface + 2] == 0);
+        CHECK(fixture.Pixels[corner] == 0);
+        CHECK(fixture.Pixels[corner + 1] == 0);
+        CHECK(fixture.Pixels[corner + 2] == UNIT);
+    };
+    update(1, false);
+    checkFrame(center);
+    // A second frame rebuilds the sequence from the retained producer.
+    checkFrame(center);
+    // Camera-only updates move the shared raster image and every pass's unprojection together.
+    constexpr usize SHIFTED_COLUMN = WIDTH / 2 + WIDTH / 4;
+    fixture.Cameras[0].WorldToClip.Columns[3].X = .5F;
+    update(2, true);
+    checkFrame(GetPixel(SHIFTED_COLUMN, HEIGHT / 2));
 }
 
 TEST_CASE("Three ReSTIR shader passes shade mesh emitters and invalidate stale history", "[render-graph][gpu][restir]")
