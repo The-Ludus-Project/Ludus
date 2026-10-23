@@ -91,6 +91,8 @@ set(editor_viewport_sources
     src/render_graph_source_watch.cpp
     src/internal/empty_world_view.h
     src/empty_world_view.cpp
+    src/internal/viewport_size.h
+    src/viewport_size.cpp
     src/preview_viewport.cpp
     src/viewport_navigation.cpp
     src/viewport_play_input.cpp

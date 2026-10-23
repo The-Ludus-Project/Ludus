@@ -232,6 +232,18 @@ RenderGraphDomain GetRenderGraphDomain(const QString& kind)
     return RenderGraphDomain::Execution;
 }
 
+bool CanDisableRenderGraphNode(const QString& kind)
+{
+    return kind == QStringLiteral("Accumulate") || kind == QStringLiteral("Denoise") ||
+           kind == QStringLiteral("ToneMap");
+}
+
+bool IsRenderGraphNodeEnabled(const QJsonObject& node)
+{
+    return CanDisableRenderGraphNode(node.value(QStringLiteral("kind")).toString()) == false ||
+           node.value(QStringLiteral("enabled")) != QJsonValue(false);
+}
+
 bool GetRenderGraphNodePorts(const RenderGraphDocument& document,
                              const QJsonObject& node,
                              RenderGraphNodePorts& outPorts)
@@ -932,7 +944,10 @@ void RenderGraphCanvas::refreshFeedback()
         const RenderGraphActivityFeedback state = activity.value(view->Id);
         const bool isInterface = view->Domain == RenderGraphDomain::Interface;
         view->Frame->setOpacity(
-            state.Activity == RenderGraphActivity::Inactive && isInterface == false ? INACTIVE_OPACITY : 1);
+            (state.Activity == RenderGraphActivity::Inactive || state.Activity == RenderGraphActivity::Disabled) &&
+                    isInterface == false
+                ? INACTIVE_OPACITY
+                : 1);
         QString explanation = isInterface == true
                                   ? QStringLiteral("Configuration interface. Library inspection assumes all exposed "
                                                    "outputs are requested; caller instances can use fewer.")
@@ -1013,7 +1028,7 @@ void RenderGraphCanvas::refreshFeedback()
             sizeLabel = QStringLiteral("Mean · %1 samples").arg(node.value(QStringLiteral("samples")).toInt());
             resources.append(QStringLiteral("Linear RGB accumulation before display conversion. "
                                             "Resets on camera, scene, size or shader replacement. "
-                                            "Bypass this node for individual samples."));
+                                            "Disable this node for individual samples."));
         }
         if (view->Kind == QStringLiteral("Denoise"))
         {
@@ -1028,7 +1043,7 @@ void RenderGraphCanvas::refreshFeedback()
             sizeLabel =
                 QStringLiteral("Reinhard · %1× exposure").arg(node.value(QStringLiteral("exposure")).toDouble());
             resources.append(QStringLiteral("Exposure, Reinhard compression and sRGB encoding after optional "
-                                            "linear accumulation. Bypass for clamped linear RGB."));
+                                            "linear accumulation. Disable for clamped linear RGB."));
         }
         view->Frame->setToolTip(view->Id + QStringLiteral(" : ") + view->Kind + QStringLiteral("\n") + explanation +
                                 QLatin1Char('\n') + resources.join(QLatin1Char('\n')));

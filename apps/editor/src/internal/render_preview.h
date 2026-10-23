@@ -20,6 +20,7 @@
 #include "internal/render_scene.h"
 #include "internal/viewport_frame_pump.h"
 #include "internal/viewport_frame_source.h"
+#include "internal/viewport_size.h"
 #include "internal/viewport_statistics.h"
 
 #include <QElapsedTimer>
@@ -130,6 +131,28 @@ public:
     {
         return mLookSensitivity;
     }
+    /// Select the viewport toolbar's size preset by index (below VIEWPORT_SIZE_PRESET_COUNT);
+    /// other values preserve it. The viewport letterboxes its frame to the preset and requests
+    /// the drawable from ComputeViewportDrawableSize. Persisted by Navigation; GUI thread only.
+    void SetViewportSize(foundation::usize presetIndex);
+    /// Current viewport size preset index; 0 (Fill) by default.
+    [[nodiscard]] LUDUS_INLINE foundation::usize GetViewportSize() const noexcept
+    {
+        return mViewportSizeIndex;
+    }
+    /// Look along a world axis through an orthographic editor lens, keeping the pivot and the
+    /// visible height there. Detaches an authored camera like other navigation; the eye backs
+    /// off outside the scene bounds so nothing is clipped. Failure preserves the camera.
+    void SetAxisView(EditorAxisView view);
+    /// Switch the editor camera between perspective and orthographic projection, keeping its
+    /// orientation, pivot and visible height. Failure, or no change, preserves the camera.
+    void SetOrthographic(bool isOrthographic);
+    /// Set the editor camera's perspective vertical field of view, in degrees between
+    /// MINIMUM_EDITOR_VERTICAL_FOV_DEGREES and MAXIMUM_EDITOR_VERTICAL_FOV_DEGREES. Other
+    /// values, or an unchanged angle, preserve the camera. Persisted by Navigation.
+    void SetVerticalFovDegrees(foundation::float32 degrees);
+    /// Camera the viewport shows: the selected authored camera, otherwise the editor camera.
+    [[nodiscard]] const gameplay::camera::CameraSample& GetVisibleCameraSample() const noexcept;
     void Orbit(foundation::float32 deltaX, foundation::float32 deltaY);
     void Pan(foundation::float32 deltaX, foundation::float32 deltaY, foundation::float32 heightLogical = 480);
     void Zoom(foundation::float32 steps);
@@ -259,6 +282,8 @@ private:
     void navigationChanged();
     EditorCameraController mCameraController;
     foundation::float32 mLookSensitivity = 1;
+    /// Viewport size preset index; see SetViewportSize.
+    foundation::usize mViewportSizeIndex = 0;
     QString mSelectedId;
     [[nodiscard]] LUDUS_INLINE bool usesLitMaterials() const noexcept
     {

@@ -395,7 +395,8 @@ public:
     /// RAW/WAR/WAW dependencies. Storage history is retained across executions; no CPU readback.
     /// Caller keeps jobs/targets alive through encoding and tracks actual frame completion before
     /// rebuilding. The null output is unchanged on rejection; temporary graph leases are released.
-    /// @param visibilityOrNull Optional opaque visibility producer; admitted only for a single-job sequence.
+    /// @param visibilityOrNull Optional opaque visibility producer, appended once before the first ray dispatch.
+    /// Every job then samples that same written color/depth image, so the source must not be any job's target.
     /// @param jobs Ready jobs from this Renderer; never also AdvanceGpuPreview them.
     /// @param targets Borrowed ready RGBA8 attachments with each job's exact extent.
     /// @param outGraph Receives compiled commands on Ready; caller discards or encodes once.

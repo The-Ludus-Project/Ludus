@@ -1,4 +1,5 @@
 #include "internal/preview_shading.h"
+#include "internal/viewport_size.h"
 #include "internal/viewport_statistics.h"
 
 #include <ludus/foundation/math/geometry.hpp>
@@ -7,7 +8,9 @@
 #include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 
+#include <QRect>
 #include <QSet>
+#include <QSize>
 #include <QString>
 
 #include <catch2/catch_approx.hpp>
@@ -184,4 +187,63 @@ TEST_CASE("Graph statistics measure delivered updates and separate active CPU fr
     CHECK(statistics.GetCpuMilliseconds().GetCount() == 0);
     CHECK(statistics.GetReadbackMilliseconds().GetCount() == 0);
     CHECK(statistics.GetFramesPerSecond(2'100'000'000) == 0);
+}
+
+TEST_CASE("Viewport size presets have unique keys and start with Fill", "[editor][viewport][viewport-size]")
+{
+    QSet<QString> keys;
+    for (usize i = 0; i < VIEWPORT_SIZE_PRESET_COUNT; ++i)
+    {
+        const QString key = GetViewportSizeKey(i);
+        INFO(key.toStdString());
+        CHECK(GetViewportSizeLabel(i).isEmpty() == false);
+        CHECK(GetViewportSizeDescription(i).isEmpty() == false);
+        usize parsed = VIEWPORT_SIZE_PRESET_COUNT;
+        REQUIRE(TryParseViewportSizeKey(key, parsed) == true);
+        CHECK(parsed == i);
+        const ViewportSize size = GetViewportSizePreset(i);
+        CHECK((size.Kind == ViewportSizeKind::Fill) == (i == 0));
+        if (size.Kind != ViewportSizeKind::Fill)
+        {
+            CHECK(size.Width > 0);
+            CHECK(size.Height > 0);
+        }
+        keys.insert(key);
+    }
+    CHECK(static_cast<usize>(keys.size()) == VIEWPORT_SIZE_PRESET_COUNT);
+    CHECK(IsViewportSizeGroupStart(0) == false);
+    usize unchanged = 3;
+    CHECK(TryParseViewportSizeKey(QStringLiteral("7:5"), unchanged) == false);
+    CHECK(TryParseViewportSizeKey(QString(), unchanged) == false);
+    CHECK(unchanged == 3);
+    // Out-of-range indices fall back to Fill rather than reading past the table.
+    CHECK(GetViewportSizePreset(VIEWPORT_SIZE_PRESET_COUNT).Kind == ViewportSizeKind::Fill);
+}
+
+TEST_CASE("Viewport size presets letterbox the frame and choose the drawable", "[editor][viewport][viewport-size]")
+{
+    const QRect area(0, 20, 800, 400);
+    const ViewportSize fill;
+    const ViewportSize wide{ .Kind = ViewportSizeKind::Aspect, .Width = 16, .Height = 9 };
+    const ViewportSize portrait{ .Kind = ViewportSizeKind::Aspect, .Width = 9, .Height = 16 };
+    const ViewportSize fixed{ .Kind = ViewportSizeKind::Fixed, .Width = 1920, .Height = 1080 };
+    CHECK(ComputeViewportFrameRectangle(fill, area) == area);
+    // 16:9 is limited by the height: 400 x 16 / 9 = 711.1 wide, centred horizontally.
+    CHECK(ComputeViewportFrameRectangle(wide, area) == QRect(44, 20, 711, 400));
+    CHECK(ComputeViewportFrameRectangle(portrait, area) == QRect(287, 20, 225, 400));
+    // A fixed resolution keeps its shape at any area, and the drawable stays exact.
+    CHECK(ComputeViewportFrameRectangle(fixed, area) == ComputeViewportFrameRectangle(wide, area));
+    const QRect tall(10, 0, 300, 900);
+    CHECK(ComputeViewportFrameRectangle(wide, tall) == QRect(10, 365, 300, 169));
+    CHECK(ComputeViewportFrameRectangle(wide, QRect()) == QRect());
+    // A sliver keeps at least one pixel on each side.
+    CHECK(ComputeViewportFrameRectangle(wide, QRect(0, 0, 1000, 1)).size() == QSize(2, 1));
+    CHECK(ComputeViewportFrameRectangle(portrait, QRect(0, 0, 1, 1000)).size() == QSize(1, 2));
+
+    CHECK(ComputeViewportDrawableSize(fill, QSize(711, 400), 2) == QSize(1422, 800));
+    CHECK(ComputeViewportDrawableSize(wide, QSize(711, 400), 1.5) == QSize(1067, 600));
+    CHECK(ComputeViewportDrawableSize(fixed, QSize(711, 400), 2) == QSize(1920, 1080));
+    CHECK(ComputeViewportDrawableSize(fixed, QSize(), 1) == QSize(1920, 1080));
+    CHECK(ComputeViewportDrawableSize(fill, QSize(0, 0), 2) == QSize(0, 0));
+    CHECK(ComputeViewportDrawableSize(fill, QSize(), 2) == QSize(0, 0));
 }

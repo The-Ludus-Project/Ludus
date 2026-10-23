@@ -23,11 +23,13 @@
 #include <QFocusEvent>
 #include <QImage>
 #include <QJsonObject>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QMouseEvent>
 #include <QPixmap>
 #include <QPoint>
 #include <QPointF>
+#include <QPushButton>
 #include <QScreen>
 #include <QTemporaryDir>
 #include <QTest>
@@ -37,6 +39,8 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+
+#include <limits>
 
 using namespace ludus::foundation;
 using namespace ludus::editor;
@@ -381,6 +385,195 @@ TEST_CASE("Lit viewport gives the render surface its available height without ba
     {
         REQUIRE(viewport.grab().save(capture) == true);
     }
+    preview.Stop();
+}
+
+TEST_CASE("Axis views look along world axes orthographically and keep the pivot and visible height",
+          "[editor][navigation][axis-view]")
+{
+    EditorCameraController controller;
+    REQUIRE(controller.TrySetOrbit({1, 2, 3}, {25, 20}, 4) == true);
+    const math::Vector3d pivotWorld = controller.GetPivotWorld();
+    const camera::CameraLens perspective = controller.GetSample().Lens;
+    const float32 visibleHeight =
+        2 * 4 * math::Sin(perspective.VerticalFov * 0.5F) / math::Cos(perspective.VerticalFov * 0.5F);
+    const math::Aabb3 boundsWorld{{-10, -1, -10}, {10, 5, 10}};
+    struct Expectation final
+    {
+        EditorAxisView View;
+        math::Vector3 ForwardWorld;
+    };
+    for (const Expectation& expectation : {Expectation{EditorAxisView::Top, {0, -1, 0}},
+                                           Expectation{EditorAxisView::Bottom, {0, 1, 0}},
+                                           Expectation{EditorAxisView::Front, {0, 0, -1}},
+                                           Expectation{EditorAxisView::Back, {0, 0, 1}},
+                                           Expectation{EditorAxisView::Right, {-1, 0, 0}},
+                                           Expectation{EditorAxisView::Left, {1, 0, 0}}})
+    {
+        INFO(GetEditorAxisViewLabel(expectation.View));
+        REQUIRE(controller.TrySetAxisView(expectation.View, &boundsWorld) == true);
+        const camera::CameraSample& sample = controller.GetSample();
+        CHECK(controller.IsOrthographic() == true);
+        const math::Vector3 forwardWorld = math::Rotate(sample.Pose.Orientation, {0, 0, -1});
+        CHECK(math::Dot(forwardWorld, expectation.ForwardWorld) > 0.9999F);
+        EditorAxisView found = EditorAxisView::Top;
+        REQUIRE(TryGetEditorAxisView(sample, found) == true);
+        CHECK(found == expectation.View);
+        CHECK(sample.Lens.VerticalSpan == Catch::Approx(visibleHeight));
+        CHECK(math::Distance(controller.GetPivotWorld(), pivotWorld) < 0.0001);
+        // The eye is outside the bounding sphere and the far plane reaches past it.
+        const math::Vector3d centerWorld{0, 2, 0};
+        const float64 radius = math::Length(math::Vector3d{10, 3, 10});
+        CHECK(math::Distance(sample.Pose.Position, centerWorld) >= radius);
+        CHECK(static_cast<float64>(sample.Lens.FarPlane) >= math::Distance(sample.Pose.Position, centerWorld) + radius);
+        // The vertical views keep yaw defined, so orbiting continues from them.
+        CHECK(math::IsFinite(controller.GetYawDegrees()) == true);
+    }
+    // Orbiting away from the axis keeps the orthographic lens but no longer names an axis.
+    REQUIRE(controller.TryRotate(40, 0, true) == true);
+    EditorAxisView unchanged = EditorAxisView::Back;
+    CHECK(TryGetEditorAxisView(controller.GetSample(), unchanged) == false);
+    CHECK(unchanged == EditorAxisView::Back);
+
+    // Perspective returns at the same pivot and visible height, with the kept field of view.
+    REQUIRE(controller.TrySetOrthographic(false, &boundsWorld) == true);
+    CHECK(controller.IsOrthographic() == false);
+    CHECK(controller.GetSample().Lens.VerticalFov == Catch::Approx(perspective.VerticalFov));
+    CHECK(controller.GetDistance() == Catch::Approx(4).epsilon(0.001));
+    CHECK(math::Distance(controller.GetPivotWorld(), pivotWorld) < 0.001);
+    CHECK(controller.TrySetOrthographic(false, &boundsWorld) == false);
+    CHECK(TryGetEditorAxisView(controller.GetSample(), unchanged) == false);
+}
+
+TEST_CASE("Editor field of view stays in its admitted range and keeps the pose", "[editor][navigation][axis-view]")
+{
+    EditorCameraController controller;
+    const camera::CameraSample before = controller.GetSample();
+    REQUIRE(controller.TrySetVerticalFov(math::DegreesToRadians(90.0F)) == true);
+    CHECK(controller.GetSample().Lens.VerticalFov == Catch::Approx(math::DegreesToRadians(90.0F)));
+    CHECK(math::Distance(controller.GetSample().Pose.Position, before.Pose.Position) == 0);
+    for (const float32 degrees : {MINIMUM_EDITOR_VERTICAL_FOV_DEGREES - 1,
+                                  MAXIMUM_EDITOR_VERTICAL_FOV_DEGREES + 1,
+                                  std::numeric_limits<float32>::quiet_NaN()})
+    {
+        CHECK(controller.TrySetVerticalFov(math::DegreesToRadians(degrees)) == false);
+        CHECK(controller.GetSample().Lens.VerticalFov == Catch::Approx(math::DegreesToRadians(90.0F)));
+    }
+
+    // The preview applies it, persists it and the toolbar reflects projection changes.
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    QDoubleSpinBox* fieldOfView = viewport.findChild<QDoubleSpinBox*>(QStringLiteral("viewportFieldOfView"));
+    QPushButton* view = viewport.findChild<QPushButton*>(QStringLiteral("viewportView"));
+    REQUIRE(fieldOfView != nullptr);
+    REQUIRE(view != nullptr);
+    CHECK(view->text() == QStringLiteral("Perspective"));
+    fieldOfView->setValue(75);
+    CHECK(preview.GetVisibleCameraSample().Lens.VerticalFov == Catch::Approx(math::DegreesToRadians(75.0F)));
+    CHECK(preview.Navigation().value(QStringLiteral("fov")).toDouble() == Catch::Approx(math::DegreesToRadians(75.0F)));
+    preview.SetAxisView(EditorAxisView::Top);
+    CHECK(view->text() == QStringLiteral("Top"));
+    CHECK(fieldOfView->isEnabled() == false);
+    QKeyEvent front(QEvent::KeyPress, Qt::Key_1, Qt::KeypadModifier);
+    QApplication::sendEvent(&viewport, &front);
+    CHECK(view->text() == QStringLiteral("Front"));
+    QKeyEvent toggle(QEvent::KeyPress, Qt::Key_5, Qt::KeypadModifier);
+    QApplication::sendEvent(&viewport, &toggle);
+    CHECK(view->text() == QStringLiteral("Perspective"));
+    CHECK(fieldOfView->isEnabled() == true);
+    CHECK(fieldOfView->value() == Catch::Approx(75));
+}
+
+TEST_CASE("Viewport size menu letterboxes the frame and persists with navigation", "[editor][viewport][viewport-size]")
+{
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    viewport.resize(800, 600);
+    viewport.show();
+    QComboBox* menu = viewport.findChild<QComboBox*>(QStringLiteral("viewportSize"));
+    REQUIRE(menu != nullptr);
+    QWidget* message = viewport.findChild<QWidget*>(QStringLiteral("emptyWorldView"));
+    REQUIRE(message != nullptr);
+    QApplication::processEvents();
+    CHECK(menu->currentText() == QStringLiteral("Fill"));
+    CHECK(message->width() == viewport.width());
+    const QRect filled = message->geometry();
+
+    usize square = 0;
+    REQUIRE(TryParseViewportSizeKey(QStringLiteral("1:1"), square) == true);
+    menu->setCurrentIndex(menu->findData(QVariant::fromValue(square)));
+    QApplication::processEvents();
+    CHECK(preview.GetViewportSize() == square);
+    CHECK(preview.Navigation().value(QStringLiteral("viewportSize")).toString() == QStringLiteral("1:1"));
+    // The square frame takes the full available height and is centred in the former area.
+    CHECK(message->width() == message->height());
+    CHECK(message->height() == filled.height());
+    CHECK(message->geometry().center().x() == Catch::Approx(filled.center().x()).margin(1));
+
+    viewport.resize(400, 900);
+    QApplication::processEvents();
+    CHECK(message->width() == message->height());
+    CHECK(message->width() == viewport.width());
+
+    // Restoring preferences selects the saved preset; an unknown key falls back to Fill.
+    QJsonObject state = preview.Navigation();
+    state.insert(QStringLiteral("viewportSize"), QStringLiteral("1920x1080"));
+    preview.RestoreNavigation(state);
+    QApplication::processEvents();
+    CHECK(menu->currentText() == QStringLiteral("1080p"));
+    CHECK(message->width() * 9 == Catch::Approx(message->height() * 16).margin(16));
+    state.insert(QStringLiteral("viewportSize"), QStringLiteral("unknown"));
+    preview.RestoreNavigation(state);
+    QApplication::processEvents();
+    CHECK(preview.GetViewportSize() == 0);
+    CHECK(message->width() == viewport.width());
+}
+
+TEST_CASE("Fixed viewport sizes request exact drawable pixels from the renderer",
+          "[editor][viewport][viewport-size][gpu]")
+{
+    if (PreviewViewport::CanPresent() == false)
+    {
+        SKIP("A native display and GPU presentation path are required");
+    }
+    QTemporaryDir directory;
+    RenderScene scene;
+    tests::MakeLitScene(QFileInfo(directory.path()).canonicalFilePath(), scene);
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    viewport.resize(800, 600);
+    viewport.show();
+    REQUIRE(preview.SetScene(scene) == true);
+    REQUIRE(preview.Start() == true);
+    REQUIRE(QTest::qWaitFor([&viewport]() { return viewport.PresentedFrames() > 0; }, 120000) == true);
+    QWidget* surfaceOrNull = viewport.findChild<QWidget*>(QStringLiteral("viewportRenderSurface"));
+    if (surfaceOrNull == nullptr)
+    {
+        surfaceOrNull = viewport.findChild<QWidget*>(QStringLiteral("LudusOffscreenViewport"));
+    }
+    REQUIRE(surfaceOrNull != nullptr);
+    const QRect filled = surfaceOrNull->geometry();
+    CHECK(filled.width() == viewport.width());
+
+    usize fixed = 0;
+    REQUIRE(TryParseViewportSizeKey(QStringLiteral("1280x720"), fixed) == true);
+    const uint64 presented = viewport.PresentedFrames();
+    preview.SetViewportSize(fixed);
+    REQUIRE(QTest::qWaitFor([&viewport, presented]() { return viewport.PresentedFrames() > presented; }, 30000) ==
+            true);
+    CHECK(preview.GetDrawableSize() == QSize(1280, 720));
+    CHECK(surfaceOrNull->width() * 9 == Catch::Approx(surfaceOrNull->height() * 16).margin(16));
+    CHECK(filled.contains(surfaceOrNull->geometry()) == true);
+    // The drawable no longer follows the panel: resizing only rescales the presented image.
+    viewport.resize(1000, 700);
+    QApplication::processEvents();
+    CHECK(preview.GetDrawableSize() == QSize(1280, 720));
+
+    preview.SetViewportSize(0);
+    QApplication::processEvents();
+    const qreal ratio = surfaceOrNull->devicePixelRatioF();
+    CHECK(surfaceOrNull->width() == viewport.width());
+    CHECK(preview.GetDrawableSize().width() == qRound(static_cast<float64>(surfaceOrNull->width()) * ratio));
     preview.Stop();
 }
 

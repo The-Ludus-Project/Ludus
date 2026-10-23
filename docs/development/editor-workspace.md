@@ -917,6 +917,38 @@ is excluded from saved Worlds, scene bounds and shadow-caster geometry. The empt
 view and rendered view share one grid layout. Render-graph attachment views show
 the grid only where their raster pass draws it; offline reference captures omit it.
 
+The viewport toolbar’s size menu, beside the shading selector, sets the shape and
+resolution of the rendered image without resizing the panel:
+
+- **Fill** (default) uses the whole viewport at its physical pixel density.
+- **16:9**, **16:10**, **21:9**, **4:3**, **1:1** and **9:16** (portrait) show the
+  largest centred frame of that shape at the viewport's own pixel density.
+- **720p**, **1080p**, **1440p** and **2160p** render exactly 1280 × 720,
+  1920 × 1080, 2560 × 1440 and 3840 × 2160 pixels and scale the image to fit the
+  panel, so resizing the panel or moving between displays does not change the
+  rendered resolution. Hover a menu item for its exact size.
+
+Dark bars with a thin outline fill the area outside the frame; navigation gestures
+work over the bars as well. The chosen size is the drawable the viewport requests, so
+a project graph whose **OutputSize** follows **Viewport pixels** receives it, and Play
+in the viewport sends it to the game as its window size. The
+[earlier built-in viewport profile](#earlier-built-in-viewport-profile) still caps
+its own image at 1024 pixels on the longest edge. The Stats
+overlay's resolution line shows what was rendered. The size is saved with viewport
+navigation; older preferences, and unknown saved values, open in **Fill**.
+
+The toolbar's **View** menu switches the editor camera between **Perspective** and
+**Orthographic**, or snaps it to an orthographic **Top**, **Bottom**, **Front**,
+**Back**, **Right** or **Left** view along a world axis (the world is Y-up; Front
+looks along −Z). Axis views keep the pivot and the visible size there, and move the
+eye outside the scene bounds so no geometry is clipped. The button names the current
+view; after orbiting away from an axis it reads **Orthographic**. Top and Bottom
+stop 0.1° short of vertical so orbiting continues smoothly from them. Choosing
+**Perspective** again restores the field of view and the same framing at the pivot.
+**FOV**, at the bottom of the same menu, sets the perspective vertical field of view
+from 10° to 120°; it is disabled in orthographic views. Like other navigation, these detach an authored camera,
+never edit it, and are saved with viewport navigation.
+
 The viewport toolbar’s **Look** multiplier controls mouse sensitivity for right-drag
 look and Alt/Option orbit, from **0.1×** to **4×** (default **1×**). Lower it for
 finer aiming. It is saved with viewport navigation; changing it preserves the
@@ -944,6 +976,8 @@ that preview. Zero-motion input leaves the selected camera unchanged.
 | Middle-drag or Shift + Alt/Option + left-drag | Pan in the camera plane |
 | Wheel / high-resolution trackpad scroll | Proportional dolly; orthographic views change visible span |
 | F | Frame the selected rendered World entity |
+| Numpad 7 / 1 / 3 | Orthographic Top / Front / Right view; add Ctrl (Command on macOS) for Bottom / Back / Left |
+| Numpad 5 | Switch between perspective and orthographic projection |
 | Home / **Frame all visible objects** | Fit all extracted visible geometry |
 | Escape, right-button release, focus loss or hiding the viewport | Stop fly movement and release mouse capture |
 

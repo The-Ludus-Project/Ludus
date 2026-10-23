@@ -2314,6 +2314,16 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
         connect(enable, &QPushButton::clicked, this, &RendererWorkspace::enableSceneMaterials);
         outFields.addRow(enable);
     }
+    if (CanDisableRenderGraphNode(node.value(QStringLiteral("kind")).toString()) == true)
+    {
+        QCheckBox* enabled = new QCheckBox(&inoutParent);
+        enabled->setObjectName(QStringLiteral("renderGraphField_enabled"));
+        enabled->setChecked(IsRenderGraphNodeEnabled(node));
+        enabled->setToolTip(QStringLiteral("When cleared, the compiler connects this node's color input directly to "
+                                           "its consumers. Settings and wires are kept for re-enabling."));
+        connect(enabled, &QCheckBox::toggled, this, &RendererWorkspace::setSelectedNodeEnabled);
+        outFields.addRow(QStringLiteral("Enabled"), enabled);
+    }
     if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Raster"))
     {
         QPushButton* migrate = new QPushButton(QStringLiteral("Convert to Graphics Pipeline"), &inoutParent);
@@ -2334,7 +2344,7 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
     for (QJsonObject::const_iterator field = node.constBegin(); field != node.constEnd(); ++field)
     {
         const QString name = field.key();
-        if (name == QStringLiteral("id") || name == QStringLiteral("kind") ||
+        if (name == QStringLiteral("id") || name == QStringLiteral("kind") || name == QStringLiteral("enabled") ||
             (name == QStringLiteral("scale") &&
              node.value(QStringLiteral("kind")).toString() == QStringLiteral("RenderSize")) ||
             IsPipelineNode(node.value(QStringLiteral("kind")).toString()) == true)
@@ -2366,7 +2376,7 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
             samples->setValue(field.value().toInt());
             samples->setToolTip(QStringLiteral("Compensated linear RGB mean before display conversion. "
                                                "Resets on camera, scene, size or shader replacement. "
-                                               "Bypass this node to display individual samples."));
+                                               "Disable this node to display individual samples."));
             connect(samples, &QSpinBox::editingFinished, this, [this, samples]() {
                 replaceSelectedField(QStringLiteral("samples"), samples->value());
             });
@@ -2380,8 +2390,9 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
             exposure->setRange(static_cast<float64>(content::render_graph_format::MIN_TONE_MAPPING_EXPOSURE),
                                static_cast<float64>(content::render_graph_format::MAX_TONE_MAPPING_EXPOSURE));
             exposure->setValue(field.value().toDouble());
-            exposure->setToolTip(QStringLiteral("Linear exposure multiplier, then Reinhard compression and sRGB "
-                                                "encoding. Connect after Accumulate; bypass to clamp raw linear RGB."));
+            exposure->setToolTip(
+                QStringLiteral("Linear exposure multiplier, then Reinhard compression and sRGB "
+                               "encoding. Connect after Accumulate; disable to clamp raw linear RGB."));
             connect(exposure, &QDoubleSpinBox::editingFinished, this, [this, exposure]() {
                 replaceSelectedField(QStringLiteral("exposure"), exposure->value());
             });
@@ -2938,6 +2949,31 @@ void RendererWorkspace::replaceSelectedField(const QString& field, const QJsonVa
                         configurations.contains(authoredDefault) == true ? authoredDefault : configurations.first());
         }
     }
+    replaceSelectedNode(node);
+}
+
+void RendererWorkspace::setSelectedNodeEnabled(bool isEnabled)
+{
+    QJsonObject node = selectedNode();
+    if (node.isEmpty() == true || CanDisableRenderGraphNode(node.value(QStringLiteral("kind")).toString()) == false ||
+        IsRenderGraphNodeEnabled(node) == isEnabled)
+    {
+        return;
+    }
+    // Enabled is the default, so the saved source records only a disabled node.
+    if (isEnabled == true)
+    {
+        node.remove(QStringLiteral("enabled"));
+    }
+    else
+    {
+        node.insert(QStringLiteral("enabled"), false);
+    }
+    replaceSelectedNode(node);
+}
+
+void RendererWorkspace::replaceSelectedNode(const QJsonObject& node)
+{
     QString error;
     const RenderGraphDocumentStatus status = mDocument.ReplaceNode(mSelectedFile, mSelectedConfiguration, node, &error);
     documentEdited(status);
@@ -3261,6 +3297,19 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
         rename->setObjectName(QStringLiteral("renderGraphRenameNodeAction"));
         rename->setEnabled(CanCreateSubgraph());
         connect(rename, &QAction::triggered, this, &RendererWorkspace::promptRenameNode);
+    }
+    if (CanDisableRenderGraphNode(node.value(QStringLiteral("kind")).toString()) == true)
+    {
+        QAction* disable = menu.addAction(QStringLiteral("Disable Node"));
+        disable->setObjectName(QStringLiteral("renderGraphDisableNodeAction"));
+        disable->setCheckable(true);
+        disable->setChecked(IsRenderGraphNodeEnabled(node) == false);
+        disable->setEnabled(CanCreateSubgraph());
+        disable->setToolTip(QStringLiteral("Bypass this node: its color input feeds its consumers directly. "
+                                           "One undoable edit, rebuilt like any other node edit."));
+        connect(disable, &QAction::triggered, this, [this](bool isDisabled) {
+            setSelectedNodeEnabled(isDisabled == false);
+        });
     }
     QAction* editInterface = menu.addAction(QStringLiteral("Edit Inputs / Outputs..."));
     editInterface->setObjectName(QStringLiteral("renderGraphEditInterfaceAction"));

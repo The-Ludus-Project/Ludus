@@ -10,6 +10,7 @@ import unittest
 from ludus_tools import render_graph as graph, render_graph_build as build, render_graph_ray as ray
 from ludus_tools.errors import ToolingError
 from ludus_tools import render_graph_pipeline as pipeline
+from ludus_tools import render_graph_execution as execution
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / 'tests/sdk_consumer/rg2/raytracing'
@@ -140,6 +141,66 @@ class RayPipelineTests(unittest.TestCase):
         manifest = json.loads((source.parent / 'main.lushader.json.in').read_text()
                               .replace('@RG2_TEST_PROFILES@', '["metal","wgsl"]'))
         build.validate_manifest(manifest)
+
+    def test_visibility_sequence_shares_one_raster_image_across_ray_passes(self):
+        plan = graph.compile_graph(ROOT / 'tests/sdk_consumer/rg2/visibility_sequence/main.lurender.json')
+        operations = [p for p in plan['passes'] if p['kind'] in ('Raster', 'RayTracing')]
+        self.assertEqual(['Raster', 'RayTracing', 'RayTracing', 'RayTracing'], [p['kind'] for p in operations])
+        producer = operations[0]
+        for consumer in operations[1:]:
+            for key, aspect in (('visibility', 'color'), ('visibility_depth', 'depth')):
+                self.assertEqual(producer['attachments'][aspect]['resource'], consumer[key]['resource'])
+                self.assertEqual(producer['attachments'][aspect]['output_version'], consumer[key]['input_version'])
+        technique = {'scene_interface': {'version': 1, 'visibility_buffer': True}}
+        profiles = ray.group_profiles([plan], technique, build)
+        self.assertEqual([True], [profile['visibility_buffer'] for profile in profiles])
+        self.assertTrue(profiles[0]['persistent'])
+        self.assertEqual(3, len(profiles[0]['variants']))
+        state = {'color': 'RGBA8Unorm', 'depth': 'Depth32Float', 'samples': 1, 'topology': 'TriangleList', 'cull': 'None',
+                 'front': 'CounterClockwise', 'depth_compare': 'Less', 'depth_write': True, 'blend': 'Opaque'}
+        package = {'plans': [plan], 'recipes': [{'technique': producer['technique'], 'state': state}]}
+        rays = [p for p in execution.lower_plan(package, 'Default')[2] if p['Program'] == 'RayTracing']
+        self.assertEqual(3, len(rays))
+        self.assertEqual(1, len({(p['Visibility'], p['VisibilityDepth']) for p in rays}))
+        self.assertNotEqual(execution.ABSENT, rays[0]['Visibility'])
+        stale = deepcopy(plan)
+        [p for p in stale['passes'] if p['kind'] == 'RayTracing'][2]['visibility']['input_version'] += 1
+        with self.assertRaisesRegex(ToolingError, 'same visibility/depth versions'):
+            execution.lower_plan(dict(package, plans=[stale]), 'Default')
+        mixed = deepcopy(plan)
+        middle = [p for p in mixed['passes'] if p['kind'] == 'RayTracing'][1]
+        del middle['visibility'], middle['visibility_depth']
+        with self.assertRaisesRegex(ToolingError, 'separate configurations'):
+            ray.group_profiles([mixed], technique, build)
+
+    def test_visibility_shading_dispatches_each_pass_callbacks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'payload.slang').write_text('struct ScenePayload { float3 Radiance; };\n')
+            programs = {}
+            for name, stage, function in (('Generate', 'ray_generation', 'GenerateRay'), ('Miss', 'miss', 'ShadeMiss'),
+                                          ('First', 'closest_hit', 'ShadeFirst'), ('Second', 'closest_hit', 'ShadeSecond')):
+                (root / (name + '.slang')).write_text('// ' + function + '\n')
+                programs[name] = {'id': name, 'stage': stage, 'source': name + '.slang', 'function': function,
+                                  'output': 'Radiance' if stage == 'ray_generation' else 'ScenePayload'}
+            interface = {'version': 1, 'payload': 'payload.slang', 'surface_queries': 1, 'visibility_queries': 0}
+            variants = [('Generate', 'Miss', 'First'), ('Generate', 'Miss', 'Second')]
+            recipe = {'source': 'renderer_gpu_preview.slang'}
+            for has_visibility in (False, True):
+                technique = {'scene_interface': dict(interface, visibility_buffer=has_visibility)}
+                wrapper = ray.persistent_wrapper(programs, technique, variants, build.Snapshot(root), build, recipe)
+                self.assertEqual(has_visibility, 'uint LoadVisibilityAndShade(' in wrapper)
+                if not has_visibility:
+                    continue
+                # Declared ahead of the namespaced sources that call it.
+                self.assertLess(wrapper.index('uint LoadVisibilityAndShade('), wrapper.index('namespace GraphSource'))
+                body = wrapper.split('uint LoadVisibilityAndShade(SceneContext scene, inout RayQueryContext queries, '
+                                     'RayLaunch launch, inout ScenePayload payload)\n{', 1)[1].split('\n}\n', 1)[0]
+                self.assertIn('LoadVisibilitySurface(scene, launch, queries, hit)', body)
+                self.assertEqual(2, body.count('switch (GetGraphPassIndex())'))
+                self.assertIn('ShadeFirst(scene, hit, queries, payload)', body)
+                self.assertIn('ShadeSecond(scene, hit, queries, payload)', body)
+                self.assertIn('ShadeMiss(scene, ray, queries, payload)', body)
 
     def test_authored_stages_lower_to_ray_execution_and_camera_export(self):
         plan = self.compile()

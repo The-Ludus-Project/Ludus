@@ -2,9 +2,11 @@
 #include "internal/empty_world_view.h"
 #include "internal/preview_shading.h"
 #include "internal/reference_capture_window.h"
+#include "internal/viewport_size.h"
 #include "internal/viewport_statistics.h"
 
 #include <ludus/foundation/base/core.h>
+#include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/time/time.hpp>
 
 #include <new>
@@ -17,12 +19,17 @@
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLayout>
+#include <QList>
+#include <QMenu>
+#include <QPainter>
 #include <QPointer>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QToolButton>
 #include <QToolTip>
 #include <QVBoxLayout>
+#include <QWidgetAction>
 
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
 #    include "internal/browser_viewport.h"
@@ -35,7 +42,6 @@
 #    include "internal/renderer_workspace.h"
 #    include "internal/world_graph_view.h"
 #    include <QLibraryInfo>
-#    include <QPainter>
 #    include <QQuickItem>
 #    include <QQuickPaintedItem>
 #    include <QQuickWindow>
@@ -51,6 +57,104 @@ using namespace foundation;
 namespace math = foundation::math;
 namespace renderer = graphics::renderer;
 namespace rhi = graphics::rhi;
+namespace
+{
+/// Colour of the viewport background, also painted in the bars around a letterboxed frame.
+constexpr QRgb VIEWPORT_BACKGROUND = qRgb(9, 12, 15);
+/// Arrow-key and spin-button step of the field of view control, in degrees.
+constexpr float64 FIELD_OF_VIEW_STEP_DEGREES = 5;
+/// Outline drawn around a letterboxed frame so its edge stays visible over a dark scene.
+constexpr QRgb FRAME_OUTLINE = qRgb(58, 66, 76);
+/// Places every presentation widget (message and grid, render surface, readback canvas, graph
+/// view or browser proxy) on the frame of the current size preset, centred in the layout's area.
+/// Only one of them is visible at a time, so they share the frame instead of stacking.
+class ViewportFrameLayout final : public QLayout
+{
+public:
+    ViewportFrameLayout() = default;
+    ~ViewportFrameLayout() override
+    {
+        for (QLayoutItem* item : mItems)
+        {
+            delete item;
+        }
+    }
+    /// Select the preset and place the widgets on its frame at once.
+    void SetSize(ViewportSize size)
+    {
+        mSize = size;
+        setGeometry(geometry());
+    }
+    [[nodiscard]] QRect GetFrameRectangle() const noexcept
+    {
+        return ComputeViewportFrameRectangle(mSize, geometry());
+    }
+    void addItem(QLayoutItem* item) override
+    {
+        mItems.append(item);
+        invalidate();
+    }
+    int count() const override
+    {
+        return static_cast<int>(mItems.size());
+    }
+    QLayoutItem* itemAt(int index) const override
+    {
+        return index >= 0 && index < mItems.size() ? mItems.at(index) : nullptr;
+    }
+    QLayoutItem* takeAt(int index) override
+    {
+        if (index < 0 || index >= mItems.size())
+        {
+            return nullptr;
+        }
+        QLayoutItem* item = mItems.takeAt(index);
+        invalidate();
+        return item;
+    }
+    Qt::Orientations expandingDirections() const override
+    {
+        return Qt::Horizontal | Qt::Vertical;
+    }
+    QSize sizeHint() const override
+    {
+        QSize hint;
+        for (const QLayoutItem* item : mItems)
+        {
+            if (item->isEmpty() == false)
+            {
+                hint = hint.expandedTo(item->sizeHint());
+            }
+        }
+        return hint;
+    }
+    QSize minimumSize() const override
+    {
+        QSize minimum;
+        for (const QLayoutItem* item : mItems)
+        {
+            if (item->isEmpty() == false)
+            {
+                minimum = minimum.expandedTo(item->minimumSize());
+            }
+        }
+        return minimum;
+    }
+    void setGeometry(const QRect& rectangle) override
+    {
+        QLayout::setGeometry(rectangle);
+        const QRect frame = GetFrameRectangle();
+        for (QLayoutItem* item : mItems)
+        {
+            item->setGeometry(frame);
+        }
+    }
+
+private:
+    QList<QLayoutItem*> mItems;
+    ViewportSize mSize;
+};
+} // namespace
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 namespace
 {
@@ -217,7 +321,7 @@ protected:
     void paintEvent(QPaintEvent*) override
     {
         QPainter painter(this);
-        painter.fillRect(rect(), QColor(9, 12, 15));
+        painter.fillRect(rect(), QColor::fromRgb(VIEWPORT_BACKGROUND));
         if (mImage.isNull() == false)
         {
             painter.setRenderHint(QPainter::SmoothPixmapTransform);
@@ -266,6 +370,8 @@ struct PreviewViewport::State final
     QPointer<ViewportFrameSource> Source;
     PreviewViewport* Widget = nullptr;
     QVBoxLayout* Layout = nullptr;
+    /// Shared frame of the presentation widgets; letterboxed by the size preset.
+    ViewportFrameLayout* FrameLayoutOrNull = nullptr;
     QHBoxLayout* ControlsOrNull = nullptr;
     QLabel* Message = nullptr;
     uint64 Presented = 0;
@@ -509,7 +615,7 @@ private:
         CanvasOrNull = new FrameCanvas(Widget, QStringLiteral("LudusOffscreenViewport"));
         CanvasOrNull->SetStatisticsText(StatisticsText);
         CanvasOrNull->SetShaderStatusText(ShaderStatusText, HasShaderError);
-        Layout->addWidget(CanvasOrNull, 1);
+        FrameLayoutOrNull->addWidget(CanvasOrNull);
         Message->hide();
         CanvasOrNull->show();
         if (Preview->AdmitOffscreenDevice() == false)
@@ -625,7 +731,7 @@ private:
         Window->installEventFilter(Widget);
         Window->setPersistentGraphics(true);
         Window->setPersistentSceneGraph(true);
-        Window->setColor(QColor(9, 12, 15));
+        Window->setColor(QColor::fromRgb(VIEWPORT_BACKGROUND));
         Device.Reset(new (std::nothrow) QtViewportDevice);
         if (Device.Get() == nullptr || Device->PrepareWindow(*Window) == false)
         {
@@ -727,7 +833,7 @@ private:
         }
         Container->setObjectName(QStringLiteral("viewportRenderSurface"));
         Container->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-        Layout->addWidget(Container, 1);
+        FrameLayoutOrNull->addWidget(Container);
         Message->hide();
         Container->show();
         Window->update();
@@ -1020,6 +1126,109 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     QHBoxLayout* controls = new QHBoxLayout;
     mState->ControlsOrNull = controls;
     controls->addWidget(shading, 1);
+    QComboBox* viewportSize = new QComboBox(this);
+    viewportSize->setObjectName(QStringLiteral("viewportSize"));
+    viewportSize->setAccessibleName(QStringLiteral("Viewport size"));
+    viewportSize->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    for (foundation::usize i = 0; i < VIEWPORT_SIZE_PRESET_COUNT; ++i)
+    {
+        if (IsViewportSizeGroupStart(i) == true)
+        {
+            viewportSize->insertSeparator(viewportSize->count());
+        }
+        viewportSize->addItem(GetViewportSizeLabel(i), QVariant::fromValue(i));
+        viewportSize->setItemData(viewportSize->count() - 1, GetViewportSizeDescription(i), Qt::ToolTipRole);
+    }
+    viewportSize->setCurrentIndex(viewportSize->findData(QVariant::fromValue(preview->GetViewportSize())));
+    viewportSize->setToolTip(
+        QStringLiteral("Shape and resolution of the rendered image. Fill uses the whole viewport. An aspect ratio "
+                       "letterboxes the image to that shape at the viewport's own pixel density. A fixed "
+                       "resolution renders exactly that many pixels and scales the image to fit, so a project "
+                       "graph's Viewport pixels output and Play in the viewport receive that size."));
+    controls->addWidget(viewportSize);
+    connect(viewportSize, &QComboBox::currentIndexChanged, preview, [preview, viewportSize]() {
+        bool isIndex = false;
+        const foundation::usize index = viewportSize->currentData().toULongLong(&isIndex);
+        if (isIndex == true)
+        {
+            preview->SetViewportSize(index);
+        }
+    });
+    connect(preview, &RenderPreview::NavigationChanged, this, [this, preview, viewportSize]() {
+        const QSignalBlocker blocker(viewportSize);
+        viewportSize->setCurrentIndex(viewportSize->findData(QVariant::fromValue(preview->GetViewportSize())));
+        applyViewportSize();
+    });
+    QPushButton* view = new QPushButton(this);
+    view->setObjectName(QStringLiteral("viewportView"));
+    view->setAccessibleName(QStringLiteral("Viewport projection and view direction"));
+    view->setToolTip(QStringLiteral("Perspective, or an orthographic view along a world axis for aligning and "
+                                    "measuring. Axis views keep the pivot and the visible size there, and look from "
+                                    "outside the scene. With the viewport focused: numpad 7, 1 and 3 for Top, Front "
+                                    "and Right (add Ctrl, or Command on macOS, for the opposite side), numpad 5 to "
+                                    "switch projection. The menu also sets the perspective field of view."));
+    QMenu* viewMenu = new QMenu(view);
+    QAction* perspective = viewMenu->addAction(QStringLiteral("Perspective"));
+    perspective->setObjectName(QStringLiteral("viewportViewPerspective"));
+    connect(perspective, &QAction::triggered, preview, [preview]() { preview->SetOrthographic(false); });
+    QAction* orthographic = viewMenu->addAction(QStringLiteral("Orthographic"));
+    orthographic->setObjectName(QStringLiteral("viewportViewOrthographic"));
+    connect(orthographic, &QAction::triggered, preview, [preview]() { preview->SetOrthographic(true); });
+    viewMenu->addSeparator();
+    for (foundation::usize i = 0; i < EDITOR_AXIS_VIEW_COUNT; ++i)
+    {
+        const EditorAxisView axis = static_cast<EditorAxisView>(i);
+        QAction* action = viewMenu->addAction(QString::fromUtf8(GetEditorAxisViewLabel(axis)));
+        action->setObjectName(QStringLiteral("viewportView%1").arg(QString::fromUtf8(GetEditorAxisViewLabel(axis))));
+        connect(action, &QAction::triggered, preview, [preview, axis]() { preview->SetAxisView(axis); });
+    }
+    // The field of view lives in the View menu beside the projection it applies to, which keeps
+    // the toolbar row narrow enough for its buttons to show their full text.
+    viewMenu->addSeparator();
+    QDoubleSpinBox* fieldOfView = new QDoubleSpinBox(viewMenu);
+    fieldOfView->setObjectName(QStringLiteral("viewportFieldOfView"));
+    fieldOfView->setAccessibleName(QStringLiteral("Vertical field of view in degrees"));
+    fieldOfView->setPrefix(QStringLiteral("FOV "));
+    fieldOfView->setSuffix(QStringLiteral("°"));
+    fieldOfView->setDecimals(0);
+    fieldOfView->setRange(static_cast<float64>(MINIMUM_EDITOR_VERTICAL_FOV_DEGREES),
+                          static_cast<float64>(MAXIMUM_EDITOR_VERTICAL_FOV_DEGREES));
+    fieldOfView->setSingleStep(FIELD_OF_VIEW_STEP_DEGREES);
+    fieldOfView->setToolTip(QStringLiteral("Vertical field of view of the editor camera. Wider angles show more "
+                                           "of the scene with more perspective distortion. Orthographic views "
+                                           "have no field of view."));
+    QWidgetAction* fieldOfViewAction = new QWidgetAction(viewMenu);
+    fieldOfViewAction->setDefaultWidget(fieldOfView);
+    viewMenu->addAction(fieldOfViewAction);
+    view->setMenu(viewMenu);
+    controls->addWidget(view);
+    connect(fieldOfView, &QDoubleSpinBox::valueChanged, preview, [preview](float64 degrees) {
+        preview->SetVerticalFovDegrees(static_cast<float32>(degrees));
+    });
+    const auto updateView = [preview, view, perspective, orthographic, fieldOfView]() {
+        const gameplay::camera::CameraSample& sample = preview->GetVisibleCameraSample();
+        const bool isOrthographic = sample.Lens.Projection == gameplay::camera::CameraProjection::OrthographicFinite;
+        EditorAxisView axis = EditorAxisView::Top;
+        if (isOrthographic == false)
+        {
+            view->setText(QStringLiteral("Perspective"));
+        }
+        else if (TryGetEditorAxisView(sample, axis) == true)
+        {
+            view->setText(QString::fromUtf8(GetEditorAxisViewLabel(axis)));
+        }
+        else
+        {
+            view->setText(QStringLiteral("Orthographic"));
+        }
+        perspective->setEnabled(isOrthographic == true);
+        orthographic->setEnabled(isOrthographic == false);
+        fieldOfView->setEnabled(isOrthographic == false);
+        const QSignalBlocker blocker(fieldOfView);
+        fieldOfView->setValue(static_cast<float64>(math::RadiansToDegrees(sample.Lens.VerticalFov)));
+    };
+    updateView();
+    connect(preview, &RenderPreview::NavigationChanged, view, updateView);
     QDoubleSpinBox* lookSensitivity = new QDoubleSpinBox(this);
     lookSensitivity->setObjectName(QStringLiteral("viewportLookSensitivity"));
     lookSensitivity->setAccessibleName(QStringLiteral("Mouse look sensitivity"));
@@ -1148,11 +1357,13 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     mState->Message = new EmptyWorldView(*preview, this);
     mState->Message->setText(QStringLiteral("Open or create a World to start authoring."));
     mState->Message->setWordWrap(true);
-    mState->Layout->addWidget(mState->Message, 1);
+    mState->FrameLayoutOrNull = new ViewportFrameLayout;
+    mState->Layout->addLayout(mState->FrameLayoutOrNull, 1);
+    mState->FrameLayoutOrNull->addWidget(mState->Message);
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
     mState->BrowserOrNull = new BrowserViewport(*preview, this);
     mState->BrowserOrNull->hide();
-    mState->Layout->addWidget(mState->BrowserOrNull, 1);
+    mState->FrameLayoutOrNull->addWidget(mState->BrowserOrNull);
     connect(preview, &RenderPreview::DeviceRequested, this, [this]() {
         mState->Message->hide();
         mState->BrowserOrNull->show();
@@ -1214,6 +1425,7 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
 #endif
     mIsAutomatic = isAutomatic;
     connectFrameSource();
+    applyViewportSize();
 }
 void PreviewViewport::connectFrameSource()
 {
@@ -1316,7 +1528,7 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
     mState->GraphViewOrNull = new WorldGraphView(inoutWorkspace, this);
     mState->GraphViewOrNull->setVisible(Preview_->Scene().Identity.isEmpty() == false);
     mState->GraphViewOrNull->SetCanPresent(mState->IsAutomatic);
-    mState->Layout->addWidget(mState->GraphViewOrNull, 1);
+    mState->FrameLayoutOrNull->addWidget(mState->GraphViewOrNull);
     mState->ControlsOrNull->insertWidget(0, mState->GraphViewOrNull->TakeControls(this), 1);
     findChild<QComboBox*>(QStringLiteral("viewportShading"))->hide();
     for (const QString& name : {QStringLiteral("viewportLiveShaders")})
@@ -1573,29 +1785,60 @@ foundation::float32 PreviewViewport::getDrawableHeight() const noexcept
 void PreviewViewport::resizeSurface()
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    const ViewportSize size = GetViewportSizePreset(Preview_->GetViewportSize());
     if (mState->CanvasOrNull != nullptr)
     {
         // RenderPreview recreates the offscreen targets when the requested size changes.
-        const float64 ratio = mState->CanvasOrNull->devicePixelRatioF();
-        mFrameSource->Resize(qRound(static_cast<float64>(mState->CanvasOrNull->width()) * ratio),
-                             qRound(static_cast<float64>(mState->CanvasOrNull->height()) * ratio));
+        const QSize drawable =
+            ComputeViewportDrawableSize(size, mState->CanvasOrNull->size(), mState->CanvasOrNull->devicePixelRatioF());
+        mFrameSource->Resize(drawable.width(), drawable.height());
         return;
     }
     if (mState->Window != nullptr && mState->Item != nullptr)
     {
-        const foundation::float64 ratio = mState->Window->devicePixelRatio();
+        const QSize drawable =
+            ComputeViewportDrawableSize(size, mState->Window->size(), mState->Window->devicePixelRatio());
         if (mState->ProjectGraph.isNull() == false && mFrameSource == &mState->ProjectGraph->GetDisplayFrames())
         {
-            Preview_->Resize(qRound(static_cast<float64>(mState->Window->width()) * ratio),
-                             qRound(static_cast<float64>(mState->Window->height()) * ratio));
+            Preview_->Resize(drawable.width(), drawable.height());
         }
-        mFrameSource->Resize(qRound(static_cast<foundation::float64>(mState->Window->width()) * ratio),
-                             qRound(static_cast<foundation::float64>(mState->Window->height()) * ratio));
+        mFrameSource->Resize(drawable.width(), drawable.height());
         mState->Item->setSize(QSizeF(mState->Window->size()));
         mState->Item->update();
         mState->applyShaderStatus();
     }
 #endif
+}
+void PreviewViewport::applyViewportSize()
+{
+    const foundation::usize index = Preview_->GetViewportSize();
+    if (index == mAppliedViewportSize || mState->FrameLayoutOrNull == nullptr)
+    {
+        return;
+    }
+    mAppliedViewportSize = index;
+    const ViewportSize size = GetViewportSizePreset(index);
+#if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
+    mState->BrowserOrNull->SetFixedDrawableSize(
+        size.Kind == ViewportSizeKind::Fixed ? ComputeViewportDrawableSize(size, {}, 1) : QSize());
+#endif
+    mState->FrameLayoutOrNull->SetSize(size);
+    // A fixed size may keep the frame's shape, so its drawable changes without a resize.
+    resizeSurface();
+    update();
+}
+void PreviewViewport::paintEvent(QPaintEvent*)
+{
+    if (GetViewportSizePreset(mAppliedViewportSize).Kind == ViewportSizeKind::Fill ||
+        mState->FrameLayoutOrNull == nullptr)
+    {
+        return;
+    }
+    // The bars beside a letterboxed frame belong to the viewport, not to the surrounding panel.
+    QPainter painter(this);
+    painter.fillRect(mState->FrameLayoutOrNull->geometry(), QColor::fromRgb(VIEWPORT_BACKGROUND));
+    painter.setPen(QColor::fromRgb(FRAME_OUTLINE));
+    painter.drawRect(mState->FrameLayoutOrNull->GetFrameRectangle().adjusted(-1, -1, 0, 0));
 }
 bool PreviewViewport::CanPresent() noexcept
 {

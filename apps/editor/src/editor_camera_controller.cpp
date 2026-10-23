@@ -1,5 +1,6 @@
 #include "internal/editor_camera_controller.h"
 
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 
 namespace ludus::editor
@@ -15,11 +16,77 @@ constexpr float32 MAXIMUM_DISTANCE = 10000000;
 constexpr float64 MAXIMUM_POSITION_WORLD = 10000000;
 constexpr float32 LOOK_RADIANS_PER_PIXEL = math::kPiF / 720;
 constexpr float32 MAXIMUM_PITCH_RADIANS = math::kHalfPiF - 0.001F;
+/// Orbit pitch of the Top and Bottom views. Not a full 90 degrees, so yaw stays defined and
+/// a later orbit continues smoothly; the resulting tilt is below a pixel at editor scales.
+constexpr float32 VERTICAL_VIEW_PITCH_DEGREES = 89.9F;
+/// Largest angle between a camera's forward direction and an axis that still names that view.
+constexpr float32 AXIS_VIEW_TOLERANCE_DEGREES = 0.5F;
+/// Perspective near plane as a fraction of the focus distance after leaving an orthographic view.
+constexpr float32 PERSPECTIVE_NEAR_FRACTION = 0.001F;
+/// Bounds of that near plane, in world units: positive, and no farther than the default 0.01.
+constexpr float32 MINIMUM_PERSPECTIVE_NEAR_PLANE = 0.0000001F;
+constexpr float32 MAXIMUM_PERSPECTIVE_NEAR_PLANE = 0.01F;
+/// Fraction of the scene radius kept between an orthographic eye and the scene bounds.
+constexpr float32 ORTHOGRAPHIC_CLEARANCE = 0.01F;
+struct AxisViewDescription final
+{
+    EditorAxisView View;
+    const char* Label;
+    /// Orbit angles that produce the view, as TrySetOrbit takes them.
+    math::Vector2 OrbitDegrees;
+    /// World direction the camera looks along.
+    math::Vector3 ForwardWorld;
+};
+constexpr StaticArray<AxisViewDescription, EDITOR_AXIS_VIEW_COUNT> AXIS_VIEWS{{
+    {EditorAxisView::Top, "Top", {0, VERTICAL_VIEW_PITCH_DEGREES}, {0, -1, 0}},
+    {EditorAxisView::Bottom, "Bottom", {0, -VERTICAL_VIEW_PITCH_DEGREES}, {0, 1, 0}},
+    {EditorAxisView::Front, "Front", {0, 0}, {0, 0, -1}},
+    {EditorAxisView::Back, "Back", {180, 0}, {0, 0, 1}},
+    {EditorAxisView::Right, "Right", {90, 0}, {-1, 0, 0}},
+    {EditorAxisView::Left, "Left", {-90, 0}, {1, 0, 0}},
+}};
+const AxisViewDescription& Describe(EditorAxisView view) noexcept
+{
+    const usize index = static_cast<usize>(view);
+    return AXIS_VIEWS[index < EDITOR_AXIS_VIEW_COUNT ? index : 0];
+}
 math::Vector3d ConvertToWorld(math::Vector3 value) noexcept
 {
     return {static_cast<float64>(value.X), static_cast<float64>(value.Y), static_cast<float64>(value.Z)};
 }
+/// Height the lens shows at distance from the eye, in world units.
+float32 GetVisibleHeight(const camera::CameraLens& lens, float32 distance) noexcept
+{
+    if (lens.Projection == camera::CameraProjection::OrthographicFinite)
+    {
+        return lens.VerticalSpan;
+    }
+    const float32 halfFov = lens.VerticalFov * 0.5F;
+    return 2 * distance * math::Sin(halfFov) / math::Cos(halfFov);
+}
 } // namespace
+bool TryGetEditorAxisView(const camera::CameraSample& sample, EditorAxisView& outView) noexcept
+{
+    if (sample.Lens.Projection != camera::CameraProjection::OrthographicFinite)
+    {
+        return false;
+    }
+    const math::Vector3 forwardWorld = math::Rotate(sample.Pose.Orientation, {0, 0, -1});
+    const float32 minimumCosine = math::Cos(math::DegreesToRadians(AXIS_VIEW_TOLERANCE_DEGREES));
+    for (const AxisViewDescription& description : AXIS_VIEWS)
+    {
+        if (math::Dot(forwardWorld, description.ForwardWorld) >= minimumCosine)
+        {
+            outView = description.View;
+            return true;
+        }
+    }
+    return false;
+}
+const char* GetEditorAxisViewLabel(EditorAxisView view) noexcept
+{
+    return Describe(view).Label;
+}
 EditorCameraController::EditorCameraController() noexcept
 {
     mSample.Lens.Projection = camera::CameraProjection::PerspectiveInfinite;
@@ -176,6 +243,91 @@ bool EditorCameraController::TrySetDistance(float32 distance) noexcept
         candidate.Lens.NearPlane = math::Min(candidate.Lens.NearPlane, math::Max(0.0000001F, distance * 0.01F));
     }
     return tryPublish(candidate, distance);
+}
+bool EditorCameraController::IsOrthographic() const noexcept
+{
+    return mSample.Lens.Projection == camera::CameraProjection::OrthographicFinite;
+}
+bool EditorCameraController::tryPublishOrthographic(camera::CameraSample candidate,
+                                                    const math::Aabb3* boundsWorldOrNull) noexcept
+{
+    const math::Vector3d pivotWorld = GetPivotWorld();
+    candidate.Lens.VerticalSpan = GetVisibleHeight(mSample.Lens, mDistance);
+    if (mSample.Lens.Projection != camera::CameraProjection::OrthographicFinite)
+    {
+        candidate.Lens.MinimumVisibleWidth = 0;
+    }
+    candidate.Lens.Projection = camera::CameraProjection::OrthographicFinite;
+    candidate.Lens.NearPlane = 0;
+    float32 distance = mDistance;
+    float32 farPlane = math::Max(mSample.Lens.FarPlane, 2 * distance);
+    if (boundsWorldOrNull != nullptr && math::IsFinite(*boundsWorldOrNull) == true &&
+        math::IsEmpty(*boundsWorldOrNull) == false)
+    {
+        // Back off beyond the bounding sphere, measured from the pivot, so the eye is outside it.
+        const math::Vector3 centerWorld = (boundsWorldOrNull->Min + boundsWorldOrNull->Max) * 0.5F;
+        const float32 radius = math::Length(boundsWorldOrNull->Max - centerWorld);
+        const float32 offset = static_cast<float32>(math::Distance(pivotWorld, ConvertToWorld(centerWorld)));
+        distance = math::Max(distance, offset + radius * (1 + ORTHOGRAPHIC_CLEARANCE));
+        farPlane = distance + offset + radius * (1 + ORTHOGRAPHIC_CLEARANCE);
+    }
+    candidate.Lens.FarPlane = math::Max(farPlane, MINIMUM_DISTANCE);
+    candidate.Pose.Position = pivotWorld - ConvertToWorld(math::Rotate(candidate.Pose.Orientation, {0, 0, -1})) *
+                                               static_cast<float64>(distance);
+    return tryPublish(candidate, distance);
+}
+bool EditorCameraController::TrySetAxisView(EditorAxisView view, const math::Aabb3* boundsWorldOrNull) noexcept
+{
+    const math::Vector2 orbitDegrees = Describe(view).OrbitDegrees;
+    math::Quaternion yaw;
+    math::Quaternion pitch;
+    if (math::TryFromAxisAngle({0, 1, 0}, math::DegreesToRadians(orbitDegrees.X), yaw) != math::MathStatus::Success ||
+        math::TryFromAxisAngle({1, 0, 0}, -math::DegreesToRadians(orbitDegrees.Y), pitch) != math::MathStatus::Success)
+    {
+        return false;
+    }
+    camera::CameraSample candidate = mSample;
+    if (math::TryNormalize(yaw * pitch, candidate.Pose.Orientation) != math::MathStatus::Success)
+    {
+        return false;
+    }
+    return tryPublishOrthographic(candidate, boundsWorldOrNull);
+}
+bool EditorCameraController::TrySetOrthographic(bool isOrthographic, const math::Aabb3* boundsWorldOrNull) noexcept
+{
+    if (isOrthographic == IsOrthographic())
+    {
+        return false;
+    }
+    if (isOrthographic == true)
+    {
+        return tryPublishOrthographic(mSample, boundsWorldOrNull);
+    }
+    camera::CameraSample candidate = mSample;
+    const float32 halfFov = candidate.Lens.VerticalFov * 0.5F;
+    // Place the eye where the perspective lens shows the orthographic span at the pivot.
+    const float32 distance =
+        math::Clamp(GetVisibleHeight(mSample.Lens, mDistance) * 0.5F * math::Cos(halfFov) / math::Sin(halfFov),
+                    MINIMUM_DISTANCE,
+                    MAXIMUM_DISTANCE);
+    candidate.Lens.Projection = camera::CameraProjection::PerspectiveInfinite;
+    candidate.Lens.NearPlane = math::Clamp(distance * PERSPECTIVE_NEAR_FRACTION,
+                                           MINIMUM_PERSPECTIVE_NEAR_PLANE,
+                                           MAXIMUM_PERSPECTIVE_NEAR_PLANE);
+    candidate.Pose.Position = GetPivotWorld() - ConvertToWorld(math::Rotate(candidate.Pose.Orientation, {0, 0, -1})) *
+                                                    static_cast<float64>(distance);
+    return tryPublish(candidate, distance);
+}
+bool EditorCameraController::TrySetVerticalFov(float32 radians) noexcept
+{
+    if (math::IsFinite(radians) == false || radians < math::DegreesToRadians(MINIMUM_EDITOR_VERTICAL_FOV_DEGREES) ||
+        radians > math::DegreesToRadians(MAXIMUM_EDITOR_VERTICAL_FOV_DEGREES))
+    {
+        return false;
+    }
+    camera::CameraSample candidate = mSample;
+    candidate.Lens.VerticalFov = radians;
+    return tryPublish(candidate, mDistance);
 }
 bool EditorCameraController::TryFrame(const math::Aabb3& boundsWorld, float32 aspect) noexcept
 {
