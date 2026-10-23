@@ -131,18 +131,32 @@ DescribeRayInterface(const QJsonObject& program, const QJsonArray& techniques, c
         {
             continue;
         }
-        const QString payload = QDir::cleanPath(
-            technique.value(QStringLiteral("scene_interface")).toObject().value(QStringLiteral("payload")).toString());
+        const QJsonObject interface = technique.value(QStringLiteral("scene_interface")).toObject();
+        const bool hasCustomPayload = interface.contains(QStringLiteral("payload"));
+        const QString payload = hasCustomPayload == true
+                                    ? QDir::cleanPath(interface.value(QStringLiteral("payload")).toString())
+                                    : QStringLiteral(":/shader-api/scene_payload.slang");
         if (payloadFiles.contains(payload) == true)
         {
             continue;
         }
         payloadFiles.append(payload);
+        QByteArray payloadSource = sources.value(payload);
+        if (hasCustomPayload == false)
+        {
+            QFile file(payload);
+            if (file.open(QIODevice::ReadOnly) == true)
+            {
+                payloadSource = file.readAll();
+            }
+        }
         const QString declaration =
-            GetStructDeclaration(QString::fromUtf8(sources.value(payload)), QStringLiteral("ScenePayload"));
-        lines.append(declaration.isEmpty() == false
-                         ? QStringLiteral("// %1\n%2").arg(payload, declaration)
-                         : QStringLiteral("// ScenePayload declaration unavailable: %1").arg(payload));
+            GetStructDeclaration(QString::fromUtf8(payloadSource), QStringLiteral("ScenePayload"));
+        lines.append(
+            declaration.isEmpty() == false
+                ? QStringLiteral("// %1\n%2")
+                      .arg(hasCustomPayload == true ? payload : QStringLiteral("Pipeline default payload"), declaration)
+                : QStringLiteral("// ScenePayload declaration unavailable: %1").arg(payload));
     }
     if (payloadFiles.isEmpty() == true)
     {

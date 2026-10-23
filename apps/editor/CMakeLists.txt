@@ -198,6 +198,7 @@ function(ludus_editor_add_shader_api target)
         PREFIX "/shader-api" BASE "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders"
         FILES "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders/ray_shader.slang"
               "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders/scene_shader.slang"
+              "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders/scene_payload.slang"
               "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders/visibility_buffer.slang")
 endfunction()
 

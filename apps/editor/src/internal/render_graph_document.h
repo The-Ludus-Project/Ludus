@@ -172,7 +172,8 @@ public:
     [[nodiscard]] RenderGraphDocumentStatus
     ExpandSceneBundle(const QString& file, const QString& configuration, const QString& node);
     /// Upgrade the package's shared ray technique to scene materials in one undoable edit.
-    /// Preserves original callbacks through adapters, program IDs and admission budgets.
+    /// Preserves original sources/signatures, program IDs and admission budgets.
+    /// The builder supplies compatibility adapters and the default payload without project helper files.
     /// Failure preserves draft/history and reports the required repair. No disk writes.
     [[nodiscard]] RenderGraphDocumentStatus EnableSceneMaterials(QString& outError);
     /// Read the shared scene-ray query budgets. Missing/ambiguous techniques, unsupported

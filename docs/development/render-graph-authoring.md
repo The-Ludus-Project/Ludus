@@ -120,12 +120,12 @@ Existing ray techniques keep their interface and authored sources. For a legacy
 parameters are unavailable through `RayHit`. Select the ray pipeline and choose
 **Enable Scene Materials** in its canvas context menu or Properties. This upgrades
 the package's shared ray technique and all references in one undoable draft edit.
-Adapters call the original shaders without rewriting their sources. Open the new
-closest-hit adapter through **View Shaders** and replace its legacy callback call
-with `EvaluateMaterial(scene, hit)` to author shading with full material properties.
+The builder adapts the original shaders without rewriting their sources or adding
+project helper files. New stages use scene-aware callbacks; replace a legacy stage
+when its shading needs `EvaluateMaterial(scene, hit)` and the full material properties.
 The conversion reuses the existing program records, IDs and profile artifact slots.
 It works with full program/artifact budgets and preserves those authored limits;
-you do not need to edit the manifest before converting. **Save** publishes the payload, adapters and manifest together.
+you do not need to edit the manifest before converting. **Save** publishes the manifest change.
 The Source interface panel describes the active interface and available material
 fields. See [scene-aware ray shaders](#author-scene-aware-ray-shaders) for callback
 and material contracts.
@@ -771,20 +771,29 @@ uniform contract; the scene-aware query API belongs to the ray profile.
 
 ### Select the interface in the manifest
 
-Keep the graph node's existing Scene/View/ColorTexture ports and its bounded
+New ray-tracing pipeline nodes supply the scene API and a default `ScenePayload`
+containing `float3 Radiance` automatically. No project `scene_payload.slang` or
+`scene_legacy_callbacks.slang` is needed. **Enable Scene Materials** on an older
+pipeline preserves its shader sources, signatures and program IDs; the builder
+adapts legacy callbacks in generated build output. Replace individual stages with
+scene-aware callbacks as needed. Existing projects with explicit custom payloads
+continue to use them.
+
+For manual authoring, keep the graph node's existing Scene/View/ColorTexture ports and its bounded
 triangle recipe state. Add this record to the manifest's
 `RendererTriangles.RayTracing` technique:
 
 ```json
 "scene_interface": {
   "version": 1,
-  "payload": "main_shaders/payload.slang",
   "surface_queries": 2,
   "visibility_queries": 2
 }
 ```
 
-The assigned programs now use these manifest input/output names and signatures:
+Scene-aware programs use these manifest input/output names and signatures.
+The pipeline can also retain legacy `RayLaunch / Ray`, `Ray / Color` and
+`RayHit / Color` stages independently; their adapters preserve authored results:
 
 | Stage | Input / output | Authored signature |
 | --- | --- | --- |
@@ -793,7 +802,8 @@ The assigned programs now use these manifest input/output names and signatures:
 | miss | Ray / ScenePayload | `void ShadeMiss(SceneContext scene, Ray ray, inout RayQueryContext queries, inout ScenePayload payload)` |
 
 Bindings remain empty: the linked wrapper supplies the scene resources (and opt-in visibility/depth reads), validates
-the compute interface and records their RHI uses. The payload file defines one
+the compute interface and records their RHI uses. To customize the shared payload,
+add `"payload": "main_shaders/payload.slang"` to `scene_interface`. The payload file defines one
 flat `struct ScenePayload` and no other declarations except `#pragma once` and
 comments. Fields can be float scalars/vectors/matrices, uint/int scalars/vectors,
 bool, Ray, RayLaunch, SurfaceHit or MaterialSample, optionally in fixed literal
@@ -1694,8 +1704,12 @@ never permits the authored count to exceed its bound or silently drops a target.
 
 Shader sources and literal quoted includes must remain inside the package root.
 Includes are relative to their shader file; graph imports are relative to the
-package root. Module imports, dynamic/continued includes, source remapping and
-recursive includes reject. Conditional includes are conservatively tracked.
+package root. Module imports, dynamic/continued includes and source remapping
+reject. An include cycle is captured when an unconditional leading `#pragma once`
+in the cycle proves traversal can terminate; Slang still validates declarations
+and rejects recursive shader calls or duplicate callbacks. Unguarded include cycles
+report the complete cycle, separately from the include-depth limit. Conditional
+includes are conservatively tracked; a conditional pragma is not treated as a guard.
 The compiler reads staged captured sources only, and its dependency file is
 checked against that closure. Sources are bounded to 64 files/4 MiB, each at
 most 128 KiB, with include depth 16; generated artifacts are at most 2 MiB each

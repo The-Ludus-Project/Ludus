@@ -23,7 +23,7 @@ namespace ludus::editor
                                                                 QJsonObject& inoutManifest,
                                                                 const QJsonObject& node,
                                                                 const QString& packageRoot);
-/// Adapt the shared legacy ray technique, preserving original sources and callback behavior.
+/// Enable builder-managed legacy adapters and default payload without creating project helper sources.
 /// Reuses program records and IDs, preserving graph references and authored admission budgets.
 /// Caller discards the unpublished candidate on failure.
 [[nodiscard]] RenderGraphDocumentStatus ConvertSceneRayInterface(RenderGraphSnapshot& inoutSnapshot,

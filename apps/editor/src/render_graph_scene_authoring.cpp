@@ -1,10 +1,6 @@
 #include "internal/render_graph_shader_creation.h"
 
-#include <QDir>
-#include <QFile>
-#include <QFileInfo>
 #include <QJsonDocument>
-#include <QRegularExpression>
 
 namespace ludus::editor
 {
@@ -15,38 +11,13 @@ const foundation::int32 RenderGraphSceneQueryBudgets::MAX_VISIBILITY_QUERIES = L
 
 namespace
 {
-constexpr qsizetype ADAPTER_PROGRAM_BASE_LENGTH = 40;
 const QString RAY_TECHNIQUE = QStringLiteral("RendererTriangles.RayTracing");
 const QStringList RAY_STAGES{QStringLiteral("ray_generation"), QStringLiteral("miss"), QStringLiteral("closest_hit")};
 
-QString MakeSourcePath(const RenderGraphSnapshot& snapshot, const QString& packageRoot, const QString& base)
+QJsonObject MakeSceneInterface()
 {
-    QString name = base + QStringLiteral(".slang");
-    for (qsizetype suffix = 2;; ++suffix)
-    {
-        bool hasConflict = false;
-        for (const QString& existing : snapshot.Files.keys())
-        {
-            hasConflict = hasConflict == true || existing.compare(name, Qt::CaseInsensitive) == 0;
-        }
-        const QFileInfo destination(QDir(packageRoot).filePath(name));
-        if (hasConflict == false && destination.exists() == false && destination.isSymLink() == false)
-        {
-            return name;
-        }
-        name = base + QLatin1Char('_') + QString::number(suffix) + QStringLiteral(".slang");
-    }
-}
-
-QJsonObject MakeSceneInterface(RenderGraphSnapshot& inoutSnapshot, const QString& packageRoot)
-{
-    const QString payload = MakeSourcePath(inoutSnapshot, packageRoot, QStringLiteral("scene_payload"));
-    inoutSnapshot.Files.insert(payload,
-                               "#pragma once\n// Shared by the scene-aware ray callbacks.\n"
-                               "struct ScenePayload\n{\n    float3 Radiance;\n};\n");
     const RenderGraphSceneQueryBudgets budgets;
     return QJsonObject{{QStringLiteral("version"), 1},
-                       {QStringLiteral("payload"), payload},
                        {QStringLiteral("surface_queries"), budgets.SurfaceQueries},
                        {QStringLiteral("visibility_queries"), budgets.VisibilityQueries}};
 }
@@ -212,10 +183,8 @@ QByteArray MakeSceneRaySource(QJsonObject& inoutProgram)
     return source.toUtf8();
 }
 
-RenderGraphDocumentStatus PrepareSceneRayDefaults(RenderGraphSnapshot& inoutSnapshot,
-                                                  QJsonObject& inoutManifest,
-                                                  const QJsonObject& node,
-                                                  const QString& packageRoot)
+RenderGraphDocumentStatus
+PrepareSceneRayDefaults(RenderGraphSnapshot&, QJsonObject& inoutManifest, const QJsonObject& node, const QString&)
 {
     if (node.value(QStringLiteral("kind")).toString() != QStringLiteral("RayTracingPipeline"))
     {
@@ -245,21 +214,21 @@ RenderGraphDocumentStatus PrepareSceneRayDefaults(RenderGraphSnapshot& inoutSnap
     techniques.append(QJsonObject{{QStringLiteral("id"), RAY_TECHNIQUE},
                                   {QStringLiteral("configuration"), QStringLiteral("RayTracing")},
                                   {QStringLiteral("recipes"), QJsonArray{}},
-                                  {QStringLiteral("scene_interface"), MakeSceneInterface(inoutSnapshot, packageRoot)}});
+                                  {QStringLiteral("scene_interface"), MakeSceneInterface()}});
     inoutManifest.insert(QStringLiteral("techniques"), techniques);
     return RenderGraphDocumentStatus::Ok;
 }
 
 RenderGraphDocumentStatus ConvertSceneRayInterface(RenderGraphSnapshot& inoutSnapshot,
                                                    const QString& manifestFile,
-                                                   const QString& packageRoot,
+                                                   const QString&,
                                                    QString& outError)
 {
     outError = QStringLiteral("Scene materials require a complete ray-generation, miss and closest-hit technique. "
                               "The draft was preserved.");
     QJsonObject manifest = QJsonDocument::fromJson(inoutSnapshot.Files.value(manifestFile)).object();
     QJsonArray techniques = manifest.value(QStringLiteral("techniques")).toArray();
-    QJsonArray programs = manifest.value(QStringLiteral("programs")).toArray();
+    const QJsonArray programs = manifest.value(QStringLiteral("programs")).toArray();
     qsizetype techniqueIndex = -1;
     for (qsizetype index = 0; index < techniques.size(); ++index)
     {
@@ -279,7 +248,6 @@ RenderGraphDocumentStatus ConvertSceneRayInterface(RenderGraphSnapshot& inoutSna
     }
     QJsonObject technique = techniques.at(techniqueIndex).toObject();
     QMap<QString, QJsonObject> originals;
-    QStringList sources;
     for (const QString& stage : RAY_STAGES)
     {
         const QString expectedInput = stage == QStringLiteral("ray_generation") ? QStringLiteral("RayLaunch")
@@ -298,11 +266,6 @@ RenderGraphDocumentStatus ConvertSceneRayInterface(RenderGraphSnapshot& inoutSna
                 inoutSnapshot.Files.contains(program.value(QStringLiteral("source")).toString()) == true)
             {
                 originals.insert(stage, program);
-                const QString source = program.value(QStringLiteral("source")).toString();
-                if (sources.contains(source) == false)
-                {
-                    sources.append(source);
-                }
             }
         }
     }
@@ -310,82 +273,11 @@ RenderGraphDocumentStatus ConvertSceneRayInterface(RenderGraphSnapshot& inoutSna
     {
         return RenderGraphDocumentStatus::InvalidEdit;
     }
-    // Copy the declaration from the renderer-owned API bundled with this editor.
-    // Generated authored sources cannot include reserved build-time helper paths.
-    QFile api(QStringLiteral(":/shader-api/ray_shader.slang"));
-    if (api.open(QIODevice::ReadOnly) == false)
-    {
-        outError = QStringLiteral("Cannot enable scene materials: the bundled legacy shader API is unavailable. "
-                                  "The draft was preserved.");
-        return RenderGraphDocumentStatus::InvalidEdit;
-    }
-    const QRegularExpression hitDeclaration(QStringLiteral("\\bstruct\\s+RayHit\\s*\\{[^}]*\\};"));
-    const QString declaration = hitDeclaration.match(QString::fromUtf8(api.readAll())).captured();
-    if (declaration.isEmpty() == true)
-    {
-        return RenderGraphDocumentStatus::InvalidEdit;
-    }
-    const QString bridge = MakeSourcePath(inoutSnapshot, packageRoot, QStringLiteral("scene_legacy_callbacks"));
-    QByteArray legacy =
-        "#pragma once\n// Compatibility inputs for the original authored callbacks.\n" + declaration.toUtf8() + "\n";
-    sources.sort();
-    for (const QString& source : sources)
-    {
-        legacy += "#include \"" + source.toUtf8() + "\"\n";
-    }
-    inoutSnapshot.Files.insert(bridge, legacy);
-    for (const QString& stage : RAY_STAGES)
-    {
-        const QJsonObject original = originals.value(stage);
-        const QString previous = original.value(QStringLiteral("id")).toString();
-        const QString base = previous.left(ADAPTER_PROGRAM_BASE_LENGTH);
-        const QString source = MakeSourcePath(inoutSnapshot, packageRoot, QStringLiteral("shader_Scene_") + base);
-        QJsonObject program = original;
-        program.insert(QStringLiteral("source"), source);
-        program.insert(QStringLiteral("function"), QStringLiteral("SceneShaderMain"));
-        QString adapter = QString::fromUtf8(MakeSceneRaySource(program));
-        if (stage == QStringLiteral("ray_generation"))
-        {
-            adapter.replace(QStringLiteral("launch.CameraRay, payload"),
-                            original.value(QStringLiteral("function")).toString() +
-                                QStringLiteral("(launch), payload"));
-        }
-        else if (stage == QStringLiteral("miss"))
-        {
-            adapter.replace(QStringLiteral("float3(0, 0, 0)"),
-                            original.value(QStringLiteral("function")).toString() + QStringLiteral("(ray)"));
-        }
-        else
-        {
-            adapter =
-                QStringLiteral(
-                    "// Original shader remains in %1. Edit this callback to access full materials.\n"
-                    "void SceneShaderMain(SceneContext scene, SurfaceHit hit, inout RayQueryContext queries, "
-                    "inout ScenePayload payload)\n{\n"
-                    "    // Full material: MaterialSample material = EvaluateMaterial(scene, hit);\n"
-                    "    RayHit input;\n    input.IncomingRay = hit.IncomingRay;\n"
-                    "    input.PositionWorld = hit.PositionWorld;\n    input.DistanceWorld = hit.DistanceWorld;\n"
-                    "    input.NormalWorld = hit.GeometricNormalWorld;\n    input.Primitive = hit.TriangleIndex;\n"
-                    "    input.Barycentric = hit.Barycentric;\n    input.Color = Surface(hit.TriangleIndex, 0);\n"
-                    "    payload.Radiance = %2(input);\n}\n")
-                    .arg(original.value(QStringLiteral("source")).toString(),
-                         original.value(QStringLiteral("function")).toString());
-        }
-        inoutSnapshot.Files.insert(source, (QStringLiteral("#include \"%1\"\n").arg(bridge) + adapter).toUtf8());
-        // Reuse the selected program's slot; preserve IDs, ordering and all graph references.
-        for (qsizetype index = 0; index < programs.size(); ++index)
-        {
-            if (programs.at(index).toObject().value(QStringLiteral("id")) == original.value(QStringLiteral("id")))
-            {
-                programs.replace(index, program);
-                break;
-            }
-        }
-    }
-    technique.insert(QStringLiteral("scene_interface"), MakeSceneInterface(inoutSnapshot, packageRoot));
+    // Compatibility is linked by the pipeline builder. Preserve authored sources,
+    // program identities and signatures; new scene callbacks can replace each stage independently.
+    technique.insert(QStringLiteral("scene_interface"), MakeSceneInterface());
     techniques.replace(techniqueIndex, technique);
     manifest.insert(QStringLiteral("techniques"), techniques);
-    manifest.insert(QStringLiteral("programs"), programs);
     inoutSnapshot.Files.insert(manifestFile, EncodeCanonicalJson(manifest));
     outError.clear();
     return RenderGraphDocumentStatus::Ok;
