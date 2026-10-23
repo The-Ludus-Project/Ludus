@@ -167,20 +167,26 @@ TEST_CASE("Create Node menus author every supported type inside an empty library
         {
             CHECK(observation.SelectionText == QStringLiteral("Subgraph Reference"));
         }
-        const QString identity = kind.toLower();
+        const QString algorithm = newKindOrNull->itemData(newKindOrNull->findText(kind)).toString();
+        const bool isUpscalePreset = algorithm.isEmpty() == false;
+        const QString identity = isUpscalePreset == true ? algorithm : kind.toLower();
+        const QString expectedKind = isUpscalePreset == true ? QStringLiteral("Upscale") : kind;
         CHECK(workspace.GetSelection() == library + QStringLiteral("#Default/") + identity);
         QJsonObject graph;
         REQUIRE(workspace.GetDocument().GetGraph(library, graph) == true);
-        CHECK(graph.value(QStringLiteral("configurations"))
-                  .toArray()
-                  .at(0)
-                  .toObject()
-                  .value(QStringLiteral("nodes"))
-                  .toArray()
-                  .last()
-                  .toObject()
-                  .value(QStringLiteral("kind"))
-                  .toString() == kind);
+        const QJsonObject node = graph.value(QStringLiteral("configurations"))
+                                     .toArray()
+                                     .at(0)
+                                     .toObject()
+                                     .value(QStringLiteral("nodes"))
+                                     .toArray()
+                                     .last()
+                                     .toObject();
+        CHECK(node.value(QStringLiteral("kind")).toString() == expectedKind);
+        if (isUpscalePreset == true)
+        {
+            CHECK(node.value(QStringLiteral("algorithm")).toString() == algorithm);
+        }
         CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH) == parent);
         const QByteArray after = workspace.GetDocument().GetDraft(library);
         workspace.Undo();

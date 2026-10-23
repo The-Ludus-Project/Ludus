@@ -21,6 +21,7 @@ TEST_CASE("GPU duration export retains submission time identity and sampling gap
         .DurationNanoseconds = 0,
         .FrameId = 5,
         .DeviceSession = 3,
+        .PassName = {},
     };
     const GpuTraceCoverage coverage
     {
@@ -58,6 +59,7 @@ TEST_CASE("invalid GPU export preserves bytes and unexported CPU events", "[prof
         .CollectionTicks = 1,
         .FrameId = 1,
         .DeviceSession = 1,
+        .PassName = {},
     };
     CHECK(SerializePerfettoTrace(bytes, {&invalid, 1}) == false);
     REQUIRE(bytes.GetSize() == 1);

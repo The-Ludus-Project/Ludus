@@ -111,16 +111,19 @@ elseif(APPLE)
 else()
     set(RG2_TEST_PROFILES "[\"spirv\"]")
 endif()
-# The installed scene helper, shared version header and generated API must agree.
-add_executable(ludus_sdk_scene_shader_contract_consumer ../scene_shader_contract.cpp)
-target_link_libraries(ludus_sdk_scene_shader_contract_consumer PRIVATE Ludus::GraphicsRenderer)
-target_compile_options(ludus_sdk_scene_shader_contract_consumer PRIVATE -Wall -Wextra -Wpedantic -Werror -fno-exceptions)
-set(scene_ray_source "${CMAKE_CURRENT_SOURCE_DIR}/../rg2/scene_ray")
-set(scene_ray_staged "${CMAKE_CURRENT_BINARY_DIR}/rg3-inputs/scene_ray")
-file(COPY "${scene_ray_source}/" DESTINATION "${scene_ray_staged}" PATTERN "*.in" EXCLUDE)
-configure_file("${scene_ray_source}/main.lushader.json.in" "${scene_ray_staged}/main.lushader.json" @ONLY)
-ludus_compile_render_graph(TARGET ludus_sdk_scene_shader_contract_consumer NAME rg2_scene_ray
-    MANIFEST "${scene_ray_staged}/main.lushader.json" RUNTIME_PACKAGE)
+if(NOT EMSCRIPTEN)
+    # The installed scene helper uses hardware ray tracing, supported only by native Metal/Vulkan.
+    # Browser qualification uses the portable offscreen runtime graphs below.
+    add_executable(ludus_sdk_scene_shader_contract_consumer ../scene_shader_contract.cpp)
+    target_link_libraries(ludus_sdk_scene_shader_contract_consumer PRIVATE Ludus::GraphicsRenderer)
+    target_compile_options(ludus_sdk_scene_shader_contract_consumer PRIVATE -Wall -Wextra -Wpedantic -Werror -fno-exceptions)
+    set(scene_ray_source "${CMAKE_CURRENT_SOURCE_DIR}/../rg2/scene_ray")
+    set(scene_ray_staged "${CMAKE_CURRENT_BINARY_DIR}/rg3-inputs/scene_ray")
+    file(COPY "${scene_ray_source}/" DESTINATION "${scene_ray_staged}" PATTERN "*.in" EXCLUDE)
+    configure_file("${scene_ray_source}/main.lushader.json.in" "${scene_ray_staged}/main.lushader.json" @ONLY)
+    ludus_compile_render_graph(TARGET ludus_sdk_scene_shader_contract_consumer NAME rg2_scene_ray
+        MANIFEST "${scene_ray_staged}/main.lushader.json" RUNTIME_PACKAGE)
+endif()
 
 add_executable(ludus_sdk_render_graph_runtime_consumer ../render_graph_runtime.cpp)
 target_link_libraries(ludus_sdk_render_graph_runtime_consumer PRIVATE Ludus::GraphicsRenderer Ludus::FoundationTime)

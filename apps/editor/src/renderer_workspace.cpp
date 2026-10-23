@@ -522,6 +522,8 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     remove->setObjectName(QStringLiteral("renderGraphRemoveNode"));
     inspectorLayout->addWidget(remove, 0, Qt::AlignLeft);
     mNewKind->setObjectName(QStringLiteral("renderGraphNewKind"));
+    mNewKind->setMinimumContentsLength(1);
+    mNewKind->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     mNewKind->addItems({QStringLiteral("Scene"),
                         QStringLiteral("Camera"),
                         QStringLiteral("Target"),

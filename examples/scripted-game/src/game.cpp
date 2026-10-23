@@ -33,10 +33,12 @@ constexpr usize CHECKPOINT_APPLIED_OFFSET = 8;
 constexpr usize CHECKPOINT_PREVIOUS_ACTIONS_OFFSET = 16;
 constexpr usize CHECKPOINT_EXECUTION_OFFSET = 24;
 constexpr usize CHECKPOINT_STATE_OFFSET = 32;
+#if !defined(LUDUS_GAME_STATIC_DISPATCH)
 /// Highest script line a breakpoint request may name.
 constexpr uint64 MAX_BREAKPOINT_LINE = 65536;
 /// Largest amount one interact request may apply.
 constexpr uint64 MAX_INTERACT_AMOUNT = 10;
+#endif
 struct Owner
 {
     behavior::LuauProvider Scripts;

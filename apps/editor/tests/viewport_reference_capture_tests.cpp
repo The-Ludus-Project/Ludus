@@ -73,11 +73,13 @@ struct DeviceFixture final
     DeviceFixture& operator=(const DeviceFixture&) = delete;
 };
 
+#if defined(LUDUS_EDITOR_REFERENCE_NATIVE_QUERIES)
 bool HasNativeRays(rhi::DeviceHandle device)
 {
     rhi::RayCapabilities capabilities;
     return rhi::GetRayCapabilities(device, capabilities) == rhi::RasterStatus::Ready && capabilities.MaxRays >= 2;
 }
+#endif
 
 void DescribeTestView(const RenderScene& scene, const QSize& extent, renderer::ViewDescription& outView)
 {
