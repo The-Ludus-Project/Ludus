@@ -1002,8 +1002,8 @@ normalization is `W = sum(target / q) / (M × target(selected))`; reuse streams
 The effective count is capped only after normalization, leaving finalized `W`
 unchanged. Reuse selection coins use FoundationMath addressed-random scopes
 separated by pass index, so they do not repeat the initial proposal stream.
-This is a bounded-history ReSTIR template, not a claim of improved
-performance or a full unbiased spatiotemporal reference implementation. The
+This is a bounded-history ReSTIR template, not a full unbiased spatiotemporal
+reference implementation. The
 original light/BSDF power or balance MIS weights cannot be applied to these
 resampled light estimates; the template uses a light-only estimator with reservoir
 normalization. Debug emitter-index display is not part of these passes.
@@ -1016,16 +1016,64 @@ There is no motion-vector reprojection or history reuse across World generations
 Spatial reuse checks the four immediate axial neighbours, matching material,
 normal cosine and world-space distance. The thresholds and history/candidate
 limits are named constants in `reservoir.slang`; tune distance in your scene's
-world units. Reprojection, denoising, reduction of correlations from overlapping history and more efficient light
-proposal generation are separate shader improvements. In particular, the retained
-distance-weighted proposal scans emitters/triangles for every initial candidate.
+world units. Reprojection, denoising and reduction of correlations from overlapping history remain
+separate shader improvements.
+
+Initial proposal generation evaluates the distance-weighted emitter geometry once
+per receiver, sharing those weights across all initial candidates. For at most
+16 emitters it builds a local alias table; larger sets use independent weighted
+reservoir selections over one shared emitter stream. Sixteen is a local table
+capacity, not an emitter admission limit. Each candidate keeps the original
+emitter PMF and the original conditional triangle/area proposal, so the RIS
+normalization above is unchanged. Selection draws remain independent; no candidate
+count or history/spatial setting is reduced. Random dimensions change, so images
+are statistically comparable rather than bit-identical. Conditional triangle
+sampling still scans the chosen emitter's triangles per candidate, and three
+passes still trace their camera rays. Large emitters and traversal-heavy scenes
+can therefore remain expensive.
+
+Created template shaders are project-owned copies. Upgrading the SDK updates the
+built-in template for future imports, but does not overwrite those copies. To
+upgrade an existing package, save and close its graph in the editor, then use the
+updated SDK's CLI (preview first):
+
+```bash
+ludus --json render-graph update-template graphs/Main/main.lushader.json
+ludus --json render-graph update-template graphs/Main/main.lushader.json --apply
+```
+
+This operation recognizes the original initial-RIS source by its exact content
+hash, replaces that source and adds `initial_emitter_sampling.slang` beside it.
+It supports both standalone and imported/prefixed programs. It leaves manifests,
+graph wiring, settings, generic emitter helpers and customized initial callbacks
+unchanged; the JSON report lists preserved custom sources for manual adaptation.
+A conflicting helper aborts the update. Originals are backed up under the package's
+`out/template-updates/restir-initial-sampling-v2/`, preserving relative paths.
+Repeated application is harmless; a missing helper beside an already-current
+callback is repaired. Failed publication rolls back this operation's writes if
+those bytes have not changed externally. Keep the graph closed during the update,
+then reopen it and rebuild so the editor captures the updated include closure.
+
+The opt-in native editor test `[.restir-benchmark]` compares baseline/candidate
+runtime packages against a supplied project's `assets/staircase2.world.json`.
+Set `LUDUS_RESTIR_BENCHMARK_PROJECT`, `LUDUS_RESTIR_BASELINE_RUNTIME`,
+`LUDUS_RESTIR_CANDIDATE_RUNTIME` and `LUDUS_RESTIR_BENCHMARK_OUTPUT` to explicit
+paths. It uses the same extracted scene/camera at 640×480, three warmup and sixty
+measured frames per round in baseline/candidate/candidate/baseline order. It writes
+raw GPU frame and first-compute durations plus adapter identity; preparation is
+excluded. Compare matching workloads, rather than treating a different viewport's
+profiler capture as the baseline.
 
 Thanks to Benedikt Bitterli, Chris Wyman, Matt Pharr, Peter Shirley, Aaron Lefohn
 and Wojciech Jarosz, [*Spatiotemporal reservoir resampling for real-time ray tracing
 with dynamic direct lighting*, ACM TOG 39(4), 2020](https://doi.org/10.1145/3386569.3392481),
 and its [supplemental reservoir-combination algorithms](https://benedikt-bitterli.me/restir/bitterli20restir-supplemental.pdf).
 The authored source retains the supplied emitter-sampling attribution to Pharr,
-Jakob and Humphreys, PBRT 4e, Appendix A.2.
+Jakob and Humphreys, PBRT 4e, Appendix A.2. The optimized selector also thanks
+those authors for [Appendix A.1, “The Alias Method”](https://pbr-book.org/4ed/Sampling_Algorithms/The_Alias_Method)
+and [Appendix A.2, “Reservoir Sampling”](https://pbr-book.org/4ed/Sampling_Algorithms/Reservoir_Sampling);
+it adapts their sampling ideas to bounded GPU-local tables and one shared emitter
+stream, rather than copying the book's container implementation.
 
 ## Author scene-aware ray shaders
 

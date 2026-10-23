@@ -1061,7 +1061,8 @@ TEST_CASE("ReSTIR import rejects a missing declared shader or transitive include
 {
     const QString missing = GENERATE(QStringLiteral("miss.slang"),
                                      QStringLiteral("reservoir.slang"),
-                                     QStringLiteral("emitter_sampling.slang"));
+                                     QStringLiteral("emitter_sampling.slang"),
+                                     QStringLiteral("initial_emitter_sampling.slang"));
     QTemporaryDir project;
     QTemporaryDir templates;
     RendererWorkspace workspace({});

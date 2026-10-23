@@ -414,6 +414,13 @@ def cmd_install_butler(args) -> int:
 def cmd_render_graph(args) -> int:
     from . import render_graph
 
+    if args.graph_action == "update-template":
+        from .render_graph_template_update import update_restir_sampling
+        result = update_restir_sampling(args.manifest, apply=args.apply)
+        _emit(args, {"template_update": result})
+        if not args.json:
+            print(_json.dumps(result, indent=2))
+        return EXIT_OK
     if args.graph_action == "migrate-pipelines":
         from . import render_graph_pipeline
         document = render_graph._parse(render_graph._read(Path(args.graph)), args.graph)
@@ -538,6 +545,10 @@ def build_parser() -> argparse.ArgumentParser:
     new_graph.add_argument("--profiles", nargs="+", choices=("spirv", "wgsl", "metal", "glsl"),
                            help="explicit shader targets for --renderer-static")
     new_graph.set_defaults(func=cmd_render_graph)
+    update_template = graphs.add_parser("update-template", help="preview/apply a conservative copied ReSTIR shader upgrade; custom edits are retained")
+    update_template.add_argument("manifest", help="existing .lushader.json; save and close its editor graph first")
+    update_template.add_argument("--apply", action="store_true", help="back up unedited old sources and publish the upgrade")
+    update_template.set_defaults(func=cmd_render_graph)
     migrate_pipelines = graphs.add_parser("migrate-pipelines", help="print a converted version-2 document; never rewrites sources or imports")
     migrate_pipelines.add_argument("graph")
     migrate_pipelines.add_argument("--manifest", required=True, help="explicit sibling build manifest")
