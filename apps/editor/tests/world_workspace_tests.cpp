@@ -1259,6 +1259,11 @@ TEST_CASE("Separate-window Play leaves the viewport alone and a refusal offers i
     // Play saved World asks for the chosen mode.
     QPushButton* play = view.findChild<QPushButton*>(QStringLiteral("worldPlay"));
     REQUIRE(play != nullptr);
+    // This World has no Play adapter, so the button and the box that configures it are both hidden.
+    QComboBox* box = view.findChild<QComboBox*>(QStringLiteral("worldPlayMode"));
+    REQUIRE(box != nullptr);
+    CHECK(play->isHidden() == true);
+    CHECK(box->isHidden() == true);
     play->click();
     REQUIRE(requests.size() == 1);
     CHECK(requests.front() == PlayMode::InViewport);

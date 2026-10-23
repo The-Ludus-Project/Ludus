@@ -408,6 +408,9 @@ TEST_CASE("World demo opens, edits and saves the committed manifest's version-2 
     REQUIRE(view.Open(path));
     REQUIRE(IsWorldDemo(view.Document()));
     REQUIRE(view.Document().HasUuidRecords());
+    // A playable World shows Play saved World together with its Play mode box.
+    CHECK(view.findChild<QPushButton*>(QStringLiteral("worldPlay"))->isHidden() == false);
+    CHECK(view.findChild<QComboBox*>(QStringLiteral("worldPlayMode"))->isHidden() == false);
 
     // The runtime still names recipes by label, and enemy targets resolve through UUIDs.
     ludus::world_demo::Level version2;
