@@ -28,7 +28,8 @@ LUDUS_SHADER_BINDING(0) cbuffer Parameters
     uint4 Counts;     // triangles, nodes, emitters, analytic lights
     uint4 Sampling;   // key lo, key hi, flags (reverse/infinite/center), target
     float4 Environment;
-    float4 Options; // secondary range, exposure, material count bits, scene data group bits
+    float4
+        Options; // secondary range, exposure (zero bypasses graph ToneMap), material count bits, scene data group bits
     float4 BoundsMinimumWorld;
     float4 BoundsMaximumWorld;
     uint4 SurfaceLayout; // surface stride, analytic offset, private kernel ABI, see renderer_gpu_preview_layout.h,
@@ -652,18 +653,27 @@ LUDUS_GPU_PREVIEW_COMPUTE_ENTRY void ComputeMain(uint3 positionPixel : SV_Dispat
         accumulation[pixel * 2 + 1] = compensation;
     }
     float3 mean = hasAccumulation == true && sampleCount > 0 ? sum.xyz / float(sampleCount) : sum.xyz;
-#if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE) && !defined(LUDUS_SCENE_RAY_INTERFACE)
-    colors[pixel] = float4(compensation.w != historyTag ? float3(1, 0, 1) : saturate(mean), float(pixel));
-#else
-    float3 linear = mean * Options.y;
-    for (uint channel = 0; channel < 3; ++channel)
+    static const uint TONE_MAPPING_CHANNEL_COUNT = 3;
+    static const float SRGB_LINEAR_THRESHOLD = .0031308;
+    static const float SRGB_POWER_SCALE = 1.055;
+    static const float SRGB_GAMMA = 2.4;
+    static const float SRGB_POWER_OFFSET = .055;
+    static const float SRGB_LINEAR_SCALE = 12.92;
+    float3 displayColor = mean;
+    if (Options.y > 0)
     {
-        // Finite nonnegative radiance can overflow when exposure is applied.
-        // Reinhard tends to one there; do not encode an infinity/infinity NaN.
-        linear[channel] = isfinite(linear[channel]) ? linear[channel] / (1 + linear[channel]) : 1;
+        float3 linear = mean * Options.y;
+        for (uint channel = 0; channel < TONE_MAPPING_CHANNEL_COUNT; ++channel)
+        {
+            // Finite nonnegative radiance can overflow when exposure is applied.
+            // Reinhard tends to one there; do not encode an infinity/infinity NaN.
+            linear[channel] = isfinite(linear[channel]) == true ? linear[channel] / (1 + linear[channel]) : 1;
+        }
+        float3 encoded = select(linear > SRGB_LINEAR_THRESHOLD,
+                                SRGB_POWER_SCALE * pow(linear, 1.0 / SRGB_GAMMA) - SRGB_POWER_OFFSET,
+                                linear * SRGB_LINEAR_SCALE);
+        displayColor = encoded;
     }
-    float3 encoded = select(linear > .0031308, 1.055 * pow(linear, 1.0 / 2.4) - .055, linear * 12.92);
-    colors[pixel] = float4(compensation.w != historyTag ? float3(1, 0, 1) : saturate(encoded), float(pixel));
-#endif
+    colors[pixel] = float4(compensation.w != historyTag ? float3(1, 0, 1) : saturate(displayColor), float(pixel));
 }
 #undef LUDUS_GPU_PREVIEW_COMPUTE_ENTRY

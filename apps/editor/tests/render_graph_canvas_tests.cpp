@@ -17,6 +17,7 @@
 #include <QCoreApplication>
 #include <QDialog>
 #include <QDir>
+#include <QDoubleSpinBox>
 #include <QFile>
 #include <QGraphicsEllipseItem>
 #include <QGraphicsScene>
@@ -1392,6 +1393,76 @@ TEST_CASE("accumulation limits edit through canvas and Properties with undo and 
         });
         const QPoint point =
             canvas.mapFromScene(canvas.GetNodePosition(QStringLiteral("accumulate")) + QPointF(20, 10));
+        QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
+        QApplication::sendEvent(canvas.viewport(), &context);
+    }
+    RenderGraphDocument reopened;
+    REQUIRE(reopened.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    CHECK(reopened.GetDraft(ROOT_GRAPH) == workspace.GetDocument().GetDraft(ROOT_GRAPH));
+}
+
+TEST_CASE("tone mapping exposure edits through canvas and Properties with undo and save",
+          "[editor][render-graph][tone-mapping]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    QComboBox* kinds = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphNewKind"));
+    QPushButton* add = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"));
+    REQUIRE(kinds != nullptr);
+    REQUIRE(add != nullptr);
+    kinds->setCurrentText(QStringLiteral("ToneMap"));
+    add->click();
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, QStringLiteral("tonemap")) == true);
+    CHECK(workspace.GetCanvas().GetPortPosition(QStringLiteral("tonemap.color"), true).isNull() == false);
+    CHECK(workspace.GetCanvas().GetPortPosition(QStringLiteral("tonemap.color"), false).isNull() == false);
+    const auto exercise = [&workspace](QWidget& inoutFields) {
+        QDoubleSpinBox* exposure = inoutFields.findChild<QDoubleSpinBox*>(QStringLiteral("renderGraphField_exposure"));
+        REQUIRE(exposure != nullptr);
+        const uint64 revision = workspace.GetDocument().GetRevision();
+        exposure->setValue(2.25);
+        Q_EMIT exposure->editingFinished();
+        CHECK(workspace.GetDocument().GetRevision() == revision + 1);
+        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("2.25") == true);
+        workspace.Undo();
+        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("2.25") == false);
+        workspace.Redo();
+        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("2.25") == true);
+        REQUIRE(workspace.Save() == true);
+    };
+    QWidget* properties = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
+    REQUIRE(properties != nullptr);
+    SECTION("Properties")
+    {
+        exercise(*properties);
+    }
+    SECTION("canvas with Properties hidden")
+    {
+        workspace.resize(1200, 800);
+        workspace.show();
+        properties->hide();
+        QCoreApplication::processEvents();
+        RenderGraphCanvas& canvas = workspace.GetCanvas();
+        canvas.Rebuild();
+        QTimer::singleShot(0, &canvas, [&canvas, &exercise, properties]() {
+            QMenu* menu = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            REQUIRE(menu != nullptr);
+            QAction* edit = menu->findChild<QAction*>(QStringLiteral("renderGraphEditNodeAction"));
+            REQUIRE(edit != nullptr);
+            QTimer::singleShot(0, &canvas, [&exercise, properties]() {
+                QDialog* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+                REQUIRE(dialog != nullptr);
+                CHECK(properties->isVisible() == false);
+                exercise(*dialog);
+                dialog->reject();
+            });
+            menu->close();
+            edit->trigger();
+        });
+        const QPoint point = canvas.mapFromScene(canvas.GetNodePosition(QStringLiteral("tonemap")) + QPointF(20, 10));
         QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
         QApplication::sendEvent(canvas.viewport(), &context);
     }

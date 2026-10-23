@@ -10,6 +10,7 @@
 
 #include "../shaders/renderer_gpu_preview_layout.h"
 
+#include <cstring>
 #include <new>
 #include <span>
 #include <string_view>
@@ -155,6 +156,7 @@ struct RenderGraphPackage::State final
     bool HasPersistentBuffers = false;
     bool HasForwardStages = false;
     bool HasExplicitAccumulation = false;
+    bool HasExplicitToneMapping = false;
     // DecodeUniforms validates and writes every active stage before any binding is published.
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     StaticArray<format::UniformBinding, format::MAX_UNIFORM_BINDINGS> UniformBindings{};
@@ -529,10 +531,19 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeRecords(ByteReader& in
                 ? inoutReader.ReadWord()
                 : (program == static_cast<uint32>(format::Technique::RayTracing) ? format::MAX_ACCUMULATION_SAMPLES
                                                                                  : 0);
+        if (HasExplicitToneMapping == true)
+        {
+            const uint32 exposureBits = inoutReader.ReadWord();
+            std::memcpy(&pass.ToneMappingExposure, &exposureBits, sizeof(exposureBits));
+        }
         if (program > MAX_TECHNIQUE || (HasIndependentPrograms == false && program >= format::LEGACY_TECHNIQUE_COUNT) ||
             colorLoad > MAX_LOAD || depthLoad > MAX_LOAD || colorStore > MAX_STORE || depthStore > MAX_STORE ||
             pass.AccumulationSamples > format::MAX_ACCUMULATION_SAMPLES ||
-            (program != static_cast<uint32>(format::Technique::RayTracing) && pass.AccumulationSamples != 0) ||
+            (pass.ToneMappingExposure != 0 &&
+             (pass.ToneMappingExposure >= format::MIN_TONE_MAPPING_EXPOSURE &&
+              pass.ToneMappingExposure <= format::MAX_TONE_MAPPING_EXPOSURE) == false) ||
+            (program != static_cast<uint32>(format::Technique::RayTracing) &&
+             (pass.AccumulationSamples != 0 || pass.ToneMappingExposure != 0)) ||
             (pass.SceneData & ~::ludus::content::render_graph_format::SCENE_DATA_ALL) != 0 ||
             (pass.SceneData & ::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY) == 0)
         {
@@ -579,12 +590,13 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != format::PACKAGE_MAGIC ||
-        (version != format::PACKAGE_VERSION && version != format::FORWARD_PACKAGE_VERSION &&
-         version != format::PIXEL_BUFFER_PACKAGE_VERSION && version != format::VISIBILITY_PACKAGE_VERSION &&
-         version != format::ORDERED_PACKAGE_VERSION && version != format::STORAGE_PACKAGE_VERSION &&
-         version != format::INDEPENDENT_PROGRAM_PACKAGE_VERSION && version != format::NATIVE_RAY_PACKAGE_VERSION &&
-         version != format::SCENE_PACKAGE_VERSION && version != format::VIEW_PACKAGE_VERSION &&
-         version != format::NAMED_PACKAGE_VERSION && version != format::LEGACY_PACKAGE_VERSION))
+        (version != format::PACKAGE_VERSION && version != format::ACCUMULATION_PACKAGE_VERSION &&
+         version != format::FORWARD_PACKAGE_VERSION && version != format::PIXEL_BUFFER_PACKAGE_VERSION &&
+         version != format::VISIBILITY_PACKAGE_VERSION && version != format::ORDERED_PACKAGE_VERSION &&
+         version != format::STORAGE_PACKAGE_VERSION && version != format::INDEPENDENT_PROGRAM_PACKAGE_VERSION &&
+         version != format::NATIVE_RAY_PACKAGE_VERSION && version != format::SCENE_PACKAGE_VERSION &&
+         version != format::VIEW_PACKAGE_VERSION && version != format::NAMED_PACKAGE_VERSION &&
+         version != format::LEGACY_PACKAGE_VERSION))
     {
         return RenderGraphPackageStatus::UnsupportedVersion;
     }
@@ -593,7 +605,8 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
     candidate->HasPersistentBuffers = version >= format::ORDERED_PACKAGE_VERSION;
     candidate->HasPixelBuffers = version >= format::PIXEL_BUFFER_PACKAGE_VERSION;
     candidate->HasForwardStages = version >= format::FORWARD_PACKAGE_VERSION;
-    candidate->HasExplicitAccumulation = version >= format::PACKAGE_VERSION;
+    candidate->HasExplicitAccumulation = version >= format::ACCUMULATION_PACKAGE_VERSION;
+    candidate->HasExplicitToneMapping = version >= format::PACKAGE_VERSION;
     candidate->HasNativeRay = version >= format::NATIVE_RAY_PACKAGE_VERSION;
     candidate->HasIndependentPrograms = version >= format::INDEPENDENT_PROGRAM_PACKAGE_VERSION;
     candidate->HasVisibilityFields = version >= format::VISIBILITY_PACKAGE_VERSION;
@@ -768,6 +781,25 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
             for (usize pass = 0; pass < candidate->Header.PassCount; ++pass)
             {
                 candidate->Passes[pass].AccumulationSamples = 0;
+            }
+        }
+    }
+    if (candidate->HasExplicitToneMapping == false)
+    {
+        bool hasSceneKernel = false;
+        for (usize target = 0; target < format::SHADER_TARGET_COUNT; ++target)
+        {
+            hasSceneKernel =
+                hasSceneKernel == true ||
+                candidate->Stages[static_cast<usize>(format::StageRole::SceneRayCompute)][target].IsPresent == true ||
+                candidate->Stages[static_cast<usize>(format::StageRole::PersistentRayCompute)][target].IsPresent ==
+                    true;
+        }
+        for (usize pass = 0; pass < candidate->Header.PassCount; ++pass)
+        {
+            if (candidate->Passes[pass].Program == format::Technique::RayTracing && hasSceneKernel == true)
+            {
+                candidate->Passes[pass].ToneMappingExposure = 1;
             }
         }
     }

@@ -19,7 +19,7 @@
           "to": "camera.target"
         },
         {
-          "from": "trace.color",
+          "from": "tonemap.color",
           "to": "output.texture"
         },
         {
@@ -53,6 +53,10 @@
         {
           "from": "HistoryB.buffer",
           "to": "trace.HistoryB"
+        },
+        {
+          "from": "trace.color",
+          "to": "tonemap.color"
         }
       ],
       "id": "Default",
@@ -230,6 +234,11 @@
           "kind": "StructuredBuffer",
           "stride": 16,
           "count": "ColorTarget"
+        },
+        {
+          "id": "tonemap",
+          "kind": "ToneMap",
+          "exposure": 1
         }
       ],
       "outputs": []
@@ -253,8 +262,12 @@
           "to": "camera.target"
         },
         {
-          "from": "trace.color",
+          "from": "tonemap.color",
           "to": "output.texture"
+        },
+        {
+          "from": "trace.color",
+          "to": "tonemap.color"
         }
       ],
       "id": "Ordinary",
@@ -345,6 +358,11 @@
               1
             ]
           }
+        },
+        {
+          "id": "tonemap",
+          "kind": "ToneMap",
+          "exposure": 1
         }
       ],
       "outputs": []

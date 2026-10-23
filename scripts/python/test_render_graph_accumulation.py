@@ -89,7 +89,7 @@ class AccumulationTests(unittest.TestCase):
         asset = json.loads(root.read_text())
         config = asset['configurations'][0]
         config['nodes'].append({'id': 'average', 'kind': 'Accumulate', 'samples': 16})
-        sink = next(edge for edge in config['edges'] if edge['to'] == 'output.texture')
+        sink = next(edge for edge in config['edges'] if edge['to'] == 'tonemap.color')
         source = sink['from']
         sink['from'] = 'average.color'
         config['edges'].append({'from': source, 'to': 'average.color'})

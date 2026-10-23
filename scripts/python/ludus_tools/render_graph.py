@@ -40,6 +40,8 @@ MAX_EXPANDED_NODES = 1024
 MAX_PASSES = 256
 MAX_TARGET_EXTENT = 16384
 MAX_ACCUMULATION_SAMPLES = 4096
+MIN_TONE_MAPPING_EXPOSURE = 0.01
+MAX_TONE_MAPPING_EXPOSURE = 64
 TYPES = ("Scene", "View", "ColorTexture", "DepthTexture")
 TEXTURES = TYPES[2:]
 MODES = ("ColorAndDepth", "DepthOnly")
@@ -146,10 +148,12 @@ def _validate_node(node, where):
     if kind in pipeline.KINDS:
         pipeline.validate(node, where, sys.modules[__name__])
         return
-    _enum(kind, ("Scene", "Camera", "Target", "Buffer", "RenderSize", "Raster", "Accumulate", "Subgraph", "Export", "Present"), where)
+    _enum(kind, ("Scene", "Camera", "Target", "Buffer", "RenderSize", "Raster", "Accumulate", "ToneMap", "Subgraph", "Export", "Present"), where)
     fields = {"id", "kind"}
     if kind == "Accumulate":
         fields.add("samples")
+    elif kind == "ToneMap":
+        fields.add("exposure")
     elif kind == "Camera":
         fields |= {"active", "role", "target_type"}
     elif kind == "Buffer":
@@ -171,6 +175,10 @@ def _validate_node(node, where):
     _require(node["id"] != "input", "Schema", where, "input is reserved for interface ports")
     if kind == "Accumulate":
         _integer(node["samples"], 1, MAX_ACCUMULATION_SAMPLES, where)
+    elif kind == "ToneMap":
+        exposure = node["exposure"]
+        _require(type(exposure) in (int, float) and MIN_TONE_MAPPING_EXPOSURE <= exposure <= MAX_TONE_MAPPING_EXPOSURE,
+                 "Capacity", where, f"exposure must be a finite multiplier in [{MIN_TONE_MAPPING_EXPOSURE}, {MAX_TONE_MAPPING_EXPOSURE}]")
     elif kind == "Camera":
         _boolean(node["active"], where)
         _enum(node["role"], ("Presentation", "Offscreen"), where)
@@ -458,7 +466,7 @@ class _Library:
         if kind in pipeline.KINDS:
             return (scene_bundle.ports({p["id"]: p["type"] for p in node["inputs"]}),
                     {p["id"]: p["type"] for p in node["outputs"]})
-        if kind == "Accumulate":
+        if kind in ("Accumulate", "ToneMap"):
             return {"color": "ColorTexture"}, {"color": "ColorTexture"}
         if kind == "Scene":
             return {}, {"scene": "Scene", **scene_bundle.TYPES}
@@ -882,6 +890,23 @@ class _Compiler:
                     'attachments': {'color': {'resource': value.resource, 'input_version': source.version,
                         'output_version': value.version, 'defined': value.defined, 'load': 'Load', 'store': 'Store'}}})
                 outputs['color'] = value
+            elif kind == "ToneMap":
+                source = inputs['color']
+                producer = next((operation for operation in self.passes if operation['id'] == source.producer), None)
+                if producer is not None and producer['kind'] == 'Accumulate':
+                    producer = next(operation for operation in self.passes if operation['id'] == producer['dependencies'][0])
+                _require(producer is not None and producer['kind'] == 'RayTracing', 'Capability', where,
+                         'ToneMap requires a ray color output, optionally through Accumulate. Raster and already tone-mapped images are unsupported.')
+                _require('tone_mapping' not in producer, 'MultipleWriters', where,
+                         'A ray output can feed only one ToneMap node. Chain consumers after its color output.')
+                value = self.write(source, {'color_load': 'Load', 'color_store': 'Store'}, 'color', where, source.cameras)
+                producer['tone_mapping'] = {'id': where, 'exposure': node['exposure']}
+                self.add_pass({'id': where, 'kind': 'ToneMap', 'exposure': node['exposure'],
+                    'source': self.library.label(path), 'asset': self.library.assets[path]['id'],
+                    'asset_configuration': config['id'], 'dependencies': [source.producer],
+                    'attachments': {'color': {'resource': value.resource, 'input_version': source.version,
+                        'output_version': value.version, 'defined': value.defined, 'load': 'Load', 'store': 'Store'}}})
+                outputs['color'] = value
             elif kind == "Raster":
                 _require(inputs["view"].cameras, "CameraTarget", where, "raster requires an active camera",
                          port=input_mapping['view'] if authored_pipeline is not None else 'view', direction='input',
@@ -958,7 +983,7 @@ class _Compiler:
                            "version": value.version, "cameras": list(value.cameras)})
 
     def finish(self):
-        for average in (operation for operation in self.passes if operation['kind'] == 'Accumulate'):
+        for average in (operation for operation in self.passes if operation['kind'] in ('Accumulate', 'ToneMap')):
             source = average['attachments']['color']
             for operation in self.passes:
                 if operation['id'] == average['id']:
@@ -968,7 +993,7 @@ class _Compiler:
                 _require(not any(read['resource'] == source['resource'] and
                                  read['input_version'] == source['input_version'] for read in reads),
                          'Capability', average['id'],
-                         'Accumulate owns the ray color version. Connect other readers after its output, or use a separate ray target for raw output.')
+                         f"{average['kind']} owns the ray color version. Connect other readers after its output, or use a separate ray target for raw output.")
         for root in self.roots:
             _require(root["version"] == self.latest[root["resource"]], "StaleVersion", root["id"],
                      "export/presentation must consume the final physical resource version")
@@ -1082,6 +1107,8 @@ def dump_plan(plan):
             lines.append(f"    scene: {entry['scene']}; view: {entry['view']}; technique: {entry['technique']}")
         if entry['kind'] == 'Accumulate':
             lines.append(f"    compensated linear RGB mean; samples: {entry['samples']}; reset: camera/scene/extent/shaders")
+        if entry['kind'] == 'ToneMap':
+            lines.append(f"    Reinhard + sRGB; exposure multiplier: {entry['exposure']}")
         if entry['kind'] == 'RayTracing':
             lines.append(f"    launch: {entry['dimensions']}; color target: {entry['attachments']['color']['resource']}")
         for name, use in entry.get('buffers', {}).items():
