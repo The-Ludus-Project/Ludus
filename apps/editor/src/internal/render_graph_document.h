@@ -202,6 +202,8 @@ public:
     /// Add or fill an empty library configuration from ReSTIR DI, including shaders/settings.
     /// For the root graph, create a new library and Subgraph node in parentConfiguration instead;
     /// an empty parent identity selects the root default. Existing files/nodes are never replaced.
+    /// Unchanged Raster admission defaults adopt the larger ReSTIR template capacities;
+    /// custom limits are preserved. Conflicts identify the authored program, source or setting.
     /// One undo step, no disk writes. Incompatible inputs/capacities preserve the complete draft.
     [[nodiscard]] RenderGraphDocumentStatus ApplyRestirTemplate(const QString& file,
                                                                 const QString& configuration,

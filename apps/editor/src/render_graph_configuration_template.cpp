@@ -32,7 +32,36 @@ QString GetProgramName(const QString& identity)
     return QStringLiteral("Restir") + identity;
 }
 
-bool MergeSettings(QJsonObject& inoutManifest, const QJsonArray& additions)
+bool UpgradeDefaultBudgets(QJsonObject& inoutManifest, const QJsonObject& source)
+{
+    QFile defaults(QStringLiteral(":/render-graph/default/main.lushader.json"));
+    if (defaults.open(QIODevice::ReadOnly) == false || defaults.size() > RenderGraphDocument::MAX_FILE_BYTES)
+    {
+        return false;
+    }
+    const QJsonObject defaultBudgets =
+        QJsonDocument::fromJson(defaults.readAll()).object().value(QStringLiteral("budgets")).toObject();
+    const QJsonObject templateBudgets = source.value(QStringLiteral("budgets")).toObject();
+    if (defaultBudgets.isEmpty() == true || templateBudgets.isEmpty() == true)
+    {
+        return false;
+    }
+    QJsonObject budgets = inoutManifest.value(QStringLiteral("budgets")).toObject();
+    for (QJsonObject::const_iterator field = templateBudgets.constBegin(); field != templateBudgets.constEnd(); ++field)
+    {
+        // Importing the larger built-in template upgrades only unchanged defaults.
+        // Custom admission limits remain authoritative, including tighter limits.
+        if (budgets.value(field.key()) == defaultBudgets.value(field.key()) &&
+            budgets.value(field.key()).toInt() < field.value().toInt())
+        {
+            budgets.insert(field.key(), field.value());
+        }
+    }
+    inoutManifest.insert(QStringLiteral("budgets"), budgets);
+    return true;
+}
+
+RenderGraphDocumentStatus MergeSettings(QJsonObject& inoutManifest, const QJsonArray& additions, QString& outError)
 {
     QJsonArray settings = inoutManifest.value(QStringLiteral("settings")).toArray();
     for (const QJsonValueConstRef value : additions)
@@ -49,7 +78,10 @@ bool MergeSettings(QJsonObject& inoutManifest, const QJsonArray& additions)
                 incoming.remove(QStringLiteral("value"));
                 if (existing != incoming)
                 {
-                    return false;
+                    outError = QStringLiteral("Setting '%1' has a different definition. Rename the conflicting "
+                                              "setting before importing ReSTIR DI. The draft was preserved.")
+                                   .arg(incoming.value(QStringLiteral("id")).toString());
+                    return RenderGraphDocumentStatus::Conflict;
                 }
             }
         }
@@ -60,10 +92,14 @@ bool MergeSettings(QJsonObject& inoutManifest, const QJsonArray& additions)
     }
     if (settings.size() > LUDUS_EDITOR_MAX_SETTINGS)
     {
-        return false;
+        outError = QStringLiteral("ReSTIR DI needs %1 settings, exceeding the editor limit of %2. "
+                                  "Remove unused settings before importing. The draft was preserved.")
+                       .arg(settings.size())
+                       .arg(LUDUS_EDITOR_MAX_SETTINGS);
+        return RenderGraphDocumentStatus::Capacity;
     }
     inoutManifest.insert(QStringLiteral("settings"), settings);
-    return true;
+    return RenderGraphDocumentStatus::Ok;
 }
 
 bool MergePayload(RenderGraphSnapshot& inoutSnapshot, QJsonObject& inoutInterface)
@@ -111,7 +147,10 @@ bool MergePayload(RenderGraphSnapshot& inoutSnapshot, QJsonObject& inoutInterfac
     return true;
 }
 
-bool MergePrograms(RenderGraphSnapshot& inoutSnapshot, QJsonObject& inoutManifest, const QJsonObject& source)
+RenderGraphDocumentStatus MergePrograms(RenderGraphSnapshot& inoutSnapshot,
+                                        QJsonObject& inoutManifest,
+                                        const QJsonObject& source,
+                                        QString& outError)
 {
     QJsonArray programs = inoutManifest.value(QStringLiteral("programs")).toArray();
     for (const QJsonValueConstRef value : source.value(QStringLiteral("programs")).toArray())
@@ -133,7 +172,11 @@ bool MergePrograms(RenderGraphSnapshot& inoutSnapshot, QJsonObject& inoutManifes
                 hasProgram = true;
                 if (existing.toObject() != program)
                 {
-                    return false;
+                    outError =
+                        QStringLiteral("Shader program '%1' already has a different definition. Rename the "
+                                       "conflicting program before importing ReSTIR DI. The draft was preserved.")
+                            .arg(program.value(QStringLiteral("id")).toString());
+                    return RenderGraphDocumentStatus::Conflict;
                 }
             }
         }
@@ -142,10 +185,16 @@ bool MergePrograms(RenderGraphSnapshot& inoutSnapshot, QJsonObject& inoutManifes
             programs.append(program);
         }
     }
-    if (programs.size() >
-        inoutManifest.value(QStringLiteral("budgets")).toObject().value(QStringLiteral("programs")).toInt())
+    const int32 programBudget =
+        inoutManifest.value(QStringLiteral("budgets")).toObject().value(QStringLiteral("programs")).toInt();
+    if (programs.size() > programBudget)
     {
-        return false;
+        outError =
+            QStringLiteral("ReSTIR DI needs %1 shader programs, but budgets.programs is %2. "
+                           "Increase budgets.programs in the shader manifest and retry. The draft was preserved.")
+                .arg(programs.size())
+                .arg(programBudget);
+        return RenderGraphDocumentStatus::Capacity;
     }
     inoutManifest.insert(QStringLiteral("programs"), programs);
     const QDir directory(RESOURCE_ROOT + QStringLiteral("main_shaders"));
@@ -159,14 +208,22 @@ bool MergePrograms(RenderGraphSnapshot& inoutSnapshot, QJsonObject& inoutManifes
         const QString relative = QStringLiteral("main_shaders/") + file;
         const QByteArray bytes = ReadTemplate(relative);
         const QString destination = SOURCE_ROOT + relative;
-        if (bytes.isEmpty() == true ||
-            (inoutSnapshot.Files.contains(destination) == true && inoutSnapshot.Files.value(destination) != bytes))
+        if (bytes.isEmpty() == true)
         {
-            return false;
+            outError = QStringLiteral("ReSTIR template source '%1' is unavailable; repair the editor installation.")
+                           .arg(relative);
+            return RenderGraphDocumentStatus::NotFound;
+        }
+        if (inoutSnapshot.Files.contains(destination) == true && inoutSnapshot.Files.value(destination) != bytes)
+        {
+            outError = QStringLiteral("Shader source '%1' already has different contents. Rename the conflicting "
+                                      "source before importing ReSTIR DI. The draft was preserved.")
+                           .arg(destination);
+            return RenderGraphDocumentStatus::Conflict;
         }
         inoutSnapshot.Files.insert(destination, bytes);
     }
-    return true;
+    return RenderGraphDocumentStatus::Ok;
 }
 } // namespace
 
@@ -230,16 +287,20 @@ RenderGraphDocumentStatus PrepareRestirConfiguration(RenderGraphSnapshot& inoutS
                                    .toArray();
     QJsonObject record = library.isEmpty() == true ? QJsonObject{} : library.first().toObject();
     outError = QStringLiteral("ReSTIR template resources are unavailable; repair the editor installation.");
-    if (source.isEmpty() == true || record.isEmpty() == true)
+    if (source.isEmpty() == true || record.isEmpty() == true || UpgradeDefaultBudgets(manifest, source) == false)
     {
         return RenderGraphDocumentStatus::NotFound;
     }
-    outError = QStringLiteral("ReSTIR DI conflicts with existing shader IDs, sources, settings or program budgets. "
-                              "Rename the conflicting Restir programs/restir_di files or use a fresh package.");
-    if (MergePrograms(inoutSnapshot, manifest, source) == false ||
-        MergeSettings(manifest, source.value(QStringLiteral("settings")).toArray()) == false)
+    const RenderGraphDocumentStatus programStatus = MergePrograms(inoutSnapshot, manifest, source, outError);
+    if (programStatus != RenderGraphDocumentStatus::Ok)
     {
-        return RenderGraphDocumentStatus::Conflict;
+        return programStatus;
+    }
+    const RenderGraphDocumentStatus settingsStatus =
+        MergeSettings(manifest, source.value(QStringLiteral("settings")).toArray(), outError);
+    if (settingsStatus != RenderGraphDocumentStatus::Ok)
+    {
+        return settingsStatus;
     }
     QJsonArray techniques = manifest.value(QStringLiteral("techniques")).toArray();
     qsizetype rayIndex = -1;
