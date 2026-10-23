@@ -1777,6 +1777,24 @@ def command_init(args: argparse.Namespace) -> int:
         init_progress.stop()
 
 
+def run_init_preflight(args: argparse.Namespace, root: Path, versions: dict[str, dict[str, str]]) -> None:
+    """Run the fast host checks before anything is installed; raise when one fails."""
+    import init_preflight
+    if init_preflight.is_skipped():
+        print(f"Skipping preflight checks because {init_preflight.SKIP_ENVIRONMENT} is set.")
+        return
+    is_ci = bool(args.ci or os.environ.get("CI"))
+    results = init_preflight.run_checks(root, minimum_python=versions["minimum"]["python"],
+                                        will_install_system_packages=not args.no_system_install, is_ci=is_ci)
+    painter = init_terminal.painter_for()
+    width = max(len(result.label) for result in results)
+    for index, result in enumerate(results, start=1):
+        init_progress.detail(index, len(results), result.label)
+        print(init_terminal.check_line(result.label, result.status, result.message, painter, width=width), flush=True)
+    if any(result.is_failure for result in results):
+        raise EngineError(init_preflight.failure_message(results))
+
+
 def run_init_steps(args: argparse.Namespace, root: Path, versions: dict[str, dict[str, str]], preset: str,
                    run_validation: bool) -> int:
     painter = init_terminal.painter_for()
@@ -1784,6 +1802,9 @@ def run_init_steps(args: argparse.Namespace, root: Path, versions: dict[str, dic
     for line in init_terminal.banner_lines((("Repository", str(root)), ("Preset", preset), ("Scope", scope)),
                                            painter):
         print(line)
+
+    init_progress.begin("preflight")
+    run_init_preflight(args, root, versions)
 
     init_progress.begin("system")
     check_current_python(root, versions["minimum"]["python"])

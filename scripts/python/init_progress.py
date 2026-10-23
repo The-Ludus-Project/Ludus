@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
 
+import init_preflight
 import init_terminal
 
 
@@ -47,6 +48,7 @@ NOTE_LINE = re.compile(r"^" + NOTE_MARKER + r" (.+)$")
 UP_TO_DATE_LINE = re.compile(r"^" + UP_TO_DATE_MARKER + r" ?(.*)$")
 ERROR_PREFIX = "error: "
 COMPLETION_PREFIX = "Ludus initialization"
+PREFLIGHT_LABEL = "Checking this computer"
 
 
 @dataclass(frozen=True)
@@ -62,6 +64,8 @@ def native_plan(args, *, system: str | None = None, environment=None) -> list[St
     validating = bool(args.validate or args.ci)
     with_editor = bool(getattr(args, "with_editor", False))
     steps = []
+    if not init_preflight.is_skipped(environment):
+        steps.append(Step("preflight", PREFLIGHT_LABEL))
     if args.no_system_install:
         steps.append(Step("system", "Checking system tools"))
     else:

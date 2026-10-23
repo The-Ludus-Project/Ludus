@@ -103,6 +103,29 @@ preset), Browser developer (one Emscripten preset), or Full validation, then
 review the preset and optional tools before pressing **Initialize**. Closing or
 cancelling the selection runs no setup actions.
 
+Before installing anything, setup's first step, *Checking this computer*,
+runs fast preflight checks (normally well under a second) and stops with a
+fix for each problem it finds:
+
+- **Operating system**: Ubuntu 24.04 or newer, or macOS 14 or newer. Other Linux
+  distributions get a warning, because automatic packages use apt.
+- **Xcode Command Line Tools** (macOS): `xcode-select -p` must name an installed
+  developer directory; otherwise run `xcode-select --install`.
+- **Python**: the minimum in `config/tool_versions.json`, with `venv` and
+  `ensurepip`. On Ubuntu, missing `python3-venv` is installed by the system step
+  unless `--no-system-install` is set.
+- **Free disk space** on the volume holding `out/`: setup stops below 15 GB and
+  warns below 30 GB (`MINIMUM_FREE_GIGABYTES` and `RECOMMENDED_FREE_GIGABYTES`
+  in `scripts/python/init_preflight.py`).
+- **Network**: one parallel HTTPS connection attempt (one second at most) to PyPI,
+  ConanCenter and GitHub, or to the `HTTPS_PROXY` host when one is set. Without
+  network a fresh checkout stops; a checkout with an earlier setup's tools and
+  Conan packages only warns and continues offline.
+
+In CI, disk and network problems are warnings. Set
+`LUDUS_INIT_SKIP_PREFLIGHT=1` to skip the checks, for example on a host you know
+works.
+
 After **Initialize**, a progress window runs setup and shows:
 
 - each planned step (for example *Conan install*, *CMake configure (editor)*,

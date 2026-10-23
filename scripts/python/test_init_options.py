@@ -141,7 +141,7 @@ class OptionsTests(unittest.TestCase):
         for options, runs in (((), 0), (("--with-tests",), 0), (("--run-tests",), 1)):
             with self.subTest(options=options), contextlib.ExitStack() as stack:
                 args = self.args("--no-system-install", *options)
-                for name in ("check_current_python", "configure_system_tool_shims", "prepare_conan_artifacts",
+                for name in ("check_current_python", "run_init_preflight", "configure_system_tool_shims", "prepare_conan_artifacts",
                              "repair_existing_cmake_caches", "command_install_hooks"):
                     stack.enter_context(patch.object(engine, name))
                 stack.enter_context(patch.object(engine, "load_tool_versions", return_value={"minimum": {"python": "3.10"}}))

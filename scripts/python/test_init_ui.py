@@ -305,7 +305,7 @@ class EditorSetupTests(unittest.TestCase):
             for module, name in ((init_editor, "prepare_editor_preview"),
                                  (engine, "repair_existing_cmake_caches"), (init_editor, "setup_editor")):
                 calls.attach_mock(stack.enter_context(patch.object(module, name)), name)
-            for name in ("check_current_python", "configure_system_tool_shims", "command_install_hooks"):
+            for name in ("check_current_python", "run_init_preflight", "configure_system_tool_shims", "command_install_hooks"):
                 stack.enter_context(patch.object(engine, name))
             stack.enter_context(patch.object(engine, "load_tool_versions", return_value={"minimum": {"python": "3.10"}}))
             stack.enter_context(patch.object(engine, "command_doctor", return_value=0))
@@ -324,7 +324,7 @@ class EditorSetupTests(unittest.TestCase):
             with self.subTest(enabled=enabled), contextlib.ExitStack() as stack:
                 args = init_ui.apply_defaults(engine.make_parser().parse_args([
                     "init", "--cli", "--no-system-install", "--with-editor" if enabled else "--no-editor"]))
-                for name in ("check_current_python", "configure_system_tool_shims",
+                for name in ("check_current_python", "run_init_preflight", "configure_system_tool_shims",
                              "repair_existing_cmake_caches", "command_install_hooks"):
                     stack.enter_context(patch.object(engine, name))
                 stack.enter_context(patch.object(
