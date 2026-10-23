@@ -111,8 +111,8 @@ controlled child environments clear CI markers and use a PTY instead of user
 input. macOS CI separately builds those test children with `LUDUS_CI_BUILD=OFF`
 to exercise the capability and verifies the runtime CI veto as a regression.
 Production CI remains noninteractive. Linux-only allocator interposition and
-fake debugger/death harnesses remain guarded; macOS crash symbolication, native
-GUI presentation and crash-artifact collection are future work.
+fake debugger/death harnesses remain guarded. Native assertion dialogs remain
+future work; the macOS Editor has the separate crash-capture path below.
 
 References: Apple's [socket(2), DESCRIPTION](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/socket.2.html)
 explains stream/packet semantics; [XNU `bsd/sys/socket.h`, SO_NOSIGPIPE](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/socket.h)
@@ -126,3 +126,139 @@ out/host-tools/venv/bin/cmake --preset linux-clang-release -B out/build/linux-cl
 out/host-tools/venv/bin/cmake --build out/build/linux-clang-release-assert-tests
 out/host-tools/venv/bin/ctest --test-dir out/build/linux-clang-release-assert-tests --output-on-failure
 ```
+
+### macOS Editor crash reporting
+
+Native macOS editor builds enable `LUDUS_EDITOR_CRASH_CAPTURE` by default. The
+editor registers with an external Crashpad handler **before QApplication starts**,
+so direct executable, Finder, IDE and `scripts/editor` launches share capture.
+Labmates do not need a special launcher, environment variables or Sentry accounts.
+The handler is built and copied to
+`ludus_editor.app/Contents/MacOS/ludus_crash_handler`; nothing downloads at launch.
+Missing-handler or database failures produce a visible startup warning without
+preventing editor use.
+
+Only Crashpad is compiled from the checksummed source distribution pinned in
+`config/editor_crash_reporting.json`. No Sentry SDK enters the editor, engine or
+installed SDK. Healthy startup registers a Mach exception port; the external
+handler saves the minidump and handles optional HTTPS submission. Ludus never
+calls normal logging, a symbolizer, UI or network code on the failing thread.
+Linux and browser editors do not build this adapter.
+
+#### Configure the team's Sentry destination
+
+The maintainer creates a Sentry organization and **Native/C++** project, then
+copies the project DSN from its settings. This is a public ingestion credential:
+**never substitute an auth/API token**. Sentry's free Developer plan can be used
+within its current quotas; paid features are not required for ingestion.
+Submitting labmates do not need dashboard accounts.
+
+After normal editor setup, configure the destination for the distributed app:
+
+```sh
+out/host-tools/venv/bin/cmake --preset macos-clang-development \
+  -DLUDUS_BUILD_EDITOR=ON \
+  -DLUDUS_EDITOR_SENTRY_DSN=https://publickey@ingest.example.com/123
+out/host-tools/venv/bin/cmake --build --preset macos-clang-development --target ludus_editor
+```
+
+Replace the example DSN. Without one, capture still works locally.
+**Help > Crash Reporting** can also configure a local installation without
+rebuilding, show pending/uploaded counts and open local reports/logs. Production
+accepts HTTPS DSNs with no password, query or fragment. A destination change
+pauses this database immediately and takes effect after restart. Restart all
+open editor instances after changing destinations or defaults. Destinations use
+separate databases: old reports are never silently sent to a new project.
+Previously unconfigured reports stay in the `unconfigured` folder and are not
+automatically migrated.
+
+On first launch with a configured destination, a dialog offers **Automatically
+send crash reports**. Saving with that box selected consents to pending and future
+submission; Cancel leaves submission off. Preferences persist across ordinary
+launches. Turning submission off pauses uploads without deleting pending reports;
+an already in-flight request may finish.
+
+#### Evidence, privacy and storage
+
+Reports live under
+`~/Library/Application Support/Ludus/Editor/CrashReports/<destination-hash>/`;
+unconfigured builds use `unconfigured` instead. Crashpad's default pruning keeps
+approximately 128 MiB of report payloads or one year of reports, deleting older
+reports periodically. A new capture may temporarily exceed the limit until
+pruning. Reports contain thread stacks/registers, loaded modules, selected process
+memory and OS information. Sentry metadata includes revision, configure-time
+modified-source status, build flavor and CPU architecture. Mach-O UUIDs identify
+the actual binaries; matching commits alone do not establish matching builds.
+
+Process memory can expose paths or research data. Project documents, screenshots
+and session logs are **not** attached. Keep the Sentry project private, select
+appropriate service retention/access controls, and keep dumps out of public
+GitHub issues. Local logs are retained separately in `logs/`: 4 MiB segments,
+32 MiB inactive-session budget and 14-day age cap. Active sessions can exceed
+inactive retention budgets.
+
+Paused/offline reports persist. The handler retries transient failures with
+bounded backoff and scans pending reports on subsequent launches. Permanent
+rejections or exhausted retries can leave retained, unsubmitted reports: capture
+does not establish server ingestion. Uploaded counts reflect acknowledgements.
+The upstream hourly limiter is disabled because it permanently skips additional
+reports; service quotas govern admission. No paid overage or account upgrade is
+configured by the editor.
+
+#### Retain and upload matching symbols
+
+Every successful editor link generates `ludus_editor.app.dSYM` beside the app.
+Archive the **exact app and dSYM** for each distribution until its reports expire.
+Do not regenerate symbols by rebuilding the commit. Compare UUIDs using
+`llvm-dwarfdump --uuid` or Xcode's `dwarfdump --uuid` on both files.
+
+An authorized maintainer uploads the dSYM/executable with Sentry's CLI or debug
+file upload interface. After authenticating the CLI locally, for example:
+
+```sh
+sentry-cli debug-files upload --org YOUR_ORGANIZATION --project YOUR_PROJECT \
+  out/build/macos-clang-development/apps/editor/ludus_editor.app.dSYM \
+  out/build/macos-clang-development/apps/editor/ludus_editor.app/Contents/MacOS/ludus_editor
+```
+
+CLI authorization is separate from the public app DSN. Keep upload tokens in
+local credentials or CI secrets, never in preferences/source control. The example
+does not upload source files. Service processing/symbol quotas still apply.
+Verify that a real Sentry event shows a caller stack with source lines before
+declaring a distributed build fully qualified.
+
+#### Distribute and validate normal launches
+
+Preserve the bundled handler and `Contents/Resources/crash-reporting-licenses/`.
+When deploying to another Mac, use the matching Qt `macdeployqt` for normal
+runtime dependencies and also pass
+`-executable=/absolute/path/ludus_editor.app/Contents/MacOS/ludus_crash_handler`.
+Sign the embedded handler as well as the app when signing/notarizing a release.
+Crash reporting does not replace [editor tooling/SDK setup](editor-workspace.md)
+or supply a signed installer.
+
+Enable `LUDUS_EDITOR_CRASH_CAPTURE_TESTS=ON`, build
+`ludus_editor_crash_probe`, then run CTest's `ludus_editor_crash_capture` test.
+It crashes only subprocess fixtures against the real handler and a local HTTP
+receiver, checking pre-Qt startup, consent-off persistence, later submission,
+acknowledgements, missing-handler failure and DSN validation. Preferences and
+reports stay in private temporary directories. Real-account ingestion and
+symbolization additionally require the maintainer's Sentry project and symbol
+upload authorization.
+
+This adapter covers native macOS editor crashes. It does not qualify standalone
+games, browser failures, hangs, GPU device loss, faults before registration,
+forced kills or whole-machine failures. Debuggers can intercept native faults;
+macOS can also inherit the handler into launched child processes. Such reports
+may be captured under this editor session, but child-process coverage is not
+qualified by the editor tests. The consent dialog discloses this inheritance.
+immediate-exit assertion recursion can bypass capture. Assertion packets and the
+logging breadcrumb ring are not yet dedicated Sentry attachments.
+
+Thanks to the Chromium authors, **Crashpad Overview Design**, Overview,
+Registration/macOS and Privacy Considerations
+([design](https://github.com/chromium/crashpad/blob/main/doc/overview_design.md)),
+for external Mach capture and consent/storage boundaries; and Sentry,
+**example-minidump-upload**, `upload.py`
+([source](https://github.com/getsentry/example-minidump-upload)), for DSN routing
+and the JSON event form protocol. This adapter uses Crashpad directly.

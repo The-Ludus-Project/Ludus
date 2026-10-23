@@ -1,4 +1,7 @@
 #include "internal/main_window.h"
+#if defined(LUDUS_EDITOR_CRASH_CAPTURE)
+#    include "internal/crash_reporting.h"
+#endif
 #include "internal/audio_workspace.h"
 #include "internal/code_editor.h"
 #include "internal/configuration_workspace.h"
@@ -531,6 +534,11 @@ void MainWindow::BuildMenus()
     buildWindowMenu(windowMenu);
 
     auto* helpMenu = menuBar()->addMenu(QStringLiteral("&Help"));
+#if defined(LUDUS_EDITOR_CRASH_CAPTURE)
+    QAction* crashReporting = helpMenu->addAction(QStringLiteral("Crash &Reporting..."));
+    crashReporting->setObjectName(QStringLiteral("help.crashReporting"));
+    connect(crashReporting, &QAction::triggered, this, [this]() { ShowEditorCrashReporting(this); });
+#endif
     auto* shortcuts = helpMenu->addAction(QStringLiteral("Keyboard Shortcuts..."));
     shortcuts->setObjectName(QStringLiteral("keyboardShortcutsAction"));
     shortcuts->setShortcut(QKeySequence(Qt::Key_F1));

@@ -427,7 +427,10 @@ assertion record, relevant configuration, module/backend versions and replay
 input when available. The existing Base emergency path captures only data safe
 at failure time; normal logging, allocations, stack symbolization, compression
 and upload happen outside it in the helper/postprocessor. No automatic network
-reporting or SaaS error SDK in the runtime. Dumps may contain proprietary/user
+reporting or SaaS error SDK in the engine runtime. The macOS Editor's separately
+bundled Crashpad handler can submit minidumps to Sentry after user consent;
+[diagnostics](../development/diagnostics.md#macos-editor-crash-reporting) owns its
+capture, symbols and deployment contract. Dumps may contain proprietary/user
 data: capture only needed data and apply access/retention controls before upload.
 See the existing assertion, diagnostics, logging and live-reload contracts.
 

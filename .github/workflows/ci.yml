@@ -94,7 +94,7 @@ jobs:
           out/host-tools/bin/clang-tidy -p out/build/macos-clang-development --warnings-as-errors='*' tools/script-provider/allocator_contract.cpp
       - name: Build all enabled engine and application targets
         run: |
-          out/host-tools/venv/bin/cmake --preset macos-clang-development -DLUDUS_SLANG_COMPILER="$PWD/out/shader-tools/slang/bin/slangc" -DLUDUS_SPIRV_CROSS="$PWD/out/shader-tools/spirv-cross/bin/spirv-cross" -DLUDUS_EDITOR_RENDER_PREVIEW=ON -DLUDUS_BUILD_WORLD_DEMO=ON -DLUDUS_BUILD_SHADER_WORKER=ON
+          out/host-tools/venv/bin/cmake --preset macos-clang-development -DLUDUS_SLANG_COMPILER="$PWD/out/shader-tools/slang/bin/slangc" -DLUDUS_SPIRV_CROSS="$PWD/out/shader-tools/spirv-cross/bin/spirv-cross" -DLUDUS_EDITOR_RENDER_PREVIEW=ON -DLUDUS_BUILD_WORLD_DEMO=ON -DLUDUS_BUILD_SHADER_WORKER=ON -DLUDUS_EDITOR_CRASH_CAPTURE_TESTS=ON
           ./scripts/build macos-clang-development
       - name: Require complete macOS source inventory
         run: ./scripts/check macos-clang-development --inventory
