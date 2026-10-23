@@ -488,6 +488,10 @@ endif()
 
 # The editor is a developer tool, never part of the installed SDK: no install()
 # rule and no LudusTargets export entry here, by design (E01).
+if(APPLE)
+    target_sources(ludus_editor PRIVATE src/qt_accessibility_macos.mm)
+    target_link_libraries(ludus_editor PRIVATE "-framework AppKit")
+endif()
 
 # --- Offscreen logic/widget tests --------------------------------------------
 # Offscreen Qt tests verify logic and widget wiring without a GPU/compositor.
@@ -495,6 +499,19 @@ endif()
 if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     find_package(Catch2 3 REQUIRED)
     find_package(Qt6 6.4 REQUIRED COMPONENTS Test)
+    if(APPLE)
+        add_executable(ludus_editor_accessibility_tests tests/main.cpp tests/accessibility_tests.mm
+            src/qt_accessibility_macos.mm)
+        target_include_directories(ludus_editor_accessibility_tests PRIVATE src)
+        target_compile_definitions(ludus_editor_accessibility_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
+        target_link_libraries(ludus_editor_accessibility_tests PRIVATE Qt6::Widgets Catch2::Catch2
+            Ludus::FoundationBase "-framework AppKit")
+        ludus_apply_project_defaults(ludus_editor_accessibility_tests)
+        ludus_enable_test_exceptions(ludus_editor_accessibility_tests)
+        add_test(NAME ludus_editor_accessibility_tests COMMAND ludus_editor_accessibility_tests)
+        set_tests_properties(ludus_editor_accessibility_tests PROPERTIES LABELS "unit;editor;native;accessibility"
+            TIMEOUT 30 ENVIRONMENT "QT_QPA_PLATFORM=cocoa")
+    endif()
     add_executable(ludus_code_editor_tests tests/main.cpp tests/code_editor_tests.cpp tests/code_document_tests.cpp)
     target_include_directories(ludus_code_editor_tests PRIVATE src)
     target_compile_definitions(ludus_code_editor_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)

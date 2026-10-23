@@ -240,6 +240,19 @@ platform/RHI backend, including Metal. Version-2 descriptors expose all three
 macOS game profiles; the Editor itself uses Debug, Development or ASan/UBSan.
 Version-1 descriptors retain their original Linux preset contract.
 
+Qt 6.12.0's Cocoa accessibility bridge incorrectly deletes a table's accessibility
+identity when releasing a synthetic row, column or cell that borrows it. This can
+crash a screen reader or UI inspector while reading selected cells. The editor
+installs a process-local ownership correction before creating its widgets: real
+elements retain Qt's cleanup, while synthetic elements never delete borrowed
+identities. Other Qt versions are unchanged, and the system Qt installation is
+not modified. An unexpected native layout fails startup with a diagnostic rather
+than applying the correction blindly. Thanks to The Qt Company for the
+[Cocoa accessibility implementation](https://github.com/qt/qtbase/blob/v6.12.0/src/plugins/platforms/cocoa/qcocoaaccessibilityelement.mm)
+used to identify the ownership error. The macOS `ludus_editor_accessibility_tests`
+exercise native selection, deselection, model resets and widget destruction for
+tables, lists and trees; they require the Cocoa platform plugin.
+
 Live Play and native reload support macOS Debug/Development profiles with
 validated Mach-O UUIDs and immutable detached DWARF symbols. Build and Play,
 Build and Reload, Pause/Step, live edits and opt-in source watching share the
