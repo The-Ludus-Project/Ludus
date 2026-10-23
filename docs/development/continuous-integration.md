@@ -302,7 +302,7 @@ yet), and drives `clang++` against the runner's Microsoft STL and dynamic CRT. I
 pinned CMake/Ninja/Conan versions, exports the local Catch2 recipe and installs
 only that locked package with `config/conan/profiles/windows-clang-x86_64`. Ludus
 configures only the FoundationThreading closure on Windows (Base, Memory,
-Containers, Time, Profiling and Threading); other modules have no Windows backend
+Containers, Hash, Strings, Time, Profiling and Threading); other modules have no Windows backend
 and no SDK is installed. The job runs the threading, startup-seam, profiling-adapter
 and allocation suites once, then repeats the scheduler and startup suites 20 times.
 
