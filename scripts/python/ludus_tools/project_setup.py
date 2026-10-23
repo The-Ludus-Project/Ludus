@@ -461,7 +461,7 @@ def repair_project(path: Path, *, tooling_root: Path, sdk: Path | None = None,
         write_object(paths.local_settings_path, json.loads(local_settings.serialize()))
         ignore = source / ".gitignore"
         contents = ignore.read_text() if ignore.exists() else ""
-        for entry in ("/CMakeUserPresets.json", "/.ludus/"):
+        for entry in ("/CMakeUserPresets.json", "/.ludus/", "/assets/.scene-writer.lock", ".DS_Store"):
             if entry not in contents.splitlines():
                 contents += "\n" + entry + "\n"
         ignore.write_text(contents)
