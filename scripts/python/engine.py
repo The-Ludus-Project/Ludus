@@ -1971,7 +1971,9 @@ def command_debug(args: argparse.Namespace) -> int:
 def command_build(args: argparse.Namespace) -> int:
     root = repo_root()
     ensure_bootstrap_for_preset(root, args.preset)
-    cmake_configure(root, args.preset)
+    # A build tree whose last configure used the same inputs goes straight to
+    # the build, which reruns CMake itself when a CMake file changes.
+    cmake_configure(root, args.preset, reuse_current_cache=True)
     cmake_build(root, args.preset, args.extra)
     return 0
 
@@ -1982,7 +1984,7 @@ def command_test(args: argparse.Namespace) -> int:
     if not read_options(root, args.preset).get("LUDUS_BUILD_TESTS", True):
         raise EngineError("Tests are disabled for this preset; opt in with ./init.sh --cli --with-tests " + args.preset + " --preset-only")
     ensure_bootstrap_for_preset(root, args.preset)
-    cmake_configure(root, args.preset)
+    cmake_configure(root, args.preset, reuse_current_cache=True)
     ctest(root, args.preset, args.label)
     return 0
 

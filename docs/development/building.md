@@ -575,6 +575,13 @@ to resolve newer upstream Conan revisions in an unlocked initialization:
 LUDUS_INIT_FORCE=1 ./init.sh --with-editor
 ```
 
+`./scripts/build` and `./scripts/test` use the same record, so a build with
+nothing to do costs about as much as Ninja's own no-op check. They configure
+when the record is missing or any input above changed, and `LUDUS_INIT_FORCE=1`
+forces a configure there too. A build right after `./init.sh --with-editor`
+still configures once, because init passes its own editor arguments; so does
+the next `./init.sh --with-editor` after a build.
+
 When ccache is installed and `LUDUS_ENABLE_CCACHE` isn't set, the editor setup
 turns ccache on for a new build tree, so removing `out/` or switching branches
 reuses earlier compiles. An existing build tree keeps its choice, since

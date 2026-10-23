@@ -1,6 +1,7 @@
 """Tests for the stamps that let a warm ./init.sh skip unchanged work."""
 from __future__ import annotations
 
+import argparse
 import contextlib
 import io
 import json
@@ -134,6 +135,51 @@ class ConfigureSkipTests(unittest.TestCase):
             engine.cmake_configure(self.root, PRESET, ["-DLUDUS_BUILD_EDITOR=ON"])
             self.assertEqual(len(runs), 2)
             self.assertFalse((self.build / engine.CONFIGURE_STAMP_NAME).exists())
+
+    def run_build(self, runs, builds, options=None):
+        arguments = argparse.Namespace(preset=PRESET, extra=[])
+        with patch.object(engine, "run", side_effect=lambda args, **_: runs.append(args)), \
+                patch.object(engine, "request_codemodel"), \
+                patch.object(engine, "ensure_bootstrap_for_preset"), \
+                patch.object(engine, "repo_root", return_value=self.root), \
+                patch.object(engine, "cmake_build", side_effect=lambda *_: builds.append(PRESET)), \
+                patch("init_editor.compiler_cache_args", return_value=[]), \
+                patch("init_options.read_options", return_value=options or {}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(engine.command_build(arguments), 0)
+
+    def test_scripted_build_skips_an_unchanged_configure(self):
+        runs = []
+        builds = []
+        self.run_build(runs, builds)
+        self.assertEqual(len(runs), 1)
+        self.run_build(runs, builds)
+        self.assertEqual(len(runs), 1)
+        self.assertEqual(len(builds), 2)
+        # Presets, saved init options and the configure environment still reconfigure.
+        (self.root / "CMakePresets.json").write_text("{}", encoding="utf-8")
+        self.run_build(runs, builds)
+        self.assertEqual(len(runs), 2)
+        self.run_build(runs, builds, options={"LUDUS_BUILD_TESTS": False})
+        self.assertEqual(len(runs), 3)
+        with patch.dict("os.environ", {"LUDUS_EDITOR_PRECOMPILED_HEADERS": "0"}):
+            self.run_build(runs, builds, options={"LUDUS_BUILD_TESTS": False})
+        self.assertEqual(len(runs), 4)
+        self.assertEqual(len(builds), 5)
+
+    def test_scripted_test_skips_an_unchanged_configure(self):
+        runs = []
+        arguments = argparse.Namespace(preset=PRESET, label=None)
+        with patch.object(engine, "run", side_effect=lambda args, **_: runs.append(args)), \
+                patch.object(engine, "request_codemodel"), \
+                patch.object(engine, "ensure_bootstrap_for_preset"), \
+                patch.object(engine, "repo_root", return_value=self.root), \
+                patch.object(engine, "ctest"), \
+                patch("init_editor.compiler_cache_args", return_value=[]), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(engine.command_test(arguments), 0)
+            self.assertEqual(engine.command_test(arguments), 0)
+        self.assertEqual(len(runs), 1)
 
 
 class ManagedToolTests(unittest.TestCase):
