@@ -263,7 +263,7 @@ TEST_CASE("Project Settings keeps distinct upscaling provider groups independent
     CHECK(scale->currentIndex() == 3);
 }
 
-TEST_CASE("Project Settings leaves the built-in renderer untouched until explicit setup and Save",
+TEST_CASE("Project Settings exposes the built-in viewport-sized renderer and saves only explicit edits",
           "[editor][resolution]")
 {
     QTemporaryDir directory;
@@ -276,11 +276,30 @@ TEST_CASE("Project Settings leaves the built-in renderer untouched until explici
     CHECK(renderer.IsDirty() == false);
     const QString destination = renderer.GetDocument().GetPackageRoot();
     CHECK(QFile::exists(destination) == false);
+    // The default follows the drawable at native scale, so no setup step is offered.
+    QPushButton* enable = settings.findChild<QPushButton*>(QStringLiteral("projectEnableResolution"));
+    REQUIRE(enable != nullptr);
+    CHECK(enable->isVisibleTo(&settings) == false);
+    const QVector<RenderGraphResolutionSelection> selections =
+        FindRenderGraphResolutionSettings(renderer.GetDocument());
+    REQUIRE(selections.size() == 1);
+    QJsonValue extent;
+    QJsonArray scale;
+    REQUIRE(ReadRenderGraphResolutionSettings(renderer.GetDocument(), selections.at(0), extent, scale) == true);
+    CHECK(extent == QJsonValue(QStringLiteral("Viewport")));
+    CHECK(scale == QJsonArray{1, 1});
+    CHECK(renderer.IsDirty() == false);
     QString error;
-    REQUIRE(renderer.EnableResolutionSettings(error) == true);
+    REQUIRE(renderer.SetResolutionSettings(selections.at(0), extent, QJsonArray{1, 2}, error) == true);
     CHECK(QFile::exists(destination) == false);
     REQUIRE(renderer.Save() == true);
     CHECK(renderer.IsBuiltIn() == false);
     CHECK(QFile::exists(QDir(destination).filePath(renderer.GetDocument().GetRootGraph())) == true);
-    CHECK(FindRenderGraphResolutionSettings(renderer.GetDocument()).size() == 1);
+    RenderGraphDocument reopened;
+    REQUIRE(reopened.Load(destination, renderer.GetDocument().GetRootGraph()) == RenderGraphDocumentStatus::Ok);
+    const QVector<RenderGraphResolutionSelection> saved = FindRenderGraphResolutionSettings(reopened);
+    REQUIRE(saved.size() == 1);
+    REQUIRE(ReadRenderGraphResolutionSettings(reopened, saved.at(0), extent, scale) == true);
+    CHECK(extent == QJsonValue(QStringLiteral("Viewport")));
+    CHECK(scale == QJsonArray{1, 2});
 }
