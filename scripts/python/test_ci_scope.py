@@ -37,33 +37,35 @@ class DocumentationScopeTests(unittest.TestCase):
 
     def test_manual_missing_malformed_and_unavailable_comparisons_require_native_validation(self):
         for event_name, event in (
-            ("workflow_dispatch", {}), ("schedule", {}), ("pull_request", {}), ("push", {}),
-            ("push", {"before": "0" * 40, "after": "a" * 40}),
-            ("push", {"before": "--help", "after": "a" * 40}),
+            ("workflow_dispatch", {}), ("schedule", {}), ("pull_request", {}),
             ("pull_request", {"pull_request": None}),
+            ("pull_request", {"pull_request": {"base": {"sha": "0" * 40}, "head": {"sha": "a" * 40}}}),
+            ("pull_request", {"pull_request": {"base": {"sha": "--help"}, "head": {"sha": "a" * 40}}}),
+            # No workflow triggers on these events; they must not route around native validation.
+            ("push", {"before": "a" * 40, "after": "b" * 40}),
+            ("merge_group", {"merge_group": {"base_sha": "a" * 40, "head_sha": "b" * 40}}),
         ):
-            with self.subTest(event=event):
+            with self.subTest(event_name=event_name, event=event):
                 self.assertTrue(ci_scope.classify(event_name, event, Path.cwd())[0])
         with mock.patch("ci_scope.changed_paths", side_effect=subprocess.CalledProcessError(128, "git")):
-            self.assertTrue(ci_scope.classify("push", {}, Path.cwd())[0])
-        for event in ({}, {"merge_group": None}, {"merge_group": {"base_sha": "a" * 40}}):
-            with self.subTest(event=event):
-                self.assertTrue(ci_scope.classify("merge_group", event, Path.cwd())[0])
+            self.assertTrue(ci_scope.classify("pull_request", {}, Path.cwd())[0])
 
 
 class ValidationTierTests(unittest.TestCase):
     @staticmethod
-    def pull_request(*labels):
-        return {"pull_request": {"labels": [{"name": label} for label in labels]}}
+    def pull_request(base_ref, *labels):
+        return {"pull_request": {"base": {"ref": base_ref}, "labels": [{"name": label} for label in labels]}}
 
-    def test_only_unlabeled_pull_requests_defer_merge_queue_jobs(self):
-        self.assertEqual(ci_scope.validation_tier("pull_request", self.pull_request()), ci_scope.PULL_REQUEST_TIER)
-        self.assertEqual(ci_scope.validation_tier("pull_request", self.pull_request("editor")),
-                         ci_scope.PULL_REQUEST_TIER)
-        self.assertEqual(ci_scope.validation_tier("pull_request", self.pull_request("editor", "ci:full")),
-                         ci_scope.FULL_TIER)
+    def test_only_develop_pull_requests_defer_compiled_jobs_and_labels_do_not_route(self):
+        for labels in ((), ("editor",), ("ci:full",)):
+            with self.subTest(labels=labels):
+                self.assertEqual(ci_scope.validation_tier("pull_request", self.pull_request("develop", *labels)),
+                                 ci_scope.INTEGRATION_TIER)
+                for base_ref in ("main", "feature/rhi-vulkan"):
+                    self.assertEqual(ci_scope.validation_tier("pull_request", self.pull_request(base_ref, *labels)),
+                                     ci_scope.FULL_TIER)
 
-    def test_queue_main_manual_and_unknown_events_run_the_full_tier(self):
+    def test_unknown_events_run_the_full_tier(self):
         for event_name in ("merge_group", "push", ""):
             with self.subTest(event_name=event_name):
                 self.assertEqual(ci_scope.validation_tier(event_name, {}), ci_scope.FULL_TIER)
@@ -74,8 +76,8 @@ class ValidationTierTests(unittest.TestCase):
             self.assertEqual(ci_scope.validation_tier(event_name, {}, is_batch=True), ci_scope.FULL_TIER)
 
     def test_malformed_pull_request_metadata_runs_the_full_tier(self):
-        for event in ({}, {"pull_request": None}, {"pull_request": {"labels": [{}]}},
-                      {"pull_request": {"labels": ["ci:full"]}}):
+        for event in ({}, {"pull_request": None}, {"pull_request": {"base": None}},
+                      {"pull_request": {"base": {"ref": None}}}):
             with self.subTest(event=event):
                 self.assertEqual(ci_scope.validation_tier("pull_request", event), ci_scope.FULL_TIER)
 
@@ -105,21 +107,19 @@ class GitComparisonTests(unittest.TestCase):
         self.git("commit", "-m", "test change")
         return self.git("rev-parse", "HEAD")
 
-    def pull_request(self, head, base=None):
-        return {"pull_request": {"base": {"sha": base or self.base}, "head": {"sha": head}}}
+    def pull_request(self, head, base=None, base_ref="develop"):
+        return {"pull_request": {"base": {"sha": base or self.base, "ref": base_ref}, "head": {"sha": head}}}
 
-    def test_documentation_push_and_complete_pr_are_exempt(self):
+    def test_documentation_only_pr_is_exempt(self):
         self.write("docs/index.md", "Updated docs")
         head = self.commit()
-        self.assertFalse(ci_scope.classify("push", {"before": self.base, "after": head}, self.root)[0])
         self.assertFalse(ci_scope.classify("pull_request", self.pull_request(head), self.root)[0])
 
     def test_latest_docs_commit_does_not_hide_earlier_engine_changes(self):
         self.write("modules/engine.cpp", "Changed engine")
-        engine_head = self.commit()
+        self.commit()
         self.write("docs/index.md", "Updated docs")
         head = self.commit()
-        self.assertFalse(ci_scope.classify("push", {"before": engine_head, "after": head}, self.root)[0])
         self.assertTrue(ci_scope.classify("pull_request", self.pull_request(head), self.root)[0])
 
     def test_pr_uses_merge_base_when_target_branch_advances(self):
@@ -130,16 +130,6 @@ class GitComparisonTests(unittest.TestCase):
         self.write("modules/engine.cpp", "Unrelated upstream change")
         base = self.commit()
         self.assertFalse(ci_scope.classify("pull_request", self.pull_request(head, base), self.root)[0])
-
-    def test_merge_group_compares_the_queued_candidate_with_its_base(self):
-        self.write("docs/index.md", "Updated docs")
-        docs_head = self.commit()
-        group = {"merge_group": {"base_sha": self.base, "head_sha": docs_head}}
-        self.assertFalse(ci_scope.classify("merge_group", group, self.root)[0])
-        self.write("modules/engine.cpp", "Queued engine change")
-        engine_head = self.commit()
-        group = {"merge_group": {"base_sha": self.base, "head_sha": engine_head}}
-        self.assertTrue(ci_scope.classify("merge_group", group, self.root)[0])
 
     def test_engine_rename_into_documentation_is_not_exempt(self):
         self.git("mv", "modules/engine.cpp", "docs/engine.cpp")
@@ -165,8 +155,8 @@ class GitComparisonTests(unittest.TestCase):
         self.assertTrue(ci_scope.classify("pull_request", self.pull_request(head), self.root)[0])
 
     def test_empty_diff_and_missing_history_require_native_validation(self):
-        self.assertTrue(ci_scope.classify("push", {"before": self.base, "after": self.base}, self.root)[0])
-        self.assertTrue(ci_scope.classify("push", {"before": "a" * 40, "after": self.base}, self.root)[0])
+        self.assertTrue(ci_scope.classify("pull_request", self.pull_request(self.base), self.root)[0])
+        self.assertTrue(ci_scope.classify("pull_request", self.pull_request(self.base, "a" * 40), self.root)[0])
 
     def test_cli_outputs_github_routing_and_summary(self):
         self.write("docs/index.md", "Updated docs")
@@ -174,7 +164,8 @@ class GitComparisonTests(unittest.TestCase):
         event = self.root / "event.json"
         output, summary = self.root / "output", self.root / "summary"
         cases = (
-            ("pull_request", self.pull_request(head), "", "false", ci_scope.PULL_REQUEST_TIER),
+            ("pull_request", self.pull_request(head), "", "false", ci_scope.INTEGRATION_TIER),
+            ("pull_request", self.pull_request(head, base_ref="main"), "", "false", ci_scope.FULL_TIER),
             ("workflow_dispatch", {}, "", "true", ci_scope.NIGHTLY_TIER),
             ("workflow_dispatch", {}, head, "true", ci_scope.FULL_TIER),
             ("schedule", {}, head, "true", ci_scope.FULL_TIER),
@@ -208,17 +199,17 @@ class RequiredGateTests(unittest.TestCase):
         jobs = set(re.findall(r"^  ([a-z][a-z0-9-]*):$", workflow, re.MULTILINE))
         self.assertTrue(set(ci_scope.NATIVE_JOBS) <= jobs)
 
-    def test_workflow_defers_exactly_the_queue_and_nightly_jobs(self):
+    def test_workflow_defers_exactly_the_integration_and_nightly_jobs(self):
         workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
+        self.assertNotIn("'pull-request'", workflow)
         conditions = dict(re.findall(r"^  ([a-z][a-z0-9-]*):\n(?:    .*\n)*?    if: (.*)$", workflow, re.MULTILINE))
         for name in ci_scope.NATIVE_JOBS:
             condition = conditions.get(name, "")
-            self.assertEqual("validation_tier != 'pull-request'" in condition, name in ci_scope.MERGE_QUEUE_JOBS)
             self.assertEqual("validation_tier == 'nightly'" in condition, name in ci_scope.NIGHTLY_JOBS)
             self.assertEqual("validation_tier != 'integration'" in condition or "validation_tier == 'nightly'" in condition,
                              name in ci_scope.INTEGRATION_JOBS, name)
 
-    def test_advisory_analyzers_run_nightly_and_required_inventory_runs_in_the_queue(self):
+    def test_advisory_analyzers_run_nightly_and_required_inventory_runs_in_every_batch(self):
         root = Path(__file__).resolve().parents[2] / ".github/workflows"
         nightly = {
             "ci.yml": "if: needs.changes.outputs.validation_tier == 'nightly'",
@@ -278,18 +269,17 @@ class RequiredGateTests(unittest.TestCase):
             with self.subTest(workflow=name):
                 self.assertNotRegex(root.joinpath(name).read_text(), r"--parallel \d")
 
-    def test_required_workflows_report_checks_to_the_merge_queue(self):
-        # A required check that never runs for merge_group stalls every queued PR.
-        for name in ("ci.yml", "project-sdk.yml", "wiki.yml"):
-            with self.subTest(workflow=name):
-                workflow = (Path(__file__).resolve().parents[2] / ".github/workflows" / name).read_text()
-                self.assertRegex(workflow, r"(?m)^  merge_group:")
-
     def test_full_validation_is_owned_by_the_batch_scheduler(self):
         root = Path(__file__).resolve().parents[2] / ".github/workflows"
+        for path in root.glob("*.yml"):
+            with self.subTest(workflow=path.name):
+                # Promotion alone updates main; no merge queue or push validates it.
+                workflow = path.read_text()
+                self.assertNotRegex(workflow.split("\npermissions:", 1)[0], r"(?m)^  (push|merge_group):")
+                self.assertNotIn("merge_group", workflow)
         for name in ("ci.yml", "wiki.yml", "project-sdk.yml"):
             triggers = root.joinpath(name).read_text().split("\npermissions:", 1)[0]
-            self.assertNotRegex(triggers, r"(?m)^  push:")
+            self.assertNotIn("labeled", triggers)
             self.assertIn("  workflow_call:", triggers)
         batch = root.joinpath("batch-ci.yml").read_text()
         self.assertIn("cron: '13,43 * * * *'", batch)
@@ -318,7 +308,7 @@ class RequiredGateTests(unittest.TestCase):
         self.assertEqual(ci_scope.gate_failures(results), [])
         self.assertEqual(ci_scope.gate_failures(self.results(False, ci_scope.INTEGRATION_TIER)), [])
 
-    def test_pull_requests_leave_macos_tooling_jobs_to_the_queue(self):
+    def test_pull_requests_leave_macos_tooling_jobs_to_the_batch(self):
         root = Path(__file__).resolve().parents[2] / ".github/workflows"
         wiki = root.joinpath("wiki.yml").read_text().split("\n  macos-documentation-tools:\n", 1)[1]
         self.assertIn("    if: github.event_name != 'pull_request'\n", wiki.split("\n    steps:", 1)[0])
@@ -332,8 +322,7 @@ class RequiredGateTests(unittest.TestCase):
 
     def results(self, native_required=True, tier=ci_scope.FULL_TIER):
         def expected(name):
-            deferred = ((tier == ci_scope.PULL_REQUEST_TIER and name in ci_scope.MERGE_QUEUE_JOBS)
-                        or (tier == ci_scope.INTEGRATION_TIER and name in ci_scope.INTEGRATION_JOBS)
+            deferred = ((tier == ci_scope.INTEGRATION_TIER and name in ci_scope.INTEGRATION_JOBS)
                         or (tier != ci_scope.NIGHTLY_TIER and name in ci_scope.NIGHTLY_JOBS))
             return "success" if native_required and not deferred else "skipped"
         return {
@@ -357,19 +346,6 @@ class RequiredGateTests(unittest.TestCase):
                     results[name]["result"] = status
                     self.assertTrue(ci_scope.gate_failures(results))
 
-    def test_pull_request_tier_requires_fast_jobs_and_skips_only_deferred_jobs(self):
-        self.assertEqual(ci_scope.gate_failures(self.results(tier=ci_scope.PULL_REQUEST_TIER)), [])
-        self.assertEqual(ci_scope.gate_failures(self.results(False, ci_scope.PULL_REQUEST_TIER)), [])
-        for name in ci_scope.NATIVE_JOBS:
-            statuses = ("failure", "cancelled", "success") if name in (
-                *ci_scope.MERGE_QUEUE_JOBS, *ci_scope.NIGHTLY_JOBS) else (
-                "failure", "cancelled", "skipped")
-            for status in statuses:
-                with self.subTest(name=name, status=status):
-                    results = self.results(tier=ci_scope.PULL_REQUEST_TIER)
-                    results[name]["result"] = status
-                    self.assertTrue(ci_scope.gate_failures(results))
-
     def test_nightly_requires_every_native_job_and_retargeting_runs_cheap_checks(self):
         results = self.results(tier=ci_scope.NIGHTLY_TIER)
         self.assertEqual(ci_scope.gate_failures(results), [])
@@ -382,10 +358,10 @@ class RequiredGateTests(unittest.TestCase):
             triggers = root.joinpath(name).read_text().split("\npermissions:", 1)[0]
             self.assertRegex(triggers, r"types: \[[^\]\n]*edited")
 
-    def test_missing_or_invalid_tier_cannot_skip_merge_queue_jobs(self):
-        for tier in (None, "", "Full", "fast"):
+    def test_missing_invalid_or_retired_tier_cannot_skip_batch_jobs(self):
+        for tier in (None, "", "Full", "fast", "pull-request"):
             with self.subTest(tier=tier):
-                results = self.results(tier=ci_scope.PULL_REQUEST_TIER)
+                results = self.results(tier=ci_scope.INTEGRATION_TIER)
                 results["changes"]["outputs"]["validation_tier"] = tier
                 self.assertTrue(ci_scope.gate_failures(results))
 
@@ -407,17 +383,6 @@ class RequiredGateTests(unittest.TestCase):
             results = self.results(False)
             results["changes"]["outputs"]["native_required"] = output
             self.assertTrue(ci_scope.gate_failures(results))
-
-    def test_older_trusted_workflows_can_report_only_a_skipped_legacy_compile(self):
-        for tier in (ci_scope.FULL_TIER, ci_scope.PULL_REQUEST_TIER, ci_scope.NIGHTLY_TIER):
-            for status in ("skipped", "success", "failure", "cancelled", None):
-                with self.subTest(tier=tier, status=status):
-                    results = self.results(tier=tier)
-                    results[ci_scope.LEGACY_INTEGRATION_JOB] = {"result": status}
-                    self.assertEqual(bool(ci_scope.gate_failures(results)), status != "skipped")
-        results = self.results(tier=ci_scope.INTEGRATION_TIER)
-        results[ci_scope.LEGACY_INTEGRATION_JOB] = {"result": "skipped"}
-        self.assertTrue(ci_scope.gate_failures(results))
 
     def test_batch_editor_retains_all_deferred_authoring_coverage(self):
         workflow = (Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml").read_text()
@@ -454,6 +419,10 @@ class RequiredGateTests(unittest.TestCase):
         self.assertTrue(ci_scope.gate_failures(results))
         results = self.results(False)
         results["unknown"] = {"result": "skipped"}
+        self.assertTrue(ci_scope.gate_failures(results))
+        # The retired PR-only compile is no longer an accepted job.
+        results = self.results()
+        results["integration-compile"] = {"result": "skipped"}
         self.assertTrue(ci_scope.gate_failures(results))
 
 

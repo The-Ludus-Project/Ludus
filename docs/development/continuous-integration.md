@@ -21,9 +21,10 @@ API/documentation validation. Drafts retain these inexpensive checks. They do no
 install the native toolchain or compile engine, Editor or shader-worker targets.
 The `Ubuntu Clang` gate requires the source/tooling job for non-documentation
 changes and verifies that every deferred native job is skipped. The installed
-host-tooling and public API checks remain separate required checks. The `ci:full`
-label does not expand an integration PR into a full run; dispatch a batch on
-`main` when earlier platform qualification is needed.
+host-tooling and public API checks remain separate required checks. No label
+expands an integration PR into a full run; dispatch a batch on `main` when
+earlier platform qualification is needed. A pull request targeting any other
+branch runs the full tier. No workflow triggers on `push` or `merge_group`.
 
 The combined batch owns native compilation, unit tests, full analysis,
 sanitizers, browser builds, SDK qualification, editor journeys and build budgets.
@@ -117,9 +118,10 @@ The coordinator is disabled until `BATCH_CI_ENABLED=true`. These settings need a
 repository/organization administrator; no credential belongs in Git or chat.
 Finish them after the migration PR lands, before accepting ordinary PRs into develop.
 
-1. Land the migration PR through the existing `main` merge queue. Legacy PRs
-   targeting `main` and `merge_group` checks remain supported for this transition.
-   Drain or remove the remaining old queue entries before switching processes.
+1. Land the migration PR through the existing `main` merge queue and drain or
+   remove the remaining old queue entries before switching processes. Activation
+   is complete: the `merge_group` triggers, the reduced tier for PRs targeting
+   `main` and its `ci:full` label have since been removed from the workflows.
 2. Use the existing `develop` branch. After landing, fast-forward it to main if
    it is behind; if it contains unique commits, merge main through a reviewed PR
    so those commits are preserved. Keep `main` the default branch.

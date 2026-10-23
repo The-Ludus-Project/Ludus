@@ -5,7 +5,7 @@ outputs:
     description: Whether native engine and host-tooling validation must run.
     value: ${{ steps.classify.outputs.native_required }}
   validation_tier:
-    description: Whether this run is the cheap integration tier, legacy pull-request tier, or full batch tier.
+    description: Whether this run is the cheap integration tier, full batch tier, or standalone nightly tier.
     value: ${{ steps.classify.outputs.validation_tier }}
 runs:
   using: composite
@@ -28,6 +28,6 @@ runs:
           *) echo 'Missing or invalid CI routing output.' >&2; exit 1 ;;
         esac
         case "$VALIDATION_TIER" in
-          full|pull-request|integration|nightly) ;;
+          full|integration|nightly) ;;
           *) echo 'Missing or invalid CI validation tier.' >&2; exit 1 ;;
         esac

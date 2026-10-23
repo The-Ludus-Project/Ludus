@@ -6,9 +6,7 @@ on:
   schedule:
     - cron: '17 9 * * *'
   pull_request:
-    # Legacy main PRs retain queue validation during the rollout.
-    types: [opened, synchronize, reopened, ready_for_review, edited, labeled]
-  merge_group:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
   workflow_call:
     inputs:
       batch_sha:
@@ -66,7 +64,7 @@ jobs:
   # Keep arm64 native coverage on macOS 15; SDKs still declare a 14.0 deployment floor.
   macos-compile:
     needs: changes
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'pull-request' && needs.changes.outputs.validation_tier != 'integration'
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
     name: macOS native backends and diagnostics
     runs-on: macos-15
     env:
@@ -375,7 +373,7 @@ jobs:
 
   macos-sanitizers:
     needs: changes
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'pull-request' && needs.changes.outputs.validation_tier != 'integration'
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
     name: macOS ASan and UBSan
     runs-on: macos-15
     env:
@@ -558,8 +556,8 @@ jobs:
         run: ./scripts/check --format
       - name: Enforce review-derived source rules
         env:
-          SOURCE_POLICY_BASE: ${{ inputs.batch_base_sha || github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || 'origin/main' }}
-          SOURCE_POLICY_HEAD: ${{ inputs.batch_sha || github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+          SOURCE_POLICY_BASE: ${{ inputs.batch_base_sha || github.event.pull_request.base.sha || 'origin/main' }}
+          SOURCE_POLICY_HEAD: ${{ inputs.batch_sha || github.event.pull_request.head.sha || github.sha }}
         run: |
           python3 scripts/python/source_policy.py --base "$SOURCE_POLICY_BASE" --head "$SOURCE_POLICY_HEAD" --clang-format "clang-format-$LUDUS_CI_LLVM_MAJOR"
           PYTHONPATH=scripts/python python3 -m unittest test_source_policy test_check_naming test_changed_tidy test_renderer_shader_recipes -v
@@ -919,7 +917,7 @@ jobs:
 
   sanitizers:
     needs: [changes, formatting]
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'pull-request' && needs.changes.outputs.validation_tier != 'integration'
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
     name: ASan and UBSan
     runs-on: ubuntu-24.04
     steps:
@@ -1166,7 +1164,7 @@ jobs:
         env:
           LUDUS_TIDY_SHARD_COUNT: "1"
           LUDUS_TIDY_SHARD_INDEX: "0"
-          CHANGED_LINES_BASE: ${{ inputs.batch_base_sha || github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || 'origin/main' }}
+          CHANGED_LINES_BASE: ${{ inputs.batch_base_sha || github.event.pull_request.base.sha || 'origin/main' }}
         run: ./scripts/check linux-clang-development --tidy-changed --base "$CHANGED_LINES_BASE"
       - name: Review complete stable analyzer baseline
         if: needs.changes.outputs.validation_tier == 'nightly'
@@ -1186,7 +1184,7 @@ jobs:
 
   editor:
     needs: [changes, formatting]
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'pull-request' && needs.changes.outputs.validation_tier != 'integration'
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
     name: Editor, shader worker and unit tests
     runs-on: ubuntu-24.04
     env:
@@ -1339,7 +1337,7 @@ jobs:
 
   build-budget:
     needs: [changes, formatting]
-    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'pull-request' && needs.changes.outputs.validation_tier != 'integration'
+    if: needs.changes.outputs.native_required == 'true' && needs.changes.outputs.validation_tier != 'integration'
     name: Build-time budget
     runs-on: ubuntu-24.04
     env:
