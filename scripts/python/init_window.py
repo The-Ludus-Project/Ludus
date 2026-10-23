@@ -17,9 +17,11 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Callable, Sequence
 
+import init_failure
 import init_progress
 import init_theme
 
@@ -37,12 +39,19 @@ WRAP_POINTS = 640
 # Wide enough for every state's footer, so the window keeps its width when setup ends.
 WINDOW_WIDTH_POINTS = 720
 LOG_HEIGHT_LINES = 10
+# After a failure the log grows to show the failing tool's last lines at once,
+# while the window still fits a 13-inch laptop screen.
+FAILURE_LOG_HEIGHT_LINES = 15
 # The rest of the runner's closing text stays in the output log, so the window
 # still fits a laptop screen with the log open.
 MAX_SUMMARY_LINES = 3
 RUNNING_HINT = "Esc to cancel setup"
 SUCCESS_HINT = "Enter to close"
 FAILURE_HINT = "Enter to retry · Esc to close"
+COPY_OUTPUT_LABEL = "Copy output"
+COPY_REPORT_LABEL = "Copy error report"
+DEFAULT_FAILURE_ADVICE = "Fix the reported problem, then choose Retry or run ./init.sh again."
+OPEN_LOG_FAILED_NOTE = "Could not open a viewer for the log. Its path is on the clipboard."
 CANCELLED_EXIT_CODE = 130
 
 
@@ -170,6 +179,9 @@ class SetupWindow:
         self.should_close_when_done = False
         self.exit_code: int | None = None
         self.log_lines = 0
+        # Recent output, searched for a recognised cause when setup fails.
+        self.recent_lines: deque[str] = deque(maxlen=init_failure.HINT_SCAN_LINES)
+        self.failure_hint: init_failure.FailureHint | None = None
         self.step_rows: list[tuple] = []
         self.timers: dict[str, str] = {}
 
@@ -260,6 +272,12 @@ class SetupWindow:
         if self.log_path is not None:
             ttk.Label(log_bar, text=f"Full log  {self.log_path}", style="Workspace.Mono.TLabel").grid(
                 row=0, column=1, sticky="e", padx=(space(init_theme.SPACE_MEDIUM), 0))
+            self.open_log_button = ttk.Button(log_bar, text="Open full log", style="Workspace.Link.TButton",
+                                              command=self.open_log)
+            self.open_log_button.grid(row=0, column=2, sticky="e", padx=(space(init_theme.SPACE_SMALL), 0))
+            self.copy_path_button = ttk.Button(log_bar, text="Copy path", style="Workspace.Link.TButton",
+                                               command=self.copy_log_path)
+            self.copy_path_button.grid(row=0, column=3, sticky="e", padx=(space(init_theme.SPACE_SMALL), 0))
 
         self.log_frame = ttk.Frame(panel, style="Workspace.TFrame")
         self.log_frame.grid(row=5, column=0, sticky="nsew", pady=(space(init_theme.SPACE_EXTRA_SMALL), 0))
@@ -283,7 +301,7 @@ class SetupWindow:
         buttons = ttk.Frame(self.footer, style="Workspace.TFrame")
         buttons.grid(row=1, column=1, sticky="e", padx=self.footer.buttons_padding)
         gap = (0, space(init_theme.SPACE_SMALL))
-        self.copy_button = ttk.Button(buttons, text="Copy output", command=self.copy_log)
+        self.copy_button = ttk.Button(buttons, text=COPY_OUTPUT_LABEL, command=self.copy_log)
         self.copy_button.pack(side="left", padx=gap)
         # Initialize stays disabled while setup runs; after a failure or a
         # cancellation it reruns the same selection.
@@ -420,6 +438,7 @@ class SetupWindow:
             if self.progress.feed(line, self.clock()):
                 appended.append(init_progress.clean_line(line))
         if appended:
+            self.recent_lines.extend(appended)
             self._append_log(appended)
         self._refresh()
         if ended:
@@ -531,13 +550,17 @@ class SetupWindow:
             self.footer.hint.configure(text=FAILURE_HINT)
         else:
             self.heading.set("Setup failed")
-            failed = next((step.label for step in self.progress.steps if step.status == init_progress.FAILED), None)
+            failed = self.failed_step_label()
             self.status.set(f"Setup failed during: {failed}" if failed else "Setup failed.")
             self.status_label.configure(foreground=palette.error)
-            self.outcome.set("Error: " + self.progress.error +
-                             "\nFix the reported problem, then choose Retry or run ./init.sh again. The output below has the details.")
+            self.failure_hint = init_failure.find_hint([*self.recent_lines, self.progress.error])
+            advice = self.failure_hint.advice if self.failure_hint is not None else DEFAULT_FAILURE_ADVICE
+            self.outcome.set("Error: " + self.progress.error + "\n\n" + advice +
+                             "\nThe last lines of output are below; the full log has everything.")
             self.outcome_banner.set_kind(init_theme.ERROR)
             self.footer.hint.configure(text=FAILURE_HINT)
+            self.copy_button.configure(text=COPY_REPORT_LABEL)
+            self.log.configure(height=FAILURE_LOG_HEIGHT_LINES)
             self.show_log(True)
         if self.outcome.get():
             self.outcome_label.grid()
@@ -574,6 +597,10 @@ class SetupWindow:
         self.log.delete("1.0", "end")
         self.log.configure(state="disabled")
         self.log_lines = 0
+        self.recent_lines.clear()
+        self.failure_hint = None
+        self.log.configure(height=LOG_HEIGHT_LINES)
+        self.copy_button.configure(text=COPY_OUTPUT_LABEL)
         self.bar.configure(mode="indeterminate", value=0)
         self.bar.start()
         self.detail_label.grid()
@@ -598,8 +625,37 @@ class SetupWindow:
             self.details_button.configure(text="Show output")
 
     def copy_log(self) -> None:
+        """Copy the output; after a failure copy a report with the step, hint, log path and last lines."""
+        if self.finished_at is not None and self.progress.outcome == init_progress.FAILED:
+            self._copy_text("\n".join(self.failure_report(include_tail=True)) + "\n")
+        else:
+            self._copy_text(self.log.get("1.0", "end"))
+
+    def copy_log_path(self) -> None:
+        if self.log_path is not None:
+            self._copy_text(str(self.log_path))
+
+    def open_log(self) -> bool:
+        """Open the full log in the desktop's viewer; copy its path instead when that fails."""
+        if self.log_path is not None and init_failure.open_in_viewer(self.log_path):
+            return True
+        self.copy_log_path()
+        self.note.set(OPEN_LOG_FAILED_NOTE)
+        self.note_label.grid()
+        return False
+
+    def _copy_text(self, text: str) -> None:
         self.window.clipboard_clear()
-        self.window.clipboard_append(self.log.get("1.0", "end"))
+        self.window.clipboard_append(text)
+
+    def failed_step_label(self) -> str | None:
+        return next((step.label for step in self.progress.steps if step.status == init_progress.FAILED), None)
+
+    def failure_report(self, *, include_tail: bool) -> list[str]:
+        """The failure as plain text, shared with the terminal summary printed after the window closes."""
+        last_lines = init_failure.tail(self.recent_lines) if include_tail else ()
+        return init_failure.report_lines(step_label=self.failed_step_label(), error=self.progress.error,
+                                         hint=self.failure_hint, log_path=self.log_path, last_lines=last_lines)
 
 
 def shorten(text: str) -> str:
@@ -637,4 +693,9 @@ def run_setup(args, engine, *, geometry: str | None = None) -> int:
     result = window.run()
     if result == CANCELLED_EXIT_CODE:
         print("Initialization cancelled from the setup window.")
+    elif window.progress.outcome == init_progress.FAILED:
+        # The output was echoed above; repeat the diagnosis where the terminal ends.
+        print("")
+        for line in window.failure_report(include_tail=False):
+            print(line)
     return result

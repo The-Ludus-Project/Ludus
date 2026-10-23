@@ -6,13 +6,16 @@ import io
 import os
 import subprocess
 import sys
+import tempfile
 import textwrap
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import engine
 import init_editor
+import init_failure
 import init_options
 import init_progress
 import init_ui
@@ -298,6 +301,12 @@ FAKE_RUNNER = textwrap.dedent("""
     if outcome == "fail":
         print("error: command failed with exit code 1: conan install", flush=True)
         sys.exit(1)
+    if outcome == "disk_full":
+        for i in range(30):
+            print(f"conan output line {i}", flush=True)
+        print("OSError: [Errno 28] No space left on device", flush=True)
+        print("error: command failed with exit code 1: conan install", flush=True)
+        sys.exit(1)
     time.sleep(0.5)
     print("LUDUS_PROGRESS 3 3 Building the editor", flush=True)
     for i in range(1, 6):
@@ -310,14 +319,14 @@ FAKE_RUNNER = textwrap.dedent("""
 
 @unittest.skipUnless(os.environ.get("LUDUS_TEST_GUI") == "1", "requires a desktop display")
 class WindowTests(unittest.TestCase):
-    def run_window(self, outcome, action=None):
+    def run_window(self, outcome, action=None, log_path=None):
         import tkinter as tk
         from tkinter import ttk
         steps = [init_progress.Step("system", "Installing system prerequisites"),
                  init_progress.Step("conan", "Conan install (all native presets)"),
                  init_progress.Step("editor_build", "Building the editor")]
         window = init_window.SetupWindow(tk, ttk, steps=steps, command=[sys.executable, "-c", FAKE_RUNNER, outcome],
-                                         title="test", log_path=None, cwd=engine.repo_root(),
+                                         title="test", log_path=log_path, cwd=engine.repo_root(),
                                          environment=init_window.child_environment())
         errors = []
         window.window.report_callback_exception = lambda *error: (errors.append(error), window.window.quit())
@@ -339,6 +348,16 @@ class WindowTests(unittest.TestCase):
                                      str(window.initialize_button.cget("state")))
                 observed["log_visible"] = window.log_frame.winfo_ismapped()
                 observed["durations"] = [str(duration.cget("text")) for _icon, _label, duration in window.step_rows]
+                observed["copy_label"] = str(window.copy_button.cget("text"))
+                observed["log_height"] = int(window.log.cget("height"))
+                observed["icons"] = [icon.status for icon, _label, _duration in window.step_rows]
+                window.copy_log()
+                observed["clipboard"] = window.window.clipboard_get()
+                if log_path is not None:
+                    with patch.object(init_window.init_failure, "open_in_viewer", return_value=False):
+                        observed["opened"] = window.open_log()
+                    observed["path_clipboard"] = window.window.clipboard_get()
+                    observed["note"] = window.note.get()
                 window.window.quit()
             else:
                 window.window.after(100, close_when_done)
@@ -363,8 +382,32 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("Conan install", observed["status"])
         self.assertIn("command failed with exit code 1", observed["outcome"])
+        self.assertIn(init_window.DEFAULT_FAILURE_ADVICE, observed["outcome"])
         self.assertEqual(observed["retry"], ("Retry", "normal"))
         self.assertTrue(observed["log_visible"])
+
+    def test_recognised_failure_explains_the_cause(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        log_path = Path(directory.name) / "setup.log"
+        code, window, observed = self.run_window("disk_full", log_path=log_path)
+        self.assertEqual(code, 1)
+        self.assertIn("Conan install", observed["status"])
+        self.assertIn("The disk is full", observed["outcome"])
+        self.assertEqual(observed["icons"][1], init_progress.FAILED)
+        self.assertEqual(observed["copy_label"], init_window.COPY_REPORT_LABEL)
+        self.assertEqual(observed["log_height"], init_window.FAILURE_LOG_HEIGHT_LINES)
+        report = observed["clipboard"]
+        self.assertIn("Setup failed during: Conan install (all native presets)", report)
+        self.assertIn(init_failure.HINT_PREFIX + "The disk is full", report)
+        self.assertIn(init_failure.LOG_PREFIX + str(log_path), report)
+        self.assertIn("No space left on device", report)
+        self.assertNotIn("conan output line 5\n", report)
+        # Without a viewer, Open full log copies the path and says so.
+        self.assertFalse(observed["opened"])
+        self.assertEqual(observed["path_clipboard"], str(log_path))
+        self.assertEqual(observed["note"], init_window.OPEN_LOG_FAILED_NOTE)
+        self.assertIn("No space left on device", log_path.read_text(encoding="utf-8"))
 
     def test_enter_retries_after_a_failure(self):
         import tkinter as tk

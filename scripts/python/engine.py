@@ -22,6 +22,7 @@ from typing import Callable, Iterable, Iterator, Sequence
 
 from formatting import FormattingError, format_source
 import init_cache
+import init_failure
 import init_progress
 import init_terminal
 import managed_venv
@@ -251,6 +252,7 @@ def run(
     except subprocess.CalledProcessError as exc:
         if exc.stdout:
             print(exc.stdout, end="")
+            init_failure.remember_output(exc.stdout)
         raise EngineError(f"command failed with exit code {exc.returncode}: {command_line(argv)}") from exc
 
 
@@ -3100,6 +3102,10 @@ def main(argv: Sequence[str]) -> int:
         sys.stdout.flush()
         print(init_terminal.error_line(str(exc), init_terminal.painter_for()))
         if args.command == "init" and not init_progress.is_machine_readable():
+            # The setup window explains failures itself; a terminal run gets the same hint here.
+            hint = init_failure.find_hint([*init_failure.recent_output(), str(exc)])
+            if hint is not None:
+                print(init_terminal.heading(init_failure.HINT_PREFIX + hint.advice, init_terminal.painter_for()))
             print("Fix the problem above, then run ./init.sh again. Finished steps are reused.")
         return 1
 
