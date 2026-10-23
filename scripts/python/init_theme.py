@@ -8,9 +8,12 @@ Identity
     ``ludus-setup`` / ``Ludus-setup`` (Tk derives both from ``className``), so
     taskbars group and label it as Ludus Setup rather than "Tk". On Linux the
     process name that ``top``, ``ps -o comm`` and system monitors show becomes
-    ``ludus-setup`` through ``prctl``. On macOS the application menu and Dock
-    use the main bundle's ``CFBundleName``, which is set before Tk creates the
-    menu bar; ``iconphoto`` replaces the Python rocket in the Dock, and
+    ``ludus-setup`` through ``prctl``. On macOS the application menu uses the
+    main bundle's ``CFBundleName``, which is set before Tk creates the menu
+    bar. The Dock reads that name from the bundle on disk instead, so
+    ``init_launcher`` runs setup from a generated ``Ludus Setup.app``; this
+    run-time name covers ``engine.py init`` started directly. ``iconphoto``
+    replaces the Python rocket in the Dock, and
     clicking that Dock icon brings the current window to the front. Both
     windows share one Tk root (see ``create_root``). The full
     command line in ``ps`` still names the interpreter: rewriting ``argv``
