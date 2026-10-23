@@ -2927,9 +2927,16 @@ undoable edit; **Save** writes it to the project.
 | Double-click a Subgraph node | Opens its asset's configuration on the canvas, in the tree and in the Source view; not an edit |
 | Double-click a Raster node | Opens its first mapped shader source; choose other stages with View Shaders or the Source selector |
 | Pinch apart/together on a supported trackpad | Zoom in/out around the gesture position; does not edit the draft |
-| Wheel or vertical two-finger scroll | Zoom around the pointer, including smooth pixel scrolling |
+| Mouse wheel, or Ctrl/Command+scroll from any device | Zoom around the pointer, including smooth pixel scrolling |
+| Two-finger scroll on a touchpad | Pan the view only, including momentum scrolling |
+| Two-finger double-tap on a macOS trackpad | Frame the whole graph; does not edit the draft |
 | Left-drag empty space | Box-select nodes; Shift adds to the selection |
 | Middle-drag or Space+left-drag | Pan the view only |
+
+The canvas recognizes a touchpad from its scroll phases (macOS and Wayland) or
+its reported device type. A driver that sends two-finger scrolling as plain
+wheel steps, as some Windows drivers do, zooms like a mouse wheel; pan there with
+Space+left-drag.
 
 Header colours show the connection domain: blue scene/view (Scene, Camera),
 orange execution (Raster, Present), green resource (Target, Export), purple
@@ -2998,8 +3005,9 @@ deletion is rejected with the caller's location: remove or rebind that node firs
 
 Left-drag empty canvas space to box-select nodes. Shift-drag adds to the selection;
 Shift-click adds a node and Ctrl-click toggles one. **Select All** and **Escape**
-select or clear the group. Pan with middle-drag or hold Space while left-dragging;
-pinch and wheel zoom keep their existing behavior. Dragging a selected node moves
+select or clear the group. Pan with middle-drag, hold Space while left-dragging,
+or scroll with two fingers on a touchpad; pinch, the mouse wheel and
+Ctrl/Command+scroll zoom. Dragging a selected node moves
 the whole group in one undo step.
 
 Use the platform **Copy** and **Paste** shortcuts (Command+C/Command+V on macOS,
