@@ -17,6 +17,17 @@ static const LightingLayoutValue SHADOW_REGION_CAPACITY = 80;
 static const LightingLayoutValue SHADOW_REGION_WORDS = 6;
 /// Total Float4 words in the shadow uniform array.
 static const LightingLayoutValue SHADOW_DATA_WORDS = SHADOW_REGION_CAPACITY * SHADOW_REGION_WORDS;
+/// Float4 words preceding the direct-light array in the portable material ABI.
+static const LightingLayoutValue FORWARD_HEADER_WORDS = 9;
+/// Maximum selected direct lights in the portable forward profile.
+static const LightingLayoutValue FORWARD_LIGHT_COUNT = 8;
+/// Float4 words encoding one direct light.
+static const LightingLayoutValue FORWARD_LIGHT_WORDS = 4;
+/// Byte offset of the shadow projections after selected direct lights.
+static const LightingLayoutValue FORWARD_SHADOW_OFFSET =
+    (FORWARD_HEADER_WORDS + FORWARD_LIGHT_COUNT * FORWARD_LIGHT_WORDS) * 16;
+/// Byte offset of surface-map controls after the shadow projections.
+static const LightingLayoutValue FORWARD_SURFACE_OFFSET = FORWARD_SHADOW_OFFSET + SHADOW_DATA_WORDS * 16;
 /// Frozen CPU/compute transport profile; version 4 adds geometric emission sidedness.
 static const LightingLayoutValue LIGHTING_PROFILE_VERSION = 4;
 

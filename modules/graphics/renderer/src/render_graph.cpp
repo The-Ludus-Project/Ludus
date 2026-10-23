@@ -3,7 +3,9 @@
 #include "../shaders/renderer_gpu_preview_layout.h"
 #include "internal/render_graph_pool.h"
 #include "internal/render_graph_ray.h"
+#include "internal/render_graph_scene_resources.h"
 
+#include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/queries.hpp>
@@ -772,9 +774,19 @@ struct RenderGraph::State final
     /// Packed bytes of the distinct value sets of the technique being prepared; reused per Update.
     StaticArray<StaticArray<uint8, MAX_TECHNIQUE_UNIFORM_BYTES>, format::MAX_UNIFORM_SETS> Packed{};
     StaticArray<uint8, MAX_TECHNIQUE_UNIFORM_BYTES> Candidate{};
+    internal::ForwardSceneResources ForwardResources;
+    MaterialProgram ForwardProgram{};
+    bool HasForwardLighting = false;
+    bool HasForwardProgram = false;
+    bool HasForwardResources = false;
+    [[nodiscard]] LUDUS_INLINE bool HasForwardProfile() const noexcept
+    {
+        return Programs.ForwardVertex.Inputs.empty() == false;
+    }
     struct Scene final
     {
         State* OwnerOrNull = nullptr;
+        core::UniquePtr<internal::ForwardSceneGeneration> ForwardGeneration;
         StaticArray<StaticArray<Mesh, format::MAX_MESHES>, format::TECHNIQUE_COUNT> Meshes{};
         StaticArray<bool, format::MAX_MESHES> HasMeshes{};
         StaticArray<StaticArray<UniformSet, format::MAX_UNIFORM_SETS>, format::TECHNIQUE_COUNT> UniformSets{};
@@ -794,6 +806,8 @@ struct RenderGraph::State final
         usize MeshCount = 0;
         uint64 Revision = 0;
         uint64 ContentRevision = 0;
+        RenderGraphSceneRevisions Revisions{};
+        RenderGraphCoveragePolicy CoveragePolicy = RenderGraphCoveragePolicy::RejectIncomplete;
         uint32 SubmittedRaySamples = 0;
         ~Scene() noexcept
         {
@@ -1025,6 +1039,14 @@ struct RenderGraph::State final
         }
         const StaticArray<format::Resource, format::MAX_RESOURCES>& preparingResources =
             Resizing.Get() != nullptr ? Resizing->Resources : Resources;
+        if (inoutScene.ForwardGeneration.Get() != nullptr)
+        {
+            const Status ready = inoutScene.ForwardGeneration->Poll();
+            if (ready != Status::Ready)
+            {
+                return ready;
+            }
+        }
         for (usize context = 0; context < format::TECHNIQUE_COUNT; ++context)
         {
             if (IsUsed[context] == false || context == static_cast<usize>(format::Technique::RayTracing))
@@ -1065,9 +1087,12 @@ struct RenderGraph::State final
             }
             if (inoutScene.HasSnapshots[i] == false)
             {
-                const Status created = context.CreateSnapshot(inoutScene.Items[i].GetData(),
-                                                              inoutScene.Counts[i],
-                                                              inoutScene.Snapshots[i]);
+                const BorrowedView<const SceneItem> items =
+                    inoutScene.ForwardGeneration.Get() != nullptr
+                        ? inoutScene.ForwardGeneration->GetItems()
+                        : BorrowedView<const SceneItem>{inoutScene.Items[i].GetData(), inoutScene.Counts[i]};
+                const Status created =
+                    context.CreateSnapshot(items.GetDataOrNull(), items.GetSize(), inoutScene.Snapshots[i]);
                 if (IsAccepted(created) == false)
                 {
                     return created;
@@ -1216,6 +1241,8 @@ struct RenderGraph::State final
         Pending.Reset();
         Resizing.Reset();
         Current.Reset();
+        ForwardResources.Reset();
+        static_cast<void>(Contexts[static_cast<usize>(format::Technique::ColorAndDepth)].Release(ForwardProgram));
         for (usize i = 0; i < Header.ResourceCount; ++i)
         {
             static_cast<void>(rhi::Destroy(Device, Buffers[i]));
@@ -1288,6 +1315,35 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
             programs.HasPersistentRayBuffers == false)
         {
             return Status::Unsupported;
+        }
+    }
+    const StaticArray<const rhi::RasterShaderDescription*, format::FORWARD_STAGE_ROLE_COUNT> forwardStages{
+        {&programs.ForwardVertex,
+         &programs.ForwardFragment,
+         &programs.ForwardShadow,
+         &programs.LightingVertex,
+         &programs.LightingFragment,
+         &programs.LightingShadow},
+    };
+    const bool hasForwardProfile = programs.ForwardVertex.Inputs.empty() == false;
+    for (const rhi::RasterShaderDescription* stage : forwardStages)
+    {
+        const bool hasArtifact = stage->Artifact.Wgsl.empty() == false || stage->Artifact.Msl.empty() == false ||
+                                 stage->Artifact.Spirv.empty() == false || stage->Artifact.GlslEs.empty() == false;
+        if (hasArtifact != hasForwardProfile)
+        {
+            return Status::InvalidDescription;
+        }
+    }
+    if (hasForwardProfile == true)
+    {
+        for (usize pass = 0; pass < plan.Passes.GetSize(); ++pass)
+        {
+            if (plan.Passes[pass].Program != format::Technique::ColorAndDepth ||
+                plan.Passes[pass].SceneData != format::SCENE_DATA_ALL)
+            {
+                return Status::Unsupported;
+            }
         }
     }
     StaticArray<bool, format::TECHNIQUE_COUNT> isUsed{};
@@ -1433,9 +1489,14 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
         const format::Technique technique = static_cast<format::Technique>(i);
         Limits limits;
         limits.Objects = static_cast<uint32>(format::MAX_ITEMS);
-        limits.Meshes = static_cast<uint32>(format::MAX_MESHES * MAX_RETAINED_SCENES);
+        limits.Meshes = static_cast<uint32>(
+            (candidate->HasForwardProfile() == true ? format::MAX_ITEMS : format::MAX_MESHES) * MAX_RETAINED_SCENES);
         limits.Snapshots = static_cast<uint32>(format::MAX_PASSES * MAX_RETAINED_SCENES);
         limits.Views = static_cast<uint32>(format::MAX_PASSES * MAX_RETAINED_SCENES);
+        if (candidate->HasForwardProfile() == true)
+        {
+            limits.Materials = static_cast<uint32>(format::MAX_ITEMS * MAX_RETAINED_SCENES);
+        }
         limits.UniformSets = static_cast<uint32>(format::MAX_UNIFORM_SETS * MAX_RETAINED_SCENES);
         status = candidate->Contexts[i].Initialize(device,
                                                    GetStage(programs, technique, rhi::ShaderStage::Vertex),
@@ -1694,6 +1755,53 @@ Status RenderGraph::Poll() noexcept
             return status;
         }
     }
+    if (state.HasForwardProfile() == true)
+    {
+        constexpr usize COLOR_CONTEXT = static_cast<usize>(format::Technique::ColorAndDepth);
+        Renderer& context = state.Contexts[COLOR_CONTEXT];
+        if (state.HasForwardLighting == false)
+        {
+            const Status status = context.InitializeLighting(state.Programs.LightingVertex,
+                                                             state.Programs.LightingFragment,
+                                                             state.Programs.LightingShadow);
+            if (IsAccepted(status) == false)
+            {
+                return status;
+            }
+            state.HasForwardLighting = true;
+        }
+        Status status = context.PollLighting();
+        if (status != Status::Ready)
+        {
+            return status;
+        }
+        if (state.HasForwardProgram == false)
+        {
+            status = context.PrewarmLitProgram(state.Programs.ForwardVertex,
+                                               state.Programs.ForwardFragment,
+                                               state.Programs.ForwardShadow,
+                                               state.ForwardProgram);
+            if (IsAccepted(status) == false)
+            {
+                return status;
+            }
+            state.HasForwardProgram = true;
+        }
+        status = context.GetStatus(state.ForwardProgram);
+        if (status != Status::Ready)
+        {
+            return status;
+        }
+        if (state.HasForwardResources == false)
+        {
+            status = state.ForwardResources.Initialize(state.Device, context, state.ForwardProgram);
+            if (status != Status::Ready)
+            {
+                return status;
+            }
+            state.HasForwardResources = true;
+        }
+    }
     for (usize i = 0; i < state.Header.ResourceCount; ++i)
     {
         if (state.Resources[i].Backing != i || state.Resources[i].IsSurface == 1)
@@ -1746,7 +1854,8 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
                            RenderGraphCoveragePolicy policy,
                            RenderGraphReport& outReport,
                            const SceneShaderInputs* sceneInputsOrNull,
-                           uint64 contentRevision) noexcept
+                           uint64 contentRevision,
+                           const RenderGraphSceneRevisions& revisions) noexcept
 {
     if (mState.Get() == nullptr)
     {
@@ -1777,8 +1886,17 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             return Status::Unsupported;
         }
     }
-    if (contentRevision != 0 && state.Current.Get() != nullptr && state.Current->ContentRevision == contentRevision &&
-        state.Resizing.Get() == nullptr && state.Pending.Get() == nullptr)
+    const bool hasRevisions = revisions.Geometry != 0 && revisions.Instances != 0 && revisions.Materials != 0 &&
+                              revisions.Lights != 0 && revisions.Environment != 0;
+    if (hasRevisions == false && revisions != RenderGraphSceneRevisions{})
+    {
+        return Status::InvalidDescription;
+    }
+    const bool canReuse =
+        state.Current.Get() != nullptr && state.Current->CoveragePolicy == policy &&
+        (hasRevisions == true ? state.Current->Revisions == revisions
+                              : contentRevision != 0 && state.Current->ContentRevision == contentRevision);
+    if (canReuse == true && state.Resizing.Get() == nullptr && state.Pending.Get() == nullptr)
     {
         if (state.PendingCamera.Get() != nullptr)
         {
@@ -1918,6 +2036,8 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     candidate->MeshCount = meshes.GetSize();
     candidate->Revision = sceneRevision;
     candidate->ContentRevision = contentRevision;
+    candidate->Revisions = revisions;
+    candidate->CoveragePolicy = policy;
     for (usize camera = 0; camera < cameras.GetSize(); ++camera)
     {
         candidate->Cameras[camera] = cameras[camera];
@@ -1945,7 +2065,29 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     };
     const bool hasDiagnostic =
         policy == RenderGraphCoveragePolicy::DiagnosticColor && state.HasDiagnosticContext() == true;
-    for (usize meshIndex = 0; meshIndex < meshes.GetSize(); ++meshIndex)
+    if (state.HasForwardProfile() == true)
+    {
+        for (usize pass = 0; pass < state.Header.PassCount; ++pass)
+        {
+            if (state.Passes[pass].Program != format::Technique::ColorAndDepth ||
+                state.Passes[pass].SceneData != format::SCENE_DATA_ALL)
+            {
+                return Status::Unsupported;
+            }
+        }
+        RenderGraphSceneDescription source;
+        source.Meshes = meshes;
+        source.Items = items;
+        source.Inputs = sceneInputsOrNull != nullptr ? *sceneInputsOrNull : SceneShaderInputs{};
+        source.HasMaterialInterface = sceneInputsOrNull != nullptr;
+        source.SourceGeneration = sceneRevision;
+        const Status prepared = state.ForwardResources.Prepare(source, candidate->ForwardGeneration);
+        if (IsAccepted(prepared) == false)
+        {
+            return prepared;
+        }
+    }
+    for (usize meshIndex = 0; state.HasForwardProfile() == false && meshIndex < meshes.GetSize(); ++meshIndex)
     {
         const RenderGraphMesh& mesh = meshes[meshIndex];
         bool isRequired = false;
@@ -2058,7 +2200,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             itemSets[itemIndex] = match;
         }
     }
-    for (usize pass = 0; pass < state.Header.PassCount; ++pass)
+    for (usize pass = 0; state.HasForwardProfile() == false && pass < state.Header.PassCount; ++pass)
     {
         const format::Pass& operation = state.Passes[pass];
         const usize context = static_cast<usize>(operation.Program);
@@ -2186,7 +2328,12 @@ BorrowedView<const RenderGraphCoverageRecord> RenderGraph::GetCoverage() const n
 }
 RenderGraphReport RenderGraph::GetReport() const noexcept
 {
-    return mState.Get() == nullptr ? RenderGraphReport{} : mState->Report;
+    RenderGraphReport report = mState.Get() == nullptr ? RenderGraphReport{} : mState->Report;
+    if (mState.Get() != nullptr)
+    {
+        report.Resources = mState->ForwardResources.GetReport();
+    }
+    return report;
 }
 uint64 RenderGraph::GetDrawableSceneRevision() const noexcept
 {

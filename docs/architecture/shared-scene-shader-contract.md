@@ -427,3 +427,19 @@ emitters survive World extraction, then run the user's authored direct and
 one-bounce shaders with no synthetic replacement lights. Deterministic synthetic
 fixtures establish CI correctness without requiring that scene. Frame time and
 noise must be measured separately; this API design makes no real-time claim.
+
+## Authored forward material execution
+
+The opt-in ForwardLit raster profile consumes the existing `RenderGraphMesh`,
+`RenderGraphItem` and `SceneShaderInputs` vocabulary. Its shader ABI is the
+renderer-authored material profile; this does not make arbitrary SceneContext
+queries or arbitrary raster storage bindings executable. The same World extraction
+feeds native rays and forward materials, while their physical preparation remains
+profile-specific. See the [forward-lit workflow and limits](../development/render-graph-authoring.md#use-the-forward-lit-template).
+
+A private forward scene generation owns material incarnations and pins shared
+immutable mesh/texture resources. Graph coverage and publication remain in RenderGraph;
+material evaluation, light selection and environment preprocessing retain their
+Renderer owners. Resources Manager still owns content leases/dependency replacement,
+not GPU caches. A scene's source leases may be released after its borrowed inputs
+have been consumed. GPU versions retire through existing Renderer/RHI retention.

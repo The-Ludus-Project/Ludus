@@ -5,6 +5,7 @@ import json
 
 
 TEMPLATES = {
+    'forward-lit': ('forward_lit', 'Forward lit', False),
     'restir-di': ('restir_di', 'ReSTIR DI', True),
     'visibility-buffer': ('visibility_buffer', 'Visibility buffer', False),
     'visibility-secondary-rays': ('visibility_secondary_rays', 'Visibility + secondary rays', True),

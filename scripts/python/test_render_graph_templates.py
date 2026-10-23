@@ -212,5 +212,28 @@ class VisibilityTemplateTests(unittest.TestCase):
             self.assertEqual(arguments.template, identity)
 
 
+class ForwardLitTemplateTests(unittest.TestCase):
+    def test_forward_template_is_portable_and_declares_one_scene_material_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = graph.new_workspace(Path(directory) / 'Lighting', output='offscreen',
+                                       renderer_static=True, profiles=('wgsl',), template='forward-lit')
+            plan = graph.compile_graph(root)
+            manifest = json.loads(root.with_name('main.lushader.json').read_text())
+            build.validate_manifest(manifest)
+            self.assertEqual(manifest['profiles'], ['wgsl'])
+            self.assertEqual(manifest['techniques'][0]['scene_interface'], {'version': 1, 'profile': 'ForwardLit'})
+            self.assertEqual(plan['techniques'], ['DefaultStaticOpaque.ColorAndDepth'])
+            library = json.loads(root.with_name('rasterize.lurender.json').read_text())
+            self.assertEqual(library['configurations'][0]['nodes'][0]['kind'], 'GraphicsPipeline')
+            extra_recipe = dict(manifest['techniques'][0]['recipes'][0], id='Extra')
+            manifest['techniques'][0]['recipes'].append(extra_recipe)
+            with self.assertRaises(ToolingError):
+                build.validate_manifest(manifest)
+            manifest['techniques'][0]['recipes'].pop()
+            manifest['techniques'][0]['scene_interface']['version'] = 2
+            with self.assertRaises(ToolingError):
+                build.validate_manifest(manifest)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -76,9 +76,9 @@ constexpr usize NO_MATERIAL = ~usize{0}, NO_SHADOW = ~usize{0};
 /// Packet/item marker for a flat draw using the bound program's zero-filled default uniforms.
 constexpr usize NO_UNIFORM = ~usize{0};
 constexpr usize SHADOW_DATA_BYTES = SHADOW_DATA_WORDS * sizeof(math::Vector4);
-constexpr usize LIT_SHADOW_OFFSET = (9 + 8 * 4) * sizeof(math::Vector4);
+constexpr usize LIT_SHADOW_OFFSET = FORWARD_SHADOW_OFFSET;
 constexpr usize CLUSTER_SHADOW_OFFSET = (9 + 128 * 4) * sizeof(math::Vector4);
-constexpr usize LIT_BYTES = LIT_SHADOW_OFFSET + SHADOW_DATA_BYTES;
+constexpr usize LIT_BYTES = FORWARD_SURFACE_OFFSET;
 constexpr usize CLUSTER_GRID_OFFSET = CLUSTER_SHADOW_OFFSET + SHADOW_DATA_BYTES;
 constexpr usize CLUSTER_BYTES = CLUSTER_GRID_OFFSET + 5 * sizeof(math::Vector4);
 constexpr usize AUTHORED_PARAMETER_BYTES = LUDUS_AUTHORED_PARAMETER_WORDS * sizeof(math::Vector4);

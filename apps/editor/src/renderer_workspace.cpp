@@ -1061,6 +1061,10 @@ bool RendererWorkspace::PromptNewGraph()
     addTemplate(QStringLiteral("Raster"),
                 QStringLiteral("raster"),
                 QStringLiteral("Render your World into a color image using editable raster shaders."));
+    addTemplate(QStringLiteral("Forward lit"),
+                QStringLiteral("forward-lit"),
+                QStringLiteral(
+                    "Render authored World materials, textures and direct lights with the portable forward profile."));
     addTemplate(QStringLiteral("Visibility buffer + depth"),
                 QStringLiteral("visibility-buffer"),
                 QStringLiteral("Write original primitive and instance IDs into RGBA8, alongside depth. "

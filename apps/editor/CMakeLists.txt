@@ -741,6 +741,22 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         set(editor_ray_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/raytracing")
         set(editor_ray_staged "${CMAKE_CURRENT_BINARY_DIR}/render-graph-host/raytracing")
         file(COPY "${editor_ray_source}/" DESTINATION "${editor_ray_staged}" PATTERN "*.in" EXCLUDE)
+        # Exercise the canonical editable forward template through the World preview path.
+        set(editor_forward_source "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/render_graphs/forward_lit")
+        set(editor_forward_staged "${CMAKE_CURRENT_BINARY_DIR}/forward-lit-inputs")
+        foreach(file main.lurender.json rasterize.lurender.json main_shaders/geometry.slang main_shaders/color.slang)
+            configure_file("${editor_forward_source}/${file}" "${editor_forward_staged}/${file}" COPYONLY)
+        endforeach()
+        set(LUDUS_DEFAULT_RENDER_GRAPH_PROFILES "[\"spirv\", \"wgsl\"]")
+        if(APPLE)
+            set(LUDUS_DEFAULT_RENDER_GRAPH_PROFILES "[\"metal\", \"wgsl\"]")
+        endif()
+        configure_file("${editor_forward_source}/main.lushader.json.in"
+            "${editor_forward_staged}/main.lushader.json" @ONLY)
+        ludus_compile_render_graph(TARGET ludus_editor_tests NAME editor_forward_lit
+            MANIFEST "${editor_forward_staged}/main.lushader.json" RUNTIME_PACKAGE)
+        target_compile_definitions(ludus_editor_tests PRIVATE
+            "LUDUS_EDITOR_FORWARD_GRAPH_FIXTURE=\"${editor_forward_lit_RUNTIME_PACKAGE}\"")
         # A stochastic ray fixture proves the editor schedules multiple samples of one revision.
         set(progressive_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/scene_ray")
         set(progressive_staged "${CMAKE_CURRENT_BINARY_DIR}/progressive-ray-inputs")
