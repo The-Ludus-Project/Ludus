@@ -1050,6 +1050,7 @@ void RendererWorkspace::SetProject(const QString& root, uint64 epoch)
     mBuildProblem.clear();
     mSourceProblem.clear();
     mExtractionProblem.clear();
+    mActivationProblem.clear();
     mSelectedFile.clear();
     mSelectedConfiguration.clear();
     mSelectedNode.clear();
@@ -1254,6 +1255,7 @@ void RendererWorkspace::showDocument(const RenderGraphDocument& document)
     mBuildProblem.clear();
     mSourceProblem.clear();
     mExtractionProblem.clear();
+    mActivationProblem.clear();
     mPreviewSceneIdentity.clear();
     mArePreviewInputsDirty = true;
     prepareDefaultPreview();
@@ -1614,6 +1616,10 @@ QString RendererWorkspace::GetRenderProblem() const
     {
         return mSourceProblem;
     }
+    if (mActivationProblem.isEmpty() == false)
+    {
+        return mActivationProblem;
+    }
     return mExtractionProblem.isEmpty() == false ? mExtractionProblem : mBuildProblem;
 }
 QString RendererWorkspace::GetScenePreparationProblem() const
@@ -1677,6 +1683,7 @@ void RendererWorkspace::setProblem(QString& inoutProblem, const QString& text)
     if (inoutProblem != text)
     {
         inoutProblem = text;
+        renderStatus();
         Q_EMIT RenderProblemChanged();
     }
 }
@@ -2890,6 +2897,10 @@ void RendererWorkspace::renderStatus()
         }
         mStatus->setText(text);
     }
+    if (GetRenderProblem().isEmpty() == false)
+    {
+        mStatus->setText(GetRenderProblem());
+    }
     updateActions();
 }
 
@@ -3972,10 +3983,17 @@ void RendererWorkspace::renderPreview()
         const graphics::renderer::RenderGraphCandidateState candidate = mPreviewOrNull->GetReport().Candidate;
         if ((candidate == graphics::renderer::RenderGraphCandidateState::Failed ||
              candidate == graphics::renderer::RenderGraphCandidateState::RestartRequired) &&
-            IsJobActive() == false && mHasPendingWorkerBuild == false && mBuildProblem.isEmpty() == true &&
-            mPreviewInputIdentity == getBuildIdentity(mPreviewSourceVersion))
+            (mPreviewInputIdentity == getBuildIdentity(mPreviewSourceVersion) ||
+             (mIsDefaultPreview == true && mPreviewInputIdentity.isEmpty() == true)))
         {
-            setProblem(mBuildProblem, mPreviewOrNull->GetDisplayStatus());
+            setProblem(mActivationProblem, mPreviewOrNull->GetDisplayStatus());
+        }
+        else if (candidate == graphics::renderer::RenderGraphCandidateState::Preparing ||
+                 candidate == graphics::renderer::RenderGraphCandidateState::NeedsUpdate ||
+                 (candidate == graphics::renderer::RenderGraphCandidateState::None &&
+                  mPreviewOrNull->GetReport().ActiveGeneration != 0))
+        {
+            setProblem(mActivationProblem, {});
         }
         static_cast<PreviewImage*>(mPreviewImage)->SetImage(mPreviewOrNull->GetImage());
         mPreviewStatus->setText(mPreviewOrNull->GetStatus());

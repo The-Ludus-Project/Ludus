@@ -3367,7 +3367,16 @@ Each accepted build reads the cooked file and stages it in a `RenderGraphActivat
 beside the generation already shown. Live Preview rebuilds saved graph/shader sources
 only; unsaved changes remain in the draft. A result for an older saved version never
 replaces the current request. Validation, compilation and activation failures preserve
-the last drawable view; successful replacements publish only after readiness. By default the viewport shows the configuration's first exported
+the last drawable view; successful replacements publish only after readiness.
+An activation failure appears in the **Error List** with its runtime status and
+candidate generation, independently of compiler results. The viewport and Render
+Preview retain the last drawable view and show the failure. A successful graph
+build does not establish successful activation: its success row is hidden while
+the current renderer reports a problem. A replacement candidate clears the prior
+activation error; switching projects or graph documents clears diagnostics from
+the previous context. Repeated polling of the same failure does not reopen the Error List.
+Scene asset validation reports only validation, without claiming the renderer
+has updated. By default the viewport shows the configuration's first exported
 `ColorTexture`, using the World's current camera or orbit. Its output selector can
 instead show any attachment after producer completion. Each World object becomes one static
 item with its flat tint (object tint times the surface's flat tint); a

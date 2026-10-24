@@ -15,6 +15,37 @@
 
 using namespace ludus::editor;
 
+TEST_CASE("preview diagnostics replace independently and reveal a changed activation failure once",
+          "[editor][render-graph][diagnostics]")
+{
+    ErrorList list;
+    QSignalSpy problems(&list, &ErrorList::ProblemsReported);
+    const QString failure = QStringLiteral("Renderer activation failed (OutOfMemory) for generation 2; "
+                                           "the last good scene is kept.");
+    const QString file = QStringLiteral("graphs/Main/main.lurender.json");
+    const QList<ErrorListEntry> preview = MakeRenderPreviewErrorEntries(failure, file);
+    REQUIRE(preview.size() == 1);
+    CHECK(preview.first().Severity == ErrorListSeverity::Error);
+    CHECK(preview.first().Producer == ErrorListProducer::RenderPreview);
+    CHECK(preview.first().Description == failure);
+    CHECK(preview.first().File == file);
+    CHECK(preview.first().Code == QStringLiteral("RenderGraphPreviewFailed"));
+    list.ReplaceEntries(ErrorListProducer::Build, ParseBuildErrorEntries(QStringLiteral("game.cpp:1: error: failure")));
+    problems.clear();
+    list.ReplaceEntries(ErrorListProducer::RenderPreview, preview);
+    CHECK(problems.count() == 1);
+    list.ReplaceEntries(ErrorListProducer::RenderPreview, preview);
+    CHECK(problems.count() == 1);
+    RenderGraphJobResult successful;
+    successful.IsSuccessful = true;
+    successful.Request.Action = QStringLiteral("build");
+    list.ReplaceEntries(ErrorListProducer::RenderGraph, MakeRenderGraphErrorEntries(successful));
+    CHECK(list.GetCount(ErrorListSeverity::Error) == 2);
+    list.ReplaceEntries(ErrorListProducer::RenderPreview, MakeRenderPreviewErrorEntries({}, file));
+    CHECK(list.GetCount(ErrorListSeverity::Error) == 1);
+    CHECK(list.GetCount(ErrorListSeverity::Message) == 1);
+}
+
 TEST_CASE("structured validation batches produce one actionable Error List row per issue",
           "[editor][render-graph][diagnostics]")
 {

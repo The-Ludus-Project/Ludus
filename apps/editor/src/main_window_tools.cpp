@@ -143,6 +143,12 @@ void MainWindow::openProjectItem(ProjectItemKind kind, const QString& path)
 
 void MainWindow::activateErrorEntry(const ErrorListEntry& entry)
 {
+    if (entry.Producer == ErrorListProducer::RenderPreview)
+    {
+        static_cast<void>(mDocuments->OpenDocument(Renderer_));
+        showToolWindow(mRenderPreviewDock);
+        return;
+    }
     if (entry.Producer == ErrorListProducer::RenderGraph)
     {
         // RendererWorkspace owns the authored-location mapping (graph node, source line or
@@ -251,7 +257,18 @@ void MainWindow::renderGraphErrors()
         Controller_->ReportProjectSetupProblem(result.Message);
     }
     // ErrorList::ProblemsReported brings the list forward for new errors and warnings.
-    mErrorList->ReplaceEntries(ErrorListProducer::RenderGraph, MakeRenderGraphErrorEntries(result));
+    const QString problem = Renderer_->GetRenderProblem();
+    const RenderGraphDocument& document = Renderer_->GetDocument();
+    const QString file =
+        document.IsLoaded() == true ? QDir(document.GetPackageRoot()).filePath(document.GetRootGraph()) : QString{};
+    mErrorList->ReplaceEntries(ErrorListProducer::RenderPreview,
+                               MakeRenderPreviewErrorEntries(Renderer_->GetActivationProblem(), file));
+    // A successful compile does not establish that the viewport accepted its generation.
+    mErrorList->ReplaceEntries(ErrorListProducer::RenderGraph,
+                               Renderer_->GetDiagnosticCount() == 0 ||
+                                       (result.IsSuccessful == true && problem.isEmpty() == false)
+                                   ? QList<ErrorListEntry>{}
+                                   : MakeRenderGraphErrorEntries(result));
     renderGraphCommands();
 }
 

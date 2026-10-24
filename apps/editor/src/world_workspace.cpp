@@ -1072,7 +1072,7 @@ void WorldWorkspace::SceneCompleted(bool accepted)
     ValidatedWorld_ = Document_.Encode();
     Render();
     Changed(importing ? QStringLiteral("Scene imported. Select its entities to edit placement and gameplay components.")
-                      : QStringLiteral("World viewport updated; scene assets validated."));
+                      : QStringLiteral("Scene assets validated."));
     if (SavePending_)
     {
         SavePending_ = false;

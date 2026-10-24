@@ -6,6 +6,9 @@
 // without a GPU adapter skip; this is not native Qt presentation evidence.
 #include "editor_default_graph.h"
 #include "editor_renderer_static.h"
+#include "internal/controller.h"
+#include "internal/error_list.h"
+#include "internal/main_window.h"
 #include "internal/offscreen_frame_reader.h"
 #include "internal/preview_viewport.h"
 #include "internal/render_graph_defaults.h"
@@ -722,6 +725,98 @@ TEST_CASE("RG3b failed and pending candidates keep the last drawable view", "[ed
     CHECK(preview.GetImage() == red);
     CHECK(preview.GetStatus().contains(QStringLiteral("last presented frame")) == true);
 }
+
+#if defined(Q_OS_MACOS)
+TEST_CASE("asynchronous activation failure reaches the shell Error List and recovers independently of compilation",
+          "[editor][render-graph][preview][diagnostics]")
+{
+    DeviceFixture device;
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    QTemporaryDir project;
+    QTemporaryDir settings;
+    REQUIRE(project.isValid() == true);
+    REQUIRE(settings.isValid() == true);
+    EditorController controller({}, nullptr, QDir(settings.path()).filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, QDir(settings.path()).filePath(QStringLiteral("workspace.json")));
+    RendererWorkspace* workspaceOrNull = window.findChild<RendererWorkspace*>();
+    ErrorList* errorsOrNull = window.findChild<ErrorList*>();
+    REQUIRE(workspaceOrNull != nullptr);
+    REQUIRE(errorsOrNull != nullptr);
+    workspaceOrNull->SetProject(project.path(), 1);
+    workspaceOrNull->SetLivePreview(false);
+    RenderGraphPreview& preview = *workspaceOrNull->GetPreviewOrNull();
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    preview.SetExtraction(MakeExtraction({0, 1, 0, 1}, 1));
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedGeneration() != 0; }) == true);
+    const QImage retained = preview.GetImage();
+    const uint64 retainedGeneration = preview.GetPresentedGeneration();
+
+    RenderGraphJobResult compiled;
+    compiled.Request.ProjectEpoch = 1;
+    compiled.Request.Action = QStringLiteral("build");
+    compiled.Request.Revision = workspaceOrNull->GetDocument().GetRevision();
+    compiled.IsSuccessful = true;
+    workspaceOrNull->AcceptResult(compiled);
+    CHECK(errorsOrNull->GetCount(ErrorListSeverity::Error) == 0);
+    CHECK(errorsOrNull->GetCount(ErrorListSeverity::Message) == 1);
+    QSignalSpy reported(errorsOrNull, &ErrorList::ProblemsReported);
+
+    // Keep the runtime package valid but make native shader preparation fail on its worker lane.
+    QFile runtime(GetDefaultRenderGraphRuntime());
+    REQUIRE(runtime.open(QIODevice::ReadOnly) == true);
+    QByteArray broken = runtime.readAll();
+    const QByteArray validInclude = QByteArrayLiteral("#include <metal_stdlib>");
+    const QByteArray brokenInclude = QByteArrayLiteral("#include <xxxxx_stdlib>");
+    REQUIRE(broken.contains(validInclude) == true);
+    REQUIRE(validInclude.size() == brokenInclude.size());
+    broken.replace(validInclude, brokenInclude);
+    REQUIRE(preview.Load(WriteBytes(project, QStringLiteral("broken.lurgrt"), broken)) ==
+            RenderGraphPreviewLoad::Staged);
+    CHECK(preview.GetImage() == retained);
+    CHECK(errorsOrNull->GetCount(ErrorListSeverity::Error) == 0);
+    REQUIRE(TickUntil(preview, [&]() {
+                return preview.GetReport().Candidate == renderer::RenderGraphCandidateState::Failed;
+            }) == true);
+    CHECK(preview.GetReport().LastFailure == rhi::RasterStatus::Failed);
+    CHECK(preview.GetPresentedGeneration() == retainedGeneration);
+    CHECK(preview.GetImage() == retained);
+    CHECK(workspaceOrNull->GetLastResult().IsSuccessful == true);
+    CHECK(workspaceOrNull->GetActivationProblem().contains(QStringLiteral("Failed")) == true);
+    CHECK(workspaceOrNull->GetActivationProblem().contains(QString::number(preview.GetReport().CandidateGeneration)) ==
+          true);
+    CHECK(workspaceOrNull->GetStatusText() == workspaceOrNull->GetActivationProblem());
+    REQUIRE(errorsOrNull->GetCount(ErrorListSeverity::Error) == 1);
+    CHECK(errorsOrNull->GetCount(ErrorListSeverity::Message) == 0);
+    CHECK(errorsOrNull->GetEntries().first().Description == preview.GetDisplayStatus());
+    CHECK(reported.count() == 1);
+    REQUIRE(errorsOrNull->ActivateVisibleRow(0) == true);
+    for (usize tick = 0; tick < 2; ++tick)
+    {
+        preview.Tick();
+    }
+    CHECK(reported.count() == 1);
+    // Even a later successful compiler result cannot erase the current activation error.
+    workspaceOrNull->AcceptResult(compiled);
+    CHECK(errorsOrNull->GetCount(ErrorListSeverity::Error) == 1);
+    CHECK(errorsOrNull->GetCount(ErrorListSeverity::Message) == 0);
+    CHECK(workspaceOrNull->GetStatusText() == workspaceOrNull->GetActivationProblem());
+
+    REQUIRE(preview.Load(GetDefaultRenderGraphRuntime()) == RenderGraphPreviewLoad::Staged);
+    CHECK(preview.GetImage() == retained);
+    CHECK(errorsOrNull->GetCount(ErrorListSeverity::Error) == 0);
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedGeneration() > retainedGeneration; }) == true);
+    CHECK(workspaceOrNull->GetActivationProblem().isEmpty() == true);
+    CHECK(workspaceOrNull->GetRenderProblem().isEmpty() == true);
+    CHECK(preview.GetDisplayStatus().isEmpty() == true);
+    CHECK(errorsOrNull->GetCount(ErrorListSeverity::Message) == 1);
+    workspaceOrNull->SetProject({}, 2);
+    CHECK(errorsOrNull->GetEntries().isEmpty() == true);
+    preview.Detach();
+}
+#endif
 
 TEST_CASE("Editors without OIDN preview a denoising graph unfiltered and say so",
           "[editor][render-graph][preview][denoising]")
