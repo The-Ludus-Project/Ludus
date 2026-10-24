@@ -105,6 +105,8 @@ TEST_CASE("Quick Add ranks label words first and accepts synonyms", "[editor][re
                                    QStringLiteral("node:Upscale/fsr-3")});
     CHECK(GetKeys(SearchRenderGraphTemplates(QStringLiteral("restir"), templates)).first() ==
           QStringLiteral("snippet:restir-di"));
+    CHECK(GetKeys(SearchRenderGraphTemplates(QStringLiteral("tiled"), templates)).first() ==
+          QStringLiteral("snippet:tiled-vbuffer-nee"));
     CHECK(SearchRenderGraphTemplates(QStringLiteral("tone zzz"), templates).isEmpty() == true);
 
     // An empty query keeps everything, grouped by category in vocabulary order.

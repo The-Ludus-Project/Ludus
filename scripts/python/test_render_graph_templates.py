@@ -212,6 +212,101 @@ class VisibilityTemplateTests(unittest.TestCase):
             self.assertEqual(arguments.template, identity)
 
 
+class TiledVbufferNeeTemplateTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+
+    def create(self, profiles=('metal', 'wgsl'), name='Tiled'):
+        return graph.new_workspace(Path(self.directory.name) / name, output='offscreen', renderer_static=True,
+                                   profiles=profiles, template='tiled-vbuffer-nee')
+
+    def test_three_visibility_driven_passes_share_one_pixel_sized_table(self):
+        root = self.create()
+        plan = graph.compile_graph(root)
+        raster = next(operation for operation in plan['passes'] if operation['kind'] == 'Raster')
+        rays = [operation for operation in plan['passes'] if operation['kind'] == 'RayTracing']
+        self.assertEqual([operation['id'].rsplit('/', 1)[-1] for operation in rays], ['tiles', 'prefix', 'shade'])
+        for operation in rays:
+            self.assertEqual(operation['visibility']['resource'], raster['attachments']['color']['resource'])
+            self.assertEqual(operation['visibility_depth']['resource'], raster['attachments']['depth']['resource'])
+            self.assertEqual(operation['pipeline']['invocation']['dimensions'], 'ColorTarget')
+        buffers = [resource for resource in plan['resources'].values() if resource['type'] == 'Buffer']
+        self.assertEqual(len(buffers), 1)
+        self.assertEqual(buffers[0]['bytes_per_pixel'], 32)
+        self.assertEqual(buffers[0]['extent'], [640 * 480 * 32, 1])
+        self.assertEqual(buffers[0]['view_scale'], [1, 1])
+        final = rays[-1]
+        self.assertTrue(any(operation['kind'] == 'Accumulate' for operation in plan['passes']))
+        self.assertEqual(1, final['tone_mapping']['exposure'])
+        manifest = json.loads(root.with_name('main.lushader.json').read_text())
+        build.validate_manifest(manifest)
+        interface = next(technique['scene_interface'] for technique in manifest['techniques']
+                         if 'scene_interface' in technique)
+        # One BSDF ray and one light occlusion query per shaded pixel.
+        self.assertEqual((interface['visibility_buffer'], interface['surface_queries'], interface['visibility_queries']),
+                         (True, 1, 1))
+        self.assertFalse(any(program['bindings'] for program in manifest['programs']))
+
+    def test_every_tile_record_fits_the_table_at_common_render_sizes(self):
+        import re
+        root = self.create()
+        header = root.with_name('main_shaders').joinpath('tile_table.slang').read_text()
+        constant = lambda name: int(re.search(rf'static const uint {name} = (\d+);', header).group(1))
+        tile, words = constant('TILED_NEE_TILE_SIZE_PIXELS'), constant('TILED_NEE_TILE_WORDS')
+        library = json.loads(root.with_name('library.lurender.json').read_text())
+        table = next(node for node in library['configurations'][0]['nodes'] if node['kind'] == 'Buffer')
+        for width, height in ((96, 64), (640, 480), (1280, 720), (1920, 1080), (2560, 1440), (3840, 2160)):
+            with self.subTest(width=width, height=height):
+                tiles = -(-width // tile) * -(-height // tile)
+                self.assertLessEqual(tiles * words * ray.BUFFER_WORD_BYTES, width * height * table['bytes_per_pixel'])
+                self.assertLessEqual(width * height * table['bytes_per_pixel'], 256 * 1024 * 1024)
+
+    def test_native_ray_tracing_is_required_and_destinations_are_preserved(self):
+        with self.assertRaises(ToolingError):
+            self.create(('wgsl',), name='Browser')
+        self.assertFalse((Path(self.directory.name) / 'Browser').exists())
+        destination = Path(self.directory.name) / 'Tiled'
+        destination.mkdir()
+        marker = destination / 'mine'
+        marker.write_text('keep')
+        with self.assertRaises(ToolingError):
+            self.create()
+        self.assertEqual(list(destination.iterdir()), [marker])
+
+    def test_template_resolves_from_a_relocated_sdk_with_its_include_closure(self):
+        from ludus_tools import render_graph_templates
+        installed = Path(self.directory.name) / 'sdk/lib/cmake/Ludus/render_graph'
+        module = installed / 'ludus_tools/render_graph_templates.py'
+        module.parent.mkdir(parents=True)
+        source = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs/tiled_vbuffer_nee'
+        shutil.copytree(source, installed / 'templates/tiled_vbuffer_nee')
+        with patch.object(render_graph_templates, '__file__', str(module)):
+            files = render_graph_templates.template_files('tiled-vbuffer-nee', ('spirv',), graph)
+        manifest = json.loads(files['main.lushader.json'])
+        self.assertEqual(manifest['profiles'], ['spirv'])
+        build.validate_manifest(manifest)
+        for callback in ('tiles', 'prefix', 'shade'):
+            self.assertIn('#include "tile_table.slang"', files[f'main_shaders/{callback}.slang'])
+        self.assertIn('EvaluateTileEmitterPmf', files['main_shaders/tile_table.slang'])
+
+    def test_raster_producer_matches_the_visibility_buffer_template(self):
+        from ludus_tools import render_graph_templates as templates
+        tiled = templates.template_files('tiled-vbuffer-nee', ('metal',), graph)
+        visibility = templates.template_files('visibility-buffer', ('metal',), graph)
+        # The editor imports these raster sources from the shared visibility_buffer directory.
+        for relative in ('main_shaders/geometry.slang', 'main_shaders/color.slang'):
+            self.assertEqual(tiled[relative], visibility[relative])
+        self.assertEqual(json.loads(tiled['main.lushader.json'])['schemas'],
+                         json.loads(visibility['main.lushader.json'])['schemas'])
+
+    def test_cli_exposes_the_template_choice(self):
+        from ludus_tools.cli import build_parser
+        arguments = build_parser().parse_args(['render-graph', 'new', 'graphs/Main', '--template', 'tiled-vbuffer-nee',
+                                               '--output', 'offscreen', '--renderer-static', '--profiles', 'metal'])
+        self.assertEqual(arguments.template, 'tiled-vbuffer-nee')
+
+
 class ForwardLitTemplateTests(unittest.TestCase):
     def test_forward_template_is_portable_and_declares_one_scene_material_profile(self):
         with tempfile.TemporaryDirectory() as directory:

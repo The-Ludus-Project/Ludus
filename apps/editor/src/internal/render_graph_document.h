@@ -236,7 +236,7 @@ public:
                                                                 const QString& configuration,
                                                                 QString& outError,
                                                                 const QString& parentConfiguration = {});
-    /// Apply restir-di, visibility-buffer or visibility-secondary-rays to a library configuration,
+    /// Apply restir-di, visibility-buffer, visibility-secondary-rays or tiled-vbuffer-nee to a library configuration,
     /// inserting a new library/Subgraph when file is the root. One undo step; no disk writes.
     /// Existing nonempty configurations, shader sources and incompatible ABIs are preserved on failure.
     /// An optional budget request reports a blocked program increase. Explicitly approved increases

@@ -36,9 +36,11 @@ PrepareRestirConfiguration(RenderGraphSnapshot& inoutSnapshot,
                                                               const QString& parentConfiguration,
                                                               const QString& packageRoot,
                                                               QString& outError);
-/// Prepare visibility-buffer or visibility-secondary-rays in an absent/empty library configuration.
-/// Caller owns/discards the snapshot; compatible RendererStatic fields are extended, authored shader
-/// bytes are preserved, and ABI/source/budget conflicts report a repair. GUI thread; no disk writes.
+/// Prepare visibility-buffer, visibility-secondary-rays or tiled-vbuffer-nee in an absent/empty
+/// library configuration. Ray sources arrive with their local include closure. Caller owns/discards
+/// the snapshot; compatible RendererStatic fields are extended, authored shader bytes are preserved,
+/// shared ray query budgets are raised to the template's needs, and ABI/source/budget conflicts
+/// report a repair. GUI thread; no disk writes.
 [[nodiscard]] RenderGraphDocumentStatus
 PrepareVisibilityConfiguration(RenderGraphSnapshot& inoutSnapshot,
                                const QString& rootGraph,
@@ -48,7 +50,7 @@ PrepareVisibilityConfiguration(RenderGraphSnapshot& inoutSnapshot,
                                QString& outError,
                                RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr);
 /// Prepare a built-in configuration, inserting a library/Subgraph when selected on the root canvas.
-/// Supports restir-di, visibility-buffer and visibility-secondary-rays. Same transaction contract
+/// Supports restir-di, visibility-buffer, visibility-secondary-rays and tiled-vbuffer-nee. Same transaction contract
 /// as PrepareRestirTemplate; invalid identities and conflicts leave publication to the caller.
 [[nodiscard]] RenderGraphDocumentStatus
 PrepareConfigurationTemplate(RenderGraphSnapshot& inoutSnapshot,

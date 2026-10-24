@@ -44,6 +44,15 @@
       "description": "Three ray passes with editable shader settings and automatically sized reservoirs. Uses emissive meshes and requires native ray tracing. Temporal reuse has no motion reprojection. Change settings through Properties or the canvas menu."
     },
     {
+      "kind": "graph",
+      "identity": "tiled-vbuffer-nee",
+      "label": "Tiled vbuffer NEE — many-light direct lighting",
+      "category": "hybrid",
+      "requirements": ["native-ray-tracing"],
+      "keywords": ["many lights", "emissive", "direct lighting", "vbuffer", "tiled", "mis"],
+      "description": "Rasterize visibility, build one emitter-selection table per 16×16 tile, then shade each pixel with a light sample and a BSDF ray, MIS-weighted. Uses emissive meshes and requires native ray tracing."
+    },
+    {
       "kind": "snippet",
       "identity": "restir-di",
       "label": "ReSTIR DI — mesh emitter lighting",
@@ -52,6 +61,16 @@
       "requirements": ["native-ray-tracing"],
       "keywords": ["restir", "many lights", "emissive", "direct lighting"],
       "description": "Three ray passes with two automatically sized reservoirs and Graph settings. Connect scene, view and color; requires native ray tracing and emissive meshes."
+    },
+    {
+      "kind": "snippet",
+      "identity": "tiled-vbuffer-nee",
+      "label": "Tiled vbuffer NEE — many-light direct lighting",
+      "category": "lighting",
+      "defaultConfiguration": "TiledVbufferNee",
+      "requirements": ["native-ray-tracing"],
+      "keywords": ["many lights", "emissive", "direct lighting", "vbuffer", "tiled", "mis"],
+      "description": "Visibility raster, a per-tile emitter table and an MIS shading pass sharing one automatically sized buffer. Connect scene, view and color; outputs color, visibility and depth. Requires native ray tracing and emissive meshes."
     },
     {
       "kind": "snippet",

@@ -3,9 +3,12 @@
 
 #include <ludus/foundation/base/types.h>
 
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QRegularExpression>
+#include <QSet>
 
 namespace ludus::editor
 {
@@ -14,6 +17,55 @@ namespace
 {
 const QString VISIBILITY_VARYING = QStringLiteral("VisibilityRasterVarying");
 const QString RAY_TECHNIQUE = QStringLiteral("RendererTriangles.RayTracing");
+
+/// One built-in visibility template: its embedded resource identity, the package directory its
+/// copied sources use, and the prefix that keeps its ray programs apart from authored ones.
+struct VisibilityTemplate final
+{
+    QString Identity;
+    QString Directory;
+    QString ProgramPrefix;
+    QString Name;
+    bool HasRays = false;
+};
+
+/// Every visibility template shares this raster producer and its sources.
+VisibilityTemplate GetRasterTemplate()
+{
+    return {QStringLiteral("visibility-buffer"),
+            QStringLiteral("visibility_buffer/"),
+            QStringLiteral("Visibility"),
+            QStringLiteral("Visibility"),
+            false};
+}
+
+bool FindVisibilityTemplate(const QString& identity, VisibilityTemplate& outTemplate)
+{
+    if (identity == QStringLiteral("visibility-buffer"))
+    {
+        outTemplate = GetRasterTemplate();
+        return true;
+    }
+    if (identity == QStringLiteral("visibility-secondary-rays"))
+    {
+        outTemplate = {identity,
+                       QStringLiteral("visibility_secondary_rays/"),
+                       QStringLiteral("VisibilitySecondary"),
+                       QStringLiteral("Visibility"),
+                       true};
+        return true;
+    }
+    if (identity == QStringLiteral("tiled-vbuffer-nee"))
+    {
+        outTemplate = {identity,
+                       QStringLiteral("tiled_vbuffer_nee/"),
+                       QStringLiteral("TiledNee"),
+                       QStringLiteral("Tiled vbuffer NEE"),
+                       true};
+        return true;
+    }
+    return false;
+}
 
 QByteArray ReadVisibilityTemplate(const QString& identity, const QString& file)
 {
@@ -25,12 +77,55 @@ QByteArray ReadVisibilityTemplate(const QString& identity, const QString& file)
     return source.readAll();
 }
 
-QString GetVisibilityProgramName(const QString& identity)
+bool IsRasterProgram(const QString& identity)
 {
-    return (identity == QStringLiteral("Geometry") || identity == QStringLiteral("Color")
-                ? QStringLiteral("Visibility")
-                : QStringLiteral("VisibilitySecondary")) +
-           identity;
+    return identity == QStringLiteral("Geometry") || identity == QStringLiteral("Color");
+}
+
+QString GetVisibilityProgramName(const QString& identity, const VisibilityTemplate& source)
+{
+    return (IsRasterProgram(identity) == true ? GetRasterTemplate().ProgramPrefix : source.ProgramPrefix) + identity;
+}
+
+// Capture an entry source and its literal local include closure: shared helpers such as a
+// tiled table header must arrive with the callbacks that include them.
+bool CopyVisibilitySources(RenderGraphSnapshot& inoutSnapshot,
+                           const VisibilityTemplate& source,
+                           const QString& entry,
+                           QString& outError)
+{
+    QStringList pending{entry};
+    QSet<QString> visited;
+    static const QRegularExpression INCLUDE(QStringLiteral("^\\s*#\\s*include\\s+\"([^\"]+)\""),
+                                            QRegularExpression::MultilineOption);
+    while (pending.isEmpty() == false)
+    {
+        const QString relative = QDir::cleanPath(pending.takeFirst());
+        if (visited.contains(relative) == true)
+        {
+            continue;
+        }
+        visited.insert(relative);
+        const QString destination = source.Directory + relative;
+        const bool isInside =
+            relative.startsWith(QStringLiteral("../")) == false && QDir::isAbsolutePath(relative) == false;
+        const QByteArray bytes = isInside == true ? ReadVisibilityTemplate(source.Identity, relative) : QByteArray{};
+        if (bytes.isEmpty() == true ||
+            (inoutSnapshot.Files.contains(destination) == true && inoutSnapshot.Files.value(destination) != bytes))
+        {
+            outError = QStringLiteral("Visibility shader source %1 is unavailable or has authored changes. "
+                                      "Rename the custom source before importing this template.")
+                           .arg(destination);
+            return false;
+        }
+        inoutSnapshot.Files.insert(destination, bytes);
+        QRegularExpressionMatchIterator includes = INCLUDE.globalMatch(QString::fromUtf8(bytes));
+        while (includes.hasNext() == true)
+        {
+            pending.append(QDir(QFileInfo(relative).path()).filePath(includes.next().captured(1)));
+        }
+    }
+    return true;
 }
 
 bool MergeVisibilitySchemas(QJsonObject& inoutManifest, const QJsonObject& source, QString& outError)
@@ -108,6 +203,7 @@ bool MergeVisibilitySchemas(QJsonObject& inoutManifest, const QJsonObject& sourc
 bool MergeVisibilityPrograms(RenderGraphSnapshot& inoutSnapshot,
                              QJsonObject& inoutManifest,
                              const QJsonObject& source,
+                             const VisibilityTemplate& selected,
                              QString& outError,
                              RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
 {
@@ -120,25 +216,14 @@ bool MergeVisibilityPrograms(RenderGraphSnapshot& inoutSnapshot,
         {
             continue;
         }
-        const bool isRaster = identity == QStringLiteral("Geometry") || identity == QStringLiteral("Color");
-        const QString templateIdentity =
-            isRaster == true ? QStringLiteral("visibility-buffer") : QStringLiteral("visibility-secondary-rays");
-        const QString directory =
-            isRaster == true ? QStringLiteral("visibility_buffer/") : QStringLiteral("visibility_secondary_rays/");
+        const VisibilityTemplate owner = IsRasterProgram(identity) == true ? GetRasterTemplate() : selected;
         const QString relative = incoming.value(QStringLiteral("source")).toString();
-        const QString destination = directory + relative;
-        const QByteArray bytes = ReadVisibilityTemplate(templateIdentity, relative);
-        if (bytes.isEmpty() == true ||
-            (inoutSnapshot.Files.contains(destination) == true && inoutSnapshot.Files.value(destination) != bytes))
+        if (CopyVisibilitySources(inoutSnapshot, owner, relative, outError) == false)
         {
-            outError = QStringLiteral("Visibility shader source %1 is unavailable or has authored changes. "
-                                      "Rename the custom source before importing this template.")
-                           .arg(destination);
             return false;
         }
-        inoutSnapshot.Files.insert(destination, bytes);
-        incoming.insert(QStringLiteral("id"), GetVisibilityProgramName(identity));
-        incoming.insert(QStringLiteral("source"), destination);
+        incoming.insert(QStringLiteral("id"), GetVisibilityProgramName(identity, selected));
+        incoming.insert(QStringLiteral("source"), owner.Directory + relative);
         bool hasProgram = false;
         for (const QJsonValueConstRef existing : programs)
         {
@@ -161,7 +246,7 @@ bool MergeVisibilityPrograms(RenderGraphSnapshot& inoutSnapshot,
     }
     if (EnsureTemplateProgramBudget(inoutManifest,
                                     static_cast<int32>(programs.size()),
-                                    QStringLiteral("Visibility"),
+                                    selected.Name,
                                     outError,
                                     inoutBudgetOrNull) == false)
     {
@@ -174,6 +259,7 @@ bool MergeVisibilityPrograms(RenderGraphSnapshot& inoutSnapshot,
 bool MergeVisibilityRayInterface(RenderGraphSnapshot& inoutSnapshot,
                                  QJsonObject& inoutManifest,
                                  const QJsonObject& source,
+                                 const VisibilityTemplate& selected,
                                  QString& outError)
 {
     QJsonArray techniques = inoutManifest.value(QStringLiteral("techniques")).toArray();
@@ -226,10 +312,15 @@ bool MergeVisibilityRayInterface(RenderGraphSnapshot& inoutSnapshot,
                                          .toObject()
                                          .value(QStringLiteral("scene_interface"))
                                          .toObject();
-        for (const QString& field :
-             {QStringLiteral("version"), QStringLiteral("surface_queries"), QStringLiteral("visibility_queries")})
+        if (interface.contains(QStringLiteral("version")) == false)
         {
-            if (interface.contains(field) == false)
+            interface.insert(QStringLiteral("version"), defaults.value(QStringLiteral("version")));
+        }
+        // Budgets are per-invocation maxima shared by every ray pass: raise them to what this
+        // template's callbacks issue, and keep larger authored budgets.
+        for (const QString& field : {QStringLiteral("surface_queries"), QStringLiteral("visibility_queries")})
+        {
+            if (interface.contains(field) == false || interface.value(field).toInt() < defaults.value(field).toInt())
             {
                 interface.insert(field, defaults.value(field));
             }
@@ -244,12 +335,12 @@ bool MergeVisibilityRayInterface(RenderGraphSnapshot& inoutSnapshot,
     for (const QString& stage :
          {QStringLiteral("ray_generation"), QStringLiteral("miss"), QStringLiteral("closest_hit")})
     {
-        technique.insert(stage, GetVisibilityProgramName(technique.value(stage).toString()));
+        technique.insert(stage, GetVisibilityProgramName(technique.value(stage).toString(), selected));
     }
     QJsonObject interface = technique.value(QStringLiteral("scene_interface")).toObject();
     const QString relative = interface.value(QStringLiteral("payload")).toString();
-    const QString destination = QStringLiteral("visibility_secondary_rays/") + relative;
-    const QByteArray payload = ReadVisibilityTemplate(QStringLiteral("visibility-secondary-rays"), relative);
+    const QString destination = selected.Directory + relative;
+    const QByteArray payload = ReadVisibilityTemplate(selected.Identity, relative);
     if (payload.isEmpty() == true ||
         (inoutSnapshot.Files.contains(destination) == true && inoutSnapshot.Files.value(destination) != payload))
     {
@@ -277,8 +368,8 @@ RenderGraphDocumentStatus PrepareVisibilityConfiguration(RenderGraphSnapshot& in
                                                          QString& outError,
                                                          RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
 {
-    const bool hasSecondaryRays = templateIdentity == QStringLiteral("visibility-secondary-rays");
-    if (hasSecondaryRays == false && templateIdentity != QStringLiteral("visibility-buffer"))
+    VisibilityTemplate selected;
+    if (FindVisibilityTemplate(templateIdentity, selected) == false)
     {
         outError = QStringLiteral("Select a built-in configuration template.");
         return RenderGraphDocumentStatus::InvalidEdit;
@@ -320,11 +411,11 @@ RenderGraphDocumentStatus PrepareVisibilityConfiguration(RenderGraphSnapshot& in
     QJsonObject manifest = QJsonDocument::fromJson(inoutSnapshot.Files.value(manifestFile)).object();
     const QJsonArray profiles = manifest.value(QStringLiteral("profiles")).toArray();
     if (manifest.isEmpty() == true || profiles.isEmpty() == true ||
-        (hasSecondaryRays == true && profiles.contains(QStringLiteral("metal")) == false &&
+        (selected.HasRays == true && profiles.contains(QStringLiteral("metal")) == false &&
          profiles.contains(QStringLiteral("spirv")) == false))
     {
         outError =
-            QStringLiteral("Visibility needs a Renderer manifest; secondary rays also need a Metal or Vulkan profile.");
+            QStringLiteral("Visibility needs a Renderer manifest; ray passes also need a Metal or Vulkan profile.");
         return RenderGraphDocumentStatus::InvalidEdit;
     }
     QByteArray bytes = ReadVisibilityTemplate(templateIdentity, QStringLiteral("main.lushader.json.in"));
@@ -342,8 +433,9 @@ RenderGraphDocumentStatus PrepareVisibilityConfiguration(RenderGraphSnapshot& in
         return RenderGraphDocumentStatus::NotFound;
     }
     if (MergeVisibilitySchemas(manifest, source, outError) == false ||
-        MergeVisibilityPrograms(inoutSnapshot, manifest, source, outError, inoutBudgetOrNull) == false ||
-        (hasSecondaryRays == true && MergeVisibilityRayInterface(inoutSnapshot, manifest, source, outError) == false))
+        MergeVisibilityPrograms(inoutSnapshot, manifest, source, selected, outError, inoutBudgetOrNull) == false ||
+        (selected.HasRays == true &&
+         MergeVisibilityRayInterface(inoutSnapshot, manifest, source, selected, outError) == false))
     {
         outError += QStringLiteral(" The draft was preserved.");
         return RenderGraphDocumentStatus::Conflict;
@@ -359,7 +451,7 @@ RenderGraphDocumentStatus PrepareVisibilityConfiguration(RenderGraphSnapshot& in
         {
             QJsonObject entry = shaders.at(shader).toObject();
             entry.insert(QStringLiteral("program"),
-                         GetVisibilityProgramName(entry.value(QStringLiteral("program")).toString()));
+                         GetVisibilityProgramName(entry.value(QStringLiteral("program")).toString(), selected));
             shaders.replace(shader, entry);
         }
         if (shaders.isEmpty() == false)

@@ -841,6 +841,54 @@ buffer values. They establish the storage/ordering seam for an authored ReSTIR
 implementation; reservoir sampling, temporal reprojection and disocclusion logic
 remain shader policy.
 
+<a id="select-emitters-per-screen-tile"></a>
+
+### Select emitters per screen tile (tiled vbuffer NEE)
+
+The **Tiled vbuffer NEE — many-light direct lighting** template (`tiled-vbuffer-nee`)
+amortizes emitter importance over screen tiles. Scoring every emitter triangle for
+every pixel costs O(emissive triangles) per sample; this template scores each emitter
+once per 16 × 16 tile and leaves the pixel an O(log emitters) CDF lookup. Create it from
+**New Render Graph → Template**, the CLI command above, or **Apply Configuration
+Template...** (also in Quick Add), which inserts the `TiledVbufferNee` configuration with
+the [visibility template ports](#raster-first-hits-and-secondary-rays).
+
+The library holds the visibility raster producer, one `table` **Buffer**
+(`bytes_per_pixel: 32`, `extent: "RenderSize"`) and three visibility-driven ray
+passes. The table chains `table.buffer → tiles.table → prefix.table → shade.table`
+and binds `GraphBuffer0` in each pass:
+
+| Pipeline node | Ray-generation source | Work |
+| --- | --- | --- |
+| `tiles` | `main_shaders/tiles.slang` | Reconstruct four representative surfaces of the tile with `LoadVisibilitySurface` (a `RayLaunch` whose `PositionPixel` is the representative pixel); each invocation scores whole `uint4` words of four emitters, so no atomics are needed |
+| `prefix` | `main_shaders/prefix.slang` | The tile's first invocation turns the weights into an inclusive CDF in place and publishes the tile header |
+| `shade` | `main_shaders/shade.slang` | Load the pixel's surface; pick an emitter from its tile's CDF and a triangle by area; one `TestVisibility` query plus one BSDF-sampled `TraceClosest` ray, combined with the power heuristic |
+
+An emitter's weight is the sum over its triangles of area × clamped inverse-square
+distance × receiver/emitter cosines, averaged over the representative surfaces. A
+per-triangle orientation floor and a floor of 1% of the tile's mean bin keep every
+emitter with positive area selectable from every pixel. A BSDF ray that hits an emitter
+reads that emitter's probability from the **same** tile table in O(1), so sampling and
+MIS evaluation always agree within a frame and the estimator stays unbiased. Tables
+that cannot be built (no emitters, invalid weights, a stale header, or an image too
+small to hold every tile record) fall back to uniform emitter selection in both places.
+
+Each tile record is 256 `uint4` words: a header with the bin count, emitter count,
+total weight, layout tag and scene generation, then 1,016 binary32 bins. With more
+emitters than bins, the last bin is an overflow bucket at the mean scored weight whose
+emitters are chosen uniformly. At 32 bytes per pixel the table is about 66 MB at
+1920 × 1080 and fits the 256 MiB buffer limit at 3840 × 2160. The template uses one
+surface query and one visibility query per invocation; the tiles and prefix passes
+issue none. It covers registered mesh emitters only: no analytic lights,
+environment importance sampling or indirect bounces, and pixels that
+`LoadVisibilitySurface` cannot reconstruct are rejected. The final shade output
+feeds an **Accumulate** node.
+
+Thanks to Ola Olsson and Ulf Assarsson, *Tiled Shading*, Journal of Graphics, GPU,
+and Game Tools 15(4), 2011, and to Jan Boksanský, Paula Jukarainen and Chris Wyman,
+*Rendering Many Lights with Grid-Based Reservoirs*, Ray Tracing Gems II, 2021, whose
+per-tile and per-cell light work this template adapts to one exact emitter CDF per tile.
+
 <a id="run-the-three-pass-restir-di-example"></a>
 
 ### Use the built-in ReSTIR DI template
@@ -1278,8 +1326,9 @@ Burns and Warren A. Hunt, [*The Visibility Buffer: A Cache-Friendly Approach to
 Deferred Shading*, JCGT 2(2), 2013](https://jcgt.org/published/0002/02/04/).
 
 In an open graph, right-click the canvas or a configuration in **Graph sources**
-and choose **Apply Configuration Template...**, then **Visibility buffer + depth**
-or **Visibility + secondary rays**. Enter a new configuration name or select an
+and choose **Apply Configuration Template...**, then **Visibility buffer + depth**,
+**Visibility + secondary rays** or [**Tiled vbuffer NEE**](#select-emitters-per-screen-tile).
+Enter a new configuration name or select an
 existing empty one. In a library asset, this fills that configuration. On the root
 canvas, it creates a library asset and inserts a Subgraph node into the selected
 parent configuration. Existing nonempty configurations are preserved.
@@ -1288,9 +1337,10 @@ parent configuration. Existing nonempty configurations are preserved.
 | --- | --- | --- |
 | Visibility buffer + depth | `scene: Scene`, `view: View`, `visibility: ColorTexture`, `depth: DepthTexture` | `visibility: ColorTexture`, optional `depth: DepthTexture` |
 | Visibility + secondary rays | `scene: Scene`, `view: View`, `color: ColorTexture` | `color: ColorTexture`, optional `visibility: ColorTexture` and `depth: DepthTexture` |
+| Tiled vbuffer NEE — many-light direct lighting | `scene: Scene`, `view: View`, `color: ColorTexture` | `color: ColorTexture`, optional `visibility: ColorTexture` and `depth: DepthTexture` |
 
 Connect the first template's two attachment inputs to matching single-sample
-RGBA8/Depth32Float targets. For the second, connect a separate shaded color target;
+RGBA8/Depth32Float targets. For the ray templates, connect a separate shaded color target;
 its internal visibility/depth targets derive their size from that color input.
 Both use the parent's camera view. Route the primary output to the next pass or
 Export; inspection outputs need connections only when consumed.
@@ -1321,9 +1371,9 @@ shader/schema or source collision reports the specific repair and preserves the
 draft. The same canonical libraries back the New Render Graph starters and are
 included in installed SDK packages.
 
-Choose either starter in **New Render Graph → Template**. The editor copies the
+Choose a starter in **New Render Graph → Template**. The editor copies the
 complete editable graph, manifest and shaders into `graphs/<name>/` and opens it.
-Both use explicit GraphicsPipeline nodes and a shared view-relative **RenderSize**
+Each uses explicit GraphicsPipeline nodes and a shared view-relative **RenderSize**
 node connected to every attachment. Edit RenderSize from Properties or the canvas
 node editor to resize them together.
 
@@ -1331,6 +1381,7 @@ node editor to resize them together.
 | --- | --- |
 | **Visibility buffer + depth** (`visibility-buffer`) | One raster pass exports the exact RGBA8 identity image and its Depth32Float attachment. The identity image is the camera output; its alpha channel encodes identity rather than transparency. No ray-tracing capability is needed. |
 | **Visibility + secondary rays** (`visibility-secondary-rays`) | The same raster producer feeds a ray pass and a separate shaded color target. It also exports visibility and depth for inspection. Requires native Metal or Vulkan ray tracing. |
+| **Tiled vbuffer NEE — many-light direct lighting** (`tiled-vbuffer-nee`) | The same raster producer feeds three ray passes that build one emitter-selection table per 16 × 16 tile and shade direct mesh-emitter lighting with MIS, then Accumulate. Exports visibility and depth for inspection. Requires native Metal or Vulkan ray tracing. See [Select emitters per screen tile](#select-emitters-per-screen-tile). |
 
 Create the same packages through the CLI:
 
@@ -1339,12 +1390,15 @@ ludus render-graph new graphs/Visibility --template visibility-buffer --output o
   --renderer-static --profiles metal wgsl
 ludus render-graph new graphs/Reflections --template visibility-secondary-rays --output offscreen \
   --renderer-static --profiles metal wgsl
+ludus render-graph new graphs/DirectLighting --template tiled-vbuffer-nee --output offscreen \
+  --renderer-static --profiles metal wgsl
 ```
 
 Use `spirv wgsl` for Vulkan. The raster-only template also accepts `wgsl` alone.
-Both canonical packages are shipped with the SDK:
-[visibility and depth](../../modules/graphics/renderer/render_graphs/visibility_buffer/main.lurender.json)
-and [secondary rays](../../modules/graphics/renderer/render_graphs/visibility_secondary_rays/main.lurender.json).
+The canonical packages are shipped with the SDK:
+[visibility and depth](../../modules/graphics/renderer/render_graphs/visibility_buffer/main.lurender.json),
+[secondary rays](../../modules/graphics/renderer/render_graphs/visibility_secondary_rays/main.lurender.json)
+and [tiled vbuffer NEE](../../modules/graphics/renderer/render_graphs/tiled_vbuffer_nee/main.lurender.json).
 Existing graph folders are never overwritten; cancelling creation writes nothing.
 
 The secondary-ray starter calls `LoadVisibilitySurface` in

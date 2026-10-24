@@ -607,7 +607,7 @@ install(FILES scripts/python/ludus_tools/__init__.py scripts/python/ludus_tools/
     scripts/python/ludus_tools/render_graph_settings.py scripts/python/ludus_tools/render_graph_templates.py
     scripts/python/ludus_tools/render_graph_template_update.py
     DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/render_graph/ludus_tools")
-foreach(template_directory IN ITEMS forward_lit restir_di visibility_buffer visibility_secondary_rays)
+foreach(template_directory IN ITEMS forward_lit restir_di visibility_buffer visibility_secondary_rays tiled_vbuffer_nee)
     install(DIRECTORY "modules/graphics/renderer/render_graphs/${template_directory}/"
         DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/render_graph/templates/${template_directory}")
 endforeach()

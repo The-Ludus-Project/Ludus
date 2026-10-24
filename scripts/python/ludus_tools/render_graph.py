@@ -1292,9 +1292,9 @@ def _root_asset(output):
 def new_workspace(destination, *, output="presentation", renderer_static=False, profiles=None, template="raster"):
     """Publish an editable built-in render graph template in a new directory.
 
-    template selects raster (the default), restir-di, visibility-buffer or
-    visibility-secondary-rays. The latter three create offscreen Renderer packages
-    containing their shaders and shared view-relative RenderSize controls.
+    template selects raster (the default), forward-lit, restir-di, visibility-buffer,
+    visibility-secondary-rays or tiled-vbuffer-nee. All but raster create offscreen
+    Renderer packages containing their shaders and shared view-relative RenderSize controls.
     output is presentation, offscreen or depth. Creation never overwrites an
     existing directory; staged files are validated before publication and cleaned
     up on failure. This is graph source creation, not game-project/SDK setup.

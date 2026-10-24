@@ -9,6 +9,7 @@ TEMPLATES = {
     'restir-di': ('restir_di', 'ReSTIR DI', True),
     'visibility-buffer': ('visibility_buffer', 'Visibility buffer', False),
     'visibility-secondary-rays': ('visibility_secondary_rays', 'Visibility + secondary rays', True),
+    'tiled-vbuffer-nee': ('tiled_vbuffer_nee', 'Tiled visibility-buffer NEE', True),
 }
 
 

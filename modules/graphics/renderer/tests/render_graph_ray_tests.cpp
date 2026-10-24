@@ -6,6 +6,7 @@
 #include "rg2_restir_di.h"
 #include "rg2_scene_ray.h"
 #include "rg2_storage_ray.h"
+#include "rg2_tiled_vbuffer_nee_template.h"
 #include "rg2_visibility.h"
 #include "rg2_visibility_buffer_template.h"
 #include "rg2_visibility_ordinary.h"
@@ -1514,6 +1515,142 @@ TEST_CASE("Built-in visibility templates preserve IDs and reconstruct reflected 
     ReadGraphFrame(fixture, colorResource);
     CHECK(fixture.Pixels[center] == 0);
     CHECK(fixture.Pixels[center + 2] == 188);
+}
+
+TEST_CASE("Tiled visibility-buffer NEE matches an area quadrature of two mesh emitters",
+          "[render-graph][gpu][tiled-nee]")
+{
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_TILED_VBUFFER_NEE_TEMPLATE_DIRECTORY, "rg2_tiled_vbuffer_nee_template.lurgrt"});
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    // One raster producer, then the tiles, prefix and shade ray passes.
+    constexpr usize PASS_COUNT = 4;
+    REQUIRE(plan.Passes.GetSize() == PASS_COUNT);
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    const renderer::RenderGraphPrograms compiled =
+        packages::rg2_tiled_vbuffer_nee_template::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                               shaders::renderer_composite::Fragment());
+    CheckSameStage(programs.ColorVertex, compiled.ColorVertex);
+    CheckSameStage(programs.RayCompute, compiled.RayCompute);
+    constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
+    const auto wait = [&fixture](rhi::RasterStatus initial) {
+        rhi::RasterStatus status = initial;
+        const uint64 beginning = time::NowTicks();
+        while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+        {
+            status = fixture.Graph.Poll();
+        }
+        REQUIRE(status == rhi::RasterStatus::Ready);
+    };
+    wait(fixture.Graph.Initialize(fixture.Device, plan, programs, nullptr, WIDTH, HEIGHT));
+    fixture.Indices = {{0, 2, 1}};
+    fixture.Cameras[0].OrthographicCamera = true;
+    constexpr usize MATERIAL_COUNT = 2;
+    StaticArray<renderer::SceneShaderMaterial, MATERIAL_COUNT> materials{};
+    materials[0].BaseColor = {1, 0, 0};
+    materials[1].Emission = {8, 8, 8};
+    materials[1].IsEmissionTwoSided = true;
+    uint32 receiverBinding = 0;
+    uint32 emitterBinding = 1;
+    StaticArray<renderer::RenderGraphMesh, MATERIAL_COUNT> meshes{};
+    meshes[0] = fixture.Meshes[0];
+    meshes[0].MaterialBindings = {&receiverBinding, 1};
+    meshes[1] = fixture.Meshes[0];
+    meshes[1].MaterialBindings = {&emitterBinding, 1};
+    // Two emitters at different distances, so the tile table's PMF is not uniform.
+    constexpr usize ITEM_COUNT = 3;
+    constexpr StaticArray<float32, ITEM_COUNT - 1> EMITTER_OFFSETS_WORLD{{1, -2}};
+    StaticArray<renderer::RenderGraphItem, ITEM_COUNT> items{};
+    items[0] = fixture.Items[0];
+    for (usize emitter = 0; emitter < EMITTER_OFFSETS_WORLD.GetSize(); ++emitter)
+    {
+        items[emitter + 1].SourceId = static_cast<uint32>(emitter + 2);
+        items[emitter + 1].MeshIndex = 1;
+        items[emitter + 1].MeshToWorld.Translation = {EMITTER_OFFSETS_WORLD[emitter], 0, -.4F};
+    }
+    renderer::SceneShaderInputs inputs;
+    inputs.Materials = {materials.GetData(), materials.GetSize()};
+    const auto update = [&fixture, &meshes, &items, &inputs, &wait](uint64 revision) {
+        renderer::RenderGraphReport report;
+        wait(fixture.Graph.Update({meshes.GetData(), meshes.GetSize()},
+                                  {items.GetData(), items.GetSize()},
+                                  {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                  revision,
+                                  renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                  report,
+                                  &inputs,
+                                  revision));
+    };
+    // Independent deterministic area quadrature of the CPU reference BSDF over both emitters.
+    renderer::ReferenceBsdf reference;
+    reference.BaseColor = materials[0].BaseColor;
+    reference.Roughness = materials[0].Roughness;
+    constexpr uint32 QUADRATURE_SIDE = 32;
+    float32 expectedRed = 0;
+    const math::Vector3 receiverPositionWorld{1.0F / static_cast<float32>(WIDTH),
+                                              -1.0F / static_cast<float32>(HEIGHT),
+                                              .5F};
+    for (const float32 offsetWorld : EMITTER_OFFSETS_WORLD)
+    {
+        for (uint32 row = 0; row < QUADRATURE_SIDE; ++row)
+        {
+            for (uint32 column = 0; column < QUADRATURE_SIDE; ++column)
+            {
+                const float32 root =
+                    math::Sqrt((static_cast<float32>(row) + .5F) / static_cast<float32>(QUADRATURE_SIDE));
+                const float32 v = (static_cast<float32>(column) + .5F) / static_cast<float32>(QUADRATURE_SIDE);
+                const float32 first = root * (1 - v);
+                const float32 second = root * v;
+                const math::Vector3 endpointWorld{offsetWorld - .5F + .5F * first + second, -.5F + first, .1F};
+                const math::Vector3 differenceWorld = endpointWorld - receiverPositionWorld;
+                const float32 distanceSquaredWorld = math::Dot(differenceWorld, differenceWorld);
+                const math::Vector3 directionWorld = differenceWorld / math::Sqrt(distanceSquaredWorld);
+                renderer::ReferenceBsdfEvaluation evaluation;
+                REQUIRE(
+                    renderer::EvaluateReferenceBsdf(reference, {0, 0, -1}, {0, 0, -1}, directionWorld, evaluation) ==
+                    rhi::RasterStatus::Ready);
+                const float32 cosine = -directionWorld.Z;
+                expectedRed += materials[1].Emission.X * evaluation.Value.X * cosine * cosine / distanceSquaredWorld;
+            }
+        }
+    }
+    // Each emitter triangle has area one half.
+    expectedRed *= .5F / static_cast<float32>(QUADRATURE_SIDE * QUADRATURE_SIDE);
+    update(1);
+    const uint32 colorResource = plan.Passes[PASS_COUNT - 1].Color;
+    // The final Accumulate node averages every frame; read its running mean.
+    constexpr usize FRAME_COUNT = 64;
+    for (usize frame = 0; frame < FRAME_COUNT; ++frame)
+    {
+        ReadGraphFrame(fixture, colorResource);
+    }
+    const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+    for (usize pixel = 0; pixel < static_cast<usize>(WIDTH) * HEIGHT; ++pixel)
+    {
+        constexpr usize CHANNEL_COUNT = 4;
+        const usize address = pixel * CHANNEL_COUNT;
+        const bool isFailureColor =
+            fixture.Pixels[address] == 255 && fixture.Pixels[address + 1] == 0 && fixture.Pixels[address + 2] == 255;
+        CHECK(isFailureColor == false);
+    }
+    CHECK(fixture.Pixels[center] > fixture.Pixels[center + 1]);
+    constexpr float32 MAXIMUM_CHANNEL = 255;
+    const float32 mapped = math::DecodeSrgb(static_cast<float32>(fixture.Pixels[center]) / MAXIMUM_CHANNEL);
+    const float32 measuredRed = mapped / (1 - mapped);
+    INFO("area quadrature=" << expectedRed << ", decoded GPU mean=" << measuredRed);
+    // Light-only, BSDF-only and MIS variants of this shader converge to the same 8-bit value,
+    // 4.5% below this quadrature; the tolerance covers that GPU/reference BSDF difference.
+    constexpr float32 RELATIVE_ENERGY_TOLERANCE = .1F;
+    CHECK(math::Abs(measuredRed - expectedRed) < RELATIVE_ENERGY_TOLERANCE * expectedRed);
+    // The table is rebuilt each frame: removing the emission must not relight the receiver.
+    materials[1].Emission = {0, 0, 0};
+    update(2);
+    ReadGraphFrame(fixture, colorResource);
+    CHECK(fixture.Pixels[center] == 0);
+    CHECK(fixture.Pixels[center + 1] == 0);
+    CHECK(fixture.Pixels[center + 2] == 0);
 }
 
 TEST_CASE("ToneMap applies exposure after linear accumulation and can be bypassed",

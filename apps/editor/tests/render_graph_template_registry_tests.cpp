@@ -84,7 +84,8 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                                                QStringLiteral("forward-lit"),
                                                QStringLiteral("visibility-buffer"),
                                                QStringLiteral("visibility-secondary-rays"),
-                                               QStringLiteral("restir-di")});
+                                               QStringLiteral("restir-di"),
+                                               QStringLiteral("tiled-vbuffer-nee")});
     CHECK(graphs.at(0).Label == QStringLiteral("Raster"));
     CHECK(graphs.at(4).Label == QStringLiteral("ReSTIR DI — mesh emitter lighting"));
     for (const RenderGraphTemplate& graph : graphs)
@@ -93,12 +94,14 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
         CHECK(graph.Description.isEmpty() == false);
         CHECK(registry.HasTemplate(RenderGraphTemplateKind::Graph, graph.Identity) == true);
         const bool isRayTraced = graph.Identity == QStringLiteral("restir-di") ||
-                                 graph.Identity == QStringLiteral("visibility-secondary-rays");
+                                 graph.Identity == QStringLiteral("visibility-secondary-rays") ||
+                                 graph.Identity == QStringLiteral("tiled-vbuffer-nee");
         CHECK(graph.Requirements.contains(QStringLiteral("native-ray-tracing")) == isRayTraced);
     }
 
     const QVector<RenderGraphTemplate> snippets = registry.GetTemplates(RenderGraphTemplateKind::Snippet);
     CHECK(GetIdentities(snippets) == QStringList{QStringLiteral("restir-di"),
+                                                 QStringLiteral("tiled-vbuffer-nee"),
                                                  QStringLiteral("visibility-buffer"),
                                                  QStringLiteral("visibility-secondary-rays")});
     QStringList defaults;
@@ -107,6 +110,7 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
         defaults.append(snippet.DefaultConfiguration);
     }
     CHECK(defaults == QStringList{QStringLiteral("RestirDi"),
+                                  QStringLiteral("TiledVbufferNee"),
                                   QStringLiteral("VisibilityBuffer"),
                                   QStringLiteral("VisibilitySecondaryRays")});
     CHECK(registry.HasTemplate(RenderGraphTemplateKind::Snippet, QStringLiteral("raster")) == false);
