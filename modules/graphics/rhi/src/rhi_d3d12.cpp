@@ -58,6 +58,110 @@ struct ComRelease final
 template <typename ObjectType>
 using ComOwner = UniquePtr<ObjectType, ComRelease>;
 
+/// SDK GUID of each COM interface this backend requests. IID_PPV_ARGS spells it with
+/// __uuidof, a Microsoft extension that the project's -Wpedantic build rejects.
+template <typename InterfaceType>
+struct InterfaceId;
+template <>
+struct InterfaceId<ID3D12Debug> final
+{
+    [[nodiscard]] static const IID& Get() noexcept
+    {
+        return IID_ID3D12Debug;
+    }
+};
+template <>
+struct InterfaceId<ID3D12Device> final
+{
+    [[nodiscard]] static const IID& Get() noexcept
+    {
+        return IID_ID3D12Device;
+    }
+};
+template <>
+struct InterfaceId<ID3D12CommandQueue> final
+{
+    [[nodiscard]] static const IID& Get() noexcept
+    {
+        return IID_ID3D12CommandQueue;
+    }
+};
+template <>
+struct InterfaceId<ID3D12Fence> final
+{
+    [[nodiscard]] static const IID& Get() noexcept
+    {
+        return IID_ID3D12Fence;
+    }
+};
+template <>
+struct InterfaceId<ID3D12CommandAllocator> final
+{
+    [[nodiscard]] static const IID& Get() noexcept
+    {
+        return IID_ID3D12CommandAllocator;
+    }
+};
+template <>
+struct InterfaceId<ID3D12GraphicsCommandList> final
+{
+    [[nodiscard]] static const IID& Get() noexcept
+    {
+        return IID_ID3D12GraphicsCommandList;
+    }
+};
+template <>
+struct InterfaceId<ID3D12DescriptorHeap> final
+{
+    [[nodiscard]] static const IID& Get() noexcept
+    {
+        return IID_ID3D12DescriptorHeap;
+    }
+};
+template <>
+struct InterfaceId<ID3D12Resource> final
+{
+    [[nodiscard]] static const IID& Get() noexcept
+    {
+        return IID_ID3D12Resource;
+    }
+};
+template <>
+struct InterfaceId<IDXGIFactory6> final
+{
+    [[nodiscard]] static const IID& Get() noexcept
+    {
+        return IID_IDXGIFactory6;
+    }
+};
+template <>
+struct InterfaceId<IDXGIAdapter1> final
+{
+    [[nodiscard]] static const IID& Get() noexcept
+    {
+        return IID_IDXGIAdapter1;
+    }
+};
+template <>
+struct InterfaceId<IDXGISwapChain3> final
+{
+    [[nodiscard]] static const IID& Get() noexcept
+    {
+        return IID_IDXGISwapChain3;
+    }
+};
+/// Interface ID for an output pointer; pass the same pointer to GetInterfaceOutput.
+template <typename InterfaceType>
+[[nodiscard]] const IID& GetInterfaceId(InterfaceType* const&) noexcept
+{
+    return InterfaceId<InterfaceType>::Get();
+}
+template <typename InterfaceType>
+[[nodiscard]] void** GetInterfaceOutput(InterfaceType*& outObjectOrNull) noexcept
+{
+    return reinterpret_cast<void**>(&outObjectOrNull);
+}
+
 constexpr usize FRAME_COUNT = 2;
 constexpr uint32 MAX_DIMENSION = D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION;
 /// One constant buffer view spans at most 4096 sixteen-byte elements.
@@ -242,7 +346,8 @@ void EnableDebugLayer() noexcept
 #if defined(LUDUS_BUILD_DEBUG) || defined(LUDUS_BUILD_DEVELOPMENT)
     // The debug layer ships with the optional Graphics Tools feature; continue without it.
     ID3D12Debug* debugOrNull = nullptr;
-    if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugOrNull))) == true && debugOrNull != nullptr)
+    if (SUCCEEDED(D3D12GetDebugInterface(GetInterfaceId(debugOrNull), GetInterfaceOutput(debugOrNull))) == true &&
+        debugOrNull != nullptr)
     {
         debugOrNull->EnableDebugLayer();
         debugOrNull->Release();
@@ -257,7 +362,10 @@ void EnableDebugLayer() noexcept
 [[nodiscard]] bool CreateDeviceOn(IDXGIAdapter1* adapter) noexcept
 {
     ID3D12Device* deviceOrNull = nullptr;
-    const HRESULT result = D3D12CreateDevice(adapter, MINIMUM_FEATURE_LEVEL, IID_PPV_ARGS(&deviceOrNull));
+    const HRESULT result = D3D12CreateDevice(adapter,
+                                             MINIMUM_FEATURE_LEVEL,
+                                             GetInterfaceId(deviceOrNull),
+                                             GetInterfaceOutput(deviceOrNull));
     if (FAILED(result) == true || deviceOrNull == nullptr)
     {
         return false;
@@ -275,7 +383,8 @@ void EnableDebugLayer() noexcept
         IDXGIAdapter1* adapterOrNull = nullptr;
         if (gFactory->EnumAdapterByGpuPreference(index,
                                                  DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
-                                                 IID_PPV_ARGS(&adapterOrNull)) == DXGI_ERROR_NOT_FOUND)
+                                                 GetInterfaceId(adapterOrNull),
+                                                 GetInterfaceOutput(adapterOrNull)) == DXGI_ERROR_NOT_FOUND)
         {
             break;
         }
@@ -297,7 +406,8 @@ void EnableDebugLayer() noexcept
         }
     }
     IDXGIAdapter1* warpOrNull = nullptr;
-    if (FAILED(gFactory->EnumWarpAdapter(IID_PPV_ARGS(&warpOrNull))) == true || warpOrNull == nullptr)
+    if (FAILED(gFactory->EnumWarpAdapter(GetInterfaceId(warpOrNull), GetInterfaceOutput(warpOrNull))) == true ||
+        warpOrNull == nullptr)
     {
         return false;
     }
@@ -322,13 +432,18 @@ void EnableDebugLayer() noexcept
         .NodeMask = 0,
     };
     ID3D12CommandQueue* queueOrNull = nullptr;
-    if (FAILED(gDevice->CreateCommandQueue(&queueDescription, IID_PPV_ARGS(&queueOrNull))) == true)
+    if (FAILED(gDevice->CreateCommandQueue(&queueDescription,
+                                           GetInterfaceId(queueOrNull),
+                                           GetInterfaceOutput(queueOrNull))) == true)
     {
         return false;
     }
     gQueue = Adopt(queueOrNull);
     ID3D12Fence* fenceOrNull = nullptr;
-    if (FAILED(gDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fenceOrNull))) == true)
+    if (FAILED(gDevice->CreateFence(0,
+                                    D3D12_FENCE_FLAG_NONE,
+                                    GetInterfaceId(fenceOrNull),
+                                    GetInterfaceOutput(fenceOrNull))) == true)
     {
         return false;
     }
@@ -341,8 +456,9 @@ void EnableDebugLayer() noexcept
     for (ComOwner<ID3D12CommandAllocator>& allocator : gAllocators)
     {
         ID3D12CommandAllocator* allocatorOrNull = nullptr;
-        if (FAILED(gDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocatorOrNull))) ==
-            true)
+        if (FAILED(gDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                   GetInterfaceId(allocatorOrNull),
+                                                   GetInterfaceOutput(allocatorOrNull))) == true)
         {
             return false;
         }
@@ -353,7 +469,8 @@ void EnableDebugLayer() noexcept
                                           D3D12_COMMAND_LIST_TYPE_DIRECT,
                                           gAllocators[0].Get(),
                                           nullptr,
-                                          IID_PPV_ARGS(&commandsOrNull))) == true)
+                                          GetInterfaceId(commandsOrNull),
+                                          GetInterfaceOutput(commandsOrNull))) == true)
     {
         return false;
     }
@@ -371,7 +488,9 @@ void EnableDebugLayer() noexcept
         .NodeMask = 0,
     };
     ID3D12DescriptorHeap* heapOrNull = nullptr;
-    if (FAILED(gDevice->CreateDescriptorHeap(&heapDescription, IID_PPV_ARGS(&heapOrNull))) == true)
+    if (FAILED(gDevice->CreateDescriptorHeap(&heapDescription,
+                                             GetInterfaceId(heapOrNull),
+                                             GetInterfaceOutput(heapOrNull))) == true)
     {
         return false;
     }
@@ -393,7 +512,8 @@ void ReleaseBackBuffers() noexcept
     for (uint32 index = 0; index < FRAME_COUNT; ++index)
     {
         ID3D12Resource* bufferOrNull = nullptr;
-        const HRESULT result = gSwapChain->GetBuffer(index, IID_PPV_ARGS(&bufferOrNull));
+        const HRESULT result =
+            gSwapChain->GetBuffer(index, GetInterfaceId(bufferOrNull), GetInterfaceOutput(bufferOrNull));
         if (FAILED(result) == true)
         {
             ReleaseBackBuffers();
@@ -440,7 +560,7 @@ void ReleaseBackBuffers() noexcept
     }
     ComOwner<IDXGISwapChain1> swapChain = Adopt(swapChainOrNull);
     IDXGISwapChain3* swapChain3OrNull = nullptr;
-    result = swapChain->QueryInterface(IID_PPV_ARGS(&swapChain3OrNull));
+    result = swapChain->QueryInterface(GetInterfaceId(swapChain3OrNull), GetInterfaceOutput(swapChain3OrNull));
     if (FAILED(result) == true || swapChain3OrNull == nullptr)
     {
         LogFailure("IDXGISwapChain3 query", result);
@@ -524,7 +644,8 @@ void ReleaseBackBuffers() noexcept
                                                             &description,
                                                             D3D12_RESOURCE_STATE_COMMON,
                                                             nullptr,
-                                                            IID_PPV_ARGS(&textureOrNull));
+                                                            GetInterfaceId(textureOrNull),
+                                                            GetInterfaceOutput(textureOrNull));
     if (FAILED(result) == true)
     {
         return result;
@@ -613,11 +734,11 @@ bool Initialize(const ApplicationInfo&) noexcept
     factoryFlags = DXGI_CREATE_FACTORY_DEBUG;
 #endif
     IDXGIFactory6* factoryOrNull = nullptr;
-    HRESULT result = CreateDXGIFactory2(factoryFlags, IID_PPV_ARGS(&factoryOrNull));
+    HRESULT result = CreateDXGIFactory2(factoryFlags, GetInterfaceId(factoryOrNull), GetInterfaceOutput(factoryOrNull));
     if (FAILED(result) == true && factoryFlags != 0)
     {
         // The DXGI debug factory also requires Graphics Tools.
-        result = CreateDXGIFactory2(0, IID_PPV_ARGS(&factoryOrNull));
+        result = CreateDXGIFactory2(0, GetInterfaceId(factoryOrNull), GetInterfaceOutput(factoryOrNull));
     }
     if (FAILED(result) == true || factoryOrNull == nullptr)
     {
@@ -961,7 +1082,8 @@ bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
                                                 &bufferDescription,
                                                 D3D12_RESOURCE_STATE_COPY_DEST,
                                                 nullptr,
-                                                IID_PPV_ARGS(&bufferOrNull))) == true)
+                                                GetInterfaceId(bufferOrNull),
+                                                GetInterfaceOutput(bufferOrNull))) == true)
     {
         return false;
     }

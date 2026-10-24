@@ -1,10 +1,11 @@
+#include "internal/gpu_scope_backend.h"
 #include "internal/raster.h"
 
 #include <ludus/foundation/base/types.h>
 
 #include <span>
 
-// Raster, compute and lifetime hooks for a backend that only clears and presents
+// Raster, compute, lifetime and pass-timing hooks for a backend that only clears and presents
 // (the Direct3D 12 bring-up, docs/architecture/windows-direct3d12.md). Zero limits
 // fail every portable raster/compute profile at startup, and every creation request
 // reports Unsupported, so no record ever reaches submission or destruction.
@@ -167,4 +168,21 @@ RasterStatus LifetimeCopyReadback(usize, uint8*, usize) noexcept
 }
 void LifetimeReleaseTransfer(bool, usize) noexcept {}
 void LifetimeReset() noexcept {}
+RasterStatus ArmPassTimings() noexcept
+{
+    return RasterStatus::Unsupported;
+}
+GpuPassTimings PollPassTimings() noexcept
+{
+    return { .State = GpuTimingState::Unavailable };
+}
+RasterStatus BeginScope(const GpuScopeDescription&) noexcept
+{
+    return RasterStatus::Unsupported;
+}
+RasterStatus EndScope() noexcept
+{
+    return RasterStatus::Unsupported;
+}
+void ResetPassTimings() noexcept {}
 } // namespace ludus::graphics::rhi::backend
