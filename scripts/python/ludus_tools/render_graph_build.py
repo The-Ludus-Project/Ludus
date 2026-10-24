@@ -539,16 +539,56 @@ SHADER_DIAGNOSTIC = re.compile(
     r'^(?:' + re.escape(SHADER_HELPER_PREFIX) + r')?'
     r'(?P<file>[^\s()+][^()\n]*?)\((?P<line>\d+)(?:,\s*(?P<column>\d+))?\):\s*'
     r'(?P<severity>error|warning)\b[^:\n]*:\s*(?P<message>[^\n]*)$', re.M)
+SHADER_CARET = re.compile(r' *\^~*')
+SLANG_TAB_COLUMNS = 4
 MAX_SHADER_DIAGNOSTICS = 32
 
 
-def map_shader_diagnostics(output, program, target, closure):
+def caret_range(text, line, excerpt, caret):
+    """One-based scalar column and scalar length marked by a Slang caret, or None.
+
+    Slang echoes the source line with tabs expanded to four-column stops and puts
+    `^~~~` under the token, counting one column per UTF-8 byte. Rebuild that
+    rendering from the captured line and map the caret back to Unicode scalars.
+    A missing caret or a different echo (Slang truncates long lines) keeps the
+    location line-only rather than guessing.
+    """
+    lines = text.split(b'\n')
+    if SHADER_CARET.fullmatch(caret) is None or line < 1 or line > len(lines):
+        return None
+    try:
+        scalars = lines[line - 1].removesuffix(b'\r').decode('utf-8')
+    except UnicodeDecodeError:
+        return None
+    rendered = []
+    starts = []
+    column = 0
+    for scalar in scalars:
+        starts.append(column)
+        width = SLANG_TAB_COLUMNS - column % SLANG_TAB_COLUMNS if scalar == '\t' else len(scalar.encode('utf-8'))
+        rendered.append(' ' * width if scalar == '\t' else scalar)
+        column += width
+    starts.append(column)
+    start = caret.index('^')
+    if ''.join(rendered) != excerpt or start not in starts:
+        return None
+    first = starts.index(start)
+    last = first + 1
+    while last < len(scalars) and starts[last] < start + len(caret.strip()):
+        last += 1
+    return first + 1, min(last, len(scalars)) - first
+
+
+def map_shader_diagnostics(output, program, target, closure, sources=None):
     """Map compiler file(line) messages to captured authored sources (RG3).
 
     Captured function/include files map to their package-relative source and
     line. Generated wrapper lines map to the owning program record, because the
     wrapper is a read-only build product regenerated from the manifest. Unknown
     files keep only their message. Bounded to 32 records; no absolute paths.
+    `sources` maps captured files to the exact bytes compiled; with it, a caret
+    under a captured line adds `column` and `length` (Unicode scalars, column
+    one-based). A caret at the end of the line has length 0.
     """
     diagnostics = []
     for match in SHADER_DIAGNOSTIC.finditer(output):
@@ -563,6 +603,11 @@ def map_shader_diagnostics(output, program, target, closure):
             record['location'] = {'generated': 'wrapper.slang', 'program': program['id'], 'line': line}
         if 'location' in record and match['column'] is not None:
             record['location']['column'] = int(match['column'])
+        following = [part.removesuffix('\r') for part in output[match.end():].split('\n', 3)[1:3]]
+        if 'source' in record.get('location', {}) and sources and match['file'] in sources and len(following) == 2:
+            marked = caret_range(sources[match['file']], line, *following)
+            if marked is not None:
+                record['location']['column'], record['location']['length'] = marked
         diagnostics.append(record)
     return diagnostics
 
@@ -673,11 +718,13 @@ def compile_program(program, schemas, closure, snapshot, work, helper, tools, ta
     """Compile only captured sources; reject any untracked compiler dependency."""
     source = work / 'source'
     source.mkdir()
+    compiled = {}
     for relative in closure:
         p = source / relative
         p.parent.mkdir(parents=True, exist_ok=True)
         override = program.get('source_overrides', {}).get(relative)
-        p.write_bytes(override.encode('utf-8') if override is not None else snapshot.files[relative])
+        compiled[relative] = override.encode('utf-8') if override is not None else snapshot.files[relative]
+        p.write_bytes(compiled[relative])
     wrapper = shader_source(program, schemas)
     (source / 'wrapper.slang').write_text(wrapper)
     output = work / 'artifact'
@@ -701,7 +748,7 @@ def compile_program(program, schemas, closure, snapshot, work, helper, tools, ta
     except ToolingError as error:
         if error.code == 'RenderGraphBuildShader':
             output = error.message.removeprefix('shader helper: ')
-            error.diagnostics = map_shader_diagnostics(output, program, target, closure)
+            error.diagnostics = map_shader_diagnostics(output, program, target, closure, compiled)
             located = [d['location'] for d in error.diagnostics if 'location' in d]
             error.location = located[0] if located else {'program': program['id']}
         raise

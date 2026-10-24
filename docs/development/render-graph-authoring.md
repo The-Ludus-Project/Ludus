@@ -2806,8 +2806,15 @@ With `--json`, a failure's `error.location` names its authored owner:
 | --- | --- | --- |
 | Source/document error | `source`, optional `configuration` and `node` | Selects the configuration or node |
 | Expanded-plan error | `source`, `configuration`, `node`, `instance` (nested path such as `Main/raster/draw`) | Selects the node in its own library |
-| Shader compiler error | `source`, `line`, optional `column`; `diagnostics` lists up to 32 compiler messages | Opens the function file at that line |
+| Shader compiler error | `source`, `line`, optional `column` and `length`; `diagnostics` lists up to 32 compiler messages | Opens the function file at that line and column; the Source pane marks each message |
 | Generated wrapper error | `generated: wrapper.slang`, `program`, `line` | Opens the program record in the build manifest |
+
+`column` is a one-based Unicode scalar column and `length` counts Unicode scalars
+(0 marks a position, such as a missing `;` at the end of a line). The tool takes
+them from the caret Slang prints under the source line, after checking that
+Slang's echo, with its four-column tab stops and byte-counted columns, matches
+the captured source. When Slang truncates a long line or prints no caret, the
+location stays line-only rather than guessing.
 
 Locations are package-relative and never contain machine paths. Activate a
 diagnostic (double-click or Enter) to navigate to it. Wiring diagnostics add
@@ -3014,8 +3021,8 @@ The **Source** pane uses the shared code editor: line numbers, Slang lexical
 coloring, current-line and matching-bracket highlighting, and native text
 selection, clipboard and navigation. Strings and comments are excluded from
 bracket matching; matching is bounded for responsiveness. Shader formatting and
-unified source/canvas undo are available; hover and completion remain future
-increments, described in the
+unified source/canvas undo are available; language-server hover and completion
+remain future increments, described in the
 [shared editor architecture](../architecture/editor-gui-systems.md#source-editing-direction).
 
 Right-click the source for the editing commands. On macOS, use Command where
@@ -3038,6 +3045,25 @@ Find supports forward/backward wrapping, case matching, and replacement; Escape
 closes its controls and returns focus to the source. Go to line uses one-based
 line numbers. Ordinary text and JSON sources share the commands, with Slang
 coloring/comment toggling enabled only for `.slang` files.
+
+#### Compiler messages in the source
+
+After a Validate, Build or live preview build fails, the Source pane marks the
+compiler messages for the file it shows. Each message gets a gutter marker beside
+its line number and a wavy underline under the reported token (red for errors,
+amber for warnings). A message without a column underlines the line's text.
+Hover over the underline or the gutter marker to read the message. Activating a
+row in the Error List opens the file with the caret on that token. The Error List
+shows the column beside the line when one is known.
+
+Markers stay on their text as you edit. The first edit marks them out of date:
+the marker turns hollow, the underline turns dotted, and the hover text says
+the report is for an earlier version. A report that already describes another
+version is out of date when shown. Examples are a draft changed during the
+build, or a live build of the saved file while the shown draft has unsaved
+edits. The next result replaces the markers, and a successful build clears
+them. Messages for generated wrappers stay in the Error List, which opens their
+program record in the manifest.
 
 Edits enter the package draft immediately. Text, canvas and inspector changes
 share one Undo/Redo order, including keyboard, source context-menu and shell

@@ -24,6 +24,9 @@ struct CodeBlockData final : QTextBlockUserData
     QVector<CodeBracket> Brackets;
 };
 
+/// Whether a palette's base is light, selecting the light code color set.
+[[nodiscard]] bool IsLightCodePalette(const QPalette& palette);
+
 /// Bounded single-pass block lexer. Qt propagates changed multiline state to
 /// subsequent blocks; no compiler or whole-document regular expression runs.
 class CodeSyntaxHighlighter final : public QSyntaxHighlighter

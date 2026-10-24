@@ -79,6 +79,11 @@ bool IsNumericType(QStringView word)
 }
 } // namespace
 
+bool IsLightCodePalette(const QPalette& palette)
+{
+    return palette.color(QPalette::Base).lightness() >= LIGHT_PALETTE_THRESHOLD;
+}
+
 CodeSyntaxHighlighter::CodeSyntaxHighlighter(QTextDocument* document) : QSyntaxHighlighter(document)
 {
     LUDUS_ASSERT(document != nullptr);
@@ -95,7 +100,7 @@ void CodeSyntaxHighlighter::SetLanguage(CodeLanguage language)
 
 void CodeSyntaxHighlighter::SetPalette(const QPalette& palette)
 {
-    const bool isLight = palette.color(QPalette::Base).lightness() >= LIGHT_PALETTE_THRESHOLD;
+    const bool isLight = IsLightCodePalette(palette);
     mKeywordFormat.setForeground(QColor::fromRgb(isLight == true ? LIGHT_KEYWORD : DARK_KEYWORD));
     mTypeFormat.setForeground(QColor::fromRgb(isLight == true ? LIGHT_TYPE : DARK_TYPE));
     mCommentFormat.setForeground(QColor::fromRgb(isLight == true ? LIGHT_COMMENT : DARK_COMMENT));

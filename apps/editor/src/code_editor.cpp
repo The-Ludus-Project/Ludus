@@ -6,11 +6,13 @@
 #include "internal/code_syntax_highlighter.h"
 
 #include <QAction>
+#include <QBrush>
 #include <QColor>
 #include <QContextMenuEvent>
 #include <QEvent>
 #include <QFocusEvent>
 #include <QFontDatabase>
+#include <QHelpEvent>
 #include <QInputMethodEvent>
 #include <QKeyEvent>
 #include <QKeySequence>
@@ -19,12 +21,16 @@
 #include <QPaintEvent>
 #include <QPainter>
 #include <QPalette>
+#include <QPen>
+#include <QRectF>
 #include <QResizeEvent>
+#include <QStringList>
 #include <QStringView>
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextEdit>
+#include <QToolTip>
 #include <QVector>
 
 // Thanks to The Qt Company, "Code Editor Example", Qt Widgets documentation,
@@ -43,6 +49,12 @@ constexpr int32 DECIMAL_RADIX = 10;
 constexpr int32 MAX_BRACKET_SCAN_CHARACTERS = 32768;
 constexpr int32 CURRENT_LINE_ALPHA = 24;
 constexpr int32 MATCHED_BRACKET_ALPHA = 96;
+constexpr uint32 LIGHT_ERROR = 0xC4314B;
+constexpr uint32 DARK_ERROR = 0xFF7B8A;
+constexpr uint32 LIGHT_WARNING = 0x9A6700;
+constexpr uint32 DARK_WARNING = 0xE3B341;
+/// Marker diameter as a divisor of the line height.
+constexpr int32 DIAGNOSTIC_MARKER_DIVISOR = 2;
 
 int32 GetIndentLength(const QString& text)
 {
@@ -52,6 +64,25 @@ int32 GetIndentLength(const QString& text)
         ++length;
     }
     return length;
+}
+
+/// UTF-16 length of the first scalars of text; an unpaired surrogate counts as one scalar.
+int32 GetScalarOffset(const QString& text, int32 scalars)
+{
+    int32 offset = 0;
+    for (int32 count = 0; count < scalars && offset < text.size(); ++count)
+    {
+        const bool isPair = text.at(offset).isHighSurrogate() == true && offset + 1 < text.size() &&
+                            text.at(offset + 1).isLowSurrogate() == true;
+        offset += isPair == true ? 2 : 1;
+    }
+    return offset;
+}
+
+QString MakeToolTipHtml(const QString& text)
+{
+    // Messages quote shader code such as vector<float, 3>; never let Qt guess rich text.
+    return QStringLiteral("<p style=\"white-space:pre-wrap\">%1</p>").arg(text.toHtmlEscaped());
 }
 } // namespace
 
@@ -70,6 +101,20 @@ private:
     {
         mEditor->paintGutter(event);
     }
+    bool event(QEvent* event) override
+    {
+        if (event->type() == QEvent::ToolTip)
+        {
+            const QHelpEvent* help = static_cast<QHelpEvent*>(event);
+            if (mEditor->showGutterToolTip(*help) == false)
+            {
+                QToolTip::hideText();
+                event->ignore();
+            }
+            return true;
+        }
+        return QWidget::event(event);
+    }
     CodeEditor* mEditor;
 };
 
@@ -87,6 +132,7 @@ CodeEditor::CodeEditor(QWidget* parentOrNull)
     connect(&mSelectionUpdate, &QTimer::timeout, this, &CodeEditor::updateSelections);
     connect(this, &QPlainTextEdit::cursorPositionChanged, this, [this]() { mSelectionUpdate.start(0); });
     connect(document(), &QTextDocument::contentsChanged, this, [this]() { mSelectionUpdate.start(0); });
+    connect(document(), &QTextDocument::contentsChange, this, &CodeEditor::markDiagnosticsOutOfDate);
     connect(this, &QPlainTextEdit::blockCountChanged, this, &CodeEditor::updateGutterWidth);
     connect(this, &QPlainTextEdit::undoAvailable, this, &CodeEditor::HistoryAvailabilityChanged);
     connect(this, &QPlainTextEdit::redoAvailable, this, &CodeEditor::HistoryAvailabilityChanged);
@@ -273,6 +319,208 @@ void CodeEditor::focusOutEvent(QFocusEvent* event)
     Q_EMIT EditBoundary();
 }
 
+void CodeEditor::SetDiagnostics(const QList<CodeDiagnostic>& diagnostics, bool isCurrent)
+{
+    mDiagnostics.clear();
+    for (const CodeDiagnostic& diagnostic : diagnostics)
+    {
+        const QTextBlock block = document()->findBlockByNumber(diagnostic.Line - 1);
+        if (diagnostic.Line < 1 || block.isValid() == false)
+        {
+            continue;
+        }
+        const QString text = block.text();
+        DiagnosticMarker marker =
+        {
+            .Range = QTextCursor(document()),
+            .Severity = diagnostic.Severity,
+            .Message = diagnostic.Message,
+            .IsLineOnly = diagnostic.Column < 1,
+        };
+        int32 start = GetIndentLength(text);
+        int32 end = static_cast<int32>(text.size());
+        if (marker.IsLineOnly == false)
+        {
+            start = GetScalarOffset(text, diagnostic.Column - 1);
+            end = start + GetScalarOffset(text.sliced(start), qMax(diagnostic.Length, 0));
+        }
+        marker.Range.setPosition(block.position() + start);
+        marker.Range.setPosition(block.position() + end, QTextCursor::KeepAnchor);
+        mDiagnostics.append(marker);
+    }
+    mAreDiagnosticsCurrent = isCurrent;
+    // Snapshot for telling highlighter reformatting apart from same-length edits.
+    mDiagnosticText = isCurrent == true && mDiagnostics.isEmpty() == false ? document()->toRawText() : QString();
+    mGutter->update();
+    mSelectionUpdate.start(0);
+}
+
+QTextCursor CodeEditor::GetDiagnosticRange(int32 index) const
+{
+    return index >= 0 && index < mDiagnostics.size() ? mDiagnostics.at(index).Range : QTextCursor();
+}
+
+QString CodeEditor::DescribeDiagnosticsAt(int32 position) const
+{
+    return describeDiagnostics(position, -1);
+}
+
+QString CodeEditor::DescribeLineDiagnostics(int32 blockNumber) const
+{
+    return describeDiagnostics(-1, blockNumber);
+}
+
+QString CodeEditor::describeDiagnostics(int32 position, int32 blockNumber) const
+{
+    QStringList lines;
+    const int32 positionBlock = position >= 0 ? document()->findBlock(position).blockNumber() : -1;
+    for (const DiagnosticMarker& marker : mDiagnostics)
+    {
+        const int32 start = marker.Range.selectionStart();
+        const int32 end = marker.Range.selectionEnd();
+        const int32 markerBlock = document()->findBlock(start).blockNumber();
+        // A point marker is underlined on its neighbouring character, so hover covers both.
+        const bool isCovered = marker.IsLineOnly == true ? markerBlock == positionBlock
+                                                         : position >= qMax(start - (start == end ? 1 : 0), 0) &&
+                                                               position <= end + (start == end ? 1 : 0);
+        if ((position >= 0 && isCovered == true) || (blockNumber >= 0 && markerBlock == blockNumber))
+        {
+            lines.append((marker.Severity == CodeDiagnosticSeverity::Error ? QStringLiteral("Error: ")
+                                                                           : QStringLiteral("Warning: ")) +
+                         marker.Message);
+        }
+    }
+    if (lines.isEmpty() == false && mAreDiagnosticsCurrent == false)
+    {
+        lines.prepend(QStringLiteral("Out of date: reported for an earlier version of this text. Build again."));
+    }
+    return lines.join(QLatin1Char('\n'));
+}
+
+void CodeEditor::markDiagnosticsOutOfDate(int32 position, int32 removed, int32 added)
+{
+    if (mDiagnostics.isEmpty() == true)
+    {
+        return;
+    }
+    // Replacing the whole text (a different file) leaves no position to anchor to.
+    // Same-length reports include the highlighter's reformatting of a one-line text.
+    const int32 previousCount = document()->characterCount() - added + removed;
+    if (position == 0 && removed != added && removed + 1 >= previousCount)
+    {
+        SetDiagnostics({}, true);
+        return;
+    }
+    if (mAreDiagnosticsCurrent == false)
+    {
+        return;
+    }
+    // The highlighter reports same-length format changes; only changed characters are edits.
+    bool isChanged = removed != added;
+    for (int32 i = position; isChanged == false && i < position + added && i < mDiagnosticText.size(); ++i)
+    {
+        isChanged = document()->characterAt(i) != mDiagnosticText.at(i);
+    }
+    if (isChanged == true)
+    {
+        mAreDiagnosticsCurrent = false;
+        mDiagnosticText.clear();
+        mGutter->update();
+        mSelectionUpdate.start(0);
+    }
+}
+
+QColor CodeEditor::getDiagnosticColor(CodeDiagnosticSeverity severity) const
+{
+    const bool isLight = IsLightCodePalette(palette());
+    if (severity == CodeDiagnosticSeverity::Error)
+    {
+        return QColor::fromRgb(isLight == true ? LIGHT_ERROR : DARK_ERROR);
+    }
+    return QColor::fromRgb(isLight == true ? LIGHT_WARNING : DARK_WARNING);
+}
+
+void CodeEditor::appendDiagnosticSelections(QList<QTextEdit::ExtraSelection>& inoutSelections) const
+{
+    // Errors are appended last so they draw over warnings on shared characters.
+    for (const CodeDiagnosticSeverity severity : {CodeDiagnosticSeverity::Warning, CodeDiagnosticSeverity::Error})
+    {
+        for (const DiagnosticMarker& marker : mDiagnostics)
+        {
+            if (marker.Severity != severity)
+            {
+                continue;
+            }
+            QTextEdit::ExtraSelection selection;
+            selection.cursor = marker.Range;
+            if (selection.cursor.hasSelection() == false)
+            {
+                // Underline the character after a point, or before it at the end of a line.
+                if (selection.cursor.atBlockEnd() == true && selection.cursor.atBlockStart() == false)
+                {
+                    selection.cursor.movePosition(QTextCursor::PreviousCharacter, QTextCursor::KeepAnchor);
+                }
+                else if (selection.cursor.atBlockEnd() == false)
+                {
+                    selection.cursor.movePosition(QTextCursor::NextCharacter, QTextCursor::KeepAnchor);
+                }
+            }
+            if (selection.cursor.hasSelection() == false)
+            {
+                continue;
+            }
+            selection.format.setUnderlineStyle(mAreDiagnosticsCurrent == true ? QTextCharFormat::WaveUnderline
+                                                                              : QTextCharFormat::DotLine);
+            selection.format.setUnderlineColor(getDiagnosticColor(severity));
+            inoutSelections.append(selection);
+        }
+    }
+}
+
+bool CodeEditor::showGutterToolTip(const QHelpEvent& help)
+{
+    const QPoint position = help.pos();
+    QTextBlock block = firstVisibleBlock();
+    int32 top = static_cast<int32>(blockBoundingGeometry(block).translated(contentOffset()).top());
+    while (block.isValid() == true && top <= position.y())
+    {
+        const int32 height = static_cast<int32>(blockBoundingRect(block).height());
+        if (block.isVisible() == true && position.y() < top + height)
+        {
+            const QString text = DescribeLineDiagnostics(block.blockNumber());
+            if (text.isEmpty() == true)
+            {
+                return false;
+            }
+            QToolTip::showText(help.globalPos(), MakeToolTipHtml(text), mGutter);
+            return true;
+        }
+        block = block.next();
+        top += height;
+    }
+    return false;
+}
+
+bool CodeEditor::viewportEvent(QEvent* event)
+{
+    if (event->type() == QEvent::ToolTip)
+    {
+        const QHelpEvent* help = static_cast<QHelpEvent*>(event);
+        const QString text = DescribeDiagnosticsAt(cursorForPosition(help->pos()).position());
+        if (text.isEmpty() == true)
+        {
+            QToolTip::hideText();
+            event->ignore();
+        }
+        else
+        {
+            QToolTip::showText(help->globalPos(), MakeToolTipHtml(text), viewport());
+        }
+        return true;
+    }
+    return QPlainTextEdit::viewportEvent(event);
+}
+
 int32 CodeEditor::getGutterWidth() const
 {
     int32 digits = 1;
@@ -282,7 +530,9 @@ int32 CodeEditor::getGutterWidth() const
         lines /= DECIMAL_RADIX;
         ++digits;
     }
-    return GUTTER_MARGIN * 2 + fontMetrics().horizontalAdvance(QLatin1Char('9')) * digits;
+    // Diagnostic marker space is reserved permanently, so reports never shift the text.
+    const int32 marker = fontMetrics().height() / DIAGNOSTIC_MARKER_DIVISOR + GUTTER_MARGIN;
+    return GUTTER_MARGIN * 2 + marker + fontMetrics().horizontalAdvance(QLatin1Char('9')) * digits;
 }
 
 void CodeEditor::updateGutterWidth()
@@ -317,8 +567,9 @@ void CodeEditor::changeEvent(QEvent* event)
 void CodeEditor::paintGutter(QPaintEvent* event)
 {
     QPainter painter(mGutter);
+    painter.setRenderHint(QPainter::Antialiasing);
     painter.fillRect(event->rect(), palette().color(QPalette::AlternateBase));
-    painter.setPen(palette().color(QPalette::Text));
+    const int32 diameter = fontMetrics().height() / DIAGNOSTIC_MARKER_DIVISOR;
     QTextBlock block = firstVisibleBlock();
     int32 top = static_cast<int32>(blockBoundingGeometry(block).translated(contentOffset()).top());
     while (block.isValid() == true && top <= event->rect().bottom())
@@ -326,6 +577,29 @@ void CodeEditor::paintGutter(QPaintEvent* event)
         const int32 height = static_cast<int32>(blockBoundingRect(block).height());
         if (block.isVisible() == true && top + height >= event->rect().top())
         {
+            bool hasMarker = false;
+            CodeDiagnosticSeverity severity = CodeDiagnosticSeverity::Warning;
+            for (const DiagnosticMarker& marker : mDiagnostics)
+            {
+                if (document()->findBlock(marker.Range.selectionStart()) == block)
+                {
+                    hasMarker = true;
+                    if (marker.Severity == CodeDiagnosticSeverity::Error)
+                    {
+                        severity = CodeDiagnosticSeverity::Error;
+                    }
+                }
+            }
+            if (hasMarker == true)
+            {
+                // Out-of-date reports draw hollow, matching their dotted underline.
+                const QColor color = getDiagnosticColor(severity);
+                painter.setPen(mAreDiagnosticsCurrent == true ? QPen(Qt::NoPen) : QPen(color));
+                painter.setBrush(mAreDiagnosticsCurrent == true ? QBrush(color) : QBrush(Qt::NoBrush));
+                painter.drawEllipse(
+                    QRectF(GUTTER_MARGIN, top + (fontMetrics().height() - diameter) / 2.0, diameter, diameter));
+            }
+            painter.setPen(palette().color(QPalette::Text));
             painter.drawText(0,
                              top,
                              mGutter->width() - GUTTER_MARGIN,
@@ -349,6 +623,7 @@ void CodeEditor::updateSelections()
     currentLine.format.setBackground(lineColor);
     currentLine.format.setProperty(QTextFormat::FullWidthSelection, true);
     selections.append(currentLine);
+    appendDiagnosticSelections(selections);
 
     const QTextCursor cursor = textCursor();
     const int32 caret = cursor.position();
@@ -654,10 +929,17 @@ void CodeEditor::DeleteLines()
     setTextCursor(lines);
 }
 
-void CodeEditor::GoToLine(int32 line)
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): line then column is the universal order.
+void CodeEditor::GoToLine(int32 line, int32 column)
 {
     const int32 clamped = qBound(1, line, blockCount());
-    setTextCursor(QTextCursor(document()->findBlockByNumber(clamped - 1)));
+    const QTextBlock block = document()->findBlockByNumber(clamped - 1);
+    QTextCursor cursor(block);
+    if (column > 1)
+    {
+        cursor.setPosition(block.position() + GetScalarOffset(block.text(), column - 1));
+    }
+    setTextCursor(cursor);
     ensureCursorVisible();
     setFocus();
 }

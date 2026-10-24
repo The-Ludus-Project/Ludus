@@ -250,10 +250,12 @@ public:
     /// the same rows in the same order (MakeRenderGraphErrorEntries).
     [[nodiscard]] foundation::int32 GetDiagnosticCount() const;
     /// Navigate to a diagnostic row's authored node (selecting it on the Canvas) or source
-    /// line (showing it in the Source view). False for a row without an authored location.
+    /// line and column (showing it in the Source view). False for a row without an authored location.
     [[nodiscard]] bool ActivateDiagnostic(foundation::int32 row);
     [[nodiscard]] QString GetSourceFile() const;
     [[nodiscard]] foundation::int32 GetSourceLine() const;
+    /// One-based Unicode scalar column of the Source view caret.
+    [[nodiscard]] foundation::int32 GetSourceColumn() const;
     /// Canonical `<project>/out/render-graph/<package>/<graph>.lurgrt` path that Build and
     /// Cook Runtime write. Empty when nothing is open or the package lies outside the project.
     [[nodiscard]] QString GetRuntimePackagePath() const;
@@ -378,7 +380,10 @@ private:
     void promptCreateConfiguration();
     void promptConfigurationTemplate();
     void activateSelectedNode();
-    void openSourceLine(const QString& file, foundation::int32 line);
+    void openSourceLine(const QString& file, foundation::int32 line, foundation::int32 column = 0);
+    /// Mark the shown source's messages from the last result. A new result always replaces
+    /// them; otherwise an unchanged result/project/file keeps the editor's anchored markers.
+    void updateSourceDiagnostics(bool isNewResult);
     [[nodiscard]] QJsonObject getDiagnosticLocation(foundation::int32 row) const;
     [[nodiscard]] QJsonObject selectedConfiguration() const;
     [[nodiscard]] QJsonObject selectedNode() const;
@@ -462,6 +467,10 @@ private:
     /// Renderer tab texture viewer; null in builds without the native GPU preview.
     TextureViewer* mTextureViewerOrNull = nullptr;
     QTimer mSourceEditDebounce;
+    /// Result, project and file whose diagnostics the Source view marks.
+    foundation::uint64 mSourceDiagnosticsRequest = 0;
+    foundation::uint64 mSourceDiagnosticsEpoch = 0;
+    QString mSourceDiagnosticsFile;
     ViewportFramePump mPreviewPump;
     foundation::uint64 mPreviewDeviceSerial = 0;
     foundation::uint64 mPreviewRevision = 0;

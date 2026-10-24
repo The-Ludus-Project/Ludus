@@ -14,10 +14,12 @@
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QFontDatabase>
+#include <QHelpEvent>
 #include <QInputMethodEvent>
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPalette>
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QSysInfo>
@@ -25,6 +27,7 @@
 #include <QTextBlock>
 #include <QTextDocument>
 #include <QTextLayout>
+#include <QToolTip>
 
 using namespace ludus::editor;
 using namespace ludus::foundation;
@@ -338,6 +341,136 @@ TEST_CASE("bracket matching rejects mismatched nesting and bounds distant matche
     SelectText(editor, 0, 0);
     FinishHighlighting();
     CHECK(editor.extraSelections().size() == 1);
+}
+
+TEST_CASE("diagnostics map scalar columns, points and whole lines into the text", "[editor][text][diagnostics]")
+{
+    CodeEditor editor;
+    editor.SetLanguage(CodeLanguage::Slang);
+    // U+1F600 occupies two UTF-16 units but one scalar column.
+    editor.setPlainText(QStringLiteral("float a = 1;\n/*\U0001F600*/ bad;\n    return\n\n"));
+    editor.SetDiagnostics(
+        {
+            { .Line = 2, .Column = 7, .Length = 3, .Message = QStringLiteral("undefined identifier 'bad'.") },
+            { .Line = 3, .Column = 11, .Severity = CodeDiagnosticSeverity::Warning, .Message = QStringLiteral("eol") },
+            { .Line = 1, .Message = QStringLiteral("line only") },
+            { .Line = 4, .Message = QStringLiteral("empty line") },
+            { .Line = 99, .Message = QStringLiteral("outside") },
+            { .Line = 0, .Message = QStringLiteral("no line") },
+        },
+        true);
+    REQUIRE(editor.GetDiagnosticCount() == 4);
+    CHECK(editor.GetDiagnosticRange(0).selectedText() == QStringLiteral("bad"));
+    CHECK(editor.GetDiagnosticRange(1).hasSelection() == false);
+    CHECK(editor.GetDiagnosticRange(1).atBlockEnd() == true);
+    CHECK(editor.GetDiagnosticRange(2).selectedText() == QStringLiteral("float a = 1;"));
+    CHECK(editor.GetDiagnosticRange(4).isNull() == true);
+    FinishHighlighting();
+    int32 underlines = 0;
+    for (const QTextEdit::ExtraSelection& selection : editor.extraSelections())
+    {
+        underlines += selection.format.underlineStyle() == QTextCharFormat::WaveUnderline ? 1 : 0;
+    }
+    // The empty line keeps only its gutter marker; the point underlines its preceding character.
+    CHECK(underlines == 3);
+    const int32 badStart = editor.GetDiagnosticRange(0).selectionStart();
+    CHECK(editor.DescribeDiagnosticsAt(badStart + 1) == QStringLiteral("Error: undefined identifier 'bad'."));
+    CHECK(editor.DescribeDiagnosticsAt(badStart - 3).isEmpty() == true);
+    CHECK(editor.DescribeDiagnosticsAt(editor.GetDiagnosticRange(1).position() - 1) == QStringLiteral("Warning: eol"));
+    CHECK(editor.DescribeLineDiagnostics(3) == QStringLiteral("Error: empty line"));
+    editor.GoToLine(2, 7);
+    CHECK(editor.textCursor().position() == badStart);
+    editor.GoToLine(2, 100);
+    CHECK(editor.textCursor().atBlockEnd() == true);
+}
+
+TEST_CASE("diagnostics follow edits and go out of date only when text changes", "[editor][text][diagnostics]")
+{
+    CodeEditor editor;
+    editor.SetLanguage(CodeLanguage::Slang);
+    editor.setPlainText(QStringLiteral("float v = missing;"));
+    editor.SetDiagnostics({{ .Line = 1, .Column = 11, .Length = 7, .Message = QStringLiteral("undefined") }}, true);
+    FinishHighlighting();
+    // Lexical reformatting reports same-length document changes without editing text.
+    editor.SetLanguage(CodeLanguage::PlainText);
+    editor.SetLanguage(CodeLanguage::Slang);
+    editor.setPalette(QPalette(Qt::black));
+    FinishHighlighting();
+    CHECK(editor.AreDiagnosticsCurrent() == true);
+    QTextCursor cursor(editor.document());
+    cursor.insertText(QStringLiteral("// note\n"));
+    CHECK(editor.AreDiagnosticsCurrent() == false);
+    REQUIRE(editor.GetDiagnosticCount() == 1);
+    CHECK(editor.GetDiagnosticRange(0).selectedText() == QStringLiteral("missing"));
+    CHECK(editor.GetDiagnosticRange(0).block().blockNumber() == 1);
+    CHECK(editor.DescribeLineDiagnostics(1).startsWith(QStringLiteral("Out of date:")) == true);
+    FinishHighlighting();
+    bool hasDottedUnderline = false;
+    for (const QTextEdit::ExtraSelection& selection : editor.extraSelections())
+    {
+        hasDottedUnderline = hasDottedUnderline || selection.format.underlineStyle() == QTextCharFormat::DotLine;
+    }
+    CHECK(hasDottedUnderline == true);
+
+    SECTION("a same-length replacement is an edit")
+    {
+        editor.SetDiagnostics({{ .Line = 2, .Column = 11, .Length = 7, .Message = QStringLiteral("again") }}, true);
+        QTextCursor replace(editor.document());
+        replace.setPosition(0);
+        replace.setPosition(1, QTextCursor::KeepAnchor);
+        replace.insertText(QStringLiteral("#"));
+        CHECK(editor.AreDiagnosticsCurrent() == false);
+    }
+    SECTION("replacing the whole text removes the markers")
+    {
+        editor.setPlainText(QStringLiteral("other file"));
+        CHECK(editor.GetDiagnosticCount() == 0);
+    }
+    SECTION("a report for an earlier version starts out of date")
+    {
+        editor.SetDiagnostics({{ .Line = 1, .Message = QStringLiteral("old") }}, false);
+        CHECK(editor.AreDiagnosticsCurrent() == false);
+        editor.SetDiagnostics({}, true);
+        CHECK(editor.GetDiagnosticCount() == 0);
+        CHECK(editor.DescribeLineDiagnostics(0).isEmpty() == true);
+    }
+}
+
+TEST_CASE("diagnostic hover shows escaped messages over text and gutter", "[editor][text][diagnostics]")
+{
+    CodeEditor editor;
+    editor.setPlainText(QStringLiteral("vector<float, 3> v = bad;\nfine"));
+    editor.SetDiagnostics({
+    {
+        .Line = 1,
+        .Column = 22,
+        .Length = 3,
+        .Message = QStringLiteral("vector<float, 3> & bad"),
+    }},
+                          true);
+    editor.resize(640, 480);
+    editor.show();
+    FinishHighlighting();
+    QTextCursor inside(editor.document());
+    inside.setPosition(22);
+    const QRect caret = editor.cursorRect(inside);
+    QHelpEvent textHelp(QEvent::ToolTip, caret.center(), editor.viewport()->mapToGlobal(caret.center()));
+    QCoreApplication::sendEvent(editor.viewport(), &textHelp);
+    CHECK(QToolTip::text().contains(QStringLiteral("vector&lt;float, 3&gt; &amp; bad")) == true);
+    QToolTip::hideText();
+    QWidget* gutterOrNull = editor.findChild<QWidget*>(QStringLiteral("codeEditorGutter"));
+    REQUIRE(gutterOrNull != nullptr);
+    const QPoint line(gutterOrNull->width() / 2, caret.center().y());
+    QHelpEvent gutterHelp(QEvent::ToolTip, line, gutterOrNull->mapToGlobal(line));
+    QCoreApplication::sendEvent(gutterOrNull, &gutterHelp);
+    CHECK(QToolTip::text().contains(QStringLiteral("Error: vector&lt;float")) == true);
+    QToolTip::hideText();
+    const QPoint below(gutterOrNull->width() / 2,
+                       editor.cursorRect(QTextCursor(editor.document()->lastBlock())).center().y());
+    QHelpEvent emptyHelp(QEvent::ToolTip, below, gutterOrNull->mapToGlobal(below));
+    QCoreApplication::sendEvent(gutterOrNull, &emptyHelp);
+    CHECK(emptyHelp.isAccepted() == false);
+    CHECK(editor.grab().isNull() == false);
 }
 
 TEST_CASE("shader-size text input records an offscreen latency baseline", "[.benchmark][editor][text]")
