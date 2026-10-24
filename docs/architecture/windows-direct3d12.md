@@ -4,7 +4,7 @@ Ludus runs on Windows through a Win32 Platform backend and a Direct3D 12 RHI
 backend. This page owns that port: the decision, the contracts of the slices
 that exist, the [port record](../development/platform-porting.md#reusable-record-format)
 and the staged plan. The work is at the **buildable** admission gate for the
-D1 and D2 closure described below; it is not yet a runnable or qualified engine
+D1 and D2 closure described below (both verified on WARP); it is not yet a runnable or qualified engine
 deployment, and nothing here changes the Linux and macOS profiles.
 
 ## Decision
@@ -229,7 +229,7 @@ cmake --build out/build/windows-mingw-check --target ludus_platform ludus_graphi
 | Milestone | Scope | Exit evidence |
 | --- | --- | --- |
 | D1 (WARP verified) | Windows closure for Platform and RHI; Win32 windows; Direct3D 12 device, swap chain, clear, present, resize and readback | Windows lane passed on PR The-Ludus-Project/Ludus#573 ([run 40043576093](https://github.com/The-Ludus-Project/Ludus/actions/runs/40043576093)), merged as `7167c8a2`; presented frames on a hardware adapter still to be recorded here |
-| D2 (in progress) | DXIL shader artifacts from the Slang toolchain (pinned DXC), `ShaderDescription` DXIL fields, root signatures, and the fullscreen compatibility draw | Fullscreen pixel tests on the WARP lane; hardware-adapter run still to be recorded here |
+| D2 (WARP verified) | DXIL shader artifacts from the Slang toolchain (pinned DXC), `ShaderDescription` DXIL fields, root signatures, and the fullscreen compatibility draw | Fullscreen pixel tests passed on the WARP lane for PR The-Ludus-Project/Ludus#586 ([run 40102938249](https://github.com/The-Ludus-Project/Ludus/actions/runs/40102938249), `002969cf`); hardware-adapter run still to be recorded here |
 | D3 | Portable raster profile: buffers, textures, views, samplers, descriptor heaps, passes and barriers | Raster conformance suite shared with Vulkan and Metal |
 | D4 | Lifetime transfers, readback, ordered graph and buffer compute profile | Lifetime, graph and compute suites; `RequiredProfile` startup passes |
 | D5 | Win32 keyboard input and key map, system entropy, filesystem, timestamps, PIX markers and DRED | Input, entropy and filesystem suites on Windows; captures documented |
@@ -244,18 +244,18 @@ another backend's behavior.
 | Subsystem / required profile | Owner | Status | Blocker / next action | PR | Evidence / commit |
 | --- | --- | --- | --- | --- | --- |
 | FoundationBase / target ABI | threading T3 | verified | none for x86_64 MSVC ABI | threading T3 | [threading evidence](../development/threading-evidence.md#platform-completion-t3) |
-| Toolchain / build configuration | D1, D2 | verified (WARP) | DXIL build-time tools added in D2 | PR #573; D2 PR | Windows lane, PR #573 (`7167c8a2`) |
+| Toolchain / build configuration | D1, D2 | verified (WARP) | DXIL build-time tools added in D2 | PR #573; PR #586 | Windows lane, PR #573 (`7167c8a2`) |
 | Time / threading | threading T3 | verified | none | threading T3 | [threading evidence](../development/threading-evidence.md#platform-completion-t3) |
 | Logging / profiling | D1 | needs port | Builds in the closure; run the logging suites on Windows | pending | none |
 | Filesystem | unassigned | needs port | Windows backend for mounts and persistence (D5) | pending | none |
 | Platform / host (Win32 windows) | D1 | verified (WARP) | Keyboard (D5) and hosted window later | PR #573 | Windows lane, PR #573 (`7167c8a2`) |
 | Input | unassigned | needs port | Win32 key map and keyboard delivery (D5) | pending | none |
 | RHI / graphics (clear/present) | D1 | verified (WARP) | Hardware-adapter evidence | PR #573 | Windows lane, PR #573 (`7167c8a2`) |
-| RHI / graphics (DXIL shaders, fullscreen draw) | D2 | in progress | Windows lane on the D2 PR; hardware-adapter evidence | D2 PR | pending |
+| RHI / graphics (DXIL shaders, fullscreen draw) | D2 | verified (WARP) | Hardware-adapter evidence | PR #586 | Windows lane, PR #586 ([run 40102938249](https://github.com/The-Ludus-Project/Ludus/actions/runs/40102938249)) |
 | RHI / graphics (raster, compute, lifetime) | unassigned | needs port | D3-D4 | pending | none |
 | Renderer / graph, text, content, runtime, audio, networking | unassigned | unreviewed | After D4 | pending | none |
 | SDK / projects / editor tooling | unassigned | unreviewed | D6 | pending | none |
-| CI / documentation | D1, D2 | in progress | Lane gates batch promotion; D2 adds the shader tool bootstrap | PR #573; D2 PR | Windows lane, PR #573 (`7167c8a2`) |
+| CI / documentation | D1, D2 | in progress | Lane gates batch promotion; D2 adds the shader tool bootstrap | PR #573; PR #586 | Windows lane, PR #573 (`7167c8a2`) |
 
 ## References
 
