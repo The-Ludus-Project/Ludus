@@ -52,8 +52,8 @@ _HOST_TOOLS = '''          ref=$(cat TOOLS_REVISION_TOKEN)
 
 _SDK_STEP = r"""      - name: STEP_NAME_TOKEN
         env:
-          SDK_URL: ${{ vars.LUDUS_RELEASE_SDK_URL }}
-          SDK_SHA256: ${{ vars.LUDUS_RELEASE_SDK_SHA256 }}
+          SDK_URL: ${{ vars.URL_VARIABLE_TOKEN }}
+          SDK_SHA256: ${{ vars.SHA_VARIABLE_TOKEN }}
         run: |
           python3 - <<'PYTHON'
           import hashlib, json, os, re, subprocess, urllib.request
@@ -73,7 +73,8 @@ _SDK_STEP = r"""      - name: STEP_NAME_TOKEN
                   output.write(block)
           if digest.hexdigest() != expected:
               raise SystemExit('SDK archive digest mismatch')
-          result = subprocess.run(['ludus', '--json', 'sdk', 'install', '--archive', path, '--digest', expected], text=True, capture_output=True, check=True)
+          # Leave stderr on the job log so an install failure shows its diagnostic.
+          result = subprocess.run(['ludus', '--json', 'sdk', 'install', '--archive', path, '--digest', expected], text=True, stdout=subprocess.PIPE, check=True)
           prefix = json.loads(result.stdout)['installed']['prefix']
           with open(os.environ['GITHUB_ENV'], 'a') as output:
               output.write('LUDUS_RELEASE_SDK_PREFIX=' + prefix + '\n')
@@ -99,7 +100,9 @@ def runner_for(platform: str) -> str:
     """Return the GitHub-hosted runner label for a native platform."""
     # GitHub, GitHub-hosted runners reference: explicit native CPU labels.
     # https://docs.github.com/en/actions/reference/runners/github-hosted-runners
-    return {"linux-x64": "ubuntu-24.04", "macos-arm64": "macos-14", "macos-x64": "macos-15-intel"}[platform]
+    # macOS 14 images are deprecated (actions/runner-images#13518); SDKs keep a 14.0 deployment floor.
+    # https://github.com/actions/runner-images/issues/13518
+    return {"linux-x64": "ubuntu-24.04", "macos-arm64": "macos-15", "macos-x64": "macos-15-intel"}[platform]
 
 
 def pinned_compiler() -> str:
@@ -125,10 +128,13 @@ def host_tools(venv: str) -> str:
     return _pin("          python3 -m venv VENV_TOKEN\n" + _HOST_TOOLS, venv)
 
 
-def release_sdk_step(name: str, invalid_message: str) -> str:
+def release_sdk_step(name: str, invalid_message: str, *, url_variable: str = "LUDUS_RELEASE_SDK_URL",
+                     sha_variable: str = "LUDUS_RELEASE_SDK_SHA256") -> str:
     """Return a step that installs the digest-pinned Release SDK named by repository variables.
 
     The step exports ``LUDUS_RELEASE_SDK_PREFIX`` and fails the job with
-    ``invalid_message`` unless the variables hold an HTTPS URL and a SHA-256 digest.
+    ``invalid_message`` unless ``url_variable`` holds an HTTPS URL and
+    ``sha_variable`` a SHA-256 digest.
     """
-    return _SDK_STEP.replace("STEP_NAME_TOKEN", name).replace("INVALID_SDK_TOKEN", invalid_message)
+    return (_SDK_STEP.replace("STEP_NAME_TOKEN", name).replace("INVALID_SDK_TOKEN", invalid_message)
+            .replace("URL_VARIABLE_TOKEN", url_variable).replace("SHA_VARIABLE_TOKEN", sha_variable))

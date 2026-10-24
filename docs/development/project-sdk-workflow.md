@@ -186,6 +186,10 @@ ludus project create ./MyGame --name "My Game" --sdk /path/to/sdk-prefix \
 # Existing project; --platform defaults to the project's preset family
 # (macOS uses this host's architecture):
 ludus project ci init ./MyGame --tools-ref <40-character Ludus commit>
+
+# Existing project, one build job per listed platform:
+ludus project ci init ./MyGame --tools-ref <40-character Ludus commit> \
+    --platform linux-x64 --platform macos-arm64 --platform macos-x64
 ```
 
 Setup writes `.github/workflows/ci.yml` and `config/ludus-tools-revision.txt`.
@@ -205,7 +209,16 @@ runs the project's CTest tests. Building needs a Release SDK archive. Set the
 repository variables `LUDUS_RELEASE_SDK_URL` (HTTPS) and `LUDUS_RELEASE_SDK_SHA256`
 (lowercase SHA-256), the same variables the release workflow uses. If both are
 unset, a short job reports a notice and the build job is skipped. If only one is
-set, or either is malformed, the build fails. Published engine releases do not
+set, or either is malformed, the build fails.
+
+A workflow for several platforms has one build job per platform, such as
+`build-and-test-macos-arm64`. Each platform needs its own matching Release SDK,
+so each job reads its own variables, suffixed with the platform:
+`LUDUS_RELEASE_SDK_URL_LINUX_X64` and `LUDUS_RELEASE_SDK_SHA256_LINUX_X64`, and
+likewise `_MACOS_ARM64` and `_MACOS_X64`. A platform whose two variables are both
+unset is skipped and named in the notice job; the other platforms still build.
+macOS jobs run on `macos-15` (arm64) and `macos-15-intel` (x64); the SDKs keep a
+macOS 14.0 deployment target. Published engine releases do not
 yet resolve a project lock, so CI cannot select an SDK by itself.
 
 GitHub runs workflows only from the repository root's `.github/workflows`.
