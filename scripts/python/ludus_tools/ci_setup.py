@@ -18,7 +18,7 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence, Union
 
 from . import descriptor, operations, workflow_steps
 from .errors import CONFLICT, INVALID_PROJECT, ToolingError
@@ -47,14 +47,23 @@ jobs:
   # Without a hosted Release SDK there is nothing to build against. Report that
   # on a short job instead of provisioning the toolchain or failing every push.
   sdk-not-configured:
-    if: vars.LUDUS_RELEASE_SDK_URL == '' && vars.LUDUS_RELEASE_SDK_SHA256 == ''
+    if: NOT_CONFIGURED_TOKEN
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Report missing SDK configuration
-        run: echo "::notice title=Ludus SDK not configured::Set repository variables LUDUS_RELEASE_SDK_URL and LUDUS_RELEASE_SDK_SHA256 to build and test in CI."
-  build-and-test:
-    if: vars.LUDUS_RELEASE_SDK_URL != '' || vars.LUDUS_RELEASE_SDK_SHA256 != ''
+NOTICE_STEPS_TOKENBUILD_JOBS_TOKEN'''
+
+NOTICE_STEP = '''      - name: Report missing SDK configuration
+        run: echo "::notice title=Ludus SDK not configured::Set repository variables URL_VAR_TOKEN and SHA_VAR_TOKEN to build and test in CI."
+'''
+
+PLATFORM_NOTICE_STEP = '''      - name: Report missing PLATFORM_TOKEN SDK configuration
+        if: UNSET_TOKEN
+        run: echo "::notice title=Ludus SDK not configured::Set repository variables URL_VAR_TOKEN and SHA_VAR_TOKEN to build and test on PLATFORM_TOKEN."
+'''
+
+BUILD_JOB = r'''  JOB_TOKEN:
+    if: SET_TOKEN
     runs-on: RUNNER_TOKEN
     timeout-minutes: 60
     steps:
@@ -67,23 +76,75 @@ BUILD_ENV_TOKEN        run: ludus project build . --profile PROFILE_TOKEN --sdk 
 '''
 
 
-def workflow_text(platform: str) -> str:
-    """Return the build/test workflow for a native platform (``linux-x64``, ``macos-arm64`` or ``macos-x64``)."""
-    if platform not in workflow_steps.NATIVE_PLATFORMS:
-        raise ToolingError(INVALID_PROJECT, f"unsupported CI platform {platform!r}")
+def sdk_variables(platform: str, platforms: Sequence[str]) -> tuple[str, str]:
+    """Return the repository variables naming ``platform``'s Release SDK URL and SHA-256.
+
+    A single-platform workflow uses the unsuffixed names shared with the release
+    workflow; a multi-platform workflow suffixes each name with its platform,
+    such as ``LUDUS_RELEASE_SDK_URL_MACOS_ARM64``.
+    """
+    names = ("LUDUS_RELEASE_SDK_URL", "LUDUS_RELEASE_SDK_SHA256")
+    if len(platforms) == 1:
+        return names
+    suffix = "_" + platform.upper().replace("-", "_")
+    return names[0] + suffix, names[1] + suffix
+
+
+def select_platforms(platforms: Sequence[str]) -> tuple[str, ...]:
+    """Return the requested native CI platforms without duplicates, in ``NATIVE_PLATFORMS`` order."""
+    for platform in platforms:
+        if platform not in workflow_steps.NATIVE_PLATFORMS:
+            raise ToolingError(INVALID_PROJECT, f"unsupported CI platform {platform!r}")
+    selected = tuple(platform for platform in workflow_steps.NATIVE_PLATFORMS if platform in platforms)
+    if len(selected) == 0:
+        raise ToolingError(INVALID_PROJECT, "CI setup requires at least one platform")
+    return selected
+
+
+def _build_job(platform: str, platforms: Sequence[str]) -> str:
+    url, sha = sdk_variables(platform, platforms)
+    job = "build-and-test" if len(platforms) == 1 else "build-and-test-" + platform
     profile = ("macos" if platform.startswith("macos-") else "linux") + "-clang-release"
     # Ubuntu installs only the versioned compiler name; name it for the
     # backend's host-toolchain check. macOS puts Homebrew LLVM first on PATH.
     build_env = "" if platform.startswith("macos-") else (
         "        env:\n          CXX: " + workflow_steps.pinned_compiler() + "\n")
-    return (WORKFLOW.replace("RUNNER_TOKEN", workflow_steps.runner_for(platform))
+    return (BUILD_JOB.replace("JOB_TOKEN", job)
+            .replace("SET_TOKEN", f"vars.{url} != '' || vars.{sha} != ''")
+            .replace("RUNNER_TOKEN", workflow_steps.runner_for(platform))
             .replace("CHECKOUT_TOKEN", workflow_steps.CHECKOUT_STEP)
             .replace("BUILD_PREREQUISITES_TOKEN", workflow_steps.build_prerequisites(platform, CI_TOOLS_VENV))
             .replace("SDK_STEP_TOKEN", workflow_steps.release_sdk_step(
                 "Acquire digest-pinned Release SDK",
-                "Set both LUDUS_RELEASE_SDK_URL (HTTPS) and LUDUS_RELEASE_SDK_SHA256 (lowercase SHA-256)"))
+                f"Set both {url} (HTTPS) and {sha} (lowercase SHA-256)", url_variable=url, sha_variable=sha))
             .replace("BUILD_ENV_TOKEN", build_env)
             .replace("PROFILE_TOKEN", profile))
+
+
+def _unset_condition(platform: str, platforms: Sequence[str]) -> str:
+    return "vars.{0} == '' && vars.{1} == ''".format(*sdk_variables(platform, platforms))
+
+
+def _notice_step(platform: str, platforms: Sequence[str]) -> str:
+    url, sha = sdk_variables(platform, platforms)
+    step = NOTICE_STEP if len(platforms) == 1 else PLATFORM_NOTICE_STEP
+    return (step.replace("UNSET_TOKEN", _unset_condition(platform, platforms)).replace("PLATFORM_TOKEN", platform)
+            .replace("URL_VAR_TOKEN", url).replace("SHA_VAR_TOKEN", sha))
+
+
+def workflow_text(*platforms: str) -> str:
+    """Return the build/test workflow for native platforms (``linux-x64``, ``macos-arm64``, ``macos-x64``).
+
+    Each platform gets its own build job, skipped while its SDK variables are unset.
+    """
+    platforms = select_platforms(platforms)
+    if len(platforms) == 1:
+        not_configured = _unset_condition(platforms[0], platforms)
+    else:
+        not_configured = " || ".join(f"({_unset_condition(platform, platforms)})" for platform in platforms)
+    return (WORKFLOW.replace("NOT_CONFIGURED_TOKEN", not_configured)
+            .replace("NOTICE_STEPS_TOKEN", "".join(_notice_step(platform, platforms) for platform in platforms))
+            .replace("BUILD_JOBS_TOKEN", "".join(_build_job(platform, platforms) for platform in platforms)))
 
 
 def platform_for_preset(preset: str, target_triple: Optional[str] = None) -> str:
@@ -162,9 +223,10 @@ def tooling_checkout_ref(tooling_root: Path) -> str:
     return require_tools_ref(result.stdout.strip())
 
 
-def ci_files(platform: str, tools_ref: str) -> list[TemplateFile]:
-    """Return the generated CI workflow and its pinned tools revision."""
-    return [TemplateFile(WORKFLOW_RELPATH, workflow_text(platform)),
+def ci_files(platforms: Union[str, Sequence[str]], tools_ref: str) -> list[TemplateFile]:
+    """Return the generated CI workflow for one or more platforms and its pinned tools revision."""
+    platforms = (platforms,) if isinstance(platforms, str) else tuple(platforms)
+    return [TemplateFile(WORKFLOW_RELPATH, workflow_text(*platforms)),
             TemplateFile(workflow_steps.TOOLS_REVISION_RELPATH, require_tools_ref(tools_ref) + "\n")]
 
 
@@ -201,9 +263,12 @@ def _origin_url(root: Path) -> Optional[str]:
     return None
 
 
-def setup_ci(project: Path, *, provider: str = "github", platform: Optional[str] = None,
+def setup_ci(project: Path, *, provider: str = "github", platform: Union[str, Sequence[str], None] = None,
              tools_ref: Optional[str] = None) -> list[str]:
     """Add the CI workflow to an existing version-2 CMake project; return the new files.
+
+    ``platform`` names one native platform or several; each gets its own build
+    job. Without it, the project's preset selects one platform.
 
     Never overwrites: an existing workflow fails with ``Conflict``. An existing
     ``config/ludus-tools-revision.txt`` naming the same commit is reused; a

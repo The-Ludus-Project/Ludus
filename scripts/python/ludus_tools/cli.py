@@ -23,7 +23,7 @@ Commands:
     ludus project engine    <project> --status --tools <checkout> [--profile <preset>]
     ludus project engine    <project> --list   --tools <checkout> [--profile <preset>]
     ludus project migrate   <project> --engine <release>
-    ludus project ci init   <project> --tools-ref <commit> [--platform <platform>]
+    ludus project ci init   <project> --tools-ref <commit> [--platform <platform>]...
 """
 
 from __future__ import annotations
@@ -387,15 +387,21 @@ def cmd_release_init(args) -> int:
 
 
 def cmd_ci_init(args) -> int:
-    from .ci_setup import describe_repository, setup_ci
+    from .ci_setup import describe_repository, sdk_variables, select_platforms, setup_ci
     files = setup_ci(Path(args.project), provider=args.provider, platform=args.platform, tools_ref=args.tools_ref)
     note = describe_repository(Path(args.project))
     _emit(args, {"files": files, "repository": note})
     if not args.json:
         print("CI setup saved: " + ", ".join(files))
         print(note)
-        print("Set repository variables LUDUS_RELEASE_SDK_URL and LUDUS_RELEASE_SDK_SHA256 to build and test; "
-              "without them the workflow reports a notice and skips the build.")
+        platforms = select_platforms(args.platform) if args.platform else ()
+        if len(platforms) > 1:
+            for platform in platforms:
+                print("Set repository variables {0} and {1} to build and test on ".format(*sdk_variables(platform, platforms))
+                      + platform + "; without them that platform reports a notice and skips its build.")
+        else:
+            print("Set repository variables LUDUS_RELEASE_SDK_URL and LUDUS_RELEASE_SDK_SHA256 to build and test; "
+                  "without them the workflow reports a notice and skips the build.")
     return EXIT_OK
 
 
@@ -727,8 +733,9 @@ def build_parser() -> argparse.ArgumentParser:
     ci_init = ci.add_parser("init", help="add a GitHub Actions build/test workflow; never overwrites files")
     ci_init.add_argument("project")
     ci_init.add_argument("--provider", choices=("github",), default="github")
-    ci_init.add_argument("--platform", choices=("linux-x64", "macos-arm64", "macos-x64"),
-                         help="runner platform (defaults to the project's preset family and this host's macOS architecture)")
+    ci_init.add_argument("--platform", choices=("linux-x64", "macos-arm64", "macos-x64"), action="append",
+                         help="runner platform; repeat for one build job per platform (defaults to the project's "
+                              "preset family and this host's macOS architecture)")
     ci_init.add_argument("--tools-ref", required=True, help="Ludus commit the workflow installs host tools from")
     ci_init.set_defaults(func=cmd_ci_init)
 

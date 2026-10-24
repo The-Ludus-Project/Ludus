@@ -141,7 +141,7 @@ class MachoTests(unittest.TestCase):
             setup_release(root, platform="macos-arm64", tools_ref="a" * 40)
             self.assertEqual(before, (root / "src/main.cpp").read_bytes())
             workflow = (root / ".github/workflows/itch-release.yml").read_text()
-            self.assertIn("macos-14", workflow)
+            self.assertIn("runs-on: macos-15\n", workflow)
             self.assertIn("LUDUS_RELEASE_SDK_SHA256", workflow)
             self.assertNotIn("BUTLER_API_KEY", workflow)
             self.assertNotIn("publish upload", workflow)
