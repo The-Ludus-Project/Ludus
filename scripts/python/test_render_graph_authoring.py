@@ -123,6 +123,38 @@ class ShaderDiagnosticTests(unittest.TestCase):
         self.assertNotIn('location', diagnostics[2])
         self.assertEqual(['error', 'error', 'warning'], [d['severity'] for d in diagnostics])
 
+    def test_caret_maps_to_scalar_column_and_length(self):
+        # Echo and caret as printed by the pinned slangc: tabs expanded to four-column
+        # stops, carets placed by UTF-8 byte column.
+        source = ('void main()\n{\n\tfloat v = missing + 1.0;\n/*é*/\tfloat z = bad;\r\n'
+                  '    int q = "str";\n    return\n}\n').encode('utf-8')
+        output = ('Ludus shader build: a.slang(3): error 30015: undefined identifier \'missing\'.\n'
+                  '    float v = missing + 1.0;\n'
+                  '              ^~~~~~~\n'
+                  'a.slang(4): error 30015: undefined identifier \'bad\'.\n'
+                  '/*é*/  float z = bad;\n'
+                  '                  ^~~\n'
+                  'a.slang(5): error 30019: expected an expression of type \'int\', got \'String\'\n'
+                  '    int q = "str";\n'
+                  '                 ^\n'
+                  'a.slang(6): error 20001: unexpected end of line, expected \';\'\n'
+                  '    return\n'
+                  '          ^\n')
+        diagnostics = build.map_shader_diagnostics(output, {'id': 'P'}, 'metal', ['a.slang'], {'a.slang': source})
+        self.assertEqual([{'source': 'a.slang', 'line': 3, 'column': 12, 'length': 7},
+                          {'source': 'a.slang', 'line': 4, 'column': 17, 'length': 3},
+                          {'source': 'a.slang', 'line': 5, 'column': 18, 'length': 1},
+                          {'source': 'a.slang', 'line': 6, 'column': 11, 'length': 0}],
+                         [d['location'] for d in diagnostics])
+
+    def test_unverifiable_caret_keeps_line_only(self):
+        source = ('x' * 300 + ' + bad;\n').encode('utf-8')
+        truncated = ('a.slang(1): error 30015: undefined identifier \'bad\'.\n' + 'x' * 200 + '\n' + ' ' * 200 + '\n')
+        edited = 'a.slang(1): error 30015: undefined identifier \'bad\'.\n    y + bad;\n        ^~~\n'
+        for output in (truncated, edited):
+            diagnostics = build.map_shader_diagnostics(output, {'id': 'P'}, 'metal', ['a.slang'], {'a.slang': source})
+            self.assertEqual({'source': 'a.slang', 'line': 1}, diagnostics[0]['location'])
+
     def test_bounded_diagnostics(self):
         output = ''.join(f'a.slang({i}): error 1: x\n' for i in range(100))
         self.assertEqual(build.MAX_SHADER_DIAGNOSTICS,

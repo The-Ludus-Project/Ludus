@@ -109,6 +109,23 @@ Save alone publishes files; it retains the existing package bounds and external
 conflict checks. Expensive tree/interface/watch refreshes are coalesced at the
 existing debounce; draft revisions and Undo availability update immediately.
 
+### Compiler diagnostics in the view
+
+The workspace keeps the build report. The editor receives copied `CodeDiagnostic`
+values for the shown file: a one-based line, an optional one-based Unicode scalar
+column and length, a severity and the message. It turns each into a document
+cursor range, so Qt moves the range with later edits. It draws a gutter marker
+and an underline, and shows the message as escaped text in the hover. The first
+character edit marks the set out of date. The editor ignores the same-length
+document notices that highlighter reformatting produces, and a whole-text
+replacement drops the markers. The editor shows out-of-date markers hollow and
+dotted rather than hiding them. The workspace also passes a set as out of date
+when the report's captured build identity no longer matches the sources. This
+includes a saved-source build of a file whose draft differs. It re-places the
+markers only for a new result, project or file, so re-rendering the pane keeps
+their anchored positions. Columns come from the render-graph tool, which checks
+Slang's caret against the captured source; the view never parses compiler text.
+
 ### Language intelligence and formatting
 
 Use Slang's language server for symbol hover, completion, signature help and
@@ -202,8 +219,13 @@ these probes without concurrent build/analysis jobs before comparing changes.
    coloring, commands and find/replace.
 2. Implemented: version-checked document adapter/unified text history and native
    asynchronous formatting, atomic undo, project style and stale-result rejection.
-3. Slang context integration, unsaved overlays, hover, completion and diagnostics.
-4. Scripting workspace integration and its language provider.
+3. Implemented: compiler diagnostics in the editor. Build/validation messages
+   are marked in the gutter and underlined, with hover text, column-accurate
+   Error List navigation, markers anchored through edits, and out-of-date
+   marking. These are the batch compiler's results, not live analysis.
+4. Slang context integration, unsaved overlays, hover, completion and live
+   language-server diagnostics.
+5. Scripting workspace integration and its language provider.
 
 ## Toolkit evaluation
 

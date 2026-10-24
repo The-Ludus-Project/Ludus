@@ -419,6 +419,10 @@ QString DescribeLocation(const QJsonObject& location)
         if (location.contains(QStringLiteral("line")) == true)
         {
             source += QLatin1Char(':') + QString::number(location.value(QStringLiteral("line")).toInt());
+            if (location.contains(QStringLiteral("column")) == true)
+            {
+                source += QLatin1Char(':') + QString::number(location.value(QStringLiteral("column")).toInt());
+            }
         }
         parts.append(source);
     }
@@ -1977,6 +1981,7 @@ void RendererWorkspace::AcceptResult(const RenderGraphJobResult& result)
     mCanvas->ClearDiagnostic();
     mLastResult = result;
     mHasResult = true;
+    updateSourceDiagnostics(true);
     if (result.IsSuccessful == true)
     {
         const QJsonObject toolchain = result.Payload.value(QStringLiteral("toolchain")).toObject();
@@ -2847,6 +2852,66 @@ void RendererWorkspace::renderSource()
     UpdateShaderInterfaceView(*mSourceInterface,
                               file,
                               DescribeShaderInterface(mDocument.GetDraft(manifestFile()), file, sources));
+    updateSourceDiagnostics(false);
+}
+
+void RendererWorkspace::updateSourceDiagnostics(bool isNewResult)
+{
+    const QString file = mSourceFile->currentText();
+    const uint64 request = mHasResult == true ? mLastResult.Request.Request : 0;
+    if (isNewResult == false && request == mSourceDiagnosticsRequest && mEpoch == mSourceDiagnosticsEpoch &&
+        file == mSourceDiagnosticsFile)
+    {
+        return;
+    }
+    mSourceDiagnosticsRequest = request;
+    mSourceDiagnosticsEpoch = mEpoch;
+    mSourceDiagnosticsFile = file;
+    QList<CodeDiagnostic> diagnostics;
+    const int32 count = mHasResult == true && mLastResult.IsSuccessful == false ? GetDiagnosticCount() : 0;
+    // Without a structured batch, row 0 summarizes the compiler rows that follow it.
+    const int32 first =
+        mLastResult.Diagnostics.isEmpty() == false && count == mLastResult.Diagnostics.size() + 1 ? 1 : 0;
+    for (int32 row = first; row < count && file.isEmpty() == false; ++row)
+    {
+        const QJsonObject diagnostic = mLastResult.GetDiagnostic(row);
+        const QJsonObject location = diagnostic.value(QStringLiteral("location")).toObject();
+        if (location.contains(QStringLiteral("generated")) == true ||
+            QDir::cleanPath(location.value(QStringLiteral("source")).toString()) != QDir::cleanPath(file) ||
+            location.value(QStringLiteral("line")).toInt() < 1)
+        {
+            continue;
+        }
+        const CodeDiagnostic entry =
+        {
+            .Line = location.value(QStringLiteral("line")).toInt(),
+            .Column = location.value(QStringLiteral("column")).toInt(),
+            .Length = location.value(QStringLiteral("length")).toInt(),
+            .Severity = diagnostic.value(QStringLiteral("severity")).toString() == QStringLiteral("warning")
+                            ? CodeDiagnosticSeverity::Warning
+                            : CodeDiagnosticSeverity::Error,
+            .Message = DescribeRenderGraphDiagnostic(diagnostic),
+        };
+        // Several programs and targets can compile one file and repeat the same message.
+        bool isDuplicate = false;
+        for (const CodeDiagnostic& existing : diagnostics)
+        {
+            isDuplicate = isDuplicate || (existing.Line == entry.Line && existing.Column == entry.Column &&
+                                          existing.Length == entry.Length && existing.Severity == entry.Severity &&
+                                          existing.Message == entry.Message);
+        }
+        if (isDuplicate == false)
+        {
+            diagnostics.append(entry);
+        }
+    }
+    // The report matches this text only if its sources are unchanged and it compiled what the
+    // view shows: a saved-source build does not describe unsaved edits.
+    const bool isCurrent = (mLastResult.Request.InputIdentity.isEmpty() == true ||
+                            mLastResult.Request.InputIdentity == getBuildIdentity(mLastResult.Request.Source)) &&
+                           (mLastResult.Request.Source == RenderGraphSource::Draft ||
+                            mDocument.GetDraft(file) == mDocument.GetSaved(file));
+    mSource->SetDiagnostics(diagnostics, isCurrent);
 }
 
 void RendererWorkspace::renderStatus()
@@ -3579,15 +3644,12 @@ QJsonObject RendererWorkspace::getDiagnosticLocation(int32 row) const
     return mLastResult.GetDiagnostic(row).value(QStringLiteral("location")).toObject();
 }
 
-void RendererWorkspace::openSourceLine(const QString& file, int32 line)
+void RendererWorkspace::openSourceLine(const QString& file, int32 line, int32 column)
 {
     mViews->setCurrentIndex(SOURCE_VIEW);
     mSourceFile->setCurrentText(file);
     renderSource();
-    const QTextBlock block = mSource->document()->findBlockByNumber(line > 0 ? line - 1 : 0);
-    QTextCursor cursor(block);
-    mSource->setTextCursor(cursor);
-    mSource->setFocus();
+    mSource->GoToLine(line, column);
 }
 
 bool RendererWorkspace::ActivateDiagnostic(int32 row)
@@ -3622,7 +3684,9 @@ bool RendererWorkspace::ActivateDiagnostic(int32 row)
     }
     if (location.contains(QStringLiteral("line")) == true)
     {
-        openSourceLine(source, location.value(QStringLiteral("line")).toInt());
+        openSourceLine(source,
+                       location.value(QStringLiteral("line")).toInt(),
+                       location.value(QStringLiteral("column")).toInt());
         return true;
     }
     mViews->setCurrentIndex(CANVAS_VIEW);
@@ -3658,6 +3722,13 @@ QString RendererWorkspace::GetSourceFile() const
 int32 RendererWorkspace::GetSourceLine() const
 {
     return mSource->textCursor().blockNumber() + 1;
+}
+
+int32 RendererWorkspace::GetSourceColumn() const
+{
+    const QTextCursor cursor = mSource->textCursor();
+    const QString prefix = cursor.block().text().left(cursor.positionInBlock());
+    return static_cast<int32>(prefix.toUcs4().size()) + 1;
 }
 
 QString RendererWorkspace::manifestFile() const

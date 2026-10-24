@@ -1,6 +1,7 @@
 // RG3 Renderer workspace: typed render-graph drafts, explicit save, mapped
 // diagnostics and CLI/editor equivalence through the shared ludus_tools backend.
 // Offscreen widgets prove document/job wiring, not GPU output or a node canvas.
+#include "internal/code_editor.h"
 #include "internal/controller.h"
 #include "internal/main_window.h"
 #include "internal/render_graph_canvas.h"
@@ -677,12 +678,105 @@ TEST_CASE("RG3 a real compiler error opens the authored shader line", "[editor][
     INFO(failure.Code.toStdString() + ": " + failure.Message.toStdString());
     CHECK(failure.Code == QStringLiteral("RenderGraphBuildShader"));
     CHECK(failure.Message.contains(QStringLiteral("Ludus shader build: main_shaders/color.slang(3)")) == true);
+    // Slang's caret under `undefinedColor` in "    return undefinedColor;" adds its range.
     CHECK(failure.Location == QJsonObject{{QStringLiteral("source"), QStringLiteral("main_shaders/color.slang")},
-                                          {QStringLiteral("line"), 3}});
+                                          {QStringLiteral("line"), 3},
+                                          {QStringLiteral("column"), 12},
+                                          {QStringLiteral("length"), 14}});
     REQUIRE(workspace.GetDiagnosticCount() >= 1);
     REQUIRE(workspace.ActivateDiagnostic(0) == true);
     CHECK(workspace.GetSourceFile() == QStringLiteral("main_shaders/color.slang"));
     CHECK(workspace.GetSourceLine() == 3);
+    CHECK(workspace.GetSourceColumn() == 12);
+    const CodeEditor* sourceOrNull = workspace.findChild<CodeEditor*>(QStringLiteral("renderGraphSource"));
+    REQUIRE(sourceOrNull != nullptr);
+    REQUIRE(sourceOrNull->GetDiagnosticCount() >= 1);
+    CHECK(sourceOrNull->GetDiagnosticRange(0).selectedText() == QStringLiteral("undefinedColor"));
+    CHECK(sourceOrNull->AreDiagnosticsCurrent() == true);
+}
+
+TEST_CASE("Shader diagnostics mark the Source editor and jump to their column", "[editor][render-graph][source-editor]")
+{
+    const QString python = FindPython();
+    if (python.isEmpty() == true)
+    {
+        SKIP("python3 is required to run the shared render-graph backend");
+    }
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({python, {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 7);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    QSignalSpy finished(&workspace, &RendererWorkspace::JobFinished);
+    REQUIRE(workspace.Validate() == true);
+    REQUIRE(finished.wait(JOB_TIMEOUT_MILLISECONDS) == true);
+    CodeEditor* sourceOrNull = workspace.findChild<CodeEditor*>(QStringLiteral("renderGraphSource"));
+    REQUIRE(sourceOrNull != nullptr);
+
+    // A failure for the captured request: "    RasterVarying result;" is line 3 of geometry.
+    const QString geometry = QStringLiteral("main_shaders/geometry.slang");
+    const QJsonObject token{{QStringLiteral("source"), geometry},
+                            {QStringLiteral("line"), 3},
+                            {QStringLiteral("column"), 19},
+                            {QStringLiteral("length"), 6}};
+    const auto makeDiagnostic = [](const QString& severity, const QString& target, const QJsonObject& location) {
+        return QJsonObject{{QStringLiteral("severity"), severity},
+                           {QStringLiteral("message"), QStringLiteral("undefined identifier")},
+                           {QStringLiteral("program"), QStringLiteral("Geometry")},
+                           {QStringLiteral("target"), target},
+                           {QStringLiteral("location"), location}};
+    };
+    RenderGraphJobResult shader = workspace.GetLastResult();
+    shader.IsSuccessful = false;
+    shader.Payload = {};
+    shader.Code = QStringLiteral("RenderGraphBuildShader");
+    shader.Message = QStringLiteral("shader helper: compiler output");
+    shader.Location = token;
+    shader.Diagnostics = QJsonArray{
+        makeDiagnostic(QStringLiteral("error"), QStringLiteral("metal"), token),
+        makeDiagnostic(QStringLiteral("error"), QStringLiteral("glsl"), token),
+        makeDiagnostic(QStringLiteral("warning"),
+                       QStringLiteral("metal"),
+                       QJsonObject{{QStringLiteral("source"), geometry}, {QStringLiteral("line"), 1}}),
+        makeDiagnostic(QStringLiteral("error"),
+                       QStringLiteral("metal"),
+                       QJsonObject{{QStringLiteral("source"), QStringLiteral("main_shaders/color.slang")},
+                                   {QStringLiteral("line"), 2}}),
+    };
+    workspace.AcceptResult(shader);
+    REQUIRE(workspace.GetDiagnosticCount() == 5);
+    // Row 0 summarizes the compiler rows; activating a row places the caret on its token.
+    REQUIRE(workspace.ActivateDiagnostic(1) == true);
+    CHECK(workspace.GetSourceFile() == geometry);
+    CHECK(workspace.GetSourceLine() == 3);
+    CHECK(workspace.GetSourceColumn() == 19);
+    // The repeated target report is shown once; the other file's message is not marked here.
+    REQUIRE(sourceOrNull->GetDiagnosticCount() == 2);
+    CHECK(sourceOrNull->AreDiagnosticsCurrent() == true);
+    CHECK(sourceOrNull->GetDiagnosticRange(0).selectedText() == QStringLiteral("result"));
+    CHECK(sourceOrNull->DescribeLineDiagnostics(0) == QStringLiteral("Warning: undefined identifier"));
+
+    // Typing keeps the marker on its token but marks the report out of date.
+    QTextCursor start(sourceOrNull->document());
+    sourceOrNull->setTextCursor(start);
+    QTest::keyClicks(sourceOrNull, QStringLiteral("x"));
+    CHECK(workspace.GetDocument().GetDraft(geometry).startsWith("x") == true);
+    CHECK(sourceOrNull->AreDiagnosticsCurrent() == false);
+    CHECK(sourceOrNull->GetDiagnosticRange(0).selectedText() == QStringLiteral("result"));
+
+    // Another file shows its own messages, already out of date since the sources changed.
+    REQUIRE(workspace.ActivateDiagnostic(4) == true);
+    CHECK(workspace.GetSourceFile() == QStringLiteral("main_shaders/color.slang"));
+    REQUIRE(sourceOrNull->GetDiagnosticCount() == 1);
+    CHECK(sourceOrNull->AreDiagnosticsCurrent() == false);
+
+    // A successful result clears the markers.
+    RenderGraphJobResult success = workspace.GetLastResult();
+    success.IsSuccessful = true;
+    success.Code.clear();
+    success.Diagnostics = {};
+    workspace.AcceptResult(success);
+    CHECK(sourceOrNull->GetDiagnosticCount() == 0);
 }
 
 TEST_CASE("RG3 Renderer tab joins the main window document actions", "[editor][render-graph]")

@@ -72,7 +72,11 @@ constexpr foundation::int32 DESCRIPTION_CELL_PADDING_PIXELS = 8;
     QStringList parts;
     if (location.contains(QStringLiteral("line")) == true)
     {
-        parts.append(QStringLiteral("line %1").arg(location.value(QStringLiteral("line")).toInt()));
+        parts.append(location.contains(QStringLiteral("column")) == true
+                         ? QStringLiteral("line %1, column %2")
+                               .arg(location.value(QStringLiteral("line")).toInt())
+                               .arg(location.value(QStringLiteral("column")).toInt())
+                         : QStringLiteral("line %1").arg(location.value(QStringLiteral("line")).toInt()));
     }
     if (location.contains(QStringLiteral("generated")) == true)
     {
