@@ -235,5 +235,35 @@ class ForwardLitTemplateTests(unittest.TestCase):
                 build.validate_manifest(manifest)
 
 
+class EditorTemplateCatalogTests(unittest.TestCase):
+    """The editor's template catalog offers exactly the templates this tooling can create."""
+
+    def setUp(self):
+        catalog = Path(__file__).resolve().parents[2] / 'apps/editor/resources/render_graph_templates.json'
+        self.templates = json.loads(catalog.read_text(encoding='utf-8'))['templates']
+
+    def identities(self, kind):
+        return [entry['identity'] for entry in self.templates if entry['kind'] == kind]
+
+    def test_graph_entries_match_the_creatable_templates(self):
+        from ludus_tools.cli import build_parser
+        from ludus_tools.render_graph_templates import TEMPLATES
+        graphs = self.identities('graph')
+        self.assertEqual(sorted(graphs), sorted(('raster', *TEMPLATES)))
+        for identity in graphs:
+            arguments = build_parser().parse_args(['render-graph', 'new', 'Main', '--template', identity])
+            self.assertEqual(arguments.template, identity)
+
+    def test_native_ray_requirements_match_the_tooling_capability_check(self):
+        from ludus_tools.render_graph_templates import TEMPLATES
+        for entry in self.templates:
+            if entry['kind'] == 'node' or entry['identity'] == 'raster':
+                continue
+            with self.subTest(kind=entry['kind'], identity=entry['identity']):
+                self.assertIn(entry['identity'], TEMPLATES)
+                self.assertEqual('native-ray-tracing' in entry.get('requirements', ()),
+                                 TEMPLATES[entry['identity']][2])
+
+
 if __name__ == '__main__':
     unittest.main()

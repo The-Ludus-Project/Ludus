@@ -1,5 +1,7 @@
 #include "internal/render_graph_creation.h"
 
+#include "internal/render_graph_template_registry.h"
+
 #include <QDir>
 #include <QFileInfo>
 #include <QRegularExpression>
@@ -40,9 +42,8 @@ bool RenderGraphCreation::Start(const ToolingPaths& tooling,
         outError = QStringLiteral("Wait for graph creation to finish.");
         return false;
     }
-    if (templateIdentity != QStringLiteral("raster") && templateIdentity != QStringLiteral("forward-lit") &&
-        templateIdentity != QStringLiteral("restir-di") && templateIdentity != QStringLiteral("visibility-buffer") &&
-        templateIdentity != QStringLiteral("visibility-secondary-rays"))
+    if (RenderGraphTemplateRegistry::GetBuiltIn().HasTemplate(RenderGraphTemplateKind::Graph, templateIdentity) ==
+        false)
     {
         outError = QStringLiteral("Select a built-in render graph template.");
         return false;

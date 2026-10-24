@@ -1,5 +1,7 @@
 #include "internal/renderer_workspace.h"
 
+#include "internal/render_graph_template_registry.h"
+
 #include <ludus/foundation/base/core.h>
 
 #include <ludus/foundation/math/scalar.hpp>
@@ -289,9 +291,20 @@ void RendererWorkspace::promptConfigurationTemplate()
     QFormLayout* fields = new QFormLayout(&dialog);
     QComboBox* choice = new QComboBox(&dialog);
     choice->setObjectName(QStringLiteral("renderGraphConfigurationTemplate"));
-    choice->addItem(QStringLiteral("ReSTIR DI — mesh emitter lighting"), QStringLiteral("restir-di"));
-    choice->addItem(QStringLiteral("Visibility buffer + depth"), QStringLiteral("visibility-buffer"));
-    choice->addItem(QStringLiteral("Visibility + secondary rays"), QStringLiteral("visibility-secondary-rays"));
+    // Each item carries its snippet's proposed configuration name and description beside its identity.
+    constexpr int32 DEFAULT_CONFIGURATION_ROLE = Qt::UserRole + 1;
+    constexpr int32 DESCRIPTION_ROLE = Qt::UserRole + 2;
+    QStringList defaultConfigurations;
+    for (const RenderGraphTemplate& entry :
+         RenderGraphTemplateRegistry::GetBuiltIn().GetTemplates(RenderGraphTemplateKind::Snippet))
+    {
+        choice->addItem(entry.Label, entry.Identity);
+        choice->setItemData(choice->count() - 1, entry.DefaultConfiguration, DEFAULT_CONFIGURATION_ROLE);
+        choice->setItemData(choice->count() - 1, entry.Description, DESCRIPTION_ROLE);
+        defaultConfigurations.append(entry.DefaultConfiguration);
+    }
+    const QString firstConfiguration =
+        defaultConfigurations.isEmpty() == true ? QString{} : defaultConfigurations.first();
     fields->addRow(QStringLiteral("Template"), choice);
     QLineEdit* name = new QLineEdit(mSelectedConfiguration, &dialog);
     name->setObjectName(QStringLiteral("renderGraphTemplateConfiguration"));
@@ -306,45 +319,26 @@ void RendererWorkspace::promptConfigurationTemplate()
                  configuration.value(QStringLiteral("inputs")).toArray().isEmpty() == false ||
                  configuration.value(QStringLiteral("outputs")).toArray().isEmpty() == false))
             {
-                name->setText(QStringLiteral("RestirDi"));
+                name->setText(firstConfiguration);
             }
         }
     }
     if (mSelectedFile == mDocument.GetRootGraph())
     {
-        name->setText(QStringLiteral("RestirDi"));
+        name->setText(firstConfiguration);
     }
     fields->addRow(QStringLiteral("Configuration"), name);
     QLabel* description = new QLabel(&dialog);
     description->setWordWrap(true);
     fields->addRow(description);
-    const auto describe = [choice, name, description, &dialog]() {
-        const QString identity = choice->currentData().toString();
-        QString defaultName = QStringLiteral("RestirDi");
-        QString text =
-            QStringLiteral("Three ray passes with two automatically sized reservoirs and Graph settings. "
-                           "Connect scene, view and color; requires native ray tracing and emissive meshes.");
-        if (identity == QStringLiteral("visibility-buffer"))
+    const auto describe = [choice, name, description, defaultConfigurations, &dialog]() {
+        if (defaultConfigurations.contains(name->text()) == true)
         {
-            defaultName = QStringLiteral("VisibilityBuffer");
-            text = QStringLiteral("Write RGBA8 primitive/instance IDs and depth. Connect scene, view, visibility "
-                                  "and depth; both attachments are exposed as outputs. Uses opaque static triangles.");
-        }
-        else if (identity == QStringLiteral("visibility-secondary-rays"))
-        {
-            defaultName = QStringLiteral("VisibilitySecondaryRays");
-            text = QStringLiteral(
-                "Rasterize visibility/depth, reconstruct the surface and trace one reflected ray. "
-                "Connect scene, view and color; outputs color, visibility and depth. Requires native ray tracing.");
-        }
-        if (name->text() == QStringLiteral("RestirDi") || name->text() == QStringLiteral("VisibilityBuffer") ||
-            name->text() == QStringLiteral("VisibilitySecondaryRays"))
-        {
-            name->setText(defaultName);
+            name->setText(choice->currentData(DEFAULT_CONFIGURATION_ROLE).toString());
         }
         description->setText(QStringLiteral("Create a library configuration or fill an empty one. On the root canvas, "
                                             "also insert a Subgraph node. ") +
-                             text);
+                             choice->currentData(DESCRIPTION_ROLE).toString());
         dialog.adjustSize();
     };
     connect(choice, &QComboBox::currentIndexChanged, &dialog, describe);

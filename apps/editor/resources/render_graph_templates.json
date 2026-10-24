@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "templates": [
+    {
+      "kind": "graph",
+      "identity": "raster",
+      "label": "Raster",
+      "category": "raster",
+      "description": "Render your World into a color image using editable raster shaders."
+    },
+    {
+      "kind": "graph",
+      "identity": "forward-lit",
+      "label": "Forward lit",
+      "category": "raster",
+      "description": "Render authored World materials, textures and direct lights with the portable forward profile."
+    },
+    {
+      "kind": "graph",
+      "identity": "visibility-buffer",
+      "label": "Visibility buffer + depth",
+      "category": "raster",
+      "description": "Write original primitive and instance IDs into RGBA8, alongside depth. Exports both attachments with one shared render size. Uses opaque static triangles."
+    },
+    {
+      "kind": "graph",
+      "identity": "visibility-secondary-rays",
+      "label": "Visibility + secondary rays",
+      "category": "hybrid",
+      "requirements": ["native-ray-tracing"],
+      "description": "Rasterize visibility and depth, reconstruct the first surface, then trace one reflected secondary ray. Samples authored emission and environment lighting. Requires native ray tracing."
+    },
+    {
+      "kind": "graph",
+      "identity": "restir-di",
+      "label": "ReSTIR DI — mesh emitter lighting",
+      "category": "ray-traced",
+      "requirements": ["native-ray-tracing"],
+      "description": "Three ray passes with editable shader settings and automatically sized reservoirs. Uses emissive meshes and requires native ray tracing. Temporal reuse has no motion reprojection. Change settings through Properties or the canvas menu."
+    },
+    {
+      "kind": "snippet",
+      "identity": "restir-di",
+      "label": "ReSTIR DI — mesh emitter lighting",
+      "category": "lighting",
+      "defaultConfiguration": "RestirDi",
+      "requirements": ["native-ray-tracing"],
+      "description": "Three ray passes with two automatically sized reservoirs and Graph settings. Connect scene, view and color; requires native ray tracing and emissive meshes."
+    },
+    {
+      "kind": "snippet",
+      "identity": "visibility-buffer",
+      "label": "Visibility buffer + depth",
+      "category": "visibility",
+      "defaultConfiguration": "VisibilityBuffer",
+      "description": "Write RGBA8 primitive/instance IDs and depth. Connect scene, view, visibility and depth; both attachments are exposed as outputs. Uses opaque static triangles."
+    },
+    {
+      "kind": "snippet",
+      "identity": "visibility-secondary-rays",
+      "label": "Visibility + secondary rays",
+      "category": "visibility",
+      "defaultConfiguration": "VisibilitySecondaryRays",
+      "requirements": ["native-ray-tracing"],
+      "description": "Rasterize visibility/depth, reconstruct the surface and trace one reflected ray. Connect scene, view and color; outputs color, visibility and depth. Requires native ray tracing."
+    },
+    { "kind": "node", "identity": "Scene", "category": "scene" },
+    { "kind": "node", "identity": "Camera", "category": "scene" },
+    { "kind": "node", "identity": "Target", "category": "resources" },
+    { "kind": "node", "identity": "Buffer", "category": "resources" },
+    { "kind": "node", "identity": "StructuredBuffer", "category": "resources" },
+    { "kind": "node", "identity": "OutputSize", "category": "resources" },
+    { "kind": "node", "identity": "RenderSize", "category": "resources" },
+    { "kind": "node", "identity": "GraphicsPipeline", "category": "passes" },
+    { "kind": "node", "identity": "ComputePipeline", "category": "passes" },
+    { "kind": "node", "identity": "RayTracingPipeline", "category": "passes", "requirements": ["native-ray-tracing"] },
+    { "kind": "node", "identity": "Accumulate", "category": "post-processing" },
+    { "kind": "node", "identity": "ToneMap", "category": "post-processing" },
+    { "kind": "node", "identity": "Denoise", "category": "post-processing", "requirements": ["denoiser"] },
+    { "kind": "node", "identity": "Subgraph", "category": "structure" },
+    { "kind": "node", "identity": "Export", "category": "output" },
+    { "kind": "node", "identity": "Present", "category": "output" },
+    { "kind": "node", "identity": "Upscale", "algorithm": "bilinear", "category": "upscaling" },
+    { "kind": "node", "identity": "Upscale", "algorithm": "dlss-sr", "category": "upscaling", "isDraft": true },
+    { "kind": "node", "identity": "Upscale", "algorithm": "fsr-1", "category": "upscaling", "isDraft": true },
+    { "kind": "node", "identity": "Upscale", "algorithm": "fsr-2", "category": "upscaling", "isDraft": true },
+    { "kind": "node", "identity": "Upscale", "algorithm": "fsr-3", "category": "upscaling", "isDraft": true },
+    { "kind": "node", "identity": "Upscale", "algorithm": "metalfx-spatial", "category": "upscaling", "requirements": ["metalfx"] },
+    { "kind": "node", "identity": "Upscale", "algorithm": "metalfx-temporal", "category": "upscaling", "isDraft": true, "requirements": ["metalfx"] },
+    { "kind": "node", "identity": "Upscale", "algorithm": "xess-sr", "category": "upscaling", "isDraft": true }
+  ]
+}

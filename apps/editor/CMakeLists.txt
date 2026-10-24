@@ -233,6 +233,10 @@ function(ludus_editor_add_default_render_graph target)
             FILES "${visibility_template}/library.lurender.json" "${visibility_template}/main.lushader.json.in"
                   ${visibility_template_shaders})
     endforeach()
+    # One catalog lists the built-in graphs, snippets and node types every template picker offers.
+    qt_add_resources(${target} ludus_render_graph_templates
+        PREFIX "/render-graph" BASE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources"
+        FILES "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/render_graph_templates.json")
     get_property(default_graph GLOBAL PROPERTY LUDUS_DEFAULT_RENDER_GRAPH_DIR)
     get_property(default_graph_files GLOBAL PROPERTY LUDUS_DEFAULT_RENDER_GRAPH_FILES)
     list(TRANSFORM default_graph_files PREPEND "${default_graph}/")
@@ -383,6 +387,8 @@ qt_add_executable(ludus_editor
     src/render_graph_job.cpp
     src/internal/render_graph_creation.h
     src/render_graph_creation.cpp
+    src/internal/render_graph_template_registry.h
+    src/render_graph_template_registry.cpp
     src/internal/render_graph_settings_editor.h
     src/render_graph_settings_editor.cpp
     src/internal/render_graph_configuration_editor.h
@@ -693,6 +699,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/render_graph_job.cpp
         src/internal/render_graph_creation.h
         src/render_graph_creation.cpp
+        src/internal/render_graph_template_registry.h
+        src/render_graph_template_registry.cpp
         src/internal/render_graph_settings_editor.h src/render_graph_settings_editor.cpp
         src/internal/render_graph_configuration_editor.h
         src/render_graph_configuration_editor.cpp
@@ -986,7 +994,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
 
     # Authoring uses the real workspace/document without requiring a viewport device.
     add_executable(ludus_render_graph_configuration_tests
-        tests/main.cpp tests/render_graph_upscale_tests.cpp tests/render_graph_configuration_tests.cpp tests/render_graph_template_tests.cpp tests/render_graph_rename_tests.cpp tests/render_graph_selection_tests.cpp tests/render_graph_canvas_tests.cpp tests/render_graph_canvas_feedback_tests.cpp tests/render_graph_diagnostic_tests.cpp
+        tests/main.cpp tests/render_graph_upscale_tests.cpp tests/render_graph_configuration_tests.cpp tests/render_graph_template_tests.cpp tests/render_graph_template_registry_tests.cpp tests/render_graph_rename_tests.cpp tests/render_graph_selection_tests.cpp tests/render_graph_canvas_tests.cpp tests/render_graph_canvas_feedback_tests.cpp tests/render_graph_diagnostic_tests.cpp
         src/internal/renderer_workspace.h src/renderer_workspace.cpp src/renderer_workspace_selection.cpp
         src/internal/viewport_frame_pump.h src/viewport_frame_pump.cpp
         src/render_graph_document.cpp src/render_graph_node_ports.cpp src/render_graph_configuration_template.cpp src/render_graph_visibility_template.cpp src/render_graph_node_transfer.cpp src/render_graph_shader_cleanup.cpp src/render_graph_shader_creation.cpp src/render_graph_scene_authoring.cpp src/render_graph_scene_bundle.cpp src/render_graph_techniques.cpp src/render_graph_pipeline_node.cpp src/render_graph_upscale_node.cpp
@@ -997,6 +1005,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/internal/render_graph_job.h src/render_graph_job.cpp
         src/internal/error_list.h src/error_list.cpp
         src/internal/render_graph_creation.h src/render_graph_creation.cpp
+        src/internal/render_graph_template_registry.h src/render_graph_template_registry.cpp
         src/internal/render_graph_settings_editor.h src/render_graph_settings_editor.cpp
         src/internal/render_graph_live_build.h src/render_graph_live_build.cpp
         src/internal/render_graph_source_watch.h src/render_graph_source_watch.cpp
