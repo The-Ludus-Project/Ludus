@@ -225,7 +225,7 @@ RenderGraphDomain GetRenderGraphDomain(const QString& kind)
 bool CanDisableRenderGraphNode(const QString& kind)
 {
     return kind == QStringLiteral("Accumulate") || kind == QStringLiteral("Denoise") ||
-           kind == QStringLiteral("ToneMap");
+           kind == QStringLiteral("ToneMap") || kind == QStringLiteral("Export");
 }
 
 bool IsRenderGraphNodeEnabled(const QJsonObject& node)

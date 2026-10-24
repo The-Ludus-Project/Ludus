@@ -53,6 +53,9 @@ FORMATS = {"ColorTexture": ("RGBA8Unorm",), "DepthTexture": ("Depth32Float",)}
 # Kinds that may be authored with `"enabled": false`, and the (input, output) port a
 # disabled node forwards unchanged. Both ports share one type, so rewiring preserves typing.
 BYPASS_PORTS = {"Accumulate": ("color", "color"), "Denoise": ("color", "color"), "ToneMap": ("color", "color")}
+# Sinks that may be disabled. A disabled sink keeps its structurally validated wire but is
+# no root, so its input needs no connection and only enabled roots retain their routes.
+DISABLE_KINDS = (*BYPASS_PORTS, "Export")
 IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,62}\Z")
 
 
@@ -144,8 +147,8 @@ def _validate_extent(extent, where):
 def _validate_node(node, where):
     _require(type(node) is dict, "Schema", where, "node object required")
     kind = node.get("kind")
-    _require("enabled" not in node or kind in BYPASS_PORTS, "Schema", where,
-             f"only {', '.join(BYPASS_PORTS)} nodes can be disabled; remove the enabled field")
+    _require("enabled" not in node or kind in DISABLE_KINDS, "Schema", where,
+             f"only {', '.join(DISABLE_KINDS)} nodes can be disabled; remove the enabled field")
     if kind in sizes.KINDS:
         sizes.validate(node, where, sys.modules[__name__])
         return
@@ -180,7 +183,7 @@ def _validate_node(node, where):
         fields |= {"asset", "configuration"}
     elif kind == "Export":
         fields |= {"type"}
-    _keys(node, fields, where, ("enabled",) if kind in BYPASS_PORTS else ())
+    _keys(node, fields, where, ("enabled",) if kind in DISABLE_KINDS else ())
     _identifier(node["id"], where)
     _require(node["id"] != "input", "Schema", where, "input is reserved for interface ports")
     if "enabled" in node:
@@ -344,14 +347,15 @@ def _bypass_disabled(asset, where):
 
     Each consumer of a disabled node's output receives that node's input source, as
     though the node and its two wires were one wire; chains of disabled nodes collapse
-    to the first enabled source. Wires into a disabled node are dropped. The caller's
-    document is not mutated, so source bytes, layout and canonical form are unchanged.
-    A consumed disabled output whose input is unconnected raises UnboundInput.
+    to the first enabled source. Wires into a disabled node are dropped. Disabled sinks
+    stay; _is_effect excludes them from roots. The caller's document is not mutated, so
+    source bytes, layout and canonical form are unchanged. A consumed disabled output
+    whose input is unconnected raises UnboundInput.
     """
     configurations = []
     for config in asset["configurations"]:
         disabled = {node["id"]: BYPASS_PORTS[node["kind"]]
-                    for node in config["nodes"] if node.get("enabled") is False}
+                    for node in config["nodes"] if node.get("enabled") is False and node["kind"] in BYPASS_PORTS}
         if not disabled:
             configurations.append(config)
             continue
@@ -385,6 +389,12 @@ def _bypass_disabled(asset, where):
         configurations.append({**config, "nodes": [node for node in config["nodes"] if node["id"] not in disabled],
                                "edges": edges, "outputs": outputs})
     return {**asset, "configurations": configurations}
+
+
+def _is_effect(node):
+    """True for an observable sink: an enabled Export, a Present or an active camera obligation."""
+    return ((node['kind'] == 'Export' and node.get('enabled') is not False) or node['kind'] == 'Present' or
+            (node['kind'] == 'Camera' and node['active']))
 
 
 def _locate_one(error, library, instances=None):
@@ -620,9 +630,7 @@ class _Library:
         identity = (path, config['id'])
         if identity not in self.effects:
             self.effects[identity] = any(
-                node['kind'] in ('Export', 'Present') or
-                (node['kind'] == 'Camera' and node['active']) or
-                (node['kind'] == 'Subgraph' and self.child_has_effects(node))
+                _is_effect(node) or (node['kind'] == 'Subgraph' and self.child_has_effects(node))
                 for node in config['nodes'])
         return self.effects[identity]
 
@@ -642,8 +650,7 @@ class _Library:
         ordered, incoming = self.order(path, config)
         where = self.label(path) + '#' + config['id']
         used = {port['source'] for port in config['outputs'] if port['id'] in requested_outputs}
-        selected = {node['id'] for node in ordered if node['kind'] in ('Export', 'Present') or
-                    (node['kind'] == 'Camera' and node['active']) or
+        selected = {node['id'] for node in ordered if _is_effect(node) or
                     (node['kind'] == 'Subgraph' and self.child_has_effects(node))}
         selected.update(_endpoint(endpoint, where)[0] for endpoint in used)
         # Reverse topological order visits each newly selected producer later.
@@ -1102,7 +1109,10 @@ class _Compiler:
                              camera["id"] in root["cameras"] for root in self.roots),
                          "CameraRouteMissing", camera["id"],
                          f"active camera has no rendered route to {kind} on {camera['target']}")
-        _require(self.roots, "UnboundOutput", "root graph", "an execution graph needs an Export or Present root")
+        _require(self.roots, "UnboundOutput", "root graph",
+                 "an execution graph needs an enabled Export or Present root",
+                 expected='enabled Export or Present root', actual='none',
+                 repair='Enable a disabled Export node, or add and connect an Export node.')
         # A target consulted only for sizing supplies metadata, not a GPU allocation.
         used_resources = {root['resource'] for root in self.roots}
         used_resources.update(attachment['resource'] for operation in self.passes
