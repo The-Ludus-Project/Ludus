@@ -616,6 +616,21 @@ bool MoveNodeEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
     inoutConfiguration.insert(QStringLiteral("layout"), layout);
     return true;
 }
+// Arguments are the edit's own arguments followed by the placed node, x and y.
+constexpr qsizetype NODE_POSITION_ARGUMENT_COUNT = 3;
+
+bool AddNodeAtEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
+{
+    return AddNodeEdit(inoutConfiguration, arguments.mid(0, 1)) == true &&
+           MoveNodeEdit(inoutConfiguration, arguments.mid(1, NODE_POSITION_ARGUMENT_COUNT)) == true;
+}
+
+bool AddUpscalePresetAtEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
+{
+    return AddUpscalePresetEdit(inoutConfiguration, arguments.mid(0, 2)) == true &&
+           MoveNodeEdit(inoutConfiguration, arguments.mid(2, NODE_POSITION_ARGUMENT_COUNT)) == true;
+}
+
 bool MoveNodesEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
 {
     // Arguments are node, x, y triples; one failed node rejects the whole gesture.
@@ -1079,24 +1094,47 @@ RenderGraphDocumentStatus RenderGraphDocument::PrepareTechniques(QString& outErr
     return commit(candidate, false);
 }
 
-RenderGraphDocumentStatus
-RenderGraphDocument::AddNode(const QString& file, const QString& configuration, const QJsonObject& node)
+RenderGraphDocumentStatus RenderGraphDocument::AddNode(const QString& file,
+                                                       const QString& configuration,
+                                                       const QJsonObject& node,
+                                                       const QPoint* positionOrNull)
 {
     mLastMove.clear();
+    const QString record = QString::fromUtf8(QJsonDocument(node).toJson(QJsonDocument::Compact));
+    if (positionOrNull == nullptr)
+    {
+        return editConfiguration(file, configuration, {record}, &AddNodeEdit, false);
+    }
     return editConfiguration(file,
                              configuration,
-                             {QString::fromUtf8(QJsonDocument(node).toJson(QJsonDocument::Compact))},
-                             &AddNodeEdit,
+                             {record,
+                              node.value(QStringLiteral("id")).toString(),
+                              QString::number(qBound(-MAX_COORDINATE, positionOrNull->x(), MAX_COORDINATE)),
+                              QString::number(qBound(-MAX_COORDINATE, positionOrNull->y(), MAX_COORDINATE))},
+                             &AddNodeAtEdit,
                              false);
 }
 
 RenderGraphDocumentStatus RenderGraphDocument::AddUpscalePreset(const QString& file,
                                                                 const QString& configuration,
                                                                 const QString& algorithm,
-                                                                const QString& identity)
+                                                                const QString& identity,
+                                                                const QPoint* positionOrNull)
 {
     mLastMove.clear();
-    return editConfiguration(file, configuration, {algorithm, identity}, &AddUpscalePresetEdit, false);
+    if (positionOrNull == nullptr)
+    {
+        return editConfiguration(file, configuration, {algorithm, identity}, &AddUpscalePresetEdit, false);
+    }
+    return editConfiguration(file,
+                             configuration,
+                             {algorithm,
+                              identity,
+                              identity,
+                              QString::number(qBound(-MAX_COORDINATE, positionOrNull->x(), MAX_COORDINATE)),
+                              QString::number(qBound(-MAX_COORDINATE, positionOrNull->y(), MAX_COORDINATE))},
+                             &AddUpscalePresetAtEdit,
+                             false);
 }
 
 // File, child configuration and parent configuration are distinct authored identities.

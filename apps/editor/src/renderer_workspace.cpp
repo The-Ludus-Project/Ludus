@@ -12,6 +12,7 @@
 #include "internal/code_formatter.h"
 #include "internal/item_selection.h"
 #include "internal/render_graph_pipeline.h"
+#include "internal/render_graph_quick_add.h"
 #include "internal/render_graph_resources.h"
 #include "internal/render_graph_shader_creation.h"
 #include "internal/render_graph_shader_interface.h"
@@ -47,10 +48,12 @@
 #include <QFormLayout>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QHash>
 #include <QHeaderView>
 #include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
@@ -473,8 +476,10 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
       mSource(new CodeEditor(this)), mSourceController(new CodeDocumentController(*mSource, this)),
       mSourceFormatter(new CodeFormatter(*mSourceController, this)), mSourceInterface(new QPlainTextEdit(this)),
       mPlan(new QPlainTextEdit(this)), mCustomize(new QAction(QStringLiteral("&Customize in Project"), this)),
-      mStatus(new QLabel(this)), mCanvas(new RenderGraphCanvas(mDocument, this)), mPreviewPage(new QWidget(this)),
-      mPreviewImage(new PreviewImage(mPreviewPage)), mPreviewStatus(new QLabel(mPreviewPage)),
+      mStatus(new QLabel(this)), mCanvas(new RenderGraphCanvas(mDocument, this)),
+      mQuickAdd(new RenderGraphQuickAdd(RenderGraphTemplateRegistry::GetBuiltIn(), this)),
+      mPreviewPage(new QWidget(this)), mPreviewImage(new PreviewImage(mPreviewPage)),
+      mPreviewStatus(new QLabel(mPreviewPage)),
       mPreviewButton(new QPushButton(QStringLiteral("&Preview Runtime"), mPreviewPage))
 {
     setObjectName(QStringLiteral("rendererWorkspace"));
@@ -804,6 +809,36 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         }
 #endif
     });
+    // Quick Add lists the catalog's snippets and nodes; ports are computed once from default node records.
+    QHash<QString, RenderGraphNodePorts> quickAddPorts;
+    for (const RenderGraphTemplate& entry :
+         RenderGraphTemplateRegistry::GetBuiltIn().GetTemplates(RenderGraphTemplateKind::Node))
+    {
+        const QString identity = QStringLiteral("quickadd");
+        const QJsonObject node = entry.Algorithm.isEmpty() == true ? MakeNode(entry.Identity, identity)
+                                                                   : MakeUpscaleNode(entry.Algorithm, identity);
+        RenderGraphNodePorts ports;
+        if (GetRenderGraphNodePorts(mDocument, node, ports) == true)
+        {
+            quickAddPorts.insert(GetRenderGraphTemplateKey(entry), ports);
+        }
+    }
+    mQuickAdd->SetNodePorts(quickAddPorts);
+    mQuickAdd->SetUnavailableRequirements({{QStringLiteral("denoiser"), GetDenoiseUnavailableMessage()}});
+    mQuickAdd->SetRecent(settings.value(QStringLiteral("renderGraph/quickAddRecent")).toStringList());
+    mQuickAdd->SetPinned(settings.value(QStringLiteral("renderGraph/quickAddPinned")).toStringList());
+    connect(mQuickAdd, &RenderGraphQuickAdd::HistoryChanged, this, [this]() {
+        QSettings settings;
+        settings.setValue(QStringLiteral("renderGraph/quickAddRecent"), mQuickAdd->GetRecent());
+        settings.setValue(QStringLiteral("renderGraph/quickAddPinned"), mQuickAdd->GetPinned());
+    });
+    connect(mQuickAdd, &RenderGraphQuickAdd::InsertRequested, this, &RendererWorkspace::insertQuickAddTemplate);
+    connect(mQuickAdd, &RenderGraphQuickAdd::NewGraphRequested, this, [this](const QString& templateIdentity) {
+        static_cast<void>(PromptNewGraph(templateIdentity));
+    });
+    connect(mCanvas, &RenderGraphCanvas::QuickAddRequested, this, [this](QPointF scenePosition) {
+        static_cast<void>(ShowQuickAdd(scenePosition));
+    });
     connect(mCanvas,
             &RenderGraphCanvas::MoveRequested,
             this,
@@ -1107,7 +1142,7 @@ bool RendererWorkspace::CanCreateGraph() const
     return mProjectRoot.isEmpty() == false && IsJobActive() == false;
 }
 
-bool RendererWorkspace::PromptNewGraph()
+bool RendererWorkspace::PromptNewGraph(const QString& templateIdentity)
 {
     if (CanCreateGraph() == false || ConfirmDiscard() == false)
     {
@@ -1133,6 +1168,10 @@ bool RendererWorkspace::PromptNewGraph()
     {
         graphTemplate->addItem(entry.Label, entry.Identity);
         graphTemplate->setItemData(graphTemplate->count() - 1, entry.Description, Qt::ToolTipRole);
+    }
+    if (templateIdentity.isEmpty() == false && graphTemplate->findData(templateIdentity) >= 0)
+    {
+        graphTemplate->setCurrentIndex(graphTemplate->findData(templateIdentity));
     }
     fields->addRow(QStringLiteral("Template"), graphTemplate);
     QLabel* description = new QLabel(&dialog);
@@ -3288,6 +3327,19 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
 {
     QMenu menu(this);
     menu.setObjectName(QStringLiteral("renderGraphNodeMenu"));
+    const QPoint quickAddPoint = mCanvas->viewport()->mapFromGlobal(globalPosition);
+    const QPointF quickAddPosition = mCanvas->mapToScene(mCanvas->viewport()->rect().contains(quickAddPoint) == true
+                                                             ? quickAddPoint
+                                                             : mCanvas->viewport()->rect().center());
+    QAction* quickAdd = menu.addAction(QStringLiteral("Quick Add..."));
+    quickAdd->setObjectName(QStringLiteral("renderGraphQuickAddAction"));
+    quickAdd->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_A));
+    quickAdd->setShortcutVisibleInContextMenu(true);
+    quickAdd->setEnabled(CanCreateSubgraph());
+    connect(quickAdd, &QAction::triggered, this, [this, quickAddPosition]() {
+        static_cast<void>(ShowQuickAdd(quickAddPosition));
+    });
+    menu.addSeparator();
     if (QJsonDocument::fromJson(mDocument.GetDraft(manifestFile()))
             .object()
             .value(QStringLiteral("settings"))
@@ -3320,7 +3372,7 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
     QAction* configurationTemplate = menu.addAction(QStringLiteral("Apply Configuration Template..."));
     configurationTemplate->setObjectName(QStringLiteral("renderGraphApplyConfigurationTemplate"));
     configurationTemplate->setEnabled(CanCreateSubgraph());
-    connect(configurationTemplate, &QAction::triggered, this, &RendererWorkspace::promptConfigurationTemplate);
+    connect(configurationTemplate, &QAction::triggered, this, [this]() { promptConfigurationTemplate(); });
     QAction* removeConfiguration = menu.addAction(QStringLiteral("Delete Configuration"));
     removeConfiguration->setObjectName(QStringLiteral("renderGraphDeleteConfiguration"));
     removeConfiguration->setEnabled(CanCreateSubgraph() == true && selectedConfiguration().isEmpty() == false);
@@ -3506,6 +3558,18 @@ void RendererWorkspace::editConfigurationInterface()
 
 void RendererWorkspace::addNode()
 {
+    const QVector<RenderGraphTemplate> nodes =
+        RenderGraphTemplateRegistry::GetBuiltIn().GetTemplates(RenderGraphTemplateKind::Node);
+    const int32 index = mNewKind->currentIndex();
+    if (index < 0 || index >= nodes.size())
+    {
+        return;
+    }
+    addNodeTemplate(nodes.at(index), nullptr);
+}
+
+void RendererWorkspace::addNodeTemplate(const RenderGraphTemplate& entry, const QPoint* positionOrNull)
+{
     const auto report = [this](const QString& message) {
         mNodeCreationMessage->setText(message);
         mNodeCreationMessage->show();
@@ -3555,18 +3619,18 @@ void RendererWorkspace::addNode()
     {
         identities.append(node.toObject().value(QStringLiteral("id")).toString());
     }
-    const QString algorithm = mNewKind->currentData().toString();
+    const QString algorithm = entry.Algorithm;
     const bool isUpscalePreset = algorithm.isEmpty() == false;
-    const QString kind = isUpscalePreset == true ? QStringLiteral("Upscale") : mNewKind->currentText();
+    const QString kind = entry.Identity;
     const QString stem = isUpscalePreset == true ? algorithm : kind.toLower();
     QString identity = stem;
     for (qsizetype suffix = 2; identities.contains(identity) == true; ++suffix)
     {
         identity = stem + QString::number(suffix);
     }
-    const RenderGraphDocumentStatus status = isUpscalePreset == true
-                                                 ? mDocument.AddUpscalePreset(file, configuration, algorithm, identity)
-                                                 : mDocument.AddNode(file, configuration, MakeNode(kind, identity));
+    const RenderGraphDocumentStatus status =
+        isUpscalePreset == true ? mDocument.AddUpscalePreset(file, configuration, algorithm, identity, positionOrNull)
+                                : mDocument.AddNode(file, configuration, MakeNode(kind, identity), positionOrNull);
     if (status != RenderGraphDocumentStatus::Ok)
     {
         report(QStringLiteral("Cannot add %1 to %2#%3: %4").arg(kind, file, configuration, DescribeStatus(status)));
@@ -3580,6 +3644,30 @@ void RendererWorkspace::addNode()
     mViews->setCurrentIndex(CANVAS_VIEW);
     mCanvas->RevealNode(identity);
     report(QStringLiteral("Added %1 to %2#%3.").arg(identity, file, configuration));
+}
+
+bool RendererWorkspace::ShowQuickAdd(QPointF scenePosition)
+{
+    if (mDocument.IsLoaded() == false || mCanvas->GetConfiguration().isEmpty() == true)
+    {
+        mStatus->setText(QStringLiteral("Open a render graph before using Quick Add."));
+        return false;
+    }
+    mQuickAddPosition = scenePosition;
+    mQuickAdd->Open(mCanvas->viewport()->mapToGlobal(mCanvas->mapFromScene(scenePosition)));
+    return true;
+}
+
+void RendererWorkspace::insertQuickAddTemplate(const RenderGraphTemplate& entry)
+{
+    if (entry.Kind == RenderGraphTemplateKind::Snippet)
+    {
+        // Snippets keep the Apply dialog's naming, budget confirmation and Subgraph insertion.
+        promptConfigurationTemplate(entry.Identity);
+        return;
+    }
+    const QPoint position = mQuickAddPosition.toPoint();
+    addNodeTemplate(entry, &position);
 }
 
 bool RendererWorkspace::SelectNode(const QString& file, const QString& configuration, const QString& node)

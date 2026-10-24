@@ -15,6 +15,7 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QMap>
+#include <QPoint>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -211,14 +212,20 @@ public:
     /// success creates no history entry. GUI thread only; no disk writes.
     [[nodiscard]] RenderGraphDocumentStatus
     RemoveUnusedShaders(QStringList& outPrograms, QStringList& outSources, QString& outError);
-    [[nodiscard]] RenderGraphDocumentStatus
-    AddNode(const QString& file, const QString& configuration, const QJsonObject& node);
+    /// Add one node. With a position, also record its canvas layout position, clamped to
+    /// ±MAX_COORDINATE, in the same undoable edit. Failure preserves the draft.
+    [[nodiscard]] RenderGraphDocumentStatus AddNode(const QString& file,
+                                                    const QString& configuration,
+                                                    const QJsonObject& node,
+                                                    const QPoint* positionOrNull = nullptr);
     /// Add an unused upscaling preset and its size providers/targets in one undoable edit.
+    /// With a position, the Upscale node is placed there; its helpers keep automatic placement.
     /// Failure preserves the draft; Save publishes graph-owned output and render settings.
     [[nodiscard]] RenderGraphDocumentStatus AddUpscalePreset(const QString& file,
                                                              const QString& configuration,
                                                              const QString& algorithm,
-                                                             const QString& identity);
+                                                             const QString& identity,
+                                                             const QPoint* positionOrNull = nullptr);
     /// Add or fill an empty library configuration from ReSTIR DI, including shaders/settings.
     /// For the root graph, create a new library and Subgraph node in parentConfiguration instead;
     /// an empty parent identity selects the root default. Existing files/nodes are never replaced.

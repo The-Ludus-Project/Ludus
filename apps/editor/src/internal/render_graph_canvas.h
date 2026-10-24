@@ -158,6 +158,9 @@ Q_SIGNALS:
     void RemoveNodesRequested(const QStringList& nodes);
     /// Context target is empty on the background or configuration interface.
     void ContextMenuRequested(const QString& node, const QPoint& globalPosition);
+    /// Open Quick Add at a scene position: Shift+A at the pointer (or the view centre when the
+    /// pointer is outside), or a double-click on empty canvas. Never edits the draft.
+    void QuickAddRequested(QPointF scenePosition);
     void MoveRequested(const QVector<ludus::editor::RenderGraphNodePosition>& positions);
     void ConnectRequested(const QString& from, const QString& to);
     void ReplaceConnectionRequested(const QString& from, const QString& to);

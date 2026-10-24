@@ -6,6 +6,7 @@
       "identity": "raster",
       "label": "Raster",
       "category": "raster",
+      "keywords": ["basic", "simple"],
       "description": "Render your World into a color image using editable raster shaders."
     },
     {
@@ -13,6 +14,7 @@
       "identity": "forward-lit",
       "label": "Forward lit",
       "category": "raster",
+      "keywords": ["forward", "lighting", "materials"],
       "description": "Render authored World materials, textures and direct lights with the portable forward profile."
     },
     {
@@ -20,6 +22,7 @@
       "identity": "visibility-buffer",
       "label": "Visibility buffer + depth",
       "category": "raster",
+      "keywords": ["vbuffer", "primitive id", "instance id"],
       "description": "Write original primitive and instance IDs into RGBA8, alongside depth. Exports both attachments with one shared render size. Uses opaque static triangles."
     },
     {
@@ -28,6 +31,7 @@
       "label": "Visibility + secondary rays",
       "category": "hybrid",
       "requirements": ["native-ray-tracing"],
+      "keywords": ["reflections", "hybrid", "ray tracing"],
       "description": "Rasterize visibility and depth, reconstruct the first surface, then trace one reflected secondary ray. Samples authored emission and environment lighting. Requires native ray tracing."
     },
     {
@@ -36,6 +40,7 @@
       "label": "ReSTIR DI — mesh emitter lighting",
       "category": "ray-traced",
       "requirements": ["native-ray-tracing"],
+      "keywords": ["restir", "many lights", "emissive", "ray tracing"],
       "description": "Three ray passes with editable shader settings and automatically sized reservoirs. Uses emissive meshes and requires native ray tracing. Temporal reuse has no motion reprojection. Change settings through Properties or the canvas menu."
     },
     {
@@ -45,6 +50,7 @@
       "category": "lighting",
       "defaultConfiguration": "RestirDi",
       "requirements": ["native-ray-tracing"],
+      "keywords": ["restir", "many lights", "emissive", "direct lighting"],
       "description": "Three ray passes with two automatically sized reservoirs and Graph settings. Connect scene, view and color; requires native ray tracing and emissive meshes."
     },
     {
@@ -53,6 +59,7 @@
       "label": "Visibility buffer + depth",
       "category": "visibility",
       "defaultConfiguration": "VisibilityBuffer",
+      "keywords": ["vbuffer", "primitive id", "instance id", "depth"],
       "description": "Write RGBA8 primitive/instance IDs and depth. Connect scene, view, visibility and depth; both attachments are exposed as outputs. Uses opaque static triangles."
     },
     {
@@ -62,31 +69,194 @@
       "category": "visibility",
       "defaultConfiguration": "VisibilitySecondaryRays",
       "requirements": ["native-ray-tracing"],
+      "keywords": ["reflections", "hybrid", "ray tracing"],
       "description": "Rasterize visibility/depth, reconstruct the surface and trace one reflected ray. Connect scene, view and color; outputs color, visibility and depth. Requires native ray tracing."
     },
-    { "kind": "node", "identity": "Scene", "category": "scene" },
-    { "kind": "node", "identity": "Camera", "category": "scene" },
-    { "kind": "node", "identity": "Target", "category": "resources" },
-    { "kind": "node", "identity": "Buffer", "category": "resources" },
-    { "kind": "node", "identity": "StructuredBuffer", "category": "resources" },
-    { "kind": "node", "identity": "OutputSize", "category": "resources" },
-    { "kind": "node", "identity": "RenderSize", "category": "resources" },
-    { "kind": "node", "identity": "GraphicsPipeline", "category": "passes" },
-    { "kind": "node", "identity": "ComputePipeline", "category": "passes" },
-    { "kind": "node", "identity": "RayTracingPipeline", "category": "passes", "requirements": ["native-ray-tracing"] },
-    { "kind": "node", "identity": "Accumulate", "category": "post-processing" },
-    { "kind": "node", "identity": "ToneMap", "category": "post-processing" },
-    { "kind": "node", "identity": "Denoise", "category": "post-processing", "requirements": ["denoiser"] },
-    { "kind": "node", "identity": "Subgraph", "category": "structure" },
-    { "kind": "node", "identity": "Export", "category": "output" },
-    { "kind": "node", "identity": "Present", "category": "output" },
-    { "kind": "node", "identity": "Upscale", "algorithm": "bilinear", "category": "upscaling" },
-    { "kind": "node", "identity": "Upscale", "algorithm": "dlss-sr", "category": "upscaling", "isDraft": true },
-    { "kind": "node", "identity": "Upscale", "algorithm": "fsr-1", "category": "upscaling", "isDraft": true },
-    { "kind": "node", "identity": "Upscale", "algorithm": "fsr-2", "category": "upscaling", "isDraft": true },
-    { "kind": "node", "identity": "Upscale", "algorithm": "fsr-3", "category": "upscaling", "isDraft": true },
-    { "kind": "node", "identity": "Upscale", "algorithm": "metalfx-spatial", "category": "upscaling", "requirements": ["metalfx"] },
-    { "kind": "node", "identity": "Upscale", "algorithm": "metalfx-temporal", "category": "upscaling", "isDraft": true, "requirements": ["metalfx"] },
-    { "kind": "node", "identity": "Upscale", "algorithm": "xess-sr", "category": "upscaling", "isDraft": true }
+    {
+      "kind": "node",
+      "identity": "Scene",
+      "category": "scene",
+      "keywords": ["world", "mesh", "materials", "lights"],
+      "description": "The selected World's geometry, materials and lights, for passes to read."
+    },
+    {
+      "kind": "node",
+      "identity": "Camera",
+      "category": "scene",
+      "keywords": ["view", "projection", "viewpoint"],
+      "description": "A camera that renders into a target texture and gives passes its view."
+    },
+    {
+      "kind": "node",
+      "identity": "Target",
+      "category": "resources",
+      "keywords": ["texture", "attachment", "render target", "image"],
+      "description": "A texture that passes render into, with a fixed size or the render size."
+    },
+    {
+      "kind": "node",
+      "identity": "Buffer",
+      "category": "resources",
+      "keywords": ["storage", "memory", "bytes"],
+      "description": "A shared persistent buffer of fixed bytes, or bytes per pixel of the render size."
+    },
+    {
+      "kind": "node",
+      "identity": "StructuredBuffer",
+      "category": "resources",
+      "keywords": ["storage", "array", "records", "reservoir"],
+      "description": "A zero-initialized array of fixed-stride records, such as ray reservoirs."
+    },
+    {
+      "kind": "node",
+      "identity": "OutputSize",
+      "category": "resources",
+      "keywords": ["resolution", "extent", "viewport size"],
+      "description": "The output resolution: the viewport's drawable pixels or a fixed size."
+    },
+    {
+      "kind": "node",
+      "identity": "RenderSize",
+      "category": "resources",
+      "keywords": ["resolution", "scale", "dynamic resolution"],
+      "description": "An internal render resolution, scaled from the output size or read from a texture."
+    },
+    {
+      "kind": "node",
+      "identity": "GraphicsPipeline",
+      "category": "passes",
+      "keywords": ["raster", "draw", "shader", "pass"],
+      "description": "A raster pass with editable vertex and fragment shaders."
+    },
+    {
+      "kind": "node",
+      "identity": "ComputePipeline",
+      "category": "passes",
+      "keywords": ["compute", "dispatch", "shader", "pass"],
+      "description": "A compute pass with an editable shader and declared resources."
+    },
+    {
+      "kind": "node",
+      "identity": "RayTracingPipeline",
+      "category": "passes",
+      "requirements": ["native-ray-tracing"],
+      "keywords": ["ray tracing", "rays", "shader", "pass"],
+      "description": "Ray generation, hit and miss shaders that trace against the scene."
+    },
+    {
+      "kind": "node",
+      "identity": "Accumulate",
+      "category": "post-processing",
+      "keywords": ["progressive", "average", "temporal", "samples"],
+      "description": "Averages color over frames while the view holds still."
+    },
+    {
+      "kind": "node",
+      "identity": "ToneMap",
+      "category": "post-processing",
+      "keywords": ["tone map", "hdr", "exposure", "tonemapping"],
+      "description": "Maps HDR color to display range with Reinhard and sRGB conversion."
+    },
+    {
+      "kind": "node",
+      "identity": "Denoise",
+      "category": "post-processing",
+      "requirements": ["denoiser"],
+      "keywords": ["oidn", "noise", "denoiser"],
+      "description": "Removes ray-tracing noise from color with the OIDN denoiser."
+    },
+    {
+      "kind": "node",
+      "identity": "Subgraph",
+      "category": "structure",
+      "keywords": ["subgraph reference", "library", "reference", "nested"],
+      "description": "References a configuration in a library graph; its interface becomes this node's ports."
+    },
+    {
+      "kind": "node",
+      "identity": "Export",
+      "category": "output",
+      "keywords": ["output", "save", "capture", "attachment"],
+      "description": "Exposes a color or depth texture as an external output of the graph."
+    },
+    {
+      "kind": "node",
+      "identity": "Present",
+      "category": "output",
+      "keywords": ["display", "swapchain", "viewport", "screen"],
+      "description": "Shows a color texture as the graph's presented image."
+    },
+    {
+      "kind": "node",
+      "identity": "Upscale",
+      "algorithm": "bilinear",
+      "category": "upscaling",
+      "keywords": ["upscaling", "upscaler", "super resolution", "spatial"],
+      "description": "Resizes render-size RGBA8 color to the output size. No temporal inputs or history."
+    },
+    {
+      "kind": "node",
+      "identity": "Upscale",
+      "algorithm": "dlss-sr",
+      "category": "upscaling",
+      "isDraft": true,
+      "keywords": ["upscaling", "upscaler", "super resolution", "dlss", "temporal"],
+      "description": "Authoring preset only: its backend is unavailable on all current execution profiles."
+    },
+    {
+      "kind": "node",
+      "identity": "Upscale",
+      "algorithm": "fsr-1",
+      "category": "upscaling",
+      "isDraft": true,
+      "keywords": ["upscaling", "upscaler", "super resolution", "fsr", "spatial"],
+      "description": "Authoring preset only: its backend is unavailable on all current execution profiles."
+    },
+    {
+      "kind": "node",
+      "identity": "Upscale",
+      "algorithm": "fsr-2",
+      "category": "upscaling",
+      "isDraft": true,
+      "keywords": ["upscaling", "upscaler", "super resolution", "fsr", "temporal"],
+      "description": "Authoring preset only: its backend is unavailable on all current execution profiles."
+    },
+    {
+      "kind": "node",
+      "identity": "Upscale",
+      "algorithm": "fsr-3",
+      "category": "upscaling",
+      "isDraft": true,
+      "keywords": ["upscaling", "upscaler", "super resolution", "fsr", "temporal"],
+      "description": "Authoring preset only: its backend is unavailable on all current execution profiles."
+    },
+    {
+      "kind": "node",
+      "identity": "Upscale",
+      "algorithm": "metalfx-spatial",
+      "category": "upscaling",
+      "requirements": ["metalfx"],
+      "keywords": ["upscaling", "upscaler", "super resolution", "metalfx", "spatial"],
+      "description": "Spatial upscaling with MetalFX on supported Metal devices; other devices report Unsupported."
+    },
+    {
+      "kind": "node",
+      "identity": "Upscale",
+      "algorithm": "metalfx-temporal",
+      "category": "upscaling",
+      "isDraft": true,
+      "requirements": ["metalfx"],
+      "keywords": ["upscaling", "upscaler", "super resolution", "metalfx", "temporal"],
+      "description": "Authoring preset only: its backend is unavailable on all current execution profiles."
+    },
+    {
+      "kind": "node",
+      "identity": "Upscale",
+      "algorithm": "xess-sr",
+      "category": "upscaling",
+      "isDraft": true,
+      "keywords": ["upscaling", "upscaler", "super resolution", "xess", "temporal"],
+      "description": "Authoring preset only: its backend is unavailable on all current execution profiles."
+    }
   ]
 }

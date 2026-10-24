@@ -117,6 +117,10 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
     QStringList algorithms;
     for (const RenderGraphTemplate& node : nodes)
     {
+        // Quick Add explains and finds every node by its description and keywords.
+        CAPTURE(node.Identity.toStdString(), node.Algorithm.toStdString());
+        CHECK(node.Description.isEmpty() == false);
+        CHECK(node.Keywords.isEmpty() == false);
         if (node.Algorithm.isEmpty() == true)
         {
             CHECK(node.Label == node.Identity);
@@ -249,6 +253,17 @@ TEST_CASE("template catalogs reject entries the pickers cannot offer", "[editor]
         {"draft not boolean",
          Encode(MakeCatalog(with(upscale, QStringLiteral("isDraft"), QStringLiteral("yes")), 2)),
          QStringLiteral("true or false")},
+        {"empty node description",
+         Encode(MakeCatalog(with(upscale, QStringLiteral("description"), QStringLiteral(" ")), 2)),
+         QStringLiteral("description must be non-empty")},
+        {"uppercase keyword",
+         Encode(MakeCatalog(with(graph, QStringLiteral("keywords"), QJsonArray{QStringLiteral("HDR")}), 0)),
+         QStringLiteral("lowercase")},
+        {"repeated keyword",
+         Encode(MakeCatalog(
+             with(graph, QStringLiteral("keywords"), QJsonArray{QStringLiteral("hdr"), QStringLiteral("hdr")}),
+             0)),
+         QStringLiteral("distinct")},
         {"repeated entry", Encode(twoGraphs), QStringLiteral("repeats an earlier entry")},
     };
     for (const Case& test : cases)

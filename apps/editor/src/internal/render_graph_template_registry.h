@@ -30,7 +30,7 @@ struct RenderGraphTemplate final
     QString Algorithm;
     /// Display text. Nodes use their kind, and Upscale presets derive it from GetUpscaleLabel().
     QString Label;
-    /// Graph and snippet explanation; empty for nodes.
+    /// What the template creates. Required for graphs and snippets; optional for nodes.
     QString Description;
     /// Grouping identity from the kind's fixed vocabulary.
     QString Category;
@@ -38,13 +38,22 @@ struct RenderGraphTemplate final
     QString DefaultConfiguration;
     /// Capabilities the template needs to preview: native-ray-tracing, denoiser or metalfx.
     QStringList Requirements;
+    /// Extra lowercase search terms, such as synonyms people type for this template.
+    QStringList Keywords;
     /// True for presets whose backend is not executable on any current profile.
     bool IsDraft = false;
 };
 
+/// Category identities a kind may use, in the order pickers group them.
+[[nodiscard]] QStringList GetRenderGraphTemplateCategories(RenderGraphTemplateKind kind);
+/// Display name of a category identity, such as "Scene & view"; empty for unknown identities.
+[[nodiscard]] QString GetRenderGraphTemplateCategoryLabel(const QString& category);
+/// Display name of a requirement identity, such as "Native ray tracing"; empty for unknown identities.
+[[nodiscard]] QString GetRenderGraphTemplateRequirementLabel(const QString& requirement);
+
 /// Ordered catalog of built-in render graph templates: complete graphs, snippets and node types.
-/// The editor's New Graph dialog, Apply Configuration Template dialog and Add Node controls read
-/// it instead of keeping their own lists. The built-in catalog is the embedded
+/// The editor's New Graph dialog, Apply Configuration Template dialog, Add Node controls and
+/// Quick Add palette read it instead of keeping their own lists. The built-in catalog is the embedded
 /// render_graph_templates.json resource.
 class RenderGraphTemplateRegistry final
 {

@@ -26,25 +26,6 @@ constexpr int32 CATALOG_VERSION = 1;
 
 // Vocabularies are built on use: parsing runs once per catalog, and namespace-scope Qt containers
 // would allocate during static initialization.
-QStringList GetGraphCategories()
-{
-    return {QStringLiteral("raster"), QStringLiteral("ray-traced"), QStringLiteral("hybrid")};
-}
-
-QStringList GetInsertedCategories()
-{
-    return {QStringLiteral("scene"),
-            QStringLiteral("resources"),
-            QStringLiteral("passes"),
-            QStringLiteral("visibility"),
-            QStringLiteral("lighting"),
-            QStringLiteral("simulation"),
-            QStringLiteral("post-processing"),
-            QStringLiteral("upscaling"),
-            QStringLiteral("output"),
-            QStringLiteral("structure")};
-}
-
 QStringList GetRequirements()
 {
     return {QStringLiteral("native-ray-tracing"), QStringLiteral("denoiser"), QStringLiteral("metalfx")};
@@ -60,6 +41,7 @@ QStringList GetEntryFields()
             QStringLiteral("category"),
             QStringLiteral("defaultConfiguration"),
             QStringLiteral("requirements"),
+            QStringLiteral("keywords"),
             QStringLiteral("isDraft")};
 }
 
@@ -126,14 +108,10 @@ bool ReadEntry(const QJsonObject& entry, const QString& where, RenderGraphTempla
     }
     const QString name = QStringLiteral("%1 '%2'").arg(where, result.Identity);
     if (ReadText(entry, QStringLiteral("category"), result.Category) == false ||
-        (result.Kind == RenderGraphTemplateKind::Graph ? GetGraphCategories() : GetInsertedCategories())
-                .contains(result.Category) == false)
+        GetRenderGraphTemplateCategories(result.Kind).contains(result.Category) == false)
     {
-        outError =
-            QStringLiteral("%1 needs a category from: %2.")
-                .arg(name,
-                     (result.Kind == RenderGraphTemplateKind::Graph ? GetGraphCategories() : GetInsertedCategories())
-                         .join(QStringLiteral(", ")));
+        outError = QStringLiteral("%1 needs a category from: %2.")
+                       .arg(name, GetRenderGraphTemplateCategories(result.Kind).join(QStringLiteral(", ")));
         return false;
     }
     if (entry.contains(QStringLiteral("requirements")) == true)
@@ -154,6 +132,25 @@ bool ReadEntry(const QJsonObject& entry, const QString& where, RenderGraphTempla
                 return false;
             }
             result.Requirements.append(text);
+        }
+    }
+    if (entry.contains(QStringLiteral("keywords")) == true)
+    {
+        const QJsonValue keywords = entry.value(QStringLiteral("keywords"));
+        if (keywords.isArray() == false)
+        {
+            outError = QStringLiteral("%1 keywords must be an array.").arg(name);
+            return false;
+        }
+        for (const QJsonValueConstRef keyword : keywords.toArray())
+        {
+            const QString text = keyword.toString();
+            if (text.trimmed().isEmpty() == true || text != text.toLower() || result.Keywords.contains(text) == true)
+            {
+                outError = QStringLiteral("%1 keywords must be distinct, non-empty lowercase strings.").arg(name);
+                return false;
+            }
+            result.Keywords.append(text);
         }
     }
     if (isNode == false)
@@ -188,12 +185,17 @@ bool ReadEntry(const QJsonObject& entry, const QString& where, RenderGraphTempla
         outTemplate = Move(result);
         return true;
     }
-    if (entry.contains(QStringLiteral("label")) == true || entry.contains(QStringLiteral("description")) == true ||
+    if (entry.contains(QStringLiteral("label")) == true ||
         entry.contains(QStringLiteral("defaultConfiguration")) == true)
     {
-        outError = QStringLiteral("%1: nodes are labelled by their kind and take no label, description or "
-                                  "defaultConfiguration.")
-                       .arg(name);
+        outError =
+            QStringLiteral("%1: nodes are labelled by their kind and take no label or defaultConfiguration.").arg(name);
+        return false;
+    }
+    if (entry.contains(QStringLiteral("description")) == true &&
+        ReadText(entry, QStringLiteral("description"), result.Description) == false)
+    {
+        outError = QStringLiteral("%1 description must be non-empty text.").arg(name);
         return false;
     }
     const bool isUpscale = result.Identity == QStringLiteral("Upscale");
@@ -230,6 +232,73 @@ bool ReadEntry(const QJsonObject& entry, const QString& where, RenderGraphTempla
     return true;
 }
 } // namespace
+
+QStringList GetRenderGraphTemplateCategories(RenderGraphTemplateKind kind)
+{
+    if (kind == RenderGraphTemplateKind::Graph)
+    {
+        return {QStringLiteral("raster"), QStringLiteral("ray-traced"), QStringLiteral("hybrid")};
+    }
+    return {QStringLiteral("scene"),
+            QStringLiteral("resources"),
+            QStringLiteral("passes"),
+            QStringLiteral("visibility"),
+            QStringLiteral("lighting"),
+            QStringLiteral("simulation"),
+            QStringLiteral("post-processing"),
+            QStringLiteral("upscaling"),
+            QStringLiteral("output"),
+            QStringLiteral("structure")};
+}
+
+QString GetRenderGraphTemplateCategoryLabel(const QString& category)
+{
+    const QStringList categories{QStringLiteral("raster"),
+                                 QStringLiteral("ray-traced"),
+                                 QStringLiteral("hybrid"),
+                                 QStringLiteral("scene"),
+                                 QStringLiteral("resources"),
+                                 QStringLiteral("passes"),
+                                 QStringLiteral("visibility"),
+                                 QStringLiteral("lighting"),
+                                 QStringLiteral("simulation"),
+                                 QStringLiteral("post-processing"),
+                                 QStringLiteral("upscaling"),
+                                 QStringLiteral("output"),
+                                 QStringLiteral("structure")};
+    const QStringList labels{QStringLiteral("Raster"),
+                             QStringLiteral("Ray traced"),
+                             QStringLiteral("Hybrid"),
+                             QStringLiteral("Scene & view"),
+                             QStringLiteral("Resources"),
+                             QStringLiteral("Passes"),
+                             QStringLiteral("Visibility"),
+                             QStringLiteral("Lighting"),
+                             QStringLiteral("Simulation"),
+                             QStringLiteral("Post-processing"),
+                             QStringLiteral("Upscaling"),
+                             QStringLiteral("Output"),
+                             QStringLiteral("Structure")};
+    const qsizetype index = categories.indexOf(category);
+    return index < 0 ? QString{} : labels.at(index);
+}
+
+QString GetRenderGraphTemplateRequirementLabel(const QString& requirement)
+{
+    if (requirement == QStringLiteral("native-ray-tracing"))
+    {
+        return QStringLiteral("Native ray tracing");
+    }
+    if (requirement == QStringLiteral("denoiser"))
+    {
+        return QStringLiteral("OIDN denoiser");
+    }
+    if (requirement == QStringLiteral("metalfx"))
+    {
+        return QStringLiteral("MetalFX");
+    }
+    return {};
+}
 
 bool RenderGraphTemplateRegistry::Parse(const QByteArray& source,
                                         RenderGraphTemplateRegistry& outRegistry,

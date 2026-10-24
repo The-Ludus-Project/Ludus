@@ -21,6 +21,7 @@
 
 #include <QByteArray>
 #include <QJsonObject>
+#include <QPointF>
 #include <QString>
 #include <QTimer>
 #include <QWidget>
@@ -44,6 +45,8 @@ QT_END_NAMESPACE
 
 namespace ludus::editor
 {
+class RenderGraphQuickAdd;
+struct RenderGraphTemplate;
 struct RenderGraphResolutionSelection;
 class CodeEditor;
 class CodeDocumentController;
@@ -139,7 +142,12 @@ public:
     [[nodiscard]] bool CanCreateGraph() const;
     /// Ask to save a dirty draft, then choose a graph name/template and start CreateGraph. False
     /// when CanCreateGraph() is false, a prompt is cancelled or creation cannot start.
-    [[nodiscard]] bool PromptNewGraph();
+    /// templateIdentity preselects a catalog graph; empty or unknown keeps the first template.
+    [[nodiscard]] bool PromptNewGraph(const QString& templateIdentity = {});
+    /// Open the Quick Add palette for the canvas configuration. A chosen node is added at
+    /// scenePosition in one undoable edit; a chosen snippet opens Apply Configuration Template
+    /// with it selected. False, with a status message, when no configuration is editable.
+    [[nodiscard]] bool ShowQuickAdd(QPointF scenePosition);
     /// Ask to save a dirty draft, then choose a root .lurender.json in the project and open
     /// it. False when CanCreateGraph() is false, a prompt is cancelled or the graph cannot open.
     [[nodiscard]] bool PromptOpenGraph();
@@ -378,7 +386,10 @@ private:
     void syncTreeSelection();
     void syncCanvasSelection(const QStringList& nodes);
     void promptCreateConfiguration();
-    void promptConfigurationTemplate();
+    void promptConfigurationTemplate(const QString& templateIdentity = {});
+    /// Add one catalog node to the canvas configuration, optionally at a layout position.
+    void addNodeTemplate(const RenderGraphTemplate& entry, const QPoint* positionOrNull);
+    void insertQuickAddTemplate(const RenderGraphTemplate& entry);
     void activateSelectedNode();
     void openSourceLine(const QString& file, foundation::int32 line, foundation::int32 column = 0);
     /// Mark the shown source's messages from the last result. A new result always replaces
@@ -458,6 +469,9 @@ private:
     QString mActivationProblem;
     QLabel* mStatus;
     RenderGraphCanvas* mCanvas;
+    RenderGraphQuickAdd* mQuickAdd;
+    /// Canvas scene position where Quick Add last opened; chosen nodes are placed there.
+    QPointF mQuickAddPosition;
     QWidget* mPreviewPage;
     QWidget* mPreviewImage;
     QLabel* mPreviewStatus;

@@ -3244,6 +3244,32 @@ configuration. The new node is selected and scrolled into view. Any failure is
 explained beside **Add Node** and leaves the draft unchanged. Addition is one
 undoable edit; **Save** writes it to the project.
 
+#### Add nodes with Quick Add
+
+Quick Add finds a node or snippet by name without scrolling through a list. Open it
+with **Shift+A** over the canvas, by double-clicking empty canvas, or with
+**Quick Add...** at the top of the canvas context menu. It opens where you asked:
+Shift+A uses the pointer (or the view centre when the pointer is outside), and a
+double-click or context menu uses that spot.
+
+| Control | Effect |
+| --- | --- |
+| Type in the search field | Matches names, purposes and common terms, such as `hdr` for ToneMap or `fsr` for the FSR upscalers; the category list shows how many matches each category has |
+| Up/Down, Enter or a click | Choose a result. A node is added at the opening position in one undoable edit; an Upscale preset places its Upscale node there and arranges its helpers automatically |
+| Choose a snippet | Opens **Apply Configuration Template** with that snippet selected, so you still name the configuration and confirm any budget increase |
+| Tab / Shift+Tab | Switch between All, Snippets and Nodes |
+| Click a category | Show only that category |
+| ☆, or **Pin** | Keep a template under Suggested |
+| Esc or click outside | Close without editing the draft |
+
+The list shows at most eight results. When more match, a "+N more" line asks you
+to keep typing or pick a category. With an empty search it opens on your three most
+recent templates and your pinned ones; the editor remembers both between sessions.
+When the search also matches complete graphs, a link opens **New Render Graph** with
+the best match selected. Quick Add never creates a complete graph on the canvas.
+Templates that cannot preview in this editor, such as Denoise without the OIDN
+denoiser, stay listed with the reason, because the graph remains portable.
+
 | Gesture | Draft operation |
 | --- | --- |
 | Drag nodes (Ctrl-click adds to the selection) | One `MoveNodes` edit per gesture, applied on release: one undo step however far the drag went. A drag that returns to its start commits nothing. |
