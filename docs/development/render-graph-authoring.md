@@ -3123,7 +3123,12 @@ Right-click a node in **Graph sources** or on the **Canvas** to use its menu:
   graph that contains the node). **configuration** lists the selected asset's
   configurations. Choosing an asset that lacks the current configuration
   switches to that asset's `default`, or to its first configuration if it has no
-  default. A missing asset or configuration is still listed, so you can see it
+  default. Changing either selection automatically removes connections to missing
+  or incompatible ports and clears affected parent configuration-output sources,
+  retaining their declarations. Compatible wires and unrelated nodes stay intact.
+  The selection and cleanup form one undoable edit; **Save** publishes both. This
+  applies to Properties, the canvas field editor and rebinding with **Create Subgraph...**.
+  A missing asset or configuration is still listed, so you can see it
   and replace it. Validation still decides whether the reference is legal,
   including whether it creates a cycle.
 - **Open Subgraph** opens the referenced configuration; a missing source disables
@@ -3329,8 +3334,9 @@ of any remaining repairs; Apply includes them all.
 
 Repair covers direct references to this configuration in the loaded package.
 Malformed graph JSON blocks caller inspection until its Source is fixed. Raw
-Source edits and changing a Subgraph's selected asset/configuration do not run
-interface repair. Editing interfaces does not change the admitted GPU pipeline
+Source edits do not run interface repair. Typed Subgraph asset/configuration
+changes repair that instance's direct connections automatically, as described
+above. Editing interfaces does not change the admitted GPU pipeline
 profile or rewrite pipeline port declarations.
 
 Before a link reaches the draft, the canvas checks it against the configuration

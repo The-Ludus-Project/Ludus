@@ -1,5 +1,5 @@
 #include "internal/render_graph_scene_bundle.h"
-#include "internal/render_graph_canvas.h"
+#include "internal/render_graph_node_ports.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>

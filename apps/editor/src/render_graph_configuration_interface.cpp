@@ -1,8 +1,9 @@
-#include "internal/render_graph_canvas.h"
 #include "internal/render_graph_configuration_editor.h"
 #include "internal/render_graph_document.h"
+#include "internal/render_graph_node_ports.h"
 
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QRegularExpression>
 #include <QSet>
 
@@ -317,6 +318,111 @@ void RepairUses(const RenderGraphDocument& document,
     inoutConfiguration.insert(QStringLiteral("outputs"), outputs);
 }
 } // namespace
+
+// File and configuration identify the caller receiving the replacement.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+RenderGraphDocumentStatus RenderGraphDocument::prepareSubgraphReplacement(RenderGraphSnapshot& inoutSnapshot,
+                                                                          const QString& file,
+                                                                          const QString& configuration,
+                                                                          const QJsonObject& node,
+                                                                          QString& outError) const
+{
+    outError = QStringLiteral("The selected Subgraph or configuration is unavailable. Reselect it and retry.");
+    QMap<QString, QJsonObject> graphs;
+    for (QMap<QString, QByteArray>::const_iterator source = inoutSnapshot.Files.constBegin();
+         source != inoutSnapshot.Files.constEnd();
+         ++source)
+    {
+        if (source.key().endsWith(QStringLiteral(".lurender.json")) == false)
+        {
+            continue;
+        }
+        const QJsonDocument graph = QJsonDocument::fromJson(source.value());
+        if (graph.isObject() == false)
+        {
+            outError =
+                QStringLiteral("Cannot inspect connections while %1 has malformed graph JSON. Fix its Source first.")
+                    .arg(source.key());
+            return RenderGraphDocumentStatus::Malformed;
+        }
+        graphs.insert(source.key(), graph.object());
+    }
+    QJsonObject graph = graphs.value(file);
+    QJsonArray configurations = graph.value(QStringLiteral("configurations")).toArray();
+    for (qsizetype configurationIndex = 0; configurationIndex < configurations.size(); ++configurationIndex)
+    {
+        QJsonObject record = configurations.at(configurationIndex).toObject();
+        if (record.value(QStringLiteral("id")) != configuration)
+        {
+            continue;
+        }
+        QJsonArray nodes = record.value(QStringLiteral("nodes")).toArray();
+        for (qsizetype nodeIndex = 0; nodeIndex < nodes.size(); ++nodeIndex)
+        {
+            const QJsonObject previous = nodes.at(nodeIndex).toObject();
+            if (previous.value(QStringLiteral("id")) != node.value(QStringLiteral("id")) ||
+                previous.value(QStringLiteral("kind")) != QStringLiteral("Subgraph"))
+            {
+                continue;
+            }
+            const QString asset = node.value(QStringLiteral("asset")).toString();
+            const QString selected = node.value(QStringLiteral("configuration")).toString();
+            const QJsonObject child = FindConfiguration(graphs.value(asset), selected);
+            if (child.isEmpty() == true)
+            {
+                outError = QStringLiteral("Subgraph %1#%2 is unavailable. Select an existing asset and configuration; "
+                                          "the draft was preserved.")
+                               .arg(asset, selected);
+                return RenderGraphDocumentStatus::InvalidEdit;
+            }
+            const int32 version = graphs.value(asset).value(QStringLiteral("version")).toInt();
+            if (ValidatePorts(child.value(QStringLiteral("inputs")).toArray(), version, false, outError) == false ||
+                ValidatePorts(child.value(QStringLiteral("outputs")).toArray(), version, true, outError) == false)
+            {
+                return RenderGraphDocumentStatus::InvalidEdit;
+            }
+            nodes.replace(nodeIndex, node);
+            record.insert(QStringLiteral("nodes"), nodes);
+            const QString identity = node.value(QStringLiteral("id")).toString();
+            QSet<QString> inputs;
+            QSet<QString> outputs;
+            // Check every direct use, including a stale wire whose old declaration is already missing.
+            const auto collect = [&identity](const QString& endpoint, QSet<QString>& inoutPorts) {
+                if (endpoint.section(QLatin1Char('.'), 0, 0) == identity)
+                {
+                    inoutPorts.insert(endpoint.section(QLatin1Char('.'), 1));
+                }
+            };
+            for (const QJsonValueConstRef edge : record.value(QStringLiteral("edges")).toArray())
+            {
+                collect(edge.toObject().value(QStringLiteral("to")).toString(), inputs);
+                collect(edge.toObject().value(QStringLiteral("from")).toString(), outputs);
+            }
+            for (const QJsonValueConstRef output : record.value(QStringLiteral("outputs")).toArray())
+            {
+                collect(output.toObject().value(QStringLiteral("source")).toString(), outputs);
+            }
+            RepairLog log;
+            RepairUses(*this,
+                       graphs,
+                       record,
+                       file + QLatin1Char('#') + configuration,
+                       {identity},
+                       {},
+                       {},
+                       inputs,
+                       outputs,
+                       log);
+            configurations.replace(configurationIndex, record);
+            graph.insert(QStringLiteral("configurations"), configurations);
+            inoutSnapshot.Files.insert(file, EncodeCanonicalJson(graph));
+            outError.clear();
+            return RenderGraphDocumentStatus::Ok;
+        }
+        return RenderGraphDocumentStatus::InvalidEdit;
+    }
+    return RenderGraphDocumentStatus::InvalidEdit;
+}
 
 RenderGraphDocumentStatus
 RenderGraphDocument::prepareConfigurationInterface(const QString& file,

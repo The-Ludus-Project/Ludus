@@ -910,6 +910,23 @@ RenderGraphDocumentStatus RenderGraphDocument::ReplaceNode(const QString& file,
     {
         return ApplyPipeline(file, configuration, node, outErrorOrNull);
     }
+    if (node.value(QStringLiteral("kind")) == QStringLiteral("Subgraph"))
+    {
+        RenderGraphSnapshot candidate = mDraft;
+        QString error;
+        const RenderGraphDocumentStatus prepared =
+            prepareSubgraphReplacement(candidate, file, configuration, node, error);
+        if (outErrorOrNull != nullptr)
+        {
+            *outErrorOrNull = error;
+        }
+        if (prepared != RenderGraphDocumentStatus::Ok || candidate == mDraft)
+        {
+            return prepared;
+        }
+        mLastMove.clear();
+        return commit(candidate, false);
+    }
     if (outErrorOrNull != nullptr)
     {
         *outErrorOrNull =
@@ -1224,6 +1241,13 @@ RenderGraphDocumentStatus RenderGraphDocument::CreateSubgraph(const QString& fil
     RenderGraphSnapshot candidate = mDraft;
     candidate.Files.insert(file, EncodeCanonicalJson(graph));
     candidate.Files.insert(asset, EncodeCanonicalJson(library));
+    QString error;
+    const RenderGraphDocumentStatus prepared =
+        prepareSubgraphReplacement(candidate, file, configuration, reference, error);
+    if (prepared != RenderGraphDocumentStatus::Ok)
+    {
+        return prepared;
+    }
     mLastMove.clear();
     return commit(candidate, false);
 }

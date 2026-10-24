@@ -155,6 +155,8 @@ public:
     [[nodiscard]] bool GetGraph(const QString& file, QJsonObject& outGraph) const;
 
     /// Replace a node atomically, preserving connected port identities and types.
+    /// Subgraph replacements automatically disconnect missing/incompatible ports and clear
+    /// affected configuration-output sources while retaining their declarations, in the same undo step.
     /// On failure the draft/history is preserved; optional error names the affected endpoint and repair.
     [[nodiscard]] RenderGraphDocumentStatus ReplaceNode(const QString& file,
                                                         const QString& configuration,
@@ -388,6 +390,12 @@ public:
     [[nodiscard]] RenderGraphDocumentStatus RefreshFromDisk(bool& outHasChanged);
 
 private:
+    /// Replace a Subgraph and repair its direct uses in an unpublished snapshot; no disk writes.
+    [[nodiscard]] RenderGraphDocumentStatus prepareSubgraphReplacement(RenderGraphSnapshot& inoutSnapshot,
+                                                                       const QString& file,
+                                                                       const QString& configuration,
+                                                                       const QJsonObject& node,
+                                                                       QString& outError) const;
     [[nodiscard]] RenderGraphDocumentStatus prepareConfigurationInterface(const QString& file,
                                                                           const QString& configuration,
                                                                           const QJsonArray& inputs,

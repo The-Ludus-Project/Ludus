@@ -5,6 +5,7 @@
 #include "internal/renderer_workspace.h"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <QAction>
 #include <QApplication>
@@ -1016,4 +1017,287 @@ TEST_CASE("bound source edit records an offscreen latency baseline", "[.benchmar
          << QSysInfo::prettyProductName().toStdString() << "; Qt=" << qVersion());
     INFO("Bytes=" << original.size() << "; p50 ns=" << samples.at(SAMPLE_COUNT / 2) << "; p95 ns=" << samples.last());
     CHECK(workspace.GetDocument().GetDraft(shader) == original);
+}
+
+TEST_CASE("Subgraph replacements repair direct connections and output sources in one edit",
+          "[editor][render-graph][subgraph-cleanup]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QString library = QStringLiteral("rasterize.lurender.json");
+    QJsonObject root;
+    REQUIRE(document.GetGraph(ROOT_GRAPH, root) == true);
+    QJsonArray configurations = root.value(QStringLiteral("configurations")).toArray();
+    QJsonObject parent = configurations.first().toObject();
+    parent.insert(QStringLiteral("outputs"),
+                  QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("colorAlias")},
+                                         {QStringLiteral("type"), QStringLiteral("ColorTexture")},
+                                         {QStringLiteral("required"), false},
+                                         {QStringLiteral("source"), QStringLiteral("raster.color")}},
+                             QJsonObject{{QStringLiteral("id"), QStringLiteral("depthAlias")},
+                                         {QStringLiteral("type"), QStringLiteral("DepthTexture")},
+                                         {QStringLiteral("required"), false},
+                                         {QStringLiteral("source"), QStringLiteral("raster.depth")}}});
+    configurations.replace(0, parent);
+    root.insert(QStringLiteral("configurations"), configurations);
+    REQUIRE(document.SetText(ROOT_GRAPH, EncodeCanonicalJson(root)) == RenderGraphDocumentStatus::Ok);
+    const QByteArray before = document.GetDraft(ROOT_GRAPH);
+    const QByteArray beforeLibrary = document.GetDraft(library);
+    QJsonObject replacement;
+    for (const QJsonValueConstRef value : parent.value(QStringLiteral("nodes")).toArray())
+    {
+        if (value.toObject().value(QStringLiteral("id")) == QStringLiteral("raster"))
+        {
+            replacement = value.toObject();
+        }
+    }
+    REQUIRE(replacement.isEmpty() == false);
+    bool shouldKeepDepth = true;
+    QString error;
+    SECTION("Switching configurations removes absent input and output ports")
+    {
+        replacement.insert(QStringLiteral("configuration"), QStringLiteral("DepthOnly"));
+        REQUIRE(document.ReplaceNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, replacement, &error) ==
+                RenderGraphDocumentStatus::Ok);
+    }
+    SECTION("Switching assets also removes incompatible port types")
+    {
+        REQUIRE(document.CreateSubgraph(ROOT_GRAPH,
+                                        DEFAULT_CONFIGURATION,
+                                        QStringLiteral("other"),
+                                        QStringLiteral("Other")) == RenderGraphDocumentStatus::Ok);
+        const QString other = QStringLiteral("Other.lurender.json");
+        QJsonObject child = GetConfiguration(document, library, QStringLiteral("DepthOnly"));
+        child.insert(QStringLiteral("id"), QStringLiteral("Retyped"));
+        QJsonArray inputs = child.value(QStringLiteral("inputs")).toArray();
+        QJsonArray edges = child.value(QStringLiteral("edges")).toArray();
+        for (qsizetype index = 0; index < inputs.size(); ++index)
+        {
+            QJsonObject input = inputs.at(index).toObject();
+            if (input.value(QStringLiteral("id")) == QStringLiteral("depth"))
+            {
+                input.insert(QStringLiteral("id"), QStringLiteral("color"));
+                inputs.replace(index, input);
+            }
+        }
+        for (qsizetype index = 0; index < edges.size(); ++index)
+        {
+            QJsonObject edge = edges.at(index).toObject();
+            if (edge.value(QStringLiteral("from")) == QStringLiteral("input.depth"))
+            {
+                edge.insert(QStringLiteral("from"), QStringLiteral("input.color"));
+                edges.replace(index, edge);
+            }
+        }
+        QJsonArray outputs = child.value(QStringLiteral("outputs")).toArray();
+        QJsonObject output = outputs.first().toObject();
+        output.insert(QStringLiteral("id"), QStringLiteral("color"));
+        outputs.replace(0, output);
+        child.insert(QStringLiteral("inputs"), inputs);
+        child.insert(QStringLiteral("edges"), edges);
+        child.insert(QStringLiteral("outputs"), outputs);
+        QJsonObject otherGraph;
+        REQUIRE(document.GetGraph(other, otherGraph) == true);
+        otherGraph.insert(QStringLiteral("configurations"), QJsonArray{child});
+        otherGraph.insert(QStringLiteral("default"), QStringLiteral("Retyped"));
+        REQUIRE(document.SetText(other, EncodeCanonicalJson(otherGraph)) == RenderGraphDocumentStatus::Ok);
+        replacement.insert(QStringLiteral("asset"), other);
+        replacement.insert(QStringLiteral("configuration"), QStringLiteral("Retyped"));
+        const QByteArray beforeSwitch = document.GetDraft(ROOT_GRAPH);
+        REQUIRE(document.ReplaceNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, replacement, &error) ==
+                RenderGraphDocumentStatus::Ok);
+        REQUIRE(document.Undo() == true);
+        CHECK(document.GetDraft(ROOT_GRAPH) == beforeSwitch);
+        REQUIRE(document.Redo() == true);
+        shouldKeepDepth = false;
+    }
+    SECTION("Creating a new empty library cleans the rebound node")
+    {
+        REQUIRE(document.CreateSubgraph(ROOT_GRAPH,
+                                        DEFAULT_CONFIGURATION,
+                                        QStringLiteral("raster"),
+                                        QStringLiteral("Empty")) == RenderGraphDocumentStatus::Ok);
+        shouldKeepDepth = false;
+    }
+    CHECK(error.isEmpty() == true);
+    CHECK(GetInputConnections(document, QStringLiteral("raster.color")).isEmpty() == true);
+    CHECK(GetInputConnections(document, QStringLiteral("raster.depth")).isEmpty() == (shouldKeepDepth == false));
+    CHECK(GetInputConnections(document, QStringLiteral("raster.scene")).isEmpty() ==
+          (replacement.value(QStringLiteral("configuration")) == QStringLiteral("ColorAndDepth")));
+    CHECK(GetInputConnections(document, QStringLiteral("camera.target")).size() == 1);
+    parent = GetConfiguration(document, ROOT_GRAPH, DEFAULT_CONFIGURATION);
+    for (const QJsonValueConstRef edge : parent.value(QStringLiteral("edges")).toArray())
+    {
+        CHECK(edge.toObject().value(QStringLiteral("from")) != QStringLiteral("raster.color"));
+    }
+    const QJsonArray aliases = parent.value(QStringLiteral("outputs")).toArray();
+    REQUIRE(aliases.size() == 2);
+    CHECK(aliases.first().toObject().value(QStringLiteral("source")).toString().isEmpty() == true);
+    CHECK(aliases.last().toObject().value(QStringLiteral("source")).toString() ==
+          (shouldKeepDepth == true ? QStringLiteral("raster.depth") : QString()));
+    CHECK(document.GetDraft(library) == beforeLibrary);
+    const QByteArray after = document.GetDraft(ROOT_GRAPH);
+    REQUIRE(document.Undo() == true);
+    // The asset-switch section had an unrelated Subgraph added before the replacement.
+    if (replacement.value(QStringLiteral("asset")) == library)
+    {
+        CHECK(document.GetDraft(ROOT_GRAPH) == before);
+    }
+    REQUIRE(document.Redo() == true);
+    CHECK(document.GetDraft(ROOT_GRAPH) == after);
+    QStringList saved;
+    REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+    RenderGraphDocument reopened;
+    REQUIRE(reopened.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    CHECK(reopened.GetDraft(ROOT_GRAPH) == after);
+}
+
+TEST_CASE("Unavailable Subgraph replacements preserve sources and history", "[editor][render-graph][subgraph-cleanup]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    QJsonObject replacement;
+    for (const QJsonValueConstRef node :
+         GetConfiguration(document, ROOT_GRAPH, DEFAULT_CONFIGURATION).value(QStringLiteral("nodes")).toArray())
+    {
+        if (node.toObject().value(QStringLiteral("id")) == QStringLiteral("raster"))
+        {
+            replacement = node.toObject();
+        }
+    }
+    const QByteArray before = document.GetDraft(ROOT_GRAPH);
+    const uint64 revision = document.GetRevision();
+    replacement.insert(QStringLiteral("configuration"), QStringLiteral("Missing"));
+    QString error;
+    CHECK(document.ReplaceNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, replacement, &error) ==
+          RenderGraphDocumentStatus::InvalidEdit);
+    CHECK(error.contains(QStringLiteral("Missing")) == true);
+    CHECK(document.GetDraft(ROOT_GRAPH) == before);
+    CHECK(document.GetRevision() == revision);
+}
+
+TEST_CASE("Subgraph dropdowns clean missing connections through Properties and the canvas",
+          "[editor][render-graph][subgraph-cleanup]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    RenderGraphDocument& document = workspace.GetDocument();
+    const bool shouldSwitchAsset = GENERATE(false, true);
+    const QString library = QStringLiteral("rasterize.lurender.json");
+    const QString selection = QStringLiteral("InternalDepth");
+    QJsonObject child = GetConfiguration(document, library, QStringLiteral("ColorAndDepth"));
+    child.insert(QStringLiteral("id"), selection);
+    QJsonArray inputs;
+    for (const QJsonValueConstRef input : child.value(QStringLiteral("inputs")).toArray())
+    {
+        if (input.toObject().value(QStringLiteral("id")) != QStringLiteral("depth"))
+        {
+            inputs.append(input);
+        }
+    }
+    QJsonArray nodes = child.value(QStringLiteral("nodes")).toArray();
+    for (const QJsonValueConstRef node :
+         GetConfiguration(document, ROOT_GRAPH, DEFAULT_CONFIGURATION).value(QStringLiteral("nodes")).toArray())
+    {
+        if (node.toObject().value(QStringLiteral("id")) == QStringLiteral("depth"))
+        {
+            QJsonObject internal = node.toObject();
+            internal.insert(QStringLiteral("id"), QStringLiteral("internalDepth"));
+            nodes.append(internal);
+        }
+    }
+    QJsonArray edges;
+    for (const QJsonValueConstRef value : child.value(QStringLiteral("edges")).toArray())
+    {
+        QJsonObject edge = value.toObject();
+        if (edge.value(QStringLiteral("from")) == QStringLiteral("input.depth"))
+        {
+            edge.insert(QStringLiteral("from"), QStringLiteral("internalDepth.texture"));
+        }
+        edges.append(edge);
+    }
+    child.insert(QStringLiteral("inputs"), inputs);
+    child.insert(QStringLiteral("nodes"), nodes);
+    child.insert(QStringLiteral("edges"), edges);
+    QString target = library;
+    if (shouldSwitchAsset == true)
+    {
+        REQUIRE(document.CreateSubgraph(ROOT_GRAPH,
+                                        DEFAULT_CONFIGURATION,
+                                        QStringLiteral("other"),
+                                        QStringLiteral("Other")) == RenderGraphDocumentStatus::Ok);
+        target = QStringLiteral("Other.lurender.json");
+    }
+    QJsonObject childGraph;
+    REQUIRE(document.GetGraph(target, childGraph) == true);
+    QJsonArray configurations = childGraph.value(QStringLiteral("configurations")).toArray();
+    configurations.append(child);
+    childGraph.insert(QStringLiteral("configurations"), configurations);
+    childGraph.insert(QStringLiteral("default"), selection);
+    REQUIRE(document.SetText(target, EncodeCanonicalJson(childGraph)) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, QStringLiteral("raster")) == true);
+    const QByteArray before = document.GetDraft(ROOT_GRAPH);
+    const QString field = shouldSwitchAsset == true ? QStringLiteral("asset") : QStringLiteral("configuration");
+    const QString choice = shouldSwitchAsset == true ? target : selection;
+    const auto exercise = [&workspace, &document, &before, &field, &choice](QWidget& inoutFields) {
+        QComboBox* choiceOrNull = inoutFields.findChild<QComboBox*>(QStringLiteral("renderGraphField_") + field);
+        REQUIRE(choiceOrNull != nullptr);
+        const uint64 revision = document.GetRevision();
+        choiceOrNull->setCurrentText(choice);
+        Q_EMIT choiceOrNull->activated(choiceOrNull->currentIndex());
+        CHECK(document.GetRevision() == revision + 1);
+        CHECK(GetInputConnections(document, QStringLiteral("raster.color")).size() == 1);
+        CHECK(GetInputConnections(document, QStringLiteral("raster.depth")).isEmpty() == true);
+        CHECK(GetInputConnections(document, QStringLiteral("output.texture")).size() == 1);
+        const QByteArray after = document.GetDraft(ROOT_GRAPH);
+        workspace.Undo();
+        CHECK(document.GetDraft(ROOT_GRAPH) == before);
+        workspace.Redo();
+        CHECK(document.GetDraft(ROOT_GRAPH) == after);
+        REQUIRE(workspace.Save() == true);
+    };
+    QWidget* properties = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
+    REQUIRE(properties != nullptr);
+    SECTION("Properties")
+    {
+        exercise(*properties);
+    }
+    SECTION("Canvas with Properties hidden")
+    {
+        workspace.resize(1200, 800);
+        workspace.show();
+        properties->hide();
+        QCoreApplication::processEvents();
+        RenderGraphCanvas& canvas = workspace.GetCanvas();
+        canvas.Rebuild();
+        QTimer::singleShot(0, &canvas, [&canvas, &exercise, properties]() {
+            QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            REQUIRE(menuOrNull != nullptr);
+            QAction* editOrNull = menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphEditNodeAction"));
+            REQUIRE(editOrNull != nullptr);
+            QTimer::singleShot(0, &canvas, [&exercise, properties]() {
+                QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+                REQUIRE(dialogOrNull != nullptr);
+                CHECK(properties->isVisible() == false);
+                exercise(*dialogOrNull);
+                dialogOrNull->reject();
+            });
+            menuOrNull->close();
+            editOrNull->trigger();
+        });
+        const QPoint point = canvas.mapFromScene(canvas.GetNodePosition(QStringLiteral("raster")) + QPointF(20, 10));
+        QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
+        QApplication::sendEvent(canvas.viewport(), &context);
+    }
+    RenderGraphDocument reopened;
+    REQUIRE(reopened.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    CHECK(reopened.GetDraft(ROOT_GRAPH) == document.GetDraft(ROOT_GRAPH));
 }
