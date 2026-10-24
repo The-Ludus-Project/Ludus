@@ -12,7 +12,7 @@
 // by ludus_compile_shader) uses SV_VertexID. Both count from the draw's first
 // vertex, which the fullscreen compatibility draw fixes at zero.
 #if defined(LUDUS_DXIL)
-#define LUDUS_SHADER_VERTEX_ID SV_VertexID
+#    define LUDUS_SHADER_VERTEX_ID SV_VertexID
 #else
-#define LUDUS_SHADER_VERTEX_ID SV_VulkanVertexID
+#    define LUDUS_SHADER_VERTEX_ID SV_VulkanVertexID
 #endif

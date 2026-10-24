@@ -143,7 +143,7 @@ if(LUDUS_BUILD_TESTS AND NOT APPLE AND NOT WIN32 AND LUDUS_SLANG_COMPILER AND LU
     ludus_enable_test_exceptions(ludus_rhi_render_tests)
     ludus_compile_shader(TARGET ludus_rhi_render_tests NAME diagnostic
         SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/diagnostic.slang"
-        VERTEX vertexMain FRAGMENT fragmentMain)
+        VERTEX VertexMain FRAGMENT FragmentMain)
     add_test(NAME ludus_rhi_render_pixels COMMAND ludus_rhi_render_tests)
     set_tests_properties(ludus_rhi_render_pixels PROPERTIES LABELS "rhi;gpu" TIMEOUT 60)
 endif()
@@ -162,7 +162,7 @@ if(LUDUS_BUILD_TESTS AND WIN32)
         target_compile_definitions(ludus_rhi_d3d12_tests PRIVATE LUDUS_TEST_DXIL=1)
         ludus_compile_shader(TARGET ludus_rhi_d3d12_tests NAME diagnostic
             SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/diagnostic.slang"
-            VERTEX vertexMain FRAGMENT fragmentMain)
+            VERTEX VertexMain FRAGMENT FragmentMain)
     else()
         message(STATUS "Direct3D 12 fullscreen pixel tests skipped: set LUDUS_SLANG_COMPILER and LUDUS_DXC_DIRECTORY")
     endif()
@@ -189,7 +189,7 @@ if(LUDUS_BUILD_TESTS AND APPLE)
         ludus_enable_test_exceptions(ludus_rhi_render_tests)
         ludus_compile_shader(TARGET ludus_rhi_render_tests NAME diagnostic
             SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/diagnostic.slang"
-            VERTEX vertexMain FRAGMENT fragmentMain)
+            VERTEX VertexMain FRAGMENT FragmentMain)
         add_test(NAME ludus_rhi_render_pixels COMMAND ludus_rhi_render_tests)
         set_tests_properties(ludus_rhi_render_pixels PROPERTIES LABELS "rhi;gpu;macos" TIMEOUT 60)
     endif()

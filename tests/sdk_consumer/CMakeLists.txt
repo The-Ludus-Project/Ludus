@@ -89,7 +89,7 @@ if(LUDUS_SDK_RENDER_TESTS)
     target_link_libraries(ludus_sdk_render_consumer PRIVATE Ludus::GraphicsRhi)
     target_compile_options(ludus_sdk_render_consumer PRIVATE -Wall -Wextra -Wpedantic -Werror -fno-exceptions)
     ludus_compile_shader(TARGET ludus_sdk_render_consumer NAME diagnostic SOURCE shaders/diagnostic.slang
-        VERTEX vertexMain FRAGMENT fragmentMain INCLUDES shaders)
+        VERTEX VertexMain FRAGMENT FragmentMain INCLUDES shaders)
     if(EMSCRIPTEN)
         target_link_options(ludus_sdk_render_consumer PRIVATE -fno-exceptions -g2 -sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1)
         set_target_properties(ludus_sdk_render_consumer PROPERTIES OUTPUT_NAME render SUFFIX ".js")

@@ -72,7 +72,7 @@ def main():
             shutil.copy2(Path(__file__).with_name("shaders") / fixture, project / fixture)
         target = json.loads((project / "ludus.project.json").read_text())["target"]
         with cmake_file.open("a") as file:
-            file.write(f"\nludus_compile_shader(TARGET {target} NAME sample SOURCE diagnostic.slang VERTEX vertexMain FRAGMENT fragmentMain)\n")
+            file.write(f"\nludus_compile_shader(TARGET {target} NAME sample SOURCE diagnostic.slang VERTEX VertexMain FRAGMENT FragmentMain)\n")
         run([cli, "project", "repair", project, "--tools", tools], cwd=root, env=env)
         shader = project / f"out/build/macos-clang-development/ludus-shaders/{target}/sample/sample.fragment.metal"
         assert shader.is_file(), shader

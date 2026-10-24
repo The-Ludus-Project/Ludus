@@ -87,7 +87,7 @@ struct ShaderDescription final
     /// call. The container must be signed by the DXIL validator, hold the program for
     /// Stage, and use at most one constant buffer at register b0, space 0.
     /// @note `ludus_compile_shader` emits DXIL only when CMake targets a Windows host.
-    std::span<const ludus::foundation::uint8> Dxil;
+    std::span<const ludus::foundation::uint8> Dxil = {};
     /// @brief Entry in Dxil, checked against the container's pipeline state validation part.
     ///
     /// A container records one entry; a different name or stage fails CreateShader.

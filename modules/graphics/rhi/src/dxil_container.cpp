@@ -15,11 +15,18 @@ namespace
 {
 using namespace ludus::foundation;
 
-[[nodiscard]] constexpr uint32 MakeFourCharacterCode(const char (&code)[5]) noexcept
+constexpr usize UINT32_BYTES = sizeof(uint32);
+constexpr uint32 BITS_PER_BYTE = 8;
+
+/// Four ASCII characters stored first-to-last in little-endian order, as DXC writes them.
+[[nodiscard]] constexpr uint32 MakeFourCharacterCode(const char (&code)[UINT32_BYTES + 1]) noexcept
 {
-    return static_cast<uint32>(static_cast<uint8>(code[0])) | (static_cast<uint32>(static_cast<uint8>(code[1])) << 8) |
-           (static_cast<uint32>(static_cast<uint8>(code[2])) << 16) |
-           (static_cast<uint32>(static_cast<uint8>(code[3])) << 24);
+    uint32 value = 0;
+    for (usize i = 0; i < UINT32_BYTES; ++i)
+    {
+        value |= static_cast<uint32>(static_cast<uint8>(code[i])) << (i * BITS_PER_BYTE);
+    }
+    return value;
 }
 
 constexpr uint32 CONTAINER_CODE = MakeFourCharacterCode("DXBC");
@@ -30,7 +37,6 @@ constexpr usize CONTAINER_SIZE_OFFSET = 24;
 constexpr usize PART_COUNT_OFFSET = 28;
 /// Each part starts with its four-character code and its content size.
 constexpr usize PART_HEADER_BYTES = 8;
-constexpr usize UINT32_BYTES = 4;
 /// The DXIL program version keeps the shader kind in its upper 16 bits.
 constexpr uint32 PROGRAM_KIND_SHIFT = 16;
 /// DXIL::ShaderKind values, shared by the program version and PSV0.

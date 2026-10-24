@@ -322,15 +322,19 @@ before 22.1.3 could not; see [macOS sanitizer runtimes](building.md#macos-saniti
 [Windows Direct3D 12 bring-up](../architecture/windows-direct3d12.md): the Win32
 Platform backend and the Direct3D 12 RHI backend. Every batch calls it, and
 promotion requires it. Integration PRs run it only when they change the
-Win32 or Direct3D 12 sources and tests, the Windows Conan profile or the
+Win32 or Direct3D 12 sources and tests, the DXIL shader toolchain (pins, bootstrap,
+driver and the fullscreen diagnostic shader), the Windows Conan profile or the
 workflow itself. Changes to shared RHI or Platform code reach it in the batch.
 
 The job uses the same pinned LLVM installer, host tools and locked Catch2 package
 as the Windows threading job; `scripts/python/test_ci.py` checks that both lanes
 share one installer pin and that the Windows module list is closed over its
-links. It builds Platform, the RHI and their tests warning-clean, then runs
+links. It bootstraps the pinned Slang and DXC with `python scripts/shader-probe
+bootstrap`, builds Platform, the RHI and their tests warning-clean (compiling the
+fullscreen diagnostic shader to signed DXIL), then runs
 `ludus_platform_win32_tests`, `ludus_rhi_d3d12_tests` and
-`ludus_rhi_lifecycle_tests`. The `windows-2022` image has no GPU, so the
+`ludus_rhi_lifecycle_tests`, and fails if the DXIL pixel tests were not
+configured. The `windows-2022` image has no GPU, so the
 Direct3D 12 tests run on WARP; they establish the backend's behavior, not
 hardware-adapter qualification.
 
