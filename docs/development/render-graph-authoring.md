@@ -1741,8 +1741,8 @@ or bounce transport, so it is also a minimal place to start authoring.
 
 ### Disable a node
 
-Accumulate, Denoise and ToneMap can be disabled without deleting them or their
-wires. Right-click the node and choose **Disable Node**, or clear **Enabled** in
+Accumulate, Denoise, ToneMap and Export can be disabled without deleting them or
+their wires. Right-click the node and choose **Disable Node**, or clear **Enabled** in
 Properties or **Edit Node...**. Choose the same action again to re-enable it.
 Each toggle is one undoable edit, saved with the graph:
 
@@ -1750,7 +1750,7 @@ Each toggle is one undoable edit, saved with the graph:
 {"id": "tonemap", "kind": "ToneMap", "exposure": 1, "enabled": false}
 ```
 
-The compiler treats a disabled node as a wire: every consumer of its `color`
+The compiler treats a disabled Accumulate, Denoise or ToneMap node as a wire: every consumer of its `color`
 output reads the source connected to its `color` input instead, and the plan
 contains no operation for it. Disabling both nodes in
 `RayTracingPipeline → Accumulate → ToneMap → Export` therefore cooks the same
@@ -1762,10 +1762,36 @@ built and previewed where OIDN is unavailable.
 `enabled` is optional and defaults to `true`; the editor writes it only when the
 node is disabled. Settings such as the sample limit and exposure are kept and
 still validated, including Denoise quality. A disabled node whose output is used must have its input
-connected, otherwise validation reports `RenderGraphUnboundInput`. Other node
+connected, otherwise validation reports `RenderGraphUnboundInput`. Export is
+the one sink that admits the field ([below](#switch-between-exported-routes)). Other node
 kinds reject the field: a pipeline, Upscale or Subgraph has no single input of
 the same type and size that it could pass through. The canvas dims disabled
 nodes and labels them **Disabled · bypassed**.
+
+#### Switch between exported routes
+
+A disabled Export is not a pass-through: it has no output, so the compiler
+builds no root for it. Its input may stay unconnected, and nodes that only it
+used become inactive and are skipped. A connected wire is kept and still
+type-checked. The canvas labels the node **Disabled · not exported**.
+
+Use this to keep several finished routes in one configuration and choose
+between them without rewiring. Exports that write the same target conflict;
+for example, one Export reading a ray pipeline's raw `color` and another
+reading a ToneMap of that output fail with `RenderGraphStaleVersion` while both
+are enabled. Disable one of them to build the other route:
+
+```json
+{"id": "raw", "kind": "Export", "type": "ColorTexture", "enabled": false},
+{"id": "mapped", "kind": "Export", "type": "ColorTexture"}
+```
+
+Likewise, disable an unconnected depth Export instead of deleting it when the
+selected route produces no depth. The editor preview shows an exported color
+texture, so leaving one color Export enabled selects the route it displays.
+Two limits still apply: an active camera needs an enabled route
+to its target (`RenderGraphCameraRouteMissing`), and a graph whose Exports are
+all disabled and that has no Present fails with `RenderGraphUnboundOutput`.
 
 ### Create structured reservoir buffers
 
@@ -2120,7 +2146,7 @@ Root execution configurations cannot contain unbound interface inputs.
 | Denoise | `quality` (`Fast`, `Balanced` or `High`); optional `enabled` ([disable a node](#disable-a-node)) | Required `color: ColorTexture` input and written `color: ColorTexture` output; [OIDN filtering](#denoise-ray-output-with-oidn) |
 | ToneMap | `exposure` (0.01..64 linear multiplier); optional `enabled` ([disable a node](#disable-a-node)) | Required `color: ColorTexture` input and written `color: ColorTexture` output; [Reinhard and sRGB conversion](#tone-map-ray-output-explicitly) |
 | Subgraph | `asset`, `configuration` | Selected asset interface defines its input/output ports |
-| Export | `type` | Input `texture` matching ColorTexture or DepthTexture; external output root |
+| Export | `type`; optional `enabled` ([disable a node](#switch-between-exported-routes)) | Input `texture` matching ColorTexture or DepthTexture; external output root when enabled |
 | Present | None | Input `color: ColorTexture`; root for the written version of an imported presentation target |
 
 The Raster input names are `scene`, `view`, `depth`, and (when available) `color`.

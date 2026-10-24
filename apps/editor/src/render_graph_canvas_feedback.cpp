@@ -47,7 +47,8 @@ public:
             return EffectState::Unknown;
         }
         const QString kind = node.value(QStringLiteral("kind")).toString();
-        if (kind == QStringLiteral("Export") || kind == QStringLiteral("Present") ||
+        if ((kind == QStringLiteral("Export") && IsRenderGraphNodeEnabled(node) == true) ||
+            kind == QStringLiteral("Present") ||
             (kind == QStringLiteral("Camera") && node.value(QStringLiteral("active")).toBool() == true))
         {
             return EffectState::Present;
@@ -220,10 +221,22 @@ InspectRenderGraphActivity(const RenderGraphDocument& document, const QString& f
         {
             // An authored fact, so it holds even where dependency inspection is unknown.
             annotation.Activity = RenderGraphActivity::Disabled;
-            annotation.Label = QStringLiteral("Disabled · bypassed");
-            annotation.Explanation = QStringLiteral(
-                "Disabled: the compiler connects this node's color input directly to its consumers and emits no "
-                "operation for it. Its settings and wires are kept; enable it from the context menu or Properties.");
+            if (value.toObject().value(QStringLiteral("kind")).toString() == QStringLiteral("Export"))
+            {
+                annotation.Label = QStringLiteral("Disabled · not exported");
+                annotation.Explanation = QStringLiteral(
+                    "Disabled: the compiler builds no root for this Export, so its input may stay unconnected and "
+                    "nodes used only by it are skipped. Its wire is kept; enable it from the context menu or "
+                    "Properties.");
+            }
+            else
+            {
+                annotation.Label = QStringLiteral("Disabled · bypassed");
+                annotation.Explanation =
+                    QStringLiteral("Disabled: the compiler connects this node's color input directly to its "
+                                   "consumers and emits no operation for it. Its settings and wires are kept; enable "
+                                   "it from the context menu or Properties.");
+            }
         }
         else if (hasUnknown == true)
         {

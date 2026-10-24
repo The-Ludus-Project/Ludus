@@ -442,6 +442,18 @@ QString DescribePackageOutsideProject()
 {
     return QStringLiteral("The render graph's package lies outside the project folder, so it has no build tree there.");
 }
+
+/// What disabling a node of this kind does in the compiled graph; Export is a sink, the others pass through.
+QString DescribeDisabledNode(const QString& kind)
+{
+    if (kind == QStringLiteral("Export"))
+    {
+        return QStringLiteral("When disabled, the compiler builds no root for this Export: its input may stay "
+                              "unconnected and nodes used only by it are skipped. Its wire is kept for re-enabling.");
+    }
+    return QStringLiteral("When disabled, the compiler connects this node's color input directly to its consumers. "
+                          "Settings and wires are kept for re-enabling.");
+}
 } // namespace
 
 RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* parentOrNull)
@@ -2355,8 +2367,7 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
         QCheckBox* enabled = new QCheckBox(&inoutParent);
         enabled->setObjectName(QStringLiteral("renderGraphField_enabled"));
         enabled->setChecked(IsRenderGraphNodeEnabled(node));
-        enabled->setToolTip(QStringLiteral("When cleared, the compiler connects this node's color input directly to "
-                                           "its consumers. Settings and wires are kept for re-enabling."));
+        enabled->setToolTip(DescribeDisabledNode(node.value(QStringLiteral("kind")).toString()));
         connect(enabled, &QCheckBox::toggled, this, &RendererWorkspace::setSelectedNodeEnabled);
         outFields.addRow(QStringLiteral("Enabled"), enabled);
     }
@@ -3345,8 +3356,8 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
         disable->setCheckable(true);
         disable->setChecked(IsRenderGraphNodeEnabled(node) == false);
         disable->setEnabled(CanCreateSubgraph());
-        disable->setToolTip(QStringLiteral("Bypass this node: its color input feeds its consumers directly. "
-                                           "One undoable edit, rebuilt like any other node edit."));
+        disable->setToolTip(DescribeDisabledNode(node.value(QStringLiteral("kind")).toString()) +
+                            QStringLiteral(" One undoable edit, rebuilt like any other node edit."));
         connect(disable, &QAction::triggered, this, [this](bool isDisabled) {
             setSelectedNodeEnabled(isDisabled == false);
         });

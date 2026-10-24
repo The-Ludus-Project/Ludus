@@ -1,4 +1,4 @@
-"""Exercise disabled Accumulate/ToneMap nodes through production graph validation/lowering."""
+"""Exercise disabled Accumulate/ToneMap/Export nodes through production graph validation/lowering."""
 import json
 from pathlib import Path
 import tempfile
@@ -95,15 +95,96 @@ class DisabledNodeTests(unittest.TestCase):
         with self.assertRaisesRegex(ToolingError, 'integer must be'):
             self.compile()
 
-    def test_only_pass_through_kinds_accept_the_field(self):
+    def test_only_pass_through_and_export_kinds_accept_the_field(self):
         baseline = list(self.configuration['nodes'])
         for node, message in (({'id': 'average', 'kind': 'Accumulate', 'samples': 8, 'enabled': 0}, 'Boolean required'),
-                              ({'id': 'raw', 'kind': 'Export', 'type': 'ColorTexture', 'enabled': False},
-                               'only Accumulate, Denoise, ToneMap nodes can be disabled')):
+                              ({'id': 'raw', 'kind': 'Export', 'type': 'ColorTexture', 'enabled': 1}, 'Boolean required'),
+                              ({'id': 'screen', 'kind': 'Present', 'enabled': False},
+                               'only Accumulate, Denoise, ToneMap, Export nodes can be disabled')):
             with self.subTest(kind=node['kind']):
                 self.configuration['nodes'] = [*baseline, node]
                 with self.assertRaisesRegex(ToolingError, message):
                     self.compile()
+
+    def add_alternative_route(self):
+        """Add trace -> ToneMap -> Export beside the raw trace -> Export route; both write one target."""
+        self.configuration['nodes'] += [{'id': 'display', 'kind': 'ToneMap', 'exposure': 2},
+                                        {'id': 'mapped', 'kind': 'Export', 'type': 'ColorTexture'}]
+        self.configuration['edges'] += [{'from': 'trace.color', 'to': 'display.color'},
+                                        {'from': 'display.color', 'to': 'mapped.texture'}]
+
+    def disable(self, *identities):
+        for node in self.configuration['nodes']:
+            node.pop('enabled', None)
+            if node['id'] in identities:
+                node['enabled'] = False
+
+    def test_disabled_export_selects_the_other_route(self):
+        raw = self.compile()
+        self.add_alternative_route()
+        with self.assertRaises(ToolingError) as raised:
+            self.compile()
+        self.assertEqual('RenderGraphStaleVersion', raised.exception.code)
+        self.disable('output')
+        mapped = self.compile()
+        self.assertEqual(['RayTracing', 'ToneMap', 'Export'], [operation['kind'] for operation in mapped['passes']])
+        self.assertEqual(['Main/mapped'], [root['id'] for root in mapped['roots']])
+        self.disable('mapped')
+        plan = self.compile()
+        self.assertEqual(raw['passes'], plan['passes'])
+        self.assertEqual(raw['roots'], plan['roots'])
+        self.assertNotIn('ToneMap', graph.dump_plan(plan))
+
+    def test_disabled_export_needs_no_input(self):
+        raw = self.compile()
+        self.configuration['nodes'].append({'id': 'depth', 'kind': 'Export', 'type': 'DepthTexture'})
+        with self.assertRaises(ToolingError) as raised:
+            self.compile()
+        self.assertEqual('RenderGraphUnboundInput', raised.exception.code)
+        self.configuration['nodes'][-1]['enabled'] = False
+        plan = self.compile()
+        self.assertEqual(raw['passes'], plan['passes'])
+        self.assertEqual(raw['roots'], plan['roots'])
+        saved = json.loads(graph.canonical_asset(self.document))
+        self.assertIn({'id': 'depth', 'kind': 'Export', 'type': 'DepthTexture', 'enabled': False},
+                      saved['configurations'][0]['nodes'])
+
+    def test_disabled_export_still_checks_its_wire_type(self):
+        self.configuration['nodes'].append({'id': 'depth', 'kind': 'Export', 'type': 'DepthTexture', 'enabled': False})
+        self.configuration['edges'].append({'from': 'trace.color', 'to': 'depth.texture'})
+        with self.assertRaises(ToolingError) as raised:
+            self.compile()
+        self.assertEqual('RenderGraphTypeMismatch', raised.exception.code)
+
+    def test_active_camera_still_needs_an_enabled_route(self):
+        self.disable('output')
+        with self.assertRaisesRegex(ToolingError, 'active camera has no rendered route') as raised:
+            self.compile()
+        self.assertEqual('RenderGraphCameraRouteMissing', raised.exception.code)
+        for node in self.configuration['nodes']:
+            if node['kind'] == 'Camera':
+                node['active'] = False
+        with self.assertRaisesRegex(ToolingError, 'needs an enabled Export or Present root') as raised:
+            self.compile()
+        self.assertEqual('RenderGraphUnboundOutput', raised.exception.code)
+
+    def test_disabled_library_export_leaves_no_effect(self):
+        library = self.path.parent / 'debug.lurender.json'
+        export = {'id': 'debug', 'kind': 'Export', 'type': 'ColorTexture', 'enabled': False}
+        self.configuration['nodes'].append({'id': 'inspect', 'kind': 'Subgraph', 'asset': 'debug.lurender.json',
+                                            'configuration': 'Main'})
+        self.configuration['edges'].append({'from': 'trace.color', 'to': 'inspect.color'})
+
+        def roots():
+            library.write_bytes(graph.canonical_asset({
+                'version': 1, 'id': 'debug', 'default': 'Main', 'configurations': [{
+                    'id': 'Main', 'inputs': [{'id': 'color', 'type': 'ColorTexture'}], 'outputs': [],
+                    'nodes': [export], 'edges': [{'from': 'input.color', 'to': 'debug.texture'}]}]}))
+            return [root['id'] for root in self.compile()['roots']]
+
+        self.assertEqual(['Main/output'], roots())
+        del export['enabled']
+        self.assertIn('Main/inspect/debug', roots())
 
     def test_library_output_forwards_through_a_disabled_node(self):
         library = self.path.parent / 'library.lurender.json'

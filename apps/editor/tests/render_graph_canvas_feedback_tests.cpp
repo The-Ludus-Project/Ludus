@@ -209,6 +209,28 @@ TEST_CASE("canvas draft activity matches compiler selection and preserves explic
                                  QStringLiteral("color.texture"),
                                  QStringLiteral("dormant.color")) == RenderGraphDocumentStatus::Ok);
     }
+    SECTION("disabled nested export leaves no effect")
+    {
+        const QString child = QStringLiteral("child.lurender.json");
+        QJsonObject record =
+            ReadGraph(document, child).value(QStringLiteral("configurations")).toArray().at(0).toObject();
+        record.insert(QStringLiteral("nodes"),
+                      QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("sink")},
+                                             {QStringLiteral("kind"), QStringLiteral("Export")},
+                                             {QStringLiteral("type"), QStringLiteral("ColorTexture")},
+                                             {QStringLiteral("enabled"), false}}});
+        record.insert(QStringLiteral("edges"),
+                      QJsonArray{QJsonObject{{QStringLiteral("from"), QStringLiteral("input.color")},
+                                             {QStringLiteral("to"), QStringLiteral("sink.texture")}}});
+        WriteRecord(document, record, child);
+        REQUIRE(document.Connect(ROOT_GRAPH,
+                                 DEFAULT_CONFIGURATION,
+                                 QStringLiteral("color.texture"),
+                                 QStringLiteral("dormant.color")) == RenderGraphDocumentStatus::Ok);
+        CHECK(InspectRenderGraphActivity(document, ROOT_GRAPH, DEFAULT_CONFIGURATION)
+                  .value(QStringLiteral("dormant"))
+                  .Activity == RenderGraphActivity::Inactive);
+    }
     const uint64 revision = document.GetRevision();
     const QByteArray original = document.GetDraft(ROOT_GRAPH);
     const QHash<QString, RenderGraphActivityFeedback> feedback =
@@ -255,6 +277,41 @@ TEST_CASE("disabled nodes are labeled and keep their upstream route", "[editor][
     CHECK(feedback.value(QStringLiteral("color")).Activity == RenderGraphActivity::Retained);
     CHECK(feedback.value(QStringLiteral("output")).Activity == RenderGraphActivity::Retained);
     CHECK(document.GetRevision() == revision);
+    CheckCompilerSelection(document, project.path());
+}
+
+TEST_CASE("disabled exports are labeled and release their upstream route", "[editor][render-graph][canvas-feedback]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakeFeedbackPackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    QJsonObject record = ReadRecord(document);
+    QJsonArray nodes = record.value(QStringLiteral("nodes")).toArray();
+    for (qsizetype index = 0; index < nodes.size(); ++index)
+    {
+        QJsonObject node = nodes.at(index).toObject();
+        if (node.value(QStringLiteral("id")).toString() == QStringLiteral("output"))
+        {
+            node.insert(QStringLiteral("enabled"), false);
+            nodes.replace(index, node);
+        }
+    }
+    // An unconnected disabled Export is accepted, as in a graph that keeps an unused depth Export.
+    nodes.append(QJsonObject{{QStringLiteral("id"), QStringLiteral("depthOutput")},
+                             {QStringLiteral("kind"), QStringLiteral("Export")},
+                             {QStringLiteral("type"), QStringLiteral("DepthTexture")},
+                             {QStringLiteral("enabled"), false}});
+    record.insert(QStringLiteral("nodes"), nodes);
+    WriteRecord(document, record);
+    const QHash<QString, RenderGraphActivityFeedback> feedback =
+        InspectRenderGraphActivity(document, ROOT_GRAPH, DEFAULT_CONFIGURATION);
+    for (const QString& identity : {QStringLiteral("output"), QStringLiteral("depthOutput")})
+    {
+        CHECK(feedback.value(identity).Activity == RenderGraphActivity::Disabled);
+        CHECK(feedback.value(identity).Label == QStringLiteral("Disabled · not exported"));
+    }
+    CHECK(feedback.value(QStringLiteral("color")).Activity == RenderGraphActivity::Inactive);
+    CHECK(feedback.value(QStringLiteral("half")).Activity == RenderGraphActivity::Inactive);
     CheckCompilerSelection(document, project.path());
 }
 

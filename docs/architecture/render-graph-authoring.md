@@ -1142,8 +1142,10 @@ raw version alongside a transformed version. A node authored with `"enabled": fa
 is [disabled](../development/render-graph-authoring.md#disable-a-node): source
 loading forwards its input's source to its consumers before validation of routes
 and lowering, so the plan and runtime package contain no trace of it and need no
-version change. Only Accumulate, Denoise and ToneMap admit the field, because each has one
-input and one output of the same type and extent. This bounded profile accepts ray
+version change. Of the pass-through kinds, only Accumulate, Denoise and ToneMap admit the field,
+because each has one input and one output of the same type and extent. Export, a sink,
+also admits it: a disabled Export keeps its structurally checked wire but is not a root,
+so route selection never retains its producers. This bounded profile accepts ray
 color only; it does not promise a general HDR raster post-processing pipeline.
 
 Numeric plan version 10 and runtime package version 14 append the float32

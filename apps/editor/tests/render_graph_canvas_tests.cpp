@@ -110,6 +110,20 @@ QJsonObject GetConfiguration(const RenderGraphDocument& document, const QString&
     return {};
 }
 
+/// Authored record of a node in the root graph's default configuration, or an empty object.
+QJsonObject FindNode(const RenderGraphDocument& document, const QString& identity)
+{
+    for (const QJsonValueConstRef value :
+         GetConfiguration(document, ROOT_GRAPH, DEFAULT_CONFIGURATION).value(QStringLiteral("nodes")).toArray())
+    {
+        if (value.toObject().value(QStringLiteral("id")).toString() == identity)
+        {
+            return value.toObject();
+        }
+    }
+    return {};
+}
+
 /// Authored layout position of a node, or false when it has none.
 bool GetLayout(const RenderGraphDocument& document, const QString& node, QPoint& outPosition)
 {
@@ -1558,6 +1572,37 @@ TEST_CASE("disabling a node keeps its settings and wires through canvas and Prop
     RenderGraphDocument reopened;
     REQUIRE(reopened.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
     CHECK(reopened.GetDraft(ROOT_GRAPH) == workspace.GetDocument().GetDraft(ROOT_GRAPH));
+}
+
+TEST_CASE("disabling an Export node keeps its type and wire", "[editor][render-graph][disable-node]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, QStringLiteral("output")) == true);
+    const QJsonObject original = FindNode(workspace.GetDocument(), QStringLiteral("output"));
+    const QJsonArray edges = GetConfiguration(workspace.GetDocument(), ROOT_GRAPH, DEFAULT_CONFIGURATION)
+                                 .value(QStringLiteral("edges"))
+                                 .toArray();
+    QWidget* properties = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
+    REQUIRE(properties != nullptr);
+    QCheckBox* enabled = properties->findChild<QCheckBox*>(QStringLiteral("renderGraphField_enabled"));
+    REQUIRE(enabled != nullptr);
+    CHECK(enabled->isChecked() == true);
+    CHECK(enabled->toolTip().contains(QStringLiteral("no root")) == true);
+    enabled->setChecked(false);
+    QJsonObject disabled = FindNode(workspace.GetDocument(), QStringLiteral("output"));
+    CHECK(IsRenderGraphNodeEnabled(disabled) == false);
+    CHECK(disabled.take(QStringLiteral("enabled")) == QJsonValue(false));
+    CHECK(disabled == original);
+    CHECK(GetConfiguration(workspace.GetDocument(), ROOT_GRAPH, DEFAULT_CONFIGURATION)
+              .value(QStringLiteral("edges"))
+              .toArray() == edges);
+    workspace.Undo();
+    CHECK(FindNode(workspace.GetDocument(), QStringLiteral("output")) == original);
 }
 
 TEST_CASE("tone mapping exposure edits through canvas and Properties with undo and save",
