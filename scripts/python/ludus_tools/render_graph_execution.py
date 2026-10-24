@@ -250,6 +250,40 @@ VISIBILITY_INPUTS = STATIC_INPUTS + [{'location': i, 'format': 'Float2'} for i i
 def stage_inputs(item):
     return [{k: v for k, v in x.items() if k != 'name'} for x in item['descriptor']['interface']['inputs']]
 
+
+def _cpu_vertex_interface(schema, stages):
+    """Describe host-owned inputs without counting shader-pair copies of that contract.
+
+    Renderer already packs both static and visibility vertex streams. Only the exact
+    built-in identity-field suffix is optional for compatibility; retain the base
+    schema verbatim so renamed, retyped, reordered or relocated fields still differ.
+    Shader descriptors/serialized inputs are not changed by this normalization.
+    """
+    visibility_fields = [
+        {'id': 'Primitive', 'type': 'Float2', 'semantic': 'TEXCOORD4', 'location': 6},
+        {'id': 'DrawInstance', 'type': 'Float2', 'semantic': 'TEXCOORD5', 'location': 7},
+    ]
+    fields = schema['fields']
+    has_visibility = (len(fields) == len(VISIBILITY_INPUTS) and
+                      fields[len(STATIC_INPUTS):] == visibility_fields)
+    if has_visibility:
+        schema = {**schema, 'fields': fields[:len(STATIC_INPUTS)]}
+    inputs, seen = [], set()
+    for (name, stage, target), record in stages.items():
+        if stage != 'vertex' or name == 'RayTracing' or (name, stage) in forward.ROLE_KEYS:
+            continue
+        stage_interface = stage_inputs(record)
+        if has_visibility and stage_interface == VISIBILITY_INPUTS:
+            stage_interface = STATIC_INPUTS
+        # Extra shader pairs do not change what the host supplies for a target.
+        # Keep different target interfaces distinct, including their existing order.
+        key = target, build.encoded(stage_interface)
+        if key not in seen:
+            seen.add(key)
+            inputs.append(stage_interface)
+    return {'vertex_schema': schema, 'inputs': inputs}
+
+
 TARGET_FIELDS = {'metal': 'Msl', 'spirv': 'Spirv', 'wgsl': 'Wgsl', 'glsl': 'GlslEs'}
 # Serialized runtime generation (RG3); mirrors render_graph_format/runtime_package.h.
 PACKAGE_MAGIC = 0x4752554C
@@ -453,9 +487,10 @@ def _runtime_contents(path, configuration):
         build.require(target != 'glsl' or is_forward or [n[0] for n in names] == sorted(b['slot'] for b in _stage_bindings(program_name, stage, bindings)),
                       'Package', program['id'], 'GLSL ES uniform blocks differ from the stage bindings')
         artifacts[key] = {'ordinal': ordinal, 'descriptor': descriptor, 'bytes': artifact, 'entry': entry, 'blocks': names, 'textures': descriptor['interface'].get('textures', {}) if target == 'glsl' else {}}
-    # CPU-visible interface: the logical vertex/instance schema, fixed static inputs,
-    # and the per-draw uniform schemas with every target layout that packs them.
-    interface = {'version': 2, 'scene_shader': 'SceneShaderInputsV1', 'vertex_schema': vertex_schemas[0], 'inputs': [stage_inputs(record) for (name, stage, target), record in stages.items() if stage == 'vertex' and name != 'RayTracing' and (name, stage) not in forward.ROLE_KEYS], 'uniform_schemas': uniform_interface}
+    # CPU-visible interface: normalize only the renderer-supported visibility suffix
+    # and repeated input contracts. Uniform schemas/bindings/layouts remain exact.
+    interface = {'version': 2, 'scene_shader': 'SceneShaderInputsV1',
+                 **_cpu_vertex_interface(vertex_schemas[0], stages), 'uniform_schemas': uniform_interface}
     scene_versions = {r.get('scene_interface_version', 0) for r in ray_recipes}
     build.require(all(type(version) is int for version in scene_versions) and scene_versions <= {0, 1} and len(scene_versions) <= 1, 'Package', 'ray interface', 'inconsistent scene callback profile')
     visibility_profiles = {r.get('visibility_buffer', False) for r in ray_recipes}
