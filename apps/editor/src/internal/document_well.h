@@ -71,6 +71,10 @@ public:
     /// Open (when closed) and activate a registered, available view, then give it focus.
     /// @return False for an unregistered or unavailable view; nothing changes then.
     bool OpenDocument(QWidget* document);
+    /// Activate the next (isForward) or previous open document in group/tab order,
+    /// wrapping at either end and focusing the view. Closed views remain closed.
+    /// @return False when no document is open; nothing changes then.
+    bool ActivateAdjacentDocument(bool isForward);
     /// Close a view's tab, the user's close command. A Hide view stays registered and
     /// alive for a later OpenDocument. An OwnerCloses view stays open, and CloseRequested
     /// is emitted for it. Nothing happens for a view that is not open.

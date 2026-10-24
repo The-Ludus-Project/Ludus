@@ -262,6 +262,25 @@ bool DocumentWell::OpenDocument(QWidget* document)
     return true;
 }
 
+bool DocumentWell::ActivateAdjacentDocument(bool isForward)
+{
+    QTabWidget* group = activeGroup();
+    if (group->count() == 0)
+    {
+        return false;
+    }
+    foundation::int32 tab = group->currentIndex() + (isForward == true ? 1 : -1);
+    if (tab < 0 || tab >= group->count())
+    {
+        const qsizetype groupIndex = mGroups.indexOf(group);
+        const qsizetype nextGroup =
+            isForward == true ? (groupIndex + 1) % mGroups.size() : (groupIndex + mGroups.size() - 1) % mGroups.size();
+        group = mGroups.at(nextGroup);
+        tab = isForward == true ? 0 : group->count() - 1;
+    }
+    return OpenDocument(group->widget(tab));
+}
+
 void DocumentWell::CloseDocument(QWidget* document)
 {
     if (groupOfOrNull(document) == nullptr)

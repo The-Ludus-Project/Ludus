@@ -89,6 +89,14 @@ their current-item behavior; selecting multiple rows does not imply batch field
 editing, reimport or opening every document. Existing Save, Undo/Redo and
 clipboard shortcuts retain their document and focus routing.
 
+Use **Window → Next Document** and **Previous Document**, or Alt+Tab and
+Alt+Shift+Tab (Control+Tab and Control+Shift+Tab on macOS), to cycle through open
+documents in tab order. Switching crosses split tab groups and wraps at either
+end, focuses the selected document, and leaves closed documents closed. The
+shortcuts also work while focus is in a text editor or a tool window. On
+Windows/Linux, the desktop may reserve Alt+Tab for application switching; the
+editor receives it only when the desktop shortcut is released or remapped.
+
 ## Project lifecycle: tasks and audiences
 
 The **Project** tab shows the project folder, committed engine requirement and

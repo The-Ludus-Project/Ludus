@@ -259,6 +259,32 @@ inline constexpr EditorCommand TOOLS_OPTIONS_COMMAND
 };
 
 // Window commands arrange documents and tool windows.
+// Qt maps Meta to the physical Control key on macOS; Ctrl maps to Command.
+#if defined(Q_OS_MACOS)
+inline constexpr const char* DOCUMENT_SWITCH_SHORTCUT = "Meta+Tab";
+inline constexpr const char* DOCUMENT_SWITCH_REVERSE_SHORTCUT = "Meta+Shift+Tab";
+#else
+inline constexpr const char* DOCUMENT_SWITCH_SHORTCUT = "Alt+Tab";
+inline constexpr const char* DOCUMENT_SWITCH_REVERSE_SHORTCUT = "Alt+Shift+Tab";
+#endif
+inline constexpr EditorCommand WINDOW_NEXT_DOCUMENT_COMMAND
+{
+    .Id = "window.nextDocument",
+    .Text = "Next &Document",
+    .ToolbarText = "",
+    .Shortcut = DOCUMENT_SWITCH_SHORTCUT,
+    .Help = "Activate the next open document in tab order, wrapping across tab groups.",
+    .IsCheckable = false,
+};
+inline constexpr EditorCommand WINDOW_PREVIOUS_DOCUMENT_COMMAND
+{
+    .Id = "window.previousDocument",
+    .Text = "Previous D&ocument",
+    .ToolbarText = "",
+    .Shortcut = DOCUMENT_SWITCH_REVERSE_SHORTCUT,
+    .Help = "Activate the previous open document in tab order, wrapping across tab groups.",
+    .IsCheckable = false,
+};
 inline constexpr EditorCommand WINDOW_NEW_VERTICAL_GROUP_COMMAND
 {
     .Id = "window.newVerticalTabGroup",

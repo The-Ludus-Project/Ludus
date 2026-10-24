@@ -708,6 +708,15 @@ void MainWindow::buildWindowMenu(QMenu* menu)
         menu->addAction(action);
         return action;
     };
+    QAction* nextDocument = addCommand(WINDOW_NEXT_DOCUMENT_COMMAND);
+    QAction* previousDocument = addCommand(WINDOW_PREVIOUS_DOCUMENT_COMMAND);
+    connect(nextDocument, &QAction::triggered, this, [this]() {
+        static_cast<void>(mDocuments->ActivateAdjacentDocument(true));
+    });
+    connect(previousDocument, &QAction::triggered, this, [this]() {
+        static_cast<void>(mDocuments->ActivateAdjacentDocument(false));
+    });
+    menu->addSeparator();
     QAction* vertical = addCommand(WINDOW_NEW_VERTICAL_GROUP_COMMAND);
     QAction* horizontal = addCommand(WINDOW_NEW_HORIZONTAL_GROUP_COMMAND);
     QAction* next = addCommand(WINDOW_MOVE_NEXT_GROUP_COMMAND);
