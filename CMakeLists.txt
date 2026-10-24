@@ -523,6 +523,8 @@ if(NOT EMSCRIPTEN)
 endif()
 ludus_sdk_register_dependency(yyjson "0.10.0" "MIT" bundled)
 ludus_sdk_register_dependency(miniaudio "0.11.23" "MIT-0" bundled)
+ludus_sdk_register_dependency(stb_image "2.30" "MIT-or-Unlicense" bundled)
+ludus_sdk_register_dependency(MikkTSpace "3e895b49d05ea07e4c2133156cfa94369e19e409" "Zlib" bundled)
 ludus_sdk_register_dependency(xxHash "0.8.3" "BSD-2-Clause" bundled)
 ludus_sdk_register_dependency(Threads     "system"    "system"             system)
 
