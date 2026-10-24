@@ -115,6 +115,9 @@ running the game. Debug sections/symbols, foreign/fat binaries, symlinks, escape
 loader paths and loader environment commands are rejected. The closed external
 baseline consists of Apple's system C/C++/Objective-C dylibs and the named system
 frameworks in `package_macos.py`; every actual dependency appears in the manifest.
+Games linking `Ludus::Platform` and `Ludus::GraphicsRhi` (including through
+`Ludus::GraphicsRenderer`) load `libbsm`, `IOSurface` and `MetalFX`. MetalFX
+first shipped in macOS 13.0, so an image with an older baseline must weak-link it.
 Unknown dependencies must be explicitly bundled or gain a reviewed policy revision.
 
 Packaging signs nested Mach-O images first, then the app, using a local ad-hoc

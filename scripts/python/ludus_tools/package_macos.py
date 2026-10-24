@@ -23,12 +23,19 @@ from .release_model import fail
 POLICY = "macos-release-adhoc-1"
 CPUS = {"macos-arm64": 0x100000C, "macos-x64": 0x1000007}
 SYSTEM_LIBRARIES = frozenset({"/usr/lib/libSystem.B.dylib", "/usr/lib/libc++.1.dylib",
-                              "/usr/lib/libc++abi.dylib", "/usr/lib/libobjc.A.dylib"})
+                              "/usr/lib/libc++abi.dylib", "/usr/lib/libobjc.A.dylib",
+                              # Platform's hosted Mach rendezvous reads the sender's audit token.
+                              "/usr/lib/libbsm.0.dylib"})
 FRAMEWORKS = frozenset({"Cocoa", "AppKit", "Foundation", "CoreFoundation", "CoreGraphics",
                        "CoreAudio", "AudioToolbox", "CoreServices", "QuartzCore", "Metal",
                        "IOKit", "Security", "CoreVideo", "CoreText", "AVFAudio",
+                       # GraphicsRhi's Metal backend: MetalFX upscaling and hosted IOSurface images.
+                       "MetalFX", "IOSurface",
                        # The SDK's OIDN denoiser runtime and its Metal/CPU device modules.
                        "Accelerate", "MetalPerformanceShaders", "MetalPerformanceShadersGraph"})
+# Allowed frameworks newer than the oldest accepted image baseline. A required
+# (non-weak) load needs an image baseline that includes the framework.
+FRAMEWORK_MINIMUMS = {"MetalFX": 0x000d0000}  # macOS 13.0
 MAGIC = b"\xcf\xfa\xed\xfe"
 
 
@@ -48,6 +55,7 @@ def inspect(path: Path) -> dict:
             _invalid("unsupported or malformed Mach-O header")
         commands = handle.read(length)
         offset, sections, dependencies, rpaths, minimum, entry = 0, {}, [], [], None, None
+        weak_dependencies = []
         code_ranges, file_ranges = [], []
         symbol_table = False
         for _ in range(count):
@@ -118,6 +126,8 @@ def inspect(path: Path) -> dict:
                         _invalid("bundled dylib identity must be package-relative")
                 else:
                     dependencies.append(text)
+                    if command == 0x80000018:  # LC_LOAD_WEAK_DYLIB
+                        weak_dependencies.append(text)
             elif command in (0x24, 0x32):
                 if stride < (16 if command == 0x24 else 24) or minimum is not None:
                     _invalid("invalid Mach-O deployment command")
@@ -158,7 +168,8 @@ def inspect(path: Path) -> dict:
         if minimum is None or not 0x000a0900 <= minimum <= 0x000e0000:
             _invalid("macOS release requires a deployment baseline no newer than 14.0")
         return {"cpu": cpu, "subtype": subtype, "kind": kind, "entry": entry,
-                "minimum": minimum, "sections": sections, "dependencies": dependencies, "rpaths": rpaths}
+                "minimum": minimum, "sections": sections, "dependencies": dependencies,
+                "weak_dependencies": weak_dependencies, "rpaths": rpaths}
 
 
 def executable_identity(path: Path) -> dict:
@@ -256,6 +267,9 @@ def validate_native(root: Path, entry_point: str, target_platform: str, *, runne
             framework = needed.split("/")
             system = needed in SYSTEM_LIBRARIES or (len(framework) == 8 and framework[:4] == ["", "System", "Library", "Frameworks"] and framework[4] == framework[7] + ".framework" and framework[5] == "Versions" and framework[6] in ("A", "C") and framework[7] in FRAMEWORKS)
             if system:
+                introduced = FRAMEWORK_MINIMUMS.get(framework[-1], 0) if len(framework) == 8 else 0
+                if image["minimum"] < introduced and needed not in image["weak_dependencies"]:
+                    _invalid(f"{framework[-1]} requires macOS {introduced >> 16}.0 or later; raise the deployment baseline or weak-link it")
                 external.add(needed)
                 continue
             candidates = ([directory / needed[7:] for directory in search] if needed.startswith("@rpath/") else [_relative(root, path, executable, needed)])

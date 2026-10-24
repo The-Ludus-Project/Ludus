@@ -22,12 +22,12 @@ from ludus_tools.release_template import release_files
 from test_ludus_tools import _manifest_json
 
 
-def synthetic(*, cpu=0x100000c, minimum=0xe0000, segment=b"__TEXT", dependency=None):
+def synthetic(*, cpu=0x100000c, minimum=0xe0000, segment=b"__TEXT", dependency=None, weak=False):
     extra = b""
     if dependency:
         text = dependency.encode() + b"\0"
         stride = (24 + len(text) + 7) & ~7
-        extra = struct.pack("<6I", 0xc, stride, 24, 0, 0, 0) + text + b"\0" * (stride - 24 - len(text))
+        extra = struct.pack("<6I", 0x80000018 if weak else 0xc, stride, 24, 0, 0, 0) + text + b"\0" * (stride - 24 - len(text))
     length = 152 + 24 + 24 + len(extra)
     position = 32 + length
     seg = struct.pack("<II16s4Q4I", 0x19, 152, segment, 0, position + 4, 0, position + 4, 7, 5, 1, 0)
@@ -88,6 +88,36 @@ class MachoTests(unittest.TestCase):
         self.assertNotIn("ludus_install_denoiser_runtime", linux)
         # The bundled OIDN runtime and its device modules link these system frameworks.
         self.assertTrue({"Accelerate", "Metal", "MetalPerformanceShaders", "MetalPerformanceShadersGraph"} <= mac.FRAMEWORKS)
+
+    def validate_synthetic(self, contents):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            exe = root / "Game.app/Contents/MacOS/Game"
+            exe.parent.mkdir(parents=True)
+            exe.write_bytes(contents)
+            exe.chmod(0o755)
+            (root / "Game.app/Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleExecutable": "Game", "CFBundlePackageType": "APPL"}))
+            (root / "NOTICE.txt").write_text("notices")
+            (root / "licenses").mkdir()
+            (root / "licenses/LICENSE").write_text("license")
+            with patch("sys.platform", "darwin"):
+                return mac.validate_native(root, "Game.app/Contents/MacOS/Game", "macos-arm64", runner=lambda *args, **kwargs: 0, env={})
+
+    def test_renderer_system_dependencies_are_external(self):
+        # Platform's hosted Mach rendezvous and GraphicsRhi's Metal backend, linked by every renderer game.
+        for dependency in ("/usr/lib/libbsm.0.dylib", "/System/Library/Frameworks/IOSurface.framework/Versions/A/IOSurface",
+                           "/System/Library/Frameworks/MetalFX.framework/Versions/A/MetalFX"):
+            with self.subTest(dependency=dependency):
+                self.assertEqual([dependency], self.validate_synthetic(synthetic(dependency=dependency)))
+        with self.assertRaisesRegex(ToolingError, "package-relative"):
+            self.validate_synthetic(synthetic(dependency="/usr/lib/libbsm.dylib"))
+
+    def test_metalfx_requires_its_baseline_unless_weak(self):
+        metalfx = "/System/Library/Frameworks/MetalFX.framework/Versions/A/MetalFX"
+        self.assertEqual([metalfx], self.validate_synthetic(synthetic(dependency=metalfx, minimum=0xd0000)))
+        self.assertEqual([metalfx], self.validate_synthetic(synthetic(dependency=metalfx, minimum=0xc0000, weak=True)))
+        with self.assertRaisesRegex(ToolingError, "MetalFX requires macOS 13.0"):
+            self.validate_synthetic(synthetic(dependency=metalfx, minimum=0xc0000))
 
     def test_both_profiles_and_preset_mismatch(self):
         for platform in mac.CPUS:
@@ -218,6 +248,30 @@ class NativeBundleTests(unittest.TestCase):
         library.unlink()
         with self.assertRaisesRegex(ToolingError, "unresolved"):
             mac.validate_native(self.payload, self.entry, self.platform)
+
+    def test_renderer_system_dependencies_package_and_run(self):
+        main = self.root / "main.cpp"
+        main.write_text("int main() noexcept { return 0; }\n")
+        compiler = shutil.which("clang++")
+        subprocess.run([compiler, "-g0", "-fno-exceptions", "-mmacosx-version-min=14.0", str(main), "-framework", "MetalFX",
+                        "-framework", "IOSurface", "-lbsm", "-o", str(self.exe)], check=True, capture_output=True)
+        package, manifest = self.package()
+        self.assertTrue({"/usr/lib/libbsm.0.dylib", "/System/Library/Frameworks/IOSurface.framework/Versions/A/IOSurface",
+                         "/System/Library/Frameworks/MetalFX.framework/Versions/A/MetalFX"} <= set(manifest["systemLibraries"]))
+        extracted = self.root / "moved"
+        extracted.mkdir()
+        extract_archive(package / "game.zip", extracted)
+        self.assertEqual(0, subprocess.run([str(extracted / self.entry)], env={"PATH": os.defpath}, capture_output=True).returncode)
+        # An older baseline needs a weak MetalFX link.
+        subprocess.run([compiler, "-g0", "-fno-exceptions", "-mmacosx-version-min=12.0", str(main), "-framework", "MetalFX",
+                        "-o", str(self.exe)], check=True, capture_output=True)
+        self.sign()
+        with self.assertRaisesRegex(ToolingError, "weak-link"):
+            mac.validate_native(self.payload, self.entry, self.platform)
+        subprocess.run([compiler, "-g0", "-fno-exceptions", "-mmacosx-version-min=12.0", str(main), "-weak_framework", "MetalFX",
+                        "-o", str(self.exe)], check=True, capture_output=True)
+        self.sign()
+        mac.validate_native(self.payload, self.entry, self.platform)
 
     @unittest.skipUnless(shutil.which("cmake") and shutil.which("ninja"), "requires managed CMake/Ninja")
     def test_cmake_dylib_install_rewrites_loader_paths_without_changing_code(self):
