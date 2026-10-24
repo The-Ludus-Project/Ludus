@@ -86,10 +86,10 @@ class ToolchainPinTests(unittest.TestCase):
         self.assertEqual(compilers, {f"clang++-{LLVM_MAJOR}"})
 
     def test_generated_project_files_and_setup_follow_a_changed_pin(self):
-        from ludus_tools import project_setup, release_setup, templates, toolchain
+        from ludus_tools import project_setup, release_setup, templates, toolchain, workflow_steps
         from ludus_tools.errors import ToolingError
 
-        with patch.object(toolchain, "PINNED_LLVM_MAJOR", 23), patch.object(release_setup, "PINNED_LLVM_MAJOR", 23):
+        with patch.object(toolchain, "PINNED_LLVM_MAJOR", 23), patch.object(workflow_steps, "PINNED_LLVM_MAJOR", 23):
             linux = release_setup.workflow_text("linux-release", "game:linux", "linux-x64")
             macos = release_setup.workflow_text("macos-release", "game:mac", "macos-arm64")
             rendered = templates.render_files(templates.get_template("minimal"),

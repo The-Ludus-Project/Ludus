@@ -118,6 +118,8 @@ struct ToolLaunch
     QString ProjectName;
     bool PrepareEngine = false;
     bool DisableWeb = false;
+    /// ProjectCreate only: also generate the GitHub Actions build/test workflow.
+    bool ShouldAddGitHubCi = false;
     QString ReleasePlatform;
     QString ItchTarget;
     QString ReleaseProfile;

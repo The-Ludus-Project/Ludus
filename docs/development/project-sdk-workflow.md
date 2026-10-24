@@ -172,6 +172,51 @@ cooperative lock, so a concurrent build of the same tree reports `Busy` rather
 than corrupting it. Raw `cmake --preset …` works too (set `LUDUS_SDK_PREFIX`
 yourself) but is outside the cooperative-lock guarantee.
 
+## Continuous integration (GitHub Actions)
+
+A project can carry a GitHub Actions workflow that builds and tests every push
+to `main`, every pull request and every manual run. Add it while creating the
+project, or later to an existing one:
+
+```bash
+# New project (in the Editor: tick "Add a GitHub Actions build and test workflow"):
+ludus project create ./MyGame --name "My Game" --sdk /path/to/sdk-prefix \
+    --ci github --tools-ref <40-character Ludus commit>
+
+# Existing project; --platform defaults to the project's preset family
+# (macOS uses this host's architecture):
+ludus project ci init ./MyGame --tools-ref <40-character Ludus commit>
+```
+
+Setup writes `.github/workflows/ci.yml` and `config/ludus-tools-revision.txt`.
+These files are yours: edit the triggers, branches and steps as the project grows.
+Setup never overwrites a file. An existing tools pin naming the same commit, for
+example one written by `ludus project release init`, is reused. A pin naming a
+different commit is a `Conflict`. The Editor pins the commit of its trusted
+tooling checkout. The workflow installs the host tools from
+`github.com/The-Ludus-Project/Ludus` at that commit, so it must be published there.
+
+The workflow has read-only repository permissions and uses no secrets. On an
+Ubuntu 24.04 or native-architecture macOS runner, it installs the pinned LLVM,
+CMake, Ninja and host tools exactly as the
+[release workflow](game-packaging-publishing.md) does. It then builds the
+platform's Release profile (`linux-clang-release` or `macos-clang-release`) and
+runs the project's CTest tests. Building needs a Release SDK archive. Set the
+repository variables `LUDUS_RELEASE_SDK_URL` (HTTPS) and `LUDUS_RELEASE_SDK_SHA256`
+(lowercase SHA-256), the same variables the release workflow uses. If both are
+unset, a short job reports a notice and the build job is skipped. If only one is
+set, or either is malformed, the build fails. Published engine releases do not
+yet resolve a project lock, so CI cannot select an SDK by itself.
+
+GitHub runs workflows only from the repository root's `.github/workflows`.
+Setup therefore refuses a project inside another Git work tree; add a workflow at
+that repository's root yourself. A new project is never the root of an existing
+work tree, so the Editor disables the option for such a location. A project
+outside any repository is accepted; initialize Git there and push it to GitHub.
+`ludus project ci init` reports whether `origin` is on github.com. It reads
+`.git/config` and never runs Git or contacts the remote. GitHub Actions is the
+only supported provider.
+
 ## Check and repair project setup
 
 In the Editor choose **Project → Check Setup**. Eligible project opening also

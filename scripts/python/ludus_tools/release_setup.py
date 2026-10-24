@@ -6,13 +6,12 @@ import re
 import tempfile
 from pathlib import Path
 
-from . import descriptor, operations
+from . import descriptor, operations, workflow_steps
 from .buildlock import BuildTreeLock
 from .package_verify import file_digest
 from .release_model import canonical, fail, json_bytes, load_release
 from .release_template import release_files
 from .templates import TemplateFile
-from .toolchain import LLVM_APT_KEY_FINGERPRINT, PINNED_LLVM_MAJOR
 
 WORKFLOW = r'''name: itch.io release
 on:
@@ -36,27 +35,9 @@ jobs:
     outputs:
       digest: ${{ steps.package.outputs.digest }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          persist-credentials: false
-      - name: Install build prerequisites
+CHECKOUT_TOKEN      - name: Install build prerequisites
         run: |
-          # Ubuntu 24.04 does not package the pinned LLVM; trust only apt.llvm.org's published key.
-          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/apt.llvm.org.asc"
-          fingerprint="$(gpg --show-keys --with-colons "$RUNNER_TEMP/apt.llvm.org.asc" | awk -F: '/^fpr:/ { print $10; exit }')"
-          [[ "$fingerprint" == LLVM_APT_KEY_TOKEN ]]
-          sudo install -D -m 0644 "$RUNNER_TEMP/apt.llvm.org.asc" /etc/apt/keyrings/ludus-apt.llvm.org.asc
-          printf 'Types: deb\nURIs: https://apt.llvm.org/noble/\nSuites: llvm-toolchain-noble-LLVM_MAJOR_TOKEN\nComponents: main\nSigned-By: /etc/apt/keyrings/ludus-apt.llvm.org.asc\n' \
-            | sudo tee /etc/apt/sources.list.d/ludus-apt.llvm.org.sources > /dev/null
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq python3-venv clang-LLVM_MAJOR_TOKEN lld-LLVM_MAJOR_TOKEN binutils libwayland-dev wayland-protocols
-          python3 -m venv /tmp/ludus-release-tools
-          ref=$(cat config/ludus-tools-revision.txt)
-          [[ "$ref" =~ ^[0-9a-f]{40}$ ]]
-          /tmp/ludus-release-tools/bin/pip install cmake==3.29.6 ninja==1.11.1.3
-          /tmp/ludus-release-tools/bin/pip install "ludus-tools @ git+https://github.com/The-Ludus-Project/Ludus.git@$ref#subdirectory=scripts/python"
-          echo /tmp/ludus-release-tools/bin >> "$GITHUB_PATH"
-      - name: Prepare project build inputs (no upload credentials)
+BUILD_PREREQUISITES_TOKEN      - name: Prepare project build inputs (no upload credentials)
         run: |
           python3 - <<'PYTHON'
           import json, subprocess
@@ -104,22 +85,13 @@ NATIVE_SDK_STEP
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+CHECKOUT_TOKEN      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: game-release
           path: out/verified-release
       - name: Install pinned publishing tools (no upload credentials)
         run: |
-          python3 -m venv /tmp/ludus-release-tools
-          ref=$(cat config/ludus-tools-revision.txt)
-          [[ "$ref" =~ ^[0-9a-f]{40}$ ]]
-          /tmp/ludus-release-tools/bin/pip install cmake==3.29.6 ninja==1.11.1.3
-          /tmp/ludus-release-tools/bin/pip install "ludus-tools @ git+https://github.com/The-Ludus-Project/Ludus.git@$ref#subdirectory=scripts/python"
-          echo /tmp/ludus-release-tools/bin >> "$GITHUB_PATH"
-      - name: Verify downloaded package
+PUBLISHING_TOOLS_TOKEN      - name: Verify downloaded package
         run: ludus project package verify out/verified-release
       - name: Upload verified snapshot to itch.io
         env:
@@ -136,57 +108,21 @@ NATIVE_SDK_STEP
           if-no-files-found: ignore
 '''
 
-
-NATIVE_SDK_STEP = r"""      - name: Acquire digest-pinned Release SDK (no upload credentials)
-        env:
-          SDK_URL: ${{ vars.LUDUS_RELEASE_SDK_URL }}
-          SDK_SHA256: ${{ vars.LUDUS_RELEASE_SDK_SHA256 }}
-        run: |
-          python3 - <<'PYTHON'
-          import hashlib, json, os, re, subprocess, urllib.request
-          url, expected = os.environ['SDK_URL'], os.environ['SDK_SHA256']
-          if not url.startswith('https://') or not re.fullmatch('[a-f0-9]{64}', expected):
-              raise SystemExit('Set LUDUS_RELEASE_SDK_URL and LUDUS_RELEASE_SDK_SHA256 for native Release packaging')
-          digest, total = hashlib.sha256(), 0
-          path = os.environ['RUNNER_TEMP'] + '/ludus-release-sdk.tar'
-          with urllib.request.urlopen(url, timeout=30) as source, open(path, 'wb') as output:
-              if not source.geturl().startswith('https://'):
-                  raise SystemExit('SDK redirect outside HTTPS')
-              while block := source.read(1024 * 1024):
-                  total += len(block)
-                  if total > 4 * 1024 * 1024 * 1024:
-                      raise SystemExit('SDK download exceeds limit')
-                  digest.update(block)
-                  output.write(block)
-          if digest.hexdigest() != expected:
-              raise SystemExit('SDK archive digest mismatch')
-          result = subprocess.run(['ludus', '--json', 'sdk', 'install', '--archive', path, '--digest', expected], text=True, capture_output=True, check=True)
-          prefix = json.loads(result.stdout)['installed']['prefix']
-          with open(os.environ['GITHUB_ENV'], 'a') as output:
-              output.write('LUDUS_RELEASE_SDK_PREFIX=' + prefix + '\n')
-          PYTHON
-"""
+# The release job's pinned host tools live in this runner-local virtual environment.
+RELEASE_TOOLS_VENV = "/tmp/ludus-release-tools"
 
 
 def workflow_text(profile: str, destination: str, platform: str) -> str:
     text = WORKFLOW
+    native = "linux-x64" if platform == "web" else platform
     if platform.startswith("macos-"):
-        # GitHub, GitHub-hosted runners reference: explicit native CPU labels.
-        # https://docs.github.com/en/actions/reference/runners/github-hosted-runners
-        runner = "macos-14" if platform == "macos-arm64" else "macos-15-intel"
-        text = text.split("  upload:\n", 1)[0].replace("name: itch.io release", "name: macOS release package").replace("runs-on: ubuntu-24.04", "runs-on: " + runner)
-        start = text.index("          # Ubuntu 24.04 does not package the pinned LLVM")
-        end = text.index("          ref=$(cat", start)
-        text = text[:start] + """          brew install python@3.12 llvm@LLVM_MAJOR_TOKEN
-          python_bin="$(brew --prefix python@3.12)/bin/python3.12"
-          llvm_prefix="$(brew --prefix llvm@LLVM_MAJOR_TOKEN)"
-          "$python_bin" -m venv /tmp/ludus-release-tools
-          echo "$llvm_prefix/bin" >> "$GITHUB_PATH"
-          echo 'MACOSX_DEPLOYMENT_TARGET=14.0' >> "$GITHUB_ENV"
-          echo "CXXFLAGS=-stdlib=libc++ -nostdinc++ -isystem $llvm_prefix/include/c++/v1" >> "$GITHUB_ENV"
-""" + text[end:]
-    text = text.replace('LLVM_MAJOR_TOKEN', str(PINNED_LLVM_MAJOR)).replace('LLVM_APT_KEY_TOKEN', LLVM_APT_KEY_FINGERPRINT)
-    return text.replace('PROFILE_TOKEN', profile).replace('DESTINATION_TOKEN', destination).replace('NATIVE_SDK_STEP', NATIVE_SDK_STEP.rstrip() if platform != 'web' else '')
+        text = text.split("  upload:\n", 1)[0].replace("name: itch.io release", "name: macOS release package").replace("runs-on: ubuntu-24.04", "runs-on: " + workflow_steps.runner_for(platform))
+    text = (text.replace("CHECKOUT_TOKEN", workflow_steps.CHECKOUT_STEP)
+            .replace("BUILD_PREREQUISITES_TOKEN", workflow_steps.build_prerequisites(native, RELEASE_TOOLS_VENV))
+            .replace("PUBLISHING_TOOLS_TOKEN", workflow_steps.host_tools(RELEASE_TOOLS_VENV)))
+    return text.replace('PROFILE_TOKEN', profile).replace('DESTINATION_TOKEN', destination).replace('NATIVE_SDK_STEP', workflow_steps.release_sdk_step(
+        "Acquire digest-pinned Release SDK (no upload credentials)",
+        "Set LUDUS_RELEASE_SDK_URL and LUDUS_RELEASE_SDK_SHA256 for native Release packaging").rstrip() if platform != 'web' else '')
 
 
 def setup_release(project: Path, *, platform: str = "linux-x64", itch_target: str | None = None,
@@ -235,8 +171,9 @@ endif()
         if not itch_target:
             config["itch"] = {"channels": {destination: {"packageProfile": profile, "channel": "html5" if platform == "web" else destination + "-stable"}}}
         config['automation'] = {'provider': 'github-actions', 'releaseTags': True, 'buildCommand': build_command if build_command is not None else (['./scripts/release-prepare'] if (root / 'scripts/release-prepare').is_file() else [])}
-        rendered.extend([TemplateFile('.github/workflows/itch-release.yml', workflow_text(profile, destination, platform)),
-                         TemplateFile('config/ludus-tools-revision.txt', tools_ref + '\n')])
+        rendered.append(TemplateFile('.github/workflows/itch-release.yml', workflow_text(profile, destination, platform)))
+        if workflow_steps.has_tools_revision(root, tools_ref) is False:
+            rendered.append(TemplateFile(workflow_steps.TOOLS_REVISION_RELPATH, tools_ref + '\n'))
     rendered[0].content = canonical(config).decode()
     if platform == 'web':
         next(file for file in rendered if file.relpath == 'RELEASING.md').content = next(file for file in rendered if file.relpath == 'RELEASING.md').content.replace('linux-release', 'web-release').replace('--destination linux', '--destination web')

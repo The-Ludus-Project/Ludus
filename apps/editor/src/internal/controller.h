@@ -47,6 +47,7 @@ struct ProjectCreationOptions
     QString Name;
     QString Sdk;
     bool PrepareEngine = false;
+    bool ShouldAddGitHubCi = false;
 };
 
 // One recorded command invocation for Copy Job Details (bounded).

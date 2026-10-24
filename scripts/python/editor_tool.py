@@ -1130,6 +1130,13 @@ class Operation:
             supported_project(self._project_path)
         elif self._project_path.exists():
             raise ToolingError("DestinationExists", "New Project destination already exists")
+        ci, tools_ref = None, None
+        if self._operation == "project_create" and self._options.get("github_ci", False) is True:
+            # Refuse a nested destination before any engine preparation. The
+            # workflow installs host tools from this trusted checkout's commit.
+            from ludus_tools.ci_setup import tooling_checkout_ref, validate_creation_ci
+            ci, tools_ref = "github", tooling_checkout_ref(self._context.tooling_root)
+            validate_creation_ci(self._project_path, ci, tools_ref)
         def runner(argv, *, cwd, env):
             capture = "--version" in argv or any(arg.startswith("--list-presets=") for arg in argv)
             self._supervisor.capture_stdout = capture
@@ -1185,8 +1192,11 @@ class Operation:
                 self._writer.output(self._stage, "stdout", f"Selected Development engine: {sdk}\n")
                 create_project(self._project_path, name=self._options["name"], template_id="minimal",
                                engine_version="", local_sdk_prefix=sdk, cancel_check=self._check_release_cancel,
-                               verify_staged=lambda staged: repair_project(staged, sdk=sdk, web_sdk=web, **options))
+                               verify_staged=lambda staged: repair_project(staged, sdk=sdk, web_sdk=web, **options),
+                               ci=ci, tools_ref=tools_ref)
                 message = "Project created and verified; ready to open"
+                if ci is not None:
+                    message += "\nAdded .github/workflows/ci.yml; push the project to its own GitHub repository to run it"
             else:
                 if sdk is None:
                     from ludus_tools.creation_engine import prepare_creation_sdk
@@ -1442,6 +1452,8 @@ def _validate_request(message: dict) -> tuple[str, str, Path, str]:
             raise ProtocolError("prepare_engine must be boolean")
         if not isinstance(message.get("disable_web", False), bool):
             raise ProtocolError("disable_web must be boolean")
+        if not isinstance(message.get("github_ci", False), bool) or (operation != "project_create" and "github_ci" in message):
+            raise ProtocolError("github_ci must be a project_create boolean")
         if message.get("disable_web") and message.get("web_sdk"):
             raise ProtocolError("Choose browser setup or desktop-only repair, not both")
     if operation == "build_debug":

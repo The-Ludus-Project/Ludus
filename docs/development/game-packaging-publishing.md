@@ -37,7 +37,9 @@ notice is a starting point: the game author must complete the license inventory.
 CMake remains authoritative for the payload; no build-tree directory sweep occurs.
 
 Existing projects can use `ludus project release init` or the Editor release setup
-action; see the [setup guide](editor-game-releases.md).
+action; see the [setup guide](editor-game-releases.md). The release workflow shares
+its toolchain steps, tools pin and SDK variables with the
+[build and test workflow](project-sdk-workflow.md#continuous-integration-github-actions).
 
 ## Build and inspect the package
 
