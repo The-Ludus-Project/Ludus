@@ -73,6 +73,8 @@ struct BackendAvailability final
     bool WebGPU = false;
     /// Browser WebGL 2 fallback implementation.
     bool WebGL2 = false;
+    /// Native Windows Direct3D 12 implementation (clear/present bring-up).
+    bool HasDirect3D12 = false;
 };
 
 /// Copied device admission requirements. Unsupported required workloads fail before startup.

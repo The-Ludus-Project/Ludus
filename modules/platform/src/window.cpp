@@ -13,12 +13,14 @@
 #    include "internal/window_web.hpp"
 #elif defined(LUDUS_PLATFORM_COCOA)
 #    include "internal/window_cocoa.hpp"
+#elif defined(LUDUS_PLATFORM_WIN32)
+#    include "internal/window_win32.hpp"
 #elif defined(LUDUS_PLATFORM_WAYLAND)
 #    include <ludus/platform/wayland/window.h>
 #elif defined(LUDUS_PLATFORM_HEADLESS)
 #    include <ludus/platform/headless/window.h>
 #else
-#    error "No platform windowing backend selected (expected LUDUS_PLATFORM_WAYLAND or LUDUS_PLATFORM_HEADLESS)"
+#    error "No platform windowing backend selected (expected LUDUS_PLATFORM_WAYLAND, WIN32 or HEADLESS)"
 #endif
 
 namespace ludus::platform
@@ -36,6 +38,8 @@ bool WindowManager::Initialize(const InitializeInfo& info) noexcept
     return browser::InitializeBrowser(info);
 #elif defined(LUDUS_PLATFORM_COCOA)
     return cocoa::Initialize(info);
+#elif defined(LUDUS_PLATFORM_WIN32)
+    return win32::Initialize(info);
 #elif defined(LUDUS_PLATFORM_WAYLAND)
     return wayland::InitializeWayland(info);
 #elif defined(LUDUS_PLATFORM_HEADLESS)
@@ -74,6 +78,8 @@ bool WindowManager::CreateWindow(const WindowBase::CreateInfo& info,
     auto window = browser::CreateWindow(info);
 #elif defined(LUDUS_PLATFORM_COCOA)
     auto window = cocoa::CreateWindow(info);
+#elif defined(LUDUS_PLATFORM_WIN32)
+    ludus::foundation::core::UniquePtr<Window> window = win32::CreateWindow(info);
 #elif defined(LUDUS_PLATFORM_WAYLAND)
     auto window = wayland::CreateWindow(info);
 #elif defined(LUDUS_PLATFORM_HEADLESS)

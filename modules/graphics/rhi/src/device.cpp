@@ -147,6 +147,7 @@ BackendAvailability GetCompiledBackends() noexcept
         .Metal = kind == Backend::Metal,
         .WebGPU = backend::Supports(BackendSelection::WebGPU),
         .WebGL2 = backend::Supports(BackendSelection::WebGL2),
+        .HasDirect3D12 = kind == Backend::Direct3D12,
     };
 }
 DeviceStatus CreateDevice(const ApplicationInfo& application,

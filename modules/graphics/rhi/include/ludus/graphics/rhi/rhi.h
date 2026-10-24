@@ -24,9 +24,16 @@ enum class Backend : ludus::foundation::uint8
     WebGPU,
     WebGL2,
     /// Native macOS renderer using Metal for Cocoa and headless targets.
-    Metal
+    Metal,
+    /// @brief Native Windows renderer using Direct3D 12 for Win32 and headless targets.
+    ///
+    /// The current bring-up starts a device, clears and presents frames; shader, draw,
+    /// compute and resource operations report Unsupported or InvalidDescription.
+    /// See docs/architecture/windows-direct3d12.md.
+    Direct3D12
 };
-/// Browser backend policy. Native accepts only Auto, selecting Vulkan on Linux and Metal on macOS.
+/// Browser backend policy. Native accepts only Auto, selecting Vulkan on Linux, Metal on macOS
+/// and Direct3D 12 on Windows.
 /// Auto attempts WebGPU (including its compatibility retry) and, only on a
 /// capability/startup failure, makes exactly one WebGL 2 attempt. A forced
 /// selection fails explicitly rather than silently switching backends.
@@ -140,7 +147,7 @@ struct StartupInfo final
 };
 /// @brief Start the main-thread session using Auto backend selection.
 ///
-/// Native Auto selects Vulkan on Linux and Metal on macOS. Duplicate calls are
+/// Native Auto selects Vulkan on Linux, Metal on macOS and Direct3D 12 on Windows. Duplicate calls are
 /// Busy until Shutdown, including failed/lost sessions. The window/canvas must
 /// outlive the session. Browser startup is asynchronous; poll GetStartup.
 [[nodiscard]] StartStatus Start(const ApplicationInfo& appInfo, const WindowInfo& windowInfo) noexcept;

@@ -1,4 +1,4 @@
-if(NOT EMSCRIPTEN AND NOT APPLE)
+if(NOT EMSCRIPTEN AND NOT APPLE AND NOT WIN32)
     find_package(volk CONFIG REQUIRED)
 endif()
 
@@ -61,6 +61,14 @@ elseif(APPLE)
     target_link_libraries(ludus_graphics_rhi PRIVATE
         "-framework MetalFX" "-framework Metal" "-framework QuartzCore" "-framework AppKit" "-framework IOSurface" "-framework CoreFoundation")
     ludus_configure_cocoa_target(ludus_graphics_rhi)
+elseif(WIN32)
+    # Direct3D 12 bring-up: device, swap chain, clear and present
+    # (docs/architecture/windows-direct3d12.md). Unimplemented feature families
+    # use the portable Unsupported implementations.
+    target_sources(ludus_graphics_rhi PRIVATE src/rhi_d3d12.cpp src/raster_unsupported.cpp src/ray_unsupported.cpp
+        src/native_interop_unsupported.cpp src/hosted_consumer_unsupported.cpp)
+    ludus_configure_win32_target(ludus_graphics_rhi)
+    target_link_libraries(ludus_graphics_rhi PRIVATE d3d12 dxgi dxguid user32)
 else()
     target_sources(ludus_graphics_rhi PRIVATE src/rhi_vulkan.cpp src/volk_impl.cpp src/vma.cpp src/hosted_vulkan.cpp src/hosted_consumer_vulkan.cpp)
     target_link_libraries(ludus_graphics_rhi PRIVATE volk::volk_headers)
@@ -98,7 +106,7 @@ install(TARGETS ludus_graphics_rhi
     FILE_SET public_headers DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
 )
 
-if(LUDUS_BUILD_TESTS AND NOT APPLE)
+if(LUDUS_BUILD_TESTS AND NOT APPLE AND NOT WIN32)
     find_package(Catch2 3 REQUIRED CONFIG)
     add_executable(ludus_graphics_rhi_tests tests/rhi_tests.cpp)
     target_include_directories(ludus_graphics_rhi_tests PRIVATE src)
@@ -125,7 +133,7 @@ if(LUDUS_BUILD_TESTS)
     set_tests_properties(ludus_rhi_lifecycle_tests PROPERTIES LABELS "unit;rhi;build-contract")
 endif()
 
-if(LUDUS_BUILD_TESTS AND NOT APPLE AND LUDUS_SLANG_COMPILER AND LUDUS_SPIRV_VALIDATOR)
+if(LUDUS_BUILD_TESTS AND NOT APPLE AND NOT WIN32 AND LUDUS_SLANG_COMPILER AND LUDUS_SPIRV_VALIDATOR)
     target_compile_definitions(ludus_graphics_rhi PRIVATE LUDUS_RHI_TEST_READBACK=1)
     add_executable(ludus_rhi_render_tests tests/render_tests.cpp)
     target_include_directories(ludus_rhi_render_tests PRIVATE src)
@@ -137,6 +145,18 @@ if(LUDUS_BUILD_TESTS AND NOT APPLE AND LUDUS_SLANG_COMPILER AND LUDUS_SPIRV_VALI
         VERTEX vertexMain FRAGMENT fragmentMain)
     add_test(NAME ludus_rhi_render_pixels COMMAND ludus_rhi_render_tests)
     set_tests_properties(ludus_rhi_render_pixels PROPERTIES LABELS "rhi;gpu" TIMEOUT 60)
+endif()
+
+if(LUDUS_BUILD_TESTS AND WIN32)
+    target_compile_definitions(ludus_graphics_rhi PRIVATE LUDUS_RHI_TEST_READBACK=1)
+    add_executable(ludus_rhi_d3d12_tests tests/d3d12_tests.cpp)
+    target_include_directories(ludus_rhi_d3d12_tests PRIVATE src)
+    target_link_libraries(ludus_rhi_d3d12_tests PRIVATE Ludus::GraphicsRhi Ludus::Platform Catch2::Catch2WithMain user32)
+    ludus_configure_win32_target(ludus_rhi_d3d12_tests)
+    ludus_apply_project_defaults(ludus_rhi_d3d12_tests)
+    ludus_enable_test_exceptions(ludus_rhi_d3d12_tests)
+    add_test(NAME ludus_rhi_d3d12_tests COMMAND ludus_rhi_d3d12_tests)
+    set_tests_properties(ludus_rhi_d3d12_tests PROPERTIES LABELS "unit;rhi;windows;gpu" TIMEOUT 60 RUN_SERIAL TRUE)
 endif()
 
 if(LUDUS_BUILD_TESTS AND APPLE)
@@ -212,7 +232,7 @@ if(TARGET ludus_rhi_render_tests)
         VERTEX vertexMain FRAGMENT fragmentMain)
 endif()
 
-if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN AND LUDUS_SLANG_COMPILER AND (APPLE OR LUDUS_SPIRV_VALIDATOR))
+if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN AND NOT WIN32 AND LUDUS_SLANG_COMPILER AND (APPLE OR LUDUS_SPIRV_VALIDATOR))
     include("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/native_interop.cmake")
     ludus_add_native_interop_fixture(ludus_rhi_native_interop_consumer "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
     ludus_apply_project_defaults(ludus_rhi_native_interop_consumer)

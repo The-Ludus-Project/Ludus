@@ -243,14 +243,20 @@ if(LUDUS_SHADER_WORKER_ONLY)
     return()
 endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    # Windows validates only the FoundationThreading closure (threading.md, T3).
-    # Other modules have no Windows backend; the SDK is not installed there yet.
-    # Keep the list closed over Ludus::Foundation* links: FoundationProfiling
-    # links FoundationStrings, which links FoundationHash.
-    # test_windows_threading_closure.py checks this.
-    foreach(module IN ITEMS memory containers hash strings time profiling threading)
+    # Windows builds the FoundationThreading closure (threading.md, T3) and the
+    # Direct3D 12 bring-up closure: Platform's Win32 window and the RHI
+    # (docs/architecture/windows-direct3d12.md). Other modules have no Windows
+    # backend yet and the SDK is not installed there. Keep the list in dependency
+    # order and closed over its Ludus::* links: FoundationProfiling links
+    # FoundationStrings, which links FoundationHash; Platform links Input, Logging
+    # and Identity (through PlatformEntropy); the RHI links Math and Threading.
+    # scripts/python/test_ci.py checks this list against the modules' links.
+    foreach(module IN ITEMS memory containers hash strings time profiling threading identity math logging)
         add_subdirectory(modules/foundation/${module})
     endforeach()
+    add_subdirectory(modules/input)
+    add_subdirectory(modules/platform)
+    add_subdirectory(modules/graphics/rhi)
     return()
 endif()
 # Portable bounded networking primitives are shared by native and web targets.

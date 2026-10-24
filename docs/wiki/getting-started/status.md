@@ -15,6 +15,7 @@ not a claim of production readiness on every platform.
 | Randomness | [Caller-owned PCG32 streams and addressed Philox samples](../guides/randomness.md) | Deterministic primitives and the [world demo's room scatter](../../examples/world-demo.md#scatter-placements); game-owned identities/state, no automatic replay or editor RNG inspector |
 | Time | [Shared monotonic clock and owner-local stopwatch/deadline/frame helpers](../guides/time.md) | Nanosecond storage; simulation integration, scheduling, pacing and editor timing telemetry remain separate work |
 | Browser runtime | Pinned Emscripten/WebGPU Foundation, Platform, RHI paths and smoke samples | Runtime work has separate browser/device acceptance; this website contains documentation |
+| Windows | [Win32 windows and a Direct3D 12 device that clears and presents](../../architecture/windows-direct3d12.md) | Bring-up only: no shaders, draws, compute, input or SDK install yet; CI runs on the WARP software adapter |
 | Platform detection | [Compiler-owned target facts and constexpr descriptor](../guides/platform-targets.md) | Recognition does not establish an engine port or runtime capabilities |
 | Engine systems | Foundation, math, graphics, content, gameplay/world and physics modules | Consult each module's implementation/evidence before relying on a feature |
 

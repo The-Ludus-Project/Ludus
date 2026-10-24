@@ -83,7 +83,8 @@ and backend inputs belong to the build system, separately from detected facts.
 | --- | --- |
 | Ubuntu 24.04, Linux x64, Clang/LLVM 23 | Native engine reference environment |
 | Pinned Emscripten, wasm32 | Browser Foundation, Platform and RHI paths plus smoke samples; browser/device acceptance is separate |
-| Windows, macOS, Android and iOS; ARM64; Emscripten wasm64 | Recognized classifications, not validated engine deployments |
+| Windows x64, pinned Clang/LLVM 23, MSVC ABI | Threading closure and the [Direct3D 12 bring-up](../../architecture/windows-direct3d12.md) build and run in CI; not an engine deployment |
+| macOS, Android and iOS; ARM64; Emscripten wasm64 | Recognized classifications, not validated engine deployments |
 | GCC and MSVC frontend dispatch | Synthetic dispatch tests, not native engine toolchain support |
 
 Not every combination of a recognized OS and architecture is a supported target.

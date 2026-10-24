@@ -715,7 +715,8 @@ GPU duration. Do not compare unrelated queue clocks without calibration.
 The current macOS Metal backend implements the same bounded device, raster,
 lifetime, ordered graph, buffer-compute and merging profiles as Vulkan, within
 its enabled capabilities. The [public rendering guide](../development/fullscreen-rendering.md#macos-metal)
-owns setup and platform limits. D3D12 remains a future backend for those contracts.
+owns setup and platform limits. The [Direct3D 12 backend](windows-direct3d12.md) currently
+clears and presents only; its staged plan brings it to those contracts.
 Their binding systems, residency, heaps, native barrier choices, command allocator
 reuse and completion mechanisms stay private. Future backend conformance must prove all common semantics before the renderer uses it.
 D3D12 allocator reset requires completed GPU uses, and Metal resource

@@ -34,3 +34,11 @@ function(ludus_enable_test_exceptions target_name)
         target_compile_options(${target_name} PRIVATE /EHsc)
     endif()
 endfunction()
+
+# Private Windows SDK configuration for a target that includes <windows.h>: the
+# Windows 10 API surface (per-monitor DPI), UTF-16 "W" entry points, and no
+# min/max macros or rarely used headers leaking into Ludus code.
+function(ludus_configure_win32_target target_name)
+    target_compile_definitions(${target_name} PRIVATE
+        WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE WINVER=0x0A00 _WIN32_WINNT=0x0A00)
+endfunction()
