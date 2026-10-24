@@ -218,7 +218,12 @@ so each job reads its own variables, suffixed with the platform:
 likewise `_MACOS_ARM64` and `_MACOS_X64`. A platform whose two variables are both
 unset is skipped and named in the notice job; the other platforms still build.
 macOS jobs run on `macos-15` (arm64) and `macos-15-intel` (x64); the SDKs keep a
-macOS 14.0 deployment target. Published engine releases do not
+macOS 14.0 deployment target.
+
+An SDK accepts only the exact compiler version it was built with, such as
+Clang 23.1.4. The workflow installs the current pinned-major LLVM from Homebrew
+or apt.llvm.org, so a new LLVM patch release makes the build fail with
+`SdkIncompatible` until the variables name an SDK built with that compiler. Published engine releases do not
 yet resolve a project lock, so CI cannot select an SDK by itself.
 
 GitHub runs workflows only from the repository root's `.github/workflows`.
