@@ -43,6 +43,11 @@ public:
     [[nodiscard]] bool IsLoaded() const noexcept;
     /// Borrow the numeric plan; empty when no generation is held. Valid until Reset.
     [[nodiscard]] RenderGraphPlan GetPlan() const noexcept;
+    /// Bypass every Denoise operation exactly as a disabled Denoise node cooks: each ray pass
+    /// presents its accumulated color unfiltered. For hosts that would rather show an unfiltered
+    /// image than have Initialize reject the graph when IsDenoisingAvailable is false.
+    /// Call before staging; graphs already initialized from this package are unaffected.
+    void BypassDenoising() noexcept;
     /// Describe the cooked stages, borrowing owned artifacts and the caller's composite recipes.
     /// The composite descriptions are copied by value; their artifact storage must outlive use.
     /// A role the generation carries no stage for (for example DepthOnly in a color-only graph)

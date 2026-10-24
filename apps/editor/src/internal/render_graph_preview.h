@@ -70,8 +70,7 @@ enum class RenderGraphPreviewLoad : foundation::uint8
     Waiting,         ///< Decoded; it stages once a viewport device is attached.
     Unreadable,      ///< The `.lurgrt` file is missing, unreadable or larger than the runtime bound.
     Malformed,       ///< RenderGraphPackage::Decode rejected the bytes.
-    Unsupported,     ///< Decoded, but the plan has no exported color result the editor can show, or it
-                     ///< needs an optional feature (OIDN denoising) this editor build lacks.
+    Unsupported,     ///< Decoded, but the plan has no exported color result the editor can show.
     RestartRequired, ///< The CPU interface differs from this editor's compiled interface.
     Failed,          ///< Staging failed on the device; the drawing generation is unchanged.
 };

@@ -828,6 +828,17 @@ bool RenderGraphPackage::IsLoaded() const noexcept
 {
     return mState.Get() != nullptr;
 }
+void RenderGraphPackage::BypassDenoising() noexcept
+{
+    if (mState.Get() == nullptr)
+    {
+        return;
+    }
+    for (uint32 i = 0; i < mState->Header.PassCount; ++i)
+    {
+        mState->Passes[i].DenoisingQuality = 0;
+    }
+}
 RenderGraphPlan RenderGraphPackage::GetPlan() const noexcept
 {
     if (mState.Get() == nullptr)

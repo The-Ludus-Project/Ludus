@@ -1613,8 +1613,9 @@ This keeps model initialization off the renderer/framework queue. Filtering runs
 between ray transport and presentation. There is no CPU pixel readback, CPU filter fallback,
 or alternate-device selection. Builds without OIDN reject a graph with an enabled
 Denoise node with `Unsupported` when the graph is set up, before any World is
-supplied; the editor refuses it at preview load, names the missing build option and
-keeps the shown frame. Disable the node to preview such a graph there. Vulkan and
+supplied. A host may call `RenderGraphPackage::BypassDenoising` first to run it as
+if its Denoise nodes were disabled; the editor does this, so its preview shows
+unfiltered color and says the denoiser was skipped. Vulkan and
 browser execution are not yet supported; enabling the build option on those
 platforms is a configuration error. Libraries advertise
 broader hardware support, but that does not establish engine interoperability.
