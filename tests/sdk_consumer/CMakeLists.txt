@@ -12,7 +12,7 @@ find_package(Ludus CONFIG REQUIRED COMPONENTS Resources GameplayCamera Foundatio
 # be installed successfully while missing from the identity manifest (#196), so
 # every exported Ludus module must be listed. Bundled third-party libraries are
 # exported only for the static link closure and are inventoried as dependencies.
-set(_ludus_bundled_third_party_targets Ludus::ludus_miniaudio Ludus::StbImage Ludus::Yyjson)
+set(_ludus_bundled_third_party_targets Ludus::ludus_miniaudio Ludus::MikkTSpace Ludus::StbImage Ludus::Yyjson)
 file(READ "${Ludus_SDK_MANIFEST}" _ludus_manifest)
 get_directory_property(_ludus_imported_targets IMPORTED_TARGETS)
 foreach(_field components features)

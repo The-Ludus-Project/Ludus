@@ -14,6 +14,8 @@ authoritative, machine-readable inventory (names, versions, kinds) is the
 | --- | --- | --- | --- |
 | yyjson | 0.10.0 | MIT | `Ludus::Content` (PRIVATE JSON parser) |
 | miniaudio | 0.11.23 | MIT-0 | `Ludus::Audio` (PRIVATE decoder/device backend) |
+| stb_image | 2.30 | MIT **or** public domain (Unlicense) — `stb-LICENSE.txt` | `Ludus::SceneCook` (PRIVATE PNG/JPEG/Radiance decoder) |
+| MikkTSpace | `3e895b49d05ea07e4c2133156cfa94369e19e409` | zlib — `mikktspace-LICENSE.txt` | `Ludus::SceneCook` (PRIVATE tangent generator) |
 | volk | 1.4.357.0 | MIT | `Ludus::GraphicsRhi` (Vulkan loader meta-loader) |
 | FreeType | 2.14.3 | FTL **or** GPLv2 (dual) — see FreeType FTL | `Ludus::Text` (PRIVATE, part of the final link closure) |
 | HarfBuzz | 14.5.1 | "Old MIT" / modern MIT-style | `Ludus::Text` (PRIVATE, part of the final link closure) |
