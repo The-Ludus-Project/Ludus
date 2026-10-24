@@ -1,6 +1,7 @@
 #include "../src/internal/gpu_denoiser.h"
 
 #include "renderer_composite.h"
+#include "rg2_compute_split.h"
 #include "rg2_ordered_ray.h"
 #include "rg2_raytracing.h"
 #include "rg2_restir_di.h"
@@ -827,6 +828,150 @@ TEST_CASE("Ordered ray callbacks share zeroed storage across passes and frames",
             previousRed = fixture.Pixels[center];
             REQUIRE(rhi::Release(fixture.Device, ticket) == rhi::RasterStatus::Ready);
         }
+    }
+}
+
+TEST_CASE("A raygen-only pass hands packed triangle hits to a later pass",
+          "[render-graph][gpu][ray-history][compute-split]")
+{
+    // Compute ray-tracing phase C0: pass 0 traces and records a packed triangle index; pass 1
+    // resolves it in its own separately built scene and BLAS/TLAS. See shade.slang for the channels.
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_COMPUTE_SPLIT_DIRECTORY, "rg2_compute_split.lurgrt"});
+    const renderer::RenderGraphPrograms decoded =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    const renderer::RenderGraphPrograms compiled =
+        packages::rg2_compute_split::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                  shaders::renderer_composite::Fragment());
+    REQUIRE(decoded.HasPersistentRayBuffers == true);
+    REQUIRE(decoded.HasSceneShaderInterface == true);
+    CheckSameStage(decoded.RayCompute, compiled.RayCompute);
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    usize rayPassCount = 0;
+    uint32 exportResource = 0;
+    for (usize pass = 0; pass < plan.Passes.GetSize(); ++pass)
+    {
+        rayPassCount += plan.Passes[pass].Program == format::Technique::RayTracing ? 1 : 0;
+    }
+    for (uint32 index = 0; index < plan.Resources.GetSize(); ++index)
+    {
+        exportResource = plan.Resources[index].IsExported == 1 ? index : exportResource;
+    }
+    REQUIRE(rayPassCount == 2);
+    // More triangles than one BVH leaf holds, in two instances, so the native order differs from
+    // the packed triangle order that the record stores.
+    constexpr usize GRID_COLUMNS = 3;
+    constexpr usize GRID_ROWS = 2;
+    constexpr usize GRID_VERTEX_COUNT = (GRID_COLUMNS + 1) * (GRID_ROWS + 1);
+    constexpr usize QUAD_INDEX_COUNT = 6;
+    constexpr usize GRID_INDEX_COUNT = GRID_COLUMNS * GRID_ROWS * QUAD_INDEX_COUNT;
+    constexpr usize GRID_ITEM_COUNT = 2;
+    constexpr float32 CELL_WIDTH = .2F;
+    constexpr float32 CELL_HEIGHT = .6F;
+    StaticArray<math::Vector3, GRID_VERTEX_COUNT> positions{};
+    StaticArray<uint32, GRID_INDEX_COUNT> indices{};
+    for (usize row = 0; row <= GRID_ROWS; ++row)
+    {
+        for (usize column = 0; column <= GRID_COLUMNS; ++column)
+        {
+            positions[row * (GRID_COLUMNS + 1) + column] = {float32(column) * CELL_WIDTH,
+                                                            float32(row) * CELL_HEIGHT - CELL_HEIGHT,
+                                                            .5F};
+        }
+    }
+    usize index = 0;
+    for (usize row = 0; row < GRID_ROWS; ++row)
+    {
+        for (usize column = 0; column < GRID_COLUMNS; ++column)
+        {
+            const uint32 corner = static_cast<uint32>(row * (GRID_COLUMNS + 1) + column);
+            const uint32 above = corner + static_cast<uint32>(GRID_COLUMNS + 1);
+            const StaticArray<uint32, QUAD_INDEX_COUNT> quad{{corner, corner + 1, above + 1, corner, above + 1, above}};
+            for (const uint32 vertex : quad)
+            {
+                indices[index] = vertex;
+                ++index;
+            }
+        }
+    }
+    StaticArray<renderer::RenderGraphMesh, 1> meshes{};
+    meshes[0].Geometry = {positions.GetData(), positions.GetSize(), indices.GetData(), indices.GetSize()};
+    StaticArray<renderer::RenderGraphItem, GRID_ITEM_COUNT> items{};
+    items[0].SourceId = 1;
+    items[0].MeshToWorld.Translation.X = .05F;
+    items[1].SourceId = 2;
+    items[1].MeshToWorld.Translation.X = -.7F;
+    rhi::RasterStatus status = fixture.Graph.Initialize(fixture.Device, plan, decoded);
+    constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
+    const uint64 beginning = time::NowTicks();
+    while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+    {
+        status = fixture.Graph.Poll();
+    }
+    REQUIRE(status == rhi::RasterStatus::Ready);
+    fixture.Cameras[0].OrthographicCamera = true;
+    renderer::RenderGraphReport report;
+    const auto update = [&fixture, &meshes, &items, &report, beginning](uint64 revision, bool shouldReuseScene) {
+        rhi::RasterStatus result = fixture.Graph.Update(
+            shouldReuseScene == true
+                ? BorrowedView<const renderer::RenderGraphMesh>{}
+                : BorrowedView<const renderer::RenderGraphMesh>{meshes.GetData(), meshes.GetSize()},
+            shouldReuseScene == true ? BorrowedView<const renderer::RenderGraphItem>{}
+                                     : BorrowedView<const renderer::RenderGraphItem>{items.GetData(), items.GetSize()},
+            {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+            revision,
+            renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+            report,
+            nullptr,
+            1);
+        while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+        {
+            result = fixture.Graph.Poll();
+        }
+        return result;
+    };
+    REQUIRE(update(1, false) == rhi::RasterStatus::Ready);
+    constexpr usize FRAME_COUNT = 4;
+    constexpr usize CAMERA_FRAME_INDEX = 2;
+    // ToneMap exposure 1 encodes a linear 1 as Reinhard 0.5, which is sRGB byte 188.
+    constexpr uint8 TONE_MAPPED_ONE = 188;
+    constexpr usize BYTE_VALUE_COUNT = 256;
+    for (usize frame = 0; frame < FRAME_COUNT; ++frame)
+    {
+        if (frame == CAMERA_FRAME_INDEX)
+        {
+            fixture.Cameras[0].WorldToClip.Columns[3].Y = .1F;
+            REQUIRE(update(2, true) == rhi::RasterStatus::Ready);
+        }
+        ReadGraphFrame(fixture, exportResource);
+        usize hitCount = 0;
+        usize mismatchCount = 0;
+        usize uncorrelatedCount = 0;
+        StaticArray<bool, BYTE_VALUE_COUNT> hasTriangleShade{};
+        for (usize pixel = 0; pixel < static_cast<usize>(WIDTH) * HEIGHT; ++pixel)
+        {
+            const uint8 identity = fixture.Pixels[pixel * 4];
+            const uint8 triangle = fixture.Pixels[pixel * 4 + 1];
+            const uint8 correlation = fixture.Pixels[pixel * 4 + 2];
+            mismatchCount += identity == TONE_MAPPED_ONE ? 0 : 1;
+            uncorrelatedCount += correlation == TONE_MAPPED_ONE ? 0 : 1;
+            hitCount += triangle != 0 ? 1 : 0;
+            hasTriangleShade[triangle] = true;
+        }
+        usize distinctTriangleShades = 0;
+        for (usize shade = 1; shade < hasTriangleShade.GetSize(); ++shade)
+        {
+            distinctTriangleShades += hasTriangleShade[shade] == true ? 1 : 0;
+        }
+        CAPTURE(frame, hitCount, distinctTriangleShades);
+        // Every pass-0 triangle index and miss resolves to the same hit in pass 1.
+        CHECK(mismatchCount == 0);
+        // Every pass draws its first automatic dimension from the same address; explicit offsets do not.
+        CHECK(uncorrelatedCount == 0);
+        CHECK(hitCount > 0);
+        CHECK(hitCount < static_cast<usize>(WIDTH) * HEIGHT);
+        CHECK(distinctTriangleShades > 2);
     }
 }
 

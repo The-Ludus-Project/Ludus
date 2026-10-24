@@ -326,3 +326,70 @@ TEST_CASE("Scene bundle selection retains geometry and omits unrequested resourc
         CHECK(job.Get() == nullptr);
     }
 }
+
+TEST_CASE("Ray passes built from one extraction pack triangles in identical order", "[scene-shader][compute-split]")
+{
+    // Each ray pass builds its own job from the same extraction, possibly with different scene data,
+    // seed and target size. A packed triangle index written by one pass must name the same triangle
+    // in every other pass (compute ray-tracing phase C0).
+    constexpr usize ITEM_COUNT = 3;
+    constexpr usize CORNERS_PER_TRIANGLE = 3;
+    SceneFixture fixture;
+    StaticArray<renderer::RenderGraphItem, ITEM_COUNT> items{};
+    for (usize i = 0; i < ITEM_COUNT; ++i)
+    {
+        items[i].SourceId = 73 + i;
+    }
+    // Listed out of spatial order so the BVH permutes triangles away from packed order.
+    items[0].MeshToWorld.Translation.X = 2;
+    items[1].MeshToWorld.Translation.X = -2;
+    fixture.Scene.Items = {items.GetData(), items.GetSize()};
+    renderer::DirectLight light;
+    light.SourceId = 1;
+    light.Kind = renderer::LightKind::Point;
+    fixture.Scene.Inputs.Lights = {&light, 1};
+    core::UniquePtr<internal::ReferenceJob> reference;
+    REQUIRE(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, reference) ==
+            rhi::RasterStatus::Ready);
+    const internal::ReferenceSceneData& expected = reference->Scene;
+    REQUIRE(expected.Triangles.GetSize() == ITEM_COUNT * (INDICES / CORNERS_PER_TRIANGLE));
+    bool isPermuted = false;
+    for (usize i = 0; i < expected.Order.GetSize(); ++i)
+    {
+        isPermuted = isPermuted == true || expected.Order[i] != i;
+    }
+    CHECK(isPermuted == true);
+    constexpr usize VARIANT_COUNT = 3;
+    const StaticArray<uint32, VARIANT_COUNT> sceneData{{::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY,
+                                                        ::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY |
+                                                            ::ludus::content::render_graph_format::SCENE_DATA_LIGHTS,
+                                                        ::ludus::content::render_graph_format::SCENE_DATA_ALL}};
+    for (usize variant = 0; variant < VARIANT_COUNT; ++variant)
+    {
+        renderer::RenderGraphSceneDescription scene = fixture.Scene;
+        scene.SceneData = sceneData[variant];
+        renderer::ReferenceCaptureDescription camera = fixture.Camera;
+        camera.Seed = variant + 1;
+        camera.Width = fixture.Camera.Width * static_cast<uint32>(variant + 1);
+        core::UniquePtr<internal::ReferenceJob> job;
+        REQUIRE(internal::BuildMaterialGraphRayScene(scene, camera, BUDGET, job) == rhi::RasterStatus::Ready);
+        const internal::ReferenceSceneData& actual = job->Scene;
+        CAPTURE(variant);
+        REQUIRE(actual.Triangles.GetSize() == expected.Triangles.GetSize());
+        REQUIRE(actual.Order.GetSize() == expected.Order.GetSize());
+        for (usize i = 0; i < expected.Triangles.GetSize(); ++i)
+        {
+            CAPTURE(i);
+            CHECK(actual.Triangles[i].ShaderInstance == expected.Triangles[i].ShaderInstance);
+            CHECK(actual.Triangles[i].Instance == expected.Triangles[i].Instance);
+            CHECK(actual.Triangles[i].Primitive == expected.Triangles[i].Primitive);
+            for (usize corner = 0; corner < CORNERS_PER_TRIANGLE; ++corner)
+            {
+                CHECK(actual.Triangles[i].Positions[corner].X == expected.Triangles[i].Positions[corner].X);
+                CHECK(actual.Triangles[i].Positions[corner].Y == expected.Triangles[i].Positions[corner].Y);
+                CHECK(actual.Triangles[i].Positions[corner].Z == expected.Triangles[i].Positions[corner].Z);
+            }
+            CHECK(actual.Order[i] == expected.Order[i]);
+        }
+    }
+}
