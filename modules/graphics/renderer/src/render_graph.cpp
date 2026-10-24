@@ -118,6 +118,8 @@ format::ShaderTarget GetTarget(rhi::Backend backend) noexcept
             return format::ShaderTarget::Wgsl;
         case rhi::Backend::WebGL2:
             return format::ShaderTarget::GlslEs;
+        // No DXIL target yet: the Direct3D 12 RHI rejects every shader artifact.
+        case rhi::Backend::Direct3D12:
         case rhi::Backend::Vulkan:
             break;
     }

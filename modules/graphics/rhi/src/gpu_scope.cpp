@@ -116,7 +116,8 @@ GpuScope::~GpuScope() noexcept
 }
 } // namespace ludus::graphics::rhi
 
-#if LUDUS_TARGET_OS == LUDUS_OS_WEB
+// Browser backends and the Direct3D 12 bring-up record no GPU pass timings.
+#if LUDUS_TARGET_OS == LUDUS_OS_WEB || LUDUS_TARGET_OS == LUDUS_OS_WINDOWS
 namespace ludus::graphics::rhi::backend
 {
 RasterStatus ArmPassTimings() noexcept

@@ -286,7 +286,7 @@ class WorkflowContractTests(unittest.TestCase):
 
     def test_all_candidate_checkouts_use_the_same_frozen_sha(self):
         for name in ("ci.yml", "project-sdk.yml", "wiki.yml", "webgpu-probe.yml", "filesystem-recovery.yml",
-                     "threading-platforms.yml"):
+                     "threading-platforms.yml", "windows-direct3d12.yml"):
             workflow = (self.ROOT / ".github/workflows" / name).read_text()
             checkouts = re.findall(r"      - uses: actions/checkout@[^\n]+\n(.*?)(?=      - |\n  [a-z]|\Z)",
                                    workflow, re.DOTALL)

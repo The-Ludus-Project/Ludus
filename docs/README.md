@@ -180,6 +180,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [Terrain generation architecture](architecture/terrain-generation.md)
 - [Terrain systems architecture](architecture/terrain.md)
 - [Threading architecture](architecture/threading.md)
+- [Windows and Direct3D 12 backend](architecture/windows-direct3d12.md)
 
 ## Decisions
 

@@ -24,7 +24,7 @@ LLVM_MAJOR = engine.pinned_llvm_major(engine.repo_root())
 CLANG_TIDY = engine.pinned_llvm_tool(engine.repo_root(), "clang-tidy")
 
 
-class WindowsThreadingClosureTests(unittest.TestCase):
+class WindowsClosureTests(unittest.TestCase):
     """The Windows configure adds a fixed module list; every Ludus:: link in it must resolve."""
     ROOT = Path(__file__).resolve().parents[2]
 
@@ -34,19 +34,29 @@ class WindowsThreadingClosureTests(unittest.TestCase):
         self.assertIsNotNone(branch, "Windows configure branch not found")
         modules = re.search(r"foreach\(module IN ITEMS ([^)]*)\)", branch.group(1))
         self.assertIsNotNone(modules, "Windows module list not found")
-        # FoundationBase is added before the platform branch.
-        return ["base", *modules.group(1).split()]
+        # FoundationBase is added before the platform branch; the Direct3D 12
+        # closure adds Input, Platform and the RHI after the Foundation list.
+        foundation = [f"modules/foundation/{name}" for name in ["base", *modules.group(1).split()]]
+        return [*foundation, *re.findall(r"add_subdirectory\((modules/[\w/]+)\)", branch.group(1))]
 
     def test_windows_module_list_is_closed_over_its_links(self):
         defined = set()
         referenced = {}
         for module in self.windows_modules():
-            text = (self.ROOT / "modules/foundation" / module / "CMakeLists.txt").read_text(encoding="utf-8")
+            text = (self.ROOT / module / "CMakeLists.txt").read_text(encoding="utf-8")
             defined.update(re.findall(r"add_library\((Ludus::\w+) ALIAS", text))
             referenced[module] = set(re.findall(r"Ludus::\w+", text))
         for module, targets in referenced.items():
             self.assertEqual(targets - defined, set(),
-                             f"modules/foundation/{module} links targets the Windows configure does not add")
+                             f"{module} links targets the Windows configure does not add")
+
+    def test_windows_closure_includes_the_direct3d12_backends(self):
+        modules = self.windows_modules()
+        for module in ("modules/input", "modules/platform", "modules/graphics/rhi"):
+            self.assertIn(module, modules)
+        # Dependencies are configured first: Platform links Input, and the RHI links Platform.
+        self.assertLess(modules.index("modules/input"), modules.index("modules/platform"))
+        self.assertLess(modules.index("modules/platform"), modules.index("modules/graphics/rhi"))
 
 
 class ToolchainPinTests(unittest.TestCase):
@@ -125,15 +135,21 @@ class ToolchainPinTests(unittest.TestCase):
                 if "apt-get" in text and apt_package.search(text):
                     self.assertIn("llvm_apt_source.py", text)
 
-    def test_windows_threading_lane_installs_the_pinned_llvm_major(self):
+    def test_windows_lanes_install_the_same_pinned_llvm(self):
         import re
 
-        workflow = (self.ROOT / ".github/workflows/threading-platforms.yml").read_text()
-        version = re.search(r"LLVM_WINDOWS_VERSION: (\d+)\.(\d+)\.(\d+)\n", workflow)
-        self.assertIsNotNone(version)
-        self.assertEqual(int(version.group(1)), LLVM_MAJOR)
-        self.assertRegex(workflow, r"LLVM_WINDOWS_SHA256: [0-9a-f]{64}\n")
-        self.assertIn("Get-FileHash -Algorithm SHA256", workflow)
+        pins = set()
+        for name in ("threading-platforms.yml", "windows-direct3d12.yml"):
+            with self.subTest(workflow=name):
+                workflow = (self.ROOT / ".github/workflows" / name).read_text()
+                version = re.search(r"LLVM_WINDOWS_VERSION: (\d+)\.(\d+)\.(\d+)\n", workflow)
+                digest = re.search(r"LLVM_WINDOWS_SHA256: ([0-9a-f]{64})\n", workflow)
+                self.assertIsNotNone(version)
+                self.assertIsNotNone(digest)
+                self.assertEqual(int(version.group(1)), LLVM_MAJOR)
+                self.assertIn("Get-FileHash -Algorithm SHA256", workflow)
+                pins.add((version.group(0), digest.group(1)))
+        self.assertEqual(len(pins), 1, "Windows lanes must share one LLVM installer pin")
 
     def test_committed_llvm_apt_key_matches_the_published_fingerprint(self):
         import llvm_apt_source

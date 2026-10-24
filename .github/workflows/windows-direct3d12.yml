@@ -1,0 +1,115 @@
+name: Windows Direct3D 12
+# Windows Direct3D 12 bring-up (docs/architecture/windows-direct3d12.md, D1): the
+# Win32 window backend and the Direct3D 12 RHI clear/present path, built with the
+# pinned Clang against the Windows SDK and run on the runner's WARP adapter.
+on:
+  workflow_call:
+    inputs:
+      batch_sha:
+        description: Frozen develop commit selected by the trusted batch coordinator.
+        required: true
+        type: string
+      batch_base_sha:
+        description: Stable main commit captured with this candidate.
+        required: true
+        type: string
+  workflow_dispatch:
+  # Targeted lane for changes to the code it alone executes; every batch also
+  # runs it. Other integration PRs keep the inexpensive checks only.
+  pull_request:
+    paths:
+      - '.github/workflows/windows-direct3d12.yml'
+      - 'config/conan/profiles/windows-clang-x86_64'
+      - 'modules/graphics/rhi/src/rhi_d3d12.cpp'
+      - 'modules/graphics/rhi/src/raster_unsupported.cpp'
+      - 'modules/graphics/rhi/tests/d3d12_tests.cpp'
+      - 'modules/platform/src/window_win32.cpp'
+      - 'modules/platform/src/internal/window_win32.hpp'
+      - 'modules/platform/tests/win32_tests.cpp'
+permissions:
+  contents: read
+concurrency:
+  group: windows-direct3d12-${{ inputs.batch_sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+env:
+  CI: "true"
+  LUDUS_DIAGNOSTIC_INTERACTIVE: "0"
+  CMAKE_BUILD_PARALLEL_LEVEL: "4"
+  LUDUS_CI_COMMIT_SHA: ${{ inputs.batch_sha || github.sha }}
+jobs:
+  windows:
+    name: Windows Direct3D 12 bring-up
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      CONAN_HOME: ${{ github.workspace }}/out/windows/conan-home
+      CONAN_NON_INTERACTIVE: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.batch_sha || github.sha }}
+          persist-credentials: false
+      # Chocolatey does not package LLVM 23 yet; install the upstream release
+      # installer, pinned by the SHA-256 digest GitHub publishes for the asset.
+      - name: Install pinned LLVM
+        shell: pwsh
+        env:
+          LLVM_WINDOWS_VERSION: 23.1.3
+          LLVM_WINDOWS_SHA256: 5153f848ac87553118340f16f8d3cd4351d729bcba6e4785c6a4a9af29676de9
+        run: |
+          $msi = Join-Path $env:RUNNER_TEMP "LLVM-$env:LLVM_WINDOWS_VERSION-win64.msi"
+          $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_WINDOWS_VERSION/LLVM-$env:LLVM_WINDOWS_VERSION-win64.msi"
+          Invoke-WebRequest -Uri $url -OutFile $msi
+          $actual = (Get-FileHash -Algorithm SHA256 $msi).Hash.ToLowerInvariant()
+          if ($actual -ne $env:LLVM_WINDOWS_SHA256) { throw "LLVM installer digest $actual does not match the pin" }
+          # The runner image preinstalls another LLVM into the same directory.
+          choco uninstall llvm --yes --no-progress
+          $process = Start-Process -FilePath msiexec.exe -Wait -PassThru -ArgumentList "/i", "`"$msi`"", "/qn", "/norestart"
+          if ($process.ExitCode -ne 0 -and $process.ExitCode -ne 3010) { throw "msiexec exited $($process.ExitCode)" }
+          exit 0
+      - name: Verify pinned LLVM and install host tools
+        run: |
+          llvm="$(python -c "import json; print(json.load(open('config/tool_versions.json'))['minimum']['clang'].split('.')[0])")"
+          mkdir -p out
+          "/c/Program Files/LLVM/bin/clang++.exe" --version | tee out/clang-version.txt
+          grep -q "clang version ${llvm}\." out/clang-version.txt
+          python -m venv out/host-tools/venv
+          versions="$(python -c "import json; m=json.load(open('config/tool_versions.json'))['managed']; print(' '.join(f'{k}=={v}' for k, v in m.items()))")"
+          # shellcheck disable=SC2086
+          out/host-tools/venv/Scripts/python -m pip install --disable-pip-version-check --quiet $versions
+      - name: Build locked Catch2 with the Windows Clang profile
+        run: |
+          export PATH="/c/Program Files/LLVM/bin:$PWD/out/host-tools/venv/Scripts:$PATH"
+          conan export third_party/catch2
+          conan install --requires=catch2/3.4.0 --lockfile conan.lock --lockfile-partial \
+            --profile:host config/conan/profiles/windows-clang-x86_64 \
+            --profile:build config/conan/profiles/windows-clang-x86_64 \
+            --settings:host build_type=RelWithDebInfo --settings:build build_type=Release \
+            --build=missing -g CMakeDeps -g CMakeToolchain --output-folder out/windows/conan
+      - name: Configure and build the Direct3D 12 closure
+        run: |
+          export PATH="/c/Program Files/LLVM/bin:$PWD/out/host-tools/venv/Scripts:$PATH"
+          cmake -S . -B out/build/windows-clang-development -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$PWD/out/windows/conan/conan_toolchain.cmake" \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLUDUS_BUILD_FLAVOR=Development \
+            -DLUDUS_BUILD_TESTS=ON -DLUDUS_WARNINGS_AS_ERRORS=ON -DLUDUS_ENABLE_CCACHE=OFF
+          cmake --build out/build/windows-clang-development --target \
+            ludus_platform ludus_graphics_rhi \
+            ludus_platform_win32_tests ludus_rhi_d3d12_tests ludus_rhi_lifecycle_tests -- -k 0
+      - name: Test the Win32 window and Direct3D 12 backends
+        run: |
+          export PATH="$PWD/out/host-tools/venv/Scripts:$PATH"
+          ctest --test-dir out/build/windows-clang-development --output-on-failure --no-tests=error \
+            --tests-regex '^ludus_(platform_win32|rhi_d3d12|rhi_lifecycle)_tests$'
+      - name: Preserve Windows test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-direct3d12
+          path: out/build/windows-clang-development/Testing/Temporary/
+          if-no-files-found: warn
+          retention-days: 14

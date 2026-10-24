@@ -22,6 +22,10 @@ enum class WindowSystem : ludus::foundation::uint8
     /// NativeWindowInfo::HostedSurfaceOrNull; see docs/architecture/editor-gui-systems.md,
     /// "The hosted surface and frame ownership".
     Hosted,
+    /// @brief Native Windows top-level window, owned by the Win32 platform backend.
+    ///
+    /// NativeWindowInfo::Win32WindowOrNull carries its HWND; Width/Height are client-area pixels.
+    Win32,
 };
 
 /// Borrowed handles. The platform window must outlive its RHI connection.
@@ -43,10 +47,16 @@ struct NativeWindowInfo final
     /// Borrowed NSView for attaching the Metal presentation layer; no GPU object is created here.
     /// Main-thread access only; lifetime matches CocoaWindow. Cocoa Width/Height are backing pixels.
     void* CocoaView = nullptr;
+    /// @brief Borrowed HWND of a Win32 window; nullptr for other backends or a closed window.
+    ///
+    /// Use it only on the thread that created and pumps the owning Ludus window, while that
+    /// window remains alive. No GPU object is created here.
+    void* Win32WindowOrNull = nullptr;
     /// @brief Backing pixels per logical point.
     ///
-    /// Hosted windows publish the scale their host sent with each resize. Native backends
-    /// do not observe a scale yet and publish 1.
+    /// Hosted windows publish the scale their host sent with each resize, and Win32 windows
+    /// publish their monitor DPI over 96. Other native backends do not observe a scale yet
+    /// and publish 1.
     ludus::foundation::float32 Scale = 1.0F;
     /// @brief Hosted only: the window's surface channel, borrowed from the hosted window.
     ///

@@ -1474,7 +1474,8 @@ CreateRasterShader(DeviceHandle device, const RasterShaderDescription& descripti
                        : backendKind == Backend::WebGL2 ? artifact.GlslEsEntry
                                                         : artifact.SpirvEntry;
     char name[64]{};
-    if (entry.empty() || CopyName(entry, name) == false ||
+    // ShaderDescription has no DXIL artifact yet; the Direct3D 12 bring-up accepts no shaders.
+    if (backendKind == Backend::Direct3D12 || entry.empty() || CopyName(entry, name) == false ||
         (backendKind == Backend::Metal    ? artifact.Msl.empty()
          : backendKind == Backend::WebGPU ? artifact.Wgsl.empty()
          : backendKind == Backend::WebGL2 ? artifact.GlslEs.empty()

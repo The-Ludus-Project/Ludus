@@ -7,7 +7,8 @@
 // <ludus/foundation/base/config.h>; this header re-exposes it so existing
 // platform-module includes keep working, and adds only what is genuinely a
 // platform-module concern: which windowing backend is active.
-// macOS selects LUDUS_PLATFORM_COCOA; its AppKit types stay private.
+// macOS selects LUDUS_PLATFORM_COCOA and Windows LUDUS_PLATFORM_WIN32; their
+// AppKit and Win32 types stay private.
 //
 // The active windowing backend is selected by the build system, not inferred
 // here: modules/platform/CMakeLists.txt defines LUDUS_PLATFORM_WAYLAND=1 when
@@ -48,8 +49,17 @@
 #    endif
 #endif
 
+#if defined(LUDUS_PLATFORM_WIN32)
+#    if LUDUS_PLATFORM_WIN32 != 1
+#        error "Ludus platform configuration: selected backend must equal 1"
+#    endif
+#    if LUDUS_TARGET_OS != LUDUS_OS_WINDOWS
+#        error "Ludus platform configuration: Win32 backend requires Windows"
+#    endif
+#endif
+
 #if (defined(LUDUS_PLATFORM_BROWSER) + defined(LUDUS_PLATFORM_WAYLAND) + defined(LUDUS_PLATFORM_X11) +                 \
-     defined(LUDUS_PLATFORM_HEADLESS) + defined(LUDUS_PLATFORM_COCOA)) > 1
+     defined(LUDUS_PLATFORM_HEADLESS) + defined(LUDUS_PLATFORM_COCOA) + defined(LUDUS_PLATFORM_WIN32)) > 1
 #    error "Ludus platform configuration: select at most one windowing backend"
 #endif
 

@@ -291,7 +291,7 @@ not establish macOS 14 runtime qualification. See GitHub's
 
 ### Threading platform lanes
 
-`.github/workflows/threading-platforms.yml` runs the only Windows build and the
+`.github/workflows/threading-platforms.yml` runs the Windows threading build and the
 macOS ThreadSanitizer run of `Ludus::FoundationThreading`
 ([threading milestone T3](../architecture/threading.md#milestones)). Every batch
 calls it, and promotion requires it. Integration PRs run it only when they change
@@ -303,16 +303,36 @@ checking it against its pinned SHA-256 digest (Chocolatey does not package LLVM 
 yet), and drives `clang++` against the runner's Microsoft STL and dynamic CRT. It installs the
 pinned CMake/Ninja/Conan versions, exports the local Catch2 recipe and installs
 only that locked package with `config/conan/profiles/windows-clang-x86_64`. Ludus
-configures only the FoundationThreading closure on Windows (Base, Memory,
-Containers, Hash, Strings, Time, Profiling and Threading); other modules have no Windows backend
-and no SDK is installed. The job runs the threading, startup-seam, profiling-adapter
-and allocation suites once, then repeats the scheduler and startup suites 20 times.
+configures the FoundationThreading closure on Windows (Base, Memory, Containers,
+Hash, Strings, Time, Profiling and Threading) plus the
+[Direct3D 12 closure](../architecture/windows-direct3d12.md#build-and-test); this
+job builds only the threading targets, and no SDK is installed. The job runs the
+threading, startup-seam, profiling-adapter and allocation suites once, then
+repeats the scheduler and startup suites 20 times.
 
 The macOS job prepares `macos-clang-development` without the editor or shader
 tools, proves TSan detection with the sanitizer control, then runs the threading,
 startup-seam and profiling-adapter suites under TSan, repeating the first two.
 The pinned LLVM 23 TSan runtime also starts on local macOS 26 hosts, which LLVM
 before 22.1.3 could not; see [macOS sanitizer runtimes](building.md#macos-sanitizer-runtimes).
+
+### Windows Direct3D 12 lane
+
+`.github/workflows/windows-direct3d12.yml` builds and runs the
+[Windows Direct3D 12 bring-up](../architecture/windows-direct3d12.md): the Win32
+Platform backend and the Direct3D 12 RHI backend. Every batch calls it, and
+promotion requires it. Integration PRs run it only when they change the
+Win32 or Direct3D 12 sources and tests, the Windows Conan profile or the
+workflow itself. Changes to shared RHI or Platform code reach it in the batch.
+
+The job uses the same pinned LLVM installer, host tools and locked Catch2 package
+as the Windows threading job; `scripts/python/test_ci.py` checks that both lanes
+share one installer pin and that the Windows module list is closed over its
+links. It builds Platform, the RHI and their tests warning-clean, then runs
+`ludus_platform_win32_tests`, `ludus_rhi_d3d12_tests` and
+`ludus_rhi_lifecycle_tests`. The `windows-2022` image has no GPU, so the
+Direct3D 12 tests run on WARP; they establish the backend's behavior, not
+hardware-adapter qualification.
 
 ## Dependencies and caches
 
