@@ -1,6 +1,7 @@
 // Visual Studio-style editor shell: document well, tool windows, commands and layout
 // persistence (docs/development/editor-workspace.md#workspace-layout).
 
+#include "internal/code_editor.h"
 #include "internal/controller.h"
 #include "internal/document_well.h"
 #include "internal/error_list.h"
@@ -1273,4 +1274,101 @@ TEST_CASE("Project Settings saves rendering edits and routes their undo to the g
     REQUIRE(reopened.GetGraph(QStringLiteral("main.lurender.json"), graph) == true);
     CHECK(QJsonDocument(graph).toJson().contains("2560") == true);
     REQUIRE(controller.CloseProject() == true);
+}
+
+TEST_CASE("Document switching follows open tab order across groups", "[editor][shell][document-switch]")
+{
+    DocumentWell well;
+    CHECK(well.ActivateAdjacentDocument(true) == false);
+    CHECK(well.ActivateAdjacentDocument(false) == false);
+    QWidget* first = new QWidget;
+    first->setObjectName(QStringLiteral("first"));
+    QWidget* second = new QWidget;
+    second->setObjectName(QStringLiteral("second"));
+    QWidget* third = new QWidget;
+    third->setObjectName(QStringLiteral("third"));
+    well.AddDocument(first, QStringLiteral("First"));
+    well.AddDocument(second, QStringLiteral("Second"));
+    well.AddDocument(third, QStringLiteral("Third"));
+    REQUIRE(well.OpenDocument(first) == true);
+    REQUIRE(well.ActivateAdjacentDocument(false) == true);
+    CHECK(well.GetActiveDocumentOrNull() == first);
+    CHECK(well.IsDocumentOpen(second) == false);
+    REQUIRE(well.OpenDocument(second) == true);
+    REQUIRE(well.OpenDocument(third) == true);
+    REQUIRE(well.SplitActiveDocument(Qt::Horizontal) == true);
+    REQUIRE(well.ActivateAdjacentDocument(true) == true);
+    CHECK(well.GetActiveDocumentOrNull() == first);
+    REQUIRE(well.ActivateAdjacentDocument(true) == true);
+    CHECK(well.GetActiveDocumentOrNull() == second);
+    REQUIRE(well.ActivateAdjacentDocument(true) == true);
+    CHECK(well.GetActiveDocumentOrNull() == third);
+    REQUIRE(well.ActivateAdjacentDocument(false) == true);
+    CHECK(well.GetActiveDocumentOrNull() == second);
+    REQUIRE(well.ActivateAdjacentDocument(false) == true);
+    REQUIRE(well.ActivateAdjacentDocument(false) == true);
+    CHECK(well.GetActiveDocumentOrNull() == third);
+    well.CloseDocument(second);
+    well.SetDocumentAvailable(third, false);
+    REQUIRE(well.ActivateAdjacentDocument(true) == true);
+    CHECK(well.GetActiveDocumentOrNull() == first);
+    CHECK(well.IsDocumentOpen(second) == false);
+    CHECK(well.IsDocumentOpen(third) == false);
+}
+
+TEST_CASE("Document shortcuts switch from text editors and tool windows", "[editor][shell][document-switch]")
+{
+    QTemporaryDir directory;
+    EditorController controller(ToolingPaths{}, nullptr, directory.filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, directory.filePath(QStringLiteral("workspace.json")));
+    DocumentWell& well = Well(window);
+    well.CloseAllDocuments();
+    CodeEditor* first = new CodeEditor;
+    first->setObjectName(QStringLiteral("switchFirst"));
+    QLineEdit* second = new QLineEdit;
+    second->setObjectName(QStringLiteral("switchSecond"));
+    well.AddDocument(first, QStringLiteral("First"));
+    well.AddDocument(second, QStringLiteral("Second"));
+    REQUIRE(well.OpenDocument(first) == true);
+    REQUIRE(well.OpenDocument(second) == true);
+    window.show();
+    window.activateWindow();
+    Settle();
+    REQUIRE(well.OpenDocument(first) == true);
+    QAction* next = Action(window, QStringLiteral("window.nextDocument"));
+    QAction* previous = Action(window, QStringLiteral("window.previousDocument"));
+#if defined(Q_OS_MACOS)
+    constexpr Qt::KeyboardModifier SWITCH_MODIFIER = Qt::MetaModifier;
+#else
+    constexpr Qt::KeyboardModifier SWITCH_MODIFIER = Qt::AltModifier;
+#endif
+    CHECK(next->shortcut() == QKeySequence(SWITCH_MODIFIER | Qt::Key_Tab));
+    CHECK(previous->shortcut() == QKeySequence(SWITCH_MODIFIER | Qt::ShiftModifier | Qt::Key_Tab));
+    QTest::keyClick(first, Qt::Key_Tab, SWITCH_MODIFIER);
+    CHECK(well.GetActiveDocumentOrNull() == second);
+    CHECK(QApplication::focusWidget() == second);
+    QTest::keyClick(second, Qt::Key_Tab, SWITCH_MODIFIER | Qt::ShiftModifier);
+    CHECK(well.GetActiveDocumentOrNull() == first);
+    CHECK(QApplication::focusWidget() == first);
+    REQUIRE(well.SplitActiveDocument(Qt::Horizontal) == true);
+    QTest::keyClick(first, Qt::Key_Tab, SWITCH_MODIFIER);
+    CHECK(well.GetActiveDocumentOrNull() == second);
+    QDockWidget* tool = new QDockWidget(&window);
+    QLineEdit* toolField = new QLineEdit(tool);
+    tool->setWidget(toolField);
+    window.addDockWidget(Qt::RightDockWidgetArea, tool);
+    tool->show();
+    tool->raise();
+    toolField->setFocus();
+    Settle();
+    REQUIRE(QApplication::focusWidget() == toolField);
+    QTest::keyClick(toolField, Qt::Key_Tab, SWITCH_MODIFIER | Qt::ShiftModifier);
+    CHECK(well.GetActiveDocumentOrNull() == first);
+    CHECK(QApplication::focusWidget() == first);
+    CHECK(first->toPlainText().isEmpty() == true);
+    CHECK(second->text().isEmpty() == true);
+    well.CloseAllDocuments();
+    next->trigger();
+    previous->trigger();
+    CHECK(well.GetActiveDocumentOrNull() == nullptr);
 }
