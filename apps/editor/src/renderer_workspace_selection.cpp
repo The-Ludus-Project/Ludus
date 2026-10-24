@@ -16,6 +16,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QList>
+#include <QMessageBox>
 #include <QMimeData>
 #include <QPushButton>
 #include <QShortcut>
@@ -243,7 +244,9 @@ bool RendererWorkspace::ApplyRestirTemplate(const QString& configuration)
     return ApplyConfigurationTemplate(configuration, QStringLiteral("restir-di"));
 }
 
-bool RendererWorkspace::ApplyConfigurationTemplate(const QString& configuration, const QString& templateIdentity)
+bool RendererWorkspace::ApplyConfigurationTemplate(const QString& configuration,
+                                                   const QString& templateIdentity,
+                                                   RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
 {
     if (CanCreateSubgraph() == false)
     {
@@ -256,7 +259,8 @@ bool RendererWorkspace::ApplyConfigurationTemplate(const QString& configuration,
                                                                                   configuration,
                                                                                   templateIdentity,
                                                                                   error,
-                                                                                  mSelectedConfiguration);
+                                                                                  mSelectedConfiguration,
+                                                                                  inoutBudgetOrNull);
     if (status != RenderGraphDocumentStatus::Ok)
     {
         mStatus->setText(error);
@@ -356,7 +360,35 @@ void RendererWorkspace::promptConfigurationTemplate()
             &QPushButton::clicked,
             &dialog,
             [this, name, choice, error, &dialog]() {
-                if (ApplyConfigurationTemplate(name->text().trimmed(), choice->currentData().toString()) == true)
+                const QString configuration = name->text().trimmed();
+                const QString templateIdentity = choice->currentData().toString();
+                RenderGraphTemplateBudgetIncrease budget;
+                bool isApplied = ApplyConfigurationTemplate(configuration, templateIdentity, &budget);
+                if (isApplied == false && budget.RequiredPrograms > budget.CurrentPrograms)
+                {
+                    QMessageBox confirmation(QMessageBox::Question,
+                                             QStringLiteral("Increase shader program budget?"),
+                                             QStringLiteral("This template needs %1 shader programs, but the current "
+                                                            "limit is %2. Increase budgets.programs from %2 to %1 "
+                                                            "and apply the template?\n\n"
+                                                            "The increase and template can be undone together. "
+                                                            "Save publishes both changes.")
+                                                 .arg(budget.RequiredPrograms)
+                                                 .arg(budget.CurrentPrograms),
+                                             QMessageBox::Cancel,
+                                             &dialog);
+                    confirmation.setObjectName(QStringLiteral("renderGraphTemplateBudgetConfirmation"));
+                    QPushButton* increase =
+                        confirmation.addButton(QStringLiteral("Increase and apply"), QMessageBox::AcceptRole);
+                    confirmation.setDefaultButton(QMessageBox::Cancel);
+                    confirmation.exec();
+                    if (confirmation.clickedButton() == increase)
+                    {
+                        budget.ApprovedPrograms = budget.RequiredPrograms;
+                        isApplied = ApplyConfigurationTemplate(configuration, templateIdentity, &budget);
+                    }
+                }
+                if (isApplied == true)
                 {
                     dialog.accept();
                 }

@@ -108,7 +108,8 @@ bool MergeVisibilitySchemas(QJsonObject& inoutManifest, const QJsonObject& sourc
 bool MergeVisibilityPrograms(RenderGraphSnapshot& inoutSnapshot,
                              QJsonObject& inoutManifest,
                              const QJsonObject& source,
-                             QString& outError)
+                             QString& outError,
+                             RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
 {
     QJsonArray programs = inoutManifest.value(QStringLiteral("programs")).toArray();
     for (const QJsonValueConstRef value : source.value(QStringLiteral("programs")).toArray())
@@ -158,16 +159,12 @@ bool MergeVisibilityPrograms(RenderGraphSnapshot& inoutSnapshot,
             programs.append(incoming);
         }
     }
-    if (programs.size() >
-        inoutManifest.value(QStringLiteral("budgets")).toObject().value(QStringLiteral("programs")).toInt())
+    if (EnsureTemplateProgramBudget(inoutManifest,
+                                    static_cast<int32>(programs.size()),
+                                    QStringLiteral("Visibility"),
+                                    outError,
+                                    inoutBudgetOrNull) == false)
     {
-        outError = QStringLiteral("Visibility needs %1 shader programs, but budgets.programs is %2. "
-                                  "Increase budgets.programs in the shader manifest and retry.")
-                       .arg(programs.size())
-                       .arg(inoutManifest.value(QStringLiteral("budgets"))
-                                .toObject()
-                                .value(QStringLiteral("programs"))
-                                .toInt());
         return false;
     }
     inoutManifest.insert(QStringLiteral("programs"), programs);
@@ -277,7 +274,8 @@ RenderGraphDocumentStatus PrepareVisibilityConfiguration(RenderGraphSnapshot& in
                                                          const QString& file,
                                                          const QString& configuration,
                                                          const QString& templateIdentity,
-                                                         QString& outError)
+                                                         QString& outError,
+                                                         RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
 {
     const bool hasSecondaryRays = templateIdentity == QStringLiteral("visibility-secondary-rays");
     if (hasSecondaryRays == false && templateIdentity != QStringLiteral("visibility-buffer"))
@@ -344,7 +342,7 @@ RenderGraphDocumentStatus PrepareVisibilityConfiguration(RenderGraphSnapshot& in
         return RenderGraphDocumentStatus::NotFound;
     }
     if (MergeVisibilitySchemas(manifest, source, outError) == false ||
-        MergeVisibilityPrograms(inoutSnapshot, manifest, source, outError) == false ||
+        MergeVisibilityPrograms(inoutSnapshot, manifest, source, outError, inoutBudgetOrNull) == false ||
         (hasSecondaryRays == true && MergeVisibilityRayInterface(inoutSnapshot, manifest, source, outError) == false))
     {
         outError += QStringLiteral(" The draft was preserved.");

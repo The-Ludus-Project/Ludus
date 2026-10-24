@@ -11,6 +11,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
+#include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
 #include <QComboBox>
@@ -27,6 +28,7 @@
 #include <QJsonObject>
 #include <QLineEdit>
 #include <QMenu>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QSpinBox>
@@ -1160,5 +1162,201 @@ TEST_CASE("Nested template shader directories are prepared before saved graph re
     {
         INFO(file.toStdString());
         CHECK(reloaded.GetDraft(file) == document.GetDraft(file));
+    }
+}
+
+TEST_CASE("Template program budget approval is bounded and transactional", "[editor][render-graph][template-budget]")
+{
+    const QString identity = GENERATE(QStringLiteral("restir-di"),
+                                      QStringLiteral("visibility-buffer"),
+                                      QStringLiteral("visibility-secondary-rays"));
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QString manifestFile = QStringLiteral("main.lushader.json");
+    QJsonObject manifest = QJsonDocument::fromJson(document.GetDraft(manifestFile)).object();
+    QJsonObject budgets = manifest.value(QStringLiteral("budgets")).toObject();
+    budgets.insert(QStringLiteral("programs"), 4);
+    manifest.insert(QStringLiteral("budgets"), budgets);
+    REQUIRE(document.SetText(manifestFile, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
+    const QByteArray beforeManifest = document.GetDraft(manifestFile);
+    const QByteArray beforeRoot = document.GetDraft(ROOT_GRAPH);
+    const QStringList beforeFiles = document.GetFiles();
+    QString error;
+    RenderGraphTemplateBudgetIncrease budget;
+    CHECK(document.ApplyConfigurationTemplate(ROOT_GRAPH, QStringLiteral("Lighting"), identity, error, {}, &budget) !=
+          RenderGraphDocumentStatus::Ok);
+    CHECK(budget.CurrentPrograms == 4);
+    REQUIRE(budget.RequiredPrograms > budget.CurrentPrograms);
+    const int32 requiredPrograms = budget.RequiredPrograms;
+    budget.ApprovedPrograms = requiredPrograms - 1;
+    CHECK(document.ApplyConfigurationTemplate(ROOT_GRAPH, QStringLiteral("Lighting"), identity, error, {}, &budget) !=
+          RenderGraphDocumentStatus::Ok);
+    CHECK(document.GetDraft(manifestFile) == beforeManifest);
+    CHECK(document.GetDraft(ROOT_GRAPH) == beforeRoot);
+    CHECK(document.GetFiles() == beforeFiles);
+    budget.ApprovedPrograms = requiredPrograms;
+    SECTION("Approved import and budget share undo and redo")
+    {
+        REQUIRE(
+            document.ApplyConfigurationTemplate(ROOT_GRAPH, QStringLiteral("Lighting"), identity, error, {}, &budget) ==
+            RenderGraphDocumentStatus::Ok);
+        const QByteArray afterManifest = document.GetDraft(manifestFile);
+        const QJsonObject after = QJsonDocument::fromJson(afterManifest).object();
+        // Unchanged defaults retain their pre-existing template upgrade policy.
+        const QJsonObject afterBudgets = after.value(QStringLiteral("budgets")).toObject();
+        CHECK(afterBudgets.value(QStringLiteral("programs")).toInt() == requiredPrograms);
+        CHECK(after.value(QStringLiteral("programs")).toArray().size() == requiredPrograms);
+        CHECK(budget.RequiredPrograms == 0);
+        CHECK(QFileInfo::exists(QDir(document.GetPackageRoot()).filePath(QStringLiteral("Lighting.lurender.json"))) ==
+              false);
+        REQUIRE(document.Undo() == true);
+        CHECK(document.GetDraft(manifestFile) == beforeManifest);
+        CHECK(document.GetDraft(ROOT_GRAPH) == beforeRoot);
+        CHECK(document.GetFiles() == beforeFiles);
+        REQUIRE(document.Redo() == true);
+        CHECK(document.GetDraft(manifestFile) == afterManifest);
+    }
+    SECTION("Later conflicts discard the approved budget increase")
+    {
+        QJsonObject conflicting = manifest;
+        if (identity != QStringLiteral("visibility-buffer"))
+        {
+            QJsonArray techniques = conflicting.value(QStringLiteral("techniques")).toArray();
+            techniques.append(
+                QJsonObject{{QStringLiteral("id"), QStringLiteral("RendererTriangles.RayTracing")},
+                            {QStringLiteral("scene_interface"), QJsonObject{{QStringLiteral("version"), 2}}}});
+            conflicting.insert(QStringLiteral("techniques"), techniques);
+        }
+        else
+        {
+            // A nonempty destination fails before committing any approved increase.
+            budget.RequiredPrograms = requiredPrograms;
+            CHECK(document.ApplyConfigurationTemplate(QStringLiteral("rasterize.lurender.json"),
+                                                      QStringLiteral("ColorAndDepth"),
+                                                      identity,
+                                                      error,
+                                                      {},
+                                                      &budget) != RenderGraphDocumentStatus::Ok);
+            CHECK(budget.RequiredPrograms == 0);
+            CHECK(document.GetDraft(manifestFile) == beforeManifest);
+            CHECK(document.GetFiles() == beforeFiles);
+            return;
+        }
+        REQUIRE(document.SetText(manifestFile, EncodeCanonicalJson(conflicting)) == RenderGraphDocumentStatus::Ok);
+        const QByteArray beforeConflict = document.GetDraft(manifestFile);
+        CHECK(
+            document.ApplyConfigurationTemplate(ROOT_GRAPH, QStringLiteral("Lighting"), identity, error, {}, &budget) !=
+            RenderGraphDocumentStatus::Ok);
+        CHECK(document.GetDraft(manifestFile) == beforeConflict);
+        CHECK(document.GetDraft(ROOT_GRAPH) == beforeRoot);
+        CHECK(document.GetFiles() == beforeFiles);
+    }
+}
+
+TEST_CASE("Canvas template picker confirms a shader program budget increase", "[editor][render-graph][template-budget]")
+{
+    const bool shouldApprove = GENERATE(false, true);
+    QTemporaryDir project;
+    QWidget properties;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    QWidget* inspector = workspace.TakeInspectorPanel(&properties);
+    inspector->hide();
+    properties.hide();
+    workspace.show();
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QString manifestFile = QStringLiteral("main.lushader.json");
+    QJsonObject manifest = QJsonDocument::fromJson(document.GetDraft(manifestFile)).object();
+    QJsonObject budgets = manifest.value(QStringLiteral("budgets")).toObject();
+    budgets.insert(QStringLiteral("programs"), 16);
+    manifest.insert(QStringLiteral("budgets"), budgets);
+    QJsonArray programs = manifest.value(QStringLiteral("programs")).toArray();
+    while (programs.size() < 12)
+    {
+        QJsonObject program = programs.first().toObject();
+        program.insert(QStringLiteral("id"), QStringLiteral("Custom%1").arg(programs.size()));
+        programs.append(program);
+    }
+    manifest.insert(QStringLiteral("programs"), programs);
+    REQUIRE(document.SetText(manifestFile, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
+    const QByteArray beforeManifest = document.GetDraft(manifestFile);
+    const QByteArray beforeRoot = document.GetDraft(ROOT_GRAPH);
+    const QStringList beforeFiles = document.GetFiles();
+    QTimer::singleShot(0, &workspace, [&workspace, shouldApprove]() {
+        QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        REQUIRE(menuOrNull != nullptr);
+        QAction* actionOrNull =
+            menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphApplyConfigurationTemplate"));
+        REQUIRE(actionOrNull != nullptr);
+        menuOrNull->close();
+        QTimer::singleShot(0, &workspace, [&workspace, shouldApprove]() {
+            QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            REQUIRE(dialogOrNull != nullptr);
+            QComboBox* choiceOrNull =
+                dialogOrNull->findChild<QComboBox*>(QStringLiteral("renderGraphConfigurationTemplate"));
+            REQUIRE(choiceOrNull != nullptr);
+            choiceOrNull->setCurrentIndex(choiceOrNull->findData(QStringLiteral("visibility-secondary-rays")));
+            QTimer::singleShot(0, &workspace, [shouldApprove]() {
+                QMessageBox* confirmationOrNull = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+                REQUIRE(confirmationOrNull != nullptr);
+                CHECK(confirmationOrNull->objectName() == QStringLiteral("renderGraphTemplateBudgetConfirmation"));
+                CHECK(confirmationOrNull->text().contains(QStringLiteral("from 16 to 17")) == true);
+                CHECK(confirmationOrNull->defaultButton() == confirmationOrNull->button(QMessageBox::Cancel));
+                if (shouldApprove == true)
+                {
+                    for (QAbstractButton* button : confirmationOrNull->buttons())
+                    {
+                        if (confirmationOrNull->buttonRole(button) == QMessageBox::AcceptRole)
+                        {
+                            button->click();
+                            return;
+                        }
+                    }
+                    FAIL("Increase and apply button is missing");
+                }
+                else
+                {
+                    confirmationOrNull->button(QMessageBox::Cancel)->click();
+                }
+            });
+            QDialogButtonBox* buttonsOrNull = dialogOrNull->findChild<QDialogButtonBox*>();
+            REQUIRE(buttonsOrNull != nullptr);
+            buttonsOrNull->button(QDialogButtonBox::Apply)->click();
+            CHECK(dialogOrNull->isVisible() == (shouldApprove == false));
+            dialogOrNull->reject();
+        });
+        actionOrNull->trigger();
+    });
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    QContextMenuEvent context(QContextMenuEvent::Mouse,
+                              canvas.viewport()->rect().center(),
+                              canvas.viewport()->mapToGlobal(canvas.viewport()->rect().center()));
+    QApplication::sendEvent(canvas.viewport(), &context);
+    CHECK(inspector->isVisible() == false);
+    if (shouldApprove == true)
+    {
+        const QByteArray afterManifest = document.GetDraft(manifestFile);
+        CHECK(QJsonDocument::fromJson(afterManifest)
+                  .object()
+                  .value(QStringLiteral("budgets"))
+                  .toObject()
+                  .value(QStringLiteral("programs"))
+                  .toInt() == 17);
+        workspace.Undo();
+        CHECK(document.GetDraft(manifestFile) == beforeManifest);
+        CHECK(document.GetDraft(ROOT_GRAPH) == beforeRoot);
+        CHECK(document.GetFiles() == beforeFiles);
+        workspace.Redo();
+        CHECK(document.GetDraft(manifestFile) == afterManifest);
+    }
+    else
+    {
+        CHECK(document.GetDraft(manifestFile) == beforeManifest);
+        CHECK(document.GetDraft(ROOT_GRAPH) == beforeRoot);
+        CHECK(document.GetFiles() == beforeFiles);
     }
 }
