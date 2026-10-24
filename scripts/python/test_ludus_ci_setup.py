@@ -47,6 +47,7 @@ class WorkflowTextTests(unittest.TestCase):
             self.assertIn("--profile macos-clang-release", text)
             self.assertNotIn("apt.llvm.org", text)
             self.assertNotIn("CXX:", text)
+            self.assertLess(text.index("brew update --quiet"), text.index("brew install python@3.12"))
 
     def test_release_and_ci_workflows_share_the_pinned_toolchain(self):
         for platform in workflow_steps.NATIVE_PLATFORMS:

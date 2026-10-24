@@ -15,7 +15,7 @@ from .toolchain import LLVM_APT_KEY_FINGERPRINT, PINNED_LLVM_MAJOR, pinned_llvm_
 # The pinned Ludus host tools commit recorded by generated workflows.
 TOOLS_REVISION_RELPATH = "config/ludus-tools-revision.txt"
 
-CHECKOUT_STEP = '''      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+CHECKOUT_STEP = '''      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1 (Node 24)
         with:
           persist-credentials: false
 '''
@@ -34,7 +34,10 @@ _LINUX_TOOLCHAIN = '''          # Ubuntu 24.04 does not package the pinned LLVM;
           python3 -m venv VENV_TOKEN
 '''
 
-_MACOS_TOOLCHAIN = '''          brew install python@3.12 llvm@LLVM_MAJOR_TOKEN
+_MACOS_TOOLCHAIN = '''          # An SDK accepts only the exact compiler version it was built with, and
+          # runner images can carry stale formula metadata; install the current bottle.
+          brew update --quiet
+          brew install python@3.12 llvm@LLVM_MAJOR_TOKEN
           python_bin="$(brew --prefix python@3.12)/bin/python3.12"
           llvm_prefix="$(brew --prefix llvm@LLVM_MAJOR_TOKEN)"
           "$python_bin" -m venv VENV_TOKEN
