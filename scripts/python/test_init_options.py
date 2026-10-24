@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import patch
 
 import engine
+import init_denoiser
 import init_options
 import init_ui
 
@@ -43,7 +44,8 @@ class OptionsTests(unittest.TestCase):
             init_options.save_options(root, (engine.DEFAULT_PRESET,), self.args("--with-tests", "--with-editor"))
             init_options.save_options(root, ("web-emscripten-development",), self.args("--persona", "browser"))
             self.assertTrue(init_options.read_options(root, engine.DEFAULT_PRESET)["LUDUS_BUILD_TESTS"])
-            init_options.save_options(root, (engine.DEFAULT_PRESET,), self.args("--persona", "application"))
+            init_options.save_options(root, (engine.DEFAULT_PRESET,), self.args("--persona", "application",
+                                                                                 "--no-denoiser"))
             self.assertFalse(any(init_options.read_options(root, engine.DEFAULT_PRESET).values()))
             self.assertTrue(init_options.read_options(root, "web-emscripten-development")["LUDUS_BUILD_SMOKE_APP"])
             self.assertEqual(init_options.read_options(root, "untouched"), {})
@@ -147,6 +149,7 @@ class OptionsTests(unittest.TestCase):
                 stack.enter_context(patch.object(engine, "load_tool_versions", return_value={"minimum": {"python": "3.10"}}))
                 stack.enter_context(patch.object(engine, "command_doctor", return_value=0))
                 stack.enter_context(patch.object(init_options, "save_options"))
+                stack.enter_context(patch.object(init_denoiser, "setup_denoiser"))
                 test = stack.enter_context(patch.object(engine, "command_test"))
                 build = stack.enter_context(patch.object(engine, "command_build"))
                 stack.enter_context(contextlib.redirect_stdout(io.StringIO()))

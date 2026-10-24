@@ -46,10 +46,17 @@ if(NOT "@CMAKE_SYSTEM_NAME@" STREQUAL "Emscripten")
     find_dependency(harfbuzz CONFIG)
 endif()
 
-# Threads is a system dependency pulled in by the assertion/concurrency paths.
-if(@LUDUS_ENABLE_OIDN@)
-    find_dependency(OpenImageDenoise 2.5.1 EXACT CONFIG)
+# Renderer links the OIDN denoiser runtime when the SDK was built with it (the
+# ./init.sh default on Apple silicon). The SDK bundles that release under its own
+# prefix; prefer it so consumers link and package the exact runtime it was built with.
+set(Ludus_ENABLE_OIDN @LUDUS_ENABLE_OIDN@)
+if(Ludus_ENABLE_OIDN)
+    find_package(OpenImageDenoise 2.5.1 EXACT CONFIG QUIET PATHS "${PACKAGE_PREFIX_DIR}" NO_DEFAULT_PATH)
+    if(NOT OpenImageDenoise_FOUND)
+        find_dependency(OpenImageDenoise 2.5.1 EXACT CONFIG)
+    endif()
 endif()
+# Threads is a system dependency pulled in by the assertion/concurrency paths.
 find_dependency(Threads)
 
 if(@LUDUS_PLATFORM_ENABLE_WAYLAND@)
@@ -184,6 +191,53 @@ if(NOT COMMAND ludus_apply_app_policy)
         else()
             target_compile_options(${target} PRIVATE /EHs-c-)
         endif()
+    endfunction()
+endif()
+
+# Install the SDK's OIDN runtime libraries and device modules for a packaged
+# executable that links them (Ludus::GraphicsRenderer and its dependents). The
+# check runs at install time, so a game that does not link the renderer, or an SDK
+# built with --no-denoiser, installs nothing. Copies are regular files named by
+# their install names, with an @loader_path search path for their siblings. OIDN's
+# notices are installed with the SDK's under share/Ludus/licenses/OpenImageDenoise.
+#   ludus_install_denoiser_runtime(TARGET <executable> DESTINATION <directory> [COMPONENT <component>])
+if(NOT COMMAND ludus_install_denoiser_runtime)
+    set(Ludus_DENOISER_RUNTIME_LIBRARIES "@LUDUS_OIDN_RUNTIME_LIBRARIES@")
+    if(Ludus_ENABLE_OIDN)
+        cmake_path(GET OpenImageDenoise_DIR PARENT_PATH _ludus_denoiser_runtime_directory)
+        cmake_path(GET _ludus_denoiser_runtime_directory PARENT_PATH _ludus_denoiser_runtime_directory)
+        set(Ludus_DENOISER_RUNTIME_DIRECTORY "${_ludus_denoiser_runtime_directory}")
+        unset(_ludus_denoiser_runtime_directory)
+    endif()
+    function(ludus_install_denoiser_runtime)
+        cmake_parse_arguments(PARSE_ARGV 0 _ludus_denoiser "" "TARGET;DESTINATION;COMPONENT" "")
+        if(NOT _ludus_denoiser_TARGET OR NOT DEFINED _ludus_denoiser_DESTINATION)
+            message(FATAL_ERROR "ludus_install_denoiser_runtime requires TARGET and DESTINATION")
+        endif()
+        if(NOT Ludus_ENABLE_OIDN)
+            return()
+        endif()
+        set(component "")
+        if(_ludus_denoiser_COMPONENT)
+            set(component COMPONENT "${_ludus_denoiser_COMPONENT}")
+        endif()
+        install(CODE "
+            file(STRINGS \"$<TARGET_FILE:${_ludus_denoiser_TARGET}>\" _ludus_denoiser_reference
+                REGEX \"libOpenImageDenoise\" LIMIT_COUNT 1)
+            if(_ludus_denoiser_reference)
+                set(_ludus_denoiser_destination \"\${CMAKE_INSTALL_PREFIX}/${_ludus_denoiser_DESTINATION}\")
+                file(MAKE_DIRECTORY \"\${_ludus_denoiser_destination}\")
+                foreach(_ludus_denoiser_library IN ITEMS ${Ludus_DENOISER_RUNTIME_LIBRARIES})
+                    set(_ludus_denoiser_file \"\${_ludus_denoiser_destination}/\${_ludus_denoiser_library}\")
+                    message(STATUS \"Installing: \${_ludus_denoiser_file}\")
+                    file(COPY_FILE \"${Ludus_DENOISER_RUNTIME_DIRECTORY}/\${_ludus_denoiser_library}\"
+                        \"\${_ludus_denoiser_file}\")
+                    execute_process(COMMAND \"${CMAKE_INSTALL_NAME_TOOL}\" -add_rpath @loader_path
+                        \"\${_ludus_denoiser_file}\" COMMAND_ERROR_IS_FATAL ANY ERROR_QUIET)
+                    execute_process(COMMAND /usr/bin/codesign --force --sign - \"\${_ludus_denoiser_file}\"
+                        COMMAND_ERROR_IS_FATAL ANY OUTPUT_QUIET ERROR_QUIET)
+                endforeach()
+            endif()" ${component})
     endfunction()
 endif()
 

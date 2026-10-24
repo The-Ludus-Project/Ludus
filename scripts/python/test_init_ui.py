@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import engine
+import init_denoiser
 import init_editor
 import init_ui
 import init_options
@@ -407,6 +408,22 @@ class WindowTests(unittest.TestCase):
         self.assertTrue(result.validate and result.skip_sdk)
         self.assertEqual(result.with_rad_debugger, linux)
         self.assertEqual(result.with_editor, linux)
+
+    def test_denoiser_checkbox_follows_host_support_and_opts_out(self):
+        supported = init_denoiser.preset_supports(engine.NATIVE_PRESET_PREFIX + "-development")
+
+        def accept(window, widgets):
+            denoiser = next(widget for widget in widgets if widget.winfo_class() == "TCheckbutton"
+                            and widget.cget("text") == init_ui.OPTION_LABELS["with_denoiser"])
+            self.assertEqual(denoiser.instate(["selected"]), supported)
+            self.assertEqual(denoiser.instate(["disabled"]), not supported)
+            if supported:
+                denoiser.invoke()
+            next(widget for widget in widgets if widget.winfo_class() == "TButton"
+                 and widget.cget("text") == "Initialize").invoke()
+        result = self.select(accept, engine.NATIVE_PRESET_PREFIX + "-development")
+        self.assertFalse(result.with_denoiser)
+        self.assertIn("--no-denoiser", init_ui.selection_to_argv(result))
 
     def test_native_editor_checkbox_remains_selectable(self):
         def accept(window, widgets):

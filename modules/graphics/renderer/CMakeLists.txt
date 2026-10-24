@@ -1,13 +1,22 @@
 add_library(ludus_graphics_renderer STATIC src/gpu_denoiser.cpp src/render_graph.cpp src/render_graph_forward.cpp src/render_graph_scene_resources.cpp src/visibility_buffer.cpp src/render_graph_ray.cpp src/render_graph_upscale.cpp src/render_graph_metalfx.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/gpu_preview_camera.cpp src/gpu_preview_graph.cpp src/render_graph_storage.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/lighting.cpp src/static_lighting.cpp src/environment.cpp src/reference_bsdf.cpp src/reference_scene.cpp src/reference_path.cpp)
 add_library(Ludus::GraphicsRenderer ALIAS ludus_graphics_renderer)
-option(LUDUS_ENABLE_OIDN "Enable optional native OIDN render-graph denoising" OFF)
+include(EngineDenoiserOptions)
 if(LUDUS_ENABLE_OIDN)
-    if(EMSCRIPTEN OR NOT APPLE)
-        message(FATAL_ERROR "LUDUS_ENABLE_OIDN currently requires native Metal on Apple silicon")
-    endif()
-    find_package(OpenImageDenoise 2.5.1 EXACT CONFIG REQUIRED)
     target_compile_definitions(ludus_graphics_renderer PRIVATE LUDUS_ENABLE_OIDN=1)
     target_link_libraries(ludus_graphics_renderer PRIVATE OpenImageDenoise)
+    # The SDK carries the OIDN runtime beside its own CMake package so consumers and
+    # packaged games link and load the same verified release; see LudusConfig.cmake.in.
+    cmake_path(GET OpenImageDenoise_DIR PARENT_PATH ludus_oidn_cmake_directory)
+    cmake_path(GET ludus_oidn_cmake_directory PARENT_PATH ludus_oidn_library_directory)
+    cmake_path(GET ludus_oidn_library_directory PARENT_PATH ludus_oidn_prefix)
+    set(LUDUS_OIDN_RUNTIME_LIBRARIES "${LUDUS_OIDN_RUNTIME_LIBRARIES}" PARENT_SCOPE)
+    # Install-name link chains are preserved; the package's IMPORTED_LOCATION is the versioned file.
+    install(DIRECTORY "${ludus_oidn_library_directory}/" DESTINATION lib USE_SOURCE_PERMISSIONS
+        FILES_MATCHING PATTERN "libOpenImageDenoise*.dylib" PATTERN "libtbb*.dylib" PATTERN "cmake" EXCLUDE)
+    install(DIRECTORY "${OpenImageDenoise_DIR}/" DESTINATION lib/cmake/OpenImageDenoise-2.5.1)
+    list(TRANSFORM LUDUS_OIDN_LICENSE_FILES PREPEND "${ludus_oidn_prefix}/doc/" OUTPUT_VARIABLE ludus_oidn_licenses)
+    install(FILES ${ludus_oidn_licenses} DESTINATION "${CMAKE_INSTALL_DATADIR}/Ludus/licenses/OpenImageDenoise")
+    ludus_sdk_register_dependency(OpenImageDenoise "2.5.1" "Apache-2.0" bundled)
 endif()
 set_target_properties(ludus_graphics_renderer PROPERTIES EXPORT_NAME GraphicsRenderer)
 target_sources(ludus_graphics_renderer PUBLIC FILE_SET public_headers TYPE HEADERS BASE_DIRS include FILES

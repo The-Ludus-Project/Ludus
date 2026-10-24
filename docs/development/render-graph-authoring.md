@@ -1587,21 +1587,46 @@ hardware-dependent selection. Edit quality through Properties or the canvas's
 
 #### Build and platform requirements
 
-OIDN is optional and is not downloaded by configuration or graph loading. Obtain
-the official **OIDN 2.5.1** SDK from the
-[RenderKit releases](https://github.com/RenderKit/oidn/releases/tag/v2.5.1), then add
-the following options to the existing native engine configuration:
+`./init.sh` includes the denoiser by default on macOS Apple silicon: the
+**Include OIDN denoiser** setup checkbox, or `--with-denoiser` on the command
+line. It downloads the official **OIDN 2.5.1** release from the
+[RenderKit releases](https://github.com/RenderKit/oidn/releases/tag/v2.5.1),
+verifies the SHA-256 pinned in `config/tool_versions.json`, unpacks it to
+`out/denoiser/oidn` and saves the choice for the prepared presets. To build
+without the denoiser, uncheck the box or run:
 
-```text
--DLUDUS_ENABLE_OIDN=ON
--DCMAKE_PREFIX_PATH=/path/to/oidn-2.5.1
+```bash
+./init.sh --no-denoiser
 ```
 
-Append the prefix to existing dependency prefixes when necessary. The installed
-Ludus SDK also requires this OIDN package when the engine was built with support
-enabled. Redistribute OIDN's runtime libraries/device modules and their license
-notices according to the upstream SDK; the engine's static library does not embed
-the neural models or device modules. OIDN headers stay private to Renderer.
+Configuration and graph loading never download OIDN. A configure without a
+saved init choice turns the denoiser on only when it finds the official 2.5.1
+release layout (runtime libraries, device modules and notices) in
+`out/denoiser/oidn` or on `CMAKE_PREFIX_PATH`; otherwise it builds without it.
+Custom CMake builds may still set `LUDUS_ENABLE_OIDN` (`OFF`, or `ON`, which fails
+with setup instructions when that release is missing or incomplete). On Linux, browser and
+Windows setups the option is unavailable: init notes that the build goes
+without it, and `--with-denoiser` there is rejected.
+
+An installed SDK built with the denoiser carries OIDN's runtime libraries,
+device modules and CMake package under `lib/`, and its license and third-party
+notices under `share/Ludus/licenses/OpenImageDenoise/`. The SDK's
+`find_package(Ludus)` resolves that bundled copy. Executables that link
+`Ludus::GraphicsRenderer` load the runtime; a project's generated macOS
+release component calls `ludus_install_denoiser_runtime`, which copies it into
+the app's `Contents/Frameworks` only when the game links it. Projects created
+before this helper existed should add the same call to `cmake/GameRelease.cmake`
+before packaging a renderer-linked game:
+
+```cmake
+if(COMMAND ludus_install_denoiser_runtime)
+    ludus_install_denoiser_runtime(TARGET MyGame DESTINATION MyGame.app/Contents/Frameworks COMPONENT GameRelease)
+endif()
+```
+
+The standard release helper already copies the SDK's license directory. The
+engine's static library does not embed the neural models or device modules.
+OIDN headers stay private to Renderer.
 The integration uses OIDN's C API and explicit status results; it does not enable
 C++ exceptions in engine translation units.
 
@@ -1616,8 +1641,8 @@ Denoise node with `Unsupported` when the graph is set up, before any World is
 supplied. A host may call `RenderGraphPackage::BypassDenoising` first to run it as
 if its Denoise nodes were disabled; the editor does this, so its preview shows
 unfiltered color and says the denoiser was skipped. Vulkan and
-browser execution are not yet supported; enabling the build option on those
-platforms is a configuration error. Libraries advertise
+browser execution are not yet supported; explicitly enabling the build option on
+those platforms is a configuration error. Libraries advertise
 broader hardware support, but that does not establish engine interoperability.
 
 The initial filter uses **color only**. Albedo/normal guide ports and temporal

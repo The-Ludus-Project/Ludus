@@ -94,7 +94,9 @@ def command(args, engine) -> int:
     try:
         if args.command == "init":
             from init_options import save_options
+            from init_denoiser import UNSUPPORTED_NOTE
             save_options(root, (args.preset,), args)
+            print(UNSUPPORTED_NOTE)
         if args.command in ("init", "bootstrap"):
             init_progress.begin("host_tools")
             native = json.loads((root / "config/tool_versions.json").read_text())["managed"]

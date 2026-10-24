@@ -73,6 +73,8 @@ def native_plan(args, *, system: str | None = None, environment=None) -> list[St
     single = args.preset_only and not validating
     steps.append(Step("host_tools", "Installing pinned CMake, Ninja and Conan"))
     steps.append(Step("conan", "Conan install" + (" (" + args.preset + ")" if single else " (all native presets)")))
+    if getattr(args, "with_denoiser", False):
+        steps.append(Step("denoiser", "Installing the OIDN denoiser"))
     steps.append(Step("cmake_caches", "Checking CMake caches"))
     if args.with_rad_debugger:
         steps.append(Step("rad", "Building RAD Debugger"))

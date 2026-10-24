@@ -78,6 +78,17 @@ class MachoTests(unittest.TestCase):
             for value in ("/opt/homebrew/lib", "@loader_path/../../../../outside", "@rpath/libgame.dylib"):
                 with self.assertRaises(ToolingError): mac._relative(root, exe, exe, value)
 
+    def test_macos_release_installs_the_denoiser_runtime_only_through_the_sdk_helper(self):
+        for platform in mac.CPUS:
+            helper = next(item.content for item in release_files("Game", platform=platform)
+                          if item.relpath == "cmake/GameRelease.cmake")
+            self.assertIn("if(COMMAND ludus_install_denoiser_runtime)\n    ludus_install_denoiser_runtime(TARGET Game "
+                          "DESTINATION Game.app/Contents/Frameworks COMPONENT GameRelease)", helper)
+        linux = next(item.content for item in release_files("Game") if item.relpath == "cmake/GameRelease.cmake")
+        self.assertNotIn("ludus_install_denoiser_runtime", linux)
+        # The bundled OIDN runtime and its device modules link these system frameworks.
+        self.assertTrue({"Accelerate", "Metal", "MetalPerformanceShaders", "MetalPerformanceShadersGraph"} <= mac.FRAMEWORKS)
+
     def test_both_profiles_and_preset_mismatch(self):
         for platform in mac.CPUS:
             with tempfile.TemporaryDirectory() as temp:

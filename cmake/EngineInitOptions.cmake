@@ -8,7 +8,7 @@ if(LUDUS_USE_INIT_OPTIONS AND EXISTS "${PROJECT_SOURCE_DIR}/out/init/options.jso
         message(FATAL_ERROR "Invalid saved setup choices in out/init/options.json")
     endif()
     get_filename_component(ludus_init_preset "${CMAKE_BINARY_DIR}" NAME)
-    foreach(ludus_init_option IN ITEMS LUDUS_BUILD_TESTS LUDUS_BUILD_SMOKE_APP LUDUS_BUILD_WEB_PROBES LUDUS_BUILD_EDITOR LUDUS_EDITOR_RENDER_PREVIEW LUDUS_BUILD_SHADER_PROBE)
+    foreach(ludus_init_option IN ITEMS LUDUS_BUILD_TESTS LUDUS_BUILD_SMOKE_APP LUDUS_BUILD_WEB_PROBES LUDUS_BUILD_EDITOR LUDUS_EDITOR_RENDER_PREVIEW LUDUS_BUILD_SHADER_PROBE LUDUS_ENABLE_OIDN)
         string(JSON ludus_init_value ERROR_VARIABLE ludus_init_error GET
             "${ludus_init_json}" "${ludus_init_preset}" "${ludus_init_option}")
         if(NOT ludus_init_error)
