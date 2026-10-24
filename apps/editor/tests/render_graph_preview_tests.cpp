@@ -1643,21 +1643,26 @@ TEST_CASE("Selected project World edits reach the delegated graph viewport", "[e
     rhi::Shutdown();
 }
 
-TEST_CASE("Supplied Sponza World replaces a drawable frame through its authored ray graph", "[.sponza-ray-project]")
+TEST_CASE("Supplied World replaces a drawable frame through its authored ray graph",
+          "[.sponza-ray-project][.supplied-ray-project]")
 {
-    const QString root = qEnvironmentVariable("LUDUS_SPONZA_TEST_PROJECT");
-    const QString runtime = qEnvironmentVariable("LUDUS_SPONZA_TEST_RUNTIME");
+    const QString root =
+        qEnvironmentVariable("LUDUS_RAY_TEST_PROJECT", qEnvironmentVariable("LUDUS_SPONZA_TEST_PROJECT"));
+    const QString runtime =
+        qEnvironmentVariable("LUDUS_RAY_TEST_RUNTIME", qEnvironmentVariable("LUDUS_SPONZA_TEST_RUNTIME"));
     if (root.isEmpty() == true || runtime.isEmpty() == true)
     {
         SKIP("Set LUDUS_SPONZA_TEST_PROJECT to an isolated project copy and LUDUS_SPONZA_TEST_RUNTIME to its ray "
              "package.");
     }
+    const QString worldPath = qEnvironmentVariable("LUDUS_RAY_TEST_WORLD", QStringLiteral("assets/sponza.world.json"));
     rhi::StorageLimits storage;
+    storage.ResourcesPerGraph = renderer::VISIBILITY_GRAPH_RESOURCE_CAPACITY;
     storage.ResourcesPerKind = 4096;
     storage.BindingDescriptors = 32768;
     storage.HostBytes = usize{256} * 1024 * 1024;
     storage.ResourceBytes = uint64{2} * 1024 * 1024 * 1024;
-    DeviceFixture device(storage);
+    DeviceFixture device(storage, true);
     REQUIRE(device.IsAvailable == true);
     RenderGraphPreview preview = MakePreview();
     REQUIRE(preview.Attach(device.Device, device.Surface) == true);
@@ -1670,7 +1675,7 @@ TEST_CASE("Supplied Sponza World replaces a drawable frame through its authored 
     REQUIRE(world.LoadSchema(QByteArrayLiteral("{\"version\":1,\"id\":\"ludus.world.default.v1\","
                                                "\"label\":\"World\",\"components\":[],\"assets\":[]}"),
                              error) == true);
-    QFile file(QDir(root).filePath(QStringLiteral("assets/sponza.world.json")));
+    QFile file(QDir(root).filePath(worldPath));
     REQUIRE(file.open(QIODevice::ReadOnly) == true);
     REQUIRE(world.Load(file.readAll(), error) == true);
     const QJsonObject level = world.SceneLevel();
@@ -1691,7 +1696,10 @@ TEST_CASE("Supplied Sponza World replaces a drawable frame through its authored 
     const bool hasScene = RenderScene::LoadCooked(cooked, level, scene, error, {});
     INFO(error.toStdString());
     REQUIRE(hasScene == true);
-    REQUIRE(scene.Objects.size() == 26);
+    if (worldPath == QStringLiteral("assets/sponza.world.json"))
+    {
+        REQUIRE(scene.Objects.size() == 26);
+    }
     RenderPreview viewport;
     REQUIRE(viewport.SetScene(scene) == true);
     constexpr uint32 TARGET_WIDTH = 640;
@@ -1706,7 +1714,11 @@ TEST_CASE("Supplied Sponza World replaces a drawable frame through its authored 
     {
         triangleCount += mesh.Geometry.IndexCount / CORNERS_PER_TRIANGLE;
     }
-    REQUIRE(triangleCount == 2000000);
+    REQUIRE(triangleCount != 0);
+    if (worldPath == QStringLiteral("assets/sponza.world.json"))
+    {
+        REQUIRE(triangleCount == 2000000);
+    }
     QFile runtimeFile(runtime);
     REQUIRE(runtimeFile.open(QIODevice::ReadOnly) == true);
     const QByteArray runtimeBytes = runtimeFile.readAll();
@@ -1728,7 +1740,8 @@ TEST_CASE("Supplied Sponza World replaces a drawable frame through its authored 
     QElapsedTimer timer;
     timer.start();
     while ((preview.GetPresentedRevision() != 2 || preview.GetPresentedGeneration() != rayGeneration) &&
-           timer.elapsed() < TIMEOUT_MILLISECONDS && preview.GetStatus().contains(QStringLiteral("rejected")) == false)
+           timer.elapsed() < TIMEOUT_MILLISECONDS &&
+           preview.GetReport().Candidate != renderer::RenderGraphCandidateState::Failed)
     {
         preview.Tick();
         QTest::qWait(1);
@@ -1746,7 +1759,7 @@ TEST_CASE("Supplied Sponza World replaces a drawable frame through its authored 
     CHECK(preview.GetImage() == firstRayFrame);
     timer.restart();
     while (preview.GetPresentedRevision() != 3 && timer.elapsed() < TIMEOUT_MILLISECONDS &&
-           preview.GetStatus().contains(QStringLiteral("rejected")) == false)
+           preview.GetReport().Candidate != renderer::RenderGraphCandidateState::Failed)
     {
         preview.Tick();
         QTest::qWait(1);
@@ -1755,7 +1768,8 @@ TEST_CASE("Supplied Sponza World replaces a drawable frame through its authored 
     REQUIRE(preview.GetPresentedRevision() == 3);
     CHECK(preview.GetPresentedGeneration() == rayGeneration);
     CHECK(preview.GetImage() != firstRayFrame);
-    const QString capture = qEnvironmentVariable("LUDUS_SPONZA_TEST_IMAGE");
+    const QString capture =
+        qEnvironmentVariable("LUDUS_RAY_TEST_IMAGE", qEnvironmentVariable("LUDUS_SPONZA_TEST_IMAGE"));
     if (capture.isEmpty() == false)
     {
         REQUIRE(preview.GetImage().save(capture) == true);

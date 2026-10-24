@@ -920,6 +920,10 @@ TEST_CASE("Visibility raster IDs reconstruct instance materials and launch secon
     GraphGpuFixture fixture;
     bool hasVisibility = true;
     SECTION("visibility configuration") {}
+    SECTION("visibility configuration with editor grid")
+    {
+        fixture.Cameras[0].WorldGrid = { .IsVisible = true, .FocusDistance = 1, .Width = WIDTH, .Height = HEIGHT };
+    }
     SECTION("ordinary configuration in the same package")
     {
         hasVisibility = false;
@@ -1442,6 +1446,8 @@ TEST_CASE("Built-in visibility templates preserve IDs and reconstruct reflected 
     };
     wait(fixture.Graph.Initialize(fixture.Device, plan, programs, nullptr, WIDTH, HEIGHT), "initialize");
     fixture.Cameras[0].OrthographicCamera = true;
+    // Navigation overlays cannot alter either exported visibility IDs or the ray producer's inputs.
+    fixture.Cameras[0].WorldGrid = { .IsVisible = true, .FocusDistance = 1, .Width = WIDTH, .Height = HEIGHT };
     constexpr usize MATERIAL_COUNT = 2;
     StaticArray<renderer::SceneShaderMaterial, MATERIAL_COUNT> materials{};
     materials[0].BaseColor = {1, 1, 1};
