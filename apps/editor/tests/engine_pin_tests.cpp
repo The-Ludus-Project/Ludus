@@ -7,6 +7,8 @@
 #include "internal/main_window.h"
 #include "internal/project_setup_dialog.h"
 
+#include <ludus/foundation/base/types.h>
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <QAction>
@@ -28,6 +30,8 @@ using namespace ludus::editor;
 
 namespace
 {
+constexpr ludus::foundation::int32 SETUP_CHECK_TIMEOUT_MILLISECONDS = 10000;
+
 void WriteFile(const QString& path, const QByteArray& bytes)
 {
     REQUIRE(QDir().mkpath(QFileInfo(path).absolutePath()));
@@ -340,11 +344,17 @@ print(json.dumps(dict(protocol=1, type='result', job=request['job'],
     check->click();
     const QString renderingProblem = QStringLiteral("Rendering tools need preparation.");
     controller.ReportProjectSetupProblem(renderingProblem);
-    REQUIRE(QTest::qWaitFor([&controller]() { return controller.Caps().CanCloseImmediately; }, 10000));
+    // ToolProcess retires before its queued Finished notification refreshes the
+    // controls. Wait for the button too, so the next click cannot be ignored.
+    REQUIRE(QTest::qWaitFor(
+        [&controller, check]() { return controller.Caps().CanCloseImmediately == true && check->isEnabled() == true; },
+        SETUP_CHECK_TIMEOUT_MILLISECONDS));
     CHECK(controller.State().SetupProblem == renderingProblem);
     CHECK(notice->isVisible() == true);
     check->click();
-    REQUIRE(QTest::qWaitFor([&controller]() { return controller.Caps().CanCloseImmediately; }, 10000));
+    REQUIRE(QTest::qWaitFor(
+        [&controller, check]() { return controller.Caps().CanCloseImmediately == true && check->isEnabled() == true; },
+        SETUP_CHECK_TIMEOUT_MILLISECONDS));
     CHECK(controller.State().SetupProblem.isEmpty() == true);
     CHECK(notice->isVisible() == false);
 

@@ -1153,7 +1153,7 @@ TEST_CASE("One visibility raster feeds every pass of an ordered ray sequence",
     constexpr uint8 UNIT = 188;
     const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
     const usize corner = GetPixel(0, 0);
-    const auto checkFrame = [&fixture, corner](usize surface) {
+    const auto checkFrame = [&fixture](usize surface) {
         ReadGraphFrame(fixture);
         CHECK(fixture.Pixels[surface] == 0);
         CHECK(fixture.Pixels[surface + 1] == UNIT);

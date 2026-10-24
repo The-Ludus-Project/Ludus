@@ -48,8 +48,6 @@ constexpr uint32 MAX_PHYSICAL_DEVICES = 32;
 constexpr uint32 MAX_AVAILABLE_INSTANCE_EXTENSIONS = 128;
 /// Longest wait for a frame or present fence: five seconds.
 constexpr uint64 FENCE_TIMEOUT_NANOSECONDS = 5000000000ULL;
-/// Bytes in one RGBA8 headless readback pixel.
-constexpr usize READBACK_PIXEL_BYTES = 4;
 void RasterVkDependencies(bool surface, VkSubpassDependency (&dependencies)[2]) noexcept;
 struct Frame final
 {
@@ -712,13 +710,12 @@ bool Initialize(const ApplicationInfo& app) noexcept
         extensions[extensionCount++] = VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME;
     }
 #endif
-    constexpr usize MAX_INSTANCE_EXTENSION_PROPERTIES = 128;
     uint32 propertyCount = 0;
     hasDebugLabels = false;
     if (vkEnumerateInstanceExtensionProperties(nullptr, &propertyCount, nullptr) == VK_SUCCESS &&
-        propertyCount <= MAX_INSTANCE_EXTENSION_PROPERTIES)
+        propertyCount <= MAX_AVAILABLE_INSTANCE_EXTENSIONS)
     {
-        StaticArray<VkExtensionProperties, MAX_INSTANCE_EXTENSION_PROPERTIES> properties;
+        StaticArray<VkExtensionProperties, MAX_AVAILABLE_INSTANCE_EXTENSIONS> properties;
         if (vkEnumerateInstanceExtensionProperties(nullptr, &propertyCount, properties.GetData()) == VK_SUCCESS)
         {
             for (usize index = 0; index < propertyCount; ++index)
@@ -1824,6 +1821,8 @@ ResourceStatus Draw(usize slot) noexcept
 #if defined(LUDUS_RHI_TEST_READBACK)
 bool ReadHeadlessPixels(std::span<uint8> pixels) noexcept
 {
+    /// Bytes in one RGBA8 headless readback pixel.
+    constexpr usize READBACK_PIXEL_BYTES = 4;
     if (gHeadless == false || gEncoding ||
         pixels.size() != static_cast<usize>(gExtent.width) * gExtent.height * READBACK_PIXEL_BYTES)
     {

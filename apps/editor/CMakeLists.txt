@@ -1041,6 +1041,20 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()
 
+# Keep the established editor test build entry point complete as suites move into
+# separate executables. Trusted batch workflows build this target before running
+# the editor CTest label, including during the promotion of newer workflow code.
+if(TARGET ludus_editor_tests)
+    foreach(target IN ITEMS ludus_editor_accessibility_tests ludus_code_editor_tests
+            ludus_editor_browser_content_tests ludus_render_graph_pipeline_tests
+            ludus_shader_interface_tests ludus_render_graph_configuration_tests
+            ludus_render_graph_live_build_tests)
+        if(TARGET ${target})
+            add_dependencies(ludus_editor_tests ${target})
+        endif()
+    endforeach()
+endif()
+
 # Source bindings share the package document; formatter/input code stays generic.
 foreach(target IN ITEMS ludus_editor ludus_editor_tests ludus_render_graph_configuration_tests)
     if(TARGET ${target})

@@ -434,6 +434,10 @@ control has a 2 MiB raw-log ceiling. Its unique run directory under
 The macOS sanitizer preset runs and preserves controls before native runtime and
 Behavior acceptance, so a later application failure cannot prevent their capture.
 Its separate Debug diagnostic configure retains its startup/decision tests.
+The `ludus_editor_tests` build target also prepares the split editor test executables
+registered alongside it. This keeps the sanitizer job's `editor` label runnable
+when a captured candidate introduces a new test executable before its workflow
+definition reaches `main`. Keep that dependency closure current when splitting suites.
 
 ## Q1 analysis and host tooling
 

@@ -522,6 +522,8 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     remove->setObjectName(QStringLiteral("renderGraphRemoveNode"));
     inspectorLayout->addWidget(remove, 0, Qt::AlignLeft);
     mNewKind->setObjectName(QStringLiteral("renderGraphNewKind"));
+    mNewKind->setMinimumContentsLength(1);
+    mNewKind->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
     mNewKind->addItems({QStringLiteral("Scene"),
                         QStringLiteral("Camera"),
                         QStringLiteral("Target"),
@@ -554,8 +556,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     QPushButton* add = new QPushButton(QStringLiteral("Add Node"), mInspector);
     add->setObjectName(QStringLiteral("renderGraphAddNode"));
     QHBoxLayout* addRow = new QHBoxLayout;
-    addRow->addWidget(mNewKind);
-    addRow->addStretch();
+    addRow->addWidget(mNewKind, 1);
     addRow->addWidget(add);
     inspectorLayout->addLayout(addRow);
     mNodeCreationMessage->setObjectName(QStringLiteral("renderGraphNodeCreationMessage"));
