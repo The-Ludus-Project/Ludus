@@ -1,5 +1,6 @@
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_canvas_feedback.h"
+#include "internal/render_graph_node_ports.h"
 #include "internal/render_graph_pipeline_node.h"
 #include "internal/render_graph_resources.h"
 #include "internal/render_graph_scene_bundle.h"
@@ -104,17 +105,6 @@ QJsonObject FindNode(const QJsonObject& configuration, const QString& node)
         }
     }
     return {};
-}
-
-QVector<RenderGraphPort> ReadInterface(const QJsonArray& ports)
-{
-    QVector<RenderGraphPort> result;
-    for (const QJsonValueConstRef port : ports)
-    {
-        result.append({port.toObject().value(QStringLiteral("id")).toString(),
-                       port.toObject().value(QStringLiteral("type")).toString()});
-    }
-    return result;
 }
 
 QString FindType(const QVector<RenderGraphPort>& ports, const QString& port)
@@ -244,109 +234,6 @@ bool IsRenderGraphNodeEnabled(const QJsonObject& node)
            node.value(QStringLiteral("enabled")) != QJsonValue(false);
 }
 
-bool GetRenderGraphNodePorts(const RenderGraphDocument& document,
-                             const QJsonObject& node,
-                             RenderGraphNodePorts& outPorts)
-{
-    const QString kind = node.value(QStringLiteral("kind")).toString();
-    RenderGraphNodePorts ports;
-    if (kind == QStringLiteral("Upscale"))
-    {
-        ports.Inputs = ReadInterface(GetUpscaleInputPorts(node));
-        ports.Outputs = {{QStringLiteral("color"), QStringLiteral("ColorTexture")}};
-    }
-    else if (IsPipelineNode(kind) == true)
-    {
-        ports.Inputs = ReadInterface(node.value(QStringLiteral("inputs")).toArray());
-        AppendSceneBundleInputs(ports.Inputs);
-        ports.Outputs = ReadInterface(node.value(QStringLiteral("outputs")).toArray());
-    }
-    else if (kind == QStringLiteral("Accumulate") || kind == QStringLiteral("ToneMap") ||
-             kind == QStringLiteral("Denoise"))
-    {
-        ports.Inputs = {{QStringLiteral("color"), QStringLiteral("ColorTexture")}};
-        ports.Outputs = {{QStringLiteral("color"), QStringLiteral("ColorTexture")}};
-    }
-    else if (kind == QStringLiteral("Scene"))
-    {
-        ports.Outputs = {{QStringLiteral("scene"), QStringLiteral("Scene")},
-                         {QStringLiteral("geometry"), QStringLiteral("SceneGeometry")},
-                         {QStringLiteral("materials"), QStringLiteral("SceneMaterials")},
-                         {QStringLiteral("lights"), QStringLiteral("SceneLights")}};
-    }
-    else if (kind == QStringLiteral("Camera"))
-    {
-        ports.Inputs = {{QStringLiteral("target"), node.value(QStringLiteral("target_type")).toString()}};
-        ports.Outputs = {{QStringLiteral("view"), QStringLiteral("View")}};
-    }
-    else if (kind == QStringLiteral("Buffer") || kind == QStringLiteral("StructuredBuffer"))
-    {
-        if (node.contains(QStringLiteral("bytes_per_pixel")) == true)
-        {
-            ports.Inputs = {{QStringLiteral("size"), QStringLiteral("RenderSize")}};
-        }
-        ports.Outputs = {{QStringLiteral("buffer"), QStringLiteral("Buffer")}};
-    }
-    else if (kind == QStringLiteral("Target"))
-    {
-        if (node.value(QStringLiteral("extent")).toString() == QStringLiteral("RenderSize"))
-        {
-            ports.Inputs = {{QStringLiteral("size"), QStringLiteral("RenderSize")}};
-        }
-        ports.Outputs = {{QStringLiteral("texture"), node.value(QStringLiteral("type")).toString()}};
-    }
-    else if (kind == QStringLiteral("RenderSize") || kind == QStringLiteral("OutputSize"))
-    {
-        if (node.value(QStringLiteral("extent")).toString() == QStringLiteral("Texture"))
-        {
-            ports.Inputs = {{QStringLiteral("texture"), QStringLiteral("Texture")}};
-        }
-        if (node.value(QStringLiteral("extent")).toString() == QStringLiteral("OutputSize"))
-        {
-            ports.Inputs = {{QStringLiteral("output"), QStringLiteral("RenderSize")}};
-        }
-        ports.Outputs = {{QStringLiteral("size"), QStringLiteral("RenderSize")}};
-    }
-    else if (kind == QStringLiteral("Raster"))
-    {
-        ports.Inputs = {{QStringLiteral("scene"), QStringLiteral("Scene")},
-                        {QStringLiteral("view"), QStringLiteral("View")},
-                        {QStringLiteral("depth"), QStringLiteral("DepthTexture")}};
-        ports.Outputs = {{QStringLiteral("depth"), QStringLiteral("DepthTexture")}};
-        if (node.value(QStringLiteral("mode")).toString() == QStringLiteral("ColorAndDepth"))
-        {
-            ports.Inputs.append({QStringLiteral("color"), QStringLiteral("ColorTexture")});
-            ports.Outputs.append({QStringLiteral("color"), QStringLiteral("ColorTexture")});
-        }
-    }
-    else if (kind == QStringLiteral("Subgraph"))
-    {
-        // Assets are package-relative, exactly as the shared validator resolves them.
-        QJsonObject graph;
-        if (document.GetGraph(node.value(QStringLiteral("asset")).toString(), graph) == false)
-        {
-            return false;
-        }
-        const QJsonObject selected = FindConfiguration(graph, node.value(QStringLiteral("configuration")).toString());
-        if (selected.isEmpty() == true)
-        {
-            return false;
-        }
-        ports.Inputs = ReadInterface(selected.value(QStringLiteral("inputs")).toArray());
-        ports.Outputs = ReadInterface(selected.value(QStringLiteral("outputs")).toArray());
-    }
-    else if (kind == QStringLiteral("Export"))
-    {
-        ports.Inputs = {{QStringLiteral("texture"), node.value(QStringLiteral("type")).toString()}};
-    }
-    else if (kind == QStringLiteral("Present"))
-    {
-        ports.Inputs = {{QStringLiteral("color"), QStringLiteral("ColorTexture")}};
-    }
-    outPorts = ports;
-    return true;
-}
-
 // File, configuration and endpoints are distinct named identities.
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
 RenderGraphLinkCheck CheckRenderGraphLink(const RenderGraphDocument& document,
@@ -377,7 +264,8 @@ RenderGraphLinkCheck CheckRenderGraphLink(const RenderGraphDocument& document,
     QString sourceType;
     if (source == INPUT_NODE)
     {
-        sourceType = FindType(ReadInterface(record.value(QStringLiteral("inputs")).toArray()), GetEndpointPort(from));
+        sourceType = FindType(ReadRenderGraphInterfacePorts(record.value(QStringLiteral("inputs")).toArray()),
+                              GetEndpointPort(from));
     }
     else
     {
@@ -400,7 +288,7 @@ RenderGraphLinkCheck CheckRenderGraphLink(const RenderGraphDocument& document,
     if (sink == OUTPUTS_NODE)
     {
         const QJsonArray outputs = record.value(QStringLiteral("outputs")).toArray();
-        const QString sinkType = FindType(ReadInterface(outputs), GetEndpointPort(to));
+        const QString sinkType = FindType(ReadRenderGraphInterfacePorts(outputs), GetEndpointPort(to));
         if (sinkType.isEmpty() == true)
         {
             return {QStringLiteral("Port"), QStringLiteral("unknown configuration output %1").arg(to)};
@@ -831,7 +719,8 @@ void RenderGraphCanvas::Rebuild()
         view->Kind = kind;
         rows.insert(column, row + qMax(ROW_SPACING, view->Frame->rect().height() + NODE_ROW_GAP));
     }
-    const QVector<RenderGraphPort> inputs = ReadInterface(record.value(QStringLiteral("inputs")).toArray());
+    const QVector<RenderGraphPort> inputs =
+        ReadRenderGraphInterfacePorts(record.value(QStringLiteral("inputs")).toArray());
     if (inputs.isEmpty() == false)
     {
         NodeView* view = addNode(INPUT_NODE,
@@ -849,7 +738,7 @@ void RenderGraphCanvas::Rebuild()
         NodeView* view = addNode(OUTPUTS_NODE,
                                  QStringLiteral("outputs (configuration)"),
                                  RenderGraphDomain::Interface,
-                                 {ReadInterface(outputs), {}},
+                                 {ReadRenderGraphInterfacePorts(outputs), {}},
                                  QPointF((lastColumn + 1) * COLUMN_SPACING, 0),
                                  {});
         view->IsMovable = false;

@@ -3,6 +3,7 @@
 #include <ludus/foundation/base/types.h>
 
 #include "internal/render_graph_document.h"
+#include "internal/render_graph_node_ports.h"
 
 #include <QGraphicsView>
 #include <QHash>
@@ -27,20 +28,6 @@ QT_END_NAMESPACE
 
 namespace ludus::editor
 {
-/// One typed node port, including graph-only RenderSize values and texture inputs.
-struct RenderGraphPort final
-{
-    QString Id;
-    QString Type;
-};
-
-/// Inputs (consumed) and outputs (produced) of one authored node or configuration interface.
-struct RenderGraphNodePorts final
-{
-    QVector<RenderGraphPort> Inputs;
-    QVector<RenderGraphPort> Outputs;
-};
-
 /// Connection domain shown on the canvas (docs/architecture/render-graph-authoring.md,
 /// "Node and connection contracts"). Shader functions live in build manifests, not here.
 enum class RenderGraphDomain : foundation::uint8
@@ -74,12 +61,6 @@ struct RenderGraphLinkCheck final
 /// False only when a node that can be disabled is authored with `"enabled": false`. The compiler
 /// then forwards its color input to its consumers; the node, its wires and settings stay in the draft.
 [[nodiscard]] bool IsRenderGraphNodeEnabled(const QJsonObject& node);
-
-/// Ports of one node, mirroring ludus_tools.render_graph `node_ports`. A Subgraph's ports
-/// are its referenced configuration's interface, resolved from the package draft.
-/// @return False when a Subgraph's asset or configuration is not in the draft.
-[[nodiscard]] bool
-GetRenderGraphNodePorts(const RenderGraphDocument& document, const QJsonObject& node, RenderGraphNodePorts& outPorts);
 
 /// Pre-check a `node.port` -> `node.port` edge against the draft configuration before it is
 /// committed: direction, known ports, type, a single writer per input, within-frame cycles

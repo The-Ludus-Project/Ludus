@@ -1,6 +1,6 @@
 #include "internal/render_graph_configuration_editor.h"
-#include "internal/render_graph_canvas.h"
 #include "internal/render_graph_document.h"
+#include "internal/render_graph_node_ports.h"
 
 #include <QComboBox>
 #include <QDialogButtonBox>
