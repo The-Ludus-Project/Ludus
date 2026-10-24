@@ -985,7 +985,15 @@ generation, prewarms it, requires it to prepare the latest accepted extraction,
 and publishes it only inside `Poll` between frames with no unconfirmed encoding.
 The CPU interface identity covers the vertex/instance schema, the static inputs,
 and the per-draw uniform schemas with every target layout that packs them, so a
-changed uniform schema or layout returns RestartRequired.
+changed uniform schema or layout returns RestartRequired. The exact built-in
+visibility extension (`Primitive` and `DrawInstance`, both `Float2` at locations
+6/7 with semantics `TEXCOORD4`/`TEXCOORD5`) shares the static host contract: the
+renderer already owns and fills both vertex stream layouts. Cooking retains the
+base schema verbatim, normalizes only that complete suffix, and counts identical
+vertex inputs once per target rather than once per shader pair. Shader artifacts
+and serialized input records retain all eight visibility locations. Other field
+names, types, semantics, locations, order and extensions remain distinct; uniform
+schemas, bindings and target layouts are still included without normalization.
 A pending, failed or coverage-rejecting candidate leaves the active generation,
 its pixels and output revision unchanged; a CPU interface mismatch returns
 RestartRequired and stages nothing. The replaced generation is Reset at the

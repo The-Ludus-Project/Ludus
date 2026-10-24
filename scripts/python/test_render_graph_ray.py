@@ -539,6 +539,31 @@ class RayPipelineTests(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('LUDUS_RG1_SLANG') and os.environ.get('LUDUS_RG1_HELPER') and os.environ.get('LUDUS_RG1_CROSS'),
                      'set LUDUS_RG1_SLANG, LUDUS_RG1_HELPER and LUDUS_RG1_CROSS for native ray compiler acceptance')
 class RayCompilerAcceptance(unittest.TestCase):
+    def test_builtin_visibility_templates_keep_the_static_host_interface(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
+                           spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+            interfaces = []
+            for template in ('raster', 'visibility-buffer', 'visibility-secondary-rays'):
+                with self.subTest(template=template):
+                    source = graph.new_workspace(root / template, output='offscreen', renderer_static=True,
+                                                 profiles=('metal', 'wgsl'), template=template)
+                    result = build.build_package(source.with_name('main.lushader.json'), root / (template + '-build'),
+                                                 **options)
+                    contents = execution._runtime_contents(result['package'], 'Default')
+                    interfaces.append(contents['interface_identity'])
+                    runtime = execution.cook_runtime(result['package'], root / (template + '.lurgrt'))
+                    self.assertEqual(contents['interface_identity'], runtime['interface_identity'])
+                    if template != 'raster':
+                        raster_inputs = [len(artifact['descriptor']['interface']['inputs'])
+                                         for (name, stage, target), artifact in contents['artifacts'].items()
+                                         if stage == 'vertex' and name != 'RayTracing']
+                        self.assertTrue(raster_inputs)
+                        self.assertEqual({len(execution.VISIBILITY_INPUTS)}, set(raster_inputs))
+            self.assertEqual(1, len(set(interfaces)))
+            self.assertEqual('7c90fffb376e45500932936927e1dbe7eebab7e2e0b975108253787e93ace25b', interfaces[0])
+
     def test_visibility_and_ordinary_configurations_compile_and_cook_independently(self):
         from ludus_tools import render_graph_templates as templates, render_graph_execution as execution
         with tempfile.TemporaryDirectory() as temporary:

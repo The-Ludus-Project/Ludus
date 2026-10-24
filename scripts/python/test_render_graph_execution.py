@@ -26,6 +26,9 @@ class ExecutionTests(unittest.TestCase):
         self.manifest = build.new_build_sources(self.graph, profiles=('metal', 'wgsl'), renderer_static=True)
         self.stage_slot = 0
         self.has_bias = False
+        self.has_visibility = False
+        (self.helper / 'visibility_buffer.slang').write_bytes(
+            (ROOT / 'modules/graphics/renderer/shaders/visibility_buffer.slang').read_bytes())
 
     def stage(self, command, cancel):
         fixtures.BuildTests.stage(self, command, cancel)
@@ -36,6 +39,10 @@ class ExecutionTests(unittest.TestCase):
                 {'location': i, 'format': 'Float3' if i == 0 else 'Float4', 'name': name}
                 for i, name in enumerate(('PositionMesh', 'MeshToClipRow0', 'MeshToClipRow1',
                                          'MeshToClipRow2', 'MeshToClipRow3', 'Color'))]
+        if descriptor['stage'] == 'vertex' and self.has_visibility:
+            fields = next(schema['fields'] for schema in self.value()['schemas'] if schema['id'] == 'RendererStatic')
+            descriptor['interface']['inputs'] = [
+                {'location': field['location'], 'format': field['type'], 'name': field['id']} for field in fields]
         for entry in descriptor['interface']['entries']:
             entry['binding'] = self.stage_slot
             if self.has_bias:
@@ -49,6 +56,8 @@ class ExecutionTests(unittest.TestCase):
 
     def test_independent_same_family_passes_keep_distinct_entry_points_in_both_emitters(self):
         from ludus_tools import render_graph_pipeline as pipeline
+        self.run_build()
+        original_interface = execution._runtime_contents(self.output, 'Default')['interface_identity']
         manifest = self.value()
         base = manifest['techniques'][0]
         program = copy.deepcopy(next(p for p in manifest['programs'] if p['id'] == base['fragment']))
@@ -87,6 +96,7 @@ class ExecutionTests(unittest.TestCase):
         self.run_build()
         contents = execution._runtime_contents(self.output, 'Default')
         self.assertEqual({'ColorAndDepth', 'ColorAndDepthVariant1'}, {p['Program'] for p in contents['passes']})
+        self.assertEqual(original_interface, contents['interface_identity'])
         self.assertTrue(all(p['AllowsRepeatedCoverage'] == 1 for p in contents['passes']))
         colors = [item['bytes'] for key, item in contents['artifacts'].items()
                   if key[1:] == ('fragment', 'metal')]
@@ -386,6 +396,69 @@ class ExecutionTests(unittest.TestCase):
         with self.assertRaisesRegex(ToolingError, 'one schema and layout'):
             execution._lower_uniforms(package, {('ColorAndDepth', 'vertex', 'wgsl'): stage,
                                                 ('ColorAndDepth', 'fragment', 'wgsl'): other})
+
+    def visibility_fields(self):
+        # Read the renderer-owned schema rather than recreating the expected layout in a fixture.
+        from ludus_tools import render_graph_templates as templates
+        files = templates.template_files('visibility-buffer', ('metal', 'wgsl'), graph)
+        manifest = json.loads(files['main.lushader.json'])
+        return next(schema['fields'] for schema in manifest['schemas'] if schema['id'] == 'RendererStatic')
+
+    def test_supported_visibility_layout_keeps_the_compiled_static_interface(self):
+        self.run_build()
+        original_interface = execution._runtime_contents(self.output, 'Default')['interface_identity']
+        # This is the fingerprint already compiled into the stock Metal/WGSL editor.
+        self.assertEqual('7c90fffb376e45500932936927e1dbe7eebab7e2e0b975108253787e93ace25b', original_interface)
+        fields = self.visibility_fields()
+        self.edit(lambda manifest: manifest['schemas'][0].update(fields=fields))
+        self.has_visibility = True
+        self.run_build()
+        contents = execution._runtime_contents(self.output, 'Default')
+        self.assertEqual(original_interface, contents['interface_identity'])
+        vertex_inputs = [artifact['descriptor']['interface']['inputs']
+                         for key, artifact in contents['artifacts'].items() if key[1] == 'vertex']
+        self.assertTrue(all(len(inputs) == len(fields) for inputs in vertex_inputs))
+        destination = self.root / 'visibility.h'
+        execution.emit_runtime(self.output, destination)
+        self.assertIn('0x7c, 0x90, 0xff, 0xfb', destination.read_text())
+        # The runtime and compiled-header emitters share the compatibility identity;
+        # neither rewrites the real eight-location shader inputs.
+        runtime = execution.cook_runtime(self.output, self.root / 'visibility.lurgrt')
+        self.assertEqual(original_interface, runtime['interface_identity'])
+
+    def test_incompatible_visibility_or_base_fields_do_not_match_the_static_host(self):
+        self.run_build()
+        original_interface = execution._runtime_contents(self.output, 'Default')['interface_identity']
+        original = self.value()
+        cases = []
+        for field_index in (0, 6, 7):
+            for key, value in (('id', 'OtherField'), ('semantic', 'TEXCOORD9'), ('type', 'Float4'), ('location', 9)):
+                fields = self.visibility_fields()
+                fields[field_index][key] = value
+                cases.append((f'{field_index}:{key}', fields))
+        reordered = self.visibility_fields()
+        reordered[-2:] = reversed(reordered[-2:])
+        cases.append(('reordered extension', reordered))
+        partial = self.visibility_fields()[:-1]
+        cases.append(('partial extension', partial))
+        extra = self.visibility_fields()
+        extra.append({'id': 'OtherField', 'type': 'Float2', 'semantic': 'TEXCOORD9', 'location': 8})
+        cases.append(('additional field', extra))
+        self.has_visibility = True
+        for name, fields in cases:
+            with self.subTest(name=name):
+                manifest = copy.deepcopy(original)
+                manifest['schemas'][0]['fields'] = fields
+                self.manifest.write_bytes(build.encoded(manifest))
+                try:
+                    self.run_build()
+                    identity = execution._runtime_contents(self.output, 'Default')['interface_identity']
+                except ToolingError as error:
+                    # Unsupported physical input formats/locations fail admission before activation.
+                    self.assertEqual('RenderGraphBuildConfiguration', error.code)
+                    self.assertRegex(str(error), 'unsupported static/visibility vertex interface')
+                    continue
+                self.assertNotEqual(original_interface, identity)
 
     def test_interface_identity_changes_with_uniform_schemas_and_layouts(self):
         self.run_build()

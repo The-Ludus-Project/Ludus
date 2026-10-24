@@ -1299,7 +1299,13 @@ Applying a template adds its graph, shader sources, compatible identity attribut
 and manifest records in one undo step. **Save** publishes the complete edit.
 Ordinary raster shader bytes are retained; the shared `RendererStatic` schema gains
 its two visibility attributes, and a separate flat varying/graphics technique
-keeps visibility shaders distinct. Unchanged engine-default authoring budgets
+keeps visibility shaders distinct. The exact built-in visibility vertex layout
+is compatible with the editor's static preview interface. After updating the
+cooking tools, use **Build & Preview** again to recook an older runtime whose
+fingerprint included the extra fields; restarting alone does not recook it.
+This compatibility does not admit custom vertex fields or changed uniform/binding
+layouts. The previous drawable view remains visible if a replacement is rejected.
+Unchanged engine-default authoring budgets
 expand to the template's budgets; custom limits remain authoritative. If a custom
 program limit is too small, the picker offers **Increase and apply**, showing the
 current and required counts. Approval raises `budgets.programs` to the required
