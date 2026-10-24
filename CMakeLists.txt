@@ -307,6 +307,13 @@ add_subdirectory(modules/foundation/parsing)
 add_subdirectory(modules/tooling/shader_compiler)
 add_subdirectory(modules/foundation/reflection)
 add_subdirectory(modules/foundation/serialization)
+# Native game modules are shared libraries that link the installed reflection
+# and serialization codecs statically. Their whole static closure must be
+# position-independent, whether or not the Behavior provider is built.
+if(NOT EMSCRIPTEN)
+    set_target_properties(ludus_foundation_base ludus_foundation_memory ludus_foundation_math
+        ludus_foundation_parsing ludus_foundation_parsing_json ludus_yyjson PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
 add_subdirectory(modules/foundation/config)
 add_subdirectory(modules/runtime/configuration)
 if(NOT EMSCRIPTEN)

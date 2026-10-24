@@ -38,10 +38,9 @@ target_link_libraries(ludus_runtime_behavior PUBLIC Ludus::FoundationBase PRIVAT
 ludus_apply_project_defaults(ludus_runtime_behavior)
 # Installed native game modules link the provider and closed JSON debug bridge
 # statically. Own their PIC closure here; private S2 probes are not prerequisites.
+# The foundation libraries are position-independent for every native SDK.
 if(NOT EMSCRIPTEN)
-    foreach(target ludus_runtime_behavior ludus_runtime_scripting Luau.VM Luau.Common
-        ludus_foundation_base ludus_foundation_memory ludus_foundation_math
-        ludus_foundation_parsing ludus_foundation_parsing_json ludus_yyjson)
+    foreach(target ludus_runtime_behavior ludus_runtime_scripting Luau.VM Luau.Common)
         set_target_properties(${target} PROPERTIES POSITION_INDEPENDENT_CODE ON)
     endforeach()
 endif()
