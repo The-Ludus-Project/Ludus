@@ -1017,20 +1017,33 @@ TEST_CASE("Subgraph creation preserves existing sources and rejects unsafe names
                                     QStringLiteral("Default"),
                                     QStringLiteral("raster"),
                                     QStringLiteral("NewLibrary")) == RenderGraphDocumentStatus::Ok);
-    // Rebinding retains the parent's authored connections for explicit interface editing.
+    // The new library has an empty interface, so rebinding drops every connection to the
+    // rebound node and keeps the parent's unrelated connections.
+    QJsonArray retainedEdges;
+    for (const QJsonValueConstRef edge : QJsonDocument::fromJson(original)
+                                             .object()
+                                             .value(QStringLiteral("configurations"))
+                                             .toArray()
+                                             .at(0)
+                                             .toObject()
+                                             .value(QStringLiteral("edges"))
+                                             .toArray())
+    {
+        const QJsonObject connection = edge.toObject();
+        if (connection.value(QStringLiteral("from")).toString().startsWith(QStringLiteral("raster.")) == false &&
+            connection.value(QStringLiteral("to")).toString().startsWith(QStringLiteral("raster.")) == false)
+        {
+            retainedEdges.append(connection);
+        }
+    }
+    CHECK(retainedEdges.size() == 1);
     CHECK(QJsonDocument::fromJson(document.GetDraft(ROOT_GRAPH))
               .object()
               .value(QStringLiteral("configurations"))
               .toArray()
               .at(0)
               .toObject()
-              .value(QStringLiteral("edges")) == QJsonDocument::fromJson(original)
-                                                     .object()
-                                                     .value(QStringLiteral("configurations"))
-                                                     .toArray()
-                                                     .at(0)
-                                                     .toObject()
-                                                     .value(QStringLiteral("edges")));
+              .value(QStringLiteral("edges")) == retainedEdges);
     WriteFile(QDir(package).filePath(QStringLiteral("NewLibrary.lurender.json")), QByteArray("external"));
     QStringList written;
     CHECK(document.Save(written) == RenderGraphDocumentStatus::Conflict);
