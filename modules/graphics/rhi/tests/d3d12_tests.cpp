@@ -344,10 +344,10 @@ TEST_CASE("Direct3D 12 draws the fullscreen pipeline across resizes, frame slots
         const usize uniformBytes = session == 0 ? DIAGNOSTIC_UNIFORM_BYTES : UNIFORM_CAPACITY;
         REQUIRE(rhi::CreateUniform(uniformBytes, uniform) == rhi::ResourceStatus::Ready);
         REQUIRE(rhi::CreatePipeline({vertex, fragment, uniform}, pipeline) == rhi::ResourceStatus::Ready);
-        // Shaders may be destroyed once the pipeline owns its compiled state.
-        REQUIRE(rhi::Destroy(vertex) == rhi::ResourceStatus::Ready);
+        // The facade keeps shaders alive while a pipeline references them.
+        REQUIRE(rhi::Destroy(vertex) == rhi::ResourceStatus::InUse);
         static uint8 payload[UNIFORM_CAPACITY]{};
-        static uint8 pixels[WIDE_WIDTH * WIDE_HEIGHT * BYTES_PER_PIXEL]{};
+        static uint8 pixels[static_cast<usize>(WIDE_WIDTH) * WIDE_HEIGHT * BYTES_PER_PIXEL]{};
         for (usize frame = 0; frame < FRAMES; ++frame)
         {
             const uint32 width = frame < SIZED_FRAMES ? WIDE_WIDTH : WIDE_HEIGHT;
@@ -376,10 +376,8 @@ TEST_CASE("Direct3D 12 draws the fullscreen pipeline across resizes, frame slots
         // Abort a recorded draw before submission; the restart must not retain it.
         rhi::UniformHandle replacement;
         rhi::PipelineHandle restarted;
-        rhi::ShaderHandle vertexAgain;
-        REQUIRE(rhi::CreateShader(ludus::shaders::diagnostic::Vertex(), vertexAgain) == rhi::ResourceStatus::Ready);
         REQUIRE(rhi::CreateUniform(DIAGNOSTIC_UNIFORM_BYTES, replacement) == rhi::ResourceStatus::Ready);
-        REQUIRE(rhi::CreatePipeline({vertexAgain, fragment, replacement}, restarted) == rhi::ResourceStatus::Ready);
+        REQUIRE(rhi::CreatePipeline({vertex, fragment, replacement}, restarted) == rhi::ResourceStatus::Ready);
         const uint8 zeros[DIAGNOSTIC_UNIFORM_BYTES]{};
         REQUIRE(rhi::UpdateUniform(replacement, zeros) == rhi::ResourceStatus::Ready);
         REQUIRE(rhi::SetFrameTarget({ .Width = WIDE_HEIGHT, .Height = WIDE_WIDTH }) == rhi::FrameStatus::Ready);

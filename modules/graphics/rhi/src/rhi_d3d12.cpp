@@ -211,6 +211,22 @@ constexpr UINT UNIFORM_REGISTER_SPACE = 0;
 constexpr usize CONSTANT_BUFFER_ALIGNMENT = D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
 /// The fullscreen compatibility draw is one non-indexed triangle.
 constexpr UINT FULLSCREEN_VERTEX_COUNT = 3;
+/// Render target slots in a pipeline's blend state.
+constexpr usize RENDER_TARGET_SLOTS = 8;
+/// Writes every channel unblended; the fullscreen draw replaces the cleared target.
+constexpr D3D12_RENDER_TARGET_BLEND_DESC OPAQUE_TARGET_BLEND =
+{
+    .BlendEnable = FALSE,
+    .LogicOpEnable = FALSE,
+    .SrcBlend = D3D12_BLEND_ONE,
+    .DestBlend = D3D12_BLEND_ZERO,
+    .BlendOp = D3D12_BLEND_OP_ADD,
+    .SrcBlendAlpha = D3D12_BLEND_ONE,
+    .DestBlendAlpha = D3D12_BLEND_ZERO,
+    .BlendOpAlpha = D3D12_BLEND_OP_ADD,
+    .LogicOp = D3D12_LOGIC_OP_NOOP,
+    .RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL,
+};
 
 /// DXIL bytecode copied at CreateShader; the description's bytes are only borrowed.
 struct Shader final
@@ -1130,30 +1146,87 @@ ResourceStatus CreatePipeline(usize slot, const PipelineResources& resources, ui
 {
     const Array<uint8>& vertex = gShaders[resources.Vertex].Bytecode;
     const Array<uint8>& fragment = gShaders[resources.Fragment].Bytecode;
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC description{};
-    description.pRootSignature = gRootSignature.Get();
-    description.VS = { .pShaderBytecode = vertex.GetData(), .BytecodeLength = vertex.GetSize() };
-    description.PS = { .pShaderBytecode = fragment.GetData(), .BytecodeLength = fragment.GetSize() };
-    description.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_ONE;
-    description.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_ZERO;
-    description.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
-    description.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
-    description.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ZERO;
-    description.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
-    description.BlendState.RenderTarget[0].LogicOp = D3D12_LOGIC_OP_NOOP;
-    description.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-    description.SampleMask = D3D12_DEFAULT_SAMPLE_MASK;
-    // The triangle covers the target in either winding; no depth or stencil target is bound.
-    description.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    description.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-    description.RasterizerState.DepthClipEnable = TRUE;
-    description.DepthStencilState.DepthEnable = FALSE;
-    description.DepthStencilState.StencilEnable = FALSE;
-    description.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    description.NumRenderTargets = 1;
-    description.RTVFormats[0] = SURFACE_FORMAT;
-    description.DSVFormat = DXGI_FORMAT_UNKNOWN;
-    description.SampleDesc = { .Count = 1, .Quality = 0 };
+    // Every slot holds valid enums; only slot 0 is bound.
+    static_assert(D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT == RENDER_TARGET_SLOTS);
+    const D3D12_BLEND_DESC blend =
+    {
+        .AlphaToCoverageEnable = FALSE,
+        .IndependentBlendEnable = FALSE,
+        .RenderTarget =
+            {
+                OPAQUE_TARGET_BLEND,
+                OPAQUE_TARGET_BLEND,
+                OPAQUE_TARGET_BLEND,
+                OPAQUE_TARGET_BLEND,
+                OPAQUE_TARGET_BLEND,
+                OPAQUE_TARGET_BLEND,
+                OPAQUE_TARGET_BLEND,
+                OPAQUE_TARGET_BLEND,
+            },
+    };
+    // Neither depth nor stencil is tested; the operations only need valid values.
+    const D3D12_DEPTH_STENCILOP_DESC keepStencil =
+    {
+        .StencilFailOp = D3D12_STENCIL_OP_KEEP,
+        .StencilDepthFailOp = D3D12_STENCIL_OP_KEEP,
+        .StencilPassOp = D3D12_STENCIL_OP_KEEP,
+        .StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS,
+    };
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC description =
+    {
+        .pRootSignature = gRootSignature.Get(),
+        .VS = { .pShaderBytecode = vertex.GetData(), .BytecodeLength = vertex.GetSize() },
+        .PS = { .pShaderBytecode = fragment.GetData(), .BytecodeLength = fragment.GetSize() },
+        .DS = { .pShaderBytecode = nullptr, .BytecodeLength = 0 },
+        .HS = { .pShaderBytecode = nullptr, .BytecodeLength = 0 },
+        .GS = { .pShaderBytecode = nullptr, .BytecodeLength = 0 },
+        .StreamOutput =
+        {
+            .pSODeclaration = nullptr,
+            .NumEntries = 0,
+            .pBufferStrides = nullptr,
+            .NumStrides = 0,
+            .RasterizedStream = 0,
+        },
+        .BlendState = blend,
+        .SampleMask = D3D12_DEFAULT_SAMPLE_MASK,
+        // The triangle covers the target in either winding; no depth target is bound.
+        .RasterizerState =
+        {
+            .FillMode = D3D12_FILL_MODE_SOLID,
+            .CullMode = D3D12_CULL_MODE_NONE,
+            .FrontCounterClockwise = FALSE,
+            .DepthBias = D3D12_DEFAULT_DEPTH_BIAS,
+            .DepthBiasClamp = D3D12_DEFAULT_DEPTH_BIAS_CLAMP,
+            .SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS,
+            .DepthClipEnable = TRUE,
+            .MultisampleEnable = FALSE,
+            .AntialiasedLineEnable = FALSE,
+            .ForcedSampleCount = 0,
+            .ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
+        },
+        .DepthStencilState =
+        {
+            .DepthEnable = FALSE,
+            .DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO,
+            .DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS,
+            .StencilEnable = FALSE,
+            .StencilReadMask = D3D12_DEFAULT_STENCIL_READ_MASK,
+            .StencilWriteMask = D3D12_DEFAULT_STENCIL_WRITE_MASK,
+            .FrontFace = keepStencil,
+            .BackFace = keepStencil,
+        },
+        .InputLayout = { .pInputElementDescs = nullptr, .NumElements = 0 },
+        .IBStripCutValue = D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED,
+        .PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+        .NumRenderTargets = 1,
+        .RTVFormats = {SURFACE_FORMAT},
+        .DSVFormat = DXGI_FORMAT_UNKNOWN,
+        .SampleDesc = { .Count = 1, .Quality = 0 },
+        .NodeMask = 0,
+        .CachedPSO = { .pCachedBlob = nullptr, .CachedBlobSizeInBytes = 0 },
+        .Flags = D3D12_PIPELINE_STATE_FLAG_NONE,
+    };
     ID3D12PipelineState* stateOrNull = nullptr;
     const HRESULT result = gDevice->CreateGraphicsPipelineState(&description,
                                                                 GetInterfaceId(stateOrNull),
@@ -1168,7 +1241,7 @@ ResourceStatus CreatePipeline(usize slot, const PipelineResources& resources, ui
 }
 void DestroyShader(usize slot) noexcept
 {
-    // Pipelines own their compiled state; the copied bytecode is no longer referenced.
+    // Pipeline state objects keep their own compiled copy of the bytecode.
     Array<uint8> released;
     gShaders[slot].Bytecode.Swap(released);
 }
