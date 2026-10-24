@@ -35,7 +35,7 @@ def main():
         shutil.copytree(sdk, relocated, symlinks=True)
         game = root / "Game"
         run([cli, "project", "create", game, "--name", "Game", "--sdk", relocated, "--tools", tools, "--profile", "macos-clang-release", "--release", "--itch-target", "tester/game",
-             "--components", "FoundationBase,FoundationFilesystem,Platform,GraphicsRhi,Content,Audio,AudioContent,Text"], cwd=root, env=env)
+             "--components", "FoundationBase,FoundationFilesystem,Platform,GraphicsRhi,GraphicsRenderer,Content,Audio,AudioContent,Text"], cwd=root, env=env)
         config = json.loads((game / "ludus.release.json").read_text())
         assert config["profiles"]["macos-release"]["entryPoint"] == "Game.app/Contents/MacOS/Game"
         def package():
@@ -63,6 +63,12 @@ def main():
         manifest = json.loads((extracted / "build-info.json").read_text())
         assert manifest["policy"] == "macos-release-adhoc-1"
         assert manifest["sdk"]["flavor"] == "Release"
+        # Renderer games load Platform's libbsm, GraphicsRhi's MetalFX/IOSurface and,
+        # when the SDK has it, the bundled OIDN denoiser runtime.
+        assert {"/usr/lib/libbsm.0.dylib", "/System/Library/Frameworks/IOSurface.framework/Versions/A/IOSurface",
+                "/System/Library/Frameworks/MetalFX.framework/Versions/A/MetalFX"} <= set(manifest["systemLibraries"])
+        if (relocated / "lib/libOpenImageDenoise.2.dylib").exists():
+            assert (extracted / "Game.app/Contents/Frameworks/libOpenImageDenoise.2.dylib").is_file()
         assert manifest["localInputs"] is True
         assert any((extracted / "licenses/Ludus").rglob("*"))
         assert not any(file.suffix in (".a", ".h", ".hpp") for file in extracted.rglob("*") if file.is_file())
@@ -81,7 +87,7 @@ def main():
         run([cli, "project", "release", "init", other, "--platform", "macos"], cwd=root, env=env)
         result = run([cli, "project", "release", "init", other, "--platform", "macos"], cwd=root, env=env, success=False)
         assert "Conflict" in result.stderr
-    print("macOS installed Release SDK: app signing, deterministic reuse, relocation, offline plan, no-overwrite setup and stale-build refusal passed")
+    print("macOS installed Release SDK: renderer-linked app signing, deterministic reuse, relocation, offline plan, no-overwrite setup and stale-build refusal passed")
 
 
 if __name__ == "__main__": main()
