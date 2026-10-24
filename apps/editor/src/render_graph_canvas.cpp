@@ -12,6 +12,7 @@
 #include <QBrush>
 #include <QColor>
 #include <QContextMenuEvent>
+#include <QCursor>
 #include <QFocusEvent>
 #include <QFont>
 #include <QFontMetricsF>
@@ -1665,6 +1666,13 @@ void RenderGraphCanvas::mouseDoubleClickEvent(QMouseEvent* event)
         event->accept();
         return;
     }
+    // Empty canvas: no node, port, wire or interface box under the pointer.
+    if (node.isEmpty() == true && itemAt(event->position().toPoint()) == nullptr)
+    {
+        Q_EMIT QuickAddRequested(mapToScene(event->position().toPoint()));
+        event->accept();
+        return;
+    }
     QGraphicsView::mouseDoubleClickEvent(event);
 }
 
@@ -1674,6 +1682,14 @@ void RenderGraphCanvas::keyPressEvent(QKeyEvent* event)
     {
         mIsSpacePressed = true;
         setCursor(Qt::OpenHandCursor);
+        event->accept();
+        return;
+    }
+    if (event->key() == Qt::Key_A && event->modifiers() == Qt::ShiftModifier)
+    {
+        const QPoint pointer = viewport()->mapFromGlobal(QCursor::pos());
+        Q_EMIT QuickAddRequested(
+            mapToScene(viewport()->rect().contains(pointer) == true ? pointer : viewport()->rect().center()));
         event->accept();
         return;
     }

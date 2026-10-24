@@ -283,7 +283,7 @@ bool RendererWorkspace::ApplyConfigurationTemplate(const QString& configuration,
     return true;
 }
 
-void RendererWorkspace::promptConfigurationTemplate()
+void RendererWorkspace::promptConfigurationTemplate(const QString& templateIdentity)
 {
     QDialog dialog(this);
     dialog.setObjectName(QStringLiteral("renderGraphTemplateDialog"));
@@ -341,6 +341,10 @@ void RendererWorkspace::promptConfigurationTemplate()
                              choice->currentData(DESCRIPTION_ROLE).toString());
         dialog.adjustSize();
     };
+    if (templateIdentity.isEmpty() == false && choice->findData(templateIdentity) >= 0)
+    {
+        choice->setCurrentIndex(choice->findData(templateIdentity));
+    }
     connect(choice, &QComboBox::currentIndexChanged, &dialog, describe);
     describe();
     QLabel* error = new QLabel(&dialog);
