@@ -250,6 +250,18 @@ GetStage(const RenderGraphPrograms& programs, format::Technique technique, rhi::
     }
     return isVertex == true ? programs.MaskedDepthVertex : programs.MaskedDepthFragment;
 }
+/// Editor overlays belong to display color, never the visibility codec's triangle/instance IDs.
+ViewDescription MakeRasterPassView(const ViewDescription& source,
+                                   const RenderGraphPrograms& programs,
+                                   format::Technique technique) noexcept
+{
+    ViewDescription view = source;
+    if (GetStage(programs, technique, rhi::ShaderStage::Vertex).Inputs.size() == format::VISIBILITY_INPUT_COUNT)
+    {
+        view.WorldGrid.IsVisible = false;
+    }
+    return view;
+}
 Status ValidateUniforms(const RenderGraphPlan& plan, StaticArray<bool, format::TECHNIQUE_COUNT> isUsed) noexcept
 {
     const format::Header& header = plan.Description;
@@ -973,8 +985,10 @@ struct RenderGraph::State final
             else
             {
                 ViewReport viewReport;
+                const ViewDescription view =
+                    MakeRasterPassView(candidate->Cameras[pass.Camera], Programs, pass.Program);
                 status = Contexts[static_cast<usize>(pass.Program)].PrepareView(Current->Snapshots[i],
-                                                                                candidate->Cameras[pass.Camera],
+                                                                                view,
                                                                                 candidate->Views[i],
                                                                                 viewReport);
             }
@@ -1329,10 +1343,9 @@ struct RenderGraph::State final
             if (inoutScene.HasViews[i] == false)
             {
                 ViewReport report;
-                const Status prepared = context.PrepareView(inoutScene.Snapshots[i],
-                                                            inoutScene.Cameras[Passes[i].Camera],
-                                                            inoutScene.Views[i],
-                                                            report);
+                const ViewDescription view =
+                    MakeRasterPassView(inoutScene.Cameras[Passes[i].Camera], Programs, Passes[i].Program);
+                const Status prepared = context.PrepareView(inoutScene.Snapshots[i], view, inoutScene.Views[i], report);
                 if (IsAccepted(prepared) == false)
                 {
                     return prepared;
