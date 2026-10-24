@@ -878,8 +878,12 @@ before Save; building does not publish them to the project. Existing callbacks r
 keeps its fields and gains `RayLaunch Launch`. Importing upgrades unchanged Raster
 admission defaults to the ReSTIR template capacities (16 programs and 64 artifacts),
 so an existing ray pipeline can coexist with the five imported programs. Custom
-admission limits remain unchanged. An incompatible payload, visibility ray profile,
-source/setting collision or insufficient custom admission budget reports a repair
+admission limits are retained unless you approve a program-budget increase. If the
+merged programs exceed `budgets.programs`, the template picker shows the current
+and required counts and offers **Increase and apply** or **Cancel**. Approval raises
+only that limit to the required count in the same undoable edit; Cancel preserves
+the draft. An incompatible payload, visibility ray profile,
+source/setting collision or other insufficient admission budget reports a repair
 and preserves the draft. Program, source and setting conflicts name the conflicting
 input; a program capacity error gives the required count and `budgets.programs` limit.
 Undo restores the previous budgets along with the graph and shader edits.
@@ -1297,7 +1301,11 @@ Ordinary raster shader bytes are retained; the shared `RendererStatic` schema ga
 its two visibility attributes, and a separate flat varying/graphics technique
 keeps visibility shaders distinct. Unchanged engine-default authoring budgets
 expand to the template's budgets; custom limits remain authoritative. If a custom
-limit is too small, the error names the required count and manifest budget field.
+program limit is too small, the picker offers **Increase and apply**, showing the
+current and required counts. Approval raises `budgets.programs` to the required
+count together with the template; **Cancel** preserves the draft. Undo/Redo restores
+both changes, and **Save** publishes them together. Other capacity failures still
+report the required repair.
 Secondary rays require a native profile. Existing ordinary ray configurations can
 share the package: their callbacks, payload source and query limits are retained.
 The shared `ScenePayload` needs a `float3 Radiance` field; comments, whitespace and

@@ -57,6 +57,18 @@ struct RenderGraphNodePosition final
     foundation::int32 Y = 0;
 };
 
+/// Per-attempt program-budget request and explicit approval for a template import.
+/// Document application clears the reported counts; approval covers at most ApprovedPrograms.
+struct RenderGraphTemplateBudgetIncrease final
+{
+    /// Maximum program count approved by the caller; zero retains the authored limit.
+    foundation::int32 ApprovedPrograms = 0;
+    /// Effective manifest limit when an unapproved increase blocks application.
+    foundation::int32 CurrentPrograms = 0;
+    /// Required merged program count; zero when no increase was requested.
+    foundation::int32 RequiredPrograms = 0;
+};
+
 enum class RenderGraphDocumentStatus : foundation::uint8
 {
     Ok,
@@ -218,11 +230,15 @@ public:
     /// Apply restir-di, visibility-buffer or visibility-secondary-rays to a library configuration,
     /// inserting a new library/Subgraph when file is the root. One undo step; no disk writes.
     /// Existing nonempty configurations, shader sources and incompatible ABIs are preserved on failure.
-    [[nodiscard]] RenderGraphDocumentStatus ApplyConfigurationTemplate(const QString& file,
-                                                                       const QString& configuration,
-                                                                       const QString& templateIdentity,
-                                                                       QString& outError,
-                                                                       const QString& parentConfiguration = {});
+    /// An optional budget request reports a blocked program increase. Explicitly approved increases
+    /// change only budgets.programs to the required count, in the same undo step as the template.
+    [[nodiscard]] RenderGraphDocumentStatus
+    ApplyConfigurationTemplate(const QString& file,
+                               const QString& configuration,
+                               const QString& templateIdentity,
+                               QString& outError,
+                               const QString& parentConfiguration = {},
+                               RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr);
     /// Add an empty named configuration to an existing file without changing its default.
     /// Unique ASCII identifiers are required. One undo step; failure preserves the draft.
     [[nodiscard]] RenderGraphDocumentStatus AddConfiguration(const QString& file, const QString& name);

@@ -1093,12 +1093,19 @@ RenderGraphDocumentStatus RenderGraphDocument::ApplyRestirTemplate(const QString
 }
 // File, configuration and template identify distinct authoring records.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-RenderGraphDocumentStatus RenderGraphDocument::ApplyConfigurationTemplate(const QString& file,
-                                                                          const QString& configuration,
-                                                                          const QString& templateIdentity,
-                                                                          QString& outError,
-                                                                          const QString& parentConfiguration)
+RenderGraphDocumentStatus
+RenderGraphDocument::ApplyConfigurationTemplate(const QString& file,
+                                                const QString& configuration,
+                                                const QString& templateIdentity,
+                                                QString& outError,
+                                                const QString& parentConfiguration,
+                                                RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
 {
+    if (inoutBudgetOrNull != nullptr)
+    {
+        inoutBudgetOrNull->CurrentPrograms = 0;
+        inoutBudgetOrNull->RequiredPrograms = 0;
+    }
     RenderGraphSnapshot candidate = mDraft;
     const RenderGraphDocumentStatus prepared = PrepareConfigurationTemplate(candidate,
                                                                             mRootGraph,
@@ -1107,7 +1114,8 @@ RenderGraphDocumentStatus RenderGraphDocument::ApplyConfigurationTemplate(const 
                                                                             parentConfiguration,
                                                                             mPackageRoot,
                                                                             templateIdentity,
-                                                                            outError);
+                                                                            outError,
+                                                                            inoutBudgetOrNull);
     if (prepared != RenderGraphDocumentStatus::Ok)
     {
         return prepared;

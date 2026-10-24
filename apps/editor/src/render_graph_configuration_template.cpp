@@ -180,7 +180,8 @@ RenderGraphDocumentStatus MergePrograms(RenderGraphSnapshot& inoutSnapshot,
                                         QJsonObject& inoutManifest,
                                         const QJsonObject& source,
                                         const QString& templateRoot,
-                                        QString& outError)
+                                        QString& outError,
+                                        RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
 {
     QJsonArray programs = inoutManifest.value(QStringLiteral("programs")).toArray();
     QStringList sources;
@@ -217,15 +218,12 @@ RenderGraphDocumentStatus MergePrograms(RenderGraphSnapshot& inoutSnapshot,
             programs.append(program);
         }
     }
-    const int32 programBudget =
-        inoutManifest.value(QStringLiteral("budgets")).toObject().value(QStringLiteral("programs")).toInt();
-    if (programs.size() > programBudget)
+    if (EnsureTemplateProgramBudget(inoutManifest,
+                                    static_cast<int32>(programs.size()),
+                                    QStringLiteral("ReSTIR DI"),
+                                    outError,
+                                    inoutBudgetOrNull) == false)
     {
-        outError =
-            QStringLiteral("ReSTIR DI needs %1 shader programs, but budgets.programs is %2. "
-                           "Increase budgets.programs in the shader manifest and retry. The draft was preserved.")
-                .arg(programs.size())
-                .arg(programBudget);
         return RenderGraphDocumentStatus::Capacity;
     }
     inoutManifest.insert(QStringLiteral("programs"), programs);
@@ -233,6 +231,37 @@ RenderGraphDocumentStatus MergePrograms(RenderGraphSnapshot& inoutSnapshot,
 }
 
 } // namespace
+
+bool EnsureTemplateProgramBudget(QJsonObject& inoutManifest,
+                                 int32 requiredPrograms,
+                                 const QString& templateName,
+                                 QString& outError,
+                                 RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
+{
+    QJsonObject budgets = inoutManifest.value(QStringLiteral("budgets")).toObject();
+    const int32 currentPrograms = budgets.value(QStringLiteral("programs")).toInt();
+    if (requiredPrograms <= currentPrograms)
+    {
+        return true;
+    }
+    if (inoutBudgetOrNull != nullptr && inoutBudgetOrNull->ApprovedPrograms >= requiredPrograms)
+    {
+        budgets.insert(QStringLiteral("programs"), requiredPrograms);
+        inoutManifest.insert(QStringLiteral("budgets"), budgets);
+        return true;
+    }
+    if (inoutBudgetOrNull != nullptr)
+    {
+        inoutBudgetOrNull->CurrentPrograms = currentPrograms;
+        inoutBudgetOrNull->RequiredPrograms = requiredPrograms;
+    }
+    outError = QStringLiteral("%1 needs %2 shader programs, but budgets.programs is %3. "
+                              "Increase budgets.programs in the shader manifest and retry. The draft was preserved.")
+                   .arg(templateName)
+                   .arg(requiredPrograms)
+                   .arg(currentPrograms);
+    return false;
+}
 
 bool UpgradeDefaultTemplateBudgets(QJsonObject& inoutManifest, const QJsonObject& source)
 {
@@ -270,7 +299,8 @@ RenderGraphDocumentStatus PrepareRestirConfiguration(RenderGraphSnapshot& inoutS
                                                      const QString& file,
                                                      const QString& configuration,
                                                      QString& outError,
-                                                     const QString& templateRoot)
+                                                     const QString& templateRoot,
+                                                     RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
 {
     const QString sourceRoot = templateRoot.isEmpty() == true ? RESOURCE_ROOT : templateRoot;
     outError = QStringLiteral(
@@ -332,7 +362,7 @@ RenderGraphDocumentStatus PrepareRestirConfiguration(RenderGraphSnapshot& inoutS
         return RenderGraphDocumentStatus::NotFound;
     }
     const RenderGraphDocumentStatus programStatus =
-        MergePrograms(inoutSnapshot, manifest, source, sourceRoot, outError);
+        MergePrograms(inoutSnapshot, manifest, source, sourceRoot, outError, inoutBudgetOrNull);
     if (programStatus != RenderGraphDocumentStatus::Ok)
     {
         return programStatus;
@@ -441,7 +471,8 @@ RenderGraphDocumentStatus PrepareConfigurationTemplate(RenderGraphSnapshot& inou
                                                        const QString& parentConfiguration,
                                                        const QString& packageRoot,
                                                        const QString& templateIdentity,
-                                                       QString& outError)
+                                                       QString& outError,
+                                                       RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
 {
     QString targetFile = file;
     if (file == rootGraph)
@@ -513,14 +544,23 @@ RenderGraphDocumentStatus PrepareConfigurationTemplate(RenderGraphSnapshot& inou
                                                                    {QStringLiteral("default"), configuration},
                                                                    {QStringLiteral("configurations"), QJsonArray{}}}));
     }
-    return templateIdentity == QStringLiteral("restir-di")
-               ? PrepareRestirConfiguration(inoutSnapshot, rootGraph, targetFile, configuration, outError)
-               : PrepareVisibilityConfiguration(inoutSnapshot,
-                                                rootGraph,
-                                                targetFile,
-                                                configuration,
-                                                templateIdentity,
-                                                outError);
+    if (templateIdentity == QStringLiteral("restir-di"))
+    {
+        return PrepareRestirConfiguration(inoutSnapshot,
+                                          rootGraph,
+                                          targetFile,
+                                          configuration,
+                                          outError,
+                                          {},
+                                          inoutBudgetOrNull);
+    }
+    return PrepareVisibilityConfiguration(inoutSnapshot,
+                                          rootGraph,
+                                          targetFile,
+                                          configuration,
+                                          templateIdentity,
+                                          outError,
+                                          inoutBudgetOrNull);
 }
 // Paths and configuration identities describe distinct parts of the insertion transaction.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)

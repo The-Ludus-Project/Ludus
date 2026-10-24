@@ -108,8 +108,11 @@ public:
     [[nodiscard]] bool ApplyRestirTemplate(const QString& configuration);
     /// Apply one built-in library template through the same undo/save path as the canvas picker.
     /// templateIdentity selects restir-di, visibility-buffer or visibility-secondary-rays.
-    /// Failure preserves sources and reports a repair. GUI thread only; Save publishes.
-    [[nodiscard]] bool ApplyConfigurationTemplate(const QString& configuration, const QString& templateIdentity);
+    /// Failure preserves sources and reports a repair. The optional budget request reports a
+    /// required increase or supplies explicit approval; GUI thread only; Save publishes.
+    [[nodiscard]] bool ApplyConfigurationTemplate(const QString& configuration,
+                                                  const QString& templateIdentity,
+                                                  RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr);
     /// Delete the selected configuration in one undo step and select the asset default.
     /// Last configurations, referenced configurations and source conflicts preserve the
     /// draft and report the repair in the status line. Save publishes; GUI thread only.
