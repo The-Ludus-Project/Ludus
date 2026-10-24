@@ -11,6 +11,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
+#include <QLabel>
 #include <QLineEdit>
 #include <QProcess>
 #include <QPushButton>
@@ -62,6 +63,38 @@ TEST_CASE("New Project uses a parent picker and protects existing destinations",
     dialog.reject();
     CHECK(QDir(directory.path()).entryList(QDir::Dirs | QDir::NoDotAndDotDot) ==
           QStringList{QStringLiteral("My Game")});
+}
+
+TEST_CASE("New Project offers GitHub CI only outside an existing work tree", "[editor][setup]")
+{
+    QTemporaryDir directory;
+    ProjectCreationDialog dialog;
+    QLineEdit* nameOrNull = dialog.findChild<QLineEdit*>(QStringLiteral("newProjectName"));
+    QLineEdit* locationOrNull = dialog.findChild<QLineEdit*>(QStringLiteral("newProjectLocation"));
+    QCheckBox* gitHubCiOrNull = dialog.findChild<QCheckBox*>(QStringLiteral("newProjectGitHubCi"));
+    QLabel* noteOrNull = dialog.findChild<QLabel*>(QStringLiteral("newProjectGitHubCiNote"));
+    REQUIRE(nameOrNull != nullptr);
+    REQUIRE(locationOrNull != nullptr);
+    REQUIRE(gitHubCiOrNull != nullptr);
+    REQUIRE(noteOrNull != nullptr);
+    locationOrNull->setText(directory.path());
+    nameOrNull->setText(QStringLiteral("Game"));
+    CHECK(gitHubCiOrNull->isEnabled());
+    CHECK_FALSE(gitHubCiOrNull->isChecked());
+    CHECK_FALSE(dialog.Options().ShouldAddGitHubCi);
+    gitHubCiOrNull->setChecked(true);
+    CHECK(dialog.Options().ShouldAddGitHubCi);
+
+    // A new folder inside a work tree can never be the repository root GitHub reads.
+    REQUIRE(QDir(directory.path()).mkdir(QStringLiteral("repository")));
+    REQUIRE(QDir(directory.filePath(QStringLiteral("repository"))).mkdir(QStringLiteral(".git")));
+    locationOrNull->setText(directory.filePath(QStringLiteral("repository/games")));
+    CHECK_FALSE(gitHubCiOrNull->isEnabled());
+    CHECK_FALSE(dialog.Options().ShouldAddGitHubCi);
+    CHECK(noteOrNull->text().contains(QStringLiteral("inside the Git repository")));
+    locationOrNull->setText(directory.path());
+    CHECK(gitHubCiOrNull->isEnabled());
+    CHECK(dialog.Options().ShouldAddGitHubCi);
 }
 
 TEST_CASE("Project repair reuses the selected engine without asking for paths", "[editor][setup]")

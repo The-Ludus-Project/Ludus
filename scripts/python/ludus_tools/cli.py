@@ -14,6 +14,7 @@ Commands:
     ludus sdk remove --digest <sha256>
     ludus project create <destination> --name <name> --template minimal
                          (--engine <release> | --sdk <prefix>)
+                         [--ci github --tools-ref <commit>]
     ludus project configure <project> [--profile <preset>] [--sdk <prefix>]
     ludus project build     <project> [--profile <preset>] [--sdk <prefix>]
     ludus project run       <project> [--profile <preset>] [--sdk <prefix>]
@@ -22,6 +23,7 @@ Commands:
     ludus project engine    <project> --status --tools <checkout> [--profile <preset>]
     ludus project engine    <project> --list   --tools <checkout> [--profile <preset>]
     ludus project migrate   <project> --engine <release>
+    ludus project ci init   <project> --tools-ref <commit> [--platform <platform>]
 """
 
 from __future__ import annotations
@@ -152,6 +154,8 @@ def cmd_project_create(args) -> int:
     local_prefix: Optional[Path] = Path(args.sdk) if args.sdk else None
     if Path(args.destination).exists():
         raise ToolingError("DestinationExists", "New Project destination already exists")
+    from .ci_setup import validate_creation_ci
+    validate_creation_ci(Path(args.destination), args.ci, args.tools_ref)
     if args.tools and not args.engine:
         from .creation_engine import select_creation_sdk, prepare_creation_sdk
         from .project_setup import run_command
@@ -176,10 +180,16 @@ def cmd_project_create(args) -> int:
         verify_staged=verifier,
         release=args.release,
         itch_target=args.itch_target,
+        ci=args.ci,
+        tools_ref=args.tools_ref,
     )
     _emit(args, {"created": str(result.destination), "resolved": result.lock.resolved})
     if not getattr(args, "json", False):
         print(f"Created project at {result.destination}")
+        if args.ci:
+            from .ci_setup import WORKFLOW_RELPATH
+            print(f"Added {WORKFLOW_RELPATH}. Initialize Git, push to GitHub and set repository variables "
+                  "LUDUS_RELEASE_SDK_URL and LUDUS_RELEASE_SDK_SHA256 to build and test in CI.")
         if not result.lock.resolved:
             if local_prefix:
                 print("Using the selected local engine; the release lock remains unresolved until a release is published.")
@@ -373,6 +383,19 @@ def cmd_release_init(args) -> int:
     _emit(args, {"files": files})
     if not args.json:
         print("Release setup saved: " + ", ".join(files))
+    return EXIT_OK
+
+
+def cmd_ci_init(args) -> int:
+    from .ci_setup import describe_repository, setup_ci
+    files = setup_ci(Path(args.project), provider=args.provider, platform=args.platform, tools_ref=args.tools_ref)
+    note = describe_repository(Path(args.project))
+    _emit(args, {"files": files, "repository": note})
+    if not args.json:
+        print("CI setup saved: " + ", ".join(files))
+        print(note)
+        print("Set repository variables LUDUS_RELEASE_SDK_URL and LUDUS_RELEASE_SDK_SHA256 to build and test; "
+              "without them the workflow reports a notice and skips the build.")
     return EXIT_OK
 
 
@@ -645,6 +668,8 @@ def build_parser() -> argparse.ArgumentParser:
     cr.add_argument("--tools", help="verify setup/build/tests using this prepared tooling checkout before publishing")
     cr.add_argument("--release", action="store_true", help="include native release configuration/install rules")
     cr.add_argument("--itch-target", help="optional username/game for offline release planning")
+    cr.add_argument("--ci", choices=("github",), help="also add a GitHub Actions build/test workflow")
+    cr.add_argument("--tools-ref", help="Ludus commit the generated workflow installs host tools from (with --ci)")
     cr.set_defaults(func=cmd_project_create)
 
     for name, func in (("configure", cmd_project_configure), ("build", cmd_project_build), ("run", cmd_project_run)):
@@ -697,6 +722,15 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--tools-ref")
     init.add_argument("--build-command-json", type=_json.loads, help="project bootstrap argv as a JSON array, without a shell")
     init.set_defaults(func=cmd_release_init)
+
+    ci = proj.add_parser("ci", help="set up continuous integration for an existing project").add_subparsers(dest="ci_action", required=True)
+    ci_init = ci.add_parser("init", help="add a GitHub Actions build/test workflow; never overwrites files")
+    ci_init.add_argument("project")
+    ci_init.add_argument("--provider", choices=("github",), default="github")
+    ci_init.add_argument("--platform", choices=("linux-x64", "macos-arm64", "macos-x64"),
+                         help="runner platform (defaults to the project's preset family and this host's macOS architecture)")
+    ci_init.add_argument("--tools-ref", required=True, help="Ludus commit the workflow installs host tools from")
+    ci_init.set_defaults(func=cmd_ci_init)
 
     publish = proj.add_parser("publish", help="inspect an offline upload plan").add_subparsers(dest="action", required=True)
     plan = publish.add_parser("plan")

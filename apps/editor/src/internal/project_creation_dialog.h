@@ -5,6 +5,7 @@
 #include <QDialog>
 
 QT_BEGIN_NAMESPACE
+class QCheckBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
@@ -23,6 +24,8 @@ private:
     QLineEdit* Name_ = nullptr;
     QLineEdit* Location_ = nullptr;
     QLineEdit* Sdk_ = nullptr;
+    QCheckBox* mGitHubCiOrNull = nullptr;
+    QLabel* mGitHubCiNoteOrNull = nullptr;
     QLabel* Destination_ = nullptr;
     QLabel* Validation_ = nullptr;
     QPushButton* Create_ = nullptr;

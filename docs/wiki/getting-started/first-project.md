@@ -14,6 +14,11 @@ Select **New Project** on Welcome or press **Ctrl+N**.
 Choose a destination that does not already exist. A new project never overwrites
 an existing folder. Normally, leave **Advanced engine selection** collapsed.
 
+Tick **Add a GitHub Actions build and test workflow** if the project will live in
+its own GitHub repository. See
+[continuous integration](../../development/project-sdk-workflow.md#continuous-integration-github-actions)
+for the repository variables the workflow needs.
+
 ## 2. Create and verify
 
 Choose **Create Project**. Ludus selects a native Development engine, prepares

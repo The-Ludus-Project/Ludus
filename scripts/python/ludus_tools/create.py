@@ -77,9 +77,18 @@ def create_project(
     verify_staged: Optional[Callable[[Path], None]] = None,
     release: bool = False,
     itch_target: Optional[str] = None,
+    ci: Optional[str] = None,
+    tools_ref: Optional[str] = None,
 ) -> CreateResult:
-    """Create a new version-2 project at an absent destination, atomically."""
+    """Create a new version-2 project at an absent destination, atomically.
+
+    ``ci="github"`` also stages the build/test workflow pinned to ``tools_ref``;
+    it is refused before any work when the destination is inside a Git work tree.
+    """
     destination = Path(destination)
+    from .ci_setup import validate_creation_ci
+
+    validate_creation_ci(destination, ci, tools_ref)
     components = components or ["FoundationBase"]
     template = get_template(template_id)
 
@@ -136,6 +145,11 @@ def create_project(
         for file in rendered:
             if file.relpath == "CMakeLists.txt":
                 file.content += '\ninclude(cmake/GameRelease.cmake)\n'
+    if ci is not None:
+        from .ci_setup import ci_files, platform_for_preset
+
+        rendered.extend(ci_files(platform_for_preset(preset, local_identity.target_triple if local_identity else None),
+                                 tools_ref))
     extra = [
         TemplateFile(DESCRIPTOR_NAME, _canonical_descriptor_json(descriptor)),
         TemplateFile(LOCK_NAME, lock.serialize().decode("utf-8")),

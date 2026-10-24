@@ -132,6 +132,10 @@ void ToolProcess::SendRequest()
         request.insert(QStringLiteral("prepare_engine"), Launch_.PrepareEngine);
         request.insert(QStringLiteral("disable_web"), Launch_.DisableWeb);
     }
+    if (Launch_.Operation == ToolOperation::ProjectCreate)
+    {
+        request.insert(QStringLiteral("github_ci"), Launch_.ShouldAddGitHubCi);
+    }
     if (Launch_.Operation == ToolOperation::BuildDebug)
     {
         request.insert(QStringLiteral("debugger"), Launch_.DebuggerPath);

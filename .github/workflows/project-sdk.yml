@@ -84,7 +84,7 @@ jobs:
         if: steps.scope.outputs.native_required == 'true'
         run: |
           cd scripts/python
-          PATH=/tmp/ludus-venv/bin:$PATH python3 -m unittest test_editor_debugger test_editor_tool test_project_setup test_engine_pin test_macos_project_tooling test_creation_engine test_ludus_tools test_ludus_project_ops test_ludus_cli test_render_graph test_render_graph_build test_render_graph_execution test_render_graph_authoring test_ludus_failure_scenarios test_ludus_release test_ludus_itch_release test_macos_release test_ludus_butler -v
+          PATH=/tmp/ludus-venv/bin:$PATH python3 -m unittest test_editor_debugger test_editor_tool test_project_setup test_engine_pin test_macos_project_tooling test_creation_engine test_ludus_tools test_ludus_project_ops test_ludus_cli test_render_graph test_render_graph_build test_render_graph_execution test_render_graph_authoring test_ludus_failure_scenarios test_ludus_release test_ludus_itch_release test_macos_release test_ludus_butler test_ludus_ci_setup -v
 
       - name: Exercise the installed release backend outside the checkout
         if: steps.scope.outputs.native_required == 'true'

@@ -386,7 +386,9 @@ and is outside version 1. State this limit in generated documentation.
 
 Generate a user-owned workflow when requested. Default trigger is
 `workflow_dispatch`; release-tag uploads require explicit enablement. PR checks
-may build/package/test without credentials, but never upload. Do not use
+may build/package/test without credentials, but never upload. The separate
+[build and test workflow](../development/project-sdk-workflow.md#continuous-integration-github-actions)
+provides those credential-free checks. Do not use
 `pull_request_target` or run untrusted PR code with deployment secrets.
 
 Use two separate jobs:

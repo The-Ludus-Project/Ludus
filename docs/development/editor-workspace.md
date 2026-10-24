@@ -346,7 +346,11 @@ Web SDK acquisition remains an explicit engine-tooling step; select an installed
 browser engine in this dialog. New Project asks only for Name and Location, with a Browse button and a
 resulting-folder preview. Choose **Create Project** to select the engine and verify
 the project. **Advanced engine selection** allows a custom Development SDK;
-normal creation requires no SDK path or preparation checkbox. All child commands use the existing streaming output,
+normal creation requires no SDK path or preparation checkbox. **Add a GitHub Actions
+build and test workflow** also generates the
+[project CI workflow](project-sdk-workflow.md#continuous-integration-github-actions),
+pinned to the tooling checkout's commit. It is unavailable, with the reason shown,
+when Location is inside a Git work tree. All child commands use the existing streaming output,
 Stop, process-group cleanup and single-operation ownership.
 
 New Project creates the bundled minimal v3 native template in a sibling staging

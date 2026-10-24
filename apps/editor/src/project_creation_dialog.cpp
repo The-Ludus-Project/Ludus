@@ -1,6 +1,7 @@
 #include "internal/project_creation_dialog.h"
 #include "internal/workspace_style.h"
 
+#include <QCheckBox>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QFileDialog>
@@ -16,6 +17,32 @@
 
 namespace ludus::editor
 {
+namespace
+{
+// Return the nearest folder at or above the existing part of `path` that holds a
+// `.git` entry, or an empty string. Mirrors ludus_tools.ci_setup.find_git_root.
+QString FindGitWorkTree(const QString& path)
+{
+    QFileInfo current(QDir::cleanPath(path));
+    while (current.exists() == false && current.absoluteFilePath() != current.absoluteDir().absolutePath())
+    {
+        current = QFileInfo(current.absolutePath());
+    }
+    QDir directory(current.absoluteFilePath());
+    while (true)
+    {
+        if (QFileInfo::exists(directory.filePath(QStringLiteral(".git"))) == true)
+        {
+            return directory.absolutePath();
+        }
+        if (directory.cdUp() == false)
+        {
+            return QString();
+        }
+    }
+}
+} // namespace
+
 ProjectCreationDialog::ProjectCreationDialog(QWidget* parent) : QDialog(parent)
 {
     // Thanks to David Lightbown, Designing the User Experience of Game
@@ -74,6 +101,13 @@ ProjectCreationDialog::ProjectCreationDialog(QWidget* parent) : QDialog(parent)
         this);
     note->setWordWrap(true);
     layout->addWidget(note);
+    mGitHubCiOrNull = new QCheckBox(QStringLiteral("Add a GitHub Actions build and test workflow"), this);
+    mGitHubCiOrNull->setObjectName(QStringLiteral("newProjectGitHubCi"));
+    layout->addWidget(mGitHubCiOrNull);
+    mGitHubCiNoteOrNull = new QLabel(this);
+    mGitHubCiNoteOrNull->setObjectName(QStringLiteral("newProjectGitHubCiNote"));
+    mGitHubCiNoteOrNull->setWordWrap(true);
+    layout->addWidget(mGitHubCiNoteOrNull);
     auto* advanced = new QPushButton(QStringLiteral("Advanced engine selection"), this);
     advanced->setCheckable(true);
     advanced->setObjectName(QStringLiteral("newProjectAdvanced"));
@@ -138,6 +172,7 @@ ProjectCreationOptions ProjectCreationDialog::Options() const
         .Destination = QDir(Location_->text().trimmed()).filePath(Name_->text().trimmed()),
         .Name = Name_->text().trimmed(),
         .Sdk = Sdk_->text().trimmed(),
+        .ShouldAddGitHubCi = mGitHubCiOrNull->isEnabled() == true && mGitHubCiOrNull->isChecked() == true,
     };
 }
 
@@ -168,6 +203,20 @@ void ProjectCreationDialog::Update()
     {
         problem = QStringLiteral("This project folder already exists. Choose a new name or location.");
     }
+    // GitHub reads workflows only from a repository root, and a new project
+    // folder can never be the root of an existing work tree.
+    const QString workTree = QDir::isAbsolutePath(Location_->text().trimmed()) == true
+                                 ? FindGitWorkTree(Location_->text().trimmed())
+                                 : QString();
+    mGitHubCiOrNull->setEnabled(workTree.isEmpty());
+    mGitHubCiNoteOrNull->setText(
+        workTree.isEmpty() == true
+            ? QStringLiteral("Builds and tests every push to main and every pull request once the project is "
+                             "in its own GitHub repository and LUDUS_RELEASE_SDK_URL and "
+                             "LUDUS_RELEASE_SDK_SHA256 are set.")
+            : QStringLiteral("Unavailable: this location is inside the Git repository at %1. GitHub runs "
+                             "workflows only from the repository root, so add CI there instead.")
+                  .arg(QDir::toNativeSeparators(workTree)));
     Destination_->setText(QStringLiteral("New folder: %1").arg(QDir::toNativeSeparators(options.Destination)));
     Validation_->setText(problem);
     Validation_->setVisible(problem.isEmpty() == false);

@@ -951,6 +951,24 @@ class HostedWindowRequestTests(unittest.TestCase):
                 editor_tool._validate_request(message)
 
 
+class GitHubCiRequestTests(unittest.TestCase):
+    """Only project_create carries the boolean GitHub CI choice."""
+
+    def base(self, operation: str = "project_create") -> dict:
+        return {"protocol": 1, "job": "0123456789abcdef", "operation": operation, "project": "/tmp/new-game",
+                "expected_sha256": "", "sdk": "", "web_sdk": "", "name": "game", "prepare_engine": False}
+
+    def test_accepts_a_boolean_choice(self) -> None:
+        for choice in (True, False):
+            editor_tool._validate_request({**self.base(), "github_ci": choice})
+        editor_tool._validate_request(self.base())
+
+    def test_rejects_malformed_or_misplaced_choices(self) -> None:
+        for message in ({**self.base(), "github_ci": "yes"}, {**self.base("project_setup"), "github_ci": True}):
+            with self.subTest(message=message), self.assertRaises(editor_tool.ProtocolError):
+                editor_tool._validate_request(message)
+
+
 class SetupDetailsProtocolTests(unittest.TestCase):
     def test_details_keep_long_unicode_paths_out_of_reserved_terminal(self):
         frames = []

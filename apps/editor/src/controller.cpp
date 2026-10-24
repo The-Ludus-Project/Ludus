@@ -500,6 +500,7 @@ void EditorController::CreateProject(const ProjectCreationOptions& creation)
     options.ProjectName = creation.Name;
     options.SetupSdk = creation.Sdk;
     options.PrepareEngine = creation.PrepareEngine;
+    options.ShouldAddGitHubCi = creation.ShouldAddGitHubCi;
     PendingCreatedProject_ = options.ProjectPath;
     StartJob(ActionKind::ProjectCreate, ToolOperation::ProjectCreate, options);
 }
