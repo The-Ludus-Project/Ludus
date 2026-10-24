@@ -1,10 +1,12 @@
 #include "../src/internal/gpu_denoiser.h"
 
 #include "renderer_composite.h"
+#include "rg2_compute_mixed.h"
 #include "rg2_compute_split.h"
 #include "rg2_ordered_ray.h"
 #include "rg2_raytracing.h"
 #include "rg2_restir_di.h"
+#include "rg2_scene_compute.h"
 #include "rg2_scene_ray.h"
 #include "rg2_storage_ray.h"
 #include "rg2_tiled_vbuffer_nee_template.h"
@@ -831,19 +833,16 @@ TEST_CASE("Ordered ray callbacks share zeroed storage across passes and frames",
     }
 }
 
-TEST_CASE("A raygen-only pass hands packed triangle hits to a later pass",
-          "[render-graph][gpu][ray-history][compute-split]")
+namespace
 {
-    // Compute ray-tracing phase C0: pass 0 traces and records a packed triangle index; pass 1
-    // resolves it in its own separately built scene and BLAS/TLAS. See shade.slang for the channels.
+/// Render a two-pass hit-record package (compute_split, compute_mixed) and require that every
+/// packed triangle index recorded by pass 0 resolves to the same hit in pass 1. See their shade.slang.
+void CheckRecordedHitsResolveInLaterPass(const PackageLocation& location, const renderer::RenderGraphPrograms& compiled)
+{
     GraphGpuFixture fixture;
-    const core::UniquePtr<renderer::RenderGraphPackage> package =
-        LoadPackage({LUDUS_RG3_COMPUTE_SPLIT_DIRECTORY, "rg2_compute_split.lurgrt"});
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(location);
     const renderer::RenderGraphPrograms decoded =
         package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
-    const renderer::RenderGraphPrograms compiled =
-        packages::rg2_compute_split::MakePrograms(shaders::renderer_composite::Vertex(),
-                                                  shaders::renderer_composite::Fragment());
     REQUIRE(decoded.HasPersistentRayBuffers == true);
     REQUIRE(decoded.HasSceneShaderInterface == true);
     CheckSameStage(decoded.RayCompute, compiled.RayCompute);
@@ -973,6 +972,206 @@ TEST_CASE("A raygen-only pass hands packed triangle hits to a later pass",
         CHECK(hitCount < static_cast<usize>(WIDTH) * HEIGHT);
         CHECK(distinctTriangleShades > 2);
     }
+}
+} // namespace
+
+TEST_CASE("A raygen-only pass hands packed triangle hits to a later pass",
+          "[render-graph][gpu][ray-history][compute-split]")
+{
+    // Compute ray-tracing phase C0: pass 0 traces and records a packed triangle index; pass 1
+    // resolves it in its own separately built scene and BLAS/TLAS.
+    CheckRecordedHitsResolveInLaterPass(
+        {LUDUS_RG3_COMPUTE_SPLIT_DIRECTORY, "rg2_compute_split.lurgrt"},
+        packages::rg2_compute_split::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                  shaders::renderer_composite::Fragment()));
+}
+
+TEST_CASE("A scene compute pass hands packed triangle hits to a later ray pass",
+          "[render-graph][gpu][compute-ray-tracing][compute-mixed]")
+{
+    // Compute ray-tracing C2: pass 0 is a ComputePipeline kernel and pass 1 a RayTracingPipeline in one
+    // persistent wrapper. The ray pass's TraceAndShade must still dispatch its own hit and miss callbacks.
+    CheckRecordedHitsResolveInLaterPass(
+        {LUDUS_RG3_COMPUTE_MIXED_DIRECTORY, "rg2_compute_mixed.lurgrt"},
+        packages::rg2_compute_mixed::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                  shaders::renderer_composite::Fragment()));
+}
+
+namespace
+{
+/// Display byte of linear radiance 1 after the fused ToneMap: exposure 0 bypasses it, 1 and 2 apply Reinhard + sRGB.
+constexpr uint8 GetDisplayedOne(float32 exposure) noexcept
+{
+    return exposure == 0 ? 255 : exposure == 1 ? 188 : 213;
+}
+/// Display byte of the accumulated mean of the linear samples 1 and 2, encoded like GetDisplayedOne.
+constexpr uint8 GetDisplayedMean(float32 exposure) noexcept
+{
+    return exposure == 0 ? 255 : exposure == 1 ? 203 : 225;
+}
+} // namespace
+
+TEST_CASE("A scene compute pass traces the World and feeds Accumulate and ToneMap",
+          "[render-graph][gpu][compute-ray-tracing][accumulation][tone-mapping]")
+{
+    // scene_info.slang: red = sample number, green = camera-ray hit, blue = GetSceneInfo triangle count.
+    // Its leftmost column calls TraceAndShade, which a compute pass must turn into the error color.
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_SCENE_COMPUTE_DIRECTORY, "rg2_scene_compute.lurgrt"});
+    const renderer::RenderGraphPrograms decoded =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    const renderer::RenderGraphPrograms compiled =
+        packages::rg2_scene_compute::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                  shaders::renderer_composite::Fragment());
+    // One compute pass still uses the persistent wrapper, which owns GraphBuffer0/1 and the pass index.
+    REQUIRE(decoded.HasPersistentRayBuffers == true);
+    REQUIRE(decoded.HasSceneShaderInterface == true);
+    CheckSameStage(decoded.RayCompute, compiled.RayCompute);
+    renderer::RenderGraphPlan plan = package->GetPlan();
+    REQUIRE(renderer::RequiresHardwareRayTracing(plan) == true);
+    constexpr usize PASS_COUNT = 1;
+    REQUIRE(plan.Passes.GetSize() == PASS_COUNT);
+    REQUIRE(plan.Passes[0].Program == format::Technique::RayTracing);
+    constexpr uint32 SAMPLE_LIMIT = 2;
+    REQUIRE(plan.Passes[0].AccumulationSamples == SAMPLE_LIMIT);
+    REQUIRE(plan.Passes[0].ToneMappingExposure == 1);
+    StaticArray<format::Pass, PASS_COUNT> passes{{plan.Passes[0]}};
+    float32 exposure = 1;
+    SECTION("authored unit exposure") {}
+    SECTION("bypass")
+    {
+        exposure = 0;
+    }
+    SECTION("double exposure")
+    {
+        exposure = 2;
+    }
+    passes[0].ToneMappingExposure = exposure;
+    plan.Passes = {passes.GetData(), passes.GetSize()};
+    const auto finish = [&fixture](rhi::RasterStatus status) {
+        const uint64 beginning = time::NowTicks();
+        constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
+        while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+        {
+            status = fixture.Graph.Poll();
+        }
+        REQUIRE(status == rhi::RasterStatus::Ready);
+    };
+    finish(fixture.Graph.Initialize(fixture.Device, plan, decoded));
+    fixture.Cameras[0].OrthographicCamera = true;
+    renderer::RenderGraphReport report;
+    finish(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                1,
+                                renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                report,
+                                nullptr,
+                                1));
+    uint32 output = 0;
+    for (uint32 resource = 0; resource < plan.Resources.GetSize(); ++resource)
+    {
+        output = plan.Resources[resource].IsExported == 1 ? resource : output;
+    }
+    const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+    const usize corner = GetPixel(WIDTH - 1, 0);
+    const usize failure = GetPixel(0, HEIGHT / 2);
+    const uint8 one = GetDisplayedOne(exposure);
+    const uint8 mean = GetDisplayedMean(exposure);
+    REQUIRE(fixture.Graph.HasPendingSamples() == true);
+    ReadGraphFrame(fixture, output);
+    CHECK(fixture.Pixels[center] == one);     // Sample 1.
+    CHECK(fixture.Pixels[center + 1] == one); // The camera ray hits the triangle.
+    CHECK(fixture.Pixels[center + 2] == one); // GetSceneInfo reports the one World triangle.
+    CHECK(fixture.Pixels[corner] == one);
+    CHECK(fixture.Pixels[corner + 1] == 0); // Miss.
+    CHECK(fixture.Pixels[corner + 2] == one);
+    // TraceAndShade has no hit or miss callback in a compute pass: the error color, not the payload.
+    CHECK(fixture.Pixels[failure] == 255);
+    CHECK(fixture.Pixels[failure + 1] == 0);
+    CHECK(fixture.Pixels[failure + 2] == 255);
+    CHECK(fixture.Graph.HasPendingSamples() == true);
+    ReadGraphFrame(fixture, output);
+    CHECK(fixture.Pixels[center] == mean); // Accumulate averages samples 1 and 2 before ToneMap.
+    CHECK(fixture.Pixels[center + 1] == one);
+    CHECK(fixture.Pixels[corner + 1] == 0);
+    CHECK(fixture.Pixels[failure + 1] == 0);
+    CHECK(fixture.Graph.HasPendingSamples() == false);
+    ReadGraphFrame(fixture, output);
+    CHECK(fixture.Pixels[center] == mean); // The sample limit stops the compute pass.
+    finish(fixture.Graph.Update({},
+                                {},
+                                {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                2,
+                                renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                report,
+                                nullptr,
+                                1));
+    CHECK(fixture.Graph.HasPendingSamples() == true);
+    ReadGraphFrame(fixture, output);
+    CHECK(fixture.Pixels[center] == one); // A camera revision restarts at sample 1.
+}
+
+TEST_CASE("Scene compute packages are ray packages for renderer selection",
+          "[render-graph][gpu][compute-ray-tracing][selection]")
+{
+    bool shouldRequestRay = false;
+    SECTION("default device features") {}
+    SECTION("native ray features preferred")
+    {
+        shouldRequestRay = true;
+    }
+    RhiGuard session;
+    rhi::DeviceDescription description;
+    description.Required.PortableRaster = true;
+    description.Storage.ResourcesPerGraph = renderer::VISIBILITY_GRAPH_RESOURCE_CAPACITY;
+    description.Preferred.RayQueries = shouldRequestRay;
+    rhi::DeviceHandle device{};
+    rhi::SurfaceHandle surface{};
+    rhi::StartupInfo failure;
+    const rhi::DeviceStatus started =
+        rhi::CreateDevice({}, { .Width = WIDTH, .Height = HEIGHT }, description, device, surface, &failure);
+    if (started != rhi::DeviceStatus::Ready && failure.Error == rhi::StartupError::AdapterUnavailable)
+    {
+        FAIL("Renderer selection acceptance requires a GPU adapter");
+    }
+    REQUIRE(started == rhi::DeviceStatus::Ready);
+    core::UniquePtr<renderer::RenderGraphPackage> compute =
+        LoadPackage({LUDUS_RG3_SCENE_COMPUTE_DIRECTORY, "rg2_scene_compute.lurgrt"});
+    core::UniquePtr<renderer::RenderGraphPackage> raster =
+        LoadPackage({LUDUS_RG3_SCENE_COMPUTE_RASTER_DIRECTORY, "rg2_scene_compute_raster.lurgrt"});
+    REQUIRE(renderer::RequiresHardwareRayTracing(compute->GetPlan()) == true);
+    REQUIRE(renderer::RequiresHardwareRayTracing(raster->GetPlan()) == false);
+    // Metal enables native rays on every capable device; a Vulkan device without the preference may
+    // not, which exercises the raster fallback with this real compute package.
+    rhi::RayCapabilities capabilities;
+    const bool hasNativeRays = rhi::GetRayCapabilities(device, capabilities) != rhi::RasterStatus::Unsupported;
+    CAPTURE(shouldRequestRay, hasNativeRays);
+    renderer::RenderGraphRenderer automatic = renderer::RenderGraphRenderer::Raster;
+    REQUIRE(renderer::SelectRenderGraphRenderer(device, renderer::RenderGraphPreference::Automatic, automatic) ==
+            rhi::RasterStatus::Ready);
+    CHECK(automatic == (hasNativeRays == true ? renderer::RenderGraphRenderer::HardwareRayTracing
+                                              : renderer::RenderGraphRenderer::Raster));
+    renderer::RenderGraphActivation activation;
+    REQUIRE(activation.Initialize(device,
+                                  {packages::rg2_scene_compute::INTERFACE_IDENTITY.GetData(),
+                                   packages::rg2_scene_compute::INTERFACE_IDENTITY.GetSize()},
+                                  shaders::renderer_composite::Vertex(),
+                                  shaders::renderer_composite::Fragment()) == rhi::RasterStatus::Ready);
+    REQUIRE(activation.Resize(WIDTH, HEIGHT) == rhi::RasterStatus::Ready);
+    // Automatic stages the compute package as the ray graph; without native rays it is released
+    // before preparation and the raster package is staged instead.
+    rhi::RasterStatus staged = activation.StageSelected(Move(raster), Move(compute));
+    REQUIRE((staged == rhi::RasterStatus::Ready || staged == rhi::RasterStatus::Pending));
+    CHECK(activation.GetReport().CandidateRenderer == automatic);
+    staged = activation.StageSelected(
+        LoadPackage({LUDUS_RG3_SCENE_COMPUTE_RASTER_DIRECTORY, "rg2_scene_compute_raster.lurgrt"}),
+        LoadPackage({LUDUS_RG3_SCENE_COMPUTE_DIRECTORY, "rg2_scene_compute.lurgrt"}),
+        renderer::RenderGraphPreference::ForceRaster);
+    REQUIRE((staged == rhi::RasterStatus::Ready || staged == rhi::RasterStatus::Pending));
+    CHECK(activation.GetReport().CandidateRenderer == renderer::RenderGraphRenderer::Raster);
+    activation.Reset();
 }
 
 TEST_CASE("Two graph reservoirs retain alternating shader writes and reset on replacement",

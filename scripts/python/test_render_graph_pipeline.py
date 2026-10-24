@@ -54,11 +54,40 @@ class PipelineDocumentTests(unittest.TestCase):
                 self.assertEqual('RenderGraphUnboundOutput', failure.exception.code)
                 self.assertEqual(before, self.path.read_bytes())
 
-    def test_compute_and_ray_programs_are_capability_gated(self):
+    def test_generic_compute_is_capability_gated_and_scene_compute_lowers(self):
         for kind, stage in (('ComputePipeline', 'compute'), ('RayTracingPipeline', 'ray_generation')):
             node = pipeline.new_node(kind, 'work')
             node['shaders'] = [{'id': 'entry', 'stage': stage, 'program': 'Entry'}]
             self.fails(node, 'Capability' if kind == 'ComputePipeline' else 'IncompletePipeline')
+        # A Scene input makes the same compute node a member of the ordered ray sequence.
+        node = pipeline.new_node('ComputePipeline', 'work')
+        node.update(state={}, invocation={'dimensions': 'ColorTarget'},
+                    shaders=[{'id': 'entry', 'stage': 'compute', 'program': 'Entry'}],
+                    inputs=[{'id': 'scene', 'type': 'Scene', 'required': True},
+                            {'id': 'view', 'type': 'View', 'required': True},
+                            {'id': 'color', 'type': 'ColorTexture', 'required': True}],
+                    outputs=[{'id': 'color', 'type': 'ColorTexture', 'target': 'color',
+                              'format': 'RGBA8Unorm', 'load': 'Clear', 'store': 'Store'}])
+        self.assertTrue(pipeline.is_scene_compute(node))
+        value = self.write(node)
+        value['configurations'][0]['nodes'].extend([
+            {'id': 'scene', 'kind': 'Scene'}, graph._target('target', 'ColorTexture'),
+            {'id': 'camera', 'kind': 'Camera', 'active': True, 'role': 'Offscreen', 'target_type': 'ColorTexture'},
+            {'id': 'output', 'kind': 'Export', 'type': 'ColorTexture'}])
+        value['configurations'][0]['edges'] = [
+            {'from': 'scene.scene', 'to': 'work.scene'}, {'from': 'camera.view', 'to': 'work.view'},
+            {'from': 'target.texture', 'to': 'work.color'}, {'from': 'target.texture', 'to': 'camera.target'},
+            {'from': 'work.color', 'to': 'output.texture'}]
+        self.path.write_bytes(graph.canonical_asset(value))
+        work = next(operation for operation in graph.compile_graph(self.path)['passes'] if operation['id'].endswith('/work'))
+        self.assertEqual(('RayTracing', 'ComputePipeline'), (work['kind'], work['source_kind']))
+        # Generic drafts keep their authored shape byte for byte.
+        draft = pipeline.new_node('ComputePipeline', 'work')
+        self.write(draft)
+        before = self.path.read_bytes()
+        self.assertEqual('InterfacesOnly', graph.load_library(self.path)['validation'])
+        self.assertEqual(before, self.path.read_bytes())
+        self.assertEqual({'group_size': [1, 1, 1]}, draft['state'])
 
     def test_stage_legality_duplicate_ids_dimensions_and_unknown_state(self):
         node = pipeline.new_node('ComputePipeline', 'work')

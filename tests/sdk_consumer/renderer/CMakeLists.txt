@@ -123,6 +123,13 @@ if(NOT EMSCRIPTEN)
     configure_file("${scene_ray_source}/main.lushader.json.in" "${scene_ray_staged}/main.lushader.json" @ONLY)
     ludus_compile_render_graph(TARGET ludus_sdk_scene_shader_contract_consumer NAME rg2_scene_ray
         MANIFEST "${scene_ray_staged}/main.lushader.json" RUNTIME_PACKAGE)
+    # A scene compute pass (ComputePipeline with a Scene input) through the installed helper.
+    set(scene_compute_source "${CMAKE_CURRENT_SOURCE_DIR}/../rg2/scene_compute")
+    set(scene_compute_staged "${CMAKE_CURRENT_BINARY_DIR}/rg3-inputs/scene_compute")
+    file(COPY "${scene_compute_source}/" DESTINATION "${scene_compute_staged}" PATTERN "*.in" EXCLUDE)
+    configure_file("${scene_compute_source}/main.lushader.json.in" "${scene_compute_staged}/main.lushader.json" @ONLY)
+    ludus_compile_render_graph(TARGET ludus_sdk_scene_shader_contract_consumer NAME rg2_scene_compute
+        MANIFEST "${scene_compute_staged}/main.lushader.json" RUNTIME_PACKAGE)
 endif()
 
 add_executable(ludus_sdk_render_graph_runtime_consumer ../render_graph_runtime.cpp)

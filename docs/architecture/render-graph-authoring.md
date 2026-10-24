@@ -10,8 +10,9 @@ exact-descriptor transient pooling with a serial control implemented, October 18
 Design update, October 19, 2026: GPU work uses graphics, compute and ray tracing
 pipeline nodes with customizable interfaces and node-owned shaders/state. This
 authoring records, editor controls and explicit raster conversion are implemented.
-Graphics nodes lower through the existing qualified raster profile; compute/ray
-execution and broader stage/state support remain capability-gated. The delivered
+Graphics nodes lower through the existing qualified raster profile. Ray tracing
+nodes, and compute nodes with a Scene input, run in the native triangle ray profile.
+Generic compute execution and broader stage/state support remain capability-gated. The delivered
 profiles listed below retain their documented limits.
 This defines the renderer authoring/compiler contract; it does not claim
 unrestricted shader composition or new RHI capability.
@@ -1170,7 +1171,11 @@ transaction that can roll back individual pixels.
 The [authoring guide](../development/render-graph-authoring.md#order-ray-passes-and-share-persistent-buffers)
 owns capacity, reset, ping-pong, editor and scheduling instructions. This change
 provides ordered storage access without qualifying arbitrary authored reservoir
-algorithms. The renderer-owned [ReSTIR DI template](../development/render-graph-authoring.md#use-the-built-in-restir-di-template)
+algorithms. [Scene compute passes](../development/render-graph-authoring.md#author-scene-compute-passes)
+are members of the same sequence: a Compute Pipeline with a Scene input lowers to an
+ordinary `RayTracing` pass record whose callback set is one authored kernel, so
+package formats and runtime execution are unchanged.
+The renderer-owned [ReSTIR DI template](../development/render-graph-authoring.md#use-the-built-in-restir-di-template)
 uses that storage contract and manifest-owned typed shader constants. Template
 creation uses the shared transactional backend; Properties and canvas controls
 edit the same draft manifest and require Save/rebuild before activation.

@@ -45,6 +45,11 @@ def new_node(kind, identity):
             'state': state, 'invocation': invocation}
 
 
+def is_scene_compute(node):
+    """Return whether a ComputePipeline declares a Scene input and so is a scene compute pass."""
+    return node['kind'] == 'ComputePipeline' and any(port['type'] == 'Scene' for port in node['inputs'])
+
+
 def _check_field(check, value, field, where, graph, *arguments):
     """Retain diagnostic codes/node locations while identifying the exact editable field."""
     try:
@@ -142,6 +147,15 @@ def validate(node, where, graph):
         graph._identifier(invocation['material'], where)
         for name in ('scene', 'view'):
             _check_field(graph._identifier, invocation[name], f'Invocation → {name}', where, graph)
+    elif is_scene_compute(node):
+        # Scene compute passes use the ray wrapper's automatic workgroup and the ray launch
+        # size. Lowering rejects any group_size other than [64, 1, 1] with a repair that clears it.
+        graph._keys(state, (), where, ('group_size',))
+        if 'group_size' in state:
+            _dimensions(state['group_size'], where, graph, 'Pipeline State → group_size')
+        _check_field(graph._keys, invocation, 'Invocation', where, graph, ('dimensions',))
+        if invocation['dimensions'] != 'ColorTarget':
+            _dimensions(invocation['dimensions'], where, graph, 'Invocation → dimensions')
     elif node['kind'] == 'ComputePipeline':
         _check_field(graph._keys, state, 'Pipeline State', where, graph, ('group_size',))
         _dimensions(state['group_size'], where, graph, 'Pipeline State → group_size')

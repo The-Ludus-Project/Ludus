@@ -18,9 +18,35 @@ MAX_BUFFER_BYTES = 256 * 1024 * 1024
 PASS_INDEX_SHIFT = 8
 
 
+COMPUTE_STAGE = 'compute'
+# A sequence made only of scene compute kernels has no hit or miss callback. These names
+# fill the template positions; persistent_wrapper replaces each call with a pass-index
+# dispatch that has no compute case, so a compute kernel's TraceAndShade latches HasFailed.
+UNUSED_COMPUTE_CALLBACKS = {'miss': 'GraphComputeMiss', 'closest_hit': 'GraphComputeClosestHit'}
+
+
 def program_tuple(node):
+    """Return a pass's callback variant: (compute,) for scene compute, else (raygen, miss, closest)."""
     assignments = {shader['stage']: shader['program'] for shader in node['shaders']}
+    if node['kind'] == 'ComputePipeline':
+        return (assignments[COMPUTE_STAGE],)
     return tuple(assignments[stage] for stage in STAGES)
+
+
+def is_compute_variant(variant):
+    """Scene compute kernels occupy only the ray-generation position of the sequence."""
+    return len(variant) == 1
+
+
+def select_callbacks(programs, variant):
+    """Map a variant to wrapper stage programs, filling a compute kernel's unused callbacks."""
+    if not is_compute_variant(variant):
+        return {stage: programs[identity] for stage, identity in zip(STAGES, variant)}
+    kernel = programs[variant[0]]
+    selected = {'ray_generation': kernel}
+    for stage, function in UNUSED_COMPUTE_CALLBACKS.items():
+        selected[stage] = dict(kernel, function=function, output='ScenePayload')
+    return selected
 
 # Thanks to Microsoft, DirectX Raytracing Functional Spec, “Intersection Attributes”:
 # https://microsoft.github.io/DirectX-Specs/d3d/Raytracing.html#intersection-attributes
@@ -68,6 +94,17 @@ def lower(node, where, graph):
                    'Customize ScenePayload in the scene interface; custom intersection attributes require an unsupported procedural profile',
                    field='state', expected=STATE, actual=resolve_state(node['state']),
                    repair='Reset advanced ray state overrides to automatic.')
+    mappings, outputs, color = lower_ports(node, where, graph, 'ray', 'triangle ray')
+    record = {'id': node['id'], 'kind': 'RayTracing', 'color_load': color['load'], 'color_store': color['store']}
+    return record, mappings, outputs
+
+
+def lower_ports(node, where, graph, noun, profile):
+    """Check the shared C04 port contract of ray and scene compute passes.
+
+    Returns the input mappings, the output mappings and the color output port. The
+    noun ('ray', 'scene compute') and profile name only change diagnostic wording.
+    """
     types = {port['id']: port['type'] for port in node['inputs']}
     mappings = {}
     for aspect, kind in (('scene', 'Scene'), ('view', 'View')):
@@ -80,13 +117,13 @@ def lower(node, where, graph):
     graph._require(len(storage) <= buffers.MAX_BUFFERS, 'Capacity', where, 'at most two Buffer inputs supported')
     mappings.update({'buffer:' + name: name for name in storage})
     colors = [port for port in node['outputs'] if port['type'] == 'ColorTexture']
-    graph._require(len(colors) == 1, 'Capability', where, 'ray pipelines require one color output')
+    graph._require(len(colors) == 1, 'Capability', where, f'{noun} pipelines require one color output')
     mappings['color'] = colors[0]['target']
-    graph._require(types.get(mappings['color']) == 'ColorTexture', 'Capability', where, 'ray output requires color input')
+    graph._require(types.get(mappings['color']) == 'ColorTexture', 'Capability', where, f'{noun} output requires color input')
     color_reads = [identity for identity, kind in types.items() if kind == 'ColorTexture' and identity != mappings['color']]
     depth_reads = [identity for identity, kind in types.items() if kind == 'DepthTexture']
     graph._require((len(color_reads), len(depth_reads)) in ((0, 0), (1, 1)), 'Capability', where,
-                   'ray visibility input requires one read-only color and one depth texture; input declarations: ' +
+                   f'{noun} visibility input requires one read-only color and one depth texture; input declarations: ' +
                    ', '.join(f"'{identity}' ({types[identity]})" for identity in color_reads + depth_reads) +
                    '. Repair corresponding interface inputs and parent wires.')
     if color_reads:
@@ -95,17 +132,17 @@ def lower(node, where, graph):
     unsupported = sorted(set(types) - set(mappings.values()))
     descriptions = ', '.join(f"'{identity}' ({types[identity]})" for identity in unsupported)
     graph._require(not unsupported, 'Capability', where,
-                   f"Unsupported ray pipeline inputs: {descriptions}. This triangle ray profile accepts only "
+                   f"Unsupported {noun} pipeline inputs: {descriptions}. This {profile} profile accepts only "
                    'Scene, View, ColorTexture, paired visibility/depth textures and up to two Buffers. Remove the extra input declarations and their wires; '
                    'if exposed by a subgraph, also remove the matching interface inputs and parent wires.',
                    port=unsupported[0] if unsupported else None, direction='input',
                    expected='Scene, View, ColorTexture', actual=descriptions,
                    repair='Remove unsupported pipeline inputs and their wires; also update exposed subgraph interfaces.')
     colors = [port for port in node['outputs'] if port['type'] == 'ColorTexture']
-    graph._require(len(colors) == 1, 'Capability', where, 'triangle ray profile requires one color output')
+    graph._require(len(colors) == 1, 'Capability', where, f'{profile} profile requires one color output')
     output = colors[0]
     graph._require(output['target'] == mappings['color'] and output['load'] == 'Clear' and output['store'] == 'Store',
-                   'Capability', where, 'ray output must Clear/Store its ColorTexture target')
+                   'Capability', where, f'{noun} output must Clear/Store its ColorTexture target')
     outputs = {'color': output['id']}
     for port in node['outputs']:
         if port is output:
@@ -114,8 +151,7 @@ def lower(node, where, graph):
                        port['load'] == 'Load' and port['store'] == 'Store', 'Capability', where,
                        'writable structured buffers require Load/Store on a paired Buffer input')
         outputs['buffer:' + port['target']] = port['id']
-    record = {'id': node['id'], 'kind': 'RayTracing', 'color_load': output['load'], 'color_store': output['store']}
-    return record, mappings, outputs
+    return mappings, outputs, output
 
 
 def validate_program(program, build):
@@ -182,9 +218,14 @@ def group_profiles(plans, technique, build):
         group = groups.setdefault(has_visibility, {'variants': set(), 'persistent': False, 'structured_buffers': False})
         group['variants'].update(program_tuple(operation['pipeline']) for operation in operations)
         group['structured_buffers'] |= any(operation.get('buffers') for operation in operations)
+        # GraphBuffer0/1 and GetGraphPassIndex exist only in the persistent wrapper, so a
+        # single scene compute pass needs it as well (compute ray tracing design, section 3.3).
         group['persistent'] |= len(operations) > 1 or any(resource['type'] == 'Buffer' and 'stride' not in resource
-                                                        for resource in plan['resources'].values())
+                                                        for resource in plan['resources'].values()) or any(
+            operation['pipeline']['kind'] == 'ComputePipeline' for operation in operations)
     if not groups:
+        build.require(all(stage in technique for stage in STAGES), 'Configuration', TECHNIQUE,
+                      'a ray technique without default callbacks requires a RayTracingPipeline or scene compute pass')
         groups[technique.get('scene_interface', {}).get('visibility_buffer', False)] = {
             'variants': {tuple(technique[stage] for stage in STAGES)}, 'persistent': False, 'structured_buffers': False}
     result = []
@@ -201,7 +242,7 @@ def group_profiles(plans, technique, build):
 def expand_programs(programs, technique, snapshot, helper, build, variants=None, persistent=False, schemas=None,
                     compute_identity=COMPUTE_ID):
     """Capture the engine kernel and all three functions in one linked compute entry."""
-    selected = {stage: programs[identity] for stage, identity in zip(STAGES, variants[0])} if variants else {stage: programs[technique[stage]] for stage in STAGES}
+    selected = select_callbacks(programs, variants[0]) if variants else {stage: programs[technique[stage]] for stage in STAGES}
     storage = buffers.merge_bindings(selected, build)
     build.require(not persistent or not storage, 'Capability', TECHNIQUE, 'ordered ray passes use Buffer storage; StructuredBuffer remains the single-job profile')
     storage_source = buffers.declarations(storage, schemas or {}, build)
@@ -282,7 +323,8 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
         build.require(technique.get('scene_interface') is not None, 'Capability', TECHNIQUE,
                       'ordered ray passes and persistent buffers require the scene callback interface')
         wrapper = persistent_wrapper(programs, technique, variants, snapshot, build, compute_recipe, compatibility)
-    result = {identity: deepcopy(program) for identity, program in programs.items() if program['stage'] not in STAGES}
+    result = {identity: deepcopy(program) for identity, program in programs.items()
+              if program['stage'] not in (*STAGES, COMPUTE_STAGE)}
     result[compute_identity] = {'id': compute_identity, 'stage': 'compute', 'source': selected['ray_generation']['source'],
                           'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': wrapper, 'native_ray_queries': True, 'native_ray_profile': True, 'persistent_ray_profile': persistent, 'storage_bindings': storage, 'storage_schemas': {binding['schema']: schemas[binding['schema']] for binding in storage}, 'visibility_buffer': technique.get('scene_interface', {}).get('visibility_buffer', False)}
     if compatibility['sources']:
@@ -537,8 +579,10 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, c
     """Namespace each unique authored source and dispatch its callbacks by pass index."""
     interface = technique['scene_interface']
     sources = sorted({programs[identity]['source'] for variant in variants for identity in variant})
-    selected = {stage: dict(programs[identity], function=f'GraphSource{sources.index(programs[identity]["source"])}::' + programs[identity]['function'])
-                for stage, identity in zip(STAGES, variants[0])}
+    # A ray variant supplies the callback template; it is the first variant in ray-only sequences.
+    template = next((variant for variant in variants if not is_compute_variant(variant)), variants[0])
+    selected = {stage: dict(program, function=f'GraphSource{sources.index(program["source"])}::' + program['function'])
+                for stage, program in select_callbacks(programs, template).items()}
     wrapper = scene_wrapper(selected, interface, snapshot, build, recipe, compatibility=compatibility)
     prefix, body = wrapper.split('uint TraceAndShade(', 1)
     first_callbacks, first_adapters = adapt_legacy_callbacks(selected)
@@ -572,6 +616,8 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, c
     def dispatch(stage, arguments, returns=False):
         result = 'switch (GetGraphPassIndex()) {\n'
         for index, variant in enumerate(variants):
+            if stage not in variant_callbacks[index]:
+                continue  # A scene compute pass has no hit or miss callback; default: latches HasFailed.
             function = variant_callbacks[index][stage]
             result += f'case {index}: ' + ('return ' if returns else '') + function + '(' + arguments + ');'
             result += ('\n' if returns else ' break;\n')

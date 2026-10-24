@@ -268,6 +268,29 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_compute_split_RUNTIME_PACKAGE PARENT_PATH compute_split_package_directory)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_COMPUTE_SPLIT_DIRECTORY="${compute_split_package_directory}")
+    # Scene compute passes (compute ray-tracing C1/C2): a single compute pass, its raster
+    # configuration for renderer selection, and a mixed compute + ray sequence.
+    set(scene_compute_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/scene_compute")
+    set(scene_compute_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/scene_compute")
+    file(COPY "${scene_compute_source}/" DESTINATION "${scene_compute_staged}" PATTERN "*.in" EXCLUDE)
+    configure_file("${scene_compute_source}/main.lushader.json.in" "${scene_compute_staged}/main.lushader.json" @ONLY)
+    ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_scene_compute
+        MANIFEST "${scene_compute_staged}/main.lushader.json" RUNTIME_PACKAGE)
+    cmake_path(GET rg2_scene_compute_RUNTIME_PACKAGE PARENT_PATH scene_compute_package_directory)
+    ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_scene_compute_raster
+        MANIFEST "${scene_compute_staged}/main.lushader.json" CONFIGURATION Raster RUNTIME_PACKAGE)
+    cmake_path(GET rg2_scene_compute_raster_RUNTIME_PACKAGE PARENT_PATH scene_compute_raster_package_directory)
+    set(compute_mixed_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/compute_mixed")
+    set(compute_mixed_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/compute_mixed")
+    file(COPY "${compute_mixed_source}/" DESTINATION "${compute_mixed_staged}" PATTERN "*.in" EXCLUDE)
+    configure_file("${compute_mixed_source}/main.lushader.json.in" "${compute_mixed_staged}/main.lushader.json" @ONLY)
+    ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_compute_mixed
+        MANIFEST "${compute_mixed_staged}/main.lushader.json" RUNTIME_PACKAGE)
+    cmake_path(GET rg2_compute_mixed_RUNTIME_PACKAGE PARENT_PATH compute_mixed_package_directory)
+    target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+        LUDUS_RG3_SCENE_COMPUTE_DIRECTORY="${scene_compute_package_directory}"
+        LUDUS_RG3_SCENE_COMPUTE_RASTER_DIRECTORY="${scene_compute_raster_package_directory}"
+        LUDUS_RG3_COMPUTE_MIXED_DIRECTORY="${compute_mixed_package_directory}")
     set(visibility_sequence_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/visibility_sequence")
     set(visibility_sequence_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/visibility_sequence")
     file(COPY "${visibility_sequence_source}/" DESTINATION "${visibility_sequence_staged}" PATTERN "*.in" EXCLUDE)

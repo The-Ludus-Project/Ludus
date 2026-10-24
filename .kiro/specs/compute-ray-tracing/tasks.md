@@ -40,53 +40,94 @@ Mac has no Linux host.
 
 ## C1 Scene compute execution profile (builder)
 
-- [ ] Add `render_graph_compute.py`: lowering, C04 port checks shared with
+- [x] Add `render_graph_compute.py`: lowering, C04 port checks shared with
       `render_graph_ray.py` through extracted helpers, and diagnostics with
       repairs.
-- [ ] Route `_lower_pipeline`. Keep the `Capability` error for compute nodes
+      *`render_graph_ray.lower_ports` is the shared helper; ray diagnostics keep
+      their wording.*
+- [x] Route `_lower_pipeline`. Keep the `Capability` error for compute nodes
       without a Scene input, with updated repair text.
-- [ ] `render_graph_pipeline.py`: `ColorTarget` dimensions, `state: {}`, the
+- [x] `render_graph_pipeline.py`: `ColorTarget` dimensions, `state: {}`, the
       `[64, 1, 1]` group-size rule. Generic drafts round-trip byte-identically.
-- [ ] `render_graph_build.py`:
-  - [ ] allow the `compute` stage with the C03 signature;
-  - [ ] collect `(compute_id,)` variants;
-  - [ ] force the persistent profile for any sequence with a compute member;
-  - [ ] reject `StructuredBuffer` on scene compute nodes.
-- [ ] `persistent_wrapper`: raygen-only dispatch cases, and the closest/miss
+      *`is_scene_compute` selects the scene validation. The group-size rule is
+      enforced at lowering, with a repair that clears it, so saved drafts with
+      another size still load.*
+- [x] `render_graph_build.py`:
+  - [x] allow the `compute` stage with the C03 signature;
+  - [x] collect `(compute_id,)` variants;
+  - [x] force the persistent profile for any sequence with a compute member;
+  - [x] reject `StructuredBuffer` on scene compute nodes.
+  *The variant collection and persistent profile live in `render_graph_ray`
+  (`program_tuple`, `group_profiles`). The StructuredBuffer rejection is in the
+  plan compiler, so it names the node and port before any build. The ray
+  technique's three default callbacks are now optional as a group, so a
+  compute-only manifest names no unused programs.*
+- [x] `persistent_wrapper`: raygen-only dispatch cases, and the closest/miss
       `default:` failure for compute pass indices.
-- [ ] Update the plan summary and diagnostics to name the source node kind.
+- [x] Update the plan summary and diagnostics to name the source node kind.
       Accumulate, ToneMap and Denoise accept compute producers.
-- [ ] Python tests:
-  - [ ] invert `test_compute_and_ray_programs_are_capability_gated`;
-  - [ ] new `test_render_graph_compute.py` covering ports, launch size, group
+- [x] Python tests:
+  - [x] invert `test_compute_and_ray_programs_are_capability_gated`
+        (now `test_generic_compute_is_capability_gated_and_scene_compute_lowers`);
+  - [x] new `test_render_graph_compute.py` covering ports, launch size, group
         size, mixed sequences, the four-pass limit, StructuredBuffer rejection
         and post-processing acceptance;
-  - [ ] keep `test_render_graph_selection.py` and the existing ray, buffer,
+  - [x] keep `test_render_graph_selection.py` and the existing ray, buffer,
         execution and tone-mapping suites green unchanged.
-- [ ] SDK fixture `tests/sdk_consumer/rg2/scene_compute/`: a single compute
+  *Ran 299 render-graph Python tests on macOS, with the pinned native shader
+  tools for the generated-wrapper checks. Seven existing ray fixtures and
+  templates (ordered_ray, visibility_sequence, compute_split, raytracing,
+  scene_ray, restir_di, visibility_secondary_rays) build byte-identical plans,
+  wrappers and Metal artifacts with the `develop` and the new tooling (C08).*
+- [x] SDK fixture `tests/sdk_consumer/rg2/scene_compute/`: a single compute
       pass that writes `GetSceneInfo`-derived color. Cook it in
       `modules/graphics/renderer/CMakeLists.txt`.
+      *Also cooked by the installed renderer consumer
+      (`ludus_sdk_scene_shader_contract_consumer`), which passed against a local
+      `macos-clang-development` SDK install.*
 
 ## C2 Runtime evidence (same PR as C1 if no runtime change)
 
-- [ ] `render_graph_ray_tests.cpp`:
-  - [ ] the scene compute fixture renders the expected pixels;
-  - [ ] a mixed compute + ray sequence works;
-  - [ ] the Accumulate stop limit works;
-  - [ ] the ToneMap exposure works.
+No runtime change was needed. Evidence is from Metal on this Mac
+(`macos-clang-debug`). Vulkan evidence for the same tests comes only from the
+batch CI native suite on Linux.
+
+- [x] `render_graph_ray_tests.cpp`:
+  - [x] the scene compute fixture renders the expected pixels;
+  - [x] a mixed compute + ray sequence works;
+  - [x] the Accumulate stop limit works;
+  - [x] the ToneMap exposure works.
   These tests skip only on `Unsupported` ray capability.
+  *"A scene compute pass traces the World and feeds Accumulate and ToneMap"
+  (exposures 1, 0 and 2, and the `TraceAndShade` error pixel) and "A scene
+  compute pass hands packed triangle hits to a later ray pass"
+  (`tests/sdk_consumer/rg2/compute_mixed/`). Both pass on Metal.*
 - [ ] Activation tests: a compute-only package is a ray package, and
       `StageSelected` falls back to raster without native rays.
-- [ ] If D1 picked `SceneCompute`:
+  - [x] Ray package: "Scene compute packages are ray packages for renderer
+        selection" passes on Metal. `RequiresHardwareRayTracing` is true for
+        the cooked package, and `StageSelected` stages it as the hardware ray
+        candidate, or raster under Force raster.
+  - [ ] Raster fallback without native rays: the same test takes that branch
+        on a device that does not enable ray queries. Metal enables them on
+        every device here, so this Mac cannot run it. The reference-backend
+        test "Unsupported native rays select raster without preparing the ray
+        package" covers the identical numeric `RayTracing` record (D1). Check
+        this box after a run on a device without native rays.
+- [ ] If D1 picked `SceneCompute`: *not applicable, because D1 chose no format
+      change.*
   - [ ] bump `plan.h`/`runtime_package.h` with history notes;
   - [ ] add `ValidatePlan` and decoder branches;
   - [ ] add old-runtime rejection tests;
   - [ ] update `test_neutral_format_limits_match_offline_lowering`.
-- [ ] Docs: in `render-graph-authoring.md`, add "Author scene compute passes"
+- [x] Docs: in `render-graph-authoring.md`, add "Author scene compute passes"
       under "Execute a triangle ray pipeline", and update "Author pipeline
       nodes" and the architecture doc's link list.
-- [ ] Run `check-docs`, the strict MkDocs build and `check-wiki
+- [x] Run `check-docs`, the strict MkDocs build and `check-wiki
       --documentation-only`.
+      *All pass, except that a local `check-wiki` has no generated Doxygen API
+      pages (`reference/index.html` → `../api/index.html`). This change touches
+      no public API.*
 
 ## C3 Editor authoring of scene compute nodes
 
