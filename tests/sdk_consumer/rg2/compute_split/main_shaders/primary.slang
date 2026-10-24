@@ -13,6 +13,7 @@ float3 TracePrimary(SceneContext scene, RayLaunch launch, inout RayQueryContext 
                                asuint(hit.DistanceWorld),
                                asuint(hit.Barycentric.x),
                                asuint(hit.Barycentric.y));
-    GraphBuffer0[base + 1] = uint4(asuint(jitterPixel.x), asuint(jitterPixel.y), launch.SampleIndex, asuint(automaticDraw));
+    GraphBuffer0[base + 1] =
+        uint4(asuint(jitterPixel.x), asuint(jitterPixel.y), launch.SampleIndex, asuint(automaticDraw));
     return float3(0);
 }
