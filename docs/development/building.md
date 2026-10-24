@@ -203,6 +203,7 @@ port; supported native hosts and limits are described below.
 ./init.sh --gui --with-rad-debugger                   # review optional debugger setup
 ./init.sh --cli --with-editor                        # Qt prerequisites + native editor build
 ./init.sh --cli --no-editor                          # omit optional editor setup (default)
+./init.sh --cli --no-denoiser                        # build without the OIDN denoiser
 ```
 
 `--persona` supplies defaults; an explicit preset and scope flags override those
@@ -252,6 +253,20 @@ Development preset. `--no-system-install` uses your existing Qt 6.4+ installatio
 instead. Launch it afterwards with `./scripts/editor --preset <preset>`.
 Qt remains an optional editor dependency outside Conan and the installed SDK.
 See [the editor guide](editor-workspace.md).
+
+The **Include OIDN denoiser** checkbox (`--with-denoiser`, the default) builds
+render-graph Denoise support into the engine, editor, SDK and games on macOS
+Apple silicon. Init downloads the pinned official Intel Open Image Denoise
+release recorded in `config/tool_versions.json`, verifies its SHA-256 and
+unpacks it to `out/denoiser/oidn`, then saves `LUDUS_ENABLE_OIDN` for the
+prepared macOS presets. Later configures, including direct CMake and IDE builds,
+find it there without downloading anything. Installed SDKs then carry OIDN's
+runtime libraries, device modules and license notices. `--no-denoiser` skips
+the download and builds without the denoiser and its runtime; editors and games
+then show Denoise nodes unfiltered with a note. Linux, browser and Windows
+setups always build without it, which init reports instead of failing; only an
+explicit `--with-denoiser` on those presets is an error. See
+[Denoise ray output with OIDN](render-graph-authoring.md#denoise-ray-output-with-oidn).
 
 Editor setup also keeps this checkout's engine installs current. Game projects
 build against an installed engine below `out/install/` (selected in their
@@ -491,6 +506,7 @@ The source tree contains only hand-written project files. Generated state belong
 ```text
 out/host-tools/venv/        pinned CMake, Ninja, and Conan Python packages
 out/host-tools/raddebugger/  optional pinned RAD source builds
+out/denoiser/oidn/          pinned OIDN release (macOS Apple silicon unless --no-denoiser)
 out/conan/home/             project-local Conan cache (unless LUDUS_CONAN_HOME is set)
 out/conan/profiles/         installed Conan profile for this checkout
 out/conan/<preset>/         Conan CMakeToolchain and CMakeDeps files

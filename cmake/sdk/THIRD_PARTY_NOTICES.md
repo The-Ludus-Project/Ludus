@@ -96,3 +96,18 @@ they are not player runtime dependencies. https://github.com/luau-lang/luau
 AMD GPUOpen and contributors, MIT. https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator/tree/v3.3.0
 The complete license is bundled as `VMA-LICENSE`. Used privately by the Vulkan
 portable resource implementation; no allocator API is exported.
+
+## Open Image Denoise 2.5.1 (macOS Apple silicon SDKs built with the denoiser)
+
+`./init.sh` builds macOS Apple silicon SDKs with Intel Open Image Denoise unless
+`--no-denoiser` is given; the manifest `dependencies` array lists it when present.
+Such an SDK bundles the official RenderKit 2.5.1 release's shared runtime under
+`lib/` (`libOpenImageDenoise`, its core and Metal/CPU device modules, and the
+oneTBB library the CPU device uses) with its CMake package under
+`lib/cmake/OpenImageDenoise-2.5.1/`. `Ludus::GraphicsRenderer` links it privately,
+so every executable that links the renderer loads it at run time.
+Copyright Intel Corporation; Apache-2.0. oneTBB is Apache-2.0. Upstream's
+`LICENSE.txt` and third-party program notices are installed under
+`share/Ludus/licenses/OpenImageDenoise/` and copied by the standard game release
+helper; `ludus_install_denoiser_runtime` installs the runtime into a macOS app.
+https://github.com/RenderKit/oidn/releases/tag/v2.5.1

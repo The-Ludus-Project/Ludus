@@ -1863,6 +1863,8 @@ def run_init_steps(args: argparse.Namespace, root: Path, versions: dict[str, dic
 
     try:
         prepare_conan_artifacts(root, versions, presets, locked=args.locked, after_host_tools=start_preview_tools)
+        from init_denoiser import setup_denoiser
+        setup_denoiser(args, root, versions, sys.modules[__name__])
         return run_remaining_init_steps(args, root, preset, presets, run_validation, painter, preparation)
     finally:
         if preparation is not None:
@@ -1936,6 +1938,7 @@ def print_init_summary(args: argparse.Namespace, root: Path, preset: str, preset
     if getattr(args, "with_editor", False) and not run_validation:
         print(f"Launch the editor: ./scripts/editor --preset {preset}")
     print("Prepared presets: " + ", ".join(presets))
+    print("OIDN denoiser: " + ("on" if getattr(args, "with_denoiser", False) else "off"))
     elapsed = init_progress.elapsed()
     if elapsed:
         print(f"Finished in {elapsed}.")
@@ -2421,6 +2424,13 @@ def verify_sdk_install(root: Path, prefix: Path, build_dir: Path) -> None:
         prefix / "share" / "Ludus" / "licenses" / "THIRD_PARTY_NOTICES.md",
         prefix / "share" / "Ludus" / "LudusSdkManifest.json",
     ]
+
+    if cache_value_matches(cmake_cache_value(build_dir / "CMakeCache.txt", "LUDUS_ENABLE_OIDN") or "OFF", "ON"):
+        # Renderer links the OIDN runtime; consumers and packaged games load it from the SDK.
+        from init_denoiser import LICENSE_FILES, RUNTIME_LIBRARIES
+        required_paths.extend(prefix / "lib" / name for name in RUNTIME_LIBRARIES)
+        required_paths.append(prefix / "lib" / "cmake" / "OpenImageDenoise-2.5.1" / "OpenImageDenoiseConfig.cmake")
+        required_paths.extend(prefix / "share" / "Ludus" / "licenses" / "OpenImageDenoise" / name for name in LICENSE_FILES)
 
     missing = [path for path in required_paths if not path.exists()]
     if missing:
@@ -2988,6 +2998,13 @@ def make_parser() -> argparse.ArgumentParser:
     preview.add_argument("--no-editor-preview", dest="with_editor_preview", action="store_false",
                          help="build a lightweight document-only editor without shader tools")
     init_parser.set_defaults(with_editor_preview=True)
+    denoiser = init_parser.add_mutually_exclusive_group()
+    denoiser.add_argument("--with-denoiser", dest="with_denoiser", action="store_true",
+                          help="install the pinned OIDN denoiser for editor and game render-graph denoising "
+                               "(default on macOS Apple silicon)")
+    denoiser.add_argument("--no-denoiser", dest="with_denoiser", action="store_false",
+                          help="build without the OIDN denoiser; the SDK then carries no OIDN runtime")
+    init_parser.set_defaults(with_denoiser=None)
     init_parser.add_argument("--no-engine-refresh", dest="skip_engine_refresh", action="store_true",
                              help="with --with-editor, do not reinstall this checkout's older engine installs under out/install")
     for name, label in (("tests", "native test targets and Catch2 dependencies"),

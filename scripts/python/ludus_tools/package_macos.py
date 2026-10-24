@@ -26,7 +26,9 @@ SYSTEM_LIBRARIES = frozenset({"/usr/lib/libSystem.B.dylib", "/usr/lib/libc++.1.d
                               "/usr/lib/libc++abi.dylib", "/usr/lib/libobjc.A.dylib"})
 FRAMEWORKS = frozenset({"Cocoa", "AppKit", "Foundation", "CoreFoundation", "CoreGraphics",
                        "CoreAudio", "AudioToolbox", "CoreServices", "QuartzCore", "Metal",
-                       "IOKit", "Security", "CoreVideo", "CoreText", "AVFAudio"})
+                       "IOKit", "Security", "CoreVideo", "CoreText", "AVFAudio",
+                       # The SDK's OIDN denoiser runtime and its Metal/CPU device modules.
+                       "Accelerate", "MetalPerformanceShaders", "MetalPerformanceShadersGraph"})
 MAGIC = b"\xcf\xfa\xed\xfe"
 
 

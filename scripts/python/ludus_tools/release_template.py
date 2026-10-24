@@ -45,7 +45,11 @@ set_target_properties(TARGET_TOKEN PROPERTIES
     MACOSX_BUNDLE_BUNDLE_NAME "TARGET_TOKEN"
     INSTALL_RPATH "@executable_path/../Frameworks"
     INSTALL_RPATH_USE_LINK_PATH FALSE)
-install(TARGETS TARGET_TOKEN BUNDLE DESTINATION . COMPONENT GameRelease)""".replace("TARGET_TOKEN", target)).replace("Linux ABI baseline", "macOS 14.0 system-library baseline")
+install(TARGETS TARGET_TOKEN BUNDLE DESTINATION . COMPONENT GameRelease)
+# The SDK's OIDN denoiser runtime, only when this game links it (Ludus::GraphicsRenderer).
+if(COMMAND ludus_install_denoiser_runtime)
+    ludus_install_denoiser_runtime(TARGET TARGET_TOKEN DESTINATION TARGET_TOKEN.app/Contents/Frameworks COMPONENT GameRelease)
+endif()""".replace("TARGET_TOKEN", target)).replace("Linux ABI baseline", "macOS 14.0 system-library baseline")
     result = [TemplateFile("ludus.release.json", canonical(config).decode("utf-8")),
             TemplateFile("cmake/GameRelease.cmake", helper),
             TemplateFile("NOTICE.txt", "This game uses Ludus. See licenses/Ludus/ for SDK license notices.\n"

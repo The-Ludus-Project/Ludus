@@ -75,9 +75,10 @@ if(NOT EMSCRIPTEN)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         target_link_options(ludus_sdk_reflection_module PRIVATE "LINKER:--exclude-libs,ALL")
     endif()
-    add_executable(ludus_sdk_consumer main.cpp reflection.cpp network.cpp policy.cpp world.cpp strings.cpp string_dictionary.cpp time.cpp identity.cpp fluid.cpp filesystem.cpp pack.cpp async.cpp persistence.cpp ui.cpp containers.cpp threading.cpp parsing.cpp localization.cpp configuration.cpp curves.cpp geometry.cpp content.cpp audio.cpp camera.cpp)
-    target_link_libraries(ludus_sdk_consumer PRIVATE consumer_reflection Ludus::AudioContent Ludus::Content Ludus::FoundationConfigJson Ludus::RuntimeConfiguration Ludus::NetworkCore Ludus::FoundationParsing Ludus::FoundationParsingJson Ludus::Localization Ludus::StringDictionary Ludus::StringDictionaryWriter Ludus::FoundationContainers Ludus::FoundationFilesystem Ludus::FoundationStrings Ludus::FoundationBase Ludus::FoundationMath Ludus::FoundationGeometry Ludus::FoundationThreading Ludus::FoundationTime Ludus::FoundationIdentity Ludus::Platform Ludus::GraphicsRhi Ludus::Input Ludus::GameplayWorld Ludus::GameplayCamera Ludus::PhysicsFluid Ludus::Ui)
+    add_executable(ludus_sdk_consumer main.cpp reflection.cpp network.cpp policy.cpp world.cpp strings.cpp string_dictionary.cpp time.cpp identity.cpp fluid.cpp filesystem.cpp pack.cpp async.cpp persistence.cpp ui.cpp containers.cpp threading.cpp parsing.cpp localization.cpp configuration.cpp curves.cpp geometry.cpp content.cpp audio.cpp camera.cpp denoiser.cpp)
+    target_link_libraries(ludus_sdk_consumer PRIVATE consumer_reflection Ludus::AudioContent Ludus::Content Ludus::FoundationConfigJson Ludus::RuntimeConfiguration Ludus::NetworkCore Ludus::FoundationParsing Ludus::FoundationParsingJson Ludus::Localization Ludus::StringDictionary Ludus::StringDictionaryWriter Ludus::FoundationContainers Ludus::FoundationFilesystem Ludus::FoundationStrings Ludus::FoundationBase Ludus::FoundationMath Ludus::FoundationGeometry Ludus::FoundationThreading Ludus::FoundationTime Ludus::FoundationIdentity Ludus::Platform Ludus::GraphicsRhi Ludus::Input Ludus::GameplayWorld Ludus::GameplayCamera Ludus::PhysicsFluid Ludus::Ui Ludus::GraphicsRenderer)
     target_compile_definitions(ludus_sdk_consumer PRIVATE
+        EXPECTED_DENOISER=$<BOOL:${Ludus_ENABLE_OIDN}>
         EXPECTED_FLAVOR=${Ludus_BUILD_FLAVOR_ID}
         EXPECTED_ASSERTS=${Ludus_ENABLE_ASSERTS}
         EXPECTED_CHECK_BREAK=${Ludus_BREAK_ON_CHECK})

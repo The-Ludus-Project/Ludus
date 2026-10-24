@@ -13,6 +13,8 @@ import platform
 import sys
 from dataclasses import dataclass
 
+from init_denoiser import preset_supports, validate_denoiser_options
+
 
 @dataclass(frozen=True)
 class Persona:
@@ -50,6 +52,7 @@ OPTION_COLUMN_WRAP_POINTS = 330
 CHECKBOX_TEXT_INDENT_POINTS = 23
 OPTION_LABELS = {
     "with_editor": "Build Ludus editor",
+    "with_denoiser": "Include OIDN denoiser",
     "with_tests": "Include native test targets",
     "with_smoke_app": "Include sample applications",
     "with_web_probes": "Include browser feasibility probes",
@@ -66,6 +69,8 @@ OPTION_LABELS = {
 }
 OPTION_HINTS = {
     "with_editor": "Includes the 3D preview and live shaders unless you turn them off in Advanced setup.",
+    "with_denoiser": "Denoises editor and game render graphs; adds the OIDN runtime to the SDK. "
+                     "macOS Apple silicon only.",
     "with_smoke_app": "The smoke test and the native input demo.",
     "with_shader_probe": "Linux Vulkan only; needs separate pinned tools.",
     "with_rad_debugger": "Optional native debugger for Linux x64.",
@@ -75,7 +80,7 @@ OPTION_HINTS = {
 }
 NESTED_OPTIONS = ("skip_checks", "skip_sanitizers", "skip_sdk")
 OPTION_COLUMNS = (
-    (("Targets", ("with_editor", "with_tests", "with_smoke_app", "with_web_probes", "with_shader_probe",
+    (("Targets", ("with_editor", "with_denoiser", "with_tests", "with_smoke_app", "with_web_probes", "with_shader_probe",
                   "with_rad_debugger")),),
     (("Setup scope", ("preset_only", "no_system_install")),
      ("After setup", ("run_tests", "validate", "skip_checks", "skip_sanitizers", "skip_sdk", "ci"))),
@@ -99,7 +104,8 @@ def apply_defaults(args: argparse.Namespace) -> argparse.Namespace:
     result.validate = args.validate or persona.validate
     for name, default in (("with_tests", result.validate or args.ci or args.run_tests),
                           ("with_smoke_app", persona.smoke_app),
-                          ("with_web_probes", False), ("with_shader_probe", False)):
+                          ("with_web_probes", False), ("with_shader_probe", False),
+                          ("with_denoiser", preset_supports(result.preset))):
         if getattr(result, name) is None:
             setattr(result, name, default)
     return result
@@ -133,6 +139,7 @@ def validate_options(args: argparse.Namespace, engine) -> None:
         engine.ensure_known_preset(args.preset)
     from init_editor import validate_editor_options
     validate_editor_options(args, engine)
+    validate_denoiser_options(args, engine)
 
 
 # Options passed to the child runner verbatim; every other init option is a
@@ -154,6 +161,7 @@ STORE_TRUE_OPTIONS = (
 PAIRED_OPTIONS = (
     ("with_editor", "--with-editor", "--no-editor"),
     ("with_editor_preview", "--with-editor-preview", "--no-editor-preview"),
+    ("with_denoiser", "--with-denoiser", "--no-denoiser"),
     ("with_tests", "--with-tests", "--no-tests"),
     ("with_smoke_app", "--with-smoke-app", "--no-smoke-app"),
     ("with_web_probes", "--with-web-probes", "--no-web-probes"),
@@ -244,8 +252,8 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
         description = tk.StringVar()
         summary = tk.StringVar()
         flags = {name: tk.BooleanVar(value=getattr(args, name)) for name in (
-            "preset_only", "no_system_install", "with_rad_debugger", "with_editor", "with_editor_preview", "with_tests",
-            "run_tests", "with_smoke_app", "with_web_probes", "with_shader_probe", "validate",
+            "preset_only", "no_system_install", "with_rad_debugger", "with_editor", "with_editor_preview", "with_denoiser",
+            "with_tests", "run_tests", "with_smoke_app", "with_web_probes", "with_shader_probe", "validate",
             "skip_checks", "skip_sanitizers", "skip_sdk", "ci",
         )}
 
@@ -342,6 +350,13 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
             controls["with_editor"].configure(state="normal" if editor_supported else "disabled")
             controls["with_editor_preview"].configure(
                 state="normal" if editor_supported and flags["with_editor"].get() else "disabled")
+            # Unavailable presets turn the denoiser off; returning to a supported one restores the default.
+            denoiser_supported = preset_supports(preset.get())
+            if denoiser_supported and str(controls["with_denoiser"].cget("state")) == "disabled":
+                flags["with_denoiser"].set(True)
+            if not denoiser_supported:
+                flags["with_denoiser"].set(False)
+            controls["with_denoiser"].configure(state="normal" if denoiser_supported else "disabled")
             validating = flags["validate"].get() or flags["ci"].get()
             if validating or flags["run_tests"].get():
                 flags["with_tests"].set(True)
@@ -371,7 +386,8 @@ def select_options(args: argparse.Namespace, engine) -> argparse.Namespace | Non
             if flags["run_tests"].get() and not validating:
                 action = "Setup plus test builds and execution"
             included = [label for name, label in (("with_tests", "tests"), ("with_smoke_app", "samples"),
-                        ("with_web_probes", "browser probes"), ("with_shader_probe", "shader probe"), ("with_editor", "editor")) if flags[name].get()]
+                        ("with_web_probes", "browser probes"), ("with_shader_probe", "shader probe"), ("with_editor", "editor"),
+                        ("with_denoiser", "OIDN denoiser")) if flags[name].get()]
             if flags["with_editor"].get():
                 included.append("3D preview + live shaders" if flags["with_editor_preview"].get() else "document-only editor")
             summary.set(f"{action} for {scope}.\nOptional targets: {', '.join(included) or 'none'}.\n"
