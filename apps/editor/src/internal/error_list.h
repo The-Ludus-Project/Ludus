@@ -3,7 +3,7 @@
 // ErrorList: the Error List tool window (private editor header, not installed).
 //
 // One table of diagnostics from independent producers: the render-graph backend
-// (graph validation and mapped shader diagnostics) and project build output.
+// (graph validation and mapped shader diagnostics), renderer activation and project build output.
 // Each producer replaces only its own rows. The list presents copies; activating a
 // row reports the entry so the shell can navigate with the producer's own mapping
 // (for render graphs, RendererWorkspace::ActivateDiagnostic). It never edits a
@@ -38,6 +38,7 @@ enum class ErrorListSeverity : foundation::uint8
 enum class ErrorListProducer : foundation::uint8
 {
     RenderGraph,
+    RenderPreview,
     Build,
 };
 
@@ -53,10 +54,10 @@ struct ErrorListEntry final
     QString File;
     /// Human-readable position: a line number, or a configuration/node path.
     QString Location;
-    /// "Render graph", "Shader" or "Build".
+    /// "Render graph", "Shader", "Renderer preview" or "Build".
     QString Origin;
     /// Producer-owned index used for navigation: the RendererWorkspace diagnostic row
-    /// for render graphs, or the zero-based Output line for builds.
+    /// for render graphs, or the zero-based Output line for builds. Preview rows open Render Preview.
     foundation::int32 SourceIndex = 0;
 };
 
@@ -67,6 +68,9 @@ inline constexpr foundation::int32 MAX_BUILD_DIAGNOSTICS = 1000;
 /// structured graph batches appear once; shader failures retain their build summary.
 /// SourceIndex is the producer's row.
 [[nodiscard]] QList<ErrorListEntry> MakeRenderGraphErrorEntries(const RenderGraphJobResult& result);
+/// Current preview failure, independently owned from compiler and project-build results.
+/// Empty problem clears the preview producer's rows; file names the authored root graph.
+[[nodiscard]] QList<ErrorListEntry> MakeRenderPreviewErrorEntries(const QString& problem, const QString& file);
 /// Compiler (`file:line[:column]: error|warning|note: text`) and CMake
 /// (`CMake Error|Warning at file:line`) diagnostics in build output, at most
 /// MAX_BUILD_DIAGNOSTICS. SourceIndex is the zero-based output line.

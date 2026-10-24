@@ -683,18 +683,16 @@ RenderGraphPreviewLoad RenderGraphPreview::stage()
     const renderer::RenderGraphActivationReport report = state.Activation.GetReport();
     state.Candidate = state.Waiting;
     state.Candidate.Serial = report.CandidateGeneration;
+    mStatus.clear();
     Q_EMIT Changed();
     if (report.Candidate == renderer::RenderGraphCandidateState::RestartRequired)
     {
-        setStatus({});
         return RenderGraphPreviewLoad::RestartRequired;
     }
     if (IsAccepted(staged) == false)
     {
-        setStatus({});
         return RenderGraphPreviewLoad::Failed;
     }
-    setStatus({});
     return RenderGraphPreviewLoad::Staged;
 }
 
@@ -1310,6 +1308,17 @@ void RenderGraphPreview::setStatus(const QString& text)
 
 QString RenderGraphPreview::GetDisplayStatus() const
 {
+    const renderer::RenderGraphActivationReport report = mState->Activation.GetReport();
+    if (report.Candidate == renderer::RenderGraphCandidateState::Failed ||
+        report.Candidate == renderer::RenderGraphCandidateState::RestartRequired)
+    {
+        const QString failure = report.Candidate == renderer::RenderGraphCandidateState::RestartRequired
+                                    ? QStringLiteral("Renderer activation requires an editor restart")
+                                    : QStringLiteral("Renderer activation failed");
+        return QStringLiteral("%1 (%2) for generation %3; the last good scene is kept.")
+            .arg(failure, DescribeRasterStatus(report.LastFailure))
+            .arg(report.CandidateGeneration);
+    }
     if (mStatus.isEmpty() == false)
     {
         return mStatus;
@@ -1325,9 +1334,8 @@ QString RenderGraphPreview::GetDisplayStatus() const
         case renderer::RenderGraphCandidateState::NeedsUpdate:
             return QStringLiteral("Updating renderer…");
         case renderer::RenderGraphCandidateState::Failed:
-            return QStringLiteral("Renderer update failed; the last good scene is kept.");
         case renderer::RenderGraphCandidateState::RestartRequired:
-            return QStringLiteral("This graph's shader interface is not supported by this editor build.");
+            break;
         case renderer::RenderGraphCandidateState::None:
             return mImage.isNull() == true ? QStringLiteral("Preparing renderer…") : QString();
     }

@@ -112,6 +112,25 @@ constexpr foundation::int32 DESCRIPTION_CELL_PADDING_PIXELS = 8;
 }
 } // namespace
 
+QList<ErrorListEntry> MakeRenderPreviewErrorEntries(const QString& problem, const QString& file)
+{
+    if (problem.isEmpty() == true)
+    {
+        return {};
+    }
+    return {
+    {
+        .Severity = ErrorListSeverity::Error,
+        .Producer = ErrorListProducer::RenderPreview,
+        .Code = QStringLiteral("RenderGraphPreviewFailed"),
+        .Description = problem,
+        .File = file,
+        .Location = {},
+        .Origin = QStringLiteral("Renderer preview"),
+        .SourceIndex = 0,
+    }};
+}
+
 QList<ErrorListEntry> MakeRenderGraphErrorEntries(const RenderGraphJobResult& result)
 {
     // Row order mirrors RendererWorkspace::AcceptResult so SourceIndex can be passed to

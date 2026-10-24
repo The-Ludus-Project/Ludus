@@ -261,8 +261,14 @@ public:
     /// unedited default is shown (when this build has one), otherwise GetRuntimePackagePath().
     [[nodiscard]] QString GetPreviewPackagePath() const;
     [[nodiscard]] QString GetStatusText() const;
-    /// Current source, build or extraction diagnostic, even while another graph keeps rendering.
+    /// Current source, activation, build or extraction diagnostic, even while another graph keeps rendering.
     [[nodiscard]] QString GetRenderProblem() const;
+    /// Last current activation failure, including the runtime status and candidate generation.
+    /// Cleared by a replacement candidate or document change, independently of compiler results.
+    [[nodiscard]] LUDUS_INLINE const QString& GetActivationProblem() const noexcept
+    {
+        return mActivationProblem;
+    }
     /// Failure that prevents scene preparation. Source/build errors are nonfatal while the
     /// prebuilt default prepares or a previously accepted graph remains active.
     [[nodiscard]] QString GetScenePreparationProblem() const;
@@ -319,7 +325,7 @@ Q_SIGNALS:
     void CommandsChanged();
     /// Live Preview was turned on or off (SetLivePreview, CancelJob or a project change).
     void LivePreviewChanged(bool isEnabled);
-    /// A source/setup/extraction diagnostic changed independently of a compiler job.
+    /// A source/setup/extraction/activation diagnostic changed independently of a compiler job.
     void RenderProblemChanged();
 
 private:
@@ -444,6 +450,7 @@ private:
     QString mBuildProblem;
     QString mSourceProblem;
     QString mExtractionProblem;
+    QString mActivationProblem;
     QLabel* mStatus;
     RenderGraphCanvas* mCanvas;
     QWidget* mPreviewPage;
