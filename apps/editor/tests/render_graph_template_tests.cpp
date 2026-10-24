@@ -167,6 +167,10 @@ TEST_CASE("Visibility templates are created from the editor picker with Properti
     {
         identity = QStringLiteral("visibility-secondary-rays");
     }
+    SECTION("tiled emitter tables and MIS direct lighting")
+    {
+        identity = QStringLiteral("tiled-vbuffer-nee");
+    }
     QTemporaryDir project;
     REQUIRE(project.isValid() == true);
     QWidget properties;
@@ -195,11 +199,16 @@ TEST_CASE("Visibility templates are created from the editor picker with Properti
     CHECK(inspector->isVisible() == false);
     const QByteArray manifest = workspace.GetDocument().GetDraft(QStringLiteral("main.lushader.json"));
     CHECK(manifest.contains("Flat") == true);
-    const bool hasSecondaryRays = identity == QStringLiteral("visibility-secondary-rays");
-    CHECK(manifest.contains("visibility_buffer") == hasSecondaryRays);
+    const bool hasRays = identity != QStringLiteral("visibility-buffer");
+    CHECK(manifest.contains("visibility_buffer") == hasRays);
     const QByteArray graph = workspace.GetDocument().GetDraft(QStringLiteral("library.lurender.json"));
     CHECK(graph.contains("GraphicsPipeline") == true);
-    CHECK(graph.contains("RayTracingPipeline") == hasSecondaryRays);
+    CHECK(graph.contains("RayTracingPipeline") == hasRays);
+    if (identity == QStringLiteral("tiled-vbuffer-nee"))
+    {
+        CHECK(graph.contains("bytes_per_pixel") == true);
+        CHECK(workspace.GetDocument().GetDraft(QStringLiteral("main_shaders/tile_table.slang")).isEmpty() == false);
+    }
     CHECK(graph.contains("visibility") == true);
     CHECK(graph.contains("depth") == true);
     REQUIRE(workspace.Validate() == true);
@@ -685,7 +694,13 @@ TEST_CASE("Visibility configurations apply from the canvas and preserve authored
     {
         identity = QStringLiteral("visibility-secondary-rays");
     }
+    SECTION("visibility and tiled direct lighting")
+    {
+        identity = QStringLiteral("tiled-vbuffer-nee");
+    }
     const bool hasSecondaryRays = identity == QStringLiteral("visibility-secondary-rays");
+    const bool hasTiledLighting = identity == QStringLiteral("tiled-vbuffer-nee");
+    const bool hasRays = hasSecondaryRays == true || hasTiledLighting == true;
     QTemporaryDir project;
     QWidget properties;
     RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
@@ -742,6 +757,23 @@ TEST_CASE("Visibility configurations apply from the canvas and preserve authored
     CHECK(canvas.GetConfiguration() == QStringLiteral("Visibility"));
     REQUIRE(document.GetDraft(library).contains("VisibilityGeometry") == true);
     CHECK(document.GetDraft(library).contains("VisibilitySecondaryGenerate") == hasSecondaryRays);
+    CHECK(document.GetDraft(library).contains("TiledNeeShade") == hasTiledLighting);
+    // The tiles, prefix and shade callbacks arrive with the table header they include.
+    CHECK(document.GetDraft(QStringLiteral("tiled_vbuffer_nee/main_shaders/tile_table.slang")).isEmpty() ==
+          (hasTiledLighting == false));
+    if (hasTiledLighting == true)
+    {
+        const QJsonArray techniques =
+            QJsonDocument::fromJson(document.GetDraft(manifest)).object().value(QStringLiteral("techniques")).toArray();
+        bool hasLightQuery = false;
+        for (const QJsonValueConstRef technique : techniques)
+        {
+            const QJsonObject interface = technique.toObject().value(QStringLiteral("scene_interface")).toObject();
+            hasLightQuery = hasLightQuery || (interface.value(QStringLiteral("visibility_buffer")).toBool() == true &&
+                                              interface.value(QStringLiteral("visibility_queries")).toInt() >= 1);
+        }
+        CHECK(hasLightQuery == true);
+    }
     CHECK(document.GetDraft(QStringLiteral("main_shaders/geometry.slang")) == beforeGeometry);
     CHECK(
         document.GetDraft(QStringLiteral("visibility_buffer/main_shaders/color.slang")).contains("EncodeVisibility") ==
@@ -783,11 +815,11 @@ TEST_CASE("Visibility configurations apply from the canvas and preserve authored
     for (const QJsonValueConstRef value : parent.value(QStringLiteral("edges")).toArray())
     {
         QJsonObject edge = value.toObject();
-        if (hasSecondaryRays == true && edge.value(QStringLiteral("to")) == QStringLiteral("raster.depth"))
+        if (hasRays == true && edge.value(QStringLiteral("to")) == QStringLiteral("raster.depth"))
         {
             continue;
         }
-        if (hasSecondaryRays == false)
+        if (hasRays == false)
         {
             if (edge.value(QStringLiteral("to")) == QStringLiteral("raster.color"))
                 edge.insert(QStringLiteral("to"), QStringLiteral("raster.visibility"));

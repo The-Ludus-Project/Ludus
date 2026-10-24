@@ -561,7 +561,8 @@ def build_parser() -> argparse.ArgumentParser:
     graphs = sub.add_parser("render-graph", help="graph contracts and offline shader packages (no GPU execution)").add_subparsers(dest="graph_action", required=True)
     new_graph = graphs.add_parser("new", help="create an editable render graph package in a new directory")
     new_graph.add_argument("destination")
-    new_graph.add_argument("--template", choices=("raster", "forward-lit", "restir-di", "visibility-buffer", "visibility-secondary-rays"), default="raster",
+    new_graph.add_argument("--template", choices=("raster", "forward-lit", "restir-di", "visibility-buffer",
+                                                   "visibility-secondary-rays", "tiled-vbuffer-nee"), default="raster",
                            help="built-in editable render graph template")
     new_graph.add_argument("--output", choices=("presentation", "offscreen", "depth"), default="presentation")
     new_graph.add_argument("--renderer-static", action="store_true", help="also create Renderer-compatible shader sources")
