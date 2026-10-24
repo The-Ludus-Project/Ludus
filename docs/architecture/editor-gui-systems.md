@@ -294,6 +294,14 @@ and parses build output; navigation calls the producer's existing location mappi
 (`RendererWorkspace::ActivateDiagnostic`), whose rows are the Error List's rows in
 the same order.
 
+The built-in templates live in one catalog, `apps/editor/resources/render_graph_templates.json`:
+complete graphs for New Render Graph, snippets for Apply Configuration Template, and node
+types for Add Node and Create Node. `RenderGraphTemplateRegistry` validates it, and each
+picker offers its kind in catalog order. A new graph or snippet entry also needs its
+sources under `modules/graphics/renderer/render_graphs/` and its identity in the
+tooling's `render_graph_templates.TEMPLATES` and `render-graph new --template` choices.
+`test_render_graph_templates.py` checks that the catalog and the tooling agree.
+
 Today one render graph is open at a time. The next subsection designs one canvas
 document per open `.lurender.json`.
 

@@ -15,6 +15,7 @@
 #include "internal/render_graph_resources.h"
 #include "internal/render_graph_shader_creation.h"
 #include "internal/render_graph_shader_interface.h"
+#include "internal/render_graph_template_registry.h"
 #include "internal/render_graph_upscale_node.h"
 #include "internal/renderer_workspace.h"
 
@@ -540,34 +541,25 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mNewKind->setObjectName(QStringLiteral("renderGraphNewKind"));
     mNewKind->setMinimumContentsLength(1);
     mNewKind->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-    mNewKind->addItems({QStringLiteral("Scene"),
-                        QStringLiteral("Camera"),
-                        QStringLiteral("Target"),
-                        QStringLiteral("Buffer"),
-                        QStringLiteral("StructuredBuffer"),
-                        QStringLiteral("OutputSize"),
-                        QStringLiteral("RenderSize"),
-                        QStringLiteral("GraphicsPipeline"),
-                        QStringLiteral("ComputePipeline"),
-                        QStringLiteral("RayTracingPipeline"),
-                        QStringLiteral("Accumulate"),
-                        QStringLiteral("ToneMap"),
-                        QStringLiteral("Denoise"),
-                        QStringLiteral("Subgraph"),
-                        QStringLiteral("Export"),
-                        QStringLiteral("Present")});
-    for (const QString& algorithm : GetUpscaleAlgorithms())
+    for (const RenderGraphTemplate& entry :
+         RenderGraphTemplateRegistry::GetBuiltIn().GetTemplates(RenderGraphTemplateKind::Node))
     {
-        mNewKind->addItem(((algorithm == QStringLiteral("bilinear") || algorithm == QStringLiteral("metalfx-spatial"))
-                               ? QStringLiteral("Upscale — %1")
-                               : QStringLiteral("Upscale — %1 (draft)"))
-                              .arg(GetUpscaleLabel(algorithm)),
-                          algorithm);
+        // Item data distinguishes Upscale presets, which carry their algorithm, from plain node kinds.
+        if (entry.Algorithm.isEmpty() == true)
+        {
+            mNewKind->addItem(entry.Label);
+        }
+        else
+        {
+            mNewKind->addItem(entry.Label, entry.Algorithm);
+        }
+        // Graphs stay portable to OIDN builds, so Denoise remains authorable; this build says why it cannot
+        // preview it.
+        if (entry.Requirements.contains(QStringLiteral("denoiser")) == true)
+        {
+            mNewKind->setItemData(mNewKind->count() - 1, GetDenoiseUnavailableMessage(), Qt::ToolTipRole);
+        }
     }
-    // Graphs stay portable to OIDN builds, so Denoise remains authorable; this build says why it cannot preview it.
-    mNewKind->setItemData(mNewKind->findText(QStringLiteral("Denoise")),
-                          GetDenoiseUnavailableMessage(),
-                          Qt::ToolTipRole);
     mNewKind->setAccessibleName(QStringLiteral("New node type"));
     QPushButton* add = new QPushButton(QStringLiteral("Add Node"), mInspector);
     add->setObjectName(QStringLiteral("renderGraphAddNode"));
@@ -1136,32 +1128,12 @@ bool RendererWorkspace::PromptNewGraph()
     fields->addRow(QStringLiteral("Name"), name);
     QComboBox* graphTemplate = new QComboBox(&dialog);
     graphTemplate->setObjectName(QStringLiteral("newRenderGraphTemplate"));
-    const auto addTemplate =
-        [graphTemplate](const QString& label, const QString& identity, const QString& description) {
-            graphTemplate->addItem(label, identity);
-            graphTemplate->setItemData(graphTemplate->count() - 1, description, Qt::ToolTipRole);
-        };
-    addTemplate(QStringLiteral("Raster"),
-                QStringLiteral("raster"),
-                QStringLiteral("Render your World into a color image using editable raster shaders."));
-    addTemplate(QStringLiteral("Forward lit"),
-                QStringLiteral("forward-lit"),
-                QStringLiteral(
-                    "Render authored World materials, textures and direct lights with the portable forward profile."));
-    addTemplate(QStringLiteral("Visibility buffer + depth"),
-                QStringLiteral("visibility-buffer"),
-                QStringLiteral("Write original primitive and instance IDs into RGBA8, alongside depth. "
-                               "Exports both attachments with one shared render size. Uses opaque static triangles."));
-    addTemplate(QStringLiteral("Visibility + secondary rays"),
-                QStringLiteral("visibility-secondary-rays"),
-                QStringLiteral(
-                    "Rasterize visibility and depth, reconstruct the first surface, then trace one reflected "
-                    "secondary ray. Samples authored emission and environment lighting. Requires native ray tracing."));
-    addTemplate(QStringLiteral("ReSTIR DI — mesh emitter lighting"),
-                QStringLiteral("restir-di"),
-                QStringLiteral("Three ray passes with editable shader settings and automatically sized reservoirs. "
-                               "Uses emissive meshes and requires native ray tracing. Temporal reuse has no motion "
-                               "reprojection. Change settings through Properties or the canvas menu."));
+    for (const RenderGraphTemplate& entry :
+         RenderGraphTemplateRegistry::GetBuiltIn().GetTemplates(RenderGraphTemplateKind::Graph))
+    {
+        graphTemplate->addItem(entry.Label, entry.Identity);
+        graphTemplate->setItemData(graphTemplate->count() - 1, entry.Description, Qt::ToolTipRole);
+    }
     fields->addRow(QStringLiteral("Template"), graphTemplate);
     QLabel* description = new QLabel(&dialog);
     description->setWordWrap(true);

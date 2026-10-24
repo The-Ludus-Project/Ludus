@@ -78,3 +78,6 @@ modules/foundation/profiling/include/ludus/foundation/profiling/memory_gauges.hp
 modules/foundation/profiling/src/memory_gauges.cpp
 modules/foundation/profiling/src/internal/memory_gauge.hpp
 modules/foundation/profiling/tests/memory_gauge_tests.cpp
+apps/editor/src/internal/render_graph_template_registry.h
+apps/editor/src/render_graph_template_registry.cpp
+apps/editor/tests/render_graph_template_registry_tests.cpp
