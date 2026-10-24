@@ -9,17 +9,34 @@ skip.
 
 ## C0 Feasibility (no product change)
 
-- [ ] **Triangle packing.** Confirm that two `GpuPreviewRecord` jobs built from
+Evidence: [design section 3](design.md#3-phase-c0-evidence). Metal only; this
+Mac has no Linux host.
+
+- [x] **Triangle packing.** Confirm that two `GpuPreviewRecord` jobs built from
       one extraction pack triangles in the same order (`gpu_preview_ray.cpp`,
       `Order`). Record the evidence. If the order is not guaranteed, switch D5
       to instance + primitive identity before C3.
-- [ ] **Random seeding.** Confirm per-pass seeding (`Sampling.xy`,
+      *Guaranteed by construction. Kept the packed triangle index. Regression:
+      `scene_shader_tests.cpp` "Ray passes built from one extraction pack
+      triangles in identical order".*
+- [x] **Random seeding.** Confirm per-pass seeding (`Sampling.xy`,
       `NextRandomDimension`, `RandomSampleIndex`) and choose the D4 option.
+      *Identical in every pass, measured on Metal. Chose explicit per-pass
+      dimension ranges through the `RayLaunch` address overloads; rejected the
+      wrapper salt.*
 - [ ] **Prototype.** Hand-edit a cooked ordered-ray fixture so one pass's
       raygen calls `TraceClosest` directly and writes a hit buffer. Run it on
       Metal and Vulkan to show the wrapper/runtime path needs no runtime change.
-- [ ] **Decide D1.** Pick between no format change and `Technique::SceneCompute`
+  - [x] Metal: `tests/sdk_consumer/rg2/compute_split/` and
+        `render_graph_ray_tests.cpp` "A raygen-only pass hands packed triangle
+        hits to a later pass" pass with no runtime change. A negative control
+        fails.
+  - [ ] Vulkan: the same test in the batch CI native suite on Linux. Not run
+        yet. Check this box only after a batch run reports it passed rather
+        than skipped.
+- [x] **Decide D1.** Pick between no format change and `Technique::SceneCompute`
       from that evidence, and record the choice in design.md.
+      *No format change.*
 
 ## C1 Scene compute execution profile (builder)
 

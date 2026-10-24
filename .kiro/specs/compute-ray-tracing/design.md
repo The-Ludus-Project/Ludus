@@ -1,7 +1,8 @@
 # Compute ray tracing design
 
 Status: implementation contract, 2026-10-24. Baseline `origin/develop`
-`dbbf7461`. This describes work to build. Read [requirements](requirements.md)
+`dbbf7461`. Phase C0 decided D1 and D4 and cleared the D5 triangle-identity
+risk; see [section 3](#3-phase-c0-evidence). This describes work to build. Read [requirements](requirements.md)
 and [tasks](tasks.md). AGENTS.md, steering, ADR 0003 and the canonical
 [render graph authoring guide](../../../docs/development/render-graph-authoring.md)
 remain authoritative. Line references are to the baseline and will drift; the
@@ -71,7 +72,7 @@ copy and selection. It would also need a storage-texture RHI feature that does
 not exist. A separate executor becomes worthwhile only for generic (non-scene)
 compute, which stays out of scope (C01).
 
-### D1 Numeric representation (recommended: no format change)
+### D1 Numeric representation (decided in C0: no format change)
 
 In the offline plan, a scene compute pass is a `RayTracing` sequence member
 with `source_kind: "ComputePipeline"` and a callback variant `[compute_id]`.
@@ -85,6 +86,14 @@ Alternative: add `Technique::SceneCompute`. That would bump both versions and
 add a runtime validation branch with identical execution. Choose it only if
 review wants runtime diagnostics to name compute passes. That is what C08
 allows.
+
+**Decision (C0).** No format change. The C0 prototype ran a raygen-only kernel
+(one `TraceClosest`, no `TraceAndShade`) followed by a pass that reads its hit
+buffer. It used the unchanged `Technique::RayTracing` pass records, the
+persistent wrapper and the runtime ray sequence, and no runtime source changed
+(section 3.3). `SceneCompute` would add two version bumps and a decoder branch
+with identical execution. Name compute passes in the offline plan summary and
+builder diagnostics instead (D3).
 
 ### D2 Authored signature (recommended: raygen-shaped)
 
@@ -133,19 +142,40 @@ so it reaches `default:` and latches `HasFailed` (C03).
   members keep that kind. Plan summary text and diagnostics name the source
   node kind.
 
-### D4 Random decorrelation between passes
+### D4 Random decorrelation between passes (decided in C0: explicit dimension offsets)
 
 Every pass is seeded from `SourceGeneration`, and `RayQueryContext` starts at
 `NextRandomDimension = 0` (`scene_wrapper`). Two passes that both draw
-automatic dimensions therefore see the same values for each pixel. Recommended
-fix: the template's second pass draws with explicit dimensions offset by a
-documented per-pass constant (`SampleSceneRandom(queries, dimension)` already
-exists).
+automatic dimensions therefore see the same values for each pixel. C0 measured
+this on Metal (section 3.2).
 
-A wrapper-level salt (`NextRandomDimension = passIndex * stride`) would change
-the existing ReSTIR and ordered-ray images, so it must not be applied silently.
-If chosen, it is a separate, versioned change. Phase C0 confirms the actual
-seeding before either fix is written.
+**Decision.** Each template pass draws from explicit dimensions with the
+existing address overloads `SampleSceneRandom(RayLaunch, uint dimension)` and
+`SelectLight(SceneContext, RayLaunch, uint dimension)`. They do not advance
+or reset `RayQueryContext`, which keeps its "do not reset or copy this state"
+contract. The dimension ranges are documented constants beside the hit record
+encoding:
+
+| Pass | Dimensions | Draws |
+| --- | --- | --- |
+| primary | `[0, PRIMARY_RANDOM_DIMENSION_COUNT)` = `[0, 2)` | subpixel jitter x, y |
+| shade | `[2, 6)` | light selection, then the `SampleIncidentLight` `float3` |
+
+Neither pass uses the automatic stream, so neither depends on how many automatic
+draws the other made. (The baseline text named `SampleSceneRandom(queries,
+dimension)`; that overload is the bounded-integer draw. The explicit-address
+overload takes a `RayLaunch`.)
+
+ReSTIR already solves the same problem differently. Its reuse passes address
+`(pixel, GetGraphPassIndex())` instead of the scene API's `(pixel, 0)` scope
+(`SampleReuseRandom` in `restir_di/main_shaders/reservoir.slang`). That is the
+better choice for a pass whose dimension count is unbounded or data-dependent.
+The C2 documentation names both patterns.
+
+A wrapper-level salt (`NextRandomDimension = passIndex * stride`, or a pass
+scope in `PixelRandomAddress`) is rejected. It would change the existing
+ReSTIR and ordered-ray images, and it is unnecessary. If it is ever wanted, it
+is a separate, versioned change.
 
 ### D5 Template (two passes)
 
@@ -186,12 +216,14 @@ this frame's primary dispatch.
 This is deliberately the shading model of a first-hit direct-lighting renderer.
 The point is to demonstrate the compute split, not a new integrator.
 
-**Correctness risk.** The runtime builds a separate packed scene and BLAS/TLAS
-per pass (`GpuPreviewRecord`, `gpu_preview_ray.cpp`). A packed triangle index
-from pass 0 is only valid in pass 1 if both packings come out in the same order
-from the same extraction. C0 must prove that, and add an assertion or test, or
-the record must carry stable identity (instance + primitive, resolved with
-`FindVisibilityTriangle`) instead.
+**Correctness risk (cleared in C0).** The runtime builds a separate packed scene
+and BLAS/TLAS per pass (`GpuPreviewRecord`, `gpu_preview_ray.cpp`). A packed
+triangle index from pass 0 is only valid in pass 1 if both packings come out in
+the same order from the same extraction. C0 showed that they do, by
+construction and by test (section 3.1). The record keeps the packed triangle
+index. The instance + primitive fallback (`FindVisibilityTriangle`) is needed
+only if a later change builds passes of one sequence from different
+extractions.
 
 Snippet interface: inputs `scene: Scene`, `view: View`, `color: ColorTexture`;
 output `color: ColorTexture`. The hits buffer is internal to the library
@@ -231,3 +263,101 @@ Generic compute without Scene, storage textures, indirect dispatch, ray queues
 and compaction (a full wavefront path tracer), more than four passes, sharing
 one scene or TLAS across passes, browser execution, and software traversal.
 Each needs its own RHI/runtime design.
+
+## 3. Phase C0 evidence
+
+Measured on `origin/develop` `64529832` (PR #589) on 2026-10-24, on this
+Mac's Metal device (Apple GPU, `macos-clang-debug`). There is no Linux host
+here. Vulkan evidence for the same GPU test comes only from the batch CI native
+suite, which runs `ludus_render_graph_ray_tests` on Linux. Until that runs, the
+claims below are Metal-only.
+
+### 3.1 Triangle identity across passes
+
+The index that a hit record stores is the *packed* triangle index, not the
+native BVH primitive index. `Trace` (`renderer_gpu_preview.slang`) reads
+`Order[CommittedPrimitiveIndex()]` from the packed scene. `CreateGpuPreviewRayGeometry`
+emits BLAS primitive `i` from `Triangles[Order[i]]`. `PackGpuScene` writes the
+triangle table in `Triangles` order. So `SurfaceHit.TriangleIndex` and
+`GetSurfaceHit` both address `ReferenceSceneData::Triangles`.
+
+That array has the same order in every pass of one sequence:
+
+- `PrepareScene` (`render_graph.cpp`) initializes every ray pass in one loop
+  from one `RenderGraphSceneDescription rayScene`. Only `rayScene.SceneData`
+  changes per pass.
+- `BuildMaterialGraphRayScene` (`scene_shader.cpp`) appends triangles in
+  item → material slot → primitive order. It skips only zero-area triangles,
+  and area depends only on positions. `SceneData` changes material indices,
+  emitters and lights, but not which triangles exist or their order. Material
+  errors fail the whole build; they never skip a triangle.
+- `BuildReferenceBvh` (`reference_scene.cpp`) derives `Order` with a
+  `StableSort` whose comparator breaks centroid ties by triangle index, so the
+  result is a pure function of `Triangles`. The packed index does not depend on
+  it anyway.
+
+Camera-only updates reuse each pass's scene and do not rebuild it. The legacy
+non-scene path builds a per-pass `Snapshot` instead, but scene compute requires
+`scene_interface`, so that path does not apply.
+
+Regression tests that keep this true:
+
+- `scene_shader_tests.cpp`, "Ray passes built from one extraction pack
+  triangles in identical order". It builds three items (six triangles, with a
+  BVH that permutes them) under three `SceneData`, seed and width variants, and
+  requires identical `Triangles` identities, positions and `Order`.
+- `render_graph_ray_tests.cpp`, "A raygen-only pass hands packed triangle hits
+  to a later pass" (section 3.3). On Metal, over four frames including a camera
+  update, every recorded hit and miss in pass 0 resolved to the same triangle,
+  instance and primitive in pass 1, with barycentrics, distance and
+  reconstructed position within 1e-5. All 24 triangles in two instances were
+  hit, on about 2,200 of the 6,144 pixels per frame.
+
+### 3.2 Random seeding across passes
+
+| Input | Source | Same in every pass? |
+| --- | --- | --- |
+| `Sampling.xy` / `RandomSeed` | `TryMakeRandomKey(Seed = SourceGeneration)` at creation (`render_graph_ray.cpp`); `TryMakeRandomKey(revision)` on a camera update (`gpu_preview_camera.cpp`) | yes |
+| `RandomPixel` | linear pixel index | yes |
+| `RandomSampleIndex` | `accumulation[pixel * 2].w` of the pass's own job | yes, while passes advance in lockstep; camera epochs reset all of them together |
+| `NextRandomDimension` | `0` in `scene_wrapper` | yes |
+
+So the automatic stream is identical in every pass. The GPU test proves it:
+for every pixel and frame, the shade pass's first `SampleSceneRandom(queries)`
+bit-matches the primary pass's, and an explicit draw at dimension
+`PRIMARY_RANDOM_DIMENSION_COUNT` differs from it. That led to the D4
+decision.
+
+Sample-index lockstep has one caveat. A pass with a fused Accumulate counts
+only valid samples, and it stops at its limit or on a latched failure. A pass
+without one counts every frame. In normal operation the counts agree. D5's
+stored `SampleIndex`, which the shade pass checks, rejects a record from any
+other sample.
+
+### 3.3 Prototype: TraceClosest from ray generation
+
+The prototype is kept as a test fixture,
+[`tests/sdk_consumer/rg2/compute_split/`](../../../tests/sdk_consumer/rg2/compute_split/main.lurender.json),
+cooked into `ludus_render_graph_ray_tests` as `rg2_compute_split`. It contains
+two `RayTracingPipeline` passes whose callbacks never call `TraceAndShade`, so
+each pass is exactly the kernel that a scene compute member would lower to:
+
+- `primary.slang` draws jitter from explicit dimensions 0 and 1, calls
+  `TraceClosest` once, and writes the D5 32-byte record to `GraphBuffer0`.
+  Instead of flags, word 1 `.w` stores its first automatic draw, which feeds the
+  section 3.2 check.
+- `shade.slang` checks the stored `SampleIndex` and re-traces the stored ray. It
+  compares the re-trace with `GetSurfaceHit` on the recorded triangle and
+  encodes identity, triangle and correlation results as colors.
+
+It ran with no runtime, RHI, format or builder change. A negative control
+(comparing against the wrong triangle and the wrong draw) failed all eight
+identity and correlation checks, so the test detects both failures.
+
+Findings for C1:
+
+- `GraphBuffer0/1` and `GetGraphPassIndex()` exist only in
+  `persistent_wrapper`. The D3 rule that any sequence with a compute member
+  forces the persistent profile is required, not optional.
+- The renderer GPU-test fixtures are staged with `file(COPY)` at configure
+  time. Editing a fixture shader does not re-cook it until CMake reconfigures.
