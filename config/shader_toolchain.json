@@ -14,7 +14,23 @@
         "url": "https://github.com/shader-slang/slang/releases/download/v2026.1.2/slang-2026.1.2-macos-x86_64.tar.gz",
         "sha256": "fbc22cb51d5f7d83dd9dcdfb13f801fe370bb9e94ff013cfeae8c4cf150d6806"
       }
+    },
+    "windows": {
+      "x86_64": {
+        "url": "https://github.com/shader-slang/slang/releases/download/v2026.1.2/slang-2026.1.2-windows-x86_64.zip",
+        "sha256": "f536f95954e834e4be1631938c23dab584efbd5b95ea2950dd9b28a8a98a8e66"
+      }
     }
+  },
+  "dxc": {
+    "version": "1.9.2609",
+    "host": "windows-x86_64",
+    "url": "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2609/dxc_2026_09_29.zip",
+    "sha256": "ad31b1fc8443175d204f77a611fdb3ef2ec42759bdc2f1167368de24a4a7e7f1",
+    "archive_directory": "bin/x64",
+    "dxcompiler_sha256": "0689e2fee0a1c9df8662a59680469f24e2a3ad7ce6bbbcc9284f7a83172bfc59",
+    "dxil_sha256": "64be2368211d257a038a7d4ea6bb3e24c878eb8d588c7b8414fccf759b69c2ac",
+    "license": "dxcompiler.dll: NCSA (LICENSE-LLVM.txt) and MIT (LICENCE-MIT.txt); dxil.dll: Microsoft DirectX Shader Compiler license terms (LICENSE-MS.txt)"
   },
   "spirv_tools": {
     "version": "2025.1~rc1-1~ubuntu0.24.04.2",

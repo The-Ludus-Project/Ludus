@@ -81,6 +81,20 @@ struct ShaderDescription final
     std::string_view Msl = "";
     /// Entry in Msl, independently verified against the compiled stage.
     std::string_view MslEntry = "";
+    /// @brief Direct3D 12 DXIL container (shader model 6.0), as written by the pinned DXC.
+    ///
+    /// The bytes are copied during CreateShader; the caller keeps them alive only for that
+    /// call. The container must be signed by the DXIL validator, hold the program for
+    /// Stage, and use at most one constant buffer at register b0, space 0.
+    /// @note `ludus_compile_shader` emits DXIL only when CMake targets a Windows host.
+    // Like Msl, defaulted so designated initializers that predate it stay complete under
+    // -Wmissing-designated-field-initializers (which fires for the MSVC STL span).
+    // NOLINTNEXTLINE(readability-redundant-member-init)
+    std::span<const ludus::foundation::uint8> Dxil = {};
+    /// @brief Entry in Dxil, checked against the container's pipeline state validation part.
+    ///
+    /// A container records one entry; a different name or stage fails CreateShader.
+    std::string_view DxilEntry = "";
 };
 /// One binding: set/group 0, binding 0, visible to vertex and fragment.
 struct PipelineDescription final

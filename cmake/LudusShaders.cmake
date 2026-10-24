@@ -49,6 +49,22 @@ function(ludus_compile_shader)
     if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
         list(APPEND backend_args --metal)
         list(APPEND backend_byproducts "${SH_NAME}.vertex.metal" "${SH_NAME}.fragment.metal")
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+        # Direct3D 12 consumes DXIL that the pinned DXC compiles and signs on the
+        # Windows host (docs/architecture/windows-direct3d12.md#dxil-artifacts).
+        if(SH_COMPUTE OR SH_RASTER OR SH_NATIVE_BINDING_ARRAYS OR SH_FRAGMENT_STORAGE)
+            message(FATAL_ERROR "ludus_compile_shader on Windows supports fullscreen VERTEX/FRAGMENT stages only; RASTER and COMPUTE need the Direct3D 12 raster profile")
+        endif()
+        if(NOT CMAKE_HOST_WIN32)
+            message(FATAL_ERROR "DXIL shader compilation requires a Windows host; cross-compiled Windows builds cannot run the pinned DXC")
+        endif()
+        foreach(library dxcompiler.dll dxil.dll)
+            ludus_require_file("${LUDUS_DXC_DIRECTORY}/${library}" "DXIL shader compilation"
+                "On the Windows host, from the Ludus source repository root: python scripts/shader-probe bootstrap\n  Then set LUDUS_DXC_DIRECTORY to out/shader-tools/dxc.")
+            list(APPEND backend_depends "${LUDUS_DXC_DIRECTORY}/${library}")
+        endforeach()
+        list(APPEND backend_args --dxil --dxc-path "${LUDUS_DXC_DIRECTORY}")
+        list(APPEND backend_byproducts "${SH_NAME}.vertex.dxil" "${SH_NAME}.fragment.dxil")
     else()
         ludus_require_tool(LUDUS_SPIRV_VALIDATOR "SPIR-V shader validation"
             "On the Linux host, from the Ludus source repository root: ./scripts/shader-probe bootstrap" --version)
@@ -107,7 +123,7 @@ function(ludus_compile_shader)
     # Optional GLSL ES 3.00 (WebGL 2) backend artifact. Enabled only when the
     # pinned SPIR-V -> GLSL ES translator is provided; SPIR-V/WGSL builds are
     # unchanged otherwise. The browser build carries both WGSL and GLSL ES.
-    if((SH_NATIVE_RAY_QUERIES AND CMAKE_SYSTEM_NAME STREQUAL "Darwin") OR (NOT SH_COMPUTE AND NOT SH_FRAGMENT_STORAGE AND (SH_NATIVE_BINDING_ARRAYS OR EMSCRIPTEN OR (LUDUS_SPIRV_CROSS AND NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin"))))
+    if((SH_NATIVE_RAY_QUERIES AND CMAKE_SYSTEM_NAME STREQUAL "Darwin") OR (NOT SH_COMPUTE AND NOT SH_FRAGMENT_STORAGE AND (SH_NATIVE_BINDING_ARRAYS OR EMSCRIPTEN OR (LUDUS_SPIRV_CROSS AND NOT CMAKE_SYSTEM_NAME MATCHES "^(Darwin|Windows)$"))))
         ludus_require_tool(LUDUS_SPIRV_CROSS "GLSL ES shader translation"
             "From the Ludus source repository root: ./scripts/bootstrap-spirv-cross")
         ludus_require_file("${LUDUS_SPIRV_CROSS}.build.json" "GLSL ES shader translation"
@@ -116,7 +132,7 @@ function(ludus_compile_shader)
     set(cross_args)
     set(cross_depends)
     set(cross_byproducts)
-    if(LUDUS_SPIRV_CROSS AND ((SH_NATIVE_RAY_QUERIES AND CMAKE_SYSTEM_NAME STREQUAL "Darwin") OR (NOT SH_COMPUTE AND NOT SH_FRAGMENT_STORAGE AND (SH_NATIVE_BINDING_ARRAYS OR NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin"))))
+    if(LUDUS_SPIRV_CROSS AND ((SH_NATIVE_RAY_QUERIES AND CMAKE_SYSTEM_NAME STREQUAL "Darwin") OR (NOT SH_COMPUTE AND NOT SH_FRAGMENT_STORAGE AND (SH_NATIVE_BINDING_ARRAYS OR NOT CMAKE_SYSTEM_NAME MATCHES "^(Darwin|Windows)$"))))
         set(cross_lock "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders/spirv_cross_toolchain.json")
         if(EXISTS "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../config/spirv_cross_toolchain.json")
             set(cross_lock "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../config/spirv_cross_toolchain.json")

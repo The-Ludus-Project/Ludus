@@ -4,7 +4,7 @@ Ludus runs on Windows through a Win32 Platform backend and a Direct3D 12 RHI
 backend. This page owns that port: the decision, the contracts of the slices
 that exist, the [port record](../development/platform-porting.md#reusable-record-format)
 and the staged plan. The work is at the **buildable** admission gate for the
-D1 closure described below; it is not yet a runnable or qualified engine
+D1 and D2 closure described below (both verified on WARP); it is not yet a runnable or qualified engine
 deployment, and nothing here changes the Linux and macOS profiles.
 
 ## Decision
@@ -28,7 +28,8 @@ The toolchain is the one the [Windows threading lane](threading.md#milestones)
 already qualifies: the pinned upstream Clang 23 driver targeting
 `x86_64-pc-windows-msvc`, the Microsoft STL and dynamic CRT, and the Windows SDK
 headers and import libraries for `d3d12`, `dxgi`, `dxguid` and `user32`. No
-third-party dependency is added. COM objects are owned by
+third-party runtime dependency is added; shaders are compiled at build time by
+the pinned Slang and DXC ([DXIL artifacts](#dxil-artifacts)). COM objects are owned by
 `UniquePtr<T, ComRelease>`, a private release protocol over the Ludus owner,
 rather than WRL `ComPtr`.
 
@@ -41,10 +42,10 @@ rather than WRL `ComPtr`.
 | Target SDK | Windows 10/11 SDK installed with the build image; Microsoft STL and dynamic CRT |
 | Runtime graphics | Direct3D 12 at feature level 11_0 or higher on a hardware adapter, otherwise WARP |
 | Unsupported variants | 32-bit x86, ARM64 and ARM64EC; UWP/GDK; Windows before 10 version 1703 (per-monitor DPI v2) |
-| Dependency pins | No new dependencies; Catch2 for tests through the existing Windows Conan profile |
+| Dependency pins | No runtime dependencies; build-time Slang 2026.1.2 (Windows x86_64) and DXC 1.9.2609 in `config/shader_toolchain.json`; Catch2 for tests through the existing Windows Conan profile |
 | Validation | `.github/workflows/windows-direct3d12.yml` on `windows-2022` (WARP; no GPU) |
-| Owner and branch | D1: `codex/windows-direct3d12-rhi` |
-| Last audited base | `develop` at `52e6ef6a` (2026-10-23) |
+| Owner and branch | D1: `codex/windows-direct3d12-rhi` (merged); D2: `codex/windows-d3d12-dxil-draw` |
+| Last audited base | `develop` at `a372af74` (2026-10-24) |
 
 ## Win32 Platform backend
 
@@ -106,17 +107,83 @@ lifecycle (`Start`, `SetFrameTarget`, `BeginFrameStatus`, `EndFrameStatus`,
   layer and the DXGI debug factory when the Windows *Graphics Tools* optional
   feature is installed, and continue without them otherwise.
 - **Limits.** `MaxFrameDimension2D` is 16384 and the uniform limit is the 64 KiB
-  constant-buffer view, clamped by the facade.
+  constant-buffer view, clamped by the facade to 16384 bytes.
 
-D1 does not render geometry. `ShaderDescription` has no DXIL artifact yet, so the
-facade rejects every shader with `InvalidDescription`, and pipelines, uniforms
-and draws are unreachable. The raster, compute and lifetime hooks
-(`raster_unsupported.cpp`) report zero capabilities and `Unsupported`, so a
-session that requires a raster or compute profile fails at startup with
-`RequirementsUnsatisfied`. Offscreen-only frames
-(`ShouldPresentToSurface = false`), GPU timing and pass scopes, native interop,
-ray queries and spatial upscaling are unavailable. The renderer, editor, SDK
-install and game host are not part of the Windows build yet.
+## Fullscreen compatibility draw (D2)
+
+D2 implements the fullscreen resource API of `render.h` (`CreateShader`,
+`CreateUniform`, `CreatePipeline`, `UpdateUniform`, `DrawFullscreen` and the
+matching `Destroy` calls) on Direct3D 12, through the legacy facade and the
+explicit device path alike.
+
+- **Shaders.** `ShaderDescription::Dxil` carries a signed DXIL container and
+  `DxilEntry` its entry name. The facade accepts a Direct3D 12 shader only when
+  the bytes start with a `DXBC` header whose recorded size matches, and the entry
+  is a valid name; otherwise `InvalidDescription`. The backend then reads the
+  container's part table: the `DXIL` program must be of the requested stage, and
+  the pipeline state validation part (`PSV0`, runtime info version 3 or later)
+  must name the same entry and stage, or creation reports `Failed`. The reader
+  (`src/dxil_container.cpp`) is portable and unit-tested on every host. The
+  bytecode is copied, so the description is borrowed only for the call.
+- **Root signature.** One root signature per device holds a single root constant
+  buffer view at register `b0`, space 0, visible to every stage, with the hull,
+  domain and geometry stages denied. There are no descriptor tables, samplers or
+  input layout.
+- **Uniforms.** Each uniform owns one persistently mapped upload-heap buffer per
+  frame slot, rounded up to the 256-byte root CBV alignment. `UpdateUniform`
+  snapshots the bytes on the CPU; `DrawFullscreen` copies them into the open
+  slot's buffer, which that slot's fence wait has already released, so a frame in
+  flight never sees a later update.
+- **Pipelines.** A graphics pipeline state object targets the BGRA8 surface with
+  blending off, culling off, depth clip on and no depth-stencil target: the
+  fullscreen draw neither tests nor writes depth on any backend, and Metal's
+  depth attachment belongs to its raster pass rather than this contract.
+  Shaders can be destroyed once a pipeline exists. Destroying a pipeline or a
+  uniform drains the queue first, because a submitted frame may still use it.
+- **Draw.** `DrawFullscreen` binds the root signature, pipeline and the slot's
+  uniform address, sets a viewport and scissor covering the acquired target and
+  issues one 3-vertex triangle list draw. Pixel origins are top-left, matching
+  the Vulkan and Metal pixel tests.
+
+The raster, compute and lifetime hooks (`raster_unsupported.cpp`) still report
+zero capabilities and `Unsupported`, so a session that requires a raster or
+compute profile fails at startup with `RequirementsUnsatisfied`, and
+`CreateRasterShader` accepts a DXIL artifact only to return the backend's
+`Unsupported`. Offscreen-only frames (`ShouldPresentToSurface = false`), GPU
+timing and pass scopes, native interop, ray queries and spatial upscaling are
+unavailable. The renderer, editor, SDK install and game host are not part of
+the Windows build yet.
+
+### DXIL artifacts
+
+`ludus_compile_shader` compiles DXIL **only when CMake runs on a Windows host
+and targets Windows**: it runs Slang's `dxil` target, which has the pinned DXC
+(`dxcompiler.dll`) compile shader model 6.0 and its validator (`dxil.dll`)
+sign the result. Retail Direct3D 12 runtimes reject unsigned DXIL, and the
+signing library ships only as a Windows binary, so Linux and macOS builds never
+need DXC and cross-compiled Windows configurations stop with a setup error.
+Only fullscreen `VERTEX`/`FRAGMENT` stages are supported; `RASTER` and
+`COMPUTE` wait for the Direct3D 12 raster profile (D3/D4).
+
+`config/shader_toolchain.json` pins the Slang Windows archive and the DXC
+release archive by SHA-256, plus the two DLLs themselves. On the Windows host:
+
+```bash
+python scripts/shader-probe bootstrap
+cmake ... -DLUDUS_SLANG_COMPILER=out/shader-tools/slang/bin/slangc.exe \
+  -DLUDUS_DXC_DIRECTORY=out/shader-tools/dxc
+```
+
+The build driver (`cmake/shaders/compile_shader.py --dxil`) checks the DLL
+hashes, defines `LUDUS_DXIL=1`, reflects the uniform independently (one
+constant buffer at `b0`, space 0, at most 16384 bytes), rejects a container
+whose hash is zero or a constant bypass value, and writes a header with
+4-byte-aligned `Dxil` arrays and `DxilEntry` names. Slang passes
+`SV_VulkanVertexID` to HLSL unchanged, so shaders spell the fullscreen vertex
+index `LUDUS_SHADER_VERTEX_ID` from the RHI's `raster_bindings.slang`, which
+selects `SV_VertexID` for DXIL. DXC is licensed under NCSA and MIT terms;
+`dxil.dll` is covered by Microsoft's DirectX Shader Compiler license, and the
+tools are used at build time only, never installed with an SDK.
 
 ## Build and test
 
@@ -128,15 +195,22 @@ builds them warning-clean and runs:
 - `ludus_platform_win32_tests`: window creation, DPI-scaled extent, minimize and
   restore, close, invalid requests and destruction.
 - `ludus_rhi_d3d12_tests`: startup policy, headless clear and pixel readback,
-  repeated target resizes across both frame slots, explicit D1 limits, legacy
+  repeated target resizes across both frame slots, explicit limits, legacy
   restart while recording, and a Win32 swap chain that resizes with its window
-  and skips minimized frames.
-- `ludus_rhi_lifecycle_tests`: the backend-independent facade suite.
+  and skips minimized frames. With the shader tools configured (`LUDUS_TEST_DXIL`)
+  it also compiles `tests/sdk_consumer/shaders/diagnostic.slang` to DXIL and
+  checks entry/stage rejection, the fullscreen image pixel by pixel across
+  resizes, a 40-frame burst over both frame slots, a 16384-byte uniform, restart
+  with a recorded but unsubmitted draw, and drawing into a Win32 swap chain.
+- `ludus_rhi_lifecycle_tests`: the backend-independent facade suite, including
+  the DXIL container reader on synthetic containers.
 
 Contributors without a Windows host can compile the closure with the pinned
 Clang and the mingw-w64 headers, which carry `d3d12.h` and `dxgi1_6.h`. This
-checks syntax and the backend symbol closure only; the MSVC STL, the Windows SDK
-and execution are qualified by the CI lane.
+checks syntax and the backend symbol closure only; the MSVC STL, the Windows SDK,
+DXIL compilation and execution are qualified by the CI lane. The configure needs
+a CMake toolchain file that sets these values (the engine refuses a configure
+without `CMAKE_TOOLCHAIN_FILE`), with llvm-ar/llvm-ranlib and `-fuse-ld=lld`.
 
 ```bash
 brew install mingw-w64
@@ -154,8 +228,8 @@ cmake --build out/build/windows-mingw-check --target ludus_platform ludus_graphi
 
 | Milestone | Scope | Exit evidence |
 | --- | --- | --- |
-| D1 (in progress) | Windows closure for Platform and RHI; Win32 windows; Direct3D 12 device, swap chain, clear, present, resize and readback | Windows lane green on WARP; presented frames on a hardware adapter recorded here |
-| D2 | DXIL shader artifacts from the Slang toolchain (pinned DXC), `ShaderDescription` DXIL fields, root signatures, and the fullscreen compatibility draw | Pixel tests for the fullscreen pipeline on WARP and hardware |
+| D1 (WARP verified) | Windows closure for Platform and RHI; Win32 windows; Direct3D 12 device, swap chain, clear, present, resize and readback | Windows lane passed on PR The-Ludus-Project/Ludus#573 ([run 40043576093](https://github.com/The-Ludus-Project/Ludus/actions/runs/40043576093)), merged as `7167c8a2`; presented frames on a hardware adapter still to be recorded here |
+| D2 (WARP verified) | DXIL shader artifacts from the Slang toolchain (pinned DXC), `ShaderDescription` DXIL fields, root signatures, and the fullscreen compatibility draw | Fullscreen pixel tests passed on the WARP lane for PR The-Ludus-Project/Ludus#586 ([run 40102938249](https://github.com/The-Ludus-Project/Ludus/actions/runs/40102938249), `002969cf`); hardware-adapter run still to be recorded here |
 | D3 | Portable raster profile: buffers, textures, views, samplers, descriptor heaps, passes and barriers | Raster conformance suite shared with Vulkan and Metal |
 | D4 | Lifetime transfers, readback, ordered graph and buffer compute profile | Lifetime, graph and compute suites; `RequiredProfile` startup passes |
 | D5 | Win32 keyboard input and key map, system entropy, filesystem, timestamps, PIX markers and DRED | Input, entropy and filesystem suites on Windows; captures documented |
@@ -170,17 +244,18 @@ another backend's behavior.
 | Subsystem / required profile | Owner | Status | Blocker / next action | PR | Evidence / commit |
 | --- | --- | --- | --- | --- | --- |
 | FoundationBase / target ABI | threading T3 | verified | none for x86_64 MSVC ABI | threading T3 | [threading evidence](../development/threading-evidence.md#platform-completion-t3) |
-| Toolchain / build configuration | D1 | in progress | Windows lane run on this change | D1 | pending |
+| Toolchain / build configuration | D1, D2 | verified (WARP) | DXIL build-time tools added in D2 | PR #573; PR #586 | Windows lane, PR #573 (`7167c8a2`) |
 | Time / threading | threading T3 | verified | none | threading T3 | [threading evidence](../development/threading-evidence.md#platform-completion-t3) |
 | Logging / profiling | D1 | needs port | Builds in the closure; run the logging suites on Windows | pending | none |
 | Filesystem | unassigned | needs port | Windows backend for mounts and persistence (D5) | pending | none |
-| Platform / host (Win32 windows) | D1 | in progress | Windows lane run; keyboard and hosted window later | D1 | pending |
+| Platform / host (Win32 windows) | D1 | verified (WARP) | Keyboard (D5) and hosted window later | PR #573 | Windows lane, PR #573 (`7167c8a2`) |
 | Input | unassigned | needs port | Win32 key map and keyboard delivery (D5) | pending | none |
-| RHI / graphics (clear/present) | D1 | in progress | Windows lane run; hardware-adapter evidence | D1 | pending |
-| RHI / graphics (shaders, raster, compute) | unassigned | needs port | D2-D4 | pending | none |
+| RHI / graphics (clear/present) | D1 | verified (WARP) | Hardware-adapter evidence | PR #573 | Windows lane, PR #573 (`7167c8a2`) |
+| RHI / graphics (DXIL shaders, fullscreen draw) | D2 | verified (WARP) | Hardware-adapter evidence | PR #586 | Windows lane, PR #586 ([run 40102938249](https://github.com/The-Ludus-Project/Ludus/actions/runs/40102938249)) |
+| RHI / graphics (raster, compute, lifetime) | unassigned | needs port | D3-D4 | pending | none |
 | Renderer / graph, text, content, runtime, audio, networking | unassigned | unreviewed | After D4 | pending | none |
 | SDK / projects / editor tooling | unassigned | unreviewed | D6 | pending | none |
-| CI / documentation | D1 | in progress | Promote lane after first green batch | D1 | pending |
+| CI / documentation | D1, D2 | in progress | Lane gates batch promotion; D2 adds the shader tool bootstrap | PR #573; PR #586 | Windows lane, PR #573 (`7167c8a2`) |
 
 ## References
 
@@ -193,6 +268,14 @@ another backend's behavior.
   flip-discard swap chains and buffer resize rules.
 - Microsoft, [Windows Advanced Rasterization Platform (WARP) guide](https://learn.microsoft.com/windows/win32/direct3darticles/directx-warp):
   the software adapter used on GPU-less hosts.
+- Microsoft, [Using a root signature](https://learn.microsoft.com/windows/win32/direct3d12/using-a-root-signature)
+  and [Using descriptors directly in the root signature](https://learn.microsoft.com/windows/win32/direct3d12/using-descriptors-directly-in-the-root-signature):
+  the single root constant buffer view of the fullscreen pipeline.
+- Microsoft and the DirectX Shader Compiler contributors, `DxilContainer.h` and
+  `DxilPipelineStateValidation.h` in [DirectXShaderCompiler](https://github.com/microsoft/DirectXShaderCompiler):
+  the container, program header and PSV0 layouts read by `dxil_container.cpp`.
+- The Slang team, [Supported Compilation Targets](https://docs.shader-slang.org/en/latest/external/slang/docs/user-guide/09-targets.html):
+  DXIL generation through DXC.
 - Microsoft, [Managing application state](https://learn.microsoft.com/windows/win32/learnwin32/managing-application-state-)
   and [WM_DPICHANGED](https://learn.microsoft.com/windows/win32/hidpi/wm-dpichanged):
   per-window state and DPI-change resizing in the Win32 backend.

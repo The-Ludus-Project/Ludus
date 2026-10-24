@@ -1,7 +1,8 @@
 name: Windows Direct3D 12
-# Windows Direct3D 12 bring-up (docs/architecture/windows-direct3d12.md, D1): the
-# Win32 window backend and the Direct3D 12 RHI clear/present path, built with the
-# pinned Clang against the Windows SDK and run on the runner's WARP adapter.
+# Windows Direct3D 12 bring-up (docs/architecture/windows-direct3d12.md, D1 and D2):
+# the Win32 window backend, the Direct3D 12 RHI clear/present path and the DXIL
+# fullscreen draw, built with the pinned Clang against the Windows SDK, with DXIL
+# from the pinned Slang and DXC, and run on the runner's WARP adapter.
 on:
   workflow_call:
     inputs:
@@ -19,13 +20,21 @@ on:
   pull_request:
     paths:
       - '.github/workflows/windows-direct3d12.yml'
+      - 'cmake/LudusShaders.cmake'
+      - 'cmake/shaders/compile_shader.py'
       - 'config/conan/profiles/windows-clang-x86_64'
+      - 'config/shader_toolchain.json'
+      - 'modules/graphics/rhi/shaders/raster_bindings.slang'
+      - 'modules/graphics/rhi/src/dxil_container.cpp'
+      - 'modules/graphics/rhi/src/internal/dxil_container.h'
       - 'modules/graphics/rhi/src/rhi_d3d12.cpp'
       - 'modules/graphics/rhi/src/raster_unsupported.cpp'
       - 'modules/graphics/rhi/tests/d3d12_tests.cpp'
       - 'modules/platform/src/window_win32.cpp'
       - 'modules/platform/src/internal/window_win32.hpp'
       - 'modules/platform/tests/win32_tests.cpp'
+      - 'scripts/shader-probe'
+      - 'tests/sdk_consumer/shaders/diagnostic.slang'
 permissions:
   contents: read
 concurrency:
@@ -89,14 +98,20 @@ jobs:
             --profile:build config/conan/profiles/windows-clang-x86_64 \
             --settings:host build_type=RelWithDebInfo --settings:build build_type=Release \
             --build=missing -g CMakeDeps -g CMakeToolchain --output-folder out/windows/conan
+      # Slang and the DXC libraries that compile and sign DXIL, verified against
+      # config/shader_toolchain.json; DXIL is compiled only on Windows hosts.
+      - name: Bootstrap pinned shader tools
+        run: python scripts/shader-probe bootstrap
       - name: Configure and build the Direct3D 12 closure
         run: |
           export PATH="/c/Program Files/LLVM/bin:$PWD/out/host-tools/venv/Scripts:$PATH"
+          tools="$(cygpath -m "$PWD/out/shader-tools")"
           cmake -S . -B out/build/windows-clang-development -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="$PWD/out/windows/conan/conan_toolchain.cmake" \
             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo -DLUDUS_BUILD_FLAVOR=Development \
-            -DLUDUS_BUILD_TESTS=ON -DLUDUS_WARNINGS_AS_ERRORS=ON -DLUDUS_ENABLE_CCACHE=OFF
+            -DLUDUS_BUILD_TESTS=ON -DLUDUS_WARNINGS_AS_ERRORS=ON -DLUDUS_ENABLE_CCACHE=OFF \
+            -DLUDUS_SLANG_COMPILER="$tools/slang/bin/slangc.exe" -DLUDUS_DXC_DIRECTORY="$tools/dxc"
           cmake --build out/build/windows-clang-development --target \
             ludus_platform ludus_graphics_rhi \
             ludus_platform_win32_tests ludus_rhi_d3d12_tests ludus_rhi_lifecycle_tests -- -k 0
@@ -105,6 +120,9 @@ jobs:
           export PATH="$PWD/out/host-tools/venv/Scripts:$PATH"
           ctest --test-dir out/build/windows-clang-development --output-on-failure --no-tests=error \
             --tests-regex '^ludus_(platform_win32|rhi_d3d12|rhi_lifecycle)_tests$'
+          # The DXIL pixel tests are configured only with the shader tools; require them here.
+          out/build/windows-clang-development/modules/graphics/rhi/ludus_rhi_d3d12_tests.exe --list-tests \
+            | grep -q "draws the fullscreen pipeline across resizes"
       - name: Preserve Windows test logs
         if: always()
         uses: actions/upload-artifact@v4

@@ -1,4 +1,5 @@
 #include "internal/backend.h"
+#include "internal/dxil_container.h"
 #include <ludus/foundation/base/checked_integer.hpp>
 #include <ludus/foundation/base/compiler.h>
 
@@ -126,6 +127,9 @@ using namespace internal;
 constexpr usize KINDS = static_cast<usize>(RasterKind::Count);
 /// Uniform members start on a 32-bit word.
 constexpr usize UNIFORM_MEMBER_ALIGNMENT_BYTES = 4;
+/// A SPIR-V module starts with its magic number and four further header words.
+constexpr uint32 SPIRV_MAGIC = 0x07230203U;
+constexpr usize SPIRV_HEADER_WORDS = 5;
 struct CpuTextureRecord final
 {
     StorageArray<uint8> Bytes;
@@ -1469,17 +1473,19 @@ CreateRasterShader(DeviceHandle device, const RasterShaderDescription& descripti
             }
         }
     }
-    const auto entry = backendKind == Backend::Metal    ? artifact.MslEntry
-                       : backendKind == Backend::WebGPU ? artifact.WgslEntry
-                       : backendKind == Backend::WebGL2 ? artifact.GlslEsEntry
-                                                        : artifact.SpirvEntry;
+    const std::string_view entry = backendKind == Backend::Metal        ? artifact.MslEntry
+                                   : backendKind == Backend::WebGPU     ? artifact.WgslEntry
+                                   : backendKind == Backend::WebGL2     ? artifact.GlslEsEntry
+                                   : backendKind == Backend::Direct3D12 ? artifact.DxilEntry
+                                                                        : artifact.SpirvEntry;
     char name[64]{};
-    // ShaderDescription has no DXIL artifact yet; the Direct3D 12 bring-up accepts no shaders.
-    if (backendKind == Backend::Direct3D12 || entry.empty() || CopyName(entry, name) == false ||
+    if (entry.empty() || CopyName(entry, name) == false ||
         (backendKind == Backend::Metal    ? artifact.Msl.empty()
          : backendKind == Backend::WebGPU ? artifact.Wgsl.empty()
          : backendKind == Backend::WebGL2 ? artifact.GlslEs.empty()
-                                          : artifact.Spirv.size() < 5 || artifact.Spirv[0] != 0x07230203U))
+         : backendKind == Backend::Direct3D12
+             ? internal::IsDxilContainer(artifact.Dxil) == false
+             : artifact.Spirv.size() < SPIRV_HEADER_WORDS || artifact.Spirv[0] != SPIRV_MAGIC))
     {
         return RasterStatus::InvalidDescription;
     }

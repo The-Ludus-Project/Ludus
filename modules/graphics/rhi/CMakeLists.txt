@@ -14,6 +14,7 @@ target_sources(ludus_graphics_rhi
     PRIVATE
         src/rhi.cpp
         src/device.cpp
+        src/dxil_container.cpp
         src/gpu_scope.cpp
         src/gpu_pass_timing_buffer.cpp
         src/profile.cpp
@@ -123,7 +124,7 @@ endif()
 
 if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
-    add_executable(ludus_rhi_lifecycle_tests tests/lifecycle_tests.cpp tests/gpu_scope_tests.cpp tests/device_tests.cpp tests/profile_tests.cpp tests/raster_tests.cpp tests/binding_tests.cpp tests/native_interop_tests.cpp tests/compute_tests.cpp tests/hosted_ring_tests.cpp tests/hosted_adapter_tests.cpp tests/reference_raster.cpp src/rhi.cpp src/device.cpp src/gpu_scope.cpp src/gpu_pass_timing_buffer.cpp src/profile.cpp src/raster.cpp src/ray_unsupported.cpp)
+    add_executable(ludus_rhi_lifecycle_tests tests/lifecycle_tests.cpp tests/gpu_scope_tests.cpp tests/device_tests.cpp tests/profile_tests.cpp tests/raster_tests.cpp tests/binding_tests.cpp tests/native_interop_tests.cpp tests/compute_tests.cpp tests/hosted_ring_tests.cpp tests/hosted_adapter_tests.cpp tests/dxil_container_tests.cpp tests/reference_raster.cpp src/rhi.cpp src/device.cpp src/dxil_container.cpp src/gpu_scope.cpp src/gpu_pass_timing_buffer.cpp src/profile.cpp src/raster.cpp src/ray_unsupported.cpp)
     target_compile_definitions(ludus_rhi_lifecycle_tests PRIVATE LUDUS_RHI_TEST_STORAGE=1)
     target_include_directories(ludus_rhi_lifecycle_tests PRIVATE include src)
     target_link_libraries(ludus_rhi_lifecycle_tests PRIVATE Ludus::Platform Ludus::FoundationContainers Ludus::FoundationStrings Catch2::Catch2WithMain)
@@ -142,7 +143,7 @@ if(LUDUS_BUILD_TESTS AND NOT APPLE AND NOT WIN32 AND LUDUS_SLANG_COMPILER AND LU
     ludus_enable_test_exceptions(ludus_rhi_render_tests)
     ludus_compile_shader(TARGET ludus_rhi_render_tests NAME diagnostic
         SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/diagnostic.slang"
-        VERTEX vertexMain FRAGMENT fragmentMain)
+        VERTEX VertexMain FRAGMENT FragmentMain)
     add_test(NAME ludus_rhi_render_pixels COMMAND ludus_rhi_render_tests)
     set_tests_properties(ludus_rhi_render_pixels PROPERTIES LABELS "rhi;gpu" TIMEOUT 60)
 endif()
@@ -155,6 +156,16 @@ if(LUDUS_BUILD_TESTS AND WIN32)
     ludus_configure_win32_target(ludus_rhi_d3d12_tests)
     ludus_apply_project_defaults(ludus_rhi_d3d12_tests)
     ludus_enable_test_exceptions(ludus_rhi_d3d12_tests)
+    # Fullscreen pixel tests need DXIL from the pinned Slang and DXC
+    # (python scripts/shader-probe bootstrap on the Windows host).
+    if(LUDUS_SLANG_COMPILER AND LUDUS_DXC_DIRECTORY)
+        target_compile_definitions(ludus_rhi_d3d12_tests PRIVATE LUDUS_TEST_DXIL=1)
+        ludus_compile_shader(TARGET ludus_rhi_d3d12_tests NAME diagnostic
+            SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/diagnostic.slang"
+            VERTEX VertexMain FRAGMENT FragmentMain)
+    else()
+        message(STATUS "Direct3D 12 fullscreen pixel tests skipped: set LUDUS_SLANG_COMPILER and LUDUS_DXC_DIRECTORY")
+    endif()
     add_test(NAME ludus_rhi_d3d12_tests COMMAND ludus_rhi_d3d12_tests)
     set_tests_properties(ludus_rhi_d3d12_tests PROPERTIES LABELS "unit;rhi;windows;gpu" TIMEOUT 60 RUN_SERIAL TRUE)
 endif()
@@ -178,7 +189,7 @@ if(LUDUS_BUILD_TESTS AND APPLE)
         ludus_enable_test_exceptions(ludus_rhi_render_tests)
         ludus_compile_shader(TARGET ludus_rhi_render_tests NAME diagnostic
             SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/diagnostic.slang"
-            VERTEX vertexMain FRAGMENT fragmentMain)
+            VERTEX VertexMain FRAGMENT FragmentMain)
         add_test(NAME ludus_rhi_render_pixels COMMAND ludus_rhi_render_tests)
         set_tests_properties(ludus_rhi_render_pixels PROPERTIES LABELS "rhi;gpu;macos" TIMEOUT 60)
     endif()

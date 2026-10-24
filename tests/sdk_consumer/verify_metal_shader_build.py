@@ -47,7 +47,7 @@ find_package(Ludus CONFIG REQUIRED COMPONENTS GraphicsRhi)
 add_executable(sample main.cpp)
 target_link_libraries(sample PRIVATE Ludus::GraphicsRhi)
 target_compile_options(sample PRIVATE -Wall -Wextra -Wpedantic -Werror -fno-exceptions)
-ludus_compile_shader(TARGET sample NAME sample SOURCE diagnostic.slang VERTEX vertexMain FRAGMENT fragmentMain DEFINES ${SHADER_DEFINES})
+ludus_compile_shader(TARGET sample NAME sample SOURCE diagnostic.slang VERTEX VertexMain FRAGMENT FragmentMain DEFINES ${SHADER_DEFINES})
 ''')
         build = root / 'build'
         command = [args.cmake, '-S', source, '-B', build, '-G', 'Ninja',
