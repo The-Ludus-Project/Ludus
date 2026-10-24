@@ -1,4 +1,5 @@
 #include "internal/backend.h"
+#include "internal/dxil_container.h"
 #include "internal/lifecycle.h"
 #include "internal/measurement.h"
 #include "internal/native_interop.h"
@@ -656,14 +657,15 @@ ResourceStatus CreateShader(const ShaderDescription& description, ShaderHandle& 
         return ResourceStatus::InvalidDescription;
     }
     const auto kind = backend::Kind();
-    // ShaderDescription has no DXIL artifact yet; the Direct3D 12 bring-up accepts no shaders.
+    // The backend later checks the DXIL program kind and entry inside the container.
     const bool validArtifact =
-        kind == Backend::Vulkan       ? (description.Spirv.size() >= 5 && description.Spirv[0] == 0x07230203U &&
-                                         ValidEntry(description.SpirvEntry))
-        : kind == Backend::WebGL2     ? (description.GlslEs.empty() == false && description.GlslEsEntry == "main")
-        : kind == Backend::Metal      ? (description.Msl.empty() == false && ValidEntry(description.MslEntry))
-        : kind == Backend::Direct3D12 ? false
-                                      : (description.Wgsl.empty() == false && ValidEntry(description.WgslEntry));
+        kind == Backend::Vulkan   ? (description.Spirv.size() >= 5 && description.Spirv[0] == 0x07230203U &&
+                                     ValidEntry(description.SpirvEntry))
+        : kind == Backend::WebGL2 ? (description.GlslEs.empty() == false && description.GlslEsEntry == "main")
+        : kind == Backend::Metal  ? (description.Msl.empty() == false && ValidEntry(description.MslEntry))
+        : kind == Backend::Direct3D12
+            ? (internal::IsDxilContainer(description.Dxil) == true && ValidEntry(description.DxilEntry))
+            : (description.Wgsl.empty() == false && ValidEntry(description.WgslEntry));
     if ((description.Stage != ShaderStage::Vertex && description.Stage != ShaderStage::Fragment) ||
         validArtifact == false)
     {

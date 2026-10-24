@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tarfile
 import urllib.request
+import zipfile
 
 ROOT = Path(__file__).resolve().parent.parent
 TOOLS = ROOT / "out/shader-tools"
@@ -41,19 +42,63 @@ def require(condition: bool, message: str) -> None:
         raise RuntimeError(message)
 
 
+def fetch(name: str, pin: dict, archive: Path) -> None:
+    """Download a pinned archive unless the verified copy is already present."""
+    if not archive.exists() or digest(archive) != pin["sha256"]:
+        temporary = archive.with_suffix(".download")
+        urllib.request.urlretrieve(pin["url"], temporary)
+        require(digest(temporary) == pin["sha256"], f"Integrity failure: {name}")
+        temporary.replace(archive)
+
+
+def extract_zip(archive: Path, destination: Path, prefix: str = "") -> list[Path]:
+    """Extract regular files under prefix, flattened below it, refusing escaping names."""
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.mkdir(parents=True)
+    extracted = []
+    with zipfile.ZipFile(archive) as contents:
+        for member in contents.infolist():
+            # Windows release archives may spell directories with backslashes.
+            name = member.filename.replace("\\", "/")
+            if member.is_dir() or not name.startswith(prefix):
+                continue
+            target = (destination / name[len(prefix):].lstrip("/")).resolve()
+            require(target.is_relative_to(destination.resolve()), "Unsafe archive member")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(contents.read(member))
+            extracted.append(target)
+    return extracted
+
+
+def bootstrap_windows() -> None:
+    """Slang plus the pinned DXC libraries that compile and sign DXIL on Windows hosts."""
+    TOOLS.mkdir(parents=True, exist_ok=True)
+    fetch("slang", LOCK["slang"]["windows"]["x86_64"], TOOLS / "slang.zip")
+    # Re-extract verified archives; never trust an old marker to skip integrity.
+    extract_zip(TOOLS / "slang.zip", TOOLS / "slang")
+    dxc = LOCK["dxc"]
+    fetch("dxc", dxc, TOOLS / "dxc.zip")
+    extract_zip(TOOLS / "dxc.zip", TOOLS / "dxc", dxc["archive_directory"] + "/")
+    for path, key in ((TOOLS / "dxc/dxcompiler.dll", "dxcompiler_sha256"), (TOOLS / "dxc/dxil.dll", "dxil_sha256")):
+        require(digest(path) == dxc[key], f"DXC pin differs: {path}")
+    require(run([str(TOOLS / "slang/bin/slangc.exe"), "-version"]).strip() == LOCK["slang"]["version"],
+            "Slang version differs from pin")
+
+
 def bootstrap() -> None:
+    if platform.system() == "Windows":
+        require(platform.machine().lower() in ("amd64", "x86_64"), "Windows bootstrap supports x86_64 only")
+        bootstrap_windows()
+        return
     macos = platform.system() == "Darwin" and platform.machine() in LOCK["slang"]["macos"]
     require(macos or (platform.system() == "Linux" and platform.machine() == "x86_64"),
-            "Bootstrap supports Linux x86_64 and macOS arm64/x86_64")
+            "Bootstrap supports Linux x86_64, macOS arm64/x86_64 and Windows x86_64")
     TOOLS.mkdir(parents=True, exist_ok=True)
     for name in (("slang",) if macos else ("slang", "spirv_tools")):
         pin = LOCK["slang"]["macos"][platform.machine()] if macos else LOCK[name]
         archive = TOOLS / ("slang.tar.gz" if name == "slang" else "spirv-tools.deb")
-        if not archive.exists() or digest(archive) != pin["sha256"]:
-            temporary = archive.with_suffix(".download")
-            urllib.request.urlretrieve(pin["url"], temporary)
-            require(digest(temporary) == pin["sha256"], f"Integrity failure: {name}")
-            temporary.replace(archive)
+        fetch(name, pin, archive)
         destination = TOOLS / name.replace("_", "-")
         # Re-extract verified archives; never trust an old marker to skip integrity.
         if destination.exists():

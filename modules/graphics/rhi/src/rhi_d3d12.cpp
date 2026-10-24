@@ -1,4 +1,5 @@
 #include "internal/backend.h"
+#include "internal/dxil_container.h"
 #include "internal/lifecycle.h"
 #include "internal/measurement.h"
 #include "internal/native_interop.h"
@@ -10,9 +11,11 @@
 #include <ludus/foundation/base/config.h>
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/base/pointer.hpp>
+#include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/logging/log_format.hpp>
 #include <ludus/platform/native_window.h>
 
+#include <cstring>
 #include <span>
 
 #if !defined(LUDUS_PLATFORM_WINDOWS)
@@ -24,11 +27,12 @@
 #include <d3d12.h>
 #include <dxgi1_6.h>
 
-// Direct3D 12 bring-up backend (docs/architecture/windows-direct3d12.md, D1):
-// device and adapter selection, a direct queue with two fenced frame slots, a
-// flip-model swap chain for Win32 windows or an offscreen target for headless
-// sessions, and clear/present. Shader, pipeline, raster, compute and lifetime
-// entry points are not implemented yet; see raster_unsupported.cpp.
+// Direct3D 12 backend (docs/architecture/windows-direct3d12.md, D1 and D2): device
+// and adapter selection, a direct queue with two fenced frame slots, a flip-model
+// swap chain for Win32 windows or an offscreen target for headless sessions,
+// clear/present, and the fullscreen compatibility draw from DXIL shaders with one
+// root constant buffer view. Raster, compute and lifetime entry points are not
+// implemented yet; see raster_unsupported.cpp.
 //
 // Thanks to Microsoft, "Creating a basic Direct3D 12 component" and "Synchronization
 // and multi-engine", Direct3D 12 programming guide, for the queue, fence and
@@ -37,9 +41,13 @@
 // https://learn.microsoft.com/windows/win32/direct3d12/user-mode-heap-synchronization
 // to Microsoft, "DXGI flip model", for the flip-discard swap chain and its resize rules:
 // https://learn.microsoft.com/windows/win32/direct3ddxgi/dxgi-flip-model
-// and to Microsoft, "Windows Advanced Rasterization Platform (WARP) guide", for the
+// to Microsoft, "Windows Advanced Rasterization Platform (WARP) guide", for the
 // software adapter used when no hardware adapter creates a device:
 // https://learn.microsoft.com/windows/win32/direct3darticles/directx-warp
+// and to Microsoft, "Using a root signature" and "Using descriptors directly in the
+// root signature", for the root constant buffer view that binds the uniform:
+// https://learn.microsoft.com/windows/win32/direct3d12/using-a-root-signature
+// https://learn.microsoft.com/windows/win32/direct3d12/using-descriptors-directly-in-the-root-signature
 namespace ludus::graphics::rhi::backend
 {
 namespace
@@ -119,6 +127,22 @@ struct InterfaceId<ID3D12DescriptorHeap> final
     }
 };
 template <>
+struct InterfaceId<ID3D12RootSignature> final
+{
+    [[nodiscard]] static const IID& Get() noexcept
+    {
+        return IID_ID3D12RootSignature;
+    }
+};
+template <>
+struct InterfaceId<ID3D12PipelineState> final
+{
+    [[nodiscard]] static const IID& Get() noexcept
+    {
+        return IID_ID3D12PipelineState;
+    }
+};
+template <>
 struct InterfaceId<ID3D12Resource> final
 {
     [[nodiscard]] static const IID& Get() noexcept
@@ -179,6 +203,34 @@ constexpr uint32 TARGET_DESCRIPTOR_COUNT = FRAME_COUNT + 1;
 /// a removed device signals every fence, so a timeout means the queue is hung.
 constexpr DWORD FENCE_TIMEOUT_MILLISECONDS = 10000;
 constexpr D3D_FEATURE_LEVEL MINIMUM_FEATURE_LEVEL = D3D_FEATURE_LEVEL_11_0;
+/// The fullscreen root signature's only parameter: the uniform as a root CBV at b0, space 0.
+constexpr UINT UNIFORM_ROOT_PARAMETER = 0;
+constexpr UINT UNIFORM_SHADER_REGISTER = 0;
+constexpr UINT UNIFORM_REGISTER_SPACE = 0;
+/// Root constant buffer view addresses are aligned to 256 bytes.
+constexpr usize CONSTANT_BUFFER_ALIGNMENT = D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
+/// The fullscreen compatibility draw is one non-indexed triangle.
+constexpr UINT FULLSCREEN_VERTEX_COUNT = 3;
+
+/// DXIL bytecode copied at CreateShader; the description's bytes are only borrowed.
+struct Shader final
+{
+    Array<uint8> Bytecode;
+};
+/// One upload buffer per frame slot, persistently mapped. Draw copies the latest bytes
+/// into the open slot's buffer, which that slot's fence wait has released.
+struct Uniform final
+{
+    ComOwner<ID3D12Resource> Buffers[FRAME_COUNT];
+    uint8* MappedOrNull[FRAME_COUNT]{};
+    usize Size = 0;
+    uint8 Bytes[internal::UNIFORM_CAPACITY]{};
+};
+struct Pipeline final
+{
+    ComOwner<ID3D12PipelineState> State;
+    usize UniformSlot = 0;
+};
 
 ComOwner<IDXGIFactory6> gFactory;
 ComOwner<IDXGIAdapter1> gAdapter;
@@ -197,6 +249,11 @@ ComOwner<ID3D12Resource> gBackBuffers[FRAME_COUNT];
 uint32 gSwapWidth = 0;
 uint32 gSwapHeight = 0;
 ComOwner<ID3D12Resource> gHeadless;
+/// Shared by every fullscreen pipeline; created with the device.
+ComOwner<ID3D12RootSignature> gRootSignature;
+Shader gShaders[internal::RESOURCE_CAPACITY];
+Uniform gUniforms[internal::RESOURCE_CAPACITY];
+Pipeline gPipelines[internal::RESOURCE_CAPACITY];
 HWND gWindowOrNull = nullptr;
 /// Color target of the open frame: a swap chain buffer or the headless texture.
 ID3D12Resource* gSurfaceOrNull = nullptr;
@@ -499,6 +556,50 @@ void EnableDebugLayer() noexcept
     return true;
 }
 
+/// One root CBV visible to every stage; the fullscreen pipelines have no input layout.
+[[nodiscard]] bool CreateRootSignature() noexcept
+{
+    D3D12_ROOT_PARAMETER parameter{};
+    parameter.ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    parameter.Descriptor.ShaderRegister = UNIFORM_SHADER_REGISTER;
+    parameter.Descriptor.RegisterSpace = UNIFORM_REGISTER_SPACE;
+    parameter.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    const D3D12_ROOT_SIGNATURE_DESC description =
+    {
+        .NumParameters = 1,
+        .pParameters = &parameter,
+        .NumStaticSamplers = 0,
+        .pStaticSamplers = nullptr,
+        .Flags = D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
+                 D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
+                 D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS,
+    };
+    ID3DBlob* serializedOrNull = nullptr;
+    ID3DBlob* errorsOrNull = nullptr;
+    HRESULT result =
+        D3D12SerializeRootSignature(&description, D3D_ROOT_SIGNATURE_VERSION_1, &serializedOrNull, &errorsOrNull);
+    const ComOwner<ID3DBlob> serialized = Adopt(serializedOrNull);
+    const ComOwner<ID3DBlob> errors = Adopt(errorsOrNull);
+    if (FAILED(result) == true || serialized.Get() == nullptr)
+    {
+        LogFailure("D3D12SerializeRootSignature", result);
+        return false;
+    }
+    ID3D12RootSignature* signatureOrNull = nullptr;
+    result = gDevice->CreateRootSignature(0,
+                                          serialized->GetBufferPointer(),
+                                          serialized->GetBufferSize(),
+                                          GetInterfaceId(signatureOrNull),
+                                          GetInterfaceOutput(signatureOrNull));
+    if (FAILED(result) == true)
+    {
+        LogFailure("CreateRootSignature", result);
+        return false;
+    }
+    gRootSignature = Adopt(signatureOrNull);
+    return true;
+}
+
 void ReleaseBackBuffers() noexcept
 {
     for (ComOwner<ID3D12Resource>& buffer : gBackBuffers)
@@ -657,6 +758,7 @@ void ReleaseBackBuffers() noexcept
 
 void ReleaseDevice() noexcept
 {
+    gRootSignature.Reset();
     gCommands.Reset();
     for (ComOwner<ID3D12CommandAllocator>& allocator : gAllocators)
     {
@@ -751,7 +853,7 @@ bool Initialize(const ApplicationInfo&) noexcept
         LUDUS_LOG_ERROR(LOG_RHI, "Direct3D 12: no adapter supports feature level 11_0");
         return false;
     }
-    if (CreateQueueObjects() == false)
+    if (CreateQueueObjects() == false || CreateRootSignature() == false)
     {
         // The device stays until Shutdown() so Start reports DeviceUnavailable.
         LUDUS_LOG_ERROR(LOG_RHI, "Direct3D 12: creating the queue, fence or command objects failed");
@@ -958,31 +1060,182 @@ bool EndFrame() noexcept
 {
     return End() == FrameStatus::Ready;
 }
-// The facade rejects every ShaderDescription on this backend (no DXIL artifact yet),
-// so no shader or pipeline can reach these entry points.
-ResourceStatus CreateShader(usize, const ShaderDescription&, uint32) noexcept
+ResourceStatus CreateShader(usize slot, const ShaderDescription& description, uint32) noexcept
 {
-    return ResourceStatus::Failed;
+    // The facade checked the container header; Direct3D 12 itself never sees the entry name.
+    if (internal::HasDxilEntry(description.Dxil, description.Stage, description.DxilEntry) == false)
+    {
+        LUDUS_LOG_ERROR(LOG_RHI, "Direct3D 12: DXIL container does not hold the requested stage and entry");
+        return ResourceStatus::Failed;
+    }
+    return gShaders[slot].Bytecode.TryAddRange(description.Dxil) == true ? ResourceStatus::Ready
+                                                                         : ResourceStatus::Failed;
 }
-ResourceStatus CreateUniform(usize, const UniformDescription&, uint32) noexcept
+ResourceStatus CreateUniform(usize slot, const UniformDescription& description, uint32) noexcept
 {
-    return ResourceStatus::Failed;
+    Uniform& uniform = gUniforms[slot];
+    uniform.Size = description.Size;
+    const D3D12_HEAP_PROPERTIES heap =
+    {
+        .Type = D3D12_HEAP_TYPE_UPLOAD,
+        .CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+        .MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN,
+        .CreationNodeMask = 0,
+        .VisibleNodeMask = 0,
+    };
+    const D3D12_RESOURCE_DESC bufferDescription =
+    {
+        .Dimension = D3D12_RESOURCE_DIMENSION_BUFFER,
+        .Alignment = 0,
+        .Width =
+            (description.Size + CONSTANT_BUFFER_ALIGNMENT - 1) / CONSTANT_BUFFER_ALIGNMENT * CONSTANT_BUFFER_ALIGNMENT,
+        .Height = 1,
+        .DepthOrArraySize = 1,
+        .MipLevels = 1,
+        .Format = DXGI_FORMAT_UNKNOWN,
+        .SampleDesc = { .Count = 1, .Quality = 0 },
+        .Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+        .Flags = D3D12_RESOURCE_FLAG_NONE,
+    };
+    for (usize index = 0; index < FRAME_COUNT; ++index)
+    {
+        ID3D12Resource* bufferOrNull = nullptr;
+        HRESULT result = gDevice->CreateCommittedResource(&heap,
+                                                          D3D12_HEAP_FLAG_NONE,
+                                                          &bufferDescription,
+                                                          D3D12_RESOURCE_STATE_GENERIC_READ,
+                                                          nullptr,
+                                                          GetInterfaceId(bufferOrNull),
+                                                          GetInterfaceOutput(bufferOrNull));
+        if (FAILED(result) == true)
+        {
+            LogFailure("uniform buffer creation", result);
+            return ResourceStatus::Failed;
+        }
+        uniform.Buffers[index] = Adopt(bufferOrNull);
+        // Upload heaps stay mapped for the resource's lifetime; the CPU never reads them.
+        const D3D12_RANGE noRead = { .Begin = 0, .End = 0 };
+        void* mappedOrNull = nullptr;
+        result = bufferOrNull->Map(0, &noRead, &mappedOrNull);
+        if (FAILED(result) == true || mappedOrNull == nullptr)
+        {
+            LogFailure("uniform buffer mapping", result);
+            return ResourceStatus::Failed;
+        }
+        uniform.MappedOrNull[index] = static_cast<uint8*>(mappedOrNull);
+    }
+    return ResourceStatus::Ready;
 }
-ResourceStatus CreatePipeline(usize, const PipelineResources&, uint32) noexcept
+ResourceStatus CreatePipeline(usize slot, const PipelineResources& resources, uint32) noexcept
 {
-    return ResourceStatus::Failed;
+    const Array<uint8>& vertex = gShaders[resources.Vertex].Bytecode;
+    const Array<uint8>& fragment = gShaders[resources.Fragment].Bytecode;
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC description{};
+    description.pRootSignature = gRootSignature.Get();
+    description.VS = { .pShaderBytecode = vertex.GetData(), .BytecodeLength = vertex.GetSize() };
+    description.PS = { .pShaderBytecode = fragment.GetData(), .BytecodeLength = fragment.GetSize() };
+    description.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_ONE;
+    description.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_ZERO;
+    description.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+    description.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+    description.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ZERO;
+    description.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    description.BlendState.RenderTarget[0].LogicOp = D3D12_LOGIC_OP_NOOP;
+    description.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+    description.SampleMask = D3D12_DEFAULT_SAMPLE_MASK;
+    // The triangle covers the target in either winding; no depth or stencil target is bound.
+    description.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    description.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    description.RasterizerState.DepthClipEnable = TRUE;
+    description.DepthStencilState.DepthEnable = FALSE;
+    description.DepthStencilState.StencilEnable = FALSE;
+    description.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    description.NumRenderTargets = 1;
+    description.RTVFormats[0] = SURFACE_FORMAT;
+    description.DSVFormat = DXGI_FORMAT_UNKNOWN;
+    description.SampleDesc = { .Count = 1, .Quality = 0 };
+    ID3D12PipelineState* stateOrNull = nullptr;
+    const HRESULT result = gDevice->CreateGraphicsPipelineState(&description,
+                                                                GetInterfaceId(stateOrNull),
+                                                                GetInterfaceOutput(stateOrNull));
+    if (FAILED(result) == true)
+    {
+        LogFailure("CreateGraphicsPipelineState", result);
+        return ResourceStatus::Failed;
+    }
+    gPipelines[slot] = { .State = Adopt(stateOrNull), .UniformSlot = resources.Uniform };
+    return ResourceStatus::Ready;
 }
-void DestroyShader(usize) noexcept {}
-void DestroyUniform(usize) noexcept {}
-void DestroyPipeline(usize) noexcept {}
-void UpdateUniform(usize, std::span<const uint8>) noexcept {}
+void DestroyShader(usize slot) noexcept
+{
+    // Pipelines own their compiled state; the copied bytecode is no longer referenced.
+    Array<uint8> released;
+    gShaders[slot].Bytecode.Swap(released);
+}
+void DestroyUniform(usize slot) noexcept
+{
+    Uniform& uniform = gUniforms[slot];
+    // A frame in flight may still read the buffers.
+    if (uniform.Size != 0)
+    {
+        static_cast<void>(WaitForIdle());
+    }
+    for (usize index = 0; index < FRAME_COUNT; ++index)
+    {
+        uniform.MappedOrNull[index] = nullptr;
+        uniform.Buffers[index].Reset();
+    }
+    uniform.Size = 0;
+}
+void DestroyPipeline(usize slot) noexcept
+{
+    Pipeline& pipeline = gPipelines[slot];
+    if (pipeline.State.Get() != nullptr)
+    {
+        static_cast<void>(WaitForIdle());
+    }
+    pipeline.State.Reset();
+    pipeline.UniformSlot = 0;
+}
+void UpdateUniform(usize slot, std::span<const uint8> bytes) noexcept
+{
+    std::memcpy(gUniforms[slot].Bytes, bytes.data(), bytes.size());
+}
 FrameInfo GetFrameInfo() noexcept
 {
     return gFrame;
 }
-ResourceStatus Draw(usize) noexcept
+ResourceStatus Draw(usize slot) noexcept
 {
-    return ResourceStatus::Failed;
+    const Pipeline& pipeline = gPipelines[slot];
+    const Uniform& uniform = gUniforms[pipeline.UniformSlot];
+    // Begin waited for this slot's fence, so the GPU no longer reads its buffer.
+    std::memcpy(uniform.MappedOrNull[gSlot], uniform.Bytes, uniform.Size);
+    const D3D12_VIEWPORT viewport =
+    {
+        .TopLeftX = 0,
+        .TopLeftY = 0,
+        .Width = static_cast<float32>(gFrame.Width),
+        .Height = static_cast<float32>(gFrame.Height),
+        .MinDepth = 0,
+        .MaxDepth = 1,
+    };
+    const D3D12_RECT scissor =
+    {
+        .left = 0,
+        .top = 0,
+        .right = static_cast<LONG>(gFrame.Width),
+        .bottom = static_cast<LONG>(gFrame.Height),
+    };
+    gCommands->SetGraphicsRootSignature(gRootSignature.Get());
+    gCommands->SetPipelineState(pipeline.State.Get());
+    gCommands->SetGraphicsRootConstantBufferView(UNIFORM_ROOT_PARAMETER,
+                                                 uniform.Buffers[gSlot]->GetGPUVirtualAddress());
+    gCommands->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    gCommands->RSSetViewports(1, &viewport);
+    gCommands->RSSetScissorRects(1, &scissor);
+    gCommands->DrawInstanced(FULLSCREEN_VERTEX_COUNT, 1, 0, 0);
+    return ResourceStatus::Ready;
 }
 // GPU timing and allocation telemetry are not implemented yet; adapter identity is.
 bool AllocatorBlockBytes(uint64&) noexcept

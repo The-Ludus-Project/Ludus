@@ -7,6 +7,10 @@
 #include <ludus/platform/native_window.h>
 
 #include "internal/readback.h"
+#include "internal/resources.h"
+#if defined(LUDUS_TEST_DXIL)
+#    include "diagnostic.h"
+#endif
 
 #include <span>
 
@@ -149,12 +153,16 @@ TEST_CASE("Direct3D 12 reports the bring-up limits explicitly", "[rhi][windows][
     CHECK(rhi::SetFrameTarget({ .Width = 0, .Height = HEIGHT }) == rhi::FrameStatus::Ready);
     CHECK(rhi::BeginFrameStatus() == rhi::FrameStatus::Skipped);
     CHECK(rhi::SetFrameTarget({ .Width = WIDTH, .Height = HEIGHT, .Red = -1 }) == rhi::FrameStatus::Failed);
-    // No DXIL artifact exists yet, so every shader description is rejected before the backend.
+    // Only a DXIL container reaches this backend; other targets' artifacts are rejected first.
     rhi::ShaderDescription description;
     description.Stage = rhi::ShaderStage::Vertex;
     description.Wgsl = "@vertex fn main() -> @builtin(position) vec4f { return vec4f(); }";
     description.WgslEntry = "main";
     rhi::ShaderHandle shader;
+    CHECK(rhi::CreateShader(description, shader) == rhi::ResourceStatus::InvalidDescription);
+    const uint8 notContainer[] = {'D', 'X', 'B', 'C'};
+    description.Dxil = notContainer;
+    description.DxilEntry = "main";
     CHECK(rhi::CreateShader(description, shader) == rhi::ResourceStatus::InvalidDescription);
 }
 
@@ -215,3 +223,204 @@ TEST_CASE("Direct3D 12 presents to a Win32 window and follows its extent", "[rhi
     // Release the swap chain before its window.
     rhi::Shutdown();
 }
+
+#if defined(LUDUS_TEST_DXIL)
+namespace
+{
+/// Diagnostic uniform values: resolution, elapsed time, direction and tint, padded as
+/// the shader's constant buffer (direction at byte 16, tint at byte 32).
+constexpr usize DIAGNOSTIC_VALUE_COUNT = 12;
+constexpr usize DIAGNOSTIC_UNIFORM_BYTES = DIAGNOSTIC_VALUE_COUNT * sizeof(float32);
+using ludus::graphics::rhi::internal::UNIFORM_CAPACITY;
+/// Readback error budget in 8-bit steps, matching the Vulkan and Metal pixel tests.
+constexpr float64 CHANNEL_TOLERANCE = 2.5;
+
+void WriteDiagnosticUniform(uint32 width, uint32 height, float32 elapsed, std::span<uint8> outBytes)
+{
+    const float32 values[DIAGNOSTIC_VALUE_COUNT] = {
+        static_cast<float32>(width),
+        static_cast<float32>(height),
+        elapsed,
+        0,
+        0.2F,
+        0.4F,
+        0.6F,
+        0,
+        0.6F,
+        0.4F,
+        0.2F,
+        1,
+    };
+    const uint8* source = reinterpret_cast<const uint8*>(values);
+    for (usize i = 0; i < DIAGNOSTIC_UNIFORM_BYTES; ++i)
+    {
+        outBytes[i] = source[i];
+    }
+}
+
+/// Pixels farther than the tolerance from the diagnostic image of that extent and time.
+usize CountDiagnosticErrors(std::span<const uint8> pixels, uint32 width, uint32 height, float32 elapsed)
+{
+    usize errors = 0;
+    for (usize y = 0; y < height; ++y)
+    {
+        for (usize x = 0; x < width; ++x)
+        {
+            const float64 cx = (static_cast<float64>(x) + 0.5 - width * 0.5) / height;
+            const float64 cy = (static_cast<float64>(y) + 0.5 - height * 0.5) / height;
+            const float64 expected[BYTES_PER_PIXEL] = {
+                0.6 * (static_cast<float64>(x) + 0.5) / width + 0.01 * static_cast<float64>(elapsed),
+                0.4 * (static_cast<float64>(y) + 0.5) / height + 0.02 * static_cast<float64>(elapsed),
+                0.2 * (cx * cx + cy * cy < 0.04 ? 1 : 0) + 0.03 * static_cast<float64>(elapsed),
+                1,
+            };
+            for (usize channel = 0; channel < BYTES_PER_PIXEL; ++channel)
+            {
+                const float64 error =
+                    static_cast<float64>(pixels[(y * width + x) * BYTES_PER_PIXEL + channel]) - expected[channel] * 255;
+                if (error > CHANNEL_TOLERANCE || error < -CHANNEL_TOLERANCE)
+                {
+                    ++errors;
+                }
+            }
+        }
+    }
+    return errors;
+}
+} // namespace
+
+TEST_CASE("Direct3D 12 checks the DXIL stage and entry before creating shaders", "[rhi][windows][gpu]")
+{
+    Guard guard;
+    RequireHeadlessDevice();
+    const rhi::ShaderDescription vertexDescription = ludus::shaders::diagnostic::Vertex();
+    // Reflection sizes the module's constant buffer for both stages.
+    CHECK(vertexDescription.UniformSize == DIAGNOSTIC_UNIFORM_BYTES);
+    CHECK(ludus::shaders::diagnostic::Fragment().UniformSize == DIAGNOSTIC_UNIFORM_BYTES);
+    rhi::ShaderDescription wrongEntry = vertexDescription;
+    wrongEntry.DxilEntry = "missing";
+    rhi::ShaderHandle failed;
+    CHECK(rhi::CreateShader(wrongEntry, failed) == rhi::ResourceStatus::Failed);
+    CHECK(rhi::Destroy(failed) == rhi::ResourceStatus::Ready);
+    rhi::ShaderDescription wrongStage = vertexDescription;
+    wrongStage.Stage = rhi::ShaderStage::Fragment;
+    rhi::ShaderHandle mismatched;
+    CHECK(rhi::CreateShader(wrongStage, mismatched) == rhi::ResourceStatus::Failed);
+    CHECK(rhi::Destroy(mismatched) == rhi::ResourceStatus::Ready);
+    // A truncated container no longer matches its recorded size.
+    rhi::ShaderDescription truncated = vertexDescription;
+    truncated.Dxil = truncated.Dxil.first(truncated.Dxil.size() - 1);
+    rhi::ShaderHandle rejected;
+    CHECK(rhi::CreateShader(truncated, rejected) == rhi::ResourceStatus::InvalidDescription);
+    rhi::ShaderHandle vertex;
+    CHECK(rhi::CreateShader(vertexDescription, vertex) == rhi::ResourceStatus::Ready);
+}
+
+TEST_CASE("Direct3D 12 draws the fullscreen pipeline across resizes, frame slots and restarts", "[rhi][windows][gpu]")
+{
+    Guard guard;
+    constexpr uint32 WIDE_WIDTH = 96;
+    constexpr uint32 WIDE_HEIGHT = 64;
+    constexpr usize FRAMES = 40;
+    constexpr usize SIZED_FRAMES = 4;
+    constexpr usize CHECKED_FRAMES = 8;
+    for (usize session = 0; session < 2; ++session)
+    {
+        rhi::Shutdown();
+        REQUIRE(rhi::Start({},
+                           { .Width = WIDE_WIDTH, .Height = WIDE_HEIGHT },
+                           rhi::BackendSelection::Auto,
+                           {
+                               .MinFrameDimension2D = WIDE_WIDTH,
+                               .MinUniformBufferSize = DIAGNOSTIC_UNIFORM_BYTES,
+                           }) == rhi::StartStatus::Ready);
+        rhi::ShaderHandle vertex;
+        rhi::ShaderHandle fragment;
+        rhi::UniformHandle uniform;
+        rhi::PipelineHandle pipeline;
+        REQUIRE(rhi::CreateShader(ludus::shaders::diagnostic::Vertex(), vertex) == rhi::ResourceStatus::Ready);
+        REQUIRE(rhi::CreateShader(ludus::shaders::diagnostic::Fragment(), fragment) == rhi::ResourceStatus::Ready);
+        // The second session uses the largest uniform the facade admits.
+        const usize uniformBytes = session == 0 ? DIAGNOSTIC_UNIFORM_BYTES : UNIFORM_CAPACITY;
+        REQUIRE(rhi::CreateUniform(uniformBytes, uniform) == rhi::ResourceStatus::Ready);
+        REQUIRE(rhi::CreatePipeline({vertex, fragment, uniform}, pipeline) == rhi::ResourceStatus::Ready);
+        // Shaders may be destroyed once the pipeline owns its compiled state.
+        REQUIRE(rhi::Destroy(vertex) == rhi::ResourceStatus::Ready);
+        static uint8 payload[UNIFORM_CAPACITY]{};
+        static uint8 pixels[WIDE_WIDTH * WIDE_HEIGHT * BYTES_PER_PIXEL]{};
+        for (usize frame = 0; frame < FRAMES; ++frame)
+        {
+            const uint32 width = frame < SIZED_FRAMES ? WIDE_WIDTH : WIDE_HEIGHT;
+            const uint32 height = frame < SIZED_FRAMES ? WIDE_HEIGHT : WIDE_WIDTH;
+            const float32 elapsed = frame % 2 == 0 ? 0.0F : 2.0F;
+            WriteDiagnosticUniform(width, height, elapsed, payload);
+            REQUIRE(rhi::UpdateUniform(uniform, {payload, uniformBytes}) == rhi::ResourceStatus::Ready);
+            REQUIRE(rhi::SetFrameTarget({ .Width = width, .Height = height }) == rhi::FrameStatus::Ready);
+            REQUIRE(rhi::BeginFrameStatus() == rhi::FrameStatus::Ready);
+            REQUIRE(rhi::DrawFullscreen(pipeline) == rhi::ResourceStatus::Ready);
+            CHECK(rhi::DrawFullscreen(pipeline) != rhi::ResourceStatus::Ready);
+            REQUIRE(rhi::EndFrameStatus() == rhi::FrameStatus::Ready);
+            // A burst without readback alternates both frame slots and their uniform
+            // buffers; the final frame of the burst is checked afterwards.
+            if (frame >= CHECKED_FRAMES && frame != FRAMES - 1)
+            {
+                continue;
+            }
+            const std::span<uint8> image{pixels, static_cast<usize>(width) * height * BYTES_PER_PIXEL};
+            REQUIRE(rhi::backend::ReadHeadlessPixels(image) == true);
+            INFO("session=" << session << " frame=" << frame);
+            REQUIRE(CountDiagnosticErrors(image, width, height, elapsed) == 0);
+        }
+        REQUIRE(rhi::Destroy(pipeline) == rhi::ResourceStatus::Ready);
+        REQUIRE(rhi::Destroy(uniform) == rhi::ResourceStatus::Ready);
+        // Abort a recorded draw before submission; the restart must not retain it.
+        rhi::UniformHandle replacement;
+        rhi::PipelineHandle restarted;
+        rhi::ShaderHandle vertexAgain;
+        REQUIRE(rhi::CreateShader(ludus::shaders::diagnostic::Vertex(), vertexAgain) == rhi::ResourceStatus::Ready);
+        REQUIRE(rhi::CreateUniform(DIAGNOSTIC_UNIFORM_BYTES, replacement) == rhi::ResourceStatus::Ready);
+        REQUIRE(rhi::CreatePipeline({vertexAgain, fragment, replacement}, restarted) == rhi::ResourceStatus::Ready);
+        const uint8 zeros[DIAGNOSTIC_UNIFORM_BYTES]{};
+        REQUIRE(rhi::UpdateUniform(replacement, zeros) == rhi::ResourceStatus::Ready);
+        REQUIRE(rhi::SetFrameTarget({ .Width = WIDE_HEIGHT, .Height = WIDE_WIDTH }) == rhi::FrameStatus::Ready);
+        REQUIRE(rhi::BeginFrameStatus() == rhi::FrameStatus::Ready);
+        REQUIRE(rhi::DrawFullscreen(restarted) == rhi::ResourceStatus::Ready);
+        rhi::Shutdown();
+        CHECK(rhi::GetStatus(restarted) == rhi::ResourceStatus::InvalidHandle);
+        CHECK(rhi::GetStatus(replacement) == rhi::ResourceStatus::InvalidHandle);
+    }
+}
+
+TEST_CASE("Direct3D 12 draws the fullscreen pipeline into a Win32 swap chain", "[rhi][windows][gpu]")
+{
+    Guard guard;
+    UniquePtr<ludus::platform::Window> window = OpenWindow(160, 120);
+    const ludus::platform::NativeWindowInfo info = window->GetNativeWindowInfo();
+    REQUIRE(rhi::Start({}, info) == rhi::StartStatus::Ready);
+    rhi::ShaderHandle vertex;
+    rhi::ShaderHandle fragment;
+    rhi::UniformHandle uniform;
+    rhi::PipelineHandle pipeline;
+    REQUIRE(rhi::CreateShader(ludus::shaders::diagnostic::Vertex(), vertex) == rhi::ResourceStatus::Ready);
+    REQUIRE(rhi::CreateShader(ludus::shaders::diagnostic::Fragment(), fragment) == rhi::ResourceStatus::Ready);
+    REQUIRE(rhi::CreateUniform(DIAGNOSTIC_UNIFORM_BYTES, uniform) == rhi::ResourceStatus::Ready);
+    REQUIRE(rhi::CreatePipeline({vertex, fragment, uniform}, pipeline) == rhi::ResourceStatus::Ready);
+    uint8 payload[DIAGNOSTIC_UNIFORM_BYTES]{};
+    for (uint32 frame = 0; frame < 4; ++frame)
+    {
+        REQUIRE(window->HandleEvent({}) == true);
+        const ludus::platform::NativeWindowInfo current = window->GetNativeWindowInfo();
+        WriteDiagnosticUniform(current.Width, current.Height, static_cast<float32>(frame), payload);
+        REQUIRE(rhi::UpdateUniform(uniform, payload) == rhi::ResourceStatus::Ready);
+        REQUIRE(rhi::SetFrameTarget({ .Width = current.Width, .Height = current.Height }) == rhi::FrameStatus::Ready);
+        REQUIRE(rhi::BeginFrameStatus() == rhi::FrameStatus::Ready);
+        REQUIRE(rhi::DrawFullscreen(pipeline) == rhi::ResourceStatus::Ready);
+        REQUIRE(rhi::EndFrameStatus() == rhi::FrameStatus::Ready);
+    }
+    // In-flight presented frames still reference the pipeline; destruction drains them.
+    REQUIRE(rhi::Destroy(pipeline) == rhi::ResourceStatus::Ready);
+    REQUIRE(rhi::Destroy(uniform) == rhi::ResourceStatus::Ready);
+    // Release the swap chain before its window.
+    rhi::Shutdown();
+}
+#endif

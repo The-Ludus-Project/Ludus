@@ -1,4 +1,5 @@
 #include "internal/backend.h"
+#include "internal/dxil_container.h"
 #include <ludus/foundation/base/checked_integer.hpp>
 #include <ludus/foundation/base/compiler.h>
 
@@ -1469,17 +1470,18 @@ CreateRasterShader(DeviceHandle device, const RasterShaderDescription& descripti
             }
         }
     }
-    const auto entry = backendKind == Backend::Metal    ? artifact.MslEntry
-                       : backendKind == Backend::WebGPU ? artifact.WgslEntry
-                       : backendKind == Backend::WebGL2 ? artifact.GlslEsEntry
-                                                        : artifact.SpirvEntry;
+    const auto entry = backendKind == Backend::Metal        ? artifact.MslEntry
+                       : backendKind == Backend::WebGPU     ? artifact.WgslEntry
+                       : backendKind == Backend::WebGL2     ? artifact.GlslEsEntry
+                       : backendKind == Backend::Direct3D12 ? artifact.DxilEntry
+                                                            : artifact.SpirvEntry;
     char name[64]{};
-    // ShaderDescription has no DXIL artifact yet; the Direct3D 12 bring-up accepts no shaders.
-    if (backendKind == Backend::Direct3D12 || entry.empty() || CopyName(entry, name) == false ||
-        (backendKind == Backend::Metal    ? artifact.Msl.empty()
-         : backendKind == Backend::WebGPU ? artifact.Wgsl.empty()
-         : backendKind == Backend::WebGL2 ? artifact.GlslEs.empty()
-                                          : artifact.Spirv.size() < 5 || artifact.Spirv[0] != 0x07230203U))
+    if (entry.empty() || CopyName(entry, name) == false ||
+        (backendKind == Backend::Metal        ? artifact.Msl.empty()
+         : backendKind == Backend::WebGPU     ? artifact.Wgsl.empty()
+         : backendKind == Backend::WebGL2     ? artifact.GlslEs.empty()
+         : backendKind == Backend::Direct3D12 ? internal::IsDxilContainer(artifact.Dxil) == false
+                                              : artifact.Spirv.size() < 5 || artifact.Spirv[0] != 0x07230203U))
     {
         return RasterStatus::InvalidDescription;
     }

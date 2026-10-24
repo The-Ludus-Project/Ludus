@@ -128,21 +128,26 @@ def glsl_es_contract(code):
         raise RuntimeError('Emitted GLSL ES exceeds the single-block fullscreen contract')
 
 
-def metal_uniform_size(path):
+def constant_buffer_uniform_size(path, api, slot):
+    """Uniform size of a target whose reflection names constant buffer slots directly."""
     parameters = json.loads(path.read_text())["parameters"]
     if not parameters:
         return 0
     if len(parameters) != 1:
-        raise RuntimeError("Metal fullscreen API supports only one uniform resource")
+        raise RuntimeError(f"{api} fullscreen API supports only one uniform resource")
     resource = parameters[0]
     binding = resource["binding"]
     if (binding["kind"] != "constantBuffer" or binding["index"] != 0 or
             binding.get("space", 0) != 0 or resource["type"]["kind"] != "constantBuffer"):
-        raise RuntimeError("Metal fullscreen API requires a constant buffer at buffer 0")
+        raise RuntimeError(f"{api} fullscreen API requires a constant buffer at {slot}")
     size = resource["type"]["elementVarLayout"]["binding"]["size"]
     if not 1 <= size <= 16384:
-        raise RuntimeError("Metal uniform exceeds fullscreen API bounds")
+        raise RuntimeError(f"{api} uniform exceeds fullscreen API bounds")
     return size
+
+
+def metal_uniform_size(path):
+    return constant_buffer_uniform_size(path, "Metal", "buffer 0")
 
 
 def relative_line_directives(code, roots):
@@ -248,6 +253,92 @@ def compile_metal(args, lock):
     target.write_text(header)
 
 
+# DXBC container header: code, 16-byte hash, version, total size and part count.
+DXIL_CONTAINER_HEADER_BYTES = 32
+DXIL_HASH = slice(4, 20)
+DXIL_SIZE_OFFSET = 24
+
+
+def dxil_container(path):
+    """Read a DXC container and require the DXIL validator's signature."""
+    data = path.read_bytes()
+    if len(data) < DXIL_CONTAINER_HEADER_BYTES or data[:4] != b'DXBC':
+        raise RuntimeError(f'{path.name} is not a DXIL container')
+    if struct.unpack_from('<I', data, DXIL_SIZE_OFFSET)[0] != len(data):
+        raise RuntimeError(f'{path.name} container size differs from its file size')
+    digest = data[DXIL_HASH]
+    # Unsigned output carries a zero or a constant "bypass" hash, which retail
+    # Direct3D 12 runtimes reject. dxil.dll must sign every artifact.
+    if len(set(digest)) == 1:
+        raise RuntimeError(f'{path.name} is not signed; dxil.dll must sit beside dxcompiler.dll')
+    return data
+
+
+def depfile_dependencies(path):
+    """Dependencies of a one-target depfile; Windows drive colons are not separators."""
+    parts = re.split(r':\s', path.read_text(), maxsplit=1)
+    if len(parts) != 2:
+        raise RuntimeError(f'{path.name} is not a one-target depfile')
+    return parts[1].strip()
+
+
+def compile_dxil(args, lock):
+    # Thanks to the Slang team, "Supported Compilation Targets" (DXIL through DXC),
+    # User Guide: https://docs.shader-slang.org/en/latest/external/slang/docs/user-guide/09-targets.html
+    # Slang emits HLSL and has the pinned DXC compile and sign it. Reflect this
+    # target independently: register b0, space 0 is the root constant buffer view.
+    if not args.dxc_path:
+        raise RuntimeError('DXIL builds require --dxc-path')
+    pin = lock['dxc']
+    for library, key in (('dxcompiler.dll', 'dxcompiler_sha256'), ('dxil.dll', 'dxil_sha256')):
+        if hashlib.sha256((Path(args.dxc_path) / library).read_bytes()).hexdigest() != pin[key]:
+            raise RuntimeError(f'{library} differs from SDK pin')
+    output = Path(args.output)
+    output.mkdir(parents=True, exist_ok=True)
+    extra = [part for path in args.include for part in ('-I', path)] + ['-D' + value for value in args.define]
+    commands, dependencies, entries, sizes, containers = [], [], {}, {}, {}
+    for stage, source_entry in (('vertex', args.vertex), ('fragment', args.fragment)):
+        artifact = output / f'{args.name}.{stage}.dxil'
+        reflection = output / f'{stage}.reflection.json'
+        depfile = output / f'{stage}.d'
+        command = [args.compiler, args.source, '-target', 'dxil', '-profile', 'sm_6_0',
+                   '-entry', source_entry, '-stage', stage, '-D', 'LUDUS_DXIL=1', '-o', str(artifact),
+                   '-reflection-json', str(reflection), '-depfile', str(depfile),
+                   '-dxc-path', args.dxc_path, *extra]
+        commands.append(command)
+        if '52001' in run(command):
+            raise RuntimeError('Slang could not load dxil.dll to sign the DXIL output')
+        dependencies.append(depfile_dependencies(depfile))
+        reflected = json.loads(reflection.read_text())['entryPoints']
+        if len(reflected) != 1 or reflected[0]['stage'] != stage or reflected[0]['name'] != source_entry:
+            raise RuntimeError('Expected one DXIL entry with the requested stage')
+        sizes[stage] = constant_buffer_uniform_size(reflection, 'DXIL', 'register b0, space 0')
+        entries[stage] = source_entry
+        containers[stage] = dxil_container(artifact)
+    header = '#pragma once\n#include <ludus/foundation/base/types.h>\n#include <ludus/graphics/rhi/render.h>\n'
+    header += f'namespace ludus::shaders::{args.name} {{\n'
+    for stage in ('vertex', 'fragment'):
+        data = containers[stage]
+        header += f'alignas(4) inline constexpr foundation::uint8 {stage.upper()}_DXIL[] = {{\n'
+        header += ',\n'.join('    ' + ', '.join(f'0x{x:02x}U' for x in data[i:i + 16]) for i in range(0, len(data), 16))
+        header += '\n};\n'
+        header += f'inline graphics::rhi::ShaderDescription {stage.title()}() noexcept {{\n'
+        header += f' graphics::rhi::ShaderDescription result; result.Stage = graphics::rhi::ShaderStage::{stage.title()};\n'
+        header += f' result.UniformSize = {sizes[stage]}; result.Dxil = {stage.upper()}_DXIL; result.DxilEntry = "{entries[stage]}";\n return result;\n}}\n'
+    header += '}\n'
+    manifest = {'compiler': lock['slang'], 'dxc': {'version': pin['version'], 'sha256': pin['sha256']},
+                'commands': commands, 'uniform_sizes': sizes, 'dxil_entries': entries, 'profiles': {'dxil': 'sm_6_0'},
+                'sha256': {f'{args.name}.{stage}.dxil': hashlib.sha256(containers[stage]).hexdigest()
+                           for stage in ('vertex', 'fragment')},
+                'layout': 'See separate DXIL reflection JSON; never assume packing equality.'}
+    (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+    target = output / f'{args.name}.h'
+    escaped_target = str(target).replace(' ', '\\ ').replace('#', '\\#')
+    (output / 'shader.d').write_text(escaped_target + ': ' + ' '.join(dependencies) + '\n')
+    # Header last: compilation/reflection failures cannot complete the command.
+    target.write_text(header)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for key in ('source', 'output', 'name', 'compiler', 'lock'):
@@ -259,6 +350,9 @@ def main():
     parser.add_argument('--worker-socket')
     parser.add_argument('--worker-identity')
     parser.add_argument('--metal', action='store_true')
+    # Windows hosts: compile and sign DXIL with the pinned DXC libraries in this directory.
+    parser.add_argument('--dxil', action='store_true')
+    parser.add_argument('--dxc-path')
     parser.add_argument('--raster', action='store_true')
     parser.add_argument('--fragment-storage', action='store_true')
     parser.add_argument('--native-ray-queries', action='store_true')
@@ -300,6 +394,12 @@ def main():
         raise RuntimeError("Compute is mutually exclusive with raster/fullscreen stages")
     if not args.compute and (not args.vertex or not args.fragment):
         raise RuntimeError("Raster/fullscreen compilation requires vertex and fragment entries")
+    if args.dxil:
+        if (args.raster or args.compute or args.metal or args.spirv_cross or args.validator or args.worker_socket or
+                args.native_binding_arrays or args.fragment_storage):
+            raise RuntimeError('DXIL builds support only fullscreen vertex/fragment stages')
+        compile_dxil(args, lock)
+        return
     if args.raster or args.compute:
         from compile_raster import compile_raster
         compile_raster(args, lock)
