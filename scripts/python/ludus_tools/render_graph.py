@@ -27,6 +27,7 @@ from . import render_graph_pipeline as pipeline
 from . import render_graph_buffers as buffers
 from . import render_graph_scene as scene_bundle
 from . import render_graph_ray as ray
+from . import render_graph_compute as compute
 from . import render_graph_upscale as upscale
 from . import render_graph_quality as quality
 from . import render_graph_sizes as sizes
@@ -466,10 +467,13 @@ def _lower_pipeline(node, where):
                  'ComputePipeline is missing its compute shader. Add that stage in Shaders and assign a build-manifest program ID.',
                  field='shaders', expected='compute shader', actual='no compute stage',
                  repair='Add a compute stage in Shaders and assign a build-manifest program ID.')
-        _fail('Capability', where, 'ComputePipeline execution is not supported by the current graph build profile. '
-              'Keep it as a saved draft, or use a GraphicsPipeline with supported vertex/fragment programs for preview.',
-              expected='supported graphics or triangle ray profile', actual='ComputePipeline',
-              repair='Use a supported pipeline for preview, or keep this compute pipeline as an unused draft.')
+        if pipeline.is_scene_compute(node):
+            return compute.lower(node, where, sys.modules[__name__])
+        _fail('Capability', where, 'ComputePipeline execution without a Scene input is not supported by the current graph build profile. '
+              'Add a Scene input for a scene compute pass, keep it as a saved draft, or use a GraphicsPipeline '
+              'with supported vertex/fragment programs for preview.',
+              expected='scene compute, supported graphics or triangle ray profile', actual='ComputePipeline without Scene input',
+              repair='Add a Scene input for a scene compute pass, or keep this compute pipeline as an unused draft.')
     return (ray.lower(node, where, sys.modules[__name__]) if node['kind'] == 'RayTracingPipeline'
             else pipeline.lower_graphics(node, where, sys.modules[__name__]))
 
@@ -854,11 +858,13 @@ class _Compiler:
                 outputs["view"] = _Value("View", origin=where, cameras=(where,) if node["active"] else ())
             elif kind == "RayTracing":
                 target = self.resources[inputs['color'].resource]
-                _require(inputs['view'].cameras, 'CameraTarget', where, 'ray pipeline requires an active camera',
+                is_compute = authored_pipeline['kind'] == compute.SOURCE_KIND
+                label = 'scene compute pass' if is_compute else 'ray pipeline'
+                _require(inputs['view'].cameras, 'CameraTarget', where, f'{label} requires an active camera',
                          port=input_mapping['view'], direction='input', expected='active camera View', actual='inactive camera View',
                          repair='Enable Active on the connected camera and give it a route to Export or Present.')
                 _require(target['format'] == 'RGBA8Unorm' and target['samples'] == 1 and not target['presentation'],
-                         'Capability', where, 'ray pipeline requires an offscreen single-sample RGBA8Unorm target',
+                         'Capability', where, f'{label} requires an offscreen single-sample RGBA8Unorm target',
                          port=input_mapping['color'], direction='input', expected='offscreen RGBA8Unorm, samples=1',
                          actual=f"{target['format']}, samples={target['samples']}, presentation={target['presentation']}",
                          repair='Connect an offscreen single-sample RGBA8Unorm color target.')
@@ -868,7 +874,7 @@ class _Compiler:
                          'AttachmentMismatch', where,
                          (f"Color target '{inputs['color'].resource}' is view-relative; explicit launch dimensions {dimensions} "
                           'cannot follow view changes. Choose Match color target in Invocation.' if target.get('view_scale') else
-                          f"Ray launch dimensions are {dimensions}, but color target '{inputs['color'].resource}' "
+                          f"{'Scene compute' if is_compute else 'Ray'} launch dimensions are {dimensions}, but color target '{inputs['color'].resource}' "
                           f"requires {expected_dimensions}. Choose Match color target in Invocation, or set dimensions to {expected_dimensions}."),
                          field='invocation.dimensions', expected='ColorTarget' if target.get('view_scale') else expected_dimensions,
                          actual=dimensions, repair='Choose Match color target in Invocation → Launch size.')
@@ -881,6 +887,14 @@ class _Compiler:
                                  resource.get('view_scale') == target.get('view_scale') and resource['samples'] == 1,
                                  'AttachmentMismatch', where, 'visibility/depth must be initialized and match the ray extent')
                         visibility_reads[aspect] = {'resource': source_value.resource, 'input_version': source_value.version}
+                structured = [port['id'] for port in authored_pipeline['inputs'] if port['type'] == 'Buffer' and
+                              'stride' in self.resources[inputs['buffer:' + port['id']].resource]]
+                _require(not is_compute or not structured, 'Capability', where,
+                         f"Scene compute input '{structured[0] if structured else ''}' is connected to a StructuredBuffer. "
+                         'Scene compute passes share render-graph Buffer nodes through GraphBuffer0/1; '
+                         'replace the StructuredBuffer with a Buffer node (bytes or bytes_per_pixel).',
+                         port=structured[0] if structured else None, direction='input', expected='Buffer', actual='StructuredBuffer',
+                         repair='Connect a Buffer node instead of a StructuredBuffer.')
                 buffer_uses = []
                 buffer_outputs = {}
                 for slot, port in enumerate(port for port in authored_pipeline['inputs'] if port['type'] == 'Buffer'):
@@ -927,6 +941,9 @@ class _Compiler:
                     'dimensions': expected_dimensions, 'persistent_buffers': buffer_uses, 'buffers': storage, **visibility_reads,
                     'attachments': {'color': {'resource': value.resource, 'input_version': inputs['color'].version,
                         'output_version': value.version, 'defined': value.defined, 'load': 'Clear', 'store': 'Store'}}})
+                if is_compute:
+                    # Only the offline plan names the source; the numeric pass record stays RayTracing (design D1).
+                    self.passes[-1]['source_kind'] = compute.SOURCE_KIND
                 outputs = {output_mapping['color']: value, **buffer_outputs, **storage_outputs}
             elif kind == "Upscale":
                 source = inputs['color']
@@ -967,7 +984,7 @@ class _Compiler:
                 source = inputs['color']
                 producer = next((operation for operation in self.passes if operation['id'] == source.producer), None)
                 _require(producer is not None and producer['kind'] == 'RayTracing', 'Capability', where,
-                         'Accumulate requires a ray color output. Connect a RayTracingPipeline color output; raster and already accumulated images are unsupported.')
+                         'Accumulate requires a ray color output. Connect a RayTracingPipeline or scene compute color output; raster and already accumulated images are unsupported.')
                 _require('accumulation' not in producer, 'MultipleWriters', where,
                          'A ray output can feed only one Accumulate node. Chain consumers after its color output.')
                 value = self.write(source, {'color_load': 'Load', 'color_store': 'Store'}, 'color', where, source.cameras)
@@ -984,7 +1001,7 @@ class _Compiler:
                 if producer is not None and producer['kind'] == 'Accumulate':
                     producer = next(operation for operation in self.passes if operation['id'] == producer['dependencies'][0])
                 _require(producer is not None and producer['kind'] == 'RayTracing', 'Capability', where,
-                         'Denoise requires linear ray color, optionally through Accumulate, before ToneMap. Raster, already denoised and display-encoded inputs are unsupported.')
+                         'Denoise requires linear ray color from a RayTracingPipeline or scene compute pass, optionally through Accumulate, before ToneMap. Raster, already denoised and display-encoded inputs are unsupported.')
                 _require('denoising' not in producer, 'MultipleWriters', where,
                          'A ray output can feed only one Denoise node. Chain consumers after its color output.')
                 value = self.write(source, {'color_load': 'Load', 'color_store': 'Store'}, 'color', where, source.cameras)
@@ -1001,7 +1018,7 @@ class _Compiler:
                 while producer is not None and producer['kind'] in ('Accumulate', 'Denoise'):
                     producer = next(operation for operation in self.passes if operation['id'] == producer['dependencies'][0])
                 _require(producer is not None and producer['kind'] == 'RayTracing', 'Capability', where,
-                         'ToneMap requires a ray color output, optionally through Accumulate. Raster and already tone-mapped images are unsupported.')
+                         'ToneMap requires a ray color output from a RayTracingPipeline or scene compute pass, optionally through Accumulate. Raster and already tone-mapped images are unsupported.')
                 _require('tone_mapping' not in producer, 'MultipleWriters', where,
                          'A ray output can feed only one ToneMap node. Chain consumers after its color output.')
                 value = self.write(source, {'color_load': 'Load', 'color_store': 'Store'}, 'color', where, source.cameras)
@@ -1224,6 +1241,8 @@ def dump_plan(plan):
             lines.append(f"    Reinhard + sRGB; exposure multiplier: {entry['exposure']}")
         if entry['kind'] == 'RayTracing':
             lines.append(f"    launch: {entry['dimensions']}; color target: {entry['attachments']['color']['resource']}")
+            if 'source_kind' in entry:
+                lines.append(f"    source: {entry['source_kind']} (scene compute kernel in the ray sequence)")
         for name, use in entry.get('buffers', {}).items():
             lines.append(f"    {name}: {use['resource']}@{use['input_version']} -> @{use['output_version']} ({use['access']})")
         for aspect, attachment in entry.get("attachments", {}).items():

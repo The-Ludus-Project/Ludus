@@ -1,0 +1,224 @@
+{
+  "configurations": [
+    {
+      "edges": [
+        {
+          "from": "color.texture",
+          "to": "camera.target"
+        },
+        {
+          "from": "scene.scene",
+          "to": "primary.scene"
+        },
+        {
+          "from": "camera.view",
+          "to": "primary.view"
+        },
+        {
+          "from": "color.texture",
+          "to": "primary.color"
+        },
+        {
+          "from": "hits.buffer",
+          "to": "primary.hits"
+        },
+        {
+          "from": "scene.scene",
+          "to": "shade.scene"
+        },
+        {
+          "from": "camera.view",
+          "to": "shade.view"
+        },
+        {
+          "from": "primary.color",
+          "to": "shade.color"
+        },
+        {
+          "from": "primary.hits",
+          "to": "shade.hits"
+        },
+        {
+          "from": "shade.color",
+          "to": "tonemap.color"
+        },
+        {
+          "from": "tonemap.color",
+          "to": "output.texture"
+        }
+      ],
+      "id": "Default",
+      "inputs": [],
+      "nodes": [
+        {
+          "id": "scene",
+          "kind": "Scene"
+        },
+        {
+          "active": true,
+          "id": "camera",
+          "kind": "Camera",
+          "role": "Offscreen",
+          "target_type": "ColorTexture"
+        },
+        {
+          "extent": [
+            96,
+            64
+          ],
+          "format": "RGBA8Unorm",
+          "id": "color",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "id": "output",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "hits",
+          "kind": "Buffer",
+          "bytes": 196608
+        },
+        {
+          "id": "primary",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "hits",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "hits",
+              "type": "Buffer",
+              "target": "hits",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "Primary"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget"
+          }
+        },
+        {
+          "id": "shade",
+          "kind": "RayTracingPipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            },
+            {
+              "id": "hits",
+              "type": "Buffer",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            },
+            {
+              "id": "hits",
+              "type": "Buffer",
+              "target": "hits",
+              "format": "Bytes",
+              "load": "Load",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "ray_generation",
+              "stage": "ray_generation",
+              "program": "Shade"
+            },
+            {
+              "id": "miss",
+              "stage": "miss",
+              "program": "Miss"
+            },
+            {
+              "id": "closest_hit",
+              "stage": "closest_hit",
+              "program": "Closest"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": [
+              96,
+              64,
+              1
+            ]
+          }
+        },
+        {
+          "id": "tonemap",
+          "kind": "ToneMap",
+          "exposure": 1
+        }
+      ],
+      "outputs": []
+    }
+  ],
+  "default": "Default",
+  "id": "Main",
+  "version": 2
+}

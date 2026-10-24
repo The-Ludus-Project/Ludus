@@ -142,6 +142,16 @@ so it reaches `default:` and latches `HasFailed` (C03).
   members keep that kind. Plan summary text and diagnostics name the source
   node kind.
 
+**Implemented (C1).** Two choices refine this section:
+
+- The `[64, 1, 1]` group-size rule is enforced at lowering, not during document
+  validation. A saved scene compute draft with another size still loads, and the
+  build reports a `Capability` diagnostic whose repair clears the field.
+- In the manifest, the ray technique's `ray_generation`, `miss` and `closest_hit`
+  defaults are optional as a group. A package whose ray passes are all
+  node-owned, such as a graph with only scene compute passes, omits all three.
+  `scene_interface` stays required for compute members.
+
 ### D4 Random decorrelation between passes (decided in C0: explicit dimension offsets)
 
 Every pass is seeded from `SourceGeneration`, and `RayQueryContext` starts at

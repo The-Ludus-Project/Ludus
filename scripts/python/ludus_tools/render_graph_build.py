@@ -26,6 +26,7 @@ from .errors import ToolingError
 from . import render_graph as graph
 from . import render_graph_diagnostics as diagnostics
 from . import render_graph_ray as ray
+from . import render_graph_compute as compute
 from . import render_graph_forward as forward
 from . import render_graph_buffers as buffers
 
@@ -235,7 +236,11 @@ def validate_manifest(value):
         require(program['source'] != 'wrapper.slang', 'Source', program['id'], 'wrapper.slang is reserved')
         require(program['function'] != 'rgEntry', 'Schema', program['id'], 'rgEntry is generated')
         require(program['id'] not in programs, 'Schema', program['id'], 'duplicate program identity')
-        enum(program['stage'], ('vertex', 'fragment', *ray.STAGES), 'stage')
+        enum(program['stage'], ('vertex', 'fragment', *ray.STAGES, ray.COMPUTE_STAGE), 'stage')
+        if program['stage'] == ray.COMPUTE_STAGE:
+            compute.validate_program(program, sys.modules[__name__])
+            programs[program['id']] = program
+            continue
         if program['stage'] in ray.STAGES:
             ray.validate_program(program, sys.modules[__name__])
             buffers.validate_bindings(program, schemas, sys.modules[__name__])
@@ -265,7 +270,12 @@ def validate_manifest(value):
     bounded_list(value['techniques'], 8, 'techniques')
     for technique in value['techniques']:
         if technique.get('id') == ray.TECHNIQUE:
-            keys(technique, ('id', 'configuration', *ray.STAGES, 'recipes'), 'ray technique', ('scene_interface',))
+            # Default callbacks are optional as a group: a package whose ray sequences are all
+            # node-owned (for example only scene compute passes) need not name unused programs.
+            keys(technique, ('id', 'configuration', 'recipes'), 'ray technique', (*ray.STAGES, 'scene_interface'))
+            declared_stages = [stage for stage in ray.STAGES if stage in technique]
+            require(len(declared_stages) in (0, len(ray.STAGES)), 'Schema', ray.TECHNIQUE,
+                    'declare all three default ray callbacks, or omit all of them for node-owned ray sequences')
             scene_interface = technique.get('scene_interface')
             if scene_interface is not None:
                 keys(scene_interface, ('version', 'surface_queries', 'visibility_queries'), 'scene interface', ('payload', 'local_payload_bytes', 'visibility_buffer'))
@@ -290,11 +300,12 @@ def validate_manifest(value):
             require(technique['configuration'] == 'RayTracing' and recipe['id'] == 'Triangles' and
                     all(type(value) is int for value in overrides.values()) and ray.resolve_state(overrides) == ray.STATE,
                     'Capability', ray.TECHNIQUE, 'use automatic triangle ray state or matching explicit profile limits')
-            for stage in ray.STAGES:
+            for stage in declared_stages:
                 require(technique[stage] in programs and programs[technique[stage]]['stage'] == stage,
                         'ShaderInterface', ray.TECHNIQUE, 'unknown or wrong ray stage program')
             is_scene = scene_interface is not None
-            require(is_scene or tuple(programs[technique[stage]]['output'] for stage in ray.STAGES) == ('Ray', 'Color', 'Color'),
+            require(is_scene or (declared_stages and
+                                 tuple(programs[technique[stage]]['output'] for stage in ray.STAGES) == ('Ray', 'Color', 'Color')),
                     'ShaderInterface', ray.TECHNIQUE, 'callback signatures must match the selected scene/legacy profile')
             require(ray.TECHNIQUE not in techniques and any(target in ('metal', 'spirv') for target in value['profiles']),
                     'Capability', ray.TECHNIQUE,
@@ -510,6 +521,7 @@ def tool_identity(helper, compiler, validator, cross, *, worker_socket=None, has
     paths['generator/render_graph_upscale.py'] = Path(graph.upscale.__file__)
     paths['generator/render_graph_sizes.py'] = Path(graph.sizes.__file__)
     paths['generator/render_graph_ray.py'] = Path(ray.__file__)
+    paths['generator/render_graph_compute.py'] = Path(compute.__file__)
     paths['generator/render_graph_forward.py'] = Path(forward.__file__)
     paths['tool/slangc'] = Path(compiler).resolve()
     if validator:
@@ -874,6 +886,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                 continue
             node = operation['pipeline']
             technique = techniques[operation['technique']]
+            if node['kind'] == 'ComputePipeline':
+                continue  # A scene compute kernel selects no recipe; lowering admitted its fixed state.
             assigned = {shader['stage']: shader['program'] for shader in node['shaders']}
             stage_names = ray.STAGES if node['kind'] == 'RayTracingPipeline' else ('vertex', 'fragment')
             require(node['kind'] == 'RayTracingPipeline' or assigned == {stage: technique[stage] for stage in stage_names},
@@ -886,11 +900,18 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                        for operation in plan['passes'] if operation['kind'] == 'RayTracing'})
     require(len(variants) <= ray.MAX_RAY_PASSES, 'Capacity', 'ray programs', 'at most four distinct ray callback sets')
     for variant in variants:
+        if ray.is_compute_variant(variant):
+            require(variant[0] in programs and programs[variant[0]]['stage'] == ray.COMPUTE_STAGE, 'ShaderInterface', variant[0],
+                    'unknown scene compute program, or a program whose manifest stage is not compute')
+            require('scene_interface' in techniques.get(ray.TECHNIQUE, {}), 'Configuration', variant[0],
+                    f'scene compute passes require scene_interface in the {ray.TECHNIQUE} technique')
+            continue
         for stage, program_identity in zip(ray.STAGES, variant):
             require(program_identity in programs and programs[program_identity]['stage'] == stage, 'ShaderInterface', program_identity,
                     'unknown or wrong node-owned ray stage program')
     selected_programs = {technique[stage] for technique in techniques.values()
-                         for stage in (ray.STAGES if technique['id'] == ray.TECHNIQUE else ('vertex', 'fragment'))}
+                         for stage in (ray.STAGES if technique['id'] == ray.TECHNIQUE else ('vertex', 'fragment'))
+                         if stage in technique}
     selected_programs.update(identity for variant in variants for identity in variant)
     programs = {identity: program for identity, program in programs.items() if identity in selected_programs}
     if ray.TECHNIQUE in techniques:
@@ -948,7 +969,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                                 'schemas': [schemas[s] for s in sorted(used) if s in schemas], 'target': target,
                                 'sources': {p: digest(snapshot.files[p]) for p in closure}, 'wrapper': shader_source(program, schemas),
                                 'tools': {k: h for k, h in tool_hashes.items()
-                                          if k not in ('generator/render_graph.py', 'generator/render_graph_pipeline.py', 'generator/render_graph_diagnostics.py', 'generator/render_graph_upscale.py', 'generator/render_graph_sizes.py')
+                                          if k not in ('generator/render_graph.py', 'generator/render_graph_pipeline.py', 'generator/render_graph_compute.py', 'generator/render_graph_diagnostics.py', 'generator/render_graph_upscale.py', 'generator/render_graph_sizes.py')
                                           and not (target in ('metal', 'wgsl') and k == 'tool/spirv-val')
                                           and not (target != 'glsl' and not program.get('native_ray_queries') and ('spirv-cross' in k or k.endswith('spirv_cross_toolchain.json')))}}
                     key = identity(key_data)

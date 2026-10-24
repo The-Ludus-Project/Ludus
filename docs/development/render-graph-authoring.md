@@ -178,8 +178,8 @@ The version-2 node fields are:
 | `inputs` | Up to eight `{id, type, required}` records; stable port IDs and explicit connection requirements |
 | `outputs` | Up to eight `{id, type, target, format, load, store}` records; `target` names a same-type input carrying the previous resource version |
 | `shaders` | Up to sixteen `{id, stage, program}` records; `program` references an explicitly declared build-manifest program, not a guessed source filename |
-| `state` | Graphics topology/cull/front/depth comparison/depth writes/blending/samples; compute `group_size`; ray tracing recursion/payload/attribute bounds |
-| `invocation` | Graphics mode, vertex layout, material family and Scene/View input names; compute dispatch `dimensions`; ray launch `dimensions` as `"ColorTarget"` or explicit `[width, height, 1]` |
+| `state` | Graphics topology/cull/front/depth comparison/depth writes/blending/samples; compute `group_size` (scene compute passes use `{}`); ray tracing recursion/payload/attribute bounds |
+| `invocation` | Graphics mode, vertex layout, material family and Scene/View input names; compute dispatch `dimensions`; scene compute and ray launch `dimensions` as `"ColorTarget"` or explicit `[width, height, 1]` |
 
 Input types include Scene, View, ColorTexture, DepthTexture, Buffer,
 AccelerationStructure, Float32, Float2, Float3, Float4 and UInt32. Outputs are
@@ -195,9 +195,11 @@ its exact vertex/fragment assignments and complete state against the authored
 technique/recipe; settings are never silently ignored. Each admitted output's
 format/sample count must match its connected target. Additional resources,
 optional geometry/tessellation stages and unsupported state produce an explicit
-capability error. Compute settings can be authored and saved, but compute-node execution remains
-outside this graph profile. Triangle ray pipelines execute through the
-[authored ray profile](#execute-a-triangle-ray-pipeline) below. Device capabilities
+capability error. Triangle ray pipelines execute through the
+[authored ray profile](#execute-a-triangle-ray-pipeline) below. A Compute Pipeline
+with a Scene input executes as a [scene compute pass](#author-scene-compute-passes)
+in the same profile. Other compute settings can be authored and saved, but those
+nodes remain outside this graph profile and report a capability error. Device capabilities
 and the complete authored interface are checked before activation. Missing required shader assignments
 produce IncompletePipeline; an invalid/pending candidate leaves the current
 viewport generation intact. Blending/rasterization remain fields inside the
@@ -840,6 +842,122 @@ exercise independent callbacks, inter-pass writes and cross-frame accumulation o
 buffer values. They establish the storage/ordering seam for an authored ReSTIR
 implementation; reservoir sampling, temporal reprojection and disocclusion logic
 remain shader policy.
+
+### Author scene compute passes
+
+A **ComputePipeline** with a **Scene** input is a *scene compute pass*: one authored
+function that runs once per pixel, traces the selected World's static opaque
+triangles with native ray queries, and returns linear radiance. It has no hit or
+miss callbacks. It joins the [ordered ray sequence](#order-ray-passes-and-share-persistent-buffers)
+as a member like a Ray Tracing Pipeline node, so it uses the same hardware profile,
+the same renderer selection and the same post-processing. A package that contains
+one is a ray package: `SelectRenderGraphRenderer`, `StageSelected` and the
+viewport's automatic and **Force raster** choices fall back to the authored raster
+graph without native rays. There is no software traversal. A ComputePipeline
+without a Scene input is still a draft and returns the `Capability` diagnostic.
+
+The node accepts the same ports as a Ray Tracing Pipeline node:
+
+- exactly one Scene input and one View input;
+- exactly one writable RGBA8Unorm ColorTexture with **Clear**/**Store**;
+- up to two writable **Buffer** resources with **Load**/**Store**, bound as `GraphBuffer0/1`;
+- optionally the read-only visibility color and depth input pair.
+
+`StructuredBuffer` inputs are rejected: connect a `Buffer` node instead. Set
+`invocation.dimensions` to `"ColorTarget"`, or to the exact `[width, height, 1]` of
+a fixed color target. Use `"state": {}`. The kernel always runs in the ray
+wrapper's 64×1×1 workgroup. An authored `group_size` other than `[64, 1, 1]` is
+rejected, and the repair is to clear it.
+
+```json
+{
+  "id": "info", "kind": "ComputePipeline",
+  "inputs": [{"id": "scene", "type": "Scene", "required": true},
+             {"id": "view", "type": "View", "required": true},
+             {"id": "color", "type": "ColorTexture", "required": true}],
+  "outputs": [{"id": "color", "type": "ColorTexture", "target": "color",
+               "format": "RGBA8Unorm", "load": "Clear", "store": "Store"}],
+  "shaders": [{"id": "compute", "stage": "compute", "program": "SceneInfo"}],
+  "state": {}, "invocation": {"dimensions": "ColorTarget"}
+}
+```
+
+Register the kernel in the build manifest with `"stage": "compute"`,
+`"input": "RayLaunch"`, `"output": "Radiance"` and an empty `bindings` array. The
+generated wrapper supplies the scene resources and slots. The `RendererTriangles.RayTracing`
+technique must declare `scene_interface`, which sets the query budgets and payload for
+every member of the sequence. Its default `ray_generation`, `miss` and
+`closest_hit` programs are optional as a group. Omit all three when every ray pass
+is owned by a node, as in a graph that has only scene compute passes.
+
+```json
+{"id": "SceneInfo", "stage": "compute", "source": "main_shaders/scene_info.slang",
+ "function": "ShadeSceneInfo", "input": "RayLaunch", "output": "Radiance", "bindings": []}
+```
+
+The function has the ray-generation signature and the whole
+[scene shader API](#read-surfaces-sample-sources-and-trace-visibility):
+
+```slang
+float3 ShadeSceneInfo(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
+{
+    SurfaceHit hit;
+    uint status = TraceClosest(scene, queries, launch.CameraRay, hit);
+    return float3(status == SCENE_QUERY_SURFACE ? 1 : 0, 0, float(GetSceneInfo(scene).TriangleCount));
+}
+```
+
+The return value is handled like a ray-generation result. Accumulate, Denoise
+and ToneMap accept the pass as their producer under the same rules as a ray pass. Nonfinite or
+negative radiance, an exhausted query budget and a latched failure show the
+magenta error color. A pass whose color is only an intermediate returns
+`float3(0)`, and a later pass that Clears/Stores the color replaces it.
+`TraceAndShade` stays declared so shared helper headers compile. A compute pass
+has no hit or miss callback, so a call to it latches `queries.HasFailed` and the
+pixel shows the error color. Use `TraceClosest`, `TestVisibility` and the
+material and light helpers directly.
+
+Scene compute and ray passes can be mixed in one sequence. The limits do not
+change: at most four consecutive passes per configuration, and the existing
+hazard tracking for color and Buffer versions. Every sequence that contains a scene compute pass compiles
+to the persistent ray wrapper, even a single pass, because only that wrapper
+declares `GraphBuffer0/1` and `GetGraphPassIndex()`. The cooked plan and runtime
+package formats do not change: a scene compute pass is an ordinary numeric
+`RayTracing` pass record, so runtimes that read the current package version run it
+unchanged. The readable plan summary names the source with a
+`source: ComputePipeline` line.
+
+**Random streams in multi-pass sequences.** Every pass of a sequence is seeded
+identically, and each pass's automatic stream starts at dimension zero. Two passes
+that both draw automatic samples (`SampleSceneRandom(queries)`, `SelectLight(scene,
+queries)`) therefore see the same values at each pixel. Decorrelate them with one
+of two patterns:
+
+- **Explicit dimension ranges.** Give each pass a disjoint, documented range and
+  draw with the address overloads `SampleSceneRandom(launch, dimension)` and
+  `SelectLight(scene, launch, dimension)`. For example, a primary pass draws its
+  subpixel jitter from `[0, 2)`, and a shading pass draws its light selection and
+  light sample from `[2, 6)`. These overloads do not advance or reset
+  `RayQueryContext`. Use this pattern when each pass needs a fixed number of draws.
+- **Pass-scoped addresses.** Address draws with `(pixel, GetGraphPassIndex())`, as
+  `SampleReuseRandom` in the ReSTIR DI template's
+  [reservoir.slang](../../modules/graphics/renderer/render_graphs/restir_di/main_shaders/reservoir.slang)
+  does. Use this when a pass's draw count is unbounded or depends on data.
+
+Editor support for scene compute nodes is not available yet. That covers the
+Launch size control, an automatic group size, the scene-aware shader stub and
+registering the program in the manifest. For now, write `state`, `invocation` and
+the manifest program in the source JSON. Properties and the canvas still edit the
+node's ports, shaders and wires.
+
+Two fixtures show complete examples. The
+[scene compute fixture](../../tests/sdk_consumer/rg2/scene_compute/main.lurender.json)
+is a single pass with Accumulate and ToneMap, plus a raster configuration for
+renderer selection; see its [kernel](../../tests/sdk_consumer/rg2/scene_compute/main_shaders/scene_info.slang).
+The [mixed sequence fixture](../../tests/sdk_consumer/rg2/compute_mixed/main.lurender.json)
+has a scene compute primary pass that records per-pixel hits in a Buffer, followed
+by a ray pass that resolves them. `ludus_render_graph_ray_tests` renders both on
+native ray hardware.
 
 <a id="select-emitters-per-screen-tile"></a>
 
