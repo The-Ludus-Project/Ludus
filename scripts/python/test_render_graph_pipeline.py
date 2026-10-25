@@ -223,6 +223,38 @@ class PipelineBuildTests(unittest.TestCase):
         self.assertEqual(6, result['cache_misses'])
         self.assertEqual(migrated, json.loads(path.read_text()))
 
+    def test_exposed_program_choice_uses_explicit_recipe_and_preserves_prior_package_on_rejection(self):
+        path, _, migrated = self.migrate()
+        configuration = migrated['configurations'][0]
+        node = configuration['nodes'][0]
+        declaration = {'id': 'Quality', 'label': 'Quality', 'type': 'Enum',
+                       'target': 'shaders.fragment.program', 'values': ['Color', 'Alternate'], 'default': 'Color'}
+        node['options'] = [declaration]
+        configuration['options'] = [{**declaration, 'target': 'draw.Quality'}]
+        path.write_bytes(graph.canonical_asset(migrated))
+        manifest = self.value()
+        alternate = {**next(program for program in manifest['programs'] if program['id'] == 'Color'), 'id': 'Alternate'}
+        manifest['programs'].append(alternate)
+        technique = next(item for item in manifest['techniques'] if item['id'].endswith('.ColorAndDepth'))
+        manifest['techniques'].append({**copy.deepcopy(technique), 'id': technique['id'] + '.Geometry.Alternate', 'fragment': 'Alternate'})
+        self.manifest.write_text(json.dumps(manifest))
+        root = json.loads(self.graph.read_text())
+        reference = next(item for item in root['configurations'][0]['nodes'] if item['kind'] == 'Subgraph')
+        reference['overrides'] = {'Quality': 'Alternate'}
+        self.graph.write_bytes(graph.canonical_asset(root))
+        result = self.run_build()
+        package = build.verify_package(Path(result['package']))
+        operation = next(item for item in package['plans'][0]['passes'] if 'pipeline' in item)
+        self.assertTrue(operation['technique'].endswith('.Geometry.Alternate'))
+        self.assertEqual('Alternate', operation['pipeline']['shaders'][1]['program'])
+        pointer = self.pointer()
+        reference['overrides'] = {'Quality': 'Hidden'}
+        self.graph.write_bytes(graph.canonical_asset(root))
+        with self.assertRaises(ToolingError) as failure:
+            self.run_build()
+        self.assertEqual('RenderGraphOption', failure.exception.code)
+        self.assertEqual(pointer, self.pointer())
+
     def test_mismatched_node_shader_or_state_preserves_published_generation(self):
         self.run_build()
         pointer = self.pointer()

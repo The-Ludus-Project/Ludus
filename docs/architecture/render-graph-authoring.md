@@ -452,6 +452,20 @@ Boolean switches; independent dimensions are allowed only with a bounded,
 reviewable legal-tuple set. Specialization constants, generic/type substitutions
 and link-time choices are configurations too, not ways around the manifest.
 
+The editor implements finite typed `options` on pipeline records and configuration
+interfaces, with `overrides` on pipeline/Subgraph uses. Pipeline targets select
+existing scalar state/invocation fields or declared shader program references;
+configuration targets explicitly forward `node.OptionId`, including through nested
+Subgraphs. Defaults live with the author; absent overrides inherit them, while an
+explicit value remains local to its instance. Validation and lowering copy each
+instance before applying defaults/overrides, preserving shared library documents.
+The selected effective pipeline still passes the existing shader/recipe and backend
+admission checks. This adds no raw macro injection, automatic shader generation or
+new RHI capability. Source options and overrides participate in source/plan identity;
+resolved pipelines use the existing package/runtime formats. Declaration changes
+reject incompatible existing callers in the editor; source-authored invalid drafts
+receive explicit validator errors. See the [authoring workflow and bounds](../development/render-graph-authoring.md#expose-finite-choices-on-reusable-nodes).
+
 Keep connection policy, compilation choice and effects separate:
 
 | Declaration | Result |

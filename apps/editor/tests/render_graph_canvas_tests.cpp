@@ -690,7 +690,7 @@ TEST_CASE("RG3b double-clicking a Subgraph navigates to its source", "[editor][r
     REQUIRE(QTest::qWaitForWindowExposed(&workspace) == true);
     RenderGraphCanvas& canvas = workspace.GetCanvas();
     QSignalSpy activated(&canvas, &RenderGraphCanvas::SubgraphActivated);
-    CHECK(canvas.ActivateNode(QStringLiteral("scene")) == false);
+    CHECK(canvas.ActivateNode(QStringLiteral("missing")) == false);
     canvas.resetTransform();
     const QPointF raster = canvas.GetNodePosition(QStringLiteral("raster"));
     canvas.centerOn(raster);

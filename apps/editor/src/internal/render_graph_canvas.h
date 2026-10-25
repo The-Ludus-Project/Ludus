@@ -144,7 +144,7 @@ public:
     /// Request an edge from an output to an input; rejected links emit LinkRejected.
     /// With shouldReplaceExisting, a legal drop replaces the input source in one undo step.
     [[nodiscard]] bool RequestLink(const QString& from, const QString& to, bool shouldReplaceExisting = false);
-    /// Activate a node as a double-click does: open a Subgraph or request a Raster's shader sources.
+    /// Activate a node as a double-click does: enter a Subgraph or request node details.
     [[nodiscard]] bool ActivateNode(const QString& node);
 
 Q_SIGNALS:
@@ -166,7 +166,8 @@ Q_SIGNALS:
     void ReplaceConnectionRequested(const QString& from, const QString& to);
     void DisconnectRequested(const QString& from, const QString& to);
     void RemoveRequested(const QString& node);
-    void ShaderSourcesRequested(const QString& node);
+    /// Open shared authoring controls for an ordinary node; Subgraphs keep their enter gesture.
+    void NodeDetailsRequested(const QString& node);
     void SubgraphActivated(const QString& asset, const QString& configuration);
     void LinkRejected(const QString& reason);
 

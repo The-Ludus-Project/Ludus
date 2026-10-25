@@ -66,6 +66,23 @@ endforeach()
 set_source_files_properties(src/render_graph_settings_editor.cpp src/render_graph_configuration_template.cpp
     PROPERTIES COMPILE_DEFINITIONS "${graph_settings_definitions}")
 
+# Finite option admission has one owner shared with installed host tooling.
+set(graph_options_policy "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/render_graph_options.py")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${graph_options_policy}")
+execute_process(COMMAND "${Python3_EXECUTABLE}" -c
+    "import json,sys; sys.path.insert(0,sys.argv[1]); from ludus_tools import render_graph_options as policy; print(json.dumps({key:getattr(policy,key) for key in ('MAX_OPTIONS','MAX_VALUES','MAX_COMBINATIONS','MAX_LABEL_LENGTH','MAX_ENUM_LENGTH','MAX_NUMERIC_VALUE')}))"
+    "${PROJECT_SOURCE_DIR}/scripts/python"
+    RESULT_VARIABLE graph_options_status OUTPUT_VARIABLE graph_options_limits ERROR_VARIABLE graph_options_error)
+if(NOT graph_options_status EQUAL 0)
+    message(FATAL_ERROR "Cannot read option limits: ${graph_options_error}")
+endif()
+set(graph_options_definitions)
+foreach(limit MAX_OPTIONS MAX_VALUES MAX_COMBINATIONS MAX_LABEL_LENGTH MAX_ENUM_LENGTH MAX_NUMERIC_VALUE)
+    string(JSON graph_options_limit GET "${graph_options_limits}" "${limit}")
+    list(APPEND graph_options_definitions "LUDUS_EDITOR_OPTIONS_${limit}=${graph_options_limit}")
+endforeach()
+set_source_files_properties(src/render_graph_options.cpp PROPERTIES COMPILE_DEFINITIONS "${graph_options_definitions}")
+
 # Use APIs available in Qt 6.4; require at least 6.4. Core/Gui/Widgets only, as
 # native system libraries or the pinned source-built WebAssembly Qt.
 # Qt is installed only by opted-in editor setup;
@@ -1111,3 +1128,20 @@ ludus_editor_apply_precompiled_headers(
     ludus_render_graph_configuration_tests
     ludus_render_graph_live_build_tests
 )
+
+# Finite choices are shared by document validation, Properties and canvas details.
+foreach(target IN ITEMS ludus_editor ludus_editor_tests ludus_render_graph_pipeline_tests ludus_render_graph_configuration_tests ludus_render_graph_live_build_tests)
+    if(TARGET ${target})
+        target_sources(${target} PRIVATE src/internal/render_graph_options.h src/render_graph_options.cpp)
+    endif()
+endforeach()
+foreach(target IN ITEMS ludus_editor ludus_editor_tests ludus_render_graph_configuration_tests)
+    if(TARGET ${target})
+        target_sources(${target} PRIVATE src/renderer_workspace_node_details.cpp
+            src/internal/render_graph_node_details.h src/render_graph_node_details.cpp)
+    endif()
+endforeach()
+
+if(TARGET ludus_render_graph_configuration_tests)
+    target_sources(ludus_render_graph_configuration_tests PRIVATE tests/render_graph_options_tests.cpp)
+endif()

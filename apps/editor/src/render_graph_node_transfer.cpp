@@ -185,6 +185,18 @@ RenderGraphDocumentStatus RenderGraphDocument::RenameNode(const QString& file,
         edges.replace(index, edge);
     }
     record.insert(QStringLiteral("edges"), edges);
+    if (record.contains(QStringLiteral("options")) == true)
+    {
+        QJsonArray options = record.value(QStringLiteral("options")).toArray();
+        for (qsizetype index = 0; index < options.size(); ++index)
+        {
+            QJsonObject option = options.at(index).toObject();
+            option.insert(QStringLiteral("target"), renameEndpoint(option.value(QStringLiteral("target")).toString()));
+            options[index] = option;
+        }
+        record.insert(QStringLiteral("options"), options);
+    }
+
     QJsonArray outputs = record.value(QStringLiteral("outputs")).toArray();
     for (qsizetype index = 0; index < outputs.size(); ++index)
     {

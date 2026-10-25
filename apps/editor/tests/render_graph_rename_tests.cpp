@@ -311,7 +311,7 @@ TEST_CASE("Canvas menu and edit dialog rename with Properties hidden", "[editor]
             {
                 QLineEdit* renamedOrNull = dialogOrNull->findChild<QLineEdit*>(QStringLiteral("renderGraphNodeName"));
                 hasUpdatedDialog = renamedOrNull != nullptr && renamedOrNull->text() == NAME &&
-                                   dialogOrNull->windowTitle() == QStringLiteral("Edit SceneColor");
+                                   dialogOrNull->windowTitle() == QStringLiteral("Details — SceneColor");
                 dialogOrNull->reject();
             }
         });

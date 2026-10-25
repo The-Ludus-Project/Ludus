@@ -152,7 +152,7 @@ TEST_CASE("shader cleanup rejects incomplete reference data without changing his
     }
     SECTION("unsupported version")
     {
-        replacement = QByteArrayLiteral("{\"version\":2,\"configurations\":[]}");
+        replacement = QByteArrayLiteral("{\"version\":3,\"configurations\":[]}");
     }
     SECTION("malformed configurations")
     {

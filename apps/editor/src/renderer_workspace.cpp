@@ -11,6 +11,7 @@
 #include "internal/code_editor_panel.h"
 #include "internal/code_formatter.h"
 #include "internal/item_selection.h"
+#include "internal/render_graph_options.h"
 #include "internal/render_graph_pipeline.h"
 #include "internal/render_graph_quick_add.h"
 #include "internal/render_graph_resources.h"
@@ -82,8 +83,6 @@ namespace
 constexpr int32 MAX_EXTENT = static_cast<int32>(content::render_graph_format::MAX_TARGET_EXTENT);
 constexpr int32 MAX_COORDINATE = RenderGraphDocument::MAX_COORDINATE;
 constexpr int32 MINIMUM_CANVAS_WIDTH = 360;
-constexpr int32 NODE_EDITOR_WIDTH = 720;
-constexpr int32 NODE_EDITOR_HEIGHT = 600;
 // The source tree stays wide enough for nested node names.
 constexpr int32 MINIMUM_SOURCE_TREE_WIDTH = 200;
 constexpr int32 STATUS_VISIBLE_LINES = 3;
@@ -790,9 +789,9 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     });
     connect(mTree, &QTreeWidget::itemDoubleClicked, this, [this]() { activateSelectedNode(); });
     connect(mCanvas, &RenderGraphCanvas::InterfaceEditRequested, this, &RendererWorkspace::editConfigurationInterface);
-    connect(mCanvas, &RenderGraphCanvas::ShaderSourcesRequested, this, [this](const QString& node) {
+    connect(mCanvas, &RenderGraphCanvas::NodeDetailsRequested, this, [this](const QString& node) {
         static_cast<void>(SelectNode(mCanvas->GetFile(), mCanvas->GetConfiguration(), node));
-        activateSelectedNode();
+        editNodeOnCanvas();
     });
     connect(mCanvas, &RenderGraphCanvas::NodeSelected, this, [this](const QString& node) {
         mSelectedFile = mCanvas->GetFile();
@@ -2365,7 +2364,16 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
             // Refresh the other surface while retaining the controls that submitted this edit.
             documentEdited(status, mInspector->isAncestorOf(editor) == false, editor);
         });
+        editor->AddOptionsEditor(createNodeOptionsEditor(inoutParent));
+        if (qobject_cast<QDialog*>(inoutParent.window()) != nullptr)
+        {
+            editor->ShowParts();
+        }
         outFields.addRow(editor);
+    }
+    if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Subgraph"))
+    {
+        outFields.addRow(QStringLiteral("Public Options"), createNodeOptionsEditor(inoutParent));
     }
     if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("RayTracingPipeline") &&
         HasSceneRayInterface(QJsonDocument::fromJson(mDocument.GetDraft(manifestFile())).object()) == false)
@@ -2408,6 +2416,7 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
     {
         const QString name = field.key();
         if (name == QStringLiteral("id") || name == QStringLiteral("kind") || name == QStringLiteral("enabled") ||
+            name == QStringLiteral("overrides") || name == QStringLiteral("options") ||
             (name == QStringLiteral("scale") &&
              node.value(QStringLiteral("kind")).toString() == QStringLiteral("RenderSize")) ||
             IsPipelineNode(node.value(QStringLiteral("kind")).toString()) == true)
@@ -2732,97 +2741,6 @@ void RendererWorkspace::editGraphSettingsOnCanvas()
     fields->addRow(buttons);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     static_cast<void>(dialog.exec());
-}
-
-void RendererWorkspace::editNodeOnCanvas(const QString& diagnosticField)
-{
-    if (selectedNode().isEmpty() == true || CanCreateSubgraph() == false)
-    {
-        return;
-    }
-    QDialog dialog(this);
-    dialog.setObjectName(QStringLiteral("renderGraphNodeEditor"));
-    dialog.setWindowTitle(QStringLiteral("Edit %1").arg(mSelectedNode));
-    QVBoxLayout* layout = new QVBoxLayout(&dialog);
-    QScrollArea* scroll = new QScrollArea(&dialog);
-    scroll->setWidgetResizable(true);
-    layout->addWidget(scroll);
-    const auto refresh = [this, scroll, &dialog]() {
-        dialog.setWindowTitle(QStringLiteral("Edit %1").arg(mSelectedNode));
-        QWidget* previousOrNull = scroll->takeWidget();
-        if (previousOrNull != nullptr)
-        {
-            for (QObject* control : previousOrNull->findChildren<QObject*>())
-            {
-                disconnect(control, nullptr, this, nullptr);
-            }
-            previousOrNull->hide();
-            previousOrNull->deleteLater();
-        }
-        QWidget* fields = new QWidget(scroll);
-        QFormLayout* form = new QFormLayout(fields);
-        populateNodeFields(*form, *fields);
-        for (const bool isX : {true, false})
-        {
-            QSpinBox* coordinate = new QSpinBox(fields);
-            coordinate->setObjectName(isX == true ? QStringLiteral("canvasLayoutX") : QStringLiteral("canvasLayoutY"));
-            coordinate->setRange(-MAX_COORDINATE, MAX_COORDINATE);
-            coordinate->setValue(isX == true ? mLayoutX->value() : mLayoutY->value());
-            form->addRow(isX == true ? QStringLiteral("Layout x") : QStringLiteral("Layout y"), coordinate);
-            connect(coordinate, &QSpinBox::editingFinished, this, [this, coordinate, isX]() {
-                if (coordinate->value() == (isX == true ? mLayoutX->value() : mLayoutY->value()))
-                {
-                    return;
-                }
-                documentEdited(mDocument.MoveNode(mSelectedFile,
-                                                  mSelectedConfiguration,
-                                                  mSelectedNode,
-                                                  isX == true ? coordinate->value() : mLayoutX->value(),
-                                                  isX == true ? mLayoutY->value() : coordinate->value()));
-            });
-        }
-        scroll->setWidget(fields);
-    };
-    refresh();
-    if (diagnosticField.isEmpty() == false)
-    {
-        for (QWidget* control : scroll->findChildren<QWidget*>())
-        {
-            if (control->property("renderGraphField").toString() == diagnosticField ||
-                control->objectName() == QStringLiteral("renderGraphField_") + diagnosticField)
-            {
-                control->setProperty("isRenderGraphDiagnosticTarget", true);
-                control->setStyleSheet(
-                    QStringLiteral("*[isRenderGraphDiagnosticTarget=\"true\"] { border: 2px solid #ff9a88; }"));
-                for (QTabWidget* tabs : scroll->findChildren<QTabWidget*>())
-                {
-                    for (int32 index = 0; index < tabs->count(); ++index)
-                    {
-                        if (tabs->widget(index) == control || tabs->widget(index)->isAncestorOf(control) == true)
-                        {
-                            tabs->setCurrentIndex(index);
-                        }
-                    }
-                }
-                control->setFocusPolicy(Qt::StrongFocus);
-                control->setAccessibleDescription(mStatus->text());
-                control->setFocus(Qt::OtherFocusReason);
-                QTimer::singleShot(0, control, [scroll, control]() { scroll->ensureWidgetVisible(control); });
-                break;
-            }
-        }
-    }
-    connect(this, &RendererWorkspace::NodeFieldsChanged, &dialog, [scroll, refresh](QWidget* editOriginOrNull) {
-        if (editOriginOrNull == nullptr || scroll->isAncestorOf(editOriginOrNull) == false)
-        {
-            refresh();
-        }
-    });
-    QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
-    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    layout->addWidget(buttons);
-    dialog.resize(NODE_EDITOR_WIDTH, NODE_EDITOR_HEIGHT);
-    dialog.exec();
 }
 
 void RendererWorkspace::renderEdges()
@@ -3222,7 +3140,13 @@ QStringList RendererWorkspace::GetSelectedShaderSources() const
         QStringList sources;
         const QJsonObject manifest = QJsonDocument::fromJson(mDocument.GetDraft(manifestFile())).object();
         const QJsonArray programs = manifest.value(QStringLiteral("programs")).toArray();
-        const QJsonArray shaders = node.value(QStringLiteral("shaders")).toArray();
+        QJsonObject effective;
+        QString optionError;
+        if (ResolveRenderGraphPipelineOptions(node, effective, optionError) == false)
+        {
+            return {};
+        }
+        const QJsonArray shaders = effective.value(QStringLiteral("shaders")).toArray();
         for (const QJsonValueConstRef shader : shaders)
         {
             for (const QJsonValueConstRef program : programs)
@@ -3288,11 +3212,7 @@ void RendererWorkspace::activateSelectedNode()
                      node.value(QStringLiteral("configuration")).toString());
         return;
     }
-    const QStringList sources = GetSelectedShaderSources();
-    if (sources.isEmpty() == false)
-    {
-        openSourceLine(sources.first(), 1);
-    }
+    editNodeOnCanvas();
 }
 
 void RendererWorkspace::expandSceneBundle(bool isExpanded)
@@ -3339,6 +3259,10 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
     connect(quickAdd, &QAction::triggered, this, [this, quickAddPosition]() {
         static_cast<void>(ShowQuickAdd(quickAddPosition));
     });
+    QAction* options = menu.addAction(QStringLiteral("Edit Exposed Options..."));
+    options->setObjectName(QStringLiteral("renderGraphExposedOptionsAction"));
+    options->setEnabled(CanCreateSubgraph());
+    connect(options, &QAction::triggered, this, &RendererWorkspace::editExposedOptionsOnCanvas);
     menu.addSeparator();
     if (QJsonDocument::fromJson(mDocument.GetDraft(manifestFile()))
             .object()
@@ -3429,7 +3353,7 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
     }
     if (node.isEmpty() == false)
     {
-        QAction* edit = menu.addAction(QStringLiteral("Edit Node..."));
+        QAction* edit = menu.addAction(QStringLiteral("Show Details / Edit Node..."));
         edit->setObjectName(QStringLiteral("renderGraphEditNodeAction"));
         edit->setEnabled(CanCreateSubgraph());
         connect(edit, &QAction::triggered, this, [this]() { editNodeOnCanvas(); });

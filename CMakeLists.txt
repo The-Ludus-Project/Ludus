@@ -608,7 +608,7 @@ install(FILES scripts/python/ludus_tools/__init__.py scripts/python/ludus_tools/
     scripts/python/ludus_tools/render_graph_quality.py
     scripts/python/ludus_tools/render_graph_diagnostics.py
     scripts/python/ludus_tools/render_graph_build.py scripts/python/ludus_tools/render_graph_execution.py
-    scripts/python/ludus_tools/render_graph_pipeline.py scripts/python/ludus_tools/render_graph_ray.py
+    scripts/python/ludus_tools/render_graph_pipeline.py scripts/python/ludus_tools/render_graph_options.py scripts/python/ludus_tools/render_graph_ray.py
     scripts/python/ludus_tools/render_graph_compute.py
     scripts/python/ludus_tools/render_graph_forward.py
     scripts/python/ludus_tools/render_graph_buffers.py scripts/python/ludus_tools/render_graph_scene.py

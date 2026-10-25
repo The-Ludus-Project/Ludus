@@ -163,6 +163,13 @@ public:
                                                         const QString& configuration,
                                                         const QJsonObject& node,
                                                         QString* outErrorOrNull = nullptr);
+    /// Replace a configuration's public finite choices in one undo step. Targets forward to
+    /// node.OptionId; incompatible bindings or existing caller overrides reject the edit.
+    /// Failure preserves the complete draft and history. Save remains explicit. GUI thread only.
+    [[nodiscard]] RenderGraphDocumentStatus SetConfigurationOptions(const QString& file,
+                                                                    const QString& configuration,
+                                                                    const QJsonArray& options,
+                                                                    QString& outError);
     /// Rename one node and its edge endpoints, configuration output sources and layout
     /// references in the owning configuration as one undoable draft edit. Names are unique
     /// ASCII graph identifiers; "input" is reserved. Equal names succeed without history.

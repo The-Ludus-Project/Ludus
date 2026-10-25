@@ -23,6 +23,7 @@ import sys
 
 from .errors import ToolingError
 from .render_graph_diagnostics import DiagnosticBatch, make_error
+from . import render_graph_options as options
 from . import render_graph_pipeline as pipeline
 from . import render_graph_buffers as buffers
 from . import render_graph_scene as scene_bundle
@@ -184,7 +185,7 @@ def _validate_node(node, where):
         fields |= {"asset", "configuration"}
     elif kind == "Export":
         fields |= {"type"}
-    _keys(node, fields, where, ("enabled",) if kind in DISABLE_KINDS else ())
+    _keys(node, fields, where, ("enabled",) if kind in DISABLE_KINDS else ("overrides",) if kind == "Subgraph" else ())
     _identifier(node["id"], where)
     _require(node["id"] != "input", "Schema", where, "input is reserved for interface ports")
     if "enabled" in node:
@@ -249,11 +250,12 @@ def _validate_document(value, where):
     _list(value["configurations"], MAX_CONFIGURATIONS, where)
     claimed = set()
     for config in value["configurations"]:
-        _keys(config, ("id", "inputs", "outputs", "nodes", "edges"), where, ("layout",))
+        _keys(config, ("id", "inputs", "outputs", "nodes", "edges"), where, ("layout", "options"))
         _identifier(config["id"], where)
         _require(config["id"] not in claimed, "DuplicateIdentity", where, config["id"])
         claimed.add(config["id"])
         location = where + "#" + config["id"]
+        options.validate(config.get("options", []), {}, location, sys.modules[__name__])
         _ports(config["inputs"], location, version=value["version"])
         _ports(config["outputs"], location, outputs=True, version=value["version"])
         _list(config["nodes"], MAX_NODES, location)
@@ -697,7 +699,8 @@ class _Library:
             diagnostics.raise_if_any()
         return ordered, incoming, used
 
-    def validate_execution(self, path, config, requested_outputs, diagnostics, depth=0, budget=None, prefix=None):
+    def validate_execution(self, path, config, requested_outputs, diagnostics, depth=0, budget=None, prefix=None, overrides=None):
+        config = options.resolve_configuration(config, overrides or {}, self.label(path) + "#" + config["id"], sys.modules[__name__], self)
         if budget is None:
             budget = [0]
         _require(depth < MAX_DEPTH, 'Capacity', self.label(path), 'expanded subgraph depth exceeded')
@@ -731,7 +734,7 @@ class _Library:
                 child_path = self.inside(node['asset'], node['id'])
                 child = _configuration(self.assets[child_path], node['configuration'], node['id'])
                 outputs = {port['id'] for port in child['outputs'] if node['id'] + '.' + port['id'] in used}
-                self.validate_execution(child_path, child, outputs, diagnostics, depth + 1, budget, prefix + '/' + node['id'])
+                self.validate_execution(child_path, child, outputs, diagnostics, depth + 1, budget, prefix + '/' + node['id'], node.get('overrides', {}))
 
     def verify_snapshot(self):
         for path, data in self.bytes.items():
@@ -787,7 +790,8 @@ class _Compiler:
         self.latest[value.resource] = result.version
         return result
 
-    def expand(self, path, config, prefix, bindings, depth=0, requested_outputs=None):
+    def expand(self, path, config, prefix, bindings, depth=0, requested_outputs=None, overrides=None):
+        config = options.resolve_configuration(config, overrides or {}, prefix, sys.modules[__name__], self.library)
         _require(depth < MAX_DEPTH, "Capacity", prefix, "expanded subgraph depth exceeded")
         self.instances[prefix] = (self.library.label(path), config["id"], {n["id"] for n in config["nodes"]})
         if requested_outputs is None:
@@ -1080,7 +1084,7 @@ class _Compiler:
                 child = self.library.assets[child_path]
                 selected = _configuration(child, node["configuration"], where)
                 requested = {port['id'] for port in selected['outputs'] if node['id'] + '.' + port['id'] in used}
-                outputs = self.expand(child_path, selected, where, inputs, depth + 1, requested)
+                outputs = self.expand(child_path, selected, where, inputs, depth + 1, requested, node.get("overrides", {}))
             else:
                 value = inputs["texture" if kind == "Export" else "color"]
                 self.root(where, kind, value)
@@ -1149,7 +1153,8 @@ def _library(path, root):
         for source, asset in library.assets.items():
             for config in asset['configurations']:
                 with diagnostics.capture():
-                    library.order(source, config)
+                    resolved = options.resolve_configuration(config, {}, library.label(source) + "#" + config["id"], sys.modules[__name__], library)
+                    library.order(source, resolved)
         diagnostics.raise_if_any()
     except ToolingError as error:
         raise _locate(error, library)

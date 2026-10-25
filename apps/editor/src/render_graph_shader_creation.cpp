@@ -1,4 +1,5 @@
 #include "internal/render_graph_shader_creation.h"
+#include "internal/render_graph_options.h"
 #include "internal/render_graph_pipeline_node.h"
 
 #include <QDir>
@@ -191,6 +192,7 @@ QStringList GetReferencedPrograms(const RenderGraphSnapshot& snapshot, const QJs
         {
             for (const QJsonValueConstRef node : configuration.toObject().value(QStringLiteral("nodes")).toArray())
             {
+                result.append(GetRenderGraphOptionPrograms(node.toObject()));
                 for (const QJsonValueConstRef shader : node.toObject().value(QStringLiteral("shaders")).toArray())
                 {
                     result.append(shader.toObject().value(QStringLiteral("program")).toString());
@@ -302,6 +304,10 @@ RenderGraphDocumentStatus ReconcileShader(RenderGraphSnapshot& inoutSnapshot,
     }
     if (name != previous)
     {
+        if (HasRenderGraphOptionProgram(inoutSnapshot.Files, previous) == true)
+        {
+            return RenderGraphDocumentStatus::Conflict;
+        }
         if (IsIdentifier(name) == false)
         {
             return RenderGraphDocumentStatus::InvalidEdit;
