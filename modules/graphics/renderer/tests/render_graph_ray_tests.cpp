@@ -2104,14 +2104,22 @@ struct CornellBox final
     CornellBox& operator=(const CornellBox&) = delete;
 };
 
+/// Pixel dimensions of an exported color resource.
+struct ExportExtent final
+{
+    uint32 Width = WIDTH;
+    uint32 Height = HEIGHT;
+};
+
 /// Render one frame and copy an RGBA8 export of the given extent into outPixels.
 void RenderExport(renderer::RenderGraph& inoutGraph,
                   const GraphGpuFixture& fixture,
                   uint32 exportResource,
-                  uint32 width,
-                  uint32 height,
+                  ExportExtent extent,
                   Array<uint8>& outPixels)
 {
+    const uint32 width = extent.Width;
+    const uint32 height = extent.Height;
     constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
     rhi::SubmissionToken completion;
     REQUIRE(inoutGraph.Render(fixture.Surface, WIDTH, HEIGHT, completion) == rhi::RasterStatus::Ready);
@@ -2170,7 +2178,8 @@ math::Vector3 ComputeMeanRadiance(const Array<uint8>& pixels)
                                   DecodeToneMapped(pixels[address + 1]),
                                   DecodeToneMapped(pixels[address + 2])};
     }
-    return sum / static_cast<float32>(pixels.GetSize() / 4);
+    const usize pixelCount = pixels.GetSize() / 4;
+    return sum / static_cast<float32>(pixelCount);
 }
 } // namespace
 
@@ -2254,8 +2263,8 @@ TEST_CASE("The compute ray-tracing template matches a single-pass direct-lightin
     Array<uint8> referencePixels;
     for (usize frame = 0; frame < FRAME_COUNT; ++frame)
     {
-        RenderExport(fixture.Graph, fixture, output, WIDTH, HEIGHT, pixels);
-        RenderExport(reference, fixture, referenceOutput, WIDTH, HEIGHT, referencePixels);
+        RenderExport(fixture.Graph, fixture, output, {}, pixels);
+        RenderExport(reference, fixture, referenceOutput, {}, referencePixels);
         // Invalid hit records, exhausted budgets and failed queries would show magenta.
         REQUIRE(CountFailurePixels(pixels) == 0);
         REQUIRE(CountFailurePixels(referencePixels) == 0);
@@ -2312,7 +2321,7 @@ TEST_CASE("The compute ray-tracing template matches a single-pass direct-lightin
     constexpr usize RESIZED_FRAME_COUNT = 4;
     for (usize frame = 0; frame < RESIZED_FRAME_COUNT; ++frame)
     {
-        RenderExport(fixture.Graph, fixture, output, RESIZED_WIDTH, RESIZED_HEIGHT, pixels);
+        RenderExport(fixture.Graph, fixture, output, {RESIZED_WIDTH, RESIZED_HEIGHT}, pixels);
         INFO("frame " << frame << " after resize");
         CHECK(CountFailurePixels(pixels) == 0);
         CHECK(ComputeMeanRadiance(pixels).X > MINIMUM_MEAN_RADIANCE);
