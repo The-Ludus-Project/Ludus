@@ -338,7 +338,7 @@ void CollectProblems(const ResourceContext& context,
             continue;
         }
         if (kind != QStringLiteral("Raster") && kind != QStringLiteral("GraphicsPipeline") &&
-            kind != QStringLiteral("RayTracingPipeline"))
+            UsesRayLaunch(node) == false)
         {
             continue;
         }
@@ -393,7 +393,7 @@ void CollectProblems(const ResourceContext& context,
                         .arg(resource.Format)
                         .arg(resource.Samples));
             }
-            if (kind == QStringLiteral("RayTracingPipeline") &&
+            if (UsesRayLaunch(node) == true &&
                 ((resource.Format.isEmpty() == false && resource.Format != QStringLiteral("RGBA8Unorm")) ||
                  (resource.Samples > 0 && resource.Samples != 1) || resource.IsPresentation == true))
             {
@@ -412,13 +412,13 @@ void CollectProblems(const ResourceContext& context,
         }
         const QJsonArray launch =
             node.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("dimensions")).toArray();
-        if (kind == QStringLiteral("RayTracingPipeline") && color.ViewPolicy.isEmpty() == false &&
+        if (UsesRayLaunch(node) == true && color.ViewPolicy.isEmpty() == false &&
             launch.size() == RAY_LAUNCH_DIMENSION_COUNT)
         {
             inoutProblems.append(where +
                                  QStringLiteral(": view-relative color requires Match color target in Invocation."));
         }
-        if (kind == QStringLiteral("RayTracingPipeline") && HasKnownExtent(color.Extent) == true &&
+        if (UsesRayLaunch(node) == true && HasKnownExtent(color.Extent) == true &&
             launch.size() == RAY_LAUNCH_DIMENSION_COUNT &&
             launch != QJsonArray{color.Extent.at(0), color.Extent.at(1), 1})
         {

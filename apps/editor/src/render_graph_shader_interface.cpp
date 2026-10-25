@@ -41,6 +41,16 @@ QString GetStructDeclaration(const QString& source, QStringView name)
     return expression.match(source).captured();
 }
 
+/// A callback belongs to the technique that names it; a scene compute kernel shares the ray technique's
+/// scene interface without being one of its callbacks.
+bool UsesTechnique(const QJsonObject& technique, const QJsonObject& program)
+{
+    const QString stage = program.value(QStringLiteral("stage")).toString();
+    return stage == QStringLiteral("compute")
+               ? technique.value(QStringLiteral("id")).toString() == QStringLiteral("RendererTriangles.RayTracing")
+               : technique.value(stage).toString() == program.value(QStringLiteral("id")).toString();
+}
+
 QString
 DescribeRayInterface(const QJsonObject& program, const QJsonArray& techniques, const QMap<QString, QByteArray>& sources)
 {
@@ -49,15 +59,15 @@ DescribeRayInterface(const QJsonObject& program, const QJsonArray& techniques, c
     const QString output = program.value(QStringLiteral("output")).toString();
     const QString function = program.value(QStringLiteral("function")).toString();
     const bool isScene = output == QStringLiteral("Radiance") || output == QStringLiteral("ScenePayload");
+    const bool isLaunch = stage == QStringLiteral("ray_generation") || stage == QStringLiteral("compute");
     QString api = ReadShaderApi(isScene);
     for (const QJsonValueConstRef entry : techniques)
     {
         const QJsonObject technique = entry.toObject();
-        if (technique.value(stage).toString() == program.value(QStringLiteral("id")).toString() &&
-            technique.value(QStringLiteral("scene_interface"))
-                    .toObject()
-                    .value(QStringLiteral("visibility_buffer"))
-                    .toBool() == true)
+        if (UsesTechnique(technique, program) == true && technique.value(QStringLiteral("scene_interface"))
+                                                                 .toObject()
+                                                                 .value(QStringLiteral("visibility_buffer"))
+                                                                 .toBool() == true)
         {
             QFile visibility(QStringLiteral(":/shader-api/visibility_buffer.slang"));
             if (visibility.open(QIODevice::ReadOnly) == true)
@@ -75,19 +85,23 @@ DescribeRayInterface(const QJsonObject& program, const QJsonArray& techniques, c
     if (isScene == true)
     {
         lines.append(
-            QStringLiteral("// Scene materials enabled.\n"
-                           "// Closest-hit material access: MaterialSample material = EvaluateMaterial(scene, hit);\n"
-                           "// Author lighting and bounce policy in your callbacks."));
+            stage == QStringLiteral("compute")
+                ? QStringLiteral("// Scene compute pass: one invocation per launch pixel in the ordered ray sequence.\n"
+                                 "// Trace with TraceClosest or TestVisibility; return linear radiance.\n"
+                                 "// There are no hit or miss callbacks: TraceAndShade latches queries.HasFailed.")
+                : QStringLiteral(
+                      "// Scene materials enabled.\n"
+                      "// Closest-hit material access: MaterialSample material = EvaluateMaterial(scene, hit);\n"
+                      "// Author lighting and bounce policy in your callbacks."));
         lines.append(
             QStringLiteral("%1 %2(\n    SceneContext scene,\n    %3 %4,\n    inout RayQueryContext queries%5);")
-                .arg(stage == QStringLiteral("ray_generation") ? QStringLiteral("float3") : QStringLiteral("void"),
+                .arg(isLaunch == true ? QStringLiteral("float3") : QStringLiteral("void"),
                      function,
                      input,
-                     stage == QStringLiteral("ray_generation") ? QStringLiteral("launch")
-                     : stage == QStringLiteral("miss")         ? QStringLiteral("ray")
-                                                               : QStringLiteral("hit"),
-                     stage == QStringLiteral("ray_generation") ? QString{}
-                                                               : QStringLiteral(",\n    inout ScenePayload payload")));
+                     isLaunch == true                  ? QStringLiteral("launch")
+                     : stage == QStringLiteral("miss") ? QStringLiteral("ray")
+                                                       : QStringLiteral("hit"),
+                     isLaunch == true ? QString{} : QStringLiteral(",\n    inout ScenePayload payload")));
     }
     else
     {
@@ -127,7 +141,7 @@ DescribeRayInterface(const QJsonObject& program, const QJsonArray& techniques, c
     for (const QJsonValueConstRef entry : techniques)
     {
         const QJsonObject technique = entry.toObject();
-        if (technique.value(stage).toString() != program.value(QStringLiteral("id")).toString())
+        if (UsesTechnique(technique, program) == false)
         {
             continue;
         }
@@ -240,7 +254,8 @@ DescribeShaderInterface(const QByteArray& manifest, const QString& sourceFile, c
         const QString stage = program.value(QStringLiteral("stage")).toString();
         const QString output = program.value(QStringLiteral("output")).toString();
         if (stage == QStringLiteral("ray_generation") || stage == QStringLiteral("closest_hit") ||
-            stage == QStringLiteral("miss"))
+            stage == QStringLiteral("miss") ||
+            (stage == QStringLiteral("compute") && output == QStringLiteral("Radiance")))
         {
             descriptions.append(
                 DescribeRayInterface(program, root.value(QStringLiteral("techniques")).toArray(), sources));

@@ -462,6 +462,13 @@ QString DescribeDisabledNode(const QString& kind)
     return QStringLiteral("When disabled, the compiler connects this node's color input directly to its consumers. "
                           "Settings and wires are kept for re-enabling.");
 }
+
+QString DescribeSceneComputeConversion()
+{
+    return QStringLiteral("Make this ComputePipeline a scene compute pass that traces the World with native ray "
+                          "queries: adds Scene and View inputs, automatic state and Match color target launch size "
+                          "in one undoable edit. Save publishes the change.");
+}
 } // namespace
 
 RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* parentOrNull)
@@ -2327,7 +2334,7 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
     if (IsPipelineNode(node.value(QStringLiteral("kind")).toString()) == true)
     {
         RenderGraphPipelineEditor* editor = new RenderGraphPipelineEditor(node, &inoutParent);
-        if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("RayTracingPipeline"))
+        if (UsesRayLaunch(node) == true)
         {
             RenderGraphSceneQueryBudgets budgets;
             if (mDocument.GetSceneQueryBudgets(budgets) == true)
@@ -2352,6 +2359,7 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
         }
         connect(editor, &RenderGraphPipelineEditor::Edited, this, [this, editor](const QJsonObject& candidate) {
             QString error;
+            const bool hasChangedProfile = IsSceneComputeNode(selectedNode()) != IsSceneComputeNode(candidate);
             const RenderGraphDocumentStatus status =
                 mDocument.ReplaceNode(mSelectedFile, mSelectedConfiguration, candidate, &error);
             if (status != RenderGraphDocumentStatus::Ok)
@@ -2361,11 +2369,26 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
                 Q_EMIT NodeFieldsChanged(nullptr);
                 return;
             }
+            if (hasChangedProfile == true)
+            {
+                // A Scene input changes the State and Invocation controls, so rebuild both surfaces.
+                documentEdited(status);
+                return;
+            }
             editor->SetShaderAssignments(selectedNode().value(QStringLiteral("shaders")).toArray());
             // Refresh the other surface while retaining the controls that submitted this edit.
             documentEdited(status, mInspector->isAncestorOf(editor) == false, editor);
         });
         outFields.addRow(editor);
+    }
+    if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("ComputePipeline") &&
+        IsSceneComputeNode(node) == false)
+    {
+        QPushButton* trace = new QPushButton(QStringLiteral("Add Scene and View Inputs"), &inoutParent);
+        trace->setObjectName(QStringLiteral("renderGraphAddSceneInputs"));
+        trace->setToolTip(DescribeSceneComputeConversion());
+        connect(trace, &QPushButton::clicked, this, &RendererWorkspace::makeSceneCompute);
+        outFields.addRow(trace);
     }
     if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("RayTracingPipeline") &&
         HasSceneRayInterface(QJsonDocument::fromJson(mDocument.GetDraft(manifestFile())).object()) == false)
@@ -3323,6 +3346,28 @@ void RendererWorkspace::enableSceneMaterials()
             : error);
 }
 
+void RendererWorkspace::makeSceneCompute()
+{
+    QJsonObject candidate;
+    if (MakeSceneComputeNode(selectedNode(), candidate) == false)
+    {
+        mStatus->setText(QStringLiteral("Select a ComputePipeline without a Scene input. The draft was preserved."));
+        return;
+    }
+    QString error;
+    const RenderGraphDocumentStatus status =
+        mDocument.ReplaceNode(mSelectedFile, mSelectedConfiguration, candidate, &error);
+    if (status != RenderGraphDocumentStatus::Ok)
+    {
+        mStatus->setText(error.isEmpty() == true ? DescribeStatus(status) : error);
+        return;
+    }
+    documentEdited(status);
+    mStatus->setText(QStringLiteral("%1 is a scene compute pass. Connect a Scene and a camera View, then add a "
+                                    "compute shader for the scene-aware stub. Save to publish.")
+                         .arg(mSelectedNode));
+}
+
 void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
 {
     QMenu menu(this);
@@ -3418,6 +3463,14 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
             QStringLiteral("Upgrade the package's shared ray callbacks, preserving original shader behavior. "
                            "Undo restores the previous interface; Save publishes the change."));
         connect(enable, &QAction::triggered, this, &RendererWorkspace::enableSceneMaterials);
+    }
+    if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("ComputePipeline"))
+    {
+        QAction* trace = menu.addAction(QStringLiteral("Add Scene and View Inputs"));
+        trace->setObjectName(QStringLiteral("renderGraphAddSceneInputsAction"));
+        trace->setEnabled(IsSceneComputeNode(node) == false && CanCreateSubgraph() == true);
+        trace->setToolTip(DescribeSceneComputeConversion());
+        connect(trace, &QAction::triggered, this, &RendererWorkspace::makeSceneCompute);
     }
     if (HasSceneBundle(node) == true)
     {

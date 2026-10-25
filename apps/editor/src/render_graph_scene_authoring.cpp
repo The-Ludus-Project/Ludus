@@ -1,3 +1,4 @@
+#include "internal/render_graph_pipeline_node.h"
 #include "internal/render_graph_shader_creation.h"
 
 #include <QJsonDocument>
@@ -168,6 +169,23 @@ QByteArray MakeSceneRaySource(QJsonObject& inoutProgram)
                                  "    payload.Radiance = material.BaseColor;\n}\n")
                       .arg(function);
     }
+    else if (stage == QStringLiteral("compute"))
+    {
+        // C03 scene compute kernel: the ray-generation signature, without hit or miss callbacks.
+        inoutProgram.insert(QStringLiteral("input"), QStringLiteral("RayLaunch"));
+        inoutProgram.insert(QStringLiteral("output"), QStringLiteral("Radiance"));
+        source += QStringLiteral("float3 %1(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)\n"
+                                 "{\n"
+                                 "    // A compute pass has no hit or miss callbacks: TraceAndShade fails here.\n"
+                                 "    SurfaceHit hit;\n"
+                                 "    if (TraceClosest(scene, queries, launch.CameraRay, hit) != SCENE_QUERY_SURFACE)\n"
+                                 "    {\n        return float3(0, 0, 0);\n    }\n"
+                                 "    // MaterialSample exposes BaseColor, Metallic, Roughness and Emission.\n"
+                                 "    MaterialSample material = EvaluateMaterial(scene, hit);\n"
+                                 "    // Display material color; author lighting here when needed.\n"
+                                 "    return material.BaseColor;\n}\n")
+                      .arg(function);
+    }
     else if (stage == QStringLiteral("miss"))
     {
         inoutProgram.insert(QStringLiteral("input"), QStringLiteral("Ray"));
@@ -186,7 +204,9 @@ QByteArray MakeSceneRaySource(QJsonObject& inoutProgram)
 RenderGraphDocumentStatus
 PrepareSceneRayDefaults(RenderGraphSnapshot&, QJsonObject& inoutManifest, const QJsonObject& node, const QString&)
 {
-    if (node.value(QStringLiteral("kind")).toString() != QStringLiteral("RayTracingPipeline"))
+    const bool isSceneCompute = IsSceneComputeNode(node);
+    if (node.value(QStringLiteral("kind")).toString() != QStringLiteral("RayTracingPipeline") &&
+        isSceneCompute == false)
     {
         return RenderGraphDocumentStatus::Ok;
     }
@@ -199,9 +219,11 @@ PrepareSceneRayDefaults(RenderGraphSnapshot&, QJsonObject& inoutManifest, const 
         }
     }
     // Only new placeholders opt into the default. Never reinterpret authored callbacks.
+    // A scene compute kernel is not a technique callback, so its pass may add the technique at any time.
     for (const QJsonValueConstRef shader : node.value(QStringLiteral("shaders")).toArray())
     {
-        if (shader.toObject().value(QStringLiteral("program")).toString() != QStringLiteral("Program"))
+        if (isSceneCompute == false &&
+            shader.toObject().value(QStringLiteral("program")).toString() != QStringLiteral("Program"))
         {
             return RenderGraphDocumentStatus::Ok;
         }
@@ -211,9 +233,14 @@ PrepareSceneRayDefaults(RenderGraphSnapshot&, QJsonObject& inoutManifest, const 
     {
         return RenderGraphDocumentStatus::Capacity;
     }
+    // Ray pipelines receive their triangle recipe and callbacks from technique preparation. A
+    // compute-only package names no callbacks, so it declares the automatic triangle recipe here.
     techniques.append(QJsonObject{{QStringLiteral("id"), RAY_TECHNIQUE},
                                   {QStringLiteral("configuration"), QStringLiteral("RayTracing")},
-                                  {QStringLiteral("recipes"), QJsonArray{}},
+                                  {QStringLiteral("recipes"),
+                                   isSceneCompute == true
+                                       ? QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("Triangles")}}}
+                                       : QJsonArray{}},
                                   {QStringLiteral("scene_interface"), MakeSceneInterface()}});
     inoutManifest.insert(QStringLiteral("techniques"), techniques);
     return RenderGraphDocumentStatus::Ok;
