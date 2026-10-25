@@ -1392,3 +1392,224 @@ TEST_CASE("Canvas template picker confirms a shader program budget increase", "[
         CHECK(document.GetFiles() == beforeFiles);
     }
 }
+
+namespace
+{
+const QString COMPUTE_TEMPLATE = QStringLiteral("compute-ray-tracing");
+const QString COMPUTE_MANIFEST = QStringLiteral("main.lushader.json");
+
+QJsonObject FindRayTechnique(const QByteArray& manifest)
+{
+    for (const QJsonValueConstRef value :
+         QJsonDocument::fromJson(manifest).object().value(QStringLiteral("techniques")).toArray())
+    {
+        if (value.toObject().value(QStringLiteral("id")) == QStringLiteral("RendererTriangles.RayTracing"))
+        {
+            return value.toObject();
+        }
+    }
+    return {};
+}
+} // namespace
+
+TEST_CASE("Compute ray-tracing template is created from the editor picker", "[editor][render-graph][compute-template]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    workspace.show();
+    QSignalSpy finished(&workspace, &RendererWorkspace::JobFinished);
+    QTimer::singleShot(0, &workspace, []() {
+        QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        REQUIRE(dialogOrNull != nullptr);
+        QComboBox* templateOrNull = dialogOrNull->findChild<QComboBox*>(QStringLiteral("newRenderGraphTemplate"));
+        REQUIRE(templateOrNull != nullptr);
+        const int32 selected = templateOrNull->findData(COMPUTE_TEMPLATE);
+        REQUIRE(selected >= 0);
+        templateOrNull->setCurrentIndex(selected);
+        dialogOrNull->accept();
+    });
+    REQUIRE(workspace.PromptNewGraph() == true);
+    REQUIRE(finished.wait(TEMPLATE_JOB_TIMEOUT_MILLISECONDS) == true);
+    INFO(workspace.GetLastResult().Message.toStdString());
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QByteArray library = document.GetDraft(QStringLiteral("library.lurender.json"));
+    CHECK(library.contains("ComputePipeline") == true);
+    CHECK(library.contains("RayTracingPipeline") == false);
+    CHECK(library.contains("bytes_per_pixel") == true);
+    CHECK(document.GetDraft(ROOT_GRAPH).contains("Accumulate") == true);
+    CHECK(document.GetDraft(QStringLiteral("main_shaders/hit_record.slang")).contains("HIT_RECORD_WORDS") == true);
+    const QJsonObject technique = FindRayTechnique(document.GetDraft(COMPUTE_MANIFEST));
+    // Node-owned scene compute passes need no default callbacks.
+    CHECK(technique.contains(QStringLiteral("ray_generation")) == false);
+    CHECK(technique.value(QStringLiteral("scene_interface")).toObject().value(QStringLiteral("version")).toInt() == 1);
+    REQUIRE(workspace.Validate() == true);
+    REQUIRE(finished.wait(TEMPLATE_JOB_TIMEOUT_MILLISECONDS) == true);
+    INFO(workspace.GetLastResult().Message.toStdString());
+    CHECK(workspace.GetLastResult().IsSuccessful == true);
+}
+
+TEST_CASE("Compute ray-tracing configuration inserts on the root canvas and validates",
+          "[editor][render-graph][compute-configuration]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QString library = QStringLiteral("Lighting.lurender.json");
+    const QByteArray beforeRoot = document.GetDraft(ROOT_GRAPH);
+    const QByteArray beforeManifest = document.GetDraft(COMPUTE_MANIFEST);
+    const QStringList beforeFiles = document.GetFiles();
+    REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("Lighting"), COMPUTE_TEMPLATE) == true);
+    CHECK(document.GetDraft(ROOT_GRAPH).contains("Lighting.lurender.json") == true);
+    CHECK(document.GetDraft(library).contains("ComputeRayPrimary") == true);
+    CHECK(document.GetDraft(library).contains("ComputeRayShade") == true);
+    // Both kernels arrive with the hit record header they include.
+    for (const QString& source : {QStringLiteral("compute_ray_tracing/main_shaders/primary.slang"),
+                                  QStringLiteral("compute_ray_tracing/main_shaders/shade.slang"),
+                                  QStringLiteral("compute_ray_tracing/main_shaders/hit_record.slang")})
+    {
+        INFO(source.toStdString());
+        CHECK(document.GetDraft(source).isEmpty() == false);
+    }
+    const QJsonObject interface =
+        FindRayTechnique(document.GetDraft(COMPUTE_MANIFEST)).value(QStringLiteral("scene_interface")).toObject();
+    CHECK(interface.value(QStringLiteral("version")).toInt() == 1);
+    CHECK(interface.value(QStringLiteral("surface_queries")).toInt() >= 1);
+    CHECK(interface.value(QStringLiteral("visibility_queries")).toInt() >= 1);
+    const QByteArray afterRoot = document.GetDraft(ROOT_GRAPH);
+    const QByteArray afterManifest = document.GetDraft(COMPUTE_MANIFEST);
+    workspace.Undo();
+    CHECK(document.GetDraft(ROOT_GRAPH) == beforeRoot);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST) == beforeManifest);
+    CHECK(document.GetFiles() == beforeFiles);
+    workspace.Redo();
+    CHECK(document.GetDraft(ROOT_GRAPH) == afterRoot);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST) == afterManifest);
+    QString error;
+    CHECK(document.ApplyConfigurationTemplate(ROOT_GRAPH, QStringLiteral("Lighting"), COMPUTE_TEMPLATE, error) ==
+          RenderGraphDocumentStatus::Conflict);
+    CHECK(document.GetDraft(ROOT_GRAPH) == afterRoot);
+
+    // Replace the raster Subgraph with the inserted one: same scene, view and color wiring.
+    QJsonObject root;
+    REQUIRE(document.GetGraph(ROOT_GRAPH, root) == true);
+    QJsonArray configurations = root.value(QStringLiteral("configurations")).toArray();
+    QJsonObject parent = configurations.first().toObject();
+    QJsonArray nodes;
+    for (const QJsonValueConstRef value : parent.value(QStringLiteral("nodes")).toArray())
+    {
+        if (value.toObject().value(QStringLiteral("id")) != QStringLiteral("raster"))
+        {
+            nodes.append(value);
+        }
+    }
+    QJsonArray edges;
+    for (const QJsonValueConstRef value : parent.value(QStringLiteral("edges")).toArray())
+    {
+        QJsonObject edge = value.toObject();
+        if (edge.value(QStringLiteral("to")) == QStringLiteral("raster.depth"))
+        {
+            continue;
+        }
+        for (const QString& end : {QStringLiteral("from"), QStringLiteral("to")})
+        {
+            edge.insert(end,
+                        edge.value(end).toString().replace(QStringLiteral("raster."), QStringLiteral("Lighting.")));
+        }
+        edges.append(edge);
+    }
+    parent.insert(QStringLiteral("nodes"), nodes);
+    parent.insert(QStringLiteral("edges"), edges);
+    configurations.replace(0, parent);
+    root.insert(QStringLiteral("configurations"), configurations);
+    REQUIRE(document.SetText(ROOT_GRAPH, EncodeCanonicalJson(root)) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(workspace.Save() == true);
+    QSignalSpy finished(&workspace, &RendererWorkspace::JobFinished);
+    REQUIRE(workspace.Validate() == true);
+    REQUIRE(finished.wait(TEMPLATE_JOB_TIMEOUT_MILLISECONDS) == true);
+    INFO(workspace.GetLastResult().Message.toStdString());
+    CHECK(workspace.GetLastResult().IsSuccessful == true);
+}
+
+TEST_CASE("Compute ray-tracing import extends a shared ray technique and preserves conflicting edits",
+          "[editor][render-graph][compute-configuration]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    RenderGraphDocument& document = workspace.GetDocument();
+    QString error;
+    REQUIRE(
+        document.ApplyConfigurationTemplate(ROOT_GRAPH, QStringLiteral("Restir"), QStringLiteral("restir-di"), error) ==
+        RenderGraphDocumentStatus::Ok);
+    QJsonObject manifest = QJsonDocument::fromJson(document.GetDraft(COMPUTE_MANIFEST)).object();
+    QJsonArray techniques = manifest.value(QStringLiteral("techniques")).toArray();
+    QJsonObject original;
+    qsizetype rayIndex = -1;
+    for (qsizetype index = 0; index < techniques.size(); ++index)
+    {
+        if (techniques.at(index).toObject().value(QStringLiteral("id")) ==
+            QStringLiteral("RendererTriangles.RayTracing"))
+        {
+            rayIndex = index;
+            original = techniques.at(index).toObject();
+        }
+    }
+    REQUIRE(rayIndex >= 0);
+    const auto setInterface = [&document, &manifest, &techniques, &original, rayIndex](const QJsonObject& interface) {
+        QJsonObject technique = original;
+        technique.insert(QStringLiteral("scene_interface"), interface);
+        techniques.replace(rayIndex, technique);
+        manifest.insert(QStringLiteral("techniques"), techniques);
+        REQUIRE(document.SetText(COMPUTE_MANIFEST, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
+    };
+    QJsonObject interface = original.value(QStringLiteral("scene_interface")).toObject();
+    SECTION("budgets rise and callbacks remain")
+    {
+        constexpr int32 AUTHORED_SURFACE_QUERIES = 3;
+        interface.insert(QStringLiteral("surface_queries"), AUTHORED_SURFACE_QUERIES);
+        interface.insert(QStringLiteral("visibility_queries"), 0);
+        setInterface(interface);
+        REQUIRE(document.ApplyConfigurationTemplate(ROOT_GRAPH, QStringLiteral("Compute"), COMPUTE_TEMPLATE, error) ==
+                RenderGraphDocumentStatus::Ok);
+        const QJsonObject merged = FindRayTechnique(document.GetDraft(COMPUTE_MANIFEST));
+        for (const QString& stage :
+             {QStringLiteral("ray_generation"), QStringLiteral("miss"), QStringLiteral("closest_hit")})
+        {
+            CHECK(merged.value(stage) == original.value(stage));
+        }
+        const QJsonObject mergedInterface = merged.value(QStringLiteral("scene_interface")).toObject();
+        CHECK(mergedInterface.value(QStringLiteral("payload")) == interface.value(QStringLiteral("payload")));
+        CHECK(mergedInterface.value(QStringLiteral("surface_queries")).toInt() == AUTHORED_SURFACE_QUERIES);
+        CHECK(mergedInterface.value(QStringLiteral("visibility_queries")).toInt() == 1);
+        return;
+    }
+    SECTION("unsupported scene interface version")
+    {
+        interface.insert(QStringLiteral("version"), 2);
+        setInterface(interface);
+    }
+    SECTION("authored hit record source")
+    {
+        REQUIRE(document.ApplyConfigurationTemplate(ROOT_GRAPH, QStringLiteral("First"), COMPUTE_TEMPLATE, error) ==
+                RenderGraphDocumentStatus::Ok);
+        const QString header = QStringLiteral("compute_ray_tracing/main_shaders/hit_record.slang");
+        REQUIRE(document.SetText(header, document.GetDraft(header) + QByteArray("\n// Authored edit.\n")) ==
+                RenderGraphDocumentStatus::Ok);
+    }
+    const QByteArray beforeRoot = document.GetDraft(ROOT_GRAPH);
+    const QByteArray beforeManifest = document.GetDraft(COMPUTE_MANIFEST);
+    const QStringList beforeFiles = document.GetFiles();
+    CHECK(document.ApplyConfigurationTemplate(ROOT_GRAPH, QStringLiteral("Compute"), COMPUTE_TEMPLATE, error) ==
+          RenderGraphDocumentStatus::Conflict);
+    CHECK(error.contains(QStringLiteral("preserved")) == true);
+    CHECK(document.GetDraft(ROOT_GRAPH) == beforeRoot);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST) == beforeManifest);
+    CHECK(document.GetFiles() == beforeFiles);
+}

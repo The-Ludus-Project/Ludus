@@ -228,7 +228,7 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_visibility_ordinary_RUNTIME_PACKAGE PARENT_PATH visibility_ordinary_package_directory)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_VISIBILITY_ORDINARY_DIRECTORY="${visibility_ordinary_package_directory}")
-    foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee)
+    foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing)
         set(template_source "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/${template_directory}")
         set(template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${template_directory}_template")
         file(COPY "${template_source}/" DESTINATION "${template_staged}" PATTERN "*.in" EXCLUDE)
@@ -287,10 +287,20 @@ if(TARGET ludus_renderer_render_tests)
     ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_compute_mixed
         MANIFEST "${compute_mixed_staged}/main.lushader.json" RUNTIME_PACKAGE)
     cmake_path(GET rg2_compute_mixed_RUNTIME_PACKAGE PARENT_PATH compute_mixed_package_directory)
+    # Single-pass RayTracingPipeline reference for the compute-ray-tracing template (C4).
+    set(direct_lighting_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/direct_lighting_reference")
+    set(direct_lighting_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/direct_lighting_reference")
+    file(COPY "${direct_lighting_source}/" DESTINATION "${direct_lighting_staged}" PATTERN "*.in" EXCLUDE)
+    configure_file("${direct_lighting_source}/main.lushader.json.in"
+        "${direct_lighting_staged}/main.lushader.json" @ONLY)
+    ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_direct_lighting_reference
+        MANIFEST "${direct_lighting_staged}/main.lushader.json" RUNTIME_PACKAGE)
+    cmake_path(GET rg2_direct_lighting_reference_RUNTIME_PACKAGE PARENT_PATH direct_lighting_package_directory)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_SCENE_COMPUTE_DIRECTORY="${scene_compute_package_directory}"
         LUDUS_RG3_SCENE_COMPUTE_RASTER_DIRECTORY="${scene_compute_raster_package_directory}"
-        LUDUS_RG3_COMPUTE_MIXED_DIRECTORY="${compute_mixed_package_directory}")
+        LUDUS_RG3_COMPUTE_MIXED_DIRECTORY="${compute_mixed_package_directory}"
+        LUDUS_RG3_DIRECT_LIGHTING_REFERENCE_DIRECTORY="${direct_lighting_package_directory}")
     set(visibility_sequence_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/visibility_sequence")
     set(visibility_sequence_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/visibility_sequence")
     file(COPY "${visibility_sequence_source}/" DESTINATION "${visibility_sequence_staged}" PATTERN "*.in" EXCLUDE)

@@ -307,6 +307,113 @@ class TiledVbufferNeeTemplateTests(unittest.TestCase):
         self.assertEqual(arguments.template, 'tiled-vbuffer-nee')
 
 
+class ComputeRayTracingTemplateTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+
+    def create(self, profiles=('metal', 'wgsl'), name='Compute'):
+        return graph.new_workspace(Path(self.directory.name) / name, output='offscreen', renderer_static=True,
+                                   profiles=profiles, template='compute-ray-tracing')
+
+    def test_two_scene_compute_passes_share_one_pixel_sized_hit_buffer(self):
+        root = self.create()
+        plan = graph.compile_graph(root)
+        rays = [operation for operation in plan['passes'] if operation['kind'] == 'RayTracing']
+        self.assertEqual([operation['id'].rsplit('/', 1)[-1] for operation in rays], ['primary', 'shade'])
+        for operation in rays:
+            self.assertEqual(operation['pipeline']['kind'], 'ComputePipeline')
+            self.assertEqual(operation['pipeline']['invocation']['dimensions'], 'ColorTarget')
+            self.assertNotIn('visibility', operation)
+        buffers = [resource for resource in plan['resources'].values() if resource['type'] == 'Buffer']
+        self.assertEqual(len(buffers), 1)
+        self.assertEqual(buffers[0]['bytes_per_pixel'], 32)
+        self.assertEqual(buffers[0]['extent'], [640 * 480 * 32, 1])
+        self.assertEqual(buffers[0]['view_scale'], [1, 1])
+        # Explicit Accumulate -> ToneMap -> Export, fused into the shade pass.
+        self.assertNotIn('accumulation', rays[0])
+        self.assertEqual(4096, rays[1]['accumulation']['samples'])
+        self.assertEqual(1, rays[1]['tone_mapping']['exposure'])
+        self.assertEqual([operation['kind'] for operation in plan['passes'][len(rays):]],
+                         ['Accumulate', 'ToneMap', 'Export'])
+        manifest = json.loads(root.with_name('main.lushader.json').read_text())
+        build.validate_manifest(manifest)
+        technique = next(technique for technique in manifest['techniques'] if technique['id'] == ray.TECHNIQUE)
+        # Node-owned compute passes only: no default callbacks; one primary and one shadow query.
+        self.assertFalse(any(stage in technique for stage in ray.STAGES))
+        self.assertEqual(technique['scene_interface'], {'version': 1, 'surface_queries': 1, 'visibility_queries': 1})
+        compute = [program for program in manifest['programs'] if program['stage'] == 'compute']
+        self.assertEqual([(program['id'], program['input'], program['output'], program['bindings'])
+                          for program in compute],
+                         [('Primary', 'RayLaunch', 'Radiance', []), ('Shade', 'RayLaunch', 'Radiance', [])])
+
+    def test_hit_record_fits_the_buffer_and_keeps_disjoint_random_ranges(self):
+        import re
+        root = self.create()
+        header = root.with_name('main_shaders').joinpath('hit_record.slang').read_text()
+        constant = lambda name: int(re.search(rf'static const uint {name} = (\d+);', header).group(1))
+        library = json.loads(root.with_name('library.lurender.json').read_text())
+        hits = next(node for node in library['configurations'][0]['nodes'] if node['kind'] == 'Buffer')
+        self.assertEqual(constant('HIT_RECORD_WORDS') * ray.BUFFER_WORD_BYTES, hits['bytes_per_pixel'])
+        self.assertEqual(constant('PRIMARY_RANDOM_DIMENSION_FIRST'), 0)
+        self.assertEqual(constant('PRIMARY_RANDOM_DIMENSION_COUNT'), 2)
+        self.assertEqual(constant('SHADE_RANDOM_DIMENSION_COUNT'), 4)
+        self.assertIn('SHADE_RANDOM_DIMENSION_FIRST = PRIMARY_RANDOM_DIMENSION_FIRST + PRIMARY_RANDOM_DIMENSION_COUNT',
+                      header)
+        # Zeroed memory must never decode as triangle 0.
+        self.assertIn('record.TriangleIndex + 1', header)
+        for name in ('Laine', 'Karras', 'Aila', 'HPG 2013', 'Burns', 'Hunt', 'JCGT 2(2), 2013'):
+            self.assertIn(name, header)
+        for kernel in ('primary', 'shade'):
+            source = root.with_name('main_shaders').joinpath(f'{kernel}.slang').read_text()
+            self.assertIn('#include "hit_record.slang"', source)
+            # Neither pass consumes the automatic stream, which every pass of a sequence shares.
+            self.assertNotIn('SampleSceneRandom(queries', source)
+            self.assertNotIn('SelectLight(scene, queries', source)
+            self.assertNotIn('TraceAndShade', source)
+
+    def test_native_ray_tracing_is_required_and_destinations_are_preserved(self):
+        with self.assertRaises(ToolingError):
+            self.create(('wgsl',), name='Browser')
+        self.assertFalse((Path(self.directory.name) / 'Browser').exists())
+        destination = Path(self.directory.name) / 'Compute'
+        destination.mkdir()
+        marker = destination / 'mine'
+        marker.write_text('keep')
+        with self.assertRaises(ToolingError):
+            self.create()
+        self.assertEqual(list(destination.iterdir()), [marker])
+
+    def test_template_resolves_from_a_relocated_sdk_with_its_include_closure(self):
+        from ludus_tools import render_graph_templates
+        installed = Path(self.directory.name) / 'sdk/lib/cmake/Ludus/render_graph'
+        module = installed / 'ludus_tools/render_graph_templates.py'
+        module.parent.mkdir(parents=True)
+        source = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs/compute_ray_tracing'
+        shutil.copytree(source, installed / 'templates/compute_ray_tracing')
+        with patch.object(render_graph_templates, '__file__', str(module)):
+            files = render_graph_templates.template_files('compute-ray-tracing', ('spirv',), graph)
+        manifest = json.loads(files['main.lushader.json'])
+        self.assertEqual(manifest['profiles'], ['spirv'])
+        build.validate_manifest(manifest)
+        self.assertIn('StoreHitRecord', files['main_shaders/hit_record.slang'])
+
+    def test_raster_fallback_programs_match_the_restir_template(self):
+        from ludus_tools import render_graph_templates as templates
+        compute = templates.template_files('compute-ray-tracing', ('metal',), graph)
+        restir = templates.template_files('restir-di', ('metal',), graph)
+        for relative in ('main_shaders/geometry.slang', 'main_shaders/color.slang', 'main_shaders/depth.slang'):
+            self.assertEqual(compute[relative], restir[relative])
+        self.assertEqual(json.loads(compute['main.lushader.json'])['schemas'],
+                         json.loads(restir['main.lushader.json'])['schemas'])
+
+    def test_cli_exposes_the_template_choice(self):
+        from ludus_tools.cli import build_parser
+        arguments = build_parser().parse_args(['render-graph', 'new', 'graphs/Main', '--template', 'compute-ray-tracing',
+                                               '--output', 'offscreen', '--renderer-static', '--profiles', 'metal'])
+        self.assertEqual(arguments.template, 'compute-ray-tracing')
+
+
 class ForwardLitTemplateTests(unittest.TestCase):
     def test_forward_template_is_portable_and_declares_one_scene_material_profile(self):
         with tempfile.TemporaryDirectory() as directory:

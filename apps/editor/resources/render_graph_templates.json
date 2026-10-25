@@ -53,6 +53,15 @@
       "description": "Rasterize visibility, build one emitter-selection table per 16×16 tile, then shade each pixel with a light sample and a BSDF ray, MIS-weighted. Uses emissive meshes and requires native ray tracing."
     },
     {
+      "kind": "graph",
+      "identity": "compute-ray-tracing",
+      "label": "Compute ray tracing — primary hits + direct lighting",
+      "category": "ray-traced",
+      "requirements": ["native-ray-tracing"],
+      "keywords": ["compute", "wavefront", "hit buffer", "direct lighting", "ray tracing"],
+      "description": "Two scene compute passes: one records each pixel's primary hit in an automatically sized buffer, the next rebuilds the surface and shades emission plus one shadowed light sample, then Accumulate and ToneMap. Requires native ray tracing."
+    },
+    {
       "kind": "snippet",
       "identity": "restir-di",
       "label": "ReSTIR DI — mesh emitter lighting",
@@ -71,6 +80,16 @@
       "requirements": ["native-ray-tracing"],
       "keywords": ["many lights", "emissive", "direct lighting", "vbuffer", "tiled", "mis"],
       "description": "Visibility raster, a per-tile emitter table and an MIS shading pass sharing one automatically sized buffer. Connect scene, view and color; outputs color, visibility and depth. Requires native ray tracing and emissive meshes."
+    },
+    {
+      "kind": "snippet",
+      "identity": "compute-ray-tracing",
+      "label": "Compute ray tracing — primary hits + direct lighting",
+      "category": "lighting",
+      "defaultConfiguration": "ComputeRayTracing",
+      "requirements": ["native-ray-tracing"],
+      "keywords": ["compute", "wavefront", "hit buffer", "direct lighting", "ray tracing"],
+      "description": "A primary-hits scene compute pass and a shading pass that share one automatically sized hit buffer. Connect scene, view and color; outputs color. Requires native ray tracing."
     },
     {
       "kind": "snippet",
