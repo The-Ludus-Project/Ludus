@@ -2801,11 +2801,12 @@ canonical state, stage identities, vertex schema and target binding layouts;
 recipe/node names and camera/extent values do not create extra shader programs.
 
 Budget ceilings are 8 configurations, 32 programs, 128 target artifacts and
-64 target pipeline recipes. The author may choose smaller bounds. Root graph
-configurations, plus the imported configurations their Subgraph nodes reach, also
-fit the configuration bound, counted separately from technique configurations.
-Unreferenced configurations of an imported file are still validated but do not
-count; a capacity failure lists each file's reachable configurations. Reports distinguish declared programs,
+64 target pipeline recipes. The author may choose smaller bounds. The
+configuration bound counts authored techniques and the root graph's own
+configurations. Imported configurations that Subgraph nodes reach do not spend
+it: they expand into the root plans, whose techniques, programs, ray variants,
+expanded nodes, passes, files and depth keep their own bounds. The package
+reports the reachable count as `graph_configurations`. Reports distinguish declared programs,
 unique stage identities, target artifacts and unique recipe keys. Deduplication
 never permits the authored count to exceed its bound or silently drops a target.
 
