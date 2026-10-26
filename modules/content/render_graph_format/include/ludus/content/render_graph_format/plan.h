@@ -13,7 +13,7 @@ namespace ludus::content::render_graph_format
 {
 /// Static triangle execution profile: opaque/masked raster with per-draw uniforms,
 /// and authored primary triangle ray functions with flat opaque World inputs.
-inline constexpr foundation::uint32 VERSION = 13;
+inline constexpr foundation::uint32 VERSION = 14;
 /// Opt-in portable raster ABI: static inputs plus primitive halves and draw/instance references.
 inline constexpr foundation::usize VISIBILITY_INPUT_COUNT = 8;
 /// Maximum authored passes in one admitted configuration.
@@ -72,7 +72,7 @@ inline constexpr foundation::usize MAX_UNIFORM_BLOCK_BYTES = 1024;
 /// Largest number of distinct per-draw uniform value sets one technique prepares per extraction.
 inline constexpr foundation::usize MAX_UNIFORM_SETS = 16;
 /// Number of explicitly serialized four-byte fields in a current pass record (uint32 or float32).
-inline constexpr foundation::usize PASS_FIELD_COUNT = 19;
+inline constexpr foundation::usize PASS_FIELD_COUNT = 20;
 /// Maximum samples in an authored Accumulate operation; zero selects individual ray samples.
 inline constexpr foundation::uint32 MAX_ACCUMULATION_SAMPLES = 4096;
 /// Smallest admitted positive linear exposure multiplier for an authored ToneMap operation.
@@ -205,6 +205,13 @@ struct Camera final
 {
     foundation::uint32 Target; ///< Logical surface color or exported color/depth resource.
 };
+/// Traversal required by a ray pass; callback signatures are shared by both profiles.
+// NOLINTNEXTLINE(performance-enum-size): versioned numeric field has an explicit width.
+enum class RayTraversal : foundation::uint32
+{
+    NativeQuery,  ///< Native inline queries require an enabled hardware ray profile.
+    TriangleLoop, ///< Ordinary GPU compute intersects packed World triangles; no native ray resources.
+};
 /// One retained scene raster or triangle ray operation; indices are checked before GPU setup.
 struct Pass final
 {
@@ -240,6 +247,8 @@ struct Pass final
     /// Zero bypasses denoising; otherwise ProcessingQuality selects OIDN RT HDR filtering
     /// after accumulation and before display conversion. Requires an enabled native OIDN profile.
     foundation::uint32 DenoisingQuality = 0;
+    /// Ray-pass traversal requirement; ignored for raster/image passes, which retain NativeQuery (zero).
+    RayTraversal Traversal = RayTraversal::NativeQuery;
 };
 /// One read-only uniform binding of a technique, filled per draw from logical values.
 /// Its values occupy [ValueOffset, ValueOffset + ValueCount) of each item's float32

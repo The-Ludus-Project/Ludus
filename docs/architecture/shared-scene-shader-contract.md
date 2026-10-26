@@ -323,7 +323,7 @@ The query boundary owns strategy dispatch: callback sources and ScenePayload do 
 change between triangle-loop intersections and native queries. Strategy is part of
 the cooked callback variant, so shared program IDs do not imply shared traversal.
 See the [authoring contract](../development/render-graph-authoring.md#reuse-ray-callbacks-in-compute-pipelines)
-for defaults, selection and the retained native capability requirement.
+for defaults, selection and the separate native-query versus ordinary-compute requirements.
 
 The following is author-owned pseudocode. UserEstimateDirect, UserHandleEmission
 and UserChooseContinuation are deliberately not engine helper implementations:

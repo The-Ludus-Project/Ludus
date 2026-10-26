@@ -10,6 +10,7 @@
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/overlays.hpp>
+#include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/renderer/viewport.hpp>
 #include <ludus/graphics/renderer/views.hpp>
@@ -1891,7 +1892,8 @@ TEST_CASE("Reference surface admission rejects retained narrow-channel texels", 
     REQUIRE(session.Renderer.Release(program) == rhi::RasterStatus::Ready);
 }
 
-TEST_CASE("Compute without native ray support cannot activate GPU tracing", "[renderer][gpu-preview]")
+TEST_CASE("Native query artifacts require ray support while software compute artifacts do not",
+          "[renderer][gpu-preview]")
 {
     Session session;
     rr::Renderer renderer;
@@ -1899,9 +1901,28 @@ TEST_CASE("Compute without native ray support cannot activate GPU tracing", "[re
     rhi::RayCapabilities capabilities;
     CHECK(rhi::GetRayCapabilities(session.Device, capabilities) == rhi::RasterStatus::Unsupported);
     CHECK(capabilities.InlineQueries == false);
-    CHECK(renderer.EnableGpuPreview({}, {}, {}, {usize{1024} * 1024, usize{1024} * 1024, 1}) ==
+    rhi::RasterShaderDescription compute;
+    rr::SetRenderGraphRayInterface(compute, rhi::ShaderStage::Compute);
+    CHECK(renderer.EnableGpuPreview(compute, {}, {}, {usize{1024} * 1024, usize{1024} * 1024, 1}) ==
           rhi::RasterStatus::Unsupported);
     CHECK(renderer.PollGpuPreview() == rhi::RasterStatus::NotReady);
+    rhi::RasterShaderDescription vertex;
+    rhi::RasterShaderDescription fragment;
+    rr::SetRenderGraphRayInterface(compute, rhi::ShaderStage::Compute, false, false, false);
+    rr::SetRenderGraphRayInterface(vertex, rhi::ShaderStage::Vertex, false, false, false);
+    rr::SetRenderGraphRayInterface(fragment, rhi::ShaderStage::Fragment, false, false, false);
+    compute.Artifact.Wgsl = "software compute fixture";
+    compute.Artifact.WgslEntry = "main";
+    vertex.Artifact.Wgsl = "software image vertex fixture";
+    vertex.Artifact.WgslEntry = "main";
+    fragment.Artifact.Wgsl = "software image fragment fixture";
+    fragment.Artifact.WgslEntry = "main";
+    REQUIRE(renderer.EnableGpuPreview(compute, vertex, fragment, {usize{1024} * 1024, usize{1024} * 1024, 1}) ==
+            rhi::RasterStatus::Ready);
+    for (const rhi::RasterBinding& binding : compute.Bindings)
+    {
+        CHECK(binding.Kind != rhi::RasterBindingKind::RayScene);
+    }
     rr::Snapshot snapshot;
     CHECK(renderer.CreateSnapshot(nullptr, 0, snapshot) == rhi::RasterStatus::Ready);
     CHECK(renderer.Release(snapshot) == rhi::RasterStatus::Ready);

@@ -96,19 +96,25 @@ def metal_layouts(code, interface, document, allows_arrays=False):
             raise RuntimeError('RG1 emitted Metal packing differs from target reflection')
 
 
-def verify_native_ray_metal(code, interface):
-    """Verify SPIRV-Cross native traversal and scalar resource slots."""
+def verify_ray_compute_metal(code, interface, requires_native_queries=True):
+    """Verify translated compute bindings and the selected native/software traversal profile."""
     scenes = [entry for entry in interface['entries'] if entry['kind'] == 'RayScene']
-    if len(scenes) != 1 or 'intersection_query<' not in code:
+    if requires_native_queries and (len(scenes) != 1 or 'intersection_query<' not in code):
         raise RuntimeError('Native ray Metal artifact lacks a single TLAS/query interface')
+    if not requires_native_queries and (scenes or 'intersection_query<' in code or 'metal_raytracing' in code):
+        raise RuntimeError('Software ray Metal artifact must not require native ray traversal')
     for binding in interface['entries']:
         resource = 'texture' if binding['kind'] in ('Texture2D', 'TextureDepth2D') else 'buffer'
         if '[[' + resource + '(' + str(binding['binding']) + ')]]' not in code:
-            raise RuntimeError('Native ray Metal binding differs from target reflection')
+            raise RuntimeError('Ray compute Metal binding differs from target reflection')
     names = re.findall(r'kernel\s+void\s+(\w+)\s*\(', code)
     if len(names) != 1:
-        raise RuntimeError('Native ray Metal artifact requires one compute entry')
+        raise RuntimeError('Ray compute Metal artifact requires one compute entry')
     return names[0]
+
+
+def verify_native_ray_metal(code, interface):
+    return verify_ray_compute_metal(code, interface)
 
 
 def compile_graph_stage(args, lock):
@@ -116,14 +122,18 @@ def compile_graph_stage(args, lock):
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     native_rays = getattr(args, 'native_ray_queries', False)
+    software_rays = getattr(args, 'graph_software_rays', False)
+    translated_compute = native_rays or software_rays
+    if software_rays and (native_rays or stage != 'compute' or target not in ('spirv', 'metal')):
+        raise RuntimeError('Software ray traversal requires an ordinary native compute target')
     if native_rays and (stage != 'compute' or target not in ('spirv', 'metal')):
         raise RuntimeError('Hardware ray queries require a native Metal or Vulkan compute target')
     metal = target == 'metal'
-    slang_target = 'spirv' if target == 'glsl' or native_rays else target
+    slang_target = 'spirv' if target == 'glsl' or translated_compute else target
     if target in ('spirv', 'glsl') or (native_rays and args.validator):
         if not args.validator or hashlib.sha256(Path(args.validator).read_bytes()).hexdigest() != lock['spirv_tools']['val_sha256']:
             raise RuntimeError('RG1 SPIR-V validator differs from SDK pin')
-    if target == 'glsl' or (native_rays and metal):
+    if target == 'glsl' or (translated_compute and metal):
         if not args.spirv_cross or not args.spirv_cross_lock:
             raise RuntimeError('RG1 GLSL requires the pinned SPIRV-Cross translator')
         pin = json.loads(Path(args.spirv_cross_lock).read_text())['spirv_cross']
@@ -132,7 +142,7 @@ def compile_graph_stage(args, lock):
         if any(build.get(k) != pin[k] for k in ('tag', 'commit', 'source_sha256')) or build.get('binary_sha256') != hashlib.sha256(tool.read_bytes()).hexdigest():
             raise RuntimeError('RG1 SPIRV-Cross identity differs from SDK pin')
     artifact = output / ('artifact.' + {'spirv': 'spv', 'wgsl': 'wgsl', 'metal': 'metal', 'glsl': 'essl'}[target])
-    intermediate = output / 'intermediate.spv' if target == 'glsl' or (native_rays and metal) else artifact
+    intermediate = output / 'intermediate.spv' if target == 'glsl' or (translated_compute and metal) else artifact
     reflection, depfile = output / 'reflection.json', output / 'stage.d'
     profile = ('spirv_1_5' if native_rays else 'spirv_1_3') if slang_target == 'spirv' else 'sm_6_0'
     command = [args.compiler, args.source, '-target', slang_target, '-profile', profile,
@@ -149,8 +159,8 @@ def compile_graph_stage(args, lock):
     points = document.get('entryPoints', [])
     if len(points) != 1 or points[0].get('stage') != stage or points[0].get('name') != args.name:
         raise RuntimeError('RG1 requested entry/stage differs from target reflection')
-    interface = raster_interface(document, stage, metal and not native_rays, structured_records=native_rays)
-    if native_rays:
+    interface = raster_interface(document, stage, metal and not translated_compute, structured_records=translated_compute)
+    if translated_compute:
         from compile_raster import verify_storage_record_strides
         verify_storage_record_strides(intermediate.read_bytes(), interface)
     allowed = ('UniformBuffer', 'StorageRead') if stage == 'fragment' and getattr(args, 'fragment_storage', False) else ('UniformBuffer',)
@@ -170,10 +180,10 @@ def compile_graph_stage(args, lock):
             raise RuntimeError('RG1 requires exactly one emitted WGSL stage entry')
         artifact.write_text(code)
         emitted = names[0]
-    elif metal and native_rays:
+    elif metal and translated_compute:
         run([args.spirv_cross, str(intermediate), '--msl', '--msl-version', '20400', '--msl-decoration-binding', '--output', str(artifact)])
         code = relative_line_directives(artifact.read_text(), [Path(args.source).parent])
-        emitted = verify_native_ray_metal(code, interface)
+        emitted = verify_ray_compute_metal(code, interface, native_rays)
         artifact.write_text(code)
     elif metal:
         native_stage = 'kernel' if stage == 'compute' else stage

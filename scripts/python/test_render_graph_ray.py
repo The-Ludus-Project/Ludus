@@ -244,7 +244,10 @@ class RayPipelineTests(unittest.TestCase):
         native_plan = deepcopy(software_plan)
         native_plan['passes'][0]['pipeline']['invocation']['traversal'] = 'NativeQuery'
         groups = ray.group_profiles([software_plan, native_plan], {}, build)
-        self.assertEqual([original, software], groups[0]['variants'])
+        self.assertEqual([software], groups[0]['variants'])
+        self.assertFalse(groups[0]['native_ray_queries'])
+        self.assertEqual([original], groups[1]['variants'])
+        self.assertTrue(groups[1]['native_ray_queries'])
         self.assertTrue(groups[0]['persistent'])
         for strategy in ('Unknown', '', 1, None):
             self.node['invocation']['traversal'] = strategy
@@ -602,15 +605,25 @@ class RayCompilerAcceptance(unittest.TestCase):
             package = Path(result['package'])
             wrapper = next(path.read_text() for path in (package / 'programs').glob('*/wrapper.slang')
                            if 'GetGraphTraversalStrategy' in path.read_text())
-            self.assertIn('const uint strategies[] = { 0, 1 }', wrapper)
+            self.assertIn('#define LUDUS_SOFTWARE_RAY_TRAVERSAL 1', wrapper)
+            self.assertIn('const uint strategies[] = { 1 }', wrapper)
             descriptor = json.loads((package / 'package.json').read_text())
-            recipe = next(recipe for recipe in descriptor['recipes'] if recipe['technique'] == ray.TECHNIQUE)
-            self.assertEqual([['Generate', 'Miss', 'Closest'],
-                              ['Generate', 'Miss', 'Closest', ray.TRIANGLE_LOOP_TAG]], recipe['ray_programs'])
+            recipes = [recipe for recipe in descriptor['recipes'] if recipe['technique'] == ray.TECHNIQUE]
+            self.assertEqual({False, True}, {recipe['native_ray_queries'] for recipe in recipes})
+            software = next(recipe for recipe in recipes if not recipe['native_ray_queries'])
+            self.assertEqual([['Generate', 'Miss', 'Closest', ray.TRIANGLE_LOOP_TAG]], software['ray_programs'])
+            stages = [program for program in descriptor['programs'] if program['id'] == ray.SOFTWARE_COMPUTE_ID]
+            self.assertTrue(stages)
+            for stage in stages:
+                self.assertNotIn('RayScene', {entry['kind'] for entry in stage['descriptor']['interface']['entries']})
+                metal = (package / 'programs' / stage['key'] / stage['descriptor']['artifact']).read_text()
+                self.assertNotIn('metal_raytracing', metal)
+                self.assertNotIn('intersection_query<', metal)
             _, _, native, _ = execution.lower_plan(descriptor, 'Native')
             _, _, compute, _ = execution.lower_plan(descriptor, 'Compute')
             self.assertEqual(0, next(item['RayProgram'] for item in native if item['Program'] == 'RayTracing'))
-            self.assertEqual(1, next(item['RayProgram'] for item in compute if item['Program'] == 'RayTracing'))
+            self.assertEqual(0, next(item['RayProgram'] for item in compute if item['Program'] == 'RayTracing'))
+            self.assertEqual('TriangleLoop', next(item['Traversal'] for item in compute if item['Program'] == 'RayTracing'))
             destination = root / 'shared.lurgrt'
             execution.cook_runtime(str(package), destination, configuration='Compute')
             self.assertGreater(destination.stat().st_size, 0)
@@ -620,7 +633,7 @@ class RayCompilerAcceptance(unittest.TestCase):
             path.write_bytes(graph.canonical_asset(document))
             rebuilt = build.build_package(manifest, root / 'build', **options)
             rebuilt_wrapper = next(path.read_text() for path in (Path(rebuilt['package']) / 'programs').glob('*/wrapper.slang')
-                                   if 'DispatchGraphRay' in path.read_text())
+                                   if 'float3 EvaluateGraphRay' in path.read_text())
             self.assertNotIn('GetGraphTraversalStrategy', rebuilt_wrapper)
             self.assertEqual(shader_bytes, {path: path.read_bytes() for path in shader_bytes})
 

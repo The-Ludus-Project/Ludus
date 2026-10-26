@@ -603,8 +603,8 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
         traversal->setCurrentIndex(traversal->findData(selection));
         traversal->setToolTip(QStringLiteral(
             "Shared ray callbacks default to triangle intersections in a compute pipeline and native queries in "
-            "a ray pipeline. Existing compute kernels default to native queries. Both strategies currently require "
-            "the native ray runtime profile. The choice applies to surface and visibility queries."));
+            "a ray pipeline. Existing compute kernels default to native queries. Triangle loop needs ordinary compute; "
+            "native queries require enabled ray hardware. The choice applies to surface and visibility queries."));
         connect(traversal, &QComboBox::currentIndexChanged, this, [this, traversal](int32 index) {
             QJsonObject invocation = mNode.value(QStringLiteral("invocation")).toObject();
             const QString strategy = traversal->itemData(index).toString();

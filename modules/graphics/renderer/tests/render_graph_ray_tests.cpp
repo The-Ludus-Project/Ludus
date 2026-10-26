@@ -10,6 +10,7 @@
 #include "rg2_restir_di.h"
 #include "rg2_scene_compute.h"
 #include "rg2_scene_ray.h"
+#include "rg2_shared_ray_default.h"
 #include "rg2_simple_compute_ray_tracing_template.h"
 #include "rg2_storage_ray.h"
 #include "rg2_tiled_vbuffer_nee_template.h"
@@ -72,13 +73,13 @@ struct GraphGpuFixture final
     StaticArray<renderer::RenderGraphItem, TABLE_COUNT> Items{};
     StaticArray<renderer::ViewDescription, TABLE_COUNT> Cameras{};
     StaticArray<uint8, PIXEL_BYTES> Pixels{};
-    explicit GraphGpuFixture(bool shouldEnableGpuTiming = false)
+    explicit GraphGpuFixture(bool shouldEnableGpuTiming = false, bool shouldRequireNativeRays = true)
     {
         rhi::DeviceDescription description;
         description.Required.PortableRaster = true;
         description.Storage.ResourcesPerGraph = renderer::VISIBILITY_GRAPH_RESOURCE_CAPACITY;
         description.EnableGpuTiming = shouldEnableGpuTiming;
-        description.Preferred.RayQueries = true;
+        description.Preferred.RayQueries = shouldRequireNativeRays;
         rhi::StartupInfo failure;
         const rhi::DeviceStatus started =
             rhi::CreateDevice({}, { .Width = WIDTH, .Height = HEIGHT }, description, Device, Surface, &failure);
@@ -88,7 +89,8 @@ struct GraphGpuFixture final
         }
         REQUIRE(started == rhi::DeviceStatus::Ready);
         rhi::RayCapabilities capabilities;
-        if (rhi::GetRayCapabilities(Device, capabilities) == rhi::RasterStatus::Unsupported)
+        if (shouldRequireNativeRays == true &&
+            rhi::GetRayCapabilities(Device, capabilities) == rhi::RasterStatus::Unsupported)
         {
             SKIP("Hardware raytracing is unavailable; no software traversal is selected");
         }
@@ -288,14 +290,33 @@ TEST_CASE("Authored ray graph shades World triangles and preserves the drawable 
 TEST_CASE("Scene callbacks preserve material and scene generation through native GPU rendering",
           "[render-graph][gpu][scene-shader]")
 {
-    GraphGpuFixture fixture;
+    bool shouldUseSoftwareTraversal = false;
+    SECTION("native traversal") {}
+    SECTION("software traversal without requested ray features")
+    {
+        shouldUseSoftwareTraversal = true;
+    }
+    GraphGpuFixture fixture(false, shouldUseSoftwareTraversal == false);
     const renderer::RenderGraphPrograms programs =
-        packages::rg2_scene_ray::MakePrograms(shaders::renderer_composite::Vertex(),
-                                              shaders::renderer_composite::Fragment());
+        shouldUseSoftwareTraversal == true
+            ? packages::rg2_shared_ray_default::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                             shaders::renderer_composite::Fragment())
+            : packages::rg2_scene_ray::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                    shaders::renderer_composite::Fragment());
     const core::UniquePtr<renderer::RenderGraphPackage> package =
-        LoadPackage({LUDUS_RG3_SCENE_RAY_DIRECTORY, "rg2_scene_ray.lurgrt"});
+        LoadPackage(shouldUseSoftwareTraversal == true
+                        ? PackageLocation{LUDUS_RG3_SHARED_RAY_DEFAULT_DIRECTORY, "rg2_shared_ray_default.lurgrt"}
+                        : PackageLocation{LUDUS_RG3_SCENE_RAY_DIRECTORY, "rg2_scene_ray.lurgrt"});
     const renderer::RenderGraphPrograms decoded =
         package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    CHECK(renderer::RequiresHardwareRayTracing(package->GetPlan()) == (shouldUseSoftwareTraversal == false));
+    for (const rhi::RasterBinding& binding : decoded.RayCompute.Bindings)
+    {
+        if (shouldUseSoftwareTraversal == true)
+        {
+            CHECK(binding.Kind != rhi::RasterBindingKind::RayScene);
+        }
+    }
     CHECK(programs.HasSceneShaderInterface == true);
     CHECK(decoded.HasSceneShaderInterface == true);
     REQUIRE(package->GetPlan().Passes[0].Program == format::Technique::RayTracing);

@@ -95,6 +95,7 @@ struct GpuPreviewState final
         ComputeBindings{}; // NOLINT(bugprone-invalid-enum-default-initialization)
     usize ComputeBindingCount = 0;
     bool IsGraphRayScene = false;
+    bool HasNativeRayQueries = true;
     bool HasVisibilityBuffer = false;
     bool HasPersistentBuffers = false;
     uint32 Phase = 0;

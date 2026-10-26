@@ -48,6 +48,13 @@ def program_tuple(node):
     return variant
 
 
+def requires_native_queries(plan):
+    """Whether any selected ray pass explicitly needs native ray traversal."""
+    return any(operation['kind'] == 'RayTracing' and
+               program_tuple(operation['pipeline'])[-1] != TRIANGLE_LOOP_TAG
+               for operation in plan['passes'])
+
+
 def is_compute_variant(variant):
     """Scene compute kernels occupy only the ray-generation position of the sequence."""
     return len(callback_programs(variant)) == 1
@@ -83,7 +90,9 @@ SCENE_QUERY_LIMITS = {
 
 COMPUTE_ID = 'GraphRayCompute'
 VISIBILITY_COMPUTE_ID = 'GraphVisibilityRayCompute'
-COMPUTE_IDS = (COMPUTE_ID, VISIBILITY_COMPUTE_ID)
+SOFTWARE_COMPUTE_ID = 'GraphSoftwareRayCompute'
+SOFTWARE_VISIBILITY_COMPUTE_ID = 'GraphSoftwareVisibilityRayCompute'
+COMPUTE_IDS = (COMPUTE_ID, VISIBILITY_COMPUTE_ID, SOFTWARE_COMPUTE_ID, SOFTWARE_VISIBILITY_COMPUTE_ID)
 IMAGE_VERTEX_ID = 'GraphRayImageVertex'
 IMAGE_INPUTS = [{'location': 0, 'format': 'Float2'}]
 IMAGE_FRAGMENT_ID = 'GraphRayImageFragment'
@@ -230,7 +239,8 @@ def group_profiles(plans, technique, build):
         build.require(not has_visibility or technique.get('scene_interface', {}).get('visibility_buffer', False),
                       'Configuration', plan['configuration'],
                       'visibility inputs require scene_interface.visibility_buffer')
-        group = groups.setdefault(has_visibility, {'variants': set(), 'persistent': False, 'structured_buffers': False})
+        has_native_queries = requires_native_queries(plan)
+        group = groups.setdefault((has_visibility, has_native_queries), {'variants': set(), 'persistent': False, 'structured_buffers': False})
         group['variants'].update(program_tuple(operation['pipeline']) for operation in operations)
         group['structured_buffers'] |= any(operation.get('buffers') for operation in operations)
         # GraphBuffer0/1 and GetGraphPassIndex exist only in the persistent wrapper, so a
@@ -244,21 +254,23 @@ def group_profiles(plans, technique, build):
     if not groups:
         build.require(all(stage in technique for stage in STAGES), 'Configuration', TECHNIQUE,
                       'a ray technique without default callbacks requires a RayTracingPipeline or scene compute pass')
-        groups[technique.get('scene_interface', {}).get('visibility_buffer', False)] = {
+        groups[(technique.get('scene_interface', {}).get('visibility_buffer', False), True)] = {
             'variants': {tuple(technique[stage] for stage in STAGES)}, 'persistent': False, 'structured_buffers': False}
     result = []
-    for has_visibility, group in sorted(groups.items()):
+    for (has_visibility, has_native_queries), group in sorted(groups.items()):
         build.require(not (group['persistent'] or len(group['variants']) > 1) or not group['structured_buffers'],
                       'Capability', 'ray storage',
                       'ordered ray passes use shared Buffer nodes; StructuredBuffer nodes remain private to one ray job')
-        result.append({'visibility_buffer': has_visibility, 'variants': sorted(group['variants']),
+        result.append({'visibility_buffer': has_visibility, 'native_ray_queries': has_native_queries,
+                       'variants': sorted(group['variants']),
                        'persistent': group['persistent'] or len(group['variants']) > 1,
-                       'compute': VISIBILITY_COMPUTE_ID if has_visibility and len(groups) > 1 else COMPUTE_ID})
+                       'compute': ((VISIBILITY_COMPUTE_ID if has_visibility and (False, has_native_queries) in groups else COMPUTE_ID) if has_native_queries else
+                                   (SOFTWARE_VISIBILITY_COMPUTE_ID if has_visibility and (False, has_native_queries) in groups else SOFTWARE_COMPUTE_ID))})
     return result
 
 
 def expand_programs(programs, technique, snapshot, helper, build, variants=None, persistent=False, schemas=None,
-                    compute_identity=COMPUTE_ID):
+                    compute_identity=COMPUTE_ID, native_ray_queries=True):
     """Capture the engine kernel and all three functions in one linked compute entry."""
     selected = select_callbacks(programs, variants[0]) if variants else {stage: programs[technique[stage]] for stage in STAGES}
     storage = buffers.merge_bindings(selected, build)
@@ -341,10 +353,12 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
         build.require(technique.get('scene_interface') is not None, 'Capability', TECHNIQUE,
                       'ordered ray passes and persistent buffers require the scene callback interface')
         wrapper = persistent_wrapper(programs, technique, variants, snapshot, build, compute_recipe, compatibility)
+    if not native_ray_queries:
+        wrapper = '#define LUDUS_SOFTWARE_RAY_TRAVERSAL 1\n' + wrapper
     result = {identity: deepcopy(program) for identity, program in programs.items()
               if program['stage'] not in (*STAGES, COMPUTE_STAGE)}
     result[compute_identity] = {'id': compute_identity, 'stage': 'compute', 'source': selected['ray_generation']['source'],
-                          'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': wrapper, 'native_ray_queries': True, 'native_ray_profile': True, 'persistent_ray_profile': persistent, 'storage_bindings': storage, 'storage_schemas': {binding['schema']: schemas[binding['schema']] for binding in storage}, 'visibility_buffer': technique.get('scene_interface', {}).get('visibility_buffer', False)}
+                          'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': wrapper, 'native_ray_queries': native_ray_queries, 'software_ray_queries': not native_ray_queries, 'native_ray_profile': True, 'persistent_ray_profile': persistent, 'storage_bindings': storage, 'storage_schemas': {binding['schema']: schemas[binding['schema']] for binding in storage}, 'visibility_buffer': technique.get('scene_interface', {}).get('visibility_buffer', False)}
     if compatibility['sources']:
         result[compute_identity]['source_overrides'] = compatibility['sources']
     for identity, stage, function in ((IMAGE_VERTEX_ID, 'vertex', image_recipe['vertex']), (IMAGE_FRAGMENT_ID, 'fragment', image_recipe['fragment'])):
@@ -381,12 +395,14 @@ def check_interface(program, result, build):
     if program['id'] in COMPUTE_IDS:
         expected = [(0, 'UniformBuffer', 224), (1, 'StorageRead', 16), (2, 'StorageReadWrite', 16),
                     (3, 'StorageReadWrite', 16), (4, 'StorageRead', 16), (5, 'RayScene', 0)]
+        if not program.get('native_ray_queries', True):
+            expected = [entry for entry in expected if entry[1] != 'RayScene']
         if program.get('persistent_ray_profile'):
             expected += [(6, 'StorageReadWrite', 16), (7, 'StorageReadWrite', 16)]
         build.require(interface.get('workgroup') == [64, 1, 1] and interface['inputs'] == [] and
                       [(entry['binding'], entry['kind'], entry['size']) for entry in entries if program.get('persistent_ray_profile') or entry['binding'] < buffers.FIRST_SLOT or entry['binding'] >= VISIBILITY_SLOT] ==
                       expected + ([(VISIBILITY_SLOT, 'Texture2D', 0), (VISIBILITY_SLOT + 1, 'TextureDepth2D', 0)] if program.get('visibility_buffer', False) else []),
-                      'ShaderInterface', program['id'], 'ray query reflection differs from the native renderer ABI')
+                      'ShaderInterface', program['id'], 'ray compute reflection differs from the selected renderer ABI')
         declared = program.get('storage_bindings', [])
         extra = [entry for entry in entries if buffers.FIRST_SLOT <= entry['binding'] < VISIBILITY_SLOT and not program.get('persistent_ray_profile')]
         build.require(len(extra) == len(declared) and all(

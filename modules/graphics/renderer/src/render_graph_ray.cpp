@@ -10,10 +10,29 @@
 // ray functions into the portable compute target with an explicit resource ABI.
 namespace ludus::graphics::renderer
 {
+namespace
+{
+template <foundation::usize BINDING_COUNT>
+constexpr foundation::StaticArray<rhi::RasterBinding, BINDING_COUNT - 1>
+MakeSoftwareRayBindings(const foundation::StaticArray<rhi::RasterBinding, BINDING_COUNT>& bindings) noexcept
+{
+    foundation::StaticArray<rhi::RasterBinding, BINDING_COUNT - 1> result{};
+    foundation::usize destination = 0;
+    for (const rhi::RasterBinding& binding : bindings)
+    {
+        if (binding.Kind != rhi::RasterBindingKind::RayScene)
+        {
+            result[destination++] = binding;
+        }
+    }
+    return result;
+}
+} // namespace
 void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription,
                                 rhi::ShaderStage stage,
                                 bool hasPersistentBuffers,
-                                bool hasVisibilityBuffer) noexcept
+                                bool hasVisibilityBuffer,
+                                bool hasNativeRayQueries) noexcept
 {
     using namespace foundation;
     constexpr usize COMPUTE_BINDING_COUNT = LUDUS_GPU_PREVIEW_BINDING_COUNT;
@@ -83,6 +102,15 @@ void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription,
                                         PERSISTENT_BINDINGS[7],
                                         VISIBILITY_BINDINGS[LUDUS_GPU_PREVIEW_BINDING_COUNT],
                                         VISIBILITY_BINDINGS[LUDUS_GPU_PREVIEW_BINDING_COUNT + 1]}};
+    static constexpr foundation::StaticArray<rhi::RasterBinding, COMPUTE_BINDING_COUNT - 1> SOFTWARE_COMPUTE_BINDINGS =
+        MakeSoftwareRayBindings(COMPUTE_BINDINGS);
+    static constexpr foundation::StaticArray<rhi::RasterBinding, LUDUS_GRAPH_VISIBILITY_BINDING_COUNT - 1>
+        SOFTWARE_VISIBILITY_BINDINGS = MakeSoftwareRayBindings(VISIBILITY_BINDINGS);
+    static constexpr foundation::StaticArray<rhi::RasterBinding, LUDUS_GRAPH_COMPUTE_BINDING_COUNT - 1>
+        SOFTWARE_PERSISTENT_BINDINGS = MakeSoftwareRayBindings(PERSISTENT_BINDINGS);
+    static constexpr foundation::
+        StaticArray<rhi::RasterBinding, LUDUS_GRAPH_COMPUTE_BINDING_COUNT + LUDUS_GRAPH_VISIBILITY_TEXTURE_COUNT - 1>
+            SOFTWARE_PERSISTENT_VISIBILITY_BINDINGS = MakeSoftwareRayBindings(PERSISTENT_VISIBILITY_BINDINGS);
     inoutDescription.Artifact.Stage = stage;
     inoutDescription.Bindings = {};
     inoutDescription.Inputs = {};
@@ -93,6 +121,15 @@ void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription,
                 ? (hasPersistentBuffers == true ? PERSISTENT_VISIBILITY_BINDINGS.AsSpan()
                                                 : VISIBILITY_BINDINGS.AsSpan())
                 : (hasPersistentBuffers == true ? PERSISTENT_BINDINGS.AsSpan() : COMPUTE_BINDINGS.AsSpan());
+        if (hasNativeRayQueries == false)
+        {
+            inoutDescription.Bindings =
+                hasVisibilityBuffer == true
+                    ? (hasPersistentBuffers == true ? SOFTWARE_PERSISTENT_VISIBILITY_BINDINGS.AsSpan()
+                                                    : SOFTWARE_VISIBILITY_BINDINGS.AsSpan())
+                    : (hasPersistentBuffers == true ? SOFTWARE_PERSISTENT_BINDINGS.AsSpan()
+                                                    : SOFTWARE_COMPUTE_BINDINGS.AsSpan());
+        }
         inoutDescription.WorkgroupSize[0] = WORKGROUP_WIDTH;
         inoutDescription.WorkgroupSize[1] = 1;
         inoutDescription.WorkgroupSize[2] = 1;

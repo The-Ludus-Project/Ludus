@@ -748,13 +748,15 @@ def compile_program(program, schemas, closure, snapshot, work, helper, tools, ta
         command += ['--graph-forward-material']
     if program.get('native_ray_queries'):
         command += ['--native-ray-queries']
+    if program.get('software_ray_queries'):
+        command += ['--graph-software-rays']
     if program.get('fragment_storage'):
         command += ['--fragment-storage']
     if worker_socket:
         command += ['--worker-socket', worker_socket, '--worker-identity', worker_identity]
     if 'tool/spirv-val' in tools:
         command += ['--validator', str(tools['tool/spirv-val'])]
-    if target == 'glsl' or (target == 'metal' and program.get('native_ray_queries')):
+    if target == 'glsl' or (target == 'metal' and (program.get('native_ray_queries') or program.get('software_ray_queries'))):
         command += ['--spirv-cross', str(tools['tool/spirv-cross']), '--spirv-cross-lock', str(helper / 'spirv_cross_toolchain.json')]
     try:
         run_stage(command, cancel)
@@ -928,7 +930,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
             if 'scene_interface' in technique:
                 technique['scene_interface']['visibility_buffer'] = profile['visibility_buffer']
             expanded = ray.expand_programs(authored_programs, technique, snapshot, helper, sys.modules[__name__],
-                                          profile['variants'], profile['persistent'], schemas, profile['compute'])
+                                          profile['variants'], profile['persistent'], schemas, profile['compute'],
+                                          profile['native_ray_queries'])
             linked_programs.update(expanded)
         programs = linked_programs
         for program_identity in (*ray.COMPUTE_IDS, ray.IMAGE_VERTEX_ID, ray.IMAGE_FRAGMENT_ID):
@@ -979,7 +982,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                                 'tools': {k: h for k, h in tool_hashes.items()
                                           if k not in ('generator/render_graph.py', 'generator/render_graph_options.py', 'generator/render_graph_pipeline.py', 'generator/render_graph_compute.py', 'generator/render_graph_diagnostics.py', 'generator/render_graph_upscale.py', 'generator/render_graph_sizes.py')
                                           and not (target in ('metal', 'wgsl') and k == 'tool/spirv-val')
-                                          and not (target != 'glsl' and not program.get('native_ray_queries') and ('spirv-cross' in k or k.endswith('spirv_cross_toolchain.json')))}}
+                                          and not (target != 'glsl' and not (program.get('native_ray_queries') or program.get('software_ray_queries')) and ('spirv-cross' in k or k.endswith('spirv_cross_toolchain.json')))}}
                     key = identity(key_data)
                     saved = cache / key
                     result = checked_cache(saved, key_data)
@@ -1012,6 +1015,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                                 'fragment': entries[(ray.IMAGE_FRAGMENT_ID, target)], 'bindings': {'vertex': [], 'fragment': []}}
                             record['ray_programs'] = [list(variant) for variant in profile['variants']]
                             record['persistent_buffers'] = profile['persistent']
+                            record['native_ray_queries'] = profile['native_ray_queries']
                             record['scene_interface_version'] = technique.get('scene_interface', {}).get('version', 0)
                             record['visibility_buffer'] = profile['visibility_buffer']
                             record['canonical'] = deepcopy(record)
