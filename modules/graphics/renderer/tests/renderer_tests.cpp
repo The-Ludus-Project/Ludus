@@ -6,7 +6,9 @@
 #include <catch2/catch_test_macros.hpp>
 #include <cmath>
 #include <limits>
+#include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/overlays.hpp>
@@ -2486,4 +2488,54 @@ TEST_CASE("Reference vertex color interpolation preserves invalid arithmetic for
     triangle.Colors[0].X = std::numeric_limits<float32>::quiet_NaN();
     CHECK(math::IsFinite(rr::internal::InterpolateReferenceColor(triangle, .1534976065158844F, .22540529072284698F)) ==
           false);
+}
+
+TEST_CASE("Compute reference status retains the selected failure and addressed sample",
+          "[renderer][reference-compute-status]")
+{
+    namespace internal = rr::internal;
+    constexpr usize WORD_COUNT = internal::REFERENCE_COMPUTE_STATUS_BYTES / sizeof(uint32);
+    // First two vectors: sample extrema, commits, invalid pixels, and query/event counts.
+    // Third vector: the same lowest failing pixel's index, depth, capacity count, reason.
+    StaticArray<uint32, WORD_COUNT> words{
+        {7, 8, 15, 2, 31, 19, 4, 3, 128, 1, 0, LUDUS_REFERENCE_FAILURE_INVALID_BSDF_SAMPLE}};
+    StaticArray<uint8, internal::REFERENCE_COMPUTE_STATUS_BYTES> bytes{};
+    const auto encodeStatus = [&words, &bytes]() {
+        for (usize index = 0; index < words.GetSize(); ++index)
+        {
+            REQUIRE(TryWriteLittleEndian(words[index], {bytes.GetData() + index * sizeof(uint32), sizeof(uint32)}) ==
+                    true);
+        }
+    };
+    encodeStatus();
+    rr::ReferenceCaptureInfo information;
+    information.MinimumSamples = 7;
+    information.CommittedSamples = 100;
+    CHECK(internal::ApplyReferenceComputeStatus(bytes, information) == rhi::RasterStatus::Failed);
+    CHECK(information.MinimumSamples == 7);
+    CHECK(information.MaximumSamples == 8);
+    CHECK(information.CommittedSamples == 115);
+    CHECK(information.InvalidContributions == 2);
+    CHECK(information.FailurePixel == 128);
+    CHECK(information.FailureDepth == 1);
+    CHECK(information.FailureSample == 7);
+    CHECK(information.Failure == rr::ReferenceFailure::InvalidBsdfSample);
+    CHECK(information.ClosestQueries == 31);
+    CHECK(information.VisibilityQueries == 19);
+    CHECK(information.NullBsdfSamples == 4);
+    CHECK(information.RouletteTerminations == 3);
+    words[10] = 1;
+    words[11] = LUDUS_REFERENCE_FAILURE_TRAVERSAL_CAPACITY_EXCEEDED;
+    encodeStatus();
+    CHECK(internal::ApplyReferenceComputeStatus(bytes, information) == rhi::RasterStatus::CapacityExceeded);
+    CHECK(information.Failure == rr::ReferenceFailure::TraversalCapacityExceeded);
+    words[3] = 0;
+    words[10] = 0;
+    words[11] = LUDUS_REFERENCE_FAILURE_NONE;
+    encodeStatus();
+    CHECK(internal::ApplyReferenceComputeStatus(bytes, information) == rhi::RasterStatus::Ready);
+    // A successful dispatch must not replace diagnostic evidence with a different pixel/reason.
+    CHECK(information.FailurePixel == 128);
+    CHECK(information.FailureSample == 7);
+    CHECK(information.Failure == rr::ReferenceFailure::TraversalCapacityExceeded);
 }

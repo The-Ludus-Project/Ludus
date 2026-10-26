@@ -58,8 +58,8 @@
       "label": "Compute ray tracing — primary hits + direct lighting",
       "category": "ray-traced",
       "requirements": ["native-ray-tracing"],
-      "keywords": ["compute", "wavefront", "hit buffer", "direct lighting", "mis", "ray tracing"],
-      "description": "Two scene compute passes: one records each pixel's primary hit in an automatically sized buffer, the next rebuilds the surface and shades emission plus a light sample and a BSDF sample combined with MIS (Veach and Guibas), then Accumulate and ToneMap. Requires native ray tracing."
+      "keywords": ["compute", "wavefront", "hit buffer", "direct lighting", "ray tracing"],
+      "description": "Two scene compute passes: one records each pixel's primary hit in an automatically sized buffer, the next rebuilds the surface and shades emission plus one shadowed light sample, then Accumulate and ToneMap. Requires native ray tracing."
     },
     {
       "kind": "graph",
@@ -69,6 +69,15 @@
       "requirements": ["native-ray-tracing"],
       "keywords": ["simple", "basic", "compute", "brute force", "triangle", "intersection", "ray tracing"],
       "description": "One compute pass loops over every World triangle, keeps the closest hit and displays its unlit material color plus emission; misses show the environment. No shadow rays or bounces. Uses the native ray-capable scene runtime."
+    },
+    {
+      "kind": "graph",
+      "identity": "veach-guibas-mis",
+      "label": "Veach & Guibas MIS — light vs BSDF sampling",
+      "category": "ray-traced",
+      "requirements": ["native-ray-tracing"],
+      "keywords": ["veach", "guibas", "mis", "multiple importance sampling", "light sampling", "bsdf sampling", "direct lighting", "ray tracing"],
+      "description": "Multiple importance sampling from Veach and Guibas (1995): after a primary-hits pass, three shading passes estimate direct lighting with one light sample and one BSDF sample combined by the balance, power, cutoff or maximum heuristic, with the light sample alone, and with the BSDF sample alone. Each image is accumulated and exported for comparison; the MIS image is shown first. Requires native ray tracing."
     },
     {
       "kind": "snippet",
@@ -97,8 +106,8 @@
       "category": "lighting",
       "defaultConfiguration": "ComputeRayTracing",
       "requirements": ["native-ray-tracing"],
-      "keywords": ["compute", "wavefront", "hit buffer", "direct lighting", "mis", "ray tracing"],
-      "description": "A primary-hits scene compute pass and an MIS shading pass that share one automatically sized hit buffer. Connect scene, view and color; outputs color. Requires native ray tracing."
+      "keywords": ["compute", "wavefront", "hit buffer", "direct lighting", "ray tracing"],
+      "description": "A primary-hits scene compute pass and a shading pass that share one automatically sized hit buffer. Connect scene, view and color; outputs color. Requires native ray tracing."
     },
     {
       "kind": "snippet",
@@ -109,6 +118,16 @@
       "keywords": ["simple", "basic", "compute", "brute force", "triangle", "intersection", "ray tracing"],
       "description": "One compute pass loops over every World triangle, keeps the closest hit and displays its unlit material color plus emission; misses show the environment. No shadow rays or bounces. Uses the native ray-capable scene runtime.",
       "defaultConfiguration": "SimpleComputeRayTracing"
+    },
+    {
+      "kind": "snippet",
+      "identity": "veach-guibas-mis",
+      "label": "Veach & Guibas MIS — light vs BSDF sampling",
+      "category": "lighting",
+      "defaultConfiguration": "VeachGuibasMis",
+      "requirements": ["native-ray-tracing"],
+      "keywords": ["veach", "guibas", "mis", "multiple importance sampling", "light sampling", "bsdf sampling", "direct lighting", "ray tracing"],
+      "description": "A primary-hits scene compute pass and three shading passes that share one automatically sized hit buffer: MIS of a light and a BSDF sample (Veach and Guibas), the light sample alone and the BSDF sample alone. Connect scene, view and color; outputs color plus optional lightSampling and bsdfSampling images. Requires native ray tracing."
     },
     {
       "kind": "snippet",

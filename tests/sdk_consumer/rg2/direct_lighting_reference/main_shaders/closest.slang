@@ -1,49 +1,4 @@
-// Emission plus one light sample and one BSDF sample at the traced hit, combined with multiple
-// importance sampling. An independent single-pass statement of the compute-ray-tracing template's
-// integrator; it does not include the template's sources.
-// Thanks to Eric Veach and Leonidas J. Guibas, "Optimally Combining Sampling Techniques for Monte
-// Carlo Rendering", SIGGRAPH 1995, pp. 419-428, https://doi.org/10.1145/218380.218498 , for the
-// multi-sample estimator and its balance, cutoff, power and maximum heuristics.
-// IS_BSDF_SAMPLING_ENABLED = false keeps only the light strategy, with weight one: the plain light
-// sampling estimator of the same integral, which the tests use to check that MIS adds no bias.
-
-static const float REFERENCE_MAXIMUM_TRACE_DISTANCE_WORLD = 3.402823466e38f;
-
-/// MIS weight of the strategy that drew a sample (MIS_HEURISTIC: 0 balance, 1 power, 2 cutoff, 3 maximum).
-float WeighStrategy(float sampledDensity, float otherDensity)
-{
-    if (IS_BSDF_SAMPLING_ENABLED == false)
-        return 1;
-    if (isfinite(sampledDensity) == false || sampledDensity <= 0)
-        return 0;
-    if (otherDensity <= 0)
-        return 1;
-    if (isfinite(otherDensity) == false)
-        return 0;
-    float largerDensity = max(sampledDensity, otherDensity);
-    float sampled = sampledDensity / largerDensity;
-    float other = otherDensity / largerDensity;
-    if (MIS_HEURISTIC == 1)
-    {
-        sampled = pow(sampled, MIS_POWER_EXPONENT);
-        other = pow(other, MIS_POWER_EXPONENT);
-    }
-    else if (MIS_HEURISTIC == 2)
-    {
-        if (sampled < MIS_CUTOFF_THRESHOLD)
-            return 0;
-        if (other < MIS_CUTOFF_THRESHOLD)
-            return 1;
-    }
-    else if (MIS_HEURISTIC == 3)
-    {
-        if (sampled == other)
-            return 0.5;
-        return sampled > other ? 1 : 0;
-    }
-    return sampled / (sampled + other);
-}
-
+// Emission plus one light sample with a shadow ray, evaluated at the traced hit.
 void ShadeDirectLighting(SceneContext scene, SurfaceHit hit, inout RayQueryContext queries, inout ScenePayload payload)
 {
     float3 viewDirectionWorld = -hit.IncomingRay.DirectionWorld;
@@ -54,60 +9,22 @@ void ShadeDirectLighting(SceneContext scene, SurfaceHit hit, inout RayQueryConte
         queries.HasFailed = true;
         return;
     }
-    // Draw in the template's order: light selection, three light-shape and three BSDF coordinates.
     SelectedLight selected = SelectLight(scene, queries);
     float3 shapeSample;
     shapeSample.x = SampleSceneRandom(queries);
     shapeSample.y = SampleSceneRandom(queries);
     shapeSample.z = SampleSceneRandom(queries);
-    float3 directionSample;
-    directionSample.x = SampleSceneRandom(queries);
-    directionSample.y = SampleSceneRandom(queries);
-    directionSample.z = SampleSceneRandom(queries);
-    float3 normalWorld = normalize(material.ShadingNormalWorld);
-
     LightSample light = SampleIncidentLight(scene, selected, hit, shapeSample);
-    float lightDensity = light.SelectionPmf * light.ConditionalPdf;
-    if (light.HasSample == true && lightDensity > 0)
-    {
-        float cosine = dot(normalWorld, light.DirectionWorld);
-        float3 reflectance;
-        float bsdfDensity;
-        EvaluateStandardBsdf(material, viewDirectionWorld, light.DirectionWorld, reflectance, bsdfDensity);
-        float weight = light.IsDiscrete == true ? 1 : WeighStrategy(lightDensity, bsdfDensity);
-        if (cosine > 0 && weight > 0 && any(reflectance * light.IncidentCoefficient > 0) == true &&
-            TestVisibility(scene, queries, hit, light) == SCENE_QUERY_MISS)
-            payload.Radiance += reflectance * light.IncidentCoefficient * (cosine * weight / lightDensity);
-    }
-    if (IS_BSDF_SAMPLING_ENABLED == false)
+    float density = light.SelectionPmf * light.ConditionalPdf;
+    if (light.HasSample == false || density <= 0)
         return;
-
-    float3 directionWorld = SampleStandardBsdf(material, viewDirectionWorld, directionSample);
-    if (all(isfinite(directionWorld)) == false || dot(directionWorld, directionWorld) <= 0)
-        return;
-    directionWorld = normalize(directionWorld);
-    float cosine = dot(normalWorld, directionWorld);
+    float3 normalWorld = normalize(material.ShadingNormalWorld);
+    float cosine = dot(normalWorld, light.DirectionWorld);
     float3 reflectance;
-    float bsdfDensity;
-    EvaluateStandardBsdf(material, viewDirectionWorld, directionWorld, reflectance, bsdfDensity);
-    if (cosine <= 0 || any(reflectance > 0) == false || isfinite(bsdfDensity) == false || bsdfDensity <= 0)
+    float bsdfPdf;
+    EvaluateStandardBsdf(material, viewDirectionWorld, light.DirectionWorld, reflectance, bsdfPdf);
+    if (cosine <= 0 || any(reflectance * light.IncidentCoefficient > 0) == false)
         return;
-    SurfaceHit endpoint;
-    Ray ray = SpawnSurfaceRay(hit, directionWorld, REFERENCE_MAXIMUM_TRACE_DISTANCE_WORLD);
-    uint status = TraceClosest(scene, queries, ray, endpoint);
-    float3 incidentRadiance = float3(0);
-    float otherDensity = 0;
-    if (status == SCENE_QUERY_MISS)
-    {
-        incidentRadiance = EvaluateEnvironment(scene, directionWorld);
-        otherDensity = EvaluateEnvironmentPdfSolidAngle(scene, directionWorld);
-    }
-    else if (status == SCENE_QUERY_SURFACE)
-    {
-        incidentRadiance = EvaluateEmission(scene, endpoint, -directionWorld);
-        otherDensity = EvaluateLightPdfSolidAngle(scene, hit.PositionWorld, endpoint);
-    }
-    float weight = WeighStrategy(bsdfDensity, otherDensity);
-    if (any(incidentRadiance > 0) == true)
-        payload.Radiance += reflectance * incidentRadiance * (cosine * weight / bsdfDensity);
+    if (TestVisibility(scene, queries, hit, light) == SCENE_QUERY_MISS)
+        payload.Radiance += reflectance * light.IncidentCoefficient * cosine / density;
 }

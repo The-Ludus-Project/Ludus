@@ -3,6 +3,7 @@
 #include "internal/render_scene.h"
 #include "internal/world_document.h"
 
+#include "entropy_fixture.h"
 #include "internal/viewport_reference_capture.h"
 #include "viewport_fixture.h"
 #include <ludus/content/scene_cook/scene_assets.h>
@@ -10,6 +11,7 @@
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
 
@@ -334,7 +336,12 @@ TEST_CASE("GPU compute reference capture matches the CPU oracle on the viewport 
     QTemporaryDir root;
     REQUIRE(root.isValid() == true);
     RenderScene scene;
-    tests::MakeLitScene(root.path(), scene, { .HasCollapsedTriangle = true });
+    tests::SequentialEntropy entropy;
+    // Source IDs determine normalized light ordering. Freeze them so matched random
+    // addresses select the same physical lights on every run of this parity test.
+    tests::MakeLitScene(root.path(),
+                        scene,
+                        { .HasCollapsedTriangle = true, .Entropy = tests::MakeSequentialEntropySource(entropy) });
     const QSize extent = ComputeReferenceExtent(QSize(640, 480), TEST_LONG_SIDE);
     renderer::ViewDescription view;
     DescribeTestView(scene, extent, view);
@@ -388,7 +395,7 @@ TEST_CASE("Reference capture window explains a missing viewport device without s
     CHECK(stop->isEnabled() == false);
 }
 
-TEST_CASE("Supplied World completes reference capture with CPU and native traversal", "[.supplied-reference-capture]")
+TEST_CASE("Supplied World completes reference capture with all reference modes", "[.supplied-reference-capture]")
 {
     const QString root = qEnvironmentVariable("LUDUS_REFERENCE_TEST_PROJECT");
     if (root.isEmpty() == true)
@@ -437,9 +444,22 @@ TEST_CASE("Supplied World completes reference capture with CPU and native traver
     constexpr int64 SUPPLIED_CAPTURE_TIMEOUT_MILLISECONDS = 600000;
     REQUIRE(preview.Start() == true);
     REQUIRE(preview.AdmitOffscreenDevice() == true);
-    for (const renderer::ReferenceTraversal traversal :
-         {renderer::ReferenceTraversal::CpuOracle, renderer::ReferenceTraversal::NativeQueries})
+    const QString selectedTraversal = qEnvironmentVariable("LUDUS_REFERENCE_TEST_TRAVERSAL");
+    constexpr usize TRAVERSAL_COUNT = 3;
+    bool isValidTraversal = false;
+    const uint32 selectedTraversalValue = selectedTraversal.toUInt(&isValidTraversal);
+    REQUIRE((selectedTraversal.isEmpty() == true ||
+             (isValidTraversal == true && selectedTraversalValue < TRAVERSAL_COUNT)));
+    const StaticArray<renderer::ReferenceTraversal, TRAVERSAL_COUNT> traversals{
+        {renderer::ReferenceTraversal::CpuOracle,
+         renderer::ReferenceTraversal::NativeQueries,
+         renderer::ReferenceTraversal::GpuCompute}};
+    for (const renderer::ReferenceTraversal traversal : traversals)
     {
+        if (selectedTraversal.isEmpty() == false && selectedTraversalValue != static_cast<uint32>(traversal))
+        {
+            continue;
+        }
         ViewportReferenceSettings settings;
         settings.Samples = requestedSamples > 0 ? static_cast<uint32>(requestedSamples) : DEFAULT_SUPPLIED_SAMPLES;
         settings.MaxDepth = 8;
@@ -450,7 +470,8 @@ TEST_CASE("Supplied World completes reference capture with CPU and native traver
         INFO(capture.GetError().toStdString());
         renderer::ReferenceCaptureInfo information;
         REQUIRE(capture.GetInfo(information) == true);
-        INFO("traversal=" << static_cast<uint32>(traversal) << " committed=" << information.CommittedSamples);
+        INFO("traversal=" << static_cast<uint32>(traversal) << " committed=" << information.CommittedSamples
+                          << " reason=" << static_cast<uint32>(information.Failure));
         CHECK(phase == ViewportReferencePhase::Complete);
         CHECK(information.Complete == true);
         CHECK(information.InvalidContributions == 0);

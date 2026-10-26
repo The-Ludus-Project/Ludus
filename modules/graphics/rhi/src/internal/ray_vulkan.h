@@ -1,4 +1,6 @@
 #pragma once
+
+#include <ludus/foundation/containers/static_array.hpp>
 // Included only by rhi_vulkan.cpp, after the shared VMA allocator implementation.
 // Thanks to Khronos, "Ray Tracing" (Vulkan Guide) and "Synchronization Examples"
 // (acceleration-structure builds and trace reads), for independently negotiated
@@ -182,11 +184,14 @@ void RayVulkanDropStructure(RayVulkanStructure& structure) noexcept
     RayVulkanDropBuffer(structure.Scratch);
     structure = {};
 }
+constexpr usize RAY_GEOMETRY_RANGE_COUNT = 2;
 struct RayVulkanBuildDescription final
 {
     VkAccelerationStructureTypeKHR Type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
     const VkAccelerationStructureGeometryKHR* Geometry = nullptr;
     uint32 PrimitiveCount = 0;
+    const VkAccelerationStructureGeometryKHR* SecondGeometryOrNull = nullptr;
+    uint32 SecondPrimitiveCount = 0;
     usize InputBytes = 0, ByteBudget = 0;
 };
 RasterStatus RayVulkanBuild(RayVulkanStructure& structure,
@@ -194,18 +199,29 @@ RasterStatus RayVulkanBuild(RayVulkanStructure& structure,
                             RayAllocation& allocation) noexcept
 {
     const auto type = description.Type;
-    const auto primitives = description.PrimitiveCount;
-    const auto& geometry = *description.Geometry;
+    const StaticArray<uint32, RAY_GEOMETRY_RANGE_COUNT> primitives{
+        {description.PrimitiveCount, description.SecondPrimitiveCount}};
+    StaticArray<VkAccelerationStructureGeometryKHR, RAY_GEOMETRY_RANGE_COUNT> geometries{};
+    geometries[0] = *description.Geometry;
+    const uint32 geometryCount = description.SecondGeometryOrNull != nullptr ? 2 : 1;
+    if (description.SecondGeometryOrNull != nullptr)
+    {
+        geometries[1] = *description.SecondGeometryOrNull;
+    }
     const auto inputs = description.InputBytes, budget = description.ByteBudget;
 
+    if (geometryCount > gRayProperties.maxGeometryCount)
+    {
+        return RasterStatus::CapacityExceeded;
+    }
     VkAccelerationStructureBuildGeometryInfoKHR build
     {
         .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
         .type = type,
         .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR,
         .mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
-        .geometryCount = 1,
-        .pGeometries = &geometry,
+        .geometryCount = geometryCount,
+        .pGeometries = geometries.GetData(),
     };
     VkAccelerationStructureBuildSizesInfoKHR sizes
     {
@@ -214,7 +230,7 @@ RasterStatus RayVulkanBuild(RayVulkanStructure& structure,
     vkGetAccelerationStructureBuildSizesKHR(gDevice,
                                             VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
                                             &build,
-                                            &primitives,
+                                            primitives.GetData(),
                                             &sizes);
     const auto limit = RayLimits().MaxBufferBytes;
     if (sizes.accelerationStructureSize == 0 || sizes.accelerationStructureSize > limit ||
@@ -259,8 +275,10 @@ RasterStatus RayVulkanBuild(RayVulkanStructure& structure,
     }
     build.dstAccelerationStructure = structure.Object;
     build.scratchData.deviceAddress = RayVulkanAddress(structure.Scratch);
-    VkAccelerationStructureBuildRangeInfoKHR range{ .primitiveCount = primitives };
-    const auto* ranges = &range;
+    StaticArray<VkAccelerationStructureBuildRangeInfoKHR, RAY_GEOMETRY_RANGE_COUNT> rangesStorage{};
+    rangesStorage[0].primitiveCount = primitives[0];
+    rangesStorage[1].primitiveCount = primitives[1];
+    const VkAccelerationStructureBuildRangeInfoKHR* ranges = rangesStorage.GetData();
     RayVulkanBarrier(structure.Command,
                      {
                          .SourceStage = VK_PIPELINE_STAGE_HOST_BIT,
@@ -431,11 +449,23 @@ RayCreateGeometry(usize slot, const RayGeometryDescription& description, RayAllo
         .indexType = VK_INDEX_TYPE_UINT32,
         .indexData = { .deviceAddress = RayVulkanAddress(geometry.Indices) },
     };
+    constexpr usize TRIANGLE_CORNER_COUNT = 3;
+    const uint32 triangleCount = static_cast<uint32>(d.IndexCount / TRIANGLE_CORNER_COUNT);
+    VkAccelerationStructureGeometryKHR masked = native;
+    if (d.OpaqueTriangleCount != 0)
+    {
+        native.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+        masked.geometry.triangles.indexData.deviceAddress +=
+            usize(d.OpaqueTriangleCount) * TRIANGLE_CORNER_COUNT * sizeof(uint32);
+    }
+    const bool hasMaskedSuffix = d.OpaqueTriangleCount != 0 && d.OpaqueTriangleCount < triangleCount;
     return RayVulkanBuild(geometry,
                           {
                               .Type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
                               .Geometry = &native,
-                              .PrimitiveCount = static_cast<uint32>(d.IndexCount / 3),
+                              .PrimitiveCount = d.OpaqueTriangleCount != 0 ? d.OpaqueTriangleCount : triangleCount,
+                              .SecondGeometryOrNull = hasMaskedSuffix == true ? &masked : nullptr,
+                              .SecondPrimitiveCount = triangleCount - d.OpaqueTriangleCount,
                               .InputBytes = vertexBytes + indexBytes,
                               .ByteBudget = d.ByteBudget,
                           },
@@ -481,7 +511,8 @@ RayCreateScene(usize slot, const internal::NativeRaySceneDescription& descriptio
         std::memcpy(&instance.transform, input[i].Transform, sizeof(instance.transform));
         instance.instanceCustomIndex = static_cast<uint32>(i);
         instance.mask = input[i].Mask;
-        instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+        instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR |
+                         (input[i].IsOpaque == true ? VK_GEOMETRY_INSTANCE_FORCE_OPAQUE_BIT_KHR : 0);
         VkAccelerationStructureDeviceAddressInfoKHR address
         {
             .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR,

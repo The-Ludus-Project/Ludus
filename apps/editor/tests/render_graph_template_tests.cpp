@@ -1413,6 +1413,71 @@ QJsonObject FindRayTechnique(const QByteArray& manifest)
     }
     return {};
 }
+
+// Replace the root's raster Subgraph with the inserted one: same scene, view and color wiring.
+void ReplaceRasterSubgraph(RenderGraphDocument& inoutDocument, const QString& subgraph)
+{
+    QJsonObject root;
+    REQUIRE(inoutDocument.GetGraph(ROOT_GRAPH, root) == true);
+    QJsonArray configurations = root.value(QStringLiteral("configurations")).toArray();
+    QJsonObject parent = configurations.first().toObject();
+    QJsonArray nodes;
+    for (const QJsonValueConstRef value : parent.value(QStringLiteral("nodes")).toArray())
+    {
+        if (value.toObject().value(QStringLiteral("id")) != QStringLiteral("raster"))
+        {
+            nodes.append(value);
+        }
+    }
+    QJsonArray edges;
+    for (const QJsonValueConstRef value : parent.value(QStringLiteral("edges")).toArray())
+    {
+        QJsonObject edge = value.toObject();
+        if (edge.value(QStringLiteral("to")) == QStringLiteral("raster.depth"))
+        {
+            continue;
+        }
+        for (const QString& end : {QStringLiteral("from"), QStringLiteral("to")})
+        {
+            edge.insert(end,
+                        edge.value(end).toString().replace(QStringLiteral("raster."), subgraph + QLatin1Char('.')));
+        }
+        edges.append(edge);
+    }
+    parent.insert(QStringLiteral("nodes"), nodes);
+    parent.insert(QStringLiteral("edges"), edges);
+    configurations.replace(0, parent);
+    root.insert(QStringLiteral("configurations"), configurations);
+    REQUIRE(inoutDocument.SetText(ROOT_GRAPH, EncodeCanonicalJson(root)) == RenderGraphDocumentStatus::Ok);
+}
+
+// Choose a template in File -> New Render Graph and wait for its creation job.
+void CreateGraphFromPicker(RendererWorkspace& inoutWorkspace, const QString& identity)
+{
+    QSignalSpy finished(&inoutWorkspace, &RendererWorkspace::JobFinished);
+    QTimer::singleShot(0, &inoutWorkspace, [identity]() {
+        QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        REQUIRE(dialogOrNull != nullptr);
+        QComboBox* templateOrNull = dialogOrNull->findChild<QComboBox*>(QStringLiteral("newRenderGraphTemplate"));
+        REQUIRE(templateOrNull != nullptr);
+        const int32 selected = templateOrNull->findData(identity);
+        REQUIRE(selected >= 0);
+        templateOrNull->setCurrentIndex(selected);
+        dialogOrNull->accept();
+    });
+    REQUIRE(inoutWorkspace.PromptNewGraph() == true);
+    REQUIRE(finished.wait(TEMPLATE_JOB_TIMEOUT_MILLISECONDS) == true);
+    INFO(inoutWorkspace.GetLastResult().Message.toStdString());
+}
+
+void RequireValidation(RendererWorkspace& inoutWorkspace)
+{
+    QSignalSpy finished(&inoutWorkspace, &RendererWorkspace::JobFinished);
+    REQUIRE(inoutWorkspace.Validate() == true);
+    REQUIRE(finished.wait(TEMPLATE_JOB_TIMEOUT_MILLISECONDS) == true);
+    INFO(inoutWorkspace.GetLastResult().Message.toStdString());
+    CHECK(inoutWorkspace.GetLastResult().IsSuccessful == true);
+}
 } // namespace
 
 TEST_CASE("Simple triangle-loop configuration imports one kernel and preserves edits on collision",
@@ -1462,20 +1527,7 @@ TEST_CASE("Compute ray-tracing template is created from the editor picker", "[ed
     workspace.SetProject(project.path(), 1);
     workspace.SetLivePreview(false);
     workspace.show();
-    QSignalSpy finished(&workspace, &RendererWorkspace::JobFinished);
-    QTimer::singleShot(0, &workspace, []() {
-        QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
-        REQUIRE(dialogOrNull != nullptr);
-        QComboBox* templateOrNull = dialogOrNull->findChild<QComboBox*>(QStringLiteral("newRenderGraphTemplate"));
-        REQUIRE(templateOrNull != nullptr);
-        const int32 selected = templateOrNull->findData(COMPUTE_TEMPLATE);
-        REQUIRE(selected >= 0);
-        templateOrNull->setCurrentIndex(selected);
-        dialogOrNull->accept();
-    });
-    REQUIRE(workspace.PromptNewGraph() == true);
-    REQUIRE(finished.wait(TEMPLATE_JOB_TIMEOUT_MILLISECONDS) == true);
-    INFO(workspace.GetLastResult().Message.toStdString());
+    CreateGraphFromPicker(workspace, COMPUTE_TEMPLATE);
     RenderGraphDocument& document = workspace.GetDocument();
     const QByteArray library = document.GetDraft(QStringLiteral("library.lurender.json"));
     CHECK(library.contains("ComputePipeline") == true);
@@ -1487,10 +1539,7 @@ TEST_CASE("Compute ray-tracing template is created from the editor picker", "[ed
     // Node-owned scene compute passes need no default callbacks.
     CHECK(technique.contains(QStringLiteral("ray_generation")) == false);
     CHECK(technique.value(QStringLiteral("scene_interface")).toObject().value(QStringLiteral("version")).toInt() == 1);
-    REQUIRE(workspace.Validate() == true);
-    REQUIRE(finished.wait(TEMPLATE_JOB_TIMEOUT_MILLISECONDS) == true);
-    INFO(workspace.GetLastResult().Message.toStdString());
-    CHECK(workspace.GetLastResult().IsSuccessful == true);
+    RequireValidation(workspace);
 }
 
 TEST_CASE("Compute ray-tracing configuration inserts on the root canvas and validates",
@@ -1510,27 +1559,14 @@ TEST_CASE("Compute ray-tracing configuration inserts on the root canvas and vali
     CHECK(document.GetDraft(ROOT_GRAPH).contains("Lighting.lurender.json") == true);
     CHECK(document.GetDraft(library).contains("ComputeRayPrimary") == true);
     CHECK(document.GetDraft(library).contains("ComputeRayShade") == true);
-    // Both kernels arrive with the hit record and MIS weight headers they include.
+    // Both kernels arrive with the hit record header they include.
     for (const QString& source : {QStringLiteral("compute_ray_tracing/main_shaders/primary.slang"),
                                   QStringLiteral("compute_ray_tracing/main_shaders/shade.slang"),
-                                  QStringLiteral("compute_ray_tracing/main_shaders/hit_record.slang"),
-                                  QStringLiteral("compute_ray_tracing/main_shaders/multiple_importance.slang")})
+                                  QStringLiteral("compute_ray_tracing/main_shaders/hit_record.slang")})
     {
         INFO(source.toStdString());
         CHECK(document.GetDraft(source).isEmpty() == false);
     }
-    // The shade kernel's MIS Graph settings arrive with their defaults.
-    QStringList settings;
-    for (const QJsonValueConstRef value : QJsonDocument::fromJson(document.GetDraft(COMPUTE_MANIFEST))
-                                              .object()
-                                              .value(QStringLiteral("settings"))
-                                              .toArray())
-    {
-        settings.append(value.toObject().value(QStringLiteral("id")).toString());
-    }
-    CHECK(settings.contains(QStringLiteral("MIS_HEURISTIC")) == true);
-    CHECK(settings.contains(QStringLiteral("MIS_POWER_EXPONENT")) == true);
-    CHECK(settings.contains(QStringLiteral("MIS_CUTOFF_THRESHOLD")) == true);
     const QJsonObject interface =
         FindRayTechnique(document.GetDraft(COMPUTE_MANIFEST)).value(QStringLiteral("scene_interface")).toObject();
     CHECK(interface.value(QStringLiteral("version")).toInt() == 1);
@@ -1550,45 +1586,90 @@ TEST_CASE("Compute ray-tracing configuration inserts on the root canvas and vali
           RenderGraphDocumentStatus::Conflict);
     CHECK(document.GetDraft(ROOT_GRAPH) == afterRoot);
 
-    // Replace the raster Subgraph with the inserted one: same scene, view and color wiring.
-    QJsonObject root;
-    REQUIRE(document.GetGraph(ROOT_GRAPH, root) == true);
-    QJsonArray configurations = root.value(QStringLiteral("configurations")).toArray();
-    QJsonObject parent = configurations.first().toObject();
-    QJsonArray nodes;
-    for (const QJsonValueConstRef value : parent.value(QStringLiteral("nodes")).toArray())
-    {
-        if (value.toObject().value(QStringLiteral("id")) != QStringLiteral("raster"))
-        {
-            nodes.append(value);
-        }
-    }
-    QJsonArray edges;
-    for (const QJsonValueConstRef value : parent.value(QStringLiteral("edges")).toArray())
-    {
-        QJsonObject edge = value.toObject();
-        if (edge.value(QStringLiteral("to")) == QStringLiteral("raster.depth"))
-        {
-            continue;
-        }
-        for (const QString& end : {QStringLiteral("from"), QStringLiteral("to")})
-        {
-            edge.insert(end,
-                        edge.value(end).toString().replace(QStringLiteral("raster."), QStringLiteral("Lighting.")));
-        }
-        edges.append(edge);
-    }
-    parent.insert(QStringLiteral("nodes"), nodes);
-    parent.insert(QStringLiteral("edges"), edges);
-    configurations.replace(0, parent);
-    root.insert(QStringLiteral("configurations"), configurations);
-    REQUIRE(document.SetText(ROOT_GRAPH, EncodeCanonicalJson(root)) == RenderGraphDocumentStatus::Ok);
+    ReplaceRasterSubgraph(document, QStringLiteral("Lighting"));
     REQUIRE(workspace.Save() == true);
-    QSignalSpy finished(&workspace, &RendererWorkspace::JobFinished);
-    REQUIRE(workspace.Validate() == true);
-    REQUIRE(finished.wait(TEMPLATE_JOB_TIMEOUT_MILLISECONDS) == true);
-    INFO(workspace.GetLastResult().Message.toStdString());
-    CHECK(workspace.GetLastResult().IsSuccessful == true);
+    RequireValidation(workspace);
+}
+
+TEST_CASE("Veach and Guibas MIS template is created from the editor picker with three compared outputs",
+          "[editor][render-graph][veach-guibas-template]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    workspace.show();
+    CreateGraphFromPicker(workspace, QStringLiteral("veach-guibas-mis"));
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QByteArray library = document.GetDraft(QStringLiteral("library.lurender.json"));
+    for (const char* program : {"ShadeMultipleImportance", "ShadeLightSampling", "ShadeBsdfSampling"})
+    {
+        INFO(program);
+        CHECK(library.contains(program) == true);
+    }
+    const QByteArray root = document.GetDraft(ROOT_GRAPH);
+    // MIS is exported first, so the viewport shows it by default; each strategy accumulates separately.
+    CHECK(root.indexOf("\"output\"") < root.indexOf("\"lightSamplingOutput\""));
+    CHECK(root.count("\"Accumulate\"") == 3);
+    CHECK(root.count("\"Export\"") == 3);
+    CHECK(document.GetDraft(QStringLiteral("main_shaders/multiple_importance.slang")).contains("ComputeMisWeight") ==
+          true);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST).contains("MIS_HEURISTIC") == true);
+    RequireValidation(workspace);
+}
+
+TEST_CASE("Veach and Guibas MIS configuration imports its shade passes and settings on the root canvas",
+          "[editor][render-graph][veach-guibas-configuration]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QString identity = QStringLiteral("veach-guibas-mis");
+    const QByteArray beforeRoot = document.GetDraft(ROOT_GRAPH);
+    const QByteArray beforeManifest = document.GetDraft(COMPUTE_MANIFEST);
+    const QStringList beforeFiles = document.GetFiles();
+    REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("Mis"), identity) == true);
+    const QByteArray library = document.GetDraft(QStringLiteral("Mis.lurender.json"));
+    for (const char* program : {"VeachMisPrimary",
+                                "VeachMisShadeMultipleImportance",
+                                "VeachMisShadeLightSampling",
+                                "VeachMisShadeBsdfSampling"})
+    {
+        INFO(program);
+        CHECK(library.contains(program) == true);
+    }
+    CHECK(library.contains("lightSampling") == true);
+    CHECK(library.contains("bsdfSampling") == true);
+    for (const QString& source : {QStringLiteral("veach_guibas_mis/main_shaders/primary.slang"),
+                                  QStringLiteral("veach_guibas_mis/main_shaders/shade.slang"),
+                                  QStringLiteral("veach_guibas_mis/main_shaders/hit_record.slang"),
+                                  QStringLiteral("veach_guibas_mis/main_shaders/multiple_importance.slang")})
+    {
+        INFO(source.toStdString());
+        CHECK(document.GetDraft(source).isEmpty() == false);
+    }
+    const QByteArray afterManifest = document.GetDraft(COMPUTE_MANIFEST);
+    for (const char* setting : {"MIS_HEURISTIC", "MIS_POWER_EXPONENT", "MIS_CUTOFF_THRESHOLD"})
+    {
+        INFO(setting);
+        CHECK(afterManifest.contains(setting) == true);
+    }
+    const QByteArray afterRoot = document.GetDraft(ROOT_GRAPH);
+    workspace.Undo();
+    CHECK(document.GetDraft(ROOT_GRAPH) == beforeRoot);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST) == beforeManifest);
+    CHECK(document.GetFiles() == beforeFiles);
+    workspace.Redo();
+    CHECK(document.GetDraft(ROOT_GRAPH) == afterRoot);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST) == afterManifest);
+
+    ReplaceRasterSubgraph(document, QStringLiteral("Mis"));
+    REQUIRE(workspace.Save() == true);
+    RequireValidation(workspace);
 }
 
 TEST_CASE("Compute ray-tracing import extends a shared ray technique and preserves conflicting edits",

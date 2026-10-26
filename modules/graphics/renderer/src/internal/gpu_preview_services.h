@@ -77,6 +77,7 @@ bool SameGpuTexture(const rhi::TextureCpuContent& a, const rhi::TextureCpuConten
 }
 Status PackGpuScene(const ReferenceJob& job,
                     bool shouldPackVisibility,
+                    bool shouldPartitionNativeOpacity,
                     usize budget,
                     Array<math::Vector4>& data,
                     Array<math::Vector4>& texels,
@@ -228,10 +229,7 @@ Status PackGpuScene(const ReferenceJob& job,
         out[1] = GpuVector(n.Bounds.Max, GpuBits(n.Right));
         out[2] = {GpuBits(n.First), GpuBits(n.Count), 0, 0};
     }
-    for (usize i = 0; i < scene.Order.GetSize(); ++i)
-    {
-        data[order + i].X = GpuBits(scene.Order[i]);
-    }
+    internal::PackGpuPreviewRayOrder(scene, shouldPartitionNativeOpacity, data.GetData() + order);
     for (usize i = 0; i < scene.Emitters.GetSize(); ++i)
     {
         data[emitters + i].X = GpuBits(scene.Emitters[i]);
@@ -377,6 +375,15 @@ Status PackGpuScene(const ReferenceJob& job,
         isOpaque = isOpaque == true && scene.Instances[i].Surface->Alpha == MaterialAlpha::Opaque;
     }
     outUniform.Sampling[2] |= isOpaque == true ? LUDUS_GPU_PREVIEW_OPAQUE_FLAG : 0;
+    uint32 nativeOpaqueTriangleCount = 0;
+    if (shouldPartitionNativeOpacity == true && scene.Order.IsEmpty() == false)
+    {
+        std::memcpy(&nativeOpaqueTriangleCount, &data[order].Y, sizeof(nativeOpaqueTriangleCount));
+    }
+    if (isOpaque == false && nativeOpaqueTriangleCount != 0)
+    {
+        outUniform.Sampling[2] |= LUDUS_GPU_PREVIEW_MIXED_OPACITY_FLAG;
+    }
     outUniform.Sampling[FOURTH_COMPONENT] = job.Description.TargetSamples;
     outUniform.Environment =
         GpuVector(job.Description.Environment, GpuBits(static_cast<uint32>(job.ShaderEmitters.GetSize())));
@@ -427,7 +434,11 @@ Status PollGpuJob(rhi::DeviceHandle device, GpuPreviewState& inoutState, GpuPrev
                         return Accepted(geometryStatus) == true ? Status::Pending : (inoutJob.Setup = geometryStatus);
                     }
                 }
-                const rhi::RayInstanceDescription instance{ .Geometry = inoutJob.NativeGeometry };
+                const rhi::RayInstanceDescription instance
+                {
+                    .Geometry = inoutJob.NativeGeometry,
+                    .AlphaMasked = (inoutJob.Uniform.Sampling[2] & LUDUS_GPU_PREVIEW_OPAQUE_FLAG) == 0,
+                };
                 const rhi::RaySceneDescription description
                 {
                     .Instances = inoutJob.HasNativeGeometry == true ? &instance : nullptr,
@@ -1261,6 +1272,7 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     internal::GpuPreviewUniform uniform;
     status = PackGpuScene(*scene,
                           mState->GpuPreview->HasVisibilityBuffer,
+                          mState->GpuPreview->HasNativeRayQueries,
                           scratch,
                           data,
                           texels,

@@ -39,6 +39,7 @@ constexpr usize ROULETTE_WORD = 7;
 constexpr usize FAILURE_PIXEL_WORD = 8;
 constexpr usize FAILURE_DEPTH_WORD = 9;
 constexpr usize CAPACITY_WORD = 10;
+constexpr usize FAILURE_REASON_WORD = 11;
 /// Float components of one read-back pixel: emission, direct and indirect float4 words.
 constexpr usize EMISSION_COMPONENT = 0;
 constexpr usize SAMPLES_COMPONENT = 3;
@@ -62,6 +63,30 @@ constexpr StaticArray<rhi::RasterBinding, LUDUS_REFERENCE_BINDING_COUNT> COMPUTE
      VECTOR_BYTES},
     {LUDUS_REFERENCE_TEXELS_BINDING, rhi::RasterBindingKind::StorageRead, rhi::RasterVisibility::Compute, VECTOR_BYTES},
 }};
+static_assert(static_cast<uint32>(ReferenceFailure::None) == LUDUS_REFERENCE_FAILURE_NONE);
+static_assert(static_cast<uint32>(ReferenceFailure::InvalidHit) == LUDUS_REFERENCE_FAILURE_INVALID_HIT);
+static_assert(static_cast<uint32>(ReferenceFailure::InvalidEmitterPdf) == LUDUS_REFERENCE_FAILURE_INVALID_EMITTER_PDF);
+static_assert(static_cast<uint32>(ReferenceFailure::InvalidSurfaceParameters) ==
+              LUDUS_REFERENCE_FAILURE_INVALID_SURFACE_PARAMETERS);
+static_assert(static_cast<uint32>(ReferenceFailure::InvalidLightSample) ==
+              LUDUS_REFERENCE_FAILURE_INVALID_LIGHT_SAMPLE);
+static_assert(static_cast<uint32>(ReferenceFailure::InvalidBsdfEvaluation) ==
+              LUDUS_REFERENCE_FAILURE_INVALID_BSDF_EVALUATION);
+static_assert(static_cast<uint32>(ReferenceFailure::InvalidDirectContribution) ==
+              LUDUS_REFERENCE_FAILURE_INVALID_DIRECT_CONTRIBUTION);
+static_assert(static_cast<uint32>(ReferenceFailure::InvalidShadowSegment) ==
+              LUDUS_REFERENCE_FAILURE_INVALID_SHADOW_SEGMENT);
+static_assert(static_cast<uint32>(ReferenceFailure::InvalidBsdfSample) == LUDUS_REFERENCE_FAILURE_INVALID_BSDF_SAMPLE);
+static_assert(static_cast<uint32>(ReferenceFailure::InvalidThroughput) == LUDUS_REFERENCE_FAILURE_INVALID_THROUGHPUT);
+static_assert(static_cast<uint32>(ReferenceFailure::InvalidRayOrigin) == LUDUS_REFERENCE_FAILURE_INVALID_RAY_ORIGIN);
+static_assert(static_cast<uint32>(ReferenceFailure::InvalidRadiance) == LUDUS_REFERENCE_FAILURE_INVALID_RADIANCE);
+static_assert(static_cast<uint32>(ReferenceFailure::InvalidAccumulation) ==
+              LUDUS_REFERENCE_FAILURE_INVALID_ACCUMULATION);
+static_assert(static_cast<uint32>(ReferenceFailure::InvalidCameraRay) == LUDUS_REFERENCE_FAILURE_INVALID_CAMERA_RAY);
+static_assert(static_cast<uint32>(ReferenceFailure::InvalidSceneLayout) ==
+              LUDUS_REFERENCE_FAILURE_INVALID_SCENE_LAYOUT);
+static_assert(static_cast<uint32>(ReferenceFailure::TraversalCapacityExceeded) ==
+              LUDUS_REFERENCE_FAILURE_TRAVERSAL_CAPACITY_EXCEEDED);
 bool Accepted(Status status) noexcept
 {
     return status == Status::Ready || status == Status::Pending;
@@ -231,26 +256,6 @@ Status BuildDispatchGraph(const ReferenceComputePipelines& pipelines,
 
     return status;
 }
-// Decode the reduced status of the completed dispatch into the capture evidence.
-void ApplyStatus(const uint8* bytes, ReferenceJob& inoutJob) noexcept
-{
-    ReferenceCaptureInfo& info = inoutJob.Info;
-    info.MinimumSamples = ReadWord(bytes, MINIMUM_SAMPLES_WORD);
-    info.MaximumSamples = ReadWord(bytes, MAXIMUM_SAMPLES_WORD);
-    info.CommittedSamples += ReadWord(bytes, COMMITTED_WORD);
-    info.ClosestQueries += ReadWord(bytes, CLOSEST_WORD);
-    info.VisibilityQueries += ReadWord(bytes, VISIBILITY_WORD);
-    info.NullBsdfSamples += ReadWord(bytes, NULL_BSDF_WORD);
-    info.RouletteTerminations += ReadWord(bytes, ROULETTE_WORD);
-    const uint32 invalid = ReadWord(bytes, INVALID_WORD);
-    if (invalid != 0)
-    {
-        info.InvalidContributions += invalid;
-        info.FailurePixel = ReadWord(bytes, FAILURE_PIXEL_WORD);
-        info.FailureDepth = ReadWord(bytes, FAILURE_DEPTH_WORD);
-        inoutJob.Compute->Failure = ReadWord(bytes, CAPACITY_WORD) != 0 ? Status::CapacityExceeded : Status::Failed;
-    }
-}
 // Copy one completed slice of committed sums into the host pixel array.
 void ApplyPixels(BorrowedView<const uint8> bytes, usize firstPixel, ReferenceJob& inoutJob) noexcept
 {
@@ -379,8 +384,8 @@ Status AdvanceReadStatus(ReferenceJob& inoutJob) noexcept
     {
         return Fail(inoutJob, status);
     }
-    static_assert(STATUS_WORD_COUNT > CAPACITY_WORD, "status words cover every decoded field");
-    ApplyStatus(bytes.GetData(), inoutJob);
+    static_assert(STATUS_WORD_COUNT > FAILURE_REASON_WORD, "status words cover every decoded field");
+    compute.Failure = ApplyReferenceComputeStatus(bytes, inoutJob.Info);
     if (compute.Failure == Status::Ready &&
         IsReadbackDue(inoutJob.Info.MinimumSamples, inoutJob.Description.TargetSamples) == false)
     {
@@ -455,6 +460,30 @@ Status AdvanceReadPixels(ReferenceJob& inoutJob) noexcept
     return inoutJob.Info.Complete == true ? Status::Ready : Status::Pending;
 }
 } // namespace
+// Decode the reduced status of the completed dispatch into the capture evidence.
+Status ApplyReferenceComputeStatus(const StaticArray<uint8, REFERENCE_COMPUTE_STATUS_BYTES>& bytes,
+                                   ReferenceCaptureInfo& inoutInfo) noexcept
+{
+    const uint32 dispatchedSample = inoutInfo.MinimumSamples;
+    inoutInfo.MinimumSamples = ReadWord(bytes.GetData(), MINIMUM_SAMPLES_WORD);
+    inoutInfo.MaximumSamples = ReadWord(bytes.GetData(), MAXIMUM_SAMPLES_WORD);
+    inoutInfo.CommittedSamples += ReadWord(bytes.GetData(), COMMITTED_WORD);
+    inoutInfo.ClosestQueries += ReadWord(bytes.GetData(), CLOSEST_WORD);
+    inoutInfo.VisibilityQueries += ReadWord(bytes.GetData(), VISIBILITY_WORD);
+    inoutInfo.NullBsdfSamples += ReadWord(bytes.GetData(), NULL_BSDF_WORD);
+    inoutInfo.RouletteTerminations += ReadWord(bytes.GetData(), ROULETTE_WORD);
+    const uint32 invalid = ReadWord(bytes.GetData(), INVALID_WORD);
+    if (invalid != 0)
+    {
+        inoutInfo.InvalidContributions += invalid;
+        inoutInfo.FailurePixel = ReadWord(bytes.GetData(), FAILURE_PIXEL_WORD);
+        inoutInfo.FailureDepth = ReadWord(bytes.GetData(), FAILURE_DEPTH_WORD);
+        inoutInfo.FailureSample = dispatchedSample;
+        inoutInfo.Failure = static_cast<ReferenceFailure>(ReadWord(bytes.GetData(), FAILURE_REASON_WORD));
+        return ReadWord(bytes.GetData(), CAPACITY_WORD) != 0 ? Status::CapacityExceeded : Status::Failed;
+    }
+    return Status::Ready;
+}
 ReferenceComputeJob::~ReferenceComputeJob() noexcept
 {
     static_cast<void>(rhi::Release(Device, StatusReadback));

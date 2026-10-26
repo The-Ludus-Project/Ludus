@@ -221,8 +221,24 @@ RenderGraphDocumentStatus PrepareComputeRayTracingConfiguration(
     const QString& templateIdentity,
     RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
 {
-    const bool isSimple = templateIdentity == QStringLiteral("simple-compute-ray-tracing");
-    if (isSimple == false && templateIdentity != QStringLiteral("compute-ray-tracing"))
+    QString programPrefix;
+    QString name;
+    if (templateIdentity == QStringLiteral("simple-compute-ray-tracing"))
+    {
+        programPrefix = QStringLiteral("SimpleComputeRay");
+        name = QStringLiteral("Simple compute ray tracing");
+    }
+    else if (templateIdentity == QStringLiteral("compute-ray-tracing"))
+    {
+        programPrefix = QStringLiteral("ComputeRay");
+        name = QStringLiteral("Compute ray tracing");
+    }
+    else if (templateIdentity == QStringLiteral("veach-guibas-mis"))
+    {
+        programPrefix = QStringLiteral("VeachMis");
+        name = QStringLiteral("Veach and Guibas MIS");
+    }
+    else
     {
         outError = QStringLiteral("Choose a built-in scene compute template.");
         return RenderGraphDocumentStatus::InvalidEdit;
@@ -232,8 +248,8 @@ RenderGraphDocumentStatus PrepareComputeRayTracingConfiguration(
     const ComputeTemplate selected{
         QStringLiteral(":/render-graph/templates/") + templateIdentity + QLatin1Char('/'),
         directory + QLatin1Char('/'),
-        isSimple == true ? QStringLiteral("SimpleComputeRay") : QStringLiteral("ComputeRay"),
-        isSimple == true ? QStringLiteral("Simple compute ray tracing") : QStringLiteral("Compute ray tracing"),
+        programPrefix,
+        name,
     };
     QJsonObject graph = QJsonDocument::fromJson(inoutSnapshot.Files.value(file)).object();
     QJsonArray configurations = graph.value(QStringLiteral("configurations")).toArray();

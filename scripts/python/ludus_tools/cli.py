@@ -569,7 +569,7 @@ def build_parser() -> argparse.ArgumentParser:
     new_graph.add_argument("destination")
     new_graph.add_argument("--template", choices=("raster", "forward-lit", "restir-di", "visibility-buffer",
                                                    "visibility-secondary-rays", "tiled-vbuffer-nee", "compute-ray-tracing",
-                                                   "simple-compute-ray-tracing"),
+                                                   "simple-compute-ray-tracing", "veach-guibas-mis"),
                            default="raster",
                            help="built-in editable render graph template")
     new_graph.add_argument("--output", choices=("presentation", "offscreen", "depth"), default="presentation")

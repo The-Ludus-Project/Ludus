@@ -1,4 +1,6 @@
+#include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/types.h>
+#include <ludus/foundation/containers/static_array.hpp>
 
 #include <ludus/foundation/logging/log_system.hpp>
 #include <ludus/foundation/time/time.hpp>
@@ -268,4 +270,92 @@ TEST_CASE("RT0 budgeted records and instances exceed legacy ceilings with retain
     REQUIRE(Poll(device, excess) == rhi::RasterStatus::Ready);
     CHECK(rhi::GetStatus(device, staleGeometry) == rhi::RasterStatus::InvalidHandle);
     REQUIRE(rhi::Destroy(device, excess) == rhi::RasterStatus::Ready);
+}
+
+TEST_CASE("Opaque geometry prefixes preserve full primitive identities and masked suffix acceptance",
+          "[rhi][gpu][ray][opacity]")
+{
+    rhi::Shutdown();
+    struct Guard final
+    {
+        LUDUS_INLINE ~Guard() noexcept
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    rhi::DeviceDescription deviceDescription;
+    deviceDescription.Preferred.RayQueries = true;
+    const rhi::DeviceStatus started =
+        rhi::CreateDevice({}, { .Width = 8, .Height = 8 }, deviceDescription, device, surface);
+    if (started != rhi::DeviceStatus::Ready && rhi::GetStartup().Error == rhi::StartupError::AdapterUnavailable)
+    {
+        SKIP("No native GPU adapter");
+    }
+    REQUIRE(started == rhi::DeviceStatus::Ready);
+    rhi::RayCapabilities capabilities;
+    if (rhi::GetRayCapabilities(device, capabilities) == rhi::RasterStatus::Unsupported)
+    {
+        SKIP("Native ray queries unavailable");
+    }
+    constexpr usize TRIANGLE_COUNT = 2;
+    constexpr usize TRIANGLE_CORNERS = 3;
+    constexpr usize POSITION_COMPONENTS = 3;
+    constexpr usize VERTEX_COUNT = TRIANGLE_COUNT * TRIANGLE_CORNERS;
+    constexpr usize BYTE_BUDGET = usize{16} * 1024 * 1024;
+    const StaticArray<float32, VERTEX_COUNT * POSITION_COMPONENTS> positions{
+        {-1, -1, 0, 1, -1, 0, 0, 1, 0, -1, -1, .5F, 1, -1, .5F, 0, 1, .5F}};
+    const StaticArray<uint32, VERTEX_COUNT> indices{{0, 1, 2, 3, 4, 5}};
+    rhi::RayGeometryDescription description
+    {
+        .Positions = positions.GetData(),
+        .VertexCount = VERTEX_COUNT,
+        .Indices = indices.GetData(),
+        .IndexCount = indices.GetSize(),
+        .ByteBudget = BYTE_BUDGET,
+        .OpaqueTriangleCount = TRIANGLE_COUNT + 1,
+    };
+    rhi::RayGeometryHandle geometry;
+    CHECK(rhi::CreateRayGeometry(device, description, geometry) == rhi::RasterStatus::InvalidDescription);
+    CHECK(rhi::GetStatus(device, geometry) == rhi::RasterStatus::InvalidHandle);
+    description.OpaqueTriangleCount = 1;
+    REQUIRE(rhi::CreateRayGeometry(device, description, geometry) == rhi::RasterStatus::Pending);
+    REQUIRE(Poll(device, geometry) == rhi::RasterStatus::Ready);
+    rhi::RayQueryProgram program;
+    REQUIRE(rhi::CreateRayQueryProgram(device, ludus::shaders::ray_query::Query(), program) ==
+            rhi::RasterStatus::Ready);
+    constexpr uint32 CONFIGURATION_COUNT = 3;
+    for (uint32 configuration = 0; configuration < CONFIGURATION_COUNT; ++configuration)
+    {
+        const uint32 expectedPrimitive = configuration == 0 ? 0 : 1;
+        rhi::RayInstanceDescription instance;
+        instance.Geometry = geometry;
+        instance.AlphaMasked = configuration != 2;
+        instance.Opacity = configuration == 1 ? 1 : 0;
+        rhi::RaySceneHandle scene;
+        REQUIRE(rhi::CreateRayScene(device, {&instance, 1, BYTE_BUDGET}, scene) == rhi::RasterStatus::Pending);
+        REQUIRE(Poll(device, scene) == rhi::RasterStatus::Ready);
+        constexpr usize RAY_COUNT = 2;
+        StaticArray<rhi::RayInput, RAY_COUNT> rays{};
+        rays[0].Origin[2] = 1;
+        rays[1] = rays[0];
+        rays[1].VisibilityOnly = 1;
+        rhi::RayQueryBatch batch;
+        REQUIRE(rhi::SubmitRayQueries(device, program, scene, rays.GetData(), rays.GetSize(), batch) ==
+                rhi::RasterStatus::Pending);
+        REQUIRE(Poll(device, batch) == rhi::RasterStatus::Ready);
+        StaticArray<rhi::RayResult, RAY_COUNT> results{};
+        REQUIRE(rhi::ReadRayResults(device, batch, results.GetData(), results.GetSize()) == rhi::RasterStatus::Ready);
+        CHECK(results[0].Hit == 1);
+        CHECK(results[0].Primitive == expectedPrimitive);
+        CHECK(results[0].Instance == 0);
+        CHECK(results[0].Reserved == 0);
+        CHECK(results[0].Distance == (expectedPrimitive == 0 ? 1.0F : .5F));
+        CHECK(results[1].Hit == 1);
+        REQUIRE(rhi::Destroy(device, batch) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::Destroy(device, scene) == rhi::RasterStatus::Ready);
+    }
+    REQUIRE(rhi::Destroy(device, geometry) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(device, program) == rhi::RasterStatus::Ready);
 }
