@@ -3,6 +3,7 @@
 #include <ludus/foundation/memory/allocation_domain.hpp>
 #include <ludus/foundation/memory/allocation_statistics.hpp>
 #include <ludus/foundation/profiling/memory_gauges.hpp>
+#include <ludus/foundation/profiling/profiling.hpp>
 #include <ludus/foundation/profiling/trace_system.hpp>
 
 #include "internal/memory_gauge.hpp"
@@ -71,13 +72,20 @@ usize CountOccurrences(const std::string& text, const std::string& pattern)
     return count;
 }
 
-std::string ExportCapture(const char* name)
+/// Export the finished capture. Release builds record gauges but compile Perfetto
+/// export out (export_perfetto.cpp), so there the export must refuse and yield no JSON.
+bool TryExportCapture(const char* name, std::string& outJson)
 {
     const std::string path = std::string("ludus_profiling_memory_") + name + ".json";
-    REQUIRE(profiling::ExportPerfettoTrace(path) == true);
-    std::string json = ReadFile(path);
+    const bool isExported = profiling::ExportPerfettoTrace(path);
+    REQUIRE(isExported == (LUDUS_PROFILING_ENABLED != 0));
+    if (isExported == false)
+    {
+        return false;
+    }
+    outJson = ReadFile(path);
     std::remove(path.c_str());
-    return json;
+    return true;
 }
 } // namespace
 
@@ -114,7 +122,11 @@ TEST_CASE("Quiescent memory gauges export as per-domain counters with a coverage
     profiling::EndCapture();
     gGaugeDomain.Free(first, 100, 16);
 
-    const std::string json = ExportCapture("quiescent");
+    std::string json;
+    if (TryExportCapture("quiescent", json) == false)
+    {
+        SKIP("Release builds compile Perfetto export out");
+    }
     // Two samples of the test domain, each one counter event with every metric.
     REQUIRE(CountOccurrences(json, "\"ph\":\"C\",\"name\":\"Memory/ProfilingTest.Gauges\"") == 2);
     CHECK(json.find("\"args\":{\"Validity\":0,\"LiveRequestedBytes\":128,\"LiveBlocks\":2,\"PeakRequestedBytes\":128,"
@@ -152,6 +164,10 @@ TEST_CASE("An invalid domain exports only its validity, never plausible values",
     REQUIRE(profiling::RecordMemoryGauges() == true);
     profiling::EndCapture();
 
-    const std::string json = ExportCapture("invalid");
+    std::string json;
+    if (TryExportCapture("invalid", json) == false)
+    {
+        SKIP("Release builds compile Perfetto export out");
+    }
     CHECK(json.find("\"name\":\"Memory/ProfilingTest.Invalid\",\"args\":{\"Validity\":2}}") != std::string::npos);
 }
