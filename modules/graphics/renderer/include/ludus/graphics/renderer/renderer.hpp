@@ -43,6 +43,10 @@ struct GpuPreviewGraphInvocation final
     /// Zero bypasses OIDN. Otherwise RenderGraphFormat::ProcessingQuality selects RT HDR
     /// filtering before display conversion. Metal GPU only; unavailable builds reject explicitly.
     foundation::uint32 DenoisingQuality = 0;
+    /// Ray path capture buffer bound at slot 10 of a capture-variant kernel; required exactly when the
+    /// enabled compute shader declares that binding. Size is a positive multiple of four. Caller-owned,
+    /// shared by every pass of the graph and retained through job release and submitted completion.
+    GpuPreviewGraphBuffer RayPathCapture{};
 };
 namespace internal
 {

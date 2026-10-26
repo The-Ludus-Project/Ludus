@@ -19,6 +19,10 @@ namespace ludus::graphics::renderer::internal
 {
 inline constexpr usize GPU_PREVIEW_JOB_COUNT = 16; // Four passes, three retained scenes and retiring work.
 inline constexpr usize GPU_GRAPH_BUFFER_COUNT = 2;
+/// Every compute binding of one job: the frozen ABI, visibility textures, structured storage and,
+/// last, the ray path capture buffer of a diagnostic capture-variant kernel.
+inline constexpr usize GPU_PREVIEW_COMPUTE_BINDING_CAPACITY =
+    LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + content::render_graph_format::MAX_STORAGE_BUFFERS + 1;
 struct GpuPreviewUniform final
 {
     math::Matrix4 ClipToWorld;
@@ -65,6 +69,7 @@ struct GpuPreviewRecord final
     rhi::BindingSetHandle ImageBindings{};
     foundation::StaticArray<GpuPreviewGraphBuffer, GPU_GRAPH_BUFFER_COUNT> GraphBuffers{};
     foundation::StaticArray<bool, GPU_GRAPH_BUFFER_COUNT> HasOwnedGraphBuffers{};
+    GpuPreviewGraphBuffer RayPathCapture{}; // Caller-owned; bound only by capture-variant kernels.
     GpuFrameRecord Frames[2];
     GpuPreviewInfo Info;
     GpuPreviewUniform Uniform{};
@@ -90,10 +95,10 @@ struct GpuPreviewState final
     StaticArray<content::render_graph_format::StorageBuffer, content::render_graph_format::MAX_STORAGE_BUFFERS>
         StorageDescriptions{};
     // RasterBinding initializes Visibility to Both for every nested element.
-    StaticArray<rhi::RasterBinding,
-                LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + content::render_graph_format::MAX_STORAGE_BUFFERS>
+    StaticArray<rhi::RasterBinding, GPU_PREVIEW_COMPUTE_BINDING_CAPACITY>
         ComputeBindings{}; // NOLINT(bugprone-invalid-enum-default-initialization)
     usize ComputeBindingCount = 0;
+    bool HasRayPathCapture = false;
     bool IsGraphRayScene = false;
     bool HasNativeRayQueries = true;
     bool HasVisibilityBuffer = false;

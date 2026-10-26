@@ -460,15 +460,13 @@ Status PollGpuJob(rhi::DeviceHandle device, GpuPreviewState& inoutState, GpuPrev
             (inoutState.HasVisibilityBuffer == false || rhi::IsNull(inoutJob.VisibilityTexture) == false))
         {
             const usize pixels = usize(inoutJob.Width) * inoutJob.Height;
-            StaticArray<rhi::RasterBindingResource,
-                        LUDUS_GRAPH_COMPUTE_BINDING_COUNT + LUDUS_GRAPH_VISIBILITY_TEXTURE_COUNT>
-                bindings{
-                    {{0, inoutJob.Parameters, 0, sizeof(internal::GpuPreviewUniform)},
-                     {1, inoutJob.Data, 0, inoutJob.DataBytes},
-                     {2, inoutJob.Accumulation, 0, pixels * LUDUS_GPU_PREVIEW_ACCUMULATION_BYTES},
-                     {LUDUS_GPU_PREVIEW_COLORS_BINDING, inoutJob.Colors, 0, pixels * LUDUS_GPU_PREVIEW_VECTOR_BYTES},
-                     {LUDUS_GPU_PREVIEW_TEXELS_BINDING, inoutJob.Texels, 0, inoutJob.TexelBytes},
-                     { .Binding = LUDUS_GPU_PREVIEW_RAY_SCENE_BINDING, .Scene = inoutJob.NativeScene }}};
+            StaticArray<rhi::RasterBindingResource, internal::GPU_PREVIEW_COMPUTE_BINDING_CAPACITY> bindings{
+                {{0, inoutJob.Parameters, 0, sizeof(internal::GpuPreviewUniform)},
+                 {1, inoutJob.Data, 0, inoutJob.DataBytes},
+                 {2, inoutJob.Accumulation, 0, pixels * LUDUS_GPU_PREVIEW_ACCUMULATION_BYTES},
+                 {LUDUS_GPU_PREVIEW_COLORS_BINDING, inoutJob.Colors, 0, pixels * LUDUS_GPU_PREVIEW_VECTOR_BYTES},
+                 {LUDUS_GPU_PREVIEW_TEXELS_BINDING, inoutJob.Texels, 0, inoutJob.TexelBytes},
+                 { .Binding = LUDUS_GPU_PREVIEW_RAY_SCENE_BINDING, .Scene = inoutJob.NativeScene }}};
             const Status created = [&]() noexcept {
                 const usize baseBindingCount =
                     LUDUS_GPU_PREVIEW_BINDING_COUNT - (inoutState.HasNativeRayQueries == true ? 0 : 1);
@@ -505,6 +503,18 @@ Status PollGpuJob(rhi::DeviceHandle device, GpuPreviewState& inoutState, GpuPrev
                         .Binding = LUDUS_GRAPH_VISIBILITY_DEPTH_BINDING,
                         .Texture = inoutJob.VisibilityDepthView,
                     };
+                }
+                if (inoutState.HasRayPathCapture == true)
+                {
+                    const Status ready = rhi::GetStatus(device, inoutJob.RayPathCapture.Buffer);
+                    if (ready != Status::Ready)
+                    {
+                        return ready;
+                    }
+                    bindings[count++] = {LUDUS_RAY_PATH_CAPTURE_BINDING,
+                                         inoutJob.RayPathCapture.Buffer,
+                                         0,
+                                         inoutJob.RayPathCapture.Size};
                 }
                 return rhi::CreateBindingSet(device,
                                              inoutState.ComputeLayout,
@@ -648,6 +658,7 @@ void Renderer::State::DropGpuPreview(usize slot) noexcept
     job.DenoisingQuality = 0;
     job.HasPendingCamera = false;
     static_cast<void>(rhi::Destroy(Device, job.ComputeBindings));
+    job.RayPathCapture = {};
     for (usize bufferIndex = 0; bufferIndex < internal::GPU_GRAPH_BUFFER_COUNT; ++bufferIndex)
     {
         if (job.HasOwnedGraphBuffers[bufferIndex] == true)
@@ -761,8 +772,25 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     {
         return status;
     }
+    // A diagnostic capture-variant kernel declares its capture buffer last, after every frozen ABI slot.
+    const rhi::RasterBinding* captureBindingOrNull =
+        compute.Bindings.empty() == false && compute.Bindings.back().Binding == LUDUS_RAY_PATH_CAPTURE_BINDING
+            ? &compute.Bindings.back()
+            : nullptr;
+    if (captureBindingOrNull != nullptr &&
+        (captureBindingOrNull->Kind != rhi::RasterBindingKind::StorageReadWrite ||
+         captureBindingOrNull->Visibility != rhi::RasterVisibility::Compute ||
+         captureBindingOrNull->MinSize != LUDUS_RAY_PATH_CAPTURE_WORD_BYTES ||
+         captureBindingOrNull->HasDynamicOffset == true || captureBindingOrNull->Count != 1 ||
+         captureBindingOrNull->IsRuntimeSized == true || captureBindingOrNull->HasPartialBinding == true ||
+         captureBindingOrNull->Indexing != rhi::RasterBindingIndexing::Constant))
+    {
+        return Status::InvalidDescription;
+    }
+    const std::span<const rhi::RasterBinding> kernelBindings =
+        compute.Bindings.first(compute.Bindings.size() - (captureBindingOrNull != nullptr ? 1 : 0));
     bool hasNativeRayQueries = false;
-    for (const rhi::RasterBinding& binding : compute.Bindings)
+    for (const rhi::RasterBinding& binding : kernelBindings)
     {
         hasNativeRayQueries = hasNativeRayQueries == true || binding.Kind == rhi::RasterBindingKind::RayScene;
     }
@@ -780,11 +808,11 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     // Frozen kernel ABI: consume independently cooked target reflection, never invent it.
     namespace format = content::render_graph_format;
     const bool hasVisibilityBuffer =
-        compute.Bindings.size() >= baseBindingCount + LUDUS_GRAPH_VISIBILITY_TEXTURE_COUNT &&
-        compute.Bindings[compute.Bindings.size() - LUDUS_GRAPH_VISIBILITY_TEXTURE_COUNT].Kind ==
+        kernelBindings.size() >= baseBindingCount + LUDUS_GRAPH_VISIBILITY_TEXTURE_COUNT &&
+        kernelBindings[kernelBindings.size() - LUDUS_GRAPH_VISIBILITY_TEXTURE_COUNT].Kind ==
             rhi::RasterBindingKind::Texture2D;
     const usize visibilityBindingCount = hasVisibilityBuffer == true ? LUDUS_GRAPH_VISIBILITY_TEXTURE_COUNT : 0;
-    const usize bufferBindingCount = compute.Bindings.size() - visibilityBindingCount;
+    const usize bufferBindingCount = kernelBindings.size() - visibilityBindingCount;
     const usize storageBindingCount = baseBindingCount + options.StorageBuffers.GetSize();
     const bool hasPersistentBuffers = options.StorageBuffers.IsEmpty() == true &&
                                       bufferBindingCount == baseBindingCount + internal::GPU_GRAPH_BUFFER_COUNT;
@@ -797,7 +825,7 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     }
     for (usize i = 0; i < baseBindingCount; ++i)
     {
-        const ludus::graphics::rhi::RasterBinding& a = compute.Bindings[i];
+        const ludus::graphics::rhi::RasterBinding& a = kernelBindings[i];
         const rhi::RasterBinding& b = GPU_COMPUTE_BINDINGS[i];
         if (a.Binding != b.Binding || a.Kind != b.Kind || a.Visibility != b.Visibility || a.MinSize != b.MinSize)
         {
@@ -806,7 +834,7 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     }
     for (usize index = baseBindingCount; hasPersistentBuffers == true && index < bufferBindingCount; ++index)
     {
-        const rhi::RasterBinding& binding = compute.Bindings[index];
+        const rhi::RasterBinding& binding = kernelBindings[index];
         if (binding.Binding != LUDUS_GRAPH_BUFFER0_BINDING + index - baseBindingCount ||
             binding.Kind != rhi::RasterBindingKind::StorageReadWrite ||
             binding.Visibility != rhi::RasterVisibility::Compute || binding.MinSize != LUDUS_GPU_PREVIEW_VECTOR_BYTES)
@@ -817,7 +845,7 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     for (usize i = 0; i < options.StorageBuffers.GetSize(); ++i)
     {
         const format::StorageBuffer& storage = options.StorageBuffers[i];
-        const rhi::RasterBinding& binding = compute.Bindings[baseBindingCount + i];
+        const rhi::RasterBinding& binding = kernelBindings[baseBindingCount + i];
         constexpr uint32 WORD_BYTES = sizeof(uint32);
         if (storage.Slot < format::FIRST_STORAGE_SLOT ||
             storage.Slot >= format::FIRST_STORAGE_SLOT + format::MAX_STORAGE_BUFFERS || storage.Stride == 0 ||
@@ -838,7 +866,7 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     {
         for (usize i = 0; i < LUDUS_GRAPH_VISIBILITY_TEXTURE_COUNT; ++i)
         {
-            const rhi::RasterBinding& actual = compute.Bindings[bufferBindingCount + i];
+            const rhi::RasterBinding& actual = kernelBindings[bufferBindingCount + i];
             const rhi::RasterBinding& expected = GPU_VISIBILITY_BINDINGS[LUDUS_GPU_PREVIEW_BINDING_COUNT + i];
             if (actual.Binding != expected.Binding || actual.Kind != expected.Kind ||
                 actual.Visibility != expected.Visibility || actual.MinSize != expected.MinSize ||
@@ -885,6 +913,7 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
         state->ComputeBindings[i] = compute.Bindings[i];
     }
     state->HasVisibilityBuffer = hasVisibilityBuffer;
+    state->HasRayPathCapture = captureBindingOrNull != nullptr;
     status = EnableReferenceRendering(
         {},
         {ReferenceTraversal::CpuOracle, options.CpuByteBudget - sizeof(GpuPreviewState), 0, 1});
@@ -1116,6 +1145,13 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     {
         return Status::InvalidDescription;
     }
+    const bool hasRayPathCapture = invocationOrNull != nullptr && invocationOrNull->RayPathCapture.Size != 0 &&
+                                   invocationOrNull->RayPathCapture.Buffer != rhi::BufferHandle{};
+    if (hasRayPathCapture != state.HasRayPathCapture ||
+        (hasRayPathCapture == true && invocationOrNull->RayPathCapture.Size % LUDUS_RAY_PATH_CAPTURE_WORD_BYTES != 0))
+    {
+        return Status::InvalidDescription;
+    }
     if (invocationOrNull != nullptr && invocationOrNull->DenoisingQuality != 0 &&
         internal::IsGpuDenoisingAvailable() == false)
     {
@@ -1341,6 +1377,7 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     }
     uniform.Options.Y = invocationOrNull != nullptr ? invocationOrNull->ToneMappingExposure : state.Options.Exposure;
     job.DenoisingQuality = invocationOrNull != nullptr ? invocationOrNull->DenoisingQuality : 0;
+    job.RayPathCapture = hasRayPathCapture == true ? invocationOrNull->RayPathCapture : GpuPreviewGraphBuffer{};
     uniform.Sampling[2] |= job.DenoisingQuality != 0 ? LUDUS_GPU_PREVIEW_DENOISING_FLAG : 0;
     job.Uniform = uniform;
     const math::Vector4 dimensions{float32(job.Width),

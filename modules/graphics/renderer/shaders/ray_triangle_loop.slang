@@ -45,7 +45,12 @@ Hit TraceTriangleLoop(float3 originWorld,
             Texture(triangle, TexcoordUv(triangle, barycentric)).w * Surface(triangle, 2).w *
                     InterpolateTriangleColor(triangle, barycentric).w <
                 Surface(triangle, 1).y)
+        {
+#ifdef LUDUS_RAY_PATH_CAPTURE
+            rayPathRejected += 1;
+#endif
             continue;
+        }
         hit.Triangle = triangle;
         hit.DistanceWorld = distanceWorld;
         hit.Barycentric = barycentric;

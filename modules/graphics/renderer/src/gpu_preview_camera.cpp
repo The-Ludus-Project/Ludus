@@ -23,9 +23,7 @@ struct GpuPreviewCameraUpdate::State final
     rhi::BufferHandle Parameters{};
     rhi::BindingSetHandle Bindings{};
     rhi::BindingLayoutHandle Layout{};
-    StaticArray<rhi::RasterBindingResource,
-                LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + content::render_graph_format::MAX_STORAGE_BUFFERS>
-        Resources{};
+    StaticArray<rhi::RasterBindingResource, GPU_PREVIEW_COMPUTE_BINDING_CAPACITY> Resources{};
     usize BindingCount = 0;
     bool HasBindings = false;
     ~State() noexcept

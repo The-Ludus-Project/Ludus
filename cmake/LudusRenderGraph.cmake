@@ -5,11 +5,16 @@ include("${CMAKE_CURRENT_LIST_DIR}/LudusDependencies.cmake")
 # Dependencies stay within ROOT; generated package/build output must be outside it.
 # RUNTIME_PACKAGE also cooks <NAME>.lurgrt for RG3 runtime activation and sets
 # <NAME>_RUNTIME_PACKAGE in the caller's scope to its absolute build-tree path.
+# RAY_PATH_CAPTURE emits only the header of the diagnostic ray path capture variant;
+# capture builds are never cooked into runtime packages.
 function(ludus_compile_render_graph)
-    cmake_parse_arguments(PARSE_ARGV 0 GRAPH "RUNTIME_PACKAGE" "TARGET;NAME;MANIFEST;ROOT;CONFIGURATION" "")
+    cmake_parse_arguments(PARSE_ARGV 0 GRAPH "RUNTIME_PACKAGE;RAY_PATH_CAPTURE" "TARGET;NAME;MANIFEST;ROOT;CONFIGURATION" "")
     if(GRAPH_UNPARSED_ARGUMENTS OR NOT TARGET "${GRAPH_TARGET}" OR
        NOT GRAPH_NAME MATCHES "^[A-Za-z][A-Za-z0-9_]*$" OR NOT GRAPH_MANIFEST)
         message(FATAL_ERROR "ludus_compile_render_graph requires TARGET NAME MANIFEST; optional ROOT CONFIGURATION")
+    endif()
+    if(GRAPH_RUNTIME_PACKAGE AND GRAPH_RAY_PATH_CAPTURE)
+        message(FATAL_ERROR "ludus_compile_render_graph: RAY_PATH_CAPTURE builds emit a header, never a RUNTIME_PACKAGE")
     endif()
     get_filename_component(manifest "${GRAPH_MANIFEST}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
     if(NOT GRAPH_ROOT)
@@ -84,6 +89,9 @@ function(ludus_compile_render_graph)
     file(GLOB modules "${package}/ludus_tools/render_graph*.py")
     set(output "${CMAKE_CURRENT_BINARY_DIR}/ludus-graphs/${GRAPH_TARGET}/${GRAPH_NAME}")
     set(outputs "${output}/${GRAPH_NAME}.h")
+    if(GRAPH_RAY_PATH_CAPTURE)
+        list(APPEND arguments --ray-path-capture)
+    endif()
     if(GRAPH_RUNTIME_PACKAGE)
         list(APPEND arguments --runtime-package "${output}/${GRAPH_NAME}.lurgrt")
         list(APPEND outputs "${output}/${GRAPH_NAME}.lurgrt" "${output}/${GRAPH_NAME}.lurgrt.resources.json")

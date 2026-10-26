@@ -76,6 +76,9 @@ def select_callbacks(programs, variant):
 # retains that contract, but uses shader-local ScenePayload rather than a DXR payload.
 STATE = {'max_recursion': 1, 'payload_bytes': 0, 'attribute_bytes': 8}
 VISIBILITY_SLOT = buffers.FIRST_SLOT + buffers.MAX_BUFFERS
+# Diagnostic ray path capture buffer (LUDUS_RAY_PATH_CAPTURE_BINDING); uint32 words.
+RAY_PATH_CAPTURE_SLOT = 10
+RAY_PATH_CAPTURE_STRIDE = 4
 MAX_LOCAL_PAYLOAD_BYTES = 4096
 PAYLOAD_FIELD_ALIGNMENT_BYTES = 16
 DEFAULT_PAYLOAD = '_ludus_ray/scene_payload.slang'
@@ -270,8 +273,12 @@ def group_profiles(plans, technique, build):
 
 
 def expand_programs(programs, technique, snapshot, helper, build, variants=None, persistent=False, schemas=None,
-                    compute_identity=COMPUTE_ID, native_ray_queries=True):
-    """Capture the engine kernel and all three functions in one linked compute entry."""
+                    compute_identity=COMPUTE_ID, native_ray_queries=True, ray_path_capture=False):
+    """Capture the engine kernel and all three functions in one linked compute entry.
+
+    ray_path_capture links the diagnostic LUDUS_RAY_PATH_CAPTURE variant of the same
+    source snapshot. The flag is part of the program, so it joins the stage cache identity.
+    """
     selected = select_callbacks(programs, variants[0]) if variants else {stage: programs[technique[stage]] for stage in STAGES}
     storage = buffers.merge_bindings(selected, build)
     build.require(not persistent or not storage, 'Capability', TECHNIQUE, 'ordered ray passes use Buffer storage; StructuredBuffer remains the single-job profile')
@@ -355,12 +362,16 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
         wrapper = persistent_wrapper(programs, technique, variants, snapshot, build, compute_recipe, compatibility)
     if not native_ray_queries:
         wrapper = '#define LUDUS_SOFTWARE_RAY_TRAVERSAL 1\n' + wrapper
+    if ray_path_capture:
+        wrapper = '#define LUDUS_RAY_PATH_CAPTURE 1\n' + wrapper
     result = {identity: deepcopy(program) for identity, program in programs.items()
               if program['stage'] not in (*STAGES, COMPUTE_STAGE)}
     result[compute_identity] = {'id': compute_identity, 'stage': 'compute', 'source': selected['ray_generation']['source'],
                           'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': wrapper, 'native_ray_queries': native_ray_queries, 'software_ray_queries': not native_ray_queries, 'native_ray_profile': True, 'persistent_ray_profile': persistent, 'storage_bindings': storage, 'storage_schemas': {binding['schema']: schemas[binding['schema']] for binding in storage}, 'visibility_buffer': technique.get('scene_interface', {}).get('visibility_buffer', False)}
     if compatibility['sources']:
         result[compute_identity]['source_overrides'] = compatibility['sources']
+    if ray_path_capture:
+        result[compute_identity]['ray_path_capture'] = True
     for identity, stage, function in ((IMAGE_VERTEX_ID, 'vertex', image_recipe['vertex']), (IMAGE_FRAGMENT_ID, 'fragment', image_recipe['fragment'])):
         # Use the same renderer-owned image recipe; its interface is validated by the runtime.
         source = '#include "_ludus_ray/' + image_recipe['source'] + '"\n'
@@ -401,7 +412,8 @@ def check_interface(program, result, build):
             expected += [(6, 'StorageReadWrite', 16), (7, 'StorageReadWrite', 16)]
         build.require(interface.get('workgroup') == [64, 1, 1] and interface['inputs'] == [] and
                       [(entry['binding'], entry['kind'], entry['size']) for entry in entries if program.get('persistent_ray_profile') or entry['binding'] < buffers.FIRST_SLOT or entry['binding'] >= VISIBILITY_SLOT] ==
-                      expected + ([(VISIBILITY_SLOT, 'Texture2D', 0), (VISIBILITY_SLOT + 1, 'TextureDepth2D', 0)] if program.get('visibility_buffer', False) else []),
+                      expected + ([(VISIBILITY_SLOT, 'Texture2D', 0), (VISIBILITY_SLOT + 1, 'TextureDepth2D', 0)] if program.get('visibility_buffer', False) else []) +
+                      ([(RAY_PATH_CAPTURE_SLOT, 'StorageReadWrite', RAY_PATH_CAPTURE_STRIDE)] if program.get('ray_path_capture', False) else []),
                       'ShaderInterface', program['id'], 'ray compute reflection differs from the selected renderer ABI')
         declared = program.get('storage_bindings', [])
         extra = [entry for entry in entries if buffers.FIRST_SLOT <= entry['binding'] < VISIBILITY_SLOT and not program.get('persistent_ray_profile')]
