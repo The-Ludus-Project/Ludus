@@ -70,7 +70,8 @@ bool AwaitCondition(Condition condition)
     return condition();
 }
 
-/// A device identity that is never dereferenced: only an import would touch it.
+/// A device identity that is never dereferenced by a refused Start or by the Metal
+/// consumer. A Vulkan consumer loads its dispatch from the instance, so it needs a live one.
 rhi::NativeDeviceIdentity MakeUntouchedIdentity(rhi::Backend api)
 {
     static int32 device = 0;
@@ -88,7 +89,8 @@ rhi::NativeDeviceIdentity MakeUntouchedIdentity(rhi::Backend api)
 constexpr rhi::Backend NATIVE_API = rhi::Backend::Metal;
 constexpr rhi::Backend FOREIGN_API = rhi::Backend::Vulkan;
 #else
-constexpr rhi::Backend NATIVE_API = rhi::Backend::Vulkan;
+// Used only by the macOS channel case; see the note above it.
+[[maybe_unused]] constexpr rhi::Backend NATIVE_API = rhi::Backend::Vulkan;
 constexpr rhi::Backend FOREIGN_API = rhi::Backend::Metal;
 #endif
 /// Whether Qt presents on a desktop display through the shared GPU device on this target.
@@ -128,7 +130,9 @@ TEST_CASE("Play in the viewport says why it cannot use a device", "[editor][play
     CHECK(source.GetState() == PlaySourceState::Stopped);
 }
 
-#if defined(Q_OS_MACOS) || defined(Q_OS_LINUX)
+// Linux would pass this fake identity to the Vulkan loader, which aborts the process on an
+// unknown VkInstance; the [gpu] hosted-frames case below covers Linux with a live device.
+#if defined(Q_OS_MACOS)
 TEST_CASE("A play source opens a private window channel and closes it on Stop", "[editor][play][viewport]")
 {
     PlayViewportSource source;
