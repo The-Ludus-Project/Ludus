@@ -7,6 +7,7 @@
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/graphics/rhi/graph.h>
+#include <ludus/graphics/rhi/lifetime.h>
 
 #if defined(_WIN32)
 #    include "internal/d3d12_device.h"
@@ -67,6 +68,32 @@ struct DeviceOwner final
         {
             Messages = rhi::backend::d3d12::ComOwner<ID3D12InfoQueue>(messagesOrNull);
             Messages->ClearStoredMessages();
+        }
+        else
+        {
+            WARN("D3D12 debug layer unavailable; native image conformance still executes");
+        }
+#endif
+    }
+    void CheckDebugMessages() const
+    {
+#if defined(_WIN32)
+        REQUIRE(rhi::backend::d3d12::WaitForQueue() == true);
+        if (Messages.Get() != nullptr)
+        {
+            const uint64 count = Messages->GetNumStoredMessagesAllowedByRetrievalFilter();
+            for (uint64 index = 0; index < count; ++index)
+            {
+                SIZE_T size = 0;
+                REQUIRE(SUCCEEDED(Messages->GetMessage(index, nullptr, &size)) == true);
+                Array<uint8> storage;
+                REQUIRE(storage.TryResize(size) == true);
+                D3D12_MESSAGE* message = reinterpret_cast<D3D12_MESSAGE*>(storage.GetData());
+                REQUIRE(SUCCEEDED(Messages->GetMessage(index, message, &size)) == true);
+                INFO(message->pDescription);
+                CHECK(message->Severity != D3D12_MESSAGE_SEVERITY_CORRUPTION);
+                CHECK(message->Severity != D3D12_MESSAGE_SEVERITY_ERROR);
+            }
         }
 #endif
     }
@@ -323,6 +350,7 @@ TEST_CASE("Portable raster complete images cover depth blending indices and clip
             }
         }
     }
+    owner.CheckDebugMessages();
 }
 
 TEST_CASE("Portable attachment passes preserve MRT stencil and selected mip contents", "[rhi][gpu][portable-raster]")
@@ -478,4 +506,35 @@ TEST_CASE("Portable attachment passes preserve MRT stencil and selected mip cont
             }
         }
     }
+    owner.CheckDebugMessages();
+}
+
+TEST_CASE("Portable surface graph preparation precedes frame acquisition", "[rhi][gpu][portable-raster]")
+{
+    DeviceOwner owner;
+    rhi::OrderedGraph graph;
+    REQUIRE(rhi::CreateOrderedGraph(owner.Device, graph) == rhi::RasterStatus::Ready);
+    rhi::GraphPassDescription pass;
+    pass.Name = "surface clear before acquisition";
+    pass.Attachment.Clear[0] = 1;
+    pass.Attachment.Clear[2] = 1;
+    REQUIRE(rhi::AddGraphPass(owner.Device, graph, pass) == rhi::RasterStatus::Ready);
+    rhi::GraphReport report;
+    REQUIRE(rhi::CompileOrderedGraph(owner.Device, graph, report) == rhi::RasterStatus::Ready);
+    CHECK(report.LivePasses == 1);
+    rhi::SubmissionToken completion;
+    REQUIRE(rhi::ExecuteOrderedGraph(owner.Device, owner.Surface, graph, completion) == rhi::RasterStatus::Ready);
+    StaticArray<uint8, PIXEL_BYTES> pixels{};
+    REQUIRE(rhi::backend::ReadHeadlessPixels(pixels.AsSpan()) == true);
+    REQUIRE(rhi::GetStatus(owner.Device, completion) == rhi::RasterStatus::Ready);
+    const StaticArray<uint8, CHANNELS> expected{255, 0, 255, 255};
+    for (usize index = 0; index < PIXEL_BYTES; ++index)
+    {
+        if (pixels[index] != expected[index % CHANNELS])
+        {
+            CAPTURE(index);
+            FAIL("Surface graph did not publish its authored clear");
+        }
+    }
+    owner.CheckDebugMessages();
 }

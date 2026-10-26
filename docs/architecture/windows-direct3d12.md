@@ -293,7 +293,7 @@ acceptance work. The implementation is on `codex/windows-integration-d3b`.
   Less/LessEqual/Greater/GreaterEqual/Always comparisons and independent writes.
   Blend uses premultiplied alpha in the attachment's linear domain. Front/back
   stencil operations, masks and reference implement the shared eight-bit contract;
-  the D3D viewport's Y inversion preserves canonical clip-space face orientation.
+  native counter-clockwise front faces preserve canonical clip-space orientation.
 - **Attachments.** Single-sample RGBA8, sRGB and supported RGBA16F allocations
   have private depth (D32F), or depth/stencil (D32F/S8). Writable views select one
   mip and layer, including array/cube attachments. Up to four color targets use
@@ -313,13 +313,15 @@ acceptance work. The implementation is on `codex/windows-integration-d3b`.
   depth, rectangles, both index widths, a 40-frame burst, detached dependencies,
   resize/restore, two-instance advancement, render-to-sample RGBA8/sRGB/HDR,
   selected mips, MRT and front-face stencil across
-  load/store pass boundaries. Color conversion permits one UNORM byte; binary
+  load/store pass boundaries. A graph surface-clear regression also exercises
+  preflight before frame acquisition, when the actual surface extent is unavailable.
+  Color conversion permits one UNORM byte; binary
   MRT/stencil images are exact. The portable ISG1 reader also has malformed-input
   and failure-output preservation tests in the common lifecycle suite.
 
 Local validation: Clang 23 builds the Windows Platform/RHI closure warning-clean;
 the common lifecycle suite passes, and both shared conformance cases pass on
-Metal under ASan/UBSan (661 assertions). The Windows tests also inspect available debug-layer
+Metal under ASan/UBSan (669 assertions). The Windows tests also inspect available debug-layer
 messages and reject corruption/errors. WARP runtime evidence is recorded after
 the Windows lane executes this change; syntax/link closure and Metal images
 alone do not qualify the D3D12 drawing profile.

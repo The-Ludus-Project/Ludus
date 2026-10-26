@@ -9,6 +9,9 @@
 // baseline command-list API so feature-level 11_0/WARP needs no newer runtime.
 // https://learn.microsoft.com/windows/win32/direct3d12/using-resource-barriers-to-synchronize-resource-states-in-direct3d-12
 // https://learn.microsoft.com/windows/win32/direct3d12/creating-a-basic-direct3d-12-component
+// Microsoft, "D3D12_RASTERIZER_DESC", FrontCounterClockwise, defines winding
+// on the render target; TRUE matches the canonical counter-clockwise front face.
+// https://learn.microsoft.com/windows/win32/api/d3d12/ns-d3d12-d3d12_rasterizer_desc
 namespace ludus::graphics::rhi::backend
 {
 namespace
@@ -175,8 +178,8 @@ RasterStatus RasterCreatePipeline(usize slot, const RasterPipelineInfo& info, ui
     native.SampleDesc.Count = 1;
     native.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
     native.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-    // D3D's viewport flips clip Y; canonical counter-clockwise becomes clockwise on screen.
-    native.RasterizerState.FrontCounterClockwise = FALSE;
+    // Match the public canonical counter-clockwise front-face contract.
+    native.RasterizerState.FrontCounterClockwise = TRUE;
     native.RasterizerState.DepthClipEnable = TRUE;
     native.DepthStencilState.DepthEnable = info.Depth == true ? TRUE : FALSE;
     native.DepthStencilState.DepthWriteMask =
@@ -189,13 +192,16 @@ RasterStatus RasterCreatePipeline(usize slot, const RasterPipelineInfo& info, ui
     native.DepthStencilState.BackFace = GetStencilFace(info.StencilBack);
     native.DSVFormat = info.Stencil == true ? DXGI_FORMAT_D32_FLOAT_S8X24_UINT : DXGI_FORMAT_D32_FLOAT;
     native.NumRenderTargets = static_cast<UINT>(info.ColorCount == 0 ? 1 : info.ColorCount);
-    for (usize color = 0; color < native.NumRenderTargets; ++color)
+    for (usize color = 0; color < D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT; ++color)
     {
-        native.RTVFormats[color] = info.ColorCount != 0                     ? GetRasterFormat(info.ColorFormats[color])
-                                   : info.Target == RasterTarget::Surface   ? DXGI_FORMAT_B8G8R8A8_UNORM
-                                   : info.Target == RasterTarget::Rgba8Srgb ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
-                                   : info.Target == RasterTarget::Rgba16Float ? DXGI_FORMAT_R16G16B16A16_FLOAT
-                                                                              : DXGI_FORMAT_R8G8B8A8_UNORM;
+        if (color < native.NumRenderTargets)
+        {
+            native.RTVFormats[color] = info.ColorCount != 0 ? GetRasterFormat(info.ColorFormats[color])
+                                       : info.Target == RasterTarget::Surface     ? DXGI_FORMAT_B8G8R8A8_UNORM
+                                       : info.Target == RasterTarget::Rgba8Srgb   ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
+                                       : info.Target == RasterTarget::Rgba16Float ? DXGI_FORMAT_R16G16B16A16_FLOAT
+                                                                                  : DXGI_FORMAT_R8G8B8A8_UNORM;
+        }
         D3D12_RENDER_TARGET_BLEND_DESC& blend = native.BlendState.RenderTarget[color];
         blend.BlendEnable = info.Blend == true ? TRUE : FALSE;
         blend.SrcBlend = D3D12_BLEND_ONE;
@@ -227,6 +233,12 @@ RasterStatus RasterPreparePass(const RasterPassInfo& info) noexcept
     }
     if (info.Texture == RASTER_INVALID && info.ColorCount == 0)
     {
+        // Graph submission preflights before acquisition. The acquired extent is
+        // available only when RasterBeginPass repeats preparation inside the frame.
+        if (GetCommandsOrNull() == nullptr)
+        {
+            return RasterStatus::Ready;
+        }
         const FrameInfo frame = GetFrameInfo();
         return PrepareSurfaceDepth(frame.Width, frame.Height);
     }
