@@ -26,7 +26,8 @@ Hit TraceTriangleLoop(float3 originWorld,
         float3 edge2World = SceneValue(firstWord + 2).xyz - positionWorld;
         float3 crossDirectionWorld = cross(directionWorld, edge2World);
         float determinant = dot(edge1World, crossDirectionWorld);
-        float threshold = TRIANGLE_PARALLEL_COSINE_TOLERANCE * length(cross(edge1World, edge2World)) * length(directionWorld);
+        float threshold =
+            TRIANGLE_PARALLEL_COSINE_TOLERANCE * length(cross(edge1World, edge2World)) * length(directionWorld);
         if (isfinite(determinant) == false || abs(determinant) <= threshold)
             continue;
         float inverseDeterminant = 1 / determinant;
@@ -35,8 +36,8 @@ Hit TraceTriangleLoop(float3 originWorld,
         float3 crossOffsetWorld = cross(offsetWorld, edge1World);
         float v = dot(directionWorld, crossOffsetWorld) * inverseDeterminant;
         float distanceWorld = dot(edge2World, crossOffsetWorld) * inverseDeterminant;
-        if (isfinite(u) == false || isfinite(v) == false || isfinite(distanceWorld) == false ||
-            u < 0 || v < 0 || u + v > 1 || distanceWorld < nearDistanceWorld || distanceWorld >= hit.DistanceWorld)
+        if (isfinite(u) == false || isfinite(v) == false || isfinite(distanceWorld) == false || u < 0 || v < 0 ||
+            u + v > 1 || distanceWorld < nearDistanceWorld || distanceWorld >= hit.DistanceWorld)
             continue;
         float2 barycentric = float2(u, v);
         if ((Sampling.z & LUDUS_GPU_PREVIEW_OPAQUE_FLAG) == 0 &&

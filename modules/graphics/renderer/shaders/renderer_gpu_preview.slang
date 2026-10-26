@@ -124,10 +124,10 @@ struct Hit
 float4 InterpolateTriangle(uint triangle, uint first, in float2 barycentric);
 #ifndef LUDUS_SOFTWARE_RAY_TRAVERSAL
 Hit TraceNative(float3 originWorld,
-          float3 directionWorld,
-          float nearDistanceWorld,
-          float farDistanceWorld,
-          bool isVisibility = false)
+                float3 directionWorld,
+                float nearDistanceWorld,
+                float farDistanceWorld,
+                bool isVisibility = false)
 {
     Hit hit;
     hit.Triangle = LUDUS_GPU_PREVIEW_INVALID_TRIANGLE;
@@ -166,7 +166,7 @@ Hit TraceNative(float3 originWorld,
 }
 #endif
 #if defined(LUDUS_GRAPH_TRAVERSAL_STRATEGIES) || defined(LUDUS_SOFTWARE_RAY_TRAVERSAL)
-#include "ray_triangle_loop.slang"
+#    include "ray_triangle_loop.slang"
 #endif
 Hit Trace(float3 originWorld,
           float3 directionWorld,
@@ -177,10 +177,10 @@ Hit Trace(float3 originWorld,
 #ifdef LUDUS_SOFTWARE_RAY_TRAVERSAL
     return TraceTriangleLoop(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
 #else
-#ifdef LUDUS_GRAPH_TRAVERSAL_STRATEGIES
+#    ifdef LUDUS_GRAPH_TRAVERSAL_STRATEGIES
     if (GetGraphTraversalStrategy() == 1)
         return TraceTriangleLoop(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
-#endif
+#    endif
     return TraceNative(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
 #endif
 }
