@@ -28,7 +28,7 @@ MAX_UNIFORM_BINDINGS = 16
 MAX_UNIFORM_FIELDS = 256
 MAX_UNIFORM_BLOCK_BYTES = 1024
 UNIFORM_SLOT_COUNT = 8
-FORMAT_VERSION = 13
+FORMAT_VERSION = 14
 ABSENT = 0xFFFFFFFF
 # Exact technique identities and their numeric program roles, in format order.
 PROGRAMS = {'DefaultStaticOpaque.ColorAndDepth': 'ColorAndDepth', 'DefaultStaticOpaque.DepthOnly': 'DepthOnly',
@@ -186,7 +186,8 @@ def lower_plan(package, configuration):
                                   'visibility/depth must come from the immediately preceding opaque Clear/Store raster using the same view')
             color = operation['attachments']['color']
             recipes = [recipe for recipe in package.get('recipes', []) if recipe['technique'] == ray.TECHNIQUE and
-                       recipe.get('visibility_buffer', False) == ('visibility' in operation)]
+                       recipe.get('visibility_buffer', False) == ('visibility' in operation) and
+                       recipe.get('native_ray_queries', True) == ray.requires_native_queries(plan)]
             variants = recipes[0].get('ray_programs', [list(ray.program_tuple(operation['pipeline']))]) if recipes else [list(ray.program_tuple(operation['pipeline']))]
             variant = list(ray.program_tuple(operation['pipeline']))
             build.require(variant in variants and all(recipe.get('ray_programs', variants) == variants for recipe in recipes),
@@ -241,6 +242,8 @@ def lower_plan(package, configuration):
     for operation, record in zip(operations, pass_records):
         record.setdefault('SourceColor', ABSENT)
         record['DenoisingQuality'] = quality.QUALITY_CODES[operation['denoising']['quality']] if 'denoising' in operation else 0
+        record['Traversal'] = ('TriangleLoop' if operation['kind'] == 'RayTracing' and
+                               ray.program_tuple(operation['pipeline'])[-1] == ray.TRIANGLE_LOOP_TAG else 'NativeQuery')
     return plan, resource_records, pass_records, cameras
 
 
@@ -287,7 +290,7 @@ def _cpu_vertex_interface(schema, stages):
 TARGET_FIELDS = {'metal': 'Msl', 'spirv': 'Spirv', 'wgsl': 'Wgsl', 'glsl': 'GlslEs'}
 # Serialized runtime generation (RG3); mirrors render_graph_format/runtime_package.h.
 PACKAGE_MAGIC = 0x4752554C
-PACKAGE_VERSION = 17
+PACKAGE_VERSION = 18
 RESOURCE_FIELD_COUNT = 9
 RESOURCE_RECORD_BYTES = RESOURCE_FIELD_COUNT * 4
 MAX_PASS_NAME_BYTES = 127
@@ -406,7 +409,8 @@ def _runtime_contents(path, configuration):
     plan, resources, passes, cameras = lower_plan(package, configuration)
     has_visibility = any(p.get('Visibility', ABSENT) != ABSENT for p in passes)
     ray_recipes = [recipe for recipe in package['recipes'] if recipe['technique'] == ray.TECHNIQUE and
-                   recipe.get('visibility_buffer', False) == has_visibility]
+                   recipe.get('visibility_buffer', False) == has_visibility and
+                   recipe.get('native_ray_queries', True) == ray.requires_native_queries(plan)]
     stages = {}
     roles = program_roles(package)
     vertex_schemas = []
@@ -560,7 +564,7 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
     lines += [f'inline constexpr foundation::usize STORAGE_BUFFER_COUNT = {len(contents["storage_buffers"])};']
     lines += _uniform_constants(contents)
     kinds = {'Kind': 'Aspect', 'Program': 'Technique', 'ColorLoad': 'Load', 'DepthLoad': 'Load', 'ColorStore': 'Store',
-             'DepthStore': 'Store', 'Stages': 'Visibility', 'Target': 'ShaderTarget'}
+             'DepthStore': 'Store', 'Stages': 'Visibility', 'Target': 'ShaderTarget', 'Traversal': 'RayTraversal'}
     tables = [('STORAGE_BUFFERS', contents['storage_buffers'], 'StorageBuffer', 'STORAGE_BUFFER_COUNT'), ('RESOURCES', resources, 'Resource', 'RESOURCE_COUNT'), ('PASSES', passes, 'Pass', 'PASS_COUNT'),
               ('UNIFORM_BINDINGS', contents['bindings'], 'UniformBinding', 'UNIFORM_BINDING_COUNT'),
               ('UNIFORM_BLOCKS', contents['blocks'], 'UniformBlock', 'UNIFORM_BLOCK_COUNT'),
@@ -656,7 +660,7 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
                 lines += ['            {' + str(value['location']) + ', rhi::RasterVertexFormat::' + value['format'] + '},' for value in input_values]
                 lines += ['        },', '    };', f'    result.{member}.Inputs = {declaration}Inputs.AsSpan();']
             if program_name == 'RayTracing':
-                lines += ['    renderer::SetRenderGraphRayInterface(result.' + member + ', rhi::ShaderStage::' + stage.title() + ', result.HasPersistentRayBuffers, result.HasVisibilityBuffer);']
+                lines += ['    renderer::SetRenderGraphRayInterface(result.' + member + ', rhi::ShaderStage::' + stage.title() + ', result.HasPersistentRayBuffers, result.HasVisibilityBuffer, ' + ('true' if ray.requires_native_queries(contents['plan']) else 'false') + ');']
             if program_name in forward.SUPPORT:
                 lines += [f'    renderer::SetRenderGraphForwardInterface(result.{member}, format::StageRole::{member});']
             stage_bindings = _stage_bindings(program_name, stage, contents['bindings'])
@@ -722,6 +726,7 @@ def encode_runtime_package(contents):
         data += struct.pack('<f', p.get('ToneMappingExposure', 0))
         data += u32(p.get('SourceColor', ABSENT))
         data += u32(p.get('DenoisingQuality', 0))
+        data += u32(1 if p.get('Traversal', 'NativeQuery') == 'TriangleLoop' else 0)
     for b in contents['bindings']:
         data += u32(PROGRAM_CODES[b['Program']], b['Slot'], VISIBILITY[b['Stages']], b['ValueOffset'], b['ValueCount'])
     for b in contents['blocks']:

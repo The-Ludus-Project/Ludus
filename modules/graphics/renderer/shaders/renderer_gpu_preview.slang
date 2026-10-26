@@ -44,7 +44,9 @@ LUDUS_SHADER_BINDING(2) RWStructuredBuffer<float4> accumulation; // sum/count, c
 LUDUS_SHADER_BINDING(LUDUS_GPU_PREVIEW_COLORS_BINDING)
 RWStructuredBuffer<float4> colors; // Encoded RGB and binary32-exact pixel index.
 LUDUS_SHADER_BINDING(LUDUS_GPU_PREVIEW_TEXELS_BINDING) StructuredBuffer<uint4> textureWords;
+#ifndef LUDUS_SOFTWARE_RAY_TRAVERSAL
 LUDUS_SHADER_BINDING(LUDUS_GPU_PREVIEW_RAY_SCENE_BINDING) RaytracingAccelerationStructure rayScene;
+#endif
 // Mirrors the CPU reference path's addresses: Scope is the 32-bit pixel index,
 // Event is the sample and dimensions follow LUDUS_PATH_RANDOM_* in
 // renderer_gpu_preview_layout.h. Host admission bounds depth, so every
@@ -120,11 +122,12 @@ struct Hit
     float2 Barycentric;
 };
 float4 InterpolateTriangle(uint triangle, uint first, in float2 barycentric);
-Hit Trace(float3 originWorld,
-          float3 directionWorld,
-          float nearDistanceWorld,
-          float farDistanceWorld,
-          bool isVisibility = false)
+#ifndef LUDUS_SOFTWARE_RAY_TRAVERSAL
+Hit TraceNative(float3 originWorld,
+                float3 directionWorld,
+                float nearDistanceWorld,
+                float farDistanceWorld,
+                bool isVisibility = false)
 {
     Hit hit;
     hit.Triangle = LUDUS_GPU_PREVIEW_INVALID_TRIANGLE;
@@ -160,6 +163,26 @@ Hit Trace(float3 originWorld,
         hit.Barycentric = query.CommittedTriangleBarycentrics();
     }
     return hit;
+}
+#endif
+#if defined(LUDUS_GRAPH_TRAVERSAL_STRATEGIES) || defined(LUDUS_SOFTWARE_RAY_TRAVERSAL)
+#    include "ray_triangle_loop.slang"
+#endif
+Hit Trace(float3 originWorld,
+          float3 directionWorld,
+          float nearDistanceWorld,
+          float farDistanceWorld,
+          bool isVisibility = false)
+{
+#ifdef LUDUS_SOFTWARE_RAY_TRAVERSAL
+    return TraceTriangleLoop(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
+#else
+#    ifdef LUDUS_GRAPH_TRAVERSAL_STRATEGIES
+    if (GetGraphTraversalStrategy() == 1)
+        return TraceTriangleLoop(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
+#    endif
+    return TraceNative(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
+#endif
 }
 // Thanks to Dirk Gerrit van Antwerpen, "Solving Self-Intersection Artifacts in
 // DirectX Raytracing", NVIDIA Technical Blog (2023), "Error bounds":

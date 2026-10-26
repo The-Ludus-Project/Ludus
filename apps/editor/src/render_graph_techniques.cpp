@@ -1,3 +1,4 @@
+#include "internal/render_graph_pipeline_node.h"
 #include "internal/render_graph_shader_creation.h"
 
 #include <QDir>
@@ -22,7 +23,7 @@ QStringList GetTechniqueStages(const QString& identity)
 QString GetTechniqueIdentity(const QJsonObject& node)
 {
     const QString kind = node.value(QStringLiteral("kind")).toString();
-    if (kind == QStringLiteral("RayTracingPipeline"))
+    if (kind == QStringLiteral("RayTracingPipeline") || IsSceneComputeNode(node) == true)
     {
         return QString(RAY_TECHNIQUE);
     }
@@ -84,7 +85,7 @@ QJsonObject MakeTechnique(const QJsonObject& node, const QString& identity)
     {
         // Match the triangle profile's automatic limits; do not change authored overrides.
         const QJsonObject defaults = NormalizeTriangleRecipe({});
-        recipe = NormalizeTriangleRecipe(recipe);
+        recipe = NormalizeTriangleRecipe(IsSceneComputeNode(node) == true ? QJsonObject{} : recipe);
         if (recipe != defaults)
         {
             return {}; // Unsupported drafts keep the execution-profile diagnostic.

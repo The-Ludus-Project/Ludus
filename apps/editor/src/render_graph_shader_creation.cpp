@@ -595,7 +595,8 @@ RenderGraphDocumentStatus PreparePipelineShaders(RenderGraphSnapshot& inoutSnaps
                                 {QStringLiteral("function"), QStringLiteral("ShaderMain")},
                                 {QStringLiteral("bindings"), QJsonArray{}}};
             if (HasSceneRayInterface(manifest) == true && IsSceneRayStage(stage) == true &&
-                inoutNode.value(QStringLiteral("kind")).toString() == QStringLiteral("RayTracingPipeline"))
+                (inoutNode.value(QStringLiteral("kind")).toString() == QStringLiteral("RayTracingPipeline") ||
+                 IsSceneComputeNode(inoutNode) == true))
             {
                 program.insert(QStringLiteral("output"), QStringLiteral("ScenePayload"));
             }

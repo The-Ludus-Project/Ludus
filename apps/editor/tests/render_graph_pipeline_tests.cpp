@@ -2723,3 +2723,88 @@ TEST_CASE("converting a compute node regenerates only untouched generated kernel
         CHECK(GetProgram(document, programName).value(QStringLiteral("output")).toString().isEmpty() == true);
     }
 }
+
+TEST_CASE("shared ray callbacks expose traversal selection in the canvas pipeline editor",
+          "[editor][render-graph][pipeline][scene-compute]")
+{
+    QJsonObject node = MakePipelineNode(QStringLiteral("ComputePipeline"), QStringLiteral("trace"));
+    node.insert(QStringLiteral("inputs"),
+                QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("scene")},
+                                       {QStringLiteral("type"), QStringLiteral("Scene")},
+                                       {QStringLiteral("required"), true}}});
+    node.insert(QStringLiteral("state"), QJsonObject{});
+    node.insert(QStringLiteral("invocation"),
+                QJsonObject{{QStringLiteral("dimensions"), QStringLiteral("ColorTarget")}});
+    QJsonArray shaders;
+    for (const QString& stage :
+         {QStringLiteral("ray_generation"), QStringLiteral("miss"), QStringLiteral("closest_hit")})
+    {
+        shaders.append(QJsonObject{{QStringLiteral("id"), stage},
+                                   {QStringLiteral("stage"), stage},
+                                   {QStringLiteral("program"), QStringLiteral("Program")}});
+    }
+    node.insert(QStringLiteral("shaders"), shaders);
+    RenderGraphPipelineEditor editor(node);
+    editor.ShowParts();
+    QComboBox* traversal = editor.findChild<QComboBox*>(QStringLiteral("renderGraphTraversal"));
+    REQUIRE(traversal != nullptr);
+    CHECK(traversal->currentData().toString().isEmpty() == true);
+    QJsonObject applied;
+    QObject::connect(&editor, &RenderGraphPipelineEditor::Edited, &editor, [&applied](const QJsonObject& candidate) {
+        applied = candidate;
+    });
+    traversal->setCurrentIndex(traversal->findData(QStringLiteral("TriangleLoop")));
+    CHECK(applied.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("traversal")) ==
+          QStringLiteral("TriangleLoop"));
+    CHECK(applied.value(QStringLiteral("shaders")) == shaders);
+    traversal->setCurrentIndex(traversal->findData(QStringLiteral("NativeQuery")));
+    CHECK(applied.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("traversal")) ==
+          QStringLiteral("NativeQuery"));
+    traversal->setCurrentIndex(0);
+    CHECK(applied == node);
+}
+
+TEST_CASE("scene compute callback programs use scene stubs and survive document save and undo",
+          "[editor][render-graph][pipeline][scene-compute]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    QJsonObject node;
+    REQUIRE(MakeSceneComputeNode(MakePipelineNode(QStringLiteral("ComputePipeline"), QStringLiteral("trace")), node) ==
+            true);
+    QJsonArray shaders;
+    for (const QString& stage :
+         {QStringLiteral("ray_generation"), QStringLiteral("miss"), QStringLiteral("closest_hit")})
+    {
+        shaders.append(QJsonObject{{QStringLiteral("id"), stage},
+                                   {QStringLiteral("stage"), stage},
+                                   {QStringLiteral("program"), QStringLiteral("Program")}});
+    }
+    node.insert(QStringLiteral("shaders"), shaders);
+    QJsonObject invocation = node.value(QStringLiteral("invocation")).toObject();
+    invocation.insert(QStringLiteral("traversal"), QStringLiteral("TriangleLoop"));
+    node.insert(QStringLiteral("invocation"), invocation);
+    REQUIRE(document.AddNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    const QJsonObject applied = GetNode(document, QStringLiteral("trace"));
+    for (const QJsonValueConstRef shader : applied.value(QStringLiteral("shaders")).toArray())
+    {
+        const QJsonObject program = GetProgram(document, shader.toObject().value(QStringLiteral("program")).toString());
+        const QString stage = program.value(QStringLiteral("stage")).toString();
+        CHECK(
+            program.value(QStringLiteral("output")) ==
+            (stage == QStringLiteral("ray_generation") ? QStringLiteral("Radiance") : QStringLiteral("ScenePayload")));
+        CHECK(document.GetDraft(program.value(QStringLiteral("source")).toString()).contains("SceneContext scene") ==
+              true);
+    }
+    REQUIRE(document.Undo() == true);
+    REQUIRE(document.Redo() == true);
+    CHECK(GetNode(document, QStringLiteral("trace")) == applied);
+    QStringList saved;
+    REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+    RenderGraphDocument reloaded;
+    REQUIRE(reloaded.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    CHECK(GetNode(reloaded, QStringLiteral("trace")) == applied);
+}
