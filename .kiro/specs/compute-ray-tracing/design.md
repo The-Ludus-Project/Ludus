@@ -226,6 +226,14 @@ this frame's primary dispatch.
 This is deliberately the shading model of a first-hit direct-lighting renderer.
 The point is to demonstrate the compute split, not a new integrator.
 
+**Implemented (C4).** Two refinements:
+
+- The shade pass needs one visibility query, not two: the surface comes from the
+  record, so only the shadow ray is traced. The template declares
+  `surface_queries: 1` and `visibility_queries: 1`.
+- Word 1 `.w` bit 1 marks a failed primary query, so the shade pass shows the
+  error color for that sample instead of reading a stale record.
+
 **Correctness risk (cleared in C0).** The runtime builds a separate packed scene
 and BLAS/TLAS per pass (`GpuPreviewRecord`, `gpu_preview_ray.cpp`). A packed
 triangle index from pass 0 is only valid in pass 1 if both packings come out in

@@ -2,7 +2,9 @@
 
 #include "renderer_composite.h"
 #include "rg2_compute_mixed.h"
+#include "rg2_compute_ray_tracing_template.h"
 #include "rg2_compute_split.h"
+#include "rg2_direct_lighting_reference.h"
 #include "rg2_ordered_ray.h"
 #include "rg2_raytracing.h"
 #include "rg2_restir_di.h"
@@ -1995,6 +1997,335 @@ TEST_CASE("Tiled visibility-buffer NEE matches an area quadrature of two mesh em
     CHECK(fixture.Pixels[center] == 0);
     CHECK(fixture.Pixels[center + 1] == 0);
     CHECK(fixture.Pixels[center + 2] == 0);
+}
+
+namespace
+{
+constexpr usize CORNELL_QUAD_COUNT = 7;
+constexpr usize CORNELL_QUAD_CORNERS = 4;
+constexpr usize CORNELL_VERTEX_COUNT = CORNELL_QUAD_COUNT * CORNELL_QUAD_CORNERS;
+constexpr usize CORNELL_TRIANGLE_COUNT = CORNELL_QUAD_COUNT * 2;
+constexpr usize CORNELL_INDEX_COUNT = CORNELL_TRIANGLE_COUNT * 3;
+constexpr usize CORNELL_MATERIAL_COUNT = 4;
+constexpr uint32 CORNELL_WHITE = 0;
+constexpr uint32 CORNELL_RED = 1;
+constexpr uint32 CORNELL_GREEN = 2;
+constexpr uint32 CORNELL_LIGHT = 3;
+/// A Cornell-box-style room spanning [-1, 1] on every axis, open toward a camera on +Z. Each quad's
+/// corners wind counterclockwise seen from inside the room, so every geometric normal faces inward.
+constexpr StaticArray<math::Vector3, CORNELL_VERTEX_COUNT> CORNELL_CORNERS_WORLD{{
+    // Floor, ceiling and back wall.
+    {-1, -1, 1},
+    {1, -1, 1},
+    {1, -1, -1},
+    {-1, -1, -1},
+    {-1, 1, -1},
+    {1, 1, -1},
+    {1, 1, 1},
+    {-1, 1, 1},
+    {-1, -1, -1},
+    {1, -1, -1},
+    {1, 1, -1},
+    {-1, 1, -1},
+    // Left and right walls.
+    {-1, -1, 1},
+    {-1, -1, -1},
+    {-1, 1, -1},
+    {-1, 1, 1},
+    {1, -1, -1},
+    {1, -1, 1},
+    {1, 1, 1},
+    {1, 1, -1},
+    // A one-sided ceiling light facing down, then the top of a block that shadows the floor.
+    {-.35F, .98F, -.35F},
+    {.35F, .98F, -.35F},
+    {.35F, .98F, .35F},
+    {-.35F, .98F, .35F},
+    {-.5F, -.3F, 0},
+    {0, -.3F, 0},
+    {0, -.3F, -.5F},
+    {-.5F, -.3F, -.5F},
+}};
+constexpr StaticArray<uint32, CORNELL_QUAD_COUNT> CORNELL_QUAD_MATERIALS{
+    {CORNELL_WHITE, CORNELL_WHITE, CORNELL_WHITE, CORNELL_RED, CORNELL_GREEN, CORNELL_LIGHT, CORNELL_WHITE}};
+constexpr float32 CORNELL_EYE_Z_WORLD = 3.4F;
+
+/// The lit room, its materials and a conventional-depth perspective camera. The mesh borrows this
+/// object's arrays, so it is neither copied nor moved.
+struct CornellBox final
+{
+    StaticArray<math::Vector3, CORNELL_VERTEX_COUNT> Positions = CORNELL_CORNERS_WORLD;
+    StaticArray<uint32, CORNELL_INDEX_COUNT> Indices{};
+    StaticArray<uint32, CORNELL_TRIANGLE_COUNT> Slots{};
+    StaticArray<uint32, CORNELL_MATERIAL_COUNT> Bindings{{CORNELL_WHITE, CORNELL_RED, CORNELL_GREEN, CORNELL_LIGHT}};
+    StaticArray<renderer::SceneShaderMaterial, CORNELL_MATERIAL_COUNT> Materials{};
+    StaticArray<renderer::RenderGraphMesh, 1> Meshes{};
+    StaticArray<renderer::RenderGraphItem, 1> Items{};
+    StaticArray<renderer::ViewDescription, 1> Cameras{};
+    renderer::SceneShaderInputs Inputs;
+    CornellBox()
+    {
+        for (usize quad = 0; quad < CORNELL_QUAD_COUNT; ++quad)
+        {
+            const uint32 first = static_cast<uint32>(quad * CORNELL_QUAD_CORNERS);
+            constexpr usize QUAD_INDEX_COUNT = 6;
+            const StaticArray<uint32, QUAD_INDEX_COUNT> corners{{0, 1, 2, 0, 2, 3}};
+            for (usize corner = 0; corner < QUAD_INDEX_COUNT; ++corner)
+            {
+                Indices[quad * QUAD_INDEX_COUNT + corner] = first + corners[corner];
+            }
+            Slots[quad * 2] = CORNELL_QUAD_MATERIALS[quad];
+            Slots[quad * 2 + 1] = CORNELL_QUAD_MATERIALS[quad];
+        }
+        Materials[CORNELL_WHITE].BaseColor = {.8F, .8F, .8F};
+        Materials[CORNELL_RED].BaseColor = {.8F, .1F, .1F};
+        Materials[CORNELL_GREEN].BaseColor = {.1F, .8F, .1F};
+        Materials[CORNELL_LIGHT].BaseColor = {.8F, .8F, .8F};
+        Materials[CORNELL_LIGHT].Emission = {12, 12, 12};
+        Meshes[0].Geometry = {Positions.GetData(), Positions.GetSize(), Indices.GetData(), Indices.GetSize()};
+        Meshes[0].MaterialSlots = {Slots.GetData(), Slots.GetSize()};
+        Meshes[0].MaterialBindings = {Bindings.GetData(), Bindings.GetSize()};
+        Items[0].SourceId = 1;
+        Inputs.Materials = {Materials.GetData(), Materials.GetSize()};
+        // Right-handed view down -Z from the eye; clip depth 0 at the near plane and 1 at the far plane.
+        constexpr float32 FOCAL_LENGTH = 2.2F;
+        constexpr float32 NEAR_WORLD = .5F;
+        constexpr float32 FAR_WORLD = 10;
+        constexpr float32 DEPTH_SCALE = FAR_WORLD / (NEAR_WORLD - FAR_WORLD);
+        const float32 aspect = static_cast<float32>(WIDTH) / static_cast<float32>(HEIGHT);
+        math::Matrix4& worldToClip = Cameras[0].WorldToClip;
+        worldToClip.Columns[0] = {FOCAL_LENGTH / aspect, 0, 0, 0};
+        worldToClip.Columns[1] = {0, FOCAL_LENGTH, 0, 0};
+        worldToClip.Columns[2] = {0, 0, DEPTH_SCALE, -1};
+        worldToClip.Columns[3] = {0, 0, DEPTH_SCALE * (NEAR_WORLD - CORNELL_EYE_Z_WORLD), CORNELL_EYE_Z_WORLD};
+        Cameras[0].CameraPosition = {0, 0, CORNELL_EYE_Z_WORLD};
+    }
+    CornellBox(const CornellBox&) = delete;
+    CornellBox& operator=(const CornellBox&) = delete;
+};
+
+/// Pixel dimensions of an exported color resource.
+struct ExportExtent final
+{
+    uint32 Width = WIDTH;
+    uint32 Height = HEIGHT;
+};
+
+/// Render one frame and copy an RGBA8 export of the given extent into outPixels.
+void RenderExport(renderer::RenderGraph& inoutGraph,
+                  const GraphGpuFixture& fixture,
+                  uint32 exportResource,
+                  ExportExtent extent,
+                  Array<uint8>& outPixels)
+{
+    const uint32 width = extent.Width;
+    const uint32 height = extent.Height;
+    constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
+    rhi::SubmissionToken completion;
+    REQUIRE(inoutGraph.Render(fixture.Surface, WIDTH, HEIGHT, completion) == rhi::RasterStatus::Ready);
+    const uint64 beginning = time::NowTicks();
+    rhi::RasterStatus result = rhi::GetStatus(fixture.Device, completion);
+    while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+    {
+        result = rhi::GetStatus(fixture.Device, completion);
+    }
+    REQUIRE(result == rhi::RasterStatus::Ready);
+    rhi::TextureHandle texture;
+    rhi::TextureAspect aspect;
+    REQUIRE(inoutGraph.GetExport(exportResource, texture, aspect) == rhi::RasterStatus::Ready);
+    const usize rowBytes = static_cast<usize>(width) * 4;
+    REQUIRE(outPixels.TryResize(rowBytes * height) == true);
+    rhi::ReadbackTicket ticket;
+    result = rhi::RequestTextureReadback(fixture.Device, texture, {0, 0, 0, width, height}, rowBytes, ticket);
+    while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+    {
+        result = rhi::GetStatus(fixture.Device, ticket);
+    }
+    REQUIRE(result == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::CopyReadback(fixture.Device, ticket, outPixels.GetData(), outPixels.GetSize()) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Release(fixture.Device, ticket) == rhi::RasterStatus::Ready);
+}
+
+/// Number of RGBA8 pixels showing the renderer's magenta shader-failure color.
+usize CountFailurePixels(const Array<uint8>& pixels)
+{
+    usize count = 0;
+    for (usize address = 0; address + 3 < pixels.GetSize(); address += 4)
+    {
+        count += pixels[address] == 255 && pixels[address + 1] == 0 && pixels[address + 2] == 255 ? 1 : 0;
+    }
+    return count;
+}
+
+/// Linear radiance of one ToneMap channel at exposure 1 (Reinhard x / (1 + x), then sRGB).
+float32 DecodeToneMapped(uint8 value)
+{
+    constexpr float32 MAXIMUM_CHANNEL = 255;
+    // The brightest byte is clamped below one, so the inverse stays finite.
+    constexpr float32 MAXIMUM_MAPPED = .999F;
+    const float32 mapped = math::Min(math::DecodeSrgb(static_cast<float32>(value) / MAXIMUM_CHANNEL), MAXIMUM_MAPPED);
+    return mapped / (1 - mapped);
+}
+
+/// Mean linear RGB radiance of a tone-mapped RGBA8 image.
+math::Vector3 ComputeMeanRadiance(const Array<uint8>& pixels)
+{
+    math::Vector3 sum{};
+    for (usize address = 0; address + 3 < pixels.GetSize(); address += 4)
+    {
+        sum = sum + math::Vector3{DecodeToneMapped(pixels[address]),
+                                  DecodeToneMapped(pixels[address + 1]),
+                                  DecodeToneMapped(pixels[address + 2])};
+    }
+    const usize pixelCount = pixels.GetSize() / 4;
+    return sum / static_cast<float32>(pixelCount);
+}
+} // namespace
+
+TEST_CASE("The compute ray-tracing template matches a single-pass direct-lighting reference",
+          "[render-graph][gpu][compute-ray-tracing][template]")
+{
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_COMPUTE_RAY_TRACING_TEMPLATE_DIRECTORY, "rg2_compute_ray_tracing_template.lurgrt"});
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    CheckSameStage(programs.RayCompute,
+                   packages::rg2_compute_ray_tracing_template::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                                            shaders::renderer_composite::Fragment())
+                       .RayCompute);
+    REQUIRE(programs.HasPersistentRayBuffers == true);
+    REQUIRE(renderer::RequiresHardwareRayTracing(plan) == true);
+    // The primary-hits and shade scene compute passes; Accumulate and ToneMap fuse into shade.
+    constexpr usize PASS_COUNT = 2;
+    REQUIRE(plan.Passes.GetSize() == PASS_COUNT);
+    REQUIRE(plan.Passes[0].Program == format::Technique::RayTracing);
+    REQUIRE(plan.Passes[1].Program == format::Technique::RayTracing);
+    CHECK(plan.Passes[0].AccumulationSamples == 0);
+    CHECK(plan.Passes[1].AccumulationSamples > 0);
+    CHECK(plan.Passes[1].ToneMappingExposure == 1);
+    uint32 hits = 0;
+    uint32 output = 0;
+    for (uint32 resource = 0; resource < plan.Resources.GetSize(); ++resource)
+    {
+        hits = plan.Resources[resource].Kind == format::Aspect::Buffer ? resource : hits;
+        output = plan.Resources[resource].IsExported == 1 ? resource : output;
+    }
+    constexpr uint32 HIT_RECORD_BYTES = 32;
+    REQUIRE(plan.Resources[hits].BytesPerPixel == HIT_RECORD_BYTES);
+
+    const core::UniquePtr<renderer::RenderGraphPackage> referencePackage =
+        LoadPackage({LUDUS_RG3_DIRECT_LIGHTING_REFERENCE_DIRECTORY, "rg2_direct_lighting_reference.lurgrt"});
+    const renderer::RenderGraphPlan referencePlan = referencePackage->GetPlan();
+    const renderer::RenderGraphPrograms referencePrograms =
+        referencePackage->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    REQUIRE(referencePlan.Passes.GetSize() == 1);
+    uint32 referenceOutput = 0;
+    for (uint32 resource = 0; resource < referencePlan.Resources.GetSize(); ++resource)
+    {
+        referenceOutput = referencePlan.Resources[resource].IsExported == 1 ? resource : referenceOutput;
+    }
+
+    renderer::RenderGraph reference;
+    constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
+    const auto wait = [](renderer::RenderGraph& inoutGraph, rhi::RasterStatus initial) {
+        rhi::RasterStatus status = initial;
+        const uint64 beginning = time::NowTicks();
+        while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+        {
+            status = inoutGraph.Poll();
+        }
+        REQUIRE(status == rhi::RasterStatus::Ready);
+    };
+    wait(fixture.Graph, fixture.Graph.Initialize(fixture.Device, plan, programs, nullptr, WIDTH, HEIGHT));
+    wait(reference, reference.Initialize(fixture.Device, referencePlan, referencePrograms, nullptr, WIDTH, HEIGHT));
+    const CornellBox room;
+    const auto update = [&room, &wait](renderer::RenderGraph& inoutGraph, uint64 revision) {
+        renderer::RenderGraphReport report;
+        wait(inoutGraph,
+             inoutGraph.Update({room.Meshes.GetData(), room.Meshes.GetSize()},
+                               {room.Items.GetData(), room.Items.GetSize()},
+                               {room.Cameras.GetData(), room.Cameras.GetSize()},
+                               revision,
+                               renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                               report,
+                               &room.Inputs,
+                               revision));
+    };
+    update(fixture.Graph, 1);
+    update(reference, 1);
+
+    // Both graphs accumulate a running mean; compare after the same number of samples.
+    constexpr usize FRAME_COUNT = 64;
+    Array<uint8> pixels;
+    Array<uint8> referencePixels;
+    for (usize frame = 0; frame < FRAME_COUNT; ++frame)
+    {
+        RenderExport(fixture.Graph, fixture, output, {}, pixels);
+        RenderExport(reference, fixture, referenceOutput, {}, referencePixels);
+        // Invalid hit records, exhausted budgets and failed queries would show magenta.
+        REQUIRE(CountFailurePixels(pixels) == 0);
+        REQUIRE(CountFailurePixels(referencePixels) == 0);
+    }
+    const math::Vector3 mean = ComputeMeanRadiance(pixels);
+    const math::Vector3 referenceMean = ComputeMeanRadiance(referencePixels);
+    INFO("template mean=" << mean.X << ',' << mean.Y << ',' << mean.Z << ", reference mean=" << referenceMean.X << ','
+                          << referenceMean.Y << ',' << referenceMean.Z);
+    // The room is lit: the back wall at the center is white, the left wall red and the right wall green.
+    const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+    const usize left = GetPixel(WIDTH / 2 - WIDTH * 3 / 10, HEIGHT / 2);
+    const usize right = GetPixel(WIDTH / 2 + WIDTH * 3 / 10, HEIGHT / 2);
+    CHECK(pixels[center] > 0);
+    CHECK(pixels[left] > pixels[left + 1]);
+    CHECK(pixels[right + 1] > pixels[right]);
+    constexpr float32 MINIMUM_MEAN_RADIANCE = .01F;
+    CHECK(mean.X > MINIMUM_MEAN_RADIANCE);
+    // Both estimate emission plus one shadowed light sample per pixel and frame. The reference draws
+    // jitter, light selection and light shape from its automatic stream in the order of the
+    // template's explicit ranges ([0, 2), then [2, 6)), so each sample sees the same random values:
+    // on Metal the two images are byte-identical. The tolerances allow other backends to contract
+    // floating-point operations differently in the two kernels. A 2% mean difference also exceeds
+    // the Monte Carlo error of 64 samples per pixel over this image.
+    constexpr float32 RELATIVE_MEAN_TOLERANCE = .02F;
+    CHECK(math::Abs(mean.X - referenceMean.X) < RELATIVE_MEAN_TOLERANCE * referenceMean.X);
+    CHECK(math::Abs(mean.Y - referenceMean.Y) < RELATIVE_MEAN_TOLERANCE * referenceMean.Y);
+    CHECK(math::Abs(mean.Z - referenceMean.Z) < RELATIVE_MEAN_TOLERANCE * referenceMean.Z);
+    constexpr uint8 CHANNEL_TOLERANCE = 2;
+    usize differingPixels = 0;
+    for (usize address = 0; address < pixels.GetSize(); address += 4)
+    {
+        bool isDifferent = false;
+        for (usize channel = 0; channel < 3; ++channel)
+        {
+            const uint8 high = math::Max(pixels[address + channel], referencePixels[address + channel]);
+            const uint8 low = math::Min(pixels[address + channel], referencePixels[address + channel]);
+            isDifferent = isDifferent == true || high - low > CHANNEL_TOLERANCE;
+        }
+        differingPixels += isDifferent == true ? 1 : 0;
+    }
+    // At most one pixel in a thousand, for shadow rays that graze an edge differently.
+    constexpr usize DIFFERING_PIXEL_DIVISOR = 1000;
+    CHECK(differingPixels <= static_cast<usize>(WIDTH) * HEIGHT / DIFFERING_PIXEL_DIVISOR);
+
+    // A resize replaces the hits buffer with a zeroed one sized for the new extent. The first
+    // samples after it must not read a stale or unwritten record.
+    constexpr uint32 RESIZED_WIDTH = WIDTH * 2;
+    constexpr uint32 RESIZED_HEIGHT = HEIGHT * 2;
+    REQUIRE(fixture.Graph.Resize(RESIZED_WIDTH, RESIZED_HEIGHT) == rhi::RasterStatus::Pending);
+    update(fixture.Graph, 1);
+    format::Resource description{};
+    REQUIRE(fixture.Graph.GetResourceDescription(hits, description) == true);
+    CHECK(description.Width == RESIZED_WIDTH * RESIZED_HEIGHT * HIT_RECORD_BYTES);
+    constexpr usize RESIZED_FRAME_COUNT = 4;
+    for (usize frame = 0; frame < RESIZED_FRAME_COUNT; ++frame)
+    {
+        RenderExport(fixture.Graph, fixture, output, {RESIZED_WIDTH, RESIZED_HEIGHT}, pixels);
+        INFO("frame " << frame << " after resize");
+        CHECK(CountFailurePixels(pixels) == 0);
+        CHECK(ComputeMeanRadiance(pixels).X > MINIMUM_MEAN_RADIANCE);
+    }
 }
 
 TEST_CASE("ToneMap applies exposure after linear accumulation and can be bypassed",

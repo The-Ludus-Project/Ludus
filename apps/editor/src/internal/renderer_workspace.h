@@ -110,7 +110,8 @@ public:
     /// Save publishes. Failures preserve sources and display a repair. GUI thread only.
     [[nodiscard]] bool ApplyRestirTemplate(const QString& configuration);
     /// Apply one built-in library template through the same undo/save path as the canvas picker.
-    /// templateIdentity selects restir-di, visibility-buffer, visibility-secondary-rays or tiled-vbuffer-nee.
+    /// templateIdentity selects restir-di, visibility-buffer, visibility-secondary-rays, tiled-vbuffer-nee
+    /// or compute-ray-tracing.
     /// Failure preserves sources and reports a repair. The optional budget request reports a
     /// required increase or supplies explicit approval; GUI thread only; Save publishes.
     [[nodiscard]] bool ApplyConfigurationTemplate(const QString& configuration,
