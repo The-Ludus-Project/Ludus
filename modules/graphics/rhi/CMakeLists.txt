@@ -66,7 +66,7 @@ elseif(WIN32)
     # Direct3D 12 bring-up: device, swap chain, clear and present
     # (docs/architecture/windows-direct3d12.md). Unimplemented feature families
     # use the portable Unsupported implementations.
-    target_sources(ludus_graphics_rhi PRIVATE src/rhi_d3d12.cpp src/raster_d3d12.cpp src/raster_unsupported.cpp src/ray_unsupported.cpp
+    target_sources(ludus_graphics_rhi PRIVATE src/rhi_d3d12.cpp src/raster_d3d12.cpp src/raster_draw_d3d12.cpp src/raster_unsupported.cpp src/ray_unsupported.cpp
         src/native_interop_unsupported.cpp src/hosted_consumer_unsupported.cpp)
     ludus_configure_win32_target(ludus_graphics_rhi)
     target_link_libraries(ludus_graphics_rhi PRIVATE d3d12 dxgi dxguid user32)
@@ -160,6 +160,7 @@ if(LUDUS_BUILD_TESTS AND WIN32)
     # (python scripts/shader-probe bootstrap on the Windows host).
     if(LUDUS_SLANG_COMPILER AND LUDUS_DXC_DIRECTORY)
         target_compile_definitions(ludus_rhi_d3d12_tests PRIVATE LUDUS_TEST_DXIL=1)
+        target_sources(ludus_rhi_d3d12_tests PRIVATE tests/portable_raster_conformance_tests.cpp)
         ludus_compile_shader(TARGET ludus_rhi_d3d12_tests NAME diagnostic
             SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/diagnostic.slang"
             VERTEX VertexMain FRAGMENT FragmentMain)
@@ -243,7 +244,7 @@ if(LUDUS_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT EMSCRIPTEN)
 endif()
 
 if(TARGET ludus_rhi_render_tests)
-    target_sources(ludus_rhi_render_tests PRIVATE tests/raster_render_tests.cpp)
+    target_sources(ludus_rhi_render_tests PRIVATE tests/raster_render_tests.cpp tests/portable_raster_conformance_tests.cpp)
     target_include_directories(ludus_rhi_render_tests PRIVATE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
     ludus_compile_shader(TARGET ludus_rhi_render_tests NAME cull
         SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/cull.slang" COMPUTE computeMain)
@@ -357,3 +358,14 @@ if(TARGET ludus_rhi_render_tests AND LUDUS_SPIRV_CROSS)
     add_test(NAME ludus_rhi_ray_queries COMMAND ludus_rhi_ray_tests)
     set_tests_properties(ludus_rhi_ray_queries PROPERTIES LABELS "rhi;gpu;ray" TIMEOUT 60)
 endif()
+
+# Shared raster conformance artifacts intentionally contain no compute/transfer dependency.
+foreach(conformance_target IN ITEMS ludus_rhi_render_tests ludus_rhi_d3d12_tests)
+    if(TARGET ${conformance_target} AND LUDUS_SLANG_COMPILER AND (NOT WIN32 OR LUDUS_DXC_DIRECTORY))
+        foreach(conformance_entry IN ITEMS write mask sample)
+            ludus_compile_shader(TARGET ${conformance_target} NAME conformance_${conformance_entry} RASTER
+                SOURCE "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/shaders/r10.slang"
+                VERTEX vertexMain FRAGMENT ${conformance_entry}Main)
+        endforeach()
+    endif()
+endforeach()

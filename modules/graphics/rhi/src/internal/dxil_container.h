@@ -12,6 +12,16 @@
 namespace ludus::graphics::rhi::internal
 {
 struct RasterLayout;
+/// Input signature semantic borrowed from the container; output is preserved on failure.
+/// Location is the native input register from target-specific Slang reflection.
+struct DxilVertexInput final
+{
+    const char* NameOrNull = nullptr;
+    foundation::uint32 Index = 0;
+};
+[[nodiscard]] bool ReadDxilVertexInput(std::span<const foundation::uint8> bytes,
+                                       foundation::uint32 location,
+                                       DxilVertexInput& outInput) noexcept;
 
 /// Validate the complete PSV0 resource table against the scalar raster layout.
 /// Rejects missing/extra bindings, register spaces, kinds, ranges and duplicates.

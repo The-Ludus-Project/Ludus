@@ -296,3 +296,80 @@ TEST_CASE("DXIL PSV resource kinds distinguish sampled dimensions and samplers",
         CHECK(rhi::internal::HasDxilBindings(bytes.AsSpan(), layout) == false);
     }
 }
+
+TEST_CASE("DXIL vertex input semantics are bounded and preserve failed outputs", "[rhi][dxil]")
+{
+    using ludus::graphics::rhi::internal::DxilVertexInput;
+    using ludus::graphics::rhi::internal::ReadDxilVertexInput;
+    // One ISG1 signature element, followed by its semantic string.
+    Array<uint8> bytes;
+    AppendCode(bytes, "DXBC");
+    for (usize index = 0; index < 16; ++index)
+    {
+        bytes.Add(0);
+    }
+    AppendUint32(bytes, 1);
+    AppendUint32(bytes, 0);
+    AppendUint32(bytes, 1);
+    AppendUint32(bytes, 36);
+    AppendCode(bytes, "ISG1");
+    AppendUint32(bytes, 49);
+    AppendUint32(bytes, 1);  // count
+    AppendUint32(bytes, 8);  // record offset
+    AppendUint32(bytes, 0);  // stream
+    AppendUint32(bytes, 40); // name offset
+    AppendUint32(bytes, 7);  // semantic index (not the native register)
+    AppendUint32(bytes, 0);  // user semantic
+    AppendUint32(bytes, 3);  // Float32 component type
+    AppendUint32(bytes, 2);  // native register
+    AppendUint32(bytes, 15); // mask
+    AppendUint32(bytes, 0);  // precision
+    AppendCode(bytes, "TEXCOORD");
+    bytes.Add(0);
+    WriteUint32(bytes, CONTAINER_SIZE_OFFSET, static_cast<uint32>(bytes.GetSize()));
+    DxilVertexInput input;
+    REQUIRE(ReadDxilVertexInput(View(bytes), 2, input) == true);
+    CHECK(std::string_view(input.NameOrNull) == "TEXCOORD");
+    CHECK(input.Index == 7);
+    const char* original = input.NameOrNull;
+    uint32 location = 2;
+    SECTION("Missing register")
+    {
+        location = 1;
+    }
+    SECTION("Unterminated name")
+    {
+        bytes[bytes.GetSize() - 1] = 'x';
+    }
+    SECTION("Name points into the record")
+    {
+        WriteUint32(bytes, 56, 8);
+    }
+    SECTION("Name lies beyond the part")
+    {
+        WriteUint32(bytes, 56, 49);
+    }
+    SECTION("Count exceeds payload")
+    {
+        WriteUint32(bytes, 44, 2);
+    }
+    SECTION("Truncated part")
+    {
+        WriteUint32(bytes, 40, 100);
+    }
+    SECTION("Record overlaps signature header")
+    {
+        WriteUint32(bytes, 48, 0);
+    }
+    SECTION("Built-in input cannot become vertex data")
+    {
+        WriteUint32(bytes, 64, 1);
+    }
+    SECTION("Wrong signature part")
+    {
+        bytes[36] = 'O';
+    }
+    CHECK(ReadDxilVertexInput(View(bytes), location, input) == false);
+    CHECK(input.NameOrNull == original);
+    CHECK(input.Index == 7);
+}
