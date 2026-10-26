@@ -56,20 +56,63 @@ usize MapOffset(const QList<CodeFormatReplacement>& replacements, usize offset) 
     return output + offset - original;
 }
 
+struct ToolVersion final
+{
+    uint64 Major = 0;
+    uint64 Minor = 0;
+    uint64 Patch = 0;
+};
+
+// Parse exactly MAJOR.MINOR.PATCH. Distribution suffixes after '-' or '(' are
+// permitted; any other trailing text (for example 23.1.30x) is rejected.
+bool ParseToolVersion(const QString& token, ToolVersion& outVersion)
+{
+    isize end = token.size();
+    const isize dash = token.indexOf(QLatin1Char('-'));
+    const isize parenthesis = token.indexOf(QLatin1Char('('));
+    end = dash >= 0 ? qMin(end, dash) : end;
+    end = parenthesis >= 0 ? qMin(end, parenthesis) : end;
+    const QStringList components = token.left(end).split(QLatin1Char('.'));
+    if (components.size() != VERSION_COMPONENTS)
+    {
+        return false;
+    }
+    const auto parseComponent = [&components](int32 index, uint64& outValue) {
+        const QByteArray digits = components.at(index).toLatin1();
+        return ParseUint64(digits.constData(), static_cast<usize>(digits.size()), outValue) ==
+               NumberParseStatus::Success;
+    };
+    ToolVersion version;
+    if (parseComponent(0, version.Major) == false || parseComponent(1, version.Minor) == false ||
+        parseComponent(2, version.Patch) == false)
+    {
+        return false;
+    }
+    outVersion = version;
+    return true;
+}
+
 // Parse only the version token after LLVM's explicit label, not a substring
-// which could accept 123.1.30 for 23.1.3. Distribution suffixes are permitted.
-bool HasExpectedVersion(const QByteArray& bytes, const QString& expected)
+// which could accept 123.1.30 for 23.1.3. As in the init tool checks
+// (scripts/python/engine.py), the pin is a minimum within its LLVM major, so
+// the reference hosts' newer point releases of that major remain usable.
+bool HasCompatibleVersion(const QByteArray& bytes, const QString& minimum)
 {
     const QString text = QString::fromUtf8(bytes);
     const QString label = QStringLiteral("clang-format version ");
     const isize start = text.indexOf(label);
-    if (start < 0 || expected.split(QLatin1Char('.')).size() != VERSION_COMPONENTS)
+    ToolVersion required;
+    ToolVersion actual;
+    if (start < 0 || ParseToolVersion(minimum, required) == false ||
+        ParseToolVersion(text.mid(start + label.size()).section(QLatin1Char(' '), 0, 0).trimmed(), actual) == false)
     {
         return false;
     }
-    const QString token = text.mid(start + label.size()).section(QLatin1Char(' '), 0, 0).trimmed();
-    return token == expected || token.startsWith(expected + QLatin1Char('-')) ||
-           token.startsWith(expected + QLatin1Char('('));
+    if (actual.Major != required.Major)
+    {
+        return false;
+    }
+    return actual.Minor > required.Minor || (actual.Minor == required.Minor && actual.Patch >= required.Patch);
 }
 } // namespace
 
@@ -256,10 +299,11 @@ void CodeFormatter::processFinished(int32 exitCode, bool hasCrashed)
     }
     if (mPhase == Phase::Version)
     {
-        if (HasExpectedVersion(mOutput, mTool.ExpectedVersion) == false)
+        if (HasCompatibleVersion(mOutput, mTool.MinimumVersion) == false)
         {
             finish(false,
-                   QStringLiteral("Formatting requires clang-format ") + mTool.ExpectedVersion + QLatin1Char('.'));
+                   QStringLiteral("Formatting requires clang-format ") + mTool.MinimumVersion +
+                       QStringLiteral(" or a newer release of the same major version."));
             return;
         }
         mOutput.clear();
