@@ -130,6 +130,13 @@ usize gReservedSubmission = RASTER_INVALID;
     }
     return DXGI_FORMAT_UNKNOWN;
 }
+[[nodiscard]] bool HasDepthFormat(DXGI_FORMAT format) noexcept
+{
+    D3D12_FEATURE_DATA_FORMAT_SUPPORT support{format, D3D12_FORMAT_SUPPORT1_NONE, D3D12_FORMAT_SUPPORT2_NONE};
+    return SUCCEEDED(GetDeviceOrNull()->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support))) ==
+               true &&
+           (support.Support1 & D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL) != 0;
+}
 [[nodiscard]] D3D12_RESOURCE_DESC MakeBufferDescription(usize size) noexcept
 {
     D3D12_RESOURCE_DESC description{};
@@ -290,7 +297,8 @@ FormatCapabilities FormatLimits(RasterFormat format) noexcept
     {
         return {};
     }
-    const bool hasAttachment = (support.Support1 & D3D12_FORMAT_SUPPORT1_RENDER_TARGET) != 0 &&
+    const bool hasAttachment = HasDepthFormat(DXGI_FORMAT_D32_FLOAT) == true &&
+                               (support.Support1 & D3D12_FORMAT_SUPPORT1_RENDER_TARGET) != 0 &&
                                (format == RasterFormat::Rgba8Unorm || format == RasterFormat::Rgba8Srgb ||
                                 format == RasterFormat::Rgba16Float);
     const bool hasBlend = hasAttachment == true && (support.Support1 & D3D12_FORMAT_SUPPORT1_BLENDABLE) != 0;
@@ -311,7 +319,7 @@ FormatCapabilities FormatLimits(RasterFormat format) noexcept
         .MaxAttachmentCubeDimension = hasAttachment == true && hasCube == true ? D3D12_REQ_TEXTURECUBE_DIMENSION : 0U,
         .MaxAttachmentLayers = hasAttachment == true ? D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION : 0U,
         .AttachmentViews = hasAttachment,
-        .StencilAttachment = hasAttachment,
+        .StencilAttachment = hasAttachment == true && HasDepthFormat(DXGI_FORMAT_D32_FLOAT_S8X24_UINT) == true,
         .HasUnalignedBlockExtents = false,
     };
 }

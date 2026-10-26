@@ -185,24 +185,30 @@ TEST_CASE("Portable raster complete images cover depth blending indices and clip
     }
     const float32 nearDepth = hasReverseDepth == true ? .75F : .25F;
     const float32 farDepth = hasReverseDepth == true ? .25F : .75F;
-    const StaticArray<float32, VERTEX_VALUES> points{-1, -1, nearDepth, 0, 1, -1, 1,  nearDepth, 0, 0,
-                                                     1,  1,  nearDepth, 1, 0, 1,  -1, nearDepth, 1, 1};
+    const float32 halfWidth = hasIndex32 == true ? .5F : 1;
+    const StaticArray<float32, VERTEX_VALUES> points{-halfWidth, -1, nearDepth, 0, 1, -halfWidth, 1,  nearDepth, 0, 0,
+                                                     halfWidth,  1,  nearDepth, 1, 0, halfWidth,  -1, nearDepth, 1, 1};
     const StaticArray<float32, VERTEX_VALUES> back{-1, -1, farDepth, 0, 1, -1, 1,  farDepth, 0, 0,
                                                    1,  1,  farDepth, 1, 0, 1,  -1, farDepth, 1, 1};
     // Instance stream advancement is exercised independently from the vertex stream.
     const StaticArray<float32, FLOAT2_VALUES> center{0, 0};
+    const StaticArray<float32, CHANNELS> offsets{hasIndex32 == true ? -.5F : 0, 0, hasIndex32 == true ? .5F : 0, 0};
     const StaticArray<uint16, INDEX_COUNT> index16{0, 1, 2, 0, 2, 3};
     const StaticArray<uint32, INDEX_COUNT> index32{0, 1, 2, 0, 2, 3};
     rhi::BufferHandle vertices;
     rhi::BufferHandle background;
     rhi::BufferHandle instances;
+    rhi::BufferHandle centerInstance;
     rhi::BufferHandle indices;
     REQUIRE(rhi::CreateBuffer(owner.Device, {rhi::BufferRole::Vertex, sizeof(points)}, GetBytes(points), vertices) ==
             rhi::RasterStatus::Ready);
     REQUIRE(rhi::CreateBuffer(owner.Device, {rhi::BufferRole::Vertex, sizeof(back)}, GetBytes(back), background) ==
             rhi::RasterStatus::Ready);
-    REQUIRE(rhi::CreateBuffer(owner.Device, {rhi::BufferRole::Vertex, sizeof(center)}, GetBytes(center), instances) ==
+    REQUIRE(rhi::CreateBuffer(owner.Device, {rhi::BufferRole::Vertex, sizeof(offsets)}, GetBytes(offsets), instances) ==
             rhi::RasterStatus::Ready);
+    REQUIRE(
+        rhi::CreateBuffer(owner.Device, {rhi::BufferRole::Vertex, sizeof(center)}, GetBytes(center), centerInstance) ==
+        rhi::RasterStatus::Ready);
     REQUIRE(rhi::CreateBuffer(owner.Device,
                               {hasIndex32 == true ? rhi::BufferRole::Index32 : rhi::BufferRole::Index16,
                                hasIndex32 == true ? sizeof(index32) : sizeof(index16)},
@@ -230,9 +236,16 @@ TEST_CASE("Portable raster complete images cover depth blending indices and clip
         pass.UseScissor = true;
         pass.Scissor = {20, 10, 28, 28};
     }
-    const uint32 frames = hasIndex32 == true ? 40 : 1;
+    const uint32 frames = hasIndex32 == true ? 42 : 1;
     for (uint32 frame = 0; frame < frames; ++frame)
     {
+        if (hasIndex32 == true && frame >= 40)
+        {
+            const uint32 width = frame == 40 ? WIDTH + 16 : WIDTH;
+            const uint32 height = frame == 40 ? HEIGHT + 8 : HEIGHT;
+            REQUIRE(rhi::SetFrameTarget(owner.Device, owner.Surface, {width, height, clear, clear, clear, 1}) ==
+                    rhi::DeviceStatus::Ready);
+        }
         REQUIRE(rhi::BeginFrame(owner.Device, owner.Surface) == rhi::DeviceStatus::Ready);
         if (hasOffscreen == true)
         {
@@ -241,7 +254,7 @@ TEST_CASE("Portable raster complete images cover depth blending indices and clip
         }
         REQUIRE(rhi::BeginRasterPass(owner.Device, pass) == rhi::RasterStatus::Ready);
         StaticArray<rhi::RasterVertexSlice, STREAM_COUNT> slices{
-            {{vertices, 0, sizeof(points)}, {instances, 0, sizeof(center)}}};
+            {{vertices, 0, sizeof(points)}, {instances, 0, sizeof(offsets)}}};
         rhi::RasterDraw draw{hasOffscreen == true ? offscreenPipeline : pipeline,
                              set,
                              slices.AsSpan(),
@@ -250,8 +263,11 @@ TEST_CASE("Portable raster complete images cover depth blending indices and clip
                              INDEX_COUNT,
                              4,
                              1};
+        draw.InstanceCount = hasIndex32 == true ? 2U : 1U;
         REQUIRE(rhi::DrawIndexed(owner.Device, draw) == rhi::RasterStatus::Ready);
         slices[0] = {background, 0, sizeof(back)};
+        slices[1] = {centerInstance, 0, sizeof(center)};
+        draw.InstanceCount = 1;
         draw.Bindings = darkSet;
         REQUIRE(rhi::DrawIndexed(owner.Device, draw) == rhi::RasterStatus::Ready);
         if (hasOffscreen == true)
@@ -271,6 +287,7 @@ TEST_CASE("Portable raster complete images cover depth blending indices and clip
     REQUIRE(rhi::Destroy(owner.Device, vertices) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::Destroy(owner.Device, background) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::Destroy(owner.Device, instances) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(owner.Device, centerInstance) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::Destroy(owner.Device, indices) == rhi::RasterStatus::Ready);
     if (hasOffscreen == true)
     {
@@ -288,7 +305,7 @@ TEST_CASE("Portable raster complete images cover depth blending indices and clip
         for (uint32 x = 0; x < WIDTH; ++x)
         {
             const bool isVisible = hasRectangles == false || (x >= 20 && x < 48 && y >= 10 && y < 38);
-            const bool isRight = x >= WIDTH / 2;
+            const bool isRight = hasIndex32 == true ? x % (WIDTH / 2) >= WIDTH / 4 : x >= WIDTH / 2;
             const bool isBottom = y >= (hasRectangles == true ? 22U : HEIGHT / 2);
             const StaticArray<int32, CHANNELS> expected{
                 isVisible == true && (isRight == isBottom) ? expectedHigh : expectedLow,

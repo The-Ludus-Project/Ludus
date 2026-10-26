@@ -311,14 +311,15 @@ acceptance work. The implementation is on `codex/windows-integration-d3b`.
   into the Windows suite and Vulkan/Metal pixel suite. Complete images cover
   sampling origin, sRGB decoding, premultiplied blending, conventional/reverse
   depth, rectangles, both index widths, a 40-frame burst, detached dependencies,
-  render-to-sample RGBA8/sRGB/HDR, selected mips, MRT and front-face stencil across
+  resize/restore, two-instance advancement, render-to-sample RGBA8/sRGB/HDR,
+  selected mips, MRT and front-face stencil across
   load/store pass boundaries. Color conversion permits one UNORM byte; binary
   MRT/stencil images are exact. The portable ISG1 reader also has malformed-input
   and failure-output preservation tests in the common lifecycle suite.
 
 Local validation: Clang 23 builds the Windows Platform/RHI closure warning-clean;
 the common lifecycle suite passes, and both shared conformance cases pass on
-Metal (631 assertions). The Windows tests also inspect available debug-layer
+Metal under ASan/UBSan (661 assertions). The Windows tests also inspect available debug-layer
 messages and reject corruption/errors. WARP runtime evidence is recorded after
 the Windows lane executes this change; syntax/link closure and Metal images
 alone do not qualify the D3D12 drawing profile.
