@@ -326,7 +326,7 @@ TEST_CASE("formatter failures cancellation and stale results preserve the author
     QTemporaryDir directory;
     REQUIRE(directory.isValid() == true);
     const CodeFormatterTool profile = MakeShaderFormatter({}, {});
-    const QString fixture = QDir(directory.path()).filePath(QStringLiteral("formatter-") + profile.ExpectedVersion);
+    const QString fixture = QDir(directory.path()).filePath(QStringLiteral("formatter-") + profile.MinimumVersion);
     REQUIRE(QFile::copy(QString::fromUtf8(LUDUS_FORMATTER_FIXTURE), fixture) == true);
     REQUIRE(QFile::setPermissions(fixture, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner) == true);
     CodeEditor editor;
@@ -335,7 +335,7 @@ TEST_CASE("formatter failures cancellation and stale results preserve the author
     controller.Bind(&document);
     CodeFormatter formatter(controller);
     QSignalSpy finished(&formatter, &CodeFormatter::Finished);
-    CodeFormatterTool tool{fixture, {QStringLiteral("success")}, profile.ExpectedVersion};
+    CodeFormatterTool tool{fixture, {QStringLiteral("success")}, profile.MinimumVersion};
     bool shouldSucceed = false;
     SECTION("success")
     {
@@ -352,9 +352,22 @@ TEST_CASE("formatter failures cancellation and stale results preserve the author
         editor.setPlainText(QString::fromUtf8("😀text"));
         tool.Arguments = {QStringLiteral("split")};
     }
+    SECTION("newer release of the pinned major")
+    {
+        shouldSucceed = true;
+        tool.MinimumVersion = profile.MinimumVersion.section(QLatin1Char('.'), 0, 0) + QStringLiteral(".0.0");
+    }
+    SECTION("older release of the pinned major")
+    {
+        tool.MinimumVersion = profile.MinimumVersion.section(QLatin1Char('.'), 0, 0) + QStringLiteral(".999.0");
+    }
     SECTION("wrong version")
     {
-        tool.ExpectedVersion = QStringLiteral("0.0.0");
+        tool.MinimumVersion = QStringLiteral("0.0.0");
+    }
+    SECTION("malformed version")
+    {
+        tool.MinimumVersion = QStringLiteral("23.1");
     }
     SECTION("missing executable")
     {
@@ -420,7 +433,7 @@ TEST_CASE("formatter failures cancellation and stale results preserve the author
     CHECK(document.GetSnapshot().Identity.Revision <= 1);
     // Failure/cancellation leaves the service reusable.
     document.LimitBytes = 4096;
-    tool = {fixture, {QStringLiteral("success")}, profile.ExpectedVersion};
+    tool = {fixture, {QStringLiteral("success")}, profile.MinimumVersion};
     REQUIRE(formatter.Start(tool) == true);
     REQUIRE(finished.wait(12000) == true);
     CHECK(formatter.IsRunning() == false);

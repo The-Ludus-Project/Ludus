@@ -20,7 +20,8 @@ struct CodeFormatterTool final
 {
     QString Program;
     QStringList Arguments;
-    QString ExpectedVersion;
+    /// Pinned MAJOR.MINOR.PATCH; newer releases of the same major are accepted.
+    QString MinimumVersion;
 };
 
 /// Replacement positions refer to the captured UTF-8 source, in ascending order.
