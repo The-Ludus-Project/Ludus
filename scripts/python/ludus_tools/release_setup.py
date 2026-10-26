@@ -171,6 +171,8 @@ endif()
         if not itch_target:
             config["itch"] = {"channels": {destination: {"packageProfile": profile, "channel": "html5" if platform == "web" else destination + "-stable"}}}
         config['automation'] = {'provider': 'github-actions', 'releaseTags': True, 'buildCommand': build_command if build_command is not None else (['./scripts/release-prepare'] if (root / 'scripts/release-prepare').is_file() else [])}
+        if platform != 'web':
+            workflow_steps.require_hosted_toolchain(platform)
         rendered.append(TemplateFile('.github/workflows/itch-release.yml', workflow_text(profile, destination, platform)))
         if workflow_steps.has_tools_revision(root, tools_ref) is False:
             rendered.append(TemplateFile(workflow_steps.TOOLS_REVISION_RELPATH, tools_ref + '\n'))
