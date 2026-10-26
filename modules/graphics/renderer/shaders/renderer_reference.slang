@@ -47,6 +47,9 @@ LUDUS_SHADER_BINDING(LUDUS_REFERENCE_ACCUMULATION_BINDING) RWStructuredBuffer<fl
 LUDUS_SHADER_BINDING(LUDUS_REFERENCE_STATUS_BINDING) RWStructuredBuffer<uint4> status;
 LUDUS_SHADER_BINDING(LUDUS_REFERENCE_TEXELS_BINDING) StructuredBuffer<uint4> textureWords;
 
+// Keeps the conventional brace layout of both kernel entry points under the pinned formatter.
+#define LUDUS_REFERENCE_COMPUTE_ENTRY [numthreads(LUDUS_REFERENCE_GROUP_WIDTH, 1, 1)]
+
 static const uint REVERSE_Z_FLAG = 1;
 static const uint INFINITE_FAR_FLAG = 2;
 static const uint CENTER_RAYS_FLAG = 4;
@@ -425,8 +428,7 @@ Hit TraceScene(Ray ray, bool isVisibility)
                 continue;
             float u = barycentric.x;
             float v = barycentric.y;
-            if (IsOpaque(GetInstance(triangle), GetTexcoordUv(triangle, u, v), GetVertexAlpha(triangle, u, v)) ==
-                false)
+            if (IsOpaque(GetInstance(triangle), GetTexcoordUv(triangle, u, v), GetVertexAlpha(triangle, u, v)) == false)
                 continue;
             closestWorld = distanceWorld;
             chosen = triangle;
@@ -697,8 +699,8 @@ float3 SampleBsdfDirection(Bsdf bsdf, float3 normalWorld, float3 viewWorld, floa
 {
     if (dot(normalWorld, viewWorld) <= 0)
         return 0;
-    float3 axisXWorld = NormalizeOrZero(
-        cross(abs(normalWorld.z) < BASIS_POLE_COSINE ? float3(0, 0, 1) : float3(0, 1, 0), normalWorld));
+    float3 axisXWorld =
+        NormalizeOrZero(cross(abs(normalWorld.z) < BASIS_POLE_COSINE ? float3(0, 0, 1) : float3(0, 1, 0), normalWorld));
     float3 axisYWorld = cross(normalWorld, axisXWorld);
     float radius = sqrt(samples.y);
     float angle = 2 * PI * samples.z;
@@ -722,8 +724,8 @@ float3 SampleBsdfDirection(Bsdf bsdf, float3 normalWorld, float3 viewWorld, floa
         float warpedY = (1 - blend) * sqrt(max(0, 1 - diskX * diskX)) + blend * diskY;
         float3 hemisphereTangent = firstTangent * diskX + secondTangent * warpedY +
                                    stretchedTangent * sqrt(max(0, 1 - diskX * diskX - warpedY * warpedY));
-        float3 halfTangent =
-            NormalizeOrZero(float3(alpha * hemisphereTangent.x, alpha * hemisphereTangent.y, max(0, hemisphereTangent.z)));
+        float3 halfTangent = NormalizeOrZero(
+            float3(alpha * hemisphereTangent.x, alpha * hemisphereTangent.y, max(0, hemisphereTangent.z)));
         float3 halfWorld = axisXWorld * halfTangent.x + axisYWorld * halfTangent.y + normalWorld * halfTangent.z;
         directionWorld = halfWorld * (2 * dot(viewWorld, halfWorld)) - viewWorld;
     }
@@ -796,8 +798,7 @@ void AddTransport(inout PathSample inoutPath, float3 contribution, uint depth, b
 }
 bool HasValidTransport(PathSample path)
 {
-    return IsValidContribution(path.Emission) && IsValidContribution(path.Direct) &&
-           IsValidContribution(path.Indirect);
+    return IsValidContribution(path.Emission) && IsValidContribution(path.Direct) && IsValidContribution(path.Indirect);
 }
 LightProposal SampleLight(uint pixel, uint sample, uint depth, float3 positionWorld)
 {
@@ -1188,7 +1189,7 @@ bool IsValidSum(float3 sum, float3 compensation)
 // One sample for every pixel still at the image's minimum committed count. A pixel
 // commits its own sample only when every AOV sum stays finite; a failed pixel keeps
 // its previous sums and retries the same addressed sample on a later dispatch.
-[numthreads(LUDUS_REFERENCE_GROUP_WIDTH, 1, 1)] void TraceMain(uint3 positionPixel : SV_DispatchThreadID)
+LUDUS_REFERENCE_COMPUTE_ENTRY void TraceMain(uint3 positionPixel : SV_DispatchThreadID)
 {
     if (positionPixel.x >= Dimensions.x || positionPixel.y >= Dimensions.y)
         return;
@@ -1244,7 +1245,7 @@ bool IsValidSum(float3 sum, float3 compensation)
 groupshared uint4 sharedSamples[LUDUS_REFERENCE_GROUP_WIDTH];
 groupshared uint4 sharedQueries[LUDUS_REFERENCE_GROUP_WIDTH];
 groupshared uint4 sharedFailures[LUDUS_REFERENCE_GROUP_WIDTH];
-[numthreads(LUDUS_REFERENCE_GROUP_WIDTH, 1, 1)] void ReduceMain(uint3 lane : SV_GroupThreadID)
+LUDUS_REFERENCE_COMPUTE_ENTRY void ReduceMain(uint3 lane : SV_GroupThreadID)
 {
     uint pixels = Dimensions.x * Dimensions.y;
     // (minimum samples, maximum samples, committed, invalid)
