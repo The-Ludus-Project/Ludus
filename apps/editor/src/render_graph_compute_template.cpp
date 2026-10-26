@@ -303,6 +303,13 @@ RenderGraphDocumentStatus PrepareComputeRayTracingConfiguration(
         outError += QStringLiteral(" The draft was preserved.");
         return status;
     }
+    // The settings error already says that the draft was preserved.
+    status =
+        MergeTemplateSettings(manifest, source.value(QStringLiteral("settings")).toArray(), selected.Name, outError);
+    if (status != RenderGraphDocumentStatus::Ok)
+    {
+        return status;
+    }
     QJsonObject record = records.first().toObject();
     record.insert(QStringLiteral("id"), configuration);
     QJsonArray nodes = record.value(QStringLiteral("nodes")).toArray();

@@ -270,6 +270,7 @@ TEST_CASE("ReSTIR configuration template fills an existing graph library from th
         actionOrNull->trigger();
     });
     RenderGraphCanvas& canvas = workspace.GetCanvas();
+    canvas.centerOn(canvas.scene()->itemsBoundingRect().bottomRight() + QPointF(100, 100));
     QContextMenuEvent event(QContextMenuEvent::Mouse,
                             canvas.viewport()->rect().center(),
                             canvas.viewport()->mapToGlobal(canvas.viewport()->rect().center()));
@@ -749,6 +750,7 @@ TEST_CASE("Visibility configurations apply from the canvas and preserve authored
         actionOrNull->trigger();
     });
     RenderGraphCanvas& canvas = workspace.GetCanvas();
+    canvas.centerOn(canvas.scene()->itemsBoundingRect().bottomRight() + QPointF(100, 100));
     QContextMenuEvent context(QContextMenuEvent::Mouse,
                               canvas.viewport()->rect().center(),
                               canvas.viewport()->mapToGlobal(canvas.viewport()->rect().center()));
@@ -1364,6 +1366,7 @@ TEST_CASE("Canvas template picker confirms a shader program budget increase", "[
         actionOrNull->trigger();
     });
     RenderGraphCanvas& canvas = workspace.GetCanvas();
+    canvas.centerOn(canvas.scene()->itemsBoundingRect().bottomRight() + QPointF(100, 100));
     QContextMenuEvent context(QContextMenuEvent::Mouse,
                               canvas.viewport()->rect().center(),
                               canvas.viewport()->mapToGlobal(canvas.viewport()->rect().center()));
@@ -1507,14 +1510,27 @@ TEST_CASE("Compute ray-tracing configuration inserts on the root canvas and vali
     CHECK(document.GetDraft(ROOT_GRAPH).contains("Lighting.lurender.json") == true);
     CHECK(document.GetDraft(library).contains("ComputeRayPrimary") == true);
     CHECK(document.GetDraft(library).contains("ComputeRayShade") == true);
-    // Both kernels arrive with the hit record header they include.
+    // Both kernels arrive with the hit record and MIS weight headers they include.
     for (const QString& source : {QStringLiteral("compute_ray_tracing/main_shaders/primary.slang"),
                                   QStringLiteral("compute_ray_tracing/main_shaders/shade.slang"),
-                                  QStringLiteral("compute_ray_tracing/main_shaders/hit_record.slang")})
+                                  QStringLiteral("compute_ray_tracing/main_shaders/hit_record.slang"),
+                                  QStringLiteral("compute_ray_tracing/main_shaders/multiple_importance.slang")})
     {
         INFO(source.toStdString());
         CHECK(document.GetDraft(source).isEmpty() == false);
     }
+    // The shade kernel's MIS Graph settings arrive with their defaults.
+    QStringList settings;
+    for (const QJsonValueConstRef value : QJsonDocument::fromJson(document.GetDraft(COMPUTE_MANIFEST))
+                                              .object()
+                                              .value(QStringLiteral("settings"))
+                                              .toArray())
+    {
+        settings.append(value.toObject().value(QStringLiteral("id")).toString());
+    }
+    CHECK(settings.contains(QStringLiteral("MIS_HEURISTIC")) == true);
+    CHECK(settings.contains(QStringLiteral("MIS_POWER_EXPONENT")) == true);
+    CHECK(settings.contains(QStringLiteral("MIS_CUTOFF_THRESHOLD")) == true);
     const QJsonObject interface =
         FindRayTechnique(document.GetDraft(COMPUTE_MANIFEST)).value(QStringLiteral("scene_interface")).toObject();
     CHECK(interface.value(QStringLiteral("version")).toInt() == 1);

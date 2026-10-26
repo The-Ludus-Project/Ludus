@@ -52,6 +52,8 @@ constexpr QRgb NODE_BORDER_COLOR = 0xFF101215;
 constexpr float64 NODE_BORDER_WIDTH = 1.5;
 constexpr QRgb SELECTION_COLOR = 0xFFFFD25A;
 constexpr QRgb EDITABLE_EDGE_COLOR = 0xFFB4BAC4;
+constexpr float64 FOCUSED_EDGE_WIDTH = 3;
+constexpr float64 UNRELATED_EDGE_OPACITY = 0.18;
 constexpr float64 NODE_WIDTH = 190;
 constexpr float64 FRAME_PADDING = 40;
 constexpr float64 HEADER_HEIGHT = 26;
@@ -554,6 +556,7 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
     setScene(mScene);
     setRenderHint(QPainter::Antialiasing);
     setDragMode(QGraphicsView::NoDrag);
+    setMouseTracking(true);
     setTransformationAnchor(QGraphicsView::NoAnchor);
     setBackgroundBrush(QColor(28, 31, 36));
     setToolTip(QStringLiteral("Left-drag empty space to box-select · Shift adds to selection · middle-drag or "
@@ -631,6 +634,7 @@ void RenderGraphCanvas::Rebuild()
     mIsBoxSelecting = false;
     mSelectionBox->hide();
     mDragNodes.clear();
+    mHoveredPort.clear();
     qDeleteAll(mNodes);
     mNodes.clear();
     qDeleteAll(mEdges);
@@ -1020,11 +1024,7 @@ void RenderGraphCanvas::refreshFeedback()
             view->SizeLabelOrNull->setToolTip(resources.join(QLatin1Char('\n')));
         }
     }
-    for (EdgeView* edge : std::as_const(mEdges))
-    {
-        const NodeView* destinationOrNull = mNodes.value(GetEndpointNode(edge->To), nullptr);
-        edge->Path->setOpacity(destinationOrNull == nullptr ? 1 : destinationOrNull->Frame->opacity());
-    }
+    updateConnectionHighlight();
 }
 
 void RenderGraphCanvas::updateLinkFeedback(QPointF position)
@@ -1208,6 +1208,7 @@ void RenderGraphCanvas::notifySelection()
             edge->Path->setPen(QPen(QColor::fromRgba(EDITABLE_EDGE_COLOR), 2));
         }
     }
+    updateConnectionHighlight();
     Q_EMIT NodesSelected(GetSelectedNodes());
 }
 
@@ -1285,11 +1286,75 @@ QJsonObject RenderGraphCanvas::GetDiagnosticLocation() const
 
 void RenderGraphCanvas::updateSelection()
 {
+    updateConnectionHighlight();
+}
+
+void RenderGraphCanvas::updateConnectionHighlight()
+{
+    const QStringList selected = GetSelectedNodes();
+    const bool hasHoveredPort = mHoveredPort.isEmpty() == false;
+    const bool hasFocus = hasHoveredPort == true || selected.isEmpty() == false;
+    QSet<QString> connected;
+    QSet<QString> highlightedInputs;
+    QSet<QString> highlightedOutputs;
+    for (EdgeView* edge : std::as_const(mEdges))
+    {
+        const QString source = GetEndpointNode(edge->From);
+        const QString destination = GetEndpointNode(edge->To);
+        const bool isHighlighted = hasHoveredPort == true
+                                       ? (mIsHoveredOutput == true ? edge->From : edge->To) == mHoveredPort
+                                       : selected.contains(source) == true || selected.contains(destination) == true;
+        const bool isSelected = edge->Path->data(0).toBool();
+        if (isHighlighted == true || isSelected == true)
+        {
+            connected.insert(source);
+            connected.insert(destination);
+            highlightedOutputs.insert(edge->From);
+            highlightedInputs.insert(edge->To);
+        }
+        const NodeView* destinationOrNull = mNodes.value(destination, nullptr);
+        const float64 activityOpacity = destinationOrNull == nullptr ? 1 : destinationOrNull->Frame->opacity();
+        edge->Path->setOpacity(isHighlighted == true || isSelected == true ? 1
+                               : hasFocus == true                          ? UNRELATED_EDGE_OPACITY
+                                                                           : activityOpacity);
+        QPen pen(isHighlighted == true || isSelected == true ? QColor::fromRgba(SELECTION_COLOR)
+                                                             : QColor::fromRgba(EDITABLE_EDGE_COLOR),
+                 isHighlighted == true || isSelected == true ? FOCUSED_EDGE_WIDTH : 2);
+        pen.setCosmetic(true);
+        if (edge->IsEditable == false)
+        {
+            pen.setStyle(Qt::DashLine);
+        }
+        edge->Path->setPen(pen);
+    }
     for (NodeView* view : std::as_const(mNodes))
     {
-        view->Frame->setPen(QPen(view->Frame->isSelected() == true ? QColor::fromRgba(SELECTION_COLOR)
-                                                                   : QColor::fromRgba(NODE_BORDER_COLOR),
-                                 NODE_BORDER_WIDTH));
+        const bool isHighlighted = view->Frame->isSelected() == true || connected.contains(view->Id) == true;
+        view->Frame->setPen(
+            QPen(isHighlighted == true ? QColor::fromRgba(SELECTION_COLOR) : QColor::fromRgba(NODE_BORDER_COLOR),
+                 isHighlighted == true ? FOCUSED_EDGE_WIDTH : NODE_BORDER_WIDTH));
+        for (bool isOutput : {true, false})
+        {
+            const QHash<QString, QGraphicsEllipseItem*>& ports =
+                isOutput == true ? view->OutputItems : view->InputItems;
+            const QSet<QString>& highlighted = isOutput == true ? highlightedOutputs : highlightedInputs;
+            for (const QString& port : ports.keys())
+            {
+                QGraphicsEllipseItem* connector = ports.value(port);
+                if (connector == mLinkPortOrNull)
+                {
+                    continue;
+                }
+                const QString endpoint = view->Id + QLatin1Char('.') + port;
+                const bool isPortHighlighted = highlighted.contains(endpoint) == true ||
+                                               (mHoveredPort == endpoint && mIsHoveredOutput == isOutput);
+                QPen pen(isPortHighlighted == true ? QColor::fromRgba(SELECTION_COLOR)
+                                                   : QColor::fromRgba(NODE_BORDER_COLOR),
+                         isPortHighlighted == true ? FOCUSED_EDGE_WIDTH : 1);
+                pen.setCosmetic(true);
+                connector->setPen(pen);
+            }
+        }
     }
 }
 
@@ -1729,6 +1794,14 @@ void RenderGraphCanvas::mouseMoveEvent(QMouseEvent* event)
         event->accept();
         return;
     }
+    bool isOutput = false;
+    const QString port = portAt(position, isOutput);
+    if (port != mHoveredPort || isOutput != mIsHoveredOutput)
+    {
+        mHoveredPort = port;
+        mIsHoveredOutput = isOutput;
+        updateConnectionHighlight();
+    }
     QGraphicsView::mouseMoveEvent(event);
 }
 
@@ -1952,6 +2025,11 @@ void RenderGraphCanvas::wheelEvent(QWheelEvent* event)
 
 bool RenderGraphCanvas::viewportEvent(QEvent* event)
 {
+    if (event->type() == QEvent::Leave)
+    {
+        mHoveredPort.clear();
+        updateConnectionHighlight();
+    }
     if (event->type() == QEvent::NativeGesture)
     {
         QNativeGestureEvent* gesture = static_cast<QNativeGestureEvent*>(event);

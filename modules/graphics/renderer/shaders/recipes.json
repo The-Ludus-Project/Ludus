@@ -80,6 +80,14 @@
     "compute": "ComputeMain",
     "native_ray_queries": true
   },
+  "renderer_reference": {
+    "source": "renderer_reference.slang",
+    "compute": "TraceMain"
+  },
+  "renderer_reference_reduce": {
+    "source": "renderer_reference.slang",
+    "compute": "ReduceMain"
+  },
   "renderer_authored": {
     "source": "renderer_authored.slang",
     "vertex": "VertexMain",

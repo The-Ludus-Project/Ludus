@@ -57,6 +57,19 @@ class ReferenceExportTests(unittest.TestCase):
                 self.assertEqual(metadata['profile'], profile)
                 self.assertEqual(pixels[0], (1, 2, 3, 4))
 
+    def test_traversal_flags_name_each_implementation(self):
+        for flags, traversal in ((32, 'native_queries'), (33, 'cpu_oracle'), (96, 'gpu_compute')):
+            with self.subTest(flags=flags):
+                data = self.capture()
+                struct.pack_into('<I', data, 44, flags)
+                metadata, _ = hdr.decode(data)
+                self.assertEqual(metadata['traversal'], traversal)
+        data = self.capture()
+        struct.pack_into('<I', data, 44, 97)
+        with self.assertRaises(ValueError): hdr.decode(data)
+        struct.pack_into('<I', data, 44, 160)
+        with self.assertRaises(ValueError): hdr.decode(data)
+
     def test_complete_short_nonfinite_and_unknown_profile_reject(self):
         data = self.capture()
         struct.pack_into('<I',data,44,0)

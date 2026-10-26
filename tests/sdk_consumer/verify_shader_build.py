@@ -63,7 +63,7 @@ ludus_compile_shader(TARGET sample NAME sample SOURCE diagnostic.slang VERTEX Ve
         manifest = json.loads(header.with_name('manifest.json').read_text())
         assert {key: manifest['uniform_sizes'][key] for key in ('vertex', 'fragment', 'wgsl')} == {'vertex':48,'fragment':48,'wgsl':48}
         assert manifest['spirv_entries'] == {'vertex':'main','fragment':'main'}
-        assert manifest['wgsl_entries'] == {'vertex':'vertexMain','fragment':'fragmentMain'}
+        assert manifest['wgsl_entries'] == {'vertex':'VertexMain','fragment':'FragmentMain'}
         contract = [('resolution', 0, 8), ('elapsedTime', 8, 4), ('direction', 16, 12), ('tint', 32, 16)]
         for target in ('vertex', 'fragment', 'wgsl'):
             resource = json.loads(header.with_name(target + '.reflection.json').read_text())['parameters'][0]

@@ -139,6 +139,7 @@ private:
     void renderGraphCommands();
     void showOptions();
     void renderGraphErrors();
+    void collapseResolvedGraphErrors();
     /// Show and raise the Error List for newly reported errors or warnings, without taking
     /// focus. Under Focus Viewport only the status bar announces them.
     void revealErrorList();

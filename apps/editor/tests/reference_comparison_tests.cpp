@@ -98,9 +98,13 @@ bool Compare(const QVector<renderer::ReferencePixel>& reference,
              QImage& outDifference,
              QString& outError)
 {
+    renderer::ReferenceCaptureInfo information;
+    information.Width = IMAGE_WIDTH;
+    information.Height = IMAGE_HEIGHT;
+    information.TargetSamples = TEST_SAMPLES;
     return CompareRasterWithReference({reference.constData(), static_cast<usize>(reference.size())},
-                                      IMAGE_WIDTH,
-                                      IMAGE_HEIGHT,
+                                      information,
+                                      false,
                                       raster,
                                       outComparison,
                                       outDifference,
@@ -210,6 +214,11 @@ TEST_CASE("Pixels without reference samples are excluded and shown grey", "[edit
     QString error;
     REQUIRE(Compare(reference, MakeRgba16Float(HALF_ONE), comparison, difference, error) == true);
     CHECK(comparison.ComparedPixels == IMAGE_WIDTH * IMAGE_HEIGHT - 1);
+    CHECK(comparison.IsReferenceComplete == false);
+    CHECK(comparison.MinimumImageSamples == 0);
+    CHECK(DescribeReferenceComparison(comparison).contains(QStringLiteral("INCOMPLETE")) == true);
+    CHECK(DescribeReferenceComparison(comparison).contains(QStringLiteral("3/4 pixels sampled (75.0%)")) == true);
+    CHECK(MakeReferenceComparisonJson(comparison).value(QStringLiteral("referenceComplete")).toBool() == false);
     CHECK(comparison.MeanAbsoluteError == 0);
     CHECK(qRed(difference.pixel(0, 0)) == qBlue(difference.pixel(0, 0)));
     CHECK(qRed(difference.pixel(0, 0)) > 0);
@@ -309,9 +318,11 @@ TEST_CASE("The viewport's forward-lit graph is captured and compared with a refe
     REQUIRE(reference.CopyPixels(pixels, error) == true);
     ReferenceComparison comparison;
     QImage difference;
+    renderer::ReferenceCaptureInfo information;
+    REQUIRE(reference.GetInfo(information) == true);
     REQUIRE(CompareRasterWithReference({pixels.GetData(), pixels.GetSize()},
-                                       static_cast<uint32>(extent.width()),
-                                       static_cast<uint32>(extent.height()),
+                                       information,
+                                       false,
                                        raster.GetTexture(),
                                        comparison,
                                        difference,
@@ -345,4 +356,51 @@ TEST_CASE("Raster capture reports a missing render graph package", "[editor][ref
     CHECK(error.isEmpty() == false);
     CHECK(raster.GetPhase() == ViewportRasterPhase::Idle);
     CHECK(extent.isEmpty() == true);
+}
+
+TEST_CASE("Comparison labels full-coverage under-sampling and failures as partial diagnostics",
+          "[editor][reference-comparison]")
+{
+    const QVector<renderer::ReferencePixel> reference = MakeReference(1);
+    renderer::ReferenceCaptureInfo information;
+    information.Width = IMAGE_WIDTH;
+    information.Height = IMAGE_HEIGHT;
+    information.TargetSamples = TEST_SAMPLES + 1;
+    ReferenceComparison comparison;
+    QImage difference;
+    QString error;
+    REQUIRE(CompareRasterWithReference({reference.constData(), static_cast<usize>(reference.size())},
+                                       information,
+                                       false,
+                                       MakeRgba16Float(HALF_ONE),
+                                       comparison,
+                                       difference,
+                                       error) == true);
+    CHECK(comparison.IsReferenceComplete == false);
+    CHECK(comparison.MinimumImageSamples == TEST_SAMPLES);
+    CHECK(DescribeReferenceComparison(comparison).contains(QStringLiteral("INCOMPLETE")) == true);
+    CHECK(DescribeReferenceComparison(comparison).contains(QStringLiteral("Partial diagnostic metrics only")) == true);
+    information.TargetSamples = TEST_SAMPLES;
+    REQUIRE(CompareRasterWithReference({reference.constData(), static_cast<usize>(reference.size())},
+                                       information,
+                                       true,
+                                       MakeRgba16Float(HALF_ONE),
+                                       comparison,
+                                       difference,
+                                       error) == true);
+    CHECK(comparison.IsReferenceComplete == false);
+    CHECK(comparison.HasReferenceFailed == true);
+    CHECK(DescribeReferenceComparison(comparison).contains(QStringLiteral("FAILED / INCOMPLETE")) == true);
+    CHECK(MakeReferenceComparisonJson(comparison).value(QStringLiteral("referenceFailed")).toBool() == true);
+    REQUIRE(CompareRasterWithReference({reference.constData(), static_cast<usize>(reference.size())},
+                                       information,
+                                       false,
+                                       MakeRgba16Float(HALF_ONE),
+                                       comparison,
+                                       difference,
+                                       error) == true);
+    CHECK(comparison.IsReferenceComplete == true);
+    CHECK(comparison.HasReferenceFailed == false);
+    CHECK(DescribeReferenceComparison(comparison).contains(QStringLiteral("Reference complete")) == true);
+    CHECK(DescribeReferenceComparison(comparison).contains(QStringLiteral("Partial diagnostic")) == false);
 }

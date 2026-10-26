@@ -60,7 +60,7 @@ a private release protocol over the Ludus owner.
 | Unsupported variants | 32-bit x86, ARM64 and ARM64EC; UWP/GDK; Windows before 10 version 1703 (per-monitor DPI v2) |
 | Dependency pins | No runtime dependencies; build-time Slang 2026.1.2 (Windows x86_64) and DXC 1.9.2609 in `config/shader_toolchain.json`; Catch2 for tests through the existing Windows Conan profile |
 | Validation | Existing Clang D1/D2 lane: `.github/workflows/windows-direct3d12.yml` on `windows-2022` (WARP; no GPU). MSVC, MSBuild and physical-GPU acceptance pending |
-| Owner and branch | D1: `codex/windows-direct3d12-rhi` (merged); D2: `codex/windows-d3d12-dxil-draw`; D3a: `codex/windows-integration-d3a`; D3b: `codex/windows-integration-d3b` |
+| Owner and branch | D1: `codex/windows-direct3d12-rhi` (merged); D2: `codex/windows-d3d12-dxil-draw`; D3a: `codex/windows-integration-d3a`; D3b: `codex/windows-integration-d3b`; D4a: `codex/windows-d4a` |
 | Last audited base | Plan/toolchain audit: `develop` at `94bc3e3c` (2026-10-26); historical D1/D2 runtime evidence remains at the commits recorded below |
 
 ## Developer workflow contract (planned)
@@ -211,8 +211,8 @@ explicit device path alike.
   the Vulkan and Metal pixel tests.
 
 D3a adds resources and D3b adds the raster drawing/pass implementation described
-below. Compute and lifetime transfers (`raster_unsupported.cpp`) remain unavailable. Offscreen-only
-frames (`ShouldPresentToSurface = false`), GPU timing/pass scopes, native interop,
+below. D4a adds the transfer/lifetime implementation and offscreen-only frames
+(`ShouldPresentToSurface = false`). Compute, GPU timing/pass scopes, native interop,
 ray queries and spatial upscaling remain unavailable. The renderer, editor, SDK
 install and game host are not part of the Windows build yet.
 
@@ -223,9 +223,11 @@ The resource-only D3a slice exposed zero draws, color attachments and vertex
 stride. D3b extends that implementation as described below; this does not complete
 the MSVC baseline in D0.
 
-- **Buffers.** Immutable vertex, index and uniform buffers use upload heaps in
-  `GENERIC_READ`, with complete initial bytes copied before return. Native padding
-  is zeroed and rounded to the 256-byte CBV alignment. Uniform slices retain their
+- **Buffers.** Vertex, index and uniform buffers use default heaps populated by
+  owned staging copies on the direct queue. Creation snapshots complete initial
+  bytes before returning `Ready` for subsequent same-queue use; D4a tickets
+  separately expose GPU completion. Native padding is zeroed and rounded to
+  the 256-byte CBV alignment. Uniform slices retain their
   logical byte bounds; descriptor sizes round up within that backing. Storage
   buffers remain unavailable with the compute profile.
 - **Textures.** Original-format sampled RGBA8/sRGB, R8, RG8, RGBA16F and BC1/3/5
@@ -237,7 +239,7 @@ the MSVC baseline in D0.
   Compressed base extents must be block-aligned. Staging bytes consume the
   resource budget in addition to logical texture bytes
   and are released at completion. D3a did not implement attachments; D3b adds
-  them below. Deferred initialization and general transfer uses remain unavailable.
+  them below. D4a adds deferred initialization and general RGBA8 transfers.
 - **Views and samplers.** Color SRVs select bounded mip/layer ranges, retaining
   the source allocation. D2 views of an array/cube layer report `Unsupported`
   because a D3D12 array SRV cannot be bound as a scalar Texture2D. Depth/stencil
@@ -279,7 +281,7 @@ correctness; D3b owns shared raster/image conformance.
 
 D3b implements indexed triangle lists through the existing explicit-device API.
 `PortableRaster` and the common ordered raster graph become available; compute,
-indirect draws and general lifetime transfers remain unavailable. Native MSVC,
+indirect draws remain unavailable. D4a extends lifetime transfers below. Native MSVC,
 physical Windows GPU execution and full-engine qualification remain separate
 acceptance work. The implementation is on `codex/windows-integration-d3b`.
 
@@ -329,6 +331,60 @@ passed; it does not establish an MSVC build of this RHI. Locally, Clang 23 build
 the Windows closure warning-clean, and the common lifecycle and shared Metal
 conformance suites pass under ASan/UBSan (669 assertions in the shared suite).
 Physical Windows GPU evidence remains pending.
+
+### Transfers, readback and lifetime (D4a)
+
+The private `transfer_d3d12.cpp` owner implements the existing
+[upload/readback](../development/fullscreen-rendering.md#upload-and-readback-rings)
+and [mutable-transfer](../development/fullscreen-rendering.md#mutable-transfers-and-mip-initialization-r8)
+contracts on D1's direct queue and fence. No public native handles or second
+submission ledger are introduced. The implementation branch is
+`codex/windows-d4a`. Clang/WARP validation passed at `5b56bea2` in
+[PR #622](https://github.com/The-Ludus-Project/Ludus/pull/622),
+[run 40375496878](https://github.com/The-Ludus-Project/Ludus/actions/runs/40375496878):
+Win32, common lifecycle and Direct3D 12 suites all passed. The local shared Metal
+render suite passed 2,543 assertions across thirteen cases, including 409
+assertions in the four transfer cases. These runs do not qualify physical
+Windows hardware or the production MSVC toolchain.
+
+- **Buffer copies.** Initial ticket uploads, bounded updates and asynchronous
+  readbacks use upload/default/readback heaps. Default buffers use D3D12's
+  documented buffer promotion/decay across ordered command-list executions.
+  Ordinary initial creation also retains staging and native destination backing
+  through completion, even after immediate public destruction. Staging consumes
+  the resource budget in addition to the logical allocation.
+- **Texture copies.** RGBA8Unorm D2, single-sample textures support deferred mip
+  initialization, full or partial updates, copies between distinct allocations
+  and asynchronous region readback. Other transfer formats/shapes remain
+  `Unsupported`. Whole-resource barriers restore a read source's previous state;
+  successful destinations finish in the tracked vertex/fragment sampled state.
+  Native rows are 256-byte aligned, with zero-offset placed footprints; public
+  readback strips native padding and zeroes caller row padding. No conversion or
+  mip generation occurs.
+- **Completion and cancellation.** Each configured upload/readback slice owns
+  its staging, allocator, list, fence and source/destination COM references.
+  Polling never waits or maps unfinished work. Mapping failure preserves caller
+  output through the common scratch-copy contract. Releasing a pending ticket
+  cancels notification while retaining the slice and source leases until its
+  exact fence completes. A failed signal or shutdown timeout retains native
+  backing until original-fence completion, device removal or a successful drain;
+  restart cannot reuse an unfinished slice. Shutdown invalidates ticket identities.
+- **Offscreen frames.** `ShouldPresentToSurface = false` selects an offscreen
+  BGRA8 frame target, skips swap-chain acquisition/presentation and ignores
+  Win32 visibility/minimization. The same frame-slot fence and resource retirement
+  rules apply. Owned raster attachments remain required for offscreen raster
+  passes; zero target extents still skip work. A later presented target resumes
+  the existing swap chain.
+- **Tests.** `portable_transfer_conformance_tests.cpp` runs unchanged on D3D12,
+  Vulkan and Metal: upload snapshots, buffer updates/readback, source destruction,
+  failed-output preservation, deferred mip/rectangle copies, row orientation and
+  padding, slice reuse, offscreen frames, raster attachment readback and restart.
+  The Windows-specific queue-gating regression forces pending work to prove
+  cancellation cannot recycle either transfer direction early, checks reuse
+  after completion and inspects debug-layer errors/corruption.
+
+D4a does not admit compute/storage/dispatch or qualify MSVC and physical Windows
+hardware. D4b, D0 and D7 retain those acceptance responsibilities respectively.
 
 ### DXIL artifacts
 
@@ -414,7 +470,7 @@ cmake --build out/build/windows-mingw-check --target ludus_platform ludus_graphi
 | D0 (next; MSVC baseline) | Pin MSVC/SDK/CRT/dependencies; enable `cl.exe`, Ninja and generated Visual Studio/MSBuild projects; reconcile compiler policy and presets | D1/D2 and Foundation tests pass on MSVC; both generators configure/build/test; physical-GPU clear/fullscreen evidence recorded |
 | D3a (Clang/WARP verified) | Raster resources, bindings and DXIL interfaces | Windows resource/binding, bounded failure, pending upload retirement and DXIL suites passed for PR #617 at `172002e4` ([run 40359506345](https://github.com/The-Ludus-Project/Ludus/actions/runs/40359506345)); production MSVC and hardware evidence remain pending |
 | D3b (Clang/WARP verified) | Portable raster pipelines/passes, attachments, depth/stencil/blend and transitions | Shared raster images and debug-queue checks passed for PR #620 at `c239b3d9` ([run 40369593745](https://github.com/The-Ludus-Project/Ludus/actions/runs/40369593745)); production MSVC and physical-GPU evidence pending |
-| D4a | Transfers, readback and lifetime | Shared transfer/lifetime suites; offscreen rendering, cancellation and failure preservation |
+| D4a (Clang/WARP verified) | Transfers, readback and lifetime | Windows transfer/lifetime, offscreen, cancellation, failure preservation and raster suites passed at `5b56bea2` ([run 40375496878](https://github.com/The-Ludus-Project/Ludus/actions/runs/40375496878)); production MSVC and physical-GPU evidence pending |
 | D4b | Compute and ordered render graphs | Compute/graph suites, mixed graphics/compute/transfer journeys; required compute profile admitted |
 | D5a | Windows host services and Foundation validation | Native input, entropy, files/persistence/watch tests; diagnostics and Foundation runtime evidence |
 | D5b | GPU measurement and debugging | Timestamp/pass-scope tests; PIX capture/markers and DRED failure diagnostics documented |
@@ -632,7 +688,8 @@ these rows remain pending.
 | RHI / graphics (DXIL/fullscreen) | D2; D0 pending | verified (Clang/WARP) | MSVC and hardware-adapter evidence in D0 | PR #586 | [Windows lane](https://github.com/The-Ludus-Project/Ludus/actions/runs/40102938249) |
 | RHI / raster resources and bindings | D3a | verified (Clang/WARP) | Production MSVC baseline and hardware evidence still pending | PR #617 | `172002e4`, [Windows lane](https://github.com/The-Ludus-Project/Ludus/actions/runs/40359506345) |
 | RHI / raster rendering | D3b | verified (Clang/WARP) | Production MSVC and physical-GPU evidence pending | PR #620 | `c239b3d9`, [Windows lane](https://github.com/The-Ludus-Project/Ludus/actions/runs/40369593745) |
-| RHI / transfers, lifetime, compute and graph | unassigned | needs port | D4a/D4b | pending | none |
+| RHI / transfers and lifetime | D4a | verified (Clang/WARP) | Production MSVC baseline and physical-GPU evidence still pending | PR #622 | `5b56bea2`, [Windows lane](https://github.com/The-Ludus-Project/Ludus/actions/runs/40375496878) |
+| RHI / compute and ordered mixed graph | D4b | needs port | Compute/storage/dispatch and mixed transfer journeys | pending | none |
 | GPU timing / PIX / DRED | unassigned | needs port | D5b | pending | none |
 | Renderer / graph | unassigned | unreviewed | D6a after D4b/D5a | pending | none |
 | Text / localization / UI | unassigned | unreviewed | D6a required-profile audit and sample | pending | none |

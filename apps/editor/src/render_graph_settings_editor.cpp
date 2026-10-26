@@ -7,6 +7,7 @@
 #include <QFormLayout>
 #include <QJsonObject>
 #include <QLabel>
+#include <QSizePolicy>
 #include <QSpinBox>
 
 namespace ludus::editor
@@ -25,12 +26,18 @@ RenderGraphSettingsEditor::RenderGraphSettingsEditor(const QJsonArray& settings,
 {
     setObjectName(QStringLiteral("renderGraphSettingsEditor"));
     QFormLayout* fields = new QFormLayout(this);
+    fields->setRowWrapPolicy(QFormLayout::WrapAllRows);
+    fields->setLabelAlignment(Qt::AlignLeft);
+    fields->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     fields->setContentsMargins(0, 0, 0, 0);
-    fields->addRow(
-        new QLabel(QStringLiteral("Settings are shader constants. Save and rebuild to apply changes."), this));
+    QLabel* help =
+        new QLabel(QStringLiteral("Settings are shader constants. Save and rebuild to apply changes."), this);
+    help->setWordWrap(true);
+    help->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    fields->addRow(help);
     if (settings.size() > MAX_SETTINGS)
     {
-        fields->addRow(new QLabel(QStringLiteral("Too many settings. Validate and repair the manifest."), this));
+        help->setText(QStringLiteral("Too many settings. Validate and repair the manifest."));
         return;
     }
     for (const QJsonValueConstRef entry : settings)
@@ -92,6 +99,19 @@ RenderGraphSettingsEditor::RenderGraphSettingsEditor(const QJsonArray& settings,
             connect(control, &QDoubleSpinBox::editingFinished, this, [this, identity, control]() {
                 Q_EMIT SettingEdited(identity, control->value());
             });
+        }
+    }
+    for (int32 row = 0; row < fields->rowCount(); ++row)
+    {
+        QLayoutItem* itemOrNull = fields->itemAt(row, QFormLayout::LabelRole);
+        if (itemOrNull != nullptr)
+        {
+            QLabel* labelOrNull = qobject_cast<QLabel*>(itemOrNull->widget());
+            if (labelOrNull != nullptr)
+            {
+                labelOrNull->setWordWrap(true);
+                labelOrNull->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+            }
         }
     }
 }

@@ -214,6 +214,7 @@ private:
     [[nodiscard]] QJsonObject configuration() const;
     void updateEdges();
     void updateSelection();
+    void updateConnectionHighlight();
     void notifySelection();
     [[nodiscard]] QString nodeAt(QPointF position) const;
     [[nodiscard]] QString portAt(QPointF position, bool& outIsOutput) const;
@@ -245,6 +246,8 @@ private:
     QGraphicsEllipseItem* mLinkPortOrNull = nullptr;
     QString mLinkPortTooltip;
     QString mLinkEndpoint;
+    QString mHoveredPort;
+    bool mIsHoveredOutput = false;
     QSize mReferenceSize;
     QRubberBand* mSelectionBox;
     QPoint mSelectionStart;

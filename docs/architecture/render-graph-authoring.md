@@ -1218,6 +1218,211 @@ Shader code owns bounds and races, including ping-pong choice and zero-history
 handling. This adds no global dispatch synchronization, buffer exports or arbitrary
 compute/raster execution. See the [authoring workflow](../development/render-graph-authoring.md#create-structured-reservoir-buffers).
 
+## Ray path inspection (proposed)
+
+**Status: design for review. Nothing in this section is implemented.**
+
+Ray path inspection records the rays that a chosen ray-producing node actually
+traces for selected pixels. It freezes them in world space and draws them over the
+3D scene, which the author then explores with the editor's free (RMB fly/noclip)
+camera. It answers "where did this pixel's paths go?": camera rays, bounces,
+visibility rays, misses and hits on named World objects. It is not a GPU frame
+debugger such as PIX or Nsight, and it is not a traversal-cost heatmap.
+
+### Scope and what the kernel can observe
+
+The scope is `RayTracingPipeline` nodes, in both the triangle and scene callback
+profiles, and scene `ComputePipeline` nodes. All of them lower to one persistent
+compute kernel. Every traversal in that kernel goes through `Trace()` in
+`renderer_gpu_preview.slang`, whose callers are:
+
+- the triangle-profile wrapper's `EvaluateGraphRay` (`render_graph_ray.py`);
+- `TraceClosest` and `TestVisibility` (`scene_shader.slang`), which are used by
+  scene callbacks, `TraceAndShade` and authored compute kernels.
+
+`LoadVisibilitySurface` (`visibility_buffer.slang`) replaces a camera query with a
+raster first hit and performs no traversal. Capture records that raster first hit
+as its own event, so paths starting from a visibility buffer still begin at the
+camera.
+
+Traversal uses inline `RayQuery`. The driver owns the acceleration structure, so
+box tests, node visits and traversal order are not observable. The kernel does see
+each non-opaque candidate triangle in the `Proceed()` loop, its alpha-test
+decision, and the committed result; see Khronos,
+[Vulkan Ray Traversal](https://docs.vulkan.org/spec/latest/chapters/raytraversal.html).
+Capture records exactly those events. It adds no software traversal to recover
+node visits. The built-in GPU preview integrator (`Integrate`) shares `Trace()`
+and could adopt the same capture later; it is out of scope here.
+
+### Capture records
+
+A capture records each `Trace()` call made by a selected invocation:
+
+| Field | Meaning |
+| --- | --- |
+| Pixel, sample, pass | Launch pixel, progressive sample index, and ray pass index (`Sampling.z` pass bits) |
+| Sequence | Zero-based order of this event within the invocation |
+| Kind | `Closest`, `Visibility` or `RasterFirstHit` |
+| `OriginWorld`, `DirectionWorld` | The ray exactly as submitted to `TraceRayInline` |
+| Min/max distance | Submitted interval in world meters |
+| Outcome | `Miss`, `Hit` or `Failure` (the failed-triangle sentinel or an invalid ray) |
+| Hit distance, triangle, instance, primitive | Committed hit identity |
+| `SourceId` | World extraction identity of the hit, read from the packed triangle words |
+| Rejected candidates | Count of candidates refused by the alpha test before the commit |
+
+Each selected invocation also writes one summary: the final sequence count,
+`HasFailed`, and the sample radiance passed to accumulation.
+
+Records have a fixed width. Their tags, widths and offsets are named in
+`renderer_gpu_preview_layout.h`, which the host decoder and the shader share; the
+host decodes field by field, not by copying structs.
+
+The capture buffer has three parts:
+
+- a CPU-written header: the selected pixel rectangle, the sample range, the
+  record capacity, an appended-record counter and a dropped-record counter;
+- a summary region sized to selected pixels × samples × passes, so summaries are
+  never dropped;
+- the event records.
+
+The selection lives in the buffer header, so the 224-byte parameter block stays
+unchanged. `ComputeMain` sets per-invocation `static` state: whether the
+invocation is selected, its sample index, and a sequence counter. `Trace()`
+appends only for a selected invocation. Records are reserved with an atomic add,
+so their order across invocations is arbitrary. The host sorts them by pixel,
+sample, pass and sequence.
+
+When capacity is exhausted, earlier records are kept and the dropped counter
+increases. A path is complete only when its recorded sequences are contiguous up
+to the summary's count. The inspector labels any other path as truncated and
+never draws it as complete.
+
+Capture must not change transport. It writes only its own buffer and consumes no
+random dimensions or query budget. For the same scene, camera, seed and sample,
+color and accumulation output must match the uncaptured kernel bit for bit.
+
+Samples are traced only while accumulation is below its limit (`shouldSample`). A
+capture therefore starts a new history epoch for the frozen camera and captures
+samples `[0, N)`.
+
+### Instrumented program variant
+
+The capture needs one more storage binding. Slot 10 is the proposal: it lies after
+the visibility slots 8–9, below `RASTER_BINDING_COUNT`, and clear of the runtime
+slots 14–15. It raises the storage-binding count from six to seven, within the
+negotiated `MaxStorageBindings`. There are two ways to provide it:
+
+| Option | Effect |
+| --- | --- |
+| **A. On-demand diagnostic artifact (recommended)** | The native shader worker compiles the same source snapshot with `LUDUS_RAY_PATH_CAPTURE` defined when a capture starts. The capture flag joins the cache identity. Packages, formats and ordinary frames are unchanged and pay nothing. The first capture waits for compilation and pipeline preparation. |
+| B. Always-bound capture buffer | Every editor-cooked ray artifact carries slot 10, and its header gates capture. This changes the persistent ABI and the runtime package version for every graph, and every `Trace()` pays a branch. |
+
+Option A keeps numeric plan and runtime package formats unchanged. Shipping
+packages never contain the variant.
+
+### Editor workflow
+
+1. The World viewport shows the project's ray graph from the editor camera, as it
+   does today.
+2. Choose what to capture. Selecting a ray or scene compute node in the Renderer
+   canvas captures that node's pass. Selecting the graph captures every ray pass
+   of the active configuration (up to `MAX_RAY_PASSES`). Recorded pass indices map
+   back to node names through the runtime package's pass names.
+3. Start **Capture ray paths**, then click a pixel in the graph output. A small
+   rectangle is possible within the record capacity. Also choose the sample
+   count N.
+4. **Freeze.** The editor copies the graph camera (`ClipToWorld`, position,
+   projection, extent), the scene revision, the generation identity and the
+   sampling seed. While frozen, `RenderGraphPreview` stops forwarding navigation
+   to the graph camera. A World edit, resize or generation activation marks the
+   capture stale. It is never mixed with a newer generation.
+5. **Run.** The diagnostic variant traces N samples with the frozen camera. The
+   records are read back with `RequestBufferReadback`/`CopyReadback`, which are
+   polled between frames without waiting.
+6. **Inspect.** `PreviewViewport` switches its frame source (`SetFrameSource`)
+   to the built-in raster `RenderPreview` of the same World, rendered from the
+   free editor camera. The paths are drawn over it, and existing navigation
+   applies: RMB fly with WASD, Alt orbit, F to frame. Leaving inspection restores
+   the live graph from the current editor camera.
+
+The inspection view is rasterized because the free camera must move
+independently of the frozen trace camera. Raster navigation must also never
+depend on ray hardware. Without a native ray profile, raster navigation still
+works and capture reports that it is unavailable.
+
+### Drawing and inspection
+
+- **Frozen camera:** its frustum, and the selected pixel's footprint on its
+  image plane.
+- **Events:** each event is a segment from `Origin + Min·Direction` to the hit
+  distance. A miss is drawn to the scene bounds with a fading end. A visibility
+  ray is drawn as occluded or unoccluded. A raster first hit runs from the frozen
+  camera to the reconstructed surface. Hits get markers; failures use the error
+  color.
+- **Color:** by kind, or by bounce depth. Bounce depth is the event's index among
+  closest queries within its sample.
+- **Filters:** pass, sample, depth range and kind. A scrubber steps through one
+  path in sequence order.
+- **Depth:** segments are depth-tested against the raster scene by default, with
+  an X-ray (`OverlayDepth::Always`) toggle.
+- **Inspector panel:** events grouped by sample, then pass, then sequence.
+  Selecting a row highlights its segment. Selecting a segment shows its fields
+  and the summary radiance. A hit's `SourceId` selects the World object through
+  the existing selection. Truncation, failure and staleness are explicit states.
+
+The first slice uses `OverlayRenderer` composed onto the `RenderPreview` target,
+depth-testing against its retained depth. Because the camera moves, the CPU
+re-expands the clip-space lines each frame.
+
+`OverlayList::MAX_VERTICES` (3072) limits one prepared version to 512 segments.
+One pixel at 16 samples with eight bounces and one visibility ray per bounce is
+about 256 segments, which fits. Larger rectangles need a world-space line pass
+that uploads the segments once per capture and expands them in the vertex
+shader. That pass is a separate change, not a raised overlay limit.
+
+### Ownership
+
+- **Renderer** owns the record layout, capture-buffer allocation within the
+  existing GPU budgets, the variant selection and dispatch, and the bounded
+  readback and host decode. It exposes this as a `RenderGraph` request/poll pair
+  with Pending/Ready/failure outcomes. The request preserves the current drawable
+  generation and never replaces drawable output.
+- **The ray builder and native worker** emit the capture variant from the
+  identical source snapshot.
+- **The editor** owns the freeze state in `RenderGraphPreview`, presentation
+  switching in `PreviewViewport`, the overlay and the inspector panel.
+
+No RHI contract changes. Usage instructions go in the
+[authoring guide](../development/render-graph-authoring.md) when this is
+implemented.
+
+### Acceptance evidence
+
+- On Metal and Vulkan, capture and plain kernels produce bit-identical color and
+  accumulation output for the same inputs.
+- A known scene reports the expected origin, direction, distance and `SourceId`
+  for a camera hit, a miss, an occluded and an unoccluded visibility ray, and an
+  alpha-rejected candidate.
+- Each node form is covered: `RayTracingPipeline` triangle profile, scene
+  profile, scene profile with a visibility buffer, and scene `ComputePipeline`.
+- A multi-pass sequence reports pass indices mapped to node names.
+- When capacity overflows, the dropped count is reported, affected paths are
+  marked truncated, and summaries stay intact.
+- In the editor: navigation keeps the frozen paths; a World edit marks the capture
+  stale; leaving inspection restores the live graph; a device without native rays
+  reports capture as unavailable while raster navigation keeps working.
+- Warning-clean builds, ASan/UBSan, format, tidy and source-policy checks pass.
+
+### Open questions
+
+1. Option A or B for the instrumented variant.
+2. Default sample count, and the largest pixel rectangle for the first slice.
+3. Whether rejected candidates are counts only, or bounded per-candidate records
+   with distance and triangle.
+4. Whether the inspection view uses the built-in raster preview or the project's
+   authored raster fallback package.
+5. Whether to show the frozen graph image on the frozen camera's image plane.
+
 ## Forward scene generations
 
 ForwardLit adds a bounded material-aware raster execution profile using the existing

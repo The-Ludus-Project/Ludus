@@ -14,8 +14,10 @@ namespace ludus::graphics::renderer
 /// progressive, finite-depth reference mode using native ray queries, without denoising.
 /// Use RasterViewport for ordinary interactive World navigation; this mode freezes
 /// scene/camera input, and requires native hardware ray support, compute and retained
-/// reference inputs. Unsupported devices/APIs return Unsupported; no software traversal
-/// or CPU transport fallback is selected.
+/// reference inputs. Native-query artifacts require native ray support. Triangle graph
+/// kernels may instead supply the software compute ABI, which needs ordinary compute
+/// and retained scene inputs but creates no acceleration structures. Unsupported
+/// devices/APIs return Unsupported; no CPU transport fallback is selected.
 struct GpuPreviewOptions final
 {
     /// Setup/retained geometry budget, including BVH construction and packing/upload scratch. Positive.

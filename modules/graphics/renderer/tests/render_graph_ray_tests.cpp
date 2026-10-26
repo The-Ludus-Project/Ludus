@@ -10,6 +10,7 @@
 #include "rg2_restir_di.h"
 #include "rg2_scene_compute.h"
 #include "rg2_scene_ray.h"
+#include "rg2_shared_ray_default.h"
 #include "rg2_simple_compute_ray_tracing_template.h"
 #include "rg2_storage_ray.h"
 #include "rg2_tiled_vbuffer_nee_template.h"
@@ -72,13 +73,13 @@ struct GraphGpuFixture final
     StaticArray<renderer::RenderGraphItem, TABLE_COUNT> Items{};
     StaticArray<renderer::ViewDescription, TABLE_COUNT> Cameras{};
     StaticArray<uint8, PIXEL_BYTES> Pixels{};
-    explicit GraphGpuFixture(bool shouldEnableGpuTiming = false)
+    explicit GraphGpuFixture(bool shouldEnableGpuTiming = false, bool shouldRequireNativeRays = true)
     {
         rhi::DeviceDescription description;
         description.Required.PortableRaster = true;
         description.Storage.ResourcesPerGraph = renderer::VISIBILITY_GRAPH_RESOURCE_CAPACITY;
         description.EnableGpuTiming = shouldEnableGpuTiming;
-        description.Preferred.RayQueries = true;
+        description.Preferred.RayQueries = shouldRequireNativeRays;
         rhi::StartupInfo failure;
         const rhi::DeviceStatus started =
             rhi::CreateDevice({}, { .Width = WIDTH, .Height = HEIGHT }, description, Device, Surface, &failure);
@@ -88,7 +89,8 @@ struct GraphGpuFixture final
         }
         REQUIRE(started == rhi::DeviceStatus::Ready);
         rhi::RayCapabilities capabilities;
-        if (rhi::GetRayCapabilities(Device, capabilities) == rhi::RasterStatus::Unsupported)
+        if (shouldRequireNativeRays == true &&
+            rhi::GetRayCapabilities(Device, capabilities) == rhi::RasterStatus::Unsupported)
         {
             SKIP("Hardware raytracing is unavailable; no software traversal is selected");
         }
@@ -288,14 +290,33 @@ TEST_CASE("Authored ray graph shades World triangles and preserves the drawable 
 TEST_CASE("Scene callbacks preserve material and scene generation through native GPU rendering",
           "[render-graph][gpu][scene-shader]")
 {
-    GraphGpuFixture fixture;
+    bool shouldUseSoftwareTraversal = false;
+    SECTION("native traversal") {}
+    SECTION("software traversal without requested ray features")
+    {
+        shouldUseSoftwareTraversal = true;
+    }
+    GraphGpuFixture fixture(false, shouldUseSoftwareTraversal == false);
     const renderer::RenderGraphPrograms programs =
-        packages::rg2_scene_ray::MakePrograms(shaders::renderer_composite::Vertex(),
-                                              shaders::renderer_composite::Fragment());
+        shouldUseSoftwareTraversal == true
+            ? packages::rg2_shared_ray_default::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                             shaders::renderer_composite::Fragment())
+            : packages::rg2_scene_ray::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                    shaders::renderer_composite::Fragment());
     const core::UniquePtr<renderer::RenderGraphPackage> package =
-        LoadPackage({LUDUS_RG3_SCENE_RAY_DIRECTORY, "rg2_scene_ray.lurgrt"});
+        LoadPackage(shouldUseSoftwareTraversal == true
+                        ? PackageLocation{LUDUS_RG3_SHARED_RAY_DEFAULT_DIRECTORY, "rg2_shared_ray_default.lurgrt"}
+                        : PackageLocation{LUDUS_RG3_SCENE_RAY_DIRECTORY, "rg2_scene_ray.lurgrt"});
     const renderer::RenderGraphPrograms decoded =
         package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    CHECK(renderer::RequiresHardwareRayTracing(package->GetPlan()) == (shouldUseSoftwareTraversal == false));
+    for (const rhi::RasterBinding& binding : decoded.RayCompute.Bindings)
+    {
+        if (shouldUseSoftwareTraversal == true)
+        {
+            CHECK(binding.Kind != rhi::RasterBindingKind::RayScene);
+        }
+    }
     CHECK(programs.HasSceneShaderInterface == true);
     CHECK(decoded.HasSceneShaderInterface == true);
     REQUIRE(package->GetPlan().Passes[0].Program == format::Technique::RayTracing);
@@ -2383,12 +2404,13 @@ TEST_CASE("The compute ray-tracing template matches a single-pass direct-lightin
     CHECK(pixels[right + 1] > pixels[right]);
     constexpr float32 MINIMUM_MEAN_RADIANCE = .01F;
     CHECK(mean.X > MINIMUM_MEAN_RADIANCE);
-    // Both estimate emission plus one shadowed light sample per pixel and frame. The reference draws
-    // jitter, light selection and light shape from its automatic stream in the order of the
-    // template's explicit ranges ([0, 2), then [2, 6)), so each sample sees the same random values:
-    // on Metal the two images are byte-identical. The tolerances allow other backends to contract
-    // floating-point operations differently in the two kernels. A 2% mean difference also exceeds
-    // the Monte Carlo error of 64 samples per pixel over this image.
+    // Both estimate emission plus one light sample and one BSDF sample per pixel and frame, combined
+    // with the power heuristic. The reference draws jitter, light selection, light shape and BSDF
+    // direction from its automatic stream in the order of the template's explicit ranges ([0, 2),
+    // then [2, 9)), so each sample sees the same random values: on Metal the two images are
+    // byte-identical. The tolerances allow other backends to contract floating-point operations
+    // differently in the two kernels. A 2% mean difference also exceeds the Monte Carlo error of 64
+    // samples per pixel over this image.
     constexpr float32 RELATIVE_MEAN_TOLERANCE = .02F;
     CHECK(math::Abs(mean.X - referenceMean.X) < RELATIVE_MEAN_TOLERANCE * referenceMean.X);
     CHECK(math::Abs(mean.Y - referenceMean.Y) < RELATIVE_MEAN_TOLERANCE * referenceMean.Y);
@@ -2406,7 +2428,7 @@ TEST_CASE("The compute ray-tracing template matches a single-pass direct-lightin
         }
         differingPixels += isDifferent == true ? 1 : 0;
     }
-    // At most one pixel in a thousand, for shadow rays that graze an edge differently.
+    // At most one pixel in a thousand, for shadow or BSDF rays that graze an edge differently.
     constexpr usize DIFFERING_PIXEL_DIVISOR = 1000;
     CHECK(differingPixels <= static_cast<usize>(WIDTH) * HEIGHT / DIFFERING_PIXEL_DIVISOR);
 
@@ -2427,6 +2449,111 @@ TEST_CASE("The compute ray-tracing template matches a single-pass direct-lightin
         CHECK(CountFailurePixels(pixels) == 0);
         CHECK(ComputeMeanRadiance(pixels).X > MINIMUM_MEAN_RADIANCE);
     }
+}
+
+TEST_CASE("Every MIS heuristic of the compute ray-tracing template estimates the light-sampling integral",
+          "[render-graph][gpu][compute-ray-tracing][template][mis]")
+{
+    // Veach and Guibas's multi-sample estimator is unbiased whenever the strategy weights sum to one.
+    // Each heuristic variant of the template (the same sources with another MIS_HEURISTIC setting)
+    // must therefore converge to what the light-sampling-only reference estimates for the same room.
+    GraphGpuFixture fixture;
+    CornellBox room;
+    // Glossy metal on the white surfaces and a grey sky through the open front. For highlights of the
+    // ceiling light and for the sky, BSDF sampling has the higher density, so the BSDF strategy
+    // carries much of the estimate instead of a negligible share, as it does in the diffuse room.
+    constexpr float32 GLOSSY_ROUGHNESS = .3F;
+    constexpr float32 SKY_RADIANCE = .5F;
+    room.Materials[CORNELL_WHITE].Metallic = 1;
+    room.Materials[CORNELL_WHITE].Roughness = GLOSSY_ROUGHNESS;
+    room.Inputs.Environment = {SKY_RADIANCE, SKY_RADIANCE, SKY_RADIANCE};
+    constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
+    constexpr usize FRAME_COUNT = 256;
+    const auto render = [&fixture, &room](const PackageLocation& location, Array<uint8>& outPixels) {
+        const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(location);
+        const renderer::RenderGraphPlan plan = package->GetPlan();
+        const renderer::RenderGraphPrograms programs =
+            package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+        uint32 output = 0;
+        for (uint32 resource = 0; resource < plan.Resources.GetSize(); ++resource)
+        {
+            output = plan.Resources[resource].IsExported == 1 ? resource : output;
+        }
+        renderer::RenderGraph graph;
+        const auto wait = [&graph](rhi::RasterStatus initial) {
+            rhi::RasterStatus status = initial;
+            const uint64 beginning = time::NowTicks();
+            while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+            {
+                status = graph.Poll();
+            }
+            REQUIRE(status == rhi::RasterStatus::Ready);
+        };
+        wait(graph.Initialize(fixture.Device, plan, programs, nullptr, WIDTH, HEIGHT));
+        renderer::RenderGraphReport report;
+        wait(graph.Update({room.Meshes.GetData(), room.Meshes.GetSize()},
+                          {room.Items.GetData(), room.Items.GetSize()},
+                          {room.Cameras.GetData(), room.Cameras.GetSize()},
+                          1,
+                          renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                          report,
+                          &room.Inputs,
+                          1));
+        for (usize frame = 0; frame < FRAME_COUNT; ++frame)
+        {
+            RenderExport(graph, fixture, output, {}, outPixels);
+            REQUIRE(CountFailurePixels(outPixels) == 0);
+        }
+        return ComputeMeanRadiance(outPixels);
+    };
+    Array<uint8> lightSamplingPixels;
+    const math::Vector3 lightSampling =
+        render({LUDUS_RG3_DIRECT_LIGHTING_LIGHT_SAMPLING_DIRECTORY, "rg2_direct_lighting_light_sampling.lurgrt"},
+               lightSamplingPixels);
+    PackageLocation heuristic{LUDUS_RG3_COMPUTE_RAY_TRACING_TEMPLATE_DIRECTORY,
+                              "rg2_compute_ray_tracing_template.lurgrt"};
+    SECTION("power (default)") {}
+    SECTION("balance")
+    {
+        heuristic = {LUDUS_RG3_COMPUTE_RAY_TRACING_MIS_BALANCE_DIRECTORY, "rg2_compute_ray_tracing_mis_balance.lurgrt"};
+    }
+    SECTION("cutoff")
+    {
+        heuristic = {LUDUS_RG3_COMPUTE_RAY_TRACING_MIS_CUTOFF_DIRECTORY, "rg2_compute_ray_tracing_mis_cutoff.lurgrt"};
+    }
+    SECTION("maximum")
+    {
+        heuristic = {LUDUS_RG3_COMPUTE_RAY_TRACING_MIS_MAXIMUM_DIRECTORY, "rg2_compute_ray_tracing_mis_maximum.lurgrt"};
+    }
+    Array<uint8> pixels;
+    const math::Vector3 mean = render(heuristic, pixels);
+    // Both share the light strategy's random values, so the images differ only through the weights
+    // and the BSDF strategy. A difference in many pixels shows that the BSDF strategy contributes.
+    constexpr uint8 CHANNEL_TOLERANCE = 2;
+    usize differingPixels = 0;
+    for (usize address = 0; address < pixels.GetSize(); address += 4)
+    {
+        bool isDifferent = false;
+        for (usize channel = 0; channel < 3; ++channel)
+        {
+            const uint8 high = math::Max(pixels[address + channel], lightSamplingPixels[address + channel]);
+            const uint8 low = math::Min(pixels[address + channel], lightSamplingPixels[address + channel]);
+            isDifferent = isDifferent == true || high - low > CHANNEL_TOLERANCE;
+        }
+        differingPixels += isDifferent == true ? 1 : 0;
+    }
+    INFO("MIS mean=" << mean.X << ',' << mean.Y << ',' << mean.Z << ", light sampling mean=" << lightSampling.X << ','
+                     << lightSampling.Y << ',' << lightSampling.Z << ", differing pixels=" << differingPixels);
+    constexpr usize DIFFERING_PIXEL_DIVISOR = 10;
+    CHECK(differingPixels > static_cast<usize>(WIDTH) * HEIGHT / DIFFERING_PIXEL_DIVISOR);
+    constexpr float32 MINIMUM_MEAN_RADIANCE = .01F;
+    REQUIRE(lightSampling.X > MINIMUM_MEAN_RADIANCE);
+    // Estimates of one integral, compared after decoding the tone-mapped running means. With 256
+    // samples per pixel the image-mean Monte Carlo difference stays well below 2%.
+    constexpr float32 RELATIVE_MEAN_TOLERANCE = .02F;
+    CHECK(math::Abs(mean.X - lightSampling.X) < RELATIVE_MEAN_TOLERANCE * lightSampling.X);
+    CHECK(math::Abs(mean.Y - lightSampling.Y) < RELATIVE_MEAN_TOLERANCE * lightSampling.Y);
+    CHECK(math::Abs(mean.Z - lightSampling.Z) < RELATIVE_MEAN_TOLERANCE * lightSampling.Z);
 }
 
 TEST_CASE("ToneMap applies exposure after linear accumulation and can be bypassed",

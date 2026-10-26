@@ -409,6 +409,7 @@ RenderGraphOptionsEditor::RenderGraphOptionsEditor(const QJsonArray& declaration
     QVBoxLayout* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     QFormLayout* choices = new QFormLayout;
+    choices->setRowWrapPolicy(QFormLayout::WrapLongRows);
     for (const QJsonValueConstRef entry : declarations)
     {
         const QJsonObject option = entry.toObject();

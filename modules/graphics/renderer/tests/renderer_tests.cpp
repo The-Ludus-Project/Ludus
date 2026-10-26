@@ -10,6 +10,7 @@
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/overlays.hpp>
+#include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/renderer/viewport.hpp>
 #include <ludus/graphics/renderer/views.hpp>
@@ -1891,7 +1892,8 @@ TEST_CASE("Reference surface admission rejects retained narrow-channel texels", 
     REQUIRE(session.Renderer.Release(program) == rhi::RasterStatus::Ready);
 }
 
-TEST_CASE("Compute without native ray support cannot activate GPU tracing", "[renderer][gpu-preview]")
+TEST_CASE("Native query artifacts require ray support while software compute artifacts do not",
+          "[renderer][gpu-preview]")
 {
     Session session;
     rr::Renderer renderer;
@@ -1899,9 +1901,28 @@ TEST_CASE("Compute without native ray support cannot activate GPU tracing", "[re
     rhi::RayCapabilities capabilities;
     CHECK(rhi::GetRayCapabilities(session.Device, capabilities) == rhi::RasterStatus::Unsupported);
     CHECK(capabilities.InlineQueries == false);
-    CHECK(renderer.EnableGpuPreview({}, {}, {}, {usize{1024} * 1024, usize{1024} * 1024, 1}) ==
+    rhi::RasterShaderDescription compute;
+    rr::SetRenderGraphRayInterface(compute, rhi::ShaderStage::Compute);
+    CHECK(renderer.EnableGpuPreview(compute, {}, {}, {usize{1024} * 1024, usize{1024} * 1024, 1}) ==
           rhi::RasterStatus::Unsupported);
     CHECK(renderer.PollGpuPreview() == rhi::RasterStatus::NotReady);
+    rhi::RasterShaderDescription vertex;
+    rhi::RasterShaderDescription fragment;
+    rr::SetRenderGraphRayInterface(compute, rhi::ShaderStage::Compute, false, false, false);
+    rr::SetRenderGraphRayInterface(vertex, rhi::ShaderStage::Vertex, false, false, false);
+    rr::SetRenderGraphRayInterface(fragment, rhi::ShaderStage::Fragment, false, false, false);
+    compute.Artifact.Wgsl = "software compute fixture";
+    compute.Artifact.WgslEntry = "main";
+    vertex.Artifact.Wgsl = "software image vertex fixture";
+    vertex.Artifact.WgslEntry = "main";
+    fragment.Artifact.Wgsl = "software image fragment fixture";
+    fragment.Artifact.WgslEntry = "main";
+    REQUIRE(renderer.EnableGpuPreview(compute, vertex, fragment, {usize{1024} * 1024, usize{1024} * 1024, 1}) ==
+            rhi::RasterStatus::Ready);
+    for (const rhi::RasterBinding& binding : compute.Bindings)
+    {
+        CHECK(binding.Kind != rhi::RasterBindingKind::RayScene);
+    }
     rr::Snapshot snapshot;
     CHECK(renderer.CreateSnapshot(nullptr, 0, snapshot) == rhi::RasterStatus::Ready);
     CHECK(renderer.Release(snapshot) == rhi::RasterStatus::Ready);
@@ -2385,4 +2406,84 @@ TEST_CASE("Pending and failed grid preparation preserve the previous drawable vi
     REQUIRE(session.Renderer.Release(candidate) == rhi::RasterStatus::Ready);
     rhi::SubmissionToken completion;
     REQUIRE(session.Renderer.Submit(previous, session.Surface, completion) == rhi::RasterStatus::Ready);
+}
+
+TEST_CASE("RT1 authored white vertex colors remain in the BSDF domain at interior barycentrics",
+          "[renderer][rt1][authored-color]")
+{
+    namespace reference = rr::internal;
+    reference::ReferenceJob job;
+    reference::ReferenceSurfaceData surface;
+    surface.Bsdf.BaseColor = {1, 1, 1};
+    surface.AreAuthoredInputsEnabled = true;
+    reference::ReferenceTriangle triangle;
+    triangle.Positions[0] = {0, 0, 0};
+    triangle.Positions[1] = {1, 0, 0};
+    triangle.Positions[2] = {0, 1, 0};
+    triangle.GeometricNormal = {0, 0, 1};
+    triangle.Area = 0.5F;
+    for (math::Vector3& normalWorld : triangle.Normals)
+    {
+        normalWorld = triangle.GeometricNormal;
+    }
+    for (math::Vector4& color : triangle.Colors)
+    {
+        color = {1, 1, 1, 1};
+    }
+    REQUIRE(job.Scene.Triangles.TryAdd(triangle) == true);
+    reference::ReferenceInstance instance;
+    instance.Surface = &surface;
+    instance.TriangleCount = 1;
+    REQUIRE(job.Scene.Instances.TryAdd(instance) == true);
+    job.Scene.InstanceCount = 1;
+    REQUIRE(math::TryMakeRandomKey(1, reference::REFERENCE_RANDOM_DOMAIN, job.Key) == math::MathStatus::Success);
+    for (const bool hasDirectLight : {false, true})
+    {
+        job.Description.LightCount = hasDirectLight == true ? 1 : 0;
+        job.Lights[0].Kind = rr::LightKind::Directional;
+        job.Lights[0].Direction = {0, 0, -1};
+        surface.Bsdf.BaseColor = {1, 1, 1};
+        reference::ReferencePath path;
+        path.Pixel = 23;
+        path.Sample = 17;
+        path.Ray = reference::ReferenceRay({0, 0, 1}, {0, 0, -1}, 2);
+        // The naive three-term interpolation of constant white rounds one ULP above one here.
+        // These coordinates were also observed at a failing Staircase2 hit.
+        rhi::RayResult hit;
+        hit.Hit = 1;
+        hit.Distance = 1;
+        hit.U = 0.1534976065158844F;
+        hit.V = 0.22540529072284698F;
+        rr::ReferenceCaptureInfo information;
+        CHECK(reference::PrepareReferenceVertex(job, information, path, hit) == rhi::RasterStatus::Ready);
+        CHECK(information.InvalidContributions == 0);
+        CHECK(information.Failure == rr::ReferenceFailure::None);
+        CHECK(math::IsFinite(path.Throughput) == true);
+        // A genuinely invalid BSDF still fails, with its exact sample location retained.
+        surface.Bsdf.BaseColor = {2, 1, 1};
+        path.Depth = 0;
+        information = {};
+        CHECK(reference::PrepareReferenceVertex(job, information, path, hit) == rhi::RasterStatus::Failed);
+        CHECK(information.InvalidContributions == 1);
+        CHECK(information.Failure == (hasDirectLight == true ? rr::ReferenceFailure::InvalidBsdfEvaluation
+                                                             : rr::ReferenceFailure::InvalidBsdfSample));
+        CHECK(information.FailurePixel == path.Pixel);
+        CHECK(information.FailureSample == path.Sample);
+        CHECK(information.FailureDepth == 0);
+    }
+}
+
+TEST_CASE("Reference vertex color interpolation preserves invalid arithmetic for validation",
+          "[renderer][rt1][authored-color]")
+{
+    rr::internal::ReferenceTriangle triangle;
+    for (math::Vector4& color : triangle.Colors)
+    {
+        color = {1, 1, 1, 1};
+    }
+    CHECK(rr::internal::InterpolateReferenceColor(triangle, .1534976065158844F, .22540529072284698F) ==
+          math::Vector4{1, 1, 1, 1});
+    triangle.Colors[0].X = std::numeric_limits<float32>::quiet_NaN();
+    CHECK(math::IsFinite(rr::internal::InterpolateReferenceColor(triangle, .1534976065158844F, .22540529072284698F)) ==
+          false);
 }

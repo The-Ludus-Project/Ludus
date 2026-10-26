@@ -184,6 +184,7 @@ void MainWindow::renderActiveDocument()
     {
         // The Renderer document keeps its inspector current with its own selection.
         mProperties->setCurrentIndex(RENDER_GRAPH_PROPERTIES_PAGE);
+        collapseResolvedGraphErrors();
     }
     else
     {
@@ -270,6 +271,22 @@ void MainWindow::renderGraphErrors()
                                    ? QList<ErrorListEntry>{}
                                    : MakeRenderGraphErrorEntries(result));
     renderGraphCommands();
+    collapseResolvedGraphErrors();
+}
+
+void MainWindow::collapseResolvedGraphErrors()
+{
+    if (mDocuments->GetActiveDocumentOrNull() != Renderer_ || mErrorList->GetCount(ErrorListSeverity::Error) != 0 ||
+        mErrorList->GetCount(ErrorListSeverity::Warning) != 0 || mErrorListDock->visibleRegion().isEmpty() == true)
+    {
+        return;
+    }
+    // Only collapse the bottom tab group when Error List is the visible tab. An explicitly
+    // selected Output, Timing or Profiling view remains open; new problems reveal Error List.
+    for (QDockWidget* dock : {mErrorListDock, OutputDock_, TimingDock_, mProfilingDock})
+    {
+        dock->hide();
+    }
 }
 
 void MainWindow::revealErrorList()

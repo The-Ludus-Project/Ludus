@@ -44,7 +44,7 @@ Status GpuPreviewCameraUpdate::Prepare(rhi::DeviceHandle device,
                                        BorrowedView<const rhi::RasterBindingResource> bindings) noexcept
 {
     if (camera.Depth != DepthConvention::Conventional || camera.InfiniteFar == true || bindings.IsValid() == false ||
-        bindings.GetSize() < LUDUS_GPU_PREVIEW_BINDING_COUNT ||
+        bindings.GetSize() < LUDUS_GPU_PREVIEW_BINDING_COUNT - 1 ||
         bindings.GetSize() > LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + content::render_graph_format::MAX_STORAGE_BUFFERS)
     {
         return Status::InvalidDescription;

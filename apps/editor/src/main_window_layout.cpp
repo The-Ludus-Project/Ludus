@@ -637,12 +637,21 @@ void MainWindow::setViewportFocused(bool isFocused)
         }
         // The viewport widgets stay where they are; only their neighbours hide, so the
         // native surface resizes instead of being recreated.
-        World_->SetChromeVisible(false);
-        static_cast<void>(mDocuments->OpenDocument(World_));
+        if (mFocusRestoreDocumentOrNull == Renderer_)
+        {
+            Renderer_->SetChromeVisible(false);
+            Renderer_->GetCanvas().setFocus(Qt::ShortcutFocusReason);
+        }
+        else
+        {
+            World_->SetChromeVisible(false);
+            static_cast<void>(mDocuments->OpenDocument(World_));
+        }
         return;
     }
     mIsViewportFocused = false;
     World_->SetChromeVisible(true);
+    Renderer_->SetChromeVisible(true);
     if (restoreState(mFocusRestoreState, LAYOUT_VERSION) == false)
     {
         LUDUS_LOG_TEXT(LOG_EDITOR_LAYOUT, Warning, "Could not restore the layout from before Focus Viewport.");

@@ -117,10 +117,13 @@ struct RenderGraphPrograms final
 /// @param stage Compute for the linked ray kernel, Vertex/Fragment for the image recipe.
 /// @param hasVisibilityBuffer Adds paired unfiltered visibility/depth compute texture inputs.
 /// @param hasPersistentBuffers Use the extended two-buffer compute ABI; image stages are unchanged.
+/// @param hasNativeRayQueries Include the acceleration-structure binding. False uses only ordinary
+/// compute buffers/textures; the artifact must contain software traversal and no native ray instructions.
 void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription,
                                 rhi::ShaderStage stage,
                                 bool hasPersistentBuffers = false,
-                                bool hasVisibilityBuffer = false) noexcept;
+                                bool hasVisibilityBuffer = false,
+                                bool hasNativeRayQueries = true) noexcept;
 /// Attach the immutable forward recipe ABI to one cooked support stage. Artifact bytes
 /// remain untouched; shader reflection and Renderer prewarming independently validate it.
 /// @param inoutDescription Receives exact inputs, bindings and uniform member metadata.

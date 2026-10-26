@@ -426,10 +426,11 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   open it, and **View** reopens any of its tool windows. Reset never changes
   drafts, saved files or a Play session.
 - **View → Focus Viewport** (Shift+Alt+Enter; Shift+Option+Return on macOS)
-  hides every tool window, the toolbars, the setup notice and the World's own
-  controls (file commands, render controls, hierarchy and status line) so the
-  World viewport fills the window; it switches to the World document if another
-  one is active. Run it again to restore the previous tool-window arrangement,
+  hides every tool window, the toolbars and the setup notice. When a render graph
+  is active, it focuses that graph and hides its navigation, source tree and
+  status strip. Otherwise it focuses the World viewport and hides the World's
+  controls (file commands, render controls, hierarchy and status line), switching
+  to the World document when needed. Run it again to restore the previous tool-window arrangement,
   sizes, toolbars and active document exactly. The viewport is never moved or
   recreated, only resized. Closing the editor while focused saves the arrangement
   Focus Viewport returns to, and Reset Window Layout also leaves it. New errors
@@ -1471,11 +1472,14 @@ geometry. They have no area to hit or emit from.
 | Traversal | Use |
 | --- | --- |
 | CPU oracle | Default. Traces a CPU BVH on every platform and admits masked materials. |
+| GPU compute | Runs the same path tracer in compute shaders: BVH traversal, intersection, light and BSDF sampling, shading and accumulation. Needs only GPU compute support, not ray tracing hardware, and admits masked materials. Its image matches the CPU oracle's sample for sample within float32 rounding. |
 | Native ray queries | Uses the GPU's ray tracing hardware when the device and build support it, otherwise the option is disabled. Masked materials are rejected. Dense scenes have an open precision qualification item. |
 
-Neither traversal falls back to the other. Work runs on the editor's GUI thread
+No traversal falls back to another. Work runs on the editor's GUI thread
 in short slices, so large images at high sample counts take minutes with the CPU
-oracle. The editor stays responsive while it runs. A capture needs a lit scene
+oracle. GPU compute advances the whole image by one sample per dispatch and copies
+its sums back after the first samples, every 16th sample and at the end, so the
+displayed image updates in those steps. The editor stays responsive while it runs. A capture needs a lit scene
 (an authored light or an emissive surface). Content outside the reference
 profile fails with an explanation and keeps any samples already taken. Examples
 are a shading normal facing away from its triangle, or a texture format the
@@ -1502,7 +1506,14 @@ summary that updates as samples accumulate. The difference image is red where
 the raster is brighter than the reference and blue where it is darker. It is
 black where they agree, saturates at 0.25 display units, and is grey where no
 reference sample exists yet. The statistics cover pixels with at least one
-reference sample:
+reference sample. The summary labels an unfinished capture **INCOMPLETE** and a
+failed capture **FAILED / INCOMPLETE**. It reports sampled pixels out of the full
+image, percentage coverage, and the minimum achieved samples across the whole
+image against the requested count. A full first pass is still incomplete until
+every pixel reaches the requested count. Metrics from either incomplete state
+are explicitly **partial diagnostic metrics**, not a completed reference
+comparison. A failure preserves previously committed samples for inspection;
+unsampled pixels do not enter the statistics.
 
 | Statistic | Meaning |
 | --- | --- |
@@ -1525,7 +1536,10 @@ graph, is captured after 64 frames, and the summary says so.
 **Save…** also writes `<name>.raster.png` (the graph output as displayed),
 `<name>.difference.png`, and `<name>.comparison.json`. The JSON records the
 metrics, the reference settings, the graph package, output and encoding, and
-the frames rendered.
+the frames rendered. Both the summary and JSON preserve reference completion,
+failure, coverage and sample-count information; a failed export also records the
+capture error. Completion describes reaching the requested sample count, not a
+claim that Monte Carlo noise has converged.
 
 ## S4 scene authoring
 

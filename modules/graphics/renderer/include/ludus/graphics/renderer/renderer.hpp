@@ -357,6 +357,19 @@ public:
     /// Failure preserves disabled state. Owner-thread/between-frames only.
     [[nodiscard]] rhi::RasterStatus EnableReferenceRendering(const rhi::ShaderDescription&,
                                                              const ReferenceRenderingOptions&) noexcept;
+    /// Opt in to the GPU-compute RT1 reference before any meshes or material versions
+    /// are live. Retains the same CPU geometry/material inputs as CpuOracle; captures then
+    /// traverse the median BVH and integrate transport on the device, without native rays.
+    /// @param trace Cooked `renderer_reference` compute kernel from the installed helper.
+    /// @param reduce Cooked `renderer_reference_reduce` kernel from the same source.
+    /// @param options Traversal must be GpuCompute with positive CPU and GPU byte budgets.
+    /// @return Ready once shaders are accepted (pipelines finish while captures set up);
+    /// Unsupported without negotiated compute; InvalidDescription for another traversal
+    /// or reflected bindings that differ from the frozen kernel ABI. Failure preserves
+    /// disabled state. Owner-thread/between-frames only.
+    [[nodiscard]] rhi::RasterStatus EnableReferenceRendering(const rhi::RasterShaderDescription& trace,
+                                                             const rhi::RasterShaderDescription& reduce,
+                                                             const ReferenceRenderingOptions& options) noexcept;
     /// Cancel reference jobs, detach their accepted native work and drop retained
     /// CPU mesh/material copies. Raster versions remain usable. Re-enabling requires
     /// reauthoring meshes/materials after all existing incarnations are released.
@@ -379,6 +392,17 @@ public:
     /// the offending pixel/depth. Owner-thread/between-frames only; no raster frame
     /// submission, denoising, silent fallback or synchronous GPU readback occurs.
     [[nodiscard]] rhi::RasterStatus AdvanceReferenceCapture(ReferenceCapture) noexcept;
+    /// Advance one GPU-compute stage without blocking: poll setup, submit one sample for
+    /// every pixel as compute work in a frame of surface, or poll its status/pixel readback.
+    /// CpuOracle/NativeQueries captures ignore surface and behave as the overload above.
+    /// @param handle Live capture of this renderer.
+    /// @param surface Device surface whose frame carries dispatches; a null surface
+    /// returns InvalidDescription when a GpuCompute dispatch is due, without failing it.
+    /// @return Pending while setup, dispatches or readbacks remain; Ready at the target
+    /// once its committed sums are read back. A pixel with an invalid contribution keeps
+    /// its committed sums; the capture then fails after reading back every pixel.
+    [[nodiscard]] rhi::RasterStatus AdvanceReferenceCapture(ReferenceCapture handle,
+                                                            rhi::SurfaceHandle surface) noexcept;
     /// Update the frozen integral transactionally. Snapshot, camera, image extent,
     /// lights, mip, seed or integrator changes reset accumulation; a TargetSamples
     /// change alone continues it. Failure preserves the previous image/job. The
@@ -514,6 +538,8 @@ public:
     /// Copy exactly Width*Height raw unexposed means/AOVs and committed counts.
     /// Incomplete images expose zero/unequal counts; native pending work never
     /// enters the copied data. Failure preserves output. No allocation or GPU wait.
+    /// GpuCompute copies its latest read-back sums, which may trail Info.MinimumSamples
+    /// between periodic readbacks; a Ready capture's pixels are fully read back.
     [[nodiscard]] rhi::RasterStatus
     CopyReferencePixels(ReferenceCapture, ReferencePixel* output, ludus::foundation::usize count) const noexcept;
     /// Encode the versioned LUHDR01 little-endian FP32 RGB/count capture and frozen

@@ -464,6 +464,8 @@ def _locate(error, library, instances=None):
 
 def _lower_pipeline(node, where):
     if node['kind'] == 'ComputePipeline':
+        if pipeline.is_scene_compute(node) and any(shader['stage'] in ray.STAGES for shader in node['shaders']):
+            return compute.lower(node, where, sys.modules[__name__])
         _require(any(shader['stage'] == 'compute' for shader in node['shaders']),
                  'IncompletePipeline', where,
                  'ComputePipeline is missing its compute shader. Add that stage in Shaders and assign a build-manifest program ID.',
@@ -1267,7 +1269,7 @@ def dump_plan(plan):
         if entry['kind'] == 'RayTracing':
             lines.append(f"    launch: {entry['dimensions']}; color target: {entry['attachments']['color']['resource']}")
             if 'source_kind' in entry:
-                lines.append(f"    source: {entry['source_kind']} (scene compute kernel in the ray sequence)")
+                lines.append(f"    source: {entry['source_kind']} (scene compute pass in the ray sequence)")
         for name, use in entry.get('buffers', {}).items():
             lines.append(f"    {name}: {use['resource']}@{use['input_version']} -> @{use['output_version']} ({use['access']})")
         for aspect, attachment in entry.get("attachments", {}).items():

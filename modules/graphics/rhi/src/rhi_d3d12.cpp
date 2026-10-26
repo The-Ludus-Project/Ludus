@@ -687,13 +687,27 @@ ID3D12Device* GetDeviceOrNull() noexcept
 {
     return gDevice.Get();
 }
+ID3D12CommandQueue* GetQueueOrNull() noexcept
+{
+    return gQueue.Get();
+}
 ID3D12Fence* GetFenceOrNull() noexcept
 {
     return gFence.Get();
 }
 uint64 GetCompletedFence() noexcept
 {
-    return gFence.Get() == nullptr ? 0 : gFence->GetCompletedValue();
+    if (gFence.Get() == nullptr)
+    {
+        return 0;
+    }
+    const uint64 completed = gFence->GetCompletedValue();
+    if (completed == ~uint64{0})
+    {
+        static_cast<void>(FailFrame(StartupError::DeviceLost));
+        return 0;
+    }
+    return completed;
 }
 uint64 GetLastFence() noexcept
 {
@@ -711,7 +725,14 @@ bool SubmitCreation(ID3D12CommandList* commands, uint64& outFence) noexcept
     // A failed signal cannot prove completion. Retain the creation backing until
     // shutdown instead of reclaiming it through the failed publication path.
     outFence = ~uint64{0};
-    return SignalFence(outFence);
+    if (SignalFence(outFence) == false)
+    {
+        // Work may have executed without a completion identity. Stop the session
+        // before another operation can reuse a possibly modified resource.
+        static_cast<void>(FailFrame(StartupError::DeviceLost));
+        return false;
+    }
+    return true;
 }
 } // namespace d3d12
 
@@ -850,10 +871,6 @@ void Shutdown() noexcept
 }
 FrameStatus SetTarget(const FrameTarget& target) noexcept
 {
-    if (target.ShouldPresentToSurface == false)
-    {
-        return FrameStatus::Unsupported;
-    }
     if (isRecording == true)
     {
         return FrameStatus::InvalidState;
@@ -883,7 +900,8 @@ FrameStatus Begin() noexcept
         return FailFrame("device", gDevice->GetDeviceRemovedReason());
     }
     if (gTarget.Width == 0 || gTarget.Height == 0 ||
-        (gWindowOrNull != nullptr && (IsIconic(gWindowOrNull) != FALSE || IsWindowVisible(gWindowOrNull) == FALSE)))
+        (gTarget.ShouldPresentToSurface == true && gWindowOrNull != nullptr &&
+         (IsIconic(gWindowOrNull) != FALSE || IsWindowVisible(gWindowOrNull) == FALSE)))
     {
         return FrameStatus::Skipped;
     }
@@ -894,7 +912,7 @@ FrameStatus Begin() noexcept
     }
     gSubmitted[gSlot] = 0;
     HRESULT result = S_OK;
-    if (gSwapChain.Get() != nullptr)
+    if (gSwapChain.Get() != nullptr && gTarget.ShouldPresentToSurface == true)
     {
         result = ResizeSwapChain(gTarget.Width, gTarget.Height);
         if (FAILED(result) == true)
@@ -965,7 +983,7 @@ FrameStatus End() noexcept
     }
     ID3D12CommandList* const lists[] = {gCommands.Get()};
     gQueue->ExecuteCommandLists(1, lists);
-    if (gSwapChain.Get() != nullptr)
+    if (gSwapChain.Get() != nullptr && gTarget.ShouldPresentToSurface == true)
     {
         // Synchronize to vertical blank; DXGI_STATUS_OCCLUDED is a success code.
         result = gSwapChain->Present(1, 0);

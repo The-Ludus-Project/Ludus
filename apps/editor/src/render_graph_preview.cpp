@@ -573,13 +573,16 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
     }
     QString selectedPath = runtimePackagePath;
     QString rendererStatus = QStringLiteral("Raster renderer.");
-    if (renderer::RequiresHardwareRayTracing(package->GetPlan()) == true)
+    if (renderer::UsesRayTracing(package->GetPlan()) == true)
     {
-        renderer::RenderGraphRenderer selected = renderer::RenderGraphRenderer::HardwareRayTracing;
+        const bool hasNativeRayQueries = renderer::RequiresHardwareRayTracing(package->GetPlan());
+        renderer::RenderGraphRenderer selected = hasNativeRayQueries == true
+                                                     ? renderer::RenderGraphRenderer::HardwareRayTracing
+                                                     : renderer::RenderGraphRenderer::ComputeRayTracing;
         const renderer::RenderGraphPreference preference = state.ShouldForceRaster == true
                                                                ? renderer::RenderGraphPreference::ForceRaster
                                                                : renderer::RenderGraphPreference::Automatic;
-        if (state.IsAttached == true)
+        if (state.IsAttached == true && hasNativeRayQueries == true)
         {
             const rhi::RasterStatus status = renderer::SelectRenderGraphRenderer(state.Device, preference, selected);
             if (status != rhi::RasterStatus::Ready)
@@ -601,7 +604,7 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
             {
                 return loaded;
             }
-            if (renderer::RequiresHardwareRayTracing(package->GetPlan()) == true)
+            if (renderer::UsesRayTracing(package->GetPlan()) == true)
             {
                 setStatus(QStringLiteral("The raster fallback contains a raytracing pass; it was rejected."));
                 return RenderGraphPreviewLoad::Unsupported;
@@ -613,7 +616,9 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
         }
         else
         {
-            rendererStatus = QStringLiteral("Hardware raytracing renderer.");
+            rendererStatus = hasNativeRayQueries == true
+                                 ? QStringLiteral("Hardware raytracing renderer.")
+                                 : QStringLiteral("Compute raytracing renderer (software triangle traversal).");
         }
     }
     // Denoising only filters the image. Without the optional denoiser, preview the graph as if its

@@ -1219,12 +1219,14 @@ in each affected path. Record backend/device/toolchain, profile, sample counts
 and comparison tolerances with the evidence. GPU capability rejection remains
 explicit; selecting the CPU oracle is a caller choice, not a silent fallback.
 
-This is the acceptance requirement for new work. The implemented RT1 capture API
-below currently uses CPU transport with CPU or native-query traversal; the
-separate [GPU preview](#gpu-resident-progressive-preview) needs matched profile,
-raw-output and production-path evidence before it can satisfy the GPU reference
-requirement for a feature. Existing coverage gaps remain open work, not evidence
-that both implementations are qualified.
+This is the acceptance requirement for new work. RT1 pairs the `CpuOracle`
+traversal with the [GPU-compute reference](#gpu-compute-reference), which runs
+the same transport, shading and accumulation in compute kernels. `NativeQueries`
+remains CPU transport with native traversal. The separate
+[GPU preview](#gpu-resident-progressive-preview) still needs matched profile,
+raw-output and production-path evidence before it can satisfy this requirement.
+Existing coverage gaps remain open work, not evidence that both implementations
+are qualified: GPU-compute pixel parity is so far qualified only on Apple M5 Metal.
 
 ## L6 implemented scope: RT0 and RT1
 
@@ -1264,9 +1266,10 @@ Build/read failures and invalid/stale handles are explicit statuses.
 After renderer initialization, call `EnableReferenceRendering` **before creating
 meshes/material versions**, with positive CPU budget and tile size (1–2048).
 Select `NativeQueries` explicitly with a cooked query program and ray-byte budget,
-or `CpuOracle` explicitly. The CPU oracle builds a balanced world-space BVH and
-uses double-precision permuted/sheared triangle edge tests. Neither mode performs
-implicit fallback. Ordinary raster use retains no new CPU geometry or texture bytes.
+`CpuOracle` explicitly, or `GpuCompute` with its two compute kernels and a GPU
+byte budget (see [GPU-compute reference](#gpu-compute-reference)). The CPU oracle
+builds a balanced world-space BVH and uses double-precision permuted/sheared
+triangle edge tests. No mode performs implicit fallback. Ordinary raster use retains no new CPU geometry or texture bytes.
 
 Create lit L4/L5 material versions and meshes, then an immutable snapshot. Color
 textures require `TextureDescription::RetainCpuContent` at upload; RGBA8 unorm/sRGB
@@ -1278,7 +1281,7 @@ bakes, AO, shadow atlases and prefiltered IBL do not enter reference transport.
 `BeginReferenceCapture` copies camera/light/integrator settings and retains the
 snapshot. `AdvanceReferenceCapture` advances one bounded stage/tile or polls a
 native batch. Even a Ready **setup** has zero samples until advanced. There are
-four simultaneous capture slots. CPU transport/shading submits batched native
+four simultaneous capture slots. With `NativeQueries`, CPU transport/shading submits batched native
 queries and explicitly reads their completed results; this implementation is an
 offline diagnostic reference, with no GPU-resident transport loop or real-time
 path-tracing performance claim. It never hides a wait/readback in raster submission.
@@ -1335,6 +1338,65 @@ backing-page overhead are unavailable, not measured zero. These are admission
 budgets, not total process/device-memory measurements. Capacity errors never drop
 instances, lights, pixels or samples.
 
+### GPU-compute reference
+
+`ReferenceTraversal::GpuCompute` is RT1's GPU implementation. Cook the
+`renderer_reference` and `renderer_reference_reduce` recipes with
+`ludus_compile_renderer_shaders` and pass both kernels to the three-argument
+`EnableReferenceRendering`, with positive CPU and GPU byte budgets, before any
+mesh or material version exists. It needs negotiated compute storage but no
+native ray queries. Devices without compute reject with `Unsupported`.
+
+Setup is the CPU oracle's: the same admitted geometry, materials, retained
+texture mip and median BVH, packed once in the GPU preview's scene layout. Each
+`AdvanceReferenceCapture(capture, surface)` step polls setup or a readback, or
+submits one ordered graph with two compute passes in a frame of `surface`. The
+transport pass traces one sample for every pixel at the image's minimum committed
+count. It walks the BVH with float32 ports of the oracle's slab and watertight
+triangle tests and applies the same masked opacity, light proposals, power MIS,
+visible-GGX/Lambert sampling and compensated roulette. It adds emission, direct
+and indirect transport to Kahan-compensated device sums. Every random value uses
+the oracle's Philox address, so both implementations trace matching paths. A
+single-group reduction totals per-pixel query and event counts into a 48-byte
+status record, the only per-sample readback. The committed sums, 48 of each
+pixel's 96 accumulation bytes, are copied back in transfer-sized slices after
+power-of-two sample counts, every 16th sample, a failure and the target.
+`Ready` follows the final copy; until then `CopyReferencePixels` returns the
+previous copy, whose counts can trail `MinimumSamples`.
+
+Commits are per pixel. A nonfinite or negative contribution, invalid ray or BVH
+stack overflow leaves that pixel's sums and count unchanged and records its
+pixel and depth. The capture fails once the other pixels' sums are read back,
+with `CapacityExceeded` for a stack overflow. The identical `Update` retries only
+the uncommitted sample addresses; changing only the target continues the
+accumulation, and other changes rebuild the job transactionally. `Release`
+cancels future dispatches; the RHI retains accepted dispatches and readbacks
+through completion. The GPU budget charges the packed scene and texels, the
+224-byte parameters, 96 accumulation bytes per pixel and the status record. The
+RHI resource budget, storage range and dispatch limits can reject a capture
+sooner. Transfer rings, pipelines and driver padding are excluded.
+
+Float32 is the only departure from the oracle's arithmetic. Slab exits widen by
+`1 + 2γ(3)` (Pharr, Jakob and Humphreys, PBRT 3rd edition, section 3.9.2). The
+watertight edge test omits the paper's float64 fallback for exactly-zero edges.
+Normalization and the environment CDF also use float32. These can change an
+individual path at grazing or near-edge hits; they do not change the declared
+integral. One dispatch covers the whole image, so very large dense scenes can
+approach a device's command timeout; there is no tiling yet.
+
+On Apple M5 Metal (macOS 26.6, debug build), the
+[renderer test](../../modules/graphics/renderer/tests/reference_compute_tests.cpp)
+renders the L6 fixture at 16×12 and 64 samples per pixel with both
+implementations. The cases are orthographic depth 4 with the emitter and
+environment; perspective depth 8 with directional, point and spot lights and
+roulette from depth 2; and a single bounce. The largest RGB distance between
+CPU and GPU means is zero for every AOV. Closest, null-BSDF and roulette counts
+are equal; one of 11,661 visibility queries differed, where a shadow
+contribution rounded to zero in one precision. A target-only update equals a
+fresh capture bit for bit. The editor's lit viewport fixture, with textures and
+point lamps, agrees within 0.002 per pixel. Vulkan and WebGPU compile the
+kernels, but their pixel parity is unqualified.
+
 ### Raw capture and installed SDK
 
 `CopyReferencePixels` copies raw linear means and committed counts without
@@ -1344,7 +1406,8 @@ magic `LUHDR01\0`, little-endian version/profile/sampler/header sizes at bytes
 64-bit scene digest words at 48–72, secondary range/mip/light count at 80–88,
 column-major world-to-clip floats at 96–159, eye at 160–171 and environment at
 172–183. Remaining header bytes are reserved zero. Flags encode CPU (1), center
-rays (2), orthographic (4), reverse-Z (8), infinite far (16), partial (32).
+rays (2), orthographic (4), reverse-Z (8), infinite far (16), partial (32) and
+GPU compute (64); neither traversal bit marks native queries.
 Each top-left ordered pixel contains three FP32 mean RGB channels and a uint32
 committed count. The light count/digest identify the retained scene; applications
 must save original light/asset inputs for independent scene reconstruction.
@@ -1555,7 +1618,16 @@ uses OIDN on linear HDR color before display conversion and leaves the accumulat
 unfiltered. Its initial native sharing profile is Metal on Apple silicon. Measure convergence across multiple seeds.
 Nonfinite contributions or broken density invariants invalidate a reference
 batch and report the offending sample; replacing them with black silently would
-bias the result. Capture jobs reserve a bounded residency budget for their pinned
+bias the result. `ReferenceCaptureInfo::Failure` identifies the rejecting validation
+stage, while `FailurePixel`, `FailureSample` and `FailureDepth` locate the path.
+These fields are meaningful when `InvalidContributions` is nonzero; a backend
+failure can occur without a path-validation record. Previously committed tiles
+remain available for partial diagnostic comparisons. CPU and GPU reference paths
+bound interpolated vertex RGBA multipliers to their admitted `[0,1]` domain before
+shading and opacity tests. A three-term FP32 barycentric sum can otherwise turn
+constant white into `1.00000012` and falsely reject a valid BSDF. Nonfinite
+interpolation still fails validation; radiance and throughput retain their
+existing checks. Capture jobs reserve a bounded residency budget for their pinned
 versions and support cancellation, releasing submitted uses through completion.
 
 ### Hybrid and real-time transport
@@ -1806,7 +1878,10 @@ pass their independently reflected descriptors. Native Metal cooking requires th
 pinned SPIRV-Cross translator. WebGPU and WebGL2 reject this path with
 `Unsupported`. The first acceptance covers native Metal; other backends require
 their own pixel qualification. There is no CPU transport/readback fallback and
-native BLAS/TLAS traversal is required; there is no software BVH fallback.
+these native-query artifacts require native BLAS/TLAS traversal. Triangle graph
+kernels may explicitly select the software compute ABI described in
+[render-graph authoring](render-graph-authoring.md); that path creates no native
+structures and does not use opacity ranges. No automatic traversal fallback is selected.
 
 CPU setup freezes the existing snapshot, retained normals/UVs/materials and one
 retained RGBA8 texture mip, builds the static median BVH, and packs GPU buffers.
@@ -1900,7 +1975,8 @@ be available; the harness never substitutes CPU time for missing GPU measurement
 
 On 2026-10-26, an 8-core Apple M5 GPU on macOS 26.6, Clang 23.1.3 and the
 Development profile produced the following original-executable comparison. The
-unchanged executable was retained from base `8e35d219`; each row pools five
+unchanged executable was retained from base `8e35d219`, and the opacity implementation
+was benchmarked at `9b94fc10` before integration with newer `develop` changes. Each row pools five
 alternating runs of 40 warm frames. The editor viewport was closed. GPU intervals
 include compute and the output raster pass. The mixed fixture has 6,144 triangles:
 one opaque layer, one rejecting masked layer and one accepting masked patch,
@@ -2242,8 +2318,10 @@ to transport. CPU sampling uses exact row solid angles and a binary64 CDF;
 GPU packing stores the normalized CDF in binary32 and evaluates the corresponding
 quantized density. Both use piecewise-constant source radiance. Black maps have a
 valid zero-radiance distribution. Tangents, vertex color, routed UVs and emission
-maps are copied/fingerprinted with the integral. Reference profile and compute
-kernel ABI are version **4** (geometric emission sidedness); existing LUHDR container/sampler versions stay one.
+maps are copied/fingerprinted with the integral. The reference lighting profile remains
+version **4** (geometric emission sidedness); the packed GPU kernel ABI is version
+**5** for opacity-range primitive identity. Recook matching preview, reference and
+graph artifacts. Existing LUHDR container/sampler versions stay one.
 Historical evidence retains its original profile identity.
 
 CPU oracle and compute preview implement authored masked coverage. Native query

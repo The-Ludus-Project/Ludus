@@ -44,7 +44,9 @@ LUDUS_SHADER_BINDING(2) RWStructuredBuffer<float4> accumulation; // sum/count, c
 LUDUS_SHADER_BINDING(LUDUS_GPU_PREVIEW_COLORS_BINDING)
 RWStructuredBuffer<float4> colors; // Encoded RGB and binary32-exact pixel index.
 LUDUS_SHADER_BINDING(LUDUS_GPU_PREVIEW_TEXELS_BINDING) StructuredBuffer<uint4> textureWords;
+#ifndef LUDUS_SOFTWARE_RAY_TRAVERSAL
 LUDUS_SHADER_BINDING(LUDUS_GPU_PREVIEW_RAY_SCENE_BINDING) RaytracingAccelerationStructure rayScene;
+#endif
 // Mirrors the CPU reference path's addresses: Scope is the 32-bit pixel index,
 // Event is the sample and dimensions follow LUDUS_PATH_RANDOM_* in
 // renderer_gpu_preview_layout.h. Host admission bounds depth, so every
@@ -120,11 +122,13 @@ struct Hit
     float2 Barycentric;
 };
 float4 InterpolateTriangle(uint triangle, uint first, in float2 barycentric);
-Hit Trace(float3 originWorld,
-          float3 directionWorld,
-          float nearDistanceWorld,
-          float farDistanceWorld,
-          bool isVisibility = false)
+float4 InterpolateTriangleColor(uint triangle, in float2 barycentric);
+#ifndef LUDUS_SOFTWARE_RAY_TRAVERSAL
+Hit TraceNative(float3 originWorld,
+                float3 directionWorld,
+                float nearDistanceWorld,
+                float farDistanceWorld,
+                bool isVisibility = false)
 {
     Hit hit;
     hit.Triangle = LUDUS_GPU_PREVIEW_INVALID_TRIANGLE;
@@ -164,7 +168,7 @@ Hit Trace(float3 originWorld,
         float2 barycentric = query.CandidateTriangleBarycentrics();
         if (asuint(Surface(triangle, LUDUS_GPU_PREVIEW_TEXTURE_OPTIONS_WORD).z) != 0 &&
             Texture(triangle, TexcoordUv(triangle, barycentric)).w * Surface(triangle, 2).w *
-                    InterpolateTriangle(triangle, LUDUS_GPU_PREVIEW_VERTEX_COLOR_WORD, barycentric).w <
+                    InterpolateTriangleColor(triangle, barycentric).w <
                 Surface(triangle, 1).y)
             continue;
         query.CommitNonOpaqueTriangleHit();
@@ -182,6 +186,26 @@ Hit Trace(float3 originWorld,
         hit.Barycentric = query.CommittedTriangleBarycentrics();
     }
     return hit;
+}
+#endif
+#if defined(LUDUS_GRAPH_TRAVERSAL_STRATEGIES) || defined(LUDUS_SOFTWARE_RAY_TRAVERSAL)
+#    include "ray_triangle_loop.slang"
+#endif
+Hit Trace(float3 originWorld,
+          float3 directionWorld,
+          float nearDistanceWorld,
+          float farDistanceWorld,
+          bool isVisibility = false)
+{
+#ifdef LUDUS_SOFTWARE_RAY_TRAVERSAL
+    return TraceTriangleLoop(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
+#else
+#    ifdef LUDUS_GRAPH_TRAVERSAL_STRATEGIES
+    if (GetGraphTraversalStrategy() == 1)
+        return TraceTriangleLoop(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
+#    endif
+    return TraceNative(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
+#endif
 }
 // Thanks to Dirk Gerrit van Antwerpen, "Solving Self-Intersection Artifacts in
 // DirectX Raytracing", NVIDIA Technical Blog (2023), "Error bounds":
@@ -296,6 +320,13 @@ float4 InterpolateTriangle(uint triangle, uint first, in float2 barycentric)
     return SceneValue(triangle * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + first) * (1 - barycentric.x - barycentric.y) +
            SceneValue(triangle * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + first + 1) * barycentric.x +
            SceneValue(triangle * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + first + 2) * barycentric.y;
+}
+// Match InterpolateReferenceColor: mesh vertex multipliers have an admitted [0,1]
+// domain. Preserve invalid arithmetic for the GPU reference's failure reporting.
+float4 InterpolateTriangleColor(uint triangle, in float2 barycentric)
+{
+    float4 color = InterpolateTriangle(triangle, LUDUS_GPU_PREVIEW_VERTEX_COLOR_WORD, barycentric);
+    return all(isfinite(color)) == true ? saturate(color) : color;
 }
 float2 ComputeEnvironmentCoordinates(in float3 directionWorld)
 {
@@ -424,7 +455,7 @@ float3 Integrate(uint pixel, uint sample)
             SceneValue(t * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + 5).xyz * hit.Barycentric.y);
         float3 color = saturate(Surface(t, 0).xyz * Texture(t, TexcoordUv(t, hit.Barycentric)).xyz);
         if (asuint(Surface(t, 7).z) != 0)
-            color *= InterpolateTriangle(t, 13, hit.Barycentric).xyz;
+            color *= InterpolateTriangleColor(t, hit.Barycentric).xyz;
         float metallic = Surface(t, 0).w;
         float roughness = Surface(t, 1).x;
         if (asuint(Surface(t, 6).w) != 0)
@@ -529,7 +560,7 @@ float3 Integrate(uint pixel, uint sample)
                     range <= Options.x &&
                     (asuint(Surface(emitter, 5).z) == 0 || Texture(emitter, TexcoordUv(emitter, uv)).w *
                                                                    Surface(emitter, 2).w *
-                                                                   InterpolateTriangle(emitter, 13, uv).w >=
+                                                                   InterpolateTriangleColor(emitter, uv).w >=
                                                                Surface(emitter, 1).y))
                     lightColor = Surface(emitter, 4).xyz * Texture(emitter, TexcoordUv(emitter, uv), 2).xyz;
             }

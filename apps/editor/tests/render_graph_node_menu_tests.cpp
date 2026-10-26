@@ -75,9 +75,13 @@ void ObserveCreateMenu(const QString& kind, CreateMenuObservation& outObservatio
     outObservation.HasMenu = true;
     outObservation.IsEnabled = createOrNull->isEnabled();
     QAction* selectedOrNull = nullptr;
-    for (QAction* action : createOrNull->actions())
+    for (QAction* action : createOrNull->findChildren<QAction*>())
     {
         const QString offered = action->data().toString();
+        if (offered.isEmpty() == true)
+        {
+            continue;
+        }
         outObservation.Kinds.append(offered);
         if (kind.isEmpty() == false && offered == kind)
         {
@@ -160,7 +164,10 @@ TEST_CASE("Create Node menus author every supported type inside an empty library
         }
         REQUIRE(observation.HasMenu == true);
         CHECK(observation.IsEnabled == true);
-        CHECK(observation.Kinds == kinds);
+        QStringList expectedKinds = kinds;
+        expectedKinds.sort();
+        observation.Kinds.sort();
+        CHECK(observation.Kinds == expectedKinds);
         REQUIRE(observation.HasSelection == true);
         CHECK(observation.IsSelectionEnabled == true);
         if (kind == QStringLiteral("Subgraph"))

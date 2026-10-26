@@ -4708,17 +4708,19 @@ Status Renderer::prepareGpuPreviewCamera(GpuPreview handle, const ViewDescriptio
                   {LUDUS_GPU_PREVIEW_COLORS_BINDING, job.Colors, 0, pixels * LUDUS_GPU_PREVIEW_VECTOR_BYTES},
                   {LUDUS_GPU_PREVIEW_TEXELS_BINDING, job.Texels, 0, job.TexelBytes},
                   { .Binding = LUDUS_GPU_PREVIEW_RAY_SCENE_BINDING, .Scene = job.NativeScene }}};
+    const usize baseBindingCount =
+        LUDUS_GPU_PREVIEW_BINDING_COUNT - (mState->GpuPreview->HasNativeRayQueries == true ? 0 : 1);
     for (usize i = 0; i < job.Storage.GetCount(); ++i)
     {
-        bindings[LUDUS_GPU_PREVIEW_BINDING_COUNT + i] = job.Storage.GetBinding(i);
+        bindings[baseBindingCount + i] = job.Storage.GetBinding(i);
     }
     for (usize i = 0; mState->GpuPreview->HasPersistentBuffers == true && i < internal::GPU_GRAPH_BUFFER_COUNT; ++i)
     {
         const GpuPreviewGraphBuffer& buffer = job.GraphBuffers[i];
-        bindings[LUDUS_GPU_PREVIEW_BINDING_COUNT + i] = {static_cast<uint32>(LUDUS_GPU_PREVIEW_BINDING_COUNT + i),
-                                                         buffer.Buffer,
-                                                         0,
-                                                         buffer.Size};
+        bindings[baseBindingCount + i] = {static_cast<uint32>(LUDUS_GRAPH_BUFFER0_BINDING + i),
+                                          buffer.Buffer,
+                                          0,
+                                          buffer.Size};
     }
     if (mState->GpuPreview->HasVisibilityBuffer == true)
     {

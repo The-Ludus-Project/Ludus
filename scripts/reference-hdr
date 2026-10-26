@@ -12,7 +12,7 @@ def decode(data):
     if len(data) < 256 or data[:8] != b'LUHDR01\0':
         raise ValueError('Not a LUHDR01 capture')
     schema, profile, sampler, header, width, height, target, depth, roulette, flags = struct.unpack_from('<10I', data, 8)
-    if (schema, sampler, header) != (1, 1, 256) or profile not in (1, 2, 3, 4) or not width or not height or flags & ~63:
+    if (schema, sampler, header) != (1, 1, 256) or profile not in (1, 2, 3, 4) or not width or not height or flags & ~127 or (flags & 1 and flags & 64):
         raise ValueError('Unsupported capture profile/header')
     if len(data) != 256 + width * height * 16 or not 1 <= target <= 16777215 or not 1 <= depth <= 64 or not 1 <= roulette <= 64:
         raise ValueError('Invalid capture extent or sampling limits')
@@ -26,7 +26,7 @@ def decode(data):
     metadata = dict(schema=schema, profile=profile, sampler=sampler, width=width, height=height,
                     target_samples=target, max_depth=depth, roulette_depth=roulette, flags=flags,
                     seed=seed, revision=revision, scene_fingerprint=f'{high:016x}{low:016x}',
-                    traversal='cpu_oracle' if flags & 1 else 'native_queries',
+                    traversal='cpu_oracle' if flags & 1 else 'gpu_compute' if flags & 64 else 'native_queries',
                     partial=bool(flags & 32), minimum_samples=min(counts), maximum_samples=max(counts),
                     secondary_distance=struct.unpack_from('<f', data, 80)[0], texture_mip=struct.unpack_from('<I', data, 84)[0],
                     light_count=struct.unpack_from('<I', data, 88)[0], world_to_clip=list(struct.unpack_from('<16f', data, 96)),

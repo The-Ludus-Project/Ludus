@@ -33,47 +33,6 @@ QString GetProgramName(const QString& identity)
     return QStringLiteral("Restir") + identity;
 }
 
-RenderGraphDocumentStatus MergeSettings(QJsonObject& inoutManifest, const QJsonArray& additions, QString& outError)
-{
-    QJsonArray settings = inoutManifest.value(QStringLiteral("settings")).toArray();
-    for (const QJsonValueConstRef value : additions)
-    {
-        QJsonObject incoming = value.toObject();
-        bool hasSetting = false;
-        for (const QJsonValueConstRef current : settings)
-        {
-            QJsonObject existing = current.toObject();
-            if (existing.value(QStringLiteral("id")) == incoming.value(QStringLiteral("id")))
-            {
-                hasSetting = true;
-                existing.remove(QStringLiteral("value"));
-                incoming.remove(QStringLiteral("value"));
-                if (existing != incoming)
-                {
-                    outError = QStringLiteral("Setting '%1' has a different definition. Rename the conflicting "
-                                              "setting before importing ReSTIR DI. The draft was preserved.")
-                                   .arg(incoming.value(QStringLiteral("id")).toString());
-                    return RenderGraphDocumentStatus::Conflict;
-                }
-            }
-        }
-        if (hasSetting == false)
-        {
-            settings.append(value);
-        }
-    }
-    if (settings.size() > LUDUS_EDITOR_MAX_SETTINGS)
-    {
-        outError = QStringLiteral("ReSTIR DI needs %1 settings, exceeding the editor limit of %2. "
-                                  "Remove unused settings before importing. The draft was preserved.")
-                       .arg(settings.size())
-                       .arg(LUDUS_EDITOR_MAX_SETTINGS);
-        return RenderGraphDocumentStatus::Capacity;
-    }
-    inoutManifest.insert(QStringLiteral("settings"), settings);
-    return RenderGraphDocumentStatus::Ok;
-}
-
 bool MergePayload(RenderGraphSnapshot& inoutSnapshot, QJsonObject& inoutInterface, const QString& templateRoot)
 {
     const QString previous = inoutInterface.value(QStringLiteral("payload")).toString();
@@ -232,6 +191,51 @@ RenderGraphDocumentStatus MergePrograms(RenderGraphSnapshot& inoutSnapshot,
 
 } // namespace
 
+RenderGraphDocumentStatus MergeTemplateSettings(QJsonObject& inoutManifest,
+                                                const QJsonArray& additions,
+                                                const QString& templateName,
+                                                QString& outError)
+{
+    QJsonArray settings = inoutManifest.value(QStringLiteral("settings")).toArray();
+    for (const QJsonValueConstRef value : additions)
+    {
+        QJsonObject incoming = value.toObject();
+        bool hasSetting = false;
+        for (const QJsonValueConstRef current : settings)
+        {
+            QJsonObject existing = current.toObject();
+            if (existing.value(QStringLiteral("id")) == incoming.value(QStringLiteral("id")))
+            {
+                hasSetting = true;
+                existing.remove(QStringLiteral("value"));
+                incoming.remove(QStringLiteral("value"));
+                if (existing != incoming)
+                {
+                    outError = QStringLiteral("Setting '%1' has a different definition. Rename the conflicting "
+                                              "setting before importing %2. The draft was preserved.")
+                                   .arg(incoming.value(QStringLiteral("id")).toString(), templateName);
+                    return RenderGraphDocumentStatus::Conflict;
+                }
+            }
+        }
+        if (hasSetting == false)
+        {
+            settings.append(value);
+        }
+    }
+    if (settings.size() > LUDUS_EDITOR_MAX_SETTINGS)
+    {
+        outError = QStringLiteral("%1 needs %2 settings, exceeding the editor limit of %3. "
+                                  "Remove unused settings before importing. The draft was preserved.")
+                       .arg(templateName)
+                       .arg(settings.size())
+                       .arg(LUDUS_EDITOR_MAX_SETTINGS);
+        return RenderGraphDocumentStatus::Capacity;
+    }
+    inoutManifest.insert(QStringLiteral("settings"), settings);
+    return RenderGraphDocumentStatus::Ok;
+}
+
 bool EnsureTemplateProgramBudget(QJsonObject& inoutManifest,
                                  int32 requiredPrograms,
                                  const QString& templateName,
@@ -368,7 +372,10 @@ RenderGraphDocumentStatus PrepareRestirConfiguration(RenderGraphSnapshot& inoutS
         return programStatus;
     }
     const RenderGraphDocumentStatus settingsStatus =
-        MergeSettings(manifest, source.value(QStringLiteral("settings")).toArray(), outError);
+        MergeTemplateSettings(manifest,
+                              source.value(QStringLiteral("settings")).toArray(),
+                              QStringLiteral("ReSTIR DI"),
+                              outError);
     if (settingsStatus != RenderGraphDocumentStatus::Ok)
     {
         return settingsStatus;

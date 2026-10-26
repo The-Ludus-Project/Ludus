@@ -14,6 +14,14 @@ namespace ludus::editor
                                                const QString& templateName,
                                                QString& outError,
                                                RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull);
+/// Merge a template's typed Graph settings into a manifest draft. A setting already present with the
+/// same definition keeps its authored value; a different definition reports Conflict and more than
+/// LUDUS_EDITOR_MAX_SETTINGS settings report Capacity, naming templateName. inoutManifest changes only
+/// on Ok. GUI thread; no disk writes.
+[[nodiscard]] RenderGraphDocumentStatus MergeTemplateSettings(QJsonObject& inoutManifest,
+                                                              const QJsonArray& additions,
+                                                              const QString& templateName,
+                                                              QString& outError);
 /// Prepare a reusable ReSTIR configuration and its shader/manifest closure in an unpublished snapshot.
 /// templateRoot selects a bounded source directory; empty uses the embedded renderer assets.
 /// The destination must be absent or empty. Existing shader bytes, configurations and setting values
@@ -53,7 +61,8 @@ PrepareVisibilityConfiguration(RenderGraphSnapshot& inoutSnapshot,
 /// The simple template imports one triangle-loop kernel under simple_compute_ray_tracing/ with no Buffer.
 /// The original template imports a primary-hits and a shade
 /// scene compute pass sharing one render-size hit Buffer. Both kernels arrive with their local include
-/// closure under compute_ray_tracing/. The shared ray technique gains scene_interface version 1 when it
+/// closure under compute_ray_tracing/, and its MIS Graph settings merge like ReSTIR's (existing values
+/// are kept). The shared ray technique gains scene_interface version 1 when it
 /// lacks one, and its query budgets are raised to the template's; its callbacks, payload and larger
 /// budgets are retained. Requires a Metal or Vulkan profile. Authored shader bytes are never replaced:
 /// source/program collisions, unsupported scene interface versions and capacity limits report a repair.
