@@ -357,13 +357,9 @@ class ComputeRayTracingTemplateTests(unittest.TestCase):
         self.assertEqual(constant('HIT_RECORD_WORDS') * ray.BUFFER_WORD_BYTES, hits['bytes_per_pixel'])
         self.assertEqual(constant('PRIMARY_RANDOM_DIMENSION_FIRST'), 0)
         self.assertEqual(constant('PRIMARY_RANDOM_DIMENSION_COUNT'), 2)
-        self.assertEqual(constant('SHADE_RANDOM_DIMENSION_COUNT'), 7)
+        self.assertEqual(constant('SHADE_RANDOM_DIMENSION_COUNT'), 4)
         self.assertIn('SHADE_RANDOM_DIMENSION_FIRST = PRIMARY_RANDOM_DIMENSION_FIRST + PRIMARY_RANDOM_DIMENSION_COUNT',
                       header)
-        # Light selection, three light-shape and three BSDF coordinates fill the shade range exactly.
-        self.assertIn('SHADE_LIGHT_SELECTION_DIMENSION = SHADE_RANDOM_DIMENSION_FIRST;', header)
-        self.assertIn('SHADE_LIGHT_SHAPE_DIMENSION_FIRST = SHADE_LIGHT_SELECTION_DIMENSION + 1;', header)
-        self.assertIn('SHADE_BSDF_DIMENSION_FIRST = SHADE_LIGHT_SHAPE_DIMENSION_FIRST + 3;', header)
         # Zeroed memory must never decode as triangle 0.
         self.assertIn('record.TriangleIndex + 1', header)
         for name in ('Laine', 'Karras', 'Aila', 'HPG 2013', 'Burns', 'Hunt', 'JCGT 2(2), 2013'):
@@ -375,32 +371,6 @@ class ComputeRayTracingTemplateTests(unittest.TestCase):
             self.assertNotIn('SampleSceneRandom(queries', source)
             self.assertNotIn('SelectLight(scene, queries', source)
             self.assertNotIn('TraceAndShade', source)
-
-    def test_shade_pass_combines_light_and_bsdf_sampling_with_mis_settings(self):
-        root = self.create()
-        shaders = root.with_name('main_shaders')
-        shade = shaders.joinpath('shade.slang').read_text()
-        weights = shaders.joinpath('multiple_importance.slang').read_text()
-        self.assertIn('#include "multiple_importance.slang"', shade)
-        for call in ('SampleIncidentLight', 'SampleStandardBsdf', 'TraceClosest', 'TestVisibility',
-                     'EvaluateLightPdfSolidAngle', 'EvaluateEnvironmentPdfSolidAngle', 'ComputeMisWeight'):
-            self.assertIn(call, shade)
-        for name in ('Veach', 'Guibas', 'SIGGRAPH 1995', '10.1145/218380.218498'):
-            self.assertIn(name, weights)
-        manifest = json.loads(root.with_name('main.lushader.json').read_text())
-        settings = {setting['id']: setting for setting in manifest['settings']}
-        self.assertEqual(settings['MIS_HEURISTIC']['value'], 1)
-        self.assertEqual((settings['MIS_HEURISTIC']['minimum'], settings['MIS_HEURISTIC']['maximum']), (0, 3))
-        self.assertEqual(settings['MIS_POWER_EXPONENT']['value'], 2)
-        self.assertEqual(settings['MIS_CUTOFF_THRESHOLD']['value'], 0.1)
-        for heuristic in ('MIS_HEURISTIC_BALANCE = 0', 'MIS_HEURISTIC_POWER = 1', 'MIS_HEURISTIC_CUTOFF = 2',
-                          'MIS_HEURISTIC_MAXIMUM = 3'):
-            self.assertIn(heuristic, weights)
-        # One BSDF ray and one shadow ray per pixel fit the shared one-query budgets.
-        technique = next(technique for technique in manifest['techniques']
-                         if technique['id'] == 'RendererTriangles.RayTracing')
-        self.assertGreaterEqual(technique['scene_interface']['surface_queries'], 1)
-        self.assertGreaterEqual(technique['scene_interface']['visibility_queries'], 1)
 
     def test_native_ray_tracing_is_required_and_destinations_are_preserved(self):
         with self.assertRaises(ToolingError):

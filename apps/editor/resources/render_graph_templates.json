@@ -58,8 +58,8 @@
       "label": "Compute ray tracing — primary hits + direct lighting",
       "category": "ray-traced",
       "requirements": ["native-ray-tracing"],
-      "keywords": ["compute", "wavefront", "hit buffer", "direct lighting", "mis", "ray tracing"],
-      "description": "Two scene compute passes: one records each pixel's primary hit in an automatically sized buffer, the next rebuilds the surface and shades emission plus a light sample and a BSDF sample combined with MIS (Veach and Guibas), then Accumulate and ToneMap. Requires native ray tracing."
+      "keywords": ["compute", "wavefront", "hit buffer", "direct lighting", "ray tracing"],
+      "description": "Two scene compute passes: one records each pixel's primary hit in an automatically sized buffer, the next rebuilds the surface and shades emission plus one shadowed light sample, then Accumulate and ToneMap. Requires native ray tracing."
     },
     {
       "kind": "graph",
@@ -97,8 +97,8 @@
       "category": "lighting",
       "defaultConfiguration": "ComputeRayTracing",
       "requirements": ["native-ray-tracing"],
-      "keywords": ["compute", "wavefront", "hit buffer", "direct lighting", "mis", "ray tracing"],
-      "description": "A primary-hits scene compute pass and an MIS shading pass that share one automatically sized hit buffer. Connect scene, view and color; outputs color. Requires native ray tracing."
+      "keywords": ["compute", "wavefront", "hit buffer", "direct lighting", "ray tracing"],
+      "description": "A primary-hits scene compute pass and a shading pass that share one automatically sized hit buffer. Connect scene, view and color; outputs color. Requires native ray tracing."
     },
     {
       "kind": "snippet",
