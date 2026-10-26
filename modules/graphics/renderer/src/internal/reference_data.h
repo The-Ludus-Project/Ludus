@@ -6,14 +6,19 @@
 #include <ludus/foundation/base/pointer.hpp>
 
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/addressed_random.hpp>
 #include <ludus/foundation/math/geometry.hpp>
 #include <ludus/foundation/math/queries.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/graphics/renderer/reference.hpp>
 #include <ludus/graphics/renderer/scene_shader.hpp>
+#include <ludus/graphics/rhi/compute.h>
+#include <ludus/graphics/rhi/lifetime.h>
 
 #include "../../shaders/renderer_gpu_preview_layout.h"
+#include "../../shaders/renderer_reference_layout.h"
 #include "environment_data.h"
 
 namespace ludus::graphics::renderer::internal
@@ -136,6 +141,61 @@ enum class ReferenceStage : uint8
     Commit,
     Complete,
     Failed,
+    // GpuCompute: submit one sample per pixel, read its reduced status, then
+    // periodically read the committed sums back for copy/export.
+    Dispatch,
+    WaitDispatch,
+    ReadStatus,
+    ReadPixels,
+};
+/// Most simultaneous readback slices one GPU-compute capture uses; the RHI allows four.
+inline constexpr usize REFERENCE_COMPUTE_READBACKS = 4;
+/// Committed-sum bytes read back per pixel: emission/count, direct/status, indirect.
+inline constexpr usize REFERENCE_COMPUTE_SUM_BYTES = LUDUS_REFERENCE_SUM_WORDS * sizeof(math::Vector4);
+/// Accumulation bytes per pixel on the device: committed sums and their compensation.
+inline constexpr usize REFERENCE_COMPUTE_PIXEL_BYTES = LUDUS_REFERENCE_PIXEL_WORDS * sizeof(math::Vector4);
+/// Reduced dispatch status bytes read back after every sample.
+inline constexpr usize REFERENCE_COMPUTE_STATUS_BYTES = LUDUS_REFERENCE_STATUS_WORDS * sizeof(math::Vector4);
+/// Shared GPU-compute kernels and layout, created by EnableReferenceRendering.
+struct ReferenceComputePipelines final
+{
+    rhi::RasterShaderHandle TraceShader{};
+    rhi::RasterShaderHandle ReduceShader{};
+    rhi::BindingLayoutHandle Layout{};
+    rhi::ComputePipelineHandle TracePipeline{};
+    rhi::ComputePipelineHandle ReducePipeline{};
+    uint32 Phase = 0;
+    rhi::RasterStatus Setup = rhi::RasterStatus::Pending;
+};
+/// One GPU-compute capture's device buffers and dispatch/readback progress.
+/// Destruction releases tickets and destroys handles; the RHI retains accepted
+/// GPU uses through their completion.
+struct ReferenceComputeJob final
+{
+    rhi::DeviceHandle Device;
+    rhi::BufferHandle Parameters{};
+    rhi::BufferHandle Scene{};
+    rhi::BufferHandle Texels{};
+    rhi::BufferHandle Accumulation{};
+    rhi::BufferHandle Status{};
+    rhi::BindingSetHandle Bindings{};
+    bool IsBindingsCreated = false;
+    usize SceneBytes = 0;
+    usize TexelBytes = 0;
+    usize GpuBytes = 0;
+    rhi::SubmissionToken Dispatch{};
+    rhi::ReadbackTicket StatusReadback{};
+    StaticArray<rhi::ReadbackTicket, REFERENCE_COMPUTE_READBACKS> PixelReadbacks{};
+    StaticArray<usize, REFERENCE_COMPUTE_READBACKS> ReadbackFirstPixels{};
+    StaticArray<usize, REFERENCE_COMPUTE_READBACKS> ReadbackPixelCounts{};
+    /// Pixels per readback slice, bounded by the device transfer size.
+    usize ChunkPixels = 0;
+    usize NextReadPixel = 0;
+    usize ReadPixels = 0;
+    /// Failure observed by the last status readback, reported once pixels are read.
+    rhi::RasterStatus Failure = rhi::RasterStatus::Ready;
+    Array<uint8> Chunk;
+    ~ReferenceComputeJob() noexcept;
 };
 struct ReferenceJob final
 {
@@ -157,6 +217,7 @@ struct ReferenceJob final
     Array<rhi::RayInput> Rays;
     Array<rhi::RayResult> Hits;
     rhi::RayQueryBatch Batch{};
+    core::UniquePtr<ReferenceComputeJob> Compute;
     ReferenceStage Stage = ReferenceStage::Setup;
     ReferenceCaptureInfo Info;
     usize FirstPixel = 0, PathCount = 0, QueryCount = 0;
@@ -181,8 +242,10 @@ struct ReferenceState final
 {
     ReferenceRenderingOptions Options;
     rhi::RayQueryProgram Program{};
+    ReferenceComputePipelines Compute;
     ReferenceCaptureRecord Captures[4];
     usize CpuBytes = 0;
+    usize GpuBytes = 0;
 };
 [[nodiscard]] inline bool ReferenceColor(math::Vector3 value, float32 maximum) noexcept
 {
@@ -277,6 +340,39 @@ struct ReferenceProbeAddress final
                                                               const ReferenceProbeAddress& address,
                                                               math::Vector3& outIrradiance) noexcept;
 [[nodiscard]] rhi::RasterStatus PrepareReferenceCamera(ReferenceJob&) noexcept;
+/// Private GPU-compute implementations in reference_compute.cpp.
+/// Validate both reflected kernels against the frozen ABI and create their shaders.
+[[nodiscard]] rhi::RasterStatus CreateReferenceComputePipelines(rhi::DeviceHandle device,
+                                                                const rhi::RasterShaderDescription& trace,
+                                                                const rhi::RasterShaderDescription& reduce,
+                                                                ReferenceComputePipelines& outPipelines) noexcept;
+/// Advance layout/pipeline creation without waiting; Ready once both pipelines are.
+[[nodiscard]] rhi::RasterStatus PollReferenceComputePipelines(rhi::DeviceHandle device,
+                                                              ReferenceComputePipelines& inoutPipelines) noexcept;
+void DestroyReferenceComputePipelines(rhi::DeviceHandle device, ReferenceComputePipelines& inoutPipelines) noexcept;
+/// Packed scene inputs of one capture; borrowed until CreateReferenceComputeJob returns.
+struct ReferenceComputeInputs final
+{
+    BorrowedView<const math::Vector4> Scene;
+    BorrowedView<const math::Vector4> Texels;
+    BorrowedView<const uint8> Parameters;
+    /// Zero bytes covering the accumulation and status buffers' initial contents.
+    BorrowedView<const uint8> Zeros;
+    /// Remaining renderer CPU bytes for the job's own state and readback scratch.
+    usize CpuByteLimit = 0;
+    /// Remaining GpuByteBudget bytes for the job's buffers.
+    usize GpuByteLimit = 0;
+};
+/// Create the device buffers of inoutJob.Compute and enter Setup. Failure leaves the
+/// job without compute resources.
+[[nodiscard]] rhi::RasterStatus CreateReferenceComputeJob(const ReferenceComputeInputs& inputs,
+                                                          ReferenceJob& inoutJob) noexcept;
+/// Advance one GPU-compute stage of inoutJob, updating its read-back pixels and info.
+[[nodiscard]] rhi::RasterStatus AdvanceReferenceCompute(const ReferenceComputePipelines& pipelines,
+                                                        rhi::SurfaceHandle surface,
+                                                        ReferenceJob& inoutJob) noexcept;
+/// Resume a GPU-compute job after only its target changed; returns Ready when complete.
+[[nodiscard]] rhi::RasterStatus ResumeReferenceCompute(ReferenceJob& inoutJob) noexcept;
 [[nodiscard]] rhi::RasterStatus GenerateReferencePrimary(const ReferenceJob&, ReferencePath&, rhi::RayInput&) noexcept;
 // Writes path diagnostics only to inoutInfo; the job itself is read-only.
 [[nodiscard]] rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,

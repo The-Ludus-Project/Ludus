@@ -39,6 +39,9 @@ inline constexpr foundation::uint32 MAXIMUM_REFERENCE_DEPTH = 64;
 inline constexpr foundation::usize REFERENCE_CPU_BYTE_BUDGET = foundation::usize{1024} * 1024 * 1024;
 /// Device ray buffer, acceleration structure and build scratch bytes for native traversal.
 inline constexpr foundation::usize REFERENCE_RAY_BYTE_BUDGET = foundation::usize{512} * 1024 * 1024;
+/// Packed scene, texel and accumulation buffer bytes for GPU-compute traversal; the device's
+/// own resource budget can reject a capture sooner.
+inline constexpr foundation::usize REFERENCE_GPU_BYTE_BUDGET = foundation::usize{512} * 1024 * 1024;
 /// Pixels one CPU-oracle tile advances; small enough that one tile stays well under a frame.
 inline constexpr foundation::uint32 REFERENCE_CPU_TILE_PIXELS = 256;
 /// Largest tile RT1 admits for either traversal.
@@ -63,7 +66,7 @@ struct ViewportReferenceSettings final
     foundation::uint32 Samples = DEFAULT_REFERENCE_SAMPLES;
     /// Maximum scattering events; transport after the last one is truncated.
     foundation::uint32 MaxDepth = DEFAULT_REFERENCE_DEPTH;
-    /// Explicit traversal; NativeQueries never falls back to the CPU oracle.
+    /// Explicit traversal; NativeQueries and GpuCompute never fall back to the CPU oracle.
     graphics::renderer::ReferenceTraversal Traversal = graphics::renderer::ReferenceTraversal::CpuOracle;
     /// Addressed Philox seed; equal inputs and seed reproduce the image.
     foundation::uint64 Seed = 1;

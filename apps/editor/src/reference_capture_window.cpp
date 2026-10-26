@@ -12,6 +12,7 @@
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/borrowed_view.hpp>
 
+#include <ludus/graphics/rhi/compute.h>
 #include <ludus/graphics/rhi/ray.h>
 
 #include <ludus/graphics/renderer/reference.hpp>
@@ -47,13 +48,21 @@ namespace renderer = graphics::renderer;
 /// Combo indices; they equal ReferenceTraversal values.
 constexpr int32 CPU_ORACLE_INDEX = static_cast<int32>(renderer::ReferenceTraversal::CpuOracle);
 constexpr int32 NATIVE_QUERIES_INDEX = static_cast<int32>(renderer::ReferenceTraversal::NativeQueries);
+constexpr int32 GPU_COMPUTE_INDEX = static_cast<int32>(renderer::ReferenceTraversal::GpuCompute);
 constexpr int32 MINIMUM_IMAGE_EXTENT = 160;
 constexpr float64 MILLISECONDS_PER_SECOND = 1000;
 
 QString DescribeTraversal(renderer::ReferenceTraversal traversal)
 {
-    return traversal == renderer::ReferenceTraversal::CpuOracle ? QStringLiteral("CPU oracle")
-                                                                : QStringLiteral("native ray queries");
+    switch (traversal)
+    {
+        case renderer::ReferenceTraversal::CpuOracle:
+            return QStringLiteral("CPU oracle");
+        case renderer::ReferenceTraversal::GpuCompute:
+            return QStringLiteral("GPU compute");
+        default:
+            return QStringLiteral("native ray queries");
+    }
 }
 
 void ConfigureImageLabel(QLabel& inoutLabel, const QString& objectName, const QString& accessibleName)
@@ -132,9 +141,12 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     // Item order follows ReferenceTraversal so indices convert directly.
     mTraversal->insertItem(NATIVE_QUERIES_INDEX, QStringLiteral("Native ray queries"));
     mTraversal->insertItem(CPU_ORACLE_INDEX, QStringLiteral("CPU oracle"));
+    mTraversal->insertItem(GPU_COMPUTE_INDEX, QStringLiteral("GPU compute"));
     mTraversal->setCurrentIndex(CPU_ORACLE_INDEX);
-    mTraversal->setToolTip(QStringLiteral("CPU oracle traces a CPU BVH and runs everywhere. Native ray queries "
-                                          "use the GPU's ray tracing hardware; they never fall back to the CPU."));
+    mTraversal->setToolTip(QStringLiteral("CPU oracle traces a CPU BVH and runs everywhere. GPU compute runs the "
+                                          "same path tracer, BVH included, in compute shaders on any GPU with "
+                                          "compute support. Native ray queries use the GPU's ray tracing "
+                                          "hardware. Neither GPU option falls back to the CPU."));
     mCompare->setObjectName(QStringLiteral("referenceCompare"));
     mCompare->setChecked(true);
     QFormLayout* form = new QFormLayout;
@@ -260,12 +272,23 @@ void ReferenceCaptureWindow::updateTraversalAvailability()
                             capabilities.MaxRays >= 2;
     }
 #endif
+    bool isComputeAvailable = false;
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mPreview.isNull() == false && mPreview->HasDevice() == true)
+    {
+        graphics::rhi::ComputeCapabilities capabilities;
+        isComputeAvailable = graphics::rhi::GetComputeCapabilities(mPreview->GetDevice(), capabilities) ==
+                             graphics::rhi::RasterStatus::Ready;
+    }
+#endif
     QStandardItemModel* model = qobject_cast<QStandardItemModel*>(mTraversal->model());
     if (model != nullptr)
     {
         model->item(NATIVE_QUERIES_INDEX)->setEnabled(isNativeAvailable);
+        model->item(GPU_COMPUTE_INDEX)->setEnabled(isComputeAvailable);
     }
-    if (isNativeAvailable == false && mTraversal->currentIndex() == NATIVE_QUERIES_INDEX)
+    if ((isNativeAvailable == false && mTraversal->currentIndex() == NATIVE_QUERIES_INDEX) ||
+        (isComputeAvailable == false && mTraversal->currentIndex() == GPU_COMPUTE_INDEX))
     {
         mTraversal->setCurrentIndex(CPU_ORACLE_INDEX);
     }

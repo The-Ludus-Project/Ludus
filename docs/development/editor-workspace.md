@@ -1471,11 +1471,14 @@ geometry. They have no area to hit or emit from.
 | Traversal | Use |
 | --- | --- |
 | CPU oracle | Default. Traces a CPU BVH on every platform and admits masked materials. |
+| GPU compute | Runs the same path tracer in compute shaders: BVH traversal, intersection, light and BSDF sampling, shading and accumulation. Needs only GPU compute support, not ray tracing hardware, and admits masked materials. Its image matches the CPU oracle's sample for sample within float32 rounding. |
 | Native ray queries | Uses the GPU's ray tracing hardware when the device and build support it, otherwise the option is disabled. Masked materials are rejected. Dense scenes have an open precision qualification item. |
 
-Neither traversal falls back to the other. Work runs on the editor's GUI thread
+No traversal falls back to another. Work runs on the editor's GUI thread
 in short slices, so large images at high sample counts take minutes with the CPU
-oracle. The editor stays responsive while it runs. A capture needs a lit scene
+oracle. GPU compute advances the whole image by one sample per dispatch and copies
+its sums back after the first samples, every 16th sample and at the end, so the
+displayed image updates in those steps. The editor stays responsive while it runs. A capture needs a lit scene
 (an authored light or an emissive surface). Content outside the reference
 profile fails with an explanation and keeps any samples already taken. Examples
 are a shading normal facing away from its triangle, or a texture format the

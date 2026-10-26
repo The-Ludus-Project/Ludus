@@ -326,7 +326,10 @@ bool PreviewGpuGeneration::enableReferenceRendering(QString& outError) noexcept
         return false;
     }
     // Must precede every mesh and material version, so RT1 retains their CPU copies.
-    const rhi::RasterStatus status = Renderer.EnableReferenceRendering(mReference.QueryShader, mReference.Options);
+    const rhi::RasterStatus status =
+        mReference.Options.Traversal == graphics::renderer::ReferenceTraversal::GpuCompute
+            ? Renderer.EnableReferenceRendering(mReference.TraceShader, mReference.ReduceShader, mReference.Options)
+            : Renderer.EnableReferenceRendering(mReference.QueryShader, mReference.Options);
     if (status != rhi::RasterStatus::Ready)
     {
         outError = QStringLiteral("Reference rendering could not be enabled on this device (status %1).")

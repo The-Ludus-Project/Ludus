@@ -5,6 +5,10 @@
 
 #include <ludus/foundation/base/types.h>
 
+#include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/math/vector.hpp>
+
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/ray.h>
 #include <ludus/graphics/rhi/rhi.h>
@@ -311,6 +315,57 @@ TEST_CASE("Native query reference capture completes where the device supports ra
 #else
     SKIP("This build has no native ray query shader");
 #endif
+}
+
+TEST_CASE("GPU compute reference capture matches the CPU oracle on the viewport scene",
+          "[editor][reference-capture][gpu]")
+{
+    DeviceFixture device;
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    QTemporaryDir root;
+    REQUIRE(root.isValid() == true);
+    RenderScene scene;
+    tests::MakeLitScene(root.path(), scene, { .HasCollapsedTriangle = true });
+    const QSize extent = ComputeReferenceExtent(QSize(640, 480), TEST_LONG_SIDE);
+    renderer::ViewDescription view;
+    DescribeTestView(scene, extent, view);
+    ViewportReferenceSettings settings;
+    settings.LongSide = TEST_LONG_SIDE;
+    settings.Samples = TEST_SAMPLES;
+    settings.MaxDepth = TEST_DEPTH;
+    Array<renderer::ReferencePixel> pixels[2];
+    const renderer::ReferenceTraversal traversals[]{renderer::ReferenceTraversal::CpuOracle,
+                                                    renderer::ReferenceTraversal::GpuCompute};
+    for (usize index = 0; index < 2; ++index)
+    {
+        settings.Traversal = traversals[index];
+        ViewportReferenceCapture capture;
+        QString error;
+        REQUIRE(capture.Start(device.Device, device.Surface, scene, view, extent, settings, error) == true);
+        const ViewportReferencePhase phase = RunToEnd(capture);
+        INFO(capture.GetError().toStdString());
+        REQUIRE(phase == ViewportReferencePhase::Complete);
+        CheckCompleteCapture(capture, extent);
+        renderer::ReferenceCaptureInfo info;
+        REQUIRE(capture.GetInfo(info) == true);
+        CHECK(info.Traversal == traversals[index]);
+        REQUIRE(capture.CopyPixels(pixels[index], error) == true);
+    }
+    // Both traversals read the same addressed samples; the device's float32 arithmetic
+    // keeps every raw mean within a small absolute RGB distance of the oracle.
+    constexpr float32 MAXIMUM_DISTANCE = 2e-3F;
+    REQUIRE(pixels[0].GetSize() == pixels[1].GetSize());
+    float32 largest = 0;
+    for (usize i = 0; i < pixels[0].GetSize(); ++i)
+    {
+        CHECK(pixels[1][i].Samples == pixels[0][i].Samples);
+        largest = math::Max(largest, math::Distance(pixels[0][i].Radiance, pixels[1][i].Radiance));
+    }
+    CAPTURE(largest);
+    CHECK(largest <= MAXIMUM_DISTANCE);
 }
 
 TEST_CASE("Reference capture window explains a missing viewport device without starting", "[editor][reference-capture]")
