@@ -27,6 +27,7 @@
 #include <QDockWidget>
 #include <QFile>
 #include <QFileInfo>
+#include <QGraphicsScene>
 #include <QHeaderView>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -40,6 +41,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSignalSpy>
 #include <QSize>
 #include <QSpinBox>
@@ -1205,6 +1207,7 @@ TEST_CASE("Remove Unused Shaders is available in Edit and on the canvas with Pro
             menuOrNull->close();
         });
         RenderGraphCanvas& canvas = renderer->GetCanvas();
+        canvas.centerOn(canvas.scene()->itemsBoundingRect().bottomRight() + QPointF(100, 100));
         const QPoint position = canvas.viewport()->rect().center();
         QContextMenuEvent event(QContextMenuEvent::Mouse, position, canvas.viewport()->mapToGlobal(position));
         QCoreApplication::sendEvent(canvas.viewport(), &event);
@@ -1371,4 +1374,93 @@ TEST_CASE("Document shortcuts switch from text editors and tool windows", "[edit
     next->trigger();
     previous->trigger();
     CHECK(well.GetActiveDocumentOrNull() == nullptr);
+}
+
+TEST_CASE("graph focus restores the active document and panel choices and resolved diagnostics release canvas space",
+          "[editor][layout][shell][render-graph][usability]")
+{
+    QTemporaryDir directory;
+    QTemporaryDir settings;
+    EditorController controller(ToolingPaths{}, nullptr, QDir(settings.path()).filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, QDir(settings.path()).filePath(QStringLiteral("workspace.json")));
+    window.resize(1280, 900);
+    window.show();
+    REQUIRE(QTest::qWaitForWindowExposed(&window) == true);
+    controller.OpenProject(WriteProject(directory));
+    Settle();
+    RendererWorkspace* renderer = window.findChild<RendererWorkspace*>();
+    ErrorList* errors = window.findChild<ErrorList*>();
+    REQUIRE(renderer != nullptr);
+    REQUIRE(errors != nullptr);
+    const QString graph = QDir(QFileInfo(directory.path()).canonicalFilePath()).filePath(PACKAGE_GRAPH);
+    REQUIRE(renderer->OpenGraph(graph) == true);
+    renderer->SetLivePreview(false);
+    const ErrorListEntry problem
+    {
+        .Severity = ErrorListSeverity::Warning,
+        .Producer = ErrorListProducer::Build,
+        .Code = QStringLiteral("TestWarning"),
+        .Description = QStringLiteral("An outstanding build warning"),
+        .File = {},
+        .Location = {},
+        .Origin = QStringLiteral("Build"),
+        .SourceIndex = 0,
+    };
+    errors->ReplaceEntries(ErrorListProducer::Build, {problem});
+    REQUIRE(Well(window).OpenDocument(renderer) == true);
+    Settle();
+    CHECK(Dock(window, QStringLiteral("errorListDock"))->isVisible() == true);
+    REQUIRE(renderer->SelectNode(QStringLiteral("main.lurender.json"),
+                                 QStringLiteral("Default"),
+                                 QStringLiteral("color")) == true);
+    const QString selection = renderer->GetSelection();
+    const QByteArray draft = renderer->GetDocument().GetDraft(QStringLiteral("main.lurender.json"));
+    QScrollArea* inspector = qobject_cast<QScrollArea*>(CurrentProperties(window));
+    REQUIRE(inspector != nullptr);
+    Settle();
+    CHECK(inspector->horizontalScrollBar()->maximum() == 0);
+    const int32 height = renderer->GetCanvas().height();
+    QTabWidget* views = renderer->findChild<QTabWidget*>(QStringLiteral("renderGraphViews"));
+    REQUIRE(views != nullptr);
+    views->setCurrentIndex(1);
+    QAction* focus = Action(window, QStringLiteral("view.focusViewport"));
+    focus->trigger();
+    Settle();
+    CHECK(Well(window).GetActiveDocumentOrNull() == renderer);
+    CHECK(views->currentWidget() == &renderer->GetCanvas());
+    CHECK(renderer->GetCanvas().height() > height);
+    CHECK(renderer->findChild<QPushButton*>(QStringLiteral("renderGraphToggleSources"))->isVisible() == false);
+    CHECK(Dock(window, QStringLiteral("propertiesDock"))->isVisible() == false);
+    focus->trigger();
+    Settle();
+    CHECK(views->currentIndex() == 1);
+    views->setCurrentWidget(&renderer->GetCanvas());
+    CHECK(Well(window).GetActiveDocumentOrNull() == renderer);
+    CHECK(Dock(window, QStringLiteral("propertiesDock"))->isVisible() == true);
+    CHECK(Dock(window, QStringLiteral("errorListDock"))->isVisible() == true);
+    CHECK(renderer->GetSelection() == selection);
+    CHECK(renderer->GetDocument().GetDraft(QStringLiteral("main.lurender.json")) == draft);
+    errors->ReplaceEntries(ErrorListProducer::Build, {});
+    REQUIRE(Well(window).OpenDocument(window.findChild<WorldWorkspace*>()) == true);
+    REQUIRE(Well(window).OpenDocument(renderer) == true);
+    Settle();
+    CHECK(Dock(window, QStringLiteral("errorListDock"))->isVisible() == false);
+    CHECK(renderer->GetCanvas().height() > height);
+    const QString capture = qEnvironmentVariable("LUDUS_EDITOR_GRAPH_USABILITY_CAPTURE");
+    if (capture.isEmpty() == false)
+    {
+        REQUIRE(window.grab().save(capture + QStringLiteral("-workspace.png")) == true);
+    }
+    errors->ReplaceEntries(ErrorListProducer::Build, {problem});
+    Settle();
+    CHECK(Dock(window, QStringLiteral("errorListDock"))->isVisible() == true);
+    errors->ReplaceEntries(ErrorListProducer::Build, {});
+    QDockWidget* output = Dock(window, QStringLiteral("outputDock"));
+    output->show();
+    output->raise();
+    Settle();
+    REQUIRE(Well(window).OpenDocument(window.findChild<WorldWorkspace*>()) == true);
+    REQUIRE(Well(window).OpenDocument(renderer) == true);
+    Settle();
+    CHECK(output->visibleRegion().isEmpty() == false);
 }

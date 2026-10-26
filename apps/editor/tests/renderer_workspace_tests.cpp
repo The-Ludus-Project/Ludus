@@ -1120,7 +1120,7 @@ TEST_CASE("Tree and canvas node menus navigate subgraphs and authored shaders", 
         QAction* openOrNull = menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphOpenSubgraph"));
         REQUIRE(openOrNull != nullptr);
         CHECK(openOrNull->isEnabled() == true);
-        CHECK(menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphCreateSubgraphAction")) != nullptr);
+        CHECK(menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphCreateSubgraphAction")) == nullptr);
         menuOrNull->close();
         openOrNull->trigger();
     });
