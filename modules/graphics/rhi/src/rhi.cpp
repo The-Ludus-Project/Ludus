@@ -161,7 +161,8 @@ void Complete(uint32 token, StartupError error, const BackendLimits& limits) noe
         Fail(token, StartupError::RequirementsUnsatisfied);
         return;
     }
-    if (gRequireRaster && backend::RasterLimits().MaxUniformRange < 16384)
+    if (gRequireRaster == true &&
+        (profile.Raster.MaxUniformRange < PORTABLE_UNIFORM_BYTES || profile.Raster.DrawsPerFrame == 0))
     {
         gStartup.UnmetRequirement = RequirementFailure::PortableRaster;
         Fail(token, StartupError::RequirementsUnsatisfied);

@@ -760,7 +760,10 @@ struct RasterDraw final
     std::span<const RasterBindingIndex> ReachableBindings{};
 };
 /// Query the enabled raster profile. Invalid owner preserves output; non-ready devices
-/// return their state and zero the capability value. All operations are owner-thread only.
+/// return their state and zero the capability value. A resource-only backend can
+/// expose nonzero allocation limits with zero DrawsPerFrame while PortableRaster
+/// remains disabled. Resource creation is available; pipelines/draws may return
+/// Unsupported. All operations are owner-thread only.
 [[nodiscard]] RasterStatus GetRasterCapabilities(DeviceHandle, RasterCapabilities&) noexcept;
 /// Query one known format's enabled uses and limits on the owner thread, including open frames.
 /// Invalid owner or malformed format preserves output. Non-ready devices zero it;

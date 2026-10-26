@@ -11,6 +11,13 @@
 // facade validates ShaderDescription::Dxil on every build and tests run off Windows.
 namespace ludus::graphics::rhi::internal
 {
+struct RasterLayout;
+
+/// Validate the complete PSV0 resource table against the scalar raster layout.
+/// Rejects missing/extra bindings, register spaces, kinds, ranges and duplicates.
+[[nodiscard]] bool HasDxilBindings(std::span<const ludus::foundation::uint8> bytes,
+                                   const RasterLayout& layout) noexcept;
+
 /// Bytes in the fixed container header: four-character code, 16-byte hash, version,
 /// total size and part count.
 inline constexpr ludus::foundation::usize DXIL_CONTAINER_HEADER_BYTES = 32;

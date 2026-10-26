@@ -296,7 +296,8 @@ def compile_dxil(args, lock):
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     extra = [part for path in args.include for part in ('-I', path)] + ['-D' + value for value in args.define]
-    commands, dependencies, entries, sizes, containers = [], [], {}, {}, {}
+    commands, dependencies, entries, sizes, containers, interfaces = [], [], {}, {}, {}, {}
+    is_raster = getattr(args, "raster", False)
     for stage, source_entry in (('vertex', args.vertex), ('fragment', args.fragment)):
         artifact = output / f'{args.name}.{stage}.dxil'
         reflection = output / f'{stage}.reflection.json'
@@ -312,22 +313,60 @@ def compile_dxil(args, lock):
         reflected = json.loads(reflection.read_text())['entryPoints']
         if len(reflected) != 1 or reflected[0]['stage'] != stage or reflected[0]['name'] != source_entry:
             raise RuntimeError('Expected one DXIL entry with the requested stage')
-        sizes[stage] = constant_buffer_uniform_size(reflection, 'DXIL', 'register b0, space 0')
+        if is_raster:
+            from compile_raster import raster_interface
+            interfaces[stage] = raster_interface(json.loads(reflection.read_text()), stage, dxil=True)
+        else:
+            sizes[stage] = constant_buffer_uniform_size(reflection, 'DXIL', 'register b0, space 0')
         entries[stage] = source_entry
         containers[stage] = dxil_container(artifact)
-    header = '#pragma once\n#include <ludus/foundation/base/types.h>\n#include <ludus/graphics/rhi/render.h>\n'
+    header = '#pragma once\n#include <ludus/foundation/base/types.h>\n#include <ludus/graphics/rhi/' + ('raster.h' if is_raster else 'render.h') + '>\n'
     header += f'namespace ludus::shaders::{args.name} {{\n'
     for stage in ('vertex', 'fragment'):
         data = containers[stage]
         header += f'alignas(4) inline constexpr foundation::uint8 {stage.upper()}_DXIL[] = {{\n'
         header += ',\n'.join('    ' + ', '.join(f'0x{x:02x}U' for x in data[i:i + 16]) for i in range(0, len(data), 16))
         header += '\n};\n'
-        header += f'inline graphics::rhi::ShaderDescription {stage.title()}() noexcept {{\n'
-        header += f' graphics::rhi::ShaderDescription result; result.Stage = graphics::rhi::ShaderStage::{stage.title()};\n'
-        header += f' result.UniformSize = {sizes[stage]}; result.Dxil = {stage.upper()}_DXIL; result.DxilEntry = "{entries[stage]}";\n return result;\n}}\n'
+        if is_raster:
+            interface = interfaces[stage]
+            label = stage.upper() + '_DXIL'
+            if interface['entries']:
+                header += f'inline constexpr graphics::rhi::RasterBinding {label}_BINDINGS[] = {{\n'
+                for binding in interface['entries']:
+                    header += '{' + f'.Binding={binding["binding"]},.Kind=graphics::rhi::RasterBindingKind::{binding["kind"]},.Visibility=graphics::rhi::RasterVisibility::{stage.title()},.MinSize={binding["size"]}' + '},\n'
+                header += '};\n'
+            if interface['inputs']:
+                header += f'inline constexpr graphics::rhi::RasterShaderInput {label}_INPUTS[] = {{\n'
+                for value in interface['inputs']:
+                    header += '{' + f'{value["location"]},graphics::rhi::RasterVertexFormat::{value["format"]}' + '},\n'
+                header += '};\n'
+            members = [(binding['binding'], name, offset, binding['shapes'][name]) for binding in interface['entries']
+                       for name, offset in binding.get('offsets', {}).items()]
+            if len(members) > 64:
+                raise RuntimeError('Uniform schema exceeds 64 top-level members')
+            if members:
+                header += f'inline constexpr graphics::rhi::RasterUniformMember {label}_MEMBERS[] = {{\n'
+                for binding, member, offset, shape in members:
+                    if re.fullmatch(r'[A-Za-z_]\w{0,62}', member) is None:
+                        raise RuntimeError('Uniform member name exceeds the schema profile')
+                    header += '{' + f'{binding},"{member}",{offset},graphics::rhi::RasterUniformShape::{shape}' + '},\n'
+                header += '};\n'
+            header += f'inline graphics::rhi::RasterShaderDescription {stage.title()}() noexcept {{\n graphics::rhi::RasterShaderDescription result;\n'
+            header += f' result.Artifact.Stage = graphics::rhi::ShaderStage::{stage.title()}; result.Artifact.Dxil = {label}; result.Artifact.DxilEntry = "{entries[stage]}";\n'
+            if interface['entries']:
+                header += f' result.Bindings = {label}_BINDINGS;\n'
+            if interface['inputs']:
+                header += f' result.Inputs = {label}_INPUTS;\n'
+            if members:
+                header += f' result.UniformMembers = {label}_MEMBERS;\n'
+            header += ' return result;\n}\n'
+        else:
+            header += f'inline graphics::rhi::ShaderDescription {stage.title()}() noexcept {{\n'
+            header += f' graphics::rhi::ShaderDescription result; result.Stage = graphics::rhi::ShaderStage::{stage.title()};\n'
+            header += f' result.UniformSize = {sizes[stage]}; result.Dxil = {stage.upper()}_DXIL; result.DxilEntry = "{entries[stage]}";\n return result;\n}}\n'
     header += '}\n'
     manifest = {'compiler': lock['slang'], 'dxc': {'version': pin['version'], 'sha256': pin['sha256']},
-                'commands': commands, 'uniform_sizes': sizes, 'dxil_entries': entries, 'profiles': {'dxil': 'sm_6_0'},
+                'commands': commands, 'uniform_sizes': sizes, 'interfaces': interfaces, 'dxil_entries': entries, 'profiles': {'dxil': 'sm_6_0'},
                 'sha256': {f'{args.name}.{stage}.dxil': hashlib.sha256(containers[stage]).hexdigest()
                            for stage in ('vertex', 'fragment')},
                 'layout': 'See separate DXIL reflection JSON; never assume packing equality.'}
@@ -395,9 +434,9 @@ def main():
     if not args.compute and (not args.vertex or not args.fragment):
         raise RuntimeError("Raster/fullscreen compilation requires vertex and fragment entries")
     if args.dxil:
-        if (args.raster or args.compute or args.metal or args.spirv_cross or args.validator or args.worker_socket or
+        if (args.compute or args.metal or args.spirv_cross or args.validator or args.worker_socket or
                 args.native_binding_arrays or args.fragment_storage):
-            raise RuntimeError('DXIL builds support only fullscreen vertex/fragment stages')
+            raise RuntimeError('DXIL builds support scalar fullscreen or raster vertex/fragment stages')
         compile_dxil(args, lock)
         return
     if args.raster or args.compute:

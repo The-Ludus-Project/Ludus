@@ -232,7 +232,8 @@ RasterStatus Admission(DeviceHandle device, bool mutation = true) noexcept
         default:
             return RasterStatus::Failed;
     }
-    if (info.Enabled.PortableRaster == false)
+    // Resource preparation can precede complete draw-profile admission (D3a).
+    if (info.Profile.Raster.MaxBufferSize == 0)
     {
         return RasterStatus::Unsupported;
     }

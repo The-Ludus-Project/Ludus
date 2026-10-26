@@ -6,12 +6,15 @@ import json
 from pathlib import Path
 import struct
 import tempfile
+import sys
+import copy
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location("ludus_shader_driver", ROOT / "cmake/shaders/compile_shader.py")
 DRIVER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(DRIVER)
+sys.path.insert(0, str(ROOT / "cmake/shaders"))
 
 FAKE_SLANG = '''#!/usr/bin/env python3
 """Stand-in slangc: emits a minimal DXBC container with a recorded hash."""
@@ -30,8 +33,15 @@ with open(option("-o"), "wb") as artifact:
 size = 0 if stage == "vertex" else 48
 parameters = [] if size == 0 else [{"binding": {"kind": "constantBuffer", "index": 0},
               "type": {"kind": "constantBuffer", "elementVarLayout": {"binding": {"size": size}}}}]
+bindings = []
+if "-DRASTER=1" in arguments and stage == "fragment":
+    parameters = [{"name": "settings", "binding": {"kind": "constantBuffer", "index": 3},
+                   "type": {"kind": "constantBuffer", "elementVarLayout": {"binding": {"size": 48}},
+                            "elementType": {"fields": [{"name": "color", "binding": {"offset": 16},
+                                "type": {"kind": "vector", "elementCount": 4, "elementType": {"scalarType": "float32"}}}]}}}]
+    bindings = [{"name": "settings", "binding": {"kind": "constantBuffer", "index": 3, "used": 1}}]
 with open(option("-reflection-json"), "w") as reflection:
-    json.dump({"entryPoints": [{"name": entry, "stage": stage}], "parameters": parameters}, reflection)
+    json.dump({"entryPoints": [{"name": entry, "stage": stage, "bindings": bindings}], "parameters": parameters}, reflection)
 with open(option("-depfile"), "w") as depfile:
     # Windows drive letters must not be mistaken for the target separator.
     depfile.write("C:/checkout/out/" + stage + ".dxil: C:/checkout/shaders/fullscreen.slang\\n")
@@ -39,7 +49,7 @@ with open(option("-depfile"), "w") as depfile:
 
 
 class DxilDriverTests(unittest.TestCase):
-    def compile(self, root, dxc_name="dxc", libraries=None):
+    def compile(self, root, dxc_name="dxc", libraries=None, raster=False):
         compiler = root / "slangc"
         compiler.write_text(FAKE_SLANG)
         compiler.chmod(0o755)
@@ -55,7 +65,7 @@ class DxilDriverTests(unittest.TestCase):
         source = root / "fullscreen.slang"
         source.write_text("// source\n")
         arguments = argparse.Namespace(source=str(source), output=str(root / "out"), name="fullscreen",
-                                       compiler=str(compiler), include=[], define=[], dxc_path=str(dxc),
+                                       compiler=str(compiler), include=[], define=["RASTER=1"] if raster else [], dxc_path=str(dxc), raster=raster,
                                        vertex="vertexMain", fragment="fragmentMain")
         DRIVER.compile_dxil(arguments, lock)
         return root / "out"
@@ -95,6 +105,40 @@ class DxilDriverTests(unittest.TestCase):
             path.write_bytes(b"SPIR" + bytes(28))
             with self.assertRaisesRegex(RuntimeError, "not a DXIL container"):
                 DRIVER.dxil_container(path)
+
+    def test_raster_headers_use_native_registers_and_target_uniform_offsets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = self.compile(Path(temporary), raster=True)
+            header = (output / "fullscreen.h").read_text()
+            self.assertIn("graphics::rhi::RasterShaderDescription Fragment()", header)
+            self.assertIn(".Binding=3,.Kind=graphics::rhi::RasterBindingKind::UniformBuffer", header)
+            self.assertIn('{3,"color",16,graphics::rhi::RasterUniformShape::Float4}', header)
+            self.assertIn('result.Artifact.Dxil = FRAGMENT_DXIL;', header)
+            self.assertIn('result.UniformMembers = FRAGMENT_DXIL_MEMBERS;', header)
+            interface = json.loads((output / "manifest.json").read_text())["interfaces"]["fragment"]
+            self.assertEqual(interface["entries"][0]["binding"], 3)
+            self.assertEqual(interface["entries"][0]["offsets"], {"color": 16})
+
+    def test_raster_native_reflection_rejects_spaces_collisions_arrays_and_storage(self):
+        from compile_raster import raster_interface
+        document = {"parameters": [{"name": "image", "binding": {"kind": "shaderResource", "index": 1},
+                    "type": {"kind": "resource", "baseShape": "texture2D", "resultType": {
+                        "kind": "vector", "elementType": {"scalarType": "float32"}}}}],
+                    "entryPoints": [{"stage": "fragment", "bindings": [{"name": "image", "binding": {"used": 1}}]}]}
+        self.assertEqual(raster_interface(document, "fragment", dxil=True)["entries"][0]["kind"], "Texture2D")
+        for mutation in ("space", "collision", "array", "storage"):
+            changed = copy.deepcopy(document)
+            resource = changed["parameters"][0]
+            if mutation == "space":
+                resource["binding"]["space"] = 1
+            elif mutation == "collision":
+                changed["parameters"].append(copy.deepcopy(resource))
+            elif mutation == "array":
+                resource["type"] = {"kind": "array", "elementCount": 2, "elementType": resource["type"]}
+            else:
+                resource["type"] = {"kind": "resource", "baseShape": "structuredBuffer", "resultType": {"kind": "scalar", "scalarType": "float32"}}
+            with self.subTest(mutation=mutation), self.assertRaises(RuntimeError):
+                raster_interface(changed, "fragment", dxil=True)
 
     def test_windows_tools_are_independently_pinned(self):
         lock = json.loads((ROOT / "config/shader_toolchain.json").read_text())
