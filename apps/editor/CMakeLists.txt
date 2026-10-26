@@ -27,7 +27,25 @@ else()
 endif()
 
 # --- Qt discovery (local to the enabled editor only) -------------------------
+# Use APIs available in Qt 6.4; require at least 6.4. Core/Gui/Widgets only, as
+# native system libraries or the pinned source-built WebAssembly Qt.
+# Qt is installed only by opted-in editor setup;
+# it is never added to the engine Conan recipe or SDK.
+find_package(Qt6 6.4 QUIET COMPONENTS Core Gui Widgets)
+if(NOT Qt6_FOUND)
+    ludus_dependency_error("Editor workspace" "Qt 6.4+ Core, Gui and Widgets"
+        "Qt development packages are missing or incompatible. Qt6_DIR='${Qt6_DIR}'."
+        "For native Linux setup, run ./init.sh --cli --with-editor from the repository root. For browser setup, follow docs/development/browser-editor.md. For an existing Qt installation set Qt6_DIR; or disable the editor with -DLUDUS_BUILD_EDITOR=OFF.")
+endif()
+
+# QT_NO_KEYWORDS forbids the unprefixed signals/slots/emit macros so Qt's macro
+# vocabulary cannot collide with engine/standard identifiers; use Q_SIGNALS/
+# Q_SLOTS/Q_EMIT and the typed (pointer-to-member) connect overloads instead.
+# AUTOMOC is enabled per target below, not globally.
+
+# --- Build-service policy limits ----------------------------------------------
 # Keep UI bounds and document admission tied to the owning build-service policy.
+# Read after Qt discovery so a missing Qt still reports its setup diagnostic.
 find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
 set(scene_query_policy "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/render_graph_ray.py")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${scene_query_policy}")
@@ -97,22 +115,6 @@ foreach(limit MAX_OPTIONS MAX_VALUES MAX_COMBINATIONS MAX_LABEL_LENGTH MAX_ENUM_
     list(APPEND graph_options_definitions "LUDUS_EDITOR_OPTIONS_${limit}=${graph_options_limit}")
 endforeach()
 set_source_files_properties(src/render_graph_options.cpp PROPERTIES COMPILE_DEFINITIONS "${graph_options_definitions}")
-
-# Use APIs available in Qt 6.4; require at least 6.4. Core/Gui/Widgets only, as
-# native system libraries or the pinned source-built WebAssembly Qt.
-# Qt is installed only by opted-in editor setup;
-# it is never added to the engine Conan recipe or SDK.
-find_package(Qt6 6.4 QUIET COMPONENTS Core Gui Widgets)
-if(NOT Qt6_FOUND)
-    ludus_dependency_error("Editor workspace" "Qt 6.4+ Core, Gui and Widgets"
-        "Qt development packages are missing or incompatible. Qt6_DIR='${Qt6_DIR}'."
-        "For native Linux setup, run ./init.sh --cli --with-editor from the repository root. For browser setup, follow docs/development/browser-editor.md. For an existing Qt installation set Qt6_DIR; or disable the editor with -DLUDUS_BUILD_EDITOR=OFF.")
-endif()
-
-# QT_NO_KEYWORDS forbids the unprefixed signals/slots/emit macros so Qt's macro
-# vocabulary cannot collide with engine/standard identifiers; use Q_SIGNALS/
-# Q_SLOTS/Q_EMIT and the typed (pointer-to-member) connect overloads instead.
-# AUTOMOC is enabled per target below, not globally.
 
 set(editor_viewport_sources
     src/internal/viewport_frame_pump.h
