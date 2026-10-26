@@ -95,26 +95,30 @@ void VerifyCastPair()
 template <typename ValueType>
 constexpr bool VerifyConstexprArithmetic() noexcept
 {
-    constexpr auto lo = std::numeric_limits<ValueType>::min();
-    constexpr auto hi = std::numeric_limits<ValueType>::max();
-    ValueType out = 42;
-    if (TryAdd(hi, ValueType{1}, out) || out != 42 || TrySubtract(lo, ValueType{1}, out) || out != 42 ||
-        TryMultiply(hi, ValueType{2}, out) || out != 42)
+    constexpr ValueType MINIMUM = std::numeric_limits<ValueType>::min();
+    constexpr ValueType MAXIMUM = std::numeric_limits<ValueType>::max();
+    ValueType output = 42;
+    if (TryAdd(MAXIMUM, ValueType{1}, output) == true || output != 42 ||
+        TrySubtract(MINIMUM, ValueType{1}, output) == true || output != 42 ||
+        TryMultiply(MAXIMUM, ValueType{2}, output) == true || output != 42)
     {
         return false;
     }
-    if (TryAdd(ValueType{20}, ValueType{22}, out) == false || out != 42 ||
-        TrySubtract(out, ValueType{2}, out) == false || out != 40 || TryMultiply(ValueType{2}, out, out) == false ||
-        out != 80)
+    if (TryAdd(ValueType{20}, ValueType{22}, output) == false || output != 42 ||
+        TrySubtract(output, ValueType{2}, output) == false || output != 40 ||
+        TryMultiply(ValueType{2}, output, output) == false || output != 80)
     {
         return false;
     }
-    if constexpr (std::is_signed_v<ValueType>)
+    if constexpr (std::is_signed_v<ValueType> == true)
     {
-        return TryMultiply(lo, ValueType{-1}, out) == false && out == 80 && TryMultiply(lo, ValueType{1}, out) &&
-               out == lo;
+        return TryMultiply(MINIMUM, ValueType{-1}, output) == false && output == 80 &&
+               TryMultiply(MINIMUM, ValueType{1}, output) == true && output == MINIMUM;
     }
-    return true;
+    else
+    {
+        return true;
+    }
 }
 
 static_assert(VerifyConstexprArithmetic<uint8>() && VerifyConstexprArithmetic<uint16>() &&
@@ -214,4 +218,70 @@ TEMPLATE_TEST_CASE("all 8-bit arithmetic matches a widened oracle", "[primitive]
             }
         }
     }
+}
+
+TEMPLATE_TEST_CASE("signed checked arithmetic preserves extrema in every sign quadrant",
+                   "[primitive][integer]",
+                   int8,
+                   int16,
+                   int32,
+                   int64,
+                   isize)
+{
+    constexpr TestType MINIMUM = std::numeric_limits<TestType>::min();
+    constexpr TestType MAXIMUM = std::numeric_limits<TestType>::max();
+    TestType output = 42;
+
+    REQUIRE(TryAdd(MINIMUM, MAXIMUM, output) == true);
+    REQUIRE(output == -1);
+    REQUIRE(TryAdd(MAXIMUM, MINIMUM, output) == true);
+    REQUIRE(output == -1);
+    REQUIRE(TryAdd(MINIMUM, TestType{-1}, output) == false);
+    REQUIRE(output == -1);
+    REQUIRE(TrySubtract(MAXIMUM, TestType{-1}, output) == false);
+    REQUIRE(output == -1);
+    REQUIRE(TrySubtract(MINIMUM, MAXIMUM, output) == false);
+    REQUIRE(output == -1);
+    REQUIRE(TrySubtract(MAXIMUM, MINIMUM, output) == false);
+    REQUIRE(output == -1);
+    REQUIRE(TrySubtract(TestType{-1}, MINIMUM, output) == true);
+    REQUIRE(output == MAXIMUM);
+
+    REQUIRE(TryMultiply(MINIMUM, TestType{-1}, output) == false);
+    REQUIRE(output == MAXIMUM);
+    REQUIRE(TryMultiply(TestType{-1}, MINIMUM, output) == false);
+    REQUIRE(output == MAXIMUM);
+    REQUIRE(TryMultiply(MINIMUM, MINIMUM, output) == false);
+    REQUIRE(output == MAXIMUM);
+    REQUIRE(TryMultiply(MINIMUM, TestType{2}, output) == false);
+    REQUIRE(output == MAXIMUM);
+    REQUIRE(TryMultiply(TestType{2}, MINIMUM, output) == false);
+    REQUIRE(output == MAXIMUM);
+    REQUIRE(TryMultiply(TestType{-1}, MAXIMUM, output) == true);
+    REQUIRE(output == -MAXIMUM);
+    REQUIRE(TryMultiply(MAXIMUM, TestType{-1}, output) == true);
+    REQUIRE(output == -MAXIMUM);
+    REQUIRE(TryMultiply(TestType{-2}, TestType{-2}, output) == true);
+    REQUIRE(output == 4);
+
+    constexpr TestType MINIMUM_HALF = static_cast<TestType>(MINIMUM / 2);
+    REQUIRE(TryMultiply(MINIMUM_HALF, TestType{2}, output) == true);
+    REQUIRE(output == MINIMUM);
+    REQUIRE(TryMultiply(TestType{2}, MINIMUM_HALF, output) == true);
+    REQUIRE(output == MINIMUM);
+    REQUIRE(TryMultiply(MINIMUM_HALF, TestType{-2}, output) == false);
+    REQUIRE(output == MINIMUM);
+    REQUIRE(TryMultiply(TestType{-2}, MINIMUM_HALF, output) == false);
+    REQUIRE(output == MINIMUM);
+    REQUIRE(TryMultiply(TestType{0}, MINIMUM, output) == true);
+    REQUIRE(output == 0);
+    REQUIRE(TryMultiply(MINIMUM, TestType{0}, output) == true);
+    REQUIRE(output == 0);
+
+    TestType left = MINIMUM;
+    REQUIRE(TryMultiply(left, TestType{-1}, left) == false);
+    REQUIRE(left == MINIMUM);
+    TestType right = -1;
+    REQUIRE(TryMultiply(MINIMUM, right, right) == false);
+    REQUIRE(right == -1);
 }

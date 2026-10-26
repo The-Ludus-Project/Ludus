@@ -338,6 +338,16 @@ configured. The `windows-2022` image has no GPU, so the
 Direct3D 12 tests run on WARP; they establish the backend's behavior, not
 hardware-adapter qualification.
 
+The workflow also contains the isolated
+[D0 MSVC primitive probe](../architecture/windows-direct3d12.md#d0-primitive-portability-probe).
+It builds the production representation checks and primitive tests with native
+MSVC, in Ninja and a generated Visual Studio solution, for Debug and
+RelWithDebInfo. Primitive header/test and probe changes also trigger this
+workflow. The separate `windows-msvc-primitive-probe` artifact records candidate
+compiler/toolset/SDK identities and test logs. This candidate lane does not
+admit MSVC for the engine, installed SDK, Behavior or editor; the existing
+Clang/WARP job remains required.
+
 ## Dependencies and caches
 
 CI uses `init.sh --locked` to consume the committed `conan.lock` without

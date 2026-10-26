@@ -5,9 +5,11 @@
 // assertions, allocation, saturation, or exceptions, including on overflow.
 // Thanks to Eric Lengyel, "Bit Hacks for Games", Game Engine Gems 2, chapter 24,
 // pp. 391-401, for the width/signed-minimum edge cases. Our independently written
-// helpers use defined LLVM overflow operations instead of the chapter's bit hacks.
+// helpers check representable bounds before arithmetic instead of using the
+// chapter's bit hacks. This also works with MSVC, without LLVM overflow builtins.
 // Thanks to the LLVM Project, Clang Language Extensions, "Checked Arithmetic
-// Builtins": https://clang.llvm.org/docs/LanguageExtensions.html#checked-arithmetic-builtins
+// Builtins", used by the original implementation:
+// https://clang.llvm.org/docs/LanguageExtensions.html#checked-arithmetic-builtins
 // Thanks to ISO/IEC JTC1/SC22/WG21, C++ Working Draft [utility.intcmp], for the
 // signedness-aware in_range contract: https://eel.is/c++draft/utility.intcmp
 // Review and departures: docs/architecture/primitive-types.md.
@@ -30,59 +32,136 @@ concept Integer =
     UnsignedInteger<ValueType> || std::is_same_v<ValueType, int8> || std::is_same_v<ValueType, int16> ||
     std::is_same_v<ValueType, int32> || std::is_same_v<ValueType, int64> || std::is_same_v<ValueType, isize>;
 
+namespace detail
+{
+// The closed alias set has binary, padding-free representations verified by
+// src/types.cpp. Form bounds in the unsigned domain; never shift a signed bit
+// into the sign position or negate the signed minimum. Keep <limits> out of
+// this public header (ADR 0003).
+template <Integer ValueType>
+inline constexpr ValueType INTEGER_MAXIMUM = []() constexpr noexcept {
+    using UnsignedType = std::make_unsigned_t<ValueType>;
+    constexpr UnsignedType ALL_BITS = static_cast<UnsignedType>(~UnsignedType{0});
+    if constexpr (std::is_signed_v<ValueType> == true)
+    {
+        return static_cast<ValueType>(ALL_BITS >> 1);
+    }
+    else
+    {
+        return static_cast<ValueType>(ALL_BITS);
+    }
+}();
+
+template <Integer ValueType>
+inline constexpr ValueType INTEGER_MINIMUM = []() constexpr noexcept {
+    if constexpr (std::is_signed_v<ValueType> == true)
+    {
+        return static_cast<ValueType>(-INTEGER_MAXIMUM<ValueType> - 1);
+    }
+    else
+    {
+        return ValueType{0};
+    }
+}();
+} // namespace detail
+
 /// @brief Convert an integer only when its value fits the destination range.
 ///
-/// @return True on success; false preserves out. Output may alias the input.
+/// @return True on success; false preserves outValue. Output may alias the input.
 /// Bool, characters, enums, floats and qualified outputs are excluded; aliases
 /// cannot distinguish int32 from native int.
 template <Integer DestinationType, Integer SourceType>
-[[nodiscard]] constexpr bool TryIntegerCast(SourceType value, DestinationType& out) noexcept
+[[nodiscard]] constexpr bool TryIntegerCast(SourceType value, DestinationType& outValue) noexcept
 {
     if (std::in_range<DestinationType>(value) == false)
     {
         return false;
     }
     // NOLINTNEXTLINE(bugprone-signed-char-misuse): int8 is numeric; preserve negative values.
-    out = static_cast<DestinationType>(value);
+    outValue = static_cast<DestinationType>(value);
     return true;
 }
 
-/// Add without wrapping or saturation; false preserves out, including aliased operands.
+/// Add without wrapping or saturation; false preserves outValue, including aliased operands.
 template <Integer ValueType>
-[[nodiscard]] constexpr bool TryAdd(ValueType left, ValueType right, ValueType& out) noexcept
+[[nodiscard]] constexpr bool TryAdd(ValueType left, ValueType right, ValueType& outValue) noexcept
 {
-    ValueType result{};
-    if (__builtin_add_overflow(left, right, &result))
+    constexpr ValueType MAXIMUM = detail::INTEGER_MAXIMUM<ValueType>;
+    if constexpr (std::is_unsigned_v<ValueType> == true)
     {
-        return false;
+        if (left > MAXIMUM - right)
+        {
+            return false;
+        }
     }
-    out = result;
+    else
+    {
+        constexpr ValueType MINIMUM = detail::INTEGER_MINIMUM<ValueType>;
+        if ((right > 0 && left > MAXIMUM - right) || (right < 0 && left < MINIMUM - right))
+        {
+            return false;
+        }
+    }
+    outValue = static_cast<ValueType>(left + right);
     return true;
 }
 
-/// Subtract without wrapping or saturation; false preserves out, including aliased operands.
+/// Subtract without wrapping or saturation; false preserves outValue, including aliased operands.
 template <Integer ValueType>
-[[nodiscard]] constexpr bool TrySubtract(ValueType left, ValueType right, ValueType& out) noexcept
+[[nodiscard]] constexpr bool TrySubtract(ValueType left, ValueType right, ValueType& outValue) noexcept
 {
-    ValueType result{};
-    if (__builtin_sub_overflow(left, right, &result))
+    if constexpr (std::is_unsigned_v<ValueType> == true)
     {
-        return false;
+        if (left < right)
+        {
+            return false;
+        }
     }
-    out = result;
+    else
+    {
+        constexpr ValueType MAXIMUM = detail::INTEGER_MAXIMUM<ValueType>;
+        constexpr ValueType MINIMUM = detail::INTEGER_MINIMUM<ValueType>;
+        if ((right > 0 && left < MINIMUM + right) || (right < 0 && left > MAXIMUM + right))
+        {
+            return false;
+        }
+    }
+    outValue = static_cast<ValueType>(left - right);
     return true;
 }
 
-/// Multiply without wrapping or saturation; false preserves out, including aliased operands.
+/// Multiply without wrapping or saturation; false preserves outValue, including aliased operands.
 template <Integer ValueType>
-[[nodiscard]] constexpr bool TryMultiply(ValueType left, ValueType right, ValueType& out) noexcept
+[[nodiscard]] constexpr bool TryMultiply(ValueType left, ValueType right, ValueType& outValue) noexcept
 {
-    ValueType result{};
-    if (__builtin_mul_overflow(left, right, &result))
+    constexpr ValueType MAXIMUM = detail::INTEGER_MAXIMUM<ValueType>;
+    if constexpr (std::is_unsigned_v<ValueType> == true)
     {
-        return false;
+        if (right != 0 && left > MAXIMUM / right)
+        {
+            return false;
+        }
     }
-    out = result;
+    else
+    {
+        constexpr ValueType MINIMUM = detail::INTEGER_MINIMUM<ValueType>;
+        if (left > 0)
+        {
+            if ((right > 0 && left > MAXIMUM / right) || (right < 0 && right < MINIMUM / left))
+            {
+                return false;
+            }
+        }
+        else if (left < 0)
+        {
+            // All divisors are nonzero and MINIMUM / -1 is never evaluated.
+            if ((right > 0 && left < MINIMUM / right) || (right < 0 && left < MAXIMUM / right))
+            {
+                return false;
+            }
+        }
+    }
+    outValue = static_cast<ValueType>(left * right);
     return true;
 }
 } // namespace ludus::foundation::core

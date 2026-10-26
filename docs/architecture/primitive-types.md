@@ -98,10 +98,18 @@ bool, Unicode characters, enums, and floating-point types are excluded.
   no alignment, endian, aliasing, or struct padding assumption is needed.
 - Checked arithmetic operands share one integer type, so mixed-width/signedness
   expressions must be converted deliberately. Output can alias either input;
-  by-value operands and a temporary result make both success and failure safe.
+  by-value operands keep the checks independent of the final output store.
   Failure returns false without changing output. It never logs, asserts, traps,
   allocates, or saturates. Division and float conversion are not exposed because
   they need additional rounding/domain policy and have no current shared caller.
+  Add/subtract/multiply use standard integer bounds checks before evaluating the
+  result, so the public helper does not require LLVM overflow builtins. Bounds
+  are derived from the closed binary alias set without adding `<limits>` to the
+  public header. Signed multiplication checks all sign quadrants without ever
+  evaluating signed-minimum divided by -1. Existing exhaustive 8-bit tests and
+  additional extrema/aliasing cases run in the isolated
+  [Windows D0 probe](windows-direct3d12.md#d0-primitive-portability-probe) as well
+  as the ordinary FoundationBase tests; MSVC evidence is limited to that probe.
 - Include helpers explicitly. `types.h`/`core.h` do not pull them. No runtime
   primitive registry or redundant short aliases are introduced. Constants and
   signed bounds are not repeated throughout the public API.
@@ -182,7 +190,7 @@ it does not change the library's raster algorithm or import reference code.
 
 ## Performance evidence
 
-An optimized Clang 18.1.3 x86-64 assembly probe (`-std=c++23 -O2
+The original LLVM-builtin implementation's optimized Clang 18.1.3 x86-64 assembly probe (`-std=c++23 -O2
 -fno-exceptions`) shows `TryAdd<uint64>` as one `addq` with carry check,
 `TryMultiply<int64>` as one `imulq` with overflow check, and a little-endian
 `uint32` read as a length check followed by one `movl`. The byte-loop source
@@ -191,6 +199,11 @@ skip the output store. These are code-generation observations on this target,
 not throughput or cross-platform timing claims. Alias spelling itself adds no
 runtime optimization; the architecture avoids wrapper overhead and catches
 invalid input before unsafe operations.
+
+That historical arithmetic code-generation result does not characterize the
+portable bounds-check implementation introduced for Windows D0. No equivalent
+MSVC performance or full build-budget qualification is claimed by the primitive
+probe; the existing build-budget limits remain unchanged.
 
 The pinned clang-tidy signed-character check mistakes signed int8 numeric
 widening for encoded-character conversion, including canonicalized template
