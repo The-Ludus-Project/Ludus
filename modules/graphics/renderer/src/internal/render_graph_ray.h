@@ -30,6 +30,10 @@ public:
     {
         return mJob;
     }
+    // Test-only borrowed accumulation handle. Keep the completed preview/frame alive
+    // through the readback; this never becomes part of the installed renderer API.
+    [[nodiscard]] static rhi::RasterStatus
+    GetAccumulationForTesting(Renderer& inoutRenderer, GpuPreview preview, rhi::BufferHandle& outBuffer) noexcept;
     [[nodiscard]] rhi::RasterStatus Poll() noexcept;
     [[nodiscard]] rhi::RasterStatus PrepareCamera(const ViewDescription& camera, foundation::uint64 revision) noexcept;
     [[nodiscard]] rhi::RasterStatus PollCamera() noexcept;

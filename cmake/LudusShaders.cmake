@@ -210,12 +210,13 @@ function(ludus_compile_ray_queries)
         list(APPEND backend_args --validator "${LUDUS_SPIRV_VALIDATOR}")
         list(APPEND backend_depends "${LUDUS_SPIRV_VALIDATOR}")
     endif()
+    cmake_path(GET source PARENT_PATH source_directory)
     set(output "${CMAKE_CURRENT_BINARY_DIR}/ludus-shaders/${RAY_TARGET}/${RAY_NAME}")
     add_custom_command(OUTPUT "${output}/${RAY_NAME}.h"
         COMMAND "${Python3_EXECUTABLE}" "${directory}/compile_ray.py" --source "${source}" --output "${output}"
             --name "${RAY_NAME}" --compiler "${LUDUS_SLANG_COMPILER}" --lock "${lock}"
             --spirv-cross "${LUDUS_SPIRV_CROSS}" --spirv-cross-lock "${cross_lock}" ${backend_args}
-        DEPENDS "${source}" "${directory}/compile_ray.py" "${directory}/compile_shader.py" "${lock}" "${cross_lock}"
+        DEPENDS "${source}" "${source_directory}/raster_bindings.slang" "${directory}/compile_ray.py" "${directory}/compile_shader.py" "${lock}" "${cross_lock}"
             "${LUDUS_SLANG_COMPILER}" "${LUDUS_SPIRV_CROSS}" "${LUDUS_SPIRV_CROSS}.build.json" ${backend_depends}
         BYPRODUCTS "${output}/${RAY_NAME}.spv" "${output}/${RAY_NAME}.metal" "${output}/manifest.json"
         VERBATIM)

@@ -139,16 +139,32 @@ Hit TraceNative(float3 originWorld,
     ray.Direction = directionWorld;
     ray.TMin = nearDistanceWorld;
     ray.TMax = farDistanceWorld;
+    // Keep closest-hit acceptance on the existing path: automatic opaque closest
+    // hits did not meet the native CPU-oracle image tolerance.
+    // Visibility needs only hit/miss and can bypass opaque candidates natively.
     uint flags = (Sampling.z & LUDUS_GPU_PREVIEW_OPAQUE_FLAG) != 0 ? RAY_FLAG_FORCE_OPAQUE : RAY_FLAG_FORCE_NON_OPAQUE;
     if (isVisibility == true)
-        flags |= RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
+        flags = ((Sampling.z & LUDUS_GPU_PREVIEW_OPAQUE_FLAG) != 0          ? RAY_FLAG_FORCE_OPAQUE
+                 : (Sampling.z & LUDUS_GPU_PREVIEW_MIXED_OPACITY_FLAG) != 0 ? RAY_FLAG_NONE
+                                                                            : RAY_FLAG_FORCE_NON_OPAQUE) |
+                RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
     RayQuery<RAY_FLAG_NONE> query;
     query.TraceRayInline(rayScene, flags, LUDUS_GPU_PREVIEW_RAY_MASK, ray);
     while (query.Proceed() == true)
     {
         if (query.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE)
             continue;
-        uint triangle = asuint(SceneValue(Offsets.y + query.CandidatePrimitiveIndex()).x);
+        uint candidatePrimitive = query.CandidatePrimitiveIndex();
+        if ((Sampling.z & LUDUS_GPU_PREVIEW_MIXED_OPACITY_FLAG) != 0)
+        {
+            if (query.CandidateGeometryIndex() == 0)
+            {
+                query.CommitNonOpaqueTriangleHit();
+                continue;
+            }
+            candidatePrimitive += asuint(SceneValue(Offsets.y).y);
+        }
+        uint triangle = asuint(SceneValue(Offsets.y + candidatePrimitive).x);
         float2 barycentric = query.CandidateTriangleBarycentrics();
         if (asuint(Surface(triangle, LUDUS_GPU_PREVIEW_TEXTURE_OPTIONS_WORD).z) != 0 &&
             Texture(triangle, TexcoordUv(triangle, barycentric)).w * Surface(triangle, 2).w *
@@ -159,7 +175,13 @@ Hit TraceNative(float3 originWorld,
     }
     if (query.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
     {
-        hit.Triangle = asuint(SceneValue(Offsets.y + query.CommittedPrimitiveIndex()).x);
+        uint primitive = query.CommittedPrimitiveIndex();
+        if ((Sampling.z & LUDUS_GPU_PREVIEW_MIXED_OPACITY_FLAG) != 0)
+        {
+            if (query.CommittedGeometryIndex() != 0)
+                primitive += asuint(SceneValue(Offsets.y).y);
+        }
+        hit.Triangle = asuint(SceneValue(Offsets.y + primitive).x);
         hit.DistanceWorld = query.CommittedRayT();
         hit.Barycentric = query.CommittedTriangleBarycentrics();
     }

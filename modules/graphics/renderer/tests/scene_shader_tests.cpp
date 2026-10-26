@@ -1,4 +1,7 @@
+#include "../src/internal/gpu_preview_ray.h"
 #include "../src/internal/render_graph_ray_scene.h"
+
+#include <cstring>
 
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/addressed_random.hpp>
@@ -392,4 +395,65 @@ TEST_CASE("Ray passes built from one extraction pack triangles in identical orde
             CHECK(actual.Order[i] == expected.Order[i]);
         }
     }
+}
+
+TEST_CASE("GPU opacity partition order preserves original triangle identities and CPU BVH order",
+          "[scene-shader][opacity]")
+{
+    constexpr usize TRIANGLE_COUNT = 6;
+    constexpr usize PARTITION_SIZE = TRIANGLE_COUNT / 2;
+    internal::ReferenceSceneData scene;
+    StaticArray<internal::ReferenceSurfaceData, MATERIALS> surfaces{};
+    surfaces[0].Alpha = renderer::MaterialAlpha::Opaque;
+    surfaces[1].Alpha = renderer::MaterialAlpha::Masked;
+    REQUIRE(scene.Instances.TryResize(MATERIALS) == true);
+    REQUIRE(scene.Triangles.TryResize(TRIANGLE_COUNT) == true);
+    REQUIRE(scene.Order.TryResize(TRIANGLE_COUNT) == true);
+    for (usize i = 0; i < MATERIALS; ++i)
+    {
+        scene.Instances[i].Surface = &surfaces[i];
+    }
+    const StaticArray<uint32, TRIANGLE_COUNT> original{{5, 0, 4, 1, 3, 2}};
+    const StaticArray<uint32, TRIANGLE_COUNT> expected{{0, 4, 2, 5, 1, 3}};
+    for (usize i = 0; i < TRIANGLE_COUNT; ++i)
+    {
+        scene.Triangles[i].Instance = static_cast<uint32>(i % MATERIALS);
+        scene.Order[i] = original[i];
+    }
+    StaticArray<math::Vector4, TRIANGLE_COUNT> packed{};
+    internal::PackGpuPreviewRayOrder(scene, true, packed.GetData());
+    for (usize i = 0; i < TRIANGLE_COUNT; ++i)
+    {
+        uint32 actual = 0;
+        std::memcpy(&actual, &packed[i].X, sizeof(actual));
+        CHECK(actual == expected[i]);
+        CHECK(scene.Order[i] == original[i]);
+    }
+    uint32 base = 0;
+    std::memcpy(&base, &packed[0].Y, sizeof(base));
+    CHECK(base == PARTITION_SIZE);
+    internal::PackGpuPreviewRayOrder(scene, false, packed.GetData());
+    CHECK(packed[0].Y == 0);
+    for (usize i = 0; i < TRIANGLE_COUNT; ++i)
+    {
+        uint32 actual = 0;
+        std::memcpy(&actual, &packed[i].X, sizeof(actual));
+        CHECK(actual == original[i]);
+    }
+    for (renderer::MaterialAlpha alpha : {renderer::MaterialAlpha::Opaque, renderer::MaterialAlpha::Masked})
+    {
+        surfaces[0].Alpha = alpha;
+        surfaces[1].Alpha = alpha;
+        internal::PackGpuPreviewRayOrder(scene, true, packed.GetData());
+        for (usize i = 0; i < TRIANGLE_COUNT; ++i)
+        {
+            uint32 actual = 0;
+            std::memcpy(&actual, &packed[i].X, sizeof(actual));
+            CHECK(actual == original[i]);
+        }
+    }
+    scene.Order.Clear();
+    packed[0].X = 1;
+    internal::PackGpuPreviewRayOrder(scene, true, packed.GetData());
+    CHECK(packed[0].X == 1);
 }

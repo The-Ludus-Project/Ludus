@@ -1888,17 +1888,40 @@ pass their independently reflected descriptors. Native Metal cooking requires th
 pinned SPIRV-Cross translator. WebGPU and WebGL2 reject this path with
 `Unsupported`. The first acceptance covers native Metal; other backends require
 their own pixel qualification. There is no CPU transport/readback fallback and
-native BLAS/TLAS traversal is required; there is no software BVH fallback.
+these native-query artifacts require native BLAS/TLAS traversal. Triangle graph
+kernels may explicitly select the software compute ABI described in
+[render-graph authoring](render-graph-authoring.md); that path creates no native
+structures and does not use opacity ranges. No automatic traversal fallback is selected.
 
 CPU setup freezes the existing snapshot, retained normals/UVs/materials and one
 retained RGBA8 texture mip, builds the static median BVH, and packs GPU buffers.
 Shared texture content is packed once, in a separate read-only buffer so the
 geometry/BVH and texel payload each respect the R4 storage-range limit. `BeginGpuPreview` then owns that immutable
 scene independently of caller snapshot/mesh/material owners. Native world-triangle
-BLAS and identity-instance TLAS builds preserve the packed primitive mapping; empty
-Worlds use an empty TLAS. Bindings publish after native builds reach Ready and retain
-the exact structure versions through GPU completion. No per-pixel CPU
-path, ray, intersection or accumulation arrays are created for GPU setup.
+BLAS construction groups triangles by authored opaque/masked alpha mode, with an
+opaque prefix and masked suffix represented by native geometry ranges inside one
+BLAS and one identity TLAS instance. Opaque-only and masked-only scenes retain one
+native geometry range; empty Worlds use an empty TLAS. `RayGeometryDescription`'s
+`OpaqueTriangleCount` declares that prefix; zero preserves ordinary alpha-filterable
+geometry. Native query results still expose the full geometry-local triangle index,
+independent of the driver's range-local primitive IDs. The matching SDK query shader
+reads the prefix count from private metadata preceding the existing triangle-UV table.
+
+The renderer's packed indirection preserves original shading, material, emitter and
+visibility identities independently of the CPU oracle's unchanged BVH order.
+Software GPU reference packing also retains that original BVH order. The native
+indirection's first word stores the masked range's primitive base. This is private preview kernel
+ABI version 5; recook preview and graph shaders with the matching runtime/SDK.
+Native geometry opacity bypasses opaque candidates for first-accepted-hit visibility
+queries. Mixed-scene closest-hit queries retain forced nonopaque traversal and
+commit opaque-range candidates directly without material/alpha lookups; masked
+candidates evaluate the same fixed-mip texture, tint, vertex alpha and inclusive
+cutoff in both queries. Automatic opaque closest-hit acceptance failed the stronger
+CPU-oracle image tolerance on native Metal, so it is not enabled for mixed scenes. One
+native BLAS build admits or rejects the combined ranges under the existing budget;
+its input, structure and scratch charges remain under the existing lifetime ledger.
+Bindings publish after native builds reach Ready and retain exact versions through
+GPU completion. No per-pixel CPU transport or accumulation arrays enter GPU setup.
 The retained-input setup machinery is shared with RT1; selecting its CPU-oracle
 input retention internally does not execute its CPU tracing loop.
 
@@ -1914,6 +1937,94 @@ The graph declares storage history, compute-to-vertex visibility and the sampled
 texture export. No ray, radiance, counter or pixel readback occurs in these
 renderer APIs. GPU numerical failure makes an error pixel magenta; CPU progress
 reports completed dispatches, not observed valid sample counts or convergence.
+
+The native opacity regression (`[opacity]` in `ludus_renderer_render_tests`)
+compares empty, opaque-only, masked-only and mixed native-preview scenes against
+raw linear CPU-oracle and software GPU-reference RGB and displayed pixels at
+64×64 and 16 samples, with matched seed and camera.
+Linear channel tolerance is 0.001 radiance units plus 0.5% of the reference channel;
+display tolerance is two RGBA8 levels. A private test-build accessor reads completed
+accumulation while retaining the frame; builds with tests disabled omit the accessor. Its mixed fixture contains both rejecting and accepting masked surfaces,
+distinct emissive materials and directional shadows. `[opacity-budget]` exercises
+combined-range budget rejection and resource cleanup. The
+`[scene-shader][opacity]` unit test verifies stable original identities and that GPU
+partitioning leaves the CPU BVH order unchanged.
+
+To benchmark the production preview path, run the paired harness:
+
+```sh
+python3 scripts/python/benchmark_ray_opacity.py \
+  --executable out/build/<native-build>/modules/graphics/renderer/ludus_renderer_render_tests \
+  --output out/opacity/paired --runs 3
+```
+
+For each scene it alternates the original single nonopaque BLAS (CPU-BVH primitive
+order and original uniform traversal flags) and partitioned layouts within the
+same test executable and compiled shader.
+The original layout control exists only in test builds; production always partitions.
+`LUDUS_OPACITY_BASELINE=1` selects that control for a standalone `[opacity]` run.
+`LUDUS_OPACITY_SCENE` optionally selects `empty`, `opaque`, `masked` or `mixed`.
+The runner writes a JSON comparison of per-run/pooled timing medians and displayed
+and raw linear differences. It reports differences without treating timing or
+image similarity as independent CPU-oracle acceptance.
+
+The benchmark uses 512×512 pixels, depth two, seed one and 48 accumulated samples
+per scene; it discards the first eight timing samples. Each scene writes its final
+`.rgba` image, `.linear.bin` raw readback (two binary32 float4 records per pixel:
+mean RGB/sample count, then compensation/history tag), `.gpu.bin` device-clock frame intervals (binary64 nanoseconds),
+`.wall.bin` submit-to-completion intervals (uint64 nanoseconds), and `.setup.bin`
+CPU preparation interval (one uint64 nanosecond value). GPU intervals include the
+preview compute and output raster pass; they are not isolated traversal timings.
+Setup measures `BeginGpuPreview` through native readiness and is reported separately
+from warm frames; device/renderer/material-program enable-time prewarming precedes it. Retain the unchanged executable for an additional original-build
+comparison with `--baseline-executable <saved-unmodified-tests>`; that mode alternates
+whole-scene batches for legacy harness compatibility. The in-process layout control
+isolates partitioning from compiler changes. Each run records executable hashes.
+Benchmark mode omits the
+small CPU-oracle render; run the ordinary regression separately. GPU timings must
+be available; the harness never substitutes CPU time for missing GPU measurements.
+
+On 2026-10-26, an 8-core Apple M5 GPU on macOS 26.6, Clang 23.1.3 and the
+Development profile produced the following original-executable comparison. The
+unchanged executable was retained from base `8e35d219`, and the opacity implementation
+was benchmarked at `9b94fc10` before integration with newer `develop` changes. Each row pools five
+alternating runs of 40 warm frames. The editor viewport was closed. GPU intervals
+include compute and the output raster pass. The mixed fixture has 6,144 triangles:
+one opaque layer, one rejecting masked layer and one accepting masked patch,
+with emissive materials, a directional light and two-bounce transport.
+
+| Scene | Original executable GPU median (ms) | Opacity ranges GPU median (ms) | Original/ranges |
+| --- | ---: | ---: | ---: |
+| Empty | 0.956 | 0.986 | 0.970× |
+| Opaque only | 3.529 | 4.120 | 0.857× |
+| Masked only | 5.440 | 5.426 | 1.003× |
+| Mixed | 6.152 | 5.461 | 1.127× |
+
+These measurements do **not** establish a reliable speedup. A separate five-pair
+same-kernel layout comparison gave mixed medians of 2.264 versus 4.919 ms, the
+opposite direction. Its unchanged opaque control varied from 1.006 to 4.234 ms
+between runs. Background GPU activity and frequency variation confound these
+process-level measurements; more isolated device measurements are required before
+claiming acceleration or a regression. Individual timings and setup/wall medians
+remain in the runner's JSON report rather than being discarded.
+
+After integration at `6a149003`, three further alternating layout pairs measured
+mixed medians of 6.652 versus 6.305 ms (5.2% less GPU time). The unchanged masked
+control measured 5.889 versus 5.058 ms, while opaque measured 3.441 versus 3.860 ms.
+Those larger control changes leave the acceleration claim unresolved. The final
+repetition retained bit-identical RGBA8 and the same raw RGB error bounds below.
+
+All four scenes produced bit-identical RGBA8 output in both final comparisons.
+The same-kernel comparison also retained raw linear readbacks: empty, opaque-only
+and masked-only RGB were bit-identical; mixed maximum absolute RGB difference was
+1.78814e-7, RMSE 6.72124e-10 and mean signed difference -9.09495e-13. Independent
+CPU-oracle regressions passed the stated per-channel tolerance at 64×64 and 16
+samples. An earlier automatic-opaque closest-hit variant failed that stronger
+regression and was rejected; the final visibility optimization preserves the
+existing closest-hit traversal mode. Thin/near-edge native FP32 precision and
+arbitrary-scene convergence remain independent qualification limits below.
+The harness retains raw readbacks and individual timing samples under its chosen
+output directory; generated/machine-local evidence is not source-controlled.
 
 The explicit quality profile admits at most four live jobs, 4096 requested
 samples, depth eight, the reference secondary-distance/camera bounds and a fixed
@@ -2224,8 +2335,10 @@ to transport. CPU sampling uses exact row solid angles and a binary64 CDF;
 GPU packing stores the normalized CDF in binary32 and evaluates the corresponding
 quantized density. Both use piecewise-constant source radiance. Black maps have a
 valid zero-radiance distribution. Tangents, vertex color, routed UVs and emission
-maps are copied/fingerprinted with the integral. Reference profile and compute
-kernel ABI are version **4** (geometric emission sidedness); existing LUHDR container/sampler versions stay one.
+maps are copied/fingerprinted with the integral. The reference lighting profile remains
+version **4** (geometric emission sidedness); the packed GPU kernel ABI is version
+**5** for opacity-range primitive identity. Recook matching preview, reference and
+graph artifacts. Existing LUHDR container/sampler versions stay one.
 Historical evidence retains its original profile identity.
 
 CPU oracle and compute preview implement authored masked coverage. Native query

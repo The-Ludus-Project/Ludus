@@ -79,6 +79,12 @@ struct RayGeometryDescription final
     /// Explicit byte budget for resident inputs/BLAS and temporary build scratch.
     /// Zero is invalid. Admission checks actual native requirements before submission.
     ludus::foundation::usize ByteBudget = 0;
+    /// Leading triangle count that bypasses opacity filtering even in a masked instance.
+    /// Must not exceed IndexCount/3. Zero keeps every triangle eligible for filtering;
+    /// a positive prefix and remaining suffix form native opaque/nonopaque ranges in
+    /// one BLAS. Public hit Primitive still addresses the full original triangle list.
+    /// Requires the matching SDK query shader when querying a partitioned geometry.
+    ludus::foundation::uint32 OpaqueTriangleCount = 0;
 };
 /// Copied instance and opacity contract. Reference filtering uses a declared fixed
 /// mip with nearest or bilinear alpha; it never borrows raster derivatives.
@@ -90,7 +96,7 @@ struct RayInstanceDescription final
     ludus::foundation::float32 Transform[12]{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
     /// Nonzero ray visibility mask in the low eight bits.
     ludus::foundation::uint32 Mask = 255;
-    /// Opacity filtering; opaque instances ignore the alpha table.
+    /// Opacity filtering outside Geometry's opaque prefix; opaque instances ignore the alpha table.
     bool AlphaMasked = false;
     /// Scalar alpha in [0,1], multiplying sampled alpha before threshold comparison.
     ludus::foundation::float32 Opacity = 1;

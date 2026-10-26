@@ -139,6 +139,7 @@ struct RayRecordInfo final
 {
     StorageArray<usize> GeometrySlots;
     StorageArray<float32> TriangleUvs;
+    uint32 OpaqueTriangleCount = 0;
     usize Scene = 0, Program = 0, Count = 0;
     RayAllocation Allocation;
 };
