@@ -1,4 +1,4 @@
-"""Hardware triangle ray pipelines using native queries and authored functions.
+"""Triangle ray pipelines using selectable traversal and shared authored functions.
 
 The renderer owns native acceleration structures and the packed shading tables. The graph owns
 stage assignment, launch extent and publication. No CPU transport is selected.
@@ -25,23 +25,45 @@ COMPUTE_STAGE = 'compute'
 UNUSED_COMPUTE_CALLBACKS = {'miss': 'GraphComputeMiss', 'closest_hit': 'GraphComputeClosestHit'}
 
 
+# Strategy tags are cooked into callback variants so the same programs can be used
+# by different passes without sharing a traversal choice or changing their sources.
+TRIANGLE_LOOP_TAG = '@TriangleLoop'
+
+
+def callback_programs(variant):
+    """Return only authored program IDs from a cooked callback/strategy variant."""
+    return tuple(variant[:-1]) if variant[-1] == TRIANGLE_LOOP_TAG else tuple(variant)
+
+
 def program_tuple(node):
-    """Return a pass's callback variant: (compute,) for scene compute, else (raygen, miss, closest)."""
+    """Return the callback IDs and optional software traversal tag for one pass."""
     assignments = {shader['stage']: shader['program'] for shader in node['shaders']}
-    if node['kind'] == 'ComputePipeline':
-        return (assignments[COMPUTE_STAGE],)
-    return tuple(assignments[stage] for stage in STAGES)
+    has_kernel = COMPUTE_STAGE in assignments
+    variant = (assignments[COMPUTE_STAGE],) if has_kernel else tuple(assignments[stage] for stage in STAGES)
+    # Preserve existing compute kernels' native query behavior. Shared ray callbacks
+    # default to engine triangle intersections when assigned to a compute pipeline.
+    default = 'TriangleLoop' if node['kind'] == 'ComputePipeline' and not has_kernel else 'NativeQuery'
+    if node['invocation'].get('traversal', default) == 'TriangleLoop':
+        variant += (TRIANGLE_LOOP_TAG,)
+    return variant
+
+
+def requires_native_queries(plan):
+    """Whether any selected ray pass explicitly needs native ray traversal."""
+    return any(operation['kind'] == 'RayTracing' and
+               program_tuple(operation['pipeline'])[-1] != TRIANGLE_LOOP_TAG
+               for operation in plan['passes'])
 
 
 def is_compute_variant(variant):
     """Scene compute kernels occupy only the ray-generation position of the sequence."""
-    return len(variant) == 1
+    return len(callback_programs(variant)) == 1
 
 
 def select_callbacks(programs, variant):
     """Map a variant to wrapper stage programs, filling a compute kernel's unused callbacks."""
     if not is_compute_variant(variant):
-        return {stage: programs[identity] for stage, identity in zip(STAGES, variant)}
+        return {stage: programs[identity] for stage, identity in zip(STAGES, callback_programs(variant))}
     kernel = programs[variant[0]]
     selected = {'ray_generation': kernel}
     for stage, function in UNUSED_COMPUTE_CALLBACKS.items():
@@ -68,13 +90,15 @@ SCENE_QUERY_LIMITS = {
 
 COMPUTE_ID = 'GraphRayCompute'
 VISIBILITY_COMPUTE_ID = 'GraphVisibilityRayCompute'
-COMPUTE_IDS = (COMPUTE_ID, VISIBILITY_COMPUTE_ID)
+SOFTWARE_COMPUTE_ID = 'GraphSoftwareRayCompute'
+SOFTWARE_VISIBILITY_COMPUTE_ID = 'GraphSoftwareVisibilityRayCompute'
+COMPUTE_IDS = (COMPUTE_ID, VISIBILITY_COMPUTE_ID, SOFTWARE_COMPUTE_ID, SOFTWARE_VISIBILITY_COMPUTE_ID)
 IMAGE_VERTEX_ID = 'GraphRayImageVertex'
 IMAGE_INPUTS = [{'location': 0, 'format': 'Float2'}]
 IMAGE_FRAGMENT_ID = 'GraphRayImageFragment'
 # Files are installed by their owning renderer/math/RHI targets beside the helper.
 HELPERS = ('scene_data.h', 'renderer_gpu_preview_layout.h', 'renderer_surface_functions.slang', 'recipes.json',
-           'lighting_layout.h', 'math.slang', 'raster_bindings.slang', 'scene_shader.slang', 'scene_payload.slang', 'scene_shader_layout.h', 'ray_shader.slang', 'visibility_buffer.slang')
+           'ray_triangle_loop.slang', 'lighting_layout.h', 'math.slang', 'raster_bindings.slang', 'scene_shader.slang', 'scene_payload.slang', 'scene_shader_layout.h', 'ray_shader.slang', 'visibility_buffer.slang')
 
 
 def resolve_state(state):
@@ -215,32 +239,38 @@ def group_profiles(plans, technique, build):
         build.require(not has_visibility or technique.get('scene_interface', {}).get('visibility_buffer', False),
                       'Configuration', plan['configuration'],
                       'visibility inputs require scene_interface.visibility_buffer')
-        group = groups.setdefault(has_visibility, {'variants': set(), 'persistent': False, 'structured_buffers': False})
+        has_native_queries = requires_native_queries(plan)
+        group = groups.setdefault((has_visibility, has_native_queries), {'variants': set(), 'persistent': False, 'structured_buffers': False})
         group['variants'].update(program_tuple(operation['pipeline']) for operation in operations)
         group['structured_buffers'] |= any(operation.get('buffers') for operation in operations)
         # GraphBuffer0/1 and GetGraphPassIndex exist only in the persistent wrapper, so a
         # single scene compute pass needs it as well (compute ray tracing design, section 3.3).
-        group['persistent'] |= len(operations) > 1 or any(resource['type'] == 'Buffer' and 'stride' not in resource
-                                                        for resource in plan['resources'].values()) or any(
-            operation['pipeline']['kind'] == 'ComputePipeline' for operation in operations)
+        has_triangle_loop = any(program_tuple(operation['pipeline'])[-1] == TRIANGLE_LOOP_TAG
+                                for operation in operations)
+        group['persistent'] |= has_triangle_loop or len(operations) > 1 or any(
+            resource['type'] == 'Buffer' and 'stride' not in resource
+            for resource in plan['resources'].values()) or any(
+                operation['pipeline']['kind'] == 'ComputePipeline' for operation in operations)
     if not groups:
         build.require(all(stage in technique for stage in STAGES), 'Configuration', TECHNIQUE,
                       'a ray technique without default callbacks requires a RayTracingPipeline or scene compute pass')
-        groups[technique.get('scene_interface', {}).get('visibility_buffer', False)] = {
+        groups[(technique.get('scene_interface', {}).get('visibility_buffer', False), True)] = {
             'variants': {tuple(technique[stage] for stage in STAGES)}, 'persistent': False, 'structured_buffers': False}
     result = []
-    for has_visibility, group in sorted(groups.items()):
+    for (has_visibility, has_native_queries), group in sorted(groups.items()):
         build.require(not (group['persistent'] or len(group['variants']) > 1) or not group['structured_buffers'],
                       'Capability', 'ray storage',
                       'ordered ray passes use shared Buffer nodes; StructuredBuffer nodes remain private to one ray job')
-        result.append({'visibility_buffer': has_visibility, 'variants': sorted(group['variants']),
+        result.append({'visibility_buffer': has_visibility, 'native_ray_queries': has_native_queries,
+                       'variants': sorted(group['variants']),
                        'persistent': group['persistent'] or len(group['variants']) > 1,
-                       'compute': VISIBILITY_COMPUTE_ID if has_visibility and len(groups) > 1 else COMPUTE_ID})
+                       'compute': ((VISIBILITY_COMPUTE_ID if has_visibility and (False, has_native_queries) in groups else COMPUTE_ID) if has_native_queries else
+                                   (SOFTWARE_VISIBILITY_COMPUTE_ID if has_visibility and (False, has_native_queries) in groups else SOFTWARE_COMPUTE_ID))})
     return result
 
 
 def expand_programs(programs, technique, snapshot, helper, build, variants=None, persistent=False, schemas=None,
-                    compute_identity=COMPUTE_ID):
+                    compute_identity=COMPUTE_ID, native_ray_queries=True):
     """Capture the engine kernel and all three functions in one linked compute entry."""
     selected = select_callbacks(programs, variants[0]) if variants else {stage: programs[technique[stage]] for stage in STAGES}
     storage = buffers.merge_bindings(selected, build)
@@ -314,7 +344,7 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
     wrapper = wrapper.replace('ComputeMain(positionPixel)', compute_recipe['compute'] + '(positionPixel)')
     compatibility = {'sources': {}, 'callbacks': []}
     if technique.get('scene_interface') is not None:
-        sources = {programs[identity]['source'] for variant in variants for identity in variant} if variants else {
+        sources = {programs[identity]['source'] for variant in variants for identity in callback_programs(variant)} if variants else {
             program['source'] for program in selected.values()}
         compatibility = migrate_legacy_scene_sources(sources, snapshot)
         wrapper = scene_wrapper(selected, technique['scene_interface'], snapshot, build, compute_recipe, storage_source,
@@ -323,10 +353,12 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
         build.require(technique.get('scene_interface') is not None, 'Capability', TECHNIQUE,
                       'ordered ray passes and persistent buffers require the scene callback interface')
         wrapper = persistent_wrapper(programs, technique, variants, snapshot, build, compute_recipe, compatibility)
+    if not native_ray_queries:
+        wrapper = '#define LUDUS_SOFTWARE_RAY_TRAVERSAL 1\n' + wrapper
     result = {identity: deepcopy(program) for identity, program in programs.items()
               if program['stage'] not in (*STAGES, COMPUTE_STAGE)}
     result[compute_identity] = {'id': compute_identity, 'stage': 'compute', 'source': selected['ray_generation']['source'],
-                          'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': wrapper, 'native_ray_queries': True, 'native_ray_profile': True, 'persistent_ray_profile': persistent, 'storage_bindings': storage, 'storage_schemas': {binding['schema']: schemas[binding['schema']] for binding in storage}, 'visibility_buffer': technique.get('scene_interface', {}).get('visibility_buffer', False)}
+                          'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': wrapper, 'native_ray_queries': native_ray_queries, 'software_ray_queries': not native_ray_queries, 'native_ray_profile': True, 'persistent_ray_profile': persistent, 'storage_bindings': storage, 'storage_schemas': {binding['schema']: schemas[binding['schema']] for binding in storage}, 'visibility_buffer': technique.get('scene_interface', {}).get('visibility_buffer', False)}
     if compatibility['sources']:
         result[compute_identity]['source_overrides'] = compatibility['sources']
     for identity, stage, function in ((IMAGE_VERTEX_ID, 'vertex', image_recipe['vertex']), (IMAGE_FRAGMENT_ID, 'fragment', image_recipe['fragment'])):
@@ -363,12 +395,14 @@ def check_interface(program, result, build):
     if program['id'] in COMPUTE_IDS:
         expected = [(0, 'UniformBuffer', 224), (1, 'StorageRead', 16), (2, 'StorageReadWrite', 16),
                     (3, 'StorageReadWrite', 16), (4, 'StorageRead', 16), (5, 'RayScene', 0)]
+        if not program.get('native_ray_queries', True):
+            expected = [entry for entry in expected if entry[1] != 'RayScene']
         if program.get('persistent_ray_profile'):
             expected += [(6, 'StorageReadWrite', 16), (7, 'StorageReadWrite', 16)]
         build.require(interface.get('workgroup') == [64, 1, 1] and interface['inputs'] == [] and
                       [(entry['binding'], entry['kind'], entry['size']) for entry in entries if program.get('persistent_ray_profile') or entry['binding'] < buffers.FIRST_SLOT or entry['binding'] >= VISIBILITY_SLOT] ==
                       expected + ([(VISIBILITY_SLOT, 'Texture2D', 0), (VISIBILITY_SLOT + 1, 'TextureDepth2D', 0)] if program.get('visibility_buffer', False) else []),
-                      'ShaderInterface', program['id'], 'ray query reflection differs from the native renderer ABI')
+                      'ShaderInterface', program['id'], 'ray compute reflection differs from the selected renderer ABI')
         declared = program.get('storage_bindings', [])
         extra = [entry for entry in entries if buffers.FIRST_SLOT <= entry['binding'] < VISIBILITY_SLOT and not program.get('persistent_ray_profile')]
         build.require(len(extra) == len(declared) and all(
@@ -578,7 +612,7 @@ def validate_payload(data, budget, build):
 def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, compatibility=None):
     """Namespace each unique authored source and dispatch its callbacks by pass index."""
     interface = technique['scene_interface']
-    sources = sorted({programs[identity]['source'] for variant in variants for identity in variant})
+    sources = sorted({programs[identity]['source'] for variant in variants for identity in callback_programs(variant)})
     # A ray variant supplies the callback template; it is the first variant in ray-only sequences.
     template = next((variant for variant in variants if not is_compute_variant(variant)), variants[0])
     selected = {stage: dict(program, function=f'GraphSource{sources.index(program["source"])}::' + program['function'])
@@ -587,9 +621,17 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, c
     prefix, body = wrapper.split('uint TraceAndShade(', 1)
     first_callbacks, first_adapters = adapt_legacy_callbacks(selected)
     body = body.replace(first_adapters, '', 1) if first_adapters else body
-    if any(programs[identity]['output'] in ('Ray', 'Color') for variant in variants for identity in variant):
+    if any(programs[identity]['output'] in ('Ray', 'Color') for variant in variants for identity in callback_programs(variant)):
         if '#include "_ludus_ray/ray_shader.slang"' not in prefix:
             prefix += '#include "_ludus_ray/ray_shader.slang"\n'
+    if any(variant[-1] == TRIANGLE_LOOP_TAG for variant in variants):
+        choices = ', '.join('1' if variant[-1] == TRIANGLE_LOOP_TAG else '0' for variant in variants)
+        prefix = ('#define LUDUS_GRAPH_TRAVERSAL_STRATEGIES 1\n'
+                  'uint GetGraphTraversalStrategy();\n' + prefix)
+        prefix += ('uint GetGraphTraversalStrategy() {\n'
+                   f'    const uint strategies[] = {{ {choices} }};\n'
+                   '    uint index = (Sampling.z >> LUDUS_GRAPH_PASS_INDEX_SHIFT) & LUDUS_GRAPH_PASS_INDEX_MASK;\n'
+                   f'    return index < {len(variants)} ? strategies[index] : 0;\n}}\n')
     prefix = prefix.replace('#define LUDUS_SCENE_RAY_INTERFACE 1',
                             '#define LUDUS_SCENE_RAY_INTERFACE 1\n#define LUDUS_GRAPH_PERSISTENT_PIPELINE 1')
     prefix += '[[vk::binding(6, 0)]] RWStructuredBuffer<uint4> GraphBuffer0;\n'
@@ -606,7 +648,7 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, c
     variant_callbacks = []
     for index, variant in enumerate(variants):
         variant_selected = {stage: dict(programs[identity], function=f'GraphSource{sources.index(programs[identity]["source"])}::' + programs[identity]['function'])
-                            for stage, identity in zip(STAGES, variant)}
+                            for stage, identity in zip(STAGES, callback_programs(variant))}
         callbacks, adapters = adapt_legacy_callbacks(variant_selected, str(index))
         variant_callbacks.append(callbacks)
         prefix += adapters

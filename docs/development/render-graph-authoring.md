@@ -628,13 +628,15 @@ There is no CPU tracing or pixel readback in this path. The editor's World/camer
 updates create replacement inputs, retaining the last drawable view until they
 are ready, just as raster graph updates do.
 
-This profile requires native ray support: Vulkan acceleration structures and
+The default native-query profile requires Vulkan acceleration structures and
 `VK_KHR_ray_query`, or Metal acceleration structures/intersection queries on Apple
 GPU family 9 or newer. Metal API availability alone does not admit older GPUs
 without dedicated ray hardware. Software/CPU Vulkan adapters are excluded. The
 shader uses native traversal inside a compute invocation; dedicated ray stages or
-shader tables are not required for hardware acceleration. It contains no manual
-BVH traversal or software ray fallback. WebGPU and WebGL2 do not execute this
+shader tables are not required for hardware acceleration. The default
+RayTracingPipeline traversal is native. The explicit triangle-loop strategy
+described below uses ordinary GPU compute and does not require ray hardware.
+WebGPU and WebGL2 do not execute this
 profile. Packages can retain browser raster targets alongside native targets;
 their `capability_profiles.ray_tracing` lists only `metal` and/or `spirv`, and no
 browser RT recipe or ray shader artifact is emitted. A browser-only RT manifest
@@ -647,15 +649,75 @@ for a renderer with optional RT, then inspect `GetRayCapabilities` on that actua
 device/API. A capable physical GPU is insufficient when its logical device has
 not enabled the ray profile. In particular, the currently adopted Vulkan editor
 device does not expose ray queries; engine-owned Vulkan device negotiation is a
-separate path. Use `Required.RayQueries` for an RT-only application. An unavailable
+separate path. Use `Required.RayQueries` for an application that requires native
+queries. Software-only configurations do not request this feature. An unavailable native
 profile returns `Unsupported` before scene retention or ray dispatch; a failed
 replacement preserves the prior drawable view. Old software-ray runtime packages
 must be rebuilt; they are rejected rather than reinterpreted as accelerated graphs.
 
+### Reuse ray callbacks in compute pipelines
+
+Assign the same `ray_generation`, `miss` and `closest_hit` manifest programs to
+both a **RayTracingPipeline** and a **ComputePipeline** with a Scene input. Keep
+the shader sources, ScenePayload and query budgets shared. Choose the pipeline in
+each graph configuration; only the node kind and its state differ. Scene compute
+nodes use `"state": {}` and the fixed 64×1×1 workgroup. A callback compute node
+must have all three callbacks and no `compute` shader. Existing single-kernel
+compute nodes remain supported.
+
+Use **Invocation → Ray traversal** in the pipeline editor, accessible from both
+Properties and the canvas pipeline editor, to choose the intersection strategy:
+
+| Selection | Behavior |
+| --- | --- |
+| Automatic | Shared callbacks in a ComputePipeline use `TriangleLoop`; a RayTracingPipeline and existing single-kernel compute passes use `NativeQuery`. |
+| Triangle loop (`TriangleLoop`) | Renderer-owned two-sided ray/triangle intersections scan the selected World's packed triangles. Closest queries retain the nearest accepted hit; visibility queries stop at the first accepted hit. |
+| Native ray query (`NativeQuery`) | Inline native acceleration-structure queries perform triangle traversal. |
+
+The optional JSON field is `invocation.traversal`:
+
+```json
+"invocation": {"dimensions": "ColorTarget", "traversal": "TriangleLoop"}
+```
+
+Both strategies apply to `TraceClosest`, `TestVisibility` and `TraceAndShade`,
+including queries issued by closest-hit and miss callbacks. The wrapper dispatches
+the same authored callbacks and preserves payload, query budgets and failure
+status. Passes sharing the same callbacks can select different strategies in one
+package; the cooked variant includes the strategy so one pass cannot overwrite
+another's selection. Changing it rebuilds the wrapper without rewriting shaders.
+
+The loop uses the same fixed-mip material alpha acceptance as native traversal.
+Its relative parallel tolerance rejects degenerate and nearly parallel triangles;
+its far endpoint is exclusive, and equal-distance hits retain the first packed
+triangle. Edge, tolerance and tie behavior can differ from hardware intersection.
+It is a linear scan intended for small scenes and comparison, not an acceleration
+structure. Adding another strategy belongs at the shared traversal boundary rather
+than in each author's callbacks.
+
+A configuration whose ray passes all select `TriangleLoop` runs on native Metal
+or Vulkan devices with the required ordinary compute/storage capabilities, including
+GPUs without RT hardware and Vulkan software adapters. Its cooked compute artifact
+has no ray-query instructions or acceleration-structure binding. Preparation uploads
+the World triangle/material data without creating BLAS/TLAS resources. Callback
+sources, payloads, query budgets, persistent buffers, camera updates and transactional
+publication use the same contracts as native queries.
+
+A configuration containing any `NativeQuery` pass still requires enabled native ray
+support. An unavailable explicit native strategy returns `Unsupported`; it is not
+silently changed to another traversal. Native and software configurations can share
+one package and the same authored callback functions. Cooking a configuration selects
+its matching compute artifact and records each pass's traversal requirement in
+version 18 runtime packages. Earlier package versions retain native-ray requirements.
+Browser rendering remains outside this profile. The current native RayTracingPipeline
+also uses inline queries in a compute wrapper; dedicated ray stages and shader tables
+are not implemented. Any-hit, procedural intersection and callable stages
+remain outside this triangle callback profile.
+
 ### Support developers and players without RT hardware
 
 The World viewport selects its renderer automatically. An authored project graph
-with raytracing passes runs only when the current logical device has enabled native
+with native-query raytracing passes runs only when the current logical device has enabled native
 triangle acceleration structures, inline ray queries and the required compute
 profile. Otherwise the viewport uses the engine's authored raster graph and keeps
 rendering the current World and camera. A raster project graph continues to run as
@@ -668,7 +730,7 @@ settings; it does not edit the project's graph or shader manifest. Turn it off t
 return to Automatic and re-evaluate the requested project graph. Device restarts
 also re-evaluate selection against the new device's enabled capabilities. Pending
 or failed replacements keep the last completed image until the new renderer
-presents. No selection invokes CPU raytracing or shader-based software traversal.
+presents. Automatic renderer selection never changes the authored traversal strategy or invokes CPU raytracing.
 
 Runtime applications ship an authored raster package alongside an optional native
 RT package and use `RenderGraphActivation::StageSelected`. After initializing the
@@ -684,9 +746,15 @@ const ludus::graphics::rhi::RasterStatus status = activation.StageSelected(
         : ludus::graphics::renderer::RenderGraphPreference::Automatic);
 ```
 
+The optional ray package may instead be a software-only `TriangleLoop` configuration.
+Automatic then stages it without requiring native ray capabilities; its normal compute
+admission still applies. Force raster continues to select the raster package. Activation
+reports `ComputeRayTracing` for the software configuration and `HardwareRayTracing` when
+any pass requires native queries.
+
 The raster package is mandatory and must contain no raytracing pass. An omitted
-RT package selects raster even on RT hardware. Selection queries enabled native
-capabilities before preparing any ray shader or acceleration structure, releases
+ray package selects raster even on RT hardware. For native-query packages, selection
+queries enabled native capabilities before preparing any ray shader or acceleration structure, releases
 the unselected package and then follows normal asynchronous activation. Use
 `GetReport().ActiveRenderer` to identify the drawing renderer and
 `CandidateRenderer` for a staged selection. Re-stage fresh packages to change the
@@ -697,7 +765,8 @@ shader/scene errors and allocation failures remain explicit errors; selection do
 not hide them by rewriting a graph.
 
 Keep World, gameplay and material inputs shared; only renderer-specific effects
-and quality settings should depend on RT. Raster can use authored shadow maps,
+and quality settings should depend on RT. Software traversal configurations keep
+the same World, camera and material inputs on devices without native ray support. Raster can use authored shadow maps,
 probes, baked lighting and reflection approximations. Validate both renderer
 selections and the explicit unsupported-RT case in CI; native ray pixel tests
 require a qualified physical GPU. An RT-only host can instead use `Stage` and
@@ -914,17 +983,21 @@ remain shader policy.
 
 ### Author scene compute passes
 
-A **ComputePipeline** with a **Scene** input is a *scene compute pass*: one authored
-function that runs once per pixel, traces the selected World's static opaque
-triangles with native ray queries, and returns linear radiance. It has no hit or
-miss callbacks. It joins the [ordered ray sequence](#order-ray-passes-and-share-persistent-buffers)
-as a member like a Ray Tracing Pipeline node, so it uses the same hardware profile,
+A **ComputePipeline** with a **Scene** input is a *scene compute pass*. It accepts
+either one authored compute function returning linear radiance per pixel, or the
+[shared ray callback set](#reuse-ray-callbacks-in-compute-pipelines). A single-kernel
+pass has no hit or miss callbacks. Its queries use native traversal by default;
+`invocation.traversal` selects the strategy explicitly. It joins the [ordered ray sequence](#order-ray-passes-and-share-persistent-buffers)
+as a member like a Ray Tracing Pipeline node, so it uses the same traversal profile,
 the same renderer selection and the same post-processing. A package that contains
 one is a ray package: `SelectRenderGraphRenderer`, `StageSelected` and the
 viewport's automatic and **Force raster** choices fall back to the authored raster
-graph without native rays. The runtime has no automatic software traversal fallback;
-the [simple triangle-loop template](#use-the-simple-triangle-loop-template) implements
-its own intersection tests inside this same native-capability profile. A ComputePipeline
+graph when the selected configuration requires unavailable native queries.
+An explicitly selected `TriangleLoop` configuration runs through ordinary compute;
+renderer selection does not substitute another traversal strategy. Existing kernel
+passes keep their native default unless `invocation.traversal` selects the loop.
+The [simple triangle-loop template](#use-the-simple-triangle-loop-template) implements
+its own intersection tests and can select this compute-only runtime too. A ComputePipeline
 without a Scene input is still a draft and returns the `Capability` diagnostic.
 
 The node accepts the same ports as a Ray Tracing Pipeline node:

@@ -89,10 +89,10 @@ enum class RenderGraphAllocation : foundation::uint8
     /// exactly as before RG4. Encodes the same commands as ExactPool.
     SerialControl,
 };
-/// Application renderer preference; never enables emulated ray traversal.
+/// Application renderer preference; uses the traversal explicitly authored in the selected package.
 enum class RenderGraphPreference : foundation::uint8
 {
-    Automatic,   ///< Prefer an available authored ray graph on a device with enabled native traversal.
+    Automatic,   ///< Prefer an authored ray graph whose explicit native/software profile the device admits.
     ForceRaster, ///< Use the authored raster graph even on a hardware ray device.
 };
 /// Execution model selected for one complete authored graph.
@@ -100,9 +100,12 @@ enum class RenderGraphRenderer : foundation::uint8
 {
     Raster,             ///< Raster passes; no raytracing is dispatched.
     HardwareRayTracing, ///< Native acceleration structures and hardware ray queries.
+    ComputeRayTracing,  ///< GPU compute intersects World triangles without requiring native ray support.
 };
-/// Whether a validated plan contains any raytracing pass. No allocation or GPU work.
+/// Whether a validated plan contains a pass requiring native ray queries. No allocation or GPU work.
 [[nodiscard]] bool RequiresHardwareRayTracing(const RenderGraphPlan& plan) noexcept;
+/// Whether a validated plan contains any software or native triangle ray pass. No allocation or GPU work.
+[[nodiscard]] bool UsesRayTracing(const RenderGraphPlan& plan) noexcept;
 /// Whether a validated plan denoises any ray pass (an authored Denoise node). No allocation or GPU work.
 [[nodiscard]] bool RequiresDenoising(const RenderGraphPlan& plan) noexcept;
 /// Whether this renderer build includes the optional OIDN denoiser (LUDUS_ENABLE_OIDN). Without it,
@@ -173,14 +176,14 @@ public:
     [[nodiscard]] rhi::RasterStatus Stage(foundation::core::UniquePtr<RenderGraphPackage> package) noexcept;
     /// Select and stage an authored renderer, taking ownership of both packages.
     /// @param rasterPackage Loaded raster-only graph; mandatory on every device.
-    /// @param rayPackageOrNull Optional loaded graph containing a hardware ray pass.
-    /// @param preference Automatic prefers the ray package only when native traversal and
-    /// compute are enabled on this device. ForceRaster always stages rasterPackage.
+    /// @param rayPackageOrNull Optional loaded graph containing software or native triangle ray passes.
+    /// @param preference Automatic stages a software-only ray package through ordinary compute. Native
+    /// packages require enabled native traversal and compute. ForceRaster always stages rasterPackage.
     /// @return Stage's result for the selected package. Invalid packages/preferences or device
     /// query failures preserve both active and candidate generations. An unsupported ray API
     /// selects raster before preparing shaders or acceleration structures. Unselected packages
     /// are released. Shader, scene or allocation failures are reported through normal activation;
-    /// they never invoke software raytracing. Re-stage fresh packages to change the preference.
+    /// they never change the authored traversal strategy. Re-stage fresh packages to change the preference.
     [[nodiscard]] rhi::RasterStatus
     StageSelected(foundation::core::UniquePtr<RenderGraphPackage> rasterPackage,
                   foundation::core::UniquePtr<RenderGraphPackage> rayPackageOrNull,

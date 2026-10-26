@@ -152,6 +152,8 @@ struct RenderGraphPackage::State final
     bool HasPixelBuffers = false;
     bool HasSceneData = false;
     bool HasNativeRay = false;
+    bool HasExplicitRayTraversal = false;
+    bool HasNativeRayQueries = false;
     bool HasIndependentPrograms = false;
     bool HasVisibilityFields = false;
     bool HasPersistentBuffers = false;
@@ -544,6 +546,16 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeRecords(ByteReader& in
         }
         pass.SourceColor = HasBilinearUpscale == true ? inoutReader.ReadWord() : format::ABSENT;
         pass.DenoisingQuality = HasDenoising == true ? inoutReader.ReadWord() : 0;
+        const uint32 traversal = HasExplicitRayTraversal == true ? inoutReader.ReadWord() : 0;
+        if (traversal > static_cast<uint32>(format::RayTraversal::TriangleLoop) ||
+            (program != static_cast<uint32>(format::Technique::RayTracing) && traversal != 0))
+        {
+            return RenderGraphPackageStatus::Malformed;
+        }
+        pass.Traversal = static_cast<format::RayTraversal>(traversal);
+        HasNativeRayQueries =
+            HasNativeRayQueries == true || (program == static_cast<uint32>(format::Technique::RayTracing) &&
+                                            pass.Traversal == format::RayTraversal::NativeQuery);
         const bool isUpscale = format::IsImageTechnique(static_cast<format::Technique>(program)) == true;
         if (pass.DenoisingQuality > static_cast<uint32>(format::ProcessingQuality::High) ||
             (isUpscale == true && (HasBilinearUpscale == false || pass.SceneData != 0)) ||
@@ -603,14 +615,15 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != format::PACKAGE_MAGIC ||
-        (version != format::METALFX_SPATIAL_PACKAGE_VERSION && version != format::DENOISING_PACKAGE_VERSION &&
-         version != format::BILINEAR_PACKAGE_VERSION && version != format::TONE_MAPPING_PACKAGE_VERSION &&
-         version != format::ACCUMULATION_PACKAGE_VERSION && version != format::FORWARD_PACKAGE_VERSION &&
-         version != format::PIXEL_BUFFER_PACKAGE_VERSION && version != format::VISIBILITY_PACKAGE_VERSION &&
-         version != format::ORDERED_PACKAGE_VERSION && version != format::STORAGE_PACKAGE_VERSION &&
-         version != format::INDEPENDENT_PROGRAM_PACKAGE_VERSION && version != format::NATIVE_RAY_PACKAGE_VERSION &&
-         version != format::SCENE_PACKAGE_VERSION && version != format::VIEW_PACKAGE_VERSION &&
-         version != format::NAMED_PACKAGE_VERSION && version != format::LEGACY_PACKAGE_VERSION))
+        (version != format::SOFTWARE_RAY_PACKAGE_VERSION && version != format::METALFX_SPATIAL_PACKAGE_VERSION &&
+         version != format::DENOISING_PACKAGE_VERSION && version != format::BILINEAR_PACKAGE_VERSION &&
+         version != format::TONE_MAPPING_PACKAGE_VERSION && version != format::ACCUMULATION_PACKAGE_VERSION &&
+         version != format::FORWARD_PACKAGE_VERSION && version != format::PIXEL_BUFFER_PACKAGE_VERSION &&
+         version != format::VISIBILITY_PACKAGE_VERSION && version != format::ORDERED_PACKAGE_VERSION &&
+         version != format::STORAGE_PACKAGE_VERSION && version != format::INDEPENDENT_PROGRAM_PACKAGE_VERSION &&
+         version != format::NATIVE_RAY_PACKAGE_VERSION && version != format::SCENE_PACKAGE_VERSION &&
+         version != format::VIEW_PACKAGE_VERSION && version != format::NAMED_PACKAGE_VERSION &&
+         version != format::LEGACY_PACKAGE_VERSION))
     {
         return RenderGraphPackageStatus::UnsupportedVersion;
     }
@@ -624,6 +637,7 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
     candidate->HasBilinearUpscale = version >= format::BILINEAR_PACKAGE_VERSION;
     candidate->HasMetalFxSpatialUpscale = version >= format::METALFX_SPATIAL_PACKAGE_VERSION;
     candidate->HasDenoising = version >= format::DENOISING_PACKAGE_VERSION;
+    candidate->HasExplicitRayTraversal = version >= format::SOFTWARE_RAY_PACKAGE_VERSION;
     candidate->HasNativeRay = version >= format::NATIVE_RAY_PACKAGE_VERSION;
     candidate->HasIndependentPrograms = version >= format::INDEPENDENT_PROGRAM_PACKAGE_VERSION;
     candidate->HasVisibilityFields = version >= format::VISIBILITY_PACKAGE_VERSION;
@@ -710,7 +724,11 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
             {
                 const usize index = static_cast<usize>(role);
                 rhi::RasterShaderDescription description;
-                SetRenderGraphRayInterface(description, rhi::ShaderStage::Compute);
+                SetRenderGraphRayInterface(description,
+                                           rhi::ShaderStage::Compute,
+                                           false,
+                                           false,
+                                           candidate->HasNativeRayQueries);
                 for (usize i = 0; i < description.Bindings.size(); ++i)
                 {
                     candidate->Bindings[index][i] = description.Bindings[i];
@@ -735,7 +753,11 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
                 }
                 if (hasVisibilityBuffer == true)
                 {
-                    SetRenderGraphRayInterface(description, rhi::ShaderStage::Compute, false, true);
+                    SetRenderGraphRayInterface(description,
+                                               rhi::ShaderStage::Compute,
+                                               false,
+                                               true,
+                                               candidate->HasNativeRayQueries);
                     for (usize i = base; i < description.Bindings.size(); ++i)
                     {
                         candidate->Bindings[index][bindingCount++] = description.Bindings[i];
@@ -953,7 +975,8 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
             SetRenderGraphRayInterface(description,
                                        description.Artifact.Stage,
                                        isPersistentCompute,
-                                       result.HasVisibilityBuffer);
+                                       result.HasVisibilityBuffer,
+                                       state.HasNativeRayQueries);
         }
         if (role >= format::FORWARD_STAGE_ROLE_FIRST)
         {
@@ -1044,7 +1067,19 @@ bool RequiresHardwareRayTracing(const RenderGraphPlan& plan) noexcept
 {
     for (usize i = 0; i < plan.Passes.GetSize(); ++i)
     {
-        if (plan.Passes[i].Program == format::Technique::RayTracing)
+        if (plan.Passes[i].Program == format::Technique::RayTracing &&
+            plan.Passes[i].Traversal == format::RayTraversal::NativeQuery)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+bool UsesRayTracing(const RenderGraphPlan& plan) noexcept
+{
+    for (usize index = 0; index < plan.Passes.GetSize(); ++index)
+    {
+        if (plan.Passes[index].Program == format::Technique::RayTracing)
         {
             return true;
         }
@@ -1194,9 +1229,11 @@ Status RenderGraphActivation::Stage(core::UniquePtr<RenderGraphPackage> package)
     // A newer request supersedes any unactivated candidate, whatever its outcome.
     state.Candidate.Reset();
     state.Report.CandidateGeneration = ++state.NextSerial;
-    state.Report.CandidateRenderer = RequiresHardwareRayTracing(package->GetPlan()) == true
-                                         ? RenderGraphRenderer::HardwareRayTracing
-                                         : RenderGraphRenderer::Raster;
+    state.Report.CandidateRenderer =
+        RequiresHardwareRayTracing(package->GetPlan()) == true
+            ? RenderGraphRenderer::HardwareRayTracing
+            : (UsesRayTracing(package->GetPlan()) == true ? RenderGraphRenderer::ComputeRayTracing
+                                                          : RenderGraphRenderer::Raster);
     if (AreIdentitiesEqual(package->GetInterfaceIdentity(), state.Interface) == false)
     {
         state.Report.Candidate = RenderGraphCandidateState::RestartRequired;
@@ -1237,9 +1274,9 @@ Status RenderGraphActivation::StageSelected(core::UniquePtr<RenderGraphPackage> 
         return Status::InvalidState;
     }
     if (rasterPackage.Get() == nullptr || rasterPackage->IsLoaded() == false ||
-        RequiresHardwareRayTracing(rasterPackage->GetPlan()) == true ||
+        UsesRayTracing(rasterPackage->GetPlan()) == true ||
         (rayPackageOrNull.Get() != nullptr &&
-         (rayPackageOrNull->IsLoaded() == false || RequiresHardwareRayTracing(rayPackageOrNull->GetPlan()) == false)))
+         (rayPackageOrNull->IsLoaded() == false || UsesRayTracing(rayPackageOrNull->GetPlan()) == false)))
     {
         return Status::InvalidDescription;
     }
@@ -1248,6 +1285,11 @@ Status RenderGraphActivation::StageSelected(core::UniquePtr<RenderGraphPackage> 
     if (status != Status::Ready)
     {
         return status;
+    }
+    if (preference == RenderGraphPreference::Automatic && rayPackageOrNull.Get() != nullptr &&
+        RequiresHardwareRayTracing(rayPackageOrNull->GetPlan()) == false)
+    {
+        return Stage(core::Move(rayPackageOrNull));
     }
     return selected == RenderGraphRenderer::HardwareRayTracing && rayPackageOrNull.Get() != nullptr
                ? Stage(core::Move(rayPackageOrNull))

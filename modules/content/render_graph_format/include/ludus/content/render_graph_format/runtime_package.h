@@ -45,14 +45,17 @@
 /// Version 15 appends SourceColor and admits the renderer-owned BilinearUpscale technique.
 /// Version 16 appends DenoisingQuality for OIDN RT HDR filtering before display conversion.
 /// Version 17 admits MetalFX Spatial roles without changing the version 16 record layout.
+/// Version 18 appends Traversal to every pass; earlier ray records require native queries.
 namespace ludus::content::render_graph_format
 {
 /// "LURG" read as a little-endian uint32.
 inline constexpr foundation::uint32 PACKAGE_MAGIC = 0x4752554CU;
 /// First generation admitting MetalFX Spatial roles; version 16's pass layout is unchanged.
 inline constexpr foundation::uint32 METALFX_SPATIAL_PACKAGE_VERSION = 17;
+/// First generation carrying software/native ray traversal requirements per pass.
+inline constexpr foundation::uint32 SOFTWARE_RAY_PACKAGE_VERSION = 18;
 /// Current runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = METALFX_SPATIAL_PACKAGE_VERSION;
+inline constexpr foundation::uint32 PACKAGE_VERSION = SOFTWARE_RAY_PACKAGE_VERSION;
 /// First package carrying explicit OIDN denoising quality per ray pass.
 inline constexpr foundation::uint32 DENOISING_PACKAGE_VERSION = 16;
 /// First package carrying the renderer-owned bilinear image operation.

@@ -577,6 +577,22 @@ class BuildTests(unittest.TestCase):
             with self.assertRaises(ToolingError):
                 self.run_build()
 
+    def test_software_ray_metal_rejects_native_resources_and_preserves_binding_gaps(self):
+        import sys
+        sys.path.insert(0, str(ROOT / 'cmake/shaders'))
+        from compile_graph_stage import verify_ray_compute_metal
+        interface = {'entries': [{'binding': 0, 'kind': 'UniformBuffer'},
+                                  {'binding': 6, 'kind': 'StorageReadWrite'}]}
+        code = 'kernel void Main(constant float4* parameters [[buffer(0)]], device uint4* values [[buffer(6)]]) {}'
+        self.assertEqual('Main', verify_ray_compute_metal(code, interface, False))
+        with self.assertRaisesRegex(RuntimeError, 'binding differs'):
+            verify_ray_compute_metal(code.replace('buffer(6)', 'buffer(5)'), interface, False)
+        with self.assertRaisesRegex(RuntimeError, 'must not require native'):
+            verify_ray_compute_metal('#include <metal_raytracing>\n' + code, interface, False)
+        interface['entries'].append({'binding': 5, 'kind': 'RayScene'})
+        with self.assertRaisesRegex(RuntimeError, 'must not require native'):
+            verify_ray_compute_metal(code, interface, False)
+
     def test_forward_metal_arrays_are_opt_in_and_independently_sized(self):
         import sys
         sys.path.insert(0, str(ROOT / 'cmake/shaders'))

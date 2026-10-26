@@ -1,4 +1,5 @@
 #include <ludus/graphics/renderer/render_graph.hpp>
+#include <ludus/graphics/renderer/render_graph_activation.hpp>
 
 #include "../shaders/renderer_gpu_preview_layout.h"
 #include "internal/gpu_denoiser.h"
@@ -514,6 +515,11 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
               pass.ToneMappingExposure <= format::MAX_TONE_MAPPING_EXPOSURE) == false) ||
             (pass.Program != format::Technique::RayTracing &&
              (pass.AccumulationSamples != 0 || pass.ToneMappingExposure != 0 || pass.DenoisingQuality != 0)))
+        {
+            return Status::InvalidDescription;
+        }
+        if (static_cast<uint32>(pass.Traversal) > static_cast<uint32>(format::RayTraversal::TriangleLoop) ||
+            (pass.Program != format::Technique::RayTracing && pass.Traversal != format::RayTraversal::NativeQuery))
         {
             return Status::InvalidDescription;
         }
@@ -1542,6 +1548,15 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
         {
             return Status::Unsupported;
         }
+    }
+    bool hasNativeRayBinding = false;
+    for (const rhi::RasterBinding& binding : programs.RayCompute.Bindings)
+    {
+        hasNativeRayBinding = hasNativeRayBinding == true || binding.Kind == rhi::RasterBindingKind::RayScene;
+    }
+    if (UsesRayTracing(plan) == true && RequiresHardwareRayTracing(plan) != hasNativeRayBinding)
+    {
+        return Status::InvalidDescription;
     }
     const StaticArray<const rhi::RasterShaderDescription*, format::FORWARD_STAGE_ROLE_COUNT> forwardStages{
         {&programs.ForwardVertex,

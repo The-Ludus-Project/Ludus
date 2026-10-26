@@ -61,7 +61,10 @@ QStringList GetPipelineShaderStages(const QString& kind)
     }
     if (kind == QStringLiteral("ComputePipeline"))
     {
-        return {QStringLiteral("compute")};
+        return {QStringLiteral("compute"),
+                QStringLiteral("ray_generation"),
+                QStringLiteral("miss"),
+                QStringLiteral("closest_hit")};
     }
     if (kind == QStringLiteral("RayTracingPipeline"))
     {

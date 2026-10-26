@@ -1,7 +1,7 @@
-"""Scene compute passes: ComputePipeline nodes that trace the World with native ray queries.
+"""Scene compute passes: kernels or shared ray callbacks using selected World traversal.
 
 A ComputePipeline with a Scene input lowers to a member of the ordered ray sequence whose
-callback set is one authored kernel. It keeps the RayTracing pass kind, the numeric
+callback set is one authored kernel or the shared ray-generation/miss/closest-hit set. It keeps the RayTracing pass kind, the numeric
 Technique::RayTracing record and the persistent ray wrapper; only the offline plan names its
 source node kind. See .kiro/specs/compute-ray-tracing/design.md, D1-D3.
 """
@@ -17,7 +17,13 @@ SIGNATURE = ('RayLaunch', 'Radiance')
 def lower(node, where, graph):
     """Validate a scene compute node and return its RayTracing record and port mappings."""
     stages = [shader['stage'] for shader in node['shaders']]
-    graph._require(stages == [ray.COMPUTE_STAGE], 'IncompletePipeline', where,
+    has_callbacks = any(stage in ray.STAGES for stage in stages)
+    if has_callbacks:
+        graph._require(len(stages) == len(ray.STAGES) and set(stages) == set(ray.STAGES),
+                       'IncompletePipeline', where, 'scene compute callbacks require ray_generation, miss and closest_hit without a compute kernel',
+                       field='shaders', expected=', '.join(ray.STAGES), actual=', '.join(stages),
+                       repair='Assign the same three callback programs used by a ray pipeline, or use one compute kernel.')
+    graph._require(has_callbacks or stages == [ray.COMPUTE_STAGE], 'IncompletePipeline', where,
                    'a scene compute pass requires exactly one compute program',
                    field='shaders', expected=ray.COMPUTE_STAGE, actual=', '.join(stages) or 'no stages',
                    repair='Assign one build-manifest compute program in Shaders.')
