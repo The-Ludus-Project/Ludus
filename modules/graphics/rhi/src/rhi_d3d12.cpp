@@ -725,7 +725,14 @@ bool SubmitCreation(ID3D12CommandList* commands, uint64& outFence) noexcept
     // A failed signal cannot prove completion. Retain the creation backing until
     // shutdown instead of reclaiming it through the failed publication path.
     outFence = ~uint64{0};
-    return SignalFence(outFence);
+    if (SignalFence(outFence) == false)
+    {
+        // Work may have executed without a completion identity. Stop the session
+        // before another operation can reuse a possibly modified resource.
+        static_cast<void>(FailFrame(StartupError::DeviceLost));
+        return false;
+    }
+    return true;
 }
 } // namespace d3d12
 

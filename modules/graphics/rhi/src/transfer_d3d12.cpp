@@ -94,12 +94,14 @@ RasterStatus MakeBuffer(usize size, D3D12_HEAP_TYPE type, ComOwner<ID3D12Resourc
     outResource = ComOwner<ID3D12Resource>(resourceOrNull);
     return RasterStatus::Ready;
 }
-RasterStatus PrepareTransfer(Transfer& inoutTransfer,
-                             bool isReadback,
-                             const uint8* bytesOrNull,
-                             usize size,
-                             usize byteCount = 0) noexcept
+RasterStatus
+PrepareTransfer(Transfer& inoutTransfer, bool isReadback, BorrowedView<const uint8> bytes, usize size) noexcept
 {
+    if (bytes.IsValid() == false || bytes.GetSize() > size ||
+        (isReadback == false && size != 0 && bytes.IsEmpty() == true))
+    {
+        return RasterStatus::InvalidDescription;
+    }
     if (inoutTransfer.Fence != 0)
     {
         return RasterStatus::CapacityExceeded;
@@ -130,7 +132,7 @@ RasterStatus PrepareTransfer(Transfer& inoutTransfer,
                 return GetTransferFailure(mapped);
             }
             std::memset(mappedOrNull, 0, size);
-            std::memcpy(mappedOrNull, bytesOrNull, byteCount == 0 ? size : byteCount);
+            std::memcpy(mappedOrNull, bytes.GetDataOrNull(), bytes.GetSize());
             inoutTransfer.Staging->Unmap(0, nullptr);
         }
     }
@@ -179,8 +181,7 @@ RasterStatus SubmitTransfer(Transfer& inoutTransfer) noexcept
 RasterStatus UploadBuffer(Transfer& inoutTransfer,
                           usize bufferSlot,
                           const BufferDescription& description,
-                          const uint8* bytes,
-                          usize size) noexcept
+                          BorrowedView<const uint8> bytes) noexcept
 {
     ComOwner<ID3D12Resource> buffer;
     const usize allocation = (description.Size + CBV_ALIGNMENT - 1) / CBV_ALIGNMENT * CBV_ALIGNMENT;
@@ -189,7 +190,7 @@ RasterStatus UploadBuffer(Transfer& inoutTransfer,
     {
         return status;
     }
-    status = PrepareTransfer(inoutTransfer, false, bytes, allocation, size);
+    status = PrepareTransfer(inoutTransfer, false, bytes, allocation);
     if (status != RasterStatus::Ready)
     {
         return status;
@@ -262,8 +263,7 @@ void PollInitialBuffers() noexcept
 }
 RasterStatus CreateInitialBuffer(const LifetimeUploadTarget& target,
                                  const BufferDescription& description,
-                                 const uint8* bytes,
-                                 usize size) noexcept
+                                 BorrowedView<const uint8> bytes) noexcept
 {
     const usize slot = target.Buffer;
     const uint32 request = target.Request;
@@ -278,7 +278,7 @@ RasterStatus CreateInitialBuffer(const LifetimeUploadTarget& target,
         return RasterStatus::CapacityExceeded;
     }
     // Ready is queue-usable: subsequent draws/copies use the same ordered queue.
-    const RasterStatus status = UploadBuffer(transfer, slot, description, bytes, size);
+    const RasterStatus status = UploadBuffer(transfer, slot, description, bytes);
     if (status == RasterStatus::Ready)
     {
         transfer.Request = request;
@@ -306,12 +306,12 @@ RasterStatus LifetimeUpload(usize slot,
                             const uint8* bytes,
                             usize size) noexcept
 {
-    return UploadBuffer(gTransfers[0][slot], target.Buffer, description, bytes, size);
+    return UploadBuffer(gTransfers[0][slot], target.Buffer, description, {bytes, size});
 }
 RasterStatus LifetimeReadback(usize slot, BufferRole, const LifetimeCopyRange& range) noexcept
 {
     Transfer& transfer = gTransfers[1][slot];
-    const RasterStatus status = PrepareTransfer(transfer, true, nullptr, range.Size);
+    const RasterStatus status = PrepareTransfer(transfer, true, {}, range.Size);
     if (status != RasterStatus::Ready)
     {
         return status;
@@ -323,7 +323,7 @@ RasterStatus LifetimeReadback(usize slot, BufferRole, const LifetimeCopyRange& r
 RasterStatus LifetimeBufferUpdate(usize slot, BufferRole, const LifetimeCopyRange& range, const uint8* bytes) noexcept
 {
     Transfer& transfer = gTransfers[0][slot];
-    const RasterStatus status = PrepareTransfer(transfer, false, bytes, range.Size);
+    const RasterStatus status = PrepareTransfer(transfer, false, {bytes, range.Size}, range.Size);
     if (status != RasterStatus::Ready)
     {
         return status;
@@ -341,7 +341,11 @@ RasterStatus LifetimeTextureTransfer(usize slot, const TextureTransfer& informat
     const bool isReadback = information.Operation == TextureTransferOperation::Readback;
     const bool isCopy = information.Operation == TextureTransferOperation::Copy;
     Transfer& transfer = gTransfers[isReadback == true ? 1 : 0][slot];
-    const RasterStatus ready = PrepareTransfer(transfer, isReadback, bytesOrNull, information.Size);
+    const RasterStatus ready = PrepareTransfer(
+        transfer,
+        isReadback,
+        isReadback == true ? BorrowedView<const uint8>{} : BorrowedView<const uint8>{bytesOrNull, information.Size},
+        information.Size);
     if (ready != RasterStatus::Ready)
     {
         return ready;

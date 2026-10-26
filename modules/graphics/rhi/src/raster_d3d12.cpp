@@ -391,7 +391,7 @@ RasterStatus RasterCreateBuffer(usize slot,
     {
         return RasterStatus::Unsupported;
     }
-    return CreateInitialBuffer({slot, request}, description, bytes.data(), bytes.size());
+    return CreateInitialBuffer({slot, request}, description, {bytes.data(), bytes.size()});
 }
 RasterStatus RasterCreateTexture(usize slot,
                                  const TextureDescription& description,

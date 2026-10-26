@@ -60,7 +60,7 @@ a private release protocol over the Ludus owner.
 | Unsupported variants | 32-bit x86, ARM64 and ARM64EC; UWP/GDK; Windows before 10 version 1703 (per-monitor DPI v2) |
 | Dependency pins | No runtime dependencies; build-time Slang 2026.1.2 (Windows x86_64) and DXC 1.9.2609 in `config/shader_toolchain.json`; Catch2 for tests through the existing Windows Conan profile |
 | Validation | Existing Clang D1/D2 lane: `.github/workflows/windows-direct3d12.yml` on `windows-2022` (WARP; no GPU). MSVC, MSBuild and physical-GPU acceptance pending |
-| Owner and branch | D1: `codex/windows-direct3d12-rhi` (merged); D2: `codex/windows-d3d12-dxil-draw`; D3a: `codex/windows-integration-d3a`; D3b: `codex/windows-integration-d3b` |
+| Owner and branch | D1: `codex/windows-direct3d12-rhi` (merged); D2: `codex/windows-d3d12-dxil-draw`; D3a: `codex/windows-integration-d3a`; D3b: `codex/windows-integration-d3b`; D4a: `codex/windows-d4a` |
 | Last audited base | Plan/toolchain audit: `develop` at `94bc3e3c` (2026-10-26); historical D1/D2 runtime evidence remains at the commits recorded below |
 
 ## Developer workflow contract (planned)
@@ -339,7 +339,13 @@ The private `transfer_d3d12.cpp` owner implements the existing
 and [mutable-transfer](../development/fullscreen-rendering.md#mutable-transfers-and-mip-initialization-r8)
 contracts on D1's direct queue and fence. No public native handles or second
 submission ledger are introduced. The implementation branch is
-`codex/windows-d4a`; Windows execution evidence is pending until its lane passes.
+`codex/windows-d4a`. Clang/WARP validation passed at `5b56bea2` in
+[PR #622](https://github.com/The-Ludus-Project/Ludus/pull/622),
+[run 40375496878](https://github.com/The-Ludus-Project/Ludus/actions/runs/40375496878):
+Win32, common lifecycle and Direct3D 12 suites all passed. The local shared Metal
+render suite passed 2,543 assertions across thirteen cases, including 409
+assertions in the four transfer cases. These runs do not qualify physical
+Windows hardware or the production MSVC toolchain.
 
 - **Buffer copies.** Initial ticket uploads, bounded updates and asynchronous
   readbacks use upload/default/readback heaps. Default buffers use D3D12's
@@ -464,7 +470,7 @@ cmake --build out/build/windows-mingw-check --target ludus_platform ludus_graphi
 | D0 (next; MSVC baseline) | Pin MSVC/SDK/CRT/dependencies; enable `cl.exe`, Ninja and generated Visual Studio/MSBuild projects; reconcile compiler policy and presets | D1/D2 and Foundation tests pass on MSVC; both generators configure/build/test; physical-GPU clear/fullscreen evidence recorded |
 | D3a (Clang/WARP verified) | Raster resources, bindings and DXIL interfaces | Windows resource/binding, bounded failure, pending upload retirement and DXIL suites passed for PR #617 at `172002e4` ([run 40359506345](https://github.com/The-Ludus-Project/Ludus/actions/runs/40359506345)); production MSVC and hardware evidence remain pending |
 | D3b (Clang/WARP verified) | Portable raster pipelines/passes, attachments, depth/stencil/blend and transitions | Shared raster images and debug-queue checks passed for PR #620 at `c239b3d9` ([run 40369593745](https://github.com/The-Ludus-Project/Ludus/actions/runs/40369593745)); production MSVC and physical-GPU evidence pending |
-| D4a (implementation; validation pending) | Transfers, readback and lifetime | Shared transfer/lifetime suites and deterministic cancellation regression added; Windows lane evidence pending |
+| D4a (Clang/WARP verified) | Transfers, readback and lifetime | Windows transfer/lifetime, offscreen, cancellation, failure preservation and raster suites passed at `5b56bea2` ([run 40375496878](https://github.com/The-Ludus-Project/Ludus/actions/runs/40375496878)); production MSVC and physical-GPU evidence pending |
 | D4b | Compute and ordered render graphs | Compute/graph suites, mixed graphics/compute/transfer journeys; required compute profile admitted |
 | D5a | Windows host services and Foundation validation | Native input, entropy, files/persistence/watch tests; diagnostics and Foundation runtime evidence |
 | D5b | GPU measurement and debugging | Timestamp/pass-scope tests; PIX capture/markers and DRED failure diagnostics documented |
@@ -682,7 +688,7 @@ these rows remain pending.
 | RHI / graphics (DXIL/fullscreen) | D2; D0 pending | verified (Clang/WARP) | MSVC and hardware-adapter evidence in D0 | PR #586 | [Windows lane](https://github.com/The-Ludus-Project/Ludus/actions/runs/40102938249) |
 | RHI / raster resources and bindings | D3a | verified (Clang/WARP) | Production MSVC baseline and hardware evidence still pending | PR #617 | `172002e4`, [Windows lane](https://github.com/The-Ludus-Project/Ludus/actions/runs/40359506345) |
 | RHI / raster rendering | D3b | verified (Clang/WARP) | Production MSVC and physical-GPU evidence pending | PR #620 | `c239b3d9`, [Windows lane](https://github.com/The-Ludus-Project/Ludus/actions/runs/40369593745) |
-| RHI / transfers and lifetime | D4a | in progress | Implementation and shared tests; Windows lane validation pending | pending | `codex/windows-d4a` |
+| RHI / transfers and lifetime | D4a | verified (Clang/WARP) | Production MSVC baseline and physical-GPU evidence still pending | PR #622 | `5b56bea2`, [Windows lane](https://github.com/The-Ludus-Project/Ludus/actions/runs/40375496878) |
 | RHI / compute and ordered mixed graph | D4b | needs port | Compute/storage/dispatch and mixed transfer journeys | pending | none |
 | GPU timing / PIX / DRED | unassigned | needs port | D5b | pending | none |
 | Renderer / graph | unassigned | unreviewed | D6a after D4b/D5a | pending | none |
