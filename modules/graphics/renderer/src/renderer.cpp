@@ -22,6 +22,7 @@
 #include "internal/environment_data.h"
 #include "internal/gpu_preview_data.h"
 #include "internal/reference_data.h"
+#include "internal/render_graph_ray.h"
 #include "internal/uniform_set_table.h"
 #include "internal/visibility_buffer.h"
 
@@ -4779,3 +4780,30 @@ void Renderer::discardGpuPreviewCamera(GpuPreview handle) noexcept
     job.CameraUpdate.Reset();
 }
 } // namespace ludus::graphics::renderer
+
+#if defined(LUDUS_RENDERER_TEST_READBACK)
+namespace ludus::graphics::renderer::internal
+{
+rhi::RasterStatus RenderGraphRayPass::GetAccumulationForTesting(Renderer& inoutRenderer,
+                                                                GpuPreview preview,
+                                                                rhi::BufferHandle& outBuffer) noexcept
+{
+    if (inoutRenderer.mState.Get() == nullptr || inoutRenderer.mState->GpuPreview.Get() == nullptr)
+    {
+        return rhi::RasterStatus::InvalidState;
+    }
+    GpuPreviewRecord* recordOrNull =
+        Resolve(inoutRenderer.mState->GpuPreview->Jobs, GPU_PREVIEW_JOB_COUNT, inoutRenderer.mState->Owner, preview);
+    if (recordOrNull == nullptr)
+    {
+        return rhi::RasterStatus::InvalidHandle;
+    }
+    if (recordOrNull->Info.Pending == true)
+    {
+        return rhi::RasterStatus::NotReady;
+    }
+    outBuffer = recordOrNull->Accumulation;
+    return rhi::RasterStatus::Ready;
+}
+} // namespace ludus::graphics::renderer::internal
+#endif

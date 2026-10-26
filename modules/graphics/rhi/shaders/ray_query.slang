@@ -10,6 +10,17 @@
 [[vk::binding(3,0)]] StructuredBuffer<float4> opacity;
 [[vk::binding(4,0)]] ConstantBuffer<uint4> parameters;
 
+static const uint RAY_OPACITY_INSTANCE_WORD_COUNT = 3;
+uint GetPrimitiveIndex(uint instance, uint geometry, uint primitive)
+{
+    if (geometry != 0)
+    {
+        uint uvOffset = uint(opacity[instance * RAY_OPACITY_INSTANCE_WORD_COUNT].x);
+        primitive += asuint(opacity[uvOffset - 1].x);
+    }
+    return primitive;
+}
+
 float alphaTexel(uint scalar)
 {
     return opacity[scalar >> 2][scalar & 3];
@@ -69,14 +80,16 @@ void queryMain(uint3 id : SV_DispatchThreadID)
     ray.TMin = origin.w;
     ray.Direction = direction.xyz;
     ray.TMax = direction.w;
-    uint flags = RAY_FLAG_FORCE_NON_OPAQUE;
+    uint flags = RAY_FLAG_NONE;
     if (options.y != 0) flags |= RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
     RayQuery<RAY_FLAG_NONE> query;
     query.TraceRayInline(scene,flags,options.x,ray);
     while (query.Proceed())
     {
         if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
-            accepted(query.CandidateInstanceIndex(),query.CandidatePrimitiveIndex(),query.CandidateTriangleBarycentrics()))
+            accepted(query.CandidateInstanceIndex(),
+                     GetPrimitiveIndex(query.CandidateInstanceIndex(), query.CandidateGeometryIndex(), query.CandidatePrimitiveIndex()),
+                     query.CandidateTriangleBarycentrics()))
             query.CommitNonOpaqueTriangleHit();
     }
     float4 attributes = float4(0);
@@ -84,7 +97,8 @@ void queryMain(uint3 id : SV_DispatchThreadID)
     if (query.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
     {
         attributes = float4(query.CommittedRayT(),query.CommittedTriangleBarycentrics(),0);
-        identity = uint4(query.CommittedPrimitiveIndex(),query.CommittedInstanceIndex(),1,0);
+        identity = uint4(GetPrimitiveIndex(query.CommittedInstanceIndex(), query.CommittedGeometryIndex(), query.CommittedPrimitiveIndex()),
+                         query.CommittedInstanceIndex(),1,0);
     }
     hits[id.x*2] = attributes;
     hits[id.x*2+1] = asfloat(identity);

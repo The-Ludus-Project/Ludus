@@ -223,10 +223,27 @@ RasterStatus RayCreateGeometry(usize slot, const RayGeometryDescription& d, RayA
         triangles.vertexFormat = MTLAttributeFormatFloat3;
         triangles.indexBuffer = geometry.Indices;
         triangles.indexType = MTLIndexTypeUInt32;
-        triangles.triangleCount = d.IndexCount / 3;
-        triangles.opaque = NO;
+        constexpr usize TRIANGLE_CORNER_COUNT = 3;
+        const usize triangleCount = d.IndexCount / TRIANGLE_CORNER_COUNT;
+        triangles.triangleCount = d.OpaqueTriangleCount != 0 ? d.OpaqueTriangleCount : triangleCount;
+        triangles.opaque = d.OpaqueTriangleCount != 0;
         auto* descriptor = [MTLPrimitiveAccelerationStructureDescriptor descriptor];
-        descriptor.geometryDescriptors = @[ triangles ];
+        if (d.OpaqueTriangleCount != 0 && d.OpaqueTriangleCount < triangleCount)
+        {
+            MTLAccelerationStructureTriangleGeometryDescriptor* maskedOrNull = [triangles copy];
+            if (maskedOrNull == nil)
+            {
+                return RasterStatus::OutOfMemory;
+            }
+            maskedOrNull.indexBufferOffset = usize(d.OpaqueTriangleCount) * TRIANGLE_CORNER_COUNT * sizeof(uint32);
+            maskedOrNull.triangleCount = triangleCount - d.OpaqueTriangleCount;
+            maskedOrNull.opaque = NO;
+            descriptor.geometryDescriptors = @[ triangles, maskedOrNull ];
+        }
+        else
+        {
+            descriptor.geometryDescriptors = @[ triangles ];
+        }
         const auto sizes = [gDevice accelerationStructureSizesWithDescriptor:descriptor];
         if (RayMetalSizes(sizes, vertexBytes + indexBytes, d.ByteBudget, allocation) == false)
         {
@@ -310,7 +327,11 @@ RayCreateScene(usize slot, const internal::NativeRaySceneDescription& descriptio
                 instance.transformationMatrix.columns[column].y = source.Transform[4 + column];
                 instance.transformationMatrix.columns[column].z = source.Transform[8 + column];
             }
-            instance.options = MTLAccelerationStructureInstanceOptionDisableTriangleCulling;
+            // Thanks to Apple, "Your guide to Metal ray tracing", WWDC23 session 10128,
+            // https://developer.apple.com/videos/play/wwdc2023/10128/ : specialize opacity
+            // per instance, leaving masked candidates available to the calling shader.
+            instance.options = MTLAccelerationStructureInstanceOptionDisableTriangleCulling |
+                               (source.IsOpaque == true ? MTLAccelerationStructureInstanceOptionOpaque : 0);
             instance.mask = source.Mask;
             instance.accelerationStructureIndex = static_cast<uint32>(index);
         }

@@ -7,6 +7,10 @@ namespace
 {
 /// Components in one ray geometry vertex position.
 constexpr usize RAY_POSITION_COMPONENT_COUNT = 3;
+constexpr usize RAY_TRIANGLE_CORNER_COUNT = 3;
+constexpr usize RAY_OPACITY_WORD_SCALARS = 4;
+constexpr usize RAY_TRIANGLE_UV_SCALARS = RAY_TRIANGLE_CORNER_COUNT * 2;
+constexpr usize RAY_TRIANGLE_UV_PADDED_SCALARS = 8;
 /// Ray visibility masks use the low eight bits.
 constexpr uint32 MAX_RAY_INSTANCE_MASK = 255;
 float32 RayScalar(const void* data, usize index) noexcept
@@ -175,7 +179,9 @@ CreateRayGeometry(DeviceHandle device, const RayGeometryDescription& description
     }
     const auto& d = description;
     if (d.Positions == nullptr || d.Indices == nullptr || d.VertexCount == 0 || d.IndexCount == 0 ||
-        d.IndexCount % 3 != 0 || d.VertexCount > limits.MaxBufferBytes / (3 * sizeof(float32)) ||
+        d.IndexCount % RAY_TRIANGLE_CORNER_COUNT != 0 ||
+        d.OpaqueTriangleCount > d.IndexCount / RAY_TRIANGLE_CORNER_COUNT ||
+        d.VertexCount > limits.MaxBufferBytes / (RAY_POSITION_COMPONENT_COUNT * sizeof(float32)) ||
         d.IndexCount > limits.MaxBufferBytes / (2 * sizeof(float32)) || d.ByteBudget == 0)
     {
         return RasterStatus::InvalidDescription;
@@ -224,7 +230,8 @@ CreateRayGeometry(DeviceHandle device, const RayGeometryDescription& description
         {
             return StorageFailure();
         }
-        record.Ray->Count = d.IndexCount / 3;
+        record.Ray->Count = d.IndexCount / RAY_TRIANGLE_CORNER_COUNT;
+        record.Ray->OpaqueTriangleCount = d.OpaqueTriangleCount;
         auto& uv = record.Ray->TriangleUvs;
         for (usize i = 0; i < d.IndexCount; ++i)
         {
@@ -309,6 +316,7 @@ CreateRayScene(DeviceHandle device, const RaySceneDescription& description, RayS
         auto& native = instances[i];
         native.Geometry = RasterAccess::Slot(input.Geometry);
         native.Mask = input.Mask;
+        native.IsOpaque = input.AlphaMasked == false;
         for (usize component = 0; component < 12; ++component)
         {
             native.Transform[component] = input.Transform[component];
@@ -316,7 +324,7 @@ CreateRayScene(DeviceHandle device, const RaySceneDescription& description, RayS
         if (uvOffsets[native.Geometry] == 0)
         {
             const auto& uv = geometry->Ray->TriangleUvs;
-            const usize appended = geometry->Ray->Count * 8;
+            const usize appended = geometry->Ray->Count * RAY_TRIANGLE_UV_PADDED_SCALARS + RAY_OPACITY_WORD_SCALARS;
             const auto begin = opacity.GetSize();
             if (appended > maxScalars - begin)
             {
@@ -326,12 +334,16 @@ CreateRayScene(DeviceHandle device, const RaySceneDescription& description, RayS
             {
                 return StorageFailure();
             }
-            uvOffsets[native.Geometry] = begin / 4;
+            // The UV pointer remains valid for existing query shaders. The preceding
+            // float4 carries geometry-range identity for the matching partition-aware shader.
+            std::memcpy(&opacity[begin], &geometry->Ray->OpaqueTriangleCount, sizeof(uint32));
+            uvOffsets[native.Geometry] = begin / RAY_OPACITY_WORD_SCALARS + 1;
             for (usize triangle = 0; triangle < geometry->Ray->Count; ++triangle)
             {
-                for (usize component = 0; component < 6; ++component)
+                for (usize component = 0; component < RAY_TRIANGLE_UV_SCALARS; ++component)
                 {
-                    opacity[begin + triangle * 8 + component] = uv[triangle * 6 + component];
+                    opacity[begin + RAY_OPACITY_WORD_SCALARS + triangle * RAY_TRIANGLE_UV_PADDED_SCALARS + component] =
+                        uv[triangle * RAY_TRIANGLE_UV_SCALARS + component];
                 }
             }
         }

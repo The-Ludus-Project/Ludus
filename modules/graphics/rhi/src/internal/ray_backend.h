@@ -13,6 +13,7 @@ struct NativeRayInstance final
     foundation::usize Geometry = 0;
     foundation::float32 Transform[12]{};
     foundation::uint32 Mask = 255;
+    bool IsOpaque = true;
 };
 struct NativeRaySceneDescription final
 {

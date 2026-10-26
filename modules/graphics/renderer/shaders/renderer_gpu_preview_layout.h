@@ -10,7 +10,7 @@
 // Strides count float4 words, not bytes. Update the version when changing layout.
 #define LUDUS_GPU_PREVIEW_SURFACE_WORDS 9
 #define LUDUS_GPU_PREVIEW_LIGHT_WORDS 4
-#define LUDUS_GPU_PREVIEW_KERNEL_VERSION LIGHTING_PROFILE_VERSION
+#define LUDUS_GPU_PREVIEW_KERNEL_VERSION 5 // Opacity-partitioned primitive identity; independent of lighting profile.
 
 #define LUDUS_GPU_PREVIEW_TRIANGLE_WORDS 16
 
@@ -46,6 +46,8 @@
 // Preserve camera/kernel flags and ordered invocation bits below camera history.
 #define LUDUS_GPU_PREVIEW_OPAQUE_FLAG 8
 #define LUDUS_GPU_PREVIEW_DENOISING_FLAG 16
+// Mixed ranges permit native opaque visibility and direct opaque candidate acceptance.
+#define LUDUS_GPU_PREVIEW_MIXED_OPACITY_FLAG 32
 #define LUDUS_GPU_PREVIEW_FLAGS_MASK 0x3ff
 #define LUDUS_GPU_PREVIEW_HISTORY_SHIFT 10
 #define LUDUS_GPU_PREVIEW_MAX_HISTORY_EPOCH 0x1fffff
