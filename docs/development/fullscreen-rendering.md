@@ -577,7 +577,11 @@ failure. Destroying the source handle before completion is safe. Logical
 cancellation does not recycle an in-flight copy or mapping.
 
 Vulkan uses the existing private VMA adapter, cached mapped staging, narrow
-transfer/host barriers and zero-timeout fence queries. Metal uses shared staging
+transfer/host barriers and zero-timeout fence queries. Direct3D 12 uses the
+existing direct queue, upload/default/readback heaps and exact fence queries;
+its [D4a port record](../architecture/windows-direct3d12.md#transfers-readback-and-lifetime-d4a)
+records the admitted transfer formats, offscreen support and validation scope.
+Metal uses shared staging
 and submitted blits. WebGPU uses copy buffers, asynchronous validation/work-done
 and read mapping; mapping success is separate from queue progress. WebGL 2 uses
 type-compatible copy buffers, zero-timeout sync queries and `getBufferSubData`

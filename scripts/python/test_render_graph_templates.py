@@ -414,6 +414,52 @@ class ComputeRayTracingTemplateTests(unittest.TestCase):
         self.assertEqual(arguments.template, 'compute-ray-tracing')
 
 
+class SimpleComputeRayTracingTemplateTests(unittest.TestCase):
+    def test_single_compute_pass_has_no_hit_buffer_or_accumulation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for profile in ('metal', 'spirv'):
+                root = graph.new_workspace(Path(directory) / profile, output='offscreen', renderer_static=True,
+                                           profiles=(profile, 'wgsl'), template='simple-compute-ray-tracing')
+                plan = graph.compile_graph(root)
+                self.assertEqual([operation['kind'] for operation in plan['passes']],
+                                 ['RayTracing', 'ToneMap', 'Export'])
+                operation = plan['passes'][0]
+                self.assertEqual(operation['pipeline']['kind'], 'ComputePipeline')
+                self.assertNotIn('accumulation', operation)
+                self.assertEqual(operation['tone_mapping']['exposure'], 1)
+                self.assertFalse(any(resource['type'] == 'Buffer' for resource in plan['resources'].values()))
+                manifest = json.loads(root.with_name('main.lushader.json').read_text())
+                build.validate_manifest(manifest)
+                compute = [program for program in manifest['programs'] if program['stage'] == 'compute']
+                self.assertEqual([program['function'] for program in compute], ['TracePixel'])
+                source = root.with_name('main_shaders').joinpath('trace.slang').read_text()
+                self.assertIn('triangleIndex < triangleCount', source)
+                for native_query in ('TraceClosest(', 'TestVisibility(', 'TraceAndShade('):
+                    self.assertNotIn(native_query, source)
+                build.Snapshot(root.parent).shader_closure('main_shaders/trace.slang')
+
+    def test_relocated_sdk_and_cli_expose_the_same_template(self):
+        from ludus_tools import render_graph_templates
+        from ludus_tools.cli import build_parser
+        with tempfile.TemporaryDirectory() as directory:
+            installed = Path(directory) / 'sdk/lib/cmake/Ludus/render_graph'
+            module = installed / 'ludus_tools/render_graph_templates.py'
+            module.parent.mkdir(parents=True)
+            source = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs/simple_compute_ray_tracing'
+            shutil.copytree(source, installed / 'templates/simple_compute_ray_tracing')
+            with patch.object(render_graph_templates, '__file__', str(module)):
+                files = render_graph_templates.template_files('simple-compute-ray-tracing', ('spirv',), graph)
+            self.assertIn('main_shaders/trace.slang', files)
+            with self.assertRaises(ToolingError):
+                graph.new_workspace(Path(directory) / 'Browser', output='offscreen', renderer_static=True,
+                                    profiles=('wgsl',), template='simple-compute-ray-tracing')
+            self.assertFalse((Path(directory) / 'Browser').exists())
+        arguments = build_parser().parse_args(['render-graph', 'new', 'graphs/Simple', '--template',
+                                               'simple-compute-ray-tracing', '--output', 'offscreen',
+                                               '--renderer-static', '--profiles', 'metal'])
+        self.assertEqual(arguments.template, 'simple-compute-ray-tracing')
+
+
 class ForwardLitTemplateTests(unittest.TestCase):
     def test_forward_template_is_portable_and_declares_one_scene_material_profile(self):
         with tempfile.TemporaryDirectory() as directory:

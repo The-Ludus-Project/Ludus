@@ -554,13 +554,15 @@ RenderGraphDocumentStatus PrepareConfigurationTemplate(RenderGraphSnapshot& inou
                                           {},
                                           inoutBudgetOrNull);
     }
-    if (templateIdentity == QStringLiteral("compute-ray-tracing"))
+    if (templateIdentity == QStringLiteral("compute-ray-tracing") ||
+        templateIdentity == QStringLiteral("simple-compute-ray-tracing"))
     {
         return PrepareComputeRayTracingConfiguration(inoutSnapshot,
                                                      rootGraph,
                                                      targetFile,
                                                      configuration,
                                                      outError,
+                                                     templateIdentity,
                                                      inoutBudgetOrNull);
     }
     return PrepareVisibilityConfiguration(inoutSnapshot,

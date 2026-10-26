@@ -39,28 +39,32 @@ void RequireReady(rhi::DeviceHandle device, rhi::TextureHandle texture)
 }
 } // namespace
 
-TEST_CASE("D3a exposes resources while required raster and compute remain unavailable", "[rhi][windows][d3a]")
+TEST_CASE("D3b admits required raster while compute remains unavailable", "[rhi][windows][d3a]")
 {
     ResourceDevice owner;
     rhi::DeviceInfo information;
     REQUIRE(rhi::GetDeviceInfo(owner.Device, information) == rhi::DeviceStatus::Ready);
-    CHECK(information.Enabled.PortableRaster == false);
+    CHECK(information.Enabled.PortableRaster == true);
     CHECK(information.Enabled.Compute == false);
-    CHECK(information.Enabled.OrderedRasterGraph == false);
+    CHECK(information.Enabled.OrderedRasterGraph == true);
     CHECK(information.Profile.Raster.MaxBufferSize > 0);
-    CHECK(information.Profile.Raster.DrawsPerFrame == 0);
+    CHECK(information.Profile.Raster.DrawsPerFrame > 0);
     rhi::FormatCapabilities format;
     REQUIRE(rhi::GetFormatCapabilities(owner.Device, rhi::RasterFormat::Rgba8Unorm, format) ==
             rhi::RasterStatus::Ready);
     CHECK(format.Uses.Sampled == true);
-    CHECK(format.Uses.ColorAttachment == false);
-    CHECK(format.Uses.CopySource == false);
-    CHECK(format.Uses.CopyDestination == false);
+    CHECK(format.Uses.ColorAttachment == true);
+    CHECK(format.Uses.CopySource == true);
+    CHECK(format.Uses.CopyDestination == true);
     REQUIRE(rhi::DestroyDevice(owner.Device) == rhi::DeviceStatus::Ready);
     owner.Surface = {};
     rhi::DeviceDescription description;
     description.Required.PortableRaster = true;
     rhi::StartupInfo failure;
+    REQUIRE(rhi::CreateDevice({}, {}, description, owner.Device, owner.Surface, &failure) == rhi::DeviceStatus::Ready);
+    REQUIRE(rhi::DestroyDevice(owner.Device) == rhi::DeviceStatus::Ready);
+    owner.Surface = {};
+    description.Required.Compute = true;
     CHECK(rhi::CreateDevice({}, {}, description, owner.Device, owner.Surface, &failure) == rhi::DeviceStatus::Failed);
     CHECK(failure.Error == rhi::StartupError::RequirementsUnsatisfied);
 }
@@ -256,7 +260,7 @@ TEST_CASE("D3a failed staging admission releases resource budget and preserves o
 {
     constexpr usize LOGICAL_BYTES = 8;
     rhi::StorageLimits limits;
-    limits.ResourceBytes = LOGICAL_BYTES;
+    limits.ResourceBytes = LOGICAL_BYTES + D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
     ResourceDevice owner(limits);
     StaticArray<uint8, LOGICAL_BYTES> bytes{};
     rhi::TextureHandle texture;

@@ -630,7 +630,13 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, c
                         'float3 radiance = DispatchGraphRay(scene, launch, queries);')
     dispatch_function = ('float3 DispatchGraphRay(SceneContext scene, RayLaunch launch, inout RayQueryContext queries) {\n' +
                          dispatch('ray_generation', 'scene, launch, queries', True) + '\n}\n')
-    # Preserve both fixed slots under optimization even for callback sets without storage uses.
+    # Preserve the frozen native scene/buffer ABI even when the authored kernel only
+    # reads triangles. Graph jobs set MaxDepth (Dimensions.z) to 1 in
+    # RenderGraphRayPass::Initialize; this ABI liveness branch never runs for them.
     body = body.replace('    SceneContext scene;\n',
-                        '    if (Dimensions.z == 0) { GraphBuffer0[0] = GraphBuffer1[0]; GraphBuffer1[0] = uint4(0); }\n    SceneContext scene;\n')
+                        '    if (Dimensions.z == 0) {\n'
+                        '        Hit interfaceHit = Trace(float3(0), float3(0, 0, 1), 0, 1);\n'
+                        '        GraphBuffer0[0] = GraphBuffer1[0];\n'
+                        '        GraphBuffer1[0] = uint4(interfaceHit.Triangle, 0, 0, 0);\n'
+                        '    }\n    SceneContext scene;\n')
     return prefix + dispatch_function + body

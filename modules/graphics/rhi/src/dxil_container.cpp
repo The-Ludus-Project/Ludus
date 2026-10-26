@@ -283,4 +283,66 @@ bool HasDxilBindings(std::span<const uint8> bytes, const RasterLayout& layout) n
     }
     return true;
 }
+bool ReadDxilVertexInput(std::span<const uint8> bytes, uint32 location, DxilVertexInput& outInput) noexcept
+{
+    // DXC DxilContainer.h: DxilProgramSignature header and 32-byte
+    // DxilProgramSignatureElement (ISG1). Names are relative to the part payload.
+    constexpr usize HEADER_BYTES = 2 * UINT32_BYTES;
+    constexpr usize ELEMENT_WORDS = 8;
+    constexpr usize ELEMENT_BYTES = ELEMENT_WORDS * UINT32_BYTES;
+    constexpr usize SEMANTIC_OFFSET = UINT32_BYTES;
+    constexpr usize INDEX_OFFSET = 2 * UINT32_BYTES;
+    constexpr usize SYSTEM_OFFSET = 3 * UINT32_BYTES;
+    constexpr usize REGISTER_OFFSET = 5 * UINT32_BYTES;
+    std::span<const uint8> part;
+    uint32 count = 0;
+    uint32 offset = 0;
+    if (IsDxilContainer(bytes) == false || FindPart(bytes, MakeFourCharacterCode("ISG1"), part) == false ||
+        ReadUint32(part, 0, count) == false || ReadUint32(part, UINT32_BYTES, offset) == false ||
+        offset < HEADER_BYTES || offset > part.size() || count > (part.size() - offset) / ELEMENT_BYTES)
+    {
+        return false;
+    }
+    DxilVertexInput candidate;
+    bool isFound = false;
+    for (uint32 element = 0; element < count; ++element)
+    {
+        const usize start = offset + usize{element} * ELEMENT_BYTES;
+        uint32 nameOffset = 0;
+        uint32 index = 0;
+        uint32 system = 0;
+        uint32 inputRegister = 0;
+        if (ReadUint32(part, start + SEMANTIC_OFFSET, nameOffset) == false ||
+            ReadUint32(part, start + INDEX_OFFSET, index) == false ||
+            ReadUint32(part, start + SYSTEM_OFFSET, system) == false ||
+            ReadUint32(part, start + REGISTER_OFFSET, inputRegister) == false ||
+            nameOffset < offset + usize{count} * ELEMENT_BYTES || nameOffset >= part.size())
+        {
+            return false;
+        }
+        usize end = nameOffset;
+        while (end < part.size() && part[end] != 0)
+        {
+            ++end;
+        }
+        if (end == nameOffset || end == part.size())
+        {
+            return false;
+        }
+        if (system == 0 && inputRegister == location)
+        {
+            if (isFound == true)
+            {
+                return false;
+            }
+            candidate = {reinterpret_cast<const char*>(part.data() + nameOffset), index};
+            isFound = true;
+        }
+    }
+    if (isFound == true)
+    {
+        outInput = candidate;
+    }
+    return isFound;
+}
 } // namespace ludus::graphics::rhi::internal

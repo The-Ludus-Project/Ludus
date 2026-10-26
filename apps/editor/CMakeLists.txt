@@ -260,7 +260,7 @@ function(ludus_editor_add_default_render_graph target)
         PREFIX "/render-graph/templates/restir-di" BASE "${restir_template}"
         FILES "${restir_template}/library.lurender.json" "${restir_template}/main.lushader.json.in"
               ${restir_template_shaders})
-    foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing)
+    foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing simple_compute_ray_tracing)
         string(REPLACE "_" "-" template_identity "${template_directory}")
         set(visibility_template "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/render_graphs/${template_directory}")
         file(GLOB visibility_template_shaders CONFIGURE_DEPENDS "${visibility_template}/main_shaders/*.slang")

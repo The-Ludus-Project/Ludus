@@ -1,5 +1,4 @@
-// Apply the built-in compute-ray-tracing configuration: two scene compute passes and their
-// shared hit buffer (compute ray-tracing spec, design D5/D6).
+// Import renderer-owned scene compute templates and their shader closure into a draft.
 #include "internal/render_graph_configuration_template.h"
 #include "internal/render_graph_shader_creation.h"
 
@@ -17,14 +16,21 @@ namespace ludus::editor
 using namespace foundation;
 namespace
 {
-const QString RESOURCE_ROOT = QStringLiteral(":/render-graph/templates/compute-ray-tracing/");
-const QString SOURCE_ROOT = QStringLiteral("compute_ray_tracing/");
-const QString RAY_TECHNIQUE = QStringLiteral("RendererTriangles.RayTracing");
-const QString TEMPLATE_NAME = QStringLiteral("Compute ray tracing");
-
-QByteArray ReadComputeTemplate(const QString& file)
+struct ComputeTemplate
 {
-    QFile source(RESOURCE_ROOT + file);
+    QString ResourceRoot;
+    QString SourceRoot;
+    QString ProgramPrefix;
+    QString Name;
+};
+QString GetRayTechniqueName()
+{
+    return QStringLiteral("RendererTriangles.RayTracing");
+}
+
+QByteArray ReadComputeTemplate(const ComputeTemplate& selected, const QString& file)
+{
+    QFile source(selected.ResourceRoot + file);
     if (source.open(QIODevice::ReadOnly) == false || source.size() > RenderGraphDocument::MAX_FILE_BYTES)
     {
         return {};
@@ -32,14 +38,16 @@ QByteArray ReadComputeTemplate(const QString& file)
     return source.readAll();
 }
 
-QString GetComputeProgramName(const QString& identity)
+QString GetComputeProgramName(const ComputeTemplate& selected, const QString& identity)
 {
-    return QStringLiteral("ComputeRay") + identity;
+    return selected.ProgramPrefix + identity;
 }
 
-// Capture the kernel sources and their literal local include closure, so hit_record.slang
-// arrives with both passes. Authored files with different bytes are never replaced.
-RenderGraphDocumentStatus CopyComputeSources(RenderGraphSnapshot& inoutSnapshot, QStringList pending, QString& outError)
+// Capture the kernels and their literal local includes without replacing authored bytes.
+RenderGraphDocumentStatus CopyComputeSources(RenderGraphSnapshot& inoutSnapshot,
+                                             const ComputeTemplate& selected,
+                                             QStringList pending,
+                                             QString& outError)
 {
     QSet<QString> visited;
     static const QRegularExpression INCLUDE(QStringLiteral("^\\s*#\\s*include\\s+\"([^\"]+)\""),
@@ -54,8 +62,8 @@ RenderGraphDocumentStatus CopyComputeSources(RenderGraphSnapshot& inoutSnapshot,
         visited.insert(relative);
         const bool isInside =
             relative.startsWith(QStringLiteral("../")) == false && QDir::isAbsolutePath(relative) == false;
-        const QByteArray bytes = isInside == true ? ReadComputeTemplate(relative) : QByteArray{};
-        const QString destination = SOURCE_ROOT + relative;
+        const QByteArray bytes = isInside == true ? ReadComputeTemplate(selected, relative) : QByteArray{};
+        const QString destination = selected.SourceRoot + relative;
         if (bytes.isEmpty() == true)
         {
             outError = QStringLiteral("Compute ray-tracing source %1 is unavailable; repair the editor installation.")
@@ -85,11 +93,12 @@ RenderGraphDocumentStatus CopyComputeSources(RenderGraphSnapshot& inoutSnapshot,
     return RenderGraphDocumentStatus::Ok;
 }
 
-// Only the two scene compute kernels are imported; the raster programs that a New Graph package
+// Only scene compute kernels are imported; the raster programs that a New Graph package
 // carries for raster fallback already exist in the destination manifest.
 RenderGraphDocumentStatus MergeComputePrograms(RenderGraphSnapshot& inoutSnapshot,
                                                QJsonObject& inoutManifest,
                                                const QJsonObject& source,
+                                               const ComputeTemplate& selected,
                                                QString& outError,
                                                RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
 {
@@ -103,8 +112,10 @@ RenderGraphDocumentStatus MergeComputePrograms(RenderGraphSnapshot& inoutSnapsho
             continue;
         }
         sources.append(program.value(QStringLiteral("source")).toString());
-        program.insert(QStringLiteral("id"), GetComputeProgramName(program.value(QStringLiteral("id")).toString()));
-        program.insert(QStringLiteral("source"), SOURCE_ROOT + program.value(QStringLiteral("source")).toString());
+        program.insert(QStringLiteral("id"),
+                       GetComputeProgramName(selected, program.value(QStringLiteral("id")).toString()));
+        program.insert(QStringLiteral("source"),
+                       selected.SourceRoot + program.value(QStringLiteral("source")).toString());
         bool hasProgram = false;
         for (const QJsonValueConstRef existing : programs)
         {
@@ -128,14 +139,14 @@ RenderGraphDocumentStatus MergeComputePrograms(RenderGraphSnapshot& inoutSnapsho
     }
     if (EnsureTemplateProgramBudget(inoutManifest,
                                     static_cast<int32>(programs.size()),
-                                    TEMPLATE_NAME,
+                                    selected.Name,
                                     outError,
                                     inoutBudgetOrNull) == false)
     {
         return RenderGraphDocumentStatus::Capacity;
     }
     inoutManifest.insert(QStringLiteral("programs"), programs);
-    return CopyComputeSources(inoutSnapshot, sources, outError);
+    return CopyComputeSources(inoutSnapshot, selected, sources, outError);
 }
 
 // Scene compute passes need scene_interface on the shared ray technique. An existing technique
@@ -146,7 +157,7 @@ MergeComputeRayTechnique(QJsonObject& inoutManifest, const QJsonObject& source, 
     QJsonObject defaults;
     for (const QJsonValueConstRef value : source.value(QStringLiteral("techniques")).toArray())
     {
-        if (value.toObject().value(QStringLiteral("id")) == RAY_TECHNIQUE)
+        if (value.toObject().value(QStringLiteral("id")) == GetRayTechniqueName())
         {
             defaults = value.toObject();
         }
@@ -156,7 +167,7 @@ MergeComputeRayTechnique(QJsonObject& inoutManifest, const QJsonObject& source, 
     for (qsizetype index = 0; index < techniques.size(); ++index)
     {
         QJsonObject technique = techniques.at(index).toObject();
-        if (technique.value(QStringLiteral("id")) != RAY_TECHNIQUE)
+        if (technique.value(QStringLiteral("id")) != GetRayTechniqueName())
         {
             continue;
         }
@@ -200,13 +211,30 @@ MergeComputeRayTechnique(QJsonObject& inoutManifest, const QJsonObject& source, 
 
 // File and configuration identify distinct authored records.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-RenderGraphDocumentStatus PrepareComputeRayTracingConfiguration(RenderGraphSnapshot& inoutSnapshot,
-                                                                const QString& rootGraph,
-                                                                const QString& file,
-                                                                const QString& configuration,
-                                                                QString& outError,
-                                                                RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
+RenderGraphDocumentStatus PrepareComputeRayTracingConfiguration(
+    RenderGraphSnapshot& inoutSnapshot,
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): root path, library path and configuration identity
+    const QString& rootGraph,
+    const QString& file,
+    const QString& configuration,
+    QString& outError,
+    const QString& templateIdentity,
+    RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
 {
+    const bool isSimple = templateIdentity == QStringLiteral("simple-compute-ray-tracing");
+    if (isSimple == false && templateIdentity != QStringLiteral("compute-ray-tracing"))
+    {
+        outError = QStringLiteral("Choose a built-in scene compute template.");
+        return RenderGraphDocumentStatus::InvalidEdit;
+    }
+    QString directory = templateIdentity;
+    directory.replace(QLatin1Char('-'), QLatin1Char('_'));
+    const ComputeTemplate selected{
+        QStringLiteral(":/render-graph/templates/") + templateIdentity + QLatin1Char('/'),
+        directory + QLatin1Char('/'),
+        isSimple == true ? QStringLiteral("SimpleComputeRay") : QStringLiteral("ComputeRay"),
+        isSimple == true ? QStringLiteral("Simple compute ray tracing") : QStringLiteral("Compute ray tracing"),
+    };
     QJsonObject graph = QJsonDocument::fromJson(inoutSnapshot.Files.value(file)).object();
     QJsonArray configurations = graph.value(QStringLiteral("configurations")).toArray();
     static const QRegularExpression IDENTIFIER(QStringLiteral("\\A[A-Za-z][A-Za-z0-9_-]{0,62}\\z"));
@@ -249,13 +277,14 @@ RenderGraphDocumentStatus PrepareComputeRayTracingConfiguration(RenderGraphSnaps
         outError = QStringLiteral("Compute ray tracing requires a Renderer manifest with a Metal or Vulkan profile.");
         return RenderGraphDocumentStatus::InvalidEdit;
     }
-    QByteArray bytes = ReadComputeTemplate(QStringLiteral("main.lushader.json.in"));
+    QByteArray bytes = ReadComputeTemplate(selected, QStringLiteral("main.lushader.json.in"));
     bytes.replace("@LUDUS_DEFAULT_RENDER_GRAPH_PROFILES@", QJsonDocument(profiles).toJson(QJsonDocument::Compact));
     const QJsonObject source = QJsonDocument::fromJson(bytes).object();
-    const QJsonArray records = QJsonDocument::fromJson(ReadComputeTemplate(QStringLiteral("library.lurender.json")))
-                                   .object()
-                                   .value(QStringLiteral("configurations"))
-                                   .toArray();
+    const QJsonArray records =
+        QJsonDocument::fromJson(ReadComputeTemplate(selected, QStringLiteral("library.lurender.json")))
+            .object()
+            .value(QStringLiteral("configurations"))
+            .toArray();
     if (source.isEmpty() == true || records.isEmpty() == true ||
         UpgradeDefaultTemplateBudgets(manifest, source) == false)
     {
@@ -264,7 +293,7 @@ RenderGraphDocumentStatus PrepareComputeRayTracingConfiguration(RenderGraphSnaps
         return RenderGraphDocumentStatus::NotFound;
     }
     RenderGraphDocumentStatus status =
-        MergeComputePrograms(inoutSnapshot, manifest, source, outError, inoutBudgetOrNull);
+        MergeComputePrograms(inoutSnapshot, manifest, source, selected, outError, inoutBudgetOrNull);
     if (status == RenderGraphDocumentStatus::Ok)
     {
         status = MergeComputeRayTechnique(manifest, source, outError);
@@ -289,7 +318,7 @@ RenderGraphDocumentStatus PrepareComputeRayTracingConfiguration(RenderGraphSnaps
         {
             QJsonObject entry = shaders.at(shader).toObject();
             entry.insert(QStringLiteral("program"),
-                         GetComputeProgramName(entry.value(QStringLiteral("program")).toString()));
+                         GetComputeProgramName(selected, entry.value(QStringLiteral("program")).toString()));
             shaders.replace(shader, entry);
         }
         node.insert(QStringLiteral("shaders"), shaders);
