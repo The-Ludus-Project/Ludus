@@ -1998,6 +1998,12 @@ process-level measurements; more isolated device measurements are required befor
 claiming acceleration or a regression. Individual timings and setup/wall medians
 remain in the runner's JSON report rather than being discarded.
 
+After integration at `6a149003`, three further alternating layout pairs measured
+mixed medians of 6.652 versus 6.305 ms (5.2% less GPU time). The unchanged masked
+control measured 5.889 versus 5.058 ms, while opaque measured 3.441 versus 3.860 ms.
+Those larger control changes leave the acceleration claim unresolved. The final
+repetition retained bit-identical RGBA8 and the same raw RGB error bounds below.
+
 All four scenes produced bit-identical RGBA8 output in both final comparisons.
 The same-kernel comparison also retained raw linear readbacks: empty, opaque-only
 and masked-only RGB were bit-identical; mixed maximum absolute RGB difference was
