@@ -1,4 +1,5 @@
 #include "internal/d3d12_raster.h"
+#include "internal/d3d12_transfer.h"
 #include "internal/dxil_container.h"
 #include "internal/raster.h"
 
@@ -306,7 +307,15 @@ FormatCapabilities FormatLimits(RasterFormat format) noexcept
     const bool hasVolume = (support.Support1 & D3D12_FORMAT_SUPPORT1_TEXTURE3D) != 0;
     return
     {
-        .Uses = { .Sampled = true, .Filterable = true, .ColorAttachment = hasAttachment, .Blendable = hasBlend },
+        .Uses =
+        {
+            .Sampled = true,
+            .Filterable = true,
+            .ColorAttachment = hasAttachment,
+            .Blendable = hasBlend,
+            .CopySource = format == RasterFormat::Rgba8Unorm,
+            .CopyDestination = format == RasterFormat::Rgba8Unorm,
+        },
         .MaxSampledDimension2D = D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION,
         .MaxAttachmentDimension2D = hasAttachment == true ? D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION : 0U,
         .MaxMipLevels = MAX_MIP_LEVELS,
@@ -369,48 +378,26 @@ RasterStatus RasterGrow(RasterKind kind, usize count) noexcept
 RasterStatus RasterPrepareStorage() noexcept
 {
     PollTextures();
+    PollInitialBuffers();
     return gSubmissions.TryResize(CurrentStorageLimits().Submissions) == true ? RasterStatus::Ready : StorageFailure();
 }
-RasterStatus
-RasterCreateBuffer(usize slot, const BufferDescription& description, std::span<const uint8> bytes, uint32) noexcept
+RasterStatus RasterCreateBuffer(usize slot,
+                                const BufferDescription& description,
+                                std::span<const uint8> bytes,
+                                uint32 request) noexcept
 {
     if (description.Role == BufferRole::Storage || description.Role == BufferRole::StorageVertex ||
         description.Role == BufferRole::StorageIndirect)
     {
         return RasterStatus::Unsupported;
     }
-    const usize size = (description.Size + CBV_ALIGNMENT - 1) / CBV_ALIGNMENT * CBV_ALIGNMENT;
-    ComOwner<ID3D12Resource> resource;
-    const RasterStatus status = CreateResource(MakeBufferDescription(size),
-                                               D3D12_HEAP_TYPE_UPLOAD,
-                                               D3D12_RESOURCE_STATE_GENERIC_READ,
-                                               resource);
-    if (status != RasterStatus::Ready)
-    {
-        return status;
-    }
-    void* mappedOrNull = nullptr;
-    const D3D12_RANGE readRange{};
-    const HRESULT result = resource->Map(0, &readRange, &mappedOrNull);
-    if (FAILED(result) == true)
-    {
-        return GetFailure(result);
-    }
-    std::memset(mappedOrNull, 0, size);
-    std::memcpy(mappedOrNull, bytes.data(), bytes.size());
-    resource->Unmap(0, nullptr);
-    gBuffers[slot].Resource = Move(resource);
-    return RasterStatus::Ready;
+    return CreateInitialBuffer({slot, request}, description, bytes.data(), bytes.size());
 }
 RasterStatus RasterCreateTexture(usize slot,
                                  const TextureDescription& description,
                                  const TextureUpload& upload,
                                  uint32 request) noexcept
 {
-    if (description.DeferredInitialization == true)
-    {
-        return RasterStatus::Unsupported;
-    }
     PollTextures();
     Texture& texture = gTextures[slot];
     if (texture.Fence != 0)
@@ -499,6 +486,10 @@ RasterStatus RasterCreateTexture(usize slot,
                     GetDescriptor(texture.Depths.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_DSV, subresource));
             }
         }
+        return RasterStatus::Ready;
+    }
+    if (description.DeferredInitialization == true)
+    {
         return RasterStatus::Ready;
     }
     StorageArray<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> footprints;
@@ -915,6 +906,7 @@ void RasterSubmit(uint64 ordinal) noexcept
 uint64 RasterCompleted() noexcept
 {
     PollTextures();
+    PollInitialBuffers();
     const uint64 completed = GetCompletedFence();
     for (Submission& submission : gSubmissions)
     {
@@ -999,6 +991,22 @@ namespace d3d12
 DXGI_FORMAT GetRasterFormat(RasterFormat format) noexcept
 {
     return GetFormat(format);
+}
+void SetBuffer(usize slot, ComOwner<ID3D12Resource>&& resource) noexcept
+{
+    gBuffers[slot].Resource = Move(resource);
+}
+ID3D12Resource* GetTexture(usize slot) noexcept
+{
+    return gTextures[slot].Resource.Get();
+}
+D3D12_RESOURCE_STATES GetTextureState(usize slot) noexcept
+{
+    return gTextures[slot].State;
+}
+void SetTextureState(usize slot, D3D12_RESOURCE_STATES state) noexcept
+{
+    gTextures[slot].State = state;
 }
 ID3D12Resource* GetBuffer(usize slot) noexcept
 {

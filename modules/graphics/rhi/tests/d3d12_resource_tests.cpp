@@ -54,8 +54,8 @@ TEST_CASE("D3b admits required raster while compute remains unavailable", "[rhi]
             rhi::RasterStatus::Ready);
     CHECK(format.Uses.Sampled == true);
     CHECK(format.Uses.ColorAttachment == true);
-    CHECK(format.Uses.CopySource == false);
-    CHECK(format.Uses.CopyDestination == false);
+    CHECK(format.Uses.CopySource == true);
+    CHECK(format.Uses.CopyDestination == true);
     REQUIRE(rhi::DestroyDevice(owner.Device) == rhi::DeviceStatus::Ready);
     owner.Surface = {};
     rhi::DeviceDescription description;
@@ -260,7 +260,7 @@ TEST_CASE("D3a failed staging admission releases resource budget and preserves o
 {
     constexpr usize LOGICAL_BYTES = 8;
     rhi::StorageLimits limits;
-    limits.ResourceBytes = LOGICAL_BYTES;
+    limits.ResourceBytes = LOGICAL_BYTES + D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT;
     ResourceDevice owner(limits);
     StaticArray<uint8, LOGICAL_BYTES> bytes{};
     rhi::TextureHandle texture;
