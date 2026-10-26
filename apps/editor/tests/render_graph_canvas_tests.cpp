@@ -1745,3 +1745,108 @@ TEST_CASE("OIDN processing quality edits through canvas and Properties with undo
     REQUIRE(reopened.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
     CHECK(reopened.GetDraft(ROOT_GRAPH) == workspace.GetDocument().GetDraft(ROOT_GRAPH));
 }
+
+TEST_CASE("scene compute nodes are authored on the canvas with Properties hidden",
+          "[editor][render-graph][pipeline][scene-compute]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    QComboBox* kindsOrNull = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphNewKind"));
+    REQUIRE(kindsOrNull != nullptr);
+    kindsOrNull->setCurrentText(QStringLiteral("ComputePipeline"));
+    workspace.findChild<QPushButton*>(QStringLiteral("renderGraphAddNode"))->click();
+    const QString identity = QStringLiteral("computepipeline");
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, identity) == true);
+    const auto getNode = [&workspace, &identity]() {
+        const QJsonObject graph = QJsonDocument::fromJson(workspace.GetDocument().GetDraft(ROOT_GRAPH)).object();
+        for (const QJsonValueConstRef configuration : graph.value(QStringLiteral("configurations")).toArray())
+        {
+            for (const QJsonValueConstRef node : configuration.toObject().value(QStringLiteral("nodes")).toArray())
+            {
+                if (node.toObject().value(QStringLiteral("id")).toString() == identity)
+                {
+                    return node.toObject();
+                }
+            }
+        }
+        return QJsonObject{};
+    };
+    // New generic compute nodes keep the generic defaults.
+    CHECK(getNode().value(QStringLiteral("state")).toObject() ==
+          QJsonObject{{QStringLiteral("group_size"), QJsonArray{1, 1, 1}}});
+    const QByteArray generic = workspace.GetDocument().GetDraft(ROOT_GRAPH);
+    workspace.resize(1200, 800);
+    workspace.show();
+    QWidget* propertiesOrNull = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
+    REQUIRE(propertiesOrNull != nullptr);
+    propertiesOrNull->hide();
+    QCoreApplication::processEvents();
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    canvas.Rebuild();
+    // The follow-up runs inside a modal dialog the action opens; actions without one ignore it.
+    const auto openMenu = [&canvas, &identity](const QString& action, const auto& afterTrigger) {
+        QTimer::singleShot(0, &canvas, [&canvas, action, afterTrigger]() {
+            QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            REQUIRE(menuOrNull != nullptr);
+            QAction* actionOrNull = menuOrNull->findChild<QAction*>(action);
+            REQUIRE(actionOrNull != nullptr);
+            REQUIRE(actionOrNull->isEnabled() == true);
+            QTimer::singleShot(0, &canvas, afterTrigger);
+            menuOrNull->close();
+            actionOrNull->trigger();
+        });
+        const QPoint point = canvas.mapFromScene(canvas.GetNodePosition(identity) + QPointF(20, 10));
+        QContextMenuEvent event(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
+        QApplication::sendEvent(canvas.viewport(), &event);
+    };
+    const uint64 revision = workspace.GetDocument().GetRevision();
+    openMenu(QStringLiteral("renderGraphAddSceneInputsAction"), []() {});
+    CHECK(workspace.GetDocument().GetRevision() == revision + 1);
+    const QJsonObject converted = getNode();
+    CHECK(converted.value(QStringLiteral("inputs")).toArray().at(0).toObject().value(QStringLiteral("type")) ==
+          QStringLiteral("Scene"));
+    CHECK(converted.value(QStringLiteral("state")).toObject().isEmpty() == true);
+    CHECK(converted.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("dimensions")) ==
+          QStringLiteral("ColorTarget"));
+    CHECK(canvas.GetPortPosition(identity + QStringLiteral(".scene"), false).isNull() == false);
+    CHECK(canvas.GetPortPosition(identity + QStringLiteral(".view"), false).isNull() == false);
+    openMenu(QStringLiteral("renderGraphEditNodeAction"), [&workspace, propertiesOrNull, revision]() {
+        QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        REQUIRE(dialogOrNull != nullptr);
+        CHECK(propertiesOrNull->isHidden() == true);
+        QComboBox* modeOrNull = dialogOrNull->findChild<QComboBox*>(QStringLiteral("rayLaunchSizeMode"));
+        REQUIRE(modeOrNull != nullptr);
+        CHECK(modeOrNull->currentText() == QStringLiteral("Match color target"));
+        modeOrNull->setCurrentIndex(1);
+        CHECK(workspace.GetDocument().GetRevision() == revision + 2);
+        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("ColorTarget") == false);
+        QGroupBox* advancedOrNull = dialogOrNull->findChild<QGroupBox*>(QStringLiteral("renderGraphComputeAdvanced"));
+        REQUIRE(advancedOrNull != nullptr);
+        CHECK(advancedOrNull->isChecked() == false);
+        advancedOrNull->setChecked(true);
+        CHECK(workspace.GetDocument().GetRevision() == revision + 3);
+        CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH).contains("group_size") == true);
+        dialogOrNull->accept();
+    });
+    const QJsonObject edited = getNode();
+    CHECK(edited.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("dimensions")).isArray() == true);
+    CHECK(edited.value(QStringLiteral("state")).toObject() ==
+          QJsonObject{{QStringLiteral("group_size"), QJsonArray{64, 1, 1}}});
+    CHECK(workspace.GetDocument().GetRevision() == revision + 3);
+    workspace.Undo();
+    workspace.Undo();
+    workspace.Undo();
+    CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH) == generic);
+    workspace.Redo();
+    workspace.Redo();
+    workspace.Redo();
+    CHECK(getNode() == edited);
+    REQUIRE(workspace.Save() == true);
+    RenderGraphDocument reopened;
+    REQUIRE(reopened.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    CHECK(reopened.GetDraft(ROOT_GRAPH) == workspace.GetDocument().GetDraft(ROOT_GRAPH));
+}

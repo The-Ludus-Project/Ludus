@@ -11,6 +11,7 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
@@ -297,6 +298,13 @@ RenderGraphPipelineEditor::RenderGraphPipelineEditor(const QJsonObject& node, QW
                       QStringLiteral(" New ray techniques expose materials through EvaluateMaterial(scene, hit). "
                                      "For legacy ray pipelines, use Enable Scene Materials on the canvas."));
     }
+    else if (IsSceneComputeNode(node) == true)
+    {
+        hint->setText(hint->text() +
+                      QStringLiteral(" Scene compute shaders implement float3 Name(SceneContext scene, RayLaunch "
+                                     "launch, inout RayQueryContext queries) and trace with TraceClosest or "
+                                     "TestVisibility. There are no hit or miss callbacks, so TraceAndShade fails."));
+    }
     hint->setWordWrap(true);
     layout->addWidget(hint);
 }
@@ -576,6 +584,11 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
         addRayStateProperties(outForm);
         return;
     }
+    if (name == QStringLiteral("state") && IsSceneComputeNode(mNode) == true)
+    {
+        addSceneComputeStateProperties(outForm);
+        return;
+    }
     const QJsonObject properties = mNode.value(name).toObject();
     for (QJsonObject::const_iterator property = properties.begin(); property != properties.end(); ++property)
     {
@@ -587,8 +600,7 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
             mNode.insert(name, record);
             publishEdit();
         };
-        if (name == QStringLiteral("invocation") && key == QStringLiteral("dimensions") &&
-            mNode.value(QStringLiteral("kind")).toString() == QStringLiteral("RayTracingPipeline"))
+        if (name == QStringLiteral("invocation") && key == QStringLiteral("dimensions") && UsesRayLaunch(mNode) == true)
         {
             QWidget* row = new QWidget(this);
             QVBoxLayout* layout = new QVBoxLayout(row);
@@ -765,6 +777,70 @@ void RenderGraphPipelineEditor::addRayStateProperties(QFormLayout& outForm)
     outForm.addRow(reset);
 }
 
+void RenderGraphPipelineEditor::addSceneComputeStateProperties(QFormLayout& outForm)
+{
+    const QJsonArray fixedGroupSize = GetSceneComputeGroupSize();
+    const QString fixedText = QStringLiteral("%1 × %2 × %3")
+                                  .arg(fixedGroupSize.at(0).toInteger())
+                                  .arg(fixedGroupSize.at(1).toInteger())
+                                  .arg(fixedGroupSize.at(2).toInteger());
+    QLabel* explanation = new QLabel(
+        QStringLiteral("Automatic: a scene compute pass runs once per launch pixel in the ray wrapper's fixed %1 "
+                       "workgroup. Query budgets are shared with the package's ray passes.")
+            .arg(fixedText),
+        this);
+    explanation->setWordWrap(true);
+    outForm.addRow(explanation);
+    QGroupBox* advanced = new QGroupBox(QStringLiteral("Advanced overrides"), this);
+    advanced->setObjectName(QStringLiteral("renderGraphComputeAdvanced"));
+    advanced->setProperty("renderGraphField", QStringLiteral("state"));
+    advanced->setCheckable(true);
+    QFormLayout* form = new QFormLayout(advanced);
+    QLabel* groupSize = new QLabel(advanced);
+    groupSize->setObjectName(QStringLiteral("renderGraphComputeGroupSize"));
+    form->addRow(QStringLiteral("Group size"), groupSize);
+    QLabel* warning = new QLabel(advanced);
+    warning->setObjectName(QStringLiteral("renderGraphComputeGroupSizeWarning"));
+    warning->setWordWrap(true);
+    form->addRow(warning);
+    // The only accepted explicit size is the fixed one; any other authored size is shown for repair.
+    const auto showState = [this, advanced, groupSize, warning, fixedGroupSize, fixedText]() {
+        const QJsonValue authored = mNode.value(QStringLiteral("state")).toObject().value(QStringLiteral("group_size"));
+        const QSignalBlocker blocker(advanced);
+        advanced->setChecked(authored.isUndefined() == false);
+        groupSize->setText(fixedText);
+        warning->setVisible(authored.isUndefined() == false && authored != fixedGroupSize);
+        warning->setText(
+            QStringLiteral("Authored group size %1 is not supported: the build rejects it. Use automatic settings "
+                           "to clear it.")
+                .arg(QString::fromUtf8(QJsonDocument(authored.toArray()).toJson(QJsonDocument::Compact))));
+    };
+    showState();
+    connect(advanced, &QGroupBox::toggled, this, [this, fixedGroupSize, showState](bool isChecked) {
+        QJsonObject state = mNode.value(QStringLiteral("state")).toObject();
+        if (isChecked == true)
+        {
+            state.insert(QStringLiteral("group_size"), fixedGroupSize);
+        }
+        else
+        {
+            state.remove(QStringLiteral("group_size"));
+        }
+        mNode.insert(QStringLiteral("state"), state);
+        showState();
+        publishEdit();
+    });
+    outForm.addRow(advanced);
+    QPushButton* reset = new QPushButton(QStringLiteral("Use automatic settings"), this);
+    reset->setObjectName(QStringLiteral("renderGraphComputeAutomatic"));
+    connect(reset, &QPushButton::clicked, this, [this, showState]() {
+        mNode.insert(QStringLiteral("state"), QJsonObject{});
+        showState();
+        publishEdit();
+    });
+    outForm.addRow(reset);
+}
+
 void RenderGraphPipelineEditor::SetShaderAssignments(const QJsonArray& shaders)
 {
     const QSignalBlocker blocker(mShaders);
@@ -846,6 +922,8 @@ void RenderGraphPipelineEditor::publishEdit()
     }
     candidate.insert(QStringLiteral("inputs"), orderedInputs);
     candidate.insert(QStringLiteral("outputs"), outputs);
+    // Adding or removing a Scene input changes a ComputePipeline's execution profile.
+    candidate = ApplyComputeProfile(mNode, candidate);
     mNode = candidate;
     Q_EMIT Edited(candidate);
 }

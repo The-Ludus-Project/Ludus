@@ -272,6 +272,32 @@ TEST_CASE("pipeline texture contracts check samples and explicit ray coverage", 
                                QStringLiteral("color.texture"),
                                QStringLiteral("ray.color"))
               .IsLegal() == true);
+    // A scene compute pass is a ray launch: the same color coverage rule applies.
+    QJsonObject kernel;
+    REQUIRE(MakeSceneComputeNode(MakePipelineNode(QStringLiteral("ComputePipeline"), QStringLiteral("kernel")),
+                                 kernel) == true);
+    QJsonArray kernelInputs = kernel.value(QStringLiteral("inputs")).toArray();
+    kernelInputs.append(pipeline.value(QStringLiteral("inputs")).toArray().at(0));
+    kernel.insert(QStringLiteral("inputs"), kernelInputs);
+    kernel.insert(QStringLiteral("outputs"), pipeline.value(QStringLiteral("outputs")));
+    kernel.insert(QStringLiteral("invocation"), QJsonObject{{QStringLiteral("dimensions"), QJsonArray{1, 2, 1}}});
+    REQUIRE(document.AddNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, kernel) == RenderGraphDocumentStatus::Ok);
+    const RenderGraphLinkCheck kernelMismatch = CheckRenderGraphLink(document,
+                                                                     ROOT_GRAPH,
+                                                                     DEFAULT_CONFIGURATION,
+                                                                     QStringLiteral("color.texture"),
+                                                                     QStringLiteral("kernel.color"));
+    CHECK(kernelMismatch.Code == QStringLiteral("AttachmentMismatch"));
+    CHECK(kernelMismatch.Reason.contains(QStringLiteral("Match color target")) == true);
+    kernel.insert(QStringLiteral("invocation"),
+                  QJsonObject{{QStringLiteral("dimensions"), QStringLiteral("ColorTarget")}});
+    REQUIRE(document.ReplaceNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, kernel) == RenderGraphDocumentStatus::Ok);
+    CHECK(CheckRenderGraphLink(document,
+                               ROOT_GRAPH,
+                               DEFAULT_CONFIGURATION,
+                               QStringLiteral("color.texture"),
+                               QStringLiteral("kernel.color"))
+              .IsLegal() == true);
     const QJsonObject recursive{{QStringLiteral("id"), QStringLiteral("recursive_draft")},
                                 {QStringLiteral("kind"), QStringLiteral("Subgraph")},
                                 {QStringLiteral("asset"), ROOT_GRAPH},
@@ -2370,4 +2396,330 @@ TEST_CASE("independent graphics shaders coexist with a legacy raster in one pack
     REQUIRE(reloaded.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
     CHECK(reloaded.GetDraft(QStringLiteral("main.lushader.json")) ==
           document.GetDraft(QStringLiteral("main.lushader.json")));
+}
+
+namespace
+{
+QJsonObject GetProgram(const RenderGraphDocument& document, const QString& identity)
+{
+    const QJsonObject manifest =
+        QJsonDocument::fromJson(document.GetDraft(QStringLiteral("main.lushader.json"))).object();
+    for (const QJsonValueConstRef value : manifest.value(QStringLiteral("programs")).toArray())
+    {
+        if (value.toObject().value(QStringLiteral("id")).toString() == identity)
+        {
+            return value.toObject();
+        }
+    }
+    return {};
+}
+
+QJsonObject AddComputeShader(QJsonObject node)
+{
+    node.insert(QStringLiteral("shaders"),
+                QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("kernel")},
+                                       {QStringLiteral("stage"), QStringLiteral("compute")},
+                                       {QStringLiteral("program"), QStringLiteral("Program")}}});
+    return node;
+}
+} // namespace
+
+TEST_CASE("scene compute nodes use automatic state and launch size while generic compute stays unchanged",
+          "[editor][render-graph][pipeline][scene-compute]")
+{
+    const QJsonObject generic = MakePipelineNode(QStringLiteral("ComputePipeline"), QStringLiteral("work"));
+    CHECK(generic.value(QStringLiteral("state")).toObject() ==
+          QJsonObject{{QStringLiteral("group_size"), QJsonArray{1, 1, 1}}});
+    CHECK(generic.value(QStringLiteral("invocation")).toObject() ==
+          QJsonObject{{QStringLiteral("dimensions"), QJsonArray{1, 1, 1}}});
+    CHECK(IsSceneComputeNode(generic) == false);
+    CHECK(UsesRayLaunch(generic) == false);
+    CHECK(ApplyComputeProfile(generic, generic) == generic);
+    {
+        RenderGraphPipelineEditor editor(generic);
+        CHECK(editor.findChild<QComboBox*>(QStringLiteral("rayLaunchSizeMode")) == nullptr);
+        CHECK(editor.findChild<QGroupBox*>(QStringLiteral("renderGraphComputeAdvanced")) == nullptr);
+    }
+
+    QJsonObject scene;
+    REQUIRE(MakeSceneComputeNode(generic, scene) == true);
+    CHECK(IsSceneComputeNode(scene) == true);
+    CHECK(UsesRayLaunch(scene) == true);
+    const QJsonArray inputs = scene.value(QStringLiteral("inputs")).toArray();
+    REQUIRE(inputs.size() == 2);
+    CHECK(inputs.at(0).toObject() == QJsonObject{{QStringLiteral("id"), QStringLiteral("scene")},
+                                                 {QStringLiteral("type"), QStringLiteral("Scene")},
+                                                 {QStringLiteral("required"), true}});
+    CHECK(inputs.at(1).toObject().value(QStringLiteral("type")) == QStringLiteral("View"));
+    CHECK(scene.value(QStringLiteral("state")).toObject().isEmpty() == true);
+    CHECK(scene.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("dimensions")) ==
+          QStringLiteral("ColorTarget"));
+    QJsonObject preserved{{QStringLiteral("id"), QStringLiteral("unchanged")}};
+    CHECK(MakeSceneComputeNode(scene, preserved) == false);
+    CHECK(MakeSceneComputeNode(MakePipelineNode(QStringLiteral("RayTracingPipeline"), QStringLiteral("ray")),
+                               preserved) == false);
+    CHECK(preserved == QJsonObject{{QStringLiteral("id"), QStringLiteral("unchanged")}});
+    // Removing the Scene input restores the generic draft's explicit fields.
+    QJsonObject withoutScene = scene;
+    withoutScene.insert(QStringLiteral("inputs"), QJsonArray{inputs.at(1)});
+    const QJsonObject restored = ApplyComputeProfile(scene, withoutScene);
+    CHECK(restored.value(QStringLiteral("state")) == generic.value(QStringLiteral("state")));
+    CHECK(restored.value(QStringLiteral("invocation")) == generic.value(QStringLiteral("invocation")));
+
+    RenderGraphPipelineEditor editor(scene);
+    QJsonObject applied;
+    QObject::connect(&editor, &RenderGraphPipelineEditor::Edited, &editor, [&applied](const QJsonObject& candidate) {
+        applied = candidate;
+    });
+    QComboBox* mode = editor.findChild<QComboBox*>(QStringLiteral("rayLaunchSizeMode"));
+    QSpinBox* width = editor.findChild<QSpinBox*>(QStringLiteral("rayLaunchDimension0"));
+    QGroupBox* advanced = editor.findChild<QGroupBox*>(QStringLiteral("renderGraphComputeAdvanced"));
+    QLabel* groupSize = editor.findChild<QLabel*>(QStringLiteral("renderGraphComputeGroupSize"));
+    QLabel* warning = editor.findChild<QLabel*>(QStringLiteral("renderGraphComputeGroupSizeWarning"));
+    QPushButton* automatic = editor.findChild<QPushButton*>(QStringLiteral("renderGraphComputeAutomatic"));
+    REQUIRE(mode != nullptr);
+    REQUIRE(width != nullptr);
+    REQUIRE(advanced != nullptr);
+    REQUIRE(groupSize != nullptr);
+    REQUIRE(warning != nullptr);
+    REQUIRE(automatic != nullptr);
+    CHECK(mode->currentText() == QStringLiteral("Match color target"));
+    CHECK(advanced->isChecked() == false);
+    CHECK(groupSize->text() == QStringLiteral("64 × 1 × 1"));
+    CHECK(warning->isHidden() == true);
+    CHECK(applied.isEmpty() == true);
+    mode->setCurrentIndex(1);
+    width->setValue(97);
+    CHECK(applied.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("dimensions")).toArray() ==
+          QJsonArray{97, 1, 1});
+    mode->setCurrentIndex(0);
+    CHECK(applied.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("dimensions")) ==
+          QStringLiteral("ColorTarget"));
+    advanced->setChecked(true);
+    CHECK(applied.value(QStringLiteral("state")).toObject() ==
+          QJsonObject{{QStringLiteral("group_size"), GetSceneComputeGroupSize()}});
+    CHECK(GetSceneComputeGroupSize() == QJsonArray{64, 1, 1});
+    advanced->setChecked(false);
+    CHECK(applied.value(QStringLiteral("state")).toObject().isEmpty() == true);
+
+    // A saved draft with an unsupported group size opens unchanged and offers the repair.
+    QJsonObject unsupported = scene;
+    unsupported.insert(QStringLiteral("state"), QJsonObject{{QStringLiteral("group_size"), QJsonArray{8, 8, 1}}});
+    RenderGraphPipelineEditor unsupportedEditor(unsupported);
+    QJsonObject repaired;
+    QObject::connect(&unsupportedEditor,
+                     &RenderGraphPipelineEditor::Edited,
+                     &unsupportedEditor,
+                     [&repaired](const QJsonObject& candidate) { repaired = candidate; });
+    QLabel* unsupportedWarning =
+        unsupportedEditor.findChild<QLabel*>(QStringLiteral("renderGraphComputeGroupSizeWarning"));
+    REQUIRE(unsupportedWarning != nullptr);
+    CHECK(unsupportedWarning->isHidden() == false);
+    CHECK(unsupportedWarning->text().contains(QStringLiteral("8,8,1")) == true);
+    CHECK(repaired.isEmpty() == true);
+    unsupportedEditor.findChild<QPushButton*>(QStringLiteral("renderGraphComputeAutomatic"))->click();
+    CHECK(repaired.value(QStringLiteral("state")).toObject().isEmpty() == true);
+    CHECK(unsupportedWarning->isHidden() == true);
+}
+
+TEST_CASE("adding a Scene read input makes a compute node a scene compute pass",
+          "[editor][render-graph][pipeline][scene-compute]")
+{
+    RenderGraphPipelineEditor editor(MakePipelineNode(QStringLiteral("ComputePipeline"), QStringLiteral("work")));
+    QJsonObject applied;
+    QObject::connect(&editor, &RenderGraphPipelineEditor::Edited, &editor, [&applied](const QJsonObject& candidate) {
+        applied = candidate;
+    });
+    QTableWidget* inputs = editor.findChild<QTableWidget*>(QStringLiteral("inputs"));
+    REQUIRE(inputs != nullptr);
+    editor.findChild<QPushButton*>(QStringLiteral("renderGraphAdd_inputs"))->click();
+    CHECK(IsSceneComputeNode(applied) == false);
+    CHECK(applied.value(QStringLiteral("state")).toObject().contains(QStringLiteral("group_size")) == true);
+    QComboBox* type = qobject_cast<QComboBox*>(inputs->cellWidget(0, 1));
+    REQUIRE(type != nullptr);
+    type->setCurrentText(QStringLiteral("Scene"));
+    CHECK(IsSceneComputeNode(applied) == true);
+    CHECK(applied.value(QStringLiteral("state")).toObject().isEmpty() == true);
+    CHECK(applied.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("dimensions")) ==
+          QStringLiteral("ColorTarget"));
+    type->setCurrentText(QStringLiteral("ColorTexture"));
+    CHECK(IsSceneComputeNode(applied) == false);
+    CHECK(applied.value(QStringLiteral("state")).toObject() ==
+          QJsonObject{{QStringLiteral("group_size"), QJsonArray{1, 1, 1}}});
+    CHECK(applied.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("dimensions")).toArray() ==
+          QJsonArray{1, 1, 1});
+}
+
+TEST_CASE("generic compute drafts round-trip unchanged through editing and save",
+          "[editor][render-graph][pipeline][scene-compute]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    QJsonObject legacy = AddComputeShader(MakePipelineNode(QStringLiteral("ComputePipeline"), QStringLiteral("work")));
+    legacy.insert(QStringLiteral("state"), QJsonObject{{QStringLiteral("group_size"), QJsonArray{8, 8, 1}}});
+    legacy.insert(QStringLiteral("invocation"), QJsonObject{{QStringLiteral("dimensions"), QJsonArray{12, 8, 1}}});
+    REQUIRE(document.AddNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, legacy) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, legacy) == RenderGraphDocumentStatus::Ok);
+    const QJsonObject saved = GetNode(document, QStringLiteral("work"));
+    const QString programName =
+        saved.value(QStringLiteral("shaders")).toArray().at(0).toObject().value(QStringLiteral("program")).toString();
+    const QJsonObject program = GetProgram(document, programName);
+    CHECK(program.value(QStringLiteral("output")).toString().isEmpty() == true);
+    const QByteArray source = document.GetDraft(program.value(QStringLiteral("source")).toString());
+    CHECK(source.contains("[shader(\"compute\")]") == true);
+    CHECK(source.contains("SceneContext") == false);
+    CHECK(GetRayTechnique(document).isEmpty() == true);
+    QStringList files;
+    REQUIRE(document.Save(files) == RenderGraphDocumentStatus::Ok);
+
+    RenderGraphDocument reloaded;
+    REQUIRE(reloaded.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QByteArray original = reloaded.GetDraft(ROOT_GRAPH);
+    const QByteArray originalManifest = reloaded.GetDraft(QStringLiteral("main.lushader.json"));
+    RenderGraphPipelineEditor editor(GetNode(reloaded, QStringLiteral("work")));
+    QJsonObject applied;
+    QObject::connect(&editor,
+                     &RenderGraphPipelineEditor::Edited,
+                     &editor,
+                     [&reloaded, &applied](const QJsonObject& candidate) {
+                         applied = candidate;
+                         REQUIRE(reloaded.ReplaceNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, candidate) ==
+                                 RenderGraphDocumentStatus::Ok);
+                     });
+    CHECK(applied.isEmpty() == true);
+    CHECK(editor.findChild<QComboBox*>(QStringLiteral("rayLaunchSizeMode")) == nullptr);
+    QWidget* groupSizeOrNull = nullptr;
+    for (QWidget* widget : editor.findChildren<QWidget*>())
+    {
+        if (widget->property("renderGraphField").toString() == QStringLiteral("state.group_size"))
+        {
+            groupSizeOrNull = widget;
+        }
+    }
+    REQUIRE(groupSizeOrNull != nullptr);
+    QSpinBox* groupWidth = groupSizeOrNull->findChild<QSpinBox*>();
+    REQUIRE(groupWidth != nullptr);
+    CHECK(groupWidth->value() == 8);
+    groupWidth->setValue(4);
+    CHECK(GetNode(reloaded, QStringLiteral("work")).value(QStringLiteral("state")).toObject() ==
+          QJsonObject{{QStringLiteral("group_size"), QJsonArray{4, 8, 1}}});
+    groupWidth->setValue(8);
+    CHECK(reloaded.GetDraft(ROOT_GRAPH) == original);
+    CHECK(reloaded.GetDraft(QStringLiteral("main.lushader.json")) == originalManifest);
+}
+
+TEST_CASE("scene compute shaders use the scene-aware stub, technique and interface panel",
+          "[editor][render-graph][pipeline][scene-compute]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QStringList originalFiles = document.GetFiles();
+    QJsonObject node;
+    REQUIRE(MakeSceneComputeNode(MakePipelineNode(QStringLiteral("ComputePipeline"), QStringLiteral("trace")), node) ==
+            true);
+    node = AddComputeShader(node);
+    REQUIRE(document.AddNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    const QJsonObject technique = GetRayTechnique(document);
+    CHECK(technique.value(QStringLiteral("configuration")) == QStringLiteral("RayTracing"));
+    CHECK(technique.value(QStringLiteral("recipes")).toArray() ==
+          QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("Triangles")}}});
+    CHECK(technique.value(QStringLiteral("scene_interface")).toObject().value(QStringLiteral("version")) == 1);
+    CHECK(technique.contains(QStringLiteral("ray_generation")) == false);
+    RenderGraphSceneQueryBudgets budgets;
+    CHECK(document.GetSceneQueryBudgets(budgets) == true);
+    const QString programName = GetNode(document, QStringLiteral("trace"))
+                                    .value(QStringLiteral("shaders"))
+                                    .toArray()
+                                    .at(0)
+                                    .toObject()
+                                    .value(QStringLiteral("program"))
+                                    .toString();
+    const QJsonObject program = GetProgram(document, programName);
+    CHECK(program.value(QStringLiteral("stage")) == QStringLiteral("compute"));
+    CHECK(program.value(QStringLiteral("input")) == QStringLiteral("RayLaunch"));
+    CHECK(program.value(QStringLiteral("output")) == QStringLiteral("Radiance"));
+    CHECK(program.value(QStringLiteral("bindings")).toArray().isEmpty() == true);
+    const QString sourceFile = program.value(QStringLiteral("source")).toString();
+    const QByteArray source = document.GetDraft(sourceFile);
+    CHECK(source.contains("float3 ShaderMain(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)") ==
+          true);
+    CHECK(source.contains("TraceClosest(scene, queries, launch.CameraRay, hit)") == true);
+    CHECK(source.contains("TraceAndShade(") == false);
+    const QByteArray manifest = document.GetDraft(QStringLiteral("main.lushader.json"));
+    const QString description = DescribeShaderInterface(manifest, sourceFile);
+    CHECK(description.contains(QStringLiteral("Scene compute pass")) == true);
+    CHECK(description.contains(QStringLiteral("float3 ShaderMain(\n    SceneContext scene,\n    RayLaunch launch,\n"
+                                              "    inout RayQueryContext queries);")) == true);
+    CHECK(description.contains(QStringLiteral("struct RayLaunch")) == true);
+    CHECK(description.contains(QStringLiteral("uint TraceClosest(")) == true);
+    CHECK(description.contains(QStringLiteral("declaration unavailable")) == false);
+    CHECK(description.contains(QStringLiteral("Legacy ray interface")) == false);
+    REQUIRE(document.Undo() == true);
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetFiles() == originalFiles);
+    REQUIRE(document.Redo() == true);
+    REQUIRE(document.Redo() == true);
+    QStringList saved;
+    REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+    RenderGraphDocument loaded;
+    REQUIRE(loaded.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    CHECK(GetRayTechnique(loaded) == technique);
+    CHECK(loaded.GetDraft(sourceFile) == source);
+}
+
+TEST_CASE("converting a compute node regenerates only untouched generated kernels in one undo step",
+          "[editor][render-graph][pipeline][scene-compute]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QJsonObject generic =
+        AddComputeShader(MakePipelineNode(QStringLiteral("ComputePipeline"), QStringLiteral("work")));
+    REQUIRE(document.AddNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, generic) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, generic) == RenderGraphDocumentStatus::Ok);
+    const QJsonObject created = GetNode(document, QStringLiteral("work"));
+    const QString programName =
+        created.value(QStringLiteral("shaders")).toArray().at(0).toObject().value(QStringLiteral("program")).toString();
+    const QString sourceFile = GetProgram(document, programName).value(QStringLiteral("source")).toString();
+    const QByteArray genericSource = document.GetDraft(sourceFile);
+
+    SECTION("an untouched kernel follows the profile")
+    {
+        QJsonObject scene;
+        REQUIRE(MakeSceneComputeNode(created, scene) == true);
+        const uint64 revision = document.GetRevision();
+        REQUIRE(document.ReplaceNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, scene) == RenderGraphDocumentStatus::Ok);
+        CHECK(document.GetRevision() == revision + 1);
+        CHECK(GetProgram(document, programName).value(QStringLiteral("output")) == QStringLiteral("Radiance"));
+        CHECK(document.GetDraft(sourceFile).contains("SceneContext scene") == true);
+        CHECK(GetRayTechnique(document).value(QStringLiteral("scene_interface")).isObject() == true);
+        QJsonObject withoutScene = scene;
+        QJsonArray inputs = scene.value(QStringLiteral("inputs")).toArray();
+        inputs.removeFirst();
+        withoutScene.insert(QStringLiteral("inputs"), inputs);
+        REQUIRE(document.ReplaceNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, ApplyComputeProfile(scene, withoutScene)) ==
+                RenderGraphDocumentStatus::Ok);
+        CHECK(GetProgram(document, programName).value(QStringLiteral("output")).toString().isEmpty() == true);
+        CHECK(document.GetDraft(sourceFile) == genericSource);
+        REQUIRE(document.Undo() == true);
+        REQUIRE(document.Undo() == true);
+        CHECK(document.GetDraft(sourceFile) == genericSource);
+        CHECK(IsSceneComputeNode(GetNode(document, QStringLiteral("work"))) == false);
+    }
+    SECTION("an authored kernel keeps its bytes and signature")
+    {
+        const QByteArray authored = genericSource + "// authored\n";
+        REQUIRE(document.SetText(sourceFile, authored) == RenderGraphDocumentStatus::Ok);
+        QJsonObject scene;
+        REQUIRE(MakeSceneComputeNode(created, scene) == true);
+        REQUIRE(document.ReplaceNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, scene) == RenderGraphDocumentStatus::Ok);
+        CHECK(document.GetDraft(sourceFile) == authored);
+        CHECK(GetProgram(document, programName).value(QStringLiteral("output")).toString().isEmpty() == true);
+    }
 }

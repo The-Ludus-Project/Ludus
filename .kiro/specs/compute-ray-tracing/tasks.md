@@ -131,39 +131,102 @@ batch CI native suite on Linux.
 
 ## C3 Editor authoring of scene compute nodes
 
-- [ ] Launch size control and Automatic group size for scene compute nodes,
+Evidence is from `macos-clang-debug` on this Mac, with `QT_QPA_PLATFORM=offscreen`.
+
+- [x] Launch size control and Automatic group size for scene compute nodes,
       in both Properties and the canvas node editor, with undo and Save.
-- [ ] Scene bundle connection, the C03 shader stub and the shader interface
+      *`IsSceneComputeNode`/`UsesRayLaunch` (`render_graph_pipeline_node.cpp`)
+      select the ray Launch size control and a Pipeline State section with the
+      automatic 64×1×1 size, an Advanced override that writes only
+      `[64, 1, 1]`, a warning for other saved sizes and **Use automatic
+      settings**. The size comes from the builder's
+      `render_graph_compute.GROUP_SIZE` at configure time. **Add Scene and View
+      Inputs** (Properties button and canvas action) and adding a Scene row
+      apply `state: {}` and `ColorTarget` through `ApplyComputeProfile`.
+      Removing the Scene input restores the generic `[1, 1, 1]` fields. Both
+      surfaces call `ReplaceNode`, so undo and Save are shared. The editor's
+      ray-launch coverage check now also covers scene compute nodes. Generic
+      `new_node` defaults are unchanged.*
+- [x] Scene bundle connection, the C03 shader stub and the shader interface
       panel signature.
-- [ ] Editor tests: node creation, launch-size edits, shader creation, and
+      *Scene compute nodes use the existing Scene bundle ports and Expand Scene
+      Bundle. A new compute shader row on a scene compute node registers a
+      `RayLaunch`/`Radiance` program with a stub that calls `TraceClosest`. When
+      no ray technique exists, the same edit adds `RendererTriangles.RayTracing`
+      with the `Triangles` recipe and `scene_interface`. Unchanged generated
+      kernels switch between the generic and C03 stubs with the profile, and
+      edited kernels keep their bytes. The Shader API panel lists the C03
+      signature, scene types, query functions and the shared payload. The stub
+      text, built into the `scene_compute` fixture, compiles for Metal with the
+      pinned Slang and SPIRV-Cross through `ludus_tools.cli render-graph build`.*
+- [x] Editor tests: node creation, launch-size edits, shader creation, and
       round-trip of old generic drafts.
-- [ ] Docs: update the editor steps in the C2 section.
+      *`render_graph_pipeline_tests.cpp` `[scene-compute]` (five cases) and the
+      scene compute coverage block in "pipeline texture contracts check samples
+      and explicit ray coverage". `render_graph_canvas_tests.cpp` "scene compute
+      nodes are authored on the canvas with Properties hidden" covers creation,
+      conversion, launch size and group size through the context menu and Edit
+      Node, plus undo, redo and Save. Full runs pass:
+      `ludus_render_graph_pipeline_tests`, `ludus_render_graph_configuration_tests`,
+      `ludus_shader_interface_tests`, `ludus_render_graph_live_build_tests` and
+      `ludus_editor_tests` (16 existing skips).*
+- [x] Docs: update the editor steps in the C2 section.
+      *Replaced the "not available yet" paragraph with numbered editor steps.
+      `check-docs`, the strict MkDocs build and `check-wiki
+      --documentation-only` pass, except that a local `check-wiki` has no
+      generated Doxygen API pages (`reference/index.html` → `../api/index.html`).*
 
 ## C4 Two-pass template
 
-- [ ] Add sources in `modules/graphics/renderer/render_graphs/compute_ray_tracing/`:
-  - [ ] `main.lurender.json` and `library.lurender.json`;
-  - [ ] `main.lushader.json.in`;
-  - [ ] `main_shaders/{primary,shade,hit_record}.slang`, with D5 encoding,
+Evidence is from Metal on this Mac (`macos-clang-debug`). Vulkan evidence for the
+same GPU test comes only from the batch CI native suite on Linux.
+
+- [x] Add sources in `modules/graphics/renderer/render_graphs/compute_ray_tracing/`:
+  - [x] `main.lurender.json` and `library.lurender.json`;
+  - [x] `main.lushader.json.in`;
+  - [x] `main_shaders/{primary,shade,hit_record}.slang`, with D5 encoding,
         validation and attribution.
-- [ ] Tooling: add the `TEMPLATES` entry and the `cli.py` choice. Test it in
+  *The raster fallback programs (`geometry`, `color`, `depth`) are byte copies of
+  ReSTIR's, because a ray package needs `DefaultStaticOpaque.ColorAndDepth`. The
+  shade pass uses one visibility query, not two: it rebuilds the surface from the
+  record and traces only the shadow ray. Word 1 `.w` bit 1 records a failed
+  primary query, so the shade pass shows the error color for it.*
+- [x] Tooling: add the `TEMPLATES` entry and the `cli.py` choice. Test it in
       `test_render_graph_templates.py`, including the native-ray parity check.
-- [ ] Install and embed:
-  - [ ] root `CMakeLists.txt` install list;
-  - [ ] renderer GPU-test `foreach`;
-  - [ ] editor qrc `foreach`.
-- [ ] Catalog entries (graph and snippet) and
+      *`ComputeRayTracingTemplateTests`; the catalog parity tests cover the new
+      graph and snippet entries; `test_render_graph_tone_mapping.py` includes the
+      template. 357 render-graph Python tests pass; with the pinned native shader
+      tools, one unrelated existing check fails (`test_real_target_entries_...`
+      expects a diagnostic location without `column`/`length`).*
+- [x] Install and embed:
+  - [x] root `CMakeLists.txt` install list;
+  - [x] renderer GPU-test `foreach`;
+  - [x] editor qrc `foreach`.
+- [x] Catalog entries (graph and snippet) and
       `PrepareComputeRayTracingConfiguration`. Update the ordered identity
       lists in `render_graph_template_registry_tests.cpp` and add
       template-application tests.
+      *`apps/editor/src/render_graph_compute_template.cpp`. Tests: "Compute
+      ray-tracing template is created from the editor picker", "... configuration
+      inserts on the root canvas and validates" and "... import extends a shared ray
+      technique and preserves conflicting edits", plus the Quick Add search.*
 - [ ] GPU acceptance in `render_graph_ray_tests.cpp`:
-  - [ ] the template renders a lit Cornell-box-style fixture;
-  - [ ] there are no magenta pixels;
-  - [ ] the converged mean matches a single-pass `RayTracingPipeline`
+  - [x] the template renders a lit Cornell-box-style fixture;
+  - [x] there are no magenta pixels;
+  - [x] the converged mean matches a single-pass `RayTracingPipeline`
         reference with the same direct-lighting policy, within a stated
         tolerance;
-  - [ ] a resize stages zeroed hits without invalid-hit pixels.
-- [ ] Docs: add "Use the compute ray-tracing template" next to the ReSTIR
+  - [x] a resize stages zeroed hits without invalid-hit pixels.
+  - [ ] Vulkan: the same test in the batch CI native suite on Linux. Not run yet.
+  *"The compute ray-tracing template matches a single-pass direct-lighting
+  reference" passes on Metal. The reference is
+  `tests/sdk_consumer/rg2/direct_lighting_reference/`; it draws the same values
+  from its automatic stream, so after 64 samples the two images are byte-identical
+  on Metal. The stated tolerances are 2% of the mean radiance per channel and at
+  most one pixel in a thousand differing by more than two levels. A negative control
+  that swapped the decoded barycentrics failed the test. After a resize to twice the
+  size, four frames show no error pixels.*
+- [x] Docs: add "Use the compute ray-tracing template" next to the ReSTIR
       section, and update the Quick Add snippet row and the configuration
       template table.
 

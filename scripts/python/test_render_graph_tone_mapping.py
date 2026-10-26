@@ -97,7 +97,7 @@ class ToneMappingTests(unittest.TestCase):
             graph.compile_graph(root)
 
     def test_shipped_ray_templates_expose_display_conversion(self):
-        for template in ('restir-di', 'visibility-secondary-rays', 'tiled-vbuffer-nee'):
+        for template in ('restir-di', 'visibility-secondary-rays', 'tiled-vbuffer-nee', 'compute-ray-tracing'):
             with self.subTest(template=template):
                 root = graph.new_workspace(self.path.parent / template, output='offscreen', renderer_static=True,
                                            profiles=('metal',), template=template)

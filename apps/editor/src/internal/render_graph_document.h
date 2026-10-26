@@ -243,11 +243,11 @@ public:
                                                                 const QString& configuration,
                                                                 QString& outError,
                                                                 const QString& parentConfiguration = {});
-    /// Apply restir-di, visibility-buffer, visibility-secondary-rays or tiled-vbuffer-nee to a library configuration,
-    /// inserting a new library/Subgraph when file is the root. One undo step; no disk writes.
-    /// Existing nonempty configurations, shader sources and incompatible ABIs are preserved on failure.
-    /// An optional budget request reports a blocked program increase. Explicitly approved increases
-    /// change only budgets.programs to the required count, in the same undo step as the template.
+    /// Apply restir-di, visibility-buffer, visibility-secondary-rays, tiled-vbuffer-nee or compute-ray-tracing
+    /// to a library configuration, inserting a new library/Subgraph when file is the root. One undo step; no disk
+    /// writes. Existing nonempty configurations, shader sources and incompatible ABIs are preserved on failure. An
+    /// optional budget request reports a blocked program increase. Explicitly approved increases change only
+    /// budgets.programs to the required count, in the same undo step as the template.
     [[nodiscard]] RenderGraphDocumentStatus
     ApplyConfigurationTemplate(const QString& file,
                                const QString& configuration,

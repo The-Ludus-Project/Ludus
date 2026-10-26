@@ -1013,11 +1013,51 @@ of two patterns:
   [reservoir.slang](../../modules/graphics/renderer/render_graphs/restir_di/main_shaders/reservoir.slang)
   does. Use this when a pass's draw count is unbounded or depends on data.
 
-Editor support for scene compute nodes is not available yet. That covers the
-Launch size control, an automatic group size, the scene-aware shader stub and
-registering the program in the manifest. For now, write `state`, `invocation` and
-the manifest program in the source JSON. Properties and the canvas still edit the
-node's ports, shaders and wires.
+**Author a scene compute pass in the editor.** Each step works from Properties
+or from the canvas with Properties hidden. The canvas actions are on the node's
+right-click menu, and **Edit Node...** opens the same controls in a dialog. Both
+surfaces make the same undoable document edit, and **Save** publishes it.
+
+1. Create a **ComputePipeline** from the node type picker, **Create Node** or
+   **Quick Add**. A new compute node is a generic draft with `group_size` and
+   `dimensions` of `[1, 1, 1]`.
+2. Choose **Add Scene and View Inputs** (a Properties button and a canvas
+   action). In one undoable edit it adds the `scene` and `view` inputs, sets
+   `"state": {}` and sets Launch size to **Match color target**. Adding a Scene
+   row in **Read Inputs** has the same effect. Removing the last Scene input
+   makes the node a generic draft again with `[1, 1, 1]` group size and
+   dimensions.
+3. Connect the Scene node's `scene` output to `scene`, or use
+   [Expand Scene Bundle](#connect-or-expand-a-scene-bundle) to connect only
+   some members. Connect the active camera's `view` output to `view`.
+4. In **Writable Resources**, add the RGBA8Unorm color row with **Clear**/**Store**,
+   and up to two **Buffer** rows with **Load**/**Store**. Connect them as for a
+   Ray Tracing Pipeline node.
+5. **Invocation → Launch size** offers **Match color target** or **Explicit
+   size**, as for ray nodes. An explicit `[width, height, 1]` must match the
+   connected color target. The canvas reports a mismatch when you connect it.
+6. **Pipeline State** shows the automatic 64×1×1 group size. **Advanced
+   overrides** writes the explicit `"group_size": [64, 1, 1]`, which is the only
+   size it can write. A saved draft with another size opens unchanged and shows a
+   warning. **Use automatic settings** clears the size and repairs the draft.
+7. Add a row in **Shaders**. The editor creates the program with `"stage":
+   "compute"`, `"input": "RayLaunch"`, `"output": "Radiance"` and empty
+   `bindings`. It also writes a C03 stub that traces the camera ray with
+   `TraceClosest` and returns the material base color. If the package has no
+   `RendererTriangles.RayTracing` technique, the same edit adds one with the
+   automatic `Triangles` recipe and the default `scene_interface`. Properties
+   then shows the shared **Scene query budgets**. If the package's ray technique
+   still uses legacy callbacks, use **Enable Scene Materials** on a ray node first.
+   Otherwise the new kernel uses the generic compute stub.
+8. The **Shader API** panel beside the source lists the kernel signature, the
+   scene types and the query functions. It notes that `TraceAndShade` fails in a
+   compute pass.
+
+A compute node that gains its Scene input replaces an unchanged generated kernel
+with the C03 stub. A node that loses its Scene input restores the generic stub.
+Edited kernel sources keep their bytes and manifest signature. Generic compute
+drafts that never get a Scene input keep their `state`, `invocation` and sources
+byte for byte.
 
 Two fixtures show complete examples. The
 [scene compute fixture](../../tests/sdk_consumer/rg2/scene_compute/main.lurender.json)
@@ -1314,6 +1354,93 @@ and [Appendix A.2, “Reservoir Sampling”](https://pbr-book.org/4ed/Sampling_A
 it adapts their sampling ideas to bounded GPU-local tables and one shared emitter
 stream, rather than copying the book's container implementation.
 
+<a id="use-the-compute-ray-tracing-template"></a>
+
+### Use the compute ray-tracing template
+
+The **Compute ray tracing — primary hits + direct lighting** template
+(`compute-ray-tracing`) splits a first-hit direct-lighting renderer into two
+[scene compute passes](#author-scene-compute-passes): one finds each pixel's primary
+hit and records it in a buffer, the next reads that record and shades it. Create a
+whole package from **New Render Graph → Template**, or with the CLI:
+
+```bash
+ludus render-graph new graphs/ComputeLighting --template compute-ray-tracing --output offscreen \
+  --renderer-static --profiles metal wgsl
+```
+
+Use `spirv wgsl` for Vulkan. To add it to an open graph, choose **Apply
+Configuration Template... → Compute ray tracing — primary hits + direct lighting**
+(also in Quick Add). It inserts the `ComputeRayTracing` configuration with the same
+`scene: Scene`, `view: View` and `color: ColorTexture` inputs and `color` output as
+the [ReSTIR DI configuration](#run-the-three-pass-restir-di-example), and the same
+rules for libraries, the root canvas, undo and Save. The package requires a native
+Metal or Vulkan ray profile.
+
+The library holds one `hits` **Buffer** (`bytes_per_pixel: 32`, `extent: "RenderSize"`,
+sized from the color input) and two ComputePipeline nodes. The buffer chains
+`hits.buffer → primary.hits → shade.hits` and binds `GraphBuffer0` in both passes.
+The main graph ends in **Accumulate → ToneMap → Export**; both fuse into the shade
+pass.
+
+| Pipeline node | Kernel source | Work | Queries |
+| --- | --- | --- | --- |
+| `primary` | `main_shaders/primary.slang` (`TracePrimaryHit`) | Draw a subpixel jitter, build the ray with `MakeCameraRay`, call `TraceClosest` and write the hit record. Returns `float3(0)`. | One surface query |
+| `shade` | `main_shaders/shade.slang` (`ShadeRecordedHit`) | Validate the record, rebuild the surface with `GetSurfaceHit`, then return the surface emission plus one light sample: `SelectLight` and `SampleIncidentLight` choose it, `TestVisibility` traces the shadow ray from the surface, and `EvaluateStandardBsdf` weights it. A miss returns `EvaluateEnvironment`. | One visibility query |
+
+`main_shaders/hit_record.slang` owns the record layout, two `uint4` words per pixel:
+
+| Word | x | y | z | w |
+| --- | --- | --- | --- | --- |
+| 0 | packed triangle + 1 (0 = miss) | `asuint(DistanceWorld)` | `asuint(Barycentric.x)` | `asuint(Barycentric.y)` |
+| 1 | `asuint(jitter.x)` | `asuint(jitter.y)` | the primary pass's `SampleIndex` | flags: bit 0 front face, bit 1 failed query |
+
+The triangle is the renderer's packed scene index, which names the same triangle in
+every pass of one sequence. It is stored plus one, so a new or resized buffer, which
+starts zeroed, reads as "no hit" rather than as triangle 0. The shade pass rebuilds
+the camera ray from the stored jitter and restores the incoming ray, distance and
+front-face flag on the reconstructed hit, as `LoadVisibilitySurface` does. It shows
+the magenta error color for a record from another sample, a failed primary query,
+an out-of-range triangle, distance or jitter, an invalid material, or nonfinite or
+negative radiance.
+
+Each pass draws from its own explicit [random dimension range](#author-scene-compute-passes)
+with the `RayLaunch` address overloads: `primary` uses `[0, 2)` for the jitter, and
+`shade` uses `[2, 6)` for the light selection and the three light-shape coordinates.
+Neither uses the automatic stream. The constants are next to the record layout; keep
+the ranges disjoint when you add draws.
+
+This is a demonstration of the compute split, not a new integrator: one uniformly
+selected light sample per pixel and frame, no BSDF sampling or MIS, and no indirect
+bounces. Use [ReSTIR DI](#run-the-three-pass-restir-di-example) or
+[tiled vbuffer NEE](#select-emitters-per-screen-tile) for many-light scenes. Because
+ray queues and compaction are not available, both passes run over every pixel.
+
+New shader programs have `ComputeRay`-prefixed IDs (`ComputeRayPrimary`,
+`ComputeRayShade`) and sources under `compute_ray_tracing/main_shaders/`, including
+the included `hit_record.slang`. The shared `RendererTriangles.RayTracing` technique
+gains `scene_interface` version 1 when it has none, and its surface and visibility
+query budgets rise to at least one each. Existing callbacks, payload and larger
+budgets are kept. A source or program collision, an unsupported scene interface
+version or a capacity limit reports the repair and preserves the draft.
+
+`ludus_render_graph_ray_tests` renders the template on a lit Cornell-box-style room
+and compares it with a single-pass RayTracingPipeline
+[reference](../../tests/sdk_consumer/rg2/direct_lighting_reference/main.lurender.json)
+that applies the same direct-lighting policy. The reference draws the same random
+values from its automatic stream, so on Metal the two accumulated images are
+byte-identical; the test allows a 2% difference in mean radiance for other backends.
+It also resizes the graph and checks that the replacement hit buffer produces no
+error pixels.
+
+Thanks to Samuli Laine, Tero Karras and Timo Aila,
+[*Megakernels Considered Harmful: Wavefront Path Tracing on GPUs*, HPG 2013](https://doi.org/10.1145/2492045.2492060),
+whose stage split motivates separating hit generation from shading, and to
+Christopher A. Burns and Warren A. Hunt,
+[*The Visibility Buffer: A Cache-Friendly Approach to Deferred Shading*, JCGT 2(2), 2013](https://jcgt.org/published/0002/02/04/),
+for storing hit identity rather than shaded attributes. See the canonical
+[package](../../modules/graphics/renderer/render_graphs/compute_ray_tracing/main.lurender.json).
+
 ## Author scene-aware ray shaders
 
 The optional scene interface extends the portable triangle profile above with
@@ -1525,6 +1652,7 @@ parent configuration. Existing nonempty configurations are preserved.
 | Visibility buffer + depth | `scene: Scene`, `view: View`, `visibility: ColorTexture`, `depth: DepthTexture` | `visibility: ColorTexture`, optional `depth: DepthTexture` |
 | Visibility + secondary rays | `scene: Scene`, `view: View`, `color: ColorTexture` | `color: ColorTexture`, optional `visibility: ColorTexture` and `depth: DepthTexture` |
 | Tiled vbuffer NEE — many-light direct lighting | `scene: Scene`, `view: View`, `color: ColorTexture` | `color: ColorTexture`, optional `visibility: ColorTexture` and `depth: DepthTexture` |
+| [Compute ray tracing — primary hits + direct lighting](#use-the-compute-ray-tracing-template) | `scene: Scene`, `view: View`, `color: ColorTexture` | `color: ColorTexture` |
 
 Connect the first template's two attachment inputs to matching single-sample
 RGBA8/Depth32Float targets. For the ray templates, connect a separate shaded color target;
@@ -3496,7 +3624,7 @@ double-click or context menu uses that spot.
 | --- | --- |
 | Type in the search field | Matches names, purposes and common terms, such as `hdr` for ToneMap or `fsr` for the FSR upscalers; the category list shows how many matches each category has |
 | Up/Down, Enter or a click | Choose a result. A node is added at the opening position in one undoable edit; an Upscale preset places its Upscale node there and arranges its helpers automatically |
-| Choose a snippet | Opens **Apply Configuration Template** with that snippet selected, so you still name the configuration and confirm any budget increase |
+| Choose a snippet | Opens **Apply Configuration Template** with that snippet selected, so you still name the configuration and confirm any budget increase. Snippets: ReSTIR DI, Tiled vbuffer NEE, [Compute ray tracing](#use-the-compute-ray-tracing-template), Visibility buffer + depth and Visibility + secondary rays |
 | Tab / Shift+Tab | Switch between All, Snippets and Nodes |
 | Click a category | Show only that category |
 | ☆, or **Pin** | Keep a template under Suggested |
