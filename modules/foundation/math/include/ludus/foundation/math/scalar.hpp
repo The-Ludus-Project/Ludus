@@ -139,7 +139,8 @@ template <typename ScalarType>
 [[nodiscard]] float64 Pow(float64 base, float64 exponent) noexcept;
 
 /// Decode a finite [0,1] sRGB channel into linear light with the IEC/W3C piecewise
-/// transfer. Values outside this bounded domain return NaN. No allocation/state.
+/// transfer. Output stays in [0,1], with exactly preserved black/white endpoints.
+/// Values outside this bounded domain return NaN. No allocation/state.
 /// Alpha/data channels must not use this color transfer.
 [[nodiscard]] float32 DecodeSrgb(float32 value) noexcept;
 /// Encode a finite [0,1] linear-light channel into bounded sRGB. Outside-domain

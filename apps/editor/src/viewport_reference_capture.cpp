@@ -88,6 +88,12 @@ QString DescribeReferenceFailure(renderer::ReferenceFailure failure)
             return QStringLiteral("invalid path radiance");
         case renderer::ReferenceFailure::InvalidAccumulation:
             return QStringLiteral("pixel accumulation overflow");
+        case renderer::ReferenceFailure::InvalidCameraRay:
+            return QStringLiteral("camera ray construction failed");
+        case renderer::ReferenceFailure::InvalidSceneLayout:
+            return QStringLiteral("incompatible GPU scene layout");
+        case renderer::ReferenceFailure::TraversalCapacityExceeded:
+            return QStringLiteral("GPU traversal stack capacity exceeded");
         case renderer::ReferenceFailure::None:
             return QStringLiteral("no path validation failure recorded");
     }

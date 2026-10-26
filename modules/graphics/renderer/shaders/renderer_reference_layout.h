@@ -4,7 +4,7 @@
 // renderer_reference.slang. The packed scene and Parameters block reuse the GPU
 // preview layout (renderer_gpu_preview_layout.h); strides count 16-byte words.
 // Update the kernel version when changing anything below.
-#define LUDUS_REFERENCE_KERNEL_VERSION 1
+#define LUDUS_REFERENCE_KERNEL_VERSION 2
 
 #define LUDUS_REFERENCE_PARAMETERS_BINDING 0
 #define LUDUS_REFERENCE_SCENE_BINDING 1
@@ -15,13 +15,13 @@
 
 // Accumulation holds every pixel's committed sums first, then their compensation
 // terms. Sum word 0 is emission plus the committed sample count, word 1 direct plus
-// the pixel's dispatch status, word 2 indirect transport.
+// the pixel's dispatch status, word 2 indirect transport plus its validation failure code.
 #define LUDUS_REFERENCE_SUM_WORDS 3
 #define LUDUS_REFERENCE_PIXEL_WORDS 6
 
 // Status words written by the reduction pass: (minimum samples, maximum samples,
 // committed pixels, invalid pixels), (closest, visibility, null BSDF, roulette),
-// (lowest failing pixel or INVALID_PIXEL, its depth, capacity failures, reserved).
+// (lowest failing pixel or INVALID_PIXEL, its depth, capacity failures, validation failure code).
 #define LUDUS_REFERENCE_STATUS_WORDS 3
 #define LUDUS_REFERENCE_INVALID_PIXEL 0xffffffff
 
@@ -38,3 +38,21 @@
 #define LUDUS_REFERENCE_COMMITTED_FLAG 0x80000
 #define LUDUS_REFERENCE_CAPACITY_FLAG 0x100000
 #define LUDUS_REFERENCE_DEPTH_SHIFT 24
+
+// Validation stages mirror ReferenceFailure; host assertions keep the ABI synchronized.
+#define LUDUS_REFERENCE_FAILURE_NONE 0
+#define LUDUS_REFERENCE_FAILURE_INVALID_HIT 1
+#define LUDUS_REFERENCE_FAILURE_INVALID_EMITTER_PDF 2
+#define LUDUS_REFERENCE_FAILURE_INVALID_SURFACE_PARAMETERS 3
+#define LUDUS_REFERENCE_FAILURE_INVALID_LIGHT_SAMPLE 4
+#define LUDUS_REFERENCE_FAILURE_INVALID_BSDF_EVALUATION 5
+#define LUDUS_REFERENCE_FAILURE_INVALID_DIRECT_CONTRIBUTION 6
+#define LUDUS_REFERENCE_FAILURE_INVALID_SHADOW_SEGMENT 7
+#define LUDUS_REFERENCE_FAILURE_INVALID_BSDF_SAMPLE 8
+#define LUDUS_REFERENCE_FAILURE_INVALID_THROUGHPUT 9
+#define LUDUS_REFERENCE_FAILURE_INVALID_RAY_ORIGIN 10
+#define LUDUS_REFERENCE_FAILURE_INVALID_RADIANCE 11
+#define LUDUS_REFERENCE_FAILURE_INVALID_ACCUMULATION 12
+#define LUDUS_REFERENCE_FAILURE_INVALID_CAMERA_RAY 13
+#define LUDUS_REFERENCE_FAILURE_INVALID_SCENE_LAYOUT 14
+#define LUDUS_REFERENCE_FAILURE_TRAVERSAL_CAPACITY_EXCEEDED 15

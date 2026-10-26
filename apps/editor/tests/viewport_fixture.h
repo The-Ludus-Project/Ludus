@@ -4,6 +4,7 @@
 #include "internal/world_document.h"
 
 #include <ludus/foundation/base/types.h>
+#include <ludus/foundation/identity/uuid.hpp>
 
 #include <ludus/platform/entropy.h>
 
@@ -39,6 +40,9 @@ struct LitSceneOptions final
     foundation::uint32 ExtraPatchCells = 0;
     /// Add the authored lamps; without them the World stays on the unlit authored path.
     bool HasLamps = true;
+    /// Caller-supplied UUID source; a deterministic source freezes light selection in parity tests.
+    /// Its context must remain alive until MakeLitScene returns.
+    foundation::identity::EntropySource Entropy = platform::GetSystemEntropySource();
 };
 /// Reads a test input completely; a missing file fails the current test.
 inline QByteArray ReadTestFile(const QString& path)
@@ -114,10 +118,7 @@ inline void MakeLitScene(const QString& root, RenderScene& outScene, const LitSc
     for (foundation::int32 i = 0; i < EXTRA_CASTER_COUNT; ++i)
     {
         QString casterId;
-        REQUIRE(world.DuplicateEntity(platform::GetSystemEntropySource(),
-                                      error,
-                                      QStringLiteral("starter.cube"),
-                                      casterId) == true);
+        REQUIRE(world.DuplicateEntity(options.Entropy, error, QStringLiteral("starter.cube"), casterId) == true);
         QJsonObject components = world.Entity(casterId).value(QStringLiteral("components")).toObject();
         QJsonObject transform = components.value(QStringLiteral("transform")).toObject();
         transform.insert(QStringLiteral("x"),
@@ -130,7 +131,7 @@ inline void MakeLitScene(const QString& root, RenderScene& outScene, const LitSc
     {
         // Lamps carry no renderable, so they add lights without adding meshes.
         QString lampId;
-        REQUIRE(world.CreateEntity(platform::GetSystemEntropySource(), error, QStringLiteral("Lamp"), lampId) == true);
+        REQUIRE(world.CreateEntity(options.Entropy, error, QStringLiteral("Lamp"), lampId) == true);
         QJsonObject components = world.Entity(lampId).value(QStringLiteral("components")).toObject();
         QJsonObject transform = components.value(QStringLiteral("transform")).toObject();
         transform.insert(QStringLiteral("x"),

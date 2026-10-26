@@ -201,6 +201,12 @@ enum class ReferenceFailure : ludus::foundation::uint8
     InvalidRadiance,
     /// Publishing the tile would overflow its accumulated pixel sums.
     InvalidAccumulation,
+    /// Constructing a camera ray from the admitted projection failed.
+    InvalidCameraRay,
+    /// The compute shader received an incompatible packed scene layout.
+    InvalidSceneLayout,
+    /// The GPU traversal exhausted its bounded pending-node stack.
+    TraversalCapacityExceeded,
 };
 
 /// Bounded capture progress, reproducibility and failure evidence.

@@ -79,11 +79,6 @@ static const float NEAR_LIGHT_SQUARED_DISTANCE_FLOOR = 1e-4;
 static const float ROULETTE_MINIMUM_SURVIVAL = .05;
 static const float ROULETTE_MAXIMUM_SURVIVAL = .95;
 static const float BASIS_POLE_COSINE = .999;
-static const float SRGB_LINEAR_THRESHOLD = .04045;
-static const float SRGB_LINEAR_SCALE = 12.92;
-static const float SRGB_OFFSET = .055;
-static const float SRGB_SCALE = 1.055;
-static const float SRGB_GAMMA = 2.4;
 static const float INFINITE_FAR_DISTANCE_SCALE = 1.000001;
 static const float MINIMUM_NORMAL_FLOAT = 1.17549435e-38;
 static const uint MINIMUM_NORMAL_FLOAT_BITS = 0x00800000;
@@ -142,9 +137,16 @@ float GetArea(uint triangle)
 {
     return TriangleValue(triangle, 1).w;
 }
+float4 InterpolateTriangleColor(uint triangle, float u, float v)
+{
+    // Match the oracle and GPU preview: finite normalized colors stay in their
+    // admitted range after interpolation; preserve nonfinite values for validation.
+    float4 color = InterpolateTriangle(triangle, LUDUS_GPU_PREVIEW_VERTEX_COLOR_WORD, u, v);
+    return all(isfinite(color)) == true ? saturate(color) : color;
+}
 float GetVertexAlpha(uint triangle, float u, float v)
 {
-    return InterpolateTriangle(triangle, LUDUS_GPU_PREVIEW_VERTEX_COLOR_WORD, u, v).w;
+    return InterpolateTriangleColor(triangle, u, v).w;
 }
 float QuietNan()
 {
@@ -220,11 +222,6 @@ int AddressTexel(int coordinate, bool isRepeated, uint extent)
         return clamp(coordinate, 0, size - 1);
     int remainder = coordinate % size;
     return remainder < 0 ? remainder + size : remainder;
-}
-float DecodeSrgb(float value)
-{
-    return value <= SRGB_LINEAR_THRESHOLD ? value / SRGB_LINEAR_SCALE
-                                          : pow((value + SRGB_OFFSET) / SRGB_SCALE, SRGB_GAMMA);
 }
 float4 ReadTexel(ImageLayout image, int x, int y)
 {
@@ -765,6 +762,7 @@ struct PathSample
     float3 Direct;
     float3 Indirect;
     uint Status;
+    uint Failure;
 };
 struct LightProposal
 {
@@ -778,8 +776,9 @@ struct LightProposal
     bool IsDelta;
     bool HasFiniteEndpoint;
 };
-void MarkInvalid(inout PathSample inoutPath, uint depth)
+void MarkInvalid(inout PathSample inoutPath, uint depth, uint failure)
 {
+    inoutPath.Failure = failure;
     inoutPath.Status |= LUDUS_REFERENCE_INVALID_FLAG | (depth << LUDUS_REFERENCE_DEPTH_SHIFT);
 }
 void CountQuery(inout PathSample inoutPath, bool isVisibility)
@@ -960,15 +959,16 @@ PathSample TracePath(uint pixel, uint sample)
     path.Direct = 0;
     path.Indirect = 0;
     path.Status = 0;
+    path.Failure = LUDUS_REFERENCE_FAILURE_NONE;
     if (SurfaceLayout.x != LUDUS_GPU_PREVIEW_SURFACE_WORDS || SurfaceLayout.z != LUDUS_GPU_PREVIEW_KERNEL_VERSION)
     {
-        MarkInvalid(path, 0);
+        MarkInvalid(path, 0, LUDUS_REFERENCE_FAILURE_INVALID_SCENE_LAYOUT);
         return path;
     }
     Ray ray;
     if (GenerateCameraRay(pixel, sample, ray) == false)
     {
-        MarkInvalid(path, 0);
+        MarkInvalid(path, 0, LUDUS_REFERENCE_FAILURE_INVALID_CAMERA_RAY);
         return path;
     }
     float3 throughput = 1;
@@ -982,7 +982,7 @@ PathSample TracePath(uint pixel, uint sample)
         if (hit.HasExceededStack == true)
         {
             path.Status |= LUDUS_REFERENCE_CAPACITY_FLAG;
-            MarkInvalid(path, depth);
+            MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_TRAVERSAL_CAPACITY_EXCEEDED);
             return path;
         }
         if (hit.Triangle == NO_TRIANGLE)
@@ -992,7 +992,7 @@ PathSample TracePath(uint pixel, uint sample)
             float weight = depth == 0 ? 1 : PowerWeight(previousPdf, lightPdf);
             AddTransport(path, throughput * environment.xyz * weight, depth, true);
             if (HasValidTransport(path) == false)
-                MarkInvalid(path, depth);
+                MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_RADIANCE);
             return path;
         }
         uint triangle = hit.Triangle;
@@ -1009,7 +1009,7 @@ PathSample TracePath(uint pixel, uint sample)
             float pdf = GetAreaPdf(triangle, previousPositionWorld, positionWorld, lights);
             if (isfinite(pdf) == false || pdf < 0)
             {
-                MarkInvalid(path, depth);
+                MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_EMITTER_PDF);
                 return path;
             }
             float weight = depth == 0 ? 1 : PowerWeight(previousPdf, pdf);
@@ -1018,13 +1018,13 @@ PathSample TracePath(uint pixel, uint sample)
         if (depth >= Dimensions.z || dot(geometricNormalWorld, viewWorld) <= 0)
         {
             if (HasValidTransport(path) == false)
-                MarkInvalid(path, depth);
+                MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_RADIANCE);
             return path;
         }
         float3 normalWorld = NormalizeOrZero(InterpolateTriangle(triangle, 3, u, v).xyz);
         float4 texel = SampleImage(instance, COLOR_IMAGE, uv);
         if (asuint(SurfaceValue(instance, 7).z) != 0)
-            texel *= InterpolateTriangle(triangle, LUDUS_GPU_PREVIEW_VERTEX_COLOR_WORD, u, v);
+            texel *= InterpolateTriangleColor(triangle, u, v);
         float4 baseAndMetallic = SurfaceValue(instance, 0);
         Bsdf bsdf;
         bsdf.BaseColor = texel.xyz * baseAndMetallic.xyz;
@@ -1036,7 +1036,7 @@ PathSample TracePath(uint pixel, uint sample)
             float4 parametersTexel = SampleImage(instance, SURFACE_IMAGE, uv);
             if (all(isfinite(parametersTexel)) == false || any(parametersTexel < 0) || any(parametersTexel > 1))
             {
-                MarkInvalid(path, depth);
+                MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_SURFACE_PARAMETERS);
                 return path;
             }
             SurfaceParameters parameters =
@@ -1048,7 +1048,7 @@ PathSample TracePath(uint pixel, uint sample)
         LightProposal proposal = SampleLight(pixel, sample, depth, positionWorld);
         if (isfinite(proposal.Pdf) == false || proposal.Pdf < 0 || IsValidContribution(proposal.Radiance) == false)
         {
-            MarkInvalid(path, depth);
+            MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_LIGHT_SAMPLE);
             return path;
         }
         bool hasShadow = false;
@@ -1061,20 +1061,20 @@ PathSample TracePath(uint pixel, uint sample)
             if (IsValidBsdf(bsdf) == false || IsUnit(normalWorld) == false || IsUnit(viewWorld) == false ||
                 IsUnit(proposal.DirectionWorld) == false)
             {
-                MarkInvalid(path, depth);
+                MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_BSDF_EVALUATION);
                 return path;
             }
             float4 evaluation = EvaluateBsdf(bsdf, normalWorld, viewWorld, proposal.DirectionWorld);
             if (IsFiniteVector(evaluation.xyz) == false || isfinite(evaluation.w) == false || evaluation.w < 0)
             {
-                MarkInvalid(path, depth);
+                MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_BSDF_EVALUATION);
                 return path;
             }
             float weight = proposal.IsDelta == true ? 1 : PowerWeight(proposal.Pdf, evaluation.w);
             pendingDirect = throughput * evaluation.xyz * proposal.Radiance * (cosine * weight / proposal.Pdf);
             if (IsValidContribution(pendingDirect) == false)
             {
-                MarkInvalid(path, depth);
+                MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_DIRECT_CONTRIBUTION);
                 return path;
             }
             hasShadow = HasPositiveComponent(pendingDirect);
@@ -1085,7 +1085,7 @@ PathSample TracePath(uint pixel, uint sample)
         if (IsValidBsdf(bsdf) == false || IsUnit(normalWorld) == false || IsUnit(viewWorld) == false ||
             any(samples < 0) || any(samples >= 1))
         {
-            MarkInvalid(path, depth);
+            MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_BSDF_SAMPLE);
             return path;
         }
         float3 outgoingWorld = SampleBsdfDirection(bsdf, normalWorld, viewWorld, samples);
@@ -1096,7 +1096,7 @@ PathSample TracePath(uint pixel, uint sample)
             evaluation = EvaluateBsdf(bsdf, normalWorld, viewWorld, outgoingWorld);
             if (IsFiniteVector(evaluation.xyz) == false || isfinite(evaluation.w) == false || evaluation.w <= 0)
             {
-                MarkInvalid(path, depth);
+                MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_BSDF_SAMPLE);
                 return path;
             }
         }
@@ -1108,7 +1108,7 @@ PathSample TracePath(uint pixel, uint sample)
             throughput *= evaluation.xyz * (dot(normalWorld, outgoingWorld) / evaluation.w);
             if (IsValidContribution(throughput) == false)
             {
-                MarkInvalid(path, depth);
+                MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_THROUGHPUT);
                 return path;
             }
             if (HasPositiveComponent(throughput) == true)
@@ -1141,13 +1141,13 @@ PathSample TracePath(uint pixel, uint sample)
             next.MaximumDistanceWorld = Options.x;
             if (IsFiniteVector(next.OriginWorld) == false)
             {
-                MarkInvalid(path, depth);
+                MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_RAY_ORIGIN);
                 return path;
             }
         }
         if (HasValidTransport(path) == false)
         {
-            MarkInvalid(path, depth);
+            MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_RADIANCE);
             return path;
         }
         if (hasShadow == true)
@@ -1155,7 +1155,11 @@ PathSample TracePath(uint pixel, uint sample)
             bool isVisible;
             if (TraceProposal(path, proposal, triangle, positionWorld, depth, isVisible) == false)
             {
-                MarkInvalid(path, depth);
+                MarkInvalid(path,
+                            depth,
+                            (path.Status & LUDUS_REFERENCE_CAPACITY_FLAG) != 0
+                                ? LUDUS_REFERENCE_FAILURE_TRAVERSAL_CAPACITY_EXCEEDED
+                                : LUDUS_REFERENCE_FAILURE_INVALID_SHADOW_SEGMENT);
                 return path;
             }
             if (isVisible == true)
@@ -1165,7 +1169,7 @@ PathSample TracePath(uint pixel, uint sample)
             return path;
         if (IsWithinWorld(next.OriginWorld) == false)
         {
-            MarkInvalid(path, depth);
+            MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_RAY_ORIGIN);
             return path;
         }
         ray = next;
@@ -1202,10 +1206,12 @@ LUDUS_REFERENCE_COMPUTE_ENTRY void TraceMain(uint3 positionPixel : SV_DispatchTh
     float4 indirect = accumulation[sumIndex + 2];
     uint samples = asuint(emission.w);
     uint word = 0;
+    uint failure = LUDUS_REFERENCE_FAILURE_NONE;
     if (samples == status[0].x)
     {
         PathSample path = TracePath(pixel, samples);
         word = path.Status;
+        failure = path.Failure;
         if ((word & LUDUS_REFERENCE_INVALID_FLAG) == 0)
         {
             float3 emissionCompensation = accumulation[compensationIndex].xyz;
@@ -1221,7 +1227,10 @@ LUDUS_REFERENCE_COMPUTE_ENTRY void TraceMain(uint3 positionPixel : SV_DispatchTh
                 IsValidSum(directSum, directCompensation) == false ||
                 IsValidSum(indirectSum, indirectCompensation) == false ||
                 IsFiniteVector(emissionSum + directSum + indirectSum) == false)
+            {
                 word |= LUDUS_REFERENCE_INVALID_FLAG;
+                failure = LUDUS_REFERENCE_FAILURE_INVALID_ACCUMULATION;
+            }
             else
             {
                 word |= LUDUS_REFERENCE_COMMITTED_FLAG;
@@ -1229,13 +1238,14 @@ LUDUS_REFERENCE_COMPUTE_ENTRY void TraceMain(uint3 positionPixel : SV_DispatchTh
                 direct.xyz = directSum;
                 indirect.xyz = indirectSum;
                 accumulation[sumIndex] = emission;
-                accumulation[sumIndex + 2] = indirect;
                 accumulation[compensationIndex] = float4(emissionCompensation, 0);
                 accumulation[compensationIndex + 1] = float4(directCompensation, 0);
                 accumulation[compensationIndex + 2] = float4(indirectCompensation, 0);
             }
         }
     }
+    indirect.w = asfloat(failure);
+    accumulation[sumIndex + 2] = indirect;
     direct.w = asfloat(word);
     accumulation[sumIndex + 1] = direct;
 }
@@ -1252,7 +1262,7 @@ LUDUS_REFERENCE_COMPUTE_ENTRY void ReduceMain(uint3 lane : SV_GroupThreadID)
     uint4 samples = uint4(0xffffffff, 0, 0, 0);
     // (closest, visibility, null BSDF, roulette)
     uint4 queries = 0;
-    // (lowest failing pixel, its depth, capacity failures, reserved)
+    // (lowest failing pixel, its depth, capacity failures, validation failure code)
     uint4 failures = uint4(LUDUS_REFERENCE_INVALID_PIXEL, 0, 0, 0);
     for (uint pixel = lane.x; pixel < pixels; pixel += LUDUS_REFERENCE_GROUP_WIDTH)
     {
@@ -1271,7 +1281,10 @@ LUDUS_REFERENCE_COMPUTE_ENTRY void ReduceMain(uint3 lane : SV_GroupThreadID)
         {
             samples.w += 1;
             if (failures.x == LUDUS_REFERENCE_INVALID_PIXEL)
+            {
                 failures.xy = uint2(pixel, word >> LUDUS_REFERENCE_DEPTH_SHIFT);
+                failures.w = asuint(accumulation[sumIndex + 2].w);
+            }
         }
     }
     sharedSamples[lane.x] = samples;
@@ -1290,7 +1303,10 @@ LUDUS_REFERENCE_COMPUTE_ENTRY void ReduceMain(uint3 lane : SV_GroupThreadID)
         queries += sharedQueries[other];
         failures.z += otherFailures.z;
         if (otherFailures.x < failures.x)
+        {
             failures.xy = otherFailures.xy;
+            failures.w = otherFailures.w;
+        }
     }
     status[0] = samples;
     status[1] = queries;

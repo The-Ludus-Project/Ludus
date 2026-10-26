@@ -92,7 +92,7 @@ float4 Texel(uint t, int x, int y, uint map)
     uint word = textureWords[layout.x + (index >> 2)][index & 3];
     float4 c = float4(word & 255, (word >> 8) & 255, (word >> 16) & 255, word >> 24) / 255.0;
     if ((flags & 8) != 0)
-        c.xyz = select(c.xyz > .04045, pow((c.xyz + .055) / 1.055, 2.4), c.xyz / 12.92);
+        c.xyz = float3(DecodeSrgb(c.x), DecodeSrgb(c.y), DecodeSrgb(c.z));
     return c;
 }
 float4 Texture(uint t, float2 uv, uint map = 0)

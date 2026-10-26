@@ -1366,7 +1366,10 @@ previous copy, whose counts can trail `MinimumSamples`.
 
 Commits are per pixel. A nonfinite or negative contribution, invalid ray or BVH
 stack overflow leaves that pixel's sums and count unchanged and records its
-pixel and depth. The capture fails once the other pixels' sums are read back,
+lowest failing pixel, addressed sample, scattering depth and validation stage.
+The stage is retained through device reduction and host readback, including camera,
+scene-layout and traversal-capacity errors; a failed GPU path does not report `None`.
+The capture fails once the other pixels' sums are read back,
 with `CapacityExceeded` for a stack overflow. The identical `Update` retries only
 the uncommitted sample addresses; changing only the target continues the
 accumulation, and other changes rebuild the job transactionally. `Release`
@@ -1375,6 +1378,13 @@ through completion. The GPU budget charges the packed scene and texels, the
 224-byte parameters, 96 accumulation bytes per pixel and the status record. The
 RHI resource budget, storage range and dispatch limits can reject a capture
 sooner. Transfer rings, pipelines and driver padding are excluded.
+
+Normalized vertex colors and decoded sRGB texels stay in [0,1] in both paths.
+The FoundationMath CPU/shader sRGB conversion preserves exact black and white
+endpoints: GPU power/division rounding must not turn a white texel into an
+out-of-range BSDF base color. Nonfinite inputs still fail validation; radiance
+and throughput are not clamped. The white-texture raw-AOV regression covers
+this case independently of the supplied Staircase2 World acceptance test.
 
 Float32 is the only departure from the oracle's arithmetic. Slab exits widen by
 `1 + 2γ(3)` (Pharr, Jakob and Humphreys, PBRT 3rd edition, section 3.9.2). The
