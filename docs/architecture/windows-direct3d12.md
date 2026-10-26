@@ -5,7 +5,11 @@ backend. This page owns that port: the decision, the contracts of the slices
 that exist, the [port record](../development/platform-porting.md#reusable-record-format)
 and the staged plan. The work is at the **buildable** admission gate for the
 D1 and D2 closure described below (both verified on WARP); it is not yet a runnable or qualified engine
-deployment, and nothing here changes the Linux and macOS profiles.
+deployment. The remaining implementation adopts **MSVC as the Windows reference
+compiler**, with CMake generating Ninja builds for VS Code/CLI/the Ludus editor
+and Visual Studio solutions built by MSBuild. That migration is planned, not
+implemented: the recorded D1/D2 evidence still belongs to Clang. Linux, macOS
+and browser compiler profiles remain unchanged.
 
 ## Decision
 
@@ -24,28 +28,87 @@ selects Vulkan on Linux and Metal on macOS. No COM, Win32 or D3D12 type appears
 in a public header; Win32 handles cross the Platform/RHI boundary as borrowed
 `void*` in `NativeWindowInfo`.
 
-The toolchain is the one the [Windows threading lane](threading.md#milestones)
-already qualifies: the pinned upstream Clang 23 driver targeting
-`x86_64-pc-windows-msvc`, the Microsoft STL and dynamic CRT, and the Windows SDK
-headers and import libraries for `d3d12`, `dxgi`, `dxguid` and `user32`. No
-third-party runtime dependency is added; shaders are compiled at build time by
-the pinned Slang and DXC ([DXIL artifacts](#dxil-artifacts)). COM objects are owned by
-`UniquePtr<T, ComRelease>`, a private release protocol over the Ludus owner,
-rather than WRL `ComPtr`.
+The current build uses the toolchain that the
+[Windows threading lane](threading.md#milestones) qualifies: pinned Clang 23
+with the Microsoft STL, dynamic CRT and Windows SDK. Targeting the MSVC ABI
+is not evidence of compilation with Microsoft's `cl.exe`. FoundationBase still
+rejects non-Clang compilers; D0 below owns that migration.
+
+The target Windows toolchain is a pinned **MSVC `cl.exe` toolset**, Microsoft
+linker, Microsoft STL, dynamic CRT and Windows SDK. D0 must choose and record
+exact versions after C++23 compatibility tests; no MSVC version is qualified by
+this plan alone. Keep LLVM 23 for repository formatting/static analysis and
+existing non-Windows compiler profiles. Windows Clang may remain an optional
+portability check after MSVC acceptance, with its own evidence and SDK identity.
+
+Shaders continue through pinned Slang/DXC to DXIL regardless of C++ compiler or
+build generator ([DXIL artifacts](#dxil-artifacts)). The D1/D2 closure adds no
+third-party runtime dependency; later runtime/editor dependencies require their
+own audit and packaging. COM objects remain owned by `UniquePtr<T, ComRelease>`,
+a private release protocol over the Ludus owner.
 
 ## Port record
 
 | Field | Value |
 | --- | --- |
-| Target | Windows 10 version 1703 or later, x86_64, little endian, 64-bit pointers |
-| Host and tools | Windows host; pinned LLVM 23.1.3 Windows installer, CMake/Ninja/Conan from `config/tool_versions.json` |
-| Target SDK | Windows 10/11 SDK installed with the build image; Microsoft STL and dynamic CRT |
+| Target | D1/D2: Windows 10 version 1703 or later, x86_64, little endian, 64-bit pointers; D0/D7 must revalidate the minimum OS against the full runtime/editor dependency set |
+| Host and tools | Current: Windows host, LLVM 23.1.3, CMake/Ninja/Conan. Target: pinned MSVC toolset/SDK, Ninja and MSBuild; exact new pins and setup delivered in D0 |
+| Target SDK | Current: Windows 10/11 SDK supplied by the build image, Microsoft STL and dynamic CRT. D0 pins the SDK and matching dependency/CRT configuration for MSVC |
 | Runtime graphics | Direct3D 12 at feature level 11_0 or higher on a hardware adapter, otherwise WARP |
 | Unsupported variants | 32-bit x86, ARM64 and ARM64EC; UWP/GDK; Windows before 10 version 1703 (per-monitor DPI v2) |
 | Dependency pins | No runtime dependencies; build-time Slang 2026.1.2 (Windows x86_64) and DXC 1.9.2609 in `config/shader_toolchain.json`; Catch2 for tests through the existing Windows Conan profile |
-| Validation | `.github/workflows/windows-direct3d12.yml` on `windows-2022` (WARP; no GPU) |
+| Validation | Existing Clang D1/D2 lane: `.github/workflows/windows-direct3d12.yml` on `windows-2022` (WARP; no GPU). MSVC, MSBuild and physical-GPU acceptance pending |
 | Owner and branch | D1: `codex/windows-direct3d12-rhi` (merged); D2: `codex/windows-d3d12-dxil-draw` |
-| Last audited base | `develop` at `a372af74` (2026-10-24) |
+| Last audited base | Plan/toolchain audit: `develop` at `94bc3e3c` (2026-10-26); historical D1/D2 runtime evidence remains at the commits recorded below |
+
+## Developer workflow contract (planned)
+
+CMake owns targets, dependencies, compiler options, shader recipes and generated
+files for every supported environment. Generate `.sln`/`.vcxproj` into ignored
+build directories; maintain project structure in CMake, not the generated
+projects. Use separate build/cache/output directories for Ninja and MSBuild.
+No second handwritten MSBuild project graph is required.
+
+| Environment | Configuration and execution | Acceptance |
+| --- | --- | --- |
+| VS Code | Shared CMake presets, CMake Tools, Ninja, MSVC | Configure/build/test/debug the engine checkout and an external SDK project; navigation and Problems diagnostics match the selected configuration |
+| Visual Studio | CMake Visual Studio generator, generated solution/projects, MSBuild, MSVC | Generate/open/build/test/debug; switch configurations; rebuild shaders and regenerate after CMake changes |
+| CLI / other source editors | Same documented CMake configure/build/test presets, Ninja, MSVC | Build and launch without an IDE or Ludus editor; report missing tools with actionable setup diagnostics |
+| Ludus editor | Shared project setup and CMake presets; Ninja/MSVC by default | Build/play/reload and resolve configuration-specific artifacts through the CMake File API; support a project's admitted MSBuild preset too |
+| Windows CI | MSVC/Ninja main validation plus MSBuild workflow coverage | Validate each admitted closure as it grows, including generated shaders, tests and installed consumers; D7 records full profile qualification |
+
+Both build generators must use the same pinned MSVC toolset, SDK, CRT policy
+and matching dependency binaries. Pin tool inputs in the existing configuration
+owners and preserve local machine paths in ignored user settings. Do not assume
+Clang-produced SDKs or game DLLs are interchangeable with MSVC artifacts;
+validate their compatibility through the existing SDK/game ABI checks.
+
+Visual Studio is a multi-configuration generator. D0 must map Ludus Debug,
+Development, Profile and Release flavors consistently to configurations,
+assertions, flags, dependency variants, PDBs, generated shaders, output paths
+and install/export metadata. Audit `CMAKE_BUILD_TYPE` assumptions and fixed
+artifact paths; build, CTest and install must select the intended configuration.
+The same checks apply to SDK project setup and repair. Today
+`cmake/EngineBuildFlavor.cmake` explicitly rejects multi-configuration generators
+and generates one flavor-specific SDK variant per build tree. D0 must replace
+that limitation with configuration-correct policy headers, generated outputs
+and exports. Development and Profile both currently use `RelWithDebInfo` but
+have different engine policies; a configuration mapping must preserve that
+distinction. Removing the guard alone is not Visual Studio support.
+
+Embedded shader/script editing and external source editors share the owning
+compiler/runtime validation and publication operations. Cover includes, source
+locations, Unicode/spaced paths, file replacement on save and concurrent edits.
+Report conflicts without overwriting unsaved document edits. Engine C++ changes
+use the selected CMake build; shader/script edits use only their supported reload
+contracts. Failed or stale candidates must not replace the last accepted
+runtime state or drawable viewport.
+
+See the existing [project setup](../development/project-sdk-workflow.md),
+[live game editing](../development/project-live-reload.md) and
+[shader authoring](../development/render-graph-authoring.md) owners for shared
+contracts. Windows support must extend those workflows rather than duplicate
+their project model or introduce a separate compiler pipeline per editor.
 
 ## Win32 Platform backend
 
@@ -187,6 +250,9 @@ tools are used at build time only, never installed with an SDK.
 
 ## Build and test
 
+This section describes the existing Clang D1/D2 closure. D0 adds the MSVC
+commands and presets only after they work; these examples do not qualify MSVC.
+
 The Windows configure builds the threading closure plus Identity, Math, Logging,
 Input, Platform and the RHI (top-level `CMakeLists.txt`). The
 [Windows Direct3D 12 lane](../development/continuous-integration.md#windows-direct3d-12-lane)
@@ -230,32 +296,187 @@ cmake --build out/build/windows-mingw-check --target ludus_platform ludus_graphi
 | --- | --- | --- |
 | D1 (WARP verified) | Windows closure for Platform and RHI; Win32 windows; Direct3D 12 device, swap chain, clear, present, resize and readback | Windows lane passed on PR The-Ludus-Project/Ludus#573 ([run 40043576093](https://github.com/The-Ludus-Project/Ludus/actions/runs/40043576093)), merged as `7167c8a2`; presented frames on a hardware adapter still to be recorded here |
 | D2 (WARP verified) | DXIL shader artifacts from the Slang toolchain (pinned DXC), `ShaderDescription` DXIL fields, root signatures, and the fullscreen compatibility draw | Fullscreen pixel tests passed on the WARP lane for PR The-Ludus-Project/Ludus#586 ([run 40102938249](https://github.com/The-Ludus-Project/Ludus/actions/runs/40102938249), `002969cf`); hardware-adapter run still to be recorded here |
-| D3 | Portable raster profile: buffers, textures, views, samplers, descriptor heaps, passes and barriers | Raster conformance suite shared with Vulkan and Metal |
-| D4 | Lifetime transfers, readback, ordered graph and buffer compute profile | Lifetime, graph and compute suites; `RequiredProfile` startup passes |
-| D5 | Win32 keyboard input and key map, system entropy, filesystem, timestamps, PIX markers and DRED | Input, entropy and filesystem suites on Windows; captures documented |
-| D6 | Renderer, installed SDK, selectable Windows presets, game host and editor | Installed consumer, preset listing/configure/build/test, sample project |
+| D0 (next; MSVC baseline) | Pin MSVC/SDK/CRT/dependencies; enable `cl.exe`, Ninja and generated Visual Studio/MSBuild projects; reconcile compiler policy and presets | D1/D2 and Foundation tests pass on MSVC; both generators configure/build/test; physical-GPU clear/fullscreen evidence recorded |
+| D3a | Raster resources, bindings and DXIL interfaces | Resource/binding suites; bounded allocation/descriptor failure; safe retirement while work is in flight |
+| D3b | Complete portable raster profile | Shared raster/image suites on WARP and hardware; required raster profile admitted |
+| D4a | Transfers, readback and lifetime | Shared transfer/lifetime suites; offscreen rendering, cancellation and failure preservation |
+| D4b | Compute and ordered render graphs | Compute/graph suites, mixed graphics/compute/transfer journeys; required compute profile admitted |
+| D5a | Windows host services and Foundation validation | Native input, entropy, files/persistence/watch tests; diagnostics and Foundation runtime evidence |
+| D5b | GPU measurement and debugging | Timestamp/pass-scope tests; PIX capture/markers and DRED failure diagnostics documented |
+| D6a | Renderer, content and playable runtime | Shared authored project renders, accepts input, loads/saves and shuts down on a physical Windows GPU |
+| D6b | Installed SDK, projects and IDE journeys | Clean installed consumer; VS Code/Ninja and Visual Studio/MSBuild configure/build/test/debug; setup repair journeys |
+| D6c | Shader/script authoring, worker and live reload | Embedded/external edit-save-compile-reload; diagnostics, conflicts and failed replacement tests |
+| D6d | Interactive Windows editor and hosted viewport | Current project World/camera, navigation/edit/resize; GPU producer/consumer ownership and pending/failure publication tests |
+| D7 | Profile qualification and continuous validation | All required coverage rows verified at one candidate commit; hardware, lifecycle, performance and both build workflows recorded |
+| D8 | Release packaging and distribution | Clean-machine install/launch, upgrades/data preservation, dependency/license inventory and matching symbols |
 
-Each milestone extends the backend behind the existing contracts. A slice that
-cannot implement a hook reports `Unsupported` explicitly instead of approximating
-another backend's behavior.
+D1 and D2 remain historical completed slices under Clang/WARP, not MSVC exit
+evidence. D0 precedes all new Windows implementation. D3a -> D3b -> D4a -> D4b
+is the graphics dependency chain; D5a can progress after D0 alongside graphics.
+D5b requires the submission/pass foundation from D4. D6a requires D4b and D5a;
+D6b and D6c build on D6a, and D6d integrates them with hosted presentation.
+D6a establishes a runnable sample for its recorded scope; D7 establishes the
+qualified profile and D8 the distributable artifact under the shared
+[admission gates](../development/platform-porting.md#admission-gates). Shared
+code must retain Linux/macOS/browser regression coverage throughout.
+
+### D0: establish MSVC and both build generators
+
+- Declare the x86_64 baseline's required runtime/editor/renderer profiles,
+  physical-GPU support matrix and minimum OS/dependency requirements. Assign
+  subsystem owners and distinguish required functionality from optional
+  feature-parity extensions before selecting implementation scope.
+- Audit C++23 language/library support, compiler detection, intrinsics, alignment,
+  calling conventions, assertions/debug breaks and export boundaries. Keep the
+  exception-free engine and test-only exception boundary, strict language mode,
+  warnings-as-errors, source policy and build-time budgets. Add equivalent MSVC
+  warning controls; accepting `cl.exe` must not silently remove warning coverage.
+- Pin the tested toolset, Windows SDK and CRT/dependency variants, including
+  Conan profiles and Qt/Slang host-tool compatibility where applicable. Reconcile
+  [ADR 0025](../decisions/0025-llvm-toolchain-pin.md), contributor rules, setup,
+  SDK identity and Behavior compiler admission in the implementation change;
+  retain LLVM formatting/tidy and other platforms' compiler profiles.
+- Add selectable configure/build/test presets and Windows setup/repair for
+  Ninja/MSVC and Visual Studio/MSBuild. Make flavor/configuration, generated
+  shader dependencies and File API artifact resolution work for both. Validate
+  a single-file edit and shader/include edit trigger the correct incremental
+  rebuild. Discover developer tools without requiring one particular IDE.
+- Port/re-run the existing Foundation, Win32, lifecycle and DXIL fullscreen tests
+  under MSVC on WARP and physical hardware. Existing Clang checks remain until
+  equivalent MSVC coverage is established. Later milestones extend both build
+  workflows; the current limited module closure must not be advertised as a
+  complete installed SDK.
+
+### D3 and D4: complete the portable graphics contract
+
+D3a implements buffers, textures, views, samplers, descriptor heaps, binding
+layouts/sets, truthful format/capability queries and raster DXIL reflection.
+Establish submission fences and descriptor/resource retirement before general
+use. D3b adds vertex/index input, pipelines, depth/stencil/blending, render
+attachments/passes and transitions for the declared renderer profiles. Share
+conformance fixtures with Vulkan/Metal, reject unsupported descriptions and
+record image tolerances and debug-layer results.
+
+D4a adds staged buffer/texture upload/update, asynchronous readback, completion
+polling and shutdown/cancellation, including `ShouldPresentToSurface = false`.
+Test multiple frames in flight, output preservation on failure and resource
+reuse after completion. D4b adds compute DXIL/pipelines, storage bindings,
+dispatch, barriers and ordered graph execution. Test compute-to-raster,
+raster-to-readback and mixed transfer paths through ordinary public contracts.
+Only advertise a required profile after its suite passes; keep unavailable
+hooks explicitly `Unsupported`.
+
+### D5: close Windows platform and diagnostics gaps
+
+D5a delivers Win32 key mapping/delivery, focus-loss recovery, system entropy,
+filesystem mounts/reads/writes, durable publication and required watch behavior.
+Audit the existing Windows async filesystem implementation before replacing
+anything. Verify Unicode/spaced paths, permissions, interrupted saves, corrupt
+packs, cancellation and bounded failures. Revalidate FoundationBase diagnostics,
+memory/alignment/allocation failure, containers, time/threading, logging and
+profiling under MSVC; prior Clang evidence remains separately identified.
+
+D5b delivers GPU frame/pass timestamps with valid frequency/completion/failure
+handling as required by the public contracts, PIX markers/capture and DRED
+collection on device failure. Record real capture and diagnostic artifacts,
+including behavior when optional capture/debug tooling is absent. Follow the
+[graphics debugging owner](graphics-debugging.md).
+
+### D6: deliver runtime and developer workflows
+
+- **D6a (runtime):** expand the top-level Windows module closure in dependency
+  order, admitting the renderer/graph, content/resources, World/camera, text/UI
+  and game host. Audit gameplay/physics, audio, networking and behavior/scripting
+  separately; verify portable code and implement necessary OS boundaries for
+  each required profile. Use the same cooked authored sample and inputs as other
+  platforms; do not invent lights or substitute a fixed demonstration scene.
+- **D6b (SDK/IDEs):** install/export the SDK and shader helpers, then build an
+  external project in VS Code/Ninja and a generated Visual Studio/MSBuild
+  solution. Exercise selectable presets, code navigation, diagnostics,
+  breakpoint/step debugging, launch, test, install and configuration switching.
+  Cover fresh clones, missing presets, moved tools/SDKs and repeated explicit
+  repair; preserve custom settings and keep project loading read-only.
+- **D6c (authoring):** port the shader worker's process/IPC/deployment and
+  Slang/DXC dependencies, file watching, game DLL loading/reload, process-tree
+  cleanup and matching symbol validation. Qualify script compilation/runtime,
+  supported reload and exposed debugging features. From embedded shader/script
+  editors and external editors, test successful edits, syntax/interface errors,
+  include changes, replacement-on-save, concurrent edits, worker timeout/crash,
+  cancellation and stale responses. Share diagnostics and publication paths;
+  failed replacements preserve accepted state and the last drawable viewport.
+- **D6d (editor):** port Qt host integration and hosted-window transport plus
+  D3D12 native interop/shared presentation with explicit handle ownership,
+  adapter identity, producer/consumer synchronization and teardown fencing.
+  Validate DPI/display changes, focus, dialogs, paths and process cleanup.
+  The viewport must render the selected project's current World/camera and
+  respond to navigation, authored edits and resize. Test pending, failure and
+  successful publication while retaining the last drawable view until Ready.
+  CPU readback is diagnostic evidence, not interactive GPU presentation
+  acceptance; optional path tracing cannot be required for raster navigation.
+
+### D7 and D8: qualify and distribute
+
+D7 extends MSVC/Ninja batch validation to all required modules, SDK consumers,
+editor, worker and runtime tests, with MSBuild coverage of the admitted closure
+and generator-sensitive journeys. Keep integration PRs targeting `develop`;
+only the existing batch/promotion process qualifies and advances `main`.
+Record one candidate commit, exact toolchain/SDK/OS/driver versions, physical
+adapters from the declared support matrix, required profiles, feature limits
+and reproducible tests. WARP coverage supplements physical-GPU evidence.
+Exercise restart, resize/minimize, device loss/failure recovery, resource and
+performance budgets, debugger/symbol journeys and available sanitizer tooling;
+report unavailable instrumentation explicitly. Every required subsystem row
+must have an owner, implementation PR and accepted evidence before qualification.
+
+D8 produces Release SDK/game/editor packages as scoped, with redistributable
+runtime/Qt dependencies, manifests, assets, shader artifacts, licenses and
+matching symbols. Validate clean-machine installation and launch, update/data
+preservation, uninstall and failure diagnostics; validate signing for the
+chosen distribution channel. Ship canonical Markdown and checked HTML together
+for offline use through the existing documentation packaging workflow.
+
+### Optional feature parity
+
+Track DXR/ray queries, wider native interop and Windows spatial-upscaling
+providers as separately scoped extensions with their own capability, shader,
+lifetime and physical-device suites. Editor presentation interop is required
+by D6d; optional interop extensions cannot substitute for it. An extension is
+mandatory when an admitted renderer/project profile promises it. Keep unsupported
+features explicit and do not call the baseline port full feature parity while
+these rows remain pending.
 
 ## Subsystem coverage
 
 | Subsystem / required profile | Owner | Status | Blocker / next action | PR | Evidence / commit |
 | --- | --- | --- | --- | --- | --- |
-| FoundationBase / target ABI | threading T3 | verified | none for x86_64 MSVC ABI | threading T3 | [threading evidence](../development/threading-evidence.md#platform-completion-t3) |
-| Toolchain / build configuration | D1, D2 | verified (WARP) | DXIL build-time tools added in D2 | PR #573; PR #586 | Windows lane, PR #573 (`7167c8a2`) |
-| Time / threading | threading T3 | verified | none | threading T3 | [threading evidence](../development/threading-evidence.md#platform-completion-t3) |
-| Logging / profiling | D1 | needs port | Builds in the closure; run the logging suites on Windows | pending | none |
-| Filesystem | unassigned | needs port | Windows backend for mounts and persistence (D5) | pending | none |
-| Platform / host (Win32 windows) | D1 | verified (WARP) | Keyboard (D5) and hosted window later | PR #573 | Windows lane, PR #573 (`7167c8a2`) |
-| Input | unassigned | needs port | Win32 key map and keyboard delivery (D5) | pending | none |
-| RHI / graphics (clear/present) | D1 | verified (WARP) | Hardware-adapter evidence | PR #573 | Windows lane, PR #573 (`7167c8a2`) |
-| RHI / graphics (DXIL shaders, fullscreen draw) | D2 | verified (WARP) | Hardware-adapter evidence | PR #586 | Windows lane, PR #586 ([run 40102938249](https://github.com/The-Ludus-Project/Ludus/actions/runs/40102938249)) |
-| RHI / graphics (raster, compute, lifetime) | unassigned | needs port | D3-D4 | pending | none |
-| Renderer / graph, text, content, runtime, audio, networking | unassigned | unreviewed | After D4 | pending | none |
-| SDK / projects / editor tooling | unassigned | unreviewed | D6 | pending | none |
-| CI / documentation | D1, D2 | in progress | Lane gates batch promotion; D2 adds the shader tool bootstrap | PR #573; PR #586 | Windows lane, PR #573 (`7167c8a2`) |
+| FoundationBase / target ABI | threading T3; D0 pending | verified (Clang only) | Revalidate with MSVC in D0 | threading T3 | [threading evidence](../development/threading-evidence.md#platform-completion-t3) |
+| Toolchain / build configuration (Clang) | D1, D2 | verified (WARP) | Retain historical scope; MSVC migration tracked separately | PR #573; PR #586 | Windows lane, PR #573 (`7167c8a2`) |
+| MSVC / Ninja / MSBuild / configuration mapping | unassigned | needs port | D0; pins, compiler gates, presets and policy reconciliation | pending | none |
+| Memory / containers / diagnostics | unassigned | unreviewed | D0 baseline and D5a runtime/failure audit under MSVC | pending | none |
+| Time / threading | threading T3; D0 pending | verified (Clang only) | Re-run MSVC suites in D0/D5a | threading T3 | [threading evidence](../development/threading-evidence.md#platform-completion-t3) |
+| Logging / profiling | unassigned | needs port | D5a; closure builds, Windows suites still needed | pending | none |
+| Filesystem / persistence / watches | unassigned | needs port | D5a; audit existing Windows async support | pending | none |
+| Platform / host (Win32 windows) | D1; D0 pending | verified (Clang/WARP) | Revalidate in D0; hosted channel in D6d | PR #573 | Windows lane, PR #573 (`7167c8a2`) |
+| Input / system entropy | unassigned | needs port | Win32 key delivery/focus recovery and entropy in D5a | pending | none |
+| RHI / graphics (clear/present) | D1; D0 pending | verified (Clang/WARP) | MSVC and hardware-adapter evidence in D0 | PR #573 | Windows lane, PR #573 (`7167c8a2`) |
+| RHI / graphics (DXIL/fullscreen) | D2; D0 pending | verified (Clang/WARP) | MSVC and hardware-adapter evidence in D0 | PR #586 | [Windows lane](https://github.com/The-Ludus-Project/Ludus/actions/runs/40102938249) |
+| RHI / raster resources and rendering | unassigned | needs port | D3a/D3b | pending | none |
+| RHI / transfers, lifetime, compute and graph | unassigned | needs port | D4a/D4b | pending | none |
+| GPU timing / PIX / DRED | unassigned | needs port | D5b | pending | none |
+| Renderer / graph | unassigned | unreviewed | D6a after D4b/D5a | pending | none |
+| Text / localization / UI | unassigned | unreviewed | D6a required-profile audit and sample | pending | none |
+| Content / resources | unassigned | unreviewed | D6a cook/load/error journeys | pending | none |
+| Runtime / game host | unassigned | unreviewed | D6a boot/shutdown; D6c DLL reload and symbols | pending | none |
+| Behavior / scripting | unassigned | unreviewed | D0 compiler admission; D6a runtime; D6c authoring/reload | pending | none |
+| Gameplay / physics | unassigned | unreviewed | D6a required-profile audit | pending | none |
+| Audio | unassigned | unreviewed | D6a playback/device/failure evidence for required profiles | pending | none |
+| Networking | unassigned | unreviewed | D6a transport/reconnect evidence for required profiles | pending | none |
+| SDK / project setup / VS Code / Visual Studio | unassigned | needs port | D0 generator foundation; D6b installed consumers and IDE journeys | pending | none |
+| Embedded/external shader/script authoring | unassigned | needs port | D6c worker/IPC/watch/reload and diagnostic acceptance | pending | none |
+| Editor / hosted viewport | unassigned | needs port | D6d GPU sharing, transport and interactive publication | pending | none |
+| Optional ray / interop extensions / upscaling | unassigned | unreviewed | Separate feature-parity profiles and hardware acceptance | pending | none |
+| Qualification / CI / documentation | D1, D2; D7 pending | in progress | Clang lane gates promotion today; D7 qualifies MSVC profiles | PR #573; PR #586 | Historical D1/D2 evidence above |
+| Packaging / distribution | unassigned | unreviewed | D8 after D7 | pending | none |
 
 ## References
 
@@ -279,3 +500,8 @@ another backend's behavior.
 - Microsoft, [Managing application state](https://learn.microsoft.com/windows/win32/learnwin32/managing-application-state-)
   and [WM_DPICHANGED](https://learn.microsoft.com/windows/win32/hidpi/wm-dpichanged):
   per-window state and DPI-change resizing in the Win32 backend.
+- Thanks to Kitware, [Visual Studio generator](https://cmake.org/cmake/help/v3.29/generator/Visual%20Studio%2017%202022.html),
+  [CMake build-system model](https://cmake.org/cmake/help/v3.29/manual/cmake.1.html#introduction-to-cmake-buildsystems)
+  and [configuration types](https://cmake.org/cmake/help/v3.29/variable/CMAKE_CONFIGURATION_TYPES.html):
+  the planned shared CMake graph, generated MSBuild projects and explicit
+  multi-configuration acceptance follow these contracts.
