@@ -30,9 +30,21 @@ void SetGpuPreviewOpacityPartitioningForTesting(bool shouldPartition) noexcept
     shouldPartitionForTesting = shouldPartition;
 }
 #endif
-void PackGpuPreviewRayOrder(const ReferenceSceneData& scene, math::Vector4* outOrder) noexcept
+void PackGpuPreviewRayOrder(const ReferenceSceneData& scene, bool shouldPartition, math::Vector4* outOrder) noexcept
 {
     LUDUS_ASSERT(outOrder != nullptr);
+    if (shouldPartition == false)
+    {
+        for (usize i = 0; i < scene.Order.GetSize(); ++i)
+        {
+            std::memcpy(&outOrder[i].X, &scene.Order[i], sizeof(uint32));
+        }
+        if (scene.Order.IsEmpty() == false)
+        {
+            outOrder[0].Y = 0;
+        }
+        return;
+    }
     usize outputIndex = 0;
     uint32 opaqueCount = 0;
     for (usize partition = 0; partition < GPU_PREVIEW_OPACITY_PARTITION_COUNT; ++partition)

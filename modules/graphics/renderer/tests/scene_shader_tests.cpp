@@ -421,7 +421,7 @@ TEST_CASE("GPU opacity partition order preserves original triangle identities an
         scene.Order[i] = original[i];
     }
     StaticArray<math::Vector4, TRIANGLE_COUNT> packed{};
-    internal::PackGpuPreviewRayOrder(scene, packed.GetData());
+    internal::PackGpuPreviewRayOrder(scene, true, packed.GetData());
     for (usize i = 0; i < TRIANGLE_COUNT; ++i)
     {
         uint32 actual = 0;
@@ -432,11 +432,19 @@ TEST_CASE("GPU opacity partition order preserves original triangle identities an
     uint32 base = 0;
     std::memcpy(&base, &packed[0].Y, sizeof(base));
     CHECK(base == PARTITION_SIZE);
+    internal::PackGpuPreviewRayOrder(scene, false, packed.GetData());
+    CHECK(packed[0].Y == 0);
+    for (usize i = 0; i < TRIANGLE_COUNT; ++i)
+    {
+        uint32 actual = 0;
+        std::memcpy(&actual, &packed[i].X, sizeof(actual));
+        CHECK(actual == original[i]);
+    }
     for (renderer::MaterialAlpha alpha : {renderer::MaterialAlpha::Opaque, renderer::MaterialAlpha::Masked})
     {
         surfaces[0].Alpha = alpha;
         surfaces[1].Alpha = alpha;
-        internal::PackGpuPreviewRayOrder(scene, packed.GetData());
+        internal::PackGpuPreviewRayOrder(scene, true, packed.GetData());
         for (usize i = 0; i < TRIANGLE_COUNT; ++i)
         {
             uint32 actual = 0;
@@ -446,6 +454,6 @@ TEST_CASE("GPU opacity partition order preserves original triangle identities an
     }
     scene.Order.Clear();
     packed[0].X = 1;
-    internal::PackGpuPreviewRayOrder(scene, packed.GetData());
+    internal::PackGpuPreviewRayOrder(scene, true, packed.GetData());
     CHECK(packed[0].X == 1);
 }

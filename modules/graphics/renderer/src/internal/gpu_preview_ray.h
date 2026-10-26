@@ -10,7 +10,8 @@ inline constexpr usize GPU_PREVIEW_OPACITY_PARTITION_COUNT = 2;
 void SetGpuPreviewOpacityPartitioningForTesting(bool shouldPartition) noexcept;
 // Stable opaque-then-masked primitive mapping, independent of the CPU oracle's BVH.
 // The first word's Y component stores the second partition's primitive base.
-void PackGpuPreviewRayOrder(const ReferenceSceneData& scene, math::Vector4* outOrder) noexcept;
+// False preserves the CPU BVH order for software compute traversal.
+void PackGpuPreviewRayOrder(const ReferenceSceneData& scene, bool shouldPartition, math::Vector4* outOrder) noexcept;
 // One native BLAS contains an opaque prefix and a masked suffix. Native geometry
 // range IDs plus local primitive IDs address the stable packed order.
 [[nodiscard]] rhi::RasterStatus CreateGpuPreviewRayGeometry(rhi::DeviceHandle device,

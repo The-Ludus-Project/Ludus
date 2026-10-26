@@ -1898,8 +1898,9 @@ independent of the driver's range-local primitive IDs. The matching SDK query sh
 reads the prefix count from private metadata preceding the existing triangle-UV table.
 
 The renderer's packed indirection preserves original shading, material, emitter and
-visibility identities independently of the CPU oracle's unchanged BVH order. Its
-first word stores the masked range's primitive base. This is private preview kernel
+visibility identities independently of the CPU oracle's unchanged BVH order.
+Software GPU reference packing also retains that original BVH order. The native
+indirection's first word stores the masked range's primitive base. This is private preview kernel
 ABI version 5; recook preview and graph shaders with the matching runtime/SDK.
 Native geometry opacity bypasses opaque candidates for first-accepted-hit visibility
 queries. Mixed-scene closest-hit queries retain forced nonopaque traversal and
@@ -1928,9 +1929,9 @@ renderer APIs. GPU numerical failure makes an error pixel magenta; CPU progress
 reports completed dispatches, not observed valid sample counts or convergence.
 
 The native opacity regression (`[opacity]` in `ludus_renderer_render_tests`)
-compares empty, opaque-only, masked-only and mixed scenes against raw linear
-CPU-oracle RGB and displayed pixels at 64×64 and 16 samples, with matched seed
-and camera.
+compares empty, opaque-only, masked-only and mixed native-preview scenes against
+raw linear CPU-oracle and software GPU-reference RGB and displayed pixels at
+64×64 and 16 samples, with matched seed and camera.
 Linear channel tolerance is 0.001 radiance units plus 0.5% of the reference channel;
 display tolerance is two RGBA8 levels. A private test-build accessor reads completed
 accumulation while retaining the frame; builds with tests disabled omit the accessor. Its mixed fixture contains both rejecting and accepting masked surfaces,

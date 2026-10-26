@@ -45,7 +45,8 @@ Status PrepareReferenceCompute(ReferenceJob& inoutJob, usize cpuRemaining, usize
     Array<math::Vector4> data;
     Array<math::Vector4> texels;
     internal::GpuPreviewUniform uniform;
-    Status status = PackGpuScene(inoutJob, false, cpuRemaining, data, texels, uniform, nullptr);
+    // Software BVH leaf ranges address the CPU order, independent of native opacity ranges.
+    Status status = PackGpuScene(inoutJob, false, false, cpuRemaining, data, texels, uniform, nullptr);
     if (status != Status::Ready)
     {
         return status;

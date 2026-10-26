@@ -77,6 +77,7 @@ bool SameGpuTexture(const rhi::TextureCpuContent& a, const rhi::TextureCpuConten
 }
 Status PackGpuScene(const ReferenceJob& job,
                     bool shouldPackVisibility,
+                    bool shouldPartitionNativeOpacity,
                     usize budget,
                     Array<math::Vector4>& data,
                     Array<math::Vector4>& texels,
@@ -228,7 +229,7 @@ Status PackGpuScene(const ReferenceJob& job,
         out[1] = GpuVector(n.Bounds.Max, GpuBits(n.Right));
         out[2] = {GpuBits(n.First), GpuBits(n.Count), 0, 0};
     }
-    internal::PackGpuPreviewRayOrder(scene, data.GetData() + order);
+    internal::PackGpuPreviewRayOrder(scene, shouldPartitionNativeOpacity, data.GetData() + order);
     for (usize i = 0; i < scene.Emitters.GetSize(); ++i)
     {
         data[emitters + i].X = GpuBits(scene.Emitters[i]);
@@ -375,7 +376,7 @@ Status PackGpuScene(const ReferenceJob& job,
     }
     outUniform.Sampling[2] |= isOpaque == true ? LUDUS_GPU_PREVIEW_OPAQUE_FLAG : 0;
     uint32 nativeOpaqueTriangleCount = 0;
-    if (scene.Order.IsEmpty() == false)
+    if (shouldPartitionNativeOpacity == true && scene.Order.IsEmpty() == false)
     {
         std::memcpy(&nativeOpaqueTriangleCount, &data[order].Y, sizeof(nativeOpaqueTriangleCount));
     }
@@ -1235,6 +1236,7 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     internal::GpuPreviewUniform uniform;
     status = PackGpuScene(*scene,
                           mState->GpuPreview->HasVisibilityBuffer,
+                          mState->GpuPreview->HasNativeRayQueries,
                           scratch,
                           data,
                           texels,
