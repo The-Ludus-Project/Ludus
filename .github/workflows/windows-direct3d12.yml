@@ -24,6 +24,7 @@ on:
       - 'cmake/shaders/compile_shader.py'
       - 'config/conan/profiles/windows-clang-x86_64'
       - 'config/conan/profiles/windows-msvc-probe-x86_64'
+      - 'config/tool_versions.json'
       - 'config/shader_toolchain.json'
       - 'modules/graphics/rhi/shaders/raster_bindings.slang'
       - 'modules/foundation/base/include/ludus/foundation/base/checked_integer.hpp'
@@ -88,8 +89,9 @@ jobs:
         run: |
           python -m venv out/host-tools/venv
           $python = "$PWD/out/host-tools/venv/Scripts/python.exe"
-          $versions = (Get-Content config/tool_versions.json | ConvertFrom-Json).managed
-          & $python -m pip install --disable-pip-version-check --quiet "cmake==$($versions.cmake)" "ninja==$($versions.ninja)" "conan==$($versions.conan)"
+          $pins = Get-Content config/tool_versions.json | ConvertFrom-Json
+          $versions = $pins.managed
+          & $python -m pip install --disable-pip-version-check --quiet "cmake==$($pins.windows_msvc_probe.cmake)" "ninja==$($versions.ninja)" "conan==$($versions.conan)"
           if ($LASTEXITCODE -ne 0) { throw 'Host tool installation failed' }
           $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
           conan export third_party/catch2
@@ -113,7 +115,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "Ninja $configuration tests failed" }
           }
           $build = 'out/windows-msvc-probe/msbuild'
-          cmake -S $source -B $build -G 'Visual Studio 17 2022' -A x64 -T "v143,version=$($env:VCToolsVersion.TrimEnd('\')),host=x64" -DCMAKE_SYSTEM_VERSION=10.0.26100.0 "-DCMAKE_PREFIX_PATH=$dependencies"
+          cmake -S $source -B $build -G 'Visual Studio 17 2022' -A x64 -T "v143,version=$($env:VCToolsVersion.TrimEnd('\')),host=x64" '-DCMAKE_SYSTEM_VERSION=10.0.26100.0' "-DCMAKE_PREFIX_PATH=$dependencies"
           if ($LASTEXITCODE -ne 0) { throw 'MSBuild configure failed' }
           foreach ($configuration in @('Debug', 'RelWithDebInfo')) {
             cmake --build $build --config $configuration

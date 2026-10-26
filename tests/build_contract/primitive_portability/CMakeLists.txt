@@ -1,10 +1,18 @@
 cmake_minimum_required(VERSION 3.29)
+get_filename_component(ludus_root "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLUTE)
+file(READ "${ludus_root}/config/tool_versions.json" ludus_tool_pins)
+string(JSON ludus_probe_cmake GET "${ludus_tool_pins}" windows_msvc_probe cmake)
+if(CMAKE_GENERATOR MATCHES "^Visual Studio" AND CMAKE_VERSION VERSION_LESS ludus_probe_cmake)
+    # Thanks to Kitware, cmGlobalVisualStudio10Generator::SetGeneratorToolset:
+    # https://github.com/Kitware/CMake/blob/v3.31.10/Source/cmGlobalVisualStudio10Generator.cxx
+    # 3.29.6 rejects explicit 14.44 minor versions under the v143 toolset.
+    message(FATAL_ERROR "The D0 Visual Studio probe requires CMake ${ludus_probe_cmake} from config/tool_versions.json (windows_msvc_probe.cmake)")
+endif()
 project(LudusPrimitivePortability LANGUAGES CXX)
 
 # This isolated D0 probe deliberately does not admit the engine, SDK or Behavior
 # compiler profiles. It reuses the production headers/representation checks and
 # the existing primitive tests with a compiler-native Catch2 dependency.
-get_filename_component(ludus_root "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLUTE)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -19,7 +27,7 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     endif()
     # Thanks to Microsoft, "/std (Specify Language Standard Version)":
     # https://learn.microsoft.com/en-us/cpp/build/reference/std-specify-language-standard-version
-    # CMake 3.29 maps cxx_std_23 to c++latest, which also admits later drafts.
+    # CMake maps cxx_std_23 to c++latest, which also admits later drafts.
     # The candidate probe uses the C++23-only mode explicitly; this is not a
     # declaration of complete C++23 support or a qualified engine toolset pin.
     set(CMAKE_CXX23_STANDARD_COMPILE_OPTION "-std:c++23preview")
@@ -58,7 +66,7 @@ add_test(NAME ludus_primitive_portability COMMAND ludus_primitive_portability)
 
 # Preserve the actual candidate identity beside each generated build tree.
 file(WRITE "${CMAKE_BINARY_DIR}/compiler-identity.txt"
-    "compiler=${CMAKE_CXX_COMPILER}\nversion=${CMAKE_CXX_COMPILER_VERSION}\n"
+    "cmake=${CMAKE_VERSION}\ncompiler=${CMAKE_CXX_COMPILER}\nversion=${CMAKE_CXX_COMPILER_VERSION}\n"
     "generator=${CMAKE_GENERATOR}\nplatform=${CMAKE_GENERATOR_PLATFORM}\n"
     "toolset=${CMAKE_VS_PLATFORM_TOOLSET_VERSION}\nsdk=${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}\n"
     "cxx23=${CMAKE_CXX23_STANDARD_COMPILE_OPTION}\ncrt=${CMAKE_MSVC_RUNTIME_LIBRARY}\n"

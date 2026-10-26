@@ -369,8 +369,14 @@ configurations in one generated Visual Studio 2022 solution. Candidate compiler,
 toolset and SDK identities and CTest logs are uploaded as
 `windows-msvc-primitive-probe`.
 
+The probe's host CMake is separately pinned to 3.31.10 in
+`config/tool_versions.json` (`windows_msvc_probe.cmake`). The common managed
+3.29.6 build cannot select the explicit 14.44 minor version of v143; the newer
+generator recognizes it. This leaves the existing platform tool pins unchanged
+while the D0 toolchain audit continues.
+
 The candidate uses `/std:c++23preview`, `/permissive-`, `/Zc:preprocessor`,
-`/Zc:__cplusplus`, `/W4` and `/WX`. CMake 3.29's default mapping of C++23 to
+`/Zc:__cplusplus`, `/W4` and `/WX`. CMake's default mapping of C++23 to
 `/std:c++latest` would also admit later draft features, so only this isolated
 probe overrides that mapping. Microsoft's
 [/std reference](https://learn.microsoft.com/en-us/cpp/build/reference/std-specify-language-standard-version)
@@ -378,8 +384,9 @@ describes the C++23-specific preview mode. This is compatibility evidence for
 the tested primitives, not full C++23 conformance or an engine toolset pin.
 
 To reproduce on Windows, enter an x64 Visual Studio 2022 developer command
-prompt selecting toolset 14.44 and SDK 10.0.26100.0. Install the managed host
-tools from `config/tool_versions.json`, export `third_party/catch2`, and install
+prompt selecting toolset 14.44 and SDK 10.0.26100.0. Install the probe's CMake
+and the managed Ninja/Conan pins from `config/tool_versions.json`, export
+`third_party/catch2`, and install
 the locked `catch2/3.4.0` with
 `config/conan/profiles/windows-msvc-probe-x86_64` for host and build. Generate
 `CMakeDeps` into one dependency directory for Debug and RelWithDebInfo. Configure
