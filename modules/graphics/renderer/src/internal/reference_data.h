@@ -320,6 +320,9 @@ ReferenceRay(math::Vector3 origin, math::Vector3 direction, float32 distance) no
 TraceReferenceOracle(const ReferenceSceneData&, const rhi::RayInput&, rhi::RayResult&) noexcept;
 [[nodiscard]] math::Vector4 SampleReferenceTexture(const ReferenceInstance&, math::Vector2) noexcept;
 [[nodiscard]] math::Vector3 SampleReferenceEmission(const ReferenceInstance&, math::Vector2) noexcept;
+/// Interpolates admitted [0,1] vertex multipliers, bounding finite rounding/extrapolation error.
+/// Nonfinite arithmetic remains visible to the reference path's validation.
+[[nodiscard]] math::Vector4 InterpolateReferenceColor(const ReferenceTriangle& triangle, float32 u, float32 v) noexcept;
 [[nodiscard]] math::Vector4 SampleReferenceSurfaceMap(const ReferenceInstance&, math::Vector2) noexcept;
 [[nodiscard]] math::Vector3 ApplyReferenceNormal(const ReferenceTriangle&,
                                                  const ReferenceSurfaceData&,

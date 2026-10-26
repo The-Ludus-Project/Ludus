@@ -659,7 +659,14 @@ TEST_CASE("CPU and GPU reference transport retained HDR source radiance and auth
         status = renderer.GetStatus(program);
     }
     REQUIRE(status == S::Ready);
-    const math::Vector3 positions[]{{-1, -1, .5F}, {1, -1, .5F}, {1, 1, .5F}, {-1, 1, .5F}};
+    // Pixel (4,4) hits interior barycentrics (0.1534976065, 0.2254052907), where
+    // a three-term interpolation of constant white rounds one ULP above one.
+    constexpr float32 QUAD_RIGHT_WORLD = 1.969098448753357F;
+    constexpr float32 QUAD_TOP_WORLD = 2.881896495819092F;
+    const math::Vector3 positions[]{{-1, -1, .5F},
+                                    {QUAD_RIGHT_WORLD, -1, .5F},
+                                    {QUAD_RIGHT_WORLD, QUAD_TOP_WORLD, .5F},
+                                    {-1, QUAD_TOP_WORLD, .5F}};
     const math::Vector3 normals[]{{0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1}};
     const math::Vector4 colors[]{{.25F, 1, .5F, 1}, {.25F, 1, .5F, 1}, {.25F, 1, .5F, 1}, {.25F, 1, .5F, 1}};
     const uint32 indices[]{0, 1, 2, 0, 2, 3};

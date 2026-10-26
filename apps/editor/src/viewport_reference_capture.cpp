@@ -60,10 +60,46 @@ bool IsAreaProxy(renderer::LightKind kind) noexcept
     return kind == renderer::LightKind::AreaOneSided || kind == renderer::LightKind::AreaTwoSided;
 }
 
+QString DescribeReferenceFailure(renderer::ReferenceFailure failure)
+{
+    switch (failure)
+    {
+        case renderer::ReferenceFailure::InvalidHit:
+            return QStringLiteral("invalid traversal hit");
+        case renderer::ReferenceFailure::InvalidEmitterPdf:
+            return QStringLiteral("invalid emitter density");
+        case renderer::ReferenceFailure::InvalidSurfaceParameters:
+            return QStringLiteral("surface parameter decoding failed");
+        case renderer::ReferenceFailure::InvalidLightSample:
+            return QStringLiteral("invalid light sample");
+        case renderer::ReferenceFailure::InvalidBsdfEvaluation:
+            return QStringLiteral("BSDF evaluation failed");
+        case renderer::ReferenceFailure::InvalidDirectContribution:
+            return QStringLiteral("invalid direct-light contribution");
+        case renderer::ReferenceFailure::InvalidShadowSegment:
+            return QStringLiteral("invalid shadow segment");
+        case renderer::ReferenceFailure::InvalidBsdfSample:
+            return QStringLiteral("BSDF sampling failed");
+        case renderer::ReferenceFailure::InvalidThroughput:
+            return QStringLiteral("invalid path throughput");
+        case renderer::ReferenceFailure::InvalidRayOrigin:
+            return QStringLiteral("invalid ray origin");
+        case renderer::ReferenceFailure::InvalidRadiance:
+            return QStringLiteral("invalid path radiance");
+        case renderer::ReferenceFailure::InvalidAccumulation:
+            return QStringLiteral("pixel accumulation overflow");
+        case renderer::ReferenceFailure::None:
+            return QStringLiteral("no path validation failure recorded");
+    }
+    return QStringLiteral("unknown path validation failure");
+}
+
 QString DescribeStatus(rhi::RasterStatus status)
 {
     switch (status)
     {
+        case rhi::RasterStatus::Failed:
+            return QStringLiteral("the reference path or backend validation failed");
         case rhi::RasterStatus::Unsupported:
             return QStringLiteral("the scene uses content outside the reference profile (for example a "
                                   "shading normal facing away from its triangle, an unretained texture "
@@ -320,10 +356,12 @@ ViewportReferencePhase ViewportReferenceCapture::Service(uint64 budgetNanosecond
             if (mGeneration->Renderer.GetReferenceCaptureInfo(mCapture, info) == rhi::RasterStatus::Ready &&
                 info.InvalidContributions != 0)
             {
-                location = QStringLiteral(" at pixel (%1, %2), depth %3")
+                location = QStringLiteral(" at pixel (%1, %2), sample %3, depth %4 (%5)")
                                .arg(info.FailurePixel % mDescription.Width)
                                .arg(info.FailurePixel / mDescription.Width)
-                               .arg(info.FailureDepth);
+                               .arg(info.FailureSample)
+                               .arg(info.FailureDepth)
+                               .arg(DescribeReferenceFailure(info.Failure));
             }
             static_cast<void>(
                 fail(QStringLiteral("Reference tracing failed%1: %2.").arg(location, DescribeStatus(status))));

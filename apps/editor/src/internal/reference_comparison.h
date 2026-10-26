@@ -46,6 +46,14 @@ struct ReferenceComparison final
     foundation::uint64 ComparedPixels = 0;
     /// Fewest committed reference samples among the compared pixels.
     foundation::uint32 MinimumReferenceSamples = 0;
+    /// Requested samples per pixel; completion requires this count across the whole image.
+    foundation::uint32 TargetReferenceSamples = 0;
+    /// Fewest samples over the whole reference image, including unsampled pixels.
+    foundation::uint32 MinimumImageSamples = 0;
+    /// True only when every image pixel has reached the requested count without a capture failure.
+    bool IsReferenceComplete = false;
+    /// The capture terminated with an error; any metrics are partial diagnostics.
+    bool HasReferenceFailed = false;
     /// Mean absolute channel error, in the comparison space.
     foundation::float64 MeanAbsoluteError = 0;
     /// Root mean squared channel error, in the comparison space.
@@ -66,6 +74,8 @@ struct ReferenceComparison final
 
 /// Compare one raster output with reference means of the same extent and camera.
 /// @param reference Width * Height top-left pixels, borrowed for the call.
+/// @param information Capture dimensions and requested sample count, matching reference.
+/// @param hasReferenceFailed Whether capture ended with an error, including backend failures.
 /// @param raster Read-back raster output; RGBA8 compares in display space, RGBA16F in linear space.
 /// @param outDifference Receives a signed display-luminance difference image: red where the raster
 /// is brighter, blue where it is darker, black where they agree and grey where no reference sample
@@ -74,8 +84,8 @@ struct ReferenceComparison final
 /// raster, or a reference without any committed sample.
 [[nodiscard]] bool
 CompareRasterWithReference(foundation::BorrowedView<const graphics::renderer::ReferencePixel> reference,
-                           foundation::uint32 width,
-                           foundation::uint32 height,
+                           const graphics::renderer::ReferenceCaptureInfo& information,
+                           bool hasReferenceFailed,
                            const InspectedTexture& raster,
                            ReferenceComparison& outComparison,
                            QImage& outDifference,

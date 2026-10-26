@@ -55,13 +55,15 @@ QString GetSpaceName(ReferenceComparisonSpace space)
 } // namespace
 
 bool CompareRasterWithReference(BorrowedView<const renderer::ReferencePixel> reference,
-                                uint32 width,
-                                uint32 height,
+                                const renderer::ReferenceCaptureInfo& information,
+                                bool hasReferenceFailed,
                                 const InspectedTexture& raster,
                                 ReferenceComparison& outComparison,
                                 QImage& outDifference,
                                 QString& outError)
 {
+    const uint32 width = information.Width;
+    const uint32 height = information.Height;
     const usize count = static_cast<usize>(width) * height;
     if (width == 0 || height == 0 || reference.GetSize() != count || raster.IsValid() == false ||
         raster.Width != width || raster.Height != height)
@@ -83,6 +85,8 @@ bool CompareRasterWithReference(BorrowedView<const renderer::ReferencePixel> ref
                                                                      : ReferenceComparisonSpace::Display;
     comparison.Width = width;
     comparison.Height = height;
+    comparison.TargetReferenceSamples = information.TargetSamples;
+    comparison.HasReferenceFailed = hasReferenceFailed == true || information.InvalidContributions != 0;
     QImage difference(static_cast<int32>(width), static_cast<int32>(height), QImage::Format_RGB32);
     if (difference.isNull() == true)
     {
@@ -159,6 +163,9 @@ bool CompareRasterWithReference(BorrowedView<const renderer::ReferencePixel> ref
     const float64 pixels = static_cast<float64>(comparison.ComparedPixels);
     const float64 channels = pixels * static_cast<float64>(RGB_CHANNELS);
     comparison.MinimumReferenceSamples = minimumSamples;
+    comparison.MinimumImageSamples = comparison.ComparedPixels == count ? minimumSamples : 0;
+    comparison.IsReferenceComplete = comparison.HasReferenceFailed == false && information.TargetSamples != 0 &&
+                                     comparison.MinimumImageSamples >= information.TargetSamples;
     comparison.MeanAbsoluteError = absoluteSum / channels;
     const float64 meanSquare = squaredSum / channels;
     comparison.RootMeanSquareError = math::Sqrt(meanSquare);
@@ -188,6 +195,11 @@ QJsonObject MakeReferenceComparisonJson(const ReferenceComparison& comparison)
         {QStringLiteral("height"), static_cast<qint64>(comparison.Height)},
         {QStringLiteral("comparedPixels"), static_cast<qint64>(comparison.ComparedPixels)},
         {QStringLiteral("minimumReferenceSamples"), static_cast<qint64>(comparison.MinimumReferenceSamples)},
+        {QStringLiteral("targetReferenceSamples"), static_cast<qint64>(comparison.TargetReferenceSamples)},
+        {QStringLiteral("minimumImageSamples"), static_cast<qint64>(comparison.MinimumImageSamples)},
+        {QStringLiteral("referenceComplete"), comparison.IsReferenceComplete},
+        {QStringLiteral("referenceFailed"), comparison.HasReferenceFailed},
+        {QStringLiteral("totalPixels"), static_cast<qint64>(comparison.Width) * comparison.Height},
         {QStringLiteral("meanAbsoluteError"), comparison.MeanAbsoluteError},
         {QStringLiteral("rootMeanSquareError"), comparison.RootMeanSquareError},
         {QStringLiteral("maximumAbsoluteError"), comparison.MaximumAbsoluteError},
@@ -216,18 +228,39 @@ QString DescribeReferenceComparison(const ReferenceComparison& comparison)
     constexpr int32 RELATIVE_ERROR_DECIMALS = 5;
     const QString bias =
         comparison.MeanSignedLuminanceError < 0 ? QStringLiteral("darker") : QStringLiteral("brighter");
-    QString text = QStringLiteral("Raster vs reference (%1 space, %2 pixels, ≥%3 samples each): "
-                                  "MAE %4, RMSE %5, max %6. Raster is %7 on average by %8 luminance. "
-                                  "%9% of pixels differ visibly.")
-                       .arg(GetSpaceName(comparison.Space))
-                       .arg(comparison.ComparedPixels)
-                       .arg(comparison.MinimumReferenceSamples)
-                       .arg(comparison.MeanAbsoluteError, 0, 'f', ERROR_DECIMALS)
-                       .arg(comparison.RootMeanSquareError, 0, 'f', ERROR_DECIMALS)
-                       .arg(comparison.MaximumAbsoluteError, 0, 'f', ERROR_DECIMALS)
-                       .arg(bias)
-                       .arg(math::Abs(comparison.MeanSignedLuminanceError), 0, 'f', ERROR_DECIMALS)
-                       .arg(comparison.VisiblyDifferentFraction * PERCENT, 0, 'f', 1);
+    const uint64 totalPixels = static_cast<uint64>(comparison.Width) * comparison.Height;
+    const QString state = comparison.HasReferenceFailed == true    ? QStringLiteral("FAILED / INCOMPLETE")
+                          : comparison.IsReferenceComplete == true ? QStringLiteral("complete")
+                                                                   : QStringLiteral("INCOMPLETE");
+    QString text =
+        QStringLiteral("Reference %1: %2/%3 pixels sampled (%4%); %5/%6 samples per pixel across the full image. ")
+            .arg(state)
+            .arg(comparison.ComparedPixels)
+            .arg(totalPixels)
+            .arg(totalPixels == 0
+                     ? 0
+                     : PERCENT * static_cast<float64>(comparison.ComparedPixels) / static_cast<float64>(totalPixels),
+                 0,
+                 'f',
+                 1)
+            .arg(comparison.MinimumImageSamples)
+            .arg(comparison.TargetReferenceSamples);
+    if (comparison.IsReferenceComplete == false)
+    {
+        text += QStringLiteral("Partial diagnostic metrics only. ");
+    }
+    text += QStringLiteral("Raster vs reference (%1 space, %2 pixels, ≥%3 samples each): "
+                           "MAE %4, RMSE %5, max %6. Raster is %7 on average by %8 luminance. "
+                           "%9% of pixels differ visibly.")
+                .arg(GetSpaceName(comparison.Space))
+                .arg(comparison.ComparedPixels)
+                .arg(comparison.MinimumReferenceSamples)
+                .arg(comparison.MeanAbsoluteError, 0, 'f', ERROR_DECIMALS)
+                .arg(comparison.RootMeanSquareError, 0, 'f', ERROR_DECIMALS)
+                .arg(comparison.MaximumAbsoluteError, 0, 'f', ERROR_DECIMALS)
+                .arg(bias)
+                .arg(math::Abs(comparison.MeanSignedLuminanceError), 0, 'f', ERROR_DECIMALS)
+                .arg(comparison.VisiblyDifferentFraction * PERCENT, 0, 'f', 1);
     if (comparison.Space == ReferenceComparisonSpace::Display)
     {
         text += QStringLiteral(" PSNR %1 dB.").arg(comparison.PeakSignalToNoiseRatio, 0, 'f', PSNR_DECIMALS);

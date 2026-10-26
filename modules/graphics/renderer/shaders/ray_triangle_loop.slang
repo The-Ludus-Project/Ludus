@@ -43,7 +43,7 @@ Hit TraceTriangleLoop(float3 originWorld,
         if ((Sampling.z & LUDUS_GPU_PREVIEW_OPAQUE_FLAG) == 0 &&
             asuint(Surface(triangle, LUDUS_GPU_PREVIEW_TEXTURE_OPTIONS_WORD).z) != 0 &&
             Texture(triangle, TexcoordUv(triangle, barycentric)).w * Surface(triangle, 2).w *
-                    InterpolateTriangle(triangle, LUDUS_GPU_PREVIEW_VERTEX_COLOR_WORD, barycentric).w <
+                    InterpolateTriangleColor(triangle, barycentric).w <
                 Surface(triangle, 1).y)
             continue;
         hit.Triangle = triangle;

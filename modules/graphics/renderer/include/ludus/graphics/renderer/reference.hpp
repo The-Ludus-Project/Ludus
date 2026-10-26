@@ -171,6 +171,38 @@ struct ReferencePixel final
     /// Committed samples; failed or uncommitted tile work never increments it.
     ludus::foundation::uint32 Samples = 0;
 };
+/// Validation stage that rejected an uncommitted reference path or tile.
+/// This records a failure, never an ordinary zero-contribution or null BSDF sample.
+enum class ReferenceFailure : ludus::foundation::uint8
+{
+    /// No path validation failure has been recorded.
+    None,
+    /// Traversal returned an invalid distance, barycentric coordinate or primitive identity.
+    InvalidHit,
+    /// The competing emissive-surface density was negative or nonfinite.
+    InvalidEmitterPdf,
+    /// Decoding authored surface parameters failed.
+    InvalidSurfaceParameters,
+    /// A light proposal had an invalid density or radiance.
+    InvalidLightSample,
+    /// Evaluation of the surface scattering function failed.
+    InvalidBsdfEvaluation,
+    /// The weighted direct-light contribution was negative or nonfinite.
+    InvalidDirectContribution,
+    /// Offsetting or constructing the finite visibility segment failed.
+    InvalidShadowSegment,
+    /// Sampling the surface scattering function failed.
+    InvalidBsdfSample,
+    /// Updated path throughput was negative or nonfinite.
+    InvalidThroughput,
+    /// A generated ray origin was nonfinite or outside the admitted world range.
+    InvalidRayOrigin,
+    /// Accumulated path radiance was negative or nonfinite.
+    InvalidRadiance,
+    /// Publishing the tile would overflow its accumulated pixel sums.
+    InvalidAccumulation,
+};
+
 /// Bounded capture progress, reproducibility and failure evidence.
 struct ReferenceCaptureInfo final
 {
@@ -218,6 +250,10 @@ struct ReferenceCaptureInfo final
     ludus::foundation::uint32 FailurePixel = 0;
     /// Scattering depth of the last invalid contribution.
     ludus::foundation::uint32 FailureDepth = 0;
+    /// Validation stage of the last invalid contribution; None until a path check fails.
+    ReferenceFailure Failure = ReferenceFailure::None;
+    /// Zero-based sample index of that path; meaningful when InvalidContributions is nonzero.
+    ludus::foundation::uint32 FailureSample = 0;
     /// Renderer-owned CPU bytes retained by this job, excluding shared mesh/texture bytes.
     ludus::foundation::usize CpuBytes = 0;
     /// False while native builds/query results or further samples are outstanding.
