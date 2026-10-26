@@ -76,8 +76,13 @@ ludus_compile_renderer_shaders(TARGET recipe SHADERS renderer_flat renderer_comp
             command = [str(args.cmake), '-S', str(recipes), '-B', str(root / 'recipe-build'), '-G', 'Ninja',
                 '-DCMAKE_MAKE_PROGRAM=' + str(args.ninja), '-DPython3_EXECUTABLE=' + sys.executable,
                 '-DCMAKE_CXX_COMPILER=' + str(ROOT / 'out/host-tools/bin/clang++'),
-                '-DLUDUS_SLANG_COMPILER=' + str(args.compiler), '-DLUDUS_SHADER_WORKER_SOCKET=' + str(endpoint),
-                '-DLUDUS_SPIRV_CROSS=' + str(args.spirv_cross)]
+                '-DLUDUS_SLANG_COMPILER=' + str(args.compiler), '-DLUDUS_SHADER_WORKER_SOCKET=' + str(endpoint)]
+            # Metal ray stages always translate through SPIR-V Cross. Elsewhere the
+            # translator only adds optional GLSL ES artifacts, and naming it makes
+            # it required (cmake/LudusShaders.cmake), so pass it only when installed.
+            should_use_spirv_cross = sys.platform == 'darwin' or args.spirv_cross.is_file()
+            if should_use_spirv_cross:
+                command += ['-DLUDUS_SPIRV_CROSS=' + str(args.spirv_cross)]
             if sys.platform != 'darwin':
                 command += ['-DLUDUS_SPIRV_VALIDATOR=' + str(args.validator)]
             configured = subprocess.run(command, capture_output=True, text=True)
@@ -92,7 +97,8 @@ ludus_compile_renderer_shaders(TARGET recipe SHADERS renderer_flat renderer_comp
             template = (bound / 'main.lushader.json.in').read_text()
             (bound / 'main.lushader.json').write_text(template.replace('@RG2_TEST_PROFILES@', json.dumps(profiles)))
             bound_options = dict(helper=ROOT / 'cmake/shaders', compiler=args.compiler)
-            bound_options['spirv_cross'] = args.spirv_cross
+            if should_use_spirv_cross:
+                bound_options['spirv_cross'] = args.spirv_cross
             # The shared helper's lock files are installed beside it; stage the
             # same verified helper bundle used by the normal build adapter.
             bound_helper = root / 'bound-helper'
