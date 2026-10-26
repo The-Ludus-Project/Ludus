@@ -212,6 +212,17 @@ struct NativeDeviceLifetime final
     void (*Release)(void*) noexcept = nullptr;
 };
 
+/// Vulkan calibrated-timestamp device extension that a source enabled when it created its device.
+enum class NativeCalibratedTimestamps : ludus::foundation::uint8
+{
+    /// Neither extension is enabled; per-pass GPU timings on the admitted device stay duration-only.
+    None,
+    /// VK_KHR_calibrated_timestamps is enabled on the device.
+    Khr,
+    /// VK_EXT_calibrated_timestamps is enabled on the device.
+    Ext,
+};
+
 /// Copied admission request. A successful source Retain promises the instance,
 /// device and queue remain valid until Release, including shutdown and loss cleanup.
 /// Vulkan metadata must identify an actually created queue on the declared device.
@@ -226,6 +237,11 @@ struct NativeDeviceDescription final
     /// Require producer and consumer queue submissions to be serialized on the RHI
     /// owner thread. Different queues and concurrent external submission are unsupported.
     bool SerializedOwnerQueue = false;
+    /// Vulkan only, None for Metal: the calibrated-timestamp extension the source enabled on Device.
+    /// RHI places timed passes on the CPU trace clock only after confirming that the physical device
+    /// also supports the extension with the device and host time domains; otherwise the timings stay
+    /// duration-only. Declaring an extension that the device did not enable is invalid usage.
+    NativeCalibratedTimestamps CalibratedTimestamps = NativeCalibratedTimestamps::None;
 };
 
 /// Negotiated native sharing profile; query only after device startup is Ready.

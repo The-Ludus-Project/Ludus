@@ -21,8 +21,9 @@ namespace
 constexpr foundation::uint32 MAX_PHYSICAL_DEVICES = 16;
 constexpr foundation::uint32 MAX_QUEUE_FAMILIES = 32;
 constexpr foundation::uint32 MAX_DEVICE_EXTENSIONS = 512;
-/// Swapchain, plus external memory and its file descriptors for a hosted game's images.
-constexpr foundation::usize MAX_ENABLED_EXTENSIONS = 3;
+/// Swapchain, external memory and its file descriptors for a hosted game's images, and
+/// calibrated timestamps for profiling.
+constexpr foundation::usize MAX_ENABLED_EXTENSIONS = 4;
 /// The single queue both Qt Quick and the RHI submit to, serialized on the GUI thread.
 constexpr foundation::uint32 SHARED_QUEUE_INDEX = 0;
 struct Candidate final
@@ -86,6 +87,8 @@ struct QtViewportDevice::State final
     foundation::uint32 QueueFamily = 0;
     /// `VK_KHR_external_memory_fd` is enabled, so hosted game images can be imported.
     bool IsHostedImportEnabled = false;
+    /// Calibrated-timestamp extension enabled for the RHI's profiling clock mapping.
+    graphics::rhi::NativeCalibratedTimestamps CalibratedTimestamps = graphics::rhi::NativeCalibratedTimestamps::None;
     ~State()
     {
         if (Device != VK_NULL_HANDLE)
@@ -206,6 +209,23 @@ bool QtViewportDevice::PrepareWindow(QQuickWindow& inoutWindow)
         }
         extensions[extensionCount++] = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
     }
+    // Optional: lets the RHI place profiled GPU passes on the CPU trace clock. The RHI
+    // still checks the time domains, so an adapter without them only stays duration-only.
+    graphics::rhi::NativeCalibratedTimestamps calibratedTimestamps = graphics::rhi::NativeCalibratedTimestamps::None;
+#if defined(VK_KHR_calibrated_timestamps)
+    // Qt compiles against the system headers, which predate the KHR promotion on older distributions.
+    if (HasDeviceExtension(*functions, best.PhysicalDevice, VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME) == true)
+    {
+        extensions[extensionCount++] = VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME;
+        calibratedTimestamps = graphics::rhi::NativeCalibratedTimestamps::Khr;
+    }
+#endif
+    if (calibratedTimestamps == graphics::rhi::NativeCalibratedTimestamps::None &&
+        HasDeviceExtension(*functions, best.PhysicalDevice, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME) == true)
+    {
+        extensions[extensionCount++] = VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME;
+        calibratedTimestamps = graphics::rhi::NativeCalibratedTimestamps::Ext;
+    }
     const VkDeviceCreateInfo description
     {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
@@ -227,6 +247,7 @@ bool QtViewportDevice::PrepareWindow(QQuickWindow& inoutWindow)
     mState->PhysicalDevice = best.PhysicalDevice;
     mState->QueueFamily = best.QueueFamily;
     mState->IsHostedImportEnabled = hasHostedImport;
+    mState->CalibratedTimestamps = calibratedTimestamps;
     mState->Instance.deviceFunctions(mState->Device)
         ->vkGetDeviceQueue(mState->Device, best.QueueFamily, SHARED_QUEUE_INDEX, &mState->Queue);
     inoutWindow.setGraphicsDevice(
@@ -260,6 +281,7 @@ bool QtViewportDevice::GetDescription(QQuickWindow& inoutWindow, graphics::rhi::
                                                             static_cast<foundation::uint32>(version.minorVersion()),
                                                             static_cast<foundation::uint32>(version.microVersion()));
     outDescription.SerializedOwnerQueue = true;
+    outDescription.CalibratedTimestamps = mState->CalibratedTimestamps;
     // IsCompatible confirms Qt Quick really adopted this device and queue.
     return IsCompatible(inoutWindow, outDescription.Identity);
 }

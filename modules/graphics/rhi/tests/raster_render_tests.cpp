@@ -11,6 +11,8 @@
 #include <thread>
 
 #include "cull.h"
+#include "internal/gpu_scope_backend.h"
+#include "internal/measurement.h"
 #include "internal/readback.h"
 #include "merged_frame.h"
 #include "ordered_frame.h"
@@ -479,8 +481,12 @@ TEST_CASE("Portable indexed instances preserve texture origin, depth and detache
             // Metal maps stage-boundary counters onto the CPU trace clock.
             CHECK(calibratedPassCount == passes.Count);
 #else
-            CHECK(calibratedPassCount == 0);
+            // Vulkan maps timestamp queries through calibrated timestamps when the device admitted
+            // them; without the extension every pass stays duration-only.
+            CHECK(calibratedPassCount == (rhi::backend::HasPassClockCalibration() == true ? passes.Count : 0));
 #endif
+            CHECK((calibratedPassCount == 0) == (passes.ClockUncertaintyNanoseconds == 0));
+            CHECK(passes.ClockUncertaintyNanoseconds <= rhi::internal::MAX_CLOCK_UNCERTAINTY_NANOSECONDS);
         }
         if (computeMode)
         {

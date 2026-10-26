@@ -366,8 +366,9 @@ Perfetto workflow does not depend on the vendor capture adapter milestones.
 The delivered local-editor workflow and current limits are in
 [Recording CPU and GPU profiling](../development/editor-workspace.md#recording-cpu-and-gpu-profiling).
 The first delivery uses fixed storage/time limits and a new destination per
-recording. Local physical-pass timing reuses those controls. Source/process
-expansion, configurable limits and calibrated lanes remain separate work.
+recording. Local physical-pass timing reuses those controls, and Metal and
+Vulkan devices with a validated clock calibration add calibrated execution lanes.
+Source/process expansion and configurable limits remain separate work.
 
 ## Mac developer setup
 
@@ -410,7 +411,7 @@ adapters. It does not wait for G2/G3 or for a full pass-timing implementation.
 | P0 Editor CPU recording | Shared profiling controller, tool window, CPU mode, Record/Stop action and proposed F9 shortcut; reuse the current CPU tracer/exporter. | Menu/toolbar/shortcut share availability; bounded capture exports and opens in Perfetto; Busy, disabled build and export-retry behavior preserve data and editor responsiveness. |
 | P1 Coarse GPU Perfetto recording | GPU and Both modes; shared viewport probe ownership, typed frame-duration samples, coverage and single-trace export. Reuse existing RHI measurement support; no vendor debugger prerequisite. | Metal and Vulkan recordings show validated duration counters and CPU scope filtering; delayed/skipped/disjoint samples, Stats on/off, cancellation and finalization produce honest coverage without GPU waits. |
 | P2 Pass durations and hosted recording | Local Metal/Vulkan bounded native queries and shared physical-pass scopes implemented; producer-side hosted transport remains pending. | Named pass counters survive pass merging, query pressure and restart; unsupported precision remains explicit; hosted traces identify their producer and preserve image leases. |
-| P3 Correlated GPU execution lanes | Backend CPU/GPU clock mapping with uncertainty, queue tracks and submission correlation. Metal per-batch calibration and overlap lanes implemented; Vulkan calibrated timestamps remain pending. | Actual GPU slices align within the stated measured error, nest legally in Perfetto, preserve overlap on separate queues and degrade to duration-only data if calibration fails. |
+| P3 Correlated GPU execution lanes | Backend CPU/GPU clock mapping with uncertainty, queue tracks and submission correlation. Metal per-batch calibration, Vulkan calibrated timestamps and overlap lanes implemented. | Actual GPU slices align within the stated measured error, nest legally in Perfetto, preserve overlap on separate queues and degrade to duration-only data if calibration fails. |
 
 | Phase | Deliverable and dependency | Exit gate |
 | --- | --- | --- |

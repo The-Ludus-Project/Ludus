@@ -210,8 +210,8 @@ include pass timing when supported; Stats visibility does not arm pass queries.
 CPU-only recording leaves the GPU recording gates disabled. Timing currently
 covers raster/compute operations in the acquired frame command buffer; separate
 ray-query batch command buffers are excluded. Do not interpret an image resolve
-pass as the duration of its ray computation. Hosted recording transport and
-Vulkan execution lanes remain separate follow-ups.
+pass as the duration of its ray computation. Hosted recording transport remains
+a separate follow-up.
 
 WebGPU/WebGL **per-pass** sampling is explicitly unsupported in this increment.
 Their frame timing retains backend feature/privacy/disjoint constraints and is
@@ -237,7 +237,24 @@ Metal's CPU timestamps exclude it while `NowTicks` includes it. The recorded
 uncertainty is half the larger read gap; it excludes drift between the two
 samples, which share one hardware counter on Apple silicon. `GpuPassTiming`
 reports the mapped interval and `GpuPassTimings::ClockUncertaintyNanoseconds`
-the bound. Vulkan reports no interval until calibrated timestamps are admitted.
+the bound.
+
+Vulkan implements the same per-batch policy with `VK_KHR_calibrated_timestamps`,
+falling back to `VK_EXT_calibrated_timestamps`. An owned device enables the
+extension only when the adapter reports both the device time domain and the host
+domain that `NowTicks` reads (`CLOCK_MONOTONIC` on Linux). A borrowed device
+declares the extension it enabled in `NativeDeviceDescription::CalibratedTimestamps`;
+the Linux editor's Qt-created viewport device does so when available. RHI
+re-checks adapter support and otherwise keeps the batch duration-only. One
+`vkGetCalibratedTimestampsKHR` pair is sampled before the armed frame is recorded
+and submitted, and another when the poll observes its fence. The host value must
+lie between the `NowTicks` reads around the call, which proves the domains match.
+TOP_OF_PIPE/BOTTOM_OF_PIPE query pairs inside that window are interpolated onto
+`NowTicks` modulo the queue's timestamp valid bits. The batch is rejected when
+either `maxDeviation` exceeds 50 µs, the window spans a full counter period, or
+the device and host elapsed times disagree by more than both deviations plus
+0.1% (a counter reset or suspend). The recorded uncertainty is the larger
+`maxDeviation`. Platforms without a matching host domain stay duration-only.
 
 The exporter writes calibrated passes as `X` slices named `<pass> (<kind>)` under
 a `GPU` process. Slices are assigned in start order to the first lane whose last
@@ -278,7 +295,10 @@ query support, units and availability contract; to Apple, [GPUStartTime](https:/
 and [GPUEndTime](https://developer.apple.com/documentation/metal/mtlcommandbuffer/gpuendtime),
 for completion-only command-buffer timing; to Apple,
 [Converting GPU timestamps into CPU time](https://developer.apple.com/documentation/metal/converting-gpu-timestamps-into-cpu-time),
-for the two-sample interpolation adopted by the Metal pass calibration; and to Perfetto contributors,
+for the two-sample interpolation adopted by the Metal pass calibration; to Khronos Group,
+[VK_KHR_calibrated_timestamps](https://docs.vulkan.org/refpages/latest/refpages/source/VK_KHR_calibrated_timestamps.html)
+and [vkGetCalibratedTimestampsKHR](https://docs.vulkan.org/refpages/latest/refpages/source/vkGetCalibratedTimestampsKHR.html),
+for the time domains and `maxDeviation` bound adopted by the Vulkan pass calibration; and to Perfetto contributors,
 [Visualizing external trace formats](https://perfetto.dev/docs/getting-started/other-formats),
 for JSON counter/duration conventions and slice nesting. Duration-only placement,
 coverage policy and the staged delivery are Ludus decisions. Retain relevant
