@@ -13,6 +13,11 @@ struct TimestampCounter final
     foundation::uint32 Bits;
     foundation::float64 Tick;
 };
+/// Mask of a counter's valid low bits; bits must lie in [1, MAX_TIMESTAMP_COUNTER_BITS].
+inline foundation::uint64 GetTimestampMask(foundation::uint32 bits) noexcept
+{
+    return bits == MAX_TIMESTAMP_COUNTER_BITS ? ~foundation::uint64{0} : (foundation::uint64{1} << bits) - 1;
+}
 inline bool TimestampDuration(foundation::uint64 start,
                               foundation::uint64 end,
                               TimestampCounter counter,
@@ -33,13 +38,60 @@ inline bool TimestampDuration(foundation::uint64 start,
     {
         return false;
     }
-    const auto mask = counter.Bits == 64 ? ~foundation::uint64{0} : (foundation::uint64{1} << counter.Bits) - 1;
-    const auto duration = static_cast<foundation::float64>((end - start) & mask) * counter.Tick;
+    const foundation::float64 duration =
+        static_cast<foundation::float64>((end - start) & GetTimestampMask(counter.Bits)) * counter.Tick;
     if (duration > static_cast<foundation::float64>(elapsedCpu) + counter.Tick * 2)
     {
         return false;
     }
     output = duration;
+    return true;
+}
+/// Largest accepted bound, in nanoseconds, on a device-to-NowTicks calibration's error. A larger
+/// bound leaves the pass batch duration-only rather than misplacing execution slices.
+inline constexpr foundation::uint64 MAX_CLOCK_UNCERTAINTY_NANOSECONDS = 50'000;
+/// One device timestamp and the foundation::time::NowTicks nanosecond it was paired with.
+struct ClockCalibration final
+{
+    foundation::uint64 Ticks = 0;
+    foundation::uint64 DeviceTimestamp = 0;
+};
+/// Start and end of one operation, in device timestamps or NowTicks nanoseconds.
+struct TimestampInterval final
+{
+    foundation::uint64 Start = 0;
+    foundation::uint64 End = 0;
+};
+// Linear interpolation between two calibrations that bracket the measured work. Device
+// timestamps are compared modulo validBits, so the caller must already have established
+// that the calibration window spans less than one counter period. An interval outside the
+// window is rejected. Results truncate; the sub-nanosecond error is far below any accepted
+// calibration uncertainty. Failure preserves outTicks.
+inline bool MapCalibratedInterval(const ClockCalibration& first,
+                                  const ClockCalibration& last,
+                                  foundation::uint32 validBits,
+                                  TimestampInterval device,
+                                  TimestampInterval& outTicks) noexcept
+{
+    if (validBits == 0 || validBits > MAX_TIMESTAMP_COUNTER_BITS || last.Ticks <= first.Ticks)
+    {
+        return false;
+    }
+    const foundation::uint64 mask = GetTimestampMask(validBits);
+    const foundation::uint64 window = (last.DeviceTimestamp - first.DeviceTimestamp) & mask;
+    const foundation::uint64 startOffset = (device.Start - first.DeviceTimestamp) & mask;
+    const foundation::uint64 endOffset = (device.End - first.DeviceTimestamp) & mask;
+    if (window == 0 || startOffset > endOffset || endOffset > window)
+    {
+        return false;
+    }
+    const foundation::float64 rate =
+        static_cast<foundation::float64>(last.Ticks - first.Ticks) / static_cast<foundation::float64>(window);
+    outTicks =
+    {
+        .Start = first.Ticks + static_cast<foundation::uint64>(static_cast<foundation::float64>(startOffset) * rate),
+        .End = first.Ticks + static_cast<foundation::uint64>(static_cast<foundation::float64>(endOffset) * rate),
+    };
     return true;
 }
 template <foundation::usize N>

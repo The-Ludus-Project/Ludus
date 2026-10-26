@@ -241,9 +241,16 @@ DeviceStatus PrepareNativeDeviceSource(const NativeDeviceDescription& descriptio
         {
             return DeviceStatus::Unsupported;
         }
+        if (description.CalibratedTimestamps != NativeCalibratedTimestamps::None &&
+            description.CalibratedTimestamps != NativeCalibratedTimestamps::Khr &&
+            description.CalibratedTimestamps != NativeCalibratedTimestamps::Ext)
+        {
+            return DeviceStatus::InvalidDescription;
+        }
     }
     else if (identity.Instance.IsNull() == false || identity.PhysicalDevice.IsNull() == false ||
-             identity.QueueFamily != 0 || identity.QueueIndex != 0 || description.InstanceApiVersion != 0)
+             identity.QueueFamily != 0 || identity.QueueIndex != 0 || description.InstanceApiVersion != 0 ||
+             description.CalibratedTimestamps != NativeCalibratedTimestamps::None)
     {
         return DeviceStatus::InvalidDescription;
     }

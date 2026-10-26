@@ -128,6 +128,35 @@ TEST_CASE("Native admission balances source ownership and preserves rejected out
         CHECK(CreateNativeDevice({}, source, {}, 8, 8, device, surface) == DeviceStatus::Unsupported);
         CHECK(owner.Retained == 0);
     }
+    SECTION("Undeclared calibrated-timestamp extension")
+    {
+        source.CalibratedTimestamps = static_cast<NativeCalibratedTimestamps>(3);
+        CHECK(CreateNativeDevice({}, source, {}, 8, 8, device, surface) == DeviceStatus::InvalidDescription);
+        CHECK(owner.Retained == 0);
+    }
+    SECTION("Declared calibrated timestamps are optional admission metadata")
+    {
+        source.CalibratedTimestamps = NativeCalibratedTimestamps::Ext;
+        CHECK(CreateNativeDevice({}, source, {}, 8, 8, device, surface) == DeviceStatus::Pending);
+        CHECK(owner.Retained == 1);
+        Shutdown();
+        CHECK(owner.Released == 1);
+        device = {};
+    }
+    SECTION("Metal sources cannot declare Vulkan calibrated timestamps")
+    {
+        backend::ActiveKind = Backend::Metal;
+        source.Identity =
+        {
+            .Api = Backend::Metal,
+            .Device = source.Identity.Device,
+            .CommandQueue = source.Identity.CommandQueue,
+        };
+        source.InstanceApiVersion = 0;
+        source.CalibratedTimestamps = NativeCalibratedTimestamps::Khr;
+        CHECK(CreateNativeDevice({}, source, {}, 8, 8, device, surface) == DeviceStatus::InvalidDescription);
+        CHECK(owner.Retained == 0);
+    }
     SECTION("Source retention rejection")
     {
         owner.Accept = false;

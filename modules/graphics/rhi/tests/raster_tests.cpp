@@ -2153,6 +2153,39 @@ TEST_CASE("R7 timestamps reject ambiguous wraps and preserve failed conversion o
     CHECK(duration == 0);
 }
 
+TEST_CASE("P3 calibrated intervals map wrapped device timestamps inside their window", "[rhi][measurement]")
+{
+    // An 8-bit counter wraps between the calibrations: 56 device ticks span 112 NowTicks nanoseconds.
+    const internal::ClockCalibration first{ .Ticks = 1000, .DeviceTimestamp = 250 };
+    const internal::ClockCalibration last{ .Ticks = 1112, .DeviceTimestamp = 50 };
+    internal::TimestampInterval ticks{ .Start = 7, .End = 9 };
+    CHECK(internal::MapCalibratedInterval(first, last, 8, { .Start = 252, .End = 10 }, ticks));
+    CHECK(ticks.Start == 1004);
+    CHECK(ticks.End == 1032);
+    CHECK(internal::MapCalibratedInterval(first, last, 8, { .Start = 250, .End = 50 }, ticks));
+    CHECK(ticks.Start == 1000);
+    CHECK(ticks.End == 1112);
+    // Outside the window, reversed, invalid widths and empty windows preserve the output.
+    CHECK_FALSE(internal::MapCalibratedInterval(first, last, 8, { .Start = 252, .End = 60 }, ticks));
+    CHECK_FALSE(internal::MapCalibratedInterval(first, last, 8, { .Start = 240, .End = 10 }, ticks));
+    CHECK_FALSE(internal::MapCalibratedInterval(first, last, 8, { .Start = 10, .End = 252 }, ticks));
+    CHECK_FALSE(internal::MapCalibratedInterval(first, last, 0, { .Start = 252, .End = 10 }, ticks));
+    CHECK_FALSE(internal::MapCalibratedInterval(first, last, 65, { .Start = 252, .End = 10 }, ticks));
+    CHECK_FALSE(internal::MapCalibratedInterval(last, first, 8, { .Start = 252, .End = 10 }, ticks));
+    const internal::ClockCalibration stopped{ .Ticks = 1112, .DeviceTimestamp = 250 };
+    CHECK_FALSE(internal::MapCalibratedInterval(first, stopped, 8, { .Start = 250, .End = 250 }, ticks));
+    CHECK(ticks.Start == 1000);
+    CHECK(ticks.End == 1112);
+    // Full-width counters, such as Metal's nanosecond timestamps, never wrap inside a window.
+    CHECK(internal::MapCalibratedInterval({ .Ticks = 100, .DeviceTimestamp = 1000 },
+                                          { .Ticks = 300, .DeviceTimestamp = 1200 },
+                                          64,
+                                          { .Start = 1050, .End = 1100 },
+                                          ticks));
+    CHECK(ticks.Start == 150);
+    CHECK(ticks.End == 200);
+}
+
 TEST_CASE("R7 allocation observations reject byte counter overflow", "[rhi][measurement]")
 {
     Session session;

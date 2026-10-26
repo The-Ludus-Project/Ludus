@@ -592,18 +592,23 @@ one duration with a logical member count. A scope containing multiple native
 operations retains each operation's ordinal. Separate ray-query batch work is
 not timed by these frame-command-buffer samples.
 
-On Metal, each named pass is also drawn as a slice, like a CPU scope, under the
-**GPU** process on the **GPU execution (calibrated)** track. Slice names are the
+On Metal, and on Vulkan devices with calibrated timestamps, each named pass is
+also drawn as a slice, like a CPU scope, under the **GPU** process on the
+**GPU execution (calibrated)** track. Slice names are the
 pass names with their kind, such as `Main/raytracing/raytracingpipeline (Compute)`.
 Their times are the GPU's own start and end timestamps converted to the CPU trace
 clock, so they line up with CPU scopes within the recorded
-`clockUncertaintyNanoseconds` (typically under a microsecond). Passes whose
+`clockUncertaintyNanoseconds` (typically under a microsecond on Metal and a few
+microseconds on Vulkan drivers). Passes whose
 execution overlaps, such as a render pass whose vertex stage starts while an
 earlier compute pass is still running, appear on separate
 **GPU execution (calibrated, overlap N)** tracks rather than as false parent and
 child slices. If the clock conversion cannot be checked, for example after the
-machine slept during a frame, that frame's passes remain counters only. Vulkan
-passes remain counters only until calibrated timestamps are implemented.
+machine slept during a frame, that frame's passes remain counters only. On Linux
+the editor enables `VK_KHR_calibrated_timestamps` (or the older
+`VK_EXT_calibrated_timestamps`) when the adapter offers it; without the extension,
+or when the driver reports more than 50 µs of calibration error, Vulkan passes
+remain counters only.
 
 The recorder holds at most 64 pass queries per acquired frame and shares its
 4,096 sample slots between frame and pass results. `frameSampleCount` and

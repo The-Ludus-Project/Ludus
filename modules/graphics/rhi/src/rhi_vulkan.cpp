@@ -34,6 +34,11 @@ void TimingEnd() noexcept;
 void TimingSubmitted() noexcept;
 void BeginPassTimingFrame() noexcept;
 void SubmitPassTimings() noexcept;
+/// Extension name when the adapter supports it with the device and NowTicks host time domains.
+const char* AdmitClockCalibrationExtensionOrNull(VkPhysicalDevice physical,
+                                                 NativeCalibratedTimestamps extension) noexcept;
+/// Resolves the calibration entry point of an enabled extension; null disables calibration.
+void ConnectClockCalibration(const char* extensionOrNull) noexcept;
 void BeginPhysicalPassTiming(GpuPassKind kind) noexcept;
 void EndPhysicalPassTiming() noexcept;
 namespace
@@ -631,6 +636,8 @@ bool Initialize(const ApplicationInfo& app) noexcept
         gFamily = imported->Identity.QueueFamily;
         gNativeInstanceVersion = imported->InstanceApiVersion;
         volkLoadDevice(gDevice);
+        // Only an extension the source declares enabled may be called; otherwise duration-only.
+        ConnectClockCalibration(AdmitClockCalibrationExtensionOrNull(gPhysical, imported->CalibratedTimestamps));
         uint32 count = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(gPhysical, &count, nullptr);
         if (count > 32 || gFamily >= count)
@@ -855,14 +862,27 @@ bool ConnectWindow(const WindowInfo& window) noexcept
         queue.queueFamilyIndex = gFamily;
         queue.queueCount = 1;
         queue.pQueuePriorities = &priority;
-        // Swapchain (two), ray queries (three) or the hosted memory extension (one).
-        constexpr usize MAX_ENABLED_DEVICE_EXTENSIONS = 6;
+        // Swapchain (two), ray queries (three), the hosted memory extension (one) or
+        // calibrated timestamps (one).
+        constexpr usize MAX_ENABLED_DEVICE_EXTENSIONS = 7;
         const char* extensions[MAX_ENABLED_DEVICE_EXTENSIONS] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME,
                                                                  VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME};
         uint32 enabledExtensions = gHeadless ? 0U : 2U;
         if (IsHostedWindow() == true)
         {
             extensions[enabledExtensions++] = HOSTED_MEMORY_EXTENSION_NAME;
+        }
+        // Optional: places timed passes on the CPU trace clock; absence keeps them duration-only.
+        const char* clockCalibrationExtensionOrNull =
+            AdmitClockCalibrationExtensionOrNull(gPhysical, NativeCalibratedTimestamps::Khr);
+        if (clockCalibrationExtensionOrNull == nullptr)
+        {
+            clockCalibrationExtensionOrNull =
+                AdmitClockCalibrationExtensionOrNull(gPhysical, NativeCalibratedTimestamps::Ext);
+        }
+        if (clockCalibrationExtensionOrNull != nullptr)
+        {
+            extensions[enabledExtensions++] = clockCalibrationExtensionOrNull;
         }
         VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT maintenance{};
         maintenance.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT;
@@ -1051,6 +1071,7 @@ bool ConnectWindow(const WindowInfo& window) noexcept
             return false;
         }
         volkLoadDevice(gDevice);
+        ConnectClockCalibration(clockCalibrationExtensionOrNull);
         vkGetDeviceQueue(gDevice, gFamily, 0, &gQueue);
         if (IsHostedWindow() == true)
         {
@@ -1279,6 +1300,7 @@ void Shutdown() noexcept
     }
     gBorrowedDevice = false;
     hasDebugLabels = false;
+    ConnectClockCalibration(nullptr);
     gNativeInstanceVersion = VK_API_VERSION_1_1;
     gPhysical = VK_NULL_HANDLE;
     gRayEnabled = gRayApiAvailable = false;

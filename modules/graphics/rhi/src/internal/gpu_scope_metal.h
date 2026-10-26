@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gpu_pass_timing_buffer.h"
+#include "measurement.h"
 #include <ludus/foundation/time/time.hpp>
 
 // Thanks to Apple, "Sampling GPU data into counter sample buffers", Metal:
@@ -20,8 +21,6 @@ namespace
 constexpr usize PASS_SAMPLE_STRIDE = 4;
 constexpr usize FRAGMENT_END_SAMPLE = PASS_SAMPLE_STRIDE - 1;
 constexpr usize PASS_SAMPLE_COUNT = MAX_GPU_TIMED_PASSES * PASS_SAMPLE_STRIDE;
-/// Larger calibration read gaps leave the batch duration-only rather than misplacing slices.
-constexpr uint64 MAX_CLOCK_UNCERTAINTY_NANOSECONDS = 50'000;
 /// One device/CPU timestamp pair bracketed by NowTicks reads.
 struct ClockSample final
 {
@@ -71,19 +70,17 @@ bool IsCalibrationValid(const ClockSample& first, const ClockSample& last, uint6
     const uint64 largerGap =
         first.ReadGapNanoseconds > last.ReadGapNanoseconds ? first.ReadGapNanoseconds : last.ReadGapNanoseconds;
     if (difference > first.ReadGapNanoseconds + last.ReadGapNanoseconds ||
-        largerGap > MAX_CLOCK_UNCERTAINTY_NANOSECONDS)
+        largerGap > internal::MAX_CLOCK_UNCERTAINTY_NANOSECONDS)
     {
         return false;
     }
     outUncertainty = (largerGap + 1) / 2;
     return true;
 }
-/// Linear device-to-NowTicks interpolation; timestamp must lie inside the calibration window.
-uint64 MapDeviceTimestamp(const ClockSample& first, const ClockSample& last, uint64 timestamp) noexcept
+/// The shared interpolation's view of a sample. Metal timestamps are full 64-bit nanoseconds.
+internal::ClockCalibration ToCalibration(const ClockSample& sample) noexcept
 {
-    const float64 rate = static_cast<float64>(last.Ticks - first.Ticks) /
-                         static_cast<float64>(last.DeviceTimestamp - first.DeviceTimestamp);
-    return first.Ticks + static_cast<uint64>(static_cast<float64>(timestamp - first.DeviceTimestamp) * rate + 0.5);
+    return { .Ticks = sample.Ticks, .DeviceTimestamp = sample.DeviceTimestamp };
 }
 } // namespace
 void ResetPassTimings() noexcept
@@ -147,12 +144,16 @@ GpuPassTimings PollPassTimings() noexcept
                 timing.DurationNanoseconds = static_cast<float64>(end - start);
                 timing.State = GpuTimingState::Available;
                 GpuPassTiming& pass = report.Passes[index];
-                if (isCalibrated == true && start >= gPassSubmitClock.DeviceTimestamp &&
-                    end <= completionClock.DeviceTimestamp)
+                internal::TimestampInterval ticks;
+                if (isCalibrated == true && internal::MapCalibratedInterval(ToCalibration(gPassSubmitClock),
+                                                                            ToCalibration(completionClock),
+                                                                            sizeof(MTLTimestamp) * CHAR_BIT,
+                                                                            { .Start = start, .End = end },
+                                                                            ticks) == true)
                 {
                     pass.HasCpuInterval = true;
-                    pass.StartTicks = MapDeviceTimestamp(gPassSubmitClock, completionClock, start);
-                    pass.EndTicks = MapDeviceTimestamp(gPassSubmitClock, completionClock, end);
+                    pass.StartTicks = ticks.Start;
+                    pass.EndTicks = ticks.End;
                     report.ClockUncertaintyNanoseconds = uncertainty;
                 }
             }

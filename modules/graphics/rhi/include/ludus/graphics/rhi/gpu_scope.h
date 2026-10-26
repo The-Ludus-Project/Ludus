@@ -70,9 +70,11 @@ struct GpuPassTimings final
     foundation::usize Count = 0;
     /// Physical operations omitted due to query capacity; never fabricated as zero durations.
     foundation::uint64 DroppedPasses = 0;
-    /// Bound, in nanoseconds, on the CPU-clock error of every pass with HasCpuInterval: the
-    /// larger CPU read gap around the two device/CPU calibration samples bracketing the batch.
-    /// Zero when no pass has a CPU interval. Metal only; other backends stay duration-only.
+    /// Bound, in nanoseconds, on the CPU-clock error of every pass with HasCpuInterval: for the
+    /// two device/CPU calibration samples bracketing the batch, half the larger CPU read gap on
+    /// Metal, or the larger driver-reported maxDeviation on Vulkan. Never above 50 µs. Zero when
+    /// no pass has a CPU interval. Metal, and Vulkan devices with calibrated timestamps, only;
+    /// other backends stay duration-only.
     foundation::uint64 ClockUncertaintyNanoseconds = 0;
     /// Initialized prefix contains identities and explicit per-operation validity.
     foundation::StaticArray<GpuPassTiming, MAX_GPU_TIMED_PASSES> Passes{};
