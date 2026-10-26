@@ -25,6 +25,9 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     set(CMAKE_CXX23_STANDARD_COMPILE_OPTION "-std:c++23preview")
     set(CMAKE_CXX23_EXTENSION_COMPILE_OPTION "-std:c++23preview")
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+    # CMake adds /EHsc by default. Select one policy per target below instead
+    # of overriding it with /EHs-c- (MSVC diagnoses that conflicting pair).
+    string(REGEX REPLACE "(^| )[/-]EH[a-zA-Z0-9-]+( |$)" " " CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
 endif()
 
 include(CTest)

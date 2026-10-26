@@ -95,26 +95,30 @@ void VerifyCastPair()
 template <typename ValueType>
 constexpr bool VerifyConstexprArithmetic() noexcept
 {
-    constexpr auto lo = std::numeric_limits<ValueType>::min();
-    constexpr auto hi = std::numeric_limits<ValueType>::max();
-    ValueType out = 42;
-    if (TryAdd(hi, ValueType{1}, out) || out != 42 || TrySubtract(lo, ValueType{1}, out) || out != 42 ||
-        TryMultiply(hi, ValueType{2}, out) || out != 42)
+    constexpr ValueType MINIMUM = std::numeric_limits<ValueType>::min();
+    constexpr ValueType MAXIMUM = std::numeric_limits<ValueType>::max();
+    ValueType output = 42;
+    if (TryAdd(MAXIMUM, ValueType{1}, output) == true || output != 42 ||
+        TrySubtract(MINIMUM, ValueType{1}, output) == true || output != 42 ||
+        TryMultiply(MAXIMUM, ValueType{2}, output) == true || output != 42)
     {
         return false;
     }
-    if (TryAdd(ValueType{20}, ValueType{22}, out) == false || out != 42 ||
-        TrySubtract(out, ValueType{2}, out) == false || out != 40 || TryMultiply(ValueType{2}, out, out) == false ||
-        out != 80)
+    if (TryAdd(ValueType{20}, ValueType{22}, output) == false || output != 42 ||
+        TrySubtract(output, ValueType{2}, output) == false || output != 40 ||
+        TryMultiply(ValueType{2}, output, output) == false || output != 80)
     {
         return false;
     }
-    if constexpr (std::is_signed_v<ValueType>)
+    if constexpr (std::is_signed_v<ValueType> == true)
     {
-        return TryMultiply(lo, ValueType{-1}, out) == false && out == 80 && TryMultiply(lo, ValueType{1}, out) &&
-               out == lo;
+        return TryMultiply(MINIMUM, ValueType{-1}, output) == false && output == 80 &&
+               TryMultiply(MINIMUM, ValueType{1}, output) == true && output == MINIMUM;
     }
-    return true;
+    else
+    {
+        return true;
+    }
 }
 
 static_assert(VerifyConstexprArithmetic<uint8>() && VerifyConstexprArithmetic<uint16>() &&

@@ -98,7 +98,7 @@ bool, Unicode characters, enums, and floating-point types are excluded.
   no alignment, endian, aliasing, or struct padding assumption is needed.
 - Checked arithmetic operands share one integer type, so mixed-width/signedness
   expressions must be converted deliberately. Output can alias either input;
-  by-value operands and a temporary result make both success and failure safe.
+  by-value operands keep the checks independent of the final output store.
   Failure returns false without changing output. It never logs, asserts, traps,
   allocates, or saturates. Division and float conversion are not exposed because
   they need additional rounding/domain policy and have no current shared caller.
