@@ -1283,6 +1283,15 @@ TEST_CASE("Cold project shader timeout keeps the default rendering the current W
     workspace.SetProject(project.path(), 1);
     REQUIRE(workspace.IsBuiltIn() == false);
     workspace.SetBuildTools(helper, compiler);
+    // SPIR-V profiles require the validator; without it the build stops at
+    // RenderGraphBuildTools before the shader timeout this case exercises.
+    const QString validator = QStringLiteral(LUDUS_EDITOR_TEST_SPIRV_VALIDATOR);
+    if (QFileInfo(validator).isExecutable() == true)
+    {
+        RenderGraphBuildSettings settings = workspace.GetBuildSettings();
+        settings.Tools.Validator = validator;
+        workspace.SetBuildSettings(settings);
+    }
     workspace.EnableWorldRendering();
     QSignalSpy failed(&source, &RenderPreview::Failed);
     const auto waitFor = [&](const auto& isReady) {
