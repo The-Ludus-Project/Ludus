@@ -107,7 +107,7 @@ def snapshot(client: GitHub, root: Path, expected_main: str, *, retry: bool = Fa
         raise BatchError("develop must descend from main; reconcile the branches before validating a batch.")
     previous = client.head(ATTEMPT_BRANCH)
     if previous == candidate and not retry:
-        return {"should_run": "false", "reason": "This develop commit was already attempted; fix develop or dispatch with retry."}
+        return {"should_run": "false", "reason": f"develop {candidate} was already attempted; fix develop or dispatch with retry."}
     remote = f"https://github.com/{client.repository}.git"
     git(root, ["fetch", "--no-tags", remote, base, candidate], client.token)
     paths = git(root, ["diff", "--name-only", "--no-renames", "-z", f"{base}..{candidate}", "--"]).split("\0")
@@ -119,6 +119,25 @@ def snapshot(client: GitHub, root: Path, expected_main: str, *, retry: bool = Fa
     return {"should_run": "true", "base_sha": base, "candidate_sha": candidate,
             "recovery_required": "true" if recovery else "false",
             "reason": f"Validate frozen develop commit {candidate} above main {base}."}
+
+
+def describe_snapshot(outputs: dict) -> tuple[str, str]:
+    """Return the run annotation and job summary for a capture decision.
+
+    A skipped capture leaves the whole run green, so it must not read as a promotion.
+    """
+    reason = outputs["reason"]
+    if outputs.get("should_run") == "true":
+        return "", f"### Validating develop candidate\n\n{reason}\n"
+    # Thanks to GitHub, "Workflow commands for GitHub Actions", setting a notice
+    # message and escaping its data:
+    # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands
+    message = f"{reason} Validation and promotion were skipped; main is unchanged."
+    escaped = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    summary = (f"### No promotion this run\n\n{reason}\n\n"
+               "Validation and promotion were skipped, so `main` is unchanged. "
+               "This run is green only because there was nothing new to validate.\n")
+    return f"::notice title=No promotion this run::{escaped}", summary
 
 
 def validate_results(results: dict, base: str, candidate: str) -> None:
@@ -179,14 +198,15 @@ def main() -> int:
                 for name, value in outputs.items():
                     if name != "reason":
                         stream.write(f"{name}={value}\n")
-            message = outputs["reason"]
+            annotation, summary = describe_snapshot(outputs)
+            print(annotation or outputs["reason"])
         else:
             promote(client, Path.cwd(), arguments.base, arguments.candidate, json.loads(os.environ["BATCH_RESULTS"]))
-            message = f"Promoted exactly {arguments.candidate} to main."
-        print(message)
+            summary = f"Promoted exactly {arguments.candidate} to main.\n"
+            print(summary, end="")
         if os.environ.get("GITHUB_STEP_SUMMARY"):
             with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as stream:
-                stream.write(message + "\n")
+                stream.write(summary)
         return 0
     except (BatchError, KeyError, TypeError, ValueError, OSError, subprocess.SubprocessError) as error:
         print(f"Batch CI: {error}", file=sys.stderr)
