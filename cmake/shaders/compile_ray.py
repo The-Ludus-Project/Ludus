@@ -79,7 +79,7 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     binary = output / (args.name + '.spv')
     metal = output / (args.name + '.metal')
-    commands = [[args.compiler, args.source, '-entry', 'queryMain', '-stage', 'compute', '-target', 'spirv',
+    commands = [[args.compiler, args.source, '-entry', 'QueryMain', '-stage', 'compute', '-target', 'spirv',
                  '-profile', 'spirv_1_5', '-capability', 'spvRayQueryKHR', '-o', str(binary)]]
     run(commands[-1])
     words = verify_spirv(binary)

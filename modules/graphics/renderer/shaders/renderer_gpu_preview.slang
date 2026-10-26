@@ -142,11 +142,11 @@ Hit TraceNative(float3 originWorld,
     // Keep closest-hit acceptance on the existing path: automatic opaque closest
     // hits did not meet the native CPU-oracle image tolerance.
     // Visibility needs only hit/miss and can bypass opaque candidates natively.
-    uint flags = (Sampling.z & LUDUS_GPU_PREVIEW_OPAQUE_FLAG) != 0 ? RAY_FLAG_FORCE_OPAQUE :
-                 RAY_FLAG_FORCE_NON_OPAQUE;
+    uint flags = (Sampling.z & LUDUS_GPU_PREVIEW_OPAQUE_FLAG) != 0 ? RAY_FLAG_FORCE_OPAQUE : RAY_FLAG_FORCE_NON_OPAQUE;
     if (isVisibility == true)
-        flags = ((Sampling.z & LUDUS_GPU_PREVIEW_OPAQUE_FLAG) != 0 ? RAY_FLAG_FORCE_OPAQUE :
-                 (Sampling.z & LUDUS_GPU_PREVIEW_MIXED_OPACITY_FLAG) != 0 ? RAY_FLAG_NONE : RAY_FLAG_FORCE_NON_OPAQUE) |
+        flags = ((Sampling.z & LUDUS_GPU_PREVIEW_OPAQUE_FLAG) != 0          ? RAY_FLAG_FORCE_OPAQUE
+                 : (Sampling.z & LUDUS_GPU_PREVIEW_MIXED_OPACITY_FLAG) != 0 ? RAY_FLAG_NONE
+                                                                            : RAY_FLAG_FORCE_NON_OPAQUE) |
                 RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
     RayQuery<RAY_FLAG_NONE> query;
     query.TraceRayInline(rayScene, flags, LUDUS_GPU_PREVIEW_RAY_MASK, ray);
