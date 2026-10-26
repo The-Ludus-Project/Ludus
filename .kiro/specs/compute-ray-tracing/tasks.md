@@ -31,10 +31,13 @@ Mac has no Linux host.
         `render_graph_ray_tests.cpp` "A raygen-only pass hands packed triangle
         hits to a later pass" pass with no runtime change. A negative control
         fails.
-  - [ ] Vulkan: the same test in the batch CI native suite on Linux. Not run
-        yet. Check this box only after a batch run reports it passed rather
-        than skipped. The Development job's Vulkan validation step runs it
-        with `[compute-split],[compute-ray-tracing]` and fails on a skip.
+  - [ ] Vulkan: the same test on a Linux Vulkan GPU. Not run. Batch CI cannot
+        provide it: hosted `ubuntu-24.04` runners only have Mesa llvmpipe, a
+        `VK_PHYSICAL_DEVICE_TYPE_CPU` device, and the Vulkan ray profile
+        accepts only discrete or integrated GPUs (`RayLimits` in
+        `ray_vulkan.h`), so the case skips there. Check this box only after a
+        run on a Vulkan GPU with ray queries reports it passed rather than
+        skipped.
 - [x] **Decide D1.** Pick between no format change and `Technique::SceneCompute`
       from that evidence, and record the choice in design.md.
       *No format change.*
@@ -90,8 +93,9 @@ Mac has no Linux host.
 ## C2 Runtime evidence (same PR as C1 if no runtime change)
 
 No runtime change was needed. Evidence is from Metal on this Mac
-(`macos-clang-debug`). Vulkan evidence for the same tests comes only from the
-batch CI native suite on Linux.
+(`macos-clang-debug`). Vulkan evidence for the same GPU tests needs a Vulkan
+GPU with ray queries; batch CI's llvmpipe runners only exercise the raster
+fallback.
 
 - [x] `render_graph_ray_tests.cpp`:
   - [x] the scene compute fixture renders the expected pixels;
@@ -115,6 +119,13 @@ batch CI native suite on Linux.
         test "Unsupported native rays select raster without preparing the ray
         package" covers the identical numeric `RayTracing` record (D1). Check
         this box after a run on a device without native rays.
+        *The Development job's Vulkan validation step runs this test on
+        llvmpipe, which has no native rays, with `--success`. It fails unless
+        both sections report `hasNativeRays := false`, select raster, and
+        produce no skip or validation message. An earlier full-ctest run already
+        passed `ludus_render_graph_ray_pixels` under Linux ASan on `bf2725de`,
+        but ctest output cannot show which branch ran. Check this box after a
+        batch run of the step passes.*
 - [ ] If D1 picked `SceneCompute`: *not applicable, because D1 chose no format
       change.*
   - [ ] bump `plan.h`/`runtime_package.h` with history notes;
@@ -180,7 +191,8 @@ Evidence is from `macos-clang-debug` on this Mac, with `QT_QPA_PLATFORM=offscree
 ## C4 Two-pass template
 
 Evidence is from Metal on this Mac (`macos-clang-debug`). Vulkan evidence for the
-same GPU test comes only from the batch CI native suite on Linux.
+same GPU test needs a Vulkan GPU with ray queries; batch CI's llvmpipe runners
+skip it.
 
 - [x] Add sources in `modules/graphics/renderer/render_graphs/compute_ray_tracing/`:
   - [x] `main.lurender.json` and `library.lurender.json`;
@@ -218,8 +230,10 @@ same GPU test comes only from the batch CI native suite on Linux.
         reference with the same direct-lighting policy, within a stated
         tolerance;
   - [x] a resize stages zeroed hits without invalid-hit pixels.
-  - [ ] Vulkan: the same test in the batch CI native suite on Linux. Not run yet.
-        The Development job's Vulkan validation step runs it and fails on a skip.
+  - [ ] Vulkan: the same test on a Linux Vulkan GPU. Not run. Batch CI's
+        hosted runners only have llvmpipe, where the case skips (see the C0
+        Vulkan box); check this box only after a run on a Vulkan GPU with ray
+        queries passes.
   *"The compute ray-tracing template matches a single-pass direct-lighting
   reference" passes on Metal. The reference is
   `tests/sdk_consumer/rg2/direct_lighting_reference/`; it draws the same values
