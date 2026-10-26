@@ -1,0 +1,220 @@
+{
+  "version": 1,
+  "id": "RendererStaticBuild",
+  "profiles": @LUDUS_DEFAULT_RENDER_GRAPH_PROFILES@,
+  "schemas": [
+    {
+      "id": "RendererStatic",
+      "role": "Vertex",
+      "fields": [
+        {
+          "id": "PositionMesh",
+          "type": "Float3",
+          "semantic": "POSITION",
+          "location": 0
+        },
+        {
+          "id": "MeshToClipRow0",
+          "type": "Float4",
+          "semantic": "TEXCOORD0",
+          "location": 1
+        },
+        {
+          "id": "MeshToClipRow1",
+          "type": "Float4",
+          "semantic": "TEXCOORD1",
+          "location": 2
+        },
+        {
+          "id": "MeshToClipRow2",
+          "type": "Float4",
+          "semantic": "TEXCOORD2",
+          "location": 3
+        },
+        {
+          "id": "MeshToClipRow3",
+          "type": "Float4",
+          "semantic": "TEXCOORD3",
+          "location": 4
+        },
+        {
+          "id": "Color",
+          "type": "Float4",
+          "semantic": "COLOR0",
+          "location": 5
+        }
+      ]
+    },
+    {
+      "id": "RasterVarying",
+      "role": "Varying",
+      "fields": [
+        {
+          "id": "PositionClip",
+          "type": "Float4",
+          "semantic": "SV_Position",
+          "location": 0
+        },
+        {
+          "id": "Color",
+          "type": "Float4",
+          "semantic": "COLOR0",
+          "location": 0
+        }
+      ]
+    }
+  ],
+  "programs": [
+    {
+      "id": "Geometry",
+      "stage": "vertex",
+      "source": "main_shaders/geometry.slang",
+      "function": "TransformGeometry",
+      "input": "RendererStatic",
+      "output": "RasterVarying",
+      "bindings": []
+    },
+    {
+      "id": "Color",
+      "stage": "fragment",
+      "source": "main_shaders/color.slang",
+      "function": "ShadeColor",
+      "input": "RasterVarying",
+      "output": "Color",
+      "bindings": []
+    },
+    {
+      "id": "Depth",
+      "stage": "fragment",
+      "source": "main_shaders/depth.slang",
+      "function": "WriteDepth",
+      "input": "RasterVarying",
+      "output": "Depth",
+      "bindings": []
+    },
+    {
+      "id": "Primary",
+      "stage": "compute",
+      "source": "main_shaders/primary.slang",
+      "function": "TracePrimaryHit",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "ShadeMultipleImportance",
+      "stage": "compute",
+      "source": "main_shaders/shade.slang",
+      "function": "ShadeMultipleImportance",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "ShadeLightSampling",
+      "stage": "compute",
+      "source": "main_shaders/shade.slang",
+      "function": "ShadeLightSampling",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "ShadeBsdfSampling",
+      "stage": "compute",
+      "source": "main_shaders/shade.slang",
+      "function": "ShadeBsdfSampling",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    }
+  ],
+  "techniques": [
+    {
+      "id": "DefaultStaticOpaque.ColorAndDepth",
+      "configuration": "ColorAndDepth",
+      "vertex": "Geometry",
+      "fragment": "Color",
+      "recipes": [
+        {
+          "id": "Default",
+          "color": "RGBA8Unorm",
+          "depth": "Depth32Float",
+          "samples": 1,
+          "topology": "TriangleList",
+          "cull": "None",
+          "front": "CounterClockwise",
+          "depth_compare": "Less",
+          "depth_write": true,
+          "blend": "Opaque"
+        }
+      ]
+    },
+    {
+      "id": "DefaultStaticOpaque.DepthOnly",
+      "configuration": "DepthOnly",
+      "vertex": "Geometry",
+      "fragment": "Depth",
+      "recipes": [
+        {
+          "id": "Default",
+          "color": "None",
+          "depth": "Depth32Float",
+          "samples": 1,
+          "topology": "TriangleList",
+          "cull": "None",
+          "front": "CounterClockwise",
+          "depth_compare": "Less",
+          "depth_write": true,
+          "blend": "Opaque"
+        }
+      ]
+    },
+    {
+      "id": "RendererTriangles.RayTracing",
+      "configuration": "RayTracing",
+      "recipes": [
+        {
+          "id": "Triangles"
+        }
+      ],
+      "scene_interface": {
+        "version": 1,
+        "surface_queries": 1,
+        "visibility_queries": 1
+      }
+    }
+  ],
+  "budgets": {
+    "configurations": 8,
+    "programs": 16,
+    "artifacts": 64,
+    "pipelines": 16
+  },
+  "settings": [
+    {
+      "id": "MIS_HEURISTIC",
+      "label": "MIS heuristic (0 balance, 1 power, 2 cutoff, 3 maximum)",
+      "type": "UInt32",
+      "value": 1,
+      "minimum": 0,
+      "maximum": 3
+    },
+    {
+      "id": "MIS_POWER_EXPONENT",
+      "label": "MIS power exponent",
+      "type": "Float32",
+      "value": 2,
+      "minimum": 1,
+      "maximum": 16
+    },
+    {
+      "id": "MIS_CUTOFF_THRESHOLD",
+      "label": "MIS cutoff threshold",
+      "type": "Float32",
+      "value": 0.1,
+      "minimum": 0,
+      "maximum": 1
+    }
+  ]
+}

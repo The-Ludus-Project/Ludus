@@ -414,6 +414,110 @@ class ComputeRayTracingTemplateTests(unittest.TestCase):
         self.assertEqual(arguments.template, 'compute-ray-tracing')
 
 
+class VeachGuibasMisTemplateTests(unittest.TestCase):
+    """Veach and Guibas multiple importance sampling: MIS and each strategy alone, side by side."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+
+    def create(self, profiles=('metal', 'wgsl'), name='Mis'):
+        return graph.new_workspace(Path(self.directory.name) / name, output='offscreen', renderer_static=True,
+                                   profiles=profiles, template='veach-guibas-mis')
+
+    def test_three_shade_passes_share_the_hit_buffer_and_accumulate_separately(self):
+        root = self.create()
+        plan = graph.compile_graph(root)
+        rays = [operation for operation in plan['passes'] if operation['kind'] == 'RayTracing']
+        self.assertEqual([operation['id'].rsplit('/', 1)[-1] for operation in rays],
+                         ['primary', 'shade', 'shadeLight', 'shadeBsdf'])
+        for operation in rays:
+            self.assertEqual(operation['pipeline']['kind'], 'ComputePipeline')
+        buffers = [resource for resource in plan['resources'].values() if resource['type'] == 'Buffer']
+        self.assertEqual(len(buffers), 1)
+        self.assertEqual(buffers[0]['bytes_per_pixel'], 32)
+        # Each shade pass owns its target, so Accumulate and ToneMap fuse into it independently.
+        self.assertNotIn('accumulation', rays[0])
+        for target in ('lightSampling', 'bsdfSampling'):
+            self.assertEqual(plan['resources'][f'VeachGuibasMis/transport/{target}']['type'], 'ColorTexture')
+        for operation in rays[1:]:
+            self.assertEqual(4096, operation['accumulation']['samples'])
+            self.assertEqual(1, operation['tone_mapping']['exposure'])
+        exports = [operation['id'].rsplit('/', 1)[-1] for operation in plan['passes'] if operation['kind'] == 'Export']
+        # MIS is the first export, which the editor viewport shows by default.
+        self.assertEqual(exports, ['output', 'lightSamplingOutput', 'bsdfSamplingOutput'])
+        manifest = json.loads(root.with_name('main.lushader.json').read_text())
+        build.validate_manifest(manifest)
+        technique = next(technique for technique in manifest['techniques'] if technique['id'] == ray.TECHNIQUE)
+        self.assertFalse(any(stage in technique for stage in ray.STAGES))
+        # One BSDF ray and one shadow ray per pass fit the shared one-query budgets.
+        self.assertEqual(technique['scene_interface'], {'version': 1, 'surface_queries': 1, 'visibility_queries': 1})
+        compute = [program for program in manifest['programs'] if program['stage'] == 'compute']
+        self.assertEqual([(program['id'], program['function']) for program in compute],
+                         [('Primary', 'TracePrimaryHit'), ('ShadeMultipleImportance', 'ShadeMultipleImportance'),
+                          ('ShadeLightSampling', 'ShadeLightSampling'), ('ShadeBsdfSampling', 'ShadeBsdfSampling')])
+
+    def test_shade_passes_weight_the_two_strategies_with_mis_settings(self):
+        import re
+        root = self.create()
+        shaders = root.with_name('main_shaders')
+        shade = shaders.joinpath('shade.slang').read_text()
+        weights = shaders.joinpath('multiple_importance.slang').read_text()
+        self.assertIn('#include "multiple_importance.slang"', shade)
+        for call in ('SampleIncidentLight', 'SampleStandardBsdf', 'TraceClosest', 'TestVisibility',
+                     'EvaluateLightPdfSolidAngle', 'EvaluateEnvironmentPdfSolidAngle', 'ComputeMisWeight'):
+            self.assertIn(call, shade)
+        # Only the MIS pass weights its strategies; each single-strategy pass keeps weight one.
+        self.assertIn('SampleLightStrategy(scene, launch, shadingPoint, true, queries)', shade)
+        self.assertIn('SampleBsdfStrategy(scene, launch, shadingPoint, true, queries)', shade)
+        self.assertIn('SampleLightStrategy(scene, launch, shadingPoint, false, queries)', shade)
+        self.assertIn('SampleBsdfStrategy(scene, launch, shadingPoint, false, queries)', shade)
+        for name in ('Veach', 'Guibas', 'SIGGRAPH 1995', '10.1145/218380.218498'):
+            self.assertIn(name, weights)
+        for heuristic in ('MIS_HEURISTIC_BALANCE = 0', 'MIS_HEURISTIC_POWER = 1', 'MIS_HEURISTIC_CUTOFF = 2',
+                          'MIS_HEURISTIC_MAXIMUM = 3'):
+            self.assertIn(heuristic, weights)
+        manifest = json.loads(root.with_name('main.lushader.json').read_text())
+        settings = {setting['id']: setting for setting in manifest['settings']}
+        self.assertEqual(settings['MIS_HEURISTIC']['value'], 1)
+        self.assertEqual((settings['MIS_HEURISTIC']['minimum'], settings['MIS_HEURISTIC']['maximum']), (0, 3))
+        self.assertEqual(settings['MIS_POWER_EXPONENT']['value'], 2)
+        self.assertEqual(settings['MIS_CUTOFF_THRESHOLD']['value'], 0.1)
+        # All three shade passes read one disjoint random range: light selection, shape, BSDF direction.
+        header = shaders.joinpath('hit_record.slang').read_text()
+        constant = lambda name: int(re.search(rf'static const uint {name} = (\d+);', header).group(1))
+        self.assertEqual(constant('PRIMARY_RANDOM_DIMENSION_COUNT'), 2)
+        self.assertEqual(constant('SHADE_RANDOM_DIMENSION_COUNT'), 7)
+        self.assertIn('SHADE_LIGHT_SELECTION_DIMENSION = SHADE_RANDOM_DIMENSION_FIRST;', header)
+        self.assertIn('SHADE_LIGHT_SHAPE_DIMENSION_FIRST = SHADE_LIGHT_SELECTION_DIMENSION + 1;', header)
+        self.assertIn('SHADE_BSDF_DIMENSION_FIRST = SHADE_LIGHT_SHAPE_DIMENSION_FIRST + 3;', header)
+        for kernel in ('primary', 'shade'):
+            source = shaders.joinpath(f'{kernel}.slang').read_text()
+            self.assertNotIn('SampleSceneRandom(queries', source)
+            self.assertNotIn('SelectLight(scene, queries', source)
+
+    def test_native_ray_tracing_is_required(self):
+        with self.assertRaises(ToolingError):
+            self.create(('wgsl',), name='Browser')
+        self.assertFalse((Path(self.directory.name) / 'Browser').exists())
+
+    def test_relocated_sdk_and_cli_expose_the_template(self):
+        from ludus_tools import render_graph_templates
+        from ludus_tools.cli import build_parser
+        installed = Path(self.directory.name) / 'sdk/lib/cmake/Ludus/render_graph'
+        module = installed / 'ludus_tools/render_graph_templates.py'
+        module.parent.mkdir(parents=True)
+        source = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs/veach_guibas_mis'
+        shutil.copytree(source, installed / 'templates/veach_guibas_mis')
+        with patch.object(render_graph_templates, '__file__', str(module)):
+            files = render_graph_templates.template_files('veach-guibas-mis', ('spirv',), graph)
+        build.validate_manifest(json.loads(files['main.lushader.json']))
+        self.assertIn('ComputeMisWeight', files['main_shaders/multiple_importance.slang'])
+        arguments = build_parser().parse_args(['render-graph', 'new', 'graphs/Mis', '--template', 'veach-guibas-mis',
+                                               '--output', 'offscreen', '--renderer-static', '--profiles', 'metal'])
+        self.assertEqual(arguments.template, 'veach-guibas-mis')
+
+
 class SimpleComputeRayTracingTemplateTests(unittest.TestCase):
     def test_single_compute_pass_has_no_hit_buffer_or_accumulation(self):
         with tempfile.TemporaryDirectory() as directory:

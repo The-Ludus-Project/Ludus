@@ -71,6 +71,15 @@
       "description": "One compute pass loops over every World triangle, keeps the closest hit and displays its unlit material color plus emission; misses show the environment. No shadow rays or bounces. Uses the native ray-capable scene runtime."
     },
     {
+      "kind": "graph",
+      "identity": "veach-guibas-mis",
+      "label": "Veach & Guibas MIS — light vs BSDF sampling",
+      "category": "ray-traced",
+      "requirements": ["native-ray-tracing"],
+      "keywords": ["veach", "guibas", "mis", "multiple importance sampling", "light sampling", "bsdf sampling", "direct lighting", "ray tracing"],
+      "description": "Multiple importance sampling from Veach and Guibas (1995): after a primary-hits pass, three shading passes estimate direct lighting with one light sample and one BSDF sample combined by the balance, power, cutoff or maximum heuristic, with the light sample alone, and with the BSDF sample alone. Each image is accumulated and exported for comparison; the MIS image is shown first. Requires native ray tracing."
+    },
+    {
       "kind": "snippet",
       "identity": "restir-di",
       "label": "ReSTIR DI — mesh emitter lighting",
@@ -109,6 +118,16 @@
       "keywords": ["simple", "basic", "compute", "brute force", "triangle", "intersection", "ray tracing"],
       "description": "One compute pass loops over every World triangle, keeps the closest hit and displays its unlit material color plus emission; misses show the environment. No shadow rays or bounces. Uses the native ray-capable scene runtime.",
       "defaultConfiguration": "SimpleComputeRayTracing"
+    },
+    {
+      "kind": "snippet",
+      "identity": "veach-guibas-mis",
+      "label": "Veach & Guibas MIS — light vs BSDF sampling",
+      "category": "lighting",
+      "defaultConfiguration": "VeachGuibasMis",
+      "requirements": ["native-ray-tracing"],
+      "keywords": ["veach", "guibas", "mis", "multiple importance sampling", "light sampling", "bsdf sampling", "direct lighting", "ray tracing"],
+      "description": "A primary-hits scene compute pass and three shading passes that share one automatically sized hit buffer: MIS of a light and a BSDF sample (Veach and Guibas), the light sample alone and the BSDF sample alone. Connect scene, view and color; outputs color plus optional lightSampling and bsdfSampling images. Requires native ray tracing."
     },
     {
       "kind": "snippet",

@@ -1541,7 +1541,9 @@ the ranges disjoint when you add draws.
 
 This is a demonstration of the compute split, not a new integrator: one uniformly
 selected light sample per pixel and frame, no BSDF sampling or MIS, and no indirect
-bounces. Use [ReSTIR DI](#run-the-three-pass-restir-di-example) or
+bounces. The [Veach and Guibas MIS template](#compare-light-and-bsdf-sampling-with-mis)
+adds a BSDF sample and multiple importance sampling to the same split. Use
+[ReSTIR DI](#run-the-three-pass-restir-di-example) or
 [tiled vbuffer NEE](#select-emitters-per-screen-tile) for many-light scenes. Because
 ray queues and compaction are not available, both passes run over every pixel.
 
@@ -1569,6 +1571,95 @@ Christopher A. Burns and Warren A. Hunt,
 [*The Visibility Buffer: A Cache-Friendly Approach to Deferred Shading*, JCGT 2(2), 2013](https://jcgt.org/published/0002/02/04/),
 for storing hit identity rather than shaded attributes. See the canonical
 [package](../../modules/graphics/renderer/render_graphs/compute_ray_tracing/main.lurender.json).
+
+### Compare light and BSDF sampling with MIS
+
+The **Veach & Guibas MIS — light vs BSDF sampling** template (`veach-guibas-mis`)
+estimates first-hit direct lighting with the two strategies of Eric Veach and
+Leonidas J. Guibas,
+[*Optimally Combining Sampling Techniques for Monte Carlo Rendering*, SIGGRAPH 1995, pp. 419–428](https://doi.org/10.1145/218380.218498),
+and exports their combination next to each strategy alone, so you can watch MIS
+remove the noise that each strategy leaves where it is weak. Create it from
+**New Render Graph → Template**, or with the CLI:
+
+```bash
+ludus render-graph new graphs/Mis --template veach-guibas-mis --output offscreen \
+  --renderer-static --profiles metal wgsl
+```
+
+Use `spirv wgsl` for Vulkan. **Apply Configuration Template...** and Quick Add also
+offer the `VeachGuibasMis` configuration. It has the `scene`, `view` and `color`
+inputs of the [compute ray-tracing template](#use-the-compute-ray-tracing-template),
+a required `color` output (MIS) and optional `lightSampling` and `bsdfSampling`
+outputs. The package requires a native Metal or Vulkan ray profile.
+
+It reuses that template's `primary` pass and 32-byte hit record, then runs three
+shade passes over every pixel. They read the same record and the same random
+dimensions, `[2, 9)`: light selection, three light-shape coordinates and three
+`SampleStandardBsdf` coordinates. So each MIS sample combines exactly the light and
+BSDF samples shown in the two comparison images.
+
+| Pipeline node | Function in `main_shaders/shade.slang` | Estimate | Output |
+| --- | --- | --- | --- |
+| `shade` | `ShadeMultipleImportance` | Emission plus one light sample and one BSDF sample, MIS-weighted | `color` → `output` export |
+| `shadeLight` | `ShadeLightSampling` | Emission plus the light sample alone | `lightSampling` → `lightSamplingOutput` |
+| `shadeBsdf` | `ShadeBsdfSampling` | Emission plus the BSDF sample alone | `bsdfSampling` → `bsdfSamplingOutput` |
+
+Each output has its own **Accumulate → ToneMap → Export** chain in the main graph.
+The viewport shows the first export, MIS, by default. Choose
+`lightSamplingOutput` or `bsdfSamplingOutput` in its output selector to compare.
+Every pass makes at most one surface query and one visibility query.
+
+The **light strategy** selects a light uniformly with `SelectLight`, proposes a point
+or direction on it with `SampleIncidentLight` and traces the shadow ray with
+`TestVisibility`. Its density is the selection probability times the conditional
+solid-angle density. The **BSDF strategy** samples `SampleStandardBsdf` and follows
+the direction with `TraceClosest`. It collects emission from the surface it hits, or
+the environment on a miss. `EvaluateLightPdfSolidAngle` and
+`EvaluateEnvironmentPdfSolidAngle` give the light strategy's density for that same
+direction, measured from the receiver. `ComputeMisWeight` in
+`main_shaders/multiple_importance.slang` weights each sample against the other
+strategy's density, and the MIS pass sums the two weighted estimates. A directional,
+point or spot light is a delta light that BSDF sampling never reaches: its light
+sample keeps weight one under MIS, and it is absent from the BSDF-sampling image. An
+emitter or environment outside the light set has light density zero, so a BSDF
+sample that reaches it keeps weight one.
+
+| Graph setting | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `MIS_HEURISTIC` | `1` (power) | `0`–`3` | `0` balance, `1` power, `2` cutoff, `3` maximum |
+| `MIS_POWER_EXPONENT` | `2` | `1`–`16` | Exponent β of the power heuristic |
+| `MIS_CUTOFF_THRESHOLD` | `0.1` | `0`–`1` | A strategy whose density is below this fraction of the larger one gets no weight |
+
+Change them in Properties or with the canvas's **Edit Graph Settings...** action, as
+for the [ReSTIR DI template](#use-the-built-in-restir-di-template). The
+balance heuristic is the paper's provably near-optimal choice; the power heuristic
+with β = 2, the paper's recommendation, sharpens it where one strategy is already
+much better. The weights of the two strategies sum to one for every direction under
+each heuristic, so the MIS image converges to the same result as each strategy
+alone; the heuristics differ only in noise. The template has no indirect bounce.
+
+New shader programs have `VeachMis`-prefixed IDs (`VeachMisPrimary`,
+`VeachMisShadeMultipleImportance`, `VeachMisShadeLightSampling`,
+`VeachMisShadeBsdfSampling`) and sources under `veach_guibas_mis/main_shaders/`.
+The MIS settings join the manifest's Graph settings; existing values are kept. The
+shared ray technique is extended as for the compute ray-tracing template.
+
+`ludus_render_graph_ray_tests` renders the template in a Cornell-box-style room
+with glossy metal surfaces under a grey sky, where light sampling is noisy in the
+highlights and BSDF sampling is noisy on the diffuse walls:
+
+- Each output matches a single-pass RayTracingPipeline
+  [reference](../../tests/sdk_consumer/rg2/veach_guibas_reference/main.lurender.json)
+  for the same estimator, which draws the same random values; on Metal the
+  accumulated images are byte-identical.
+- The power, balance, cutoff and maximum variants, and BSDF sampling alone, converge
+  to the light-sampling mean within 2% at 256 samples per pixel.
+- After 16 samples, the MIS image has a lower mean squared error than either
+  strategy alone, measured against an independently seeded 1024-sample image.
+
+See the canonical
+[package](../../modules/graphics/renderer/render_graphs/veach_guibas_mis/main.lurender.json).
 
 ## Author scene-aware ray shaders
 

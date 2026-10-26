@@ -12,6 +12,7 @@ TEMPLATES = {
     'tiled-vbuffer-nee': ('tiled_vbuffer_nee', 'Tiled visibility-buffer NEE', True),
     'simple-compute-ray-tracing': ('simple_compute_ray_tracing', 'Simple compute ray tracing', True),
     'compute-ray-tracing': ('compute_ray_tracing', 'Compute ray tracing', True),
+    'veach-guibas-mis': ('veach_guibas_mis', 'Veach and Guibas MIS', True),
 }
 
 
