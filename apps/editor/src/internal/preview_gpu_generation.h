@@ -63,6 +63,10 @@ struct PreviewReferenceSetup final
     graphics::renderer::ReferenceRenderingOptions Options{};
     /// Installed native query kernel; borrowed static artifact, ignored by CpuOracle.
     graphics::rhi::ShaderDescription QueryShader{};
+    /// GpuCompute transport and reduction kernels; borrowed static artifacts, used by GpuCompute only.
+    graphics::rhi::RasterShaderDescription TraceShader{};
+    /// Reduction kernel paired with TraceShader.
+    graphics::rhi::RasterShaderDescription ReduceShader{};
 };
 
 /// Owner-thread GPU generation, frozen to one validated scene and shading mode.

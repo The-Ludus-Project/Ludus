@@ -201,7 +201,9 @@ endif()
 
 # Viewport reference capture offers native RT1 traversal only with the fixed query kernel, which
 # needs the pinned SPIR-V Cross translator; without it the editor offers the CPU oracle alone.
+# The GPU-compute RT1 kernels need only compute support and are always compiled.
 function(ludus_editor_enable_reference_queries target)
+    ludus_compile_renderer_shaders(TARGET ${target} SHADERS renderer_reference renderer_reference_reduce)
     if(LUDUS_SPIRV_CROSS)
         ludus_compile_ray_queries(TARGET ${target} NAME ray_query)
         target_compile_definitions(${target} PRIVATE LUDUS_EDITOR_REFERENCE_NATIVE_QUERIES=1)

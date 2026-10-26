@@ -9,6 +9,7 @@
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
 
+#include <ludus/graphics/rhi/compute.h>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/raster.h>
 #include <ludus/graphics/rhi/ray.h>
@@ -19,6 +20,10 @@
 
 #include <ludus/runtime/resources/scene.h>
 
+#if defined(LUDUS_EDITOR_GPU_PREVIEW) && defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "renderer_reference.h"
+#    include "renderer_reference_reduce.h"
+#endif
 #if defined(LUDUS_EDITOR_REFERENCE_NATIVE_QUERIES)
 #    include "ray_query.h"
 #endif
@@ -86,6 +91,26 @@ bool ResolveTileAndShader(rhi::DeviceHandle device,
     {
         outSetup.Options.TilePixels = REFERENCE_CPU_TILE_PIXELS;
         return true;
+    }
+    if (traversal == renderer::ReferenceTraversal::GpuCompute)
+    {
+#    if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+        rhi::ComputeCapabilities capabilities;
+        if (rhi::GetComputeCapabilities(device, capabilities) != rhi::RasterStatus::Ready)
+        {
+            outError = QStringLiteral("GPU compute is unavailable on this device; choose the CPU oracle.");
+            return false;
+        }
+        // Every dispatch advances the whole image; the tile size only satisfies option validation.
+        outSetup.Options.TilePixels = REFERENCE_CPU_TILE_PIXELS;
+        outSetup.Options.GpuByteBudget = REFERENCE_GPU_BYTE_BUDGET;
+        outSetup.TraceShader = ludus::shaders::renderer_reference::Compute();
+        outSetup.ReduceShader = ludus::shaders::renderer_reference_reduce::Compute();
+        return true;
+#    else
+        outError = QStringLiteral("This editor build has no GPU compute reference kernel; choose the CPU oracle.");
+        return false;
+#    endif
     }
 #    if defined(LUDUS_EDITOR_REFERENCE_NATIVE_QUERIES)
     rhi::RayCapabilities capabilities;
@@ -283,7 +308,7 @@ ViewportReferencePhase ViewportReferenceCapture::Service(uint64 budgetNanosecond
     }
     while (mPhase == ViewportReferencePhase::Tracing && isWithinBudget() == true)
     {
-        const rhi::RasterStatus status = mGeneration->Renderer.AdvanceReferenceCapture(mCapture);
+        const rhi::RasterStatus status = mGeneration->Renderer.AdvanceReferenceCapture(mCapture, mSurface);
         if (status == rhi::RasterStatus::Ready)
         {
             mPhase = ViewportReferencePhase::Complete;

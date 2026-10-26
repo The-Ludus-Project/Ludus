@@ -65,6 +65,10 @@ enum class ReferenceTraversal : ludus::foundation::uint8
     /// Explicit CPU BVH oracle for validation/offline work. Never silently selected
     /// as a hardware fallback; the same retained geometry/material schema is used.
     CpuOracle,
+    /// GPU reference: compute kernels traverse the same median BVH and run transport,
+    /// shading and compensated accumulation on the device. Requires compute support,
+    /// not native ray queries. Committed sums are read back only for copy/export.
+    GpuCompute,
 };
 /// Opt-in retained CPU geometry and native query setup; call before creating meshes.
 /// Buffers are admitted against explicit budgets, rather than silently truncating
@@ -80,7 +84,13 @@ struct ReferenceRenderingOptions final
     ludus::foundation::usize RayByteBudget = 0;
     /// At most this many pixels advance in one tile; positive and at most 2048.
     /// Native mode also requires twice this count within RayCapabilities::MaxRays.
+    /// GpuCompute advances every pixel by one sample per dispatch and ignores the value.
     ludus::foundation::uint32 TilePixels = 0;
+    /// GpuCompute only: renderer-owned packed scene, texel, uniform, accumulation and
+    /// status buffer bytes across live captures, including a replacement built by
+    /// UpdateReferenceCapture. Excludes RHI registries, transfer rings, pipelines and
+    /// driver padding. Positive for GpuCompute; other traversals ignore it.
+    ludus::foundation::usize GpuByteBudget = 0;
 };
 /// Immutable reference integral and stop target. Camera coordinates and matrices
 /// match raster canonical XY [-1,1], depth [0,1], Y up, top-left image rows.

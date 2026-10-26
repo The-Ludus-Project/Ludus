@@ -30,6 +30,50 @@ constexpr usize FINGERPRINT_SURFACE_MAP_BYTES = 3 * sizeof(uint64) + sizeof(floa
 constexpr usize FINGERPRINT_LIGHT_BYTES = sizeof(uint64) + sizeof(uint32) + 13 * sizeof(float32);
 constexpr usize FINGERPRINT_ENVIRONMENT_BYTES = 3 * sizeof(float32);
 constexpr uint32 FINGERPRINT_SURFACE_MAP_TAG = 0x53555246; // Numeric SURF tag; encoded little-endian.
+/// Largest admitted RT1 tile, in pixels.
+constexpr uint32 MAXIMUM_REFERENCE_TILE_PIXELS = 2048;
+/// LUHDR01 flags bit identifying a GPU-compute capture.
+constexpr uint32 HDR_GPU_COMPUTE_FLAG = 64;
+
+usize GetReferenceGpuBytes(const ReferenceJob& job) noexcept
+{
+    return job.Compute.Get() != nullptr ? job.Compute->GpuBytes : 0;
+}
+// Pack the frozen scene with the GPU preview's layout and create the job's device buffers.
+Status PrepareReferenceCompute(ReferenceJob& inoutJob, usize cpuRemaining, usize gpuRemaining) noexcept
+{
+    Array<math::Vector4> data;
+    Array<math::Vector4> texels;
+    internal::GpuPreviewUniform uniform;
+    Status status = PackGpuScene(inoutJob, false, cpuRemaining, data, texels, uniform, nullptr);
+    if (status != Status::Ready)
+    {
+        return status;
+    }
+    const usize packedBytes = (data.GetSize() + texels.GetSize()) * sizeof(math::Vector4);
+    const usize pixels = usize(inoutJob.Description.Width) * inoutJob.Description.Height;
+    usize zeroBytes = 0;
+    if (foundation::TryMultiply(pixels, internal::REFERENCE_COMPUTE_PIXEL_BYTES, zeroBytes) == false ||
+        packedBytes > cpuRemaining || zeroBytes > cpuRemaining - packedBytes)
+    {
+        return Status::CapacityExceeded;
+    }
+    zeroBytes = math::Max(zeroBytes, internal::REFERENCE_COMPUTE_STATUS_BYTES);
+    Array<uint8> zeros;
+    if (zeros.TryResize(zeroBytes) == false)
+    {
+        return Status::OutOfMemory;
+    }
+    std::memset(zeros.GetData(), 0, zeros.GetSize());
+    internal::ReferenceComputeInputs inputs;
+    inputs.Scene = {data.GetData(), data.GetSize()};
+    inputs.Texels = {texels.GetData(), texels.GetSize()};
+    inputs.Parameters = {reinterpret_cast<const uint8*>(&uniform), sizeof(uniform)};
+    inputs.Zeros = {zeros.GetData(), zeros.GetSize()};
+    inputs.CpuByteLimit = cpuRemaining - packedBytes - math::Min(zeroBytes, cpuRemaining - packedBytes);
+    inputs.GpuByteLimit = gpuRemaining;
+    return internal::CreateReferenceComputeJob(inputs, inoutJob);
+}
 
 bool SameReferenceLight(const DirectLight& a, const DirectLight& b) noexcept
 {
@@ -253,7 +297,7 @@ bool ReferenceFingerprint(ReferenceJob& inoutJob, usize budget, SceneShaderDiagn
 } // namespace
 usize Renderer::State::RemainingReferenceRayBytes(Status& status) noexcept
 {
-    if (Reference->Options.Traversal == ReferenceTraversal::CpuOracle)
+    if (Reference->Options.Traversal != ReferenceTraversal::NativeQueries)
     {
         status = Status::Ready;
         return 0;
@@ -399,6 +443,7 @@ void Renderer::State::DropReferenceCapture(usize index) noexcept
     }
     const auto snapshot = record.SnapshotSlot;
     Reference->CpuBytes -= record.Job->Info.CpuBytes;
+    Reference->GpuBytes -= GetReferenceGpuBytes(*record.Job);
     record.Job.Reset();
     record.Used = record.Owned = false;
     ++record.Generation;
@@ -424,6 +469,7 @@ void Renderer::State::ClearReference() noexcept
         material.Reference.Reset();
     }
     static_cast<void>(rhi::Destroy(Device, Reference->Program));
+    internal::DestroyReferenceComputePipelines(Device, Reference->Compute);
     Reference.Reset();
 }
 Status Renderer::EnableReferenceRendering(const rhi::ShaderDescription& shader,
@@ -491,6 +537,65 @@ Status Renderer::EnableReferenceRendering(const rhi::ShaderDescription& shader,
         }
     }
     mState->Reference = core::Move(state);
+    return Status::Ready;
+}
+Status Renderer::EnableReferenceRendering(const rhi::RasterShaderDescription& trace,
+                                          const rhi::RasterShaderDescription& reduce,
+                                          const ReferenceRenderingOptions& options) noexcept
+{
+    if (mState.Get() == nullptr || mState->Setup != Status::Ready)
+    {
+        return Status::NotReady;
+    }
+    if (mState->Reference)
+    {
+        return Status::InvalidState;
+    }
+    for (const State::MeshRecord& mesh : mState->MeshRecords)
+    {
+        if (mesh.Used)
+        {
+            return Status::InvalidState;
+        }
+    }
+    for (const State::MaterialRecord& material : mState->Materials)
+    {
+        if (material.Used)
+        {
+            return Status::InvalidState;
+        }
+    }
+    if (options.Traversal != ReferenceTraversal::GpuCompute || options.TilePixels == 0 ||
+        options.TilePixels > MAXIMUM_REFERENCE_TILE_PIXELS ||
+        options.CpuByteBudget < sizeof(internal::ReferenceState) || options.GpuByteBudget == 0)
+    {
+        return Status::InvalidDescription;
+    }
+    const Status admission = RendererAdmission(mState->Device);
+    if (admission != Status::Ready)
+    {
+        return admission;
+    }
+    internal::ReferenceState* allocation = new (std::nothrow) internal::ReferenceState;
+    if (allocation == nullptr)
+    {
+        return Status::OutOfMemory;
+    }
+    core::UniquePtr<internal::ReferenceState> state(allocation);
+    state->Options = options;
+    state->CpuBytes = sizeof(internal::ReferenceState);
+    Status status = internal::CreateReferenceComputePipelines(mState->Device, trace, reduce, state->Compute);
+    if (status != Status::Ready)
+    {
+        return status;
+    }
+    mState->Reference = core::Move(state);
+    status = internal::PollReferenceComputePipelines(mState->Device, mState->Reference->Compute);
+    if (Accepted(status) == false)
+    {
+        mState->ClearReference();
+        return status;
+    }
     return Status::Ready;
 }
 Status Renderer::DisableReferenceRendering() noexcept
@@ -626,10 +731,12 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
         }
         ++instances;
     }
+    const bool isGpuCompute = gpuSetup == false && Reference->Options.Traversal == ReferenceTraversal::GpuCompute;
     const usize pixels = gpuSetup ? 0 : usize(description.Width) * description.Height;
-    const usize tile = gpuSetup ? 0 : Reference->Options.TilePixels;
-    const bool oracle = gpuSetup || Reference->Options.Traversal == ReferenceTraversal::CpuOracle;
-    const uint64 bvhBytes = oracle ? uint64(triangles) * (2 * sizeof(internal::ReferenceBvhNode) + sizeof(uint32)) : 0;
+    const usize tile = gpuSetup || isGpuCompute ? 0 : Reference->Options.TilePixels;
+    const bool isOracle = gpuSetup || Reference->Options.Traversal != ReferenceTraversal::NativeQueries;
+    const uint64 bvhBytes =
+        isOracle ? uint64(triangles) * (2 * sizeof(internal::ReferenceBvhNode) + sizeof(uint32)) : 0;
     const uint64 fixedWide =
         sizeof(ReferenceJob) + uint64(instances) * sizeof(internal::ReferenceInstance) +
         uint64(pixels) * sizeof(internal::ReferenceAccumulator) + uint64(tile) * sizeof(internal::ReferencePath) +
@@ -640,11 +747,11 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
         uint64(surfaceMaps) * FINGERPRINT_SURFACE_MAP_BYTES + uint64(lights.Count) * FINGERPRINT_LIGHT_BYTES +
         FINGERPRINT_ENVIRONMENT_BYTES + (environmentOrNull != nullptr ? 2 * sizeof(uint64) + 2 * sizeof(uint32) : 0);
     const uint64 nativeSetup =
-        oracle ? 0
-               : uint64(instances) * (sizeof(rhi::RayInstanceDescription) + sizeof(Array<float32>)) +
-                     alphaScalars * sizeof(float32);
+        isOracle ? 0
+                 : uint64(instances) * (sizeof(rhi::RayInstanceDescription) + sizeof(Array<float32>)) +
+                       alphaScalars * sizeof(float32);
     const uint64 transientWide =
-        math::Max(signatureBytes, math::Max(nativeSetup, oracle ? uint64(triangles) * sizeof(uint32) : uint64{0}));
+        math::Max(signatureBytes, math::Max(nativeSetup, isOracle ? uint64(triangles) * sizeof(uint32) : uint64{0}));
     usize fixed = 0;
     usize transient = 0;
     // Bounded source counts fit uint64; convert only at the wasm32 allocation boundary.
@@ -825,7 +932,7 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
         }
         ++job->Scene.InstanceCount;
     }
-    if (oracle)
+    if (isOracle == true)
     {
         status = internal::BuildReferenceBvh(job->Scene);
         if (status != Status::Ready)
@@ -863,7 +970,17 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
         return Status::CapacityExceeded;
     }
     job->Stage = ReferenceStage::Primary;
-    if (oracle == false && instances != 0)
+    if (isGpuCompute == true)
+    {
+        status = PrepareReferenceCompute(*job,
+                                         remaining - job->Info.CpuBytes,
+                                         Reference->Options.GpuByteBudget - Reference->GpuBytes);
+        if (Accepted(status) == false)
+        {
+            return status;
+        }
+    }
+    if (isOracle == false && instances != 0)
     {
         Array<rhi::RayInstanceDescription> native;
         Array<Array<float32>> alpha;
@@ -991,6 +1108,7 @@ Status Renderer::BeginReferenceCapture(Snapshot snapshot,
     auto& record = state.Captures[slot];
     record.SnapshotSlot = Access::Slot(snapshot);
     state.CpuBytes += job->Info.CpuBytes;
+    state.GpuBytes += GetReferenceGpuBytes(*job);
     record.Job = core::Move(job);
     record.Used = record.Owned = true;
     ++source->References;
@@ -1182,6 +1300,10 @@ bool FiniteReferenceSum(const internal::ReferenceSum& sum) noexcept
 } // namespace
 Status Renderer::AdvanceReferenceCapture(ReferenceCapture handle) noexcept
 {
+    return AdvanceReferenceCapture(handle, rhi::SurfaceHandle{});
+}
+Status Renderer::AdvanceReferenceCapture(ReferenceCapture handle, rhi::SurfaceHandle surface) noexcept
+{
     if (mState.Get() == nullptr || mState->Reference.Get() == nullptr)
     {
         return Status::InvalidHandle;
@@ -1210,6 +1332,15 @@ Status Renderer::AdvanceReferenceCapture(ReferenceCapture handle) noexcept
         job.Stage = ReferenceStage::Failed;
         return status;
     };
+    if (state.Options.Traversal == ReferenceTraversal::GpuCompute)
+    {
+        const Status pipelines = internal::PollReferenceComputePipelines(mState->Device, state.Compute);
+        if (pipelines != Status::Ready)
+        {
+            return pipelines == Status::Pending ? pipelines : fail(pipelines);
+        }
+        return internal::AdvanceReferenceCompute(state.Compute, surface, job);
+    }
     if (job.Stage == ReferenceStage::Setup)
     {
         const auto status = rhi::GetStatus(job.Device, job.Scene.Native);
@@ -1431,6 +1562,10 @@ Status Renderer::UpdateReferenceCapture(ReferenceCapture handle,
     {
         old.Description.TargetSamples = description.TargetSamples;
         old.Info.TargetSamples = description.TargetSamples;
+        if (old.Compute.Get() != nullptr)
+        {
+            return internal::ResumeReferenceCompute(old);
+        }
         old.Info.Complete = old.Info.MinimumSamples >= description.TargetSamples;
         if (old.Info.Complete)
         {
@@ -1459,8 +1594,10 @@ Status Renderer::UpdateReferenceCapture(ReferenceCapture handle,
     const auto oldSnapshot = record->SnapshotSlot;
     auto& state = *mState->Reference;
     state.CpuBytes -= old.Info.CpuBytes;
+    state.GpuBytes -= GetReferenceGpuBytes(old);
     record->Job.Reset();
     state.CpuBytes += replacement->Info.CpuBytes;
+    state.GpuBytes += GetReferenceGpuBytes(*replacement);
     record->Job = core::Move(replacement);
     record->SnapshotSlot = Access::Slot(snapshot);
     --mState->SnapshotRecords[oldSnapshot].References;
@@ -1508,6 +1645,7 @@ Renderer::EncodeReferenceHdr(ReferenceCapture handle, uint8* output, usize capac
     Put32(output + 36, job.Description.MaxDepth);
     Put32(output + 40, job.Description.RouletteDepth);
     const uint32 flags = (job.Info.Traversal == ReferenceTraversal::CpuOracle ? 1U : 0U) |
+                         (job.Info.Traversal == ReferenceTraversal::GpuCompute ? HDR_GPU_COMPUTE_FLAG : 0U) |
                          (job.Description.CenterRays ? 2U : 0U) | (job.Description.OrthographicCamera ? 4U : 0U) |
                          (job.Description.ReverseZ ? 8U : 0U) | (job.Description.InfiniteFar ? 16U : 0U) |
                          (job.Info.Complete == false ? 32U : 0U);
