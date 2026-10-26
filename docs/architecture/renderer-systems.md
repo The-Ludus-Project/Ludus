@@ -1555,7 +1555,16 @@ uses OIDN on linear HDR color before display conversion and leaves the accumulat
 unfiltered. Its initial native sharing profile is Metal on Apple silicon. Measure convergence across multiple seeds.
 Nonfinite contributions or broken density invariants invalidate a reference
 batch and report the offending sample; replacing them with black silently would
-bias the result. Capture jobs reserve a bounded residency budget for their pinned
+bias the result. `ReferenceCaptureInfo::Failure` identifies the rejecting validation
+stage, while `FailurePixel`, `FailureSample` and `FailureDepth` locate the path.
+These fields are meaningful when `InvalidContributions` is nonzero; a backend
+failure can occur without a path-validation record. Previously committed tiles
+remain available for partial diagnostic comparisons. CPU and GPU reference paths
+bound interpolated vertex RGBA multipliers to their admitted `[0,1]` domain before
+shading and opacity tests. A three-term FP32 barycentric sum can otherwise turn
+constant white into `1.00000012` and falsely reject a valid BSDF. Nonfinite
+interpolation still fails validation; radiance and throughput retain their
+existing checks. Capture jobs reserve a bounded residency budget for their pinned
 versions and support cancellation, releasing submitted uses through completion.
 
 ### Hybrid and real-time transport

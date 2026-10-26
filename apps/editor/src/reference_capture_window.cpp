@@ -380,7 +380,7 @@ bool ReferenceCaptureWindow::StartCapture()
         updateStatus();
         return false;
     }
-    mMessage = QStringLiteral("%1 × %2, %3 samples, depth %4, %5.")
+    mMessage = QStringLiteral("%1 × %2, %3 requested samples/pixel, depth %4, %5.")
                    .arg(extent.width())
                    .arg(extent.height())
                    .arg(settings.Samples)
@@ -447,6 +447,8 @@ bool ReferenceCaptureWindow::saveComparison(const QString& hdrPath, QString& out
         reference.insert(QStringLiteral("targetSamples"), static_cast<qint64>(info.TargetSamples));
         reference.insert(QStringLiteral("maxDepth"), static_cast<qint64>(info.MaxDepth));
         reference.insert(QStringLiteral("complete"), info.Complete);
+        reference.insert(QStringLiteral("failed"), mCapture.GetPhase() == ViewportReferencePhase::Failed);
+        reference.insert(QStringLiteral("error"), mCapture.GetError());
         reference.insert(QStringLiteral("traversal"), DescribeTraversal(info.Traversal));
         reference.insert(QStringLiteral("seed"), QString::number(info.Seed));
     }
@@ -535,12 +537,16 @@ void ReferenceCaptureWindow::updateComparison()
     {
         return;
     }
-    const QSize extent = mCapture.GetExtent();
+    renderer::ReferenceCaptureInfo information;
+    if (mCapture.GetInfo(information) == false)
+    {
+        return;
+    }
     ReferenceComparison comparison;
     QImage difference;
     if (CompareRasterWithReference({pixels.GetData(), pixels.GetSize()},
-                                   static_cast<uint32>(extent.width()),
-                                   static_cast<uint32>(extent.height()),
+                                   information,
+                                   mCapture.GetPhase() == ViewportReferencePhase::Failed,
                                    mRasterCapture.GetTexture(),
                                    comparison,
                                    difference,
@@ -594,6 +600,11 @@ QString ReferenceCaptureWindow::describeRaster() const
     if (mIsComparing == false)
     {
         return {};
+    }
+    if (mCapture.GetPhase() == ViewportReferencePhase::Failed && mHasComparison == false)
+    {
+        return QStringLiteral("Reference FAILED / INCOMPLETE. Comparison unavailable: %1")
+            .arg(mComparisonError.isEmpty() == true ? QStringLiteral("no sampled pixels") : mComparisonError);
     }
     if (mComparisonError.isEmpty() == false)
     {

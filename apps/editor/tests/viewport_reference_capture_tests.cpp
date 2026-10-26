@@ -1,7 +1,11 @@
 #include "internal/reference_capture_window.h"
+#include "internal/render_preview.h"
 #include "internal/render_scene.h"
+#include "internal/world_document.h"
+
 #include "internal/viewport_reference_capture.h"
 #include "viewport_fixture.h"
+#include <ludus/content/scene_cook/scene_assets.h>
 
 #include <ludus/foundation/base/types.h>
 
@@ -17,6 +21,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QImage>
+#include <QJsonDocument>
 #include <QPushButton>
 #include <QSize>
 #include <QString>
@@ -92,13 +97,14 @@ void DescribeTestView(const RenderScene& scene, const QSize& extent, renderer::V
     REQUIRE(isDescribed == true);
 }
 
-ViewportReferencePhase RunToEnd(ViewportReferenceCapture& inoutCapture)
+ViewportReferencePhase RunToEnd(ViewportReferenceCapture& inoutCapture,
+                                int64 timeoutMilliseconds = CAPTURE_TIMEOUT_MILLISECONDS)
 {
     QElapsedTimer timer;
     timer.start();
     ViewportReferencePhase phase = inoutCapture.GetPhase();
     while ((phase == ViewportReferencePhase::Preparing || phase == ViewportReferencePhase::Tracing) &&
-           timer.elapsed() < CAPTURE_TIMEOUT_MILLISECONDS)
+           timer.elapsed() < timeoutMilliseconds)
     {
         phase = inoutCapture.Service(TEST_SERVICE_BUDGET_NANOSECONDS);
     }
@@ -325,4 +331,78 @@ TEST_CASE("Reference capture window explains a missing viewport device without s
     QPushButton* stop = window.findChild<QPushButton*>(QStringLiteral("referenceStop"));
     REQUIRE(stop != nullptr);
     CHECK(stop->isEnabled() == false);
+}
+
+TEST_CASE("Supplied World completes reference capture with CPU and native traversal", "[.supplied-reference-capture]")
+{
+    const QString root = qEnvironmentVariable("LUDUS_REFERENCE_TEST_PROJECT");
+    if (root.isEmpty() == true)
+    {
+        SKIP("Set LUDUS_REFERENCE_TEST_PROJECT to a project with assets/staircase2.world.json.");
+    }
+    WorldDocument world;
+    QString error;
+    REQUIRE(world.LoadSchema(QByteArrayLiteral("{\"version\":1,\"id\":\"ludus.world.default.v1\",\"label\":\"World\","
+                                               "\"components\":[],\"assets\":[]}"),
+                             error) == true);
+    REQUIRE(world.Load(tests::ReadTestFile(QDir(root).filePath(QStringLiteral("assets/staircase2.world.json"))),
+                       error) == true);
+    const QJsonObject level = world.SceneLevel();
+    const QByteArray levelBytes = QJsonDocument(level).toJson(QJsonDocument::Compact);
+    const QByteArray rootBytes = root.toUtf8();
+    Array<uint8> bundle;
+    ludus::content::scene_cook::AssetError assetError;
+    REQUIRE(ludus::content::scene_cook::AssembleLevel(
+                {rootBytes.constData(), static_cast<usize>(rootBytes.size())},
+                {reinterpret_cast<const uint8*>(levelBytes.constData()), static_cast<usize>(levelBytes.size())},
+                {},
+                bundle,
+                assetError) == true);
+    RenderScene scene;
+    REQUIRE(RenderScene::LoadCooked(
+                QByteArray(reinterpret_cast<const char*>(bundle.GetData()), static_cast<qsizetype>(bundle.GetSize())),
+                level,
+                scene,
+                error,
+                {}) == true);
+    const QSize extent(512, 225);
+    RenderPreview preview;
+    REQUIRE(preview.SetScene(scene) == true);
+    const QString navigationPath = qEnvironmentVariable("LUDUS_REFERENCE_TEST_NAVIGATION");
+    if (navigationPath.isEmpty() == false)
+    {
+        preview.RestoreNavigation(QJsonDocument::fromJson(tests::ReadTestFile(navigationPath)).object());
+    }
+    renderer::ViewDescription view;
+    REQUIRE(
+        preview.DescribeView(static_cast<uint32>(extent.width()), static_cast<uint32>(extent.height()), view, error) ==
+        true);
+    const int32 requestedSamples = qEnvironmentVariableIntValue("LUDUS_REFERENCE_TEST_SAMPLES");
+    constexpr uint32 DEFAULT_SUPPLIED_SAMPLES = 64;
+    constexpr int64 SUPPLIED_CAPTURE_TIMEOUT_MILLISECONDS = 600000;
+    REQUIRE(preview.Start() == true);
+    REQUIRE(preview.AdmitOffscreenDevice() == true);
+    for (const renderer::ReferenceTraversal traversal :
+         {renderer::ReferenceTraversal::CpuOracle, renderer::ReferenceTraversal::NativeQueries})
+    {
+        ViewportReferenceSettings settings;
+        settings.Samples = requestedSamples > 0 ? static_cast<uint32>(requestedSamples) : DEFAULT_SUPPLIED_SAMPLES;
+        settings.MaxDepth = 8;
+        settings.Traversal = traversal;
+        ViewportReferenceCapture capture;
+        REQUIRE(capture.Start(preview.GetDevice(), preview.GetSurface(), scene, view, extent, settings, error) == true);
+        const ViewportReferencePhase phase = RunToEnd(capture, SUPPLIED_CAPTURE_TIMEOUT_MILLISECONDS);
+        INFO(capture.GetError().toStdString());
+        renderer::ReferenceCaptureInfo information;
+        REQUIRE(capture.GetInfo(information) == true);
+        INFO("traversal=" << static_cast<uint32>(traversal) << " committed=" << information.CommittedSamples);
+        CHECK(phase == ViewportReferencePhase::Complete);
+        CHECK(information.Complete == true);
+        CHECK(information.InvalidContributions == 0);
+        CHECK(information.MinimumSamples == settings.Samples);
+        CHECK(information.CommittedSamples ==
+              static_cast<uint64>(extent.width()) * static_cast<uint64>(extent.height()) * settings.Samples);
+    }
+    preview.Stop();
+    rhi::Shutdown();
 }

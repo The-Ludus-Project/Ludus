@@ -1502,7 +1502,14 @@ summary that updates as samples accumulate. The difference image is red where
 the raster is brighter than the reference and blue where it is darker. It is
 black where they agree, saturates at 0.25 display units, and is grey where no
 reference sample exists yet. The statistics cover pixels with at least one
-reference sample:
+reference sample. The summary labels an unfinished capture **INCOMPLETE** and a
+failed capture **FAILED / INCOMPLETE**. It reports sampled pixels out of the full
+image, percentage coverage, and the minimum achieved samples across the whole
+image against the requested count. A full first pass is still incomplete until
+every pixel reaches the requested count. Metrics from either incomplete state
+are explicitly **partial diagnostic metrics**, not a completed reference
+comparison. A failure preserves previously committed samples for inspection;
+unsampled pixels do not enter the statistics.
 
 | Statistic | Meaning |
 | --- | --- |
@@ -1525,7 +1532,10 @@ graph, is captured after 64 frames, and the summary says so.
 **Save…** also writes `<name>.raster.png` (the graph output as displayed),
 `<name>.difference.png`, and `<name>.comparison.json`. The JSON records the
 metrics, the reference settings, the graph package, output and encoding, and
-the frames rendered.
+the frames rendered. Both the summary and JSON preserve reference completion,
+failure, coverage and sample-count information; a failed export also records the
+capture error. Completion describes reaching the requested sample count, not a
+claim that Monte Carlo noise has converged.
 
 ## S4 scene authoring
 
