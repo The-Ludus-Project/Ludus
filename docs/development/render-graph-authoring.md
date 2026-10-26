@@ -922,7 +922,9 @@ as a member like a Ray Tracing Pipeline node, so it uses the same hardware profi
 the same renderer selection and the same post-processing. A package that contains
 one is a ray package: `SelectRenderGraphRenderer`, `StageSelected` and the
 viewport's automatic and **Force raster** choices fall back to the authored raster
-graph without native rays. There is no software traversal. A ComputePipeline
+graph without native rays. The runtime has no automatic software traversal fallback;
+the [simple triangle-loop template](#use-the-simple-triangle-loop-template) implements
+its own intersection tests inside this same native-capability profile. A ComputePipeline
 without a Scene input is still a draft and returns the `Capability` diagnostic.
 
 The node accepts the same ports as a Ray Tracing Pipeline node:
@@ -1355,6 +1357,60 @@ it adapts their sampling ideas to bounded GPU-local tables and one shared emitte
 stream, rather than copying the book's container implementation.
 
 <a id="use-the-compute-ray-tracing-template"></a>
+
+### Use the simple triangle-loop template
+
+Choose **New Render Graph → Template → Simple compute ray tracing — triangle loop**,
+or create its editable sources with:
+
+```bash
+ludus render-graph new graphs/SimpleRays --template simple-compute-ray-tracing --output offscreen \
+  --renderer-static --profiles metal wgsl
+```
+
+Use `spirv wgsl` for Vulkan. **Apply Configuration Template** and canvas Quick Add
+also offer the `SimpleComputeRayTracing` snippet, with `scene`, `view` and `color`
+inputs and a `color` output. Its only node is a **ComputePipeline**. The standalone
+graph connects **Scene + Camera + Target → SimpleComputeRayTracing → ToneMap → Export**;
+RenderSize controls the Target resolution. No hit buffer or accumulation is needed.
+
+Open `main_shaders/trace.slang` to edit the algorithm (after snippet insertion it
+lives under `simple_compute_ray_tracing/main_shaders/`, with program ID
+`SimpleComputeRayTrace`). One invocation handles one pixel:
+
+```text
+make a camera ray through the pixel center
+for every World triangle:
+    test the ray against the triangle
+    keep the closest intersection within the ray interval
+if a surface was found:
+    reconstruct its material and return base color + emission
+otherwise:
+    return the authored environment
+```
+
+The renderer already flattens primitive instances into world-space triangles for
+`GetTriangle`, so this visits every instance without a second primitive loop.
+`TryIntersectTriangle` implements the two-sided barycentric test from Tomas Möller
+and Ben Trumbore, *Fast, Minimum Storage Ray-Triangle Intersection*, Journal of
+Graphics Tools 2(1), 1997, pp. 21–28, section 2
+([paper](https://doi.org/10.1080/10867651.1997.10487468)). It rejects degenerate and
+nearly parallel triangles using a relative determinant tolerance. This simple test
+does not promise watertight shared edges. Each accepted hit shortens the ray's
+maximum distance, so triangle order cannot cause a farther hit to overwrite it;
+equal-distance ties keep the first triangle.
+
+This is an educational unlit material preview. It does not evaluate scene lights,
+shadow rays, reflections, indirect bounces or antialiasing. Add light sampling and
+a second triangle loop at the shading comment to extend it with shadows. Work is
+linear in the triangle count for every pixel; start with a small scene/resolution.
+The kernel makes no `TraceClosest` or visibility query, although the scene ABI
+still reserves its minimum one-surface-query budget. The existing runtime still
+prepares native ray resources and requires a supported Metal/Vulkan ray device;
+the template does not enable browser execution or ray-incapable GPUs. The generated
+wrapper retains the fixed native-scene binding in its ABI liveness branch
+(`Dimensions.z == 0`); graph jobs always set that field to one, so valid pixel
+launches execute only the authored triangle loop.
 
 ### Use the compute ray-tracing template
 
@@ -3626,7 +3682,7 @@ double-click or context menu uses that spot.
 | --- | --- |
 | Type in the search field | Matches names, purposes and common terms, such as `hdr` for ToneMap or `fsr` for the FSR upscalers; the category list shows how many matches each category has |
 | Up/Down, Enter or a click | Choose a result. A node is added at the opening position in one undoable edit; an Upscale preset places its Upscale node there and arranges its helpers automatically |
-| Choose a snippet | Opens **Apply Configuration Template** with that snippet selected, so you still name the configuration and confirm any budget increase. Snippets: ReSTIR DI, Tiled vbuffer NEE, [Compute ray tracing](#use-the-compute-ray-tracing-template), Visibility buffer + depth and Visibility + secondary rays |
+| Choose a snippet | Opens **Apply Configuration Template** with that snippet selected, so you still name the configuration and confirm any budget increase. Snippets: ReSTIR DI, Tiled vbuffer NEE, [Compute ray tracing](#use-the-compute-ray-tracing-template), [Simple triangle loop](#use-the-simple-triangle-loop-template), Visibility buffer + depth and Visibility + secondary rays |
 | Tab / Shift+Tab | Switch between All, Snippets and Nodes |
 | Click a category | Show only that category |
 | ☆, or **Pin** | Keep a template under Suggested |

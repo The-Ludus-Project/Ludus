@@ -1412,6 +1412,45 @@ QJsonObject FindRayTechnique(const QByteArray& manifest)
 }
 } // namespace
 
+TEST_CASE("Simple triangle-loop configuration imports one kernel and preserves edits on collision",
+          "[editor][render-graph][simple-compute-template]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QString identity = QStringLiteral("simple-compute-ray-tracing");
+    const QString source = QStringLiteral("simple_compute_ray_tracing/main_shaders/trace.slang");
+    const QByteArray beforeRoot = document.GetDraft(ROOT_GRAPH);
+    const QByteArray beforeManifest = document.GetDraft(COMPUTE_MANIFEST);
+    const QStringList beforeFiles = document.GetFiles();
+    REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("Simple"), identity) == true);
+    const QByteArray library = document.GetDraft(QStringLiteral("Simple.lurender.json"));
+    CHECK(library.contains("SimpleComputeRayTrace") == true);
+    CHECK(library.contains("Buffer") == false);
+    CHECK(document.GetDraft(source).contains("TryIntersectTriangle") == true);
+    const QByteArray afterManifest = document.GetDraft(COMPUTE_MANIFEST);
+    workspace.Undo();
+    CHECK(document.GetDraft(ROOT_GRAPH) == beforeRoot);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST) == beforeManifest);
+    CHECK(document.GetFiles() == beforeFiles);
+    workspace.Redo();
+    CHECK(document.GetDraft(COMPUTE_MANIFEST) == afterManifest);
+    REQUIRE(document.SetText(source, document.GetDraft(source) + "\n// Authored edit\n") ==
+            RenderGraphDocumentStatus::Ok);
+    const QByteArray editedSource = document.GetDraft(source);
+    const QStringList existingFiles = document.GetFiles();
+    QString error;
+    CHECK(document.ApplyConfigurationTemplate(ROOT_GRAPH, QStringLiteral("Another"), identity, error) ==
+          RenderGraphDocumentStatus::Conflict);
+    CHECK(error.contains(QStringLiteral("different contents")) == true);
+    CHECK(document.GetDraft(source) == editedSource);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST) == afterManifest);
+    CHECK(document.GetFiles() == existingFiles);
+}
+
 TEST_CASE("Compute ray-tracing template is created from the editor picker", "[editor][render-graph][compute-template]")
 {
     QTemporaryDir project;
