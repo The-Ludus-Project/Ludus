@@ -7,8 +7,10 @@ and the staged plan. The work is at the **buildable** admission gate for the
 D1 and D2 closure described below (both verified on WARP); it is not yet a runnable or qualified engine
 deployment. The remaining implementation adopts **MSVC as the Windows reference
 compiler**, with CMake generating Ninja builds for VS Code/CLI/the Ludus editor
-and Visual Studio solutions built by MSBuild. That migration is planned, not
-implemented: the recorded D1/D2 evidence still belongs to Clang. Linux, macOS
+and Visual Studio solutions built by MSBuild. The migration has started with
+the isolated [D0 primitive probe](#d0-primitive-portability-probe); the engine's
+compiler gate remains unchanged and the recorded D1/D2 evidence still belongs
+to Clang. Linux, macOS
 and browser compiler profiles remain unchanged.
 
 ## Decision
@@ -346,6 +348,54 @@ code must retain Linux/macOS/browser regression coverage throughout.
   equivalent MSVC coverage is established. Later milestones extend both build
   workflows; the current limited module closure must not be advertised as a
   complete installed SDK.
+
+#### D0 primitive portability probe
+
+The first implementation slice removes LLVM overflow builtins from
+FoundationBase's public checked-integer helpers. They check the representable
+bounds before evaluating arithmetic, retaining constexpr evaluation, noexcept,
+output preservation and operand/output aliasing. No `<limits>` or other new
+standard-library facility enters the public header. The
+[numeric boundary owner](primitive-types.md#final-boundary-contracts) records
+the shared contract and test coverage.
+
+`tests/build_contract/primitive_portability` is an isolated CMake project. It
+builds the production type representation checks, checked-integer and byte-order
+tests, plus a compiler abstraction test. It does not configure the engine or
+export an SDK. The Windows workflow adds a separate native `cl.exe` job using
+the MSVC 14.44 candidate, SDK 10.0.26100.0 and dynamic CRT, with MSVC-built Catch2
+from the locked recipe. It exercises Ninja Debug/RelWithDebInfo builds and both
+configurations in one generated Visual Studio 2022 solution. Candidate compiler,
+toolset and SDK identities and CTest logs are uploaded as
+`windows-msvc-primitive-probe`.
+
+The candidate uses `/std:c++23preview`, `/permissive-`, `/Zc:preprocessor`,
+`/Zc:__cplusplus`, `/W4` and `/WX`. CMake 3.29's default mapping of C++23 to
+`/std:c++latest` would also admit later draft features, so only this isolated
+probe overrides that mapping. Microsoft's
+[/std reference](https://learn.microsoft.com/en-us/cpp/build/reference/std-specify-language-standard-version)
+describes the C++23-specific preview mode. This is compatibility evidence for
+the tested primitives, not full C++23 conformance or an engine toolset pin.
+
+To reproduce on Windows, enter an x64 Visual Studio 2022 developer command
+prompt selecting toolset 14.44 and SDK 10.0.26100.0. Install the managed host
+tools from `config/tool_versions.json`, export `third_party/catch2`, and install
+the locked `catch2/3.4.0` with
+`config/conan/profiles/windows-msvc-probe-x86_64` for host and build. Generate
+`CMakeDeps` into one dependency directory for Debug and RelWithDebInfo. Configure
+the probe with `-DCMAKE_PREFIX_PATH=<dependency-directory>`, then build and run
+CTest with `--config`/`-C` selecting the intended configuration. Use separate
+build trees for Ninja and Visual Studio; pass `-A x64`, the selected full
+toolset version with `-T`, and `-DCMAKE_SYSTEM_VERSION=10.0.26100.0` for Visual
+Studio. The workflow contains the complete commands.
+
+D0 remains in progress. The production FoundationBase compiler gate, flavor
+headers/SDK identity, Behavior admission, full engine MSVC warning policy,
+selectable engine presets, setup/repair, WARP runtime tests and physical GPU
+acceptance are unchanged. The candidate's actual patch versions must be reviewed
+and pinned after compatibility results; the 14.44 family selection is not that
+final pin. A successful primitive probe does not qualify the engine's
+multi-configuration build or complete the D0 acceptance criteria above.
 
 ### D3 and D4: complete the portable graphics contract
 

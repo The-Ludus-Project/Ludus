@@ -23,8 +23,16 @@ on:
       - 'cmake/LudusShaders.cmake'
       - 'cmake/shaders/compile_shader.py'
       - 'config/conan/profiles/windows-clang-x86_64'
+      - 'config/conan/profiles/windows-msvc-probe-x86_64'
       - 'config/shader_toolchain.json'
       - 'modules/graphics/rhi/shaders/raster_bindings.slang'
+      - 'modules/foundation/base/include/ludus/foundation/base/checked_integer.hpp'
+      - 'modules/foundation/base/include/ludus/foundation/base/compiler.h'
+      - 'modules/foundation/base/include/ludus/foundation/base/types.h'
+      - 'modules/foundation/base/src/types.cpp'
+      - 'modules/foundation/base/tests/checked_integer_tests.cpp'
+      - 'modules/foundation/base/tests/byte_order_tests.cpp'
+      - 'tests/build_contract/primitive_portability/**'
       - 'modules/graphics/rhi/src/dxil_container.cpp'
       - 'modules/graphics/rhi/src/internal/dxil_container.h'
       - 'modules/graphics/rhi/src/rhi_d3d12.cpp'
@@ -46,6 +54,81 @@ env:
   CMAKE_BUILD_PARALLEL_LEVEL: "4"
   LUDUS_CI_COMMIT_SHA: ${{ inputs.batch_sha || github.sha }}
 jobs:
+  msvc-primitives:
+    name: D0 MSVC primitive probe
+    runs-on: windows-2022
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CONAN_HOME: ${{ github.workspace }}/out/windows-msvc-probe/conan-home
+      CONAN_NON_INTERACTIVE: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.batch_sha || github.sha }}
+          persist-credentials: false
+      - name: Select the x64 MSVC candidate and Windows SDK
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installation = & $vswhere -latest -version '[17.0,18.0)' -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $installation) { throw 'Install Visual Studio 2022 C++ Build Tools for the D0 probe' }
+          $command = "`"$installation\Common7\Tools\VsDevCmd.bat`" -no_logo -arch=x64 -host_arch=x64 -vcvars_ver=14.44 -winsdk=10.0.26100.0 >nul && set"
+          $environment = & $env:ComSpec /d /s /c $command
+          if ($LASTEXITCODE -ne 0) { throw 'The MSVC 14.44 / Windows SDK 10.0.26100.0 candidate is unavailable' }
+          foreach ($line in $environment) {
+            if ($line -match '^(PATH|INCLUDE|LIB|LIBPATH|VCToolsVersion|VCToolsInstallDir|VSINSTALLDIR|VCINSTALLDIR|WindowsSdkDir|WindowsSDKVersion|UniversalCRTSdkDir|UCRTVersion)=(.*)$') {
+              "$($Matches[1])=$($Matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            }
+          }
+      - name: Install pinned host tools and compiler-native Catch2
+        run: |
+          python -m venv out/host-tools/venv
+          $python = "$PWD/out/host-tools/venv/Scripts/python.exe"
+          $versions = (Get-Content config/tool_versions.json | ConvertFrom-Json).managed
+          & $python -m pip install --disable-pip-version-check --quiet "cmake==$($versions.cmake)" "ninja==$($versions.ninja)" "conan==$($versions.conan)"
+          if ($LASTEXITCODE -ne 0) { throw 'Host tool installation failed' }
+          $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
+          conan export third_party/catch2
+          if ($LASTEXITCODE -ne 0) { throw 'Catch2 recipe export failed' }
+          foreach ($configuration in @('Debug', 'RelWithDebInfo')) {
+            conan install --requires=catch2/3.4.0 --lockfile conan.lock --lockfile-partial --profile:host config/conan/profiles/windows-msvc-probe-x86_64 --profile:build config/conan/profiles/windows-msvc-probe-x86_64 --settings:host "build_type=$configuration" --settings:build build_type=Release --build=missing -g CMakeDeps --output-folder out/windows-msvc-probe/dependencies
+            if ($LASTEXITCODE -ne 0) { throw "Catch2 $configuration setup failed" }
+          }
+      - name: Build and test primitives with Ninja and MSBuild
+        run: |
+          $env:PATH = "$PWD/out/host-tools/venv/Scripts;$env:PATH"
+          $source = "$PWD/tests/build_contract/primitive_portability"
+          $dependencies = "$PWD/out/windows-msvc-probe/dependencies"
+          foreach ($configuration in @('Debug', 'RelWithDebInfo')) {
+            $build = "out/windows-msvc-probe/ninja-$configuration"
+            cmake -S $source -B $build -G Ninja -DCMAKE_CXX_COMPILER=cl "-DCMAKE_BUILD_TYPE=$configuration" "-DCMAKE_PREFIX_PATH=$dependencies"
+            if ($LASTEXITCODE -ne 0) { throw "Ninja $configuration configure failed" }
+            cmake --build $build --config $configuration
+            if ($LASTEXITCODE -ne 0) { throw "Ninja $configuration build failed" }
+            ctest --test-dir $build -C $configuration --output-on-failure --no-tests=error
+            if ($LASTEXITCODE -ne 0) { throw "Ninja $configuration tests failed" }
+          }
+          $build = 'out/windows-msvc-probe/msbuild'
+          cmake -S $source -B $build -G 'Visual Studio 17 2022' -A x64 -T "v143,version=$($env:VCToolsVersion.TrimEnd('\')),host=x64" -DCMAKE_SYSTEM_VERSION=10.0.26100.0 "-DCMAKE_PREFIX_PATH=$dependencies"
+          if ($LASTEXITCODE -ne 0) { throw 'MSBuild configure failed' }
+          foreach ($configuration in @('Debug', 'RelWithDebInfo')) {
+            cmake --build $build --config $configuration
+            if ($LASTEXITCODE -ne 0) { throw "MSBuild $configuration build failed" }
+            ctest --test-dir $build -C $configuration --output-on-failure --no-tests=error
+            if ($LASTEXITCODE -ne 0) { throw "MSBuild $configuration tests failed" }
+          }
+      - name: Preserve candidate identities and test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-msvc-primitive-probe
+          path: |
+            out/windows-msvc-probe/**/compiler-identity.txt
+            out/windows-msvc-probe/**/Testing/Temporary/
+          if-no-files-found: warn
+          retention-days: 14
   windows:
     name: Windows Direct3D 12 bring-up
     runs-on: windows-2022

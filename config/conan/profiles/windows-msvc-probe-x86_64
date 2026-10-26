@@ -1,0 +1,11 @@
+# D0 primitive probe candidate only; not an admitted engine or SDK profile.
+[settings]
+os=Windows
+arch=x86_64
+compiler=msvc
+compiler.version=194
+compiler.cppstd=23
+compiler.runtime=dynamic
+
+[conf]
+tools.cmake.cmaketoolchain:generator=Ninja
