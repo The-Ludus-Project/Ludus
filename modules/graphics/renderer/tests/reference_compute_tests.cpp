@@ -9,6 +9,7 @@
 #include "renderer_shadow.h"
 
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/projection.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
@@ -241,7 +242,14 @@ void Capture(Session& inoutSession,
     rr::ReferenceCapture capture;
     const S begun = inoutSession.Renderer.BeginReferenceCapture(inoutSession.Snapshot, description, capture);
     REQUIRE((begun == S::Ready || begun == S::Pending));
-    REQUIRE(Run(inoutSession.Renderer, capture, surface) == S::Ready);
+    const S completed = Run(inoutSession.Renderer, capture, surface);
+    REQUIRE(inoutSession.Renderer.GetReferenceCaptureInfo(capture, outInfo) == S::Ready);
+    CAPTURE(outInfo.FailurePixel,
+            outInfo.FailureDepth,
+            outInfo.FailureSample,
+            static_cast<uint32>(outInfo.Failure),
+            outInfo.InvalidContributions);
+    REQUIRE(completed == S::Ready);
     REQUIRE(inoutSession.Renderer.GetStatus(capture) == S::Ready);
     REQUIRE(outPixels.TryResize(usize(description.Width) * description.Height) == true);
     REQUIRE(inoutSession.Renderer.CopyReferencePixels(capture, outPixels.GetData(), outPixels.GetSize()) == S::Ready);
@@ -657,4 +665,115 @@ TEST_CASE("GPU-compute reference continues targets and exports its traversal", "
     CHECK((flags & GPU_COMPUTE_FLAG) != 0);
     CHECK((flags & 1) == 0);
     REQUIRE(gpu.Renderer.Release(handle) == S::Ready);
+}
+
+TEST_CASE("GPU-compute reference preserves bounded white sRGB textures and vertex colors",
+          "[renderer][gpu][reference-compute][reference-color]")
+{
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    rhi::DeviceDescription deviceDescription;
+    deviceDescription.Required.PortableRaster = true;
+    deviceDescription.Required.Compute = true;
+    REQUIRE(rhi::CreateDevice({}, { .Width = 8, .Height = 8 }, deviceDescription, device, surface) ==
+            rhi::DeviceStatus::Ready);
+    Session cpu;
+    Session gpu;
+    REQUIRE(Prepare(device, rr::ReferenceTraversal::CpuOracle, cpu) == S::Ready);
+    const S enabled = Prepare(device, rr::ReferenceTraversal::GpuCompute, gpu);
+    if (enabled == S::Unsupported)
+    {
+        SKIP("Compute storage is unavailable on this device");
+    }
+    REQUIRE(enabled == S::Ready);
+    constexpr usize TEXEL_BYTES = 4;
+    const StaticArray<uint8, TEXEL_BYTES> texel{{255, 255, 255, 255}};
+    rhi::TextureDescription textureDescription{1, 1, rhi::RasterFormat::Rgba8Srgb};
+    textureDescription.RetainCpuContent = true;
+    rhi::TextureHandle texture;
+    REQUIRE(
+        rhi::CreateTexture(device, textureDescription, {{texel.GetData(), texel.GetSize()}, TEXEL_BYTES}, texture) ==
+        S::Ready);
+    constexpr usize VERTEX_COUNT = 3;
+    const StaticArray<math::Vector3, VERTEX_COUNT> positions{
+        {{-1.73F, -2.31F, 0}, {2.17F, -1.89F, 0}, {.13F, 2.27F, 0}}};
+    const StaticArray<math::Vector3, VERTEX_COUNT> normals{{{0, 0, -1}, {0, 0, -1}, {0, 0, -1}}};
+    const StaticArray<math::Vector4, VERTEX_COUNT> colors{{{1, 1, 1, 1}, {1, 1, 1, 1}, {1, 1, 1, 1}}};
+    const StaticArray<uint32, VERTEX_COUNT> indices{{0, 2, 1}};
+    constexpr usize SESSION_COUNT = 2;
+    const StaticArray<Session*, SESSION_COUNT> sessions{{&cpu, &gpu}};
+    for (Session* session : sessions)
+    {
+        rr::MeshDescription meshDescription{positions.GetData(),
+                                            positions.GetSize(),
+                                            indices.GetData(),
+                                            indices.GetSize()};
+        meshDescription.Normals = normals.GetData();
+        meshDescription.Colors = {colors.GetData(), colors.GetSize()};
+        rr::Mesh mesh;
+        S status = session->Renderer.CreateMesh(meshDescription, mesh);
+        const uint64 meshStart = time::NowTicks();
+        while (status == S::Pending && time::NowTicks() - meshStart < TIMEOUT)
+        {
+            status = session->Renderer.GetStatus(mesh);
+        }
+        REQUIRE(status == S::Ready);
+        rr::LitMaterialDescription materialDescription;
+        materialDescription.Surface.Tint = {1, 1, 1, 1};
+        materialDescription.Surface.Texture = texture;
+        materialDescription.Roughness = 1;
+        rr::MaterialVersion material;
+        rr::LightSelection selection;
+        status = session->Renderer.CreateLitMaterial(session->Program, materialDescription, material, selection);
+        const uint64 materialStart = time::NowTicks();
+        while (status == S::Pending && time::NowTicks() - materialStart < TIMEOUT)
+        {
+            status = session->Renderer.GetStatus(material);
+        }
+        REQUIRE(status == S::Ready);
+        rr::SceneItem item;
+        item.Geometry = mesh;
+        item.Surface = material;
+        item.SourceId = 1;
+        rr::Snapshot snapshot;
+        REQUIRE(session->Renderer.CreateSnapshot(&item, 1, snapshot) == S::Ready);
+        REQUIRE(session->Renderer.Release(session->Snapshot) == S::Ready);
+        session->Snapshot = snapshot;
+        REQUIRE(session->Renderer.Release(mesh) == S::Ready);
+        REQUIRE(session->Renderer.Release(material) == S::Ready);
+    }
+    REQUIRE(rhi::Destroy(device, texture) == S::Ready);
+    rr::ReferenceCaptureDescription capture;
+    capture.Width = 64;
+    capture.Height = 32;
+    capture.TargetSamples = 8;
+    capture.MaxDepth = 2;
+    capture.Seed = 1;
+    capture.OrthographicCamera = true;
+    capture.WorldToClip.Columns[3].Z = .7F;
+    capture.CameraPosition.Z = -.7F;
+    capture.Environment = {.3F, .4F, .5F};
+    Array<rr::ReferencePixel> oracle;
+    Array<rr::ReferencePixel> compute;
+    rr::ReferenceCaptureInfo oracleInfo;
+    rr::ReferenceCaptureInfo computeInfo;
+    Capture(cpu, capture, surface, oracle, oracleInfo);
+    Capture(gpu, capture, surface, compute, computeInfo);
+    const Comparison comparison = Compare(oracle, compute, capture.TargetSamples);
+    CAPTURE(comparison.MaximumRadiance, math::Sqrt(comparison.SquaredRadiance));
+    CHECK(computeInfo.InvalidContributions == 0);
+    CHECK(computeInfo.Failure == rr::ReferenceFailure::None);
+    CHECK(computeInfo.Complete == true);
+    CHECK(comparison.MaximumRadiance <= 2e-3F);
+    CHECK(comparison.MaximumEmission <= 2e-3F);
+    CHECK(comparison.MaximumDirect <= 2e-3F);
+    CHECK(comparison.MaximumIndirect <= 2e-3F);
 }

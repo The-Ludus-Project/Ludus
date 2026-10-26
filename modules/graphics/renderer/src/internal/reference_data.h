@@ -156,6 +156,10 @@ inline constexpr usize REFERENCE_COMPUTE_SUM_BYTES = LUDUS_REFERENCE_SUM_WORDS *
 inline constexpr usize REFERENCE_COMPUTE_PIXEL_BYTES = LUDUS_REFERENCE_PIXEL_WORDS * sizeof(math::Vector4);
 /// Reduced dispatch status bytes read back after every sample.
 inline constexpr usize REFERENCE_COMPUTE_STATUS_BYTES = LUDUS_REFERENCE_STATUS_WORDS * sizeof(math::Vector4);
+/// Apply a completed dispatch status without publishing pixels; preserves the addressed
+/// failing sample and returns Failed or CapacityExceeded when any pixel was rejected.
+rhi::RasterStatus ApplyReferenceComputeStatus(const StaticArray<uint8, REFERENCE_COMPUTE_STATUS_BYTES>& bytes,
+                                              ReferenceCaptureInfo& inoutInfo) noexcept;
 /// Shared GPU-compute kernels and layout, created by EnableReferenceRendering.
 struct ReferenceComputePipelines final
 {

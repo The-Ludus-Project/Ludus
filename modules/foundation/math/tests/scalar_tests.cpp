@@ -89,7 +89,9 @@ TEST_CASE("sRGB transfer and FP32 predecessor honor their bounded domains", "[ma
     CHECK(Abs(DecodeSrgb(.04045F) - .0031308F) < 1e-7F);
     for (ludus::foundation::usize i = 0; i <= 255; ++i)
     {
-        const auto channel = float32(i) / 255;
+        const float32 channel = float32(i) / 255;
+        CHECK(DecodeSrgb(channel) >= 0);
+        CHECK(DecodeSrgb(channel) <= 1);
         CHECK(Abs(EncodeSrgb(DecodeSrgb(channel)) - channel) < 2e-7F);
     }
     CHECK_FALSE(IsFinite(DecodeSrgb(-.1F)));
