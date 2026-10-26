@@ -39,6 +39,20 @@ bool CollectProgramReferences(const QJsonValue& value, QStringList& inoutReferen
     else if (value.isObject() == true)
     {
         const QJsonObject object = value.toObject();
+        const QString target = object.value(QStringLiteral("target")).toString();
+        if (target.startsWith(QStringLiteral("shaders.")) == true &&
+            target.endsWith(QStringLiteral(".program")) == true)
+        {
+            for (const QJsonValueConstRef choice : object.value(QStringLiteral("values")).toArray())
+            {
+                if (choice.isString() == false)
+                {
+                    return false;
+                }
+                inoutReferences.append(choice.toString());
+            }
+        }
+
         for (QJsonObject::const_iterator field = object.constBegin(); field != object.constEnd(); ++field)
         {
             if (field.key() == QStringLiteral("program") && field.value().isString() == false)
@@ -182,7 +196,8 @@ RenderGraphDocument::RemoveUnusedShaders(QStringList& outPrograms, QStringList& 
         const QJsonDocument document = QJsonDocument::fromJson(file.value());
         const QJsonObject object = document.object();
         bool hasCompleteReferences =
-            document.isObject() == true && object.value(QStringLiteral("version")).toInt() == 1;
+            document.isObject() == true && (object.value(QStringLiteral("version")).toInt() == 1 ||
+                                            (isGraph == true && object.value(QStringLiteral("version")).toInt() == 2));
         if (isGraph == true)
         {
             hasCompleteReferences = hasCompleteReferences == true &&

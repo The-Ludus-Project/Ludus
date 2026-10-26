@@ -1,5 +1,6 @@
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_configuration_template.h"
+#include "internal/render_graph_options.h"
 #include "internal/render_graph_pipeline_node.h"
 #include "internal/render_graph_scene_bundle.h"
 #include "internal/render_graph_shader_creation.h"
@@ -935,6 +936,15 @@ RenderGraphDocumentStatus RenderGraphDocument::ReplaceNode(const QString& file,
         {
             *outErrorOrNull = error;
         }
+        if (prepared == RenderGraphDocumentStatus::Ok &&
+            ValidateRenderGraphOptionInterfaces(candidate.Files, error) == false)
+        {
+            if (outErrorOrNull != nullptr)
+            {
+                *outErrorOrNull = error;
+            }
+            return RenderGraphDocumentStatus::InvalidEdit;
+        }
         if (prepared != RenderGraphDocumentStatus::Ok || candidate == mDraft)
         {
             return prepared;
@@ -1050,6 +1060,15 @@ RenderGraphDocumentStatus RenderGraphDocument::ApplyPipeline(const QString& file
     if (sceneStatus != RenderGraphDocumentStatus::Ok)
     {
         return sceneStatus;
+    }
+    QString optionError;
+    if (ValidateRenderGraphOptionInterfaces(candidate.Files, optionError) == false)
+    {
+        if (outErrorOrNull != nullptr)
+        {
+            *outErrorOrNull = optionError;
+        }
+        return RenderGraphDocumentStatus::InvalidEdit;
     }
     if (outErrorOrNull != nullptr)
     {

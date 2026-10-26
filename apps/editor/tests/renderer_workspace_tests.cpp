@@ -1174,10 +1174,17 @@ TEST_CASE("Tree and canvas node menus navigate subgraphs and authored shaders", 
     REQUIRE(workspace.SelectNode(LIBRARY, QStringLiteral("DepthOnly"), QStringLiteral("draw")) == true);
     CHECK(workspace.GetSelectedShaderSources() ==
           QStringList{QStringLiteral("main_shaders/geometry.slang"), QStringLiteral("main_shaders/depth.slang")});
+    const auto closeDetails = []() {
+        QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        if (dialogOrNull != nullptr)
+        {
+            dialogOrNull->accept();
+        }
+    };
+    QTimer::singleShot(0, &workspace, closeDetails);
     REQUIRE(canvasOrNull->ActivateNode(QStringLiteral("draw")) == true);
-    CHECK(sourceOrNull->currentText() == QStringLiteral("main_shaders/geometry.slang"));
+    QTimer::singleShot(0, &workspace, closeDetails);
     Q_EMIT treeOrNull->itemDoubleClicked(treeOrNull->currentItem(), 0);
-    CHECK(sourceOrNull->currentText() == QStringLiteral("main_shaders/geometry.slang"));
 }
 
 TEST_CASE("Subgraph references choose authored graphs and configurations from dropdowns",

@@ -369,6 +369,8 @@ private:
     void editGraphSettingsOnCanvas();
     void populateGraphSettings(QFormLayout& outFields, QWidget& inoutParent);
     void setGraphSetting(const QString& identity, const QJsonValue& value, QWidget* editOrigin);
+    [[nodiscard]] QWidget* createNodeOptionsEditor(QWidget& inoutParent);
+    void editExposedOptionsOnCanvas();
     void editNodeOnCanvas(const QString& diagnosticField = {});
     void renderEdges();
     void renderSource();

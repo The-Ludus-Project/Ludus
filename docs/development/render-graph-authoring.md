@@ -52,9 +52,14 @@ renaming or changing the type of a connected port. A rejected edit preserves
 the draft and identifies the affected endpoint and repair. Duplicate or invalid
 port names are explained beside the controls; graph validation names missing
 connections and incompatible output/input pairs with concrete repair actions.
-Undo restores the complete record and document version. Double-click the pipeline
-to open a mapped shader source through its explicit program reference in the
-build manifest.
+Undo restores the complete record and document version. Double-click any ordinary
+node to open **Details**. A pipeline's clickable parts are **Read Inputs**,
+**Writable Resources**, **Shaders**, **Pipeline State**, **Invocation** and
+**Public Options**. Each part opens the same controls used by Properties;
+Properties may remain hidden. Double-clicking a Subgraph enters its graph.
+Right-click a pipeline and choose **View Shaders** to open a mapped source through
+its explicit build-manifest program reference. **Show Details / Edit Node** opens
+a Subgraph instance's choices without entering its shared source.
 
 Pipeline records use document `version: 2`; adding one upgrades the draft in the
 same undo step. Version-1 graphs remain readable and are never rewritten on load.
@@ -546,6 +551,70 @@ accumulation. Fixed-capacity graph buffers retain their contents across resize. 
 follow their connected RenderSize and stage zeroed replacement allocations when
 capacity changes. Shaders must validate capacity and invalidate incompatible history; foreign
 texture/history imports remain unsupported. See [ordered ray passes](#order-ray-passes-and-share-persistent-buffers).
+
+## Expose finite choices on reusable nodes
+
+Open a pipeline's **Details → Public Options**. **Add Option** declares an ID,
+label, type (**Enum**, **Bool**, **UInt32** or **Float32**), target, allowed values
+and default. Separate allowed values with commas; Boolean values are `true` and
+`false`. **Apply Options** commits the declaration as one undoable draft edit.
+Targets are existing scalar **Pipeline State** or **Invocation** fields, or a
+shader row's program reference (`shaders.<shader ID>.program`). Resource ports,
+node IDs, arbitrary JSON paths and shader text are outside this interface.
+
+An option selects from its declared finite set. The current use's choice appears
+above the declarations. **Default (value)** removes the override, so later author
+default changes are inherited. A concrete choice remains an override even when it
+equals today's default. Changing a choice changes only this use's saved record;
+it never changes a shared subgraph's source or another instance. Save and rebuild
+to apply it to rendering.
+
+To publish a pipeline choice through a graph, right-click the graph canvas and
+choose **Edit Exposed Options**. Declare the public option with a target such as
+`shade.Quality`, where `shade` is the child node ID and `Quality` is its option ID.
+The public type must match; its allowed values must be a subset of the child's.
+This can forward through another Subgraph's public option, so nested libraries
+retain an explicit public interface. In the parent graph, right-click the Subgraph
+and choose **Show Details / Edit Node** to set its per-use choices. The same choices
+are available in Properties. Enter the Subgraph to edit its authoring source.
+Existing callers prevent removal or narrowing of an option when their overrides
+would become invalid; reset those callers before changing the declaration.
+Renaming a node updates exposed option targets in the same undo step.
+
+Each declaration list and value list admits at most sixteen entries; an interface
+admits at most 64 combinations across its independent choices. Prefer one named
+mode over many independent Boolean switches. Numeric
+values are bounded to one million in magnitude (UInt32 values are nonnegative).
+These are build-time choices. They select existing shader programs and pipeline
+fields; they do not inject raw preprocessor macros or synthesize shader programs.
+Register alternate programs and their compatible techniques/recipes in the build
+manifest before selecting them. Unused alternatives remain protected from
+**Remove Unused Shaders**. Rename a program exposed as an allowed choice only
+after removing that choice from its public interfaces. State and shader choices
+remain subject to the selected execution profile: for example, the static raster
+profile still rejects unsupported culling/blending state. An allowed-value list
+does not expand backend capabilities. Only instantiated choices are lowered;
+ordinary build budgets still limit compiled programs, recipes and artifacts.
+
+The authored representation keeps defaults beside declarations and overrides on
+uses. For example, on a pipeline whose fragment shader row is `pixel`:
+
+```json
+"options": [{
+  "id": "Quality", "label": "Quality", "type": "Enum",
+  "target": "shaders.pixel.program",
+  "values": ["FastPixel", "QualityPixel"], "default": "QualityPixel"
+}],
+"overrides": {"Quality": "FastPixel"}
+```
+
+Its configuration can expose the same choice as `shade.Quality` by declaring
+`"target": "shade.Quality"`. A Subgraph use then stores
+`"overrides": {"Quality": "FastPixel"}` beside its `asset` and `configuration`.
+Absent overrides inherit the selected configuration's defaults. Validation rejects
+unknown IDs, incompatible forwarding, duplicate targets and values outside the
+allowlist. Resolution copies the selected instance before graph lowering; library
+records and source bytes remain unchanged.
 
 ## Execute a triangle ray pipeline
 
@@ -3519,9 +3588,8 @@ Right-click a node in **Graph sources** or on the **Canvas** to use its menu:
 - **Remove Node** removes that node and its connections as one undoable edit.
   Referenced subgraph files are retained.
 
-Double-click a Subgraph to open it, or a Raster node to open its first mapped
-shader source. The source selector and **View Shaders** menu give access to the
-other stage. Accepted Source edits stay in the shared draft when navigating or
+Double-click a Subgraph to enter it, or any other node to show its editable details.
+The source selector and **View Shaders** menu give access to mapped shader sources. Accepted Source edits stay in the shared draft when navigating or
 creating nodes.
 
 ### Edit on the canvas
@@ -3583,7 +3651,7 @@ denoiser, stay listed with the reason, because the graph remains portable.
 | Right-click Accumulate, Denoise or ToneMap → Disable Node | Toggle its `enabled` field as one undoable edit; the compiler [forwards its input](#disable-a-node) |
 | Select a node and press Delete | `RemoveNode` (also drops its links and layout position) |
 | Double-click a Subgraph node | Opens its asset's configuration on the canvas, in the tree and in the Source view; not an edit |
-| Double-click a Raster node | Opens its first mapped shader source; choose other stages with View Shaders or the Source selector |
+| Double-click an ordinary node | Opens Details; pipeline parts share their controls with Properties |
 | Pinch apart/together on a supported trackpad | Zoom in/out around the gesture position; does not edit the draft |
 | Mouse wheel, or Ctrl/Command+scroll from any device | Zoom around the pointer, including smooth pixel scrolling |
 | Two-finger scroll on a touchpad | Pan the view only, including momentum scrolling |

@@ -1,10 +1,12 @@
 #include "internal/render_graph_pipeline.h"
 
-#include <ludus/foundation/base/types.h>
+#include <ludus/foundation/base/core.h>
 
+#include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -16,8 +18,11 @@
 #include <QRegularExpression>
 #include <QSignalBlocker>
 #include <QSpinBox>
+#include <QStyle>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTableWidget>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 namespace ludus::editor
@@ -249,6 +254,8 @@ RenderGraphPipelineEditor::RenderGraphPipelineEditor(const QJsonObject& node, QW
 {
     QVBoxLayout* layout = new QVBoxLayout(this);
     QTabWidget* tabs = new QTabWidget(this);
+    mTabs = tabs;
+    mTabs->setObjectName(QStringLiteral("renderGraphPipelineParts"));
     for (QTableWidget* table : {mInputs, mOutputs, mShaders})
     {
         const QString name = table->objectName();
@@ -300,6 +307,76 @@ RenderGraphPipelineEditor::RenderGraphPipelineEditor(const QJsonObject& node, QW
     }
     hint->setWordWrap(true);
     layout->addWidget(hint);
+}
+
+void RenderGraphPipelineEditor::AddOptionsEditor(QWidget* editor)
+{
+    LUDUS_REQUIRE(editor != nullptr);
+    mTabs->addTab(editor, QStringLiteral("Public Options"));
+}
+
+void RenderGraphPipelineEditor::ShowParts()
+{
+    constexpr int32 PART_COLUMNS = 3;
+    constexpr int32 MINIMUM_PART_HEIGHT = 64;
+    constexpr int32 SHADER_PART_ROW = 2;
+    constexpr int32 SHADER_TAB = 2;
+    if (mPartsOrNull != nullptr)
+    {
+        mPartsOrNull->hide();
+        mPartsOrNull->setParent(&mRetiredParts);
+        mPartsOrNull->deleteLater();
+    }
+    QWidget* overview = new QWidget(this);
+    overview->setObjectName(QStringLiteral("renderGraphNodeParts"));
+    mPartsOrNull = overview;
+    QGridLayout* parts = new QGridLayout(overview);
+    QButtonGroup* selection = new QButtonGroup(overview);
+    selection->setExclusive(true);
+    for (int32 index = 0; index < mTabs->count(); ++index)
+    {
+        QToolButton* part = new QToolButton(overview);
+        part->setObjectName(QStringLiteral("renderGraphPart_") + QString::number(index));
+        part->setText(mTabs->tabText(index));
+        part->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        part->setIcon(style()->standardIcon(index == SHADER_TAB ? QStyle::SP_FileIcon : QStyle::SP_DirIcon));
+        part->setCheckable(true);
+        part->setChecked(index == mTabs->currentIndex());
+        part->setMinimumHeight(MINIMUM_PART_HEIGHT);
+        part->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        part->setToolTip(QStringLiteral("Edit %1 for this pipeline").arg(mTabs->tabText(index)));
+        selection->addButton(part, index);
+        parts->addWidget(part, index / PART_COLUMNS, index % PART_COLUMNS);
+    }
+    const QJsonArray shaders = mNode.value(QStringLiteral("shaders")).toArray();
+    for (int32 index = 0; index < shaders.size(); ++index)
+    {
+        const QJsonObject shader = shaders.at(index).toObject();
+        QToolButton* part = new QToolButton(overview);
+        part->setObjectName(QStringLiteral("renderGraphShaderPart_") + shader.value(QStringLiteral("id")).toString());
+        part->setText(QStringLiteral("%1\n%2").arg(shader.value(QStringLiteral("stage")).toString(),
+                                                   shader.value(QStringLiteral("program")).toString()));
+        part->setToolTip(QStringLiteral("Edit this shader assignment in Shaders"));
+        part->setIcon(style()->standardIcon(QStyle::SP_FileIcon));
+        part->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        part->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        part->setMinimumHeight(MINIMUM_PART_HEIGHT);
+        parts->addWidget(part, SHADER_PART_ROW + index / PART_COLUMNS, index % PART_COLUMNS);
+        connect(part, &QToolButton::clicked, this, [this, index]() {
+            mTabs->setCurrentIndex(SHADER_TAB);
+            mShaders->setCurrentCell(index, 2);
+            mShaders->setFocus(Qt::OtherFocusReason);
+        });
+    }
+    connect(selection, &QButtonGroup::idClicked, mTabs, &QTabWidget::setCurrentIndex);
+    connect(mTabs, &QTabWidget::currentChanged, selection, [selection](int32 index) {
+        if (selection->button(index) != nullptr)
+        {
+            selection->button(index)->setChecked(true);
+        }
+    });
+    mTabs->tabBar()->hide();
+    static_cast<QVBoxLayout*>(layout())->insertWidget(0, overview);
 }
 
 void RenderGraphPipelineEditor::AddSceneQueryBudgets(const RenderGraphSceneQueryBudgets& budgets)
@@ -771,6 +848,10 @@ void RenderGraphPipelineEditor::SetShaderAssignments(const QJsonArray& shaders)
     for (int32 row = 0; row < shaders.size() && row < mShaders->rowCount(); ++row)
     {
         mShaders->item(row, 2)->setText(shaders.at(row).toObject().value(QStringLiteral("program")).toString());
+    }
+    if (mPartsOrNull != nullptr)
+    {
+        ShowParts();
     }
 }
 

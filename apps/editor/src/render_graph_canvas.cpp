@@ -447,7 +447,8 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
                               "undo step per drag) · drag from an output port to an "
                               "input port to connect or replace · right-click nodes, wires or ports to edit · "
                               "Delete removes the selected node or link · double-click a "
-                              "Subgraph to open its source · pinch, wheel or Ctrl+scroll zooms around the pointer · "
+                              "Subgraph to enter it, or any other node to show details · pinch, wheel or Ctrl+scroll "
+                              "zooms around the pointer · "
                               "two-finger double-tap frames the graph"));
 }
 
@@ -1308,14 +1309,14 @@ bool RenderGraphCanvas::ActivateNode(const QString& node)
         return true;
     }
     const QJsonObject record = FindNode(configuration(), node);
-    if (record.value(QStringLiteral("kind")).toString() == QStringLiteral("Raster"))
+    if (record.isEmpty() == true)
     {
-        Q_EMIT ShaderSourcesRequested(node);
-        return true;
+        return false;
     }
     if (record.value(QStringLiteral("kind")).toString() != QStringLiteral("Subgraph"))
     {
-        return false;
+        Q_EMIT NodeDetailsRequested(node);
+        return true;
     }
     Q_EMIT SubgraphActivated(record.value(QStringLiteral("asset")).toString(),
                              record.value(QStringLiteral("configuration")).toString());

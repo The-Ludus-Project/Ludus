@@ -63,7 +63,7 @@ def _check_field(check, value, field, where, graph, *arguments):
 
 def validate(node, where, graph):
     """Check bounded source shape, allowing incomplete saved drafts, without mutation."""
-    graph._keys(node, ('id', 'kind', 'inputs', 'outputs', 'shaders', 'state', 'invocation'), where)
+    graph._keys(node, ('id', 'kind', 'inputs', 'outputs', 'shaders', 'state', 'invocation'), where, ('options', 'overrides'))
     _check_field(graph._identifier, node['id'], 'Node ID', where, graph)
     graph._require(node['id'] != 'input', 'Schema', where, 'input is reserved')
     graph._enum(node['kind'], KINDS, where)
@@ -171,6 +171,8 @@ def validate(node, where, graph):
         _check_field(graph._keys, invocation, 'Invocation', where, graph, ('dimensions',))
         if invocation['dimensions'] != 'ColorTarget':
             _dimensions(invocation['dimensions'], where, graph, 'Invocation → dimensions')
+
+    graph.options.validate_pipeline(node, where, graph)
 
 
 def _dimensions(values, where, graph, field):

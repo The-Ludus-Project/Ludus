@@ -15,6 +15,7 @@ QT_BEGIN_NAMESPACE
 class QFormLayout;
 class QLabel;
 class QTableWidget;
+class QTabWidget;
 QT_END_NAMESPACE
 
 namespace ludus::editor
@@ -30,6 +31,11 @@ class RenderGraphPipelineEditor final : public QWidget
     Q_OBJECT
 public:
     explicit RenderGraphPipelineEditor(const QJsonObject& node, QWidget* parentOrNull = nullptr);
+
+    /// Add shared finite option controls as an authorable pipeline part; ownership transfers to this widget.
+    void AddOptionsEditor(QWidget* editor);
+    /// Show clickable part cards above the shared controls, keeping selection during edits.
+    void ShowParts();
 
     /// Adopt document-assigned program names without emitting another edit or replacing controls.
     void SetShaderAssignments(const QJsonArray& shaders);
@@ -52,6 +58,9 @@ private:
     void publishEdit();
     void connectChoices(QTableWidget& inoutTable, foundation::int32 row);
     QJsonObject mNode;
+    QTabWidget* mTabs;
+    QWidget* mPartsOrNull = nullptr;
+    QWidget mRetiredParts;
     QTableWidget* mInputs;
     QTableWidget* mOutputs;
     QTableWidget* mShaders;
