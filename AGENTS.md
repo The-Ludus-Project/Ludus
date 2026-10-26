@@ -282,6 +282,23 @@ rejects the explicit `== true`/`== false` style.
   magic-number rules in "Naming enforcement". Compiler, reflection tests,
   formatting, tidy and semantic review remain required.
 
+### CPU and GPU reference path tracing (hard rule)
+
+- Always implement and maintain both a CPU oracle and a GPU reference path
+  tracer when building or extending reference path tracing. Deliver each new
+  reference transport, material, sampling or accumulation feature in both paths
+  in the same change, with parity evidence before claiming completion.
+- The GPU implementation must execute transport, shading and accumulation on the
+  GPU. CPU transport with GPU intersection queries does not satisfy this rule.
+  Retain the CPU implementation for independent correctness checks and debugging.
+- Both paths must estimate the same declared integral. Compare raw linear outputs
+  with matched inputs and documented numerical/statistical tolerances; do not use
+  denoising or temporal reuse to establish reference parity. Unsupported GPU
+  capabilities remain explicit and do not silently select the CPU oracle.
+- Follow the canonical [implementation and acceptance contract](docs/architecture/renderer-systems.md#cpu-and-gpu-reference-implementation-requirement).
+  Record existing coverage gaps explicitly rather than treating a preview or a
+  CPU-only implementation as a completed pair.
+
 ### Review feedback and viewport acceptance
 
 - Render-graph authoring must be available directly from the graph canvas.

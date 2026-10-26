@@ -63,6 +63,12 @@ documents** index, and search. Do not create wiki mirrors or miscellaneous repor
 without a distinct reader need. Keep private material outside the published tree
 and run the required documentation checks before a PR.
 
+## Reference path tracing
+
+Reference path-tracing work must follow [AGENTS.md's CPU and GPU requirement](../../AGENTS.md#cpu-and-gpu-reference-path-tracing-hard-rule)
+and its linked renderer acceptance contract. Apply it to implementation plans,
+feature extensions and completion reviews.
+
 ## Responsibility boundaries
 
 Follow [AGENTS.md's responsibility and refactoring rules](../../AGENTS.md#responsibility-boundaries-and-incremental-refactoring).

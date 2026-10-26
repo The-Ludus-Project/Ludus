@@ -1191,6 +1191,41 @@ Full path tracing evaluates supported emitters and scattering directly; it does
 not also add baked lighting, ambient occlusion or prefiltered IBL approximations.
 Record any intentionally mixed approximation in the capture's rendering profile.
 
+### CPU and GPU reference implementation requirement
+
+Building or extending a reference path tracer requires both a CPU oracle and a
+GPU reference implementation. Deliver changes to reference transport, materials,
+sampling and accumulation in both implementations in the same change. The CPU
+oracle remains independently executable for correctness checks and debugging;
+the GPU implementation keeps path transport, shading and accumulation on the
+device for practical captures. CPU shading with batched GPU intersection queries
+is a traversal variant of the CPU integrator, not the required GPU integrator.
+Offline output/progress readback is allowed; a per-bounce CPU transport loop does
+not establish GPU implementation coverage.
+
+Both implementations must estimate the same declared integral: frozen scene and
+resource versions, camera, material/emitter profile, texture filtering, depth and
+range limits, sampler version, seed and sample target. Preserve reproducible
+sample addressing and replay within each implementation. Scheduling and
+floating-point differences may require documented numerical or statistical
+tolerances rather than bit-identical images. Reference acceptance uses raw,
+scene-linear, independently sampled outputs without denoising or temporal reuse.
+
+Before claiming a reference feature complete, exercise both production paths on
+matched fixtures, compare emission/direct/indirect and total radiance, and check
+multiple seeds and depth sensitivity where relevant. Cover invalid contributions,
+unsupported content, capacity failures, reset/cancellation and resource lifetimes
+in each affected path. Record backend/device/toolchain, profile, sample counts
+and comparison tolerances with the evidence. GPU capability rejection remains
+explicit; selecting the CPU oracle is a caller choice, not a silent fallback.
+
+This is the acceptance requirement for new work. The implemented RT1 capture API
+below currently uses CPU transport with CPU or native-query traversal; the
+separate [GPU preview](#gpu-resident-progressive-preview) needs matched profile,
+raw-output and production-path evidence before it can satisfy the GPU reference
+requirement for a feature. Existing coverage gaps remain open work, not evidence
+that both implementations are qualified.
+
 ## L6 implemented scope: RT0 and RT1
 
 RT0/RT1 are an opt-in static triangle query profile and progressive RGB reference
@@ -1570,7 +1605,7 @@ extensions; they do not claim any existing R1 backend already traces rays.
 | Phase | Deliverable | Acceptance |
 | --- | --- | --- |
 | RT0: scene/query foundation | Optional native capability profile, static triangle BLAS/TLAS, retained tables, primary and visibility queries | Raster/ray instance, position, normal, UV and depth agreement; offscreen hits; build/read/lifetime stress; unsupported devices preserve raster |
-| RT1: progressive reference | Frozen RGB surface profile, light/environment/BSDF sampling, MIS, raw accumulation and HDR export | Furnace/Cornell/emissive fixtures, sampling/PDF normalization, multiple seeds/depths, no double lighting; unsupported content and overflow are visible |
+| RT1: progressive reference | CPU oracle and GPU reference implementations of the same frozen RGB surface profile, light/environment/BSDF sampling, MIS, raw accumulation and HDR export | Matched raw CPU/GPU emission/direct/indirect/total comparisons; furnace/Cornell/emissive fixtures, sampling/PDF normalization, multiple seeds/depths, no double lighting; unsupported content and overflow are visible |
 | RT2: hybrid effects | Bounded shadows, reflections and then indirect diffuse with reconstruction/fallbacks | Raw and reconstructed images compared to RT1; moving/disoccluded/reloaded scenes, per-view history, build/ray/filter median and tail times |
 | RT3: dynamic scene scaling | Skinned/morphed BLAS, measured refit/rebuild, optional compaction and scheduling | Pose parity, changing topology/opacity, extreme/mirrored transforms, thin geometry, streaming/rebase/loss and peak overlap memory |
 | RT4: high-end real-time PT | Reviewed resampling, reconstruction and optional wavefront/ray-pipeline variants | Scene suite at fixed resolution/quality budget; temporal artifacts and error versus RT1; measured target-GPU benefit and disabled-mode support |
