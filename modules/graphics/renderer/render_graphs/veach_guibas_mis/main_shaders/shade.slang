@@ -3,7 +3,7 @@
 
 // Passes 2 to 4 (scene compute): rebuild the recorded surface and estimate first-hit direct lighting
 // with the two strategies that Veach and Guibas combine (multiple_importance.slang):
-// - light: SelectLight chooses a light uniformly, SampleIncidentLight proposes a shadingPoint or direction
+// - light: SelectLight chooses a light uniformly, SampleIncidentLight proposes a point or direction
 //   on it and TestVisibility traces the shadow ray;
 // - BSDF: SampleStandardBsdf proposes a direction and TraceClosest finds what it reaches: emission
 //   from the surface it hits, or the environment on a miss.
@@ -12,7 +12,7 @@
 //   direction (EvaluateLightPdfSolidAngle, EvaluateEnvironmentPdfSolidAngle). The graph's color output.
 // - ShadeLightSampling: the light strategy alone, with weight one (lightSampling output).
 // - ShadeBsdfSampling: the BSDF strategy alone, with weight one (bsdfSampling output). It never reaches
-//   a directional, shadingPoint or spot light, so those lights are absent from this image.
+//   a directional, point or spot light, so those lights are absent from this image.
 // The three passes read the same random dimensions, so each MIS image combines exactly the light
 // and BSDF samples shown in the other two outputs. Both densities are solid-angle densities. A delta
 // light sample keeps weight one under MIS, because BSDF sampling never proposes its direction.
