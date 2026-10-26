@@ -28,8 +28,8 @@ bool TryIntersectTriangle(Ray ray, TriangleData triangle, out float outDistanceW
     float3 crossOffsetWorld = cross(offsetWorld, edge1World);
     float v = dot(ray.DirectionWorld, crossOffsetWorld) * inverseDeterminant;
     float distanceWorld = dot(edge2World, crossOffsetWorld) * inverseDeterminant;
-    if (isfinite(u) == false || isfinite(v) == false || isfinite(distanceWorld) == false ||
-        u < 0 || v < 0 || u + v > 1 || distanceWorld < ray.MinDistanceWorld || distanceWorld >= ray.MaxDistanceWorld)
+    if (isfinite(u) == false || isfinite(v) == false || isfinite(distanceWorld) == false || u < 0 || v < 0 ||
+        u + v > 1 || distanceWorld < ray.MinDistanceWorld || distanceWorld >= ray.MaxDistanceWorld)
         return false;
     outDistanceWorld = distanceWorld;
     outBarycentric = float2(u, v);
