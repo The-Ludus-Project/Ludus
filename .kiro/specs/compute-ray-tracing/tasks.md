@@ -33,7 +33,8 @@ Mac has no Linux host.
         fails.
   - [ ] Vulkan: the same test in the batch CI native suite on Linux. Not run
         yet. Check this box only after a batch run reports it passed rather
-        than skipped.
+        than skipped. The Development job's Vulkan validation step runs it
+        with `[compute-split],[compute-ray-tracing]` and fails on a skip.
 - [x] **Decide D1.** Pick between no format change and `Technique::SceneCompute`
       from that evidence, and record the choice in design.md.
       *No format change.*
@@ -218,6 +219,7 @@ same GPU test comes only from the batch CI native suite on Linux.
         tolerance;
   - [x] a resize stages zeroed hits without invalid-hit pixels.
   - [ ] Vulkan: the same test in the batch CI native suite on Linux. Not run yet.
+        The Development job's Vulkan validation step runs it and fails on a skip.
   *"The compute ray-tracing template matches a single-pass direct-lighting
   reference" passes on Metal. The reference is
   `tests/sdk_consumer/rg2/direct_lighting_reference/`; it draws the same values
