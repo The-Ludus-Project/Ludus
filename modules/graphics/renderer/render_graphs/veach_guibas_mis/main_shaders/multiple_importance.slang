@@ -1,5 +1,5 @@
 #pragma once
-// Multiple importance sampling (MIS) weights for the shade pass's two direct-lighting strategies.
+// Multiple importance sampling (MIS) weights for the two direct-lighting strategies of the shade passes.
 // Thanks to Eric Veach and Leonidas J. Guibas, "Optimally Combining Sampling Techniques for Monte
 // Carlo Rendering", SIGGRAPH 1995, pp. 419-428, https://doi.org/10.1145/218380.218498 : their
 // multi-sample estimator sum_i (1 / n_i) sum_j w_i(X_ij) f(X_ij) / p_i(X_ij) stays unbiased whenever
@@ -7,7 +7,7 @@
 // add the cutoff, power and maximum heuristics, which sharpen it where one strategy is already good.
 //
 // Each strategy here draws one sample (n_i = 1), so a density is also its strategy's effective
-// sample density n_i p_i. Both densities must use one measure: the shade pass uses solid angle.
+// sample density n_i p_i. Both densities must use one measure: the shade passes use solid angle.
 // MIS_HEURISTIC, MIS_POWER_EXPONENT and MIS_CUTOFF_THRESHOLD are Graph settings (main.lushader.json);
 // the builder declares them before this source and validates their ranges.
 

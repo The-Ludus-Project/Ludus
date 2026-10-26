@@ -233,7 +233,7 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_visibility_ordinary_RUNTIME_PACKAGE PARENT_PATH visibility_ordinary_package_directory)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_VISIBILITY_ORDINARY_DIRECTORY="${visibility_ordinary_package_directory}")
-    foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing simple_compute_ray_tracing)
+    foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing simple_compute_ray_tracing veach_guibas_mis)
         set(template_source "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/${template_directory}")
         set(template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${template_directory}_template")
         file(COPY "${template_source}/" DESTINATION "${template_staged}" PATTERN "*.in" EXCLUDE)
@@ -305,63 +305,71 @@ if(TARGET ludus_renderer_render_tests)
     ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_compute_mixed
         MANIFEST "${compute_mixed_staged}/main.lushader.json" RUNTIME_PACKAGE)
     cmake_path(GET rg2_compute_mixed_RUNTIME_PACKAGE PARENT_PATH compute_mixed_package_directory)
-    # Single-pass RayTracingPipeline reference for the compute-ray-tracing template (C4): the MIS
-    # integrator, and the light-sampling-only estimator of the same integral (no BSDF strategy).
+    # Single-pass RayTracingPipeline reference for the compute-ray-tracing template (C4).
     set(direct_lighting_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/direct_lighting_reference")
-    foreach(direct_lighting_variant IN ITEMS reference light_sampling)
-        set(direct_lighting_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/direct_lighting_${direct_lighting_variant}")
-        set(LUDUS_DIRECT_LIGHTING_IS_BSDF_SAMPLING_ENABLED true)
-        if(direct_lighting_variant STREQUAL "light_sampling")
-            set(LUDUS_DIRECT_LIGHTING_IS_BSDF_SAMPLING_ENABLED false)
-        endif()
-        file(COPY "${direct_lighting_source}/" DESTINATION "${direct_lighting_staged}" PATTERN "*.in" EXCLUDE)
-        configure_file("${direct_lighting_source}/main.lushader.json.in"
-            "${direct_lighting_staged}/main.lushader.json" @ONLY)
-        ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME "rg2_direct_lighting_${direct_lighting_variant}"
-            MANIFEST "${direct_lighting_staged}/main.lushader.json" RUNTIME_PACKAGE)
-        cmake_path(GET "rg2_direct_lighting_${direct_lighting_variant}_RUNTIME_PACKAGE" PARENT_PATH
-            direct_lighting_package_directory)
-        string(TOUPPER "${direct_lighting_variant}" direct_lighting_definition)
+    set(direct_lighting_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/direct_lighting_reference")
+    file(COPY "${direct_lighting_source}/" DESTINATION "${direct_lighting_staged}" PATTERN "*.in" EXCLUDE)
+    configure_file("${direct_lighting_source}/main.lushader.json.in"
+        "${direct_lighting_staged}/main.lushader.json" @ONLY)
+    ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_direct_lighting_reference
+        MANIFEST "${direct_lighting_staged}/main.lushader.json" RUNTIME_PACKAGE)
+    cmake_path(GET rg2_direct_lighting_reference_RUNTIME_PACKAGE PARENT_PATH direct_lighting_package_directory)
+    # Single-pass RayTracingPipeline references for the Veach and Guibas MIS template, one per shade
+    # pass: the MIS estimator and each strategy alone (REFERENCE_STRATEGY 0, 1 and 2).
+    set(veach_guibas_reference_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/veach_guibas_reference")
+    foreach(veach_guibas_variant IN ITEMS "mis;0" "light_sampling;1" "bsdf_sampling;2")
+        list(GET veach_guibas_variant 0 veach_guibas_name)
+        list(GET veach_guibas_variant 1 LUDUS_VEACH_GUIBAS_REFERENCE_STRATEGY)
+        set(veach_guibas_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/veach_guibas_reference_${veach_guibas_name}")
+        file(COPY "${veach_guibas_reference_source}/" DESTINATION "${veach_guibas_staged}" PATTERN "*.in" EXCLUDE)
+        configure_file("${veach_guibas_reference_source}/main.lushader.json.in"
+            "${veach_guibas_staged}/main.lushader.json" @ONLY)
+        ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests
+            NAME "rg2_veach_guibas_reference_${veach_guibas_name}"
+            MANIFEST "${veach_guibas_staged}/main.lushader.json" RUNTIME_PACKAGE)
+        cmake_path(GET "rg2_veach_guibas_reference_${veach_guibas_name}_RUNTIME_PACKAGE" PARENT_PATH
+            veach_guibas_package_directory)
+        string(TOUPPER "${veach_guibas_name}" veach_guibas_definition)
         target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
-            "LUDUS_RG3_DIRECT_LIGHTING_${direct_lighting_definition}_DIRECTORY=\"${direct_lighting_package_directory}\"")
+            "LUDUS_RG3_VEACH_GUIBAS_REFERENCE_${veach_guibas_definition}_DIRECTORY=\"${veach_guibas_package_directory}\"")
     endforeach()
-    # The compute-ray-tracing template once per other MIS_HEURISTIC value (the staged default is power):
+    # The Veach and Guibas template once per other MIS_HEURISTIC value (the staged default is power):
     # the same sources with only that Graph setting's value replaced.
-    set(compute_ray_tracing_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/compute_ray_tracing_template")
-    file(READ "${compute_ray_tracing_staged}/main.lushader.json" compute_ray_tracing_manifest)
-    string(JSON compute_ray_tracing_setting_count LENGTH "${compute_ray_tracing_manifest}" settings)
+    set(veach_guibas_template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/veach_guibas_mis_template")
+    file(READ "${veach_guibas_template_staged}/main.lushader.json" veach_guibas_manifest)
+    string(JSON veach_guibas_setting_count LENGTH "${veach_guibas_manifest}" settings)
     set(mis_heuristic_index -1)
-    math(EXPR compute_ray_tracing_setting_last "${compute_ray_tracing_setting_count} - 1")
-    foreach(setting_index RANGE ${compute_ray_tracing_setting_last})
-        string(JSON setting_id GET "${compute_ray_tracing_manifest}" settings ${setting_index} id)
+    math(EXPR veach_guibas_setting_last "${veach_guibas_setting_count} - 1")
+    foreach(setting_index RANGE ${veach_guibas_setting_last})
+        string(JSON setting_id GET "${veach_guibas_manifest}" settings ${setting_index} id)
         if(setting_id STREQUAL "MIS_HEURISTIC")
             set(mis_heuristic_index ${setting_index})
         endif()
     endforeach()
     if(mis_heuristic_index LESS 0)
-        message(FATAL_ERROR "The compute-ray-tracing template manifest has no MIS_HEURISTIC setting.")
+        message(FATAL_ERROR "The Veach and Guibas MIS template manifest has no MIS_HEURISTIC setting.")
     endif()
     foreach(mis_variant IN ITEMS "balance;0" "cutoff;2" "maximum;3")
         list(GET mis_variant 0 mis_name)
         list(GET mis_variant 1 mis_value)
-        set(mis_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/compute_ray_tracing_mis_${mis_name}")
-        file(COPY "${compute_ray_tracing_staged}/" DESTINATION "${mis_staged}" PATTERN "main.lushader.json" EXCLUDE)
-        string(JSON mis_manifest SET "${compute_ray_tracing_manifest}" settings ${mis_heuristic_index} value
-            ${mis_value})
+        set(mis_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/veach_guibas_mis_${mis_name}")
+        file(COPY "${veach_guibas_template_staged}/" DESTINATION "${mis_staged}" PATTERN "main.lushader.json" EXCLUDE)
+        string(JSON mis_manifest SET "${veach_guibas_manifest}" settings ${mis_heuristic_index} value ${mis_value})
         # Rewrite the staged manifest only when it changes, so reconfiguring does not rebuild the package.
         file(WRITE "${mis_staged}.lushader.json" "${mis_manifest}\n")
         file(COPY_FILE "${mis_staged}.lushader.json" "${mis_staged}/main.lushader.json" ONLY_IF_DIFFERENT)
-        ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME "rg2_compute_ray_tracing_mis_${mis_name}"
+        ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME "rg2_veach_guibas_mis_${mis_name}"
             MANIFEST "${mis_staged}/main.lushader.json" RUNTIME_PACKAGE)
-        cmake_path(GET "rg2_compute_ray_tracing_mis_${mis_name}_RUNTIME_PACKAGE" PARENT_PATH mis_package_directory)
+        cmake_path(GET "rg2_veach_guibas_mis_${mis_name}_RUNTIME_PACKAGE" PARENT_PATH mis_package_directory)
         string(TOUPPER "${mis_name}" mis_definition)
         target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
-            "LUDUS_RG3_COMPUTE_RAY_TRACING_MIS_${mis_definition}_DIRECTORY=\"${mis_package_directory}\"")
+            "LUDUS_RG3_VEACH_GUIBAS_MIS_${mis_definition}_DIRECTORY=\"${mis_package_directory}\"")
     endforeach()
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_SCENE_COMPUTE_DIRECTORY="${scene_compute_package_directory}"
         LUDUS_RG3_SCENE_COMPUTE_RASTER_DIRECTORY="${scene_compute_raster_package_directory}"
-        LUDUS_RG3_COMPUTE_MIXED_DIRECTORY="${compute_mixed_package_directory}")
+        LUDUS_RG3_COMPUTE_MIXED_DIRECTORY="${compute_mixed_package_directory}"
+        LUDUS_RG3_DIRECT_LIGHTING_REFERENCE_DIRECTORY="${direct_lighting_package_directory}")
     set(visibility_sequence_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/visibility_sequence")
     set(visibility_sequence_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/visibility_sequence")
     file(COPY "${visibility_sequence_source}/" DESTINATION "${visibility_sequence_staged}" PATTERN "*.in" EXCLUDE)

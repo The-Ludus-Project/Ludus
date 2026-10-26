@@ -1,0 +1,156 @@
+{
+  "version": 2,
+  "id": "VeachGuibasMis",
+  "default": "Default",
+  "configurations": [
+    {
+      "id": "Default",
+      "inputs": [],
+      "outputs": [],
+      "nodes": [
+        {
+          "id": "scene",
+          "kind": "Scene"
+        },
+        {
+          "active": true,
+          "id": "camera",
+          "kind": "Camera",
+          "role": "Offscreen",
+          "target_type": "ColorTexture"
+        },
+        {
+          "extent": "RenderSize",
+          "format": "RGBA8Unorm",
+          "id": "color",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "id": "renderSize",
+          "kind": "RenderSize",
+          "extent": {
+            "reference": "View",
+            "scale": [
+              1,
+              1
+            ]
+          }
+        },
+        {
+          "id": "output",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "lightSamplingOutput",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "bsdfSamplingOutput",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "transport",
+          "kind": "Subgraph",
+          "asset": "library.lurender.json",
+          "configuration": "VeachGuibasMis"
+        },
+        {
+          "id": "accumulate",
+          "kind": "Accumulate",
+          "samples": 4096
+        },
+        {
+          "id": "tonemap",
+          "kind": "ToneMap",
+          "exposure": 1
+        },
+        {
+          "id": "accumulateLightSampling",
+          "kind": "Accumulate",
+          "samples": 4096
+        },
+        {
+          "id": "tonemapLightSampling",
+          "kind": "ToneMap",
+          "exposure": 1
+        },
+        {
+          "id": "accumulateBsdfSampling",
+          "kind": "Accumulate",
+          "samples": 4096
+        },
+        {
+          "id": "tonemapBsdfSampling",
+          "kind": "ToneMap",
+          "exposure": 1
+        }
+      ],
+      "edges": [
+        {
+          "from": "scene.scene",
+          "to": "transport.scene"
+        },
+        {
+          "from": "camera.view",
+          "to": "transport.view"
+        },
+        {
+          "from": "color.texture",
+          "to": "transport.color"
+        },
+        {
+          "from": "color.texture",
+          "to": "camera.target"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "color.size"
+        },
+        {
+          "from": "transport.color",
+          "to": "accumulate.color"
+        },
+        {
+          "from": "accumulate.color",
+          "to": "tonemap.color"
+        },
+        {
+          "from": "tonemap.color",
+          "to": "output.texture"
+        },
+        {
+          "from": "transport.lightSampling",
+          "to": "accumulateLightSampling.color"
+        },
+        {
+          "from": "accumulateLightSampling.color",
+          "to": "tonemapLightSampling.color"
+        },
+        {
+          "from": "tonemapLightSampling.color",
+          "to": "lightSamplingOutput.texture"
+        },
+        {
+          "from": "transport.bsdfSampling",
+          "to": "accumulateBsdfSampling.color"
+        },
+        {
+          "from": "accumulateBsdfSampling.color",
+          "to": "tonemapBsdfSampling.color"
+        },
+        {
+          "from": "tonemapBsdfSampling.color",
+          "to": "bsdfSamplingOutput.texture"
+        }
+      ]
+    }
+  ]
+}

@@ -87,7 +87,8 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                                                QStringLiteral("restir-di"),
                                                QStringLiteral("tiled-vbuffer-nee"),
                                                QStringLiteral("compute-ray-tracing"),
-                                               QStringLiteral("simple-compute-ray-tracing")});
+                                               QStringLiteral("simple-compute-ray-tracing"),
+                                               QStringLiteral("veach-guibas-mis")});
     CHECK(graphs.at(0).Label == QStringLiteral("Raster"));
     CHECK(graphs.at(4).Label == QStringLiteral("ReSTIR DI — mesh emitter lighting"));
     CHECK(graphs.at(6).Category == QStringLiteral("ray-traced"));
@@ -100,7 +101,8 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                                  graph.Identity == QStringLiteral("visibility-secondary-rays") ||
                                  graph.Identity == QStringLiteral("tiled-vbuffer-nee") ||
                                  graph.Identity == QStringLiteral("compute-ray-tracing") ||
-                                 graph.Identity == QStringLiteral("simple-compute-ray-tracing");
+                                 graph.Identity == QStringLiteral("simple-compute-ray-tracing") ||
+                                 graph.Identity == QStringLiteral("veach-guibas-mis");
         CHECK(graph.Requirements.contains(QStringLiteral("native-ray-tracing")) == isRayTraced);
     }
 
@@ -109,6 +111,7 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                                                  QStringLiteral("tiled-vbuffer-nee"),
                                                  QStringLiteral("compute-ray-tracing"),
                                                  QStringLiteral("simple-compute-ray-tracing"),
+                                                 QStringLiteral("veach-guibas-mis"),
                                                  QStringLiteral("visibility-buffer"),
                                                  QStringLiteral("visibility-secondary-rays")});
     QStringList defaults;
@@ -120,6 +123,7 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                                   QStringLiteral("TiledVbufferNee"),
                                   QStringLiteral("ComputeRayTracing"),
                                   QStringLiteral("SimpleComputeRayTracing"),
+                                  QStringLiteral("VeachGuibasMis"),
                                   QStringLiteral("VisibilityBuffer"),
                                   QStringLiteral("VisibilitySecondaryRays")});
     CHECK(registry.HasTemplate(RenderGraphTemplateKind::Snippet, QStringLiteral("raster")) == false);

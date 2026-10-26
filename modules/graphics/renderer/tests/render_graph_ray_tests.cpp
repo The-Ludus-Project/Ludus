@@ -14,6 +14,7 @@
 #include "rg2_simple_compute_ray_tracing_template.h"
 #include "rg2_storage_ray.h"
 #include "rg2_tiled_vbuffer_nee_template.h"
+#include "rg2_veach_guibas_mis_template.h"
 #include "rg2_visibility.h"
 #include "rg2_visibility_buffer_template.h"
 #include "rg2_visibility_ordinary.h"
@@ -2133,15 +2134,9 @@ struct ExportExtent final
     uint32 Height = HEIGHT;
 };
 
-/// Render one frame and copy an RGBA8 export of the given extent into outPixels.
-void RenderExport(renderer::RenderGraph& inoutGraph,
-                  const GraphGpuFixture& fixture,
-                  uint32 exportResource,
-                  ExportExtent extent,
-                  Array<uint8>& outPixels)
+/// Render one frame and wait for its completion.
+void RenderFrame(renderer::RenderGraph& inoutGraph, const GraphGpuFixture& fixture)
 {
-    const uint32 width = extent.Width;
-    const uint32 height = extent.Height;
     constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
     rhi::SubmissionToken completion;
     REQUIRE(inoutGraph.Render(fixture.Surface, WIDTH, HEIGHT, completion) == rhi::RasterStatus::Ready);
@@ -2152,13 +2147,27 @@ void RenderExport(renderer::RenderGraph& inoutGraph,
         result = rhi::GetStatus(fixture.Device, completion);
     }
     REQUIRE(result == rhi::RasterStatus::Ready);
+}
+
+/// Copy an RGBA8 export of the given extent, as the last rendered frame left it, into outPixels.
+void ReadExport(renderer::RenderGraph& inoutGraph,
+                const GraphGpuFixture& fixture,
+                uint32 exportResource,
+                ExportExtent extent,
+                Array<uint8>& outPixels)
+{
+    const uint32 width = extent.Width;
+    const uint32 height = extent.Height;
+    constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
+    const uint64 beginning = time::NowTicks();
     rhi::TextureHandle texture;
     rhi::TextureAspect aspect;
     REQUIRE(inoutGraph.GetExport(exportResource, texture, aspect) == rhi::RasterStatus::Ready);
     const usize rowBytes = static_cast<usize>(width) * 4;
     REQUIRE(outPixels.TryResize(rowBytes * height) == true);
     rhi::ReadbackTicket ticket;
-    result = rhi::RequestTextureReadback(fixture.Device, texture, {0, 0, 0, width, height}, rowBytes, ticket);
+    rhi::RasterStatus result =
+        rhi::RequestTextureReadback(fixture.Device, texture, {0, 0, 0, width, height}, rowBytes, ticket);
     while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
     {
         result = rhi::GetStatus(fixture.Device, ticket);
@@ -2167,6 +2176,17 @@ void RenderExport(renderer::RenderGraph& inoutGraph,
     REQUIRE(rhi::CopyReadback(fixture.Device, ticket, outPixels.GetData(), outPixels.GetSize()) ==
             rhi::RasterStatus::Ready);
     REQUIRE(rhi::Release(fixture.Device, ticket) == rhi::RasterStatus::Ready);
+}
+
+/// Render one frame and copy an RGBA8 export of the given extent into outPixels.
+void RenderExport(renderer::RenderGraph& inoutGraph,
+                  const GraphGpuFixture& fixture,
+                  uint32 exportResource,
+                  ExportExtent extent,
+                  Array<uint8>& outPixels)
+{
+    RenderFrame(inoutGraph, fixture);
+    ReadExport(inoutGraph, fixture, exportResource, extent, outPixels);
 }
 
 /// Number of RGBA8 pixels showing the renderer's magenta shader-failure color.
@@ -2404,13 +2424,12 @@ TEST_CASE("The compute ray-tracing template matches a single-pass direct-lightin
     CHECK(pixels[right + 1] > pixels[right]);
     constexpr float32 MINIMUM_MEAN_RADIANCE = .01F;
     CHECK(mean.X > MINIMUM_MEAN_RADIANCE);
-    // Both estimate emission plus one light sample and one BSDF sample per pixel and frame, combined
-    // with the power heuristic. The reference draws jitter, light selection, light shape and BSDF
-    // direction from its automatic stream in the order of the template's explicit ranges ([0, 2),
-    // then [2, 9)), so each sample sees the same random values: on Metal the two images are
-    // byte-identical. The tolerances allow other backends to contract floating-point operations
-    // differently in the two kernels. A 2% mean difference also exceeds the Monte Carlo error of 64
-    // samples per pixel over this image.
+    // Both estimate emission plus one shadowed light sample per pixel and frame. The reference draws
+    // jitter, light selection and light shape from its automatic stream in the order of the
+    // template's explicit ranges ([0, 2), then [2, 6)), so each sample sees the same random values:
+    // on Metal the two images are byte-identical. The tolerances allow other backends to contract
+    // floating-point operations differently in the two kernels. A 2% mean difference also exceeds
+    // the Monte Carlo error of 64 samples per pixel over this image.
     constexpr float32 RELATIVE_MEAN_TOLERANCE = .02F;
     CHECK(math::Abs(mean.X - referenceMean.X) < RELATIVE_MEAN_TOLERANCE * referenceMean.X);
     CHECK(math::Abs(mean.Y - referenceMean.Y) < RELATIVE_MEAN_TOLERANCE * referenceMean.Y);
@@ -2428,7 +2447,7 @@ TEST_CASE("The compute ray-tracing template matches a single-pass direct-lightin
         }
         differingPixels += isDifferent == true ? 1 : 0;
     }
-    // At most one pixel in a thousand, for shadow or BSDF rays that graze an edge differently.
+    // At most one pixel in a thousand, for shadow rays that graze an edge differently.
     constexpr usize DIFFERING_PIXEL_DIVISOR = 1000;
     CHECK(differingPixels <= static_cast<usize>(WIDTH) * HEIGHT / DIFFERING_PIXEL_DIVISOR);
 
@@ -2451,99 +2470,279 @@ TEST_CASE("The compute ray-tracing template matches a single-pass direct-lightin
     }
 }
 
-TEST_CASE("Every MIS heuristic of the compute ray-tracing template estimates the light-sampling integral",
-          "[render-graph][gpu][compute-ray-tracing][template][mis]")
+namespace
 {
-    // Veach and Guibas's multi-sample estimator is unbiased whenever the strategy weights sum to one.
-    // Each heuristic variant of the template (the same sources with another MIS_HEURISTIC setting)
-    // must therefore converge to what the light-sampling-only reference estimates for the same room.
-    GraphGpuFixture fixture;
-    CornellBox room;
-    // Glossy metal on the white surfaces and a grey sky through the open front. For highlights of the
-    // ceiling light and for the sky, BSDF sampling has the higher density, so the BSDF strategy
-    // carries much of the estimate instead of a negligible share, as it does in the diffuse room.
+// Veach and Guibas MIS template tests. Thanks to Eric Veach and Leonidas J. Guibas, "Optimally
+// Combining Sampling Techniques for Monte Carlo Rendering", SIGGRAPH 1995, pp. 419-428,
+// https://doi.org/10.1145/218380.218498 : the template combines their light and BSDF strategies and
+// exports each strategy alone, so these tests check the estimator's unbiasedness and its lower noise.
+
+/// Shade passes of the template, in its output order: MIS (the graph's color output), then each strategy alone.
+constexpr usize VEACH_GUIBAS_OUTPUT_COUNT = 3;
+/// Index of the first shade pass; pass 0 records the primary hits.
+constexpr usize VEACH_GUIBAS_FIRST_SHADE_PASS = 1;
+constexpr usize VEACH_GUIBAS_MIS = 0;
+constexpr usize VEACH_GUIBAS_LIGHT_SAMPLING = 1;
+constexpr usize VEACH_GUIBAS_BSDF_SAMPLING = 2;
+constexpr uint64 VEACH_GUIBAS_TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
+
+/// Glossy metal on the white surfaces and a grey sky through the open front. For highlights of the
+/// ceiling light and for the sky, BSDF sampling has the higher density, while light sampling suits
+/// the diffuse red and green walls: as in Veach and Guibas's glossy-plate scene, neither strategy is
+/// good everywhere.
+void MakeRoomGlossy(CornellBox& inoutRoom)
+{
     constexpr float32 GLOSSY_ROUGHNESS = .3F;
     constexpr float32 SKY_RADIANCE = .5F;
-    room.Materials[CORNELL_WHITE].Metallic = 1;
-    room.Materials[CORNELL_WHITE].Roughness = GLOSSY_ROUGHNESS;
-    room.Inputs.Environment = {SKY_RADIANCE, SKY_RADIANCE, SKY_RADIANCE};
-    constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
-    constexpr usize FRAME_COUNT = 256;
-    const auto render = [&fixture, &room](const PackageLocation& location, Array<uint8>& outPixels) {
-        const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(location);
-        const renderer::RenderGraphPlan plan = package->GetPlan();
-        const renderer::RenderGraphPrograms programs =
-            package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
-        uint32 output = 0;
-        for (uint32 resource = 0; resource < plan.Resources.GetSize(); ++resource)
-        {
-            output = plan.Resources[resource].IsExported == 1 ? resource : output;
-        }
-        renderer::RenderGraph graph;
-        const auto wait = [&graph](rhi::RasterStatus initial) {
-            rhi::RasterStatus status = initial;
-            const uint64 beginning = time::NowTicks();
-            while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
-            {
-                status = graph.Poll();
-            }
-            REQUIRE(status == rhi::RasterStatus::Ready);
-        };
-        wait(graph.Initialize(fixture.Device, plan, programs, nullptr, WIDTH, HEIGHT));
+    inoutRoom.Materials[CORNELL_WHITE].Metallic = 1;
+    inoutRoom.Materials[CORNELL_WHITE].Roughness = GLOSSY_ROUGHNESS;
+    inoutRoom.Inputs.Environment = {SKY_RADIANCE, SKY_RADIANCE, SKY_RADIANCE};
+}
+
+/// A runtime graph initialized for one room, with the package storage its programs borrow.
+struct PreparedGraph final
+{
+    core::UniquePtr<renderer::RenderGraphPackage> Package;
+    renderer::RenderGraphPlan Plan;
+    renderer::RenderGraphPrograms Programs;
+    renderer::RenderGraph Graph;
+
+    /// @param revision Scene and camera revision; a different revision reseeds sampling.
+    PreparedGraph(const GraphGpuFixture& fixture,
+                  const PackageLocation& location,
+                  const CornellBox& room,
+                  uint64 revision)
+        : Package(LoadPackage(location)), Plan(Package->GetPlan()),
+          Programs(Package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment()))
+    {
+        wait(Graph.Initialize(fixture.Device, Plan, Programs, nullptr, WIDTH, HEIGHT));
         renderer::RenderGraphReport report;
-        wait(graph.Update({room.Meshes.GetData(), room.Meshes.GetSize()},
+        wait(Graph.Update({room.Meshes.GetData(), room.Meshes.GetSize()},
                           {room.Items.GetData(), room.Items.GetSize()},
                           {room.Cameras.GetData(), room.Cameras.GetSize()},
-                          1,
+                          revision,
                           renderer::RenderGraphCoveragePolicy::RejectIncomplete,
                           report,
                           &room.Inputs,
-                          1));
-        for (usize frame = 0; frame < FRAME_COUNT; ++frame)
+                          revision));
+    }
+    PreparedGraph(const PreparedGraph&) = delete;
+    PreparedGraph& operator=(const PreparedGraph&) = delete;
+
+    /// The single exported color resource of a reference graph.
+    uint32 GetOnlyExport() const
+    {
+        uint32 output = 0;
+        usize exportCount = 0;
+        for (uint32 resource = 0; resource < Plan.Resources.GetSize(); ++resource)
         {
-            RenderExport(graph, fixture, output, {}, outPixels);
-            REQUIRE(CountFailurePixels(outPixels) == 0);
+            output = Plan.Resources[resource].IsExported == 1 ? resource : output;
+            exportCount += Plan.Resources[resource].IsExported == 1 ? 1 : 0;
         }
-        return ComputeMeanRadiance(outPixels);
-    };
-    Array<uint8> lightSamplingPixels;
-    const math::Vector3 lightSampling =
-        render({LUDUS_RG3_DIRECT_LIGHTING_LIGHT_SAMPLING_DIRECTORY, "rg2_direct_lighting_light_sampling.lurgrt"},
-               lightSamplingPixels);
-    PackageLocation heuristic{LUDUS_RG3_COMPUTE_RAY_TRACING_TEMPLATE_DIRECTORY,
-                              "rg2_compute_ray_tracing_template.lurgrt"};
-    SECTION("power (default)") {}
-    SECTION("balance")
-    {
-        heuristic = {LUDUS_RG3_COMPUTE_RAY_TRACING_MIS_BALANCE_DIRECTORY, "rg2_compute_ray_tracing_mis_balance.lurgrt"};
+        REQUIRE(exportCount == 1);
+        return output;
     }
-    SECTION("cutoff")
+
+    /// The template's exports, identified by the shade pass that writes each one.
+    StaticArray<uint32, VEACH_GUIBAS_OUTPUT_COUNT> GetVeachGuibasExports() const
     {
-        heuristic = {LUDUS_RG3_COMPUTE_RAY_TRACING_MIS_CUTOFF_DIRECTORY, "rg2_compute_ray_tracing_mis_cutoff.lurgrt"};
+        REQUIRE(Plan.Passes.GetSize() == VEACH_GUIBAS_FIRST_SHADE_PASS + VEACH_GUIBAS_OUTPUT_COUNT);
+        StaticArray<uint32, VEACH_GUIBAS_OUTPUT_COUNT> exports{};
+        for (usize output = 0; output < VEACH_GUIBAS_OUTPUT_COUNT; ++output)
+        {
+            exports[output] = Plan.Passes[VEACH_GUIBAS_FIRST_SHADE_PASS + output].Color;
+            REQUIRE(exports[output] < Plan.Resources.GetSize());
+            REQUIRE(Plan.Resources[exports[output]].IsExported == 1);
+        }
+        REQUIRE(exports[VEACH_GUIBAS_MIS] != exports[VEACH_GUIBAS_LIGHT_SAMPLING]);
+        REQUIRE(exports[VEACH_GUIBAS_MIS] != exports[VEACH_GUIBAS_BSDF_SAMPLING]);
+        REQUIRE(exports[VEACH_GUIBAS_LIGHT_SAMPLING] != exports[VEACH_GUIBAS_BSDF_SAMPLING]);
+        return exports;
     }
-    SECTION("maximum")
+
+private:
+    void wait(rhi::RasterStatus initial)
     {
-        heuristic = {LUDUS_RG3_COMPUTE_RAY_TRACING_MIS_MAXIMUM_DIRECTORY, "rg2_compute_ray_tracing_mis_maximum.lurgrt"};
+        rhi::RasterStatus status = initial;
+        const uint64 beginning = time::NowTicks();
+        while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < VEACH_GUIBAS_TIMEOUT)
+        {
+            status = Graph.Poll();
+        }
+        REQUIRE(status == rhi::RasterStatus::Ready);
     }
-    Array<uint8> pixels;
-    const math::Vector3 mean = render(heuristic, pixels);
-    // Both share the light strategy's random values, so the images differ only through the weights
-    // and the BSDF strategy. A difference in many pixels shows that the BSDF strategy contributes.
-    constexpr uint8 CHANNEL_TOLERANCE = 2;
+};
+
+/// Render frameCount frames of the template and read each output's running mean after the last one.
+void RenderVeachGuibasOutputs(PreparedGraph& inoutTemplate,
+                              const GraphGpuFixture& fixture,
+                              usize frameCount,
+                              StaticArray<Array<uint8>, VEACH_GUIBAS_OUTPUT_COUNT>& outPixels)
+{
+    const StaticArray<uint32, VEACH_GUIBAS_OUTPUT_COUNT> exports = inoutTemplate.GetVeachGuibasExports();
+    for (usize frame = 0; frame < frameCount; ++frame)
+    {
+        RenderFrame(inoutTemplate.Graph, fixture);
+    }
+    for (usize output = 0; output < VEACH_GUIBAS_OUTPUT_COUNT; ++output)
+    {
+        ReadExport(inoutTemplate.Graph, fixture, exports[output], {}, outPixels[output]);
+        // Invalid hit records, exhausted budgets and failed queries would show magenta.
+        REQUIRE(CountFailurePixels(outPixels[output]) == 0);
+    }
+}
+
+/// Number of pixels whose RGB channels differ by more than channelTolerance.
+usize CountDifferingPixels(const Array<uint8>& first, const Array<uint8>& second, uint8 channelTolerance)
+{
+    REQUIRE(first.GetSize() == second.GetSize());
     usize differingPixels = 0;
-    for (usize address = 0; address < pixels.GetSize(); address += 4)
+    for (usize address = 0; address + 3 < first.GetSize(); address += 4)
     {
         bool isDifferent = false;
         for (usize channel = 0; channel < 3; ++channel)
         {
-            const uint8 high = math::Max(pixels[address + channel], lightSamplingPixels[address + channel]);
-            const uint8 low = math::Min(pixels[address + channel], lightSamplingPixels[address + channel]);
-            isDifferent = isDifferent == true || high - low > CHANNEL_TOLERANCE;
+            const uint8 high = math::Max(first[address + channel], second[address + channel]);
+            const uint8 low = math::Min(first[address + channel], second[address + channel]);
+            isDifferent = isDifferent == true || high - low > channelTolerance;
         }
         differingPixels += isDifferent == true ? 1 : 0;
     }
-    INFO("MIS mean=" << mean.X << ',' << mean.Y << ',' << mean.Z << ", light sampling mean=" << lightSampling.X << ','
-                     << lightSampling.Y << ',' << lightSampling.Z << ", differing pixels=" << differingPixels);
+    return differingPixels;
+}
+
+/// Mean squared error of decoded linear radiance against a converged image, over pixels and RGB channels.
+float64 ComputeMeanSquaredError(const Array<uint8>& pixels, const Array<uint8>& converged)
+{
+    REQUIRE(pixels.GetSize() == converged.GetSize());
+    float64 sum = 0;
+    for (usize address = 0; address + 3 < pixels.GetSize(); address += 4)
+    {
+        for (usize channel = 0; channel < 3; ++channel)
+        {
+            const float64 difference = static_cast<float64>(DecodeToneMapped(pixels[address + channel])) -
+                                       static_cast<float64>(DecodeToneMapped(converged[address + channel]));
+            sum += difference * difference;
+        }
+    }
+    constexpr float64 CHANNEL_COUNT = 3;
+    return sum / (static_cast<float64>(pixels.GetSize() / 4) * CHANNEL_COUNT);
+}
+
+/// Image means agree within a relative tolerance in every channel.
+void CheckMeansAgree(const math::Vector3& mean, const math::Vector3& expected, float32 relativeTolerance)
+{
+    CHECK(math::Abs(mean.X - expected.X) < relativeTolerance * expected.X);
+    CHECK(math::Abs(mean.Y - expected.Y) < relativeTolerance * expected.Y);
+    CHECK(math::Abs(mean.Z - expected.Z) < relativeTolerance * expected.Z);
+}
+} // namespace
+
+TEST_CASE("The Veach and Guibas MIS template matches single-pass references for each of its three outputs",
+          "[render-graph][gpu][veach-guibas][template]")
+{
+    GraphGpuFixture fixture;
+    CornellBox room;
+    MakeRoomGlossy(room);
+    PreparedGraph mis(fixture,
+                      {LUDUS_RG3_VEACH_GUIBAS_MIS_TEMPLATE_DIRECTORY, "rg2_veach_guibas_mis_template.lurgrt"},
+                      room,
+                      1);
+    CheckSameStage(mis.Programs.RayCompute,
+                   packages::rg2_veach_guibas_mis_template::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                                         shaders::renderer_composite::Fragment())
+                       .RayCompute);
+    REQUIRE(mis.Programs.HasPersistentRayBuffers == true);
+    REQUIRE(renderer::RequiresHardwareRayTracing(mis.Plan) == true);
+    // The primary-hits pass, then one shade pass per output with its own Accumulate and ToneMap.
+    for (usize pass = 0; pass < mis.Plan.Passes.GetSize(); ++pass)
+    {
+        INFO("pass " << pass);
+        CHECK(mis.Plan.Passes[pass].Program == format::Technique::RayTracing);
+        CHECK((mis.Plan.Passes[pass].AccumulationSamples > 0) == (pass >= VEACH_GUIBAS_FIRST_SHADE_PASS));
+        CHECK((mis.Plan.Passes[pass].ToneMappingExposure == 1) == (pass >= VEACH_GUIBAS_FIRST_SHADE_PASS));
+    }
+    StaticArray<Array<uint8>, VEACH_GUIBAS_OUTPUT_COUNT> pixels;
+    // Both graphs accumulate a running mean; compare after the same number of samples.
+    constexpr usize FRAME_COUNT = 64;
+    RenderVeachGuibasOutputs(mis, fixture, FRAME_COUNT, pixels);
+
+    const StaticArray<PackageLocation, VEACH_GUIBAS_OUTPUT_COUNT> references{{
+        {LUDUS_RG3_VEACH_GUIBAS_REFERENCE_MIS_DIRECTORY, "rg2_veach_guibas_reference_mis.lurgrt"},
+        {LUDUS_RG3_VEACH_GUIBAS_REFERENCE_LIGHT_SAMPLING_DIRECTORY, "rg2_veach_guibas_reference_light_sampling.lurgrt"},
+        {LUDUS_RG3_VEACH_GUIBAS_REFERENCE_BSDF_SAMPLING_DIRECTORY, "rg2_veach_guibas_reference_bsdf_sampling.lurgrt"},
+    }};
+    for (usize output = 0; output < VEACH_GUIBAS_OUTPUT_COUNT; ++output)
+    {
+        PreparedGraph reference(fixture, references[output], room, 1);
+        REQUIRE(reference.Plan.Passes.GetSize() == 1);
+        const uint32 referenceOutput = reference.GetOnlyExport();
+        Array<uint8> referencePixels;
+        for (usize frame = 0; frame < FRAME_COUNT; ++frame)
+        {
+            RenderExport(reference.Graph, fixture, referenceOutput, {}, referencePixels);
+        }
+        REQUIRE(CountFailurePixels(referencePixels) == 0);
+        const math::Vector3 mean = ComputeMeanRadiance(pixels[output]);
+        const math::Vector3 referenceMean = ComputeMeanRadiance(referencePixels);
+        INFO("output " << output << ": template mean=" << mean.X << ',' << mean.Y << ',' << mean.Z
+                       << ", reference mean=" << referenceMean.X << ',' << referenceMean.Y << ',' << referenceMean.Z);
+        constexpr float32 MINIMUM_MEAN_RADIANCE = .01F;
+        CHECK(mean.X > MINIMUM_MEAN_RADIANCE);
+        // Each reference draws jitter, light selection, light shape and BSDF direction from its
+        // automatic stream in the order of the template's explicit ranges ([0, 2), then [2, 9)), so
+        // each sample sees the same random values: on Metal the images are byte-identical. The
+        // tolerances allow other backends to contract floating-point operations differently in the
+        // two kernels. A 2% mean difference also exceeds the Monte Carlo error of 64 samples per pixel.
+        constexpr float32 RELATIVE_MEAN_TOLERANCE = .02F;
+        CheckMeansAgree(mean, referenceMean, RELATIVE_MEAN_TOLERANCE);
+        // At most one pixel in a thousand, for shadow or BSDF rays that graze an edge differently.
+        constexpr uint8 CHANNEL_TOLERANCE = 2;
+        constexpr usize DIFFERING_PIXEL_DIVISOR = 1000;
+        CHECK(CountDifferingPixels(pixels[output], referencePixels, CHANNEL_TOLERANCE) <=
+              static_cast<usize>(WIDTH) * HEIGHT / DIFFERING_PIXEL_DIVISOR);
+    }
+}
+
+TEST_CASE("Every MIS heuristic of the Veach and Guibas template estimates the same integral as each strategy alone",
+          "[render-graph][gpu][veach-guibas][template][mis]")
+{
+    // Veach and Guibas's multi-sample estimator is unbiased whenever the strategy weights sum to one.
+    // Each heuristic variant (the same sources with another MIS_HEURISTIC setting) must therefore
+    // converge to what light sampling alone estimates; so must BSDF sampling alone, since the room has
+    // no delta light that BSDF sampling could miss.
+    GraphGpuFixture fixture;
+    CornellBox room;
+    MakeRoomGlossy(room);
+    PackageLocation heuristic{LUDUS_RG3_VEACH_GUIBAS_MIS_TEMPLATE_DIRECTORY, "rg2_veach_guibas_mis_template.lurgrt"};
+    SECTION("power (default)") {}
+    SECTION("balance")
+    {
+        heuristic = {LUDUS_RG3_VEACH_GUIBAS_MIS_BALANCE_DIRECTORY, "rg2_veach_guibas_mis_balance.lurgrt"};
+    }
+    SECTION("cutoff")
+    {
+        heuristic = {LUDUS_RG3_VEACH_GUIBAS_MIS_CUTOFF_DIRECTORY, "rg2_veach_guibas_mis_cutoff.lurgrt"};
+    }
+    SECTION("maximum")
+    {
+        heuristic = {LUDUS_RG3_VEACH_GUIBAS_MIS_MAXIMUM_DIRECTORY, "rg2_veach_guibas_mis_maximum.lurgrt"};
+    }
+    PreparedGraph graph(fixture, heuristic, room, 1);
+    constexpr usize FRAME_COUNT = 256;
+    StaticArray<Array<uint8>, VEACH_GUIBAS_OUTPUT_COUNT> pixels;
+    RenderVeachGuibasOutputs(graph, fixture, FRAME_COUNT, pixels);
+    const math::Vector3 mis = ComputeMeanRadiance(pixels[VEACH_GUIBAS_MIS]);
+    const math::Vector3 lightSampling = ComputeMeanRadiance(pixels[VEACH_GUIBAS_LIGHT_SAMPLING]);
+    const math::Vector3 bsdfSampling = ComputeMeanRadiance(pixels[VEACH_GUIBAS_BSDF_SAMPLING]);
+    // MIS and light sampling share the light strategy's random values, so the images differ only through
+    // the weights and the BSDF strategy. A difference in many pixels shows that the BSDF strategy contributes.
+    constexpr uint8 CHANNEL_TOLERANCE = 2;
+    const usize differingPixels =
+        CountDifferingPixels(pixels[VEACH_GUIBAS_MIS], pixels[VEACH_GUIBAS_LIGHT_SAMPLING], CHANNEL_TOLERANCE);
+    INFO("MIS mean=" << mis.X << ',' << mis.Y << ',' << mis.Z << ", light sampling mean=" << lightSampling.X << ','
+                     << lightSampling.Y << ',' << lightSampling.Z << ", BSDF sampling mean=" << bsdfSampling.X << ','
+                     << bsdfSampling.Y << ',' << bsdfSampling.Z << ", differing pixels=" << differingPixels);
     constexpr usize DIFFERING_PIXEL_DIVISOR = 10;
     CHECK(differingPixels > static_cast<usize>(WIDTH) * HEIGHT / DIFFERING_PIXEL_DIVISOR);
     constexpr float32 MINIMUM_MEAN_RADIANCE = .01F;
@@ -2551,9 +2750,41 @@ TEST_CASE("Every MIS heuristic of the compute ray-tracing template estimates the
     // Estimates of one integral, compared after decoding the tone-mapped running means. With 256
     // samples per pixel the image-mean Monte Carlo difference stays well below 2%.
     constexpr float32 RELATIVE_MEAN_TOLERANCE = .02F;
-    CHECK(math::Abs(mean.X - lightSampling.X) < RELATIVE_MEAN_TOLERANCE * lightSampling.X);
-    CHECK(math::Abs(mean.Y - lightSampling.Y) < RELATIVE_MEAN_TOLERANCE * lightSampling.Y);
-    CHECK(math::Abs(mean.Z - lightSampling.Z) < RELATIVE_MEAN_TOLERANCE * lightSampling.Z);
+    CheckMeansAgree(mis, lightSampling, RELATIVE_MEAN_TOLERANCE);
+    CheckMeansAgree(bsdfSampling, lightSampling, RELATIVE_MEAN_TOLERANCE);
+}
+
+TEST_CASE("The Veach and Guibas MIS output has less error than either sampling strategy alone",
+          "[render-graph][gpu][veach-guibas][template][mis]")
+{
+    // The paper's central result: in a scene where each strategy fails somewhere (glossy highlights
+    // for light sampling, the small light on diffuse walls for BSDF sampling), MIS keeps the error of
+    // whichever strategy is better at each sample. Compare low-sample images of all three outputs
+    // with an independent converged image: another graph instance whose scene revision reseeds sampling.
+    GraphGpuFixture fixture;
+    CornellBox room;
+    MakeRoomGlossy(room);
+    const PackageLocation location{LUDUS_RG3_VEACH_GUIBAS_MIS_TEMPLATE_DIRECTORY,
+                                   "rg2_veach_guibas_mis_template.lurgrt"};
+    PreparedGraph graph(fixture, location, room, 1);
+    constexpr usize LOW_FRAME_COUNT = 16;
+    StaticArray<Array<uint8>, VEACH_GUIBAS_OUTPUT_COUNT> pixels;
+    RenderVeachGuibasOutputs(graph, fixture, LOW_FRAME_COUNT, pixels);
+    constexpr uint64 CONVERGED_REVISION = 2;
+    PreparedGraph convergedGraph(fixture, location, room, CONVERGED_REVISION);
+    constexpr usize CONVERGED_FRAME_COUNT = 1024;
+    StaticArray<Array<uint8>, VEACH_GUIBAS_OUTPUT_COUNT> converged;
+    RenderVeachGuibasOutputs(convergedGraph, fixture, CONVERGED_FRAME_COUNT, converged);
+    StaticArray<float64, VEACH_GUIBAS_OUTPUT_COUNT> errors{};
+    for (usize output = 0; output < VEACH_GUIBAS_OUTPUT_COUNT; ++output)
+    {
+        errors[output] = ComputeMeanSquaredError(pixels[output], converged[VEACH_GUIBAS_MIS]);
+    }
+    INFO("mean squared error at " << LOW_FRAME_COUNT << " samples: MIS=" << errors[VEACH_GUIBAS_MIS]
+                                  << ", light sampling=" << errors[VEACH_GUIBAS_LIGHT_SAMPLING]
+                                  << ", BSDF sampling=" << errors[VEACH_GUIBAS_BSDF_SAMPLING]);
+    CHECK(errors[VEACH_GUIBAS_MIS] < errors[VEACH_GUIBAS_LIGHT_SAMPLING]);
+    CHECK(errors[VEACH_GUIBAS_MIS] < errors[VEACH_GUIBAS_BSDF_SAMPLING]);
 }
 
 TEST_CASE("ToneMap applies exposure after linear accumulation and can be bypassed",
