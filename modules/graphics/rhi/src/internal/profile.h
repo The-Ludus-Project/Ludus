@@ -4,6 +4,8 @@
 
 namespace ludus::graphics::rhi::internal
 {
+/// Minimum guaranteed uniform range of the complete portable raster profile.
+inline constexpr foundation::usize PORTABLE_UNIFORM_BYTES = foundation::usize{16} * 1024;
 bool ValidProfileRequirements(const DeviceProfileRequirements&) noexcept;
 bool NeedsRaster(const DeviceProfileRequirements&) noexcept;
 bool NeedsCompute(const DeviceProfileRequirements&) noexcept;

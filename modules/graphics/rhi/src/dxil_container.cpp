@@ -1,4 +1,5 @@
 #include "internal/dxil_container.h"
+#include "internal/raster.h"
 
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/core.h>
@@ -185,5 +186,101 @@ bool HasDxilEntry(std::span<const uint8> bytes, ShaderStage stage, std::string_v
     }
     const uint32 kind = GetShaderKind(stage);
     return programVersion >> PROGRAM_KIND_SHIFT == kind && validationKind == kind && validationEntry == entry;
+}
+
+bool HasDxilBindings(std::span<const uint8> bytes, const RasterLayout& layout) noexcept
+{
+    // PSVResourceBindInfo1: ResType, Space, LowerBound, UpperBound, ResKind,
+    // ResFlags. See the DXC attribution above. Read fields, never host structs.
+    constexpr usize TYPE_OFFSET = 0;
+    constexpr usize SPACE_OFFSET = TYPE_OFFSET + sizeof(uint32);
+    constexpr usize LOWER_OFFSET = SPACE_OFFSET + sizeof(uint32);
+    constexpr usize UPPER_OFFSET = LOWER_OFFSET + sizeof(uint32);
+    constexpr usize KIND_OFFSET = UPPER_OFFSET + sizeof(uint32);
+    constexpr usize FLAGS_OFFSET = KIND_OFFSET + sizeof(uint32);
+    constexpr usize RECORD_WORDS = (FLAGS_OFFSET + sizeof(uint32)) / sizeof(uint32);
+    constexpr usize RECORD_BYTES = RECORD_WORDS * sizeof(uint32);
+    constexpr uint32 SAMPLER_TYPE = 1;
+    constexpr uint32 UNIFORM_TYPE = 2;
+    constexpr uint32 TEXTURE_TYPE = 3;
+    constexpr uint32 TEXTURE2D_KIND = 2;
+    constexpr uint32 TEXTURE3D_KIND = 4;
+    constexpr uint32 TEXTURE_CUBE_KIND = 5;
+    constexpr uint32 TEXTURE_ARRAY_KIND = 7;
+    constexpr uint32 UNIFORM_KIND = 13;
+    constexpr uint32 SAMPLER_KIND = 14;
+    std::span<const uint8> part;
+    uint32 runtimeBytes = 0;
+    if (IsDxilContainer(bytes) == false || FindPart(bytes, VALIDATION_PART_CODE, part) == false ||
+        ReadUint32(part, 0, runtimeBytes) == false || runtimeBytes < RUNTIME_VERSION3_BYTES ||
+        runtimeBytes > part.size() - UINT32_BYTES)
+    {
+        return false;
+    }
+    usize position = UINT32_BYTES + runtimeBytes;
+    uint32 count = 0;
+    if (ReadUint32(part, position, count) == false || count != layout.Count)
+    {
+        return false;
+    }
+    if (count == 0)
+    {
+        return true;
+    }
+    position += UINT32_BYTES;
+    uint32 stride = 0;
+    if (ReadUint32(part, position, stride) == false || stride < RECORD_BYTES)
+    {
+        return false;
+    }
+    position += UINT32_BYTES;
+    if (uint64{count} * stride > part.size() - position)
+    {
+        return false;
+    }
+    uint32 matchedBindings = 0;
+    for (uint32 resource = 0; resource < count; ++resource)
+    {
+        uint32 type = 0;
+        uint32 space = 0;
+        uint32 lower = 0;
+        uint32 upper = 0;
+        uint32 kind = 0;
+        const usize record = position + usize{resource} * stride;
+        if (ReadUint32(part, record, type) == false || ReadUint32(part, record + UINT32_BYTES, space) == false ||
+            ReadUint32(part, record + 2 * UINT32_BYTES, lower) == false ||
+            ReadUint32(part, record + UPPER_OFFSET, upper) == false ||
+            ReadUint32(part, record + KIND_OFFSET, kind) == false || space != 0 || lower != upper ||
+            lower >= RASTER_BINDING_COUNT || (matchedBindings & (uint32{1} << lower)) != 0)
+        {
+            return false;
+        }
+        bool isMatched = false;
+        for (usize entry = 0; entry < layout.Count; ++entry)
+        {
+            const RasterBinding& binding = layout.Entries[entry];
+            if (binding.Binding != lower || binding.Count != 1 || binding.IsRuntimeSized == true)
+            {
+                continue;
+            }
+            const uint32 expectedType = binding.Kind == RasterBindingKind::UniformBuffer ? UNIFORM_TYPE
+                                        : binding.Kind == RasterBindingKind::Sampler     ? SAMPLER_TYPE
+                                                                                         : TEXTURE_TYPE;
+            const uint32 expectedKind = binding.Kind == RasterBindingKind::UniformBuffer    ? UNIFORM_KIND
+                                        : binding.Kind == RasterBindingKind::Sampler        ? SAMPLER_KIND
+                                        : binding.Kind == RasterBindingKind::Texture2D      ? TEXTURE2D_KIND
+                                        : binding.Kind == RasterBindingKind::Texture2DArray ? TEXTURE_ARRAY_KIND
+                                        : binding.Kind == RasterBindingKind::TextureCube    ? TEXTURE_CUBE_KIND
+                                        : binding.Kind == RasterBindingKind::Texture3D      ? TEXTURE3D_KIND
+                                                                                            : 0;
+            isMatched = type == expectedType && kind == expectedKind && expectedKind != 0;
+        }
+        if (isMatched == false)
+        {
+            return false;
+        }
+        matchedBindings |= uint32{1} << lower;
+    }
+    return true;
 }
 } // namespace ludus::graphics::rhi::internal

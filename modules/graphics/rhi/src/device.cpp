@@ -290,7 +290,8 @@ DeviceStatus GetDeviceInfo(DeviceHandle device, DeviceInfo& info) noexcept
         info.Enabled.BindlessTextureIndexing = info.Supported.BindlessTextureIndexing;
         info.Supported.HasRuntimeTextureArrays = info.Profile.Binding.HasRuntimeTextureArrays;
         info.Enabled.HasRuntimeTextureArrays = info.Supported.HasRuntimeTextureArrays;
-        info.Supported.PortableRaster = info.Profile.Raster.MaxUniformRange >= 16384;
+        info.Supported.PortableRaster = info.Profile.Raster.MaxUniformRange >= internal::PORTABLE_UNIFORM_BYTES &&
+                                        info.Profile.Raster.DrawsPerFrame != 0;
         info.Enabled.PortableRaster = info.Supported.PortableRaster;
         info.Supported.OrderedRasterGraph = info.Supported.PortableRaster;
         info.Enabled.OrderedRasterGraph = info.Supported.OrderedRasterGraph;

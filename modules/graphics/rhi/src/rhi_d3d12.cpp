@@ -1,4 +1,5 @@
 #include "internal/backend.h"
+#include "internal/d3d12_device.h"
 #include "internal/dxil_container.h"
 #include "internal/lifecycle.h"
 #include "internal/measurement.h"
@@ -31,8 +32,8 @@
 // and adapter selection, a direct queue with two fenced frame slots, a flip-model
 // swap chain for Win32 windows or an offscreen target for headless sessions,
 // clear/present, and the fullscreen compatibility draw from DXIL shaders with one
-// root constant buffer view. Raster, compute and lifetime entry points are not
-// implemented yet; see raster_unsupported.cpp.
+// root constant buffer view. Raster resource and descriptor ownership lives in
+// raster_d3d12.cpp; drawing, compute and transfers remain later slices.
 //
 // Thanks to Microsoft, "Creating a basic Direct3D 12 component" and "Synchronization
 // and multi-engine", Direct3D 12 programming guide, for the queue, fence and
@@ -55,136 +56,7 @@ namespace
 using namespace foundation;
 constexpr logging::LogCategory LOG_RHI{"RHI"};
 
-/// Releases one COM reference; the D3D12/DXGI owner protocol for UniquePtr.
-struct ComRelease final
-{
-    void operator()(IUnknown* objectOrNull) const noexcept
-    {
-        objectOrNull->Release();
-    }
-};
-template <typename ObjectType>
-using ComOwner = UniquePtr<ObjectType, ComRelease>;
-
-/// SDK GUID of each COM interface this backend requests. IID_PPV_ARGS spells it with
-/// __uuidof, a Microsoft extension that the project's -Wpedantic build rejects.
-template <typename InterfaceType>
-struct InterfaceId;
-template <>
-struct InterfaceId<ID3D12Debug> final
-{
-    [[nodiscard]] static const IID& Get() noexcept
-    {
-        return IID_ID3D12Debug;
-    }
-};
-template <>
-struct InterfaceId<ID3D12Device> final
-{
-    [[nodiscard]] static const IID& Get() noexcept
-    {
-        return IID_ID3D12Device;
-    }
-};
-template <>
-struct InterfaceId<ID3D12CommandQueue> final
-{
-    [[nodiscard]] static const IID& Get() noexcept
-    {
-        return IID_ID3D12CommandQueue;
-    }
-};
-template <>
-struct InterfaceId<ID3D12Fence> final
-{
-    [[nodiscard]] static const IID& Get() noexcept
-    {
-        return IID_ID3D12Fence;
-    }
-};
-template <>
-struct InterfaceId<ID3D12CommandAllocator> final
-{
-    [[nodiscard]] static const IID& Get() noexcept
-    {
-        return IID_ID3D12CommandAllocator;
-    }
-};
-template <>
-struct InterfaceId<ID3D12GraphicsCommandList> final
-{
-    [[nodiscard]] static const IID& Get() noexcept
-    {
-        return IID_ID3D12GraphicsCommandList;
-    }
-};
-template <>
-struct InterfaceId<ID3D12DescriptorHeap> final
-{
-    [[nodiscard]] static const IID& Get() noexcept
-    {
-        return IID_ID3D12DescriptorHeap;
-    }
-};
-template <>
-struct InterfaceId<ID3D12RootSignature> final
-{
-    [[nodiscard]] static const IID& Get() noexcept
-    {
-        return IID_ID3D12RootSignature;
-    }
-};
-template <>
-struct InterfaceId<ID3D12PipelineState> final
-{
-    [[nodiscard]] static const IID& Get() noexcept
-    {
-        return IID_ID3D12PipelineState;
-    }
-};
-template <>
-struct InterfaceId<ID3D12Resource> final
-{
-    [[nodiscard]] static const IID& Get() noexcept
-    {
-        return IID_ID3D12Resource;
-    }
-};
-template <>
-struct InterfaceId<IDXGIFactory6> final
-{
-    [[nodiscard]] static const IID& Get() noexcept
-    {
-        return IID_IDXGIFactory6;
-    }
-};
-template <>
-struct InterfaceId<IDXGIAdapter1> final
-{
-    [[nodiscard]] static const IID& Get() noexcept
-    {
-        return IID_IDXGIAdapter1;
-    }
-};
-template <>
-struct InterfaceId<IDXGISwapChain3> final
-{
-    [[nodiscard]] static const IID& Get() noexcept
-    {
-        return IID_IDXGISwapChain3;
-    }
-};
-/// Interface ID for an output pointer; pass the same pointer to GetInterfaceOutput.
-template <typename InterfaceType>
-[[nodiscard]] const IID& GetInterfaceId(InterfaceType* const&) noexcept
-{
-    return InterfaceId<InterfaceType>::Get();
-}
-template <typename InterfaceType>
-[[nodiscard]] void** GetInterfaceOutput(InterfaceType*& outObjectOrNull) noexcept
-{
-    return reinterpret_cast<void**>(&outObjectOrNull);
-}
+using namespace d3d12;
 
 constexpr usize FRAME_COUNT = 2;
 constexpr uint32 MAX_DIMENSION = D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION;
@@ -800,6 +672,40 @@ void ReleaseDevice() noexcept
     }
 }
 } // namespace
+
+namespace d3d12
+{
+ID3D12Device* GetDeviceOrNull() noexcept
+{
+    return gDevice.Get();
+}
+ID3D12Fence* GetFenceOrNull() noexcept
+{
+    return gFence.Get();
+}
+uint64 GetCompletedFence() noexcept
+{
+    return gFence.Get() == nullptr ? 0 : gFence->GetCompletedValue();
+}
+uint64 GetLastFence() noexcept
+{
+    return gFenceValue;
+}
+bool WaitForQueue() noexcept
+{
+    return WaitForIdle();
+}
+bool SubmitCreation(ID3D12CommandList* commands, uint64& outFence) noexcept
+{
+    LUDUS_ASSERT(commands != nullptr);
+    ID3D12CommandList* const lists[] = {commands};
+    gQueue->ExecuteCommandLists(1, lists);
+    // A failed signal cannot prove completion. Retain the creation backing until
+    // shutdown instead of reclaiming it through the failed publication path.
+    outFence = ~uint64{0};
+    return SignalFence(outFence);
+}
+} // namespace d3d12
 
 Backend Kind() noexcept
 {

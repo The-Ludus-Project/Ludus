@@ -6,8 +6,10 @@
 
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 
 #include "internal/dxil_container.h"
+#include "internal/raster.h"
 
 #include <span>
 #include <string_view>
@@ -38,6 +40,11 @@ constexpr usize CONTAINER_SIZE_OFFSET = 24;
 
 struct ContainerShape final
 {
+    uint32 ResourceType = 0;
+    uint32 ResourceKind = 0;
+    uint32 ResourceSpace = 0;
+    uint32 ResourceLower = 0;
+    uint32 ResourceUpper = 0;
     uint32 ProgramKind = VERTEX_KIND;
     uint32 ValidationKind = VERTEX_KIND;
     std::string_view Entry = "vertexMain";
@@ -94,10 +101,12 @@ Array<uint8> MakeValidationPart(const ContainerShape& shape)
     }
     AppendUint32(part, 1);
     AppendUint32(part, RESOURCE_RECORD_BYTES);
-    for (uint32 i = 0; i < RESOURCE_RECORD_BYTES; ++i)
-    {
-        part.Add(0);
-    }
+    AppendUint32(part, shape.ResourceType);
+    AppendUint32(part, shape.ResourceSpace);
+    AppendUint32(part, shape.ResourceLower);
+    AppendUint32(part, shape.ResourceUpper);
+    AppendUint32(part, shape.ResourceKind);
+    AppendUint32(part, 0);
     Array<uint8> strings;
     strings.Add(0);
     AppendCode(strings, shape.Entry);
@@ -206,4 +215,84 @@ TEST_CASE("DXIL container rejects malformed or ambiguous parts", "[rhi][dxil]")
     Array<uint8> counted = MakeContainer({});
     WriteUint32(counted, DXIL_CONTAINER_HEADER_BYTES - sizeof(uint32), 0xFFFFFFFFU);
     CHECK(HasDxilEntry(View(counted), ShaderStage::Vertex, "vertexMain") == false);
+}
+
+TEST_CASE("DXIL scalar raster bindings match the complete PSV table", "[rhi][dxil]")
+{
+    namespace rhi = ludus::graphics::rhi;
+    ContainerShape shape;
+    shape.ResourceType = 2;
+    shape.ResourceKind = 13;
+    shape.ResourceLower = 3;
+    shape.ResourceUpper = 3;
+    rhi::internal::RasterLayout layout;
+    layout.Count = 1;
+    layout.DescriptorCount = 1;
+    layout.Entries[0] = { .Binding = 3, .Kind = rhi::RasterBindingKind::UniformBuffer, .MinSize = 16 };
+    const auto matches = [&](const ContainerShape& candidate) {
+        const Array<uint8> bytes = MakeContainer(candidate);
+        return rhi::internal::HasDxilBindings(bytes.AsSpan(), layout);
+    };
+    CHECK(matches(shape) == true);
+    SECTION("wrong register space")
+    {
+        shape.ResourceSpace = 1;
+    }
+    SECTION("wrong category")
+    {
+        shape.ResourceType = 3;
+    }
+    SECTION("wrong dimension")
+    {
+        shape.ResourceKind = 2;
+    }
+    SECTION("wrong slot")
+    {
+        shape.ResourceLower = 2;
+        shape.ResourceUpper = 2;
+    }
+    SECTION("descriptor array")
+    {
+        shape.ResourceUpper = 4;
+    }
+    SECTION("extra native binding")
+    {
+        layout.Count = 0;
+    }
+    SECTION("extra metadata binding")
+    {
+        layout.Count = 2;
+    }
+    SECTION("runtime array")
+    {
+        layout.Entries[0].IsRuntimeSized = true;
+    }
+    CHECK(matches(shape) == false);
+}
+
+TEST_CASE("DXIL PSV resource kinds distinguish sampled dimensions and samplers", "[rhi][dxil]")
+{
+    namespace rhi = ludus::graphics::rhi;
+    constexpr usize KIND_COUNT = 5;
+    const ludus::foundation::StaticArray<rhi::RasterBindingKind, KIND_COUNT> kinds{
+        rhi::RasterBindingKind::Texture2D,
+        rhi::RasterBindingKind::Texture2DArray,
+        rhi::RasterBindingKind::TextureCube,
+        rhi::RasterBindingKind::Texture3D,
+        rhi::RasterBindingKind::Sampler};
+    const ludus::foundation::StaticArray<uint32, KIND_COUNT> nativeKinds{2, 7, 5, 4, 14};
+    for (usize index = 0; index < nativeKinds.GetSize(); ++index)
+    {
+        ContainerShape shape;
+        shape.ResourceType = kinds[index] == rhi::RasterBindingKind::Sampler ? 1 : 3;
+        shape.ResourceKind = nativeKinds[index];
+        const Array<uint8> bytes = MakeContainer(shape);
+        rhi::internal::RasterLayout layout;
+        layout.Count = 1;
+        layout.DescriptorCount = 1;
+        layout.Entries[0].Kind = kinds[index];
+        CHECK(rhi::internal::HasDxilBindings(bytes.AsSpan(), layout) == true);
+        layout.Entries[0].Kind = rhi::RasterBindingKind::StorageRead;
+        CHECK(rhi::internal::HasDxilBindings(bytes.AsSpan(), layout) == false);
+    }
 }

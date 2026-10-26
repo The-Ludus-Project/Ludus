@@ -4,7 +4,7 @@ Ludus runs on Windows through a Win32 Platform backend and a Direct3D 12 RHI
 backend. This page owns that port: the decision, the contracts of the slices
 that exist, the [port record](../development/platform-porting.md#reusable-record-format)
 and the staged plan. The work is at the **buildable** admission gate for the
-D1 and D2 closure described below (both verified on WARP); it is not yet a runnable or qualified engine
+D1/D2 and D3a resource closure described below (verified on Clang/WARP); it is not yet a runnable or qualified engine
 deployment. The remaining implementation adopts **MSVC as the Windows reference
 compiler**, with CMake generating Ninja builds for VS Code/CLI/the Ludus editor
 and Visual Studio solutions built by MSBuild. The migration has started with
@@ -60,7 +60,7 @@ a private release protocol over the Ludus owner.
 | Unsupported variants | 32-bit x86, ARM64 and ARM64EC; UWP/GDK; Windows before 10 version 1703 (per-monitor DPI v2) |
 | Dependency pins | No runtime dependencies; build-time Slang 2026.1.2 (Windows x86_64) and DXC 1.9.2609 in `config/shader_toolchain.json`; Catch2 for tests through the existing Windows Conan profile |
 | Validation | Existing Clang D1/D2 lane: `.github/workflows/windows-direct3d12.yml` on `windows-2022` (WARP; no GPU). MSVC, MSBuild and physical-GPU acceptance pending |
-| Owner and branch | D1: `codex/windows-direct3d12-rhi` (merged); D2: `codex/windows-d3d12-dxil-draw` |
+| Owner and branch | D1: `codex/windows-direct3d12-rhi` (merged); D2: `codex/windows-d3d12-dxil-draw`; D3a: `codex/windows-integration-d3a` |
 | Last audited base | Plan/toolchain audit: `develop` at `94bc3e3c` (2026-10-26); historical D1/D2 runtime evidence remains at the commits recorded below |
 
 ## Developer workflow contract (planned)
@@ -210,14 +210,73 @@ explicit device path alike.
   issues one 3-vertex triangle list draw. Pixel origins are top-left, matching
   the Vulkan and Metal pixel tests.
 
-The raster, compute and lifetime hooks (`raster_unsupported.cpp`) still report
-zero capabilities and `Unsupported`, so a session that requires a raster or
-compute profile fails at startup with `RequirementsUnsatisfied`, and
-`CreateRasterShader` accepts a DXIL artifact only to return the backend's
-`Unsupported`. Offscreen-only frames (`ShouldPresentToSurface = false`), GPU
-timing and pass scopes, native interop, ray queries and spatial upscaling are
-unavailable. The renderer, editor, SDK install and game host are not part of
-the Windows build yet.
+D3a adds the resource portion described below. Raster draws/passes, compute and
+lifetime transfers (`raster_unsupported.cpp`) remain unavailable. Offscreen-only
+frames (`ShouldPresentToSurface = false`), GPU timing/pass scopes, native interop,
+ray queries and spatial upscaling remain unavailable. The renderer, editor, SDK
+install and game host are not part of the Windows build yet.
+
+### Raster resources and bindings (D3a)
+
+The private `raster_d3d12.cpp` owner shares D1's device, direct queue and fence.
+The effective profile exposes resource limits but zero draws, color attachments
+and vertex stride. `PortableRaster`, ordered graphs and compute remain disabled;
+requiring them still fails startup with `RequirementsUnsatisfied`. Applications
+can query `GetRasterCapabilities` and prepare resources on an otherwise ready
+explicit device. D3b must supply and qualify drawing before admitting the complete
+portable profile. This does not complete the MSVC baseline in D0.
+
+- **Buffers.** Immutable vertex, index and uniform buffers use upload heaps in
+  `GENERIC_READ`, with complete initial bytes copied before return. Native padding
+  is zeroed and rounded to the 256-byte CBV alignment. Uniform slices retain their
+  logical byte bounds; descriptor sizes round up within that backing. Storage
+  buffers remain unavailable with the compute profile.
+- **Textures.** Original-format sampled RGBA8/sRGB, R8, RG8, RGBA16F and BC1/3/5
+  allocations support complete mip chains in D2, arrays, cubes and volumes when
+  `CheckFeatureSupport` admits the native format/dimension. Native copyable
+  footprints determine aligned row/slice placement; caller padding is preserved
+  in the borrowed upload contract, without conversion. Creation returns `Pending`;
+  `GetStatus` or ordinary frame collection publishes `Ready` after the queue fence.
+  Compressed base extents must be block-aligned. Staging bytes consume the
+  resource budget in addition to logical texture bytes
+  and are released at completion. Attachments and deferred initialization remain
+  unavailable. Format queries do not advertise drawing or transfer uses.
+- **Views and samplers.** Color SRVs select bounded mip/layer ranges, retaining
+  the source allocation. D2 views of an array/cube layer report `Unsupported`
+  because a D3D12 array SRV cannot be bound as a scalar Texture2D. Depth/stencil
+  and writable views wait for D3b. Samplers implement nearest/linear texel and
+  mip filtering and clamp/repeat addressing; no comparison or anisotropy.
+- **Bindings.** Scalar uniform, sampled-color and sampler layouts create a root
+  signature with one table per binding at the same native register in space zero.
+  Each immutable set owns separate shader-visible resource and sampler heaps.
+  The shared registry budgets every descriptor and retains layout/resources
+  through snapshot retirement. Dynamic offsets, descriptor arrays, runtime arrays
+  and partial binding remain explicitly unavailable. Heap creation is transactional;
+  a failed second heap does not publish a partially usable set.
+- **Lifetime.** Texture upload backing and its allocator/list remain owned until
+  the exact creation fence completes, including logical destruction while pending.
+  Submission bookkeeping reserves a configured completion cell before encoding and
+  maps accepted ordinals to the existing queue fence. Reset drains the queue before
+  physical destruction. A failed signal retains submitted creation backing until a successful drain or
+  original-fence completion; a timeout keeps that backing across device restart.
+- **Shaders.** Raster DXIL is reflected independently at build time, including
+  native registers, uniform member offsets and vertex inputs. Native creation
+  checks stage/entry and the complete PSV0 resource table against the copied scalar
+  layout: missing/extra bindings, wrong spaces, ranges, categories and dimensions
+  reject. Bytecode is copied into budgeted storage. Pipelines and draws wait for D3b.
+
+The Windows lane builds `d3d12_resource_tests.cpp` beside D1/D2: partial-profile
+admission, descriptor/resource exhaustion and reuse, retained snapshots, padded
+mip/array/cube/volume creation across native formats, pending-upload destruction
+and restart, and real raster DXIL interface rejection. Portable PSV reader tests
+and resource-only facade admission run with the common lifecycle suite on every
+host. The Clang/WARP run at `172002e4` passed the Win32, common lifecycle and
+Direct3D 12 suites in [PR #617](https://github.com/The-Ludus-Project/Ludus/pull/617),
+[run 40359506345](https://github.com/The-Ludus-Project/Ludus/actions/runs/40359506345).
+The separate MSVC primitive probe passed too; it does not establish compilation
+of this RHI with `cl.exe`. Cross-compilation checks Windows syntax/backend closure;
+production MSVC and physical-adapter execution remain necessary for the full port. These resource tests do not establish rendered image
+correctness; D3b owns shared raster/image conformance.
 
 ### DXIL artifacts
 
@@ -227,8 +286,10 @@ and targets Windows**: it runs Slang's `dxil` target, which has the pinned DXC
 sign the result. Retail Direct3D 12 runtimes reject unsigned DXIL, and the
 signing library ships only as a Windows binary, so Linux and macOS builds never
 need DXC and cross-compiled Windows configurations stop with a setup error.
-Only fullscreen `VERTEX`/`FRAGMENT` stages are supported; `RASTER` and
-`COMPUTE` wait for the Direct3D 12 raster profile (D3/D4).
+Fullscreen and scalar `RASTER` vertex/fragment artifacts are supported.
+`COMPUTE`, storage bindings and descriptor arrays wait for later Direct3D 12
+profiles. Raster headers carry target-specific bindings, uniform members and
+vertex inputs; the fullscreen header contract remains unchanged.
 
 `config/shader_toolchain.json` pins the Slang Windows archive and the DXC
 release archive by SHA-256, plus the two DLLs themselves. On the Windows host:
@@ -299,7 +360,7 @@ cmake --build out/build/windows-mingw-check --target ludus_platform ludus_graphi
 | D1 (WARP verified) | Windows closure for Platform and RHI; Win32 windows; Direct3D 12 device, swap chain, clear, present, resize and readback | Windows lane passed on PR The-Ludus-Project/Ludus#573 ([run 40043576093](https://github.com/The-Ludus-Project/Ludus/actions/runs/40043576093)), merged as `7167c8a2`; presented frames on a hardware adapter still to be recorded here |
 | D2 (WARP verified) | DXIL shader artifacts from the Slang toolchain (pinned DXC), `ShaderDescription` DXIL fields, root signatures, and the fullscreen compatibility draw | Fullscreen pixel tests passed on the WARP lane for PR The-Ludus-Project/Ludus#586 ([run 40102938249](https://github.com/The-Ludus-Project/Ludus/actions/runs/40102938249), `002969cf`); hardware-adapter run still to be recorded here |
 | D0 (next; MSVC baseline) | Pin MSVC/SDK/CRT/dependencies; enable `cl.exe`, Ninja and generated Visual Studio/MSBuild projects; reconcile compiler policy and presets | D1/D2 and Foundation tests pass on MSVC; both generators configure/build/test; physical-GPU clear/fullscreen evidence recorded |
-| D3a | Raster resources, bindings and DXIL interfaces | Resource/binding suites; bounded allocation/descriptor failure; safe retirement while work is in flight |
+| D3a (Clang/WARP verified) | Raster resources, bindings and DXIL interfaces | Windows resource/binding, bounded failure, pending upload retirement and DXIL suites passed for PR #617 at `172002e4` ([run 40359506345](https://github.com/The-Ludus-Project/Ludus/actions/runs/40359506345)); production MSVC and hardware evidence remain pending |
 | D3b | Complete portable raster profile | Shared raster/image suites on WARP and hardware; required raster profile admitted |
 | D4a | Transfers, readback and lifetime | Shared transfer/lifetime suites; offscreen rendering, cancellation and failure preservation |
 | D4b | Compute and ordered render graphs | Compute/graph suites, mixed graphics/compute/transfer journeys; required compute profile admitted |
@@ -517,7 +578,8 @@ these rows remain pending.
 | Input / system entropy | unassigned | needs port | Win32 key delivery/focus recovery and entropy in D5a | pending | none |
 | RHI / graphics (clear/present) | D1; D0 pending | verified (Clang/WARP) | MSVC and hardware-adapter evidence in D0 | PR #573 | Windows lane, PR #573 (`7167c8a2`) |
 | RHI / graphics (DXIL/fullscreen) | D2; D0 pending | verified (Clang/WARP) | MSVC and hardware-adapter evidence in D0 | PR #586 | [Windows lane](https://github.com/The-Ludus-Project/Ludus/actions/runs/40102938249) |
-| RHI / raster resources and rendering | unassigned | needs port | D3a/D3b | pending | none |
+| RHI / raster resources and bindings | D3a | verified (Clang/WARP) | Production MSVC baseline and hardware evidence still pending | PR #617 | `172002e4`, [Windows lane](https://github.com/The-Ludus-Project/Ludus/actions/runs/40359506345) |
+| RHI / raster rendering | D3b | needs port | Pipelines, passes and shared raster images | pending | none |
 | RHI / transfers, lifetime, compute and graph | unassigned | needs port | D4a/D4b | pending | none |
 | GPU timing / PIX / DRED | unassigned | needs port | D5b | pending | none |
 | Renderer / graph | unassigned | unreviewed | D6a after D4b/D5a | pending | none |

@@ -2,6 +2,7 @@
 #include "internal/profile.h"
 #include "reference_raster.h"
 
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/raster.h>
 
@@ -740,4 +741,48 @@ TEST_CASE("R18c byte and descriptor requirements use enabled limits independentl
         CHECK(info.UnmetProfilePreference.Requested == 9);
         CHECK(info.UnmetProfilePreference.Available == 8);
     }
+}
+
+TEST_CASE("Resource-only profiles never admit a required raster workload", "[rhi][profile]")
+{
+    ProfileFixture fixture;
+    reference::RasterLimitOverride = backend::RasterLimits();
+    reference::RasterLimitOverride.DrawsPerFrame = 0;
+    reference::OverrideRasterLimits = true;
+    struct ResetOverride final
+    {
+        ~ResetOverride()
+        {
+            Shutdown();
+            reference::OverrideRasterLimits = false;
+        }
+    } resetOverride;
+    DeviceHandle device;
+    SurfaceHandle surface;
+    REQUIRE(CreateDevice({}, {}, {}, device, surface) == DeviceStatus::Pending);
+    internal::Complete(backend::PendingToken,
+                       StartupError::None,
+                       { .MaxFrameDimension2D = 4096, .MaxUniformBufferSize = 16384 });
+    DeviceInfo information;
+    REQUIRE(GetDeviceInfo(device, information) == DeviceStatus::Ready);
+    CHECK(information.Enabled.PortableRaster == false);
+    CHECK(information.Enabled.OrderedRasterGraph == false);
+    CHECK(information.Profile.Raster.MaxBufferSize > 0);
+    constexpr ludus::foundation::usize BUFFER_BYTES = 16;
+    const ludus::foundation::StaticArray<ludus::foundation::uint8, BUFFER_BYTES> bytes{};
+    BufferHandle buffer;
+    REQUIRE(CreateBuffer(device, { .Role = BufferRole::Uniform, .Size = BUFFER_BYTES }, bytes.AsSpan(), buffer) ==
+            RasterStatus::Ready);
+    REQUIRE(Destroy(device, buffer) == RasterStatus::Ready);
+    REQUIRE(DestroyDevice(device) == DeviceStatus::Ready);
+    surface = {};
+    DeviceDescription description;
+    description.Required.PortableRaster = true;
+    REQUIRE(CreateDevice({}, {}, description, device, surface) == DeviceStatus::Pending);
+    internal::Complete(backend::PendingToken,
+                       StartupError::None,
+                       { .MaxFrameDimension2D = 4096, .MaxUniformBufferSize = 16384 });
+    CHECK(GetDeviceInfo(device, information) == DeviceStatus::Failed);
+    CHECK(GetStartup().Error == StartupError::RequirementsUnsatisfied);
+    static_cast<void>(DestroyDevice(device));
 }

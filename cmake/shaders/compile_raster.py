@@ -117,7 +117,7 @@ def storage_record_layout(record):
     return (offset + alignment - 1) // alignment * alignment, members
 
 
-def raster_interface(document, stage, metal=False, native_arrays=False, runtime_arrays=False, structured_records=False):
+def raster_interface(document, stage, metal=False, native_arrays=False, runtime_arrays=False, structured_records=False, dxil=False):
     points = [x for x in document['entryPoints'] if x['stage'] == stage]
     if len(points) != 1:
         raise RuntimeError('Expected one entry per raster stage')
@@ -140,7 +140,7 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
             continue
         bindings = resource.get('bindings', [resource.get('binding', {})])
         descriptors = [b for b in bindings if b.get('kind') == 'descriptorTableSlot']
-        if metal and not descriptors:
+        if (metal or dxil) and not descriptors:
             native_kinds = ('constantBuffer', 'shaderResource') if stage == 'compute' else ('constantBuffer', 'shaderResource', 'samplerState')
             # Metal buffers also carry zero-count shaderResource metadata.
             # Only the occupied native category identifies their descriptor.
@@ -214,11 +214,13 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
             raise RuntimeError('Unsupported raster resource shape: ' + kind)
         if stage == 'compute' and kind not in ('UniformBuffer', 'StorageRead', 'StorageReadWrite', 'RayScene', 'Texture2D', 'TextureDepth2D'):
             raise RuntimeError('Compute profile accepts buffers, native scenes and unfiltered 2D color/depth textures only')
-        if metal:
+        if metal or dxil:
             native_kind = {'StorageRead': 'constantBuffer', 'StorageReadWrite': 'constantBuffer', 'UniformBuffer': 'constantBuffer', 'Texture2D': 'shaderResource', 'Texture2DArray': 'shaderResource', 'TextureCube': 'shaderResource', 'Texture3D': 'shaderResource', 'TextureDepth2D': 'shaderResource', 'TextureStencil2D': 'shaderResource', 'Sampler': 'samplerState'}[kind]
             native = [b for b in bindings if b.get('kind') == native_kind]
             if len(native) != 1 or native[0]['index'] != index:
-                raise RuntimeError('Metal binding remapping is outside this raster profile')
+                raise RuntimeError('Native binding remapping is outside this raster profile')
+        if dxil and (count != 1 or is_runtime or kind not in ('UniformBuffer', 'Sampler', 'Texture2D', 'Texture2DArray', 'TextureCube', 'Texture3D')):
+            raise RuntimeError('DXIL D3a supports scalar uniform, sampled color and sampler bindings only')
         value = {'binding': index, 'kind': kind, 'size': size, 'name': resource['name']}
         if is_runtime and kind not in ('Texture2D', 'Texture2DArray', 'TextureCube', 'Texture3D'):
             raise RuntimeError('Runtime arrays require sampled color texture descriptors')
