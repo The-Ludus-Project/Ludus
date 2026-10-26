@@ -175,7 +175,7 @@
       "scene_interface": {
         "version": 1,
         "payload": "main_shaders/payload.slang",
-        "surface_queries": 1,
+        "surface_queries": 2,
         "visibility_queries": 1
       }
     }
@@ -185,5 +185,37 @@
     "programs": 16,
     "artifacts": 64,
     "pipelines": 16
-  }
+  },
+  "settings": [
+    {
+      "id": "MIS_HEURISTIC",
+      "label": "MIS heuristic (0 balance, 1 power, 2 cutoff, 3 maximum)",
+      "type": "UInt32",
+      "value": 1,
+      "minimum": 0,
+      "maximum": 3
+    },
+    {
+      "id": "MIS_POWER_EXPONENT",
+      "label": "MIS power exponent",
+      "type": "Float32",
+      "value": 2,
+      "minimum": 1,
+      "maximum": 16
+    },
+    {
+      "id": "MIS_CUTOFF_THRESHOLD",
+      "label": "MIS cutoff threshold",
+      "type": "Float32",
+      "value": 0.1,
+      "minimum": 0,
+      "maximum": 1
+    },
+    {
+      "id": "IS_BSDF_SAMPLING_ENABLED",
+      "label": "BSDF sampling strategy",
+      "type": "Bool",
+      "value": @LUDUS_DIRECT_LIGHTING_IS_BSDF_SAMPLING_ENABLED@
+    }
+  ]
 }

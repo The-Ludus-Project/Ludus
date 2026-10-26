@@ -26,9 +26,13 @@ static const uint HIT_RECORD_FLAG_FAILED = 2;
 // Primary pass: subpixel jitter x, y.
 static const uint PRIMARY_RANDOM_DIMENSION_FIRST = 0;
 static const uint PRIMARY_RANDOM_DIMENSION_COUNT = 2;
-// Shade pass: light selection, then the three SampleIncidentLight shape coordinates.
+// Shade pass: light selection, the three SampleIncidentLight shape coordinates, then the three
+// SampleStandardBsdf coordinates (lobe, radius, angle).
 static const uint SHADE_RANDOM_DIMENSION_FIRST = PRIMARY_RANDOM_DIMENSION_FIRST + PRIMARY_RANDOM_DIMENSION_COUNT;
-static const uint SHADE_RANDOM_DIMENSION_COUNT = 4;
+static const uint SHADE_RANDOM_DIMENSION_COUNT = 7;
+static const uint SHADE_LIGHT_SELECTION_DIMENSION = SHADE_RANDOM_DIMENSION_FIRST;
+static const uint SHADE_LIGHT_SHAPE_DIMENSION_FIRST = SHADE_LIGHT_SELECTION_DIMENSION + 1;
+static const uint SHADE_BSDF_DIMENSION_FIRST = SHADE_LIGHT_SHAPE_DIMENSION_FIRST + 3;
 
 struct HitRecord
 {
