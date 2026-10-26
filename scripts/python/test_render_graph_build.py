@@ -471,6 +471,29 @@ class BuildTests(unittest.TestCase):
             self.run_build()
         self.assertFalse(self.calls)
 
+    def test_unreferenced_imported_configurations_do_not_spend_the_configuration_budget(self):
+        rasterize = self.graph.with_name('rasterize.lurender.json')
+        value = json.loads(rasterize.read_text())
+        template = value['configurations'][0]
+        while len(value['configurations']) < graph.MAX_CONFIGURATIONS:
+            value['configurations'].append({**template, 'id': f'Unused{len(value["configurations"])}'})
+        rasterize.write_text(json.dumps(value))
+        package = build.verify_package(Path(self.run_build()['package']))
+        self.assertEqual(2, package['counts']['graph_configurations'])
+
+    def test_configuration_budget_error_reports_reachable_counts_and_files(self):
+        value = json.loads(self.graph.read_text())
+        value['configurations'].append({**value['configurations'][0], 'id': 'Second'})
+        self.graph.write_text(json.dumps(value))
+        self.edit(lambda v: v['budgets'].update(configurations=2))
+        with self.assertRaises(ToolingError) as caught:
+            self.run_build()
+        self.assertEqual('RenderGraphBuildCapacity', caught.exception.code)
+        self.assertIn('3 configurations reachable from the root exceed budgets.configurations 2 '
+                      '(main.lurender.json: Default, Second; rasterize.lurender.json: ColorAndDepth)',
+                      str(caught.exception))
+        self.assertFalse(self.calls)
+
     def test_no_missing_or_unused_stage_programs(self):
         for change in (lambda v: v['techniques'][0].update(fragment='Missing'),
                        lambda v: v['techniques'][0].update(vertex='Color'),

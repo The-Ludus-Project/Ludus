@@ -535,6 +535,26 @@ class _Library:
             self.active.pop()
         return asset
 
+    def reachable(self, path):
+        """Return {file label: [configuration ids]} for the root configurations of the
+        loaded asset at path and every configuration their Subgraph nodes import.
+
+        load() validates every configuration of an imported file, but only these are
+        planned; an imported file's unreferenced configurations are absent.
+        """
+        reached = {}
+        pending = [(path, config["id"]) for config in self.assets[path]["configurations"]]
+        while pending:
+            source, identity = pending.pop()
+            label = self.label(source)
+            if identity in reached.setdefault(label, []):
+                continue
+            reached[label].append(identity)
+            for node in _configuration(self.assets[source], identity, label)["nodes"]:
+                if node["kind"] == "Subgraph":
+                    pending.append((self.inside(node["asset"], label), node["configuration"]))
+        return {label: sorted(identities) for label, identities in sorted(reached.items())}
+
     def node_ports(self, node):
         kind = node["kind"]
         if kind == "Upscale":

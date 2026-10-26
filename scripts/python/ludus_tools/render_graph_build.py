@@ -943,9 +943,16 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     for program in programs.values():
         program['settings_source'] = render_graph_settings.shader_source(value.get('settings', []))
     counts['root_configurations'] = len(plans)
-    counts['graph_configurations'] = sum(len(a['configurations']) for a in library.assets.values())
-    require(counts['graph_configurations'] <= value['budgets']['configurations'], 'Capacity', 'graph configurations', 'closure configuration budget exceeded')
-    require(len(plans) <= value['budgets']['configurations'], 'Capacity', 'root configurations', 'root configuration budget exceeded')
+    # Only configurations the roots reach through imports are planned. Unreferenced
+    # configurations of an imported file stay validated but do not spend the budget.
+    reachable = library.reachable(graph_path)
+    counts['graph_configurations'] = sum(len(identities) for identities in reachable.values())
+    require(counts['graph_configurations'] <= value['budgets']['configurations'], 'Capacity', 'graph configurations',
+            f'{counts["graph_configurations"]} configurations reachable from the root exceed budgets.configurations '
+            f'{value["budgets"]["configurations"]} (' + '; '.join(
+                f'{label}: {", ".join(identities)}' for label, identities in reachable.items()) + ')')
+    require(len(plans) <= value['budgets']['configurations'], 'Capacity', 'root configurations',
+            f'{len(plans)} root configurations exceed budgets.configurations {value["budgets"]["configurations"]}')
     output = Path(output).resolve()
     require(not snapshot.root.is_relative_to(output), 'Source', str(output), 'output must not contain source root')
     output.mkdir(parents=True, exist_ok=True)
