@@ -24,6 +24,11 @@ class QGraphicsScene;
 class QShowEvent;
 class QRubberBand;
 class QFocusEvent;
+class QResizeEvent;
+class QPaintEvent;
+class QAction;
+class QLabel;
+class QToolBar;
 QT_END_NAMESPACE
 
 namespace ludus::editor
@@ -115,6 +120,13 @@ public:
     /// Current World drawable reference in physical pixels; empty means unavailable.
     /// Refreshes size annotations without changing drafts, selection, layout or undo history.
     void SetReferenceSize(const QSize& size);
+    /// Frame all node boxes, including configuration interfaces. View only: preserves
+    /// selection, authored positions and undo. Empty graphs are a no-op; magnification is bounded.
+    void FitGraph();
+    /// Frame the selected authored nodes; no selection is a no-op. Never edits the draft.
+    void FitSelection();
+    /// Restore 100% magnification around the viewport centre, preserving selection and draft.
+    void ResetZoom();
     [[nodiscard]] const QString& GetFile() const noexcept
     {
         return mFile;
@@ -199,6 +211,8 @@ protected:
     void contextMenuEvent(QContextMenuEvent* event) override;
     bool viewportEvent(QEvent* event) override;
     void showEvent(QShowEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
+    void paintEvent(QPaintEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
@@ -222,14 +236,23 @@ private:
     void cancelLink();
     void refreshFeedback();
     void updateLinkFeedback(QPointF position);
-    void fitGraph();
+    void fitBounds(const QRectF& bounds);
+    void updateFramingControls();
+    void updateSemanticZoom(bool shouldForce = false);
     /// Scroll the view so its content moves by a viewport-pixel delta; never edits the draft.
     void panBy(QPoint delta);
     void zoomAt(foundation::float64 factor, QPointF position);
 
     const RenderGraphDocument& mDocument;
     QGraphicsScene* mScene;
+    QToolBar* mFramingToolbar;
+    QAction* mFitGraphAction;
+    QAction* mFitSelectionAction;
+    QLabel* mZoomLabel;
+    foundation::float64 mPresentedScale = 0;
     QGraphicsRectItem* mDiagnosticMarkerOrNull = nullptr;
+    QGraphicsSimpleTextItem* mDiagnosticLabelOrNull = nullptr;
+    QString mDiagnosticText;
     QJsonObject mDiagnosticLocation;
     QString mFile;
     QString mConfiguration;

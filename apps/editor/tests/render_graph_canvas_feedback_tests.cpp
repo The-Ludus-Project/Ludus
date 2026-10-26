@@ -17,12 +17,15 @@
 #include <QGraphicsEllipseItem>
 #include <QGraphicsRectItem>
 #include <QGraphicsScene>
+#include <QGraphicsSimpleTextItem>
 #include <QGraphicsTextItem>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QLabel>
 #include <QProcess>
 #include <QSet>
 #include <QStandardPaths>
+#include <QStringView>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -118,6 +121,28 @@ QGraphicsTextItem* FindHint(const RenderGraphCanvas& canvas)
     }
     return nullptr;
 }
+QGraphicsSimpleTextItem* FindNodeText(const RenderGraphCanvas& canvas, const QString& identity, QStringView prefix)
+{
+    for (QGraphicsItem* item : canvas.scene()->items())
+    {
+        QGraphicsSimpleTextItem* textOrNull = qgraphicsitem_cast<QGraphicsSimpleTextItem*>(item);
+        if (textOrNull == nullptr || textOrNull->text().startsWith(prefix) == false)
+        {
+            continue;
+        }
+        const QGraphicsItem* owner = item;
+        while (owner->parentItem() != nullptr)
+        {
+            owner = owner->parentItem();
+        }
+        if (owner->data(0).toString() == identity)
+        {
+            return textOrNull;
+        }
+    }
+    return nullptr;
+}
+
 void CheckCompilerSelection(RenderGraphDocument& inoutDocument, const QString& package)
 {
     QStringList saved;
@@ -161,6 +186,182 @@ void CheckCompilerSelection(RenderGraphDocument& inoutDocument, const QString& p
     }
 }
 } // namespace
+
+TEST_CASE("semantic zoom simplifies labels without changing ports, selection or draft feedback",
+          "[editor][render-graph][canvas-feedback][semantic-zoom]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakeFeedbackPackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    RenderGraphCanvas canvas(document);
+    canvas.resize(1000, 650);
+    canvas.ShowConfiguration(ROOT_GRAPH, DEFAULT_CONFIGURATION);
+    canvas.SetReferenceSize(QSize(1920, 1080));
+    canvas.show();
+    QCoreApplication::processEvents();
+    canvas.ResetZoom();
+    canvas.SelectNode(QStringLiteral("color"));
+    const QStringList selected = canvas.GetSelectedNodes();
+    const QByteArray draft = document.GetDraft(ROOT_GRAPH);
+    const QPointF portPosition = canvas.GetPortPosition(QStringLiteral("half.size"), true);
+    QGraphicsRectItem* frame = FindFrame(canvas, QStringLiteral("half"));
+    REQUIRE(frame != nullptr);
+    const QRectF frameBounds = frame->sceneBoundingRect();
+    QGraphicsSimpleTextItem* title = FindNodeText(canvas, QStringLiteral("half"), QStringLiteral("half :"));
+    QGraphicsSimpleTextItem* activity = FindNodeText(canvas, QStringLiteral("half"), QStringLiteral("On draft route"));
+    QGraphicsSimpleTextItem* size = FindNodeText(canvas, QStringLiteral("half"), QStringLiteral("View 1/2"));
+    QGraphicsSimpleTextItem* port = FindNodeText(canvas, QStringLiteral("half"), QStringLiteral("size"));
+    REQUIRE(title != nullptr);
+    REQUIRE(activity != nullptr);
+    REQUIRE(size != nullptr);
+    REQUIRE(port != nullptr);
+    const QString fullTitle = title->text();
+    const QString explanation = activity->toolTip();
+    const QString capture = qEnvironmentVariable("LUDUS_EDITOR_GRAPH_FRAMING_CAPTURE");
+    const auto captureView = [&canvas, &capture](const QString& name) {
+        if (capture.isEmpty() == false)
+        {
+            REQUIRE(QDir().mkpath(capture) == true);
+            REQUIRE(canvas.grab().save(QDir(capture).filePath(name + QStringLiteral(".png"))) == true);
+        }
+    };
+    captureView(QStringLiteral("detail"));
+    for (float64 scale : {0.6, 0.4, 0.1, 1.0})
+    {
+        canvas.setTransform(QTransform::fromScale(scale, scale));
+        canvas.centerOn(canvas.sceneRect().center());
+        canvas.viewport()->repaint();
+        QCoreApplication::processEvents();
+        INFO(scale);
+        CHECK(title->isVisible() == (scale >= 0.4));
+        CHECK(port->isVisible() == (scale >= 0.6));
+        CHECK(size->isVisible() == (scale == 1));
+        CHECK(activity->isVisible() == (scale >= 0.4));
+        if (title->isVisible() == true)
+        {
+            CHECK(title->text() == (scale == 1 ? fullTitle : QStringLiteral("half")));
+            CHECK(activity->text() == (scale == 1 ? QStringLiteral("On draft route") : QStringLiteral("Draft route")));
+        }
+        CHECK(activity->toolTip() == explanation);
+        CHECK(title->toolTip() == QStringLiteral("half : RenderSize"));
+        CHECK(frame->toolTip().contains(QStringLiteral("960 × 540")) == true);
+        CHECK(frame->sceneBoundingRect() == frameBounds);
+        CHECK(canvas.GetPortPosition(QStringLiteral("half.size"), true) == portPosition);
+        CHECK(FindPort(canvas, QStringLiteral("half.size"), true)->isVisible() == true);
+        CHECK(canvas.GetSelectedNodes() == selected);
+        if (scale == 0.4)
+        {
+            CHECK(title->boundingRect().height() * title->scale() * scale >= 11);
+            CHECK(FindNodeText(canvas, QStringLiteral("depth"), QStringLiteral("Inactive")) != nullptr);
+            canvas.SetReferenceSize(QSize(1280, 720));
+            CHECK(size->isVisible() == false);
+            canvas.SetReferenceSize(QSize(1920, 1080));
+            captureView(QStringLiteral("overview"));
+        }
+        if (scale == 0.6)
+        {
+            captureView(QStringLiteral("working"));
+        }
+    }
+    CHECK(document.GetDraft(ROOT_GRAPH) == draft);
+    CHECK(document.GetRevision() == 0);
+    CHECK(document.CanUndo() == false);
+}
+
+TEST_CASE("semantic overview preserves unknown and disabled activity classifications",
+          "[editor][render-graph][canvas-feedback][semantic-zoom]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakeFeedbackPackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    QString expected;
+    SECTION("disabled output remains disabled")
+    {
+        QJsonObject record = ReadRecord(document);
+        QJsonArray nodes = record.value(QStringLiteral("nodes")).toArray();
+        for (qsizetype index = 0; index < nodes.size(); ++index)
+        {
+            QJsonObject node = nodes.at(index).toObject();
+            if (node.value(QStringLiteral("id")).toString() == QStringLiteral("output"))
+            {
+                node.insert(QStringLiteral("enabled"), false);
+                nodes.replace(index, node);
+            }
+        }
+        record.insert(QStringLiteral("nodes"), nodes);
+        WriteRecord(document, record);
+        expected = QStringLiteral("Disabled");
+    }
+    SECTION("broken structure stays unknown")
+    {
+        QJsonObject record = ReadRecord(document);
+        QJsonArray edges = record.value(QStringLiteral("edges")).toArray();
+        edges.append(QJsonObject{{QStringLiteral("from"), QStringLiteral("missing.texture")},
+                                 {QStringLiteral("to"), QStringLiteral("output.texture")}});
+        record.insert(QStringLiteral("edges"), edges);
+        WriteRecord(document, record);
+        expected = QStringLiteral("Unknown");
+    }
+    const uint64 revision = document.GetRevision();
+    const QByteArray draft = document.GetDraft(ROOT_GRAPH);
+    RenderGraphCanvas canvas(document);
+    canvas.resize(900, 600);
+    canvas.ShowConfiguration(ROOT_GRAPH, DEFAULT_CONFIGURATION);
+    canvas.show();
+    QCoreApplication::processEvents();
+    canvas.setTransform(QTransform::fromScale(0.4, 0.4));
+    canvas.viewport()->repaint();
+    QCoreApplication::processEvents();
+    QGraphicsSimpleTextItem* label = FindNodeText(canvas, QStringLiteral("output"), expected);
+    REQUIRE(label != nullptr);
+    CHECK(label->isVisible() == true);
+    CHECK(label->toolTip().isEmpty() == false);
+    CHECK(document.GetRevision() == revision);
+    CHECK(document.GetDraft(ROOT_GRAPH) == draft);
+}
+
+TEST_CASE("semantic zoom keeps diagnostics visible on inactive nodes at every scale",
+          "[editor][render-graph][canvas-feedback][semantic-zoom]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakeFeedbackPackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    RenderGraphCanvas canvas(document);
+    canvas.resize(900, 600);
+    canvas.ShowConfiguration(ROOT_GRAPH, DEFAULT_CONFIGURATION);
+    canvas.show();
+    QCoreApplication::processEvents();
+    const QJsonObject location{{QStringLiteral("node"), QStringLiteral("depth")},
+                               {QStringLiteral("port"), QStringLiteral("texture")},
+                               {QStringLiteral("direction"), QStringLiteral("output")}};
+    const QString description = QStringLiteral("Texture contract needs attention");
+    REQUIRE(canvas.ShowDiagnostic(location, description) == true);
+    QGraphicsSimpleTextItem* label = FindNodeText(canvas, QStringLiteral("depth"), QStringLiteral("Error:"));
+    REQUIRE(label != nullptr);
+    QGraphicsRectItem* marker = qgraphicsitem_cast<QGraphicsRectItem*>(label->parentItem());
+    REQUIRE(marker != nullptr);
+    for (float64 scale : {1.0, 0.4, 0.01})
+    {
+        canvas.setTransform(QTransform::fromScale(scale, scale));
+        canvas.centerOn(canvas.sceneRect().center());
+        canvas.viewport()->repaint();
+        QCoreApplication::processEvents();
+        CHECK(label->isVisible() == true);
+        CHECK(label->effectiveOpacity() == 1);
+        CHECK(marker->pen().isCosmetic() == true);
+        CHECK(label->boundingRect().height() * label->scale() * scale >= 11);
+        CHECK(label->text().isEmpty() == false);
+        CHECK(label->toolTip() == description);
+        CHECK(canvas.GetDiagnosticLocation() == location);
+        CHECK(canvas.accessibleDescription() == description);
+    }
+    CHECK(label->text() == QStringLiteral("!"));
+    canvas.ResetZoom();
+    CHECK(label->text().startsWith(QStringLiteral("Error:")) == true);
+    canvas.Rebuild();
+    CHECK(canvas.GetDiagnosticLocation().isEmpty() == true);
+    CHECK(document.GetRevision() == 0);
+}
 
 TEST_CASE("canvas draft activity matches compiler selection and preserves explicit nested effects",
           "[editor][render-graph][canvas-feedback]")

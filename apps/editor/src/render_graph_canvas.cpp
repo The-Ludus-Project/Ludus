@@ -26,17 +26,21 @@
 #include <QJsonArray>
 #include <QKeyEvent>
 #include <QKeySequence>
+#include <QLabel>
 #include <QMenu>
 #include <QMouseEvent>
 #include <QNativeGestureEvent>
+#include <QPaintEvent>
 #include <QPainterPath>
 #include <QPen>
 #include <QPointingDevice>
+#include <QResizeEvent>
 #include <QRubberBand>
 #include <QScrollBar>
 #include <QSet>
 #include <QShowEvent>
 #include <QTimer>
+#include <QToolBar>
 #include <QWheelEvent>
 
 #include <cmath>
@@ -71,6 +75,15 @@ constexpr float64 SCROLL_PIXELS_PER_ZOOM_STEP = 40;
 constexpr float64 PAN_PIXELS_PER_WHEEL_NOTCH = 60;
 constexpr float64 MINIMUM_VIEW_SCALE = 0.01;
 constexpr float64 MAXIMUM_VIEW_SCALE = 8;
+constexpr float64 DETAIL_VIEW_SCALE = 0.75;
+constexpr float64 PORT_LABEL_VIEW_SCALE = 0.45;
+constexpr float64 MINIMUM_TEXT_CARD_WIDTH = 60;
+constexpr float64 MINIMUM_STATUS_CARD_HEIGHT = 38;
+constexpr float64 MINIMUM_TITLE_PIXEL_HEIGHT = 14;
+constexpr float64 MINIMUM_LABEL_PIXEL_HEIGHT = 12;
+constexpr float64 PERCENT_SCALE = 100;
+constexpr float64 SCENE_SCROLL_PADDING = 400;
+constexpr float64 PORT_LABEL_GAP = 4;
 constexpr int32 LABEL_POINT_SIZE = 9;
 constexpr int32 MAX_CYCLE_SEARCH_STEPS = 1024;
 constexpr float64 INACTIVE_OPACITY = 0.55;
@@ -86,6 +99,27 @@ constexpr float64 QUICK_ADD_PORT_GAP = COLUMN_SPACING - NODE_WIDTH;
 /// Reserved display key for configuration outputs; not a valid authored identifier.
 const QString OUTPUTS_NODE = QStringLiteral("#outputs");
 const QString INPUT_NODE = QStringLiteral("input");
+
+enum class CanvasLabelRole : uint8
+{
+    Title,
+    Annotation,
+};
+
+// Compensate small labels in screen pixels while keeping their node-local geometry stable.
+void SetScaledLabel(QGraphicsSimpleTextItem& inoutLabel,
+                    const QString& text,
+                    float64 viewScale,
+                    CanvasLabelRole role,
+                    float64 availableWidth)
+{
+    const float64 minimumPixelHeight =
+        role == CanvasLabelRole::Title ? MINIMUM_TITLE_PIXEL_HEIGHT : MINIMUM_LABEL_PIXEL_HEIGHT;
+    const float64 labelScale =
+        math::Max(1.0, minimumPixelHeight / (QFontMetricsF(inoutLabel.font()).height() * viewScale));
+    inoutLabel.setScale(labelScale);
+    inoutLabel.setText(QFontMetricsF(inoutLabel.font()).elidedText(text, Qt::ElideRight, availableWidth / labelScale));
+}
 
 QJsonObject FindConfiguration(const QJsonObject& graph, const QString& configuration)
 {
@@ -518,8 +552,14 @@ struct RenderGraphCanvas::NodeView final
     QGraphicsRectItem* Frame;
     QHash<QString, QGraphicsEllipseItem*> InputItems;
     QHash<QString, QGraphicsEllipseItem*> OutputItems;
+    QGraphicsSimpleTextItem* TitleLabelOrNull = nullptr;
+    QString Title;
+    QHash<QString, QGraphicsSimpleTextItem*> InputLabels;
+    QHash<QString, QGraphicsSimpleTextItem*> OutputLabels;
     QGraphicsSimpleTextItem* ActivityLabelOrNull = nullptr;
     QGraphicsSimpleTextItem* SizeLabelOrNull = nullptr;
+    QString ActivityText;
+    QString CompactActivityText;
     bool IsMovable = true;
 };
 
@@ -549,6 +589,8 @@ struct RenderGraphCanvas::EdgeView final
 
 RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidget* parentOrNull)
     : QGraphicsView(parentOrNull), mDocument(document), mScene(new QGraphicsScene(this)),
+      mFramingToolbar(new QToolBar(this)), mFitGraphAction(new QAction(QStringLiteral("Fit Graph"), this)),
+      mFitSelectionAction(new QAction(QStringLiteral("Fit Selection"), this)), mZoomLabel(new QLabel(this)),
       mSelectionBox(new QRubberBand(QRubberBand::Rectangle, viewport()))
 {
     setObjectName(QStringLiteral("renderGraphCanvas"));
@@ -559,15 +601,48 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
     setMouseTracking(true);
     setTransformationAnchor(QGraphicsView::NoAnchor);
     setBackgroundBrush(QColor(28, 31, 36));
-    setToolTip(QStringLiteral("Left-drag empty space to box-select · Shift adds to selection · middle-drag or "
-                              "Space+left-drag pans (two-finger scroll on a touchpad) · Copy/Paste reuses node groups "
-                              "· drag nodes to arrange them (one "
-                              "undo step per drag) · drag from an output port to an "
-                              "input port to connect or replace · right-click nodes, wires or ports to edit · "
-                              "Delete removes the selected node or link · double-click a "
-                              "Subgraph to enter it, or any other node to show details · pinch, wheel or Ctrl+scroll "
-                              "zooms around the pointer · "
-                              "two-finger double-tap frames the graph"));
+    mFramingToolbar->setObjectName(QStringLiteral("renderGraphFramingToolbar"));
+    mFramingToolbar->setAccessibleName(QStringLiteral("Canvas framing"));
+    mFramingToolbar->setMovable(false);
+    mFramingToolbar->setFloatable(false);
+    mFramingToolbar->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    mFitGraphAction->setObjectName(QStringLiteral("renderGraphFitGraph"));
+    mFitSelectionAction->setObjectName(QStringLiteral("renderGraphFitSelection"));
+    mFitGraphAction->setShortcut(QKeySequence(Qt::Key_Home));
+    mFitSelectionAction->setShortcut(QKeySequence(Qt::Key_F));
+    QAction* resetZoom = new QAction(QStringLiteral("100%"), this);
+    resetZoom->setObjectName(QStringLiteral("renderGraphResetZoom"));
+    resetZoom->setShortcut(QKeySequence(QStringLiteral("Ctrl+0")));
+    mFitGraphAction->setToolTip(QStringLiteral("Frame all nodes (Home)"));
+    mFitSelectionAction->setToolTip(QStringLiteral("Frame selected nodes (F)"));
+    resetZoom->setToolTip(
+        QStringLiteral("Restore 100% zoom (%1)").arg(resetZoom->shortcut().toString(QKeySequence::NativeText)));
+    for (QAction* action : {mFitGraphAction, mFitSelectionAction, resetZoom})
+    {
+        action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+        addAction(action);
+        mFramingToolbar->addAction(action);
+    }
+    mFramingToolbar->addSeparator();
+    mZoomLabel->setObjectName(QStringLiteral("renderGraphZoomLabel"));
+    mZoomLabel->setAccessibleName(QStringLiteral("Canvas zoom"));
+    mFramingToolbar->addWidget(mZoomLabel);
+    setViewportMargins(0, mFramingToolbar->sizeHint().height(), 0, 0);
+    connect(mFitGraphAction, &QAction::triggered, this, &RenderGraphCanvas::FitGraph);
+    connect(mFitSelectionAction, &QAction::triggered, this, &RenderGraphCanvas::FitSelection);
+    connect(resetZoom, &QAction::triggered, this, &RenderGraphCanvas::ResetZoom);
+    updateFramingControls();
+    updateSemanticZoom();
+    setToolTip(QStringLiteral(
+        "Left-drag empty space to box-select · Shift adds to selection · middle-drag or "
+        "Space+left-drag pans (two-finger scroll on a touchpad) · Copy/Paste reuses node groups "
+        "· drag nodes to arrange them (one "
+        "undo step per drag) · drag from an output port to an "
+        "input port to connect or replace · right-click nodes, wires or ports to edit · "
+        "Delete removes the selected node or link · double-click a "
+        "Subgraph to enter it, or any other node to show details · pinch, wheel or Ctrl+scroll "
+        "zooms around the pointer · "
+        "Home or two-finger double-tap frames the graph · F frames selection · Ctrl/Command+0 resets zoom"));
 }
 
 RenderGraphCanvas::~RenderGraphCanvas()
@@ -590,7 +665,7 @@ void RenderGraphCanvas::ShowConfiguration(const QString& file, const QString& co
         mShouldFitOnShow = true;
         if (isVisible() == true)
         {
-            fitGraph();
+            FitGraph();
         }
     }
 }
@@ -603,16 +678,162 @@ void RenderGraphCanvas::showEvent(QShowEvent* event)
     QTimer::singleShot(0, this, [this]() {
         if (mShouldFitOnShow == true)
         {
-            fitGraph();
+            FitGraph();
         }
     });
 }
 
-void RenderGraphCanvas::fitGraph()
+void RenderGraphCanvas::resizeEvent(QResizeEvent* event)
 {
-    fitInView(mScene->itemsBoundingRect().adjusted(-FRAME_PADDING, -FRAME_PADDING, FRAME_PADDING, FRAME_PADDING),
-              Qt::KeepAspectRatio);
+    QGraphicsView::resizeEvent(event);
+    const int32 height = mFramingToolbar->sizeHint().height();
+    if (viewportMargins().top() != height)
+    {
+        setViewportMargins(0, height, 0, 0);
+    }
+    mFramingToolbar->setGeometry(frameWidth(), frameWidth(), width() - 2 * frameWidth(), height);
+}
+
+void RenderGraphCanvas::paintEvent(QPaintEvent* event)
+{
+    // Also handles a transform applied by a host/test through QGraphicsView's API.
+    updateSemanticZoom();
+    QGraphicsView::paintEvent(event);
+}
+
+void RenderGraphCanvas::FitGraph()
+{
+    QRectF bounds;
+    for (const NodeView* view : std::as_const(mNodes))
+    {
+        bounds = bounds.united(view->Frame->sceneBoundingRect());
+    }
+    fitBounds(bounds);
     mShouldFitOnShow = false;
+}
+
+void RenderGraphCanvas::FitSelection()
+{
+    QRectF bounds;
+    for (const QString& identity : GetSelectedNodes())
+    {
+        bounds = bounds.united(mNodes.value(identity)->Frame->sceneBoundingRect());
+    }
+    fitBounds(bounds);
+}
+
+void RenderGraphCanvas::fitBounds(const QRectF& bounds)
+{
+    if (bounds.isEmpty() == true || viewport()->width() <= 1 || viewport()->height() <= 1)
+    {
+        return;
+    }
+    fitInView(bounds.adjusted(-FRAME_PADDING, -FRAME_PADDING, FRAME_PADDING, FRAME_PADDING), Qt::KeepAspectRatio);
+    const float64 current = transform().m11();
+    const float64 target = math::Clamp(current, MINIMUM_VIEW_SCALE, MAXIMUM_VIEW_SCALE);
+    scale(target / current, target / current);
+    centerOn(bounds.center());
+    updateSemanticZoom();
+}
+
+void RenderGraphCanvas::ResetZoom()
+{
+    const QPointF position = viewport()->rect().center();
+    const QPointF before = viewportTransform().inverted().map(position);
+    resetTransform();
+    const QPointF after = viewportTransform().inverted().map(position);
+    const QPointF offset = after - before;
+    translate(offset.x(), offset.y());
+    updateSemanticZoom();
+}
+
+void RenderGraphCanvas::updateFramingControls()
+{
+    mFitGraphAction->setEnabled(mNodes.isEmpty() == false);
+    mFitSelectionAction->setEnabled(GetSelectedNodes().isEmpty() == false);
+}
+
+void RenderGraphCanvas::updateSemanticZoom(bool shouldForce)
+{
+    const float64 viewScale = transform().m11();
+    if (math::IsFinite(viewScale) == false || viewScale <= 0 || (shouldForce == false && viewScale == mPresentedScale))
+    {
+        return;
+    }
+    mPresentedScale = viewScale;
+    mZoomLabel->setText(QStringLiteral("%1%").arg(viewScale * PERCENT_SCALE, 0, 'f', 0));
+    const bool hasDetails = viewScale >= DETAIL_VIEW_SCALE;
+    const bool hasPortLabels = viewScale >= PORT_LABEL_VIEW_SCALE;
+    const bool hasReadableCards = NODE_WIDTH * viewScale >= MINIMUM_TEXT_CARD_WIDTH;
+    mZoomLabel->setToolTip(hasDetails == true ? QStringLiteral("Detailed view: ports, activity and resource metadata")
+                           : hasPortLabels == true
+                               ? QStringLiteral("Working view: ports and compact activity")
+                               : QStringLiteral("Overview: node identities and compact activity; hover for details"));
+    for (NodeView* view : std::as_const(mNodes))
+    {
+        if (view->TitleLabelOrNull != nullptr)
+        {
+            QGraphicsSimpleTextItem& title = *view->TitleLabelOrNull;
+            title.setVisible(hasReadableCards);
+            SetScaledLabel(title,
+                           hasDetails == true ? view->Title
+                                              : (view->Id == OUTPUTS_NODE ? QStringLiteral("outputs") : view->Id),
+                           viewScale,
+                           CanvasLabelRole::Title,
+                           NODE_WIDTH - 2 * NODE_PADDING);
+            title.setPos(NODE_PADDING,
+                         math::Max(0.0, (HEADER_HEIGHT - title.boundingRect().height() * title.scale()) / 2));
+        }
+        for (bool isOutput : {false, true})
+        {
+            const QHash<QString, QGraphicsSimpleTextItem*>& labels =
+                isOutput == true ? view->OutputLabels : view->InputLabels;
+            const QHash<QString, QGraphicsEllipseItem*>& connectors =
+                isOutput == true ? view->OutputItems : view->InputItems;
+            for (QHash<QString, QGraphicsSimpleTextItem*>::const_iterator label = labels.cbegin();
+                 label != labels.cend();
+                 ++label)
+            {
+                QGraphicsSimpleTextItem& name = *label.value();
+                name.setVisible(hasPortLabels);
+                const float64 availableWidth = NODE_WIDTH / 2 - PORT_RADIUS - 2 * PORT_LABEL_GAP;
+                SetScaledLabel(name, label.key(), viewScale, CanvasLabelRole::Annotation, availableWidth);
+                const float64 x = isOutput == true ? NODE_WIDTH - PORT_RADIUS - PORT_LABEL_GAP -
+                                                         name.boundingRect().width() * name.scale()
+                                                   : PORT_RADIUS + PORT_LABEL_GAP;
+                const float64 y = connectors.value(label.key())->rect().center().y();
+                name.setPos(x, y - name.boundingRect().height() * name.scale() / 2);
+            }
+        }
+        if (view->ActivityLabelOrNull != nullptr)
+        {
+            QGraphicsSimpleTextItem& activity = *view->ActivityLabelOrNull;
+            activity.setVisible(
+                hasDetails == true ||
+                (hasReadableCards == true && view->Frame->rect().height() * viewScale >= MINIMUM_STATUS_CARD_HEIGHT));
+            SetScaledLabel(activity,
+                           hasDetails == true ? view->ActivityText : view->CompactActivityText,
+                           viewScale,
+                           CanvasLabelRole::Annotation,
+                           NODE_WIDTH - 2 * NODE_PADDING);
+            activity.setPos(NODE_PADDING,
+                            hasDetails == true ? view->Frame->rect().height() - FEEDBACK_HEIGHT
+                                               : view->Frame->rect().height() - NODE_PADDING -
+                                                     activity.boundingRect().height() * activity.scale());
+        }
+        if (view->SizeLabelOrNull != nullptr)
+        {
+            view->SizeLabelOrNull->setVisible(hasDetails);
+        }
+    }
+    if (mDiagnosticLabelOrNull != nullptr)
+    {
+        SetScaledLabel(*mDiagnosticLabelOrNull,
+                       hasReadableCards == true ? mDiagnosticText : QStringLiteral("!"),
+                       viewScale,
+                       CanvasLabelRole::Title,
+                       hasReadableCards == true ? NODE_WIDTH - 2 * NODE_PADDING : NODE_WIDTH / viewScale);
+    }
 }
 
 QJsonObject RenderGraphCanvas::configuration() const
@@ -643,6 +864,8 @@ void RenderGraphCanvas::Rebuild()
     const QJsonObject record = configuration();
     if (record.isEmpty() == true)
     {
+        updateFramingControls();
+        updateSemanticZoom(true);
         return;
     }
     QHash<QString, QPointF> authored;
@@ -722,6 +945,8 @@ void RenderGraphCanvas::Rebuild()
         header->setBrush(GetDomainColor(domain));
         header->setPen(Qt::NoPen);
         QGraphicsSimpleTextItem* label = new QGraphicsSimpleTextItem(title, header);
+        view->TitleLabelOrNull = label;
+        view->Title = title;
         QFont font = label->font();
         font.setBold(true);
         label->setFont(font);
@@ -746,10 +971,12 @@ void RenderGraphCanvas::Rebuild()
             small.setPointSize(LABEL_POINT_SIZE);
             name->setFont(small);
             name->setBrush(QColor(214, 218, 224));
+            name->setToolTip(connector->toolTip());
             const float64 labelX =
                 isOutput == true ? NODE_WIDTH - PORT_RADIUS - 4 - name->boundingRect().width() : PORT_RADIUS + 4;
             name->setPos(labelX, y - name->boundingRect().height() / 2);
             (isOutput == true ? view->OutputItems : view->InputItems).insert(port.Id, connector);
+            (isOutput == true ? view->OutputLabels : view->InputLabels).insert(port.Id, name);
         };
         for (qsizetype i = 0; i < ports.Inputs.size(); ++i)
         {
@@ -870,7 +1097,14 @@ void RenderGraphCanvas::Rebuild()
         }
     }
     updateSelection();
-    mScene->setSceneRect(mScene->itemsBoundingRect().adjusted(-400, -400, 400, 400));
+    QRectF nodeBounds;
+    for (const NodeView* view : std::as_const(mNodes))
+    {
+        nodeBounds = nodeBounds.united(view->Frame->sceneBoundingRect());
+    }
+    mScene->setSceneRect(
+        nodeBounds.adjusted(-SCENE_SCROLL_PADDING, -SCENE_SCROLL_PADDING, SCENE_SCROLL_PADDING, SCENE_SCROLL_PADDING));
+    updateSemanticZoom(true);
 }
 
 void RenderGraphCanvas::SetReferenceSize(const QSize& size)
@@ -930,6 +1164,12 @@ void RenderGraphCanvas::refreshFeedback()
         const QString label = isInterface == true             ? QStringLiteral("Configuration interface")
                               : state.Label.isEmpty() == true ? QStringLiteral("Activity unknown")
                                                               : state.Label;
+        view->ActivityText = label;
+        view->CompactActivityText = isInterface == true                               ? QStringLiteral("Interface")
+                                    : state.Activity == RenderGraphActivity::Retained ? QStringLiteral("Draft route")
+                                    : state.Activity == RenderGraphActivity::Inactive ? QStringLiteral("Inactive")
+                                    : state.Activity == RenderGraphActivity::Disabled ? QStringLiteral("Disabled")
+                                                                                      : QStringLiteral("Unknown");
         if (view->ActivityLabelOrNull != nullptr)
         {
             view->ActivityLabelOrNull->setText(QFontMetricsF(view->ActivityLabelOrNull->font())
@@ -973,6 +1213,12 @@ void RenderGraphCanvas::refreshFeedback()
                 }
                 tooltip += QStringLiteral("\nRight-click to connect/disconnect; drag an output onto an input to check "
                                           "compatibility or replace its source.");
+                QGraphicsSimpleTextItem* portLabelOrNull =
+                    (isOutput == true ? view->OutputLabels : view->InputLabels).value(port.Id, nullptr);
+                if (portLabelOrNull != nullptr)
+                {
+                    portLabelOrNull->setToolTip(tooltip);
+                }
                 QGraphicsEllipseItem* connectorOrNull =
                     (isOutput == true ? view->OutputItems : view->InputItems).value(port.Id, nullptr);
                 if (connectorOrNull != nullptr)
@@ -1025,6 +1271,7 @@ void RenderGraphCanvas::refreshFeedback()
         }
     }
     updateConnectionHighlight();
+    updateSemanticZoom(true);
 }
 
 void RenderGraphCanvas::updateLinkFeedback(QPointF position)
@@ -1228,6 +1475,8 @@ void RenderGraphCanvas::ClearDiagnostic()
 {
     delete mDiagnosticMarkerOrNull;
     mDiagnosticMarkerOrNull = nullptr;
+    mDiagnosticLabelOrNull = nullptr;
+    mDiagnosticText.clear();
     mDiagnosticLocation = {};
     setAccessibleDescription({});
 }
@@ -1251,7 +1500,10 @@ bool RenderGraphCanvas::ShowDiagnostic(const QJsonObject& location, const QStrin
     setAccessibleDescription(description);
     mDiagnosticMarkerOrNull = new QGraphicsRectItem(viewOrNull->Frame->rect(), viewOrNull->Frame);
     mDiagnosticMarkerOrNull->setAcceptedMouseButtons(Qt::NoButton);
-    mDiagnosticMarkerOrNull->setPen(QPen(QColor::fromRgba(LINK_REJECT_COLOR), NODE_BORDER_WIDTH * 2));
+    QPen diagnosticPen(QColor::fromRgba(LINK_REJECT_COLOR), NODE_BORDER_WIDTH * 2);
+    diagnosticPen.setCosmetic(true);
+    mDiagnosticMarkerOrNull->setPen(diagnosticPen);
+    mDiagnosticMarkerOrNull->setFlag(QGraphicsItem::ItemIgnoresParentOpacity);
     mDiagnosticMarkerOrNull->setToolTip(description.toHtmlEscaped());
     // Exposed outputs are consumers on the left side of the configuration output box.
     const bool isOutputConnector = owner == OUTPUTS_NODE ? false : isOutput;
@@ -1264,10 +1516,12 @@ bool RenderGraphCanvas::ShowDiagnostic(const QJsonObject& location, const QStrin
             mDiagnosticMarkerOrNull);
         ring->setPos(connectorOrNull->mapToItem(mDiagnosticMarkerOrNull, QPointF()));
         ring->setAcceptedMouseButtons(Qt::NoButton);
-        ring->setPen(QPen(QColor::fromRgba(LINK_REJECT_COLOR), NODE_BORDER_WIDTH * 2));
+        ring->setPen(diagnosticPen);
     }
     QGraphicsSimpleTextItem* label = new QGraphicsSimpleTextItem(mDiagnosticMarkerOrNull);
+    mDiagnosticLabelOrNull = label;
     const QString target = port.isEmpty() == false ? port : location.value(QStringLiteral("field")).toString();
+    mDiagnosticText = QStringLiteral("Error: %1").arg(target.isEmpty() == true ? owner : target);
     label->setText(QFontMetricsF(label->font())
                        .elidedText(QStringLiteral("Error: %1").arg(target.isEmpty() == true ? owner : target),
                                    Qt::ElideRight,
@@ -1275,6 +1529,7 @@ bool RenderGraphCanvas::ShowDiagnostic(const QJsonObject& location, const QStrin
     label->setBrush(QColor::fromRgba(LINK_REJECT_COLOR));
     label->setPos(NODE_PADDING, viewOrNull->Frame->rect().bottom() + NODE_PADDING);
     label->setToolTip(description.toHtmlEscaped());
+    updateSemanticZoom(true);
     ensureVisible(mDiagnosticMarkerOrNull->sceneBoundingRect().united(label->sceneBoundingRect()));
     return true;
 }
@@ -1287,6 +1542,7 @@ QJsonObject RenderGraphCanvas::GetDiagnosticLocation() const
 void RenderGraphCanvas::updateSelection()
 {
     updateConnectionHighlight();
+    updateFramingControls();
 }
 
 void RenderGraphCanvas::updateConnectionHighlight()
@@ -2046,7 +2302,7 @@ bool RenderGraphCanvas::viewportEvent(QEvent* event)
         if (gesture->gestureType() == Qt::SmartZoomNativeGesture)
         {
             // macOS two-finger double-tap: recover from a lost view by framing the graph.
-            fitGraph();
+            FitGraph();
             event->accept();
             return true;
         }
@@ -2085,5 +2341,6 @@ void RenderGraphCanvas::zoomAt(float64 factor, QPointF position)
     const QPointF after = viewportTransform().inverted().map(position);
     const QPointF offset = after - before;
     translate(offset.x(), offset.y());
+    updateSemanticZoom();
 }
 } // namespace ludus::editor
