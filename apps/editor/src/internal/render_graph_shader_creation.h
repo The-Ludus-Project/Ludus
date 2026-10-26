@@ -13,11 +13,13 @@ namespace ludus::editor
                                                                const QJsonObject& previousNode,
                                                                const QString& manifestFile,
                                                                const QString& packageRoot);
-/// Generate the scene-aware callback and record its manifest input/output types.
+/// Generate the scene-aware callback, or the C03 kernel for a compute stage, and record its manifest
+/// input/output types. Returns empty bytes for stages without a scene-aware form.
 [[nodiscard]] QByteArray MakeSceneRaySource(QJsonObject& inoutProgram);
 /// True when the shared ray technique declares the scene-aware interface.
 [[nodiscard]] bool HasSceneRayInterface(const QJsonObject& manifest);
-/// Initialize scene callbacks for a new ray pipeline when no ray technique exists.
+/// Initialize scene callbacks for a new ray pipeline, or the scene interface and automatic triangle
+/// recipe for a scene compute pass, when no ray technique exists.
 /// Caller owns the unpublished candidate; existing techniques and sources are preserved.
 [[nodiscard]] RenderGraphDocumentStatus PrepareSceneRayDefaults(RenderGraphSnapshot& inoutSnapshot,
                                                                 QJsonObject& inoutManifest,

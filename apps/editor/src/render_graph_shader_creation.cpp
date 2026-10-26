@@ -38,12 +38,19 @@ bool IsSceneRayStage(const QString& stage)
            stage == QStringLiteral("closest_hit");
 }
 
+bool IsSceneComputeProgram(const QJsonObject& program)
+{
+    return program.value(QStringLiteral("stage")).toString() == QStringLiteral("compute") &&
+           program.value(QStringLiteral("output")).toString() == QStringLiteral("Radiance");
+}
+
 QByteArray MakeSource(QJsonObject& inoutProgram, const QJsonArray& schemas)
 {
     const QString stage = inoutProgram.value(QStringLiteral("stage")).toString();
-    if (IsSceneRayStage(stage) == true &&
-        (inoutProgram.value(QStringLiteral("output")).toString() == QStringLiteral("Radiance") ||
-         inoutProgram.value(QStringLiteral("output")).toString() == QStringLiteral("ScenePayload")))
+    if ((IsSceneRayStage(stage) == true &&
+         (inoutProgram.value(QStringLiteral("output")).toString() == QStringLiteral("Radiance") ||
+          inoutProgram.value(QStringLiteral("output")).toString() == QStringLiteral("ScenePayload"))) ||
+        IsSceneComputeProgram(inoutProgram) == true)
     {
         return MakeSceneRaySource(inoutProgram);
     }
@@ -299,6 +306,24 @@ RenderGraphDocumentStatus ReconcileShader(RenderGraphSnapshot& inoutSnapshot,
         {
             inoutSnapshot.Files.insert(source, replacement);
         }
+    }
+    // A compute node that gains or loses its Scene input swaps an untouched, unshared generated kernel
+    // between the generic and C03 forms. Authored kernels keep their bytes and manifest signature.
+    const bool shouldUseSceneCompute = stage == QStringLiteral("compute") && IsSceneComputeNode(inoutNode) == true &&
+                                       HasSceneRayInterface(inoutManifest) == true;
+    if (stage == QStringLiteral("compute") && IsSceneComputeProgram(program) != shouldUseSceneCompute &&
+        inoutSnapshot.Files.value(source) == originalTemplate &&
+        GetReferencedPrograms(inoutSnapshot, inoutManifest.value(QStringLiteral("techniques")).toArray())
+                .count(previous) <= 1)
+    {
+        program.insert(QStringLiteral("output"),
+                       shouldUseSceneCompute == true ? QStringLiteral("Radiance") : QString());
+        const QByteArray replacement = MakeSource(program, schemas);
+        if (replacement.isEmpty() == true)
+        {
+            return RenderGraphDocumentStatus::InvalidEdit;
+        }
+        inoutSnapshot.Files.insert(source, replacement);
     }
     if (name != previous)
     {
@@ -567,6 +592,11 @@ RenderGraphDocumentStatus PreparePipelineShaders(RenderGraphSnapshot& inoutSnaps
                 inoutNode.value(QStringLiteral("kind")).toString() == QStringLiteral("RayTracingPipeline"))
             {
                 program.insert(QStringLiteral("output"), QStringLiteral("ScenePayload"));
+            }
+            else if (HasSceneRayInterface(manifest) == true && stage == QStringLiteral("compute") &&
+                     IsSceneComputeNode(inoutNode) == true)
+            {
+                program.insert(QStringLiteral("output"), QStringLiteral("Radiance"));
             }
             const QByteArray source = MakeSource(program, manifest.value(QStringLiteral("schemas")).toArray());
             if (source.isEmpty() == true)

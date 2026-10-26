@@ -21,6 +21,8 @@ namespace ludus::editor
 {
 /// Edits read inputs and paired writable resources, program references, state and invocation.
 /// Each writable row creates both ports and serializes their target association automatically.
+/// Ray pipelines and scene compute passes show Launch size and automatic state; adding or removing a
+/// ComputePipeline's Scene input applies that profile's state and invocation defaults.
 /// Completed control edits emit a candidate for the document's undoable draft.
 /// The document owns acceptance and Save; this widget never builds shaders. GUI thread only.
 class RenderGraphPipelineEditor final : public QWidget
@@ -46,6 +48,7 @@ private:
     createTable(const QString& name, const QStringList& fields, const QStringList& defaults);
     void addProperties(QFormLayout& outForm, const QString& name);
     void addRayStateProperties(QFormLayout& outForm);
+    void addSceneComputeStateProperties(QFormLayout& outForm);
     void publishEdit();
     void connectChoices(QTableWidget& inoutTable, foundation::int32 row);
     QJsonObject mNode;

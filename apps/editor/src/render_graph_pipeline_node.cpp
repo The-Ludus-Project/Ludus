@@ -1,10 +1,48 @@
 #include "internal/render_graph_pipeline_node.h"
 
+#include <ludus/foundation/base/types.h>
+
 #include <QJsonArray>
 #include <QStringList>
 
 namespace ludus::editor
 {
+namespace
+{
+// The builder's render_graph_compute.GROUP_SIZE: the persistent ray wrapper's workgroup width.
+constexpr foundation::int32 SCENE_COMPUTE_GROUP_WIDTH = LUDUS_EDITOR_SCENE_COMPUTE_GROUP_WIDTH;
+
+bool HasInputType(const QJsonObject& node, const QString& type)
+{
+    for (const QJsonValueConstRef input : node.value(QStringLiteral("inputs")).toArray())
+    {
+        if (input.toObject().value(QStringLiteral("type")).toString() == type)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+QString MakeUniqueInputIdentity(const QJsonObject& node, const QString& base)
+{
+    QStringList identities;
+    for (const QString& direction : {QStringLiteral("inputs"), QStringLiteral("outputs")})
+    {
+        for (const QJsonValueConstRef port : node.value(direction).toArray())
+        {
+            identities.append(port.toObject().value(QStringLiteral("id")).toString());
+        }
+    }
+    QString identity = base;
+    for (foundation::int32 suffix = 2; identities.contains(identity) == true; ++suffix)
+    {
+        identity = base + QString::number(suffix);
+    }
+    return identity;
+}
+} // namespace
+
 bool IsPipelineNode(const QString& kind) noexcept
 {
     return kind == QStringLiteral("GraphicsPipeline") || kind == QStringLiteral("ComputePipeline") ||
@@ -69,6 +107,79 @@ QJsonObject MakePipelineNode(const QString& kind, const QString& identity)
             {QStringLiteral("shaders"), QJsonArray{}},
             {QStringLiteral("state"), state},
             {QStringLiteral("invocation"), invocation}};
+}
+
+bool IsSceneComputeNode(const QJsonObject& node)
+{
+    return node.value(QStringLiteral("kind")).toString() == QStringLiteral("ComputePipeline") &&
+           HasInputType(node, QStringLiteral("Scene")) == true;
+}
+
+bool UsesRayLaunch(const QJsonObject& node)
+{
+    return node.value(QStringLiteral("kind")).toString() == QStringLiteral("RayTracingPipeline") ||
+           IsSceneComputeNode(node) == true;
+}
+
+QJsonArray GetSceneComputeGroupSize()
+{
+    return QJsonArray{SCENE_COMPUTE_GROUP_WIDTH, 1, 1};
+}
+
+QJsonObject ApplyComputeProfile(const QJsonObject& previousNode, const QJsonObject& node)
+{
+    const bool isSceneCompute = IsSceneComputeNode(node);
+    if (node.value(QStringLiteral("kind")).toString() != QStringLiteral("ComputePipeline") ||
+        IsSceneComputeNode(previousNode) == isSceneCompute)
+    {
+        return node;
+    }
+    QJsonObject result = node;
+    if (isSceneCompute == true)
+    {
+        // A generic group size or dispatch count has no meaning for a per-pixel ray launch.
+        result.insert(QStringLiteral("state"), QJsonObject{});
+        result.insert(QStringLiteral("invocation"),
+                      QJsonObject{{QStringLiteral("dimensions"), QStringLiteral("ColorTarget")}});
+        return result;
+    }
+    QJsonObject state = result.value(QStringLiteral("state")).toObject();
+    if (state.contains(QStringLiteral("group_size")) == false)
+    {
+        state.insert(QStringLiteral("group_size"), QJsonArray{1, 1, 1});
+    }
+    QJsonObject invocation = result.value(QStringLiteral("invocation")).toObject();
+    if (invocation.value(QStringLiteral("dimensions")).isArray() == false)
+    {
+        invocation.insert(QStringLiteral("dimensions"), QJsonArray{1, 1, 1});
+    }
+    result.insert(QStringLiteral("state"), state);
+    result.insert(QStringLiteral("invocation"), invocation);
+    return result;
+}
+
+bool MakeSceneComputeNode(const QJsonObject& node, QJsonObject& outNode)
+{
+    if (node.value(QStringLiteral("kind")).toString() != QStringLiteral("ComputePipeline") ||
+        IsSceneComputeNode(node) == true)
+    {
+        return false;
+    }
+    QJsonObject candidate = node;
+    QJsonArray inputs = candidate.value(QStringLiteral("inputs")).toArray();
+    // Scene and View lead, matching the ray pipeline contract's port order.
+    if (HasInputType(node, QStringLiteral("View")) == false)
+    {
+        inputs.prepend(QJsonObject{{QStringLiteral("id"), MakeUniqueInputIdentity(node, QStringLiteral("view"))},
+                                   {QStringLiteral("type"), QStringLiteral("View")},
+                                   {QStringLiteral("required"), true}});
+    }
+    inputs.prepend(QJsonObject{{QStringLiteral("id"), MakeUniqueInputIdentity(node, QStringLiteral("scene"))},
+                               {QStringLiteral("type"), QStringLiteral("Scene")},
+                               {QStringLiteral("required"), true}});
+    candidate.insert(QStringLiteral("inputs"), inputs);
+    outNode = ApplyComputeProfile(node, candidate);
+    return true;
 }
 
 bool MigrateRasterNode(const QJsonObject& node, const QJsonObject& manifest, QJsonObject& outNode)

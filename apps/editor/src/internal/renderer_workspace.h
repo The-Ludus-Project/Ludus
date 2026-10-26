@@ -354,6 +354,7 @@ private:
     void scheduleLiveBuild(bool hasDebouncedSource = false);
     void refreshWatchedSources();
     void enableSceneMaterials();
+    void makeSceneCompute();
     void expandSceneBundle(bool isExpanded);
     void applySourceEdit();
     void setProblem(QString& inoutProblem, const QString& text);

@@ -944,11 +944,51 @@ of two patterns:
   [reservoir.slang](../../modules/graphics/renderer/render_graphs/restir_di/main_shaders/reservoir.slang)
   does. Use this when a pass's draw count is unbounded or depends on data.
 
-Editor support for scene compute nodes is not available yet. That covers the
-Launch size control, an automatic group size, the scene-aware shader stub and
-registering the program in the manifest. For now, write `state`, `invocation` and
-the manifest program in the source JSON. Properties and the canvas still edit the
-node's ports, shaders and wires.
+**Author a scene compute pass in the editor.** Each step works from Properties
+or from the canvas with Properties hidden. The canvas actions are on the node's
+right-click menu, and **Edit Node...** opens the same controls in a dialog. Both
+surfaces make the same undoable document edit, and **Save** publishes it.
+
+1. Create a **ComputePipeline** from the node type picker, **Create Node** or
+   **Quick Add**. A new compute node is a generic draft with `group_size` and
+   `dimensions` of `[1, 1, 1]`.
+2. Choose **Add Scene and View Inputs** (a Properties button and a canvas
+   action). In one undoable edit it adds the `scene` and `view` inputs, sets
+   `"state": {}` and sets Launch size to **Match color target**. Adding a Scene
+   row in **Read Inputs** has the same effect. Removing the last Scene input
+   makes the node a generic draft again with `[1, 1, 1]` group size and
+   dimensions.
+3. Connect the Scene node's `scene` output to `scene`, or use
+   [Expand Scene Bundle](#connect-or-expand-a-scene-bundle) to connect only
+   some members. Connect the active camera's `view` output to `view`.
+4. In **Writable Resources**, add the RGBA8Unorm color row with **Clear**/**Store**,
+   and up to two **Buffer** rows with **Load**/**Store**. Connect them as for a
+   Ray Tracing Pipeline node.
+5. **Invocation → Launch size** offers **Match color target** or **Explicit
+   size**, as for ray nodes. An explicit `[width, height, 1]` must match the
+   connected color target. The canvas reports a mismatch when you connect it.
+6. **Pipeline State** shows the automatic 64×1×1 group size. **Advanced
+   overrides** writes the explicit `"group_size": [64, 1, 1]`, which is the only
+   size it can write. A saved draft with another size opens unchanged and shows a
+   warning. **Use automatic settings** clears the size and repairs the draft.
+7. Add a row in **Shaders**. The editor creates the program with `"stage":
+   "compute"`, `"input": "RayLaunch"`, `"output": "Radiance"` and empty
+   `bindings`. It also writes a C03 stub that traces the camera ray with
+   `TraceClosest` and returns the material base color. If the package has no
+   `RendererTriangles.RayTracing` technique, the same edit adds one with the
+   automatic `Triangles` recipe and the default `scene_interface`. Properties
+   then shows the shared **Scene query budgets**. If the package's ray technique
+   still uses legacy callbacks, use **Enable Scene Materials** on a ray node first.
+   Otherwise the new kernel uses the generic compute stub.
+8. The **Shader API** panel beside the source lists the kernel signature, the
+   scene types and the query functions. It notes that `TraceAndShade` fails in a
+   compute pass.
+
+A compute node that gains its Scene input replaces an unchanged generated kernel
+with the C03 stub. A node that loses its Scene input restores the generic stub.
+Edited kernel sources keep their bytes and manifest signature. Generic compute
+drafts that never get a Scene input keep their `state`, `invocation` and sources
+byte for byte.
 
 Two fixtures show complete examples. The
 [scene compute fixture](../../tests/sdk_consumer/rg2/scene_compute/main.lurender.json)
