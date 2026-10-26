@@ -775,6 +775,7 @@ TEST_CASE("Ray admission distinguishes GPU, RHI resource and CPU scratch ceiling
     rhi::DeviceDescription deviceDescription;
     deviceDescription.Required.PortableRaster = true;
     deviceDescription.Required.Compute = true;
+    deviceDescription.Preferred.RayQueries = true;
     rr::GpuPreviewOptions options;
     options.CpuByteBudget = usize{1} * 1024 * 1024;
     options.GpuByteBudget = usize{1} * 1024 * 1024;
@@ -811,6 +812,15 @@ TEST_CASE("Ray admission distinguishes GPU, RHI resource and CPU scratch ceiling
     rr::Renderer context;
     REQUIRE(context.Initialize(device, shaders::renderer_flat::Vertex(), shaders::renderer_flat::Fragment()) ==
             S::Ready);
+    rhi::RayCapabilities rayCapabilities;
+    if (rhi::GetRayCapabilities(device, rayCapabilities) == S::Unsupported)
+    {
+        CHECK(context.EnableTriangleRayPipeline(shaders::renderer_gpu_preview::Compute(),
+                                                shaders::renderer_gpu_preview_image::Vertex(),
+                                                shaders::renderer_gpu_preview_image::Fragment(),
+                                                options) == S::Unsupported);
+        SKIP("Hardware raytracing unavailable; ray admission needs the triangle ray pipeline");
+    }
     REQUIRE(context.EnableTriangleRayPipeline(shaders::renderer_gpu_preview::Compute(),
                                               shaders::renderer_gpu_preview_image::Vertex(),
                                               shaders::renderer_gpu_preview_image::Fragment(),

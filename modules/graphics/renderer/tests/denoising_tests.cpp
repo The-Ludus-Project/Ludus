@@ -84,6 +84,10 @@ TEST_CASE("OIDN GPU pass preserves HDR and metadata and retires through graph co
             {
                 prepared = denoiser.Prepare(device, colors, EXTENT, EXTENT, static_cast<uint32>(quality));
             }
+            if (prepared == Status::Unsupported)
+            {
+                SKIP("OIDN cannot use this Metal device (for example a paravirtual CI adapter)");
+            }
             REQUIRE(prepared == Status::Ready);
             rhi::OrderedGraph graph;
             REQUIRE(rhi::CreateOrderedGraph(device, graph) == Status::Ready);
@@ -189,6 +193,10 @@ TEST_CASE("OIDN GPU pass preserves HDR and metadata and retires through graph co
         {
             prepared =
                 denoiser.Prepare(device, colors, EXTENT, EXTENT, static_cast<uint32>(format::ProcessingQuality::Fast));
+        }
+        if (prepared == Status::Unsupported)
+        {
+            SKIP("OIDN cannot use this Metal device (for example a paravirtual CI adapter)");
         }
         REQUIRE(prepared == Status::Ready);
         rhi::OrderedGraph graph;
