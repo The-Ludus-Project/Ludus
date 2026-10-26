@@ -19,12 +19,12 @@ static const float SHADE_MAXIMUM_TRACE_DISTANCE_WORLD = 3.402823466e38f;
 
 /// Light strategy: one light proposal and its shadow ray, MIS-weighted against BSDF sampling.
 float3 SampleLightStrategy(SceneContext scene,
-                          RayLaunch launch,
-                          SurfaceHit receiver,
-                          MaterialSample material,
-                          float3 shadingNormalWorld,
-                          float3 viewDirectionWorld,
-                          inout RayQueryContext queries)
+                           RayLaunch launch,
+                           SurfaceHit receiver,
+                           MaterialSample material,
+                           float3 shadingNormalWorld,
+                           float3 viewDirectionWorld,
+                           inout RayQueryContext queries)
 {
     SelectedLight selected = SelectLight(scene, launch, SHADE_LIGHT_SELECTION_DIMENSION);
     if (selected.HasSample == false)
@@ -51,12 +51,12 @@ float3 SampleLightStrategy(SceneContext scene,
 
 /// BSDF strategy: one BSDF-sampled ray; the emitter or environment it reaches is MIS-weighted.
 float3 SampleBsdfStrategy(SceneContext scene,
-                         RayLaunch launch,
-                         SurfaceHit receiver,
-                         MaterialSample material,
-                         float3 shadingNormalWorld,
-                         float3 viewDirectionWorld,
-                         inout RayQueryContext queries)
+                          RayLaunch launch,
+                          SurfaceHit receiver,
+                          MaterialSample material,
+                          float3 shadingNormalWorld,
+                          float3 viewDirectionWorld,
+                          inout RayQueryContext queries)
 {
     float3 directionSample = float3(SampleSceneRandom(launch, SHADE_BSDF_DIMENSION_FIRST),
                                     SampleSceneRandom(launch, SHADE_BSDF_DIMENSION_FIRST + 1),
