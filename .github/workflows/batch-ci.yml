@@ -46,7 +46,7 @@ jobs:
           private-key: ${{ secrets.BATCH_PROMOTION_APP_PRIVATE_KEY }}
           permission-contents: write
           permission-workflows: write
-      - name: Capture exact commit and record this attempt
+      - name: Capture exact commit, or report why no batch runs
         id: capture
         env:
           GH_TOKEN: ${{ steps.attempt-token.outputs.token }}

@@ -90,6 +90,48 @@ class CaptureTests(unittest.TestCase):
                 self.assertIn("-z", arguments)
 
 
+class SnapshotReportTests(unittest.TestCase):
+    """A green no-op tick must say that nothing was validated or promoted."""
+
+    def run_snapshot(self, outputs):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "output"
+            summary = Path(directory) / "summary"
+            environment = {"GITHUB_REF": "refs/heads/main", "GITHUB_REPOSITORY": "example/engine",
+                           "GH_TOKEN": "test-token", "GITHUB_SHA": BASE,
+                           "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary)}
+            with mock.patch.dict("os.environ", environment), \
+                    mock.patch("sys.argv", ["batch_ci.py", "snapshot"]), \
+                    mock.patch("batch_ci.snapshot", return_value=outputs), \
+                    mock.patch("builtins.print") as printed:
+                self.assertEqual(batch_ci.main(), 0)
+            return output.read_text(), summary.read_text(), printed.call_args.args[0]
+
+    def test_skipped_capture_annotates_run_and_summary_with_reason(self):
+        reason = f"develop {CANDIDATE} was already attempted; fix develop or dispatch with retry."
+        output, summary, annotation = self.run_snapshot({"should_run": "false", "reason": reason})
+        self.assertEqual(output, "should_run=false\n")
+        self.assertTrue(annotation.startswith("::notice title=No promotion this run::"))
+        self.assertIn(reason, annotation)
+        self.assertIn("main is unchanged", annotation)
+        self.assertIn("### No promotion this run", summary)
+        self.assertIn(reason, summary)
+
+    def test_notice_escapes_workflow_command_data(self):
+        annotation, _ = batch_ci.describe_snapshot({"should_run": "false", "reason": "100%\nnext\rline"})
+        self.assertIn("100%25%0Anext%0Dline", annotation)
+        self.assertNotIn("\n", annotation)
+
+    def test_selected_capture_reports_validation_without_skip_notice(self):
+        reason = f"Validate frozen develop commit {CANDIDATE} above main {BASE}."
+        _, summary, printed = self.run_snapshot({"should_run": "true", "base_sha": BASE,
+                                                  "candidate_sha": CANDIDATE, "recovery_required": "false",
+                                                  "reason": reason})
+        self.assertEqual(printed, reason)
+        self.assertIn("### Validating develop candidate", summary)
+        self.assertNotIn("No promotion", summary)
+
+
 class PromotionTests(unittest.TestCase):
     def setUp(self):
         self.client = mock.Mock(repository="example/engine", token="test-token")

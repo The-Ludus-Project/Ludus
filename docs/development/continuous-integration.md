@@ -186,6 +186,9 @@ through a develop PR; split or bisect a large batch when the source is unclear.
 Changes accepted while the run was active remain eligible for the next snapshot.
 
 The scheduler will not repeatedly run heavy CI for an unchanged attempted SHA.
+Such a tick, like one with no new changes, still finishes green after capturing
+nothing. It carries a **No promotion this run** notice and job summary naming the
+reason; only **Promote validated candidate** succeeding means main advanced.
 After an infrastructure failure, dispatch the coordinator on main with **retry**
 enabled. This reruns every required suite before another promotion attempt;
 never push main manually or mark failed checks successful. If main moved during
