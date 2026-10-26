@@ -270,6 +270,7 @@ TEST_CASE("ReSTIR configuration template fills an existing graph library from th
         actionOrNull->trigger();
     });
     RenderGraphCanvas& canvas = workspace.GetCanvas();
+    canvas.centerOn(canvas.scene()->itemsBoundingRect().bottomRight() + QPointF(100, 100));
     QContextMenuEvent event(QContextMenuEvent::Mouse,
                             canvas.viewport()->rect().center(),
                             canvas.viewport()->mapToGlobal(canvas.viewport()->rect().center()));
@@ -749,6 +750,7 @@ TEST_CASE("Visibility configurations apply from the canvas and preserve authored
         actionOrNull->trigger();
     });
     RenderGraphCanvas& canvas = workspace.GetCanvas();
+    canvas.centerOn(canvas.scene()->itemsBoundingRect().bottomRight() + QPointF(100, 100));
     QContextMenuEvent context(QContextMenuEvent::Mouse,
                               canvas.viewport()->rect().center(),
                               canvas.viewport()->mapToGlobal(canvas.viewport()->rect().center()));
@@ -1364,6 +1366,7 @@ TEST_CASE("Canvas template picker confirms a shader program budget increase", "[
         actionOrNull->trigger();
     });
     RenderGraphCanvas& canvas = workspace.GetCanvas();
+    canvas.centerOn(canvas.scene()->itemsBoundingRect().bottomRight() + QPointF(100, 100));
     QContextMenuEvent context(QContextMenuEvent::Mouse,
                               canvas.viewport()->rect().center(),
                               canvas.viewport()->mapToGlobal(canvas.viewport()->rect().center()));

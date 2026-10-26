@@ -215,14 +215,15 @@ inline constexpr EditorCommand VIEW_TIMING_COMMAND
     .Help = "Show the running game's frame timing.",
     .IsCheckable = false,
 };
-// Visual Studio binds Full Screen to Shift+Alt+Enter; Ludus gives that space to the World viewport.
+// Focus the active graph canvas or the World viewport with the established full-screen gesture.
 inline constexpr EditorCommand VIEW_FOCUS_VIEWPORT_COMMAND
 {
     .Id = "view.focusViewport",
     .Text = "&Focus Viewport",
     .ToolbarText = "",
     .Shortcut = "Shift+Alt+Return",
-    .Help = "Hide tool windows, toolbars and World controls to give the World viewport the window. Run again to "
+    .Help = "Hide tool windows, toolbars and document controls to focus the active render graph or World viewport. Run "
+            "again to "
             "restore the previous arrangement exactly.",
     .IsCheckable = true,
 };

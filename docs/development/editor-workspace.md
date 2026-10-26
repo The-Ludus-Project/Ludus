@@ -426,10 +426,11 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   open it, and **View** reopens any of its tool windows. Reset never changes
   drafts, saved files or a Play session.
 - **View → Focus Viewport** (Shift+Alt+Enter; Shift+Option+Return on macOS)
-  hides every tool window, the toolbars, the setup notice and the World's own
-  controls (file commands, render controls, hierarchy and status line) so the
-  World viewport fills the window; it switches to the World document if another
-  one is active. Run it again to restore the previous tool-window arrangement,
+  hides every tool window, the toolbars and the setup notice. When a render graph
+  is active, it focuses that graph and hides its navigation, source tree and
+  status strip. Otherwise it focuses the World viewport and hides the World's
+  controls (file commands, render controls, hierarchy and status line), switching
+  to the World document when needed. Run it again to restore the previous tool-window arrangement,
   sizes, toolbars and active document exactly. The viewport is never moved or
   recreated, only resized. Closing the editor while focused saves the arrangement
   Focus Viewport returns to, and Reset Window Layout also leaves it. New errors

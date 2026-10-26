@@ -3776,11 +3776,32 @@ node. It is another view of the same typed draft: every canvas edit is a
 `RenderGraphDocument` operation, so undo, explicit save, validation and Properties
 stay in step.
 
+Use **Graph Sources** in the document header to hide or restore the source tree.
+Its visibility and splitter width are remembered between sessions. The status
+strip reserves one line; longer reports remain scrollable. **View → Focus
+Viewport** (Shift+Alt+Enter; Shift+Option+Return on macOS), while the graph is
+active, hides the surrounding tool windows and graph navigation to give the
+canvas the window. Run it again to restore the layout and source-tree choice.
+Opening the graph or completing its build collapses a visible Error List tab
+group when no producer has errors or warnings. An explicitly selected Output,
+Timing or Profiling tab stays open; new problems reveal Error List again.
+
+Properties puts selected-node fields first, with **Graph settings** in a
+collapsible section below them. Narrow forms wrap labels above controls; graph
+setting explanations and labels wrap within the panel. These are the same draft
+controls used by the canvas editors, with the same undo and Save behavior.
+
 Every graph-authoring operation in Properties also has a canvas gesture or
 context-menu entry. Right-click the background to create nodes and subgraphs or
 edit the configuration interface; right-click a node to edit its fields or remove
 it; right-click wires and ports to manage connections. Properties remains an
 additional way to perform those same document edits.
+
+Background menus contain Quick Add, categorized **Create Node** entries,
+configuration/interface editing and package operations. **Configurations** groups
+Add, Apply Template and Delete. Node menus contain editing, copy, removal and
+the selected kind's actions; they do not inherit graph-wide commands from a
+previous selection. Wire and port menus contain connection operations.
 
 Choose a node type in Properties and click **Add Node**. It uses the configuration
 currently shown on the canvas, including a selected file's default; selecting a
@@ -3867,6 +3888,13 @@ Configuration output links can be selected and deleted, just like pass connectio
 They edit the configuration output's source rather than adding an ordinary edge.
 
 ### Read canvas feedback
+
+Select a node to emphasize its incoming and outgoing wires, their ports and the
+connected nodes, while fading unrelated wires. Hovering a port temporarily
+focuses just that port's connections, including every consumer of an output.
+Leaving the canvas restores the selection highlight; clearing selection restores
+normal activity styling. Highlighting never edits the draft or changes undo
+history. It describes connectivity, independently of validation or execution.
 
 Each node has a draft-route label. **Inactive branch** nodes and their incoming
 wires are dimmed: they have no route to an exposed configuration output,

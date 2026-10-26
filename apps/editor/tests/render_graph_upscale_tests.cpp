@@ -134,7 +134,7 @@ TEST_CASE("upscaler creation and algorithm editing work with Properties hidden",
         REQUIRE(menuOrNull != nullptr);
         QMenu* createOrNull = menuOrNull->findChild<QMenu*>(QStringLiteral("renderGraphCreateNodeMenu"));
         REQUIRE(createOrNull != nullptr);
-        for (QAction* action : createOrNull->actions())
+        for (QAction* action : createOrNull->findChildren<QAction*>())
         {
             if (action->text().contains(QStringLiteral("Bilinear")) == true)
             {
@@ -451,7 +451,7 @@ TEST_CASE("MetalFX color interpretation edits work with Properties hidden", "[ed
         REQUIRE(menuOrNull != nullptr);
         QMenu* createOrNull = menuOrNull->findChild<QMenu*>(QStringLiteral("renderGraphCreateNodeMenu"));
         REQUIRE(createOrNull != nullptr);
-        for (QAction* action : createOrNull->actions())
+        for (QAction* action : createOrNull->findChildren<QAction*>())
         {
             if (action->text().contains(QStringLiteral("MetalFX Spatial")) == true)
             {
