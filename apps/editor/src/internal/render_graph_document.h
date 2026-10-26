@@ -58,6 +58,14 @@ struct RenderGraphNodePosition final
     foundation::int32 Y = 0;
 };
 
+/// Edge added together with a new node: From is an existing `node.port` output and To is an
+/// input of the added node, such as `tonemap.color`.
+struct RenderGraphNodeConnection final
+{
+    QString From;
+    QString To;
+};
+
 /// Per-attempt program-budget request and explicit approval for a template import.
 /// Document application clears the reported counts; approval covers at most ApprovedPrograms.
 struct RenderGraphTemplateBudgetIncrease final
@@ -213,19 +221,26 @@ public:
     [[nodiscard]] RenderGraphDocumentStatus
     RemoveUnusedShaders(QStringList& outPrograms, QStringList& outSources, QString& outError);
     /// Add one node. With a position, also record its canvas layout position, clamped to
-    /// ±MAX_COORDINATE, in the same undoable edit. Failure preserves the draft.
+    /// ±MAX_COORDINATE, in the same undoable edit. With a connection, also add that edge in the
+    /// same edit; its To must be an input of node. Like Connect, the caller checks the edge first
+    /// (CheckRenderGraphLinkToNewNode). Failure preserves the draft.
     [[nodiscard]] RenderGraphDocumentStatus AddNode(const QString& file,
                                                     const QString& configuration,
                                                     const QJsonObject& node,
-                                                    const QPoint* positionOrNull = nullptr);
+                                                    const QPoint* positionOrNull = nullptr,
+                                                    const RenderGraphNodeConnection* connectionOrNull = nullptr);
     /// Add an unused upscaling preset and its size providers/targets in one undoable edit.
     /// With a position, the Upscale node is placed there; its helpers keep automatic placement.
+    /// With a connection to one of the Upscale node's inputs, that input gets no helper target and
+    /// is connected in the same edit instead; the caller checks the edge first.
     /// Failure preserves the draft; Save publishes graph-owned output and render settings.
-    [[nodiscard]] RenderGraphDocumentStatus AddUpscalePreset(const QString& file,
-                                                             const QString& configuration,
-                                                             const QString& algorithm,
-                                                             const QString& identity,
-                                                             const QPoint* positionOrNull = nullptr);
+    [[nodiscard]] RenderGraphDocumentStatus
+    AddUpscalePreset(const QString& file,
+                     const QString& configuration,
+                     const QString& algorithm,
+                     const QString& identity,
+                     const QPoint* positionOrNull = nullptr,
+                     const RenderGraphNodeConnection* connectionOrNull = nullptr);
     /// Add or fill an empty library configuration from ReSTIR DI, including shaders/settings.
     /// For the root graph, create a new library and Subgraph node in parentConfiguration instead;
     /// an empty parent identity selects the root default. Existing files/nodes are never replaced.

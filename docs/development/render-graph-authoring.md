@@ -3570,10 +3570,28 @@ the best match selected. Quick Add never creates a complete graph on the canvas.
 Templates that cannot preview in this editor, such as Denoise without the OIDN
 denoiser, stay listed with the reason, because the graph remains portable.
 
+To add a node that is already connected, start from an output instead. Drag a wire
+from an output port and release it on empty canvas, or click an output port without
+dragging. Quick Add opens with a context line such as
+`Connect from tonemap.color · ColorTexture` and lists only nodes that have an input
+accepting that output. Each candidate input goes through the same link pre-check as a
+drag onto an existing input, including type, cycle and texture-contract checks, so an
+incompatible template is never offered. When you choose a node, Quick Add adds it with
+the first accepting input lined up on the drop point, or one column gap to the right of
+a clicked port. The node, its layout position and the new connection form one undoable
+edit. An Upscale preset connects the wire to that input instead of creating a helper
+target for it. Snippets are not offered while the filter is on: they apply through
+**Apply Configuration Template** as a separate edit, so the wire could not be part of
+the same undo step. **Show all**, or Backspace in an empty search, clears the filter.
+After that, a chosen node is added at the same spot without a connection. Esc closes
+the palette and leaves the draft unchanged. Releasing on a node body does nothing, and
+releasing on a port connects or rejects as usual.
+
 | Gesture | Draft operation |
 | --- | --- |
 | Drag nodes (Ctrl-click adds to the selection) | One `MoveNodes` edit per gesture, applied on release: one undo step however far the drag went. A drag that returns to its start commits nothing. |
 | Drag from an output port to an input port | `Connect`, after the pre-check below |
+| Drag from an output port to empty canvas, or click an output port | Opens port-filtered Quick Add; choosing a node is one `AddNode` edit with its layout position and connection |
 | Select a link and press Delete, or right-click a wire/port and choose Disconnect | `Disconnect` |
 | Drag an output onto an occupied input | Replace its source as one undoable edit; invalid links preserve the existing source. |
 | Right-click a port → Connect from / Connect to | Choose a compatible endpoint, replacing an occupied input in one undo step. |

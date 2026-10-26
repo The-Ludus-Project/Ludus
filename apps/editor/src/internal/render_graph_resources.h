@@ -2,6 +2,7 @@
 
 #include <ludus/foundation/base/types.h>
 
+#include <QJsonObject>
 #include <QSize>
 #include <QString>
 
@@ -35,8 +36,10 @@ struct RenderGraphResourceFeedback final
 /// Resolves fixed/shared extents and paired resource identities through subgraph bindings.
 /// Existing unrelated problems and unresolved draft inputs do not reject the proposed edit;
 /// bounded inference defers unknown contracts to the build validator. Does not modify drafts.
+/// record is the named configuration's record before the edit: a draft record, or one that already
+/// holds a node that is about to be added. Subgraphs still resolve from document.
 [[nodiscard]] RenderGraphLinkCheck CheckRenderGraphTextureContracts(const RenderGraphDocument& document,
-                                                                    const QString& file,
+                                                                    const QJsonObject& record,
                                                                     const QString& configuration,
                                                                     const QString& from,
                                                                     const QString& to);

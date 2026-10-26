@@ -75,6 +75,17 @@ struct RenderGraphLinkCheck final
                                                         const QString& to,
                                                         bool shouldReplaceExisting = false);
 
+/// Pre-check a `from` -> `to` edge to an input of node, a complete record that is not in the draft
+/// yet, exactly as CheckRenderGraphLink would once node has been added. Rejects an identity that is
+/// empty or already used, and a `to` that is not on node. Used to offer and add a node together
+/// with its connection (RenderGraphDocument::AddNode). Does not modify the draft.
+[[nodiscard]] RenderGraphLinkCheck CheckRenderGraphLinkToNewNode(const RenderGraphDocument& document,
+                                                                 const QString& file,
+                                                                 const QString& configuration,
+                                                                 const QJsonObject& node,
+                                                                 const QString& from,
+                                                                 const QString& to);
+
 // RG3b visual node canvas over one configuration of a RenderGraphDocument draft. The canvas
 // owns no graph state: it renders the draft and emits typed edit requests that the Renderer
 // workspace applies through the same document operations as the inspector, so undo, save and
@@ -119,6 +130,8 @@ public:
     [[nodiscard]] QPointF GetNodePosition(const QString& node) const;
     /// Scene position of a port connector; outputs are on the right edge.
     [[nodiscard]] QPointF GetPortPosition(const QString& endpoint, bool isOutput) const;
+    /// Type of a displayed port, such as ColorTexture; empty when the canvas does not show it.
+    [[nodiscard]] QString GetPortType(const QString& endpoint, bool isOutput) const;
     /// Domain colour category of a displayed node (for tests and accessibility text).
     [[nodiscard]] RenderGraphDomain GetNodeDomain(const QString& node) const;
     void SelectNode(const QString& node);
@@ -146,6 +159,12 @@ public:
     [[nodiscard]] bool RequestLink(const QString& from, const QString& to, bool shouldReplaceExisting = false);
     /// Activate a node as a double-click does: open a Subgraph or request a Raster's shader sources.
     [[nodiscard]] bool ActivateNode(const QString& node);
+    /// Layout position for node, a record not in the draft yet, that puts its input connector on
+    /// inputPosition once it is added with a `from` -> `node.input` connection. Uses the same port
+    /// rows as the canvas, including hidden Scene bundle members. Returns inputPosition when the
+    /// node has no such input.
+    [[nodiscard]] QPointF
+    GetNewNodePosition(const QJsonObject& node, const QString& from, const QString& input, QPointF inputPosition) const;
 
 Q_SIGNALS:
     /// Open the displayed configuration interface editor (double-click an interface box).
@@ -161,6 +180,11 @@ Q_SIGNALS:
     /// Open Quick Add at a scene position: Shift+A at the pointer (or the view centre when the
     /// pointer is outside), or a double-click on empty canvas. Never edits the draft.
     void QuickAddRequested(QPointF scenePosition);
+    /// Open Quick Add filtered to nodes that accept the output `from`: a wire from it was released on
+    /// empty canvas (inputPosition is the drop point), or the output was clicked without dragging
+    /// (inputPosition is a column gap to its right). The new node's input belongs at inputPosition.
+    /// Never edits the draft.
+    void ConnectQuickAddRequested(const QString& from, QPointF inputPosition);
     void MoveRequested(const QVector<ludus::editor::RenderGraphNodePosition>& positions);
     void ConnectRequested(const QString& from, const QString& to);
     void ReplaceConnectionRequested(const QString& from, const QString& to);

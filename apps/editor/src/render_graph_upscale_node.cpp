@@ -50,7 +50,13 @@ QJsonObject MakeUpscaleNode(const QString& algorithm, const QString& identity)
     return node;
 }
 
-bool AppendUpscalePreset(QJsonObject& inoutConfiguration, const QString& algorithm, const QString& identity)
+// Algorithm, node identity and input port are distinct named identities.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+bool AppendUpscalePreset(QJsonObject& inoutConfiguration,
+                         const QString& algorithm,
+                         const QString& identity,
+                         const QString& connectedInput)
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     const QJsonObject upscale = MakeUpscaleNode(algorithm, identity);
     QJsonArray nodes = inoutConfiguration.value(QStringLiteral("nodes")).toArray();
@@ -98,6 +104,10 @@ bool AppendUpscalePreset(QJsonObject& inoutConfiguration, const QString& algorit
         if (type != QStringLiteral("ColorTexture") && type != QStringLiteral("DepthTexture"))
         {
             continue; // Per-frame temporal values must come from authored providers.
+        }
+        if (port == connectedInput)
+        {
+            continue; // The caller connects this input to an existing output instead.
         }
         const QString target = allocate(port);
         nodes.append(QJsonObject{

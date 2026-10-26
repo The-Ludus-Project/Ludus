@@ -149,6 +149,13 @@ public:
     /// scenePosition in one undoable edit; a chosen snippet opens Apply Configuration Template
     /// with it selected. False, with a status message, when no configuration is editable.
     [[nodiscard]] bool ShowQuickAdd(QPointF scenePosition);
+    /// Open Quick Add listing only nodes with an input that accepts from, an output shown on the
+    /// canvas (checked with CheckRenderGraphLinkToNewNode). A chosen node is added with that input's
+    /// connector at inputPosition and connected from `from`, with its layout position, in one
+    /// undoable edit. Snippets are not offered; clearing the filter in the palette inserts an
+    /// unconnected node at inputPosition. False, with a status message, when no configuration is
+    /// editable or from is not a displayed output.
+    [[nodiscard]] bool ShowConnectQuickAdd(const QString& from, QPointF inputPosition);
     /// Ask to save a dirty draft, then choose a root .lurender.json in the project and open
     /// it. False when CanCreateGraph() is false, a prompt is cancelled or the graph cannot open.
     [[nodiscard]] bool PromptOpenGraph();
@@ -390,8 +397,13 @@ private:
     void promptCreateConfiguration();
     void promptConfigurationTemplate(const QString& templateIdentity = {});
     /// Add one catalog node to the canvas configuration, optionally at a layout position.
-    void addNodeTemplate(const RenderGraphTemplate& entry, const QPoint* positionOrNull);
-    void insertQuickAddTemplate(const RenderGraphTemplate& entry);
+    /// With from and input, the node's input is connected from `from` in the same edit, and
+    /// positionOrNull is where that input's connector goes instead of the node's corner.
+    void addNodeTemplate(const RenderGraphTemplate& entry,
+                         const QPoint* positionOrNull,
+                         const QString& from = {},
+                         const QString& input = {});
+    void insertQuickAddTemplate(const RenderGraphTemplate& entry, const QString& input);
     void activateSelectedNode();
     void openSourceLine(const QString& file, foundation::int32 line, foundation::int32 column = 0);
     /// Mark the shown source's messages from the last result. A new result always replaces
@@ -474,6 +486,8 @@ private:
     RenderGraphQuickAdd* mQuickAdd;
     /// Canvas scene position where Quick Add last opened; chosen nodes are placed there.
     QPointF mQuickAddPosition;
+    /// Output a filtered Quick Add connects from; empty for an unfiltered palette.
+    QString mQuickAddSource;
     QWidget* mPreviewPage;
     QWidget* mPreviewImage;
     QLabel* mPreviewStatus;

@@ -527,21 +527,16 @@ RenderGraphResourceFeedback DescribeRenderGraphResource(const RenderGraphDocumen
     return {size, size + QLatin1Char('\n') + detail};
 }
 
+// Configuration and endpoints are distinct named identities.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
 RenderGraphLinkCheck CheckRenderGraphTextureContracts(const RenderGraphDocument& document,
-                                                      const QString& file,
+                                                      const QJsonObject& record,
                                                       const QString& configuration,
                                                       const QString& from,
                                                       const QString& to)
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
-    QJsonObject graph;
-    if (document.GetGraph(file, graph) == false)
-    {
-        return {};
-    }
-    ResourceContext context{document,
-                            FindRecord(graph.value(QStringLiteral("configurations")).toArray(), configuration),
-                            nullptr,
-                            {}};
+    ResourceContext context{document, record, nullptr, {}};
     QStringList previous;
     int32 remainingSteps = MAX_INFERENCE_STEPS;
     CollectProblems(context, configuration, previous, remainingSteps);
