@@ -64,7 +64,7 @@ ludus_compile_shader(TARGET sample NAME sample SOURCE diagnostic.slang VERTEX Ve
         shader = header.with_name('sample.fragment.metal')
         manifest = json.loads(header.with_name('manifest.json').read_text())
         assert manifest['uniform_sizes'] == {'vertex': 48, 'fragment': 48}
-        assert manifest['metal_entries'] == {'vertex': 'vertexMain', 'fragment': 'fragmentMain'}
+        assert manifest['metal_entries'] == {'vertex': 'VertexMain', 'fragment': 'FragmentMain'}
         contract = [('resolution', 0, 8), ('elapsedTime', 8, 4), ('direction', 16, 16), ('tint', 32, 16)]
         for stage in ('vertex', 'fragment'):
             resource = json.loads(header.with_name(stage + '.reflection.json').read_text())['parameters'][0]
