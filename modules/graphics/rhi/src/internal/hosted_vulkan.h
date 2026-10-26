@@ -52,19 +52,24 @@ inline void FillHostedImageInfo(foundation::uint32 width,
     outExternal = {};
     outExternal.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
     outExternal.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
-    outImage = {};
-    outImage.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    outImage.pNext = &outExternal;
-    outImage.imageType = VK_IMAGE_TYPE_2D;
-    outImage.format = HOSTED_IMAGE_FORMAT;
-    outImage.extent = { .width = width, .height = height, .depth = 1 };
-    outImage.mipLevels = 1;
-    outImage.arrayLayers = 1;
-    outImage.samples = VK_SAMPLE_COUNT_1_BIT;
-    outImage.tiling = VK_IMAGE_TILING_OPTIMAL;
-    outImage.usage = HOSTED_IMAGE_USAGE;
-    outImage.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    outImage.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    outImage =
+    {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .pNext = &outExternal,
+        .flags = 0,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = HOSTED_IMAGE_FORMAT,
+        .extent = { .width = width, .height = height, .depth = 1 },
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = HOSTED_IMAGE_USAGE,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = 0,
+        .pQueueFamilyIndices = nullptr,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
 }
 
 /// @brief Read an adapter's `deviceUUID` and `driverUUID` through the session's instance dispatch.

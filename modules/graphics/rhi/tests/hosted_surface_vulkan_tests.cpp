@@ -180,6 +180,8 @@ public:
     [[nodiscard]] PixelCopy SubmitCenterPixelCopy(const rhi::HostedFrame& frame) const
     {
         REQUIRE(frame.VulkanLayout == rhi::HOSTED_VULKAN_SHADER_READ_LAYOUT);
+        // Reconstruct Vulkan's opaque handle from the RHI's borrowed native bits.
+        // NOLINTNEXTLINE(performance-no-int-to-ptr)
         const VkImage image = reinterpret_cast<VkImage>(frame.VulkanImage.GetBits());
         PixelCopy copy;
         VkBufferCreateInfo bufferInfo{};
@@ -380,9 +382,12 @@ TEST_CASE("Probe: the adapter identifies itself and exports hosted images as opa
     CHECK(deviceBits != 0);
     CHECK(driverBits != 0);
 
-    VkPhysicalDeviceExternalImageFormatInfo external{};
-    external.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO;
-    external.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+    VkPhysicalDeviceExternalImageFormatInfo external
+    {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO,
+        .pNext = nullptr,
+        .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT,
+    };
     VkPhysicalDeviceImageFormatInfo2 format{};
     format.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2;
     format.pNext = &external;

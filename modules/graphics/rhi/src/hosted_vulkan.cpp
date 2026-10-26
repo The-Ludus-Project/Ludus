@@ -74,7 +74,7 @@ bool HostedProducerVulkan::createGeneration(usize slot, VkRenderPass renderPass,
     {
         Image& image = mImages[slot][index];
         VkExternalMemoryImageCreateInfo external{};
-        VkImageCreateInfo create{};
+        VkImageCreateInfo create{ .samples = VK_SAMPLE_COUNT_1_BIT };
         FillHostedImageInfo(width, height, external, create);
         if (vkCreateImage(mDevice.Device, &create, nullptr, &image.Object) != VK_SUCCESS)
         {
@@ -106,10 +106,9 @@ bool HostedProducerVulkan::createGeneration(usize slot, VkRenderPass renderPass,
         {
             return false;
         }
-        VkMemoryGetFdInfoKHR exported{};
+        VkMemoryGetFdInfoKHR exported{ .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT };
         exported.sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR;
         exported.memory = image.Memory;
-        exported.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
         int32 descriptor = -1;
         if (vkGetMemoryFdKHR == nullptr || vkGetMemoryFdKHR(mDevice.Device, &exported, &descriptor) != VK_SUCCESS)
         {

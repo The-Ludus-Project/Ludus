@@ -14,7 +14,7 @@ namespace
 constexpr usize VERTICES = 4;
 constexpr usize INDICES = 6;
 constexpr usize MATERIALS = 2;
-constexpr usize BUDGET = 1024 * 1024;
+constexpr usize BUDGET = usize{1024} * 1024;
 struct SceneFixture final
 {
     StaticArray<math::Vector3, VERTICES> Positions{{{0, 0, .5F}, {1, 0, .5F}, {0, 1, .5F}, {1, 1, .5F}}};

@@ -94,7 +94,7 @@ TEST_CASE("glTF alphaMode MASK cooks a LUSCN v5 mask; BLEND stays opaque", "[sce
         CHECK(material.AlphaCutoff == .25F);
         // Texture alpha 0, 64, 128, 255 times baseColorFactor alpha 0.5.
         const ludus::resources::SceneTexture& texture = decoded.Textures[material.Texture];
-        REQUIRE(texture.Pixels.GetSize() == 4 * format::TEXEL_BYTES);
+        REQUIRE(texture.Pixels.GetSize() == usize{4} * format::TEXEL_BYTES);
         const uint32 expected[] = {0, 32, 64, 128};
         for (usize i = 0; i < 4; ++i)
         {
@@ -121,7 +121,7 @@ TEST_CASE("glTF normal, roughness and emissive maps cook into LUSCN v6 maps with
     REQUIRE(material.EmissionTexture != format::NO_TEXTURE);
     const ludus::resources::SceneTexture& emission = decoded.Textures[material.EmissionTexture];
     CHECK(emission.IsLinear == false);
-    REQUIRE(emission.Pixels.GetSize() == 2 * format::TEXEL_BYTES);
+    REQUIRE(emission.Pixels.GetSize() == usize{2} * format::TEXEL_BYTES);
     CHECK(emission.Pixels[0] == 255);
     CHECK(emission.Pixels[format::TEXEL_BYTES] == 0);
     REQUIRE(material.SurfaceTexture != format::NO_TEXTURE);
