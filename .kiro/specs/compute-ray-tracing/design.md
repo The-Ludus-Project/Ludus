@@ -286,9 +286,10 @@ Each needs its own RHI/runtime design.
 
 Measured on `origin/develop` `64529832` (PR #589) on 2026-10-24, on this
 Mac's Metal device (Apple GPU, `macos-clang-debug`). There is no Linux host
-here. Vulkan evidence for the same GPU test comes only from the batch CI native
-suite, which runs `ludus_render_graph_ray_tests` on Linux. Until that runs, the
-claims below are Metal-only.
+here. Batch CI's Linux runners cannot supply Vulkan evidence either: they only
+have Mesa llvmpipe, a CPU device that the Vulkan ray profile rejects, so the GPU
+case skips there. Until it runs on a Vulkan GPU with ray queries, the claims
+below are Metal-only.
 
 ### 3.1 Triangle identity across passes
 
