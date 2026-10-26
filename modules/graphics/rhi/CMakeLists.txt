@@ -230,7 +230,13 @@ if(LUDUS_BUILD_TESTS AND CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT EMSCRIPTEN)
     ludus_apply_project_defaults(ludus_rhi_hosted_surface_tests)
     ludus_enable_test_exceptions(ludus_rhi_hosted_surface_tests)
     add_test(NAME ludus_rhi_hosted_surface_tests COMMAND ludus_rhi_hosted_surface_tests)
-    set_tests_properties(ludus_rhi_hosted_surface_tests PROPERTIES LABELS "rhi;gpu;linux" TIMEOUT 120)
+    # Every case skips on a host without a VK_KHR_external_memory_fd adapter, and
+    # Catch2 3.4 then returns 4. Thanks to Catch2, Session::runInternal (v3.4.0
+    # src/catch2/catch_session.cpp), and CMake 3.29 SKIP_RETURN_CODE for reporting
+    # that as Skipped rather than Failed:
+    # https://cmake.org/cmake/help/v3.29/prop_test/SKIP_RETURN_CODE.html
+    set_tests_properties(ludus_rhi_hosted_surface_tests PROPERTIES
+        LABELS "rhi;gpu;linux" TIMEOUT 120 SKIP_RETURN_CODE 4)
 endif()
 
 if(TARGET ludus_rhi_render_tests)
