@@ -1,4 +1,4 @@
-#include "internal/d3d12_device.h"
+#include "internal/d3d12_raster.h"
 #include "internal/dxil_container.h"
 #include "internal/raster.h"
 
@@ -6,6 +6,7 @@
 #include <ludus/foundation/containers/static_array.hpp>
 
 #include <cstring>
+#include <initializer_list>
 
 // Thanks to Microsoft, "Creating Descriptor Heaps" and "Uploading texture data
 // through buffers", Direct3D 12 programming guide, for immutable shader-visible
@@ -43,6 +44,10 @@ struct Texture final
     ComOwner<ID3D12GraphicsCommandList> Commands;
     ComOwner<ID3D12Fence> CompletionFence;
     TextureDescription Description;
+    ComOwner<ID3D12Resource> Depth;
+    ComOwner<ID3D12DescriptorHeap> Targets;
+    ComOwner<ID3D12DescriptorHeap> Depths;
+    D3D12_RESOURCE_STATES State = D3D12_RESOURCE_STATE_COMMON;
     uint64 Fence = 0;
     uint64 StagingBytes = 0;
     uint32 Request = 0;
@@ -78,6 +83,7 @@ struct Set final
     ComOwner<ID3D12DescriptorHeap> Samplers;
     uint32 ResourceCount = 0;
     uint32 SamplerCount = 0;
+    RasterLayout Description;
 };
 struct Submission final
 {
@@ -123,6 +129,13 @@ usize gReservedSubmission = RASTER_INVALID;
             return DXGI_FORMAT_BC5_UNORM;
     }
     return DXGI_FORMAT_UNKNOWN;
+}
+[[nodiscard]] bool HasDepthFormat(DXGI_FORMAT format) noexcept
+{
+    D3D12_FEATURE_DATA_FORMAT_SUPPORT support{format, D3D12_FORMAT_SUPPORT1_NONE, D3D12_FORMAT_SUPPORT2_NONE};
+    return SUCCEEDED(GetDeviceOrNull()->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support))) ==
+               true &&
+           (support.Support1 & D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL) != 0;
 }
 [[nodiscard]] D3D12_RESOURCE_DESC MakeBufferDescription(usize size) noexcept
 {
@@ -236,8 +249,7 @@ RasterCapabilities RasterLimits() noexcept
         .UniformOffsetAlignment = CBV_ALIGNMENT,
         .MaxUniformRange = MAX_UNIFORM_BYTES,
         .ResourcesPerKind = CurrentStorageLimits().ResourcesPerKind,
-        // Resources can be prepared, but D3b must implement passes before draw admission.
-        .DrawsPerFrame = 0,
+        .DrawsPerFrame = CurrentStorageLimits().DrawsPerFrame,
         .MaxVertexAttributes = MAX_VERTEX_ATTRIBUTES,
         .MaxTextureUploadBytes = MAX_BUFFER_BYTES,
     };
@@ -263,11 +275,11 @@ BindingCapabilities BindingLimits() noexcept
 }
 uint32 RasterColorAttachmentLimit() noexcept
 {
-    return 0;
+    return static_cast<uint32>(MAX_COLOR_ATTACHMENTS);
 }
 uint32 RasterVertexStrideLimit() noexcept
 {
-    return 0;
+    return MAX_VERTEX_STRIDE_BYTES;
 }
 FormatCapabilities FormatLimits(RasterFormat format) noexcept
 {
@@ -285,17 +297,29 @@ FormatCapabilities FormatLimits(RasterFormat format) noexcept
     {
         return {};
     }
+    const bool hasAttachment = HasDepthFormat(DXGI_FORMAT_D32_FLOAT) == true &&
+                               (support.Support1 & D3D12_FORMAT_SUPPORT1_RENDER_TARGET) != 0 &&
+                               (format == RasterFormat::Rgba8Unorm || format == RasterFormat::Rgba8Srgb ||
+                                format == RasterFormat::Rgba16Float);
+    const bool hasBlend = hasAttachment == true && (support.Support1 & D3D12_FORMAT_SUPPORT1_BLENDABLE) != 0;
     const bool hasCube = (support.Support1 & D3D12_FORMAT_SUPPORT1_TEXTURECUBE) != 0;
     const bool hasVolume = (support.Support1 & D3D12_FORMAT_SUPPORT1_TEXTURE3D) != 0;
     return
     {
-        .Uses = { .Sampled = true, .Filterable = true },
+        .Uses = { .Sampled = true, .Filterable = true, .ColorAttachment = hasAttachment, .Blendable = hasBlend },
         .MaxSampledDimension2D = D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION,
+        .MaxAttachmentDimension2D = hasAttachment == true ? D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION : 0U,
         .MaxMipLevels = MAX_MIP_LEVELS,
+        .SampleCounts = hasAttachment == true ? 1U : 0U,
         .MaxArrayLayers = D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION,
         .MaxCubeDimension = hasCube == true ? D3D12_REQ_TEXTURECUBE_DIMENSION : 0U,
         .MaxDimension3D = hasVolume == true ? D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION : 0U,
         .PartialViews = true,
+        .MaxAttachmentMipLevels = hasAttachment == true ? MAX_MIP_LEVELS : 0U,
+        .MaxAttachmentCubeDimension = hasAttachment == true && hasCube == true ? D3D12_REQ_TEXTURECUBE_DIMENSION : 0U,
+        .MaxAttachmentLayers = hasAttachment == true ? D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION : 0U,
+        .AttachmentViews = hasAttachment,
+        .StencilAttachment = hasAttachment == true && HasDepthFormat(DXGI_FORMAT_D32_FLOAT_S8X24_UINT) == true,
         .HasUnalignedBlockExtents = false,
     };
 }
@@ -335,6 +359,8 @@ RasterStatus RasterGrow(RasterKind kind, usize count) noexcept
         case RasterKind::Set:
             isReady = gSets.EnsureSlots(count);
             break;
+        case RasterKind::Pipeline:
+            return GrowPipelines(count);
         default:
             return RasterStatus::Unsupported;
     }
@@ -381,7 +407,7 @@ RasterStatus RasterCreateTexture(usize slot,
                                  const TextureUpload& upload,
                                  uint32 request) noexcept
 {
-    if (description.Attachment == true || description.DeferredInitialization == true)
+    if (description.DeferredInitialization == true)
     {
         return RasterStatus::Unsupported;
     }
@@ -405,12 +431,75 @@ RasterStatus RasterCreateTexture(usize slot,
     native.DepthOrArraySize = static_cast<uint16>(description.DepthOrLayers);
     native.MipLevels = static_cast<uint16>(description.MipLevels);
     native.Format = GetFormat(description.Format);
-    native.SampleDesc.Count = 1;
-    RasterStatus status =
-        CreateResource(native, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_COPY_DEST, texture.Resource);
+    native.SampleDesc.Count = description.SampleCount;
+    native.Flags = description.Attachment == true ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET : D3D12_RESOURCE_FLAG_NONE;
+    const D3D12_RESOURCE_STATES initialState =
+        description.Attachment == true ? D3D12_RESOURCE_STATE_RENDER_TARGET : D3D12_RESOURCE_STATE_COPY_DEST;
+    RasterStatus status = CreateResource(native, D3D12_HEAP_TYPE_DEFAULT, initialState, texture.Resource);
     if (status != RasterStatus::Ready)
     {
         return status;
+    }
+    texture.Description = description;
+    texture.State = initialState;
+    if (description.Attachment == true)
+    {
+        D3D12_RESOURCE_DESC depth = native;
+        depth.Format = description.Stencil == true ? DXGI_FORMAT_D32_FLOAT_S8X24_UINT : DXGI_FORMAT_D32_FLOAT;
+        depth.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL | D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+        status = CreateResource(depth, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_DEPTH_WRITE, texture.Depth);
+        if (status != RasterStatus::Ready)
+        {
+            return status;
+        }
+        for (const D3D12_DESCRIPTOR_HEAP_TYPE type : {D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_DESCRIPTOR_HEAP_TYPE_DSV})
+        {
+            const D3D12_DESCRIPTOR_HEAP_DESC heap{type, count, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, 0};
+            ID3D12DescriptorHeap* heapOrNull = nullptr;
+            const HRESULT result = GetDeviceOrNull()->CreateDescriptorHeap(&heap,
+                                                                           GetInterfaceId(heapOrNull),
+                                                                           GetInterfaceOutput(heapOrNull));
+            if (FAILED(result) == true)
+            {
+                return GetFailure(result);
+            }
+            if (type == D3D12_DESCRIPTOR_HEAP_TYPE_RTV)
+            {
+                texture.Targets = ComOwner<ID3D12DescriptorHeap>(heapOrNull);
+            }
+            else
+            {
+                texture.Depths = ComOwner<ID3D12DescriptorHeap>(heapOrNull);
+            }
+        }
+        for (uint32 layer = 0; layer < layers; ++layer)
+        {
+            for (uint32 mip = 0; mip < description.MipLevels; ++mip)
+            {
+                const uint32 subresource = mip + layer * description.MipLevels;
+                D3D12_RENDER_TARGET_VIEW_DESC target{};
+                target.Format = native.Format;
+                target.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DARRAY;
+                target.Texture2DArray.MipSlice = mip;
+                target.Texture2DArray.FirstArraySlice = layer;
+                target.Texture2DArray.ArraySize = 1;
+                GetDeviceOrNull()->CreateRenderTargetView(
+                    texture.Resource.Get(),
+                    &target,
+                    GetDescriptor(texture.Targets.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, subresource));
+                D3D12_DEPTH_STENCIL_VIEW_DESC depthView{};
+                depthView.Format = depth.Format;
+                depthView.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
+                depthView.Texture2DArray.MipSlice = mip;
+                depthView.Texture2DArray.FirstArraySlice = layer;
+                depthView.Texture2DArray.ArraySize = 1;
+                GetDeviceOrNull()->CreateDepthStencilView(
+                    texture.Depth.Get(),
+                    &depthView,
+                    GetDescriptor(texture.Depths.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_DSV, subresource));
+            }
+        }
+        return RasterStatus::Ready;
     }
     StorageArray<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> footprints;
     if (footprints.TryResize(count) == false)
@@ -529,12 +618,13 @@ RasterStatus RasterCreateTexture(usize slot,
     }
     // Return Pending even if the driver finished immediately. Completion is delivered
     // by the next facade collection, after the request identity has been published.
+    texture.State = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
     RasterExpect(request, RasterCallbacks::One);
     return RasterStatus::Pending;
 }
 RasterStatus RasterCreateView(usize slot, const RasterViewSource& source, uint32) noexcept
 {
-    if (source.View.Attachment == true || source.View.Aspect != TextureAspect::Color)
+    if (source.View.Aspect != TextureAspect::Color)
     {
         return RasterStatus::Unsupported;
     }
@@ -578,6 +668,11 @@ RasterStatus RasterCreateView(usize slot, const RasterViewSource& source, uint32
             native.Texture3D.MostDetailedMip = view.BaseMip;
             native.Texture3D.MipLevels = view.MipCount;
             break;
+    }
+    if (view.Attachment == true)
+    {
+        gViews[slot] = { .TextureSlot = source.Texture, .Description = native };
+        return RasterStatus::Ready;
     }
     // D3D12 cannot bind a one-layer array SRV as Texture2D. Do not reinterpret it.
     if (view.Dimension == TextureDimension::D2 && texture.Dimension != TextureDimension::D2)
@@ -690,6 +785,7 @@ RasterStatus RasterCreateLayout(usize slot, const RasterLayout& layout, uint32) 
 RasterStatus RasterCreateSet(usize slot, const RasterLayout& layout, const RasterSet& snapshot, uint32) noexcept
 {
     Set candidate;
+    candidate.Description = layout;
     for (usize entry = 0; entry < layout.Count; ++entry)
     {
         if (layout.Entries[entry].Kind == RasterBindingKind::Sampler)
@@ -780,6 +876,9 @@ void RasterDestroy(RasterKind kind, usize slot) noexcept
         case RasterKind::Layout:
             gLayouts[slot] = {};
             break;
+        case RasterKind::Pipeline:
+            DestroyPipeline(slot);
+            break;
         case RasterKind::Set:
             gSets[slot] = {};
             break;
@@ -833,6 +932,7 @@ uint64 RasterCompleted() noexcept
 void RasterReset() noexcept
 {
     const bool isDrained = WaitForQueue();
+    ResetRasterPasses();
     PollTextures();
     if (isDrained == true)
     {
@@ -875,4 +975,84 @@ void RasterShutdown() noexcept
     }
     gSubmissions.Clear();
 }
+void RasterTextureBarrier(usize slot, RasterTextureUse use) noexcept
+{
+    Texture& texture = gTextures[slot];
+    const D3D12_RESOURCE_STATES next =
+        use == RasterTextureUse::ColorAttachment
+            ? D3D12_RESOURCE_STATE_RENDER_TARGET
+            : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    if (next != texture.State)
+    {
+        D3D12_RESOURCE_BARRIER barrier{};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition.pResource = texture.Resource.Get();
+        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        barrier.Transition.StateBefore = texture.State;
+        barrier.Transition.StateAfter = next;
+        GetCommandsOrNull()->ResourceBarrier(1, &barrier);
+        texture.State = next;
+    }
+}
+namespace d3d12
+{
+DXGI_FORMAT GetRasterFormat(RasterFormat format) noexcept
+{
+    return GetFormat(format);
+}
+ID3D12Resource* GetBuffer(usize slot) noexcept
+{
+    return gBuffers[slot].Resource.Get();
+}
+D3D12_SHADER_BYTECODE GetShader(usize slot) noexcept
+{
+    const Shader& shader = gRasterShaders[slot];
+    return {shader.Bytes.GetData(), shader.Bytes.GetSize()};
+}
+ID3D12RootSignature* GetSignature(usize slot) noexcept
+{
+    return gLayouts[slot].Signature.Get();
+}
+Attachment GetAttachment(usize slot, uint32 mip, uint32 layer) noexcept
+{
+    Texture& texture = gTextures[slot];
+    const uint32 index = mip + layer * texture.Description.MipLevels;
+    return {texture.Resource.Get(),
+            texture.Depth.Get(),
+            GetDescriptor(texture.Targets.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, index),
+            GetDescriptor(texture.Depths.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_DSV, index)};
+}
+void BindSet(ID3D12GraphicsCommandList* commands, usize slot) noexcept
+{
+    const Set& set = gSets[slot];
+    constexpr usize MAX_BOUND_HEAPS = 2;
+    StaticArray<ID3D12DescriptorHeap*, MAX_BOUND_HEAPS> heaps{};
+    uint32 count = 0;
+    if (set.Resources.Get() != nullptr)
+    {
+        heaps[count++] = set.Resources.Get();
+    }
+    if (set.Samplers.Get() != nullptr)
+    {
+        heaps[count++] = set.Samplers.Get();
+    }
+    if (count != 0)
+    {
+        commands->SetDescriptorHeaps(count, heaps.GetData());
+    }
+    uint32 resourceIndex = 0;
+    uint32 samplerIndex = 0;
+    for (usize entry = 0; entry < set.Description.Count; ++entry)
+    {
+        const bool isSampler = set.Description.Entries[entry].Kind == RasterBindingKind::Sampler;
+        ID3D12DescriptorHeap* heap = isSampler == true ? set.Samplers.Get() : set.Resources.Get();
+        const D3D12_DESCRIPTOR_HEAP_TYPE type =
+            isSampler == true ? D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER : D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        const uint32 index = isSampler == true ? samplerIndex++ : resourceIndex++;
+        D3D12_GPU_DESCRIPTOR_HANDLE handle = heap->GetGPUDescriptorHandleForHeapStart();
+        handle.ptr += uint64{index} * GetDeviceOrNull()->GetDescriptorHandleIncrementSize(type);
+        commands->SetGraphicsRootDescriptorTable(static_cast<UINT>(entry), handle);
+    }
+}
+} // namespace d3d12
 } // namespace ludus::graphics::rhi::backend

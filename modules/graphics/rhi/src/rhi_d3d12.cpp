@@ -1,5 +1,5 @@
 #include "internal/backend.h"
-#include "internal/d3d12_device.h"
+#include "internal/d3d12_raster.h"
 #include "internal/dxil_container.h"
 #include "internal/lifecycle.h"
 #include "internal/measurement.h"
@@ -675,6 +675,14 @@ void ReleaseDevice() noexcept
 
 namespace d3d12
 {
+ID3D12GraphicsCommandList* GetCommandsOrNull() noexcept
+{
+    return isRecording == true ? gCommands.Get() : nullptr;
+}
+Attachment GetSurfaceAttachment() noexcept
+{
+    return { .ColorOrNull = gSurfaceOrNull, .Color = gSurfaceDescriptor };
+}
 ID3D12Device* GetDeviceOrNull() noexcept
 {
     return gDevice.Get();
@@ -919,6 +927,7 @@ FrameStatus Begin() noexcept
         return FailFrame("ID3D12GraphicsCommandList::Reset", result);
     }
     isRecording = true;
+    RasterEndPass();
     const D3D12_RESOURCE_BARRIER toTarget =
         MakeTransition(gSurfaceOrNull,
                        { .Before = D3D12_RESOURCE_STATE_PRESENT, .After = D3D12_RESOURCE_STATE_RENDER_TARGET });
