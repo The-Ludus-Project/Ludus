@@ -60,8 +60,9 @@ TEST_CASE("D3a exposes resources while required raster and compute remain unavai
     owner.Surface = {};
     rhi::DeviceDescription description;
     description.Required.PortableRaster = true;
-    CHECK(rhi::CreateDevice({}, {}, description, owner.Device, owner.Surface) == rhi::DeviceStatus::Failed);
-    CHECK(rhi::GetStartup().Error == rhi::StartupError::RequirementsUnsatisfied);
+    rhi::StartupInfo failure;
+    CHECK(rhi::CreateDevice({}, {}, description, owner.Device, owner.Surface, &failure) == rhi::DeviceStatus::Failed);
+    CHECK(failure.Error == rhi::StartupError::RequirementsUnsatisfied);
 }
 
 TEST_CASE("D3a binding snapshots retain native buffers and descriptors within configured limits", "[rhi][windows][d3a]")
