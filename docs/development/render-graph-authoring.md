@@ -3873,6 +3873,17 @@ releasing on a port connects or rejects as usual.
 | Two-finger double-tap on a macOS trackpad | Frame the whole graph; does not edit the draft |
 | Left-drag empty space | Box-select nodes; Shift adds to the selection |
 | Middle-drag or Space+left-drag | Pan the view only |
+| Fit Graph toolbar button, or Home | Frame all node boxes, including configuration interfaces |
+| Fit Selection toolbar button, or F | Frame selected authored nodes; no selection leaves the view unchanged |
+| 100% toolbar button, or Ctrl/Command+0 | Restore normal magnification around the view centre |
+
+The framing toolbar stays above the canvas and shows the current zoom percentage.
+Its shortcuts apply while the canvas has focus; typing in Properties or a source
+editor does not frame the graph. Framing preserves selection, authored positions,
+draft bytes and undo history. It ignores transient hints and diagnostic labels.
+Fit commands use the current viewport size and keep magnification within the
+same 1%–800% limits as wheel and pinch zoom. An empty graph has nothing to frame;
+**Fit Selection** is disabled until an authored node is selected.
 
 The canvas recognizes a touchpad from its scroll phases (macOS and Wayland) or
 its reported device type. A driver that sends two-finger scrolling as plain
@@ -3888,6 +3899,23 @@ Configuration output links can be selected and deleted, just like pass connectio
 They edit the configuration output's source rather than adding an ordinary edge.
 
 ### Read canvas feedback
+
+Canvas labels adapt to magnification without moving nodes, wires or port hit
+targets. At 75% and above, cards show their full identity/kind title, port names,
+activity and resource footer. Between 45% and 75%, cards show their identity,
+port names and compact activity. Below 45%, port names disappear, leaving an
+overview of node identities, activity and coloured connections. Small labels are
+kept readable and elided within their cards. When a card becomes narrower than
+60 screen pixels, its text disappears; compact activity also needs 38 pixels of
+card height. Zoom in or hover for full names, resource contracts and explanations.
+This display choice does not collapse ports or change which nodes execute.
+
+Diagnostic outlines and port rings retain their screen-space line width, even
+on inactive nodes. Their labels remain visible at every zoom level, reducing to
+**!** when a card is too small for text. The tooltip and accessible diagnostic
+description retain the full message. Returning to a detailed view restores the
+labels automatically; reference-size refreshes and rebuilds respect the current
+zoom level.
 
 Select a node to emphasize its incoming and outgoing wires, their ports and the
 connected nodes, while fading unrelated wires. Hovering a port temporarily

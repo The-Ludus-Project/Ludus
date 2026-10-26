@@ -21,11 +21,13 @@
 #include <QDoubleSpinBox>
 #include <QFile>
 #include <QGraphicsEllipseItem>
+#include <QGraphicsRectItem>
 #include <QGraphicsScene>
 #include <QGroupBox>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QKeySequence>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
 #include <QNativeGestureEvent>
@@ -39,6 +41,8 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
+#include <QToolBar>
+#include <QVBoxLayout>
 #include <QWheelEvent>
 
 #include <limits>
@@ -342,6 +346,121 @@ TEST_CASE("RG3b canvas shows a configuration by domain with typed ports", "[edit
     CHECK(canvas.GetPortPosition(QStringLiteral("input.scene"), true).isNull() == false);
 }
 
+TEST_CASE("Graph framing controls preserve authored state and frame only node bounds",
+          "[editor][render-graph][canvas][framing]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakePackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    RenderGraphCanvas canvas(document);
+    canvas.resize(900, 600);
+    canvas.ShowConfiguration(ROOT_GRAPH, DEFAULT_CONFIGURATION);
+    canvas.show();
+    QCoreApplication::processEvents();
+    QAction* fitGraph = canvas.findChild<QAction*>(QStringLiteral("renderGraphFitGraph"));
+    QAction* fitSelection = canvas.findChild<QAction*>(QStringLiteral("renderGraphFitSelection"));
+    QAction* resetZoom = canvas.findChild<QAction*>(QStringLiteral("renderGraphResetZoom"));
+    QLabel* zoom = canvas.findChild<QLabel*>(QStringLiteral("renderGraphZoomLabel"));
+    QToolBar* toolbar = canvas.findChild<QToolBar*>(QStringLiteral("renderGraphFramingToolbar"));
+    REQUIRE(fitGraph != nullptr);
+    REQUIRE(fitSelection != nullptr);
+    REQUIRE(resetZoom != nullptr);
+    REQUIRE(zoom != nullptr);
+    REQUIRE(toolbar != nullptr);
+    CHECK(toolbar->geometry().bottom() < canvas.viewport()->geometry().top());
+    CHECK(fitGraph->isEnabled() == true);
+    CHECK(fitSelection->isEnabled() == false);
+    const QTransform beforeEmptyFit = canvas.transform();
+    canvas.FitSelection();
+    CHECK(canvas.transform() == beforeEmptyFit);
+    canvas.SelectNodes({QStringLiteral("raster"), QStringLiteral("color")});
+    const QStringList selected = canvas.GetSelectedNodes();
+    const QByteArray draft = document.GetDraft(ROOT_GRAPH);
+    const QPointF position = canvas.GetNodePosition(QStringLiteral("raster"));
+    CHECK(fitSelection->isEnabled() == true);
+    // Transient scene annotations must not change either framing operation.
+    QGraphicsRectItem* hint = canvas.scene()->addRect(QRectF(-90000, -90000, 20, 20));
+    fitGraph->trigger();
+    const float64 graphScale = canvas.transform().m11();
+    QRectF allBounds;
+    QRectF selectedBounds;
+    for (QGraphicsItem* item : canvas.scene()->items())
+    {
+        if (qgraphicsitem_cast<QGraphicsRectItem*>(item) != nullptr && item->data(0).toString().isEmpty() == false &&
+            item->parentItem() == nullptr)
+        {
+            allBounds = allBounds.united(item->sceneBoundingRect());
+            if (selected.contains(item->data(0).toString()) == true)
+            {
+                selectedBounds = selectedBounds.united(item->sceneBoundingRect());
+            }
+        }
+    }
+    CHECK(canvas.mapToScene(canvas.viewport()->rect()).boundingRect().contains(allBounds) == true);
+    fitSelection->trigger();
+    CHECK(canvas.transform().m11() > graphScale);
+    CHECK(canvas.mapToScene(canvas.viewport()->rect()).boundingRect().contains(selectedBounds) == true);
+    CHECK((canvas.mapToScene(canvas.viewport()->rect().center()) - selectedBounds.center()).manhattanLength() < 2);
+    const QPointF centre = canvas.mapToScene(canvas.viewport()->rect().center());
+    resetZoom->trigger();
+    CHECK(canvas.transform().m11() == 1);
+    CHECK(zoom->text() == QStringLiteral("100%"));
+    CHECK((canvas.mapToScene(canvas.viewport()->rect().center()) - centre).manhattanLength() < 2);
+    delete hint;
+    canvas.resize(420, 300);
+    QCoreApplication::processEvents();
+    CHECK(toolbar->geometry().bottom() < canvas.viewport()->geometry().top());
+    canvas.FitGraph();
+    CHECK(canvas.mapToScene(canvas.viewport()->rect()).boundingRect().contains(allBounds) == true);
+    CHECK(canvas.GetSelectedNodes() == selected);
+    CHECK(canvas.GetNodePosition(QStringLiteral("raster")) == position);
+    CHECK(document.GetDraft(ROOT_GRAPH) == draft);
+    CHECK(document.GetRevision() == 0);
+    CHECK(document.CanUndo() == false);
+    canvas.ShowConfiguration({}, {});
+    CHECK(fitGraph->isEnabled() == false);
+    CHECK(fitSelection->isEnabled() == false);
+    const QTransform empty = canvas.transform();
+    canvas.FitGraph();
+    canvas.FitSelection();
+    CHECK(canvas.transform() == empty);
+}
+
+TEST_CASE("Graph framing shortcuts stay scoped to the canvas", "[editor][render-graph][canvas][framing]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakePackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    QWidget window;
+    QVBoxLayout* layout = new QVBoxLayout(&window);
+    QLineEdit* text = new QLineEdit(&window);
+    RenderGraphCanvas* canvas = new RenderGraphCanvas(document, &window);
+    layout->addWidget(text);
+    layout->addWidget(canvas);
+    window.resize(900, 650);
+    canvas->ShowConfiguration(ROOT_GRAPH, DEFAULT_CONFIGURATION);
+    window.show();
+    window.activateWindow();
+    QCoreApplication::processEvents();
+    canvas->SelectNode(QStringLiteral("raster"));
+    canvas->setFocus();
+    QTest::keyClick(canvas, Qt::Key_F);
+    const QTransform selection = canvas->transform();
+    QTest::keyClick(canvas, Qt::Key_Home);
+    CHECK(canvas->transform().m11() < selection.m11());
+    QTest::keySequence(canvas, QKeySequence(QStringLiteral("Ctrl+0")));
+    CHECK(canvas->transform().m11() == 1);
+    const QTransform beforeText = canvas->transform();
+    text->setFocus();
+    QTest::keyClicks(text, QStringLiteral("f"));
+    QTest::keyClick(text, Qt::Key_Home);
+    QTest::keySequence(text, QKeySequence(QStringLiteral("Ctrl+0")));
+    CHECK(text->text() == QStringLiteral("f"));
+    CHECK(text->cursorPosition() == 0);
+    CHECK(canvas->transform() == beforeText);
+    CHECK(document.GetRevision() == 0);
+}
+
 TEST_CASE("Graph pinch zoom keeps its focal point and never edits the draft", "[editor][render-graph][canvas]")
 {
     QTemporaryDir project;
@@ -367,6 +486,7 @@ TEST_CASE("Graph pinch zoom keeps its focal point and never edits the draft", "[
     QCoreApplication::sendEvent(canvas.viewport(), &outward);
     CHECK(outward.isAccepted() == true);
     CHECK(canvas.transform().m11() == 1.25);
+    CHECK(canvas.findChild<QLabel*>(QStringLiteral("renderGraphZoomLabel"))->text() == QStringLiteral("125%"));
     const QPointF after = canvas.viewportTransform().inverted().map(position);
     CHECK((after - before).manhattanLength() < 2);
     QNativeGestureEvent inward(Qt::ZoomNativeGesture, device, 2, position, position, global, -0.2, {});
