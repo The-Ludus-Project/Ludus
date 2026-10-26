@@ -4,8 +4,7 @@ Ludus runs on Windows through a Win32 Platform backend and a Direct3D 12 RHI
 backend. This page owns that port: the decision, the contracts of the slices
 that exist, the [port record](../development/platform-porting.md#reusable-record-format)
 and the staged plan. The work is at the **buildable** admission gate for the
-D1 and D2 closure described below (both verified on WARP), with D3a resource
-implementation awaiting Windows execution; it is not yet a runnable or qualified engine
+D1/D2 and D3a resource closure described below (verified on Clang/WARP); it is not yet a runnable or qualified engine
 deployment. The remaining implementation adopts **MSVC as the Windows reference
 compiler**, with CMake generating Ninja builds for VS Code/CLI/the Ludus editor
 and Visual Studio solutions built by MSBuild. The migration has started with
@@ -258,8 +257,8 @@ portable profile. This does not complete the MSVC baseline in D0.
   the exact creation fence completes, including logical destruction while pending.
   Submission bookkeeping reserves a configured completion cell before encoding and
   maps accepted ordinals to the existing queue fence. Reset drains the queue before
-  physical destruction. A failed signal retains submitted creation backing for
-  shutdown rather than treating it as completed work.
+  physical destruction. A failed signal retains submitted creation backing until a successful drain or
+  original-fence completion; a timeout keeps that backing across device restart.
 - **Shaders.** Raster DXIL is reflected independently at build time, including
   native registers, uniform member offsets and vertex inputs. Native creation
   checks stage/entry and the complete PSV0 resource table against the copied scalar
@@ -271,9 +270,12 @@ admission, descriptor/resource exhaustion and reuse, retained snapshots, padded
 mip/array/cube/volume creation across native formats, pending-upload destruction
 and restart, and real raster DXIL interface rejection. Portable PSV reader tests
 and resource-only facade admission run with the common lifecycle suite on every
-host. Cross-compilation verifies Windows syntax and the backend closure; WARP,
-MSVC and physical-adapter execution must be recorded separately before claiming
-Windows qualification. These resource tests do not establish rendered image
+host. The Clang/WARP run at `172002e4` passed the Win32, common lifecycle and
+Direct3D 12 suites in [PR #617](https://github.com/The-Ludus-Project/Ludus/pull/617),
+[run 40359506345](https://github.com/The-Ludus-Project/Ludus/actions/runs/40359506345).
+The separate MSVC primitive probe passed too; it does not establish compilation
+of this RHI with `cl.exe`. Cross-compilation checks Windows syntax/backend closure;
+production MSVC and physical-adapter execution remain necessary for the full port. These resource tests do not establish rendered image
 correctness; D3b owns shared raster/image conformance.
 
 ### DXIL artifacts
@@ -358,7 +360,7 @@ cmake --build out/build/windows-mingw-check --target ludus_platform ludus_graphi
 | D1 (WARP verified) | Windows closure for Platform and RHI; Win32 windows; Direct3D 12 device, swap chain, clear, present, resize and readback | Windows lane passed on PR The-Ludus-Project/Ludus#573 ([run 40043576093](https://github.com/The-Ludus-Project/Ludus/actions/runs/40043576093)), merged as `7167c8a2`; presented frames on a hardware adapter still to be recorded here |
 | D2 (WARP verified) | DXIL shader artifacts from the Slang toolchain (pinned DXC), `ShaderDescription` DXIL fields, root signatures, and the fullscreen compatibility draw | Fullscreen pixel tests passed on the WARP lane for PR The-Ludus-Project/Ludus#586 ([run 40102938249](https://github.com/The-Ludus-Project/Ludus/actions/runs/40102938249), `002969cf`); hardware-adapter run still to be recorded here |
 | D0 (next; MSVC baseline) | Pin MSVC/SDK/CRT/dependencies; enable `cl.exe`, Ninja and generated Visual Studio/MSBuild projects; reconcile compiler policy and presets | D1/D2 and Foundation tests pass on MSVC; both generators configure/build/test; physical-GPU clear/fullscreen evidence recorded |
-| D3a (implemented; Windows execution pending) | Raster resources, bindings and DXIL interfaces | Resource/binding suites; bounded allocation/descriptor failure; safe retirement while work is in flight |
+| D3a (Clang/WARP verified) | Raster resources, bindings and DXIL interfaces | Windows resource/binding, bounded failure, pending upload retirement and DXIL suites passed for PR #617 at `172002e4` ([run 40359506345](https://github.com/The-Ludus-Project/Ludus/actions/runs/40359506345)); production MSVC and hardware evidence remain pending |
 | D3b | Complete portable raster profile | Shared raster/image suites on WARP and hardware; required raster profile admitted |
 | D4a | Transfers, readback and lifetime | Shared transfer/lifetime suites; offscreen rendering, cancellation and failure preservation |
 | D4b | Compute and ordered render graphs | Compute/graph suites, mixed graphics/compute/transfer journeys; required compute profile admitted |
@@ -576,7 +578,7 @@ these rows remain pending.
 | Input / system entropy | unassigned | needs port | Win32 key delivery/focus recovery and entropy in D5a | pending | none |
 | RHI / graphics (clear/present) | D1; D0 pending | verified (Clang/WARP) | MSVC and hardware-adapter evidence in D0 | PR #573 | Windows lane, PR #573 (`7167c8a2`) |
 | RHI / graphics (DXIL/fullscreen) | D2; D0 pending | verified (Clang/WARP) | MSVC and hardware-adapter evidence in D0 | PR #586 | [Windows lane](https://github.com/The-Ludus-Project/Ludus/actions/runs/40102938249) |
-| RHI / raster resources and bindings | D3a | implemented; execution pending | Run the resource/binding suite on Windows; MSVC baseline still pending | pending | Local cross-compilation and portable tests only |
+| RHI / raster resources and bindings | D3a | verified (Clang/WARP) | Production MSVC baseline and hardware evidence still pending | PR #617 | `172002e4`, [Windows lane](https://github.com/The-Ludus-Project/Ludus/actions/runs/40359506345) |
 | RHI / raster rendering | D3b | needs port | Pipelines, passes and shared raster images | pending | none |
 | RHI / transfers, lifetime, compute and graph | unassigned | needs port | D4a/D4b | pending | none |
 | GPU timing / PIX / DRED | unassigned | needs port | D5b | pending | none |
