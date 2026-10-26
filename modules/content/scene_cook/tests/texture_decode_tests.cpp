@@ -51,6 +51,7 @@ void CopyTexture(const ScratchDirectory& scratch, std::string_view fixture, std:
 }
 
 /// Append one material and a triangle that uses it.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the OBJ and MTL texts are distinct outputs.
 void AddMaterial(std::string& inoutWavefront, std::string& inoutMtl, int32 index, std::string_view statements)
 {
     const std::string name = "M" + std::to_string(index);

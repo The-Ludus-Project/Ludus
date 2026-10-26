@@ -395,8 +395,15 @@ TEST_CASE("OBJ surface maps beyond the texture count are averaged into scalar te
     {
         mtl += "newmtl M" + std::to_string(i) + "\nKd 0.5 0.5 0.5\nPr 0.5\nmap_Pr -imfchan g textures/rough.png\n";
         const std::string x = std::to_string(i * 2);
-        wavefrontText +=
-            "v " + x + " 0 0\nv " + x + ".5 0 0\nv " + x + " 1 0\nusemtl M" + std::to_string(i) + "\nf -3 -2 -1\n";
+        for (const char* const vertex : {" 0 0\n", ".5 0 0\n", " 1 0\n"})
+        {
+            wavefrontText += "v ";
+            wavefrontText += x;
+            wavefrontText += vertex;
+        }
+        wavefrontText += "usemtl M";
+        wavefrontText += std::to_string(i);
+        wavefrontText += "\nf -3 -2 -1\n";
     }
     WriteFile(scratch.Path / "scene.obj", wavefrontText);
     WriteFile(scratch.Path / "m.mtl", mtl);

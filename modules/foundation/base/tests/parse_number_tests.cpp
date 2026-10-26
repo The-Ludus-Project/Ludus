@@ -265,7 +265,12 @@ TEST_CASE("Short and long spellings of one value convert identically", "[base][p
             text += '.';
             text += digits.substr(digits.size() - fractionDigits);
         }
-        const std::string padded = fractionDigits != 0 ? text + padding : text + "." + padding;
+        std::string padded = text;
+        if (fractionDigits == 0)
+        {
+            padded += '.';
+        }
+        padded += padding;
         CAPTURE(text);
         float32 shortValue = 17;
         float32 longValue = 23;

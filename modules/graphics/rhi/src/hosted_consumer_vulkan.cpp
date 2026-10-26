@@ -187,7 +187,7 @@ RecordTransfer(const HostedConsumerBackend& backend, VkImage image, Transfer tra
     const VolkDeviceTable& functions = backend.Functions;
     const VkDevice device = backend.Device;
     VkExternalMemoryImageCreateInfo external{};
-    VkImageCreateInfo create{};
+    VkImageCreateInfo create{ .samples = VK_SAMPLE_COUNT_1_BIT };
     backend::FillHostedImageInfo(images.Width, images.Height, external, create);
     if (functions.vkCreateImage(device, &create, nullptr, &inoutImage.Object) != VK_SUCCESS)
     {
@@ -204,10 +204,9 @@ RecordTransfer(const HostedConsumerBackend& backend, VkImage image, Transfer tra
     VkMemoryDedicatedAllocateInfo dedicated{};
     dedicated.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
     dedicated.image = inoutImage.Object;
-    VkImportMemoryFdInfoKHR imported{};
+    VkImportMemoryFdInfoKHR imported{ .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT };
     imported.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR;
     imported.pNext = &dedicated;
-    imported.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
     imported.fd = inoutHandle.GetFileDescriptor();
     VkMemoryAllocateInfo allocate{};
     allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
