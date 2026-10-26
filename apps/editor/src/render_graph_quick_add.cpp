@@ -285,7 +285,8 @@ QVector<RenderGraphTemplate> SearchRenderGraphTemplates(const QString& query,
 }
 
 RenderGraphQuickAdd::RenderGraphQuickAdd(const RenderGraphTemplateRegistry& registry, QWidget* parentOrNull)
-    : QFrame(parentOrNull, Qt::Popup), mSearch(new QLineEdit(this)), mKindAll(new QToolButton(this)),
+    : QFrame(parentOrNull, Qt::Popup), mSearch(new QLineEdit(this)), mContext(new QWidget(this)),
+      mContextLabel(new QLabel(mContext)), mContextClear(new QToolButton(mContext)), mKindAll(new QToolButton(this)),
       mKindSnippets(new QToolButton(this)), mKindNodes(new QToolButton(this)), mCategories(new QTreeWidget(this)),
       mResults(new QTreeWidget(this)), mMore(new QLabel(this)), mGraphHint(new QPushButton(this)),
       mTitle(new QLabel(this)), mDescription(new QLabel(this)), mPorts(new QLabel(this)), mWarning(new QLabel(this)),
@@ -339,6 +340,28 @@ RenderGraphQuickAdd::RenderGraphQuickAdd(const RenderGraphTemplateRegistry& regi
               RenderGraphQuickAddKind::Nodes,
               QStringLiteral("Nodes"));
     layout->addLayout(head);
+
+    // Shown only with a port filter: which output the new node connects from, and a way out.
+    mContext->setObjectName(QStringLiteral("renderGraphQuickAddContext"));
+    QHBoxLayout* context = new QHBoxLayout(mContext);
+    context->setContentsMargins(0, 0, 0, 0);
+    mContextLabel->setObjectName(QStringLiteral("renderGraphQuickAddContextLabel"));
+    mContextLabel->setTextFormat(Qt::PlainText);
+    context->addWidget(mContextLabel, 1);
+    mContextClear->setObjectName(QStringLiteral("renderGraphQuickAddContextClear"));
+    mContextClear->setText(QStringLiteral("Show all"));
+    mContextClear->setAccessibleName(QStringLiteral("Clear the connection filter"));
+    mContextClear->setToolTip(
+        QStringLiteral("List every snippet and node; the added node is not connected. Backspace in an empty "
+                       "search does the same."));
+    mContextClear->setFocusPolicy(Qt::NoFocus);
+    connect(mContextClear, &QToolButton::clicked, this, [this]() {
+        ClearPortFilter();
+        mSearch->setFocus();
+    });
+    context->addWidget(mContextClear);
+    mContext->hide();
+    layout->addWidget(mContext);
 
     const int32 rowHeight = qMax(22, fontMetrics().height() + 8);
     // Room for every result row plus the Recent and Pinned headings, so the list never scrolls.
@@ -475,7 +498,7 @@ RenderGraphQuickAdd::RenderGraphQuickAdd(const RenderGraphTemplateRegistry& regi
     layout->addLayout(foot);
 
     connect(mSearch, &QLineEdit::textChanged, this, [this]() {
-        mCategory = mSearch->text().trimmed().isEmpty() == true ? GetSuggestedCategory() : GetAllCategory();
+        mCategory = mSearch->text().trimmed().isEmpty() == true ? getDefaultCategory() : GetAllCategory();
         mHighlight = 0;
         refresh();
     });
@@ -483,15 +506,13 @@ RenderGraphQuickAdd::RenderGraphQuickAdd(const RenderGraphTemplateRegistry& regi
     refresh();
 }
 
-void RenderGraphQuickAdd::Open(const QPoint& globalPosition)
+void RenderGraphQuickAdd::Open(const QPoint& globalPosition, const RenderGraphQuickAddPortFilter& filter)
 {
     const QSignalBlocker blocker(mSearch);
     mSearch->clear();
-    mKind = RenderGraphQuickAddKind::All;
-    mKindAll->setChecked(true);
-    mCategory = GetSuggestedCategory();
-    mHighlight = 0;
-    refresh();
+    mPortFilter = filter;
+    mCategory = getDefaultCategory();
+    SetKind(RenderGraphQuickAddKind::All);
     adjustSize();
     QScreen* screenOrNull = QGuiApplication::screenAt(globalPosition);
     if (screenOrNull == nullptr)
@@ -510,6 +531,19 @@ void RenderGraphQuickAdd::Open(const QPoint& globalPosition)
     raise();
     activateWindow();
     mSearch->setFocus(Qt::PopupFocusReason);
+}
+
+const RenderGraphQuickAddPortFilter& RenderGraphQuickAdd::GetPortFilter() const noexcept
+{
+    return mPortFilter;
+}
+
+void RenderGraphQuickAdd::ClearPortFilter()
+{
+    mPortFilter = {};
+    mCategory = mSearch->text().trimmed().isEmpty() == true ? getDefaultCategory() : GetAllCategory();
+    mHighlight = 0;
+    SetKind(mKind);
 }
 
 void RenderGraphQuickAdd::SetNodePorts(const QHash<QString, RenderGraphNodePorts>& ports)
@@ -557,9 +591,16 @@ void RenderGraphQuickAdd::SetKind(RenderGraphQuickAddKind kind)
     mKindAll->setChecked(kind == RenderGraphQuickAddKind::All);
     mKindSnippets->setChecked(kind == RenderGraphQuickAddKind::Snippets);
     mKindNodes->setChecked(kind == RenderGraphQuickAddKind::Nodes);
-    mSearch->setPlaceholderText(kind == RenderGraphQuickAddKind::Snippets ? QStringLiteral("Search snippets")
+    mSearch->setPlaceholderText(hasPortFilter() == true
+                                    ? QStringLiteral("Search nodes that accept %1").arg(mPortFilter.Type)
+                                : kind == RenderGraphQuickAddKind::Snippets ? QStringLiteral("Search snippets")
                                 : kind == RenderGraphQuickAddKind::Nodes ? QStringLiteral("Search nodes")
                                                                          : QStringLiteral("Search snippets and nodes"));
+    // Snippets apply through a dialog as a separate edit, so they cannot be connected on insert.
+    mKindSnippets->setEnabled(hasPortFilter() == false);
+    mKindSnippets->setToolTip(hasPortFilter() == true
+                                  ? QStringLiteral("Snippets cannot be connected on insert. Show all to apply one.")
+                                  : QStringLiteral("Tab switches kinds while searching."));
     mHighlight = 0;
     refresh();
 }
@@ -604,12 +645,13 @@ bool RenderGraphQuickAdd::InsertHighlighted()
     }
     const RenderGraphTemplate entry = mListed.at(mHighlight);
     const QString key = GetRenderGraphTemplateKey(entry);
+    const QString input = mPortFilter.Inputs.value(key);
     mRecent.removeAll(key);
     mRecent.prepend(key);
     mRecent = mRecent.mid(0, MAX_RECENT);
     Q_EMIT HistoryChanged();
     close();
-    Q_EMIT InsertRequested(entry);
+    Q_EMIT InsertRequested(entry, input);
     return true;
 }
 
@@ -653,6 +695,13 @@ bool RenderGraphQuickAdd::eventFilter(QObject* watched, QEvent* event)
         case Qt::Key_Escape:
             close();
             return true;
+        case Qt::Key_Backspace:
+            if (hasPortFilter() == true && mSearch->text().isEmpty() == true)
+            {
+                ClearPortFilter();
+                return true;
+            }
+            return QFrame::eventFilter(watched, event);
         case Qt::Key_Tab:
             cycleKind(true);
             return true;
@@ -688,8 +737,23 @@ void RenderGraphQuickAdd::moveHighlight(int32 delta)
 void RenderGraphQuickAdd::cycleKind(bool isForward)
 {
     constexpr int32 KIND_COUNT = 3;
-    const int32 next = (static_cast<int32>(mKind) + (isForward == true ? 1 : KIND_COUNT - 1)) % KIND_COUNT;
+    int32 next = (static_cast<int32>(mKind) + (isForward == true ? 1 : KIND_COUNT - 1)) % KIND_COUNT;
+    if (hasPortFilter() == true && static_cast<RenderGraphQuickAddKind>(next) == RenderGraphQuickAddKind::Snippets)
+    {
+        next = (next + (isForward == true ? 1 : KIND_COUNT - 1)) % KIND_COUNT;
+    }
     SetKind(static_cast<RenderGraphQuickAddKind>(next));
+}
+
+bool RenderGraphQuickAdd::hasPortFilter() const noexcept
+{
+    return mPortFilter.Source.isEmpty() == false;
+}
+
+QString RenderGraphQuickAdd::getDefaultCategory() const
+{
+    // A port filter already removes most choices, so it opens on everything compatible.
+    return hasPortFilter() == true ? GetAllCategory() : GetSuggestedCategory();
 }
 
 QVector<RenderGraphTemplate> RenderGraphQuickAdd::getMatches() const
@@ -700,6 +764,10 @@ QVector<RenderGraphTemplate> RenderGraphQuickAdd::getMatches() const
         const bool isSnippet = entry.Kind == RenderGraphTemplateKind::Snippet;
         if ((mKind == RenderGraphQuickAddKind::Snippets && isSnippet == false) ||
             (mKind == RenderGraphQuickAddKind::Nodes && isSnippet == true))
+        {
+            continue;
+        }
+        if (hasPortFilter() == true && mPortFilter.Inputs.contains(GetRenderGraphTemplateKey(entry)) == false)
         {
             continue;
         }
@@ -737,13 +805,20 @@ QString RenderGraphQuickAdd::describePorts(const RenderGraphTemplate& entry) con
                    : QString{};
     }
     const RenderGraphNodePorts ports = mNodePorts.value(key);
-    return QStringLiteral("Inputs: %1\nOutputs: %2").arg(ListPorts(ports.Inputs), ListPorts(ports.Outputs));
+    QString text = QStringLiteral("Inputs: %1\nOutputs: %2").arg(ListPorts(ports.Inputs), ListPorts(ports.Outputs));
+    if (mPortFilter.Inputs.contains(key) == true)
+    {
+        text += QStringLiteral("\nConnects %1 to its %2 input.").arg(mPortFilter.Source, mPortFilter.Inputs.value(key));
+    }
+    return text;
 }
 
 void RenderGraphQuickAdd::refresh()
 {
     const QVector<RenderGraphTemplate> matches = getMatches();
     const bool isSearching = mSearch->text().trimmed().isEmpty() == false;
+    mContextLabel->setText(QStringLiteral("Connect from %1 · %2").arg(mPortFilter.Source, mPortFilter.Type));
+    mContext->setVisible(hasPortFilter() == true);
     if (isSearching == true && mCategory == GetSuggestedCategory())
     {
         mCategory = GetAllCategory();
@@ -899,8 +974,13 @@ void RenderGraphQuickAdd::refresh()
         mHiddenCount = static_cast<int32>(filtered.size() - mListed.size());
         if (filtered.isEmpty() == true)
         {
+            const QString nothing =
+                hasPortFilter() == true && isSearching == false
+                    ? QStringLiteral("No node accepts %1. Show all to add an unconnected node.").arg(mPortFilter.Type)
+                : hasPortFilter() == true ? QStringLiteral("No compatible node matches. Try another word or Show all.")
+                                          : QStringLiteral("Nothing matches. Try another word or switch to All.");
             addPlaceholder(matches.isEmpty() == true
-                               ? QStringLiteral("Nothing matches. Try another word or switch to All.")
+                               ? nothing
                                : QStringLiteral("No matches here; %1 in other categories.").arg(matches.size()));
         }
         if (mHiddenCount > 0)
@@ -981,8 +1061,9 @@ void RenderGraphQuickAdd::renderDetail()
     const bool isSnippet = entry.Kind == RenderGraphTemplateKind::Snippet;
     mInsert->setEnabled(true);
     mInsert->setText(isSnippet == true ? QStringLiteral("Apply…") : QStringLiteral("Insert"));
-    mInsert->setToolTip(isSnippet == true
-                            ? QStringLiteral("Choose the configuration name, then apply the snippet.")
+    mInsert->setToolTip(isSnippet == true ? QStringLiteral("Choose the configuration name, then apply the snippet.")
+                        : hasPortFilter() == true
+                            ? QStringLiteral("Add this node at the wire's end and connect it, as one undoable edit.")
                             : QStringLiteral("Add this node where Quick Add opened, as one undoable edit."));
     const bool isPinned = mPinned.contains(GetRenderGraphTemplateKey(entry));
     mPin->setEnabled(true);

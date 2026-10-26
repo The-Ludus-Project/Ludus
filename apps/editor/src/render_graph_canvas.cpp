@@ -9,6 +9,7 @@
 #include <ludus/foundation/math/scalar.hpp>
 
 #include <QAction>
+#include <QApplication>
 #include <QBrush>
 #include <QColor>
 #include <QContextMenuEvent>
@@ -78,6 +79,8 @@ constexpr QRgb LINK_ACCEPT_COLOR = 0xFF79D69E;
 constexpr QRgb LINK_REJECT_COLOR = 0xFFFF9A88;
 constexpr QRgb LABEL_COLOR = 0xFFD6DAE0;
 constexpr float64 NODE_ROW_GAP = 30;
+// Clicking an output offers Quick Add for a node one ordinary column gap to its right.
+constexpr float64 QUICK_ADD_PORT_GAP = COLUMN_SPACING - NODE_WIDTH;
 /// Reserved display key for configuration outputs; not a valid authored identifier.
 const QString OUTPUTS_NODE = QStringLiteral("#outputs");
 const QString INPUT_NODE = QStringLiteral("input");
@@ -106,6 +109,52 @@ QJsonObject FindNode(const QJsonObject& configuration, const QString& node)
         }
     }
     return {};
+}
+
+/// Hide derived Scene bundle members of a collapsed node that nothing connects, as the canvas shows them.
+void HideUnusedSceneMembers(const QJsonObject& record, const QJsonObject& node, RenderGraphNodePorts& inoutPorts)
+{
+    const QString identity = node.value(QStringLiteral("id")).toString();
+    const QString kind = node.value(QStringLiteral("kind")).toString();
+    const QJsonArray edges = record.value(QStringLiteral("edges")).toArray();
+    const auto hide = [&identity, &kind, &node, &edges, &record](QVector<RenderGraphPort>& inoutList, bool isOutput) {
+        for (qsizetype index = inoutList.size(); index > 0; --index)
+        {
+            const RenderGraphPort& port = inoutList.at(index - 1);
+            if (IsSceneBundleMember(port) == false)
+            {
+                continue;
+            }
+            const bool isDerivedMember =
+                kind == QStringLiteral("Scene") || GetSceneBundlePortType(node, port.Id).isEmpty() == false;
+            if (isDerivedMember == false)
+            {
+                continue;
+            }
+            bool isConnected = false;
+            for (const QJsonValueConstRef edge : edges)
+            {
+                isConnected = isConnected == true ||
+                              edge.toObject()
+                                      .value(isOutput == true ? QStringLiteral("from") : QStringLiteral("to"))
+                                      .toString() == identity + QLatin1Char('.') + port.Id;
+            }
+            if (isOutput == true)
+            {
+                for (const QJsonValueConstRef output : record.value(QStringLiteral("outputs")).toArray())
+                {
+                    isConnected = isConnected == true || output.toObject().value(QStringLiteral("source")).toString() ==
+                                                             identity + QLatin1Char('.') + port.Id;
+                }
+            }
+            if (isConnected == false)
+            {
+                inoutList.removeAt(index - 1);
+            }
+        }
+    };
+    hide(inoutPorts.Inputs, false);
+    hide(inoutPorts.Outputs, true);
 }
 
 QString FindType(const QVector<RenderGraphPort>& ports, const QString& port)
@@ -235,26 +284,19 @@ bool IsRenderGraphNodeEnabled(const QJsonObject& node)
            node.value(QStringLiteral("enabled")) != QJsonValue(false);
 }
 
-// File, configuration and endpoints are distinct named identities.
+namespace
+{
+/// CheckRenderGraphLink against one configuration record, which may hold a node that is not in the draft yet.
+// Configuration and endpoints are distinct named identities.
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
-RenderGraphLinkCheck CheckRenderGraphLink(const RenderGraphDocument& document,
-                                          const QString& file,
-                                          const QString& configuration,
-                                          const QString& from,
-                                          const QString& to,
-                                          bool shouldReplaceExisting)
+RenderGraphLinkCheck CheckLinkInRecord(const RenderGraphDocument& document,
+                                       const QJsonObject& record,
+                                       const QString& configuration,
+                                       const QString& from,
+                                       const QString& to,
+                                       bool shouldReplaceExisting)
 // NOLINTEND(bugprone-easily-swappable-parameters)
 {
-    QJsonObject graph;
-    if (document.GetGraph(file, graph) == false)
-    {
-        return {QStringLiteral("Schema"), QStringLiteral("the draft graph is not a JSON object")};
-    }
-    const QJsonObject record = FindConfiguration(graph, configuration);
-    if (record.isEmpty() == true)
-    {
-        return {QStringLiteral("Configuration"), QStringLiteral("configuration %1 is not declared").arg(configuration)};
-    }
     const QString source = GetEndpointNode(from);
     const QString sink = GetEndpointNode(to);
     if (from.count(QLatin1Char('.')) != 1 || to.count(QLatin1Char('.')) != 1)
@@ -387,7 +429,80 @@ RenderGraphLinkCheck CheckRenderGraphLink(const RenderGraphDocument& document,
             }
         }
     }
-    return CheckRenderGraphTextureContracts(document, file, configuration, from, to);
+    return CheckRenderGraphTextureContracts(document, record, configuration, from, to);
+}
+
+/// The displayed configuration record, or a failed check explaining why there is none.
+// File and configuration are distinct named identities.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+RenderGraphLinkCheck ReadConfigurationRecord(const RenderGraphDocument& document,
+                                             const QString& file,
+                                             const QString& configuration,
+                                             QJsonObject& outRecord)
+// NOLINTEND(bugprone-easily-swappable-parameters)
+{
+    QJsonObject graph;
+    if (document.GetGraph(file, graph) == false)
+    {
+        return {QStringLiteral("Schema"), QStringLiteral("the draft graph is not a JSON object")};
+    }
+    outRecord = FindConfiguration(graph, configuration);
+    if (outRecord.isEmpty() == true)
+    {
+        return {QStringLiteral("Configuration"), QStringLiteral("configuration %1 is not declared").arg(configuration)};
+    }
+    return {};
+}
+} // namespace
+
+// File, configuration and endpoints are distinct named identities.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+RenderGraphLinkCheck CheckRenderGraphLink(const RenderGraphDocument& document,
+                                          const QString& file,
+                                          const QString& configuration,
+                                          const QString& from,
+                                          const QString& to,
+                                          bool shouldReplaceExisting)
+// NOLINTEND(bugprone-easily-swappable-parameters)
+{
+    QJsonObject record;
+    RenderGraphLinkCheck readCheck = ReadConfigurationRecord(document, file, configuration, record);
+    if (readCheck.IsLegal() == false)
+    {
+        return readCheck;
+    }
+    return CheckLinkInRecord(document, record, configuration, from, to, shouldReplaceExisting);
+}
+
+// File, configuration and endpoints are distinct named identities.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+RenderGraphLinkCheck CheckRenderGraphLinkToNewNode(const RenderGraphDocument& document,
+                                                   const QString& file,
+                                                   const QString& configuration,
+                                                   const QJsonObject& node,
+                                                   const QString& from,
+                                                   const QString& to)
+// NOLINTEND(bugprone-easily-swappable-parameters)
+{
+    QJsonObject record;
+    RenderGraphLinkCheck readCheck = ReadConfigurationRecord(document, file, configuration, record);
+    if (readCheck.IsLegal() == false)
+    {
+        return readCheck;
+    }
+    const QString identity = node.value(QStringLiteral("id")).toString();
+    if (identity.isEmpty() == true || identity == INPUT_NODE || FindNode(record, identity).isEmpty() == false)
+    {
+        return {QStringLiteral("Port"), QStringLiteral("%1 is not a new node identity").arg(identity)};
+    }
+    if (GetEndpointNode(to) != identity)
+    {
+        return {QStringLiteral("Port"), QStringLiteral("%1 is not an input of the new node %2").arg(to, identity)};
+    }
+    QJsonArray nodes = record.value(QStringLiteral("nodes")).toArray();
+    nodes.append(node);
+    record.insert(QStringLiteral("nodes"), nodes);
+    return CheckLinkInRecord(document, record, configuration, from, to, false);
 }
 
 struct RenderGraphCanvas::NodeView final
@@ -663,47 +778,7 @@ void RenderGraphCanvas::Rebuild()
         const bool hasPorts = GetRenderGraphNodePorts(mDocument, node, ports);
         if (IsSceneBundleExpanded(identity) == false)
         {
-            const auto hideUnusedMembers =
-                [&edges, &identity, &record, &kind, &node](QVector<RenderGraphPort>& inoutPorts, bool isOutput) {
-                    for (qsizetype index = inoutPorts.size(); index > 0; --index)
-                    {
-                        const RenderGraphPort& port = inoutPorts.at(index - 1);
-                        if (IsSceneBundleMember(port) == false)
-                        {
-                            continue;
-                        }
-                        const bool isDerivedMember =
-                            kind == QStringLiteral("Scene") || GetSceneBundlePortType(node, port.Id).isEmpty() == false;
-                        if (isDerivedMember == false)
-                        {
-                            continue;
-                        }
-                        bool isConnected = false;
-                        for (const QJsonValueConstRef edge : edges)
-                        {
-                            isConnected =
-                                isConnected == true ||
-                                edge.toObject()
-                                        .value(isOutput == true ? QStringLiteral("from") : QStringLiteral("to"))
-                                        .toString() == identity + QLatin1Char('.') + port.Id;
-                        }
-                        if (isOutput == true)
-                        {
-                            for (const QJsonValueConstRef output : record.value(QStringLiteral("outputs")).toArray())
-                            {
-                                isConnected = isConnected == true ||
-                                              output.toObject().value(QStringLiteral("source")).toString() ==
-                                                  identity + QLatin1Char('.') + port.Id;
-                            }
-                        }
-                        if (isConnected == false)
-                        {
-                            inoutPorts.removeAt(index - 1);
-                        }
-                    }
-                };
-            hideUnusedMembers(ports.Inputs, false);
-            hideUnusedMembers(ports.Outputs, true);
+            HideUnusedSceneMembers(record, node, ports);
         }
         const int32 column = columns.value(identity);
         lastColumn = qMax(lastColumn, column);
@@ -981,7 +1056,8 @@ void RenderGraphCanvas::updateLinkFeedback(QPointF position)
         mLinkPortOrNull->setToolTip(mLinkPortTooltip);
         mLinkPortOrNull = nullptr;
     }
-    QString message = QStringLiteral("Drop on an input port to connect or replace its source.");
+    QString message = QStringLiteral(
+        "Drop on an input port to connect or replace its source, or on empty canvas to add a connected node.");
     QColor color = QColor::fromRgba(EDITABLE_EDGE_COLOR);
     if (endpoint.isEmpty() == false && endpoint != mLinkFrom)
     {
@@ -1091,6 +1167,14 @@ QPointF RenderGraphCanvas::GetPortPosition(const QString& endpoint, bool isOutpu
     const QGraphicsEllipseItem* connectorOrNull =
         (isOutput == true ? viewOrNull->OutputItems : viewOrNull->InputItems).value(GetEndpointPort(endpoint), nullptr);
     return connectorOrNull == nullptr ? QPointF() : connectorOrNull->mapToScene(connectorOrNull->rect().center());
+}
+
+QString RenderGraphCanvas::GetPortType(const QString& endpoint, bool isOutput) const
+{
+    const NodeView* viewOrNull = mNodes.value(GetEndpointNode(endpoint), nullptr);
+    return viewOrNull == nullptr ? QString{}
+                                 : FindType(isOutput == true ? viewOrNull->Ports.Outputs : viewOrNull->Ports.Inputs,
+                                            GetEndpointPort(endpoint));
 }
 
 RenderGraphDomain RenderGraphCanvas::GetNodeDomain(const QString& node) const
@@ -1321,6 +1405,40 @@ bool RenderGraphCanvas::ActivateNode(const QString& node)
     Q_EMIT SubgraphActivated(record.value(QStringLiteral("asset")).toString(),
                              record.value(QStringLiteral("configuration")).toString());
     return true;
+}
+
+QPointF RenderGraphCanvas::GetNewNodePosition(const QJsonObject& node,
+                                              const QString& from,
+                                              const QString& input,
+                                              QPointF inputPosition) const
+{
+    const QString identity = node.value(QStringLiteral("id")).toString();
+    QJsonObject record = configuration();
+    QJsonArray nodes = record.value(QStringLiteral("nodes")).toArray();
+    nodes.append(node);
+    record.insert(QStringLiteral("nodes"), nodes);
+    QJsonArray edges = record.value(QStringLiteral("edges")).toArray();
+    edges.append(
+        QJsonObject{{QStringLiteral("from"), from}, {QStringLiteral("to"), identity + QLatin1Char('.') + input}});
+    record.insert(QStringLiteral("edges"), edges);
+    RenderGraphNodePorts ports;
+    if (GetRenderGraphNodePorts(mDocument, node, ports) == false)
+    {
+        return inputPosition;
+    }
+    if (IsSceneBundleExpanded(identity) == false)
+    {
+        HideUnusedSceneMembers(record, node, ports);
+    }
+    for (qsizetype row = 0; row < ports.Inputs.size(); ++row)
+    {
+        if (ports.Inputs.at(row).Id == input)
+        {
+            // Matches addPort in Rebuild: inputs sit on the left edge, centred in their row.
+            return inputPosition - QPointF(0, HEADER_HEIGHT + (static_cast<float64>(row) + 0.5) * PORT_SPACING);
+        }
+    }
+    return inputPosition;
 }
 
 QString RenderGraphCanvas::nodeAt(QPointF position) const
@@ -1636,11 +1754,25 @@ void RenderGraphCanvas::mouseReleaseEvent(QMouseEvent* event)
     {
         const QString from = mLinkFrom;
         cancelLink();
+        const QPoint point = event->position().toPoint();
+        const QPointF position = mapToScene(point);
         bool isOutput = false;
-        const QString to = portAt(mapToScene(event->position().toPoint()), isOutput);
-        if (to.isEmpty() == false)
+        const QString to = portAt(position, isOutput);
+        const bool isClick =
+            (point - mapFromScene(mPressPosition)).manhattanLength() < QApplication::startDragDistance();
+        if (isClick == true)
+        {
+            // A plain click on an output offers nodes that accept it, placed a column gap to the right.
+            Q_EMIT ConnectQuickAddRequested(from, GetPortPosition(from, true) + QPointF(QUICK_ADD_PORT_GAP, 0));
+        }
+        else if (to.isEmpty() == false)
         {
             static_cast<void>(RequestLink(from, to, true));
+        }
+        else if (nodeAt(position).isEmpty() == true && itemAt(point) == nullptr)
+        {
+            // Released on empty canvas: offer nodes that accept the wire, with their input at the drop point.
+            Q_EMIT ConnectQuickAddRequested(from, position);
         }
         event->accept();
         return;

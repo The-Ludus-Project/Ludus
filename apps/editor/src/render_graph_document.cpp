@@ -619,6 +619,8 @@ bool MoveNodeEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
 }
 // Arguments are the edit's own arguments followed by the placed node, x and y.
 constexpr qsizetype NODE_POSITION_ARGUMENT_COUNT = 3;
+// A connection's arguments are its from and to endpoints.
+constexpr qsizetype CONNECTION_ARGUMENT_COUNT = 2;
 
 bool AddNodeAtEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
 {
@@ -630,6 +632,41 @@ bool AddUpscalePresetAtEdit(QJsonObject& inoutConfiguration, const QStringList& 
 {
     return AddUpscalePresetEdit(inoutConfiguration, arguments.mid(0, 2)) == true &&
            MoveNodeEdit(inoutConfiguration, arguments.mid(2, NODE_POSITION_ARGUMENT_COUNT)) == true;
+}
+
+// Arguments are the added node, x and y (empty keeps automatic placement), then from and to.
+bool PlaceAndConnectEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
+{
+    const QStringList position = arguments.mid(0, NODE_POSITION_ARGUMENT_COUNT);
+    const QStringList connection = arguments.mid(NODE_POSITION_ARGUMENT_COUNT);
+    if (connection.size() != CONNECTION_ARGUMENT_COUNT || IsEndpointOf(connection.at(1), position.at(0)) == false)
+    {
+        return false;
+    }
+    if (position.at(1).isEmpty() == false && MoveNodeEdit(inoutConfiguration, position) == false)
+    {
+        return false;
+    }
+    return ConnectEdit(inoutConfiguration, connection);
+}
+
+// Arguments are the node record, then PlaceAndConnectEdit's arguments.
+bool AddNodeConnectedEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
+{
+    return AddNodeEdit(inoutConfiguration, arguments.mid(0, 1)) == true &&
+           PlaceAndConnectEdit(inoutConfiguration, arguments.mid(1)) == true;
+}
+
+// Arguments are the algorithm, then PlaceAndConnectEdit's arguments starting with the identity.
+bool AddUpscalePresetConnectedEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
+{
+    const QStringList placement = arguments.mid(1);
+    return placement.size() == NODE_POSITION_ARGUMENT_COUNT + CONNECTION_ARGUMENT_COUNT &&
+           AppendUpscalePreset(inoutConfiguration,
+                               arguments.at(0),
+                               placement.at(0),
+                               placement.last().section(QLatin1Char('.'), 1)) == true &&
+           PlaceAndConnectEdit(inoutConfiguration, placement) == true;
 }
 
 bool MoveNodesEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
@@ -906,7 +943,8 @@ RenderGraphDocumentStatus RenderGraphDocument::editConfiguration(const QString& 
     }
     RenderGraphSnapshot candidate = mDraft;
     candidate.Files.insert(file, EncodeCanonicalJson(graph));
-    if (edit == &ConnectEdit || edit == &ReplaceConnectionEdit || edit == &ExpandSceneBundleEdit)
+    if (edit == &ConnectEdit || edit == &ReplaceConnectionEdit || edit == &ExpandSceneBundleEdit ||
+        edit == &AddNodeConnectedEdit || edit == &AddUpscalePresetConnectedEdit)
     {
         const RenderGraphDocumentStatus status = PrepareConnectedSceneShaders(candidate, mRootGraph, mPackageRoot);
         if (status != RenderGraphDocumentStatus::Ok)
@@ -1113,13 +1151,41 @@ RenderGraphDocumentStatus RenderGraphDocument::PrepareTechniques(QString& outErr
     return commit(candidate, false);
 }
 
+namespace
+{
+/// x and y arguments for an optional layout position, clamped to ±MAX_COORDINATE; empty without one.
+QStringList GetPositionArguments(const QPoint* positionOrNull)
+{
+    if (positionOrNull == nullptr)
+    {
+        return {QString{}, QString{}};
+    }
+    return {
+        QString::number(
+            qBound(-RenderGraphDocument::MAX_COORDINATE, positionOrNull->x(), RenderGraphDocument::MAX_COORDINATE)),
+        QString::number(
+            qBound(-RenderGraphDocument::MAX_COORDINATE, positionOrNull->y(), RenderGraphDocument::MAX_COORDINATE))};
+}
+} // namespace
+
 RenderGraphDocumentStatus RenderGraphDocument::AddNode(const QString& file,
                                                        const QString& configuration,
                                                        const QJsonObject& node,
-                                                       const QPoint* positionOrNull)
+                                                       const QPoint* positionOrNull,
+                                                       const RenderGraphNodeConnection* connectionOrNull)
 {
     mLastMove.clear();
     const QString record = QString::fromUtf8(QJsonDocument(node).toJson(QJsonDocument::Compact));
+    if (connectionOrNull != nullptr)
+    {
+        return editConfiguration(file,
+                                 configuration,
+                                 QStringList{record, node.value(QStringLiteral("id")).toString()} +
+                                     GetPositionArguments(positionOrNull) +
+                                     QStringList{connectionOrNull->From, connectionOrNull->To},
+                                 &AddNodeConnectedEdit,
+                                 false);
+    }
     if (positionOrNull == nullptr)
     {
         return editConfiguration(file, configuration, {record}, &AddNodeEdit, false);
@@ -1138,9 +1204,19 @@ RenderGraphDocumentStatus RenderGraphDocument::AddUpscalePreset(const QString& f
                                                                 const QString& configuration,
                                                                 const QString& algorithm,
                                                                 const QString& identity,
-                                                                const QPoint* positionOrNull)
+                                                                const QPoint* positionOrNull,
+                                                                const RenderGraphNodeConnection* connectionOrNull)
 {
     mLastMove.clear();
+    if (connectionOrNull != nullptr)
+    {
+        return editConfiguration(file,
+                                 configuration,
+                                 QStringList{algorithm, identity} + GetPositionArguments(positionOrNull) +
+                                     QStringList{connectionOrNull->From, connectionOrNull->To},
+                                 &AddUpscalePresetConnectedEdit,
+                                 false);
+    }
     if (positionOrNull == nullptr)
     {
         return editConfiguration(file, configuration, {algorithm, identity}, &AddUpscalePresetEdit, false);

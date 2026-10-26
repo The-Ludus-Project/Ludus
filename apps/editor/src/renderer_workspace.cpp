@@ -357,6 +357,32 @@ QJsonObject MakeNode(const QString& kind, const QString& identity)
     return node;
 }
 
+/// Default record for a node template: an Upscale preset's node, or MakeNode for its kind.
+QJsonObject MakeTemplateNode(const RenderGraphTemplate& entry, const QString& identity)
+{
+    return entry.Algorithm.isEmpty() == true ? MakeNode(entry.Identity, identity)
+                                             : MakeUpscaleNode(entry.Algorithm, identity);
+}
+
+/// First free node identity for a template in a configuration record: the preset's algorithm or the
+/// lowercase kind, then the same with 2, 3, ... appended.
+QString MakeNodeIdentity(const RenderGraphTemplate& entry, const QJsonObject& configuration)
+{
+    QStringList identities;
+    const QJsonArray nodes = configuration.value(QStringLiteral("nodes")).toArray();
+    for (const QJsonValueConstRef node : nodes)
+    {
+        identities.append(node.toObject().value(QStringLiteral("id")).toString());
+    }
+    const QString stem = entry.Algorithm.isEmpty() == false ? entry.Algorithm : entry.Identity.toLower();
+    QString identity = stem;
+    for (qsizetype suffix = 2; identities.contains(identity) == true; ++suffix)
+    {
+        identity = stem + QString::number(suffix);
+    }
+    return identity;
+}
+
 bool IsNodeFieldControl(const QWidget& workspace, const QWidget& inspector, QWidget* controlOrNull)
 {
     if (controlOrNull == nullptr)
@@ -820,9 +846,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     for (const RenderGraphTemplate& entry :
          RenderGraphTemplateRegistry::GetBuiltIn().GetTemplates(RenderGraphTemplateKind::Node))
     {
-        const QString identity = QStringLiteral("quickadd");
-        const QJsonObject node = entry.Algorithm.isEmpty() == true ? MakeNode(entry.Identity, identity)
-                                                                   : MakeUpscaleNode(entry.Algorithm, identity);
+        const QJsonObject node = MakeTemplateNode(entry, QStringLiteral("quickadd"));
         RenderGraphNodePorts ports;
         if (GetRenderGraphNodePorts(mDocument, node, ports) == true)
         {
@@ -845,6 +869,12 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     connect(mCanvas, &RenderGraphCanvas::QuickAddRequested, this, [this](QPointF scenePosition) {
         static_cast<void>(ShowQuickAdd(scenePosition));
     });
+    connect(mCanvas,
+            &RenderGraphCanvas::ConnectQuickAddRequested,
+            this,
+            [this](const QString& from, QPointF inputPosition) {
+                static_cast<void>(ShowConnectQuickAdd(from, inputPosition));
+            });
     connect(mCanvas,
             &RenderGraphCanvas::MoveRequested,
             this,
@@ -3545,7 +3575,10 @@ void RendererWorkspace::addNode()
     addNodeTemplate(nodes.at(index), nullptr);
 }
 
-void RendererWorkspace::addNodeTemplate(const RenderGraphTemplate& entry, const QPoint* positionOrNull)
+void RendererWorkspace::addNodeTemplate(const RenderGraphTemplate& entry,
+                                        const QPoint* positionOrNull,
+                                        const QString& from,
+                                        const QString& input)
 {
     const auto report = [this](const QString& message) {
         mNodeCreationMessage->setText(message);
@@ -3590,24 +3623,35 @@ void RendererWorkspace::addNodeTemplate(const RenderGraphTemplate& entry, const 
                    .arg(file, configuration));
         return;
     }
-    QStringList identities;
-    const QJsonArray nodes = record.value(QStringLiteral("nodes")).toArray();
-    for (const QJsonValueConstRef node : nodes)
-    {
-        identities.append(node.toObject().value(QStringLiteral("id")).toString());
-    }
     const QString algorithm = entry.Algorithm;
     const bool isUpscalePreset = algorithm.isEmpty() == false;
     const QString kind = entry.Identity;
-    const QString stem = isUpscalePreset == true ? algorithm : kind.toLower();
-    QString identity = stem;
-    for (qsizetype suffix = 2; identities.contains(identity) == true; ++suffix)
+    const QString identity = MakeNodeIdentity(entry, record);
+    const QJsonObject node = MakeTemplateNode(entry, identity);
+    const bool isConnected = from.isEmpty() == false && input.isEmpty() == false;
+    const RenderGraphNodeConnection connection{from, identity + QLatin1Char('.') + input};
+    QPoint position = positionOrNull == nullptr ? QPoint() : *positionOrNull;
+    if (isConnected == true)
     {
-        identity = stem + QString::number(suffix);
+        // Check the exact record being added with the same pre-check that offered this input.
+        const RenderGraphLinkCheck check =
+            CheckRenderGraphLinkToNewNode(mDocument, file, configuration, node, from, connection.To);
+        if (check.IsLegal() == false)
+        {
+            report(QStringLiteral("Cannot connect %1 to a new %2: %3: %4").arg(from, kind, check.Code, check.Reason));
+            return;
+        }
+        if (positionOrNull != nullptr)
+        {
+            position = mCanvas->GetNewNodePosition(node, from, input, QPointF(position)).toPoint();
+        }
     }
+    const QPoint* placementOrNull = positionOrNull == nullptr ? nullptr : &position;
+    const RenderGraphNodeConnection* connectionOrNull = isConnected == true ? &connection : nullptr;
     const RenderGraphDocumentStatus status =
-        isUpscalePreset == true ? mDocument.AddUpscalePreset(file, configuration, algorithm, identity, positionOrNull)
-                                : mDocument.AddNode(file, configuration, MakeNode(kind, identity), positionOrNull);
+        isUpscalePreset == true
+            ? mDocument.AddUpscalePreset(file, configuration, algorithm, identity, placementOrNull, connectionOrNull)
+            : mDocument.AddNode(file, configuration, node, placementOrNull, connectionOrNull);
     if (status != RenderGraphDocumentStatus::Ok)
     {
         report(QStringLiteral("Cannot add %1 to %2#%3: %4").arg(kind, file, configuration, DescribeStatus(status)));
@@ -3620,7 +3664,9 @@ void RendererWorkspace::addNodeTemplate(const RenderGraphTemplate& entry, const 
     documentEdited(status);
     mViews->setCurrentIndex(CANVAS_VIEW);
     mCanvas->RevealNode(identity);
-    report(QStringLiteral("Added %1 to %2#%3.").arg(identity, file, configuration));
+    report(isConnected == true
+               ? QStringLiteral("Added %1 to %2#%3, connected from %4.").arg(identity, file, configuration, from)
+               : QStringLiteral("Added %1 to %2#%3.").arg(identity, file, configuration));
 }
 
 bool RendererWorkspace::ShowQuickAdd(QPointF scenePosition)
@@ -3631,11 +3677,68 @@ bool RendererWorkspace::ShowQuickAdd(QPointF scenePosition)
         return false;
     }
     mQuickAddPosition = scenePosition;
+    mQuickAddSource.clear();
     mQuickAdd->Open(mCanvas->viewport()->mapToGlobal(mCanvas->mapFromScene(scenePosition)));
     return true;
 }
 
-void RendererWorkspace::insertQuickAddTemplate(const RenderGraphTemplate& entry)
+bool RendererWorkspace::ShowConnectQuickAdd(const QString& from, QPointF inputPosition)
+{
+    if (mDocument.IsLoaded() == false || mCanvas->GetConfiguration().isEmpty() == true)
+    {
+        mStatus->setText(QStringLiteral("Open a render graph before using Quick Add."));
+        return false;
+    }
+    const QString file = mCanvas->GetFile();
+    const QString configuration = mCanvas->GetConfiguration();
+    RenderGraphQuickAddPortFilter filter{from, mCanvas->GetPortType(from, true), {}};
+    QJsonObject graph;
+    QJsonObject record;
+    if (filter.Type.isEmpty() == false && mDocument.GetGraph(file, graph) == true)
+    {
+        const QJsonArray configurations = graph.value(QStringLiteral("configurations")).toArray();
+        for (const QJsonValueConstRef value : configurations)
+        {
+            if (value.toObject().value(QStringLiteral("id")).toString() == configuration)
+            {
+                record = value.toObject();
+                break;
+            }
+        }
+    }
+    if (record.isEmpty() == true)
+    {
+        mStatus->setText(QStringLiteral("Cannot connect from %1: it is not an output on this canvas.").arg(from));
+        return false;
+    }
+    // Offer a node when the shared link pre-check accepts `from` on one of its inputs; the first wins.
+    for (const RenderGraphTemplate& entry :
+         RenderGraphTemplateRegistry::GetBuiltIn().GetTemplates(RenderGraphTemplateKind::Node))
+    {
+        const QString identity = MakeNodeIdentity(entry, record);
+        const QJsonObject node = MakeTemplateNode(entry, identity);
+        RenderGraphNodePorts ports;
+        if (node.isEmpty() == true || GetRenderGraphNodePorts(mDocument, node, ports) == false)
+        {
+            continue;
+        }
+        for (const RenderGraphPort& port : ports.Inputs)
+        {
+            const QString to = identity + QLatin1Char('.') + port.Id;
+            if (CheckRenderGraphLinkToNewNode(mDocument, file, configuration, node, from, to).IsLegal() == true)
+            {
+                filter.Inputs.insert(GetRenderGraphTemplateKey(entry), port.Id);
+                break;
+            }
+        }
+    }
+    mQuickAddPosition = inputPosition;
+    mQuickAddSource = from;
+    mQuickAdd->Open(mCanvas->viewport()->mapToGlobal(mCanvas->mapFromScene(inputPosition)), filter);
+    return true;
+}
+
+void RendererWorkspace::insertQuickAddTemplate(const RenderGraphTemplate& entry, const QString& input)
 {
     if (entry.Kind == RenderGraphTemplateKind::Snippet)
     {
@@ -3644,7 +3747,7 @@ void RendererWorkspace::insertQuickAddTemplate(const RenderGraphTemplate& entry)
         return;
     }
     const QPoint position = mQuickAddPosition.toPoint();
-    addNodeTemplate(entry, &position);
+    addNodeTemplate(entry, &position, input.isEmpty() == true ? QString{} : mQuickAddSource, input);
 }
 
 bool RendererWorkspace::SelectNode(const QString& file, const QString& configuration, const QString& node)

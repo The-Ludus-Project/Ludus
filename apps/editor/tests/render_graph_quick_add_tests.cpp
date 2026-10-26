@@ -1,4 +1,4 @@
-// The Quick Add palette: ranking, the bounded result list, keyboard use and canvas insertion.
+// The Quick Add palette: ranking, the bounded result list, keyboard use, canvas insertion and port filtering.
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_quick_add.h"
@@ -14,6 +14,7 @@
 #include <QDialog>
 #include <QDir>
 #include <QFile>
+#include <QGraphicsScene>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
@@ -23,6 +24,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
+#include <QToolButton>
 
 using namespace ludus::editor;
 using namespace ludus::foundation;
@@ -86,6 +88,98 @@ QPoint GetLayoutPosition(const RenderGraphDocument& document, const QString& nod
     }
     return {};
 }
+
+/// The first configuration's record in the root graph draft.
+QJsonObject GetConfiguration(const RenderGraphDocument& document)
+{
+    QJsonObject graph;
+    REQUIRE(document.GetGraph(GetRoot(), graph) == true);
+    return graph.value(QStringLiteral("configurations")).toArray().at(0).toObject();
+}
+
+bool HasEdge(const RenderGraphDocument& document, const QString& from, const QString& to)
+{
+    const QJsonArray edges = GetConfiguration(document).value(QStringLiteral("edges")).toArray();
+    for (const QJsonValueConstRef edge : edges)
+    {
+        if (edge.toObject().value(QStringLiteral("from")).toString() == from &&
+            edge.toObject().value(QStringLiteral("to")).toString() == to)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool HasNode(const RenderGraphDocument& document, const QString& node)
+{
+    const QJsonArray nodes = GetConfiguration(document).value(QStringLiteral("nodes")).toArray();
+    for (const QJsonValueConstRef value : nodes)
+    {
+        if (value.toObject().value(QStringLiteral("id")).toString() == node)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// A shown workspace on the offscreen test package with its whole graph in view and no Quick Add history.
+struct QuickAddCanvasFixture final
+{
+    QTemporaryDir Project;
+    RendererWorkspace Workspace{{}};
+    RenderGraphQuickAdd* PaletteOrNull = nullptr;
+
+    QuickAddCanvasFixture()
+    {
+        const QString package = MakeQuickAddTestPackage(Project);
+        Workspace.SetProject(Project.path(), 1);
+        REQUIRE(Workspace.OpenGraph(QDir(package).filePath(GetRoot())) == true);
+        Workspace.SetLivePreview(false);
+        Workspace.resize(1450, 850);
+        Workspace.show();
+        QCoreApplication::processEvents();
+        RenderGraphCanvas& canvas = Workspace.GetCanvas();
+        canvas.fitInView(canvas.scene()->itemsBoundingRect().adjusted(-200, -200, 200, 200), Qt::KeepAspectRatio);
+        PaletteOrNull = Workspace.findChild<RenderGraphQuickAdd*>(QStringLiteral("renderGraphQuickAdd"));
+        REQUIRE(PaletteOrNull != nullptr);
+        PaletteOrNull->SetRecent({});
+        PaletteOrNull->SetPinned({});
+    }
+
+    /// A viewport point over empty canvas, well away from avoid.
+    [[nodiscard]] QPoint FindEmptyPoint(QPoint avoid)
+    {
+        RenderGraphCanvas& canvas = Workspace.GetCanvas();
+        constexpr int32 STEP = 24;
+        constexpr int32 MINIMUM_DISTANCE = 120;
+        for (int32 y = STEP; y < canvas.viewport()->height() - STEP; y += STEP)
+        {
+            for (int32 x = STEP; x < canvas.viewport()->width() - STEP; x += STEP)
+            {
+                const QPoint point(x, y);
+                if ((point - avoid).manhattanLength() >= MINIMUM_DISTANCE && canvas.itemAt(point) == nullptr)
+                {
+                    return point;
+                }
+            }
+        }
+        FAIL("the canvas has no empty point in view");
+        return {};
+    }
+
+    /// Drag a wire from an output and release it on the viewport point end.
+    void DragWire(const QString& from, QPoint end)
+    {
+        RenderGraphCanvas& canvas = Workspace.GetCanvas();
+        const QPoint start = canvas.mapFromScene(canvas.GetPortPosition(from, true));
+        QTest::mousePress(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, start);
+        QTest::mouseMove(canvas.viewport(), (start + end) / 2);
+        QTest::mouseMove(canvas.viewport(), end);
+        QTest::mouseRelease(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, end);
+    }
+};
 } // namespace
 
 TEST_CASE("Quick Add ranks label words first and accepts synonyms", "[editor][render-graph][quick-add]")
@@ -325,4 +419,239 @@ TEST_CASE("Quick Add needs an open graph", "[editor][render-graph][quick-add]")
     REQUIRE(paletteOrNull != nullptr);
     CHECK(workspace.ShowQuickAdd(QPointF(0.0, 0.0)) == false);
     CHECK(paletteOrNull->isVisible() == false);
+}
+
+TEST_CASE("Quick Add lists only nodes that accept a port filter, and can clear it", "[editor][render-graph][quick-add]")
+{
+    RenderGraphQuickAdd palette(RenderGraphTemplateRegistry::GetBuiltIn());
+    QSignalSpy inserted(&palette, &RenderGraphQuickAdd::InsertRequested);
+    palette.SetRecent({QStringLiteral("snippet:visibility-buffer"), QStringLiteral("node:Scene")});
+    const RenderGraphQuickAddPortFilter filter{QStringLiteral("tonemap.color"),
+                                               QStringLiteral("ColorTexture"),
+                                               {{QStringLiteral("node:Export"), QStringLiteral("texture")},
+                                                {QStringLiteral("node:Present"), QStringLiteral("color")}}};
+    palette.Open(QPoint(40, 40), filter);
+    QWidget* contextOrNull = palette.findChild<QWidget*>(QStringLiteral("renderGraphQuickAddContext"));
+    QLabel* contextLabelOrNull = palette.findChild<QLabel*>(QStringLiteral("renderGraphQuickAddContextLabel"));
+    QToolButton* clearOrNull = palette.findChild<QToolButton*>(QStringLiteral("renderGraphQuickAddContextClear"));
+    QToolButton* snippetsOrNull = palette.findChild<QToolButton*>(QStringLiteral("renderGraphQuickAddKindSnippets"));
+    QLineEdit* searchOrNull = palette.findChild<QLineEdit*>(QStringLiteral("renderGraphQuickAddSearch"));
+    REQUIRE(contextOrNull != nullptr);
+    REQUIRE(contextLabelOrNull != nullptr);
+    REQUIRE(clearOrNull != nullptr);
+    REQUIRE(snippetsOrNull != nullptr);
+    REQUIRE(searchOrNull != nullptr);
+    const QString capture = qEnvironmentVariable("LUDUS_EDITOR_QUICK_ADD_CAPTURE");
+    if (capture.isEmpty() == false)
+    {
+        REQUIRE(palette.grab().save(capture + QStringLiteral("-filtered.png")) == true);
+    }
+
+    // The filter opens on everything compatible: recent incompatible templates and snippets stay out.
+    CHECK(contextOrNull->isVisible() == true);
+    CHECK(contextLabelOrNull->text() == QStringLiteral("Connect from tonemap.color · ColorTexture"));
+    CHECK(palette.GetCategory() == QStringLiteral("all"));
+    CHECK(palette.GetListedKeys() == QStringList{QStringLiteral("node:Export"), QStringLiteral("node:Present")});
+    CHECK(snippetsOrNull->isEnabled() == false);
+    QTest::keyClick(searchOrNull, Qt::Key_Tab);
+    CHECK(palette.GetKind() == RenderGraphQuickAddKind::Nodes);
+    QTest::keyClick(searchOrNull, Qt::Key_Tab);
+    CHECK(palette.GetKind() == RenderGraphQuickAddKind::All);
+    QTest::keyClicks(searchOrNull, QStringLiteral("scene"));
+    CHECK(palette.GetListedKeys().isEmpty() == true);
+    searchOrNull->setText(QStringLiteral("present"));
+    REQUIRE(palette.InsertHighlighted() == true);
+    REQUIRE(inserted.size() == 1);
+    CHECK(GetRenderGraphTemplateKey(inserted.at(0).at(0).value<RenderGraphTemplate>()) ==
+          QStringLiteral("node:Present"));
+    CHECK(inserted.at(0).at(1).toString() == QStringLiteral("color"));
+
+    // The clear button lists every template again and the next insert is unconnected.
+    palette.Open(QPoint(40, 40), filter);
+    clearOrNull->click();
+    CHECK(palette.GetPortFilter().Source.isEmpty() == true);
+    CHECK(contextOrNull->isVisible() == false);
+    CHECK(snippetsOrNull->isEnabled() == true);
+    CHECK(palette.GetCategory() == QStringLiteral("suggested"));
+    CHECK(palette.GetListedKeys().contains(QStringLiteral("snippet:visibility-buffer")) == true);
+    searchOrNull->setText(QStringLiteral("export"));
+    REQUIRE(palette.InsertHighlighted() == true);
+    REQUIRE(inserted.size() == 2);
+    CHECK(inserted.at(1).at(1).toString().isEmpty() == true);
+
+    // Backspace in an empty search clears the filter too; reopening without one shows no context.
+    palette.Open(QPoint(40, 40), filter);
+    QTest::keyClick(searchOrNull, Qt::Key_Backspace);
+    CHECK(palette.GetPortFilter().Source.isEmpty() == true);
+    CHECK(contextOrNull->isVisible() == false);
+    palette.Open(QPoint(40, 40), filter);
+    palette.close();
+    palette.Open(QPoint(40, 40));
+    CHECK(contextOrNull->isVisible() == false);
+    palette.close();
+}
+
+TEST_CASE("Dropping a wire on empty canvas adds a connected node in one undo step", "[editor][render-graph][quick-add]")
+{
+    QuickAddCanvasFixture fixture;
+    RenderGraphCanvas& canvas = fixture.Workspace.GetCanvas();
+    RenderGraphDocument& document = fixture.Workspace.GetDocument();
+    RenderGraphQuickAdd& palette = *fixture.PaletteOrNull;
+    const QByteArray original = document.GetDraft(GetRoot());
+    const QString source = QStringLiteral("color.texture");
+    const QPoint drop = fixture.FindEmptyPoint(canvas.mapFromScene(canvas.GetPortPosition(source, true)));
+    const QPointF dropScene = canvas.mapToScene(drop);
+
+    fixture.DragWire(source, drop);
+    REQUIRE(palette.isVisible() == true);
+    CHECK(palette.GetPortFilter().Source == source);
+    CHECK(palette.GetPortFilter().Type == QStringLiteral("ColorTexture"));
+    CHECK(palette.GetPortFilter().Inputs.value(QStringLiteral("node:ToneMap")) == QStringLiteral("color"));
+    QLabel* contextLabelOrNull = palette.findChild<QLabel*>(QStringLiteral("renderGraphQuickAddContextLabel"));
+    REQUIRE(contextLabelOrNull != nullptr);
+    CHECK(contextLabelOrNull->text() == QStringLiteral("Connect from color.texture · ColorTexture"));
+    // Every row passed the link pre-check; nodes without such an input are never offered.
+    for (const QString& key : palette.GetListedKeys())
+    {
+        CHECK(palette.GetPortFilter().Inputs.contains(key) == true);
+    }
+    CHECK(palette.GetPortFilter().Inputs.contains(QStringLiteral("node:Scene")) == false);
+    CHECK(document.GetDraft(GetRoot()) == original);
+
+    QLineEdit* searchOrNull = palette.findChild<QLineEdit*>(QStringLiteral("renderGraphQuickAddSearch"));
+    REQUIRE(searchOrNull != nullptr);
+    QTest::keyClicks(searchOrNull, QStringLiteral("tonemap"));
+    QTest::keyClick(searchOrNull, Qt::Key_Return);
+    REQUIRE(HasNode(document, QStringLiteral("tonemap")) == true);
+    CHECK(HasEdge(document, source, QStringLiteral("tonemap.color")) == true);
+    // The matching input sits on the drop point (layout positions are whole canvas units).
+    const QPointF input = canvas.GetPortPosition(QStringLiteral("tonemap.color"), false);
+    CHECK(qAbs(input.x() - dropScene.x()) <= 1.0);
+    CHECK(qAbs(input.y() - dropScene.y()) <= 1.0);
+
+    // Node, layout position and connection are one edit.
+    fixture.Workspace.Undo();
+    CHECK(document.GetDraft(GetRoot()) == original);
+    fixture.Workspace.Redo();
+    CHECK(HasEdge(document, source, QStringLiteral("tonemap.color")) == true);
+    CHECK(GetLayoutPosition(document, QStringLiteral("tonemap")).isNull() == false);
+}
+
+TEST_CASE("Clicking an output offers connected nodes to its right", "[editor][render-graph][quick-add]")
+{
+    QuickAddCanvasFixture fixture;
+    RenderGraphCanvas& canvas = fixture.Workspace.GetCanvas();
+    RenderGraphDocument& document = fixture.Workspace.GetDocument();
+    RenderGraphQuickAdd& palette = *fixture.PaletteOrNull;
+    const QString source = QStringLiteral("raster.color");
+    const QPointF port = canvas.GetPortPosition(source, true);
+    const QPoint point = canvas.mapFromScene(port);
+    QTest::mouseClick(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+    REQUIRE(palette.isVisible() == true);
+    CHECK(palette.GetPortFilter().Source == source);
+
+    // An Upscale preset connects the wire instead of creating a helper target for that input.
+    QLineEdit* searchOrNull = palette.findChild<QLineEdit*>(QStringLiteral("renderGraphQuickAddSearch"));
+    REQUIRE(searchOrNull != nullptr);
+    searchOrNull->setText(QStringLiteral("bilinear"));
+    REQUIRE(palette.GetHighlightedKey() == QStringLiteral("node:Upscale/bilinear"));
+    REQUIRE(palette.InsertHighlighted() == true);
+    CHECK(HasEdge(document, source, QStringLiteral("bilinear.color")) == true);
+    CHECK(HasNode(document, QStringLiteral("bilinear-color")) == false);
+    CHECK(HasNode(document, QStringLiteral("bilinear-destination")) == true);
+    const QPointF input = canvas.GetPortPosition(QStringLiteral("bilinear.color"), false);
+    CHECK(input.x() > port.x());
+    CHECK(qAbs(input.y() - port.y()) <= 1.0);
+}
+
+TEST_CASE("Port-filtered Quick Add never offers incompatible templates and cancels cleanly",
+          "[editor][render-graph][quick-add]")
+{
+    QuickAddCanvasFixture fixture;
+    RenderGraphCanvas& canvas = fixture.Workspace.GetCanvas();
+    RenderGraphDocument& document = fixture.Workspace.GetDocument();
+    RenderGraphQuickAdd& palette = *fixture.PaletteOrNull;
+    const QByteArray original = document.GetDraft(GetRoot());
+    const uint64 revision = document.GetRevision();
+    const QString source = QStringLiteral("depth.texture");
+    fixture.DragWire(source, fixture.FindEmptyPoint(canvas.mapFromScene(canvas.GetPortPosition(source, true))));
+    REQUIRE(palette.isVisible() == true);
+    CHECK(palette.GetPortFilter().Type == QStringLiteral("DepthTexture"));
+
+    // ToneMap only takes color: it is not offered for depth, even by name, and nor are snippets.
+    CHECK(palette.GetPortFilter().Inputs.contains(QStringLiteral("node:ToneMap")) == false);
+    QLineEdit* searchOrNull = palette.findChild<QLineEdit*>(QStringLiteral("renderGraphQuickAddSearch"));
+    REQUIRE(searchOrNull != nullptr);
+    QTest::keyClicks(searchOrNull, QStringLiteral("tone"));
+    CHECK(palette.GetListedKeys().contains(QStringLiteral("node:ToneMap")) == false);
+    searchOrNull->setText(QStringLiteral("visibility"));
+    for (const QString& key : palette.GetListedKeys())
+    {
+        CHECK(key.startsWith(QStringLiteral("snippet:")) == false);
+    }
+
+    // Escape closes the palette without touching the draft or its history.
+    QTest::keyClick(searchOrNull, Qt::Key_Escape);
+    CHECK(palette.isVisible() == false);
+    CHECK(document.GetDraft(GetRoot()) == original);
+    CHECK(document.GetRevision() == revision);
+
+    // Releasing on a node body (not a port or empty canvas) opens nothing.
+    const QPoint body = canvas.mapFromScene(canvas.GetNodePosition(QStringLiteral("scene")) + QPointF(60.0, 8.0));
+    fixture.DragWire(source, body);
+    CHECK(palette.isVisible() == false);
+    CHECK(document.GetRevision() == revision);
+}
+
+TEST_CASE("AddNode connects the new node in the same edit", "[editor][render-graph][quick-add]")
+{
+    QTemporaryDir project;
+    const QString package = MakeQuickAddTestPackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, GetRoot()) == RenderGraphDocumentStatus::Ok);
+    const QByteArray original = document.GetDraft(GetRoot());
+    const QJsonObject node{{QStringLiteral("id"), QStringLiteral("present")},
+                           {QStringLiteral("kind"), QStringLiteral("Present")}};
+    const QString from = QStringLiteral("raster.color");
+
+    // The shared pre-check sees the node as added: a matching type passes, the wrong type and a used
+    // identity do not.
+    CHECK(CheckRenderGraphLinkToNewNode(document,
+                                        GetRoot(),
+                                        QStringLiteral("Default"),
+                                        node,
+                                        from,
+                                        QStringLiteral("present.color"))
+              .IsLegal() == true);
+    CHECK(CheckRenderGraphLinkToNewNode(document,
+                                        GetRoot(),
+                                        QStringLiteral("Default"),
+                                        node,
+                                        QStringLiteral("depth.texture"),
+                                        QStringLiteral("present.color"))
+              .Code == QStringLiteral("TypeMismatch"));
+    const QJsonObject used{{QStringLiteral("id"), QStringLiteral("camera")},
+                           {QStringLiteral("kind"), QStringLiteral("Present")}};
+    CHECK(CheckRenderGraphLinkToNewNode(document,
+                                        GetRoot(),
+                                        QStringLiteral("Default"),
+                                        used,
+                                        from,
+                                        QStringLiteral("camera.color"))
+              .IsLegal() == false);
+
+    // A connection whose destination is not on the new node is rejected and leaves the draft.
+    const RenderGraphNodeConnection elsewhere{from, QStringLiteral("output.texture")};
+    CHECK(document.AddNode(GetRoot(), QStringLiteral("Default"), node, nullptr, &elsewhere) ==
+          RenderGraphDocumentStatus::InvalidEdit);
+    CHECK(document.GetDraft(GetRoot()) == original);
+
+    const QPoint position(100, -20);
+    const RenderGraphNodeConnection connection{from, QStringLiteral("present.color")};
+    REQUIRE(document.AddNode(GetRoot(), QStringLiteral("Default"), node, &position, &connection) ==
+            RenderGraphDocumentStatus::Ok);
+    CHECK(HasEdge(document, from, QStringLiteral("present.color")) == true);
+    CHECK(GetLayoutPosition(document, QStringLiteral("present")) == position);
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetDraft(GetRoot()) == original);
 }
