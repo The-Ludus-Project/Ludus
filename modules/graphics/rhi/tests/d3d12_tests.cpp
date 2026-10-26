@@ -149,7 +149,7 @@ TEST_CASE("Direct3D 12 reports the bring-up limits explicitly", "[rhi][windows][
     Guard guard;
     RequireHeadlessDevice();
     CHECK(rhi::SetFrameTarget({ .Width = WIDTH, .Height = HEIGHT, .ShouldPresentToSurface = false }) ==
-          rhi::FrameStatus::Unsupported);
+          rhi::FrameStatus::Ready);
     CHECK(rhi::SetFrameTarget({ .Width = 0, .Height = HEIGHT }) == rhi::FrameStatus::Ready);
     CHECK(rhi::BeginFrameStatus() == rhi::FrameStatus::Skipped);
     CHECK(rhi::SetFrameTarget({ .Width = WIDTH, .Height = HEIGHT, .Red = -1 }) == rhi::FrameStatus::Failed);
@@ -216,8 +216,13 @@ TEST_CASE("Direct3D 12 presents to a Win32 window and follows its extent", "[rhi
     ShowWindow(handle, SW_MINIMIZE);
     REQUIRE(window->HandleEvent({}) == true);
     CHECK(rhi::BeginFrameStatus() == rhi::FrameStatus::Skipped);
+    REQUIRE(rhi::SetFrameTarget({ .Width = WIDTH, .Height = HEIGHT, .ShouldPresentToSurface = false }) ==
+            rhi::FrameStatus::Ready);
+    REQUIRE(rhi::BeginFrameStatus() == rhi::FrameStatus::Ready);
+    REQUIRE(rhi::EndFrameStatus() == rhi::FrameStatus::Ready);
     ShowWindow(handle, SW_RESTORE);
     REQUIRE(window->HandleEvent({}) == true);
+    REQUIRE(rhi::SetFrameTarget({ .Width = resized.Width, .Height = resized.Height }) == rhi::FrameStatus::Ready);
     REQUIRE(rhi::BeginFrameStatus() == rhi::FrameStatus::Ready);
     REQUIRE(rhi::EndFrameStatus() == rhi::FrameStatus::Ready);
     // Release the swap chain before its window.

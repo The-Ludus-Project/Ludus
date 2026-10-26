@@ -145,6 +145,7 @@ template <typename InterfaceType>
 }
 
 [[nodiscard]] ID3D12Device* GetDeviceOrNull() noexcept;
+[[nodiscard]] ID3D12CommandQueue* GetQueueOrNull() noexcept;
 [[nodiscard]] ID3D12Fence* GetFenceOrNull() noexcept;
 [[nodiscard]] uint64 GetCompletedFence() noexcept;
 [[nodiscard]] uint64 GetLastFence() noexcept;
