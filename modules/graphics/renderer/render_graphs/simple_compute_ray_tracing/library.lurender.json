@@ -1,0 +1,90 @@
+{
+  "version": 2,
+  "id": "SimpleComputeRayTracingLibrary",
+  "default": "SimpleComputeRayTracing",
+  "configurations": [
+    {
+      "id": "SimpleComputeRayTracing",
+      "inputs": [
+        {
+          "id": "scene",
+          "type": "Scene"
+        },
+        {
+          "id": "view",
+          "type": "View"
+        },
+        {
+          "id": "color",
+          "type": "ColorTexture"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "color",
+          "type": "ColorTexture",
+          "source": "trace.color",
+          "required": true
+        }
+      ],
+      "nodes": [
+        {
+          "id": "trace",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "Trace"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget"
+          }
+        }
+      ],
+      "edges": [
+        {
+          "from": "input.scene",
+          "to": "trace.scene"
+        },
+        {
+          "from": "input.view",
+          "to": "trace.view"
+        },
+        {
+          "from": "input.color",
+          "to": "trace.color"
+        }
+      ]
+    }
+  ]
+}

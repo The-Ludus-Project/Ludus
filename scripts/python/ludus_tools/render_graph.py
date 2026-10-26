@@ -1337,7 +1337,7 @@ def new_workspace(destination, *, output="presentation", renderer_static=False, 
     """Publish an editable built-in render graph template in a new directory.
 
     template selects raster (the default), forward-lit, restir-di, visibility-buffer,
-    visibility-secondary-rays, tiled-vbuffer-nee or compute-ray-tracing. All but raster create offscreen
+    visibility-secondary-rays, tiled-vbuffer-nee, compute-ray-tracing or simple-compute-ray-tracing. All but raster create offscreen
     Renderer packages containing their shaders and shared view-relative RenderSize controls.
     output is presentation, offscreen or depth. Creation never overwrites an
     existing directory; staged files are validated before publication and cleaned

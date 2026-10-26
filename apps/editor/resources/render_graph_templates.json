@@ -62,6 +62,15 @@
       "description": "Two scene compute passes: one records each pixel's primary hit in an automatically sized buffer, the next rebuilds the surface and shades emission plus one shadowed light sample, then Accumulate and ToneMap. Requires native ray tracing."
     },
     {
+      "kind": "graph",
+      "identity": "simple-compute-ray-tracing",
+      "label": "Simple compute ray tracing — triangle loop",
+      "category": "ray-traced",
+      "requirements": ["native-ray-tracing"],
+      "keywords": ["simple", "basic", "compute", "brute force", "triangle", "intersection", "ray tracing"],
+      "description": "One compute pass loops over every World triangle, keeps the closest hit and displays its unlit material color plus emission; misses show the environment. No shadow rays or bounces. Uses the native ray-capable scene runtime."
+    },
+    {
       "kind": "snippet",
       "identity": "restir-di",
       "label": "ReSTIR DI — mesh emitter lighting",
@@ -90,6 +99,16 @@
       "requirements": ["native-ray-tracing"],
       "keywords": ["compute", "wavefront", "hit buffer", "direct lighting", "ray tracing"],
       "description": "A primary-hits scene compute pass and a shading pass that share one automatically sized hit buffer. Connect scene, view and color; outputs color. Requires native ray tracing."
+    },
+    {
+      "kind": "snippet",
+      "identity": "simple-compute-ray-tracing",
+      "label": "Simple compute ray tracing — triangle loop",
+      "category": "visibility",
+      "requirements": ["native-ray-tracing"],
+      "keywords": ["simple", "basic", "compute", "brute force", "triangle", "intersection", "ray tracing"],
+      "description": "One compute pass loops over every World triangle, keeps the closest hit and displays its unlit material color plus emission; misses show the environment. No shadow rays or bounces. Uses the native ray-capable scene runtime.",
+      "defaultConfiguration": "SimpleComputeRayTracing"
     },
     {
       "kind": "snippet",

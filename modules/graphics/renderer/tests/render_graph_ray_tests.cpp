@@ -10,6 +10,7 @@
 #include "rg2_restir_di.h"
 #include "rg2_scene_compute.h"
 #include "rg2_scene_ray.h"
+#include "rg2_simple_compute_ray_tracing_template.h"
 #include "rg2_storage_ray.h"
 #include "rg2_tiled_vbuffer_nee_template.h"
 #include "rg2_visibility.h"
@@ -2182,6 +2183,106 @@ math::Vector3 ComputeMeanRadiance(const Array<uint8>& pixels)
     return sum / static_cast<float32>(pixelCount);
 }
 } // namespace
+
+TEST_CASE("The simple triangle-loop template keeps the nearest instance in either input order",
+          "[render-graph][gpu][simple-compute-template]")
+{
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(
+        {LUDUS_RG3_SIMPLE_COMPUTE_RAY_TRACING_TEMPLATE_DIRECTORY, "rg2_simple_compute_ray_tracing_template.lurgrt"});
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    CheckSameStage(
+        programs.RayCompute,
+        packages::rg2_simple_compute_ray_tracing_template::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                                        shaders::renderer_composite::Fragment())
+            .RayCompute);
+    REQUIRE(plan.Passes.GetSize() == 1);
+    CHECK(plan.Passes[0].AccumulationSamples == 0);
+    uint32 output = 0;
+    for (uint32 resource = 0; resource < plan.Resources.GetSize(); ++resource)
+    {
+        CHECK(plan.Resources[resource].Kind != format::Aspect::Buffer);
+        output = plan.Resources[resource].IsExported == 1 ? resource : output;
+    }
+    constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
+    const auto wait = [&fixture](rhi::RasterStatus initial) {
+        rhi::RasterStatus status = initial;
+        const uint64 beginning = time::NowTicks();
+        while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+        {
+            status = fixture.Graph.Poll();
+        }
+        REQUIRE(status == rhi::RasterStatus::Ready);
+    };
+    wait(fixture.Graph.Initialize(fixture.Device, plan, programs, nullptr, WIDTH, HEIGHT));
+    constexpr usize INSTANCE_COUNT = 2;
+    StaticArray<renderer::RenderGraphItem, INSTANCE_COUNT> items{{fixture.Items[0], fixture.Items[0]}};
+    items[1].SourceId = 2;
+    items[1].MeshToWorld.Translation.Z = .25F;
+    items[1].MeshIndex = 1;
+    StaticArray<renderer::RenderGraphMesh, INSTANCE_COUNT> meshes{{fixture.Meshes[0], fixture.Meshes[0]}};
+    StaticArray<uint32, INSTANCE_COUNT> bindings{{0, 1}};
+    StaticArray<renderer::SceneShaderMaterial, INSTANCE_COUNT> materials{};
+    materials[0].BaseColor = {1, 0, 0};
+    materials[1].BaseColor = {0, 1, 0};
+    for (usize index = 0; index < INSTANCE_COUNT; ++index)
+    {
+        meshes[index].MaterialBindings = {&bindings[index], 1};
+    }
+    renderer::SceneShaderInputs inputs;
+    inputs.Materials = {materials.GetData(), materials.GetSize()};
+    fixture.Cameras[0].OrthographicCamera = true;
+    const auto update = [&fixture, &items, &meshes, &inputs, &wait](uint64 revision, usize count) {
+        renderer::RenderGraphReport report;
+        wait(fixture.Graph.Update({meshes.GetData(), meshes.GetSize()},
+                                  {items.GetData(), count},
+                                  {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                  revision,
+                                  renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                  report,
+                                  &inputs));
+    };
+    Array<uint8> pixels;
+    const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+    constexpr uint8 TONEMAPPED_UNIT_COLOR = 188;
+    update(1, INSTANCE_COUNT);
+    RenderExport(fixture.Graph, fixture, output, {}, pixels);
+    CHECK(pixels[center] == TONEMAPPED_UNIT_COLOR);
+    CHECK(pixels[center + 1] == 0);
+    CHECK(CountFailurePixels(pixels) == 0);
+    const renderer::RenderGraphItem first = items[0];
+    items[0] = items[1];
+    items[1] = first;
+    update(2, INSTANCE_COUNT);
+    RenderExport(fixture.Graph, fixture, output, {}, pixels);
+    CHECK(pixels[center] == TONEMAPPED_UNIT_COLOR);
+    CHECK(pixels[center + 1] == 0);
+    // Reverse winding: the intersection remains two-sided.
+    fixture.Indices[1] = 2;
+    fixture.Indices[2] = 1;
+    update(3, INSTANCE_COUNT);
+    RenderExport(fixture.Graph, fixture, output, {}, pixels);
+    CHECK(pixels[center] == TONEMAPPED_UNIT_COLOR);
+    // A miss and an empty scene use the authored environment (black by default).
+    CHECK(pixels[GetPixel(0, 0)] == 0);
+    CHECK(pixels[GetPixel(0, 0) + 1] == 0);
+    // Put one triangle behind the near plane and the other beyond the far plane.
+    items[0].MeshToWorld.Translation.Z = -1;
+    items[1].MeshToWorld.Translation.Z = 1;
+    update(4, INSTANCE_COUNT);
+    RenderExport(fixture.Graph, fixture, output, {}, pixels);
+    CHECK(pixels[center] == 0);
+    CHECK(pixels[center + 1] == 0);
+    CHECK(CountFailurePixels(pixels) == 0);
+    update(5, 0);
+    RenderExport(fixture.Graph, fixture, output, {}, pixels);
+    CHECK(pixels[center] == 0);
+    CHECK(pixels[center + 1] == 0);
+    CHECK(pixels[center + 2] == 0);
+    CHECK(CountFailurePixels(pixels) == 0);
+}
 
 TEST_CASE("The compute ray-tracing template matches a single-pass direct-lighting reference",
           "[render-graph][gpu][compute-ray-tracing][template]")

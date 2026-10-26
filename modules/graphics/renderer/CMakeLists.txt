@@ -228,7 +228,7 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_visibility_ordinary_RUNTIME_PACKAGE PARENT_PATH visibility_ordinary_package_directory)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_VISIBILITY_ORDINARY_DIRECTORY="${visibility_ordinary_package_directory}")
-    foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing)
+    foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing simple_compute_ray_tracing)
         set(template_source "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/${template_directory}")
         set(template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${template_directory}_template")
         file(COPY "${template_source}/" DESTINATION "${template_staged}" PATTERN "*.in" EXCLUDE)

@@ -49,7 +49,9 @@ PrepareVisibilityConfiguration(RenderGraphSnapshot& inoutSnapshot,
                                const QString& templateIdentity,
                                QString& outError,
                                RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr);
-/// Prepare compute-ray-tracing in an absent/empty library configuration: a primary-hits and a shade
+/// Prepare the compute-ray-tracing or simple-compute-ray-tracing template in an absent/empty library.
+/// The simple template imports one triangle-loop kernel under simple_compute_ray_tracing/ with no Buffer.
+/// The original template imports a primary-hits and a shade
 /// scene compute pass sharing one render-size hit Buffer. Both kernels arrive with their local include
 /// closure under compute_ray_tracing/. The shared ray technique gains scene_interface version 1 when it
 /// lacks one, and its query budgets are raised to the template's; its callbacks, payload and larger
@@ -62,10 +64,11 @@ PrepareComputeRayTracingConfiguration(RenderGraphSnapshot& inoutSnapshot,
                                       const QString& file,
                                       const QString& configuration,
                                       QString& outError,
+                                      const QString& templateIdentity,
                                       RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr);
 /// Prepare a built-in configuration, inserting a library/Subgraph when selected on the root canvas.
 /// Supports restir-di, visibility-buffer, visibility-secondary-rays, tiled-vbuffer-nee and
-/// compute-ray-tracing. Same transaction contract
+/// compute-ray-tracing and simple-compute-ray-tracing. Same transaction contract
 /// as PrepareRestirTemplate; invalid identities and conflicts leave publication to the caller.
 [[nodiscard]] RenderGraphDocumentStatus
 PrepareConfigurationTemplate(RenderGraphSnapshot& inoutSnapshot,
