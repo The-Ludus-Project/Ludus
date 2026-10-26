@@ -661,18 +661,26 @@ TEST_CASE("CPU and GPU reference transport retained HDR source radiance and auth
     REQUIRE(status == S::Ready);
     // Pixel (4,4) hits interior barycentrics (0.1534976065, 0.2254052907), where
     // a three-term interpolation of constant white rounds one ULP above one.
-    constexpr float32 QUAD_RIGHT_WORLD = 1.969098448753357F;
-    constexpr float32 QUAD_TOP_WORLD = 2.881896495819092F;
-    const math::Vector3 positions[]{{-1, -1, .5F},
-                                    {QUAD_RIGHT_WORLD, -1, .5F},
-                                    {QUAD_RIGHT_WORLD, QUAD_TOP_WORLD, .5F},
-                                    {-1, QUAD_TOP_WORLD, .5F}};
-    const math::Vector3 normals[]{{0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1}};
-    const math::Vector4 colors[]{{.25F, 1, .5F, 1}, {.25F, 1, .5F, 1}, {.25F, 1, .5F, 1}, {.25F, 1, .5F, 1}};
-    const uint32 indices[]{0, 1, 2, 0, 2, 3};
-    rr::MeshDescription geometry{positions, 4, indices, 6};
-    geometry.Normals = normals;
-    geometry.Colors = colors;
+    constexpr usize QUAD_VERTEX_COUNT = 4;
+    constexpr usize QUAD_INDEX_COUNT = 6;
+    constexpr float32 QUAD_RIGHT_MESH = 1.969098448753357F;
+    constexpr float32 QUAD_TOP_MESH = 2.881896495819092F;
+    StaticArray<math::Vector3, QUAD_VERTEX_COUNT> positionsMesh{};
+    positionsMesh[0] = {-1, -1, .5F};
+    positionsMesh[1] = {QUAD_RIGHT_MESH, -1, .5F};
+    positionsMesh[2] = {QUAD_RIGHT_MESH, QUAD_TOP_MESH, .5F};
+    positionsMesh[QUAD_VERTEX_COUNT - 1] = {-1, QUAD_TOP_MESH, .5F};
+    StaticArray<math::Vector3, QUAD_VERTEX_COUNT> normalsMesh{};
+    normalsMesh.Fill({0, 0, 1});
+    StaticArray<math::Vector4, QUAD_VERTEX_COUNT> colors{};
+    colors.Fill({.25F, 1, .5F, 1});
+    const StaticArray<uint32, QUAD_INDEX_COUNT> indices{{0, 1, 2, 0, 2, 3}};
+    rr::MeshDescription geometry{positionsMesh.GetData(),
+                                 positionsMesh.GetSize(),
+                                 indices.GetData(),
+                                 indices.GetSize()};
+    geometry.Normals = normalsMesh.GetData();
+    geometry.Colors = {colors.GetData(), colors.GetSize()};
     rr::Mesh mesh;
     REQUIRE(renderer.CreateMesh(geometry, mesh) == S::Ready);
     rr::LitMaterialDescription material;
