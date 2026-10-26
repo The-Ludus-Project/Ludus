@@ -189,7 +189,7 @@ ludus project ci init ./MyGame --tools-ref <40-character Ludus commit>
 
 # Existing project, one build job per listed platform:
 ludus project ci init ./MyGame --tools-ref <40-character Ludus commit> \
-    --platform linux-x64 --platform macos-arm64 --platform macos-x64
+    --platform linux-x64 --platform macos-arm64
 ```
 
 Setup writes `.github/workflows/ci.yml` and `config/ludus-tools-revision.txt`.
@@ -215,16 +215,19 @@ A workflow for several platforms has one build job per platform, such as
 `build-and-test-macos-arm64`. Each platform needs its own matching Release SDK,
 so each job reads its own variables, suffixed with the platform:
 `LUDUS_RELEASE_SDK_URL_LINUX_X64` and `LUDUS_RELEASE_SDK_SHA256_LINUX_X64`, and
-likewise `_MACOS_ARM64` and `_MACOS_X64`. A platform whose two variables are both
-unset is skipped and named in the notice job; the other platforms still build.
-macOS jobs run on `macos-15` (arm64) and `macos-15-intel` (x64); the SDKs keep a
-macOS 14.0 deployment target.
+likewise `_MACOS_ARM64`. A platform whose two variables are both unset is skipped
+and named in the notice job; the other platforms still build. macOS jobs run on
+`macos-15`; the SDKs keep a macOS 14.0 deployment target. Setup refuses
+`macos-x64`: Homebrew ships no Intel macOS bottles for the pinned LLVM and LLVM
+publishes no macOS x64 release binaries, so an Intel runner would build LLVM from
+source for longer than a job may run.
 
 An SDK accepts only the exact compiler version it was built with, such as
 Clang 23.1.4. The workflow installs the current pinned-major LLVM from Homebrew
 or apt.llvm.org, so a new LLVM patch release makes the build fail with
-`SdkIncompatible` until the variables name an SDK built with that compiler. Published engine releases do not
-yet resolve a project lock, so CI cannot select an SDK by itself.
+`SdkIncompatible` until the variables name an SDK built with that compiler.
+Published engine releases do not yet resolve a project lock, so CI cannot select
+an SDK by itself.
 
 GitHub runs workflows only from the repository root's `.github/workflows`.
 Setup therefore refuses a project inside another Git work tree; add a workflow at

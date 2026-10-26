@@ -95,6 +95,7 @@ def select_platforms(platforms: Sequence[str]) -> tuple[str, ...]:
     for platform in platforms:
         if platform not in workflow_steps.NATIVE_PLATFORMS:
             raise ToolingError(INVALID_PROJECT, f"unsupported CI platform {platform!r}")
+        workflow_steps.require_hosted_toolchain(platform)
     selected = tuple(platform for platform in workflow_steps.NATIVE_PLATFORMS if platform in platforms)
     if len(selected) == 0:
         raise ToolingError(INVALID_PROJECT, "CI setup requires at least one platform")
@@ -133,7 +134,7 @@ def _notice_step(platform: str, platforms: Sequence[str]) -> str:
 
 
 def workflow_text(*platforms: str) -> str:
-    """Return the build/test workflow for native platforms (``linux-x64``, ``macos-arm64``, ``macos-x64``).
+    """Return the build/test workflow for native platforms (``linux-x64``, ``macos-arm64``).
 
     Each platform gets its own build job, skipped while its SDK variables are unset.
     """

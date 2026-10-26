@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .errors import CONFLICT, ToolingError
+from .errors import CONFLICT, INVALID_PROJECT, ToolingError
 from .toolchain import LLVM_APT_KEY_FINGERPRINT, PINNED_LLVM_MAJOR, pinned_llvm_tool
 
 # The pinned Ludus host tools commit recorded by generated workflows.
@@ -21,6 +21,17 @@ CHECKOUT_STEP = '''      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d
 '''
 
 NATIVE_PLATFORMS = ("linux-x64", "macos-arm64", "macos-x64")
+
+# Hosted runners cannot provision the pinned toolchain for these platforms.
+# Homebrew ships no Intel macOS bottles for llvm, lld or python@3.12, and LLVM
+# publishes no macOS x64 release binaries, so macos-15-intel would build LLVM
+# from source for longer than a job may run.
+_UNAVAILABLE_HOSTED_PLATFORMS = {
+    "macos-x64": "macos-x64 workflows are unavailable: Homebrew ships no Intel macOS bottles for the pinned "
+                 "LLVM and LLVM publishes no macOS x64 release binaries; choose linux-x64 or macos-arm64",
+}
+# The native platforms that generated workflows can build on hosted runners.
+HOSTED_PLATFORMS = tuple(platform for platform in NATIVE_PLATFORMS if platform not in _UNAVAILABLE_HOSTED_PLATFORMS)
 
 _LINUX_TOOLCHAIN = '''          # Ubuntu 24.04 does not package the pinned LLVM; trust only apt.llvm.org's published key.
           curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o "$RUNNER_TEMP/apt.llvm.org.asc"
@@ -97,6 +108,13 @@ def has_tools_revision(project_dir: Path, tools_ref: str) -> bool:
         raise ToolingError(CONFLICT, f"{TOOLS_REVISION_RELPATH} names a different Ludus commit; "
                                      f"pass that --tools-ref or update the file yourself")
     return True
+
+
+def require_hosted_toolchain(platform: str) -> None:
+    """Fail with ``InvalidProject`` when a generated workflow cannot install the pinned toolchain for ``platform``."""
+    reason = _UNAVAILABLE_HOSTED_PLATFORMS.get(platform)
+    if reason is not None:
+        raise ToolingError(INVALID_PROJECT, reason)
 
 
 def runner_for(platform: str) -> str:

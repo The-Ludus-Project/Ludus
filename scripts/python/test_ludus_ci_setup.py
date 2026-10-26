@@ -41,16 +41,21 @@ class WorkflowTextTests(unittest.TestCase):
             self.assertNotIn(forbidden, text)
 
     def test_macos_workflow_uses_native_runner_and_homebrew_llvm(self):
-        for platform, runner in (("macos-arm64", "macos-15"), ("macos-x64", "macos-15-intel")):
-            text = ci_setup.workflow_text(platform)
-            self.assertIn(f"runs-on: {runner}", text)
-            self.assertIn("--profile macos-clang-release", text)
-            self.assertNotIn("apt.llvm.org", text)
-            self.assertNotIn("CXX:", text)
-            self.assertLess(text.index("brew update --quiet"), text.index("brew install python@3.12"))
+        text = ci_setup.workflow_text("macos-arm64")
+        self.assertIn("runs-on: macos-15\n", text)
+        self.assertIn("--profile macos-clang-release", text)
+        self.assertNotIn("apt.llvm.org", text)
+        self.assertNotIn("CXX:", text)
+        self.assertLess(text.index("brew update --quiet"), text.index("brew install python@3.12"))
+
+    def test_macos_x64_is_refused_without_a_hosted_toolchain(self):
+        self.assertEqual(workflow_steps.HOSTED_PLATFORMS, ("linux-x64", "macos-arm64"))
+        for platforms in (("macos-x64",), ("linux-x64", "macos-x64")):
+            with self.subTest(platforms=platforms), self.assertRaisesRegex(ToolingError, "Intel macOS bottles"):
+                ci_setup.workflow_text(*platforms)
 
     def test_release_and_ci_workflows_share_the_pinned_toolchain(self):
-        for platform in workflow_steps.NATIVE_PLATFORMS:
+        for platform in workflow_steps.HOSTED_PLATFORMS:
             self.assertIn(workflow_steps.build_prerequisites(platform, ci_setup.CI_TOOLS_VENV),
                           ci_setup.workflow_text(platform))
         self.assertIn(workflow_steps.build_prerequisites("linux-x64", RELEASE_TOOLS_VENV),
@@ -68,7 +73,7 @@ class WorkflowTextTests(unittest.TestCase):
 
     @unittest.skipIf(yaml is None, "requires PyYAML")
     def test_workflow_is_valid_yaml(self):
-        for platform in workflow_steps.NATIVE_PLATFORMS:
+        for platform in workflow_steps.HOSTED_PLATFORMS:
             document = yaml.safe_load(ci_setup.workflow_text(platform))
             self.assertEqual(document["permissions"], {"contents": "read"})
             self.assertEqual(set(document["jobs"]), {"sdk-not-configured", "build-and-test"})
@@ -90,13 +95,13 @@ class WorkflowTextTests(unittest.TestCase):
 
 
 class MultiPlatformWorkflowTests(unittest.TestCase):
-    PLATFORMS = ("macos-x64", "linux-x64", "macos-arm64", "linux-x64")
+    PLATFORMS = ("macos-arm64", "linux-x64", "linux-x64")
 
     def test_each_platform_gets_a_job_gated_on_its_own_sdk_variables(self):
         text = ci_setup.workflow_text(*self.PLATFORMS)
         self.assertNotIn("  build-and-test:\n", text)
-        for platform in workflow_steps.NATIVE_PLATFORMS:
-            url, sha = ci_setup.sdk_variables(platform, workflow_steps.NATIVE_PLATFORMS)
+        for platform in workflow_steps.HOSTED_PLATFORMS:
+            url, sha = ci_setup.sdk_variables(platform, workflow_steps.HOSTED_PLATFORMS)
             self.assertEqual((url, sha), ("LUDUS_RELEASE_SDK_URL_" + platform.upper().replace("-", "_"),
                                           "LUDUS_RELEASE_SDK_SHA256_" + platform.upper().replace("-", "_")))
             job = text.split(f"  build-and-test-{platform}:\n", 1)[1].split("\n  build-and-test-", 1)[0]
@@ -106,17 +111,16 @@ class MultiPlatformWorkflowTests(unittest.TestCase):
             self.assertIn("SDK_SHA256: ${{ vars." + sha + " }}", job)
             self.assertIn(workflow_steps.build_prerequisites(platform, ci_setup.CI_TOOLS_VENV), job)
             self.assertNotIn("vars.LUDUS_RELEASE_SDK_URL }}", job)
-        self.assertEqual(text.count("  build-and-test-"), 3)
+        self.assertEqual(text.count("  build-and-test-"), 2)
         # Jobs follow NATIVE_PLATFORMS order whatever order the platforms were requested in.
         self.assertLess(text.index("build-and-test-linux-x64:"), text.index("build-and-test-macos-arm64:"))
-        self.assertLess(text.index("build-and-test-macos-arm64:"), text.index("build-and-test-macos-x64:"))
 
     def test_notice_reports_each_unconfigured_platform(self):
         text = ci_setup.workflow_text(*self.PLATFORMS)
         notice = text.split("  sdk-not-configured:\n", 1)[1].split("\n  build-and-test-", 1)[0]
         conditions = []
-        for platform in workflow_steps.NATIVE_PLATFORMS:
-            url, sha = ci_setup.sdk_variables(platform, workflow_steps.NATIVE_PLATFORMS)
+        for platform in workflow_steps.HOSTED_PLATFORMS:
+            url, sha = ci_setup.sdk_variables(platform, workflow_steps.HOSTED_PLATFORMS)
             unset = f"vars.{url} == '' && vars.{sha} == ''"
             conditions.append(f"({unset})")
             self.assertIn(f"        if: {unset}\n", notice)
@@ -133,8 +137,8 @@ class MultiPlatformWorkflowTests(unittest.TestCase):
     def test_multi_platform_workflow_is_valid_yaml(self):
         document = yaml.safe_load(ci_setup.workflow_text(*self.PLATFORMS))
         self.assertEqual(set(document["jobs"]), {"sdk-not-configured", "build-and-test-linux-x64",
-                                                 "build-and-test-macos-arm64", "build-and-test-macos-x64"})
-        self.assertEqual(len(document["jobs"]["sdk-not-configured"]["steps"]), 3)
+                                                 "build-and-test-macos-arm64"})
+        self.assertEqual(len(document["jobs"]["sdk-not-configured"]["steps"]), 2)
 
 
 class RepositoryPlacementTests(unittest.TestCase):
@@ -188,6 +192,16 @@ class SetupTests(unittest.TestCase):
                 with self.subTest(ref=ref), self.assertRaises(ToolingError):
                     ci_setup.setup_ci(root, tools_ref=ref)
             self.assertFalse((root / ".github").exists())
+
+    def test_macos_x64_workflows_are_refused_without_writing(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = make_project(Path(temp) / "game")
+            with self.assertRaisesRegex(ToolingError, "Intel macOS bottles"):
+                ci_setup.setup_ci(root, platform=["linux-x64", "macos-x64"], tools_ref=TOOLS_REF)
+            with self.assertRaisesRegex(ToolingError, "Intel macOS bottles"):
+                setup_release(root, platform="macos-x64", tools_ref=TOOLS_REF)
+            self.assertFalse((root / ".github").exists())
+            self.assertFalse((root / workflow_steps.TOOLS_REVISION_RELPATH).exists())
 
     def test_setup_shares_the_release_tools_pin(self):
         with tempfile.TemporaryDirectory() as temp:
