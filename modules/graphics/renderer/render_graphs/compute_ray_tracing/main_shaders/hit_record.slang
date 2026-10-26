@@ -49,7 +49,8 @@ bool HasHitRecordCapacity(RayLaunch launch)
     uint stride;
     GraphBuffer0.GetDimensions(wordCount, stride);
     uint capacity = wordCount / HIT_RECORD_WORDS;
-    return launch.ExtentPixel.x > 0 && launch.ExtentPixel.y > 0 && launch.ExtentPixel.x <= capacity / launch.ExtentPixel.y;
+    return launch.ExtentPixel.x > 0 && launch.ExtentPixel.y > 0 &&
+           launch.ExtentPixel.x <= capacity / launch.ExtentPixel.y;
 }
 
 uint GetHitRecordBase(RayLaunch launch)
