@@ -20,10 +20,11 @@ import sys
 #   -include-pch <path.pch|.gch>                 (consume a PCH directly)
 #   -Xclang -emit-pch                            (generate a PCH; the PCH entry)
 #   -Xclang -include-pch -Xclang <path.pch>      (consume via cc1)
+#   -Xclang -include -Xclang <cmake_pch.hxx>     (force-include via cc1, Clang's editor PCH)
 #   -Xclang <path.pch|.hxx>                      (cc1 PCH path argument)
 #   -x c++-header                                (compile the .hxx as a header)
 _PCH_FLAGS_WITH_ARG = ("-include", "-include-pch", "-include-pch-out")
-_PCH_XCLANG_DIRECTIVES = ("-emit-pch", "-include-pch", "-building-pch-with-obj", "-fno-pch-timestamp")
+_PCH_XCLANG_DIRECTIVES = ("-emit-pch", "-include-pch", "-include", "-building-pch-with-obj", "-fno-pch-timestamp")
 
 
 def _looks_like_pch_path(token: str) -> bool:
@@ -52,8 +53,8 @@ def compiler_options(entry):
             arguments[index + 1] in _PCH_XCLANG_DIRECTIVES or _looks_like_pch_path(arguments[index + 1])
         ):
             # Drop this "-Xclang <pch-directive-or-path>" pair. If the directive
-            # is -include-pch, the following "-Xclang <path>" pair is dropped by
-            # the same rule on its own iteration.
+            # is -include-pch or -include, the following "-Xclang <path>" pair is
+            # dropped by the same rule on its own iteration.
             index += 2
             continue
         elif arg == "-x" and index + 1 < len(arguments) and arguments[index + 1] == "c++-header":
