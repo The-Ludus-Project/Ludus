@@ -41,6 +41,8 @@ on:
       - 'modules/graphics/rhi/src/*d3d12*'
       - 'modules/graphics/rhi/src/internal/d3d12_device.h'
       - 'modules/graphics/rhi/src/internal/d3d12_raster.h'
+      - 'modules/graphics/rhi/src/internal/d3d12_transfer.h'
+      - 'modules/graphics/rhi/tests/portable_transfer_conformance_tests.cpp'
       - 'modules/graphics/rhi/tests/portable_raster_conformance_tests.cpp'
       - 'tests/sdk_consumer/shaders/r10.slang'
       - 'modules/graphics/rhi/CMakeLists.txt'
@@ -214,6 +216,8 @@ jobs:
           export PATH="$PWD/out/host-tools/venv/Scripts:$PATH"
           ctest --test-dir out/build/windows-clang-development --output-on-failure --no-tests=error \
             --tests-regex '^ludus_(platform_win32|rhi_d3d12|rhi_lifecycle)_tests$'
+          out/build/windows-clang-development/modules/graphics/rhi/ludus_rhi_d3d12_tests.exe --list-tests \
+            | grep -q "Portable texture transfers initialize mips"
           # The DXIL pixel tests are configured only with the shader tools; require them here.
           out/build/windows-clang-development/modules/graphics/rhi/ludus_rhi_d3d12_tests.exe --list-tests \
             | grep -q "draws the fullscreen pipeline across resizes"
