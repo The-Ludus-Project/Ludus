@@ -313,6 +313,21 @@ math::Vector3 SampleReferenceEmission(const ReferenceInstance& instance, math::V
                                     : math::Vector4{1, 1, 1, 1};
     return math::Hadamard(instance.Surface->Emission, math::Vector3{texel.X, texel.Y, texel.Z});
 }
+math::Vector4 InterpolateReferenceColor(const ReferenceTriangle& triangle, float32 u, float32 v) noexcept
+{
+    const math::Vector4 color = triangle.Colors[0] * (1 - u - v) + triangle.Colors[1] * u + triangle.Colors[2] * v;
+    if (math::IsFinite(color) == false)
+    {
+        return color;
+    }
+    // MeshDescription::Colors admits linear multipliers in [0,1]. Even constant white can
+    // round one ULP above one in a three-term barycentric sum; keep the interpolant in that
+    // input domain before BSDF evaluation. Radiance and path throughput remain unbounded.
+    return {math::Clamp(color.X, 0.0F, 1.0F),
+            math::Clamp(color.Y, 0.0F, 1.0F),
+            math::Clamp(color.Z, 0.0F, 1.0F),
+            math::Clamp(color.W, 0.0F, 1.0F)};
+}
 math::Vector4 SampleReferenceSurfaceMap(const ReferenceInstance& instance, math::Vector2 uv) noexcept
 {
     return SampleReferenceImage(*instance.Surface, instance.SurfaceMap, uv);
@@ -432,8 +447,7 @@ TraceReferenceOracle(const ReferenceSceneData& scene, const rhi::RayInput& ray, 
             const auto u = intersection.U, v = intersection.V;
             const auto uv = triangle.Uvs[0] * (1 - u - v) + triangle.Uvs[1] * u + triangle.Uvs[2] * v;
             const ReferenceInstance& instance = scene.Instances[triangle.Instance];
-            const float32 alpha =
-                triangle.Colors[0].W * (1 - u - v) + triangle.Colors[1].W * u + triangle.Colors[2].W * v;
+            const float32 alpha = InterpolateReferenceColor(triangle, u, v).W;
             if (instance.Surface->Alpha == MaterialAlpha::Masked &&
                 SampleReferenceTexture(instance, uv).W * instance.Surface->Tint.W * alpha <
                     instance.Surface->AlphaCutoff)

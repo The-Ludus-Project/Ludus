@@ -82,6 +82,10 @@ public:
     RendererWorkspace(const RendererWorkspace&) = delete;
     RendererWorkspace& operator=(const RendererWorkspace&) = delete;
 
+    /// Hide document navigation, sources and status while the shell focuses the graph.
+    /// Restoring chrome preserves the user's source-tree visibility preference and selection.
+    void SetChromeVisible(bool isVisible);
+
     /// Bind a project root and epoch; a different root closes the document and cancels jobs.
     /// The root is canonicalized, so a symlinked path binds the same project and its build
     /// tree; an empty or missing root closes the project. A bound project then shows its
@@ -392,7 +396,7 @@ private:
     void replaceSelectedNode(const QJsonObject& node);
     void editConfigurationInterface();
     void addNode();
-    void showNodeContextMenu(const QPoint& globalPosition);
+    void showNodeContextMenu(const QPoint& globalPosition, bool isNodeContext);
     void setupGraphSelection();
     void syncTreeSelection();
     void syncCanvasSelection(const QStringList& nodes);
@@ -431,6 +435,9 @@ private:
     foundation::uint64 mValidatedRevision = 0;
     bool mIsValidated = false;
     bool mIsRendering = false;
+    bool mIsGraphSettingsSectionExpanded = false;
+    bool mIsChromeVisible = true;
+    foundation::int32 mFocusRestoreView = 0;
     bool mHasResult = false;
     bool mIsLivePreviewEnabled = false;
     RenderGraphDocument mDocument;
@@ -449,6 +456,9 @@ private:
     QPushButton* mCreateFirst;
     QComboBox* mConfiguration;
     QTreeWidget* mTree;
+    QWidget* mNavigation;
+    QScrollArea* mStatusPanel;
+    QPushButton* mSourcesToggle;
     QTabWidget* mViews;
     QScrollArea* mInspectorPanel;
     QWidget* mInspector;

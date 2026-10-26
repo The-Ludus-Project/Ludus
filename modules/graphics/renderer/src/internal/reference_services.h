@@ -1217,6 +1217,7 @@ ReferenceQuery(ReferenceJob& job, rhi::RayQueryProgram program, ReferenceTravers
             math::Abs(origin.Z) > internal::MAX_WORLD_COORDINATE)
         {
             ++job.Info.InvalidContributions;
+            job.Info.Failure = ReferenceFailure::InvalidRayOrigin;
             for (usize path = 0; path < job.PathCount; ++path)
             {
                 const auto& candidate = job.Paths[path];
@@ -1225,6 +1226,7 @@ ReferenceQuery(ReferenceJob& job, rhi::RayQueryProgram program, ReferenceTravers
                 {
                     job.Info.FailurePixel = candidate.Pixel;
                     job.Info.FailureDepth = candidate.Depth;
+                    job.Info.FailureSample = candidate.Sample;
                     break;
                 }
             }
@@ -1501,6 +1503,8 @@ Status Renderer::AdvanceReferenceCapture(ReferenceCapture handle, rhi::SurfaceHa
                 ++job.Info.InvalidContributions;
                 job.Info.FailurePixel = path.Pixel;
                 job.Info.FailureDepth = path.Depth;
+                job.Info.FailureSample = path.Sample;
+                job.Info.Failure = ReferenceFailure::InvalidAccumulation;
                 return fail(Status::Failed);
             }
             if (trial.Samples >= (uint32{1} << 24) - 1)

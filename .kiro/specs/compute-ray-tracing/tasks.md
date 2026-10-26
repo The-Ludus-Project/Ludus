@@ -7,6 +7,10 @@ checking a task. Mocks, skipped checks or optionalized failures do not count as
 acceptance. Native ray pixel tests need a qualified GPU; report a skip as a
 skip.
 
+Revised 2026-10-26: traversal strategies and MIS shading landed outside this
+plan (#619, #621, #626). C5 records them and the evidence they still need;
+earlier phases are unchanged except where noted.
+
 ## C0 Feasibility (no product change)
 
 Evidence: [design section 3](design.md#3-phase-c0-evidence). Metal only; this
@@ -242,9 +246,60 @@ skip it.
   most one pixel in a thousand differing by more than two levels. A negative control
   that swapped the decoded barycentrics failed the test. After a resize to twice the
   size, four frames show no error pixels.*
+  *#626 later replaced the one-light-sample policy with MIS of one light and one
+  BSDF sample in both the template and `direct_lighting_reference`, and added
+  "Every MIS heuristic of the compute ray-tracing template estimates the
+  light-sampling integral". The checked boxes above were recorded for the
+  original policy; #626 carries the evidence for the MIS version.*
 - [x] Docs: add "Use the compute ray-tracing template" next to the ReSTIR
       section, and update the Quick Add snippet row and the configuration
       template table.
+
+## C5 Traversal strategies (landed outside this plan)
+
+[Design D8](design.md#d8-traversal-strategy-added-after-c4) records the contract.
+These PRs carried their own evidence; this phase records what landed and what is
+still unproven. Do not check a box below from those PRs' descriptions alone.
+
+Landed in `develop`, not re-verified here:
+
+- #619 added the `simple-compute-ray-tracing` template. It is a single kernel
+  with its own Möller–Trumbore loop; the native default traversal still
+  applies.
+- #621 added two things:
+  - shared callback sets in scene compute nodes;
+  - `invocation.traversal` (Automatic, `TriangleLoop`, `NativeQuery`), the
+    renderer `TriangleLoop` strategy, `RenderGraphRenderer::ComputeRayTracing`
+    and package version 18. Commit `2720bb84` is the software-only runtime.
+- #626 added MIS shading to the C4 template (see C4).
+
+Open:
+
+- [ ] **Software-only selection evidence.** Add a selection test for a
+      software-only (`TriangleLoop`) scene compute package. On a device with
+      and without native rays, Automatic must report `ComputeRayTracing` and
+      stage it, and Force raster must stage raster. The C2 selection test
+      requires a native-query fixture, so it does not cover this. "Runtime
+      packages preserve explicit software traversal and legacy native
+      requirements" (`render_graph_activation_tests.cpp`) covers decoding and
+      `RequiresHardwareRayTracing` only. No test checks `CandidateRenderer ==
+      ComputeRayTracing` or the Automatic staging branch in `StageSelected`.
+- [ ] **Vulkan loop-path pixels on llvmpipe.** Cook the C0 prototype
+      (`compute_split`) and the C4 template with `traversal: TriangleLoop` on
+      every ray pass. Run them in the Development job's Vulkan validation step
+      on llvmpipe with no skip and no validation message. Do this beside the
+      #607 fallback check, not instead of it. This is Vulkan evidence for the
+      loop path only; leave the C0 and C4 native Vulkan boxes open.
+- [ ] **Strategy parity.** On a device with native rays, compare the C4 template
+      under `NativeQuery` and `TriangleLoop` after convergence. State a
+      tolerance for the documented edge, tolerance and tie differences, or
+      record that the images match.
+- [ ] **ASan Linux run of the software section.** The ASan job's full ctest
+      runs the "software traversal without requested ray features" section of
+      "Scene callbacks preserve material and scene generation through native
+      GPU rendering" on llvmpipe. ctest reports Passed even when Catch2 skips a
+      case, so confirm from the test log that this section ran. Then check this
+      box.
 
 ## Readiness for each PR
 

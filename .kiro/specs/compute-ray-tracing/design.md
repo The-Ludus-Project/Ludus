@@ -2,7 +2,10 @@
 
 Status: implementation contract, 2026-10-24. Baseline `origin/develop`
 `dbbf7461`. Phase C0 decided D1 and D4 and cleared the D5 triangle-identity
-risk; see [section 3](#3-phase-c0-evidence). This describes work to build. Read [requirements](requirements.md)
+risk; see [section 3](#3-phase-c0-evidence). Revised 2026-10-26 against
+`origin/develop` `c3312612`: traversal strategies landed after C4 (#619, #621)
+and are recorded in [D8](#d8-traversal-strategy-added-after-c4). Section 1
+still describes the 2026-10-24 baseline. This describes work to build. Read [requirements](requirements.md)
 and [tasks](tasks.md). AGENTS.md, steering, ADR 0003 and the canonical
 [render graph authoring guide](../../../docs/development/render-graph-authoring.md)
 remain authoritative. Line references are to the baseline and will drift; the
@@ -95,6 +98,14 @@ persistent wrapper and the runtime ray sequence, and no runtime source changed
 with identical execution. Name compute passes in the offline plan summary and
 builder diagnostics instead (D3).
 
+**Later change (D8).** The traversal strategy did need a numeric field, because
+the runtime must know before preparation whether a pass needs native rays. #621
+appended `Pass::Traversal` to every pass record. That raised `plan.h` `VERSION`
+to 14 (`PASS_FIELD_COUNT` 20) and `PACKAGE_VERSION` to
+`SOFTWARE_RAY_PACKAGE_VERSION` 18. The D1 decision itself still holds: a scene
+compute pass has no technique of its own and is a `Technique::RayTracing`
+record with its source kind named only offline.
+
 ### D2 Authored signature (recommended: raygen-shaped)
 
 ```slang
@@ -112,6 +123,13 @@ Legacy (non-scene) signatures are not admitted for compute; a scene compute
 node requires `scene_interface`. `TraceAndShade` stays declared so shared helper
 headers compile. For a compute pass index, the dispatcher has no hit/miss case,
 so it reaches `default:` and latches `HasFailed` (C03).
+
+**Later alternative (#621).** A scene compute node may instead hold the complete
+`ray_generation`/`miss`/`closest_hit` set and no `compute` shader. Its variant is
+then the callback triple plus its strategy, and `TraceAndShade` dispatches those
+callbacks as in a `RayTracingPipeline`. The kernel form above is unchanged. A
+kernel node still has no hit/miss case and still latches `HasFailed` on
+`TraceAndShade`.
 
 ### D3 Builder changes
 
@@ -169,7 +187,9 @@ encoding:
 | Pass | Dimensions | Draws |
 | --- | --- | --- |
 | primary | `[0, PRIMARY_RANDOM_DIMENSION_COUNT)` = `[0, 2)` | subpixel jitter x, y |
-| shade | `[2, 6)` | light selection, then the `SampleIncidentLight` `float3` |
+| shade | `[2, 9)` | light selection, the `SampleIncidentLight` `float3`, then the `SampleStandardBsdf` lobe, radius and angle |
+
+The shade range was `[2, 6)` until #626 added the BSDF sample (D5).
 
 Neither pass uses the automatic stream, so neither depends on how many automatic
 draws the other made. (The baseline text named `SampleSceneRandom(queries,
@@ -234,6 +254,20 @@ The point is to demonstrate the compute split, not a new integrator.
 - Word 1 `.w` bit 1 marks a failed primary query, so the shade pass shows the
   error color for that sample instead of reading a stale record.
 
+**Later change (#626).** The shade pass now returns emission plus one light
+sample and one BSDF sample, combined with the multiple importance sampling
+heuristics of Veach and Guibas, "Optimally Combining Sampling Techniques for
+Monte Carlo Rendering", SIGGRAPH 1995 (`multiple_importance.slang`).
+
+- The BSDF sample uses `SampleStandardBsdf` and one more `TraceClosest`, so the
+  shade budget is one surface query plus one visibility query.
+- The heuristic is a Graph setting.
+- The single-pass reference fixture `direct_lighting_reference` implements the
+  same estimator, and the C4 GPU acceptance compares the two.
+
+The hit record and the two-pass structure are unchanged. The canonical
+description is "Combine light and BSDF sampling" in the authoring guide.
+
 **Correctness risk (cleared in C0).** The runtime builds a separate packed scene
 and BLAS/TLAS per pass (`GpuPreviewRecord`, `gpu_preview_ray.cpp`). A packed
 triangle index from pass 0 is only valid in pass 1 if both packings come out in
@@ -279,8 +313,73 @@ Attribution in the shader sources:
 
 Generic compute without Scene, storage textures, indirect dispatch, ray queues
 and compaction (a full wavefront path tracer), more than four passes, sharing
-one scene or TLAS across passes, browser execution, and software traversal.
-Each needs its own RHI/runtime design.
+one scene or TLAS across passes, browser execution, a software acceleration
+structure (BVH) traversal, and CPU tracing. Each needs its own RHI/runtime
+design.
+
+The baseline also excluded all software traversal. That exclusion no longer
+holds: the linear `TriangleLoop` strategy landed in #621 (D8). Adding another
+strategy, such as a software BVH, belongs at the shared traversal boundary
+rather than in each author's callbacks.
+
+### D8 Traversal strategy (added after C4)
+
+This was not part of the C0–C4 plan. #619 and #621 added it to `develop`; this
+section records the contract that this spec now depends on. The canonical
+description is "Reuse ray callbacks in compute pipelines" in the authoring
+guide.
+
+**Strategies.** `format::RayTraversal` (`plan.h`) has two values:
+
+| Strategy | Intersection | Needs |
+| --- | --- | --- |
+| `NativeQuery` | Inline native acceleration-structure queries | The native ray profile (C02); BLAS/TLAS per pass |
+| `TriangleLoop` | `ray_triangle_loop.slang` scans the packed World triangles (`for triangle < Counts.x`) with the two-sided Möller–Trumbore test. Closest queries keep the nearest accepted hit, visibility queries stop at the first, and equal-distance ties keep the first packed triangle. | Ordinary compute/storage admission only; no acceleration structures and no ray-query instructions in the cooked artifact |
+
+- **Query boundary.** The strategy is selected at the query boundary.
+  `TraceClosest`, `TestVisibility` and `TraceAndShade` (and queries issued from
+  closest-hit and miss) dispatch to it. Callbacks, `ScenePayload`, query
+  budgets and failure status are shared.
+- **Edge cases.** The loop's edge, tolerance and tie behavior can differ from
+  hardware intersection. It is linear in the triangle count per query and is
+  meant for small scenes and comparison.
+- **Authoring.** The optional field is `invocation.traversal`, and Automatic
+  resolution follows C05. The strategy is part of the cooked callback variant,
+  so passes sharing program IDs can select different strategies. Changing it
+  rebuilds the wrapper without touching shader sources.
+- **Selection.** `RequiresHardwareRayTracing` checks only `NativeQuery` passes,
+  and `UsesRayTracing` checks any ray pass. `RenderGraphActivation::Stage`
+  reports:
+  - `HardwareRayTracing` when any pass is `NativeQuery`;
+  - `ComputeRayTracing` when all ray passes are `TriangleLoop`;
+  - `Raster` otherwise.
+
+  `StageSelected` still calls `SelectRenderGraphRenderer` first, so its errors
+  propagate. Under Automatic, a software-only ray package is then staged whatever
+  native capabilities the device has; Force raster still selects the raster
+  package. `SelectRenderGraphRenderer` itself is unchanged.
+
+**Effect on this spec's decisions.**
+
+- **D1.** The scene compute representation is unchanged, but packages now carry
+  the per-pass traversal word (version 18, D1 note).
+- **D3.** The callback-set compute form (D2 note) and the traversal field
+  extend the builder. Validation is in `render_graph_pipeline.py`; lowering and
+  wrapper generation are in `render_graph_compute.py` and `render_graph_ray.py`.
+- **D4.** Neither strategy draws random dimensions, so the explicit ranges are
+  unaffected.
+- **D5.** The packed-triangle identity argument (section 3.1) holds for
+  `TriangleLoop` more directly than for native queries. The loop indexes packed
+  triangles itself, with no `Order` indirection, and both passes read the same
+  packing. The template's kernels use the native default (C10).
+- **C2/#607 evidence.** The llvmpipe step's selection test requires its fixture
+  to be a native-query package (`RequiresHardwareRayTracing == true`), so it
+  still proves the raster fallback for native configurations. It does not cover
+  software-only selection.
+- **Vulkan evidence.** A `TriangleLoop` configuration runs on llvmpipe, so batch
+  CI can provide Vulkan pixel evidence for the loop path (tasks.md, C5). That
+  does not establish native-query behavior on Vulkan. The C0 and C4 native
+  Vulkan boxes still need a Vulkan GPU with ray queries.
 
 ## 3. Phase C0 evidence
 
@@ -289,7 +388,8 @@ Mac's Metal device (Apple GPU, `macos-clang-debug`). There is no Linux host
 here. Batch CI's Linux runners cannot supply Vulkan evidence either: they only
 have Mesa llvmpipe, a CPU device that the Vulkan ray profile rejects, so the GPU
 case skips there. Until it runs on a Vulkan GPU with ray queries, the claims
-below are Metal-only.
+below are Metal-only. All of this evidence predates D8 and was taken with native
+queries.
 
 ### 3.1 Triangle identity across passes
 

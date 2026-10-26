@@ -273,6 +273,7 @@ RenderGraphPipelineEditor::RenderGraphPipelineEditor(const QJsonObject& node, QW
     {
         QWidget* panel = new QWidget(tabs);
         QFormLayout* form = new QFormLayout(panel);
+        form->setRowWrapPolicy(QFormLayout::WrapLongRows);
         addProperties(*form, name);
         tabs->addTab(panel,
                      name == QStringLiteral("state") ? QStringLiteral("Pipeline State") : QStringLiteral("Invocation"));
@@ -386,6 +387,7 @@ void RenderGraphPipelineEditor::AddSceneQueryBudgets(const RenderGraphSceneQuery
     QGroupBox* group = new QGroupBox(QStringLiteral("Scene query budgets"), this);
     group->setObjectName(QStringLiteral("renderGraphSceneQueryBudgets"));
     QFormLayout* form = new QFormLayout(group);
+    form->setRowWrapPolicy(QFormLayout::WrapLongRows);
     QSpinBox* surface = new QSpinBox(group);
     surface->setObjectName(QStringLiteral("renderGraphSurfaceQueries"));
     surface->setRange(RenderGraphSceneQueryBudgets::MIN_SURFACE_QUERIES,
@@ -759,6 +761,7 @@ void RenderGraphPipelineEditor::addRayStateProperties(QFormLayout& outForm)
     QWidget* fields = new QWidget(advanced);
     fields->setObjectName(QStringLiteral("renderGraphRayLimits"));
     QFormLayout* form = new QFormLayout(fields);
+    form->setRowWrapPolicy(QFormLayout::WrapLongRows);
     fields->setVisible(advanced->isChecked());
     connect(advanced, &QGroupBox::toggled, fields, &QWidget::setVisible);
     for (const QString& key :
@@ -832,6 +835,7 @@ void RenderGraphPipelineEditor::addSceneComputeStateProperties(QFormLayout& outF
     advanced->setProperty("renderGraphField", QStringLiteral("state"));
     advanced->setCheckable(true);
     QFormLayout* form = new QFormLayout(advanced);
+    form->setRowWrapPolicy(QFormLayout::WrapLongRows);
     QLabel* groupSize = new QLabel(advanced);
     groupSize->setObjectName(QStringLiteral("renderGraphComputeGroupSize"));
     form->addRow(QStringLiteral("Group size"), groupSize);

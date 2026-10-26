@@ -65,6 +65,7 @@
 #include <QScrollArea>
 #include <QSettings>
 #include <QSignalBlocker>
+#include <QSizePolicy>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QStackedWidget>
@@ -72,6 +73,7 @@
 #include <QTableWidget>
 #include <QTextBlock>
 #include <QTextDocument>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
@@ -85,7 +87,8 @@ constexpr int32 MAX_COORDINATE = RenderGraphDocument::MAX_COORDINATE;
 constexpr int32 MINIMUM_CANVAS_WIDTH = 360;
 // The source tree stays wide enough for nested node names.
 constexpr int32 MINIMUM_SOURCE_TREE_WIDTH = 200;
-constexpr int32 STATUS_VISIBLE_LINES = 3;
+constexpr int32 STATUS_VISIBLE_LINES = 1;
+constexpr int32 STATUS_PADDING_PIXELS = 4;
 // Initial share of the document's width: source tree, then the Canvas/Source/Plan/Textures views.
 constexpr int32 SOURCE_TREE_SHARE = 1;
 constexpr int32 VIEWS_SHARE = 4;
@@ -101,6 +104,8 @@ enum DocumentView : int32
 };
 const QString DEFAULT_CONFIGURATION = QStringLiteral("(asset default)");
 const QString WORKER_SOCKET_KEY = QStringLiteral("renderGraph/workerSocket");
+const QString SOURCES_VISIBLE_KEY = QStringLiteral("renderGraph/sourcesVisible");
+const QString SPLITTER_STATE_KEY = QStringLiteral("renderGraph/splitterState");
 
 /// Paints the last presented preview frame, letterboxed to its aspect ratio.
 class PreviewImage final : public QWidget
@@ -500,12 +505,14 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     : QWidget(parentOrNull), mTooling(tooling), mSourceDocument(mDocument),
       mPath(new QLabel(QStringLiteral("No render graph is open."), this)), mContent(new QStackedWidget(this)),
       mEmptyMessage(new QLabel(this)), mCreateFirst(new QPushButton(QStringLiteral("Create Render Graph..."), this)),
-      mConfiguration(new QComboBox(this)), mTree(new QTreeWidget(this)), mViews(new QTabWidget(this)),
-      mInspectorPanel(new QScrollArea(this)), mInspector(new QWidget(mInspectorPanel)), mFields(new QFormLayout),
-      mLayoutX(new QSpinBox(mInspector)), mLayoutY(new QSpinBox(mInspector)), mNewKind(new QComboBox(mInspector)),
-      mNodeCreationMessage(new QLabel(mInspector)), mEdges(new QTableWidget(mInspector)),
-      mEdgeFrom(new QLineEdit(mInspector)), mEdgeTo(new QLineEdit(mInspector)), mSourceFile(new QComboBox(this)),
-      mSource(new CodeEditor(this)), mSourceController(new CodeDocumentController(*mSource, this)),
+      mConfiguration(new QComboBox(this)), mTree(new QTreeWidget(this)), mNavigation(new QWidget(this)),
+      mStatusPanel(new QScrollArea(this)), mSourcesToggle(new QPushButton(QStringLiteral("Graph Sources"), this)),
+      mViews(new QTabWidget(this)), mInspectorPanel(new QScrollArea(this)), mInspector(new QWidget(mInspectorPanel)),
+      mFields(new QFormLayout), mLayoutX(new QSpinBox(mInspector)), mLayoutY(new QSpinBox(mInspector)),
+      mNewKind(new QComboBox(mInspector)), mNodeCreationMessage(new QLabel(mInspector)),
+      mEdges(new QTableWidget(mInspector)), mEdgeFrom(new QLineEdit(mInspector)), mEdgeTo(new QLineEdit(mInspector)),
+      mSourceFile(new QComboBox(this)), mSource(new CodeEditor(this)),
+      mSourceController(new CodeDocumentController(*mSource, this)),
       mSourceFormatter(new CodeFormatter(*mSourceController, this)), mSourceInterface(new QPlainTextEdit(this)),
       mPlan(new QPlainTextEdit(this)), mCustomize(new QAction(QStringLiteral("&Customize in Project"), this)),
       mStatus(new QLabel(this)), mCanvas(new RenderGraphCanvas(mDocument, this)),
@@ -527,7 +534,14 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mConfiguration->setObjectName(QStringLiteral("renderGraphConfiguration"));
     mConfiguration->setToolTip(QStringLiteral("Root configuration to validate and cook; choices are authored."));
     mConfiguration->setSizeAdjustPolicy(QComboBox::AdjustToContents);
-    QHBoxLayout* header = new QHBoxLayout;
+    QHBoxLayout* header = new QHBoxLayout(mNavigation);
+    header->setContentsMargins(0, 0, 0, 0);
+    mSourcesToggle->setObjectName(QStringLiteral("renderGraphToggleSources"));
+    mSourcesToggle->setCheckable(true);
+    mSourcesToggle->setChecked(QSettings().value(SOURCES_VISIBLE_KEY, true).toBool());
+    mSourcesToggle->setToolTip(
+        QStringLiteral("Show or hide graph sources. View > Focus Viewport maximizes the graph."));
+    header->addWidget(mSourcesToggle);
     header->addWidget(mPath, 1);
     header->addWidget(new QLabel(QStringLiteral("Configuration"), this));
     header->addWidget(mConfiguration);
@@ -559,6 +573,8 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mInspectorPanel->setFrameShape(QFrame::NoFrame);
     mInspectorPanel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     QVBoxLayout* inspectorLayout = new QVBoxLayout(mInspector);
+    mFields->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    mFields->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     inspectorLayout->addLayout(mFields);
     mLayoutX->setObjectName(QStringLiteral("renderGraphLayoutX"));
     mLayoutY->setObjectName(QStringLiteral("renderGraphLayoutY"));
@@ -568,6 +584,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     layoutRow->addWidget(mLayoutX);
     layoutRow->addWidget(mLayoutY);
     QFormLayout* positionForm = new QFormLayout;
+    positionForm->setRowWrapPolicy(QFormLayout::WrapLongRows);
     QLabel* positionLabel = new QLabel(QStringLiteral("Layout x/y"), mInspector);
     positionLabel->setToolTip(QStringLiteral("Canvas position; presentation only, never part of the build."));
     positionForm->addRow(positionLabel, layoutRow);
@@ -721,13 +738,12 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mStatus->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     // Compiler messages may contain the entire multiline report. Keep it readable
     // without letting its height displace the graph/source editing area.
-    QScrollArea* statusPanel = new QScrollArea(this);
-    statusPanel->setObjectName(QStringLiteral("renderGraphStatusPanel"));
-    statusPanel->setFrameShape(QFrame::NoFrame);
-    statusPanel->setWidgetResizable(true);
-    statusPanel->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    statusPanel->setFixedHeight(mStatus->fontMetrics().lineSpacing() * STATUS_VISIBLE_LINES);
-    statusPanel->setWidget(mStatus);
+    mStatusPanel->setObjectName(QStringLiteral("renderGraphStatusPanel"));
+    mStatusPanel->setFrameShape(QFrame::NoFrame);
+    mStatusPanel->setWidgetResizable(true);
+    mStatusPanel->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    mStatusPanel->setFixedHeight(mStatus->fontMetrics().lineSpacing() * STATUS_VISIBLE_LINES + STATUS_PADDING_PIXELS);
+    mStatusPanel->setWidget(mStatus);
     QSplitter* horizontal = new QSplitter(Qt::Horizontal, this);
     horizontal->setObjectName(QStringLiteral("renderGraphSplitter"));
     horizontal->addWidget(mTree);
@@ -740,6 +756,34 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     horizontal->setStretchFactor(SOURCE_TREE_COLUMN, SOURCE_TREE_SHARE);
     horizontal->setStretchFactor(VIEWS_COLUMN, VIEWS_SHARE);
     horizontal->setSizes({SOURCE_TREE_SHARE, VIEWS_SHARE});
+    static_cast<void>(horizontal->restoreState(QSettings().value(SPLITTER_STATE_KEY).toByteArray()));
+    mTree->setVisible(mSourcesToggle->isChecked());
+    connect(mSourcesToggle, &QPushButton::toggled, this, [this, horizontal](bool isVisible) {
+        if (isVisible == false)
+        {
+            QSettings().setValue(SPLITTER_STATE_KEY, horizontal->saveState());
+        }
+        mTree->setVisible(isVisible);
+        if (isVisible == true)
+        {
+            static_cast<void>(horizontal->restoreState(QSettings().value(SPLITTER_STATE_KEY).toByteArray()));
+            if (horizontal->sizes().value(SOURCE_TREE_COLUMN) == 0)
+            {
+                horizontal->setSizes({MINIMUM_SOURCE_TREE_WIDTH, horizontal->width() - MINIMUM_SOURCE_TREE_WIDTH});
+            }
+        }
+        QSettings().setValue(SOURCES_VISIBLE_KEY, isVisible);
+    });
+    connect(horizontal, &QSplitter::splitterMoved, this, [this, horizontal]() {
+        const bool isVisible = horizontal->sizes().value(SOURCE_TREE_COLUMN) > 0;
+        const QSignalBlocker blocker(mSourcesToggle);
+        mSourcesToggle->setChecked(isVisible);
+        QSettings().setValue(SOURCES_VISIBLE_KEY, isVisible);
+        if (isVisible == true)
+        {
+            QSettings().setValue(SPLITTER_STATE_KEY, horizontal->saveState());
+        }
+    });
     QWidget* emptyPage = new QWidget(this);
     QVBoxLayout* emptyLayout = new QVBoxLayout(emptyPage);
     emptyLayout->addStretch();
@@ -754,9 +798,9 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mContent->addWidget(emptyPage);
     mContent->addWidget(horizontal);
     QVBoxLayout* layout = new QVBoxLayout(this);
-    layout->addLayout(header);
+    layout->addWidget(mNavigation);
     layout->addWidget(mContent, 1);
-    layout->addWidget(statusPanel);
+    layout->addWidget(mStatusPanel);
 
     connect(mCreateFirst, &QPushButton::clicked, this, [this]() { static_cast<void>(PromptNewGraph()); });
     connect(mConfiguration, &QComboBox::currentTextChanged, this, [this]() {
@@ -778,7 +822,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
             mSelectedNode.clear();
             mSelectedNodes.clear();
         }
-        showNodeContextMenu(mTree->viewport()->mapToGlobal(position));
+        showNodeContextMenu(mTree->viewport()->mapToGlobal(position), mSelectedNodes.isEmpty() == false);
     });
     connect(&mCreation, &RenderGraphCreation::Finished, this, [this]() {
         updateActions();
@@ -915,7 +959,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
                 {
                     mSelectedNode = node;
                 }
-                showNodeContextMenu(globalPosition);
+                showNodeContextMenu(globalPosition, node.isEmpty() == false);
             });
     setupGraphSelection();
     connect(mPreviewButton, &QPushButton::clicked, this, [this]() { static_cast<void>(PreviewRuntime()); });
@@ -1080,6 +1124,27 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     });
     renderStatus();
     renderPreview();
+}
+
+void RendererWorkspace::SetChromeVisible(bool isVisible)
+{
+    if (isVisible == mIsChromeVisible)
+    {
+        return;
+    }
+    mIsChromeVisible = isVisible;
+    if (isVisible == false)
+    {
+        mFocusRestoreView = mViews->currentIndex();
+        mViews->setCurrentWidget(mCanvas);
+    }
+    else
+    {
+        mViews->setCurrentIndex(mFocusRestoreView);
+    }
+    mNavigation->setVisible(isVisible);
+    mStatusPanel->setVisible(isVisible);
+    mTree->setVisible(isVisible == true && mSourcesToggle->isChecked() == true);
 }
 
 RendererWorkspace::~RendererWorkspace()
@@ -2287,7 +2352,6 @@ void RendererWorkspace::renderInspector()
             delete itemOrNull;
         }
     }
-    populateGraphSettings(*mFields, *mInspector);
     const QJsonObject node = mSelectedNodes.size() > 1 ? QJsonObject{} : selectedNode();
     QPushButton* remove = mInspector->findChild<QPushButton*>(QStringLiteral("renderGraphRemoveNode"));
     LUDUS_REQUIRE(remove != nullptr);
@@ -2297,14 +2361,18 @@ void RendererWorkspace::renderInspector()
     mLayoutY->setEnabled(node.isEmpty() == false);
     if (node.isEmpty() == true)
     {
-        mFields->addRow(new QLabel(
+        QLabel* hint = new QLabel(
             mSelectedNodes.size() > 1
                 ? QStringLiteral("%1 nodes selected. Drag, copy, or remove the group.").arg(mSelectedNodes.size())
                 : QStringLiteral("Select a node to inspect its authored fields."),
-            mInspector));
+            mInspector);
+        hint->setWordWrap(true);
+        mFields->addRow(hint);
+        populateGraphSettings(*mFields, *mInspector);
         return;
     }
     populateNodeFields(*mFields, *mInspector);
+    populateGraphSettings(*mFields, *mInspector);
     int32 x = 0;
     int32 y = 0;
     const QJsonObject layout = selectedConfiguration().value(QStringLiteral("layout")).toObject();
@@ -2558,7 +2626,9 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
         else if (name == QStringLiteral("extent"))
         {
             QWidget* row = new QWidget(&inoutParent);
-            QHBoxLayout* rowLayout = new QHBoxLayout(row);
+            QFormLayout* rowLayout = new QFormLayout(row);
+            rowLayout->setRowWrapPolicy(QFormLayout::WrapLongRows);
+            rowLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
             rowLayout->setContentsMargins(0, 0, 0, 0);
             QComboBox* mode = new QComboBox(row);
             mode->setObjectName(QStringLiteral("renderGraphExtentMode"));
@@ -2605,7 +2675,7 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
                 selectedMode = OUTPUT_SIZE_MODE;
             }
             mode->setCurrentIndex(selectedMode);
-            rowLayout->addWidget(mode);
+            rowLayout->addRow(mode);
             QSpinBox* width = new QSpinBox(row);
             QSpinBox* height = new QSpinBox(row);
             width->setObjectName(QStringLiteral("renderGraphExtentWidth"));
@@ -2615,8 +2685,11 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
                 spin->setRange(1, MAX_EXTENT);
                 spin->setEnabled(isFixed);
                 spin->setVisible(isFixed);
-                rowLayout->addWidget(spin);
             }
+            rowLayout->addRow(QStringLiteral("Width (pixels)"), width);
+            rowLayout->addRow(QStringLiteral("Height (pixels)"), height);
+            rowLayout->setRowVisible(width, isFixed);
+            rowLayout->setRowVisible(height, isFixed);
             const QJsonArray extent =
                 isFixed == true ? field.value().toArray() : QJsonArray{DEFAULT_RENDER_WIDTH, DEFAULT_RENDER_HEIGHT};
             width->setValue(extent.at(0).toInt());
@@ -2635,8 +2708,11 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
                 spin->setRange(1, MAX_EXTENT);
                 spin->setVisible(isCustom);
                 spin->setEnabled(isCustom);
-                rowLayout->addWidget(spin);
             }
+            rowLayout->addRow(QStringLiteral("Scale numerator"), numerator);
+            rowLayout->addRow(QStringLiteral("Scale denominator"), denominator);
+            rowLayout->setRowVisible(numerator, isCustom);
+            rowLayout->setRowVisible(denominator, isCustom);
             numerator->setValue(scale.isEmpty() == true ? 1 : scale.at(0).toInt());
             denominator->setValue(scale.isEmpty() == true ? 1 : scale.at(1).toInt());
             const auto commitScale = [this, mode, numerator, denominator]() {
@@ -2655,14 +2731,14 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
             connect(mode,
                     &QComboBox::activated,
                     this,
-                    [this, source, width, height, numerator, denominator](int32 index) {
+                    [this, source, width, height, numerator, denominator, rowLayout](int32 index) {
                         const bool isCustomScale = index >= FIRST_VIEW_MODE + VIEW_PRESET_COUNT;
                         // Selecting Custom may keep the same fraction as a preset, so there may
                         // be no document edit/rebuild. Reveal its controls in that case too.
                         numerator->setEnabled(isCustomScale);
                         denominator->setEnabled(isCustomScale);
-                        numerator->setVisible(isCustomScale);
-                        denominator->setVisible(isCustomScale);
+                        rowLayout->setRowVisible(numerator, isCustomScale);
+                        rowLayout->setRowVisible(denominator, isCustomScale);
                         QJsonValue extentValue = source;
                         if (index == 0)
                         {
@@ -2742,7 +2818,21 @@ void RendererWorkspace::populateGraphSettings(QFormLayout& outFields, QWidget& i
         &RenderGraphSettingsEditor::SettingEdited,
         this,
         [this, editor](const QString& identity, const QJsonValue& value) { setGraphSetting(identity, value, editor); });
-    outFields.addRow(QStringLiteral("Graph settings"), editor);
+    QToolButton* section = new QToolButton(&inoutParent);
+    section->setObjectName(QStringLiteral("renderGraphToggleSettings"));
+    section->setText(QStringLiteral("Graph settings"));
+    section->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    section->setCheckable(true);
+    section->setChecked(mIsGraphSettingsSectionExpanded);
+    section->setArrowType(mIsGraphSettingsSectionExpanded == true ? Qt::DownArrow : Qt::RightArrow);
+    editor->setVisible(mIsGraphSettingsSectionExpanded);
+    connect(section, &QToolButton::toggled, this, [this, editor, section](bool isExpanded) {
+        mIsGraphSettingsSectionExpanded = isExpanded;
+        section->setArrowType(isExpanded == true ? Qt::DownArrow : Qt::RightArrow);
+        editor->setVisible(isExpanded);
+    });
+    outFields.addRow(section);
+    outFields.addRow(editor);
 }
 
 void RendererWorkspace::setGraphSetting(const QString& identity, const QJsonValue& value, QWidget* editOrigin)
@@ -3318,68 +3408,77 @@ void RendererWorkspace::makeSceneCompute()
                          .arg(mSelectedNode));
 }
 
-void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
+void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition, bool isNodeContext)
 {
     QMenu menu(this);
-    menu.setObjectName(QStringLiteral("renderGraphNodeMenu"));
-    const QPoint quickAddPoint = mCanvas->viewport()->mapFromGlobal(globalPosition);
-    const QPointF quickAddPosition = mCanvas->mapToScene(mCanvas->viewport()->rect().contains(quickAddPoint) == true
-                                                             ? quickAddPoint
-                                                             : mCanvas->viewport()->rect().center());
-    QAction* quickAdd = menu.addAction(QStringLiteral("Quick Add..."));
-    quickAdd->setObjectName(QStringLiteral("renderGraphQuickAddAction"));
-    quickAdd->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_A));
-    quickAdd->setShortcutVisibleInContextMenu(true);
-    quickAdd->setEnabled(CanCreateSubgraph());
-    connect(quickAdd, &QAction::triggered, this, [this, quickAddPosition]() {
-        static_cast<void>(ShowQuickAdd(quickAddPosition));
-    });
-    QAction* options = menu.addAction(QStringLiteral("Edit Exposed Options..."));
-    options->setObjectName(QStringLiteral("renderGraphExposedOptionsAction"));
-    options->setEnabled(CanCreateSubgraph());
-    connect(options, &QAction::triggered, this, &RendererWorkspace::editExposedOptionsOnCanvas);
-    menu.addSeparator();
-    if (QJsonDocument::fromJson(mDocument.GetDraft(manifestFile()))
-            .object()
-            .value(QStringLiteral("settings"))
-            .toArray()
-            .isEmpty() == false)
+    menu.setObjectName(isNodeContext == true ? QStringLiteral("renderGraphNodeMenu")
+                                             : QStringLiteral("renderGraphBackgroundMenu"));
+    if (isNodeContext == false)
     {
-        QAction* settings = menu.addAction(QStringLiteral("Edit Graph Settings..."));
-        settings->setObjectName(QStringLiteral("renderGraphEditSettingsAction"));
-        settings->setEnabled(CanCreateSubgraph());
-        connect(settings, &QAction::triggered, this, &RendererWorkspace::editGraphSettingsOnCanvas);
+        const QPoint quickAddPoint = mCanvas->viewport()->mapFromGlobal(globalPosition);
+        const QPointF quickAddPosition = mCanvas->mapToScene(mCanvas->viewport()->rect().contains(quickAddPoint) == true
+                                                                 ? quickAddPoint
+                                                                 : mCanvas->viewport()->rect().center());
+        QAction* quickAdd = menu.addAction(QStringLiteral("Quick Add..."));
+        quickAdd->setObjectName(QStringLiteral("renderGraphQuickAddAction"));
+        quickAdd->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_A));
+        quickAdd->setShortcutVisibleInContextMenu(true);
+        quickAdd->setEnabled(CanCreateSubgraph());
+        connect(quickAdd, &QAction::triggered, this, [this, quickAddPosition]() {
+            static_cast<void>(ShowQuickAdd(quickAddPosition));
+        });
+        QAction* options = menu.addAction(QStringLiteral("Edit Exposed Options..."));
+        options->setObjectName(QStringLiteral("renderGraphExposedOptionsAction"));
+        options->setEnabled(CanCreateSubgraph());
+        connect(options, &QAction::triggered, this, &RendererWorkspace::editExposedOptionsOnCanvas);
+        menu.addSeparator();
+        if (QJsonDocument::fromJson(mDocument.GetDraft(manifestFile()))
+                .object()
+                .value(QStringLiteral("settings"))
+                .toArray()
+                .isEmpty() == false)
+        {
+            QAction* settings = menu.addAction(QStringLiteral("Edit Graph Settings..."));
+            settings->setObjectName(QStringLiteral("renderGraphEditSettingsAction"));
+            settings->setEnabled(CanCreateSubgraph());
+            connect(settings, &QAction::triggered, this, &RendererWorkspace::editGraphSettingsOnCanvas);
+        }
+        QAction* paste = menu.addAction(QStringLiteral("Paste Nodes"));
+        paste->setObjectName(QStringLiteral("renderGraphPasteNodes"));
+        paste->setEnabled(CanCreateSubgraph());
+        const QPoint localPosition = mCanvas->viewport()->mapFromGlobal(globalPosition);
+        const QPointF pastePosition = mCanvas->mapToScene(mCanvas->viewport()->rect().contains(localPosition) == true
+                                                              ? localPosition
+                                                              : mCanvas->viewport()->rect().center());
+        connect(paste, &QAction::triggered, this, [this, pastePosition]() {
+            static_cast<void>(PasteNodes(pastePosition));
+        });
+        QMenu* configurations = menu.addMenu(QStringLiteral("Configurations"));
+        configurations->setObjectName(QStringLiteral("renderGraphConfigurationsMenu"));
+        QAction* createConfiguration = configurations->addAction(QStringLiteral("Add Configuration..."));
+        createConfiguration->setObjectName(QStringLiteral("renderGraphAddConfiguration"));
+        createConfiguration->setEnabled(mDocument.IsLoaded() == true);
+        connect(createConfiguration, &QAction::triggered, this, &RendererWorkspace::promptCreateConfiguration);
+        QAction* configurationTemplate = configurations->addAction(QStringLiteral("Apply Configuration Template..."));
+        configurationTemplate->setObjectName(QStringLiteral("renderGraphApplyConfigurationTemplate"));
+        configurationTemplate->setEnabled(CanCreateSubgraph());
+        connect(configurationTemplate, &QAction::triggered, this, [this]() { promptConfigurationTemplate(); });
+        QAction* removeConfiguration = configurations->addAction(QStringLiteral("Delete Configuration"));
+        removeConfiguration->setObjectName(QStringLiteral("renderGraphDeleteConfiguration"));
+        removeConfiguration->setEnabled(CanCreateSubgraph() == true && selectedConfiguration().isEmpty() == false);
+        connect(removeConfiguration, &QAction::triggered, this, [this]() {
+            static_cast<void>(RemoveSelectedConfiguration());
+        });
+        menu.addSeparator();
     }
-    QAction* copy = menu.addAction(QStringLiteral("Copy Selected Nodes"));
-    copy->setObjectName(QStringLiteral("renderGraphCopyNodes"));
-    copy->setEnabled(mSelectedNodes.isEmpty() == false);
-    connect(copy, &QAction::triggered, this, [this]() { static_cast<void>(CopySelectedNodes()); });
-    QAction* paste = menu.addAction(QStringLiteral("Paste Nodes"));
-    paste->setObjectName(QStringLiteral("renderGraphPasteNodes"));
-    paste->setEnabled(CanCreateSubgraph());
-    const QPoint localPosition = mCanvas->viewport()->mapFromGlobal(globalPosition);
-    const QPointF pastePosition = mCanvas->mapToScene(mCanvas->viewport()->rect().contains(localPosition) == true
-                                                          ? localPosition
-                                                          : mCanvas->viewport()->rect().center());
-    connect(paste, &QAction::triggered, this, [this, pastePosition]() {
-        static_cast<void>(PasteNodes(pastePosition));
-    });
-    QAction* createConfiguration = menu.addAction(QStringLiteral("Add Configuration..."));
-    createConfiguration->setObjectName(QStringLiteral("renderGraphAddConfiguration"));
-    createConfiguration->setEnabled(mDocument.IsLoaded() == true);
-    connect(createConfiguration, &QAction::triggered, this, &RendererWorkspace::promptCreateConfiguration);
-    QAction* configurationTemplate = menu.addAction(QStringLiteral("Apply Configuration Template..."));
-    configurationTemplate->setObjectName(QStringLiteral("renderGraphApplyConfigurationTemplate"));
-    configurationTemplate->setEnabled(CanCreateSubgraph());
-    connect(configurationTemplate, &QAction::triggered, this, [this]() { promptConfigurationTemplate(); });
-    QAction* removeConfiguration = menu.addAction(QStringLiteral("Delete Configuration"));
-    removeConfiguration->setObjectName(QStringLiteral("renderGraphDeleteConfiguration"));
-    removeConfiguration->setEnabled(CanCreateSubgraph() == true && selectedConfiguration().isEmpty() == false);
-    connect(removeConfiguration, &QAction::triggered, this, [this]() {
-        static_cast<void>(RemoveSelectedConfiguration());
-    });
-    menu.addSeparator();
-    const QJsonObject node = mSelectedNodes.size() > 1 ? QJsonObject{} : selectedNode();
+    if (isNodeContext == true)
+    {
+        QAction* copy = menu.addAction(QStringLiteral("Copy Selected Nodes"));
+        copy->setObjectName(QStringLiteral("renderGraphCopyNodes"));
+        copy->setEnabled(mSelectedNodes.isEmpty() == false);
+        connect(copy, &QAction::triggered, this, [this]() { static_cast<void>(CopySelectedNodes()); });
+    }
+    const QJsonObject node = isNodeContext == false || mSelectedNodes.size() > 1 ? QJsonObject{} : selectedNode();
     if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Subgraph"))
     {
         const QString asset = node.value(QStringLiteral("asset")).toString();
@@ -3397,7 +3496,7 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
         QMenu* shaders = menu.addMenu(QStringLiteral("View Shaders"));
         shaders->setObjectName(QStringLiteral("renderGraphViewShaders"));
         const QStringList sources = GetSelectedShaderSources();
-        shaders->setEnabled(sources.isEmpty() == false);
+        shaders->menuAction()->setVisible(sources.isEmpty() == false);
         shaders->setToolTip(QStringLiteral("Shader sources used by this pass's authored technique; scene and resource "
                                            "nodes have no shaders."));
         for (const QString& source : sources)
@@ -3458,34 +3557,48 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
             setSelectedNodeEnabled(isDisabled == false);
         });
     }
-    QAction* editInterface = menu.addAction(QStringLiteral("Edit Inputs / Outputs..."));
-    editInterface->setObjectName(QStringLiteral("renderGraphEditInterfaceAction"));
-    editInterface->setEnabled(CanCreateSubgraph());
-    connect(editInterface, &QAction::triggered, this, &RendererWorkspace::editConfigurationInterface);
-    QAction* cleanup = menu.addAction(QStringLiteral("Remove Unused Shaders"));
-    cleanup->setObjectName(QStringLiteral("renderGraphRemoveUnusedShadersAction"));
-    cleanup->setEnabled(CanRemoveUnusedShaders());
-    connect(cleanup, &QAction::triggered, this, [this]() { static_cast<void>(RemoveUnusedShaders()); });
-    QMenu* createNodes = menu.addMenu(QStringLiteral("Create Node"));
-    createNodes->setObjectName(QStringLiteral("renderGraphCreateNodeMenu"));
-    createNodes->setEnabled(CanCreateSubgraph());
-    for (int32 index = 0; index < mNewKind->count(); ++index)
+    if (isNodeContext == false)
     {
-        const QString kind = mNewKind->itemText(index);
-        QAction* createNode =
-            createNodes->addAction(kind == QStringLiteral("Subgraph") ? QStringLiteral("Subgraph Reference") : kind);
-        createNode->setData(kind);
-        createNode->setToolTip(mNewKind->itemData(index, Qt::ToolTipRole).toString());
-        connect(createNode, &QAction::triggered, this, [this, index]() {
-            mNewKind->setCurrentIndex(index);
-            addNode();
-        });
+        QAction* editInterface = menu.addAction(QStringLiteral("Edit Inputs / Outputs..."));
+        editInterface->setObjectName(QStringLiteral("renderGraphEditInterfaceAction"));
+        editInterface->setEnabled(CanCreateSubgraph());
+        connect(editInterface, &QAction::triggered, this, &RendererWorkspace::editConfigurationInterface);
+        QAction* cleanup = menu.addAction(QStringLiteral("Remove Unused Shaders"));
+        cleanup->setObjectName(QStringLiteral("renderGraphRemoveUnusedShadersAction"));
+        cleanup->setEnabled(CanRemoveUnusedShaders());
+        connect(cleanup, &QAction::triggered, this, [this]() { static_cast<void>(RemoveUnusedShaders()); });
+        QMenu* createNodes = menu.addMenu(QStringLiteral("Create Node"));
+        createNodes->setObjectName(QStringLiteral("renderGraphCreateNodeMenu"));
+        createNodes->setEnabled(CanCreateSubgraph());
+        const QVector<RenderGraphTemplate> entries =
+            RenderGraphTemplateRegistry::GetBuiltIn().GetTemplates(RenderGraphTemplateKind::Node);
+        for (const QString& category : GetRenderGraphTemplateCategories(RenderGraphTemplateKind::Node))
+        {
+            QMenu* group = createNodes->addMenu(GetRenderGraphTemplateCategoryLabel(category));
+            for (int32 index = 0; index < entries.size(); ++index)
+            {
+                const RenderGraphTemplate& entry = entries.at(index);
+                if (entry.Category != category)
+                {
+                    continue;
+                }
+                QAction* createNode = group->addAction(
+                    entry.Identity == QStringLiteral("Subgraph") ? QStringLiteral("Subgraph Reference") : entry.Label);
+                createNode->setData(mNewKind->itemText(index));
+                createNode->setToolTip(entry.Description + QLatin1Char('\n') +
+                                       mNewKind->itemData(index, Qt::ToolTipRole).toString());
+                connect(createNode, &QAction::triggered, this, [this, index]() {
+                    mNewKind->setCurrentIndex(index);
+                    addNode();
+                });
+            }
+        }
+        QAction* create = menu.addAction(QStringLiteral("Create Subgraph..."));
+        create->setObjectName(QStringLiteral("renderGraphCreateSubgraphAction"));
+        create->setEnabled(CanCreateSubgraph());
+        connect(create, &QAction::triggered, this, [this]() { static_cast<void>(PromptCreateSubgraph()); });
     }
-    QAction* create = menu.addAction(QStringLiteral("Create Subgraph..."));
-    create->setObjectName(QStringLiteral("renderGraphCreateSubgraphAction"));
-    create->setEnabled(CanCreateSubgraph());
-    connect(create, &QAction::triggered, this, [this]() { static_cast<void>(PromptCreateSubgraph()); });
-    if (mSelectedNodes.isEmpty() == false)
+    if (isNodeContext == true && mSelectedNodes.isEmpty() == false)
     {
         menu.addSeparator();
         QAction* remove = menu.addAction(mSelectedNodes.size() > 1 ? QStringLiteral("Remove Selected Nodes")
@@ -3494,7 +3607,7 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition)
         remove->setEnabled(true);
         connect(remove, &QAction::triggered, this, &RendererWorkspace::RemoveSelectedNodes);
     }
-    if (mCustomize->isVisible() == true)
+    if (isNodeContext == false && mCustomize->isVisible() == true)
     {
         menu.addAction(mCustomize);
     }

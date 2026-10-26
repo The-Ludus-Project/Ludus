@@ -7,7 +7,10 @@
 #include <QClipboard>
 #include <QContextMenuEvent>
 #include <QDir>
+#include <QDoubleSpinBox>
 #include <QFile>
+#include <QGraphicsPathItem>
+#include <QGraphicsScene>
 #include <QInputDialog>
 #include <QJsonDocument>
 #include <QKeySequence>
@@ -15,13 +18,20 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMimeData>
+#include <QPen>
+#include <QPushButton>
+#include <QScrollArea>
 #include <QScrollBar>
+#include <QSettings>
 #include <QSignalSpy>
+#include <QSplitter>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
+#include <QVBoxLayout>
 
 using namespace ludus::editor;
 using namespace ludus::foundation;
@@ -483,7 +493,7 @@ TEST_CASE("Graph file context menu adds a configuration through the name dialog"
     tree->setCurrentItem(fileOrNull);
     const QByteArray before = workspace.GetDocument().GetDraft(LIBRARY);
     QTimer::singleShot(0, &workspace, [&workspace]() {
-        QMenu* menuOrNull = workspace.findChild<QMenu*>(QStringLiteral("renderGraphNodeMenu"));
+        QMenu* menuOrNull = workspace.findChild<QMenu*>(QStringLiteral("renderGraphBackgroundMenu"));
         REQUIRE(menuOrNull != nullptr);
         QAction* create = menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphAddConfiguration"));
         REQUIRE(create != nullptr);
@@ -635,7 +645,7 @@ TEST_CASE("Tree and canvas menus delete configurations with Properties hidden an
     const QByteArray root = workspace.GetDocument().GetDraft(ROOT);
     const uint64 revision = workspace.GetDocument().GetRevision();
     const auto deleteFromMenu = [&workspace]() {
-        QMenu* menuOrNull = workspace.findChild<QMenu*>(QStringLiteral("renderGraphNodeMenu"));
+        QMenu* menuOrNull = workspace.findChild<QMenu*>(QStringLiteral("renderGraphBackgroundMenu"));
         REQUIRE(menuOrNull != nullptr);
         QAction* remove = menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphDeleteConfiguration"));
         REQUIRE(remove != nullptr);
@@ -686,4 +696,224 @@ TEST_CASE("Tree and canvas menus delete configurations with Properties hidden an
     CHECK(workspace.RemoveSelectedConfiguration() == false);
     CHECK(workspace.GetStatusText().contains(QStringLiteral("last configuration")) == true);
     CHECK(workspace.GetDocument().GetRevision() == beforeRejected);
+}
+
+TEST_CASE("graph connections highlight selection and port hover without editing the draft",
+          "[editor][render-graph][usability]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    OpenSelectionPackage(workspace, project);
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    canvas.resetTransform();
+    canvas.centerOn(200, 150);
+    QGraphicsPathItem* outputWireOrNull = nullptr;
+    QGraphicsPathItem* cameraWireOrNull = nullptr;
+    for (QGraphicsItem* item : canvas.scene()->items())
+    {
+        QGraphicsPathItem* pathOrNull = qgraphicsitem_cast<QGraphicsPathItem*>(item);
+        if (pathOrNull == nullptr)
+        {
+            continue;
+        }
+        if (pathOrNull->toolTip().contains(QStringLiteral("output.texture")) == true)
+        {
+            outputWireOrNull = pathOrNull;
+        }
+        if (pathOrNull->toolTip().contains(QStringLiteral("camera.target")) == true)
+        {
+            cameraWireOrNull = pathOrNull;
+        }
+    }
+    REQUIRE(outputWireOrNull != nullptr);
+    REQUIRE(cameraWireOrNull != nullptr);
+    const uint64 revision = workspace.GetDocument().GetRevision();
+    const QByteArray draft = workspace.GetDocument().GetDraft(ROOT);
+    const QPen original = outputWireOrNull->pen();
+    const float64 cameraOpacity = cameraWireOrNull->opacity();
+    canvas.SelectNode(QStringLiteral("output"));
+    CHECK(outputWireOrNull->pen().widthF() > original.widthF());
+    CHECK(outputWireOrNull->pen().color() != original.color());
+    CHECK(cameraWireOrNull->opacity() < cameraOpacity);
+    QTest::mouseMove(canvas.viewport(),
+                     canvas.mapFromScene(canvas.GetPortPosition(QStringLiteral("texture.texture"), true)));
+    CHECK(cameraWireOrNull->pen().color() == outputWireOrNull->pen().color());
+    CHECK(cameraWireOrNull->opacity() == 1);
+    QEvent leave(QEvent::Leave);
+    QApplication::sendEvent(canvas.viewport(), &leave);
+    CHECK(cameraWireOrNull->opacity() < cameraOpacity);
+    canvas.SelectNode({});
+    CHECK(outputWireOrNull->pen().color() == original.color());
+    CHECK(cameraWireOrNull->opacity() == cameraOpacity);
+    REQUIRE(workspace.SelectNode(ROOT, DEFAULT, QStringLiteral("output")) == true);
+    canvas.Rebuild();
+    CHECK(canvas.GetSelectedNodes() == QStringList{QStringLiteral("output")});
+    CHECK(workspace.GetDocument().GetRevision() == revision);
+    CHECK(workspace.GetDocument().GetDraft(ROOT) == draft);
+    CHECK(workspace.CanUndo() == false);
+}
+
+TEST_CASE("graph sources collapse and restore width without changing selection", "[editor][render-graph][usability]")
+{
+    QSettings().remove(QStringLiteral("renderGraph/splitterState"));
+    QSettings().remove(QStringLiteral("renderGraph/sourcesVisible"));
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    OpenSelectionPackage(workspace, project);
+    QPushButton* sources = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphToggleSources"));
+    QSplitter* splitter = workspace.findChild<QSplitter*>(QStringLiteral("renderGraphSplitter"));
+    QTreeWidget* tree = workspace.findChild<QTreeWidget*>(QStringLiteral("renderGraphTree"));
+    REQUIRE(sources != nullptr);
+    REQUIRE(splitter != nullptr);
+    REQUIRE(tree != nullptr);
+    REQUIRE(workspace.SelectNode(ROOT, DEFAULT, QStringLiteral("output")) == true);
+    const QString selection = workspace.GetSelection();
+    const uint64 revision = workspace.GetDocument().GetRevision();
+    const int32 before = workspace.GetCanvas().width();
+    const int32 treeWidth = tree->width();
+    sources->click();
+    QApplication::processEvents();
+    CHECK(tree->isVisible() == false);
+    CHECK(workspace.GetCanvas().width() > before);
+    workspace.SetChromeVisible(false);
+    workspace.SetChromeVisible(true);
+    CHECK(tree->isVisible() == false);
+    sources->click();
+    QApplication::processEvents();
+    CHECK(tree->isVisible() == true);
+    CHECK(tree->width() == treeWidth);
+    CHECK(workspace.GetSelection() == selection);
+    CHECK(workspace.GetDocument().GetRevision() == revision);
+    sources->click();
+    RendererWorkspace reopened({});
+    QPushButton* restored = reopened.findChild<QPushButton*>(QStringLiteral("renderGraphToggleSources"));
+    REQUIRE(restored != nullptr);
+    CHECK(restored->isChecked() == false);
+    QSettings().remove(QStringLiteral("renderGraph/splitterState"));
+    QSettings().remove(QStringLiteral("renderGraph/sourcesVisible"));
+}
+
+TEST_CASE("Properties keeps selected fields and long graph settings within narrow panels",
+          "[editor][render-graph][usability]")
+{
+    QTemporaryDir project;
+    const QString package = MakeSelectionPackage(project);
+    QFile manifest(QDir(package).filePath(QStringLiteral("main.lushader.json")));
+    REQUIRE(manifest.open(QIODevice::WriteOnly) == true);
+    REQUIRE(manifest.write(R"json({"version":1,"id":"Build","profiles":["metal"],"settings":[
+      {"id":"DISTANCE","label":"Maximum neighbour distance (world units)","type":"Float32",
+       "minimum":0,"maximum":1000,"value":0.25}],"programs":[],"schemas":[]})json") > 0);
+    manifest.close();
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT)) == true);
+    workspace.SetLivePreview(false);
+    QWidget properties;
+    QScrollArea* inspector = qobject_cast<QScrollArea*>(workspace.TakeInspectorPanel(&properties));
+    REQUIRE(inspector != nullptr);
+    QVBoxLayout* layout = new QVBoxLayout(&properties);
+    layout->addWidget(inspector);
+    inspector->show();
+    REQUIRE(workspace.SelectNode(ROOT, DEFAULT, QStringLiteral("output")) == true);
+    properties.resize(320, 700);
+    properties.show();
+    QApplication::processEvents();
+    QLineEdit* name = inspector->findChild<QLineEdit*>(QStringLiteral("renderGraphNodeName"));
+    QToolButton* section = inspector->findChild<QToolButton*>(QStringLiteral("renderGraphToggleSettings"));
+    REQUIRE(name != nullptr);
+    REQUIRE(section != nullptr);
+    CHECK(section->isChecked() == false);
+    CHECK(name->mapTo(inspector->widget(), QPoint()).y() < section->mapTo(inspector->widget(), QPoint()).y());
+    section->click();
+    QApplication::processEvents();
+    CHECK(inspector->horizontalScrollBar()->maximum() == 0);
+    QDoubleSpinBox* distance = inspector->findChild<QDoubleSpinBox*>(QStringLiteral("renderGraphSetting_DISTANCE"));
+    REQUIRE(distance != nullptr);
+    CHECK(distance->isVisible() == true);
+    CHECK(distance->mapTo(inspector->widget(), QPoint()).x() + distance->width() <= inspector->widget()->width());
+    QLabel* settingLabelOrNull = nullptr;
+    for (QLabel* label : inspector->findChildren<QLabel*>())
+    {
+        if (label->text() == QStringLiteral("Maximum neighbour distance (world units)"))
+        {
+            settingLabelOrNull = label;
+        }
+    }
+    REQUIRE(settingLabelOrNull != nullptr);
+    for (int32 width : {280, 320, 420})
+    {
+        properties.resize(width, 700);
+        QApplication::processEvents();
+        CHECK(inspector->horizontalScrollBar()->maximum() == 0);
+        CHECK(settingLabelOrNull->isVisible() == true);
+        CHECK(settingLabelOrNull->width() > 0);
+        CHECK(settingLabelOrNull->mapTo(inspector->widget(), QPoint()).x() + settingLabelOrNull->width() <=
+              inspector->widget()->width());
+        for (QLabel* label : inspector->findChildren<QLabel*>())
+        {
+            if (label->isVisible() == true && label->wordWrap() == false)
+            {
+                INFO(label->text().toStdString());
+                CHECK(label->width() >= label->fontMetrics().horizontalAdvance(label->text()));
+                CHECK(label->mapTo(inspector->viewport(), QPoint()).x() >= 0);
+            }
+        }
+    }
+    properties.resize(320, 700);
+    QApplication::processEvents();
+    const QString capture = qEnvironmentVariable("LUDUS_EDITOR_GRAPH_USABILITY_CAPTURE");
+    if (capture.isEmpty() == false)
+    {
+        REQUIRE(properties.grab().save(capture + QStringLiteral("-properties.png")) == true);
+    }
+    distance->setValue(0.5);
+    Q_EMIT distance->editingFinished();
+    CHECK(workspace.CanUndo() == true);
+    CHECK(workspace.GetDocument().GetDraft(QStringLiteral("main.lushader.json")).contains("0.5") == true);
+    workspace.Undo();
+    CHECK(workspace.GetDocument().GetDraft(QStringLiteral("main.lushader.json")).contains("0.25") == true);
+    for (const QString& node : {QStringLiteral("texture"), QStringLiteral("camera")})
+    {
+        REQUIRE(workspace.SelectNode(ROOT, DEFAULT, node) == true);
+        for (int32 width : {280, 320, 420})
+        {
+            properties.resize(width, 700);
+            QApplication::processEvents();
+            INFO(node.toStdString());
+            CHECK(inspector->horizontalScrollBar()->maximum() == 0);
+        }
+    }
+}
+
+TEST_CASE("canvas menus keep node actions out of background and graph actions out of nodes",
+          "[editor][render-graph][usability]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    OpenSelectionPackage(workspace, project);
+    REQUIRE(workspace.SelectNode(ROOT, DEFAULT, QStringLiteral("output")) == true);
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    for (bool isNode : {false, true})
+    {
+        QTimer::singleShot(0, &workspace, [isNode]() {
+            QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+            REQUIRE(menuOrNull != nullptr);
+            CHECK((menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphEditNodeAction")) != nullptr) == isNode);
+            CHECK((menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphRemoveNodeAction")) != nullptr) ==
+                  isNode);
+            CHECK((menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphQuickAddAction")) == nullptr) == isNode);
+            CHECK((menuOrNull->findChild<QMenu*>(QStringLiteral("renderGraphConfigurationsMenu")) == nullptr) ==
+                  isNode);
+            CHECK((menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphEditInterfaceAction")) == nullptr) ==
+                  isNode);
+            menuOrNull->close();
+        });
+        const QPoint point =
+            isNode == true ? canvas.mapFromScene(canvas.GetNodePosition(QStringLiteral("output")) + QPointF(30, 10))
+                           : canvas.viewport()->rect().bottomRight();
+        QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
+        QApplication::sendEvent(canvas.viewport(), &context);
+    }
+    CHECK(canvas.GetSelectedNodes() == QStringList{QStringLiteral("output")});
+    CHECK(workspace.GetDocument().GetRevision() == 0);
 }
