@@ -287,20 +287,63 @@ if(TARGET ludus_renderer_render_tests)
     ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_compute_mixed
         MANIFEST "${compute_mixed_staged}/main.lushader.json" RUNTIME_PACKAGE)
     cmake_path(GET rg2_compute_mixed_RUNTIME_PACKAGE PARENT_PATH compute_mixed_package_directory)
-    # Single-pass RayTracingPipeline reference for the compute-ray-tracing template (C4).
+    # Single-pass RayTracingPipeline reference for the compute-ray-tracing template (C4): the MIS
+    # integrator, and the light-sampling-only estimator of the same integral (no BSDF strategy).
     set(direct_lighting_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/direct_lighting_reference")
-    set(direct_lighting_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/direct_lighting_reference")
-    file(COPY "${direct_lighting_source}/" DESTINATION "${direct_lighting_staged}" PATTERN "*.in" EXCLUDE)
-    configure_file("${direct_lighting_source}/main.lushader.json.in"
-        "${direct_lighting_staged}/main.lushader.json" @ONLY)
-    ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_direct_lighting_reference
-        MANIFEST "${direct_lighting_staged}/main.lushader.json" RUNTIME_PACKAGE)
-    cmake_path(GET rg2_direct_lighting_reference_RUNTIME_PACKAGE PARENT_PATH direct_lighting_package_directory)
+    foreach(direct_lighting_variant IN ITEMS reference light_sampling)
+        set(direct_lighting_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/direct_lighting_${direct_lighting_variant}")
+        set(LUDUS_DIRECT_LIGHTING_IS_BSDF_SAMPLING_ENABLED true)
+        if(direct_lighting_variant STREQUAL "light_sampling")
+            set(LUDUS_DIRECT_LIGHTING_IS_BSDF_SAMPLING_ENABLED false)
+        endif()
+        file(COPY "${direct_lighting_source}/" DESTINATION "${direct_lighting_staged}" PATTERN "*.in" EXCLUDE)
+        configure_file("${direct_lighting_source}/main.lushader.json.in"
+            "${direct_lighting_staged}/main.lushader.json" @ONLY)
+        ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME "rg2_direct_lighting_${direct_lighting_variant}"
+            MANIFEST "${direct_lighting_staged}/main.lushader.json" RUNTIME_PACKAGE)
+        cmake_path(GET "rg2_direct_lighting_${direct_lighting_variant}_RUNTIME_PACKAGE" PARENT_PATH
+            direct_lighting_package_directory)
+        string(TOUPPER "${direct_lighting_variant}" direct_lighting_definition)
+        target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+            "LUDUS_RG3_DIRECT_LIGHTING_${direct_lighting_definition}_DIRECTORY=\"${direct_lighting_package_directory}\"")
+    endforeach()
+    # The compute-ray-tracing template once per other MIS_HEURISTIC value (the staged default is power):
+    # the same sources with only that Graph setting's value replaced.
+    set(compute_ray_tracing_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/compute_ray_tracing_template")
+    file(READ "${compute_ray_tracing_staged}/main.lushader.json" compute_ray_tracing_manifest)
+    string(JSON compute_ray_tracing_setting_count LENGTH "${compute_ray_tracing_manifest}" settings)
+    set(mis_heuristic_index -1)
+    math(EXPR compute_ray_tracing_setting_last "${compute_ray_tracing_setting_count} - 1")
+    foreach(setting_index RANGE ${compute_ray_tracing_setting_last})
+        string(JSON setting_id GET "${compute_ray_tracing_manifest}" settings ${setting_index} id)
+        if(setting_id STREQUAL "MIS_HEURISTIC")
+            set(mis_heuristic_index ${setting_index})
+        endif()
+    endforeach()
+    if(mis_heuristic_index LESS 0)
+        message(FATAL_ERROR "The compute-ray-tracing template manifest has no MIS_HEURISTIC setting.")
+    endif()
+    foreach(mis_variant IN ITEMS "balance;0" "cutoff;2" "maximum;3")
+        list(GET mis_variant 0 mis_name)
+        list(GET mis_variant 1 mis_value)
+        set(mis_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/compute_ray_tracing_mis_${mis_name}")
+        file(COPY "${compute_ray_tracing_staged}/" DESTINATION "${mis_staged}" PATTERN "main.lushader.json" EXCLUDE)
+        string(JSON mis_manifest SET "${compute_ray_tracing_manifest}" settings ${mis_heuristic_index} value
+            ${mis_value})
+        # Rewrite the staged manifest only when it changes, so reconfiguring does not rebuild the package.
+        file(WRITE "${mis_staged}.lushader.json" "${mis_manifest}\n")
+        file(COPY_FILE "${mis_staged}.lushader.json" "${mis_staged}/main.lushader.json" ONLY_IF_DIFFERENT)
+        ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME "rg2_compute_ray_tracing_mis_${mis_name}"
+            MANIFEST "${mis_staged}/main.lushader.json" RUNTIME_PACKAGE)
+        cmake_path(GET "rg2_compute_ray_tracing_mis_${mis_name}_RUNTIME_PACKAGE" PARENT_PATH mis_package_directory)
+        string(TOUPPER "${mis_name}" mis_definition)
+        target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+            "LUDUS_RG3_COMPUTE_RAY_TRACING_MIS_${mis_definition}_DIRECTORY=\"${mis_package_directory}\"")
+    endforeach()
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_SCENE_COMPUTE_DIRECTORY="${scene_compute_package_directory}"
         LUDUS_RG3_SCENE_COMPUTE_RASTER_DIRECTORY="${scene_compute_raster_package_directory}"
-        LUDUS_RG3_COMPUTE_MIXED_DIRECTORY="${compute_mixed_package_directory}"
-        LUDUS_RG3_DIRECT_LIGHTING_REFERENCE_DIRECTORY="${direct_lighting_package_directory}")
+        LUDUS_RG3_COMPUTE_MIXED_DIRECTORY="${compute_mixed_package_directory}")
     set(visibility_sequence_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/visibility_sequence")
     set(visibility_sequence_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/visibility_sequence")
     file(COPY "${visibility_sequence_source}/" DESTINATION "${visibility_sequence_staged}" PATTERN "*.in" EXCLUDE)

@@ -1417,7 +1417,8 @@ launches execute only the authored triangle loop.
 The **Compute ray tracing — primary hits + direct lighting** template
 (`compute-ray-tracing`) splits a first-hit direct-lighting renderer into two
 [scene compute passes](#author-scene-compute-passes): one finds each pixel's primary
-hit and records it in a buffer, the next reads that record and shades it. Create a
+hit and records it in a buffer, the next reads that record and shades it with
+[multiple importance sampling](#combine-light-and-bsdf-sampling). Create a
 whole package from **New Render Graph → Template**, or with the CLI:
 
 ```bash
@@ -1442,7 +1443,7 @@ pass.
 | Pipeline node | Kernel source | Work | Queries |
 | --- | --- | --- | --- |
 | `primary` | `main_shaders/primary.slang` (`TracePrimaryHit`) | Draw a subpixel jitter, build the ray with `MakeCameraRay`, call `TraceClosest` and write the hit record. Returns `float3(0)`. | One surface query |
-| `shade` | `main_shaders/shade.slang` (`ShadeRecordedHit`) | Validate the record, rebuild the surface with `GetSurfaceHit`, then return the surface emission plus one light sample: `SelectLight` and `SampleIncidentLight` choose it, `TestVisibility` traces the shadow ray from the surface, and `EvaluateStandardBsdf` weights it. A miss returns `EvaluateEnvironment`. | One visibility query |
+| `shade` | `main_shaders/shade.slang` (`ShadeRecordedHit`) | Validate the record, rebuild the surface with `GetSurfaceHit`, then return the surface emission plus one MIS-weighted light sample and one MIS-weighted BSDF sample. A miss returns `EvaluateEnvironment`. | One surface query and one visibility query |
 
 `main_shaders/hit_record.slang` owns the record layout, two `uint4` words per pixel:
 
@@ -1462,13 +1463,54 @@ negative radiance.
 
 Each pass draws from its own explicit [random dimension range](#author-scene-compute-passes)
 with the `RayLaunch` address overloads: `primary` uses `[0, 2)` for the jitter, and
-`shade` uses `[2, 6)` for the light selection and the three light-shape coordinates.
-Neither uses the automatic stream. The constants are next to the record layout; keep
-the ranges disjoint when you add draws.
+`shade` uses `[2, 9)`: the light selection, the three light-shape coordinates and the
+three BSDF coordinates (lobe, radius, angle). Neither uses the automatic stream. The
+constants are next to the record layout; keep the ranges disjoint when you add draws.
 
-This is a demonstration of the compute split, not a new integrator: one uniformly
-selected light sample per pixel and frame, no BSDF sampling or MIS, and no indirect
-bounces. Use [ReSTIR DI](#run-the-three-pass-restir-di-example) or
+<a id="combine-light-and-bsdf-sampling"></a>
+
+#### Combine light and BSDF sampling
+
+The shade pass estimates the light reflected toward the camera from the first surface
+with two sampling strategies, one sample each, and adds the weighted results:
+
+| Strategy | Proposal | What it reaches | Weighted against |
+| --- | --- | --- | --- |
+| Light | `SelectLight` picks a light uniformly; `SampleIncidentLight` picks a point on an emissive mesh, a direction toward the environment or the analytic light itself | Emission if `TestVisibility` finds the path unoccluded | The BSDF density of that direction, from `EvaluateStandardBsdf` |
+| BSDF | `SampleStandardBsdf` picks a direction from the surface's GGX/diffuse mixture | Emission of the surface that `TraceClosest` hits, or the environment on a miss | The light strategy's density of that point or direction: `EvaluateLightPdfSolidAngle` or `EvaluateEnvironmentPdfSolidAngle` |
+
+Both densities are solid-angle densities measured from the shaded surface. A
+directional, point or spot light is a delta light: a BSDF ray never reaches it, so its
+light sample has weight one. A surface whose emission is not in the scene's emitter
+list, and the environment when it has no radiance, have no light-strategy density, so a
+BSDF sample of them has weight one. Light sampling handles small, bright emitters and
+diffuse surfaces well; BSDF sampling handles large emitters, the environment and
+glossy surfaces well. The weights keep whichever strategy has the higher density for a
+direction, so the combination is robust where either strategy alone is noisy.
+
+`ComputeMisWeight` in `main_shaders/multiple_importance.slang` implements the heuristics
+of Eric Veach and Leonidas J. Guibas,
+[*Optimally Combining Sampling Techniques for Monte Carlo Rendering*, SIGGRAPH 1995, pp. 419–428](https://doi.org/10.1145/218380.218498).
+For finite positive densities, the two strategies' weights sum to one for every
+heuristic, so the combined estimate is unbiased. Choose a heuristic in **Graph settings**
+(Properties, or **Edit Graph Settings...** on the canvas); these are compile-time
+settings, so a change rebuilds the shaders and restarts accumulation:
+
+| Setting | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| MIS heuristic | 1 (power) | 0–3 | 0 balance: weight in proportion to density. 1 power: in proportion to density raised to the exponent. 2 cutoff: a strategy below the threshold fraction of the larger density gets nothing; the rest share by balance. 3 maximum: the strategy with the larger density gets everything; equal densities split evenly |
+| MIS power exponent | 2 | 1–16 | Exponent of the power heuristic; 1 equals the balance heuristic |
+| MIS cutoff threshold | 0.1 | 0–1 | Threshold of the cutoff heuristic; 0 equals the balance heuristic |
+
+The balance heuristic is provably close to the variance of the best possible weights.
+The others reduce variance further where one strategy already has much the higher
+density, such as glossy highlights of small lights; the power heuristic with exponent 2
+is the common choice. Inserting the configuration into an existing package adds missing
+settings and keeps the values of settings it already has.
+
+This remains a first-hit direct-lighting renderer: one light and one BSDF sample per
+pixel and frame, with no indirect bounces. Use
+[ReSTIR DI](#run-the-three-pass-restir-di-example) or
 [tiled vbuffer NEE](#select-emitters-per-screen-tile) for many-light scenes. Because
 ray queues and compaction are not available, both passes run over every pixel.
 
@@ -1483,13 +1525,17 @@ version or a capacity limit reports the repair and preserves the draft.
 `ludus_render_graph_ray_tests` renders the template on a lit Cornell-box-style room
 and compares it with a single-pass RayTracingPipeline
 [reference](../../tests/sdk_consumer/rg2/direct_lighting_reference/main.lurender.json)
-that applies the same direct-lighting policy. The reference draws the same random
-values from its automatic stream, so on Metal the two accumulated images are
-byte-identical; the test allows a 2% difference in mean radiance for other backends.
-It also resizes the graph and checks that the replacement hit buffer produces no
-error pixels.
+that independently implements the same MIS direct-lighting estimator. The reference
+draws the same random values from its automatic stream, so on Metal the two
+accumulated images are byte-identical; the test allows a 2% difference in mean
+radiance for other backends. It also resizes the graph and checks that the
+replacement hit buffer produces no error pixels. A second test builds the template
+once per heuristic and compares each 256-sample image's mean radiance with a
+light-sampling-only build of the reference (2% tolerance), which checks that every
+heuristic estimates the same integral.
 
-Thanks to Samuli Laine, Tero Karras and Timo Aila,
+Thanks to Eric Veach and Leonidas J. Guibas for multiple importance sampling and its
+heuristics, to Samuli Laine, Tero Karras and Timo Aila,
 [*Megakernels Considered Harmful: Wavefront Path Tracing on GPUs*, HPG 2013](https://doi.org/10.1145/2492045.2492060),
 whose stage split motivates separating hit generation from shading, and to
 Christopher A. Burns and Warren A. Hunt,
