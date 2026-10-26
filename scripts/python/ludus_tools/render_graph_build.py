@@ -913,7 +913,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     selected_programs = {technique[stage] for technique in techniques.values()
                          for stage in (ray.STAGES if technique['id'] == ray.TECHNIQUE else ('vertex', 'fragment'))
                          if stage in technique}
-    selected_programs.update(identity for variant in variants for identity in variant)
+    selected_programs.update(identity for variant in variants for identity in ray.callback_programs(variant))
     programs = {identity: program for identity, program in programs.items() if identity in selected_programs}
     if ray.TECHNIQUE in techniques:
         require(any(target in ('metal', 'spirv') for target in value['profiles']), 'Capability', 'profiles',

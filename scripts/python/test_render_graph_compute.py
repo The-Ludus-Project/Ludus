@@ -62,6 +62,15 @@ class SceneComputeLoweringTests(SceneComputeFixture):
         self.assertIn('source: ComputePipeline', graph.dump_plan(plan))
         self.assertEqual(before, json.loads(self.path.read_text()))
 
+    def test_existing_compute_kernel_can_select_triangle_loop_without_callbacks(self):
+        node = self.node('info')
+        node['invocation']['traversal'] = 'TriangleLoop'
+        operation = next(item for item in self.compile()['passes'] if item['kind'] == 'RayTracing')
+        variant = ray.program_tuple(operation['pipeline'])
+        self.assertEqual(('SceneInfo', ray.TRIANGLE_LOOP_TAG), variant)
+        self.assertEqual(('SceneInfo',), ray.callback_programs(variant))
+        self.assertTrue(ray.is_compute_variant(variant))
+
     def test_ray_members_keep_their_plan_records(self):
         plan = graph.compile_graph(ROOT / 'tests/sdk_consumer/rg2/ordered_ray/main.lurender.json')
         self.assertFalse(any('source_kind' in operation for operation in plan['passes']))
@@ -276,6 +285,27 @@ class NativeSceneComputeTests(unittest.TestCase):
         match = re.search(r'switch \(GetGraphPassIndex\(\)\) \{\n((?:case \d+: [^\n]*' + re.escape(callback_arguments) +
                           r'[^\n]*\n)*)default:', wrapper)
         return re.findall(r'case (\d+):', match[1]) if match else None
+
+    def test_mixed_sequence_can_select_triangle_loop_for_one_kernel(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'source'
+            shutil.copytree(COMPUTE_MIXED, source)
+            path = source / 'main.lurender.json'
+            document = json.loads(path.read_text())
+            node = next(node for node in document['configurations'][0]['nodes'] if node['kind'] == 'ComputePipeline')
+            node['invocation']['traversal'] = 'TriangleLoop'
+            path.write_bytes(graph.canonical_asset(document))
+            manifest = source / 'main.lushader.json'
+            manifest.write_text((source / 'main.lushader.json.in').read_text().replace(
+                '@RG2_TEST_PROFILES@', '["metal", "wgsl"]'))
+            result = build.build_package(manifest, root / 'build', helper=os.environ['LUDUS_RG1_HELPER'],
+                                         compiler=os.environ['LUDUS_RG1_SLANG'], spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+            package = Path(result['package'])
+            descriptor = json.loads((package / 'package.json').read_text())
+            recipe = next(recipe for recipe in descriptor['recipes'] if recipe['technique'] == ray.TECHNIQUE)
+            self.assertEqual(1, sum(variant[-1] == ray.TRIANGLE_LOOP_TAG for variant in recipe['ray_programs']))
+            execution.cook_runtime(str(package), root / 'mixed.lurgrt')
 
     def test_compute_kernels_dispatch_only_from_ray_generation(self):
         from test_render_graph_authoring import parse_runtime

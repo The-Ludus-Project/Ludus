@@ -300,10 +300,12 @@ RenderGraphPipelineEditor::RenderGraphPipelineEditor(const QJsonObject& node, QW
     }
     else if (IsSceneComputeNode(node) == true)
     {
-        hint->setText(hint->text() +
-                      QStringLiteral(" Scene compute shaders implement float3 Name(SceneContext scene, RayLaunch "
-                                     "launch, inout RayQueryContext queries) and trace with TraceClosest or "
-                                     "TestVisibility. There are no hit or miss callbacks, so TraceAndShade fails."));
+        hint->setText(
+            hint->text() +
+            QStringLiteral(" Scene compute shaders implement float3 Name(SceneContext scene, RayLaunch "
+                           "launch, inout RayQueryContext queries) and trace with TraceClosest or "
+                           "TestVisibility. Alternatively assign ray_generation, miss and closest_hit programs "
+                           "from a ray pipeline; TraceAndShade then invokes those callbacks."));
     }
     hint->setWordWrap(true);
     layout->addWidget(hint);
@@ -589,10 +591,44 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
         addSceneComputeStateProperties(outForm);
         return;
     }
+    if (name == QStringLiteral("invocation") && UsesRayLaunch(mNode) == true)
+    {
+        QComboBox* traversal = new QComboBox(this);
+        traversal->setObjectName(QStringLiteral("renderGraphTraversal"));
+        traversal->setProperty("renderGraphField", QStringLiteral("invocation.traversal"));
+        traversal->addItem(QStringLiteral("Automatic"), QString());
+        traversal->addItem(QStringLiteral("Triangle loop"), QStringLiteral("TriangleLoop"));
+        traversal->addItem(QStringLiteral("Native ray query"), QStringLiteral("NativeQuery"));
+        const QString selection = mNode.value(name).toObject().value(QStringLiteral("traversal")).toString();
+        traversal->setCurrentIndex(traversal->findData(selection));
+        traversal->setToolTip(QStringLiteral(
+            "Shared ray callbacks default to triangle intersections in a compute pipeline and native queries in "
+            "a ray pipeline. Existing compute kernels default to native queries. Both strategies currently require "
+            "the native ray runtime profile. The choice applies to surface and visibility queries."));
+        connect(traversal, &QComboBox::currentIndexChanged, this, [this, traversal](int32 index) {
+            QJsonObject invocation = mNode.value(QStringLiteral("invocation")).toObject();
+            const QString strategy = traversal->itemData(index).toString();
+            if (strategy.isEmpty() == true)
+            {
+                invocation.remove(QStringLiteral("traversal"));
+            }
+            else
+            {
+                invocation.insert(QStringLiteral("traversal"), strategy);
+            }
+            mNode.insert(QStringLiteral("invocation"), invocation);
+            publishEdit();
+        });
+        outForm.addRow(QStringLiteral("Ray traversal"), traversal);
+    }
     const QJsonObject properties = mNode.value(name).toObject();
     for (QJsonObject::const_iterator property = properties.begin(); property != properties.end(); ++property)
     {
         const QString key = property.key();
+        if (name == QStringLiteral("invocation") && key == QStringLiteral("traversal") && UsesRayLaunch(mNode) == true)
+        {
+            continue;
+        }
         const QJsonValue value = property.value();
         const auto setProperty = [this, name, key](const QJsonValue& field) {
             QJsonObject record = mNode.value(name).toObject();

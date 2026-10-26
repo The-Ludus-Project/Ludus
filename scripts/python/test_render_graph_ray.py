@@ -213,6 +213,44 @@ class RayPipelineTests(unittest.TestCase):
         self.assertEqual(self.node, operation['pipeline'])
         self.assertEqual(self.document, json.loads(self.path.read_text()))
 
+    def test_compute_pipeline_reuses_ray_programs_and_defaults_to_triangle_intersections(self):
+        original = deepcopy(self.node['shaders'])
+        self.node.update(kind='ComputePipeline', state={})
+        plan = self.compile()
+        operation = next(item for item in plan['passes'] if item['kind'] == 'RayTracing')
+        self.assertEqual(original, operation['pipeline']['shaders'])
+        variant = ray.program_tuple(operation['pipeline'])
+        self.assertEqual(('Generate', 'Miss', 'Closest'), ray.callback_programs(variant))
+        self.assertEqual(ray.TRIANGLE_LOOP_TAG, variant[-1])
+        self.assertFalse(ray.is_compute_variant(variant))
+        self.node['invocation']['traversal'] = 'NativeQuery'
+        self.assertEqual(('Generate', 'Miss', 'Closest'), ray.program_tuple(self.compile()['passes'][0]['pipeline']))
+
+    def test_shared_callbacks_reject_partial_or_mixed_kernel_assignments(self):
+        self.node.update(kind='ComputePipeline', state={})
+        original = deepcopy(self.node['shaders'])
+        for shaders in (original[:-1], original + [{'id': 'kernel', 'stage': 'compute', 'program': 'Kernel'}]):
+            self.node['shaders'] = shaders
+            with self.assertRaisesRegex(ToolingError, 'without a compute kernel'):
+                self.compile()
+
+    def test_traversal_selection_is_validated_and_cooked_as_part_of_the_variant(self):
+        original = ray.program_tuple(self.node)
+        self.node['invocation']['traversal'] = 'TriangleLoop'
+        software_plan = self.compile()
+        software = ray.program_tuple(software_plan['passes'][0]['pipeline'])
+        self.assertEqual(original + (ray.TRIANGLE_LOOP_TAG,), software)
+        self.assertEqual(original, ray.callback_programs(software))
+        native_plan = deepcopy(software_plan)
+        native_plan['passes'][0]['pipeline']['invocation']['traversal'] = 'NativeQuery'
+        groups = ray.group_profiles([software_plan, native_plan], {}, build)
+        self.assertEqual([original, software], groups[0]['variants'])
+        self.assertTrue(groups[0]['persistent'])
+        for strategy in ('Unknown', '', 1, None):
+            self.node['invocation']['traversal'] = strategy
+            with self.assertRaisesRegex(ToolingError, 'traversal'):
+                self.compile()
+
     def connect_members(self, members):
         configuration = self.document['configurations'][0]
         configuration['edges'] = [edge for edge in configuration['edges'] if not edge['to'].startswith('trace.scene')]
@@ -539,6 +577,53 @@ class RayPipelineTests(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('LUDUS_RG1_SLANG') and os.environ.get('LUDUS_RG1_HELPER') and os.environ.get('LUDUS_RG1_CROSS'),
                      'set LUDUS_RG1_SLANG, LUDUS_RG1_HELPER and LUDUS_RG1_CROSS for native ray compiler acceptance')
 class RayCompilerAcceptance(unittest.TestCase):
+    def test_shared_ray_callbacks_compile_with_both_traversals_and_pipeline_kinds(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'source'
+            shutil.copytree(ROOT / 'tests/sdk_consumer/rg2/scene_ray', source)
+            path = source / 'main.lurender.json'
+            document = json.loads(path.read_text())
+            configuration = document['configurations'][0]
+            configuration['id'] = 'Native'
+            document['default'] = 'Native'
+            compute_configuration = deepcopy(configuration)
+            compute_configuration['id'] = 'Compute'
+            node = next(node for node in compute_configuration['nodes'] if node['kind'] == 'RayTracingPipeline')
+            node.update(kind='ComputePipeline', state={})
+            document['configurations'] = [configuration, compute_configuration]
+            path.write_bytes(graph.canonical_asset(document))
+            manifest = source / 'main.lushader.json'
+            manifest.write_text((source / 'main.lushader.json.in').read_text().replace(
+                '@RG2_TEST_PROFILES@', '["metal", "wgsl"]'))
+            options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
+                           spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+            result = build.build_package(manifest, root / 'build', **options)
+            package = Path(result['package'])
+            wrapper = next(path.read_text() for path in (package / 'programs').glob('*/wrapper.slang')
+                           if 'GetGraphTraversalStrategy' in path.read_text())
+            self.assertIn('const uint strategies[] = { 0, 1 }', wrapper)
+            descriptor = json.loads((package / 'package.json').read_text())
+            recipe = next(recipe for recipe in descriptor['recipes'] if recipe['technique'] == ray.TECHNIQUE)
+            self.assertEqual([['Generate', 'Miss', 'Closest'],
+                              ['Generate', 'Miss', 'Closest', ray.TRIANGLE_LOOP_TAG]], recipe['ray_programs'])
+            _, _, native, _ = execution.lower_plan(descriptor, 'Native')
+            _, _, compute, _ = execution.lower_plan(descriptor, 'Compute')
+            self.assertEqual(0, next(item['RayProgram'] for item in native if item['Program'] == 'RayTracing'))
+            self.assertEqual(1, next(item['RayProgram'] for item in compute if item['Program'] == 'RayTracing'))
+            destination = root / 'shared.lurgrt'
+            execution.cook_runtime(str(package), destination, configuration='Compute')
+            self.assertGreater(destination.stat().st_size, 0)
+            # An explicit selector change rebuilds the wrapper without modifying any authored shader.
+            shader_bytes = {path: path.read_bytes() for path in (source / 'main_shaders').glob('*.slang')}
+            node['invocation']['traversal'] = 'NativeQuery'
+            path.write_bytes(graph.canonical_asset(document))
+            rebuilt = build.build_package(manifest, root / 'build', **options)
+            rebuilt_wrapper = next(path.read_text() for path in (Path(rebuilt['package']) / 'programs').glob('*/wrapper.slang')
+                                   if 'DispatchGraphRay' in path.read_text())
+            self.assertNotIn('GetGraphTraversalStrategy', rebuilt_wrapper)
+            self.assertEqual(shader_bytes, {path: path.read_bytes() for path in shader_bytes})
+
     def test_builtin_visibility_templates_keep_the_static_host_interface(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

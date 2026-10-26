@@ -120,7 +120,7 @@ struct Hit
     float2 Barycentric;
 };
 float4 InterpolateTriangle(uint triangle, uint first, in float2 barycentric);
-Hit Trace(float3 originWorld,
+Hit TraceNative(float3 originWorld,
           float3 directionWorld,
           float nearDistanceWorld,
           float farDistanceWorld,
@@ -160,6 +160,21 @@ Hit Trace(float3 originWorld,
         hit.Barycentric = query.CommittedTriangleBarycentrics();
     }
     return hit;
+}
+#ifdef LUDUS_GRAPH_TRAVERSAL_STRATEGIES
+#include "ray_triangle_loop.slang"
+#endif
+Hit Trace(float3 originWorld,
+          float3 directionWorld,
+          float nearDistanceWorld,
+          float farDistanceWorld,
+          bool isVisibility = false)
+{
+#ifdef LUDUS_GRAPH_TRAVERSAL_STRATEGIES
+    if (GetGraphTraversalStrategy() == 1)
+        return TraceTriangleLoop(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
+#endif
+    return TraceNative(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
 }
 // Thanks to Dirk Gerrit van Antwerpen, "Solving Self-Intersection Artifacts in
 // DirectX Raytracing", NVIDIA Technical Blog (2023), "Error bounds":

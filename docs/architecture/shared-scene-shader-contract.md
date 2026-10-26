@@ -318,6 +318,13 @@ queries do not recursively dispatch user shading. This is ordinary linked
 compute code on the current portable BVH profile, not an implied DXR/Vulkan
 shader table or hardware traversal guarantee.
 
+Ray callbacks may also be assigned as a complete set to a scene ComputePipeline.
+The query boundary owns strategy dispatch: callback sources and ScenePayload do not
+change between triangle-loop intersections and native queries. Strategy is part of
+the cooked callback variant, so shared program IDs do not imply shared traversal.
+See the [authoring contract](../development/render-graph-authoring.md#reuse-ray-callbacks-in-compute-pipelines)
+for defaults, selection and the retained native capability requirement.
+
 The following is author-owned pseudocode. UserEstimateDirect, UserHandleEmission
 and UserChooseContinuation are deliberately not engine helper implementations:
 

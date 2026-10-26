@@ -1,4 +1,4 @@
-"""Hardware triangle ray pipelines using native queries and authored functions.
+"""Triangle ray pipelines using selectable traversal and shared authored functions.
 
 The renderer owns native acceleration structures and the packed shading tables. The graph owns
 stage assignment, launch extent and publication. No CPU transport is selected.
@@ -25,23 +25,38 @@ COMPUTE_STAGE = 'compute'
 UNUSED_COMPUTE_CALLBACKS = {'miss': 'GraphComputeMiss', 'closest_hit': 'GraphComputeClosestHit'}
 
 
+# Strategy tags are cooked into callback variants so the same programs can be used
+# by different passes without sharing a traversal choice or changing their sources.
+TRIANGLE_LOOP_TAG = '@TriangleLoop'
+
+
+def callback_programs(variant):
+    """Return only authored program IDs from a cooked callback/strategy variant."""
+    return tuple(variant[:-1]) if variant[-1] == TRIANGLE_LOOP_TAG else tuple(variant)
+
+
 def program_tuple(node):
-    """Return a pass's callback variant: (compute,) for scene compute, else (raygen, miss, closest)."""
+    """Return the callback IDs and optional software traversal tag for one pass."""
     assignments = {shader['stage']: shader['program'] for shader in node['shaders']}
-    if node['kind'] == 'ComputePipeline':
-        return (assignments[COMPUTE_STAGE],)
-    return tuple(assignments[stage] for stage in STAGES)
+    has_kernel = COMPUTE_STAGE in assignments
+    variant = (assignments[COMPUTE_STAGE],) if has_kernel else tuple(assignments[stage] for stage in STAGES)
+    # Preserve existing compute kernels' native query behavior. Shared ray callbacks
+    # default to engine triangle intersections when assigned to a compute pipeline.
+    default = 'TriangleLoop' if node['kind'] == 'ComputePipeline' and not has_kernel else 'NativeQuery'
+    if node['invocation'].get('traversal', default) == 'TriangleLoop':
+        variant += (TRIANGLE_LOOP_TAG,)
+    return variant
 
 
 def is_compute_variant(variant):
     """Scene compute kernels occupy only the ray-generation position of the sequence."""
-    return len(variant) == 1
+    return len(callback_programs(variant)) == 1
 
 
 def select_callbacks(programs, variant):
     """Map a variant to wrapper stage programs, filling a compute kernel's unused callbacks."""
     if not is_compute_variant(variant):
-        return {stage: programs[identity] for stage, identity in zip(STAGES, variant)}
+        return {stage: programs[identity] for stage, identity in zip(STAGES, callback_programs(variant))}
     kernel = programs[variant[0]]
     selected = {'ray_generation': kernel}
     for stage, function in UNUSED_COMPUTE_CALLBACKS.items():
@@ -74,7 +89,7 @@ IMAGE_INPUTS = [{'location': 0, 'format': 'Float2'}]
 IMAGE_FRAGMENT_ID = 'GraphRayImageFragment'
 # Files are installed by their owning renderer/math/RHI targets beside the helper.
 HELPERS = ('scene_data.h', 'renderer_gpu_preview_layout.h', 'renderer_surface_functions.slang', 'recipes.json',
-           'lighting_layout.h', 'math.slang', 'raster_bindings.slang', 'scene_shader.slang', 'scene_payload.slang', 'scene_shader_layout.h', 'ray_shader.slang', 'visibility_buffer.slang')
+           'ray_triangle_loop.slang', 'lighting_layout.h', 'math.slang', 'raster_bindings.slang', 'scene_shader.slang', 'scene_payload.slang', 'scene_shader_layout.h', 'ray_shader.slang', 'visibility_buffer.slang')
 
 
 def resolve_state(state):
@@ -220,9 +235,12 @@ def group_profiles(plans, technique, build):
         group['structured_buffers'] |= any(operation.get('buffers') for operation in operations)
         # GraphBuffer0/1 and GetGraphPassIndex exist only in the persistent wrapper, so a
         # single scene compute pass needs it as well (compute ray tracing design, section 3.3).
-        group['persistent'] |= len(operations) > 1 or any(resource['type'] == 'Buffer' and 'stride' not in resource
-                                                        for resource in plan['resources'].values()) or any(
-            operation['pipeline']['kind'] == 'ComputePipeline' for operation in operations)
+        has_triangle_loop = any(program_tuple(operation['pipeline'])[-1] == TRIANGLE_LOOP_TAG
+                                for operation in operations)
+        group['persistent'] |= has_triangle_loop or len(operations) > 1 or any(
+            resource['type'] == 'Buffer' and 'stride' not in resource
+            for resource in plan['resources'].values()) or any(
+                operation['pipeline']['kind'] == 'ComputePipeline' for operation in operations)
     if not groups:
         build.require(all(stage in technique for stage in STAGES), 'Configuration', TECHNIQUE,
                       'a ray technique without default callbacks requires a RayTracingPipeline or scene compute pass')
@@ -314,7 +332,7 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
     wrapper = wrapper.replace('ComputeMain(positionPixel)', compute_recipe['compute'] + '(positionPixel)')
     compatibility = {'sources': {}, 'callbacks': []}
     if technique.get('scene_interface') is not None:
-        sources = {programs[identity]['source'] for variant in variants for identity in variant} if variants else {
+        sources = {programs[identity]['source'] for variant in variants for identity in callback_programs(variant)} if variants else {
             program['source'] for program in selected.values()}
         compatibility = migrate_legacy_scene_sources(sources, snapshot)
         wrapper = scene_wrapper(selected, technique['scene_interface'], snapshot, build, compute_recipe, storage_source,
@@ -578,7 +596,7 @@ def validate_payload(data, budget, build):
 def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, compatibility=None):
     """Namespace each unique authored source and dispatch its callbacks by pass index."""
     interface = technique['scene_interface']
-    sources = sorted({programs[identity]['source'] for variant in variants for identity in variant})
+    sources = sorted({programs[identity]['source'] for variant in variants for identity in callback_programs(variant)})
     # A ray variant supplies the callback template; it is the first variant in ray-only sequences.
     template = next((variant for variant in variants if not is_compute_variant(variant)), variants[0])
     selected = {stage: dict(program, function=f'GraphSource{sources.index(program["source"])}::' + program['function'])
@@ -587,9 +605,17 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, c
     prefix, body = wrapper.split('uint TraceAndShade(', 1)
     first_callbacks, first_adapters = adapt_legacy_callbacks(selected)
     body = body.replace(first_adapters, '', 1) if first_adapters else body
-    if any(programs[identity]['output'] in ('Ray', 'Color') for variant in variants for identity in variant):
+    if any(programs[identity]['output'] in ('Ray', 'Color') for variant in variants for identity in callback_programs(variant)):
         if '#include "_ludus_ray/ray_shader.slang"' not in prefix:
             prefix += '#include "_ludus_ray/ray_shader.slang"\n'
+    if any(variant[-1] == TRIANGLE_LOOP_TAG for variant in variants):
+        choices = ', '.join('1' if variant[-1] == TRIANGLE_LOOP_TAG else '0' for variant in variants)
+        prefix = ('#define LUDUS_GRAPH_TRAVERSAL_STRATEGIES 1\n'
+                  'uint GetGraphTraversalStrategy();\n' + prefix)
+        prefix += ('uint GetGraphTraversalStrategy() {\n'
+                   f'    const uint strategies[] = {{ {choices} }};\n'
+                   '    uint index = (Sampling.z >> LUDUS_GRAPH_PASS_INDEX_SHIFT) & LUDUS_GRAPH_PASS_INDEX_MASK;\n'
+                   f'    return index < {len(variants)} ? strategies[index] : 0;\n}}\n')
     prefix = prefix.replace('#define LUDUS_SCENE_RAY_INTERFACE 1',
                             '#define LUDUS_SCENE_RAY_INTERFACE 1\n#define LUDUS_GRAPH_PERSISTENT_PIPELINE 1')
     prefix += '[[vk::binding(6, 0)]] RWStructuredBuffer<uint4> GraphBuffer0;\n'
@@ -606,7 +632,7 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, c
     variant_callbacks = []
     for index, variant in enumerate(variants):
         variant_selected = {stage: dict(programs[identity], function=f'GraphSource{sources.index(programs[identity]["source"])}::' + programs[identity]['function'])
-                            for stage, identity in zip(STAGES, variant)}
+                            for stage, identity in zip(STAGES, callback_programs(variant))}
         callbacks, adapters = adapt_legacy_callbacks(variant_selected, str(index))
         variant_callbacks.append(callbacks)
         prefix += adapters

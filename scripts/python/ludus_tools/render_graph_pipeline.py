@@ -17,7 +17,7 @@ MAX_SHADERS = 16
 MAX_DIMENSION = 65535
 STAGES = {
     'GraphicsPipeline': ('vertex', 'fragment', 'geometry', 'hull', 'domain'),
-    'ComputePipeline': ('compute',),
+    'ComputePipeline': ('compute', 'ray_generation', 'miss', 'closest_hit'),
     'RayTracingPipeline': ('ray_generation', 'miss', 'closest_hit', 'any_hit', 'intersection', 'callable'),
 }
 GRAPHICS_STATE = {
@@ -153,7 +153,7 @@ def validate(node, where, graph):
         graph._keys(state, (), where, ('group_size',))
         if 'group_size' in state:
             _dimensions(state['group_size'], where, graph, 'Pipeline State → group_size')
-        _check_field(graph._keys, invocation, 'Invocation', where, graph, ('dimensions',))
+        graph._keys(invocation, ('dimensions',), where, ('traversal',))
         if invocation['dimensions'] != 'ColorTarget':
             _dimensions(invocation['dimensions'], where, graph, 'Invocation → dimensions')
     elif node['kind'] == 'ComputePipeline':
@@ -168,9 +168,15 @@ def validate(node, where, graph):
         for field in ('payload_bytes', 'attribute_bytes'):
             if field in state:
                 _check_field(graph._integer, state[field], f'Pipeline State → {field} (bytes)', where, graph, 0, 4096)
-        _check_field(graph._keys, invocation, 'Invocation', where, graph, ('dimensions',))
+        graph._keys(invocation, ('dimensions',), where, ('traversal',))
         if invocation['dimensions'] != 'ColorTarget':
             _dimensions(invocation['dimensions'], where, graph, 'Invocation → dimensions')
+
+    if 'traversal' in invocation:
+        graph._require(node['kind'] == 'RayTracingPipeline' or is_scene_compute(node),
+                       'Capability', where, 'traversal requires a ray pipeline or scene compute pass')
+        _check_field(graph._enum, invocation['traversal'], 'Invocation → traversal', where, graph,
+                     ('TriangleLoop', 'NativeQuery'))
 
     graph.options.validate_pipeline(node, where, graph)
 
