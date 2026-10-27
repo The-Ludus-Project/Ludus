@@ -38,6 +38,7 @@
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/profile.h>
 
+#include <cstddef>
 #include <cstring>
 #include <initializer_list>
 #include <new>
@@ -865,9 +866,11 @@ TEST_CASE("Editors without OIDN preview a denoising graph unfiltered and say so"
                            readWord(CAMERA_COUNT_FIELD * sizeof(uint32)) * format::CAMERA_RECORD_BYTES;
     REQUIRE(readWord(PASS_COUNT_FIELD * sizeof(uint32)) != 0);
     REQUIRE(readWord(passesAt) == static_cast<uint32>(format::Technique::RayTracing));
-    // DenoisingQuality is the last word of a pass record: what a Denoise node after this ray pass cooks to.
+    // DenoisingQuality is what a Denoise node after this ray pass cooks to; later fields follow it.
+    static_assert(offsetof(format::Pass, DenoisingQuality) == format::PASS_DENOISING_QUALITY_FIELD * sizeof(uint32));
+    const usize qualityAt = passesAt + format::PASS_DENOISING_QUALITY_FIELD * sizeof(uint32);
     const uint32 quality = static_cast<uint32>(format::ProcessingQuality::Balanced);
-    std::memcpy(bytes.data() + passesAt + format::PASS_RECORD_BYTES - sizeof(uint32), &quality, sizeof(quality));
+    std::memcpy(bytes.data() + qualityAt, &quality, sizeof(quality));
     QTemporaryDir directory;
     const QString denoised = WriteBytes(directory, QStringLiteral("denoised.lurgrt"), bytes);
     DeviceFixture device({}, true);

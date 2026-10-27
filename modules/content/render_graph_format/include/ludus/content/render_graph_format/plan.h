@@ -73,6 +73,10 @@ inline constexpr foundation::usize MAX_UNIFORM_BLOCK_BYTES = 1024;
 inline constexpr foundation::usize MAX_UNIFORM_SETS = 16;
 /// Number of explicitly serialized four-byte fields in a current pass record (uint32 or float32).
 inline constexpr foundation::usize PASS_FIELD_COUNT = 20;
+/// Serialized four-byte field index of Pass::DenoisingQuality, stable since it was appended in
+/// runtime package version 16; later versions append fields after it.
+inline constexpr foundation::usize PASS_DENOISING_QUALITY_FIELD = 18;
+static_assert(PASS_DENOISING_QUALITY_FIELD < PASS_FIELD_COUNT);
 /// Maximum samples in an authored Accumulate operation; zero selects individual ray samples.
 inline constexpr foundation::uint32 MAX_ACCUMULATION_SAMPLES = 4096;
 /// Smallest admitted positive linear exposure multiplier for an authored ToneMap operation.
