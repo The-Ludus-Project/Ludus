@@ -38,6 +38,45 @@ class VisibilityBenchmarkTests(unittest.TestCase):
         (self.root / 'visibility/mixed.pass-names.bin').write_bytes(
             b''.join(struct.pack('<I', len(name)) + name for name in names))
 
+    def write_both_passes(self):
+        self.write_passes()
+        for suffix in ('.pass-info.bin', '.pass-names.bin', '.pass-intervals.bin',
+                       '.transport.gpu.bin', '.output.gpu.bin'):
+            shutil.copy2(self.root / 'visibility' / ('mixed' + suffix),
+                         self.root / 'full' / ('mixed' + suffix))
+        self.write('full/mixed.transport.gpu.bin', 'd', [60, 80, 100, 120])
+
+    def test_workgroup_transport_ratios_pair_frames_independently_of_frame_intervals(self):
+        self.write_both_passes()
+        result = summarize([self.root], scenes=('mixed',), pass_variants=('full', 'visibility'))['mixed']
+        transport = result['transport_pairs']
+        self.assertEqual(transport['median_run_paired_speedup'], 2)
+        self.assertEqual(transport['median_run_paired_gpu_time_reduction_percent'], 50)
+        self.assertEqual(transport['ratio_pairs'], 4)
+        self.assertEqual(result['median_run_paired_speedup'], 5.5)
+        self.assertEqual(result['runs'][0]['transport_pairs']['baseline_first_speedup'], 2)
+        self.assertEqual(result['runs'][0]['transport_pairs']['candidate_first_speedup'], 2)
+
+    def test_workgroup_zero_duration_pairs_do_not_manufacture_transport_speedup(self):
+        self.write_both_passes()
+        self.write('visibility/mixed.transport.gpu.bin', 'd', [0, 40, 50, 60])
+        result = summarize([self.root], scenes=('mixed',), pass_variants=('full', 'visibility'))['mixed']
+        self.assertEqual(result['transport_pairs']['ratio_pairs'], 3)
+        self.assertEqual(result['transport_pairs']['zero_duration_pairs'], 1)
+        self.assertEqual(result['transport_pairs']['median_run_paired_speedup'], 2)
+        self.write('visibility/mixed.transport.gpu.bin', 'd', [0] * 4)
+        result = summarize([self.root], scenes=('mixed',), pass_variants=('full', 'visibility'))['mixed']
+        self.assertEqual(result['transport_pairs']['runs_with_ratios'], 0)
+        self.assertIsNone(result['transport_pairs']['median_run_paired_speedup'])
+        self.assertIsNone(result['transport_pairs']['run_bootstrap_95_percent_interval'])
+
+    def test_unrepresentable_transport_ratio_is_rejected(self):
+        self.write_both_passes()
+        self.write('full/mixed.transport.gpu.bin', 'd', [1e308] * 4)
+        self.write('visibility/mixed.transport.gpu.bin', 'd', [1e-308] * 4)
+        with self.assertRaisesRegex(ValueError, 'unrepresentable paired transport ratio'):
+            summarize_run(self.root, 'mixed', pass_variants=('full', 'visibility'))
+
     def test_passes_are_separate_intervals_and_need_not_sum_to_frame_time(self):
         self.write_passes()
         result = summarize_run(self.root, 'mixed', pass_variants=('visibility',))

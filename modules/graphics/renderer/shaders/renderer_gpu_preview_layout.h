@@ -33,7 +33,18 @@
 #define LUDUS_GPU_PREVIEW_GEOMETRIC_NORMAL_WORD 8
 #define LUDUS_GPU_PREVIEW_INVALID_TRIANGLE 0xffffffff
 #define LUDUS_GPU_PREVIEW_FAILED_TRIANGLE 0xfffffffe
+// Graph callback entries retain their existing linear grouping.
 #define LUDUS_GPU_PREVIEW_GROUP_WIDTH 64
+// Thanks to Apple, "Scale compute workloads across Apple GPUs", WWDC22,
+// https://developer.apple.com/videos/play/wwdc2022/10159/: compare group shapes
+// against matched pixel/sample addresses. The native preview's measured 8x8
+// choice changes dispatch grouping, not transport arithmetic or the estimator.
+#ifndef LUDUS_GPU_PREVIEW_TRANSPORT_GROUP_WIDTH
+#    define LUDUS_GPU_PREVIEW_TRANSPORT_GROUP_WIDTH 8
+#endif
+#ifndef LUDUS_GPU_PREVIEW_TRANSPORT_GROUP_HEIGHT
+#    define LUDUS_GPU_PREVIEW_TRANSPORT_GROUP_HEIGHT 8
+#endif
 #define LUDUS_GPU_PREVIEW_PARAMETERS_BYTES 224
 
 // Scene interface metadata in otherwise unused packed triangle components.

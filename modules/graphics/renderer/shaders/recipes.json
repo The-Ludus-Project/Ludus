@@ -137,5 +137,25 @@
     "source": "renderer_gpu_preview_hit_cached.slang",
     "compute": "ComputeMain",
     "native_ray_queries": true
+  },
+  "renderer_gpu_preview_group32": {
+    "source": "renderer_gpu_preview_group32.slang",
+    "compute": "ComputeMain",
+    "native_ray_queries": true
+  },
+  "renderer_gpu_preview_group128": {
+    "source": "renderer_gpu_preview_group128.slang",
+    "compute": "ComputeMain",
+    "native_ray_queries": true
+  },
+  "renderer_gpu_preview_group8x8": {
+    "source": "renderer_gpu_preview_group8x8.slang",
+    "compute": "ComputeMain",
+    "native_ray_queries": true
+  },
+  "renderer_gpu_preview_group64": {
+    "source": "renderer_gpu_preview_group64.slang",
+    "compute": "ComputeMain",
+    "native_ray_queries": true
   }
 }

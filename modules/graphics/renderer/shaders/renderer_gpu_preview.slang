@@ -967,7 +967,8 @@ float3 Integrate(uint pixel, uint sample)
 #if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE)
 #    define LUDUS_GPU_PREVIEW_COMPUTE_ENTRY
 #else
-#    define LUDUS_GPU_PREVIEW_COMPUTE_ENTRY [numthreads(LUDUS_GPU_PREVIEW_GROUP_WIDTH, 1, 1)]
+#    define LUDUS_GPU_PREVIEW_COMPUTE_ENTRY                                                                            \
+        [numthreads(LUDUS_GPU_PREVIEW_TRANSPORT_GROUP_WIDTH, LUDUS_GPU_PREVIEW_TRANSPORT_GROUP_HEIGHT, 1)]
 #endif
 LUDUS_GPU_PREVIEW_COMPUTE_ENTRY void ComputeMain(uint3 positionPixel : SV_DispatchThreadID)
 {

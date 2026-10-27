@@ -98,6 +98,8 @@ struct GpuPreviewState final
     StaticArray<rhi::RasterBinding, GPU_PREVIEW_COMPUTE_BINDING_CAPACITY>
         ComputeBindings{}; // NOLINT(bugprone-invalid-enum-default-initialization)
     usize ComputeBindingCount = 0;
+    uint32 WorkgroupWidth = 1;
+    uint32 WorkgroupHeight = 1;
     bool HasRayPathCapture = false;
     bool IsGraphRayScene = false;
     bool HasNativeRayQueries = true;

@@ -2237,7 +2237,7 @@ checks. No image readback or file I/O occurs between paired submissions; counter
 resolution happens after completion and its CPU cost is visible in the pair gap.
 
 Measurement on 2026-10-27 used Apple M5 (8 GPU cores), macOS 26.6,
-Clang 23.1.3 `RelWithDebInfo` (`-O2`), the default visibility-only / uncached
+Clang 23.1.3 `RelWithDebInfo` (`-O2`), the then-default 64×1 visibility-only / uncached
 shader, 512×512 pixels and 128 samples (16 warmup). Five independent processes
 contributed 112 matched AB/BA pairs per scene each. The source base was
 `02df0b37e3e2283f88a86ea1a012e2794a8905d6`; the frozen executable SHA-256 was
@@ -2269,6 +2269,90 @@ order-bias inspection. Every displayed RGBA8 channel and raw linear RGB value
 was identical between unprobed and profiled variants, with complete sample
 coverage. The ordinary regression separately checks the independent CPU oracle
 and software GPU-reference outputs at 64×64 / 16 samples using the tolerances above.
+
+The standalone native-preview transport uses an 8×8 workgroup. Dispatch and image
+admission use the supplied compute artifact's reflected X/Y dimensions, including
+partial edge groups; Z must be one. Zero dimensions reject as `InvalidDescription`,
+and workgroup volume/dimensions or dispatch counts exceeding device limits reject
+as `Unsupported`. Authored render-graph callback entry points retain their existing
+64×1 grouping. This experiment qualifies the standalone preview workload, with
+performance evidence from the M5 backend below.
+
+Reproduce workgroup comparisons against the former 64×1 shape with:
+
+```sh
+python3 scripts/python/benchmark_ray_visibility.py --experiment workgroups \
+  --workgroup 8x8 \
+  --executable out/build/<native-build>/modules/graphics/renderer/ludus_renderer_render_tests \
+  --output out/workgroups/confirmation --runs 5
+```
+
+`--workgroup` also accepts `32x1`, `128x1` and `64x1`; the last is an A/A control.
+Both `baseline/` and `candidate/` use frame and pass probes. The same 512×512,
+128-sample, 16-warmup fixtures alternate AB/BA at matched pixel/sample addresses;
+processes reverse their initial order. The report retains both sets of raw pass
+records and independently computes paired transport and full-frame ratios, order
+splits and 95% process-bootstrap intervals. Quantized-zero transport durations
+remain valid raw measurements; pairs containing one cannot form a ratio and are
+counted explicitly. A run with no positive pairs has no transport ratio. Image
+readback and file writing follow the timed sequence.
+
+Generated-code inspection on the pinned Slang/SPIRV-Cross toolchain found identical
+175,969-byte MSL for 32×1, 64×1, 128×1 and 8×8, including the proposed production
+recipe (SHA-256 `da66fc86c67d5eda31ecd44ac3a409fb92fdd47cb00a897bf7b8a0623b754893`).
+All SPIR-V artifacts had 9,377 instructions and 144,872 bytes; only the local-size
+execution mode differed. Reflection matched each intended shape. There was no
+threadgroup memory or barrier in the emitted MSL. The native pipeline receives the
+reflected group size at dispatch; this change does not add a compilation occupancy
+hint or change transport arithmetic. Native register/spill statistics were
+unavailable because the local offline Metal compiler was not installed. Thanks to
+**Apple**, [*Scale compute workloads across Apple GPUs*, WWDC22](https://developer.apple.com/videos/play/wwdc2022/10159/),
+for the workload-specific threadgroup-size guidance used to select this experiment.
+
+Measurement on 2026-10-27 used Apple M5 (8 GPU cores), macOS 26.6 and Clang
+23.1.3 `RelWithDebInfo` (`-O2`). A three-process-block screen rotated 32×1, 128×1,
+8×8 and a 64×1/64×1 control; 32×1 and 128×1 showed small/inconsistent changes,
+while 8×8 improved transport and full-frame intervals across every nonempty fixture.
+An independent five-block confirmation alternated 8×8 and the A/A control, reversing
+initial AB/BA order per block: 560 matched measured pairs per scene and experiment.
+The final source base was `94fa8ef9b26a5d3f081721baebebaa3402213b7a`; the frozen
+executable SHA-256 was `75368d6d70c41d82097e1ecdf5b74c987edd703c329f4cfcc5e22124864f5f7a`.
+No other builds or GPU tests from this experiment ran during timed submissions.
+Raw duration columns are medians of process medians; percentage reductions are
+medians of matched-frame ratios, with 95% process-bootstrap intervals in brackets.
+Positive percentages mean less elapsed GPU time.
+
+| Scene | 64×1 transport (ms) | 8×8 transport (ms) | Transport reduction [95% interval] | Full-frame reduction [95% interval] | A/A transport reduction |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| empty | 0.5271 | 0.5204 | 1.51% [1.22%, 1.53%] | 1.30% [1.08%, 1.37%] | 0.14% |
+| opaque | 1.6577 | 1.5675 | 5.23% [4.92%, 5.50%] | 5.13% [4.69%, 5.41%] | -0.12% |
+| masked | 2.9145 | 2.7124 | 7.06% [6.82%, 7.20%] | 6.78% [6.63%, 7.49%] | -0.28% |
+| mixed | 2.9202 | 2.6693 | 8.99% [8.49%, 9.32%] | 8.77% [7.72%, 9.07%] | -0.26% |
+| textured-nearest | 3.5355 | 3.0704 | 12.07% [12.03%, 13.32%] | 12.15% [11.81%, 13.37%] | 0.31% |
+| textured-linear | 4.0648 | 3.5850 | 10.92% [10.59%, 11.08%] | 10.80% [10.64%, 10.94%] | -0.56% |
+
+Every nonempty scene improved in all five independent runs and both frame-order
+splits; transport and full-frame confidence intervals exclude no change. All A/A
+control transport intervals include no change, with point estimates from −0.56% to
++0.31% for nonempty scenes. The confirmation retained 3360 pairs for each experiment
+and complete sample coverage. Every raw accumulation file and displayed RGBA8 image
+was byte-identical between its paired variants. The earlier screen showed occasional
+one-ULP raw RGB drift (maximum 2.98×10⁻⁸), including in the A/A control; no displayed
+channel changed. This observation is recorded rather than increasing any reference
+comparison tolerance. GPU elapsed intervals include stalls and overlapping raster
+envelopes as described above; these gains do not establish native shader busy time
+or reduced register pressure. Performance on other adapters and authored graph
+estimators remains unqualified.
+
+At 64×64 / 16 samples, every tested shape passed the existing independent raw
+CPU-oracle and software GPU-reference tolerances for all six fixtures. A separate
+67×67 / 16-sample diagnostic exercises partial edge groups: native shape comparisons
+and the software GPU reference agree, while the CPU oracle differs in nine channel
+comparisons at pixel 1888 (x=12, y=28) across the nonempty fixtures, with maximum
+absolute RGB difference about 0.0341. The same failure signature occurs in the
+64×1/64×1 control and all candidate shapes; it is retained as a baseline reference
+precision limitation, and tolerances are not increased. Set
+`LUDUS_WORKGROUP_ODD_EXTENT=1` when running `[workgroups]` to reproduce that diagnostic.
 
 The explicit quality profile admits at most four live jobs, 4096 requested
 samples, depth eight, the reference secondary-distance/camera bounds and a fixed

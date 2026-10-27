@@ -426,6 +426,9 @@ public:
     /// artifacts must be the installed native-query preview kernels. Requires enabled
     /// native rays, Compute/StorageVertex and a Ready renderer. Unsupported devices
     /// reject; no software traversal or CPU rendering fallback is selected.
+    /// Uses the compute artifact's reflected positive X/Y workgroup dimensions; Z must be 1.
+    /// Zero dimensions reject with InvalidDescription; device workgroup/dispatch limits reject
+    /// with Unsupported. Image extents need not divide evenly into groups.
     /// Copies options; positive budgets and finite exposure are required. Owner-thread,
     /// between frames. Failure preserves the previous disabled state. Pending owns
     /// setup and requires PollGpuPreview; Reset releases it.

@@ -170,6 +170,26 @@ def read_pass_timings(directory, scene, count):
     }
 
 
+def summarize_transport_pairs(directory, scene, count, variants, order):
+    """Pair positive transport intervals; retain quantized-zero coverage explicitly."""
+    transport = [read_numbers(directory / variant / f'{scene}.transport.gpu.bin', 'd', count)
+                 for variant in variants]
+    pairs = [(first / second, first_order) for first, second, first_order in zip(*transport, order)
+             if first > 0 and second > 0]
+    if any(not math.isfinite(ratio) or ratio <= 0 for ratio, _ in pairs):
+        raise ValueError(f'{scene}: unrepresentable paired transport ratio')
+    ratios = [ratio for ratio, _ in pairs]
+    return {
+        'ratio_pairs': len(pairs),
+        'zero_duration_pairs': count - len(pairs),
+        'median_paired_speedup': statistics.median(ratios) if ratios else None,
+        'baseline_first_speedup': statistics.median(ratio for ratio, first in pairs if first == 1)
+            if any(first == 1 for _, first in pairs) else None,
+        'candidate_first_speedup': statistics.median(ratio for ratio, first in pairs if first == 0)
+            if any(first == 0 for _, first in pairs) else None,
+    }
+
+
 def summarize_run(directory, scene, variants=VARIANTS, pass_variants=()):
     configuration = read_configuration(directory, scene)
     count = configuration['target_samples'] - configuration['warmup_samples']
@@ -197,6 +217,8 @@ def summarize_run(directory, scene, variants=VARIANTS, pass_variants=()):
     return {
         'configuration': configuration,
         'pass_timings': passes,
+        'transport_pairs': summarize_transport_pairs(directory, scene, count, variants, order)
+            if len(pass_variants) == 2 else None,
         'pairs': count,
         'gpu_median_ms': [statistics.median(row) / NANOSECONDS_PER_MILLISECOND for row in gpu],
         'wall_median_ms': [statistics.median(row) / NANOSECONDS_PER_MILLISECOND for row in wall],
@@ -274,30 +296,50 @@ def summarize(directories, scenes=SCENES, variants=VARIANTS, pass_variants=()):
             'maximum_display_difference': max(run['images']['maximum_display_difference'] for run in runs),
             'maximum_linear_difference': max(run['images']['maximum_linear_difference'] for run in runs),
         }
+        if len(pass_variants) == 2:
+            transport_medians = [run['transport_pairs']['median_paired_speedup'] for run in runs
+                                 if run['transport_pairs']['median_paired_speedup'] is not None]
+            transport_ratio = statistics.median(transport_medians) if transport_medians else None
+            results[scene]['transport_pairs'] = {
+                'runs_with_ratios': len(transport_medians),
+                'ratio_pairs': sum(run['transport_pairs']['ratio_pairs'] for run in runs),
+                'zero_duration_pairs': sum(run['transport_pairs']['zero_duration_pairs'] for run in runs),
+                'median_run_paired_speedup': transport_ratio,
+                'median_run_paired_gpu_time_reduction_percent': 100 * (1 - 1 / transport_ratio)
+                    if transport_ratio is not None else None,
+                'run_bootstrap_95_percent_interval': bootstrap_interval(transport_medians),
+            }
     return results
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--experiment', choices=('visibility', 'hit-cache', 'pass-timings'), default='visibility')
+    parser.add_argument('--experiment', choices=('visibility', 'hit-cache', 'pass-timings', 'workgroups'), default='visibility')
+    parser.add_argument('--workgroup', choices=('32x1', '64x1', '128x1', '8x8'),
+                        help='Candidate against 64x1 in the workgroups experiment (default: 8x8).')
     parser.add_argument('--executable', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--runs', type=int, default=5)
     options = parser.parse_args()
     if options.runs < 1:
         parser.error('--runs must be positive')
+    if options.workgroup is not None and options.experiment != 'workgroups':
+        parser.error('--workgroup requires --experiment workgroups')
     if options.output.exists():
         parser.error('--output must be a new directory to preserve measurement evidence')
     options.output.mkdir(parents=True)
     executable = options.output / 'benchmark-tests'
     shutil.copy2(options.executable.resolve(), executable)
     is_cache = options.experiment == 'hit-cache'
+    is_workgroups = options.experiment == 'workgroups'
     is_pass = options.experiment == 'pass-timings'
-    variants = ('unprobed', 'profiled') if is_pass else ('uncached', 'cached') if is_cache else VARIANTS
-    pass_variants = ('profiled',) if is_pass else ()
-    scenes = SCENES + ('textured-nearest', 'textured-linear') if is_cache or is_pass else SCENES
-    prefix = 'LUDUS_RAY_PASS' if is_pass else 'LUDUS_HIT_CACHE' if is_cache else 'LUDUS_VISIBILITY'
-    tag = '[ray-pass-timings]' if is_pass else '[hit-cache]' if is_cache else '[visibility]'
+    variants = (('baseline', 'candidate') if is_workgroups else ('unprobed', 'profiled') if is_pass
+                else ('uncached', 'cached') if is_cache else VARIANTS)
+    pass_variants = variants if is_workgroups else ('profiled',) if is_pass else ()
+    scenes = SCENES + ('textured-nearest', 'textured-linear') if is_cache or is_pass or is_workgroups else SCENES
+    prefix = ('LUDUS_WORKGROUP' if is_workgroups else 'LUDUS_RAY_PASS' if is_pass
+              else 'LUDUS_HIT_CACHE' if is_cache else 'LUDUS_VISIBILITY')
+    tag = '[workgroups]' if is_workgroups else '[ray-pass-timings]' if is_pass else '[hit-cache]' if is_cache else '[visibility]'
     metadata = {
         'created_at_utc': datetime.now(timezone.utc).isoformat(),
         'platform': platform.platform(),
@@ -307,6 +349,7 @@ def main():
         'experiment': options.experiment,
         'variants': variants,
         'per_pass_variants': pass_variants,
+        'workgroup_shapes': ['64x1', options.workgroup or '8x8'] if is_workgroups else None,
         'scenes': scenes,
         'pairing': 'One device/queue/surface per scene; both pipelines ready; AB,BA per matched sample; reverse initial order between processes.',
         'timing_scope': 'Frame: compute plus output raster. Optional pass timestamps: transport compute encoder and output raster stage envelope, including stalls. Pass intervals are not an additive partition of frame time; CPU wall time is separate.',
@@ -320,6 +363,9 @@ def main():
             (directory / variant).mkdir(parents=True)
         environment = dict(os.environ)
         environment[prefix + '_BENCHMARK_DIRECTORY'] = str(directory.resolve())
+        environment.pop('LUDUS_WORKGROUP_ODD_EXTENT', None)
+        if is_workgroups:
+            environment['LUDUS_WORKGROUP_VARIANT'] = options.workgroup or '8x8'
         if run % 2:
             environment[prefix + '_REVERSE_ORDER'] = '1'
         else:
@@ -333,7 +379,18 @@ def main():
     report.write_text(json.dumps(results, indent=2) + '\n')
     print(f'Report: {report}', flush=True)
     for scene, result in results.items():
-        if is_pass:
+        if is_workgroups:
+            transport = result['transport_pairs']
+            reduction = transport['median_run_paired_gpu_time_reduction_percent']
+            reduction_text = f'{reduction:.2f}%' if reduction is not None else 'unavailable'
+            print(f"{scene}: transport reduction {reduction_text}, "
+                  f"ratio 95% interval {transport['run_bootstrap_95_percent_interval']}, "
+                  f"{transport['ratio_pairs']} positive pairs, {transport['zero_duration_pairs']} zero-duration pairs; "
+                  f"frame reduction {result['median_run_paired_gpu_time_reduction_percent']:.2f}%, "
+                  f"ratio 95% interval {result['run_bootstrap_95_percent_interval']}; "
+                  f"maximum linear difference {result['maximum_linear_difference']}, "
+                  f"maximum RGBA8 difference {result['maximum_display_difference']}", flush=True)
+        elif is_pass:
             passes = result['pass_timings']['profiled']
             ratio = result['median_run_paired_speedup']
             alignment = (f"overlap {passes['overlap_median_ms']:.4f} ms, "
