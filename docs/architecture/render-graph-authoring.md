@@ -839,6 +839,13 @@ halves. Built-in engine schemas stay compatible with the running SDK; loading a
 new game shader package cannot mutate a compiled engine ABI. Browser dynamic
 game-module reload remains subject to its existing documented limitations.
 
+Activation runs beneath the browser host's frame on emscripten's default 64 KiB
+stack. `RenderGraphPrograms` is tens of KiB, so `Stage` builds it in heap storage,
+and the browser build rejects `render_graph_activation.cpp` frames over 16 KiB.
+Hosts should hold compiled-header programs the same way. The RG3 browser
+consumers link with `-sSTACK_OVERFLOW_CHECK=2`, so an overflow names its frame
+instead of silently corrupting the allocator's static state.
+
 Parameter migration retains a value only when stable field identity, type,
 meaning/units and declared conversion agree. A renamed label is metadata; a
 changed semantic field requires explicit conversion/default and a visible diff.
@@ -1193,6 +1200,9 @@ The renderer-owned [ReSTIR DI template](../development/render-graph-authoring.md
 uses that storage contract and manifest-owned typed shader constants. Template
 creation uses the shared transactional backend; Properties and canvas controls
 edit the same draft manifest and require Save/rebuild before activation.
+A proposed `ris-projected-solid-angle` template follows the four-pass
+`veach-guibas-mis` shape for many-area-light direct lighting; see its
+[estimator review](many-area-light-sampling-reference-review.md#template-ris-projected-solid-angle).
 ### Structured storage in the native ray profile
 
 Native triangle-ray jobs admit two named structured buffers in user slots 6/7.

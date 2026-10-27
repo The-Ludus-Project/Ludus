@@ -1,0 +1,19 @@
+#pragma once
+
+#include <ludus/foundation/base/types.h>
+
+namespace ludus::editor::layout_policy
+{
+/// Saved canvas position bound, in scene units. Owned by ludus_tools.render_graph_layout.
+inline constexpr foundation::int32 MAX_COORDINATE = @MAX_COORDINATE@;
+/// Maximum saved comment frames per configuration.
+inline constexpr foundation::int32 MAX_COMMENT_FRAMES = @MAX_COMMENT_FRAMES@;
+/// Maximum Unicode code points in a comment title.
+inline constexpr foundation::int32 MAX_COMMENT_TITLE_CODEPOINTS = @MAX_COMMENT_TITLE_CODEPOINTS@;
+/// Maximum Unicode code points in comment notes.
+inline constexpr foundation::int32 MAX_COMMENT_NOTES_CODEPOINTS = @MAX_COMMENT_NOTES_CODEPOINTS@;
+/// Minimum frame width in scene units.
+inline constexpr foundation::int32 MIN_COMMENT_WIDTH = @MIN_COMMENT_WIDTH@;
+/// Minimum frame height in scene units.
+inline constexpr foundation::int32 MIN_COMMENT_HEIGHT = @MIN_COMMENT_HEIGHT@;
+} // namespace ludus::editor::layout_policy

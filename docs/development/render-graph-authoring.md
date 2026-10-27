@@ -4042,6 +4042,90 @@ dependency order for display only; nothing is written until you move them.
 Configuration output links can be selected and deleted, just like pass connections.
 They edit the configuration output's source rather than adding an ordinary edge.
 
+### Arrange, align and distribute nodes
+
+Right-click the canvas background or a selected node and open **Layout**. These
+commands remain available in Focus Viewport mode with Properties hidden.
+
+- **Auto-arrange Selection** places only selected authored nodes in dependency
+  columns. **Auto-arrange All** places every authored node in the displayed
+  configuration, including inactive, disabled and incomplete nodes.
+- Dependencies between the affected nodes determine columns. Cyclic components
+  stay in one column; node IDs give a stable order within columns. Card sizes
+  determine spacing, so tall cards do not overlap other affected cards. This is
+  a simple dependency layout, without a wire-crossing minimization pass.
+- **Align Left / Horizontal Centres / Right** and **Align Top / Vertical Centres /
+  Bottom** align two or more selected cards against their combined bounds.
+- **Distribute Horizontally / Vertically** spaces three or more selected card
+  centres evenly between the outermost centres. It preserves those endpoints
+  and the perpendicular coordinates; cards can still overlap when the available
+  span is too small. Move the outer cards farther apart before distributing.
+
+Each command writes saved integer layout positions in one undo step. Undo and
+Redo restore the whole operation; Save publishes the positions. A repeated
+command that produces the same saved positions does not create another undo
+step. Selection and upstream/downstream tracing remain active. Auto-arrange
+frames the affected cards afterward; alignment and distribution keep the view.
+
+Selection commands leave unselected nodes fixed and use only dependencies within
+the selection. They do not avoid collisions with those fixed nodes. Configuration
+input/output boxes are automatic interfaces and are never saved or moved by
+these commands. Subgraphs remain single cards; their internal configurations are
+unchanged. Layout does not change fields, connections, execution or build identity.
+
+Arrangement starts at the affected cards' previous top-left bounds. A common
+translation keeps positions within the document's coordinate limits; an
+arrangement too large to fit, or an alignment/distribution outside those limits,
+is rejected without a partial edit. Commands are
+unavailable during a node or connection gesture. Menu actions that need a larger
+selection are disabled.
+
+### Label pipeline stages with comment frames
+
+Select the nodes for a stage, then right-click the canvas and choose **Add Comment
+Frame…**. The new frame surrounds the selection with space for a title and notes.
+With no selected nodes, it starts at the context-menu position. Set a title,
+plain-text notes and a colour using **Choose Colour…** or an RGB `#RRGGBB` value.
+Cancel leaves the draft and undo history unchanged. These controls work in Focus
+Viewport mode with Properties hidden.
+
+Double-click the frame header, or right-click its header and choose **Edit Comment
+Frame…**, to edit its title, notes and colour. Notes appear as a compact plain-text
+preview; hover for the complete text. The frame's context menu also offers
+**Remove Comment Frame**, which keeps every node and connection.
+
+Drag the header to move the frame and every authored node fully enclosed by its
+rectangle at the start of the drag. Node selection is independent: enclosed nodes
+move even when unselected, while selected nodes outside the frame stay fixed.
+Partially intersecting cards stay fixed. Each frame is independent; overlapping
+frames can enclose the same nodes, and moving one frame leaves other frames fixed.
+Configuration input/output boxes remain automatic. Drag the bottom-right handle
+to resize only the frame; its new bounds determine the next move's group.
+
+Each completed edit, resize, group move or removal is one undo step. Save publishes
+the metadata and moved node positions. Escape or loss of canvas focus cancels an
+active frame gesture without clearing node selection or dependency tracing. A
+configuration switch discards its pending preview. Stale modal edits are rejected
+if the document changes while the controls are open. Failed transactions restore
+the saved presentation. Frames participate in **Fit Graph**; **Fit Selection**
+continues to frame the selected nodes. Node arrangement/alignment/distribution
+leave frames fixed.
+
+Frames are editor metadata in each configuration's `layout.frames` array, beside
+`layout.positions`. Each record has `id`, `title`, `notes`, `colour`, `x`, `y`,
+`width` and `height`. IDs use the graph identifier grammar and are unique within
+the frame array, independently of node IDs. There are at most 64 frames per
+configuration; titles are nonempty single lines of up to 128 Unicode code points,
+and notes allow up to 4,096. Frames have a minimum size of 160 × 100 scene units;
+integer corners stay within ±32,768. These limits are shared by the editor and
+offline validator. Source/package byte limits also apply. Malformed frame arrays
+are skipped with a status message and must be repaired in Source before frame
+editing resumes.
+
+Comment metadata does not affect dependencies, semantic build identity, compiled
+passes or rendering. The CLI validates and preserves it as authored source, and
+the editor's live-build identity excludes it with the rest of `layout`.
+
 ### Find existing nodes and trace dependencies
 
 Choose **Find Node…** on the canvas toolbar, or press **Ctrl/Command+F** while the

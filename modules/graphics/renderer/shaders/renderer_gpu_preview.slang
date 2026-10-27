@@ -123,6 +123,46 @@ float4 Texel(uint t, int x, int y, uint map)
                 f.y);
 }
 
+struct HitMaterial
+{
+    uint Triangle;
+#ifndef LUDUS_GPU_PREVIEW_CACHE_HIT
+    float2 Barycentric;
+#else
+    uint SurfaceAddress;
+    float2 TexcoordUv;
+#endif
+};
+HitMaterial LoadHitMaterial(uint triangle, float2 barycentric)
+{
+    HitMaterial material;
+    material.Triangle = triangle;
+#ifndef LUDUS_GPU_PREVIEW_CACHE_HIT
+    material.Barycentric = barycentric;
+#else
+    uint index = asuint(SceneValue(triangle * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS).w);
+    material.SurfaceAddress = Offsets.w + index * SurfaceLayout.x;
+    material.TexcoordUv = TexcoordUv(triangle, barycentric);
+#endif
+    return material;
+}
+float4 ReadHitSurface(in HitMaterial material, uint field)
+{
+#ifndef LUDUS_GPU_PREVIEW_CACHE_HIT
+    return Surface(material.Triangle, field);
+#else
+    return SceneValue(material.SurfaceAddress + field);
+#endif
+}
+float4 SampleHitTexture(in HitMaterial material, uint map = 0)
+{
+#ifndef LUDUS_GPU_PREVIEW_CACHE_HIT
+    return Texture(material.Triangle, TexcoordUv(material.Triangle, material.Barycentric), map);
+#else
+    return Texture(material.Triangle, material.TexcoordUv, map);
+#endif
+}
+
 struct Hit
 {
     uint Triangle;
@@ -452,15 +492,66 @@ float PowerWeight(float a, float b)
     b /= m;
     return a * a / (a * a + b * b);
 }
-float AreaPdf(uint t, float3 fromPositionWorld, float3 toPositionWorld, uint lightCount)
+float AreaPdf(uint t, float3 fromPositionWorld, float3 toPositionWorld, float selection)
 {
-    if (lightCount == 0)
+    if (selection <= 0)
         return 0;
     float3 offsetWorld = toPositionWorld - fromPositionWorld;
     float cosine = abs(dot(SceneValue(t * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + 8).xyz, -NormalizeOrZero(offsetWorld)));
-    return cosine > 0 ? dot(offsetWorld, offsetWorld) /
-                            (float(lightCount) * SceneValue(t * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + 1).w * cosine)
+    return cosine > 0 ? selection * dot(offsetWorld, offsetWorld) /
+                            (SceneValue(t * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + 1).w * cosine)
                       : 0;
+}
+// Emitter words: ascending triangle index in X, inclusive integer power CDF in Y.
+// Matches the CPU reference's SelectReferenceEmitter/FindReferenceEmitter/ComputeEmitterSelection.
+uint EmitterCumulative(uint emitter)
+{
+    return sceneWords[Offsets.z + emitter].y;
+}
+uint SelectEmitter(uint value)
+{
+    uint low = 0;
+    uint high = Counts.z - 1;
+    while (low < high)
+    {
+        uint middle = low + (high - low) / 2;
+        if (EmitterCumulative(middle) <= value)
+            low = middle + 1;
+        else
+            high = middle;
+    }
+    return low;
+}
+bool FindEmitter(uint t, out uint outEmitter)
+{
+    outEmitter = 0;
+    uint low = 0;
+    uint high = Counts.z;
+    while (low < high)
+    {
+        uint middle = low + (high - low) / 2;
+        if (sceneWords[Offsets.z + middle].x < t)
+            low = middle + 1;
+        else
+            high = middle;
+    }
+    if (low == Counts.z || sceneWords[Offsets.z + low].x != t)
+        return false;
+    outEmitter = low;
+    return true;
+}
+float EmitterSelection(uint emitter, uint lightCount)
+{
+    uint total = Counts.z == 0 ? 0 : EmitterCumulative(Counts.z - 1);
+    if (lightCount == 0 || emitter >= Counts.z || total == 0)
+        return 0;
+    uint previous = emitter == 0 ? 0 : EmitterCumulative(emitter - 1);
+    return float(EmitterCumulative(emitter) - previous) / float(total) * (float(Counts.z) / float(lightCount));
+}
+float HitEmitterSelection(uint t, uint lightCount)
+{
+    uint emitter;
+    return FindEmitter(t, emitter) == true ? EmitterSelection(emitter, lightCount) : 0;
 }
 void Evaluate(float3 color,
               float metallic,
@@ -648,37 +739,46 @@ float3 Integrate(uint pixel, uint sample)
             break;
         }
         uint t = hit.Triangle;
+        HitMaterial material = LoadHitMaterial(t, hit.Barycentric);
         float3 positionWorld = PositionWorld(t, hit.Barycentric);
         float3 geometricNormalWorld = SceneValue(t * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + 8).xyz;
         float3 viewDirectionWorld = -directionWorld;
-        float3 emission = Surface(t, 4).xyz * Texture(t, TexcoordUv(t, hit.Barycentric), 2).xyz;
-        if (asuint(Surface(t, 5).w) == 0 && dot(geometricNormalWorld, viewDirectionWorld) <= 0)
+        float3 emission =
+            ReadHitSurface(material, LUDUS_GPU_PREVIEW_EMISSION_WORD).xyz * SampleHitTexture(material, 2).xyz;
+        if (asuint(ReadHitSurface(material, LUDUS_GPU_PREVIEW_TEXTURE_OPTIONS_WORD).w) == 0 &&
+            dot(geometricNormalWorld, viewDirectionWorld) <= 0)
             emission = float3(0);
         radiance +=
             throughput * emission *
-            (depth == 0 ? 1 : PowerWeight(previousPdf, AreaPdf(t, previousPositionWorld, positionWorld, lights)));
+            (depth == 0
+                 ? 1
+                 : PowerWeight(previousPdf,
+                               AreaPdf(t, previousPositionWorld, positionWorld, HitEmitterSelection(t, lights))));
         if (depth >= Dimensions.z || dot(geometricNormalWorld, viewDirectionWorld) <= 0)
             break;
         float3 normalWorld = NormalizeOrZero(
             SceneValue(t * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + 3).xyz * (1 - hit.Barycentric.x - hit.Barycentric.y) +
             SceneValue(t * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + 4).xyz * hit.Barycentric.x +
             SceneValue(t * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + 5).xyz * hit.Barycentric.y);
-        float3 color = saturate(Surface(t, 0).xyz * Texture(t, TexcoordUv(t, hit.Barycentric)).xyz);
-        if (asuint(Surface(t, 7).z) != 0)
+        float3 color =
+            saturate(ReadHitSurface(material, LUDUS_GPU_PREVIEW_BASE_COLOR_WORD).xyz * SampleHitTexture(material).xyz);
+        if (asuint(ReadHitSurface(material, LUDUS_GPU_PREVIEW_SURFACE_OPTIONS_WORD).z) != 0)
             color *= InterpolateTriangleColor(t, hit.Barycentric).xyz;
-        float metallic = Surface(t, 0).w;
-        float roughness = Surface(t, 1).x;
-        if (asuint(Surface(t, 6).w) != 0)
+        float metallic = ReadHitSurface(material, LUDUS_GPU_PREVIEW_BASE_COLOR_WORD).w;
+        float roughness = ReadHitSurface(material, LUDUS_GPU_PREVIEW_ROUGHNESS_WORD).x;
+        if (asuint(ReadHitSurface(material, LUDUS_GPU_PREVIEW_SURFACE_MAP_WORD).w) != 0)
         {
-            SurfaceParameters parameters = DecodeSurfaceParameters(Texture(t, TexcoordUv(t, hit.Barycentric), 1),
-                                                                   metallic,
-                                                                   roughness,
-                                                                   Surface(t, 6).x);
+            SurfaceParameters parameters =
+                DecodeSurfaceParameters(SampleHitTexture(material, 1),
+                                        metallic,
+                                        roughness,
+                                        ReadHitSurface(material, LUDUS_GPU_PREVIEW_SURFACE_MAP_WORD).x);
             metallic = parameters.Metallic;
             roughness = parameters.Roughness;
-            float2 uvScale = Surface(t, 3).xy;
+            float2 uvScale = ReadHitSurface(material, LUDUS_GPU_PREVIEW_UV_TRANSFORM_WORD).xy;
             float4 authoredTangentWorld = InterpolateTriangle(t, 10, hit.Barycentric);
-            if (asuint(Surface(t, 7).z) != 0 && abs(authoredTangentWorld.w) > .5)
+            if (asuint(ReadHitSurface(material, LUDUS_GPU_PREVIEW_SURFACE_OPTIONS_WORD).z) != 0 &&
+                abs(authoredTangentWorld.w) > .5)
             {
                 float3 tangentWorld = NormalizeOrZero(authoredTangentWorld.xyz -
                                                       normalWorld * dot(normalWorld, authoredTangentWorld.xyz));
@@ -756,7 +856,16 @@ float3 Integrate(uint pixel, uint sample)
             }
             else if (selected - Counts.w < Counts.z)
             {
-                emitter = asuint(SceneValue(Offsets.z + selected - Counts.w).x);
+                uint total = EmitterCumulative(Counts.z - 1);
+                uint value = 0;
+                if (total != 0 && TrySampleRandomBounded(
+                                      Sampling.xy,
+                                      PixelRandomAddress(pixel, sample, dimension + LUDUS_PATH_RANDOM_EMITTER_SLOT),
+                                      total,
+                                      value) == false)
+                    return float3(-1);
+                uint selectedEmitter = total == 0 ? 0 : SelectEmitter(value);
+                emitter = asuint(SceneValue(Offsets.z + selectedEmitter).x);
                 float root = sqrt(Random01(pixel, sample, dimension + 1));
                 float2 uv = float2(root * (1 - Random01(pixel, sample, dimension + 2)), 0);
                 uv.y = root - uv.x;
@@ -764,7 +873,11 @@ float3 Integrate(uint pixel, uint sample)
                 float3 offsetWorld = lightPositionWorld - positionWorld;
                 range = length(offsetWorld);
                 lightDirectionWorld = NormalizeOrZero(offsetWorld);
-                pdf = AreaPdf(emitter, positionWorld, lightPositionWorld, lights);
+                pdf = total == 0 ? 0
+                                 : AreaPdf(emitter,
+                                           positionWorld,
+                                           lightPositionWorld,
+                                           EmitterSelection(selectedEmitter, lights));
                 if ((asuint(Surface(emitter, 5).w) != 0 ||
                      dot(SceneValue(emitter * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + 8).xyz, -lightDirectionWorld) > 0) &&
                     range <= Options.x &&

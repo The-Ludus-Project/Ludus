@@ -1,8 +1,11 @@
 #include "../src/internal/gpu_preview_ray.h"
 #include "../src/internal/render_graph_ray.h"
+#include "renderer_authored.h"
+#include "renderer_authored_shadow.h"
 #include "renderer_composite.h"
 #include "renderer_flat.h"
 #include "renderer_gpu_preview.h"
+#include "renderer_gpu_preview_hit_cached.h"
 #include "renderer_gpu_preview_image.h"
 #include "renderer_gpu_preview_visibility_full.h"
 #include "renderer_lit.h"
@@ -21,6 +24,7 @@
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/rhi/device.h>
+#include <ludus/graphics/rhi/gpu_scope.h>
 #include <ludus/graphics/rhi/measurement.h>
 
 #include <catch2/catch_test_macros.hpp>
@@ -39,7 +43,21 @@ using Status = rhi::RasterStatus;
 constexpr uint64 TIMEOUT = 30 * time::NANOSECONDS_PER_SECOND;
 constexpr usize BYTE_BUDGET = usize{64} * 1024 * 1024;
 constexpr usize VARIANT_COUNT = 2;
+constexpr usize EXPECTED_PASS_COUNT = 2;
+constexpr usize TRANSPORT_PASS_INDEX = 0;
+constexpr usize OUTPUT_PASS_INDEX = 1;
+constexpr usize PROFILED_VARIANT_INDEX = 1;
+constexpr usize PASS_METADATA_WORD_COUNT = 7;
+constexpr usize PASS_INTERVAL_WORD_COUNT = 6;
+constexpr uint64 PASS_METADATA_VERSION = 1;
 constexpr usize SCENE_COUNT = 4;
+constexpr usize ALL_SCENE_COUNT = 6;
+constexpr uint32 TEXTURE_EXTENT = 4;
+constexpr float32 TEXTURE_UV_REPETITIONS = 3;
+constexpr uint8 TEXEL_HIGH = 224;
+constexpr uint8 TEXEL_LOW = 64;
+constexpr uint8 TEXEL_MIDDLE = 128;
+constexpr uint8 TEXEL_MAXIMUM = 255;
 constexpr uint32 GRID_CELLS = 32;
 constexpr usize TRIANGLE_CORNERS = 3;
 constexpr usize QUAD_VERTICES = 2 * TRIANGLE_CORNERS;
@@ -62,19 +80,32 @@ constexpr float32 LINEAR_ABSOLUTE_TOLERANCE = .001F;
 constexpr float32 LINEAR_RELATIVE_TOLERANCE = .005F;
 constexpr usize CONFIGURATION_WORD_COUNT = 4;
 constexpr uint32 BENCHMARK_FORMAT_VERSION = 1;
-constexpr StaticArray<const char*, SCENE_COUNT> SCENE_NAMES{{"empty", "opaque", "masked", "mixed"}};
+constexpr StaticArray<const char*, ALL_SCENE_COUNT> SCENE_NAMES{
+    {"empty", "opaque", "masked", "mixed", "textured-nearest", "textured-linear"}};
+constexpr StaticArray<const char*, VARIANT_COUNT> CACHE_VARIANT_NAMES{{"uncached", "cached"}};
 constexpr StaticArray<const char*, VARIANT_COUNT> VARIANT_NAMES{{"full", "visibility"}};
+constexpr StaticArray<const char*, VARIANT_COUNT> PASS_VARIANT_NAMES{{"unprobed", "profiled"}};
+enum class BenchmarkExperiment : uint32
+{
+    Visibility,
+    HitCache,
+    PassTimings,
+};
 enum class SceneKind : uint32
 {
     Empty,
     Opaque,
     Masked,
     Mixed,
+    TexturedNearest,
+    TexturedLinear,
 };
 enum class RenderPath : uint32
 {
     FullHit,
     VisibilityOnly,
+    UncachedHit,
+    CachedHit,
     CpuOracle,
     GpuReference,
 };
@@ -84,8 +115,16 @@ struct VisibilityFixture final
     rr::Snapshot Snapshot;
     rr::GpuPreview Preview;
 };
+struct PassTimingSamples final
+{
+    StaticArray<Array<float64>, EXPECTED_PASS_COUNT> Nanoseconds;
+    Array<uint64> IntervalWords;
+    StaticArray<rhi::GpuPassTiming, EXPECTED_PASS_COUNT> Metadata{};
+    bool HasMetadata = false;
+};
 struct TimingSamples final
 {
+    PassTimingSamples Passes;
     StaticArray<Array<float64>, VARIANT_COUNT> GpuNanoseconds;
     StaticArray<Array<uint64>, VARIANT_COUNT> WallNanoseconds;
     Array<uint64> PairGapNanoseconds;
@@ -122,9 +161,11 @@ void CreateMesh(rr::Renderer& inoutRenderer, bool shouldKeepEvenColumns, rr::Mes
     const usize vertexCount = shouldKeepEvenColumns == true ? MAX_VERTICES / 2 : MAX_VERTICES;
     Array<math::Vector3> positionsMesh;
     Array<math::Vector3> normalsMesh;
+    Array<math::Vector2> texcoords;
     Array<uint32> indices;
     REQUIRE(positionsMesh.TryResize(vertexCount) == true);
     REQUIRE(normalsMesh.TryResize(vertexCount) == true);
+    REQUIRE(texcoords.TryResize(vertexCount) == true);
     REQUIRE(indices.TryResize(vertexCount) == true);
     usize vertex = 0;
     for (uint32 y = 0; y < GRID_CELLS; ++y)
@@ -147,6 +188,7 @@ void CreateMesh(rr::Renderer& inoutRenderer, bool shouldKeepEvenColumns, rr::Mes
             {
                 positionsMesh[vertex] = cornerMesh;
                 normalsMesh[vertex] = {0, 0, -1};
+                texcoords[vertex] = {cornerMesh.X * .5F + .5F, cornerMesh.Y * .5F + .5F};
                 indices[vertex] = static_cast<uint32>(vertex);
                 ++vertex;
             }
@@ -155,6 +197,7 @@ void CreateMesh(rr::Renderer& inoutRenderer, bool shouldKeepEvenColumns, rr::Mes
     REQUIRE(vertex == vertexCount);
     rr::MeshDescription description{positionsMesh.GetData(), vertexCount, indices.GetData(), vertexCount};
     description.Normals = normalsMesh.GetData();
+    description.Texcoords = texcoords.GetData();
     REQUIRE(IsAccepted(inoutRenderer.CreateMesh(description, outMesh)) == true);
     WaitReady(inoutRenderer, outMesh);
 }
@@ -163,11 +206,13 @@ void PrepareFixture(rhi::DeviceHandle device, RenderPath path, SceneKind scene, 
     rr::Renderer& renderer = outFixture.Renderer;
     REQUIRE(renderer.Initialize(device, shaders::renderer_flat::Vertex(), shaders::renderer_flat::Fragment()) ==
             Status::Ready);
-    if (path == RenderPath::FullHit || path == RenderPath::VisibilityOnly)
+    if (path == RenderPath::FullHit || path == RenderPath::VisibilityOnly || path == RenderPath::UncachedHit ||
+        path == RenderPath::CachedHit)
     {
-        const rhi::RasterShaderDescription shader = path == RenderPath::FullHit
-                                                        ? shaders::renderer_gpu_preview_visibility_full::Compute()
-                                                        : shaders::renderer_gpu_preview::Compute();
+        const rhi::RasterShaderDescription shader =
+            path == RenderPath::CachedHit ? shaders::renderer_gpu_preview_hit_cached::Compute()
+            : path == RenderPath::FullHit ? shaders::renderer_gpu_preview_visibility_full::Compute()
+                                          : shaders::renderer_gpu_preview::Compute();
         REQUIRE(renderer.EnableGpuPreview(shader,
                                           shaders::renderer_gpu_preview_image::Vertex(),
                                           shaders::renderer_gpu_preview_image::Fragment(),
@@ -198,18 +243,78 @@ void PrepareFixture(rhi::DeviceHandle device, RenderPath path, SceneKind scene, 
         REQUIRE(renderer.CreateSnapshot(nullptr, 0, outFixture.Snapshot) == Status::Ready);
         return;
     }
+    const bool isTextured = scene == SceneKind::TexturedNearest || scene == SceneKind::TexturedLinear;
     rr::MaterialProgram program;
-    REQUIRE(IsAccepted(renderer.PrewarmLitProgram(shaders::renderer_lit::Vertex(),
-                                                  shaders::renderer_lit::Fragment(),
-                                                  shaders::renderer_lit_shadow::Fragment(),
-                                                  program)) == true);
+    REQUIRE(IsAccepted(renderer.PrewarmLitProgram(
+                isTextured == true ? shaders::renderer_authored::Vertex() : shaders::renderer_lit::Vertex(),
+                isTextured == true ? shaders::renderer_authored::Fragment() : shaders::renderer_lit::Fragment(),
+                isTextured == true ? shaders::renderer_authored_shadow::Fragment()
+                                   : shaders::renderer_lit_shadow::Fragment(),
+                program)) == true);
     WaitReady(renderer, program);
     rr::Mesh receiver;
     rr::Mesh occluder;
     CreateMesh(renderer, false, receiver);
     CreateMesh(renderer, true, occluder);
+    rhi::TextureHandle baseTexture;
+    rhi::TextureHandle emissionTexture;
+    rhi::TextureHandle surfaceTexture;
+    if (isTextured == true)
+    {
+        StaticArray<uint8, TEXTURE_EXTENT * TEXTURE_EXTENT * COLOR_CHANNELS> base{};
+        StaticArray<uint8, TEXTURE_EXTENT * TEXTURE_EXTENT * COLOR_CHANNELS> emission{};
+        StaticArray<uint8, TEXTURE_EXTENT * TEXTURE_EXTENT * COLOR_CHANNELS> surface{};
+        for (usize y = 0; y < TEXTURE_EXTENT; ++y)
+        {
+            for (usize x = 0; x < TEXTURE_EXTENT; ++x)
+            {
+                const usize offset = (y * TEXTURE_EXTENT + x) * COLOR_CHANNELS;
+                base[offset] = (x + y) % 2 == 0 ? TEXEL_HIGH : TEXEL_LOW;
+                base[offset + 1] = TEXEL_MIDDLE;
+                base[offset + 2] = x % 2 == 0 ? TEXEL_LOW : TEXEL_HIGH;
+                base[offset + COLOR_CHANNELS - 1] = TEXEL_MAXIMUM;
+                emission[offset] = y % 2 == 0 ? TEXEL_HIGH : TEXEL_LOW;
+                emission[offset + 1] = TEXEL_LOW;
+                emission[offset + 2] = TEXEL_MIDDLE;
+                emission[offset + COLOR_CHANNELS - 1] = TEXEL_MAXIMUM;
+                surface[offset] = TEXEL_MIDDLE;
+                surface[offset + 1] = TEXEL_MIDDLE;
+                surface[offset + 2] = x % 2 == 0 ? TEXEL_HIGH : TEXEL_MIDDLE;
+                surface[offset + COLOR_CHANNELS - 1] = TEXEL_LOW;
+            }
+        }
+        rhi::TextureDescription textureDescription{TEXTURE_EXTENT, TEXTURE_EXTENT, rhi::RasterFormat::Rgba8Srgb};
+        textureDescription.RetainCpuContent = true;
+        const usize rowBytes = TEXTURE_EXTENT * COLOR_CHANNELS;
+        REQUIRE(
+            rhi::CreateTexture(device, textureDescription, {{base.GetData(), base.GetSize()}, rowBytes}, baseTexture) ==
+            Status::Ready);
+        REQUIRE(rhi::CreateTexture(device,
+                                   textureDescription,
+                                   {{emission.GetData(), emission.GetSize()}, rowBytes},
+                                   emissionTexture) == Status::Ready);
+        textureDescription.Format = rhi::RasterFormat::Rgba8Unorm;
+        REQUIRE(rhi::CreateTexture(device,
+                                   textureDescription,
+                                   {{surface.GetData(), surface.GetSize()}, rowBytes},
+                                   surfaceTexture) == Status::Ready);
+    }
     rr::LitMaterialDescription material;
     material.Roughness = 1;
+    material.AreAuthoredInputsEnabled = isTextured;
+    if (isTextured == true)
+    {
+        material.Surface.Texture = baseTexture;
+        material.EmissionMap = emissionTexture;
+        material.SurfaceMap = surfaceTexture;
+        material.Emission = {.5F, .5F, .5F};
+        material.Metallic = .5F;
+        material.Surface.UvTransform = {TEXTURE_UV_REPETITIONS, -TEXTURE_UV_REPETITIONS, .5F, .5F};
+        material.Surface.Sampler.Filter =
+            scene == SceneKind::TexturedLinear ? rhi::RasterFilter::Linear : rhi::RasterFilter::Nearest;
+        material.Surface.Sampler.U = rhi::RasterAddress::Repeat;
+        material.Surface.Sampler.V = rhi::RasterAddress::Clamp;
+    }
     material.Surface.Tint = {.5F, 1, .5F, 1};
     material.Surface.Alpha = scene == SceneKind::Masked ? rr::MaterialAlpha::Masked : rr::MaterialAlpha::Opaque;
     rr::MaterialVersion receiverMaterial;
@@ -221,6 +326,7 @@ void PrepareFixture(rhi::DeviceHandle device, RenderPath path, SceneKind scene, 
     rr::MaterialVersion occluderMaterial;
     REQUIRE(IsAccepted(renderer.CreateLitMaterial(program, material, occluderMaterial, selection)) == true);
     WaitReady(renderer, occluderMaterial);
+    material.Emission = {};
     material.Surface.Tint = {1, .5F, .5F, 0};
     material.Surface.Alpha = rr::MaterialAlpha::Masked;
     rr::MaterialVersion rejectingMaterial;
@@ -244,16 +350,91 @@ void PrepareFixture(rhi::DeviceHandle device, RenderPath path, SceneKind scene, 
                                     scene == SceneKind::Opaque ? 2 : items.GetSize(),
                                     outFixture.Snapshot) == Status::Ready);
 }
+// The fixture owns exactly one transport dispatch and one output raster pass.
+// Reject unexpected topology or invalid timestamps instead of attributing other work.
+void CollectPassTimings(rhi::DeviceHandle device, usize sampleIndex, PassTimingSamples& inoutSamples)
+{
+    rhi::GpuPassTimings batch;
+    const uint64 start = time::NowTicks();
+    do
+    {
+        REQUIRE(rhi::GetGpuPassTimings(device, batch) == Status::Ready);
+    } while (batch.State == rhi::GpuTimingState::Pending && time::NowTicks() - start < TIMEOUT);
+    REQUIRE(batch.State == rhi::GpuTimingState::Available);
+    REQUIRE(batch.DroppedPasses == 0);
+    REQUIRE(batch.Count == EXPECTED_PASS_COUNT);
+    StaticArray<bool, EXPECTED_PASS_COUNT> hasSeen{};
+    StaticArray<rhi::GpuPassTiming, EXPECTED_PASS_COUNT> observed{};
+    for (usize index = 0; index < batch.Count; ++index)
+    {
+        const rhi::GpuPassTiming& pass = batch.Passes[index];
+        REQUIRE((pass.Kind == rhi::GpuPassKind::Compute || pass.Kind == rhi::GpuPassKind::Raster));
+        const usize stage = pass.Kind == rhi::GpuPassKind::Compute ? TRANSPORT_PASS_INDEX : OUTPUT_PASS_INDEX;
+        REQUIRE(hasSeen[stage] == false);
+        hasSeen[stage] = true;
+        observed[stage] = pass;
+        REQUIRE(pass.Scope.Identity != 0);
+        REQUIRE(pass.Scope.Name[0] != '\0');
+        REQUIRE(pass.Scope.LogicalPassCount == 1);
+        REQUIRE(pass.ScopePassIndex == 0);
+        REQUIRE(pass.Timing.State == rhi::GpuTimingState::Available);
+        REQUIRE(math::IsFinite(pass.Timing.DurationNanoseconds) == true);
+        REQUIRE(pass.Timing.DurationNanoseconds >= 0);
+        REQUIRE(math::IsFinite(pass.Timing.TickNanoseconds) == true);
+        REQUIRE(pass.Timing.TickNanoseconds >= 0);
+        if (inoutSamples.HasMetadata == true)
+        {
+            REQUIRE(pass.Scope.Identity == inoutSamples.Metadata[stage].Scope.Identity);
+            REQUIRE(std::strcmp(pass.Scope.Name.GetData(), inoutSamples.Metadata[stage].Scope.Name.GetData()) == 0);
+            REQUIRE(pass.Timing.TickNanoseconds == inoutSamples.Metadata[stage].Timing.TickNanoseconds);
+            REQUIRE(pass.Timing.ValidBits == inoutSamples.Metadata[stage].Timing.ValidBits);
+        }
+        else
+            inoutSamples.Metadata[stage] = pass;
+        inoutSamples.Nanoseconds[stage][sampleIndex] = pass.Timing.DurationNanoseconds;
+    }
+    REQUIRE(inoutSamples.Metadata[TRANSPORT_PASS_INDEX].Scope.Identity !=
+            inoutSamples.Metadata[OUTPUT_PASS_INDEX].Scope.Identity);
+    const rhi::GpuPassTiming& transport = observed[TRANSPORT_PASS_INDEX];
+    const rhi::GpuPassTiming& output = observed[OUTPUT_PASS_INDEX];
+    const bool hasAlignment = transport.HasCpuInterval == true && output.HasCpuInterval == true;
+    if (hasAlignment == true)
+    {
+        REQUIRE(transport.EndTicks >= transport.StartTicks);
+        REQUIRE(output.EndTicks >= output.StartTicks);
+    }
+    // Missing calibration does not invalidate GPU durations. Only the aligned
+    // intervals are absent, and the explicit final word distinguishes that state.
+    const StaticArray<uint64, PASS_INTERVAL_WORD_COUNT> interval{
+        {hasAlignment == true ? transport.StartTicks : 0,
+         hasAlignment == true ? transport.EndTicks : 0,
+         hasAlignment == true ? output.StartTicks : 0,
+         hasAlignment == true ? output.EndTicks : 0,
+         hasAlignment == true ? batch.ClockUncertaintyNanoseconds : 0,
+         hasAlignment == true ? 1U : 0U}};
+    for (usize word = 0; word < interval.GetSize(); ++word)
+        inoutSamples.IntervalWords[sampleIndex * PASS_INTERVAL_WORD_COUNT + word] = interval[word];
+    inoutSamples.HasMetadata = true;
+}
 void AdvancePairs(rhi::DeviceHandle device,
                   rhi::SurfaceHandle surface,
                   StaticArray<VisibilityFixture, VARIANT_COUNT>& inoutFixtures,
                   uint32 samples,
                   bool isBenchmark,
+                  bool shouldMeasurePasses,
                   bool shouldReverseOrder,
                   TimingSamples& outTimings)
 {
     const uint32 warmup = isBenchmark == true ? WARMUP_SAMPLES : 0;
-    if (isBenchmark == true)
+    const bool shouldTimeFrames = isBenchmark == true || shouldMeasurePasses == true;
+    outTimings.Passes.HasMetadata = false;
+    if (shouldMeasurePasses == true)
+    {
+        for (Array<float64>& values : outTimings.Passes.Nanoseconds)
+            REQUIRE(values.TryResize(samples - warmup) == true);
+        REQUIRE(outTimings.Passes.IntervalWords.TryResize(usize(samples - warmup) * PASS_INTERVAL_WORD_COUNT) == true);
+    }
+    if (shouldTimeFrames == true)
     {
         for (usize variant = 0; variant < VARIANT_COUNT; ++variant)
         {
@@ -271,14 +452,23 @@ void AdvancePairs(rhi::DeviceHandle device,
         {
             const usize variant = isBaselineFirst == true ? turn : VARIANT_COUNT - 1 - turn;
             VisibilityFixture& fixture = inoutFixtures[variant];
-            if (isBenchmark == true)
+            if (shouldTimeFrames == true)
                 REQUIRE(rhi::ArmGpuTiming(device) == Status::Ready);
+            const bool hasPassProbe = shouldMeasurePasses == true && variant == PROFILED_VARIANT_INDEX;
+            if (hasPassProbe == true)
+            {
+                const Status armed = rhi::ArmGpuPassTimings(device);
+                if (armed == Status::Unsupported && isBenchmark == false)
+                    SKIP("Native per-pass timestamp sampling unavailable");
+                INFO("Per-pass timestamps are required in pass-timings benchmark mode");
+                REQUIRE(armed == Status::Ready);
+            }
             const uint64 startedAt = time::NowTicks();
             rhi::SubmissionToken token;
             REQUIRE(fixture.Renderer.AdvanceGpuPreview(fixture.Preview, surface, token) == Status::Ready);
             WaitSamples(fixture, sample);
             const uint64 completedAt = time::NowTicks();
-            if (isBenchmark == true)
+            if (shouldTimeFrames == true)
             {
                 rhi::GpuTiming timing;
                 REQUIRE(rhi::GetGpuTiming(device, timing) == Status::Ready);
@@ -296,6 +486,8 @@ void AdvancePairs(rhi::DeviceHandle device,
                     }
                 }
             }
+            if (hasPassProbe == true)
+                CollectPassTimings(device, sample > warmup ? usize(sample - warmup - 1) : 0, outTimings.Passes);
             firstCompletedAt = completedAt;
         }
     }
@@ -376,13 +568,56 @@ void WriteIntegers(const std::string& directory, const char* scene, const char* 
         REQUIRE(TryWriteLittleEndian(values[i], {bytes.GetData() + i * sizeof(Value), sizeof(Value)}) == true);
     WriteArtifact(directory, scene, suffix, bytes.GetData(), bytes.GetSize());
 }
-void WriteTimings(const std::string& directory, const char* scene, const Array<float64>& values)
+void WriteTimings(const std::string& directory,
+                  const char* scene,
+                  const Array<float64>& values,
+                  const char* suffix = ".gpu.bin")
 {
     Array<uint64> bits;
     REQUIRE(bits.TryResize(values.GetSize()) == true);
     for (usize i = 0; i < values.GetSize(); ++i)
         std::memcpy(&bits[i], &values[i], sizeof(uint64));
-    WriteIntegers(directory, scene, ".gpu.bin", bits);
+    WriteIntegers(directory, scene, suffix, bits);
+}
+void WritePassTimings(const std::string& directory, const char* scene, const PassTimingSamples& samples)
+{
+    REQUIRE(samples.HasMetadata == true);
+    WriteTimings(directory, scene, samples.Nanoseconds[TRANSPORT_PASS_INDEX], ".transport.gpu.bin");
+    WriteTimings(directory, scene, samples.Nanoseconds[OUTPUT_PASS_INDEX], ".output.gpu.bin");
+    WriteIntegers(directory, scene, ".pass-intervals.bin", samples.IntervalWords);
+    const rhi::GpuPassTiming& transport = samples.Metadata[TRANSPORT_PASS_INDEX];
+    const rhi::GpuPassTiming& output = samples.Metadata[OUTPUT_PASS_INDEX];
+    // Seven explicit little-endian 64-bit words: version, two binary64 ticks,
+    // two valid-bit counts and two scope identities. No host struct padding.
+    StaticArray<uint64, PASS_METADATA_WORD_COUNT> metadata{{PASS_METADATA_VERSION,
+                                                            0,
+                                                            0,
+                                                            transport.Timing.ValidBits,
+                                                            output.Timing.ValidBits,
+                                                            transport.Scope.Identity,
+                                                            output.Scope.Identity}};
+    std::memcpy(&metadata[1], &transport.Timing.TickNanoseconds, sizeof(float64));
+    std::memcpy(&metadata[2], &output.Timing.TickNanoseconds, sizeof(float64));
+    StaticArray<uint8, PASS_METADATA_WORD_COUNT * sizeof(uint64)> bytes{};
+    for (usize index = 0; index < metadata.GetSize(); ++index)
+        REQUIRE(TryWriteLittleEndian(metadata[index], {bytes.GetData() + index * sizeof(uint64), sizeof(uint64)}) ==
+                true);
+    WriteArtifact(directory, scene, ".pass-info.bin", bytes.GetData(), bytes.GetSize());
+    StaticArray<uint8, EXPECTED_PASS_COUNT * (sizeof(uint32) + rhi::GPU_SCOPE_NAME_BYTES)> names{};
+    usize offset = 0;
+    for (const rhi::GpuPassTiming& pass : samples.Metadata)
+    {
+        uint32 length = 0;
+        while (length < pass.Scope.Name.GetSize() && pass.Scope.Name[length] != '\0')
+            ++length;
+        REQUIRE(length != 0);
+        REQUIRE(length < pass.Scope.Name.GetSize());
+        REQUIRE(TryWriteLittleEndian(length, {names.GetData() + offset, sizeof(uint32)}) == true);
+        offset += sizeof(uint32);
+        std::memcpy(names.GetData() + offset, pass.Scope.Name.GetData(), length);
+        offset += length;
+    }
+    WriteArtifact(directory, scene, ".pass-names.bin", names.GetData(), offset);
 }
 void WriteLinear(const std::string& directory, const char* scene, const Array<math::Vector4>& values)
 {
@@ -422,8 +657,10 @@ void CompareReference(rhi::DeviceHandle device,
     CHECK(information.InvalidContributions == 0);
     if (scene == SceneKind::Empty)
         CHECK(information.VisibilityQueries == 0);
-    else
+    else if (scene == SceneKind::Opaque || scene == SceneKind::Masked || scene == SceneKind::Mixed)
         CHECK(information.VisibilityQueries > pixelCount * description.TargetSamples / 2);
+    else
+        CHECK(information.VisibilityQueries > 0);
     for (usize pixel = 0; pixel < pixelCount; ++pixel)
     {
         CAPTURE(path, pixel);
@@ -439,18 +676,23 @@ void CompareReference(rhi::DeviceHandle device,
     }
     REQUIRE(fixture.Renderer.Release(capture) == Status::Ready);
 }
-} // namespace
-
-TEST_CASE("Visibility-only queries preserve full-hit output and CPU/GPU reference parity",
-          "[renderer][gpu][visibility]")
+void RunPairedPreview(BenchmarkExperiment experiment)
 {
-    const char* directoryOrNull = std::getenv("LUDUS_VISIBILITY_BENCHMARK_DIRECTORY");
+    const bool shouldCacheHit = experiment == BenchmarkExperiment::HitCache;
+    const bool shouldMeasurePasses = experiment == BenchmarkExperiment::PassTimings;
+    const char* directoryOrNull = std::getenv(shouldMeasurePasses == true ? "LUDUS_RAY_PASS_BENCHMARK_DIRECTORY"
+                                              : shouldCacheHit == true    ? "LUDUS_HIT_CACHE_BENCHMARK_DIRECTORY"
+                                                                          : "LUDUS_VISIBILITY_BENCHMARK_DIRECTORY");
     const bool isBenchmark = directoryOrNull != nullptr;
-    const bool shouldReverseOrder = std::getenv("LUDUS_VISIBILITY_REVERSE_ORDER") != nullptr;
+    const bool shouldReverseOrder = std::getenv(shouldMeasurePasses == true ? "LUDUS_RAY_PASS_REVERSE_ORDER"
+                                                : shouldCacheHit == true ? "LUDUS_HIT_CACHE_REVERSE_ORDER"
+                                                                         : "LUDUS_VISIBILITY_REVERSE_ORDER") != nullptr;
     rr::internal::SetGpuPreviewOpacityPartitioningForTesting(true);
     const uint32 extent = isBenchmark == true ? BENCHMARK_EXTENT : TEST_EXTENT;
     const uint32 samples = isBenchmark == true ? BENCHMARK_SAMPLES : TEST_SAMPLES;
-    for (usize sceneIndex = 0; sceneIndex < SCENE_COUNT; ++sceneIndex)
+    for (usize sceneIndex = 0;
+         sceneIndex < ((shouldCacheHit == true || shouldMeasurePasses == true) ? ALL_SCENE_COUNT : SCENE_COUNT);
+         ++sceneIndex)
     {
         CAPTURE(sceneIndex);
         const SceneKind scene = static_cast<SceneKind>(sceneIndex);
@@ -466,7 +708,7 @@ TEST_CASE("Visibility-only queries preserve full-hit output and CPU/GPU referenc
         deviceDescription.Required.PortableRaster = true;
         deviceDescription.Required.Compute = true;
         deviceDescription.Preferred.RayQueries = true;
-        deviceDescription.EnableGpuTiming = isBenchmark;
+        deviceDescription.EnableGpuTiming = isBenchmark == true || shouldMeasurePasses == true;
         rhi::DeviceHandle device;
         rhi::SurfaceHandle surface;
         const rhi::DeviceStatus started =
@@ -478,8 +720,16 @@ TEST_CASE("Visibility-only queries preserve full-hit output and CPU/GPU referenc
         if (rhi::GetRayCapabilities(device, capabilities) == Status::Unsupported)
             SKIP("Native ray queries unavailable");
         StaticArray<VisibilityFixture, VARIANT_COUNT> fixtures{};
-        PrepareFixture(device, RenderPath::FullHit, scene, fixtures[0]);
-        PrepareFixture(device, RenderPath::VisibilityOnly, scene, fixtures[1]);
+        PrepareFixture(device,
+                       shouldCacheHit == true        ? RenderPath::UncachedHit
+                       : shouldMeasurePasses == true ? RenderPath::VisibilityOnly
+                                                     : RenderPath::FullHit,
+                       scene,
+                       fixtures[0]);
+        PrepareFixture(device,
+                       shouldCacheHit == true ? RenderPath::CachedHit : RenderPath::VisibilityOnly,
+                       scene,
+                       fixtures[1]);
         const rr::DirectLight light
         {
             .SourceId = 1,
@@ -505,7 +755,7 @@ TEST_CASE("Visibility-only queries preserve full-hit output and CPU/GPU referenc
         TimingSamples timings;
         // Both immutable pipelines/scenes are ready before any timed frame. AB,BA
         // alternation pairs the same sample address, on one device/queue/surface.
-        AdvancePairs(device, surface, fixtures, samples, isBenchmark, shouldReverseOrder, timings);
+        AdvancePairs(device, surface, fixtures, samples, isBenchmark, shouldMeasurePasses, shouldReverseOrder, timings);
         StaticArray<Array<uint8>, VARIANT_COUNT> pixels{};
         StaticArray<Array<math::Vector4>, VARIANT_COUNT> linear{};
         for (usize variant = 0; variant < VARIANT_COUNT; ++variant)
@@ -527,7 +777,10 @@ TEST_CASE("Visibility-only queries preserve full-hit output and CPU/GPU referenc
             const char* sceneName = SCENE_NAMES[sceneIndex];
             for (usize variant = 0; variant < VARIANT_COUNT; ++variant)
             {
-                const std::string variantDirectory = directory + "/" + VARIANT_NAMES[variant];
+                const std::string variantDirectory = directory + "/" +
+                                                     (shouldMeasurePasses == true ? PASS_VARIANT_NAMES[variant]
+                                                      : shouldCacheHit == true    ? CACHE_VARIANT_NAMES[variant]
+                                                                                  : VARIANT_NAMES[variant]);
                 WriteArtifact(variantDirectory,
                               sceneName,
                               ".rgba",
@@ -536,6 +789,8 @@ TEST_CASE("Visibility-only queries preserve full-hit output and CPU/GPU referenc
                 WriteLinear(variantDirectory, sceneName, linear[variant]);
                 WriteTimings(variantDirectory, sceneName, timings.GpuNanoseconds[variant]);
                 WriteIntegers(variantDirectory, sceneName, ".wall.bin", timings.WallNanoseconds[variant]);
+                if (shouldMeasurePasses == true && variant == PROFILED_VARIANT_INDEX)
+                    WritePassTimings(variantDirectory, sceneName, timings.Passes);
             }
             WriteIntegers(directory, sceneName, ".gap.bin", timings.PairGapNanoseconds);
             WriteIntegers(directory, sceneName, ".order.bin", timings.IsBaselineFirst);
@@ -566,4 +821,22 @@ TEST_CASE("Visibility-only queries preserve full-hit output and CPU/GPU referenc
         CHECK(resources.Geometries == 0);
         CHECK(resources.Scenes == 0);
     }
+}
+} // namespace
+
+TEST_CASE("Visibility-only queries preserve full-hit output and CPU/GPU reference parity",
+          "[renderer][gpu][visibility]")
+{
+    RunPairedPreview(BenchmarkExperiment::Visibility);
+}
+TEST_CASE("Per-hit material and UV caching preserves uncached output and CPU/GPU reference parity",
+          "[renderer][gpu][hit-cache]")
+{
+    RunPairedPreview(BenchmarkExperiment::HitCache);
+}
+
+TEST_CASE("Per-pass GPU probes preserve ray rendering and separate transport from output",
+          "[renderer][gpu][ray-pass-timings]")
+{
+    RunPairedPreview(BenchmarkExperiment::PassTimings);
 }

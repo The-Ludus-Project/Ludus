@@ -93,6 +93,7 @@ static const uint BSDF_LOBE_SLOT = 3;
 static const uint BSDF_FIRST_SLOT = 4;
 static const uint BSDF_SECOND_SLOT = 5;
 static const uint ROULETTE_SLOT = 6;
+static const uint EMITTER_SLOT = LUDUS_PATH_RANDOM_EMITTER_SLOT;
 
 float4 SceneValue(uint index)
 {
@@ -528,15 +529,69 @@ uint GetLightCount()
 {
     return Counts.w + Counts.z + ((SurfaceLayout.w != 0 || HasPositiveComponent(Environment.xyz)) ? 1u : 0u);
 }
-float GetAreaPdf(uint triangle, float3 fromPositionWorld, float3 toPositionWorld, uint lightCount)
+// AreaPdf: solid-angle density after selecting the triangle with probability `selection`.
+float GetAreaPdf(uint triangle, float3 fromPositionWorld, float3 toPositionWorld, float selection)
 {
     float3 deltaWorld = toPositionWorld - fromPositionWorld;
     float distanceSquared = dot(deltaWorld, deltaWorld);
     float cosine = abs(dot(GetGeometricNormalWorld(triangle), -NormalizeOrZero(deltaWorld)));
     float area = GetArea(triangle);
-    if (lightCount == 0 || area <= 0 || cosine <= 0)
+    if (selection <= 0 || area <= 0 || cosine <= 0)
         return 0;
-    return distanceSquared / (float(lightCount) * area * cosine);
+    return selection * distanceSquared / (area * cosine);
+}
+// Emitter words hold the ascending triangle index in X and the inclusive integer
+// power CDF in Y (BuildReferenceEmitterSelection).
+uint GetEmitterTriangle(uint emitter)
+{
+    return sceneWords[Offsets.z + emitter].x;
+}
+uint GetEmitterCumulative(uint emitter)
+{
+    return sceneWords[Offsets.z + emitter].y;
+}
+// SelectReferenceEmitter: the emitter whose CDF interval contains value.
+uint SelectEmitter(uint value)
+{
+    uint low = 0;
+    uint high = Counts.z - 1;
+    while (low < high)
+    {
+        uint middle = low + (high - low) / 2;
+        if (GetEmitterCumulative(middle) <= value)
+            low = middle + 1;
+        else
+            high = middle;
+    }
+    return low;
+}
+// FindReferenceEmitter: false when the triangle is not a light proposal.
+bool FindEmitter(uint triangle, out uint outEmitter)
+{
+    outEmitter = 0;
+    uint low = 0;
+    uint high = Counts.z;
+    while (low < high)
+    {
+        uint middle = low + (high - low) / 2;
+        if (GetEmitterTriangle(middle) < triangle)
+            low = middle + 1;
+        else
+            high = middle;
+    }
+    if (low == Counts.z || GetEmitterTriangle(low) != triangle)
+        return false;
+    outEmitter = low;
+    return true;
+}
+// ComputeEmitterSelection: the uniform category share times the CDF probability.
+float GetEmitterSelection(uint emitter, uint lightCount)
+{
+    uint total = Counts.z == 0 ? 0 : GetEmitterCumulative(Counts.z - 1);
+    if (lightCount == 0 || emitter >= Counts.z || total == 0)
+        return 0;
+    uint previous = emitter == 0 ? 0 : GetEmitterCumulative(emitter - 1);
+    return float(GetEmitterCumulative(emitter) - previous) / float(total) * (float(Counts.z) / float(lightCount));
 }
 // TryOffsetRayOrigin: project the reconstruction error onto the oriented geometric
 // normal, then step each nonzero component one representable value outward.
@@ -881,7 +936,20 @@ LightProposal SampleLight(uint pixel, uint sample, uint depth, float3 positionWo
     }
     if (selected - Counts.w < Counts.z)
     {
-        uint triangle = asuint(SceneValue(Offsets.z + selected - Counts.w).x);
+        uint total = GetEmitterCumulative(Counts.z - 1);
+        if (total == 0)
+            return result; // No emitter carries power; the proposal contributes nothing.
+        uint value;
+        if (TrySampleRandomBounded(Sampling.xy,
+                                   PixelRandomAddress(pixel, sample, GetBounceDimension(depth, EMITTER_SLOT)),
+                                   total,
+                                   value) == false)
+        {
+            result.Pdf = -1;
+            return result;
+        }
+        uint emitter = SelectEmitter(value);
+        uint triangle = GetEmitterTriangle(emitter);
         float root = sqrt(first);
         float u = root * (1 - second);
         float v = root - u;
@@ -897,7 +965,7 @@ LightProposal SampleLight(uint pixel, uint sample, uint depth, float3 positionWo
         result.ErrorWorld = GetPositionErrorWorld(triangle);
         result.NormalWorld = GetGeometricNormalWorld(triangle);
         result.HasFiniteEndpoint = true;
-        result.Pdf = GetAreaPdf(triangle, positionWorld, result.PositionWorld, count);
+        result.Pdf = GetAreaPdf(triangle, positionWorld, result.PositionWorld, GetEmitterSelection(emitter, count));
         uint instance = GetInstance(triangle);
         float2 uv = GetTexcoordUv(triangle, u, v);
         if ((IsEmissionTwoSided(instance) == true || dot(result.NormalWorld, -result.DirectionWorld) > 0) &&
@@ -1008,7 +1076,9 @@ PathSample TracePath(uint pixel, uint sample)
         if (HasPositiveComponent(SurfaceValue(instance, 4).xyz) == true &&
             (IsEmissionTwoSided(instance) == true || dot(geometricNormalWorld, viewWorld) > 0))
         {
-            float pdf = GetAreaPdf(triangle, previousPositionWorld, positionWorld, lights);
+            uint emitter;
+            float selection = FindEmitter(triangle, emitter) == true ? GetEmitterSelection(emitter, lights) : 0;
+            float pdf = GetAreaPdf(triangle, previousPositionWorld, positionWorld, selection);
             if (isfinite(pdf) == false || pdf < 0)
             {
                 MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_EMITTER_PDF);

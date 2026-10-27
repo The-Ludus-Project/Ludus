@@ -1288,8 +1288,19 @@ path-tracing performance claim. It never hides a wait/readback in raster submiss
 
 The profile uses L4's isotropic single-scattering GGX, correlated Smith, Schlick
 Fresnel and Fresnel-weighted Lambert, visible-GGX/cosine mixture sampling with
-explicit null events, one uniformly selected analytic/triangle/environment light
-proposal, power-heuristic MIS and compensated roulette. Profile version 2 matches L4 point/spot range windows, the squared smooth cone
+explicit null events, one light proposal per vertex, power-heuristic MIS and
+compensated roulette. The proposal first picks a light uniformly among analytic
+lights, emissive triangles and the environment. When it picks an emissive triangle,
+a second bounded draw (per-bounce random slot `LUDUS_PATH_RANDOM_EMITTER_SLOT`)
+replaces that uniform choice with one from an integer CDF over emitted luminance
+times area, after PBR 4e section 12.6.2's power light sampler. Weights are quantized
+against 2^24 and every positive one keeps at least one unit, so each emitter's
+selection probability is exact and nonzero. Emitter hits look up the same
+probability for MIS by binary search over the ascending emitter list. Many small,
+bright emitters therefore no longer crowd out large, dim panels (for example the
+candle flames and ceiling light of the pbrt-v4 staircase). Analytic lights and the
+environment keep their uniform share; a power-weighted choice across categories is
+future work. Profile version 2 matches L4 point/spot range windows, the squared smooth cone
 and the 1e-4 square-meter near-light attenuation floor. Version 1 used a different
 spot interpolation and unbounded nonzero-distance attenuation; old captures retain
 that profile identity and cannot be compared as the same integral. Emission is two-sided; reflection is restricted to the geometric and
@@ -1703,7 +1714,12 @@ do not substitute “reuse the last ray” for an estimator. The May 2026 paper
 by Daqi Lin, Markus Kettunen and Chris Wyman identifies contemporary work on
 reconnection, correlation and reuse cost. Its abstract is discovery evidence,
 not a completed algorithm review or a Ludus speedup. Review the full estimator
-and validate it against the independent reference before adopting it.
+and validate it against the independent reference before adopting it. The
+[many-area-light resampling review](many-area-light-sampling-reference-review.md)
+proposes RIS over emissive triangles with projected solid angle/LTC sampling,
+first as a `ris-projected-solid-angle` render graph template and then as an
+explicit second RT1 light-sampling profile. It is not implemented; `UniformArea`
+remains the reference oracle.
 
 Keep a single loop kernel initially. A wavefront implementation can later split
 intersection, hit shading and shadow work into compact queues when divergence
@@ -1965,12 +1981,11 @@ A compute dispatch performs closest/visibility native acceleration-structure que
 shared material opacity filtering,
 RGB GGX/Lambert sampling, analytic-light/emissive-triangle/constant-environment sampling, MIS,
 roulette and compensated accumulation. It uses RT1's addressed Philox dimensions
-and world-space origin error allowance. A second ordered GDI pass draws pixel
-quads using compute-written per-instance RGB/pixel-index records into an RHI
-attachment texture. Binary32-exact indices are bounded to 2^24 pixels, avoiding
-nonportable builtin-instance signature lowering without extra buffer bytes.
-The graph declares storage history, compute-to-vertex visibility and the sampled
-texture export. No ray, radiance, counter or pixel readback occurs in these
+and world-space origin error allowance. A second ordered raster pass draws one
+fullscreen quad; its fragment shader reads compute-written display colors by pixel
+coordinate into an RHI attachment texture. Current preview admission retains the
+2^24-pixel bound. The graph declares storage history, compute-to-fragment visibility
+and the sampled texture export. No ray, radiance, counter or pixel readback occurs in these
 renderer APIs. GPU numerical failure makes an error pixel magenta; CPU progress
 reports completed dispatches, not observed valid sample counts or convergence.
 
@@ -2134,6 +2149,163 @@ zero invalid reference contributions and visibility-query coverage on geometry
 scenes. Run this ordinary mode independently of benchmark mode, which omits oracle
 renders during timing. Neither denoising nor temporal reuse establishes parity.
 
+The opt-in `renderer_gpu_preview_hit_cached` recipe experiments with per-hit material
+word-address and interpolated-UV reuse. The default preview, reference integral,
+packed-scene ABI and candidate acceptance remain unchanged. `HitMaterial` is local
+to one intersection; it introduces no persistent history, host allocation or GPU
+buffer. Map transforms, fixed-mip filtering, decoding and normal mapping retain
+the existing texture helper, including its out-of-line SPIR-V filter. The material
+word constants are shared by the host packer and shader readers.
+
+Generated-code inspection at base `44d7510a` found three separate primary-hit UV
+interpolations for emission, base color and surface maps. The default artifact has
+8,745 SPIR-V instructions, 907 static `OpLoad` and 354 `OpAccessChain` instructions;
+the opt-in artifact has 8,571, 874 and 321 respectively. The default retains the
+original counts. These are module-wide static instruction counts, including local
+loads and branches, not measured device-memory traffic. Translated Metal source
+is 160,150 versus 158,462 bytes. SPIRV-Cross still marks the texture helper
+`always_inline`; downstream driver optimization can eliminate source redundancy.
+Fewer intermediate instructions do not establish faster GPU execution.
+
+Use the same interleaved harness with the cache experiment selected:
+
+```sh
+python3 scripts/python/benchmark_ray_visibility.py --experiment hit-cache \
+  --executable out/build/<native-build>/modules/graphics/renderer/ludus_renderer_render_tests \
+  --output out/hit-cache/interleaved --runs 5
+```
+
+The experiment prepares default/uncached and opt-in/cached pipelines together and
+uses the same matched-sample AB/BA protocol, warmup, timing scope, executable hash,
+complete sample-coverage checks and independent-process bootstrap described above.
+Artifacts use `uncached/` and `cached/` variant directories. Four untextured controls
+are joined by `textured-nearest` and `textured-linear` scenes with retained sRGB base
+and emission maps, a linear normal/roughness/metallic map, explicit mesh UVs, negative
+V scale, repeated U and clamped V. Each textured scene has 5,120 triangles. Its
+emissive surfaces exercise mesh-light sampling too. The ordinary `[hit-cache]`
+regression compares final RGBA8 A/B output, raw RGB, and the independent CPU oracle
+and software GPU reference at 64×64/16 samples, with the same documented channel
+tolerances. Benchmark mode omits oracle rendering during timing.
+
+On 2026-10-27, five independent processes on an 8-core Apple M5 GPU,
+macOS 26.6 and Clang 23.1.3 Development measured 112 balanced AB/BA pairs after
+16 warmup pairs per process: 560 measured pairs per scene. Positive savings mean
+the cached recipe used less GPU time. Each row uses the median of process median
+matched-frame ratios; the bootstrap resamples those five process medians.
+
+| Scene | Paired GPU time saved | 95% run-bootstrap uncached/cached ratio |
+| --- | ---: | ---: |
+| empty | 0.76% | 1.0009–1.0106× |
+| opaque | -2.33% | 0.9760–0.9803× |
+| masked | -0.39% | 0.9918–1.0015× |
+| mixed | -0.74% | 0.9846–1.0003× |
+| textured-nearest | -0.04% | 0.9948–1.0003× |
+| textured-linear | 0.31% | 0.9985–1.0067× |
+
+All six scenes retained bit-identical normalized raw RGB and RGBA8 across all five
+processes. The ordinary regression also passed independent CPU/software-GPU parity.
+The maximum recorded CPU gap within a pair was 2.754 ms (empty control); the
+largest geometry-scene gap was 0.186 ms. Individual gaps and both order-specific
+ratios remain in the JSON report; no additional timings were discarded. The
+textured-linear median gain is small and its interval includes no gain; opaque
+rendering has a repeatable regression. This does not establish a general speedup.
+
+Two earlier variants were also measured and rejected. Resolving material addresses
+through the texture filter reduced static loads from 907 to 805 but regressed the
+opaque fixture by 2.40% over five runs. Adding lazy UV evaluation and per-filter
+metadata caching regressed opaque by 4.21% and textured-linear by 1.77% over three
+runs. The final implementation keeps the texture-filter boundary unchanged. A
+separate three-run repetition of that narrow implementation also measured an
+opaque regression (2.44%) and only 0.23% textured-linear savings. These results
+motivate the opt-in status rather than a default performance claim.
+
+The recipe remains an opt-in experiment. Native backend qualification and a
+representative measured improvement are required before default activation.
+
+The `pass-timings` benchmark experiment uses the existing RHI per-pass probes to
+measure the named `GPU preview transport` compute operation and `GPU preview image`
+raster operation separately. Both variants use the same production shader with
+material caching disabled. `unprobed` keeps the frame probe alone; `profiled` also
+arms `ArmGpuPassTimings` before submission and polls `GetGpuPassTimings` after
+completion. Their matched AB/BA frame intervals expose the observed instrumentation
+overhead, independently of the per-pass durations. Run:
+
+```sh
+python3 scripts/python/benchmark_ray_visibility.py --experiment pass-timings \
+  --executable out/build/<native-build>/modules/graphics/renderer/ludus_renderer_render_tests \
+  --output out/ray-pass/interleaved --runs 5
+```
+
+It reuses all six opaque/masked/textured fixtures, sample addresses, warmup and
+independent-process repetitions above. The ordinary `[ray-pass-timings]` regression
+checks the same shader with probes off/on, sample coverage and independent CPU/
+software-GPU reference parity. Benchmark mode validates exactly one compute and
+one raster interval per profiled frame, their distinct nonzero scope identities,
+stable names/precision, zero dropped records, and explicit Available states with
+finite nonnegative durations. A quantized zero is retained and counted. Unsupported
+per-pass sampling skips the ordinary hardware test, but fails a requested benchmark;
+unavailable, disjoint, missing or unexpected data never becomes a CPU-time fallback.
+
+These intervals include GPU stalls. Metal raster timing is the elapsed envelope of
+vertex/fragment stages, which can overlap other operation envelopes. The report
+therefore retains each raw duration and, when the RHI supplies validated clock
+alignment, their overlap and the output's end-time tail after compute. The latter
+is `max(0, outputEnd - transportEnd)` on the calibrated clock, not raster shader
+busy time. Overlap/tail statistics use only aligned samples and always report their
+count and the largest clock-mapping uncertainty. Missing alignment leaves these
+statistics absent while raw GPU durations remain available. Pass durations are
+not an additive partition of frame time. The [profiling contract](profiling-final.md)
+owns backend stage, clock-calibration and uncertainty details.
+
+In each `profiled/` directory, `.transport.gpu.bin` and `.output.gpu.bin` contain one
+little-endian binary64 nanosecond duration per measured sample. `.pass-info.bin`
+contains seven explicit 64-bit words: version 1 (uint64), transport/output tick
+nanoseconds (binary64), their valid-bit counts (uint64), and their scope identities
+(uint64). Zero precision fields mean unknown; identities remain process/device
+local. `.pass-names.bin` contains transport then output UTF-8 names, each prefixed
+by its uint32 little-endian byte length, without a terminator. `.pass-intervals.bin`
+has six uint64 little-endian words per sample: transport start/end, output start/end,
+clock uncertainty in nanoseconds, and a 0/1 alignment-availability word. Unavailable
+intervals contain zero timestamp/bound words and are not interpreted as zero overlap.
+The JSON preserves per-run metadata, names, precision, zero-duration/alignment counts,
+pass medians and process-bootstrap intervals, plus the original frame and image
+checks. No image readback or file I/O occurs between paired submissions; counter
+resolution happens after completion and its CPU cost is visible in the pair gap.
+
+Measurement on 2026-10-27 used Apple M5 (8 GPU cores), macOS 26.6,
+Clang 23.1.3 `RelWithDebInfo` (`-O2`), the default visibility-only / uncached
+shader, 512×512 pixels and 128 samples (16 warmup). Five independent processes
+contributed 112 matched AB/BA pairs per scene each. The source base was
+`02df0b37e3e2283f88a86ea1a012e2794a8905d6`; the frozen executable SHA-256 was
+`7da4672c54616f898f58905a7f9145e64914aa5594b579c00eb3c0875cc30e91`. Values below are medians of
+process medians; bracketed ranges are 95% process-bootstrap intervals for raw
+pass durations. Durations and overlap/tail are in milliseconds.
+
+| Scene | Transport [95% interval] | Output envelope [95% interval] | Overlap | Output tail | Aligned samples | Max clock uncertainty (µs) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| empty | 0.5345 [0.3561, 0.6879] | 0.5906 [0.3935, 0.7491] | 0.5075 | 0.0499 | 558/560 | 0.667 |
+| opaque | 1.8432 [1.3666, 2.6971] | 1.8757 [1.3445, 2.7698] | 1.8361 | 0.0629 | 560/560 | 5.125 |
+| masked | 3.4468 [2.6952, 6.2121] | 3.4984 [2.7276, 6.2898] | 3.4346 | 0.0664 | 560/560 | 9.000 |
+| mixed | 3.6646 [3.2291, 6.2483] | 3.6408 [3.2203, 6.3440] | 3.5853 | 0.0670 | 559/560 | 17.730 |
+| textured-nearest | 4.2184 [3.6288, 5.0066] | 4.2706 [3.6437, 5.2127] | 4.2063 | 0.0612 | 559/560 | 8.938 |
+| textured-linear | 4.8813 [4.5703, 8.0433] | 4.8721 [4.5881, 8.0585] | 4.7998 | 0.0742 | 556/560 | 13.667 |
+
+All 3360 profiled frames retained valid GPU pass durations; eight lacked validated
+clock alignment and were excluded only from overlap/tail statistics. Tick precision
+was 1 ns with 64 valid bits and no zero-duration samples. The large raster envelope
+mostly overlaps transport; neither it nor the output tail identifies raster shader
+busy time. Absolute times vary substantially between processes, so these are
+observed workload intervals rather than uncontended hardware costs.
+
+Matched frame overhead point estimates ranged from −0.71% to +0.60%; every
+95% process-bootstrap unprobed/profiled ratio interval included 1. This does not
+establish zero probe overhead. Median inter-frame pair gaps were 0.012–0.020 ms
+across scene/process combinations; the JSON retains AB/BA splits and gaps for
+order-bias inspection. Every displayed RGBA8 channel and raw linear RGB value
+was identical between unprobed and profiled variants, with complete sample
+coverage. The ordinary regression separately checks the independent CPU oracle
+and software GPU-reference outputs at 64×64 / 16 samples using the tolerances above.
+
 The explicit quality profile admits at most four live jobs, 4096 requested
 samples, depth eight, the reference secondary-distance/camera bounds and a fixed
 texture mip. It has no denoising, motion history, transmission, spectral transport,
@@ -2261,6 +2433,8 @@ Older baseline layouts stay admitted and reject non-null maps with `Unsupported`
 GPU reference rendering now copies all normalized authored analytic lights into
 its budgeted scene buffer, uniformly selects among them, finite triangle emitters
 and a positive constant environment, and uses unit MIS weight for delta lights.
+Within the emitter share, both GPU kernels pick triangles from the packed
+power-weighted CDF (emitter word Y), matching the CPU proposal described above.
 Point/spot shadow segments terminate before the light endpoint. Raster, CPU reference
 and GPU reference use the same units, inverse-square floor, range window and
 squared cone. No lighting selection truncates the reference integral. Existing
@@ -2558,7 +2732,8 @@ including an area that overflows binary32, still fails preparation.
 
 The virtual diffuse receiver uses cosine-hemisphere sampling plus the reference
 integrator's same-measure next-event MIS, visibility, metallic/roughness transport
-and compensated roulette. It includes **all admitted emissive triangles** and
+and compensated roulette, including its power-weighted emitter proposal. It
+includes **all admitted emissive triangles** and
 raw authored environment direct diffuse, plus subsequent indirect transport.
 Analytic direct diffuse stays in raster. The declared path-depth/range bounds
 introduce truncation bias, sample count controls variance, and per-triangle

@@ -7,9 +7,9 @@ checking a task. Mocks, skipped checks or optionalized failures do not count as
 acceptance. Native ray pixel tests need a qualified GPU; report a skip as a
 skip.
 
-Revised 2026-10-26: traversal strategies and MIS shading landed outside this
-plan (#619, #621, #626). C5 records them and the evidence they still need;
-earlier phases are unchanged except where noted.
+Revised 2026-10-26 and 2026-10-27: traversal strategies (#619, #621) and a
+separate MIS template (#635) landed outside this plan. C5 records them and the
+evidence they still need; earlier phases are unchanged except where noted.
 
 ## C0 Feasibility (no product change)
 
@@ -246,11 +246,10 @@ skip it.
   most one pixel in a thousand differing by more than two levels. A negative control
   that swapped the decoded barycentrics failed the test. After a resize to twice the
   size, four frames show no error pixels.*
-  *#626 later replaced the one-light-sample policy with MIS of one light and one
-  BSDF sample in both the template and `direct_lighting_reference`, and added
-  "Every MIS heuristic of the compute ray-tracing template estimates the
-  light-sampling integral". The checked boxes above were recorded for the
-  original policy; #626 carries the evidence for the MIS version.*
+  *#626 briefly replaced this template's policy with MIS; `01a50759` restored
+  the one-light-sample template, its `direct_lighting_reference` and these
+  tests, so the boxes above describe the current template. MIS is the separate
+  `veach-guibas-mis` template (design D9, C5).*
 - [x] Docs: add "Use the compute ray-tracing template" next to the ReSTIR
       section, and update the Quick Add snippet row and the configuration
       template table.
@@ -271,7 +270,10 @@ Landed in `develop`, not re-verified here:
   - `invocation.traversal` (Automatic, `TriangleLoop`, `NativeQuery`), the
     renderer `TriangleLoop` strategy, `RenderGraphRenderer::ComputeRayTracing`
     and package version 18. Commit `2720bb84` is the software-only runtime.
-- #626 added MIS shading to the C4 template (see C4).
+- #635 added the `veach-guibas-mis` graph template and snippet (design D9):
+  a primary-hits pass and three shading passes (MIS, light only, BSDF only),
+  with GPU tests against `veach_guibas_reference`. #626's MIS change to the C4
+  template was reverted by `01a50759`.
 
 Open:
 

@@ -3,8 +3,10 @@
 Status: proposed implementation, 2026-10-24. Baseline `origin/develop`
 `dbbf7461`. Revised 2026-10-26 against `origin/develop` `c3312612` for the
 traversal strategies added after C4 by #619 and #621 (software compute
-traversal) and for the MIS shading added by #626; see
-[design D8](design.md#d8-traversal-strategy-added-after-c4). Implement with
+traversal); see [design D8](design.md#d8-traversal-strategy-added-after-c4).
+Revised again 2026-10-27 against `bf909fe0`: #626 had put MIS into the C10
+template, `01a50759` reverted that, and #635 added MIS as the separate
+`veach-guibas-mis` template (design D9). Implement with
 AGENTS.md/steering, [design](design.md) and [tasks](tasks.md). C01-C14 are
 normative. File paths, node shapes and APIs in this package are deliverables,
 not existing capabilities.
@@ -136,13 +138,17 @@ Accumulate → ToneMap → Export:
 - a primary-hits pass, which writes a per-pixel hit record into a render-size
   `Buffer`;
 - a trace & shade pass, which reconstructs the surface and shades emission
-  plus one light sample and one BSDF sample combined with multiple importance
-  sampling (#626).
+  plus one shadowed light sample.
 
 The template's kernels SHALL keep the native default traversal, so it carries
 the `native-ray-tracing` requirement and the `ray-traced` graph category. A
 `TriangleLoop` selection on both passes is an author choice and is not required
 of the template.
+
+Other shading policies SHALL ship as separate templates that reuse the hit
+record, not as changes to this one. The first is `veach-guibas-mis` (#635,
+design D9): a primary-hits pass and three shading passes for MIS, light sampling
+alone and BSDF sampling alone.
 
 ## C11 Editor authoring
 
@@ -188,4 +194,5 @@ scene compute passes, traversal strategies and the template in the same changes
 that add them. It SHALL replace the "ComputePipeline is not executable"
 statements and keep the public API Doxygen contracts current. Shader sources
 SHALL credit the papers they adopt, including Möller and Trumbore (1997) for the
-triangle test and Veach and Guibas (1995) for MIS.
+triangle test, and Veach and Guibas (1995) for MIS in the `veach-guibas-mis`
+template.

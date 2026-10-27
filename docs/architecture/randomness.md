@@ -396,7 +396,10 @@ storage; introduce it only for such a consumer. A sequential reservoir requires
 stable traversal to reproduce its outcome, and its arithmetic/weight policy is
 part of replay. It is not automatically order-independent because its random
 source is addressable. A parallel/order-independent selection scheme needs its
-own proved weighting, reduction, and tie contract.
+own proved weighting, reduction, and tie contract. The proposed
+[many-area-light resampling estimator](many-area-light-sampling-reference-review.md#random-layout-sampler-version-2)
+is such a consumer: a fixed-order candidate stream with one addressed ticket
+dimension per candidate.
 
 Raw randomness never quietly implements fairness. Shuffle bags, no-repeat sound
 choices, weighted-without-replacement selection, streak protection, cooldowns,

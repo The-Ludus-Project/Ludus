@@ -203,13 +203,14 @@ Status StaticLightingBake::State::Prepare(const resources::SceneDefinition& scen
     }
     const usize objectCount = scene.Objects.GetSize();
     const usize environmentCount = scene.Environment.Pixels.GetSize();
-    // Peak includes temporary BVH scratch/order and retained node capacity.
+    // Peak includes temporary BVH scratch, the per-triangle index arrays and retained node capacity.
     const uint64 requiredBytes =
         sizeof(State) + pixelBytes +
         uint64(objectCount) *
             (sizeof(ChartRecord) + sizeof(internal::ReferenceSurfaceData) + sizeof(internal::ReferenceInstance)) +
         uint64(triangleCount) * (sizeof(internal::ReferenceTriangle) + sizeof(internal::ReferenceSum) +
-                                 3 * sizeof(uint32) + 2 * sizeof(internal::ReferenceBvhNode)) +
+                                 (internal::REFERENCE_TRIANGLE_INDEX_ARRAYS + 1) * sizeof(uint32) +
+                                 2 * sizeof(internal::ReferenceBvhNode)) +
         sizeof(internal::EnvironmentData) + uint64(environmentCount) * (sizeof(math::Vector4) + sizeof(float64));
     if (triangleCount > ~uint32{0} / 2 || requiredBytes > description.CpuByteBudget)
     {
@@ -488,6 +489,11 @@ Status StaticLightingBake::State::Prepare(const resources::SceneDefinition& scen
     if (bvhStatus != Status::Ready)
     {
         return bvhStatus;
+    }
+    const Status selectionStatus = internal::BuildReferenceEmitterSelection(job.Scene);
+    if (selectionStatus != Status::Ready)
+    {
+        return selectionStatus;
     }
     uint32 skippedTriangles = 0;
     uint32 affectedObjects = 0;

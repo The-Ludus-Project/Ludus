@@ -10,7 +10,7 @@
 // Strides count float4 words, not bytes. Update the version when changing layout.
 #define LUDUS_GPU_PREVIEW_SURFACE_WORDS 9
 #define LUDUS_GPU_PREVIEW_LIGHT_WORDS 4
-#define LUDUS_GPU_PREVIEW_KERNEL_VERSION 6 // BVH node word 2 carries the split axis in Z.
+#define LUDUS_GPU_PREVIEW_KERNEL_VERSION 7 // Emitter CDF in emitter word Y; BVH split axis in node word 2 Z.
 
 #define LUDUS_GPU_PREVIEW_TRIANGLE_WORDS 16
 
@@ -21,6 +21,9 @@
 // PER_BOUNCE dimensions starting at FIRST_BOUNCE + d * PER_BOUNCE.
 #define LUDUS_PATH_RANDOM_FIRST_BOUNCE_DIMENSION 2
 #define LUDUS_PATH_RANDOM_DIMENSIONS_PER_BOUNCE 8
+// Bounce slot of the bounded draw that picks an emitter triangle from the
+// power-weighted emitter CDF once the uniform light proposal chose an emitter.
+#define LUDUS_PATH_RANDOM_EMITTER_SLOT 7
 // Admitted MaxDepth limits. Both keep every bounce dimension within the 16-bit
 // Dimension of addressed-random layout v1; host code static_asserts this.
 #define LUDUS_REFERENCE_MAX_DEPTH 64
@@ -67,7 +70,24 @@
 #define LUDUS_GPU_PREVIEW_COLORS_BINDING 3
 #define LUDUS_GPU_PREVIEW_TEXELS_BINDING 4
 
+// Material record word addresses; the host packer and shader readers share these.
+#define LUDUS_GPU_PREVIEW_BASE_COLOR_WORD 0
+#define LUDUS_GPU_PREVIEW_ROUGHNESS_WORD 1
+#define LUDUS_GPU_PREVIEW_TINT_WORD 2
+#define LUDUS_GPU_PREVIEW_UV_TRANSFORM_WORD 3
+#define LUDUS_GPU_PREVIEW_EMISSION_WORD 4
 #define LUDUS_GPU_PREVIEW_TEXTURE_OPTIONS_WORD 5
+#define LUDUS_GPU_PREVIEW_SURFACE_MAP_WORD 6
+#define LUDUS_GPU_PREVIEW_SURFACE_OPTIONS_WORD 7
+#define LUDUS_GPU_PREVIEW_EMISSION_MAP_WORD 8
+
+#define LUDUS_GPU_PREVIEW_TEXTURE_LINEAR_FLAG 1
+#define LUDUS_GPU_PREVIEW_TEXTURE_REPEAT_U_FLAG 2
+#define LUDUS_GPU_PREVIEW_TEXTURE_REPEAT_V_FLAG 4
+#define LUDUS_GPU_PREVIEW_TEXTURE_SRGB_FLAG 8
+#define LUDUS_GPU_PREVIEW_TEXTURE_SAMPLER_FLAGS                                                                        \
+    (LUDUS_GPU_PREVIEW_TEXTURE_LINEAR_FLAG | LUDUS_GPU_PREVIEW_TEXTURE_REPEAT_U_FLAG |                                 \
+     LUDUS_GPU_PREVIEW_TEXTURE_REPEAT_V_FLAG)
 
 // Extended graph ABI; low Sampling.z bits retain the camera/kernel flags.
 #define LUDUS_GRAPH_PASS_INDEX_SHIFT 8

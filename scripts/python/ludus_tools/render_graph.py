@@ -32,6 +32,7 @@ from . import render_graph_compute as compute
 from . import render_graph_upscale as upscale
 from . import render_graph_quality as quality
 from . import render_graph_sizes as sizes
+from . import render_graph_layout as layout_policy
 
 MAX_ASSET_BYTES = 128 * 1024
 MAX_TOTAL_BYTES = 2 * 1024 * 1024
@@ -277,7 +278,8 @@ def _validate_document(value, where):
             _endpoint(edge["to"], location)
         if "layout" in config:
             layout = config["layout"]
-            _keys(layout, ("positions",), location)
+            _keys(layout, ("positions",), location, ("frames",))
+            layout_policy.validate_frames(layout.get("frames", []), location, sys.modules[__name__])
             _list(layout["positions"], MAX_NODES, location)
             placed = set()
             for item in layout["positions"]:
@@ -286,7 +288,7 @@ def _validate_document(value, where):
                          and item["node"] not in placed, "Schema", location, "invalid layout node")
                 placed.add(item["node"])
                 for coordinate in ("x", "y"):
-                    _integer(item[coordinate], -32768, 32768, location)
+                    _integer(item[coordinate], -layout_policy.MAX_COORDINATE, layout_policy.MAX_COORDINATE, location)
     _require(value["default"] in claimed, "Configuration", where, "default configuration is missing")
 
 

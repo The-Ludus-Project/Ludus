@@ -161,7 +161,10 @@ foreach(rg3_fixture offscreen masked_color)
 endforeach()
 target_include_directories(ludus_sdk_render_graph_runtime_consumer PRIVATE "${rg3_embedded}")
 if(EMSCRIPTEN)
-    target_link_options(ludus_sdk_render_graph_runtime_consumer PRIVATE -fno-exceptions -g2 -sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1)
+    # Keep the browser's default 64 KiB stack, which RenderGraphActivation must fit, and report an
+    # overflow at the offending frame instead of letting it corrupt the allocator's static state.
+    target_link_options(ludus_sdk_render_graph_runtime_consumer PRIVATE -fno-exceptions -g2 -sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1
+        -sSTACK_OVERFLOW_CHECK=2)
     set_target_properties(ludus_sdk_render_graph_runtime_consumer PROPERTIES OUTPUT_NAME render-graph-runtime SUFFIX ".js")
     configure_file(../render-graph-runtime.html render-graph-runtime.html COPYONLY)
 endif()
@@ -175,7 +178,9 @@ target_compile_options(ludus_sdk_render_graph_pooling_consumer PRIVATE -Wall -We
 target_include_directories(ludus_sdk_render_graph_pooling_consumer PRIVATE "${rg3_embedded}")
 ludus_compile_renderer_shaders(TARGET ludus_sdk_render_graph_pooling_consumer SHADERS renderer_composite)
 if(EMSCRIPTEN)
-    target_link_options(ludus_sdk_render_graph_pooling_consumer PRIVATE -fno-exceptions -g2 -sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1)
+    # As above: report a stack overflow instead of corrupting the allocator's static state.
+    target_link_options(ludus_sdk_render_graph_pooling_consumer PRIVATE -fno-exceptions -g2 -sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1
+        -sSTACK_OVERFLOW_CHECK=2)
     set_target_properties(ludus_sdk_render_graph_pooling_consumer PROPERTIES OUTPUT_NAME render-graph-pooling SUFFIX ".js")
     configure_file(../render-graph-pooling.html render-graph-pooling.html COPYONLY)
 endif()

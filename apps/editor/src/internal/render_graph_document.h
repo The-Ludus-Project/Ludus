@@ -5,6 +5,8 @@
 
 #include <ludus/foundation/containers/borrowed_view.hpp>
 
+#include "render_graph_layout_policy.h"
+
 #include "internal/code_document.h"
 #include "internal/document_history.h"
 #include "internal/render_graph_scene_query_budgets.h"
@@ -113,7 +115,7 @@ public:
     static constexpr foundation::int32 MAX_NODES = 128;
     static constexpr foundation::int32 MAX_EDGES = 512;
     static constexpr foundation::int32 MAX_IDENTIFIER_LENGTH = 63;
-    static constexpr foundation::int32 MAX_COORDINATE = 32768;
+    static constexpr foundation::int32 MAX_COORDINATE = layout_policy::MAX_COORDINATE;
 
     /// Read every authored source below packageRoot (bounded, no symlinks, no
     /// hidden or `out` directories). rootGraph is package-relative. Failure keeps
@@ -363,6 +365,14 @@ public:
     /// Every node must exist; otherwise nothing changes. Never merges with another edit.
     [[nodiscard]] RenderGraphDocumentStatus
     MoveNodes(const QString& file, const QString& configuration, const QVector<RenderGraphNodePosition>& positions);
+    /// Replace editor-only comment frames and optional grouped node positions atomically.
+    /// Validates the complete frame array and each node position; failure preserves draft/history.
+    /// One undo step, with no merge into adjacent moves. Save publishes metadata; GUI thread only.
+    [[nodiscard]] RenderGraphDocumentStatus
+    ReplaceCommentFrames(const QString& file,
+                         const QString& configuration,
+                         const QJsonArray& frames,
+                         const QVector<RenderGraphNodePosition>& positions = {});
     /// Replace an existing source's draft bytes (shader function, build manifest or graph text).
     [[nodiscard]] RenderGraphDocumentStatus SetText(const QString& file, const QByteArray& bytes);
     /// Apply a UTF-8 replacement against the exact draft revision. Preserves draft,

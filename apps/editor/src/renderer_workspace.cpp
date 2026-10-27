@@ -11,6 +11,7 @@
 #include "internal/code_editor_panel.h"
 #include "internal/code_formatter.h"
 #include "internal/item_selection.h"
+#include "internal/render_graph_comments.h"
 #include "internal/render_graph_history.h"
 #include "internal/render_graph_options.h"
 #include "internal/render_graph_pipeline.h"
@@ -948,6 +949,24 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     });
     connect(mCanvas, &RenderGraphCanvas::LinkRejected, this, [this](const QString& reason) {
         mStatus->setText(QStringLiteral("Link rejected - %1").arg(reason));
+    });
+    connect(mCanvas, &RenderGraphCanvas::LayoutRejected, this, [this](const QString& reason) {
+        mStatus->setText(QStringLiteral("Layout rejected - %1").arg(reason));
+    });
+    connect(&mCanvas->GetComments(),
+            &RenderGraphComments::EditRequested,
+            this,
+            [this](const QJsonArray& frames, const QVector<RenderGraphNodePosition>& positions) {
+                const RenderGraphDocumentStatus status =
+                    mDocument.ReplaceCommentFrames(mCanvas->GetFile(), mCanvas->GetConfiguration(), frames, positions);
+                if (status != RenderGraphDocumentStatus::Ok)
+                {
+                    mCanvas->Rebuild();
+                }
+                documentEdited(status);
+            });
+    connect(&mCanvas->GetComments(), &RenderGraphComments::Rejected, this, [this](const QString& reason) {
+        mStatus->setText(QStringLiteral("Comment frame - %1").arg(reason));
     });
     connect(mCanvas, &RenderGraphCanvas::SubgraphActivated, this, &RendererWorkspace::openSubgraph);
     connect(&mCanvas->GetHistory(),
@@ -3497,6 +3516,25 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition, bool i
         copy->setEnabled(mSelectedNodes.isEmpty() == false);
         connect(copy, &QAction::triggered, this, [this]() { static_cast<void>(CopySelectedNodes()); });
     }
+    QAction* comment = menu.addAction(QStringLiteral("Add Comment Frame…"));
+    comment->setObjectName(QStringLiteral("renderGraphAddComment"));
+    comment->setEnabled(CanCreateSubgraph());
+    const QPoint commentPoint = mCanvas->viewport()->mapFromGlobal(globalPosition);
+    const QPointF commentPosition = mCanvas->mapToScene(commentPoint);
+    const QString commentFile = mCanvas->GetFile();
+    const QString commentConfiguration = mCanvas->GetConfiguration();
+    const uint64 commentRevision = mDocument.GetRevision();
+    connect(comment,
+            &QAction::triggered,
+            this,
+            [this, commentPosition, commentFile, commentConfiguration, commentRevision]() {
+                if (commentFile == mCanvas->GetFile() && commentConfiguration == mCanvas->GetConfiguration() &&
+                    commentRevision == mDocument.GetRevision())
+                {
+                    mCanvas->GetComments().CreateFrame(commentPosition);
+                }
+            });
+    mCanvas->AddLayoutMenu(menu);
     const QJsonObject node = isNodeContext == false || mSelectedNodes.size() > 1 ? QJsonObject{} : selectedNode();
     if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Subgraph"))
     {

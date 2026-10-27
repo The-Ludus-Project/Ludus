@@ -3,6 +3,7 @@
 #include <ludus/foundation/base/types.h>
 
 #include "internal/render_graph_document.h"
+#include "internal/render_graph_layout.h"
 #include "internal/render_graph_node_ports.h"
 #include "internal/render_graph_view_state.h"
 
@@ -30,12 +31,14 @@ class QPaintEvent;
 class QAction;
 class QLabel;
 class QToolBar;
+class QMenu;
 QT_END_NAMESPACE
 
 namespace ludus::editor
 {
 class RenderGraphNavigation;
 class RenderGraphHistory;
+class RenderGraphComments;
 /// Connection domain shown on the canvas (docs/architecture/render-graph-authoring.md,
 /// "Node and connection contracts"). Shader functions live in build manifests, not here.
 enum class RenderGraphDomain : foundation::uint8
@@ -128,6 +131,14 @@ public:
     void FitGraph();
     /// Frame the selected authored nodes; no selection is a no-op. Never edits the draft.
     void FitSelection();
+    /// Add canvas layout actions with current selection availability to a caller-owned menu.
+    /// Actions use the shared MoveRequested operation; keep the menu on the GUI thread.
+    void AddLayoutMenu(QMenu& inoutMenu);
+    /// Request one saved-position edit for selected authored nodes, or all authored nodes when
+    /// shouldArrangeAll is true (Arrange only). Preserves selection and dependency tracing.
+    /// Invalid/insufficient input or an active gesture returns false without an edit. Unchanged
+    /// saved positions are a successful no-op. Arrange frames its targets after synchronous handling.
+    [[nodiscard]] bool ApplyLayout(RenderGraphLayoutOperation operation, bool shouldArrangeAll = false);
     /// Restore 100% magnification around the viewport centre, preserving selection and draft.
     void ResetZoom();
     /// Capture selection, bounded magnification, scene centre and trace mode without changing the view.
@@ -139,6 +150,15 @@ public:
     [[nodiscard]] bool RestoreViewState(const RenderGraphViewState& state);
     /// Per-package browser navigation and breadcrumbs, owned by this canvas. GUI thread only.
     [[nodiscard]] RenderGraphHistory& GetHistory() noexcept;
+    /// Canvas-owned comment editing and grouped gestures; GUI thread only.
+    [[nodiscard]] RenderGraphComments& GetComments() noexcept;
+    /// Current document revision, for rejecting stale modal/gesture operations.
+    [[nodiscard]] foundation::uint64 GetDocumentRevision() const noexcept;
+    /// Copy authored card geometry without configuration interface boxes.
+    [[nodiscard]] QVector<RenderGraphLayoutNode> GetAuthoredNodeBounds() const;
+    /// Preview supplied saved integer positions without editing or changing selection/trace.
+    /// Unknown nodes are ignored; callers cancel or commit the corresponding gesture afterward.
+    void PreviewNodePositions(const QVector<RenderGraphNodePosition>& positions);
     [[nodiscard]] const QString& GetFile() const noexcept
     {
         return mFile;
@@ -219,6 +239,8 @@ Q_SIGNALS:
     /// Enter the referenced configuration from this authored Subgraph instance.
     void SubgraphActivated(const QString& asset, const QString& configuration, const QString& instance);
     void LinkRejected(const QString& reason);
+    /// Layout was rejected before any document edit; reason is suitable for the status line.
+    void LayoutRejected(const QString& reason);
 
 protected:
     void contextMenuEvent(QContextMenuEvent* event) override;
@@ -263,6 +285,7 @@ private:
     QToolBar* mFramingToolbar;
     RenderGraphNavigation* mNavigation;
     RenderGraphHistory* mHistoryOrNull = nullptr;
+    RenderGraphComments* mCommentsOrNull = nullptr;
     QAction* mFitGraphAction;
     QAction* mFitSelectionAction;
     QLabel* mZoomLabel;

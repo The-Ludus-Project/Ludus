@@ -1249,13 +1249,23 @@ Status RenderGraphActivation::Stage(core::UniquePtr<RenderGraphPackage> package)
     }
     generation->Package.Swap(package);
     generation->Serial = state.Report.CandidateGeneration;
-    const Status status = generation->Graph.Initialize(
-        state.Device,
-        generation->Package->GetPlan(),
-        generation->Package->GetPrograms(state.CompositeVertex, state.CompositeFragment, true),
-        state.IsPooled == true ? &state.Pool : nullptr,
-        state.ReferenceWidth,
-        state.ReferenceHeight);
+    // RenderGraphPrograms is tens of KiB: a stack temporary here, beneath the caller's frame,
+    // overflowed the browser's default 64 KiB stack into the allocator's static state.
+    // The new-expression constructs the returned value in place; Initialize copies what it keeps.
+    RenderGraphPrograms* programsOrNull = new (std::nothrow)
+        RenderGraphPrograms(generation->Package->GetPrograms(state.CompositeVertex, state.CompositeFragment, true));
+    const core::UniquePtr<RenderGraphPrograms> programs{programsOrNull};
+    if (programs.Get() == nullptr)
+    {
+        state.FailCandidate(Status::OutOfMemory);
+        return Status::OutOfMemory;
+    }
+    const Status status = generation->Graph.Initialize(state.Device,
+                                                       generation->Package->GetPlan(),
+                                                       *programs,
+                                                       state.IsPooled == true ? &state.Pool : nullptr,
+                                                       state.ReferenceWidth,
+                                                       state.ReferenceHeight);
     if (IsAccepted(status) == false)
     {
         state.FailCandidate(status);

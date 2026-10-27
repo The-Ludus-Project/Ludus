@@ -4,7 +4,9 @@ Status: implementation contract, 2026-10-24. Baseline `origin/develop`
 `dbbf7461`. Phase C0 decided D1 and D4 and cleared the D5 triangle-identity
 risk; see [section 3](#3-phase-c0-evidence). Revised 2026-10-26 against
 `origin/develop` `c3312612`: traversal strategies landed after C4 (#619, #621)
-and are recorded in [D8](#d8-traversal-strategy-added-after-c4). Section 1
+and are recorded in [D8](#d8-traversal-strategy-added-after-c4). Revised
+2026-10-27 against `bf909fe0`: MIS is the separate template in
+[D9](#d9-mis-template-added-after-c4), not part of D5. Section 1
 still describes the 2026-10-24 baseline. This describes work to build. Read [requirements](requirements.md)
 and [tasks](tasks.md). AGENTS.md, steering, ADR 0003 and the canonical
 [render graph authoring guide](../../../docs/development/render-graph-authoring.md)
@@ -187,9 +189,11 @@ encoding:
 | Pass | Dimensions | Draws |
 | --- | --- | --- |
 | primary | `[0, PRIMARY_RANDOM_DIMENSION_COUNT)` = `[0, 2)` | subpixel jitter x, y |
-| shade | `[2, 9)` | light selection, the `SampleIncidentLight` `float3`, then the `SampleStandardBsdf` lobe, radius and angle |
+| shade | `[2, 6)` | light selection, then the `SampleIncidentLight` `float3` |
 
-The shade range was `[2, 6)` until #626 added the BSDF sample (D5).
+The `veach-guibas-mis` template (D9) keeps the primary range. Each of its three
+shading passes draws from `[2, 9)`: the same four, then the `SampleStandardBsdf`
+lobe, radius and angle.
 
 Neither pass uses the automatic stream, so neither depends on how many automatic
 draws the other made. (The baseline text named `SampleSceneRandom(queries,
@@ -254,19 +258,10 @@ The point is to demonstrate the compute split, not a new integrator.
 - Word 1 `.w` bit 1 marks a failed primary query, so the shade pass shows the
   error color for that sample instead of reading a stale record.
 
-**Later change (#626).** The shade pass now returns emission plus one light
-sample and one BSDF sample, combined with the multiple importance sampling
-heuristics of Veach and Guibas, "Optimally Combining Sampling Techniques for
-Monte Carlo Rendering", SIGGRAPH 1995 (`multiple_importance.slang`).
-
-- The BSDF sample uses `SampleStandardBsdf` and one more `TraceClosest`, so the
-  shade budget is one surface query plus one visibility query.
-- The heuristic is a Graph setting.
-- The single-pass reference fixture `direct_lighting_reference` implements the
-  same estimator, and the C4 GPU acceptance compares the two.
-
-The hit record and the two-pass structure are unchanged. The canonical
-description is "Combine light and BSDF sampling" in the authoring guide.
+**Later history.** #626 replaced this shade pass with MIS. `01a50759` reverted
+that in this template, together with its `direct_lighting_reference` fixture,
+tests and docs, and #635 added MIS as the separate template described in D9. This
+template's shade pass is the one-light-sample policy above.
 
 **Correctness risk (cleared in C0).** The runtime builds a separate packed scene
 and BLAS/TLAS per pass (`GpuPreviewRecord`, `gpu_preview_ray.cpp`). A packed
@@ -380,6 +375,55 @@ guide.
   CI can provide Vulkan pixel evidence for the loop path (tasks.md, C5). That
   does not establish native-query behavior on Vulkan. The C0 and C4 native
   Vulkan boxes still need a Vulkan GPU with ray queries.
+
+### D9 MIS template (added after C4)
+
+This was not part of the C0–C4 plan. #635 added the `veach-guibas-mis` graph
+template and snippet (`modules/graphics/renderer/render_graphs/veach_guibas_mis/`)
+as a sibling of the D5 template rather than a change to it. The canonical
+description is "Compare light and BSDF sampling with MIS" in the authoring
+guide.
+
+```text
+library configuration VeachGuibasMis (hits = Buffer, bytes per pixel of RenderSize):
+  primary    [ComputePipeline: scene, view, color rw, hits rw]
+  shade      [ComputePipeline: MIS]              -> output color
+  shadeLight [ComputePipeline: light sample]     -> output lightSampling (optional)
+  shadeBsdf  [ComputePipeline: BSDF sample]      -> output bsdfSampling (optional)
+root graph: each output -> Accumulate -> ToneMap -> Export
+```
+
+- **Structure.** Four scene compute passes, which is the `MAX_RAY_PASSES` limit
+  of one sequence. They use the same D5 hit-record layout, in the template's
+  own `hit_record.slang`.
+- **MIS output.** The first shading pass combines one light sample and one BSDF
+  sample with the Veach and Guibas heuristics: balance, power, cutoff or
+  maximum, chosen in Graph settings.
+
+  Eric Veach and Leonidas J. Guibas, "Optimally Combining Sampling Techniques
+  for Monte Carlo Rendering", SIGGRAPH 1995, pp. 419–428,
+  https://doi.org/10.1145/218380.218498 (`multiple_importance.slang`).
+- **Comparison outputs.** The other two passes estimate the same integral with
+  the light sample alone and with the BSDF sample alone. Each output has its own
+  Accumulate and ToneMap. The snippet exposes `color` plus optional
+  `lightSampling` and `bsdfSampling`.
+- **Randomness.** All three shading passes use one dimension layout, `[2, 9)`
+  (D4).
+- **Budget.** The BSDF sample adds one `TraceClosest`, and the template declares
+  `surface_queries: 1` and `visibility_queries: 1`.
+- **Requirements.** It keeps the native default traversal and carries
+  `native-ray-tracing` and the `ray-traced` category, like C10.
+- **Evidence.** In `render_graph_ray_tests.cpp`, against the single-pass
+  `tests/sdk_consumer/rg2/veach_guibas_reference/`:
+  - "The Veach and Guibas MIS template matches single-pass references for each
+    of its three outputs";
+  - "Every MIS heuristic of the Veach and Guibas template estimates the same
+    integral as each strategy alone";
+  - "The Veach and Guibas MIS output has less error than either sampling
+    strategy alone".
+
+  This plan has not re-run these; the C5 Vulkan and parity notes apply to it
+  too.
 
 ## 3. Phase C0 evidence
 

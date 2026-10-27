@@ -1,0 +1,483 @@
+# Point and line direct lighting design
+
+Status: proposed, 2026-10-27. Baseline `origin/develop` `02df0b37`. This
+describes work to build. Read [requirements](requirements.md) and
+[tasks](tasks.md). AGENTS.md, steering, ADR 0003, the
+[compute ray-tracing spec](../compute-ray-tracing/design.md) and the canonical
+[render graph authoring guide](../../../docs/development/render-graph-authoring.md)
+remain authoritative. Line references drift; symbol names are the stable anchors.
+
+## 1. What already exists
+
+- **Scene compute passes.** A `ComputePipeline` with a Scene input runs one
+  authored kernel, or a shared callback set, per pixel. Up to four passes share
+  one ordered sequence, `GraphBuffer0/1` and one scene interface (compute
+  ray-tracing D1-D3, C06).
+- **Traversal boundary.** `TraceClosest`, `TestVisibility` and `TraceAndShade`
+  call `Trace` in `renderer_gpu_preview.slang`. It dispatches to
+  `TraceNativeQuery` (inline `RayQuery`) or `TraceTriangleLoop`
+  (`ray_triangle_loop.slang`) according to the pass's `RayTraversal`
+  (compute ray-tracing D8). The query functions own budgets and failure
+  latching. Callbacks never see the strategy.
+- **Scene data a kernel can read.** `GetTriangle`, `GetEmitterTriangle`,
+  `GetEmitter`, `GetLightInfo`, `SelectLight`, `EvaluateLightSelectionPmf`
+  (uniform), `SampleIncidentLight`, `EvaluateLightPdfSolidAngle`,
+  `EvaluateEnvironmentPdfSolidAngle`, `EvaluateEmission`, `EvaluateMaterial`,
+  `EvaluateStandardBsdf`, `SampleStandardBsdf`, `SpawnSurfaceRay` and the
+  explicit-address `SampleSceneRandom` overloads (`scene_shader.slang`).
+- **Packed BVH.** `PackGpuScene` (`gpu_preview_services.h`) writes the
+  `ReferenceBvhNode` array at `Offsets.x` (three `float4` words per node: lower
+  bound and one child index, upper bound and the other, triangle range) and `Order`
+  at `Offsets.y`. `TraceScene` in `renderer_reference.slang` traverses it with a
+  bounded stack and reports `HasExceededStack`. Render-graph ray passes do not
+  traverse it today.
+- **Opacity.** `LUDUS_GPU_PREVIEW_OPAQUE_FLAG` in `Sampling.z` marks a scene
+  whose instances are all opaque. Otherwise a triangle is alpha-tested when its
+  `LUDUS_GPU_PREVIEW_TEXTURE_OPTIONS_WORD` `.z` is nonzero. `TraceTriangleLoop`
+  then compares texture, material and vertex alpha with the cutoff per hit.
+- **Visibility tolerances.** `SpawnSurfaceRay` offsets the receiver with
+  `OffsetPositionWorld` for the ray direction. `TestVisibility` offsets a light
+  endpoint on its triangle toward the receiver and shortens the ray by one ulp,
+  so light geometry does not occlude its own emission.
+- **MIS template.** `veach_guibas_mis` (compute ray-tracing D9) runs a primary
+  pass and three shading passes, with a two-strategy `ComputeMisWeight` in
+  `main_shaders/multiple_importance.slang` under balance, power, cutoff and
+  maximum heuristics.
+- **Query budgets.** `scene_interface` declares `surface_queries` and
+  `visibility_queries`. `render_graph_ray.py` substitutes them into the wrapper
+  as `RayQueryContext.Maximum*Queries` and bounds them by `SCENE_QUERY_LIMITS`.
+  They are not plan or package fields.
+
+No line visibility query, line strategy or triangle-shaped traversal exists.
+
+## 2. The method as adopted
+
+Salesin and Jarosz (2019) write direct lighting from a light as a 2D integral
+over the light's surface. A line sample chooses a line offset `v` with a
+marginal density `p(v)`, then a point `u` along that line with a conditional
+density `p(u | v)`. Their key observation (section 4) is that this is ordinary
+point sampling with the joint density `p(u, v) = p(v) p(u | v)`. So line samples
+can be combined by MIS with BSDF point samples, and with lines in another
+direction, in one sampling space.
+
+A line sample is useful because its conditional density covers only the
+visible parts of the line. The shadow triangle formed by the shading point and
+the line is intersected with the scene (Billen and Dutré 2016). Points are then
+drawn only where visibility is one, which removes visibility discontinuities
+from the conditional integrand. The paper's surface-area strategy (their
+equations 14-15) draws `v` proportional to chord length and `u` uniformly over
+the visible intervals. In the unoccluded case that reduces to uniform area
+sampling. Evaluating a line strategy's density at a point drawn by another
+strategy needs a line query through that point (their section 4.2). The paper
+reports a line query costing 1.2-55 times a shadow ray on its scenes, and
+implements the method in PBRT on the CPU.
+
+Ludus adopts:
+
+- the joint-density formulation and MIS between BSDF points and two line
+  directions (section 4.2);
+- the surface-area line strategy (section 4.1, equations 14-15);
+- Billen and Dutré's shadow-triangle intersection, restated in D2.
+
+Ludus departs as follows:
+
+- **Triangle emitters.** The paper's lights are quads. Here a line is a chord
+  of one emitter triangle (D6), and planar chords across triangles are deferred.
+- **Area measure only.** The solid-angle line strategy, which adapts Ureña,
+  Fajardo and King, "An Area-Preserving Parametrization for Spherical
+  Rectangles", *Computer Graphics Forum* 32(4) (EGSR 2013), needs
+  parallelogram emitters and is deferred. Near the light and on glossy
+  surfaces this costs variance (the paper's figure 3). MIS with BSDF sampling
+  covers the glossy case.
+- **Masked occluders.** The paper's scenes are opaque. D4 adds a stochastic
+  rule for alpha-tested triangles.
+- **Bounded intervals.** The paper's interval lists are unbounded CPU
+  containers. D3 bounds them and fails explicitly.
+- **No smoothing heuristic.** Section 4.3's discontinuity-smoothing balance
+  heuristic only improves the convergence rate under stratified sampling. The
+  scene random stream is not stratified (PL15).
+- **GPU compute.** The query runs in compute shaders, first as a linear scan,
+  then over the packed BVH (D5).
+
+## 3. Decisions
+
+### D1 Query at the traversal boundary
+
+A new private source, `ray_line_visibility.slang`, implements the traversal.
+`scene_shader.slang` declares the public API (PL02) and owns budgets and failure
+latching, as `TestVisibility` does around `Trace`:
+
+```slang
+struct LineSegment
+{
+    float3 StartWorld;
+    float3 EndWorld;
+    uint TriangleIndex; // carrying emitter triangle, or SCENE_INVALID_INDEX
+};
+
+struct LineVisibility
+{
+    float2 Intervals[SCENE_LINE_INTERVAL_CAPACITY]; // visible [start, end) in [0, 1], sorted
+    uint IntervalCount;
+    float VisibleLengthWorld;
+    bool HasMaskedOccluders;
+};
+
+uint FindVisibleLineIntervals(SceneContext scene,
+                              inout RayQueryContext queries,
+                              SurfaceHit receiver,
+                              LineSegment segment,
+                              out LineVisibility outVisibility);
+```
+
+- `LUDUS_SCENE_LINE_INTERVAL_CAPACITY` and
+  `LUDUS_SCENE_LINE_INTERVAL_MERGE_TOLERANCE` are defined in
+  `scene_shader_layout.h` and mirrored by `SCENE_LINE_INTERVAL_CAPACITY` and
+  `SCENE_LINE_INTERVAL_MERGE_TOLERANCE` in Slang and C++ (`scene_shader.hpp`).
+  The C++ side lets tests and the SDK name the same bound.
+- `RayQueryContext` gains `LineQueries` and `MaximumLineQueries`. The wrapper
+  initializes the maximum from `line_queries` (D9).
+- The function name says what it returns: visible intervals, not occluders.
+
+Alternatives considered:
+
+- An author helper in each template. Rejected: compute ray-tracing D7 places new
+  traversal at the shared boundary, and budgets and failure latching belong to
+  the query layer.
+- Returning occluded intervals. Rejected: every caller needs the visible set and
+  its length.
+
+### D2 Shadow-triangle clipping
+
+Notation: `x` is the offset apex (PL03), `a` and `b` the offset segment
+endpoints. A point `y` in the plane of `S = (x, a, b)` has coordinates
+`y = x + alpha (a - x) + beta (b - x)`. The interior of `S` is `alpha >= 0`,
+`beta >= 0`, `alpha + beta <= 1`. Along the ray from `x` through `y`, `s =
+alpha + beta` is the fraction of the way to the segment, and
+`t = beta / (alpha + beta)` is where the ray meets the segment.
+
+For each occluder triangle `T` not excluded by index:
+
+1. Compute the signed distances of `T`'s vertices to the plane of `S`. If all
+   three have one strict sign, `T` does not cross the plane. If all three lie
+   within the parallel tolerance, `T` is coplanar and does not occlude (PL03).
+2. Otherwise intersect `T`'s edges with the plane to get the segment `p q` of
+   `T` in the plane. A vertex on the plane contributes itself.
+3. Express `p` and `q` in `(alpha, beta)` and clip `p q` to
+   `alpha >= 0`, `beta >= 0`, `s >= s_near`, `s <= 1 - s_far`. `s_near`
+   excludes surfaces at the apex and `s_far` the light plane; both come from the
+   PL03 offsets, not new constants.
+4. The clipped segment maps to `t` through a projective map whose denominator
+   `s` stays positive after clipping, so `t` is monotonic along it. The occluded
+   interval is `[min(t_p, t_q), max(t_p, t_q)]`, clamped to `[0, 1]`.
+5. If `T` is alpha-tested (section 1), set `HasMaskedOccluders` instead of
+   inserting the interval (D4).
+
+This restates Billen and Dutré's routine (their section 4) for the packed
+triangle layout. Computing in `(alpha, beta)` keeps one clip region for every
+occluder. The receiver and carrying triangles are excluded by index because a
+ray from a point of a plane meets that plane only once.
+
+### D3 Interval set
+
+The query keeps a sorted array of disjoint occluded intervals in registers and
+inserts each new interval with merging:
+
+- Two intervals merge when they overlap or their gap is at most
+  `SCENE_LINE_INTERVAL_MERGE_TOLERANCE`.
+- When an insertion would make the count exceed the capacity, the query fails
+  (PL04). The visible complement has at most one more interval than the
+  occluded set, so the occluded set's capacity is
+  `SCENE_LINE_INTERVAL_CAPACITY - 1`.
+- After the scan, the visible intervals are the complement in `[0, 1]`.
+  Visible intervals no longer than the tolerance are dropped.
+  `VisibleLengthWorld` is the remaining parameter length times
+  `length(b - a)`.
+
+The tolerance rule only removes visible length, deterministically. A strategy
+whose support shrinks by a fixed, deterministic set is still a valid density, so
+MIS outputs stay unbiased wherever another strategy covers that set: BSDF
+sampling in `color`, the other line direction in `lineSampling`. A line-only
+estimate loses at most the dropped length, which PL0 bounds. Without the rule,
+abutting triangles of one occluder mesh would leave float-sized visible cracks,
+and line samples drawn there would assume visibility one: a light leak.
+
+Overflow fails rather than approximates:
+
+- Merging the closest occluded intervals would mark visible length occluded.
+  That is deterministic only for one insertion order, so the loop (PL1) and the
+  BVH (PL3) would disagree.
+- Treating overflow as fully visible would leak light.
+
+Insertion order still decides when overflow happens, because the running set
+can hold more intervals than the final union. PL3 compares the loop and the BVH
+only on fixtures that do not overflow.
+
+### D4 Alpha-tested occluders
+
+An exact interval set through an alpha-tested triangle would need the alpha
+texture integrated along a curve, which no existing contract provides.
+
+Rule: clip only opaque occluders. Report any alpha-tested candidate through
+`HasMaskedOccluders`, and make the line strategy confirm its drawn point with
+`TestVisibility`.
+
+Why this is unbiased. The line strategy's density is positive only where no
+opaque occluder blocks the path. The confirmed point's integrand includes the
+true visibility, evaluated by the same traversal as every other shadow ray.
+Wherever the true visibility is one, no opaque occluder blocks the path, so the
+density is positive there. The estimator therefore covers the integrand's whole
+support, and the masked occluders' visibility is estimated stochastically.
+Density evaluation (PL09) uses the same opaque-only intervals, so MIS weights
+match the densities actually sampled. The cost is one visibility query per line
+sample that reports masked candidates, and none in an opaque scene.
+
+Alternatives considered:
+
+- **Treat masked triangles as opaque.** Biased: foliage and fences would block
+  all light.
+- **Reject scenes with masked materials.** Too restrictive, and unnecessary
+  given the rule above.
+- **Skip masked triangles silently.** Biased: light leaks through opaque texels.
+
+### D5 Traversal
+
+**PL1, linear scan.** Loop over `GetSceneInfo(scene).TriangleCount` packed
+triangles, as `TraceTriangleLoop` does: cost linear in triangle count per query,
+for small scenes and comparison. It reads the packed triangle words directly,
+not through `GetTriangle`, to avoid copying texture coordinates per triangle.
+
+**PL3, BVH traversal.** Traverse the packed `ReferenceBvhNode` array with a
+bounded stack, following `TraceScene` in `renderer_reference.slang`. Visit a
+node when its box overlaps the shadow triangle, using the separating-axis test
+of Tomas Akenine-Möller, "Fast 3D Triangle-Box Overlap Testing", *Journal of
+Graphics Tools* 6(1), 2001, pp. 29-33. Stack exhaustion fails (PL12). The node
+test is conservative, so the BVH visits a superset of the triangles that clip,
+and each interval is computed from the same per-triangle arithmetic. Results
+therefore equal the loop's for non-overflowing fixtures. PL0 confirms that
+render-graph scene packs contain the nodes under both traversal strategies.
+
+**Native.** Not provided. Inline `RayQuery` and Metal intersection queries
+accept rays only, and the native acceleration structure is opaque, so its nodes
+cannot be walked with a triangle. Line queries in a `NativeQuery` pass use the
+software traversal (PL06). The software clip and hardware ray-triangle tests
+can then disagree within float tolerance at triangle edges. The template
+avoids this by selecting `TriangleLoop` for every pass (D8).
+
+### D6 Line strategies on a triangle emitter
+
+For a selected mesh light with total emitting area `A_light` (emitter `.z`):
+
+1. `SampleIncidentLight(scene, selected, receiver, shapeSample)` returns an
+   area-uniform point `l0` on triangle `T`, chosen with probability
+   `A_T / A_light`.
+2. Direction `U = normalize(P1 - P0)` of `T`; direction `V = normalize(cross(n,
+   U))`, with `n` the geometric normal. The chord is the intersection of `T`
+   with the line through `l0` in the chosen direction, giving endpoints `a`
+   and `b` and length `c`. Because `l0` is area-uniform, the chord's offset has
+   density `c / A_T`, which is Billen and Dutré's length-proportional offset
+   (Salesin and Jarosz equation 14) with no extra inversion.
+3. `FindVisibleLineIntervals` with `segment = {a, b, T}`.
+4. Zero visible intervals contribute zero. Otherwise draw `xi` and map it
+   linearly across the concatenated visible intervals to a point `l`, so that
+   `p(u | v) = 1 / L_visible` in metres (equation 15).
+5. If `HasMaskedOccluders`, build a `LightSample` for `l` and call
+   `TestVisibility` (D4). Contribute zero on `SCENE_QUERY_SURFACE`.
+6. Joint area density `p_A = P(light) * (A_T / A_light) * (c / A_T) /
+   L_visible = P(light) * c / (A_light * L_visible)`. Convert it to solid angle
+   with `distance^2 / |cos_light|`, as `EvaluateLightPdfSolidAngle` does,
+   respecting emitter sidedness through `EvaluateEmission`. With no occluder
+   this equals the existing area-light density, a useful test invariant.
+
+Emission is evaluated at `l`, so textured emission is integrated but not
+importance sampled, which matches the paper's figure 11 discussion.
+
+A selected non-mesh light (directional, point, spot, environment) uses the
+existing point proposal and its density, with `TestVisibility`. Two line
+strategies then propose the same density for such a source, so under balance or
+power weighting each takes half of it. BSDF sampling never reaches a delta
+light, and reaches the environment with the environment density.
+
+### D7 Density of a line strategy at a given point
+
+For a point `l` on emitter triangle `T` reached by a BSDF sample or drawn by the
+other line direction:
+
+1. Build the chord of `T` through `l` in the strategy's direction.
+2. Run `FindVisibleLineIntervals`. If `l`'s chord parameter lies in no visible
+   interval, the density is zero.
+3. Otherwise apply D6 step 6 with the chord's `c` and `L_visible`.
+
+A BSDF sample that reaches an emitter costs two line queries (`U` and `V`). A
+`U` sample costs its own query and one `V` evaluation, and likewise for `V`.
+
+### D8 Templates
+
+Each template directory under `modules/graphics/renderer/render_graphs/`
+follows the `veach_guibas_mis` layout: `library.lurender.json`,
+`main.lurender.json`, `main.lushader.json.in` and `main_shaders/` with its own
+`hit_record.slang` copy of the compute ray-tracing D5 record. Every pass sets
+`invocation.traversal` to `TriangleLoop`, so each package is a
+`ComputeRayTracing` package and needs no native ray profile.
+
+#### D8a `line-sampling` (PL1)
+
+Directory `line_sampling/`, program IDs prefixed `LineSampling`. It ships with
+the query so that the query has an end-to-end, editable example from its first
+change.
+
+```text
+library configuration LineSampling (hits = Buffer, 32 bytes per pixel of RenderSize):
+  primary              [ComputePipeline: scene, view, color rw, hits rw]
+  shade                [ComputePipeline: one line U sample]      -> output color
+  shadeVisibleFraction [ComputePipeline: L_visible / c, gray]    -> output visibleFraction (optional)
+root graph: each output -> Accumulate -> ToneMap -> Export
+```
+
+- `shade` is the D6 strategy in direction `U` alone: Billen and Dutré's
+  surface-area line estimator, with the sampled point evaluated instead of an
+  analytic line integral. Non-mesh lights use the point fallback with weight 1.
+- `shadeVisibleFraction` repeats the same chord (same dimensions) and returns
+  `float3(L_visible / c)` for mesh lights and `float3(0)` otherwise. It shows
+  where the query finds penumbra and umbra, and gives PL1's tests an image-level
+  check. Accumulated, it is the mean visible fraction, not radiance; the guide
+  says so.
+- Random dimensions: the D8b layout's line `U` entries, 2-6. Budgets: surface
+  0, visibility 1 (masked confirmation or a non-mesh light's shadow ray), line 1.
+
+#### D8b `salesin-jarosz-lines` (PL2)
+
+Directory `salesin_jarosz_lines/`, program IDs prefixed `PointLine`.
+
+```text
+library configuration PointLineMis (hits = Buffer, 32 bytes per pixel of RenderSize):
+  primary     [ComputePipeline: scene, view, color rw, hits rw]
+  shade       [ComputePipeline: BSDF + line U + line V]   -> output color
+  shadeLines  [ComputePipeline: line U + line V]          -> output lineSampling (optional)
+  shadePoints [ComputePipeline: BSDF + area light point]  -> output pointSampling (optional)
+root graph: each output -> Accumulate -> ToneMap -> Export
+```
+
+Random dimensions. The primary pass keeps `[0, 2)` (compute ray-tracing D4).
+All three shading passes use one layout:
+
+| Dimensions | Draws |
+| --- | --- |
+| 2 | line `U` light selection |
+| 3-5 | line `U` shape sample (`SampleIncidentLight`) |
+| 6 | line `U` position along the visible intervals |
+| 7 | line `V` light selection |
+| 8-10 | line `V` shape sample |
+| 11 | line `V` position along the visible intervals |
+| 12-14 | `SampleStandardBsdf` lobe, radius, angle |
+
+`shadePoints` draws its light point from dimensions 2-5. Its point therefore
+equals the area point that seeds the `U` chord, which makes the point and line
+images directly comparable per sample. PL0 checks that 15 dimensions are within
+`RANDOM_MAX_DIMENSION`.
+
+MIS. `main_shaders/multiple_importance.slang` generalizes the `veach_guibas_mis`
+helper (compute ray-tracing D9) to three
+strategies, `ComputeMisWeight(float sampledDensity, float otherDensity0, float
+otherDensity1)`, for the balance and power heuristics only. A zero other density
+drops that strategy. For finite positive densities the three weights sum to one,
+which a GPU test checks numerically. `shadeLines` and `shadePoints` pass zero
+for the absent strategy. Graph settings: `MIS_HEURISTIC` (`0` balance, `1`
+power, default `0`, the paper's choice) and `MIS_POWER_EXPONENT`.
+
+Budgets. Passes in one sequence share a scene interface (compute ray-tracing
+C06), so it declares the maximum over passes:
+
+| Pass | Surface | Visibility | Line |
+| --- | --- | --- | --- |
+| `shade` | 1 | 2 | 6 |
+| `shadeLines` | 0 | 2 | 4 |
+| `shadePoints` | 1 | 1 | 0 |
+| declared | 1 | 2 | 6 |
+
+The two visibility queries cover a masked confirmation (D4) or a non-mesh
+light's shadow ray, one per line strategy.
+
+#### D8c Registration
+
+Each template is registered everywhere `veach-guibas-mis` is:
+
+- `scripts/python/ludus_tools/render_graph_templates.py` `TEMPLATES`, with the
+  third field `True` (Metal or Vulkan profiles only), and the `cli.py`
+  `--template` choices;
+- `apps/editor/resources/render_graph_templates.json`: one `graph` entry
+  (category `ray-traced`) and one `snippet` entry (category `lighting`, with
+  `defaultConfiguration`);
+- the `apps/editor/CMakeLists.txt` template embedding list;
+- a `Prepare…Configuration` function in its own editor source, dispatched from
+  `PrepareConfigurationTemplate` beside
+  `PrepareComputeRayTracingConfiguration`, following compute ray-tracing D6;
+- the renderer's installed SDK template files, as the existing templates.
+
+Registry requirement. The vocabulary today is `native-ray-tracing`,
+`denoiser` and `metalfx` (`render_graph_template_registry.cpp`). The existing
+`simple-compute-ray-tracing` template uses the triangle loop yet declares
+`native-ray-tracing`. These templates must not repeat that, because they run on
+GPUs without ray hardware. PL1 adds `compute-ray-tracing` with the label
+"Metal or Vulkan compute" to the registry, its label function and the
+registry tests, and both templates declare it. Correcting the older template's
+declaration is a separate change, noted in the PL1 pull request.
+
+The CLI's profile check for these templates is the existing Metal-or-Vulkan
+rule, but its repair text says "this template requires native ray tracing".
+PL1 makes the text follow the template's registry requirement, so a
+`line-sampling` failure names Metal or Vulkan compute instead.
+
+### D9 Builder and wrapper
+
+- `render_graph_build.py` accepts optional `line_queries` in
+  `scene_interface`, bounded by new `SCENE_QUERY_LIMITS` entries
+  `MIN_LINE_QUERIES = 0` and `MAX_LINE_QUERIES = 8`. An absent field means 0
+  and generates the same wrapper bytes as today.
+- `render_graph_ray.py` substitutes `MAX_LINE_QUERIES` into
+  `queries.MaximumLineQueries` beside the other limits.
+- The plan and package formats are unchanged (PL07). PL1 confirms this with
+  byte-identical cooked outputs for the existing ray fixtures and templates.
+
+### D10 Deferred work
+
+These are deferred, each with its own reason:
+
+- **Solid-angle lines.** Need parallelogram emitters (section 2).
+- **Planar chords.** Need emitter-level topology.
+- **Discontinuity smoothing.** Needs stratified sampling.
+- **Path capture.** Line queries are not recorded by the ray path capture.
+- **Native and browser.** No native line query exists, and browser ray
+  execution is not provided.
+
+## 4. PL0 evidence (to be recorded)
+
+PL0 makes no product change. It records:
+
+1. **Capacity.** Visible-interval counts on the PL2 fixtures and a dense-blinds
+   fixture, and register/occupancy cost on Metal for capacities 8, 16 and 32.
+   Choose the smallest capacity that covers the fixtures with margin.
+2. **Merge tolerance.** The smallest tolerance with no crack along the shared
+   edges of a finely tessellated sphere and a two-triangle quad occluder, and
+   the visible length dropped at that tolerance.
+3. **Packed nodes.** Whether render-graph scene packs include `ReferenceBvhNode`
+   data under both strategies, and the node count for each fixture.
+4. **Random dimensions.** `RANDOM_MAX_DIMENSION` covers dimension 14.
+5. **Line query cost.** A prototype loop query's time per pixel against
+   `TestVisibility` with `TriangleLoop` on the same scene, for context with the
+   paper's 1.2-55× figure.
+
+## 5. Risks
+
+- **Linear cost.** Six line queries per pixel, each scanning every triangle,
+  limit PL1/PL2 to small scenes. PL3's BVH is the remedy; tests use small
+  fixtures until then.
+- **Register pressure.** A 16-entry `float2` array per thread can spill. PL0
+  measures it before the capacity is fixed.
+- **Geometric disagreement.** The D2 clip and the Möller-Trumbore loop treat
+  edges differently within float tolerance. With `TriangleLoop` on every pass
+  the effect is confined to near-edge slivers. The PL2 convergence test bounds
+  it with the same 2% tolerance as the MIS template's same-integral check.
+- **Equal-sample, not equal-time.** Line samples cost more per sample. The PL2
+  error comparison is at equal sample count and reports timing separately, so
+  it supports no speed claim.
