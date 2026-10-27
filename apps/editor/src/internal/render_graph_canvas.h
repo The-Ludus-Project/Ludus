@@ -38,6 +38,7 @@ namespace ludus::editor
 {
 class RenderGraphNavigation;
 class RenderGraphHistory;
+class RenderGraphComments;
 /// Connection domain shown on the canvas (docs/architecture/render-graph-authoring.md,
 /// "Node and connection contracts"). Shader functions live in build manifests, not here.
 enum class RenderGraphDomain : foundation::uint8
@@ -149,6 +150,15 @@ public:
     [[nodiscard]] bool RestoreViewState(const RenderGraphViewState& state);
     /// Per-package browser navigation and breadcrumbs, owned by this canvas. GUI thread only.
     [[nodiscard]] RenderGraphHistory& GetHistory() noexcept;
+    /// Canvas-owned comment editing and grouped gestures; GUI thread only.
+    [[nodiscard]] RenderGraphComments& GetComments() noexcept;
+    /// Current document revision, for rejecting stale modal/gesture operations.
+    [[nodiscard]] foundation::uint64 GetDocumentRevision() const noexcept;
+    /// Copy authored card geometry without configuration interface boxes.
+    [[nodiscard]] QVector<RenderGraphLayoutNode> GetAuthoredNodeBounds() const;
+    /// Preview supplied saved integer positions without editing or changing selection/trace.
+    /// Unknown nodes are ignored; callers cancel or commit the corresponding gesture afterward.
+    void PreviewNodePositions(const QVector<RenderGraphNodePosition>& positions);
     [[nodiscard]] const QString& GetFile() const noexcept
     {
         return mFile;
@@ -275,6 +285,7 @@ private:
     QToolBar* mFramingToolbar;
     RenderGraphNavigation* mNavigation;
     RenderGraphHistory* mHistoryOrNull = nullptr;
+    RenderGraphComments* mCommentsOrNull = nullptr;
     QAction* mFitGraphAction;
     QAction* mFitSelectionAction;
     QLabel* mZoomLabel;

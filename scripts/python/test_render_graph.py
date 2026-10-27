@@ -330,6 +330,43 @@ class RenderGraphTests(unittest.TestCase):
         self.assertEqual(before["passes"], after["passes"])
         self.assertNotEqual(before["dependencies"], after["dependencies"])
 
+    def test_comment_frames_preserve_semantics_and_canonical_roundtrip(self):
+        before = graph.compile_graph(self.path)
+        value = self.read()
+        frame = dict(id="stage", title="Lighting 🌟", notes="<b>Plain text</b>\nSecond line",
+                     colour="#547FA3", x=-100, y=-100, width=800, height=400)
+        self.config(value)["layout"] = dict(positions=[], frames=[frame])
+        self.assertEqual(json.loads(graph.canonical_asset(value)), value)
+        self.write(value)
+        after = graph.compile_graph(self.path)
+        self.assertEqual(before["semantic_digest"], after["semantic_digest"])
+        self.assertEqual(before["passes"], after["passes"])
+
+    def test_comment_frame_schema_is_bounded_and_rejects_malformed_metadata(self):
+        from ludus_tools import render_graph_layout as policy
+        original = dict(id="stage", title="Visibility", notes="", colour="#547FA3",
+                        x=0, y=0, width=800, height=400)
+        changes = [dict(title=" "), dict(title="first\nsecond"),
+                   dict(title="🌟" * (policy.MAX_COMMENT_TITLE_CODEPOINTS + 1)),
+                   dict(notes="a" * (policy.MAX_COMMENT_NOTES_CODEPOINTS + 1)),
+                   dict(colour="red"), dict(colour="#FF000080"), dict(x=0.5), dict(x=True),
+                   dict(width=policy.MIN_COMMENT_WIDTH-1), dict(height=policy.MIN_COMMENT_HEIGHT-1),
+                   dict(x=policy.MAX_COORDINATE), dict(id="bad.id"), dict(extra=True)]
+        for change in changes:
+            with self.subTest(change=change):
+                value = self.read()
+                self.config(value)["layout"] = dict(positions=[], frames=[original | change])
+                with self.assertRaises(ToolingError):
+                    graph.canonical_asset(value)
+        for frames in ([original, original], [original] * (policy.MAX_COMMENT_FRAMES + 1), None):
+            value = self.read()
+            self.config(value)["layout"] = dict(positions=[], frames=frames)
+            with self.assertRaises(ToolingError):
+                graph.canonical_asset(value)
+        value = self.read()
+        self.config(value)["layout"] = dict(positions=[], frames=[original | dict(title="🌟" * policy.MAX_COMMENT_TITLE_CODEPOINTS)])
+        graph.canonical_asset(value)
+
     def test_plan_is_deterministic_after_relocation_and_repeat(self):
         before = graph.compile_graph(self.path)
         other = graph.new_workspace(self.directory.parent / "relocated")

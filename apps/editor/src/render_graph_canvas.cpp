@@ -1,5 +1,6 @@
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_canvas_feedback.h"
+#include "internal/render_graph_comments.h"
 #include "internal/render_graph_history.h"
 #include "internal/render_graph_navigation.h"
 #include "internal/render_graph_node_ports.h"
@@ -639,6 +640,7 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
     connect(resetZoom, &QAction::triggered, this, &RenderGraphCanvas::ResetZoom);
     mNavigation = new RenderGraphNavigation(*mFramingToolbar, *this);
     mHistoryOrNull = new RenderGraphHistory(mDocument, *this);
+    mCommentsOrNull = new RenderGraphComments(*this, *mScene);
     setViewportMargins(0, mFramingToolbar->sizeHint().height() + mHistoryOrNull->sizeHint().height(), 0, 0);
     connect(mNavigation, &RenderGraphNavigation::TraceChanged, this, &RenderGraphCanvas::updateConnectionHighlight);
     connect(mNavigation, &RenderGraphNavigation::NodeRequested, this, [this](const QString& identity) {
@@ -669,8 +671,42 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
 
 RenderGraphCanvas::~RenderGraphCanvas()
 {
+    delete mCommentsOrNull;
     qDeleteAll(mNodes);
     qDeleteAll(mEdges);
+}
+
+RenderGraphComments& RenderGraphCanvas::GetComments() noexcept
+{
+    return *mCommentsOrNull;
+}
+uint64 RenderGraphCanvas::GetDocumentRevision() const noexcept
+{
+    return mDocument.GetRevision();
+}
+QVector<RenderGraphLayoutNode> RenderGraphCanvas::GetAuthoredNodeBounds() const
+{
+    QVector<RenderGraphLayoutNode> nodes;
+    for (const NodeView* view : std::as_const(mNodes))
+    {
+        if (view->IsMovable == true)
+        {
+            nodes.append({view->Id, QRectF(view->Frame->pos(), view->Frame->rect().size())});
+        }
+    }
+    return nodes;
+}
+void RenderGraphCanvas::PreviewNodePositions(const QVector<RenderGraphNodePosition>& positions)
+{
+    for (const RenderGraphNodePosition& position : positions)
+    {
+        NodeView* viewOrNull = mNodes.value(position.Node, nullptr);
+        if (viewOrNull != nullptr && viewOrNull->IsMovable == true)
+        {
+            viewOrNull->Frame->setPos(ClampCoordinate(position.X), ClampCoordinate(position.Y));
+        }
+    }
+    updateEdges();
 }
 
 void RenderGraphCanvas::ShowConfiguration(const QString& file, const QString& configuration)
@@ -744,6 +780,7 @@ void RenderGraphCanvas::FitGraph()
     {
         bounds = bounds.united(view->Frame->sceneBoundingRect());
     }
+    bounds = bounds.united(mCommentsOrNull->GetBounds());
     fitBounds(bounds);
     mShouldFitOnShow = false;
 }
@@ -964,6 +1001,7 @@ void RenderGraphCanvas::Rebuild()
     mNodes.clear();
     qDeleteAll(mEdges);
     mEdges.clear();
+    mCommentsOrNull->Clear();
     mScene->clear();
     const QJsonObject record = configuration();
     if (record.isEmpty() == true)
@@ -1203,7 +1241,8 @@ void RenderGraphCanvas::Rebuild()
     rebuildNavigation();
     refreshFeedback();
     updateSelection();
-    QRectF nodeBounds;
+    mCommentsOrNull->Rebuild(record);
+    QRectF nodeBounds = mCommentsOrNull->GetBounds();
     for (const NodeView* view : std::as_const(mNodes))
     {
         nodeBounds = nodeBounds.united(view->Frame->sceneBoundingRect());
@@ -2119,6 +2158,12 @@ void RenderGraphCanvas::contextMenuEvent(QContextMenuEvent* event)
     bool isOutput = false;
     const QString port = portAt(position, isOutput);
     const QString node = nodeAt(position);
+    if (node.isEmpty() == true && port.isEmpty() == true &&
+        mCommentsOrNull->ShowContextMenu(position, event->globalPos()) == true)
+    {
+        event->accept();
+        return;
+    }
     QString to;
     const QString from = node.isEmpty() == true ? edgeAt(position, to) : QString();
     if (port.isEmpty() == false || from.isEmpty() == false)
@@ -2254,6 +2299,11 @@ void RenderGraphCanvas::mousePressEvent(QMouseEvent* event)
         event->accept();
         return;
     }
+    if (mCommentsOrNull->BeginGesture(position) == true)
+    {
+        event->accept();
+        return;
+    }
     QString to;
     const QString from = edgeAt(position, to);
     for (EdgeView* edge : std::as_const(mEdges))
@@ -2291,6 +2341,11 @@ void RenderGraphCanvas::mouseMoveEvent(QMouseEvent* event)
         const QPoint delta = event->position().toPoint() - mPanPosition;
         mPanPosition = event->position().toPoint();
         panBy(delta);
+        event->accept();
+        return;
+    }
+    if (mCommentsOrNull->UpdateGesture(mapToScene(event->position().toPoint())) == true)
+    {
         event->accept();
         return;
     }
@@ -2343,6 +2398,11 @@ void RenderGraphCanvas::mouseReleaseEvent(QMouseEvent* event)
     {
         mIsPanning = false;
         setCursor(mIsSpacePressed == true ? Qt::OpenHandCursor : Qt::ArrowCursor);
+        event->accept();
+        return;
+    }
+    if (event->button() == Qt::LeftButton && mCommentsOrNull->EndGesture() == true)
+    {
         event->accept();
         return;
     }
@@ -2404,6 +2464,11 @@ void RenderGraphCanvas::mouseDoubleClickEvent(QMouseEvent* event)
         event->accept();
         return;
     }
+    if (node.isEmpty() == true && mCommentsOrNull->ActivateAt(mapToScene(event->position().toPoint())) == true)
+    {
+        event->accept();
+        return;
+    }
     // Empty canvas: no node, port, wire or interface box under the pointer.
     if (node.isEmpty() == true && itemAt(event->position().toPoint()) == nullptr)
     {
@@ -2457,6 +2522,11 @@ void RenderGraphCanvas::keyPressEvent(QKeyEvent* event)
     }
     if (event->key() == Qt::Key_Escape)
     {
+        if (mCommentsOrNull->CancelGesture() == true)
+        {
+            event->accept();
+            return;
+        }
         if (mNavigation->GetTraceDirection() != RenderGraphTraceDirection::None && mLinkPreviewOrNull == nullptr &&
             mIsDragging == false && mIsBoxSelecting == false && mIsPanning == false)
         {
@@ -2528,6 +2598,7 @@ void RenderGraphCanvas::keyReleaseEvent(QKeyEvent* event)
 
 void RenderGraphCanvas::focusOutEvent(QFocusEvent* event)
 {
+    static_cast<void>(mCommentsOrNull->CancelGesture());
     mIsSpacePressed = false;
     mIsPanning = false;
     mIsBoxSelecting = false;
