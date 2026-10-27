@@ -132,5 +132,10 @@
     "source": "renderer_gpu_preview_visibility_full.slang",
     "compute": "ComputeMain",
     "native_ray_queries": true
+  },
+  "renderer_gpu_preview_hit_cached": {
+    "source": "renderer_gpu_preview_hit_cached.slang",
+    "compute": "ComputeMain",
+    "native_ray_queries": true
   }
 }

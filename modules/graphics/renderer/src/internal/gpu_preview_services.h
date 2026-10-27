@@ -241,34 +241,56 @@ Status PackGpuScene(const ReferenceJob& job,
     for (usize i = 0; i < scene.InstanceCount; ++i)
     {
         const internal::ReferenceInstance& instance = scene.Instances[i];
-        const internal::ReferenceSurfaceData& s = *instance.Surface;
-        math::Vector4* out = data.GetData() + surfaces + i * LUDUS_GPU_PREVIEW_SURFACE_WORDS;
-        out[0] = GpuVector(s.Bsdf.BaseColor, s.Bsdf.Metallic);
-        out[1] = {s.Bsdf.Roughness, s.AlphaCutoff, GpuBits(instance.Texture.Width), GpuBits(instance.Texture.Height)};
-        out[2] = s.Tint;
-        out[3] = s.UvTransform;
-        out[4] = GpuVector(s.Emission, GpuBits(s.HasTexture ? 1U : 0U));
-        const uint32 flags = (s.Sampler.Filter == rhi::RasterFilter::Linear ? 1U : 0U) |
-                             (s.Sampler.U == rhi::RasterAddress::Repeat ? 2U : 0U) |
-                             (s.Sampler.V == rhi::RasterAddress::Repeat ? 4U : 0U) |
-                             (instance.Texture.Format == rhi::RasterFormat::Rgba8Srgb ? 8U : 0U);
-        out[LUDUS_GPU_PREVIEW_TEXTURE_OPTIONS_WORD] = {
-            GpuBits(static_cast<uint32>(textures[i * LUDUS_GPU_PREVIEW_TEXTURES_PER_SURFACE])),
-            GpuBits(flags),
-            GpuBits(s.Alpha == MaterialAlpha::Masked ? 1U : 0U),
-            GpuBits(s.IsEmissionTwoSided == true ? 1U : 0U)};
-        out[6] = {s.NormalScale,
-                  GpuBits(instance.SurfaceMap.Width),
-                  GpuBits(instance.SurfaceMap.Height),
-                  GpuBits(s.HasSurfaceMap ? 1U : 0U)};
-        out[7] = {GpuBits(static_cast<uint32>(textures[i * LUDUS_GPU_PREVIEW_TEXTURES_PER_SURFACE + 1])),
-                  GpuBits(flags & 7U),
-                  GpuBits(s.AreAuthoredInputsEnabled ? 1U : 0U),
-                  0};
-        out[8] = {GpuBits(static_cast<uint32>(textures[i * LUDUS_GPU_PREVIEW_TEXTURES_PER_SURFACE + 2])),
-                  GpuBits((flags & 7U) | (instance.EmissionMap.Format == rhi::RasterFormat::Rgba8Srgb ? 8U : 0U)),
-                  GpuBits(instance.EmissionMap.Width),
-                  GpuBits(instance.EmissionMap.Height)};
+        const internal::ReferenceSurfaceData& surface = *instance.Surface;
+        math::Vector4* surfaceWords = data.GetData() + surfaces + i * LUDUS_GPU_PREVIEW_SURFACE_WORDS;
+        surfaceWords[LUDUS_GPU_PREVIEW_BASE_COLOR_WORD] = GpuVector(surface.Bsdf.BaseColor, surface.Bsdf.Metallic);
+        surfaceWords[LUDUS_GPU_PREVIEW_ROUGHNESS_WORD] =
+        {
+            .X = surface.Bsdf.Roughness,
+            .Y = surface.AlphaCutoff,
+            .Z = GpuBits(instance.Texture.Width),
+            .W = GpuBits(instance.Texture.Height),
+        };
+        surfaceWords[LUDUS_GPU_PREVIEW_TINT_WORD] = surface.Tint;
+        surfaceWords[LUDUS_GPU_PREVIEW_UV_TRANSFORM_WORD] = surface.UvTransform;
+        surfaceWords[LUDUS_GPU_PREVIEW_EMISSION_WORD] =
+            GpuVector(surface.Emission, GpuBits(surface.HasTexture == true ? 1U : 0U));
+        const uint32 flags =
+            (surface.Sampler.Filter == rhi::RasterFilter::Linear ? LUDUS_GPU_PREVIEW_TEXTURE_LINEAR_FLAG : 0U) |
+            (surface.Sampler.U == rhi::RasterAddress::Repeat ? LUDUS_GPU_PREVIEW_TEXTURE_REPEAT_U_FLAG : 0U) |
+            (surface.Sampler.V == rhi::RasterAddress::Repeat ? LUDUS_GPU_PREVIEW_TEXTURE_REPEAT_V_FLAG : 0U) |
+            (instance.Texture.Format == rhi::RasterFormat::Rgba8Srgb ? LUDUS_GPU_PREVIEW_TEXTURE_SRGB_FLAG : 0U);
+        surfaceWords[LUDUS_GPU_PREVIEW_TEXTURE_OPTIONS_WORD] =
+        {
+            .X = GpuBits(static_cast<uint32>(textures[i * LUDUS_GPU_PREVIEW_TEXTURES_PER_SURFACE])),
+            .Y = GpuBits(flags),
+            .Z = GpuBits(surface.Alpha == MaterialAlpha::Masked ? 1U : 0U),
+            .W = GpuBits(surface.IsEmissionTwoSided == true ? 1U : 0U),
+        };
+        surfaceWords[LUDUS_GPU_PREVIEW_SURFACE_MAP_WORD] =
+        {
+            .X = surface.NormalScale,
+            .Y = GpuBits(instance.SurfaceMap.Width),
+            .Z = GpuBits(instance.SurfaceMap.Height),
+            .W = GpuBits(surface.HasSurfaceMap == true ? 1U : 0U),
+        };
+        surfaceWords[LUDUS_GPU_PREVIEW_SURFACE_OPTIONS_WORD] =
+        {
+            .X = GpuBits(static_cast<uint32>(textures[i * LUDUS_GPU_PREVIEW_TEXTURES_PER_SURFACE + 1])),
+            .Y = GpuBits(flags & LUDUS_GPU_PREVIEW_TEXTURE_SAMPLER_FLAGS),
+            .Z = GpuBits(surface.AreAuthoredInputsEnabled == true ? 1U : 0U),
+            .W = 0,
+        };
+        surfaceWords[LUDUS_GPU_PREVIEW_EMISSION_MAP_WORD] =
+        {
+            .X = GpuBits(static_cast<uint32>(textures[i * LUDUS_GPU_PREVIEW_TEXTURES_PER_SURFACE + 2])),
+            .Y = GpuBits((flags & LUDUS_GPU_PREVIEW_TEXTURE_SAMPLER_FLAGS) |
+                         (instance.EmissionMap.Format == rhi::RasterFormat::Rgba8Srgb
+                              ? LUDUS_GPU_PREVIEW_TEXTURE_SRGB_FLAG
+                              : 0U)),
+            .Z = GpuBits(instance.EmissionMap.Width),
+            .W = GpuBits(instance.EmissionMap.Height),
+        };
     }
     for (usize i = 0; i < textureCount; ++i)
     {
