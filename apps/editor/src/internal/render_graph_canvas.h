@@ -4,6 +4,7 @@
 
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_node_ports.h"
+#include "internal/render_graph_view_state.h"
 
 #include <QGraphicsView>
 #include <QHash>
@@ -34,6 +35,7 @@ QT_END_NAMESPACE
 namespace ludus::editor
 {
 class RenderGraphNavigation;
+class RenderGraphHistory;
 /// Connection domain shown on the canvas (docs/architecture/render-graph-authoring.md,
 /// "Node and connection contracts"). Shader functions live in build manifests, not here.
 enum class RenderGraphDomain : foundation::uint8
@@ -128,6 +130,15 @@ public:
     void FitSelection();
     /// Restore 100% magnification around the viewport centre, preserving selection and draft.
     void ResetZoom();
+    /// Capture selection, bounded magnification, scene centre and trace mode without changing the view.
+    [[nodiscard]] RenderGraphViewState CaptureViewState() const;
+    /// Restore a GUI-thread snapshot in the currently displayed configuration. Returns false for
+    /// nonfinite/out-of-range zoom or centre, preserving the view on failure. Missing node IDs are
+    /// ignored, and no remaining selection clears tracing. Cancels pending auto-fit and notifies
+    /// selection listeners; never changes the document or its undo history.
+    [[nodiscard]] bool RestoreViewState(const RenderGraphViewState& state);
+    /// Per-package browser navigation and breadcrumbs, owned by this canvas. GUI thread only.
+    [[nodiscard]] RenderGraphHistory& GetHistory() noexcept;
     [[nodiscard]] const QString& GetFile() const noexcept
     {
         return mFile;
@@ -205,7 +216,8 @@ Q_SIGNALS:
     void RemoveRequested(const QString& node);
     /// Open shared authoring controls for an ordinary node; Subgraphs keep their enter gesture.
     void NodeDetailsRequested(const QString& node);
-    void SubgraphActivated(const QString& asset, const QString& configuration);
+    /// Enter the referenced configuration from this authored Subgraph instance.
+    void SubgraphActivated(const QString& asset, const QString& configuration, const QString& instance);
     void LinkRejected(const QString& reason);
 
 protected:
@@ -239,6 +251,7 @@ private:
     void updateLinkFeedback(QPointF position);
     void fitBounds(const QRectF& bounds);
     void updateFramingControls();
+    void applyViewTransform(const RenderGraphViewState& state);
     void rebuildNavigation();
     void updateSemanticZoom(bool shouldForce = false);
     /// Scroll the view so its content moves by a viewport-pixel delta; never edits the draft.
@@ -249,6 +262,7 @@ private:
     QGraphicsScene* mScene;
     QToolBar* mFramingToolbar;
     RenderGraphNavigation* mNavigation;
+    RenderGraphHistory* mHistoryOrNull = nullptr;
     QAction* mFitGraphAction;
     QAction* mFitSelectionAction;
     QLabel* mZoomLabel;

@@ -11,6 +11,7 @@
 #include "internal/code_editor_panel.h"
 #include "internal/code_formatter.h"
 #include "internal/item_selection.h"
+#include "internal/render_graph_history.h"
 #include "internal/render_graph_options.h"
 #include "internal/render_graph_pipeline.h"
 #include "internal/render_graph_quick_add.h"
@@ -949,6 +950,20 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         mStatus->setText(QStringLiteral("Link rejected - %1").arg(reason));
     });
     connect(mCanvas, &RenderGraphCanvas::SubgraphActivated, this, &RendererWorkspace::openSubgraph);
+    connect(&mCanvas->GetHistory(),
+            &RenderGraphHistory::LocationRequested,
+            this,
+            [this](const QString& file, const QString& configuration, const QStringList& selection) {
+                mSelectedFile = file;
+                mSelectedConfiguration = configuration;
+                mSelectedNodes = selection;
+                mSelectedNode = selection.isEmpty() == true ? QString() : selection.first();
+                renderTree();
+                mSourceFile->setCurrentText(file);
+                renderSource();
+                mViews->setCurrentWidget(mCanvas);
+            });
+    connect(&mCanvas->GetHistory(), &RenderGraphHistory::NavigationFailed, mStatus, &QLabel::setText);
     connect(mCanvas,
             &RenderGraphCanvas::ContextMenuRequested,
             this,
@@ -1190,6 +1205,7 @@ void RendererWorkspace::SetProject(const QString& root, uint64 epoch)
     mResolvedTools = {};
     mResolvedSdk.clear();
     mSourceDocument.ResetBinding();
+    mCanvas->GetHistory().Reset();
     mDocument.Reset();
     mBuildProblem.clear();
     mSourceProblem.clear();
@@ -1379,6 +1395,7 @@ void RendererWorkspace::showDocument(const RenderGraphDocument& document)
     CancelJob();
     mSourceEditDebounce.stop();
     mSourceDocument.ResetBinding();
+    mCanvas->ShowConfiguration({}, {});
     mDocument = document;
     mBuildProblem.clear();
     mSourceProblem.clear();
@@ -3261,6 +3278,7 @@ bool RendererWorkspace::CreateSubgraph(const QString& name)
         return false;
     }
     const QString asset = name + QStringLiteral(".lurender.json");
+    static_cast<void>(mCanvas->GetHistory().PrepareSubgraph(node, asset, QStringLiteral("Default")));
     mSelectedFile = asset;
     mSelectedConfiguration = QStringLiteral("Default");
     mSelectedNode.clear();
@@ -3352,7 +3370,8 @@ void RendererWorkspace::activateSelectedNode()
     if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Subgraph"))
     {
         openSubgraph(node.value(QStringLiteral("asset")).toString(),
-                     node.value(QStringLiteral("configuration")).toString());
+                     node.value(QStringLiteral("configuration")).toString(),
+                     mSelectedNode);
         return;
     }
     editNodeOnCanvas();
@@ -3487,8 +3506,9 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition, bool i
         open->setObjectName(QStringLiteral("renderGraphOpenSubgraph"));
         RenderGraphNodePorts ports;
         open->setEnabled(GetRenderGraphNodePorts(mDocument, node, ports) == true);
-        connect(open, &QAction::triggered, this, [this, asset, configuration]() {
-            openSubgraph(asset, configuration);
+        const QString instance = node.value(QStringLiteral("id")).toString();
+        connect(open, &QAction::triggered, this, [this, asset, configuration, instance]() {
+            openSubgraph(asset, configuration, instance);
         });
     }
     else if (node.isEmpty() == false)
@@ -4066,11 +4086,15 @@ QWidget* RendererWorkspace::TakePreviewPanel(QWidget* newParent)
     return mPreviewPage;
 }
 
-void RendererWorkspace::openSubgraph(const QString& asset, const QString& configuration)
+void RendererWorkspace::openSubgraph(const QString& asset, const QString& configuration, const QString& instance)
 {
     if (mDocument.GetFiles().contains(asset) == false)
     {
         mStatus->setText(QStringLiteral("Subgraph source %1 is not part of this package.").arg(asset));
+        return;
+    }
+    if (mCanvas->GetHistory().PrepareSubgraph(instance, asset, configuration) == false)
+    {
         return;
     }
     // Navigate canvas, tree and Source tab to the referenced asset's configuration.

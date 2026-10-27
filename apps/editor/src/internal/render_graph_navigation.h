@@ -2,6 +2,8 @@
 
 #include <ludus/foundation/base/types.h>
 
+#include "internal/render_graph_view_state.h"
+
 #include <QObject>
 #include <QSet>
 #include <QString>
@@ -20,14 +22,6 @@ QT_END_NAMESPACE
 
 namespace ludus::editor
 {
-/// Direction through displayed connections in one configuration; never enters Subgraph assets.
-enum class RenderGraphTraceDirection : foundation::uint8
-{
-    None,       ///< Normal selection/port-hover highlighting.
-    Upstream,   ///< Producers that reach the selected nodes.
-    Downstream, ///< Consumers reachable from the selected nodes.
-};
-
 /// Snapshot of a displayed node. Only authored nodes can be searched or used as trace roots.
 struct RenderGraphNavigationNode final
 {
