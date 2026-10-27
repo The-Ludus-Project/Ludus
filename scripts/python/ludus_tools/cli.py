@@ -483,7 +483,7 @@ def cmd_render_graph(args) -> int:
             defaults = _read_json_argument(args.defaults, "--defaults") if args.defaults else None
             payload = {"migration": render_graph_authoring.migrate_values(Path(args.old), Path(args.new), values, defaults)}
         human = _json.dumps(payload, indent=2)
-    elif args.graph_action in ("new-build", "build", "verify-package", "emit-runtime", "cook-runtime"):
+    elif args.graph_action in ("new-build", "build", "verify-package", "emit-runtime", "cook-runtime", "ray-path-capture"):
         from . import render_graph_build
         if args.graph_action == "cook-runtime":
             from . import render_graph_execution
@@ -502,16 +502,24 @@ def cmd_render_graph(args) -> int:
             options = dict(helper=args.helper, compiler=args.compiler, validator=args.validator,
                            spirv_cross=args.spirv_cross, root=args.root, worker_socket=args.worker_socket)
             toolchain = None
+            manifest = args.manifest if args.graph_action != "ray-path-capture" else None
+            if args.graph_action == "ray-path-capture":
+                from . import render_graph_reload
+                manifest = render_graph_reload.ray_path_capture_sources(args.generation)[2]
             if args.project:
                 from .render_graph_project import resolve_build_tools
-                detected, toolchain = resolve_build_tools(args.project, args.tooling_root, args.manifest,
+                detected, toolchain = resolve_build_tools(args.project, args.tooling_root, manifest,
                     helper=args.helper, compiler=args.compiler, validator=args.validator,
                     spirv_cross=args.spirv_cross, store=_store(args))
                 options.update(detected)
             elif not args.helper or not args.compiler:
                 raise ToolingError("RenderGraphTools", "Build requires a project SDK selection (--project), "
                                    "or explicit --helper and --compiler overrides.")
-            if args.runtime_package:
+            if args.graph_action == "ray-path-capture":
+                from . import render_graph_reload
+                payload = render_graph_reload.rebuild_ray_path_capture(args.generation, args.output, args.destination,
+                            configuration=args.configuration, **options)
+            elif args.runtime_package:
                 from . import render_graph_reload
                 payload = render_graph_reload.rebuild(args.manifest, args.output, args.runtime_package,
                             configuration=args.configuration, **options)
@@ -616,6 +624,21 @@ def build_parser() -> argparse.ArgumentParser:
         build_graph.set_defaults(func=cmd_render_graph)
         build_graph.add_argument("--runtime-package", help="atomically cook/publish a reloadable .lurgrt generation")
         build_graph.add_argument("--configuration", default="Default")
+    capture_graph = graphs.add_parser("ray-path-capture",
+        help="compile the editor-only ray path capture variant of a published generation from its saved sources")
+    capture_graph.add_argument("generation", help="immutable generation or build tree with current.json")
+    capture_graph.add_argument("output", help="owned build tree for the capture variant, outside the generation")
+    capture_graph.add_argument("destination", help="diagnostic ray path capture package destination")
+    capture_graph.add_argument("--configuration", default="Default")
+    capture_graph.add_argument("--helper", help="installed SDK shader helper override")
+    capture_graph.add_argument("--compiler", help="pinned Slang executable override")
+    capture_graph.add_argument("--project", help="resolve the SDK and shader tools selected by this project")
+    capture_graph.add_argument("--tooling-root", help="trusted checkout with prepared shader tools")
+    capture_graph.add_argument("--store", help="SDK store (default: LUDUS_SDK_STORE or user data directory)")
+    capture_graph.add_argument("--validator", help="pinned spirv-val; required for spirv/glsl")
+    capture_graph.add_argument("--spirv-cross", help="verified SPIRV-Cross; required for glsl")
+    capture_graph.add_argument("--worker-socket", help="existing headless native shader worker endpoint")
+    capture_graph.set_defaults(func=cmd_render_graph, root=None)
     verify_graph = graphs.add_parser("verify-package", help="verify complete generation inventory without shader tools")
     verify_graph.add_argument("package")
     verify_graph.set_defaults(func=cmd_render_graph)

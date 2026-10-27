@@ -4,11 +4,13 @@
 
 #include <ludus/foundation/base/pointer.hpp>
 #include <ludus/foundation/containers/borrowed_view.hpp>
+#include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/raster.h>
 
 #include "internal/graph_display_frames.h"
+#include "internal/ray_path_capture.h"
 #include "internal/render_graph_targets.h"
 #include "internal/render_scene.h"
 #include "internal/texture_inspection.h"
@@ -23,6 +25,8 @@
 
 namespace ludus::editor
 {
+/// Name of an RHI raster status as diagnostics show it, for example "CapacityExceeded".
+[[nodiscard]] QString DescribeRasterStatus(graphics::rhi::RasterStatus status);
 /// Describe a rejected extraction, including measured memory admission and preservation of the last frame.
 [[nodiscard]] QString
 DescribeRenderGraphExtractionFailure(graphics::rhi::RasterStatus status,
@@ -203,6 +207,44 @@ public:
     {
         return mInspectedRevision;
     }
+    /// Why the drawing generation's ray paths cannot be captured here; empty when they can.
+    /// Capture needs an attached device, a drawn generation and the hardware raytracing renderer:
+    /// a raster selection (no native ray queries, or Force raster) or software traversal reports
+    /// unavailable, while that renderer keeps drawing and navigating normally.
+    [[nodiscard]] QString DescribeRayPathCaptureProblem() const;
+    /// Freeze the live graph for ray path inspection. Copies the graph camera, World revision,
+    /// content revision (the capture graph's sampling seed), reference and output sizes, generation
+    /// serial and identity of the drawing generation. While frozen, SetCamera no longer reaches the
+    /// graph camera (the latest camera is kept for ThawRayPaths), the live graph submits no frames,
+    /// and SetExtraction, a different reference size or a newly active generation marks the capture
+    /// stale; the frozen capture is never mixed with newer inputs.
+    /// @return False with outError (DescribeRayPathCaptureProblem) when ray paths cannot be captured.
+    [[nodiscard]] bool FreezeRayPaths(QString& outError);
+    /// Leave ray path inspection: release the capture and return the live graph to the latest
+    /// World extraction and camera supplied while frozen. No effect when not frozen.
+    void ThawRayPaths();
+    [[nodiscard]] bool IsRayPathFrozen() const noexcept;
+    /// Inputs copied by FreezeRayPaths; default values when not frozen.
+    [[nodiscard]] const RayPathFreeze& GetRayPathFreeze() const noexcept;
+    /// Report that the capture variant of the frozen generation is compiling.
+    void BeginRayPathBuild();
+    /// Report that compiling the capture variant failed, or that capture is unavailable.
+    void FailRayPathCapture(const QString& reason, bool isUnavailable = false);
+    /// Trace a compiled diagnostic capture package of the frozen generation in its own graph,
+    /// with the frozen extraction and camera; Tick advances it between frames without waiting.
+    /// @param packagePath `.lurgrd` written by `render-graph ray-path-capture`, at most MAX_PACKAGE_BYTES.
+    /// @param pixel Normalized position in the exported output, [0, 1), top row zero.
+    /// @param target Node whose ray pass is traced, or the whole graph.
+    /// @param sampleCount Progressive samples to record.
+    /// @return False when not frozen or the run cannot begin; GetRayPathCapture reports why.
+    [[nodiscard]] bool StartRayPathCapture(const QString& packagePath,
+                                           foundation::math::Vector2 pixel,
+                                           const RayPathTarget& target,
+                                           foundation::uint32 sampleCount);
+    /// The capture of the frozen generation and its decoded results.
+    [[nodiscard]] const RayPathCapture& GetRayPathCapture() const noexcept;
+    /// Why the frozen capture no longer matches the World, viewport or graph; empty while current.
+    [[nodiscard]] const QString& GetRayPathStaleReason() const noexcept;
     /// Human-readable state, distinguishing the shown frame from a pending or failed candidate.
     [[nodiscard]] QString GetStatus() const;
     /// World-facing progress or error text; empty after a successful frame.
@@ -219,6 +261,8 @@ Q_SIGNALS:
     void TargetsChanged();
     /// GetInspectedTexture or GetInspectionStatus changed.
     void TargetInspected();
+    /// The freeze, its staleness or the ray path capture's state changed.
+    void RayPathCaptureChanged();
 
 private:
     struct State;
@@ -231,6 +275,7 @@ private:
     [[nodiscard]] bool beginInspection();
     void finishInspection();
     void setStatus(const QString& text);
+    void markRayPathStale(const QString& reason);
 
     foundation::UniquePtr<State> mState;
     QImage mImage;

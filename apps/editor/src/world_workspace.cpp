@@ -1700,6 +1700,18 @@ void WorldWorkspace::RestoreSession(const QJsonObject& state)
     Render();
     Changed();
 }
+bool WorldWorkspace::SelectEntity(const QString& id)
+{
+    if (Document_.Entity(id).isEmpty() == true)
+    {
+        return false;
+    }
+    mSelectedEntities = {id};
+    Selected_ = id;
+    Render();
+    Changed();
+    return true;
+}
 bool WorldWorkspace::Apply()
 {
     if (SceneBusy())

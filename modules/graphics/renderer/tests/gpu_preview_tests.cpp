@@ -10,6 +10,7 @@
 #include "renderer_lit.h"
 #include "renderer_lit_shadow.h"
 #include "renderer_output.h"
+#include "renderer_overlay.h"
 #include "renderer_shadow.h"
 #include "renderer_surface.h"
 #include "renderer_surface_shadow.h"
@@ -344,6 +345,141 @@ TEST_CASE("Interactive raster viewport updates World snapshots and camera withou
     REQUIRE(renderer.Release(world) == S::Ready);
     REQUIRE(renderer.Release(mesh) == S::Ready);
     viewport.Reset();
+}
+
+TEST_CASE("Interactive raster viewport composes a depth-tested overlay into its scene", "[renderer][gpu][viewport]")
+{
+    rhi::Shutdown();
+    struct Guard
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    constexpr uint32 EXTENT = 8;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    rhi::DeviceDescription description;
+    description.Required.PortableRaster = true;
+    const rhi::DeviceStatus started =
+        rhi::CreateDevice({}, { .Width = EXTENT, .Height = EXTENT }, description, device, surface);
+#if defined(LUDUS_TEST_METAL)
+    if (started != rhi::DeviceStatus::Ready && rhi::GetStartup().Error == rhi::StartupError::AdapterUnavailable)
+    {
+        SKIP("No Metal adapter");
+    }
+#endif
+    REQUIRE(started == rhi::DeviceStatus::Ready);
+    rr::Renderer renderer;
+    REQUIRE(renderer.Initialize(device, shaders::renderer_flat::Vertex(), shaders::renderer_flat::Fragment()) ==
+            S::Ready);
+    REQUIRE(renderer.InitializeViews(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment()) ==
+            S::Ready);
+    REQUIRE(renderer.InitializeLighting(shaders::renderer_output::Vertex(),
+                                        shaders::renderer_output::Fragment(),
+                                        shaders::renderer_shadow::Fragment()) == S::Ready);
+    rr::OverlayRenderer overlays;
+    S overlaySetup =
+        overlays.Initialize(device, shaders::renderer_overlay::Vertex(), shaders::renderer_overlay::Fragment());
+    const uint64 setupStart = time::NowTicks();
+    while (overlaySetup == S::Pending && time::NowTicks() - setupStart < 10 * time::NANOSECONDS_PER_SECOND)
+    {
+        overlaySetup = overlays.Poll();
+    }
+    REQUIRE(overlaySetup == S::Ready);
+    // A red quad at depth 0.5 under the conventional identity camera.
+    constexpr float32 QUAD_DEPTH = .5F;
+    const math::Vector3 positions[]{{-1, -1, QUAD_DEPTH}, {1, -1, QUAD_DEPTH}, {1, 1, QUAD_DEPTH}, {-1, 1, QUAD_DEPTH}};
+    const uint32 indices[]{0, 1, 2, 0, 2, 3};
+    rr::Mesh mesh;
+    REQUIRE(renderer.CreateMesh({positions, 4, indices, 6}, mesh) == S::Ready);
+    rr::SceneItem item;
+    item.Geometry = mesh;
+    item.SourceId = 1;
+    item.Material.Color = {1, 0, 0, 1};
+    rr::Snapshot world;
+    REQUIRE(renderer.CreateSnapshot(&item, 1, world) == S::Ready);
+    rr::RasterViewport viewport;
+    rr::OverlayList list;
+    REQUIRE(list.Initialize() == S::Ready);
+    // A horizontal green line through the center pixel, either in front of or behind the quad.
+    const auto prepare = [&](float32 depth, rr::OverlayDepth test, rr::PreparedOverlay& outOverlay) {
+        list.Clear();
+        rr::OverlayStyle style;
+        style.Depth = test;
+        REQUIRE(list.Line({-1, 0, depth, 1}, {1, 0, depth, 1}, {0, 1, 0, 1}, 2, EXTENT, EXTENT, style) == S::Ready);
+        S prepared = overlays.Prepare(list, {}, outOverlay);
+        const uint64 start = time::NowTicks();
+        while (prepared == S::Pending && time::NowTicks() - start < 10 * time::NANOSECONDS_PER_SECOND)
+        {
+            REQUIRE(overlays.Poll() == S::Ready);
+            prepared = overlays.GetStatus(outOverlay);
+        }
+        REQUIRE(prepared == S::Ready);
+    };
+    rr::PreparedOverlay behind;
+    rr::PreparedOverlay xRay;
+    rr::PreparedOverlay inFront;
+    prepare(.75F, rr::OverlayDepth::Conventional, behind);
+    prepare(.75F, rr::OverlayDepth::Always, xRay);
+    prepare(.25F, rr::OverlayDepth::Conventional, inFront);
+    rhi::RasterCapabilities capabilities;
+    REQUIRE(rhi::GetRasterCapabilities(device, capabilities) == S::Ready);
+    if (capabilities.HdrColor == true)
+    {
+        // An HDR scene target cannot take the RGBA8 overlay pipelines.
+        REQUIRE(viewport.Initialize(renderer, device, EXTENT, EXTENT, 1, rr::ViewportColorMode::PreferHdr) == S::Ready);
+        CHECK(viewport.SetOverlay(&overlays, behind) == S::Unsupported);
+        viewport.Reset();
+    }
+    CHECK(viewport.SetOverlay(&overlays, behind) == S::InvalidState);
+    REQUIRE(viewport.Initialize(renderer, device, EXTENT, EXTENT, 1, rr::ViewportColorMode::Linear8) == S::Ready);
+    rr::ViewDescription camera;
+    rr::ViewReport report;
+    REQUIRE(viewport.Update(world, camera, report) == S::Ready);
+    constexpr usize CENTER = (usize{EXTENT / 2} * EXTENT + EXTENT / 2) * 4;
+    constexpr uint8 VISIBLE = 64;
+    StaticArray<uint8, usize{EXTENT} * EXTENT * 4> image{};
+    const auto render = [&]() {
+        rhi::SubmissionToken producer;
+        REQUIRE(viewport.Render(surface, producer) == S::Ready);
+        rr::ViewportFrame frame;
+        rr::ViewportImage display;
+        const uint64 start = time::NowTicks();
+        S status = S::Pending;
+        do
+        {
+            status = viewport.Acquire(frame, display);
+        } while (status == S::Pending && time::NowTicks() - start < 10 * time::NANOSECONDS_PER_SECOND);
+        REQUIRE(status == S::Ready);
+        ReadImage(device, {display.Texture, display.Producer, EXTENT, EXTENT, 0}, image.GetData(), image.GetSize());
+        REQUIRE(viewport.Release(frame) == S::Ready);
+    };
+    REQUIRE(viewport.SetOverlay(&overlays, behind) == S::Ready);
+    render();
+    CHECK(image[CENTER] >= 126);
+    CHECK(image[CENTER + 1] == 0);
+    REQUIRE(viewport.SetOverlay(&overlays, xRay) == S::Ready);
+    // A replaced version may be released at once; accepted frames retain its resources.
+    REQUIRE(overlays.Release(behind) == S::Ready);
+    render();
+    CHECK(image[CENTER] < VISIBLE);
+    CHECK(image[CENTER + 1] > VISIBLE);
+    REQUIRE(viewport.SetOverlay(&overlays, inFront) == S::Ready);
+    render();
+    CHECK(image[CENTER] < VISIBLE);
+    CHECK(image[CENTER + 1] > VISIBLE);
+    REQUIRE(viewport.SetOverlay(nullptr, {}) == S::Ready);
+    render();
+    CHECK(image[CENTER] >= 126);
+    CHECK(image[CENTER + 1] == 0);
+    REQUIRE(overlays.Release(xRay) == S::Ready);
+    REQUIRE(overlays.Release(inFront) == S::Ready);
+    viewport.Reset();
+    REQUIRE(renderer.Release(world) == S::Ready);
+    REQUIRE(renderer.Release(mesh) == S::Ready);
+    overlays.Reset();
 }
 
 TEST_CASE("Surface maps and authored punctual/area lights agree across raster and GPU reference",

@@ -290,6 +290,8 @@ def _cpu_vertex_interface(schema, stages):
 TARGET_FIELDS = {'metal': 'Msl', 'spirv': 'Spirv', 'wgsl': 'Wgsl', 'glsl': 'GlslEs'}
 # Serialized runtime generation (RG3); mirrors render_graph_format/runtime_package.h.
 PACKAGE_MAGIC = 0x4752554C
+# Editor-only diagnostic ray path capture generation; same layout, refused by runtime decoding.
+RAY_PATH_CAPTURE_PACKAGE_MAGIC = 0x5052554C
 PACKAGE_VERSION = 18
 RESOURCE_FIELD_COUNT = 9
 RESOURCE_RECORD_BYTES = RESOURCE_FIELD_COUNT * 4
@@ -700,8 +702,11 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
             'scene': next(p['scene'] for p in plan['passes'] if p['kind'] in ('Raster', 'RayTracing'))}
 
 
-def encode_runtime_package(contents):
+def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
     """Serialize lowered contents field by field in little-endian order.
+
+    magic is PACKAGE_MAGIC for runtime packages; cook_ray_path_capture passes
+    RAY_PATH_CAPTURE_PACKAGE_MAGIC for its editor-only diagnostic generation.
 
     Layout (runtime_package.h): header of ten uint32 values (magic, version,
     resource/pass/camera counts, uniform value/binding/block/field counts and the
@@ -714,7 +719,7 @@ def encode_runtime_package(contents):
     aspects = {'Color': 0, 'Depth': 1, 'Buffer': 2}
     loads, stores = {'Clear': 0, 'Load': 1, 'Discard': 2}, {'Store': 0, 'Discard': 1}
     stages = sorted(contents['artifacts'].items(), key=lambda item: item[1]['ordinal'])
-    data = bytearray(u32(PACKAGE_MAGIC, PACKAGE_VERSION, len(contents['resources']), len(contents['passes']),
+    data = bytearray(u32(magic, PACKAGE_VERSION, len(contents['resources']), len(contents['passes']),
                          len(contents['camera_targets']), contents['uniform_values'], len(contents['bindings']),
                          len(contents['blocks']), len(contents['fields']), len(stages)))
     data += bytes.fromhex(contents['interface_identity']) + bytes.fromhex(contents['generation'])
@@ -838,6 +843,36 @@ def cook_runtime(path, destination, *, configuration='Default'):
     """
     try:
         return _cook_runtime(path, destination, configuration=configuration)
+    except (KeyError, TypeError, ValueError, IndexError, UnicodeError, struct.error) as error:
+        build.fail('Package', str(path), 'malformed execution metadata: ' + str(error))
+
+
+def _cook_ray_path_capture(path, destination, *, configuration='Default'):
+    contents = _runtime_contents(path, configuration)
+    build.require(contents['ray_path_capture'], 'Capability', 'ray path capture',
+                  'the build was not linked with the ray path capture variant')
+    data = encode_runtime_package(contents, magic=RAY_PATH_CAPTURE_PACKAGE_MAGIC)
+    destination = Path(destination).absolute()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    build.atomic(resource_names_path(destination), encode_resource_names(contents))
+    build.atomic(destination, data)
+    return {'ray_path_capture_package': str(destination), 'resource_names': str(resource_names_path(destination)),
+            'configuration': configuration, 'generation': contents['generation'],
+            'interface_identity': contents['interface_identity'], 'bytes': len(data),
+            'passes': len(contents['passes']), 'profiles': sorted({key[2] for key in contents['artifacts']})}
+
+
+def cook_ray_path_capture(path, destination, *, configuration='Default'):
+    """Write the editor-only diagnostic generation of a ray path capture build.
+
+    The layout is cook_runtime's, with RAY_PATH_CAPTURE_PACKAGE_MAGIC in place of
+    PACKAGE_MAGIC: RenderGraphPackage::Decode, and so every runtime host, refuses
+    it, and only RenderGraphPackage::DecodeRayPathCapture admits it. The build must
+    have been linked with ray_path_capture=True; a plain build is rejected, as
+    cook_runtime rejects a capture build. The destination is replaced atomically.
+    """
+    try:
+        return _cook_ray_path_capture(path, destination, configuration=configuration)
     except (KeyError, TypeError, ValueError, IndexError, UnicodeError, struct.error) as error:
         build.fail('Package', str(path), 'malformed execution metadata: ' + str(error))
 

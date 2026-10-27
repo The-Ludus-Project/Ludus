@@ -17,6 +17,7 @@
 #include "internal/editor_camera_controller.h"
 #include "internal/preview_shader_set.h"
 #include "internal/preview_shading.h"
+#include "internal/ray_path_overlay.h"
 #include "internal/render_scene.h"
 #include "internal/viewport_frame_pump.h"
 #include "internal/viewport_frame_source.h"
@@ -183,7 +184,23 @@ public:
     /// or device. Clearing the problem permits an explicit retry.
     void SetProjectGraphProblem(const QString& problem);
     /// Publish completion of the current World extraction from the delegated graph producer.
+    /// Ignored while inspecting ray paths, when this preview produces its own frames.
     void NotifyProjectFrame();
+    /// Draw this viewport's built-in raster scene from the free editor camera even while
+    /// UseProjectGraph delegates frame production, for ray path inspection; false returns frame
+    /// production to the project graph. Raster navigation needs no ray hardware. The scene target
+    /// becomes linear RGBA8 while inspecting, so the overlay can compose into it. GUI thread only.
+    void SetRayPathInspection(bool isInspecting);
+    [[nodiscard]] LUDUS_INLINE bool IsRayPathInspection() const noexcept
+    {
+        return mIsInspectingRayPaths;
+    }
+    /// World-space lines composed into built-in frames while inspecting, depth-tested against
+    /// that frame's scene depth unless overlay.IsXRay. The lines are projected with the current
+    /// camera every time it changes; an empty overlay draws nothing. Native GPU preview only.
+    void SetRayPathOverlay(const RayPathOverlay& overlay);
+    /// Overlay lines composed into the latest submitted built-in frame; zero without an overlay.
+    [[nodiscard]] foundation::usize GetPresentedRayPathLines() const noexcept;
     void Tick();
     [[nodiscard]] LUDUS_INLINE bool Running() const noexcept
     {
@@ -341,6 +358,16 @@ private:
     bool mIsAwaitingProducer = false;
     [[nodiscard]] bool prepare();
     void restartResources() noexcept;
+    bool mIsInspectingRayPaths = false;
+    RayPathOverlay mRayPathOverlay;
+    foundation::uint64 mRayPathOverlayRevision = 0;
+    /// Overlay renderer, list and prepared versions on the owned device; null until first used.
+    struct RayPathOverlayResources;
+    foundation::UniquePtr<RayPathOverlayResources> mRayPathOverlayResources;
+    /// Prepare and attach the overlay version for the current camera before a built-in frame.
+    void serviceRayPathOverlay() noexcept;
+    /// Detach and release every overlay version; resetRenderer also drops the renderer before device loss.
+    void releaseRayPathOverlay(bool shouldResetRenderer) noexcept;
     RenderScene Scene_;
     static constexpr foundation::int32 DEFAULT_DRAWABLE_WIDTH = 640;
     static constexpr foundation::int32 DEFAULT_DRAWABLE_HEIGHT = 480;

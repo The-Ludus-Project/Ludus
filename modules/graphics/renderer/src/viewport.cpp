@@ -33,6 +33,11 @@ struct RasterViewport::State final
     StaticArray<bool, DISPLAY_IMAGE_COUNT> HasSurfaceDisplay{};
     bool ShouldPresentToSurface = false;
     ViewMapping Mapping;
+    /// Scene target format; only linear RGBA8 admits an overlay.
+    rhi::RasterFormat SceneFormat = rhi::RasterFormat::Rgba8Unorm;
+    /// Borrowed debug overlay composed into the scene; null without one.
+    OverlayRenderer* OverlaysOrNull = nullptr;
+    PreparedOverlay Overlay{};
     PreparedView View{};
     PreparedView PendingView{};
     bool HasPendingView = false;
@@ -143,6 +148,7 @@ Status RasterViewport::Initialize(Renderer& renderer,
     texture.Format = capabilities.HdrColor == true && colorMode == ViewportColorMode::PreferHdr
                          ? rhi::RasterFormat::Rgba16Float
                          : rhi::RasterFormat::Rgba8Unorm;
+    candidate->SceneFormat = texture.Format;
     Status status = rhi::CreateTexture(device, texture, {}, candidate->SceneColor);
     if (Accepted(status) == false)
     {
@@ -363,7 +369,23 @@ Status RasterViewport::Render(rhi::SurfaceHandle surface, rhi::SubmissionToken& 
     static_cast<void>(rhi::MakeGpuScope(1, {"Viewport/Scene", sizeof("Viewport/Scene") - 1}, sceneScope));
     {
         const rhi::GpuScope scope(state.Device, sceneScope);
-        state.RecordingStatus = state.SceneRenderer->DrawView(state.View, { .Color = state.SceneColor });
+        // An overlay depth-tests against this frame's scene depth, so keep it past the scene pass.
+        const bool hasOverlay = state.OverlaysOrNull != nullptr;
+        state.RecordingStatus = state.SceneRenderer->DrawView(
+            state.View,
+            {
+                .Color = state.SceneColor,
+                .DepthStore = hasOverlay == true ? rhi::RasterStore::Store : rhi::RasterStore::Discard,
+            });
+    }
+    if (state.RecordingStatus == Status::Ready && state.OverlaysOrNull != nullptr)
+    {
+        constexpr uint64 OVERLAY_SCOPE_ID = 4;
+        rhi::GpuScopeDescription overlayScope;
+        static_cast<void>(
+            rhi::MakeGpuScope(OVERLAY_SCOPE_ID, {"Viewport/Overlay", sizeof("Viewport/Overlay") - 1}, overlayScope));
+        const rhi::GpuScope scope(state.Device, overlayScope);
+        state.RecordingStatus = state.OverlaysOrNull->Draw(state.Overlay, { .Color = state.SceneColor });
     }
     if (state.RecordingStatus == Status::Ready)
     {
@@ -385,6 +407,33 @@ Status RasterViewport::Render(rhi::SurfaceHandle surface, rhi::SubmissionToken& 
         state.RecordingStatus = state.SceneRenderer->DrawPresentation(state.SurfaceDisplays[index]);
     }
     return state.Finish(completion);
+}
+
+Status RasterViewport::SetOverlay(OverlayRenderer* overlaysOrNull, PreparedOverlay overlay) noexcept
+{
+    if (mState.Get() == nullptr || mState->FrameOpen == true)
+    {
+        return Status::InvalidState;
+    }
+    State& state = *mState;
+    if (overlaysOrNull == nullptr)
+    {
+        state.OverlaysOrNull = nullptr;
+        state.Overlay = {};
+        return Status::Ready;
+    }
+    if (state.SceneFormat != rhi::RasterFormat::Rgba8Unorm)
+    {
+        return Status::Unsupported;
+    }
+    const Status ready = overlaysOrNull->GetStatus(overlay);
+    if (ready != Status::Ready)
+    {
+        return ready;
+    }
+    state.OverlaysOrNull = overlaysOrNull;
+    state.Overlay = overlay;
+    return Status::Ready;
 }
 
 Status RasterViewport::Acquire(ViewportFrame& frame, ViewportImage& image) noexcept

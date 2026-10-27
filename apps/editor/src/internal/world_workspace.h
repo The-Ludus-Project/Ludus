@@ -138,6 +138,9 @@ public:
     {
         return Document_;
     }
+    /// Select one entity of the open World by ID, as a hierarchy click does.
+    /// @return False when the World has no such entity (for example an imported scene object).
+    [[nodiscard]] bool SelectEntity(const QString& id);
     /// Move the entity inspector (name, component fields, Add Component, Apply and Reset)
     /// out of this view into newParent, for a shell Properties tool window. The panel keeps
     /// editing this workspace's draft; this workspace keeps owning its state. Call once.

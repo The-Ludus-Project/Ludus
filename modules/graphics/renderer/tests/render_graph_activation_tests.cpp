@@ -591,6 +591,42 @@ TEST_CASE("RG3 SPIR-V artifacts reject partial words and unpaired stages", "[ren
           renderer::RenderGraphPackageStatus::Malformed);
 }
 
+TEST_CASE("Ray path capture generations decode only through their diagnostic entry point",
+          "[render-graph][activation][ray-path]")
+{
+    const Array<uint8> runtime = MakePackageBytes({});
+    Array<uint8> capture = Array<uint8>::FromRange(runtime.AsSpan());
+    // Same layout as a runtime package; only the leading little-endian magic word differs.
+    constexpr usize MAGIC_BYTES = 4;
+    constexpr uint32 BITS_PER_BYTE = 8;
+    for (usize i = 0; i < MAGIC_BYTES; ++i)
+    {
+        capture[i] = static_cast<uint8>(format::RAY_PATH_CAPTURE_PACKAGE_MAGIC >> (i * BITS_PER_BYTE));
+    }
+    CHECK(DecodeBytes(capture) == renderer::RenderGraphPackageStatus::UnsupportedVersion);
+    renderer::RenderGraphPackage refused;
+    CHECK(refused.DecodeRayPathCapture({runtime.GetData(), runtime.GetSize()}) ==
+          renderer::RenderGraphPackageStatus::UnsupportedVersion);
+    CHECK(refused.IsLoaded() == false);
+    renderer::RenderGraphPackage plain;
+    REQUIRE(plain.Decode({runtime.GetData(), runtime.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
+    CHECK(plain.IsRayPathCapture() == false);
+    CHECK(plain.GetPrograms({}, {}).HasRayPathCapture == false);
+    renderer::RenderGraphPackage* allocationOrNull = new (std::nothrow) renderer::RenderGraphPackage;
+    core::UniquePtr<renderer::RenderGraphPackage> diagnostic{allocationOrNull};
+    REQUIRE(diagnostic.Get() != nullptr);
+    REQUIRE(diagnostic->DecodeRayPathCapture({capture.GetData(), capture.GetSize()}) ==
+            renderer::RenderGraphPackageStatus::Ready);
+    CHECK(diagnostic->IsRayPathCapture() == true);
+    CHECK(diagnostic->GetPrograms({}, {}).HasRayPathCapture == true);
+    CHECK(diagnostic->GetPlan().Resources.GetSize() == plain.GetPlan().Resources.GetSize());
+    // Activation never stages the diagnostic variant as a drawing generation.
+    ActivationFixture fixture;
+    CHECK(fixture.Activation.Stage(Move(diagnostic)) == rhi::RasterStatus::InvalidDescription);
+    CHECK(fixture.Activation.GetReport().CandidateGeneration == 0);
+    CHECK(fixture.Activation.GetActiveOrNull() == nullptr);
+}
+
 TEST_CASE("RG3 first generation activates once its pipelines are ready", "[render-graph][activation]")
 {
     ActivationFixture fixture;

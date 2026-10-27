@@ -38,6 +38,7 @@
 #    include "internal/offscreen_frame_reader.h"
 #    include "internal/preview_shader_reload.h"
 #    include "internal/qt_viewport_device.h"
+#    include "internal/ray_path_inspection.h"
 #    include "internal/render_graph_preview.h"
 #    include "internal/renderer_workspace.h"
 #    include "internal/world_graph_view.h"
@@ -1567,12 +1568,101 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
         });
     }
     updateStatistics();
+    mRayPaths = inoutWorkspace.GetRayPathInspectionOrNull();
+    mRayPathWorkspaceOrNull = &inoutWorkspace;
+    if (mRayPaths.isNull() == false)
+    {
+        connect(mRayPaths, &RayPathInspection::Changed, this, &PreviewViewport::updateRayPathInspection);
+        connect(mRayPaths, &RayPathInspection::OverlayChanged, this, &PreviewViewport::updateRayPathOverlay);
+    }
     if (wasRunning == true)
     {
         static_cast<void>(Preview_->Start());
     }
 #else
     static_cast<void>(inoutWorkspace);
+#endif
+}
+void PreviewViewport::updateRayPathInspection()
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mRayPaths.isNull() == true || mRayPathWorkspaceOrNull == nullptr)
+    {
+        return;
+    }
+    // Only the viewport whose preview feeds the graph presents its inspection.
+    const bool isSource = mRayPathWorkspaceOrNull->GetPreviewSourceOrNull() == Preview_;
+    const RayPathInspectionStage stage = mRayPaths->GetStage();
+    const bool shouldInspect = isSource == true && stage == RayPathInspectionStage::Inspecting;
+    if (isSource == true && stage == RayPathInspectionStage::PickingPixel)
+    {
+        setCursor(Qt::CrossCursor);
+    }
+    else
+    {
+        unsetCursor();
+    }
+    const QString status = isSource == true ? mRayPaths->GetStatus() : QString{};
+    if (status.isEmpty() == false || mIsShowingRayPathStatus == true)
+    {
+        mState->ShaderStatusText = status;
+        mState->HasShaderError = false;
+        mState->applyShaderStatus();
+        mIsShowingRayPathStatus = status.isEmpty() == false;
+    }
+    if (shouldInspect == mIsInspectingRayPaths)
+    {
+        return;
+    }
+    mIsInspectingRayPaths = shouldInspect;
+    // The inspection view is the built-in raster preview from the free camera; never the frozen graph image.
+    Preview_->SetRayPathInspection(shouldInspect);
+    if (mState->Window != nullptr)
+    {
+        SetFrameSource(shouldInspect == true ? Preview_ : nullptr);
+    }
+    else if (mState->GraphViewOrNull != nullptr)
+    {
+        mState->GraphViewOrNull->setVisible(shouldInspect == false && Preview_->Scene().Identity.isEmpty() == false);
+    }
+    updateRayPathOverlay();
+#endif
+}
+void PreviewViewport::updateRayPathOverlay()
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mRayPaths.isNull() == true || mIsInspectingRayPaths == false)
+    {
+        return;
+    }
+    math::Aabb3 boundsWorld;
+    const bool hasBounds = Preview_->Scene().TryGetBounds({}, boundsWorld);
+    Preview_->SetRayPathOverlay(mRayPaths->BuildOverlay(hasBounds == true ? &boundsWorld : nullptr));
+#endif
+}
+bool PreviewViewport::pickRayPathPixel(QPointF globalPosition)
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mRayPaths.isNull() == true || mRayPathWorkspaceOrNull == nullptr ||
+        mRayPaths->GetStage() != RayPathInspectionStage::PickingPixel ||
+        mRayPathWorkspaceOrNull->GetPreviewSourceOrNull() != Preview_)
+    {
+        return false;
+    }
+    // The graph output fills the letterboxed frame, as both presentation paths show it.
+    const QRect frame = mState->FrameLayoutOrNull->GetFrameRectangle();
+    const QPointF local = QPointF(mapFromGlobal(globalPosition.toPoint())) - QPointF(frame.topLeft());
+    if (frame.isEmpty() == true || local.x() < 0 || local.y() < 0 || local.x() >= frame.width() ||
+        local.y() >= frame.height())
+    {
+        return true;
+    }
+    static_cast<void>(mRayPaths->PickPixel(
+        {static_cast<float32>(local.x() / frame.width()), static_cast<float32>(local.y() / frame.height())}));
+    return true;
+#else
+    static_cast<void>(globalPosition);
+    return false;
 #endif
 }
 void PreviewViewport::HoldFrame()

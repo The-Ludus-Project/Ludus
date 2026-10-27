@@ -50,6 +50,11 @@ namespace ludus::content::render_graph_format
 {
 /// "LURG" read as a little-endian uint32.
 inline constexpr foundation::uint32 PACKAGE_MAGIC = 0x4752554CU;
+/// "LURP" read as a little-endian uint32: an editor-only diagnostic ray path capture generation.
+/// Its layout is a runtime package's, but its ray kernel is the `LUDUS_RAY_PATH_CAPTURE` variant
+/// compiled from the same source snapshot. Runtime decoding rejects this magic, so a shipping host
+/// never loads it; see docs/architecture/render-graph-authoring.md, "Ray path inspection".
+inline constexpr foundation::uint32 RAY_PATH_CAPTURE_PACKAGE_MAGIC = 0x5052554CU;
 /// First generation admitting MetalFX Spatial roles; version 16's pass layout is unchanged.
 inline constexpr foundation::uint32 METALFX_SPATIAL_PACKAGE_VERSION = 17;
 /// First generation carrying software/native ray traversal requirements per pass.

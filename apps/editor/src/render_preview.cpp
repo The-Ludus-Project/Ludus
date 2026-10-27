@@ -3,6 +3,9 @@
 #include "internal/preview_lighting.h"
 #include "internal/preview_shading.h"
 #include "internal/render_scene_limits.h"
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "renderer_overlay.h"
+#endif
 #include <ludus/foundation/profiling/profiling.hpp>
 #include <ludus/foundation/time/time.hpp>
 
@@ -13,6 +16,7 @@
 
 #include <ludus/content/scene_format/luscn.h>
 
+#include <ludus/graphics/renderer/overlays.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/graph.h>
@@ -128,6 +132,25 @@ struct RenderPreview::Residency final
                payload == Definition.Get();
     }
 };
+struct RenderPreview::RayPathOverlayResources final
+{
+    rr::OverlayRenderer Renderer;
+    rr::OverlayList List;
+    rr::PreparedOverlay Active{};
+    rr::PreparedOverlay Pending{};
+    bool IsInitialized = false;
+    bool HasFailed = false;
+    bool HasActive = false;
+    bool HasPending = false;
+    /// Inputs of the most recently prepared version; a change prepares a new one.
+    math::Matrix4 PreparedWorldToClip = math::Matrix4::Identity();
+    uint64 PreparedRevision = 0;
+    uint32 PreparedWidth = 0;
+    uint32 PreparedHeight = 0;
+    bool HasPrepared = false;
+    usize PendingLines = 0;
+    usize ActiveLines = 0;
+};
 RenderPreview::RenderPreview(QObject* parent) : ViewportFrameSource(parent)
 {
     connect(&mFramePump, &ViewportFramePump::WorkRequested, this, &RenderPreview::Tick);
@@ -135,6 +158,184 @@ RenderPreview::RenderPreview(QObject* parent) : ViewportFrameSource(parent)
 RenderPreview::~RenderPreview()
 {
     Stop();
+}
+void RenderPreview::SetRayPathInspection(bool isInspecting)
+{
+    if (mIsInspectingRayPaths == isInspecting)
+    {
+        return;
+    }
+    mIsInspectingRayPaths = isInspecting;
+    if (isInspecting == false)
+    {
+        releaseRayPathOverlay(false);
+        mRayPathOverlay = {};
+    }
+    if (OwnsDevice_ == true)
+    {
+        // The scene target's format follows inspection (linear RGBA8 admits the overlay).
+        if (mHasViewport == true)
+        {
+            resetFrames();
+        }
+        ViewDirty_ = true;
+        mFramePump.Start();
+        mFramePump.Wake();
+    }
+    Q_EMIT Changed();
+}
+void RenderPreview::SetRayPathOverlay(const RayPathOverlay& overlay)
+{
+    mRayPathOverlay = overlay;
+    ++mRayPathOverlayRevision;
+    if (OwnsDevice_ == true && mIsInspectingRayPaths == true)
+    {
+        mFramePump.Wake();
+    }
+}
+usize RenderPreview::GetPresentedRayPathLines() const noexcept
+{
+    return mRayPathOverlayResources.Get() != nullptr && mRayPathOverlayResources->HasActive == true
+               ? mRayPathOverlayResources->ActiveLines
+               : 0;
+}
+void RenderPreview::releaseRayPathOverlay(bool shouldResetRenderer) noexcept
+{
+    RayPathOverlayResources* resourcesOrNull = mRayPathOverlayResources.Get();
+    if (resourcesOrNull == nullptr)
+    {
+        return;
+    }
+    if (mResources.Get() != nullptr)
+    {
+        static_cast<void>(mResources->Viewport.SetOverlay(nullptr, {}));
+    }
+    if (resourcesOrNull->HasActive == true)
+    {
+        static_cast<void>(resourcesOrNull->Renderer.Release(resourcesOrNull->Active));
+    }
+    if (resourcesOrNull->HasPending == true)
+    {
+        static_cast<void>(resourcesOrNull->Renderer.Release(resourcesOrNull->Pending));
+    }
+    resourcesOrNull->HasActive = false;
+    resourcesOrNull->HasPending = false;
+    resourcesOrNull->HasPrepared = false;
+    resourcesOrNull->ActiveLines = 0;
+    if (shouldResetRenderer == true)
+    {
+        mRayPathOverlayResources.Reset();
+    }
+}
+void RenderPreview::serviceRayPathOverlay() noexcept
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mIsInspectingRayPaths == false || mResources.Get() == nullptr)
+    {
+        return;
+    }
+    if (mRayPathOverlayResources.Get() == nullptr)
+    {
+        mRayPathOverlayResources.Reset(new (std::nothrow) RayPathOverlayResources);
+        if (mRayPathOverlayResources.Get() == nullptr)
+        {
+            return;
+        }
+    }
+    RayPathOverlayResources& overlay = *mRayPathOverlayResources;
+    if (overlay.HasFailed == true)
+    {
+        return;
+    }
+    if (overlay.IsInitialized == false)
+    {
+        const rhi::RasterStatus initialized = overlay.Renderer.Initialize(Device_,
+                                                                          ludus::shaders::renderer_overlay::Vertex(),
+                                                                          ludus::shaders::renderer_overlay::Fragment());
+        overlay.IsInitialized = Accepted(initialized) == true && overlay.List.Initialize() == rhi::RasterStatus::Ready;
+        overlay.HasFailed = overlay.IsInitialized == false;
+        if (overlay.HasFailed == true)
+        {
+            return;
+        }
+    }
+    if (overlay.Renderer.Poll() != rhi::RasterStatus::Ready)
+    {
+        return;
+    }
+    if (overlay.HasPending == true)
+    {
+        const rhi::RasterStatus prepared = overlay.Renderer.GetStatus(overlay.Pending);
+        if (prepared == rhi::RasterStatus::Ready)
+        {
+            // Accepted frames retain the replaced version's resources, so it may go at once.
+            if (overlay.HasActive == true)
+            {
+                static_cast<void>(overlay.Renderer.Release(overlay.Active));
+            }
+            overlay.Active = overlay.Pending;
+            overlay.Pending = {};
+            overlay.HasActive = true;
+            overlay.HasPending = false;
+            overlay.ActiveLines = overlay.PendingLines;
+        }
+        else if (prepared != rhi::RasterStatus::Pending)
+        {
+            static_cast<void>(overlay.Renderer.Release(overlay.Pending));
+            overlay.HasPending = false;
+        }
+    }
+    const bool hasChanged = overlay.HasPrepared == false || overlay.PreparedRevision != mRayPathOverlayRevision ||
+                            overlay.PreparedWidth != Width_ || overlay.PreparedHeight != Height_ ||
+                            (overlay.PreparedWorldToClip == Description_.WorldToClip) == false;
+    if (overlay.HasPending == false && hasChanged == true && Width_ != 0 && Height_ != 0)
+    {
+        overlay.List.Clear();
+        rr::OverlayStyle style;
+        style.Depth = mRayPathOverlay.IsXRay == true                        ? rr::OverlayDepth::Always
+                      : Description_.Depth == rr::DepthConvention::ReverseZ ? rr::OverlayDepth::ReverseZ
+                                                                            : rr::OverlayDepth::Conventional;
+        usize lines = 0;
+        const QVector<RayPathLine>& worldLines = mRayPathOverlay.Lines;
+        for (const RayPathLine& line : worldLines)
+        {
+            const math::Vector4 start =
+                Description_.WorldToClip * math::Vector4{line.StartWorld.X, line.StartWorld.Y, line.StartWorld.Z, 1};
+            const math::Vector4 end =
+                Description_.WorldToClip * math::Vector4{line.EndWorld.X, line.EndWorld.Y, line.EndWorld.Z, 1};
+            if (overlay.List.Line(start, end, line.Color, line.WidthPixels, Width_, Height_, style) ==
+                rhi::RasterStatus::Ready)
+            {
+                ++lines;
+            }
+        }
+        overlay.HasPrepared = true;
+        overlay.PreparedRevision = mRayPathOverlayRevision;
+        overlay.PreparedWidth = Width_;
+        overlay.PreparedHeight = Height_;
+        overlay.PreparedWorldToClip = Description_.WorldToClip;
+        if (overlay.List.VertexCount() == 0)
+        {
+            if (overlay.HasActive == true)
+            {
+                static_cast<void>(mResources->Viewport.SetOverlay(nullptr, {}));
+                static_cast<void>(overlay.Renderer.Release(overlay.Active));
+                overlay.HasActive = false;
+                overlay.ActiveLines = 0;
+            }
+        }
+        else if (Accepted(overlay.Renderer.Prepare(overlay.List, {}, overlay.Pending)) == true)
+        {
+            overlay.HasPending = true;
+            overlay.PendingLines = lines;
+        }
+    }
+    // A resized or restarted viewport lost its attachment; attaching again is cheap.
+    if (overlay.HasActive == true)
+    {
+        static_cast<void>(mResources->Viewport.SetOverlay(&overlay.Renderer, overlay.Active));
+    }
+#endif
 }
 platform::NativeWindowInfo RenderPreview::WindowInfo() const noexcept
 {
@@ -491,6 +692,7 @@ void RenderPreview::Stop() noexcept
     {
         // Borrowers such as the render-graph preview release their resources first.
         Q_EMIT DeviceStopping();
+        releaseRayPathOverlay(true);
         mHasTimingAssociation = false;
         mIsTimingArmed = false;
         mHasPassTimingAssociation = false;
@@ -1334,7 +1536,7 @@ void RenderPreview::SetProjectGraphProblem(const QString& problem)
 }
 void RenderPreview::NotifyProjectFrame()
 {
-    if (mIsProjectGraphEnabled == true && OwnsDevice_ == true)
+    if (mIsProjectGraphEnabled == true && mIsInspectingRayPaths == false && OwnsDevice_ == true)
     {
         mHasFrame = true;
         ++Frames_;
@@ -1355,7 +1557,7 @@ void RenderPreview::Tick()
     {
         return;
     }
-    if (mIsProjectGraphEnabled == true)
+    if (mIsProjectGraphEnabled == true && mIsInspectingRayPaths == false)
     {
         static_cast<void>(rhi::PollLifetime(Device_));
         return;
@@ -1487,7 +1689,8 @@ void RenderPreview::Tick()
             Width_,
             Height_,
             1,
-            usesLitMaterials() == true ? rr::ViewportColorMode::PreferHdr : rr::ViewportColorMode::Linear8,
+            usesLitMaterials() == true && mIsInspectingRayPaths == false ? rr::ViewportColorMode::PreferHdr
+                                                                         : rr::ViewportColorMode::Linear8,
 #    if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
             true
 #    else
@@ -1543,6 +1746,7 @@ void RenderPreview::Tick()
         return;
     }
 #    endif
+    serviceRayPathOverlay();
     // Arm immediately before the viewport frame so the probe encloses it, not a shadow submission.
     PrepareGpuProfileFrame();
     mProducer = {};

@@ -1,4 +1,7 @@
 #include "internal/preview_viewport.h"
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "internal/ray_path_inspection.h"
+#endif
 
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
@@ -61,6 +64,11 @@ void PreviewViewport::mousePressEvent(QMouseEvent* event)
     if (mPlayEndpointOrNull != nullptr)
     {
         // A click gives the game the keyboard; there is no pointer input to forward yet.
+        event->accept();
+        return;
+    }
+    if (event->button() == Qt::LeftButton && pickRayPathPixel(event->globalPosition()) == true)
+    {
         event->accept();
         return;
     }
@@ -187,6 +195,12 @@ void PreviewViewport::keyPressEvent(QKeyEvent* event)
     if (event->key() == Qt::Key_Escape)
     {
         stopNavigation();
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+        if (mRayPaths.isNull() == false && mRayPaths->GetStage() == RayPathInspectionStage::PickingPixel)
+        {
+            mRayPaths->Leave();
+        }
+#endif
         event->accept();
         return;
     }
