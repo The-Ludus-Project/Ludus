@@ -10,7 +10,7 @@
 // Strides count float4 words, not bytes. Update the version when changing layout.
 #define LUDUS_GPU_PREVIEW_SURFACE_WORDS 9
 #define LUDUS_GPU_PREVIEW_LIGHT_WORDS 4
-#define LUDUS_GPU_PREVIEW_KERNEL_VERSION 5 // Opacity-partitioned primitive identity; independent of lighting profile.
+#define LUDUS_GPU_PREVIEW_KERNEL_VERSION 6 // Emitter words carry the power-weighted selection CDF in Y.
 
 #define LUDUS_GPU_PREVIEW_TRIANGLE_WORDS 16
 
@@ -21,6 +21,9 @@
 // PER_BOUNCE dimensions starting at FIRST_BOUNCE + d * PER_BOUNCE.
 #define LUDUS_PATH_RANDOM_FIRST_BOUNCE_DIMENSION 2
 #define LUDUS_PATH_RANDOM_DIMENSIONS_PER_BOUNCE 8
+// Bounce slot of the bounded draw that picks an emitter triangle from the
+// power-weighted emitter CDF once the uniform light proposal chose an emitter.
+#define LUDUS_PATH_RANDOM_EMITTER_SLOT 7
 // Admitted MaxDepth limits. Both keep every bounce dimension within the 16-bit
 // Dimension of addressed-random layout v1; host code static_asserts this.
 #define LUDUS_REFERENCE_MAX_DEPTH 64

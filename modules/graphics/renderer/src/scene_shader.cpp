@@ -192,7 +192,8 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& source,
                               sizeof(ReferenceInstance) + sizeof(ReferenceSurfaceData) + sizeof(math::Vector4),
                               peak) == false ||
         TryAddSceneAllocation(triangleCapacity,
-                              sizeof(ReferenceTriangle) + 2 * sizeof(ReferenceBvhNode) + 2 * sizeof(uint32),
+                              sizeof(ReferenceTriangle) + 2 * sizeof(ReferenceBvhNode) +
+                                  REFERENCE_TRIANGLE_INDEX_ARRAYS * sizeof(uint32),
                               peak) == false)
     {
         return Status::CapacityExceeded;
@@ -546,6 +547,11 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& source,
     }
     candidate->Scene.InstanceCount = surfaceIndex;
     status = BuildReferenceBvh(candidate->Scene);
+    if (status != Status::Ready)
+    {
+        return status;
+    }
+    status = BuildReferenceEmitterSelection(candidate->Scene);
     if (status != Status::Ready)
     {
         return status;

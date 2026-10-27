@@ -93,11 +93,17 @@ struct ReferenceBvhNode final
     math::Aabb3 Bounds;
     uint32 Left = 0, Right = 0, First = 0, Count = 0;
 };
+/// Per-triangle uint32 arrays of ReferenceSceneData (Order, Emitters and EmitterCdf)
+/// that scene memory estimates reserve before the BVH and emitter CDF are built.
+inline constexpr usize REFERENCE_TRIANGLE_INDEX_ARRAYS = 3;
 struct ReferenceSceneData final
 {
     math::Aabb3 Bounds;
     Array<ReferenceTriangle> Triangles;
     Array<uint32> Order, Emitters;
+    /// Inclusive cumulative integer selection weights, one per ascending `Emitters` entry.
+    /// BuildReferenceEmitterSelection derives them from emitted luminance times area.
+    Array<uint32> EmitterCdf;
     Array<ReferenceBvhNode> Nodes;
     Array<ReferenceInstance> Instances;
     usize InstanceCount = 0;
@@ -320,6 +326,19 @@ ReferenceRay(math::Vector3 origin, math::Vector3 direction, float32 distance) no
                                                           math::Vector3 positionMesh) noexcept;
 /// Private implementations in reference_scene.cpp; no renderer/resource ownership.
 [[nodiscard]] rhi::RasterStatus BuildReferenceBvh(ReferenceSceneData&) noexcept;
+/// Integer total that emitter selection weights are quantized against before rounding.
+/// Positive weights keep at least one unit, so every sampleable emitter stays reachable.
+inline constexpr uint32 REFERENCE_EMITTER_WEIGHT_TOTAL = uint32{1} << 24;
+/// Builds `EmitterCdf` from every emitter's luminance times area after `Emitters` and
+/// instance surfaces are final. Leaves `EmitterCdf` unchanged and fails when emitter
+/// indices are not strictly ascending triangle indices or the integer total exceeds 32 bits.
+[[nodiscard]] rhi::RasterStatus BuildReferenceEmitterSelection(ReferenceSceneData& inoutScene) noexcept;
+/// Returns the emitter whose CDF interval contains `value`; `value` must be below the CDF total.
+[[nodiscard]] usize SelectReferenceEmitter(const ReferenceSceneData& scene, uint32 value) noexcept;
+/// Finds the emitter entry of `triangle`; false leaves `outEmitter` unchanged.
+[[nodiscard]] bool FindReferenceEmitter(const ReferenceSceneData& scene, uint32 triangle, usize& outEmitter) noexcept;
+/// Probability that the emitter CDF selects `emitter`, or zero for an empty total.
+[[nodiscard]] float32 GetReferenceEmitterProbability(const ReferenceSceneData& scene, usize emitter) noexcept;
 [[nodiscard]] rhi::RasterStatus
 TraceReferenceOracle(const ReferenceSceneData&, const rhi::RayInput&, rhi::RayResult&) noexcept;
 [[nodiscard]] math::Vector4 SampleReferenceTexture(const ReferenceInstance&, math::Vector2) noexcept;

@@ -73,8 +73,9 @@ S Prepare(rhi::DeviceHandle device, rr::ReferenceTraversal traversal, Session& o
     REQUIRE(status == S::Ready);
     return ludus::qa::BuildL6Snapshot(renderer, outSession.Program, outSession.Snapshot, -.7F);
 }
-// A tessellated glossy metal sphere in front of a diffuse wall and a small emitter:
-// thousands of triangles exercise deep BVH traversal and visible-GGX sampling.
+// A tessellated glossy metal sphere in front of a diffuse wall and two emitters of
+// unequal area: thousands of triangles exercise deep BVH traversal and visible-GGX
+// sampling, and the unequal emitters exercise the power-weighted emitter CDF.
 S BuildSphereSnapshot(rhi::DeviceHandle device,
                       rr::Renderer& inoutRenderer,
                       rr::MaterialProgram program,
@@ -191,7 +192,8 @@ S BuildSphereSnapshot(rhi::DeviceHandle device,
         }
         REQUIRE(status == S::Ready);
     }
-    rr::SceneItem items[MATERIAL_COUNT];
+    constexpr usize ITEM_COUNT = MATERIAL_COUNT + 1;
+    rr::SceneItem items[ITEM_COUNT];
     items[0].Geometry = meshes[0];
     items[0].Surface = materials[0];
     items[0].SourceId = 1;
@@ -211,7 +213,13 @@ S BuildSphereSnapshot(rhi::DeviceHandle device,
     items[3].Transform.Columns[0].X = .2F;
     items[3].Transform.Columns[1].Y = .2F;
     items[3].Transform.Translation = {.25F, -.2F, -.7F};
-    const S created = inoutRenderer.CreateSnapshot(items, MATERIAL_COUNT, outSnapshot);
+    items[4].Geometry = meshes[1];
+    items[4].Surface = materials[2];
+    items[4].SourceId = 5;
+    items[4].Transform.Columns[0].X = .04F;
+    items[4].Transform.Columns[1].Y = .04F;
+    items[4].Transform.Translation = {.7F, .6F, -.4F};
+    const S created = inoutRenderer.CreateSnapshot(items, ITEM_COUNT, outSnapshot);
     static_cast<void>(rhi::Destroy(device, texture));
     for (rr::MaterialVersion& material : materials)
     {
