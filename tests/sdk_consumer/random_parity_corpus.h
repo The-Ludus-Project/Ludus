@@ -5,13 +5,15 @@
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/addressed_random.hpp>
+#include <ludus/foundation/math/weighted_reservoir.hpp>
 
 #include "random_parity_layout.h"
 
 #include <cstring>
 
-// Case corpus and comparison for FoundationMath's shader port of addressed
-// random v1 (modules/foundation/math/shaders/math.slang); see
+// Case corpus and comparison for FoundationMath's shader ports of addressed
+// random v1 (modules/foundation/math/shaders/math.slang) and the weighted
+// reservoir (shaders/weighted_reservoir.slang); see
 // docs/architecture/randomness.md#gpu-addressed-sampling. Shared by the native
 // renderer test (gpu_random_tests.cpp) and the WebGPU browser fixture
 // (random_parity.cpp) so every backend checks the same cases. Every expected
@@ -110,6 +112,71 @@ public:
             .Expected = {{static_cast<uint32>(product), static_cast<uint32>(product >> 32u), 0, 0}},
         });
     }
+    /// Streams candidates through the CPU reservoir until one is rejected, then adds
+    /// the reservoir case and one candidate case per entry for the kernel to replay.
+    /// @param selectedTarget Target passed to the contribution weight. Callers keep
+    ///        M * target a power of two, or make the quotient fail or underflow, so
+    ///        every backend's FP32 division agrees with the CPU.
+    /// @return False when more than LUDUS_RANDOM_PARITY_MAX_RESERVOIR_CANDIDATES
+    ///         candidates are supplied; the corpus is then unchanged.
+    [[nodiscard]] bool TryAddReservoir(BorrowedView<const math::ReservoirCandidate> candidates,
+                                       float32 selectedTarget) noexcept
+    {
+        if (candidates.IsValid() == false || candidates.GetSize() > LUDUS_RANDOM_PARITY_MAX_RESERVOIR_CANDIDATES)
+        {
+            return false;
+        }
+        math::WeightedReservoir reservoir;
+        uint32 flags = 0;
+        for (usize i = 0; i < candidates.GetSize(); ++i)
+        {
+            bool isSelected = false;
+            if (math::TryAddReservoirCandidate(candidates[i], reservoir, isSelected) != math::MathStatus::Success)
+            {
+                flags |= LUDUS_RANDOM_PARITY_RESERVOIR_IS_REJECTED;
+                break;
+            }
+            if (isSelected == true)
+            {
+                flags |= 1u << (LUDUS_RANDOM_PARITY_RESERVOIR_SELECTED_SHIFT + i);
+            }
+        }
+        flags |= reservoir.GetCandidateCount();
+        if (reservoir.HasSelection() == true)
+        {
+            flags |= LUDUS_RANDOM_PARITY_RESERVOIR_HAS_SELECTION;
+        }
+        float32 contribution = 0.0f;
+        if ((flags & LUDUS_RANDOM_PARITY_RESERVOIR_IS_REJECTED) == 0u &&
+            math::TryComputeReservoirContributionWeight(reservoir, selectedTarget, contribution) ==
+                math::MathStatus::Success)
+        {
+            flags |= LUDUS_RANDOM_PARITY_RESERVOIR_HAS_CONTRIBUTION;
+        }
+        Add(
+        {
+            .Kind = LUDUS_RANDOM_PARITY_CASE_RESERVOIR,
+            .Key = {},
+            .Bound = static_cast<uint32>(candidates.GetSize()),
+            .Operand = {{GetFloatBits(selectedTarget), 0, 0, 0}},
+            .Expected = {{reservoir.GetSelectedIndex(),
+                          GetFloatBits(reservoir.GetWeightSum()),
+                          GetFloatBits(contribution),
+                          flags}},
+        });
+        for (usize i = 0; i < candidates.GetSize(); ++i)
+        {
+            Add(
+            {
+                .Kind = LUDUS_RANDOM_PARITY_CASE_RESERVOIR_CANDIDATE,
+                .Key = {},
+                .Bound = 0,
+                .Operand = {{GetFloatBits(candidates[i].Weight), GetFloatBits(candidates[i].Ticket), 0, 0}},
+                .Expected = {},
+            });
+        }
+        return true;
+    }
     void PadToGroup() noexcept
     {
         while (mCases.GetSize() % LUDUS_RANDOM_PARITY_GROUP_SIZE != 0 && mHasFailedAllocation == false)
@@ -145,15 +212,204 @@ public:
     }
 
 private:
+    [[nodiscard]] static uint32 GetFloatBits(float32 value) noexcept
+    {
+        uint32 bits = 0;
+        std::memcpy(&bits, &value, sizeof(bits));
+        return bits;
+    }
+
     Array<ParityCase> mCases;
     Array<math::RandomBlock> mExpected;
     bool mHasFailedAllocation = false;
 };
 
+[[nodiscard]] inline float32 MakeFloat(uint32 bits) noexcept
+{
+    float32 value = 0.0f;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+/// Adds the weighted-reservoir cases: shader constants, every ticket tuple of an
+/// exact-frequency grid, addressed RIS streams, and zero, boundary, flush,
+/// rejection and contribution-weight edge cases. Every successful contribution
+/// weight divides by a power of two M * target, which all backends divide
+/// exactly, or underflows to zero.
+/// @return False when the CPU reference cannot produce a key or a stream is too long.
+[[nodiscard]] inline bool TryAddReservoirCases(ParityCorpus& outCorpus) noexcept
+{
+    using math::ReservoirCandidate;
+    uint32 minimumWeightBits = 0;
+    std::memcpy(&minimumWeightBits, &math::WeightedReservoirMinimumWeight, sizeof(minimumWeightBits));
+    outCorpus.Add(
+    {
+        .Kind = LUDUS_RANDOM_PARITY_CASE_RESERVOIR_CONSTANTS,
+        .Key = {},
+        .Bound = 0,
+        .Operand = {},
+        .Expected = {{math::WeightedReservoirSelectionVersion, minimumWeightBits, 0, 0}},
+    });
+
+    // Weights 1:2:0:3 with midpoint tickets (k + 1/2) / 6: six is a multiple of
+    // every prefix sum, so the 1296 streams select 216:432:0:648 exactly, as the
+    // FoundationMath unit test proves on the CPU.
+    constexpr usize GRID_CANDIDATE_COUNT = 4;
+    constexpr uint32 GRID_TICKET_COUNT = 6;
+    const StaticArray<float32, GRID_CANDIDATE_COUNT> gridWeights = {1.0f, 2.0f, 0.0f, 3.0f};
+    for (uint32 tuple = 0; tuple < GRID_TICKET_COUNT * GRID_TICKET_COUNT * GRID_TICKET_COUNT * GRID_TICKET_COUNT;
+         ++tuple)
+    {
+        StaticArray<ReservoirCandidate, GRID_CANDIDATE_COUNT> candidates{};
+        uint32 digits = tuple;
+        for (usize i = 0; i < GRID_CANDIDATE_COUNT; ++i)
+        {
+            const float32 ticket = (static_cast<float32>(digits % GRID_TICKET_COUNT) + 0.5f) / GRID_TICKET_COUNT;
+            candidates[i] = { .Weight = gridWeights[i], .Ticket = ticket };
+            digits /= GRID_TICKET_COUNT;
+        }
+        if (outCorpus.TryAddReservoir({candidates.GetData(), GRID_CANDIDATE_COUNT}, 0.5f) == false)
+        {
+            return false;
+        }
+    }
+
+    // Addressed RIS streams as the many-area-light layout uses them: candidate i
+    // draws its weight and ticket from dimensions 12 + 2i and 13 + 2i. Weights are
+    // general FP32 values, with about one in eight zero; M * target = 1.
+    math::RandomKey key;
+    if (math::TryMakeRandomKey(42, 7, key) != math::MathStatus::Success)
+    {
+        return false;
+    }
+    constexpr usize STREAM_CANDIDATE_COUNT = LUDUS_RANDOM_PARITY_MAX_RESERVOIR_CANDIDATES;
+    constexpr uint64 STREAM_COUNT = 256;
+    for (uint64 scope = 0; scope < STREAM_COUNT; ++scope)
+    {
+        StaticArray<ReservoirCandidate, STREAM_CANDIDATE_COUNT> candidates{};
+        for (usize i = 0; i < STREAM_CANDIDATE_COUNT; ++i)
+        {
+            const uint16 dimension = static_cast<uint16>(12u + 2u * i);
+            const float32 weightSample = math::SampleFloat01(key, {scope, 0, dimension});
+            candidates[i] =
+            {
+                .Weight = weightSample < 0.125f ? 0.0f : weightSample * 8.0f,
+                .Ticket = math::SampleFloat01(key, {scope, 0, static_cast<uint16>(dimension + 1u)}),
+            };
+        }
+        if (outCorpus.TryAddReservoir({candidates.GetData(), STREAM_CANDIDATE_COUNT}, 0.125f) == false)
+        {
+            return false;
+        }
+    }
+
+    // Edge streams. Target bits that an empty reservoir never examines are NaN.
+    const float32 maxTicket = 1.0f - 0x1p-24f;
+    const float32 largest = MakeFloat(0x7f7fffffu);
+    const float32 notANumber = MakeFloat(0x7fc00000u);
+    const ReservoirCandidate zeroTotal[] = {
+        { .Weight = 0.0f, .Ticket = 0.0f },
+        { .Weight = MakeFloat(0x80000000u), .Ticket = 0.5f },
+        { .Weight = MakeFloat(0x00000001u), .Ticket = 0.0f },
+        { .Weight = MakeFloat(0x00800000u), .Ticket = 0.0f },
+        { .Weight = MakeFloat(0x0c7fffffu), .Ticket = 0.0f },
+    };
+    const ReservoirCandidate single[] = {{ .Weight = 3.0f, .Ticket = maxTicket }};
+    const ReservoirCandidate strictBoundary[] = {
+        { .Weight = 1.0f, .Ticket = 0.75f },
+        { .Weight = 1.0f, .Ticket = 0.5f },
+    };
+    const ReservoirCandidate belowBoundary[] = {
+        { .Weight = 1.0f, .Ticket = 0.75f },
+        { .Weight = 1.0f, .Ticket = 0.49999997f },
+    };
+    // Unflushed, the subnormal ticket would give 2^-140 * 2^120 = 2^-20 and reject 2^-30.
+    const ReservoirCandidate subnormalTicket[] = {
+        { .Weight = 0x1p120f, .Ticket = MakeFloat(0x80000000u) },
+        { .Weight = 0x1p-30f, .Ticket = 0x1p-140f },
+    };
+    if (outCorpus.TryAddReservoir({}, notANumber) == false ||
+        outCorpus.TryAddReservoir(zeroTotal, notANumber) == false || outCorpus.TryAddReservoir(single, 4.0f) == false ||
+        outCorpus.TryAddReservoir(strictBoundary, 1.0f) == false ||
+        outCorpus.TryAddReservoir(belowBoundary, 1.0f) == false ||
+        outCorpus.TryAddReservoir(subnormalTicket, 0x1p100f) == false)
+    {
+        return false;
+    }
+    // The first positive weight is selected even at the largest ticket.
+    const float32 firstWeights[] =
+        {MakeFloat(0x0c800000u), MakeFloat(0x0c800001u), MakeFloat(0x0cffffffu), 0.1f, MakeFloat(0x3fffffffu), largest};
+    for (const float32 weight : firstWeights)
+    {
+        const ReservoirCandidate first[] = {
+            { .Weight = 0.0f, .Ticket = 0.0f },
+            { .Weight = weight, .Ticket = maxTicket },
+        };
+        if (outCorpus.TryAddReservoir(first, 0.5f) == false)
+        {
+            return false;
+        }
+    }
+    // Rejected candidates stop the stream; the trailing candidate is never streamed.
+    const ReservoirCandidate rejected[] = {
+        { .Weight = notANumber, .Ticket = 0.5f },
+        { .Weight = MakeFloat(0x7f800000u), .Ticket = 0.5f },
+        { .Weight = MakeFloat(0xff800000u), .Ticket = 0.5f },
+        { .Weight = -1.0f, .Ticket = 0.5f },
+        { .Weight = MakeFloat(0x80000001u), .Ticket = 0.5f },
+        { .Weight = 1.0f, .Ticket = 1.0f },
+        { .Weight = 1.0f, .Ticket = 2.0f },
+        { .Weight = 1.0f, .Ticket = -0.25f },
+        { .Weight = 1.0f, .Ticket = notANumber },
+        { .Weight = 1.0f, .Ticket = MakeFloat(0x7f800000u) },
+        { .Weight = 1.0f, .Ticket = MakeFloat(0x80000001u) },
+        { .Weight = largest, .Ticket = 0.0f },
+    };
+    for (const ReservoirCandidate& candidate : rejected)
+    {
+        const ReservoirCandidate stream[] = {
+            { .Weight = largest, .Ticket = 0.25f },
+            { .Weight = 0.0f, .Ticket = 0.5f },
+            candidate,
+            { .Weight = 1.0f, .Ticket = 0.0f },
+        };
+        if (outCorpus.TryAddReservoir(stream, 1.0f) == false)
+        {
+            return false;
+        }
+    }
+    // Contribution weights: invalid targets, overflow of M * target and of the
+    // quotient, and subnormal quotients flushed to zero.
+    const ReservoirCandidate two[] = {{ .Weight = 2.0f, .Ticket = 0.5f }};
+    const float32 targets[] = {0.0f,
+                               MakeFloat(0x80000000u),
+                               -1.0f,
+                               notANumber,
+                               MakeFloat(0x7f800000u),
+                               MakeFloat(0x00000001u),
+                               MakeFloat(0x00800000u),
+                               largest};
+    for (const float32 target : targets)
+    {
+        if (outCorpus.TryAddReservoir(two, target) == false)
+        {
+            return false;
+        }
+    }
+    const ReservoirCandidate twoCandidates[] = {
+        { .Weight = 2.0f, .Ticket = 0.5f },
+        { .Weight = 0.0f, .Ticket = 0.5f },
+    };
+    const ReservoirCandidate huge[] = {{ .Weight = 0x1p100f, .Ticket = 0.0f }};
+    const ReservoirCandidate minimum[] = {{ .Weight = 0x1p-102f, .Ticket = 0.0f }};
+    return outCorpus.TryAddReservoir(twoCandidates, largest) == true &&
+           outCorpus.TryAddReservoir(huge, 0x1p-100f) == true && outCorpus.TryAddReservoir(minimum, 0x1p30f) == true;
+}
+
 /// Builds the full corpus: Random123 and Ludus v1 known answers, layout
 /// constants, forced retry-loop boundaries, endpoint floats, live CPU parity for
-/// raw/float/bounded samples and MultiplyWide limb sweeps, padded to whole
-/// workgroups.
+/// raw/float/bounded samples, MultiplyWide limb sweeps and the weighted-reservoir
+/// cases, padded to whole workgroups.
 /// @return False when allocation fails or the CPU reference disagrees with a
 ///         pinned key derivation; the corpus is then unusable.
 [[nodiscard]] inline bool TryBuildCorpus(ParityCorpus& outCorpus) noexcept
@@ -344,6 +600,10 @@ private:
     {
         outCorpus.AddMultiply(0xffffffffu, 0xffff0000u | limb);
         outCorpus.AddMultiply((limb << 16u) | 0xffffu, 0xffffffffu);
+    }
+    if (TryAddReservoirCases(outCorpus) == false)
+    {
+        return false;
     }
     outCorpus.PadToGroup();
     return outCorpus.HasFailedAllocation() == false;

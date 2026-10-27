@@ -12,7 +12,7 @@ const root = resolve(process.argv[2]);
 const output = resolve(process.argv[3] || 'out/random-parity-browser');
 // Cases in random_parity_corpus.h after padding to whole 64-invocation groups;
 // update together with the corpus so a truncated run cannot pass.
-const EXPECTED_CASES = 164032;
+const EXPECTED_CASES = 172928;
 await mkdir(output, {recursive:true});
 for (const name of ['random_parity.html','random_parity.js','random_parity.wasm']) await access(resolve(root,name));
 const server = createServer(async (request, response) => {
