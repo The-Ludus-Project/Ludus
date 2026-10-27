@@ -99,6 +99,7 @@ constexpr float64 LINK_HINT_WIDTH = 340;
 constexpr float64 LINK_HINT_OFFSET = 16;
 constexpr QRgb LINK_ACCEPT_COLOR = 0xFF79D69E;
 constexpr QRgb LINK_REJECT_COLOR = 0xFFFF9A88;
+constexpr QRgb WARNING_COLOR = 0xFFFFC857;
 constexpr QRgb LABEL_COLOR = 0xFFD6DAE0;
 constexpr float64 NODE_ROW_GAP = 30;
 // Clicking an output offers Quick Add for a node one ordinary column gap to its right.
@@ -1653,7 +1654,6 @@ bool RenderGraphCanvas::ShowDiagnostic(const QJsonObject& location, const QStrin
     setAccessibleDescription(description);
     mDiagnosticMarkerOrNull = new QGraphicsRectItem(viewOrNull->Frame->rect(), viewOrNull->Frame);
     mDiagnosticMarkerOrNull->setAcceptedMouseButtons(Qt::NoButton);
-    constexpr QRgb WARNING_COLOR = 0xFFFFC857;
     const QColor diagnosticColour = QColor::fromRgba(isWarning == true ? WARNING_COLOR : LINK_REJECT_COLOR);
     QPen diagnosticPen(diagnosticColour, NODE_BORDER_WIDTH * 2);
     diagnosticPen.setCosmetic(true);
