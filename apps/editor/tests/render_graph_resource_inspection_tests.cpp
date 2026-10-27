@@ -376,7 +376,8 @@ TEST_CASE("canvas port wire and reroute inspection preserve selection trace view
     const RenderGraphViewState state{{QStringLiteral("draw")},
                                      QPointF(400, 150),
                                      1,
-                                     RenderGraphTraceDirection::Downstream};
+                                     RenderGraphTraceDirection::Downstream,
+                                     {}};
     REQUIRE(canvas.RestoreViewState(state) == true);
     const RenderGraphViewState expected = canvas.CaptureViewState();
     const QByteArray before = workspace.GetDocument().GetDraft(GetRoot());

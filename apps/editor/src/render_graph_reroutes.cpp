@@ -134,6 +134,10 @@ QRectF RenderGraphReroutes::GetBounds() const
     QRectF bounds;
     for (const QGraphicsEllipseItem* handle : mHandles)
     {
+        if (handle->isVisible() == false)
+        {
+            continue;
+        }
         bounds = bounds.united(
             QRectF(handle->pos() - QPointF(HIT_RADIUS, HIT_RADIUS), QSizeF(2 * HIT_RADIUS, 2 * HIT_RADIUS)));
     }
@@ -152,7 +156,8 @@ void RenderGraphReroutes::RefreshStyles()
         handle->setPen(pen);
         handle->setBrush(QColor::fromRgba(isSelected == true ? SELECTED_FILL : HANDLE_FILL));
         // A broken endpoint produces an empty path. Keep its metadata but do not expose an orphan handle.
-        handle->setVisible(path->path().isEmpty() == false);
+        handle->setVisible(path->isVisible() == true && path->path().isEmpty() == false &&
+                           mCanvas.IsWireCollapsed(handle->data(0).toString(), handle->data(1).toString()) == false);
     }
 }
 bool RenderGraphReroutes::isCurrent() const
@@ -174,6 +179,11 @@ void RenderGraphReroutes::AddPoint(const QString& from, const QString& to, int32
     if (isCurrent() == false || math::IsFinite(position.x()) == false || math::IsFinite(position.y()) == false)
     {
         Q_EMIT Rejected(QStringLiteral("Wire route metadata changed or is invalid; reopen the connection menu."));
+        return;
+    }
+    if (mCanvas.IsWireCollapsed(from, to) == true)
+    {
+        Q_EMIT Rejected(QStringLiteral("Expand the stage before editing its saved wire reroutes."));
         return;
     }
     QJsonArray routes = mRoutes;
