@@ -976,11 +976,11 @@ eye outside the scene bounds so no geometry is clipped. The button names the cur
 view; after orbiting away from an axis it reads **Orthographic**. Top and Bottom
 stop 0.1° short of vertical so orbiting continues smoothly from them. Choosing
 **Perspective** again restores the field of view and the same framing at the pivot.
-**FOV**, at the bottom of the same menu, sets the perspective vertical field of view
+**FOV**, near the bottom of the same menu, sets the perspective vertical field of view
 from 10° to 120°; it is disabled in orthographic views. Like other navigation, these detach an authored camera,
 never edit it, and are saved with viewport navigation.
 
-The viewport toolbar’s **Look** multiplier controls mouse sensitivity for right-drag
+The **Look** multiplier, below **FOV** in the **View** menu, controls mouse sensitivity for right-drag
 look and Alt/Option orbit, from **0.1×** to **4×** (default **1×**). Lower it for
 finer aiming. It is saved with viewport navigation; changing it preserves the
 current camera pose and does not change pan, dolly or keyboard movement speed.

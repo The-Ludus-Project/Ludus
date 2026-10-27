@@ -1167,7 +1167,8 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
                                     "measuring. Axis views keep the pivot and the visible size there, and look from "
                                     "outside the scene. With the viewport focused: numpad 7, 1 and 3 for Top, Front "
                                     "and Right (add Ctrl, or Command on macOS, for the opposite side), numpad 5 to "
-                                    "switch projection. The menu also sets the perspective field of view."));
+                                    "switch projection. The menu also sets the perspective field of view and the "
+                                    "mouse look sensitivity."));
     QMenu* viewMenu = new QMenu(view);
     QAction* perspective = viewMenu->addAction(QStringLiteral("Perspective"));
     perspective->setObjectName(QStringLiteral("viewportViewPerspective"));
@@ -1201,6 +1202,23 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     QWidgetAction* fieldOfViewAction = new QWidgetAction(viewMenu);
     fieldOfViewAction->setDefaultWidget(fieldOfView);
     viewMenu->addAction(fieldOfViewAction);
+    // Mouse look sensitivity sits beside the field of view for the same reason: with it in the
+    // toolbar row, Linux's default fonts left the View button a pixel short at a 1280-pixel window.
+    QDoubleSpinBox* lookSensitivity = new QDoubleSpinBox(viewMenu);
+    lookSensitivity->setObjectName(QStringLiteral("viewportLookSensitivity"));
+    lookSensitivity->setAccessibleName(QStringLiteral("Mouse look sensitivity"));
+    lookSensitivity->setPrefix(QStringLiteral("Look "));
+    lookSensitivity->setSuffix(QStringLiteral("×"));
+    lookSensitivity->setRange(static_cast<float64>(RenderPreview::MINIMUM_LOOK_SENSITIVITY),
+                              static_cast<float64>(RenderPreview::MAXIMUM_LOOK_SENSITIVITY));
+    lookSensitivity->setSingleStep(static_cast<float64>(RenderPreview::MINIMUM_LOOK_SENSITIVITY));
+    lookSensitivity->setDecimals(1);
+    lookSensitivity->setValue(static_cast<float64>(preview->GetLookSensitivity()));
+    lookSensitivity->setToolTip(QStringLiteral("Mouse sensitivity for right-drag look and Alt/Option orbit. "
+                                               "Lower values rotate more slowly; 1× is the default."));
+    QWidgetAction* lookSensitivityAction = new QWidgetAction(viewMenu);
+    lookSensitivityAction->setDefaultWidget(lookSensitivity);
+    viewMenu->addAction(lookSensitivityAction);
     view->setMenu(viewMenu);
     controls->addWidget(view);
     connect(fieldOfView, &QDoubleSpinBox::valueChanged, preview, [preview](float64 degrees) {
@@ -1230,19 +1248,6 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     };
     updateView();
     connect(preview, &RenderPreview::NavigationChanged, view, updateView);
-    QDoubleSpinBox* lookSensitivity = new QDoubleSpinBox(this);
-    lookSensitivity->setObjectName(QStringLiteral("viewportLookSensitivity"));
-    lookSensitivity->setAccessibleName(QStringLiteral("Mouse look sensitivity"));
-    lookSensitivity->setPrefix(QStringLiteral("Look "));
-    lookSensitivity->setSuffix(QStringLiteral("×"));
-    lookSensitivity->setRange(static_cast<float64>(RenderPreview::MINIMUM_LOOK_SENSITIVITY),
-                              static_cast<float64>(RenderPreview::MAXIMUM_LOOK_SENSITIVITY));
-    lookSensitivity->setSingleStep(static_cast<float64>(RenderPreview::MINIMUM_LOOK_SENSITIVITY));
-    lookSensitivity->setDecimals(1);
-    lookSensitivity->setValue(static_cast<float64>(preview->GetLookSensitivity()));
-    lookSensitivity->setToolTip(QStringLiteral("Mouse sensitivity for right-drag look and Alt/Option orbit. "
-                                               "Lower values rotate more slowly; 1× is the default."));
-    controls->addWidget(lookSensitivity);
     connect(lookSensitivity, &QDoubleSpinBox::valueChanged, preview, [preview](float64 sensitivity) {
         preview->SetLookSensitivity(static_cast<float32>(sensitivity));
     });
