@@ -452,15 +452,66 @@ float PowerWeight(float a, float b)
     b /= m;
     return a * a / (a * a + b * b);
 }
-float AreaPdf(uint t, float3 fromPositionWorld, float3 toPositionWorld, uint lightCount)
+float AreaPdf(uint t, float3 fromPositionWorld, float3 toPositionWorld, float selection)
 {
-    if (lightCount == 0)
+    if (selection <= 0)
         return 0;
     float3 offsetWorld = toPositionWorld - fromPositionWorld;
     float cosine = abs(dot(SceneValue(t * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + 8).xyz, -NormalizeOrZero(offsetWorld)));
-    return cosine > 0 ? dot(offsetWorld, offsetWorld) /
-                            (float(lightCount) * SceneValue(t * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + 1).w * cosine)
+    return cosine > 0 ? selection * dot(offsetWorld, offsetWorld) /
+                            (SceneValue(t * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + 1).w * cosine)
                       : 0;
+}
+// Emitter words: ascending triangle index in X, inclusive integer power CDF in Y.
+// Matches the CPU reference's SelectReferenceEmitter/FindReferenceEmitter/ComputeEmitterSelection.
+uint EmitterCumulative(uint emitter)
+{
+    return sceneWords[Offsets.z + emitter].y;
+}
+uint SelectEmitter(uint value)
+{
+    uint low = 0;
+    uint high = Counts.z - 1;
+    while (low < high)
+    {
+        uint middle = low + (high - low) / 2;
+        if (EmitterCumulative(middle) <= value)
+            low = middle + 1;
+        else
+            high = middle;
+    }
+    return low;
+}
+bool FindEmitter(uint t, out uint outEmitter)
+{
+    outEmitter = 0;
+    uint low = 0;
+    uint high = Counts.z;
+    while (low < high)
+    {
+        uint middle = low + (high - low) / 2;
+        if (sceneWords[Offsets.z + middle].x < t)
+            low = middle + 1;
+        else
+            high = middle;
+    }
+    if (low == Counts.z || sceneWords[Offsets.z + low].x != t)
+        return false;
+    outEmitter = low;
+    return true;
+}
+float EmitterSelection(uint emitter, uint lightCount)
+{
+    uint total = Counts.z == 0 ? 0 : EmitterCumulative(Counts.z - 1);
+    if (lightCount == 0 || emitter >= Counts.z || total == 0)
+        return 0;
+    uint previous = emitter == 0 ? 0 : EmitterCumulative(emitter - 1);
+    return float(EmitterCumulative(emitter) - previous) / float(total) * (float(Counts.z) / float(lightCount));
+}
+float HitEmitterSelection(uint t, uint lightCount)
+{
+    uint emitter;
+    return FindEmitter(t, emitter) == true ? EmitterSelection(emitter, lightCount) : 0;
 }
 void Evaluate(float3 color,
               float metallic,
@@ -656,7 +707,10 @@ float3 Integrate(uint pixel, uint sample)
             emission = float3(0);
         radiance +=
             throughput * emission *
-            (depth == 0 ? 1 : PowerWeight(previousPdf, AreaPdf(t, previousPositionWorld, positionWorld, lights)));
+            (depth == 0
+                 ? 1
+                 : PowerWeight(previousPdf,
+                               AreaPdf(t, previousPositionWorld, positionWorld, HitEmitterSelection(t, lights))));
         if (depth >= Dimensions.z || dot(geometricNormalWorld, viewDirectionWorld) <= 0)
             break;
         float3 normalWorld = NormalizeOrZero(
@@ -756,7 +810,16 @@ float3 Integrate(uint pixel, uint sample)
             }
             else if (selected - Counts.w < Counts.z)
             {
-                emitter = asuint(SceneValue(Offsets.z + selected - Counts.w).x);
+                uint total = EmitterCumulative(Counts.z - 1);
+                uint value = 0;
+                if (total != 0 && TrySampleRandomBounded(
+                                      Sampling.xy,
+                                      PixelRandomAddress(pixel, sample, dimension + LUDUS_PATH_RANDOM_EMITTER_SLOT),
+                                      total,
+                                      value) == false)
+                    return float3(-1);
+                uint selectedEmitter = total == 0 ? 0 : SelectEmitter(value);
+                emitter = asuint(SceneValue(Offsets.z + selectedEmitter).x);
                 float root = sqrt(Random01(pixel, sample, dimension + 1));
                 float2 uv = float2(root * (1 - Random01(pixel, sample, dimension + 2)), 0);
                 uv.y = root - uv.x;
@@ -764,7 +827,11 @@ float3 Integrate(uint pixel, uint sample)
                 float3 offsetWorld = lightPositionWorld - positionWorld;
                 range = length(offsetWorld);
                 lightDirectionWorld = NormalizeOrZero(offsetWorld);
-                pdf = AreaPdf(emitter, positionWorld, lightPositionWorld, lights);
+                pdf = total == 0 ? 0
+                                 : AreaPdf(emitter,
+                                           positionWorld,
+                                           lightPositionWorld,
+                                           EmitterSelection(selectedEmitter, lights));
                 if ((asuint(Surface(emitter, 5).w) != 0 ||
                      dot(SceneValue(emitter * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + 8).xyz, -lightDirectionWorld) > 0) &&
                     range <= Options.x &&

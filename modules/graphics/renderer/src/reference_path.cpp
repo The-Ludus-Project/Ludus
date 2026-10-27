@@ -60,17 +60,30 @@ math::Vector2 Uv(const ReferenceTriangle& triangle, float32 u, float32 v) noexce
 {
     return triangle.Uvs[0] * (1 - u - v) + triangle.Uvs[1] * u + triangle.Uvs[2] * v;
 }
-float32 AreaPdf(const ReferenceTriangle& triangle, math::Vector3 from, math::Vector3 point, usize lights) noexcept
+// Solid-angle density of a point sampled uniformly on `triangle` after the light
+// proposal chose that triangle with probability `selection`.
+float32 AreaPdf(const ReferenceTriangle& triangle, math::Vector3 from, math::Vector3 point, float32 selection) noexcept
 {
     const auto delta = point - from;
     const auto distanceSquared = math::Dot(delta, delta);
     const auto direction = ReferenceNormalize(delta);
     const auto cosine = math::Abs(math::Dot(triangle.GeometricNormal, -direction));
-    if (lights == 0 || triangle.Area <= 0 || cosine <= 0)
+    if (selection <= 0 || triangle.Area <= 0 || cosine <= 0)
     {
         return 0;
     }
-    return distanceSquared / (float32(lights) * triangle.Area * cosine);
+    return selection * distanceSquared / (triangle.Area * cosine);
+}
+// The uniform proposal picks the emitter category with probability emitters / lights;
+// the power-weighted CDF then picks one emitter triangle. The GPU kernels use this order.
+float32 ComputeEmitterSelection(const ReferenceJob& job, usize emitter, usize lights) noexcept
+{
+    if (lights == 0)
+    {
+        return 0;
+    }
+    return GetReferenceEmitterProbability(job.Scene, emitter) *
+           (float32(job.Scene.Emitters.GetSize()) / float32(lights));
 }
 math::Vector3 Offset(math::Vector3 point, const ReferenceTriangle& triangle, math::Vector3 direction) noexcept
 {
@@ -154,9 +167,29 @@ LightProposal SampleLight(const ReferenceJob& job, const ReferencePath& path, ma
         }
         return result;
     }
-    const auto emitter = usize(selected) - job.Description.LightCount;
-    if (emitter < job.Scene.Emitters.GetSize())
+    if (usize(selected) - job.Description.LightCount < job.Scene.Emitters.GetSize())
     {
+        if (job.Scene.EmitterCdf.GetSize() != job.Scene.Emitters.GetSize())
+        {
+            result.Pdf = -1;
+            return result;
+        }
+        const uint32 total = job.Scene.EmitterCdf[job.Scene.EmitterCdf.GetSize() - 1];
+        if (total == 0)
+        {
+            return result; // No emitter carries power; the proposal contributes nothing.
+        }
+        uint32 value = 0;
+        if (math::TrySampleBounded(
+                job.Key,
+                {path.Pixel, path.Sample, ReferenceBounceDimension(path.Depth, LUDUS_PATH_RANDOM_EMITTER_SLOT)},
+                total,
+                value) != math::MathStatus::Success)
+        {
+            result.Pdf = -1;
+            return result;
+        }
+        const usize emitter = SelectReferenceEmitter(job.Scene, value);
         const auto& triangle = job.Scene.Triangles[job.Scene.Emitters[emitter]];
         const float32 root = math::Sqrt(ReferenceRandom(job, path, ReferenceBounceDimension(path.Depth, 1)));
         const float32 u = root * (1 - ReferenceRandom(job, path, ReferenceBounceDimension(path.Depth, 2)));
@@ -173,7 +206,7 @@ LightProposal SampleLight(const ReferenceJob& job, const ReferencePath& path, ma
         result.Error = triangle.Error;
         result.Normal = triangle.GeometricNormal;
         result.FiniteEndpoint = true;
-        result.Pdf = AreaPdf(triangle, point, result.Point, count);
+        result.Pdf = AreaPdf(triangle, point, result.Point, ComputeEmitterSelection(job, emitter, count));
         const auto& instance = job.Scene.Instances[triangle.Instance];
         if ((instance.Surface->IsEmissionTwoSided == true ||
              math::Dot(triangle.GeometricNormal, -result.Direction) > 0) &&
@@ -253,7 +286,14 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
     if (Positive(surface.Emission) == true &&
         (surface.IsEmissionTwoSided == true || math::Dot(triangle.GeometricNormal, view) > 0))
     {
-        const auto pdf = AreaPdf(triangle, path.PreviousPoint, point, lights);
+        // An emitter missing from the proposal list cannot be light-sampled; BSDF sampling then owns it.
+        usize emitter = 0;
+        const float32 selection =
+            FindReferenceEmitter(job.Scene, static_cast<uint32>(instance.FirstTriangle + hit.Primitive), emitter) ==
+                    true
+                ? ComputeEmitterSelection(job, emitter, lights)
+                : 0;
+        const float32 pdf = AreaPdf(triangle, path.PreviousPoint, point, selection);
         if (math::IsFinite(pdf) == false || pdf < 0)
         {
             return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidEmitterPdf);

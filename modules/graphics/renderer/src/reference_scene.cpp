@@ -263,6 +263,116 @@ rhi::RasterStatus BuildReferenceBvh(ReferenceSceneData& scene) noexcept
     scene.Bounds = scene.Nodes[0].Bounds;
     return rhi::RasterStatus::Ready;
 }
+// Thanks to Matt Pharr, Wenzel Jakob and Greg Humphreys, "Physically Based
+// Rendering", 4th edition (2023), section 12.6.2 "Power Light Sampler",
+// https://pbr-book.org/4ed/Light_Sources/Light_Sampling: choose emitters in
+// proportion to emitted power (luminance times area for a diffuse triangle). pbrt
+// builds an alias table over every light; this variant uses an integer CDF over
+// emitter triangles only, quantized so the bounded random mapper selects
+// each emitter with an exactly known probability; it keeps the uniform proposal
+// across analytic, emitter and environment categories.
+rhi::RasterStatus BuildReferenceEmitterSelection(ReferenceSceneData& inoutScene) noexcept
+{
+    const usize count = inoutScene.Emitters.GetSize();
+    Array<uint32> cdf;
+    if (cdf.TryResize(count) == false)
+    {
+        return rhi::RasterStatus::OutOfMemory;
+    }
+    const auto computeWeight = [&inoutScene](usize emitter) noexcept -> float64 {
+        const ReferenceTriangle& triangle = inoutScene.Triangles[inoutScene.Emitters[emitter]];
+        const math::Vector3 emission = inoutScene.Instances[triangle.Instance].Surface->Emission;
+        const float64 luminance = .2126 * float64(math::Max(emission.X, 0.F)) +
+                                  .7152 * float64(math::Max(emission.Y, 0.F)) +
+                                  .0722 * float64(math::Max(emission.Z, 0.F));
+        const float64 weight = luminance * float64(triangle.Area);
+        return math::IsFinite(weight) == true && weight > 0 ? weight : 0;
+    };
+    float64 total = 0;
+    for (usize emitter = 0; emitter < count; ++emitter)
+    {
+        if (inoutScene.Emitters[emitter] >= inoutScene.Triangles.GetSize() ||
+            (emitter != 0 && inoutScene.Emitters[emitter] <= inoutScene.Emitters[emitter - 1]))
+        {
+            return rhi::RasterStatus::InvalidDescription;
+        }
+        total += computeWeight(emitter);
+    }
+    if (math::IsFinite(total) == false)
+    {
+        return rhi::RasterStatus::CapacityExceeded;
+    }
+    uint64 cumulative = 0;
+    for (usize emitter = 0; emitter < count; ++emitter)
+    {
+        const float64 weight = computeWeight(emitter);
+        if (weight > 0)
+        {
+            // Round half up; any nonnegative rounding keeps the probabilities exact for the sampler.
+            const float64 scaled = weight / total * float64(REFERENCE_EMITTER_WEIGHT_TOTAL);
+            cumulative += math::Max(static_cast<uint64>(math::Floor(scaled + .5)), uint64{1});
+        }
+        if (cumulative > ~uint32{0})
+        {
+            return rhi::RasterStatus::CapacityExceeded;
+        }
+        cdf[emitter] = static_cast<uint32>(cumulative);
+    }
+    inoutScene.EmitterCdf = Move(cdf);
+    return rhi::RasterStatus::Ready;
+}
+usize SelectReferenceEmitter(const ReferenceSceneData& scene, uint32 value) noexcept
+{
+    LUDUS_ASSERT(scene.EmitterCdf.GetSize() != 0 && value < scene.EmitterCdf[scene.EmitterCdf.GetSize() - 1]);
+    usize low = 0;
+    usize high = scene.EmitterCdf.GetSize() - 1;
+    while (low < high)
+    {
+        const usize middle = low + (high - low) / 2;
+        if (scene.EmitterCdf[middle] <= value)
+        {
+            low = middle + 1;
+        }
+        else
+        {
+            high = middle;
+        }
+    }
+    return low;
+}
+bool FindReferenceEmitter(const ReferenceSceneData& scene, uint32 triangle, usize& outEmitter) noexcept
+{
+    usize low = 0;
+    usize high = scene.Emitters.GetSize();
+    while (low < high)
+    {
+        const usize middle = low + (high - low) / 2;
+        if (scene.Emitters[middle] < triangle)
+        {
+            low = middle + 1;
+        }
+        else
+        {
+            high = middle;
+        }
+    }
+    if (low == scene.Emitters.GetSize() || scene.Emitters[low] != triangle)
+    {
+        return false;
+    }
+    outEmitter = low;
+    return true;
+}
+float32 GetReferenceEmitterProbability(const ReferenceSceneData& scene, usize emitter) noexcept
+{
+    const usize count = scene.EmitterCdf.GetSize();
+    if (emitter >= count || scene.EmitterCdf[count - 1] == 0)
+    {
+        return 0;
+    }
+    const uint32 previous = emitter == 0 ? 0 : scene.EmitterCdf[emitter - 1];
+    return float32(scene.EmitterCdf[emitter] - previous) / float32(scene.EmitterCdf[count - 1]);
+}
 math::Vector4 SampleReferenceImage(const ReferenceSurfaceData& surface,
                                    const rhi::TextureCpuContent& texture,
                                    math::Vector2 uv) noexcept

@@ -1288,8 +1288,19 @@ path-tracing performance claim. It never hides a wait/readback in raster submiss
 
 The profile uses L4's isotropic single-scattering GGX, correlated Smith, Schlick
 Fresnel and Fresnel-weighted Lambert, visible-GGX/cosine mixture sampling with
-explicit null events, one uniformly selected analytic/triangle/environment light
-proposal, power-heuristic MIS and compensated roulette. Profile version 2 matches L4 point/spot range windows, the squared smooth cone
+explicit null events, one light proposal per vertex, power-heuristic MIS and
+compensated roulette. The proposal first picks a light uniformly among analytic
+lights, emissive triangles and the environment. When it picks an emissive triangle,
+a second bounded draw (per-bounce random slot `LUDUS_PATH_RANDOM_EMITTER_SLOT`)
+replaces that uniform choice with one from an integer CDF over emitted luminance
+times area, after PBR 4e section 12.6.2's power light sampler. Weights are quantized
+against 2^24 and every positive one keeps at least one unit, so each emitter's
+selection probability is exact and nonzero. Emitter hits look up the same
+probability for MIS by binary search over the ascending emitter list. Many small,
+bright emitters therefore no longer crowd out large, dim panels (for example the
+candle flames and ceiling light of the pbrt-v4 staircase). Analytic lights and the
+environment keep their uniform share; a power-weighted choice across categories is
+future work. Profile version 2 matches L4 point/spot range windows, the squared smooth cone
 and the 1e-4 square-meter near-light attenuation floor. Version 1 used a different
 spot interpolation and unbounded nonzero-distance attenuation; old captures retain
 that profile identity and cannot be compared as the same integral. Emission is two-sided; reflection is restricted to the geometric and
@@ -2225,6 +2236,8 @@ Older baseline layouts stay admitted and reject non-null maps with `Unsupported`
 GPU reference rendering now copies all normalized authored analytic lights into
 its budgeted scene buffer, uniformly selects among them, finite triangle emitters
 and a positive constant environment, and uses unit MIS weight for delta lights.
+Within the emitter share, both GPU kernels pick triangles from the packed
+power-weighted CDF (emitter word Y), matching the CPU proposal described above.
 Point/spot shadow segments terminate before the light endpoint. Raster, CPU reference
 and GPU reference use the same units, inverse-square floor, range window and
 squared cone. No lighting selection truncates the reference integral. Existing
@@ -2522,7 +2535,8 @@ including an area that overflows binary32, still fails preparation.
 
 The virtual diffuse receiver uses cosine-hemisphere sampling plus the reference
 integrator's same-measure next-event MIS, visibility, metallic/roughness transport
-and compensated roulette. It includes **all admitted emissive triangles** and
+and compensated roulette, including its power-weighted emitter proposal. It
+includes **all admitted emissive triangles** and
 raw authored environment direct diffuse, plus subsequent indirect transport.
 Analytic direct diffuse stays in raster. The declared path-depth/range bounds
 introduce truncation bias, sample count controls variance, and per-triangle

@@ -85,6 +85,10 @@ Status PackGpuScene(const ReferenceJob& job,
                     SceneShaderDiagnostics* diagnosticsOrNull) noexcept
 {
     const internal::ReferenceSceneData& scene = job.Scene;
+    if (scene.EmitterCdf.GetSize() != scene.Emitters.GetSize())
+    {
+        return Status::InvalidDescription; // Kernels select emitters through the packed CDF.
+    }
     const uint64 visibilityWide = uint64(scene.Triangles.GetSize()) * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS;
     const uint64 nodesWide = visibilityWide + (shouldPackVisibility == true ? scene.Triangles.GetSize() : 0);
     const uint64 orderWide = nodesWide + uint64(scene.Nodes.GetSize()) * 3;
@@ -233,6 +237,7 @@ Status PackGpuScene(const ReferenceJob& job,
     for (usize i = 0; i < scene.Emitters.GetSize(); ++i)
     {
         data[emitters + i].X = GpuBits(scene.Emitters[i]);
+        data[emitters + i].Y = GpuBits(scene.EmitterCdf[i]);
     }
     for (usize i = 0; i < job.ShaderEmitters.GetSize(); ++i)
     {

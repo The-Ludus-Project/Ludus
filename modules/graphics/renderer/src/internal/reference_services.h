@@ -742,7 +742,7 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
         sizeof(ReferenceJob) + uint64(instances) * sizeof(internal::ReferenceInstance) +
         uint64(pixels) * sizeof(internal::ReferenceAccumulator) + uint64(tile) * sizeof(internal::ReferencePath) +
         uint64(tile) * 2 * (sizeof(rhi::RayInput) + sizeof(rhi::RayResult)) +
-        uint64(triangles) * sizeof(ReferenceTriangle) + bvhBytes + uint64(emitters) * sizeof(uint32);
+        uint64(triangles) * sizeof(ReferenceTriangle) + bvhBytes + uint64(emitters) * 2 * sizeof(uint32);
     const uint64 signatureBytes =
         uint64(triangles) * FINGERPRINT_TRIANGLE_BYTES + uint64(instances) * FINGERPRINT_INSTANCE_BYTES +
         uint64(surfaceMaps) * FINGERPRINT_SURFACE_MAP_BYTES + uint64(lights.Count) * FINGERPRINT_LIGHT_BYTES +
@@ -941,6 +941,12 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
             return status;
         }
     }
+    // Every traversal shares the CPU light proposal, so the CDF does not depend on the oracle BVH.
+    status = internal::BuildReferenceEmitterSelection(job->Scene);
+    if (status != Status::Ready)
+    {
+        return status;
+    }
     status = internal::PrepareReferenceCamera(*job);
     if (status != Status::Ready)
     {
@@ -965,6 +971,7 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
         job->Hits.GetCapacity() * sizeof(rhi::RayResult) +
         job->Scene.Triangles.GetCapacity() * sizeof(ReferenceTriangle) +
         job->Scene.Order.GetCapacity() * sizeof(uint32) + job->Scene.Emitters.GetCapacity() * sizeof(uint32) +
+        job->Scene.EmitterCdf.GetCapacity() * sizeof(uint32) +
         job->Scene.Nodes.GetCapacity() * sizeof(internal::ReferenceBvhNode);
     if (job->Info.CpuBytes > remaining || transient > remaining - job->Info.CpuBytes)
     {
