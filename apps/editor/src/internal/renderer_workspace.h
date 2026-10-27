@@ -271,7 +271,9 @@ public:
     /// the same rows in the same order (MakeRenderGraphErrorEntries).
     [[nodiscard]] foundation::int32 GetDiagnosticCount() const;
     /// Navigate to a diagnostic row's authored node (selecting it on the Canvas) or source
-    /// line and column (showing it in the Source view). False for a row without an authored location.
+    /// line and column (showing it in the Source view). Graph jumps record a view visit even within
+    /// the same configuration, reveal warning/error ports and open shared field controls. Invalid
+    /// graph targets preserve selection/view/history and return false. Never changes document undo.
     [[nodiscard]] bool ActivateDiagnostic(foundation::int32 row);
     [[nodiscard]] QString GetSourceFile() const;
     [[nodiscard]] foundation::int32 GetSourceLine() const;
@@ -416,6 +418,8 @@ private:
     /// Mark the shown source's messages from the last result. A new result always replaces
     /// them; otherwise an unchanged result/project/file keeps the editor's anchored markers.
     void updateSourceDiagnostics(bool isNewResult);
+    /// Refresh canvas report availability and currency after edits, saves and configuration changes.
+    void updateCanvasDiagnostics();
     [[nodiscard]] QJsonObject getDiagnosticLocation(foundation::int32 row) const;
     [[nodiscard]] QJsonObject selectedConfiguration() const;
     [[nodiscard]] QJsonObject selectedNode() const;

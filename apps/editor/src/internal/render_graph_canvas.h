@@ -39,6 +39,7 @@ namespace ludus::editor
 class RenderGraphNavigation;
 class RenderGraphHistory;
 class RenderGraphComments;
+class RenderGraphDiagnostics;
 /// Connection domain shown on the canvas (docs/architecture/render-graph-authoring.md,
 /// "Node and connection contracts"). Shader functions live in build manifests, not here.
 enum class RenderGraphDomain : foundation::uint8
@@ -152,6 +153,8 @@ public:
     [[nodiscard]] RenderGraphHistory& GetHistory() noexcept;
     /// Canvas-owned comment editing and grouped gestures; GUI thread only.
     [[nodiscard]] RenderGraphComments& GetComments() noexcept;
+    /// Canvas-owned report counts, source freshness and diagnostic navigation; GUI thread only.
+    [[nodiscard]] RenderGraphDiagnostics& GetDiagnostics() noexcept;
     /// Current document revision, for rejecting stale modal/gesture operations.
     [[nodiscard]] foundation::uint64 GetDocumentRevision() const noexcept;
     /// Copy authored card geometry without configuration interface boxes.
@@ -189,7 +192,8 @@ public:
     /// Reveal a diagnostic's authored node/interface and ring its exact port when present.
     /// Missing ports fall back to their owner. Display only; cleared by the next rebuild.
     /// Returns false when no displayed owner exists; never changes document/history.
-    [[nodiscard]] bool ShowDiagnostic(const QJsonObject& location, const QString& description);
+    /// isWarning selects an amber Warning outline/label instead of the error presentation.
+    [[nodiscard]] bool ShowDiagnostic(const QJsonObject& location, const QString& description, bool isWarning = false);
     /// Current display marker, empty after a rebuild or when its owner is absent.
     [[nodiscard]] QJsonObject GetDiagnosticLocation() const;
 
@@ -286,6 +290,7 @@ private:
     RenderGraphNavigation* mNavigation;
     RenderGraphHistory* mHistoryOrNull = nullptr;
     RenderGraphComments* mCommentsOrNull = nullptr;
+    RenderGraphDiagnostics* mDiagnostics;
     QAction* mFitGraphAction;
     QAction* mFitSelectionAction;
     QLabel* mZoomLabel;

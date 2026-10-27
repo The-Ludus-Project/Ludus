@@ -54,6 +54,10 @@ public:
     /// Validate a Subgraph instance before the workspace changes configuration. False leaves
     /// the current location intact and reports a NavigationFailed reason. Used by canvas and tree entry.
     [[nodiscard]] bool PrepareSubgraph(const QString& instance, const QString& file, const QString& configuration);
+    /// Request a new view visit for the next valid ShowConfiguration, including a jump within
+    /// the same configuration. Captures the prior selection/pan/zoom/trace, preserves a current
+    /// instance path for same-configuration jumps, and leaves document undo unchanged.
+    void PrepareDiagnosticVisit();
     /// Restore an earlier/later valid visit; false when no such target remains.
     [[nodiscard]] bool Back();
     [[nodiscard]] bool Forward();
@@ -99,6 +103,7 @@ private:
     QString mPreparedFile;
     QString mPreparedConfiguration;
     bool mIsRestoring = false;
+    bool mShouldRecordDiagnostic = false;
     foundation::uint64 mGeneration = 0;
 };
 } // namespace ludus::editor

@@ -1,6 +1,7 @@
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_canvas_feedback.h"
 #include "internal/render_graph_comments.h"
+#include "internal/render_graph_diagnostics.h"
 #include "internal/render_graph_history.h"
 #include "internal/render_graph_navigation.h"
 #include "internal/render_graph_node_ports.h"
@@ -98,6 +99,7 @@ constexpr float64 LINK_HINT_WIDTH = 340;
 constexpr float64 LINK_HINT_OFFSET = 16;
 constexpr QRgb LINK_ACCEPT_COLOR = 0xFF79D69E;
 constexpr QRgb LINK_REJECT_COLOR = 0xFFFF9A88;
+constexpr QRgb WARNING_COLOR = 0xFFFFC857;
 constexpr QRgb LABEL_COLOR = 0xFFD6DAE0;
 constexpr float64 NODE_ROW_GAP = 30;
 // Clicking an output offers Quick Add for a node one ordinary column gap to its right.
@@ -639,6 +641,7 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
     connect(mFitSelectionAction, &QAction::triggered, this, &RenderGraphCanvas::FitSelection);
     connect(resetZoom, &QAction::triggered, this, &RenderGraphCanvas::ResetZoom);
     mNavigation = new RenderGraphNavigation(*mFramingToolbar, *this);
+    mDiagnostics = new RenderGraphDiagnostics(mDocument, *mFramingToolbar, *this);
     mHistoryOrNull = new RenderGraphHistory(mDocument, *this);
     mCommentsOrNull = new RenderGraphComments(*this, *mScene);
     setViewportMargins(0, mFramingToolbar->sizeHint().height() + mHistoryOrNull->sizeHint().height(), 0, 0);
@@ -679,6 +682,10 @@ RenderGraphCanvas::~RenderGraphCanvas()
 RenderGraphComments& RenderGraphCanvas::GetComments() noexcept
 {
     return *mCommentsOrNull;
+}
+RenderGraphDiagnostics& RenderGraphCanvas::GetDiagnostics() noexcept
+{
+    return *mDiagnostics;
 }
 uint64 RenderGraphCanvas::GetDocumentRevision() const noexcept
 {
@@ -1628,7 +1635,7 @@ void RenderGraphCanvas::ClearDiagnostic()
     setAccessibleDescription({});
 }
 
-bool RenderGraphCanvas::ShowDiagnostic(const QJsonObject& location, const QString& description)
+bool RenderGraphCanvas::ShowDiagnostic(const QJsonObject& location, const QString& description, bool isWarning)
 {
     ClearDiagnostic();
     const bool isOutput = location.value(QStringLiteral("direction")).toString() == QStringLiteral("output");
@@ -1647,7 +1654,8 @@ bool RenderGraphCanvas::ShowDiagnostic(const QJsonObject& location, const QStrin
     setAccessibleDescription(description);
     mDiagnosticMarkerOrNull = new QGraphicsRectItem(viewOrNull->Frame->rect(), viewOrNull->Frame);
     mDiagnosticMarkerOrNull->setAcceptedMouseButtons(Qt::NoButton);
-    QPen diagnosticPen(QColor::fromRgba(LINK_REJECT_COLOR), NODE_BORDER_WIDTH * 2);
+    const QColor diagnosticColour = QColor::fromRgba(isWarning == true ? WARNING_COLOR : LINK_REJECT_COLOR);
+    QPen diagnosticPen(diagnosticColour, NODE_BORDER_WIDTH * 2);
     diagnosticPen.setCosmetic(true);
     mDiagnosticMarkerOrNull->setPen(diagnosticPen);
     mDiagnosticMarkerOrNull->setFlag(QGraphicsItem::ItemIgnoresParentOpacity);
@@ -1668,12 +1676,11 @@ bool RenderGraphCanvas::ShowDiagnostic(const QJsonObject& location, const QStrin
     QGraphicsSimpleTextItem* label = new QGraphicsSimpleTextItem(mDiagnosticMarkerOrNull);
     mDiagnosticLabelOrNull = label;
     const QString target = port.isEmpty() == false ? port : location.value(QStringLiteral("field")).toString();
-    mDiagnosticText = QStringLiteral("Error: %1").arg(target.isEmpty() == true ? owner : target);
-    label->setText(QFontMetricsF(label->font())
-                       .elidedText(QStringLiteral("Error: %1").arg(target.isEmpty() == true ? owner : target),
-                                   Qt::ElideRight,
-                                   NODE_WIDTH - NODE_PADDING * 2));
-    label->setBrush(QColor::fromRgba(LINK_REJECT_COLOR));
+    mDiagnosticText = (isWarning == true ? QStringLiteral("Warning: %1") : QStringLiteral("Error: %1"))
+                          .arg(target.isEmpty() == true ? owner : target);
+    label->setText(
+        QFontMetricsF(label->font()).elidedText(mDiagnosticText, Qt::ElideRight, NODE_WIDTH - NODE_PADDING * 2));
+    label->setBrush(diagnosticColour);
     label->setPos(NODE_PADDING, viewOrNull->Frame->rect().bottom() + NODE_PADDING);
     label->setToolTip(description.toHtmlEscaped());
     updateSemanticZoom(true);

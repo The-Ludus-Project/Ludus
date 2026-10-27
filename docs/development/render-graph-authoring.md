@@ -4200,6 +4200,49 @@ Unambiguous instance renames repair the breadcrumb; ambiguous renames are not
 guessed. Saved selection IDs that no longer exist are dropped, and no remaining
 selection clears tracing.
 
+### Navigate canvas diagnostics
+
+The canvas toolbar shows error and warning counts for the latest accepted graph
+report, plus **Previous** and **Next** diagnostic controls. Press **F8** for Next
+or **Shift+F8** for Previous while the canvas has focus. The controls remain
+available in Focus Viewport mode; a narrow canvas uses the toolbar overflow menu.
+Source and Properties text editing and modal field editors keep their own keys.
+
+Counts cover report errors/warnings across the open package. Compiler summary
+rows are excluded when detailed messages follow them; informational messages are
+not problems. The position label counts available **canvas** targets, which can
+be fewer than the report's problems. Source-line/generated messages stay in the
+Error List, and missing nodes/configurations are skipped by the canvas controls.
+Next/Previous follow report order and wrap. A new report resets the cursor;
+success or cancellation clears available problem targets. Pending work leaves the
+last accepted report visible. Results for another request/project cannot replace it.
+
+A jump selects and reveals the authored node in its configuration. Errors use a
+red outline; warnings use an amber outline and **Warning:** label. A named port
+receives a ring when it still exists, otherwise its owner stays highlighted.
+Configuration interface diagnostics reveal their input/output box. A field
+message opens the shared canvas node editor, selects its relevant tab, scrolls
+to the control and highlights it, including with Properties hidden. Invalid
+Error List graph targets preserve the current view and selection.
+
+Every graph diagnostic jump creates a navigation visit, including a jump within
+the same configuration. **Back** restores the preceding selection, pan, zoom and
+dependency trace; **Forward** returns to the visited view. A same-configuration
+jump retains its Subgraph instance breadcrumb path. Cross-configuration jumps
+use direct graph locations because reports identify authored assets, rather than
+one unique caller instance. Navigation never changes saved layout, draft bytes or
+document undo. Diagnostic markers clear on a rebuild or configuration change;
+Next/Previous reveal the current report's marker again.
+
+**Current** means the captured semantic input identity matches the current draft
+and the report's build-source version. A saved-source report with different
+unsaved semantic edits is **Stale** (validate again), even when its saved inputs
+are unchanged. Layout/comment edits do not make a matching report stale. Undoing
+semantic edits can make it Current again. A report without an input fingerprint
+is **Unverified**. The tooltip names its saved/draft source and captured revision;
+these labels describe the report, independently of the last drawable preview.
+Stale/unverified diagnostics can still reveal targets that remain available.
+
 ### Read canvas feedback
 
 Canvas labels adapt to magnification without moving nodes, wires or port hit
