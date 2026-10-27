@@ -1,14 +1,15 @@
 #include "internal/reference_data.h"
 
 #include <ludus/foundation/containers/stable_sort.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/status.hpp>
 
 // Thanks to Sven Woop, Carsten Benthin and Ingo Wald, "Watertight Ray/Triangle
 // Intersection", JCGT 2(1), 2013, section 3,
 // https://jcgt.org/published/0002/01/05/paper.pdf: use one ray-dependent axis
 // permutation/shear and consistent edge functions. This independent CPU oracle
-// computes every edge in float64, uses a simple balanced median BVH and does not
-// claim the paper's complete optimized conservative-bound implementation.
+// computes every edge in float64, traverses a binned-SAH BVH (BuildNode) and does
+// not claim the paper's complete optimized conservative-bound implementation.
 namespace ludus::graphics::renderer::internal
 {
 namespace
@@ -39,31 +40,189 @@ struct TriangleLess final
         return x == y ? a < b : x < y;
     }
 };
-uint32 BuildNode(ReferenceSceneData& scene, uint32 first, uint32 count, uint32* scratch) noexcept
+// Thanks to Ingo Wald, "On fast Construction of SAH-based Bounding Volume
+// Hierarchies", IEEE/Eurographics Symposium on Interactive Ray Tracing 2007,
+// pp. 33-40, https://www.sci.utah.edu/~wald/Publications/2007/ParallelBVHBuild/fastbuild.pdf:
+// bin triangle centroids along each axis and choose the plane with the lowest
+// surface area heuristic cost. This serial build keeps the existing binary node
+// layout and four-triangle leaves, and falls back to a balanced median split
+// whenever SAH splitting could exceed REFERENCE_BVH_MAX_DEPTH.
+constexpr usize AXIS_COUNT = 3;
+constexpr usize SAH_BIN_COUNT = 16;
+// Relative costs of visiting one node and testing one triangle.
+constexpr float64 SAH_TRAVERSAL_COST = 1;
+constexpr float64 SAH_INTERSECTION_COST = 1;
+// Three times the centroid; TriangleLess orders by the same sum.
+math::Vector3 ComputeCentroidSum(const ReferenceTriangle& triangle) noexcept
 {
-    const auto node = static_cast<uint32>(scene.Nodes.GetSize());
+    return triangle.Positions[0] + triangle.Positions[1] + triangle.Positions[2];
+}
+// Half the surface area; SAH compares ratios, so the factor of two cancels.
+float64 ComputeHalfArea(const math::Aabb3& bounds) noexcept
+{
+    if (bounds.Min.X > bounds.Max.X || bounds.Min.Y > bounds.Max.Y || bounds.Min.Z > bounds.Max.Z)
+    {
+        return 0;
+    }
+    const float64 x = float64(bounds.Max.X) - float64(bounds.Min.X);
+    const float64 y = float64(bounds.Max.Y) - float64(bounds.Min.Y);
+    const float64 z = float64(bounds.Max.Z) - float64(bounds.Min.Z);
+    return x * y + y * z + z * x;
+}
+constexpr uint32 UINT32_BITS = 32;
+uint32 ComputeCeilingLog2(uint32 value) noexcept
+{
+    uint32 result = 0;
+    while (result < UINT32_BITS && (uint64{1} << result) < value)
+    {
+        ++result;
+    }
+    return result;
+}
+struct SahSplit final
+{
+    float64 Cost = 0;
+    usize Axis = 0;
+    usize Bin = 0;
+    bool IsValid = false;
+};
+usize ComputeBin(float32 centroid, float32 minimum, float32 extent) noexcept
+{
+    const float64 scaled = (float64(centroid) - float64(minimum)) / float64(extent) * float64(SAH_BIN_COUNT);
+    return scaled <= 0 ? 0 : math::Min(static_cast<usize>(scaled), SAH_BIN_COUNT - 1);
+}
+SahSplit
+FindSahSplit(const ReferenceSceneData& scene, const ReferenceBvhNode& node, const math::Aabb3& centroidBounds) noexcept
+{
+    SahSplit best;
+    const float64 area = ComputeHalfArea(node.Bounds);
+    if (area <= 0)
+    {
+        return best;
+    }
+    for (usize axis = 0; axis < AXIS_COUNT; ++axis)
+    {
+        const float32 minimum = Component(centroidBounds.Min, axis);
+        const float32 extent = Component(centroidBounds.Max, axis) - minimum;
+        if ((extent > 0) == false)
+        {
+            continue;
+        }
+        StaticArray<uint32, SAH_BIN_COUNT> counts{};
+        StaticArray<math::Aabb3, SAH_BIN_COUNT> binBounds;
+        binBounds.Fill(math::EmptyAabb3());
+        for (usize i = node.First; i < usize(node.First) + node.Count; ++i)
+        {
+            const ReferenceTriangle& triangle = scene.Triangles[scene.Order[i]];
+            const usize bin = ComputeBin(Component(ComputeCentroidSum(triangle), axis), minimum, extent);
+            ++counts[bin];
+            binBounds[bin] = math::Merge(binBounds[bin], TriangleBounds(triangle));
+        }
+        // Suffix areas/counts give every plane's right side; the left side accumulates.
+        StaticArray<float64, SAH_BIN_COUNT> rightAreas{};
+        StaticArray<uint32, SAH_BIN_COUNT> rightCounts{};
+        math::Aabb3 right = math::EmptyAabb3();
+        uint32 rightCount = 0;
+        for (usize bin = SAH_BIN_COUNT - 1; bin > 0; --bin)
+        {
+            right = math::Merge(right, binBounds[bin]);
+            rightCount += counts[bin];
+            rightAreas[bin] = ComputeHalfArea(right);
+            rightCounts[bin] = rightCount;
+        }
+        math::Aabb3 left = math::EmptyAabb3();
+        uint32 leftCount = 0;
+        for (usize bin = 1; bin < SAH_BIN_COUNT; ++bin)
+        {
+            left = math::Merge(left, binBounds[bin - 1]);
+            leftCount += counts[bin - 1];
+            if (leftCount == 0 || rightCounts[bin] == 0)
+            {
+                continue;
+            }
+            const float64 cost =
+                SAH_TRAVERSAL_COST +
+                SAH_INTERSECTION_COST *
+                    (ComputeHalfArea(left) * float64(leftCount) + rightAreas[bin] * float64(rightCounts[bin])) / area;
+            if (best.IsValid == false || cost < best.Cost)
+            {
+                best = {cost, axis, bin, true};
+            }
+        }
+    }
+    return best;
+}
+uint32 BuildNode(ReferenceSceneData& inoutScene, uint32 first, uint32 count, uint32 depth, uint32* scratch) noexcept
+{
+    const uint32 node = static_cast<uint32>(inoutScene.Nodes.GetSize());
     ReferenceBvhNode value;
     value.Bounds = math::EmptyAabb3();
     value.First = first;
     value.Count = count;
+    math::Aabb3 centroidBounds = math::EmptyAabb3();
     for (usize i = first; i < usize(first) + count; ++i)
     {
-        value.Bounds = math::Merge(value.Bounds, TriangleBounds(scene.Triangles[scene.Order[i]]));
+        const ReferenceTriangle& triangle = inoutScene.Triangles[inoutScene.Order[i]];
+        const math::Vector3 centroid = ComputeCentroidSum(triangle);
+        value.Bounds = math::Merge(value.Bounds, TriangleBounds(triangle));
+        centroidBounds = math::Merge(centroidBounds, {centroid, centroid});
     }
     // Exact capacity was reserved before recursion; these additions cannot allocate.
-    static_cast<void>(scene.Nodes.TryAdd(value));
-    if (count > 4)
+    static_cast<void>(inoutScene.Nodes.TryAdd(value));
+    if (count <= 1)
     {
-        const auto extent = value.Bounds.Max - value.Bounds.Min;
-        const usize axis = extent.X >= extent.Y && extent.X >= extent.Z ? 0 : extent.Y >= extent.Z ? 1 : 2;
-        static_cast<void>(StableSort(scene.Order.GetData() + first, scratch, count, TriangleLess{scene, axis}));
-        const auto half = count / 2;
-        const auto left = BuildNode(scene, first, half, scratch);
-        const auto right = BuildNode(scene, first + half, count - half, scratch);
-        scene.Nodes[node].Left = left;
-        scene.Nodes[node].Right = right;
-        scene.Nodes[node].Count = 0;
+        return node;
     }
+    const SahSplit split = FindSahSplit(inoutScene, value, centroidBounds);
+    if (count <= REFERENCE_BVH_MAX_LEAF_TRIANGLES &&
+        (split.IsValid == false || SAH_INTERSECTION_COST * float64(count) <= split.Cost))
+    {
+        return node;
+    }
+    usize axis = 0;
+    uint32 leftCount = 0;
+    if (split.IsValid == true && depth + ComputeCeilingLog2(count) < REFERENCE_BVH_MAX_DEPTH)
+    {
+        // Stable partition by bin keeps the build deterministic.
+        axis = split.Axis;
+        const float32 minimum = Component(centroidBounds.Min, axis);
+        const float32 extent = Component(centroidBounds.Max, axis) - minimum;
+        uint32 rightCount = 0;
+        for (usize i = first; i < usize(first) + count; ++i)
+        {
+            const uint32 triangle = inoutScene.Order[i];
+            if (ComputeBin(Component(ComputeCentroidSum(inoutScene.Triangles[triangle]), axis), minimum, extent) <
+                split.Bin)
+            {
+                inoutScene.Order[first + leftCount] = triangle;
+                ++leftCount;
+            }
+            else
+            {
+                scratch[rightCount] = triangle;
+                ++rightCount;
+            }
+        }
+        for (uint32 i = 0; i < rightCount; ++i)
+        {
+            inoutScene.Order[first + leftCount + i] = scratch[i];
+        }
+    }
+    else
+    {
+        // Balanced median split: each level halves the range, bounding the remaining depth.
+        const math::Vector3 extent = value.Bounds.Max - value.Bounds.Min;
+        axis = extent.X >= extent.Y && extent.X >= extent.Z ? 0 : extent.Y >= extent.Z ? 1 : 2;
+        static_cast<void>(
+            StableSort(inoutScene.Order.GetData() + first, scratch, count, TriangleLess{inoutScene, axis}));
+        leftCount = count / 2;
+    }
+    const uint32 left = BuildNode(inoutScene, first, leftCount, depth + 1, scratch);
+    const uint32 right = BuildNode(inoutScene, first + leftCount, count - leftCount, depth + 1, scratch);
+    inoutScene.Nodes[node].Left = left;
+    inoutScene.Nodes[node].Right = right;
+    inoutScene.Nodes[node].Count = 0;
+    inoutScene.Nodes[node].SplitAxis = static_cast<uint32>(axis);
     return node;
 }
 struct OracleIntersection final
@@ -259,7 +418,7 @@ rhi::RasterStatus BuildReferenceBvh(ReferenceSceneData& scene) noexcept
     {
         return rhi::RasterStatus::Ready;
     }
-    static_cast<void>(BuildNode(scene, 0, static_cast<uint32>(surfaceCount), scratch.GetData()));
+    static_cast<void>(BuildNode(scene, 0, static_cast<uint32>(surfaceCount), 0, scratch.GetData()));
     scene.Bounds = scene.Nodes[0].Bounds;
     return rhi::RasterStatus::Ready;
 }
@@ -540,8 +699,11 @@ TraceReferenceOracle(const ReferenceSceneData& scene, const rhi::RayInput& ray, 
             {
                 return rhi::RasterStatus::CapacityExceeded;
             }
-            stack[pending++] = node.Right;
-            stack[pending++] = node.Left;
+            // Visit the child on the ray's near side of the split first, so a closest
+            // hit there shortens the interval that culls the far child.
+            const bool isReversed = Component(ReferenceDirection(ray), node.SplitAxis) < 0;
+            stack[pending++] = isReversed == true ? node.Left : node.Right;
+            stack[pending++] = isReversed == true ? node.Right : node.Left;
             continue;
         }
         for (usize i = node.First; i < usize(node.First) + node.Count; ++i)

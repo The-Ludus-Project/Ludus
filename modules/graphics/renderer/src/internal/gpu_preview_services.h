@@ -231,7 +231,7 @@ Status PackGpuScene(const ReferenceJob& job,
         math::Vector4* out = data.GetData() + nodes + i * 3;
         out[0] = GpuVector(n.Bounds.Min, GpuBits(n.Left));
         out[1] = GpuVector(n.Bounds.Max, GpuBits(n.Right));
-        out[2] = {GpuBits(n.First), GpuBits(n.Count), 0, 0};
+        out[2] = {GpuBits(n.First), GpuBits(n.Count), GpuBits(n.SplitAxis), 0};
     }
     internal::PackGpuPreviewRayOrder(scene, shouldPartitionNativeOpacity, data.GetData() + order);
     for (usize i = 0; i < scene.Emitters.GetSize(); ++i)

@@ -1359,7 +1359,7 @@ mesh or material version exists. It needs negotiated compute storage but no
 native ray queries. Devices without compute reject with `Unsupported`.
 
 Setup is the CPU oracle's: the same admitted geometry, materials, retained
-texture mip and median BVH, packed once in the GPU preview's scene layout. Each
+texture mip and binned-SAH BVH, packed once in the GPU preview's scene layout. Each
 `AdvanceReferenceCapture(capture, surface)` step polls setup or a readback, or
 submits one ordered graph with two compute passes in a frame of `surface`. The
 transport pass traces one sample for every pixel at the image's minimum committed
@@ -1404,6 +1404,42 @@ Normalization and the environment CDF also use float32. These can change an
 individual path at grazing or near-edge hits; they do not change the declared
 integral. One dispatch covers the whole image, so very large dense scenes can
 approach a device's command timeout; there is no tiling yet.
+
+The CPU oracle and the GPU kernel share one BVH. It is built with a 16-bin
+surface area heuristic over triangle centroids (Wald, "On fast Construction of
+SAH-based Bounding Volume Hierarchies", RT 2007). Leaves hold at most four
+triangles. Any range whose remaining SAH splitting could exceed depth 48 falls
+back to a balanced median split, so traversal always fits the 64-entry stacks.
+Each interior node records its split axis. Both traversals visit the child on the
+ray's near side first, so a closest hit there culls the far child sooner. Closest
+hits do not depend on node order, except where a box test's rounding decides a
+grazing hit or an exact tie on a shared edge. In the staircase2 capture below, one
+of 7,168 CPU-oracle pixels changed by 3e-7 luminance. In the GPU capture, 89 of
+115,200 pixels changed and the mean luminance moved from 0.427322 to 0.427327.
+
+`ludus_reference_benchmark` (built with the renderer's GPU tests) times a capture
+of a cooked LUSCN scene, such as `ludus-cook cook` output for staircase2. It
+reports setup-to-first-sample time, total wall time and the device time of the
+transport passes. The device time is not inflated by CPU load from other processes.
+It also prints a checksum of the converged radiance. Setting
+`LUDUS_REFERENCE_BENCHMARK_OUTPUT` to a directory saves the last image as
+float32 RGB:
+
+```bash
+out/build/macos-clang-debug/modules/content/scene_cook/ludus-cook cook \
+  references/resources/scenes/staircase2 out/bench/staircase2
+out/build/macos-clang-debug/modules/graphics/renderer/ludus_reference_benchmark \
+  out/bench/staircase2 512 225 64 8 gpu 3
+```
+
+On Apple M5 Metal (macOS 26.6, debug build, about 29,000 triangles), the median
+BVH needed 7.8–7.9 s of transport device time for 512×225 pixels at 64 samples
+per pixel and depth 8. Wall time was 9.5–9.6 s. The SAH BVH with near-first
+traversal needs 1.03–1.13 s of device time and 2.6–3.0 s of wall time. Of that
+gain, SAH alone gives about 7× and near-first ordering about 10%. Setup to the
+first sample grew by about 0.2–0.3 s for the larger CPU build. The CPU oracle at
+128×56 and 8 samples went from 9.4–10.0 s to 2.9–3.5 s. Wall time is now mostly
+the per-sample dispatch, wait and status readback, not tracing.
 
 On Apple M5 Metal (macOS 26.6, debug build), the
 [renderer test](../../modules/graphics/renderer/tests/reference_compute_tests.cpp)
@@ -1910,7 +1946,7 @@ kernels may explicitly select the software compute ABI described in
 structures and does not use opacity ranges. No automatic traversal fallback is selected.
 
 CPU setup freezes the existing snapshot, retained normals/UVs/materials and one
-retained RGBA8 texture mip, builds the static median BVH, and packs GPU buffers.
+retained RGBA8 texture mip, builds the static binned-SAH BVH, and packs GPU buffers.
 Shared texture content is packed once, in a separate read-only buffer so the
 geometry/BVH and texel payload each respect the R4 storage-range limit. `BeginGpuPreview` then owns that immutable
 scene independently of caller snapshot/mesh/material owners. Native world-triangle

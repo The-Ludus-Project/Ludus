@@ -401,7 +401,7 @@ Hit TraceScene(Ray ray, bool isVisibility)
         uint node = Offsets.x + stack[pending] * 3;
         float4 lower = SceneValue(node);
         float4 upper = SceneValue(node + 1);
-        uint2 range = asuint(SceneValue(node + 2).xy);
+        uint3 range = asuint(SceneValue(node + 2).xyz); // first, count, split axis
         if (IntersectBox(ray, lower.xyz, upper.xyz, closestWorld) == false)
             continue;
         if (range.y == 0)
@@ -411,8 +411,10 @@ Hit TraceScene(Ray ray, bool isVisibility)
                 result.HasExceededStack = true;
                 return result;
             }
-            stack[pending] = asuint(upper.w);
-            stack[pending + 1] = asuint(lower.w);
+            // Near child last so it pops first; its closest hit then culls the far child.
+            bool isReversed = ray.DirectionWorld[range.z] < 0;
+            stack[pending] = isReversed == true ? asuint(lower.w) : asuint(upper.w);
+            stack[pending + 1] = isReversed == true ? asuint(upper.w) : asuint(lower.w);
             pending += 2;
             continue;
         }

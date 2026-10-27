@@ -10,7 +10,7 @@
 // Strides count float4 words, not bytes. Update the version when changing layout.
 #define LUDUS_GPU_PREVIEW_SURFACE_WORDS 9
 #define LUDUS_GPU_PREVIEW_LIGHT_WORDS 4
-#define LUDUS_GPU_PREVIEW_KERNEL_VERSION 6 // Emitter words carry the power-weighted selection CDF in Y.
+#define LUDUS_GPU_PREVIEW_KERNEL_VERSION 7 // Emitter CDF in emitter word Y; BVH split axis in node word 2 Z.
 
 #define LUDUS_GPU_PREVIEW_TRIANGLE_WORDS 16
 

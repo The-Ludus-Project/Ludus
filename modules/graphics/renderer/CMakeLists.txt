@@ -90,7 +90,7 @@ install(DIRECTORY "${default_render_graph}/" DESTINATION "${CMAKE_INSTALL_DATADI
 if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
     # Exercise the production renderer/RHI registry with the existing deterministic backend.
-    add_executable(ludus_renderer_tests tests/renderer_tests.cpp tests/world_grid_tests.cpp tests/reference_backend.cpp src/gpu_denoiser.cpp src/render_graph.cpp src/render_graph_forward.cpp src/render_graph_scene_resources.cpp src/visibility_buffer.cpp src/render_graph_ray.cpp src/render_graph_ray_path.cpp src/render_graph_upscale.cpp src/render_graph_metalfx.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/gpu_preview_camera.cpp src/gpu_preview_graph.cpp src/render_graph_storage.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/lighting.cpp src/static_lighting.cpp src/environment.cpp src/reference_bsdf.cpp src/reference_scene.cpp src/reference_path.cpp src/reference_compute.cpp tests/views_tests.cpp tests/static_lighting_tests.cpp tests/render_graph_tests.cpp tests/render_graph_ray_path_decode_tests.cpp tests/render_graph_activation_tests.cpp tests/render_graph_pool_tests.cpp tests/scene_shader_tests.cpp tests/reference_emitter_selection_tests.cpp
+    add_executable(ludus_renderer_tests tests/renderer_tests.cpp tests/world_grid_tests.cpp tests/reference_backend.cpp src/gpu_denoiser.cpp src/render_graph.cpp src/render_graph_forward.cpp src/render_graph_scene_resources.cpp src/visibility_buffer.cpp src/render_graph_ray.cpp src/render_graph_ray_path.cpp src/render_graph_upscale.cpp src/render_graph_metalfx.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/gpu_preview_camera.cpp src/gpu_preview_graph.cpp src/render_graph_storage.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/lighting.cpp src/static_lighting.cpp src/environment.cpp src/reference_bsdf.cpp src/reference_scene.cpp src/reference_path.cpp src/reference_compute.cpp tests/views_tests.cpp tests/static_lighting_tests.cpp tests/render_graph_tests.cpp tests/render_graph_ray_path_decode_tests.cpp tests/render_graph_activation_tests.cpp tests/render_graph_pool_tests.cpp tests/scene_shader_tests.cpp tests/reference_emitter_selection_tests.cpp tests/reference_bvh_tests.cpp
         ../rhi/src/rhi.cpp ../rhi/src/device.cpp ../rhi/src/dxil_container.cpp ../rhi/src/gpu_scope.cpp ../rhi/src/gpu_pass_timing_buffer.cpp ../rhi/src/profile.cpp ../rhi/src/raster.cpp ../rhi/tests/reference_raster.cpp ../rhi/src/ray_unsupported.cpp)
     target_include_directories(ludus_renderer_tests PRIVATE include ../rhi/include ../rhi/src ../rhi/tests "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
     target_link_libraries(ludus_renderer_tests PRIVATE Ludus::FoundationStrings Ludus::RenderGraphFormat Ludus::Platform Ludus::FoundationContainers Ludus::FoundationMath Ludus::FoundationThreading Ludus::FoundationThreadingProfiling Ludus::FoundationTime Ludus::Resources Ludus::FoundationHash Catch2::Catch2WithMain)
@@ -127,6 +127,15 @@ if(TARGET ludus_rhi_render_tests)
                  "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/render_graphs/restir_di/main_shaders")
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_gpu_preview renderer_gpu_preview_visibility_full renderer_gpu_preview_hit_cached renderer_gpu_preview_group32 renderer_gpu_preview_group64 renderer_gpu_preview_group128 renderer_gpu_preview_group8x8)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_gpu_preview_image)
+    # Manual timing tool for reference captures on a cooked scene; not a CTest case.
+    add_executable(ludus_reference_benchmark tests/reference_benchmark.cpp)
+    target_link_libraries(ludus_reference_benchmark PRIVATE
+        Ludus::GraphicsRenderer Ludus::Resources Ludus::Content Ludus::FoundationContainers Ludus::FoundationFilesystem
+        Ludus::FoundationTime)
+    ludus_apply_project_defaults(ludus_reference_benchmark)
+    ludus_compile_renderer_shaders(TARGET ludus_reference_benchmark SHADERS
+        renderer_flat renderer_composite renderer_lit renderer_lit_shadow renderer_shadow renderer_output
+        renderer_reference renderer_reference_reduce)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_reference renderer_reference_reduce)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_flat)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_composite)
