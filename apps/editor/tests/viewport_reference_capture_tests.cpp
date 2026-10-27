@@ -372,11 +372,36 @@ TEST_CASE("GPU compute reference capture matches the CPU oracle on the viewport 
     constexpr float32 MAXIMUM_DISTANCE = 2e-3F;
     REQUIRE(pixels[0].GetSize() == pixels[1].GetSize());
     float32 largest = 0;
+    usize largestIndex = 0;
+    usize divergentPixels = 0;
     for (usize i = 0; i < pixels[0].GetSize(); ++i)
     {
         CHECK(pixels[1][i].Samples == pixels[0][i].Samples);
-        largest = math::Max(largest, math::Distance(pixels[0][i].Radiance, pixels[1][i].Radiance));
+        const float32 distance = math::Distance(pixels[0][i].Radiance, pixels[1][i].Radiance);
+        if (distance > MAXIMUM_DISTANCE)
+        {
+            ++divergentPixels;
+        }
+        if (distance > largest)
+        {
+            largest = distance;
+            largestIndex = i;
+        }
     }
+    // Locate and decompose the worst pixel, so a failure on one device says whether a few
+    // edge pixels or the whole image diverge, and in which transport term.
+    const usize width = static_cast<usize>(extent.width());
+    const renderer::ReferencePixel& oracle = pixels[0][largestIndex];
+    const renderer::ReferencePixel& compute = pixels[1][largestIndex];
+    INFO("divergent pixels " << divergentPixels << " of " << pixels[0].GetSize() << "; worst at x "
+                             << largestIndex % width << " y " << largestIndex / width);
+    INFO("oracle emission " << oracle.Emission.X << " " << oracle.Emission.Y << " " << oracle.Emission.Z << " direct "
+                            << oracle.Direct.X << " " << oracle.Direct.Y << " " << oracle.Direct.Z << " indirect "
+                            << oracle.Indirect.X << " " << oracle.Indirect.Y << " " << oracle.Indirect.Z);
+    INFO("compute emission " << compute.Emission.X << " " << compute.Emission.Y << " " << compute.Emission.Z
+                             << " direct " << compute.Direct.X << " " << compute.Direct.Y << " " << compute.Direct.Z
+                             << " indirect " << compute.Indirect.X << " " << compute.Indirect.Y << " "
+                             << compute.Indirect.Z);
     CAPTURE(largest);
     CHECK(largest <= MAXIMUM_DISTANCE);
 }

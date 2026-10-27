@@ -21,6 +21,7 @@
 #include <QFileInfo>
 #include <QImage>
 #include <QRegularExpression>
+#include <QStringList>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QToolButton>
@@ -318,6 +319,25 @@ void AppendLine(const QString& path, const QByteArray& line)
 {
     tests::WriteText(path, tests::ReadText(path) + "\n" + line + "\n");
 }
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW) && defined(Q_OS_LINUX)
+/// Recipe and stage of every slot shaders replaces, such as "renderer_lit fragment", or "none".
+QString DescribeReplacedStages(const PreviewShaderSet& shaders)
+{
+    QStringList stages;
+    for (usize slot = 0; slot < PREVIEW_SHADER_SLOT_COUNT; ++slot)
+    {
+        const PreviewShaderProgram program = static_cast<PreviewShaderProgram>(slot / PREVIEW_SHADER_STAGE_COUNT);
+        const PreviewShaderStage stage = static_cast<PreviewShaderStage>(slot % PREVIEW_SHADER_STAGE_COUNT);
+        if (shaders.HasArtifact(program, stage) == true)
+        {
+            stages.append(QStringLiteral("%1 %2").arg(
+                QString::fromLatin1(GetPreviewShaderRecipeName(program)),
+                stage == PreviewShaderStage::Vertex ? QStringLiteral("vertex") : QStringLiteral("fragment")));
+        }
+    }
+    return stages.isEmpty() == true ? QStringLiteral("none") : stages.join(QStringLiteral(", "));
+}
+#endif
 } // namespace
 
 TEST_CASE("Preview shader sets replace one stage and identify their content", "[editor][shader-reload]")
@@ -704,6 +724,8 @@ TEST_CASE("Live shaders rebuild through ludus-shader-worker and swap into the vi
     INFO(reload->GetStatusText().toStdString());
     REQUIRE(reload->GetState() == PreviewShaderReloadState::Idle);
     // The worker reproduces the build's artifacts, so turning live shaders on swaps nothing.
+    // Name any stage whose worker output differs from the build's compiled bytes.
+    INFO("Replaced stages: " << DescribeReplacedStages(preview.GetShaders()).toStdString());
     CHECK(reload->GetStatusText().startsWith(QStringLiteral("Live shaders on")) == true);
     CHECK(preview.GetShaders().HasArtifacts() == false);
     const QString lit = QDir(sources.RecipeDirectory).filePath(QStringLiteral("renderer_lit.slang"));
