@@ -2026,6 +2026,78 @@ arbitrary-scene convergence remain independent qualification limits below.
 The harness retains raw readbacks and individual timing samples under its chosen
 output directory; generated/machine-local evidence is not source-controlled.
 
+Visibility queries use the same native traversal and candidate alpha acceptance as
+closest-hit queries, but consume only committed hit/miss status. They skip committed
+primitive/range remapping, distance and barycentric reads. The closest-hit result
+and preview ABI remain unchanged. Ray-path capture variants retain full shadow-hit
+extraction so diagnostic records still contain committed identity and distance;
+normal rendering keeps the visibility-only fast path. Explicit software graph traversal retains its
+existing hit/miss/failure contract. The diagnostic recipe
+`renderer_gpu_preview_visibility_full` shares the production integrator but restores
+full committed-hit extraction for shadows; it exists for reproducible A/B evidence.
+Generated Metal has one set of committed primitive/geometry/distance/barycentric
+reads in the production kernel (closest-hit), versus two sets in that diagnostic.
+
+Run the frame-interleaved visibility benchmark with:
+
+```sh
+python3 scripts/python/benchmark_ray_visibility.py \
+  --executable out/build/<native-build>/modules/graphics/renderer/ludus_renderer_render_tests \
+  --output out/visibility/interleaved --runs 5
+```
+
+Both immutable pipelines and scenes are prepared on one device/queue/surface before
+timing. Every sample pairs full-hit and visibility-only frames, alternates AB/BA,
+and reverses the initial order between independent processes. No image readback or
+file I/O occurs between timed pairs. Each scene uses 512×512 pixels, depth two,
+seed one and 128 samples, discarding the first 16 pairs. A tessellated receiver and
+opaque or accepting masked slats create blocked and unblocked shadow rays; masked
+and mixed scenes add a fully rejecting masked layer. Materials are nonemissive,
+with one directional light and constant environment. Opaque has 3,072 triangles;
+masked and mixed each have 5,120. Empty is the no-geometry control.
+
+The runner freezes and hashes its executable, preserves individual GPU/wall timings,
+records AB/BA order and the CPU gap from the first completion observation to the
+second submission, and checks complete per-pixel sample coverage. Its JSON reports
+paired ratios, separate AB/BA ratios and run medians. The 95% percentile bootstrap
+resamples independent process run medians, not correlated frames. GPU intervals
+include compute and output raster and do not isolate traversal. Final RGBA8 and raw
+linear readbacks happen after timing. The private little-endian artifact protocol
+uses each scene's `.configuration.bin` (version, extent, target samples, warmup
+samples as four uint32 values), `.order.bin` (uint8 baseline-first flags) and
+`.gap.bin` (uint64 nanoseconds), with each variant's `.gpu.bin`, `.wall.bin`,
+`.rgba` and `.linear.bin` using the formats described above. Existing output
+directories are rejected to preserve evidence.
+
+On 2026-10-26, two five-process repetitions on the same 8-core Apple M5 GPU,
+macOS 26.6, Clang 23.1.3 Development build based on `0fbb4f29` gave the following
+results. Each process contributes 112 balanced AB/BA pairs per scene (1,120 total
+pairs per row). Times are medians of process GPU medians; reductions and intervals
+use process median paired ratios, so they need not equal the ratio of those times.
+
+| Scene | Full hit (ms) | Visibility only (ms) | Paired GPU time reduction | 95% run-bootstrap full/visibility ratio |
+| --- | ---: | ---: | ---: | ---: |
+| Empty | 0.2492 | 0.2515 | -1.13% | 0.9871–0.9923× |
+| Opaque | 1.3071 | 1.2916 | 1.19% | 1.0108–1.0129× |
+| Masked | 2.3816 | 2.3204 | 2.54% | 1.0256–1.0265× |
+| Mixed | 2.5444 | 2.4810 | 2.47% | 1.0249–1.0256× |
+
+Both submission orders retained gains on geometry scenes: median AB/BA ratios
+were 1.0110/1.0130× opaque, 1.0241/1.0285× masked and 1.0231/1.0278× mixed.
+The empty control was slower overall, with order sensitivity (0.9823/1.0003×).
+The largest recorded CPU pair gap was 1 microsecond. This is a modest measured
+improvement on these Metal fixtures, with an approximately 1% empty-scene cost;
+it is not qualification of other scenes, GPUs or native backends.
+
+Across all ten processes, every scene retained bit-identical normalized raw RGB
+and RGBA8 output. The ordinary `[visibility]` regression separately compares both
+kernels at 64×64 and 16 samples, verifies complete sample coverage, then compares
+the fast path with independent CPU-oracle and software GPU-reference raw RGB at
+the existing 0.001 absolute plus 0.5% relative channel tolerance. It also requires
+zero invalid reference contributions and visibility-query coverage on geometry
+scenes. Run this ordinary mode independently of benchmark mode, which omits oracle
+renders during timing. Neither denoising nor temporal reuse establishes parity.
+
 The explicit quality profile admits at most four live jobs, 4096 requested
 samples, depth eight, the reference secondary-distance/camera bounds and a fixed
 texture mip. It has no denoising, motion history, transmission, spectral transport,

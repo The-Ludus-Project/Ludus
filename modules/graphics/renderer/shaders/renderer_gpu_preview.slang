@@ -241,16 +241,13 @@ void EndRayPathCapture(float3 radiance)
 }
 #endif
 #ifndef LUDUS_SOFTWARE_RAY_TRAVERSAL
-Hit TraceNative(float3 originWorld,
-                float3 directionWorld,
-                float nearDistanceWorld,
-                float farDistanceWorld,
-                bool isVisibility = false)
+void TraceNativeQuery(float3 originWorld,
+                      float3 directionWorld,
+                      float nearDistanceWorld,
+                      float farDistanceWorld,
+                      bool isVisibility,
+                      inout RayQuery<RAY_FLAG_NONE> inoutQuery)
 {
-    Hit hit;
-    hit.Triangle = LUDUS_GPU_PREVIEW_INVALID_TRIANGLE;
-    hit.DistanceWorld = farDistanceWorld;
-    hit.Barycentric = 0;
     RayDesc ray;
     ray.Origin = originWorld;
     ray.Direction = directionWorld;
@@ -265,24 +262,23 @@ Hit TraceNative(float3 originWorld,
                  : (Sampling.z & LUDUS_GPU_PREVIEW_MIXED_OPACITY_FLAG) != 0 ? RAY_FLAG_NONE
                                                                             : RAY_FLAG_FORCE_NON_OPAQUE) |
                 RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
-    RayQuery<RAY_FLAG_NONE> query;
-    query.TraceRayInline(rayScene, flags, LUDUS_GPU_PREVIEW_RAY_MASK, ray);
-    while (query.Proceed() == true)
+    inoutQuery.TraceRayInline(rayScene, flags, LUDUS_GPU_PREVIEW_RAY_MASK, ray);
+    while (inoutQuery.Proceed() == true)
     {
-        if (query.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE)
+        if (inoutQuery.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE)
             continue;
-        uint candidatePrimitive = query.CandidatePrimitiveIndex();
+        uint candidatePrimitive = inoutQuery.CandidatePrimitiveIndex();
         if ((Sampling.z & LUDUS_GPU_PREVIEW_MIXED_OPACITY_FLAG) != 0)
         {
-            if (query.CandidateGeometryIndex() == 0)
+            if (inoutQuery.CandidateGeometryIndex() == 0)
             {
-                query.CommitNonOpaqueTriangleHit();
+                inoutQuery.CommitNonOpaqueTriangleHit();
                 continue;
             }
             candidatePrimitive += asuint(SceneValue(Offsets.y).y);
         }
         uint triangle = asuint(SceneValue(Offsets.y + candidatePrimitive).x);
-        float2 barycentric = query.CandidateTriangleBarycentrics();
+        float2 barycentric = inoutQuery.CandidateTriangleBarycentrics();
         if (asuint(Surface(triangle, LUDUS_GPU_PREVIEW_TEXTURE_OPTIONS_WORD).z) != 0 &&
             Texture(triangle, TexcoordUv(triangle, barycentric)).w * Surface(triangle, 2).w *
                     InterpolateTriangleColor(triangle, barycentric).w <
@@ -293,8 +289,21 @@ Hit TraceNative(float3 originWorld,
 #    endif
             continue;
         }
-        query.CommitNonOpaqueTriangleHit();
+        inoutQuery.CommitNonOpaqueTriangleHit();
     }
+}
+Hit TraceNative(float3 originWorld,
+                float3 directionWorld,
+                float nearDistanceWorld,
+                float farDistanceWorld,
+                bool isVisibility = false)
+{
+    Hit hit;
+    hit.Triangle = LUDUS_GPU_PREVIEW_INVALID_TRIANGLE;
+    hit.DistanceWorld = farDistanceWorld;
+    hit.Barycentric = 0;
+    RayQuery<RAY_FLAG_NONE> query;
+    TraceNativeQuery(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility, query);
     if (query.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
     {
         uint primitive = query.CommittedPrimitiveIndex();
@@ -309,6 +318,15 @@ Hit TraceNative(float3 originWorld,
     }
     return hit;
 }
+// Visibility consumes only committed status; candidate attributes remain necessary
+// for exactly the same masked-coverage test used by closest-hit traversal.
+bool TraceNativeVisibility(float3 originWorld, float3 directionWorld, float nearDistanceWorld, float farDistanceWorld)
+{
+    RayQuery<RAY_FLAG_NONE> query;
+    TraceNativeQuery(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, true, query);
+    return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
+}
+
 #endif
 #if defined(LUDUS_GRAPH_TRAVERSAL_STRATEGIES) || defined(LUDUS_SOFTWARE_RAY_TRAVERSAL)
 #    include "ray_triangle_loop.slang"
@@ -357,6 +375,38 @@ Hit Trace(float3 originWorld,
     return hit;
 #else
     return TraceWorld(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
+#endif
+}
+// Three outcomes preserve the existing software traversal failure contract.
+struct VisibilityResult
+{
+    bool HasFailed;
+    bool IsOccluded;
+};
+VisibilityResult ResolveVisibility(in Hit hit)
+{
+    VisibilityResult result;
+    result.HasFailed = hit.Triangle == LUDUS_GPU_PREVIEW_FAILED_TRIANGLE;
+    result.IsOccluded = result.HasFailed == false && hit.Triangle != LUDUS_GPU_PREVIEW_INVALID_TRIANGLE;
+    return result;
+}
+VisibilityResult
+TraceVisibility(float3 originWorld, float3 directionWorld, float nearDistanceWorld, float farDistanceWorld)
+{
+// Capture requires committed hit identity/distance for visibility event records.
+#if defined(LUDUS_RAY_PATH_CAPTURE) || defined(LUDUS_GPU_PREVIEW_VISIBILITY_FULL_HIT) ||                               \
+    defined(LUDUS_SOFTWARE_RAY_TRAVERSAL)
+    return ResolveVisibility(Trace(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, true));
+#else
+#    ifdef LUDUS_GRAPH_TRAVERSAL_STRATEGIES
+    if (GetGraphTraversalStrategy() == 1)
+        return ResolveVisibility(
+            TraceTriangleLoop(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, true));
+#    endif
+    VisibilityResult result;
+    result.HasFailed = false;
+    result.IsOccluded = TraceNativeVisibility(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld);
+    return result;
 #endif
 }
 // Thanks to Dirk Gerrit van Antwerpen, "Solving Self-Intersection Artifacts in
@@ -749,10 +799,10 @@ float3 Integrate(uint pixel, uint sample)
                     shadowDirectionWorld = NormalizeOrZero(offsetWorld);
                     distance = asfloat(asuint(distance) - 1);
                 }
-                Hit shadow = Trace(shadowOriginWorld, shadowDirectionWorld, 0, distance, true);
-                if (shadow.Triangle == LUDUS_GPU_PREVIEW_FAILED_TRIANGLE)
+                VisibilityResult shadow = TraceVisibility(shadowOriginWorld, shadowDirectionWorld, 0, distance);
+                if (shadow.HasFailed == true)
                     return float3(-1);
-                if (shadow.Triangle == LUDUS_GPU_PREVIEW_INVALID_TRIANGLE)
+                if (shadow.IsOccluded == false)
                     radiance +=
                         throughput * value * lightColor *
                         (dot(normalWorld, lightDirectionWorld) * (isDelta ? 1 : PowerWeight(pdf, bsdfPdf)) / pdf);

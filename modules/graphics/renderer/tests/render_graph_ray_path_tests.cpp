@@ -37,8 +37,8 @@ constexpr usize PIXEL_BYTES = static_cast<usize>(WIDTH) * HEIGHT * 4;
 constexpr usize VERTEX_COUNT = 3;
 constexpr usize INDEX_COUNT = 3;
 constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
-/// The ray_path fixture traces a camera query and two visibility queries per hit pixel.
-constexpr uint32 FIXTURE_EVENTS_PER_HIT = 3;
+/// The ray_path fixture traces a camera query and three visibility queries per hit pixel.
+constexpr uint32 FIXTURE_EVENTS_PER_HIT = 4;
 /// The ray_path fixture's red channel: (sample + 1) * SAMPLE_COLOR_SCALE.
 constexpr float32 SAMPLE_COLOR_SCALE = 0.125F;
 /// Orthographic identity camera: rays start on the z = 0 near plane and end on z = 1.
@@ -394,6 +394,9 @@ TEST_CASE("Scene compute capture records occluded and unoccluded visibility rays
         const renderer::RayPathEvent& camera = result.Events[usize{sample} * FIXTURE_EVENTS_PER_HIT];
         const renderer::RayPathEvent& occluded = result.Events[usize{sample} * FIXTURE_EVENTS_PER_HIT + 1];
         const renderer::RayPathEvent& unoccluded = result.Events[usize{sample} * FIXTURE_EVENTS_PER_HIT + 2];
+        constexpr usize PREVIEW_VISIBILITY_EVENT = 3;
+        const renderer::RayPathEvent& preview =
+            result.Events[usize{sample} * FIXTURE_EVENTS_PER_HIT + PREVIEW_VISIBILITY_EVENT];
         CHECK(camera.Sample == sample);
         CHECK(camera.Sequence == 0);
         CHECK(camera.Kind == renderer::RayPathEventKind::Closest);
@@ -415,6 +418,14 @@ TEST_CASE("Scene compute capture records occluded and unoccluded visibility rays
         CHECK(unoccluded.SourceId == 0);
         CHECK(IsNear(unoccluded.DirectionWorld.Z, -1) == true);
         CHECK(IsNear(unoccluded.HitDistanceWorld, unoccluded.MaxDistanceWorld) == true);
+        CHECK(preview.Sample == sample);
+        CHECK(preview.Sequence == PREVIEW_VISIBILITY_EVENT);
+        CHECK(preview.Kind == renderer::RayPathEventKind::Visibility);
+        CHECK(preview.Outcome == renderer::RayPathOutcome::Hit);
+        CHECK(preview.SourceId == 2);
+        CHECK(preview.Instance == 1);
+        CHECK(IsNear(preview.DirectionWorld.Z, 1) == true);
+        CHECK(IsNear(preview.HitDistanceWorld, OCCLUDER_DEPTH_WORLD - preview.OriginWorld.Z) == true);
     }
 }
 

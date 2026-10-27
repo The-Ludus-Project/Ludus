@@ -69,10 +69,11 @@ class RendererShaderRecipesTests(unittest.TestCase):
                     self.assertEqual(fragment, recipe.get("fragment", ""))
                     self.assertEqual(compute, recipe.get("compute", ""))
                     self.assertEqual(Path(dependency).name, "recipes.json")
-                    # Wrappers include the shared lit source; verify actual entries.
+                    # Diagnostic and material wrappers share production entries.
                     text = (SHADERS / recipe["source"]).read_text()
-                    if "renderer_lit.slang" in text:
-                        text += (SHADERS / "renderer_lit.slang").read_text()
+                    for shared in ["renderer_lit.slang", "renderer_gpu_preview.slang"]:
+                        if f'#include "{shared}"' in text:
+                            text += (SHADERS / shared).read_text()
                     for entry in [vertex, fragment, compute]:
                         if entry:
                             self.assertIn(entry + "(", text)

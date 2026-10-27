@@ -127,5 +127,10 @@
     "source": "renderer_clustered_authored_debug.slang",
     "vertex": "VertexMain",
     "fragment": "ShadowMain"
+  },
+  "renderer_gpu_preview_visibility_full": {
+    "source": "renderer_gpu_preview_visibility_full.slang",
+    "compute": "ComputeMain",
+    "native_ray_queries": true
   }
 }
