@@ -39,8 +39,20 @@ public:
     /// @return Ready on success. Any failure leaves the package empty. A package
     /// that already holds a generation returns InvalidState and is unchanged.
     [[nodiscard]] RenderGraphPackageStatus Decode(foundation::BorrowedView<const foundation::uint8> bytes) noexcept;
+    /// Decode an editor-only diagnostic ray path capture generation
+    /// (content::render_graph_format::RAY_PATH_CAPTURE_PACKAGE_MAGIC). The layout and copy
+    /// semantics are Decode's; GetPrograms then sets RenderGraphPrograms::HasRayPathCapture, so the
+    /// programs initialize only a separate diagnostic RenderGraph. RenderGraphActivation refuses
+    /// such a package. A runtime package's magic is rejected here, as this magic is by Decode.
+    /// @param bytes Complete file image; need only be valid during the call.
+    /// @return Ready on success; UnsupportedVersion for another magic or an unknown layout version;
+    /// otherwise Decode's failures. Any failure leaves the package empty.
+    [[nodiscard]] RenderGraphPackageStatus
+    DecodeRayPathCapture(foundation::BorrowedView<const foundation::uint8> bytes) noexcept;
     /// Whether a decoded generation is held.
     [[nodiscard]] bool IsLoaded() const noexcept;
+    /// Whether the held generation was decoded by DecodeRayPathCapture; false when empty.
+    [[nodiscard]] bool IsRayPathCapture() const noexcept;
     /// Borrow the numeric plan; empty when no generation is held. Valid until Reset.
     [[nodiscard]] RenderGraphPlan GetPlan() const noexcept;
     /// Bypass every Denoise operation exactly as a disabled Denoise node cooks: each ray pass
@@ -68,6 +80,8 @@ public:
 
 private:
     struct State;
+    [[nodiscard]] RenderGraphPackageStatus decode(foundation::BorrowedView<const foundation::uint8> bytes,
+                                                  foundation::uint32 magic) noexcept;
     foundation::core::UniquePtr<State> mState;
 };
 /// Lifecycle of the most recently staged candidate generation.
@@ -173,6 +187,8 @@ public:
     /// An earlier unactivated candidate is discarded. A CPU interface mismatch
     /// returns Unsupported with RestartRequired; setup failure returns its status
     /// with Failed. Neither changes the active generation. Pending/Ready is accepted.
+    /// A diagnostic ray path capture package (RenderGraphPackage::IsRayPathCapture) returns
+    /// InvalidDescription without staging: it never becomes a drawing generation.
     [[nodiscard]] rhi::RasterStatus Stage(foundation::core::UniquePtr<RenderGraphPackage> package) noexcept;
     /// Select and stage an authored renderer, taking ownership of both packages.
     /// @param rasterPackage Loaded raster-only graph; mandatory on every device.

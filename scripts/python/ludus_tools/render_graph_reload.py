@@ -59,6 +59,34 @@ def rebuild(manifest, output, runtime_package, *, configuration='Default', **opt
         return {'build': report, 'runtime': cooked}
 
 
+def ray_path_capture_sources(generation):
+    """Return the verified generation, its saved source root and saved build manifest."""
+    generation = execution.resolve_generation(generation)
+    package = build.verify_package(generation)
+    sources = generation / 'sources'
+    manifest = sources / package['source_map']['build_manifest']
+    build.require(manifest.resolve().is_relative_to(sources.resolve()) and manifest.is_file(), 'Package',
+                  str(generation), 'the generation carries no saved build manifest')
+    return generation, sources, manifest
+
+
+def rebuild_ray_path_capture(generation, output, destination, *, configuration='Default', **options):
+    """Compile and cook the ray path capture variant of one published generation.
+
+    The variant is linked from the generation's own saved source snapshot, never the
+    live project sources, so it traces exactly what the runtime package cooked from
+    that generation traces. output is the capture build tree, separate from the
+    generation's tree; destination receives the editor-only diagnostic package
+    (cook_ray_path_capture). A failure preserves the previous diagnostic package.
+    """
+    generation, sources, manifest = ray_path_capture_sources(generation)
+    options = {key: value for key, value in options.items() if key != 'root'}
+    report = build.build_package(manifest, output, root=sources, ray_path_capture=True, **options)
+    build.checkpoint(options.get('cancel'))
+    cooked = execution.cook_ray_path_capture(report['package'], destination, configuration=configuration)
+    return {'build': report, 'ray_path_capture': cooked, 'source_generation': generation.name}
+
+
 def watch(manifest, output, runtime_package, emit, *, interval=0.2, configuration='Default', **options):
     """Watch explicit source roots; emit only build/error events, never unchanged polls."""
     root = Path(options.get('root') or Path(manifest).parent).resolve()

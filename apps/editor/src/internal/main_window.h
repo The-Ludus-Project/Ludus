@@ -144,6 +144,8 @@ private:
     /// focus. Under Focus Viewport only the status bar announces them.
     void revealErrorList();
     void setupProfiling();
+    /// Native GPU preview only: the Ray Paths panel of the renderer's ray path inspection.
+    void setupRayPaths();
     void renderBuildErrors();
     void SaveWorkspaceLayout() const;
     [[nodiscard]] bool ConfirmProjectChange(const QString& action);
@@ -214,6 +216,10 @@ private:
     QDockWidget* mContentDock;
     QDockWidget* mRenderPreviewDock;
     QDockWidget* mProfilingDock;
+    /// Ray Paths panel; null in builds without the native GPU preview.
+    QDockWidget* mRayPathsDockOrNull = nullptr;
+    /// Whether the panel was last shown for an active or unavailable capture, so it opens once per request.
+    bool mHasShownRayPaths = false;
     ProfilingPanel* mProfilingPanel;
     QAction* mRecordProfileAction;
     QToolBar* mStandardToolbar;

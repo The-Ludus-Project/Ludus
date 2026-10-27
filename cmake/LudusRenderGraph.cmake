@@ -6,15 +6,21 @@ include("${CMAKE_CURRENT_LIST_DIR}/LudusDependencies.cmake")
 # RUNTIME_PACKAGE also cooks <NAME>.lurgrt for RG3 runtime activation and sets
 # <NAME>_RUNTIME_PACKAGE in the caller's scope to its absolute build-tree path.
 # RAY_PATH_CAPTURE emits only the header of the diagnostic ray path capture variant;
-# capture builds are never cooked into runtime packages.
+# capture builds are never cooked into runtime packages. RAY_PATH_CAPTURE_PACKAGE (with
+# RAY_PATH_CAPTURE) also cooks the editor-only diagnostic <NAME>.lurgrd and sets
+# <NAME>_RAY_PATH_CAPTURE_PACKAGE in the caller's scope; runtime activation refuses it.
 function(ludus_compile_render_graph)
-    cmake_parse_arguments(PARSE_ARGV 0 GRAPH "RUNTIME_PACKAGE;RAY_PATH_CAPTURE" "TARGET;NAME;MANIFEST;ROOT;CONFIGURATION" "")
+    cmake_parse_arguments(PARSE_ARGV 0 GRAPH "RUNTIME_PACKAGE;RAY_PATH_CAPTURE;RAY_PATH_CAPTURE_PACKAGE"
+        "TARGET;NAME;MANIFEST;ROOT;CONFIGURATION" "")
     if(GRAPH_UNPARSED_ARGUMENTS OR NOT TARGET "${GRAPH_TARGET}" OR
        NOT GRAPH_NAME MATCHES "^[A-Za-z][A-Za-z0-9_]*$" OR NOT GRAPH_MANIFEST)
         message(FATAL_ERROR "ludus_compile_render_graph requires TARGET NAME MANIFEST; optional ROOT CONFIGURATION")
     endif()
     if(GRAPH_RUNTIME_PACKAGE AND GRAPH_RAY_PATH_CAPTURE)
         message(FATAL_ERROR "ludus_compile_render_graph: RAY_PATH_CAPTURE builds emit a header, never a RUNTIME_PACKAGE")
+    endif()
+    if(GRAPH_RAY_PATH_CAPTURE_PACKAGE AND NOT GRAPH_RAY_PATH_CAPTURE)
+        message(FATAL_ERROR "ludus_compile_render_graph: RAY_PATH_CAPTURE_PACKAGE requires RAY_PATH_CAPTURE")
     endif()
     get_filename_component(manifest "${GRAPH_MANIFEST}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
     if(NOT GRAPH_ROOT)
@@ -91,6 +97,11 @@ function(ludus_compile_render_graph)
     set(outputs "${output}/${GRAPH_NAME}.h")
     if(GRAPH_RAY_PATH_CAPTURE)
         list(APPEND arguments --ray-path-capture)
+    endif()
+    if(GRAPH_RAY_PATH_CAPTURE_PACKAGE)
+        list(APPEND arguments --ray-path-capture-package "${output}/${GRAPH_NAME}.lurgrd")
+        list(APPEND outputs "${output}/${GRAPH_NAME}.lurgrd" "${output}/${GRAPH_NAME}.lurgrd.resources.json")
+        set(${GRAPH_NAME}_RAY_PATH_CAPTURE_PACKAGE "${output}/${GRAPH_NAME}.lurgrd" PARENT_SCOPE)
     endif()
     if(GRAPH_RUNTIME_PACKAGE)
         list(APPEND arguments --runtime-package "${output}/${GRAPH_NAME}.lurgrt")

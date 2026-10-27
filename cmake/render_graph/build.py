@@ -15,6 +15,7 @@ def main():
     parser.add_argument('--spirv-cross')
     parser.add_argument('--runtime-package')
     parser.add_argument('--ray-path-capture', action='store_true')
+    parser.add_argument('--ray-path-capture-package')
     args = parser.parse_args()
     try:
         report = render_graph_build.build_package(args.manifest, args.output, root=args.root,
@@ -24,6 +25,9 @@ def main():
                     configuration=args.configuration, name=args.name)
         if args.runtime_package:
             render_graph_execution.cook_runtime(report['package'], args.runtime_package,
+                    configuration=args.configuration)
+        if args.ray_path_capture_package:
+            render_graph_execution.cook_ray_path_capture(report['package'], args.ray_path_capture_package,
                     configuration=args.configuration)
     except (ToolingError, OSError, ValueError) as error:
         print(str(error), file=sys.stderr)

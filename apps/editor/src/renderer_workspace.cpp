@@ -33,6 +33,7 @@
 
 #    include "editor_default_graph.h"
 #    include "editor_renderer_static.h"
+#    include "internal/ray_path_inspection.h"
 #    include "internal/render_graph_preview.h"
 #    include "internal/texture_viewer.h"
 #    include "renderer_composite.h"
@@ -1045,6 +1046,10 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         renderPreview();
     });
     mTextureViewerOrNull->SetPreview(mPreviewOrNull);
+    mRayPathsOrNull = new RayPathInspection(this);
+    mRayPathsOrNull->SetPreview(mPreviewOrNull);
+    connect(mRayPathsOrNull, &RayPathInspection::BuildRequested, this, &RendererWorkspace::startRayPathBuild);
+    connect(mPreviewOrNull, &RenderGraphPreview::RayPathCaptureChanged, &mPreviewPump, &ViewportFramePump::Wake);
     connect(&mPreviewPump, &ViewportFramePump::WorkRequested, this, &RendererWorkspace::ServicePreview);
     connect(mPreviewOrNull, &RenderGraphPreview::FramePresented, &mPreviewPump, &ViewportFramePump::Wake);
     connect(mPreviewOrNull, &RenderGraphPreview::Changed, &mPreviewPump, &ViewportFramePump::Wake);
@@ -2000,23 +2005,7 @@ bool RendererWorkspace::startBuild(bool shouldPreview, RenderGraphSource source)
                           build,
                           QStringLiteral("--root"),
                           QStringLiteral("{snapshot}")};
-    if (shouldOverride == true)
-    {
-        arguments += {QStringLiteral("--helper"), tools.Helper, QStringLiteral("--compiler"), tools.Compiler};
-    }
-    else
-    {
-        arguments +=
-            {QStringLiteral("--project"), mProjectRoot, QStringLiteral("--tooling-root"), mTooling.ToolingRoot};
-    }
-    if (shouldOverride == true && tools.Validator.isEmpty() == false)
-    {
-        arguments += {QStringLiteral("--validator"), tools.Validator};
-    }
-    if (shouldOverride == true && tools.SpirvCross.isEmpty() == false)
-    {
-        arguments += {QStringLiteral("--spirv-cross"), tools.SpirvCross};
-    }
+    appendBuildToolArguments(arguments);
     QString endpoint = mBuildSettings.WorkerSocket;
     if (endpoint.isEmpty() == true)
     {
@@ -2056,6 +2045,108 @@ bool RendererWorkspace::startBuild(bool shouldPreview, RenderGraphSource source)
                       configuration};
     }
     return startJob(QStringLiteral("build"), arguments, true, shouldPreview, source);
+}
+
+void RendererWorkspace::appendBuildToolArguments(QStringList& inoutArguments) const
+{
+    const bool shouldOverride = mBuildSettings.ShouldOverrideTools;
+    const RenderGraphBuildTools& tools = mBuildSettings.Tools;
+    if (shouldOverride == true)
+    {
+        inoutArguments += {QStringLiteral("--helper"), tools.Helper, QStringLiteral("--compiler"), tools.Compiler};
+    }
+    else
+    {
+        inoutArguments +=
+            {QStringLiteral("--project"), mProjectRoot, QStringLiteral("--tooling-root"), mTooling.ToolingRoot};
+    }
+    if (shouldOverride == true && tools.Validator.isEmpty() == false)
+    {
+        inoutArguments += {QStringLiteral("--validator"), tools.Validator};
+    }
+    if (shouldOverride == true && tools.SpirvCross.isEmpty() == false)
+    {
+        inoutArguments += {QStringLiteral("--spirv-cross"), tools.SpirvCross};
+    }
+}
+
+bool RendererWorkspace::BeginRayPathCapture(const QString& node)
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mRayPathsOrNull == nullptr)
+    {
+        return false;
+    }
+    QJsonObject graph;
+    static_cast<void>(mDocument.GetGraph(mCanvas->GetFile(), graph));
+    const RayPathTarget target{graph.value(QStringLiteral("id")).toString(), node};
+    if (mRayPathsOrNull->Begin(target) == false)
+    {
+        mStatus->setText(mRayPathsOrNull->GetStatus());
+        return false;
+    }
+    mStatus->setText(mRayPathsOrNull->GetStatus());
+    return true;
+#else
+    static_cast<void>(node);
+    return false;
+#endif
+}
+
+void RendererWorkspace::startRayPathBuild()
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    const RayPathFreeze& freeze = mPreviewOrNull->GetRayPathFreeze();
+    const QString build = buildDirectory();
+    const QString generation = build.isEmpty() == true
+                                   ? QString{}
+                                   : QDir(build).filePath(QStringLiteral("generations/") +
+                                                          QString::fromLatin1(freeze.GenerationIdentity.toHex()));
+    // The capture variant is compiled from the drawing generation's own saved sources, never newer edits.
+    if (generation.isEmpty() == true || QFileInfo(generation).isDir() == false)
+    {
+        mRayPathsOrNull->RejectBuild(QStringLiteral("The drawing generation has no build package in this project, as "
+                                                    "for the prebuilt engine default. Build & Preview the project's "
+                                                    "graph, then capture again."));
+        return;
+    }
+    if (IsJobActive() == true)
+    {
+        mRayPathsOrNull->RejectBuild(QStringLiteral("Another render-graph job is running; capture again once it "
+                                                    "finishes."));
+        return;
+    }
+    QString name = mDocument.GetRootGraph();
+    name.chop(static_cast<qsizetype>(QStringLiteral(".lurender.json").size()));
+    mRayPathPackage = QDir::cleanPath(QDir(build).filePath(QStringLiteral("../") + name + QStringLiteral(".lurgrd")));
+    const QString configuration = mConfiguration->currentText() == DEFAULT_CONFIGURATION
+                                      ? QStringLiteral("Default")
+                                      : mConfiguration->currentText();
+    QStringList arguments{generation,
+                          QDir::cleanPath(QDir(build).filePath(QStringLiteral("../ray-path-capture"))),
+                          mRayPathPackage,
+                          QStringLiteral("--configuration"),
+                          configuration};
+    appendBuildToolArguments(arguments);
+    QString endpoint = mBuildSettings.WorkerSocket;
+    if (endpoint.isEmpty() == true)
+    {
+        endpoint = qEnvironmentVariable("LUDUS_SHADER_WORKER_SOCKET");
+    }
+    if (endpoint.isEmpty() == true && mBuildSettings.ShouldOverrideTools == false &&
+        mWorkerOrNull->GetState() == RenderGraphWorkerState::Ready)
+    {
+        endpoint = mWorkerOrNull->Prepare();
+    }
+    if (endpoint.isEmpty() == false)
+    {
+        arguments += {QStringLiteral("--worker-socket"), endpoint};
+    }
+    if (startJob(QStringLiteral("ray-path-capture"), arguments, false) == false)
+    {
+        mRayPathsOrNull->RejectBuild(mStatus->text());
+    }
+#endif
 }
 
 bool RendererWorkspace::CookRuntime()
@@ -2143,6 +2234,13 @@ void RendererWorkspace::AcceptResult(const RenderGraphJobResult& result)
     if (result.Request.Request != mActiveRequest || result.Request.ProjectEpoch != mEpoch ||
         mDocument.IsLoaded() == false)
     {
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+        if (result.Request.Action == QStringLiteral("ray-path-capture") && mRayPathsOrNull != nullptr)
+        {
+            mRayPathsOrNull->RejectBuild(QStringLiteral("The project or graph changed while the capture variant "
+                                                        "compiled; capture again."));
+        }
+#endif
         Q_EMIT JobFinished();
         return;
     }
@@ -2199,6 +2297,21 @@ void RendererWorkspace::AcceptResult(const RenderGraphJobResult& result)
     {
         static_cast<void>(PreviewRuntime(result.Request.Source));
     }
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (result.Request.Action == QStringLiteral("ray-path-capture") && mRayPathsOrNull != nullptr)
+    {
+        if (result.IsSuccessful == true)
+        {
+            mRayPathsOrNull->AcceptBuild(mRayPathPackage);
+        }
+        else
+        {
+            mRayPathsOrNull->RejectBuild(result.IsCancelled == true
+                                             ? QStringLiteral("The capture build was cancelled.")
+                                             : QStringLiteral("%1: %2").arg(result.Code, result.Message));
+        }
+    }
+#endif
     renderStatus();
     if (result.IsSuccessful == false)
     {
@@ -3609,6 +3722,28 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition, bool i
             connect(open, &QAction::triggered, this, [this, source]() { openSourceLine(source, 1); });
         }
     }
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    // Canvas parity: capture is reachable here as well as from the Ray Paths panel.
+    const QString kind = node.value(QStringLiteral("kind")).toString();
+    const bool isRayNode = kind == QStringLiteral("RayTracingPipeline") ||
+                           (kind == QStringLiteral("ComputePipeline") && IsSceneComputeNode(node) == true);
+    if (mRayPathsOrNull != nullptr && (isNodeContext == false || isRayNode == true))
+    {
+        const QString captured = isNodeContext == true ? node.value(QStringLiteral("id")).toString() : QString{};
+        QAction* capture = menu.addAction(isNodeContext == true ? QStringLiteral("Capture Ray Paths")
+                                                                : QStringLiteral("Capture Ray Paths (All Ray Passes)"));
+        capture->setObjectName(isNodeContext == true ? QStringLiteral("renderGraphCaptureRayPathsAction")
+                                                     : QStringLiteral("renderGraphCaptureAllRayPathsAction"));
+        const QString problem = mPreviewOrNull->DescribeRayPathCaptureProblem();
+        capture->setToolTip(problem.isEmpty() == false
+                                ? problem
+                                : QStringLiteral("Click a pixel of the World viewport's graph output, then explore "
+                                                 "the rays it traced with the free camera."));
+        connect(capture, &QAction::triggered, this, [this, captured]() {
+            static_cast<void>(BeginRayPathCapture(captured));
+        });
+    }
+#endif
     if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("RayTracingPipeline"))
     {
         QAction* enable = menu.addAction(QStringLiteral("Enable Scene Materials"));

@@ -2,6 +2,7 @@
 
 #include <ludus/foundation/base/pointer.hpp>
 
+#include <ludus/graphics/renderer/overlays.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/renderer/viewport_frame.hpp>
 
@@ -67,6 +68,21 @@ public:
     /// presented image. Rejection preserves the prior view, pending candidate and
     /// report. No PT/BVH setup.
     [[nodiscard]] rhi::RasterStatus Update(Snapshot snapshot, const ViewDescription& view, ViewReport& report) noexcept;
+    /// Compose prepared debug geometry into every later Render, before display conversion.
+    /// The overlay draws into the linear scene target after the scene and depth-tests each
+    /// command (OverlayDepth) against that frame's own scene depth, which the scene pass then
+    /// keeps; OverlayDepth::Always draws through geometry. Overlay colors therefore pass through
+    /// the same exposure and display encoding as the scene. Between frames only.
+    /// @param overlaysOrNull Overlay renderer on this viewport's device, borrowed until replaced,
+    /// cleared or Reset. Null clears the overlay, and overlay is then ignored.
+    /// @param overlay A version of overlaysOrNull whose GetStatus is Ready. The caller keeps it
+    /// unreleased while set; it may Release a replaced version once this call returns, because
+    /// accepted frames retain their resources.
+    /// @return Ready once set or cleared. InvalidState before Initialize or while this viewport's
+    /// frame is open; the overlay's GetStatus failure (such as Pending) when not Ready; Unsupported
+    /// when the scene target is not linear RGBA8 (an HDR attachment; initialize with
+    /// ViewportColorMode::Linear8). Failure preserves the previous overlay.
+    [[nodiscard]] rhi::RasterStatus SetOverlay(OverlayRenderer* overlaysOrNull, PreparedOverlay overlay) noexcept;
     /// Render the latest Ready view into an unleased display image. Closed frame
     /// required; completion starts null. NotReady applies producer/consumer
     /// backpressure. A failure may still publish a token for accepted partial work.

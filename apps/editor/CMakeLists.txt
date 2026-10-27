@@ -145,6 +145,8 @@ set(editor_viewport_sources
     src/empty_world_view.cpp
     src/internal/viewport_size.h
     src/viewport_size.cpp
+    src/internal/ray_path_overlay.h
+    src/ray_path_overlay.cpp
     src/preview_viewport.cpp
     src/viewport_navigation.cpp
     src/viewport_play_input.cpp
@@ -163,6 +165,12 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
         src/internal/graph_display_frames.h src/graph_display_frames.cpp
         src/internal/world_graph_view.h src/world_graph_view.cpp
         src/internal/render_graph_worker.h src/render_graph_worker.cpp)
+    # Ray path inspection: the diagnostic capture run, its workflow, the inspector panel and its dock.
+    list(APPEND editor_viewport_sources
+        src/internal/ray_path_capture.h src/ray_path_capture.cpp
+        src/internal/ray_path_inspection.h src/ray_path_inspection.cpp
+        src/internal/ray_path_inspector.h src/ray_path_inspector.cpp
+        src/main_window_ray_paths.cpp)
     # The Renderer tab's texture viewer reads any graph attachment (colour or depth) back the same way.
     list(APPEND editor_viewport_sources
         src/internal/render_graph_targets.h src/render_graph_targets.cpp
@@ -616,7 +624,8 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     target_compile_definitions(ludus_editor PRIVATE LUDUS_EDITOR_NATIVE_PREVIEW=1 LUDUS_EDITOR_GPU_PREVIEW=1)
     target_link_libraries(ludus_editor PRIVATE Ludus::GraphicsRhi Qt6::Quick)
     ludus_compile_renderer_shaders(TARGET ludus_editor SHADERS
-        renderer_flat renderer_composite renderer_material renderer_lit renderer_output renderer_shadow)
+        renderer_flat renderer_composite renderer_material renderer_lit renderer_output renderer_shadow
+        renderer_overlay)
     ludus_compile_renderer_shaders(TARGET ludus_editor SHADERS
         renderer_lit_shadow renderer_clustered renderer_clustered_shadow
         renderer_clustered_authored renderer_clustered_authored_shadow
@@ -913,7 +922,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         target_compile_definitions(ludus_editor_tests PRIVATE LUDUS_EDITOR_NATIVE_PREVIEW=1 LUDUS_EDITOR_GPU_PREVIEW=1)
         target_link_libraries(ludus_editor_tests PRIVATE Ludus::GraphicsRhi Qt6::Quick)
         ludus_compile_renderer_shaders(TARGET ludus_editor_tests SHADERS
-            renderer_flat renderer_composite renderer_material renderer_lit renderer_output renderer_shadow)
+            renderer_flat renderer_composite renderer_material renderer_lit renderer_output renderer_shadow
+            renderer_overlay)
         ludus_compile_renderer_shaders(TARGET ludus_editor_tests SHADERS
             renderer_lit_shadow renderer_clustered renderer_clustered_shadow
             renderer_clustered_authored renderer_clustered_authored_shadow
@@ -960,6 +970,12 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             MANIFEST "${editor_ray_staged}/main.lushader.json" RUNTIME_PACKAGE)
         target_compile_definitions(ludus_editor_tests PRIVATE
             "LUDUS_EDITOR_RAY_GRAPH_FIXTURE=\"${editor_renderer_ray_RUNTIME_PACKAGE}\"")
+        # The same sources' diagnostic capture variant, as `render-graph ray-path-capture` cooks it.
+        ludus_compile_render_graph(TARGET ludus_editor_tests NAME editor_renderer_ray_capture
+            MANIFEST "${editor_ray_staged}/main.lushader.json" RAY_PATH_CAPTURE RAY_PATH_CAPTURE_PACKAGE)
+        target_compile_definitions(ludus_editor_tests PRIVATE
+            "LUDUS_EDITOR_RAY_CAPTURE_FIXTURE=\"${editor_renderer_ray_capture_RAY_PATH_CAPTURE_PACKAGE}\"")
+        target_sources(ludus_editor_tests PRIVATE tests/ray_path_inspection_tests.cpp)
         file(COPY "${progressive_source}/" DESTINATION "${progressive_staged}" PATTERN "*.in" EXCLUDE)
         configure_file("${progressive_source}/main.lushader.json.in" "${progressive_staged}/main.lushader.json" @ONLY)
         configure_file("${progressive_source}/main_shaders/progressive_closest.slang"

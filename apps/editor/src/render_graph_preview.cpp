@@ -30,6 +30,7 @@ constexpr int32 MAX_PRODUCER_MILLISECONDS = 10'000;
 constexpr float64 NANOSECONDS_PER_MILLISECOND = 1'000'000.0;
 /// Straight alpha below one cannot use the opaque static profile.
 constexpr float32 OPAQUE_ALPHA = 1.0F;
+} // namespace
 
 QString DescribeRasterStatus(rhi::RasterStatus status)
 {
@@ -63,6 +64,8 @@ QString DescribeRasterStatus(rhi::RasterStatus status)
     return QStringLiteral("Unknown");
 }
 
+namespace
+{
 QString DescribePackageStatus(renderer::RenderGraphPackageStatus status)
 {
     switch (status)
@@ -338,6 +341,9 @@ struct RenderGraphPreview::State final
         /// Every texture of the generation, for the texture viewer.
         RenderGraphTargetCatalogue Catalogue;
         QString RendererStatus;
+        /// Runtime package and generation identity, for ray path capture of this generation.
+        QString PackagePath;
+        QByteArray GenerationIdentity;
         StaticArray<format::Resource, format::MAX_RESOURCES> Descriptions{};
     };
     StaticArray<uint8, format::IDENTITY_BYTES> Interface{};
@@ -411,6 +417,16 @@ struct RenderGraphPreview::State final
     bool IsInspectionRequested = false;
     uint64 InspectingGeneration = 0;
     uint64 InspectingRevision = 0;
+    /// Ray path inspection: while frozen the live graph keeps Extraction as it was at the freeze.
+    bool IsFrozen = false;
+    RayPathFreeze Freeze;
+    QString StaleReason;
+    /// Latest camera and extraction supplied while frozen, applied by ThawRayPaths.
+    renderer::ViewDescription LiveView{};
+    uint64 LiveRevision = 0;
+    RenderGraphExtraction PendingExtraction;
+    bool HasPendingExtraction = false;
+    RayPathCapture Capture;
 };
 
 RenderGraphPreview::RenderGraphPreview(BorrowedView<const uint8> interfaceIdentity,
@@ -434,6 +450,7 @@ RenderGraphPreview::RenderGraphPreview(BorrowedView<const uint8> interfaceIdenti
 RenderGraphPreview::~RenderGraphPreview()
 {
     // Same release order as Detach, without notifying observers during destruction.
+    mState->Capture.Reset();
     mState->Display.Reset();
     mState->Reader.Release();
     mState->Inspector.Release();
@@ -488,6 +505,12 @@ void RenderGraphPreview::Detach() noexcept
         return;
     }
     state.Trace.Cancel("preview detached");
+    // The capture graph lives on this device too; decoded results stay for the inspector.
+    state.Capture.Release(QStringLiteral("The viewport device stopped before the capture finished."));
+    if (state.IsFrozen == true)
+    {
+        markRayPathStale(QStringLiteral("The viewport device stopped; capture again after it restarts."));
+    }
     // Drop the export and inspection consumers before the generations that own their textures.
     state.Display.Reset();
     state.IsCopyingDisplay = false;
@@ -663,6 +686,10 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
     const QByteArray namesDocument =
         names.open(QIODevice::ReadOnly) == true ? names.read(MAX_PACKAGE_BYTES) : QByteArray();
     target.Catalogue = MakeTargetCatalogue(plan, package->GetGenerationIdentity(), namesDocument);
+    target.PackagePath = Move(selectedPath);
+    const BorrowedView<const uint8> generationIdentity = package->GetGenerationIdentity();
+    target.GenerationIdentity = QByteArray(reinterpret_cast<const char*>(generationIdentity.GetDataOrNull()),
+                                           static_cast<qsizetype>(generationIdentity.GetSize()));
     state.ResolveTarget(target);
     state.Waiting = target;
     state.WaitingOrNull.Swap(package);
@@ -732,18 +759,42 @@ bool RenderGraphPreview::IsCopyingOutput() const noexcept
 }
 void RenderGraphPreview::SetExtraction(const RenderGraphExtraction& extraction)
 {
-    mState->Extraction = extraction;
-    mState->HasExtraction = extraction.Revision != 0;
+    State& state = *mState;
+    if (state.IsFrozen == true)
+    {
+        // The live graph keeps the frozen inputs; the edit applies when inspection ends.
+        state.PendingExtraction = extraction;
+        state.HasPendingExtraction = true;
+        state.LiveView = extraction.View;
+        state.LiveRevision = extraction.Revision;
+        markRayPathStale(QStringLiteral("The World changed after this capture; capture again to trace the edit."));
+        return;
+    }
+    state.Extraction = extraction;
+    state.HasExtraction = extraction.Revision != 0;
 }
 
 void RenderGraphPreview::SetCamera(const renderer::ViewDescription& view, uint64 revision)
 {
-    mState->Extraction.View = view;
-    mState->Extraction.Revision = revision;
+    State& state = *mState;
+    if (state.IsFrozen == true)
+    {
+        // Navigation explores the frozen paths; it never moves the frozen graph camera.
+        state.LiveView = view;
+        state.LiveRevision = revision;
+        return;
+    }
+    state.Extraction.View = view;
+    state.Extraction.Revision = revision;
 }
 void RenderGraphPreview::SetReferenceSize(const QSize& size)
 {
-    mState->ReferenceSize = size;
+    State& state = *mState;
+    if (state.IsFrozen == true && size != state.Freeze.ReferenceSize)
+    {
+        markRayPathStale(QStringLiteral("The viewport was resized after this capture; capture again at the new size."));
+    }
+    state.ReferenceSize = size;
 }
 
 QSize RenderGraphPreview::GetTargetSize() const noexcept
@@ -782,7 +833,7 @@ bool RenderGraphPreview::HasPendingWork() const noexcept
     const renderer::RenderGraphCandidateState candidate = state.Activation.GetReport().Candidate;
     return state.IsAwaitingProducer == true || state.Reader.IsBusy() == true || state.IsCopyingDisplay == true ||
            state.Inspector.IsBusy() == true || state.HasPendingPreparation == true ||
-           candidate == renderer::RenderGraphCandidateState::Preparing ||
+           state.Capture.HasPendingWork() == true || candidate == renderer::RenderGraphCandidateState::Preparing ||
            (candidate == renderer::RenderGraphCandidateState::NeedsUpdate && state.HasExtraction == true);
 }
 bool RenderGraphPreview::HasGpuFrame() const noexcept
@@ -1042,6 +1093,11 @@ void RenderGraphPreview::finishDisplayCopy()
 void RenderGraphPreview::advance()
 {
     State& state = *mState;
+    // No live frame or export copy is in flight here, so the capture graph may submit its sample.
+    if (state.Capture.Advance() == true)
+    {
+        Q_EMIT RayPathCaptureChanged();
+    }
     if (state.ReferenceSize.isEmpty() == true)
     {
         return;
@@ -1075,6 +1131,11 @@ void RenderGraphPreview::advance()
     {
         state.Active = state.Candidate;
         state.Candidate = {};
+        if (state.IsFrozen == true)
+        {
+            markRayPathStale(QStringLiteral("The graph was rebuilt after this capture; capture again to trace the "
+                                            "new generation."));
+        }
         // A rebuilt generation renumbers textures; the selection follows its name.
         Q_EMIT TargetsChanged();
     }
@@ -1154,7 +1215,9 @@ void RenderGraphPreview::advance()
         Q_EMIT TargetsChanged();
     }
     const uint64 drawable = activeOrNull->GetDrawableSceneRevision();
-    if ((state.FailedOutputGeneration == report.ActiveGeneration && state.FailedOutputRevision == drawable) ||
+    // While frozen the inspection view is rasterized from the free camera; the live graph waits.
+    if (state.IsFrozen == true ||
+        (state.FailedOutputGeneration == report.ActiveGeneration && state.FailedOutputRevision == drawable) ||
         drawable == 0 ||
         (mPresentedSession == state.Session && report.ActiveGeneration == mPresentedGeneration &&
          drawable == mPresentedRevision && activeOrNull->HasPendingSamples() == false))
@@ -1295,6 +1358,180 @@ void RenderGraphPreview::finishInspection()
     mInspectedGeneration = state.InspectingGeneration;
     mInspectedRevision = state.InspectingRevision;
     Q_EMIT TargetInspected();
+}
+
+QString RenderGraphPreview::DescribeRayPathCaptureProblem() const
+{
+    const State& state = *mState;
+    if (state.IsAttached == false)
+    {
+        return QStringLiteral("Start the World viewport to capture ray paths.");
+    }
+    const renderer::RenderGraphActivationReport report = state.Activation.GetReport();
+    if (report.ActiveGeneration == 0 || state.Active.Serial != report.ActiveGeneration || state.HasExtraction == false)
+    {
+        return QStringLiteral("Wait until the graph draws the World, then capture ray paths.");
+    }
+    switch (report.ActiveRenderer)
+    {
+        case renderer::RenderGraphRenderer::HardwareRayTracing:
+            return {};
+        case renderer::RenderGraphRenderer::ComputeRayTracing:
+            return QStringLiteral("Ray path capture is unavailable: this graph traces with software traversal, and "
+                                  "capture records native ray queries.");
+        case renderer::RenderGraphRenderer::Raster:
+            break;
+    }
+    return state.ShouldForceRaster == true
+               ? QStringLiteral("Ray path capture is unavailable while Force raster is selected.")
+               : QStringLiteral("Ray path capture is unavailable: the drawing renderer is raster (this GPU/API has "
+                                "no native ray queries, or the graph has no ray pass).");
+}
+
+bool RenderGraphPreview::FreezeRayPaths(QString& outError)
+{
+    State& state = *mState;
+    const QString problem = DescribeRayPathCaptureProblem();
+    if (problem.isEmpty() == false)
+    {
+        outError = problem;
+        return false;
+    }
+    RayPathFreeze freeze;
+    freeze.View = state.Extraction.View;
+    freeze.ReferenceSize = state.ReferenceSize;
+    freeze.OutputSize = {static_cast<int32>(state.Active.Width), static_cast<int32>(state.Active.Height)};
+    freeze.SceneRevision = state.Extraction.Revision;
+    freeze.ContentRevision = state.Extraction.ContentRevision;
+    freeze.Generation = state.Active.Serial;
+    freeze.GenerationIdentity = state.Active.GenerationIdentity;
+    freeze.InterfaceIdentity = QByteArray(reinterpret_cast<const char*>(state.Interface.GetData()),
+                                          static_cast<qsizetype>(format::IDENTITY_BYTES));
+    freeze.PackagePath = state.Active.PackagePath;
+    state.Freeze = Move(freeze);
+    state.IsFrozen = true;
+    state.StaleReason.clear();
+    state.LiveView = state.Extraction.View;
+    state.LiveRevision = state.Extraction.Revision;
+    state.HasPendingExtraction = false;
+    state.PendingExtraction = {};
+    state.Capture.Reset();
+    Q_EMIT RayPathCaptureChanged();
+    return true;
+}
+
+void RenderGraphPreview::ThawRayPaths()
+{
+    State& state = *mState;
+    if (state.IsFrozen == false)
+    {
+        return;
+    }
+    state.Capture.Reset();
+    state.IsFrozen = false;
+    state.Freeze = {};
+    state.StaleReason.clear();
+    if (state.HasPendingExtraction == true)
+    {
+        state.Extraction = state.PendingExtraction;
+        state.HasExtraction = state.Extraction.Revision != 0;
+        state.PendingExtraction = {};
+        state.HasPendingExtraction = false;
+    }
+    // Revisions only grow, so a camera supplied after the last extraction carries a newer one.
+    if (state.LiveRevision != 0 && state.LiveRevision != state.Extraction.Revision)
+    {
+        state.Extraction.View = state.LiveView;
+        state.Extraction.Revision = state.LiveRevision;
+    }
+    Q_EMIT RayPathCaptureChanged();
+    Q_EMIT Changed();
+}
+
+bool RenderGraphPreview::IsRayPathFrozen() const noexcept
+{
+    return mState->IsFrozen;
+}
+
+const RayPathFreeze& RenderGraphPreview::GetRayPathFreeze() const noexcept
+{
+    return mState->Freeze;
+}
+
+void RenderGraphPreview::BeginRayPathBuild()
+{
+    mState->Capture.BeginBuild();
+    Q_EMIT RayPathCaptureChanged();
+}
+
+void RenderGraphPreview::FailRayPathCapture(const QString& reason, bool isUnavailable)
+{
+    if (isUnavailable == true)
+    {
+        mState->Capture.SetUnavailable(reason);
+    }
+    else
+    {
+        mState->Capture.Fail(reason);
+    }
+    Q_EMIT RayPathCaptureChanged();
+}
+
+bool RenderGraphPreview::StartRayPathCapture(const QString& packagePath,
+                                             math::Vector2 pixel,
+                                             const RayPathTarget& target,
+                                             uint32 sampleCount)
+{
+    State& state = *mState;
+    if (state.IsFrozen == false || state.IsAttached == false)
+    {
+        state.Capture.Fail(QStringLiteral("Freeze the World viewport before tracing ray paths."));
+        Q_EMIT RayPathCaptureChanged();
+        return false;
+    }
+    QFile file(packagePath);
+    if (QFileInfo(packagePath).isFile() == false || QFileInfo(packagePath).size() > MAX_PACKAGE_BYTES ||
+        file.open(QIODevice::ReadOnly) == false)
+    {
+        state.Capture.Fail(QStringLiteral("The ray path capture package %1 is missing or unreadable.")
+                               .arg(QFileInfo(packagePath).fileName()));
+        Q_EMIT RayPathCaptureChanged();
+        return false;
+    }
+    const QByteArray bytes = file.read(MAX_PACKAGE_BYTES);
+    const bool isStarted = state.Capture.Start(state.Device,
+                                               state.Surface,
+                                               bytes,
+                                               state.Extraction,
+                                               state.Freeze,
+                                               pixel,
+                                               target,
+                                               sampleCount,
+                                               state.CompositeVertex,
+                                               state.CompositeFragment);
+    Q_EMIT RayPathCaptureChanged();
+    Q_EMIT Changed();
+    return isStarted;
+}
+
+const RayPathCapture& RenderGraphPreview::GetRayPathCapture() const noexcept
+{
+    return mState->Capture;
+}
+
+const QString& RenderGraphPreview::GetRayPathStaleReason() const noexcept
+{
+    return mState->StaleReason;
+}
+
+void RenderGraphPreview::markRayPathStale(const QString& reason)
+{
+    State& state = *mState;
+    if (state.StaleReason.isEmpty() == true)
+    {
+        state.StaleReason = reason;
+        Q_EMIT RayPathCaptureChanged();
+    }
 }
 
 renderer::RenderGraphActivationReport RenderGraphPreview::GetReport() const noexcept

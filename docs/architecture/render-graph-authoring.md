@@ -1230,10 +1230,11 @@ compute/raster execution. See the [authoring workflow](../development/render-gra
 
 ## Ray path inspection (proposed)
 
-**Status: the renderer and builder slice is implemented; the editor workflow is
-not.** The [authoring guide](../development/render-graph-authoring.md#capture-ray-paths-for-inspection)
+**Status: the renderer, builder and editor slices are implemented** for one pixel
+at 16 samples. Vulkan parity is established by batch CI. The
+[authoring guide](../development/render-graph-authoring.md#capture-ray-paths-for-inspection)
 documents usage. [Decisions](#ray-path-inspection-decisions) records the answers to
-the review's open questions and how the first slice differs from this design.
+the review's open questions and how the implementation differs from this design.
 
 Ray path inspection records the rays that a chosen ray-producing node actually
 traces for selected pixels. It freezes them in world space and draws them over the
@@ -1451,8 +1452,35 @@ The implemented slice differs from the design text in these ways:
   one callback set.
 - RenderGraph scene inputs have no masked materials yet, so the alpha-rejection
   counter is covered by decoder tests only.
-- How the editor obtains the variant's stage artifacts, given that runtime
-  packages refuse it, is left to the editor slice.
+- **Transport of the variant.** The editor runs `render-graph ray-path-capture`
+  on the drawing generation. It rebuilds the variant from that immutable
+  generation's saved `sources/` snapshot, never from newer project edits, so the
+  identical source snapshot is guaranteed rather than assumed. The native shader
+  worker is used when it is running, and the capture flag keeps its own stage
+  cache identity. The result is a diagnostic package: the runtime layout under its
+  own magic, `RAY_PATH_CAPTURE_PACKAGE_MAGIC`. The runtime decoder rejects that
+  magic, `RenderGraphActivation::Stage` rejects a diagnostic package, and only
+  `RenderGraphPackage::DecodeRayPathCapture` admits it. This reuses the package
+  decoder and its validation instead of adding a second artifact format, and
+  shipping runtime packages stay unchanged.
+- **Editor ownership.** `RenderGraphPreview` owns the freeze: it copies the graph
+  camera, World and content revisions (the revision seeds sampling), reference
+  and output sizes, generation serial and identity. It holds back later cameras
+  and extractions until inspection ends and submits no live frames meanwhile. It
+  also owns the capture run (`RayPathCapture`), which is advanced between live
+  frames. `RayPathInspection` owns the workflow, `PreviewViewport` the presentation
+  switch and pixel picking, and the **Ray Paths** panel the event tree.
+- **Overlay composition.** `RasterViewport::SetOverlay` composes a prepared
+  `OverlayRenderer` version into the scene target after the scene pass, which now
+  keeps its depth while an overlay is set. The target must be linear RGBA8, so
+  `RenderPreview` selects `ViewportColorMode::Linear8` while inspecting. Overlay
+  colors therefore pass through the same exposure and display conversion as the
+  scene. `RenderPreview` re-expands the world-space lines with the free camera
+  whenever that camera changes.
+- **Not yet implemented:** the depth-range and kind filters, the path scrubber, and
+  selecting a segment directly in the viewport (selection goes through the
+  panel's rows). A hit selects a World entity; objects of an imported scene that
+  are not entities are named but not selected.
 
 ## Forward scene generations
 

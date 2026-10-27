@@ -3,6 +3,7 @@ from copy import deepcopy
 import json
 import os
 import shutil
+import struct
 from pathlib import Path
 import tempfile
 import unittest
@@ -11,6 +12,7 @@ from ludus_tools import render_graph as graph, render_graph_build as build, rend
 from ludus_tools.errors import ToolingError
 from ludus_tools import render_graph_pipeline as pipeline
 from ludus_tools import render_graph_execution as execution
+from ludus_tools import render_graph_reload as reload
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / 'tests/sdk_consumer/rg2/raytracing'
@@ -677,6 +679,41 @@ class RayCompilerAcceptance(unittest.TestCase):
             self.assertFalse(destination.exists())
             self.assertEqual(0, build.build_package(manifest, root / 'build', **options)['cache_misses'])
             self.assertEqual(original, {path.relative_to(source): path.read_bytes() for path in source.rglob('*') if path.is_file()})
+
+    def test_ray_path_capture_rebuilds_a_generation_from_its_saved_sources(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'source'
+            shutil.copytree(ROOT / 'tests/sdk_consumer/rg2/ray_path', source)
+            manifest = source / 'main.lushader.json'
+            manifest.write_text((source / 'main.lushader.json.in').read_text().replace(
+                '@RG2_TEST_PROFILES@', '["metal"]'))
+            options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
+                           spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+            plain = build.build_package(manifest, root / 'build', **options)
+            runtime = execution.cook_runtime(plain['package'], root / 'plain.lurgrt')
+            # Later edits to the live sources must not reach the capture of the published generation.
+            edited = next((source / 'main_shaders').glob('*.slang'))
+            edited.write_text(edited.read_text() + '\n// edited after publication\n')
+            destination = root / 'plain.lurgrd'
+            result = reload.rebuild_ray_path_capture(root / 'build', root / 'capture', destination,
+                                                     root=str(source), **options)
+            self.assertEqual(result['source_generation'], plain['generation'])
+            capture = Path(result['build']['package'])
+            self.assertEqual({path.relative_to(Path(plain['package']) / 'sources'): path.read_bytes()
+                              for path in (Path(plain['package']) / 'sources').rglob('*') if path.is_file()},
+                             {path.relative_to(capture / 'sources'): path.read_bytes()
+                              for path in (capture / 'sources').rglob('*') if path.is_file()})
+            data = destination.read_bytes()
+            self.assertEqual(struct.unpack('<2I', data[:8]),
+                             (execution.RAY_PATH_CAPTURE_PACKAGE_MAGIC, execution.PACKAGE_VERSION))
+            self.assertEqual(result['ray_path_capture']['interface_identity'], runtime['interface_identity'])
+            self.assertEqual(result['ray_path_capture']['passes'], runtime['passes'])
+            self.assertTrue(execution.resource_names_path(destination).is_file())
+            # A plain build is never cooked as a capture, as cook_runtime refuses capture builds.
+            with self.assertRaises(ToolingError):
+                execution.cook_ray_path_capture(plain['package'], root / 'refused.lurgrd')
+            self.assertFalse((root / 'refused.lurgrd').exists())
 
     def test_builtin_visibility_templates_keep_the_static_host_interface(self):
         with tempfile.TemporaryDirectory() as temporary:

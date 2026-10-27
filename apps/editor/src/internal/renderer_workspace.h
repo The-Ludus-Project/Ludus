@@ -51,6 +51,7 @@ struct RenderGraphResolutionSelection;
 class CodeEditor;
 class CodeDocumentController;
 class CodeFormatter;
+class RayPathInspection;
 class RenderGraphPreview;
 class RenderGraphWorker;
 class RenderPreview;
@@ -337,6 +338,18 @@ public:
     {
         return mTextureViewerOrNull;
     }
+    /// Ray path inspection of the World viewport's graph, or null in builds without the native
+    /// GPU preview. The World viewport presents it; the shell's Ray Paths panel inspects it.
+    [[nodiscard]] RayPathInspection* GetRayPathInspectionOrNull() noexcept
+    {
+        return mRayPathsOrNull;
+    }
+    /// Capture the rays a canvas node traces: a RayTracingPipeline or scene ComputePipeline node of
+    /// the canvas document, or every ray pass of the drawing configuration for an empty node. The
+    /// next click on the World viewport's graph output picks the pixel; the capture variant of the
+    /// drawing generation is then compiled from that generation's saved sources and traced.
+    /// @return False when capture is unavailable; the inspection reports why.
+    [[nodiscard]] bool BeginRayPathCapture(const QString& node);
     /// Advance the preview from its source once (the timer calls this every display refresh).
     void ServicePreview();
 
@@ -513,6 +526,14 @@ private:
     RenderGraphPreview* mPreviewOrNull = nullptr;
     /// Renderer tab texture viewer; null in builds without the native GPU preview.
     TextureViewer* mTextureViewerOrNull = nullptr;
+    /// Ray path inspection of mPreviewOrNull; null in builds without the native GPU preview.
+    RayPathInspection* mRayPathsOrNull = nullptr;
+    /// Diagnostic package the running ray-path-capture job writes.
+    QString mRayPathPackage;
+    /// Compile the capture variant of the frozen generation from its saved source snapshot.
+    void startRayPathBuild();
+    /// Shader tool selection shared by graph builds and capture builds.
+    void appendBuildToolArguments(QStringList& inoutArguments) const;
     QTimer mSourceEditDebounce;
     /// Result, project and file whose diagnostics the Source view marks.
     foundation::uint64 mSourceDiagnosticsRequest = 0;

@@ -108,6 +108,9 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
     mProfilingDock->setObjectName(QStringLiteral("profilingDock"));
     BuildUi();
     setupProfiling();
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    setupRayPaths();
+#endif
     BuildMenus();
     InitializeWorkspace();
     connect(mDocuments, &DocumentWell::ActiveDocumentChanged, this, &MainWindow::renderActiveDocument);

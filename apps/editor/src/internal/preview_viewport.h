@@ -14,6 +14,7 @@
 #include <QFocusEvent>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QPointer>
 #include <QResizeEvent>
 #include <QTimer>
 #include <QWheelEvent>
@@ -26,6 +27,7 @@ class HostedWindowEndpoint;
 namespace ludus::editor
 {
 class PreviewShaderReload;
+class RayPathInspection;
 class RendererWorkspace;
 /// How the viewport shows engine frames in this process.
 enum class ViewportPresentation : foundation::uint8
@@ -82,7 +84,16 @@ public:
     void SetPlayInput(platform::HostedWindowEndpoint* endpointOrNull);
     /// Present the project's graph output using this viewport's scene, camera and device.
     /// Call on the GUI thread; workspace must outlive the binding. Native builds only.
+    /// While this viewport's preview feeds the graph, it also presents the workspace's ray path
+    /// inspection: picking a pixel takes the next left click on the graph output, and inspecting
+    /// shows the preview's raster frames from the free camera with the frozen paths over them.
+    /// Leaving inspection presents the live graph again.
     void UseProjectGraph(RendererWorkspace& inoutWorkspace);
+    /// Whether this viewport presents a ray path inspection (raster frames and frozen paths).
+    [[nodiscard]] LUDUS_INLINE bool IsInspectingRayPaths() const noexcept
+    {
+        return mIsInspectingRayPaths;
+    }
     /// Retain the last shown frame while an import candidate awaits publication.
     void HoldFrame();
     void ShowFrame();
@@ -166,5 +177,18 @@ private:
                                      Qt::MouseButtons buttons,
                                      Qt::KeyboardModifiers modifiers);
     [[nodiscard]] foundation::float32 getDrawableHeight() const noexcept;
+    /// Ray path inspection of the bound project graph; null without one.
+    QPointer<RayPathInspection> mRayPaths;
+    RendererWorkspace* mRayPathWorkspaceOrNull = nullptr;
+    bool mIsInspectingRayPaths = false;
+    /// Whether the status overlay shows the inspection's text, which must be cleared when it ends.
+    bool mIsShowingRayPathStatus = false;
+    /// Follow the inspection stage: switch presentation and the picking cursor.
+    void updateRayPathInspection();
+    /// Hand the inspection's current lines to the preview.
+    void updateRayPathOverlay();
+    /// Pick the clicked output pixel while the inspection waits for one.
+    /// @return True when the click was taken by picking.
+    [[nodiscard]] bool pickRayPathPixel(QPointF globalPosition);
 };
 } // namespace ludus::editor

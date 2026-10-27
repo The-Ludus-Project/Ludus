@@ -146,6 +146,8 @@ struct RenderGraphPackage::State final
     StaticArray<format::Pass, format::MAX_PASSES> Passes{};
     StaticArray<BorrowedView<const char>, format::MAX_PASSES> PassNames{};
     bool HasPassNames = false;
+    /// Decoded by DecodeRayPathCapture: the ray kernel is the diagnostic capture variant.
+    bool IsRayPathCapture = false;
     StaticArray<format::StorageBuffer, format::MAX_STORAGE_BUFFERS> StorageBuffers{};
     usize StorageBufferCount = 0;
     bool HasRelativeSizes = false;
@@ -587,6 +589,14 @@ RenderGraphPackage::RenderGraphPackage() noexcept = default;
 RenderGraphPackage::~RenderGraphPackage() noexcept = default;
 RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> bytes) noexcept
 {
+    return decode(bytes, format::PACKAGE_MAGIC);
+}
+RenderGraphPackageStatus RenderGraphPackage::DecodeRayPathCapture(BorrowedView<const uint8> bytes) noexcept
+{
+    return decode(bytes, format::RAY_PATH_CAPTURE_PACKAGE_MAGIC);
+}
+RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> bytes, uint32 expectedMagic) noexcept
+{
     if (mState.Get() != nullptr)
     {
         return RenderGraphPackageStatus::InvalidState;
@@ -614,7 +624,7 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
     ByteReader reader{candidate->Bytes.AsSpan()};
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
-    if (magic != format::PACKAGE_MAGIC ||
+    if (magic != expectedMagic ||
         (version != format::SOFTWARE_RAY_PACKAGE_VERSION && version != format::METALFX_SPATIAL_PACKAGE_VERSION &&
          version != format::DENOISING_PACKAGE_VERSION && version != format::BILINEAR_PACKAGE_VERSION &&
          version != format::TONE_MAPPING_PACKAGE_VERSION && version != format::ACCUMULATION_PACKAGE_VERSION &&
@@ -627,6 +637,7 @@ RenderGraphPackageStatus RenderGraphPackage::Decode(BorrowedView<const uint8> by
     {
         return RenderGraphPackageStatus::UnsupportedVersion;
     }
+    candidate->IsRayPathCapture = expectedMagic == format::RAY_PATH_CAPTURE_PACKAGE_MAGIC;
     candidate->HasRelativeSizes = version >= format::VIEW_PACKAGE_VERSION;
     candidate->HasSceneData = version >= format::SCENE_PACKAGE_VERSION;
     candidate->HasPersistentBuffers = version >= format::ORDERED_PACKAGE_VERSION;
@@ -850,6 +861,10 @@ bool RenderGraphPackage::IsLoaded() const noexcept
 {
     return mState.Get() != nullptr;
 }
+bool RenderGraphPackage::IsRayPathCapture() const noexcept
+{
+    return mState.Get() != nullptr && mState->IsRayPathCapture == true;
+}
 void RenderGraphPackage::BypassDenoising() noexcept
 {
     if (mState.Get() == nullptr)
@@ -894,6 +909,7 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
         return result;
     }
     const State& state = *mState;
+    result.HasRayPathCapture = state.IsRayPathCapture;
     for (usize pass = 0; pass < state.Header.PassCount; ++pass)
     {
         result.HasVisibilityBuffer =
@@ -1222,7 +1238,8 @@ Status RenderGraphActivation::Stage(core::UniquePtr<RenderGraphPackage> package)
         return Status::InvalidState;
     }
     State& state = *mState;
-    if (package.Get() == nullptr || package->IsLoaded() == false)
+    // A diagnostic capture generation runs only in its own RenderGraph, never as drawing output.
+    if (package.Get() == nullptr || package->IsLoaded() == false || package->IsRayPathCapture() == true)
     {
         return Status::InvalidDescription;
     }

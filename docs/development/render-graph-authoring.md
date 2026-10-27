@@ -2493,9 +2493,70 @@ Ray path capture records the rays that `RayTracingPipeline` nodes (triangle and
 scene callback profiles, with or without a visibility buffer) and scene
 `ComputePipeline` nodes trace for one pixel. The
 [design](../architecture/render-graph-authoring.md#ray-path-inspection-proposed)
-explains what the kernel can observe. This first slice is the renderer and
-builder part. The editor's frozen-path overlay, free-camera inspection and
-inspector panel are not implemented yet.
+explains what the kernel can observe. The editor freezes the World viewport's
+graph, traces the pixel and draws the frozen paths over the scene, which you then
+explore with the free camera. It is not a GPU frame debugger.
+
+**Inspect a pixel in the editor.**
+
+1. Show the World with the project's ray graph in the World viewport. Capture needs
+   the hardware raytracing renderer: a GPU or API without native ray queries, **Force
+   raster**, or a software-traversal graph reports capture as unavailable in the
+   **Ray Paths** panel. The viewport keeps rendering and navigating normally.
+2. On the Renderer canvas, right-click a `RayTracingPipeline` or scene
+   `ComputePipeline` node and choose **Capture Ray Paths**. To capture every ray
+   pass of the configuration, right-click the canvas background and choose
+   **Capture Ray Paths (All Ray Passes)** instead. The **Ray Paths** panel opens.
+3. Click a pixel of the graph output in the World viewport. Esc cancels. The
+   editor then freezes the graph camera, the World revision (which also seeds
+   sampling), the drawing generation and the viewport size.
+4. The editor compiles the capture variant from the drawing generation's saved
+   source snapshot (see below), then traces 16 samples of that pixel from the
+   frozen camera in a separate diagnostic graph. The panel shows each step. The
+   first capture waits for the variant's shaders and pipelines.
+5. The viewport now shows the built-in raster preview of the same World, so you
+   can fly freely: hold the right mouse button and use WASD, Alt to orbit, F to
+   frame. The frozen camera's frustum and the pixel's footprint are drawn in gray
+   and yellow. Each traced ray is a segment, colored by kind or by bounce depth:
+   orange for hits, blue for misses (drawn to the scene bounds with a faded tail),
+   green and red for unoccluded and occluded visibility rays, yellow for raster
+   first hits, and magenta for failures. Hits get small markers. Segments are
+   depth-tested against the scene; **X-ray** draws them through geometry. The
+   overlay passes through the viewport's display conversion, so its colors look
+   slightly muted.
+6. The panel groups events by sample, then pass, then sequence, with each pass's
+   sample radiance. Selecting a row highlights its segment and shows its fields.
+   Selecting a hit also selects its World entity. A sample filter limits the
+   drawing to one sample.
+7. Choose **Leave Inspection** to return to the live graph from the current editor
+   camera. **Capture Again** picks another pixel for the same target.
+
+While frozen, navigation never moves the graph camera, and the live graph renders
+no frames. A World edit, a viewport resize or a newly built generation marks the
+capture **Stale**. The paths stay visible but are never mixed with the newer
+inputs, and the edit reaches the live graph when you leave. A path whose records
+ran out of capacity is labeled truncated and drawn thin and faded, never as a
+complete path. One overlay draws at most 512 segments; the frustum always fits,
+and later segments are dropped. A capture of the engine's prebuilt default
+renderer is unavailable because it has no build package in the project: Build &
+Preview the project's graph first.
+
+**How the editor gets the capture variant.** Runtime packages never carry the
+variant. The editor runs
+
+```bash
+python -m ludus_tools --json render-graph ray-path-capture <build>/generations/<generation> <capture-build> <graph>.lurgrd --configuration <name> --project <project>
+```
+
+It compiles the variant from the generation's own `sources/` snapshot, never from
+newer edits, so it traces exactly what the drawing runtime package was cooked from.
+The output is a diagnostic package with the runtime package layout and its own
+magic (`RAY_PATH_CAPTURE_PACKAGE_MAGIC`, "LURP"). `RenderGraphPackage::Decode`, and
+therefore every runtime host and `RenderGraphActivation`, refuses it. Only
+`RenderGraphPackage::DecodeRayPathCapture` admits it, and its programs set
+`HasRayPathCapture`. The same tool options as `build` select the shader tools,
+including `--worker-socket`. In CMake, `RAY_PATH_CAPTURE_PACKAGE` (with
+`RAY_PATH_CAPTURE`) also cooks `<NAME>.lurgrd`.
 
 **Build the capture variant.** Capture uses a separate diagnostic kernel, compiled
 from the same source snapshot with `LUDUS_RAY_PATH_CAPTURE` defined. It adds one
@@ -2579,6 +2640,8 @@ Current limits:
   scene can exercise it end to end yet.
 - Native ray queries are required. Without them, `Initialize` of the capture
   variant fails like any native ray kernel; raster navigation is unaffected.
+- The editor captures one pixel at 16 samples and draws at most 512 segments.
+  Larger rectangles need a world-space line pass, which is a separate change.
 
 The capture keeps the plain kernel's output. The
 [capture GPU tests](../../modules/graphics/renderer/tests/render_graph_ray_path_tests.cpp)

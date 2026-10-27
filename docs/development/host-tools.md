@@ -42,3 +42,6 @@ RG1 shader/schema packages use the same installed backend. See [build sources,
 pinned SDK helper and immutable publication](render-graph-authoring.md#build-explicit-shader-packages-rg1).
 RG3 adds `render-graph cook-runtime`, `schema-diff` and `migrate`, and JSON
 failures carry an authored `location`. See [edit and reload graphs](render-graph-authoring.md#edit-and-reload-graphs-rg3).
+`render-graph ray-path-capture` compiles the editor-only diagnostic capture
+variant of a published generation; see
+[capture ray paths for inspection](render-graph-authoring.md#capture-ray-paths-for-inspection).
