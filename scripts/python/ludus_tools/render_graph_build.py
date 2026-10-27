@@ -790,7 +790,8 @@ def compile_program(program, schemas, closure, snapshot, work, helper, tools, ta
     return output, result
 
 
-def build_package(manifest, output, *, helper, compiler, validator=None, spirv_cross=None, root=None, cancel=None, worker_socket=None):
+def build_package(manifest, output, *, helper, compiler, validator=None, spirv_cross=None, root=None, cancel=None, worker_socket=None,
+                  ray_path_capture=False):
     """Build every authored technique/profile and atomically publish current.json.
 
     Sources/tools must remain identical to their captured snapshot at publication.
@@ -799,6 +800,9 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     GPU execution. Return an immutable package path and separate hit/miss counts.
     helper names the installed SDK shaders directory (or checkout cmake/shaders).
     Runs on macOS/Linux, with one nonblocking writer per output tree.
+    ray_path_capture links every ray kernel as the diagnostic LUDUS_RAY_PATH_CAPTURE
+    variant from the same snapshot. Its stages have their own cache identities, and the
+    result is never cooked into a runtime package.
     """
     started = time.monotonic()
     manifest = Path(manifest).resolve()
@@ -917,6 +921,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                          if stage in technique}
     selected_programs.update(identity for variant in variants for identity in ray.callback_programs(variant))
     programs = {identity: program for identity, program in programs.items() if identity in selected_programs}
+    require(not ray_path_capture or ray.TECHNIQUE in techniques, 'Capability', 'ray path capture',
+            'ray path capture requires a RayTracingPipeline or scene ComputePipeline node')
     if ray.TECHNIQUE in techniques:
         require(any(target in ('metal', 'spirv') for target in value['profiles']), 'Capability', 'profiles',
                 'Hardware raytracing requires native Metal or Vulkan; select an authored raster configuration on unsupported APIs')
@@ -931,7 +937,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                 technique['scene_interface']['visibility_buffer'] = profile['visibility_buffer']
             expanded = ray.expand_programs(authored_programs, technique, snapshot, helper, sys.modules[__name__],
                                           profile['variants'], profile['persistent'], schemas, profile['compute'],
-                                          profile['native_ray_queries'])
+                                          profile['native_ray_queries'], ray_path_capture)
             linked_programs.update(expanded)
         programs = linked_programs
         for program_identity in (*ray.COMPUTE_IDS, ray.IMAGE_VERTEX_ID, ray.IMAGE_FRAGMENT_ID):
@@ -1015,6 +1021,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                             record['native_ray_queries'] = profile['native_ray_queries']
                             record['scene_interface_version'] = technique.get('scene_interface', {}).get('version', 0)
                             record['visibility_buffer'] = profile['visibility_buffer']
+                            if ray_path_capture:
+                                record['ray_path_capture'] = True
                             record['canonical'] = deepcopy(record)
                             record['key'] = identity(record['canonical'])
                             recipes.append(record)

@@ -123,6 +123,123 @@ struct Hit
 };
 float4 InterpolateTriangle(uint triangle, uint first, in float2 barycentric);
 float4 InterpolateTriangleColor(uint triangle, in float2 barycentric);
+#ifdef LUDUS_RAY_PATH_CAPTURE
+// Diagnostic ray path capture; see render-graph-authoring.md#ray-path-inspection-proposed.
+// Selected invocations append each Trace() call to this buffer. Capture writes only the
+// buffer and the private statics below: it consumes no random dimension or query budget
+// and never changes a transport value, so color and accumulation match the plain kernel.
+LUDUS_SHADER_BINDING(LUDUS_RAY_PATH_CAPTURE_BINDING) RWStructuredBuffer<uint> rayPathCapture;
+static bool isRayPathSelected = false;
+static bool hasRayPathFailure = false;
+static uint rayPathSummary = 0;
+static uint2 rayPathPixel = 0;
+static uint rayPathSample = 0;
+static uint rayPathPass = 0;
+static uint rayPathSequence = 0;
+static uint rayPathRejected = 0;
+/// Select this invocation when the header's pixel rectangle and sample range contain it.
+void BeginRayPathCapture(uint2 positionPixel, uint sampleIndex)
+{
+    isRayPathSelected = false;
+    hasRayPathFailure = false;
+    rayPathSequence = 0;
+    rayPathRejected = 0;
+    if (rayPathCapture[LUDUS_RAY_PATH_HEADER_VERSION_WORD] != LUDUS_RAY_PATH_CAPTURE_VERSION)
+        return;
+    uint2 firstPixel =
+        uint2(rayPathCapture[LUDUS_RAY_PATH_HEADER_PIXEL_X_WORD], rayPathCapture[LUDUS_RAY_PATH_HEADER_PIXEL_Y_WORD]);
+    uint2 extentPixel =
+        uint2(rayPathCapture[LUDUS_RAY_PATH_HEADER_WIDTH_WORD], rayPathCapture[LUDUS_RAY_PATH_HEADER_HEIGHT_WORD]);
+    uint firstSample = rayPathCapture[LUDUS_RAY_PATH_HEADER_FIRST_SAMPLE_WORD];
+    uint sampleCount = rayPathCapture[LUDUS_RAY_PATH_HEADER_SAMPLE_COUNT_WORD];
+    if (any(positionPixel < firstPixel) || any(positionPixel - firstPixel >= extentPixel) ||
+        sampleIndex < firstSample || sampleIndex - firstSample >= sampleCount)
+        return;
+    uint2 offsetPixel = positionPixel - firstPixel;
+    rayPathPixel = positionPixel;
+    rayPathSample = sampleIndex;
+    rayPathPass = (Sampling.z >> LUDUS_GRAPH_PASS_INDEX_SHIFT) & LUDUS_GRAPH_PASS_INDEX_MASK;
+    rayPathSummary = ((offsetPixel.y * extentPixel.x + offsetPixel.x) * sampleCount + sampleIndex - firstSample) *
+                         LUDUS_RAY_PATH_CAPTURE_PASS_COUNT +
+                     rayPathPass;
+    isRayPathSelected = true;
+}
+/// Reserve and write one event record; a full buffer keeps earlier records and counts the drop.
+void AppendRayPathEvent(uint kind,
+                        float3 originWorld,
+                        float3 directionWorld,
+                        float minimumDistanceWorld,
+                        float maximumDistanceWorld,
+                        uint outcome,
+                        float hitDistanceWorld,
+                        uint triangle)
+{
+    uint rejected = rayPathRejected;
+    rayPathRejected = 0;
+    if (isRayPathSelected == false)
+        return;
+    uint sequence = rayPathSequence;
+    rayPathSequence += 1;
+    if (outcome == LUDUS_RAY_PATH_OUTCOME_FAILURE)
+        hasRayPathFailure = true;
+    uint record = 0;
+    InterlockedAdd(rayPathCapture[LUDUS_RAY_PATH_HEADER_APPENDED_WORD], 1, record);
+    if (record >= rayPathCapture[LUDUS_RAY_PATH_HEADER_RECORD_CAPACITY_WORD])
+    {
+        InterlockedAdd(rayPathCapture[LUDUS_RAY_PATH_HEADER_DROPPED_WORD], 1);
+        return;
+    }
+    uint summaryCount = rayPathCapture[LUDUS_RAY_PATH_HEADER_WIDTH_WORD] *
+                        rayPathCapture[LUDUS_RAY_PATH_HEADER_HEIGHT_WORD] *
+                        rayPathCapture[LUDUS_RAY_PATH_HEADER_SAMPLE_COUNT_WORD] * LUDUS_RAY_PATH_CAPTURE_PASS_COUNT;
+    uint base = LUDUS_RAY_PATH_HEADER_WORDS + summaryCount * LUDUS_RAY_PATH_SUMMARY_WORDS +
+                record * LUDUS_RAY_PATH_RECORD_WORDS;
+    bool isHit = outcome == LUDUS_RAY_PATH_OUTCOME_HIT && triangle < Counts.x;
+    uint triangleWord = triangle * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS;
+    rayPathCapture[base + LUDUS_RAY_PATH_RECORD_PIXEL_X_WORD] = rayPathPixel.x;
+    rayPathCapture[base + LUDUS_RAY_PATH_RECORD_PIXEL_Y_WORD] = rayPathPixel.y;
+    rayPathCapture[base + LUDUS_RAY_PATH_RECORD_SAMPLE_WORD] = rayPathSample;
+    rayPathCapture[base + LUDUS_RAY_PATH_RECORD_PASS_WORD] = rayPathPass;
+    rayPathCapture[base + LUDUS_RAY_PATH_RECORD_SEQUENCE_WORD] = sequence;
+    rayPathCapture[base + LUDUS_RAY_PATH_RECORD_KIND_WORD] = kind;
+    rayPathCapture[base + LUDUS_RAY_PATH_RECORD_OUTCOME_WORD] = outcome;
+    rayPathCapture[base + LUDUS_RAY_PATH_RECORD_REJECTED_WORD] = rejected;
+    for (uint axis = 0; axis < 3; ++axis)
+    {
+        rayPathCapture[base + LUDUS_RAY_PATH_RECORD_ORIGIN_WORD + axis] = asuint(originWorld[axis]);
+        rayPathCapture[base + LUDUS_RAY_PATH_RECORD_DIRECTION_WORD + axis] = asuint(directionWorld[axis]);
+    }
+    rayPathCapture[base + LUDUS_RAY_PATH_RECORD_MIN_DISTANCE_WORD] = asuint(minimumDistanceWorld);
+    rayPathCapture[base + LUDUS_RAY_PATH_RECORD_MAX_DISTANCE_WORD] = asuint(maximumDistanceWorld);
+    rayPathCapture[base + LUDUS_RAY_PATH_RECORD_HIT_DISTANCE_WORD] = asuint(hitDistanceWorld);
+    rayPathCapture[base + LUDUS_RAY_PATH_RECORD_TRIANGLE_WORD] =
+        isHit == true ? triangle : LUDUS_GPU_PREVIEW_INVALID_TRIANGLE;
+    rayPathCapture[base + LUDUS_RAY_PATH_RECORD_INSTANCE_WORD] =
+        isHit == true ? asuint(SceneValue(triangleWord + LUDUS_GRAPH_INSTANCE_WORD).w)
+                      : LUDUS_GPU_PREVIEW_INVALID_TRIANGLE;
+    rayPathCapture[base + LUDUS_RAY_PATH_RECORD_PRIMITIVE_WORD] =
+        isHit == true ? asuint(SceneValue(triangleWord + 2).w) : LUDUS_GPU_PREVIEW_INVALID_TRIANGLE;
+    uint2 sourceId = isHit == true ? asuint(SceneValue(triangleWord + LUDUS_GRAPH_SOURCE_WORD).zw) : uint2(0);
+    rayPathCapture[base + LUDUS_RAY_PATH_RECORD_SOURCE_LOW_WORD] = sourceId.x;
+    rayPathCapture[base + LUDUS_RAY_PATH_RECORD_SOURCE_HIGH_WORD] = sourceId.y;
+}
+/// Write the selected invocation's summary: final sequence count, failure and sample radiance.
+void EndRayPathCapture(float3 radiance)
+{
+    if (isRayPathSelected == false)
+        return;
+    bool hasFailed = hasRayPathFailure == true || any(isfinite(radiance) == false) || any(radiance < 0);
+    uint base = LUDUS_RAY_PATH_HEADER_WORDS + rayPathSummary * LUDUS_RAY_PATH_SUMMARY_WORDS;
+    rayPathCapture[base + LUDUS_RAY_PATH_SUMMARY_SAMPLE_WORD] = rayPathSample;
+    rayPathCapture[base + LUDUS_RAY_PATH_SUMMARY_PASS_WORD] = rayPathPass;
+    rayPathCapture[base + LUDUS_RAY_PATH_SUMMARY_EVENT_COUNT_WORD] = rayPathSequence;
+    for (uint channel = 0; channel < 3; ++channel)
+        rayPathCapture[base + LUDUS_RAY_PATH_SUMMARY_RADIANCE_WORD + channel] = asuint(radiance[channel]);
+    rayPathCapture[base + LUDUS_RAY_PATH_SUMMARY_FLAGS_WORD] =
+        LUDUS_RAY_PATH_SUMMARY_WRITTEN_FLAG | (hasFailed == true ? LUDUS_RAY_PATH_SUMMARY_FAILED_FLAG : 0u);
+    isRayPathSelected = false;
+}
+#endif
 #ifndef LUDUS_SOFTWARE_RAY_TRAVERSAL
 Hit TraceNative(float3 originWorld,
                 float3 directionWorld,
@@ -170,7 +287,12 @@ Hit TraceNative(float3 originWorld,
             Texture(triangle, TexcoordUv(triangle, barycentric)).w * Surface(triangle, 2).w *
                     InterpolateTriangleColor(triangle, barycentric).w <
                 Surface(triangle, 1).y)
+        {
+#    ifdef LUDUS_RAY_PATH_CAPTURE
+            rayPathRejected += 1;
+#    endif
             continue;
+        }
         query.CommitNonOpaqueTriangleHit();
     }
     if (query.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
@@ -191,11 +313,11 @@ Hit TraceNative(float3 originWorld,
 #if defined(LUDUS_GRAPH_TRAVERSAL_STRATEGIES) || defined(LUDUS_SOFTWARE_RAY_TRAVERSAL)
 #    include "ray_triangle_loop.slang"
 #endif
-Hit Trace(float3 originWorld,
-          float3 directionWorld,
-          float nearDistanceWorld,
-          float farDistanceWorld,
-          bool isVisibility = false)
+Hit TraceWorld(float3 originWorld,
+               float3 directionWorld,
+               float nearDistanceWorld,
+               float farDistanceWorld,
+               bool isVisibility)
 {
 #ifdef LUDUS_SOFTWARE_RAY_TRAVERSAL
     return TraceTriangleLoop(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
@@ -205,6 +327,36 @@ Hit Trace(float3 originWorld,
         return TraceTriangleLoop(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
 #    endif
     return TraceNative(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
+#endif
+}
+/// Every scene traversal of the kernel; capture variants record the submitted ray and its result.
+Hit Trace(float3 originWorld,
+          float3 directionWorld,
+          float nearDistanceWorld,
+          float farDistanceWorld,
+          bool isVisibility = false)
+{
+#ifdef LUDUS_RAY_PATH_CAPTURE
+    rayPathRejected = 0;
+    Hit hit = TraceWorld(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
+    bool isValidRay = all(isfinite(originWorld)) == true && all(isfinite(directionWorld)) == true &&
+                      isfinite(nearDistanceWorld) == true && isfinite(farDistanceWorld) == true &&
+                      nearDistanceWorld >= 0 && farDistanceWorld >= nearDistanceWorld;
+    uint outcome = isValidRay == false || hit.Triangle == LUDUS_GPU_PREVIEW_FAILED_TRIANGLE
+                       ? LUDUS_RAY_PATH_OUTCOME_FAILURE
+                   : hit.Triangle == LUDUS_GPU_PREVIEW_INVALID_TRIANGLE ? LUDUS_RAY_PATH_OUTCOME_MISS
+                                                                        : LUDUS_RAY_PATH_OUTCOME_HIT;
+    AppendRayPathEvent(isVisibility == true ? LUDUS_RAY_PATH_KIND_VISIBILITY : LUDUS_RAY_PATH_KIND_CLOSEST,
+                       originWorld,
+                       directionWorld,
+                       nearDistanceWorld,
+                       farDistanceWorld,
+                       outcome,
+                       hit.DistanceWorld,
+                       hit.Triangle);
+    return hit;
+#else
+    return TraceWorld(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
 #endif
 }
 // Thanks to Dirk Gerrit van Antwerpen, "Solving Self-Intersection Artifacts in
@@ -670,11 +822,17 @@ LUDUS_GPU_PREVIEW_COMPUTE_ENTRY void ComputeMain(uint3 positionPixel : SV_Dispat
     bool shouldSample = hasAccumulation == false || (sampleCount < Sampling.w && compensation.w == historyTag);
     if (shouldSample == true)
     {
+#ifdef LUDUS_RAY_PATH_CAPTURE
+        BeginRayPathCapture(positionPixel.xy, sampleCount);
+#endif
 #if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE)
         // Keep one callback invocation: duplicating it for raw/mean output expands large estimators twice.
         float3 sample = EvaluateGraphRay(pixel);
 #else
         float3 sample = Integrate(pixel, sampleCount);
+#endif
+#ifdef LUDUS_RAY_PATH_CAPTURE
+        EndRayPathCapture(sample);
 #endif
         if (hasAccumulation == false)
         {

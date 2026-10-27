@@ -235,7 +235,8 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
     // GraphUse::Visibility defaults to RasterVisibility::Both; LLVM 23 overlooks that
     // member initializer for the value-initialized tail of this array (.clang-tidy).
     // NOLINTBEGIN(bugprone-invalid-enum-default-initialization)
-    StaticArray<rhi::GraphUse, LUDUS_GRAPH_COMPUTE_BINDING_COUNT> computeUses{
+    // One more use than the frozen ABI's bindings: a capture-variant kernel's ray path buffer.
+    StaticArray<rhi::GraphUse, LUDUS_GRAPH_COMPUTE_BINDING_COUNT + 1> computeUses{
         {{versions[0], rhi::GraphAccessMode::StorageRead, 0, job.DataBytes, rhi::RasterVisibility::Compute},
          {versions[1],
           rhi::GraphAccessMode::Uniform,
@@ -293,6 +294,27 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
                                           rhi::GraphAccessMode::Sampled,
                                           0,
                                           0,
+                                          rhi::RasterVisibility::Compute};
+    }
+    if (state.HasRayPathCapture == true)
+    {
+        // Every pass appends to the one shared capture buffer, so each pass writes a new version.
+        rhi::GraphVersion previous;
+        rhi::GraphVersion next;
+        status = inoutResources.ImportBuffer(device, graph, job.RayPathCapture.Buffer, previous);
+        if (status == Status::Ready)
+        {
+            status = rhi::NextGraphVersion(device, graph, previous, next);
+        }
+        if (status != Status::Ready)
+        {
+            return status;
+        }
+        inoutResources.SetBufferVersion(job.RayPathCapture.Buffer, next);
+        computeUses[computeUseCount++] = {next,
+                                          rhi::GraphAccessMode::StorageReadWrite,
+                                          0,
+                                          job.RayPathCapture.Size,
                                           rhi::RasterVisibility::Compute};
     }
     const rhi::ComputeDispatch dispatch{

@@ -64,10 +64,10 @@ uint FindVisibilityTriangle(SceneContext scene, uint instanceIndex, uint primiti
 /// Returns MISS for clear pixels, SURFACE for a valid hit, FAILURE for invalid identity/depth/geometry.
 /// Failure latches queries.HasFailed. The query budget is unchanged. Source textures, scene and
 /// launch must share generation, camera and extent; the graph runtime enforces the producer pairing.
-uint LoadVisibilitySurface(SceneContext scene,
-                           RayLaunch launch,
-                           inout RayQueryContext inoutQueries,
-                           out SurfaceHit outHit)
+uint LoadVisibilitySurfaceWithoutCapture(SceneContext scene,
+                                         RayLaunch launch,
+                                         inout RayQueryContext inoutQueries,
+                                         out SurfaceHit outHit)
 {
     outHit = (SurfaceHit)0;
     if (inoutQueries.HasFailed == true || any(launch.ExtentPixel == 0) ||
@@ -124,5 +124,31 @@ uint LoadVisibilitySurface(SceneContext scene,
         return SCENE_QUERY_FAILURE;
     }
     return SCENE_QUERY_SURFACE;
+}
+/// Load the raster first hit; capture variants record it as a RasterFirstHit event so paths
+/// that start from the visibility buffer still begin at the camera.
+uint LoadVisibilitySurface(SceneContext scene,
+                           RayLaunch launch,
+                           inout RayQueryContext inoutQueries,
+                           out SurfaceHit outHit)
+{
+#    ifdef LUDUS_RAY_PATH_CAPTURE
+    uint status = LoadVisibilitySurfaceWithoutCapture(scene, launch, inoutQueries, outHit);
+    uint outcome = status == SCENE_QUERY_SURFACE ? LUDUS_RAY_PATH_OUTCOME_HIT
+                   : status == SCENE_QUERY_MISS  ? LUDUS_RAY_PATH_OUTCOME_MISS
+                                                 : LUDUS_RAY_PATH_OUTCOME_FAILURE;
+    rayPathRejected = 0;
+    AppendRayPathEvent(LUDUS_RAY_PATH_KIND_RASTER_FIRST_HIT,
+                       launch.CameraRay.OriginWorld,
+                       launch.CameraRay.DirectionWorld,
+                       launch.CameraRay.MinDistanceWorld,
+                       launch.CameraRay.MaxDistanceWorld,
+                       outcome,
+                       status == SCENE_QUERY_SURFACE ? outHit.DistanceWorld : launch.CameraRay.MaxDistanceWorld,
+                       status == SCENE_QUERY_SURFACE ? outHit.TriangleIndex : LUDUS_GPU_PREVIEW_INVALID_TRIANGLE);
+    return status;
+#    else
+    return LoadVisibilitySurfaceWithoutCapture(scene, launch, inoutQueries, outHit);
+#    endif
 }
 #endif
