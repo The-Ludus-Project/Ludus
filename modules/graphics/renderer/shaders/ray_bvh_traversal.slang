@@ -70,6 +70,20 @@ bool IntersectBvhBox(BvhRay ray, float3 minimumWorld, float3 maximumWorld, float
     }
     return true;
 }
+// The sheared 2D edge function first.x * second.y - first.y * second.x. Watertightness needs the
+// two triangles sharing an edge to compute exactly negated values. Ordinary float arithmetic
+// gives that, but Ludus compiles Metal with fast math, which may fuse either product into a
+// multiply-add and break the antisymmetry, so rays through a shared edge miss both triangles.
+// Evaluating in a canonical vertex order makes both triangles compute the same expression;
+// without fusion the result is bit-identical to the direct evaluation.
+float ComputeBvhEdgeFunction(float2 first, float2 second)
+{
+    bool isSwapped = first.x > second.x || (first.x == second.x && first.y > second.y);
+    float2 low = isSwapped == true ? second : first;
+    float2 high = isSwapped == true ? first : second;
+    float value = low.x * high.y - low.y * high.x;
+    return isSwapped == true ? -value : value;
+}
 bool IntersectBvhTriangle(uint triangle,
                           BvhRay ray,
                           float limitWorld,
@@ -106,7 +120,9 @@ bool IntersectBvhTriangle(uint triangle,
         py[corner] = (positionWorld[y] - ray.OriginWorld[y]) - shearY * dz;
         pz[corner] = dz * shearZ;
     }
-    float3 edge = float3(px[2] * py[1] - py[2] * px[1], px[0] * py[2] - py[0] * px[2], px[1] * py[0] - py[1] * px[0]);
+    float3 edge = float3(ComputeBvhEdgeFunction(float2(px[2], py[2]), float2(px[1], py[1])),
+                         ComputeBvhEdgeFunction(float2(px[0], py[0]), float2(px[2], py[2])),
+                         ComputeBvhEdgeFunction(float2(px[1], py[1]), float2(px[0], py[0])));
     if (any(edge < 0) && any(edge > 0))
         return false;
     float determinant = edge.x + edge.y + edge.z;

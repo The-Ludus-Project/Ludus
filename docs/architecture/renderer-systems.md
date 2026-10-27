@@ -1365,7 +1365,9 @@ submits one ordered graph with two compute passes in a frame of `surface`. The
 transport pass traces one sample for every pixel at the image's minimum committed
 count. It walks the BVH with float32 ports of the oracle's slab and watertight
 triangle tests (`ray_bvh_traversal.slang`, shared with render-graph `ComputeBvh`
-ray passes) and applies the same masked opacity, light proposals, power MIS,
+ray passes). Each edge function is evaluated in a canonical vertex order, so fast-math
+multiply-add contraction cannot open cracks between triangles that share an edge. The
+pass applies the same masked opacity, light proposals, power MIS,
 visible-GGX/Lambert sampling and compensated roulette. It adds emission, direct
 and indirect transport to Kahan-compensated device sums. Every random value uses
 the oracle's Philox address, so both implementations trace matching paths. A

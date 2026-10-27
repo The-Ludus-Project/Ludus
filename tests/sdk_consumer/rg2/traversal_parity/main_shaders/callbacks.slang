@@ -5,6 +5,9 @@
 static const float3 SECONDARY_DIRECTION_WORLD = float3(0.267261, 0.534522, 0.801784);
 static const float3 VISIBILITY_DIRECTION_WORLD = float3(-0.301511, 0.301511, 0.904534);
 static const float SECONDARY_DISTANCE_WORLD = 100;
+// Off-center, with x - y and x + y not integers, so no camera ray lies exactly on a room corner
+// line of the symmetric test view; exact edge ties measure tie-breaking, not traversal.
+static const float2 SUBPIXEL_SAMPLE = float2(0.3125, 0.5625);
 static const uint IDENTITY_MASK = 255;
 static const float CHANNEL_MAXIMUM = 255;
 static const float VISIBLE_LEVEL = 255;
@@ -17,7 +20,7 @@ float EncodeIdentity(uint status, SurfaceHit hit)
 float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext queries)
 {
     ScenePayload payload = (ScenePayload)0;
-    TraceAndShade(scene, queries, MakeCameraRay(launch, float2(0.5)), payload);
+    TraceAndShade(scene, queries, MakeCameraRay(launch, SUBPIXEL_SAMPLE), payload);
     return payload.Radiance;
 }
 void ShadeMiss(SceneContext scene, Ray ray, inout RayQueryContext queries, inout ScenePayload payload)

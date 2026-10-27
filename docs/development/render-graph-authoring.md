@@ -707,14 +707,22 @@ strategies. Each ray's traversal stack holds 64 nodes, and the builder's 48-leve
 depth limit keeps admitted scenes within it; an overflow would fail the query rather
 than return a partial result. Use it for scenes larger than a few hundred triangles,
 and `TriangleLoop` for small comparisons. Edge, tolerance and tie behavior can differ
-from hardware intersection and from the loop's Moller-Trumbore test.
+from hardware intersection and from the loop's Moller-Trumbore test. Ludus compiles
+Metal with fast math, which may fuse the watertight test's edge products into
+multiply-adds; each edge function is therefore evaluated in a canonical vertex order,
+so triangles sharing an edge still compute exactly negated values and rays through
+the edge cannot miss both.
 
 The `ludus_render_graph_ray_tests` traversal parity test renders a
 [fixture](../../tests/sdk_consumer/rg2/traversal_parity/main.lurender.json) with
 the three strategies over one set of callbacks. Each pixel encodes the camera
 ray's triangle, a secondary closest query's triangle and a visibility result. On
 a room with nested blocks, `ComputeBvh` must match `TriangleLoop` and, on devices
-with native ray queries, `NativeQuery` in all but one pixel in a thousand. The
+with native ray queries, `NativeQuery`. Camera rays sample off the pixel center so
+none lies exactly on a corner line, where strategies may break an equal-distance tie
+differently. On native Metal (Apple M5) all three images are identical; the test
+allows one pixel in a thousand for other backends. Vulkan compiles and first runs
+these tests in batch CI. The
 compiled kernel uses no native ray constructs; the build test also compiles it to
 WGSL with the pinned Slang compiler. WebGPU execution is not part of this profile
 yet, so no browser ray recipe is emitted.

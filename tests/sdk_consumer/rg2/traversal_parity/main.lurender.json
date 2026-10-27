@@ -19,16 +19,8 @@
           "to": "camera.target"
         },
         {
-          "from": "tonemap.color",
-          "to": "output.texture"
-        },
-        {
           "from": "trace.color",
-          "to": "accumulate.color"
-        },
-        {
-          "from": "accumulate.color",
-          "to": "tonemap.color"
+          "to": "output.texture"
         }
       ],
       "id": "TriangleLoop",
@@ -66,52 +58,23 @@
         },
         {
           "id": "trace",
-          "kind": "ComputePipeline",
           "inputs": [
             {
               "id": "scene",
-              "type": "Scene",
-              "required": true
+              "required": true,
+              "type": "Scene"
             },
             {
               "id": "view",
-              "type": "View",
-              "required": true
+              "required": true,
+              "type": "View"
             },
             {
               "id": "color",
-              "type": "ColorTexture",
-              "required": true
+              "required": true,
+              "type": "ColorTexture"
             }
           ],
-          "outputs": [
-            {
-              "id": "color",
-              "type": "ColorTexture",
-              "target": "color",
-              "format": "RGBA8Unorm",
-              "load": "Clear",
-              "store": "Store"
-            }
-          ],
-          "shaders": [
-            {
-              "id": "ray_generation",
-              "stage": "ray_generation",
-              "program": "Generate"
-            },
-            {
-              "id": "miss",
-              "stage": "miss",
-              "program": "Miss"
-            },
-            {
-              "id": "closest_hit",
-              "stage": "closest_hit",
-              "program": "Closest"
-            }
-          ],
-          "state": {},
           "invocation": {
             "dimensions": [
               96,
@@ -119,17 +82,36 @@
               1
             ],
             "traversal": "TriangleLoop"
-          }
-        },
-        {
-          "id": "accumulate",
-          "kind": "Accumulate",
-          "samples": 1
-        },
-        {
-          "id": "tonemap",
-          "kind": "ToneMap",
-          "exposure": 1
+          },
+          "kind": "ComputePipeline",
+          "outputs": [
+            {
+              "format": "RGBA8Unorm",
+              "id": "color",
+              "load": "Clear",
+              "store": "Store",
+              "target": "color",
+              "type": "ColorTexture"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "ray_generation",
+              "program": "Generate",
+              "stage": "ray_generation"
+            },
+            {
+              "id": "miss",
+              "program": "Miss",
+              "stage": "miss"
+            },
+            {
+              "id": "closest_hit",
+              "program": "Closest",
+              "stage": "closest_hit"
+            }
+          ],
+          "state": {}
         }
       ],
       "outputs": []
@@ -153,16 +135,8 @@
           "to": "camera.target"
         },
         {
-          "from": "tonemap.color",
-          "to": "output.texture"
-        },
-        {
           "from": "trace.color",
-          "to": "accumulate.color"
-        },
-        {
-          "from": "accumulate.color",
-          "to": "tonemap.color"
+          "to": "output.texture"
         }
       ],
       "id": "Native",
@@ -200,52 +174,23 @@
         },
         {
           "id": "trace",
-          "kind": "ComputePipeline",
           "inputs": [
             {
               "id": "scene",
-              "type": "Scene",
-              "required": true
+              "required": true,
+              "type": "Scene"
             },
             {
               "id": "view",
-              "type": "View",
-              "required": true
+              "required": true,
+              "type": "View"
             },
             {
               "id": "color",
-              "type": "ColorTexture",
-              "required": true
+              "required": true,
+              "type": "ColorTexture"
             }
           ],
-          "outputs": [
-            {
-              "id": "color",
-              "type": "ColorTexture",
-              "target": "color",
-              "format": "RGBA8Unorm",
-              "load": "Clear",
-              "store": "Store"
-            }
-          ],
-          "shaders": [
-            {
-              "id": "ray_generation",
-              "stage": "ray_generation",
-              "program": "Generate"
-            },
-            {
-              "id": "miss",
-              "stage": "miss",
-              "program": "Miss"
-            },
-            {
-              "id": "closest_hit",
-              "stage": "closest_hit",
-              "program": "Closest"
-            }
-          ],
-          "state": {},
           "invocation": {
             "dimensions": [
               96,
@@ -253,17 +198,36 @@
               1
             ],
             "traversal": "NativeQuery"
-          }
-        },
-        {
-          "id": "accumulate",
-          "kind": "Accumulate",
-          "samples": 1
-        },
-        {
-          "id": "tonemap",
-          "kind": "ToneMap",
-          "exposure": 1
+          },
+          "kind": "ComputePipeline",
+          "outputs": [
+            {
+              "format": "RGBA8Unorm",
+              "id": "color",
+              "load": "Clear",
+              "store": "Store",
+              "target": "color",
+              "type": "ColorTexture"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "ray_generation",
+              "program": "Generate",
+              "stage": "ray_generation"
+            },
+            {
+              "id": "miss",
+              "program": "Miss",
+              "stage": "miss"
+            },
+            {
+              "id": "closest_hit",
+              "program": "Closest",
+              "stage": "closest_hit"
+            }
+          ],
+          "state": {}
         }
       ],
       "outputs": []
@@ -287,16 +251,8 @@
           "to": "camera.target"
         },
         {
-          "from": "tonemap.color",
-          "to": "output.texture"
-        },
-        {
           "from": "trace.color",
-          "to": "accumulate.color"
-        },
-        {
-          "from": "accumulate.color",
-          "to": "tonemap.color"
+          "to": "output.texture"
         }
       ],
       "id": "ComputeBvh",
@@ -334,52 +290,23 @@
         },
         {
           "id": "trace",
-          "kind": "ComputePipeline",
           "inputs": [
             {
               "id": "scene",
-              "type": "Scene",
-              "required": true
+              "required": true,
+              "type": "Scene"
             },
             {
               "id": "view",
-              "type": "View",
-              "required": true
+              "required": true,
+              "type": "View"
             },
             {
               "id": "color",
-              "type": "ColorTexture",
-              "required": true
+              "required": true,
+              "type": "ColorTexture"
             }
           ],
-          "outputs": [
-            {
-              "id": "color",
-              "type": "ColorTexture",
-              "target": "color",
-              "format": "RGBA8Unorm",
-              "load": "Clear",
-              "store": "Store"
-            }
-          ],
-          "shaders": [
-            {
-              "id": "ray_generation",
-              "stage": "ray_generation",
-              "program": "Generate"
-            },
-            {
-              "id": "miss",
-              "stage": "miss",
-              "program": "Miss"
-            },
-            {
-              "id": "closest_hit",
-              "stage": "closest_hit",
-              "program": "Closest"
-            }
-          ],
-          "state": {},
           "invocation": {
             "dimensions": [
               96,
@@ -387,17 +314,36 @@
               1
             ],
             "traversal": "ComputeBvh"
-          }
-        },
-        {
-          "id": "accumulate",
-          "kind": "Accumulate",
-          "samples": 1
-        },
-        {
-          "id": "tonemap",
-          "kind": "ToneMap",
-          "exposure": 1
+          },
+          "kind": "ComputePipeline",
+          "outputs": [
+            {
+              "format": "RGBA8Unorm",
+              "id": "color",
+              "load": "Clear",
+              "store": "Store",
+              "target": "color",
+              "type": "ColorTexture"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "ray_generation",
+              "program": "Generate",
+              "stage": "ray_generation"
+            },
+            {
+              "id": "miss",
+              "program": "Miss",
+              "stage": "miss"
+            },
+            {
+              "id": "closest_hit",
+              "program": "Closest",
+              "stage": "closest_hit"
+            }
+          ],
+          "state": {}
         }
       ],
       "outputs": []
