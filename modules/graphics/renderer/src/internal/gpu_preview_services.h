@@ -855,11 +855,15 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     const bool hasPersistentBuffers = options.StorageBuffers.IsEmpty() == true &&
                                       bufferBindingCount == baseBindingCount + internal::GPU_GRAPH_BUFFER_COUNT;
     if (options.StorageBuffers.IsValid() == false || options.StorageBuffers.GetSize() > format::MAX_STORAGE_BUFFERS ||
-        (hasPersistentBuffers == false && bufferBindingCount != storageBindingCount) ||
-        compute.WorkgroupSize[0] != LUDUS_GPU_PREVIEW_GROUP_WIDTH || compute.WorkgroupSize[1] != 1 ||
-        compute.WorkgroupSize[2] != 1)
+        (hasPersistentBuffers == false && bufferBindingCount != storageBindingCount) || compute.WorkgroupSize[0] == 0 ||
+        compute.WorkgroupSize[1] == 0 || compute.WorkgroupSize[2] != 1)
     {
         return Status::InvalidDescription;
+    }
+    if (compute.WorkgroupSize[0] > caps.MaxWorkgroupSize[0] || compute.WorkgroupSize[1] > caps.MaxWorkgroupSize[1] ||
+        uint64(compute.WorkgroupSize[0]) * compute.WorkgroupSize[1] > caps.MaxWorkgroupInvocations)
+    {
+        return Status::Unsupported;
     }
     for (usize i = 0; i < baseBindingCount; ++i)
     {
@@ -945,6 +949,8 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
         state->StorageDescriptions[i] = options.StorageBuffers[i];
     }
     state->Options.StorageBuffers = {state->StorageDescriptions.GetData(), options.StorageBuffers.GetSize()};
+    state->WorkgroupWidth = compute.WorkgroupSize[0];
+    state->WorkgroupHeight = compute.WorkgroupSize[1];
     state->ComputeBindingCount = compute.Bindings.size();
     for (usize i = 0; i < compute.Bindings.size(); ++i)
     {
@@ -1383,7 +1389,8 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
                                            largestStorageBuffer,
                                            computeCaps.MaxStorageRange);
     }
-    if ((description.Width + 63) / 64 > computeCaps.MaxDispatch[0] || description.Height > computeCaps.MaxDispatch[1] ||
+    if ((description.Width - 1) / state.WorkgroupWidth + 1 > computeCaps.MaxDispatch[0] ||
+        (description.Height - 1) / state.WorkgroupHeight + 1 > computeCaps.MaxDispatch[1] ||
         description.Width > formatCaps.MaxAttachmentDimension2D ||
         description.Height > formatCaps.MaxAttachmentDimension2D)
     {

@@ -320,7 +320,7 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
     const rhi::ComputeDispatch dispatch{
         state.ComputePipeline,
         job.ComputeBindings,
-        {(job.Width + LUDUS_GPU_PREVIEW_GROUP_WIDTH - 1) / LUDUS_GPU_PREVIEW_GROUP_WIDTH, job.Height, 1}};
+        {(job.Width - 1) / state.WorkgroupWidth + 1, (job.Height - 1) / state.WorkgroupHeight + 1, 1}};
     rhi::GraphPassDescription compute;
     compute.Name = "GPU preview transport";
     compute.Uses = computeUses.GetData();

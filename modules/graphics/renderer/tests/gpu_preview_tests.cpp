@@ -21,6 +21,7 @@
 #include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/renderer/viewport.hpp>
+#include <ludus/graphics/rhi/compute.h>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/lifetime.h>
 
@@ -123,6 +124,34 @@ TEST_CASE("GPU preview transports emissive RGB on GPU and preserves leased outpu
         CHECK(renderer.PollGpuPreview() == S::NotReady);
         SKIP("Hardware raytracing unavailable; raster remains independently testable");
     }
+    // Malformed shape reflection must reject before retaining GPU resources.
+    for (usize axis = 0; axis < 2; ++axis)
+    {
+        rhi::RasterShaderDescription malformed = shaders::renderer_gpu_preview::Compute();
+        malformed.WorkgroupSize[axis] = 0;
+        CHECK(renderer.EnableGpuPreview(malformed,
+                                        shaders::renderer_gpu_preview_image::Vertex(),
+                                        shaders::renderer_gpu_preview_image::Fragment(),
+                                        {usize{32} * 1024 * 1024, usize{32} * 1024 * 1024, 1}) ==
+              S::InvalidDescription);
+        CHECK(renderer.PollGpuPreview() == S::NotReady);
+    }
+    rhi::RasterShaderDescription nonplanar = shaders::renderer_gpu_preview::Compute();
+    nonplanar.WorkgroupSize[2] = 2;
+    CHECK(renderer.EnableGpuPreview(nonplanar,
+                                    shaders::renderer_gpu_preview_image::Vertex(),
+                                    shaders::renderer_gpu_preview_image::Fragment(),
+                                    {usize{32} * 1024 * 1024, usize{32} * 1024 * 1024, 1}) == S::InvalidDescription);
+    CHECK(renderer.PollGpuPreview() == S::NotReady);
+    rhi::ComputeCapabilities computeCapabilities;
+    REQUIRE(rhi::GetComputeCapabilities(device, computeCapabilities) == S::Ready);
+    rhi::RasterShaderDescription oversized = shaders::renderer_gpu_preview::Compute();
+    oversized.WorkgroupSize[0] = computeCapabilities.MaxWorkgroupSize[0] + 1;
+    CHECK(renderer.EnableGpuPreview(oversized,
+                                    shaders::renderer_gpu_preview_image::Vertex(),
+                                    shaders::renderer_gpu_preview_image::Fragment(),
+                                    {usize{32} * 1024 * 1024, usize{32} * 1024 * 1024, 1}) == S::Unsupported);
+    CHECK(renderer.PollGpuPreview() == S::NotReady);
     rhi::RasterShaderDescription oldKernel = shaders::renderer_gpu_preview::Compute();
     constexpr usize COMPUTE_BINDING_COUNT = 6;
     rhi::RasterBinding oldBindings[COMPUTE_BINDING_COUNT];

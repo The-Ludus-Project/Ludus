@@ -5,6 +5,11 @@
 #include "renderer_composite.h"
 #include "renderer_flat.h"
 #include "renderer_gpu_preview.h"
+#include "renderer_gpu_preview_group128.h"
+#include "renderer_gpu_preview_group32.h"
+#include "renderer_gpu_preview_group64.h"
+#include "renderer_gpu_preview_group8x8.h"
+
 #include "renderer_gpu_preview_hit_cached.h"
 #include "renderer_gpu_preview_image.h"
 #include "renderer_gpu_preview_visibility_full.h"
@@ -63,6 +68,7 @@ constexpr usize TRIANGLE_CORNERS = 3;
 constexpr usize QUAD_VERTICES = 2 * TRIANGLE_CORNERS;
 constexpr usize MAX_VERTICES = usize(GRID_CELLS) * GRID_CELLS * QUAD_VERTICES;
 constexpr uint32 TEST_EXTENT = 64;
+constexpr uint32 WORKGROUP_TEST_EXTENT = 67;
 constexpr uint32 TEST_SAMPLES = 16;
 constexpr uint32 BENCHMARK_EXTENT = 512;
 constexpr uint32 BENCHMARK_SAMPLES = 128;
@@ -85,11 +91,13 @@ constexpr StaticArray<const char*, ALL_SCENE_COUNT> SCENE_NAMES{
 constexpr StaticArray<const char*, VARIANT_COUNT> CACHE_VARIANT_NAMES{{"uncached", "cached"}};
 constexpr StaticArray<const char*, VARIANT_COUNT> VARIANT_NAMES{{"full", "visibility"}};
 constexpr StaticArray<const char*, VARIANT_COUNT> PASS_VARIANT_NAMES{{"unprobed", "profiled"}};
+constexpr StaticArray<const char*, VARIANT_COUNT> WORKGROUP_VARIANT_NAMES{{"baseline", "candidate"}};
 enum class BenchmarkExperiment : uint32
 {
     Visibility,
     HitCache,
     PassTimings,
+    Workgroups,
 };
 enum class SceneKind : uint32
 {
@@ -104,6 +112,8 @@ enum class RenderPath : uint32
 {
     FullHit,
     VisibilityOnly,
+    Workgroup,
+    BaselineWorkgroup,
     UncachedHit,
     CachedHit,
     CpuOracle,
@@ -124,7 +134,7 @@ struct PassTimingSamples final
 };
 struct TimingSamples final
 {
-    PassTimingSamples Passes;
+    StaticArray<PassTimingSamples, VARIANT_COUNT> Passes;
     StaticArray<Array<float64>, VARIANT_COUNT> GpuNanoseconds;
     StaticArray<Array<uint64>, VARIANT_COUNT> WallNanoseconds;
     Array<uint64> PairGapNanoseconds;
@@ -207,12 +217,32 @@ void PrepareFixture(rhi::DeviceHandle device, RenderPath path, SceneKind scene, 
     REQUIRE(renderer.Initialize(device, shaders::renderer_flat::Vertex(), shaders::renderer_flat::Fragment()) ==
             Status::Ready);
     if (path == RenderPath::FullHit || path == RenderPath::VisibilityOnly || path == RenderPath::UncachedHit ||
-        path == RenderPath::CachedHit)
+        path == RenderPath::CachedHit || path == RenderPath::Workgroup || path == RenderPath::BaselineWorkgroup)
     {
-        const rhi::RasterShaderDescription shader =
+        rhi::RasterShaderDescription shader =
             path == RenderPath::CachedHit ? shaders::renderer_gpu_preview_hit_cached::Compute()
             : path == RenderPath::FullHit ? shaders::renderer_gpu_preview_visibility_full::Compute()
                                           : shaders::renderer_gpu_preview::Compute();
+        if (path == RenderPath::BaselineWorkgroup)
+            shader = shaders::renderer_gpu_preview_group64::Compute();
+        if (path == RenderPath::Workgroup)
+        {
+            const char* shapeOrNull = std::getenv("LUDUS_WORKGROUP_VARIANT");
+            if (shapeOrNull != nullptr)
+            {
+                if (std::strcmp(shapeOrNull, "32x1") == 0)
+                    shader = shaders::renderer_gpu_preview_group32::Compute();
+                else if (std::strcmp(shapeOrNull, "128x1") == 0)
+                    shader = shaders::renderer_gpu_preview_group128::Compute();
+                else if (std::strcmp(shapeOrNull, "8x8") == 0)
+                    shader = shaders::renderer_gpu_preview_group8x8::Compute();
+                else
+                {
+                    REQUIRE(std::strcmp(shapeOrNull, "64x1") == 0);
+                    shader = shaders::renderer_gpu_preview_group64::Compute();
+                }
+            }
+        }
         REQUIRE(renderer.EnableGpuPreview(shader,
                                           shaders::renderer_gpu_preview_image::Vertex(),
                                           shaders::renderer_gpu_preview_image::Fragment(),
@@ -422,17 +452,22 @@ void AdvancePairs(rhi::DeviceHandle device,
                   uint32 samples,
                   bool isBenchmark,
                   bool shouldMeasurePasses,
+                  bool shouldMeasureBothPasses,
                   bool shouldReverseOrder,
                   TimingSamples& outTimings)
 {
     const uint32 warmup = isBenchmark == true ? WARMUP_SAMPLES : 0;
     const bool shouldTimeFrames = isBenchmark == true || shouldMeasurePasses == true;
-    outTimings.Passes.HasMetadata = false;
+    for (PassTimingSamples& pass : outTimings.Passes)
+        pass.HasMetadata = false;
     if (shouldMeasurePasses == true)
     {
-        for (Array<float64>& values : outTimings.Passes.Nanoseconds)
-            REQUIRE(values.TryResize(samples - warmup) == true);
-        REQUIRE(outTimings.Passes.IntervalWords.TryResize(usize(samples - warmup) * PASS_INTERVAL_WORD_COUNT) == true);
+        for (PassTimingSamples& pass : outTimings.Passes)
+        {
+            for (Array<float64>& values : pass.Nanoseconds)
+                REQUIRE(values.TryResize(samples - warmup) == true);
+            REQUIRE(pass.IntervalWords.TryResize(usize(samples - warmup) * PASS_INTERVAL_WORD_COUNT) == true);
+        }
     }
     if (shouldTimeFrames == true)
     {
@@ -454,7 +489,8 @@ void AdvancePairs(rhi::DeviceHandle device,
             VisibilityFixture& fixture = inoutFixtures[variant];
             if (shouldTimeFrames == true)
                 REQUIRE(rhi::ArmGpuTiming(device) == Status::Ready);
-            const bool hasPassProbe = shouldMeasurePasses == true && variant == PROFILED_VARIANT_INDEX;
+            const bool hasPassProbe =
+                shouldMeasurePasses == true && (shouldMeasureBothPasses == true || variant == PROFILED_VARIANT_INDEX);
             if (hasPassProbe == true)
             {
                 const Status armed = rhi::ArmGpuPassTimings(device);
@@ -487,7 +523,9 @@ void AdvancePairs(rhi::DeviceHandle device,
                 }
             }
             if (hasPassProbe == true)
-                CollectPassTimings(device, sample > warmup ? usize(sample - warmup - 1) : 0, outTimings.Passes);
+                CollectPassTimings(device,
+                                   sample > warmup ? usize(sample - warmup - 1) : 0,
+                                   outTimings.Passes[variant]);
             firstCompletedAt = completedAt;
         }
     }
@@ -679,16 +717,23 @@ void CompareReference(rhi::DeviceHandle device,
 void RunPairedPreview(BenchmarkExperiment experiment)
 {
     const bool shouldCacheHit = experiment == BenchmarkExperiment::HitCache;
-    const bool shouldMeasurePasses = experiment == BenchmarkExperiment::PassTimings;
-    const char* directoryOrNull = std::getenv(shouldMeasurePasses == true ? "LUDUS_RAY_PASS_BENCHMARK_DIRECTORY"
-                                              : shouldCacheHit == true    ? "LUDUS_HIT_CACHE_BENCHMARK_DIRECTORY"
-                                                                          : "LUDUS_VISIBILITY_BENCHMARK_DIRECTORY");
+    const bool shouldMeasureBothPasses = experiment == BenchmarkExperiment::Workgroups;
+    const bool shouldMeasurePasses = experiment == BenchmarkExperiment::PassTimings || shouldMeasureBothPasses == true;
+    const char* directoryOrNull = std::getenv(shouldMeasureBothPasses == true ? "LUDUS_WORKGROUP_BENCHMARK_DIRECTORY"
+                                              : shouldMeasurePasses == true   ? "LUDUS_RAY_PASS_BENCHMARK_DIRECTORY"
+                                              : shouldCacheHit == true        ? "LUDUS_HIT_CACHE_BENCHMARK_DIRECTORY"
+                                                                              : "LUDUS_VISIBILITY_BENCHMARK_DIRECTORY");
     const bool isBenchmark = directoryOrNull != nullptr;
-    const bool shouldReverseOrder = std::getenv(shouldMeasurePasses == true ? "LUDUS_RAY_PASS_REVERSE_ORDER"
+    const bool shouldReverseOrder = std::getenv(shouldMeasureBothPasses == true ? "LUDUS_WORKGROUP_REVERSE_ORDER"
+                                                : shouldMeasurePasses == true   ? "LUDUS_RAY_PASS_REVERSE_ORDER"
                                                 : shouldCacheHit == true ? "LUDUS_HIT_CACHE_REVERSE_ORDER"
                                                                          : "LUDUS_VISIBILITY_REVERSE_ORDER") != nullptr;
     rr::internal::SetGpuPreviewOpacityPartitioningForTesting(true);
-    const uint32 extent = isBenchmark == true ? BENCHMARK_EXTENT : TEST_EXTENT;
+    const bool shouldUseOddExtent =
+        shouldMeasureBothPasses == true && std::getenv("LUDUS_WORKGROUP_ODD_EXTENT") != nullptr;
+    const uint32 extent = isBenchmark == true          ? BENCHMARK_EXTENT
+                          : shouldUseOddExtent == true ? WORKGROUP_TEST_EXTENT
+                                                       : TEST_EXTENT;
     const uint32 samples = isBenchmark == true ? BENCHMARK_SAMPLES : TEST_SAMPLES;
     for (usize sceneIndex = 0;
          sceneIndex < ((shouldCacheHit == true || shouldMeasurePasses == true) ? ALL_SCENE_COUNT : SCENE_COUNT);
@@ -721,13 +766,16 @@ void RunPairedPreview(BenchmarkExperiment experiment)
             SKIP("Native ray queries unavailable");
         StaticArray<VisibilityFixture, VARIANT_COUNT> fixtures{};
         PrepareFixture(device,
-                       shouldCacheHit == true        ? RenderPath::UncachedHit
-                       : shouldMeasurePasses == true ? RenderPath::VisibilityOnly
-                                                     : RenderPath::FullHit,
+                       shouldMeasureBothPasses == true ? RenderPath::BaselineWorkgroup
+                       : shouldCacheHit == true        ? RenderPath::UncachedHit
+                       : shouldMeasurePasses == true   ? RenderPath::VisibilityOnly
+                                                       : RenderPath::FullHit,
                        scene,
                        fixtures[0]);
         PrepareFixture(device,
-                       shouldCacheHit == true ? RenderPath::CachedHit : RenderPath::VisibilityOnly,
+                       shouldMeasureBothPasses == true ? RenderPath::Workgroup
+                       : shouldCacheHit == true        ? RenderPath::CachedHit
+                                                       : RenderPath::VisibilityOnly,
                        scene,
                        fixtures[1]);
         const rr::DirectLight light
@@ -755,7 +803,15 @@ void RunPairedPreview(BenchmarkExperiment experiment)
         TimingSamples timings;
         // Both immutable pipelines/scenes are ready before any timed frame. AB,BA
         // alternation pairs the same sample address, on one device/queue/surface.
-        AdvancePairs(device, surface, fixtures, samples, isBenchmark, shouldMeasurePasses, shouldReverseOrder, timings);
+        AdvancePairs(device,
+                     surface,
+                     fixtures,
+                     samples,
+                     isBenchmark,
+                     shouldMeasurePasses,
+                     shouldMeasureBothPasses,
+                     shouldReverseOrder,
+                     timings);
         StaticArray<Array<uint8>, VARIANT_COUNT> pixels{};
         StaticArray<Array<math::Vector4>, VARIANT_COUNT> linear{};
         for (usize variant = 0; variant < VARIANT_COUNT; ++variant)
@@ -778,9 +834,10 @@ void RunPairedPreview(BenchmarkExperiment experiment)
             for (usize variant = 0; variant < VARIANT_COUNT; ++variant)
             {
                 const std::string variantDirectory = directory + "/" +
-                                                     (shouldMeasurePasses == true ? PASS_VARIANT_NAMES[variant]
-                                                      : shouldCacheHit == true    ? CACHE_VARIANT_NAMES[variant]
-                                                                                  : VARIANT_NAMES[variant]);
+                                                     (shouldMeasureBothPasses == true ? WORKGROUP_VARIANT_NAMES[variant]
+                                                      : shouldMeasurePasses == true   ? PASS_VARIANT_NAMES[variant]
+                                                      : shouldCacheHit == true        ? CACHE_VARIANT_NAMES[variant]
+                                                                                      : VARIANT_NAMES[variant]);
                 WriteArtifact(variantDirectory,
                               sceneName,
                               ".rgba",
@@ -789,8 +846,9 @@ void RunPairedPreview(BenchmarkExperiment experiment)
                 WriteLinear(variantDirectory, sceneName, linear[variant]);
                 WriteTimings(variantDirectory, sceneName, timings.GpuNanoseconds[variant]);
                 WriteIntegers(variantDirectory, sceneName, ".wall.bin", timings.WallNanoseconds[variant]);
-                if (shouldMeasurePasses == true && variant == PROFILED_VARIANT_INDEX)
-                    WritePassTimings(variantDirectory, sceneName, timings.Passes);
+                if (shouldMeasurePasses == true &&
+                    (shouldMeasureBothPasses == true || variant == PROFILED_VARIANT_INDEX))
+                    WritePassTimings(variantDirectory, sceneName, timings.Passes[variant]);
             }
             WriteIntegers(directory, sceneName, ".gap.bin", timings.PairGapNanoseconds);
             WriteIntegers(directory, sceneName, ".order.bin", timings.IsBaselineFirst);
@@ -839,4 +897,9 @@ TEST_CASE("Per-pass GPU probes preserve ray rendering and separate transport fro
           "[renderer][gpu][ray-pass-timings]")
 {
     RunPairedPreview(BenchmarkExperiment::PassTimings);
+}
+
+TEST_CASE("Transport workgroups preserve rendering and CPU/GPU parity", "[renderer][gpu][workgroups]")
+{
+    RunPairedPreview(BenchmarkExperiment::Workgroups);
 }
