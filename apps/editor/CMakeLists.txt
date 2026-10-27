@@ -1082,8 +1082,15 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     ludus_editor_add_default_render_graph(ludus_render_graph_configuration_tests)
     ludus_apply_project_defaults(ludus_render_graph_configuration_tests)
     ludus_enable_test_exceptions(ludus_render_graph_configuration_tests)
-    add_test(NAME ludus_render_graph_configuration_tests COMMAND ludus_render_graph_configuration_tests)
-    set_tests_properties(ludus_render_graph_configuration_tests PROPERTIES LABELS "editor;render-graph" TIMEOUT 30
+    add_test(NAME ludus_render_graph_configuration_tests COMMAND ludus_render_graph_configuration_tests
+        --durations yes)
+    # The render-graph workspace suite grows with each canvas and template feature;
+    # no single case dominates. At 152 cases macos-clang-debug took 31.9 s wall
+    # (22.5 s CPU) at load 37 and 54.7 s under CTest at higher load; Linux CI took
+    # 11 s and Linux ASan 22 s. macOS ASan exceeded the former 30 s TIMEOUT in every
+    # batch since 2026-10-26 (a 29.0 s pass on 2026-10-24). This TIMEOUT only catches
+    # a hung case; --durations yes names the completed ones.
+    set_tests_properties(ludus_render_graph_configuration_tests PROPERTIES LABELS "editor;render-graph" TIMEOUT 180
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
     add_executable(ludus_render_graph_live_build_tests tests/main.cpp tests/render_graph_live_build_tests.cpp
