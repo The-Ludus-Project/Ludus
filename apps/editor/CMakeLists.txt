@@ -1154,6 +1154,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/render_graph_shader_cleanup.cpp src/render_graph_shader_creation.cpp src/render_graph_scene_authoring.cpp src/render_graph_scene_bundle.cpp src/render_graph_techniques.cpp src/render_graph_pipeline_node.cpp src/render_graph_upscale_node.cpp
         src/render_graph_configuration_interface.cpp
         src/internal/render_graph_comment_frame.h src/render_graph_comment_frame.cpp
+        src/internal/render_graph_wire_routes.h src/render_graph_wire_routes.cpp
         src/render_graph_live_build.cpp src/internal/render_graph_live_build.h)
     set_target_properties(ludus_render_graph_live_build_tests PROPERTIES AUTOMOC ON)
     target_include_directories(ludus_render_graph_live_build_tests PRIVATE src)
