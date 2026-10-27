@@ -6,6 +6,7 @@
 #include "internal/render_graph_navigation.h"
 #include "internal/render_graph_node_ports.h"
 #include "internal/render_graph_pipeline_node.h"
+#include "internal/render_graph_reroutes.h"
 #include "internal/render_graph_resources.h"
 #include "internal/render_graph_scene_bundle.h"
 #include "internal/render_graph_upscale_node.h"
@@ -644,6 +645,8 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
     mDiagnostics = new RenderGraphDiagnostics(mDocument, *mFramingToolbar, *this);
     mHistoryOrNull = new RenderGraphHistory(mDocument, *this);
     mCommentsOrNull = new RenderGraphComments(*this, *mScene);
+    mReroutesOrNull = new RenderGraphReroutes(*this);
+    connect(mReroutesOrNull, &RenderGraphReroutes::PreviewChanged, this, &RenderGraphCanvas::updateEdges);
     setViewportMargins(0, mFramingToolbar->sizeHint().height() + mHistoryOrNull->sizeHint().height(), 0, 0);
     connect(mNavigation, &RenderGraphNavigation::TraceChanged, this, &RenderGraphCanvas::updateConnectionHighlight);
     connect(mNavigation, &RenderGraphNavigation::NodeRequested, this, [this](const QString& identity) {
@@ -666,7 +669,8 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
         "· drag nodes to arrange them (one "
         "undo step per drag) · drag from an output port to an "
         "input port to connect or replace · right-click nodes, wires or ports to edit · "
-        "Delete removes the selected node or link · double-click a "
+        "double-click a wire to add a reroute point · drag points to move them · "
+        "Delete removes the selected point, node or link · double-click a "
         "Subgraph to enter it, or any other node to show details · pinch, wheel or Ctrl+scroll "
         "zooms around the pointer · "
         "Home or two-finger double-tap frames the graph · F frames selection · Ctrl/Command+0 resets zoom"));
@@ -674,11 +678,16 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
 
 RenderGraphCanvas::~RenderGraphCanvas()
 {
+    delete mReroutesOrNull;
     delete mCommentsOrNull;
     qDeleteAll(mNodes);
     qDeleteAll(mEdges);
 }
 
+RenderGraphReroutes& RenderGraphCanvas::GetReroutes() noexcept
+{
+    return *mReroutesOrNull;
+}
 RenderGraphComments& RenderGraphCanvas::GetComments() noexcept
 {
     return *mCommentsOrNull;
@@ -787,7 +796,7 @@ void RenderGraphCanvas::FitGraph()
     {
         bounds = bounds.united(view->Frame->sceneBoundingRect());
     }
-    bounds = bounds.united(mCommentsOrNull->GetBounds());
+    bounds = bounds.united(mCommentsOrNull->GetBounds()).united(mReroutesOrNull->GetBounds());
     fitBounds(bounds);
     mShouldFitOnShow = false;
 }
@@ -1009,6 +1018,7 @@ void RenderGraphCanvas::Rebuild()
     qDeleteAll(mEdges);
     mEdges.clear();
     mCommentsOrNull->Clear();
+    mReroutesOrNull->Clear();
     mScene->clear();
     const QJsonObject record = configuration();
     if (record.isEmpty() == true)
@@ -1223,8 +1233,10 @@ void RenderGraphCanvas::Rebuild()
         mEdges.append(
             new EdgeView(link, mScene->addPath(QPainterPath(), QPen(QColor::fromRgba(EDITABLE_EDGE_COLOR), 2))));
     }
+    mReroutesOrNull->Rebuild(record);
     for (EdgeView* edge : std::as_const(mEdges))
     {
+        mReroutesOrNull->BindWire(edge->From, edge->To, *edge->Path);
         edge->Path->setZValue(-1);
         if (edge->IsEditable == false)
         {
@@ -1249,7 +1261,7 @@ void RenderGraphCanvas::Rebuild()
     refreshFeedback();
     updateSelection();
     mCommentsOrNull->Rebuild(record);
-    QRectF nodeBounds = mCommentsOrNull->GetBounds();
+    QRectF nodeBounds = mCommentsOrNull->GetBounds().united(mReroutesOrNull->GetBounds());
     for (const NodeView* view : std::as_const(mNodes))
     {
         nodeBounds = nodeBounds.united(view->Frame->sceneBoundingRect());
@@ -1523,8 +1535,34 @@ void RenderGraphCanvas::updateEdges()
             edge->Path->setPath(QPainterPath());
             continue;
         }
-        edge->Path->setPath(MakeCurve(from, to));
+        QPainterPath path(from);
+        QPointF previous = from;
+        for (QPointF point : mReroutesOrNull->GetPoints(edge->From, edge->To))
+        {
+            path.connectPath(MakeCurve(previous, point));
+            previous = point;
+        }
+        path.connectPath(MakeCurve(previous, to));
+        edge->Path->setPath(path);
     }
+    mReroutesOrNull->RefreshStyles();
+}
+
+int32 RenderGraphCanvas::findRerouteSegment(const QString& from, const QString& to, QPointF position) const
+{
+    QVector<QPointF> points = mReroutesOrNull->GetPoints(from, to);
+    points.prepend(GetPortPosition(from, true));
+    points.append(GetPortPosition(to, false));
+    QPainterPathStroker stroker;
+    stroker.setWidth(EDGE_HIT_WIDTH);
+    for (int32 index = 0; index + 1 < points.size(); ++index)
+    {
+        if (stroker.createStroke(MakeCurve(points.at(index), points.at(index + 1))).contains(position) == true)
+        {
+            return index;
+        }
+    }
+    return static_cast<int32>(points.size()) - 2;
 }
 
 int32 RenderGraphCanvas::GetNodeCount() const
@@ -1591,6 +1629,12 @@ void RenderGraphCanvas::SelectNode(const QString& node)
 
 void RenderGraphCanvas::SelectNodes(const QStringList& nodes)
 {
+    QStringList ordered = nodes;
+    ordered.sort();
+    if (ordered != GetSelectedNodes())
+    {
+        static_cast<void>(mReroutesOrNull->ClearSelection());
+    }
     for (NodeView* view : std::as_const(mNodes))
     {
         view->Frame->setSelected(view->IsMovable == true && nodes.contains(view->Id) == true);
@@ -1790,6 +1834,7 @@ void RenderGraphCanvas::updateConnectionHighlight()
             }
         }
     }
+    mReroutesOrNull->RefreshStyles();
 }
 
 QStringList RenderGraphCanvas::GetSelectedNodes() const
@@ -2166,6 +2211,12 @@ void RenderGraphCanvas::contextMenuEvent(QContextMenuEvent* event)
     const QString port = portAt(position, isOutput);
     const QString node = nodeAt(position);
     if (node.isEmpty() == true && port.isEmpty() == true &&
+        mReroutesOrNull->ShowContextMenu(position, event->globalPos()) == true)
+    {
+        event->accept();
+        return;
+    }
+    if (node.isEmpty() == true && port.isEmpty() == true &&
         mCommentsOrNull->ShowContextMenu(position, event->globalPos()) == true)
     {
         event->accept();
@@ -2177,6 +2228,25 @@ void RenderGraphCanvas::contextMenuEvent(QContextMenuEvent* event)
     {
         QMenu menu(this);
         menu.setObjectName(QStringLiteral("renderGraphConnectionMenu"));
+        if (port.isEmpty() == true && from.isEmpty() == false)
+        {
+            const int32 segment = findRerouteSegment(from, to, position);
+            const uint64 revision = GetDocumentRevision();
+            const QString file = mFile;
+            const QString configuration = mConfiguration;
+            QAction* add = menu.addAction(QStringLiteral("Add Reroute Point"));
+            add->setObjectName(QStringLiteral("renderGraphAddReroute"));
+            connect(add,
+                    &QAction::triggered,
+                    this,
+                    [this, from, to, segment, position, revision, file, configuration]() {
+                        if (revision == GetDocumentRevision() && file == mFile && configuration == mConfiguration)
+                        {
+                            mReroutesOrNull->AddPoint(from, to, segment, position);
+                        }
+                    });
+            menu.addSeparator();
+        }
         // Copy endpoints before executing: an edit can rebuild and delete every EdgeView.
         for (const EdgeView* edge : std::as_const(mEdges))
         {
@@ -2266,6 +2336,7 @@ void RenderGraphCanvas::mousePressEvent(QMouseEvent* event)
     const QString port = portAt(position, isOutput);
     if (port.isEmpty() == false && isOutput == true)
     {
+        static_cast<void>(mReroutesOrNull->ClearSelection());
         mLinkFrom = port;
         mLinkPreviewOrNull =
             mScene->addPath(MakeCurve(position, position), QPen(QColor::fromRgba(SELECTION_COLOR), 2, Qt::DashLine));
@@ -2282,6 +2353,7 @@ void RenderGraphCanvas::mousePressEvent(QMouseEvent* event)
     const QString node = nodeAt(position);
     if (node.isEmpty() == false)
     {
+        static_cast<void>(mReroutesOrNull->ClearSelection());
         NodeView* view = mNodes.value(node);
         if (event->modifiers().testFlag(Qt::ControlModifier) == true)
         {
@@ -2306,6 +2378,12 @@ void RenderGraphCanvas::mousePressEvent(QMouseEvent* event)
         event->accept();
         return;
     }
+    if (port.isEmpty() == true && mReroutesOrNull->BeginGesture(position) == true)
+    {
+        event->accept();
+        return;
+    }
+    static_cast<void>(mReroutesOrNull->ClearSelection());
     if (mCommentsOrNull->BeginGesture(position) == true)
     {
         event->accept();
@@ -2325,6 +2403,7 @@ void RenderGraphCanvas::mousePressEvent(QMouseEvent* event)
         }
         edge->Path->setData(0, isSelected);
     }
+    updateConnectionHighlight();
     if (from.isEmpty() == true)
     {
         mSelectionBeforeBox = event->modifiers().testFlag(Qt::ShiftModifier) == true ||
@@ -2348,6 +2427,11 @@ void RenderGraphCanvas::mouseMoveEvent(QMouseEvent* event)
         const QPoint delta = event->position().toPoint() - mPanPosition;
         mPanPosition = event->position().toPoint();
         panBy(delta);
+        event->accept();
+        return;
+    }
+    if (mReroutesOrNull->UpdateGesture(mapToScene(event->position().toPoint())) == true)
+    {
         event->accept();
         return;
     }
@@ -2405,6 +2489,11 @@ void RenderGraphCanvas::mouseReleaseEvent(QMouseEvent* event)
     {
         mIsPanning = false;
         setCursor(mIsSpacePressed == true ? Qt::OpenHandCursor : Qt::ArrowCursor);
+        event->accept();
+        return;
+    }
+    if (event->button() == Qt::LeftButton && mReroutesOrNull->EndGesture() == true)
+    {
         event->accept();
         return;
     }
@@ -2471,6 +2560,24 @@ void RenderGraphCanvas::mouseDoubleClickEvent(QMouseEvent* event)
         event->accept();
         return;
     }
+    const QPointF position = mapToScene(event->position().toPoint());
+    bool isOutput = false;
+    if (node.isEmpty() == true && portAt(position, isOutput).isEmpty() == true)
+    {
+        if (mReroutesOrNull->HasPointAt(position) == true)
+        {
+            event->accept();
+            return;
+        }
+        QString to;
+        const QString from = edgeAt(position, to);
+        if (from.isEmpty() == false)
+        {
+            mReroutesOrNull->AddPoint(from, to, findRerouteSegment(from, to, position), position);
+            event->accept();
+            return;
+        }
+    }
     if (node.isEmpty() == true && mCommentsOrNull->ActivateAt(mapToScene(event->position().toPoint())) == true)
     {
         event->accept();
@@ -2518,6 +2625,7 @@ void RenderGraphCanvas::keyPressEvent(QKeyEvent* event)
     }
     if (event->matches(QKeySequence::SelectAll) == true)
     {
+        static_cast<void>(mReroutesOrNull->ClearSelection());
         for (NodeView* view : std::as_const(mNodes))
         {
             view->Frame->setSelected(view->IsMovable);
@@ -2529,6 +2637,11 @@ void RenderGraphCanvas::keyPressEvent(QKeyEvent* event)
     }
     if (event->key() == Qt::Key_Escape)
     {
+        if (mReroutesOrNull->CancelGesture() == true || mReroutesOrNull->ClearSelection() == true)
+        {
+            event->accept();
+            return;
+        }
         if (mCommentsOrNull->CancelGesture() == true)
         {
             event->accept();
@@ -2565,6 +2678,11 @@ void RenderGraphCanvas::keyPressEvent(QKeyEvent* event)
     if (event->key() != Qt::Key_Delete && event->key() != Qt::Key_Backspace)
     {
         QGraphicsView::keyPressEvent(event);
+        return;
+    }
+    if (mReroutesOrNull->DeleteSelectedPoint() == true)
+    {
+        event->accept();
         return;
     }
     for (const EdgeView* edge : std::as_const(mEdges))
@@ -2605,6 +2723,7 @@ void RenderGraphCanvas::keyReleaseEvent(QKeyEvent* event)
 
 void RenderGraphCanvas::focusOutEvent(QFocusEvent* event)
 {
+    static_cast<void>(mReroutesOrNull->CancelGesture());
     static_cast<void>(mCommentsOrNull->CancelGesture());
     mIsSpacePressed = false;
     mIsPanning = false;

@@ -330,6 +330,39 @@ class RenderGraphTests(unittest.TestCase):
         self.assertEqual(before["passes"], after["passes"])
         self.assertNotEqual(before["dependencies"], after["dependencies"])
 
+    def test_wire_routes_preserve_semantics_and_canonical_roundtrip(self):
+        before = graph.compile_graph(self.path)
+        value = self.read()
+        edge = self.config(value)['edges'][0]
+        self.config(value)['layout'] = dict(positions=[], routes=[dict(
+            **edge, points=[dict(x=-32768, y=32768), dict(x=100, y=200)])])
+        self.assertEqual(json.loads(graph.canonical_asset(value)), value)
+        self.write(value)
+        after = graph.compile_graph(self.path)
+        self.assertEqual(before['semantic_digest'], after['semantic_digest'])
+        self.assertEqual(before['passes'], after['passes'])
+
+    def test_wire_route_schema_rejects_invalid_geometry_and_connections(self):
+        from ludus_tools import render_graph_layout as policy
+        original = self.read()
+        edge = self.config(original)['edges'][0]
+        route = dict(**edge, points=[dict(x=0, y=0)])
+        for change in (dict(points=[]), dict(points=None), dict(points=[dict(x=True, y=0)]),
+                       dict(points=[dict(x=0.5, y=0)]), dict(points=[dict(x=policy.MAX_COORDINATE + 1, y=0)]),
+                       dict(points=[dict(x=0, y=0, unknown=0)]),
+                       dict(points=[dict(x=0, y=0)] * (policy.MAX_WIRE_REROUTE_POINTS + 1)),
+                       dict(to='missing.color'), dict(to='#outputs.missing'), dict(unknown=0)):
+            with self.subTest(change=change):
+                value = copy.deepcopy(original)
+                self.config(value)['layout'] = dict(positions=[], routes=[route | change])
+                with self.assertRaises(ToolingError):
+                    graph.canonical_asset(value)
+        for routes in ([route, route], [route] * (policy.MAX_WIRE_ROUTES + 1), None):
+            value = copy.deepcopy(original)
+            self.config(value)['layout'] = dict(positions=[], routes=routes)
+            with self.assertRaises(ToolingError):
+                graph.canonical_asset(value)
+
     def test_comment_frames_preserve_semantics_and_canonical_roundtrip(self):
         before = graph.compile_graph(self.path)
         value = self.read()

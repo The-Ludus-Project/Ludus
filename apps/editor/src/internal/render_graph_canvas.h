@@ -39,6 +39,7 @@ namespace ludus::editor
 class RenderGraphNavigation;
 class RenderGraphHistory;
 class RenderGraphComments;
+class RenderGraphReroutes;
 class RenderGraphDiagnostics;
 /// Connection domain shown on the canvas (docs/architecture/render-graph-authoring.md,
 /// "Node and connection contracts"). Shader functions live in build manifests, not here.
@@ -153,6 +154,8 @@ public:
     [[nodiscard]] RenderGraphHistory& GetHistory() noexcept;
     /// Canvas-owned comment editing and grouped gestures; GUI thread only.
     [[nodiscard]] RenderGraphComments& GetComments() noexcept;
+    /// Canvas-owned reroute presentation and gestures; GUI thread only, valid for canvas lifetime.
+    [[nodiscard]] RenderGraphReroutes& GetReroutes() noexcept;
     /// Canvas-owned report counts, source freshness and diagnostic navigation; GUI thread only.
     [[nodiscard]] RenderGraphDiagnostics& GetDiagnostics() noexcept;
     /// Current document revision, for rejecting stale modal/gesture operations.
@@ -266,6 +269,7 @@ private:
     struct EdgeView;
     [[nodiscard]] QJsonObject configuration() const;
     void updateEdges();
+    [[nodiscard]] foundation::int32 findRerouteSegment(const QString& from, const QString& to, QPointF position) const;
     void updateSelection();
     void updateConnectionHighlight();
     void notifySelection();
@@ -290,6 +294,7 @@ private:
     RenderGraphNavigation* mNavigation;
     RenderGraphHistory* mHistoryOrNull = nullptr;
     RenderGraphComments* mCommentsOrNull = nullptr;
+    RenderGraphReroutes* mReroutesOrNull = nullptr;
     RenderGraphDiagnostics* mDiagnostics;
     QAction* mFitGraphAction;
     QAction* mFitSelectionAction;

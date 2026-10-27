@@ -4126,6 +4126,48 @@ Comment metadata does not affect dependencies, semantic build identity, compiled
 passes or rendering. The CLI validates and preserves it as authored source, and
 the editor's live-build identity excludes it with the rest of `layout`.
 
+### Route wires around pipeline stages
+
+Double-click a wire, or right-click it and choose **Add Reroute Point**, to insert
+an ordered point on the clicked segment. Drag a point to change the route. Select
+a point and press **Delete/Backspace**, or right-click it and choose **Remove
+Reroute Point**, to remove it. Removing the last point restores the direct wire.
+Nodes and ports take priority where they overlap a point. Each point has a screen
+size hit target at every zoom level.
+
+Adding, removing and completing a changed drag each create one undo step. Escape
+or loss of canvas focus cancels a drag; a click without movement creates no edit.
+Failed or stale edits preserve the document and restore the saved wire. Node
+selection and upstream/downstream tracing remain active while routing. Routed
+segments retain connection highlighting and their ordinary disconnect menu;
+reroute points never become graph nodes or dependencies. **Fit Graph** includes
+points. **Fit Selection** continues to frame the selected nodes.
+
+Points stay fixed in canvas coordinates when nodes or comment frames move,
+including auto-arrange, alignment and distribution. Node renaming updates route
+endpoints. Structured authoring operations remove routes whose exact connection
+pair disappears, including node deletion, disconnection, producer replacement
+and interface repair; undo restores connection and layout together. A replaced
+connection starts with a direct wire. Source edits and disk refresh preserve exact
+source bytes; invalid routes can be repaired in Source rather than being rewritten
+while typing.
+
+Routes are optional editor metadata in each configuration's `layout.routes`,
+beside `positions` and `frames`. Each record has `from`, `to` and a nonempty
+`points` array of integer `{ "x": 100, "y": 200 }` positions. Endpoint pairs must
+be unique and match an authored edge, or a configuration output source paired
+with `#outputs.<output-id>`. The independent layout budget is 512 routes per
+configuration and 16 points per route; coordinates stay within ±32,768 scene
+units. Source/package byte limits also apply. The editor and offline validator
+share these limits. Invalid route arrays are skipped with a status message;
+route edits remain blocked until repaired. Structurally malformed arrays survive
+other authoring edits for Source repair.
+
+Save publishes route metadata. It does not affect resource ownership, dependency
+traces, semantic build identity, compiled passes or rendering. The CLI validates
+and preserves routes, while the semantic digest and live-build identity exclude
+them with the rest of `layout`.
+
 ### Find existing nodes and trace dependencies
 
 Choose **Find Node…** on the canvas toolbar, or press **Ctrl/Command+F** while the

@@ -1,5 +1,6 @@
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_pipeline_node.h"
+#include "internal/render_graph_wire_routes.h"
 
 #include <QCryptographicHash>
 #include <QJsonDocument>
@@ -222,6 +223,21 @@ RenderGraphDocumentStatus RenderGraphDocument::RenameNode(const QString& file,
             }
         }
         layout.insert(QStringLiteral("positions"), positions);
+        if (layout.value(QStringLiteral("routes")).isArray() == true &&
+            AreRenderGraphWireRoutesValid(layout.value(QStringLiteral("routes")).toArray(), record, false) == true)
+        {
+            QJsonArray routes = layout.value(QStringLiteral("routes")).toArray();
+            for (qsizetype index = 0; index < routes.size(); ++index)
+            {
+                QJsonObject route = routes.at(index).toObject();
+                for (const QString& field : {QStringLiteral("from"), QStringLiteral("to")})
+                {
+                    route.insert(field, renameEndpoint(route.value(field).toString()));
+                }
+                routes.replace(index, route);
+            }
+            layout.insert(QStringLiteral("routes"), routes);
+        }
         record.insert(QStringLiteral("layout"), layout);
     }
     configurations.replace(configurationIndex, record);
