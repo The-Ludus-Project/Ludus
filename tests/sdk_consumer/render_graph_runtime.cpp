@@ -358,8 +358,17 @@ void Tick() noexcept
     Publish(0);
     if (gStep == Step::StartCompiled)
     {
-        const rhi::RasterStatus initialized =
-            gCompiled.Initialize(gDevice, FIXTURES[gFixture].MakePlan(), MakeCompiledPrograms());
+        // RenderGraphPrograms is tens of KiB; a temporary in this frame would take over half
+        // of the browser's default 64 KiB stack, so the new-expression builds it in place.
+        renderer::RenderGraphPrograms* programsOrNull =
+            new (std::nothrow) renderer::RenderGraphPrograms(MakeCompiledPrograms());
+        const core::UniquePtr<renderer::RenderGraphPrograms> programs{programsOrNull};
+        if (programs.Get() == nullptr)
+        {
+            Fail(rhi::RasterStatus::OutOfMemory);
+            return;
+        }
+        const rhi::RasterStatus initialized = gCompiled.Initialize(gDevice, FIXTURES[gFixture].MakePlan(), *programs);
         if (IsAccepted(initialized) == false)
         {
             Fail(initialized);
