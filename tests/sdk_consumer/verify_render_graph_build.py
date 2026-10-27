@@ -57,14 +57,17 @@ def main():
     # The pinned compiler's diagnostic arrives through the helper's prefixed stderr report and
     # must still name the authored function file and line the editor opens.
     broken = original.replace('material.tint', 'undefinedTint')
-    broken_line = next(i for i, line in enumerate(broken.splitlines(), 1) if 'undefinedTint' in line)
+    broken_line, broken_column = next((i, line.index('undefinedTint') + 1)
+                                      for i, line in enumerate(broken.splitlines(), 1) if 'undefinedTint' in line)
     color.write_text(broken)
     failed = subprocess.run([cli, '--json', 'render-graph', 'build', manifest, str(output / 'first'), *flags], cwd=output,
                             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     assert failed.returncode != 0 and (output / 'first/current.json').read_bytes() == prior
     error = json.loads(failed.stdout)['error']
     assert error['code'] == 'RenderGraphBuildShader'
-    assert error['location'] == {'source': 'main_shaders/color.slang', 'line': broken_line}, error.get('location')
+    # The caret under the echoed line also marks the undefined token's column and length.
+    assert error['location'] == {'source': 'main_shaders/color.slang', 'line': broken_line, 'column': broken_column,
+                                 'length': len('undefinedTint')}, error.get('location')
     # The report names no machine path: no helper command echoes or temporary build roots.
     assert str(output) not in error['message'] and str(output.resolve()) not in error['message'], error['message']
     assert not any(line.startswith('+ ') for line in error['message'].splitlines()), error['message']
