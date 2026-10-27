@@ -236,6 +236,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [Ludus Parsing Literature Review](architecture/parsing-gems-review.md)
 - [Ludus Randomness: Gems Review and Design Revisions](architecture/randomness-gems-review.md)
 - [Ludus Strings Literature Review](architecture/strings-gems-review.md)
+- [Many-area-light resampling estimator review](architecture/many-area-light-sampling-reference-review.md)
 - [Memory Management: Independent Adversarial Design Review](architecture/memory-management-review.md)
 - [Memory Profiling: Game Development Reference Review](architecture/memory-profiling-gems-review.md)
 - [Module lifecycle reference review](architecture/module-lifecycle-reference-review.md)
