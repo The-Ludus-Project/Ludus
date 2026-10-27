@@ -1,5 +1,6 @@
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_canvas_feedback.h"
+#include "internal/render_graph_history.h"
 #include "internal/render_graph_navigation.h"
 #include "internal/render_graph_node_ports.h"
 #include "internal/render_graph_pipeline_node.h"
@@ -77,6 +78,8 @@ constexpr float64 SCROLL_PIXELS_PER_ZOOM_STEP = 40;
 constexpr float64 PAN_PIXELS_PER_WHEEL_NOTCH = 60;
 constexpr float64 MINIMUM_VIEW_SCALE = 0.01;
 constexpr float64 MAXIMUM_VIEW_SCALE = 8;
+// Keep restored centres representable by Qt's signed 32-bit scroll bars at every supported zoom.
+constexpr float64 MAX_RESTORED_CENTRE_COORDINATE = static_cast<float64>(INT32_MAX) / MAXIMUM_VIEW_SCALE;
 constexpr float64 DETAIL_VIEW_SCALE = 0.75;
 constexpr float64 PORT_LABEL_VIEW_SCALE = 0.45;
 constexpr float64 MINIMUM_TEXT_CARD_WIDTH = 60;
@@ -603,6 +606,7 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
     setDragMode(QGraphicsView::NoDrag);
     setMouseTracking(true);
     setTransformationAnchor(QGraphicsView::NoAnchor);
+    setResizeAnchor(QGraphicsView::AnchorViewCenter);
     setBackgroundBrush(QColor(28, 31, 36));
     mFramingToolbar->setObjectName(QStringLiteral("renderGraphFramingToolbar"));
     mFramingToolbar->setAccessibleName(QStringLiteral("Canvas framing"));
@@ -630,11 +634,12 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
     mZoomLabel->setObjectName(QStringLiteral("renderGraphZoomLabel"));
     mZoomLabel->setAccessibleName(QStringLiteral("Canvas zoom"));
     mFramingToolbar->addWidget(mZoomLabel);
-    setViewportMargins(0, mFramingToolbar->sizeHint().height(), 0, 0);
     connect(mFitGraphAction, &QAction::triggered, this, &RenderGraphCanvas::FitGraph);
     connect(mFitSelectionAction, &QAction::triggered, this, &RenderGraphCanvas::FitSelection);
     connect(resetZoom, &QAction::triggered, this, &RenderGraphCanvas::ResetZoom);
     mNavigation = new RenderGraphNavigation(*mFramingToolbar, *this);
+    mHistoryOrNull = new RenderGraphHistory(mDocument, *this);
+    setViewportMargins(0, mFramingToolbar->sizeHint().height() + mHistoryOrNull->sizeHint().height(), 0, 0);
     connect(mNavigation, &RenderGraphNavigation::TraceChanged, this, &RenderGraphCanvas::updateConnectionHighlight);
     connect(mNavigation, &RenderGraphNavigation::NodeRequested, this, [this](const QString& identity) {
         const NodeView* viewOrNull = mNodes.value(identity, nullptr);
@@ -670,6 +675,7 @@ RenderGraphCanvas::~RenderGraphCanvas()
 
 void RenderGraphCanvas::ShowConfiguration(const QString& file, const QString& configuration)
 {
+    mHistoryOrNull->BeforeShow(file, configuration);
     const bool isSame = file == mFile && configuration == mConfiguration;
     if (isSame == false)
     {
@@ -689,6 +695,7 @@ void RenderGraphCanvas::ShowConfiguration(const QString& file, const QString& co
             FitGraph();
         }
     }
+    mHistoryOrNull->AfterShow();
 }
 
 void RenderGraphCanvas::showEvent(QShowEvent* event)
@@ -707,12 +714,20 @@ void RenderGraphCanvas::showEvent(QShowEvent* event)
 void RenderGraphCanvas::resizeEvent(QResizeEvent* event)
 {
     QGraphicsView::resizeEvent(event);
-    const int32 height = mFramingToolbar->sizeHint().height();
+    if (mHistoryOrNull == nullptr)
+    {
+        return;
+    }
+    const int32 historyHeight = mHistoryOrNull->sizeHint().height();
+    const int32 framingHeight = mFramingToolbar->sizeHint().height();
+    const int32 height = historyHeight + framingHeight;
     if (viewportMargins().top() != height)
     {
         setViewportMargins(0, height, 0, 0);
     }
-    mFramingToolbar->setGeometry(frameWidth(), frameWidth(), width() - 2 * frameWidth(), height);
+    const int32 toolbarWidth = width() - 2 * frameWidth();
+    mHistoryOrNull->setGeometry(frameWidth(), frameWidth(), toolbarWidth, historyHeight);
+    mFramingToolbar->setGeometry(frameWidth(), frameWidth() + historyHeight, toolbarWidth, framingHeight);
 }
 
 void RenderGraphCanvas::paintEvent(QPaintEvent* event)
@@ -766,6 +781,73 @@ void RenderGraphCanvas::ResetZoom()
     const QPointF offset = after - before;
     translate(offset.x(), offset.y());
     updateSemanticZoom();
+}
+
+RenderGraphViewState RenderGraphCanvas::CaptureViewState() const
+{
+    return
+    {
+        .Selection = GetSelectedNodes(),
+        .CentreScene =
+            viewportTransform().inverted().map(QPointF(viewport()->width() * 0.5, viewport()->height() * 0.5)),
+        .Zoom = math::Clamp(transform().m11(), MINIMUM_VIEW_SCALE, MAXIMUM_VIEW_SCALE),
+        .Trace = mNavigation->GetTraceDirection(),
+    };
+}
+
+bool RenderGraphCanvas::RestoreViewState(const RenderGraphViewState& state)
+{
+    if (math::IsFinite(state.Zoom) == false || state.Zoom < MINIMUM_VIEW_SCALE || state.Zoom > MAXIMUM_VIEW_SCALE ||
+        math::IsFinite(state.CentreScene.x()) == false || math::IsFinite(state.CentreScene.y()) == false ||
+        math::Abs(state.CentreScene.x()) > MAX_RESTORED_CENTRE_COORDINATE ||
+        math::Abs(state.CentreScene.y()) > MAX_RESTORED_CENTRE_COORDINATE ||
+        (state.Trace != RenderGraphTraceDirection::None && state.Trace != RenderGraphTraceDirection::Upstream &&
+         state.Trace != RenderGraphTraceDirection::Downstream))
+    {
+        return false;
+    }
+    mShouldFitOnShow = false;
+    mHoveredPort.clear();
+    SelectNodes(state.Selection);
+    mNavigation->SetTraceDirection(state.Trace);
+    applyViewTransform(state);
+    notifySelection();
+    const QStringList selected = GetSelectedNodes();
+    if (selected.isEmpty() == false)
+    {
+        Q_EMIT NodeSelected(selected.first());
+    }
+    return true;
+}
+
+void RenderGraphCanvas::applyViewTransform(const RenderGraphViewState& state)
+{
+    if (math::IsFinite(state.Zoom) == false || state.Zoom <= 0 || math::IsFinite(state.CentreScene.x()) == false ||
+        math::IsFinite(state.CentreScene.y()) == false)
+    {
+        return;
+    }
+    // Qt clamps panning to the scene rectangle. Include the restored viewport so its centre
+    // remains reachable even after a resize or a graph edit that shrinks the node bounds.
+    const float64 halfWidthScene = static_cast<float64>(viewport()->width()) / state.Zoom / 2 + FRAME_PADDING;
+    const float64 halfHeightScene = static_cast<float64>(viewport()->height()) / state.Zoom / 2 + FRAME_PADDING;
+    const QRectF visibleScene(state.CentreScene.x() - halfWidthScene,
+                              state.CentreScene.y() - halfHeightScene,
+                              2 * halfWidthScene,
+                              2 * halfHeightScene);
+    mScene->setSceneRect(mScene->sceneRect().united(visibleScene));
+    setTransform(QTransform::fromScale(state.Zoom, state.Zoom));
+    centerOn(state.CentreScene);
+    const QPointF centreScene =
+        viewportTransform().inverted().map(QPointF(viewport()->width() * 0.5, viewport()->height() * 0.5));
+    const QPointF offsetScene = centreScene - state.CentreScene;
+    translate(offsetScene.x(), offsetScene.y());
+    updateSemanticZoom();
+}
+
+RenderGraphHistory& RenderGraphCanvas::GetHistory() noexcept
+{
+    return *mHistoryOrNull;
 }
 
 void RenderGraphCanvas::updateFramingControls()
@@ -869,6 +951,7 @@ QJsonObject RenderGraphCanvas::configuration() const
 
 void RenderGraphCanvas::Rebuild()
 {
+    const RenderGraphViewState viewState = CaptureViewState();
     const QStringList selected = GetSelectedNodes();
     ClearDiagnostic();
     cancelLink();
@@ -1127,6 +1210,7 @@ void RenderGraphCanvas::Rebuild()
     }
     mScene->setSceneRect(
         nodeBounds.adjusted(-SCENE_SCROLL_PADDING, -SCENE_SCROLL_PADDING, SCENE_SCROLL_PADDING, SCENE_SCROLL_PADDING));
+    applyViewTransform(viewState);
     updateSemanticZoom(true);
 }
 
@@ -1772,7 +1856,8 @@ bool RenderGraphCanvas::ActivateNode(const QString& node)
         return true;
     }
     Q_EMIT SubgraphActivated(record.value(QStringLiteral("asset")).toString(),
-                             record.value(QStringLiteral("configuration")).toString());
+                             record.value(QStringLiteral("configuration")).toString(),
+                             node);
     return true;
 }
 

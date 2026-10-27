@@ -4074,11 +4074,47 @@ inspect its internal paths. Cycles terminate safely and missing node endpoints
 are ignored.
 
 The trace follows selection changes and refreshes after edits, undo and rebuilds.
-Clearing the selection, deleting all its roots, or switching configurations clears
-it. **Clear Trace**, or Escape on the canvas while no drag/link gesture is active,
+Clearing the selection, deleting all its roots, or an ordinary configuration switch
+clears it. Back/Forward and ancestor breadcrumbs restore each saved view's trace. **Clear Trace**, or Escape on the canvas while no drag/link gesture is active,
 restores normal selection/hover highlighting and keeps the selected nodes. Escape in
 Find Node cancels only the search. Search and tracing never change draft bytes,
 authored positions, port geometry or undo history.
+
+### Navigate subgraphs with breadcrumbs and history
+
+Double-click a Subgraph node, or choose **Open Subgraph** in its context menu, to
+enter its configuration. A breadcrumb bar above the canvas framing controls shows
+the root graph/configuration followed by the Subgraph instance names. For example,
+`Main#Default → left#Default → nested#Default` records the caller instances, so two
+nodes that reference the same library can have different navigation paths and
+saved views. Hover a breadcrumb for its package-relative file and configuration.
+Long paths remain accessible through the toolbar's overflow menu.
+
+Use **Back** and **Forward**, or the platform navigation shortcuts shown in their
+tooltips while the canvas has focus, to return through visited configurations.
+Returning restores the saved node selection, magnification, scene centre and
+upstream/downstream trace mode. Graph sources, Properties and the Source file also
+follow the restored location. The scene centre remains the reference point if the
+window size changed while you were away. Scrollable background space may expand
+to keep that point reachable; node positions and port geometry do not change.
+The breadcrumb bar stays available in Focus Viewport mode with Graph sources and
+Properties hidden.
+
+Click an ancestor breadcrumb to return to its saved view. This is a new visit and
+discards Forward history, as does entering another Subgraph or jumping to another
+configuration through Graph sources. Selection changes and ordinary rebuilds in
+the current configuration do not add visits. Navigation is separate from document
+undo: it always shows the current draft, preserves draft bytes/revisions and does
+not undo edits made since the previous visit.
+
+History is kept only for the open package: up to 64 visits and 32 breadcrumb levels
+including the root. Reopening or replacing the package/project clears it. Failed
+opens keep the current package and history. Missing configurations are skipped.
+If a caller is deleted or rebound, its broken instance path becomes a direct
+location in the still-available asset rather than following a different binding.
+Unambiguous instance renames repair the breadcrumb; ambiguous renames are not
+guessed. Saved selection IDs that no longer exist are dropped, and no remaining
+selection clears tracing.
 
 ### Read canvas feedback
 

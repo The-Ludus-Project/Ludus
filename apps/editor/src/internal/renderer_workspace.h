@@ -82,8 +82,9 @@ public:
     RendererWorkspace(const RendererWorkspace&) = delete;
     RendererWorkspace& operator=(const RendererWorkspace&) = delete;
 
-    /// Hide document navigation, sources and status while the shell focuses the graph.
-    /// Restoring chrome preserves the user's source-tree visibility preference and selection.
+    /// Hide the document header, sources and status while the shell focuses the graph.
+    /// Canvas breadcrumbs and Back/Forward remain available. Restoring chrome preserves
+    /// the user's source-tree visibility preference and selection.
     void SetChromeVisible(bool isVisible);
 
     /// Bind a project root and epoch; a different root closes the document and cancels jobs.
@@ -422,7 +423,7 @@ private:
     [[nodiscard]] QString manifestFile() const;
     void renderCanvas();
     void renderPreview();
-    void openSubgraph(const QString& asset, const QString& configuration);
+    void openSubgraph(const QString& asset, const QString& configuration, const QString& instance);
 
     static constexpr foundation::int32 FILE_ROLE = Qt::UserRole;
     static constexpr foundation::int32 CONFIGURATION_ROLE = Qt::UserRole + 1;
