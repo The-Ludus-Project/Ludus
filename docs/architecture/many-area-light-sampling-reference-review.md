@@ -1,6 +1,9 @@
 # Many-area-light resampling estimator review
 
-Status: proposed design, reviewed October 27, 2026. Nothing below is implemented.
+Status: proposed design, reviewed October 27, 2026. Revised the same day to
+reconcile it with the CPU and GPU reference requirement and with the
+polygonal-light work's licensing, traversal and primitive decisions. Nothing
+below is implemented.
 This review is the estimator review that
 [hybrid and real-time transport](renderer-systems.md#hybrid-and-real-time-transport)
 requires before resampling enters a Ludus estimator. It covers next-event
@@ -11,10 +14,12 @@ estimation (NEE) for emissive triangles, delivered in two stages:
    [MIS](../development/render-graph-authoring.md#compare-light-and-bsdf-sampling-with-mis)
    and [ReSTIR DI](../development/render-graph-authoring.md#use-the-built-in-restir-di-template)
    templates.
-2. An explicit second light-sampling profile for the RT1 progressive reference
-   integrators (CPU, `GpuCompute` and the GPU preview).
+2. An explicit second light-sampling profile for the RT1 progressive reference,
+   delivered in the CPU oracle and the GPU-compute reference in the same change.
 
-Spatiotemporal reservoir reuse remains a separate RT4 upgrade.
+Spatiotemporal reservoir reuse remains a separate RT4 upgrade. The Peters 2021
+polygonal-light work runs in parallel and shares two pieces with this design: the
+projected-solid-angle primitives and the template shadow-ray traversal.
 
 ## Sources reviewed
 
@@ -39,10 +44,13 @@ attribution beside the code:
   David Cline and Parris Egbert, “Importance Resampling for Global Illumination,”
   EGSR 2005: the RIS contribution weight and its unbiasedness conditions.
 
-No third-party LTC tables, renderer source or sample code was inspected, and none
-is proposed for import. Peters' open-source renderer and published LTC fits need
-an explicit license review before any of their code or data is used. This plan
-assumes Ludus fits its own tables.
+**Licensing, as decided for the polygonal-light work.**
+- Of Peters' published renderer code, only `polygon_sampling.glsl` is dual
+  licensed BSD-3/GPLv3. It may be ported, keeping its notice.
+- The clipping, LTC table and utility code, and shading passes are GPLv3-only.
+  They are reimplemented from the paper's text (and, for LTCs, from Heitz et al.
+  above), never copied.
+- No third-party LTC tables are imported. Ludus fits its own.
 
 ## Current estimators
 
@@ -54,9 +62,10 @@ assumes Ludus fits its own tables.
 | `tiled-vbuffer-nee` template | A per-tile emitter CDF with floors, combined with the BSDF by the power heuristic. |
 
 None of these accounts for the cosine and BSDF when sampling a point on a
-triangle, and only ReSTIR adapts light choice to the receiver. Ludus has no LTC,
-projected-solid-angle, spherical-polygon or polygon-clipping code. The
-reservoir helpers are private to the ReSTIR template.
+triangle, and only ReSTIR adapts light choice to the receiver. `develop` has no
+LTC, projected-solid-angle or polygon-clipping code yet. The polygonal-light work
+is adding the clipping and projected-solid-angle primitives (see
+[Ownership](#ownership)). The reservoir helpers are private to the ReSTIR template.
 
 ## Proposed estimator
 
@@ -121,9 +130,9 @@ template and RT1 differ only where noted.
      Emission, alpha, sidedness and visibility come from that point
      (`GetSurfaceHit`, `EvaluateEmission`, `TestVisibility` in the template). A
      plane hit outside the triangle in FP32 contributes zero.
-   - Emissive NEE therefore costs up to **two shadow rays**. The fixed-iteration
-     inversion has a small backward error (Peters §3.7); tests bound it and the
-     estimator declares it.
+   - Emissive NEE therefore costs up to **two shadow rays**. The fixed
+     two-iteration inversion has a small backward error, which Peters §3.6
+     reports near `1e-5`. Tests bound it and the estimator declares it.
 7. The contribution of light technique `s` is
    `W_L(ω_s, y) · w^c_s(ω_s) · F(ω_s) / p_s(ω_s) · W / P_E`. Here `F` is the
    shadowed BSDF·cosine·emission and `W_L` is the BSDF-hit split defined next.
@@ -206,7 +215,18 @@ library: hits Buffer (32 B/px, RenderSize)
 
   The technique is `RendererTriangles.RayTracing` with
   `scene_interface {version 1, surface_queries 1, visibility_queries 1}`, plus
-  the polygon-light requirement below. It requires native rays.
+  the polygon-light requirement below.
+- **Traversal.** Shadow and BSDF rays use the renderer's GPU-compute BVH, the same
+  decision as the polygonal-light templates, so the template does not require
+  native ray tracing.
+  - Today graph passes choose only `NativeQuery` or `TriangleLoop`, and
+    `TriangleLoop` is a linear scan meant for small scenes. A compute-BVH strategy
+    is therefore a prerequisite, added once at the shared
+    [traversal boundary](../development/render-graph-authoring.md#reuse-ray-callbacks-in-compute-pipelines)
+    rather than inside either template's callbacks.
+  - A `NativeQuery` configuration can follow later as a separate configuration.
+  - Browser execution stays outside the graph ray profile until that profile
+    admits it.
 - **Settings.** Finite, author-declared values:
   - `RIS_CANDIDATE_COUNT`: 32, range 1–32;
   - `RIS_NORMALIZATION_CANDIDATE_COUNT`: 8, range 1–16;
@@ -230,13 +250,16 @@ library: hits Buffer (32 B/px, RenderSize)
 | 16 + 2i, 17 + 2i, `i < 32` | Candidate `i`: power-CDF ticket, reservoir ticket |
 | 80 + k, `k < 16` | Normalization candidate `k`: power-CDF ticket |
 
-**Shader helpers.** FoundationMath owns new shader primitives for polygon
-clipping, the projected-solid-angle integral and sampler, and a sequential
-reservoir. The renderer owns a generated LTC-table include. Stage both through
-the engine ray helpers (`HELPERS` in `render_graph_ray.py` and the installed
-shader directory). The wrapper includes them only when the technique declares a
-new `scene_interface` requirement, in the same way `visibility_buffer` adds its
-include today. Older SDKs reject that requirement explicitly.
+**Shader helpers.**
+- The projected-solid-angle shader source from the polygonal-light work is
+  reused, not duplicated. FoundationMath adds the sequential reservoir beside it.
+- The renderer owns a generated LTC-table include, shared with the
+  polygonal-light LTC templates.
+- Stage them through the engine ray helpers (`HELPERS` in `render_graph_ray.py`
+  and the installed shader directory).
+- The wrapper includes them only when the technique declares a new
+  `scene_interface` requirement, in the same way `visibility_buffer` adds its
+  include today. Older SDKs reject that requirement explicitly.
 
 **Registration** follows the existing template checklist:
 - `TEMPLATES` and the CLI `--template` choices;
@@ -251,8 +274,15 @@ include today. Older SDKs reject that requirement explicitly.
 
 ## RT1 profile split and identity
 
-After the template proves the estimator, the reference integrators gain an
-explicit integrator setting with two named modes:
+After the template proves the estimator, RT1 gains an explicit integrator setting
+with two named modes. Under the
+[CPU and GPU reference requirement](renderer-systems.md#cpu-and-gpu-reference-implementation-requirement),
+the resampled mode lands in the CPU oracle
+([reference_path.cpp](../../modules/graphics/renderer/src/reference_path.cpp))
+and the GPU-compute reference
+([renderer_reference.slang](../../modules/graphics/renderer/shaders/renderer_reference.slang))
+in the same change, with parity evidence. A CPU-only first step is not a
+deliverable.
 
 | Mode | Contract |
 | --- | --- |
@@ -260,10 +290,13 @@ explicit integrator setting with two named modes:
 | `ResampledProjectedSolidAngle` | This review's estimator. `SamplerVersion = 2`, 128 dimensions per bounce. Requires the renderer's LTC table. |
 
 - **API.** A proposed `ReferenceLightSampling` enum on
-  `ReferenceCaptureDescription` and the GPU preview description, recorded in
-  `ReferenceCaptureInfo`. It covers the CPU, `GpuCompute` and preview kernels,
-  and joins the integral/accumulation key, so changing it builds a replacement
-  job and resets accumulation.
+  `ReferenceCaptureDescription`, recorded in `ReferenceCaptureInfo`.
+  - `CpuOracle` and `NativeQueries` share the CPU transport; `GpuCompute` runs
+    the same estimator in its kernels.
+  - The setting joins the integral/accumulation key, so changing it builds a
+    replacement job and resets accumulation.
+  - The separate GPU preview may adopt the mode later. That does not count toward
+    the reference requirement, which the preview does not yet satisfy.
 - **LUHDR.** The sampler field carries 2, and new flag bit `128` marks the
   resampled mode (bit 64 already means `gpu_compute`). Today
   `scripts/reference-hdr` rejects any sampler other than 1 and any flag above
@@ -271,12 +304,15 @@ explicit integrator setting with two named modes:
   the converter and its manifest in the same change.
 - **Versions.** `ProfileVersion` (`LIGHTING_PROFILE_VERSION`) is unchanged, because
   both modes estimate the same truncated RGB integral. Changes to packed words
-  bump the preview's separate `LUDUS_GPU_PREVIEW_KERNEL_VERSION` and the reference
-  kernel layout.
+  bump the reference kernel layout, and the preview's separate
+  `LUDUS_GPU_PREVIEW_KERNEL_VERSION` if the preview adopts the mode.
 - **Acceptance.** Both modes are unbiased for the same integral at matched depth,
   roulette and range, so acceptance is statistical agreement across seeds, not
-  pixel equality. That includes CPU against GPU, whose discrete selections can
-  diverge under FP32 differences.
+  pixel equality.
+  - CPU and GPU-compute resampled outputs must also agree with each other, on raw
+    emission, direct, indirect and total radiance, with documented tolerances.
+    Their discrete selections can diverge under FP32 differences.
+  - Record the backend, device and toolchain with the evidence.
 - **No fallback.** A device or package without the LTC table rejects the
   resampled mode explicitly.
 
@@ -309,28 +345,36 @@ aligned to Philox's four-lane blocks:
 
 | Piece | Owner | Notes |
 | --- | --- | --- |
-| Convex polygon horizon clipping, clipped projected-solid-angle integral, Peters sampler and density, generic LTC polygon transform | FoundationMath, C++ and a new shader source beside `math.slang` | Matched numerical tests: integral against quadrature, density normalization, inversion backward error, and degenerate, grazing and behind cases |
+| Convex polygon horizon clipping (up to seven input vertices), clipped projected-solid-angle integral, Peters sampler and density | FoundationMath `projected_solid_angle.hpp` and `shaders/projected_solid_angle.slang`, being added by the polygonal-light work | The sampler is ported from the BSD-licensed `polygon_sampling.glsl` with its notice. Clipping is an independent reimplementation. This design consumes these primitives and adds none of its own. |
+| Generic LTC polygon transform | FoundationMath, beside those primitives | Transform the vertices by `M⁻¹`, then reuse the same clipping and integral |
 | Sequential weighted reservoir | FoundationMath | Explicit order, zero totals, and selection-frequency tests on exact small integers. The ReSTIR template may adopt it separately; this design does not change that template. |
-| LTC table for Ludus GGX/correlated Smith/Schlick, its fitter and provenance | Renderer (generated include) plus an offline Ludus tool | Must cover roughness down to 0.045, where fits are least accurate. A poor fit costs variance, not correctness. |
+| LTC table for Ludus GGX/correlated Smith/Schlick, its fitter and provenance | Renderer (generated include) plus an offline Ludus tool, shared with the polygonal-light LTC templates | Reimplemented from Heitz et al. and Peters §4.1, not from GPLv3 utilities. Must cover roughness down to 0.045, where fits are least accurate. A poor fit costs variance, not correctness. Agree on one owner before either workstream builds it. |
+| Compute-BVH graph traversal strategy | Renderer, at the shared traversal boundary | Shared with the polygonal-light templates; a prerequisite for both |
 | Power-CDF scene-interface accessors, diffuse albedo approximation, RT1 path state | Renderer | One packed CDF serves RT1 and graph shaders |
 
 ## Acceptance
 
-1. **Primitives.** C++ and Slang parity tests for the FoundationMath helpers.
+1. **Primitives.** The projected-solid-angle primitives carry their own C++ and
+   Slang parity tests from the polygonal-light work. This design adds parity tests
+   for the reservoir and the LTC transform.
 2. **LTC table.** Integral checks against Monte Carlo estimates of the exact BRDF.
 3. **Template.** Python template tests modeled on `VeachGuibasMisTemplateTests`,
-   including WGSL-only rejection. GPU tests on Cornell, many-emitter, textured,
-   two-sided, metallic and minimum-roughness fixtures:
+   including capability rejection for the selected traversal. GPU tests on
+   Cornell, many-emitter, textured, two-sided, metallic and minimum-roughness
+   fixtures:
    - the three outputs agree with each other and with `veach-guibas-mis`
      light-only within 2% of the mean at 256 spp;
    - MIS mean squared error against a 1024-spp image is below `veach-guibas-mis`
      MIS at equal spp on the many-emitter fixture;
    - an opt-in equal-time benchmark that reports shadow rays per pixel and kernel
      time.
-4. **RT1 resampled profile.** CPU first, then `GpuCompute` and the preview, each
-   in statistical agreement with `UniformArea` across seeds and depths. Edge
-   cases: `Ẑ = 0`, an empty LTC clip, all emitters behind the receiver, and a
-   unit test that the MIS weights sum to one.
+4. **RT1 resampled profile.** The CPU oracle and the GPU-compute reference in one
+   change.
+   - Each agrees statistically with `UniformArea` across seeds and depths, and
+     CPU and GPU agree with each other on raw outputs.
+   - Edge cases are covered in both paths: `Ẑ = 0`, an empty LTC clip, all
+     emitters behind the receiver, invalid contributions, and a unit test that the
+     MIS weights sum to one.
 5. **Evaluation.** Equal-sample and equal-time error against high-sample
    `UniformArea` references, reporting MAPE as in Shah et al. §5 plus RMSE, on
    scenes with thousands of emissive triangles.
