@@ -9,28 +9,54 @@ missing native ray profile; report any other skip as a skip, with the device.
 
 ## PL0 Feasibility (no product change)
 
-Record results in [design section 4](design.md#4-pl0-evidence-to-be-recorded).
+Record results in [design section 4](design.md#4-pl0-evidence). Evidence is from
+an Apple M5 on Metal (macOS 26.6). Vulkan was not run: no Linux or Vulkan host
+was available.
 
-- [ ] **Prototype query.** Write the D2/D3 linear-scan query as a throwaway
+- [x] **Prototype query.** Write the D2/D3 linear-scan query as a throwaway
       kernel in a local fixture (not committed as product code). Run it on
       Metal against hand-computed intervals for one occluder, two overlapping
       occluders and a coplanar occluder.
+      *A `TriangleLoop` scene compute kernel matched hand-computed intervals
+      within 9e-8 for one occluder, two overlapping occluders plus a disjoint
+      one, a coplanar occluder, an abutting quad, and occluders behind the
+      receiver and beyond the segment (design 4.1).*
 - [ ] **Capacity.** Count visible intervals on the PL13 fixtures plus a
       dense-blinds fixture. Measure register use and occupancy for capacities
       8, 16 and 32 on Metal. Record the chosen
       `LUDUS_SCENE_LINE_INTERVAL_CAPACITY`.
-- [ ] **Merge tolerance.** Find the smallest tolerance with no visible crack
+      *Counts, occupancy and the choice are recorded: single-occluder fixtures
+      reach at most 2 visible intervals (3 running) and blinds with `K` slats
+      about `K`. Every capacity keeps `maxTotalThreadsPerThreadgroup` at 1024,
+      and time does not order by capacity. Chosen capacity: 32 (design 4.2).
+      Left unchecked because register use was not measured: Metal exposes no
+      register count, and Xcode's GPU profiler is not installed here. Vulkan
+      was not run.*
+- [x] **Merge tolerance.** Find the smallest tolerance with no visible crack
       along shared edges of a tessellated sphere and a two-triangle quad
       occluder, and record the visible length it drops. Record the chosen
       `LUDUS_SCENE_LINE_INTERVAL_MERGE_TOLERANCE`.
-- [ ] **Packed nodes.** Confirm whether render-graph ray passes pack
+      *Intersecting each edge from its lexicographically smaller endpoint
+      leaves no crack at any tolerance, including 0. In triangle winding order,
+      cracks persist up to 1e-3, so D2 step 2 now requires canonical order.
+      Chosen tolerance: 1e-6, which drops at most 2.1e-7 m (design 4.3).*
+- [x] **Packed nodes.** Confirm whether render-graph ray passes pack
       `ReferenceBvhNode` data under `NativeQuery` and `TriangleLoop`. If a
       strategy omits them, record what PL3 must add.
-- [ ] **Random dimensions.** Confirm `RANDOM_MAX_DIMENSION` admits dimension 14
+      *Both strategies pack the nodes, with identical counts, for example 2047
+      nodes for 3980 triangles. In a plan with a `NativeQuery` pass, however,
+      `Order` is opacity-partitioned, so PL3 needs an unpartitioned leaf order
+      for scenes with masked triangles (design 4.4, D5).*
+- [x] **Random dimensions.** Confirm `RANDOM_MAX_DIMENSION` admits dimension 14
       (design D8). If not, revise the D8 layout before PL2.
-- [ ] **Cost.** Time the prototype query per pixel against `TestVisibility` with
+      *`RANDOM_MAX_DIMENSION = 0xffff`, so the D8b layout is unchanged
+      (design 4.5).*
+- [x] **Cost.** Time the prototype query per pixel against `TestVisibility` with
       `TriangleLoop` on the same scene. Record it as context, not as an
       acceptance threshold.
+      *On 3980 triangles a line query costs 0.90-1.02× a `TriangleLoop` shadow
+      ray, about 175 ns per pixel at 640×480. On 14-44 triangles it costs
+      1.4-8.2×, with up to 2× noise between runs (design 4.6).*
 
 ## PL1 Line visibility query and line-sampling template
 
@@ -38,8 +64,9 @@ Record results in [design section 4](design.md#4-pl0-evidence-to-be-recorded).
       `LUDUS_SCENE_LINE_INTERVAL_MERGE_TOLERANCE` with their units and purpose.
       Mirror them in `scene_shader.hpp` with Doxygen comments, and in
       `scene_shader.slang`.
-- [ ] `ray_line_visibility.slang`: the D2 clip and the D3 interval set over a
-      linear scan, with alpha-tested candidates reported, not clipped (D4).
+- [ ] `ray_line_visibility.slang`: the D2 clip, with canonical edge order (D2
+      step 2), and the D3 interval set over a linear scan, with alpha-tested
+      candidates reported, not clipped (D4).
       Attribution comments for Billen and Dutré (2016) and Salesin and Jarosz
       (2019), with the departures in design section 2.
 - [ ] `scene_shader.slang`: `LineSegment`, `LineVisibility` and
@@ -162,7 +189,10 @@ Record results in [design section 4](design.md#4-pl0-evidence-to-be-recorded).
 - [ ] Traverse the packed `ReferenceBvhNode` array with a bounded stack and the
       Akenine-Möller triangle-box test (D5), with attribution. Stack exhaustion
       fails.
-- [ ] Add packed nodes to any strategy PL0 found without them.
+- [ ] Add packed nodes to any strategy PL0 found without them. PL0 found none
+      missing, but plans with a `NativeQuery` pass partition `Order` by opacity.
+      Traverse leaves through an unpartitioned order there, and add a
+      masked-scene parity test under both strategies (design 4.4).
 - [ ] Parity: every PL1 and PL2 non-overflow fixture gives identical intervals
       and byte-identical accumulated images with the loop and the BVH.
 - [ ] Both templates keep byte-identical accumulated images on their PL1 and

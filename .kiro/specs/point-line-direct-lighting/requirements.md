@@ -94,8 +94,8 @@ match `TestVisibility` as follows:
 
 - `SCENE_LINE_INTERVAL_CAPACITY` SHALL bound the visible intervals in one
   result. It is a named constant beside the scene shader layout and shared with
-  C++ through `scene_shader_layout.h`. Its value is decided by PL0 evidence;
-  the design starts at 16.
+  C++ through `scene_shader_layout.h`. Its value is decided by PL0 evidence:
+  32 ([design section 4.2](design.md#42-capacity)).
 - Intervals SHALL be sorted, disjoint and nonempty.
 - Occluded intervals separated by a gap no larger than
   `SCENE_LINE_INTERVAL_MERGE_TOLERANCE` (a fraction of the segment, chosen in

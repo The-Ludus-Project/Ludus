@@ -1,7 +1,8 @@
 # Point and line direct lighting design
 
-Status: proposed, 2026-10-27. Baseline `origin/develop` `02df0b37`. This
-describes work to build. Read [requirements](requirements.md) and
+Status: proposed, 2026-10-27. Baseline `origin/develop` `02df0b37`. PL0
+evidence recorded 2026-10-27 on `431613a2` (section 4). This describes work to
+build. Read [requirements](requirements.md) and
 [tasks](tasks.md). AGENTS.md, steering, ADR 0003, the
 [compute ray-tracing spec](../compute-ray-tracing/design.md) and the canonical
 [render graph authoring guide](../../../docs/development/render-graph-authoring.md)
@@ -134,7 +135,8 @@ uint FindVisibleLineIntervals(SceneContext scene,
   `LUDUS_SCENE_LINE_INTERVAL_MERGE_TOLERANCE` are defined in
   `scene_shader_layout.h` and mirrored by `SCENE_LINE_INTERVAL_CAPACITY` and
   `SCENE_LINE_INTERVAL_MERGE_TOLERANCE` in Slang and C++ (`scene_shader.hpp`).
-  The C++ side lets tests and the SDK name the same bound.
+  The C++ side lets tests and the SDK name the same bound. PL0 chose 32
+  intervals and 1e-6 of the segment (sections 4.2 and 4.3).
 - `RayQueryContext` gains `LineQueries` and `MaximumLineQueries`. The wrapper
   initializes the maximum from `line_queries` (D9).
 - The function name says what it returns: visible intervals, not occluders.
@@ -162,7 +164,11 @@ For each occluder triangle `T` not excluded by index:
    three have one strict sign, `T` does not cross the plane. If all three lie
    within the parallel tolerance, `T` is coplanar and does not occlude (PL03).
 2. Otherwise intersect `T`'s edges with the plane to get the segment `p q` of
-   `T` in the plane. A vertex on the plane contributes itself.
+   `T` in the plane. A vertex on the plane contributes itself. Each edge is
+   intersected from its lexicographically smaller endpoint (compare `x`, then
+   `y`, then `z`), so two triangles that share an edge compute a bitwise-identical
+   point. PL0 found that intersecting in each triangle's winding order leaves
+   cracks that no tolerance up to 1e-3 closes (section 4.3).
 3. Express `p` and `q` in `(alpha, beta)` and clip `p q` to
    `alpha >= 0`, `beta >= 0`, `s >= s_near`, `s <= 1 - s_far`. `s_near`
    excludes surfaces at the apex and `s_far` the light plane; both come from the
@@ -198,9 +204,11 @@ The tolerance rule only removes visible length, deterministically. A strategy
 whose support shrinks by a fixed, deterministic set is still a valid density, so
 MIS outputs stay unbiased wherever another strategy covers that set: BSDF
 sampling in `color`, the other line direction in `lineSampling`. A line-only
-estimate loses at most the dropped length, which PL0 bounds. Without the rule,
-abutting triangles of one occluder mesh would leave float-sized visible cracks,
-and line samples drawn there would assume visibility one: a light leak.
+estimate loses at most the dropped length: 2.1e-7 m at most on the PL0 fixtures
+(section 4.3). Canonical edge order (D2 step 2) removes cracks along shared
+edges by itself. The rule guards abutting geometry that does not share vertex
+bits, where a crack would make line samples drawn there assume visibility one:
+a light leak.
 
 Overflow fails rather than approximates:
 
@@ -254,8 +262,11 @@ of Tomas Akenine-Möller, "Fast 3D Triangle-Box Overlap Testing", *Journal of
 Graphics Tools* 6(1), 2001, pp. 29-33. Stack exhaustion fails (PL12). The node
 test is conservative, so the BVH visits a superset of the triangles that clip,
 and each interval is computed from the same per-triangle arithmetic. Results
-therefore equal the loop's for non-overflowing fixtures. PL0 confirms that
-render-graph scene packs contain the nodes under both traversal strategies.
+therefore equal the loop's for non-overflowing fixtures. PL0 confirmed that
+render-graph scene packs contain the nodes under both traversal strategies
+(section 4.4). In a plan with any `NativeQuery` pass, however, `Order` is
+partitioned by opacity, so leaf ranges do not address it in a scene with masked
+triangles. PL3 traverses leaves through an unpartitioned order in that case.
 
 **Native.** Not provided. Inline `RayQuery` and Metal intersection queries
 accept rays only, and the native acceleration structure is opaque, so its nodes
@@ -450,30 +461,222 @@ These are deferred, each with its own reason:
 - **Native and browser.** No native line query exists, and browser ray
   execution is not provided.
 
-## 4. PL0 evidence (to be recorded)
+## 4. PL0 evidence
 
-PL0 makes no product change. It records:
+PL0 makes no product change. It was asked to record: visible-interval counts
+and Metal register/occupancy cost for capacities 8, 16 and 32 (choose the
+smallest capacity that covers the fixtures with margin); the smallest crack-free
+merge tolerance on a tessellated sphere and a two-triangle quad occluder, with
+the visible length it drops; whether render-graph scene packs carry
+`ReferenceBvhNode` data under both strategies; whether `RANDOM_MAX_DIMENSION`
+covers dimension 14; and the prototype query's cost against `TestVisibility`
+with `TriangleLoop`.
 
-1. **Capacity.** Visible-interval counts on the PL2 fixtures and a dense-blinds
-   fixture, and register/occupancy cost on Metal for capacities 8, 16 and 32.
-   Choose the smallest capacity that covers the fixtures with margin.
-2. **Merge tolerance.** The smallest tolerance with no crack along the shared
-   edges of a finely tessellated sphere and a two-triangle quad occluder, and
-   the visible length dropped at that tolerance.
-3. **Packed nodes.** Whether render-graph scene packs include `ReferenceBvhNode`
-   data under both strategies, and the node count for each fixture.
-4. **Random dimensions.** `RANDOM_MAX_DIMENSION` covers dimension 14.
-5. **Line query cost.** A prototype loop query's time per pixel against
-   `TestVisibility` with `TriangleLoop` on the same scene, for context with the
-   paper's 1.2-55× figure.
+Recorded 2026-10-27 on `origin/develop` `431613a2`.
+
+- **Device.** Apple M5 (MacBook Air, 16 GB), macOS 26.6 (25G72), Metal 4.
+- **Toolchain.** `macos-clang-development` preset, Homebrew clang 23.1.3,
+  pinned Slang 2026.1.2 and SPIRV-Cross. MSL is compiled by Metal at pipeline
+  creation.
+- **Vulkan.** Not run. There is no Linux or Vulkan host here, so every number
+  below is Metal only.
+
+**Prototype.** A throwaway scene compute kernel, not committed. It implements D2
+and D3 as written, as a linear scan over `Counts.x` packed triangles:
+
+- The apex and endpoints are offset with `OffsetPositionWorld` (PL03), and the
+  receiver and carrying triangles are excluded by index.
+- The clip region is `s` in `[0, 1]` (`s_near = s_far = 0`), with clipped
+  points at `s <= 0` skipped.
+- Chords are the D6 `U` and `V` chords through `SampleIncidentLight` area
+  points.
+
+Three local fixtures ran one kernel per pass with `invocation.traversal:
+TriangleLoop`; only the node probe also ran as `NativeQuery`. A local Catch2
+driver read results back as RGBA8 holding 24-bit fixed point, so readout
+quantization is 6e-8.
+
+Scenes: a `[-1, 1]` room (10 triangles) with a 0.7 m two-triangle quad light at
+`y = 0.98`, plus one of the following:
+
+- a two-triangle block top (the Cornell penumbra case, standing in for the PL2
+  room);
+- a UV sphere, radius 0.3 m, 64×32 (3968 triangles);
+- a 0.6 m quad rotated 30°;
+- blinds: `K` slats at `y = 0.85` spanning the light, pitch `0.7 / K` m, half
+  open.
+
+A 640×480 pinhole camera gives about 190,000 receivers. Each receiver tests 8
+area points, with a `U` and a `V` chord through each.
+
+### 4.1 Prototype check
+
+Receiver at the origin, segment `(-1, 2, 0)` to `(1, 2, 0)` (2 m), no offsets,
+capacity 16, tolerance 0. Intervals are segment parameters.
+
+| Case | Expected visible | Measured | Max error |
+| --- | --- | --- | --- |
+| Occluders only behind the receiver (`y = -1`) and beyond the segment (`y = 3`) | `[0, 1]` | `[0, 1]`, nothing inserted | 0 |
+| One occluder, cross-section `x` in `[-0.25, 0.25]` at `y = 1` | `[0, .25] [.75, 1]` | same | 4.5e-8 |
+| Two overlapping (`[.25, .75]`, `[.6, .9]`) and a disjoint `[.05, .15]` | `[0, .05] [.15, .25] [.9, 1]` | same, peak running set 2 | 8.9e-8 |
+| Coplanar triangle in the shadow plane | `[0, 1]` | `[0, 1]`, rejected as coplanar | 0 |
+| Abutting two-triangle quad, diagonal crossing at a non-dyadic point | `[0, .25] [.75, 1]` | same | 4.5e-8 |
+
+Every case is in the scene alongside the behind and beyond occluders, and gives
+the same result with either edge-intersection order (section 4.3). All errors
+are within readout quantization.
+
+### 4.2 Capacity
+
+Counts use capacity 64, tolerance 1e-6 and canonical edge order, over every
+chord of every receiver:
+
+| Fixture | Triangles | Max visible | 99th percentile | Max running occluded set |
+| --- | --- | --- | --- | --- |
+| Room + block (penumbra) | 14 | 2 | 1 | 1 |
+| Room + sphere 64×32 | 3980 | 2 | 1 | 3 |
+| Room + rotated quad | 14 | 2 | 2 | 2 |
+| Blinds 8 | 28 | 8 | 8 | 8 |
+| Blinds 12 | 36 | 12 | 12 | 12 |
+| Blinds 16 | 44 | 16 | 16 | 16 |
+| Blinds 24 | 60 | 23 | 23 | 23 |
+| Blinds 32 | 76 | 31 | 30 | 31 |
+
+The sphere's running set reaches 3 before its pieces merge into one interval.
+That is D3's insertion-order effect, measured.
+
+Register use is not measured. Metal exposes no per-thread register count, and
+Xcode's GPU profiler is not installed on this machine. As the occupancy proxy,
+each pipeline was compiled alone from its generated MSL and
+`MTLComputePipelineState` queried:
+
+- the base, shadow-ray and line pipelines at capacities 8, 16 and 32 all report
+  `maxTotalThreadsPerThreadgroup = 1024`, `threadExecutionWidth = 32` and no
+  threadgroup memory;
+- GPU time does not order by capacity (section 4.6). On the sphere the three
+  capacities are within ±5%, inside run-to-run variance.
+
+The insertion indexes its arrays dynamically. The Metal compiler therefore
+probably keeps them in thread memory, not registers. That is an inference;
+nothing here measured it.
+
+**Chosen `LUDUS_SCENE_LINE_INTERVAL_CAPACITY = 32`.** It is the smallest tested
+capacity that covers the fixtures with margin. The PL2-style single-occluder
+fixtures need 2 visible intervals (3 running), which 8 already covers. Dense
+blinds of 16 slats across the 0.7 m light reach 16 running occluded intervals,
+which overflows 16, whose occluded capacity is 15 (D3). At 32, the occluded
+capacity of 31 covers 24 slats with a margin of 8, and 32 slats exactly. The
+cost on Metal is none measurable. On Vulkan it is unmeasured, so PL1 reports
+the llvmpipe run, which measures no GPU registers either.
+
+### 4.3 Merge tolerance
+
+A sweep over `tau` (segment parameter) with the sphere and the rotated quad.
+"Cracked" counts receivers, out of the shadowed ones, with a visible interval
+inside the hull of the inserted occluded intervals; for a convex occluder that
+is a crack. "Dropped" is the analytic visible length minus the reported visible
+length, with canonical order, in metres; chords are at most 0.99 m long.
+
+Naive order intersects each edge in its triangle's winding order. Canonical
+order intersects each edge from its lexicographically smaller endpoint
+(compare `x`, then `y`, then `z`).
+
+| `tau` | Sphere: cracked naive / canonical (of 2308) | Sphere: dropped max, mean (m) | Quad: cracked naive / canonical (of 5583) | Quad: dropped max, mean (m) |
+| --- | --- | --- | --- | --- |
+| 0 | 634 / 0 | 2.8e-8, 5.4e-11 | 1637 / 0 | 5.9e-8, 4.9e-10 |
+| 1e-7 | 522 / 0 | 6.0e-8, 5.8e-9 | 770 / 0 | 9.2e-8, 1.5e-8 |
+| 3e-7 | 247 / 0 | 7.6e-8, 6.0e-9 | 128 / 0 | 1.5e-7, 2.5e-8 |
+| 1e-6 | 54 / 0 | 2.1e-7, 6.4e-9 | 9 / 0 | 1.5e-7, 2.6e-8 |
+| 3e-6 | 4 / 0 | 1.0e-6, 7.1e-9 | 2 / 0 | 9.7e-7, 2.6e-8 |
+| 1e-5 | 1 / 0 | 1.1e-5, 2.0e-8 | 2 / 0 | 6.9e-6, 3.0e-8 |
+| 1e-4 | 0 / 0 | 5.6e-5, 1.4e-7 | 2 / 0 | 7.6e-5, 9.3e-8 |
+| 1e-3 | 0 / 0 | 4.6e-4, 1.1e-6 | 2 / 0 | 9.0e-4, 1.9e-6 |
+
+The `tau = 0` dropped values are float rounding in the comparison itself.
+
+Two findings follow from the table:
+
+- **Tolerance is not the fix.** With naive order, two quad receivers still
+  crack at `tau = 1e-3`. An edge that grazes the shadow plane makes the
+  intersection ill-conditioned, so the two triangles' points can differ by more
+  than any small tolerance.
+- **Canonical order is the fix.** It makes the shared-edge point bitwise
+  identical in both triangles. Neither fixture has a crack at any `tau`,
+  including 0. D2 step 2 now requires it.
+
+**Chosen `LUDUS_SCENE_LINE_INTERVAL_MERGE_TOLERANCE = 1e-6`** (a fraction of the
+segment), with canonical edge order. The smallest crack-free tolerance is 0. The
+1e-6 margin, about 8 ulp at 1, guards abutting geometry that does not share
+vertex bits, such as instances placed edge to edge. That case was not measured.
+At 1e-6 the dropped visible length is at most 2.1e-7 m (mean 6.4e-9 m) on the
+sphere and 1.5e-7 m (mean 2.6e-8 m) on the quad.
+
+### 4.4 Packed nodes
+
+A probe kernel read `Counts.y`, and compared node 0's lower bound at
+`Offsets.x` with `BoundsMinimumWorld`, once in a `TriangleLoop` pass and once in
+a `NativeQuery` pass. Both strategies gave the same node counts, and every root
+matched the scene bounds:
+
+| Fixture | Triangles | Nodes |
+| --- | --- | --- |
+| Room + block | 14 | 7 |
+| Room + sphere | 3980 | 2047 |
+| Room + rotated quad | 14 | 7 |
+| Blinds 8 / 12 / 16 / 24 / 32 | 28 / 36 / 44 / 60 / 76 | 15 / 23 / 31 / 31 / 55 |
+
+The code agrees. The graph ray scene (`BuildGraphRayScene`), material graph
+scene and reference job paths all call `BuildReferenceBvh`, and `PackGpuScene`
+packs the nodes unconditionally.
+
+PL3 must still handle one case. `render_graph_activation.cpp` sets
+`HasNativeRayQueries` when any pass in the plan selects `NativeQuery`.
+`PackGpuScene` then partitions `Order` by opacity through
+`PackGpuPreviewRayOrder`: an opaque prefix, then a masked suffix. In that case
+a node's `[First, First + Count)` range no longer addresses `Order` whenever the
+scene contains masked triangles. The fixtures here are all opaque, so the
+partition preserved order. PL3 therefore adds an unpartitioned leaf order, or
+its own permutation, for plans that contain a `NativeQuery` pass, with a
+masked-scene parity test under both strategies (see D5).
+
+### 4.5 Random dimensions
+
+`RANDOM_MAX_DIMENSION = 0xffff` (FoundationMath `math.slang`, mirrored by C++
+`RandomMaxDimension`). `TryAdvanceSceneRandomDimension` fails only above it,
+and the explicit-address `SampleSceneRandom` overloads require dimensions no
+greater than it. D8b uses dimensions 0-14, so the layout stands unchanged.
+
+### 4.6 Line query cost
+
+Each kernel takes one camera hit and draws 8 area samples per pixel at 640×480.
+"Shadow" then adds 8 `TestVisibility` calls under `TriangleLoop`; "line" adds 8
+`U`-chord line queries. Each cell is the median GPU pass time over 64 frames,
+for two runs. The ratio is `(line - base) / (shadow - base)`.
+
+| Fixture | Base (ms) | Shadow (ms) | Line 8 (ms) | Line 16 (ms) | Line 32 (ms) | Line/shadow ratio |
+| --- | --- | --- | --- | --- | --- | --- |
+| Room + sphere (3980 triangles) | 60.5 / 74.2 | 484.3 / 512.6 | 470.6 / 491.7 | 492.5 / 480.4 | 487.4 / 469.9 | 0.90-1.02 |
+| Room + blinds 16 (44) | 1.31 / 1.21 | 11.79 / 11.90 | 16.64 / 16.17 (overflows) | 19.07 / 18.90 | 17.50 / 16.32 | 1.40-1.69 |
+| Room + block (14) | 1.53 / 1.34 | 2.43 / 2.97 | 5.57 / 4.84 | 8.87 / 12.91 | 5.12 / 9.25 | 2.1-8.2 |
+
+On the sphere, one query costs about 172 ns per pixel as a shadow ray and
+176 ns as a line query at capacity 16. Both scan every triangle; the
+`TriangleLoop` shadow ray exits early only when it is occluded. The small
+scenes are dominated by per-query overhead. They also vary up to 2× from run to
+run on this machine, so the capacity columns do not order there. Capacity 8
+overflows on blinds 16 and stops early, so its time there is not comparable.
+
+For comparison, the paper reports 1.2-55× with a CPU BVH. These linear-scan
+ratios are context, not an acceptance threshold, and support no speed claim.
 
 ## 5. Risks
 
 - **Linear cost.** Six line queries per pixel, each scanning every triangle,
   limit PL1/PL2 to small scenes. PL3's BVH is the remedy; tests use small
   fixtures until then.
-- **Register pressure.** A 16-entry `float2` array per thread can spill. PL0
-  measures it before the capacity is fixed.
+- **Register pressure.** A 32-entry `float2` array per thread can spill. On
+  Metal, PL0 found no occupancy change and no capacity-ordered time difference
+  (section 4.2). Register counts and Vulkan were not measured.
 - **Geometric disagreement.** The D2 clip and the Möller-Trumbore loop treat
   edges differently within float tolerance. With `TriangleLoop` on every pass
   the effect is confined to near-edge slivers. The PL2 convergence test bounds
