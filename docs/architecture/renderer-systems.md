@@ -1940,12 +1940,11 @@ A compute dispatch performs closest/visibility native acceleration-structure que
 shared material opacity filtering,
 RGB GGX/Lambert sampling, analytic-light/emissive-triangle/constant-environment sampling, MIS,
 roulette and compensated accumulation. It uses RT1's addressed Philox dimensions
-and world-space origin error allowance. A second ordered GDI pass draws pixel
-quads using compute-written per-instance RGB/pixel-index records into an RHI
-attachment texture. Binary32-exact indices are bounded to 2^24 pixels, avoiding
-nonportable builtin-instance signature lowering without extra buffer bytes.
-The graph declares storage history, compute-to-vertex visibility and the sampled
-texture export. No ray, radiance, counter or pixel readback occurs in these
+and world-space origin error allowance. A second ordered raster pass draws one
+fullscreen quad; its fragment shader reads compute-written display colors by pixel
+coordinate into an RHI attachment texture. Current preview admission retains the
+2^24-pixel bound. The graph declares storage history, compute-to-fragment visibility
+and the sampled texture export. No ray, radiance, counter or pixel readback occurs in these
 renderer APIs. GPU numerical failure makes an error pixel magenta; CPU progress
 reports completed dispatches, not observed valid sample counts or convergence.
 
@@ -2181,6 +2180,90 @@ motivate the opt-in status rather than a default performance claim.
 
 The recipe remains an opt-in experiment. Native backend qualification and a
 representative measured improvement are required before default activation.
+
+The `pass-timings` benchmark experiment uses the existing RHI per-pass probes to
+measure the named `GPU preview transport` compute operation and `GPU preview image`
+raster operation separately. Both variants use the same production shader with
+material caching disabled. `unprobed` keeps the frame probe alone; `profiled` also
+arms `ArmGpuPassTimings` before submission and polls `GetGpuPassTimings` after
+completion. Their matched AB/BA frame intervals expose the observed instrumentation
+overhead, independently of the per-pass durations. Run:
+
+```sh
+python3 scripts/python/benchmark_ray_visibility.py --experiment pass-timings \
+  --executable out/build/<native-build>/modules/graphics/renderer/ludus_renderer_render_tests \
+  --output out/ray-pass/interleaved --runs 5
+```
+
+It reuses all six opaque/masked/textured fixtures, sample addresses, warmup and
+independent-process repetitions above. The ordinary `[ray-pass-timings]` regression
+checks the same shader with probes off/on, sample coverage and independent CPU/
+software-GPU reference parity. Benchmark mode validates exactly one compute and
+one raster interval per profiled frame, their distinct nonzero scope identities,
+stable names/precision, zero dropped records, and explicit Available states with
+finite nonnegative durations. A quantized zero is retained and counted. Unsupported
+per-pass sampling skips the ordinary hardware test, but fails a requested benchmark;
+unavailable, disjoint, missing or unexpected data never becomes a CPU-time fallback.
+
+These intervals include GPU stalls. Metal raster timing is the elapsed envelope of
+vertex/fragment stages, which can overlap other operation envelopes. The report
+therefore retains each raw duration and, when the RHI supplies validated clock
+alignment, their overlap and the output's end-time tail after compute. The latter
+is `max(0, outputEnd - transportEnd)` on the calibrated clock, not raster shader
+busy time. Overlap/tail statistics use only aligned samples and always report their
+count and the largest clock-mapping uncertainty. Missing alignment leaves these
+statistics absent while raw GPU durations remain available. Pass durations are
+not an additive partition of frame time. The [profiling contract](profiling-final.md)
+owns backend stage, clock-calibration and uncertainty details.
+
+In each `profiled/` directory, `.transport.gpu.bin` and `.output.gpu.bin` contain one
+little-endian binary64 nanosecond duration per measured sample. `.pass-info.bin`
+contains seven explicit 64-bit words: version 1 (uint64), transport/output tick
+nanoseconds (binary64), their valid-bit counts (uint64), and their scope identities
+(uint64). Zero precision fields mean unknown; identities remain process/device
+local. `.pass-names.bin` contains transport then output UTF-8 names, each prefixed
+by its uint32 little-endian byte length, without a terminator. `.pass-intervals.bin`
+has six uint64 little-endian words per sample: transport start/end, output start/end,
+clock uncertainty in nanoseconds, and a 0/1 alignment-availability word. Unavailable
+intervals contain zero timestamp/bound words and are not interpreted as zero overlap.
+The JSON preserves per-run metadata, names, precision, zero-duration/alignment counts,
+pass medians and process-bootstrap intervals, plus the original frame and image
+checks. No image readback or file I/O occurs between paired submissions; counter
+resolution happens after completion and its CPU cost is visible in the pair gap.
+
+Measurement on 2026-10-27 used Apple M5 (8 GPU cores), macOS 26.6,
+Clang 23.1.3 `RelWithDebInfo` (`-O2`), the default visibility-only / uncached
+shader, 512×512 pixels and 128 samples (16 warmup). Five independent processes
+contributed 112 matched AB/BA pairs per scene each. The source base was
+`02df0b37e3e2283f88a86ea1a012e2794a8905d6`; the frozen executable SHA-256 was
+`7da4672c54616f898f58905a7f9145e64914aa5594b579c00eb3c0875cc30e91`. Values below are medians of
+process medians; bracketed ranges are 95% process-bootstrap intervals for raw
+pass durations. Durations and overlap/tail are in milliseconds.
+
+| Scene | Transport [95% interval] | Output envelope [95% interval] | Overlap | Output tail | Aligned samples | Max clock uncertainty (µs) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| empty | 0.5345 [0.3561, 0.6879] | 0.5906 [0.3935, 0.7491] | 0.5075 | 0.0499 | 558/560 | 0.667 |
+| opaque | 1.8432 [1.3666, 2.6971] | 1.8757 [1.3445, 2.7698] | 1.8361 | 0.0629 | 560/560 | 5.125 |
+| masked | 3.4468 [2.6952, 6.2121] | 3.4984 [2.7276, 6.2898] | 3.4346 | 0.0664 | 560/560 | 9.000 |
+| mixed | 3.6646 [3.2291, 6.2483] | 3.6408 [3.2203, 6.3440] | 3.5853 | 0.0670 | 559/560 | 17.730 |
+| textured-nearest | 4.2184 [3.6288, 5.0066] | 4.2706 [3.6437, 5.2127] | 4.2063 | 0.0612 | 559/560 | 8.938 |
+| textured-linear | 4.8813 [4.5703, 8.0433] | 4.8721 [4.5881, 8.0585] | 4.7998 | 0.0742 | 556/560 | 13.667 |
+
+All 3360 profiled frames retained valid GPU pass durations; eight lacked validated
+clock alignment and were excluded only from overlap/tail statistics. Tick precision
+was 1 ns with 64 valid bits and no zero-duration samples. The large raster envelope
+mostly overlaps transport; neither it nor the output tail identifies raster shader
+busy time. Absolute times vary substantially between processes, so these are
+observed workload intervals rather than uncontended hardware costs.
+
+Matched frame overhead point estimates ranged from −0.71% to +0.60%; every
+95% process-bootstrap unprobed/profiled ratio interval included 1. This does not
+establish zero probe overhead. Median inter-frame pair gaps were 0.012–0.020 ms
+across scene/process combinations; the JSON retains AB/BA splits and gaps for
+order-bias inspection. Every displayed RGBA8 channel and raw linear RGB value
+was identical between unprobed and profiled variants, with complete sample
+coverage. The ordinary regression separately checks the independent CPU oracle
+and software GPU-reference outputs at 64×64 / 16 samples using the tolerances above.
 
 The explicit quality profile admits at most four live jobs, 4096 requested
 samples, depth eight, the reference secondary-distance/camera bounds and a fixed

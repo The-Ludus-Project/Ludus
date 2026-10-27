@@ -24,6 +24,7 @@
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/rhi/device.h>
+#include <ludus/graphics/rhi/gpu_scope.h>
 #include <ludus/graphics/rhi/measurement.h>
 
 #include <catch2/catch_test_macros.hpp>
@@ -42,8 +43,15 @@ using Status = rhi::RasterStatus;
 constexpr uint64 TIMEOUT = 30 * time::NANOSECONDS_PER_SECOND;
 constexpr usize BYTE_BUDGET = usize{64} * 1024 * 1024;
 constexpr usize VARIANT_COUNT = 2;
+constexpr usize EXPECTED_PASS_COUNT = 2;
+constexpr usize TRANSPORT_PASS_INDEX = 0;
+constexpr usize OUTPUT_PASS_INDEX = 1;
+constexpr usize PROFILED_VARIANT_INDEX = 1;
+constexpr usize PASS_METADATA_WORD_COUNT = 7;
+constexpr usize PASS_INTERVAL_WORD_COUNT = 6;
+constexpr uint64 PASS_METADATA_VERSION = 1;
 constexpr usize SCENE_COUNT = 4;
-constexpr usize CACHE_SCENE_COUNT = 6;
+constexpr usize ALL_SCENE_COUNT = 6;
 constexpr uint32 TEXTURE_EXTENT = 4;
 constexpr float32 TEXTURE_UV_REPETITIONS = 3;
 constexpr uint8 TEXEL_HIGH = 224;
@@ -72,10 +80,17 @@ constexpr float32 LINEAR_ABSOLUTE_TOLERANCE = .001F;
 constexpr float32 LINEAR_RELATIVE_TOLERANCE = .005F;
 constexpr usize CONFIGURATION_WORD_COUNT = 4;
 constexpr uint32 BENCHMARK_FORMAT_VERSION = 1;
-constexpr StaticArray<const char*, CACHE_SCENE_COUNT> SCENE_NAMES{
+constexpr StaticArray<const char*, ALL_SCENE_COUNT> SCENE_NAMES{
     {"empty", "opaque", "masked", "mixed", "textured-nearest", "textured-linear"}};
 constexpr StaticArray<const char*, VARIANT_COUNT> CACHE_VARIANT_NAMES{{"uncached", "cached"}};
 constexpr StaticArray<const char*, VARIANT_COUNT> VARIANT_NAMES{{"full", "visibility"}};
+constexpr StaticArray<const char*, VARIANT_COUNT> PASS_VARIANT_NAMES{{"unprobed", "profiled"}};
+enum class BenchmarkExperiment : uint32
+{
+    Visibility,
+    HitCache,
+    PassTimings,
+};
 enum class SceneKind : uint32
 {
     Empty,
@@ -100,8 +115,16 @@ struct VisibilityFixture final
     rr::Snapshot Snapshot;
     rr::GpuPreview Preview;
 };
+struct PassTimingSamples final
+{
+    StaticArray<Array<float64>, EXPECTED_PASS_COUNT> Nanoseconds;
+    Array<uint64> IntervalWords;
+    StaticArray<rhi::GpuPassTiming, EXPECTED_PASS_COUNT> Metadata{};
+    bool HasMetadata = false;
+};
 struct TimingSamples final
 {
+    PassTimingSamples Passes;
     StaticArray<Array<float64>, VARIANT_COUNT> GpuNanoseconds;
     StaticArray<Array<uint64>, VARIANT_COUNT> WallNanoseconds;
     Array<uint64> PairGapNanoseconds;
@@ -327,16 +350,91 @@ void PrepareFixture(rhi::DeviceHandle device, RenderPath path, SceneKind scene, 
                                     scene == SceneKind::Opaque ? 2 : items.GetSize(),
                                     outFixture.Snapshot) == Status::Ready);
 }
+// The fixture owns exactly one transport dispatch and one output raster pass.
+// Reject unexpected topology or invalid timestamps instead of attributing other work.
+void CollectPassTimings(rhi::DeviceHandle device, usize sampleIndex, PassTimingSamples& inoutSamples)
+{
+    rhi::GpuPassTimings batch;
+    const uint64 start = time::NowTicks();
+    do
+    {
+        REQUIRE(rhi::GetGpuPassTimings(device, batch) == Status::Ready);
+    } while (batch.State == rhi::GpuTimingState::Pending && time::NowTicks() - start < TIMEOUT);
+    REQUIRE(batch.State == rhi::GpuTimingState::Available);
+    REQUIRE(batch.DroppedPasses == 0);
+    REQUIRE(batch.Count == EXPECTED_PASS_COUNT);
+    StaticArray<bool, EXPECTED_PASS_COUNT> hasSeen{};
+    StaticArray<rhi::GpuPassTiming, EXPECTED_PASS_COUNT> observed{};
+    for (usize index = 0; index < batch.Count; ++index)
+    {
+        const rhi::GpuPassTiming& pass = batch.Passes[index];
+        REQUIRE((pass.Kind == rhi::GpuPassKind::Compute || pass.Kind == rhi::GpuPassKind::Raster));
+        const usize stage = pass.Kind == rhi::GpuPassKind::Compute ? TRANSPORT_PASS_INDEX : OUTPUT_PASS_INDEX;
+        REQUIRE(hasSeen[stage] == false);
+        hasSeen[stage] = true;
+        observed[stage] = pass;
+        REQUIRE(pass.Scope.Identity != 0);
+        REQUIRE(pass.Scope.Name[0] != '\0');
+        REQUIRE(pass.Scope.LogicalPassCount == 1);
+        REQUIRE(pass.ScopePassIndex == 0);
+        REQUIRE(pass.Timing.State == rhi::GpuTimingState::Available);
+        REQUIRE(math::IsFinite(pass.Timing.DurationNanoseconds) == true);
+        REQUIRE(pass.Timing.DurationNanoseconds >= 0);
+        REQUIRE(math::IsFinite(pass.Timing.TickNanoseconds) == true);
+        REQUIRE(pass.Timing.TickNanoseconds >= 0);
+        if (inoutSamples.HasMetadata == true)
+        {
+            REQUIRE(pass.Scope.Identity == inoutSamples.Metadata[stage].Scope.Identity);
+            REQUIRE(std::strcmp(pass.Scope.Name.GetData(), inoutSamples.Metadata[stage].Scope.Name.GetData()) == 0);
+            REQUIRE(pass.Timing.TickNanoseconds == inoutSamples.Metadata[stage].Timing.TickNanoseconds);
+            REQUIRE(pass.Timing.ValidBits == inoutSamples.Metadata[stage].Timing.ValidBits);
+        }
+        else
+            inoutSamples.Metadata[stage] = pass;
+        inoutSamples.Nanoseconds[stage][sampleIndex] = pass.Timing.DurationNanoseconds;
+    }
+    REQUIRE(inoutSamples.Metadata[TRANSPORT_PASS_INDEX].Scope.Identity !=
+            inoutSamples.Metadata[OUTPUT_PASS_INDEX].Scope.Identity);
+    const rhi::GpuPassTiming& transport = observed[TRANSPORT_PASS_INDEX];
+    const rhi::GpuPassTiming& output = observed[OUTPUT_PASS_INDEX];
+    const bool hasAlignment = transport.HasCpuInterval == true && output.HasCpuInterval == true;
+    if (hasAlignment == true)
+    {
+        REQUIRE(transport.EndTicks >= transport.StartTicks);
+        REQUIRE(output.EndTicks >= output.StartTicks);
+    }
+    // Missing calibration does not invalidate GPU durations. Only the aligned
+    // intervals are absent, and the explicit final word distinguishes that state.
+    const StaticArray<uint64, PASS_INTERVAL_WORD_COUNT> interval{
+        {hasAlignment == true ? transport.StartTicks : 0,
+         hasAlignment == true ? transport.EndTicks : 0,
+         hasAlignment == true ? output.StartTicks : 0,
+         hasAlignment == true ? output.EndTicks : 0,
+         hasAlignment == true ? batch.ClockUncertaintyNanoseconds : 0,
+         hasAlignment == true ? 1U : 0U}};
+    for (usize word = 0; word < interval.GetSize(); ++word)
+        inoutSamples.IntervalWords[sampleIndex * PASS_INTERVAL_WORD_COUNT + word] = interval[word];
+    inoutSamples.HasMetadata = true;
+}
 void AdvancePairs(rhi::DeviceHandle device,
                   rhi::SurfaceHandle surface,
                   StaticArray<VisibilityFixture, VARIANT_COUNT>& inoutFixtures,
                   uint32 samples,
                   bool isBenchmark,
+                  bool shouldMeasurePasses,
                   bool shouldReverseOrder,
                   TimingSamples& outTimings)
 {
     const uint32 warmup = isBenchmark == true ? WARMUP_SAMPLES : 0;
-    if (isBenchmark == true)
+    const bool shouldTimeFrames = isBenchmark == true || shouldMeasurePasses == true;
+    outTimings.Passes.HasMetadata = false;
+    if (shouldMeasurePasses == true)
+    {
+        for (Array<float64>& values : outTimings.Passes.Nanoseconds)
+            REQUIRE(values.TryResize(samples - warmup) == true);
+        REQUIRE(outTimings.Passes.IntervalWords.TryResize(usize(samples - warmup) * PASS_INTERVAL_WORD_COUNT) == true);
+    }
+    if (shouldTimeFrames == true)
     {
         for (usize variant = 0; variant < VARIANT_COUNT; ++variant)
         {
@@ -354,14 +452,23 @@ void AdvancePairs(rhi::DeviceHandle device,
         {
             const usize variant = isBaselineFirst == true ? turn : VARIANT_COUNT - 1 - turn;
             VisibilityFixture& fixture = inoutFixtures[variant];
-            if (isBenchmark == true)
+            if (shouldTimeFrames == true)
                 REQUIRE(rhi::ArmGpuTiming(device) == Status::Ready);
+            const bool hasPassProbe = shouldMeasurePasses == true && variant == PROFILED_VARIANT_INDEX;
+            if (hasPassProbe == true)
+            {
+                const Status armed = rhi::ArmGpuPassTimings(device);
+                if (armed == Status::Unsupported && isBenchmark == false)
+                    SKIP("Native per-pass timestamp sampling unavailable");
+                INFO("Per-pass timestamps are required in pass-timings benchmark mode");
+                REQUIRE(armed == Status::Ready);
+            }
             const uint64 startedAt = time::NowTicks();
             rhi::SubmissionToken token;
             REQUIRE(fixture.Renderer.AdvanceGpuPreview(fixture.Preview, surface, token) == Status::Ready);
             WaitSamples(fixture, sample);
             const uint64 completedAt = time::NowTicks();
-            if (isBenchmark == true)
+            if (shouldTimeFrames == true)
             {
                 rhi::GpuTiming timing;
                 REQUIRE(rhi::GetGpuTiming(device, timing) == Status::Ready);
@@ -379,6 +486,8 @@ void AdvancePairs(rhi::DeviceHandle device,
                     }
                 }
             }
+            if (hasPassProbe == true)
+                CollectPassTimings(device, sample > warmup ? usize(sample - warmup - 1) : 0, outTimings.Passes);
             firstCompletedAt = completedAt;
         }
     }
@@ -459,13 +568,56 @@ void WriteIntegers(const std::string& directory, const char* scene, const char* 
         REQUIRE(TryWriteLittleEndian(values[i], {bytes.GetData() + i * sizeof(Value), sizeof(Value)}) == true);
     WriteArtifact(directory, scene, suffix, bytes.GetData(), bytes.GetSize());
 }
-void WriteTimings(const std::string& directory, const char* scene, const Array<float64>& values)
+void WriteTimings(const std::string& directory,
+                  const char* scene,
+                  const Array<float64>& values,
+                  const char* suffix = ".gpu.bin")
 {
     Array<uint64> bits;
     REQUIRE(bits.TryResize(values.GetSize()) == true);
     for (usize i = 0; i < values.GetSize(); ++i)
         std::memcpy(&bits[i], &values[i], sizeof(uint64));
-    WriteIntegers(directory, scene, ".gpu.bin", bits);
+    WriteIntegers(directory, scene, suffix, bits);
+}
+void WritePassTimings(const std::string& directory, const char* scene, const PassTimingSamples& samples)
+{
+    REQUIRE(samples.HasMetadata == true);
+    WriteTimings(directory, scene, samples.Nanoseconds[TRANSPORT_PASS_INDEX], ".transport.gpu.bin");
+    WriteTimings(directory, scene, samples.Nanoseconds[OUTPUT_PASS_INDEX], ".output.gpu.bin");
+    WriteIntegers(directory, scene, ".pass-intervals.bin", samples.IntervalWords);
+    const rhi::GpuPassTiming& transport = samples.Metadata[TRANSPORT_PASS_INDEX];
+    const rhi::GpuPassTiming& output = samples.Metadata[OUTPUT_PASS_INDEX];
+    // Seven explicit little-endian 64-bit words: version, two binary64 ticks,
+    // two valid-bit counts and two scope identities. No host struct padding.
+    StaticArray<uint64, PASS_METADATA_WORD_COUNT> metadata{{PASS_METADATA_VERSION,
+                                                            0,
+                                                            0,
+                                                            transport.Timing.ValidBits,
+                                                            output.Timing.ValidBits,
+                                                            transport.Scope.Identity,
+                                                            output.Scope.Identity}};
+    std::memcpy(&metadata[1], &transport.Timing.TickNanoseconds, sizeof(float64));
+    std::memcpy(&metadata[2], &output.Timing.TickNanoseconds, sizeof(float64));
+    StaticArray<uint8, PASS_METADATA_WORD_COUNT * sizeof(uint64)> bytes{};
+    for (usize index = 0; index < metadata.GetSize(); ++index)
+        REQUIRE(TryWriteLittleEndian(metadata[index], {bytes.GetData() + index * sizeof(uint64), sizeof(uint64)}) ==
+                true);
+    WriteArtifact(directory, scene, ".pass-info.bin", bytes.GetData(), bytes.GetSize());
+    StaticArray<uint8, EXPECTED_PASS_COUNT * (sizeof(uint32) + rhi::GPU_SCOPE_NAME_BYTES)> names{};
+    usize offset = 0;
+    for (const rhi::GpuPassTiming& pass : samples.Metadata)
+    {
+        uint32 length = 0;
+        while (length < pass.Scope.Name.GetSize() && pass.Scope.Name[length] != '\0')
+            ++length;
+        REQUIRE(length != 0);
+        REQUIRE(length < pass.Scope.Name.GetSize());
+        REQUIRE(TryWriteLittleEndian(length, {names.GetData() + offset, sizeof(uint32)}) == true);
+        offset += sizeof(uint32);
+        std::memcpy(names.GetData() + offset, pass.Scope.Name.GetData(), length);
+        offset += length;
+    }
+    WriteArtifact(directory, scene, ".pass-names.bin", names.GetData(), offset);
 }
 void WriteLinear(const std::string& directory, const char* scene, const Array<math::Vector4>& values)
 {
@@ -524,17 +676,23 @@ void CompareReference(rhi::DeviceHandle device,
     }
     REQUIRE(fixture.Renderer.Release(capture) == Status::Ready);
 }
-void RunPairedPreview(bool shouldCacheHit)
+void RunPairedPreview(BenchmarkExperiment experiment)
 {
-    const char* directoryOrNull = std::getenv(shouldCacheHit == true ? "LUDUS_HIT_CACHE_BENCHMARK_DIRECTORY"
-                                                                     : "LUDUS_VISIBILITY_BENCHMARK_DIRECTORY");
+    const bool shouldCacheHit = experiment == BenchmarkExperiment::HitCache;
+    const bool shouldMeasurePasses = experiment == BenchmarkExperiment::PassTimings;
+    const char* directoryOrNull = std::getenv(shouldMeasurePasses == true ? "LUDUS_RAY_PASS_BENCHMARK_DIRECTORY"
+                                              : shouldCacheHit == true    ? "LUDUS_HIT_CACHE_BENCHMARK_DIRECTORY"
+                                                                          : "LUDUS_VISIBILITY_BENCHMARK_DIRECTORY");
     const bool isBenchmark = directoryOrNull != nullptr;
-    const bool shouldReverseOrder = std::getenv(shouldCacheHit == true ? "LUDUS_HIT_CACHE_REVERSE_ORDER"
-                                                                       : "LUDUS_VISIBILITY_REVERSE_ORDER") != nullptr;
+    const bool shouldReverseOrder = std::getenv(shouldMeasurePasses == true ? "LUDUS_RAY_PASS_REVERSE_ORDER"
+                                                : shouldCacheHit == true ? "LUDUS_HIT_CACHE_REVERSE_ORDER"
+                                                                         : "LUDUS_VISIBILITY_REVERSE_ORDER") != nullptr;
     rr::internal::SetGpuPreviewOpacityPartitioningForTesting(true);
     const uint32 extent = isBenchmark == true ? BENCHMARK_EXTENT : TEST_EXTENT;
     const uint32 samples = isBenchmark == true ? BENCHMARK_SAMPLES : TEST_SAMPLES;
-    for (usize sceneIndex = 0; sceneIndex < (shouldCacheHit == true ? CACHE_SCENE_COUNT : SCENE_COUNT); ++sceneIndex)
+    for (usize sceneIndex = 0;
+         sceneIndex < ((shouldCacheHit == true || shouldMeasurePasses == true) ? ALL_SCENE_COUNT : SCENE_COUNT);
+         ++sceneIndex)
     {
         CAPTURE(sceneIndex);
         const SceneKind scene = static_cast<SceneKind>(sceneIndex);
@@ -550,7 +708,7 @@ void RunPairedPreview(bool shouldCacheHit)
         deviceDescription.Required.PortableRaster = true;
         deviceDescription.Required.Compute = true;
         deviceDescription.Preferred.RayQueries = true;
-        deviceDescription.EnableGpuTiming = isBenchmark;
+        deviceDescription.EnableGpuTiming = isBenchmark == true || shouldMeasurePasses == true;
         rhi::DeviceHandle device;
         rhi::SurfaceHandle surface;
         const rhi::DeviceStatus started =
@@ -563,7 +721,9 @@ void RunPairedPreview(bool shouldCacheHit)
             SKIP("Native ray queries unavailable");
         StaticArray<VisibilityFixture, VARIANT_COUNT> fixtures{};
         PrepareFixture(device,
-                       shouldCacheHit == true ? RenderPath::UncachedHit : RenderPath::FullHit,
+                       shouldCacheHit == true        ? RenderPath::UncachedHit
+                       : shouldMeasurePasses == true ? RenderPath::VisibilityOnly
+                                                     : RenderPath::FullHit,
                        scene,
                        fixtures[0]);
         PrepareFixture(device,
@@ -595,7 +755,7 @@ void RunPairedPreview(bool shouldCacheHit)
         TimingSamples timings;
         // Both immutable pipelines/scenes are ready before any timed frame. AB,BA
         // alternation pairs the same sample address, on one device/queue/surface.
-        AdvancePairs(device, surface, fixtures, samples, isBenchmark, shouldReverseOrder, timings);
+        AdvancePairs(device, surface, fixtures, samples, isBenchmark, shouldMeasurePasses, shouldReverseOrder, timings);
         StaticArray<Array<uint8>, VARIANT_COUNT> pixels{};
         StaticArray<Array<math::Vector4>, VARIANT_COUNT> linear{};
         for (usize variant = 0; variant < VARIANT_COUNT; ++variant)
@@ -617,8 +777,10 @@ void RunPairedPreview(bool shouldCacheHit)
             const char* sceneName = SCENE_NAMES[sceneIndex];
             for (usize variant = 0; variant < VARIANT_COUNT; ++variant)
             {
-                const std::string variantDirectory =
-                    directory + "/" + (shouldCacheHit == true ? CACHE_VARIANT_NAMES[variant] : VARIANT_NAMES[variant]);
+                const std::string variantDirectory = directory + "/" +
+                                                     (shouldMeasurePasses == true ? PASS_VARIANT_NAMES[variant]
+                                                      : shouldCacheHit == true    ? CACHE_VARIANT_NAMES[variant]
+                                                                                  : VARIANT_NAMES[variant]);
                 WriteArtifact(variantDirectory,
                               sceneName,
                               ".rgba",
@@ -627,6 +789,8 @@ void RunPairedPreview(bool shouldCacheHit)
                 WriteLinear(variantDirectory, sceneName, linear[variant]);
                 WriteTimings(variantDirectory, sceneName, timings.GpuNanoseconds[variant]);
                 WriteIntegers(variantDirectory, sceneName, ".wall.bin", timings.WallNanoseconds[variant]);
+                if (shouldMeasurePasses == true && variant == PROFILED_VARIANT_INDEX)
+                    WritePassTimings(variantDirectory, sceneName, timings.Passes);
             }
             WriteIntegers(directory, sceneName, ".gap.bin", timings.PairGapNanoseconds);
             WriteIntegers(directory, sceneName, ".order.bin", timings.IsBaselineFirst);
@@ -663,10 +827,16 @@ void RunPairedPreview(bool shouldCacheHit)
 TEST_CASE("Visibility-only queries preserve full-hit output and CPU/GPU reference parity",
           "[renderer][gpu][visibility]")
 {
-    RunPairedPreview(false);
+    RunPairedPreview(BenchmarkExperiment::Visibility);
 }
 TEST_CASE("Per-hit material and UV caching preserves uncached output and CPU/GPU reference parity",
           "[renderer][gpu][hit-cache]")
 {
-    RunPairedPreview(true);
+    RunPairedPreview(BenchmarkExperiment::HitCache);
+}
+
+TEST_CASE("Per-pass GPU probes preserve ray rendering and separate transport from output",
+          "[renderer][gpu][ray-pass-timings]")
+{
+    RunPairedPreview(BenchmarkExperiment::PassTimings);
 }
