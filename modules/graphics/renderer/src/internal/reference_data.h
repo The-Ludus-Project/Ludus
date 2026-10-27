@@ -88,10 +88,19 @@ struct ReferenceInstance final
     usize FirstTriangle = 0, TriangleCount = 0;
     uint64 SourceId = 0;
 };
+/// Largest triangle count a BVH leaf may hold; larger ranges always split.
+inline constexpr uint32 REFERENCE_BVH_MAX_LEAF_TRIANGLES = 4;
+/// Deepest BVH leaf. Traversal keeps at most one deferred sibling per level, so this
+/// bound keeps both the CPU oracle's and the GPU kernel's 64-entry stacks sufficient.
+inline constexpr uint32 REFERENCE_BVH_MAX_DEPTH = 48;
+static_assert(REFERENCE_BVH_MAX_DEPTH + 2 < LUDUS_REFERENCE_STACK_SIZE, "traversal stack covers the deepest leaf");
 struct ReferenceBvhNode final
 {
     math::Aabb3 Bounds;
     uint32 Left = 0, Right = 0, First = 0, Count = 0;
+    /// Interior nodes: axis (0-2) whose lower centroids went to Left. Traversal visits
+    /// Left first when the ray direction along it is nonnegative. Zero for leaves.
+    uint32 SplitAxis = 0;
 };
 struct ReferenceSceneData final
 {

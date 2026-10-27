@@ -10,7 +10,7 @@
 // Strides count float4 words, not bytes. Update the version when changing layout.
 #define LUDUS_GPU_PREVIEW_SURFACE_WORDS 9
 #define LUDUS_GPU_PREVIEW_LIGHT_WORDS 4
-#define LUDUS_GPU_PREVIEW_KERNEL_VERSION 5 // Opacity-partitioned primitive identity; independent of lighting profile.
+#define LUDUS_GPU_PREVIEW_KERNEL_VERSION 6 // BVH node word 2 carries the split axis in Z.
 
 #define LUDUS_GPU_PREVIEW_TRIANGLE_WORDS 16
 
