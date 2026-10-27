@@ -130,6 +130,13 @@ if(NOT EMSCRIPTEN)
     configure_file("${scene_compute_source}/main.lushader.json.in" "${scene_compute_staged}/main.lushader.json" @ONLY)
     ludus_compile_render_graph(TARGET ludus_sdk_scene_shader_contract_consumer NAME rg2_scene_compute
         MANIFEST "${scene_compute_staged}/main.lushader.json" RUNTIME_PACKAGE)
+    # A triangle-loop scene compute pass that calls FindVisibleLineIntervals through the installed helper.
+    set(line_visibility_source "${CMAKE_CURRENT_SOURCE_DIR}/../rg2/line_visibility")
+    set(line_visibility_staged "${CMAKE_CURRENT_BINARY_DIR}/rg3-inputs/line_visibility")
+    file(COPY "${line_visibility_source}/" DESTINATION "${line_visibility_staged}" PATTERN "*.in" EXCLUDE)
+    configure_file("${line_visibility_source}/main.lushader.json.in" "${line_visibility_staged}/main.lushader.json" @ONLY)
+    ludus_compile_render_graph(TARGET ludus_sdk_scene_shader_contract_consumer NAME rg2_line_visibility_loop
+        MANIFEST "${line_visibility_staged}/main.lushader.json" CONFIGURATION Loop RUNTIME_PACKAGE)
 endif()
 
 add_executable(ludus_sdk_render_graph_runtime_consumer ../render_graph_runtime.cpp)
