@@ -4042,6 +4042,44 @@ dependency order for display only; nothing is written until you move them.
 Configuration output links can be selected and deleted, just like pass connections.
 They edit the configuration output's source rather than adding an ordinary edge.
 
+### Find existing nodes and trace dependencies
+
+Choose **Find Node…** on the canvas toolbar, or press **Ctrl/Command+F** while the
+canvas has focus. The popup searches authored nodes in the current configuration
+by name or kind, including inactive, disabled and incomplete nodes. Every word
+must match either field; matching ignores case. Exact names appear first, then
+name prefixes, then other matches, with names sorted within each group. Empty
+search lists every authored node. Configuration interface boxes are not search
+results because they are not authored-node selections.
+
+Use Up/Down to choose a result and Enter or a double-click to select and frame
+it. The selection also updates Graph sources and Properties. Search does not
+preview selection as you type: Escape or clicking outside closes the popup and
+keeps the previous view and selection. No matches leaves the popup open on Enter.
+Edits, rebuilds and configuration switches close stale results. Text editing in
+Properties or source editors keeps its own Find shortcut.
+
+Select one or more nodes, then choose **Upstream** or **Downstream** on the canvas
+toolbar. Upstream follows every producer recursively; downstream follows every
+consumer. Multiple selections trace the union of their paths. The active button
+stays checked; its tooltip reports the number of nodes and connections. Matching
+wires and ports are emphasized, and unrelated nodes and wires are faded without
+moving or hiding them. Hovering a port does not replace an explicit trace.
+
+Tracing describes authored connections in the displayed configuration, including
+configuration input/output links. It includes inactive and disabled branches;
+their activity labels and dimming remain independent. A trace is not validation
+or proof of execution. Subgraph nodes stay opaque: enter their configuration to
+inspect its internal paths. Cycles terminate safely and missing node endpoints
+are ignored.
+
+The trace follows selection changes and refreshes after edits, undo and rebuilds.
+Clearing the selection, deleting all its roots, or switching configurations clears
+it. **Clear Trace**, or Escape on the canvas while no drag/link gesture is active,
+restores normal selection/hover highlighting and keeps the selected nodes. Escape in
+Find Node cancels only the search. Search and tracing never change draft bytes,
+authored positions, port geometry or undo history.
+
 ### Read canvas feedback
 
 Canvas labels adapt to magnification without moving nodes, wires or port hit
