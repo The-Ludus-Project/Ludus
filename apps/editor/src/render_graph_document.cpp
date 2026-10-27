@@ -1,4 +1,5 @@
 #include "internal/render_graph_document.h"
+#include "internal/render_graph_comment_frame.h"
 #include "internal/render_graph_configuration_template.h"
 #include "internal/render_graph_options.h"
 #include "internal/render_graph_pipeline_node.h"
@@ -680,6 +681,26 @@ bool MoveNodesEdit(QJsonObject& inoutConfiguration, const QStringList& arguments
         }
     }
     return arguments.isEmpty() == false && arguments.size() % 3 == 0;
+}
+bool ReplaceCommentFramesEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
+{
+    const QJsonDocument parsed = QJsonDocument::fromJson(arguments.first().toUtf8());
+    if (parsed.isArray() == false || AreRenderGraphCommentFramesValid(parsed.array()) == false)
+    {
+        return false;
+    }
+    if (arguments.size() > 1 && MoveNodesEdit(inoutConfiguration, arguments.mid(1)) == false)
+    {
+        return false;
+    }
+    QJsonObject layout = inoutConfiguration.value(QStringLiteral("layout")).toObject();
+    if (layout.contains(QStringLiteral("positions")) == false)
+    {
+        layout.insert(QStringLiteral("positions"), QJsonArray{});
+    }
+    layout.insert(QStringLiteral("frames"), parsed.array());
+    inoutConfiguration.insert(QStringLiteral("layout"), layout);
+    return true;
 }
 } // namespace
 
@@ -1474,6 +1495,20 @@ RenderGraphDocumentStatus RenderGraphDocument::MoveNodes(const QString& file,
         arguments += {position.Node, QString::number(position.X), QString::number(position.Y)};
     }
     return editConfiguration(file, configuration, arguments, &MoveNodesEdit, false);
+}
+
+RenderGraphDocumentStatus RenderGraphDocument::ReplaceCommentFrames(const QString& file,
+                                                                    const QString& configuration,
+                                                                    const QJsonArray& frames,
+                                                                    const QVector<RenderGraphNodePosition>& positions)
+{
+    mLastMove.clear();
+    QStringList arguments{QString::fromUtf8(QJsonDocument(frames).toJson(QJsonDocument::Compact))};
+    for (const RenderGraphNodePosition& position : positions)
+    {
+        arguments += {position.Node, QString::number(position.X), QString::number(position.Y)};
+    }
+    return editConfiguration(file, configuration, arguments, &ReplaceCommentFramesEdit, false);
 }
 
 RenderGraphDocumentStatus RenderGraphDocument::SetText(const QString& file, const QByteArray& bytes)
