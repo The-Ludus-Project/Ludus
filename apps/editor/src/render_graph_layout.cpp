@@ -12,7 +12,6 @@ namespace
 {
 constexpr float64 COLUMN_GAP = 60;
 constexpr float64 ROW_GAP = 28;
-constexpr qsizetype MINIMUM_DISTRIBUTION_COUNT = 3;
 
 bool AreBoundsValid(const QRectF& bounds)
 {
@@ -131,7 +130,7 @@ bool ComputeRenderGraphLayout(const QVector<RenderGraphLayoutNode>& nodes,
         (operation != RenderGraphLayoutOperation::Arrange && nodes.size() < 2) ||
         ((operation == RenderGraphLayoutOperation::DistributeHorizontal ||
           operation == RenderGraphLayoutOperation::DistributeVertical) &&
-         nodes.size() < MINIMUM_DISTRIBUTION_COUNT))
+         nodes.size() < MINIMUM_RENDER_GRAPH_DISTRIBUTION_COUNT))
     {
         return false;
     }

@@ -11,6 +11,9 @@
 
 namespace ludus::editor
 {
+/// Minimum authored-card selection for distribution; shared by menu admission and calculation.
+inline constexpr foundation::int32 MINIMUM_RENDER_GRAPH_DISTRIBUTION_COUNT = 3;
+
 /// Authored-position operation; alignment uses the selection's outer bounds, distribution its centres.
 enum class RenderGraphLayoutOperation : foundation::uint8
 {

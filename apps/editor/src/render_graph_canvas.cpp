@@ -1856,15 +1856,14 @@ void RenderGraphCanvas::AddLayoutMenu(QMenu& inoutMenu)
               RenderGraphLayoutOperation::AlignBottom,
               selectedCount >= 2);
     layout->addSeparator();
-    constexpr qsizetype MINIMUM_DISTRIBUTION_COUNT = 3;
     addAction(QStringLiteral("Distribute Horizontally"),
               "renderGraphDistributeHorizontal",
               RenderGraphLayoutOperation::DistributeHorizontal,
-              selectedCount >= MINIMUM_DISTRIBUTION_COUNT);
+              selectedCount >= MINIMUM_RENDER_GRAPH_DISTRIBUTION_COUNT);
     addAction(QStringLiteral("Distribute Vertically"),
               "renderGraphDistributeVertical",
               RenderGraphLayoutOperation::DistributeVertical,
-              selectedCount >= MINIMUM_DISTRIBUTION_COUNT);
+              selectedCount >= MINIMUM_RENDER_GRAPH_DISTRIBUTION_COUNT);
 }
 
 bool RenderGraphCanvas::ApplyLayout(RenderGraphLayoutOperation operation, bool shouldArrangeAll)
