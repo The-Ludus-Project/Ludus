@@ -1844,6 +1844,7 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | GetSurfaceHit | Surface endpoint from triangle/barycentrics, without tracing; IncomingRay and DistanceWorld are zero |
 | SelectLight / SampleIncidentLight | Optional default source selection and incident-light proposal; SelectLight(scene, queries) uses the invocation stream; no radiance estimate is added |
 | EvaluateLightSelectionPmf / EvaluateLightPdfSolidAngle | Matching source PMF / emitter-endpoint joint solid-angle density |
+| SelectEmissiveTriangle / EvaluateEmissiveTriangleSelectionPmf | [Power-weighted emissive triangle](#select-emissive-triangles-by-power) at an explicit dimension / that selection's probability for a triangle |
 | EvaluateEnvironment / EvaluateEnvironmentPdfSolidAngle | Environment emission and joint density under the uniform-source proposal |
 | TraceClosest / TestVisibility | Closest or occlusion query with explicit miss/surface/failure status |
 | SpawnSurfaceRay | Error-bound origin offset for a unit world direction and explicit maximum distance |
@@ -2129,6 +2130,49 @@ then sampled uniformly on the triangle. Splitting a triangle does not multiply
 its source selection probability. Emission maps are sampled at the actual UV;
 black texels and back-side one-sided samples remain zero-contribution events.
 The initial environment proposal is uniform sphere, including HDR maps.
+
+### Select emissive triangles by power
+
+For estimators that choose among emissive triangles themselves, such as
+resampled importance sampling, the interface exposes the renderer's
+power-weighted triangle distribution. It is the same packed CDF that the RT1
+reference uses for its emitter ticket, so graph and reference estimators draw
+from one distribution:
+
+```slang
+EmissiveTriangleSelection candidate = SelectEmissiveTriangle(scene, launch, dimension);
+if (candidate.HasSample == true)
+{
+    // candidate.TriangleIndex ~ p_src, with p_src(t) = candidate.SelectionPmf.
+    SurfaceHit point = GetSurfaceHit(scene, candidate.TriangleIndex, barycentric);
+}
+float pmf = EvaluateEmissiveTriangleSelectionPmf(scene, hit.TriangleIndex);
+```
+
+- A triangle's weight is the BT.709 luminance of its surface's constant emission
+  factor, with negative channels clamped to zero, times its world area. The
+  renderer quantizes the weights against 2²⁴ and keeps at least one unit for
+  every positive weight, so every emitting triangle stays selectable.
+- `SelectEmissiveTriangle` makes one bounded integer draw over the CDF total at
+  the explicit `launch`/`dimension` address, in the same way as
+  `SelectLight(scene, launch, dimension)`. It does not advance the automatic
+  stream. `SelectionPmf` is the triangle's discrete probability among emissive
+  triangles. It excludes any category choice such as `SelectLight`.
+- `EvaluateEmissiveTriangleSelectionPmf` returns that probability for any
+  triangle index, for example `SurfaceHit.TriangleIndex` from `TraceClosest`. It
+  returns zero for triangles without emitted power and for out-of-range indices.
+- A Scene connection without the lights group, a scene without emitted power
+  and an invalid or exhausted random address return `HasSample == false` and a
+  zero PMF. These are ordinary no-sample results; they do not latch `HasFailed`.
+- Weights use the constant emission factor only. Emission maps, alpha cutoff,
+  sidedness and visibility can only make the true contribution smaller, so
+  evaluate them at the sampled point with `GetSurfaceHit`, `EvaluateEmission` and
+  `TestVisibility`.
+
+The C++ reference counterparts (`SelectReferenceEmissiveTriangle` and
+`EvaluateReferenceEmissiveTriangleSelectionPmf`) are private to the renderer. The
+`[power-cdf]` GPU test compares the two implementations: triangle selections must
+match exactly, and PMFs must agree within the division error of Metal's fast math.
 
 LightSample exposes SelectionPmf and ConditionalPdf separately. Continuous
 sources use inverse-steradian density; delta sources set IsDiscrete and sampled
