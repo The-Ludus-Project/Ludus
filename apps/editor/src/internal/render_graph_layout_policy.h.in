@@ -6,6 +6,10 @@ namespace ludus::editor::layout_policy
 {
 /// Saved canvas position bound, in scene units. Owned by ludus_tools.render_graph_layout.
 inline constexpr foundation::int32 MAX_COORDINATE = @MAX_COORDINATE@;
+/// Maximum independently routed connections per configuration (layout budget).
+inline constexpr foundation::int32 MAX_WIRE_ROUTES = @MAX_WIRE_ROUTES@;
+/// Maximum ordered reroute points on one connection.
+inline constexpr foundation::int32 MAX_WIRE_REROUTE_POINTS = @MAX_WIRE_REROUTE_POINTS@;
 /// Maximum saved comment frames per configuration.
 inline constexpr foundation::int32 MAX_COMMENT_FRAMES = @MAX_COMMENT_FRAMES@;
 /// Maximum Unicode code points in a comment title.

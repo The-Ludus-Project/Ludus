@@ -278,8 +278,9 @@ def _validate_document(value, where):
             _endpoint(edge["to"], location)
         if "layout" in config:
             layout = config["layout"]
-            _keys(layout, ("positions",), location, ("frames",))
+            _keys(layout, ("positions",), location, ("frames", "routes"))
             layout_policy.validate_frames(layout.get("frames", []), location, sys.modules[__name__])
+            layout_policy.validate_routes(layout.get("routes", []), config, location, sys.modules[__name__])
             _list(layout["positions"], MAX_NODES, location)
             placed = set()
             for item in layout["positions"]:

@@ -373,6 +373,11 @@ public:
                          const QString& configuration,
                          const QJsonArray& frames,
                          const QVector<RenderGraphNodePosition>& positions = {});
+    /// Replace the complete editor-only wire routes as one undo step. Each route must name
+    /// a current connection and contain bounded integer points. Failure preserves draft/history;
+    /// Save publishes metadata. Does not affect graph execution. GUI thread only.
+    [[nodiscard]] RenderGraphDocumentStatus
+    ReplaceWireRoutes(const QString& file, const QString& configuration, const QJsonArray& routes);
     /// Replace an existing source's draft bytes (shader function, build manifest or graph text).
     [[nodiscard]] RenderGraphDocumentStatus SetText(const QString& file, const QByteArray& bytes);
     /// Apply a UTF-8 replacement against the exact draft revision. Preserves draft,
@@ -450,12 +455,18 @@ private:
                                                               const QStringList& arguments,
                                                               EditFunction edit,
                                                               bool shouldMerge);
+    enum class CommitKind : foundation::uint8
+    {
+        Authoring,
+        Source
+    };
     [[nodiscard]] RenderGraphDocumentStatus commit(const RenderGraphSnapshot& candidate,
                                                    bool shouldMerge,
                                                    const RenderGraphTextState& beforeText = {},
                                                    const RenderGraphTextState& afterText = {},
                                                    const RenderGraphNodeSelection& beforeSelection = {},
-                                                   const RenderGraphNodeSelection& afterSelection = {});
+                                                   const RenderGraphNodeSelection& afterSelection = {},
+                                                   CommitKind kind = CommitKind::Authoring);
     [[nodiscard]] RenderGraphDocumentStatus createPackage(QStringList& outSavedFiles);
     void
     adopt(const QString& packageRoot, const QString& rootGraph, const RenderGraphSnapshot& snapshot, bool isBuiltIn);

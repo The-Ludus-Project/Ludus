@@ -17,6 +17,7 @@
 #include "internal/render_graph_options.h"
 #include "internal/render_graph_pipeline.h"
 #include "internal/render_graph_quick_add.h"
+#include "internal/render_graph_reroutes.h"
 #include "internal/render_graph_resources.h"
 #include "internal/render_graph_shader_creation.h"
 #include "internal/render_graph_shader_interface.h"
@@ -953,6 +954,18 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     });
     connect(mCanvas, &RenderGraphCanvas::LayoutRejected, this, [this](const QString& reason) {
         mStatus->setText(QStringLiteral("Layout rejected - %1").arg(reason));
+    });
+    connect(&mCanvas->GetReroutes(), &RenderGraphReroutes::EditRequested, this, [this](const QJsonArray& routes) {
+        const RenderGraphDocumentStatus status =
+            mDocument.ReplaceWireRoutes(mCanvas->GetFile(), mCanvas->GetConfiguration(), routes);
+        if (status != RenderGraphDocumentStatus::Ok)
+        {
+            mCanvas->Rebuild();
+        }
+        documentEdited(status);
+    });
+    connect(&mCanvas->GetReroutes(), &RenderGraphReroutes::Rejected, this, [this](const QString& reason) {
+        mStatus->setText(QStringLiteral("Wire reroutes - %1").arg(reason));
     });
     connect(&mCanvas->GetComments(),
             &RenderGraphComments::EditRequested,

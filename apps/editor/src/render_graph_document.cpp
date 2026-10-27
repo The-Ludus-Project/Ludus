@@ -6,6 +6,7 @@
 #include "internal/render_graph_scene_bundle.h"
 #include "internal/render_graph_shader_creation.h"
 #include "internal/render_graph_upscale_node.h"
+#include "internal/render_graph_wire_routes.h"
 
 #include <ludus/foundation/strings/utf8.hpp>
 
@@ -682,6 +683,22 @@ bool MoveNodesEdit(QJsonObject& inoutConfiguration, const QStringList& arguments
     }
     return arguments.isEmpty() == false && arguments.size() % 3 == 0;
 }
+bool ReplaceWireRoutesEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
+{
+    const QJsonDocument parsed = QJsonDocument::fromJson(arguments.first().toUtf8());
+    if (parsed.isArray() == false || AreRenderGraphWireRoutesValid(parsed.array(), inoutConfiguration) == false)
+    {
+        return false;
+    }
+    QJsonObject layout = inoutConfiguration.value(QStringLiteral("layout")).toObject();
+    if (layout.contains(QStringLiteral("positions")) == false)
+    {
+        layout.insert(QStringLiteral("positions"), QJsonArray{});
+    }
+    layout.insert(QStringLiteral("routes"), parsed.array());
+    inoutConfiguration.insert(QStringLiteral("layout"), layout);
+    return true;
+}
 bool ReplaceCommentFramesEdit(QJsonObject& inoutConfiguration, const QStringList& arguments)
 {
     const QJsonDocument parsed = QJsonDocument::fromJson(arguments.first().toUtf8());
@@ -893,10 +910,45 @@ RenderGraphDocumentStatus RenderGraphDocument::commit(const RenderGraphSnapshot&
                                                       const RenderGraphTextState& beforeText,
                                                       const RenderGraphTextState& afterText,
                                                       const RenderGraphNodeSelection& beforeSelection,
-                                                      const RenderGraphNodeSelection& afterSelection)
+                                                      const RenderGraphNodeSelection& afterSelection,
+                                                      CommitKind kind)
 {
+    RenderGraphSnapshot after = candidate;
+    if (kind == CommitKind::Authoring)
+    {
+        for (QMap<QString, QByteArray>::iterator file = after.Files.begin(); file != after.Files.end(); ++file)
+        {
+            if (file.key().endsWith(QStringLiteral(".lurender.json")) == false ||
+                file.value() == mDraft.Files.value(file.key()))
+            {
+                continue;
+            }
+            const QJsonDocument parsed = QJsonDocument::fromJson(file.value());
+            if (parsed.isObject() == false)
+            {
+                continue;
+            }
+            QJsonObject graph = parsed.object();
+            QJsonArray configurations = graph.value(QStringLiteral("configurations")).toArray();
+            bool hasChanged = false;
+            for (qsizetype index = 0; index < configurations.size(); ++index)
+            {
+                QJsonObject configuration = configurations.at(index).toObject();
+                if (PruneRenderGraphWireRoutes(configuration) == true)
+                {
+                    configurations.replace(index, configuration);
+                    hasChanged = true;
+                }
+            }
+            if (hasChanged == true)
+            {
+                graph.insert(QStringLiteral("configurations"), configurations);
+                file.value() = EncodeCanonicalJson(graph);
+            }
+        }
+    }
     qsizetype total = 0;
-    for (const QByteArray& bytes : candidate.Files)
+    for (const QByteArray& bytes : after.Files)
     {
         if (bytes.size() > MAX_FILE_BYTES)
         {
@@ -904,14 +956,13 @@ RenderGraphDocumentStatus RenderGraphDocument::commit(const RenderGraphSnapshot&
         }
         total += bytes.size();
     }
-    if (total > MAX_TOTAL_BYTES || static_cast<usize>(candidate.Files.size()) > MAX_FILES)
+    if (total > MAX_TOTAL_BYTES || static_cast<usize>(after.Files.size()) > MAX_FILES)
     {
         return RenderGraphDocumentStatus::Capacity;
     }
     RenderGraphSnapshot before = mDraft;
     before.TextState = beforeText;
     before.NodeSelection = beforeSelection;
-    RenderGraphSnapshot after = candidate;
     after.TextState = afterText;
     after.NodeSelection = afterSelection;
     if (mHistory.Commit(before, after, shouldMerge) == false)
@@ -1511,6 +1562,17 @@ RenderGraphDocumentStatus RenderGraphDocument::ReplaceCommentFrames(const QStrin
     return editConfiguration(file, configuration, arguments, &ReplaceCommentFramesEdit, false);
 }
 
+RenderGraphDocumentStatus
+RenderGraphDocument::ReplaceWireRoutes(const QString& file, const QString& configuration, const QJsonArray& routes)
+{
+    mLastMove.clear();
+    return editConfiguration(file,
+                             configuration,
+                             {QString::fromUtf8(QJsonDocument(routes).toJson(QJsonDocument::Compact))},
+                             &ReplaceWireRoutesEdit,
+                             false);
+}
+
 RenderGraphDocumentStatus RenderGraphDocument::SetText(const QString& file, const QByteArray& bytes)
 {
     mLastMove.clear();
@@ -1520,7 +1582,7 @@ RenderGraphDocumentStatus RenderGraphDocument::SetText(const QString& file, cons
     }
     RenderGraphSnapshot candidate = mDraft;
     candidate.Files.insert(file, bytes);
-    return commit(candidate, false);
+    return commit(candidate, false, {}, {}, {}, {}, CommitKind::Source);
 }
 
 CodeEditStatus RenderGraphDocument::ApplyTextEdit(const QString& file,
@@ -1591,7 +1653,8 @@ CodeEditStatus RenderGraphDocument::ApplyTextEdit(const QString& file,
     RenderGraphSnapshot candidate = mDraft;
     candidate.Files.insert(file, text);
     const bool canMerge = shouldMerge == true && mLastTextFile == file;
-    const RenderGraphDocumentStatus status = commit(candidate, canMerge, {file, before}, {file, after});
+    const RenderGraphDocumentStatus status =
+        commit(candidate, canMerge, {file, before}, {file, after}, {}, {}, CommitKind::Source);
     if (status == RenderGraphDocumentStatus::Ok)
     {
         mLastMove.clear();
@@ -1670,7 +1733,7 @@ RenderGraphDocumentStatus RenderGraphDocument::RefreshFromDisk(bool& outHasChang
     {
         return RenderGraphDocumentStatus::Conflict;
     }
-    const RenderGraphDocumentStatus committed = commit(candidate, false);
+    const RenderGraphDocumentStatus committed = commit(candidate, false, {}, {}, {}, {}, CommitKind::Source);
     if (committed == RenderGraphDocumentStatus::Ok)
     {
         mSaved = candidate;

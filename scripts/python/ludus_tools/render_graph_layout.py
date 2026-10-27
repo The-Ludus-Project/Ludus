@@ -33,3 +33,33 @@ def validate_frames(frames, location, graph):
         graph._require(frame['x'] + frame['width'] <= MAX_COORDINATE
                        and frame['y'] + frame['height'] <= MAX_COORDINATE,
                        'Schema', location, 'comment frame exceeds canvas coordinate bounds')
+
+
+MAX_WIRE_ROUTES = 512
+MAX_WIRE_REROUTE_POINTS = 16
+
+
+def validate_routes(routes, configuration, location, graph):
+    """Validate layout-only routes against exact authored or output-interface connections."""
+    graph._list(routes, MAX_WIRE_ROUTES, location)
+    connections = {(edge['from'], edge['to']) for edge in configuration['edges']}
+    connections.update((output['source'], '#outputs.' + output['id'])
+                       for output in configuration['outputs'] if output.get('source'))
+    claimed = set()
+    for route in routes:
+        graph._keys(route, ('from', 'to', 'points'), location)
+        pair = (route['from'], route['to'])
+        graph._endpoint(route['from'], location)
+        if type(route['to']) is str and route['to'].startswith('#outputs.'):
+            graph._identifier(route['to'][len('#outputs.'):], location)
+        else:
+            graph._endpoint(route['to'], location)
+        graph._require(pair in connections and pair not in claimed,
+                       'Schema', location, 'wire route must name one unique current connection')
+        claimed.add(pair)
+        graph._list(route['points'], MAX_WIRE_REROUTE_POINTS, location)
+        graph._require(len(route['points']) > 0, 'Schema', location, 'wire route needs a point')
+        for point in route['points']:
+            graph._keys(point, ('x', 'y'), location)
+            for coordinate in ('x', 'y'):
+                graph._integer(point[coordinate], -MAX_COORDINATE, MAX_COORDINATE, location)
