@@ -376,8 +376,54 @@ bool TraceNativeVisibility(float3 originWorld, float3 directionWorld, float near
 }
 
 #endif
-#if defined(LUDUS_GRAPH_TRAVERSAL_STRATEGIES) || defined(LUDUS_SOFTWARE_RAY_TRAVERSAL)
+#ifdef LUDUS_GRAPH_TRIANGLE_LOOP_TRAVERSAL
 #    include "ray_triangle_loop.slang"
+#endif
+#ifdef LUDUS_GRAPH_COMPUTE_BVH_TRAVERSAL
+#    include "ray_bvh_traversal.slang"
+// Graph passes accept BVH candidates with the same fixed-mip masked coverage as the other strategies.
+bool IsBvhCandidateAccepted(uint triangle, float2 barycentric)
+{
+    if ((Sampling.z & LUDUS_GPU_PREVIEW_OPAQUE_FLAG) != 0 ||
+        asuint(Surface(triangle, LUDUS_GPU_PREVIEW_TEXTURE_OPTIONS_WORD).z) == 0)
+        return true;
+    bool isAccepted = Texture(triangle, TexcoordUv(triangle, barycentric)).w * Surface(triangle, 2).w *
+                          InterpolateTriangleColor(triangle, barycentric).w >=
+                      Surface(triangle, 1).y;
+#    ifdef LUDUS_RAY_PATH_CAPTURE
+    if (isAccepted == false)
+        rayPathRejected += 1;
+#    endif
+    return isAccepted;
+}
+/// Trace the renderer's packed BVH in ordinary compute. A miss retains farDistanceWorld and the
+/// invalid-triangle sentinel; a traversal stack overflow reports the failed-triangle sentinel.
+Hit TraceComputeBvh(float3 originWorld,
+                    float3 directionWorld,
+                    float nearDistanceWorld,
+                    float farDistanceWorld,
+                    bool isVisibility)
+{
+    BvhRay ray;
+    ray.OriginWorld = originWorld;
+    ray.DirectionWorld = directionWorld;
+    ray.MinimumDistanceWorld = nearDistanceWorld;
+    ray.MaximumDistanceWorld = farDistanceWorld;
+    BvhHit traced = TraceBvh(ray, isVisibility);
+    Hit hit;
+    hit.Triangle = LUDUS_GPU_PREVIEW_INVALID_TRIANGLE;
+    hit.DistanceWorld = farDistanceWorld;
+    hit.Barycentric = 0;
+    if (traced.HasExceededStack == true)
+        hit.Triangle = LUDUS_GPU_PREVIEW_FAILED_TRIANGLE;
+    else if (traced.Triangle != LUDUS_GPU_PREVIEW_INVALID_TRIANGLE)
+    {
+        hit.Triangle = traced.Triangle;
+        hit.DistanceWorld = traced.DistanceWorld;
+        hit.Barycentric = traced.Barycentric;
+    }
+    return hit;
+}
 #endif
 Hit TraceWorld(float3 originWorld,
                float3 directionWorld,
@@ -385,13 +431,25 @@ Hit TraceWorld(float3 originWorld,
                float farDistanceWorld,
                bool isVisibility)
 {
-#ifdef LUDUS_SOFTWARE_RAY_TRAVERSAL
-    return TraceTriangleLoop(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
-#else
-#    ifdef LUDUS_GRAPH_TRAVERSAL_STRATEGIES
-    if (GetGraphTraversalStrategy() == 1)
+#ifdef LUDUS_GRAPH_TRAVERSAL_STRATEGIES
+    uint strategy = GetGraphTraversalStrategy();
+#    ifdef LUDUS_GRAPH_COMPUTE_BVH_TRAVERSAL
+    if (strategy == LUDUS_GRAPH_TRAVERSAL_COMPUTE_BVH)
+        return TraceComputeBvh(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
+#    endif
+#    ifdef LUDUS_GRAPH_TRIANGLE_LOOP_TRAVERSAL
+    if (strategy == LUDUS_GRAPH_TRAVERSAL_TRIANGLE_LOOP)
         return TraceTriangleLoop(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
 #    endif
+#endif
+#ifdef LUDUS_SOFTWARE_RAY_TRAVERSAL
+    // Every pass of a software configuration names its strategy; anything else is a failed query.
+    Hit failed;
+    failed.Triangle = LUDUS_GPU_PREVIEW_FAILED_TRIANGLE;
+    failed.DistanceWorld = farDistanceWorld;
+    failed.Barycentric = 0;
+    return failed;
+#else
     return TraceNative(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
 #endif
 }
@@ -447,9 +505,8 @@ TraceVisibility(float3 originWorld, float3 directionWorld, float nearDistanceWor
     return ResolveVisibility(Trace(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, true));
 #else
 #    ifdef LUDUS_GRAPH_TRAVERSAL_STRATEGIES
-    if (GetGraphTraversalStrategy() == 1)
-        return ResolveVisibility(
-            TraceTriangleLoop(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, true));
+    if (GetGraphTraversalStrategy() != LUDUS_GRAPH_TRAVERSAL_NATIVE_QUERY)
+        return ResolveVisibility(TraceWorld(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, true));
 #    endif
     VisibilityResult result;
     result.HasFailed = false;

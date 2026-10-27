@@ -35,6 +35,10 @@ constexpr uint32 MAX_VISIBILITY = static_cast<uint32>(format::Visibility::Both);
 constexpr uint32 MAX_TARGET = static_cast<uint32>(format::ShaderTarget::GlslEs);
 constexpr uint32 MAX_LOAD = static_cast<uint32>(format::Load::Discard);
 constexpr uint32 MAX_STORE = static_cast<uint32>(format::Store::Discard);
+static_assert(static_cast<uint32>(format::RayTraversal::NativeQuery) == LUDUS_GRAPH_TRAVERSAL_NATIVE_QUERY &&
+                  static_cast<uint32>(format::RayTraversal::TriangleLoop) == LUDUS_GRAPH_TRAVERSAL_TRIANGLE_LOOP &&
+                  static_cast<uint32>(format::RayTraversal::ComputeBvh) == LUDUS_GRAPH_TRAVERSAL_COMPUTE_BVH,
+              "cooked pass traversal codes select the linked kernel's strategy");
 constexpr uint32 FIRST_ENTRY_CHARACTER = 0x21;
 constexpr uint32 LAST_ENTRY_CHARACTER = 0x7E;
 bool IsAccepted(Status status) noexcept
@@ -549,7 +553,7 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeRecords(ByteReader& in
         pass.SourceColor = HasBilinearUpscale == true ? inoutReader.ReadWord() : format::ABSENT;
         pass.DenoisingQuality = HasDenoising == true ? inoutReader.ReadWord() : 0;
         const uint32 traversal = HasExplicitRayTraversal == true ? inoutReader.ReadWord() : 0;
-        if (traversal > static_cast<uint32>(format::RayTraversal::TriangleLoop) ||
+        if (traversal > static_cast<uint32>(format::RayTraversal::ComputeBvh) ||
             (program != static_cast<uint32>(format::Technique::RayTracing) && traversal != 0))
         {
             return RenderGraphPackageStatus::Malformed;

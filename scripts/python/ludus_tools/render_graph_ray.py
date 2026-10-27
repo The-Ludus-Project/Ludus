@@ -25,14 +25,35 @@ COMPUTE_STAGE = 'compute'
 UNUSED_COMPUTE_CALLBACKS = {'miss': 'GraphComputeMiss', 'closest_hit': 'GraphComputeClosestHit'}
 
 
+# One owner for the invocation.traversal choices, in runtime RayTraversal code order
+# (LUDUS_GRAPH_TRAVERSAL_* in renderer_gpu_preview_layout.h). Validation, cooking
+# and the per-pass kernel strategy table all read this tuple.
+NATIVE_QUERY = 'NativeQuery'
+TRIANGLE_LOOP = 'TriangleLoop'
+COMPUTE_BVH = 'ComputeBvh'
+TRAVERSALS = (NATIVE_QUERY, TRIANGLE_LOOP, COMPUTE_BVH)
+STRATEGY_MACROS = {NATIVE_QUERY: 'LUDUS_GRAPH_TRAVERSAL_NATIVE_QUERY',
+                   TRIANGLE_LOOP: 'LUDUS_GRAPH_TRAVERSAL_TRIANGLE_LOOP',
+                   COMPUTE_BVH: 'LUDUS_GRAPH_TRAVERSAL_COMPUTE_BVH'}
 # Strategy tags are cooked into callback variants so the same programs can be used
 # by different passes without sharing a traversal choice or changing their sources.
+# Native queries carry no tag, so existing native variants keep their identities.
 TRIANGLE_LOOP_TAG = '@TriangleLoop'
+COMPUTE_BVH_TAG = '@ComputeBvh'
+SOFTWARE_TAGS = {TRIANGLE_LOOP_TAG: TRIANGLE_LOOP, COMPUTE_BVH_TAG: COMPUTE_BVH}
+# Each software strategy compiles its traversal only into kernels that select it.
+SOFTWARE_DEFINES = {TRIANGLE_LOOP: 'LUDUS_GRAPH_TRIANGLE_LOOP_TRAVERSAL',
+                    COMPUTE_BVH: 'LUDUS_GRAPH_COMPUTE_BVH_TRAVERSAL'}
 
 
 def callback_programs(variant):
     """Return only authored program IDs from a cooked callback/strategy variant."""
-    return tuple(variant[:-1]) if variant[-1] == TRIANGLE_LOOP_TAG else tuple(variant)
+    return tuple(variant[:-1]) if variant[-1] in SOFTWARE_TAGS else tuple(variant)
+
+
+def traversal(variant):
+    """Return the traversal strategy a cooked callback/strategy variant selects."""
+    return SOFTWARE_TAGS.get(variant[-1], NATIVE_QUERY)
 
 
 def program_tuple(node):
@@ -42,16 +63,18 @@ def program_tuple(node):
     variant = (assignments[COMPUTE_STAGE],) if has_kernel else tuple(assignments[stage] for stage in STAGES)
     # Preserve existing compute kernels' native query behavior. Shared ray callbacks
     # default to engine triangle intersections when assigned to a compute pipeline.
-    default = 'TriangleLoop' if node['kind'] == 'ComputePipeline' and not has_kernel else 'NativeQuery'
-    if node['invocation'].get('traversal', default) == 'TriangleLoop':
-        variant += (TRIANGLE_LOOP_TAG,)
+    default = TRIANGLE_LOOP if node['kind'] == 'ComputePipeline' and not has_kernel else NATIVE_QUERY
+    selected = node['invocation'].get('traversal', default)
+    tags = {strategy: tag for tag, strategy in SOFTWARE_TAGS.items()}
+    if selected in tags:
+        variant += (tags[selected],)
     return variant
 
 
 def requires_native_queries(plan):
     """Whether any selected ray pass explicitly needs native ray traversal."""
     return any(operation['kind'] == 'RayTracing' and
-               program_tuple(operation['pipeline'])[-1] != TRIANGLE_LOOP_TAG
+               traversal(program_tuple(operation['pipeline'])) == NATIVE_QUERY
                for operation in plan['passes'])
 
 
@@ -101,7 +124,7 @@ IMAGE_INPUTS = [{'location': 0, 'format': 'Float2'}]
 IMAGE_FRAGMENT_ID = 'GraphRayImageFragment'
 # Files are installed by their owning renderer/math/RHI targets beside the helper.
 HELPERS = ('scene_data.h', 'renderer_gpu_preview_layout.h', 'renderer_surface_functions.slang', 'recipes.json',
-           'ray_triangle_loop.slang', 'lighting_layout.h', 'math.slang', 'raster_bindings.slang', 'scene_shader.slang', 'scene_payload.slang', 'scene_shader_layout.h', 'ray_shader.slang', 'visibility_buffer.slang')
+           'ray_triangle_loop.slang', 'ray_bvh_traversal.slang', 'renderer_reference_layout.h', 'lighting_layout.h', 'math.slang', 'raster_bindings.slang', 'scene_shader.slang', 'scene_payload.slang', 'scene_shader_layout.h', 'ray_shader.slang', 'visibility_buffer.slang')
 
 
 def resolve_state(state):
@@ -248,9 +271,10 @@ def group_profiles(plans, technique, build):
         group['structured_buffers'] |= any(operation.get('buffers') for operation in operations)
         # GraphBuffer0/1 and GetGraphPassIndex exist only in the persistent wrapper, so a
         # single scene compute pass needs it as well (compute ray tracing design, section 3.3).
-        has_triangle_loop = any(program_tuple(operation['pipeline'])[-1] == TRIANGLE_LOOP_TAG
-                                for operation in operations)
-        group['persistent'] |= has_triangle_loop or len(operations) > 1 or any(
+        # Software strategies are selected per pass through the same pass index.
+        has_software_traversal = any(traversal(program_tuple(operation['pipeline'])) != NATIVE_QUERY
+                                     for operation in operations)
+        group['persistent'] |= has_software_traversal or len(operations) > 1 or any(
             resource['type'] == 'Buffer' and 'stride' not in resource
             for resource in plan['resources'].values()) or any(
                 operation['pipeline']['kind'] == 'ComputePipeline' for operation in operations)
@@ -636,14 +660,17 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, c
     if any(programs[identity]['output'] in ('Ray', 'Color') for variant in variants for identity in callback_programs(variant)):
         if '#include "_ludus_ray/ray_shader.slang"' not in prefix:
             prefix += '#include "_ludus_ray/ray_shader.slang"\n'
-    if any(variant[-1] == TRIANGLE_LOOP_TAG for variant in variants):
-        choices = ', '.join('1' if variant[-1] == TRIANGLE_LOOP_TAG else '0' for variant in variants)
-        prefix = ('#define LUDUS_GRAPH_TRAVERSAL_STRATEGIES 1\n'
+    strategies = [traversal(variant) for variant in variants]
+    if any(strategy != NATIVE_QUERY for strategy in strategies):
+        choices = ', '.join(STRATEGY_MACROS[strategy] for strategy in strategies)
+        defines = ''.join(f'#define {SOFTWARE_DEFINES[strategy]} 1\n'
+                          for strategy in TRAVERSALS if strategy in strategies and strategy in SOFTWARE_DEFINES)
+        prefix = ('#define LUDUS_GRAPH_TRAVERSAL_STRATEGIES 1\n' + defines +
                   'uint GetGraphTraversalStrategy();\n' + prefix)
         prefix += ('uint GetGraphTraversalStrategy() {\n'
                    f'    const uint strategies[] = {{ {choices} }};\n'
                    '    uint index = (Sampling.z >> LUDUS_GRAPH_PASS_INDEX_SHIFT) & LUDUS_GRAPH_PASS_INDEX_MASK;\n'
-                   f'    return index < {len(variants)} ? strategies[index] : 0;\n}}\n')
+                   f'    return index < {len(variants)} ? strategies[index] : LUDUS_GRAPH_TRAVERSAL_NATIVE_QUERY;\n}}\n')
     prefix = prefix.replace('#define LUDUS_SCENE_RAY_INTERFACE 1',
                             '#define LUDUS_SCENE_RAY_INTERFACE 1\n#define LUDUS_GRAPH_PERSISTENT_PIPELINE 1')
     prefix += '[[vk::binding(6, 0)]] RWStructuredBuffer<uint4> GraphBuffer0;\n'

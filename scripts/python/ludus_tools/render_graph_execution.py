@@ -242,8 +242,8 @@ def lower_plan(package, configuration):
     for operation, record in zip(operations, pass_records):
         record.setdefault('SourceColor', ABSENT)
         record['DenoisingQuality'] = quality.QUALITY_CODES[operation['denoising']['quality']] if 'denoising' in operation else 0
-        record['Traversal'] = ('TriangleLoop' if operation['kind'] == 'RayTracing' and
-                               ray.program_tuple(operation['pipeline'])[-1] == ray.TRIANGLE_LOOP_TAG else 'NativeQuery')
+        record['Traversal'] = (ray.traversal(ray.program_tuple(operation['pipeline']))
+                               if operation['kind'] == 'RayTracing' else ray.NATIVE_QUERY)
     return plan, resource_records, pass_records, cameras
 
 
@@ -734,7 +734,7 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
         data += struct.pack('<f', p.get('ToneMappingExposure', 0))
         data += u32(p.get('SourceColor', ABSENT))
         data += u32(p.get('DenoisingQuality', 0))
-        data += u32(1 if p.get('Traversal', 'NativeQuery') == 'TriangleLoop' else 0)
+        data += u32(ray.TRAVERSALS.index(p.get('Traversal', ray.NATIVE_QUERY)))
     for b in contents['bindings']:
         data += u32(PROGRAM_CODES[b['Program']], b['Slot'], VISIBILITY[b['Stages']], b['ValueOffset'], b['ValueCount'])
     for b in contents['blocks']:

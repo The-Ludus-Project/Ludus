@@ -1364,7 +1364,8 @@ texture mip and binned-SAH BVH, packed once in the GPU preview's scene layout. E
 submits one ordered graph with two compute passes in a frame of `surface`. The
 transport pass traces one sample for every pixel at the image's minimum committed
 count. It walks the BVH with float32 ports of the oracle's slab and watertight
-triangle tests and applies the same masked opacity, light proposals, power MIS,
+triangle tests (`ray_bvh_traversal.slang`, shared with render-graph `ComputeBvh`
+ray passes) and applies the same masked opacity, light proposals, power MIS,
 visible-GGX/Lambert sampling and compensated roulette. It adds emission, direct
 and indirect transport to Kahan-compensated device sums. Every random value uses
 the oracle's Philox address, so both implementations trace matching paths. A
@@ -1534,9 +1535,12 @@ compiler output. [Metal acceleration structures](https://developer.apple.com/doc
 also require device/OS/compiler evidence; the pinned MSL 2.3 raster target is not
 proof that a proposed ray shader works. A newer ray target needs an explicit
 toolchain/profile change. Ludus's current WebGPU/WebGL paths have no hardware
-ray contract. A bounded software BVH compute experiment is possible after compute
-support, but it is another implementation with its own cost, not a hardware
-capability or a required browser fallback. Do not hide CPU readbacks behind it.
+ray contract. Render-graph ray passes can select the `ComputeBvh` strategy, which
+walks the renderer's packed BVH in ordinary compute with the RT1 reference's
+traversal; it is another implementation with its own cost, not a hardware
+capability or an automatic fallback. Its kernel already compiles to WGSL, but the
+graph ray profile does not yet admit browser targets. Do not hide CPU readbacks
+behind it.
 
 ### Scene and acceleration-structure ownership
 
@@ -1962,8 +1966,10 @@ reads the prefix count from private metadata preceding the existing triangle-UV 
 The renderer's packed indirection preserves original shading, material, emitter and
 visibility identities independently of the CPU oracle's unchanged BVH order.
 Software GPU reference packing also retains that original BVH order. The native
-indirection's first word stores the masked range's primitive base. This is private preview kernel
-ABI version 5; recook preview and graph shaders with the matching runtime/SDK.
+indirection's first word stores the masked range's primitive base. Each indirection word's Z
+component keeps the unpartitioned BVH leaf order, so compute traversal can share the packed scene
+with native opacity ranges. This is private preview kernel ABI version 8; recook preview and graph
+shaders with the matching runtime/SDK.
 Native geometry opacity bypasses opaque candidates for first-accepted-hit visibility
 queries. Mixed-scene closest-hit queries retain forced nonopaque traversal and
 commit opaque-range candidates directly without material/alpha lookups; masked

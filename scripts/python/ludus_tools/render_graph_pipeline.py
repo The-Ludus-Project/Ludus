@@ -175,8 +175,8 @@ def validate(node, where, graph):
     if 'traversal' in invocation:
         graph._require(node['kind'] == 'RayTracingPipeline' or is_scene_compute(node),
                        'Capability', where, 'traversal requires a ray pipeline or scene compute pass')
-        _check_field(graph._enum, invocation['traversal'], 'Invocation → traversal', where, graph,
-                     ('TriangleLoop', 'NativeQuery'))
+        from . import render_graph_ray as ray
+        _check_field(graph._enum, invocation['traversal'], 'Invocation → traversal', where, graph, ray.TRAVERSALS)
 
     graph.options.validate_pipeline(node, where, graph)
 

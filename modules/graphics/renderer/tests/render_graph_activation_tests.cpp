@@ -1132,11 +1132,19 @@ TEST_CASE("Runtime packages preserve explicit software traversal and legacy nati
     options.Version = format::METALFX_SPATIAL_PACKAGE_VERSION;
     CHECK(renderer::RequiresHardwareRayTracing(MakePackage(options)->GetPlan()) == true);
     options.Version = format::PACKAGE_VERSION;
-    options.Traversal = static_cast<format::RayTraversal>(2);
+    options.Traversal = format::RayTraversal::ComputeBvh;
+    const core::UniquePtr<renderer::RenderGraphPackage> bvh = MakePackage(options);
+    CHECK(renderer::RequiresHardwareRayTracing(bvh->GetPlan()) == false);
+    CHECK(bvh->GetPlan().Passes[0].Traversal == format::RayTraversal::ComputeBvh);
+    constexpr uint32 UNKNOWN_TRAVERSAL = static_cast<uint32>(format::RayTraversal::ComputeBvh) + 1;
+    options.Traversal = static_cast<format::RayTraversal>(UNKNOWN_TRAVERSAL);
     CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
-    options.Traversal = format::RayTraversal::TriangleLoop;
-    options.Program = format::Technique::ColorAndDepth;
-    CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
+    for (format::RayTraversal traversal : {format::RayTraversal::TriangleLoop, format::RayTraversal::ComputeBvh})
+    {
+        options.Traversal = traversal;
+        options.Program = format::Technique::ColorAndDepth;
+        CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
+    }
 }
 
 TEST_CASE("Renderer selection chooses raster on a device without native rays", "[render-graph][selection]")
