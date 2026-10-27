@@ -6,7 +6,7 @@ import struct
 import tempfile
 import unittest
 
-from benchmark_ray_visibility import bootstrap_interval, compare_images, summarize_run
+from benchmark_ray_visibility import bootstrap_interval, compare_images, summarize, summarize_run
 
 
 class VisibilityBenchmarkTests(unittest.TestCase):
@@ -35,6 +35,14 @@ class VisibilityBenchmarkTests(unittest.TestCase):
         self.assertEqual(result['visibility_first_speedup'], 5.5)
         self.assertEqual(result['images']['maximum_linear_difference'], 0)
         self.assertEqual(result['pair_gap_maximum_ms'], 0.0001)
+
+    def test_cache_experiment_uses_its_selected_scenes_and_variant_labels(self):
+        (self.root / 'full').rename(self.root / 'uncached')
+        (self.root / 'visibility').rename(self.root / 'cached')
+        result = summarize([self.root], scenes=('mixed',), variants=('uncached', 'cached'))
+        self.assertEqual(tuple(result), ('mixed',))
+        self.assertEqual(result['mixed']['median_run_paired_speedup'], 5.5)
+        self.assertEqual(result['mixed']['maximum_linear_difference'], 0)
 
     def test_truncated_timing_and_unbalanced_orders_are_rejected(self):
         self.write('full/mixed.gpu.bin', 'd', [10])

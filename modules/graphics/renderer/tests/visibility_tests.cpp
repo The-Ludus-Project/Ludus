@@ -1,8 +1,11 @@
 #include "../src/internal/gpu_preview_ray.h"
 #include "../src/internal/render_graph_ray.h"
+#include "renderer_authored.h"
+#include "renderer_authored_shadow.h"
 #include "renderer_composite.h"
 #include "renderer_flat.h"
 #include "renderer_gpu_preview.h"
+#include "renderer_gpu_preview_hit_cached.h"
 #include "renderer_gpu_preview_image.h"
 #include "renderer_gpu_preview_visibility_full.h"
 #include "renderer_lit.h"
@@ -40,6 +43,13 @@ constexpr uint64 TIMEOUT = 30 * time::NANOSECONDS_PER_SECOND;
 constexpr usize BYTE_BUDGET = usize{64} * 1024 * 1024;
 constexpr usize VARIANT_COUNT = 2;
 constexpr usize SCENE_COUNT = 4;
+constexpr usize CACHE_SCENE_COUNT = 6;
+constexpr uint32 TEXTURE_EXTENT = 4;
+constexpr float32 TEXTURE_UV_REPETITIONS = 3;
+constexpr uint8 TEXEL_HIGH = 224;
+constexpr uint8 TEXEL_LOW = 64;
+constexpr uint8 TEXEL_MIDDLE = 128;
+constexpr uint8 TEXEL_MAXIMUM = 255;
 constexpr uint32 GRID_CELLS = 32;
 constexpr usize TRIANGLE_CORNERS = 3;
 constexpr usize QUAD_VERTICES = 2 * TRIANGLE_CORNERS;
@@ -62,7 +72,9 @@ constexpr float32 LINEAR_ABSOLUTE_TOLERANCE = .001F;
 constexpr float32 LINEAR_RELATIVE_TOLERANCE = .005F;
 constexpr usize CONFIGURATION_WORD_COUNT = 4;
 constexpr uint32 BENCHMARK_FORMAT_VERSION = 1;
-constexpr StaticArray<const char*, SCENE_COUNT> SCENE_NAMES{{"empty", "opaque", "masked", "mixed"}};
+constexpr StaticArray<const char*, CACHE_SCENE_COUNT> SCENE_NAMES{
+    {"empty", "opaque", "masked", "mixed", "textured-nearest", "textured-linear"}};
+constexpr StaticArray<const char*, VARIANT_COUNT> CACHE_VARIANT_NAMES{{"uncached", "cached"}};
 constexpr StaticArray<const char*, VARIANT_COUNT> VARIANT_NAMES{{"full", "visibility"}};
 enum class SceneKind : uint32
 {
@@ -70,11 +82,15 @@ enum class SceneKind : uint32
     Opaque,
     Masked,
     Mixed,
+    TexturedNearest,
+    TexturedLinear,
 };
 enum class RenderPath : uint32
 {
     FullHit,
     VisibilityOnly,
+    UncachedHit,
+    CachedHit,
     CpuOracle,
     GpuReference,
 };
@@ -122,9 +138,11 @@ void CreateMesh(rr::Renderer& inoutRenderer, bool shouldKeepEvenColumns, rr::Mes
     const usize vertexCount = shouldKeepEvenColumns == true ? MAX_VERTICES / 2 : MAX_VERTICES;
     Array<math::Vector3> positionsMesh;
     Array<math::Vector3> normalsMesh;
+    Array<math::Vector2> texcoords;
     Array<uint32> indices;
     REQUIRE(positionsMesh.TryResize(vertexCount) == true);
     REQUIRE(normalsMesh.TryResize(vertexCount) == true);
+    REQUIRE(texcoords.TryResize(vertexCount) == true);
     REQUIRE(indices.TryResize(vertexCount) == true);
     usize vertex = 0;
     for (uint32 y = 0; y < GRID_CELLS; ++y)
@@ -147,6 +165,7 @@ void CreateMesh(rr::Renderer& inoutRenderer, bool shouldKeepEvenColumns, rr::Mes
             {
                 positionsMesh[vertex] = cornerMesh;
                 normalsMesh[vertex] = {0, 0, -1};
+                texcoords[vertex] = {cornerMesh.X * .5F + .5F, cornerMesh.Y * .5F + .5F};
                 indices[vertex] = static_cast<uint32>(vertex);
                 ++vertex;
             }
@@ -155,6 +174,7 @@ void CreateMesh(rr::Renderer& inoutRenderer, bool shouldKeepEvenColumns, rr::Mes
     REQUIRE(vertex == vertexCount);
     rr::MeshDescription description{positionsMesh.GetData(), vertexCount, indices.GetData(), vertexCount};
     description.Normals = normalsMesh.GetData();
+    description.Texcoords = texcoords.GetData();
     REQUIRE(IsAccepted(inoutRenderer.CreateMesh(description, outMesh)) == true);
     WaitReady(inoutRenderer, outMesh);
 }
@@ -163,11 +183,13 @@ void PrepareFixture(rhi::DeviceHandle device, RenderPath path, SceneKind scene, 
     rr::Renderer& renderer = outFixture.Renderer;
     REQUIRE(renderer.Initialize(device, shaders::renderer_flat::Vertex(), shaders::renderer_flat::Fragment()) ==
             Status::Ready);
-    if (path == RenderPath::FullHit || path == RenderPath::VisibilityOnly)
+    if (path == RenderPath::FullHit || path == RenderPath::VisibilityOnly || path == RenderPath::UncachedHit ||
+        path == RenderPath::CachedHit)
     {
-        const rhi::RasterShaderDescription shader = path == RenderPath::FullHit
-                                                        ? shaders::renderer_gpu_preview_visibility_full::Compute()
-                                                        : shaders::renderer_gpu_preview::Compute();
+        const rhi::RasterShaderDescription shader =
+            path == RenderPath::CachedHit ? shaders::renderer_gpu_preview_hit_cached::Compute()
+            : path == RenderPath::FullHit ? shaders::renderer_gpu_preview_visibility_full::Compute()
+                                          : shaders::renderer_gpu_preview::Compute();
         REQUIRE(renderer.EnableGpuPreview(shader,
                                           shaders::renderer_gpu_preview_image::Vertex(),
                                           shaders::renderer_gpu_preview_image::Fragment(),
@@ -198,18 +220,78 @@ void PrepareFixture(rhi::DeviceHandle device, RenderPath path, SceneKind scene, 
         REQUIRE(renderer.CreateSnapshot(nullptr, 0, outFixture.Snapshot) == Status::Ready);
         return;
     }
+    const bool isTextured = scene == SceneKind::TexturedNearest || scene == SceneKind::TexturedLinear;
     rr::MaterialProgram program;
-    REQUIRE(IsAccepted(renderer.PrewarmLitProgram(shaders::renderer_lit::Vertex(),
-                                                  shaders::renderer_lit::Fragment(),
-                                                  shaders::renderer_lit_shadow::Fragment(),
-                                                  program)) == true);
+    REQUIRE(IsAccepted(renderer.PrewarmLitProgram(
+                isTextured == true ? shaders::renderer_authored::Vertex() : shaders::renderer_lit::Vertex(),
+                isTextured == true ? shaders::renderer_authored::Fragment() : shaders::renderer_lit::Fragment(),
+                isTextured == true ? shaders::renderer_authored_shadow::Fragment()
+                                   : shaders::renderer_lit_shadow::Fragment(),
+                program)) == true);
     WaitReady(renderer, program);
     rr::Mesh receiver;
     rr::Mesh occluder;
     CreateMesh(renderer, false, receiver);
     CreateMesh(renderer, true, occluder);
+    rhi::TextureHandle baseTexture;
+    rhi::TextureHandle emissionTexture;
+    rhi::TextureHandle surfaceTexture;
+    if (isTextured == true)
+    {
+        StaticArray<uint8, TEXTURE_EXTENT * TEXTURE_EXTENT * COLOR_CHANNELS> base{};
+        StaticArray<uint8, TEXTURE_EXTENT * TEXTURE_EXTENT * COLOR_CHANNELS> emission{};
+        StaticArray<uint8, TEXTURE_EXTENT * TEXTURE_EXTENT * COLOR_CHANNELS> surface{};
+        for (usize y = 0; y < TEXTURE_EXTENT; ++y)
+        {
+            for (usize x = 0; x < TEXTURE_EXTENT; ++x)
+            {
+                const usize offset = (y * TEXTURE_EXTENT + x) * COLOR_CHANNELS;
+                base[offset] = (x + y) % 2 == 0 ? TEXEL_HIGH : TEXEL_LOW;
+                base[offset + 1] = TEXEL_MIDDLE;
+                base[offset + 2] = x % 2 == 0 ? TEXEL_LOW : TEXEL_HIGH;
+                base[offset + COLOR_CHANNELS - 1] = TEXEL_MAXIMUM;
+                emission[offset] = y % 2 == 0 ? TEXEL_HIGH : TEXEL_LOW;
+                emission[offset + 1] = TEXEL_LOW;
+                emission[offset + 2] = TEXEL_MIDDLE;
+                emission[offset + COLOR_CHANNELS - 1] = TEXEL_MAXIMUM;
+                surface[offset] = TEXEL_MIDDLE;
+                surface[offset + 1] = TEXEL_MIDDLE;
+                surface[offset + 2] = x % 2 == 0 ? TEXEL_HIGH : TEXEL_MIDDLE;
+                surface[offset + COLOR_CHANNELS - 1] = TEXEL_LOW;
+            }
+        }
+        rhi::TextureDescription textureDescription{TEXTURE_EXTENT, TEXTURE_EXTENT, rhi::RasterFormat::Rgba8Srgb};
+        textureDescription.RetainCpuContent = true;
+        const usize rowBytes = TEXTURE_EXTENT * COLOR_CHANNELS;
+        REQUIRE(
+            rhi::CreateTexture(device, textureDescription, {{base.GetData(), base.GetSize()}, rowBytes}, baseTexture) ==
+            Status::Ready);
+        REQUIRE(rhi::CreateTexture(device,
+                                   textureDescription,
+                                   {{emission.GetData(), emission.GetSize()}, rowBytes},
+                                   emissionTexture) == Status::Ready);
+        textureDescription.Format = rhi::RasterFormat::Rgba8Unorm;
+        REQUIRE(rhi::CreateTexture(device,
+                                   textureDescription,
+                                   {{surface.GetData(), surface.GetSize()}, rowBytes},
+                                   surfaceTexture) == Status::Ready);
+    }
     rr::LitMaterialDescription material;
     material.Roughness = 1;
+    material.AreAuthoredInputsEnabled = isTextured;
+    if (isTextured == true)
+    {
+        material.Surface.Texture = baseTexture;
+        material.EmissionMap = emissionTexture;
+        material.SurfaceMap = surfaceTexture;
+        material.Emission = {.5F, .5F, .5F};
+        material.Metallic = .5F;
+        material.Surface.UvTransform = {TEXTURE_UV_REPETITIONS, -TEXTURE_UV_REPETITIONS, .5F, .5F};
+        material.Surface.Sampler.Filter =
+            scene == SceneKind::TexturedLinear ? rhi::RasterFilter::Linear : rhi::RasterFilter::Nearest;
+        material.Surface.Sampler.U = rhi::RasterAddress::Repeat;
+        material.Surface.Sampler.V = rhi::RasterAddress::Clamp;
+    }
     material.Surface.Tint = {.5F, 1, .5F, 1};
     material.Surface.Alpha = scene == SceneKind::Masked ? rr::MaterialAlpha::Masked : rr::MaterialAlpha::Opaque;
     rr::MaterialVersion receiverMaterial;
@@ -221,6 +303,7 @@ void PrepareFixture(rhi::DeviceHandle device, RenderPath path, SceneKind scene, 
     rr::MaterialVersion occluderMaterial;
     REQUIRE(IsAccepted(renderer.CreateLitMaterial(program, material, occluderMaterial, selection)) == true);
     WaitReady(renderer, occluderMaterial);
+    material.Emission = {};
     material.Surface.Tint = {1, .5F, .5F, 0};
     material.Surface.Alpha = rr::MaterialAlpha::Masked;
     rr::MaterialVersion rejectingMaterial;
@@ -422,8 +505,10 @@ void CompareReference(rhi::DeviceHandle device,
     CHECK(information.InvalidContributions == 0);
     if (scene == SceneKind::Empty)
         CHECK(information.VisibilityQueries == 0);
-    else
+    else if (scene == SceneKind::Opaque || scene == SceneKind::Masked || scene == SceneKind::Mixed)
         CHECK(information.VisibilityQueries > pixelCount * description.TargetSamples / 2);
+    else
+        CHECK(information.VisibilityQueries > 0);
     for (usize pixel = 0; pixel < pixelCount; ++pixel)
     {
         CAPTURE(path, pixel);
@@ -439,18 +524,17 @@ void CompareReference(rhi::DeviceHandle device,
     }
     REQUIRE(fixture.Renderer.Release(capture) == Status::Ready);
 }
-} // namespace
-
-TEST_CASE("Visibility-only queries preserve full-hit output and CPU/GPU reference parity",
-          "[renderer][gpu][visibility]")
+void RunPairedPreview(bool shouldCacheHit)
 {
-    const char* directoryOrNull = std::getenv("LUDUS_VISIBILITY_BENCHMARK_DIRECTORY");
+    const char* directoryOrNull = std::getenv(shouldCacheHit == true ? "LUDUS_HIT_CACHE_BENCHMARK_DIRECTORY"
+                                                                     : "LUDUS_VISIBILITY_BENCHMARK_DIRECTORY");
     const bool isBenchmark = directoryOrNull != nullptr;
-    const bool shouldReverseOrder = std::getenv("LUDUS_VISIBILITY_REVERSE_ORDER") != nullptr;
+    const bool shouldReverseOrder = std::getenv(shouldCacheHit == true ? "LUDUS_HIT_CACHE_REVERSE_ORDER"
+                                                                       : "LUDUS_VISIBILITY_REVERSE_ORDER") != nullptr;
     rr::internal::SetGpuPreviewOpacityPartitioningForTesting(true);
     const uint32 extent = isBenchmark == true ? BENCHMARK_EXTENT : TEST_EXTENT;
     const uint32 samples = isBenchmark == true ? BENCHMARK_SAMPLES : TEST_SAMPLES;
-    for (usize sceneIndex = 0; sceneIndex < SCENE_COUNT; ++sceneIndex)
+    for (usize sceneIndex = 0; sceneIndex < (shouldCacheHit == true ? CACHE_SCENE_COUNT : SCENE_COUNT); ++sceneIndex)
     {
         CAPTURE(sceneIndex);
         const SceneKind scene = static_cast<SceneKind>(sceneIndex);
@@ -478,8 +562,14 @@ TEST_CASE("Visibility-only queries preserve full-hit output and CPU/GPU referenc
         if (rhi::GetRayCapabilities(device, capabilities) == Status::Unsupported)
             SKIP("Native ray queries unavailable");
         StaticArray<VisibilityFixture, VARIANT_COUNT> fixtures{};
-        PrepareFixture(device, RenderPath::FullHit, scene, fixtures[0]);
-        PrepareFixture(device, RenderPath::VisibilityOnly, scene, fixtures[1]);
+        PrepareFixture(device,
+                       shouldCacheHit == true ? RenderPath::UncachedHit : RenderPath::FullHit,
+                       scene,
+                       fixtures[0]);
+        PrepareFixture(device,
+                       shouldCacheHit == true ? RenderPath::CachedHit : RenderPath::VisibilityOnly,
+                       scene,
+                       fixtures[1]);
         const rr::DirectLight light
         {
             .SourceId = 1,
@@ -527,7 +617,8 @@ TEST_CASE("Visibility-only queries preserve full-hit output and CPU/GPU referenc
             const char* sceneName = SCENE_NAMES[sceneIndex];
             for (usize variant = 0; variant < VARIANT_COUNT; ++variant)
             {
-                const std::string variantDirectory = directory + "/" + VARIANT_NAMES[variant];
+                const std::string variantDirectory =
+                    directory + "/" + (shouldCacheHit == true ? CACHE_VARIANT_NAMES[variant] : VARIANT_NAMES[variant]);
                 WriteArtifact(variantDirectory,
                               sceneName,
                               ".rgba",
@@ -566,4 +657,16 @@ TEST_CASE("Visibility-only queries preserve full-hit output and CPU/GPU referenc
         CHECK(resources.Geometries == 0);
         CHECK(resources.Scenes == 0);
     }
+}
+} // namespace
+
+TEST_CASE("Visibility-only queries preserve full-hit output and CPU/GPU reference parity",
+          "[renderer][gpu][visibility]")
+{
+    RunPairedPreview(false);
+}
+TEST_CASE("Per-hit material and UV caching preserves uncached output and CPU/GPU reference parity",
+          "[renderer][gpu][hit-cache]")
+{
+    RunPairedPreview(true);
 }

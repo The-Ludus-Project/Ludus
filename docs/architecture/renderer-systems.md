@@ -2109,6 +2109,79 @@ zero invalid reference contributions and visibility-query coverage on geometry
 scenes. Run this ordinary mode independently of benchmark mode, which omits oracle
 renders during timing. Neither denoising nor temporal reuse establishes parity.
 
+The opt-in `renderer_gpu_preview_hit_cached` recipe experiments with per-hit material
+word-address and interpolated-UV reuse. The default preview, reference integral,
+packed-scene ABI and candidate acceptance remain unchanged. `HitMaterial` is local
+to one intersection; it introduces no persistent history, host allocation or GPU
+buffer. Map transforms, fixed-mip filtering, decoding and normal mapping retain
+the existing texture helper, including its out-of-line SPIR-V filter. The material
+word constants are shared by the host packer and shader readers.
+
+Generated-code inspection at base `44d7510a` found three separate primary-hit UV
+interpolations for emission, base color and surface maps. The default artifact has
+8,745 SPIR-V instructions, 907 static `OpLoad` and 354 `OpAccessChain` instructions;
+the opt-in artifact has 8,571, 874 and 321 respectively. The default retains the
+original counts. These are module-wide static instruction counts, including local
+loads and branches, not measured device-memory traffic. Translated Metal source
+is 160,150 versus 158,462 bytes. SPIRV-Cross still marks the texture helper
+`always_inline`; downstream driver optimization can eliminate source redundancy.
+Fewer intermediate instructions do not establish faster GPU execution.
+
+Use the same interleaved harness with the cache experiment selected:
+
+```sh
+python3 scripts/python/benchmark_ray_visibility.py --experiment hit-cache \
+  --executable out/build/<native-build>/modules/graphics/renderer/ludus_renderer_render_tests \
+  --output out/hit-cache/interleaved --runs 5
+```
+
+The experiment prepares default/uncached and opt-in/cached pipelines together and
+uses the same matched-sample AB/BA protocol, warmup, timing scope, executable hash,
+complete sample-coverage checks and independent-process bootstrap described above.
+Artifacts use `uncached/` and `cached/` variant directories. Four untextured controls
+are joined by `textured-nearest` and `textured-linear` scenes with retained sRGB base
+and emission maps, a linear normal/roughness/metallic map, explicit mesh UVs, negative
+V scale, repeated U and clamped V. Each textured scene has 5,120 triangles. Its
+emissive surfaces exercise mesh-light sampling too. The ordinary `[hit-cache]`
+regression compares final RGBA8 A/B output, raw RGB, and the independent CPU oracle
+and software GPU reference at 64×64/16 samples, with the same documented channel
+tolerances. Benchmark mode omits oracle rendering during timing.
+
+On 2026-10-27, five independent processes on an 8-core Apple M5 GPU,
+macOS 26.6 and Clang 23.1.3 Development measured 112 balanced AB/BA pairs after
+16 warmup pairs per process: 560 measured pairs per scene. Positive savings mean
+the cached recipe used less GPU time. Each row uses the median of process median
+matched-frame ratios; the bootstrap resamples those five process medians.
+
+| Scene | Paired GPU time saved | 95% run-bootstrap uncached/cached ratio |
+| --- | ---: | ---: |
+| empty | 0.76% | 1.0009–1.0106× |
+| opaque | -2.33% | 0.9760–0.9803× |
+| masked | -0.39% | 0.9918–1.0015× |
+| mixed | -0.74% | 0.9846–1.0003× |
+| textured-nearest | -0.04% | 0.9948–1.0003× |
+| textured-linear | 0.31% | 0.9985–1.0067× |
+
+All six scenes retained bit-identical normalized raw RGB and RGBA8 across all five
+processes. The ordinary regression also passed independent CPU/software-GPU parity.
+The maximum recorded CPU gap within a pair was 2.754 ms (empty control); the
+largest geometry-scene gap was 0.186 ms. Individual gaps and both order-specific
+ratios remain in the JSON report; no additional timings were discarded. The
+textured-linear median gain is small and its interval includes no gain; opaque
+rendering has a repeatable regression. This does not establish a general speedup.
+
+Two earlier variants were also measured and rejected. Resolving material addresses
+through the texture filter reduced static loads from 907 to 805 but regressed the
+opaque fixture by 2.40% over five runs. Adding lazy UV evaluation and per-filter
+metadata caching regressed opaque by 4.21% and textured-linear by 1.77% over three
+runs. The final implementation keeps the texture-filter boundary unchanged. A
+separate three-run repetition of that narrow implementation also measured an
+opaque regression (2.44%) and only 0.23% textured-linear savings. These results
+motivate the opt-in status rather than a default performance claim.
+
+The recipe remains an opt-in experiment. Native backend qualification and a
+representative measured improvement are required before default activation.
+
 The explicit quality profile admits at most four live jobs, 4096 requested
 samples, depth eight, the reference secondary-distance/camera bounds and a fixed
 texture mip. It has no denoising, motion history, transmission, spectral transport,

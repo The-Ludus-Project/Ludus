@@ -123,6 +123,46 @@ float4 Texel(uint t, int x, int y, uint map)
                 f.y);
 }
 
+struct HitMaterial
+{
+    uint Triangle;
+#ifndef LUDUS_GPU_PREVIEW_CACHE_HIT
+    float2 Barycentric;
+#else
+    uint SurfaceAddress;
+    float2 TexcoordUv;
+#endif
+};
+HitMaterial LoadHitMaterial(uint triangle, float2 barycentric)
+{
+    HitMaterial material;
+    material.Triangle = triangle;
+#ifndef LUDUS_GPU_PREVIEW_CACHE_HIT
+    material.Barycentric = barycentric;
+#else
+    uint index = asuint(SceneValue(triangle * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS).w);
+    material.SurfaceAddress = Offsets.w + index * SurfaceLayout.x;
+    material.TexcoordUv = TexcoordUv(triangle, barycentric);
+#endif
+    return material;
+}
+float4 ReadHitSurface(in HitMaterial material, uint field)
+{
+#ifndef LUDUS_GPU_PREVIEW_CACHE_HIT
+    return Surface(material.Triangle, field);
+#else
+    return SceneValue(material.SurfaceAddress + field);
+#endif
+}
+float4 SampleHitTexture(in HitMaterial material, uint map = 0)
+{
+#ifndef LUDUS_GPU_PREVIEW_CACHE_HIT
+    return Texture(material.Triangle, TexcoordUv(material.Triangle, material.Barycentric), map);
+#else
+    return Texture(material.Triangle, material.TexcoordUv, map);
+#endif
+}
+
 struct Hit
 {
     uint Triangle;
@@ -699,11 +739,14 @@ float3 Integrate(uint pixel, uint sample)
             break;
         }
         uint t = hit.Triangle;
+        HitMaterial material = LoadHitMaterial(t, hit.Barycentric);
         float3 positionWorld = PositionWorld(t, hit.Barycentric);
         float3 geometricNormalWorld = SceneValue(t * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + 8).xyz;
         float3 viewDirectionWorld = -directionWorld;
-        float3 emission = Surface(t, 4).xyz * Texture(t, TexcoordUv(t, hit.Barycentric), 2).xyz;
-        if (asuint(Surface(t, 5).w) == 0 && dot(geometricNormalWorld, viewDirectionWorld) <= 0)
+        float3 emission =
+            ReadHitSurface(material, LUDUS_GPU_PREVIEW_EMISSION_WORD).xyz * SampleHitTexture(material, 2).xyz;
+        if (asuint(ReadHitSurface(material, LUDUS_GPU_PREVIEW_TEXTURE_OPTIONS_WORD).w) == 0 &&
+            dot(geometricNormalWorld, viewDirectionWorld) <= 0)
             emission = float3(0);
         radiance +=
             throughput * emission *
@@ -717,22 +760,25 @@ float3 Integrate(uint pixel, uint sample)
             SceneValue(t * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + 3).xyz * (1 - hit.Barycentric.x - hit.Barycentric.y) +
             SceneValue(t * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + 4).xyz * hit.Barycentric.x +
             SceneValue(t * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS + 5).xyz * hit.Barycentric.y);
-        float3 color = saturate(Surface(t, 0).xyz * Texture(t, TexcoordUv(t, hit.Barycentric)).xyz);
-        if (asuint(Surface(t, 7).z) != 0)
+        float3 color =
+            saturate(ReadHitSurface(material, LUDUS_GPU_PREVIEW_BASE_COLOR_WORD).xyz * SampleHitTexture(material).xyz);
+        if (asuint(ReadHitSurface(material, LUDUS_GPU_PREVIEW_SURFACE_OPTIONS_WORD).z) != 0)
             color *= InterpolateTriangleColor(t, hit.Barycentric).xyz;
-        float metallic = Surface(t, 0).w;
-        float roughness = Surface(t, 1).x;
-        if (asuint(Surface(t, 6).w) != 0)
+        float metallic = ReadHitSurface(material, LUDUS_GPU_PREVIEW_BASE_COLOR_WORD).w;
+        float roughness = ReadHitSurface(material, LUDUS_GPU_PREVIEW_ROUGHNESS_WORD).x;
+        if (asuint(ReadHitSurface(material, LUDUS_GPU_PREVIEW_SURFACE_MAP_WORD).w) != 0)
         {
-            SurfaceParameters parameters = DecodeSurfaceParameters(Texture(t, TexcoordUv(t, hit.Barycentric), 1),
-                                                                   metallic,
-                                                                   roughness,
-                                                                   Surface(t, 6).x);
+            SurfaceParameters parameters =
+                DecodeSurfaceParameters(SampleHitTexture(material, 1),
+                                        metallic,
+                                        roughness,
+                                        ReadHitSurface(material, LUDUS_GPU_PREVIEW_SURFACE_MAP_WORD).x);
             metallic = parameters.Metallic;
             roughness = parameters.Roughness;
-            float2 uvScale = Surface(t, 3).xy;
+            float2 uvScale = ReadHitSurface(material, LUDUS_GPU_PREVIEW_UV_TRANSFORM_WORD).xy;
             float4 authoredTangentWorld = InterpolateTriangle(t, 10, hit.Barycentric);
-            if (asuint(Surface(t, 7).z) != 0 && abs(authoredTangentWorld.w) > .5)
+            if (asuint(ReadHitSurface(material, LUDUS_GPU_PREVIEW_SURFACE_OPTIONS_WORD).z) != 0 &&
+                abs(authoredTangentWorld.w) > .5)
             {
                 float3 tangentWorld = NormalizeOrZero(authoredTangentWorld.xyz -
                                                       normalWorld * dot(normalWorld, authoredTangentWorld.xyz));
