@@ -7,6 +7,7 @@
 #include "internal/render_graph_node_ports.h"
 #include "internal/render_graph_pipeline_node.h"
 #include "internal/render_graph_reroutes.h"
+#include "internal/render_graph_resource_inspection.h"
 #include "internal/render_graph_resources.h"
 #include "internal/render_graph_scene_bundle.h"
 #include "internal/render_graph_upscale_node.h"
@@ -1278,6 +1279,7 @@ void RenderGraphCanvas::SetReferenceSize(const QSize& size)
     {
         mReferenceSize = size;
         refreshFeedback();
+        Q_EMIT ReferenceSizeChanged(size);
     }
 }
 
@@ -2228,6 +2230,32 @@ void RenderGraphCanvas::contextMenuEvent(QContextMenuEvent* event)
     {
         QMenu menu(this);
         menu.setObjectName(QStringLiteral("renderGraphConnectionMenu"));
+        const QString inspectedEndpoint = port.isEmpty() == false ? port : from;
+        const bool isInspectedOutput = port.isEmpty() == false ? isOutput : true;
+        const QString inspectedFile = mFile;
+        const QString inspectedConfiguration = mConfiguration;
+        const uint64 inspectedRevision = GetDocumentRevision();
+        const QVector<RenderGraphHistoryLocation> inspectedPath = mHistoryOrNull->GetPath();
+        QAction* inspect = menu.addAction(QStringLiteral("Inspect Resource"));
+        inspect->setObjectName(QStringLiteral("renderGraphInspectResource"));
+        connect(inspect,
+                &QAction::triggered,
+                this,
+                [this,
+                 inspectedEndpoint,
+                 isInspectedOutput,
+                 inspectedFile,
+                 inspectedConfiguration,
+                 inspectedRevision,
+                 inspectedPath]() {
+                    if (mFile == inspectedFile && mConfiguration == inspectedConfiguration &&
+                        GetDocumentRevision() == inspectedRevision &&
+                        AreRenderGraphResourcePathsEqual(inspectedPath, mHistoryOrNull->GetPath()) == true)
+                    {
+                        Q_EMIT ResourceInspectionRequested(inspectedEndpoint, isInspectedOutput);
+                    }
+                });
+        menu.addSeparator();
         if (port.isEmpty() == true && from.isEmpty() == false)
         {
             const int32 segment = findRerouteSegment(from, to, position);
@@ -2479,6 +2507,18 @@ void RenderGraphCanvas::mouseMoveEvent(QMouseEvent* event)
         mHoveredPort = port;
         mIsHoveredOutput = isOutput;
         updateConnectionHighlight();
+    }
+    bool isResourceOutput = isOutput;
+    QString resourceEndpoint = port;
+    if (resourceEndpoint.isEmpty() == true && nodeAt(position).isEmpty() == true)
+    {
+        QString destination;
+        resourceEndpoint = edgeAt(position, destination);
+        isResourceOutput = true;
+    }
+    if (resourceEndpoint.isEmpty() == false)
+    {
+        Q_EMIT ResourceHovered(resourceEndpoint, isResourceOutput);
     }
     QGraphicsView::mouseMoveEvent(event);
 }

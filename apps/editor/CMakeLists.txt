@@ -467,6 +467,7 @@ qt_add_executable(ludus_editor
     src/internal/render_graph_comments.h src/render_graph_comments.cpp
     src/internal/render_graph_wire_routes.h src/render_graph_wire_routes.cpp
     src/internal/render_graph_reroutes.h src/render_graph_reroutes.cpp
+    src/internal/render_graph_resource_inspection.h src/render_graph_resource_inspection.cpp src/render_graph_resource_resolution.cpp
     src/internal/render_graph_view_state.h src/internal/render_graph_history.h src/render_graph_history.cpp
     src/internal/external_code_editor.h
     src/external_code_editor.cpp
@@ -789,6 +790,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/internal/render_graph_comments.h src/render_graph_comments.cpp
         src/internal/render_graph_wire_routes.h src/render_graph_wire_routes.cpp
         src/internal/render_graph_reroutes.h src/render_graph_reroutes.cpp
+        src/internal/render_graph_resource_inspection.h src/render_graph_resource_inspection.cpp src/render_graph_resource_resolution.cpp
         src/internal/render_graph_view_state.h src/internal/render_graph_history.h src/render_graph_history.cpp
         src/internal/external_code_editor.h
         src/external_code_editor.cpp
@@ -833,7 +835,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/render_graph_node_menu_tests.cpp
         tests/render_graph_rename_tests.cpp
         tests/render_graph_default_tests.cpp
-        tests/render_graph_canvas_tests.cpp tests/render_graph_navigation_tests.cpp tests/render_graph_history_tests.cpp tests/render_graph_layout_tests.cpp tests/render_graph_comment_tests.cpp tests/render_graph_reroute_tests.cpp
+        tests/render_graph_canvas_tests.cpp tests/render_graph_navigation_tests.cpp tests/render_graph_history_tests.cpp tests/render_graph_layout_tests.cpp tests/render_graph_comment_tests.cpp tests/render_graph_reroute_tests.cpp tests/render_graph_resource_inspection_tests.cpp
         tests/render_graph_canvas_feedback_tests.cpp
         tests/render_graph_diagnostic_tests.cpp tests/render_graph_diagnostic_navigation_tests.cpp
         tests/texture_inspection_tests.cpp
@@ -1061,10 +1063,12 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/internal/render_graph_comments.h src/render_graph_comments.cpp
         src/internal/render_graph_wire_routes.h src/render_graph_wire_routes.cpp
         src/internal/render_graph_reroutes.h src/render_graph_reroutes.cpp
+        src/internal/render_graph_resource_inspection.h src/render_graph_resource_inspection.cpp src/render_graph_resource_resolution.cpp
         src/internal/render_graph_view_state.h src/internal/render_graph_history.h src/render_graph_history.cpp
         src/internal/render_graph_configuration_editor.h src/render_graph_configuration_editor.cpp
         src/render_graph_configuration_interface.cpp src/render_graph_shader_interface.cpp
-        src/internal/render_graph_job.h src/render_graph_job.cpp)
+        src/internal/render_graph_job.h src/render_graph_job.cpp
+        src/internal/render_graph_live_build.h src/render_graph_live_build.cpp)
     set_target_properties(ludus_render_graph_pipeline_tests PROPERTIES AUTOMOC ON)
     target_include_directories(ludus_render_graph_pipeline_tests PRIVATE src)
     target_compile_definitions(ludus_render_graph_pipeline_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII
@@ -1093,7 +1097,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
 
     # Authoring uses the real workspace/document without requiring a viewport device.
     add_executable(ludus_render_graph_configuration_tests
-        tests/main.cpp tests/render_graph_upscale_tests.cpp tests/render_graph_configuration_tests.cpp tests/render_graph_template_tests.cpp tests/render_graph_template_registry_tests.cpp tests/render_graph_quick_add_tests.cpp tests/render_graph_rename_tests.cpp tests/render_graph_selection_tests.cpp tests/render_graph_canvas_tests.cpp tests/render_graph_navigation_tests.cpp tests/render_graph_history_tests.cpp tests/render_graph_layout_tests.cpp tests/render_graph_comment_tests.cpp tests/render_graph_reroute_tests.cpp tests/render_graph_canvas_feedback_tests.cpp tests/render_graph_diagnostic_tests.cpp tests/render_graph_diagnostic_navigation_tests.cpp
+        tests/main.cpp tests/render_graph_upscale_tests.cpp tests/render_graph_configuration_tests.cpp tests/render_graph_template_tests.cpp tests/render_graph_template_registry_tests.cpp tests/render_graph_quick_add_tests.cpp tests/render_graph_rename_tests.cpp tests/render_graph_selection_tests.cpp tests/render_graph_canvas_tests.cpp tests/render_graph_navigation_tests.cpp tests/render_graph_history_tests.cpp tests/render_graph_layout_tests.cpp tests/render_graph_comment_tests.cpp tests/render_graph_reroute_tests.cpp tests/render_graph_resource_inspection_tests.cpp tests/render_graph_canvas_feedback_tests.cpp tests/render_graph_diagnostic_tests.cpp tests/render_graph_diagnostic_navigation_tests.cpp
         src/internal/renderer_workspace.h src/renderer_workspace.cpp src/renderer_workspace_selection.cpp
         src/internal/viewport_frame_pump.h src/viewport_frame_pump.cpp
         src/render_graph_document.cpp src/render_graph_node_ports.cpp src/render_graph_configuration_template.cpp src/render_graph_visibility_template.cpp src/render_graph_compute_template.cpp src/render_graph_node_transfer.cpp src/render_graph_shader_cleanup.cpp src/render_graph_shader_creation.cpp src/render_graph_scene_authoring.cpp src/render_graph_scene_bundle.cpp src/render_graph_techniques.cpp src/render_graph_pipeline_node.cpp src/render_graph_upscale_node.cpp
@@ -1107,6 +1111,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/internal/render_graph_comments.h src/render_graph_comments.cpp
         src/internal/render_graph_wire_routes.h src/render_graph_wire_routes.cpp
         src/internal/render_graph_reroutes.h src/render_graph_reroutes.cpp
+        src/internal/render_graph_resource_inspection.h src/render_graph_resource_inspection.cpp src/render_graph_resource_resolution.cpp
         src/internal/render_graph_view_state.h src/internal/render_graph_history.h src/render_graph_history.cpp
         src/internal/render_graph_pipeline.h src/render_graph_pipeline.cpp
         src/internal/render_graph_job.h src/render_graph_job.cpp
@@ -1154,6 +1159,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/render_graph_shader_cleanup.cpp src/render_graph_shader_creation.cpp src/render_graph_scene_authoring.cpp src/render_graph_scene_bundle.cpp src/render_graph_techniques.cpp src/render_graph_pipeline_node.cpp src/render_graph_upscale_node.cpp
         src/render_graph_configuration_interface.cpp
         src/internal/render_graph_comment_frame.h src/render_graph_comment_frame.cpp
+        src/internal/render_graph_wire_routes.h src/render_graph_wire_routes.cpp
         src/render_graph_live_build.cpp src/internal/render_graph_live_build.h)
     set_target_properties(ludus_render_graph_live_build_tests PROPERTIES AUTOMOC ON)
     target_include_directories(ludus_render_graph_live_build_tests PRIVATE src)
@@ -1239,3 +1245,10 @@ endforeach()
 if(TARGET ludus_render_graph_configuration_tests)
     target_sources(ludus_render_graph_configuration_tests PRIVATE tests/render_graph_options_tests.cpp)
 endif()
+
+# Resource inspection bridges metadata to the existing viewer; authoring tests need no device.
+foreach(target IN ITEMS ludus_editor ludus_editor_tests ludus_render_graph_configuration_tests)
+    if(TARGET ${target})
+        target_sources(${target} PRIVATE src/renderer_workspace_resources.cpp)
+    endif()
+endforeach()

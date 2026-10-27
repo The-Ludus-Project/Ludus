@@ -58,6 +58,8 @@ struct RenderGraphTargetCatalogue final
     QVector<QPair<QString, QString>> Cameras;
     /// True when a matching names sidecar supplied resource names.
     bool HasNames = false;
+    /// True only when the sidecar also binds the exact runtime bytes, distinguishing configurations.
+    bool HasExactRuntimeNames = false;
     /// Why the names sidecar was not used; empty when HasNames or when none was found.
     QString NamesProblem;
 
@@ -73,10 +75,13 @@ struct RenderGraphTargetCatalogue final
 /// generation identity; otherwise NamesProblem says why and the numeric names are used.
 /// @param generationIdentity RenderGraphPackage::GetGenerationIdentity of the same package.
 /// @param namesDocument Sidecar bytes, or empty when no sidecar exists.
+/// @param runtimeIdentity Optional hex SHA-256 of decoded runtime bytes. A conflicting binding
+/// rejects names; a missing legacy binding keeps HasNames but never HasExactRuntimeNames.
 [[nodiscard]] RenderGraphTargetCatalogue
 MakeTargetCatalogue(const graphics::renderer::RenderGraphPlan& plan,
                     foundation::BorrowedView<const foundation::uint8> generationIdentity,
-                    const QByteArray& namesDocument);
+                    const QByteArray& namesDocument,
+                    const QByteArray& runtimeIdentity = {});
 
 /// Resource names a canvas node shows, in a stable order: a Target its own texture; a Raster
 /// node the attachments its pass writes (colour, then depth); a Subgraph node the final

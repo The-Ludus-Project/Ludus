@@ -218,6 +218,12 @@ public:
     GetNewNodePosition(const QJsonObject& node, const QString& from, const QString& input, QPointF inputPosition) const;
 
 Q_SIGNALS:
+    /// Inspect a copied endpoint without selecting nodes or changing tracing.
+    void ResourceInspectionRequested(const QString& endpoint, bool isOutput);
+    /// Passive resource hover; no document or viewer mutation. Pinning is owned by the inspector.
+    void ResourceHovered(const QString& endpoint, bool isOutput);
+    /// Drawable reference for draft resource descriptions, in physical pixels.
+    void ReferenceSizeChanged(const QSize& size);
     /// Open the displayed configuration interface editor (double-click an interface box).
     void InterfaceEditRequested();
     void NodeSelected(const QString& node);

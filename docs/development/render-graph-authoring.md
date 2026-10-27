@@ -4231,6 +4231,62 @@ traces, semantic build identity, compiled passes or rendering. The CLI validates
 and preserves routes, while the semantic digest and live-build identity exclude
 them with the rest of `layout`.
 
+### Inspect a resource from the canvas
+
+Right-click a wire, reroute point or input/output port and choose **Inspect
+Resource**. A modeless window shows the endpoint type, its producer and consumers
+in the displayed configuration, the existing draft size/format description, and
+the fully expanded resource name when the caller instance can be established.
+Unconnected, ambiguous, removed or cyclic bindings show an explanation. Graph
+values such as Scene and RenderSize can be described but are not texture images.
+
+The window follows other ports and wires as you hover while it is open and
+unpinned. **Pin resource** holds the endpoint, breadcrumb caller path and resolved
+resource identity while selecting, navigating or tracing other nodes. A changed
+binding cannot silently substitute another resource: the window reports
+Unavailable until you unpin or explicitly inspect again. An explicit **Inspect
+Resource** request deliberately replaces the current pin. Closing (including
+Escape), opening another package or changing projects releases it. This window
+works with Properties hidden and never changes selection, pan, zoom, dependency
+trace, navigation visits, document undo or saved layout.
+
+Draft details and generation metadata are separate. The latter reuses the existing
+texture viewer's verified resource-name catalogue, dimensions, formats and uses:
+
+- **Current** means the presented generation's verified build source identity and
+  root configuration match the draft. Layout-only changes do not make it stale.
+- **Stale** means the presented generation describes older graph/shader sources
+  or another root configuration. Its generation details stay explicitly labelled.
+- **Unverified** means the runtime package has no verified source provenance from
+  an accepted build. Names may still be verified against that exact package;
+  **Build & Preview** supplies source provenance for the package it builds.
+  The cooker reports its runtime SHA-256 (`runtime.sha256`); admission checks both
+  that digest and the build-generation identity, so configurations sharing a build
+  generation cannot inherit each other's provenance. Resource-name sidecars also
+  carry `runtime_sha256`; port inspection requires that exact runtime binding.
+  Legacy catalogues remain usable in the existing viewer, and the inspector asks
+  for Build & Preview to regenerate their exact binding.
+- **Unavailable** explains a missing port/resource, unbound caller, missing names,
+  absent native preview, buffer/presentation surface, or active generation still
+  awaiting presentation for its current drawable extent/device session. The existing
+  last drawable view is retained.
+
+**Open in Textures** selects the exact expanded resource in the existing Textures
+page. It rechecks the attached and presented generation at activation time.
+An older named image can still be opened with the Stale/Unverified label visible.
+Buffers and presentation surfaces have metadata but no viewer image. A library
+opened directly has no unique caller instance: enter it through the root graph's
+Subgraph breadcrumbs instead. Repeated instances are resolved by the full caller
+path, never by matching a node-name suffix.
+
+Inspection and hover only read metadata. Opening Textures reuses its existing
+single target selection and GPU readback; no additional device, image copy or
+readback loop is created. While pinned, ordinary node clicks do not automatically
+retarget that viewer. The viewer displays the generation's final resource
+contents, rather than a historical version at the clicked wire; its own readback
+status and pixel probe remain authoritative for the sampled image. Current refers
+to graph sources, not to completion of a pending World edit or GPU readback.
+
 ### Find existing nodes and trace dependencies
 
 Choose **Find Node…** on the canvas toolbar, or press **Ctrl/Command+F** while the

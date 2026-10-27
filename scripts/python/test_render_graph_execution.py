@@ -353,10 +353,12 @@ class ExecutionTests(unittest.TestCase):
         runtime = execution.cook_runtime(self.output, destination)
         sidecar = execution.resource_names_path(destination)
         self.assertEqual(runtime['resource_names'], str(sidecar))
+        self.assertEqual(runtime['sha256'], build.digest(destination.read_bytes()))
         self.assertEqual(sidecar.name, 'named.lurgrt.resources.json')
         names = json.loads(sidecar.read_text())
         self.assertEqual(names['version'], execution.RESOURCE_NAMES_VERSION)
         self.assertEqual(names['generation'], runtime['generation'])
+        self.assertEqual(names['runtime_sha256'], runtime['sha256'])
         contents = execution._runtime_contents(self.output, 'Default')
         pass_names = [p['id'] for p in contents['plan']['passes'] if p['kind'] in ('Raster', 'RayTracing')]
         suffix = b''.join(struct.pack('<I', len(name.encode())) + name.encode() + bytes(-len(name.encode()) % 4)
@@ -379,7 +381,8 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(len(roots), 1)
         self.assertEqual(set(roots[0]['attachments']), {'texture'})
         self.assertTrue(all(camera['target'] for camera in names['cameras']))
-        self.assertEqual(sidecar.read_bytes(), execution.encode_resource_names(contents))
+        self.assertEqual(sidecar.read_bytes(), execution.encode_resource_names(
+            contents, runtime_identity=runtime['sha256']))
 
     def test_vertex_and_fragment_sharing_a_slot_merge_into_one_binding(self):
         self.edit(lambda value: self.bind_material(value, vertex=True))
