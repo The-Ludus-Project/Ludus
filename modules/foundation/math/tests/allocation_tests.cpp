@@ -10,6 +10,7 @@
 #include <ludus/foundation/math/dynamics.hpp>
 #include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/patch.hpp>
+#include <ludus/foundation/math/projected_solid_angle.hpp>
 #include <ludus/foundation/math/projection.hpp>
 #include <ludus/foundation/math/quaternion.hpp>
 #include <ludus/foundation/math/queries.hpp>
@@ -214,6 +215,19 @@ TEST_CASE("Checked math operations never allocate", "[math][alloc]")
     PreparedBound32 bound;
     REQUIRE(TryPrepareBound32(1000, bound) == MathStatus::Success);
     REQUIRE(TrySampleBounded(key, address, bound, ticket) == MathStatus::Success);
+
+    // Projected solid angle sampling of a polygonal light.
+    ProjectedPolygonInput polygon;
+    polygon.VertexCount = 4;
+    polygon.PositionsTangent[0] = Vector3{1, -1, 0.5f};
+    polygon.PositionsTangent[1] = Vector3{1, -1, 2};
+    polygon.PositionsTangent[2] = Vector3{1, 1, 2};
+    polygon.PositionsTangent[3] = Vector3{1, 1, 0.5f};
+    ProjectedSolidAnglePolygon prepared;
+    REQUIRE(TryPrepareProjectedSolidAnglePolygon(polygon, prepared) == MathStatus::Success);
+    Vector3 lightDirection;
+    REQUIRE(TrySampleProjectedSolidAnglePolygon(prepared, Vector2{0.3f, 0.6f}, lightDirection) == MathStatus::Success);
+    REQUIRE(EvaluateProjectedSolidAnglePolygonDensity(prepared, lightDirection) > 0.0f);
 
     // Batch (caller-owned stack buffers; no heap scratch inside).
     std::array<Vector3, 8> input{};

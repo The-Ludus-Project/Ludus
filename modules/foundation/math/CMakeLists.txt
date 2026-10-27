@@ -29,6 +29,7 @@ target_sources(
         src/patch.cpp
         src/summation.cpp
         src/enclosure.cpp
+        src/projected_solid_angle.cpp
     PUBLIC
         FILE_SET public_headers
         TYPE HEADERS
@@ -54,6 +55,7 @@ target_sources(
             include/ludus/foundation/math/cubic.hpp
             include/ludus/foundation/math/patch.hpp
             include/ludus/foundation/math/enclosure.hpp
+            include/ludus/foundation/math/projected_solid_angle.hpp
 )
 
 # Dependency direction: FoundationMath may use FoundationBase (types,
@@ -110,6 +112,7 @@ if(LUDUS_BUILD_TESTS)
             tests/curves_surfaces_fixture_tests.cpp
             tests/summation_tests.cpp
             tests/enclosure_tests.cpp
+            tests/projected_solid_angle_tests.cpp
     )
     target_include_directories(ludus_foundation_math_tests PRIVATE tests src)
     target_link_libraries(
@@ -155,4 +158,4 @@ if(LUDUS_BUILD_TESTS)
     endif()
 endif()
 
-install(FILES shaders/math.slang DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
+install(FILES shaders/math.slang shaders/projected_solid_angle.slang DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
