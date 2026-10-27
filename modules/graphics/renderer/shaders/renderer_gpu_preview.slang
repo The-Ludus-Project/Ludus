@@ -95,8 +95,15 @@ float4 Texel(uint t, int x, int y, uint map)
         c.xyz = float3(DecodeSrgb(c.x), DecodeSrgb(c.y), DecodeSrgb(c.z));
     return c;
 }
-float4 Texture(uint t, float2 uv, uint map = 0)
-{
+// Thanks to the Slang authors, core module noinline attribute reference:
+// https://docs.shader-slang.org/en/latest/external/core-module-reference/attributes/noinline.html
+// Keep the four-texel bilinear filter out of line in SPIR-V. Slang's default
+// optimizer otherwise copies it into every material, emission and alpha-test
+// site, which made translated ray-graph Metal sources exceed the 2 MiB stage
+// artifact limit. SPIRV-Cross still marks the MSL function always_inline, and
+// Slang emits no inlining hint for Metal, WGSL or GLSL source; Vulkan drivers
+// make their own inlining decision when compiling the SPIR-V.
+[noinline] float4 Texture(uint t, float2 uv, uint map = 0) {
     if ((map == 2 ? asuint(Surface(t, 8).z) : asuint(Surface(t, map == 1 ? 6 : 4).w)) == 0)
         return float4(1);
     float4 transform = Surface(t, 3);
@@ -115,6 +122,7 @@ float4 Texture(uint t, float2 uv, uint map = 0)
                 lerp(Texel(t, cell.x, cell.y + 1, map), Texel(t, cell.x + 1, cell.y + 1, map), f.x),
                 f.y);
 }
+
 struct Hit
 {
     uint Triangle;
