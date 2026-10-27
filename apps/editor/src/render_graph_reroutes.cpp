@@ -1,5 +1,6 @@
 #include "internal/render_graph_reroutes.h"
 #include "internal/render_graph_canvas.h"
+#include "internal/render_graph_resource_inspection.h"
 
 #include <ludus/foundation/math/scalar.hpp>
 
@@ -370,11 +371,21 @@ bool RenderGraphReroutes::ShowContextMenu(QPointF position, const QPoint& global
     const uint64 revision = mRevision;
     const QString file = mFile;
     const QString configuration = mConfiguration;
+    const QVector<RenderGraphHistoryLocation> path = mCanvas.GetHistory().GetPath();
     QMenu menu(&mCanvas);
     menu.setObjectName(QStringLiteral("renderGraphRerouteMenu"));
     QAction* remove = menu.addAction(QStringLiteral("Remove Reroute Point"));
     remove->setObjectName(QStringLiteral("renderGraphRemoveReroute"));
-    if (menu.exec(globalPosition) == remove && isCurrent() == true && revision == mRevision && file == mFile &&
+    QAction* inspect = menu.addAction(QStringLiteral("Inspect Resource"));
+    inspect->setObjectName(QStringLiteral("renderGraphInspectResource"));
+    QAction* selectedOrNull = menu.exec(globalPosition);
+    if (selectedOrNull == inspect && isCurrent() == true && revision == mRevision && file == mFile &&
+        configuration == mConfiguration &&
+        AreRenderGraphResourcePathsEqual(path, mCanvas.GetHistory().GetPath()) == true)
+    {
+        Q_EMIT mCanvas.ResourceInspectionRequested(from, true);
+    }
+    if (selectedOrNull == remove && isCurrent() == true && revision == mRevision && file == mFile &&
         configuration == mConfiguration)
     {
         mSelectedFrom = from;

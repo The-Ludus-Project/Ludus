@@ -17,6 +17,7 @@
 #include "internal/viewport_statistics.h"
 #include "internal/viewport_trace.h"
 
+#include <QByteArray>
 #include <QImage>
 #include <QObject>
 #include <QSize>
@@ -67,6 +68,18 @@ struct RenderGraphExtraction final
                                              RenderGraphExtraction& outExtraction,
                                              QString& outError);
 
+/// Optional authoring provenance for a cooked package. The preview admits it only when
+/// Generation and RuntimeIdentity match the decoded build generation and exact package bytes.
+/// InputIdentity is the editor semantic source/configuration digest; empty means unverified.
+struct RenderGraphPreviewSource final
+{
+    QByteArray InputIdentity;
+    QString Configuration;
+    QByteArray Generation;        ///< Hex build-generation identity, as reported by the cooker.
+    QByteArray RuntimeIdentity{}; ///< Hex SHA-256 of the cooked runtime bytes, binding the configuration too.
+    QString RootFile{};           ///< Package-relative root graph that was cooked.
+};
+
 /// Result of an explicit request to preview a cooked runtime generation.
 enum class RenderGraphPreviewLoad : foundation::uint8
 {
@@ -116,9 +129,11 @@ public:
     /// Explicitly preview one cooked runtime generation; the previous request is superseded.
     /// An RT request automatically selects rasterFallbackPath when native traversal is unavailable
     /// or Force raster is selected. The fallback must be an authored raster-only package.
+    /// Optional source provenance is copied and accepted only for its exact decoded generation.
     /// No fallback is needed for a raster request. Selection is repeated on device attachment.
     [[nodiscard]] RenderGraphPreviewLoad Load(const QString& runtimePackagePath,
-                                              const QString& rasterFallbackPath = {});
+                                              const QString& rasterFallbackPath = {},
+                                              const RenderGraphPreviewSource& source = {});
     /// Queue selection between frames; retain the last drawable image while preparing.
     void SetForceRaster(bool shouldForceRaster);
     [[nodiscard]] bool ShouldForceRaster() const noexcept;
@@ -179,6 +194,13 @@ public:
     }
     [[nodiscard]] graphics::renderer::RenderGraphActivationReport GetReport() const noexcept;
 
+    /// Provenance belonging to GetTargetCatalogue's active generation, never a pending candidate.
+    /// Empty when no verified build identity was supplied or the selected package differs.
+    /// Borrowed until activation/reset; copy it to retain a snapshot.
+    [[nodiscard]] const RenderGraphPreviewSource& GetActiveSource() const noexcept;
+    /// True when the active catalogue belongs to a completed presented frame in this device
+    /// session and drawable extent. False during activation/resize until the new frame presents.
+    [[nodiscard]] bool HasPresentedCatalogue() const noexcept;
     /// Textures of the active generation; empty before one is active.
     [[nodiscard]] const RenderGraphTargetCatalogue& GetTargetCatalogue() const noexcept;
     /// Choose the texture the viewer reads back, by expanded resource name; empty stops reading.

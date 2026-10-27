@@ -787,7 +787,7 @@ def resource_names_path(runtime_package):
     return runtime_package.with_name(runtime_package.name + RESOURCE_NAMES_SUFFIX)
 
 
-def encode_resource_names(contents):
+def encode_resource_names(contents, *, runtime_identity=""):
     """Name each plan resource in record order, for tools that inspect a generation.
 
     The runtime package carries numeric records only. Record i is the i-th authored
@@ -812,6 +812,8 @@ def encode_resource_names(contents):
     cameras = [{'id': camera['id'], 'target': camera['target']} for camera in plan['cameras'] if camera['target']]
     document = {'version': RESOURCE_NAMES_VERSION, 'generation': contents['generation'], 'resources': entries,
                 'operations': operations, 'cameras': cameras}
+    if runtime_identity:
+        document['runtime_sha256'] = runtime_identity
     return (json.dumps(document, indent=2, sort_keys=True) + '\n').encode()
 
 
@@ -823,12 +825,12 @@ def _cook_runtime(path, destination, *, configuration='Default'):
     destination = Path(destination).absolute()
     destination.parent.mkdir(parents=True, exist_ok=True)
     # Names first: a reader that sees the new package always finds its matching names.
-    build.atomic(resource_names_path(destination), encode_resource_names(contents))
+    build.atomic(resource_names_path(destination), encode_resource_names(contents, runtime_identity=build.digest(data)))
     build.atomic(destination, data)
     return {'runtime_package': str(destination), 'resource_names': str(resource_names_path(destination)),
             'stage': 'RG3', 'configuration': configuration,
             'generation': contents['generation'], 'interface_identity': contents['interface_identity'],
-            'bytes': len(data), 'resources': len(contents['resources']), 'passes': len(contents['passes']),
+            'sha256': build.digest(data), 'bytes': len(data), 'resources': len(contents['resources']), 'passes': len(contents['passes']),
             'uniform_values': contents['uniform_values'], 'uniform_bindings': len(contents['bindings']),
             'stages': len(contents['artifacts']), 'profiles': sorted({key[2] for key in contents['artifacts']})}
 
@@ -854,7 +856,7 @@ def _cook_ray_path_capture(path, destination, *, configuration='Default'):
     data = encode_runtime_package(contents, magic=RAY_PATH_CAPTURE_PACKAGE_MAGIC)
     destination = Path(destination).absolute()
     destination.parent.mkdir(parents=True, exist_ok=True)
-    build.atomic(resource_names_path(destination), encode_resource_names(contents))
+    build.atomic(resource_names_path(destination), encode_resource_names(contents, runtime_identity=build.digest(data)))
     build.atomic(destination, data)
     return {'ray_path_capture_package': str(destination), 'resource_names': str(resource_names_path(destination)),
             'configuration': configuration, 'generation': contents['generation'],
