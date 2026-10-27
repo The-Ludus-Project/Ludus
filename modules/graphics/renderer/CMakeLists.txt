@@ -422,5 +422,11 @@ if(TARGET ludus_renderer_render_tests)
             MANIFEST "${${ray_path_form}_staged}/main.lushader.json" RAY_PATH_CAPTURE)
     endforeach()
     add_test(NAME ludus_render_graph_ray_path_capture COMMAND ludus_render_graph_ray_path_tests)
-    set_tests_properties(ludus_render_graph_ray_path_capture PROPERTIES LABELS "renderer;gpu;ray" TIMEOUT 60)
+    # Every case skips on a device without hardware ray queries, and Catch2 3.4 then
+    # returns 4. Thanks to Catch2, Session::runInternal (v3.4.0
+    # src/catch2/catch_session.cpp), and CMake 3.29 SKIP_RETURN_CODE for reporting
+    # that as Skipped rather than Failed:
+    # https://cmake.org/cmake/help/v3.29/prop_test/SKIP_RETURN_CODE.html
+    set_tests_properties(ludus_render_graph_ray_path_capture PROPERTIES
+        LABELS "renderer;gpu;ray" TIMEOUT 60 SKIP_RETURN_CODE 4)
 endif()
