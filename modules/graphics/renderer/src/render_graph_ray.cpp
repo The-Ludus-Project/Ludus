@@ -16,6 +16,8 @@ template <foundation::usize BINDING_COUNT>
 constexpr foundation::StaticArray<rhi::RasterBinding, BINDING_COUNT - 1>
 MakeSoftwareRayBindings(const foundation::StaticArray<rhi::RasterBinding, BINDING_COUNT>& bindings) noexcept
 {
+    // Every element uses RasterBinding's valid Visibility::Both default member initializer.
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     foundation::StaticArray<rhi::RasterBinding, BINDING_COUNT - 1> result{};
     foundation::usize destination = 0;
     for (const rhi::RasterBinding& binding : bindings)
