@@ -839,6 +839,13 @@ halves. Built-in engine schemas stay compatible with the running SDK; loading a
 new game shader package cannot mutate a compiled engine ABI. Browser dynamic
 game-module reload remains subject to its existing documented limitations.
 
+Activation runs beneath the browser host's frame on emscripten's default 64 KiB
+stack. `RenderGraphPrograms` is tens of KiB, so `Stage` builds it in heap storage,
+and the browser build rejects `render_graph_activation.cpp` frames over 16 KiB.
+Hosts should hold compiled-header programs the same way. The RG3 browser
+consumers link with `-sSTACK_OVERFLOW_CHECK=2`, so an overflow names its frame
+instead of silently corrupting the allocator's static state.
+
 Parameter migration retains a value only when stable field identity, type,
 meaning/units and declared conversion agree. A renamed label is metadata; a
 changed semantic field requires explicit conversion/default and a visible diff.

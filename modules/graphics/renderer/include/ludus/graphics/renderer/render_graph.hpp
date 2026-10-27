@@ -74,6 +74,9 @@ ResolveRenderGraphResource(const content::render_graph_format::Resource& resourc
 /// binding records. Ray compute can additionally bind the plan's StorageBuffers
 /// at user slots 6/7. A depth-only stage pair shares its family's exact geometry
 /// stage; the masked depth fragment is a separately authored coverage function.
+/// @note The struct is tens of KiB. Browser hosts run on emscripten's default 64 KiB stack,
+/// so construct it in owned storage, for example `new (std::nothrow) RenderGraphPrograms(MakePrograms(...))`,
+/// rather than as a stack temporary.
 struct RenderGraphPrograms final
 {
     rhi::RasterShaderDescription ColorVertex{};         ///< Authored ColorAndDepth geometry entry.

@@ -46,6 +46,11 @@ target_link_libraries(ludus_graphics_renderer PUBLIC Ludus::FoundationBase Ludus
     PRIVATE Ludus::FoundationContainers Ludus::FoundationHash Ludus::FoundationThreadingProfiling Ludus::FoundationTime Ludus::Resources Ludus::SceneFormat)
 target_compile_options(ludus_graphics_renderer PRIVATE $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-ffp-contract=off>)
 ludus_apply_project_defaults(ludus_graphics_renderer)
+if(EMSCRIPTEN)
+    # Activation runs beneath the host's frame on the browser's default 64 KiB stack; catch
+    # tens-of-KiB RenderGraphPrograms temporaries during compilation, as Resources does.
+    set_source_files_properties(src/render_graph_activation.cpp PROPERTIES COMPILE_OPTIONS -Wframe-larger-than=16384)
+endif()
 install(TARGETS ludus_graphics_renderer EXPORT LudusTargets ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     FILE_SET public_headers DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 # Source is cooked by the existing installed shader helper; no runtime compiler dependency.
