@@ -3,6 +3,7 @@
 #include <ludus/foundation/base/types.h>
 
 #include "internal/render_graph_document.h"
+#include "internal/render_graph_layout.h"
 #include "internal/render_graph_node_ports.h"
 #include "internal/render_graph_view_state.h"
 
@@ -30,6 +31,7 @@ class QPaintEvent;
 class QAction;
 class QLabel;
 class QToolBar;
+class QMenu;
 QT_END_NAMESPACE
 
 namespace ludus::editor
@@ -128,6 +130,14 @@ public:
     void FitGraph();
     /// Frame the selected authored nodes; no selection is a no-op. Never edits the draft.
     void FitSelection();
+    /// Add canvas layout actions with current selection availability to a caller-owned menu.
+    /// Actions use the shared MoveRequested operation; keep the menu on the GUI thread.
+    void AddLayoutMenu(QMenu& inoutMenu);
+    /// Request one saved-position edit for selected authored nodes, or all authored nodes when
+    /// shouldArrangeAll is true (Arrange only). Preserves selection and dependency tracing.
+    /// Invalid/insufficient input or an active gesture returns false without an edit. Unchanged
+    /// saved positions are a successful no-op. Arrange frames its targets after synchronous handling.
+    [[nodiscard]] bool ApplyLayout(RenderGraphLayoutOperation operation, bool shouldArrangeAll = false);
     /// Restore 100% magnification around the viewport centre, preserving selection and draft.
     void ResetZoom();
     /// Capture selection, bounded magnification, scene centre and trace mode without changing the view.
@@ -219,6 +229,8 @@ Q_SIGNALS:
     /// Enter the referenced configuration from this authored Subgraph instance.
     void SubgraphActivated(const QString& asset, const QString& configuration, const QString& instance);
     void LinkRejected(const QString& reason);
+    /// Layout was rejected before any document edit; reason is suitable for the status line.
+    void LayoutRejected(const QString& reason);
 
 protected:
     void contextMenuEvent(QContextMenuEvent* event) override;

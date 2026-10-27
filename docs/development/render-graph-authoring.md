@@ -4042,6 +4042,44 @@ dependency order for display only; nothing is written until you move them.
 Configuration output links can be selected and deleted, just like pass connections.
 They edit the configuration output's source rather than adding an ordinary edge.
 
+### Arrange, align and distribute nodes
+
+Right-click the canvas background or a selected node and open **Layout**. These
+commands remain available in Focus Viewport mode with Properties hidden.
+
+- **Auto-arrange Selection** places only selected authored nodes in dependency
+  columns. **Auto-arrange All** places every authored node in the displayed
+  configuration, including inactive, disabled and incomplete nodes.
+- Dependencies between the affected nodes determine columns. Cyclic components
+  stay in one column; node IDs give a stable order within columns. Card sizes
+  determine spacing, so tall cards do not overlap other affected cards. This is
+  a simple dependency layout, without a wire-crossing minimization pass.
+- **Align Left / Horizontal Centres / Right** and **Align Top / Vertical Centres /
+  Bottom** align two or more selected cards against their combined bounds.
+- **Distribute Horizontally / Vertically** spaces three or more selected card
+  centres evenly between the outermost centres. It preserves those endpoints
+  and the perpendicular coordinates; cards can still overlap when the available
+  span is too small. Move the outer cards farther apart before distributing.
+
+Each command writes saved integer layout positions in one undo step. Undo and
+Redo restore the whole operation; Save publishes the positions. A repeated
+command that produces the same saved positions does not create another undo
+step. Selection and upstream/downstream tracing remain active. Auto-arrange
+frames the affected cards afterward; alignment and distribution keep the view.
+
+Selection commands leave unselected nodes fixed and use only dependencies within
+the selection. They do not avoid collisions with those fixed nodes. Configuration
+input/output boxes are automatic interfaces and are never saved or moved by
+these commands. Subgraphs remain single cards; their internal configurations are
+unchanged. Layout does not change fields, connections, execution or build identity.
+
+Arrangement starts at the affected cards' previous top-left bounds. A common
+translation keeps positions within the document's coordinate limits; an
+arrangement too large to fit, or an alignment/distribution outside those limits,
+is rejected without a partial edit. Commands are
+unavailable during a node or connection gesture. Menu actions that need a larger
+selection are disabled.
+
 ### Find existing nodes and trace dependencies
 
 Choose **Find Node…** on the canvas toolbar, or press **Ctrl/Command+F** while the
