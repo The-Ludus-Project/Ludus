@@ -107,6 +107,7 @@ void RenderGraphHistory::Reset()
     mPreparedInstance.clear();
     mPreparedFile.clear();
     mPreparedConfiguration.clear();
+    mShouldRecordDiagnostic = false;
     refresh();
 }
 
@@ -259,6 +260,14 @@ bool RenderGraphHistory::PrepareSubgraph(const QString& instance, const QString&
     return false;
 }
 
+void RenderGraphHistory::PrepareDiagnosticVisit()
+{
+    mShouldRecordDiagnostic = true;
+    mPreparedInstance.clear();
+    mPreparedFile.clear();
+    mPreparedConfiguration.clear();
+}
+
 void RenderGraphHistory::BeforeShow(const QString& file, const QString& configuration)
 {
     if (mIsRestoring == true)
@@ -266,6 +275,8 @@ void RenderGraphHistory::BeforeShow(const QString& file, const QString& configur
         return;
     }
     mPending = {};
+    const bool shouldRecordDiagnostic = mShouldRecordDiagnostic;
+    mShouldRecordDiagnostic = false;
     if (hasConfiguration(file, configuration) == false)
     {
         if (file.isEmpty() == true)
@@ -284,6 +295,10 @@ void RenderGraphHistory::BeforeShow(const QString& file, const QString& configur
     }
     else if (file == mCanvas.GetFile() && configuration == mCanvas.GetConfiguration() && mCurrent >= 0)
     {
+        if (shouldRecordDiagnostic == true)
+        {
+            mPending = mEntries.at(mCurrent);
+        }
         return;
     }
     mPending.Path.append({file, configuration, isSubgraph == true ? mPreparedInstance : QString(), {}, false});

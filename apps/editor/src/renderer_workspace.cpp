@@ -12,6 +12,7 @@
 #include "internal/code_formatter.h"
 #include "internal/item_selection.h"
 #include "internal/render_graph_comments.h"
+#include "internal/render_graph_diagnostics.h"
 #include "internal/render_graph_history.h"
 #include "internal/render_graph_options.h"
 #include "internal/render_graph_pipeline.h"
@@ -968,6 +969,13 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     connect(&mCanvas->GetComments(), &RenderGraphComments::Rejected, this, [this](const QString& reason) {
         mStatus->setText(QStringLiteral("Comment frame - %1").arg(reason));
     });
+    connect(&mCanvas->GetDiagnostics(),
+            &RenderGraphDiagnostics::RefreshRequested,
+            this,
+            &RendererWorkspace::updateCanvasDiagnostics);
+    connect(&mCanvas->GetDiagnostics(), &RenderGraphDiagnostics::DiagnosticRequested, this, [this](int32 row) {
+        static_cast<void>(ActivateDiagnostic(row));
+    });
     connect(mCanvas, &RenderGraphCanvas::SubgraphActivated, this, &RendererWorkspace::openSubgraph);
     connect(&mCanvas->GetHistory(),
             &RenderGraphHistory::LocationRequested,
@@ -1147,6 +1155,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     connect(this, &RendererWorkspace::JobFinished, this, [this]() { refreshWatchedSources(); });
     connect(this, &RendererWorkspace::DocumentChanged, this, [this]() {
         mSourceWatch.SetDocument(mDocument, mProjectRoot);
+        updateCanvasDiagnostics();
     });
     // Save must be available while a table cell or property text editor still owns focus.
     connect(qApp, &QApplication::focusChanged, this, [this](QWidget* previousOrNull, QWidget* currentOrNull) {
@@ -2129,6 +2138,8 @@ void RendererWorkspace::AcceptResult(const RenderGraphJobResult& result)
     mCanvas->ClearDiagnostic();
     mLastResult = result;
     mHasResult = true;
+    mCanvas->GetDiagnostics().SetResult(result);
+    updateCanvasDiagnostics();
     updateSourceDiagnostics(true);
     if (result.IsSuccessful == true)
     {
@@ -2995,7 +3006,9 @@ void RendererWorkspace::updateSourceDiagnostics(bool isNewResult)
             .Line = location.value(QStringLiteral("line")).toInt(),
             .Column = location.value(QStringLiteral("column")).toInt(),
             .Length = location.value(QStringLiteral("length")).toInt(),
-            .Severity = diagnostic.value(QStringLiteral("severity")).toString() == QStringLiteral("warning")
+            .Severity = diagnostic.value(QStringLiteral("severity"))
+                                    .toString()
+                                    .compare(QLatin1StringView("warning"), Qt::CaseInsensitive) == 0
                             ? CodeDiagnosticSeverity::Warning
                             : CodeDiagnosticSeverity::Error,
             .Message = DescribeRenderGraphDiagnostic(diagnostic),
@@ -3022,8 +3035,28 @@ void RendererWorkspace::updateSourceDiagnostics(bool isNewResult)
     mSource->SetDiagnostics(diagnostics, isCurrent);
 }
 
+void RendererWorkspace::updateCanvasDiagnostics()
+{
+    RenderGraphDiagnostics& diagnostics = mCanvas->GetDiagnostics();
+    if (mHasResult == false)
+    {
+        diagnostics.Reset();
+        return;
+    }
+    const QByteArray captured = mLastResult.Request.InputIdentity;
+    RenderGraphDiagnosticFreshness freshness = RenderGraphDiagnosticFreshness::Unverified;
+    if (captured.isEmpty() == false)
+    {
+        const bool isCurrent = captured == getBuildIdentity(mLastResult.Request.Source) &&
+                               captured == getBuildIdentity(RenderGraphSource::Draft);
+        freshness = isCurrent == true ? RenderGraphDiagnosticFreshness::Current : RenderGraphDiagnosticFreshness::Stale;
+    }
+    diagnostics.Refresh(freshness);
+}
+
 void RendererWorkspace::renderStatus()
 {
+    updateCanvasDiagnostics();
     if (mCreation.IsActive() == true)
     {
         mStatus->setText(QStringLiteral("Creating the graph and shader sources in your project..."));
@@ -3969,6 +4002,8 @@ bool RendererWorkspace::ActivateDiagnostic(int32 row)
     {
         return false;
     }
+    updateCanvasDiagnostics();
+    const QJsonObject diagnostic = mLastResult.GetDiagnostic(row);
     const QJsonObject location = getDiagnosticLocation(row);
     const QString source = location.value(QStringLiteral("source")).toString();
     if (location.contains(QStringLiteral("generated")) == true)
@@ -3995,27 +4030,47 @@ bool RendererWorkspace::ActivateDiagnostic(int32 row)
     }
     if (location.contains(QStringLiteral("line")) == true)
     {
+        mCanvas->GetDiagnostics().SetCurrentRow(row);
         openSourceLine(source,
                        location.value(QStringLiteral("line")).toInt(),
                        location.value(QStringLiteral("column")).toInt());
         return true;
     }
+    const QJsonObject target = ResolveRenderGraphDiagnosticTarget(mDocument, location);
+    if (target.isEmpty() == true)
+    {
+        mStatus->setText(QStringLiteral(
+            "This diagnostic's canvas target is no longer available. See Error List or validate again."));
+        return false;
+    }
+    mCanvas->GetDiagnostics().SetCurrentRow(row);
+    mCanvas->GetHistory().PrepareDiagnosticVisit();
     mViews->setCurrentIndex(CANVAS_VIEW);
-    const QString node = location.value(QStringLiteral("node")).toString();
-    const bool isSelected = SelectNode(source,
-                                       location.value(QStringLiteral("configuration")).toString(),
-                                       node == QStringLiteral("input") ? QString() : node);
-    QString description = DescribeRenderGraphDiagnostic(mLastResult.GetDiagnostic(row));
-    if (mLastResult.Request.InputIdentity.isEmpty() == false &&
-        mLastResult.Request.InputIdentity != getBuildIdentity(mLastResult.Request.Source))
+    const QString node = target.value(QStringLiteral("node")).toString();
+    const bool isInterface = node == QStringLiteral("input") || node == QStringLiteral("#outputs");
+    const bool isSelected = SelectNode(target.value(QStringLiteral("source")).toString(),
+                                       target.value(QStringLiteral("configuration")).toString(),
+                                       isInterface == true ? QString() : node);
+    const bool isWarning = diagnostic.value(QStringLiteral("severity"))
+                               .toString()
+                               .compare(QLatin1StringView("warning"), Qt::CaseInsensitive) == 0;
+    QString description = (isWarning == true ? QStringLiteral("Warning: ") : QStringLiteral("Error: ")) +
+                          DescribeRenderGraphDiagnostic(diagnostic);
+    const RenderGraphDiagnosticFreshness freshness = mCanvas->GetDiagnostics().GetFreshness();
+    if (freshness == RenderGraphDiagnosticFreshness::Stale)
     {
         description.prepend(
             QStringLiteral("This report describes an earlier source version. Validate again after edits.\n"));
     }
+    else if (freshness == RenderGraphDiagnosticFreshness::Unverified)
+    {
+        description.prepend(
+            QStringLiteral("This report has no captured source identity; its freshness is unverified.\n"));
+    }
     mStatus->setText(description);
     if (isSelected == true)
     {
-        static_cast<void>(mCanvas->ShowDiagnostic(location, description));
+        static_cast<void>(mCanvas->ShowDiagnostic(target, description, isWarning));
         const QString field = location.value(QStringLiteral("field")).toString();
         if (field.isEmpty() == false && selectedNode().isEmpty() == false)
         {
