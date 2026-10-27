@@ -2,7 +2,7 @@
 if(LUDUS_BUILD_TESTS)
     set_source_files_properties(src/renderer.cpp src/gpu_preview_ray.cpp PROPERTIES COMPILE_DEFINITIONS LUDUS_RENDERER_TEST_READBACK=1)
 endif()
-add_library(ludus_graphics_renderer STATIC src/gpu_denoiser.cpp src/render_graph.cpp src/render_graph_forward.cpp src/render_graph_scene_resources.cpp src/visibility_buffer.cpp src/render_graph_ray.cpp src/render_graph_upscale.cpp src/render_graph_metalfx.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/gpu_preview_camera.cpp src/gpu_preview_graph.cpp src/render_graph_storage.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/lighting.cpp src/static_lighting.cpp src/environment.cpp src/reference_bsdf.cpp src/reference_scene.cpp src/reference_path.cpp src/reference_compute.cpp)
+add_library(ludus_graphics_renderer STATIC src/gpu_denoiser.cpp src/render_graph.cpp src/render_graph_forward.cpp src/render_graph_scene_resources.cpp src/visibility_buffer.cpp src/render_graph_ray.cpp src/render_graph_ray_path.cpp src/render_graph_upscale.cpp src/render_graph_metalfx.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/gpu_preview_camera.cpp src/gpu_preview_graph.cpp src/render_graph_storage.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/lighting.cpp src/static_lighting.cpp src/environment.cpp src/reference_bsdf.cpp src/reference_scene.cpp src/reference_path.cpp src/reference_compute.cpp)
 add_library(Ludus::GraphicsRenderer ALIAS ludus_graphics_renderer)
 include(EngineDenoiserOptions)
 if(LUDUS_ENABLE_OIDN)
@@ -85,7 +85,7 @@ install(DIRECTORY "${default_render_graph}/" DESTINATION "${CMAKE_INSTALL_DATADI
 if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
     # Exercise the production renderer/RHI registry with the existing deterministic backend.
-    add_executable(ludus_renderer_tests tests/renderer_tests.cpp tests/world_grid_tests.cpp tests/reference_backend.cpp src/gpu_denoiser.cpp src/render_graph.cpp src/render_graph_forward.cpp src/render_graph_scene_resources.cpp src/visibility_buffer.cpp src/render_graph_ray.cpp src/render_graph_upscale.cpp src/render_graph_metalfx.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/gpu_preview_camera.cpp src/gpu_preview_graph.cpp src/render_graph_storage.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/lighting.cpp src/static_lighting.cpp src/environment.cpp src/reference_bsdf.cpp src/reference_scene.cpp src/reference_path.cpp src/reference_compute.cpp tests/views_tests.cpp tests/static_lighting_tests.cpp tests/render_graph_tests.cpp tests/render_graph_activation_tests.cpp tests/render_graph_pool_tests.cpp tests/scene_shader_tests.cpp
+    add_executable(ludus_renderer_tests tests/renderer_tests.cpp tests/world_grid_tests.cpp tests/reference_backend.cpp src/gpu_denoiser.cpp src/render_graph.cpp src/render_graph_forward.cpp src/render_graph_scene_resources.cpp src/visibility_buffer.cpp src/render_graph_ray.cpp src/render_graph_ray_path.cpp src/render_graph_upscale.cpp src/render_graph_metalfx.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/gpu_preview_camera.cpp src/gpu_preview_graph.cpp src/render_graph_storage.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/lighting.cpp src/static_lighting.cpp src/environment.cpp src/reference_bsdf.cpp src/reference_scene.cpp src/reference_path.cpp src/reference_compute.cpp tests/views_tests.cpp tests/static_lighting_tests.cpp tests/render_graph_tests.cpp tests/render_graph_ray_path_decode_tests.cpp tests/render_graph_activation_tests.cpp tests/render_graph_pool_tests.cpp tests/scene_shader_tests.cpp
         ../rhi/src/rhi.cpp ../rhi/src/device.cpp ../rhi/src/dxil_container.cpp ../rhi/src/gpu_scope.cpp ../rhi/src/gpu_pass_timing_buffer.cpp ../rhi/src/profile.cpp ../rhi/src/raster.cpp ../rhi/tests/reference_raster.cpp ../rhi/src/ray_unsupported.cpp)
     target_include_directories(ludus_renderer_tests PRIVATE include ../rhi/include ../rhi/src ../rhi/tests "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
     target_link_libraries(ludus_renderer_tests PRIVATE Ludus::FoundationStrings Ludus::RenderGraphFormat Ludus::Platform Ludus::FoundationContainers Ludus::FoundationMath Ludus::FoundationThreading Ludus::FoundationThreadingProfiling Ludus::FoundationTime Ludus::Resources Ludus::FoundationHash Catch2::Catch2WithMain)
@@ -402,4 +402,25 @@ if(TARGET ludus_renderer_render_tests)
         LUDUS_RG3_STORAGE_RAY_DIRECTORY="${storage_ray_package_directory}")
     add_test(NAME ludus_render_graph_ray_pixels COMMAND ludus_render_graph_ray_tests)
     set_tests_properties(ludus_render_graph_ray_pixels PROPERTIES LABELS "renderer;gpu;ray" TIMEOUT 60)
+    # Ray path capture: each node form's diagnostic LUDUS_RAY_PATH_CAPTURE variant is compiled
+    # from the same staged snapshot as its plain header, which the bit-identity checks compare.
+    add_executable(ludus_render_graph_ray_path_tests tests/render_graph_ray_path_tests.cpp)
+    target_link_libraries(ludus_render_graph_ray_path_tests PRIVATE Ludus::GraphicsRenderer
+        Ludus::FoundationTime Catch2::Catch2WithMain)
+    ludus_apply_project_defaults(ludus_render_graph_ray_path_tests)
+    ludus_enable_test_exceptions(ludus_render_graph_ray_path_tests)
+    ludus_compile_renderer_shaders(TARGET ludus_render_graph_ray_path_tests SHADERS renderer_composite)
+    set(ray_path_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/ray_path")
+    set(ray_path_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/ray_path")
+    file(COPY "${ray_path_source}/" DESTINATION "${ray_path_staged}" PATTERN "*.in" EXCLUDE)
+    configure_file("${ray_path_source}/main.lushader.json.in" "${ray_path_staged}/main.lushader.json" @ONLY)
+    set(raytracing_staged "${ray_staged}")
+    foreach(ray_path_form IN ITEMS raytracing scene_ray visibility ordered_ray ray_path)
+        ludus_compile_render_graph(TARGET ludus_render_graph_ray_path_tests NAME rg2_${ray_path_form}_plain
+            MANIFEST "${${ray_path_form}_staged}/main.lushader.json")
+        ludus_compile_render_graph(TARGET ludus_render_graph_ray_path_tests NAME rg2_${ray_path_form}_capture
+            MANIFEST "${${ray_path_form}_staged}/main.lushader.json" RAY_PATH_CAPTURE)
+    endforeach()
+    add_test(NAME ludus_render_graph_ray_path_capture COMMAND ludus_render_graph_ray_path_tests)
+    set_tests_properties(ludus_render_graph_ray_path_capture PROPERTIES LABELS "renderer;gpu;ray" TIMEOUT 60)
 endif()

@@ -6,6 +6,7 @@
 #include "internal/render_graph_metalfx.h"
 #include "internal/render_graph_pool.h"
 #include "internal/render_graph_ray.h"
+#include "internal/render_graph_ray_path.h"
 #include "internal/render_graph_scene_resources.h"
 #include "internal/render_graph_upscale.h"
 
@@ -44,6 +45,8 @@ constexpr usize BOX_CORNER_COUNT = 8;
 constexpr usize BOX_INDEX_COUNT = 36;
 constexpr usize FLAT_INPUT_COUNT = 6;
 constexpr usize MAX_RETAINED_SCENES = 3;
+/// Frozen ray compute ABI, visibility textures, structured storage and the diagnostic capture slot.
+constexpr usize RAY_COMPUTE_BINDING_CAPACITY = LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + format::MAX_STORAGE_BUFFERS + 1;
 constexpr usize MAX_COMPONENTS = 4;
 /// Largest packed uniform bytes of one technique: every slot at its largest block.
 constexpr usize MAX_TECHNIQUE_UNIFORM_BYTES = format::UNIFORM_SLOT_COUNT * format::MAX_UNIFORM_BLOCK_BYTES;
@@ -865,6 +868,11 @@ struct RenderGraph::State final
     bool HasRaySetup = false;
     StaticArray<bool, format::TECHNIQUE_COUNT> IsBound{};
     RenderGraphPrograms Programs{};
+    /// Capture-variant RayCompute bindings with the appended capture slot; Programs borrows them.
+    // RasterBinding initializes Visibility to Both for every nested element.
+    StaticArray<rhi::RasterBinding, RAY_COMPUTE_BINDING_CAPACITY>
+        RayComputeBindings{}; // NOLINT(bugprone-invalid-enum-default-initialization)
+    internal::RenderGraphRayPathCapture RayPathCapture;
     StaticArray<internal::RenderGraphUpscaleProgram, UPSCALE_TARGET_COUNT> UpscalePrograms{};
     StaticArray<bool, UPSCALE_TARGET_COUNT> HasUpscalePrograms{};
     /// Packed bytes of the distinct value sets of the technique being prepared; reused per Update.
@@ -1498,6 +1506,82 @@ void RenderGraph::Reset() noexcept
 {
     mState.Reset();
 }
+Status RenderGraph::RequestRayPathCapture(const RayPathCaptureDescription& description) noexcept
+{
+    if (mState.Get() == nullptr)
+    {
+        return Status::InvalidState;
+    }
+    State& state = *mState;
+    if (state.Programs.HasRayPathCapture == false)
+    {
+        return Status::Unsupported;
+    }
+    const Status admitted = CheckDevice(state.Device);
+    if (admitted != Status::Ready)
+    {
+        return admitted;
+    }
+    if (state.IsReady == false || state.HasOpenFrame == true || state.HasExternalRecording == true ||
+        state.Current.Get() != nullptr || state.Pending.Get() != nullptr)
+    {
+        return Status::InvalidState;
+    }
+    // Records carry the cooked callback-set index; map it back to the one plan pass using it.
+    internal::RayPathPassTable passes{};
+    for (uint32& pass : passes)
+    {
+        pass = format::ABSENT;
+    }
+    for (usize pass = 0; pass < state.Header.PassCount; ++pass)
+    {
+        const format::Pass& operation = state.Passes[pass];
+        if (operation.Program != format::Technique::RayTracing)
+        {
+            continue;
+        }
+        if (operation.RayProgram >= passes.GetSize() || passes[operation.RayProgram] != format::ABSENT)
+        {
+            return Status::Unsupported;
+        }
+        passes[operation.RayProgram] = static_cast<uint32>(pass);
+    }
+    return state.RayPathCapture.Request(state.Device, description, passes);
+}
+Status RenderGraph::PollRayPathCapture(RayPathCaptureReport& outReport) noexcept
+{
+    if (mState.Get() == nullptr)
+    {
+        return Status::InvalidState;
+    }
+    State& state = *mState;
+    if (state.RayPathCapture.IsRequested() == false || state.HasOpenFrame == true || state.HasExternalRecording == true)
+    {
+        return Status::InvalidState;
+    }
+    const Status admitted = CheckDevice(state.Device);
+    if (admitted != Status::Ready)
+    {
+        return admitted;
+    }
+    if (state.Producer.IsNull() == false)
+    {
+        const Status completed = rhi::GetStatus(state.Device, state.Producer);
+        if (completed != Status::Ready)
+        {
+            return completed;
+        }
+    }
+    return state.RayPathCapture.Poll(outReport);
+}
+BorrowedView<const RayPathEvent> RenderGraph::GetRayPathEvents() const noexcept
+{
+    return mState.Get() != nullptr ? mState->RayPathCapture.GetEvents() : BorrowedView<const RayPathEvent>{};
+}
+BorrowedView<const RayPathSummary> RenderGraph::GetRayPathSummaries() const noexcept
+{
+    return mState.Get() != nullptr ? mState->RayPathCapture.GetSummaries() : BorrowedView<const RayPathSummary>{};
+}
 Status RenderGraph::Initialize(rhi::DeviceHandle device,
                                const RenderGraphPlan& sourcePlan,
                                const RenderGraphPrograms& programs,
@@ -1700,6 +1784,31 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     candidate->Header = plan.Description;
     candidate->Target = target;
     candidate->Programs = programs;
+    if (programs.HasRayPathCapture == true)
+    {
+        // Runtime-package stage metadata never names the diagnostic slot; generated headers reflect it.
+        const std::span<const rhi::RasterBinding> bindings = programs.RayCompute.Bindings;
+        const bool hasCaptureBinding =
+            bindings.empty() == false && bindings.back().Binding == LUDUS_RAY_PATH_CAPTURE_BINDING;
+        const usize count = bindings.size() + (hasCaptureBinding == true ? 0 : 1);
+        if (isUsed[static_cast<usize>(format::Technique::RayTracing)] == false ||
+            count > candidate->RayComputeBindings.GetSize())
+        {
+            return Status::InvalidDescription;
+        }
+        for (usize i = 0; i < bindings.size(); ++i)
+        {
+            candidate->RayComputeBindings[i] = bindings[i];
+        }
+        if (hasCaptureBinding == false)
+        {
+            candidate->RayComputeBindings[count - 1] = {LUDUS_RAY_PATH_CAPTURE_BINDING,
+                                                        rhi::RasterBindingKind::StorageReadWrite,
+                                                        rhi::RasterVisibility::Compute,
+                                                        LUDUS_RAY_PATH_CAPTURE_WORD_BYTES};
+        }
+        candidate->Programs.RayCompute.Bindings = {candidate->RayComputeBindings.GetData(), count};
+    }
     if (plan.StorageBuffers.IsValid() == false || plan.StorageBuffers.GetSize() > format::MAX_STORAGE_BUFFERS ||
         (plan.StorageBuffers.IsEmpty() == false &&
          (isUsed[static_cast<usize>(format::Technique::RayTracing)] == false ||
@@ -2137,6 +2246,12 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     {
         return admitted != Status::Ready ? admitted : Status::NotReady;
     }
+    // A capture graph traces one extraction: a replacement would record samples [0, N) again.
+    if (state.Programs.HasRayPathCapture == true && (state.RayPathCapture.IsRequested() == false ||
+                                                     state.Current.Get() != nullptr || state.Pending.Get() != nullptr))
+    {
+        return Status::InvalidState;
+    }
     if (meshes.IsValid() == false || items.IsValid() == false || cameras.IsValid() == false ||
         meshes.GetSize() > format::MAX_MESHES || items.GetSize() > format::MAX_ITEMS ||
         cameras.GetSize() != state.Header.CameraCount || sceneRevision == 0 ||
@@ -2550,7 +2665,8 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
                 : BorrowedView<const GpuPreviewGraphBuffer>{},
             operation.AccumulationSamples,
             operation.ToneMappingExposure,
-            operation.DenoisingQuality};
+            operation.DenoisingQuality,
+            state.RayPathCapture.GetBuffer()};
         const Status created =
             candidate->RayPasses[pass].Initialize(state.Contexts[static_cast<usize>(operation.Program)],
                                                   {},

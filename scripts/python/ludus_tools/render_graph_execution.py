@@ -506,7 +506,8 @@ def _runtime_contents(path, configuration):
     build.require(not has_ray or visibility_profiles == {has_visibility}, 'Configuration', 'visibility',
                   'ray visibility inputs must match scene_interface.visibility_buffer')
     persistent = ray.TECHNIQUE in selected_techniques and any(recipe.get('persistent_buffers', False) for recipe in ray_recipes)
-    return {'forward_lit': has_forward, 'persistent_buffers': persistent, 'visibility_buffer': has_visibility, 'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
+    ray_path_capture = ray.TECHNIQUE in selected_techniques and any(recipe.get('ray_path_capture', False) for recipe in ray_recipes)
+    return {'forward_lit': has_forward, 'persistent_buffers': persistent, 'ray_path_capture': ray_path_capture, 'visibility_buffer': has_visibility, 'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
             'cameras': cameras, 'camera_targets': camera_targets, 'artifacts': artifacts,
             'uniform_values': value_count, 'bindings': bindings, 'blocks': blocks, 'fields': fields,
             'storage_buffers': storage_buffers, 'uniform_interface': uniform_interface,
@@ -644,6 +645,8 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
         lines.append('    result.HasSceneShaderInterface = true;')
     if contents.get('visibility_buffer', False):
         lines.append('    result.HasVisibilityBuffer = true;')
+    if contents.get('ray_path_capture', False):
+        lines.append('    result.HasRayPathCapture = true;')
     for program_name in (*PROGRAM_CODES, *forward.SUPPORT):
         for stage in (forward.SUPPORT[program_name][1] if program_name in forward.SUPPORT else ('compute', 'vertex', 'fragment') if program_name == 'RayTracing' else ('vertex', 'fragment')):
             member = program_member(program_name, stage)
@@ -809,6 +812,8 @@ def encode_resource_names(contents):
 
 def _cook_runtime(path, destination, *, configuration='Default'):
     contents = _runtime_contents(path, configuration)
+    build.require(not contents['ray_path_capture'], 'Capability', 'ray path capture',
+                  'diagnostic ray path capture builds are never cooked into runtime packages')
     data = encode_runtime_package(contents)
     destination = Path(destination).absolute()
     destination.parent.mkdir(parents=True, exist_ok=True)

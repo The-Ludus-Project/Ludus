@@ -4700,14 +4700,13 @@ Status Renderer::prepareGpuPreviewCamera(GpuPreview handle, const ViewDescriptio
     }
     internal::GpuPreviewRecord& job = *jobOrNull;
     const usize pixels = usize(job.Width) * job.Height;
-    StaticArray<rhi::RasterBindingResource,
-                LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + content::render_graph_format::MAX_STORAGE_BUFFERS>
-        bindings{{{0, job.Parameters, 0, sizeof(internal::GpuPreviewUniform)},
-                  {1, job.Data, 0, job.DataBytes},
-                  {2, job.Accumulation, 0, pixels * LUDUS_GPU_PREVIEW_ACCUMULATION_BYTES},
-                  {LUDUS_GPU_PREVIEW_COLORS_BINDING, job.Colors, 0, pixels * LUDUS_GPU_PREVIEW_VECTOR_BYTES},
-                  {LUDUS_GPU_PREVIEW_TEXELS_BINDING, job.Texels, 0, job.TexelBytes},
-                  { .Binding = LUDUS_GPU_PREVIEW_RAY_SCENE_BINDING, .Scene = job.NativeScene }}};
+    StaticArray<rhi::RasterBindingResource, internal::GPU_PREVIEW_COMPUTE_BINDING_CAPACITY> bindings{
+        {{0, job.Parameters, 0, sizeof(internal::GpuPreviewUniform)},
+         {1, job.Data, 0, job.DataBytes},
+         {2, job.Accumulation, 0, pixels * LUDUS_GPU_PREVIEW_ACCUMULATION_BYTES},
+         {LUDUS_GPU_PREVIEW_COLORS_BINDING, job.Colors, 0, pixels * LUDUS_GPU_PREVIEW_VECTOR_BYTES},
+         {LUDUS_GPU_PREVIEW_TEXELS_BINDING, job.Texels, 0, job.TexelBytes},
+         { .Binding = LUDUS_GPU_PREVIEW_RAY_SCENE_BINDING, .Scene = job.NativeScene }}};
     const usize baseBindingCount =
         LUDUS_GPU_PREVIEW_BINDING_COUNT - (mState->GpuPreview->HasNativeRayQueries == true ? 0 : 1);
     for (usize i = 0; i < job.Storage.GetCount(); ++i)
@@ -4724,13 +4723,21 @@ Status Renderer::prepareGpuPreviewCamera(GpuPreview handle, const ViewDescriptio
     }
     if (mState->GpuPreview->HasVisibilityBuffer == true)
     {
-        const usize firstTexture = mState->GpuPreview->ComputeBindingCount - LUDUS_GRAPH_VISIBILITY_TEXTURE_COUNT;
+        const usize firstTexture = mState->GpuPreview->ComputeBindingCount - LUDUS_GRAPH_VISIBILITY_TEXTURE_COUNT -
+                                   (mState->GpuPreview->HasRayPathCapture == true ? 1 : 0);
         bindings[firstTexture] = { .Binding = LUDUS_GRAPH_VISIBILITY_BINDING, .Texture = job.VisibilityView };
         bindings[firstTexture + 1] =
         {
             .Binding = LUDUS_GRAPH_VISIBILITY_DEPTH_BINDING,
             .Texture = job.VisibilityDepthView,
         };
+    }
+    if (mState->GpuPreview->HasRayPathCapture == true)
+    {
+        bindings[mState->GpuPreview->ComputeBindingCount - 1] = {LUDUS_RAY_PATH_CAPTURE_BINDING,
+                                                                 job.RayPathCapture.Buffer,
+                                                                 0,
+                                                                 job.RayPathCapture.Size};
     }
     if (sizeof(internal::GpuPreviewUniform) > mState->GpuPreview->Options.GpuByteBudget - mState->GpuPreview->GpuBytes)
     {

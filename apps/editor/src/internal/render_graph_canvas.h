@@ -33,6 +33,7 @@ QT_END_NAMESPACE
 
 namespace ludus::editor
 {
+class RenderGraphNavigation;
 /// Connection domain shown on the canvas (docs/architecture/render-graph-authoring.md,
 /// "Node and connection contracts"). Shader functions live in build manifests, not here.
 enum class RenderGraphDomain : foundation::uint8
@@ -238,6 +239,7 @@ private:
     void updateLinkFeedback(QPointF position);
     void fitBounds(const QRectF& bounds);
     void updateFramingControls();
+    void rebuildNavigation();
     void updateSemanticZoom(bool shouldForce = false);
     /// Scroll the view so its content moves by a viewport-pixel delta; never edits the draft.
     void panBy(QPoint delta);
@@ -246,6 +248,7 @@ private:
     const RenderGraphDocument& mDocument;
     QGraphicsScene* mScene;
     QToolBar* mFramingToolbar;
+    RenderGraphNavigation* mNavigation;
     QAction* mFitGraphAction;
     QAction* mFitSelectionAction;
     QLabel* mZoomLabel;

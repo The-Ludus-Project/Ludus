@@ -1220,7 +1220,10 @@ compute/raster execution. See the [authoring workflow](../development/render-gra
 
 ## Ray path inspection (proposed)
 
-**Status: design for review. Nothing in this section is implemented.**
+**Status: the renderer and builder slice is implemented; the editor workflow is
+not.** The [authoring guide](../development/render-graph-authoring.md#capture-ray-paths-for-inspection)
+documents usage. [Decisions](#ray-path-inspection-decisions) records the answers to
+the review's open questions and how the first slice differs from this design.
 
 Ray path inspection records the rays that a chosen ray-producing node actually
 traces for selected pixels. It freezes them in world space and draws them over the
@@ -1413,15 +1416,33 @@ implemented.
   reports capture as unavailable while raster navigation keeps working.
 - Warning-clean builds, ASan/UBSan, format, tidy and source-policy checks pass.
 
-### Open questions
+<a id="ray-path-inspection-decisions"></a>
 
-1. Option A or B for the instrumented variant.
-2. Default sample count, and the largest pixel rectangle for the first slice.
-3. Whether rejected candidates are counts only, or bounded per-candidate records
-   with distance and triangle.
-4. Whether the inspection view uses the built-in raster preview or the project's
-   authored raster fallback package.
-5. Whether to show the frozen graph image on the frozen camera's image plane.
+### Decisions
+
+The review's open questions were decided as follows:
+
+1. **Option A.** The diagnostic `LUDUS_RAY_PATH_CAPTURE` variant is compiled from
+   the same snapshot on demand. Runtime packages never carry it: `cook_runtime`
+   refuses capture builds.
+2. **16 samples, one pixel** for the first slice.
+3. **Counts only** for rejected candidates.
+4. The inspection view uses the **built-in raster preview**.
+5. The frozen graph image is **not** shown on the frozen camera's image plane.
+
+The implemented slice differs from the design text in these ways:
+
+- The capture runs in its own diagnostic `RenderGraph` instance, initialized with
+  the capture variant. `RequestRayPathCapture` precedes that graph's first
+  `Update`, and the capture buffer is shared by every ray pass. The live graph is
+  never involved, so its drawable output cannot change.
+- Records carry the cooked callback-set index (`Sampling.z` pass bits), which the
+  host maps to the plan pass. A request is `Unsupported` when two ray passes share
+  one callback set.
+- RenderGraph scene inputs have no masked materials yet, so the alpha-rejection
+  counter is covered by decoder tests only.
+- How the editor obtains the variant's stage artifacts, given that runtime
+  packages refuse it, is left to the editor slice.
 
 ## Forward scene generations
 

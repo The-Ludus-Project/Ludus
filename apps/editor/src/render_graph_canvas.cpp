@@ -1,5 +1,6 @@
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_canvas_feedback.h"
+#include "internal/render_graph_navigation.h"
 #include "internal/render_graph_node_ports.h"
 #include "internal/render_graph_pipeline_node.h"
 #include "internal/render_graph_resources.h"
@@ -58,6 +59,7 @@ constexpr QRgb SELECTION_COLOR = 0xFFFFD25A;
 constexpr QRgb EDITABLE_EDGE_COLOR = 0xFFB4BAC4;
 constexpr float64 FOCUSED_EDGE_WIDTH = 3;
 constexpr float64 UNRELATED_EDGE_OPACITY = 0.18;
+constexpr float64 UNRELATED_NODE_OPACITY = 0.25;
 constexpr float64 NODE_WIDTH = 190;
 constexpr float64 FRAME_PADDING = 40;
 constexpr float64 HEADER_HEIGHT = 26;
@@ -560,6 +562,7 @@ struct RenderGraphCanvas::NodeView final
     QGraphicsSimpleTextItem* SizeLabelOrNull = nullptr;
     QString ActivityText;
     QString CompactActivityText;
+    float64 ActivityOpacity = 1;
     bool IsMovable = true;
 };
 
@@ -631,6 +634,20 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
     connect(mFitGraphAction, &QAction::triggered, this, &RenderGraphCanvas::FitGraph);
     connect(mFitSelectionAction, &QAction::triggered, this, &RenderGraphCanvas::FitSelection);
     connect(resetZoom, &QAction::triggered, this, &RenderGraphCanvas::ResetZoom);
+    mNavigation = new RenderGraphNavigation(*mFramingToolbar, *this);
+    connect(mNavigation, &RenderGraphNavigation::TraceChanged, this, &RenderGraphCanvas::updateConnectionHighlight);
+    connect(mNavigation, &RenderGraphNavigation::NodeRequested, this, [this](const QString& identity) {
+        const NodeView* viewOrNull = mNodes.value(identity, nullptr);
+        if (viewOrNull == nullptr || viewOrNull->IsMovable == false)
+        {
+            return;
+        }
+        mHoveredPort.clear();
+        SelectNode(identity);
+        notifySelection();
+        Q_EMIT NodeSelected(identity);
+        FitSelection();
+    });
     updateFramingControls();
     updateSemanticZoom();
     setToolTip(QStringLiteral(
@@ -654,6 +671,10 @@ RenderGraphCanvas::~RenderGraphCanvas()
 void RenderGraphCanvas::ShowConfiguration(const QString& file, const QString& configuration)
 {
     const bool isSame = file == mFile && configuration == mConfiguration;
+    if (isSame == false)
+    {
+        mNavigation->SetTraceDirection(RenderGraphTraceDirection::None);
+    }
     mFile = file;
     mConfiguration = configuration;
     const bool wasEmpty = mNodes.isEmpty();
@@ -864,6 +885,7 @@ void RenderGraphCanvas::Rebuild()
     const QJsonObject record = configuration();
     if (record.isEmpty() == true)
     {
+        rebuildNavigation();
         updateFramingControls();
         updateSemanticZoom(true);
         return;
@@ -1088,7 +1110,6 @@ void RenderGraphCanvas::Rebuild()
         }
     }
     updateEdges();
-    refreshFeedback();
     for (const QString& node : selected)
     {
         if (mNodes.contains(node) == true)
@@ -1096,6 +1117,8 @@ void RenderGraphCanvas::Rebuild()
             mNodes.value(node)->Frame->setSelected(true);
         }
     }
+    rebuildNavigation();
+    refreshFeedback();
     updateSelection();
     QRectF nodeBounds;
     for (const NodeView* view : std::as_const(mNodes))
@@ -1147,11 +1170,12 @@ void RenderGraphCanvas::refreshFeedback()
     {
         const RenderGraphActivityFeedback state = activity.value(view->Id);
         const bool isInterface = view->Domain == RenderGraphDomain::Interface;
-        view->Frame->setOpacity(
+        view->ActivityOpacity =
             (state.Activity == RenderGraphActivity::Inactive || state.Activity == RenderGraphActivity::Disabled) &&
                     isInterface == false
                 ? INACTIVE_OPACITY
-                : 1);
+                : 1;
+        view->Frame->setOpacity(view->ActivityOpacity);
         QString explanation = isInterface == true
                                   ? QStringLiteral("Configuration interface. Library inspection assumes all exposed "
                                                    "outputs are requested; caller instances can use fewer.")
@@ -1545,19 +1569,40 @@ void RenderGraphCanvas::updateSelection()
     updateFramingControls();
 }
 
+void RenderGraphCanvas::rebuildNavigation()
+{
+    QVector<RenderGraphNavigationNode> nodes;
+    for (const NodeView* view : std::as_const(mNodes))
+    {
+        nodes.append({view->Id, view->Kind, view->IsMovable});
+    }
+    QVector<RenderGraphNavigationEdge> edges;
+    for (const EdgeView* edge : std::as_const(mEdges))
+    {
+        edges.append({GetEndpointNode(edge->From), GetEndpointNode(edge->To)});
+    }
+    mNavigation->SetGraph(nodes, edges);
+    mNavigation->SetSelection(GetSelectedNodes());
+}
+
 void RenderGraphCanvas::updateConnectionHighlight()
 {
     const QStringList selected = GetSelectedNodes();
-    const bool hasHoveredPort = mHoveredPort.isEmpty() == false;
-    const bool hasFocus = hasHoveredPort == true || selected.isEmpty() == false;
+    mNavigation->SetSelection(selected);
+    const bool hasTrace = mNavigation->GetTraceDirection() != RenderGraphTraceDirection::None;
+    const RenderGraphDependencyTrace& trace = mNavigation->GetTrace();
+    const bool hasHoveredPort = hasTrace == false && mHoveredPort.isEmpty() == false;
+    const bool hasFocus = hasTrace == true || hasHoveredPort == true || selected.isEmpty() == false;
     QSet<QString> connected;
     QSet<QString> highlightedInputs;
     QSet<QString> highlightedOutputs;
-    for (EdgeView* edge : std::as_const(mEdges))
+    for (qsizetype index = 0; index < mEdges.size(); ++index)
     {
+        EdgeView* edge = mEdges.at(index);
         const QString source = GetEndpointNode(edge->From);
         const QString destination = GetEndpointNode(edge->To);
-        const bool isHighlighted = hasHoveredPort == true
+        const bool isHighlighted = hasTrace == true ? trace.Edges.contains(index)
+                                   : hasHoveredPort == true
                                        ? (mIsHoveredOutput == true ? edge->From : edge->To) == mHoveredPort
                                        : selected.contains(source) == true || selected.contains(destination) == true;
         const bool isSelected = edge->Path->data(0).toBool();
@@ -1569,7 +1614,7 @@ void RenderGraphCanvas::updateConnectionHighlight()
             highlightedInputs.insert(edge->To);
         }
         const NodeView* destinationOrNull = mNodes.value(destination, nullptr);
-        const float64 activityOpacity = destinationOrNull == nullptr ? 1 : destinationOrNull->Frame->opacity();
+        const float64 activityOpacity = destinationOrNull == nullptr ? 1 : destinationOrNull->ActivityOpacity;
         edge->Path->setOpacity(isHighlighted == true || isSelected == true ? 1
                                : hasFocus == true                          ? UNRELATED_EDGE_OPACITY
                                                                            : activityOpacity);
@@ -1586,6 +1631,9 @@ void RenderGraphCanvas::updateConnectionHighlight()
     for (NodeView* view : std::as_const(mNodes))
     {
         const bool isHighlighted = view->Frame->isSelected() == true || connected.contains(view->Id) == true;
+        view->Frame->setOpacity(view->ActivityOpacity * (hasTrace == true && trace.Nodes.contains(view->Id) == false
+                                                             ? UNRELATED_NODE_OPACITY
+                                                             : 1));
         view->Frame->setPen(
             QPen(isHighlighted == true ? QColor::fromRgba(SELECTION_COLOR) : QColor::fromRgba(NODE_BORDER_COLOR),
                  isHighlighted == true ? FOCUSED_EDGE_WIDTH : NODE_BORDER_WIDTH));
@@ -2181,6 +2229,13 @@ void RenderGraphCanvas::keyPressEvent(QKeyEvent* event)
     }
     if (event->key() == Qt::Key_Escape)
     {
+        if (mNavigation->GetTraceDirection() != RenderGraphTraceDirection::None && mLinkPreviewOrNull == nullptr &&
+            mIsDragging == false && mIsBoxSelecting == false && mIsPanning == false)
+        {
+            mNavigation->SetTraceDirection(RenderGraphTraceDirection::None);
+            event->accept();
+            return;
+        }
         cancelLink();
         mIsBoxSelecting = false;
         mSelectionBox->hide();

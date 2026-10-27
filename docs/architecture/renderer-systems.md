@@ -2029,7 +2029,9 @@ output directory; generated/machine-local evidence is not source-controlled.
 Visibility queries use the same native traversal and candidate alpha acceptance as
 closest-hit queries, but consume only committed hit/miss status. They skip committed
 primitive/range remapping, distance and barycentric reads. The closest-hit result
-and preview ABI remain unchanged. Explicit software graph traversal retains its
+and preview ABI remain unchanged. Ray-path capture variants retain full shadow-hit
+extraction so diagnostic records still contain committed identity and distance;
+normal rendering keeps the visibility-only fast path. Explicit software graph traversal retains its
 existing hit/miss/failure contract. The diagnostic recipe
 `renderer_gpu_preview_visibility_full` shares the production integrator but restores
 full committed-hit extraction for shadows; it exists for reproducible A/B evidence.

@@ -109,6 +109,11 @@ struct RenderGraphPrograms final
     bool HasVisibilityBuffer = false;
     bool HasPersistentRayBuffers = false; ///< Extended ordered ray ABI with two persistent uint4 storage slots.
     bool HasSceneShaderInterface = false; ///< Opt-in material/light/query callback ABI, encoded in cooked stage roles.
+    /// RayCompute is the diagnostic ray path capture variant (`LUDUS_RAY_PATH_CAPTURE`) of the same
+    /// source snapshot: it also binds one read-write capture buffer at slot 10. RenderGraph appends
+    /// that binding when RayCompute.Bindings omit it. Such a graph requires RequestRayPathCapture
+    /// before its first Update and accepts exactly one extraction. Runtime packages never carry this variant.
+    bool HasRayPathCapture = false;
 };
 /// Attach the frozen triangle-ray compute/image interface metadata to a cooked stage.
 /// Does not compile, allocate or change artifact bytes. Used by generated headers and
@@ -130,6 +135,88 @@ void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription,
 /// @param role One of the six forward StageRole values; other roles leave the description unchanged.
 void SetRenderGraphForwardInterface(rhi::RasterShaderDescription& inoutDescription,
                                     content::render_graph_format::StageRole role) noexcept;
+/// Triangle, instance and primitive value of a ray path event without a committed hit.
+inline constexpr foundation::uint32 RAY_PATH_INVALID_INDEX = 0xffffffffU;
+/// Default number of progressive samples a ray path capture records.
+inline constexpr foundation::uint32 DEFAULT_RAY_PATH_SAMPLES = 16;
+/// Largest number of progressive samples one ray path capture records.
+inline constexpr foundation::uint32 MAX_RAY_PATH_SAMPLES = 256;
+/// Default event record capacity of one ray path capture.
+inline constexpr foundation::uint32 DEFAULT_RAY_PATH_RECORDS = 1024;
+/// Largest event record capacity of one ray path capture. The whole capture buffer must
+/// also fit the device's rhi::LifetimeCapabilities::TransferBytes, so it is read back at once.
+inline constexpr foundation::uint32 MAX_RAY_PATH_RECORDS = 2048;
+/// Selection of one ray path capture: one launch pixel of the ray passes' color extent and
+/// the progressive samples [0, SampleCount). This first slice captures a single pixel.
+struct RayPathCaptureDescription final
+{
+    foundation::uint32 PixelX = 0; ///< Launch pixel column; a pixel outside a pass's extent records nothing.
+    foundation::uint32 PixelY = 0; ///< Launch pixel row, top row zero.
+    /// Progressive samples recorded, 1..MAX_RAY_PATH_SAMPLES. A pass whose authored Accumulate
+    /// limit is lower traces, and so records, only that many samples.
+    foundation::uint32 SampleCount = DEFAULT_RAY_PATH_SAMPLES;
+    /// Event records kept, 1..MAX_RAY_PATH_RECORDS. Later events beyond it are counted as dropped.
+    foundation::uint32 RecordCapacity = DEFAULT_RAY_PATH_RECORDS;
+};
+/// Which kernel operation produced a ray path event.
+enum class RayPathEventKind : foundation::uint8
+{
+    Closest,        ///< A closest-hit query: camera ray, bounce or authored TraceClosest.
+    Visibility,     ///< An any-hit visibility (shadow) query; Hit means occluded.
+    RasterFirstHit, ///< A visibility-buffer first hit replacing the camera query; no traversal.
+};
+/// Result of one ray path event.
+enum class RayPathOutcome : foundation::uint8
+{
+    Miss,    ///< No accepted triangle in the submitted interval.
+    Hit,     ///< A committed triangle; its identity fields are valid.
+    Failure, ///< The failed-triangle sentinel, an invalid submitted ray or a failed raster reconstruction.
+};
+/// One decoded Trace() call, or raster first hit, of a captured invocation. Values are exactly
+/// what the kernel submitted and committed; driver BVH traversal is not observable.
+struct RayPathEvent final
+{
+    foundation::uint32 PixelX = 0;   ///< Launch pixel column.
+    foundation::uint32 PixelY = 0;   ///< Launch pixel row.
+    foundation::uint32 Sample = 0;   ///< Progressive sample index within the capture's history epoch.
+    foundation::uint32 Pass = 0;     ///< Index into the plan's Passes of the ray pass that traced it.
+    foundation::uint32 Sequence = 0; ///< Zero-based order within the invocation of that pixel, sample and pass.
+    RayPathEventKind Kind = RayPathEventKind::Closest;     ///< Query kind.
+    RayPathOutcome Outcome = RayPathOutcome::Miss;         ///< Query result.
+    foundation::math::Vector3 OriginWorld{};               ///< Submitted origin, world meters.
+    foundation::math::Vector3 DirectionWorld{};            ///< Submitted direction as passed to the query.
+    foundation::float32 MinDistanceWorld = 0;              ///< Submitted interval start, world meters.
+    foundation::float32 MaxDistanceWorld = 0;              ///< Submitted interval end, world meters.
+    foundation::float32 HitDistanceWorld = 0;              ///< Committed hit distance; MaxDistanceWorld for a miss.
+    foundation::uint32 Triangle = RAY_PATH_INVALID_INDEX;  ///< Packed scene triangle of a hit.
+    foundation::uint32 Instance = RAY_PATH_INVALID_INDEX;  ///< Extraction instance index of a hit.
+    foundation::uint32 Primitive = RAY_PATH_INVALID_INDEX; ///< Mesh-local primitive of a hit.
+    foundation::uint64 SourceId = 0;                       ///< RenderGraphItem::SourceId of a hit, otherwise zero.
+    foundation::uint32 RejectedCandidates = 0;             ///< Candidates refused by the alpha test before the commit.
+};
+/// End state of one captured invocation (pixel, sample and pass).
+struct RayPathSummary final
+{
+    foundation::uint32 PixelX = 0;        ///< Launch pixel column.
+    foundation::uint32 PixelY = 0;        ///< Launch pixel row.
+    foundation::uint32 Sample = 0;        ///< Progressive sample index.
+    foundation::uint32 Pass = 0;          ///< Index into the plan's Passes.
+    foundation::uint32 EventCount = 0;    ///< Events the invocation produced, including dropped ones.
+    foundation::math::Vector3 Radiance{}; ///< Sample radiance passed to accumulation, before display conversion.
+    bool HasFailed = false;               ///< A failure event or an invalid (non-finite/negative) sample.
+    /// Recorded sequences are not contiguous from zero to EventCount: capacity dropped part of the
+    /// path. A truncated path must never be presented as complete.
+    bool IsTruncated = false;
+};
+/// Counters of the latest decoded ray path capture.
+struct RayPathCaptureReport final
+{
+    foundation::uint32 RecordCapacity = 0;     ///< Requested event record capacity.
+    foundation::uint32 StoredRecords = 0;      ///< Decoded events, at most RecordCapacity.
+    foundation::uint32 DroppedRecords = 0;     ///< Events lost because capacity was exhausted.
+    foundation::uint32 WrittenSummaries = 0;   ///< Captured invocations so far.
+    foundation::uint32 TruncatedSummaries = 0; ///< Captured invocations with dropped events.
+};
 /// Declared geometry interface of an extracted draw item.
 enum class RenderGraphLayout : foundation::uint8
 {
@@ -509,6 +596,35 @@ public:
     [[nodiscard]] rhi::RasterStatus GetResourceAllocation(foundation::uint32 resource,
                                                           rhi::TextureHandle& outTexture,
                                                           rhi::TextureAspect& outAspect) const noexcept;
+    /// Select the pixel and samples recorded by a graph initialized with RenderGraphPrograms::HasRayPathCapture.
+    /// Call between frames after Initialize reaches Ready and before the first Update; each graph
+    /// instance captures once. Allocates the capture buffer within the device's transfer budget and binds
+    /// it into every ray pass prepared by later Updates. Run the capture in its own graph instance, so the
+    /// live graph's drawable scene and output never change; render it from the frozen camera until the
+    /// requested samples complete, then call PollRayPathCapture. See "Ray path inspection" in
+    /// docs/architecture/render-graph-authoring.md.
+    /// @param description Pixel, sample count and record capacity; copied before return.
+    /// @return Ready or Pending once the buffer is accepted; Unsupported when RayCompute is not the capture
+    /// variant or two ray passes share one cooked callback set; InvalidState when uninitialized, not Ready,
+    /// in a frame, already requested or after a scene was accepted; InvalidDescription for a sample count
+    /// or record capacity outside its range; CapacityExceeded when the buffer exceeds TransferBytes.
+    /// Failure leaves the graph unchanged.
+    [[nodiscard]] rhi::RasterStatus RequestRayPathCapture(const RayPathCaptureDescription& description) noexcept;
+    /// Read back and decode the capture without waiting. The first call after the last producer completes
+    /// starts a bounded readback and returns Pending; a later call returns Ready with the decoded events,
+    /// sorted by pixel, sample, pass and sequence, and the per-invocation summaries. Calling again starts a
+    /// new readback of the same buffer, so callers may poll while more samples render. Owner thread, between
+    /// frames. Never changes drawable output.
+    /// @param outReport Receives the decoded counters on Ready; unchanged otherwise.
+    /// @return Ready after decoding; Pending while the producer or readback is outstanding; InvalidState
+    /// without a request or during an open/unconfirmed frame; a device or readback failure otherwise,
+    /// which keeps the previously decoded capture.
+    [[nodiscard]] rhi::RasterStatus PollRayPathCapture(RayPathCaptureReport& outReport) noexcept;
+    /// Borrow the events of the last Ready PollRayPathCapture until the next poll, request or Reset.
+    [[nodiscard]] foundation::BorrowedView<const RayPathEvent> GetRayPathEvents() const noexcept;
+    /// Borrow the summaries of the last Ready PollRayPathCapture, sorted by pixel, sample and pass,
+    /// until the next poll, request or Reset.
+    [[nodiscard]] foundation::BorrowedView<const RayPathSummary> GetRayPathSummaries() const noexcept;
     /// Detach graph resources. Device stays alive, no open frame or foreign export consumer.
     /// GPU uses retire in RHI; does not wait or destroy another graph generation.
     void Reset() noexcept;

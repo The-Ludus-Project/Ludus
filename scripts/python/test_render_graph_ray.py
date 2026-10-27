@@ -637,6 +637,47 @@ class RayCompilerAcceptance(unittest.TestCase):
             self.assertNotIn('GetGraphTraversalStrategy', rebuilt_wrapper)
             self.assertEqual(shader_bytes, {path: path.read_bytes() for path in shader_bytes})
 
+    def test_ray_path_capture_variant_has_its_own_identity_and_is_never_cooked(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'source'
+            shutil.copytree(ROOT / 'tests/sdk_consumer/rg2/ray_path', source)
+            manifest = source / 'main.lushader.json'
+            manifest.write_text((source / 'main.lushader.json.in').read_text().replace(
+                '@RG2_TEST_PROFILES@', '["metal"]'))
+            original = {path.relative_to(source): path.read_bytes() for path in source.rglob('*') if path.is_file()}
+            options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
+                           spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+            plain = build.build_package(manifest, root / 'build', **options)
+            plain_descriptor = json.loads((Path(plain['package']) / 'package.json').read_text())
+            capture = build.build_package(manifest, root / 'build', ray_path_capture=True, **options)
+            package = Path(capture['package'])
+            descriptor = json.loads((package / 'package.json').read_text())
+            # Only the linked ray kernel is recompiled; the flag joins its stage cache identity.
+            self.assertEqual(1, capture['cache_misses'])
+            recipe = next(recipe for recipe in descriptor['recipes'] if recipe['technique'] == ray.TECHNIQUE)
+            self.assertTrue(recipe['ray_path_capture'])
+            self.assertNotIn('ray_path_capture', next(recipe for recipe in plain_descriptor['recipes']
+                                                      if recipe['technique'] == ray.TECHNIQUE))
+            wrappers = [path.read_text() for path in (package / 'programs').glob('*/wrapper.slang')]
+            self.assertTrue(any(text.startswith('#define LUDUS_RAY_PATH_CAPTURE 1\n') for text in wrappers))
+            contents = execution._runtime_contents(package, 'Default')
+            self.assertTrue(contents['ray_path_capture'])
+            compute = next(artifact for (name, stage, target), artifact in contents['artifacts'].items()
+                           if name == 'RayTracing' and stage == 'compute')
+            entries = {entry['binding']: entry for entry in compute['descriptor']['interface']['entries']}
+            self.assertEqual(('StorageReadWrite', ray.RAY_PATH_CAPTURE_STRIDE),
+                             (entries[ray.RAY_PATH_CAPTURE_SLOT]['kind'], entries[ray.RAY_PATH_CAPTURE_SLOT]['size']))
+            header = root / 'capture.h'
+            execution.emit_runtime(package, header, name='Capture')
+            self.assertIn('result.HasRayPathCapture = true;', header.read_text())
+            destination = root / 'capture.lurgrt'
+            with self.assertRaises(ToolingError):
+                execution.cook_runtime(package, destination)
+            self.assertFalse(destination.exists())
+            self.assertEqual(0, build.build_package(manifest, root / 'build', **options)['cache_misses'])
+            self.assertEqual(original, {path.relative_to(source): path.read_bytes() for path in source.rglob('*') if path.is_file()})
+
     def test_builtin_visibility_templates_keep_the_static_host_interface(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

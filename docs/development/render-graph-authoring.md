@@ -2487,6 +2487,105 @@ compute/raster storage, host uploads, buffer exports and history across extracti
 replacement remain unsupported. The [two-reservoir GPU fixture](../../tests/sdk_consumer/rg2/storage_ray/reservoir.slang)
 checks alternating writes, persistence and replacement reset.
 
+### Capture ray paths for inspection
+
+Ray path capture records the rays that `RayTracingPipeline` nodes (triangle and
+scene callback profiles, with or without a visibility buffer) and scene
+`ComputePipeline` nodes trace for one pixel. The
+[design](../architecture/render-graph-authoring.md#ray-path-inspection-proposed)
+explains what the kernel can observe. This first slice is the renderer and
+builder part. The editor's frozen-path overlay, free-camera inspection and
+inspector panel are not implemented yet.
+
+**Build the capture variant.** Capture uses a separate diagnostic kernel, compiled
+from the same source snapshot with `LUDUS_RAY_PATH_CAPTURE` defined. It adds one
+read-write `uint` buffer at slot 10. Ordinary kernels, numeric plans and runtime
+packages are unchanged and pay nothing. In CMake, compile a second header from the
+same manifest:
+
+```cmake
+ludus_compile_render_graph(TARGET my_tool NAME my_graph_capture
+    MANIFEST "${staged}/main.lushader.json" RAY_PATH_CAPTURE)
+```
+
+`RAY_PATH_CAPTURE` cannot be combined with `RUNTIME_PACKAGE`. Python callers pass
+`ray_path_capture=True` to `render_graph_build.build_package`. The flag is part of
+the ray kernel's stage cache identity, including for native shader worker builds,
+so the plain kernel stays cached. `emit_runtime` writes a header whose
+`MakePrograms()` sets `RenderGraphPrograms::HasRayPathCapture`. `cook_runtime`
+refuses capture builds, so a shipping package never contains the variant.
+
+**Run a capture.** Use a second `RenderGraph` for the capture, not the live graph.
+Its output is diagnostic, and the live graph's drawable scene and image never
+change:
+
+```cpp
+renderer::RenderGraph capture;
+// Initialize with the plan and the capture header's programs, then Poll until Ready.
+renderer::RayPathCaptureDescription selection;
+selection.PixelX = pixelX; // A launch pixel of the ray passes' color extent.
+selection.PixelY = pixelY;
+selection.SampleCount = renderer::DEFAULT_RAY_PATH_SAMPLES; // 16
+status = capture.RequestRayPathCapture(selection);          // Before the first Update.
+// Update with the frozen camera and the current extraction, then Render until
+// SampleCount samples have completed.
+renderer::RayPathCaptureReport report;
+status = capture.PollRayPathCapture(report); // Pending: readback started.
+// ... next frame or event-loop turn ...
+status = capture.PollRayPathCapture(report); // Ready: decoded.
+const foundation::BorrowedView<const renderer::RayPathEvent> events = capture.GetRayPathEvents();
+for (foundation::usize index = 0; index < events.GetSize(); ++index) { /* events[index] */ }
+```
+
+`RequestRayPathCapture` must come after `Initialize` reaches Ready and before the
+first `Update`. `Update` returns `InvalidState` until a capture is requested, and
+again after the graph has accepted its one extraction: a replacement would record
+the same samples twice. Start another capture with a new graph. A
+graph whose `RayCompute` is not the capture variant returns `Unsupported`.
+`PollRayPathCapture` never waits. It returns Pending until the last producer
+completes and the bounded readback arrives. Calling it again starts a new
+readback, so you can poll while more samples render.
+
+Each `RayPathEvent` is one `Trace()` call: a camera ray, bounce, `TraceClosest`,
+or `TestVisibility` shadow ray. A visibility-buffer launch also records one
+`RasterFirstHit` event, which has no traversal. Events contain the submitted
+origin, direction and interval, the outcome (`Miss`, `Hit` or `Failure`), the
+hit distance and identity (triangle, instance, primitive and
+`RenderGraphItem::SourceId`), and the number of candidates the alpha test
+rejected. Events are sorted by pixel, sample, plan pass and sequence. `Pass`
+indexes the plan's `Passes`, so it maps to node names through the runtime
+package's pass names. Each `RayPathSummary` reports one invocation's event count,
+failure state and the sample radiance passed to accumulation.
+
+Capture records progressive samples `[0, SampleCount)` of the capture graph's
+history. A pass with a lower authored **Accumulate** limit traces only that many
+samples. When `RecordCapacity` (default 1,024, at most 2,048) runs out, earlier
+records are kept and `DroppedRecords` counts the rest. Summaries have their own
+region, so they are never dropped. A summary whose recorded sequences are not
+exactly `0..EventCount-1` has `IsTruncated` set; never present a truncated path as
+complete. The whole buffer must fit the device's transfer budget
+(`rhi::LifetimeCapabilities::TransferBytes`), otherwise the request returns
+`CapacityExceeded`.
+
+Current limits:
+
+- One pixel per capture. The buffer layout already stores a rectangle.
+- Two ray passes that share one cooked callback set cannot be told apart, so the
+  request returns `Unsupported`.
+- Driver BVH traversal (box tests, node visits and order) is not observable.
+  The built-in GPU preview integrator is not instrumented.
+- RenderGraph scene inputs have no masked materials yet, so no graph produces
+  alpha-rejected candidates today. The counter is decoded and tested, but no
+  scene can exercise it end to end yet.
+- Native ray queries are required. Without them, `Initialize` of the capture
+  variant fails like any native ray kernel; raster navigation is unaffected.
+
+The capture keeps the plain kernel's output. The
+[capture GPU tests](../../modules/graphics/renderer/tests/render_graph_ray_path_tests.cpp)
+compare the exported image of the plain and capture graphs byte for byte on every
+frame. They also check known hits, misses, occluded and unoccluded visibility
+rays, raster first hits, pass mapping and overflow truncation for each node form.
+
 ## Start customizing the renderer
 
 You don't need to create a render graph first. The engine ships a default one, and
@@ -3942,6 +4041,44 @@ show the value type. Nodes without a `layout` position are arranged by
 dependency order for display only; nothing is written until you move them.
 Configuration output links can be selected and deleted, just like pass connections.
 They edit the configuration output's source rather than adding an ordinary edge.
+
+### Find existing nodes and trace dependencies
+
+Choose **Find Node…** on the canvas toolbar, or press **Ctrl/Command+F** while the
+canvas has focus. The popup searches authored nodes in the current configuration
+by name or kind, including inactive, disabled and incomplete nodes. Every word
+must match either field; matching ignores case. Exact names appear first, then
+name prefixes, then other matches, with names sorted within each group. Empty
+search lists every authored node. Configuration interface boxes are not search
+results because they are not authored-node selections.
+
+Use Up/Down to choose a result and Enter or a double-click to select and frame
+it. The selection also updates Graph sources and Properties. Search does not
+preview selection as you type: Escape or clicking outside closes the popup and
+keeps the previous view and selection. No matches leaves the popup open on Enter.
+Edits, rebuilds and configuration switches close stale results. Text editing in
+Properties or source editors keeps its own Find shortcut.
+
+Select one or more nodes, then choose **Upstream** or **Downstream** on the canvas
+toolbar. Upstream follows every producer recursively; downstream follows every
+consumer. Multiple selections trace the union of their paths. The active button
+stays checked; its tooltip reports the number of nodes and connections. Matching
+wires and ports are emphasized, and unrelated nodes and wires are faded without
+moving or hiding them. Hovering a port does not replace an explicit trace.
+
+Tracing describes authored connections in the displayed configuration, including
+configuration input/output links. It includes inactive and disabled branches;
+their activity labels and dimming remain independent. A trace is not validation
+or proof of execution. Subgraph nodes stay opaque: enter their configuration to
+inspect its internal paths. Cycles terminate safely and missing node endpoints
+are ignored.
+
+The trace follows selection changes and refreshes after edits, undo and rebuilds.
+Clearing the selection, deleting all its roots, or switching configurations clears
+it. **Clear Trace**, or Escape on the canvas while no drag/link gesture is active,
+restores normal selection/hover highlighting and keeps the selected nodes. Escape in
+Find Node cancels only the search. Search and tracing never change draft bytes,
+authored positions, port geometry or undo history.
 
 ### Read canvas feedback
 
