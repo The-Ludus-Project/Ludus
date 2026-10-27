@@ -1193,6 +1193,9 @@ The renderer-owned [ReSTIR DI template](../development/render-graph-authoring.md
 uses that storage contract and manifest-owned typed shader constants. Template
 creation uses the shared transactional backend; Properties and canvas controls
 edit the same draft manifest and require Save/rebuild before activation.
+A proposed `ris-projected-solid-angle` template follows the four-pass
+`veach-guibas-mis` shape for many-area-light direct lighting; see its
+[estimator review](many-area-light-sampling-reference-review.md#template-ris-projected-solid-angle).
 ### Structured storage in the native ray profile
 
 Native triangle-ray jobs admit two named structured buffers in user slots 6/7.
