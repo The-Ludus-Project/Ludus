@@ -1794,6 +1794,150 @@ void RenderGraphCanvas::UpdateDrag(QPointF delta)
     updateEdges();
 }
 
+void RenderGraphCanvas::AddLayoutMenu(QMenu& inoutMenu)
+{
+    QMenu* layout = inoutMenu.addMenu(QStringLiteral("Layout"));
+    layout->setObjectName(QStringLiteral("renderGraphLayoutMenu"));
+    const qsizetype selectedCount = GetSelectedNodes().size();
+    qsizetype authoredCount = 0;
+    for (const NodeView* view : std::as_const(mNodes))
+    {
+        if (view->IsMovable == true)
+        {
+            ++authoredCount;
+        }
+    }
+    const bool canEdit =
+        mFile.isEmpty() == false && mIsDragging == false && mIsBoxSelecting == false && mLinkFrom.isEmpty() == true;
+    const auto addAction = [this, layout, canEdit](const QString& label,
+                                                   const char* actionName,
+                                                   RenderGraphLayoutOperation operation,
+                                                   bool hasEnoughNodes,
+                                                   bool shouldArrangeAll = false) {
+        QAction* action = layout->addAction(label);
+        action->setObjectName(QString::fromLatin1(actionName));
+        action->setEnabled(canEdit == true && hasEnoughNodes == true);
+        connect(action, &QAction::triggered, this, [this, operation, shouldArrangeAll]() {
+            static_cast<void>(ApplyLayout(operation, shouldArrangeAll));
+        });
+    };
+    addAction(QStringLiteral("Auto-arrange Selection"),
+              "renderGraphArrangeSelection",
+              RenderGraphLayoutOperation::Arrange,
+              selectedCount > 0);
+    addAction(QStringLiteral("Auto-arrange All"),
+              "renderGraphArrangeAll",
+              RenderGraphLayoutOperation::Arrange,
+              authoredCount > 0,
+              true);
+    layout->addSeparator();
+    addAction(QStringLiteral("Align Left"),
+              "renderGraphAlignLeft",
+              RenderGraphLayoutOperation::AlignLeft,
+              selectedCount >= 2);
+    addAction(QStringLiteral("Align Horizontal Centres"),
+              "renderGraphAlignHorizontalCentre",
+              RenderGraphLayoutOperation::AlignHorizontalCentre,
+              selectedCount >= 2);
+    addAction(QStringLiteral("Align Right"),
+              "renderGraphAlignRight",
+              RenderGraphLayoutOperation::AlignRight,
+              selectedCount >= 2);
+    addAction(QStringLiteral("Align Top"),
+              "renderGraphAlignTop",
+              RenderGraphLayoutOperation::AlignTop,
+              selectedCount >= 2);
+    addAction(QStringLiteral("Align Vertical Centres"),
+              "renderGraphAlignVerticalCentre",
+              RenderGraphLayoutOperation::AlignVerticalCentre,
+              selectedCount >= 2);
+    addAction(QStringLiteral("Align Bottom"),
+              "renderGraphAlignBottom",
+              RenderGraphLayoutOperation::AlignBottom,
+              selectedCount >= 2);
+    layout->addSeparator();
+    constexpr qsizetype MINIMUM_DISTRIBUTION_COUNT = 3;
+    addAction(QStringLiteral("Distribute Horizontally"),
+              "renderGraphDistributeHorizontal",
+              RenderGraphLayoutOperation::DistributeHorizontal,
+              selectedCount >= MINIMUM_DISTRIBUTION_COUNT);
+    addAction(QStringLiteral("Distribute Vertically"),
+              "renderGraphDistributeVertical",
+              RenderGraphLayoutOperation::DistributeVertical,
+              selectedCount >= MINIMUM_DISTRIBUTION_COUNT);
+}
+
+bool RenderGraphCanvas::ApplyLayout(RenderGraphLayoutOperation operation, bool shouldArrangeAll)
+{
+    if (mIsDragging == true || mLinkFrom.isEmpty() == false || mIsBoxSelecting == true ||
+        (shouldArrangeAll == true && operation != RenderGraphLayoutOperation::Arrange))
+    {
+        return false;
+    }
+    const QStringList selected = GetSelectedNodes();
+    QVector<RenderGraphLayoutNode> nodes;
+    for (const NodeView* view : std::as_const(mNodes))
+    {
+        if (view->IsMovable == true && (shouldArrangeAll == true || selected.contains(view->Id) == true))
+        {
+            nodes.append({view->Id, QRectF(view->Frame->pos(), view->Frame->rect().size())});
+        }
+    }
+    QVector<RenderGraphLayoutEdge> edges;
+    for (const EdgeView* edge : std::as_const(mEdges))
+    {
+        edges.append({GetEndpointNode(edge->From), GetEndpointNode(edge->To)});
+    }
+    QVector<RenderGraphNodePosition> positions;
+    if (ComputeRenderGraphLayout(nodes, edges, operation, positions) == false)
+    {
+        Q_EMIT LayoutRejected(
+            QStringLiteral("Select enough authored nodes with valid card bounds; the resulting layout "
+                           "must fit within the saved coordinate limits."));
+        return false;
+    }
+    const QJsonArray saved =
+        configuration().value(QStringLiteral("layout")).toObject().value(QStringLiteral("positions")).toArray();
+    QVector<RenderGraphNodePosition> changed;
+    for (const RenderGraphNodePosition& position : std::as_const(positions))
+    {
+        bool isSaved = false;
+        for (const QJsonValueConstRef value : saved)
+        {
+            const QJsonObject record = value.toObject();
+            if (record.value(QStringLiteral("node")).toString() == position.Node &&
+                record.value(QStringLiteral("x")).toInt() == position.X &&
+                record.value(QStringLiteral("y")).toInt() == position.Y)
+            {
+                isSaved = true;
+                break;
+            }
+        }
+        if (isSaved == false)
+        {
+            changed.append(position);
+        }
+    }
+    if (changed.isEmpty() == false)
+    {
+        Q_EMIT MoveRequested(changed);
+    }
+    if (operation == RenderGraphLayoutOperation::Arrange)
+    {
+        QRectF bounds;
+        for (const RenderGraphLayoutNode& node : std::as_const(nodes))
+        {
+            const NodeView* viewOrNull = mNodes.value(node.Identity, nullptr);
+            if (viewOrNull != nullptr)
+            {
+                bounds = bounds.united(QRectF(viewOrNull->Frame->pos(), viewOrNull->Frame->rect().size()));
+            }
+        }
+        fitBounds(bounds);
+    }
+    return true;
+}
+
 void RenderGraphCanvas::EndDrag()
 {
     if (mIsDragging == false)

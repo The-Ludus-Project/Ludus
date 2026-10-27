@@ -949,6 +949,9 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     connect(mCanvas, &RenderGraphCanvas::LinkRejected, this, [this](const QString& reason) {
         mStatus->setText(QStringLiteral("Link rejected - %1").arg(reason));
     });
+    connect(mCanvas, &RenderGraphCanvas::LayoutRejected, this, [this](const QString& reason) {
+        mStatus->setText(QStringLiteral("Layout rejected - %1").arg(reason));
+    });
     connect(mCanvas, &RenderGraphCanvas::SubgraphActivated, this, &RendererWorkspace::openSubgraph);
     connect(&mCanvas->GetHistory(),
             &RenderGraphHistory::LocationRequested,
@@ -3497,6 +3500,7 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition, bool i
         copy->setEnabled(mSelectedNodes.isEmpty() == false);
         connect(copy, &QAction::triggered, this, [this]() { static_cast<void>(CopySelectedNodes()); });
     }
+    mCanvas->AddLayoutMenu(menu);
     const QJsonObject node = isNodeContext == false || mSelectedNodes.size() > 1 ? QJsonObject{} : selectedNode();
     if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Subgraph"))
     {
