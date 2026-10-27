@@ -1153,12 +1153,13 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/internal/render_graph_shader_creation.h
         src/render_graph_shader_cleanup.cpp src/render_graph_shader_creation.cpp src/render_graph_scene_authoring.cpp src/render_graph_scene_bundle.cpp src/render_graph_techniques.cpp src/render_graph_pipeline_node.cpp src/render_graph_upscale_node.cpp
         src/render_graph_configuration_interface.cpp
+        src/internal/render_graph_comment_frame.h src/render_graph_comment_frame.cpp
         src/render_graph_live_build.cpp src/internal/render_graph_live_build.h)
     set_target_properties(ludus_render_graph_live_build_tests PROPERTIES AUTOMOC ON)
     target_include_directories(ludus_render_graph_live_build_tests PRIVATE src)
     target_compile_definitions(ludus_render_graph_live_build_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
     target_link_libraries(ludus_render_graph_live_build_tests PRIVATE Qt6::Core Qt6::Widgets Qt6::Test
-        Ludus::FoundationContainers Catch2::Catch2)
+        Ludus::FoundationContainers Ludus::FoundationMath Catch2::Catch2)
     ludus_apply_project_defaults(ludus_render_graph_live_build_tests)
     ludus_enable_test_exceptions(ludus_render_graph_live_build_tests)
     add_test(NAME ludus_render_graph_live_build_tests COMMAND ludus_render_graph_live_build_tests)
