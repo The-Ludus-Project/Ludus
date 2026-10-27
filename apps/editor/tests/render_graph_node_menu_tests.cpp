@@ -21,6 +21,7 @@
 #include <QMenu>
 #include <QPlainTextEdit>
 #include <QPoint>
+#include <QPointF>
 #include <QStringList>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -97,6 +98,20 @@ void ObserveCreateMenu(const QString& kind, CreateMenuObservation& outObservatio
         selectedOrNull->trigger();
     }
 }
+
+/// Opens the canvas context menu on empty background beyond the authored items.
+void RequestBackgroundMenu(RenderGraphCanvas& inoutCanvas)
+{
+    // Inspector widths, font metrics and graph auto-fit can put a node or port at a
+    // fixed pixel such as (1, 1), so pick actual background instead.
+    const QPointF background = inoutCanvas.scene()->itemsBoundingRect().bottomRight() + QPointF(100, 100);
+    inoutCanvas.centerOn(background);
+    const QPoint position = inoutCanvas.mapFromScene(background);
+    REQUIRE(inoutCanvas.viewport()->rect().contains(position) == true);
+    REQUIRE(inoutCanvas.itemAt(position) == nullptr);
+    QContextMenuEvent context(QContextMenuEvent::Mouse, position, inoutCanvas.viewport()->mapToGlobal(position));
+    QCoreApplication::sendEvent(inoutCanvas.viewport(), &context);
+}
 } // namespace
 
 TEST_CASE("Create Node menus author every supported type inside an empty library", "[editor][render-graph][node-menu]")
@@ -151,16 +166,7 @@ TEST_CASE("Create Node menus author every supported type inside an empty library
         }
         else
         {
-            RenderGraphCanvas& canvas = workspace.GetCanvas();
-            // Inspector widths and graph auto-fit can put a port at (1, 1). Pick
-            // actual background beyond the authored items instead of a fixed pixel.
-            const QPointF background = canvas.scene()->itemsBoundingRect().bottomRight() + QPointF(100, 100);
-            canvas.centerOn(background);
-            const QPoint position = canvas.mapFromScene(background);
-            REQUIRE(canvas.viewport()->rect().contains(position) == true);
-            REQUIRE(canvas.itemAt(position) == nullptr);
-            QContextMenuEvent context(QContextMenuEvent::Mouse, position, canvas.viewport()->mapToGlobal(position));
-            QCoreApplication::sendEvent(canvas.viewport(), &context);
+            RequestBackgroundMenu(workspace.GetCanvas());
         }
         REQUIRE(observation.HasMenu == true);
         CHECK(observation.IsEnabled == true);
@@ -209,10 +215,13 @@ TEST_CASE("Create Node menu cancellation preserves the current text draft", "[ed
     QTemporaryDir project;
     const QString package = MakePackage(project);
     RendererWorkspace workspace({});
+    workspace.resize(CREATION_WORKSPACE_WIDTH, CREATION_WORKSPACE_HEIGHT);
     workspace.SetProject(project.path(), 1);
     REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
     workspace.SetLivePreview(false);
     static_cast<void>(workspace.SelectNode(ROOT_GRAPH, QStringLiteral("Default"), {}));
+    workspace.show();
+    QCoreApplication::processEvents();
     SECTION("cancel menu") {}
     SECTION("accepted Source edit")
     {
@@ -224,10 +233,7 @@ TEST_CASE("Create Node menu cancellation preserves the current text draft", "[ed
     const uint64 revision = workspace.GetDocument().GetRevision();
     CreateMenuObservation observation;
     QTimer::singleShot(0, &workspace, [&observation]() { ObserveCreateMenu({}, observation); });
-    RenderGraphCanvas& canvas = workspace.GetCanvas();
-    const QPoint position(1, 1);
-    QContextMenuEvent context(QContextMenuEvent::Mouse, position, canvas.viewport()->mapToGlobal(position));
-    QCoreApplication::sendEvent(canvas.viewport(), &context);
+    RequestBackgroundMenu(workspace.GetCanvas());
     REQUIRE(observation.HasMenu == true);
     CHECK(observation.IsEnabled == true);
     CHECK(observation.HasSelection == false);
