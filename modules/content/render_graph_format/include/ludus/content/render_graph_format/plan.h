@@ -209,8 +209,10 @@ struct Camera final
 // NOLINTNEXTLINE(performance-enum-size): versioned numeric field has an explicit width.
 enum class RayTraversal : foundation::uint32
 {
-    NativeQuery,  ///< Native inline queries require an enabled hardware ray profile.
-    TriangleLoop, ///< Ordinary GPU compute intersects packed World triangles; no native ray resources.
+    NativeQuery,      ///< Native inline queries require an enabled hardware ray profile.
+    TriangleLoop,     ///< Ordinary GPU compute intersects packed World triangles; no native ray resources.
+    Custom,           ///< Authored compute traversal supplies closest and visibility queries; no native ray resources.
+    HardwarePipeline, ///< Native ray-generation/hit/miss stages with hardware BVH traversal.
 };
 /// One retained scene raster or triangle ray operation; indices are checked before GPU setup.
 struct Pass final

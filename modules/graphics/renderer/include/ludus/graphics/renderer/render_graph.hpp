@@ -89,9 +89,11 @@ struct RenderGraphPrograms final
     rhi::RasterShaderDescription MaskedColorFragment{}; ///< Authored masked color entry with its coverage function.
     rhi::RasterShaderDescription MaskedDepthVertex{};   ///< Authored MaskedDepthOnly geometry entry.
     rhi::RasterShaderDescription MaskedDepthFragment{}; ///< Separately authored void masked coverage entry.
-    rhi::RasterShaderDescription RayCompute{};          ///< Linked authored triangle ray functions and BVH traversal.
-    rhi::RasterShaderDescription RayImageVertex{};      ///< Renderer-owned GPU-produced pixel presentation.
-    rhi::RasterShaderDescription RayImageFragment{};    ///< Renderer-owned color copy; no host pixel transfer.
+    /// Native Metal ray stages; borrowed through graph preparation like RayCompute. Empty when unused.
+    rhi::RasterShaderDescription NativeRayStages{};
+    rhi::RasterShaderDescription RayCompute{};       ///< Linked authored triangle ray functions and BVH traversal.
+    rhi::RasterShaderDescription RayImageVertex{};   ///< Renderer-owned GPU-produced pixel presentation.
+    rhi::RasterShaderDescription RayImageFragment{}; ///< Renderer-owned color copy; no host pixel transfer.
     /// Independent raster stage pairs in numeric technique order after the legacy roles.
     /// Index (Program - LEGACY_TECHNIQUE_COUNT) * TECHNIQUE_STAGE_COUNT selects a
     /// vertex description; the following entry is its fragment description. All

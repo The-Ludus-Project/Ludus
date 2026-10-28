@@ -595,19 +595,64 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
     }
     if (name == QStringLiteral("invocation") && UsesRayLaunch(mNode) == true)
     {
+        const QJsonObject invocation = mNode.value(name).toObject();
+        QComboBox* execution = new QComboBox(this);
+        execution->setObjectName(QStringLiteral("renderGraphRayInvocationType"));
+        execution->setProperty("renderGraphField", QStringLiteral("invocation.type"));
+        execution->addItem(QStringLiteral("Compute pipeline"), QStringLiteral("Compute"));
+        if (mNode.value(QStringLiteral("kind")).toString() == QStringLiteral("RayTracingPipeline"))
+        {
+            execution->addItem(QStringLiteral("Hardware RT pipeline"), QStringLiteral("RayTracing"));
+        }
+        execution->setCurrentIndex(
+            execution->findData(invocation.value(QStringLiteral("type")).toString(QStringLiteral("Compute"))));
+        execution->setToolTip(QStringLiteral("Select how this logical ray node executes. Hardware RT requires a "
+                                             "native ray-stage backend and never silently lowers to compute."));
+        outForm.addRow(QStringLiteral("Invocation type"), execution);
         QComboBox* traversal = new QComboBox(this);
         traversal->setObjectName(QStringLiteral("renderGraphTraversal"));
         traversal->setProperty("renderGraphField", QStringLiteral("invocation.traversal"));
         traversal->addItem(QStringLiteral("Automatic"), QString());
         traversal->addItem(QStringLiteral("Triangle loop"), QStringLiteral("TriangleLoop"));
         traversal->addItem(QStringLiteral("Native ray query"), QStringLiteral("NativeQuery"));
+        traversal->addItem(QStringLiteral("Custom traversal"), QStringLiteral("Custom"));
         const QString selection = mNode.value(name).toObject().value(QStringLiteral("traversal")).toString();
         traversal->setCurrentIndex(traversal->findData(selection));
         traversal->setToolTip(QStringLiteral(
-            "Shared ray callbacks default to triangle intersections in a compute pipeline and native queries in "
-            "a ray pipeline. Existing compute kernels default to native queries. Triangle loop needs ordinary compute; "
-            "native queries require enabled ray hardware. The choice applies to surface and visibility queries."));
-        connect(traversal, &QComboBox::currentIndexChanged, this, [this, traversal](int32 index) {
+            "Compute invocation uses native hardware BVH queries, the engine triangle loop, or your traversal source. "
+            "Automatic on an explicit Compute invocation uses the triangle loop. Legacy graphs retain their prior "
+            "default. Hardware RT invocation owns its traversal."));
+        QLineEdit* source = new QLineEdit(invocation.value(QStringLiteral("traversal_source")).toString(), this);
+        source->setObjectName(QStringLiteral("renderGraphTraversalSource"));
+        source->setProperty("renderGraphField", QStringLiteral("invocation.traversal_source"));
+        source->setPlaceholderText(QStringLiteral("Package-relative .slang traversal source"));
+        source->setToolTip(QStringLiteral("Defines Hit TraceWorld(float3 originWorld, float3 directionWorld, "
+                                          "float nearDistanceWorld, float farDistanceWorld, bool isVisibility). "
+                                          "The same source handles closest and visibility queries."));
+        traversal->setEnabled(execution->currentData().toString() == QStringLiteral("Compute"));
+        source->setEnabled(traversal->isEnabled() == true && selection == QStringLiteral("Custom"));
+        connect(execution, &QComboBox::currentIndexChanged, this, [this, execution, traversal, source]() {
+            QJsonObject candidate = mNode.value(QStringLiteral("invocation")).toObject();
+            const bool isCompute = execution->currentData().toString() == QStringLiteral("Compute");
+            candidate.insert(QStringLiteral("type"), execution->currentData().toString());
+            if (isCompute == false)
+            {
+                candidate.remove(QStringLiteral("traversal"));
+                candidate.remove(QStringLiteral("traversal_source"));
+            }
+            else
+            {
+                candidate.insert(QStringLiteral("traversal"), QStringLiteral("TriangleLoop"));
+            }
+            const QSignalBlocker blocker(traversal);
+            traversal->setCurrentIndex(
+                traversal->findData(isCompute == true ? QStringLiteral("TriangleLoop") : QString()));
+            traversal->setEnabled(isCompute);
+            source->setEnabled(false);
+            mNode.insert(QStringLiteral("invocation"), candidate);
+            publishEdit();
+        });
+        connect(traversal, &QComboBox::currentIndexChanged, this, [this, traversal, source](int32 index) {
             QJsonObject invocation = mNode.value(QStringLiteral("invocation")).toObject();
             const QString strategy = traversal->itemData(index).toString();
             if (strategy.isEmpty() == true)
@@ -618,16 +663,39 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
             {
                 invocation.insert(QStringLiteral("traversal"), strategy);
             }
+            const bool isCustom = strategy == QStringLiteral("Custom");
+            source->setEnabled(isCustom);
+            if (isCustom == true)
+            {
+                invocation.insert(QStringLiteral("traversal_source"), source->text().trimmed());
+            }
+            else
+            {
+                invocation.remove(QStringLiteral("traversal_source"));
+            }
             mNode.insert(QStringLiteral("invocation"), invocation);
             publishEdit();
         });
         outForm.addRow(QStringLiteral("Ray traversal"), traversal);
+        connect(source, &QLineEdit::editingFinished, this, [this, source]() {
+            if (source->isEnabled() == false)
+            {
+                return;
+            }
+            QJsonObject candidate = mNode.value(QStringLiteral("invocation")).toObject();
+            candidate.insert(QStringLiteral("traversal_source"), source->text().trimmed());
+            mNode.insert(QStringLiteral("invocation"), candidate);
+            publishEdit();
+        });
+        outForm.addRow(QStringLiteral("Traversal source"), source);
     }
     const QJsonObject properties = mNode.value(name).toObject();
     for (QJsonObject::const_iterator property = properties.begin(); property != properties.end(); ++property)
     {
         const QString key = property.key();
-        if (name == QStringLiteral("invocation") && key == QStringLiteral("traversal") && UsesRayLaunch(mNode) == true)
+        if (name == QStringLiteral("invocation") && UsesRayLaunch(mNode) == true &&
+            (key == QStringLiteral("type") || key == QStringLiteral("traversal") ||
+             key == QStringLiteral("traversal_source")))
         {
             continue;
         }

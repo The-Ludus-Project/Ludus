@@ -30,6 +30,8 @@ struct GpuTraceSample final
     uint32 LogicalPassCount = 1;
     /// True for a compute encoder/dispatch, false for a render encoder/pass.
     bool IsCompute = false;
+    /// Native ray-stage pipeline. Takes precedence over the physical encoder classification in labels.
+    bool IsRayTracing = false;
     /// True when ExecutionStartTicks/ExecutionEndTicks place a named pass on the CPU trace clock
     /// through a validated backend calibration. Only such samples become execution slices;
     /// frame probes and uncalibrated passes remain duration counters.
