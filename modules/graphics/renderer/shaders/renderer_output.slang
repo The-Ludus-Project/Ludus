@@ -1,4 +1,6 @@
-// Explicit scene-linear -> display-linear Reinhard -> optional sRGB encoding.
+// Explicit scene-linear -> display-linear tone curve (Reinhard or Khronos PBR Neutral) -> optional sRGB encoding.
+// Parameters.Output: exposure, curve (0 none, 1 Reinhard, 2 PBR Neutral; ToneCurve in tone_mapping.hpp),
+// sRGB encode flag.
 // UI blends into a linear display intermediate before the final encode-only pass.
 struct Parameters { float4 Output; };
 [[vk::binding(0,0)]] ConstantBuffer<Parameters> parameters : register(b0);
@@ -6,6 +8,27 @@ struct Parameters { float4 Output; };
 [[vk::binding(2,0)]] SamplerState imageSampler : register(s2);
 struct Input { [[vk::location(0)]] float4 positionUv : POSITION; };
 struct Varying { float4 position : SV_Position; float2 uv : TEXCOORD0; };
+// Khronos PBR Neutral (https://github.com/KhronosGroup/ToneMapping); mirrors ApplyPbrNeutral in tone_mapping.hpp.
+static const float PBR_NEUTRAL_FRESNEL = 0.04;
+static const float PBR_NEUTRAL_START = 0.8 - PBR_NEUTRAL_FRESNEL;
+static const float PBR_NEUTRAL_DESATURATION = 0.15;
+float3 ApplyPbrNeutral(float3 color)
+{
+    // Infinite radiance would produce infinity * 0; it maps to white like the Reinhard path's guard.
+    if (all(isfinite(color)) == false)
+        return float3(1);
+    float smallest = min(color.x, min(color.y, color.z));
+    float offset = smallest <= 2 * PBR_NEUTRAL_FRESNEL ? smallest - smallest * smallest / (4 * PBR_NEUTRAL_FRESNEL)
+                                                       : PBR_NEUTRAL_FRESNEL;
+    color -= offset;
+    float peak = max(color.x, max(color.y, color.z));
+    if (peak <= PBR_NEUTRAL_START)
+        return color;
+    float headroom = 1 - PBR_NEUTRAL_START;
+    float newPeak = 1 - headroom * headroom / (peak + 1 - 2 * PBR_NEUTRAL_START);
+    float mixAmount = 1 / (PBR_NEUTRAL_DESATURATION * (peak - newPeak) + 1);
+    return color * (newPeak / peak) * mixAmount + newPeak * (1 - mixAmount);
+}
 [shader("vertex")]
 Varying vertexMain(Input input)
 {
@@ -15,7 +38,8 @@ Varying vertexMain(Input input)
 float4 fragmentMain(Varying input) : SV_Target
 {
     float3 color = max(image.SampleLevel(imageSampler,input.uv,0).rgb,float3(0))*parameters.Output.x;
-    if (parameters.Output.y > 0.5) color = color/(1+color);
+    if (parameters.Output.y > 1.5) color = ApplyPbrNeutral(color);
+    else if (parameters.Output.y > 0.5) color = color/(1+color);
     if (parameters.Output.z > 0.5)
     {
         color = saturate(color);

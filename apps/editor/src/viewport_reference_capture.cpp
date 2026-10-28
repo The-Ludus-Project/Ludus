@@ -206,17 +206,26 @@ usize CollectReferenceLights(const renderer::LightSelection& selection, Referenc
     return count;
 }
 
-float32 EncodeReferenceDisplayValue(float32 radiance) noexcept
+math::Vector3 EncodeReferenceDisplayColor(math::Vector3 radiance) noexcept
 {
-    // Matches renderer_output.slang at exposure one: Reinhard, saturate, then sRGB.
-    const float32 linear = math::IsFinite(radiance) == true ? math::Max(radiance, 0.0F) : 0.0F;
-    const float32 display = math::Clamp(linear / (1 + linear), 0.0F, 1.0F);
-    return math::EncodeSrgb(display);
+    // Matches renderer_output.slang at exposure one: the viewport's tone curve, saturate, then sRGB.
+    const auto sanitize = [](float32 value) { return math::IsFinite(value) == true ? math::Max(value, 0.0F) : 0.0F; };
+    const math::Vector3 display =
+        renderer::ApplyToneCurve(VIEWPORT_TONE_CURVE,
+                                 {sanitize(radiance.X), sanitize(radiance.Y), sanitize(radiance.Z)});
+    return {math::EncodeSrgb(math::Clamp(display.X, 0.0F, 1.0F)),
+            math::EncodeSrgb(math::Clamp(display.Y, 0.0F, 1.0F)),
+            math::EncodeSrgb(math::Clamp(display.Z, 0.0F, 1.0F))};
 }
 
-uint8 EncodeReferenceDisplayChannel(float32 radiance) noexcept
+float32 EncodeReferenceDisplayValue(float32 greyRadiance) noexcept
 {
-    return static_cast<uint8>(EncodeReferenceDisplayValue(radiance) * DISPLAY_CHANNEL_MAXIMUM + .5F);
+    return EncodeReferenceDisplayColor({greyRadiance, greyRadiance, greyRadiance}).X;
+}
+
+uint8 EncodeReferenceDisplayChannel(float32 greyRadiance) noexcept
+{
+    return static_cast<uint8>(EncodeReferenceDisplayValue(greyRadiance) * DISPLAY_CHANNEL_MAXIMUM + .5F);
 }
 
 ViewportReferenceCapture::ViewportReferenceCapture() noexcept = default;
@@ -440,9 +449,10 @@ bool ViewportReferenceCapture::CopyDisplayImage(QImage& outImage, QString& outEr
         for (uint32 x = 0; x < mDescription.Width; ++x)
         {
             const renderer::ReferencePixel& pixel = pixels[static_cast<usize>(y) * mDescription.Width + x];
-            row[x] = qRgb(EncodeReferenceDisplayChannel(pixel.Radiance.X),
-                          EncodeReferenceDisplayChannel(pixel.Radiance.Y),
-                          EncodeReferenceDisplayChannel(pixel.Radiance.Z));
+            const math::Vector3 display = EncodeReferenceDisplayColor(pixel.Radiance);
+            row[x] = qRgb(static_cast<uint8>(display.X * DISPLAY_CHANNEL_MAXIMUM + .5F),
+                          static_cast<uint8>(display.Y * DISPLAY_CHANNEL_MAXIMUM + .5F),
+                          static_cast<uint8>(display.Z * DISPLAY_CHANNEL_MAXIMUM + .5F));
         }
     }
     outImage = image;

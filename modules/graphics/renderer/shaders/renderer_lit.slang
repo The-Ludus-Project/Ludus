@@ -293,9 +293,34 @@ float2 EvaluateEnvironmentDfg(float roughness, float cosineView)
 }
 #endif
 #ifdef LUDUS_DEBUG_VIEW
-// Largest display-linear value before the inverse Reinhard grows without bound (about 0.998 sRGB).
+// Largest display-linear value the inverse reproduces (about 0.998 sRGB); mirrors PBR_NEUTRAL_INVERSE_LIMIT.
 static const float DEBUG_DISPLAY_LINEAR_LIMIT = 0.995;
-// Inverts RasterViewport's presentation (renderer_output.slang: Reinhard, then sRGB encode at
+// Khronos PBR Neutral constants, as in renderer_output.slang.
+static const float PBR_NEUTRAL_FRESNEL = 0.04;
+static const float PBR_NEUTRAL_START = 0.8 - PBR_NEUTRAL_FRESNEL;
+static const float PBR_NEUTRAL_DESATURATION = 0.15;
+// Scene-linear colour that renderer_output.slang's PBR Neutral curve maps to a wanted display-linear colour;
+// mirrors InvertPbrNeutral in tone_mapping.hpp.
+float3 InvertPbrNeutral(float3 display)
+{
+    float peak = max(display.x, max(display.y, display.z));
+    float3 shifted = display;
+    if (peak > PBR_NEUTRAL_START)
+    {
+        float headroom = 1 - PBR_NEUTRAL_START;
+        float oldPeak = headroom * headroom / (1 - peak) - 1 + 2 * PBR_NEUTRAL_START;
+        float mixAmount = 1 / (PBR_NEUTRAL_DESATURATION * (oldPeak - peak) + 1);
+        float scale = peak / oldPeak * mixAmount;
+        shifted = max((display - peak * (1 - mixAmount)) / scale, float3(0));
+    }
+    float smallest = min(shifted.x, min(shifted.y, shifted.z));
+    float original = smallest < PBR_NEUTRAL_FRESNEL ? 2 * sqrt(PBR_NEUTRAL_FRESNEL * smallest)
+                                                    : smallest + PBR_NEUTRAL_FRESNEL;
+    float offset = original <= 2 * PBR_NEUTRAL_FRESNEL ? original - original * original / (4 * PBR_NEUTRAL_FRESNEL)
+                                                       : PBR_NEUTRAL_FRESNEL;
+    return shifted + offset;
+}
+// Inverts RasterViewport's presentation (renderer_output.slang: PBR Neutral, then sRGB encode at
 // exposure one) so a diagnostic colour authored in display sRGB appears unchanged on screen.
 float3 EncodeDebugDisplay(float3 displaySrgb)
 {
@@ -303,8 +328,7 @@ float3 EncodeDebugDisplay(float3 displaySrgb)
     float3 linearColor = float3(encoded.x <= 0.04045 ? encoded.x / 12.92 : pow((encoded.x + 0.055) / 1.055, 2.4),
                                 encoded.y <= 0.04045 ? encoded.y / 12.92 : pow((encoded.y + 0.055) / 1.055, 2.4),
                                 encoded.z <= 0.04045 ? encoded.z / 12.92 : pow((encoded.z + 0.055) / 1.055, 2.4));
-    linearColor = min(linearColor, float3(DEBUG_DISPLAY_LINEAR_LIMIT));
-    return linearColor / (1 - linearColor);
+    return InvertPbrNeutral(min(linearColor, float3(DEBUG_DISPLAY_LINEAR_LIMIT)));
 }
 // Four-segment blue, cyan, green, yellow, red ramp over t in [0,1].
 float3 ComputeHeatColour(float t)

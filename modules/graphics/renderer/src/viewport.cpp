@@ -81,6 +81,7 @@ struct RasterViewport::State final
         return submitted;
     }
     float32 Exposure = 1;
+    ToneCurve Curve = ToneCurve::Reinhard;
     ~State() noexcept
     {
         static_cast<void>(SceneRenderer->Release(PendingView));
@@ -109,14 +110,16 @@ Status RasterViewport::Initialize(Renderer& renderer,
                                   uint32 height,
                                   float32 exposure,
                                   ViewportColorMode colorMode,
-                                  bool shouldPresentToSurface) noexcept
+                                  bool shouldPresentToSurface,
+                                  ToneCurve toneCurve) noexcept
 {
     if (mState)
     {
         return Status::InvalidState;
     }
     if (width == 0 || height == 0 || math::IsFinite(exposure) == false || exposure < .000001F || exposure > 1000 ||
-        (colorMode != ViewportColorMode::PreferHdr && colorMode != ViewportColorMode::Linear8))
+        (colorMode != ViewportColorMode::PreferHdr && colorMode != ViewportColorMode::Linear8) ||
+        (toneCurve != ToneCurve::Reinhard && toneCurve != ToneCurve::PbrNeutral))
     {
         return Status::InvalidDescription;
     }
@@ -178,6 +181,7 @@ Status RasterViewport::Initialize(Renderer& renderer,
     candidate->Mapping = mapping;
     candidate->ShouldPresentToSurface = shouldPresentToSurface;
     candidate->Exposure = exposure;
+    candidate->Curve = toneCurve;
     mState = Move(candidate);
     const Status setup = Poll();
     if (Accepted(setup) == false)
@@ -207,7 +211,7 @@ Status RasterViewport::Poll() noexcept
         const Status created = state.SceneRenderer->PrepareLightingPresentation(
             state.SceneColor,
             state.Mapping,
-            { .Exposure = state.Exposure, .ToneMap = true, .Encode = true },
+            { .Exposure = state.Exposure, .ToneMap = true, .Curve = state.Curve, .Encode = true },
             state.Display);
         if (Accepted(created) == false)
         {
