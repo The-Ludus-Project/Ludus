@@ -271,9 +271,9 @@ void ConfigurePassTiming(MTLRenderPassDescriptor* description) noexcept
         attachment.endOfFragmentSampleIndex = first + PASS_SAMPLE_STRIDE - 1;
     }
 }
-void ConfigurePassTiming(MTLComputePassDescriptor* description) noexcept
+void ConfigurePassTiming(MTLComputePassDescriptor* description, GpuPassKind kind = GpuPassKind::Compute) noexcept
 {
-    const usize index = gPassTimings.AddPass(GpuPassKind::Compute);
+    const usize index = gPassTimings.AddPass(kind);
     if (index < MAX_GPU_TIMED_PASSES)
     {
         MTLComputePassSampleBufferAttachmentDescriptor* attachment = description.sampleBufferAttachments[0];

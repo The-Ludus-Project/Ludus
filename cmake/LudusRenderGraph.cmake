@@ -41,7 +41,7 @@ function(ludus_compile_render_graph)
         # Build dependencies read only installed/tool/source files. Writable staging belongs to this target.
         set(helper "${CMAKE_CURRENT_BINARY_DIR}/ludus-graphs/${GRAPH_TARGET}/${GRAPH_NAME}/helper")
         file(MAKE_DIRECTORY "${helper}")
-        foreach(source compile_shader.py compile_raster.py compile_graph_stage.py native_worker.py)
+        foreach(source compile_shader.py compile_raster.py compile_graph_stage.py compile_metal_ray.py native_worker.py)
             configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders/${source}" "${helper}/${source}" COPYONLY)
         endforeach()
         ludus_get_renderer_shader_roots(renderer_directory renderer_includes)
@@ -51,7 +51,7 @@ function(ludus_compile_render_graph)
             string(JSON source GET "${renderer_recipes}" "${recipe}" source)
             configure_file("${renderer_directory}/${source}" "${helper}/${source}" COPYONLY)
         endforeach()
-        foreach(source renderer_lit.slang renderer_environment_layout.h renderer_gpu_preview_layout.h renderer_surface_functions.slang scene_shader.slang scene_payload.slang visibility_buffer.slang ray_shader.slang ray_triangle_loop.slang ray_bvh_traversal.slang renderer_reference_layout.h)
+        foreach(source renderer_lit.slang renderer_environment_layout.h renderer_gpu_preview_layout.h native_metal_ray.slang renderer_surface_functions.slang scene_shader.slang scene_payload.slang visibility_buffer.slang ray_shader.slang ray_triangle_loop.slang ray_bvh_traversal.slang renderer_reference_layout.h)
             configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../modules/graphics/renderer/shaders/${source}" "${helper}/${source}" COPYONLY)
         endforeach()
         configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../modules/content/render_graph_format/include/ludus/content/render_graph_format/scene_data.h" "${helper}/scene_data.h" COPYONLY)
@@ -59,6 +59,7 @@ function(ludus_compile_render_graph)
         configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../modules/graphics/renderer/include/ludus/graphics/renderer/lighting_layout.h" "${helper}/lighting_layout.h" COPYONLY)
         configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../modules/foundation/math/shaders/math.slang" "${helper}/math.slang" COPYONLY)
         configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../modules/graphics/rhi/shaders/raster_bindings.slang" "${helper}/raster_bindings.slang" COPYONLY)
+        configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../modules/graphics/rhi/shaders/metal_ray_pipeline_layout.h" "${helper}/metal_ray_pipeline_layout.h" COPYONLY)
         foreach(lock shader_toolchain.json spirv_cross_toolchain.json)
             configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../config/${lock}" "${helper}/${lock}" COPYONLY)
         endforeach()
@@ -115,8 +116,9 @@ function(ludus_compile_render_graph)
             --helper "${helper}" --compiler "${LUDUS_SLANG_COMPILER}" ${arguments}
         DEPENDS ${inputs} ${modules} ${tools} "${driver}"
             "${package}/ludus_tools/buildlock.py" "${package}/ludus_tools/errors.py"
-            "${helper}/compile_shader.py" "${helper}/compile_raster.py" "${helper}/compile_graph_stage.py" "${helper}/native_worker.py"
+            "${helper}/compile_shader.py" "${helper}/compile_raster.py" "${helper}/compile_graph_stage.py" "${helper}/compile_metal_ray.py" "${helper}/native_worker.py"
             "${helper}/shader_toolchain.json" "${helper}/spirv_cross_toolchain.json" "${helper}/scene_data.h"
+            "${helper}/native_metal_ray.slang" "${helper}/metal_ray_pipeline_layout.h"
             "${helper}/visibility_buffer.slang"
         VERBATIM)
     target_sources(${GRAPH_TARGET} PRIVATE "${output}/${GRAPH_NAME}.h")

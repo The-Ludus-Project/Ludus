@@ -24,5 +24,6 @@ struct RenderGraphViewState final
     QPointF CentreScene;          ///< Scene-space point at the viewport centre.
     foundation::float64 Zoom = 1; ///< Dimensionless magnification, bounded by the canvas on capture/restore.
     RenderGraphTraceDirection Trace = RenderGraphTraceDirection::None; ///< Saved dependency-trace mode.
+    QStringList RevealedFrames; ///< Temporarily expanded stage IDs, independent of saved collapse metadata.
 };
 } // namespace ludus::editor

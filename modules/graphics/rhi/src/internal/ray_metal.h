@@ -80,6 +80,7 @@ RayCapabilities RayLimits() noexcept
     {
         .StaticTriangles = true,
         .InlineQueries = true,
+        .RayPipelines = gDevice.supportsFunctionPointers == true,
         .MaxInstances = internal::CurrentStorageLimits().RayInstances,
         .MaxRays = 4096,
         .MaxBufferBytes =

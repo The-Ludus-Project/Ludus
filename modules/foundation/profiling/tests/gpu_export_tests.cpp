@@ -164,6 +164,15 @@ TEST_CASE("calibrated GPU passes export named slices on non-overlapping lanes", 
     CHECK(json.find("GPU/FrameDurationNanoseconds") != std::string::npos);
     CHECK(json.find("\"frameSampleCount\":1") != std::string::npos);
 
+    samples[0].IsRayTracing = true;
+    Array<uint8> nativeBytes;
+    REQUIRE(SerializePerfettoTrace(nativeBytes, {samples.GetData(), samples.GetSize()}, coverage, false) == true);
+    const std::string nativeJson(reinterpret_cast<const char*>(nativeBytes.GetData()), nativeBytes.GetSize());
+    CHECK(nativeJson.find("gpu.raytracing") != std::string::npos);
+    CHECK(nativeJson.find("(Native RT)") != std::string::npos);
+    CHECK(nativeJson.find("\"isCompute\":true,\"isRayTracing\":true") != std::string::npos);
+    CHECK(nativeJson.find("gpu.raster") != std::string::npos);
+
     const usize originalSize = bytes.GetSize();
     samples[1].ExecutionEndTicks = samples[1].ExecutionStartTicks - 1;
     CHECK(SerializePerfettoTrace(bytes, {samples.GetData(), samples.GetSize()}, coverage, false) == false);

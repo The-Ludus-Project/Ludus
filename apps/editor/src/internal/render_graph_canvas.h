@@ -154,6 +154,10 @@ public:
     [[nodiscard]] RenderGraphHistory& GetHistory() noexcept;
     /// Canvas-owned comment editing and grouped gestures; GUI thread only.
     [[nodiscard]] RenderGraphComments& GetComments() noexcept;
+    /// Apply comment stage visibility/proxy routing, retaining logical selection and trace. GUI thread only.
+    void RefreshCommentPresentation();
+    /// Whether either logical wire endpoint is hidden in a stage; reroutes remain saved until expansion.
+    [[nodiscard]] bool IsWireCollapsed(const QString& from, const QString& to) const;
     /// Canvas-owned reroute presentation and gestures; GUI thread only, valid for canvas lifetime.
     [[nodiscard]] RenderGraphReroutes& GetReroutes() noexcept;
     /// Canvas-owned report counts, source freshness and diagnostic navigation; GUI thread only.
@@ -178,7 +182,7 @@ public:
     [[nodiscard]] bool HasNode(const QString& node) const;
     /// Displayed scene position of a node's top-left corner.
     [[nodiscard]] QPointF GetNodePosition(const QString& node) const;
-    /// Scene position of a port connector; outputs are on the right edge.
+    /// Scene position of a port connector or its collapsed-stage boundary proxy; outputs are on the right edge.
     [[nodiscard]] QPointF GetPortPosition(const QString& endpoint, bool isOutput) const;
     /// Type of a displayed port, such as ColorTexture; empty when the canvas does not show it.
     [[nodiscard]] QString GetPortType(const QString& endpoint, bool isOutput) const;
@@ -218,6 +222,12 @@ public:
     GetNewNodePosition(const QJsonObject& node, const QString& from, const QString& input, QPointF inputPosition) const;
 
 Q_SIGNALS:
+    /// Inspect a copied endpoint without selecting nodes or changing tracing.
+    void ResourceInspectionRequested(const QString& endpoint, bool isOutput);
+    /// Passive resource hover; no document or viewer mutation. Pinning is owned by the inspector.
+    void ResourceHovered(const QString& endpoint, bool isOutput);
+    /// Drawable reference for draft resource descriptions, in physical pixels.
+    void ReferenceSizeChanged(const QSize& size);
     /// Open the displayed configuration interface editor (double-click an interface box).
     void InterfaceEditRequested();
     void NodeSelected(const QString& node);
@@ -308,6 +318,7 @@ private:
     QString mConfiguration;
     QHash<QString, NodeView*> mNodes;
     QStringList mExpandedSceneBundles;
+    QStringList mHiddenSelection;
     QVector<EdgeView*> mEdges;
     QStringList mDragNodes;
     QHash<QString, QPointF> mDragOrigins;

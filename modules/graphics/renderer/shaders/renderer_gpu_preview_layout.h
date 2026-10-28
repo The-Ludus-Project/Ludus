@@ -110,7 +110,9 @@
 // code per ordered pass into the linked kernel's strategy table.
 #define LUDUS_GRAPH_TRAVERSAL_NATIVE_QUERY 0
 #define LUDUS_GRAPH_TRAVERSAL_TRIANGLE_LOOP 1
-#define LUDUS_GRAPH_TRAVERSAL_COMPUTE_BVH 2
+#define LUDUS_GRAPH_TRAVERSAL_CUSTOM 2
+#define LUDUS_GRAPH_TRAVERSAL_HARDWARE_PIPELINE 3
+#define LUDUS_GRAPH_TRAVERSAL_COMPUTE_BVH 4
 
 // Ray path capture: diagnostic LUDUS_RAY_PATH_CAPTURE kernels only. One uint32-word
 // storage buffer holds a CPU-written header, a summary per selected pixel, sample and

@@ -13,7 +13,9 @@ worker-order, installed-SDK, and pinned WebAssembly corpus checks. FoundationMat
 shader source `math.slang` carries a bit-exact port of the addressed raw, float
 and bounded samplers for kernels; the renderer's GPU preview path tracer uses it,
 and a GPU test checks it against the pinned known answers and the CPU reference
-(see [GPU addressed sampling](#gpu-addressed-sampling)). `random_domains.hpp`
+(see [GPU addressed sampling](#gpu-addressed-sampling)). `weighted_reservoir.hpp`
+and its shader port provide the [sequential weighted reservoir](#sequential-weighted-reservoir)
+for resampled light selection. `random_domains.hpp`
 checks domain manifests against the game and engine ID ranges at compile time,
 and the headless procedural scatter kernel is the first consumer outside the
 renderer ([milestone 1](#milestone-1-procedural-placement)). It makes no throughput
@@ -23,7 +25,8 @@ and security entropy remain future work.
 
 The specification below describes the complete target architecture. Code uses
 `TryMakeRandomKey`, `TryMakeRandomAddress`, `SampleUInt32`, `SampleFloat01`,
-`TrySampleBlock`, `TryPrepareBound32`, and `TrySampleBounded`; illustrative API
+`TrySampleBlock`, `TryPrepareBound32`, `TrySampleBounded`,
+`TryAddReservoirCandidate`, and `TryComputeReservoirContributionWeight`; illustrative API
 names elsewhere in this proposal are not additional shipped entry points.
 
 ## Initial design, before the Gems review
@@ -399,7 +402,8 @@ source is addressable. A parallel/order-independent selection scheme needs its
 own proved weighting, reduction, and tie contract. The proposed
 [many-area-light resampling estimator](many-area-light-sampling-reference-review.md#random-layout-sampler-version-2)
 is such a consumer: a fixed-order candidate stream with one addressed ticket
-dimension per candidate.
+dimension per candidate. FoundationMath ships the
+[sequential weighted reservoir](#sequential-weighted-reservoir) for it.
 
 Raw randomness never quietly implements fairness. Shuffle bags, no-repeat sound
 choices, weighted-without-replacement selection, streak protection, cooldowns,
@@ -424,6 +428,64 @@ breaking and iteration budgets are explicit simulation policies. The
 [NPC decision chapter](randomness-gems-review.md#decision-making) motivates this
 separation of stochastic modeling from actual outcome generation; a general
 dynamic-programming engine remains outside FoundationMath.
+
+### Sequential weighted reservoir
+
+`weighted_reservoir.hpp` and its kernel port `shaders/weighted_reservoir.slang`
+select one candidate from a stream, with replacement, for resampled importance
+sampling (RIS). The reservoir is the [streaming selection](randomness-gems-review.md#streaming-selection)
+of Chris Wyman's *Ray Tracing Gems II* chapter 22, specialized to one sample.
+Selection version 1 (`WeightedReservoirSelectionVersion`) freezes this contract:
+
+- **Order.** The caller streams every candidate, zero weights included, in one
+  fixed order. Each candidate supplies a weight and its own ticket in `[0,1)`,
+  normally `SampleFloat01` at a dimension reserved for that candidate. The
+  outcome depends on that order; an addressable random source does not make it
+  order-independent.
+- **Rule.** `w_sum += w`, then the candidate replaces the selection when
+  `ticket * w_sum < w`. The comparison is strict, so a zero weight is never
+  selected and the first positive weight always is. The reservoir is empty
+  exactly while `w_sum = 0`. A zero total is a valid empty result that
+  contributes zero, not an error.
+- **Count.** The reservoir counts every streamed candidate as RIS `M` and
+  records the selected candidate's stream position. It stores no payload: the
+  caller keeps the payload of the candidate whose update reports a selection.
+- **Contribution weight.** `TryComputeReservoirContributionWeight` returns
+  `W = w_sum / (M * p̂(y))` for the selected candidate's target `p̂(y)`. An empty
+  reservoir returns `W = 0` without examining the target.
+- **Validation.** Weights and tickets are classified on their FP32 bits, never
+  through NaN comparisons. A NaN or infinite weight, ticket or target returns
+  `NonFiniteInput`. A negative weight, a ticket outside `[0,1)`, or a zero,
+  negative or subnormal target returns `InvalidArgument`. A weight sum,
+  `M * p̂(y)` or `W` that would overflow returns `OutOfRange`. Every failure
+  leaves the reservoir and outputs unchanged. `-0` is a zero weight and a valid
+  zero ticket.
+- **Declared approximations.** Weights below `WeightedReservoirMinimumWeight`
+  (`2^-102`, 2^24 times FP32's smallest normal value) count as zero, and so do
+  subnormal tickets. Above that threshold `ticket * w_sum` is normal wherever it
+  can approach `w`, so neither FP32 rounding nor GPU subnormal flushing can change
+  a selection. A subnormal `W` is flushed to zero. Tickets quantize acceptance to
+  their resolution, `2^-24` for `SampleFloat01`.
+
+The kernel port returns `false` instead of a status and leaves the reservoir
+unchanged on failure. Metal compiles shaders with fast math, so the port tests
+bits rather than relying on IEEE infinities or NaNs. Selections and weight sums
+use only correctly rounded FP32 additions and multiplications, so they match the
+CPU bit for bit. `W` divides once, and a backend's FP32 division may differ from
+the CPU's correctly rounded quotient within that backend's division accuracy;
+WGSL, for example, allows 2.5 ULP.
+
+FoundationMath's unit tests enumerate every ticket tuple on a midpoint grid
+whose size is a multiple of every prefix sum. Selection counts then equal the
+weight ratios exactly, for example 216:432:0:648 for weights 1:2:0:3 over 1296
+streams. The tests also cover zero totals, a single candidate at the largest
+ticket, the strict boundary, rejection and output preservation, and
+`E[W * g(Y)] = Σ g` over an enumerated two-candidate RIS estimator. The shared
+GPU corpus in [GPU addressed sampling](#gpu-addressed-sampling) replays these
+cases, addressed RIS streams and contribution-weight edges on every backend,
+choosing power-of-two denominators `M * p̂(y)` so that every backend divides
+exactly. The `restir-di` render-graph template keeps its private reservoir until
+it adopts this helper in a separate change.
 
 ## Spread, nonuniform distributions, and graphics
 
@@ -514,7 +576,13 @@ exactly:
   would accept one extra attempt, acceptance on the last attempt, and a unit bound;
 - endpoint float mappings and the shader's copies of the versions and limits;
 - `MultiplyWide` over every pair of limb-edge values and exhaustive sweeps of
-  each limb against an all-ones operand.
+  each limb against an all-ones operand;
+- the [sequential weighted reservoir](#sequential-weighted-reservoir): its shader
+  constants, every stream of the 1:2:0:3 exact-frequency ticket grid, 256
+  addressed eight-candidate RIS streams, and zero-total, strict-boundary,
+  minimum-weight, subnormal-ticket, rejection and contribution-weight edges.
+  A reservoir case is followed by its candidate cases, which its invocation
+  reads in order.
 
 The renderer's GPU test `modules/graphics/renderer/tests/gpu_random_tests.cpp`
 runs the corpus on Metal (macOS) and Vulkan (Linux GPU CI) and skips only when no

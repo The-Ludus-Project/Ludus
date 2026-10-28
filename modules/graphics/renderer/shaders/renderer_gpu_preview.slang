@@ -169,6 +169,15 @@ struct Hit
     float DistanceWorld;
     float2 Barycentric;
 };
+#ifdef LUDUS_GRAPH_CUSTOM_RAY_TRAVERSAL
+// Generated per-pass dispatch to the authored compute query source. The source
+// shares the packed World hit contract with the engine's triangle-loop strategy.
+Hit TraceCustomWorld(float3 originWorld,
+                     float3 directionWorld,
+                     float nearDistanceWorld,
+                     float farDistanceWorld,
+                     bool isVisibility);
+#endif
 float4 InterpolateTriangle(uint triangle, uint first, in float2 barycentric);
 float4 InterpolateTriangleColor(uint triangle, in float2 barycentric);
 #ifdef LUDUS_RAY_PATH_CAPTURE
@@ -288,7 +297,9 @@ void EndRayPathCapture(float3 radiance)
     isRayPathSelected = false;
 }
 #endif
-#ifndef LUDUS_SOFTWARE_RAY_TRAVERSAL
+#if defined(LUDUS_NATIVE_METAL_RAY_PIPELINE)
+#    include "native_metal_ray.slang"
+#elif !defined(LUDUS_SOFTWARE_RAY_TRAVERSAL)
 void TraceNativeQuery(float3 originWorld,
                       float3 directionWorld,
                       float nearDistanceWorld,
@@ -376,7 +387,7 @@ bool TraceNativeVisibility(float3 originWorld, float3 directionWorld, float near
 }
 
 #endif
-#ifdef LUDUS_GRAPH_TRIANGLE_LOOP_TRAVERSAL
+#if defined(LUDUS_GRAPH_TRAVERSAL_STRATEGIES) || defined(LUDUS_SOFTWARE_RAY_TRAVERSAL)
 #    include "ray_triangle_loop.slang"
 #endif
 #ifdef LUDUS_GRAPH_COMPUTE_BVH_TRAVERSAL
@@ -431,25 +442,32 @@ Hit TraceWorld(float3 originWorld,
                float farDistanceWorld,
                bool isVisibility)
 {
-#ifdef LUDUS_GRAPH_TRAVERSAL_STRATEGIES
-    uint strategy = GetGraphTraversalStrategy();
-#    ifdef LUDUS_GRAPH_COMPUTE_BVH_TRAVERSAL
-    if (strategy == LUDUS_GRAPH_TRAVERSAL_COMPUTE_BVH)
+#ifdef LUDUS_GRAPH_CUSTOM_RAY_TRAVERSAL
+    if (GetGraphTraversalStrategy() == LUDUS_GRAPH_TRAVERSAL_CUSTOM)
+    {
+        Hit hit = TraceCustomWorld(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
+        if (hit.Triangle == LUDUS_GPU_PREVIEW_INVALID_TRIANGLE || hit.Triangle == LUDUS_GPU_PREVIEW_FAILED_TRIANGLE)
+            return hit;
+        if (hit.Triangle >= Counts.x || isfinite(hit.DistanceWorld) == false || hit.DistanceWorld < nearDistanceWorld ||
+            hit.DistanceWorld >= farDistanceWorld || all(isfinite(hit.Barycentric)) == false ||
+            any(hit.Barycentric < 0) || hit.Barycentric.x + hit.Barycentric.y > 1)
+        {
+            hit.Triangle = LUDUS_GPU_PREVIEW_FAILED_TRIANGLE;
+        }
+        return hit;
+    }
+#endif
+#ifdef LUDUS_GRAPH_COMPUTE_BVH_TRAVERSAL
+    if (GetGraphTraversalStrategy() == LUDUS_GRAPH_TRAVERSAL_COMPUTE_BVH)
         return TraceComputeBvh(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
-#    endif
-#    ifdef LUDUS_GRAPH_TRIANGLE_LOOP_TRAVERSAL
-    if (strategy == LUDUS_GRAPH_TRAVERSAL_TRIANGLE_LOOP)
-        return TraceTriangleLoop(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
-#    endif
 #endif
 #ifdef LUDUS_SOFTWARE_RAY_TRAVERSAL
-    // Every pass of a software configuration names its strategy; anything else is a failed query.
-    Hit failed;
-    failed.Triangle = LUDUS_GPU_PREVIEW_FAILED_TRIANGLE;
-    failed.DistanceWorld = farDistanceWorld;
-    failed.Barycentric = 0;
-    return failed;
+    return TraceTriangleLoop(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
 #else
+#    ifdef LUDUS_GRAPH_TRAVERSAL_STRATEGIES
+    if (GetGraphTraversalStrategy() == LUDUS_GRAPH_TRAVERSAL_TRIANGLE_LOOP)
+        return TraceTriangleLoop(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
+#    endif
     return TraceNative(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
 #endif
 }
@@ -504,9 +522,19 @@ TraceVisibility(float3 originWorld, float3 directionWorld, float nearDistanceWor
     defined(LUDUS_SOFTWARE_RAY_TRAVERSAL)
     return ResolveVisibility(Trace(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, true));
 #else
+#    ifdef LUDUS_GRAPH_CUSTOM_RAY_TRAVERSAL
+    if (GetGraphTraversalStrategy() == LUDUS_GRAPH_TRAVERSAL_CUSTOM)
+        return ResolveVisibility(Trace(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, true));
+#    endif
+#    ifdef LUDUS_GRAPH_COMPUTE_BVH_TRAVERSAL
+    if (GetGraphTraversalStrategy() == LUDUS_GRAPH_TRAVERSAL_COMPUTE_BVH)
+        return ResolveVisibility(
+            TraceComputeBvh(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, true));
+#    endif
 #    ifdef LUDUS_GRAPH_TRAVERSAL_STRATEGIES
-    if (GetGraphTraversalStrategy() != LUDUS_GRAPH_TRAVERSAL_NATIVE_QUERY)
-        return ResolveVisibility(TraceWorld(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, true));
+    if (GetGraphTraversalStrategy() == LUDUS_GRAPH_TRAVERSAL_TRIANGLE_LOOP)
+        return ResolveVisibility(
+            TraceTriangleLoop(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, true));
 #    endif
     VisibilityResult result;
     result.HasFailed = false;
@@ -597,13 +625,20 @@ bool FindEmitter(uint t, out uint outEmitter)
     outEmitter = low;
     return true;
 }
-float EmitterSelection(uint emitter, uint lightCount)
+// GetReferenceEmitterProbability: the power CDF's probability of emitter, zero for an empty total.
+float EmitterProbability(uint emitter)
 {
     uint total = Counts.z == 0 ? 0 : EmitterCumulative(Counts.z - 1);
-    if (lightCount == 0 || emitter >= Counts.z || total == 0)
+    if (emitter >= Counts.z || total == 0)
         return 0;
     uint previous = emitter == 0 ? 0 : EmitterCumulative(emitter - 1);
-    return float(EmitterCumulative(emitter) - previous) / float(total) * (float(Counts.z) / float(lightCount));
+    return float(EmitterCumulative(emitter) - previous) / float(total);
+}
+float EmitterSelection(uint emitter, uint lightCount)
+{
+    if (lightCount == 0)
+        return 0;
+    return EmitterProbability(emitter) * (float(Counts.z) / float(lightCount));
 }
 float HitEmitterSelection(uint t, uint lightCount)
 {
