@@ -1948,7 +1948,11 @@ TEST_CASE("RIS projected-solid-angle import enables the polygonal-light helpers 
 
 namespace
 {
-const QString POINT_LINE_TEMPLATE = QStringLiteral("salesin-jarosz-lines");
+/// The point-and-line MIS template's registry identity.
+QString GetPointLineTemplate()
+{
+    return QStringLiteral("salesin-jarosz-lines");
+}
 
 /// A Graph setting's current value in a manifest draft.
 float64 GetGraphSetting(const QByteArray& manifest, const QString& identity)
@@ -2015,7 +2019,7 @@ TEST_CASE("Salesin and Jarosz template settings edit and save from the canvas wi
     inspector->hide();
     properties.hide();
     workspace.show();
-    CreateGraphFromPicker(workspace, POINT_LINE_TEMPLATE);
+    CreateGraphFromPicker(workspace, GetPointLineTemplate());
     CHECK(inspector->isVisible() == false);
     RenderGraphDocument& document = workspace.GetDocument();
     const QByteArray library = document.GetDraft(QStringLiteral("library.lurender.json"));
@@ -2110,7 +2114,7 @@ TEST_CASE("Salesin and Jarosz template settings edit and save through Properties
     layout->addWidget(inspector);
     inspector->show();
     workspace.show();
-    CreateGraphFromPicker(workspace, POINT_LINE_TEMPLATE);
+    CreateGraphFromPicker(workspace, GetPointLineTemplate());
     properties.resize(TEMPLATE_PROPERTIES_WIDTH, TEMPLATE_PROPERTIES_HEIGHT);
     properties.show();
     REQUIRE(workspace.SelectNode(ROOT_GRAPH, QStringLiteral("Default"), QStringLiteral("output")) == true);
@@ -2178,7 +2182,7 @@ TEST_CASE("Salesin and Jarosz snippet applies from Quick Add on the canvas with 
         QComboBox* choiceOrNull =
             dialogOrNull->findChild<QComboBox*>(QStringLiteral("renderGraphConfigurationTemplate"));
         REQUIRE(choiceOrNull != nullptr);
-        CHECK(choiceOrNull->currentData().toString() == POINT_LINE_TEMPLATE);
+        CHECK(choiceOrNull->currentData().toString() == GetPointLineTemplate());
         QLineEdit* nameOrNull = dialogOrNull->findChild<QLineEdit*>(QStringLiteral("renderGraphTemplateConfiguration"));
         REQUIRE(nameOrNull != nullptr);
         offeredConfiguration = nameOrNull->text();
@@ -2244,7 +2248,7 @@ TEST_CASE("Salesin and Jarosz configuration applies from the canvas Configuratio
             QComboBox* choiceOrNull =
                 dialogOrNull->findChild<QComboBox*>(QStringLiteral("renderGraphConfigurationTemplate"));
             REQUIRE(choiceOrNull != nullptr);
-            const int32 selected = choiceOrNull->findData(POINT_LINE_TEMPLATE);
+            const int32 selected = choiceOrNull->findData(GetPointLineTemplate());
             REQUIRE(selected >= 0);
             choiceOrNull->setCurrentIndex(selected);
             QLineEdit* nameOrNull =
