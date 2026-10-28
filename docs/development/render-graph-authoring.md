@@ -4341,6 +4341,51 @@ on the revealed frame to fold it again. Back/Forward snapshots restore temporary
 reveals alongside selection, pan, zoom and tracing. Switching configurations starts
 with their saved collapse states; returning through history restores that visit.
 
+### Inspect the execution plan on the canvas
+
+Validate the selected root configuration, then enable **Execution Plan** in the
+canvas toolbar. The Plan page lists accepted serial operations in compiler order,
+with the expanded instance/node and authored source beside each entry. The raw
+accepted JSON remains below the list. Double-click an entry, press Enter, or use
+**Reveal on Canvas** to navigate to its real authored node. The jump creates one
+Back/Forward visit, follows the exact subgraph caller chain and temporarily reveals
+collapsed stages. Opening a shared library directly has no unique caller context;
+its badges say **Plan unavailable** until a specific instance is visited.
+
+Badges use one-based order numbers. A Subgraph badge aggregates its descendant
+operations; collapsed stage summaries count distinct operations and list their
+orders alongside the number of pruned members. **Active value** means a retained
+Scene, Camera, Target, size provider or other value node with no serial operation.
+**Pruned** means the current accepted plan omitted that node. It also covers
+bypassed disabled nodes, which emit no operation. Interface boxes have no badge.
+These are serial contract operations, including Export/Present and processing
+that may be folded into another native pass. The numbers do not describe GPU
+queue timestamps, execution duration or separate GPU dispatch counts.
+
+The compiler emits `source` for the root graph and an additive `activity` array
+in each plan. Every visited instance records its `instance`, package-relative
+`source`, `configuration` and retained node IDs in compiler order, after resolving
+requested outputs, overrides and disabled-node bypass. The retained lists share
+the existing expanded-node budget. This provenance distinguishes callers of the
+same library and includes value providers without inferring activity from wires
+in the current draft. Existing pass IDs, order, semantic digest and numeric runtime
+plan records retain their contracts. Older results without supported provenance
+remain readable as raw JSON and label the overlay unavailable.
+
+**Current plan**, **Stale plan** and **Unverified plan** distinguish the accepted
+snapshot from the current root selection and draft/saved source identities.
+Layout-only edits do not stale the plan. Stale/unverified snapshots retain known
+order badges with explicit labels; they never mark newly absent nodes as pruned.
+Stage summaries report unknown pruning in those states. Failed, cancelled or
+unsupported later results retain the last accepted plan and identify the latest
+outcome in the Plan page and tooltips. Missing or changed source nodes/caller
+bindings disable navigation without editing the graph or adding a history visit.
+
+Toggling the overlay and refreshing results preserve selection, dependency tracing,
+pan, zoom, stage collapse preferences, node positions, wire reroutes and document
+undo. Explicit Plan navigation selects and frames its target; Back restores the
+previous selection, trace and view. All controls work with Properties hidden.
+
 ### Route wires around pipeline stages
 
 Double-click a wire, or right-click it and choose **Add Reroute Point**, to insert
