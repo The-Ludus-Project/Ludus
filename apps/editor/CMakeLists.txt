@@ -494,6 +494,8 @@ qt_add_executable(ludus_editor
     src/document_well.cpp
     src/internal/editor_commands.h
     src/editor_commands.cpp
+    src/internal/command_palette.h
+    src/command_palette.cpp
     src/internal/options_dialog.h
     src/options_dialog.cpp
     src/internal/render_graph_build_settings.h
@@ -831,6 +833,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/project_lifecycle_tests.cpp
         tests/workspace_layout_tests.cpp
         tests/editor_shell_tests.cpp
+        tests/command_palette_tests.cpp
         tests/recent_projects_tests.cpp
         tests/source_watch_tests.cpp
         tests/script_workspace_tests.cpp
@@ -878,6 +881,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/document_well.cpp
         src/internal/editor_commands.h
         src/editor_commands.cpp
+        src/internal/command_palette.h
+        src/command_palette.cpp
         src/internal/options_dialog.h
         src/options_dialog.cpp
         src/internal/render_graph_build_settings.h

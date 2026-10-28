@@ -656,9 +656,21 @@ keeps the window and its draft open.
 | Ctrl+Alt+L / F4 | Show Project Explorer / Properties |
 | Ctrl+Alt+E / Ctrl+Alt+O | Show Error List / Output |
 | Shift+Alt+Enter | Focus Viewport on or off |
+| Ctrl+K (Cmd+K on macOS) / F3 | Command Palette / Run Command in Context |
 | F1 | Keyboard Shortcuts help |
 
-The help dialog reads the same QAction bindings used by menus/toolbars. Qt's
+The **Command Palette** (Ctrl/Cmd+K) searches every menu command by name with fuzzy
+matching: letters must appear in order, and consecutive letters, word starts and
+short names rank higher. A command that is not available now is shown dimmed
+after the available ones and cannot run. **Run Command in Context** (F3) lists
+only the commands that can run right now. Enter runs the chosen command after
+the palette closes; Up and Down move through the list; Esc closes it. Both read
+the menu bar when they open and keep nothing while closed, so a command added
+to a menu appears in the palette and the F1 list with its label, shortcut and
+availability.
+
+The help dialog reads the same QAction bindings used by menus/toolbars, groups
+them by menu and has a search box. Qt's
 standard New/Open/Save bindings follow the platform; actions remain window-scoped
 and use controller capability gates. Configurable mappings remain future work.
 See [art direction](../architecture/editor-art-direction.md) and

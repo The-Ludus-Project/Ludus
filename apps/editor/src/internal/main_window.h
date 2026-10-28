@@ -93,6 +93,7 @@ private Q_SLOTS:
     void OnNewProject();
     void OnCloseProject();
     void ShowShortcuts();
+    void showCommandPalette(bool isEnabledOnly);
     void OnSetupRelease();
     void OnPackageRelease();
 
@@ -234,6 +235,8 @@ private:
     QAction* mCookGraphAction;
     QAction* mCancelGraphAction;
     QAction* mOptionsAction;
+    QAction* mCommandPaletteAction;
+    QAction* mRunInContextAction;
     QAction* mProjectSettingsAction;
     QAction* mResetLayoutAction;
     QAction* mFocusViewportAction;
