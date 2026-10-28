@@ -85,16 +85,15 @@ float3 ShadeLineSampling(SceneContext scene, RayLaunch launch, inout RayQueryCon
         return isMiss == true ? EvaluateEnvironment(scene, -shadingPoint.ViewDirectionWorld) : float3(0);
     float3 radiance = EvaluateEmission(scene, shadingPoint.Hit, shadingPoint.ViewDirectionWorld);
     LineProposal proposal;
-    LineVisibility visibility;
     if (ProposeLineU(scene,
                      launch,
                      shadingPoint.Hit,
                      shadingPoint.ShadingNormalWorld,
                      true,
                      SHADE_LINE_U_DIMENSION_FIRST,
+                     SHADE_LINE_U_POSITION_DIMENSION,
                      queries,
-                     proposal,
-                     visibility) == true)
+                     proposal) == true)
         radiance += EstimateLineProposal(scene,
                                          launch,
                                          shadingPoint.Hit,
@@ -102,8 +101,6 @@ float3 ShadeLineSampling(SceneContext scene, RayLaunch launch, inout RayQueryCon
                                          shadingPoint.ShadingNormalWorld,
                                          shadingPoint.ViewDirectionWorld,
                                          proposal,
-                                         visibility,
-                                         SHADE_LINE_U_POSITION_DIMENSION,
                                          queries);
     return FinishRadiance(radiance, queries);
 }
@@ -116,15 +113,14 @@ float3 ShadeVisibleFraction(SceneContext scene, RayLaunch launch, inout RayQuery
     if (TryLoadShadingPoint(scene, launch, queries, shadingPoint, isMiss) == false)
         return float3(0);
     LineProposal proposal;
-    LineVisibility visibility;
     ProposeLineU(scene,
                  launch,
                  shadingPoint.Hit,
                  shadingPoint.ShadingNormalWorld,
                  false,
                  SHADE_LINE_U_DIMENSION_FIRST,
+                 SHADE_LINE_U_POSITION_DIMENSION,
                  queries,
-                 proposal,
-                 visibility);
-    return FinishRadiance(float3(GetVisibleChordFraction(proposal, visibility)), queries);
+                 proposal);
+    return FinishRadiance(float3(GetVisibleChordFraction(proposal)), queries);
 }

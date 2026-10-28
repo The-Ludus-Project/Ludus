@@ -221,6 +221,22 @@ Insertion order still decides when overflow happens, because the running set
 can hold more intervals than the final union. PL3 compares the loop and the BVH
 only on fixtures that do not overflow.
 
+PL1 storage. The query keeps the running occluded set in
+`LineVisibility.Intervals` itself and complements it in place, from the last gap
+down, then drops short gaps in order. With a separate occluded array, the
+line-sampling template's merged three-pass kernel lost its interval stores on
+Metal (Apple M5, macOS 26.6) at capacity 32, though not at 8 or 16. The count and
+length survived but every interval read back as zero, so every line sample used
+the chord's first endpoint and the image was 2.6% too bright in red. The same
+kernel also needed `ClearLineVisibility`, a field-by-field reset, in place of
+`(LineVisibility)0`. After merging later `develop` ray changes the template
+regressed again while passing a `LineVisibility` between functions, so it now
+reads the intervals only in the function that ran the query and keeps scalars
+(visible length, drawn parameter) in what it passes on. Its mean then matches
+light sampling within 0.03%. The emitted MSL was logically correct, so this is a
+Metal compiler problem. PL2 and PL3 should follow the same pattern, and PL3's BVH
+stack adds thread memory that should be checked against it.
+
 ### D4 Alpha-tested occluders
 
 An exact interval set through an alpha-tested triangle would need the alpha
@@ -239,6 +255,12 @@ support, and the masked occluders' visibility is estimated stochastically.
 Density evaluation (PL09) uses the same opaque-only intervals, so MIS weights
 match the densities actually sampled. The cost is one visibility query per line
 sample that reports masked candidates, and none in an opaque scene.
+
+PL1 finding. Render-graph scenes cannot hold alpha-tested triangles today:
+`SceneShaderMaterial` has no alpha mode, and scene preparation rejects any item
+whose coverage is not opaque. So every graph ray pass sees an opaque scene, and the
+masked path is implemented but cannot be exercised through the public API. Its
+GPU test, and PL2's and PL3's masked tests, wait for a scene-material alpha mode.
 
 Alternatives considered:
 

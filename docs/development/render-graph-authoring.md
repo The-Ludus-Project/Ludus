@@ -2019,7 +2019,7 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | SelectEmissiveTriangle / EvaluateEmissiveTriangleSelectionPmf | [Power-weighted emissive triangle](#select-emissive-triangles-by-power) at an explicit dimension / that selection's probability for a triangle |
 | EvaluateEnvironment / EvaluateEnvironmentPdfSolidAngle | Environment emission and joint density under the uniform-source proposal |
 | TraceClosest / TestVisibility | Closest or occlusion query with explicit miss/surface/failure status |
-| FindVisibleLineIntervals | Visible parts of a world-space segment from a receiver, as sorted parameter intervals; see [Find the visible parts of a segment](#find-the-visible-parts-of-a-segment) |
+| FindVisibleLineIntervals / ClearLineVisibility | Visible parts of a world-space segment from a receiver, as sorted parameter intervals; see [Find the visible parts of a segment](#find-the-visible-parts-of-a-segment) |
 | SpawnSurfaceRay | Error-bound origin offset for a unit world direction and explicit maximum distance |
 | SampleSceneRandom / MakeCameraRay | Automatic invocation-stream draw or explicit random dimension / chosen subpixel camera ray |
 | EvaluateStandardBsdf / SampleStandardBsdf | Optional existing reflection-model primitives; no integrator or MIS |
@@ -2049,6 +2049,14 @@ uint status = FindVisibleLineIntervals(scene, queries, receiver, segment, visibi
 | `SCENE_QUERY_MISS` | No opaque triangle removes any part of the segment: one interval, `[0, 1]` |
 | `SCENE_QUERY_SURFACE` | At least one opaque triangle removes length; a fully occluded segment has zero intervals |
 | `SCENE_QUERY_FAILURE` | `queries.HasFailed` is latched and `visibility` is zero; the sample shows the error color |
+
+To reset a `LineVisibility` you keep across calls, use `ClearLineVisibility`
+rather than assigning `(LineVisibility)0`. On an Apple M5 under macOS 26.6 the
+whole-struct zero followed by indexed interval stores lost those stores in large
+merged kernels. For the same reason, read the intervals in the function that
+called the query and pass on only what you need from them, such as the visible
+length or a drawn parameter, rather than copying a `LineVisibility` into other
+functions or structs.
 
 `VisibleLengthWorld` is the visible length in metres; parameters run from
 `StartWorld` (0) to `EndWorld` (1). Geometry matches `TestVisibility`: the receiver

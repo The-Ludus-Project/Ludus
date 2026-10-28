@@ -33,15 +33,18 @@ struct EmitterChord
     float LengthWorld;
 };
 
-/// Draws of one line strategy before its position along the chord: the selected light's point
-/// proposal and, for a mesh light, the chord through that point. The chord's visible intervals are
-/// kept in a separate LineVisibility; nesting its interval array in this struct and copying it lost
-/// the intervals on Metal (PL1).
+/// Draws of one line strategy: the selected light's point proposal and, for a mesh light, the chord
+/// through that point, its visible length and the chord parameter drawn over its visible intervals.
+/// The intervals themselves are read only inside ProposeLineU, right after the query: copying a
+/// LineVisibility between functions lost its intervals on Metal in this merged kernel (PL1).
 struct LineProposal
 {
     LightSample PointSample;
     EmitterChord Chord;
     float EmitterAreaWorld;
+    float VisibleLengthWorld;
+    float DrawnParameter;
+    bool HasMaskedOccluders;
     bool IsMeshChord;
     bool HasProposal;
 };
@@ -91,23 +94,23 @@ float2 GetChordBarycentric(EmitterChord chord, float t)
     return sum > 1 ? barycentric / sum : barycentric;
 }
 
-/// Select a light, propose a point on it and, for a mesh light, build its U chord and find the
-/// chord's visible intervals (outVisibility, zero otherwise). Reads dimensions firstDimension to firstDimension + 3 at explicit
-/// addresses. Consumes one line query for a mesh light unless the receiver lies in the emitter's
-/// plane or sees the whole chord below its horizon (both contribute zero). A failed line query
-/// latches queries.HasFailed. Returns false when there is nothing to estimate.
+/// Select a light, propose a point on it and, for a mesh light, build its U chord, find the chord's
+/// visible intervals and draw a chord parameter uniformly by length over them. Reads dimensions
+/// firstDimension to firstDimension + 3, and positionDimension, at explicit addresses. Consumes one
+/// line query for a mesh light unless the receiver lies in the emitter's plane or sees the whole
+/// chord below its horizon (both contribute zero). A failed line query latches queries.HasFailed.
+/// Returns false when there is nothing to estimate.
 bool ProposeLineU(SceneContext scene,
                   RayLaunch launch,
                   SurfaceHit receiver,
                   float3 shadingNormalWorld,
                   bool isHorizonTested,
                   uint firstDimension,
+                  uint positionDimension,
                   inout RayQueryContext queries,
-                  out LineProposal outProposal,
-                  out LineVisibility outVisibility)
+                  out LineProposal outProposal)
 {
     outProposal = (LineProposal)0;
-    ClearLineVisibility(outVisibility);
     SelectedLight selected = SelectLight(scene, launch, firstDimension);
     if (selected.HasSample == false)
         return false;
@@ -150,25 +153,44 @@ bool ProposeLineU(SceneContext scene,
         outProposal.HasProposal = false;
         return false;
     }
-    if (FindVisibleLineIntervals(scene, queries, receiver, outProposal.Chord.Segment, outVisibility) ==
+    LineVisibility visibility;
+    if (FindVisibleLineIntervals(scene, queries, receiver, outProposal.Chord.Segment, visibility) ==
         SCENE_QUERY_FAILURE)
     {
         outProposal.HasProposal = false;
         return false;
     }
+    outProposal.VisibleLengthWorld = visibility.VisibleLengthWorld;
+    outProposal.HasMaskedOccluders = visibility.HasMaskedOccluders;
+    if (visibility.IntervalCount == 0)
+        return true;
+    // Map one uniform draw linearly across the concatenated visible intervals.
+    float remaining = SampleSceneRandom(launch, positionDimension) * visibility.VisibleLengthWorld /
+                      outProposal.Chord.LengthWorld;
+    outProposal.DrawnParameter = visibility.Intervals[visibility.IntervalCount - 1].y;
+    for (uint i = 0; i < visibility.IntervalCount; ++i)
+    {
+        float width = visibility.Intervals[i].y - visibility.Intervals[i].x;
+        if (remaining < width)
+        {
+            outProposal.DrawnParameter = visibility.Intervals[i].x + remaining;
+            break;
+        }
+        remaining -= width;
+    }
     return true;
 }
 
 /// Fraction of the proposal's chord that the receiver sees, L_visible / c; zero for a non-mesh light.
-float GetVisibleChordFraction(LineProposal proposal, LineVisibility visibility)
+float GetVisibleChordFraction(LineProposal proposal)
 {
     return proposal.IsMeshChord == true && proposal.Chord.LengthWorld > 0
-               ? visibility.VisibleLengthWorld / proposal.Chord.LengthWorld
+               ? proposal.VisibleLengthWorld / proposal.Chord.LengthWorld
                : 0;
 }
 
-/// Estimate direct lighting from a proposal: for a mesh chord, draw a point uniformly by length over
-/// its visible intervals (dimension positionDimension) and weight it by the joint density
+/// Estimate direct lighting from a proposal: for a mesh chord, evaluate the point drawn over its
+/// visible intervals and weight it by the joint density
 /// P(light) * c / (A_light * L_visible), converted to solid angle; for a non-mesh light, trace the
 /// point proposal's shadow ray. Consumes at most one visibility query: the non-mesh shadow ray, or
 /// the confirmation of a point drawn past alpha-tested triangles (HasMaskedOccluders).
@@ -179,8 +201,6 @@ float3 EstimateLineProposal(SceneContext scene,
                             float3 shadingNormalWorld,
                             float3 viewDirectionWorld,
                             LineProposal proposal,
-                            LineVisibility visibility,
-                            uint positionDimension,
                             inout RayQueryContext queries)
 {
     if (proposal.HasProposal == false)
@@ -199,24 +219,10 @@ float3 EstimateLineProposal(SceneContext scene,
             return float3(0);
         return bsdfValue * light.IncidentCoefficient * (cosSurface / lightDensity);
     }
-    if (visibility.IntervalCount == 0 || visibility.VisibleLengthWorld <= 0)
+    if (proposal.VisibleLengthWorld <= 0)
         return float3(0);
-    // Map one uniform draw linearly across the concatenated visible intervals.
-    float visibleParameter = visibility.VisibleLengthWorld / proposal.Chord.LengthWorld;
-    float remaining = SampleSceneRandom(launch, positionDimension) * visibleParameter;
-    float t = visibility.Intervals[visibility.IntervalCount - 1].y;
-    for (uint i = 0; i < visibility.IntervalCount; ++i)
-    {
-        float width = visibility.Intervals[i].y - visibility.Intervals[i].x;
-        if (remaining < width)
-        {
-            t = visibility.Intervals[i].x + remaining;
-            break;
-        }
-        remaining -= width;
-    }
-    SurfaceHit endpoint =
-        GetSurfaceHit(scene, proposal.Chord.Segment.TriangleIndex, GetChordBarycentric(proposal.Chord, t));
+    SurfaceHit endpoint = GetSurfaceHit(
+        scene, proposal.Chord.Segment.TriangleIndex, GetChordBarycentric(proposal.Chord, proposal.DrawnParameter));
     if (endpoint.IsValid == false)
     {
         queries.HasFailed = true;
@@ -235,7 +241,7 @@ float3 EstimateLineProposal(SceneContext scene,
     EvaluateStandardBsdf(material, viewDirectionWorld, directionWorld, bsdfValue, bsdfDensity);
     if (any(bsdfValue > 0) == false)
         return float3(0);
-    if (visibility.HasMaskedOccluders == true)
+    if (proposal.HasMaskedOccluders == true)
     {
         LightSample confirmation = (LightSample)0;
         confirmation.TriangleIndex = endpoint.TriangleIndex;
@@ -250,7 +256,7 @@ float3 EstimateLineProposal(SceneContext scene,
     }
     // Joint area density P(light) * c / (A_light * L_visible), in solid angle d^2 / |cos_light|.
     float densitySolidAngle = light.SelectionPmf * proposal.Chord.LengthWorld /
-                              (proposal.EmitterAreaWorld * visibility.VisibleLengthWorld) * distanceWorld *
+                              (proposal.EmitterAreaWorld * proposal.VisibleLengthWorld) * distanceWorld *
                               distanceWorld / cosLight;
     if (isfinite(densitySolidAngle) == false || densitySolidAngle <= 0)
         return float3(0);
