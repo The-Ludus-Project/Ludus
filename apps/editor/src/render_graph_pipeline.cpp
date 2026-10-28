@@ -5,6 +5,7 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QEvent>
 #include <QFormLayout>
 #include <QGridLayout>
 #include <QGroupBox>
@@ -15,6 +16,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMouseEvent>
+#include <QObject>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSignalBlocker>
