@@ -535,6 +535,8 @@ qt_add_executable(ludus_editor
     src/error_list.cpp
     src/internal/project_explorer.h
     src/project_explorer.cpp
+    src/internal/project_files.h src/project_files.cpp
+    src/main_window_project_files.cpp
     src/internal/timing_panel.h
     src/timing_panel.cpp
     src/project_setup_dialog.cpp
@@ -738,6 +740,17 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     add_test(NAME ludus_editor_browser_content_tests COMMAND ludus_editor_browser_content_tests)
     set_tests_properties(ludus_editor_browser_content_tests PROPERTIES
         LABELS "unit;editor;browser" TIMEOUT 60 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_executable(ludus_project_explorer_tests tests/main.cpp tests/project_explorer_tests.cpp
+        src/internal/project_explorer.h src/project_explorer.cpp src/project_files.cpp)
+    set_target_properties(ludus_project_explorer_tests PROPERTIES AUTOMOC ON)
+    target_include_directories(ludus_project_explorer_tests PRIVATE src)
+    target_compile_definitions(ludus_project_explorer_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
+    target_link_libraries(ludus_project_explorer_tests PRIVATE Qt6::Widgets Qt6::Test Ludus::FoundationBase Catch2::Catch2)
+    ludus_apply_project_defaults(ludus_project_explorer_tests)
+    ludus_enable_test_exceptions(ludus_project_explorer_tests)
+    add_test(NAME ludus_project_explorer_tests COMMAND ludus_project_explorer_tests)
+    set_tests_properties(ludus_project_explorer_tests PROPERTIES LABELS "unit;editor" TIMEOUT 30
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(ludus_editor_tests
         ${editor_profiling_sources}
         tests/profiling_tests.cpp
@@ -935,6 +948,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/error_list.cpp
         src/internal/project_explorer.h
         src/project_explorer.cpp
+        src/internal/project_files.h src/project_files.cpp
+        src/main_window_project_files.cpp
         src/internal/timing_panel.h
         src/timing_panel.cpp
         src/project_setup_dialog.cpp
@@ -1262,7 +1277,7 @@ endif()
 # the editor CTest label, including during the promotion of newer workflow code.
 if(TARGET ludus_editor_tests)
     foreach(target IN ITEMS ludus_editor_accessibility_tests ludus_code_editor_tests
-            ludus_editor_browser_content_tests ludus_render_graph_pipeline_tests
+            ludus_project_explorer_tests ludus_editor_browser_content_tests ludus_render_graph_pipeline_tests
             ludus_shader_interface_tests ludus_render_graph_configuration_tests
             ludus_render_graph_live_build_tests)
         if(TARGET ${target})
@@ -1305,6 +1320,7 @@ ludus_editor_apply_precompiled_headers(
     ludus_editor_code
     ludus_editor
     ludus_code_editor_tests
+    ludus_project_explorer_tests
     ludus_editor_browser_content_tests
     ludus_editor_tests
     ludus_render_graph_pipeline_tests

@@ -78,6 +78,8 @@ void MainWindow::RenderDocumentActions()
     {
         return;
     }
+    // World changes can leave both the active tab and render-graph commands unchanged.
+    renderDocumentTitles();
     QWidget* areaOrNull = getActiveWorkspaceOrNull();
     const bool isProject = areaOrNull == ProjectSettings_;
     const bool isAudio = areaOrNull != nullptr && areaOrNull->isAncestorOf(Audio_);

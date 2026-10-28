@@ -41,7 +41,8 @@
 // ellipse kinds are explicit instead of the sign bit and infinity encodings, the
 // [0, pi] arctangent never divides by zero and finiteness is tested on bit
 // patterns, because Ludus compiles Metal shaders with fast math and WGSL does not
-// guarantee infinities, NaNs or signed zeros; sector selection skips sectors
+// guarantee infinities, NaNs or signed zeros; that arctangent is math.slang's
+// ComputeArctangent, not the backend's atan; sector selection skips sectors
 // without area; the iteration uses an exact reciprocal; horizon clipping is an
 // independent implementation. See the FoundationMath module page. Loops keep
 // compile-time bounds and unroll, so array indices stay constant on GPUs (paper
@@ -143,15 +144,16 @@ float GetEllipseNormalizedDirectionFactor(float2 ellipse, float2 normalizedDirec
     return 1.0 / sqrt(fma(ellipseDotDirection, ellipseDotDirection, 1.0));
 }
 // The angle in [0, pi] of the direction (x, y) with y >= 0: positive_atan(y / x) without dividing by zero.
+// Areas are differences of these angles, so the arctangent must not depend on the backend's atan precision.
 float ComputeSectorAngle(float y, float x)
 {
     if (x > 0.0)
     {
-        return atan(y / x);
+        return ComputeArctangent(y / x);
     }
     if (x < 0.0)
     {
-        return atan(y / x) + PI;
+        return ComputeArctangent(y / x) + PI;
     }
     return y > 0.0 ? 0.5 * PI : 0.0;
 }
