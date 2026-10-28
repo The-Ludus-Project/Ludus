@@ -46,6 +46,9 @@
 /// Version 16 appends DenoisingQuality for OIDN RT HDR filtering before display conversion.
 /// Version 17 admits MetalFX Spatial roles without changing the version 16 record layout.
 /// Version 18 appends Traversal to every pass; earlier ray records require native queries.
+/// Version 19 inserts RAY_WORKGROUP_DIMENSIONS uint32 values after the six fixed fields
+/// of each RayCompute/SceneRayCompute/PersistentRayCompute stage record. X/Y must be positive and Z
+/// must be one; targets of the same role must agree. Earlier compute stages imply 64x1x1.
 namespace ludus::content::render_graph_format
 {
 /// "LURG" read as a little-endian uint32.
@@ -59,8 +62,10 @@ inline constexpr foundation::uint32 RAY_PATH_CAPTURE_PACKAGE_MAGIC = 0x5052554CU
 inline constexpr foundation::uint32 METALFX_SPATIAL_PACKAGE_VERSION = 17;
 /// First generation carrying software/native ray traversal requirements per pass.
 inline constexpr foundation::uint32 SOFTWARE_RAY_PACKAGE_VERSION = 18;
+/// First generation carrying reflected X/Y/Z dimensions on ray compute stages.
+inline constexpr foundation::uint32 RAY_WORKGROUP_PACKAGE_VERSION = 19;
 /// Current runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = SOFTWARE_RAY_PACKAGE_VERSION;
+inline constexpr foundation::uint32 PACKAGE_VERSION = RAY_WORKGROUP_PACKAGE_VERSION;
 /// First package carrying explicit OIDN denoising quality per ray pass.
 inline constexpr foundation::uint32 DENOISING_PACKAGE_VERSION = 16;
 /// First package carrying the renderer-owned bilinear image operation.
@@ -159,6 +164,8 @@ inline constexpr foundation::usize UNIFORM_BLOCK_RECORD_BYTES = 3 * sizeof(found
 inline constexpr foundation::usize UNIFORM_FIELD_RECORD_BYTES = 5 * sizeof(foundation::uint32);
 /// Fixed uint32 fields at the start of each stage record.
 inline constexpr foundation::usize STAGE_FIELD_COUNT = 6;
+/// Reflected X, Y and Z words on a ray compute stage in version 19 and later.
+inline constexpr foundation::usize RAY_WORKGROUP_DIMENSIONS = 3;
 /// Serialized width of one (location, format) stage input pair.
 inline constexpr foundation::usize INPUT_RECORD_BYTES = 2 * sizeof(foundation::uint32);
 /// Explicit program role: raster vertex/fragment pairs, followed by three linked ray roles.

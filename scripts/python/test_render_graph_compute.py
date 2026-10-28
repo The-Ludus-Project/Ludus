@@ -141,8 +141,10 @@ class SceneComputeLoweringTests(SceneComputeFixture):
         info['state'] = {'group_size': list(compute.GROUP_SIZE)}
         self.compile()
         info['state'] = {'group_size': [8, 8, 1]}
+        self.compile()
+        info['state'] = {'group_size': [32, 2, 1]}
         before = graph.canonical_asset(self.document)
-        error = self.fails('Capability', 'fixed')
+        error = self.fails('Capability', 'support')
         self.assertEqual('state.group_size', error.target['field'])
         self.assertIn('Clear group_size', error.details['repair'])
         self.assertEqual(before, self.path.read_bytes())
@@ -151,6 +153,17 @@ class SceneComputeLoweringTests(SceneComputeFixture):
                 info['state'] = state
                 with self.assertRaises(ToolingError):
                     graph.canonical_asset(self.document)
+
+    def test_shader_bundle_inherits_one_override_and_rejects_conflicts(self):
+        self.chain_compute_passes(2)
+        self.node('pass0')['state'] = {'group_size': [8, 8, 1]}
+        plan = self.compile()
+        profiles = ray.group_profiles([plan], {}, build)
+        self.assertTrue(profiles)
+        self.assertTrue(all(profile['workgroup'] == [8, 8, 1] for profile in profiles))
+        self.node('pass1')['state'] = {'group_size': [64, 1, 1]}
+        with self.assertRaisesRegex(ToolingError, 'one workgroup shape'):
+            ray.group_profiles([self.compile()], {}, build)
 
     def test_post_processing_accepts_compute_producers(self):
         self.configuration['nodes'].append({'id': 'denoise', 'kind': 'Denoise', 'quality': 'Balanced'})

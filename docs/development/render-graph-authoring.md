@@ -661,7 +661,7 @@ Assign the same `ray_generation`, `miss` and `closest_hit` manifest programs to
 both a **RayTracingPipeline** and a **ComputePipeline** with a Scene input. Keep
 the shader sources, ScenePayload and query budgets shared. Choose the pipeline in
 each graph configuration; only the node kind and its state differ. Scene compute
-nodes use `"state": {}` and the fixed 64×1×1 workgroup. A callback compute node
+nodes use `"state": {}` and inherit the bundle workgroup (64×1×1 when no pass overrides it). A callback compute node
 must have all three callbacks and no `compute` shader. Existing single-kernel
 compute nodes remain supported.
 
@@ -1009,9 +1009,18 @@ The node accepts the same ports as a Ray Tracing Pipeline node:
 
 `StructuredBuffer` inputs are rejected: connect a `Buffer` node instead. Set
 `invocation.dimensions` to `"ColorTarget"`, or to the exact `[width, height, 1]` of
-a fixed color target. Use `"state": {}`. The kernel always runs in the ray
-wrapper's 64×1×1 workgroup. An authored `group_size` other than `[64, 1, 1]` is
-rejected, and the repair is to clear it.
+a fixed color target. Use `"state": {}` for automatic grouping, or
+`"state": {"group_size": [8, 8, 1]}` to opt into square groups. The admitted
+explicit shapes are `[64, 1, 1]` and `[8, 8, 1]`. All explicit overrides across
+all configurations in one shader bundle must agree; automatic passes inherit
+that choice. With no override the bundle uses 64×1×1. Conflicts and unsupported
+shapes fail the build without rewriting sources. Partial edge groups are bounds
+checked. See the [measured scope and reproduction workflow](../architecture/renderer-systems.md#authored-graph-workgroup-experiment).
+
+Runtime package version 19 stores reflected X/Y/Z dimensions after the six fixed
+fields of every ray compute stage. All target artifacts for a role must agree.
+Earlier packages retain their implicit 64×1×1 grouping. Cooked headers and runtime
+packages dispatch the same reflected dimensions; device limits still apply.
 
 ```json
 {
@@ -1111,10 +1120,12 @@ surfaces make the same undoable document edit, and **Save** publishes it.
 5. **Invocation → Launch size** offers **Match color target** or **Explicit
    size**, as for ray nodes. An explicit `[width, height, 1]` must match the
    connected color target. The canvas reports a mismatch when you connect it.
-6. **Pipeline State** shows the automatic 64×1×1 group size. **Advanced
-   overrides** writes the explicit `"group_size": [64, 1, 1]`, which is the only
-   size it can write. A saved draft with another size opens unchanged and shows a
-   warning. **Use automatic settings** clears the size and repairs the draft.
+6. **Pipeline State → Advanced overrides → Group size** offers **64 × 1 × 1**
+   and **8 × 8 × 1**. The same form is available from the canvas with Properties
+   hidden. All explicit overrides in the bundle must agree; automatic passes
+   inherit that choice. An unsupported saved size opens unchanged with a warning.
+   **Use automatic settings** clears the override; with no overrides the bundle
+   uses 64×1×1.
 7. Add a row in **Shaders**. The editor creates the program with `"stage":
    "compute"`, `"input": "RayLaunch"`, `"output": "Radiance"` and empty
    `bindings`. It also writes a C03 stub that traces the camera ray with

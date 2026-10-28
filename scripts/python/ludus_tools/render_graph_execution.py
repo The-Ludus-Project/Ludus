@@ -292,7 +292,7 @@ TARGET_FIELDS = {'metal': 'Msl', 'spirv': 'Spirv', 'wgsl': 'Wgsl', 'glsl': 'Glsl
 PACKAGE_MAGIC = 0x4752554C
 # Editor-only diagnostic ray path capture generation; same layout, refused by runtime decoding.
 RAY_PATH_CAPTURE_PACKAGE_MAGIC = 0x5052554C
-PACKAGE_VERSION = 18
+PACKAGE_VERSION = 19
 RESOURCE_FIELD_COUNT = 9
 RESOURCE_RECORD_BYTES = RESOURCE_FIELD_COUNT * 4
 MAX_PASS_NAME_BYTES = 127
@@ -666,6 +666,10 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
                 lines += ['        },', '    };', f'    result.{member}.Inputs = {declaration}Inputs.AsSpan();']
             if program_name == 'RayTracing':
                 lines += ['    renderer::SetRenderGraphRayInterface(result.' + member + ', rhi::ShaderStage::' + stage.title() + ', result.HasPersistentRayBuffers, result.HasVisibilityBuffer, ' + ('true' if ray.requires_native_queries(contents['plan']) else 'false') + ');']
+            if program_name == 'RayTracing' and stage == 'compute':
+                shape = contents['artifacts'][keys[0]]['descriptor']['interface']['workgroup']
+                for axis, dimension in enumerate(shape):
+                    lines.append(f'    result.{member}.WorkgroupSize[{axis}] = {dimension};')
             if program_name in forward.SUPPORT:
                 lines += [f'    renderer::SetRenderGraphForwardInterface(result.{member}, format::StageRole::{member});']
             stage_bindings = _stage_bindings(program_name, stage, contents['bindings'])
@@ -748,6 +752,11 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
         stage_role = (PERSISTENT_RAY_STAGE_ROLE if contents.get('persistent_buffers', False) else 11) if program_name == 'RayTracing' and stage == 'compute' and contents.get('scene_interface', False) else role(program_name, stage)
         data += u32(stage_role, TARGET_CODES[target], len(inputs), len(entry), len(item['bytes']),
                     len(item['blocks']))
+        if program_name == 'RayTracing' and stage == 'compute':
+            workgroup = item['descriptor']['interface']['workgroup']
+            build.require(workgroup in ray.SUPPORTED_WORKGROUP_SIZES, 'ShaderInterface', program_name,
+                          'ray workgroup differs from the admitted compiler policy')
+            data += u32(*workgroup)
         for value in inputs:
             data += u32(value['location'], FORMAT_CODES[value['format']])
         for slot, block in item['blocks']:

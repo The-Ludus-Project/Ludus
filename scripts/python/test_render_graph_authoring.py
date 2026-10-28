@@ -348,6 +348,7 @@ def parse_runtime(data):
               'fields': [take(5) for _ in range(fields)], 'stages': []}
     for _ in range(stages):
         role, target, inputs, entry_bytes, artifact_bytes, block_count = take(6)
+        workgroup = take(3) if version >= 19 and role in (8, 11, execution.PERSISTENT_RAY_STAGE_ROLE) else (64, 1, 1)
         stage_inputs = [take(2) for _ in range(inputs)]
         names = []
         for _ in range(block_count):
@@ -359,7 +360,7 @@ def parse_runtime(data):
         artifact = data[offset:offset + artifact_bytes]
         offset += artifact_bytes + (-artifact_bytes % 4)
         result['stages'].append({'role': role, 'target': target, 'inputs': stage_inputs, 'entry': entry,
-                                 'artifact': artifact, 'blocks': names})
+                                 'artifact': artifact, 'blocks': names, 'workgroup': workgroup})
     result['storage_buffers'] = [take(4) for _ in range(take(1)[0])] if version >= 8 else []
     result['pass_names'] = []
     if version >= 3:

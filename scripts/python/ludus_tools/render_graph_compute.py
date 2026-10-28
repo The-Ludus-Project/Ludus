@@ -9,7 +9,7 @@ from . import render_graph_ray as ray
 
 SOURCE_KIND = 'ComputePipeline'
 # The persistent ray wrapper's fixed workgroup (LUDUS_GPU_PREVIEW_GROUP_WIDTH x 1 x 1).
-GROUP_SIZE = [64, 1, 1]
+GROUP_SIZE = ray.DEFAULT_WORKGROUP_SIZE
 # C03: float3 Name(SceneContext scene, RayLaunch launch, inout RayQueryContext queries).
 SIGNATURE = ('RayLaunch', 'Radiance')
 
@@ -28,8 +28,8 @@ def lower(node, where, graph):
                    field='shaders', expected=ray.COMPUTE_STAGE, actual=', '.join(stages) or 'no stages',
                    repair='Assign one build-manifest compute program in Shaders.')
     group_size = node['state'].get('group_size', GROUP_SIZE)
-    graph._require(group_size == GROUP_SIZE, 'Capability', where,
-                   f'scene compute passes run on the renderer\'s fixed {GROUP_SIZE} workgroup; '
+    graph._require(group_size in ray.SUPPORTED_WORKGROUP_SIZES, 'Capability', where,
+                   f'scene compute passes support {ray.SUPPORTED_WORKGROUP_SIZES}; '
                    f'the authored group_size {group_size} is not supported',
                    field='state.group_size', expected=GROUP_SIZE, actual=group_size,
                    repair='Clear group_size so Pipeline State is automatic (state: {}).')

@@ -937,7 +937,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                 technique['scene_interface']['visibility_buffer'] = profile['visibility_buffer']
             expanded = ray.expand_programs(authored_programs, technique, snapshot, helper, sys.modules[__name__],
                                           profile['variants'], profile['persistent'], schemas, profile['compute'],
-                                          profile['native_ray_queries'], ray_path_capture)
+                                          profile['native_ray_queries'], ray_path_capture, profile['workgroup'])
             linked_programs.update(expanded)
         programs = linked_programs
         for program_identity in (*ray.COMPUTE_IDS, ray.IMAGE_VERTEX_ID, ray.IMAGE_FRAGMENT_ID):

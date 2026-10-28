@@ -1,6 +1,8 @@
 #include "internal/level_workspace.h"
 #include "internal/preview_viewport.h"
+#include "internal/render_graph_preview.h"
 #include "internal/render_preview.h"
+#include "internal/renderer_workspace.h"
 #include "internal/workspace_style.h"
 #include "internal/world_document.h"
 #include "internal/world_workspace.h"
@@ -15,7 +17,9 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QImage>
+#include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QQuickWindow>
@@ -119,13 +123,26 @@ void SendNativeKey(QQuickWindow& inoutSurface, uint16 key, NSString* characters,
     QApplication::processEvents();
 }
 
-void RequirePresentation(PreviewViewport& inoutViewport, uint64 previous, const RenderPreview* previewOrNull = nullptr)
+void RequirePresentation(PreviewViewport& inoutViewport,
+                         uint64 previous,
+                         const RenderPreview* previewOrNull = nullptr,
+                         const RenderGraphPreview* graphOrNull = nullptr)
 {
+    [NSApp activateIgnoringOtherApps:YES];
+    inoutViewport.window()->raise();
+    inoutViewport.window()->activateWindow();
     const bool hasPresented =
         QTest::qWaitFor([&inoutViewport, previous]() { return inoutViewport.PresentedFrames() > previous; }, 10000);
     const QString status = previewOrNull != nullptr ? previewOrNull->Status() : QString();
     const uint64 produced = previewOrNull != nullptr ? previewOrNull->Frames() : 0;
     CAPTURE(status.toStdString(), produced, previous, inoutViewport.PresentedFrames());
+    const QString graphStatus = graphOrNull != nullptr ? graphOrNull->GetStatus() : QString();
+    const uint64 revision = graphOrNull != nullptr ? graphOrNull->GetPresentedRevision() : 0;
+    const uint64 generation = graphOrNull != nullptr ? graphOrNull->GetPresentedGeneration() : 0;
+    const bool hasGpuFrame = graphOrNull != nullptr && graphOrNull->HasGpuFrame() == true;
+    const bool hasPendingWork = graphOrNull != nullptr && graphOrNull->HasPendingWork() == true;
+    const bool isCopying = graphOrNull != nullptr && graphOrNull->IsCopyingOutput() == true;
+    CAPTURE(graphStatus.toStdString(), revision, generation, hasGpuFrame, hasPendingWork, isCopying);
     REQUIRE(hasPresented == true);
 }
 } // namespace
@@ -160,28 +177,95 @@ TEST_CASE("Cocoa embedded Metal viewport routes native navigation and releases c
         REQUIRE(target.open(QIODevice::WriteOnly) == true);
         REQUIRE(target.write(bytes) == bytes.size());
     }
+    const QString runtime = qEnvironmentVariable("LUDUS_NATIVE_GRAPH_RUNTIME");
     WorldDocument world;
     QString error;
     REQUIRE(world.LoadSchema(ReadNativeFixture(root + QStringLiteral("/authoring/world.schema.json")), error) == true);
     REQUIRE(world.Load(ReadNativeFixture(root + QStringLiteral("/authoring/rendering.world.json")), error) == true);
+    if (runtime.isEmpty() == false)
+    {
+        // Explicitly author the fixture's point light: the graph does not invent raster preview lighting.
+        QJsonObject litWorld = world.Draft();
+        QJsonArray entities = litWorld.value(QStringLiteral("entities")).toArray();
+        for (int32 index = 0; index < entities.size(); ++index)
+        {
+            QJsonObject entity = entities.at(index).toObject();
+            if (entity.value(QStringLiteral("id")).toString() != QStringLiteral("preview.camera"))
+                continue;
+            QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+            components.insert(QStringLiteral("light"),
+                              QJsonObject{{QStringLiteral("enabled"), true},
+                                          {QStringLiteral("kind"), QStringLiteral("point")},
+                                          {QStringLiteral("r"), 1},
+                                          {QStringLiteral("g"), 1},
+                                          {QStringLiteral("b"), 1},
+                                          {QStringLiteral("intensity"), 20},
+                                          {QStringLiteral("range"), 100},
+                                          {QStringLiteral("innerAngle"), 10},
+                                          {QStringLiteral("outerAngle"), 40}});
+            entity.insert(QStringLiteral("components"), components);
+            entities.replace(index, entity);
+        }
+        litWorld.insert(QStringLiteral("entities"), entities);
+        REQUIRE(world.Load(QJsonDocument(litWorld).toJson(), error) == true);
+    }
     const QJsonObject original = world.Draft();
     RenderScene scene;
     REQUIRE(RenderScene::Load(root, world, scene, error) == true);
+    RendererWorkspace workspace({});
     RenderPreview preview;
     QWidget host;
     QVBoxLayout layout(&host);
     QLineEdit field;
     PreviewViewport viewport(&preview);
+    if (runtime.isEmpty() == false)
+    {
+        REQUIRE(scene.AuthoredLights.Count == 1);
+        viewport.UseProjectGraph(workspace);
+        workspace.SetPreviewSource(&preview);
+        workspace.SetProject(root, 1);
+        workspace.EnableWorldRendering();
+        REQUIRE(workspace.GetPreviewOrNull() != nullptr);
+    }
     layout.addWidget(&field);
     layout.addWidget(&viewport, 1);
-    host.resize(800, 600);
+    host.resize(runtime.isEmpty() == true ? 800 : 480, runtime.isEmpty() == true ? 600 : 360);
+    if (runtime.isEmpty() == false)
+    {
+        // Qt stops painting an occluded native child; keep the GPU acceptance fixture exposed.
+        host.setWindowFlag(Qt::WindowStaysOnTopHint);
+        host.move(100, 100);
+    }
     host.show();
     host.raise();
     host.activateWindow();
     REQUIRE(preview.SetScene(scene) == true);
     preview.Navigate(0, {0, 0}, 3, false);
     REQUIRE(preview.Start() == true);
-    RequirePresentation(viewport, 0, &preview);
+    RequirePresentation(viewport, 0, &preview, workspace.GetPreviewOrNull());
+    if (runtime.isEmpty() == false)
+    {
+        RenderGraphPreview& graph = *workspace.GetPreviewOrNull();
+        const uint64 previousPaint = viewport.PresentedFrames();
+        REQUIRE(graph.Load(runtime) == RenderGraphPreviewLoad::Staged);
+        CHECK(viewport.HasRetainedGraphFrame() == true);
+        [NSApp activateIgnoringOtherApps:YES];
+        host.raise();
+        host.activateWindow();
+        const uint64 candidate = graph.GetReport().CandidateGeneration;
+        const bool hasPresentedCandidate = QTest::qWaitFor(
+            [&graph, &viewport, candidate, previousPaint]() {
+                return graph.GetPresentedGeneration() == candidate && viewport.PresentedFrames() > previousPaint;
+            },
+            30000);
+        INFO(graph.GetStatus().toStdString());
+        INFO("candidate=" << candidate << ", presented=" << graph.GetPresentedGeneration()
+                          << ", active=" << graph.GetReport().ActiveGeneration
+                          << ", failure=" << static_cast<uint32>(graph.GetReport().LastFailure));
+        REQUIRE(hasPresentedCandidate == true);
+        INFO(graph.GetRequestedPackagePath().toStdString());
+        CHECK(graph.GetRequestedPackagePath() == runtime);
+    }
     QQuickWindow* surfaceOrNull = nullptr;
     for (QWindow* window : QGuiApplication::allWindows())
     {
@@ -199,8 +283,9 @@ TEST_CASE("Cocoa embedded Metal viewport routes native navigation and releases c
     QTest::qWait(100);
     field.setFocus();
     const QJsonObject beforeOrbit = preview.Navigation();
-    const QImage originalImage = surface.grabWindow();
-    REQUIRE(originalImage.isNull() == false);
+    const QImage originalImage = runtime.isEmpty() == true ? surface.grabWindow() : QImage{};
+    if (runtime.isEmpty() == true)
+        REQUIRE(originalImage.isNull() == false);
     const QPoint start(surface.width() / 2, surface.height() / 2);
     const QPoint moved = start + QPoint(60, 25);
     uint64 presented = viewport.PresentedFrames();
@@ -208,12 +293,14 @@ TEST_CASE("Cocoa embedded Metal viewport routes native navigation and releases c
     SendNativeMouse(surface, NSEventTypeLeftMouseDragged, moved, NSEventModifierFlagOption);
     SendNativeMouse(surface, NSEventTypeLeftMouseUp, moved, NSEventModifierFlagOption);
     REQUIRE(preview.Navigation() != beforeOrbit);
-    RequirePresentation(viewport, presented, &preview);
-    REQUIRE(QTest::qWaitFor([&surface, &originalImage]() { return surface.grabWindow() != originalImage; }, 5000) ==
-            true);
+    RequirePresentation(viewport, presented, &preview, workspace.GetPreviewOrNull());
+    if (runtime.isEmpty() == true)
+        REQUIRE(QTest::qWaitFor([&surface, &originalImage]() { return surface.grabWindow() != originalImage; }, 5000) ==
+                true);
 
     const QJsonObject beforeTrackpadPan = preview.Navigation();
-    const QImage beforeTrackpadPanImage = surface.grabWindow();
+    const uint64 beforeTrackpadPaint = viewport.PresentedFrames();
+    const QImage beforeTrackpadPanImage = runtime.isEmpty() == true ? surface.grabWindow() : QImage{};
     const NSEventModifierFlags panModifiers = NSEventModifierFlagOption | NSEventModifierFlagShift;
     SendNativeMouse(surface, NSEventTypeLeftMouseDown, start, panModifiers);
     SendNativeMouse(surface, NSEventTypeLeftMouseDragged, moved, panModifiers);
@@ -222,9 +309,12 @@ TEST_CASE("Cocoa embedded Metal viewport routes native navigation and releases c
     CHECK(afterTrackpadPan != beforeTrackpadPan);
     CHECK(afterTrackpadPan.value(QStringLiteral("yaw")) == beforeTrackpadPan.value(QStringLiteral("yaw")));
     CHECK(afterTrackpadPan.value(QStringLiteral("pitch")) == beforeTrackpadPan.value(QStringLiteral("pitch")));
-    REQUIRE(QTest::qWaitFor(
-                [&surface, &beforeTrackpadPanImage]() { return surface.grabWindow() != beforeTrackpadPanImage; },
-                5000) == true);
+    if (runtime.isEmpty() == true)
+        REQUIRE(QTest::qWaitFor(
+                    [&surface, &beforeTrackpadPanImage]() { return surface.grabWindow() != beforeTrackpadPanImage; },
+                    5000) == true);
+    else
+        RequirePresentation(viewport, beforeTrackpadPaint, &preview, workspace.GetPreviewOrNull());
 
     const QJsonObject beforePan = preview.Navigation();
     presented = viewport.PresentedFrames();
@@ -232,7 +322,7 @@ TEST_CASE("Cocoa embedded Metal viewport routes native navigation and releases c
     SendNativeMouse(surface, NSEventTypeOtherMouseDragged, moved);
     SendNativeMouse(surface, NSEventTypeOtherMouseUp, moved);
     CHECK(preview.Navigation() != beforePan);
-    RequirePresentation(viewport, presented, &preview);
+    RequirePresentation(viewport, presented, &preview, workspace.GetPreviewOrNull());
 
     SendNativeMouse(surface, NSEventTypeRightMouseDown, start);
     const QJsonObject beforeLook = preview.Navigation();
@@ -255,7 +345,7 @@ TEST_CASE("Cocoa embedded Metal viewport routes native navigation and releases c
     SendNativeKey(surface, 3, @"f", true);
     SendNativeKey(surface, 3, @"f", false);
     CHECK(preview.Navigation() != stopped);
-    RequirePresentation(viewport, presented, &preview);
+    RequirePresentation(viewport, presented, &preview, workspace.GetPreviewOrNull());
     // macOS users can produce a secondary click with Control + the primary
     // button even when their trackpad has no configured two-finger click.
     SendNativeMouse(surface, NSEventTypeLeftMouseDown, start, NSEventModifierFlagControl);
@@ -274,7 +364,46 @@ TEST_CASE("Cocoa embedded Metal viewport routes native navigation and releases c
     CHECK(preview.Navigation() != beforeFrameAll);
     CHECK(world.Draft() == original);
     CHECK(world.Dirty() == false);
+    if (runtime.isEmpty() == false)
+    {
+        RenderGraphPreview& graph = *workspace.GetPreviewOrNull();
+        CHECK(graph.HasGpuFrame() == true);
+        CHECK(viewport.HasRetainedGraphFrame() == true);
+        const QSize beforeResize = surface.size();
+        presented = viewport.PresentedFrames();
+        host.resize(551, 417);
+        RequirePresentation(viewport, presented, &preview, workspace.GetPreviewOrNull());
+        CHECK(surface.size() != beforeResize);
+        const uint64 generation = graph.GetPresentedGeneration();
+        const uint64 revision = graph.GetPresentedRevision();
+        const uint64 beforeEdit = viewport.PresentedFrames();
+        // Reload an edited current World through the same extraction boundary used by the project.
+        QJsonObject edited = original;
+        QJsonArray entities = edited.value(QStringLiteral("entities")).toArray();
+        REQUIRE(entities.isEmpty() == false);
+        QJsonObject entity = entities.at(0).toObject();
+        QJsonObject components = entity.value(QStringLiteral("components")).toObject();
+        QJsonObject transform = components.value(QStringLiteral("transform")).toObject();
+        transform.insert(QStringLiteral("x"), -1);
+        components.insert(QStringLiteral("transform"), transform);
+        entity.insert(QStringLiteral("components"), components);
+        entities.replace(0, entity);
+        edited.insert(QStringLiteral("entities"), entities);
+        REQUIRE(world.Load(QJsonDocument(edited).toJson(), error) == true);
+        REQUIRE(RenderScene::Load(root, world, scene, error) == true);
+        REQUIRE(preview.SetScene(scene) == true);
+        REQUIRE(QTest::qWaitFor([&graph, revision]() { return graph.GetPresentedRevision() > revision; }, 10000) ==
+                true);
+        REQUIRE(QTest::qWaitFor([&viewport, beforeEdit]() { return viewport.PresentedFrames() > beforeEdit; }, 10000) ==
+                true);
+        CHECK(graph.GetPresentedGeneration() == generation);
+        CHECK(graph.HasGpuFrame() == true);
+        const QString capture = qEnvironmentVariable("LUDUS_NATIVE_GRAPH_CAPTURE");
+        if (capture.isEmpty() == false)
+            REQUIRE(surface.grabWindow().save(capture) == true);
+    }
     preview.Stop();
+    workspace.SetPreviewSource(nullptr);
 }
 
 TEST_CASE("Supplied imported World accepts native drag navigation with restored camera preferences",
