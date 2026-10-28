@@ -65,6 +65,7 @@ for content changes. Module/sample/tool READMEs link to these owners.
 - [Generated public SDK reference](development/api-reference.md)
 - [Hash bytes without confusing identity](wiki/guides/hashing.md)
 - [Independent Ludus game projects and shared SDKs — user guide](development/project-sdk-workflow.md)
+- [LTC table fitting and accuracy](development/ltc-table.md)
 - [Ludus Wiki: development and publication](development/wiki.md)
 - [ludus-tools](development/host-tools.md)
 - [Memory Phase 0: Trace Prerequisites and Baselines](development/memory-phase-0.md)

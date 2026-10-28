@@ -28,7 +28,10 @@ constexpr int32 CATALOG_VERSION = 1;
 // would allocate during static initialization.
 QStringList GetRequirements()
 {
-    return {QStringLiteral("native-ray-tracing"), QStringLiteral("denoiser"), QStringLiteral("metalfx")};
+    return {QStringLiteral("native-ray-tracing"),
+            QStringLiteral("compute-ray-tracing"),
+            QStringLiteral("denoiser"),
+            QStringLiteral("metalfx")};
 }
 
 QStringList GetEntryFields()
@@ -288,6 +291,10 @@ QString GetRenderGraphTemplateRequirementLabel(const QString& requirement)
     if (requirement == QStringLiteral("native-ray-tracing"))
     {
         return QStringLiteral("Native ray tracing");
+    }
+    if (requirement == QStringLiteral("compute-ray-tracing"))
+    {
+        return QStringLiteral("Metal or Vulkan compute");
     }
     if (requirement == QStringLiteral("denoiser"))
     {

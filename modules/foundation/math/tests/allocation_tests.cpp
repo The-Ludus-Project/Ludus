@@ -8,6 +8,7 @@
 #include <ludus/foundation/math/batch.hpp>
 #include <ludus/foundation/math/cubic.hpp>
 #include <ludus/foundation/math/dynamics.hpp>
+#include <ludus/foundation/math/linearly_transformed_cosine.hpp>
 #include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/patch.hpp>
 #include <ludus/foundation/math/projected_solid_angle.hpp>
@@ -228,6 +229,16 @@ TEST_CASE("Checked math operations never allocate", "[math][alloc]")
     Vector3 lightDirection;
     REQUIRE(TrySampleProjectedSolidAnglePolygon(prepared, Vector2{0.3f, 0.6f}, lightDirection) == MathStatus::Success);
     REQUIRE(EvaluateProjectedSolidAnglePolygonDensity(prepared, lightDirection) > 0.0f);
+
+    // Linearly transformed cosine sampling of the same light.
+    LinearlyTransformedCosine lobe;
+    REQUIRE(TryMakeLinearlyTransformedCosine(Matrix3{{Vector3{4, 0, 0}, Vector3{0, 4, 0}, Vector3{-2, 0, 1}}}, lobe) ==
+            MathStatus::Success);
+    LinearlyTransformedCosinePolygon lobePolygon;
+    REQUIRE(TryPrepareLinearlyTransformedCosinePolygon(polygon, lobe, lobePolygon) == MathStatus::Success);
+    REQUIRE(TrySampleLinearlyTransformedCosinePolygon(lobePolygon, Vector2{0.3f, 0.6f}, lightDirection) ==
+            MathStatus::Success);
+    REQUIRE(EvaluateLinearlyTransformedCosinePolygonDensity(lobePolygon, lightDirection) > 0.0f);
 
     // Batch (caller-owned stack buffers; no heap scratch inside).
     std::array<Vector3, 8> input{};

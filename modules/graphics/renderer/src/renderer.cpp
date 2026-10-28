@@ -1720,7 +1720,7 @@ Status Renderer::PreparePresentationData(rhi::TextureHandle source,
         for (usize mode = 0; mode < 2 && Accepted(status); ++mode)
         {
             const math::Vector4 parameters{lighting->Exposure,
-                                           lighting->ToneMap ? 1.0F : 0.0F,
+                                           lighting->ToneMap == true ? static_cast<float32>(lighting->Curve) : 0.0F,
                                            mode != 0 && lighting->Encode ? 1.0F : 0.0F,
                                            0};
             status = rhi::CreateBuffer(s.Device,

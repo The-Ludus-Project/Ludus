@@ -64,12 +64,17 @@ public:
     /// Visit an ancestor in the current instance path, restoring that ancestor's saved view.
     /// Invalid/current indices are no-ops. A successful jump is a new visit and discards Forward history.
     [[nodiscard]] bool VisitAncestor(foundation::int32 index);
+    /// Visit an exact, current caller path and reveal an authored node in one browser-history step.
+    /// Invalid/missing/changed paths fail before navigation; document undo and layout are untouched.
+    [[nodiscard]] bool VisitNodePath(const QVector<RenderGraphHistoryLocation>& path, const QString& node);
     /// Current instance path, or empty when nothing is shown. Copy is independent of later navigation.
     [[nodiscard]] QVector<RenderGraphHistoryLocation> GetPath() const;
     /// Retained visit count, for accessibility and bounded-history checks.
     [[nodiscard]] foundation::int32 GetEntryCount() const noexcept;
 
 Q_SIGNALS:
+    /// Current caller path or its restored view changed; GUI-thread presentation listeners only.
+    void Changed();
     /// Synchronous GUI-thread request. The workspace must show this file/configuration, synchronize
     /// its selection and switch to Canvas before returning; the history then restores the saved view.
     void LocationRequested(const QString& file, const QString& configuration, const QStringList& selection);

@@ -34,6 +34,7 @@ from . import render_graph_quality as quality
 from . import render_graph_sizes as sizes
 from . import render_graph_layout as layout_policy
 
+PLAN_VERSION = 1
 MAX_ASSET_BYTES = 128 * 1024
 MAX_TOTAL_BYTES = 2 * 1024 * 1024
 MAX_ASSETS = 32
@@ -793,6 +794,7 @@ class _Compiler:
         self.techniques = set()
         self.expanded = 0
         self.instances = {}
+        self.activity = []
 
     def add_pass(self, entry):
         _require(len(self.passes) < MAX_PASSES, "Capacity", entry["id"], "serial pass capacity exceeded")
@@ -822,6 +824,10 @@ class _Compiler:
         if requested_outputs is None:
             requested_outputs = {port['id'] for port in config['outputs']}
         order, incoming, used = self.library.execution_order(path, config, requested_outputs)
+        # Authoritative activity for this exact caller/output/override context. Retained IDs
+        # share the existing expanded-node budget; no second graph walk or runtime schedule.
+        self.activity.append({'instance': prefix, 'source': self.library.label(path),
+                              'configuration': config['id'], 'retained': [node['id'] for node in order]})
         values = {"input." + key: value for key, value in bindings.items()}
         for node in order:
             self.expanded += 1
@@ -1242,11 +1248,12 @@ def compile_graph(path, *, configuration=None, root=None):
             **document, "configurations": [{k: v for k, v in c.items() if k != "layout"}
                                           for c in document["configurations"]]}})
     identity = {"documents": semantic, "configuration": selected}
-    return {"version": 1, "stage": "RG0", "execution": "ContractOnly", "asset": asset["id"],
+    return {"version": PLAN_VERSION, "stage": "RG0", "execution": "ContractOnly", "asset": asset["id"],
             "configuration": selected, "selection": "Default" if configuration is None else "Explicit",
             "semantic_digest": hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
             "dependencies": [{"source": library.label(p), "sha256": hashlib.sha256(library.bytes[p]).hexdigest()}
                              for p in sorted(library.bytes, key=library.label)],
+            "source": library.label(path), "activity": compiler.activity,
             "passes": compiler.passes, "resources": compiler.resources, "roots": compiler.roots,
             "cameras": compiler.cameras, "techniques": sorted(compiler.techniques),
             "checks_pending": ["ShaderBuild", "DeviceCapabilities", "SceneCoverage", "GpuExecution"]}
@@ -1342,8 +1349,8 @@ def new_workspace(destination, *, output="presentation", renderer_static=False, 
     """Publish an editable built-in render graph template in a new directory.
 
     template selects raster (the default), forward-lit, restir-di, visibility-buffer,
-    visibility-secondary-rays, tiled-vbuffer-nee, compute-ray-tracing, simple-compute-ray-tracing or
-    veach-guibas-mis. All but raster create offscreen Renderer packages containing their shaders and
+    visibility-secondary-rays, tiled-vbuffer-nee, compute-ray-tracing, simple-compute-ray-tracing,
+    veach-guibas-mis or line-sampling. All but raster create offscreen Renderer packages containing their shaders and
     shared view-relative RenderSize controls.
     output is presentation, offscreen or depth. Creation never overwrites an
     existing directory; staged files are validated before publication and cleaned

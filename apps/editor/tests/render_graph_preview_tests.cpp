@@ -2422,6 +2422,7 @@ TEST_CASE("Graph GPU display snapshots retain consumers and bypass frame readbac
         CHECK(reads.Held[i].Image.Height == HEIGHT);
         CHECK(preview.GetImage().isNull() == true);
         CHECK(preview.HasGpuFrame() == true);
+        CHECK(preview.GetDisplayStatus().isEmpty() == true);
     }
     const uint64 retainedSerial = display.GetLatestSerial();
     constexpr uint64 BLOCKED_REVISION = 4;

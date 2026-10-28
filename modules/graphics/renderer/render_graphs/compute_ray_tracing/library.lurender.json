@@ -27,6 +27,32 @@
           "required": true
         }
       ],
+      "options": [
+        {
+          "id": "PrimaryTraversal",
+          "label": "Primary-hit ray traversal",
+          "type": "Enum",
+          "target": "primary.Traversal",
+          "values": [
+            "NativeQuery",
+            "ComputeBvh",
+            "TriangleLoop"
+          ],
+          "default": "NativeQuery"
+        },
+        {
+          "id": "ShadeTraversal",
+          "label": "Shading ray traversal",
+          "type": "Enum",
+          "target": "shade.Traversal",
+          "values": [
+            "NativeQuery",
+            "ComputeBvh",
+            "TriangleLoop"
+          ],
+          "default": "NativeQuery"
+        }
+      ],
       "nodes": [
         {
           "id": "hits",
@@ -86,8 +112,23 @@
           ],
           "state": {},
           "invocation": {
-            "dimensions": "ColorTarget"
-          }
+            "dimensions": "ColorTarget",
+            "traversal": "NativeQuery"
+          },
+          "options": [
+            {
+              "id": "Traversal",
+              "label": "Ray traversal",
+              "type": "Enum",
+              "target": "invocation.traversal",
+              "values": [
+                "NativeQuery",
+                "ComputeBvh",
+                "TriangleLoop"
+              ],
+              "default": "NativeQuery"
+            }
+          ]
         },
         {
           "id": "shade",
@@ -141,8 +182,23 @@
           ],
           "state": {},
           "invocation": {
-            "dimensions": "ColorTarget"
-          }
+            "dimensions": "ColorTarget",
+            "traversal": "NativeQuery"
+          },
+          "options": [
+            {
+              "id": "Traversal",
+              "label": "Ray traversal",
+              "type": "Enum",
+              "target": "invocation.traversal",
+              "values": [
+                "NativeQuery",
+                "ComputeBvh",
+                "TriangleLoop"
+              ],
+              "default": "NativeQuery"
+            }
+          ]
         },
         {
           "id": "renderSize",

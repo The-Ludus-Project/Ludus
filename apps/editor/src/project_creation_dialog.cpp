@@ -1,4 +1,5 @@
 #include "internal/project_creation_dialog.h"
+#include "internal/theme_fonts.h"
 #include "internal/workspace_style.h"
 
 #include <QCheckBox>
@@ -59,9 +60,7 @@ ProjectCreationDialog::ProjectCreationDialog(QWidget* parent) : QDialog(parent)
     layout->setContentsMargins(20, 20, 20, 20);
     layout->setSpacing(12);
     auto* heading = new QLabel(QStringLiteral("Create a project"), this);
-    auto font = heading->font();
-    font.setBold(true);
-    heading->setFont(font);
+    heading->setFont(MakeTypeFont(heading->font(), TypeRole::Title));
     layout->addWidget(heading);
     auto* form = new QFormLayout;
     form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
