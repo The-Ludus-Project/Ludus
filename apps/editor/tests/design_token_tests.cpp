@@ -2,6 +2,7 @@
 // proven for every pair in both appearances and the workspace style really reads the tokens.
 
 #include "design_tokens.h"
+#include "internal/theme_preferences.h"
 #include "internal/workspace_style.h"
 
 #include <ludus/foundation/base/types.h>
@@ -9,6 +10,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <QApplication>
+#include <QByteArray>
 #include <QColor>
 #include <QPalette>
 #include <QString>
@@ -84,6 +86,56 @@ TEST_CASE("Every design token contrast pair holds in both appearances", "[editor
             CHECK(ratio >= requirement.Minimum);
         }
     }
+}
+
+TEST_CASE("Every design token contrast pair reaches its high-contrast minimum in both appearances",
+          "[editor][design-tokens]")
+{
+    constexpr double HIGH_CONTRAST_TEXT_RATIO = 7.0;
+    constexpr double NORMAL_TEXT_RATIO = 4.5;
+    for (const design::ContrastRequirement& requirement : design::CONTRAST_REQUIREMENTS)
+    {
+        CHECK(requirement.HighContrastMinimum >= requirement.Minimum);
+        for (const bool isDark : {true, false})
+        {
+            INFO(requirement.Label << (isDark == true ? " (dark, high contrast)" : " (light, high contrast)"));
+            const double ratio = ContrastRatio(design::GetThemeColour(requirement.Foreground, isDark, true),
+                                               design::GetThemeColour(requirement.Background, isDark, true));
+            CHECK(ratio >= requirement.HighContrastMinimum);
+            if (requirement.Minimum == NORMAL_TEXT_RATIO)
+            {
+                CHECK(requirement.HighContrastMinimum >= HIGH_CONTRAST_TEXT_RATIO);
+            }
+        }
+    }
+}
+
+TEST_CASE("High contrast changes the workspace style and keeps the viewport", "[editor][design-tokens]")
+{
+    const QPalette original = QApplication::palette();
+    qputenv(HIGH_CONTRAST_VARIABLE, QByteArrayLiteral("1"));
+    for (const bool isDark : {true, false})
+    {
+        INFO((isDark == true ? "dark" : "light"));
+        QApplication::setPalette(MakeApplicationPalette(isDark));
+        QWidget widget;
+        ApplyWorkspaceStyle(&widget);
+        CHECK(widget.palette().color(QPalette::WindowText).rgb() ==
+              design::GetThemeArgb(design::ThemeColour::TextPrimary, isDark, true));
+        CHECK(widget.palette().color(QPalette::Mid).rgb() ==
+              design::GetThemeArgb(design::ThemeColour::BorderControl, isDark, true));
+        CHECK(widget.styleSheet().contains(QStringLiteral("3px solid")) == true);
+        CHECK(widget.styleSheet().contains(QStringLiteral("2px solid")) == true);
+    }
+    qunsetenv(HIGH_CONTRAST_VARIABLE);
+    QApplication::setPalette(MakeApplicationPalette(true));
+    QWidget normal;
+    ApplyWorkspaceStyle(&normal);
+    CHECK(normal.styleSheet().contains(QStringLiteral("3px solid")) == false);
+    // The viewport colour never changes with the interface theme.
+    CHECK(design::GetThemeColour(design::ThemeColour::SurfaceViewport, true, true) ==
+          design::GetThemeColour(design::ThemeColour::SurfaceViewport, true, false));
+    QApplication::setPalette(original);
 }
 
 TEST_CASE("Design tokens are well formed", "[editor][design-tokens]")

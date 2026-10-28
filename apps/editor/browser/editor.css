@@ -75,6 +75,58 @@
     --ludus-axis-z: #5b8ee6;
   }
 }
+@media (prefers-contrast: more) {
+  :root {
+    --ludus-surface-workspace: #000000;
+    --ludus-surface-panel: #0b0f12;
+    --ludus-surface-raised: #1c262c;
+    --ludus-surface-log: #000000;
+    --ludus-text-primary: #ffffff;
+    --ludus-text-secondary: #e6eef0;
+    --ludus-text-tertiary: #d3dfe2;
+    --ludus-text-disabled: #9fb0b5;
+    --ludus-text-log: #ffffff;
+    --ludus-text-hud-quiet: #c4d2d6;
+    --ludus-border-subtle: #7d9299;
+    --ludus-border-control: #b9cbd0;
+    --ludus-accent-primary: #7ff0e0;
+    --ludus-accent-primary-active: #b0f7ee;
+    --ludus-accent-on-primary: #000000;
+    --ludus-accent-surface: #0f4a4a;
+    --ludus-status-success: #8ef0a8;
+    --ludus-status-warning: #ffd873;
+    --ludus-status-danger: #ffb3aa;
+    --ludus-status-success-surface: #0b2a18;
+    --ludus-status-warning-surface: #2e2400;
+    --ludus-status-danger-surface: #3a0f14;
+  }
+}
+@media (prefers-contrast: more) and (prefers-color-scheme: light) {
+  :root {
+    --ludus-surface-workspace: #ffffff;
+    --ludus-surface-panel: #ffffff;
+    --ludus-surface-raised: #e9e9e9;
+    --ludus-surface-log: #000000;
+    --ludus-text-primary: #000000;
+    --ludus-text-secondary: #1a2a2e;
+    --ludus-text-tertiary: #22343a;
+    --ludus-text-disabled: #5b6c70;
+    --ludus-text-log: #ffffff;
+    --ludus-text-hud-quiet: #c4d2d6;
+    --ludus-border-subtle: #5c7076;
+    --ludus-border-control: #34484d;
+    --ludus-accent-primary: #00524b;
+    --ludus-accent-primary-active: #003b36;
+    --ludus-accent-on-primary: #ffffff;
+    --ludus-accent-surface: #bfeae2;
+    --ludus-status-success: #0b5a22;
+    --ludus-status-warning: #6b4000;
+    --ludus-status-danger: #8f1a10;
+    --ludus-status-success-surface: #d8f0df;
+    --ludus-status-warning-surface: #f8e8bd;
+    --ludus-status-danger-surface: #f8d9d5;
+  }
+}
 /* END generated design tokens */
 html, body { margin: 0; height: 100%; font: 14px system-ui, sans-serif; color: var(--ludus-text-primary); background: var(--ludus-surface-workspace); }
 body { display: flex; flex-direction: column; }
