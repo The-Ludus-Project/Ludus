@@ -33,9 +33,9 @@ constexpr float64 HANDLE_TIP_PIXELS = 5;
 constexpr float64 MOVE_SNAP_METRES = 0.1;
 constexpr float64 ROTATE_SNAP_DEGREES = 15;
 constexpr float64 SCALE_SNAP = 0.1;
-constexpr float64 MINIMUM_SCALE = 0.000001;
-constexpr float64 MAXIMUM_SCALE = 1000000;
-constexpr float64 DEGREES_PER_TURN = 360;
+/// Lowest fraction of the original scale previewed by one drag; WorldDocument owns absolute admission limits.
+constexpr float64 MINIMUM_SCALE_FACTOR = 0.01;
+constexpr float64 DEGREES_PER_TURN = math::RadiansToDegrees(math::kTau);
 constexpr float64 PIXELS_PER_DEGREE = HANDLE_PIXELS * math::DegreesToRadians(1.0);
 constexpr float64 WIRE_WIDTH = 1.5;
 constexpr float64 HANDLE_WIDTH = 3;
@@ -86,10 +86,10 @@ float64 ComputeDistanceSquared(QPointF point, const QLineF& line) noexcept
     const QPointF difference = point - line.p1() - direction * t;
     return QPointF::dotProduct(difference, difference);
 }
-bool IntersectTriangle(const math::Ray3& ray,
-                       math::Vector3 a,
-                       math::Vector3 b,
-                       math::Vector3 c,
+bool IntersectTriangle(const math::Ray3& rayMesh,
+                       math::Vector3 positionMeshA,
+                       math::Vector3 positionMeshB,
+                       math::Vector3 positionMeshC,
                        float64& outDistance) noexcept
 {
     // Mesh units need not match world metres. Double products avoid a fixed
@@ -97,19 +97,19 @@ bool IntersectTriangle(const math::Ray3& ray,
     const auto widen = [](math::Vector3 value) noexcept -> math::Vector3d {
         return {static_cast<float64>(value.X), static_cast<float64>(value.Y), static_cast<float64>(value.Z)};
     };
-    const math::Vector3d edge1 = widen(b) - widen(a);
-    const math::Vector3d edge2 = widen(c) - widen(a);
-    const math::Vector3d cross = math::Cross(widen(ray.Direction), edge2);
-    const float64 determinant = math::Dot(edge1, cross);
+    const math::Vector3d edge1Mesh = widen(positionMeshB) - widen(positionMeshA);
+    const math::Vector3d edge2Mesh = widen(positionMeshC) - widen(positionMeshA);
+    const math::Vector3d crossMesh = math::Cross(widen(rayMesh.Direction), edge2Mesh);
+    const float64 determinant = math::Dot(edge1Mesh, crossMesh);
     if (determinant == 0 || math::IsFinite(determinant) == false)
     {
         return false;
     }
-    const math::Vector3d offset = widen(ray.Origin) - widen(a);
-    const float64 u = math::Dot(offset, cross) / determinant;
-    const math::Vector3d secondCross = math::Cross(offset, edge1);
-    const float64 v = math::Dot(widen(ray.Direction), secondCross) / determinant;
-    const float64 distance = math::Dot(edge2, secondCross) / determinant;
+    const math::Vector3d offsetMesh = widen(rayMesh.Origin) - widen(positionMeshA);
+    const float64 u = math::Dot(offsetMesh, crossMesh) / determinant;
+    const math::Vector3d secondCrossMesh = math::Cross(offsetMesh, edge1Mesh);
+    const float64 v = math::Dot(widen(rayMesh.Direction), secondCrossMesh) / determinant;
+    const float64 distance = math::Dot(edge2Mesh, secondCrossMesh) / determinant;
     if (u < 0 || v < 0 || u + v > 1 || distance < 0 || math::IsFinite(distance) == false)
     {
         return false;
@@ -283,7 +283,7 @@ QString ViewportObjectInteraction::Pick(QPointF positionPixel, const QRectF& out
         }
         const math::Ray3 rayMesh{math::TransformPoint(worldToMesh, rayWorld.Origin),
                                  math::TransformVector(worldToMesh, rayWorld.Direction)};
-        const BorrowedView<const math::Vector3> positions = GetPositions(scene, object.Mesh);
+        const BorrowedView<const math::Vector3> positionsMesh = GetPositions(scene, object.Mesh);
         const BorrowedView<const uint32> indices = GetIndices(scene, object.Mesh);
         for (usize index = 0; index + TRIANGLE_VERTICES <= indices.GetSize(); index += TRIANGLE_VERTICES)
         {
@@ -291,8 +291,8 @@ QString ViewportObjectInteraction::Pick(QPointF positionPixel, const QRectF& out
             const uint32 b = indices[index + 1];
             const uint32 c = indices[index + 2];
             float64 distance = 0;
-            if (a >= positions.GetSize() || b >= positions.GetSize() || c >= positions.GetSize() ||
-                IntersectTriangle(rayMesh, positions[a], positions[b], positions[c], distance) == false ||
+            if (a >= positionsMesh.GetSize() || b >= positionsMesh.GetSize() || c >= positionsMesh.GetSize() ||
+                IntersectTriangle(rayMesh, positionsMesh[a], positionsMesh[b], positionsMesh[c], distance) == false ||
                 (hasHit == true && distance >= nearest))
             {
                 continue;
@@ -311,26 +311,26 @@ QString ViewportObjectInteraction::Pick(QPointF positionPixel, const QRectF& out
 }
 math::Affine3 ViewportObjectInteraction::makeTransform(const QJsonObject& placement) const
 {
-    math::Affine3 basis;
+    math::Affine3 importedMeshToParent;
     const QJsonArray values = placement.value(QStringLiteral("basis")).toArray();
     for (int32 axis = 0; axis < AXIS_COUNT; ++axis)
     {
-        const int32 offset = axis * AXIS_COUNT;
-        basis.Columns[axis] = {static_cast<float32>(values[offset].toDouble()),
-                               static_cast<float32>(values[offset + 1].toDouble()),
-                               static_cast<float32>(values[offset + 2].toDouble())};
+        const int32 offsetMesh = axis * AXIS_COUNT;
+        importedMeshToParent.Columns[axis] = {static_cast<float32>(values[offsetMesh].toDouble()),
+                                              static_cast<float32>(values[offsetMesh + 1].toDouble()),
+                                              static_cast<float32>(values[offsetMesh + 2].toDouble())};
     }
-    const math::Vector3 rotation = ReadVector(placement.value(QStringLiteral("rotation")).toArray());
+    const math::Vector3 rotationDegrees = ReadVector(placement.value(QStringLiteral("rotation")).toArray());
     math::Quaternion rotationX;
     math::Quaternion rotationY;
     math::Quaternion rotationZ;
-    static_cast<void>(math::TryFromAxisAngle({1, 0, 0}, math::DegreesToRadians(rotation.X), rotationX));
-    static_cast<void>(math::TryFromAxisAngle({0, 1, 0}, math::DegreesToRadians(rotation.Y), rotationY));
-    static_cast<void>(math::TryFromAxisAngle({0, 0, 1}, math::DegreesToRadians(rotation.Z), rotationZ));
-    math::TransformTRS adjustment;
-    static_cast<void>(math::TryNormalize(rotationZ * rotationY * rotationX, adjustment.Rotation));
-    adjustment.Scale = ReadVector(placement.value(QStringLiteral("scale")).toArray());
-    math::Affine3 meshToParent = math::Compose(basis, math::ToAffine3(adjustment));
+    static_cast<void>(math::TryFromAxisAngle({1, 0, 0}, math::DegreesToRadians(rotationDegrees.X), rotationX));
+    static_cast<void>(math::TryFromAxisAngle({0, 1, 0}, math::DegreesToRadians(rotationDegrees.Y), rotationY));
+    static_cast<void>(math::TryFromAxisAngle({0, 0, 1}, math::DegreesToRadians(rotationDegrees.Z), rotationZ));
+    math::TransformTRS adjustmentMesh;
+    static_cast<void>(math::TryNormalize(rotationZ * rotationY * rotationX, adjustmentMesh.Rotation));
+    adjustmentMesh.Scale = ReadVector(placement.value(QStringLiteral("scale")).toArray());
+    math::Affine3 meshToParent = math::Compose(importedMeshToParent, math::ToAffine3(adjustmentMesh));
     meshToParent.Translation = ReadVector(placement.value(QStringLiteral("position")).toArray());
     return math::Compose(mParentToWorld, meshToParent);
 }
@@ -358,10 +358,10 @@ void ViewportObjectInteraction::buildHandles()
     {
         return;
     }
-    const float32 radius = static_cast<float32>(HANDLE_PIXELS / pixelsPerMetre);
+    const float32 radiusWorld = static_cast<float32>(HANDLE_PIXELS / pixelsPerMetre);
     for (int32 axis = 0; axis < AXIS_COUNT; ++axis)
     {
-        math::Affine3 axisFrame = meshToWorld;
+        math::Affine3 axisFrameToWorld = meshToWorld;
         if (mTool == Tool::Rotate)
         {
             QJsonObject axisPlacement = mDragAxis >= 0 ? mCandidate : mPlacement;
@@ -373,16 +373,17 @@ void ViewportObjectInteraction::buildHandles()
                 rotation[preceding] = 0;
             }
             axisPlacement.insert(QStringLiteral("rotation"), rotation);
-            axisFrame = makeTransform(axisPlacement);
+            axisFrameToWorld = makeTransform(axisPlacement);
         }
-        math::Vector3 directionWorld = mTool == Tool::Move ? mParentToWorld.Columns[axis] : axisFrame.Columns[axis];
+        math::Vector3 directionWorld =
+            mTool == Tool::Move ? mParentToWorld.Columns[axis] : axisFrameToWorld.Columns[axis];
         math::Vector3 unitWorld;
         if (math::TryNormalize(directionWorld, unitWorld) != math::MathStatus::Success)
         {
             continue;
         }
         QPointF endPixel;
-        if (project(meshToWorld.Translation + unitWorld * radius, endPixel) == false)
+        if (project(meshToWorld.Translation + unitWorld * radiusWorld, endPixel) == false)
         {
             continue;
         }
@@ -397,11 +398,11 @@ void ViewportObjectInteraction::buildHandles()
         }
         else
         {
-            const math::Vector3 firstWorld = axisFrame.Columns[(axis + 1) % AXIS_COUNT];
-            math::Vector3 ringX;
-            math::Vector3 ringY;
-            if (math::TryNormalize(firstWorld, ringX) != math::MathStatus::Success ||
-                math::TryNormalize(math::Cross(unitWorld, ringX), ringY) != math::MathStatus::Success)
+            const math::Vector3 firstWorld = axisFrameToWorld.Columns[(axis + 1) % AXIS_COUNT];
+            math::Vector3 ringXWorld;
+            math::Vector3 ringYWorld;
+            if (math::TryNormalize(firstWorld, ringXWorld) != math::MathStatus::Success ||
+                math::TryNormalize(math::Cross(unitWorld, ringXWorld), ringYWorld) != math::MathStatus::Success)
             {
                 continue;
             }
@@ -411,9 +412,11 @@ void ViewportObjectInteraction::buildHandles()
                 const float32 angle2 = static_cast<float32>(segment + 1) * 2 * math::kPiF / RING_SEGMENTS;
                 QPointF firstPixel;
                 QPointF secondPixel;
-                if (project(meshToWorld.Translation + (ringX * math::Cos(angle1) + ringY * math::Sin(angle1)) * radius,
+                if (project(meshToWorld.Translation +
+                                (ringXWorld * math::Cos(angle1) + ringYWorld * math::Sin(angle1)) * radiusWorld,
                             firstPixel) == true &&
-                    project(meshToWorld.Translation + (ringX * math::Cos(angle2) + ringY * math::Sin(angle2)) * radius,
+                    project(meshToWorld.Translation +
+                                (ringXWorld * math::Cos(angle2) + ringYWorld * math::Sin(angle2)) * radiusWorld,
                             secondPixel) == true)
                 {
                     mHandles.append({QLineF(firstPixel, secondPixel), axis});
@@ -519,7 +522,7 @@ bool ViewportObjectInteraction::Move(QPointF positionPixel, bool shouldSnap)
         {
             factor = ComputeSnap(factor, SCALE_SNAP);
         }
-        value = math::Clamp(original * factor, MINIMUM_SCALE, MAXIMUM_SCALE);
+        value = original * math::Max(factor, MINIMUM_SCALE_FACTOR);
     }
     if (math::IsFinite(value) == false)
     {
@@ -575,7 +578,7 @@ void ViewportObjectInteraction::Paint(QPainter& inoutPainter, const QRectF& oute
             continue;
         }
         const math::Affine3 meshToWorld = mDragAxis >= 0 ? makeTransform(mCandidate) : object.Transform;
-        const BorrowedView<const math::Vector3> positions = GetPositions(scene, object.Mesh);
+        const BorrowedView<const math::Vector3> positionsMesh = GetPositions(scene, object.Mesh);
         const BorrowedView<const uint32> indices = GetIndices(scene, object.Mesh);
         const usize triangleCount = indices.GetSize() / TRIANGLE_VERTICES;
         const usize stride = (triangleCount / MAX_WIRE_TRIANGLES + 1) * TRIANGLE_VERTICES;
@@ -587,9 +590,9 @@ void ViewportObjectInteraction::Paint(QPainter& inoutPainter, const QRectF& oute
                 const uint32 second = indices[index + (edge + 1) % TRIANGLE_VERTICES];
                 QPointF firstPixel;
                 QPointF secondPixel;
-                if (first < positions.GetSize() && second < positions.GetSize() &&
-                    project(math::TransformPoint(meshToWorld, positions[first]), firstPixel) == true &&
-                    project(math::TransformPoint(meshToWorld, positions[second]), secondPixel) == true)
+                if (first < positionsMesh.GetSize() && second < positionsMesh.GetSize() &&
+                    project(math::TransformPoint(meshToWorld, positionsMesh[first]), firstPixel) == true &&
+                    project(math::TransformPoint(meshToWorld, positionsMesh[second]), secondPixel) == true)
                 {
                     inoutPainter.drawLine(firstPixel, secondPixel);
                 }
