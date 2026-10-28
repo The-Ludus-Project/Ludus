@@ -17,9 +17,11 @@ void RayPathInspection::SetPreview(RenderGraphPreview* previewOrNull)
     }
     Leave();
     disconnect(mCaptureConnection);
+    disconnect(mPreviewConnection);
     mPreview = previewOrNull;
     if (previewOrNull != nullptr)
     {
+        mPreviewConnection = connect(previewOrNull, &RenderGraphPreview::Changed, this, &RayPathInspection::Changed);
         mCaptureConnection = connect(previewOrNull, &RenderGraphPreview::RayPathCaptureChanged, this, [this]() {
             Q_EMIT Changed();
             Q_EMIT OverlayChanged();

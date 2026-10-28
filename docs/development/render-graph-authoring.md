@@ -3007,6 +3007,8 @@ explore with the free camera. It is not a GPU frame debugger.
    `ComputePipeline` node and choose **Capture Ray Paths**. To capture every ray
    pass of the configuration, right-click the canvas background and choose
    **Capture Ray Paths (All Ray Passes)** instead. The **Ray Paths** panel opens.
+   You can also start an all-pass capture with **Capture ray paths** in that
+   panel when the viewport is ready.
 3. Click a pixel of the graph output in the World viewport. Esc cancels. The
    editor then freezes the graph camera, the World revision (which also seeds
    sampling), the drawing generation and the viewport size.
@@ -3024,10 +3026,19 @@ explore with the free camera. It is not a GPU frame debugger.
    depth-tested against the scene; **X-ray** draws them through geometry. The
    overlay passes through the viewport's display conversion, so its colors look
    slightly muted.
-6. The panel groups events by sample, then pass, then sequence, with each pass's
-   sample radiance. Selecting a row highlights its segment and shows its fields.
-   Selecting a hit also selects its World entity. A sample filter limits the
-   drawing to one sample.
+6. The panel groups events by sample, then invocation (pass), then sequence.
+   The first sample starts expanded, as do failed or truncated samples so their
+   warnings remain visible. Use **Expand all** or **Collapse all** to explore
+   larger captures. Event names and hit distances share a full-width list, with
+   complete labels available on hover. Select an invocation to see its event
+   count, linear RGB radiance and truncation/failure status. Select an event to
+   highlight its segment and read its world-space origin, direction, interval,
+   hit distance and full object ID in the selectable **Details** area. Drag the
+   divider to resize the list and details; long details scroll independently.
+   Selecting a hit also selects its World entity. **Sample** filters both the
+   list and viewport, clearing a selection hidden by the filter. **Color by**
+   and **X-ray** control the viewport overlay. These are event counts and ray
+   distances; capture does not report GPU invocation timings.
 7. Choose **Leave Inspection** to return to the live graph from the current editor
    camera. **Capture Again** picks another pixel for the same target.
 
