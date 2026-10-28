@@ -229,7 +229,7 @@ Vulkan was not run: no Linux or Vulkan host was available.
 ## PL2 Point-and-line MIS template
 
 Evidence is from an Apple M5 on Metal (macOS 26.6), `macos-clang-development`,
-on the branch merged with `develop` `0b87e2e1`. Vulkan was not run: no Linux or
+on the branch merged with `develop` `221f7621`. Vulkan was not run: no Linux or
 Vulkan host was available, so the llvmpipe run is left to batch CI.
 
 - [x] `render_graphs/salesin_jarosz_lines/`: library and main graphs, manifest
@@ -276,8 +276,11 @@ Vulkan host was available, so the llvmpipe run is left to batch CI.
       *`SalesinJaroszLinesTemplateTests` (7 tests) also checks the random
       layout, the attributions, a `wgsl`-only `Capability` diagnostic and the
       relocated SDK copy. It rejects heuristic values -1, 2, 3, 0.5, `true` and
-      `null`. The render-graph Python suites ran 417 tests: all pass, 18
-      skipped for missing local tools.*
+      `null`. The render-graph Python suites, with the pinned Slang, helper and
+      SPIRV-Cross set so that the compiler acceptance tests run, ran 429 tests:
+      428 pass. `test_real_target_entries_layouts_determinism_and_generated_cpp`
+      fails as PL1 recorded on unmodified `develop` (a compiler diagnostic now
+      reports a column); this change does not touch its code.*
 - [x] GPU tests (`TriangleLoop`, Metal; Vulkan through llvmpipe in batch CI):
   - [x] three-strategy weights sum to one within float tolerance over sampled
         densities, including zero and delta cases;
@@ -336,15 +339,46 @@ Vulkan host was available, so the llvmpipe run is left to batch CI.
       and the canvas **Configurations → Apply Configuration Template...**
       import `PointLineMis` with Properties hidden.
       `ludus_render_graph_configuration_tests` passes all 214 test cases.*
-- [ ] SDK consumer fixture for the template.
-      *SDK_CONSUMER_EVIDENCE*
+- [x] SDK consumer fixture for the template.
+      *`ludus_sdk_scene_shader_contract_consumer` copies the installed
+      `templates/salesin_jarosz_lines`, cooks it through the installed helper
+      and checks that its four passes form a ray-tracing plan that needs no
+      hardware ray tracing. It passed against a local `macos-clang-development`
+      SDK install. `scripts/install-sdk` runs only the base consumer, so the
+      renderer consumer was configured against the install with the pinned
+      Slang and SPIRV-Cross.*
 - [x] Documentation: a "Combine point and line samples" section after "Compare
       light and BSDF sampling with MIS", with the passes, outputs, settings,
       evidence, scope limits and attribution.
       *Placed after "Sample lights along lines", which it builds on and which
       itself follows the MIS section. PL1's scope paragraph now links to it.*
 - [ ] Gates as in PL1.
-      *GATES_EVIDENCE*
+      *Run on the branch merged with `develop` `221f7621`:
+      `macos-clang-development` builds with no compiler warnings (only the
+      linker's notes that Homebrew Qt targets macOS 14.4). `--format`,
+      `--tidy-changed` (base `221f7621`) and `source_policy.py --base 221f7621
+      --clang-format` pass. Targeted `--tidy` on the five changed translation
+      units reports findings only on lines this change does not touch, after
+      one new file-scope `QString` in the editor tests became a function.
+      `check-docs`, strict MkDocs, `scripts/build-api --bootstrap` (no new
+      gaps), `check-wiki --documentation-only` and the
+      `test_docs.py`/`test_wiki.py` suites pass. `macos-clang-asan-ubsan`
+      passes 120 of 122 tests with no sanitizer report. That includes
+      `ludus_render_graph_ray_pixels`, which runs the PL2 GPU tests.
+      Left open because `develop` fails in code this change does not touch.
+      `macos-clang-development` passes 138 of 142:
+      `ludus_rhi_ray_queries` expects `RayPipelines` false on Metal (as in
+      PL1, also under ASan); `ludus_renderer_pixels` fails
+      `projected_solid_angle_parity_tests.cpp:542`, the
+      `ris-projected-solid-angle` work from #723 (also under ASan);
+      `ludus_editor_tests` fails five cases (asynchronous activation failure,
+      ray path capture without native rays, Build & Preview of an edited
+      default, New Graph cooking with the project SDK, and the shell inspector's
+      horizontal scroll); and `ludus_render_graph_configuration_tests` fails
+      the Project Settings resolution case. Those six editor cases fail the same
+      way in a build of plain `develop` `221f7621`. A seventh,
+      the activity chip's rate limit, failed only under load and passes alone.
+      Ruff was not run (not installed locally). Vulkan was not run.*
 
 ## PL3 BVH line traversal
 
