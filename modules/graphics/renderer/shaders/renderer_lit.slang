@@ -420,7 +420,9 @@ float3 ComputeDebugColour(int mode,
     float nv = max(dot(normalWorld, viewDirectionWorld), 0);
     float3 f0 = lerp(float3(0.04), baseColor.rgb, metallic);
     float3 f = f0 + (1 - f0) * ComputeFifth(1 - nv);
-    float3 irradiance = material.EnvironmentIrradiance.rgb;
+    // Hemispheric constant environment: sky irradiance above, scaled by w toward the ground (+Y is up).
+    float3 irradiance =
+        material.EnvironmentIrradiance.rgb * lerp(material.EnvironmentIrradiance.w, 1, normalWorld.y * 0.5 + 0.5);
     float3 specularEnvironment = material.EnvironmentRadiance.rgb * f;
 #ifdef LUDUS_AUTHORED_INPUTS
     if (material.Authored.z > .5)
