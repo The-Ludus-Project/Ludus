@@ -665,19 +665,39 @@ nodes use `"state": {}` and the fixed 64×1×1 workgroup. A callback compute nod
 must have all three callbacks and no `compute` shader. Existing single-kernel
 compute nodes remain supported.
 
-Use **Invocation → Ray traversal** in the pipeline editor, accessible from both
-Properties and the canvas pipeline editor, to choose the intersection strategy:
+The graph node is a logical ray program. **Invocation → Invocation type** in the
+pipeline editor, accessible from both Properties and the canvas pipeline editor,
+selects its execution model without changing the node kind or its callbacks:
+
+| Invocation type | Contract |
+| --- | --- |
+| Hardware RT pipeline (`RayTracing`) | Uses Metal native intersectors, an intersection function table for alpha acceptance, and visible function tables for ray-generation, closest-hit and miss callbacks. Requires hardware ray traversal and function pointers. Other backends reject this invocation explicitly; it never selects inline-query compute as a fallback. |
+| Compute pipeline (`Compute`) | Runs the ray callbacks through a compute entry and selects their query implementation with **Ray traversal**. |
+
+An omitted `invocation.type` retains the legacy compute execution model. Selecting
+an explicit Compute invocation defaults to the engine's triangle loop when no
+traversal is specified. A logical RayTracingPipeline may select either invocation;
+a scene ComputePipeline remains a compute invocation. Metal uses a native function-table backend because the pinned Slang compiler
+does not emit Metal ray-generation stages directly. The offline compiler retains
+the authored Slang callbacks and lowers the reserved stage/table ABI to native MSL.
+Hardware invocation requires the scene callback interface (`scene_interface.version: 1`);
+legacy callback signatures use that interface's existing adapters. The driver
+independently compiles and links all stages. This does not promise a
+performance improvement over inline queries; measure the same scene and settings.
+
+Use **Invocation → Ray traversal** to choose the compute intersection strategy:
 
 | Selection | Behavior |
 | --- | --- |
-| Automatic | Shared callbacks in a ComputePipeline use `TriangleLoop`; a RayTracingPipeline and existing single-kernel compute passes use `NativeQuery`. |
+| Automatic | An explicit Compute invocation uses `TriangleLoop`. Legacy documents without an invocation type retain their defaults: shared callbacks in a ComputePipeline use `TriangleLoop`; a RayTracingPipeline and existing single-kernel compute passes use `NativeQuery`. |
 | Triangle loop (`TriangleLoop`) | Renderer-owned two-sided ray/triangle intersections scan the selected World's packed triangles. Closest queries retain the nearest accepted hit; visibility queries stop at the first accepted hit. |
 | Native ray query (`NativeQuery`) | Inline native acceleration-structure queries perform triangle traversal. |
+| Custom traversal (`Custom`) | The package-relative **Traversal source** implements closest and visibility queries in compute. No native acceleration structure is created or bound. |
 
 The optional JSON field is `invocation.traversal`:
 
 ```json
-"invocation": {"dimensions": "ColorTarget", "traversal": "TriangleLoop"}
+"invocation": {"type": "Compute", "dimensions": "ColorTarget", "traversal": "TriangleLoop"}
 ```
 
 Both strategies apply to `TraceClosest`, `TestVisibility` and `TraceAndShade`,
@@ -686,6 +706,35 @@ the same authored callbacks and preserves payload, query budgets and failure
 status. Passes sharing the same callbacks can select different strategies in one
 package; the cooked variant includes the strategy so one pass cannot overwrite
 another's selection. Changing it rebuilds the wrapper without rewriting shaders.
+
+For custom compute queries, supply a source implementing this function:
+
+```slang
+Hit TraceWorld(float3 originWorld, float3 directionWorld,
+               float nearDistanceWorld, float farDistanceWorld, bool isVisibility)
+{
+    return TraceTriangleLoop(originWorld, directionWorld,
+                             nearDistanceWorld, farDistanceWorld, isVisibility);
+}
+```
+
+Select it with
+`"invocation": {"type": "Compute", "dimensions": "ColorTarget", "traversal": "Custom", "traversal_source": "queries/custom.slang"}`.
+The example delegates to the engine default; replace its body with the desired
+query algorithm. Custom sources can access the selected World's packed geometry
+and the existing `GraphBuffer0`/`GraphBuffer1` persistent storage slots, so preceding
+compute passes can build an acceleration structure in authored Buffer resources.
+The custom source must return a packed World triangle index, distance in world
+meters and barycentrics through `Hit`. Return `LUDUS_GPU_PREVIEW_INVALID_TRIANGLE`
+for a miss or `LUDUS_GPU_PREVIEW_FAILED_TRIANGLE` for failure. Closest queries
+return the nearest accepted triangle; visibility queries may return any accepted
+triangle. The implementation owns interval bounds, alpha acceptance and bounded
+traversal storage; the engine does not substitute another query on failure.
+Procedural geometry that cannot identify a packed World triangle is outside this
+callback contract. Each pass retains its own source selection, even when callbacks
+are shared. Sources and literal includes enter the immutable build snapshot, cache
+identity and compiler diagnostics. Shader compilation or publication failure keeps
+the preceding active generation.
 
 The loop uses the same fixed-mip material alpha acceptance as native traversal.
 Its relative parallel tolerance rejects degenerate and nearly parallel triangles;
@@ -709,9 +758,16 @@ silently changed to another traversal. Native and software configurations can sh
 one package and the same authored callback functions. Cooking a configuration selects
 its matching compute artifact and records each pass's traversal requirement in
 version 18 runtime packages. Earlier package versions retain native-ray requirements.
-Browser rendering remains outside this profile. The current native RayTracingPipeline
-also uses inline queries in a compute wrapper; dedicated ray stages and shader tables
-are not implemented. Any-hit, procedural intersection and callable stages
+Version 19 additionally records custom software traversal distinctly from the
+engine triangle loop. Version 20 carries a separate native Metal stage artifact
+and records hardware invocation per pass, allowing mixed native/compute sequences.
+Older runtimes reject the new package versions.
+Browser rendering remains outside this profile. The legacy RayTracingPipeline
+invocation uses inline queries in a compute wrapper. Explicit hardware invocation
+uses native stage and intersection function tables on supported Metal devices.
+Profiling labels those operations **Native RT** (`gpu.raytracing`); Metal submits
+them through a compute encoder, so physical encoder type alone does not identify
+the traversal or callback execution model. The final image copy remains raster. Any-hit, procedural intersection and callable stages
 remain outside this triangle callback profile.
 
 ### Support developers and players without RT hardware

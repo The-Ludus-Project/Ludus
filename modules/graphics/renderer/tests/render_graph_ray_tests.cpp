@@ -10,6 +10,11 @@
 #include "rg2_restir_di.h"
 #include "rg2_scene_compute.h"
 #include "rg2_scene_ray.h"
+#if defined(__APPLE__)
+#    include "rg2_mixed_invocation.h"
+#    include "rg2_native_ray.h"
+#    include "rg2_native_visibility.h"
+#endif
 #include "rg2_shared_ray_default.h"
 #include "rg2_simple_compute_ray_tracing_template.h"
 #include "rg2_storage_ray.h"
@@ -35,6 +40,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <new>
+#include <string>
 #include <string_view>
 
 using namespace ludus::foundation;
@@ -292,22 +298,37 @@ TEST_CASE("Scene callbacks preserve material and scene generation through native
           "[render-graph][gpu][scene-shader]")
 {
     bool shouldUseSoftwareTraversal = false;
+    bool shouldUseNativeStages = false;
     SECTION("native traversal") {}
+#if defined(__APPLE__)
+    SECTION("native ray stage function tables")
+    {
+        shouldUseNativeStages = true;
+    }
+#endif
     SECTION("software traversal without requested ray features")
     {
         shouldUseSoftwareTraversal = true;
     }
     GraphGpuFixture fixture(false, shouldUseSoftwareTraversal == false);
     const renderer::RenderGraphPrograms programs =
+#if defined(__APPLE__)
+        shouldUseNativeStages == true ? packages::rg2_native_ray::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                                               shaders::renderer_composite::Fragment())
+        :
+#endif
         shouldUseSoftwareTraversal == true
             ? packages::rg2_shared_ray_default::MakePrograms(shaders::renderer_composite::Vertex(),
                                                              shaders::renderer_composite::Fragment())
             : packages::rg2_scene_ray::MakePrograms(shaders::renderer_composite::Vertex(),
                                                     shaders::renderer_composite::Fragment());
-    const core::UniquePtr<renderer::RenderGraphPackage> package =
-        LoadPackage(shouldUseSoftwareTraversal == true
-                        ? PackageLocation{LUDUS_RG3_SHARED_RAY_DEFAULT_DIRECTORY, "rg2_shared_ray_default.lurgrt"}
-                        : PackageLocation{LUDUS_RG3_SCENE_RAY_DIRECTORY, "rg2_scene_ray.lurgrt"});
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(
+#if defined(__APPLE__)
+        shouldUseNativeStages == true ? PackageLocation{LUDUS_RG3_NATIVE_RAY_DIRECTORY, "rg2_native_ray.lurgrt"} :
+#endif
+        shouldUseSoftwareTraversal == true
+            ? PackageLocation{LUDUS_RG3_SHARED_RAY_DEFAULT_DIRECTORY, "rg2_shared_ray_default.lurgrt"}
+            : PackageLocation{LUDUS_RG3_SCENE_RAY_DIRECTORY, "rg2_scene_ray.lurgrt"});
     const renderer::RenderGraphPrograms decoded =
         package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
     CHECK(renderer::RequiresHardwareRayTracing(package->GetPlan()) == (shouldUseSoftwareTraversal == false));
@@ -324,6 +345,12 @@ TEST_CASE("Scene callbacks preserve material and scene generation through native
     CheckSameStage(decoded.RayCompute, programs.RayCompute);
     CheckSameStage(decoded.RayImageVertex, programs.RayImageVertex);
     CheckSameStage(decoded.RayImageFragment, programs.RayImageFragment);
+    CHECK(decoded.NativeRayStages.Artifact.HasNativeRayStages == shouldUseNativeStages);
+    if (shouldUseNativeStages == true)
+    {
+        CheckSameStage(decoded.NativeRayStages, programs.NativeRayStages);
+        CHECK(package->GetPlan().Passes[0].Traversal == format::RayTraversal::HardwarePipeline);
+    }
     uint32 selection = format::SCENE_DATA_ALL;
     SECTION("full Scene") {}
     SECTION("Geometry only")
@@ -471,6 +498,57 @@ TEST_CASE("Scene callbacks preserve material and scene generation through native
     CHECK(fixture.Pixels[center + 1] == 0);
     CHECK(fixture.Pixels[center + 2] == 188);
 }
+
+#if defined(__APPLE__)
+TEST_CASE("Native Metal intersection callbacks read bound scene data and reject opaque candidates",
+          "[render-graph][gpu][native-ray]")
+{
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_NATIVE_RAY_DIRECTORY, "rg2_native_ray.lurgrt"});
+    renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    // Replace only the intersection callback's final predicate. Reading the first
+    // packed World position proves its private buffer binding reaches the callback;
+    // rejecting an opaque triangle proves the intersector invokes the function table.
+    std::string source(programs.NativeRayStages.Artifact.Msl);
+    const usize predicate = source.rfind("return LudusNativeAcceptTriangle_");
+    REQUIRE(predicate != std::string::npos);
+    const usize end = source.find(';', predicate);
+    REQUIRE(end != std::string::npos);
+    source.replace(predicate, end - predicate + 1, "return as_type<float>(sceneWords_1[0].x) != -0.5f;");
+    programs.NativeRayStages.Artifact.Msl = source;
+    rhi::RasterStatus status = fixture.Graph.Initialize(fixture.Device, package->GetPlan(), programs);
+    const uint64 beginning = time::NowTicks();
+    constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
+    while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+    {
+        status = fixture.Graph.Poll();
+    }
+    REQUIRE(status == rhi::RasterStatus::Ready);
+    fixture.Cameras[0].OrthographicCamera = true;
+    renderer::SceneShaderInputs inputs;
+    inputs.Environment = {0, 0, 1};
+    renderer::RenderGraphReport report;
+    status = fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                  {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                  {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                  1,
+                                  renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                  report,
+                                  &inputs);
+    while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+    {
+        status = fixture.Graph.Poll();
+    }
+    REQUIRE(status == rhi::RasterStatus::Ready);
+    ReadGraphFrame(fixture);
+    const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+    CHECK(fixture.Pixels[center] == 0);
+    constexpr uint8 EXPECTED_BLUE = 188;
+    CHECK(fixture.Pixels[center + 2] == EXPECTED_BLUE);
+}
+#endif
 
 TEST_CASE("Legacy software ray packages require recooking", "[render-graph][ray-pipeline][activation]")
 {
@@ -748,14 +826,34 @@ TEST_CASE("Measure engine-only ray navigation and image output at 640 by 480", "
 
 TEST_CASE("Ordered ray callbacks share zeroed storage across passes and frames", "[render-graph][gpu][ray-history]")
 {
-    GraphGpuFixture fixture;
-    const core::UniquePtr<renderer::RenderGraphPackage> package =
-        LoadPackage({LUDUS_RG3_ORDERED_RAY_DIRECTORY, "rg2_ordered_ray.lurgrt"});
+    bool hasMixedInvocations = false;
+    SECTION("compute invocations") {}
+#if defined(__APPLE__)
+    SECTION("native stages, inline query compute and software compute")
+    {
+        hasMixedInvocations = true;
+    }
+#endif
+    GraphGpuFixture fixture(hasMixedInvocations);
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(
+#if defined(__APPLE__)
+        hasMixedInvocations == true
+            ? PackageLocation{LUDUS_RG3_MIXED_INVOCATION_DIRECTORY, "rg2_mixed_invocation.lurgrt"}
+            :
+#endif
+            PackageLocation{LUDUS_RG3_ORDERED_RAY_DIRECTORY, "rg2_ordered_ray.lurgrt"});
     const renderer::RenderGraphPrograms decoded =
         package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
     const renderer::RenderGraphPrograms compiled =
-        packages::rg2_ordered_ray::MakePrograms(shaders::renderer_composite::Vertex(),
-                                                shaders::renderer_composite::Fragment());
+#if defined(__APPLE__)
+        hasMixedInvocations == true
+            ? packages::rg2_mixed_invocation::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                           shaders::renderer_composite::Fragment())
+            :
+#endif
+            packages::rg2_ordered_ray::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                    shaders::renderer_composite::Fragment());
+    CHECK(decoded.NativeRayStages.Artifact.HasNativeRayStages == hasMixedInvocations);
     REQUIRE(decoded.HasPersistentRayBuffers == true);
     REQUIRE(decoded.HasSceneShaderInterface == true);
     CheckSameStage(decoded.RayCompute, compiled.RayCompute);
@@ -808,6 +906,10 @@ TEST_CASE("Ordered ray callbacks share zeroed storage across passes and frames",
                 }
                 REQUIRE(status == rhi::RasterStatus::Ready);
             }
+            if (hasMixedInvocations == true)
+            {
+                REQUIRE(rhi::ArmGpuPassTimings(fixture.Device) == rhi::RasterStatus::Ready);
+            }
             rhi::SubmissionToken completion;
             REQUIRE(fixture.Graph.Render(fixture.Surface, WIDTH, HEIGHT, completion) == rhi::RasterStatus::Ready);
             status = rhi::GetStatus(fixture.Device, completion);
@@ -816,6 +918,25 @@ TEST_CASE("Ordered ray callbacks share zeroed storage across passes and frames",
                 status = rhi::GetStatus(fixture.Device, completion);
             }
             REQUIRE(status == rhi::RasterStatus::Ready);
+            if (hasMixedInvocations == true)
+            {
+                rhi::GpuPassTimings timings;
+                REQUIRE(rhi::GetGpuPassTimings(fixture.Device, timings) == rhi::RasterStatus::Ready);
+                bool hasNativeTiming = false;
+                bool hasComputeTiming = false;
+                bool hasRasterTiming = false;
+                for (usize index = 0; index < timings.Count; ++index)
+                {
+                    hasNativeTiming =
+                        hasNativeTiming == true || timings.Passes[index].Kind == rhi::GpuPassKind::RayTracing;
+                    hasComputeTiming =
+                        hasComputeTiming == true || timings.Passes[index].Kind == rhi::GpuPassKind::Compute;
+                    hasRasterTiming = hasRasterTiming == true || timings.Passes[index].Kind == rhi::GpuPassKind::Raster;
+                }
+                CHECK(hasNativeTiming == true);
+                CHECK(hasComputeTiming == true);
+                CHECK(hasRasterTiming == true);
+            }
             rhi::TextureHandle texture;
             rhi::TextureAspect aspect;
             uint32 resource = 0;
@@ -1289,6 +1410,13 @@ TEST_CASE("Visibility raster IDs reconstruct instance materials and launch secon
 {
     GraphGpuFixture fixture;
     bool hasVisibility = true;
+    bool hasNativeStages = false;
+#if defined(__APPLE__)
+    SECTION("native stages reconstruct visibility and launch secondary rays")
+    {
+        hasNativeStages = true;
+    }
+#endif
     SECTION("visibility configuration") {}
     SECTION("visibility configuration with editor grid")
     {
@@ -1298,18 +1426,28 @@ TEST_CASE("Visibility raster IDs reconstruct instance materials and launch secon
     {
         hasVisibility = false;
     }
-    const core::UniquePtr<renderer::RenderGraphPackage> package =
-        LoadPackage(hasVisibility == true
-                        ? PackageLocation{LUDUS_RG3_VISIBILITY_DIRECTORY, "rg2_visibility.lurgrt"}
-                        : PackageLocation{LUDUS_RG3_VISIBILITY_ORDINARY_DIRECTORY, "rg2_visibility_ordinary.lurgrt"});
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(
+#if defined(__APPLE__)
+        hasNativeStages == true ? PackageLocation{LUDUS_RG3_NATIVE_VISIBILITY_DIRECTORY, "rg2_native_visibility.lurgrt"}
+        :
+#endif
+        hasVisibility == true
+            ? PackageLocation{LUDUS_RG3_VISIBILITY_DIRECTORY, "rg2_visibility.lurgrt"}
+            : PackageLocation{LUDUS_RG3_VISIBILITY_ORDINARY_DIRECTORY, "rg2_visibility_ordinary.lurgrt"});
     const renderer::RenderGraphPrograms decoded =
         package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
     const renderer::RenderGraphPrograms compiled =
+#if defined(__APPLE__)
+        hasNativeStages == true ? packages::rg2_native_visibility::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                                                shaders::renderer_composite::Fragment())
+        :
+#endif
         hasVisibility == true
             ? packages::rg2_visibility::MakePrograms(shaders::renderer_composite::Vertex(),
                                                      shaders::renderer_composite::Fragment())
             : packages::rg2_visibility_ordinary::MakePrograms(shaders::renderer_composite::Vertex(),
                                                               shaders::renderer_composite::Fragment());
+    CHECK(decoded.NativeRayStages.Artifact.HasNativeRayStages == hasNativeStages);
     CheckSameStage(decoded.ColorVertex, compiled.ColorVertex);
     CheckSameStage(decoded.RayCompute, compiled.RayCompute);
     REQUIRE(decoded.HasVisibilityBuffer == hasVisibility);

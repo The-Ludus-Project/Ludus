@@ -58,7 +58,7 @@ if(EMSCRIPTEN)
         "-sMIN_WEBGL_VERSION=2"
         "-sFULL_ES3=1")
 elseif(APPLE)
-    target_sources(ludus_graphics_rhi PRIVATE src/rhi_metal.mm src/spatial_upscale_metal.mm src/hosted_metal.mm src/hosted_consumer_metal.mm)
+    target_sources(ludus_graphics_rhi PRIVATE src/native_ray_metal.mm src/rhi_metal.mm src/spatial_upscale_metal.mm src/hosted_metal.mm src/hosted_consumer_metal.mm)
     target_link_libraries(ludus_graphics_rhi PRIVATE
         "-framework MetalFX" "-framework Metal" "-framework QuartzCore" "-framework AppKit" "-framework IOSurface" "-framework CoreFoundation")
     ludus_configure_cocoa_target(ludus_graphics_rhi)

@@ -1240,8 +1240,11 @@ Vulkan negotiates API 1.2, buffer device address, acceleration structures, ray
 queries and deferred host operations independently of ordinary Vulkan 1.1 raster
 startup. Metal checks `supportsRaytracing` and compiles MSL 2.4. Browser/native
 adapters without the optional profile reject native queries; preferred requests
-preserve raster, required requests fail startup explicitly. Neither ray pipelines,
-updates/refits, procedural primitives, motion nor asynchronous compute are exposed.
+preserve raster, required requests fail startup explicitly. Metal additionally exposes
+native ray stage/function-table execution on hardware-ray devices supporting function
+pointers. The logical RT node selects this separately from inline-query compute or
+custom/software compute traversal; see [ray invocation authoring](../development/render-graph-authoring.md).
+Updates/refits, procedural primitives, motion and asynchronous compute remain unavailable.
 
 The installed `ludus_compile_ray_queries(TARGET ... NAME ...)` helper cooks the
 fixed query kernel with verified Slang/SPIRV-Cross source and binary provenance.
@@ -1523,9 +1526,11 @@ distinguishes shared acceleration structures from query and pipeline execution.
 Queries fit ordinary shader passes; dedicated stages offer different scheduling
 choices. Begin with query-based compute effects and a loop-based path integrator.
 Keep nearest accepted hit and early-exit visibility as separate shader operations.
-Add native ray pipelines only when measured traversal/shading divergence or a
-required intersection program warrants them. Shader binding tables, native
-addresses, hit-group indexing and recursion limits then remain backend details;
+Native Metal stage execution uses visible function tables for ray-generation,
+closest-hit and miss callbacks, plus intersection function tables for alpha acceptance.
+Vulkan native stage pipelines remain unavailable. Backend stage support does not
+promise a speedup over inline queries. Shader binding tables, native
+addresses, hit-group indexing and recursion limits remain backend details;
 do not force Metal's model into a Vulkan-shaped public table abstraction.
 
 The existing Vulkan subset does not establish support: negotiate the necessary

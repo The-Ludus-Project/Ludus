@@ -1,5 +1,6 @@
 #pragma once
 
+#include "native_ray_metal.h"
 #include "profile.h"
 
 #include <ludus/foundation/base/checked_integer.hpp>
@@ -23,6 +24,7 @@ MTLTextureType RasterMetalTextureType(TextureDimension dimension) noexcept
 struct RasterMetalShader final
 {
     id<MTLFunction> Function = nil;
+    MetalRayFunctions RayFunctions;
     internal::RasterShaderInfo Info;
 };
 struct RasterMetalPipeline final
@@ -49,6 +51,7 @@ constexpr uint32 METAL_BUFFER_SIZE_TABLE_SLOT = 25;
 using MetalBufferSizeTable = foundation::StaticArray<uint32, internal::RASTER_BINDINGS>;
 struct MetalComputePipeline final
 {
+    MetalRayPipeline RayPipeline;
     id<MTLComputePipelineState> ObjectOrNull = nil;
     bool HasBufferSizeTable = false;
     id<MTLCommandQueue> NativeQueueOrNull = nil;
@@ -84,6 +87,13 @@ bool RasterMetalBindings(NSArray<id<MTLBinding>>* bindings,
         if (shader.Stage == ShaderStage::Vertex && binding.type == MTLBindingTypeBuffer &&
             binding.index >= internal::RASTER_BINDINGS &&
             binding.index < internal::RASTER_BINDINGS + pipeline.StreamCount)
+        {
+            continue;
+        }
+        if (shader.HasNativeRayStages == true && ((binding.type == MTLBindingTypeVisibleFunctionTable &&
+                                                   binding.index == LUDUS_METAL_RAY_FUNCTION_TABLE_BINDING) ||
+                                                  (binding.type == MTLBindingTypeIntersectionFunctionTable &&
+                                                   binding.index == LUDUS_METAL_RAY_INTERSECTION_TABLE_BINDING)))
         {
             continue;
         }
@@ -299,7 +309,12 @@ struct MetalShaderPreparation final : NativePreparationTask
             if (functionOrNull != nil && functionOrNull.functionType == expected)
             {
                 Shader.Function = functionOrNull;
-                Outcome = RasterStatus::Ready;
+                if (Shader.Info.HasNativeRayStages == false ||
+                    (DeviceOrNull.supportsFunctionPointers == true &&
+                     LoadMetalRayFunctions(libraryOrNull, Shader.RayFunctions) == true))
+                {
+                    Outcome = RasterStatus::Ready;
+                }
             }
         }
     }
@@ -319,6 +334,7 @@ struct MetalShaderPreparation final : NativePreparationTask
 };
 struct MetalComputePreparation final : NativePreparationTask
 {
+    MetalRayPipeline RayPipeline;
     id<MTLDevice> DeviceOrNull = nil;
     RasterMetalShader Shader;
     internal::ComputePipelineInfo Info;
@@ -335,7 +351,9 @@ struct MetalComputePreparation final : NativePreparationTask
     {
         if (Outcome == RasterStatus::Ready)
         {
-            gComputePipelines[ResourceSlot] = {ObjectOrNull, HasBufferSizeTable};
+            gComputePipelines[ResourceSlot].ObjectOrNull = ObjectOrNull;
+            gComputePipelines[ResourceSlot].HasBufferSizeTable = HasBufferSizeTable;
+            gComputePipelines[ResourceSlot].RayPipeline = RayPipeline;
             gComputeInfos[ResourceSlot] = Info;
         }
         else
@@ -382,11 +400,25 @@ RasterStatus MetalComputePreparation::Build() noexcept
 
         MTLComputePipelineReflection* reflectionOrNull = nil;
         NSError* errorOrNull = nil;
+        MTLComputePipelineDescriptor* descriptor = [MTLComputePipelineDescriptor new];
+        descriptor.computeFunction = Shader.Function;
+        if (Shader.Info.HasNativeRayStages == true)
+        {
+            MTLLinkedFunctions* linked = [MTLLinkedFunctions new];
+            linked.functions = @[
+                Shader.RayFunctions.Stages[0],
+                Shader.RayFunctions.Stages[1],
+                Shader.RayFunctions.Stages[2],
+                Shader.RayFunctions.IntersectionOrNull
+            ];
+            descriptor.linkedFunctions = linked;
+            descriptor.maxCallStackDepth = LUDUS_METAL_RAY_MAX_CALL_DEPTH;
+        }
         id<MTLComputePipelineState> pipelineOrNull =
-            [DeviceOrNull newComputePipelineStateWithFunction:Shader.Function
-                                                      options:BINDING_INFO | MTLPipelineOptionBufferTypeInfo
-                                                   reflection:&reflectionOrNull
-                                                        error:&errorOrNull];
+            [DeviceOrNull newComputePipelineStateWithDescriptor:descriptor
+                                                        options:BINDING_INFO | MTLPipelineOptionBufferTypeInfo
+                                                     reflection:&reflectionOrNull
+                                                          error:&errorOrNull];
         ErrorOrNull = errorOrNull;
         const uint32 threads = info.WorkgroupSize[0] * info.WorkgroupSize[1] * info.WorkgroupSize[2];
         if (pipelineOrNull == nil || reflectionOrNull == nil ||
@@ -401,6 +433,11 @@ RasterStatus MetalComputePreparation::Build() noexcept
             HasBufferSizeTable =
                 HasBufferSizeTable == true ||
                 (binding.used == true && IsMetalBufferSizeTable(binding, ShaderStage::Compute) == true);
+        }
+        if (Shader.Info.HasNativeRayStages == true &&
+            CreateMetalRayPipeline(pipelineOrNull, Shader.RayFunctions, RayPipeline) == false)
+        {
+            return RasterStatus::Failed;
         }
         ObjectOrNull = pipelineOrNull;
         return RasterStatus::Ready;
@@ -534,7 +571,8 @@ RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
         }
     }
     MTLComputePassDescriptor* description = [MTLComputePassDescriptor computePassDescriptor];
-    ConfigurePassTiming(description);
+    ConfigurePassTiming(description,
+                        pipeline.RayPipeline.StagesOrNull != nil ? GpuPassKind::RayTracing : GpuPassKind::Compute);
     id<MTLComputeCommandEncoder> encoder = [gCommand computeCommandEncoderWithDescriptor:description];
     encoder.label = gPassLabelOrNull;
     if (encoder == nil)
@@ -565,6 +603,30 @@ RasterStatus ComputeEncode(const internal::ComputePacket& packet) noexcept
                         offset:set.Offsets[i] + packet.BindingOffsets.Bytes[layout.Entries[i].Binding]
                        atIndex:layout.Entries[i].Binding];
         }
+    }
+    if (pipeline.RayPipeline.StagesOrNull != nil)
+    {
+        id<MTLIntersectionFunctionTable> intersectionsOrNull =
+            CreateMetalRayIntersections(pipeline.ObjectOrNull, pipeline.RayPipeline);
+        if (intersectionsOrNull == nil)
+        {
+            [encoder endEncoding];
+            return RasterStatus::OutOfMemory;
+        }
+        for (usize index = 0; index < layout.Count; ++index)
+        {
+            const uint32 binding = layout.Entries[index].Binding;
+            if (binding == 0 || binding == 1 || binding == LUDUS_METAL_RAY_ALPHA_TEXTURE_BINDING)
+            {
+                [intersectionsOrNull setBuffer:gRasterBuffers[set.Slots[index]]
+                                        offset:set.Offsets[index] + packet.BindingOffsets.Bytes[binding]
+                                       atIndex:binding];
+            }
+        }
+        [encoder setVisibleFunctionTable:pipeline.RayPipeline.StagesOrNull
+                           atBufferIndex:LUDUS_METAL_RAY_FUNCTION_TABLE_BINDING];
+        [encoder setIntersectionFunctionTable:intersectionsOrNull
+                                atBufferIndex:LUDUS_METAL_RAY_INTERSECTION_TABLE_BINDING];
     }
     [encoder dispatchThreadgroups:MTLSizeMake(packet.Groups[0], packet.Groups[1], packet.Groups[2])
             threadsPerThreadgroup:MTLSizeMake(info.WorkgroupSize[0], info.WorkgroupSize[1], info.WorkgroupSize[2])];

@@ -121,7 +121,10 @@ def compile_graph_stage(args, lock):
     target, stage = args.graph_target, args.graph_stage
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
-    native_rays = getattr(args, 'native_ray_queries', False)
+    native_pipeline = getattr(args, 'native_ray_pipeline', False)
+    native_rays = getattr(args, 'native_ray_queries', False) and not native_pipeline
+    if native_pipeline and (target != 'metal' or stage != 'compute'):
+        raise RuntimeError('Native ray stages require the Metal ray pipeline backend')
     software_rays = getattr(args, 'graph_software_rays', False)
     translated_compute = native_rays or software_rays
     if software_rays and (native_rays or stage != 'compute' or target not in ('spirv', 'metal')):
@@ -150,7 +153,7 @@ def compile_graph_stage(args, lock):
                '-reflection-json', str(reflection), '-depfile', str(depfile)]
     if native_rays:
         command += ['-capability', 'spvRayQueryKHR']
-    if getattr(args, 'worker_socket', None):
+    if getattr(args, 'worker_socket', None) and not native_pipeline:
         from native_worker import compile_stage
         compile_stage(args.worker_socket, args, lock, intermediate, reflection, depfile)
     else:
@@ -159,7 +162,12 @@ def compile_graph_stage(args, lock):
     points = document.get('entryPoints', [])
     if len(points) != 1 or points[0].get('stage') != stage or points[0].get('name') != args.name:
         raise RuntimeError('RG1 requested entry/stage differs from target reflection')
-    interface = raster_interface(document, stage, metal and not translated_compute, structured_records=translated_compute)
+    if native_pipeline:
+        from compile_metal_ray import legalize
+        code, document = legalize(artifact.read_text(), document, Path(args.source).parent / '_ludus_ray/metal_ray_pipeline_layout.h', json.loads(args.native_ray_storage))
+        artifact.write_text(code)
+        reflection.write_text(json.dumps(document))
+    interface = raster_interface(document, stage, metal and not translated_compute and not native_pipeline, structured_records=translated_compute or native_pipeline)
     if translated_compute:
         from compile_raster import verify_storage_record_strides
         verify_storage_record_strides(intermediate.read_bytes(), interface)
