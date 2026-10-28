@@ -212,6 +212,14 @@ if(TARGET ludus_renderer_render_tests)
     configure_file("${forward_source}/main.lushader.json.in" "${forward_staged}/main.lushader.json" @ONLY)
     ludus_compile_render_graph(TARGET ludus_renderer_render_tests NAME rg2_forward_lit
         MANIFEST "${forward_staged}/main.lushader.json" RUNTIME_PACKAGE)
+    foreach(configuration Default ZPrepass)
+        ludus_compile_render_graph(TARGET ludus_renderer_render_tests NAME rg2_clustered_${configuration}
+            MANIFEST "${default_render_graph}/main.lushader.json" CONFIGURATION "${configuration}" RUNTIME_PACKAGE)
+        cmake_path(GET rg2_clustered_${configuration}_RUNTIME_PACKAGE PARENT_PATH clustered_package_directory)
+        string(TOUPPER "${configuration}" configuration_constant)
+        target_compile_definitions(ludus_renderer_render_tests PRIVATE
+            LUDUS_RG3_CLUSTERED_${configuration_constant}_DIRECTORY="${clustered_package_directory}")
+    endforeach()
     cmake_path(GET rg2_forward_lit_RUNTIME_PACKAGE PARENT_PATH forward_package_directory)
     target_compile_definitions(ludus_renderer_render_tests PRIVATE
         LUDUS_RG3_FORWARD_DIRECTORY="${forward_package_directory}")

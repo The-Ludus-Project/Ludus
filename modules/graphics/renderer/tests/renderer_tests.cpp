@@ -901,6 +901,84 @@ struct LitFixture final
     }
 };
 } // namespace
+TEST_CASE("clustered depth prepass shares the retained color vertex and omits material shading",
+          "[renderer][clustered-prepass]")
+{
+    Session session;
+    LitFixture fixture(true);
+    fixture.Enable(session);
+    rhi::RasterShaderDescription depth;
+    depth.Artifact.Stage = rhi::ShaderStage::Fragment;
+    depth.Artifact.Wgsl = "void opaque depth fixture";
+    depth.Artifact.WgslEntry = "DepthMain";
+    rr::MaterialProgram program;
+    rhi::RasterStatus prewarm =
+        session.Renderer.PrewarmLitProgram(fixture.Vertex, fixture.Fragment, fixture.Shadow, program, &depth);
+    constexpr usize PREWARM_ATTEMPTS = 20;
+    for (usize attempt = 0; attempt < PREWARM_ATTEMPTS && prewarm == rhi::RasterStatus::Pending; ++attempt)
+    {
+        prewarm = session.Renderer.GetStatus(program);
+    }
+    REQUIRE(prewarm == rhi::RasterStatus::Ready);
+    rr::LightClusterDescription clusters;
+    rr::LitMaterialDescription description;
+    description.Clusters = &clusters;
+    rr::MaterialVersion material;
+    rr::LightSelection selection;
+    REQUIRE(session.Renderer.CreateLitMaterial(program, description, material, selection) == rhi::RasterStatus::Ready);
+    constexpr usize CORNER_COUNT = 3;
+    const StaticArray<math::Vector3, CORNER_COUNT> positions{{{-.1F, -.1F, .5F}, {.1F, -.1F, .5F}, {0, .1F, .5F}}};
+    const StaticArray<math::Vector3, CORNER_COUNT> normals{{{0, 0, 1}, {0, 0, 1}, {0, 0, 1}}};
+    const StaticArray<uint32, CORNER_COUNT> indices{{0, 1, 2}};
+    rr::MeshDescription geometry;
+    geometry.Positions = positions.GetData();
+    geometry.VertexCount = positions.GetSize();
+    geometry.Indices = indices.GetData();
+    geometry.IndexCount = indices.GetSize();
+    geometry.Normals = normals.GetData();
+    rr::Mesh mesh;
+    REQUIRE(session.Renderer.CreateMesh(geometry, mesh) == rhi::RasterStatus::Ready);
+    rr::SceneItem item;
+    item.Geometry = mesh;
+    item.Surface = material;
+    item.SourceId = 1;
+    rr::Snapshot snapshot;
+    REQUIRE(session.Renderer.CreateSnapshot(&item, 1, snapshot) == rhi::RasterStatus::Ready);
+    REQUIRE(session.Renderer.Release(material) == rhi::RasterStatus::Ready);
+    REQUIRE(session.Renderer.Release(program) == rhi::RasterStatus::Ready);
+    REQUIRE(session.Renderer.Release(mesh) == rhi::RasterStatus::Ready);
+    rr::PreparedView view;
+    rr::ViewReport report;
+    REQUIRE(session.Renderer.PrepareView(snapshot, {}, view, report) == rhi::RasterStatus::Ready);
+    REQUIRE(session.Renderer.Release(snapshot) == rhi::RasterStatus::Ready);
+    rhi::TextureDescription target;
+    target.Width = 64;
+    target.Height = 64;
+    target.Attachment = true;
+    rhi::TextureHandle texture;
+    REQUIRE(rhi::CreateTexture(session.Device, target, {}, texture) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::BeginFrame(session.Device, session.Surface) == rhi::DeviceStatus::Ready);
+    rhi::RasterPassDescription pass;
+    pass.Color = texture;
+    pass.DepthStore = rhi::RasterStore::Store;
+    REQUIRE(session.Renderer.DrawDepthView(view, pass) == rhi::RasterStatus::Ready);
+    const rhi::internal::RasterPipelineInfo prepass = rhi::reference::Pipelines[rhi::reference::Packet.Pipeline];
+    pass.DepthLoad = rhi::RasterLoad::Load;
+    REQUIRE(session.Renderer.DrawView(view, pass) == rhi::RasterStatus::Ready);
+    const rhi::internal::RasterPipelineInfo color = rhi::reference::Pipelines[rhi::reference::Packet.Pipeline];
+    CHECK(prepass.Vertex == color.Vertex);
+    CHECK(prepass.Fragment != color.Fragment);
+    CHECK(prepass.DepthCompare == rhi::RasterDepthCompare::Less);
+    CHECK(color.DepthCompare == rhi::RasterDepthCompare::LessEqual);
+    CHECK(prepass.DepthWrite == true);
+    CHECK(prepass.Target == rhi::RasterTarget::Rgba8Unorm);
+    CHECK(prepass.AttributeCount == color.AttributeCount);
+    rhi::SubmissionToken completion;
+    REQUIRE(rhi::EndFrame(session.Device, completion) == rhi::RasterStatus::Ready);
+    REQUIRE(session.Renderer.Release(view) == rhi::RasterStatus::Ready);
+    REQUIRE(rhi::Destroy(session.Device, texture) == rhi::RasterStatus::Ready);
+}
+
 TEST_CASE("L4 direct lists saturate stably and BRDF guards preserve reference outputs", "[renderer][l4]")
 {
     rr::DirectLight lights[10];

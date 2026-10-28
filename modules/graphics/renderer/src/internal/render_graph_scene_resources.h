@@ -34,8 +34,10 @@ public:
     ~ForwardSceneResources() noexcept;
     ForwardSceneResources(const ForwardSceneResources&) = delete;
     ForwardSceneResources& operator=(const ForwardSceneResources&) = delete;
-    [[nodiscard]] rhi::RasterStatus
-    Initialize(rhi::DeviceHandle device, Renderer& inoutRenderer, MaterialProgram program) noexcept;
+    [[nodiscard]] rhi::RasterStatus Initialize(rhi::DeviceHandle device,
+                                               Renderer& inoutRenderer,
+                                               MaterialProgram program,
+                                               bool isClustered = false) noexcept;
     /// Consume every input before returning. Failure preserves a null generation.
     [[nodiscard]] rhi::RasterStatus
     Prepare(const RenderGraphSceneDescription& scene,

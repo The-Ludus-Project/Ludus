@@ -1046,13 +1046,16 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                             record['key'] = identity(record['canonical'])
                             recipes.append(record)
                         continue
-                    if forward.is_forward(technique):
+                    is_clustered_depth = tid == 'DefaultStaticOpaque.DepthOnly' and any(forward.is_clustered(item) for item in techniques.values())
+                    if forward.is_forward(technique) or is_clustered_depth:
                         record = {'technique': tid, 'profile': target, 'state': technique['recipes'][0],
                                   'vertex': entries[('ForwardSetupVertex', target)],
-                                  'fragment': entries[('ForwardSetupFragment', target)],
+                                  'fragment': entries[(technique['fragment'] if is_clustered_depth else 'ForwardSetupFragment', target)],
                                   'vertex_schema': schemas['RendererStatic'], 'bindings': {'vertex': [], 'fragment': []},
-                                  'forward_stages': {group + ':' + stage: entries[(technique[stage] if group == 'ForwardLit' else group + stage.title(), target)]
-                                                     for group, (_, stages) in forward.SUPPORT.items() for stage in stages}}
+                                  'clustered_forward': is_clustered_depth or forward.is_clustered(technique),
+                                  'forward_stages': {group + ':' + stage: entries[(forward.support_program(techniques, group, stage), target)]
+                                                     for group, (_, stages) in forward.SUPPORT.items() for stage in stages
+                                                     if group != 'ForwardDepth' or is_clustered_depth or forward.is_clustered(technique)}}
                         record['canonical'] = deepcopy(record)
                         record['key'] = identity(record['canonical'])
                         recipes.append(record)

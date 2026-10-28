@@ -691,6 +691,37 @@ class RasterTemplateTests(unittest.TestCase):
                 for identity in ('color', 'depth'):
                     self.assertEqual(resized['resources']['Main/' + identity]['extent'], [961, 541])
 
+    def test_default_clustered_profile_has_an_explicit_optional_prepass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = graph.new_workspace(Path(directory) / 'Raster', output='offscreen',
+                                       renderer_static=True, profiles=('wgsl',))
+            manifest = json.loads(root.with_name('main.lushader.json').read_text())
+            build.validate_manifest(manifest)
+            technique = next(item for item in manifest['techniques']
+                             if item['id'] == 'DefaultStaticOpaque.ColorAndDepth')
+            self.assertEqual(technique['scene_interface'], {'version': 1, 'profile': 'ClusteredForward'})
+            self.assertEqual(technique['recipes'][0]['depth_compare'], 'LessEqual')
+            self.assertEqual(json.loads(root.read_text())['default'], 'Default')
+            ordinary = graph.compile_graph(root)
+            prepass = graph.compile_graph(root, configuration='ZPrepass')
+            self.assertEqual([item['configuration'] for item in ordinary['passes'] if item['kind'] == 'Raster'],
+                             ['ColorAndDepth'])
+            raster_passes = [item for item in prepass['passes'] if item['kind'] == 'Raster']
+            self.assertEqual([item['configuration'] for item in raster_passes], ['DepthOnly', 'ColorAndDepth'])
+            self.assertNotIn('color', raster_passes[0]['attachments'])
+            written_depth = raster_passes[0]['attachments']['depth']
+            loaded_depth = raster_passes[1]['attachments']['depth']
+            self.assertEqual(written_depth['resource'], loaded_depth['resource'])
+            self.assertEqual(written_depth['store'], 'Store')
+            self.assertEqual(loaded_depth['load'], 'Load')
+            self.assertEqual(ordinary['resources'], prepass['resources'])
+            from ludus_tools import render_graph_execution as execution
+            recipes = [{'technique': item['id'], 'state': item['recipes'][0], 'clustered_forward': True}
+                       for item in manifest['techniques']]
+            lowered = execution.lower_plan({'plans': [prepass], 'recipes': recipes}, 'ZPrepass')[2]
+            self.assertEqual([item['AllowsRepeatedCoverage'] for item in lowered], [1, 1])
+
+
     def test_relocated_sdk_copies_the_default_without_a_source_checkout(self):
         from ludus_tools import render_graph_templates
         source = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs/default'
