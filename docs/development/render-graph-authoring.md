@@ -184,7 +184,7 @@ The version-2 node fields are:
 | `outputs` | Up to eight `{id, type, target, format, load, store}` records; `target` names a same-type input carrying the previous resource version |
 | `shaders` | Up to sixteen `{id, stage, program}` records; `program` references an explicitly declared build-manifest program, not a guessed source filename |
 | `state` | Graphics topology/cull/front/depth comparison/depth writes/blending/samples; compute `group_size` (scene compute passes use `{}`); ray tracing recursion/payload/attribute bounds |
-| `invocation` | Graphics mode, vertex layout, material family and Scene/View input names; compute dispatch `dimensions`; scene compute and ray launch `dimensions` as `"ColorTarget"` or explicit `[width, height, 1]` |
+| `invocation` | Graphics mode, vertex layout, material family and Scene/View input names; compute dispatch `dimensions`; scene compute and ray launch `dimensions` as `"ColorTarget"` or explicit `[width, height, 1]`, plus optional [`traversal`](#reuse-ray-callbacks-in-compute-pipelines) (`NativeQuery`, `TriangleLoop` or `ComputeBvh`) |
 
 Input types include Scene, View, ColorTexture, DepthTexture, Buffer,
 AccelerationStructure, Float32, Float2, Float3, Float4 and UInt32. Outputs are
@@ -634,8 +634,8 @@ GPU family 9 or newer. Metal API availability alone does not admit older GPUs
 without dedicated ray hardware. Software/CPU Vulkan adapters are excluded. The
 shader uses native traversal inside a compute invocation; dedicated ray stages or
 shader tables are not required for hardware acceleration. The default
-RayTracingPipeline traversal is native. The explicit triangle-loop strategy
-described below uses ordinary GPU compute and does not require ray hardware.
+RayTracingPipeline traversal is native. The explicit triangle-loop and compute-BVH
+strategies described below use ordinary GPU compute and do not require ray hardware.
 WebGPU and WebGL2 do not execute this
 profile. Packages can retain browser raster targets alongside native targets;
 their `capability_profiles.ray_tracing` lists only `metal` and/or `spirv`, and no
@@ -691,16 +691,17 @@ Use **Invocation → Ray traversal** to choose the compute intersection strategy
 | --- | --- |
 | Automatic | An explicit Compute invocation uses `TriangleLoop`. Legacy documents without an invocation type retain their defaults: shared callbacks in a ComputePipeline use `TriangleLoop`; a RayTracingPipeline and existing single-kernel compute passes use `NativeQuery`. |
 | Triangle loop (`TriangleLoop`) | Renderer-owned two-sided ray/triangle intersections scan the selected World's packed triangles. Closest queries retain the nearest accepted hit; visibility queries stop at the first accepted hit. |
+| Compute BVH (`ComputeBvh`) | Ordinary GPU compute walks the renderer's packed binned-SAH BVH with watertight triangle tests. Closest queries retain the nearest accepted hit; visibility queries stop at the first accepted hit. |
 | Native ray query (`NativeQuery`) | Inline native acceleration-structure queries perform triangle traversal. |
 | Custom traversal (`Custom`) | The package-relative **Traversal source** implements closest and visibility queries in compute. No native acceleration structure is created or bound. |
 
 The optional JSON field is `invocation.traversal`:
 
 ```json
-"invocation": {"type": "Compute", "dimensions": "ColorTarget", "traversal": "TriangleLoop"}
+"invocation": {"type": "Compute", "dimensions": "ColorTarget", "traversal": "ComputeBvh"}
 ```
 
-Both strategies apply to `TraceClosest`, `TestVisibility` and `TraceAndShade`,
+Every strategy applies to `TraceClosest`, `TestVisibility` and `TraceAndShade`,
 including queries issued by closest-hit and miss callbacks. The wrapper dispatches
 the same authored callbacks and preserves payload, query budgets and failure
 status. Passes sharing the same callbacks can select different strategies in one
@@ -741,14 +742,45 @@ Its relative parallel tolerance rejects degenerate and nearly parallel triangles
 its far endpoint is exclusive, and equal-distance hits retain the first packed
 triangle. Edge, tolerance and tie behavior can differ from hardware intersection.
 It is a linear scan intended for small scenes and comparison, not an acceleration
-structure. Adding another strategy belongs at the shared traversal boundary rather
-than in each author's callbacks.
+structure. Strategies are added at this shared traversal boundary rather than in
+each author's callbacks.
 
-A configuration whose ray passes all select `TriangleLoop` runs on native Metal
+`ComputeBvh` uses the BVH that scene preparation already builds for every ray
+graph; it adds no structure and no preparation work. The kernel shares its node
+walk and float32 port of Woop, Benthin and Wald's watertight triangle test with the
+[GPU-compute RT1 reference](../architecture/renderer-systems.md#gpu-compute-reference)
+(`ray_bvh_traversal.slang`). Its ray interval is closed: a hit exactly at the
+maximum distance is accepted, and equal-distance hits keep the lowest packed
+triangle. Candidates pass the same fixed-mip material alpha acceptance as the other
+strategies. Each ray's traversal stack holds 64 nodes, and the builder's 48-level
+depth limit keeps admitted scenes within it; an overflow would fail the query rather
+than return a partial result. Use it for scenes larger than a few hundred triangles,
+and `TriangleLoop` for small comparisons. Edge, tolerance and tie behavior can differ
+from hardware intersection and from the loop's Moller-Trumbore test. Ludus compiles
+Metal with fast math, which may fuse the watertight test's edge products into
+multiply-adds; each edge function is therefore evaluated in a canonical vertex order,
+so triangles sharing an edge still compute exactly negated values and rays through
+the edge cannot miss both.
+
+The `ludus_render_graph_ray_tests` traversal parity test renders a
+[fixture](../../tests/sdk_consumer/rg2/traversal_parity/main.lurender.json) with
+the three strategies over one set of callbacks. Each pixel encodes the camera
+ray's triangle, a secondary closest query's triangle and a visibility result. On
+a room with nested blocks, `ComputeBvh` must match `TriangleLoop` and, on devices
+with native ray queries, `NativeQuery`. Camera rays sample off the pixel center so
+none lies exactly on a corner line, where strategies may break an equal-distance tie
+differently. On native Metal (Apple M5) all three images are identical; the test
+allows one pixel in a thousand for other backends. Vulkan compiles and first runs
+these tests in batch CI. The
+compiled kernel uses no native ray constructs; the build test also compiles it to
+WGSL with the pinned Slang compiler. WebGPU execution is not part of this profile
+yet, so no browser ray recipe is emitted.
+
+A configuration whose ray passes all select `TriangleLoop` or `ComputeBvh` runs on native Metal
 or Vulkan devices with the required ordinary compute/storage capabilities, including
 GPUs without RT hardware and Vulkan software adapters. Its cooked compute artifact
 has no ray-query instructions or acceleration-structure binding. Preparation uploads
-the World triangle/material data without creating BLAS/TLAS resources. Callback
+the World triangle, BVH and material data without creating BLAS/TLAS resources. Callback
 sources, payloads, query budgets, persistent buffers, camera updates and transactional
 publication use the same contracts as native queries.
 
@@ -761,6 +793,7 @@ version 18 runtime packages. Earlier package versions retain native-ray requirem
 Version 19 additionally records custom software traversal distinctly from the
 engine triangle loop. Version 20 carries a separate native Metal stage artifact
 and records hardware invocation per pass, allowing mixed native/compute sequences.
+Version 22 admits `ComputeBvh` in the same traversal field without a layout change.
 Older runtimes reject the new package versions.
 Browser rendering remains outside this profile. The legacy RayTracingPipeline
 invocation uses inline queries in a compute wrapper. Explicit hardware invocation
@@ -802,7 +835,7 @@ const ludus::graphics::rhi::RasterStatus status = activation.StageSelected(
         : ludus::graphics::renderer::RenderGraphPreference::Automatic);
 ```
 
-The optional ray package may instead be a software-only `TriangleLoop` configuration.
+The optional ray package may instead be a software-only `TriangleLoop` or `ComputeBvh` configuration.
 Automatic then stages it without requiring native ray capabilities; its normal compute
 admission still applies. Force raster continues to select the raster package. Activation
 reports `ComputeRayTracing` for the software configuration and `HardwareRayTracing` when
@@ -1049,9 +1082,9 @@ the same renderer selection and the same post-processing. A package that contain
 one is a ray package: `SelectRenderGraphRenderer`, `StageSelected` and the
 viewport's automatic and **Force raster** choices fall back to the authored raster
 graph when the selected configuration requires unavailable native queries.
-An explicitly selected `TriangleLoop` configuration runs through ordinary compute;
-renderer selection does not substitute another traversal strategy. Existing kernel
-passes keep their native default unless `invocation.traversal` selects the loop.
+An explicitly selected `TriangleLoop` or `ComputeBvh` configuration runs through ordinary
+compute; renderer selection does not substitute another traversal strategy. Existing kernel
+passes keep their native default unless `invocation.traversal` selects a compute strategy.
 The [simple triangle-loop template](#use-the-simple-triangle-loop-template) implements
 its own intersection tests and can select this compute-only runtime too. A ComputePipeline
 without a Scene input is still a draft and returns the `Capability` diagnostic.
@@ -1571,7 +1604,26 @@ Configuration Template... → Compute ray tracing — primary hits + direct ligh
 `scene: Scene`, `view: View` and `color: ColorTexture` inputs and `color` output as
 the [ReSTIR DI configuration](#run-the-three-pass-restir-di-example), and the same
 rules for libraries, the root canvas, undo and Save. The package requires a native
-Metal or Vulkan ray profile.
+Metal or Vulkan profile.
+
+Both pipeline nodes expose a `Traversal` [public option](#expose-finite-choices-on-reusable-nodes)
+on `invocation.traversal`, with `NativeQuery`, `ComputeBvh` and `TriangleLoop`
+allowed and `NativeQuery` the default. The library configuration forwards them as
+`PrimaryTraversal` and `ShadeTraversal`. The main graph's `Default` configuration
+uses native ray queries; its `ComputeBvh` configuration sets both overrides to
+`ComputeBvh` and needs only ordinary compute, so it also runs on GPUs and Vulkan
+adapters without ray hardware:
+
+```json
+{"id": "transport", "kind": "Subgraph", "asset": "library.lurender.json",
+ "configuration": "ComputeRayTracing",
+ "overrides": {"PrimaryTraversal": "ComputeBvh", "ShadeTraversal": "ComputeBvh"}}
+```
+
+Build it with `--configuration ComputeBvh` (`CONFIGURATION ComputeBvh` in
+`ludus_compile_render_graph`), or ship it as the
+[optional ray package](#support-developers-and-players-without-rt-hardware) that
+Automatic selection stages without native ray capabilities.
 
 The library holds one `hits` **Buffer** (`bytes_per_pixel: 32`, `extent: "RenderSize"`,
 sized from the color input) and two ComputePipeline nodes. The buffer chains
@@ -1629,7 +1681,10 @@ that applies the same direct-lighting policy. The reference draws the same rando
 values from its automatic stream, so on Metal the two accumulated images are
 byte-identical; the test allows a 2% difference in mean radiance for other backends.
 It also resizes the graph and checks that the replacement hit buffer produces no
-error pixels.
+error pixels. A second test renders the `ComputeBvh` configuration on a device
+created without requesting ray features, then compares it over 64 samples with the
+native `Default` configuration: mean radiance within 2%, and at most one pixel in a
+thousand differing by more than two bytes.
 
 Thanks to Samuli Laine, Tero Karras and Timo Aila,
 [*Megakernels Considered Harmful: Wavefront Path Tracing on GPUs*, HPG 2013](https://doi.org/10.1145/2492045.2492060),

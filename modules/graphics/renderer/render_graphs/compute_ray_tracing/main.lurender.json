@@ -97,6 +97,105 @@
           "to": "output.texture"
         }
       ]
+    },
+    {
+      "id": "ComputeBvh",
+      "inputs": [],
+      "outputs": [],
+      "nodes": [
+        {
+          "id": "scene",
+          "kind": "Scene"
+        },
+        {
+          "active": true,
+          "id": "camera",
+          "kind": "Camera",
+          "role": "Offscreen",
+          "target_type": "ColorTexture"
+        },
+        {
+          "extent": "RenderSize",
+          "format": "RGBA8Unorm",
+          "id": "color",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "id": "renderSize",
+          "kind": "RenderSize",
+          "extent": {
+            "reference": "View",
+            "scale": [
+              1,
+              1
+            ]
+          }
+        },
+        {
+          "id": "output",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "transport",
+          "kind": "Subgraph",
+          "asset": "library.lurender.json",
+          "configuration": "ComputeRayTracing",
+          "overrides": {
+            "PrimaryTraversal": "ComputeBvh",
+            "ShadeTraversal": "ComputeBvh"
+          }
+        },
+        {
+          "id": "accumulate",
+          "kind": "Accumulate",
+          "samples": 4096
+        },
+        {
+          "id": "tonemap",
+          "kind": "ToneMap",
+          "exposure": 1
+        }
+      ],
+      "edges": [
+        {
+          "from": "scene.scene",
+          "to": "transport.scene"
+        },
+        {
+          "from": "camera.view",
+          "to": "transport.view"
+        },
+        {
+          "from": "color.texture",
+          "to": "transport.color"
+        },
+        {
+          "from": "color.texture",
+          "to": "camera.target"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "color.size"
+        },
+        {
+          "from": "transport.color",
+          "to": "accumulate.color"
+        },
+        {
+          "from": "accumulate.color",
+          "to": "tonemap.color"
+        },
+        {
+          "from": "tonemap.color",
+          "to": "output.texture"
+        }
+      ]
     }
   ]
 }
