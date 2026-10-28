@@ -340,6 +340,13 @@ sampled distribution:
   divides by zero. Ludus compiles Metal shaders with fast math and WGSL does not
   guarantee infinities, NaNs or signed zeros; the paper's encoding produced NaN
   for a vertex at the zenith on Metal. The shader tests finiteness on bit patterns.
+- The arctangent is `ComputeArctangent` from FoundationMath's `math.slang`, not
+  the backend's `atan`. Vulkan bounds `atan` only to 4096 ulp. Mesa lowers it to a
+  polynomial whose absolute error reaches 3.3e-6 near |x| = 1 on lavapipe 25.2.
+  Sector areas are differences of these angles, so on that driver the
+  99th-percentile relative area error against C++ was 1.5e-3.
+  `ComputeArctangent` uses Stephen L. Moshier's Cephes `atanf` range reduction and
+  polynomial and stays within 3 ulp of float64 on every backend.
 - Sector selection skips sectors without area, so rounding at the end of the
   distribution cannot select an empty sector, where the original produces NaN.
 - The iteration's approximate exponent-flip reciprocal is an exact reciprocal,
@@ -364,7 +371,9 @@ Fig. 6b; the relative backward error grows only for small projected solid angles
 alone (paper section 3.6 reports 0.02). A stratified quadrature integrates the
 density to one within 0.5%. The renderer's `[polygon-sampling]` GPU test compares
 the shader with C++ on 4096 cases; it runs natively on Metal here, and the
-Vulkan/SPIR-V and WGSL builds compile but are first executed in CI.
+WGSL build compiles but is first executed in CI. On Mesa lavapipe 25.2 (Vulkan)
+the relative area error has a 99th percentile of 8.8e-5 and the direction error
+1.6e-5.
 
 ## Linearly transformed cosines over polygons
 
