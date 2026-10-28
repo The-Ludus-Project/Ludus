@@ -314,8 +314,8 @@ float3 InvertPbrNeutral(float3 display)
         shifted = max((display - peak * (1 - mixAmount)) / scale, float3(0));
     }
     float smallest = min(shifted.x, min(shifted.y, shifted.z));
-    float original = smallest < PBR_NEUTRAL_FRESNEL ? 2 * sqrt(PBR_NEUTRAL_FRESNEL * smallest)
-                                                    : smallest + PBR_NEUTRAL_FRESNEL;
+    float original =
+        smallest < PBR_NEUTRAL_FRESNEL ? 2 * sqrt(PBR_NEUTRAL_FRESNEL * smallest) : smallest + PBR_NEUTRAL_FRESNEL;
     float offset = original <= 2 * PBR_NEUTRAL_FRESNEL ? original - original * original / (4 * PBR_NEUTRAL_FRESNEL)
                                                        : PBR_NEUTRAL_FRESNEL;
     return shifted + offset;
