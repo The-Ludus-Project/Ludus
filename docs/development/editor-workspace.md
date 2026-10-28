@@ -989,6 +989,39 @@ Browser builds and native builds without `LUDUS_EDITOR_RENDER_PREVIEW` explain
 why rendering is unavailable. The game adapter chooses the trusted preview for
 the open World; it does not introduce another authoring workspace.
 
+### Select and transform objects in the World viewport
+
+Click a visible object's triangles to select it. The hierarchy and Properties
+follow the same stable entity ID; clicking empty space clears the selection.
+The selected object has an amber wireframe, drawn over the rendered image so its
+shape stays visible against dark surfaces. Selection works with the inspector
+hidden. Picking chooses the nearest geometric triangle, including back faces;
+texture alpha masks and shader displacement do not alter this editor query.
+
+Choose **Select (Q)**, **Move (W)**, **Rotate (E)** or **Scale (R)** in the viewport
+tool menu. Drag a red X, green Y or blue Z handle; rotation uses rings. Move
+changes the parent-local position, rotation changes the stored Euler degree
+component, and scale changes one positive local scale component. Hold **Shift**
+for 0.1 metre movement, 15 degree rotation or 0.1 scale-factor increments.
+The wireframe previews the candidate throughout a drag. Release applies one
+validated World edit and refreshes the shaded scene; **Undo** restores the entire
+gesture. **Delete** and **Ctrl+D** use the hierarchy’s delete and duplicate
+commands while the viewport has focus. **Escape**, a tool change, hiding the view
+or losing focus cancels the candidate. **Save World** persists the accepted placement.
+
+Imported scene instances and project preview transform bindings expose these
+handles. Other extractors can still select and highlight their objects; they need
+an explicit authoring transform binding before the editor can manipulate them.
+A multiple selection, unapplied inspector fields or a running scene operation
+disables transform handles. Axis handles viewed directly end-on are hidden;
+orbit to expose them. Wireframes sample very dense meshes to bound overlay cost.
+The native shared-device viewport and native readback fallback show the same
+selection overlay. The browser's separate GPU canvas does not yet composite it.
+
+Alt/Option-drag orbit, middle-drag pan, right-drag navigation and Play input keep
+their existing behavior. Q/W/E/R choose tools only while the editor camera is not
+flying; the fly movement keys keep working while the right button is held.
+
 ### World viewport navigation
 
 The World hierarchy scrolls when the available dock height cannot fit its entity
