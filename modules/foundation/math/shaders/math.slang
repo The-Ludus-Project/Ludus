@@ -19,8 +19,11 @@ bool HasPositiveComponent(float3 v)
 // tan(3 pi / 8) and tan(pi / 8) to |x| <= tan(pi / 8), then its odd degree-9 polynomial.
 static const float ARCTANGENT_UPPER_REDUCTION = 2.414213562373095;  // tan(3 pi / 8)
 static const float ARCTANGENT_LOWER_REDUCTION = 0.4142135623730950; // tan(pi / 8)
-static const float4 ARCTANGENT_COEFFICIENTS = float4(8.05374449538e-2, -1.38776856032e-1, 1.99777106478e-1,
-                                                     -3.33329491539e-1);
+// Odd polynomial coefficients of x^9, x^7, x^5 and x^3; the x coefficient is one.
+static const float ARCTANGENT_COEFFICIENT_9 = 8.05374449538e-2;
+static const float ARCTANGENT_COEFFICIENT_7 = -1.38776856032e-1;
+static const float ARCTANGENT_COEFFICIENT_5 = 1.99777106478e-1;
+static const float ARCTANGENT_COEFFICIENT_3 = -3.33329491539e-1;
 float ComputeArctangent(float x)
 {
     float magnitude = abs(x);
@@ -37,10 +40,9 @@ float ComputeArctangent(float x)
         reduced = (magnitude - 1.0) / (magnitude + 1.0);
     }
     float square = reduced * reduced;
-    float polynomial =
-        ((ARCTANGENT_COEFFICIENTS.x * square + ARCTANGENT_COEFFICIENTS.y) * square + ARCTANGENT_COEFFICIENTS.z) *
-            square +
-        ARCTANGENT_COEFFICIENTS.w;
+    float polynomial = ARCTANGENT_COEFFICIENT_9 * square + ARCTANGENT_COEFFICIENT_7;
+    polynomial = polynomial * square + ARCTANGENT_COEFFICIENT_5;
+    polynomial = polynomial * square + ARCTANGENT_COEFFICIENT_3;
     float result = offset + (polynomial * square * reduced + reduced);
     return x < 0 ? -result : result;
 }
