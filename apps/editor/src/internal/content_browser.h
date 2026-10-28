@@ -99,6 +99,8 @@ private:
     bool Closing_ = false;
 };
 
+class StateView;
+
 class ContentWorkspace final : public QWidget
 {
     Q_OBJECT
@@ -122,6 +124,7 @@ Q_SIGNALS:
 
 private:
     void RenderActions();
+    void showProblem(const ContentResult& result);
     void RestoreSelection();
     void Accept(const ContentResult& result);
     [[nodiscard]] ContentRequest Request() const;
@@ -131,6 +134,7 @@ private:
     QTableView* Table_ = nullptr;
     QLineEdit* Search_ = nullptr;
     QLabel* Status_ = nullptr;
+    StateView* mProblemOrNull = nullptr;
     QPushButton* Refresh_ = nullptr;
     QPushButton* Import_ = nullptr;
     QPushButton* Reimport_ = nullptr;

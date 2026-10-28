@@ -472,6 +472,12 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   command rows of their own: **File → New Render Graph...** and **Open Render
   Graph...** open graphs, and the **Build** menu holds every render-graph
   command, including Cook Render Graph Runtime and Cancel Render Graph Job.
+- **Empty and error states** share one `StateView`: an icon, one sentence, at most
+  one primary action with its shortcut, and for an error the cause, what to do
+  about it and a **Copy Details** button that puts all of it on the clipboard.
+  The Start Page (no recent projects), the World Inspector (no world open), the
+  viewport when its GPU device or presentation fails, and a failed content
+  refresh or import use it; cancelling an import is not an error.
 - **Tools → Options...** edits editor preferences. Its **Render Graph** page
   holds the advanced shader-tool overrides and the native shader worker socket
   ([build settings](render-graph-authoring.md#build-settings)).

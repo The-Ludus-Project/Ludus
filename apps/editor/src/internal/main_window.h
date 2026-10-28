@@ -53,6 +53,7 @@ class ProjectExplorer;
 struct ErrorListEntry;
 enum class ProjectItemKind : foundation::uint8;
 class ScriptWorkspace;
+class StateView;
 class RendererWorkspace;
 class ProjectRenderingSettings;
 class TimingPanel;
@@ -281,7 +282,7 @@ private:
     QPushButton* WelcomeNewButton_ = nullptr;
     QAction* CloseProjectAction_ = nullptr;
     QListWidget* RecentList_ = nullptr;
-    QLabel* RecentEmptyLabel_ = nullptr;
+    StateView* mRecentEmptyStateOrNull = nullptr;
     QPushButton* RecentOpenButton_ = nullptr;
     QPushButton* BrowseProjectButton_ = nullptr;
     QMenu* RecentMenu_ = nullptr;

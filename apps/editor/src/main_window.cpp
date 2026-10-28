@@ -18,6 +18,7 @@
 #include "internal/project_setup_dialog.h"
 #include "internal/renderer_workspace.h"
 #include "internal/script_workspace.h"
+#include "internal/state_view.h"
 #include "internal/timing_panel.h"
 #include "internal/workspace_style.h"
 #include "internal/world_workspace.h"
@@ -1011,7 +1012,13 @@ void MainWindow::RenderRecentProjects()
         stamp.append(project.DescriptorPath);
         stamp.append(QFileInfo(project.DescriptorPath).isFile() ? QString() : QStringLiteral("Missing"));
     }
-    RecentEmptyLabel_->setVisible(projects.isEmpty());
+    StateViewContent recentEmpty;
+    recentEmpty.Icon = EditorIcon::OpenProject;
+    recentEmpty.Message = QStringLiteral("No recent projects yet.");
+    recentEmpty.ShortcutHint = QStringLiteral("Open a project (%1) to add it here.")
+                                   .arg(OpenAction_->shortcut().toString(QKeySequence::NativeText));
+    mRecentEmptyStateOrNull->SetContent(recentEmpty);
+    mRecentEmptyStateOrNull->setVisible(projects.isEmpty());
     RecentList_->setVisible(projects.isEmpty() == false);
     if (stamp == RecentProjectsStamp_)
     {

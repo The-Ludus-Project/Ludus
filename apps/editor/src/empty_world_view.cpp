@@ -1,5 +1,6 @@
 #include "internal/empty_world_view.h"
 #include "internal/render_preview.h"
+#include "internal/state_view.h"
 
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/matrix.hpp>
@@ -9,6 +10,7 @@
 #include <ludus/graphics/renderer/world_grid.hpp>
 
 #include <QPainter>
+#include <QVBoxLayout>
 
 namespace ludus::editor
 {
@@ -20,6 +22,7 @@ constexpr int32 TEXT_MARGIN = 12;
 constexpr usize CLIP_PLANE_COUNT = 6;
 constexpr QRgb BACKGROUND = qRgb(9, 12, 15);
 constexpr QRgb CAPTION = qRgb(175, 184, 194);
+constexpr QRgb SECONDARY_CAPTION = qRgb(150, 160, 170);
 
 StaticArray<float32, CLIP_PLANE_COUNT> GetClipDistances(math::Vector4 positionClip) noexcept
 {
@@ -90,8 +93,35 @@ EmptyWorldView::EmptyWorldView(RenderPreview& inoutPreview, QWidget* parentOrNul
     setAlignment(Qt::AlignBottom | Qt::AlignLeft);
     setMargin(TEXT_MARGIN);
     setWordWrap(true);
+    QVBoxLayout* centre = new QVBoxLayout(this);
+    centre->setContentsMargins(TEXT_MARGIN, TEXT_MARGIN, TEXT_MARGIN, TEXT_MARGIN);
+    mProblemOrNull = new StateView(this);
+    mProblemOrNull->setObjectName(QStringLiteral("viewportProblem"));
+    mProblemOrNull->SetFixedColours({QColor::fromRgb(CAPTION), QColor::fromRgb(SECONDARY_CAPTION)});
+    mProblemOrNull->hide();
+    connect(mProblemOrNull, &StateView::ActionTriggered, this, [this]() { update(); });
+    centre->addWidget(mProblemOrNull, 0, Qt::AlignCenter);
     connect(&mPreview, &RenderPreview::NavigationChanged, this, [this]() { update(); });
     connect(&mPreview, &RenderPreview::Changed, this, [this]() { update(); });
+}
+void EmptyWorldView::SetPrompt(const QString& text)
+{
+    mProblemOrNull->hide();
+    setText(text);
+    update();
+}
+void EmptyWorldView::ShowProblem(const QString& status)
+{
+    const StateViewContent content = MakeViewportProblem(status);
+    mProblemOrNull->SetContent(content);
+    mProblemOrNull->show();
+    // The sentence stays the label text so assistive technology and tests read the same words.
+    setText(content.Message);
+    update();
+}
+bool EmptyWorldView::HasProblem() const noexcept
+{
+    return mProblemOrNull->isVisibleTo(this);
 }
 void EmptyWorldView::paintEvent(QPaintEvent* /*event*/)
 {
@@ -135,6 +165,10 @@ void EmptyWorldView::drawCaption(QPainter& inoutPainter) const
     // Painted here rather than by QLabel: the workspace style sheet colours every QLabel from the window
     // palette, which left this caption charcoal on charcoal. The viewport background is fixed, so the
     // caption colour is too.
+    if (HasProblem() == true)
+    {
+        return;
+    }
     inoutPainter.setRenderHint(QPainter::Antialiasing, false);
     inoutPainter.setPen(QColor::fromRgb(CAPTION));
     inoutPainter.drawText(rect().adjusted(TEXT_MARGIN, TEXT_MARGIN, -TEXT_MARGIN, -TEXT_MARGIN),
