@@ -546,8 +546,14 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_storage_ray_RUNTIME_PACKAGE PARENT_PATH storage_ray_package_directory)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_STORAGE_RAY_DIRECTORY="${storage_ray_package_directory}")
-    add_test(NAME ludus_render_graph_ray_pixels COMMAND ludus_render_graph_ray_tests)
+    add_test(NAME ludus_render_graph_ray_pixels COMMAND ludus_render_graph_ray_tests "~[ris-projected-solid-angle]")
     set_tests_properties(ludus_render_graph_ray_pixels PROPERTIES LABELS "renderer;gpu;ray" TIMEOUT 60)
+    # The ris-projected-solid-angle template's convergence and error checks render about 2600 frames and
+    # need no native ray tracing, so they also run on software Vulkan adapters; they get their own timeout.
+    add_test(NAME ludus_render_graph_ris_projected_solid_angle_pixels
+        COMMAND ludus_render_graph_ray_tests "[ris-projected-solid-angle]")
+    set_tests_properties(ludus_render_graph_ris_projected_solid_angle_pixels PROPERTIES
+        LABELS "renderer;gpu;ray" TIMEOUT 600)
     add_executable(ludus_graph_workgroup_tests tests/graph_workgroup_tests.cpp)
     target_link_libraries(ludus_graph_workgroup_tests PRIVATE Ludus::GraphicsRenderer
         Ludus::FoundationTime Catch2::Catch2WithMain)

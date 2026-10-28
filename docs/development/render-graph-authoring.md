@@ -1878,15 +1878,22 @@ Scope and limits:
   a direction that misses its triangle in float32 contributes zero.
 - There is no indirect bounce and no reservoir reuse.
 
-`ludus_render_graph_ray_tests` renders the template on Metal, with its compute BVH,
-in the glossy Cornell-box-style room under a sky and in a room with sixteen small
-emitters whose power spans a factor of 64:
+`ludus_render_graph_ray_tests` renders the template on Metal, with its compute BVH.
+These cases run as their own CTest entry,
+`ludus_render_graph_ris_projected_solid_angle_pixels`. The fixtures are the glossy
+Cornell-box-style room under a sky, a room with sixteen small emitters whose power
+spans a factor of 64, and a two-sided emitter over minimum-roughness metal:
 
-- all three outputs converge to the MIS template's light-sampling output within 2%
-  at 256 samples per pixel;
-- after 16 samples, the combined image in the many-emitter room has a lower mean
+- At 256 samples per pixel, all three outputs converge to the MIS template's
+  light-sampling output within 2%. The exception is the two-sided case, where they
+  are compared with its MIS output instead. There the light lies 2 cm below the
+  ceiling, so area-uniform light sampling has unbounded variance and its 256-sample
+  mean reads about 4% low.
+- After 16 samples in the many-emitter room, the combined image has a lower mean
   squared error than the MIS template's, measured against a 1024-sample image of the
-  MIS template with an independent seed.
+  MIS template with an independent seed. The error is measured on the tone-mapped
+  image, about 0.0011 against 0.0025 on Apple M5. The decoded linear error is
+  reported beside it but is dominated by pixels that see an emitter directly.
 
 `ludus_renderer_render_tests` runs the weights on the GPU. It checks that Peters'
 weights and the light/BSDF split sum to one wherever a technique can sample, that

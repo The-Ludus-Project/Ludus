@@ -293,8 +293,14 @@ these departures and choices:
   direction. `Ẑ` is computed at most once per invocation, on first use.
 - **Comparison baseline.** GPU tests compare against `veach-guibas-mis` cooked with
   every pass on the triangle loop, so neither template needs native ray tracing.
-  The 1024-sample image for the MSE check is that template's MIS output with an
-  independent seed.
+  - The two-sided, minimum-roughness fixture is compared with that template's MIS
+    output instead of its light-only output. Area-uniform light sampling of a light
+    2 cm below the ceiling has unbounded variance, and its 256-sample mean reads
+    about 4% low. Its MIS and BSDF outputs agree with all three of this template's.
+  - The MSE check measures error on the tone-mapped image, against that template's
+    1024-sample MIS output with an independent seed. On decoded linear radiance, the
+    pixels that see emitters directly dominate both errors: 0.079 against 0.080,
+    compared with 0.0011 against 0.0025 tone-mapped on Apple M5.
 
 Evidence and remaining acceptance work, against [Acceptance](#acceptance) item 3:
 

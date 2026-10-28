@@ -153,7 +153,7 @@ struct WeightRecord final
 {
     StaticArray<uint32, WORDS_PER_RECORD> Words{};
 
-    float32 GetFloat(usize word) const
+    [[nodiscard]] float32 GetFloat(usize word) const
     {
         float32 value = 0;
         std::memcpy(&value, &Words[word], sizeof(value));
@@ -259,7 +259,8 @@ TEST_CASE("RIS projected-solid-angle MIS weights partition unity and handle Z-ha
         {
             ++emptyClipSampleCount;
             CHECK(emptyClipWeights.GetFloat(3) > 0);
-            CHECK(emptyClipWeights.GetFloat(0) == 1);
+            // v * 1 + (1 - v) * 1 may round to one ulp below one.
+            CHECK(math::Abs(emptyClipWeights.GetFloat(0) - 1) <= PARTITION_TOLERANCE);
             CHECK(emptyClipWeights.GetFloat(1) == 0);
         }
 
