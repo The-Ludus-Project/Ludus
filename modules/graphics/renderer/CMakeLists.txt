@@ -1,6 +1,6 @@
 # Private raw-accumulation access; no public SDK API and omitted when tests are off.
 if(LUDUS_BUILD_TESTS)
-    set_source_files_properties(src/renderer.cpp src/gpu_preview_ray.cpp PROPERTIES COMPILE_DEFINITIONS LUDUS_RENDERER_TEST_READBACK=1)
+    set_source_files_properties(src/renderer.cpp src/gpu_preview_ray.cpp src/render_graph.cpp PROPERTIES COMPILE_DEFINITIONS LUDUS_RENDERER_TEST_READBACK=1)
 endif()
 add_library(ludus_graphics_renderer STATIC src/gpu_denoiser.cpp src/render_graph.cpp src/render_graph_forward.cpp src/render_graph_scene_resources.cpp src/visibility_buffer.cpp src/render_graph_ray.cpp src/render_graph_ray_path.cpp src/render_graph_upscale.cpp src/render_graph_metalfx.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/gpu_preview_camera.cpp src/gpu_preview_graph.cpp src/render_graph_storage.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/lighting.cpp src/static_lighting.cpp src/environment.cpp src/reference_bsdf.cpp src/reference_scene.cpp src/reference_path.cpp src/reference_compute.cpp)
 add_library(Ludus::GraphicsRenderer ALIAS ludus_graphics_renderer)
