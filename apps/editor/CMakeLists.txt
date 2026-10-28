@@ -1261,7 +1261,7 @@ endif()
 # the editor CTest label, including during the promotion of newer workflow code.
 if(TARGET ludus_editor_tests)
     foreach(target IN ITEMS ludus_editor_accessibility_tests ludus_code_editor_tests
-            ludus_editor_browser_content_tests ludus_render_graph_pipeline_tests
+            ludus_project_explorer_tests ludus_editor_browser_content_tests ludus_render_graph_pipeline_tests
             ludus_shader_interface_tests ludus_render_graph_configuration_tests
             ludus_render_graph_live_build_tests)
         if(TARGET ${target})
@@ -1304,6 +1304,7 @@ ludus_editor_apply_precompiled_headers(
     ludus_editor_code
     ludus_editor
     ludus_code_editor_tests
+    ludus_project_explorer_tests
     ludus_editor_browser_content_tests
     ludus_editor_tests
     ludus_render_graph_pipeline_tests
