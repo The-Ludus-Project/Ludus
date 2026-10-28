@@ -570,6 +570,15 @@ RenderGraphDocumentStatus PrepareConfigurationTemplate(RenderGraphSnapshot& inou
                                                 outError,
                                                 inoutBudgetOrNull);
     }
+    if (templateIdentity == QStringLiteral("salesin-jarosz-lines"))
+    {
+        return PreparePointLineConfiguration(inoutSnapshot,
+                                             rootGraph,
+                                             targetFile,
+                                             configuration,
+                                             outError,
+                                             inoutBudgetOrNull);
+    }
     if (templateIdentity == QStringLiteral("compute-ray-tracing") ||
         templateIdentity == QStringLiteral("simple-compute-ray-tracing") ||
         templateIdentity == QStringLiteral("veach-guibas-mis"))

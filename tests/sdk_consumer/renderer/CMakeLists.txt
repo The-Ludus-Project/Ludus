@@ -137,6 +137,15 @@ if(NOT EMSCRIPTEN)
     configure_file("${line_visibility_source}/main.lushader.json.in" "${line_visibility_staged}/main.lushader.json" @ONLY)
     ludus_compile_render_graph(TARGET ludus_sdk_scene_shader_contract_consumer NAME rg2_line_visibility_loop
         MANIFEST "${line_visibility_staged}/main.lushader.json" CONFIGURATION Loop RUNTIME_PACKAGE)
+    # The installed salesin-jarosz-lines template (point-line PL2), cooked as a project would copy it:
+    # four triangle-loop scene compute passes through the installed helper, with no native ray profile.
+    set(point_line_source "${Ludus_DIR}/render_graph/templates/salesin_jarosz_lines")
+    set(point_line_staged "${CMAKE_CURRENT_BINARY_DIR}/rg3-inputs/salesin_jarosz_lines")
+    file(COPY "${point_line_source}/" DESTINATION "${point_line_staged}" PATTERN "*.in" EXCLUDE)
+    set(LUDUS_DEFAULT_RENDER_GRAPH_PROFILES "${RG2_TEST_PROFILES}")
+    configure_file("${point_line_source}/main.lushader.json.in" "${point_line_staged}/main.lushader.json" @ONLY)
+    ludus_compile_render_graph(TARGET ludus_sdk_scene_shader_contract_consumer NAME rg2_salesin_jarosz_lines
+        MANIFEST "${point_line_staged}/main.lushader.json" RUNTIME_PACKAGE)
 endif()
 
 add_executable(ludus_sdk_render_graph_runtime_consumer ../render_graph_runtime.cpp)

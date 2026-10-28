@@ -1,0 +1,156 @@
+{
+  "version": 2,
+  "id": "SalesinJaroszLines",
+  "default": "Default",
+  "configurations": [
+    {
+      "id": "Default",
+      "inputs": [],
+      "outputs": [],
+      "nodes": [
+        {
+          "id": "scene",
+          "kind": "Scene"
+        },
+        {
+          "active": true,
+          "id": "camera",
+          "kind": "Camera",
+          "role": "Offscreen",
+          "target_type": "ColorTexture"
+        },
+        {
+          "extent": "RenderSize",
+          "format": "RGBA8Unorm",
+          "id": "color",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "id": "renderSize",
+          "kind": "RenderSize",
+          "extent": {
+            "reference": "View",
+            "scale": [
+              1,
+              1
+            ]
+          }
+        },
+        {
+          "id": "output",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "lineSamplingOutput",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "pointSamplingOutput",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "transport",
+          "kind": "Subgraph",
+          "asset": "library.lurender.json",
+          "configuration": "PointLineMis"
+        },
+        {
+          "id": "accumulate",
+          "kind": "Accumulate",
+          "samples": 4096
+        },
+        {
+          "id": "tonemap",
+          "kind": "ToneMap",
+          "exposure": 1
+        },
+        {
+          "id": "accumulateLineSampling",
+          "kind": "Accumulate",
+          "samples": 4096
+        },
+        {
+          "id": "tonemapLineSampling",
+          "kind": "ToneMap",
+          "exposure": 1
+        },
+        {
+          "id": "accumulatePointSampling",
+          "kind": "Accumulate",
+          "samples": 4096
+        },
+        {
+          "id": "tonemapPointSampling",
+          "kind": "ToneMap",
+          "exposure": 1
+        }
+      ],
+      "edges": [
+        {
+          "from": "scene.scene",
+          "to": "transport.scene"
+        },
+        {
+          "from": "camera.view",
+          "to": "transport.view"
+        },
+        {
+          "from": "color.texture",
+          "to": "transport.color"
+        },
+        {
+          "from": "color.texture",
+          "to": "camera.target"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "color.size"
+        },
+        {
+          "from": "transport.color",
+          "to": "accumulate.color"
+        },
+        {
+          "from": "accumulate.color",
+          "to": "tonemap.color"
+        },
+        {
+          "from": "tonemap.color",
+          "to": "output.texture"
+        },
+        {
+          "from": "transport.lineSampling",
+          "to": "accumulateLineSampling.color"
+        },
+        {
+          "from": "accumulateLineSampling.color",
+          "to": "tonemapLineSampling.color"
+        },
+        {
+          "from": "tonemapLineSampling.color",
+          "to": "lineSamplingOutput.texture"
+        },
+        {
+          "from": "transport.pointSampling",
+          "to": "accumulatePointSampling.color"
+        },
+        {
+          "from": "accumulatePointSampling.color",
+          "to": "tonemapPointSampling.color"
+        },
+        {
+          "from": "tonemapPointSampling.color",
+          "to": "pointSamplingOutput.texture"
+        }
+      ]
+    }
+  ]
+}

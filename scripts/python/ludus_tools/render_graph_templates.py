@@ -16,6 +16,7 @@ TEMPLATES = {
     'compute-ray-tracing': ('compute_ray_tracing', 'Compute ray tracing', 'native-ray-tracing'),
     'veach-guibas-mis': ('veach_guibas_mis', 'Veach and Guibas MIS', 'native-ray-tracing'),
     'line-sampling': ('line_sampling', 'Line sampling', 'compute-ray-tracing'),
+    'salesin-jarosz-lines': ('salesin_jarosz_lines', 'Salesin and Jarosz point and line MIS', 'compute-ray-tracing'),
 }
 # What each requirement needs, as the capability repair names it.
 REQUIREMENT_REPAIRS = {

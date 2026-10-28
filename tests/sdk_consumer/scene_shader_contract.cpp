@@ -1,7 +1,9 @@
 #include "rg2_line_visibility_loop.h"
+#include "rg2_salesin_jarosz_lines.h"
 #include "rg2_scene_compute.h"
 #include "rg2_scene_ray.h"
 
+#include <ludus/graphics/renderer/render_graph_activation.hpp>
 #include <ludus/graphics/renderer/scene_shader.hpp>
 
 namespace renderer = ludus::graphics::renderer;
@@ -15,6 +17,17 @@ int main()
     // A triangle-loop kernel calling the line visibility query cooks against the installed scene helper.
     const renderer::RenderGraphPrograms lines =
         ludus::render_graph_packages::rg2_line_visibility_loop::MakePrograms({}, {});
+    // The installed point-and-line MIS template: a primary pass and three shade passes, all on the
+    // triangle loop, so the package needs no native ray profile.
+    const renderer::RenderGraphPrograms pointLine =
+        ludus::render_graph_packages::rg2_salesin_jarosz_lines::MakePrograms({}, {});
+    const renderer::RenderGraphPlan pointLinePlan = ludus::render_graph_packages::rg2_salesin_jarosz_lines::MakePlan();
+    constexpr ludus::foundation::usize POINT_LINE_PASS_COUNT = 4;
+    const bool isPointLineValid =
+        pointLine.HasSceneShaderInterface == true && pointLine.HasPersistentRayBuffers == true &&
+        pointLine.RayCompute.Artifact.Stage == ludus::graphics::rhi::ShaderStage::Compute &&
+        pointLinePlan.Passes.GetSize() == POINT_LINE_PASS_COUNT && renderer::UsesRayTracing(pointLinePlan) == true &&
+        renderer::RequiresHardwareRayTracing(pointLinePlan) == false;
     static_assert(renderer::SCENE_LINE_INTERVAL_CAPACITY == LUDUS_SCENE_LINE_INTERVAL_CAPACITY);
     static_assert(renderer::SCENE_LINE_INTERVAL_MERGE_TOLERANCE > 0 &&
                   renderer::SCENE_LINE_INTERVAL_MERGE_TOLERANCE < 1);
@@ -23,7 +36,8 @@ int main()
                    lines.RayCompute.Artifact.Stage == ludus::graphics::rhi::ShaderStage::Compute &&
                    programs.RayCompute.Artifact.Stage == ludus::graphics::rhi::ShaderStage::Compute &&
                    compute.HasSceneShaderInterface == true && compute.HasPersistentRayBuffers == true &&
-                   compute.RayCompute.Artifact.Stage == ludus::graphics::rhi::ShaderStage::Compute
+                   compute.RayCompute.Artifact.Stage == ludus::graphics::rhi::ShaderStage::Compute &&
+                   isPointLineValid == true
                ? 0
                : 1;
 }

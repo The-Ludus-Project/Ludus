@@ -431,6 +431,17 @@ C06), so it declares the maximum over passes:
 The two visibility queries cover a masked confirmation (D4) or a non-mesh
 light's shadow ray, one per line strategy.
 
+PL2 notes. `line_sampling.slang` is a copy of PL1's, extended, because a template
+directory imports only its own include closure. Its line queries run in
+`[noinline]` functions (`ProposeLineOutOfLine`, `EvaluateLineDensityOutOfLine`)
+that take `RayQueryContext` by value and return it through an `out` parameter.
+Inlined at every call path, the ten line queries of the three shade passes made the
+merged Metal stage 2.10 MB, over the builder's 2 MiB artifact limit; out of line it
+is 1.09 MB. Slang 2026.1.2 inlines a `[noinline]` function that has an `inout`
+parameter, hence the copy in and out. SPIRV-Cross still marks the MSL functions
+`always_inline`, so Metal compiles the same kernel, and each function still reads
+its `LineVisibility` only where it ran the query (D3, "PL1 storage").
+
 #### D8c Registration
 
 Each template is registered everywhere `veach-guibas-mis` is:

@@ -10,6 +10,7 @@
 #include "rg2_ordered_ray.h"
 #include "rg2_raytracing.h"
 #include "rg2_restir_di.h"
+#include "rg2_salesin_jarosz_lines_template.h"
 #include "rg2_scene_compute.h"
 #include "rg2_scene_ray.h"
 #include "rg2_shared_ray_computebvh.h"
@@ -3833,6 +3834,386 @@ TEST_CASE("The line-sampling template converges to light sampling and shows its 
     INFO("visible fraction: lit=" << litFraction << ", largest in umbra=" << umbraFraction);
     CHECK(math::Abs(litFraction - 1) < FRACTION_TOLERANCE);
     CHECK(umbraFraction == 0);
+}
+
+namespace
+{
+// Point-and-line MIS template tests (point-line spec PL2). Thanks to Katherine Salesin and Wojciech
+// Jarosz, "Combining Point and Line Samples for Direct Illumination", Computer Graphics Forum 38(4)
+// (EGSR 2019), pp. 159-169, https://doi.org/10.1111/cgf.13779 : a line sample is a point sample with
+// a joint density, so BSDF samples and line samples in two directions combine by MIS (their section
+// 4.2), and line samples lower penumbra noise. Thanks to Veach and Guibas (1995), above, for the
+// multi-sample estimator that stays unbiased whenever the weights sum to one.
+constexpr usize POINT_LINE_OUTPUT_COUNT = 3;
+/// Index of the first shade pass; pass 0 records the primary hits.
+constexpr usize POINT_LINE_FIRST_SHADE_PASS = 1;
+constexpr usize POINT_LINE_MIS = 0;
+constexpr usize POINT_LINE_LINE_SAMPLING = 1;
+constexpr usize POINT_LINE_POINT_SAMPLING = 2;
+/// The point_line_densities kernel's rows and its error scale (point_line_densities.slang).
+constexpr usize POINT_LINE_DENSITY_COUNT = 8;
+constexpr usize POINT_LINE_WEIGHT_ROW_COUNT = 8;
+constexpr usize POINT_LINE_SINGLE_WEIGHT_ROW = 8;
+constexpr usize POINT_LINE_DENSITY_FIRST_ROW = 16;
+constexpr float64 POINT_LINE_ERROR_SCALE = 1000;
+constexpr float64 POINT_LINE_SKIPPED = 1;
+
+StaticArray<uint32, POINT_LINE_OUTPUT_COUNT> GetPointLineExports(const renderer::RenderGraphPlan& plan)
+{
+    REQUIRE(plan.Passes.GetSize() == POINT_LINE_FIRST_SHADE_PASS + POINT_LINE_OUTPUT_COUNT);
+    StaticArray<uint32, POINT_LINE_OUTPUT_COUNT> exports{};
+    for (usize output = 0; output < POINT_LINE_OUTPUT_COUNT; ++output)
+    {
+        exports[output] = plan.Passes[POINT_LINE_FIRST_SHADE_PASS + output].Color;
+        REQUIRE(exports[output] < plan.Resources.GetSize());
+        REQUIRE(plan.Resources[exports[output]].IsExported == 1);
+    }
+    REQUIRE(exports[POINT_LINE_MIS] != exports[POINT_LINE_LINE_SAMPLING]);
+    REQUIRE(exports[POINT_LINE_MIS] != exports[POINT_LINE_POINT_SAMPLING]);
+    REQUIRE(exports[POINT_LINE_LINE_SAMPLING] != exports[POINT_LINE_POINT_SAMPLING]);
+    return exports;
+}
+
+/// Mean GPU time per frame of each timed physical pass, in the order the device reports them.
+struct PassTimings final
+{
+    StaticArray<rhi::GpuScopeDescription, rhi::MAX_GPU_TIMED_PASSES> Scopes{};
+    StaticArray<float64, rhi::MAX_GPU_TIMED_PASSES> Nanoseconds{};
+    usize Count = 0;
+    usize FrameCount = 0;
+};
+
+/// Render frameCount frames and read each output's running mean after the last one. With
+/// timingsOrNull, arm GPU pass timing for every frame and add each available pass duration to it.
+void RenderPointLineOutputs(PreparedGraph& inoutGraph,
+                            const GraphGpuFixture& fixture,
+                            usize frameCount,
+                            StaticArray<Array<uint8>, POINT_LINE_OUTPUT_COUNT>& outPixels,
+                            PassTimings* timingsOrNull = nullptr)
+{
+    const StaticArray<uint32, POINT_LINE_OUTPUT_COUNT> exports = GetPointLineExports(inoutGraph.Plan);
+    for (usize frame = 0; frame < frameCount; ++frame)
+    {
+        if (timingsOrNull != nullptr)
+        {
+            REQUIRE(rhi::ArmGpuPassTimings(fixture.Device) == rhi::RasterStatus::Ready);
+        }
+        RenderFrame(inoutGraph.Graph, fixture);
+        rhi::GpuPassTimings timings;
+        if (timingsOrNull == nullptr || rhi::GetGpuPassTimings(fixture.Device, timings) != rhi::RasterStatus::Ready)
+        {
+            continue;
+        }
+        timingsOrNull->Count = math::Max(timingsOrNull->Count, timings.Count);
+        timingsOrNull->FrameCount += 1;
+        for (usize pass = 0; pass < timings.Count; ++pass)
+        {
+            timingsOrNull->Scopes[pass] = timings.Passes[pass].Scope;
+            if (timings.Passes[pass].Timing.State == rhi::GpuTimingState::Available)
+            {
+                timingsOrNull->Nanoseconds[pass] +=
+                    static_cast<float64>(timings.Passes[pass].Timing.DurationNanoseconds);
+            }
+        }
+    }
+    for (usize output = 0; output < POINT_LINE_OUTPUT_COUNT; ++output)
+    {
+        ReadExport(inoutGraph.Graph, fixture, exports[output], {}, outPixels[output]);
+        // Invalid hit records, exhausted budgets and failed line queries would show magenta.
+        REQUIRE(CountFailurePixels(outPixels[output]) == 0);
+    }
+}
+
+/// Move the Cornell block's top far behind the camera, leaving no occluder between any room surface
+/// and the light.
+void RemoveCornellBlock(CornellBox& inoutRoom)
+{
+    constexpr float32 BEHIND_CAMERA_WORLD = 6;
+    for (usize corner = CORNELL_VERTEX_COUNT - CORNELL_QUAD_CORNERS; corner < CORNELL_VERTEX_COUNT; ++corner)
+    {
+        inoutRoom.Positions[corner].Z += BEHIND_CAMERA_WORLD;
+    }
+}
+
+/// Mean squared error of decoded linear radiance against a reference, over the masked pixels only.
+float64
+ComputeMaskedMeanSquaredError(const Array<uint8>& pixels, const Array<uint8>& reference, const Array<bool>& mask)
+{
+    REQUIRE(pixels.GetSize() == reference.GetSize());
+    REQUIRE(mask.GetSize() * 4 == pixels.GetSize());
+    float64 sum = 0;
+    usize count = 0;
+    for (usize pixel = 0; pixel < mask.GetSize(); ++pixel)
+    {
+        if (mask[pixel] == false)
+        {
+            continue;
+        }
+        for (usize channel = 0; channel < 3; ++channel)
+        {
+            const float64 difference = static_cast<float64>(DecodeToneMapped(pixels[pixel * 4 + channel])) -
+                                       static_cast<float64>(DecodeToneMapped(reference[pixel * 4 + channel]));
+            sum += difference * difference;
+            ++count;
+        }
+    }
+    REQUIRE(count > 0);
+    return sum / static_cast<float64>(count);
+}
+
+/// The three outputs and the Veach and Guibas light-sampling image estimate one integral.
+void CheckPointLineOutputsAgree(const GraphGpuFixture& fixture,
+                                const PackageLocation& location,
+                                const CornellBox& room,
+                                StaticArray<Array<uint8>, POINT_LINE_OUTPUT_COUNT>& outPixels)
+{
+    PreparedGraph graph(fixture, location, room, 1);
+    REQUIRE(renderer::RequiresHardwareRayTracing(graph.Plan) == false);
+    constexpr usize FRAME_COUNT = 256;
+    RenderPointLineOutputs(graph, fixture, FRAME_COUNT, outPixels);
+    PreparedGraph veach(
+        fixture,
+        {LUDUS_RG3_VEACH_GUIBAS_MIS_TRIANGLE_LOOP_DIRECTORY, "rg2_veach_guibas_mis_triangle_loop.lurgrt"},
+        room,
+        1);
+    StaticArray<Array<uint8>, VEACH_GUIBAS_OUTPUT_COUNT> veachPixels;
+    RenderVeachGuibasOutputs(veach, fixture, FRAME_COUNT, veachPixels);
+    const math::Vector3 mis = ComputeMeanRadiance(outPixels[POINT_LINE_MIS]);
+    const math::Vector3 lines = ComputeMeanRadiance(outPixels[POINT_LINE_LINE_SAMPLING]);
+    const math::Vector3 points = ComputeMeanRadiance(outPixels[POINT_LINE_POINT_SAMPLING]);
+    const math::Vector3 lightSampling = ComputeMeanRadiance(veachPixels[VEACH_GUIBAS_LIGHT_SAMPLING]);
+    // MIS and point sampling share the BSDF samples and the area point that seeds the U chord, so the
+    // images differ only through the line strategies. A difference in many pixels shows they contribute.
+    constexpr uint8 CHANNEL_TOLERANCE = 2;
+    const usize differingPixels =
+        CountDifferingPixels(outPixels[POINT_LINE_MIS], outPixels[POINT_LINE_POINT_SAMPLING], CHANNEL_TOLERANCE);
+    INFO("MIS mean=" << mis.X << ',' << mis.Y << ',' << mis.Z << ", line sampling mean=" << lines.X << ',' << lines.Y
+                     << ',' << lines.Z << ", point sampling mean=" << points.X << ',' << points.Y << ',' << points.Z
+                     << ", Veach and Guibas light sampling mean=" << lightSampling.X << ',' << lightSampling.Y << ','
+                     << lightSampling.Z << ", differing pixels=" << differingPixels);
+    constexpr usize DIFFERING_PIXEL_DIVISOR = 10;
+    CHECK(differingPixels > static_cast<usize>(WIDTH) * HEIGHT / DIFFERING_PIXEL_DIVISOR);
+    constexpr float32 MINIMUM_MEAN_RADIANCE = .01F;
+    REQUIRE(points.X > MINIMUM_MEAN_RADIANCE);
+    // Estimates of one integral, compared after decoding the tone-mapped running means, at 256
+    // samples per pixel as for the MIS template's same-integral check.
+    constexpr float32 RELATIVE_MEAN_TOLERANCE = .02F;
+    CheckMeansAgree(mis, points, RELATIVE_MEAN_TOLERANCE);
+    CheckMeansAgree(lines, points, RELATIVE_MEAN_TOLERANCE);
+    CheckMeansAgree(points, lightSampling, RELATIVE_MEAN_TOLERANCE);
+}
+} // namespace
+
+TEST_CASE("Point-and-line MIS weights sum to one and an unoccluded line density equals the area density",
+          "[render-graph][gpu][point-line][mis]")
+{
+    GraphGpuFixture fixture(false, false);
+    PackageLocation location{LUDUS_RG3_POINT_LINE_DENSITIES_BALANCE_DIRECTORY,
+                             "rg2_point_line_densities_balance.lurgrt"};
+    SECTION("balance") {}
+    SECTION("power")
+    {
+        location = {LUDUS_RG3_POINT_LINE_DENSITIES_POWER_DIRECTORY, "rg2_point_line_densities_power.lurgrt"};
+    }
+    CornellBox room;
+    RemoveCornellBlock(room);
+    PreparedGraph graph(fixture, location, room, 1);
+    REQUIRE(renderer::RequiresHardwareRayTracing(graph.Plan) == false);
+    Array<uint8> pixels;
+    RenderExport(graph.Graph, fixture, graph.GetOnlyExport(), {}, pixels);
+    REQUIRE(CountFailurePixels(pixels) == 0);
+
+    // Over every triple of densities from zero through 1e-20 to 1e12, including equal ones, the three
+    // strategies' weights sum to one, or to zero when no strategy has a positive density.
+    // Float rounding of three quotients (and of pow under the power heuristic) stays below this.
+    constexpr float64 WEIGHT_SUM_TOLERANCE = 2e-6;
+    float64 largestSumError = 0;
+    for (usize row = 0; row < POINT_LINE_WEIGHT_ROW_COUNT; ++row)
+    {
+        for (usize column = 0; column < POINT_LINE_DENSITY_COUNT * POINT_LINE_DENSITY_COUNT; ++column)
+        {
+            largestSumError = math::Max(largestSumError, DecodeLineFixed(pixels, column, row) / POINT_LINE_ERROR_SCALE);
+        }
+    }
+    // Delta light (both line strategies propose it with one probability, BSDF sampling never), the
+    // only strategy, a strategy that did not propose the sample, and three equal densities.
+    constexpr usize SINGLE_WEIGHT_COUNT = 4;
+    constexpr StaticArray<float64, SINGLE_WEIGHT_COUNT> SINGLE_WEIGHTS{{.5, 1, 0, 1.0 / 3.0}};
+    constexpr float64 WEIGHT_TOLERANCE = 1e-6;
+    float64 largestWeightError = 0;
+    for (usize column = 0; column < SINGLE_WEIGHTS.GetSize(); ++column)
+    {
+        largestWeightError = math::Max(
+            largestWeightError,
+            math::Abs(DecodeLineFixed(pixels, column, POINT_LINE_SINGLE_WEIGHT_ROW) - SINGLE_WEIGHTS[column]));
+    }
+
+    // With no occluder, the chord through any light point is wholly visible, so both line strategies'
+    // densities at that point equal EvaluateLightPdfSolidAngle (design D6 step 6).
+    constexpr float64 DENSITY_RELATIVE_TOLERANCE = 1e-5;
+    constexpr usize LINE_DIRECTION_COUNT = 2;
+    StaticArray<usize, LINE_DIRECTION_COUNT> evaluatedPixels{};
+    StaticArray<float64, LINE_DIRECTION_COUNT> largestDensityError{};
+    for (usize row = POINT_LINE_DENSITY_FIRST_ROW; row < HEIGHT; ++row)
+    {
+        for (usize column = 0; column < WIDTH; ++column)
+        {
+            const float64 value = DecodeLineFixed(pixels, column, row);
+            if (value == POINT_LINE_SKIPPED)
+            {
+                continue;
+            }
+            const usize direction = column % LINE_DIRECTION_COUNT;
+            evaluatedPixels[direction] += 1;
+            largestDensityError[direction] = math::Max(largestDensityError[direction], value / POINT_LINE_ERROR_SCALE);
+        }
+    }
+    INFO("largest weight-sum error=" << largestSumError << ", largest single-weight error=" << largestWeightError
+                                     << ", U density pixels=" << evaluatedPixels[0] << " largest relative error="
+                                     << largestDensityError[0] << ", V density pixels=" << evaluatedPixels[1]
+                                     << " largest relative error=" << largestDensityError[1]);
+    CHECK(largestSumError <= WEIGHT_SUM_TOLERANCE);
+    CHECK(largestWeightError <= WEIGHT_TOLERANCE);
+    // Most of the image is room surface; the light and the open front are skipped.
+    const usize minimumEvaluated = static_cast<usize>(WIDTH) * (HEIGHT - POINT_LINE_DENSITY_FIRST_ROW) / 4;
+    CHECK(evaluatedPixels[0] > minimumEvaluated);
+    CHECK(evaluatedPixels[1] > minimumEvaluated);
+    CHECK(largestDensityError[0] <= DENSITY_RELATIVE_TOLERANCE);
+    CHECK(largestDensityError[1] <= DENSITY_RELATIVE_TOLERANCE);
+}
+
+TEST_CASE("The point-and-line MIS template's three outputs estimate one integral under both heuristics",
+          "[render-graph][gpu][point-line][template]")
+{
+    GraphGpuFixture fixture(false, false);
+    PackageLocation location{LUDUS_RG3_SALESIN_JAROSZ_LINES_TEMPLATE_DIRECTORY,
+                             "rg2_salesin_jarosz_lines_template.lurgrt"};
+    // The Cornell room: the block top casts a penumbra from the two-triangle quad light.
+    CornellBox room;
+    SECTION("balance (default)")
+    {
+        PreparedGraph graph(fixture, location, room, 1);
+        CheckSameStage(
+            graph.Programs.RayCompute,
+            packages::rg2_salesin_jarosz_lines_template::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                                      shaders::renderer_composite::Fragment())
+                .RayCompute);
+        REQUIRE(graph.Programs.HasPersistentRayBuffers == true);
+        // Every pass is a triangle loop: a compute ray-tracing package with no native ray requirement.
+        REQUIRE(renderer::RequiresHardwareRayTracing(graph.Plan) == false);
+        for (usize pass = 0; pass < graph.Plan.Passes.GetSize(); ++pass)
+        {
+            INFO("pass " << pass);
+            CHECK(graph.Plan.Passes[pass].Program == format::Technique::RayTracing);
+            CHECK((graph.Plan.Passes[pass].AccumulationSamples > 0) == (pass >= POINT_LINE_FIRST_SHADE_PASS));
+        }
+    }
+    SECTION("power")
+    {
+        location = {LUDUS_RG3_SALESIN_JAROSZ_LINES_POWER_DIRECTORY, "rg2_salesin_jarosz_lines_power.lurgrt"};
+    }
+    StaticArray<Array<uint8>, POINT_LINE_OUTPUT_COUNT> pixels;
+    CheckPointLineOutputsAgree(fixture, location, room, pixels);
+}
+
+TEST_CASE("An analytic point light and a constant environment take the point fallback in every point-and-line output",
+          "[render-graph][gpu][point-line][template]")
+{
+    // An analytic point light and a constant environment through the open front, with the ceiling
+    // light's emission removed: each line strategy proposes them with the point proposal (design D6).
+    GraphGpuFixture fixture(false, false);
+    PackageLocation location{LUDUS_RG3_SALESIN_JAROSZ_LINES_TEMPLATE_DIRECTORY,
+                             "rg2_salesin_jarosz_lines_template.lurgrt"};
+    SECTION("balance (default)") {}
+    SECTION("power")
+    {
+        location = {LUDUS_RG3_SALESIN_JAROSZ_LINES_POWER_DIRECTORY, "rg2_salesin_jarosz_lines_power.lurgrt"};
+    }
+    CornellBox room;
+    room.Materials[CORNELL_LIGHT].Emission = {0, 0, 0};
+    StaticArray<renderer::DirectLight, 1> lights{};
+    lights[0].SourceId = 1;
+    lights[0].Kind = renderer::LightKind::Point;
+    lights[0].Position = {0, .6F, .2F};
+    constexpr float32 POINT_INTENSITY = 2;
+    lights[0].Intensity = POINT_INTENSITY;
+    room.Inputs.Lights = {lights.GetData(), lights.GetSize()};
+    constexpr float32 SKY_RADIANCE = .5F;
+    room.Inputs.Environment = {SKY_RADIANCE, SKY_RADIANCE, SKY_RADIANCE};
+    StaticArray<Array<uint8>, POINT_LINE_OUTPUT_COUNT> pixels;
+    CheckPointLineOutputsAgree(fixture, location, room, pixels);
+}
+
+TEST_CASE("After 16 samples per pixel point-and-line MIS has less penumbra error than point sampling",
+          "[render-graph][gpu][point-line][template][mis]")
+{
+    GraphGpuFixture fixture(true, false);
+    CornellBox room;
+    // The penumbra: pixels whose mean visible chord fraction, from the line-sampling template, lies
+    // strictly between umbra (0) and full light (1).
+    PreparedGraph fraction(fixture,
+                           {LUDUS_RG3_LINE_SAMPLING_TEMPLATE_DIRECTORY, "rg2_line_sampling_template.lurgrt"},
+                           room,
+                           1);
+    constexpr usize FRACTION_FRAME_COUNT = 256;
+    for (usize frame = 0; frame < FRACTION_FRAME_COUNT; ++frame)
+    {
+        RenderFrame(fraction.Graph, fixture);
+    }
+    const StaticArray<uint32, LINE_SAMPLING_OUTPUT_COUNT> fractionExports = GetLineSamplingExports(fraction.Plan);
+    Array<uint8> fractionPixels;
+    ReadExport(fraction.Graph, fixture, fractionExports[LINE_SAMPLING_VISIBLE_FRACTION], {}, fractionPixels);
+    Array<bool> penumbra;
+    REQUIRE(penumbra.TryResize(fractionPixels.GetSize() / 4) == true);
+    constexpr float32 PENUMBRA_LOWEST_FRACTION = .1F;
+    constexpr float32 PENUMBRA_HIGHEST_FRACTION = .9F;
+    usize penumbraPixels = 0;
+    for (usize pixel = 0; pixel < penumbra.GetSize(); ++pixel)
+    {
+        const float32 visible = DecodeToneMapped(fractionPixels[pixel * 4]);
+        penumbra[pixel] = visible > PENUMBRA_LOWEST_FRACTION && visible < PENUMBRA_HIGHEST_FRACTION;
+        penumbraPixels += penumbra[pixel] == true ? 1 : 0;
+    }
+    constexpr usize MINIMUM_PENUMBRA_PIXELS = 32;
+    REQUIRE(penumbraPixels >= MINIMUM_PENUMBRA_PIXELS);
+
+    const PackageLocation location{LUDUS_RG3_SALESIN_JAROSZ_LINES_TEMPLATE_DIRECTORY,
+                                   "rg2_salesin_jarosz_lines_template.lurgrt"};
+    PreparedGraph graph(fixture, location, room, 1);
+    constexpr usize LOW_FRAME_COUNT = 16;
+    StaticArray<Array<uint8>, POINT_LINE_OUTPUT_COUNT> pixels;
+    PassTimings timings;
+    RenderPointLineOutputs(graph, fixture, LOW_FRAME_COUNT, pixels, &timings);
+    // An independently seeded reference: another graph instance whose scene revision reseeds sampling.
+    constexpr uint64 REFERENCE_REVISION = 2;
+    PreparedGraph referenceGraph(fixture, location, room, REFERENCE_REVISION);
+    constexpr usize REFERENCE_FRAME_COUNT = 1024;
+    StaticArray<Array<uint8>, POINT_LINE_OUTPUT_COUNT> reference;
+    RenderPointLineOutputs(referenceGraph, fixture, REFERENCE_FRAME_COUNT, reference);
+    const float64 misError = ComputeMaskedMeanSquaredError(pixels[POINT_LINE_MIS], reference[POINT_LINE_MIS], penumbra);
+    const float64 lineError =
+        ComputeMaskedMeanSquaredError(pixels[POINT_LINE_LINE_SAMPLING], reference[POINT_LINE_MIS], penumbra);
+    const float64 pointError =
+        ComputeMaskedMeanSquaredError(pixels[POINT_LINE_POINT_SAMPLING], reference[POINT_LINE_MIS], penumbra);
+    // Equal samples, not equal time: line samples cost line queries, so the GPU time of each pass is
+    // reported beside the errors and supports no speed claim.
+    constexpr float64 NANOSECONDS_PER_MILLISECOND = 1'000'000;
+    REQUIRE(timings.FrameCount > 0);
+    StaticArray<float64, POINT_LINE_FIRST_SHADE_PASS + POINT_LINE_OUTPUT_COUNT> passMilliseconds{};
+    for (usize pass = 0; pass < passMilliseconds.GetSize() && pass < timings.Count; ++pass)
+    {
+        passMilliseconds[pass] =
+            timings.Nanoseconds[pass] / static_cast<float64>(timings.FrameCount) / NANOSECONDS_PER_MILLISECOND;
+    }
+    WARN("point-and-line penumbra (" << penumbraPixels << " pixels) mean squared error at " << LOW_FRAME_COUNT
+                                     << " samples: MIS=" << misError << ", line sampling=" << lineError
+                                     << ", point sampling=" << pointError << "; mean GPU ms per frame over "
+                                     << timings.FrameCount << " frames, " << timings.Count << " timed passes: "
+                                     << timings.Scopes[0].Name.GetData() << '=' << passMilliseconds[0] << ", "
+                                     << timings.Scopes[1].Name.GetData() << '=' << passMilliseconds[1] << ", "
+                                     << timings.Scopes[2].Name.GetData() << '=' << passMilliseconds[2] << ", "
+                                     << timings.Scopes[3].Name.GetData() << '=' << passMilliseconds[3]);
+    CHECK(misError < pointError);
 }
 
 TEST_CASE("ToneMap applies exposure after linear accumulation and can be bypassed",

@@ -89,6 +89,15 @@
       "description": "Line sampling from Billen and Dutré (2016): after a primary-hits pass, one shading pass draws a chord across an emissive triangle, finds its visible parts with the scene line query and samples a point on them; a second pass shows the chord's visible fraction (1 lit, 0 in umbra; not radiance). Every pass uses the triangle loop, so it needs Metal or Vulkan compute but no hardware ray tracing."
     },
     {
+      "kind": "graph",
+      "identity": "salesin-jarosz-lines",
+      "label": "Salesin & Jarosz — point and line samples with MIS",
+      "category": "ray-traced",
+      "requirements": ["compute-ray-tracing"],
+      "keywords": ["line sampling", "point sampling", "salesin", "jarosz", "billen", "dutre", "veach", "guibas", "mis", "multiple importance sampling", "soft shadows", "penumbra", "area light", "direct lighting"],
+      "description": "Point and line samples combined with MIS, from Salesin and Jarosz (2019): after a primary-hits pass, three shading passes estimate direct lighting with a BSDF sample and line samples in two directions across an emissive triangle, MIS-weighted by the balance or power heuristic; with the two line samples alone; and with a BSDF sample and an area-light point sample. Each image is accumulated and exported for comparison; the combined image is shown first. Every pass uses the triangle loop, so it needs Metal or Vulkan compute but no hardware ray tracing."
+    },
+    {
       "kind": "snippet",
       "identity": "restir-di",
       "label": "ReSTIR DI — mesh emitter lighting",
@@ -147,6 +156,16 @@
       "requirements": ["compute-ray-tracing"],
       "keywords": ["line sampling", "billen", "dutre", "salesin", "jarosz", "soft shadows", "penumbra", "area light", "direct lighting"],
       "description": "A primary-hits scene compute pass and two triangle-loop shading passes that share one automatically sized hit buffer: one line sample per pixel over the visible parts of an emitter chord, and the chord's visible fraction. Connect scene, view and color; outputs color plus an optional visibleFraction image. Needs Metal or Vulkan compute."
+    },
+    {
+      "kind": "snippet",
+      "identity": "salesin-jarosz-lines",
+      "label": "Salesin & Jarosz — point and line samples with MIS",
+      "category": "lighting",
+      "defaultConfiguration": "PointLineMis",
+      "requirements": ["compute-ray-tracing"],
+      "keywords": ["line sampling", "point sampling", "salesin", "jarosz", "billen", "dutre", "veach", "guibas", "mis", "multiple importance sampling", "soft shadows", "penumbra", "area light", "direct lighting"],
+      "description": "A primary-hits scene compute pass and three triangle-loop shading passes that share one automatically sized hit buffer: MIS of a BSDF sample and line samples in two directions (Salesin and Jarosz), the two line samples alone, and a BSDF sample with an area-light point sample. Connect scene, view and color; outputs color plus optional lineSampling and pointSampling images. Needs Metal or Vulkan compute."
     },
     {
       "kind": "snippet",

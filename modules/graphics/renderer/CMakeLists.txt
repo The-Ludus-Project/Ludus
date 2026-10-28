@@ -269,7 +269,7 @@ if(TARGET ludus_renderer_render_tests)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_VISIBILITY_ORDINARY_DIRECTORY="${visibility_ordinary_package_directory}")
     foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing
-            simple_compute_ray_tracing veach_guibas_mis line_sampling)
+            simple_compute_ray_tracing veach_guibas_mis line_sampling salesin_jarosz_lines)
         set(template_source "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/${template_directory}")
         set(template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${template_directory}_template")
         file(COPY "${template_source}/" DESTINATION "${template_staged}" PATTERN "*.in" EXCLUDE)
@@ -504,6 +504,69 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_veach_guibas_mis_triangle_loop_RUNTIME_PACKAGE PARENT_PATH veach_guibas_loop_package_directory)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_VEACH_GUIBAS_MIS_TRIANGLE_LOOP_DIRECTORY="${veach_guibas_loop_package_directory}")
+    # The salesin-jarosz-lines template with its MIS_HEURISTIC Graph setting set to power (the staged
+    # default is balance), and the point_line_densities kernel over the template's own strategy and
+    # weight sources under each heuristic (point-line PL2).
+    set(point_line_template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/salesin_jarosz_lines_template")
+    file(READ "${point_line_template_staged}/main.lushader.json" point_line_manifest)
+    string(JSON point_line_setting_count LENGTH "${point_line_manifest}" settings)
+    set(point_line_heuristic_index -1)
+    math(EXPR point_line_setting_last "${point_line_setting_count} - 1")
+    foreach(setting_index RANGE ${point_line_setting_last})
+        string(JSON setting_id GET "${point_line_manifest}" settings ${setting_index} id)
+        if(setting_id STREQUAL "MIS_HEURISTIC")
+            set(point_line_heuristic_index ${setting_index})
+        endif()
+    endforeach()
+    if(point_line_heuristic_index LESS 0)
+        message(FATAL_ERROR "The salesin-jarosz-lines template manifest has no MIS_HEURISTIC setting.")
+    endif()
+    set(point_line_power_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/salesin_jarosz_lines_power")
+    file(COPY "${point_line_template_staged}/" DESTINATION "${point_line_power_staged}"
+        PATTERN "main.lushader.json" EXCLUDE)
+    string(JSON point_line_power_manifest SET "${point_line_manifest}" settings ${point_line_heuristic_index} value 1)
+    # Rewrite the staged manifest only when it changes, so reconfiguring does not rebuild the package.
+    file(WRITE "${point_line_power_staged}.lushader.json" "${point_line_power_manifest}\n")
+    file(COPY_FILE "${point_line_power_staged}.lushader.json" "${point_line_power_staged}/main.lushader.json"
+        ONLY_IF_DIFFERENT)
+    ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_salesin_jarosz_lines_power
+        MANIFEST "${point_line_power_staged}/main.lushader.json" RUNTIME_PACKAGE)
+    cmake_path(GET rg2_salesin_jarosz_lines_power_RUNTIME_PACKAGE PARENT_PATH point_line_power_package_directory)
+    target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+        LUDUS_RG3_SALESIN_JAROSZ_LINES_POWER_DIRECTORY="${point_line_power_package_directory}")
+    set(point_line_densities_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/point_line_densities")
+    set(point_line_densities_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/point_line_densities")
+    file(COPY "${point_line_densities_source}/" DESTINATION "${point_line_densities_staged}" PATTERN "*.in" EXCLUDE)
+    foreach(point_line_source IN ITEMS line_sampling.slang multiple_importance.slang)
+        file(COPY_FILE "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/salesin_jarosz_lines/main_shaders/${point_line_source}"
+            "${point_line_densities_staged}/main_shaders/${point_line_source}" ONLY_IF_DIFFERENT)
+    endforeach()
+    configure_file("${point_line_densities_source}/main.lushader.json.in"
+        "${point_line_densities_staged}/balance.lushader.json" @ONLY)
+    file(READ "${point_line_densities_staged}/balance.lushader.json" point_line_densities_manifest)
+    string(JSON point_line_densities_heuristic GET "${point_line_densities_manifest}" settings 0 id)
+    if(NOT point_line_densities_heuristic STREQUAL "MIS_HEURISTIC")
+        message(FATAL_ERROR "The point_line_densities manifest must list MIS_HEURISTIC first.")
+    endif()
+    foreach(point_line_variant IN ITEMS "balance;0" "power;1")
+        list(GET point_line_variant 0 point_line_name)
+        list(GET point_line_variant 1 point_line_value)
+        string(JSON point_line_variant_manifest SET "${point_line_densities_manifest}"
+            settings 0 value ${point_line_value})
+        set(point_line_variant_staged "${point_line_densities_staged}_${point_line_name}")
+        file(COPY "${point_line_densities_staged}/" DESTINATION "${point_line_variant_staged}"
+            PATTERN "*.lushader.json" EXCLUDE)
+        file(WRITE "${point_line_variant_staged}.lushader.json" "${point_line_variant_manifest}\n")
+        file(COPY_FILE "${point_line_variant_staged}.lushader.json" "${point_line_variant_staged}/main.lushader.json"
+            ONLY_IF_DIFFERENT)
+        ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME "rg2_point_line_densities_${point_line_name}"
+            MANIFEST "${point_line_variant_staged}/main.lushader.json" RUNTIME_PACKAGE)
+        cmake_path(GET "rg2_point_line_densities_${point_line_name}_RUNTIME_PACKAGE" PARENT_PATH
+            point_line_densities_package_directory)
+        string(TOUPPER "${point_line_name}" point_line_definition)
+        target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+            "LUDUS_RG3_POINT_LINE_DENSITIES_${point_line_definition}_DIRECTORY=\"${point_line_densities_package_directory}\"")
+    endforeach()
     # FindVisibleLineIntervals against analytic intervals (point-line PL1), once with a TriangleLoop
     # pass and once with a NativeQuery pass, which must give the same software line traversal.
     set(line_visibility_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/line_visibility")

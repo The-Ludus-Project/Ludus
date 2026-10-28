@@ -111,10 +111,25 @@ PrepareLineSamplingConfiguration(RenderGraphSnapshot& inoutSnapshot,
                                  const QString& configuration,
                                  QString& outError,
                                  RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr);
+/// Prepare the salesin-jarosz-lines template (point-line design D8b) in an absent/empty library: a
+/// primary-hits pass and the ShadeMultipleImportance, ShadeLineSampling and ShadePointSampling
+/// triangle-loop passes sharing one render-size hit Buffer, imported under salesin_jarosz_lines/ with
+/// PointLine-prefixed program IDs and the MIS_HEURISTIC and MIS_POWER_EXPONENT Graph settings;
+/// lineSampling and pointSampling are optional library outputs. The ray technique's scene_interface
+/// gains the template's visibility and line_queries budgets. Requires a Metal or Vulkan profile but no
+/// native ray tracing. Same transaction contract as PrepareComputeRayTracingConfiguration.
+[[nodiscard]] RenderGraphDocumentStatus
+PreparePointLineConfiguration(RenderGraphSnapshot& inoutSnapshot,
+                              const QString& rootGraph,
+                              const QString& file,
+                              const QString& configuration,
+                              QString& outError,
+                              RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr);
 /// Prepare a built-in configuration, inserting a library/Subgraph when selected on the root canvas.
 /// Supports restir-di, visibility-buffer, visibility-secondary-rays, tiled-vbuffer-nee,
-/// compute-ray-tracing, simple-compute-ray-tracing, veach-guibas-mis and line-sampling. Same transaction contract
-/// as PrepareRestirTemplate; invalid identities and conflicts leave publication to the caller.
+/// compute-ray-tracing, simple-compute-ray-tracing, veach-guibas-mis, line-sampling and salesin-jarosz-lines.
+/// Same transaction contract as PrepareRestirTemplate; invalid identities and conflicts leave publication to the
+/// caller.
 [[nodiscard]] RenderGraphDocumentStatus
 PrepareConfigurationTemplate(RenderGraphSnapshot& inoutSnapshot,
                              const QString& rootGraph,
