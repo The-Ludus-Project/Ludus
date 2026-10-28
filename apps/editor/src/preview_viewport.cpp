@@ -26,7 +26,6 @@
 #include <QList>
 #include <QMenu>
 #include <QPainter>
-#include <QPicture>
 #include <QPointer>
 #include <QPushButton>
 #include <QSignalBlocker>
@@ -46,6 +45,7 @@
 #    include "internal/ray_path_inspection.h"
 #    include "internal/render_graph_preview.h"
 #    include "internal/renderer_workspace.h"
+#    include "internal/viewport_object_overlay_item.h"
 #    include "internal/world_graph_view.h"
 #    include <QLibraryInfo>
 #    include <QQuickItem>
@@ -337,35 +337,6 @@ void PaintLegend(QPainter& inoutPainter, const PreviewLegend& legend, QPointF or
 /// Overlay panel inside the viewport's QQuickWindow. A sibling QWidget would sit under the
 /// native window that createWindowContainer embeds on macOS and Linux; a scene-graph item is
 /// composited by Qt Quick in the same Metal/Vulkan pass as the frame, so it is always on top.
-class ObjectInteractionItem final : public QQuickPaintedItem
-{
-public:
-    ObjectInteractionItem(ViewportObjectInteraction& inoutInteraction, QQuickItem* parent)
-        : QQuickPaintedItem(parent), mInteraction(inoutInteraction)
-    {
-        setObjectName(QStringLiteral("viewportObjectSelectionOverlay"));
-        setZ(STATISTICS_Z - 1);
-        setAntialiasing(true);
-        connect(&mInteraction, &ViewportObjectInteraction::Changed, this, [this]() { rebuildPicture(); });
-        connect(this, &QQuickItem::widthChanged, this, [this]() { rebuildPicture(); });
-        connect(this, &QQuickItem::heightChanged, this, [this]() { rebuildPicture(); });
-    }
-    void paint(QPainter* painter) override
-    {
-        painter->drawPicture(0, 0, mPicture);
-    }
-
-private:
-    void rebuildPicture()
-    {
-        mPicture = QPicture{};
-        QPainter painter(&mPicture);
-        mInteraction.Paint(painter, boundingRect());
-        update();
-    }
-    ViewportObjectInteraction& mInteraction;
-    QPicture mPicture;
-};
 class StatisticsItem final : public QQuickPaintedItem
 {
 public:
@@ -712,7 +683,7 @@ struct PreviewViewport::State final
     private:
         State& mState;
     };
-    ObjectInteractionItem* ObjectOverlayOrNull = nullptr;
+    QQuickItem* ObjectOverlayOrNull = nullptr;
     QQuickWindow* Window = nullptr;
     StatisticsItem* StatisticsOrNull = nullptr;
     StatisticsItem* ShaderStatusOrNull = nullptr;
@@ -1040,7 +1011,7 @@ private:
             static_cast<PreviewViewport*>(Widget)->resizeSurface();
         });
         createItem();
-        ObjectOverlayOrNull = new ObjectInteractionItem(Widget->GetObjectInteraction(), Window->contentItem());
+        ObjectOverlayOrNull = CreateViewportObjectOverlayItem(Widget->GetObjectInteraction(), *Window->contentItem());
         ObjectOverlayOrNull->setSize(Window->size());
         StatisticsOrNull = new StatisticsItem(Window->contentItem(), QStringLiteral("viewportStatisticsOverlay"));
         StatisticsOrNull->SetText(StatisticsText);

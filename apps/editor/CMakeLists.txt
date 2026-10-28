@@ -151,6 +151,7 @@ set(editor_viewport_sources
     src/internal/ray_path_overlay.h
     src/ray_path_overlay.cpp
     src/preview_viewport.cpp
+    src/internal/viewport_object_overlay.h
     src/internal/viewport_object_interaction.h
     src/viewport_object_interaction.cpp
     src/viewport_navigation.cpp
@@ -162,6 +163,8 @@ if(APPLE)
 endif()
 if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     find_package(Qt6 6.4 REQUIRED COMPONENTS Quick)
+    list(APPEND editor_viewport_sources src/internal/viewport_object_overlay_item.h
+        src/viewport_object_overlay_item.cpp src/viewport_object_overlay_geometry.cpp)
     # The readback fallback is selected only on Linux, but the shared viewport code references it.
     list(APPEND editor_viewport_sources src/internal/offscreen_frame_reader.h src/offscreen_frame_reader.cpp)
     # RG3b trusted render-graph preview reads exported color back through the same frame reader.
@@ -699,6 +702,15 @@ endif()
 # Offscreen Qt tests verify logic and widget wiring without a GPU/compositor.
 # They do NOT prove native Wayland interaction or that a game rendered a frame.
 if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
+    if(TARGET Qt6::Quick)
+        add_executable(ludus_viewport_overlay_benchmark EXCLUDE_FROM_ALL
+            tests/viewport_object_overlay_benchmark.cpp src/viewport_object_overlay_geometry.cpp)
+        target_include_directories(ludus_viewport_overlay_benchmark PRIVATE src)
+        target_compile_definitions(ludus_viewport_overlay_benchmark PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
+        target_link_libraries(ludus_viewport_overlay_benchmark PRIVATE Qt6::Widgets Qt6::Quick Qt6::Test
+            Ludus::FoundationContainers Ludus::FoundationMath Ludus::FoundationProfiling)
+        ludus_apply_project_defaults(ludus_viewport_overlay_benchmark)
+    endif()
     find_package(Catch2 3 REQUIRED)
     find_package(Qt6 6.4 REQUIRED COMPONENTS Test)
     if(APPLE)
@@ -811,6 +823,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/viewport_debug_tests.cpp
         tests/preview_generation_tests.cpp
         tests/viewport_navigation_tests.cpp
+        tests/viewport_object_overlay_tests.cpp
         tests/design_token_tests.cpp
         tests/theme_preference_tests.cpp
         tests/viewport_legibility_tests.cpp
