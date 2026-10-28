@@ -16,6 +16,7 @@ TEMPLATES = {
     'compute-ray-tracing': ('compute_ray_tracing', 'Compute ray tracing', 'native-ray-tracing'),
     'veach-guibas-mis': ('veach_guibas_mis', 'Veach and Guibas MIS', 'native-ray-tracing'),
     'line-sampling': ('line_sampling', 'Line sampling', 'compute-ray-tracing'),
+    'ris-projected-solid-angle': ('ris_projected_solid_angle', 'RIS and projected solid angle', 'compute-ray-tracing'),
 }
 # What each requirement needs, as the capability repair names it.
 REQUIREMENT_REPAIRS = {

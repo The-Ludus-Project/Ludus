@@ -156,6 +156,13 @@ IMAGE_FRAGMENT_ID = 'GraphRayImageFragment'
 HELPERS = ('scene_data.h', 'renderer_gpu_preview_layout.h', 'renderer_surface_functions.slang', 'recipes.json',
            'native_metal_ray.slang', 'metal_ray_pipeline_layout.h',
            'ray_triangle_loop.slang', 'ray_line_visibility.slang', 'ray_bvh_traversal.slang', 'renderer_reference_layout.h', 'lighting_layout.h', 'math.slang', 'raster_bindings.slang', 'scene_shader.slang', 'scene_payload.slang', 'scene_shader_layout.h', 'ray_shader.slang', 'visibility_buffer.slang')
+# Staged and included only for scene_interface.polygonal_light_sampling: FoundationMath's projected-solid-angle,
+# LTC and weighted-reservoir primitives and the renderer's LTC table, in include order. The table data is 0.5 MB,
+# so packages that do not request it keep their snapshot and cache identity.
+POLYGONAL_LIGHT_HELPERS = ('projected_solid_angle.slang', 'linearly_transformed_cosine.slang', 'weighted_reservoir.slang',
+                           'ltc_table.slang', 'ltc_table_data.inc')
+POLYGONAL_LIGHT_INCLUDES = ('projected_solid_angle.slang', 'linearly_transformed_cosine.slang', 'weighted_reservoir.slang',
+                            'ltc_table.slang')
 
 
 def resolve_state(state):
@@ -351,8 +358,10 @@ def expand_programs(programs, technique, snapshot, helper, build, variants=None,
     recipes = build.document(build.read(helper / 'recipes.json'), 'renderer recipes')
     compute_recipe = recipes['renderer_gpu_preview']
     image_recipe = recipes['renderer_gpu_preview_image']
-    for filename in (*HELPERS, compute_recipe['source'], image_recipe['source']):
-        data = build.read(helper / filename)
+    polygonal_light_helpers = POLYGONAL_LIGHT_HELPERS if technique.get('scene_interface', {}).get(
+        'polygonal_light_sampling', False) else ()
+    for filename in (*HELPERS, *polygonal_light_helpers, compute_recipe['source'], image_recipe['source']):
+        data = build.read(helper / filename, build.MAX_HELPER_FILE)
         relative = '_ludus_ray/' + filename
         if relative in snapshot.files:
             build.require(snapshot.external.get(relative) == helper / filename and snapshot.files[relative] == data,
@@ -547,6 +556,8 @@ def scene_wrapper(selected, interface, snapshot, build, recipe, storage_source='
     compatibility = compatibility or {'sources': {}, 'callbacks': []}
     if interface.get('visibility_buffer', False):
         wrapper += '#define LUDUS_RENDER_GRAPH_VISIBILITY_INPUTS 1\n#include "_ludus_ray/visibility_buffer.slang"\n'
+    if interface.get('polygonal_light_sampling', False):
+        wrapper += ''.join('#include "_ludus_ray/' + source + '"\n' for source in POLYGONAL_LIGHT_INCLUDES)
     if compatibility['sources'] or any(program['output'] in ('Ray', 'Color') for program in selected.values()):
         wrapper += '#include "_ludus_ray/ray_shader.slang"\n'
     wrapper += '#include "' + payload + '"\n'

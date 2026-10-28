@@ -1846,6 +1846,100 @@ TEST_CASE("Line-sampling import raises only the line budget it declares",
               .toInt() == AUTHORED_LINE_QUERIES);
 }
 
+TEST_CASE("RIS projected-solid-angle template is created from the editor picker with three compared outputs",
+          "[editor][render-graph][ris-projected-solid-angle-template]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    workspace.show();
+    CreateGraphFromPicker(workspace, QStringLiteral("ris-projected-solid-angle"));
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QByteArray library = document.GetDraft(QStringLiteral("library.lurender.json"));
+    for (const char* program : {"Primary", "ShadeMultipleImportance", "ShadeLightSampling", "ShadeBsdfSampling"})
+    {
+        INFO(program);
+        CHECK(library.contains(program) == true);
+    }
+    // Every pass walks the compute BVH, so the package needs no ray hardware.
+    CHECK(library.count("\"ComputeBvh\"") == 4);
+    CHECK(library.contains("NativeQuery") == false);
+    const QByteArray root = document.GetDraft(ROOT_GRAPH);
+    // The combined estimator is exported first, so the viewport shows it by default.
+    CHECK(root.indexOf("\"output\"") < root.indexOf("\"lightSamplingOutput\""));
+    CHECK(root.count("\"Accumulate\"") == 3);
+    CHECK(root.count("\"Export\"") == 3);
+    CHECK(document.GetDraft(QStringLiteral("main_shaders/projected_solid_angle_light.slang"))
+              .contains("ComputeClampedOptimalMisWeights") == true);
+    const QByteArray manifest = document.GetDraft(COMPUTE_MANIFEST);
+    for (const char* setting :
+         {"RIS_CANDIDATE_COUNT", "RIS_NORMALIZATION_CANDIDATE_COUNT", "PROJECTED_SOLID_ANGLE_MIS_VISIBILITY"})
+    {
+        INFO(setting);
+        CHECK(manifest.contains(setting) == true);
+    }
+    const QJsonObject interface = FindRayTechnique(manifest).value(QStringLiteral("scene_interface")).toObject();
+    CHECK(interface.value(QStringLiteral("visibility_queries")).toInt() == 2);
+    CHECK(interface.value(QStringLiteral("polygonal_light_sampling")).toBool() == true);
+    RequireValidation(workspace);
+}
+
+TEST_CASE("RIS projected-solid-angle import enables the polygonal-light helpers on the shared ray technique",
+          "[editor][render-graph][ris-projected-solid-angle-configuration]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    RenderGraphDocument& document = workspace.GetDocument();
+    QString error;
+    // Other scene compute templates leave the helper requirement absent.
+    REQUIRE(document.ApplyConfigurationTemplate(ROOT_GRAPH, QStringLiteral("Compute"), COMPUTE_TEMPLATE, error) ==
+            RenderGraphDocumentStatus::Ok);
+    QJsonObject interface =
+        FindRayTechnique(document.GetDraft(COMPUTE_MANIFEST)).value(QStringLiteral("scene_interface")).toObject();
+    CHECK(interface.contains(QStringLiteral("polygonal_light_sampling")) == false);
+    REQUIRE(document.ApplyConfigurationTemplate(ROOT_GRAPH,
+                                                QStringLiteral("Ris"),
+                                                QStringLiteral("ris-projected-solid-angle"),
+                                                error) == RenderGraphDocumentStatus::Ok);
+    const QByteArray library = document.GetDraft(QStringLiteral("Ris.lurender.json"));
+    for (const char* program : {"RisProjectedSolidAnglePrimary",
+                                "RisProjectedSolidAngleShadeMultipleImportance",
+                                "RisProjectedSolidAngleShadeLightSampling",
+                                "RisProjectedSolidAngleShadeBsdfSampling"})
+    {
+        INFO(program);
+        CHECK(library.contains(program) == true);
+    }
+    for (const QString& source :
+         {QStringLiteral("ris_projected_solid_angle/main_shaders/primary.slang"),
+          QStringLiteral("ris_projected_solid_angle/main_shaders/shade.slang"),
+          QStringLiteral("ris_projected_solid_angle/main_shaders/hit_record.slang"),
+          QStringLiteral("ris_projected_solid_angle/main_shaders/resampled_light.slang"),
+          QStringLiteral("ris_projected_solid_angle/main_shaders/projected_solid_angle_light.slang")})
+    {
+        INFO(source.toStdString());
+        CHECK(document.GetDraft(source).isEmpty() == false);
+    }
+    interface =
+        FindRayTechnique(document.GetDraft(COMPUTE_MANIFEST)).value(QStringLiteral("scene_interface")).toObject();
+    CHECK(interface.value(QStringLiteral("visibility_queries")).toInt() >= 2);
+    CHECK(interface.value(QStringLiteral("polygonal_light_sampling")).toBool() == true);
+    // A later import of a template without the requirement keeps it.
+    REQUIRE(document.ApplyConfigurationTemplate(ROOT_GRAPH,
+                                                QStringLiteral("MoreCompute"),
+                                                QStringLiteral("simple-compute-ray-tracing"),
+                                                error) == RenderGraphDocumentStatus::Ok);
+    CHECK(FindRayTechnique(document.GetDraft(COMPUTE_MANIFEST))
+              .value(QStringLiteral("scene_interface"))
+              .toObject()
+              .value(QStringLiteral("polygonal_light_sampling"))
+              .toBool() == true);
+}
+
 TEST_CASE("Compute ray-tracing import extends a shared ray technique and preserves conflicting edits",
           "[editor][render-graph][compute-configuration]")
 {

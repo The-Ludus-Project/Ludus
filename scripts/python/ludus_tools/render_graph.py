@@ -1350,8 +1350,8 @@ def new_workspace(destination, *, output="presentation", renderer_static=False, 
 
     template selects raster (the default), forward-lit, restir-di, visibility-buffer,
     visibility-secondary-rays, tiled-vbuffer-nee, compute-ray-tracing, simple-compute-ray-tracing,
-    veach-guibas-mis or line-sampling. All but raster create offscreen Renderer packages containing their shaders and
-    shared view-relative RenderSize controls.
+    veach-guibas-mis, line-sampling or ris-projected-solid-angle. All but raster create offscreen Renderer
+    packages containing their shaders and shared view-relative RenderSize controls.
     output is presentation, offscreen or depth. Creation never overwrites an
     existing directory; staged files are validated before publication and cleaned
     up on failure. This is graph source creation, not game-project/SDK setup.

@@ -1,10 +1,11 @@
 # Many-area-light resampling estimator review
 
-Status: proposed design, reviewed October 27, 2026. Revised the same day to
-reconcile it with the CPU and GPU reference requirement and with the
-polygonal-light work's licensing, traversal and primitive decisions. The
-FoundationMath primitives listed under [Ownership](#ownership) are implemented;
-the estimator itself is not.
+Status: reviewed October 27, 2026. Revised the same day to reconcile it with the
+CPU and GPU reference requirement and with the polygonal-light work's licensing,
+traversal and primitive decisions. The primitives listed under
+[Ownership](#ownership) are implemented. The `ris-projected-solid-angle` template
+(stage 1) is implemented as of October 28, 2026, with the departures listed under
+[Implementation notes](#implementation-notes). The RT1 profile (stage 2) is not.
 This review is the estimator review that
 [hybrid and real-time transport](renderer-systems.md#hybrid-and-real-time-transport)
 requires before resampling enters a Ludus estimator. It covers next-event
@@ -261,6 +262,49 @@ library: hits Buffer (32 B/px, RenderSize)
   `scene_interface` requirement, in the same way `visibility_buffer` adds its
   include today. Older SDKs reject that requirement explicitly.
 
+### Implementation notes
+
+The template ships as
+[`render_graphs/ris_projected_solid_angle`](../../modules/graphics/renderer/render_graphs/ris_projected_solid_angle/main.lurender.json).
+Its usage is in the
+[authoring guide](../development/render-graph-authoring.md#resample-many-area-lights-with-projected-solid-angle-sampling).
+It follows the estimator, BSDF-hit decision, settings and random table above, with
+these departures and choices:
+
+- **Visibility budget.** The technique declares `visibility_queries: 2`, not 1,
+  because the selected triangle's diffuse and LTC samples each trace a shadow ray.
+- **Helper requirement.** The requirement is `scene_interface.polygonal_light_sampling: true`.
+  It stages and includes the projected-solid-angle, LTC and reservoir primitives and
+  the LTC table, which together add about 0.5 MB to the source snapshot. Packages
+  without it keep their snapshots. The builder rejects a non-Boolean value, and
+  older SDKs reject the unknown field.
+- **Emitter alpha.** Light samples do not apply the emitter's own alpha cutoff,
+  because the scene interface has no alpha-acceptance query. `veach-guibas-mis`
+  light sampling behaves the same way. Emission maps, sidedness and occlusion are
+  evaluated at the sampled point.
+- **Diffuse albedo.** `a₀ = baseColor · (1 − metallic) · (1 − F₀)` per channel,
+  Schlick's reflectance at normal incidence, clamped to 0.01. This settles the
+  open question for the template only; RT1 may measure another.
+- **Other MIS pairs.** Analytic and environment light samples and the BSDF sample
+  use the same power heuristic as `W_L`, and delta lights keep weight one.
+- **Consistent densities.** Both MIS sites evaluate `P̃` with
+  `EvaluateEmissiveTriangleSelectionPmf`, the same target function and the
+  densities at the normalized world direction, so `W_L` is one function of the
+  direction. `Ẑ` is computed at most once per invocation, on first use.
+- **Comparison baseline.** GPU tests compare against `veach-guibas-mis` cooked with
+  every pass on the triangle loop, so neither template needs native ray tracing.
+  The 1024-sample image for the MSE check is that template's MIS output with an
+  independent seed.
+
+Evidence and remaining acceptance work, against [Acceptance](#acceptance) item 3:
+
+- **Tested.** The GPU tests on Metal cover the glossy Cornell room, the
+  many-emitter room and two-sided emitters over minimum-roughness metal. The weight
+  unit test covers the MIS partition of unity, `Ẑ = 0` and the empty LTC clip.
+- **Not yet covered.** Textured emitters and the opt-in equal-time benchmark have no
+  fixture yet.
+- **Not run.** Vulkan first runs in batch CI.
+
 **Registration** follows the existing template checklist:
 - `TEMPLATES` and the CLI `--template` choices;
 - the root CMake install list and the editor resource list and catalog (graph
@@ -270,7 +314,7 @@ library: hits Buffer (32 B/px, RenderSize)
 - the renderer GPU staging loop;
 - a usage section in the authoring guide beside
   [Compare light and BSDF sampling with MIS](../development/render-graph-authoring.md#compare-light-and-bsdf-sampling-with-mis),
-  added only once the template ships.
+  added with the template.
 
 ## RT1 profile split and identity
 

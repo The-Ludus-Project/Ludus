@@ -10,6 +10,7 @@
 #include "rg2_ordered_ray.h"
 #include "rg2_raytracing.h"
 #include "rg2_restir_di.h"
+#include "rg2_ris_projected_solid_angle_template.h"
 #include "rg2_scene_compute.h"
 #include "rg2_scene_ray.h"
 #include "rg2_shared_ray_computebvh.h"
@@ -3055,11 +3056,10 @@ struct PreparedGraph final
     renderer::RenderGraphPrograms Programs;
     renderer::RenderGraph Graph;
 
+    /// @param room A scene fixture exposing Meshes, Items, Cameras and Inputs, such as CornellBox.
     /// @param revision Scene and camera revision; a different revision reseeds sampling.
-    PreparedGraph(const GraphGpuFixture& fixture,
-                  const PackageLocation& location,
-                  const CornellBox& room,
-                  uint64 revision)
+    template <typename Room>
+    PreparedGraph(const GraphGpuFixture& fixture, const PackageLocation& location, const Room& room, uint64 revision)
         : Package(LoadPackage(location)), Plan(Package->GetPlan()),
           Programs(Package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment()))
     {
@@ -3333,6 +3333,237 @@ TEST_CASE("The Veach and Guibas MIS output has less error than either sampling s
                                   << ", BSDF sampling=" << errors[VEACH_GUIBAS_BSDF_SAMPLING]);
     CHECK(errors[VEACH_GUIBAS_MIS] < errors[VEACH_GUIBAS_LIGHT_SAMPLING]);
     CHECK(errors[VEACH_GUIBAS_MIS] < errors[VEACH_GUIBAS_BSDF_SAMPLING]);
+}
+
+namespace
+{
+// ris-projected-solid-angle template tests. Thanks to Ishaan Shah, Aakash KT and P. J. Narayanan, "Combining Resampled
+// Importance and Projected Solid Angle Samplings for Many Area Light Rendering", SIGGRAPH Asia 2023 Technical
+// Communications, https://doi.org/10.1145/3610543.3626165 : the template resamples emissive triangles by their
+// unshadowed LTC shading and samples the selected one with Christoph Peters' projected-solid-angle and LTC techniques
+// ("BRDF Importance Sampling for Polygonal Lights", ACM Transactions on Graphics 40(4), Article 140, 2021,
+// https://doi.org/10.1145/3450626.3459672). Its outputs follow the veach-guibas-mis order (combined MIS, light
+// strategy, BSDF strategy), so the Veach and Guibas helpers above read them. Acceptance is
+// docs/architecture/many-area-light-sampling-reference-review.md, "Acceptance", item 3.
+constexpr usize MANY_EMITTER_GRID = 4;
+constexpr usize MANY_EMITTER_COUNT = MANY_EMITTER_GRID * MANY_EMITTER_GRID;
+/// Floor, ceiling, back, left and right walls and the block top of the Cornell room, without its ceiling light.
+constexpr usize MANY_EMITTER_ROOM_QUAD_COUNT = 6;
+constexpr usize MANY_EMITTER_QUAD_COUNT = MANY_EMITTER_ROOM_QUAD_COUNT + MANY_EMITTER_COUNT;
+constexpr usize MANY_EMITTER_QUAD_CORNERS = 4;
+constexpr usize MANY_EMITTER_QUAD_INDICES = 6;
+constexpr usize MANY_EMITTER_VERTEX_COUNT = MANY_EMITTER_QUAD_COUNT * MANY_EMITTER_QUAD_CORNERS;
+constexpr usize MANY_EMITTER_INDEX_COUNT = MANY_EMITTER_QUAD_COUNT * MANY_EMITTER_QUAD_INDICES;
+constexpr usize MANY_EMITTER_TRIANGLE_COUNT = MANY_EMITTER_QUAD_COUNT * 2;
+constexpr uint32 MANY_EMITTER_WHITE = 0;
+constexpr uint32 MANY_EMITTER_RED = 1;
+constexpr uint32 MANY_EMITTER_GREEN = 2;
+constexpr uint32 MANY_EMITTER_FIRST_LIGHT = 3;
+constexpr usize MANY_EMITTER_MATERIAL_COUNT = MANY_EMITTER_FIRST_LIGHT + MANY_EMITTER_COUNT;
+/// The Cornell room quads kept by the many-emitter room, as first corners in CORNELL_CORNERS_WORLD.
+constexpr StaticArray<usize, MANY_EMITTER_ROOM_QUAD_COUNT> MANY_EMITTER_ROOM_QUAD_FIRST_CORNERS{{0, 4, 8, 12, 16, 24}};
+constexpr StaticArray<uint32, MANY_EMITTER_ROOM_QUAD_COUNT> MANY_EMITTER_ROOM_QUAD_MATERIALS{{MANY_EMITTER_WHITE,
+                                                                                              MANY_EMITTER_WHITE,
+                                                                                              MANY_EMITTER_WHITE,
+                                                                                              MANY_EMITTER_RED,
+                                                                                              MANY_EMITTER_GREEN,
+                                                                                              MANY_EMITTER_WHITE}};
+
+/// The Cornell room with its ceiling light replaced by a 4 x 4 grid of small one-sided emitters, each its own material,
+/// whose power spans a factor of 64. White surfaces are a rough dielectric, so both of Peters' techniques matter.
+/// Veach and Guibas light sampling picks emitters uniformly and points by area; RIS adapts to power and to the
+/// receiver. The mesh borrows this object's arrays, so it is neither copied nor moved.
+struct ManyEmitterRoom final
+{
+    StaticArray<math::Vector3, MANY_EMITTER_VERTEX_COUNT> Positions{};
+    StaticArray<uint32, MANY_EMITTER_INDEX_COUNT> Indices{};
+    StaticArray<uint32, MANY_EMITTER_TRIANGLE_COUNT> Slots{};
+    StaticArray<uint32, MANY_EMITTER_MATERIAL_COUNT> Bindings{};
+    StaticArray<renderer::SceneShaderMaterial, MANY_EMITTER_MATERIAL_COUNT> Materials{};
+    StaticArray<renderer::RenderGraphMesh, 1> Meshes{};
+    StaticArray<renderer::RenderGraphItem, 1> Items{};
+    StaticArray<renderer::ViewDescription, 1> Cameras{};
+    renderer::SceneShaderInputs Inputs;
+    ManyEmitterRoom()
+    {
+        for (usize quad = 0; quad < MANY_EMITTER_ROOM_QUAD_COUNT; ++quad)
+        {
+            for (usize corner = 0; corner < MANY_EMITTER_QUAD_CORNERS; ++corner)
+            {
+                Positions[quad * MANY_EMITTER_QUAD_CORNERS + corner] =
+                    CORNELL_CORNERS_WORLD[MANY_EMITTER_ROOM_QUAD_FIRST_CORNERS[quad] + corner];
+            }
+            setQuadMaterial(quad, MANY_EMITTER_ROOM_QUAD_MATERIALS[quad]);
+        }
+        // Tiles face down like the Cornell light, with its corner order; centers 0.4 apart, sides 0.16 long.
+        constexpr float32 TILE_HEIGHT_WORLD = .98F;
+        constexpr float32 TILE_FIRST_CENTER_WORLD = -.6F;
+        constexpr float32 TILE_SPACING_WORLD = .4F;
+        constexpr float32 TILE_HALF_SIDE_WORLD = .08F;
+        constexpr usize EMISSION_LEVEL_COUNT = 4;
+        constexpr StaticArray<float32, EMISSION_LEVEL_COUNT> EMISSION_LEVELS{{.5F, 2, 8, 32}};
+        constexpr usize TINT_COUNT = 3;
+        constexpr StaticArray<math::Vector3, TINT_COUNT> TINTS{{{1, 1, 1}, {1, .6F, .3F}, {.3F, .6F, 1}}};
+        for (usize tile = 0; tile < MANY_EMITTER_COUNT; ++tile)
+        {
+            const float32 centerX =
+                TILE_FIRST_CENTER_WORLD + TILE_SPACING_WORLD * static_cast<float32>(tile % MANY_EMITTER_GRID);
+            const float32 centerZ =
+                TILE_FIRST_CENTER_WORLD + TILE_SPACING_WORLD * static_cast<float32>(tile / MANY_EMITTER_GRID);
+            const usize quad = MANY_EMITTER_ROOM_QUAD_COUNT + tile;
+            const usize first = quad * MANY_EMITTER_QUAD_CORNERS;
+            Positions[first] = {centerX - TILE_HALF_SIDE_WORLD, TILE_HEIGHT_WORLD, centerZ - TILE_HALF_SIDE_WORLD};
+            Positions[first + 1] = {centerX + TILE_HALF_SIDE_WORLD, TILE_HEIGHT_WORLD, centerZ - TILE_HALF_SIDE_WORLD};
+            Positions[first + 2] = {centerX + TILE_HALF_SIDE_WORLD, TILE_HEIGHT_WORLD, centerZ + TILE_HALF_SIDE_WORLD};
+            Positions[first + 3] = {centerX - TILE_HALF_SIDE_WORLD, TILE_HEIGHT_WORLD, centerZ + TILE_HALF_SIDE_WORLD};
+            const uint32 material = MANY_EMITTER_FIRST_LIGHT + static_cast<uint32>(tile);
+            setQuadMaterial(quad, material);
+            // Levels and tints cycle with different periods, so neighbors differ in both.
+            Materials[material].BaseColor = {.8F, .8F, .8F};
+            Materials[material].Emission =
+                TINTS[tile % TINT_COUNT] * EMISSION_LEVELS[(tile * 3) % EMISSION_LEVEL_COUNT];
+        }
+        constexpr float32 DIELECTRIC_ROUGHNESS = .4F;
+        Materials[MANY_EMITTER_WHITE].BaseColor = {.8F, .8F, .8F};
+        Materials[MANY_EMITTER_WHITE].Roughness = DIELECTRIC_ROUGHNESS;
+        Materials[MANY_EMITTER_RED].BaseColor = {.8F, .1F, .1F};
+        Materials[MANY_EMITTER_GREEN].BaseColor = {.1F, .8F, .1F};
+        for (uint32 material = 0; material < MANY_EMITTER_MATERIAL_COUNT; ++material)
+        {
+            Bindings[material] = material;
+        }
+        Meshes[0].Geometry = {Positions.GetData(), Positions.GetSize(), Indices.GetData(), Indices.GetSize()};
+        Meshes[0].MaterialSlots = {Slots.GetData(), Slots.GetSize()};
+        Meshes[0].MaterialBindings = {Bindings.GetData(), Bindings.GetSize()};
+        Items[0].SourceId = 1;
+        Inputs.Materials = {Materials.GetData(), Materials.GetSize()};
+        // The Cornell room's camera.
+        const CornellBox cornell;
+        Cameras[0] = cornell.Cameras[0];
+    }
+    ManyEmitterRoom(const ManyEmitterRoom&) = delete;
+    ManyEmitterRoom& operator=(const ManyEmitterRoom&) = delete;
+
+private:
+    void setQuadMaterial(usize quad, uint32 material)
+    {
+        const uint32 first = static_cast<uint32>(quad * MANY_EMITTER_QUAD_CORNERS);
+        const StaticArray<uint32, MANY_EMITTER_QUAD_INDICES> corners{{0, 1, 2, 0, 2, 3}};
+        for (usize corner = 0; corner < MANY_EMITTER_QUAD_INDICES; ++corner)
+        {
+            Indices[quad * MANY_EMITTER_QUAD_INDICES + corner] = first + corners[corner];
+        }
+        Slots[quad * 2] = material;
+        Slots[quad * 2 + 1] = material;
+    }
+};
+
+const PackageLocation RIS_PROJECTED_SOLID_ANGLE_TEMPLATE{LUDUS_RG3_RIS_PROJECTED_SOLID_ANGLE_TEMPLATE_DIRECTORY,
+                                                         "rg2_ris_projected_solid_angle_template.lurgrt"};
+const PackageLocation VEACH_GUIBAS_TRIANGLE_LOOP{LUDUS_RG3_VEACH_GUIBAS_MIS_TRIANGLE_LOOP_DIRECTORY,
+                                                 "rg2_veach_guibas_mis_triangle_loop.lurgrt"};
+
+/// Render both templates on one room at 256 samples per pixel and require that the three RIS outputs and Veach and
+/// Guibas light sampling estimate the same integral.
+template <typename Room>
+void CheckRisOutputsAgreeWithVeachGuibasLightSampling(const GraphGpuFixture& fixture, const Room& room)
+{
+    PreparedGraph ris(fixture, RIS_PROJECTED_SOLID_ANGLE_TEMPLATE, room, 1);
+    REQUIRE(ris.Programs.HasPersistentRayBuffers == true);
+    // Every pass walks the compute BVH: a compute ray-tracing package with no native ray requirement.
+    REQUIRE(renderer::RequiresHardwareRayTracing(ris.Plan) == false);
+    REQUIRE(renderer::UsesRayTracing(ris.Plan) == true);
+    for (usize pass = 0; pass < ris.Plan.Passes.GetSize(); ++pass)
+    {
+        INFO("pass " << pass);
+        CHECK(ris.Plan.Passes[pass].Program == format::Technique::RayTracing);
+        CHECK(ris.Plan.Passes[pass].Traversal == format::RayTraversal::ComputeBvh);
+        CHECK((ris.Plan.Passes[pass].AccumulationSamples > 0) == (pass >= VEACH_GUIBAS_FIRST_SHADE_PASS));
+    }
+    constexpr usize FRAME_COUNT = 256;
+    StaticArray<Array<uint8>, VEACH_GUIBAS_OUTPUT_COUNT> pixels;
+    RenderVeachGuibasOutputs(ris, fixture, FRAME_COUNT, pixels);
+    PreparedGraph veach(fixture, VEACH_GUIBAS_TRIANGLE_LOOP, room, 1);
+    StaticArray<Array<uint8>, VEACH_GUIBAS_OUTPUT_COUNT> veachPixels;
+    RenderVeachGuibasOutputs(veach, fixture, FRAME_COUNT, veachPixels);
+    const math::Vector3 lightMean = ComputeMeanRadiance(veachPixels[VEACH_GUIBAS_LIGHT_SAMPLING]);
+    constexpr float32 MINIMUM_MEAN_RADIANCE = .01F;
+    REQUIRE(lightMean.X > MINIMUM_MEAN_RADIANCE);
+    // Estimates of one integral, compared after decoding the tone-mapped running means, at 256 samples per pixel as
+    // for the Veach and Guibas template's same-integral check.
+    constexpr float32 RELATIVE_MEAN_TOLERANCE = .02F;
+    for (usize output = 0; output < VEACH_GUIBAS_OUTPUT_COUNT; ++output)
+    {
+        const math::Vector3 mean = ComputeMeanRadiance(pixels[output]);
+        INFO("RIS output " << output << " mean=" << mean.X << ',' << mean.Y << ',' << mean.Z
+                           << ", Veach and Guibas light sampling mean=" << lightMean.X << ',' << lightMean.Y << ','
+                           << lightMean.Z);
+        CheckMeansAgree(mean, lightMean, RELATIVE_MEAN_TOLERANCE);
+    }
+}
+} // namespace
+
+TEST_CASE("The RIS projected-solid-angle template's outputs agree with Veach and Guibas light sampling",
+          "[render-graph][gpu][ris-projected-solid-angle][template]")
+{
+    GraphGpuFixture fixture(false, false);
+    {
+        PreparedGraph ris(fixture, RIS_PROJECTED_SOLID_ANGLE_TEMPLATE, CornellBox{}, 1);
+        CheckSameStage(
+            ris.Programs.RayCompute,
+            packages::rg2_ris_projected_solid_angle_template::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                                           shaders::renderer_composite::Fragment())
+                .RayCompute);
+    }
+    SECTION("glossy Cornell room with a sky")
+    {
+        CornellBox room;
+        MakeRoomGlossy(room);
+        CheckRisOutputsAgreeWithVeachGuibasLightSampling(fixture, room);
+    }
+    SECTION("many emitters of different power")
+    {
+        const ManyEmitterRoom room;
+        CheckRisOutputsAgreeWithVeachGuibasLightSampling(fixture, room);
+    }
+    SECTION("a two-sided emitter over minimum-roughness metal")
+    {
+        // The LTC table's smallest roughness, where the specular technique carries almost all the weight.
+        constexpr float32 MINIMUM_ROUGHNESS = .045F;
+        CornellBox room;
+        room.Materials[CORNELL_WHITE].Metallic = 1;
+        room.Materials[CORNELL_WHITE].Roughness = MINIMUM_ROUGHNESS;
+        room.Materials[CORNELL_LIGHT].IsEmissionTwoSided = true;
+        CheckRisOutputsAgreeWithVeachGuibasLightSampling(fixture, room);
+    }
+}
+
+TEST_CASE("The RIS projected-solid-angle MIS output has less error than Veach and Guibas MIS with many emitters",
+          "[render-graph][gpu][ris-projected-solid-angle][template][mis]")
+{
+    // Shah et al.'s motivation: with many emitters of unequal power, uniform emitter selection and area sampling waste
+    // most light samples, while RIS over emitted power and the receiver's LTC shading concentrates them. Compare both
+    // templates' MIS images at equal samples per pixel with an independent converged image: the Veach and Guibas MIS
+    // output at 1024 samples per pixel, whose scene revision reseeds sampling.
+    GraphGpuFixture fixture(false, false);
+    const ManyEmitterRoom room;
+    constexpr usize LOW_FRAME_COUNT = 16;
+    PreparedGraph ris(fixture, RIS_PROJECTED_SOLID_ANGLE_TEMPLATE, room, 1);
+    StaticArray<Array<uint8>, VEACH_GUIBAS_OUTPUT_COUNT> risPixels;
+    RenderVeachGuibasOutputs(ris, fixture, LOW_FRAME_COUNT, risPixels);
+    PreparedGraph veach(fixture, VEACH_GUIBAS_TRIANGLE_LOOP, room, 1);
+    StaticArray<Array<uint8>, VEACH_GUIBAS_OUTPUT_COUNT> veachPixels;
+    RenderVeachGuibasOutputs(veach, fixture, LOW_FRAME_COUNT, veachPixels);
+    constexpr uint64 CONVERGED_REVISION = 2;
+    PreparedGraph convergedGraph(fixture, VEACH_GUIBAS_TRIANGLE_LOOP, room, CONVERGED_REVISION);
+    constexpr usize CONVERGED_FRAME_COUNT = 1024;
+    StaticArray<Array<uint8>, VEACH_GUIBAS_OUTPUT_COUNT> converged;
+    RenderVeachGuibasOutputs(convergedGraph, fixture, CONVERGED_FRAME_COUNT, converged);
+    const float64 risError = ComputeMeanSquaredError(risPixels[VEACH_GUIBAS_MIS], converged[VEACH_GUIBAS_MIS]);
+    const float64 veachError = ComputeMeanSquaredError(veachPixels[VEACH_GUIBAS_MIS], converged[VEACH_GUIBAS_MIS]);
+    INFO("MIS mean squared error at " << LOW_FRAME_COUNT << " samples: RIS projected solid angle=" << risError
+                                      << ", Veach and Guibas=" << veachError);
+    CHECK(risError < veachError);
 }
 
 namespace

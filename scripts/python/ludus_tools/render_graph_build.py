@@ -42,6 +42,9 @@ NATIVE_WORKER_HELPER = 'native_worker.py'
 HELPERS = ('compile_shader.py', 'compile_raster.py', 'compile_graph_stage.py', 'compile_metal_ray.py', 'shader_toolchain.json', 'spirv_cross_toolchain.json')
 LIMITS = {'configurations': 8, 'programs': 32, 'artifacts': 128, 'pipelines': 64}
 MAX_FILE = 128 * 1024
+# Engine-owned ray helper sources staged from the SDK, which are larger than authored files: the generated LTC table
+# (ltc_table_data.inc) is about 0.5 MiB. Authored sources keep MAX_FILE.
+MAX_HELPER_FILE = 1024 * 1024
 MAX_BYTES = 4 * 1024 * 1024
 MAX_FILES = 64
 MAX_SHADER_INCLUDE_DEPTH = 16
@@ -181,7 +184,10 @@ class Snapshot:
 
     def verify(self):
         for relative, data in self.files.items():
-            require(read(self.external.get(relative, self.path(relative))) == data, 'Stale', relative, 'source changed during build; prior package retained')
+            # Engine helpers staged from the SDK keep their own, larger read limit.
+            limit = MAX_HELPER_FILE if relative in self.external else MAX_FILE
+            require(read(self.external.get(relative, self.path(relative)), limit) == data, 'Stale', relative,
+                    'source changed during build; prior package retained')
 
 
 def validate_manifest(value):
@@ -279,9 +285,13 @@ def validate_manifest(value):
             scene_interface = technique.get('scene_interface')
             if scene_interface is not None:
                 keys(scene_interface, ('version', 'surface_queries', 'visibility_queries'), 'scene interface',
-                     ('payload', 'local_payload_bytes', 'visibility_buffer', 'line_queries'))
+                     ('payload', 'local_payload_bytes', 'visibility_buffer', 'line_queries', 'polygonal_light_sampling'))
                 if 'visibility_buffer' in scene_interface:
                     require(type(scene_interface['visibility_buffer']) is bool, 'Schema', 'visibility_buffer', 'Boolean required')
+                # Optional and additive: stages the projected-solid-angle, LTC, reservoir and LTC-table helpers.
+                if 'polygonal_light_sampling' in scene_interface:
+                    require(type(scene_interface['polygonal_light_sampling']) is bool, 'Schema',
+                            'polygonal_light_sampling', 'Boolean required')
                 if 'local_payload_bytes' in scene_interface:
                     integer(scene_interface['local_payload_bytes'], ray.PAYLOAD_FIELD_ALIGNMENT_BYTES,
                             ray.MAX_LOCAL_PAYLOAD_BYTES, 'shader-local payload budget')

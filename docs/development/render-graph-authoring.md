@@ -1787,6 +1787,115 @@ highlights and BSDF sampling is noisy on the diffuse walls:
 See the canonical
 [package](../../modules/graphics/renderer/render_graphs/veach_guibas_mis/main.lurender.json).
 
+### Resample many area lights with projected solid angle sampling
+
+The **RIS + projected solid angle — many area lights** template
+(`ris-projected-solid-angle`) estimates first-hit direct lighting from many
+emissive triangles. It implements Ishaan Shah, Aakash KT and P. J. Narayanan,
+[*Combining Resampled Importance and Projected Solid Angle Samplings for Many Area Light Rendering*, SIGGRAPH Asia 2023 Technical Communications](https://doi.org/10.1145/3610543.3626165),
+with both sampling techniques of Christoph Peters,
+[*BRDF Importance Sampling for Polygonal Lights*, ACM TOG 40(4), article 140, 2021](https://doi.org/10.1145/3450626.3459672).
+It adds BSDF-hit MIS through a surrogate light density. The estimator, its
+decisions and its random layout are owned by the
+[many-area-light sampling review](../architecture/many-area-light-sampling-reference-review.md#template-ris-projected-solid-angle).
+Create it from **New Render Graph → Template**, or with the CLI:
+
+```bash
+ludus render-graph new graphs/Ris --template ris-projected-solid-angle --output offscreen \
+  --renderer-static --profiles metal wgsl
+```
+
+Use `spirv wgsl` for Vulkan. A `wgsl`-only package is rejected with a `Capability`
+diagnostic that names Metal or Vulkan compute. **Apply Configuration Template...**
+and Quick Add also offer the `RisProjectedSolidAngle` configuration. Its inputs and
+outputs match the [MIS template](#compare-light-and-bsdf-sampling-with-mis): `scene`,
+`view` and `color` in, a required `color` output and optional `lightSampling` and
+`bsdfSampling` outputs.
+
+Every pass selects the `ComputeBvh` traversal, so the package needs Metal or Vulkan
+compute but no hardware ray tracing. Its registry requirement is
+`compute-ray-tracing`. Browser execution is outside the graph ray profile.
+
+The package has the MIS template's shape: one `primary` pass, a 32-byte hit record,
+and three shade passes with their own **Accumulate → ToneMap → Export** chains.
+
+| Pipeline node | Function in `main_shaders/shade.slang` | Estimate | Output |
+| --- | --- | --- | --- |
+| `shade` | `ShadeMultipleImportance` | Emission plus the resampled light strategy and one BSDF sample, MIS-weighted | `color` → `output` export |
+| `shadeLight` | `ShadeLightSampling` | Emission plus the light strategy alone: Shah et al.'s estimator | `lightSampling` → `lightSamplingOutput` |
+| `shadeBsdf` | `ShadeBsdfSampling` | Emission plus the BSDF sample alone | `bsdfSampling` → `bsdfSamplingOutput` |
+
+The **light strategy** keeps `SelectLight`'s uniform category draw. Analytic lights
+and the environment use `SampleIncidentLight`, as in the MIS template. When the draw
+lands on a mesh emitter, the strategy works on the whole emissive set, chosen with
+probability `P_E` (emitters over lights):
+
+1. `MakeReceiverLightingFrame` looks up the receiver's specular LTC once, and sets
+   the diffuse technique's albedo, clamped to 0.01 per channel.
+2. `RIS_CANDIDATE_COUNT` candidates are drawn with `SelectEmissiveTriangle`. Each is
+   weighted by its target `p̂ / p_src` and streamed through the weighted reservoir.
+   The target `p̂` is the triangle's unshadowed LTC shading (constant emission
+   luminance times the albedo-weighted diffuse and LTC integrals), and zero for a
+   one-sided emitter seen from behind.
+3. The selected triangle receives one diffuse projected-solid-angle sample and,
+   unless its LTC-space clip is empty, one LTC sample. Peters' clamped optimal MIS
+   weights them, with visibility estimate `PROJECTED_SOLID_ANGLE_MIS_VISIBILITY`.
+4. Each direction is mapped to a point on the triangle. Emission maps and sidedness
+   are evaluated there, and `TestVisibility` traces the shadow ray. Emissive NEE
+   therefore costs up to two shadow rays.
+
+The **BSDF strategy** is the MIS template's. RIS has no tractable density, so a BSDF
+ray that reaches an emissive triangle uses a surrogate density. It is built from
+`RIS_NORMALIZATION_CANDIDATE_COUNT` further, independent power-CDF draws
+(`TryEnsureTargetTotalEstimate`) and capped by the triangle's chance of being a
+candidate at all. The light group and the BSDF sample are weighted against each
+other with the power heuristic, so the combined image converges to the same
+integral as each strategy alone. The scene interface declares `surface_queries: 1`,
+`visibility_queries: 2` and `polygonal_light_sampling: true`.
+
+| Graph setting | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `RIS_CANDIDATE_COUNT` | `32` | `1`–`32` | Candidates `M` per receiver |
+| `RIS_NORMALIZATION_CANDIDATE_COUNT` | `8` | `1`–`16` | Normalization candidates `K` for the BSDF-hit density |
+| `PROJECTED_SOLID_ANGLE_MIS_VISIBILITY` | `0.5` | `0`–`1` | Peters' `v`: `1` is the weighted balance heuristic, `0` the balance heuristic |
+
+Settings never change the random layout. Dimensions 2–8 keep the MIS template's
+meanings, so analytic, environment and BSDF draws are paired across the two
+templates. The table is in `main_shaders/hit_record.slang` and in the review.
+
+New shader programs have `RisProjectedSolidAngle`-prefixed IDs and sources under
+`ris_projected_solid_angle/main_shaders/`. The settings join the manifest's Graph
+settings, and existing values are kept. The shared ray technique is extended as for
+the compute ray-tracing template, and it gains `polygonal_light_sampling`.
+
+Scope and limits:
+
+- Light samples do not apply the emitter's own alpha cutoff, because the scene
+  interface has no alpha-acceptance query. This is the same as the MIS template.
+- Emission maps are integrated but not importance sampled.
+- The diffuse technique's albedo uses Schlick's reflectance at normal incidence.
+- The fixed two-iteration inversion of Peters' sampler has a small backward error;
+  a direction that misses its triangle in float32 contributes zero.
+- There is no indirect bounce and no reservoir reuse.
+
+`ludus_render_graph_ray_tests` renders the template on Metal, with its compute BVH,
+in the glossy Cornell-box-style room under a sky and in a room with sixteen small
+emitters whose power spans a factor of 64:
+
+- all three outputs converge to the MIS template's light-sampling output within 2%
+  at 256 samples per pixel;
+- after 16 samples, the combined image in the many-emitter room has a lower mean
+  squared error than the MIS template's, measured against a 1024-sample image of the
+  MIS template with an independent seed.
+
+`ludus_renderer_render_tests` runs the weights on the GPU. It checks that Peters'
+weights and the light/BSDF split sum to one wherever a technique can sample, that
+`Ẑ = 0` applies the inclusion cap, and that an empty LTC clip leaves the diffuse
+technique all the weight. Vulkan has not been run for this template.
+
+See the canonical
+[package](../../modules/graphics/renderer/render_graphs/ris_projected_solid_angle/main.lurender.json).
+
 ### Sample lights along lines
 
 The **Line sampling — visible chords of area lights** template (`line-sampling`)
@@ -1964,6 +2073,25 @@ triangle recipe state. Add this record to the manifest's
 Add `"line_queries": 1` (up to 8) only when a callback calls
 `FindVisibleLineIntervals`. An absent field means 0, and the generated wrapper is
 then byte-identical to one without the field.
+
+Add `"polygonal_light_sampling": true` to use the polygonal-light primitives in
+callbacks. The wrapper then stages and includes, before your sources:
+
+- FoundationMath's `projected_solid_angle.slang` (Peters' projected-solid-angle
+  clipping, integral and sampler);
+- `linearly_transformed_cosine.slang` (the LTC polygon transform);
+- `weighted_reservoir.slang` (the sequential weighted reservoir);
+- the renderer's `ltc_table.slang` (`LookupSpecularLtc`, `ComputeSpecularLtcAlbedo`)
+  with its generated table.
+
+Their contracts are on the
+[FoundationMath page](../modules/foundation/math.md#linearly-transformed-cosines-over-polygons),
+in [randomness](../architecture/randomness.md#sequential-weighted-reservoir) and in
+the [LTC table guide](ltc-table.md). The table adds about 0.5 MB to the source
+snapshot, so omit the field when you do not need them. It must be a Boolean, and
+older SDKs reject the unknown field instead of building without the helpers. The
+[RIS and projected-solid-angle template](#resample-many-area-lights-with-projected-solid-angle-sampling)
+declares it.
 
 Scene-aware programs use these manifest input/output names and signatures.
 The pipeline can also retain legacy `RayLaunch / Ray`, `Ray / Color` and
