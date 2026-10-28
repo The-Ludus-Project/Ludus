@@ -56,9 +56,6 @@ TEST_CASE("Browser players admit only shipped sample identifiers", "[editor][bro
 
 namespace
 {
-/// MainWindow's short-window threshold for opening the bottom tool-window group by default.
-constexpr int SHORT_WINDOW_HEIGHT_PIXELS = 1000;
-
 QDockWidget* Dock(MainWindow& window, const QString& name)
 {
     auto* dock = window.findChild<QDockWidget*>(name);
@@ -96,12 +93,11 @@ void CheckDefaultPanels(MainWindow& window)
     QDockWidget* errors = Dock(window, QStringLiteral("errorListDock"));
     CHECK(window.dockWidgetArea(inspector) == Qt::RightDockWidgetArea);
     CHECK(window.dockWidgetArea(output) == Qt::BottomDockWidgetArea);
-    // Short windows start with the bottom group closed; it is still arranged under the documents.
-    const bool isBottomOpen = errors->isHidden() == false;
-    CHECK(isBottomOpen == (window.height() >= SHORT_WINDOW_HEIGHT_PIXELS));
+    // The calm default starts with the bottom group closed at any height; it is still arranged under the
+    // documents and opens when there is something to show.
     for (QDockWidget* dock : {output, errors, Dock(window, QStringLiteral("timingDock"))})
     {
-        CHECK(dock->isHidden() == (isBottomOpen == false));
+        CHECK(dock->isHidden() == true);
         dock->show();
     }
     for (QDockWidget* dock : {inspector, output, errors, Dock(window, QStringLiteral("projectExplorerDock"))})
@@ -216,6 +212,11 @@ TEST_CASE("Invalid or incompatible layout preferences fall back to recoverable d
     SECTION("Older single-dock layout")
     {
         WriteSetting(preferences, QStringLiteral("version"), 3);
+    }
+    SECTION("Layout from before the calm default")
+    {
+        // Version 5 had Project Explorer on the right and the bottom group open; it resets once.
+        WriteSetting(preferences, QStringLiteral("version"), 5);
     }
     SECTION("Different Qt version")
     {
@@ -505,8 +506,7 @@ TEST_CASE("Focus Viewport hides chrome around the World viewport and restores th
     CHECK(world->IsChromeVisible() == true);
 }
 
-TEST_CASE("Short windows start with the bottom tool windows closed until a problem is reported",
-          "[editor][layout][error-list]")
+TEST_CASE("The bottom tool windows start closed until a problem is reported", "[editor][layout][error-list]")
 {
     QTemporaryDir directory;
     EditorController controller(ToolingPaths{}, nullptr, directory.filePath(QStringLiteral("recent.json")));
@@ -557,14 +557,12 @@ TEST_CASE("Short windows start with the bottom tool windows closed until a probl
     CHECK(window.dockWidgetArea(errors) == Qt::BottomDockWidgetArea);
     CHECK(errors->height() <= window.height() / 3);
 
-    // Taller windows keep the bottom group open by default.
+    // A taller window starts the same way: closed, with the problems waiting behind the status bar.
+    list->ReplaceEntries(ErrorListProducer::Build, {});
     window.resize(1600, 1100);
     Reset(window);
     QApplication::processEvents();
-    if (window.height() >= SHORT_WINDOW_HEIGHT_PIXELS)
-    {
-        CHECK(errors->isHidden() == false);
-    }
+    CHECK(errors->isHidden() == true);
 }
 
 TEST_CASE("The World viewport keeps most of a MacBook Air-sized editor window", "[editor][layout][world]")
@@ -595,7 +593,7 @@ TEST_CASE("The World viewport keeps most of a MacBook Air-sized editor window", 
                    << viewport->height());
     // Before these limits the viewport had about 135 of 950 pixels of height.
     CHECK(viewport->height() * 100 >= window.height() * 55);
-    CHECK(viewport->width() * 100 >= window.width() * 50);
+    CHECK(viewport->width() * 100 >= window.width() * 40);
     const QString captures = qEnvironmentVariable("LUDUS_EDITOR_LAYOUT_CAPTURE");
     if (captures.isEmpty() == false)
     {

@@ -60,9 +60,6 @@ using ludus::foundation::int32;
 
 namespace
 {
-/// MainWindow's short-window threshold below which the bottom tool windows start closed.
-constexpr int SHORT_WINDOW_HEIGHT_PIXELS = 1000;
-
 /// objectNames of every tool window the shell creates.
 QStringList GetToolWindows()
 {
@@ -176,31 +173,27 @@ void Settle()
 void CheckDefaultToolWindows(const MainWindow& window)
 {
     CHECK(window.centralWidget() == &Well(window));
-    // Short windows start with the bottom group closed; View reopens it at the default height.
-    const bool isShortWindow = window.height() < SHORT_WINDOW_HEIGHT_PIXELS;
+    // The calm default closes the bottom group at any height; View reopens it at the default height.
     for (const QString& name : GetToolWindows())
     {
         INFO(name.toStdString());
         const bool isBottom = window.dockWidgetArea(Dock(window, name)) == Qt::BottomDockWidgetArea;
-        CHECK(Dock(window, name)->isHidden() == (isShortWindow == true && isBottom == true));
+        CHECK(Dock(window, name)->isHidden() == isBottom);
         CHECK(Dock(window, name)->isFloating() == false);
     }
-    if (isShortWindow == true)
+    for (const QString& command :
+         {QStringLiteral("view.output"), QStringLiteral("view.timing"), QStringLiteral("view.errorList")})
     {
-        for (const QString& command :
-             {QStringLiteral("view.output"), QStringLiteral("view.timing"), QStringLiteral("view.errorList")})
-        {
-            Action(window, command)->trigger();
-        }
-        Settle();
+        Action(window, command)->trigger();
     }
+    Settle();
     QDockWidget* explorer = Dock(window, QStringLiteral("projectExplorerDock"));
     QDockWidget* properties = Dock(window, QStringLiteral("propertiesDock"));
     QDockWidget* errors = Dock(window, QStringLiteral("errorListDock"));
-    CHECK(window.dockWidgetArea(explorer) == Qt::RightDockWidgetArea);
+    // Project Explorer on the left, Properties on the right: the documents sit between them.
+    CHECK(window.dockWidgetArea(explorer) == Qt::LeftDockWidgetArea);
     CHECK(window.dockWidgetArea(properties) == Qt::RightDockWidgetArea);
     CHECK(window.dockWidgetArea(errors) == Qt::BottomDockWidgetArea);
-    // Project Explorer and Properties are stacked, not tabbed, so both stay visible.
     CHECK(window.tabifiedDockWidgets(explorer).contains(properties) == false);
     CHECK(window.tabifiedDockWidgets(explorer).contains(Dock(window, QStringLiteral("contentDock"))) == true);
     CHECK(window.tabifiedDockWidgets(explorer).contains(Dock(window, QStringLiteral("renderPreviewDock"))) == true);
@@ -353,10 +346,11 @@ TEST_CASE("Shell puts documents in the centre and tool windows around them", "[e
         Settle();
         CheckDefaultToolWindows(window);
         CHECK(window.width() == size.width());
-        // Documents get most of the window; tool windows keep useful default sizes.
-        CHECK(well.width() * 100 >= window.width() * 65);
+        // Documents get most of the window; the two side tool windows keep useful default sizes.
+        CHECK(well.width() * 100 >= window.width() * 60);
         CHECK(well.height() * 100 >= window.height() * 55);
-        CHECK(Dock(window, QStringLiteral("projectExplorerDock"))->width() >= 260);
+        CHECK(Dock(window, QStringLiteral("projectExplorerDock"))->width() >= 200);
+        CHECK(Dock(window, QStringLiteral("propertiesDock"))->width() >= 240);
         // The bottom tool windows keep room for several diagnostic rows. Measured on the
         // table, since the dock's own tab bar height differs between platform styles.
         QTableWidget* diagnostics = window.findChild<QTableWidget*>(QStringLiteral("errorListTable"));
@@ -404,7 +398,7 @@ TEST_CASE("Window menu shows hides and resets every tool window", "[editor][layo
     QTemporaryDir settings;
     EditorController controller(ToolingPaths{}, nullptr, QDir(settings.path()).filePath(QStringLiteral("recent.json")));
     MainWindow window(&controller, nullptr, QDir(settings.path()).filePath(QStringLiteral("workspace.json")));
-    // Tall enough that the default arrangement opens every tool window.
+    // A tall window: the bottom group is still closed until needed.
     window.resize(1600, 1100);
     window.show();
     Settle();
@@ -415,13 +409,16 @@ TEST_CASE("Window menu shows hides and resets every tool window", "[editor][layo
         INFO(name.toStdString());
         QDockWidget* dock = Dock(window, name);
         QAction* toggle = dock->toggleViewAction();
+        // The bottom group starts closed; every other tool window starts open.
+        const bool wasHidden = dock->isHidden();
         CHECK(menu->actions().contains(toggle) == true);
-        CHECK(toggle->isChecked() == true);
+        CHECK(toggle->isChecked() == (wasHidden == false));
         toggle->trigger();
-        CHECK(dock->isHidden() == true);
+        CHECK(dock->isHidden() == (wasHidden == false));
         toggle->trigger();
-        CHECK(dock->isHidden() == false);
+        CHECK(dock->isHidden() == wasHidden);
         toggle->trigger();
+        dock->setHidden(true);
     }
     // View commands show and focus a tool window instead of toggling it.
     Action(window, QStringLiteral("view.errorList"))->trigger();
