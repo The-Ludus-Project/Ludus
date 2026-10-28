@@ -116,6 +116,14 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
     BuildMenus();
     InitializeWorkspace();
     connect(mDocuments, &DocumentWell::ActiveDocumentChanged, this, &MainWindow::renderActiveDocument);
+    // Restoring a saved layout, resetting it or leaving Focus Viewport can show or hide the strip; the queued
+    // check puts it back to what the active document asks for.
+    connect(mRenderGraphToolbar,
+            &QToolBar::visibilityChanged,
+            this,
+            &MainWindow::UpdateContextStrip,
+            Qt::QueuedConnection);
+    UpdateContextStrip();
     connect(mProjectExplorer, &ProjectExplorer::OpenRequested, this, &MainWindow::openProjectItem);
     connect(mErrorList, &ErrorList::EntryActivated, this, &MainWindow::activateErrorEntry);
     connect(mErrorList, &ErrorList::ProblemsReported, this, &MainWindow::revealErrorList);
@@ -387,18 +395,17 @@ void MainWindow::BuildMenus()
     addToolBar(mStandardToolbar);
     OpenAction_->setIconText(QStringLiteral("Open"));
     SaveAction_->setIconText(QStringLiteral("Save"));
-    for (QAction* action : {OpenAction_, SaveAction_, UndoAction_, RedoAction_})
-    {
-        mStandardToolbar->addAction(action);
-    }
+    // Groups: File (Open, Save) and History (Undo, Redo), told apart by a separator.
+    mStandardToolbar->addAction(OpenAction_);
+    mStandardToolbar->addAction(SaveAction_);
+    mStandardToolbar->addSeparator();
+    mStandardToolbar->addAction(UndoAction_);
+    mStandardToolbar->addAction(RedoAction_);
     GameToolbar_ = addToolBar(QStringLiteral("Game"));
     GameToolbar_->setObjectName(QStringLiteral("gameToolbar"));
     GameToolbar_->setToolButtonStyle(Qt::ToolButtonTextOnly);
     BuildRunAction_->setIconText(QStringLiteral("Run"));
     BuildDebugAction_->setIconText(QStringLiteral("Debug"));
-    GameToolbar_->addAction(BuildAction_);
-    GameToolbar_->addAction(BuildRunAction_);
-    GameToolbar_->addAction(BuildDebugAction_);
 
     QMenu* releaseMenu = menuBar()->addMenu(QStringLiteral("&Release"));
     SetupReleaseAction_ = releaseMenu->addAction(QStringLiteral("Set Up &Releases..."));
@@ -478,14 +485,23 @@ void MainWindow::BuildMenus()
     connect(ResumeAction_, &QAction::triggered, this, [this]() { Controller_->PlayCommand(QStringLiteral("Resume")); });
     connect(RefreshPropertiesAction_, &QAction::triggered, Controller_, &EditorController::RefreshProperties);
 
-    GameToolbar_->addSeparator();
+    // Groups: Run (Play, Build, Stop), Launch (Run, Debug) and Session (Pause, Step, Resume, Reload Code). The
+    // session commands are only meaningful while a game is running or paused, so RenderCapabilities shows them
+    // only then, together with their separator.
     GameToolbar_->addAction(PlayAction_);
+    GameToolbar_->addAction(BuildAction_);
+    GameToolbar_->addAction(StopAction_);
+    GameToolbar_->addSeparator();
+    GameToolbar_->addAction(BuildRunAction_);
+    GameToolbar_->addAction(BuildDebugAction_);
+    mSessionSeparatorActionOrNull = GameToolbar_->addSeparator();
     GameToolbar_->addAction(PauseAction_);
     GameToolbar_->addAction(StepAction_);
     GameToolbar_->addAction(ResumeAction_);
     GameToolbar_->addAction(BuildReloadAction_);
-    GameToolbar_->addAction(StopAction_);
 
+    // The Render Graph toolbar is the context strip: it shows only while a render graph is the active document
+    // (UpdateContextStrip), so a World tab keeps one row of commands about the project and the game.
     mRenderGraphToolbar->setObjectName(QStringLiteral("renderGraphToolbar"));
     mRenderGraphToolbar->setToolButtonStyle(Qt::ToolButtonTextOnly);
     addToolBar(mRenderGraphToolbar);
@@ -547,7 +563,8 @@ void MainWindow::BuildMenus()
     addToolWindowCommand(VIEW_PROFILING_COMMAND, mProfilingDock);
     viewMenu->addSeparator();
     QMenu* toolbars = viewMenu->addMenu(QStringLiteral("&Toolbars"));
-    for (QToolBar* toolbar : {mStandardToolbar, GameToolbar_, mRenderGraphToolbar})
+    // The context strip follows the active document, so it has no entry here.
+    for (QToolBar* toolbar : {mStandardToolbar, GameToolbar_})
     {
         toolbars->addAction(toolbar->toggleViewAction());
     }
@@ -1152,6 +1169,15 @@ void MainWindow::RenderCapabilities()
     {
         const QSignalBlocker blocker(AutoReloadAction_);
         AutoReloadAction_->setChecked(Controller_->AutoReloadEnabled());
+    }
+    const bool isSessionLive = play == PlayPhase::Running || play == PlayPhase::Paused;
+    for (QAction* action : {PauseAction_, StepAction_, ResumeAction_, BuildReloadAction_})
+    {
+        action->setVisible(isSessionLive);
+    }
+    if (mSessionSeparatorActionOrNull != nullptr)
+    {
+        mSessionSeparatorActionOrNull->setVisible(isSessionLive);
     }
     PauseAction_->setEnabled(debuggerStopped == false && play == PlayPhase::Running);
     ResumeAction_->setEnabled(debuggerStopped == false && play == PlayPhase::Paused);
