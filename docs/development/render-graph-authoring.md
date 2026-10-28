@@ -3058,8 +3058,11 @@ the editor uses it for any project that has no graph of its own.
    pauses/resumes automatic builds of saved sources. Changing the preview configuration
    selects that configuration of the saved sources.
 
-**File → New Render Graph...** creates an editable barebone graph and its shaders in
-`graphs/<name>/`, then makes it active in the World viewport. **Customize in Project**
+**File → New Render Graph... → Raster** copies the engine default graph and its
+editable shaders into `graphs/<name>/`, then makes it active in the World viewport.
+Its shared OutputSize/RenderSize controls follow the viewport size, just like the
+engine default. The package is a project-owned snapshot; subsequent engine updates
+do not overwrite your edits. **Customize in Project**
 copies the engine default into `graphs/Main/`. At project opening, `graphs/Main/main.lurender.json`
 has priority; otherwise the first `graphs/<name>/main.lurender.json` in name order is used.
 With no such graph, the engine default is used. A malformed project graph reports its
@@ -3141,8 +3144,10 @@ In the native editor, open your game project and choose **File → New Render Gr
 choose **Create**. The editor creates `graphs/<name>/` inside the selected game
 project, including `main.lurender.json`, the reusable `rasterize.lurender.json`,
 `main.lushader.json` and editable `main_shaders/*.slang` functions, then opens the
-graph on the canvas. The starter exports a color image and uses the
-RendererStatic interface required by the editor preview. Target profiles are
+graph on the canvas. The Raster starter copies the same canonical package used by
+the engine default, with viewport-relative color/depth targets and editable unlit
+color shaders. It exports a color image and uses the RendererStatic interface
+required by the editor preview. Target profiles are
 Metal/WGSL on macOS and SPIR-V/WGSL on Linux. Creation needs no shader compiler or
 running viewport and never overwrites an existing graph folder. A failed creation
 keeps the previously open draft. Graphs and shader sources belong to the game
@@ -3494,8 +3499,12 @@ and rejects recursive shader calls or duplicate callbacks. Unguarded include cyc
 report the complete cycle, separately from the include-depth limit. Conditional
 includes are conservatively tracked; a conditional pragma is not treated as a guard.
 The compiler reads staged captured sources only, and its dependency file is
-checked against that closure. Sources are bounded to 64 files/4 MiB, each at
-most 128 KiB, with include depth 16; generated artifacts are at most 2 MiB each
+checked against that closure. The combined build snapshot is bounded to 128
+files/4 MiB, including graph metadata, authored shaders and SDK helpers; each
+file is at most 128 KiB, with include depth 16. The native shader worker retains
+its separate 64-file request limit, including the generated wrapper. Each stage
+receives only its captured closure from the larger package snapshot. Source or
+compiler limit failures preserve the prior package. Generated artifacts are at most 2 MiB each
 and a generation is at most 64 MiB/1024 files. Use `--root` for a containing
 package when the sibling root/manifest lives in a subdirectory; program source
 paths are relative to that package root, not the manifest directory.

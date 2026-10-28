@@ -70,7 +70,13 @@ if(LUDUS_BUILD_SHADER_WORKER)
     target_include_directories(ludus-shader-worker PRIVATE src)
     target_link_libraries(ludus-shader-worker PRIVATE Ludus::ShaderCompiler)
     target_compile_definitions(ludus-shader-worker PRIVATE LUDUS_SLANG_VERSION="${slang_version}")
-    set_target_properties(ludus-shader-worker PROPERTIES INSTALL_RPATH "$ORIGIN/../lib;$ORIGIN/../lib/ludus-shader-tools")
+    # Slang dlopens its SPIR-V optimizer (slang-glslang) beside itself by bare name. A sanitizer
+    # runtime intercepts dlopen from the executable, so the loader then searches the executable's
+    # run path rather than the Slang library's; without the Slang directory there, Slang silently
+    # skips optimization. Name it in the build tree as the install path already does.
+    get_filename_component(slang_library_directory "${slang_library}" DIRECTORY)
+    set_target_properties(ludus-shader-worker PROPERTIES INSTALL_RPATH "$ORIGIN/../lib;$ORIGIN/../lib/ludus-shader-tools"
+        BUILD_RPATH "${slang_library_directory}")
     if(APPLE)
         set_target_properties(ludus_shader_compiler PROPERTIES INSTALL_RPATH "@loader_path/ludus-shader-tools")
         # The pinned upstream macOS Slang API library requires macOS 15.
@@ -96,6 +102,8 @@ if(LUDUS_BUILD_TESTS AND TARGET ludus-shader-worker)
     find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
     add_executable(ludus_shader_compiler_tests tests/compiler_tests.cpp)
     target_link_libraries(ludus_shader_compiler_tests PRIVATE Ludus::ShaderCompiler Catch2::Catch2WithMain)
+    # Loads Slang in process, so it needs the worker's run path to Slang's optimizer.
+    set_target_properties(ludus_shader_compiler_tests PROPERTIES BUILD_RPATH "${slang_library_directory}")
     ludus_apply_project_defaults(ludus_shader_compiler_tests)
     ludus_enable_test_exceptions(ludus_shader_compiler_tests)
     add_test(NAME ludus_shader_compiler_tests COMMAND ludus_shader_compiler_tests "[shader][compiler]")

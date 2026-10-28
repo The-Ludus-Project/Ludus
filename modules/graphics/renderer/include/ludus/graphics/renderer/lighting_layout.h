@@ -43,9 +43,9 @@ static const LightingLayoutValue MATERIAL_DEBUG_VIEW_ROUGHNESS = 3;
 static const LightingLayoutValue MATERIAL_DEBUG_VIEW_METALLIC = 4;
 /// Fractional mesh UV0 as red/green.
 static const LightingLayoutValue MATERIAL_DEBUG_VIEW_TEXCOORD_UV = 5;
-/// Count of direct lights with a nonzero (shadowed) contribution, as a heat ramp.
+/// Count of direct lights with a nonzero (shadowed) contribution, as a viridis ramp.
 static const LightingLayoutValue MATERIAL_DEBUG_VIEW_LIGHT_COUNT = 6;
-/// Light count at which the debug heat ramp saturates to its hottest colour.
+/// Light count at which the debug viridis ramp saturates to its brightest colour.
 static const LightingLayoutValue MATERIAL_DEBUG_LIGHT_COUNT_SATURATION = 16;
 
 #ifdef __cplusplus

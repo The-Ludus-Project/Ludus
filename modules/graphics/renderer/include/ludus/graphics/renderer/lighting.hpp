@@ -194,7 +194,8 @@ enum class MaterialDebugView : ludus::foundation::uint8
     None = MATERIAL_DEBUG_VIEW_NONE,
     /// Shaded world-space normal mapped from [-1,1] to [0,1] RGB.
     NormalWorld = MATERIAL_DEBUG_VIEW_NORMAL_WORLD,
-    /// Camera distance mapped linearly over ViewDescription::DebugDepthRange, near black to far white.
+    /// Camera distance mapped linearly over ViewDescription::DebugDepthRange, near dark purple to far yellow on the
+    /// viridis ramp.
     LinearDepth = MATERIAL_DEBUG_VIEW_LINEAR_DEPTH,
     /// Perceptual roughness after surface-map scaling, as grey.
     Roughness = MATERIAL_DEBUG_VIEW_ROUGHNESS,
@@ -202,8 +203,8 @@ enum class MaterialDebugView : ludus::foundation::uint8
     Metallic = MATERIAL_DEBUG_VIEW_METALLIC,
     /// Fractional mesh UV0 as red (U) and green (V).
     TexcoordUv = MATERIAL_DEBUG_VIEW_TEXCOORD_UV,
-    /// Direct lights with a nonzero shadowed contribution at the pixel, as a blue-to-red heat
-    /// ramp saturating at MATERIAL_DEBUG_LIGHT_COUNT_SATURATION; black means no direct light.
+    /// Direct lights with a nonzero shadowed contribution at the pixel, as a viridis
+    /// ramp saturating at MATERIAL_DEBUG_LIGHT_COUNT_SATURATION; dark purple means no direct light.
     LightCount = MATERIAL_DEBUG_VIEW_LIGHT_COUNT,
 };
 /// Immutable unlit base schema plus the L4 metallic/roughness lighting terms.
@@ -247,6 +248,10 @@ struct LitMaterialDescription final
     rhi::TextureHandle EmissionMap{};
     /// Constant diffuse irradiance in [0,10000], used when a baked chart is absent/invalid.
     ludus::foundation::math::Vector3 EnvironmentIrradiance{};
+    /// Hemispheric variation of the constant EnvironmentIrradiance in [0,1]: it is the irradiance of a surface
+    /// facing +Y (the sky), and a surface facing -Y receives that much times this scale, blended by the
+    /// normal's Y. One keeps the irradiance constant, as before. Ignored when baked or authored irradiance applies.
+    ludus::foundation::float32 EnvironmentGroundScale = 1;
     /// Constant filtered environment radiance in [0,10000]; single-scatter Fresnel approximation.
     ludus::foundation::math::Vector3 EnvironmentRadiance{};
     /// Borrowed list, validated and copied before CreateLitMaterial returns.

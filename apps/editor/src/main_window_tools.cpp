@@ -36,6 +36,7 @@
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
+#include <QToolBar>
 
 namespace ludus::editor
 {
@@ -193,6 +194,16 @@ void MainWindow::renderActiveDocument()
         mProperties->setCurrentIndex(EMPTY_PROPERTIES_PAGE);
     }
     RenderDocumentActions();
+    updateContextStrip();
+}
+
+void MainWindow::updateContextStrip()
+{
+    const bool shouldShow = mIsViewportFocused == false && mDocuments->GetActiveDocumentOrNull() == Renderer_;
+    if (mRenderGraphToolbar->isHidden() == shouldShow)
+    {
+        mRenderGraphToolbar->setVisible(shouldShow);
+    }
 }
 
 void MainWindow::renderDocumentTitles()
