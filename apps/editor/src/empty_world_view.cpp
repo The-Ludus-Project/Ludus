@@ -9,7 +9,6 @@
 #include <ludus/graphics/renderer/world_grid.hpp>
 
 #include <QPainter>
-#include <QPalette>
 
 namespace ludus::editor
 {
@@ -91,13 +90,10 @@ EmptyWorldView::EmptyWorldView(RenderPreview& inoutPreview, QWidget* parentOrNul
     setAlignment(Qt::AlignBottom | Qt::AlignLeft);
     setMargin(TEXT_MARGIN);
     setWordWrap(true);
-    QPalette colours = palette();
-    colours.setColor(QPalette::WindowText, QColor::fromRgb(CAPTION));
-    setPalette(colours);
     connect(&mPreview, &RenderPreview::NavigationChanged, this, [this]() { update(); });
     connect(&mPreview, &RenderPreview::Changed, this, [this]() { update(); });
 }
-void EmptyWorldView::paintEvent(QPaintEvent* event)
+void EmptyWorldView::paintEvent(QPaintEvent* /*event*/)
 {
     QPainter painter(this);
     painter.fillRect(rect(), QColor::fromRgb(BACKGROUND));
@@ -112,8 +108,7 @@ void EmptyWorldView::paintEvent(QPaintEvent* event)
         float32 step = 0;
         if (renderer::BuildWorldGridLines(view, {lines.GetData(), lines.GetSize()}, count, step) == false)
         {
-            painter.end();
-            QLabel::paintEvent(event);
+            drawCaption(painter);
             return;
         }
         painter.setRenderHint(QPainter::Antialiasing);
@@ -133,7 +128,17 @@ void EmptyWorldView::paintEvent(QPaintEvent* event)
                 .arg(view.OrthographicCamera == true ? QStringLiteral("Orthographic") : QStringLiteral("Perspective"))
                 .arg(static_cast<float64>(step)));
     }
-    painter.end();
-    QLabel::paintEvent(event);
+    drawCaption(painter);
+}
+void EmptyWorldView::drawCaption(QPainter& inoutPainter) const
+{
+    // Painted here rather than by QLabel: the workspace style sheet colours every QLabel from the window
+    // palette, which left this caption charcoal on charcoal. The viewport background is fixed, so the
+    // caption colour is too.
+    inoutPainter.setRenderHint(QPainter::Antialiasing, false);
+    inoutPainter.setPen(QColor::fromRgb(CAPTION));
+    inoutPainter.drawText(rect().adjusted(TEXT_MARGIN, TEXT_MARGIN, -TEXT_MARGIN, -TEXT_MARGIN),
+                          Qt::AlignBottom | Qt::AlignLeft | Qt::TextWordWrap,
+                          text());
 }
 } // namespace ludus::editor
