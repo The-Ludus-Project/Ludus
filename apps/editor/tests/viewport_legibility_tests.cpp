@@ -23,6 +23,7 @@
 #include <QWidget>
 #include <QWidgetAction>
 
+#include <algorithm>
 #include <cmath>
 
 using namespace ludus::editor;
@@ -82,8 +83,28 @@ QPalette MakePalette(bool isDark)
     return palette;
 }
 
-/// Counts pixels in the bottom strip that are exactly the caption colour, i.e. glyph cores that no style
-/// sheet or palette recoloured.
+/// A glyph pixel is a blend of the caption colour over the background. It counts as caption-coloured when it lies
+/// on the background-to-caption line: at least CAPTION_COVERAGE of the way along, with all three channels agreeing
+/// within BLEND_SPREAD. Exact matches are not required because hinting and font choice decide whether any glyph
+/// pixel is fully covered.
+constexpr double CAPTION_COVERAGE = 0.4;
+constexpr double BLEND_SPREAD = 0.1;
+
+bool IsCaptionBlend(QRgb pixel)
+{
+    const auto fraction = [](int value, int caption, int background) {
+        return static_cast<double>(value - background) / static_cast<double>(caption - background);
+    };
+    const double red = fraction(qRed(pixel), qRed(CAPTION), qRed(BACKGROUND));
+    const double green = fraction(qGreen(pixel), qGreen(CAPTION), qGreen(BACKGROUND));
+    const double blue = fraction(qBlue(pixel), qBlue(CAPTION), qBlue(BACKGROUND));
+    const double lowest = std::min({red, green, blue});
+    const double highest = std::max({red, green, blue});
+    return lowest >= CAPTION_COVERAGE && highest <= 1.0 && highest - lowest <= BLEND_SPREAD;
+}
+
+/// Counts pixels in the bottom strip that are mostly the caption colour, i.e. glyph cores that no style sheet or
+/// palette recoloured.
 int CountCaptionPixels(const QImage& image)
 {
     int count = 0;
@@ -91,7 +112,7 @@ int CountCaptionPixels(const QImage& image)
     {
         for (int x = 0; x < image.width(); ++x)
         {
-            count += image.pixel(x, y) == CAPTION ? 1 : 0;
+            count += IsCaptionBlend(image.pixel(x, y)) ? 1 : 0;
         }
     }
     return count;
