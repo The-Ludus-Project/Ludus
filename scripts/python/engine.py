@@ -1074,8 +1074,6 @@ def ubuntu_stanza_has_component(stanza: str, component: str) -> bool:
         return False
     if not re.search(r"(?im)^Types:\s*.*\bdeb\b", stanza):
         return False
-    if not re.search(r"(?im)^URIs:\s*.*ubuntu", stanza):
-        return False
     components_match = re.search(r"(?im)^Components:\s*(.+)$", stanza)
     if not components_match:
         return False
@@ -1112,7 +1110,7 @@ def add_component_to_ubuntu_sources_text(text: str, component: str) -> tuple[str
         if re.search(r"(?im)^Enabled:\s*no\s*$", part):
             updated_parts.append(part)
             continue
-        if not re.search(r"(?im)^Types:\s*.*\bdeb\b", part) or not re.search(r"(?im)^URIs:\s*.*ubuntu", part):
+        if not re.search(r"(?im)^Types:\s*.*\bdeb\b", part):
             updated_parts.append(part)
             continue
 
