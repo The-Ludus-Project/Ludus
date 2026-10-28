@@ -54,6 +54,8 @@
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
+#include <QTreeWidget>
+#include <QTreeWidgetItemIterator>
 
 using namespace ludus::editor;
 using ludus::foundation::int32;
@@ -1460,4 +1462,51 @@ TEST_CASE("graph focus restores the active document and panel choices and resolv
     REQUIRE(Well(window).OpenDocument(renderer) == true);
     Settle();
     CHECK(output->visibleRegion().isEmpty() == false);
+}
+
+TEST_CASE("Primary toolbar commands show an icon beside the label and every explorer row has an icon",
+          "[editor][layout][shell][icons]")
+{
+    QTemporaryDir directory;
+    QTemporaryDir settings;
+    EditorController controller(ToolingPaths{}, nullptr, QDir(settings.path()).filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, QDir(settings.path()).filePath(QStringLiteral("workspace.json")));
+    window.show();
+    controller.OpenProject(WriteProject(directory));
+    Settle();
+    QToolBar* game = window.findChild<QToolBar*>(QStringLiteral("gameToolbar"));
+    REQUIRE(game != nullptr);
+    const auto checkButton = [game](const QString& label, bool hasIcon) {
+        QAction* foundOrNull = nullptr;
+        for (QAction* action : game->actions())
+        {
+            if (action->iconText() == label)
+            {
+                foundOrNull = action;
+            }
+        }
+        REQUIRE(foundOrNull != nullptr);
+        QToolButton* button = qobject_cast<QToolButton*>(game->widgetForAction(foundOrNull));
+        REQUIRE(button != nullptr);
+        CHECK(foundOrNull->icon().isNull() == (hasIcon == false));
+        CHECK(button->toolButtonStyle() == (hasIcon ? Qt::ToolButtonTextBesideIcon : Qt::ToolButtonTextOnly));
+    };
+    for (const char* label : {"Build", "Run", "Play", "Stop"})
+    {
+        checkButton(QString::fromLatin1(label), true);
+    }
+    // Everything else keeps a text-only button.
+    for (const char* label : {"Debug", "Pause", "Step", "Resume", "Reload Code"})
+    {
+        checkButton(QString::fromLatin1(label), false);
+    }
+    QTreeWidget* tree = window.findChild<ProjectExplorer*>()->findChild<QTreeWidget*>();
+    REQUIRE(tree != nullptr);
+    int rowCount = 0;
+    for (QTreeWidgetItemIterator iterator(tree); *iterator != nullptr; ++iterator)
+    {
+        CHECK((*iterator)->icon(0).isNull() == false);
+        ++rowCount;
+    }
+    CHECK(rowCount > 0);
 }

@@ -278,6 +278,13 @@ function(ludus_editor_add_shader_api target)
               "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/shaders/visibility_buffer.slang")
 endfunction()
 
+# Lucide icon files (ISC, see icons/LICENSE) parsed by src/editor_icons.cpp.
+function(ludus_editor_add_icons target)
+    file(GLOB editor_icon_files CONFIGURE_DEPENDS "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/icons/*.svg")
+    qt_add_resources(${target} ludus_editor_icons
+        PREFIX "/icons" BASE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/icons" FILES ${editor_icon_files})
+endfunction()
+
 # The default graph's authored sources, read-only inside the editor (also in builds
 # without the native preview), so the Renderer tab can show and copy them.
 function(ludus_editor_add_default_render_graph target)
@@ -534,6 +541,8 @@ qt_add_executable(ludus_editor
     src/theme_preferences.cpp
     src/internal/theme_fonts.h
     src/theme_fonts.cpp
+    src/internal/editor_icons.h
+    src/editor_icons.cpp
     src/internal/window_size.h
     src/window_size.cpp
     src/controller.cpp
@@ -558,6 +567,7 @@ qt_add_resources(ludus_editor world_demo_schema PREFIX "/world-demo" BASE "${PRO
 qt_add_resources(ludus_editor ludus_samples
     PREFIX "/samples" BASE "${PROJECT_SOURCE_DIR}/examples" FILES ${editor_sample_files})
 ludus_editor_add_default_render_graph(ludus_editor)
+ludus_editor_add_icons(ludus_editor)
 if(APPLE)
     target_link_libraries(ludus_editor PRIVATE "-framework AppKit" "-framework CoreGraphics")
     target_sources(ludus_editor PRIVATE resources/ludus.icns)
@@ -776,6 +786,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/design_token_tests.cpp
         tests/theme_preference_tests.cpp
         tests/viewport_legibility_tests.cpp
+        tests/editor_icons_tests.cpp
         tests/viewport_frame_pump_tests.cpp
         tests/viewport_frame_source_tests.cpp
         tests/world_demo_workspace_tests.cpp
@@ -889,6 +900,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     qt_add_resources(ludus_editor_tests ludus_samples
         PREFIX "/samples" BASE "${PROJECT_SOURCE_DIR}/examples" FILES ${editor_sample_files})
     ludus_editor_add_default_render_graph(ludus_editor_tests)
+    ludus_editor_add_icons(ludus_editor_tests)
     target_include_directories(ludus_editor_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/modules/audio/tests")
     target_compile_definitions(ludus_editor_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII
         "LUDUS_EDITOR_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\""
@@ -928,6 +940,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/theme_preferences.cpp
         src/internal/theme_fonts.h
         src/theme_fonts.cpp
+        src/internal/editor_icons.h
+        src/editor_icons.cpp
         src/window_size.cpp)
     target_link_libraries(ludus_editor_tests
         PRIVATE
@@ -1180,7 +1194,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/internal/render_graph_view_state.h src/internal/render_graph_history.h src/render_graph_history.cpp
         src/internal/render_graph_pipeline.h src/render_graph_pipeline.cpp
         src/internal/render_graph_job.h src/render_graph_job.cpp
-        src/internal/error_list.h src/error_list.cpp
+        src/internal/error_list.h src/error_list.cpp src/internal/editor_icons.h src/editor_icons.cpp
         src/internal/render_graph_creation.h src/render_graph_creation.cpp
         src/internal/render_graph_template_registry.h src/render_graph_template_registry.cpp
         src/internal/render_graph_quick_add.h src/render_graph_quick_add.cpp
@@ -1205,6 +1219,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         "$<COMPILE_ONLY:Ludus::GraphicsRenderer>" "$<COMPILE_ONLY:Ludus::GameplayCamera>"
         "$<COMPILE_ONLY:Ludus::Resources>")
     ludus_editor_add_default_render_graph(ludus_render_graph_configuration_tests)
+    ludus_editor_add_icons(ludus_render_graph_configuration_tests)
     ludus_apply_project_defaults(ludus_render_graph_configuration_tests)
     ludus_enable_test_exceptions(ludus_render_graph_configuration_tests)
     add_test(NAME ludus_render_graph_configuration_tests COMMAND ludus_render_graph_configuration_tests
