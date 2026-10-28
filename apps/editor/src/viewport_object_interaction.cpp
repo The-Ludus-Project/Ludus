@@ -7,6 +7,7 @@
 #include <ludus/foundation/math/quaternion.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
+#include <ludus/foundation/profiling/profiling.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 
 #include <QColor>
@@ -22,8 +23,8 @@ namespace math = foundation::math;
 namespace
 {
 constexpr int32 AXIS_COUNT = ViewportObjectInteraction::AXIS_COUNT;
-constexpr int32 TRIANGLE_VERTICES = 3;
-constexpr int32 MAX_WIRE_TRIANGLES = 12000;
+constexpr usize TRIANGLE_VERTICES = ViewportObjectOverlay::TRIANGLE_VERTICES;
+constexpr usize MAX_WIRE_LINES = ViewportObjectOverlay::MAX_WIRE_LINES;
 constexpr float32 PROJECTION_EPSILON = 0.000001F;
 constexpr float64 HANDLE_PIXELS = 80;
 constexpr float64 HANDLE_HIT_PIXELS = 9;
@@ -36,14 +37,16 @@ constexpr float64 SCALE_SNAP = 0.1;
 constexpr float64 MINIMUM_SCALE_FACTOR = 0.01;
 constexpr float64 DEGREES_PER_TURN = math::RadiansToDegrees(math::kTau);
 constexpr float64 PIXELS_PER_DEGREE = HANDLE_PIXELS * math::DegreesToRadians(1.0);
-constexpr float64 WIRE_WIDTH = 1.5;
 constexpr float64 HANDLE_WIDTH = 3;
 constexpr float64 ACTIVE_HANDLE_WIDTH = 4;
 constexpr float64 LABEL_OFFSET = 12;
+constexpr int32 TIP_SEGMENTS = ViewportObjectOverlay::TIP_SEGMENTS;
+constexpr float64 GLYPH_WIDTH_PIXELS = 6;
+constexpr float64 GLYPH_HEIGHT_PIXELS = 8;
+constexpr usize MAX_HANDLE_STROKES = ViewportObjectOverlay::MAX_HANDLE_STROKES;
 constexpr float64 MAXIMUM_GESTURE_PIXELS = 10000000;
 
 constexpr StaticArray<QRgb, AXIS_COUNT> AXIS_COLORS{0xffff6060, 0xff68df85, 0xff639fff};
-constexpr QRgb SELECTION_COLOR = 0xffffbd59;
 math::Vector3 ReadVector(const QJsonArray& values) noexcept
 {
     return {static_cast<float32>(values[0].toDouble()),
@@ -567,18 +570,21 @@ void ViewportObjectInteraction::Cancel()
         Q_EMIT Changed();
     }
 }
-void ViewportObjectInteraction::Paint(QPainter& inoutPainter, const QRectF& outerFramePixel)
+void ViewportObjectInteraction::BuildOverlay(const QRectF& outerFramePixel, ViewportObjectOverlay& outOverlay)
 {
+    LUDUS_PROFILE_SCOPE(EditorObjectOverlayBuild);
+    outOverlay.WireLinesPixel.Clear();
+    outOverlay.HandleStrokes.Clear();
+    outOverlay.FramePixel = {};
     const QRectF framePixel = resolveFrame(outerFramePixel);
-    if (describe(framePixel, mWorldToClip) == false || mSelected.isEmpty() == true)
+    if (describe(framePixel, mWorldToClip) == false || mSelected.isEmpty() == true ||
+        outOverlay.WireLinesPixel.TryEnsureCapacity(MAX_WIRE_LINES) == false ||
+        outOverlay.HandleStrokes.TryEnsureCapacity(MAX_HANDLE_STROKES) == false)
     {
         return;
     }
     mFramePixel = framePixel;
-    inoutPainter.save();
-    inoutPainter.setClipRect(framePixel);
-    inoutPainter.setRenderHint(QPainter::Antialiasing);
-    inoutPainter.setPen(QPen(QColor::fromRgb(SELECTION_COLOR), WIRE_WIDTH));
+    outOverlay.FramePixel = framePixel;
     const RenderScene& scene = mPreviewOrNull->Scene();
     for (const PreviewObject& object : scene.Objects)
     {
@@ -590,8 +596,14 @@ void ViewportObjectInteraction::Paint(QPainter& inoutPainter, const QRectF& oute
         const BorrowedView<const math::Vector3> positionsMesh = GetPositions(scene, object.Mesh);
         const BorrowedView<const uint32> indices = GetIndices(scene, object.Mesh);
         const usize triangleCount = indices.GetSize() / TRIANGLE_VERTICES;
-        const usize stride = (triangleCount / MAX_WIRE_TRIANGLES + 1) * TRIANGLE_VERTICES;
-        for (usize index = 0; index + TRIANGLE_VERTICES <= indices.GetSize(); index += stride)
+        const usize triangleStride =
+            math::Max(usize{1},
+                      triangleCount / ViewportObjectOverlay::MAX_WIRE_TRIANGLES +
+                          (triangleCount % ViewportObjectOverlay::MAX_WIRE_TRIANGLES > 0 ? usize{1} : usize{0}));
+        const usize stride = triangleStride * TRIANGLE_VERTICES;
+        for (usize index = 0; index + TRIANGLE_VERTICES <= indices.GetSize() &&
+                              outOverlay.WireLinesPixel.GetSize() + TRIANGLE_VERTICES <= MAX_WIRE_LINES;
+             index += stride)
         {
             for (usize edge = 0; edge < TRIANGLE_VERTICES; ++edge)
             {
@@ -603,22 +615,74 @@ void ViewportObjectInteraction::Paint(QPainter& inoutPainter, const QRectF& oute
                     project(math::TransformPoint(meshToWorld, positionsMesh[first]), firstPixel) == true &&
                     project(math::TransformPoint(meshToWorld, positionsMesh[second]), secondPixel) == true)
                 {
-                    inoutPainter.drawLine(firstPixel, secondPixel);
+                    // Admission above reserves every possible edge; Add cannot allocate here.
+                    outOverlay.WireLinesPixel.Add(QLineF(firstPixel, secondPixel));
                 }
             }
         }
     }
     buildHandles();
+    const auto appendStroke = [&outOverlay](QPointF firstPixel, QPointF secondPixel, QRgb color, float64 widthPixels) {
+        outOverlay.HandleStrokes.Add({QLineF(firstPixel, secondPixel), color, static_cast<float32>(widthPixels)});
+    };
     for (const HandleLine& handle : mHandles)
     {
-        inoutPainter.setPen(QPen(QColor::fromRgb(AXIS_COLORS[static_cast<usize>(handle.Axis)]),
-                                 handle.Axis == mDragAxis ? ACTIVE_HANDLE_WIDTH : HANDLE_WIDTH));
-        inoutPainter.drawLine(handle.Line);
+        const QRgb color = AXIS_COLORS[static_cast<usize>(handle.Axis)];
+        const float64 widthPixels = handle.Axis == mDragAxis ? ACTIVE_HANDLE_WIDTH : HANDLE_WIDTH;
+        appendStroke(handle.Line.p1(), handle.Line.p2(), color, widthPixels);
         if (mTool != Tool::Rotate)
         {
-            inoutPainter.drawEllipse(handle.Line.p2(), HANDLE_TIP_PIXELS, HANDLE_TIP_PIXELS);
-            inoutPainter.drawText(handle.Line.p2() + QPointF(LABEL_OFFSET, 0), QString(QChar('X' + handle.Axis)));
+            for (int32 segment = 0; segment < TIP_SEGMENTS; ++segment)
+            {
+                const float64 firstAngle = math::kTau * segment / TIP_SEGMENTS;
+                const float64 secondAngle = math::kTau * (segment + 1) / TIP_SEGMENTS;
+                appendStroke(
+                    handle.Line.p2() + QPointF(math::Cos(firstAngle), math::Sin(firstAngle)) * HANDLE_TIP_PIXELS,
+                    handle.Line.p2() + QPointF(math::Cos(secondAngle), math::Sin(secondAngle)) * HANDLE_TIP_PIXELS,
+                    color,
+                    widthPixels);
+            }
+            // Small stroke glyphs stay geometry in the native overlay, avoiding a full-frame text texture.
+            const QPointF topLeftPixel = handle.Line.p2() + QPointF(LABEL_OFFSET, -GLYPH_HEIGHT_PIXELS);
+            const QPointF topRightPixel = topLeftPixel + QPointF(GLYPH_WIDTH_PIXELS, 0);
+            const QPointF bottomLeftPixel = topLeftPixel + QPointF(0, GLYPH_HEIGHT_PIXELS);
+            const QPointF bottomRightPixel = topLeftPixel + QPointF(GLYPH_WIDTH_PIXELS, GLYPH_HEIGHT_PIXELS);
+            if (handle.Axis == 0)
+            {
+                appendStroke(topLeftPixel, bottomRightPixel, color, 1);
+                appendStroke(topRightPixel, bottomLeftPixel, color, 1);
+            }
+            else if (handle.Axis == 1)
+            {
+                const QPointF middlePixel = (topLeftPixel + bottomRightPixel) * 0.5;
+                appendStroke(topLeftPixel, middlePixel, color, 1);
+                appendStroke(topRightPixel, middlePixel, color, 1);
+                appendStroke(middlePixel, (bottomLeftPixel + bottomRightPixel) * 0.5, color, 1);
+            }
+            else
+            {
+                appendStroke(topLeftPixel, topRightPixel, color, 1);
+                appendStroke(topRightPixel, bottomLeftPixel, color, 1);
+                appendStroke(bottomLeftPixel, bottomRightPixel, color, 1);
+            }
         }
+    }
+}
+void ViewportObjectInteraction::Paint(QPainter& inoutPainter, const QRectF& outerFramePixel)
+{
+    LUDUS_PROFILE_SCOPE(EditorObjectOverlayPaint);
+    BuildOverlay(outerFramePixel, mPaintOverlay);
+    inoutPainter.save();
+    inoutPainter.setClipRect(mPaintOverlay.FramePixel);
+    inoutPainter.setRenderHint(QPainter::Antialiasing);
+    inoutPainter.setPen(QPen(QColor::fromRgb(ViewportObjectOverlay::SELECTION_COLOR),
+                             static_cast<float64>(ViewportObjectOverlay::WIRE_WIDTH_PIXELS)));
+    inoutPainter.drawLines(mPaintOverlay.WireLinesPixel.GetData(),
+                           static_cast<int32>(mPaintOverlay.WireLinesPixel.GetSize()));
+    for (const ViewportHandleStroke& stroke : mPaintOverlay.HandleStrokes)
+    {
+        inoutPainter.setPen(QPen(QColor::fromRgb(stroke.Color), static_cast<float64>(stroke.WidthPixels)));
+        inoutPainter.drawLine(stroke.LinePixel);
     }
     inoutPainter.restore();
 }

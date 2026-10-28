@@ -309,7 +309,7 @@ TARGET_FIELDS = {'metal': 'Msl', 'spirv': 'Spirv', 'wgsl': 'Wgsl', 'glsl': 'Glsl
 PACKAGE_MAGIC = 0x4752554C
 # Editor-only diagnostic ray path capture generation; same layout, refused by runtime decoding.
 RAY_PATH_CAPTURE_PACKAGE_MAGIC = 0x5052554C
-PACKAGE_VERSION = 23
+PACKAGE_VERSION = 24
 RESOURCE_FIELD_COUNT = 9
 RESOURCE_RECORD_BYTES = RESOURCE_FIELD_COUNT * 4
 MAX_PASS_NAME_BYTES = 127
@@ -329,6 +329,8 @@ def role(program, stage):
         return FORWARD_DEPTH_STAGE_ROLE
     if program == 'RayTracing':
         return {'compute': 8, 'vertex': 9, 'fragment': 10}[stage]
+    if program.startswith('Deferred'):
+        return FORWARD_DEPTH_STAGE_ROLE + 1 + forward.ROLE_KEYS.index((program, stage)) - forward.ROLE_KEYS.index(('DeferredGBuffer', 'fragment'))
     if (program, stage) in forward.ROLE_KEYS:
         return PERSISTENT_RAY_STAGE_ROLE + 1 + forward.ROLE_KEYS.index((program, stage))
     code = PROGRAM_CODES[program]
@@ -537,7 +539,7 @@ def _runtime_contents(path, configuration):
                   'ray visibility inputs must match scene_interface.visibility_buffer')
     persistent = ray.TECHNIQUE in selected_techniques and any(recipe.get('persistent_buffers', False) for recipe in ray_recipes)
     ray_path_capture = ray.TECHNIQUE in selected_techniques and any(recipe.get('ray_path_capture', False) for recipe in ray_recipes)
-    return {'clustered_forward': is_clustered_forward, 'forward_lit': has_forward, 'persistent_buffers': persistent, 'ray_path_capture': ray_path_capture, 'visibility_buffer': has_visibility, 'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
+    return {'clustered_deferred': any(recipe.get('clustered_deferred', False) for recipe in package['recipes'] if recipe['technique'] in selected_techniques), 'clustered_forward': is_clustered_forward, 'forward_lit': has_forward, 'persistent_buffers': persistent, 'ray_path_capture': ray_path_capture, 'visibility_buffer': has_visibility, 'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
             'cameras': cameras, 'camera_targets': camera_targets, 'artifacts': artifacts,
             'uniform_values': value_count, 'bindings': bindings, 'blocks': blocks, 'fields': fields,
             'storage_buffers': storage_buffers, 'uniform_interface': uniform_interface,
@@ -669,6 +671,8 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
               '[[nodiscard]] LUDUS_INLINE renderer::RenderGraphPrograms MakePrograms(',
               '    const rhi::RasterShaderDescription& compositeVertex,',
               '    const rhi::RasterShaderDescription& compositeFragment) noexcept', '{', '    renderer::RenderGraphPrograms result;']
+    if contents.get('clustered_deferred', False):
+        lines.append('    result.HasClusteredDeferred = true;')
     if contents.get('clustered_forward', False):
         lines.append('    result.HasClusteredForward = true;')
     if contents.get('persistent_buffers', False):

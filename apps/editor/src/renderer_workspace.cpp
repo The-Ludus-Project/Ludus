@@ -661,7 +661,9 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     edgeRow->addWidget(mEdgeTo);
     inspectorLayout->addLayout(edgeRow);
     QPushButton* connectButton = new QPushButton(QStringLiteral("Connect"), mInspector);
-    QPushButton* disconnectButton = new QPushButton(QStringLiteral("Disconnect Selected"), mInspector);
+    // A short label keeps both buttons within the narrowest docked Properties width.
+    QPushButton* disconnectButton = new QPushButton(QStringLiteral("Disconnect"), mInspector);
+    disconnectButton->setToolTip(QStringLiteral("Remove the connection selected in the table above."));
     QHBoxLayout* edgeButtons = new QHBoxLayout;
     edgeButtons->addWidget(connectButton);
     edgeButtons->addWidget(disconnectButton);

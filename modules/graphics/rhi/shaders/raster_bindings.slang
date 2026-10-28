@@ -16,3 +16,11 @@
 #else
 #    define LUDUS_SHADER_VERTEX_ID SV_VulkanVertexID
 #endif
+
+// Native Metal reflection follows HLSL registers; portable targets follow the
+// descriptor annotation above. Expand one owned numeric slot into its register
+// spelling so these two interfaces cannot acquire independent slot literals.
+#define LUDUS_SHADER_REGISTER_TOKEN_INNER(prefix, slot) prefix##slot
+#define LUDUS_SHADER_REGISTER_TOKEN(prefix, slot) LUDUS_SHADER_REGISTER_TOKEN_INNER(prefix, slot)
+#define LUDUS_SHADER_TEXTURE_REGISTER(slot) : register(LUDUS_SHADER_REGISTER_TOKEN(t, slot))
+#define LUDUS_SHADER_UNIFORM_REGISTER(slot) : register(LUDUS_SHADER_REGISTER_TOKEN(b, slot))

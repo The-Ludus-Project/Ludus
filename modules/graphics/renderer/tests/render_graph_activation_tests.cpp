@@ -1044,6 +1044,7 @@ TEST_CASE("runtime packages preserve relative policies and decode fixed legacy v
                                  format::NATIVE_RAY_PIPELINE_PACKAGE_VERSION,
                                  format::RAY_WORKGROUP_PACKAGE_VERSION,
                                  format::COMPUTE_BVH_PACKAGE_VERSION,
+                                 format::CLUSTERED_FORWARD_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         PackageOptions options;
@@ -1255,6 +1256,7 @@ TEST_CASE("runtime independent shader pairs decode with their own stage and bind
                                  format::SOFTWARE_RAY_PACKAGE_VERSION,
                                  format::CUSTOM_RAY_PACKAGE_VERSION,
                                  format::NATIVE_RAY_PIPELINE_PACKAGE_VERSION,
+                                 format::CLUSTERED_FORWARD_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         constexpr format::Technique GBUFFER_PROGRAM = static_cast<format::Technique>(format::LEGACY_TECHNIQUE_COUNT);
@@ -1374,6 +1376,7 @@ TEST_CASE("legacy scene-ray packages preserve implicit tone mapping independentl
                                  format::SOFTWARE_RAY_PACKAGE_VERSION,
                                  format::CUSTOM_RAY_PACKAGE_VERSION,
                                  format::NATIVE_RAY_PIPELINE_PACKAGE_VERSION,
+                                 format::CLUSTERED_FORWARD_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         for (const format::StageRole compute : {format::StageRole::RayCompute,
@@ -1566,4 +1569,124 @@ TEST_CASE("runtime denoising fields preserve modes and reject invalid raster use
     options.Version = format::PACKAGE_VERSION;
     options.DenoisingQuality = static_cast<uint32>(format::ProcessingQuality::High) + 1;
     CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
+}
+
+TEST_CASE("deferred runtime roles are complete per target and require version twenty four", "[render-graph][deferred]")
+{
+    constexpr usize SUPPORT_COUNT = format::FORWARD_STAGE_ROLE_COUNT + 1 + format::DEFERRED_STAGE_ROLE_COUNT;
+    const StaticArray<format::StageRole, SUPPORT_COUNT> roles{{format::StageRole::ForwardVertex,
+                                                               format::StageRole::ClusteredForwardFragment,
+                                                               format::StageRole::ForwardShadow,
+                                                               format::StageRole::LightingVertex,
+                                                               format::StageRole::LightingFragment,
+                                                               format::StageRole::LightingShadow,
+                                                               format::StageRole::ForwardDepth,
+                                                               format::StageRole::DeferredGBufferFragment,
+                                                               format::StageRole::DeferredLightingVertex,
+                                                               format::StageRole::DeferredLightingFragment,
+                                                               format::StageRole::DeferredDepthCopyFragment}};
+    const auto makeDeferred = [&](uint32 version,
+                                  uint32 omittedRole,
+                                  format::ShaderTarget target = format::ShaderTarget::Wgsl,
+                                  format::StageRole blockRole = format::StageRole::DeferredLightingFragment) {
+        PackageWriter writer;
+        PackageOptions options;
+        options.Version = version;
+        WritePlan(writer, options, static_cast<uint32>(SUPPORT_COUNT + 2 - (omittedRole == format::ABSENT ? 0 : 1)));
+        WriteStage(writer, format::StageRole::ColorVertex, target, VERTEX_TEXT, "VertexMain");
+        WriteStage(writer, format::StageRole::ColorFragment, target, FRAGMENT_TEXT, "FragmentMain");
+        for (const format::StageRole role : roles)
+        {
+            if (static_cast<uint32>(role) == omittedRole)
+            {
+                continue;
+            }
+            const bool isGeometry = role == format::StageRole::ForwardVertex;
+            const bool isFullscreen =
+                role == format::StageRole::LightingVertex || role == format::StageRole::DeferredLightingVertex;
+            const uint32 inputCount = isGeometry == true     ? static_cast<uint32>(format::FORWARD_INPUT_COUNT)
+                                      : isFullscreen == true ? 1
+                                                             : 0;
+            constexpr std::string_view ENTRY = "Main";
+            writer.WriteWord(static_cast<uint32>(role));
+            writer.WriteWord(static_cast<uint32>(target));
+            writer.WriteWord(inputCount);
+            writer.WriteWord(static_cast<uint32>(ENTRY.size()));
+            writer.WriteWord(static_cast<uint32>(FRAGMENT_TEXT.size()));
+            const bool hasViewBlock = target == format::ShaderTarget::GlslEs && role == blockRole;
+            writer.WriteWord(hasViewBlock == true ? 1 : 0);
+            for (uint32 input = 0; input < inputCount; ++input)
+            {
+                const format::InputFormat shape = isFullscreen == true         ? format::InputFormat::Float4
+                                                  : (input == 0 || input == 7) ? format::InputFormat::Float3
+                                                  : (input == 6 || input == 13 || input == 15)
+                                                      ? format::InputFormat::Float2
+                                                      : format::InputFormat::Float4;
+                writer.WriteWord(input);
+                writer.WriteWord(static_cast<uint32>(shape));
+            }
+            if (hasViewBlock == true)
+            {
+                constexpr std::string_view VIEW_BLOCK = "deferred_view";
+                writer.WriteWord(15);
+                writer.WriteWord(static_cast<uint32>(VIEW_BLOCK.size()));
+                writer.WritePadded(VIEW_BLOCK);
+            }
+            writer.WriteWord(0); // No combined sampler names in this declaration-only fixture.
+            writer.WritePadded(ENTRY);
+            writer.WritePadded(FRAGMENT_TEXT);
+        }
+        writer.WriteWord(0);
+        writer.WriteWord(static_cast<uint32>(options.PassName.size()));
+        writer.WritePadded(options.PassName);
+        return Move(writer.Bytes);
+    };
+    for (const uint32 version : {format::CLUSTERED_FORWARD_PACKAGE_VERSION, format::PACKAGE_VERSION})
+    {
+        const Array<uint8> bytes = makeDeferred(version, format::ABSENT);
+        renderer::RenderGraphPackage* allocationOrNull = new (std::nothrow) renderer::RenderGraphPackage;
+        core::UniquePtr<renderer::RenderGraphPackage> package{allocationOrNull};
+        REQUIRE(package.Get() != nullptr);
+        REQUIRE(package->Decode({bytes.GetData(), bytes.GetSize()}) ==
+                (version == format::PACKAGE_VERSION ? renderer::RenderGraphPackageStatus::Ready
+                                                    : renderer::RenderGraphPackageStatus::UnsupportedVersion));
+        if (version == format::PACKAGE_VERSION)
+        {
+            const renderer::RenderGraphPrograms programs = package->GetPrograms({}, {});
+            CHECK(programs.HasClusteredDeferred == true);
+            CHECK(programs.HasClusteredForward == true);
+            CHECK(programs.DeferredLightingVertex.Inputs.size() == 1);
+            CHECK(programs.DeferredGBufferFragment.Bindings.size() == 11);
+            CHECK(programs.DeferredLightingFragment.Bindings.size() == 16);
+            CHECK(programs.DeferredDepthCopyFragment.Bindings[0].Kind == rhi::RasterBindingKind::TextureDepth2D);
+        }
+    }
+    {
+        const Array<uint8> bytes = makeDeferred(format::PACKAGE_VERSION, format::ABSENT, format::ShaderTarget::GlslEs);
+        renderer::RenderGraphPackage* allocationOrNull = new (std::nothrow) renderer::RenderGraphPackage;
+        core::UniquePtr<renderer::RenderGraphPackage> package{allocationOrNull};
+        REQUIRE(package.Get() != nullptr);
+        REQUIRE(package->Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
+        const renderer::RenderGraphPrograms programs = package->GetPrograms({}, {});
+        CHECK(programs.DeferredLightingFragment.UniformBlocks[15] == "deferred_view");
+    }
+    {
+        const Array<uint8> bytes = makeDeferred(format::PACKAGE_VERSION,
+                                                format::ABSENT,
+                                                format::ShaderTarget::GlslEs,
+                                                format::StageRole::ClusteredForwardFragment);
+        renderer::RenderGraphPackage* allocationOrNull = new (std::nothrow) renderer::RenderGraphPackage;
+        core::UniquePtr<renderer::RenderGraphPackage> package{allocationOrNull};
+        REQUIRE(package.Get() != nullptr);
+        // Earlier role layouts retain their eight-slot uniform-name bounds.
+        CHECK(package->Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Malformed);
+    }
+    for (usize role = format::DEFERRED_STAGE_ROLE_FIRST; role < format::STAGE_ROLE_COUNT; ++role)
+    {
+        const Array<uint8> bytes = makeDeferred(format::PACKAGE_VERSION, static_cast<uint32>(role));
+        renderer::RenderGraphPackage* allocationOrNull = new (std::nothrow) renderer::RenderGraphPackage;
+        core::UniquePtr<renderer::RenderGraphPackage> package{allocationOrNull};
+        REQUIRE(package.Get() != nullptr);
+        CHECK(package->Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Malformed);
+    }
 }

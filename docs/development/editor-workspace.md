@@ -1030,7 +1030,22 @@ A multiple selection, unapplied inspector fields or a running scene operation
 disables transform handles. Axis handles viewed directly end-on are hidden;
 orbit to expose them. Wireframes sample very dense meshes to bound overlay cost.
 The native shared-device viewport and native readback fallback show the same
-selection overlay. The browser's separate GPU canvas does not yet composite it.
+selection overlay. The shared-device presentation uploads batched stroke geometry
+directly to the Qt scene graph; highlighting does not rasterize or upload a
+viewport-sized overlay texture. Camera and gesture changes are projected once
+per Qt frame, and the readback presentation draws the same strokes in one wire
+batch. CPU profiling includes `EditorObjectOverlayBuild`, `EditorObjectOverlayUpload`
+and `EditorObjectOverlayPaint` to distinguish these costs. The browser's separate
+GPU canvas does not yet composite the overlay.
+
+To compare the old painted texture with the batched geometry, build the optional
+`ludus_viewport_overlay_benchmark` target in a native editor build with tests enabled.
+Run `apps/editor/ludus_viewport_overlay_benchmark` from that build directory on a
+desktop display. It renders the same 36,000 strokes at 1280 × 720 logical pixels
+through both paths, checks for highlighted pixels, and prints JSON with the median
+and maximum presentation intervals over 30 frames after warm-up. Vsync, window
+visibility and device pixel ratio affect this comparison; it is an overlay fixture,
+not a measurement of an entire project's frame time.
 
 Alt/Option-drag orbit, middle-drag pan, right-drag navigation and Play input keep
 their existing behavior. Q/W/E/R choose tools only while the editor camera is not
