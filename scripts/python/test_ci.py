@@ -210,6 +210,20 @@ class ToolchainPinTests(unittest.TestCase):
                 if registered:
                     register.assert_called_once_with(self.ROOT, "noble", LLVM_MAJOR, ["sudo"])
 
+    def test_ubuntu_sources_mirror_file_form_counts_as_ubuntu(self):
+        source = """Types: deb
+URIs: mirror+file:/etc/apt/apt-mirrors.txt
+Suites: noble noble-updates noble-backports
+Components: main universe restricted multiverse
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+"""
+        self.assertTrue(engine.ubuntu_stanza_has_component(source, "universe"))
+        with tempfile.TemporaryDirectory() as temporary:
+            source_path = Path(temporary) / "ubuntu.sources"
+            source_path.write_text(source, encoding="utf-8")
+            with patch.object(engine, "ubuntu_sources_file", return_value=source_path):
+                self.assertTrue(engine.ubuntu_apt_component_enabled("universe"))
+
     def test_missing_clang_pin_is_an_explicit_error(self):
         with self.assertRaisesRegex(engine.EngineError, "minimum.clang"):
             engine.llvm_major_version({"minimum": {"clang": ""}})

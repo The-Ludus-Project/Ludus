@@ -4,6 +4,7 @@
 #include "resource_mesh.h"
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <cmath>
 #include <limits>
 #include <ludus/foundation/base/byte_order.hpp>
@@ -901,11 +902,12 @@ struct LitFixture final
     }
 };
 } // namespace
-TEST_CASE("clustered depth prepass shares the retained color vertex and omits material shading",
+TEST_CASE("lit depth prepass shares the retained color vertex and omits material shading",
           "[renderer][clustered-prepass]")
 {
     Session session;
-    LitFixture fixture(true);
+    const bool isClustered = GENERATE(false, true);
+    LitFixture fixture(isClustered);
     fixture.Enable(session);
     rhi::RasterShaderDescription depth;
     depth.Artifact.Stage = rhi::ShaderStage::Fragment;
@@ -922,7 +924,7 @@ TEST_CASE("clustered depth prepass shares the retained color vertex and omits ma
     REQUIRE(prewarm == rhi::RasterStatus::Ready);
     rr::LightClusterDescription clusters;
     rr::LitMaterialDescription description;
-    description.Clusters = &clusters;
+    description.Clusters = isClustered == true ? &clusters : nullptr;
     rr::MaterialVersion material;
     rr::LightSelection selection;
     REQUIRE(session.Renderer.CreateLitMaterial(program, description, material, selection) == rhi::RasterStatus::Ready);

@@ -2404,7 +2404,7 @@ Status Renderer::GetStatus(MaterialProgram handle) noexcept
                                     : (p->Phase < 3 ? rhi::RasterTarget::Surface : rhi::RasterTarget::Rgba8Unorm);
         description.DepthWrite = variant != 2;
         description.DepthCompare = variant == 1 ? rhi::RasterDepthCompare::Greater : rhi::RasterDepthCompare::Less;
-        if (p->Clustered == true && variant == 0)
+        if (p->HasDepthPrepass == true && variant == 0)
         {
             description.DepthCompare = rhi::RasterDepthCompare::LessEqual;
         }
@@ -4131,8 +4131,9 @@ Status Renderer::CreateLitMaterial(MaterialProgram program,
         math::IsFinite(description.Roughness) == false || description.Roughness < MIN_ROUGHNESS ||
         description.Roughness > 1 || bounded(description.Emission) == false ||
         bounded(description.EnvironmentIrradiance) == false || bounded(description.EnvironmentRadiance) == false ||
-        bounded(bake.Scale) == false || math::IsFinite(bake.UvTransform) == false ||
-        math::IsFinite(bake.Transform) == false)
+        math::IsFinite(description.EnvironmentGroundScale) == false || description.EnvironmentGroundScale < 0 ||
+        description.EnvironmentGroundScale > 1 || bounded(bake.Scale) == false ||
+        math::IsFinite(bake.UvTransform) == false || math::IsFinite(bake.Transform) == false)
     {
         return Status::InvalidDescription;
     }
@@ -4361,7 +4362,7 @@ Status Renderer::CreateLitMaterial(MaterialProgram program,
     parameters.EnvironmentIrradiance = {description.EnvironmentIrradiance.X,
                                         description.EnvironmentIrradiance.Y,
                                         description.EnvironmentIrradiance.Z,
-                                        0};
+                                        description.EnvironmentGroundScale};
     parameters.EnvironmentRadiance = {description.EnvironmentRadiance.X,
                                       description.EnvironmentRadiance.Y,
                                       description.EnvironmentRadiance.Z,
