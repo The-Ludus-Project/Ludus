@@ -11,6 +11,7 @@
 
 #include <new>
 
+#include <QAction>
 #include <QApplication>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -26,6 +27,7 @@
 #include <QPointer>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QToolBar>
 #include <QToolButton>
 #include <QToolTip>
 #include <QVBoxLayout>
@@ -66,6 +68,26 @@ constexpr QRgb VIEWPORT_BACKGROUND = qRgb(9, 12, 15);
 constexpr float64 FIELD_OF_VIEW_STEP_DEGREES = 5;
 /// Outline drawn around a letterboxed frame so its edge stays visible over a dark scene.
 constexpr QRgb FRAME_OUTLINE = qRgb(58, 66, 76);
+/// Width of the shading menu in characters; longer labels are cut, and the full text is in the tooltip.
+constexpr int SHADING_COMBO_CHARACTERS = 12;
+/// Shows or hides a widget that was added to the controls toolbar. A toolbar owns the visibility of its
+/// widgets through their actions, so hiding the widget itself would be undone on the next layout.
+void SetControlVisible(QToolBar& inoutControls, QWidget* controlOrNull, bool isVisible)
+{
+    if (controlOrNull == nullptr)
+    {
+        return;
+    }
+    for (QAction* action : inoutControls.actions())
+    {
+        const QWidgetAction* widgetAction = qobject_cast<QWidgetAction*>(action);
+        if (widgetAction != nullptr && widgetAction->defaultWidget() == controlOrNull)
+        {
+            action->setVisible(isVisible);
+            return;
+        }
+    }
+}
 /// Places every presentation widget (message and grid, render surface, readback canvas, graph
 /// view or browser proxy) on the frame of the current size preset, centred in the layout's area.
 /// Only one of them is visible at a time, so they share the frame instead of stacking.
@@ -373,7 +395,7 @@ struct PreviewViewport::State final
     QVBoxLayout* Layout = nullptr;
     /// Shared frame of the presentation widgets; letterboxed by the size preset.
     ViewportFrameLayout* FrameLayoutOrNull = nullptr;
-    QHBoxLayout* ControlsOrNull = nullptr;
+    QToolBar* ControlsOrNull = nullptr;
     QLabel* Message = nullptr;
     uint64 Presented = 0;
     /// Statistics overlay text currently shown; empty while the overlay is off.
@@ -1110,8 +1132,8 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     shading->setObjectName(QStringLiteral("viewportShading"));
     shading->setAccessibleName(QStringLiteral("Viewport shading"));
     shading->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-    shading->setMinimumContentsLength(4);
-    shading->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    shading->setMinimumContentsLength(SHADING_COMBO_CHARACTERS);
+    shading->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     // Combo indices equal PreviewShading values; new modes are appended so saved indices stay valid.
     for (foundation::usize i = 0; i < PREVIEW_SHADING_COUNT; ++i)
     {
@@ -1124,9 +1146,16 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
                        "Debug views (Normal, Depth, Roughness, Metallic, UV, Light count) replace shading with "
                        "one material or lighting quantity per pixel so it can be inspected directly."));
     shading->setCurrentIndex(static_cast<foundation::int32>(preview->GetShading()));
-    QHBoxLayout* controls = new QHBoxLayout;
+    // A toolbar rather than a plain row: controls that do not fit move behind its overflow chevron instead of
+    // being squeezed until their text is cut off.
+    QToolBar* controls = new QToolBar(this);
+    controls->setObjectName(QStringLiteral("viewportControls"));
+    controls->setAccessibleName(QStringLiteral("Viewport controls"));
+    controls->setMovable(false);
+    controls->setFloatable(false);
+    controls->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     mState->ControlsOrNull = controls;
-    controls->addWidget(shading, 1);
+    controls->addWidget(shading);
     QComboBox* viewportSize = new QComboBox(this);
     viewportSize->setObjectName(QStringLiteral("viewportSize"));
     viewportSize->setAccessibleName(QStringLiteral("Viewport size"));
@@ -1343,7 +1372,7 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
                            navigationHint->toolTip(),
                            navigationHint);
     });
-    mState->Layout->addLayout(controls);
+    mState->Layout->addWidget(controls);
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
     mState->StatisticsLabelOrNull = new QLabel(this);
     mState->StatisticsLabelOrNull->setObjectName(QStringLiteral("viewportStatisticsOverlay"));
@@ -1539,16 +1568,10 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
     mState->GraphViewOrNull->setVisible(Preview_->Scene().Identity.isEmpty() == false);
     mState->GraphViewOrNull->SetCanPresent(mState->IsAutomatic);
     mState->FrameLayoutOrNull->addWidget(mState->GraphViewOrNull);
-    mState->ControlsOrNull->insertWidget(0, mState->GraphViewOrNull->TakeControls(this), 1);
-    findChild<QComboBox*>(QStringLiteral("viewportShading"))->hide();
-    for (const QString& name : {QStringLiteral("viewportLiveShaders")})
-    {
-        QToolButton* buttonOrNull = findChild<QToolButton*>(name);
-        if (buttonOrNull != nullptr)
-        {
-            buttonOrNull->hide();
-        }
-    }
+    QWidget* graphControls = mState->GraphViewOrNull->TakeControls(this);
+    mState->ControlsOrNull->insertWidget(mState->ControlsOrNull->actions().value(0), graphControls);
+    SetControlVisible(*mState->ControlsOrNull, findChild<QComboBox*>(QStringLiteral("viewportShading")), false);
+    SetControlVisible(*mState->ControlsOrNull, findChild<QToolButton*>(QStringLiteral("viewportLiveShaders")), false);
     QToolButton* statistics = findChild<QToolButton*>(QStringLiteral("viewportStatistics"));
     LUDUS_REQUIRE(statistics != nullptr);
     statistics->setToolTip(QStringLiteral("Show delivered-image FPS, active CPU work, GPU device time and elapsed "

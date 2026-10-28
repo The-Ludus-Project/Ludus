@@ -1475,6 +1475,8 @@ TEST_CASE("Cold project shader timeout keeps the default rendering the current W
 TEST_CASE("Graph viewport Stats toggle is visible and persists with navigation",
           "[editor][render-graph][graph-statistics]")
 {
+    constexpr int32 STATISTICS_VIEWPORT_WIDTH = 1200;
+    constexpr int32 STATISTICS_VIEWPORT_HEIGHT = 600;
     RendererWorkspace workspace({});
     RenderPreview source;
     PreviewViewport viewport(&source);
@@ -1484,7 +1486,11 @@ TEST_CASE("Graph viewport Stats toggle is visible and persists with navigation",
     QLabel* overlay = viewport.findChild<QLabel*>(QStringLiteral("worldGraphStatisticsOverlay"));
     REQUIRE(statistics != nullptr);
     REQUIRE(overlay != nullptr);
-    CHECK(statistics->isHidden() == false);
+    // The controls live in a toolbar, which only reveals its widgets once it is laid out.
+    viewport.resize(STATISTICS_VIEWPORT_WIDTH, STATISTICS_VIEWPORT_HEIGHT);
+    viewport.show();
+    QApplication::processEvents();
+    CHECK(statistics->isVisible() == true);
     CHECK(overlay->isHidden() == true);
     statistics->click();
     CHECK(source.IsStatisticsVisible() == true);
