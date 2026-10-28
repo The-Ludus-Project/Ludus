@@ -1137,7 +1137,7 @@ RenderGraphDocumentStatus RenderGraphDocument::ApplyPipeline(const QString& file
         }
     }
     const RenderGraphDocumentStatus status =
-        PreparePipelineShaders(candidate, pipeline, previousNode, manifest, mPackageRoot);
+        PreparePipelineShaders(candidate, pipeline, previousNode, manifest, mPackageRoot, outErrorOrNull);
     if (status != RenderGraphDocumentStatus::Ok)
     {
         return status;

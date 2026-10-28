@@ -98,8 +98,12 @@ select the desired program IDs. To share one source with different entry points,
 register separate programs in the manifest with the same `source` and different
 `function` values, then select those programs on the nodes. The compiler preserves
 these choices in both compiled headers and runtime packages. Exhausted manifest
-budgets preserve the draft and explain the repair. Ray callbacks still share the
-single bounded ray technique.
+budgets preserve the draft and explain the repair. When **Add** reaches the
+program limit, its error names the root shader manifest, current program count
+and minimum required `budgets.programs` value. Increase that field in the named
+manifest and retry, or enter an existing compatible program ID to reuse it.
+A new triangle ray pipeline needs room for three programs (`ray_generation`,
+`miss` and `closest_hit`). Ray callbacks still share the single bounded ray technique.
 To clean up the open package, choose **Edit → Remove Unused Shaders**, or
 **Remove Unused Shaders** in the canvas context menu. The command checks every
 loaded graph file and configuration (including disconnected nodes and unselected
@@ -3520,8 +3524,13 @@ to the graph plan, rather than the shader program. Recipe keys compare complete
 canonical state, stage identities, vertex schema and target binding layouts;
 recipe/node names and camera/extent values do not create extra shader programs.
 
-Budget ceilings are 8 configurations, 32 programs, 128 target artifacts and
-64 target pipeline recipes. The author may choose smaller bounds. The
+Program counts have no separate fixed engine ceiling: `budgets.programs` is a
+positive integer chosen by the author. Adding programs beyond 32 is supported
+when that authored budget admits them. Independent ceilings remain 8
+configurations, 128 target artifacts and 64 target pipeline recipes; source and
+package byte/file limits also apply. Target artifacts count registered programs
+multiplied by target profiles, so increasing the program budget does not bypass
+the artifact budget. The author may choose smaller bounds. The
 configuration bound counts authored techniques and the root graph's own
 configurations. Imported configurations that Subgraph nodes reach do not spend
 it: they expand into the root plans, whose techniques, programs, ray variants,
