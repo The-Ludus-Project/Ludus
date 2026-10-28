@@ -3,6 +3,7 @@
 #include <ludus/foundation/base/types.h>
 
 #include "internal/render_graph_node_ports.h"
+#include "internal/render_graph_quick_add_graphs.h"
 #include "internal/render_graph_template_registry.h"
 
 #include <QFrame>
@@ -28,18 +29,21 @@ enum class RenderGraphQuickAddKind : foundation::uint8
     All,
     Snippets,
     Nodes,
+    /// Existing package graphs, inserted as Subgraph references.
+    Graphs,
 };
 
-/// Limits Quick Add to node templates that can take a wire from one output, as when a wire is dropped
-/// on empty canvas. An empty Source means no filter.
+/// Connection context when an output wire is dropped on empty canvas. Nodes must accept the wire;
+/// graph references are ranked by compatibility. An empty Source means no filter.
 struct RenderGraphQuickAddPortFilter final
 {
     /// Output endpoint the wire comes from, such as "tonemap.color".
     QString Source;
     /// Type of that output, such as "ColorTexture".
     QString Type;
-    /// Template key (GetRenderGraphTemplateKey) to the input that accepts Source, as checked by the
-    /// caller with CheckRenderGraphLinkToNewNode. Templates without an entry are not listed.
+    /// Template key (GetRenderGraphTemplateKey) to the input that accepts Source, checked with
+    /// CheckRenderGraphLinkToNewNode. Nodes without an entry are omitted; graphs remain inspectable
+    /// with insertion disabled.
     QHash<QString, QString> Inputs;
 };
 
@@ -53,12 +57,11 @@ struct RenderGraphQuickAddPortFilter final
 [[nodiscard]] QVector<RenderGraphTemplate> SearchRenderGraphTemplates(const QString& query,
                                                                       const QVector<RenderGraphTemplate>& templates);
 
-/// Search-first popup for adding snippets and nodes to the canvas. It shows at most
-/// MAX_ROWS results; anything further is summarized as "+N more" so the list never scrolls.
-/// With an empty query it opens on recent and pinned templates. With a port filter it lists only
-/// nodes that accept that output, under a context line that can clear the filter. Selecting a
-/// template emits InsertRequested; the palette never edits a document itself. GUI thread only.
-/// See docs/development/render-graph-authoring.md#add-nodes-with-quick-add.
+/// Search-first popup for snippets, nodes and package graph references, showing at most MAX_ROWS results; anything
+/// further is summarized as "+N more" so the list never scrolls. With an empty query it opens on recent and pinned
+/// templates. With a port filter it lists only nodes that accept that output and ranks compatible graphs first, under a
+/// clearable context line. Selecting a template emits InsertRequested; the palette never edits a document itself. GUI
+/// thread only. See docs/development/render-graph-authoring.md#add-nodes-with-quick-add.
 class RenderGraphQuickAdd final : public QFrame
 {
     Q_OBJECT
@@ -87,6 +90,9 @@ public:
     /// Why a requirement cannot preview in this editor, keyed by requirement identity. A
     /// missing or empty message means the requirement is available.
     void SetUnavailableRequirements(const QHash<QString, QString>& messages);
+    /// Replace package graph references and their default interfaces/status before opening. Graphs
+    /// participate in All, Graphs, search, recent and pinned lists. GUI thread only; copies entries.
+    void SetGraphs(const QVector<RenderGraphQuickAddGraph>& graphs);
     /// Recent template keys, most recent first; only the first MAX_RECENT are kept.
     /// Unknown keys are kept but not shown.
     void SetRecent(const QStringList& keys);
@@ -107,13 +113,14 @@ public:
     [[nodiscard]] foundation::int32 GetHiddenCount() const noexcept;
     /// Key of the highlighted row; empty when nothing is listed.
     [[nodiscard]] QString GetHighlightedKey() const;
-    /// Emit InsertRequested for the highlighted row and close, as Enter does. False when empty.
+    /// Emit InsertRequested and close, as Enter does. False when empty or a graph is blocked.
     [[nodiscard]] bool InsertHighlighted();
     /// Add or remove a template key from the pinned list and emit HistoryChanged.
     void TogglePinned(const QString& key);
 
 Q_SIGNALS:
-    /// A node to insert where the palette opened, or a snippet to apply. The palette has closed.
+    /// A node or graph reference to insert where the palette opened, or a snippet to apply.
+    /// The palette has closed.
     /// With a port filter, input is the node's input to connect from the filter's Source; it is
     /// empty otherwise. Snippets are never offered while filtered.
     void InsertRequested(const ludus::editor::RenderGraphTemplate& entry, const QString& input);
@@ -139,6 +146,8 @@ private:
 
     QVector<RenderGraphTemplate> mTemplates;
     QVector<RenderGraphTemplate> mGraphs;
+    QVector<RenderGraphTemplate> mGraphAssets;
+    QHash<QString, QString> mUnavailableGraphs;
     QHash<QString, RenderGraphNodePorts> mNodePorts;
     QHash<QString, QString> mUnavailableRequirements;
     RenderGraphQuickAddPortFilter mPortFilter;
@@ -158,6 +167,7 @@ private:
     QToolButton* mKindAll;
     QToolButton* mKindSnippets;
     QToolButton* mKindNodes;
+    QToolButton* mKindGraphs;
     QTreeWidget* mCategories;
     QTreeWidget* mResults;
     QLabel* mMore;
