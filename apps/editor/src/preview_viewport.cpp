@@ -1733,6 +1733,17 @@ bool PreviewViewport::HasRetainedGraphFrame() const noexcept
     return false;
 #endif
 }
+uint64 PreviewViewport::GetPresentedGraphFrameSerial() const noexcept
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mState->ProjectGraph.isNull() == false && mState->Source == &mState->ProjectGraph->GetDisplayFrames() &&
+        mState->Active >= 0)
+    {
+        return mState->Frames[mState->Active].Read.Token;
+    }
+#endif
+    return 0;
+}
 void PreviewViewport::ClearFrame(const QString& text)
 {
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
