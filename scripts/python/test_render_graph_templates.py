@@ -658,6 +658,72 @@ class SimpleComputeRayTracingTemplateTests(unittest.TestCase):
         self.assertEqual(arguments.template, 'simple-compute-ray-tracing')
 
 
+class RasterTemplateTests(unittest.TestCase):
+    def test_editor_raster_copies_engine_default_and_resizes_both_attachments(self):
+        source = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs/default'
+        for profiles in (('metal', 'wgsl'), ('spirv', 'wgsl'), ('wgsl',)):
+            with self.subTest(profiles=profiles), tempfile.TemporaryDirectory() as directory:
+                root = graph.new_workspace(Path(directory) / 'Raster', output='offscreen',
+                                           renderer_static=True, profiles=profiles)
+                expected = {path.relative_to(source).as_posix(): path.read_text()
+                            for path in source.rglob('*') if path.is_file()}
+                manifest = json.loads(expected.pop('main.lushader.json.in').replace(
+                    '@LUDUS_DEFAULT_RENDER_GRAPH_PROFILES@', json.dumps(list(profiles))))
+                actual = {path.relative_to(root.parent).as_posix(): path.read_text()
+                          for path in root.parent.rglob('*') if path.is_file()}
+                self.assertEqual(json.loads(actual.pop('main.lushader.json')), manifest)
+                self.assertEqual(actual, expected)
+                build.validate_manifest(manifest)
+                plan = graph.compile_graph(root)
+                self.assertEqual(plan['techniques'], ['DefaultStaticOpaque.ColorAndDepth'])
+                self.assertEqual([operation['kind'] for operation in plan['passes']], ['Raster', 'Export'])
+                for identity in ('color', 'depth'):
+                    self.assertEqual(plan['resources']['Main/' + identity]['view_scale'], [1, 1])
+
+                asset = json.loads(root.read_text())
+                configuration = asset['configurations'][0]
+                output_size = next(node for node in configuration['nodes'] if node['kind'] == 'OutputSize')
+                output_size['extent'] = [1921, 1081]
+                render_size = next(node for node in configuration['nodes'] if node['kind'] == 'RenderSize')
+                render_size['scale'] = [1, 2]
+                root.write_bytes(graph.canonical_asset(asset))
+                resized = graph.compile_graph(root)
+                for identity in ('color', 'depth'):
+                    self.assertEqual(resized['resources']['Main/' + identity]['extent'], [961, 541])
+
+    def test_relocated_sdk_copies_the_default_without_a_source_checkout(self):
+        from ludus_tools import render_graph_templates
+        source = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs/default'
+        with tempfile.TemporaryDirectory() as directory:
+            installed = Path(directory) / 'sdk/lib/cmake/Ludus/render_graph'
+            module = installed / 'ludus_tools/render_graph_templates.py'
+            module.parent.mkdir(parents=True)
+            shutil.copytree(source, installed / 'templates/default')
+            with patch.object(render_graph_templates, '__file__', str(module)):
+                root = graph.new_workspace(Path(directory) / 'Raster', output='offscreen',
+                                           renderer_static=True, profiles=('spirv', 'wgsl'))
+            self.assertEqual(root.read_bytes(), (source / root.name).read_bytes())
+            self.assertEqual(json.loads(root.with_name('main.lushader.json').read_text())['profiles'],
+                             ['spirv', 'wgsl'])
+            self.assertEqual(graph.compile_graph(root)['roots'][0]['kind'], 'Export')
+
+    def test_missing_default_shader_never_publishes_a_partial_package(self):
+        from ludus_tools import render_graph_templates
+        source = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs/default'
+        with tempfile.TemporaryDirectory() as directory:
+            installed = Path(directory) / 'sdk/lib/cmake/Ludus/render_graph'
+            module = installed / 'ludus_tools/render_graph_templates.py'
+            module.parent.mkdir(parents=True)
+            shutil.copytree(source, installed / 'templates/default')
+            (installed / 'templates/default/main_shaders/color.slang').unlink()
+            destination = Path(directory) / 'Raster'
+            with patch.object(render_graph_templates, '__file__', str(module)):
+                with self.assertRaises(ToolingError):
+                    graph.new_workspace(destination, output='offscreen', renderer_static=True, profiles=('wgsl',))
+            self.assertFalse(destination.exists())
+            self.assertFalse(list(destination.parent.glob('.Raster.*.staging')))
+
+
 class ForwardLitTemplateTests(unittest.TestCase):
     def test_forward_template_is_portable_and_declares_one_scene_material_profile(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -695,7 +761,7 @@ class EditorTemplateCatalogTests(unittest.TestCase):
         from ludus_tools.cli import build_parser
         from ludus_tools.render_graph_templates import TEMPLATES
         graphs = self.identities('graph')
-        self.assertEqual(sorted(graphs), sorted(('raster', *TEMPLATES)))
+        self.assertEqual(sorted(graphs), sorted(TEMPLATES))
         for identity in graphs:
             arguments = build_parser().parse_args(['render-graph', 'new', 'Main', '--template', identity])
             self.assertEqual(arguments.template, identity)

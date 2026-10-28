@@ -3058,8 +3058,11 @@ the editor uses it for any project that has no graph of its own.
    pauses/resumes automatic builds of saved sources. Changing the preview configuration
    selects that configuration of the saved sources.
 
-**File → New Render Graph...** creates an editable barebone graph and its shaders in
-`graphs/<name>/`, then makes it active in the World viewport. **Customize in Project**
+**File → New Render Graph... → Raster** copies the engine default graph and its
+editable shaders into `graphs/<name>/`, then makes it active in the World viewport.
+Its shared OutputSize/RenderSize controls follow the viewport size, just like the
+engine default. The package is a project-owned snapshot; subsequent engine updates
+do not overwrite your edits. **Customize in Project**
 copies the engine default into `graphs/Main/`. At project opening, `graphs/Main/main.lurender.json`
 has priority; otherwise the first `graphs/<name>/main.lurender.json` in name order is used.
 With no such graph, the engine default is used. A malformed project graph reports its
@@ -3141,8 +3144,10 @@ In the native editor, open your game project and choose **File → New Render Gr
 choose **Create**. The editor creates `graphs/<name>/` inside the selected game
 project, including `main.lurender.json`, the reusable `rasterize.lurender.json`,
 `main.lushader.json` and editable `main_shaders/*.slang` functions, then opens the
-graph on the canvas. The starter exports a color image and uses the
-RendererStatic interface required by the editor preview. Target profiles are
+graph on the canvas. The Raster starter copies the same canonical package used by
+the engine default, with viewport-relative color/depth targets and editable unlit
+color shaders. It exports a color image and uses the RendererStatic interface
+required by the editor preview. Target profiles are
 Metal/WGSL on macOS and SPIR-V/WGSL on Linux. Creation needs no shader compiler or
 running viewport and never overwrites an existing graph folder. A failed creation
 keeps the previously open draft. Graphs and shader sources belong to the game
