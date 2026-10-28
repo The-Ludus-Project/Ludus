@@ -13,6 +13,7 @@ from ludus_tools.errors import ToolingError
 from ludus_tools.cli import main
 
 ROOT = Path(__file__).resolve().parents[2]
+PREVIOUS_SNAPSHOT_FILE_LIMIT = 64
 
 
 class BuildTests(unittest.TestCase):
@@ -662,6 +663,54 @@ class BuildTests(unittest.TestCase):
         self.output = self.root
         with self.assertRaisesRegex(ToolingError, 'contain source root'):
             self.run_build()
+
+    def add_shader_dependencies(self, program, count):
+        source = self.manifest.parent / program['source']
+        includes = []
+        for index in range(count):
+            dependency = source.with_name(f'{source.stem}_dependency{index}.slang')
+            dependency.write_text('// independent captured dependency\n')
+            includes.append(f'#include "{dependency.name}"\n')
+        source.write_text(''.join(includes) + source.read_text())
+
+    def test_independent_stage_closures_share_a_larger_package_snapshot(self):
+        for program in self.value()['programs'][:2]:
+            self.add_shader_dependencies(program, PREVIOUS_SNAPSHOT_FILE_LIMIT // 2)
+        with patch.object(build, 'compile_program', wraps=build.compile_program) as compile_program:
+            result = self.run_build()
+        package = build.verify_package(Path(result['package']))
+        self.assertGreater(len(package['provenance']), PREVIOUS_SNAPSHOT_FILE_LIMIT)
+        self.assertLessEqual(len(package['provenance']), build.MAX_FILES)
+        self.assertTrue(all(len(call.args[2]) + 1 <= PREVIOUS_SNAPSHOT_FILE_LIMIT
+                            for call in compile_program.call_args_list))
+        self.assertEqual(6, len(self.calls))
+
+    def test_aggregate_byte_limit_still_preserves_publication(self):
+        self.run_build()
+        prior = self.pointer()
+        self.calls.clear()
+        program = self.value()['programs'][0]
+        self.add_shader_dependencies(program, build.MAX_BYTES // build.MAX_FILE)
+        source = self.manifest.parent / program['source']
+        for dependency in source.parent.glob(source.stem + '_dependency*.slang'):
+            dependency.write_bytes(b' ' * build.MAX_FILE)
+        with self.assertRaisesRegex(ToolingError, 'source byte limit exceeded') as caught:
+            self.run_build()
+        self.assertEqual('RenderGraphBuildCapacity', caught.exception.code)
+        self.assertEqual(prior, self.pointer())
+        self.assertFalse(self.calls)
+
+    def test_aggregate_file_limit_still_preserves_publication(self):
+        self.run_build()
+        prior = self.pointer()
+        self.calls.clear()
+        for program in self.value()['programs'][:2]:
+            self.add_shader_dependencies(program, build.MAX_FILES // 2)
+        with self.assertRaisesRegex(ToolingError, 'files per build snapshot') as caught:
+            self.run_build()
+        self.assertEqual('RenderGraphBuildCapacity', caught.exception.code)
+        self.assertEqual(prior, self.pointer())
+        self.assertFalse(self.calls)
 
     def test_cli_build_and_verify_use_shared_backend(self):
         from contextlib import redirect_stdout

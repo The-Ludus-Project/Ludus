@@ -43,7 +43,9 @@ HELPERS = ('compile_shader.py', 'compile_raster.py', 'compile_graph_stage.py', '
 LIMITS = {'configurations': 8, 'programs': 32, 'artifacts': 128, 'pipelines': 64}
 MAX_FILE = 128 * 1024
 MAX_BYTES = 4 * 1024 * 1024
-MAX_FILES = 64
+# A package combines independent stage closures, graph metadata and SDK helpers.
+# Keep its aggregate bound separate from the native compiler's per-request bound.
+MAX_FILES = 128
 MAX_SHADER_INCLUDE_DEPTH = 16
 MAX_PACKAGE_FILES = 1024
 MAX_PACKAGE_BYTES = 64 * 1024 * 1024
@@ -136,7 +138,8 @@ class Snapshot:
 
     def load(self, relative):
         if relative not in self.files:
-            require(len(self.files) < MAX_FILES, 'Capacity', relative, 'source file limit exceeded')
+            require(len(self.files) < MAX_FILES, 'Capacity', relative,
+                    f'source file limit exceeded ({MAX_FILES} files per build snapshot)')
             self.files[relative] = read(self.path(relative))
             self.total += len(self.files[relative])
             require(self.total <= MAX_BYTES, 'Capacity', relative, 'source byte limit exceeded')
