@@ -946,6 +946,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                          for stage in (ray.STAGES if technique['id'] == ray.TECHNIQUE else ('vertex', 'fragment'))
                          if stage in technique}
     selected_programs.update(identity for variant in variants for identity in ray.callback_programs(variant))
+    if any(forward.is_deferred(technique) for technique in techniques.values()):
+        selected_programs.add('DeferredLighting')
     programs = {identity: program for identity, program in programs.items() if identity in selected_programs}
     require(not ray_path_capture or ray.TECHNIQUE in techniques, 'Capability', 'ray path capture',
             'ray path capture requires a RayTracingPipeline or scene ComputePipeline node')
@@ -1069,10 +1071,12 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                                   'vertex': entries[('ForwardSetupVertex', target)],
                                   'fragment': entries[(technique['fragment'] if is_clustered_depth else 'ForwardSetupFragment', target)],
                                   'vertex_schema': schemas['RendererStatic'], 'bindings': {'vertex': [], 'fragment': []},
+                                  'clustered_deferred': any(forward.is_deferred(item) for item in techniques.values()),
                                   'clustered_forward': is_clustered_depth or forward.is_clustered(technique),
                                   'forward_stages': {group + ':' + stage: entries[(forward.support_program(techniques, group, stage), target)]
                                                      for group, (_, stages) in forward.SUPPORT.items() for stage in stages
-                                                     if group != 'ForwardDepth' or is_clustered_depth or forward.is_clustered(technique)}}
+                                                     if (not group.startswith('Deferred') or any(forward.is_deferred(item) for item in techniques.values())) and
+                                                     (group != 'ForwardDepth' or is_clustered_depth or forward.is_clustered(technique))}}
                         record['canonical'] = deepcopy(record)
                         record['key'] = identity(record['canonical'])
                         recipes.append(record)

@@ -52,10 +52,11 @@
 /// of each RayCompute/SceneRayCompute/PersistentRayCompute stage record. X/Y must be positive and Z
 /// must be one; targets of the same role must agree. Earlier compute stages imply 64x1x1.
 /// Version 22 admits RayTraversal::ComputeBvh in each pass's traversal word.
+/// Version 24 adds four clustered deferred support roles without changing record widths.
 /// Version 23 admits ClusteredForwardFragment in place of ForwardFragment; other forward
 /// stages then use the clustered material ABI. ForwardDepth carries its matching opaque
 /// depth-only fragment. It preserves the version 22 record widths.
-/// Version 24 appends one scene resource word after the storage records. Bit
+/// Version 25 appends one scene resource word after the storage records. Bit
 /// SCENE_RESOURCE_LTC_TABLE means the linked scene ray kernel reads the renderer's LTC table at
 /// LUDUS_GRAPH_LTC_TABLE_BINDING; other bits must be zero. Earlier packages bind no table.
 namespace ludus::content::render_graph_format
@@ -81,8 +82,10 @@ inline constexpr foundation::uint32 RAY_WORKGROUP_PACKAGE_VERSION = 21;
 inline constexpr foundation::uint32 COMPUTE_BVH_PACKAGE_VERSION = 22;
 /// First generation admitting the clustered forward fragment role; record widths are unchanged.
 inline constexpr foundation::uint32 CLUSTERED_FORWARD_PACKAGE_VERSION = 23;
+/// First generation carrying the four clustered deferred support stages; record widths are unchanged.
+inline constexpr foundation::uint32 CLUSTERED_DEFERRED_PACKAGE_VERSION = 24;
 /// First generation carrying the scene resource word after the storage records.
-inline constexpr foundation::uint32 LTC_TABLE_PACKAGE_VERSION = 24;
+inline constexpr foundation::uint32 LTC_TABLE_PACKAGE_VERSION = 25;
 /// Scene resource bit: the linked scene ray kernel reads the renderer-owned LTC table.
 inline constexpr foundation::uint32 SCENE_RESOURCE_LTC_TABLE = 1U;
 /// Current runtime generation layout version.
@@ -150,8 +153,12 @@ inline constexpr foundation::usize NATIVE_RAY_STAGE_ROLE = FORWARD_STAGE_ROLE_FI
 inline constexpr foundation::usize CLUSTERED_FORWARD_FRAGMENT_ROLE = NATIVE_RAY_STAGE_ROLE + 1;
 /// Void clustered forward prepass fragment sharing the authored material vertex entry.
 inline constexpr foundation::usize FORWARD_DEPTH_STAGE_ROLE = CLUSTERED_FORWARD_FRAGMENT_ROLE + 1;
-/// All admitted raster, compute and native ray stage roles.
-inline constexpr foundation::usize STAGE_ROLE_COUNT = FORWARD_DEPTH_STAGE_ROLE + 1;
+/// First appended deferred support role; earlier stage IDs are unchanged.
+inline constexpr foundation::usize DEFERRED_STAGE_ROLE_FIRST = FORWARD_DEPTH_STAGE_ROLE + 1;
+/// Geometry fragment, lighting vertex/fragment and depth-copy fragment roles.
+inline constexpr foundation::usize DEFERRED_STAGE_ROLE_COUNT = 4;
+/// Complete role table including clustered deferred support.
+inline constexpr foundation::usize STAGE_ROLE_COUNT = DEFERRED_STAGE_ROLE_FIRST + DEFERRED_STAGE_ROLE_COUNT;
 /// Return a raster pair's vertex (stage 0) or fragment (stage 1) role.
 /// @pre technique is a bounded raster role and stage is below TECHNIQUE_STAGE_COUNT.
 [[nodiscard]] LUDUS_INLINE constexpr foundation::usize GetRasterStageRole(Technique technique,
@@ -222,6 +229,10 @@ enum class StageRole : foundation::uint32
     ClusteredForwardFragment = CLUSTERED_FORWARD_FRAGMENT_ROLE,
     /// Optional opaque depth-only fragment, executed with the exact forward vertex entry.
     ForwardDepth = FORWARD_DEPTH_STAGE_ROLE,
+    DeferredGBufferFragment = DEFERRED_STAGE_ROLE_FIRST, ///< Authored opaque material to three G-buffer targets.
+    DeferredLightingVertex,                              ///< Fullscreen clustered lighting geometry.
+    DeferredLightingFragment,  ///< Authored lighting resolve with reconstructed world position and exported depth.
+    DeferredDepthCopyFragment, ///< Copies optional prepass depth to the G-buffer owner.
     NativeRayStages = NATIVE_RAY_STAGE_ROLE, ///< Linked native ray stages sharing the persistent scene ABI.
 };
 /// Float vertex input width of one stage input record.

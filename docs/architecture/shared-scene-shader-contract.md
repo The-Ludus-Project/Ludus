@@ -446,13 +446,13 @@ noise must be measured separately; this API design makes no real-time claim.
 
 ## Authored forward material execution
 
-The `ForwardLit` and `ClusteredForward` raster profiles consume the existing `RenderGraphMesh`,
+The `ForwardLit`, `ClusteredForward` and `ClusteredDeferred` raster profiles consume the existing `RenderGraphMesh`,
 `RenderGraphItem` and `SceneShaderInputs` vocabulary. Its shader ABI is the
 renderer-authored material profile; this does not make arbitrary SceneContext
 queries or arbitrary raster storage bindings executable. The same World extraction
-feeds native rays and forward materials, while their physical preparation remains
-profile-specific. The engine default uses the portable clustered profile, with an
-explicit optional depth prepass; see [default clustered forward lighting](../development/render-graph-authoring.md#default-clustered-forward-lighting).
+feeds native rays and raster materials, while their physical preparation remains
+profile-specific. The engine default uses the portable clustered deferred profile, with an
+explicit optional depth prepass; see [default clustered deferred lighting](../development/render-graph-authoring.md#default-clustered-deferred-lighting).
 The original eight-light profile remains available; see the [forward-lit workflow and limits](../development/render-graph-authoring.md#use-the-forward-lit-template).
 
 A private forward scene generation owns material incarnations and pins shared

@@ -78,7 +78,7 @@
       "id": "Color",
       "stage": "fragment",
       "source": "main_shaders/color.slang",
-      "function": "PSMain",
+      "function": "MaterialMain",
       "input": "RasterVarying",
       "output": "Color",
       "bindings": []
@@ -90,6 +90,15 @@
       "function": "DepthMain",
       "input": "RasterVarying",
       "output": "Depth",
+      "bindings": []
+    },
+    {
+      "id": "DeferredLighting",
+      "stage": "fragment",
+      "source": "main_shaders/lighting.slang",
+      "function": "LightingMain",
+      "input": "RasterVarying",
+      "output": "Color",
       "bindings": []
     }
   ],
@@ -115,7 +124,7 @@
       ],
       "scene_interface": {
         "version": 1,
-        "profile": "ClusteredForward"
+        "profile": "ClusteredDeferred"
       }
     },
     {
@@ -142,7 +151,7 @@
   "budgets": {
     "configurations": 8,
     "programs": 8,
-    "artifacts": 32,
+    "artifacts": 64,
     "pipelines": 16
   }
 }

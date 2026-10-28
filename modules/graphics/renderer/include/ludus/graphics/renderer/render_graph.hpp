@@ -117,6 +117,16 @@ struct RenderGraphPrograms final
     bool HasVisibilityBuffer = false;
     /// Use the complete clustered material ABI and conservative spatial light lists.
     bool HasClusteredForward = false;
+    /// Opaque material fragment writing normal/roughness, base/metallic and emission/coverage in RGBA16F.
+    rhi::RasterShaderDescription DeferredGBufferFragment{};
+    /// Renderer fullscreen geometry for deferred lighting and optional prepass depth transfer.
+    rhi::RasterShaderDescription DeferredLightingVertex{};
+    /// Clustered lighting resolve; reads the G-buffer and writes linear color plus scene depth.
+    rhi::RasterShaderDescription DeferredLightingFragment{};
+    /// Optional prepass depth transfer into the G-buffer's private depth owner.
+    rhi::RasterShaderDescription DeferredDepthCopyFragment{};
+    /// Enable the opaque three-target deferred profile; requires the complete clustered material ABI.
+    bool HasClusteredDeferred = false;
     bool HasPersistentRayBuffers = false; ///< Extended ordered ray ABI with two persistent uint4 storage slots.
     bool HasSceneShaderInterface = false; ///< Opt-in material/light/query callback ABI, encoded in cooked stage roles.
     /// RayCompute is the diagnostic ray path capture variant (`LUDUS_RAY_PATH_CAPTURE`) of the same
@@ -148,7 +158,8 @@ void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription,
 /// Attach the immutable forward recipe ABI to one cooked support stage. Artifact bytes
 /// remain untouched; shader reflection and Renderer prewarming independently validate it.
 /// @param inoutDescription Receives exact inputs, bindings and uniform member metadata.
-/// @param role A forward material/output role or ForwardDepth; other roles leave the description unchanged.
+/// @param role A forward material/output, ForwardDepth or deferred support role; other roles leave the description
+/// unchanged.
 /// @param isClustered Select the clustered material layout; old forward packages retain their ABI.
 void SetRenderGraphForwardInterface(rhi::RasterShaderDescription& inoutDescription,
                                     content::render_graph_format::StageRole role,
@@ -437,7 +448,7 @@ private:
     /// Grants RenderGraph acquisition and release of pooled attachments.
     friend struct internal::RenderGraphPoolAccess;
 };
-/// Copied attachment ownership of one graph; counts are allocations, never bytes.
+/// Copied attachment ownership of one graph; byte estimates are explicitly named.
 struct RenderGraphAllocationReport final
 {
     foundation::uint32 ExportAllocations = 0;    ///< Allocations backing an export; created and destroyed by the graph.
@@ -445,6 +456,10 @@ struct RenderGraphAllocationReport final
     foundation::uint32 CreatedAllocations = 0;   ///< Allocations this graph created, exports included.
     foundation::uint32 ReusedAllocations = 0;    ///< Transient allocations reused from the pool.
     bool IsPooled = false;                       ///< Initialized with a pool; false is the serial, non-pooled control.
+    /// Live deferred G-buffer allocations across drawable and pending scenes; separate from plan allocations above.
+    foundation::uint32 DeferredAllocations = 0;
+    /// Logical color plus private depth bytes of those allocations; excludes native padding and per-view bindings.
+    foundation::uint64 DeferredAttachmentBytes = 0;
 };
 /// Renderer integration of one immutable cooked graph configuration.
 /// All calls use the RHI owner thread; Encode requires an acquired frame,

@@ -23,6 +23,7 @@
 #include "internal/gpu_preview_data.h"
 #include "internal/ltc_table_data.h"
 #include "internal/reference_data.h"
+#include "internal/render_graph_deferred.h"
 #include "internal/render_graph_ray.h"
 #include "internal/uniform_set_table.h"
 #include "internal/visibility_buffer.h"
@@ -561,6 +562,10 @@ struct Renderer::State final
         rhi::RasterShaderHandle Fragment{};
         rhi::RasterShaderHandle ShadowFragment{};
         rhi::RasterShaderHandle DepthFragment{};
+        rhi::RasterShaderHandle GBufferFragment{};
+        static constexpr usize GBUFFER_PIPELINE_COUNT = 2;
+        StaticArray<rhi::RasterPipelineHandle, GBUFFER_PIPELINE_COUNT> GBufferPipelines{};
+        bool HasGBuffer = false;
         rhi::BindingLayoutHandle Layout{};
         rhi::TextureHandle White{};
         rhi::RasterPipelineHandle ShadowPipeline{};
@@ -571,7 +576,7 @@ struct Renderer::State final
         bool HasSurfaceMapProfile = false;
         bool HasAuthoredProfile = false;
         uint32 VariantCount = 6;
-        static constexpr usize REQUEST_CAPACITY = 8;
+        static constexpr usize REQUEST_CAPACITY = PROGRAM_VARIANT_COUNT + 2 + GBUFFER_PIPELINE_COUNT;
         StaticArray<rhi::PipelineRequest, REQUEST_CAPACITY> Requests{};
         bool HasDepthPrepass = false;
         rhi::RasterPipelineHandle Pipelines[6]{};
@@ -788,6 +793,7 @@ struct Renderer::State final
             }
             static_cast<void>(rhi::Destroy(Device, p.ShadowFragment));
             static_cast<void>(rhi::Destroy(Device, p.DepthFragment));
+            static_cast<void>(rhi::Destroy(Device, p.GBufferFragment));
             static_cast<void>(rhi::Destroy(Device, p.White));
             static_cast<void>(rhi::Destroy(Device, p.Layout));
             static_cast<void>(rhi::Destroy(Device, p.Fragment));
@@ -1527,16 +1533,82 @@ Status Renderer::AppendVisibilityView(PreparedView handle,
                                                 attachment};
     return internal::AppendVisibilityCommands(state.Device, inoutGraph, commands, previous, outWritten);
 }
+Status Renderer::getDeferredMaterial(PreparedView handle, internal::DeferredMaterialBindings& outBindings) noexcept
+{
+    const Status ready = GetStatus(handle);
+    if (ready != Status::Ready)
+    {
+        return ready;
+    }
+    State& state = *mState;
+    const State::ViewRecord& view = state.ViewRecords[Access::Slot(handle)];
+    outBindings = {};
+    for (usize index = 0; index < view.DrawCount; ++index)
+    {
+        const State::Packet& packet = view.Packets[index];
+        if (packet.Pass != Layer::Opaque)
+        {
+            continue;
+        }
+        if (packet.MaterialSlot == NO_MATERIAL)
+        {
+            return Status::Unsupported;
+        }
+        const State::MaterialRecord& material = state.Materials[packet.MaterialSlot];
+        if (material.Clustered == false || state.Programs[material.ProgramSlot].HasGBuffer == false)
+        {
+            return Status::Unsupported;
+        }
+        const StaticArray<rhi::TextureViewHandle, CLUSTERED_AUTHORED_BINDING_COUNT> textures{
+            {{},
+             material.Texture,
+             {},
+             material.BakeTexture,
+             material.ShadowTexture,
+             {},
+             material.ClusterView,
+             material.SurfaceTexture,
+             material.EnvironmentTexture,
+             {},
+             material.EmissionTexture}};
+        const StaticArray<rhi::SamplerHandle, CLUSTERED_AUTHORED_BINDING_COUNT> samplers{
+            {{},
+             {},
+             material.Sampler,
+             {},
+             {},
+             material.ShadowSampler,
+             {},
+             {},
+             {},
+             material.EnvironmentOrNull != nullptr ? material.EnvironmentOrNull->Sampler : material.Sampler,
+             {}}};
+        for (usize slot = 0; slot < CLUSTERED_AUTHORED_BINDING_COUNT; ++slot)
+        {
+            outBindings.Resources[slot].Binding = static_cast<uint32>(slot);
+            outBindings.Resources[slot].Texture = textures[slot];
+            outBindings.Resources[slot].Sampler = samplers[slot];
+        }
+        outBindings.Resources[0].Buffer = material.Parameters;
+        outBindings.Resources[0].Size = material.ParameterSize;
+        outBindings.HasMaterial = true;
+        break;
+    }
+    return Status::Ready;
+}
 Status Renderer::DrawView(PreparedView handle, const rhi::RasterPassDescription& description) noexcept
 {
-    return drawView(handle, description, false);
+    return drawView(handle, description, DrawMode::Color);
 }
 Status Renderer::DrawDepthView(PreparedView handle, const rhi::RasterPassDescription& description) noexcept
 {
-    return drawView(handle, description, true);
+    return drawView(handle, description, DrawMode::Depth);
 }
-Status Renderer::drawView(PreparedView handle, const rhi::RasterPassDescription& description, bool isDepthOnly) noexcept
+Status Renderer::drawView(PreparedView handle, const rhi::RasterPassDescription& description, DrawMode mode) noexcept
 {
+    const bool isDepthOnly = mode == DrawMode::Depth;
+    const bool isGBuffer = mode == DrawMode::GBuffer;
+    const bool areOverlaysOnly = mode == DrawMode::Overlays;
     auto status = GetStatus(handle);
     if (status != Status::Ready)
     {
@@ -1548,11 +1620,27 @@ Status Renderer::drawView(PreparedView handle, const rhi::RasterPassDescription&
     }
     auto& s = *mState;
     auto& view = s.ViewRecords[Access::Slot(handle)];
+    if (areOverlaysOnly == true)
+    {
+        bool hasOverlays = view.Grid.Get() != nullptr;
+        for (usize index = 0; index < view.DrawCount; ++index)
+        {
+            hasOverlays = hasOverlays == true || view.Packets[index].Pass != Layer::Opaque;
+        }
+        if (hasOverlays == false)
+        {
+            return Status::Ready;
+        }
+    }
     auto pass = description;
     pass.ClearDepth = view.Depth == DepthConvention::ReverseZ ? 0 : 1;
-    const bool surface = rhi::IsNull(description.Color);
-    bool hdr = false;
-    if (surface == false)
+    const bool isSurface = rhi::IsNull(description.Color) == true && description.ColorCount == 0;
+    bool isHdr = isGBuffer;
+    if (isGBuffer == true && (description.ColorCount != DEFERRED_TARGET_COUNT || description.Colors == nullptr))
+    {
+        return Status::InvalidDescription;
+    }
+    if (isSurface == false && isGBuffer == false)
     {
         rhi::TextureDescription texture;
         const auto targetStatus = rhi::GetTextureDescription(s.Device, description.Color, texture);
@@ -1560,27 +1648,34 @@ Status Renderer::drawView(PreparedView handle, const rhi::RasterPassDescription&
         {
             return targetStatus;
         }
-        hdr = texture.Format == rhi::RasterFormat::Rgba16Float;
-        if (texture.Attachment == false || (texture.Format != rhi::RasterFormat::Rgba8Unorm && hdr == false) ||
-            (hdr && mState->LightingSetup != Status::Ready))
+        isHdr = texture.Format == rhi::RasterFormat::Rgba16Float;
+        if (texture.Attachment == false || (texture.Format != rhi::RasterFormat::Rgba8Unorm && isHdr == false) ||
+            (isHdr == true && mState->LightingSetup != Status::Ready))
         {
             return Status::Unsupported;
         }
     }
-    if (isDepthOnly == true && (surface == true || hdr == true || view.Depth != DepthConvention::Conventional))
+    if (isDepthOnly == true && (isSurface == true || isHdr == true || view.Depth != DepthConvention::Conventional))
     {
         return Status::Unsupported;
     }
     for (usize i = 0; i < view.DrawCount; ++i)
     {
         const auto slot = view.Packets[i].MaterialSlot;
+        if (isGBuffer == true && view.Packets[i].Pass == Layer::Opaque &&
+            (slot == NO_MATERIAL || s.Materials[slot].Alpha != MaterialAlpha::Opaque ||
+             s.Programs[s.Materials[slot].ProgramSlot].HasGBuffer == false))
+        {
+            return Status::Unsupported;
+        }
         if (isDepthOnly == true && view.Packets[i].Pass == Layer::Opaque &&
             (slot == NO_MATERIAL || s.Materials[slot].Alpha != MaterialAlpha::Opaque ||
              s.Programs[s.Materials[slot].ProgramSlot].HasDepthPrepass == false))
         {
             return Status::Unsupported;
         }
-        if (slot != NO_MATERIAL && ((s.Materials[slot].Lit && surface) || (s.Materials[slot].Lit == false && hdr)))
+        if (slot != NO_MATERIAL &&
+            ((s.Materials[slot].Lit && isSurface == true) || (s.Materials[slot].Lit == false && isHdr == true)))
         {
             return Status::Unsupported;
         }
@@ -1600,7 +1695,9 @@ Status Renderer::drawView(PreparedView handle, const rhi::RasterPassDescription&
         const WorldGridBuffers& grid = *view.Grid;
         const rhi::RasterVertexSlice slices[]{{grid.Vertices, 0, WORLD_GRID_VERTEX_COUNT * sizeof(Vertex)},
                                               {grid.Instances, 0, grid.Count * sizeof(Instance)}};
-        const usize target = hdr == true ? WORLD_GRID_HDR_PIPELINE : surface == true ? 0 : WORLD_GRID_UNORM_PIPELINE;
+        const usize target = isHdr == true       ? WORLD_GRID_HDR_PIPELINE
+                             : isSurface == true ? 0
+                                                 : WORLD_GRID_UNORM_PIPELINE;
         const usize reverse = view.Depth == DepthConvention::ReverseZ ? 1 : 0;
         return rhi::DrawIndexed(s.Device,
                                 {s.GridPipelines[target + reverse],
@@ -1615,7 +1712,8 @@ Status Renderer::drawView(PreparedView handle, const rhi::RasterPassDescription&
     for (usize i = 0; i < view.DrawCount; ++i)
     {
         const auto& packet = view.Packets[i];
-        if (isDepthOnly == true && packet.Pass != Layer::Opaque)
+        if (((isDepthOnly == true || isGBuffer == true) && packet.Pass != Layer::Opaque) ||
+            (areOverlaysOnly == true && packet.Pass == Layer::Opaque))
         {
             continue;
         }
@@ -1633,10 +1731,12 @@ Status Renderer::drawView(PreparedView handle, const rhi::RasterPassDescription&
              0,
              mesh.VertexCount * (s.HasVisibilityInputs == true ? sizeof(VisibilityVertex) : sizeof(Vertex))},
             {view.Instances, packet.First * sizeof(Instance), packet.Count * sizeof(Instance)}};
-        const auto opaque = hdr       ? (view.Depth == DepthConvention::ReverseZ ? s.HdrFlat[1] : s.HdrFlat[0])
-                            : surface ? (view.Depth == DepthConvention::ReverseZ ? s.SurfaceReverse : s.Opaque)
-                                      : (view.Depth == DepthConvention::ReverseZ ? s.TargetReverse : s.TargetOpaque);
-        const auto overlay = hdr ? s.HdrFlat[2] : (surface ? s.Overlay : s.TargetOverlay);
+        const rhi::RasterPipelineHandle opaque =
+            isHdr == true       ? (view.Depth == DepthConvention::ReverseZ ? s.HdrFlat[1] : s.HdrFlat[0])
+            : isSurface == true ? (view.Depth == DepthConvention::ReverseZ ? s.SurfaceReverse : s.Opaque)
+                                : (view.Depth == DepthConvention::ReverseZ ? s.TargetReverse : s.TargetOpaque);
+        const rhi::RasterPipelineHandle overlay =
+            isHdr == true ? s.HdrFlat[2] : (isSurface == true ? s.Overlay : s.TargetOverlay);
         auto pipeline = packet.Pass == Layer::Opaque ? opaque : overlay;
         rhi::BindingSetHandle bindings =
             packet.UniformSlot != NO_UNIFORM ? s.UniformSets.GetBindings(packet.UniformSlot) : s.Bindings;
@@ -1644,13 +1744,19 @@ Status Renderer::drawView(PreparedView handle, const rhi::RasterPassDescription&
         {
             const auto& material = s.Materials[packet.MaterialSlot];
             const auto& program = s.Programs[material.ProgramSlot];
-            pipeline = program.Pipelines[(program.Lit ? (hdr ? 3 : 0) : (surface ? 0 : 3)) +
-                                         (packet.Pass == Layer::Overlay             ? 2
-                                          : view.Depth == DepthConvention::ReverseZ ? 1
-                                                                                    : 0)];
+            pipeline =
+                program.Pipelines[(program.Lit == true ? (isHdr == true ? LDR_LIT_PROGRAM_VARIANT_COUNT : 0)
+                                                       : (isSurface == true ? 0 : LDR_LIT_PROGRAM_VARIANT_COUNT)) +
+                                  (packet.Pass == Layer::Overlay             ? 2
+                                   : view.Depth == DepthConvention::ReverseZ ? 1
+                                                                             : 0)];
             if (isDepthOnly == true)
             {
                 pipeline = program.DepthPipeline;
+            }
+            if (isGBuffer == true)
+            {
+                pipeline = program.GBufferPipelines[view.Depth == DepthConvention::ReverseZ ? 1 : 0];
             }
             bindings = material.Bindings;
         }
@@ -1662,7 +1768,7 @@ Status Renderer::drawView(PreparedView handle, const rhi::RasterPassDescription&
             return status;
         }
     }
-    return isDepthOnly == true || hasDrawnGrid == true ? Status::Ready : drawGrid();
+    return isDepthOnly == true || isGBuffer == true || hasDrawnGrid == true ? Status::Ready : drawGrid();
 }
 Status
 Renderer::PreparePresentation(rhi::TextureHandle source, const ViewMapping& mapping, Presentation& output) noexcept
@@ -2012,7 +2118,8 @@ Status Renderer::prewarmProgram(const rhi::RasterShaderDescription& vertex,
                                 const rhi::RasterShaderDescription& fragment,
                                 const rhi::RasterShaderDescription* shadowOrNull,
                                 MaterialProgram& outProgram,
-                                const rhi::RasterShaderDescription* depthOrNull) noexcept
+                                const rhi::RasterShaderDescription* depthOrNull,
+                                const rhi::RasterShaderDescription* gBufferOrNull) noexcept
 {
     constexpr usize PLAIN_BINDING_COUNT = 3;
     constexpr usize CLUSTER_BINDING_COUNT = 8;
@@ -2047,6 +2154,11 @@ Status Renderer::prewarmProgram(const rhi::RasterShaderDescription& vertex,
         isLit == true &&
         fragment.Bindings.size() ==
             (hasAuthoredProfile == true ? CLUSTER_BINDING_COUNT + AUTHORED_BINDING_COUNT : CLUSTER_BINDING_COUNT);
+    if (gBufferOrNull != nullptr && (isClustered == false || hasAuthoredProfile == false || depthOrNull == nullptr ||
+                                     gBufferOrNull->Artifact.Stage != rhi::ShaderStage::Fragment))
+    {
+        return Status::InvalidDescription;
+    }
     const usize bindingCount = (isClustered == true ? CLUSTER_BINDING_COUNT
                                 : isLit == true     ? LIT_BINDING_COUNT + (hasSurfaceMapProfile == true ? 1 : 0)
                                                     : PLAIN_BINDING_COUNT) +
@@ -2248,6 +2360,7 @@ Status Renderer::prewarmProgram(const rhi::RasterShaderDescription& vertex,
     p.Lit = isLit;
     p.Clustered = isClustered;
     p.HasDepthPrepass = depthOrNull != nullptr;
+    p.HasGBuffer = gBufferOrNull != nullptr;
     p.HasSurfaceMapProfile = hasSurfaceMapProfile;
     p.HasAuthoredProfile = hasAuthoredProfile;
     p.Hdr = isLit == true && s.Hdr;
@@ -2268,6 +2381,10 @@ Status Renderer::prewarmProgram(const rhi::RasterShaderDescription& vertex,
     if (Accepted(status) == true && depthOrNull != nullptr)
     {
         status = rhi::CreateRasterShader(s.Device, *depthOrNull, p.DepthFragment);
+    }
+    if (Accepted(status) == true && gBufferOrNull != nullptr)
+    {
+        status = rhi::CreateRasterShader(s.Device, *gBufferOrNull, p.GBufferFragment);
     }
     const uint8 white[]{255, 255, 255, 255};
     rhi::TextureDescription texture{1, 1, rhi::RasterFormat::Rgba8Unorm};
@@ -2365,7 +2482,9 @@ Status Renderer::GetStatus(MaterialProgram handle) noexcept
         attributes[12] = {12, 0, LUDUS_AUTHORED_COLOR_OFFSET, rhi::RasterVertexFormat::Float4};
         attributes[13] = {13, 0, LUDUS_AUTHORED_UV1_OFFSET, rhi::RasterVertexFormat::Float2};
     }
-    const uint32 total = p->VariantCount + (p->Lit == true ? 1U : 0U) + (p->HasDepthPrepass == true ? 1U : 0U);
+    const uint32 total =
+        p->VariantCount + (p->Lit == true ? 1U : 0U) + (p->HasDepthPrepass == true ? 1U : 0U) +
+        (p->HasGBuffer == true ? static_cast<uint32>(State::ProgramRecord::GBUFFER_PIPELINE_COUNT) : 0U);
     while (p->Phase <= total)
     {
         if (p->Phase != 0)
@@ -2379,11 +2498,13 @@ Status Renderer::GetStatus(MaterialProgram handle) noexcept
                 }
                 return ready;
             }
-            const Status acquired = rhi::GetRequestedPipeline(s.Device,
-                                                              p->Requests[p->Phase - 1],
-                                                              p->Phase <= p->VariantCount ? p->Pipelines[p->Phase - 1]
-                                                              : p->Phase == p->VariantCount + 1 ? p->ShadowPipeline
-                                                                                                : p->DepthPipeline);
+            const Status acquired = rhi::GetRequestedPipeline(
+                s.Device,
+                p->Requests[p->Phase - 1],
+                p->Phase <= p->VariantCount       ? p->Pipelines[p->Phase - 1]
+                : p->Phase == p->VariantCount + 1 ? p->ShadowPipeline
+                : p->Phase == p->VariantCount + 2 ? p->DepthPipeline
+                                                  : p->GBufferPipelines[p->Phase - p->VariantCount - 3]);
             if (acquired != Status::Ready)
             {
                 return p->Setup = acquired;
@@ -2431,6 +2552,24 @@ Status Renderer::GetStatus(MaterialProgram handle) noexcept
             description.DepthWrite = true;
             description.Blend = false;
             description.DepthCompare = rhi::RasterDepthCompare::Less;
+        }
+        if (p->HasGBuffer == true && p->Phase >= p->VariantCount + 2)
+        {
+            const Status ready = rhi::GetStatus(s.Device, p->GBufferFragment);
+            if (ready != Status::Ready)
+            {
+                return ready;
+            }
+            static constexpr StaticArray<rhi::RasterFormat, DEFERRED_TARGET_COUNT> formats{
+                {rhi::RasterFormat::Rgba16Float, rhi::RasterFormat::Rgba16Float, rhi::RasterFormat::Rgba16Float}};
+            description.Fragment = p->GBufferFragment;
+            description.Target = rhi::RasterTarget::Rgba16Float;
+            description.ColorFormats = formats.AsSpan();
+            description.Depth = true;
+            description.DepthWrite = true;
+            description.Blend = false;
+            description.DepthCompare = p->Phase == p->VariantCount + 2 ? rhi::RasterDepthCompare::LessEqual
+                                                                       : rhi::RasterDepthCompare::GreaterEqual;
         }
         const auto requested = rhi::RequestPipeline(s.Device, description, p->Requests[p->Phase]);
         if (Accepted(requested) == false)

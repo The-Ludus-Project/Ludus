@@ -656,7 +656,7 @@ TEST_CASE("Legacy software ray packages require recooking", "[render-graph][ray-
         const usize word = format::HEADER_BYTES + i * format::RESOURCE_RECORD_BYTES - sizeof(uint32);
         bytes.RemoveRange(word, word + sizeof(uint32));
     }
-    // Version 24 appends the scene resource word between the storage records and the pass names.
+    // Version 25 appends the scene resource word between the storage records and the pass names.
     const usize nameBytes = package.GetPlan().PassNames[0].GetSize();
     const usize paddedNameBytes = ((nameBytes + WORD_BYTES - 1) / WORD_BYTES) * WORD_BYTES;
     const usize sceneResourceOffset = bytes.GetSize() - paddedNameBytes - 2 * WORD_BYTES;
@@ -4380,7 +4380,7 @@ TEST_CASE("A render graph kernel reads the renderer-bound LTC table like the CPU
                                               shaders::renderer_composite::Fragment());
     REQUIRE(decoded.HasLtcTable == true);
     REQUIRE(compiled.HasLtcTable == true);
-    // The version 24 package rebuilds the reflected binding list of the generated header, table slot last.
+    // The version 25 package rebuilds the reflected binding list of the generated header, table slot last.
     CheckSameStage(decoded.RayCompute, compiled.RayCompute);
     REQUIRE(decoded.RayCompute.Bindings.back().Binding == LUDUS_GRAPH_LTC_TABLE_BINDING);
     renderer::RenderGraphPlan plan = package->GetPlan();

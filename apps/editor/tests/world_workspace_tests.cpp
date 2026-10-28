@@ -1818,3 +1818,60 @@ TEST_CASE("Viewport picking is independent of mesh units and instance scale", "[
     const QRectF frame{0, 0, 800, 600};
     CHECK(interaction.Pick(frame.center(), frame) == scene.Objects[0].Id);
 }
+
+TEST_CASE("Viewport overlay projection reuses bounded buffers and follows gestures and activation",
+          "[editor][world][object-interaction][overlay]")
+{
+    using namespace ludus::foundation;
+    WorldDocument document = UnboundDocument();
+    QString error;
+    REQUIRE(document.ImportScene(ImportedLevel(), error) == true);
+    RenderScene scene = MakeInteractionScene();
+    // Exceed the sampled wire budget without changing the selectable triangle.
+    constexpr usize DENSE_TRIANGLES = ViewportObjectOverlay::MAX_WIRE_TRIANGLES + 1;
+    scene.Meshes[0].Indices.clear();
+    for (usize triangle = 0; triangle < DENSE_TRIANGLES; ++triangle)
+    {
+        scene.Meshes[0].Indices.append({0, 1, 2});
+    }
+    RenderPreview preview;
+    ConfigureInteractionPreview(preview, scene);
+    ViewportObjectInteraction interaction(preview, nullptr);
+    interaction.SetWorld(document, scene.Objects[0].Id, true);
+    ViewportObjectOverlay overlay;
+    const QRectF framePixel{0, 0, 800, 600};
+    interaction.BuildOverlay(framePixel, overlay);
+    REQUIRE(overlay.WireLinesPixel.IsEmpty() == false);
+    CHECK(overlay.WireLinesPixel.GetSize() <= ViewportObjectOverlay::MAX_WIRE_LINES);
+    REQUIRE(overlay.HandleStrokes.IsEmpty() == false);
+    CHECK(overlay.HandleStrokes.GetSize() <= ViewportObjectOverlay::MAX_HANDLE_STROKES);
+    const QLineF* wireStorage = overlay.WireLinesPixel.GetData();
+    const ViewportHandleStroke* handleStorage = overlay.HandleStrokes.GetData();
+    const QLineF originalPixel = overlay.WireLinesPixel[0];
+    interaction.BuildOverlay(framePixel, overlay);
+    CHECK(overlay.WireLinesPixel.GetData() == wireStorage);
+    CHECK(overlay.HandleStrokes.GetData() == handleStorage);
+    CHECK(overlay.WireLinesPixel[0] == originalPixel);
+    REQUIRE(interaction.Press(framePixel.center() + QPointF(70, 0), framePixel) == true);
+    REQUIRE(interaction.Move(framePixel.center() + QPointF(110, 0), false) == true);
+    interaction.BuildOverlay(framePixel, overlay);
+    CHECK(overlay.WireLinesPixel[0] != originalPixel);
+    CHECK(overlay.WireLinesPixel.GetData() == wireStorage);
+    interaction.Cancel();
+    interaction.BuildOverlay(framePixel, overlay);
+    CHECK(overlay.WireLinesPixel[0] == originalPixel);
+    interaction.SetImageSize({800, 800});
+    interaction.BuildOverlay(framePixel, overlay);
+    CHECK(overlay.FramePixel == QRectF(100, 0, 600, 600));
+    interaction.SetActive(false);
+    interaction.BuildOverlay(framePixel, overlay);
+    CHECK(overlay.WireLinesPixel.IsEmpty() == true);
+    CHECK(overlay.HandleStrokes.IsEmpty() == true);
+    CHECK(overlay.FramePixel.isEmpty() == true);
+    CHECK(overlay.WireLinesPixel.GetData() == wireStorage);
+    interaction.SetActive(true);
+    interaction.SetWorld(document, scene.Objects[0].Id, false);
+    interaction.BuildOverlay(framePixel, overlay);
+    CHECK(overlay.WireLinesPixel.IsEmpty() == false);
+    CHECK(overlay.HandleStrokes.IsEmpty() == true);
+}

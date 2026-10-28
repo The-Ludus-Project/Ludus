@@ -162,5 +162,20 @@
     "source": "renderer_clustered_authored.slang",
     "vertex": "VertexMain",
     "fragment": "OpaqueDepthMain"
+  },
+  "renderer_deferred_material": {
+    "source": "renderer_deferred_material.slang",
+    "vertex": "VertexMain",
+    "fragment": "GBufferMain"
+  },
+  "renderer_deferred_lighting": {
+    "source": "renderer_deferred_lighting.slang",
+    "vertex": "DeferredVertexMain",
+    "fragment": "DeferredLightingMain"
+  },
+  "renderer_deferred_depth": {
+    "source": "renderer_deferred_depth.slang",
+    "vertex": "DeferredVertexMain",
+    "fragment": "DeferredDepthMain"
   }
 }

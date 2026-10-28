@@ -263,7 +263,7 @@ library: hits Buffer (32 B/px, RenderSize)
 - The technique declares `scene_interface.polygonal_light_sampling`, in the same
   way `visibility_buffer` adds its include and textures. The wrapper then includes
   the helpers, and the renderer binds the table buffer at slot 13, which every
-  backend leaves free, when the linked kernel's reflection keeps it. Version 24
+  backend leaves free, when the linked kernel's reflection keeps it. Version 25
   runtime packages record that binding. Older SDKs reject the key explicitly. The
   passes must be compute-invoked: native ray stages cannot bind the table
   ([use the table](../development/ltc-table.md#use-the-table)).
