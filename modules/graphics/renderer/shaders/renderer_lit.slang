@@ -18,13 +18,13 @@ struct Parameters
     float4 BakeScale;
     float4 BakeUv;
 #ifdef LUDUS_CLUSTERED
-    float4 Lights[512];
+    float4 Lights[CLUSTERED_LIGHT_COUNT * FORWARD_LIGHT_WORDS];
 #else
     float4 Lights[32];
 #endif
     float4 ShadowData[SHADOW_DATA_WORDS];
 #ifdef LUDUS_CLUSTERED
-    float4 GridRows[3];
+    float4 GridRows[CLUSTERED_GRID_ROWS];
     float4 GridMinimum;
     float4 GridScale;
 #endif
@@ -582,3 +582,9 @@ float3 ComputeDebugColour(int mode,
     float high = floor(encoded / 256);
     return float4(high / 255, (encoded - high * 256) / 255, 0, 1);
 }
+
+#ifdef LUDUS_CLUSTERED
+// The prepass retains the exact color vertex entry and evaluates no material terms.
+// This profile accepts opaque coverage only; masked coverage needs its own qualified entry.
+void OpaqueDepthMain(in Varying input) {}
+#endif

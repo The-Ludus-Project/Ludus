@@ -260,7 +260,8 @@ ViewDescription MakeRasterPassView(const ViewDescription& source,
                                    format::Technique technique) noexcept
 {
     ViewDescription view = source;
-    if (GetStage(programs, technique, rhi::ShaderStage::Vertex).Inputs.size() == format::VISIBILITY_INPUT_COUNT)
+    if (GetStage(programs, technique, rhi::ShaderStage::Vertex).Inputs.size() == format::VISIBILITY_INPUT_COUNT ||
+        format::GetTechniqueFamily(technique) == format::Technique::DepthOnly)
     {
         view.WorldGrid.IsVisible = false;
     }
@@ -883,6 +884,14 @@ struct RenderGraph::State final
     bool HasForwardLighting = false;
     bool HasForwardProgram = false;
     bool HasForwardResources = false;
+    [[nodiscard]] LUDUS_INLINE Renderer& GetContext(format::Technique technique) noexcept
+    {
+        const format::Technique context =
+            Programs.HasClusteredForward == true && technique == format::Technique::DepthOnly
+                ? format::Technique::ColorAndDepth
+                : technique;
+        return Contexts[static_cast<usize>(context)];
+    }
     [[nodiscard]] LUDUS_INLINE bool HasForwardProfile() const noexcept
     {
         return Programs.ForwardVertex.Inputs.empty() == false;
@@ -921,7 +930,7 @@ struct RenderGraph::State final
                 static_cast<void>(rhi::DiscardOrderedGraph(OwnerOrNull->Device, RayGraph));
                 for (usize i = 0; i < OwnerOrNull->Header.PassCount; ++i)
                 {
-                    Renderer& context = OwnerOrNull->Contexts[static_cast<usize>(OwnerOrNull->Passes[i].Program)];
+                    Renderer& context = OwnerOrNull->GetContext(OwnerOrNull->Passes[i].Program);
                     static_cast<void>(context.Release(Views[i]));
                     static_cast<void>(context.Release(Snapshots[i]));
                 }
@@ -961,8 +970,7 @@ struct RenderGraph::State final
                 {
                     SourceOrNull->RayPasses[i].DiscardCamera();
                 }
-                static_cast<void>(
-                    OwnerOrNull->Contexts[static_cast<usize>(OwnerOrNull->Passes[i].Program)].Release(Views[i]));
+                static_cast<void>(OwnerOrNull->GetContext(OwnerOrNull->Passes[i].Program).Release(Views[i]));
             }
         }
     };
@@ -1001,10 +1009,8 @@ struct RenderGraph::State final
                 ViewReport viewReport;
                 const ViewDescription view =
                     MakeRasterPassView(candidate->Cameras[pass.Camera], Programs, pass.Program);
-                status = Contexts[static_cast<usize>(pass.Program)].PrepareView(Current->Snapshots[i],
-                                                                                view,
-                                                                                candidate->Views[i],
-                                                                                viewReport);
+                status =
+                    GetContext(pass.Program).PrepareView(Current->Snapshots[i], view, candidate->Views[i], viewReport);
             }
             if (IsAccepted(status) == false)
             {
@@ -1033,7 +1039,7 @@ struct RenderGraph::State final
             }
             const Status status = update.HasRayCamera[i] == true
                                       ? Current->RayPasses[i].PollCamera()
-                                      : Contexts[static_cast<usize>(Passes[i].Program)].GetStatus(update.Views[i]);
+                                      : GetContext(Passes[i].Program).GetStatus(update.Views[i]);
             if (status != Status::Ready)
             {
                 if (status != Status::Pending)
@@ -1060,7 +1066,7 @@ struct RenderGraph::State final
             }
             else
             {
-                static_cast<void>(Contexts[static_cast<usize>(Passes[i].Program)].Release(Current->Views[i]));
+                static_cast<void>(GetContext(Passes[i].Program).Release(Current->Views[i]));
                 Current->Views[i] = update.Views[i];
                 update.Views[i] = {};
             }
@@ -1300,7 +1306,7 @@ struct RenderGraph::State final
                 }
                 continue;
             }
-            Renderer& context = Contexts[static_cast<usize>(Passes[i].Program)];
+            Renderer& context = GetContext(Passes[i].Program);
             if (Passes[i].Program == format::Technique::RayTracing && inoutScene.HasViews[i] == true)
             {
                 const Status ready = inoutScene.RayPasses[i].Poll();
@@ -1447,8 +1453,9 @@ struct RenderGraph::State final
                 description.Clear[ALPHA_CHANNEL] = 0;
             }
             HasAttemptedDraw = true;
-            RecordingStatus =
-                Contexts[static_cast<usize>(operation.Program)].DrawView(Current->Views[pass], description);
+            RecordingStatus = Programs.HasClusteredForward == true && operation.Program == format::Technique::DepthOnly
+                                  ? GetContext(operation.Program).DrawDepthView(Current->Views[pass], description)
+                                  : GetContext(operation.Program).DrawView(Current->Views[pass], description);
         }
         return RecordingStatus;
     }
@@ -1676,6 +1683,14 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
             return Status::InvalidDescription;
         }
     }
+    const bool hasDepthArtifact =
+        programs.ForwardDepth.Artifact.Wgsl.empty() == false || programs.ForwardDepth.Artifact.Msl.empty() == false ||
+        programs.ForwardDepth.Artifact.Spirv.empty() == false || programs.ForwardDepth.Artifact.GlslEs.empty() == false;
+    if (hasDepthArtifact != programs.HasClusteredForward ||
+        (programs.HasClusteredForward == true && hasForwardProfile == false))
+    {
+        return Status::InvalidDescription;
+    }
     if (hasForwardProfile == true)
     {
         for (usize pass = 0; pass < plan.Passes.GetSize(); ++pass)
@@ -1684,7 +1699,9 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
             {
                 continue;
             }
-            if (plan.Passes[pass].Program != format::Technique::ColorAndDepth ||
+            if ((plan.Passes[pass].Program != format::Technique::ColorAndDepth &&
+                 (programs.HasClusteredForward == false ||
+                  plan.Passes[pass].Program != format::Technique::DepthOnly)) ||
                 plan.Passes[pass].SceneData != format::SCENE_DATA_ALL)
             {
                 return Status::Unsupported;
@@ -1721,6 +1738,10 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
         {
             isUsed[static_cast<usize>(plan.Passes[pass].Program)] = true;
         }
+    }
+    if (programs.HasClusteredForward == true && isUsed[static_cast<usize>(format::Technique::ColorAndDepth)] == false)
+    {
+        return Status::Unsupported;
     }
     for (usize i = 0; i < format::TECHNIQUE_COUNT; ++i)
     {
@@ -1838,6 +1859,10 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
         candidate->StorageBuffers[i] = plan.StorageBuffers[i];
     }
     candidate->IsUsed = isUsed;
+    if (programs.HasClusteredForward == true)
+    {
+        candidate->IsUsed[static_cast<usize>(format::Technique::DepthOnly)] = false;
+    }
     candidate->PoolOrNull = poolOrNull;
     candidate->Allocation.IsPooled = poolOrNull != nullptr;
     for (usize i = 0; i < plan.Resources.GetSize(); ++i)
@@ -2174,7 +2199,9 @@ Status RenderGraph::Poll() noexcept
             status = context.PrewarmLitProgram(state.Programs.ForwardVertex,
                                                state.Programs.ForwardFragment,
                                                state.Programs.ForwardShadow,
-                                               state.ForwardProgram);
+                                               state.ForwardProgram,
+                                               state.Programs.HasClusteredForward == true ? &state.Programs.ForwardDepth
+                                                                                          : nullptr);
             if (IsAccepted(status) == false)
             {
                 return status;
@@ -2188,7 +2215,10 @@ Status RenderGraph::Poll() noexcept
         }
         if (state.HasForwardResources == false)
         {
-            status = state.ForwardResources.Initialize(state.Device, context, state.ForwardProgram);
+            status = state.ForwardResources.Initialize(state.Device,
+                                                       context,
+                                                       state.ForwardProgram,
+                                                       state.Programs.HasClusteredForward);
             if (status != Status::Ready)
             {
                 return status;
@@ -2469,7 +2499,9 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
     {
         for (usize pass = 0; pass < state.Header.PassCount; ++pass)
         {
-            if (state.Passes[pass].Program != format::Technique::ColorAndDepth ||
+            if ((state.Passes[pass].Program != format::Technique::ColorAndDepth &&
+                 (state.Programs.HasClusteredForward == false ||
+                  state.Passes[pass].Program != format::Technique::DepthOnly)) ||
                 state.Passes[pass].SceneData != format::SCENE_DATA_ALL)
             {
                 return Status::Unsupported;
@@ -2687,14 +2719,13 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             operation.DenoisingQuality,
             state.RayPathCapture.GetBuffer(),
             operation.Traversal == format::RayTraversal::HardwarePipeline};
-        const Status created =
-            candidate->RayPasses[pass].Initialize(state.Contexts[static_cast<usize>(operation.Program)],
-                                                  {},
-                                                  cameras[operation.Camera],
-                                                  preparingResources[operation.Color].Width,
-                                                  preparingResources[operation.Color].Height,
-                                                  &rayScene,
-                                                  &invocation);
+        const Status created = candidate->RayPasses[pass].Initialize(state.GetContext(operation.Program),
+                                                                     {},
+                                                                     cameras[operation.Camera],
+                                                                     preparingResources[operation.Color].Width,
+                                                                     preparingResources[operation.Color].Height,
+                                                                     &rayScene,
+                                                                     &invocation);
         if (IsAccepted(created) == false)
         {
             outReport = state.Report;
@@ -2821,7 +2852,7 @@ Status RenderGraph::PrepareEncoding() noexcept
         if (operation.Visibility != format::ABSENT && visibilityOrNull == nullptr)
         {
             const format::Pass& producer = state.Passes[pass - 1];
-            visibility.ProducerOrNull = &state.Contexts[static_cast<usize>(producer.Program)];
+            visibility.ProducerOrNull = &state.GetContext(producer.Program);
             visibility.View = state.Current->Views[pass - 1];
             visibility.Attachment.Color = state.Textures[operation.Visibility];
             visibility.Attachment.ColorLoad = static_cast<rhi::RasterLoad>(producer.ColorLoad);

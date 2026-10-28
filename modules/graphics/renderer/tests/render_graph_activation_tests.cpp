@@ -1042,6 +1042,8 @@ TEST_CASE("runtime packages preserve relative policies and decode fixed legacy v
                                  format::SOFTWARE_RAY_PACKAGE_VERSION,
                                  format::CUSTOM_RAY_PACKAGE_VERSION,
                                  format::NATIVE_RAY_PIPELINE_PACKAGE_VERSION,
+                                 format::RAY_WORKGROUP_PACKAGE_VERSION,
+                                 format::COMPUTE_BVH_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         PackageOptions options;
