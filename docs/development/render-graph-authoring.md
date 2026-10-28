@@ -56,7 +56,11 @@ Undo restores the complete record and document version. Double-click any ordinar
 node to open **Details**. A pipeline's clickable parts are **Read Inputs**,
 **Writable Resources**, **Shaders**, **Pipeline State**, **Invocation** and
 **Public Options**. Each part opens the same controls used by Properties;
-Properties may remain hidden. Double-clicking a Subgraph enters its graph.
+Properties may remain hidden. Click an individual shader card to select its assignment;
+double-click it to close **Details** and open that shader in the **Source** editor.
+The source comes from the current build-manifest program reference, including any
+per-use program override. An unmapped shader keeps **Details** open and reports the
+missing source. Double-clicking a Subgraph enters its graph.
 Right-click a pipeline and choose **View Shaders** to open a mapped source through
 its explicit build-manifest program reference. **Show Details / Edit Node** opens
 a Subgraph instance's choices without entering its shared source.
