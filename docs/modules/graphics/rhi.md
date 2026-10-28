@@ -55,6 +55,14 @@ The existing smoke/probe private WGSL interop remains a test boundary. External
 applications use the public rendering API and exported `ludus_compile_shader`.
 Neither compiler tools nor probe headers are installed as engine dependencies.
 
+## Raster color writes
+
+`RasterPipelineDescription::ShouldWriteColor` defaults to true. Set it to false
+for a depth-only draw: all color attachment write masks become zero, including
+on WebGPU where a void fragment stage requires that state. Attachment clears,
+loads and stores still follow the render pass description. The write policy
+participates in pipeline request identity.
+
 ## Vulkan diagnostics
 
 Implementation files formatting VkResult use the private

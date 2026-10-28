@@ -1,4 +1,5 @@
 #include "internal/world_graph_view.h"
+#include "internal/viewport_object_interaction.h"
 
 #include "internal/render_graph_preview.h"
 #include "internal/render_preview.h"
@@ -222,6 +223,11 @@ void WorldGraphView::refreshStatus()
     mStatus->setVisible(text.isEmpty() == false);
     Q_EMIT StatusChanged(text);
 }
+void WorldGraphView::SetObjectInteraction(ViewportObjectInteraction& inoutInteraction)
+{
+    mInteractionOrNull = &inoutInteraction;
+    connect(&inoutInteraction, &ViewportObjectInteraction::Changed, this, [this]() { update(); });
+}
 void WorldGraphView::paintEvent(QPaintEvent*)
 {
     LUDUS_PROFILE_SCOPE(EditorWorldGraphPaint);
@@ -234,6 +240,10 @@ void WorldGraphView::paintEvent(QPaintEvent*)
             const QSize size = mImage.size().scaled(this->size(), Qt::KeepAspectRatio);
             const QRect target(QPoint((width() - size.width()) / 2, (height() - size.height()) / 2), size);
             painter.drawImage(target, mImage);
+            if (mInteractionOrNull != nullptr)
+            {
+                mInteractionOrNull->Paint(painter, target);
+            }
         }
     }
     mPaintTrace.EndPaint();

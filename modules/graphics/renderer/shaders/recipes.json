@@ -157,5 +157,10 @@
     "source": "renderer_gpu_preview_group64.slang",
     "compute": "ComputeMain",
     "native_ray_queries": true
+  },
+  "renderer_clustered_authored_depth": {
+    "source": "renderer_clustered_authored.slang",
+    "vertex": "VertexMain",
+    "fragment": "OpaqueDepthMain"
   }
 }

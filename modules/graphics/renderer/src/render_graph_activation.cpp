@@ -172,6 +172,7 @@ struct RenderGraphPackage::State final
     bool HasVisibilityFields = false;
     bool HasPersistentBuffers = false;
     bool HasForwardStages = false;
+    bool CanHaveClusteredForward = false;
     bool HasExplicitAccumulation = false;
     bool HasExplicitToneMapping = false;
     bool HasBilinearUpscale = false;
@@ -225,7 +226,14 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         {
             return RenderGraphPackageStatus::Malformed;
         }
-        const bool isForwardRole = role >= format::FORWARD_STAGE_ROLE_FIRST && role < format::NATIVE_RAY_STAGE_ROLE;
+        const bool isClusteredFragment = role == format::CLUSTERED_FORWARD_FRAGMENT_ROLE;
+        const bool isForwardDepth = role == format::FORWARD_DEPTH_STAGE_ROLE;
+        if ((isClusteredFragment == true || isForwardDepth == true) && CanHaveClusteredForward == false)
+        {
+            return RenderGraphPackageStatus::UnsupportedVersion;
+        }
+        const bool isForwardRole = (role >= format::FORWARD_STAGE_ROLE_FIRST && role < format::NATIVE_RAY_STAGE_ROLE) ||
+                                   isClusteredFragment == true || isForwardDepth == true;
         if (isForwardRole == true && HasForwardStages == false)
         {
             return RenderGraphPackageStatus::UnsupportedVersion;
@@ -393,13 +401,35 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
     for (usize target = 0; target < format::SHADER_TARGET_COUNT; ++target)
     {
         const bool hasForward = Stages[format::FORWARD_STAGE_ROLE_FIRST][target].IsPresent;
+        if (Stages[format::FORWARD_DEPTH_STAGE_ROLE][target].IsPresent !=
+            Stages[format::CLUSTERED_FORWARD_FRAGMENT_ROLE][target].IsPresent)
+        {
+            return RenderGraphPackageStatus::Malformed;
+        }
         for (usize role = format::FORWARD_STAGE_ROLE_FIRST; role < format::NATIVE_RAY_STAGE_ROLE; ++role)
         {
-            if (Stages[role][target].IsPresent != hasForward)
+            const bool isFragment = role == static_cast<usize>(format::StageRole::ForwardFragment);
+            const bool hasClusteredFragment = Stages[format::CLUSTERED_FORWARD_FRAGMENT_ROLE][target].IsPresent;
+            if ((isFragment == true && hasClusteredFragment == true && Stages[role][target].IsPresent == true) ||
+                (isFragment == true ? (Stages[role][target].IsPresent == true || hasClusteredFragment == true)
+                                    : Stages[role][target].IsPresent) != hasForward)
             {
                 return RenderGraphPackageStatus::Malformed;
             }
         }
+    }
+    bool hasClusteredForward = false;
+    bool hasLegacyForward = false;
+    for (usize target = 0; target < format::SHADER_TARGET_COUNT; ++target)
+    {
+        hasClusteredForward =
+            hasClusteredForward == true || Stages[format::CLUSTERED_FORWARD_FRAGMENT_ROLE][target].IsPresent == true;
+        hasLegacyForward = hasLegacyForward == true ||
+                           Stages[static_cast<usize>(format::StageRole::ForwardFragment)][target].IsPresent == true;
+    }
+    if (hasClusteredForward == true && hasLegacyForward == true)
+    {
+        return RenderGraphPackageStatus::Malformed;
     }
     bool hasNativeRayInvocation = false;
     for (usize pass = 0; pass < Header.PassCount; ++pass)
@@ -677,17 +707,17 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
-        (version != format::COMPUTE_BVH_PACKAGE_VERSION && version != format::RAY_WORKGROUP_PACKAGE_VERSION &&
-         version != format::NATIVE_RAY_PIPELINE_PACKAGE_VERSION && version != format::CUSTOM_RAY_PACKAGE_VERSION &&
-         version != format::SOFTWARE_RAY_PACKAGE_VERSION && version != format::METALFX_SPATIAL_PACKAGE_VERSION &&
-         version != format::DENOISING_PACKAGE_VERSION && version != format::BILINEAR_PACKAGE_VERSION &&
-         version != format::TONE_MAPPING_PACKAGE_VERSION && version != format::ACCUMULATION_PACKAGE_VERSION &&
-         version != format::FORWARD_PACKAGE_VERSION && version != format::PIXEL_BUFFER_PACKAGE_VERSION &&
-         version != format::VISIBILITY_PACKAGE_VERSION && version != format::ORDERED_PACKAGE_VERSION &&
-         version != format::STORAGE_PACKAGE_VERSION && version != format::INDEPENDENT_PROGRAM_PACKAGE_VERSION &&
-         version != format::NATIVE_RAY_PACKAGE_VERSION && version != format::SCENE_PACKAGE_VERSION &&
-         version != format::VIEW_PACKAGE_VERSION && version != format::NAMED_PACKAGE_VERSION &&
-         version != format::LEGACY_PACKAGE_VERSION))
+        (version != format::CLUSTERED_FORWARD_PACKAGE_VERSION && version != format::COMPUTE_BVH_PACKAGE_VERSION &&
+         version != format::RAY_WORKGROUP_PACKAGE_VERSION && version != format::NATIVE_RAY_PIPELINE_PACKAGE_VERSION &&
+         version != format::CUSTOM_RAY_PACKAGE_VERSION && version != format::SOFTWARE_RAY_PACKAGE_VERSION &&
+         version != format::METALFX_SPATIAL_PACKAGE_VERSION && version != format::DENOISING_PACKAGE_VERSION &&
+         version != format::BILINEAR_PACKAGE_VERSION && version != format::TONE_MAPPING_PACKAGE_VERSION &&
+         version != format::ACCUMULATION_PACKAGE_VERSION && version != format::FORWARD_PACKAGE_VERSION &&
+         version != format::PIXEL_BUFFER_PACKAGE_VERSION && version != format::VISIBILITY_PACKAGE_VERSION &&
+         version != format::ORDERED_PACKAGE_VERSION && version != format::STORAGE_PACKAGE_VERSION &&
+         version != format::INDEPENDENT_PROGRAM_PACKAGE_VERSION && version != format::NATIVE_RAY_PACKAGE_VERSION &&
+         version != format::SCENE_PACKAGE_VERSION && version != format::VIEW_PACKAGE_VERSION &&
+         version != format::NAMED_PACKAGE_VERSION && version != format::LEGACY_PACKAGE_VERSION))
     {
         return RenderGraphPackageStatus::UnsupportedVersion;
     }
@@ -697,6 +727,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     candidate->HasPersistentBuffers = version >= format::ORDERED_PACKAGE_VERSION;
     candidate->HasPixelBuffers = version >= format::PIXEL_BUFFER_PACKAGE_VERSION;
     candidate->HasForwardStages = version >= format::FORWARD_PACKAGE_VERSION;
+    candidate->CanHaveClusteredForward = version >= format::CLUSTERED_FORWARD_PACKAGE_VERSION;
     candidate->HasExplicitAccumulation = version >= format::ACCUMULATION_PACKAGE_VERSION;
     candidate->HasExplicitToneMapping = version >= format::TONE_MAPPING_PACKAGE_VERSION;
     candidate->HasBilinearUpscale = version >= format::BILINEAR_PACKAGE_VERSION;
@@ -970,6 +1001,10 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
     }
     const State& state = *mState;
     result.HasRayPathCapture = state.IsRayPathCapture;
+    for (const State::StageView& view : state.Stages[format::CLUSTERED_FORWARD_FRAGMENT_ROLE])
+    {
+        result.HasClusteredForward = result.HasClusteredForward == true || view.IsPresent == true;
+    }
     for (usize pass = 0; pass < state.Header.PassCount; ++pass)
     {
         result.HasVisibilityBuffer =
@@ -998,8 +1033,10 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
     for (usize role = 0; role < format::STAGE_ROLE_COUNT; ++role)
     {
         rhi::RasterShaderDescription& description =
-            role == format::NATIVE_RAY_STAGE_ROLE      ? result.NativeRayStages
-            : role >= format::FORWARD_STAGE_ROLE_FIRST ? *forwardMembers[role - format::FORWARD_STAGE_ROLE_FIRST]
+            role == format::FORWARD_DEPTH_STAGE_ROLE          ? result.ForwardDepth
+            : role == format::CLUSTERED_FORWARD_FRAGMENT_ROLE ? result.ForwardFragment
+            : role == format::NATIVE_RAY_STAGE_ROLE           ? result.NativeRayStages
+            : role >= format::FORWARD_STAGE_ROLE_FIRST        ? *forwardMembers[role - format::FORWARD_STAGE_ROLE_FIRST]
             : role == static_cast<usize>(format::StageRole::PersistentRayCompute) ? result.RayCompute
             : role < format::LEGACY_STAGE_ROLE_COUNT
                 ? *members[role]
@@ -1073,9 +1110,14 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
                 }
             }
         }
-        if (role >= format::FORWARD_STAGE_ROLE_FIRST && role < format::NATIVE_RAY_STAGE_ROLE)
+        if ((role >= format::FORWARD_STAGE_ROLE_FIRST && role < format::NATIVE_RAY_STAGE_ROLE) ||
+            role == format::CLUSTERED_FORWARD_FRAGMENT_ROLE || role == format::FORWARD_DEPTH_STAGE_ROLE)
         {
-            SetRenderGraphForwardInterface(description, static_cast<format::StageRole>(role));
+            SetRenderGraphForwardInterface(description,
+                                           role == format::CLUSTERED_FORWARD_FRAGMENT_ROLE
+                                               ? format::StageRole::ForwardFragment
+                                               : static_cast<format::StageRole>(role),
+                                           result.HasClusteredForward);
         }
         if (state.BindingCounts[role] != 0)
         {

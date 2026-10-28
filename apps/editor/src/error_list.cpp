@@ -1,10 +1,10 @@
 #include "internal/error_list.h"
+#include "internal/editor_icons.h"
 #include "internal/item_selection.h"
 
 #include <ludus/foundation/base/core.h>
 
 #include <QAbstractItemView>
-#include <QApplication>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QJsonArray>
@@ -17,7 +17,6 @@
 #include <QResizeEvent>
 #include <QScrollBar>
 #include <QStringList>
-#include <QStyle>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QToolButton>
@@ -113,6 +112,20 @@ constexpr foundation::int32 DESCRIPTION_CELL_PADDING_PIXELS = 8;
             break;
     }
     return QStringLiteral("Message");
+}
+
+[[nodiscard]] EditorIcon GetSeverityIcon(ErrorListSeverity severity)
+{
+    switch (severity)
+    {
+        case ErrorListSeverity::Error:
+            return EditorIcon::Error;
+        case ErrorListSeverity::Warning:
+            return EditorIcon::Warning;
+        case ErrorListSeverity::Message:
+            break;
+    }
+    return EditorIcon::Information;
 }
 } // namespace
 
@@ -248,13 +261,12 @@ ErrorList::ErrorList(QWidget* parentOrNull)
     QHBoxLayout* filters = new QHBoxLayout;
     filters->setContentsMargins(0, 0, 0, 0);
     filters->setSpacing(0);
-    const QStyle* style = QApplication::style();
     mErrors->setObjectName(QStringLiteral("errorListErrors"));
-    mErrors->setIcon(style->standardIcon(QStyle::SP_MessageBoxCritical));
+    mErrors->setIcon(GetEditorIcon(EditorIcon::Error));
     mWarnings->setObjectName(QStringLiteral("errorListWarnings"));
-    mWarnings->setIcon(style->standardIcon(QStyle::SP_MessageBoxWarning));
+    mWarnings->setIcon(GetEditorIcon(EditorIcon::Warning));
     mMessages->setObjectName(QStringLiteral("errorListMessages"));
-    mMessages->setIcon(style->standardIcon(QStyle::SP_MessageBoxInformation));
+    mMessages->setIcon(GetEditorIcon(EditorIcon::Information));
     for (QToolButton* filter : {mErrors, mWarnings, mMessages})
     {
         filter->setCheckable(true);
@@ -355,6 +367,7 @@ void ErrorList::ReplaceEntries(ErrorListProducer producer, const QList<ErrorList
     kept.append(entries);
     mEntries = foundation::Move(kept);
     render();
+    Q_EMIT CountsChanged();
     if (isChanged == true && hasProblem == true)
     {
         Q_EMIT ProblemsReported();
@@ -409,7 +422,6 @@ void ErrorList::render()
     mWarnings->setText(QStringLiteral("%1 Warnings").arg(GetCount(ErrorListSeverity::Warning)));
     mMessages->setText(QStringLiteral("%1 Messages").arg(GetCount(ErrorListSeverity::Message)));
     mTable->setRowCount(0);
-    const QStyle* style = QApplication::style();
     for (qsizetype index = 0; index < mEntries.size(); ++index)
     {
         const ErrorListEntry& entry = mEntries.at(index);
@@ -420,10 +432,7 @@ void ErrorList::render()
         const foundation::int32 row = mTable->rowCount();
         mTable->insertRow(row);
         QTableWidgetItem* severity = new QTableWidgetItem(GetSeverityName(entry.Severity));
-        severity->setIcon(style->standardIcon(entry.Severity == ErrorListSeverity::Error ? QStyle::SP_MessageBoxCritical
-                                              : entry.Severity == ErrorListSeverity::Warning
-                                                  ? QStyle::SP_MessageBoxWarning
-                                                  : QStyle::SP_MessageBoxInformation));
+        severity->setIcon(GetEditorIcon(GetSeverityIcon(entry.Severity)));
         severity->setData(ENTRY_ROLE, static_cast<foundation::int32>(index));
         mTable->setItem(row, SEVERITY_COLUMN, severity);
         mTable->setItem(row, CODE_COLUMN, new QTableWidgetItem(entry.Code));

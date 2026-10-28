@@ -52,6 +52,9 @@
 /// of each RayCompute/SceneRayCompute/PersistentRayCompute stage record. X/Y must be positive and Z
 /// must be one; targets of the same role must agree. Earlier compute stages imply 64x1x1.
 /// Version 22 admits RayTraversal::ComputeBvh in each pass's traversal word.
+/// Version 23 admits ClusteredForwardFragment in place of ForwardFragment; other forward
+/// stages then use the clustered material ABI. ForwardDepth carries its matching opaque
+/// depth-only fragment. It preserves the version 22 record widths.
 namespace ludus::content::render_graph_format
 {
 /// "LURG" read as a little-endian uint32.
@@ -73,8 +76,10 @@ inline constexpr foundation::uint32 NATIVE_RAY_PIPELINE_PACKAGE_VERSION = 20;
 inline constexpr foundation::uint32 RAY_WORKGROUP_PACKAGE_VERSION = 21;
 /// First generation admitting the ComputeBvh pass traversal; version 21's layout is unchanged.
 inline constexpr foundation::uint32 COMPUTE_BVH_PACKAGE_VERSION = 22;
+/// First generation admitting the clustered forward fragment role; record widths are unchanged.
+inline constexpr foundation::uint32 CLUSTERED_FORWARD_PACKAGE_VERSION = 23;
 /// Current runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = COMPUTE_BVH_PACKAGE_VERSION;
+inline constexpr foundation::uint32 PACKAGE_VERSION = CLUSTERED_FORWARD_PACKAGE_VERSION;
 /// First package carrying explicit OIDN denoising quality per ray pass.
 inline constexpr foundation::uint32 DENOISING_PACKAGE_VERSION = 16;
 /// First package carrying the renderer-owned bilinear image operation.
@@ -134,8 +139,12 @@ inline constexpr foundation::usize FORWARD_STAGE_ROLE_COUNT = 6;
 inline constexpr foundation::usize FORWARD_INPUT_COUNT = 16;
 /// Appended native Metal stage role; earlier role identifiers stay stable.
 inline constexpr foundation::usize NATIVE_RAY_STAGE_ROLE = FORWARD_STAGE_ROLE_FIRST + FORWARD_STAGE_ROLE_COUNT;
+/// Fragment-role marker selecting the complete clustered material ABI for all forward stages.
+inline constexpr foundation::usize CLUSTERED_FORWARD_FRAGMENT_ROLE = NATIVE_RAY_STAGE_ROLE + 1;
+/// Void clustered forward prepass fragment sharing the authored material vertex entry.
+inline constexpr foundation::usize FORWARD_DEPTH_STAGE_ROLE = CLUSTERED_FORWARD_FRAGMENT_ROLE + 1;
 /// All admitted raster, compute and native ray stage roles.
-inline constexpr foundation::usize STAGE_ROLE_COUNT = NATIVE_RAY_STAGE_ROLE + 1;
+inline constexpr foundation::usize STAGE_ROLE_COUNT = FORWARD_DEPTH_STAGE_ROLE + 1;
 /// Return a raster pair's vertex (stage 0) or fragment (stage 1) role.
 /// @pre technique is a bounded raster role and stage is below TECHNIQUE_STAGE_COUNT.
 [[nodiscard]] LUDUS_INLINE constexpr foundation::usize GetRasterStageRole(Technique technique,
@@ -202,7 +211,11 @@ enum class StageRole : foundation::uint32
     LightingVertex,                           ///< Renderer lighting composition vertex.
     LightingFragment,                         ///< Renderer lighting composition fragment.
     LightingShadow,                           ///< Renderer flat shadow fragment.
-    NativeRayStages = NATIVE_RAY_STAGE_ROLE,  ///< Linked native ray stages sharing the persistent scene ABI.
+    /// Clustered material fragment; replaces ForwardFragment without renumbering earlier roles.
+    ClusteredForwardFragment = CLUSTERED_FORWARD_FRAGMENT_ROLE,
+    /// Optional opaque depth-only fragment, executed with the exact forward vertex entry.
+    ForwardDepth = FORWARD_DEPTH_STAGE_ROLE,
+    NativeRayStages = NATIVE_RAY_STAGE_ROLE, ///< Linked native ray stages sharing the persistent scene ABI.
 };
 /// Float vertex input width of one stage input record.
 // NOLINTNEXTLINE(performance-enum-size): versioned numeric fields have explicit 32-bit widths.

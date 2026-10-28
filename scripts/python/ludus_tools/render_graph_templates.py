@@ -7,6 +7,7 @@ import json
 # Directory, label and the editor template registry's requirement (render_graph_templates.json):
 # None for portable templates, otherwise a requirement that needs a Metal or Vulkan profile.
 TEMPLATES = {
+    'raster': ('default', 'Raster', None),
     'forward-lit': ('forward_lit', 'Forward lit', None),
     'restir-di': ('restir_di', 'ReSTIR DI', 'native-ray-tracing'),
     'visibility-buffer': ('visibility_buffer', 'Visibility buffer', None),

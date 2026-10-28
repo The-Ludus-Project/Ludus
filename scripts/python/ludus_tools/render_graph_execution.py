@@ -43,6 +43,11 @@ RASTER_FAMILY_COUNT = LEGACY_PROGRAM_COUNT - 1
 MAX_AUTHORED_TECHNIQUES = build.LIMITS['configurations']
 LEGACY_STAGE_ROLE_COUNT = 12
 PERSISTENT_RAY_STAGE_ROLE = LEGACY_STAGE_ROLE_COUNT + (MAX_AUTHORED_TECHNIQUES - 1) * RASTER_FAMILY_COUNT * 2
+FORWARD_STAGE_ROLE_FIRST = PERSISTENT_RAY_STAGE_ROLE + 1
+LEGACY_FORWARD_STAGE_COUNT = 6
+NATIVE_RAY_STAGE_ROLE = FORWARD_STAGE_ROLE_FIRST + LEGACY_FORWARD_STAGE_COUNT
+CLUSTERED_FORWARD_FRAGMENT_ROLE = NATIVE_RAY_STAGE_ROLE + 1
+FORWARD_DEPTH_STAGE_ROLE = CLUSTERED_FORWARD_FRAGMENT_ROLE + 1
 for variant in range(1, MAX_AUTHORED_TECHNIQUES):
     for family, base in enumerate(tuple(PROGRAM_MEMBERS)[:RASTER_FAMILY_COUNT]):
         name = base + 'Variant' + str(variant)
@@ -209,7 +214,7 @@ def lower_plan(package, configuration):
                     for key, value in operation['pipeline']['state'].items()))]
         build.require(choices and all(r['state']['color'] == ('RGBA8Unorm' if operation['configuration'] == 'ColorAndDepth' else 'None') and
                       r['state']['depth'] == 'Depth32Float' and r['state']['samples'] == 1 and r['state']['topology'] == 'TriangleList' and r['state']['cull'] == 'None' and r['state']['front'] == 'CounterClockwise' and
-                      r['state']['depth_compare'] == 'Less' and r['state']['depth_write'] and r['state']['blend'] == 'Opaque'
+                      r['state']['depth_compare'] == ('LessEqual' if r.get('clustered_forward', False) and operation['configuration'] == 'ColorAndDepth' else 'Less') and r['state']['depth_write'] and r['state']['blend'] == 'Opaque'
                       for r in choices), 'Configuration', operation['id'], 'recipe differs from admitted static Renderer state')
         attachment = operation['attachments']
         depth = attachment['depth']['resource']
@@ -235,6 +240,18 @@ def lower_plan(package, configuration):
                  peer['configuration'] == operation['configuration']]
         if len(peers) > 1 and len({peer['technique'] for peer in peers}) == len(peers):
             record['AllowsRepeatedCoverage'] = 1
+    # An authored clustered depth prepass deliberately covers depth again in the
+    # immediately dependent color pass. Unrelated duplicate routes still reject.
+    for index in range(1, len(pass_records)):
+        previous, current = pass_records[index - 1], pass_records[index]
+        operation = operations[index]
+        is_clustered_color = any(recipe.get('clustered_forward', False) and
+                                 recipe['technique'] == operation.get('technique')
+                                 for recipe in package['recipes'])
+        if (is_clustered_color and previous['Program'] == 'DepthOnly' and current['Program'] == 'ColorAndDepth' and
+                previous['Camera'] == current['Camera'] and previous['Depth'] == current['Depth'] and
+                previous['DepthStore'] == 'Store' and current['DepthLoad'] == 'Load'):
+            previous['AllowsRepeatedCoverage'] = current['AllowsRepeatedCoverage'] = 1
     for index, record in enumerate(pass_records):
         if record.get('Visibility', ABSENT) != ABSENT:
             record['AllowsRepeatedCoverage'] = 1
@@ -292,7 +309,7 @@ TARGET_FIELDS = {'metal': 'Msl', 'spirv': 'Spirv', 'wgsl': 'Wgsl', 'glsl': 'Glsl
 PACKAGE_MAGIC = 0x4752554C
 # Editor-only diagnostic ray path capture generation; same layout, refused by runtime decoding.
 RAY_PATH_CAPTURE_PACKAGE_MAGIC = 0x5052554C
-PACKAGE_VERSION = 22
+PACKAGE_VERSION = 23
 RESOURCE_FIELD_COUNT = 9
 RESOURCE_RECORD_BYTES = RESOURCE_FIELD_COUNT * 4
 MAX_PASS_NAME_BYTES = 127
@@ -307,7 +324,9 @@ FORMAT_CODES = {'Float32': 0, 'Float2': 1, 'Float3': 2, 'Float4': 3}
 def role(program, stage):
     """Numeric StageRole: two consecutive roles (vertex, fragment) per program."""
     if program == 'NativeRayStages':
-        return PERSISTENT_RAY_STAGE_ROLE + 1 + len(forward.ROLE_KEYS)
+        return NATIVE_RAY_STAGE_ROLE
+    if program == 'ForwardDepth':
+        return FORWARD_DEPTH_STAGE_ROLE
     if program == 'RayTracing':
         return {'compute': 8, 'vertex': 9, 'fragment': 10}[stage]
     if (program, stage) in forward.ROLE_KEYS:
@@ -440,8 +459,11 @@ def _runtime_contents(path, configuration):
                 build.require(len(matches) == 1, 'Package', technique, 'native ray stage identity is ambiguous')
                 stages[('NativeRayStages', 'compute', recipe['profile'])] = matches[0]
     has_forward = any('forward_stages' in recipe for recipe in package['recipes'] if recipe['technique'] in selected_techniques)
+    is_clustered_forward = has_forward and any(recipe.get('clustered_forward', False) for recipe in package['recipes'] if recipe['technique'] in selected_techniques)
     if has_forward:
-        build.require(len(selected_techniques) == 1 and all(p['Program'] == 'ColorAndDepth' and p['SceneData'] == graph.scene_bundle.ALL_DATA for p in passes),
+        allowed = {'ColorAndDepth', 'DepthOnly'} if is_clustered_forward else {'ColorAndDepth'}
+        build.require(any(p['Program'] == 'ColorAndDepth' for p in passes) and
+                      all(p['Program'] in allowed and p['SceneData'] == graph.scene_bundle.ALL_DATA for p in passes),
                       'Capability', configuration, 'forward-lit requires opaque color passes with the complete Scene bundle')
         for recipe in package['recipes']:
             if recipe['technique'] not in selected_techniques:
@@ -515,7 +537,7 @@ def _runtime_contents(path, configuration):
                   'ray visibility inputs must match scene_interface.visibility_buffer')
     persistent = ray.TECHNIQUE in selected_techniques and any(recipe.get('persistent_buffers', False) for recipe in ray_recipes)
     ray_path_capture = ray.TECHNIQUE in selected_techniques and any(recipe.get('ray_path_capture', False) for recipe in ray_recipes)
-    return {'forward_lit': has_forward, 'persistent_buffers': persistent, 'ray_path_capture': ray_path_capture, 'visibility_buffer': has_visibility, 'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
+    return {'clustered_forward': is_clustered_forward, 'forward_lit': has_forward, 'persistent_buffers': persistent, 'ray_path_capture': ray_path_capture, 'visibility_buffer': has_visibility, 'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
             'cameras': cameras, 'camera_targets': camera_targets, 'artifacts': artifacts,
             'uniform_values': value_count, 'bindings': bindings, 'blocks': blocks, 'fields': fields,
             'storage_buffers': storage_buffers, 'uniform_interface': uniform_interface,
@@ -647,6 +669,8 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
               '[[nodiscard]] LUDUS_INLINE renderer::RenderGraphPrograms MakePrograms(',
               '    const rhi::RasterShaderDescription& compositeVertex,',
               '    const rhi::RasterShaderDescription& compositeFragment) noexcept', '{', '    renderer::RenderGraphPrograms result;']
+    if contents.get('clustered_forward', False):
+        lines.append('    result.HasClusteredForward = true;')
     if contents.get('persistent_buffers', False):
         lines.append('    result.HasPersistentRayBuffers = true;')
     if contents.get('scene_interface', False):
@@ -682,7 +706,8 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
                 for axis, dimension in enumerate(shape):
                     lines.append(f'    result.{member}.WorkgroupSize[{axis}] = {dimension};')
             if program_name in forward.SUPPORT:
-                lines += [f'    renderer::SetRenderGraphForwardInterface(result.{member}, format::StageRole::{member});']
+                cluster_argument = 'true' if contents.get('clustered_forward', False) else 'false'
+                lines += [f'    renderer::SetRenderGraphForwardInterface(result.{member}, format::StageRole::{member}, {cluster_argument});']
             stage_bindings = _stage_bindings(program_name, stage, contents['bindings'])
             if program_name in ('RayTracing', 'NativeRayStages') and stage == 'compute':
                 # Slot order, as the runtime package decodes it; reflection order follows declaration order.
@@ -761,6 +786,8 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
                   if program_name in ('RayTracing', 'NativeRayStages') and stage == 'vertex' else stage_inputs(item) if stage == 'vertex' else [])
         entry = item['entry'].encode()
         stage_role = (PERSISTENT_RAY_STAGE_ROLE if contents.get('persistent_buffers', False) else 11) if program_name == 'RayTracing' and stage == 'compute' and contents.get('scene_interface', False) else role(program_name, stage)
+        if contents.get('clustered_forward', False) and (program_name, stage) == ('ForwardLit', 'fragment'):
+            stage_role = CLUSTERED_FORWARD_FRAGMENT_ROLE
         data += u32(stage_role, TARGET_CODES[target], len(inputs), len(entry), len(item['bytes']),
                     len(item['blocks']))
         if program_name == 'RayTracing' and stage == 'compute':

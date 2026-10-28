@@ -54,6 +54,41 @@ central document well, and **tool windows** dock around it (see
 | Timing | Runtime-reported frame pacing and interval statistics for the running session |
 | Profiling | Record editor CPU scopes, viewport GPU durations, or both into a Perfetto JSON trace |
 
+Right-click a Project Explorer category, file, or empty area to open its context
+menu. The **Add** button also offers **New World**, **New Render Graph**,
+**New Shader**, **New Script**, **New Sound**, **New Music**, and the audio/content
+import workflow. Worlds begin as unsaved drafts; Save creates the file. Render
+graphs use the existing template/package creation dialog. Shader and Luau source
+files start as unregistered source files: add their entry points/programs to the
+owning manifest/package before building or cooking. Script files and shaders
+without a graph owner open in the configured external code editor on native
+platforms; that external launch is unavailable in the browser. The Scripts
+category continues to open the project script workspace.
+
+**Add Existing File** copies a selected authored file into an existing project
+folder without replacing files. A file already inside the project is opened
+without copying it. Single-file imports retain their references; add companion
+files separately. Audio/content imports use the Content workspace's current
+WAV/FLAC importer and publish through its catalog. New sound/music definitions
+require an imported source selected in Audio. The audio/content categories keep
+their workspace operations; they do not expose raw file deletion or duplication
+of catalog-managed resources.
+
+For one authored file, choose **Duplicate** (Ctrl+D / Command+D) or **Remove**
+(Delete, or Backspace on macOS). A graph in a subdirectory duplicates its entire
+containing package into a new sibling folder, preserving companion paths.
+Root-level graphs, worlds, shaders and scripts duplicate only the saved file;
+references outside the copied package stay shared. Copies never overwrite a
+destination and reject child symlinks; package copies are bounded to 64 MiB,
+4096 entries and 12 directory levels, and publish only after the full copy succeeds.
+Remove asks for confirmation, then moves the file under the project's hidden
+`.ludus-trash` folder, preserving its relative path inside a unique recovery
+folder. Restore it manually to its original path and Refresh. References in
+other files are not rewritten. Switch away from a loaded World or graph package
+before removing its files; closing a tab retains its document. Select another
+script program before removing its loaded source. File actions operate on one item at a
+time; a multiple selection disables Duplicate and Remove.
+
 The Configuration workspace retains its explicitly loaded preview/draft across
 project changes. Quitting prompts for unsaved preferences. Project settings,
 audio definitions, offline preferences and live values have separate save owners.
@@ -463,14 +498,37 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   closed, without taking focus; repeating an unchanged result does not, so a list
   you closed stays closed. A details pane under the table shows the selected
   description only when its row cannot: multi-line or elided descriptions.
-- **Toolbars** share the menus' commands: Standard (Open, Save, Undo, Redo),
-  Game (build, run, debug and Play controls) and Render Graph (Validate, Build
-  Graph, Build & Preview, Live Preview, Cancel). Toolbar buttons use short labels
+- **Toolbars** share the menus' commands, in groups told apart by a separator: Standard
+  holds File (Open, Save) and History (Undo, Redo); Game holds Run (Play, Build, Stop),
+  Launch (Run, Debug) and Session (Pause, Step, Resume, Reload Code). The Session group
+  is shown only while a game is running or paused. The Render Graph toolbar is the
+  context strip: it appears only while a render graph is the active document (Validate,
+  Build Graph, Build & Preview, Live Preview, Cancel), so a World tab keeps one row of
+  commands. Toolbar buttons use short labels
   so a 1280-pixel window shows them all; tooltips give the full name and
-  shortcut. **View → Toolbars** hides or shows each toolbar. Documents have no
+  shortcut. The primary commands (Open, Save, Build, Run, Play, Stop) also show an
+  icon beside the label; every other button stays text only. Project Explorer
+  rows and the Error List severities carry icons too. The icons are Lucide
+  drawings (ISC), drawn in the palette's button text colour; see
+  [Editor icons](#editor-icons) for attribution and contribution instructions.
+  **View → Toolbars** hides or shows the Standard and Game toolbars. Documents have no
   command rows of their own: **File → New Render Graph...** and **Open Render
   Graph...** open graphs, and the **Build** menu holds every render-graph
   command, including Cook Render Graph Runtime and Cancel Render Graph Job.
+- **Empty and error states** share one `StateView`: an icon, one sentence, at most
+  one primary action with its shortcut, and for an error the cause, what to do
+  about it and a **Copy Details** button that puts all of it on the clipboard.
+  The Start Page (no recent projects), the World Inspector (no world open), the
+  viewport when its GPU device or presentation fails, and a failed content
+  refresh or import use it; cancelling an import is not an error.
+- The right side of the status bar shows the **activity chip**: while a build,
+  configure, render-graph job or content import runs it shows a dot and one
+  label (an operation phase wins over a render-graph job, which wins over an
+  import); a job that reports progress shows a determinate bar instead. The chip
+  is hidden when nothing runs and never opens a toast. Beside it, **Problems**
+  and **Warnings** counts from the Error List open that tool window when
+  clicked. The chip applies at most ten changes a second, so a fast job cannot
+  flicker the status bar.
 - **Tools → Options...** edits editor preferences. Its **Render Graph** page
   holds the advanced shader-tool overrides and the native shader worker socket
   ([build settings](render-graph-authoring.md#build-settings)).
@@ -945,6 +1003,39 @@ Browser builds and native builds without `LUDUS_EDITOR_RENDER_PREVIEW` explain
 why rendering is unavailable. The game adapter chooses the trusted preview for
 the open World; it does not introduce another authoring workspace.
 
+### Select and transform objects in the World viewport
+
+Click a visible object's triangles to select it. The hierarchy and Properties
+follow the same stable entity ID; clicking empty space clears the selection.
+The selected object has an amber wireframe, drawn over the rendered image so its
+shape stays visible against dark surfaces. Selection works with the inspector
+hidden. Picking chooses the nearest geometric triangle, including back faces;
+texture alpha masks and shader displacement do not alter this editor query.
+
+Choose **Select (Q)**, **Move (W)**, **Rotate (E)** or **Scale (R)** in the viewport
+tool menu. Drag a red X, green Y or blue Z handle; rotation uses rings. Move
+changes the parent-local position, rotation changes the stored Euler degree
+component, and scale changes one positive local scale component. Hold **Shift**
+for 0.1 metre movement, 15 degree rotation or 0.1 scale-factor increments.
+The wireframe previews the candidate throughout a drag. Release applies one
+validated World edit and refreshes the shaded scene; **Undo** restores the entire
+gesture. **Delete** and **Ctrl+D** use the hierarchy’s delete and duplicate
+commands while the viewport has focus. **Escape**, a tool change, hiding the view
+or losing focus cancels the candidate. **Save World** persists the accepted placement.
+
+Imported scene instances and project preview transform bindings expose these
+handles. Other extractors can still select and highlight their objects; they need
+an explicit authoring transform binding before the editor can manipulate them.
+A multiple selection, unapplied inspector fields or a running scene operation
+disables transform handles. Axis handles viewed directly end-on are hidden;
+orbit to expose them. Wireframes sample very dense meshes to bound overlay cost.
+The native shared-device viewport and native readback fallback show the same
+selection overlay. The browser's separate GPU canvas does not yet composite it.
+
+Alt/Option-drag orbit, middle-drag pan, right-drag navigation and Play input keep
+their existing behavior. Q/W/E/R choose tools only while the editor camera is not
+flying; the fly movement keys keep working while the right button is held.
+
 ### World viewport navigation
 
 The World hierarchy scrolls when the available dock height cannot fit its entity
@@ -1262,19 +1353,21 @@ Debug views follow Lit in the selector. Each replaces shading with one quantity
 per pixel so you can inspect it directly:
 
 - **Normal — world-space normals as colour**: +X red, +Y green, +Z blue.
-- **Depth — distance from camera, near black to far white**: linear distance
+- **Depth — distance from camera, near purple to far yellow**: linear distance
   between the camera's near plane and far plane, tightened to the scene's
-  bounds so visible geometry spans the full range.
+  bounds so visible geometry spans the full range. Depth and Light count use
+  the perceptually uniform viridis ramp, and a key in the viewport's bottom
+  left names both ends.
 - **Roughness — smooth black to rough white**.
 - **Metallic — dielectric black to metal white**.
 - **UV — texture coordinates as red/green**: the first UV set.
-- **Light count — lights reaching each pixel as a heat map**: counts lights
-  whose shadowed contribution is nonzero: black for none, then blue (one) to
-  red (16 or more).
+- **Light count — lights reaching each pixel as a ramp**: counts lights
+  whose shadowed contribution is nonzero: dark purple for none, then through
+  teal and green to yellow (16 or more).
 
 Scenes with authored lights use the same surface maps, clusters and shadows as
 Lit. Authored Worlds without lights get editor-derived vertex normals when the
-mesh has none. Light count is black there because no lights exist. Overdraw is
+mesh has none. Light count is the ramp's dark purple end there because no lights exist. Overdraw is
 not offered, because the world pass has no additive blend state to count
 overlapping fragments. The debug view is saved like the other modes. Older
 preferences open in Solid.
@@ -1950,6 +2043,39 @@ supported; do not distribute layout blobs with projects.
 See [architecture](../architecture/editor-architecture.md),
 [interaction design](../architecture/editor-interaction-design.md), and
 [post-design reference review](../architecture/editor-design-review.md).
+
+## Editor icons
+
+The outline icons for the toolbars, Project Explorer and Error List are taken
+unchanged from [Lucide](https://lucide.dev) 1.62.0, commit
+`2ca268e74888d3506b3319fb8f94aaaaf70ceca9` of
+[lucide-icons/lucide](https://github.com/lucide-icons/lucide).
+Thanks to the Lucide authors for these drawings. Lucide is ISC licensed; some
+of its drawings derive from Feather (MIT). The licence file at
+`apps/editor/icons/LICENSE` carries both notices and must ship with the icons.
+
+The SVG files live in `apps/editor/icons` and are Qt resources under `:/icons`.
+`apps/editor/src/editor_icons.cpp` parses each one once, on first use, into a
+`QPainterPath` on a 24 unit grid and draws it with a 1.5 unit round stroke in the
+palette's button text colour. Disabled icons use disabled button text; Play and
+Stop are filled to identify live-state actions. No SVG is parsed while painting,
+and no Qt SVG module is needed. One bounded pixmap cache keys entries by icon,
+size, device pixel ratio, mode and colour. The parser supports `path`, `circle`
+and `rect` elements and the M, L, H, V, C, S, Q, T, A and Z path commands; a new
+icon that needs anything else fails the icon tests.
+
+To add an icon:
+
+1. Copy its SVG from the pinned Lucide commit into `apps/editor/icons`.
+2. Add it to `EditorIcon` in `apps/editor/src/internal/editor_icons.h` and to
+   `ICON_DESCRIPTORS` in `apps/editor/src/editor_icons.cpp`, and keep
+   `EDITOR_ICON_COUNT` in step.
+3. Run the editor tests tagged `[icons]`. The resource helper in
+   `apps/editor/CMakeLists.txt` discovers SVG files in that directory automatically.
+
+Engine concepts that Lucide has no drawing for (entity, probe, cook) will be
+drawn in house on the same grid and stroke. List their attribution here when
+added.
 
 ## macOS validation
 

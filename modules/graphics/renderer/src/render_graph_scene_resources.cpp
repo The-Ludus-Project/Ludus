@@ -4,7 +4,10 @@
 #include <ludus/foundation/base/checked_integer.hpp>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/math/geometry.hpp>
+#include <ludus/foundation/math/queries.hpp>
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/math/transform.hpp>
 #include <ludus/graphics/renderer/environment.hpp>
 #include <ludus/graphics/renderer/lighting.hpp>
 
@@ -13,8 +16,8 @@
 
 // Thanks to Alegruz, "Efficient Rendering Study Notes" (19 July 2022),
 // sections "Forward Rendering" and "Single Pass Lighting": scene material/light inputs
-// feed one geometry shading pass. This first slice reuses L4's bounded forward list;
-// tiled/clustered assignment remains a separate extension. Design and limits:
+// feed one geometry shading pass. The portable clustered extension reuses L5's
+// conservative spatial grid and full-list overflow fallback. Design and limits:
 // docs/architecture/shared-scene-shader-contract.md#authored-forward-material-execution
 // https://alegruz.github.io/graphics/2022/07/19/efficient-rendering-study-notes.html
 namespace ludus::graphics::renderer::internal
@@ -121,6 +124,7 @@ struct ForwardSceneResources::State final
     rhi::DeviceHandle Device{};
     Renderer* RendererOrNull = nullptr;
     MaterialProgram Program{};
+    bool IsClustered = false;
     StaticArray<MeshEntry, CACHE_MESH_COUNT> Meshes{};
     StaticArray<TextureEntry, CACHE_TEXTURE_COUNT> Textures{};
     usize IdentityBytes = 0;
@@ -326,6 +330,8 @@ struct ForwardSceneGeneration::State final
     Array<LitMaterialDescription> Descriptions;
     Array<MaterialVersion> Materials;
     Array<DirectLight> Lights;
+    LightClusterDescription Clusters;
+    math::Aabb3 BoundsWorld = math::EmptyAabb3();
     EnvironmentMap Environment;
     usize PreparedMaterials = 0;
     bool HasEnvironment = false;
@@ -360,8 +366,10 @@ void ForwardSceneResources::Reset() noexcept
 {
     mState.Reset();
 }
-Status
-ForwardSceneResources::Initialize(rhi::DeviceHandle device, Renderer& inoutRenderer, MaterialProgram program) noexcept
+Status ForwardSceneResources::Initialize(rhi::DeviceHandle device,
+                                         Renderer& inoutRenderer,
+                                         MaterialProgram program,
+                                         bool isClustered) noexcept
 {
     if (mState.Get() != nullptr)
     {
@@ -375,6 +383,7 @@ ForwardSceneResources::Initialize(rhi::DeviceHandle device, Renderer& inoutRende
     allocationOrNull->Device = device;
     allocationOrNull->RendererOrNull = &inoutRenderer;
     allocationOrNull->Program = program;
+    allocationOrNull->IsClustered = isClustered;
     mState.Reset(allocationOrNull);
     return Status::Ready;
 }
@@ -427,6 +436,7 @@ Status ForwardSceneGeneration::Poll() noexcept
         LitMaterialDescription& description = state.Descriptions[state.PreparedMaterials];
         description.Lights = state.Lights.GetData();
         description.LightCount = state.Lights.GetSize();
+        description.Clusters = owner.IsClustered == true ? &state.Clusters : nullptr;
         LightSelection selection;
         const Status status = owner.RendererOrNull->CreateLitMaterial(owner.Program,
                                                                       description,
@@ -437,6 +447,8 @@ Status ForwardSceneGeneration::Poll() noexcept
             return status;
         }
         owner.Report.DroppedLights = selection.Dropped;
+        owner.Report.OverflowClusters = selection.OverflowCells;
+        owner.Report.ClusterAssignments = selection.Assignments;
     }
     for (usize i = 0; i < state.Materials.GetSize(); ++i)
     {
@@ -635,6 +647,21 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
                 return status;
             }
             static_cast<void>(candidate.MeshPins.TryAdd(meshIndex));
+            if (owner.IsClustered == true)
+            {
+                math::Aabb3 boundsMesh = math::EmptyAabb3();
+                for (usize vertex = 0; vertex < geometry.VertexCount; ++vertex)
+                {
+                    const math::Vector3 positionMesh = geometry.Positions[vertex];
+                    boundsMesh = math::Merge(boundsMesh, {positionMesh, positionMesh});
+                }
+                math::Aabb3 boundsWorld;
+                if (math::TryTransformAabb(item.MeshToWorld, boundsMesh, boundsWorld) != math::MathStatus::Success)
+                {
+                    return Status::InvalidDescription;
+                }
+                candidate.BoundsWorld = math::Merge(candidate.BoundsWorld, boundsWorld);
+            }
             LitMaterialDescription description;
             description.AreAuthoredInputsEnabled = true;
             description.Surface.Tint = {material.BaseColor.X * item.SurfaceTint.X,
@@ -679,6 +706,21 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
             static_cast<void>(candidate.Items.TryAdd(drawing));
             static_cast<void>(candidate.Descriptions.TryAdd(description));
         }
+    }
+    if (owner.IsClustered == true && math::IsEmpty(candidate.BoundsWorld) == false)
+    {
+        // A half-metre margin gives planar scenes nonzero cells. The shader evaluates
+        // every light outside the representable grid, so clamping never drops illumination.
+        const math::Vector3 minimumWorld = candidate.BoundsWorld.Min;
+        const math::Vector3 maximumWorld = candidate.BoundsWorld.Max;
+        candidate.Clusters.Bounds = {
+            {math::Clamp(minimumWorld.X - 0.5F, -MAX_CLUSTER_COORDINATE, MAX_CLUSTER_COORDINATE - 1),
+             math::Clamp(minimumWorld.Y - 0.5F, -MAX_CLUSTER_COORDINATE, MAX_CLUSTER_COORDINATE - 1),
+             math::Clamp(minimumWorld.Z - 0.5F, -MAX_CLUSTER_COORDINATE, MAX_CLUSTER_COORDINATE - 1)},
+            {math::Clamp(maximumWorld.X + 0.5F, -MAX_CLUSTER_COORDINATE + 1, MAX_CLUSTER_COORDINATE),
+             math::Clamp(maximumWorld.Y + 0.5F, -MAX_CLUSTER_COORDINATE + 1, MAX_CLUSTER_COORDINATE),
+             math::Clamp(maximumWorld.Z + 0.5F, -MAX_CLUSTER_COORDINATE + 1, MAX_CLUSTER_COORDINATE)},
+        };
     }
     if (candidate.Materials.TryResize(candidate.Descriptions.GetSize()) == false)
     {

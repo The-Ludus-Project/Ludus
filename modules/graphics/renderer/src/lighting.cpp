@@ -70,10 +70,6 @@ rhi::RasterStatus DecodeSurfaceParameters(math::Vector4 texel,
 }
 namespace
 {
-/// Largest absolute light-cluster bound coordinate, and the accepted cluster extent, in metres.
-constexpr float32 MAX_CLUSTER_COORDINATE = 1000000;
-constexpr float32 MIN_CLUSTER_EXTENT = 0.01F;
-constexpr float32 MAX_CLUSTER_EXTENT = 2000000;
 /// Smallest perceptual roughness the lit BRDF accepts; lower values alias badly.
 constexpr float32 MIN_ROUGHNESS = 0.045F;
 /// Accepted directional shadow map resolution, in texels per side.

@@ -622,6 +622,10 @@ RasterStatus RasterCreatePipeline(usize slot, const internal::RasterPipelineInfo
         }
     }
     WGPUColorTargetState target = WGPU_COLOR_TARGET_STATE_INIT;
+    // Thanks to the GPU for the Web Community Group, WebGPU CTS, "pipeline_output_targets":
+    // a color attachment without a fragment output requires a zero write mask.
+    // https://github.com/gpuweb/cts/blob/main/src/webgpu/api/validation/render_pipeline/fragment_state.spec.ts
+    target.writeMask = info.ShouldWriteColor == true ? WGPUColorWriteMask_All : WGPUColorWriteMask_None;
     target.format = info.Target == RasterTarget::Rgba16Float  ? WGPUTextureFormat_RGBA16Float
                     : info.Target == RasterTarget::Surface    ? gConfiguration.format
                     : info.Target == RasterTarget::Rgba8Unorm ? WGPUTextureFormat_RGBA8Unorm

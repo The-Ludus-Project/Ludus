@@ -424,7 +424,8 @@ RenderGraphDocumentStatus PreparePipelineShaders(RenderGraphSnapshot& inoutSnaps
                                                  QJsonObject& inoutNode,
                                                  const QJsonObject& previousNode,
                                                  const QString& manifestFile,
-                                                 const QString& packageRoot)
+                                                 const QString& packageRoot,
+                                                 QString* outErrorOrNull)
 {
     const RenderGraphSnapshot originalSnapshot = inoutSnapshot;
     const QJsonArray originalShaders = inoutNode.value(QStringLiteral("shaders")).toArray();
@@ -610,10 +611,22 @@ RenderGraphDocumentStatus PreparePipelineShaders(RenderGraphSnapshot& inoutSnaps
             {
                 return RenderGraphDocumentStatus::InvalidEdit;
             }
-            const foundation::int32 programBudget =
-                manifest.value(QStringLiteral("budgets")).toObject().value(QStringLiteral("programs")).toInt();
-            if (programs.size() >= programBudget)
+            const foundation::float64 programBudget =
+                manifest.value(QStringLiteral("budgets")).toObject().value(QStringLiteral("programs")).toDouble();
+            if (static_cast<foundation::float64>(programs.size()) >= programBudget)
             {
+                if (outErrorOrNull != nullptr)
+                {
+                    *outErrorOrNull =
+                        QStringLiteral("Cannot add shader: %1 already contains %2 programs and the authored "
+                                       "budgets.programs limit is %3. "
+                                       "Increase budgets.programs to at least %4 in that shader manifest, or assign "
+                                       "an existing compatible program, then retry. The draft was preserved.")
+                            .arg(manifestFile)
+                            .arg(programs.size())
+                            .arg(programBudget)
+                            .arg(programs.size() + 1);
+                }
                 return RenderGraphDocumentStatus::Capacity;
             }
             programs.append(program);

@@ -11,6 +11,41 @@ bool HasPositiveComponent(float3 v)
 {
     return any(v > 0);
 }
+// Arctangent within 3 ulp on every backend, measured against float64 over float32 inputs of
+// magnitude 1e-6 to 1e6. Vulkan bounds atan only to 4096 ulp; Mesa lowers it to a polynomial
+// whose absolute error reaches 3.3e-6 near |x| = 1 on lavapipe 25.2, and differences of such
+// angles lose that much in every result. Thanks to Stephen L. Moshier, Cephes Math Library,
+// single precision atanf.c, https://www.netlib.org/cephes/ (single.tgz): reduction by
+// tan(3 pi / 8) and tan(pi / 8) to |x| <= tan(pi / 8), then its odd degree-9 polynomial.
+static const float ARCTANGENT_UPPER_REDUCTION = 2.414213562373095;  // tan(3 pi / 8)
+static const float ARCTANGENT_LOWER_REDUCTION = 0.4142135623730950; // tan(pi / 8)
+// Odd polynomial coefficients of x^9, x^7, x^5 and x^3; the x coefficient is one.
+static const float ARCTANGENT_COEFFICIENT_9 = 8.05374449538e-2;
+static const float ARCTANGENT_COEFFICIENT_7 = -1.38776856032e-1;
+static const float ARCTANGENT_COEFFICIENT_5 = 1.99777106478e-1;
+static const float ARCTANGENT_COEFFICIENT_3 = -3.33329491539e-1;
+float ComputeArctangent(float x)
+{
+    float magnitude = abs(x);
+    float offset = 0;
+    float reduced = magnitude;
+    if (magnitude > ARCTANGENT_UPPER_REDUCTION)
+    {
+        offset = 0.5 * PI;
+        reduced = -1.0 / magnitude;
+    }
+    else if (magnitude > ARCTANGENT_LOWER_REDUCTION)
+    {
+        offset = 0.25 * PI;
+        reduced = (magnitude - 1.0) / (magnitude + 1.0);
+    }
+    float square = reduced * reduced;
+    float polynomial = ARCTANGENT_COEFFICIENT_9 * square + ARCTANGENT_COEFFICIENT_7;
+    polynomial = polynomial * square + ARCTANGENT_COEFFICIENT_5;
+    polynomial = polynomial * square + ARCTANGENT_COEFFICIENT_3;
+    float result = offset + (polynomial * square * reduced + reduced);
+    return x < 0 ? -result : result;
+}
 // Matches DecodeSrgb's bounded CPU contract. Thanks to W3C, "CSS Color Module
 // Level 4", section 10.2, https://www.w3.org/TR/css-color-4/#predefined-sRGB,
 // for the piecewise transfer. GPU pow/division can round encoded white above one;

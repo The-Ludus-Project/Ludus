@@ -606,16 +606,14 @@ class RenderGraphTests(unittest.TestCase):
             self.assertTrue((destination / program["source"]).is_file())
         plan = graph.compile_graph(destination / "main.lurender.json")
         self.assertEqual("Export", plan["roots"][0]["kind"])
-        separate = graph.new_workspace(self.directory.parent / "separate", output="offscreen")
-        from ludus_tools.render_graph_build import new_build_sources
-        new_build_sources(separate, renderer_static=True, profiles=["metal", "wgsl"])
+        from ludus_tools.render_graph_templates import template_files
         self.assertEqual({p.relative_to(destination): p.read_bytes() for p in destination.rglob("*") if p.is_file()},
-                         {p.relative_to(separate.parent): p.read_bytes() for p in separate.parent.rglob("*") if p.is_file()})
+                         {Path(name): text.encode() for name, text in
+                          template_files('raster', ('metal', 'wgsl'), graph).items()})
 
     def test_renderer_creation_failure_never_publishes_partial_graph(self):
-        from ludus_tools import render_graph_build
         destination = self.directory.parent / "failed-renderer"
-        with patch.object(render_graph_build, "new_build_sources", side_effect=ToolingError("Injected", "fail")):
+        with patch.object(graph, "compile_graph", side_effect=ToolingError("Injected", "fail")):
             with self.assertRaises(ToolingError):
                 graph.new_workspace(destination, output="offscreen", renderer_static=True, profiles=["metal"])
         self.assertFalse(destination.exists())

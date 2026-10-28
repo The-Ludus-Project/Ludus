@@ -76,15 +76,14 @@ using internal::Access;
 constexpr usize NO_MATERIAL = ~usize{0}, NO_SHADOW = ~usize{0};
 /// Packet/item marker for a flat draw using the bound program's zero-filled default uniforms.
 constexpr usize NO_UNIFORM = ~usize{0};
-constexpr usize SHADOW_DATA_BYTES = SHADOW_DATA_WORDS * sizeof(math::Vector4);
 constexpr usize LIT_SHADOW_OFFSET = FORWARD_SHADOW_OFFSET;
-constexpr usize CLUSTER_SHADOW_OFFSET = (9 + 128 * 4) * sizeof(math::Vector4);
+constexpr usize CLUSTER_SHADOW_OFFSET = CLUSTERED_SHADOW_OFFSET;
 constexpr usize LIT_BYTES = FORWARD_SURFACE_OFFSET;
-constexpr usize CLUSTER_GRID_OFFSET = CLUSTER_SHADOW_OFFSET + SHADOW_DATA_BYTES;
-constexpr usize CLUSTER_BYTES = CLUSTER_GRID_OFFSET + 5 * sizeof(math::Vector4);
+constexpr usize CLUSTER_GRID_OFFSET = CLUSTERED_GRID_OFFSET;
+constexpr usize CLUSTER_BYTES = CLUSTERED_SURFACE_OFFSET;
 constexpr usize AUTHORED_PARAMETER_BYTES = LUDUS_AUTHORED_PARAMETER_WORDS * sizeof(math::Vector4);
-constexpr usize CLUSTER_LIGHT_WORD_COUNT = usize{128} * 4;
-constexpr usize LIGHT_GRID_ROW_COUNT = 3;
+constexpr usize CLUSTER_LIGHT_WORD_COUNT = static_cast<usize>(CLUSTERED_LIGHT_COUNT) * FORWARD_LIGHT_WORDS;
+constexpr usize LIGHT_GRID_ROW_COUNT = CLUSTERED_GRID_ROWS;
 constexpr usize LEGACY_LIGHT_PARAMETER_BYTES = LIT_BYTES + sizeof(math::Vector4) + AUTHORED_PARAMETER_BYTES;
 // Owner-thread scratch is charged to Limits::HostBytes. Keeping large reflected
 // layouts here avoids overflowing the browser's default 64 KiB call stack.
@@ -560,16 +559,20 @@ struct Renderer::State final
         rhi::RasterShaderHandle Vertex{};
         rhi::RasterShaderHandle Fragment{};
         rhi::RasterShaderHandle ShadowFragment{};
+        rhi::RasterShaderHandle DepthFragment{};
         rhi::BindingLayoutHandle Layout{};
         rhi::TextureHandle White{};
         rhi::RasterPipelineHandle ShadowPipeline{};
+        rhi::RasterPipelineHandle DepthPipeline{};
         bool Lit = false;
         bool Hdr = false;
         bool Clustered = false;
         bool HasSurfaceMapProfile = false;
         bool HasAuthoredProfile = false;
         uint32 VariantCount = 6;
-        rhi::PipelineRequest Requests[7]{};
+        static constexpr usize REQUEST_CAPACITY = 8;
+        StaticArray<rhi::PipelineRequest, REQUEST_CAPACITY> Requests{};
+        bool HasDepthPrepass = false;
         rhi::RasterPipelineHandle Pipelines[6]{};
         uint32 References = 0;
         uint32 Phase = 0;
@@ -783,6 +786,7 @@ struct Renderer::State final
                 static_cast<void>(rhi::Release(Device, request));
             }
             static_cast<void>(rhi::Destroy(Device, p.ShadowFragment));
+            static_cast<void>(rhi::Destroy(Device, p.DepthFragment));
             static_cast<void>(rhi::Destroy(Device, p.White));
             static_cast<void>(rhi::Destroy(Device, p.Layout));
             static_cast<void>(rhi::Destroy(Device, p.Fragment));
@@ -1524,6 +1528,14 @@ Status Renderer::AppendVisibilityView(PreparedView handle,
 }
 Status Renderer::DrawView(PreparedView handle, const rhi::RasterPassDescription& description) noexcept
 {
+    return drawView(handle, description, false);
+}
+Status Renderer::DrawDepthView(PreparedView handle, const rhi::RasterPassDescription& description) noexcept
+{
+    return drawView(handle, description, true);
+}
+Status Renderer::drawView(PreparedView handle, const rhi::RasterPassDescription& description, bool isDepthOnly) noexcept
+{
     auto status = GetStatus(handle);
     if (status != Status::Ready)
     {
@@ -1554,9 +1566,19 @@ Status Renderer::DrawView(PreparedView handle, const rhi::RasterPassDescription&
             return Status::Unsupported;
         }
     }
+    if (isDepthOnly == true && (surface == true || hdr == true || view.Depth != DepthConvention::Conventional))
+    {
+        return Status::Unsupported;
+    }
     for (usize i = 0; i < view.DrawCount; ++i)
     {
         const auto slot = view.Packets[i].MaterialSlot;
+        if (isDepthOnly == true && view.Packets[i].Pass == Layer::Opaque &&
+            (slot == NO_MATERIAL || s.Materials[slot].Alpha != MaterialAlpha::Opaque ||
+             s.Programs[s.Materials[slot].ProgramSlot].HasDepthPrepass == false))
+        {
+            return Status::Unsupported;
+        }
         if (slot != NO_MATERIAL && ((s.Materials[slot].Lit && surface) || (s.Materials[slot].Lit == false && hdr)))
         {
             return Status::Unsupported;
@@ -1592,6 +1614,10 @@ Status Renderer::DrawView(PreparedView handle, const rhi::RasterPassDescription&
     for (usize i = 0; i < view.DrawCount; ++i)
     {
         const auto& packet = view.Packets[i];
+        if (isDepthOnly == true && packet.Pass != Layer::Opaque)
+        {
+            continue;
+        }
         if (packet.Pass == Layer::Overlay && hasDrawnGrid == false)
         {
             status = drawGrid();
@@ -1621,6 +1647,10 @@ Status Renderer::DrawView(PreparedView handle, const rhi::RasterPassDescription&
                                          (packet.Pass == Layer::Overlay             ? 2
                                           : view.Depth == DepthConvention::ReverseZ ? 1
                                                                                     : 0)];
+            if (isDepthOnly == true)
+            {
+                pipeline = program.DepthPipeline;
+            }
             bindings = material.Bindings;
         }
         status = rhi::DrawIndexed(
@@ -1631,7 +1661,7 @@ Status Renderer::DrawView(PreparedView handle, const rhi::RasterPassDescription&
             return status;
         }
     }
-    return hasDrawnGrid == true ? Status::Ready : drawGrid();
+    return isDepthOnly == true || hasDrawnGrid == true ? Status::Ready : drawGrid();
 }
 Status
 Renderer::PreparePresentation(rhi::TextureHandle source, const ViewMapping& mapping, Presentation& output) noexcept
@@ -1967,21 +1997,40 @@ Status Renderer::PrewarmMaterialProgram(const rhi::RasterShaderDescription& vert
                                         const rhi::RasterShaderDescription& fragment,
                                         MaterialProgram& output) noexcept
 {
-    return PrewarmProgram(vertex, fragment, nullptr, output);
+    return prewarmProgram(vertex, fragment, nullptr, output);
 }
 Status Renderer::PrewarmLitProgram(const rhi::RasterShaderDescription& vertex,
                                    const rhi::RasterShaderDescription& fragment,
-                                   const rhi::RasterShaderDescription& shadow,
-                                   MaterialProgram& output) noexcept
+                                   const rhi::RasterShaderDescription& shadowFragment,
+                                   MaterialProgram& outProgram,
+                                   const rhi::RasterShaderDescription* depthOrNull) noexcept
 {
-    return PrewarmProgram(vertex, fragment, &shadow, output);
+    return prewarmProgram(vertex, fragment, &shadowFragment, outProgram, depthOrNull);
 }
-Status Renderer::PrewarmProgram(const rhi::RasterShaderDescription& vertex,
+Status Renderer::prewarmProgram(const rhi::RasterShaderDescription& vertex,
                                 const rhi::RasterShaderDescription& fragment,
-                                const rhi::RasterShaderDescription* shadow,
-                                MaterialProgram& output) noexcept
+                                const rhi::RasterShaderDescription* shadowOrNull,
+                                MaterialProgram& outProgram,
+                                const rhi::RasterShaderDescription* depthOrNull) noexcept
 {
-    const bool lit = shadow != nullptr;
+    constexpr usize PLAIN_BINDING_COUNT = 3;
+    constexpr usize CLUSTER_BINDING_COUNT = 8;
+    constexpr usize AUTHORED_BINDING_COUNT = 3;
+    constexpr usize LIT_BINDING_COUNT = 6;
+    constexpr usize PLAIN_MEMBER_COUNT = 3;
+    constexpr usize LIT_MEMBER_COUNT = FORWARD_HEADER_WORDS + 2;
+    constexpr usize CLUSTER_MEMBER_COUNT = LIT_MEMBER_COUNT + CLUSTERED_GRID_ROWS;
+    constexpr usize PLAIN_VERTEX_ATTRIBUTE_COUNT = 7;
+    constexpr usize LIT_VERTEX_ATTRIBUTE_COUNT = 16;
+    constexpr usize WORD_BYTES = sizeof(math::Vector4);
+    const bool isLit = shadowOrNull != nullptr;
+    if (depthOrNull != nullptr &&
+        (shadowOrNull == nullptr || depthOrNull->Artifact.Stage != rhi::ShaderStage::Fragment ||
+         depthOrNull->Inputs.empty() == false || depthOrNull->Bindings.empty() == false ||
+         depthOrNull->UniformMembers.empty() == false))
+    {
+        return Status::InvalidDescription;
+    }
     bool hasSurfaceMapProfile = false;
     bool hasAuthoredProfile = false;
     for (const rhi::RasterUniformMember& member : fragment.UniformMembers)
@@ -1989,35 +2038,40 @@ Status Renderer::PrewarmProgram(const rhi::RasterShaderDescription& vertex,
         hasSurfaceMapProfile = hasSurfaceMapProfile || member.Name == "SurfaceMap";
         hasAuthoredProfile = hasAuthoredProfile || member.Name == "Authored";
     }
-    if (hasSurfaceMapProfile == true && lit == false)
+    if (hasSurfaceMapProfile == true && isLit == false)
     {
         return Status::InvalidDescription;
     }
-    const bool clustered = lit && fragment.Bindings.size() == (hasAuthoredProfile ? 11U : 8U);
-    const usize bindingCount = (clustered ? 8U
-                                : lit     ? (hasSurfaceMapProfile ? 7U : 6U)
-                                          : 3U) +
-                               (hasAuthoredProfile ? 3U : 0U);
-    const usize memberCount = (clustered ? 14U
-                               : lit     ? 11U
-                                         : 3U) +
+    const bool isClustered =
+        isLit == true &&
+        fragment.Bindings.size() ==
+            (hasAuthoredProfile == true ? CLUSTER_BINDING_COUNT + AUTHORED_BINDING_COUNT : CLUSTER_BINDING_COUNT);
+    const usize bindingCount = (isClustered == true ? CLUSTER_BINDING_COUNT
+                                : isLit == true     ? LIT_BINDING_COUNT + (hasSurfaceMapProfile == true ? 1 : 0)
+                                                    : PLAIN_BINDING_COUNT) +
+                               (hasAuthoredProfile == true ? AUTHORED_BINDING_COUNT : 0);
+    const usize memberCount = (isClustered == true ? CLUSTER_MEMBER_COUNT
+                               : isLit == true     ? LIT_MEMBER_COUNT
+                                                   : PLAIN_MEMBER_COUNT) +
                               (hasSurfaceMapProfile ? 1U : 0U) + (hasAuthoredProfile ? 2U : 0U);
-    if (mState.Get() == nullptr || mState->Setup != Status::Ready || (lit && mState->LightingSetup != Status::Ready))
+    if (mState.Get() == nullptr || mState->Setup != Status::Ready ||
+        (isLit == true && mState->LightingSetup != Status::Ready))
     {
         return Status::NotReady;
     }
-    if (Access::Owner(output) != 0)
+    if (Access::Owner(outProgram) != 0)
     {
         return Status::InvalidState;
     }
     if (vertex.Artifact.Stage != rhi::ShaderStage::Vertex || fragment.Artifact.Stage != rhi::ShaderStage::Fragment ||
-        vertex.Inputs.size() != (lit == true ? 16U : 7U) || vertex.Bindings.empty() == false ||
-        vertex.UniformMembers.empty() == false || fragment.Inputs.empty() == false ||
-        fragment.Bindings.size() != bindingCount || fragment.UniformMembers.size() != memberCount)
+        vertex.Inputs.size() != (isLit == true ? LIT_VERTEX_ATTRIBUTE_COUNT : PLAIN_VERTEX_ATTRIBUTE_COUNT) ||
+        vertex.Bindings.empty() == false || vertex.UniformMembers.empty() == false ||
+        fragment.Inputs.empty() == false || fragment.Bindings.size() != bindingCount ||
+        fragment.UniformMembers.size() != memberCount)
     {
         return Status::InvalidDescription;
     }
-    for (usize i = 0; i < (lit ? 16U : 7U); ++i)
+    for (usize i = 0; i < (isLit == true ? LIT_VERTEX_ATTRIBUTE_COUNT : PLAIN_VERTEX_ATTRIBUTE_COUNT); ++i)
     {
         const rhi::RasterVertexFormat format = (hasAuthoredProfile && i == 13) ? rhi::RasterVertexFormat::Float2
                                                : (i == 0 || i == 7)            ? rhi::RasterVertexFormat::Float3
@@ -2028,10 +2082,11 @@ Status Renderer::PrewarmProgram(const rhi::RasterShaderDescription& vertex,
             return Status::InvalidDescription;
         }
     }
-    const usize byteSize = (clustered ? CLUSTER_BYTES
-                            : lit     ? LIT_BYTES
-                                      : 48) +
-                           (hasSurfaceMapProfile ? 16U : 0U) + (hasAuthoredProfile ? AUTHORED_PARAMETER_BYTES : 0U);
+    const usize byteSize = (isClustered == true ? CLUSTER_BYTES
+                            : isLit == true     ? LIT_BYTES
+                                                : PLAIN_MEMBER_COUNT * WORD_BYTES) +
+                           (hasSurfaceMapProfile == true ? WORD_BYTES : 0) +
+                           (hasAuthoredProfile ? AUTHORED_PARAMETER_BYTES : 0U);
     rhi::RasterBinding expected[]{
         {0, rhi::RasterBindingKind::UniformBuffer, rhi::RasterVisibility::Fragment, byteSize},
         {1, rhi::RasterBindingKind::Texture2D, rhi::RasterVisibility::Fragment, 0},
@@ -2079,9 +2134,13 @@ Status Renderer::PrewarmProgram(const rhi::RasterShaderDescription& vertex,
                         "GridRows",
                         "GridMinimum",
                         "GridScale"};
-    for (usize i = 0; i < (clustered ? 14U : lit ? 11U : 3U); ++i)
+    for (usize i = 0; i < (isClustered == true ? CLUSTER_MEMBER_COUNT
+                           : isLit == true     ? LIT_MEMBER_COUNT
+                                               : PLAIN_MEMBER_COUNT);
+         ++i)
     {
-        const usize offset = i == 10   ? (clustered ? CLUSTER_SHADOW_OFFSET : LIT_SHADOW_OFFSET)
+        const usize offset = i == FORWARD_HEADER_WORDS + 1
+                                 ? (isClustered == true ? CLUSTER_SHADOW_OFFSET : LIT_SHADOW_OFFSET)
                              : i == 11 ? CLUSTER_GRID_OFFSET
                              : i == 12 ? CLUSTER_GRID_OFFSET + 3 * sizeof(math::Vector4)
                              : i == 13 ? CLUSTER_GRID_OFFSET + 4 * sizeof(math::Vector4)
@@ -2104,7 +2163,7 @@ Status Renderer::PrewarmProgram(const rhi::RasterShaderDescription& vertex,
         for (const rhi::RasterUniformMember& member : fragment.UniformMembers)
         {
             hasSurfaceMap = hasSurfaceMap || (member.Binding == 0 && member.Name == "SurfaceMap" &&
-                                              member.Offset == (clustered ? CLUSTER_BYTES : LIT_BYTES) &&
+                                              member.Offset == (isClustered == true ? CLUSTER_BYTES : LIT_BYTES) &&
                                               member.Shape == rhi::RasterUniformShape::Float4);
         }
         if (hasSurfaceMap == false)
@@ -2114,7 +2173,7 @@ Status Renderer::PrewarmProgram(const rhi::RasterShaderDescription& vertex,
     }
     if (hasAuthoredProfile == true)
     {
-        const usize authoredOffset = (clustered ? CLUSTER_BYTES : LIT_BYTES) + 16;
+        const usize authoredOffset = (isClustered == true ? CLUSTER_BYTES : LIT_BYTES) + 16;
         for (usize index = 0; index < 2; ++index)
         {
             bool found = false;
@@ -2131,17 +2190,18 @@ Status Renderer::PrewarmProgram(const rhi::RasterShaderDescription& vertex,
             }
         }
     }
-    if (lit)
+    if (isLit == true)
     {
-        if (shadow->Artifact.Stage != rhi::ShaderStage::Fragment || shadow->Inputs.empty() == false ||
-            shadow->Bindings.size() != 3 || shadow->UniformMembers.size() != fragment.UniformMembers.size())
+        if (shadowOrNull->Artifact.Stage != rhi::ShaderStage::Fragment || shadowOrNull->Inputs.empty() == false ||
+            shadowOrNull->Bindings.size() != PLAIN_BINDING_COUNT ||
+            shadowOrNull->UniformMembers.size() != fragment.UniformMembers.size())
         {
             return Status::InvalidDescription;
         }
         for (usize i = 0; i < 3; ++i)
         {
             bool found = false;
-            for (const auto& binding : shadow->Bindings)
+            for (const rhi::RasterBinding& binding : shadowOrNull->Bindings)
             {
                 found |= binding.Binding == expected[i].Binding && binding.Kind == expected[i].Kind &&
                          binding.MinSize == expected[i].MinSize && binding.Visibility == expected[i].Visibility;
@@ -2154,7 +2214,7 @@ Status Renderer::PrewarmProgram(const rhi::RasterShaderDescription& vertex,
         for (const auto& expectedMember : fragment.UniformMembers)
         {
             bool found = false;
-            for (const auto& member : shadow->UniformMembers)
+            for (const rhi::RasterUniformMember& member : shadowOrNull->UniformMembers)
             {
                 found |= member.Binding == expectedMember.Binding && member.Name == expectedMember.Name &&
                          member.Offset == expectedMember.Offset && member.Shape == expectedMember.Shape;
@@ -2184,24 +2244,29 @@ Status Renderer::PrewarmProgram(const rhi::RasterShaderDescription& vertex,
     }
     auto& p = s.Programs[slot];
     p.Used = p.Owned = true;
-    p.Lit = lit;
-    p.Clustered = clustered;
+    p.Lit = isLit;
+    p.Clustered = isClustered;
+    p.HasDepthPrepass = depthOrNull != nullptr;
     p.HasSurfaceMapProfile = hasSurfaceMapProfile;
     p.HasAuthoredProfile = hasAuthoredProfile;
-    p.Hdr = lit && s.Hdr;
-    p.VariantCount = lit && p.Hdr == false ? LDR_LIT_PROGRAM_VARIANT_COUNT : PROGRAM_VARIANT_COUNT;
+    p.Hdr = isLit == true && s.Hdr;
+    p.VariantCount = isLit == true && p.Hdr == false ? LDR_LIT_PROGRAM_VARIANT_COUNT : PROGRAM_VARIANT_COUNT;
     status = rhi::CreateRasterShader(s.Device, vertex, p.Vertex);
     if (Accepted(status))
     {
         status = rhi::CreateRasterShader(s.Device, fragment, p.Fragment);
     }
-    if (Accepted(status) && lit)
+    if (Accepted(status) == true && isLit == true)
     {
-        status = rhi::CreateRasterShader(s.Device, *shadow, p.ShadowFragment);
+        status = rhi::CreateRasterShader(s.Device, *shadowOrNull, p.ShadowFragment);
     }
     if (Accepted(status))
     {
         status = rhi::CreateBindingLayout(s.Device, {expected, bindingCount}, p.Layout);
+    }
+    if (Accepted(status) == true && depthOrNull != nullptr)
+    {
+        status = rhi::CreateRasterShader(s.Device, *depthOrNull, p.DepthFragment);
     }
     const uint8 white[]{255, 255, 255, 255};
     rhi::TextureDescription texture{1, 1, rhi::RasterFormat::Rgba8Unorm};
@@ -2224,7 +2289,7 @@ Status Renderer::PrewarmProgram(const rhi::RasterShaderDescription& vertex,
         s.DropProgram(slot);
         return status;
     }
-    output = handle;
+    outProgram = handle;
     return status;
 }
 Status Renderer::GetStatus(MaterialProgram handle) noexcept
@@ -2299,7 +2364,7 @@ Status Renderer::GetStatus(MaterialProgram handle) noexcept
         attributes[12] = {12, 0, LUDUS_AUTHORED_COLOR_OFFSET, rhi::RasterVertexFormat::Float4};
         attributes[13] = {13, 0, LUDUS_AUTHORED_UV1_OFFSET, rhi::RasterVertexFormat::Float2};
     }
-    const auto total = p->VariantCount + (p->Lit ? 1U : 0U);
+    const uint32 total = p->VariantCount + (p->Lit == true ? 1U : 0U) + (p->HasDepthPrepass == true ? 1U : 0U);
     while (p->Phase <= total)
     {
         if (p->Phase != 0)
@@ -2313,10 +2378,11 @@ Status Renderer::GetStatus(MaterialProgram handle) noexcept
                 }
                 return ready;
             }
-            const auto acquired =
-                rhi::GetRequestedPipeline(s.Device,
-                                          p->Requests[p->Phase - 1],
-                                          p->Phase <= p->VariantCount ? p->Pipelines[p->Phase - 1] : p->ShadowPipeline);
+            const Status acquired = rhi::GetRequestedPipeline(s.Device,
+                                                              p->Requests[p->Phase - 1],
+                                                              p->Phase <= p->VariantCount ? p->Pipelines[p->Phase - 1]
+                                                              : p->Phase == p->VariantCount + 1 ? p->ShadowPipeline
+                                                                                                : p->DepthPipeline);
             if (acquired != Status::Ready)
             {
                 return p->Setup = acquired;
@@ -2338,11 +2404,30 @@ Status Renderer::GetStatus(MaterialProgram handle) noexcept
                                     : (p->Phase < 3 ? rhi::RasterTarget::Surface : rhi::RasterTarget::Rgba8Unorm);
         description.DepthWrite = variant != 2;
         description.DepthCompare = variant == 1 ? rhi::RasterDepthCompare::Greater : rhi::RasterDepthCompare::Less;
+        if (p->HasDepthPrepass == true && variant == 0)
+        {
+            description.DepthCompare = rhi::RasterDepthCompare::LessEqual;
+        }
         if (p->Lit && p->Phase == p->VariantCount)
         {
             description.Fragment = p->ShadowFragment;
             description.Target = rhi::RasterTarget::Rgba8Unorm;
             description.Depth = description.DepthWrite = true;
+            description.Blend = false;
+            description.DepthCompare = rhi::RasterDepthCompare::Less;
+        }
+        if (p->HasDepthPrepass == true && p->Phase == p->VariantCount + 1)
+        {
+            const Status ready = rhi::GetStatus(s.Device, p->DepthFragment);
+            if (ready != Status::Ready)
+            {
+                return ready;
+            }
+            description.Fragment = p->DepthFragment;
+            description.ShouldWriteColor = false;
+            description.Target = rhi::RasterTarget::Rgba8Unorm;
+            description.Depth = true;
+            description.DepthWrite = true;
             description.Blend = false;
             description.DepthCompare = rhi::RasterDepthCompare::Less;
         }

@@ -118,6 +118,12 @@ SelectDirectLights(const DirectLight* lights, ludus::foundation::usize count, Li
 /// reference transport, where silently dropping illumination would change the integral.
 [[nodiscard]] rhi::RasterStatus
 NormalizeDirectLights(const DirectLight* lights, ludus::foundation::usize count, LightSelection& output) noexcept;
+/// Largest absolute grid bound coordinate in metres for the portable clustered profile.
+inline constexpr foundation::float32 MAX_CLUSTER_COORDINATE = 1000000;
+/// Minimum grid extent per axis in metres; prevents unstable reciprocal cell sizes.
+inline constexpr foundation::float32 MIN_CLUSTER_EXTENT = 0.01F;
+/// Maximum grid extent per axis in metres.
+inline constexpr foundation::float32 MAX_CLUSTER_EXTENT = 2 * MAX_CLUSTER_COORDINATE;
 /// Regular 8x8x8 grid in a rigidly transformed space, independent of opaque depth.
 struct LightClusterDescription final
 {
@@ -194,7 +200,8 @@ enum class MaterialDebugView : ludus::foundation::uint8
     None = MATERIAL_DEBUG_VIEW_NONE,
     /// Shaded world-space normal mapped from [-1,1] to [0,1] RGB.
     NormalWorld = MATERIAL_DEBUG_VIEW_NORMAL_WORLD,
-    /// Camera distance mapped linearly over ViewDescription::DebugDepthRange, near black to far white.
+    /// Camera distance mapped linearly over ViewDescription::DebugDepthRange, near dark purple to far yellow on the
+    /// viridis ramp.
     LinearDepth = MATERIAL_DEBUG_VIEW_LINEAR_DEPTH,
     /// Perceptual roughness after surface-map scaling, as grey.
     Roughness = MATERIAL_DEBUG_VIEW_ROUGHNESS,
@@ -202,8 +209,8 @@ enum class MaterialDebugView : ludus::foundation::uint8
     Metallic = MATERIAL_DEBUG_VIEW_METALLIC,
     /// Fractional mesh UV0 as red (U) and green (V).
     TexcoordUv = MATERIAL_DEBUG_VIEW_TEXCOORD_UV,
-    /// Direct lights with a nonzero shadowed contribution at the pixel, as a blue-to-red heat
-    /// ramp saturating at MATERIAL_DEBUG_LIGHT_COUNT_SATURATION; black means no direct light.
+    /// Direct lights with a nonzero shadowed contribution at the pixel, as a viridis
+    /// ramp saturating at MATERIAL_DEBUG_LIGHT_COUNT_SATURATION; dark purple means no direct light.
     LightCount = MATERIAL_DEBUG_VIEW_LIGHT_COUNT,
 };
 /// Immutable unlit base schema plus the L4 metallic/roughness lighting terms.

@@ -28,6 +28,19 @@ static const LightingLayoutValue FORWARD_SHADOW_OFFSET =
     (FORWARD_HEADER_WORDS + FORWARD_LIGHT_COUNT * FORWARD_LIGHT_WORDS) * 16;
 /// Byte offset of surface-map controls after the shadow projections.
 static const LightingLayoutValue FORWARD_SURFACE_OFFSET = FORWARD_SHADOW_OFFSET + SHADOW_DATA_WORDS * 16;
+/// Maximum direct lights retained by the clustered material ABI.
+static const LightingLayoutValue CLUSTERED_LIGHT_COUNT = 128;
+/// Float4 rows of the rigid world-to-grid transform.
+static const LightingLayoutValue CLUSTERED_GRID_ROWS = 3;
+/// Grid transform rows, minimum and reciprocal cell extents.
+static const LightingLayoutValue CLUSTERED_GRID_WORDS = CLUSTERED_GRID_ROWS + 2;
+/// Byte offset of clustered shadow projections after the complete light list.
+static const LightingLayoutValue CLUSTERED_SHADOW_OFFSET =
+    (FORWARD_HEADER_WORDS + CLUSTERED_LIGHT_COUNT * FORWARD_LIGHT_WORDS) * 16;
+/// Byte offset of the clustered grid transform.
+static const LightingLayoutValue CLUSTERED_GRID_OFFSET = CLUSTERED_SHADOW_OFFSET + SHADOW_DATA_WORDS * 16;
+/// Byte offset of clustered surface-map controls after the grid transform.
+static const LightingLayoutValue CLUSTERED_SURFACE_OFFSET = CLUSTERED_GRID_OFFSET + CLUSTERED_GRID_WORDS * 16;
 /// Frozen CPU/compute transport profile; version 4 adds geometric emission sidedness.
 static const LightingLayoutValue LIGHTING_PROFILE_VERSION = 4;
 
@@ -43,9 +56,9 @@ static const LightingLayoutValue MATERIAL_DEBUG_VIEW_ROUGHNESS = 3;
 static const LightingLayoutValue MATERIAL_DEBUG_VIEW_METALLIC = 4;
 /// Fractional mesh UV0 as red/green.
 static const LightingLayoutValue MATERIAL_DEBUG_VIEW_TEXCOORD_UV = 5;
-/// Count of direct lights with a nonzero (shadowed) contribution, as a heat ramp.
+/// Count of direct lights with a nonzero (shadowed) contribution, as a viridis ramp.
 static const LightingLayoutValue MATERIAL_DEBUG_VIEW_LIGHT_COUNT = 6;
-/// Light count at which the debug heat ramp saturates to its hottest colour.
+/// Light count at which the debug viridis ramp saturates to its brightest colour.
 static const LightingLayoutValue MATERIAL_DEBUG_LIGHT_COUNT_SATURATION = 16;
 
 #ifdef __cplusplus

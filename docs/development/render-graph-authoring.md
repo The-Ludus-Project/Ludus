@@ -56,7 +56,11 @@ Undo restores the complete record and document version. Double-click any ordinar
 node to open **Details**. A pipeline's clickable parts are **Read Inputs**,
 **Writable Resources**, **Shaders**, **Pipeline State**, **Invocation** and
 **Public Options**. Each part opens the same controls used by Properties;
-Properties may remain hidden. Double-clicking a Subgraph enters its graph.
+Properties may remain hidden. Click an individual shader card to select its assignment;
+double-click it to close **Details** and open that shader in the **Source** editor.
+The source comes from the current build-manifest program reference, including any
+per-use program override. An unmapped shader keeps **Details** open and reports the
+missing source. Double-clicking a Subgraph enters its graph.
 Right-click a pipeline and choose **View Shaders** to open a mapped source through
 its explicit build-manifest program reference. **Show Details / Edit Node** opens
 a Subgraph instance's choices without entering its shared source.
@@ -94,8 +98,12 @@ select the desired program IDs. To share one source with different entry points,
 register separate programs in the manifest with the same `source` and different
 `function` values, then select those programs on the nodes. The compiler preserves
 these choices in both compiled headers and runtime packages. Exhausted manifest
-budgets preserve the draft and explain the repair. Ray callbacks still share the
-single bounded ray technique.
+budgets preserve the draft and explain the repair. When **Add** reaches the
+program limit, its error names the root shader manifest, current program count
+and minimum required `budgets.programs` value. Increase that field in the named
+manifest and retry, or enter an existing compatible program ID to reuse it.
+A new triangle ray pipeline needs room for three programs (`ray_generation`,
+`miss` and `closest_hit`). Ray callbacks still share the single bounded ray technique.
 To clean up the open package, choose **Edit → Remove Unused Shaders**, or
 **Remove Unused Shaders** in the canvas context menu. The command checks every
 loaded graph file and configuration (including disconnected nodes and unselected
@@ -3193,8 +3201,11 @@ the editor uses it for any project that has no graph of its own.
    pauses/resumes automatic builds of saved sources. Changing the preview configuration
    selects that configuration of the saved sources.
 
-**File → New Render Graph...** creates an editable barebone graph and its shaders in
-`graphs/<name>/`, then makes it active in the World viewport. **Customize in Project**
+**File → New Render Graph... → Raster** copies the engine default graph and its
+editable shaders into `graphs/<name>/`, then makes it active in the World viewport.
+Its shared OutputSize/RenderSize controls follow the viewport size, just like the
+engine default. The package is a project-owned snapshot; subsequent engine updates
+do not overwrite your edits. **Customize in Project**
 copies the engine default into `graphs/Main/`. At project opening, `graphs/Main/main.lurender.json`
 has priority; otherwise the first `graphs/<name>/main.lurender.json` in name order is used.
 With no such graph, the engine default is used. A malformed project graph reports its
@@ -3268,6 +3279,42 @@ Limits:
 - Opening or saving an unedited default writes nothing. Project loading never bootstraps
   tools or repairs an SDK. Missing tools are build diagnostics; use project setup to repair them.
 
+## Default clustered forward lighting
+
+The engine default and the **Raster** starter use the `ClusteredForward` scene
+profile. They shade the current World's authored materials, textures, analytic
+lights and environment; an unlit World with no emission or environment is dark.
+They require static opaque triangles with normals. Masked/transparent materials
+and invalid inputs reject preparation and retain the last drawable generation.
+No proxy lights, ray tracing, shadow maps or indirect illumination are added.
+The color target remains linear RGBA8, so radiance above one clips.
+
+`Default` runs one color/depth pass. Select **ZPrepass** in the preview configuration
+selector to enable a separate depth-only pass. That pass clears and stores depth;
+the color pass loads the same depth and uses `LessEqual`. Both passes use the same
+geometry transforms, camera and viewport-relative extent. The prepass uses the same authored vertex stage, calls the editable
+`main_shaders/depth.slang` coverage function, and writes no color or material shading. It is disabled in `Default`; choose it after
+measuring geometry and fragment costs for the target workload. The canvas shows
+both passes in `rasterize.lurender.json` → `ColorAndDepthWithPrepass`.
+
+Light assignment reuses the [portable L5 clustered profile](../architecture/renderer-systems.md#l5-opt-in-portable-scaling).
+The CPU builds conservative 8×8×8 world-space cells over the scene's transformed
+geometry bounds, padded by half a metre and clamped to the profile's coordinate
+limits. Shading runs on the GPU. All admitted lights (up to 128) are retained;
+each cell stores up to 32 indices. Overflowing cells and samples outside the grid
+evaluate the complete list. `RenderGraphReport::Resources` exposes dropped lights,
+overflow cells and stored assignments. Camera-only edits reuse the scene's lists;
+changed scene/light inputs prepare immutable replacement materials and lists.
+This first integration uses the existing per-material list texture/upload path,
+not GPU light assignment, projection-shaped clusters or depth occupancy pruning.
+
+The manifest selects `"scene_interface": {"version": 1, "profile": "ClusteredForward"}`
+on `DefaultStaticOpaque.ColorAndDepth`, with a `LessEqual` recipe. The optional
+`DefaultStaticOpaque.DepthOnly` technique shares the renderer setup geometry stage.
+Other raster technique families are rejected by this profile. Existing `ForwardLit`
+packages keep their original eight-light ABI and behavior; runtime package version
+23 distinguishes the clustered fragment role without changing record widths.
+
 ## Create a saved graph and import it
 
 In the native editor, open your game project and choose **File → New Render Graph...**.
@@ -3276,8 +3323,10 @@ In the native editor, open your game project and choose **File → New Render Gr
 choose **Create**. The editor creates `graphs/<name>/` inside the selected game
 project, including `main.lurender.json`, the reusable `rasterize.lurender.json`,
 `main.lushader.json` and editable `main_shaders/*.slang` functions, then opens the
-graph on the canvas. The starter exports a color image and uses the
-RendererStatic interface required by the editor preview. Target profiles are
+graph on the canvas. The Raster starter copies the same canonical package used by
+the engine default, with viewport-relative color/depth targets and editable clustered
+forward material shaders. It exports a color image and uses the RendererStatic interface
+required by the editor preview. Target profiles are
 Metal/WGSL on macOS and SPIR-V/WGSL on Linux. Creation needs no shader compiler or
 running viewport and never overwrites an existing graph folder. A failed creation
 keeps the previously open draft. Graphs and shader sources belong to the game
@@ -3610,8 +3659,13 @@ to the graph plan, rather than the shader program. Recipe keys compare complete
 canonical state, stage identities, vertex schema and target binding layouts;
 recipe/node names and camera/extent values do not create extra shader programs.
 
-Budget ceilings are 8 configurations, 32 programs, 128 target artifacts and
-64 target pipeline recipes. The author may choose smaller bounds. The
+Program counts have no separate fixed engine ceiling: `budgets.programs` is a
+positive integer chosen by the author. Adding programs beyond 32 is supported
+when that authored budget admits them. Independent ceilings remain 8
+configurations, 128 target artifacts and 64 target pipeline recipes; source and
+package byte/file limits also apply. Target artifacts count registered programs
+multiplied by target profiles, so increasing the program budget does not bypass
+the artifact budget. The author may choose smaller bounds. The
 configuration bound counts authored techniques and the root graph's own
 configurations. Imported configurations that Subgraph nodes reach do not spend
 it: they expand into the root plans, whose techniques, programs, ray variants,
@@ -3629,8 +3683,12 @@ and rejects recursive shader calls or duplicate callbacks. Unguarded include cyc
 report the complete cycle, separately from the include-depth limit. Conditional
 includes are conservatively tracked; a conditional pragma is not treated as a guard.
 The compiler reads staged captured sources only, and its dependency file is
-checked against that closure. Sources are bounded to 64 files/4 MiB, each at
-most 128 KiB, with include depth 16; generated artifacts are at most 2 MiB each
+checked against that closure. The combined build snapshot is bounded to 128
+files/4 MiB, including graph metadata, authored shaders and SDK helpers; each
+file is at most 128 KiB, with include depth 16. The native shader worker retains
+its separate 64-file request limit, including the generated wrapper. Each stage
+receives only its captured closure from the larger package snapshot. Source or
+compiler limit failures preserve the prior package. Generated artifacts are at most 2 MiB each
 and a generation is at most 64 MiB/1024 files. Use `--root` for a containing
 package when the sibling root/manifest lives in a subdirectory; program source
 paths are relative to that package root, not the manifest directory.
@@ -4504,7 +4562,7 @@ undoable edit; **Save** writes it to the project.
 
 #### Add nodes with Quick Add
 
-Quick Add finds a node or snippet by name without scrolling through a list. Open it
+Quick Add finds a node, snippet or existing package graph by name without scrolling through a list. Open it
 with **Shift+A** over the canvas, by double-clicking empty canvas, or with
 **Quick Add...** at the top of the canvas context menu. It opens where you asked:
 Shift+A uses the pointer (or the view centre when the pointer is outside), and a
@@ -4515,7 +4573,8 @@ double-click or context menu uses that spot.
 | Type in the search field | Matches names, purposes and common terms, such as `hdr` for ToneMap or `fsr` for the FSR upscalers; the category list shows how many matches each category has |
 | Up/Down, Enter or a click | Choose a result. A node is added at the opening position in one undoable edit; an Upscale preset places its Upscale node there and arranges its helpers automatically |
 | Choose a snippet | Opens **Apply Configuration Template** with that snippet selected, so you still name the configuration and confirm any budget increase. Snippets: ReSTIR DI, Tiled vbuffer NEE, [Compute ray tracing](#use-the-compute-ray-tracing-template), [Simple triangle loop](#use-the-simple-triangle-loop-template), Visibility buffer + depth and Visibility + secondary rays |
-| Tab / Shift+Tab | Switch between All, Snippets and Nodes |
+| Choose a graph | Inserts a Subgraph reference to its default configuration at the opening position, in one undoable edit; change the referenced configuration afterward through the canvas node fields or Properties |
+| Tab / Shift+Tab | Switch between All, Snippets, Nodes and Graphs |
 | Click a category | Show only that category |
 | ☆, or **Pin** | Keep a template under Suggested |
 | Esc or click outside | Close without editing the draft |
@@ -4525,6 +4584,16 @@ to keep typing or pick a category. With an empty search it opens on your three m
 recent templates and your pinned ones; the editor remembers both between sessions.
 When the search also matches complete graphs, a link opens **New Render Graph** with
 the best match selected. Quick Add never creates a complete graph on the canvas.
+The **Graphs** tab lists graph assets loaded in the package, including unused sources;
+**All** searches them alongside nodes and snippets. Search matches graph names, paths,
+configuration names, descriptions and exposed port names/types. The detail preview shows
+the package-relative path, default configuration and its inputs/outputs. Insertion adds
+a reference without copying or changing the graph source. Graphs that would introduce
+a dependency cycle, have a missing default configuration or an unavailable dependency
+stay visible with the reason and insertion disabled. Recent and pinned graph entries
+use the asset path, so identically named graphs remain distinct. Reopening refreshes
+the catalog from the current draft; insertion rechecks the default and dependencies.
+
 Templates that cannot preview in this editor, such as Denoise without the OIDN
 denoiser, stay listed with the reason, because the graph remains portable.
 
@@ -4534,14 +4603,16 @@ dragging. Quick Add opens with a context line such as
 `Connect from tonemap.color · ColorTexture` and lists only nodes that have an input
 accepting that output. Each candidate input goes through the same link pre-check as a
 drag onto an existing input, including type, cycle and texture-contract checks, so an
-incompatible template is never offered. When you choose a node, Quick Add adds it with
+incompatible node template is never offered. Compatible graph references are ranked
+first; other graphs stay visible with insertion disabled and an explanation. When you
+choose a node or graph, Quick Add adds it with
 the first accepting input lined up on the drop point, or one column gap to the right of
 a clicked port. The node, its layout position and the new connection form one undoable
 edit. An Upscale preset connects the wire to that input instead of creating a helper
 target for it. Snippets are not offered while the filter is on: they apply through
 **Apply Configuration Template** as a separate edit, so the wire could not be part of
 the same undo step. **Show all**, or Backspace in an empty search, clears the filter.
-After that, a chosen node is added at the same spot without a connection. Esc closes
+After that, a chosen node or graph is added at the same spot without a connection. Esc closes
 the palette and leaves the draft unchanged. Releasing on a node body does nothing, and
 releasing on a port connects or rejects as usual.
 
@@ -5198,6 +5269,11 @@ replacement previews until retained GPU uses retire. The device-wide RHI resourc
 budget and each device's storage-buffer binding range apply independently; a
 larger graph ceiling cannot override either one. The supplied imported Sponza
 World's two million triangles require more than the previous 256 MiB ceilings.
+Native ray geometry and acceleration-structure build scratch use the backend's
+enabled allocation range, rather than the former fixed 64 MiB ceiling. Each
+creation still checks its explicit byte budget. Packed opacity metadata retains
+its separate exact-float32-addressing bound; a larger native allocation range
+does not enlarge that representation.
 
 When measured byte admission fails, `RenderGraphReport::SceneDiagnostics` names
 the exceeded budget and records required and available bytes. The editor displays

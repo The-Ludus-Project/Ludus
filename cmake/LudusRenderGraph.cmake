@@ -49,7 +49,7 @@ function(ludus_compile_render_graph)
         projected_solid_angle.slang linearly_transformed_cosine.slang weighted_reservoir.slang ltc_table.slang
         ltc_table_data.inc
         shader_toolchain.json spirv_cross_toolchain.json)
-    foreach(recipe renderer_gpu_preview renderer_gpu_preview_image renderer_authored renderer_authored_shadow renderer_flat renderer_output renderer_shadow)
+    foreach(recipe renderer_gpu_preview renderer_gpu_preview_image renderer_authored renderer_authored_shadow renderer_clustered_authored renderer_clustered_authored_shadow renderer_flat renderer_output renderer_shadow)
         string(JSON source GET "${renderer_recipes}" "${recipe}" source)
         list(APPEND helper_files "${source}")
     endforeach()

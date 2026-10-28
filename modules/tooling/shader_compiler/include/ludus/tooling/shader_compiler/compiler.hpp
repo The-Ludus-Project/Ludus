@@ -90,6 +90,8 @@ public:
     Compiler(const Compiler&) = delete;            ///< Compiler ownership is unique.
     Compiler& operator=(const Compiler&) = delete; ///< Compiler ownership is unique.
     /// Initialize the pinned Slang API. Repeated initialization returns InvalidState.
+    /// Returns Unavailable when the pinned version or its SPIR-V optimizer library cannot be
+    /// loaded; Slang would otherwise emit unoptimized SPIR-V that differs from slangc's output.
     [[nodiscard]] Status Initialize() noexcept;
     /// Synchronously compile captured sources, with no disk reads through the Slang filesystem.
     /// @param request Input views remain alive only for this call; source bytes are copied.

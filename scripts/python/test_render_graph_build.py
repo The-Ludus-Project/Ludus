@@ -13,6 +13,7 @@ from ludus_tools.errors import ToolingError
 from ludus_tools.cli import main
 
 ROOT = Path(__file__).resolve().parents[2]
+PREVIOUS_SNAPSHOT_FILE_LIMIT = 64
 
 
 class BuildTests(unittest.TestCase):
@@ -460,6 +461,59 @@ class BuildTests(unittest.TestCase):
             self.run_build()
         self.assertEqual(prior, self.pointer())
 
+    def test_more_than_32_programs_build_publish_and_reuse_the_cache(self):
+        program_count = 40
+        value = self.value()
+        template = value['programs'][0]
+        while len(value['programs']) < program_count:
+            value['programs'].append({**template, 'id': f'Additional{len(value["programs"])}'})
+        value['budgets'].update(programs=program_count, artifacts=program_count * len(value['profiles']))
+        self.manifest.write_text(json.dumps(value))
+        first = self.run_build()
+        package = build.verify_package(Path(first['package']))
+        self.assertEqual(program_count, package['counts']['programs'])
+        self.assertEqual(program_count * len(value['profiles']), package['counts']['artifacts'])
+        self.assertEqual(program_count, package['budgets']['programs'])
+        self.calls.clear()
+        second = self.run_build()
+        self.assertEqual(first['generation'], second['generation'])
+        self.assertEqual(0, second['cache_misses'])
+        self.assertFalse(self.calls)
+
+    def test_program_budget_has_no_fixed_ceiling_but_requires_a_positive_integer(self):
+        for budget in (33, 1000, 2 ** 40):
+            with self.subTest(budget=budget):
+                value = self.value()
+                value['budgets']['programs'] = budget
+                build.validate_manifest(value)
+        for budget in (0, -1, True, False, 33.5, '33', None):
+            with self.subTest(budget=budget):
+                value = self.value()
+                value['budgets']['programs'] = budget
+                with self.assertRaisesRegex(ToolingError, 'budget programs: positive integer required'):
+                    build.validate_manifest(value)
+
+    def test_program_growth_still_checks_authored_and_artifact_budgets_before_compilation(self):
+        self.run_build()
+        previous = self.pointer()
+        value = self.value()
+        template = value['programs'][0]
+        while len(value['programs']) < 33:
+            value['programs'].append({**template, 'id': f'Additional{len(value["programs"])}'})
+        value['budgets'].update(programs=32, artifacts=128)
+        self.manifest.write_text(json.dumps(value))
+        self.calls.clear()
+        with self.assertRaisesRegex(ToolingError, '33 exceeds authored budget 32; increase budgets.programs to at least 33'):
+            self.run_build()
+        self.assertFalse(self.calls)
+        self.assertEqual(previous, self.pointer())
+        value['budgets'].update(programs=33, artifacts=64)
+        self.manifest.write_text(json.dumps(value))
+        with self.assertRaisesRegex(ToolingError, 'artifacts: 66 exceeds authored budget 64'):
+            self.run_build()
+        self.assertFalse(self.calls)
+        self.assertEqual(previous, self.pointer())
+
     def test_capacity_and_configuration_budgets_fail_before_compilation(self):
         for key in build.LIMITS:
             value = self.value()
@@ -662,6 +716,54 @@ class BuildTests(unittest.TestCase):
         self.output = self.root
         with self.assertRaisesRegex(ToolingError, 'contain source root'):
             self.run_build()
+
+    def add_shader_dependencies(self, program, count):
+        source = self.manifest.parent / program['source']
+        includes = []
+        for index in range(count):
+            dependency = source.with_name(f'{source.stem}_dependency{index}.slang')
+            dependency.write_text('// independent captured dependency\n')
+            includes.append(f'#include "{dependency.name}"\n')
+        source.write_text(''.join(includes) + source.read_text())
+
+    def test_independent_stage_closures_share_a_larger_package_snapshot(self):
+        for program in self.value()['programs'][:2]:
+            self.add_shader_dependencies(program, PREVIOUS_SNAPSHOT_FILE_LIMIT // 2)
+        with patch.object(build, 'compile_program', wraps=build.compile_program) as compile_program:
+            result = self.run_build()
+        package = build.verify_package(Path(result['package']))
+        self.assertGreater(len(package['provenance']), PREVIOUS_SNAPSHOT_FILE_LIMIT)
+        self.assertLessEqual(len(package['provenance']), build.MAX_FILES)
+        self.assertTrue(all(len(call.args[2]) + 1 <= PREVIOUS_SNAPSHOT_FILE_LIMIT
+                            for call in compile_program.call_args_list))
+        self.assertEqual(6, len(self.calls))
+
+    def test_aggregate_byte_limit_still_preserves_publication(self):
+        self.run_build()
+        prior = self.pointer()
+        self.calls.clear()
+        program = self.value()['programs'][0]
+        self.add_shader_dependencies(program, build.MAX_BYTES // build.MAX_FILE)
+        source = self.manifest.parent / program['source']
+        for dependency in source.parent.glob(source.stem + '_dependency*.slang'):
+            dependency.write_bytes(b' ' * build.MAX_FILE)
+        with self.assertRaisesRegex(ToolingError, 'source byte limit exceeded') as caught:
+            self.run_build()
+        self.assertEqual('RenderGraphBuildCapacity', caught.exception.code)
+        self.assertEqual(prior, self.pointer())
+        self.assertFalse(self.calls)
+
+    def test_aggregate_file_limit_still_preserves_publication(self):
+        self.run_build()
+        prior = self.pointer()
+        self.calls.clear()
+        for program in self.value()['programs'][:2]:
+            self.add_shader_dependencies(program, build.MAX_FILES // 2)
+        with self.assertRaisesRegex(ToolingError, 'files per build snapshot') as caught:
+            self.run_build()
+        self.assertEqual('RenderGraphBuildCapacity', caught.exception.code)
+        self.assertEqual(prior, self.pointer())
+        self.assertFalse(self.calls)
 
     def test_cli_build_and_verify_use_shared_backend(self):
         from contextlib import redirect_stdout

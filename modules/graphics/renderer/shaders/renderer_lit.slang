@@ -18,13 +18,13 @@ struct Parameters
     float4 BakeScale;
     float4 BakeUv;
 #ifdef LUDUS_CLUSTERED
-    float4 Lights[512];
+    float4 Lights[CLUSTERED_LIGHT_COUNT * FORWARD_LIGHT_WORDS];
 #else
     float4 Lights[32];
 #endif
     float4 ShadowData[SHADOW_DATA_WORDS];
 #ifdef LUDUS_CLUSTERED
-    float4 GridRows[3];
+    float4 GridRows[CLUSTERED_GRID_ROWS];
     float4 GridMinimum;
     float4 GridScale;
 #endif
@@ -330,11 +330,23 @@ float3 EncodeDebugDisplay(float3 displaySrgb)
                                 encoded.z <= 0.04045 ? encoded.z / 12.92 : pow((encoded.z + 0.055) / 1.055, 2.4));
     return InvertPbrNeutral(min(linearColor, float3(DEBUG_DISPLAY_LINEAR_LIMIT)));
 }
-// Four-segment blue, cyan, green, yellow, red ramp over t in [0,1].
-float3 ComputeHeatColour(float t)
+// Perceptually uniform viridis ramp over t in [0,1], dark purple through teal to yellow, as display-space sRGB.
+// Thanks to Matt Zucker, "Viridis approximation" (Shadertoy WlfXRN), a degree-six polynomial fit of
+// matplotlib's viridis (Nathaniel Smith and Stefan van der Walt, CC0).
+float3 ComputeRampColour(float t)
 {
-    float x = saturate(t) * 4;
-    return saturate(float3(x - 2, x < 2 ? x : 4 - x, 2 - x));
+    const float3 coefficient0 = float3(0.2777273272234177, 0.005407344544966578, 0.3340998053353061);
+    const float3 coefficient1 = float3(0.1050930431085774, 1.404613529898575, 1.384590162594685);
+    const float3 coefficient2 = float3(-0.3308618287255563, 0.214847559468213, 0.09509516302823659);
+    const float3 coefficient3 = float3(-4.634230498983486, -5.799100973351585, -19.33244095627987);
+    const float3 coefficient4 = float3(6.228269936347081, 14.17993336680509, 56.69055260068105);
+    const float3 coefficient5 = float3(4.776384997670288, -13.74514537774601, -65.35303263337234);
+    const float3 coefficient6 = float3(-5.435455855934631, 4.645852612178535, 26.3124352495832);
+    float x = saturate(t);
+    return saturate(
+        coefficient0 +
+        x * (coefficient1 +
+             x * (coefficient2 + x * (coefficient3 + x * (coefficient4 + x * (coefficient5 + x * coefficient6))))));
 }
 float3 ComputeDebugColour(int mode,
                           Varying input,
@@ -353,7 +365,7 @@ float3 ComputeDebugColour(int mode,
         float distance = (GetEyeFlags(input) & 2) != 0 ? -dot(input.PositionWorld, input.EyeWorld.xyz)
                                                        : length(input.PositionWorld - input.EyeWorld.xyz);
         float span = input.DebugDepthRange.y - input.DebugDepthRange.x;
-        return float3(span > 0 ? saturate((distance - input.DebugDepthRange.x) / span) : 0);
+        return ComputeRampColour(span > 0 ? (distance - input.DebugDepthRange.x) / span : 0);
     }
     if (mode == int(MATERIAL_DEBUG_VIEW_ROUGHNESS))
         return float3(roughness);
@@ -362,8 +374,7 @@ float3 ComputeDebugColour(int mode,
     if (mode == int(MATERIAL_DEBUG_VIEW_TEXCOORD_UV))
         return float3(frac(input.TexcoordUv), 0);
     if (mode == int(MATERIAL_DEBUG_VIEW_LIGHT_COUNT))
-        return lightCount == 0 ? float3(0)
-                               : ComputeHeatColour(float(lightCount) / float(MATERIAL_DEBUG_LIGHT_COUNT_SATURATION));
+        return ComputeRampColour(float(lightCount) / float(MATERIAL_DEBUG_LIGHT_COUNT_SATURATION));
     return shaded;
 }
 #endif
@@ -571,3 +582,9 @@ float3 ComputeDebugColour(int mode,
     float high = floor(encoded / 256);
     return float4(high / 255, (encoded - high * 256) / 255, 0, 1);
 }
+
+#ifdef LUDUS_CLUSTERED
+// The prepass retains the exact color vertex entry and evaluates no material terms.
+// This profile accepts opaque coverage only; masked coverage needs its own qualified entry.
+void OpaqueDepthMain(in Varying input) {}
+#endif
