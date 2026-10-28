@@ -1044,24 +1044,31 @@ TEST_CASE("independent entry points render different colors in one graph", "[ren
     CHECK(fixture.Pixels[RIGHT + 1] > 0);
 }
 
-TEST_CASE("default clustered forward matches full light evaluation with and without the z prepass",
-          "[render-graph][clustered-forward][gpu]")
+TEST_CASE("default clustered deferred matches forward material shading and preserves optional prepass pixels",
+          "[render-graph][clustered-deferred][gpu]")
 {
     constexpr usize LIGHT_COUNT = 40;
-    constexpr usize LIGHTING_CASE_COUNT = 2;
+    constexpr usize LIGHTING_CASE_COUNT = 4;
+    constexpr usize PROFILE_COUNT = 3;
+    StaticArray<StaticArray<uint8, PIXEL_BYTES>, LIGHTING_CASE_COUNT> forwardPixels{};
+    StaticArray<StaticArray<uint8, PIXEL_BYTES>, LIGHTING_CASE_COUNT> forwardDepthPixels{};
     constexpr usize POLL_ATTEMPTS = 10000;
     StaticArray<StaticArray<uint8, PIXEL_BYTES>, LIGHTING_CASE_COUNT> ordinaryPixels{};
-    for (const bool shouldUsePrepass : {false, true})
+    for (usize profile = 0; profile < PROFILE_COUNT; ++profile)
     {
+        const bool shouldUsePrepass = profile == 2;
         GraphGpuFixture fixture;
         const PackageLocation location =
-            shouldUsePrepass == true
+            profile == 0
+                ? PackageLocation{LUDUS_RG3_CLUSTERED_FORWARD_DIRECTORY, "rg2_clustered_forward_control.lurgrt"}
+            : shouldUsePrepass == true
                 ? PackageLocation{LUDUS_RG3_CLUSTERED_ZPREPASS_DIRECTORY, "rg2_clustered_ZPrepass.lurgrt"}
                 : PackageLocation{LUDUS_RG3_CLUSTERED_DEFAULT_DIRECTORY, "rg2_clustered_Default.lurgrt"};
         const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(location);
         const renderer::RenderGraphPrograms programs =
             package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
         REQUIRE(programs.HasClusteredForward == true);
+        REQUIRE(programs.HasClusteredDeferred == (profile != 0));
         CHECK(package->GetPlan().Passes.GetSize() == (shouldUsePrepass == true ? 2 : 1));
         if (shouldUsePrepass == true)
         {
@@ -1082,23 +1089,54 @@ TEST_CASE("default clustered forward matches full light evaluation with and with
         fixture.Meshes[0].Geometry.Normals = normals.GetData();
         const uint32 materialIndex = 0;
         fixture.Meshes[0].MaterialBindings = {&materialIndex, 1};
-        renderer::SceneShaderMaterial material;
+        constexpr usize MATERIAL_COUNT = 2;
+        StaticArray<renderer::SceneShaderMaterial, MATERIAL_COUNT> materials{};
+        materials[1].BaseColor = {.2F, .6F, .8F};
+        materials[1].Metallic = .5F;
+        materials[1].Roughness = .3F;
+        materials[1].Emission = {.1F, .02F, .03F};
+        const StaticArray<uint8, TEXEL_BYTES> surfaceMap{{140, 120, 150, 200}};
+        materials[1].SurfaceTexture =
+            {surfaceMap.GetData(), surfaceMap.GetSize(), surfaceMap.GetSize(), 1, 1, rhi::RasterFormat::Rgba8Unorm};
+        const StaticArray<uint8, TEXEL_BYTES> emissionMap{{128, 255, 64, 255}};
+        materials[1].EmissionTexture =
+            {emissionMap.GetData(), emissionMap.GetSize(), emissionMap.GetSize(), 1, 1, rhi::RasterFormat::Rgba8Unorm};
+        StaticArray<renderer::RenderGraphItem, MATERIAL_COUNT> items{{fixture.Items[0], fixture.Items[0]}};
+        items[1].SourceId = 2;
+        items[1].MeshToWorld.Translation = {.2F, 0, -.1F};
+        const uint32 secondMaterial = 1;
+        items[1].MaterialOverrides = {&secondMaterial, 1};
         renderer::SceneShaderInputs inputs;
-        inputs.Materials = {&material, 1};
+        inputs.Materials = {materials.GetData(), materials.GetSize()};
+        inputs.Environment = {.02F, .03F, .01F};
         StaticArray<renderer::DirectLight, LIGHT_COUNT> lights{};
         inputs.Lights = {lights.GetData(), lights.GetSize()};
         uint64 revision = 0;
+        uint64 contentRevision = 0;
         const auto update = [&]() {
             renderer::RenderGraphReport report;
             ++revision;
+            ++contentRevision;
             return poll(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
-                                             {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                             {items.GetData(), items.GetSize()},
                                              {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
                                              revision,
                                              renderer::RenderGraphCoveragePolicy::RejectIncomplete,
                                              report,
                                              &inputs,
-                                             revision));
+                                             contentRevision));
+        };
+        const auto updateCamera = [&]() {
+            renderer::RenderGraphReport report;
+            ++revision;
+            return poll(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                             {items.GetData(), items.GetSize()},
+                                             {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                             revision,
+                                             renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                             report,
+                                             &inputs,
+                                             contentRevision));
         };
         rhi::TextureHandle texture;
         rhi::TextureAspect aspect;
@@ -1114,6 +1152,7 @@ TEST_CASE("default clustered forward matches full light evaluation with and with
                                              WIDTH,
                                              HEIGHT,
                                              mapping) == rhi::RasterStatus::Ready);
+        DepthDisplay depthDisplay(fixture.Device);
         renderer::Presentation presentation;
         REQUIRE(compositor.PreparePresentation(texture, mapping, presentation) == rhi::RasterStatus::Ready);
         const auto render = [&]() {
@@ -1128,13 +1167,18 @@ TEST_CASE("default clustered forward matches full light evaluation with and with
         };
         for (usize lightingCase = 0; lightingCase < LIGHTING_CASE_COUNT; ++lightingCase)
         {
+            const bool areDirectional = lightingCase % 2 == 0;
+            fixture.Cameras[0].OrthographicCamera = lightingCase >= 2;
+            fixture.Cameras[0].WorldToClip.Columns[2].W = lightingCase >= 2 ? 0 : .2F;
+            fixture.Cameras[0].WorldToClip.Columns[3].X = .1F;
             for (usize light = 0; light < LIGHT_COUNT; ++light)
             {
                 lights[light].SourceId = light + 1;
                 lights[light].Color = light + 1 == LIGHT_COUNT ? math::Vector3{0, 0, 1} : math::Vector3{1, 0, 0};
                 lights[light].Direction = {0, 0, -1};
                 lights[light].Intensity = light + 1 == LIGHT_COUNT ? 0.5F : 0.02F;
-                lights[light].Kind = lightingCase == 0 ? renderer::LightKind::Directional : renderer::LightKind::Point;
+                lights[light].Kind =
+                    areDirectional == true ? renderer::LightKind::Directional : renderer::LightKind::Point;
                 lights[light].Position = {100 + static_cast<float32>(light), 0, 1};
                 lights[light].Range = 0.1F;
             }
@@ -1144,20 +1188,46 @@ TEST_CASE("default clustered forward matches full light evaluation with and with
             REQUIRE(update() == rhi::RasterStatus::Ready);
             const renderer::RenderGraphSceneResourceReport report = fixture.Graph.GetReport().Resources;
             CHECK(report.DroppedLights == 0);
-            CHECK(report.OverflowClusters == (lightingCase == 0 ? 512 : 0));
+            CHECK(report.OverflowClusters == (areDirectional == true ? 512 : 0));
             render();
             CHECK(fixture.Pixels[GetPixel(WIDTH / 2, HEIGHT / 2) + 2] > 10);
             const StaticArray<uint8, PIXEL_BYTES> clustered = fixture.Pixels;
-            if (shouldUsePrepass == false)
+            StaticArray<uint8, PIXEL_BYTES> depthPixels{};
+            depthDisplay.Show(fixture.Surface, texture, depthPixels);
+            if (profile == 0)
+            {
+                forwardDepthPixels[lightingCase] = depthPixels;
+            }
+            else
+            {
+                CHECK(depthPixels == forwardDepthPixels[lightingCase]);
+            }
+            if (profile == 0)
+            {
+                forwardPixels[lightingCase] = clustered;
+            }
+            else
+            {
+                // RGBA16F attributes and depth reconstruction may move a final linear RGBA8 channel by two codes.
+                for (usize channel = 0; channel < PIXEL_BYTES; ++channel)
+                {
+                    CHECK(math::Abs(static_cast<float32>(clustered[channel]) -
+                                    static_cast<float32>(forwardPixels[lightingCase][channel])) <= 2);
+                }
+                const renderer::RenderGraphAllocationReport allocation = fixture.Graph.GetAllocationReport();
+                CHECK(allocation.DeferredAllocations == 3);
+                CHECK(allocation.DeferredAttachmentBytes == uint64{WIDTH} * HEIGHT * 36);
+            }
+            if (profile == 1)
             {
                 ordinaryPixels[lightingCase] = clustered;
             }
-            else
+            else if (shouldUsePrepass == true)
             {
                 CHECK(clustered == ordinaryPixels[lightingCase]);
             }
             fixture.Cameras[0].DirectLighting = true;
-            REQUIRE(update() == rhi::RasterStatus::Ready);
+            REQUIRE(updateCamera() == rhi::RasterStatus::Ready);
             render();
             for (usize channel = 0; channel < PIXEL_BYTES; ++channel)
             {
@@ -1166,12 +1236,47 @@ TEST_CASE("default clustered forward matches full light evaluation with and with
             }
             // Failed replacement retains the last successfully published scene and pixels.
             const StaticArray<uint8, PIXEL_BYTES> lastDrawable = fixture.Pixels;
+            const uint64 lastDrawableRevision = fixture.Graph.GetDrawableSceneRevision();
+            if (profile != 0)
+            {
+                const math::Matrix4 validWorldToClip = fixture.Cameras[0].WorldToClip;
+                fixture.Cameras[0].WorldToClip.Columns[0] = {};
+                REQUIRE(updateCamera() != rhi::RasterStatus::Ready);
+                CHECK(fixture.Graph.GetDrawableSceneRevision() == lastDrawableRevision);
+                render();
+                CHECK(fixture.Pixels == lastDrawable);
+                fixture.Cameras[0].WorldToClip = validWorldToClip;
+            }
             lights[LIGHT_COUNT - 1].Color = {0, 1, 0};
             lights[LIGHT_COUNT - 1].SourceId = lights[0].SourceId;
             REQUIRE(update() != rhi::RasterStatus::Ready);
-            CHECK(fixture.Graph.GetDrawableSceneRevision() == revision - 1);
+            CHECK(fixture.Graph.GetDrawableSceneRevision() == lastDrawableRevision);
             render();
             CHECK(fixture.Pixels == lastDrawable);
+        }
+        if (profile == 1)
+        {
+            lights[LIGHT_COUNT - 1].SourceId = LIGHT_COUNT;
+            lights[LIGHT_COUNT - 1].Color = {0, 0, 1};
+            REQUIRE(update() == rhi::RasterStatus::Ready);
+            render();
+            const StaticArray<uint8, PIXEL_BYTES> beforeResize = fixture.Pixels;
+            REQUIRE(fixture.Graph.Resize(WIDTH / 2, HEIGHT / 2) == rhi::RasterStatus::Pending);
+            render();
+            CHECK(fixture.Pixels == beforeResize);
+            REQUIRE(update() == rhi::RasterStatus::Ready);
+            CHECK(fixture.Graph.HasPendingResize() == false);
+            REQUIRE(fixture.Graph.GetExportAllocation(0, texture, aspect) == rhi::RasterStatus::Ready);
+            REQUIRE(compositor.Release(presentation) == rhi::RasterStatus::Ready);
+            REQUIRE(renderer::ResolveViewMapping({WIDTH / 2, HEIGHT / 2, renderer::ScreenFit::Stretch},
+                                                 {0, 0, WIDTH, HEIGHT},
+                                                 WIDTH,
+                                                 HEIGHT,
+                                                 mapping) == rhi::RasterStatus::Ready);
+            REQUIRE(compositor.PreparePresentation(texture, mapping, presentation) == rhi::RasterStatus::Ready);
+            render();
+            CHECK(fixture.Pixels[GetPixel(WIDTH / 2, HEIGHT / 2) + 2] > 10);
+            CHECK(fixture.Graph.GetAllocationReport().DeferredAttachmentBytes == uint64{WIDTH / 2} * (HEIGHT / 2) * 36);
         }
     }
 }

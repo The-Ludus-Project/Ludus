@@ -1,4 +1,9 @@
-float4 PSMain(Varying value)
+SurfaceSample MaterialMain(in Varying value)
 {
-    return FragmentMain(value);
+    return SampleMaterial(value);
+}
+
+float4 ForwardMain(in Varying value)
+{
+    return ShadeMaterial(MaterialMain(value), value);
 }

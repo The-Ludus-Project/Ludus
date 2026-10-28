@@ -34,6 +34,8 @@ static const LightingLayoutValue CLUSTERED_LIGHT_COUNT = 128;
 static const LightingLayoutValue CLUSTERED_GRID_ROWS = 3;
 /// Grid transform rows, minimum and reciprocal cell extents.
 static const LightingLayoutValue CLUSTERED_GRID_WORDS = CLUSTERED_GRID_ROWS + 2;
+/// Group-zero entries in the authored clustered material layout.
+static const LightingLayoutValue CLUSTERED_AUTHORED_BINDING_COUNT = 11;
 /// Byte offset of clustered shadow projections after the complete light list.
 static const LightingLayoutValue CLUSTERED_SHADOW_OFFSET =
     (FORWARD_HEADER_WORDS + CLUSTERED_LIGHT_COUNT * FORWARD_LIGHT_WORDS) * 16;

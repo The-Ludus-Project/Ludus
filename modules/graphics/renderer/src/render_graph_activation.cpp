@@ -143,7 +143,7 @@ struct RenderGraphPackage::State final
         std::string_view Text;
         Array<uint32> Words;
         /// GLSL ES uniform block names by binding number; empty for other targets.
-        StaticArray<std::string_view, format::UNIFORM_SLOT_COUNT> Blocks{};
+        StaticArray<std::string_view, rhi::RASTER_BINDING_COUNT> Blocks{};
         StaticArray<std::string_view, rhi::RASTER_BINDING_COUNT> TextureNames{};
         StaticArray<uint32, rhi::RASTER_BINDING_COUNT> TextureSamplers{};
     };
@@ -173,6 +173,7 @@ struct RenderGraphPackage::State final
     bool HasPersistentBuffers = false;
     bool HasForwardStages = false;
     bool CanHaveClusteredForward = false;
+    bool CanHaveClusteredDeferred = false;
     bool HasExplicitAccumulation = false;
     bool HasExplicitToneMapping = false;
     bool HasBilinearUpscale = false;
@@ -226,6 +227,11 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         {
             return RenderGraphPackageStatus::Malformed;
         }
+        const bool isDeferredRole = role >= format::DEFERRED_STAGE_ROLE_FIRST;
+        if (isDeferredRole == true && CanHaveClusteredDeferred == false)
+        {
+            return RenderGraphPackageStatus::UnsupportedVersion;
+        }
         const bool isClusteredFragment = role == format::CLUSTERED_FORWARD_FRAGMENT_ROLE;
         const bool isForwardDepth = role == format::FORWARD_DEPTH_STAGE_ROLE;
         if ((isClusteredFragment == true || isForwardDepth == true) && CanHaveClusteredForward == false)
@@ -233,7 +239,7 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
             return RenderGraphPackageStatus::UnsupportedVersion;
         }
         const bool isForwardRole = (role >= format::FORWARD_STAGE_ROLE_FIRST && role < format::NATIVE_RAY_STAGE_ROLE) ||
-                                   isClusteredFragment == true || isForwardDepth == true;
+                                   isClusteredFragment == true || isForwardDepth == true || isDeferredRole == true;
         if (isForwardRole == true && HasForwardStages == false)
         {
             return RenderGraphPackageStatus::UnsupportedVersion;
@@ -242,10 +248,12 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
             (role >= static_cast<uint32>(format::StageRole::RayCompute) && role < format::LEGACY_STAGE_ROLE_COUNT) ||
             role == static_cast<uint32>(format::StageRole::PersistentRayCompute) ||
             role == format::NATIVE_RAY_STAGE_ROLE;
-        const bool isVertex = isForwardRole == true ? (role == static_cast<uint32>(format::StageRole::ForwardVertex) ||
-                                                       role == static_cast<uint32>(format::StageRole::LightingVertex))
-                              : isRayRole == true   ? role == static_cast<uint32>(format::StageRole::RayImageVertex)
-                                                    : role % format::TECHNIQUE_STAGE_COUNT == 0;
+        const bool isVertex = isForwardRole == true
+                                  ? (role == static_cast<uint32>(format::StageRole::ForwardVertex) ||
+                                     role == static_cast<uint32>(format::StageRole::LightingVertex) ||
+                                     role == static_cast<uint32>(format::StageRole::DeferredLightingVertex))
+                              : isRayRole == true ? role == static_cast<uint32>(format::StageRole::RayImageVertex)
+                                                  : role % format::TECHNIQUE_STAGE_COUNT == 0;
         if (HasVisibilityFields == false && isVertex == true && isRayRole == true && inputCount == 2)
         {
             return RenderGraphPackageStatus::UnsupportedVersion;
@@ -253,8 +261,10 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         if ((isVertex == false && inputCount != 0) || (isVertex == true && isRayRole == true && inputCount != 1) ||
             (isForwardRole == true &&
              inputCount != (role == static_cast<uint32>(format::StageRole::ForwardVertex) ? format::FORWARD_INPUT_COUNT
-                            : role == static_cast<uint32>(format::StageRole::LightingVertex) ? 1
-                                                                                             : 0)) ||
+                            : (role == static_cast<uint32>(format::StageRole::LightingVertex) ||
+                               role == static_cast<uint32>(format::StageRole::DeferredLightingVertex))
+                                ? 1
+                                : 0)) ||
             (isVertex == true && isRayRole == false && isForwardRole == false &&
              inputCount != format::STATIC_INPUT_COUNT &&
              (HasVisibilityFields == false || inputCount != format::VISIBILITY_INPUT_COUNT)))
@@ -281,12 +291,13 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
             const uint32 location = inoutReader.ReadWord();
             const uint32 inputFormat = inoutReader.ReadWord();
             const format::InputFormat expected =
-                isForwardRole == true
-                    ? (role == static_cast<uint32>(format::StageRole::LightingVertex) ? format::InputFormat::Float4
-                       : (input == 0 || input == 7)                                   ? format::InputFormat::Float3
-                       : (input == 6 || input == 13 || input == 15)                   ? format::InputFormat::Float2
+                isForwardRole == true ? ((role == static_cast<uint32>(format::StageRole::LightingVertex) ||
+                                          role == static_cast<uint32>(format::StageRole::DeferredLightingVertex))
+                                             ? format::InputFormat::Float4
+                                         : (input == 0 || input == 7)                 ? format::InputFormat::Float3
+                                         : (input == 6 || input == 13 || input == 15) ? format::InputFormat::Float2
                                                                                       : format::InputFormat::Float4)
-                : input == 0 ? (isRayRole == true ? format::InputFormat::Float2 : format::InputFormat::Float3)
+                : input == 0          ? (isRayRole == true ? format::InputFormat::Float2 : format::InputFormat::Float3)
                 : input >= format::STATIC_INPUT_COUNT ? format::InputFormat::Float2
                                                       : format::InputFormat::Float4;
             if (location != input || inputFormat != static_cast<uint32>(expected))
@@ -308,7 +319,8 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         {
             const uint32 slot = inoutReader.ReadWord();
             const uint32 nameBytes = inoutReader.ReadWord();
-            if (inoutReader.IsOk() == false || slot >= format::UNIFORM_SLOT_COUNT ||
+            if (inoutReader.IsOk() == false ||
+                slot >= (isDeferredRole == true ? rhi::RASTER_BINDING_COUNT : format::UNIFORM_SLOT_COUNT) ||
                 nameBytes > format::MAX_ENTRY_BYTES || view.Blocks[slot].empty() == false)
             {
                 return RenderGraphPackageStatus::Malformed;
@@ -430,6 +442,22 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
     if (hasClusteredForward == true && hasLegacyForward == true)
     {
         return RenderGraphPackageStatus::Malformed;
+    }
+    bool hasDeferred = false;
+    for (usize target = 0; target < format::SHADER_TARGET_COUNT; ++target)
+    {
+        hasDeferred = hasDeferred == true || Stages[format::DEFERRED_STAGE_ROLE_FIRST][target].IsPresent == true;
+    }
+    for (usize target = 0; target < format::SHADER_TARGET_COUNT; ++target)
+    {
+        const bool hasClusteredTarget = Stages[format::CLUSTERED_FORWARD_FRAGMENT_ROLE][target].IsPresent;
+        for (usize role = format::DEFERRED_STAGE_ROLE_FIRST; role < format::STAGE_ROLE_COUNT; ++role)
+        {
+            if (Stages[role][target].IsPresent != (hasDeferred == true && hasClusteredTarget == true))
+            {
+                return RenderGraphPackageStatus::Malformed;
+            }
+        }
     }
     bool hasNativeRayInvocation = false;
     for (usize pass = 0; pass < Header.PassCount; ++pass)
@@ -707,7 +735,8 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
-        (version != format::CLUSTERED_FORWARD_PACKAGE_VERSION && version != format::COMPUTE_BVH_PACKAGE_VERSION &&
+        (version != format::CLUSTERED_DEFERRED_PACKAGE_VERSION &&
+         version != format::CLUSTERED_FORWARD_PACKAGE_VERSION && version != format::COMPUTE_BVH_PACKAGE_VERSION &&
          version != format::RAY_WORKGROUP_PACKAGE_VERSION && version != format::NATIVE_RAY_PIPELINE_PACKAGE_VERSION &&
          version != format::CUSTOM_RAY_PACKAGE_VERSION && version != format::SOFTWARE_RAY_PACKAGE_VERSION &&
          version != format::METALFX_SPATIAL_PACKAGE_VERSION && version != format::DENOISING_PACKAGE_VERSION &&
@@ -727,6 +756,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     candidate->HasPersistentBuffers = version >= format::ORDERED_PACKAGE_VERSION;
     candidate->HasPixelBuffers = version >= format::PIXEL_BUFFER_PACKAGE_VERSION;
     candidate->HasForwardStages = version >= format::FORWARD_PACKAGE_VERSION;
+    candidate->CanHaveClusteredDeferred = version >= format::CLUSTERED_DEFERRED_PACKAGE_VERSION;
     candidate->CanHaveClusteredForward = version >= format::CLUSTERED_FORWARD_PACKAGE_VERSION;
     candidate->HasExplicitAccumulation = version >= format::ACCUMULATION_PACKAGE_VERSION;
     candidate->HasExplicitToneMapping = version >= format::TONE_MAPPING_PACKAGE_VERSION;
@@ -1005,6 +1035,10 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
     {
         result.HasClusteredForward = result.HasClusteredForward == true || view.IsPresent == true;
     }
+    for (const State::StageView& view : state.Stages[format::DEFERRED_STAGE_ROLE_FIRST])
+    {
+        result.HasClusteredDeferred = result.HasClusteredDeferred == true || view.IsPresent == true;
+    }
     for (usize pass = 0; pass < state.Header.PassCount; ++pass)
     {
         result.HasVisibilityBuffer =
@@ -1030,10 +1064,16 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
          &result.LightingFragment,
          &result.LightingShadow},
     };
+    const StaticArray<rhi::RasterShaderDescription*, format::DEFERRED_STAGE_ROLE_COUNT> deferredMembers{
+        {&result.DeferredGBufferFragment,
+         &result.DeferredLightingVertex,
+         &result.DeferredLightingFragment,
+         &result.DeferredDepthCopyFragment}};
     for (usize role = 0; role < format::STAGE_ROLE_COUNT; ++role)
     {
         rhi::RasterShaderDescription& description =
-            role == format::FORWARD_DEPTH_STAGE_ROLE          ? result.ForwardDepth
+            role >= format::DEFERRED_STAGE_ROLE_FIRST  ? *deferredMembers[role - format::DEFERRED_STAGE_ROLE_FIRST]
+            : role == format::FORWARD_DEPTH_STAGE_ROLE ? result.ForwardDepth
             : role == format::CLUSTERED_FORWARD_FRAGMENT_ROLE ? result.ForwardFragment
             : role == format::NATIVE_RAY_STAGE_ROLE           ? result.NativeRayStages
             : role >= format::FORWARD_STAGE_ROLE_FIRST        ? *forwardMembers[role - format::FORWARD_STAGE_ROLE_FIRST]
@@ -1111,7 +1151,8 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
             }
         }
         if ((role >= format::FORWARD_STAGE_ROLE_FIRST && role < format::NATIVE_RAY_STAGE_ROLE) ||
-            role == format::CLUSTERED_FORWARD_FRAGMENT_ROLE || role == format::FORWARD_DEPTH_STAGE_ROLE)
+            role == format::CLUSTERED_FORWARD_FRAGMENT_ROLE || role == format::FORWARD_DEPTH_STAGE_ROLE ||
+            role >= format::DEFERRED_STAGE_ROLE_FIRST)
         {
             SetRenderGraphForwardInterface(description,
                                            role == format::CLUSTERED_FORWARD_FRAGMENT_ROLE
@@ -1151,7 +1192,7 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
         {
             description.Artifact.GlslEs = glsl.Text;
             description.Artifact.GlslEsEntry = glsl.Entry;
-            for (usize slot = 0; slot < format::UNIFORM_SLOT_COUNT; ++slot)
+            for (usize slot = 0; slot < rhi::RASTER_BINDING_COUNT; ++slot)
             {
                 description.UniformBlocks[slot] = glsl.Blocks[slot];
             }

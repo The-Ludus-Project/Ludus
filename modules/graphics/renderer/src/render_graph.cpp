@@ -3,6 +3,7 @@
 
 #include "../shaders/renderer_gpu_preview_layout.h"
 #include "internal/gpu_denoiser.h"
+#include "internal/render_graph_deferred.h"
 #include "internal/render_graph_metalfx.h"
 #include "internal/render_graph_pool.h"
 #include "internal/render_graph_ray.h"
@@ -881,6 +882,8 @@ struct RenderGraph::State final
     StaticArray<uint8, MAX_TECHNIQUE_UNIFORM_BYTES> Candidate{};
     internal::ForwardSceneResources ForwardResources;
     MaterialProgram ForwardProgram{};
+    internal::RenderGraphDeferredProgram DeferredProgram;
+    bool HasDeferredProgram = false;
     bool HasForwardLighting = false;
     bool HasForwardProgram = false;
     bool HasForwardResources = false;
@@ -908,8 +911,10 @@ struct RenderGraph::State final
         StaticArray<StaticArray<usize, format::MAX_ITEMS>, format::TECHNIQUE_COUNT> ItemSets{};
         StaticArray<Snapshot, format::MAX_PASSES> Snapshots{};
         StaticArray<PreparedView, format::MAX_PASSES> Views{};
+        StaticArray<core::UniquePtr<internal::RenderGraphDeferredPass>, format::MAX_PASSES> DeferredPasses{};
         StaticArray<internal::RenderGraphRayPass, format::MAX_PASSES> RayPasses{};
         StaticArray<internal::RenderGraphUpscalePass, format::MAX_PASSES> UpscalePasses{};
+        StaticArray<core::UniquePtr<internal::RenderGraphDeferredTargets>, format::MAX_PASSES> DeferredTargets{};
         rhi::OrderedGraph RayGraph{};
         bool IsRayGraphPrepared = false;
         StaticArray<ViewDescription, format::MAX_CAMERAS> Cameras{};
@@ -920,6 +925,7 @@ struct RenderGraph::State final
         usize MeshCount = 0;
         uint64 Revision = 0;
         uint64 ContentRevision = 0;
+        uint64 DeferredAttachmentBytes = 0;
         RenderGraphSceneRevisions Revisions{};
         RenderGraphCoveragePolicy CoveragePolicy = RenderGraphCoveragePolicy::RejectIncomplete;
         uint32 SubmittedRaySamples = 0;
@@ -930,6 +936,8 @@ struct RenderGraph::State final
                 static_cast<void>(rhi::DiscardOrderedGraph(OwnerOrNull->Device, RayGraph));
                 for (usize i = 0; i < OwnerOrNull->Header.PassCount; ++i)
                 {
+                    DeferredPasses[i].Reset();
+                    DeferredTargets[i].Reset();
                     Renderer& context = OwnerOrNull->GetContext(OwnerOrNull->Passes[i].Program);
                     static_cast<void>(context.Release(Views[i]));
                     static_cast<void>(context.Release(Snapshots[i]));
@@ -955,6 +963,7 @@ struct RenderGraph::State final
         State* OwnerOrNull = nullptr;
         Scene* SourceOrNull = nullptr;
         StaticArray<PreparedView, format::MAX_PASSES> Views{};
+        StaticArray<core::UniquePtr<internal::RenderGraphDeferredPass>, format::MAX_PASSES> DeferredPasses{};
         StaticArray<bool, format::MAX_PASSES> HasRayCamera{};
         StaticArray<ViewDescription, format::MAX_CAMERAS> Cameras{};
         uint64 Revision = 0;
@@ -970,11 +979,34 @@ struct RenderGraph::State final
                 {
                     SourceOrNull->RayPasses[i].DiscardCamera();
                 }
+                DeferredPasses[i].Reset();
                 static_cast<void>(OwnerOrNull->GetContext(OwnerOrNull->Passes[i].Program).Release(Views[i]));
             }
         }
     };
     core::UniquePtr<CameraUpdate> PendingCamera;
+    Status PrepareDeferredView(core::UniquePtr<internal::RenderGraphDeferredPass>& inoutPass,
+                               internal::RenderGraphDeferredTargets& inoutTargets,
+                               PreparedView view,
+                               const ViewDescription& camera) noexcept
+    {
+        if (inoutPass.Get() == nullptr)
+        {
+            internal::RenderGraphDeferredPass* allocationOrNull = new (std::nothrow) internal::RenderGraphDeferredPass;
+            if (allocationOrNull == nullptr)
+            {
+                return Status::OutOfMemory;
+            }
+            inoutPass = core::UniquePtr<internal::RenderGraphDeferredPass>{allocationOrNull};
+            const Status status =
+                inoutPass->Initialize(inoutTargets, GetContext(format::Technique::ColorAndDepth), view, camera);
+            if (IsAccepted(status) == false)
+            {
+                return status;
+            }
+        }
+        return inoutPass->Poll();
+    }
     Status PrepareCameras(BorrowedView<const ViewDescription> cameras, uint64 revision) noexcept
     {
         CameraUpdate* allocationOrNull = new (std::nothrow) CameraUpdate;
@@ -1037,9 +1069,16 @@ struct RenderGraph::State final
             {
                 continue;
             }
-            const Status status = update.HasRayCamera[i] == true
-                                      ? Current->RayPasses[i].PollCamera()
-                                      : GetContext(Passes[i].Program).GetStatus(update.Views[i]);
+            Status status = update.HasRayCamera[i] == true ? Current->RayPasses[i].PollCamera()
+                                                           : GetContext(Passes[i].Program).GetStatus(update.Views[i]);
+            if (status == Status::Ready && Programs.HasClusteredDeferred == true &&
+                Passes[i].Program == format::Technique::ColorAndDepth)
+            {
+                status = PrepareDeferredView(update.DeferredPasses[i],
+                                             *Current->DeferredTargets[i],
+                                             update.Views[i],
+                                             update.Cameras[Passes[i].Camera]);
+            }
             if (status != Status::Ready)
             {
                 if (status != Status::Pending)
@@ -1067,6 +1106,7 @@ struct RenderGraph::State final
             else
             {
                 static_cast<void>(GetContext(Passes[i].Program).Release(Current->Views[i]));
+                Current->DeferredPasses[i].Swap(update.DeferredPasses[i]);
                 Current->Views[i] = update.Views[i];
                 update.Views[i] = {};
             }
@@ -1380,6 +1420,50 @@ struct RenderGraph::State final
             {
                 return ready;
             }
+            if (Programs.HasClusteredDeferred == true && Passes[i].Program == format::Technique::ColorAndDepth)
+            {
+                if (inoutScene.DeferredTargets[i].Get() == nullptr)
+                {
+                    internal::RenderGraphDeferredTargets* allocationOrNull =
+                        new (std::nothrow) internal::RenderGraphDeferredTargets;
+                    if (allocationOrNull == nullptr)
+                    {
+                        return Status::OutOfMemory;
+                    }
+                    inoutScene.DeferredTargets[i] =
+                        core::UniquePtr<internal::RenderGraphDeferredTargets>{allocationOrNull};
+                    const uint32 backing = preparingResources[Passes[i].Depth].Backing;
+                    const StaticArray<rhi::TextureHandle, format::MAX_RESOURCES>& textures =
+                        Resizing.Get() != nullptr ? Resizing->Textures : Textures;
+                    const Status initialized =
+                        inoutScene.DeferredTargets[i]->Initialize(DeferredProgram,
+                                                                  textures[backing],
+                                                                  preparingResources[backing].Width,
+                                                                  preparingResources[backing].Height);
+                    if (IsAccepted(initialized) == false)
+                    {
+                        return initialized;
+                    }
+                    constexpr usize COLOR_CHANNEL_COUNT = 4;
+                    constexpr usize ATTACHMENT_BYTES_PER_PIXEL = COLOR_CHANNEL_COUNT * sizeof(uint16) + sizeof(float32);
+                    inoutScene.DeferredAttachmentBytes = uint64{preparingResources[backing].Width} *
+                                                         preparingResources[backing].Height * DEFERRED_TARGET_COUNT *
+                                                         ATTACHMENT_BYTES_PER_PIXEL;
+                }
+                const Status targets = inoutScene.DeferredTargets[i]->Poll();
+                if (targets != Status::Ready)
+                {
+                    return targets;
+                }
+                const Status deferred = PrepareDeferredView(inoutScene.DeferredPasses[i],
+                                                            *inoutScene.DeferredTargets[i],
+                                                            inoutScene.Views[i],
+                                                            inoutScene.Cameras[Passes[i].Camera]);
+                if (deferred != Status::Ready)
+                {
+                    return deferred;
+                }
+            }
         }
         return Status::Ready;
     }
@@ -1453,9 +1537,14 @@ struct RenderGraph::State final
                 description.Clear[ALPHA_CHANNEL] = 0;
             }
             HasAttemptedDraw = true;
-            RecordingStatus = Programs.HasClusteredForward == true && operation.Program == format::Technique::DepthOnly
-                                  ? GetContext(operation.Program).DrawDepthView(Current->Views[pass], description)
-                                  : GetContext(operation.Program).DrawView(Current->Views[pass], description);
+            RecordingStatus =
+                Programs.HasClusteredDeferred == true && operation.Program == format::Technique::ColorAndDepth
+                    ? Current->DeferredPasses[pass]->Draw(GetContext(operation.Program),
+                                                          Current->Views[pass],
+                                                          description)
+                : Programs.HasClusteredForward == true && operation.Program == format::Technique::DepthOnly
+                    ? GetContext(operation.Program).DrawDepthView(Current->Views[pass], description)
+                    : GetContext(operation.Program).DrawView(Current->Views[pass], description);
         }
         return RecordingStatus;
     }
@@ -1690,6 +1779,82 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
         (programs.HasClusteredForward == true && hasForwardProfile == false))
     {
         return Status::InvalidDescription;
+    }
+    const StaticArray<const rhi::RasterShaderDescription*, format::DEFERRED_STAGE_ROLE_COUNT> deferredStages{
+        {&programs.DeferredGBufferFragment,
+         &programs.DeferredLightingVertex,
+         &programs.DeferredLightingFragment,
+         &programs.DeferredDepthCopyFragment}};
+    for (const rhi::RasterShaderDescription* stage : deferredStages)
+    {
+        const bool hasArtifact = stage->Artifact.Wgsl.empty() == false || stage->Artifact.Msl.empty() == false ||
+                                 stage->Artifact.Spirv.empty() == false || stage->Artifact.GlslEs.empty() == false;
+        if (hasArtifact != programs.HasClusteredDeferred)
+        {
+            return Status::InvalidDescription;
+        }
+    }
+    if (programs.HasClusteredDeferred == true)
+    {
+        if (programs.HasClusteredForward == false)
+        {
+            return Status::InvalidDescription;
+        }
+        usize colorCount = 0;
+        usize depthCount = 0;
+        for (usize index = 0; index < plan.Passes.GetSize(); ++index)
+        {
+            const format::Pass& pass = plan.Passes[index];
+            if (pass.Program == format::Technique::ColorAndDepth)
+            {
+                ++colorCount;
+                if (pass.DepthStore != format::Store::Store || pass.ColorStore != format::Store::Store ||
+                    pass.ColorLoad != format::Load::Clear)
+                {
+                    return Status::Unsupported;
+                }
+                if (pass.DepthLoad == format::Load::Load &&
+                    (index == 0 || plan.Passes[index - 1].Program != format::Technique::DepthOnly ||
+                     plan.Passes[index - 1].Depth != pass.Depth || plan.Passes[index - 1].Camera != pass.Camera))
+                {
+                    return Status::Unsupported;
+                }
+            }
+            else if (pass.Program == format::Technique::DepthOnly)
+            {
+                ++depthCount;
+                if (index + 1 >= plan.Passes.GetSize() ||
+                    plan.Passes[index + 1].Program != format::Technique::ColorAndDepth ||
+                    plan.Passes[index + 1].DepthLoad != format::Load::Load ||
+                    plan.Passes[index + 1].Depth != pass.Depth || plan.Passes[index + 1].Camera != pass.Camera)
+                {
+                    return Status::Unsupported;
+                }
+            }
+        }
+        if (colorCount != 1 || depthCount > 1)
+        {
+            return Status::Unsupported;
+        }
+        rhi::DeviceInfo information;
+        rhi::FormatCapabilities formatCapabilities;
+        if (rhi::GetDeviceInfo(device, information) != rhi::DeviceStatus::Ready)
+        {
+            return Status::InvalidHandle;
+        }
+        const Status formatStatus =
+            rhi::GetFormatCapabilities(device, rhi::RasterFormat::Rgba16Float, formatCapabilities);
+        if (formatStatus != Status::Ready)
+        {
+            return formatStatus;
+        }
+        if (information.Profile.Interface.MaxColorAttachments < DEFERRED_TARGET_COUNT ||
+            information.Profile.Interface.MaxBindings < DEFERRED_BINDING_COUNT ||
+            formatCapabilities.DepthSampled == false || formatCapabilities.AttachmentViews == false ||
+            formatCapabilities.Uses.ColorAttachment == false)
+        {
+            return Status::Unsupported;
+        }
     }
     if (hasForwardProfile == true)
     {
@@ -2196,12 +2361,13 @@ Status RenderGraph::Poll() noexcept
         }
         if (state.HasForwardProgram == false)
         {
-            status = context.PrewarmLitProgram(state.Programs.ForwardVertex,
-                                               state.Programs.ForwardFragment,
-                                               state.Programs.ForwardShadow,
-                                               state.ForwardProgram,
-                                               state.Programs.HasClusteredForward == true ? &state.Programs.ForwardDepth
-                                                                                          : nullptr);
+            status = context.prewarmProgram(
+                state.Programs.ForwardVertex,
+                state.Programs.ForwardFragment,
+                &state.Programs.ForwardShadow,
+                state.ForwardProgram,
+                state.Programs.HasClusteredForward == true ? &state.Programs.ForwardDepth : nullptr,
+                state.Programs.HasClusteredDeferred == true ? &state.Programs.DeferredGBufferFragment : nullptr);
             if (IsAccepted(status) == false)
             {
                 return status;
@@ -2238,6 +2404,26 @@ Status RenderGraph::Poll() noexcept
         if (ready != Status::Ready)
         {
             return ready;
+        }
+    }
+    if (state.Programs.HasClusteredDeferred == true)
+    {
+        if (state.HasDeferredProgram == false)
+        {
+            const Status status = state.DeferredProgram.Initialize(state.Device,
+                                                                   state.Programs.DeferredLightingVertex,
+                                                                   state.Programs.DeferredLightingFragment,
+                                                                   state.Programs.DeferredDepthCopyFragment);
+            if (IsAccepted(status) == false)
+            {
+                return status;
+            }
+            state.HasDeferredProgram = true;
+        }
+        const Status status = state.DeferredProgram.Poll();
+        if (status != Status::Ready)
+        {
+            return status;
         }
     }
     state.IsReady = true;
@@ -2756,7 +2942,20 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
 }
 RenderGraphAllocationReport RenderGraph::GetAllocationReport() const noexcept
 {
-    return mState.Get() == nullptr ? RenderGraphAllocationReport{} : mState->Allocation;
+    if (mState.Get() == nullptr)
+    {
+        return {};
+    }
+    RenderGraphAllocationReport report = mState->Allocation;
+    for (const State::Scene* sceneOrNull : {mState->Current.Get(), mState->Pending.Get()})
+    {
+        if (sceneOrNull != nullptr && sceneOrNull->DeferredAttachmentBytes != 0)
+        {
+            report.DeferredAllocations += DEFERRED_TARGET_COUNT;
+            report.DeferredAttachmentBytes += sceneOrNull->DeferredAttachmentBytes;
+        }
+    }
+    return report;
 }
 BorrowedView<const RenderGraphCoverageRecord> RenderGraph::GetCoverage() const noexcept
 {

@@ -378,7 +378,17 @@ float3 ComputeDebugColour(int mode,
     return shaded;
 }
 #endif
-[shader("fragment")] float4 FragmentMain(Varying input) : SV_Target
+struct SurfaceSample
+{
+    float4 BaseColor;
+    float3 NormalWorld;
+    float3 ViewDirectionWorld;
+    float Metallic;
+    float Roughness;
+    float3 Emission;
+    float Alpha;
+};
+SurfaceSample SampleMaterial(in Varying input)
 {
     float4 baseColor = SampleBaseTexel(input);
     // Thanks to the W3C GPU for the Web Working Group, WGSL, "Derivative Built-in Functions":
@@ -428,6 +438,41 @@ float3 ComputeDebugColour(int mode,
                                            uvDerivativeYMaterial);
     }
 #endif
+    float3 geometricNormalWorld = cross(positionDerivativeXWorld, positionDerivativeYWorld);
+    if (dot(geometricNormalWorld, input.NormalWorld) < 0)
+        geometricNormalWorld = -geometricNormalWorld;
+    float3 result = material.Emission.w > .5 || dot(geometricNormalWorld, viewDirectionWorld) > 0
+                        ? material.Emission.rgb
+                        : float3(0);
+#ifdef LUDUS_AUTHORED_INPUTS
+    if (material.SurfaceMap.z > .5)
+    {
+        float2 emissionUv =
+            (material.Authored.y > .5 ? input.MaterialUv1 : input.TexcoordUv) * material.UvTransform.xy +
+            material.UvTransform.zw;
+        float3 emission = material.Options.y < 0
+                              ? emissionTexture.Sample(colorSampler, emissionUv).rgb
+                              : emissionTexture.SampleLevel(colorSampler, emissionUv, material.Options.y).rgb;
+        result *= emission;
+    }
+#endif
+    SurfaceSample output;
+    output.BaseColor = baseColor;
+    output.NormalWorld = normalWorld;
+    output.ViewDirectionWorld = viewDirectionWorld;
+    output.Metallic = metallic;
+    output.Roughness = roughness;
+    output.Emission = result;
+    output.Alpha = material.Options.z == 2 ? baseColor.a : 1;
+    return output;
+}
+float4 ShadeMaterial(in SurfaceSample surface, in Varying input)
+{
+    float4 baseColor = surface.BaseColor;
+    float3 normalWorld = surface.NormalWorld;
+    float3 viewDirectionWorld = surface.ViewDirectionWorld;
+    float metallic = surface.Metallic;
+    float roughness = surface.Roughness;
     float nv = max(dot(normalWorld, viewDirectionWorld), 0);
     float3 f0 = lerp(float3(0.04), baseColor.rgb, metallic);
     float3 f = f0 + (1 - f0) * ComputeFifth(1 - nv);
@@ -454,24 +499,7 @@ float3 ComputeDebugColour(int mode,
             bakeTexture.SampleLevel(colorSampler, saturate(input.BakeUv) * material.BakeUv.xy + material.BakeUv.zw, 0)
                 .rgb *
             material.BakeScale.rgb;
-    float3 geometricNormalWorld = cross(positionDerivativeXWorld, positionDerivativeYWorld);
-    if (dot(geometricNormalWorld, input.NormalWorld) < 0)
-        geometricNormalWorld = -geometricNormalWorld;
-    float3 result = material.Emission.w > .5 || dot(geometricNormalWorld, viewDirectionWorld) > 0
-                        ? material.Emission.rgb
-                        : float3(0);
-#ifdef LUDUS_AUTHORED_INPUTS
-    if (material.SurfaceMap.z > .5)
-    {
-        float2 emissionUv =
-            (material.Authored.y > .5 ? input.MaterialUv1 : input.TexcoordUv) * material.UvTransform.xy +
-            material.UvTransform.zw;
-        float3 emission = material.Options.y < 0
-                              ? emissionTexture.Sample(colorSampler, emissionUv).rgb
-                              : emissionTexture.SampleLevel(colorSampler, emissionUv, material.Options.y).rgb;
-        result *= emission;
-    }
-#endif
+    float3 result = surface.Emission;
     if (nv > 0)
         result += irradiance * baseColor.rgb * (1 - metallic) * (1 - f) / PI + specularEnvironment;
 #ifdef LUDUS_DEBUG_VIEW
@@ -572,8 +600,12 @@ float3 ComputeDebugColour(int mode,
                           ComputeDebugColour(debugView, input, normalWorld, metallic, roughness, lightCount, result)),
                       1);
 #endif
-    float alpha = material.Options.z == 2 ? baseColor.a : 1;
+    float alpha = surface.Alpha;
     return float4(min(max(result, float3(0)), float3(65504)) * alpha, alpha);
+}
+[shader("fragment")] float4 FragmentMain(Varying input) : SV_Target
+{
+    return ShadeMaterial(SampleMaterial(input), input);
 }
 [shader("fragment")] float4 ShadowMain(Varying input) : SV_Target
 {

@@ -13,7 +13,8 @@ function(ludus_get_renderer_shader_roots out_directory out_includes)
         set(includes "${root}/modules/content/render_graph_format/include/ludus/content/render_graph_format"
                      "${root}/modules/foundation/math/shaders"
                      "${root}/modules/graphics/rhi/shaders"
-                     "${root}/modules/graphics/renderer/include/ludus/graphics/renderer")
+                     "${root}/modules/graphics/renderer/include/ludus/graphics/renderer"
+                     "${root}/modules/graphics/renderer/include/ludus/graphics/renderer/detail")
     endif()
     set(${out_directory} "${directory}" PARENT_SCOPE)
     set(${out_includes} "${includes}" PARENT_SCOPE)
