@@ -65,7 +65,6 @@ static const uint DIRECTIONAL_LIGHT = 0;
 static const uint SPOT_LIGHT = 2;
 static const uint AREA_ONE_SIDED_LIGHT = 3;
 static const uint AREA_TWO_SIDED_LIGHT = 4;
-static const uint BOX_MAXIMUM_PENDING = LUDUS_REFERENCE_STACK_SIZE - 2;
 static const uint RGBA8_CHANNEL_BITS = 8;
 static const uint RGBA8_CHANNEL_MASK = 0xff;
 static const uint TEXELS_PER_WORD = 4;
@@ -84,8 +83,6 @@ static const float MINIMUM_NORMAL_FLOAT = 1.17549435e-38;
 static const uint MINIMUM_NORMAL_FLOAT_BITS = 0x00800000;
 static const uint SIGN_BIT = 0x80000000;
 static const uint QUIET_NAN_BITS = 0x7fc00000;
-// 1 + 2 * gamma(3), gamma(n) = n * epsilon / (1 - n * epsilon), epsilon = 2^-24.
-static const float SLAB_EXIT_SCALE = 1.00000036;
 static const uint PROPOSAL_SELECTION_SLOT = 0;
 static const uint PROPOSAL_FIRST_SLOT = 1;
 static const uint PROPOSAL_SECOND_SLOT = 2;
@@ -289,6 +286,8 @@ bool IsOpaque(uint instance, float2 uv, float vertexAlpha)
 }
 
 // --- BVH traversal (TraceReferenceOracle) ------------------------------------
+// The node walk and watertight triangle test are shared with render-graph ComputeBvh passes.
+#include "ray_bvh_traversal.slang"
 struct Ray
 {
     float3 OriginWorld;
@@ -304,142 +303,27 @@ struct Hit
     float V;
     bool HasExceededStack;
 };
-bool IntersectBox(Ray ray, float3 minimumWorld, float3 maximumWorld, float maximumDistanceWorld)
+// The opacity test the shared traversal applies to each nearer or lower-index candidate.
+bool IsBvhCandidateAccepted(uint triangle, float2 barycentric)
 {
-    if (any(minimumWorld > maximumWorld))
-        return false;
-    float entry = ray.MinimumDistanceWorld;
-    float exit = maximumDistanceWorld * SLAB_EXIT_SCALE;
-    for (uint axis = 0; axis < 3; ++axis)
-    {
-        float origin = ray.OriginWorld[axis];
-        float direction = ray.DirectionWorld[axis];
-        if (direction == 0)
-        {
-            if (origin < minimumWorld[axis] || origin > maximumWorld[axis])
-                return false;
-            continue;
-        }
-        float near = (minimumWorld[axis] - origin) / direction;
-        float far = (maximumWorld[axis] - origin) / direction;
-        if (near > far)
-        {
-            float swapped = near;
-            near = far;
-            far = swapped;
-        }
-        entry = max(entry, near);
-        exit = min(exit, far * SLAB_EXIT_SCALE);
-        if (entry > exit)
-            return false;
-    }
-    return true;
-}
-bool IntersectTriangle(uint triangle, Ray ray, float limitWorld, out float outDistanceWorld, out float2 outBarycentric)
-{
-    outDistanceWorld = 0;
-    outBarycentric = 0;
-    uint z = 0;
-    for (uint axis = 1; axis < 3; ++axis)
-    {
-        if (abs(ray.DirectionWorld[axis]) > abs(ray.DirectionWorld[z]))
-            z = axis;
-    }
-    uint x = (z + 1) % 3;
-    uint y = (x + 1) % 3;
-    if (ray.DirectionWorld[z] < 0)
-    {
-        uint swapped = x;
-        x = y;
-        y = swapped;
-    }
-    float shearX = ray.DirectionWorld[x] / ray.DirectionWorld[z];
-    float shearY = ray.DirectionWorld[y] / ray.DirectionWorld[z];
-    float shearZ = 1 / ray.DirectionWorld[z];
-    float3 px;
-    float3 py;
-    float3 pz;
-    for (uint corner = 0; corner < 3; ++corner)
-    {
-        float3 positionWorld = TriangleValue(triangle, corner).xyz;
-        float dz = positionWorld[z] - ray.OriginWorld[z];
-        px[corner] = (positionWorld[x] - ray.OriginWorld[x]) - shearX * dz;
-        py[corner] = (positionWorld[y] - ray.OriginWorld[y]) - shearY * dz;
-        pz[corner] = dz * shearZ;
-    }
-    float3 edge = float3(px[2] * py[1] - py[2] * px[1], px[0] * py[2] - py[0] * px[2], px[1] * py[0] - py[1] * px[0]);
-    if (any(edge < 0) && any(edge > 0))
-        return false;
-    float determinant = edge.x + edge.y + edge.z;
-    if (determinant == 0)
-        return false;
-    float distanceWorld = dot(edge, pz) / determinant;
-    if (distanceWorld < ray.MinimumDistanceWorld || distanceWorld > limitWorld)
-        return false;
-    outDistanceWorld = distanceWorld;
-    outBarycentric = float2(edge.y / determinant, edge.z / determinant);
-    return true;
+    float u = barycentric.x;
+    float v = barycentric.y;
+    return IsOpaque(GetInstance(triangle), GetTexcoordUv(triangle, u, v), GetVertexAlpha(triangle, u, v));
 }
 Hit TraceScene(Ray ray, bool isVisibility)
 {
+    BvhRay query;
+    query.OriginWorld = ray.OriginWorld;
+    query.DirectionWorld = ray.DirectionWorld;
+    query.MinimumDistanceWorld = ray.MinimumDistanceWorld;
+    query.MaximumDistanceWorld = ray.MaximumDistanceWorld;
+    BvhHit traced = TraceBvh(query, isVisibility);
     Hit result;
-    result.Triangle = NO_TRIANGLE;
-    result.DistanceWorld = 0;
-    result.U = 0;
-    result.V = 0;
-    result.HasExceededStack = false;
-    if (Counts.y == 0)
-        return result;
-    uint stack[LUDUS_REFERENCE_STACK_SIZE];
-    stack[0] = 0;
-    uint pending = 1;
-    float closestWorld = ray.MaximumDistanceWorld;
-    uint chosen = NO_TRIANGLE;
-    while (pending != 0)
-    {
-        --pending;
-        uint node = Offsets.x + stack[pending] * 3;
-        float4 lower = SceneValue(node);
-        float4 upper = SceneValue(node + 1);
-        uint3 range = asuint(SceneValue(node + 2).xyz); // first, count, split axis
-        if (IntersectBox(ray, lower.xyz, upper.xyz, closestWorld) == false)
-            continue;
-        if (range.y == 0)
-        {
-            if (pending > BOX_MAXIMUM_PENDING)
-            {
-                result.HasExceededStack = true;
-                return result;
-            }
-            // Near child last so it pops first; its closest hit then culls the far child.
-            bool isReversed = ray.DirectionWorld[range.z] < 0;
-            stack[pending] = isReversed == true ? asuint(lower.w) : asuint(upper.w);
-            stack[pending + 1] = isReversed == true ? asuint(upper.w) : asuint(lower.w);
-            pending += 2;
-            continue;
-        }
-        for (uint slot = range.x; slot < range.x + range.y; ++slot)
-        {
-            uint triangle = asuint(SceneValue(Offsets.y + slot).x);
-            float distanceWorld;
-            float2 barycentric;
-            if (IntersectTriangle(triangle, ray, closestWorld, distanceWorld, barycentric) == false ||
-                (distanceWorld == closestWorld && triangle >= chosen))
-                continue;
-            float u = barycentric.x;
-            float v = barycentric.y;
-            if (IsOpaque(GetInstance(triangle), GetTexcoordUv(triangle, u, v), GetVertexAlpha(triangle, u, v)) == false)
-                continue;
-            closestWorld = distanceWorld;
-            chosen = triangle;
-            result.Triangle = triangle;
-            result.DistanceWorld = distanceWorld;
-            result.U = u;
-            result.V = v;
-            if (isVisibility == true)
-                return result;
-        }
-    }
+    result.Triangle = traced.Triangle;
+    result.DistanceWorld = traced.DistanceWorld;
+    result.U = traced.Barycentric.x;
+    result.V = traced.Barycentric.y;
+    result.HasExceededStack = traced.HasExceededStack;
     return result;
 }
 

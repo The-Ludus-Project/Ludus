@@ -2,6 +2,7 @@
 #include "internal/render_graph_canvas_feedback.h"
 #include "internal/render_graph_comments.h"
 #include "internal/render_graph_diagnostics.h"
+#include "internal/render_graph_execution_plan.h"
 #include "internal/render_graph_history.h"
 #include "internal/render_graph_navigation.h"
 #include "internal/render_graph_node_ports.h"
@@ -570,6 +571,11 @@ struct RenderGraphCanvas::NodeView final
     QGraphicsSimpleTextItem* SizeLabelOrNull = nullptr;
     QString ActivityText;
     QString CompactActivityText;
+    QGraphicsRectItem* PlanBadgeOrNull = nullptr;
+    QGraphicsSimpleTextItem* PlanLabelOrNull = nullptr;
+    QString PlanText;
+    float64 PlanOpacity = 1;
+    bool HasPlanActivity = false;
     float64 ActivityOpacity = 1;
     bool IsMovable = true;
 };
@@ -649,6 +655,9 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
     mReroutesOrNull = new RenderGraphReroutes(*this);
     connect(mDiagnostics, &RenderGraphDiagnostics::Changed, mCommentsOrNull, &RenderGraphComments::RefreshCounts);
     connect(mReroutesOrNull, &RenderGraphReroutes::PreviewChanged, this, &RenderGraphCanvas::updateEdges);
+    mExecutionPlanOrNull = new RenderGraphExecutionPlan(mDocument, *this, *mFramingToolbar);
+    connect(mExecutionPlanOrNull, &RenderGraphExecutionPlan::Changed, this, &RenderGraphCanvas::RefreshPlanOverlay);
+    connect(mHistoryOrNull, &RenderGraphHistory::Changed, this, &RenderGraphCanvas::RefreshPlanOverlay);
     setViewportMargins(0, mFramingToolbar->sizeHint().height() + mHistoryOrNull->sizeHint().height(), 0, 0);
     connect(mNavigation, &RenderGraphNavigation::TraceChanged, this, &RenderGraphCanvas::updateConnectionHighlight);
     connect(mNavigation, &RenderGraphNavigation::NodeRequested, this, [this](const QString& identity) {
@@ -681,6 +690,7 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
 
 RenderGraphCanvas::~RenderGraphCanvas()
 {
+    delete mExecutionPlanOrNull;
     delete mReroutesOrNull;
     delete mCommentsOrNull;
     qDeleteAll(mNodes);
@@ -699,6 +709,29 @@ RenderGraphDiagnostics& RenderGraphCanvas::GetDiagnostics() noexcept
 {
     return *mDiagnostics;
 }
+RenderGraphExecutionPlan& RenderGraphCanvas::GetExecutionPlan() noexcept
+{
+    return *mExecutionPlanOrNull;
+}
+
+void RenderGraphCanvas::RefreshPlanOverlay()
+{
+    for (NodeView* view : std::as_const(mNodes))
+    {
+        const RenderGraphPlanAnnotation annotation = mExecutionPlanOrNull->GetNodeAnnotation(view->Id);
+        view->HasPlanActivity = view->IsMovable == true && annotation.HasActivity == true;
+        view->PlanOpacity = annotation.IsPruned == true ? INACTIVE_OPACITY : 1;
+        view->PlanText = annotation.Label;
+        if (view->PlanBadgeOrNull != nullptr)
+        {
+            view->PlanBadgeOrNull->setToolTip(annotation.Explanation.toHtmlEscaped());
+        }
+    }
+    mCommentsOrNull->RefreshCounts();
+    updateConnectionHighlight();
+    updateSemanticZoom(true);
+}
+
 uint64 RenderGraphCanvas::GetDocumentRevision() const noexcept
 {
     return mDocument.GetRevision();
@@ -938,6 +971,21 @@ void RenderGraphCanvas::updateSemanticZoom(bool shouldForce)
                                : QStringLiteral("Overview: node identities and compact activity; hover for details"));
     for (NodeView* view : std::as_const(mNodes))
     {
+        if (view->PlanBadgeOrNull != nullptr && view->PlanLabelOrNull != nullptr)
+        {
+            view->PlanBadgeOrNull->setVisible(mExecutionPlanOrNull->IsEnabled() == true && view->IsMovable == true &&
+                                              hasReadableCards == true);
+            SetScaledLabel(*view->PlanLabelOrNull,
+                           view->PlanText,
+                           viewScale,
+                           CanvasLabelRole::Annotation,
+                           NODE_WIDTH - 2 * NODE_PADDING);
+            const float64 badgeHeight =
+                view->PlanLabelOrNull->boundingRect().height() * view->PlanLabelOrNull->scale() + NODE_PADDING;
+            view->PlanBadgeOrNull->setRect(0, 0, NODE_WIDTH, badgeHeight);
+            view->PlanBadgeOrNull->setPos(0, -badgeHeight - NODE_PADDING);
+            view->PlanLabelOrNull->setPos(NODE_PADDING, NODE_PADDING / 2);
+        }
         if (view->TitleLabelOrNull != nullptr)
         {
             QGraphicsSimpleTextItem& title = *view->TitleLabelOrNull;
@@ -1158,6 +1206,14 @@ void RenderGraphCanvas::Rebuild()
         {
             addPort(ports.Outputs.at(i), outputRows.value(ports.Outputs.at(i).Id, i), true);
         }
+        view->PlanBadgeOrNull = new QGraphicsRectItem(view->Frame);
+        view->PlanBadgeOrNull->setBrush(QColor::fromRgba(NODE_BACKGROUND_COLOR));
+        view->PlanBadgeOrNull->setPen(QPen(QColor::fromRgba(NODE_BORDER_COLOR)));
+        view->PlanBadgeOrNull->setAcceptedMouseButtons(Qt::NoButton);
+        view->PlanBadgeOrNull->setData(0, QStringLiteral("#plan-badge:") + identity);
+        view->PlanLabelOrNull = new QGraphicsSimpleTextItem(view->PlanBadgeOrNull);
+        view->PlanLabelOrNull->setBrush(QColor::fromRgba(LABEL_COLOR));
+        view->PlanBadgeOrNull->hide();
         view->ActivityLabelOrNull = new QGraphicsSimpleTextItem(view->Frame);
         view->SizeLabelOrNull = new QGraphicsSimpleTextItem(view->Frame);
         for (QGraphicsSimpleTextItem* annotation : {view->ActivityLabelOrNull, view->SizeLabelOrNull})
@@ -1273,6 +1329,7 @@ void RenderGraphCanvas::Rebuild()
     refreshFeedback();
     updateSelection();
     mCommentsOrNull->Rebuild(record);
+    RefreshPlanOverlay();
     QRectF nodeBounds = mCommentsOrNull->GetBounds().united(mReroutesOrNull->GetBounds());
     for (const NodeView* view : std::as_const(mNodes))
     {
@@ -1857,7 +1914,11 @@ void RenderGraphCanvas::updateConnectionHighlight()
             highlightedInputs.insert(edge->To);
         }
         const NodeView* destinationOrNull = mNodes.value(destination, nullptr);
-        const float64 activityOpacity = destinationOrNull == nullptr ? 1 : destinationOrNull->ActivityOpacity;
+        const float64 activityOpacity =
+            destinationOrNull == nullptr ? 1
+            : mExecutionPlanOrNull->IsEnabled() == true && destinationOrNull->HasPlanActivity == true
+                ? destinationOrNull->PlanOpacity
+                : destinationOrNull->ActivityOpacity;
         edge->Path->setOpacity(isHighlighted == true || isSelected == true ? 1
                                : hasFocus == true                          ? UNRELATED_EDGE_OPACITY
                                                                            : activityOpacity);
@@ -1874,9 +1935,12 @@ void RenderGraphCanvas::updateConnectionHighlight()
     for (NodeView* view : std::as_const(mNodes))
     {
         const bool isHighlighted = view->Frame->isSelected() == true || connected.contains(view->Id) == true;
-        view->Frame->setOpacity(view->ActivityOpacity * (hasTrace == true && trace.Nodes.contains(view->Id) == false
-                                                             ? UNRELATED_NODE_OPACITY
-                                                             : 1));
+        const float64 activityOpacity = mExecutionPlanOrNull->IsEnabled() == true && view->HasPlanActivity == true
+                                            ? view->PlanOpacity
+                                            : view->ActivityOpacity;
+        view->Frame->setOpacity(activityOpacity * (hasTrace == true && trace.Nodes.contains(view->Id) == false
+                                                       ? UNRELATED_NODE_OPACITY
+                                                       : 1));
         view->Frame->setPen(
             QPen(isHighlighted == true ? QColor::fromRgba(SELECTION_COLOR) : QColor::fromRgba(NODE_BORDER_COLOR),
                  isHighlighted == true ? FOCUSED_EDGE_WIDTH : NODE_BORDER_WIDTH));
