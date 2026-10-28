@@ -26,8 +26,8 @@
   },
   "renderer_output": {
     "source": "renderer_output.slang",
-    "vertex": "vertexMain",
-    "fragment": "fragmentMain"
+    "vertex": "VertexMain",
+    "fragment": "FragmentMain"
   },
   "renderer_lit": {
     "source": "renderer_lit.slang",

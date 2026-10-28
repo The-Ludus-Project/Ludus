@@ -10,6 +10,7 @@
 #include "internal/project_rendering_settings.h"
 #include "internal/renderer_workspace.h"
 #include "internal/script_workspace.h"
+#include "internal/theme_fonts.h"
 #include "internal/timing_panel.h"
 #include "internal/world_workspace.h"
 
@@ -426,10 +427,7 @@ void MainWindow::BuildUi()
     brand->setObjectName(QStringLiteral("welcomeLogo"));
     brand->setAccessibleName(QStringLiteral("Ludus logo"));
     brand->setPixmap(QIcon(QStringLiteral(":/ludus/ludus-mark.png")).pixmap(48, 48));
-    auto font = title->font();
-    font.setBold(true);
-    font.setPointSize(font.pointSize() + 6);
-    title->setFont(font);
+    title->setFont(MakeTypeFont(title->font(), TypeRole::Heading));
     auto* intro = new QLabel(QStringLiteral("Create a project or continue where you left off."), recentPanel);
     intro->setWordWrap(true);
     intro->setProperty("visualRole", QStringLiteral("secondary"));

@@ -13,6 +13,7 @@
 #    include "internal/crash_reporting.h"
 #endif
 #include "internal/qt_accessibility.h"
+#include "internal/theme_fonts.h"
 #include "internal/window_size.h"
 
 #include <ludus/foundation/base/types.h>
@@ -75,6 +76,7 @@ int main(int argc, char** argv)
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("Ludus Editor"));
     QApplication::setWindowIcon(QIcon(QStringLiteral(":/ludus/ludus-icon.png")));
+    ludus::editor::ApplyThemeFonts();
 
     namespace logging = ludus::foundation::logging;
     logging::LogConfig logConfig;
