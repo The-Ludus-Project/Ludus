@@ -229,8 +229,9 @@ Vulkan was not run: no Linux or Vulkan host was available.
 ## PL2 Point-and-line MIS template
 
 Evidence is from an Apple M5 on Metal (macOS 26.6), `macos-clang-development`,
-on the branch merged with `develop` `221f7621` (rechecked on `ba249bff`). Vulkan was not run: no Linux or
-Vulkan host was available, so the llvmpipe run is left to batch CI.
+on the branch merged with `develop` `221f7621` (rechecked on `ba249bff`).
+Vulkan was not run: no Linux or Vulkan host was available, so the llvmpipe run
+is left to batch CI.
 
 - [x] `render_graphs/salesin_jarosz_lines/`: library and main graphs, manifest
       and `main_shaders/` (D8b), all passes `TriangleLoop`, Graph settings
