@@ -637,6 +637,49 @@ class RayPipelineTests(unittest.TestCase):
         with self.assertRaises(ToolingError):
             build.validate_manifest(value)
 
+    def test_line_query_budget_is_optional_bounded_and_integral(self):
+        fixture = ROOT / 'tests/sdk_consumer/rg2/scene_ray/main.lushader.json.in'
+        value = json.loads(fixture.read_text().replace('@RG2_TEST_PROFILES@', '["metal"]'))
+        interface = next(item for item in value['techniques'] if item['id'] == ray.TECHNIQUE)['scene_interface']
+        # Absent means 0: existing manifests keep validating without the field.
+        self.assertNotIn('line_queries', interface)
+        build.validate_manifest(value)
+        self.assertEqual((ray.SCENE_QUERY_LIMITS['MIN_LINE_QUERIES'], ray.SCENE_QUERY_LIMITS['MAX_LINE_QUERIES']), (0, 8))
+        for accepted in (0, 1, 8):
+            interface['line_queries'] = accepted
+            build.validate_manifest(value)
+        for rejected in (-1, 9, 1.5, True, '1', None):
+            with self.subTest(line_queries=rejected):
+                interface['line_queries'] = rejected
+                with self.assertRaises(ToolingError) as caught:
+                    build.validate_manifest(value)
+                self.assertEqual(caught.exception.code, 'RenderGraphBuildCapacity')
+                # The diagnostic names the budget and its admitted range, which is the repair.
+                self.assertIn('line query budget', caught.exception.message)
+                self.assertIn('[0,8]', caught.exception.message)
+
+    def test_line_query_budget_reaches_the_wrapper_only_when_nonzero(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'kernel.slang').write_text('// LineKernel\n')
+            (root / 'payload.slang').write_text('struct ScenePayload { float3 Radiance; };\n')
+            programs = {'Kernel': {'id': 'Kernel', 'stage': 'compute', 'source': 'kernel.slang',
+                                   'function': 'LineKernel', 'output': 'Radiance'}}
+            recipe = {'source': 'renderer_gpu_preview.slang'}
+            interface = {'version': 1, 'payload': 'payload.slang', 'surface_queries': 1, 'visibility_queries': 0}
+            wrappers = {}
+            for name, line_queries in (('absent', None), ('zero', 0), ('three', 3)):
+                value = dict(interface) if line_queries is None else dict(interface, line_queries=line_queries)
+                wrappers[name] = ray.persistent_wrapper(programs, {'scene_interface': value}, [('Kernel',)],
+                                                        build.Snapshot(root), build, recipe)
+            # Absent and zero keep the zero-initialized maximum and the wrapper bytes of today.
+            self.assertEqual(wrappers['absent'], wrappers['zero'])
+            self.assertNotIn('MaximumLineQueries', wrappers['absent'])
+            self.assertNotIn('MAX_LINE_QUERIES', wrappers['absent'])
+            assignment = '    queries.MaximumLineQueries = 3;\n'
+            self.assertEqual(wrappers['three'].count(assignment), 1)
+            self.assertEqual(wrappers['three'].replace(assignment, '', 1), wrappers['absent'])
+
     def test_scene_pipeline_adapts_legacy_stages_without_project_helpers(self):
         value = json.loads((FIXTURE / 'main.lushader.json.in').read_text().replace('@RG2_TEST_PROFILES@', '["metal"]'))
         technique = next(item for item in value['techniques'] if item['id'] == ray.TECHNIQUE)

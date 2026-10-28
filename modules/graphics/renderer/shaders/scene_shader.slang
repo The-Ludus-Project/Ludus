@@ -16,6 +16,10 @@ static const uint SCENE_LIGHT_SPOT = 2;
 static const uint SCENE_LIGHT_MESH = 3;
 static const uint SCENE_LIGHT_ENVIRONMENT = 4;
 static const float SCENE_UNIT_TOLERANCE = 0.00001;
+/// Maximum visible intervals in one FindVisibleLineIntervals result (scene_shader_layout.h).
+static const uint SCENE_LINE_INTERVAL_CAPACITY = LUDUS_SCENE_LINE_INTERVAL_CAPACITY;
+/// Line interval merge and drop tolerance, a unitless fraction of the segment (scene_shader_layout.h).
+static const float SCENE_LINE_INTERVAL_MERGE_TOLERANCE = LUDUS_SCENE_LINE_INTERVAL_MERGE_TOLERANCE;
 struct Ray
 {
     float3 OriginWorld;
@@ -45,8 +49,10 @@ struct RayQueryContext
 {
     uint SurfaceQueries;
     uint VisibilityQueries;
+    uint LineQueries; ///< FindVisibleLineIntervals calls made by this invocation.
     uint MaximumSurfaceQueries;
     uint MaximumVisibilityQueries;
+    uint MaximumLineQueries; ///< The scene interface's line_queries budget; zero when absent.
     bool HasFailed;
     uint2 RandomSeed;         ///< Renderer-initialized sampling key; forward unchanged between callbacks.
     uint RandomPixel;         ///< Renderer-initialized linear pixel identity.
@@ -608,6 +614,122 @@ uint TestVisibility(SceneContext scene, inout RayQueryContext queries, SurfaceHi
         return SCENE_QUERY_FAILURE;
     }
     return hit.Triangle == SCENE_INVALID_INDEX ? SCENE_QUERY_MISS : SCENE_QUERY_SURFACE;
+}
+/// A world-space segment whose visibility from a receiver is queried, usually a chord of an emitter
+/// triangle. TriangleIndex is the packed index of the triangle that carries the segment, which is
+/// excluded from the occluders, or SCENE_INVALID_INDEX for a segment that no scene triangle carries.
+struct LineSegment
+{
+    float3 StartWorld;
+    float3 EndWorld;
+    uint TriangleIndex;
+};
+/// Visible parts of a LineSegment. Intervals[0, IntervalCount) are sorted, disjoint and nonempty
+/// [start, end) segment parameters in [0, 1], from StartWorld (0) to EndWorld (1); later entries are
+/// zero. VisibleLengthWorld is their total length in metres. HasMaskedOccluders reports an
+/// alpha-tested triangle across the path: such triangles are never clipped, so a point drawn from
+/// these intervals must be confirmed with TestVisibility. It is always false in an opaque scene.
+struct LineVisibility
+{
+    float2 Intervals[SCENE_LINE_INTERVAL_CAPACITY];
+    uint IntervalCount;
+    float VisibleLengthWorld;
+    bool HasMaskedOccluders;
+};
+/// Zero a LineVisibility field by field, as FindVisibleLineIntervals does with its output.
+/// Prefer it to assigning (LineVisibility)0: on Metal (Apple M5, macOS 26.6) that whole-struct zero
+/// assignment followed by indexed interval stores lost the stores in large merged kernels.
+void ClearLineVisibility(out LineVisibility outVisibility)
+{
+    for (uint i = 0; i < SCENE_LINE_INTERVAL_CAPACITY; ++i)
+        outVisibility.Intervals[i] = float2(0, 0);
+    outVisibility.IntervalCount = 0;
+    outVisibility.VisibleLengthWorld = 0;
+    outVisibility.HasMaskedOccluders = false;
+}
+#include "ray_line_visibility.slang"
+/// Find which parts of a segment the receiver sees past opaque scene triangles, consuming one line
+/// query. The apex is the receiver offset as SpawnSurfaceRay offsets it toward the segment midpoint,
+/// and the endpoints are offset toward the receiver on segment.TriangleIndex as TestVisibility offsets
+/// a light endpoint. The receiver and carrying triangles are excluded; coplanar occluders, occluders
+/// behind the receiver and occluders beyond the segment do not occlude. Occluded intervals within
+/// SCENE_LINE_INTERVAL_MERGE_TOLERANCE merge, and shorter visible intervals are dropped. Every pass
+/// uses the same software scan of the packed triangles, whatever its traversal strategy, and the
+/// query draws no random dimensions.
+/// Returns SCENE_QUERY_MISS when no opaque occluder removes any length, SCENE_QUERY_SURFACE when one
+/// does (a fully occluded segment has zero intervals), and SCENE_QUERY_FAILURE for an exhausted line
+/// budget, an earlier failure, an invalid receiver or segment triangle, nonfinite positions, a segment
+/// shorter than SCENE_UNIT_TOLERANCE, a receiver in the segment's line, a nonfinite interval or more
+/// than SCENE_LINE_INTERVAL_CAPACITY - 1 running occluded intervals. Failure latches queries.HasFailed
+/// and zeroes outVisibility.
+uint FindVisibleLineIntervals(SceneContext scene,
+                              inout RayQueryContext queries,
+                              SurfaceHit receiver,
+                              LineSegment segment,
+                              out LineVisibility outVisibility)
+{
+    ClearLineVisibility(outVisibility);
+    if (queries.HasFailed == true || scene.Version != SCENE_INTERFACE_VERSION ||
+        queries.LineQueries >= queries.MaximumLineQueries || receiver.IsValid == false ||
+        (segment.TriangleIndex != SCENE_INVALID_INDEX && segment.TriangleIndex >= Counts.x))
+    {
+        queries.HasFailed = true;
+        return SCENE_QUERY_FAILURE;
+    }
+    queries.LineQueries += 1;
+    float3 segmentWorld = segment.EndWorld - segment.StartWorld;
+    float segmentLengthWorld = length(segmentWorld);
+    if (all(isfinite(receiver.PositionWorld)) == false || all(isfinite(segment.StartWorld)) == false ||
+        all(isfinite(segment.EndWorld)) == false || isfinite(segmentLengthWorld) == false ||
+        segmentLengthWorld < SCENE_UNIT_TOLERANCE)
+    {
+        queries.HasFailed = true;
+        return SCENE_QUERY_FAILURE;
+    }
+    float3 middleWorld = (segment.StartWorld + segment.EndWorld) * 0.5;
+    float3 apexWorld = SpawnSurfaceRay(receiver, NormalizeOrZero(middleWorld - receiver.PositionWorld), 0).OriginWorld;
+    float3 startWorld = segment.StartWorld;
+    float3 endWorld = segment.EndWorld;
+    if (segment.TriangleIndex != SCENE_INVALID_INDEX)
+    {
+        startWorld = OffsetPositionWorld(startWorld,
+                                         segment.TriangleIndex,
+                                         NormalizeOrZero(receiver.PositionWorld - segment.StartWorld));
+        endWorld = OffsetPositionWorld(endWorld,
+                                       segment.TriangleIndex,
+                                       NormalizeOrZero(receiver.PositionWorld - segment.EndWorld));
+    }
+    // A receiver in the segment's line spans no shadow triangle; the sine of the apex angle is tested
+    // against the triangle loop's parallel tolerance.
+    float3 edgeAWorld = startWorld - apexWorld;
+    float3 edgeBWorld = endWorld - apexWorld;
+    float normalLength = length(cross(edgeAWorld, edgeBWorld));
+    if (isfinite(normalLength) == false ||
+        normalLength <= TRIANGLE_PARALLEL_COSINE_TOLERANCE * length(edgeAWorld) * length(edgeBWorld))
+    {
+        queries.HasFailed = true;
+        return SCENE_QUERY_FAILURE;
+    }
+    uint receiverTriangle = receiver.TriangleIndex < Counts.x ? receiver.TriangleIndex : SCENE_INVALID_INDEX;
+    bool isOccluded;
+    if (TraceLineTriangleLoop(apexWorld,
+                              startWorld,
+                              endWorld,
+                              receiverTriangle,
+                              segment.TriangleIndex,
+                              outVisibility,
+                              isOccluded) == false)
+    {
+        ClearLineVisibility(outVisibility);
+        queries.HasFailed = true;
+        return SCENE_QUERY_FAILURE;
+    }
+    float visibleParameter = 0;
+    for (uint i = 0; i < outVisibility.IntervalCount; ++i)
+        visibleParameter += outVisibility.Intervals[i].y - outVisibility.Intervals[i].x;
+    // Parameters address the caller's unoffset segment, so its length scales them.
+    outVisibility.VisibleLengthWorld = visibleParameter * segmentLengthWorld;
+    return isOccluded == true ? SCENE_QUERY_SURFACE : SCENE_QUERY_MISS;
 }
 // Raw geometry access for authors implementing a different light proposal.
 struct TriangleData

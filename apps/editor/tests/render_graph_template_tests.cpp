@@ -4,6 +4,7 @@
 #include "internal/render_graph_configuration_template.h"
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_pipeline_node.h"
+#include "internal/render_graph_quick_add.h"
 #include "internal/renderer_workspace.h"
 
 #include <ludus/foundation/base/types.h>
@@ -1670,6 +1671,179 @@ TEST_CASE("Veach and Guibas MIS configuration imports its shade passes and setti
     ReplaceRasterSubgraph(document, QStringLiteral("Mis"));
     REQUIRE(workspace.Save() == true);
     RequireValidation(workspace);
+}
+
+TEST_CASE("Line-sampling template is created from the editor picker with Properties hidden",
+          "[editor][render-graph][line-sampling-template]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    QWidget properties;
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    QWidget* inspector = workspace.TakeInspectorPanel(&properties);
+    inspector->hide();
+    properties.hide();
+    workspace.show();
+    CreateGraphFromPicker(workspace, QStringLiteral("line-sampling"));
+    CHECK(inspector->isVisible() == false);
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QByteArray library = document.GetDraft(QStringLiteral("library.lurender.json"));
+    for (const char* program : {"Primary", "ShadeLineSampling", "ShadeVisibleFraction"})
+    {
+        INFO(program);
+        CHECK(library.contains(program) == true);
+    }
+    // Every pass selects the software triangle loop, so the package needs no ray hardware.
+    CHECK(library.count("\"TriangleLoop\"") == 3);
+    CHECK(library.contains("NativeQuery") == false);
+    const QByteArray root = document.GetDraft(ROOT_GRAPH);
+    CHECK(root.indexOf("\"output\"") < root.indexOf("\"visibleFractionOutput\""));
+    CHECK(root.count("\"Accumulate\"") == 2);
+    CHECK(root.count("\"Export\"") == 2);
+    CHECK(document.GetDraft(QStringLiteral("main_shaders/line_sampling.slang")).contains("FindVisibleLineIntervals") ==
+          true);
+    const QJsonObject interface =
+        FindRayTechnique(document.GetDraft(COMPUTE_MANIFEST)).value(QStringLiteral("scene_interface")).toObject();
+    CHECK(interface.value(QStringLiteral("line_queries")).toInt() == 1);
+    RequireValidation(workspace);
+}
+
+TEST_CASE("Line-sampling snippet applies from Quick Add on the canvas with Properties hidden",
+          "[editor][render-graph][line-sampling-configuration]")
+{
+    QTemporaryDir project;
+    QWidget properties;
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    QWidget* inspector = workspace.TakeInspectorPanel(&properties);
+    inspector->hide();
+    properties.hide();
+    workspace.resize(TEMPLATE_WORKSPACE_WIDTH, TEMPLATE_WORKSPACE_HEIGHT);
+    workspace.show();
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QByteArray beforeRoot = document.GetDraft(ROOT_GRAPH);
+    const QByteArray beforeManifest = document.GetDraft(COMPUTE_MANIFEST);
+    const QStringList beforeFiles = document.GetFiles();
+    RenderGraphQuickAdd* paletteOrNull =
+        workspace.findChild<RenderGraphQuickAdd*>(QStringLiteral("renderGraphQuickAdd"));
+    REQUIRE(paletteOrNull != nullptr);
+    paletteOrNull->SetRecent({});
+    paletteOrNull->SetPinned({});
+    QString offeredConfiguration;
+    QTimer::singleShot(0, &workspace, [&offeredConfiguration]() {
+        QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        REQUIRE(dialogOrNull != nullptr);
+        QComboBox* choiceOrNull =
+            dialogOrNull->findChild<QComboBox*>(QStringLiteral("renderGraphConfigurationTemplate"));
+        REQUIRE(choiceOrNull != nullptr);
+        CHECK(choiceOrNull->currentData().toString() == QStringLiteral("line-sampling"));
+        QLineEdit* nameOrNull = dialogOrNull->findChild<QLineEdit*>(QStringLiteral("renderGraphTemplateConfiguration"));
+        REQUIRE(nameOrNull != nullptr);
+        offeredConfiguration = nameOrNull->text();
+        QDialogButtonBox* buttonsOrNull = dialogOrNull->findChild<QDialogButtonBox*>();
+        REQUIRE(buttonsOrNull != nullptr);
+        buttonsOrNull->button(QDialogButtonBox::Apply)->click();
+        CHECK(dialogOrNull->isVisible() == false);
+        dialogOrNull->reject();
+    });
+    REQUIRE(workspace.ShowQuickAdd(QPointF(0.0, 0.0)) == true);
+    QLineEdit* searchOrNull = paletteOrNull->findChild<QLineEdit*>(QStringLiteral("renderGraphQuickAddSearch"));
+    REQUIRE(searchOrNull != nullptr);
+    searchOrNull->setText(QStringLiteral("line sampling"));
+    paletteOrNull->SetKind(RenderGraphQuickAddKind::Snippets);
+    REQUIRE(paletteOrNull->GetHighlightedKey() == QStringLiteral("snippet:line-sampling"));
+    REQUIRE(paletteOrNull->InsertHighlighted() == true);
+    CHECK(inspector->isVisible() == false);
+    CHECK(offeredConfiguration == QStringLiteral("LineSampling"));
+    const QByteArray library = document.GetDraft(QStringLiteral("LineSampling.lurender.json"));
+    for (const char* program :
+         {"LineSamplingPrimary", "LineSamplingShadeLineSampling", "LineSamplingShadeVisibleFraction"})
+    {
+        INFO(program);
+        CHECK(library.contains(program) == true);
+    }
+    CHECK(library.contains("visibleFraction") == true);
+    for (const QString& source : {QStringLiteral("line_sampling/main_shaders/primary.slang"),
+                                  QStringLiteral("line_sampling/main_shaders/shade.slang"),
+                                  QStringLiteral("line_sampling/main_shaders/hit_record.slang"),
+                                  QStringLiteral("line_sampling/main_shaders/line_sampling.slang")})
+    {
+        INFO(source.toStdString());
+        CHECK(document.GetDraft(source).isEmpty() == false);
+    }
+    const QJsonObject interface =
+        FindRayTechnique(document.GetDraft(COMPUTE_MANIFEST)).value(QStringLiteral("scene_interface")).toObject();
+    CHECK(interface.value(QStringLiteral("version")).toInt() == 1);
+    CHECK(interface.value(QStringLiteral("surface_queries")).toInt() >= 1);
+    CHECK(interface.value(QStringLiteral("visibility_queries")).toInt() >= 1);
+    CHECK(interface.value(QStringLiteral("line_queries")).toInt() == 1);
+    const QByteArray afterRoot = document.GetDraft(ROOT_GRAPH);
+    const QByteArray afterManifest = document.GetDraft(COMPUTE_MANIFEST);
+    workspace.Undo();
+    CHECK(document.GetDraft(ROOT_GRAPH) == beforeRoot);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST) == beforeManifest);
+    CHECK(document.GetFiles() == beforeFiles);
+    workspace.Redo();
+    CHECK(document.GetDraft(ROOT_GRAPH) == afterRoot);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST) == afterManifest);
+
+    ReplaceRasterSubgraph(document, QStringLiteral("LineSampling"));
+    REQUIRE(workspace.Save() == true);
+    RequireValidation(workspace);
+}
+
+TEST_CASE("Line-sampling import raises only the line budget it declares",
+          "[editor][render-graph][line-sampling-configuration]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    RenderGraphDocument& document = workspace.GetDocument();
+    QString error;
+    // Other scene compute templates declare no line budget and leave the field absent.
+    REQUIRE(document.ApplyConfigurationTemplate(ROOT_GRAPH, QStringLiteral("Compute"), COMPUTE_TEMPLATE, error) ==
+            RenderGraphDocumentStatus::Ok);
+    QJsonObject interface =
+        FindRayTechnique(document.GetDraft(COMPUTE_MANIFEST)).value(QStringLiteral("scene_interface")).toObject();
+    CHECK(interface.contains(QStringLiteral("line_queries")) == false);
+    REQUIRE(document.ApplyConfigurationTemplate(ROOT_GRAPH,
+                                                QStringLiteral("Lines"),
+                                                QStringLiteral("line-sampling"),
+                                                error) == RenderGraphDocumentStatus::Ok);
+    interface =
+        FindRayTechnique(document.GetDraft(COMPUTE_MANIFEST)).value(QStringLiteral("scene_interface")).toObject();
+    CHECK(interface.value(QStringLiteral("line_queries")).toInt() == 1);
+    // A larger authored line budget is retained by a later import.
+    constexpr int32 AUTHORED_LINE_QUERIES = 4;
+    QJsonObject manifest = QJsonDocument::fromJson(document.GetDraft(COMPUTE_MANIFEST)).object();
+    QJsonArray techniques = manifest.value(QStringLiteral("techniques")).toArray();
+    for (qsizetype index = 0; index < techniques.size(); ++index)
+    {
+        QJsonObject technique = techniques.at(index).toObject();
+        if (technique.value(QStringLiteral("id")) != QStringLiteral("RendererTriangles.RayTracing"))
+        {
+            continue;
+        }
+        interface.insert(QStringLiteral("line_queries"), AUTHORED_LINE_QUERIES);
+        technique.insert(QStringLiteral("scene_interface"), interface);
+        techniques.replace(index, technique);
+    }
+    manifest.insert(QStringLiteral("techniques"), techniques);
+    REQUIRE(document.SetText(COMPUTE_MANIFEST, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(document.ApplyConfigurationTemplate(ROOT_GRAPH,
+                                                QStringLiteral("MoreLines"),
+                                                QStringLiteral("line-sampling"),
+                                                error) == RenderGraphDocumentStatus::Ok);
+    CHECK(FindRayTechnique(document.GetDraft(COMPUTE_MANIFEST))
+              .value(QStringLiteral("scene_interface"))
+              .toObject()
+              .value(QStringLiteral("line_queries"))
+              .toInt() == AUTHORED_LINE_QUERIES);
 }
 
 TEST_CASE("Compute ray-tracing import extends a shared ray technique and preserves conflicting edits",

@@ -5,6 +5,8 @@
 #include "rg2_compute_ray_tracing_template.h"
 #include "rg2_compute_split.h"
 #include "rg2_direct_lighting_reference.h"
+#include "rg2_line_sampling_template.h"
+#include "rg2_line_visibility_loop.h"
 #include "rg2_ordered_ray.h"
 #include "rg2_raytracing.h"
 #include "rg2_restir_di.h"
@@ -3280,6 +3282,506 @@ TEST_CASE("The Veach and Guibas MIS output has less error than either sampling s
                                   << ", BSDF sampling=" << errors[VEACH_GUIBAS_BSDF_SAMPLING]);
     CHECK(errors[VEACH_GUIBAS_MIS] < errors[VEACH_GUIBAS_LIGHT_SAMPLING]);
     CHECK(errors[VEACH_GUIBAS_MIS] < errors[VEACH_GUIBAS_BSDF_SAMPLING]);
+}
+
+namespace
+{
+// Line visibility query tests (point-line spec PL1). Thanks to Niels Billen and Philip Dutre, "Line
+// Sampling for Direct Illumination", Computer Graphics Forum 35(4) (EGSR 2016), pp. 93-102,
+// https://doi.org/10/f84z2h : FindVisibleLineIntervals clips each occluder against their shadow
+// triangle, so the visible parts of a segment have closed forms for these planar occluders.
+//
+// The line_visibility kernel's receiver is the World origin and its segment runs from (-1, 2, 0) to
+// (1, 2, 0). An occluder crossing the shadow plane z = 0 at height y over [xa, xb] hides segment
+// parameters [(xa / y + 1) / 2, (xb / y + 1) / 2]. Each kernel row is one query form; columns hold
+// the status, count and HasMaskedOccluders bytes, the visible length and then each interval, as exact
+// 24-bit fixed point (no Accumulate or ToneMap).
+constexpr usize LINE_ROW_PLAIN = 0;
+constexpr usize LINE_ROW_RECEIVER_EXCLUDED = 1;
+constexpr usize LINE_ROW_SEGMENT_EXCLUDED = 2;
+constexpr usize LINE_FIRST_FAILING_ROW = 3;
+constexpr usize LINE_LAST_FAILING_ROW = 5;
+constexpr usize LINE_FIRST_INTERVAL_COLUMN = 2;
+constexpr usize LINE_INTERVAL_CAPACITY = renderer::SCENE_LINE_INTERVAL_CAPACITY;
+constexpr float64 LINE_SEGMENT_LENGTH_WORLD = 2;
+constexpr float64 LINE_FIXED_POINT_SCALE = 16777215;
+constexpr uint8 LINE_QUERY_MISS = 0;
+constexpr uint8 LINE_QUERY_SURFACE = 1;
+/// Parameter tolerance against the analytic intervals: float32 rounding of the occluder vertices and
+/// of the clip, plus 6e-8 of 24-bit readout quantization, stays below it; equal to the merge tolerance.
+constexpr float64 LINE_PARAMETER_TOLERANCE = static_cast<float64>(renderer::SCENE_LINE_INTERVAL_MERGE_TOLERANCE);
+constexpr usize LINE_MAXIMUM_TRIANGLES = 96;
+
+/// Triangle soup for the line visibility kernel, with one neutral material and a camera the kernel
+/// ignores. The mesh borrows this object's arrays, so it is neither copied nor moved.
+struct LineScene final
+{
+    Array<math::Vector3> Positions;
+    Array<uint32> Indices;
+    StaticArray<uint32, 1> Bindings{{0}};
+    StaticArray<renderer::SceneShaderMaterial, 1> Materials{};
+    StaticArray<renderer::RenderGraphMesh, 1> Meshes{};
+    StaticArray<renderer::RenderGraphItem, 1> Items{};
+    StaticArray<renderer::ViewDescription, 1> Cameras{};
+    renderer::SceneShaderInputs Inputs;
+    LineScene()
+    {
+        REQUIRE(Positions.TryEnsureCapacity(LINE_MAXIMUM_TRIANGLES * 3) == true);
+        REQUIRE(Indices.TryEnsureCapacity(LINE_MAXIMUM_TRIANGLES * 3) == true);
+        // Occluders behind the receiver (y = -1) and beyond the segment (y = 3) are in every scene.
+        AddTriangle({-1, -1, -1}, {1, -1, -1}, {0, -1, 1});
+        AddTriangle({-1, 3, -1}, {1, 3, -1}, {0, 3, 1});
+    }
+    LineScene(const LineScene&) = delete;
+    LineScene& operator=(const LineScene&) = delete;
+    void AddTriangle(math::Vector3 position0World, math::Vector3 position1World, math::Vector3 position2World)
+    {
+        const uint32 first = static_cast<uint32>(Positions.GetSize());
+        REQUIRE(Positions.TryAdd(position0World) == true);
+        REQUIRE(Positions.TryAdd(position1World) == true);
+        REQUIRE(Positions.TryAdd(position2World) == true);
+        for (uint32 corner = 0; corner < 3; ++corner)
+        {
+            REQUIRE(Indices.TryAdd(first + corner) == true);
+        }
+    }
+    /// An occluder at height y whose cross-section with z = 0 is [xa, xb]; its third vertex lies in
+    /// the shadow plane, so it also covers a vertex that contributes itself to the clip.
+    void AddOccluder(float32 heightWorld, float32 minimumWorld, float32 maximumWorld)
+    {
+        AddTriangle({minimumWorld, heightWorld, -1}, {minimumWorld, heightWorld, 1}, {maximumWorld, heightWorld, 0});
+    }
+    void Finish()
+    {
+        Meshes[0].Geometry = {Positions.GetData(), Positions.GetSize(), Indices.GetData(), Indices.GetSize()};
+        Meshes[0].MaterialBindings = {Bindings.GetData(), Bindings.GetSize()};
+        Items[0].SourceId = 1;
+        Inputs.Materials = {Materials.GetData(), Materials.GetSize()};
+        constexpr float32 FOCAL_LENGTH = 2.2F;
+        constexpr float32 NEAR_WORLD = .5F;
+        constexpr float32 FAR_WORLD = 10;
+        constexpr float32 EYE_Z_WORLD = 3.4F;
+        constexpr float32 DEPTH_SCALE = FAR_WORLD / (NEAR_WORLD - FAR_WORLD);
+        const float32 aspect = static_cast<float32>(WIDTH) / static_cast<float32>(HEIGHT);
+        math::Matrix4& worldToClip = Cameras[0].WorldToClip;
+        worldToClip.Columns[0] = {FOCAL_LENGTH / aspect, 0, 0, 0};
+        worldToClip.Columns[1] = {0, FOCAL_LENGTH, 0, 0};
+        worldToClip.Columns[2] = {0, 0, DEPTH_SCALE, -1};
+        worldToClip.Columns[3] = {0, 0, DEPTH_SCALE * (NEAR_WORLD - EYE_Z_WORLD), EYE_Z_WORLD};
+        Cameras[0].CameraPosition = {0, 0, EYE_Z_WORLD};
+    }
+};
+
+/// Expected result of one kernel row: status and visible intervals as segment parameters.
+struct LineExpectation final
+{
+    uint8 Status = LINE_QUERY_MISS;
+    usize IntervalCount = 1;
+    StaticArray<float64, LINE_INTERVAL_CAPACITY * 2> Bounds{{0, 1}};
+};
+
+/// K equal slats at y = 1 across the segment, each hiding the middle half of its 1 / K share.
+void AddSlats(LineScene& inoutScene, usize slatCount, LineExpectation& outExpected)
+{
+    outExpected = {};
+    outExpected.Status = LINE_QUERY_SURFACE;
+    outExpected.IntervalCount = slatCount + 1;
+    const float64 pitch = 1.0 / static_cast<float64>(slatCount);
+    for (usize slat = 0; slat < slatCount; ++slat)
+    {
+        const float64 start = (static_cast<float64>(slat) + .25) * pitch;
+        const float64 end = (static_cast<float64>(slat) + .75) * pitch;
+        // On y = 1, segment parameter t covers x = t - 0.5.
+        inoutScene.AddOccluder(1, static_cast<float32>(start - .5), static_cast<float32>(end - .5));
+        if (slat + 1 < LINE_INTERVAL_CAPACITY)
+        {
+            outExpected.Bounds[slat * 2 + 1] = start;
+            outExpected.Bounds[slat * 2 + 2] = end;
+        }
+    }
+    if (slatCount < LINE_INTERVAL_CAPACITY)
+    {
+        outExpected.Bounds[slatCount * 2 + 1] = 1;
+    }
+}
+
+float64 DecodeLineFixed(const Array<uint8>& pixels, usize column, usize row)
+{
+    const usize address = GetPixel(column, row);
+    const uint32 bits = (static_cast<uint32>(pixels[address]) << 16) | (static_cast<uint32>(pixels[address + 1]) << 8) |
+                        static_cast<uint32>(pixels[address + 2]);
+    return static_cast<float64>(bits) / LINE_FIXED_POINT_SCALE;
+}
+
+bool IsFailurePixel(const Array<uint8>& pixels, usize column, usize row)
+{
+    const usize address = GetPixel(column, row);
+    return pixels[address] == 255 && pixels[address + 1] == 0 && pixels[address + 2] == 255;
+}
+
+/// Compare one kernel row with its analytic intervals; returns the largest parameter error.
+float64 CheckLineRow(const Array<uint8>& pixels, usize row, const LineExpectation& expected)
+{
+    INFO("row " << row);
+    REQUIRE(IsFailurePixel(pixels, 0, row) == false);
+    const usize header = GetPixel(0, row);
+    CHECK(pixels[header] == expected.Status);
+    CHECK(pixels[header + 1] == expected.IntervalCount);
+    // Render-graph scenes are opaque, so no masked occluder is ever reported.
+    CHECK(pixels[header + 2] == 0);
+    float64 largestError = 0;
+    float64 visibleParameter = 0;
+    for (usize interval = 0; interval < expected.IntervalCount; ++interval)
+    {
+        for (usize bound = 0; bound < 2; ++bound)
+        {
+            const float64 measured = DecodeLineFixed(pixels, LINE_FIRST_INTERVAL_COLUMN + interval * 2 + bound, row);
+            const float64 error = math::Abs(measured - expected.Bounds[interval * 2 + bound]);
+            INFO("interval " << interval << " bound " << bound << ": measured " << measured << ", expected "
+                             << expected.Bounds[interval * 2 + bound]);
+            CHECK(error <= LINE_PARAMETER_TOLERANCE);
+            largestError = math::Max(largestError, error);
+        }
+        visibleParameter += expected.Bounds[interval * 2 + 1] - expected.Bounds[interval * 2];
+    }
+    // Later interval slots are zero.
+    for (usize column = LINE_FIRST_INTERVAL_COLUMN + expected.IntervalCount * 2;
+         column < LINE_FIRST_INTERVAL_COLUMN + LINE_INTERVAL_CAPACITY * 2;
+         ++column)
+    {
+        CHECK(DecodeLineFixed(pixels, column, row) == 0);
+    }
+    const float64 visibleLengthWorld = DecodeLineFixed(pixels, 1, row) * LINE_SEGMENT_LENGTH_WORLD;
+    CHECK(math::Abs(visibleLengthWorld - visibleParameter * LINE_SEGMENT_LENGTH_WORLD) <=
+          LINE_PARAMETER_TOLERANCE * LINE_SEGMENT_LENGTH_WORLD * static_cast<float64>(expected.IntervalCount * 2));
+    return largestError;
+}
+
+/// The line_visibility package, initialized once and updated per scene.
+struct LineVisibilityGraph final
+{
+    core::UniquePtr<renderer::RenderGraphPackage> Package;
+    renderer::RenderGraphPlan Plan;
+    renderer::RenderGraphPrograms Programs;
+    renderer::RenderGraph Graph;
+    uint32 Output = 0;
+
+    LineVisibilityGraph(const GraphGpuFixture& fixture, const PackageLocation& location)
+        : Package(LoadPackage(location)), Plan(Package->GetPlan()),
+          Programs(Package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment()))
+    {
+        for (uint32 resource = 0; resource < Plan.Resources.GetSize(); ++resource)
+        {
+            Output = Plan.Resources[resource].IsExported == 1 ? resource : Output;
+        }
+        wait(Graph.Initialize(fixture.Device, Plan, Programs, nullptr, WIDTH, HEIGHT));
+    }
+    LineVisibilityGraph(const LineVisibilityGraph&) = delete;
+    LineVisibilityGraph& operator=(const LineVisibilityGraph&) = delete;
+
+    void Render(const GraphGpuFixture& fixture, const LineScene& scene, uint64 revision, Array<uint8>& outPixels)
+    {
+        renderer::RenderGraphReport report;
+        wait(Graph.Update({scene.Meshes.GetData(), scene.Meshes.GetSize()},
+                          {scene.Items.GetData(), scene.Items.GetSize()},
+                          {scene.Cameras.GetData(), scene.Cameras.GetSize()},
+                          revision,
+                          renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                          report,
+                          &scene.Inputs,
+                          revision));
+        RenderExport(Graph, fixture, Output, {}, outPixels);
+    }
+
+private:
+    void wait(rhi::RasterStatus initial)
+    {
+        rhi::RasterStatus status = initial;
+        const uint64 beginning = time::NowTicks();
+        while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < VEACH_GUIBAS_TIMEOUT)
+        {
+            status = Graph.Poll();
+        }
+        REQUIRE(status == rhi::RasterStatus::Ready);
+    }
+};
+
+/// The analytic line visibility cases, each one World and the plain row's expected intervals.
+enum class LineCase : uint8
+{
+    Unoccluded,
+    OneOccluder,
+    OverlappingOccluders,
+    AbuttingQuad,
+    CoplanarOccluder,
+    FullyOccluded,
+    FullCapacity,
+    Overflow,
+};
+constexpr usize LINE_CASE_COUNT = 8;
+
+/// Build one case. Returns false for the overflowing case, whose plain row must fail.
+bool BuildLineCase(LineCase lineCase, LineScene& inoutScene, LineExpectation& outExpected)
+{
+    outExpected = {};
+    bool isSuccessful = true;
+    switch (lineCase)
+    {
+        case LineCase::Unoccluded:
+            break;
+        case LineCase::OneOccluder:
+            inoutScene.AddOccluder(1, -.25F, .25F);
+            outExpected.Status = LINE_QUERY_SURFACE;
+            outExpected.IntervalCount = 2;
+            outExpected.Bounds = {{0, .25, .75, 1}};
+            break;
+        case LineCase::OverlappingOccluders:
+            // [.25, .75] and [.6, .9] merge; [.05, .15] stays disjoint.
+            inoutScene.AddOccluder(1, -.25F, .25F);
+            inoutScene.AddOccluder(1.5F, .15F, .6F);
+            inoutScene.AddOccluder(1, -.45F, -.35F);
+            outExpected.Status = LINE_QUERY_SURFACE;
+            outExpected.IntervalCount = 3;
+            outExpected.Bounds = {{0, .05, .15, .25, .9, 1}};
+            break;
+        case LineCase::AbuttingQuad:
+            // Two triangles sharing a diagonal that crosses the shadow plane at a non-dyadic point: a
+            // crack along it would split the occluded interval in two.
+            inoutScene.AddTriangle({-.25F, 1, -.7F}, {.25F, 1, -.7F}, {.25F, 1, 1.3F});
+            inoutScene.AddTriangle({-.25F, 1, -.7F}, {.25F, 1, 1.3F}, {-.25F, 1, 1.3F});
+            outExpected.Status = LINE_QUERY_SURFACE;
+            outExpected.IntervalCount = 2;
+            outExpected.Bounds = {{0, .25, .75, 1}};
+            break;
+        case LineCase::CoplanarOccluder:
+            inoutScene.AddTriangle({-.5F, 1, 0}, {.5F, 1, 0}, {0, 1.5F, 0});
+            break;
+        case LineCase::FullyOccluded:
+            inoutScene.AddOccluder(1, -1, 2);
+            outExpected.Status = LINE_QUERY_SURFACE;
+            outExpected.IntervalCount = 0;
+            break;
+        case LineCase::FullCapacity:
+            // CAPACITY - 1 occluded intervals leave exactly CAPACITY visible ones.
+            AddSlats(inoutScene, LINE_INTERVAL_CAPACITY - 1, outExpected);
+            break;
+        case LineCase::Overflow:
+            AddSlats(inoutScene, LINE_INTERVAL_CAPACITY, outExpected);
+            isSuccessful = false;
+            break;
+    }
+    inoutScene.Finish();
+    return isSuccessful;
+}
+
+/// Render every case with one package and check each row; outImages keeps each case's pixels.
+void CheckLineCases(const GraphGpuFixture& fixture,
+                    const PackageLocation& location,
+                    StaticArray<Array<uint8>, LINE_CASE_COUNT>& outImages)
+{
+    LineVisibilityGraph graph(fixture, location);
+    float64 largestError = 0;
+    for (usize index = 0; index < LINE_CASE_COUNT; ++index)
+    {
+        const LineCase lineCase = static_cast<LineCase>(index);
+        INFO("case " << index);
+        LineScene scene;
+        LineExpectation expected;
+        const bool isSuccessful = BuildLineCase(lineCase, scene, expected);
+        graph.Render(fixture, scene, index + 1, outImages[index]);
+        const Array<uint8>& pixels = outImages[index];
+        if (isSuccessful == true)
+        {
+            largestError = math::Max(largestError, CheckLineRow(pixels, LINE_ROW_PLAIN, expected));
+        }
+        else
+        {
+            // Capacity overflow latches failure and shows the error color.
+            CHECK(IsFailurePixel(pixels, 0, LINE_ROW_PLAIN) == true);
+        }
+        if (lineCase == LineCase::OneOccluder)
+        {
+            // Naming the occluder as the receiver's or the segment's carrying triangle excludes it.
+            const LineExpectation unoccluded{};
+            largestError = math::Max(largestError, CheckLineRow(pixels, LINE_ROW_RECEIVER_EXCLUDED, unoccluded));
+            largestError = math::Max(largestError, CheckLineRow(pixels, LINE_ROW_SEGMENT_EXCLUDED, unoccluded));
+        }
+        // A zero-length segment, a second query beyond the budget of one and a receiver in the
+        // segment's line fail in every World.
+        for (usize row = LINE_FIRST_FAILING_ROW; row <= LINE_LAST_FAILING_ROW; ++row)
+        {
+            INFO("failing row " << row);
+            CHECK(IsFailurePixel(pixels, 0, row) == true);
+            CHECK(IsFailurePixel(pixels, WIDTH - 1, row) == true);
+        }
+    }
+    INFO("largest interval error " << largestError);
+    CHECK(largestError <= LINE_PARAMETER_TOLERANCE);
+}
+} // namespace
+
+TEST_CASE("Line visibility queries match analytic intervals through a triangle-loop scene compute pass",
+          "[render-graph][gpu][line-visibility]")
+{
+    GraphGpuFixture fixture(false, false);
+    const PackageLocation location{LUDUS_RG3_LINE_VISIBILITY_LOOP_DIRECTORY, "rg2_line_visibility_loop.lurgrt"};
+    {
+        const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(location);
+        // A triangle-loop pass that calls the line query stays a compute ray-tracing package (PL06).
+        CHECK(renderer::RequiresHardwareRayTracing(package->GetPlan()) == false);
+        CHECK(renderer::UsesRayTracing(package->GetPlan()) == true);
+        CheckSameStage(package->GetPrograms({}, {}).RayCompute,
+                       packages::rg2_line_visibility_loop::MakePrograms({}, {}).RayCompute);
+    }
+    StaticArray<Array<uint8>, LINE_CASE_COUNT> images;
+    CheckLineCases(fixture, location, images);
+}
+
+TEST_CASE("Line visibility in a NativeQuery pass uses the same software traversal as the triangle loop",
+          "[render-graph][gpu][line-visibility]")
+{
+    // Native traversal serves rays only; the line query scans the packed triangles in every pass, so
+    // both strategies give byte-identical results (PL06).
+    GraphGpuFixture fixture;
+    const PackageLocation native{LUDUS_RG3_LINE_VISIBILITY_NATIVE_DIRECTORY, "rg2_line_visibility_native.lurgrt"};
+    REQUIRE(renderer::RequiresHardwareRayTracing(LoadPackage(native)->GetPlan()) == true);
+    StaticArray<Array<uint8>, LINE_CASE_COUNT> nativeImages;
+    CheckLineCases(fixture, native, nativeImages);
+    StaticArray<Array<uint8>, LINE_CASE_COUNT> loopImages;
+    CheckLineCases(fixture, {LUDUS_RG3_LINE_VISIBILITY_LOOP_DIRECTORY, "rg2_line_visibility_loop.lurgrt"}, loopImages);
+    for (usize index = 0; index < LINE_CASE_COUNT; ++index)
+    {
+        INFO("case " << index);
+        CHECK(CountDifferingPixels(nativeImages[index], loopImages[index], 0) == 0);
+    }
+}
+
+namespace
+{
+// Line-sampling template tests. Thanks to Billen and Dutre (2016), above, for the surface-area line
+// estimator, and to Katherine Salesin and Wojciech Jarosz, "Combining Point and Line Samples for
+// Direct Illumination", Computer Graphics Forum 38(4) (EGSR 2019), pp. 159-169,
+// https://doi.org/10.1111/cgf.13779 , for treating a line sample as a point sample with a joint
+// density: the template therefore estimates the same integral as ordinary light sampling.
+constexpr usize LINE_SAMPLING_OUTPUT_COUNT = 2;
+constexpr usize LINE_SAMPLING_COLOR = 0;
+constexpr usize LINE_SAMPLING_VISIBLE_FRACTION = 1;
+/// Index of the first shade pass; pass 0 records the primary hits.
+constexpr usize LINE_SAMPLING_FIRST_SHADE_PASS = 1;
+
+StaticArray<uint32, LINE_SAMPLING_OUTPUT_COUNT> GetLineSamplingExports(const renderer::RenderGraphPlan& plan)
+{
+    REQUIRE(plan.Passes.GetSize() == LINE_SAMPLING_FIRST_SHADE_PASS + LINE_SAMPLING_OUTPUT_COUNT);
+    StaticArray<uint32, LINE_SAMPLING_OUTPUT_COUNT> exports{};
+    for (usize output = 0; output < LINE_SAMPLING_OUTPUT_COUNT; ++output)
+    {
+        exports[output] = plan.Passes[LINE_SAMPLING_FIRST_SHADE_PASS + output].Color;
+        REQUIRE(exports[output] < plan.Resources.GetSize());
+        REQUIRE(plan.Resources[exports[output]].IsExported == 1);
+    }
+    REQUIRE(exports[LINE_SAMPLING_COLOR] != exports[LINE_SAMPLING_VISIBLE_FRACTION]);
+    return exports;
+}
+
+/// Mean decoded value over a square of pixels centered on (column, row).
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): a pixel column and row, then the square's radius
+float32 ComputeRegionMean(const Array<uint8>& pixels, usize column, usize row, usize radius)
+{
+    float32 sum = 0;
+    usize count = 0;
+    for (usize y = row - radius; y <= row + radius; ++y)
+    {
+        for (usize x = column - radius; x <= column + radius; ++x)
+        {
+            sum += DecodeToneMapped(pixels[GetPixel(x, y)]);
+            ++count;
+        }
+    }
+    return sum / static_cast<float32>(count);
+}
+} // namespace
+
+TEST_CASE("The line-sampling template converges to light sampling and shows its visible fraction",
+          "[render-graph][gpu][line-sampling][template]")
+{
+    GraphGpuFixture fixture(false, false);
+    CornellBox room;
+    const PackageLocation location{LUDUS_RG3_LINE_SAMPLING_TEMPLATE_DIRECTORY, "rg2_line_sampling_template.lurgrt"};
+    PreparedGraph lines(fixture, location, room, 1);
+    CheckSameStage(lines.Programs.RayCompute,
+                   packages::rg2_line_sampling_template::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                                      shaders::renderer_composite::Fragment())
+                       .RayCompute);
+    REQUIRE(lines.Programs.HasPersistentRayBuffers == true);
+    // Every pass is a triangle loop: a compute ray-tracing package with no native ray requirement.
+    REQUIRE(renderer::RequiresHardwareRayTracing(lines.Plan) == false);
+    REQUIRE(renderer::UsesRayTracing(lines.Plan) == true);
+    for (usize pass = 0; pass < lines.Plan.Passes.GetSize(); ++pass)
+    {
+        INFO("pass " << pass);
+        CHECK(lines.Plan.Passes[pass].Program == format::Technique::RayTracing);
+        CHECK((lines.Plan.Passes[pass].AccumulationSamples > 0) == (pass >= LINE_SAMPLING_FIRST_SHADE_PASS));
+    }
+    const StaticArray<uint32, LINE_SAMPLING_OUTPUT_COUNT> exports = GetLineSamplingExports(lines.Plan);
+    constexpr usize FRAME_COUNT = 256;
+    for (usize frame = 0; frame < FRAME_COUNT; ++frame)
+    {
+        RenderFrame(lines.Graph, fixture);
+    }
+    StaticArray<Array<uint8>, LINE_SAMPLING_OUTPUT_COUNT> pixels;
+    for (usize output = 0; output < LINE_SAMPLING_OUTPUT_COUNT; ++output)
+    {
+        ReadExport(lines.Graph, fixture, exports[output], {}, pixels[output]);
+        // Invalid hit records, exhausted budgets and failed line queries would show magenta.
+        REQUIRE(CountFailurePixels(pixels[output]) == 0);
+    }
+
+    // The same room through the Veach and Guibas template's light-sampling output, with every pass
+    // on the triangle loop. Both read the area point that seeds the chord from dimensions 2 to 5.
+    PreparedGraph veach(
+        fixture,
+        {LUDUS_RG3_VEACH_GUIBAS_MIS_TRIANGLE_LOOP_DIRECTORY, "rg2_veach_guibas_mis_triangle_loop.lurgrt"},
+        room,
+        1);
+    REQUIRE(renderer::RequiresHardwareRayTracing(veach.Plan) == false);
+    StaticArray<Array<uint8>, VEACH_GUIBAS_OUTPUT_COUNT> veachPixels;
+    RenderVeachGuibasOutputs(veach, fixture, FRAME_COUNT, veachPixels);
+    const math::Vector3 lineMean = ComputeMeanRadiance(pixels[LINE_SAMPLING_COLOR]);
+    const math::Vector3 lightMean = ComputeMeanRadiance(veachPixels[VEACH_GUIBAS_LIGHT_SAMPLING]);
+    INFO("line sampling mean=" << lineMean.X << ',' << lineMean.Y << ',' << lineMean.Z
+                               << ", light sampling mean=" << lightMean.X << ',' << lightMean.Y << ',' << lightMean.Z);
+    constexpr float32 MINIMUM_MEAN_RADIANCE = .01F;
+    REQUIRE(lightMean.X > MINIMUM_MEAN_RADIANCE);
+    // Estimates of one integral, compared after decoding the tone-mapped running means, at 256
+    // samples per pixel as for the MIS template's same-integral check.
+    constexpr float32 RELATIVE_MEAN_TOLERANCE = .02F;
+    CheckMeansAgree(lineMean, lightMean, RELATIVE_MEAN_TOLERANCE);
+
+    // The visible fraction is exact per sample: one where the light is unoccluded, zero in the umbra
+    // of the block top. The floor point (0.6, -1, 0.3) sees the whole light past the block; every
+    // segment from a floor point with x and z in [-0.58, -0.19] to the light crosses the block top.
+    // With this camera, pixel (61, 54) and its neighbors are lit, and the umbra covers pixel row 50
+    // from column 38 to 43, whose pixel footprints lie wholly inside it; rows 49 and 51 reach penumbra.
+    constexpr usize LIT_RADIUS = 1;
+    constexpr usize LIT_COLUMN = 61;
+    constexpr usize LIT_ROW = 54;
+    constexpr usize UMBRA_FIRST_COLUMN = 39;
+    constexpr usize UMBRA_LAST_COLUMN = 42;
+    constexpr usize UMBRA_ROW = 50;
+    // ToneMap quantizes one to a byte of 188 of 255; decoding recovers it within this tolerance.
+    constexpr float32 FRACTION_TOLERANCE = .02F;
+    const float32 litFraction =
+        ComputeRegionMean(pixels[LINE_SAMPLING_VISIBLE_FRACTION], LIT_COLUMN, LIT_ROW, LIT_RADIUS);
+    float32 umbraFraction = 0;
+    for (usize column = UMBRA_FIRST_COLUMN; column <= UMBRA_LAST_COLUMN; ++column)
+    {
+        umbraFraction =
+            math::Max(umbraFraction,
+                      DecodeToneMapped(pixels[LINE_SAMPLING_VISIBLE_FRACTION][GetPixel(column, UMBRA_ROW)]));
+    }
+    INFO("visible fraction: lit=" << litFraction << ", largest in umbra=" << umbraFraction);
+    CHECK(math::Abs(litFraction - 1) < FRACTION_TOLERANCE);
+    CHECK(umbraFraction == 0);
 }
 
 TEST_CASE("ToneMap applies exposure after linear accumulation and can be bypassed",

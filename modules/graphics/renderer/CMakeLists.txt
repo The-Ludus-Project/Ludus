@@ -55,7 +55,7 @@ endif()
 install(TARGETS ludus_graphics_renderer EXPORT LudusTargets ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     FILE_SET public_headers DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 # Source is cooked by the existing installed shader helper; no runtime compiler dependency.
-install(FILES "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/scene_data.h" include/ludus/graphics/renderer/scene_shader_layout.h include/ludus/graphics/renderer/lighting_layout.h shaders/recipes.json shaders/renderer_gpu_preview_layout.h shaders/scene_shader.slang shaders/scene_payload.slang shaders/visibility_buffer.slang shaders/ray_shader.slang shaders/ray_triangle_loop.slang shaders/ray_bvh_traversal.slang shaders/renderer_flat.slang shaders/renderer_composite.slang shaders/renderer_overlay.slang shaders/renderer_material.slang shaders/renderer_lit.slang shaders/renderer_clustered.slang shaders/renderer_shadow.slang shaders/renderer_output.slang shaders/renderer_gpu_preview.slang shaders/renderer_gpu_preview_visibility_full.slang shaders/renderer_gpu_preview_hit_cached.slang shaders/renderer_gpu_preview_group32.slang shaders/renderer_gpu_preview_group64.slang shaders/renderer_gpu_preview_group128.slang shaders/renderer_gpu_preview_group8x8.slang shaders/renderer_gpu_preview_image.slang shaders/renderer_reference.slang shaders/renderer_reference_layout.h shaders/renderer_surface.slang shaders/renderer_clustered_surface.slang shaders/renderer_surface_functions.slang shaders/renderer_authored.slang shaders/renderer_clustered_authored.slang shaders/renderer_lit_debug.slang shaders/renderer_clustered_authored_debug.slang shaders/renderer_environment_layout.h shaders/ltc_table.slang shaders/ltc_table_data.inc DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
+install(FILES "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/scene_data.h" include/ludus/graphics/renderer/scene_shader_layout.h include/ludus/graphics/renderer/lighting_layout.h shaders/recipes.json shaders/renderer_gpu_preview_layout.h shaders/scene_shader.slang shaders/scene_payload.slang shaders/visibility_buffer.slang shaders/ray_shader.slang shaders/ray_triangle_loop.slang shaders/ray_line_visibility.slang shaders/ray_bvh_traversal.slang shaders/renderer_flat.slang shaders/renderer_composite.slang shaders/renderer_overlay.slang shaders/renderer_material.slang shaders/renderer_lit.slang shaders/renderer_clustered.slang shaders/renderer_shadow.slang shaders/renderer_output.slang shaders/renderer_gpu_preview.slang shaders/renderer_gpu_preview_visibility_full.slang shaders/renderer_gpu_preview_hit_cached.slang shaders/renderer_gpu_preview_group32.slang shaders/renderer_gpu_preview_group64.slang shaders/renderer_gpu_preview_group128.slang shaders/renderer_gpu_preview_group8x8.slang shaders/renderer_gpu_preview_image.slang shaders/renderer_reference.slang shaders/renderer_reference_layout.h shaders/renderer_surface.slang shaders/renderer_clustered_surface.slang shaders/renderer_surface_functions.slang shaders/renderer_authored.slang shaders/renderer_clustered_authored.slang shaders/renderer_lit_debug.slang shaders/renderer_clustered_authored_debug.slang shaders/renderer_environment_layout.h shaders/ltc_table.slang shaders/ltc_table_data.inc DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
 # Engine-owned default render graph: the RendererStatic static opaque profile the editor
 # shows when a project has no graph of its own, and the read-only starting point a project
 # copies when it customizes the renderer. Profiles follow the host device family, as the
@@ -268,7 +268,8 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_visibility_ordinary_RUNTIME_PACKAGE PARENT_PATH visibility_ordinary_package_directory)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_VISIBILITY_ORDINARY_DIRECTORY="${visibility_ordinary_package_directory}")
-    foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing simple_compute_ray_tracing veach_guibas_mis)
+    foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing
+            simple_compute_ray_tracing veach_guibas_mis line_sampling)
         set(template_source "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/${template_directory}")
         set(template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${template_directory}_template")
         file(COPY "${template_source}/" DESTINATION "${template_staged}" PATTERN "*.in" EXCLUDE)
@@ -479,6 +480,45 @@ if(TARGET ludus_renderer_render_tests)
         string(TOUPPER "${mis_name}" mis_definition)
         target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
             "LUDUS_RG3_VEACH_GUIBAS_MIS_${mis_definition}_DIRECTORY=\"${mis_package_directory}\"")
+    endforeach()
+    # The Veach and Guibas template with every scene compute pass on the triangle loop, so the
+    # line-sampling comparison with its lightSampling output needs no native ray profile.
+    set(veach_guibas_loop_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/veach_guibas_mis_triangle_loop")
+    file(COPY "${veach_guibas_template_staged}/" DESTINATION "${veach_guibas_loop_staged}"
+        PATTERN "library.lurender.json" EXCLUDE)
+    file(READ "${veach_guibas_template_staged}/library.lurender.json" veach_guibas_library)
+    string(JSON veach_guibas_node_count LENGTH "${veach_guibas_library}" configurations 0 nodes)
+    math(EXPR veach_guibas_node_last "${veach_guibas_node_count} - 1")
+    foreach(node_index RANGE ${veach_guibas_node_last})
+        string(JSON node_kind GET "${veach_guibas_library}" configurations 0 nodes ${node_index} kind)
+        if(node_kind STREQUAL "ComputePipeline")
+            string(JSON veach_guibas_library SET "${veach_guibas_library}"
+                configurations 0 nodes ${node_index} invocation traversal "\"TriangleLoop\"")
+        endif()
+    endforeach()
+    file(WRITE "${veach_guibas_loop_staged}.lurender.json" "${veach_guibas_library}\n")
+    file(COPY_FILE "${veach_guibas_loop_staged}.lurender.json" "${veach_guibas_loop_staged}/library.lurender.json"
+        ONLY_IF_DIFFERENT)
+    ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_veach_guibas_mis_triangle_loop
+        MANIFEST "${veach_guibas_loop_staged}/main.lushader.json" RUNTIME_PACKAGE)
+    cmake_path(GET rg2_veach_guibas_mis_triangle_loop_RUNTIME_PACKAGE PARENT_PATH veach_guibas_loop_package_directory)
+    target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+        LUDUS_RG3_VEACH_GUIBAS_MIS_TRIANGLE_LOOP_DIRECTORY="${veach_guibas_loop_package_directory}")
+    # FindVisibleLineIntervals against analytic intervals (point-line PL1), once with a TriangleLoop
+    # pass and once with a NativeQuery pass, which must give the same software line traversal.
+    set(line_visibility_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/line_visibility")
+    set(line_visibility_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/line_visibility")
+    file(COPY "${line_visibility_source}/" DESTINATION "${line_visibility_staged}" PATTERN "*.in" EXCLUDE)
+    configure_file("${line_visibility_source}/main.lushader.json.in" "${line_visibility_staged}/main.lushader.json" @ONLY)
+    foreach(configuration IN ITEMS Loop Native)
+        string(TOLOWER "${configuration}" configuration_suffix)
+        string(TOUPPER "${configuration}" configuration_definition)
+        ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_line_visibility_${configuration_suffix}
+            MANIFEST "${line_visibility_staged}/main.lushader.json" CONFIGURATION "${configuration}" RUNTIME_PACKAGE)
+        cmake_path(GET rg2_line_visibility_${configuration_suffix}_RUNTIME_PACKAGE PARENT_PATH
+            line_visibility_package_directory)
+        target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+            "LUDUS_RG3_LINE_VISIBILITY_${configuration_definition}_DIRECTORY=\"${line_visibility_package_directory}\"")
     endforeach()
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_SCENE_COMPUTE_DIRECTORY="${scene_compute_package_directory}"
