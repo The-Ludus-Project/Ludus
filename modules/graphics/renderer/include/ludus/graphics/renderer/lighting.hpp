@@ -13,6 +13,7 @@
 #include <ludus/graphics/renderer/light_selection.hpp>
 #include <ludus/graphics/renderer/lighting_layout.h>
 #include <ludus/graphics/renderer/materials.hpp>
+#include <ludus/graphics/renderer/tone_mapping.hpp>
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/graphics/rhi/raster.h>
 
@@ -184,8 +185,9 @@ struct BakedLighting final
 };
 /// Diagnostic output selected by the debug-view lit recipes (`renderer_lit_debug`,
 /// `renderer_clustered_authored_debug`). Ordinary lit programs ignore it and shade normally.
-/// Debug colours are pre-compensated for RasterViewport's Reinhard + sRGB presentation at
-/// exposure one, so they display as described; RGBA8 scene targets clip values above 0.73.
+/// Debug colours are pre-compensated for RasterViewport's PBR Neutral (ToneCurve::PbrNeutral) + sRGB
+/// presentation at exposure one (InvertPbrNeutral), so they display as described; RGBA8 scene targets clip scene values
+/// above one, which limits a white debug colour to 0.87 display-linear.
 enum class MaterialDebugView : ludus::foundation::uint8
 {
     /// Ordinary lit shading.
@@ -323,8 +325,10 @@ struct LightingOutput final
 {
     /// Manual scene exposure multiplier, [0.000001,1000], applied exactly once.
     ludus::foundation::float32 Exposure = 1;
-    /// Apply guarded per-channel Reinhard after exposure; false preserves linear RGB.
+    /// Apply the Curve after exposure; false preserves linear RGB.
     bool ToneMap = true;
+    /// Display curve used when ToneMap is true. Reinhard stays the default so existing presentations are unchanged.
+    ToneCurve Curve = ToneCurve::Reinhard;
     /// Encode to sRGB for unorm display textures/surfaces; hardware sRGB surfaces encode instead.
     /// False selects a linear display intermediate, suitable for subsequent linear UI blending.
     bool Encode = true;

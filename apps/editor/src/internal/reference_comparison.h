@@ -28,7 +28,7 @@ inline constexpr foundation::float64 REFERENCE_MAXIMUM_PSNR = 100;
 enum class ReferenceComparisonSpace : foundation::uint8
 {
     /// RGBA8 raster output is the displayed image; the reference passes through the viewport's
-    /// display transform (exposure one, Reinhard, sRGB) before comparison. Values in [0, 1].
+    /// display transform (exposure one, the viewport's tone curve, sRGB) before comparison. Values in [0, 1].
     Display,
     /// RGBA16F raster output is scene-linear radiance, compared with the raw reference means.
     Linear,
