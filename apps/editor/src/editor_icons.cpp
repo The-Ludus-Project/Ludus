@@ -14,6 +14,7 @@
 #include <QSize>
 #include <QXmlStreamAttributes>
 #include <QXmlStreamReader>
+#include <QtGlobal>
 
 #include <algorithm>
 #include <cmath>
@@ -379,7 +380,16 @@ public:
     QPixmap scaledPixmap(const QSize& size, QIcon::Mode mode, QIcon::State state, qreal scale) override
     {
         Q_UNUSED(state);
-        return GetCachedPixmap(mIcon, size, mode, scale);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+        // Since Qt 6.8 QIcon passes the device independent size.
+        const QSize logicalSize = size;
+#else
+        // Before Qt 6.8 QIcon passes the size in device pixels (size times scale).
+        const qreal safeScale = scale < 1.0 ? 1.0 : scale;
+        const QSize logicalSize(static_cast<int>(std::lround(static_cast<qreal>(size.width()) / safeScale)),
+                                static_cast<int>(std::lround(static_cast<qreal>(size.height()) / safeScale)));
+#endif
+        return GetCachedPixmap(mIcon, logicalSize, mode, scale);
     }
 
     QSize actualSize(const QSize& size, QIcon::Mode mode, QIcon::State state) override
