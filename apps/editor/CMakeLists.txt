@@ -151,6 +151,8 @@ set(editor_viewport_sources
     src/internal/ray_path_overlay.h
     src/ray_path_overlay.cpp
     src/preview_viewport.cpp
+    src/internal/viewport_object_interaction.h
+    src/viewport_object_interaction.cpp
     src/viewport_navigation.cpp
     src/viewport_play_input.cpp
     src/internal/texture_inspection.h
@@ -445,6 +447,7 @@ qt_add_executable(ludus_editor
     src/world_document.cpp
     src/world_demo_adapter.cpp
     src/world_workspace.cpp
+    src/world_viewport_editing.cpp
     src/internal/controller.h
     src/internal/configuration_workspace.h
     src/internal/main_window.h
@@ -767,6 +770,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/world_document.cpp
         src/world_demo_adapter.cpp
         src/world_workspace.cpp
+    src/world_viewport_editing.cpp
             tests/world_workspace_tests.cpp
         tests/level_workspace_tests.cpp
         tests/render_authoring_tests.cpp

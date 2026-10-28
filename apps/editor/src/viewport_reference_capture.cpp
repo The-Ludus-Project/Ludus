@@ -50,8 +50,10 @@ namespace renderer = graphics::renderer;
 constexpr usize REFERENCE_HDR_HEADER_BYTES = 256;
 /// LUHDR01 bytes per pixel: three FP32 means and a uint32 committed count.
 constexpr usize REFERENCE_HDR_PIXEL_BYTES = 16;
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
 /// Roulette starts after this many scattering events, or at the last one for shallower depths.
 constexpr uint32 REFERENCE_ROULETTE_DEPTH = 3;
+#endif
 /// Largest display channel value after encoding.
 constexpr float32 DISPLAY_CHANNEL_MAXIMUM = 255;
 
@@ -60,6 +62,7 @@ bool IsAreaProxy(renderer::LightKind kind) noexcept
     return kind == renderer::LightKind::AreaOneSided || kind == renderer::LightKind::AreaTwoSided;
 }
 
+#if defined(LUDUS_EDITOR_GPU_PREVIEW)
 QString DescribeReferenceFailure(renderer::ReferenceFailure failure)
 {
     switch (failure)
@@ -99,6 +102,8 @@ QString DescribeReferenceFailure(renderer::ReferenceFailure failure)
     }
     return QStringLiteral("unknown path validation failure");
 }
+
+#endif
 
 QString DescribeStatus(rhi::RasterStatus status)
 {

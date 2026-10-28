@@ -181,6 +181,9 @@ private:
     void SceneVerified(bool accepted);
     void Render();
     void RenderInspector();
+    void bindViewportInteraction();
+    void updateViewportInteraction();
+    void commitViewportPlacement(const QString& id, const QJsonObject& placement);
     void Changed(const QString& message = {});
     void Pending();
     void PreviewDraft();

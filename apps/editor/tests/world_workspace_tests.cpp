@@ -7,9 +7,13 @@
 #include "internal/preview_viewport.h"
 #include "internal/render_preview.h"
 #include "internal/renderer_workspace.h"
+#include "internal/viewport_object_interaction.h"
 #include "internal/world_document.h"
 #include "internal/world_workspace.h"
 #include "scene_fixture.h"
+#include <QColor>
+#include <QImage>
+#include <QPainter>
 
 #include "internal/workspace_style.h"
 #include <QAction>
@@ -24,6 +28,7 @@
 #include <QJsonDocument>
 #include <QKeySequence>
 #include <QLabel>
+#include <QLayout>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QLockFile>
@@ -41,6 +46,11 @@
 #include <QToolButton>
 #include <catch2/catch_test_macros.hpp>
 
+#include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/memory/allocation_domain.hpp>
+#include <ludus/foundation/memory/shared_ptr.hpp>
+#include <ludus/gameplay/camera/camera.hpp>
+#include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/platform/entropy.h>
 
 using namespace ludus::editor;
@@ -1341,4 +1351,390 @@ TEST_CASE("The World viewport is labelled while the game plays in its own window
     CHECK(status->text().startsWith(QStringLiteral("Playing in a separate window.")));
     view.SetPlayingElsewhere(false);
     CHECK(status->text() == QStringLiteral("Viewport paused. World data is preserved."));
+}
+
+namespace
+{
+RenderScene MakeInteractionScene()
+{
+    RenderScene scene;
+    scene.Identity = QByteArrayLiteral("object-interaction-fixture");
+    PreviewMesh mesh;
+    mesh.Positions = {{-1, -1, 0}, {1, -1, 0}, {0, 1, 0}};
+    mesh.Indices = {0, 1, 2};
+    scene.Meshes.append(mesh);
+    PreviewObject object;
+    object.Id = QStringLiteral("b8517f65-8127-4bf4-99c2-e53b1a6d9700");
+    object.Transform.Translation = {2, 3, 4};
+    scene.Objects.append(object);
+    PreviewCamera camera;
+    camera.Id = QStringLiteral("interaction-camera");
+    camera.Sample.Pose.Position = {2, 3, 10};
+    camera.Sample.Lens.Projection = ludus::gameplay::camera::CameraProjection::PerspectiveInfinite;
+    camera.Sample.Lens.NearPlane = 0.01F;
+    scene.Cameras.append(camera);
+    return scene;
+}
+void ConfigureInteractionPreview(RenderPreview& inoutPreview, const RenderScene& scene)
+{
+    REQUIRE(inoutPreview.SetScene(scene) == true);
+    inoutPreview.Navigate(0, {0, 0}, 1, false);
+}
+} // namespace
+TEST_CASE("Viewport object picking uses the nearest triangle and respects empty space and activation",
+          "[editor][world][object-interaction]")
+{
+    RenderScene scene = MakeInteractionScene();
+    PreviewObject behind = scene.Objects[0];
+    behind.Id = QStringLiteral("behind");
+    behind.Transform.Translation.Z -= 2;
+    scene.Objects.prepend(behind);
+    RenderPreview preview;
+    ConfigureInteractionPreview(preview, scene);
+    ViewportObjectInteraction interaction(preview, nullptr);
+    const QRectF frame{20, 40, 800, 600};
+    CHECK(interaction.Pick(frame.center(), frame) == scene.Objects[1].Id);
+    CHECK(interaction.Pick({10, 10}, frame).isEmpty() == true);
+    CHECK(interaction.Pick(frame.topLeft(), frame).isEmpty() == true);
+    interaction.SetActive(false);
+    CHECK(interaction.Pick(frame.center(), frame).isEmpty() == true);
+    interaction.SetActive(true);
+    scene.Objects.removeLast();
+    scene.Identity.append('2');
+    ConfigureInteractionPreview(preview, scene);
+    CHECK(interaction.Pick(frame.center(), frame) == QStringLiteral("behind"));
+}
+TEST_CASE("Viewport transform drags preview a highlighted wireframe and commit one undoable placement",
+          "[editor][world][object-interaction]")
+{
+    WorldDocument document = UnboundDocument();
+    QString error;
+    REQUIRE(document.ImportScene(ImportedLevel(), error) == true);
+    const RenderScene scene = MakeInteractionScene();
+    const QString id = scene.Objects[0].Id;
+    RenderPreview preview;
+    ConfigureInteractionPreview(preview, scene);
+    ViewportObjectInteraction interaction(preview, nullptr);
+    interaction.SetWorld(document, id, true);
+    const QJsonObject before = document.Draft();
+    QSignalSpy committed(&interaction, &ViewportObjectInteraction::PlacementCommitted);
+    QObject::connect(&interaction,
+                     &ViewportObjectInteraction::PlacementCommitted,
+                     &interaction,
+                     [&document, &error](const QString& entityId, const QJsonObject& placement) {
+                         const QJsonObject entity = document.Entity(entityId);
+                         REQUIRE(document.Edit(entityId,
+                                               entity.value(QStringLiteral("components")).toObject(),
+                                               entity.value(QStringLiteral("name")).toString(),
+                                               error,
+                                               &placement) == true);
+                     });
+    QImage image(800, 600, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::transparent);
+    {
+        QPainter painter(&image);
+        interaction.Paint(painter, image.rect());
+    }
+    bool hasHighlight = false;
+    for (ludus::foundation::int32 y = 0; y < image.height(); ++y)
+    {
+        for (ludus::foundation::int32 x = 0; x < image.width(); ++x)
+        {
+            const QColor color = image.pixelColor(x, y);
+            if (color.alpha() > 0 && color.red() > 200 && color.green() > 120 && color.blue() < 120)
+            {
+                hasHighlight = true;
+            }
+        }
+    }
+    CHECK(hasHighlight == true);
+    const QRectF frame{0, 0, 800, 600};
+    REQUIRE(interaction.Press(frame.center() + QPointF(70, 0), frame) == true);
+    REQUIRE(interaction.Move(frame.center() + QPointF(110, 0), true) == true);
+    CHECK(document.Draft() == before);
+    REQUIRE(interaction.Release() == true);
+    CHECK(committed.count() == 1);
+    CHECK(document.Draft() != before);
+    CHECK(document.ScenePlacement(document.Entity(id)).value(QStringLiteral("position")).toArray()[0].toDouble() > 2);
+    REQUIRE(document.Undo() == true);
+    CHECK(document.Draft() == before);
+    REQUIRE(document.Redo() == true);
+    CHECK(document.Draft() != before);
+    CHECK(interaction.Release() == false);
+}
+TEST_CASE("Viewport gestures cancel without a document edit and readonly objects keep their selection highlight",
+          "[editor][world][object-interaction]")
+{
+    WorldDocument document = UnboundDocument();
+    QString error;
+    REQUIRE(document.ImportScene(ImportedLevel(), error) == true);
+    const RenderScene scene = MakeInteractionScene();
+    RenderPreview preview;
+    ConfigureInteractionPreview(preview, scene);
+    ViewportObjectInteraction interaction(preview, nullptr);
+    interaction.SetWorld(document, scene.Objects[0].Id, true);
+    QSignalSpy committed(&interaction, &ViewportObjectInteraction::PlacementCommitted);
+    const QRectF frame{0, 0, 800, 600};
+    REQUIRE(interaction.Press(frame.center() + QPointF(70, 0), frame) == true);
+    REQUIRE(interaction.Move(frame.center() + QPointF(110, 0), false) == true);
+    interaction.Cancel();
+    CHECK(interaction.Release() == false);
+    CHECK(committed.count() == 0);
+    interaction.SetWorld(document, scene.Objects[0].Id, false);
+    CHECK(interaction.Press(frame.center(), frame) == true);
+    CHECK(interaction.Move(frame.center() + QPointF(100, 0), false) == false);
+    CHECK(committed.count() == 0);
+}
+TEST_CASE("Viewport scale and rotation tools edit only their selected placement component",
+          "[editor][world][object-interaction]")
+{
+    WorldDocument document = UnboundDocument();
+    QString error;
+    REQUIRE(document.ImportScene(ImportedLevel(), error) == true);
+    const RenderScene scene = MakeInteractionScene();
+    RenderPreview preview;
+    ConfigureInteractionPreview(preview, scene);
+    ViewportObjectInteraction interaction(preview, nullptr);
+    interaction.SetWorld(document, scene.Objects[0].Id, true);
+    QSignalSpy committed(&interaction, &ViewportObjectInteraction::PlacementCommitted);
+    const QRectF frame{0, 0, 800, 600};
+    interaction.SetTool(ViewportObjectInteraction::Tool::Scale);
+    REQUIRE(interaction.Press(frame.center() + QPointF(70, 0), frame) == true);
+    REQUIRE(interaction.Move(frame.center() + QPointF(110, 0), true) == true);
+    REQUIRE(interaction.Release() == true);
+    REQUIRE(committed.count() == 1);
+    const QJsonObject scaled = committed[0][1].toJsonObject();
+    CHECK(scaled.value(QStringLiteral("scale")).toArray() == QJsonArray{1.5, 1, 1});
+    CHECK(scaled.value(QStringLiteral("position")) == QJsonArray{2, 3, 4});
+    CHECK(scaled.value(QStringLiteral("rotation")) == QJsonArray{0, 0, 0});
+    interaction.SetTool(ViewportObjectInteraction::Tool::Rotate);
+    const ludus::foundation::float64 diagonal = 80 * ludus::foundation::math::Sqrt(0.5);
+    const QPointF ringPixel = frame.center() + QPointF(diagonal, -diagonal);
+    REQUIRE(interaction.Press(ringPixel, frame) == true);
+    REQUIRE(interaction.Move(ringPixel + QPointF(-20, -20), true) == true);
+    REQUIRE(interaction.Release() == true);
+    REQUIRE(committed.count() == 2);
+    const QJsonObject rotated = committed[1][1].toJsonObject();
+    CHECK(rotated.value(QStringLiteral("rotation")).toArray()[2].toDouble() != 0);
+    CHECK(rotated.value(QStringLiteral("rotation")).toArray()[0].toDouble() == 0);
+    CHECK(rotated.value(QStringLiteral("rotation")).toArray()[1].toDouble() == 0);
+    CHECK(rotated.value(QStringLiteral("scale")) == QJsonArray{1, 1, 1});
+}
+TEST_CASE("Viewport move axes follow a rotated scaled parent and preserve parent-local placement",
+          "[editor][world][object-interaction]")
+{
+    WorldDocument document = UnboundDocument();
+    QString error;
+    QJsonObject level = ImportedLevel();
+    QJsonArray objects = level.value(QStringLiteral("objects")).toArray();
+    QJsonObject child = objects[0].toObject();
+    const QString parentId = QStringLiteral("b8517f65-8127-4bf4-99c2-e53b1a6d9701");
+    child.insert(QStringLiteral("parent"), parentId);
+    QJsonObject parent = objects[0].toObject();
+    parent.insert(QStringLiteral("id"), parentId);
+    parent.insert(QStringLiteral("transform"), QJsonArray{0, 2, 0, -1, 0, 0, 0, 0, 1, 10, 0, 0});
+    objects[0] = child;
+    objects.append(parent);
+    level.insert(QStringLiteral("objects"), objects);
+    REQUIRE(document.ImportScene(level, error) == true);
+    RenderScene scene = MakeInteractionScene();
+    PreviewObject parentObject;
+    parentObject.Id = parentId;
+    parentObject.Transform.Columns[0] = {0, 2, 0};
+    parentObject.Transform.Columns[1] = {-1, 0, 0};
+    parentObject.Transform.Translation = {10, 0, 0};
+    scene.Objects[0].Transform = ludus::foundation::math::Compose(parentObject.Transform, scene.Objects[0].Transform);
+    scene.Cameras[0].Sample.Pose.Position = {7, 4, 10};
+    scene.Objects.append(parentObject);
+    RenderPreview preview;
+    ConfigureInteractionPreview(preview, scene);
+    ViewportObjectInteraction interaction(preview, nullptr);
+    interaction.SetWorld(document, scene.Objects[0].Id, true);
+    QSignalSpy committed(&interaction, &ViewportObjectInteraction::PlacementCommitted);
+    const QRectF frame{0, 0, 800, 600};
+    REQUIRE(interaction.Press(frame.center() + QPointF(0, -70), frame) == true);
+    REQUIRE(interaction.Move(frame.center() + QPointF(0, -110), true) == true);
+    REQUIRE(interaction.Release() == true);
+    REQUIRE(committed.count() == 1);
+    const QJsonArray position = committed[0][1].toJsonObject().value(QStringLiteral("position")).toArray();
+    CHECK(position[0].toDouble() > 2);
+    CHECK(position[1].toDouble() == 3);
+    CHECK(position[2].toDouble() == 4);
+}
+
+TEST_CASE("Viewport picking reads immutable cooked geometry and matches orthographic letterboxed images",
+          "[editor][world][object-interaction]")
+{
+    using namespace ludus::foundation;
+    RenderScene scene = MakeInteractionScene();
+    SharedPtr<ludus::resources::SceneDefinition> definition;
+    REQUIRE(TryMakeShared<ludus::resources::SceneDefinition>(GetSystemAllocationDomain(), definition) ==
+            OwnershipStatus::Ok);
+    REQUIRE(definition->Meshes.TryResize(1) == true);
+    ludus::resources::SceneMesh& mesh = definition->Meshes[0];
+    REQUIRE(mesh.Positions.TryResize(3) == true);
+    REQUIRE(mesh.Indices.TryResize(3) == true);
+    for (usize index = 0; index < 3; ++index)
+    {
+        mesh.Positions[index] = scene.Meshes[0].Positions[static_cast<int32>(index)];
+        mesh.Indices[index] = scene.Meshes[0].Indices[static_cast<int32>(index)];
+    }
+    scene.Definition = definition;
+    scene.Meshes[0].Positions.clear();
+    scene.Meshes[0].Indices.clear();
+    scene.Cameras[0].Sample.Lens.Projection = ludus::gameplay::camera::CameraProjection::OrthographicFinite;
+    RenderPreview preview;
+    ConfigureInteractionPreview(preview, scene);
+    ViewportObjectInteraction interaction(preview, nullptr);
+    interaction.SetImageSize({400, 400});
+    const QRectF frame{0, 0, 800, 600};
+    CHECK(interaction.Pick(frame.center(), frame) == scene.Objects[0].Id);
+    CHECK(interaction.Pick({50, 300}, frame).isEmpty() == true);
+    QSignalSpy selection(&interaction, &ViewportObjectInteraction::SelectionRequested);
+    interaction.SetTool(ViewportObjectInteraction::Tool::Select);
+    REQUIRE(interaction.Press(frame.center(), frame) == true);
+    REQUIRE(selection.count() == 1);
+    CHECK(selection[0][0].toString() == scene.Objects[0].Id);
+    SharedPtr<ludus::resources::SceneDefinition> invalidDefinition;
+    REQUIRE(TryMakeShared<ludus::resources::SceneDefinition>(GetSystemAllocationDomain(), invalidDefinition) ==
+            OwnershipStatus::Ok);
+    scene.Definition = invalidDefinition;
+    scene.Identity.append('2');
+    REQUIRE(preview.SetScene(scene) == true);
+    CHECK(interaction.Pick(frame.center(), frame).isEmpty() == true);
+}
+TEST_CASE("World viewport interaction shares hierarchy selection inspector validation and undo",
+          "[editor][world][object-interaction]")
+{
+    QTemporaryDir directory;
+    const QString path = Fixture(directory);
+    const QString external = directory.filePath(QStringLiteral("external"));
+    QString error;
+    REQUIRE(ludus::editor::tests::CreateFixtureSource(external) == true);
+    REQUIRE(ludus::editor::tests::PrepareImportedLevel(directory.path(),
+                                                       QStringLiteral("scenes/room.lulevel"),
+                                                       external,
+                                                       error) == true);
+    WorldDocument document = Document();
+    const QJsonObject level =
+        QJsonDocument::fromJson(Read(directory.filePath(QStringLiteral("scenes/room.lulevel")))).object();
+    REQUIRE(document.ImportScene(level, error) == true);
+    Write(path, document.Encode());
+    WorldWorkspace workspace;
+    workspace.SetProject(directory.path(), 1);
+    REQUIRE(workspace.Open(path) == true);
+    const auto waitUntilSettled = [&workspace]() {
+        QElapsedTimer timer;
+        timer.start();
+        while (workspace.CanSave() == false && timer.elapsed() < 15000)
+        {
+            QTest::qWait(10);
+        }
+        REQUIRE(workspace.CanSave() == true);
+    };
+    waitUntilSettled();
+    LevelWorkspace* sceneOrNull = workspace.findChild<LevelWorkspace*>();
+    REQUIRE(sceneOrNull != nullptr);
+    ViewportObjectInteraction& interaction = sceneOrNull->GetViewport().GetObjectInteraction();
+    const QString id =
+        level.value(QStringLiteral("objects")).toArray()[0].toObject().value(QStringLiteral("id")).toString();
+    QWidget* propertiesOrNull = workspace.findChild<QWidget*>(QStringLiteral("worldProperties"));
+    REQUIRE(propertiesOrNull != nullptr);
+    propertiesOrNull->hide();
+    interaction.SelectionRequested(id);
+    QListWidget* entitiesOrNull = workspace.findChild<QListWidget*>(QStringLiteral("worldEntities"));
+    REQUIRE(entitiesOrNull != nullptr);
+    REQUIRE(entitiesOrNull->currentItem() != nullptr);
+    CHECK(entitiesOrNull->currentItem()->data(Qt::UserRole).toString() == id);
+    const QJsonObject before = workspace.Document().Draft();
+    QJsonObject placement = workspace.Document().ScenePlacement(workspace.Document().Entity(id));
+    QJsonArray position = placement.value(QStringLiteral("position")).toArray();
+    position[0] = position[0].toDouble() + 2;
+    placement.insert(QStringLiteral("position"), position);
+    interaction.PlacementCommitted(id, placement);
+    CHECK(workspace.Document().ScenePlacement(workspace.Document().Entity(id)).value(QStringLiteral("position")) ==
+          position);
+    waitUntilSettled();
+    workspace.Undo();
+    CHECK(workspace.Document().Draft() == before);
+    waitUntilSettled();
+    workspace.Redo();
+    CHECK(workspace.Document().Draft() != before);
+    waitUntilSettled();
+    const QJsonObject accepted = workspace.Document().Draft();
+    placement.insert(QStringLiteral("scale"), QJsonArray{0, 1, 1});
+    interaction.PlacementCommitted(id, placement);
+    CHECK(workspace.Document().Draft() == accepted);
+    interaction.SelectionRequested(QString());
+    CHECK(entitiesOrNull->selectedItems().isEmpty() == true);
+}
+TEST_CASE("World viewport mouse events select objects while Alt keeps camera navigation",
+          "[editor][world][object-interaction]")
+{
+    WorldDocument document = UnboundDocument();
+    QString error;
+    REQUIRE(document.ImportScene(ImportedLevel(), error) == true);
+    const RenderScene scene = MakeInteractionScene();
+    RenderPreview preview;
+    ConfigureInteractionPreview(preview, scene);
+    PreviewViewport viewport(&preview, nullptr, false);
+    viewport.resize(1000, 700);
+    viewport.show();
+    QTest::qWait(10);
+    ViewportObjectInteraction& interaction = viewport.GetObjectInteraction();
+    interaction.SetWorld(document, scene.Objects[0].Id, true);
+    interaction.SetTool(ViewportObjectInteraction::Tool::Select);
+    QSignalSpy selection(&interaction, &ViewportObjectInteraction::SelectionRequested);
+    REQUIRE(viewport.layout() != nullptr);
+    REQUIRE(viewport.layout()->count() >= 2);
+    const QPoint centerPixel = viewport.layout()->itemAt(1)->geometry().center();
+    QTest::mouseClick(&viewport, Qt::LeftButton, Qt::NoModifier, centerPixel);
+    REQUIRE(selection.count() == 1);
+    CHECK(selection[0][0].toString() == scene.Objects[0].Id);
+    QTest::mouseClick(&viewport, Qt::LeftButton, Qt::AltModifier, centerPixel);
+    CHECK(selection.count() == 1);
+    QTest::keyClick(&viewport, Qt::Key_E);
+    CHECK(interaction.GetTool() == ViewportObjectInteraction::Tool::Rotate);
+    QTest::keyClick(&viewport, Qt::Key_R);
+    CHECK(interaction.GetTool() == ViewportObjectInteraction::Tool::Scale);
+}
+
+TEST_CASE("Destroying a viewport renderer cancels its outstanding object gesture",
+          "[editor][world][object-interaction]")
+{
+    WorldDocument document = UnboundDocument();
+    QString error;
+    REQUIRE(document.ImportScene(ImportedLevel(), error) == true);
+    const RenderScene scene = MakeInteractionScene();
+    QObject owner;
+    RenderPreview* preview = new RenderPreview(&owner);
+    ConfigureInteractionPreview(*preview, scene);
+    ViewportObjectInteraction interaction(*preview, nullptr);
+    interaction.SetWorld(document, scene.Objects[0].Id, true);
+    QSignalSpy committed(&interaction, &ViewportObjectInteraction::PlacementCommitted);
+    const QRectF frame{0, 0, 800, 600};
+    REQUIRE(interaction.Press(frame.center() + QPointF(70, 0), frame) == true);
+    REQUIRE(interaction.Move(frame.center() + QPointF(110, 0), false) == true);
+    delete preview;
+    CHECK(interaction.Release() == false);
+    CHECK(interaction.Pick(frame.center(), frame).isEmpty() == true);
+    CHECK(committed.count() == 0);
+}
+
+TEST_CASE("Viewport picking is independent of mesh units and instance scale", "[editor][world][object-interaction]")
+{
+    RenderScene scene = MakeInteractionScene();
+    for (ludus::foundation::math::Vector3& positionMesh : scene.Meshes[0].Positions)
+    {
+        positionMesh = positionMesh * 0.00001F;
+    }
+    for (ludus::foundation::math::Vector3& axisWorld : scene.Objects[0].Transform.Columns)
+    {
+        axisWorld = axisWorld * 100000;
+    }
+    RenderPreview preview;
+    ConfigureInteractionPreview(preview, scene);
+    ViewportObjectInteraction interaction(preview, nullptr);
+    const QRectF frame{0, 0, 800, 600};
+    CHECK(interaction.Pick(frame.center(), frame) == scene.Objects[0].Id);
 }

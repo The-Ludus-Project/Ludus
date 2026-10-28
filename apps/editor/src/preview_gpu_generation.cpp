@@ -524,6 +524,7 @@ bool PreviewGpuGeneration::prepareAssets(QString& outError) noexcept
     mStage = PreparationStage::Snapshot;
     return true;
 #else
+    static_cast<void>(outError);
     return false;
 #endif
 }

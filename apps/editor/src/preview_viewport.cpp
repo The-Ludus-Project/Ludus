@@ -24,6 +24,7 @@
 #include <QList>
 #include <QMenu>
 #include <QPainter>
+#include <QPicture>
 #include <QPointer>
 #include <QPushButton>
 #include <QSignalBlocker>
@@ -270,6 +271,35 @@ QPointF GetShaderStatusOrigin(const QString& statisticsText)
 /// Overlay panel inside the viewport's QQuickWindow. A sibling QWidget would sit under the
 /// native window that createWindowContainer embeds on macOS and Linux; a scene-graph item is
 /// composited by Qt Quick in the same Metal/Vulkan pass as the frame, so it is always on top.
+class ObjectInteractionItem final : public QQuickPaintedItem
+{
+public:
+    ObjectInteractionItem(ViewportObjectInteraction& inoutInteraction, QQuickItem* parent)
+        : QQuickPaintedItem(parent), mInteraction(inoutInteraction)
+    {
+        setObjectName(QStringLiteral("viewportObjectSelectionOverlay"));
+        setZ(STATISTICS_Z - 1);
+        setAntialiasing(true);
+        connect(&mInteraction, &ViewportObjectInteraction::Changed, this, [this]() { rebuildPicture(); });
+        connect(this, &QQuickItem::widthChanged, this, [this]() { rebuildPicture(); });
+        connect(this, &QQuickItem::heightChanged, this, [this]() { rebuildPicture(); });
+    }
+    void paint(QPainter* painter) override
+    {
+        painter->drawPicture(0, 0, mPicture);
+    }
+
+private:
+    void rebuildPicture()
+    {
+        mPicture = QPicture{};
+        QPainter painter(&mPicture);
+        mInteraction.Paint(painter, boundingRect());
+        update();
+    }
+    ViewportObjectInteraction& mInteraction;
+    QPicture mPicture;
+};
 class StatisticsItem final : public QQuickPaintedItem
 {
 public:
@@ -313,6 +343,11 @@ public:
         // The owning PreviewViewport keeps handling orbit, pan, zoom and framing.
         setAttribute(Qt::WA_TransparentForMouseEvents);
     }
+    void SetInteraction(ViewportObjectInteraction& inoutInteraction)
+    {
+        mInteractionOrNull = &inoutInteraction;
+        connect(&inoutInteraction, &ViewportObjectInteraction::Changed, this, [this]() { update(); });
+    }
     void SetImage(const QImage& image)
     {
         mImage = image;
@@ -352,6 +387,10 @@ protected:
             painter.setRenderHint(QPainter::SmoothPixmapTransform);
             painter.drawImage(rect(), mImage);
         }
+        if (mInteractionOrNull != nullptr)
+        {
+            mInteractionOrNull->Paint(painter, rect());
+        }
         PaintStatistics(painter, mStatisticsText, {STATISTICS_MARGIN, STATISTICS_MARGIN});
         PaintStatistics(painter,
                         FitOverlayText(mShaderStatusText, width()),
@@ -360,6 +399,7 @@ protected:
     }
 
 private:
+    ViewportObjectInteraction* mInteractionOrNull = nullptr;
     QImage mImage;
     QString mStatisticsText;
     QString mShaderStatusText;
@@ -537,6 +577,7 @@ struct PreviewViewport::State final
     private:
         State& mState;
     };
+    ObjectInteractionItem* ObjectOverlayOrNull = nullptr;
     QQuickWindow* Window = nullptr;
     StatisticsItem* StatisticsOrNull = nullptr;
     StatisticsItem* ShaderStatusOrNull = nullptr;
@@ -638,6 +679,7 @@ private:
             return;
         }
         CanvasOrNull = new FrameCanvas(Widget, QStringLiteral("LudusOffscreenViewport"));
+        CanvasOrNull->SetInteraction(Widget->GetObjectInteraction());
         CanvasOrNull->SetStatisticsText(StatisticsText);
         CanvasOrNull->SetShaderStatusText(ShaderStatusText, HasShaderError);
         FrameLayoutOrNull->addWidget(CanvasOrNull);
@@ -843,6 +885,8 @@ private:
             static_cast<PreviewViewport*>(Widget)->resizeSurface();
         });
         createItem();
+        ObjectOverlayOrNull = new ObjectInteractionItem(Widget->GetObjectInteraction(), Window->contentItem());
+        ObjectOverlayOrNull->setSize(Window->size());
         StatisticsOrNull = new StatisticsItem(Window->contentItem(), QStringLiteral("viewportStatisticsOverlay"));
         StatisticsOrNull->SetText(StatisticsText);
         ShaderStatusOrNull = new StatisticsItem(Window->contentItem(), QStringLiteral("viewportShaderStatusOverlay"));
@@ -1010,6 +1054,7 @@ private:
         }
         if (Container != nullptr)
         {
+            ObjectOverlayOrNull = nullptr;
             delete Container;
             Container = nullptr;
         }
@@ -1104,6 +1149,7 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
 {
     LUDUS_REQUIRE(preview != nullptr);
     LUDUS_REQUIRE(frameSource != nullptr);
+    mObjectInteraction = new ViewportObjectInteraction(*preview, this);
     mState.Reset(new State);
     setMinimumSize(160, 160);
     setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
@@ -1285,6 +1331,25 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     connect(preview, &RenderPreview::NavigationChanged, lookSensitivity, [preview, lookSensitivity]() {
         const QSignalBlocker blocker(lookSensitivity);
         lookSensitivity->setValue(static_cast<float64>(preview->GetLookSensitivity()));
+    });
+    QComboBox* objectTool = new QComboBox(this);
+    objectTool->setObjectName(QStringLiteral("viewportObjectTool"));
+    objectTool->setAccessibleName(QStringLiteral("Object interaction tool"));
+    objectTool->addItems({QStringLiteral("Select (Q)"),
+                          QStringLiteral("Move (W)"),
+                          QStringLiteral("Rotate (E)"),
+                          QStringLiteral("Scale (R)")});
+    objectTool->setCurrentIndex(static_cast<int32>(ViewportObjectInteraction::Tool::Move));
+    objectTool->setToolTip(QStringLiteral("Click an object to select it. Drag an axis handle to transform it. "
+                                          "Shift snaps; Escape cancels. Alt-drag or right-drag navigates."));
+    objectTool->hide();
+    controls->addWidget(objectTool);
+    connect(objectTool, &QComboBox::currentIndexChanged, this, [this](int32 index) {
+        mObjectInteraction->SetTool(static_cast<ViewportObjectInteraction::Tool>(index));
+    });
+    connect(mObjectInteraction, &ViewportObjectInteraction::Changed, objectTool, [this, objectTool]() {
+        const QSignalBlocker blocker(objectTool);
+        objectTool->setCurrentIndex(static_cast<int32>(mObjectInteraction->GetTool()));
     });
     QToolButton* frameAll = new QToolButton(this);
     frameAll->setObjectName(QStringLiteral("viewportFrameAll"));
@@ -1567,6 +1632,7 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
     synchronizeProblem();
     mState->ProjectGraph = inoutWorkspace.GetPreviewOrNull();
     mState->GraphViewOrNull = new WorldGraphView(inoutWorkspace, this);
+    mState->GraphViewOrNull->SetObjectInteraction(*mObjectInteraction);
     mState->GraphViewOrNull->setVisible(Preview_->Scene().Identity.isEmpty() == false);
     mState->GraphViewOrNull->SetCanPresent(mState->IsAutomatic);
     mState->FrameLayoutOrNull->addWidget(mState->GraphViewOrNull);
@@ -1597,6 +1663,12 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
             mState->applyStatistics();
         });
     }
+    connect(mState->ProjectGraph, &RenderGraphPreview::FramePresented, this, [this]() {
+        if (mIsInspectingRayPaths == false)
+        {
+            mObjectInteraction->SetImageSize(mState->ProjectGraph->GetTargetSize());
+        }
+    });
     updateStatistics();
     mRayPaths = inoutWorkspace.GetRayPathInspectionOrNull();
     mRayPathWorkspaceOrNull = &inoutWorkspace;
@@ -1644,7 +1716,9 @@ void PreviewViewport::updateRayPathInspection()
     {
         return;
     }
+    mObjectInteraction->SetImageSize(shouldInspect == true ? QSize{} : mState->ProjectGraph->GetTargetSize());
     mIsInspectingRayPaths = shouldInspect;
+    mObjectInteraction->SetActive(shouldInspect == false);
     // The inspection view is the built-in raster preview from the free camera; never the frozen graph image.
     Preview_->SetRayPathInspection(shouldInspect);
     if (mState->Window != nullptr)
@@ -1669,6 +1743,14 @@ void PreviewViewport::updateRayPathOverlay()
     const bool hasBounds = Preview_->Scene().TryGetBounds({}, boundsWorld);
     Preview_->SetRayPathOverlay(mRayPaths->BuildOverlay(hasBounds == true ? &boundsWorld : nullptr));
 #endif
+}
+QRectF PreviewViewport::getInteractionFrame() const
+{
+    return mState->FrameLayoutOrNull != nullptr ? mState->FrameLayoutOrNull->GetFrameRectangle() : QRectF{};
+}
+QPointF PreviewViewport::getInteractionPosition(QPointF globalPosition) const
+{
+    return mapFromGlobal(globalPosition);
 }
 bool PreviewViewport::pickRayPathPixel(QPointF globalPosition)
 {
@@ -1939,6 +2021,11 @@ void PreviewViewport::resizeSurface()
         }
         mFrameSource->Resize(drawable.width(), drawable.height());
         mState->Item->setSize(QSizeF(mState->Window->size()));
+        if (mState->ObjectOverlayOrNull != nullptr)
+        {
+            mState->ObjectOverlayOrNull->setSize(mState->Window->size());
+            mState->ObjectOverlayOrNull->update();
+        }
         mState->Item->update();
         mState->applyShaderStatus();
     }

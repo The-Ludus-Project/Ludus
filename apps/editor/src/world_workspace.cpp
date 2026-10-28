@@ -576,6 +576,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
                                   "them. Import scene… copies a scene folder, .zip or .pbrt with its files into the "
                                   "session and cooks it here. Play and runtime binding require the native editor."));
 #endif
+    bindViewportInteraction();
     DraftTimer_.setSingleShot(true);
     DraftTimer_.setInterval(180);
     connect(&DraftTimer_, &QTimer::timeout, this, &WorldWorkspace::PreviewDraft);
@@ -1500,6 +1501,7 @@ void WorldWorkspace::Changed(const QString& message)
     PathLabel_->setToolTip((Path_.isEmpty() ? QString() : QDir::toNativeSeparators(Path_) + QStringLiteral("\n\n")) +
                            GetWorldIntroduction());
     Render_->SetSelection(Selected_, Pending_);
+    updateViewportInteraction();
     Q_EMIT DocumentChanged();
 }
 bool WorldWorkspace::ReadDraft(WorldDocument& document, QString& error, QWidget*& invalid)

@@ -60,6 +60,7 @@ void PreviewViewport::SetPlayInput(platform::HostedWindowEndpoint* endpointOrNul
     }
     stopNavigation();
     mPlayEndpointOrNull = endpointOrNull;
+    mObjectInteraction->SetActive(endpointOrNull == nullptr);
     for (bool& isHeld : mPlayHeldKeys)
     {
         isHeld = false;
