@@ -29,6 +29,12 @@ inline constexpr foundation::int32 LAMP_COUNT = 12;
 inline constexpr foundation::int32 EXTRA_CASTER_COUNT = 4;
 /// Spacing between lamps along the row above the World origin, in world units.
 inline constexpr foundation::float64 LAMP_SPACING = 1.5;
+/// Spacing between the sample cube and its copies along x, in world units. The cube has
+/// half-extent 1 and is turned 25 degrees about y, so it spans 2 (cos 25 + sin 25) = 2.66
+/// units along x. Closer copies interpenetrate with coplanar tops, where float32 rounding
+/// decides which copy, and so which texel, a ray sees; the reference parity test needs
+/// every visible surface to be unambiguous.
+inline constexpr foundation::float64 CASTER_SPACING = 3;
 /// Height of the lamp row above the World origin, in world units.
 inline constexpr foundation::float64 LAMP_HEIGHT = 3;
 /// Optional mesh flaws and workload for MakeLitScene.
@@ -123,7 +129,7 @@ inline void MakeLitScene(const QString& root, RenderScene& outScene, const LitSc
         QJsonObject transform = components.value(QStringLiteral("transform")).toObject();
         transform.insert(QStringLiteral("x"),
                          transform.value(QStringLiteral("x")).toDouble() +
-                             static_cast<foundation::float64>(i + 1) * LAMP_SPACING);
+                             static_cast<foundation::float64>(i + 1) * CASTER_SPACING);
         components.insert(QStringLiteral("transform"), transform);
         REQUIRE(world.Edit(casterId, components, QStringLiteral("Caster"), error) == true);
     }

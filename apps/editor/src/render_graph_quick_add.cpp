@@ -46,6 +46,7 @@ constexpr float64 HEADING_LETTER_SPACING = 108.0;
 // Kind glyphs in a 16-pixel icon, matching the canvas's snippet (amber) and node (teal) accents.
 constexpr QRgb SNIPPET_GLYPH_COLOR = 0xffc8842a;
 constexpr QRgb NODE_GLYPH_COLOR = 0xff2a9d80;
+constexpr QRgb GRAPH_GLYPH_COLOR = 0xffad88cd;
 constexpr float64 GLYPH_STROKE_WIDTH = 1.5;
 constexpr int32 ICON_SIZE = 16;
 // A node is one inset square; a snippet is two offset squares, back-left and front-right.
@@ -89,7 +90,8 @@ int32 ScoreTemplate(const RenderGraphTemplate& entry, const QStringList& tokens)
 {
     const QString label = entry.Label.toLower();
     const QStringList words = SplitWords(entry.Label) + SplitWords(entry.Identity) + SplitWords(entry.Algorithm);
-    const QString keywords = entry.Keywords.join(QLatin1Char(' ')) + QLatin1Char(' ') + entry.Identity.toLower();
+    const QString keywords =
+        entry.Keywords.join(QLatin1Char(' ')).toLower() + QLatin1Char(' ') + entry.Identity.toLower();
     const QString category = GetRenderGraphTemplateCategoryLabel(entry.Category).toLower();
     const QString description = entry.Description.toLower();
     int32 total = 0;
@@ -141,8 +143,10 @@ QIcon MakeKindIcon(RenderGraphTemplateKind kind)
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing, true);
     const bool isSnippet = kind == RenderGraphTemplateKind::Snippet;
-    painter.setPen(
-        QPen(QColor::fromRgba(isSnippet == true ? SNIPPET_GLYPH_COLOR : NODE_GLYPH_COLOR), GLYPH_STROKE_WIDTH));
+    painter.setPen(QPen(QColor::fromRgba(kind == RenderGraphTemplateKind::Graph ? GRAPH_GLYPH_COLOR
+                                         : isSnippet == true                    ? SNIPPET_GLYPH_COLOR
+                                                                                : NODE_GLYPH_COLOR),
+                        GLYPH_STROKE_WIDTH));
     if (isSnippet == true)
     {
         painter.drawRoundedRect(
@@ -257,8 +261,12 @@ QVector<RenderGraphTemplate> SearchRenderGraphTemplates(const QString& query,
         if (tokens.isEmpty() == true)
         {
             // Group by category in vocabulary order; a lower score sorts first after negation below.
-            const int32 order =
-                static_cast<int32>(GetRenderGraphTemplateCategories(entry.Kind).indexOf(entry.Category));
+            const int32 order = static_cast<int32>(
+                GetRenderGraphTemplateCategories(entry.Kind == RenderGraphTemplateKind::Graph &&
+                                                         entry.Category == QStringLiteral("structure")
+                                                     ? RenderGraphTemplateKind::Node
+                                                     : entry.Kind)
+                    .indexOf(entry.Category));
             ranked.append({-order, static_cast<int32>(i)});
             continue;
         }
@@ -287,10 +295,10 @@ QVector<RenderGraphTemplate> SearchRenderGraphTemplates(const QString& query,
 RenderGraphQuickAdd::RenderGraphQuickAdd(const RenderGraphTemplateRegistry& registry, QWidget* parentOrNull)
     : QFrame(parentOrNull, Qt::Popup), mSearch(new QLineEdit(this)), mContext(new QWidget(this)),
       mContextLabel(new QLabel(mContext)), mContextClear(new QToolButton(mContext)), mKindAll(new QToolButton(this)),
-      mKindSnippets(new QToolButton(this)), mKindNodes(new QToolButton(this)), mCategories(new QTreeWidget(this)),
-      mResults(new QTreeWidget(this)), mMore(new QLabel(this)), mGraphHint(new QPushButton(this)),
-      mTitle(new QLabel(this)), mDescription(new QLabel(this)), mPorts(new QLabel(this)), mWarning(new QLabel(this)),
-      mInsert(new QPushButton(this)), mPin(new QPushButton(this))
+      mKindSnippets(new QToolButton(this)), mKindNodes(new QToolButton(this)), mKindGraphs(new QToolButton(this)),
+      mCategories(new QTreeWidget(this)), mResults(new QTreeWidget(this)), mMore(new QLabel(this)),
+      mGraphHint(new QPushButton(this)), mTitle(new QLabel(this)), mDescription(new QLabel(this)),
+      mPorts(new QLabel(this)), mWarning(new QLabel(this)), mInsert(new QPushButton(this)), mPin(new QPushButton(this))
 {
     setObjectName(QStringLiteral("renderGraphQuickAdd"));
     setAccessibleName(QStringLiteral("Quick Add"));
@@ -339,6 +347,10 @@ RenderGraphQuickAdd::RenderGraphQuickAdd(const RenderGraphTemplateRegistry& regi
               QStringLiteral("renderGraphQuickAddKindNodes"),
               RenderGraphQuickAddKind::Nodes,
               QStringLiteral("Nodes"));
+    setUpKind(mKindGraphs,
+              QStringLiteral("renderGraphQuickAddKindGraphs"),
+              RenderGraphQuickAddKind::Graphs,
+              QStringLiteral("Graphs"));
     layout->addLayout(head);
 
     // Shown only with a port filter: which output the new node connects from, and a way out.
@@ -423,6 +435,7 @@ RenderGraphQuickAdd::RenderGraphQuickAdd(const RenderGraphTemplateRegistry& regi
             return;
         }
         mHighlight = index.toInt();
+        renderDetail();
         if (column == 2)
         {
             TogglePinned(GetRenderGraphTemplateKey(mListed.at(mHighlight)));
@@ -552,6 +565,24 @@ void RenderGraphQuickAdd::SetNodePorts(const QHash<QString, RenderGraphNodePorts
     refresh();
 }
 
+void RenderGraphQuickAdd::SetGraphs(const QVector<RenderGraphQuickAddGraph>& graphs)
+{
+    for (const RenderGraphTemplate& entry : mGraphAssets)
+    {
+        mNodePorts.remove(GetRenderGraphTemplateKey(entry));
+    }
+    mGraphAssets.clear();
+    mUnavailableGraphs.clear();
+    for (const RenderGraphQuickAddGraph& graph : graphs)
+    {
+        const QString key = GetRenderGraphTemplateKey(graph.Template);
+        mGraphAssets.append(graph.Template);
+        mNodePorts.insert(key, graph.Ports);
+        mUnavailableGraphs.insert(key, graph.UnavailableReason);
+    }
+    refresh();
+}
+
 void RenderGraphQuickAdd::SetUnavailableRequirements(const QHash<QString, QString>& messages)
 {
     mUnavailableRequirements = messages;
@@ -588,14 +619,20 @@ RenderGraphQuickAddKind RenderGraphQuickAdd::GetKind() const noexcept
 void RenderGraphQuickAdd::SetKind(RenderGraphQuickAddKind kind)
 {
     mKind = kind;
+    if (kind == RenderGraphQuickAddKind::Graphs && mCategory == GetSuggestedCategory())
+    {
+        mCategory = GetAllCategory();
+    }
     mKindAll->setChecked(kind == RenderGraphQuickAddKind::All);
     mKindSnippets->setChecked(kind == RenderGraphQuickAddKind::Snippets);
     mKindNodes->setChecked(kind == RenderGraphQuickAddKind::Nodes);
-    mSearch->setPlaceholderText(hasPortFilter() == true
-                                    ? QStringLiteral("Search nodes that accept %1").arg(mPortFilter.Type)
-                                : kind == RenderGraphQuickAddKind::Snippets ? QStringLiteral("Search snippets")
-                                : kind == RenderGraphQuickAddKind::Nodes ? QStringLiteral("Search nodes")
-                                                                         : QStringLiteral("Search snippets and nodes"));
+    mKindGraphs->setChecked(kind == RenderGraphQuickAddKind::Graphs);
+    mSearch->setPlaceholderText(
+        hasPortFilter() == true ? QStringLiteral("Search nodes and graphs for %1").arg(mPortFilter.Type)
+        : kind == RenderGraphQuickAddKind::Snippets ? QStringLiteral("Search snippets")
+        : kind == RenderGraphQuickAddKind::Nodes    ? QStringLiteral("Search nodes")
+        : kind == RenderGraphQuickAddKind::Graphs   ? QStringLiteral("Search graphs")
+                                                    : QStringLiteral("Search snippets, nodes and graphs"));
     // Snippets apply through a dialog as a separate edit, so they cannot be connected on insert.
     mKindSnippets->setEnabled(hasPortFilter() == false);
     mKindSnippets->setToolTip(hasPortFilter() == true
@@ -644,6 +681,10 @@ bool RenderGraphQuickAdd::InsertHighlighted()
         return false;
     }
     const RenderGraphTemplate entry = mListed.at(mHighlight);
+    if (entry.Kind == RenderGraphTemplateKind::Graph && getUnavailableMessage(entry).isEmpty() == false)
+    {
+        return false;
+    }
     const QString key = GetRenderGraphTemplateKey(entry);
     const QString input = mPortFilter.Inputs.value(key);
     mRecent.removeAll(key);
@@ -736,7 +777,7 @@ void RenderGraphQuickAdd::moveHighlight(int32 delta)
 
 void RenderGraphQuickAdd::cycleKind(bool isForward)
 {
-    constexpr int32 KIND_COUNT = 3;
+    constexpr int32 KIND_COUNT = 4;
     int32 next = (static_cast<int32>(mKind) + (isForward == true ? 1 : KIND_COUNT - 1)) % KIND_COUNT;
     if (hasPortFilter() == true && static_cast<RenderGraphQuickAddKind>(next) == RenderGraphQuickAddKind::Snippets)
     {
@@ -752,32 +793,69 @@ bool RenderGraphQuickAdd::hasPortFilter() const noexcept
 
 QString RenderGraphQuickAdd::getDefaultCategory() const
 {
-    // A port filter already removes most choices, so it opens on everything compatible.
+    // A port filter opens on compatible nodes and graphs, followed by blocked graphs with reasons.
     return hasPortFilter() == true ? GetAllCategory() : GetSuggestedCategory();
 }
 
 QVector<RenderGraphTemplate> RenderGraphQuickAdd::getMatches() const
 {
     QVector<RenderGraphTemplate> candidates;
-    for (const RenderGraphTemplate& entry : mTemplates)
+    for (const RenderGraphTemplate& entry : mTemplates + mGraphAssets)
     {
+        const bool isGraph = entry.Kind == RenderGraphTemplateKind::Graph;
         const bool isSnippet = entry.Kind == RenderGraphTemplateKind::Snippet;
         if ((mKind == RenderGraphQuickAddKind::Snippets && isSnippet == false) ||
-            (mKind == RenderGraphQuickAddKind::Nodes && isSnippet == true))
+            (mKind == RenderGraphQuickAddKind::Nodes && entry.Kind != RenderGraphTemplateKind::Node) ||
+            (mKind == RenderGraphQuickAddKind::Graphs && isGraph == false))
         {
             continue;
         }
-        if (hasPortFilter() == true && mPortFilter.Inputs.contains(GetRenderGraphTemplateKey(entry)) == false)
+        if (hasPortFilter() == true && isGraph == false &&
+            mPortFilter.Inputs.contains(GetRenderGraphTemplateKey(entry)) == false)
         {
             continue;
         }
         candidates.append(entry);
     }
-    return SearchRenderGraphTemplates(mSearch->text(), candidates);
+    const QVector<RenderGraphTemplate> ranked = SearchRenderGraphTemplates(mSearch->text(), candidates);
+    if (hasPortFilter() == false)
+    {
+        return ranked;
+    }
+    QVector<RenderGraphTemplate> result;
+    // Preserve search ranking within each group; blocked graphs remain discoverable with a reason.
+    for (const RenderGraphTemplate& entry : ranked)
+    {
+        if (entry.Kind != RenderGraphTemplateKind::Graph || getUnavailableMessage(entry).isEmpty() == true)
+        {
+            result.append(entry);
+        }
+    }
+    for (const RenderGraphTemplate& entry : ranked)
+    {
+        if (entry.Kind == RenderGraphTemplateKind::Graph && getUnavailableMessage(entry).isEmpty() == false)
+        {
+            result.append(entry);
+        }
+    }
+    return result;
 }
 
 QString RenderGraphQuickAdd::getUnavailableMessage(const RenderGraphTemplate& entry) const
 {
+    if (entry.Kind == RenderGraphTemplateKind::Graph)
+    {
+        const QString key = GetRenderGraphTemplateKey(entry);
+        const QString reason = mUnavailableGraphs.value(key);
+        if (reason.isEmpty() == false)
+        {
+            return reason;
+        }
+        if (hasPortFilter() == true && mPortFilter.Inputs.contains(key) == false)
+        {
+            return QStringLiteral("No input accepts this connection. Show all to insert an unconnected graph.");
+        }
+    }
     for (const QString& requirement : entry.Requirements)
     {
         const QString message = mUnavailableRequirements.value(requirement);
@@ -809,6 +887,11 @@ QString RenderGraphQuickAdd::describePorts(const RenderGraphTemplate& entry) con
     if (mPortFilter.Inputs.contains(key) == true)
     {
         text += QStringLiteral("\nConnects %1 to its %2 input.").arg(mPortFilter.Source, mPortFilter.Inputs.value(key));
+    }
+    if (entry.Kind == RenderGraphTemplateKind::Graph)
+    {
+        text.prepend(
+            QStringLiteral("Asset: %1\nDefault configuration: %2\n").arg(entry.Identity, entry.DefaultConfiguration));
     }
     return text;
 }
@@ -876,7 +959,7 @@ void RenderGraphQuickAdd::refresh()
                                   : QStringLiteral("%1  (%2)").arg(entry.Label, tags.join(QStringLiteral(", ")));
         const QString key = GetRenderGraphTemplateKey(entry);
         QString signature = QStringLiteral("library configuration");
-        if (entry.Kind == RenderGraphTemplateKind::Node)
+        if (entry.Kind != RenderGraphTemplateKind::Snippet)
         {
             const RenderGraphNodePorts ports = mNodePorts.value(key);
             signature = mNodePorts.contains(key) == true
@@ -889,7 +972,15 @@ void RenderGraphQuickAdd::refresh()
                                 {label, signature, isPinned == true ? QStringLiteral("★") : QStringLiteral("☆")});
         item->setIcon(0, MakeKindIcon(entry.Kind));
         item->setData(0, LISTED_INDEX_ROLE, static_cast<int32>(mListed.size()));
-        item->setToolTip(0, entry.Description);
+        const QString unavailable = getUnavailableMessage(entry);
+        item->setToolTip(0,
+                         entry.Kind == RenderGraphTemplateKind::Graph ? entry.Identity + QLatin1Char('\n') + unavailable
+                                                                      : entry.Description);
+        if (entry.Kind == RenderGraphTemplateKind::Graph && unavailable.isEmpty() == false)
+        {
+            // Keep the row inspectable so keyboard and pointer users can read why insertion is disabled.
+            item->setForeground(0, mResults->palette().color(QPalette::Disabled, QPalette::Text));
+        }
         item->setToolTip(2,
                          isPinned == true ? QStringLiteral("Unpin from Suggested")
                                           : QStringLiteral("Pin to Suggested"));
@@ -955,7 +1046,8 @@ void RenderGraphQuickAdd::refresh()
         {
             addPlaceholder(QStringLiteral("Nothing recent or pinned yet. Type to search, or pick a category."));
         }
-        more = QStringLiteral("☆ pins a template here · %1 snippets and nodes").arg(mTemplates.size());
+        more = QStringLiteral("☆ pins an entry here · %1 snippets, nodes and graphs")
+                   .arg(mTemplates.size() + mGraphAssets.size());
     }
     else
     {
@@ -1040,9 +1132,10 @@ void RenderGraphQuickAdd::renderDetail()
     }
     const RenderGraphTemplate& entry = mListed.at(mHighlight);
     // Plain nodes are labelled by their kind; only presets such as Upscale name it separately.
-    const QString kind = entry.Kind == RenderGraphTemplateKind::Snippet ? QStringLiteral("Snippet")
-                         : entry.Label == entry.Identity                ? QStringLiteral("Node")
-                                                                        : QStringLiteral("%1 node").arg(entry.Identity);
+    const QString kind = entry.Kind == RenderGraphTemplateKind::Graph     ? QStringLiteral("Graph reference")
+                         : entry.Kind == RenderGraphTemplateKind::Snippet ? QStringLiteral("Snippet")
+                         : entry.Label == entry.Identity ? QStringLiteral("Node")
+                                                         : QStringLiteral("%1 node").arg(entry.Identity);
     QStringList facts{kind, GetRenderGraphTemplateCategoryLabel(entry.Category)};
     for (const QString& requirement : entry.Requirements)
     {
@@ -1059,7 +1152,7 @@ void RenderGraphQuickAdd::renderDetail()
     mWarning->setText(warning);
     mWarning->setVisible(warning.isEmpty() == false);
     const bool isSnippet = entry.Kind == RenderGraphTemplateKind::Snippet;
-    mInsert->setEnabled(true);
+    mInsert->setEnabled(entry.Kind != RenderGraphTemplateKind::Graph || warning.isEmpty() == true);
     mInsert->setText(isSnippet == true ? QStringLiteral("Apply…") : QStringLiteral("Insert"));
     mInsert->setToolTip(isSnippet == true ? QStringLiteral("Choose the configuration name, then apply the snippet.")
                         : hasPortFilter() == true

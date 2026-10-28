@@ -1,5 +1,5 @@
-// Default render graph depth-only pass: opaque coverage, no alpha discard.
-void DepthMain(RasterVarying value)
+// Opaque prepass coverage; shares the authored color vertex stage and Varying.
+void DepthMain(Varying value)
 {
-    // Authored opaque coverage: no alpha discard or custom depth.
+    OpaqueDepthMain(value);
 }

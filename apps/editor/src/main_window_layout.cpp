@@ -1,3 +1,4 @@
+#include "internal/activity_chip.h"
 #include "internal/audio_workspace.h"
 #include "internal/configuration_workspace.h"
 #include "internal/content_browser.h"
@@ -10,6 +11,7 @@
 #include "internal/project_rendering_settings.h"
 #include "internal/renderer_workspace.h"
 #include "internal/script_workspace.h"
+#include "internal/state_view.h"
 #include "internal/theme_fonts.h"
 #include "internal/timing_panel.h"
 #include "internal/world_workspace.h"
@@ -400,6 +402,13 @@ void MainWindow::BuildUi()
     StatusLabel_->setObjectName(QStringLiteral("workspaceStatus"));
     StatusLabel_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     statusBar()->addWidget(StatusLabel_, 1);
+    // Right side: the running job and the problem counts, which open the Error List.
+    mActivityBarOrNull = new StatusActivityBar(this);
+    statusBar()->addPermanentWidget(mActivityBarOrNull);
+    connect(mActivityBarOrNull, &StatusActivityBar::ProblemsRequested, this, [this]() {
+        showToolWindow(mErrorListDock);
+    });
+    connect(mErrorList, &ErrorList::CountsChanged, this, &MainWindow::renderActivity);
 
     // Thanks to David Lightbown, Designing the User Experience of Game
     // Development Tools (2015), ch. 5, pp. 80-86, 112-115: show task-relevant choices
@@ -409,9 +418,8 @@ void MainWindow::BuildUi()
     Welcome_->setObjectName(QStringLiteral("projectWelcome"));
     auto* recentPanel = Welcome_;
     auto* recentLayout = new QVBoxLayout(recentPanel);
-    RecentEmptyLabel_ =
-        new QLabel(QStringLiteral("No recent projects yet. Open a project to add it here."), recentPanel);
-    RecentEmptyLabel_->setWordWrap(true);
+    mRecentEmptyStateOrNull = new StateView(recentPanel);
+    mRecentEmptyStateOrNull->setObjectName(QStringLiteral("recentProjectsEmpty"));
     RecentList_ = new QListWidget(recentPanel);
     ConfigureItemSelection(*RecentList_);
     RecentList_->setObjectName(QStringLiteral("recentProjectsList"));
@@ -447,8 +455,7 @@ void MainWindow::BuildUi()
     recentLayout->addLayout(welcomeActions);
     recentLayout->addSpacing(12);
     recentLayout->addWidget(new QLabel(QStringLiteral("Recent projects"), recentPanel));
-    recentLayout->addWidget(RecentEmptyLabel_);
-    RecentEmptyLabel_->setAlignment(Qt::AlignTop);
+    recentLayout->addWidget(mRecentEmptyStateOrNull, 0, Qt::AlignHCenter);
     recentLayout->addWidget(RecentList_, 1);
     recentLayout->addStretch();
     auto* recentActions = new QHBoxLayout;
@@ -663,6 +670,7 @@ void MainWindow::setViewportFocused(bool isFocused)
         static_cast<void>(mDocuments->OpenDocument(previousOrNull));
     }
     // The setup notice follows project state, not the restored toolbar visibility.
+    updateContextStrip();
     RenderStatus();
 }
 
@@ -702,10 +710,11 @@ void MainWindow::ResetWorkspaceLayout()
     (void)restoreState(DefaultLayout_, LAYOUT_VERSION);
     // Also recover panes that were floating, closed or moved when the user requested reset.
     arrangeDefaultDocks();
-    for (QToolBar* toolbar : {mStandardToolbar, GameToolbar_, mRenderGraphToolbar})
+    for (QToolBar* toolbar : {mStandardToolbar, GameToolbar_})
     {
         toolbar->show();
     }
+    updateContextStrip();
     applyDefaultDockSizes();
     RenderStatus();
 }

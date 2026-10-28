@@ -19,6 +19,7 @@
 #include "internal/project_setup_dialog.h"
 #include "internal/renderer_workspace.h"
 #include "internal/script_workspace.h"
+#include "internal/state_view.h"
 #include "internal/timing_panel.h"
 #include "internal/workspace_style.h"
 #include "internal/world_workspace.h"
@@ -119,7 +120,32 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
     BuildMenus();
     InitializeWorkspace();
     connect(mDocuments, &DocumentWell::ActiveDocumentChanged, this, &MainWindow::renderActiveDocument);
+    // Restoring a saved layout, resetting it or leaving Focus Viewport can show or hide the strip; the queued
+    // check puts it back to what the active document asks for.
+    connect(mRenderGraphToolbar,
+            &QToolBar::visibilityChanged,
+            this,
+            &MainWindow::updateContextStrip,
+            Qt::QueuedConnection);
+    updateContextStrip();
     connect(mProjectExplorer, &ProjectExplorer::OpenRequested, this, &MainWindow::openProjectItem);
+    connect(mProjectExplorer, &ProjectExplorer::ActionRequested, this, &MainWindow::changeProjectItem);
+    connect(Renderer_, &RendererWorkspace::DocumentChanged, this, [this]() {
+        const RenderGraphDocument& graph = Renderer_->GetDocument();
+        const QString path = QDir(graph.GetPackageRoot()).filePath(graph.GetRootGraph());
+        if (graph.IsLoaded() == true && graph.IsBuiltIn() == false && QFileInfo(path).isFile() == true &&
+            mProjectExplorer->GetFiles(ProjectItemKind::RenderGraph).contains(path) == false)
+        {
+            mProjectExplorer->Refresh();
+        }
+    });
+    connect(World_, &WorldWorkspace::DocumentChanged, this, [this]() {
+        if (QFileInfo(World_->Path()).isFile() == true &&
+            mProjectExplorer->GetFiles(ProjectItemKind::World).contains(World_->Path()) == false)
+        {
+            mProjectExplorer->Refresh();
+        }
+    });
     connect(mErrorList, &ErrorList::EntryActivated, this, &MainWindow::activateErrorEntry);
     connect(mErrorList, &ErrorList::ProblemsReported, this, &MainWindow::revealErrorList);
     mBuildErrorsTimer.setSingleShot(true);
@@ -127,6 +153,9 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
     connect(&mBuildErrorsTimer, &QTimer::timeout, this, &MainWindow::renderBuildErrors);
     connect(Audio_, &AudioWorkspace::DocumentChanged, this, &MainWindow::RenderDocumentActions);
     connect(Content_, &ContentWorkspace::BusyChanged, this, &MainWindow::RenderCapabilities);
+    connect(Content_, &ContentWorkspace::BusyChanged, this, &MainWindow::renderActivity);
+    connect(Renderer_, &RendererWorkspace::CommandsChanged, this, &MainWindow::renderActivity);
+    connect(Renderer_, &RendererWorkspace::JobFinished, this, &MainWindow::renderActivity);
     connect(Content_, &ContentWorkspace::CatalogChanged, Audio_, &AudioWorkspace::RefreshCatalog);
     connect(Audio_, &AudioWorkspace::ImportRequested, this, [this]() {
         showToolWindow(mContentDock);
@@ -390,18 +419,17 @@ void MainWindow::BuildMenus()
     addToolBar(mStandardToolbar);
     OpenAction_->setIconText(QStringLiteral("Open"));
     SaveAction_->setIconText(QStringLiteral("Save"));
-    for (QAction* action : {OpenAction_, SaveAction_, UndoAction_, RedoAction_})
-    {
-        mStandardToolbar->addAction(action);
-    }
+    // Groups: File (Open, Save) and History (Undo, Redo), told apart by a separator.
+    mStandardToolbar->addAction(OpenAction_);
+    mStandardToolbar->addAction(SaveAction_);
+    mStandardToolbar->addSeparator();
+    mStandardToolbar->addAction(UndoAction_);
+    mStandardToolbar->addAction(RedoAction_);
     GameToolbar_ = addToolBar(QStringLiteral("Game"));
     GameToolbar_->setObjectName(QStringLiteral("gameToolbar"));
     GameToolbar_->setToolButtonStyle(Qt::ToolButtonTextOnly);
     BuildRunAction_->setIconText(QStringLiteral("Run"));
     BuildDebugAction_->setIconText(QStringLiteral("Debug"));
-    GameToolbar_->addAction(BuildAction_);
-    GameToolbar_->addAction(BuildRunAction_);
-    GameToolbar_->addAction(BuildDebugAction_);
 
     QMenu* releaseMenu = menuBar()->addMenu(QStringLiteral("&Release"));
     SetupReleaseAction_ = releaseMenu->addAction(QStringLiteral("Set Up &Releases..."));
@@ -481,14 +509,23 @@ void MainWindow::BuildMenus()
     connect(ResumeAction_, &QAction::triggered, this, [this]() { Controller_->PlayCommand(QStringLiteral("Resume")); });
     connect(RefreshPropertiesAction_, &QAction::triggered, Controller_, &EditorController::RefreshProperties);
 
-    GameToolbar_->addSeparator();
+    // Groups: Run (Play, Build, Stop), Launch (Run, Debug) and Session (Pause, Step, Resume, Reload Code). The
+    // session commands are only meaningful while a game is running or paused, so RenderCapabilities shows them
+    // only then, together with their separator.
     GameToolbar_->addAction(PlayAction_);
+    GameToolbar_->addAction(BuildAction_);
+    GameToolbar_->addAction(StopAction_);
+    GameToolbar_->addSeparator();
+    GameToolbar_->addAction(BuildRunAction_);
+    GameToolbar_->addAction(BuildDebugAction_);
+    mSessionSeparatorActionOrNull = GameToolbar_->addSeparator();
     GameToolbar_->addAction(PauseAction_);
     GameToolbar_->addAction(StepAction_);
     GameToolbar_->addAction(ResumeAction_);
     GameToolbar_->addAction(BuildReloadAction_);
-    GameToolbar_->addAction(StopAction_);
 
+    // The Render Graph toolbar is the context strip: it shows only while a render graph is the active document
+    // (updateContextStrip), so a World tab keeps one row of commands about the project and the game.
     mRenderGraphToolbar->setObjectName(QStringLiteral("renderGraphToolbar"));
     mRenderGraphToolbar->setToolButtonStyle(Qt::ToolButtonTextOnly);
     addToolBar(mRenderGraphToolbar);
@@ -550,7 +587,8 @@ void MainWindow::BuildMenus()
     addToolWindowCommand(VIEW_PROFILING_COMMAND, mProfilingDock);
     viewMenu->addSeparator();
     QMenu* toolbars = viewMenu->addMenu(QStringLiteral("&Toolbars"));
-    for (QToolBar* toolbar : {mStandardToolbar, GameToolbar_, mRenderGraphToolbar})
+    // The context strip follows the active document, so it has no entry here.
+    for (QToolBar* toolbar : {mStandardToolbar, GameToolbar_})
     {
         toolbars->addAction(toolbar->toggleViewAction());
     }
@@ -1030,7 +1068,13 @@ void MainWindow::RenderRecentProjects()
         stamp.append(project.DescriptorPath);
         stamp.append(QFileInfo(project.DescriptorPath).isFile() ? QString() : QStringLiteral("Missing"));
     }
-    RecentEmptyLabel_->setVisible(projects.isEmpty());
+    StateViewContent recentEmpty;
+    recentEmpty.Icon = EditorIcon::OpenProject;
+    recentEmpty.Message = QStringLiteral("No recent projects yet.");
+    recentEmpty.ShortcutHint = QStringLiteral("Open a project (%1) to add it here.")
+                                   .arg(OpenAction_->shortcut().toString(QKeySequence::NativeText));
+    mRecentEmptyStateOrNull->SetContent(recentEmpty);
+    mRecentEmptyStateOrNull->setVisible(projects.isEmpty());
     RecentList_->setVisible(projects.isEmpty() == false);
     if (stamp == RecentProjectsStamp_)
     {
@@ -1171,6 +1215,15 @@ void MainWindow::RenderCapabilities()
     {
         const QSignalBlocker blocker(AutoReloadAction_);
         AutoReloadAction_->setChecked(Controller_->AutoReloadEnabled());
+    }
+    const bool isSessionLive = play == PlayPhase::Running || play == PlayPhase::Paused;
+    for (QAction* action : {PauseAction_, StepAction_, ResumeAction_, BuildReloadAction_})
+    {
+        action->setVisible(isSessionLive);
+    }
+    if (mSessionSeparatorActionOrNull != nullptr)
+    {
+        mSessionSeparatorActionOrNull->setVisible(isSessionLive);
     }
     PauseAction_->setEnabled(debuggerStopped == false && play == PlayPhase::Running);
     ResumeAction_->setEnabled(debuggerStopped == false && play == PlayPhase::Paused);
@@ -1400,6 +1453,7 @@ void MainWindow::RenderStatus()
         status += QStringLiteral("  —  ") + setupSummary;
     }
     StatusLabel_->setText(status);
+    renderActivity();
     StatusLabel_->setToolTip(status + QStringLiteral("\n") + state.Result.Message + QStringLiteral("\n") +
                              state.SetupStatus);
 

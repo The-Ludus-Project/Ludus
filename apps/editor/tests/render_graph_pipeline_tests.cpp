@@ -19,6 +19,7 @@
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMap>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QTableWidget>
@@ -2870,4 +2871,89 @@ TEST_CASE("scene compute callback programs use scene stubs and survive document 
     RenderGraphDocument reloaded;
     REQUIRE(reloaded.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
     CHECK(GetNode(reloaded, QStringLiteral("trace")) == applied);
+}
+
+TEST_CASE("Add Shader reports an exhausted manifest budget and can retry after repair",
+          "[editor][render-graph][pipeline][shader-creation]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QString manifestFile = QStringLiteral("main.lushader.json");
+    QJsonObject manifest = QJsonDocument::fromJson(document.GetDraft(manifestFile)).object();
+    constexpr qsizetype EXISTING_PROGRAM_COUNT = 32;
+    QJsonArray programs = manifest.value(QStringLiteral("programs")).toArray();
+    while (programs.size() < EXISTING_PROGRAM_COUNT)
+    {
+        QJsonObject program = programs.at(0).toObject();
+        program.insert(QStringLiteral("id"), QStringLiteral("Existing%1").arg(programs.size()));
+        programs.append(program);
+    }
+    manifest.insert(QStringLiteral("programs"), programs);
+    const qsizetype programCount = programs.size();
+    QJsonObject budgets = manifest.value(QStringLiteral("budgets")).toObject();
+    budgets.insert(QStringLiteral("programs"), programCount);
+    manifest.insert(QStringLiteral("budgets"), budgets);
+    REQUIRE(document.SetText(manifestFile, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
+    const QJsonObject node = MakePipelineNode(QStringLiteral("RayTracingPipeline"), QStringLiteral("trace"));
+    REQUIRE(document.AddNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    const QStringList beforeFiles = document.GetFiles();
+    QMap<QString, QByteArray> before;
+    for (const QString& file : beforeFiles)
+    {
+        before.insert(file, document.GetDraft(file));
+    }
+    const uint64 revision = document.GetRevision();
+    RenderGraphPipelineEditor editor(node);
+    QString error;
+    RenderGraphDocumentStatus status = RenderGraphDocumentStatus::Ok;
+    QObject::connect(&editor, &RenderGraphPipelineEditor::Edited, &editor, [&](const QJsonObject& candidate) {
+        status = document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, candidate, &error);
+    });
+    QPushButton* add = editor.findChild<QPushButton*>(QStringLiteral("renderGraphAdd_shaders"));
+    REQUIRE(add != nullptr);
+    add->click();
+    CHECK(status == RenderGraphDocumentStatus::Capacity);
+    CHECK(error.contains(manifestFile) == true);
+    CHECK(error.contains(QStringLiteral("authored budgets.programs limit is %1").arg(programCount)) == true);
+    CHECK(error.contains(QStringLiteral("at least %1").arg(programCount + 1)) == true);
+    CHECK(error.contains(QStringLiteral("existing compatible program")) == true);
+    CHECK(document.GetFiles() == beforeFiles);
+    for (const QString& file : beforeFiles)
+    {
+        CHECK(document.GetDraft(file) == before.value(file));
+    }
+    CHECK(document.GetRevision() == revision);
+    budgets.insert(QStringLiteral("programs"), programCount + 1);
+    SECTION("exact required authored budget") {}
+    SECTION("authored budget larger than a signed 32-bit integer")
+    {
+        constexpr uint64 LARGE_PROGRAM_BUDGET = uint64{1} << 40;
+        budgets.insert(QStringLiteral("programs"), static_cast<float64>(LARGE_PROGRAM_BUDGET));
+    }
+    manifest.insert(QStringLiteral("budgets"), budgets);
+    REQUIRE(document.SetText(manifestFile, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
+    // Retry the same candidate after repairing only the admission budget.
+    QJsonObject candidate = node;
+    candidate.insert(QStringLiteral("shaders"),
+                     QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("shader")},
+                                            {QStringLiteral("stage"), QStringLiteral("ray_generation")},
+                                            {QStringLiteral("program"), QStringLiteral("Program")}}});
+    REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, candidate, &error) ==
+            RenderGraphDocumentStatus::Ok);
+    CHECK(error.isEmpty() == true);
+    CHECK(document.GetFiles().contains(QStringLiteral("shader_Shader_trace_shader.slang")) == true);
+    const QJsonObject createdManifest = QJsonDocument::fromJson(document.GetDraft(manifestFile)).object();
+    CHECK(createdManifest.value(QStringLiteral("programs")).toArray().size() == programCount + 1);
+    CHECK(createdManifest.value(QStringLiteral("budgets")).toObject().value(QStringLiteral("programs")) ==
+          budgets.value(QStringLiteral("programs")));
+    QStringList saved;
+    REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+    RenderGraphDocument reloaded;
+    REQUIRE(reloaded.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    CHECK(reloaded.GetDraft(manifestFile) == document.GetDraft(manifestFile));
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetDraft(manifestFile) == EncodeCanonicalJson(manifest));
+    CHECK(document.GetFiles() == beforeFiles);
 }

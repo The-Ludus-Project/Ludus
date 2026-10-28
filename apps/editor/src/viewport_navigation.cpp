@@ -54,6 +54,7 @@ int32 GetMovementKey(int32 key) noexcept
 } // namespace
 void PreviewViewport::resizeEvent(QResizeEvent* event)
 {
+    mObjectInteraction->Cancel();
     QWidget::resizeEvent(event);
     resizeSurface();
 }
@@ -72,8 +73,16 @@ void PreviewViewport::mousePressEvent(QMouseEvent* event)
         event->accept();
         return;
     }
+    if (event->button() == Qt::LeftButton && event->modifiers().testFlag(Qt::AltModifier) == false &&
+        mIsFlying == false &&
+        mObjectInteraction->Press(getInteractionPosition(event->globalPosition()), getInteractionFrame()) == true)
+    {
+        event->accept();
+        return;
+    }
     if (event->button() == Qt::RightButton)
     {
+        mObjectInteraction->Cancel();
         mIsFlying = true;
         mHeldKeys[BOOST_KEY] = event->modifiers().testFlag(Qt::ShiftModifier);
         mNavigationClock.start();
@@ -102,6 +111,10 @@ void PreviewViewport::mouseReleaseEvent(QMouseEvent* event)
         event->accept();
         return;
     }
+    if (event->button() == Qt::LeftButton)
+    {
+        static_cast<void>(mObjectInteraction->Release());
+    }
     if (event->button() == Qt::RightButton)
     {
         stopNavigation();
@@ -111,6 +124,12 @@ void PreviewViewport::mouseReleaseEvent(QMouseEvent* event)
 void PreviewViewport::mouseMoveEvent(QMouseEvent* event)
 {
     if (mPlayEndpointOrNull != nullptr)
+    {
+        event->accept();
+        return;
+    }
+    if (mObjectInteraction->Move(getInteractionPosition(event->globalPosition()),
+                                 event->modifiers().testFlag(Qt::ShiftModifier)) == true)
     {
         event->accept();
         return;
@@ -174,6 +193,7 @@ void PreviewViewport::wheelEvent(QWheelEvent* event)
                                                                 : static_cast<float32>(event->angleDelta().y()) / 120;
     if (steps != 0)
     {
+        mObjectInteraction->Cancel();
         if (mIsFlying == true)
         {
             mSpeedMultiplier =
@@ -194,6 +214,7 @@ void PreviewViewport::keyPressEvent(QKeyEvent* event)
     }
     if (event->key() == Qt::Key_Escape)
     {
+        mObjectInteraction->Cancel();
         stopNavigation();
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
         if (mRayPaths.isNull() == false && mRayPaths->GetStage() == RayPathInspectionStage::PickingPixel)
@@ -213,6 +234,30 @@ void PreviewViewport::keyPressEvent(QKeyEvent* event)
     }
     if (mIsFlying == false && event->modifiers() == Qt::NoModifier)
     {
+        if (mObjectInteraction->IsActive() == true)
+        {
+            switch (event->key())
+            {
+                case Qt::Key_Q:
+                    mObjectInteraction->SetTool(ViewportObjectInteraction::Tool::Select);
+                    event->accept();
+                    return;
+                case Qt::Key_W:
+                    mObjectInteraction->SetTool(ViewportObjectInteraction::Tool::Move);
+                    event->accept();
+                    return;
+                case Qt::Key_E:
+                    mObjectInteraction->SetTool(ViewportObjectInteraction::Tool::Rotate);
+                    event->accept();
+                    return;
+                case Qt::Key_R:
+                    mObjectInteraction->SetTool(ViewportObjectInteraction::Tool::Scale);
+                    event->accept();
+                    return;
+                default:
+                    break;
+            }
+        }
         if (event->key() == Qt::Key_F)
         {
             static_cast<void>(Preview_->FrameSelection());
@@ -276,6 +321,7 @@ void PreviewViewport::keyReleaseEvent(QKeyEvent* event)
 }
 void PreviewViewport::stopNavigation()
 {
+    mObjectInteraction->Cancel();
 #if defined(Q_OS_MACOS)
     mRelativeMouse.Stop();
 #endif

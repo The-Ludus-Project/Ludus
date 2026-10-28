@@ -6,11 +6,12 @@
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/foundation/math/vector.hpp>
+#include <ludus/graphics/renderer/lighting_layout.h>
 
 namespace ludus::graphics::renderer
 {
 /// Most lights one LightSelection holds and the light admission functions accept.
-inline constexpr ludus::foundation::uint32 MAX_DIRECT_LIGHTS = 128;
+inline constexpr ludus::foundation::uint32 MAX_DIRECT_LIGHTS = CLUSTERED_LIGHT_COUNT;
 /// Default point/spot range in meters for a new DirectLight.
 inline constexpr ludus::foundation::float32 DEFAULT_LIGHT_RANGE_METERS = 10;
 /// Default spot inner half-angle cosine for a new DirectLight.

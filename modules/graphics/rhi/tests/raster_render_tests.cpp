@@ -35,8 +35,13 @@ TEST_CASE("Portable indexed instances preserve texture origin, depth and detache
           "[rhi][gpu][raster]")
 {
     int32 mode = 0;
+    bool shouldWriteColor = true;
     bool forceTiming = false;
     SECTION("Linear RGBA8 sampling and depth") {}
+    SECTION("Disabled color writes retain the frame clear")
+    {
+        shouldWriteColor = false;
+    }
     SECTION("sRGB sampling decodes to linear output")
     {
         mode = 1;
@@ -160,16 +165,17 @@ TEST_CASE("Portable indexed instances preserve texture origin, depth and detache
                                                    {1, 0, 12, rhi::RasterVertexFormat::Float2},
                                                    {2, 1, 0, rhi::RasterVertexFormat::Float2}};
     rhi::PipelineRequest request;
-    REQUIRE(rhi::RequestPipeline(device,
-                                 {vs,
-                                  fs,
-                                  layout,
-                                  streams,
-                                  attributes,
-                                  true,
-                                  mode == 2,
-                                  graphMode ? rhi::RasterTarget::Rgba8Unorm : rhi::RasterTarget::Surface},
-                                 request) == rhi::RasterStatus::Pending);
+    rhi::RasterPipelineDescription pipelineDescription{vs,
+                                                       fs,
+                                                       layout,
+                                                       streams,
+                                                       attributes,
+                                                       true,
+                                                       mode == 2,
+                                                       graphMode == true ? rhi::RasterTarget::Rgba8Unorm
+                                                                         : rhi::RasterTarget::Surface};
+    pipelineDescription.ShouldWriteColor = shouldWriteColor;
+    REQUIRE(rhi::RequestPipeline(device, pipelineDescription, request) == rhi::RasterStatus::Pending);
     REQUIRE(rhi::PollLifetime(device) == rhi::RasterStatus::Ready);
     rhi::RasterPipelineHandle pipeline;
     REQUIRE(rhi::GetRequestedPipeline(device, request, pipeline) == rhi::RasterStatus::Ready);
@@ -542,7 +548,7 @@ TEST_CASE("Portable indexed instances preserve texture origin, depth and detache
     {
         CHECK(std::memcmp(pixels, computePixels, sizeof(pixels)) == 0);
     }
-    const uint8 high = mode == 1 ? 55 : mode == 2 ? 160 : 255;
+    const uint8 high = shouldWriteColor == false ? 0 : mode == 1 ? 55 : mode == 2 ? 160 : 255;
     const uint8 low = mode == 2 ? 32 : 0;
     const uint32 xs[4]{12, 36, 60, 84};
     for (usize i = 0; i < 4; ++i)

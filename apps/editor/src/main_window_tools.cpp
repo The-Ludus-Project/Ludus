@@ -5,12 +5,15 @@
 // The tool windows and the document well are separate components; this file
 // only connects their requests to the document owners' existing operations.
 
+#include "internal/activity_chip.h"
 #include "internal/audio_workspace.h"
 #include "internal/configuration_workspace.h"
+#include "internal/content_browser.h"
 #include "internal/controller.h"
 #include "internal/document_well.h"
 #include "internal/editor_commands.h"
 #include "internal/error_list.h"
+#include "internal/external_code_editor.h"
 #include "internal/main_window.h"
 #include "internal/options_dialog.h"
 #include "internal/project_explorer.h"
@@ -36,6 +39,7 @@
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
+#include <QToolBar>
 
 namespace ludus::editor
 {
@@ -114,9 +118,12 @@ void MainWindow::openProjectItem(ProjectItemKind kind, const QString& path)
                                    QFileInfo(graph).canonicalFilePath() == QFileInfo(current).canonicalFilePath();
             if (graph.isEmpty() == true)
             {
-                statusBar()->showMessage(
-                    QStringLiteral("No render graph in this project owns %1.").arg(QDir::toNativeSeparators(path)),
-                    STATUS_MESSAGE_MILLISECONDS);
+                ExternalCodeEditor editor;
+                QString error;
+                if (editor.Open(this, path, error) == false && error.isEmpty() == false)
+                {
+                    statusBar()->showMessage(error, STATUS_MESSAGE_MILLISECONDS);
+                }
                 return;
             }
             if (isCurrent == false && (Renderer_->ConfirmDiscard() == false || Renderer_->OpenGraph(graph) == false))
@@ -127,7 +134,19 @@ void MainWindow::openProjectItem(ProjectItemKind kind, const QString& path)
             return;
         }
         case ProjectItemKind::Scripts:
-            static_cast<void>(mDocuments->OpenDocument(Scripts_));
+            if (path.isEmpty() == false)
+            {
+                ExternalCodeEditor editor;
+                QString error;
+                if (editor.Open(this, path, error) == false && error.isEmpty() == false)
+                {
+                    statusBar()->showMessage(error, STATUS_MESSAGE_MILLISECONDS);
+                }
+            }
+            else
+            {
+                static_cast<void>(mDocuments->OpenDocument(Scripts_));
+            }
             return;
         case ProjectItemKind::Audio:
             static_cast<void>(mDocuments->OpenDocument(mAudioDocument));
@@ -193,6 +212,29 @@ void MainWindow::renderActiveDocument()
         mProperties->setCurrentIndex(EMPTY_PROPERTIES_PAGE);
     }
     RenderDocumentActions();
+    updateContextStrip();
+}
+
+void MainWindow::renderActivity()
+{
+    if (mActivityBarOrNull == nullptr)
+    {
+        return;
+    }
+    mActivityBarOrNull->SetActivity(
+        GetActivityLabel(Controller_->State().OperationPhase, Content_->Importing(), Renderer_->IsJobActive()),
+        -1.0);
+    mActivityBarOrNull->SetCounts(mErrorList->GetCount(ErrorListSeverity::Error),
+                                  mErrorList->GetCount(ErrorListSeverity::Warning));
+}
+
+void MainWindow::updateContextStrip()
+{
+    const bool shouldShow = mIsViewportFocused == false && mDocuments->GetActiveDocumentOrNull() == Renderer_;
+    if (mRenderGraphToolbar->isHidden() == shouldShow)
+    {
+        mRenderGraphToolbar->setVisible(shouldShow);
+    }
 }
 
 void MainWindow::renderDocumentTitles()

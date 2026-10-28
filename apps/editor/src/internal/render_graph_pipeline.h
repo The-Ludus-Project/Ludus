@@ -46,10 +46,13 @@ public:
 Q_SIGNALS:
     /// A completed edit proposes the complete node; the document may reject unsafe port changes.
     void Edited(const QJsonObject& node);
+    /// Double-clicking a shader part requests its current source by assignment ID; no draft edit is made.
+    void ShaderOpenRequested(const QString& shaderId);
     /// A completed budget edit proposes the shared technique's limits; no node fields change.
     void SceneQueryBudgetsEdited(const RenderGraphSceneQueryBudgets& budgets);
 
 private:
+    bool eventFilter(QObject* watched, QEvent* event) override;
     [[nodiscard]] QTableWidget*
     createTable(const QString& name, const QStringList& fields, const QStringList& defaults);
     void addProperties(QFormLayout& outForm, const QString& name);

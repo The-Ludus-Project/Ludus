@@ -18,6 +18,7 @@
 #include "internal/render_graph_options.h"
 #include "internal/render_graph_pipeline.h"
 #include "internal/render_graph_quick_add.h"
+#include "internal/render_graph_quick_add_graphs.h"
 #include "internal/render_graph_reroutes.h"
 #include "internal/render_graph_resource_inspection.h"
 #include "internal/render_graph_resources.h"
@@ -369,15 +370,22 @@ QJsonObject MakeNode(const QString& kind, const QString& identity)
     return node;
 }
 
-/// Default record for a node template: an Upscale preset's node, or MakeNode for its kind.
+/// Build a node record for a catalog node template or an existing package graph reference.
 QJsonObject MakeTemplateNode(const RenderGraphTemplate& entry, const QString& identity)
 {
+    if (entry.Kind == RenderGraphTemplateKind::Graph)
+    {
+        return {{QStringLiteral("id"), identity},
+                {QStringLiteral("kind"), QStringLiteral("Subgraph")},
+                {QStringLiteral("asset"), entry.Identity},
+                {QStringLiteral("configuration"), entry.DefaultConfiguration}};
+    }
     return entry.Algorithm.isEmpty() == true ? MakeNode(entry.Identity, identity)
                                              : MakeUpscaleNode(entry.Algorithm, identity);
 }
 
 /// First free node identity for a template in a configuration record: the preset's algorithm or the
-/// lowercase kind, then the same with 2, 3, ... appended.
+/// lowercase kind (subgraph for graph references), then the same with 2, 3, ... appended.
 QString MakeNodeIdentity(const RenderGraphTemplate& entry, const QJsonObject& configuration)
 {
     QStringList identities;
@@ -386,7 +394,9 @@ QString MakeNodeIdentity(const RenderGraphTemplate& entry, const QJsonObject& co
     {
         identities.append(node.toObject().value(QStringLiteral("id")).toString());
     }
-    const QString stem = entry.Algorithm.isEmpty() == false ? entry.Algorithm : entry.Identity.toLower();
+    const QString stem = entry.Kind == RenderGraphTemplateKind::Graph ? QStringLiteral("subgraph")
+                         : entry.Algorithm.isEmpty() == false         ? entry.Algorithm
+                                                                      : entry.Identity.toLower();
     QString identity = stem;
     for (qsizetype suffix = 2; identities.contains(identity) == true; ++suffix)
     {
@@ -2651,6 +2661,9 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
             // Refresh the other surface while retaining the controls that submitted this edit.
             documentEdited(status, mInspector->isAncestorOf(editor) == false, editor);
         });
+        connect(editor, &RenderGraphPipelineEditor::ShaderOpenRequested, this, [this, editor](const QString& shaderId) {
+            openNodeShader(shaderId, editor);
+        });
         editor->AddOptionsEditor(createNodeOptionsEditor(inoutParent));
         if (qobject_cast<QDialog*>(inoutParent.window()) != nullptr)
         {
@@ -3981,7 +3994,16 @@ void RendererWorkspace::addNodeTemplate(const RenderGraphTemplate& entry,
     }
     const QString algorithm = entry.Algorithm;
     const bool isUpscalePreset = algorithm.isEmpty() == false;
-    const QString kind = entry.Identity;
+    if (entry.Kind == RenderGraphTemplateKind::Graph)
+    {
+        const QString reason = CheckRenderGraphQuickAddGraph(mDocument, file, configuration, entry);
+        if (reason.isEmpty() == false)
+        {
+            report(reason);
+            return;
+        }
+    }
+    const QString kind = entry.Kind == RenderGraphTemplateKind::Graph ? QStringLiteral("Subgraph") : entry.Identity;
     const QString identity = MakeNodeIdentity(entry, record);
     const QJsonObject node = MakeTemplateNode(entry, identity);
     const bool isConnected = from.isEmpty() == false && input.isEmpty() == false;
@@ -4032,6 +4054,7 @@ bool RendererWorkspace::ShowQuickAdd(QPointF scenePosition)
         mStatus->setText(QStringLiteral("Open a render graph before using Quick Add."));
         return false;
     }
+    mQuickAdd->SetGraphs(BuildRenderGraphQuickAddGraphs(mDocument, mCanvas->GetFile(), mCanvas->GetConfiguration()));
     mQuickAddPosition = scenePosition;
     mQuickAddSource.clear();
     mQuickAdd->Open(mCanvas->viewport()->mapToGlobal(mCanvas->mapFromScene(scenePosition)));
@@ -4067,9 +4090,19 @@ bool RendererWorkspace::ShowConnectQuickAdd(const QString& from, QPointF inputPo
         mStatus->setText(QStringLiteral("Cannot connect from %1: it is not an output on this canvas.").arg(from));
         return false;
     }
-    // Offer a node when the shared link pre-check accepts `from` on one of its inputs; the first wins.
-    for (const RenderGraphTemplate& entry :
-         RenderGraphTemplateRegistry::GetBuiltIn().GetTemplates(RenderGraphTemplateKind::Node))
+    const QVector<RenderGraphQuickAddGraph> graphs = BuildRenderGraphQuickAddGraphs(mDocument, file, configuration);
+    mQuickAdd->SetGraphs(graphs);
+    QVector<RenderGraphTemplate> candidates =
+        RenderGraphTemplateRegistry::GetBuiltIn().GetTemplates(RenderGraphTemplateKind::Node);
+    for (const RenderGraphQuickAddGraph& graphEntry : graphs)
+    {
+        if (graphEntry.UnavailableReason.isEmpty() == true)
+        {
+            candidates.append(graphEntry.Template);
+        }
+    }
+    // Offer the first input accepted by the shared link pre-check, for nodes and graph references.
+    for (const RenderGraphTemplate& entry : candidates)
     {
         const QString identity = MakeNodeIdentity(entry, record);
         const QJsonObject node = MakeTemplateNode(entry, identity);

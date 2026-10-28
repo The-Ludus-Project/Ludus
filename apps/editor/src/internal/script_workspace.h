@@ -29,6 +29,8 @@ public:
     explicit ScriptWorkspace(EditorController* controller, QWidget* parent = nullptr);
     void SetProject(const QString& root, const QString& source, const QString& preset);
     void Refresh();
+    /// Absolute source path of the loaded draft; empty when no program is selected.
+    [[nodiscard]] QString GetPath() const;
     [[nodiscard]] bool ConfirmDiscard();
     [[nodiscard]] bool Dirty() const noexcept
     {

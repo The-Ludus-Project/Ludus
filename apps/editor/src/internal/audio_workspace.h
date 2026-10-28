@@ -33,6 +33,8 @@ public:
         return Dirty_;
     }
     void RefreshCatalog();
+    /// Prompt for an ID and create a definition using the selected imported audio source.
+    void PromptCreateDefinition(bool isMusic);
     [[nodiscard]] bool OpenResource(const QString& id);
     [[nodiscard]] bool CanSave() const noexcept
     {

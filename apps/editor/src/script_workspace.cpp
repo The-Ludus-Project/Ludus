@@ -711,3 +711,8 @@ void ScriptWorkspace::Refresh()
     Q_EMIT DocumentChanged();
 }
 } // namespace ludus::editor
+
+QString ludus::editor::ScriptWorkspace::GetPath() const
+{
+    return Path_;
+}

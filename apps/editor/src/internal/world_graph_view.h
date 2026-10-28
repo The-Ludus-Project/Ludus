@@ -14,6 +14,7 @@ class QLabel;
 
 namespace ludus::editor
 {
+class ViewportObjectInteraction;
 class RendererWorkspace;
 class RenderGraphPreview;
 /// Interactive World output of the project's active graph. Owns only display/target selection;
@@ -26,6 +27,7 @@ public:
     WorldGraphView(RendererWorkspace& inoutWorkspace, QWidget* parent);
     /// Move the output/configuration controls into the viewport toolbar once.
     QWidget* TakeControls(QWidget* parent);
+    void SetObjectInteraction(ViewportObjectInteraction& inoutInteraction);
     /// Hold the last image while a candidate import waits for catalog publication.
     void SetCanPresent(bool canPresent);
     /// Explicitly clear this view, as when closing its World.
@@ -49,6 +51,7 @@ protected:
     void paintEvent(QPaintEvent*) override;
 
 private:
+    ViewportObjectInteraction* mInteractionOrNull = nullptr;
     void refreshTargets();
     void refreshFrame();
     void refreshStatus();

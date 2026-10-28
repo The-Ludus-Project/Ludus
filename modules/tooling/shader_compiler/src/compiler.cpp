@@ -345,6 +345,13 @@ Status Compiler::Initialize() noexcept
     {
         return Status::Unavailable;
     }
+    // Slang loads its SPIR-V optimizer (the pinned slang-glslang library) on demand. When that
+    // load fails it emits unoptimized SPIR-V without a diagnostic, so live output would silently
+    // differ from slangc's build artifacts. Refuse such a compiler instead.
+    if (SLANG_FAILED(state->Global->checkPassThroughSupport(SLANG_PASS_THROUGH_SPIRV_OPT)))
+    {
+        return Status::Unavailable;
+    }
     mState = Move(state);
     return Status::Ready;
 }

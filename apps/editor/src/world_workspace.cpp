@@ -5,9 +5,11 @@
 
 #include "internal/controller.h"
 #include "internal/editor_files.h"
+#include "internal/editor_icons.h"
 #include "internal/editor_identity.h"
 #include "internal/level_workspace.h"
 #include "internal/render_panel.h"
+#include "internal/state_view.h"
 #include "internal/world_demo_adapter.h"
 
 #include <ludus/foundation/base/core.h>
@@ -576,6 +578,7 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
                                   "them. Import scene… copies a scene folder, .zip or .pbrt with its files into the "
                                   "session and cooks it here. Play and runtime binding require the native editor."));
 #endif
+    bindViewportInteraction();
     DraftTimer_.setSingleShot(true);
     DraftTimer_.setInterval(180);
     connect(&DraftTimer_, &QTimer::timeout, this, &WorldWorkspace::PreviewDraft);
@@ -1173,10 +1176,20 @@ void WorldWorkspace::RenderInspector()
     const auto entity = Document_.Entity(Selected_);
     if (entity.isEmpty())
     {
+        if (Document_.Loaded() == false)
+        {
+            StateView* empty = new StateView;
+            StateViewContent state;
+            state.Icon = EditorIcon::World;
+            state.Message = QStringLiteral("No world open.");
+            state.ShortcutHint = QStringLiteral("Open a world from the Project Explorer.");
+            empty->SetContent(state);
+            Inspector_->addWidget(empty);
+            Inspector_->addStretch();
+            return;
+        }
         auto* hint = new QLabel(
-            Document_.Loaded()
-                ? QStringLiteral("Select an entity. Add Entity starts with the components your project requires.")
-                : QStringLiteral("No world open."));
+            QStringLiteral("Select an entity. Add Entity starts with the components your project requires."));
         hint->setTextFormat(Qt::PlainText);
         hint->setWordWrap(true);
         Inspector_->addWidget(hint);
@@ -1500,6 +1513,7 @@ void WorldWorkspace::Changed(const QString& message)
     PathLabel_->setToolTip((Path_.isEmpty() ? QString() : QDir::toNativeSeparators(Path_) + QStringLiteral("\n\n")) +
                            GetWorldIntroduction());
     Render_->SetSelection(Selected_, Pending_);
+    updateViewportInteraction();
     Q_EMIT DocumentChanged();
 }
 bool WorldWorkspace::ReadDraft(WorldDocument& document, QString& error, QWidget*& invalid)

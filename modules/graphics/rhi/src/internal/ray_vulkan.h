@@ -329,7 +329,7 @@ RayCapabilities RayLimits() noexcept
         .InlineQueries = true,
         .MaxInstances = supported < 0x01000000U ? supported : 0x01000000U,
         .MaxRays = 4096,
-        .MaxBufferBytes = bufferLimit < usize{64} * 1024 * 1024 ? bufferLimit : usize{64} * 1024 * 1024,
+        .MaxBufferBytes = bufferLimit,
     };
 }
 VkAccelerationStructureKHR GetRayVulkanScene(usize slot) noexcept
