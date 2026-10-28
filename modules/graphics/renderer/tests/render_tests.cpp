@@ -792,7 +792,8 @@ TEST_CASE("L4 PBR Neutral output matches the CPU curve and keeps hue where Reinh
     rhi::StartupInfo failure;
     rhi::DeviceDescription description;
     description.Required.PortableRaster = true;
-    const auto started = rhi::CreateDevice({}, { .Width = 96, .Height = 64 }, description, device, surface, &failure);
+    const rhi::DeviceStatus started =
+        rhi::CreateDevice({}, { .Width = 96, .Height = 64 }, description, device, surface, &failure);
 #if defined(LUDUS_TEST_METAL)
     if (started != rhi::DeviceStatus::Ready && failure.Error == rhi::StartupError::AdapterUnavailable)
     {
@@ -822,7 +823,7 @@ TEST_CASE("L4 PBR Neutral output matches the CPU curve and keeps hue where Reinh
         {
             rr::Renderer renderer;
             auto wait = [&](auto handle) {
-                auto status = renderer.GetStatus(handle);
+                rhi::RasterStatus status = renderer.GetStatus(handle);
                 for (usize i = 0; i < 100000 && status == rhi::RasterStatus::Pending; ++i)
                 {
                     status = renderer.GetStatus(handle);
@@ -840,10 +841,11 @@ TEST_CASE("L4 PBR Neutral output matches the CPU curve and keeps hue where Reinh
                                                 ludus::shaders::renderer_shadow::Fragment()) ==
                     rhi::RasterStatus::Ready);
             rr::MaterialProgram program;
-            const auto warming = renderer.PrewarmLitProgram(ludus::shaders::renderer_lit::Vertex(),
-                                                            ludus::shaders::renderer_lit::Fragment(),
-                                                            ludus::shaders::renderer_lit_shadow::Fragment(),
-                                                            program);
+            const rhi::RasterStatus warming =
+                renderer.PrewarmLitProgram(ludus::shaders::renderer_lit::Vertex(),
+                                           ludus::shaders::renderer_lit::Fragment(),
+                                           ludus::shaders::renderer_lit_shadow::Fragment(),
+                                           program);
             REQUIRE((warming == rhi::RasterStatus::Ready || warming == rhi::RasterStatus::Pending));
             wait(program);
             rr::Mesh mesh;
@@ -857,7 +859,7 @@ TEST_CASE("L4 PBR Neutral output matches the CPU curve and keeps hue where Reinh
             material.LightCount = 0;
             rr::MaterialVersion version;
             rr::LightSelection lights;
-            const auto created = renderer.CreateLitMaterial(program, material, version, lights);
+            const rhi::RasterStatus created = renderer.CreateLitMaterial(program, material, version, lights);
             REQUIRE((created == rhi::RasterStatus::Ready || created == rhi::RasterStatus::Pending));
             wait(version);
             rr::SceneItem item;
@@ -868,7 +870,7 @@ TEST_CASE("L4 PBR Neutral output matches the CPU curve and keeps hue where Reinh
             REQUIRE(renderer.CreateSnapshot(&item, 1, snapshot) == rhi::RasterStatus::Ready);
             rr::PreparedView view;
             rr::ViewReport report;
-            const auto prepared = renderer.PrepareView(snapshot, {}, view, report);
+            const rhi::RasterStatus prepared = renderer.PrepareView(snapshot, {}, view, report);
             REQUIRE((prepared == rhi::RasterStatus::Ready || prepared == rhi::RasterStatus::Pending));
             wait(view);
             rhi::TextureHandle target;
@@ -881,7 +883,7 @@ TEST_CASE("L4 PBR Neutral output matches the CPU curve and keeps hue where Reinh
             rr::ViewMapping mapping;
             REQUIRE(rr::ResolveViewMapping({96, 64}, {0, 0, 96, 64}, 96, 64, mapping) == rhi::RasterStatus::Ready);
             rr::Presentation output;
-            const auto composed =
+            const rhi::RasterStatus composed =
                 renderer.PrepareLightingPresentation(target,
                                                      mapping,
                                                      { .ToneMap = true, .Curve = curve, .Encode = true },
