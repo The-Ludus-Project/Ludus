@@ -8,11 +8,13 @@ namespace ludus::editor
 /// Reconcile previous assignments, preserving authored bytes on rename and stage edits.
 /// Program receives a generated name; unreferenced untouched generated drafts are removed.
 /// The document commits all files together. No disk writes occur here.
+/// When supplied, outErrorOrNull receives an actionable program-capacity diagnostic.
 [[nodiscard]] RenderGraphDocumentStatus PreparePipelineShaders(RenderGraphSnapshot& inoutSnapshot,
                                                                QJsonObject& inoutNode,
                                                                const QJsonObject& previousNode,
                                                                const QString& manifestFile,
-                                                               const QString& packageRoot);
+                                                               const QString& packageRoot,
+                                                               QString* outErrorOrNull = nullptr);
 /// Generate the scene-aware callback, or the C03 kernel for a compute stage, and record its manifest
 /// input/output types. Returns empty bytes for stages without a scene-aware form.
 [[nodiscard]] QByteArray MakeSceneRaySource(QJsonObject& inoutProgram);

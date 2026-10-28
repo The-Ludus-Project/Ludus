@@ -40,7 +40,9 @@ RESERVED.update(('alignas alignof and and_eq asm atomic_cancel atomic_commit ato
 NAME = re.compile(r'[A-Za-z][A-Za-z0-9_]{0,62}\Z')
 NATIVE_WORKER_HELPER = 'native_worker.py'
 HELPERS = ('compile_shader.py', 'compile_raster.py', 'compile_graph_stage.py', 'compile_metal_ray.py', 'shader_toolchain.json', 'spirv_cross_toolchain.json')
-LIMITS = {'configurations': 8, 'programs': 32, 'artifacts': 128, 'pipelines': 64}
+# Program counts are governed by the authored budget, not a second fixed ceiling.
+# Artifact, source-byte and package bounds independently constrain admitted work.
+LIMITS = {'configurations': 8, 'programs': None, 'artifacts': 128, 'pipelines': 64}
 MAX_FILE = 128 * 1024
 MAX_BYTES = 4 * 1024 * 1024
 # A package combines independent stage closures, graph metadata and SDK helpers.
@@ -199,7 +201,11 @@ def validate_manifest(value):
     require(value['profiles'] and len(set(value['profiles'])) == len(value['profiles']), 'Schema', 'profiles', 'nonempty unique targets required')
     keys(value['budgets'], LIMITS, 'budgets')
     for key, maximum in LIMITS.items():
-        integer(value['budgets'][key], 1, maximum, 'budget ' + key)
+        if maximum is None:
+            require(type(value['budgets'][key]) is int and value['budgets'][key] >= 1,
+                    'Capacity', 'budget ' + key, 'positive integer required')
+        else:
+            integer(value['budgets'][key], 1, maximum, 'budget ' + key)
     schemas, programs = {}, {}
     bounded_list(value['schemas'], 16, 'schemas')
     for schema in value['schemas']:
@@ -231,7 +237,11 @@ def validate_manifest(value):
                 elif field['semantic'] == 'SV_Position':
                     require(field['type'] == 'Float4', 'Schema', field['id'], 'position requires Float4')
         schemas[schema['id']] = schema
-    bounded_list(value['programs'], LIMITS['programs'], 'programs')
+    require(type(value['programs']) is list, 'Schema', 'programs', 'array required')
+    program_count = len(value['programs'])
+    require(program_count <= value['budgets']['programs'], 'Capacity', 'programs',
+            f'{program_count} exceeds authored budget {value["budgets"]["programs"]}; '
+            f'increase budgets.programs to at least {program_count} or reuse existing programs')
     for program in value['programs']:
         keys(program, ('id', 'stage', 'source', 'function', 'input', 'output', 'bindings'), 'program')
         name(program['id'], 'program id')
