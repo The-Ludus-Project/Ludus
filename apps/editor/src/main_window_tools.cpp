@@ -5,8 +5,10 @@
 // The tool windows and the document well are separate components; this file
 // only connects their requests to the document owners' existing operations.
 
+#include "internal/activity_chip.h"
 #include "internal/audio_workspace.h"
 #include "internal/configuration_workspace.h"
+#include "internal/content_browser.h"
 #include "internal/controller.h"
 #include "internal/document_well.h"
 #include "internal/editor_commands.h"
@@ -211,6 +213,19 @@ void MainWindow::renderActiveDocument()
     }
     RenderDocumentActions();
     updateContextStrip();
+}
+
+void MainWindow::renderActivity()
+{
+    if (mActivityBarOrNull == nullptr)
+    {
+        return;
+    }
+    mActivityBarOrNull->SetActivity(
+        GetActivityLabel(Controller_->State().OperationPhase, Content_->Importing(), Renderer_->IsJobActive()),
+        -1.0);
+    mActivityBarOrNull->SetCounts(mErrorList->GetCount(ErrorListSeverity::Error),
+                                  mErrorList->GetCount(ErrorListSeverity::Warning));
 }
 
 void MainWindow::updateContextStrip()

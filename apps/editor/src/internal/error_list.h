@@ -103,6 +103,8 @@ Q_SIGNALS:
     /// A producer reported a changed set of rows that includes an error or warning. Repeating
     /// an unchanged result does not emit, so a list the user closed stays closed.
     void ProblemsReported();
+    /// The rows changed in any way, so counts derived from them may differ.
+    void CountsChanged();
 
 protected:
     /// Reserve visible table rows before giving the selected diagnostic remaining height.

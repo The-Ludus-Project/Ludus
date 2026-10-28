@@ -515,6 +515,14 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   command rows of their own: **File → New Render Graph...** and **Open Render
   Graph...** open graphs, and the **Build** menu holds every render-graph
   command, including Cook Render Graph Runtime and Cancel Render Graph Job.
+- The right side of the status bar shows the **activity chip**: while a build,
+  configure, render-graph job or content import runs it shows a dot and one
+  label (an operation phase wins over a render-graph job, which wins over an
+  import); a job that reports progress shows a determinate bar instead. The chip
+  is hidden when nothing runs and never opens a toast. Beside it, **Problems**
+  and **Warnings** counts from the Error List open that tool window when
+  clicked. The chip applies at most ten changes a second, so a fast job cannot
+  flicker the status bar.
 - **Tools → Options...** edits editor preferences. Its **Render Graph** page
   holds the advanced shader-tool overrides and the native shader worker socket
   ([build settings](render-graph-authoring.md#build-settings)).

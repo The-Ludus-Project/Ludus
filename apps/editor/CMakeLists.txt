@@ -548,6 +548,8 @@ qt_add_executable(ludus_editor
     src/theme_fonts.cpp
     src/internal/editor_icons.h
     src/editor_icons.cpp
+    src/internal/activity_chip.h
+    src/activity_chip.cpp
     src/internal/window_size.h
     src/window_size.cpp
     src/controller.cpp
@@ -806,6 +808,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/theme_preference_tests.cpp
         tests/viewport_legibility_tests.cpp
         tests/editor_icons_tests.cpp
+        tests/activity_chip_tests.cpp
         tests/viewport_frame_pump_tests.cpp
         tests/viewport_frame_source_tests.cpp
         tests/world_demo_workspace_tests.cpp
@@ -963,6 +966,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/theme_fonts.cpp
         src/internal/editor_icons.h
         src/editor_icons.cpp
+        src/internal/activity_chip.h
+        src/activity_chip.cpp
         src/window_size.cpp)
     target_link_libraries(ludus_editor_tests
         PRIVATE

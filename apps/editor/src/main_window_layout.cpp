@@ -1,3 +1,4 @@
+#include "internal/activity_chip.h"
 #include "internal/audio_workspace.h"
 #include "internal/configuration_workspace.h"
 #include "internal/content_browser.h"
@@ -400,6 +401,13 @@ void MainWindow::BuildUi()
     StatusLabel_->setObjectName(QStringLiteral("workspaceStatus"));
     StatusLabel_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     statusBar()->addWidget(StatusLabel_, 1);
+    // Right side: the running job and the problem counts, which open the Error List.
+    mActivityBarOrNull = new StatusActivityBar(this);
+    statusBar()->addPermanentWidget(mActivityBarOrNull);
+    connect(mActivityBarOrNull, &StatusActivityBar::ProblemsRequested, this, [this]() {
+        showToolWindow(mErrorListDock);
+    });
+    connect(mErrorList, &ErrorList::CountsChanged, this, &MainWindow::renderActivity);
 
     // Thanks to David Lightbown, Designing the User Experience of Game
     // Development Tools (2015), ch. 5, pp. 80-86, 112-115: show task-relevant choices
