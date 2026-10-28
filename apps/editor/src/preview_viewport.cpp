@@ -573,7 +573,7 @@ struct PreviewViewport::State final
     /// Shared frame of the presentation widgets; letterboxed by the size preset.
     ViewportFrameLayout* FrameLayoutOrNull = nullptr;
     QToolBar* ControlsOrNull = nullptr;
-    QLabel* Message = nullptr;
+    EmptyWorldView* MessageOrNull = nullptr;
     uint64 Presented = 0;
     /// Statistics overlay text currently shown; empty while the overlay is off.
     QString StatisticsText;
@@ -663,7 +663,7 @@ struct PreviewViewport::State final
                 next.Wrapper = mState.Device->WrapTexture(*window(), next.Read.Image);
                 if (next.Wrapper == nullptr)
                 {
-                    mState.Message->setText(
+                    mState.MessageOrNull->ShowProblem(
                         QStringLiteral("Qt cannot import this GPU texture. Editing remains available."));
                     next.IsRetiring = true;
                     mState.Pending = -1;
@@ -819,12 +819,12 @@ private:
             if (Preview->AdmitOffscreenDevice() == true)
             {
                 GraphViewOrNull->show();
-                Message->hide();
+                MessageOrNull->hide();
             }
             else
             {
-                Message->setText(Preview->Status());
-                Message->show();
+                MessageOrNull->ShowProblem(Preview->Status());
+                MessageOrNull->show();
             }
             return;
         }
@@ -834,7 +834,7 @@ private:
         CanvasOrNull->SetShaderStatusText(ShaderStatusText, HasShaderError);
         applyLegend(Preview->GetShading());
         FrameLayoutOrNull->addWidget(CanvasOrNull);
-        Message->hide();
+        MessageOrNull->hide();
         CanvasOrNull->show();
         if (Preview->AdmitOffscreenDevice() == false)
         {
@@ -842,8 +842,8 @@ private:
             Preview->Stop();
             delete CanvasOrNull;
             CanvasOrNull = nullptr;
-            Message->setText(status);
-            Message->show();
+            MessageOrNull->ShowProblem(status);
+            MessageOrNull->show();
             return;
         }
         static_cast<PreviewViewport*>(Widget)->resizeSurface();
@@ -874,8 +874,9 @@ private:
             else if (status == OffscreenReadStatus::Failed)
             {
                 releaseReadLease();
-                Message->setText(QStringLiteral("Offscreen viewport copy failed. Editing remains available."));
-                Message->show();
+                MessageOrNull->ShowProblem(
+                    QStringLiteral("Offscreen viewport copy failed. Editing remains available."));
+                MessageOrNull->show();
             }
             return;
         }
@@ -892,8 +893,9 @@ private:
         if (Reader.Begin(Preview->GetDevice(), image.Texture, image.Width, image.Height) == false)
         {
             releaseReadLease();
-            Message->setText(QStringLiteral("Offscreen viewport copy is unavailable. Editing remains available."));
-            Message->show();
+            MessageOrNull->ShowProblem(
+                QStringLiteral("Offscreen viewport copy is unavailable. Editing remains available."));
+            MessageOrNull->show();
             return;
         }
         static_cast<void>(Reader.Poll());
@@ -904,12 +906,12 @@ private:
         {
             if (Preview->HasDevice() == false && Preview->AdmitOffscreenDevice() == false)
             {
-                Message->setText(Preview->Status());
-                Message->show();
+                MessageOrNull->ShowProblem(Preview->Status());
+                MessageOrNull->show();
             }
             else
             {
-                Message->hide();
+                MessageOrNull->hide();
                 GraphViewOrNull->show();
             }
             return;
@@ -932,8 +934,9 @@ private:
         if (presentation != ViewportPresentation::SharedDevice)
         {
             Preview->Stop();
-            Message->setText(QStringLiteral("This display cannot show the GPU viewport (needs macOS Metal, or "
-                                            "X11/Wayland with Vulkan)."));
+            MessageOrNull->ShowProblem(
+                QStringLiteral("This display cannot show the GPU viewport (needs macOS Metal, or "
+                               "X11/Wayland with Vulkan)."));
             return;
         }
         // Basic rendering keeps all RHI calls and native queue submissions on
@@ -956,7 +959,7 @@ private:
             destroyWindow();
 #    if defined(Q_OS_MACOS)
             Preview->Stop();
-            Message->setText(QStringLiteral("Qt GPU initialization failed. Editing remains available."));
+            MessageOrNull->ShowProblem(QStringLiteral("Qt GPU initialization failed. Editing remains available."));
 #    else
             // No adapter can present to this window with a shareable device; keep an
             // interactive view through the engine-owned offscreen device instead.
@@ -973,8 +976,9 @@ private:
                 rhi::NativeDeviceDescription description;
                 if (Device->GetDescription(*Window, description) == false)
                 {
-                    Message->setText(QStringLiteral("Qt Quick did not adopt the shared GPU device. Editing remains "
-                                                    "available."));
+                    MessageOrNull->ShowProblem(
+                        QStringLiteral("Qt Quick did not adopt the shared GPU device. Editing remains "
+                                       "available."));
                     QTimer::singleShot(0, Widget, [this]() { Preview->Stop(); });
                     return;
                 }
@@ -1026,7 +1030,7 @@ private:
                          &QQuickWindow::sceneGraphError,
                          Widget,
                          [this](QQuickWindow::SceneGraphError, const QString& error) {
-                             Message->setText(error);
+                             MessageOrNull->ShowProblem(error);
                              QTimer::singleShot(0, Widget, [this]() { Preview->Stop(); });
                          });
         QObject::connect(Window, &QQuickWindow::widthChanged, Widget, [this]() {
@@ -1056,7 +1060,7 @@ private:
         Container->setObjectName(QStringLiteral("viewportRenderSurface"));
         Container->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         FrameLayoutOrNull->addWidget(Container);
-        Message->hide();
+        MessageOrNull->hide();
         Container->show();
         Window->update();
         Service.start(SERVICE_INTERVAL_MILLISECONDS);
@@ -1225,7 +1229,7 @@ private:
         Window = nullptr;
         Device.Reset();
         IsDestroyingWindow = false;
-        Message->show();
+        MessageOrNull->show();
     }
     void showFrame()
     {
@@ -1268,7 +1272,7 @@ private:
             }
             if (acquired != rhi::RasterStatus::Ready)
             {
-                Message->setText(QStringLiteral("GPU texture sharing failed. Editing remains available."));
+                MessageOrNull->ShowProblem(QStringLiteral("GPU texture sharing failed. Editing remains available."));
                 return;
             }
             frame.HasLease = true;
@@ -1626,37 +1630,36 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
         mState->applyLegend(preview->GetShading());
     });
 #endif
-    mState->Message = new EmptyWorldView(*preview, this);
-    mState->Message->setText(QStringLiteral("Open or create a World to start authoring."));
-    mState->Message->setWordWrap(true);
+    mState->MessageOrNull = new EmptyWorldView(*preview, this);
+    mState->MessageOrNull->SetPrompt(QStringLiteral("Open or create a World to start authoring."));
+    mState->MessageOrNull->setWordWrap(true);
     mState->FrameLayoutOrNull = new ViewportFrameLayout;
     mState->Layout->addLayout(mState->FrameLayoutOrNull, 1);
-    mState->FrameLayoutOrNull->addWidget(mState->Message);
+    mState->FrameLayoutOrNull->addWidget(mState->MessageOrNull);
+    connect(preview, &RenderPreview::Failed, this, [this](const QString& error) {
+        mState->MessageOrNull->ShowProblem(error);
+#if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
+        mState->MessageOrNull->show();
+#endif
+    });
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
     mState->BrowserOrNull = new BrowserViewport(*preview, this);
     mState->BrowserOrNull->hide();
     mState->FrameLayoutOrNull->addWidget(mState->BrowserOrNull);
     connect(preview, &RenderPreview::DeviceRequested, this, [this]() {
-        mState->Message->hide();
+        mState->MessageOrNull->hide();
         mState->BrowserOrNull->show();
         mState->Layout->activate();
         if (mState->BrowserOrNull->Start() == false)
         {
             mState->BrowserOrNull->hide();
-            mState->Message->setText(mState->Preview->Status());
-            mState->Message->show();
+            mState->MessageOrNull->ShowProblem(mState->Preview->Status());
+            mState->MessageOrNull->show();
         }
-    });
-    connect(preview, &RenderPreview::Failed, this, [this](const QString& error) {
-        mState->Message->setText(error);
-        mState->Message->show();
     });
 #endif
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     connect(preview, &RenderPreview::DeviceRequested, this, [this]() { mState->createWindow(); });
-    // A stopped preview uncovers the message label; replace the workspace's
-    // placeholder with the failure so the viewport says why it is empty.
-    connect(preview, &RenderPreview::Failed, this, [this](const QString& error) { mState->Message->setText(error); });
     connect(preview, &RenderPreview::Stopped, this, [this]() {
         if (mState->IsDestroyingWindow == true)
         {
@@ -1969,7 +1972,7 @@ void PreviewViewport::HoldFrame()
 void PreviewViewport::ShowFrame()
 {
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
-    mState->Message->hide();
+    mState->MessageOrNull->hide();
     mState->BrowserOrNull->ShowFrame();
 #endif
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
@@ -2012,7 +2015,7 @@ void PreviewViewport::ClearFrame(const QString& text)
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
     mState->BrowserOrNull->ClearFrame();
     mState->BrowserOrNull->hide();
-    mState->Message->show();
+    mState->MessageOrNull->show();
 #endif
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     mState->clearFrames();
@@ -2025,11 +2028,11 @@ void PreviewViewport::ClearFrame(const QString& text)
         }
     }
 #endif
-    mState->Message->setText(text);
+    mState->MessageOrNull->SetPrompt(text);
     if (Preview_->Scene().Identity.isEmpty() == true)
     {
-        mState->Message->show();
-        mState->Message->update();
+        mState->MessageOrNull->show();
+        mState->MessageOrNull->update();
     }
 }
 QString PreviewViewport::GetStatisticsText() const

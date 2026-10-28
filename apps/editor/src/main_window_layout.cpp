@@ -11,6 +11,7 @@
 #include "internal/project_rendering_settings.h"
 #include "internal/renderer_workspace.h"
 #include "internal/script_workspace.h"
+#include "internal/state_view.h"
 #include "internal/theme_fonts.h"
 #include "internal/timing_panel.h"
 #include "internal/world_workspace.h"
@@ -417,9 +418,8 @@ void MainWindow::BuildUi()
     Welcome_->setObjectName(QStringLiteral("projectWelcome"));
     auto* recentPanel = Welcome_;
     auto* recentLayout = new QVBoxLayout(recentPanel);
-    RecentEmptyLabel_ =
-        new QLabel(QStringLiteral("No recent projects yet. Open a project to add it here."), recentPanel);
-    RecentEmptyLabel_->setWordWrap(true);
+    mRecentEmptyStateOrNull = new StateView(recentPanel);
+    mRecentEmptyStateOrNull->setObjectName(QStringLiteral("recentProjectsEmpty"));
     RecentList_ = new QListWidget(recentPanel);
     ConfigureItemSelection(*RecentList_);
     RecentList_->setObjectName(QStringLiteral("recentProjectsList"));
@@ -455,8 +455,7 @@ void MainWindow::BuildUi()
     recentLayout->addLayout(welcomeActions);
     recentLayout->addSpacing(12);
     recentLayout->addWidget(new QLabel(QStringLiteral("Recent projects"), recentPanel));
-    recentLayout->addWidget(RecentEmptyLabel_);
-    RecentEmptyLabel_->setAlignment(Qt::AlignTop);
+    recentLayout->addWidget(mRecentEmptyStateOrNull, 0, Qt::AlignHCenter);
     recentLayout->addWidget(RecentList_, 1);
     recentLayout->addStretch();
     auto* recentActions = new QHBoxLayout;

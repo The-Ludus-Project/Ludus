@@ -550,6 +550,8 @@ qt_add_executable(ludus_editor
     src/theme_fonts.cpp
     src/internal/editor_icons.h
     src/editor_icons.cpp
+    src/internal/state_view.h
+    src/state_view.cpp
     src/internal/activity_chip.h
     src/activity_chip.cpp
     src/internal/window_size.h
@@ -731,7 +733,10 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/main.cpp tests/content_browser_tests.cpp
         src/internal/content_browser.h src/content_catalog_model.cpp
         src/content_import.cpp src/content_jobs.cpp src/content_workspace.cpp
+        src/internal/state_view.h src/state_view.cpp src/internal/editor_icons.h src/editor_icons.cpp
+        src/internal/theme_fonts.h src/theme_fonts.cpp
         src/editor_files.cpp src/scene_archive.cpp)
+    ludus_editor_add_icons(ludus_editor_browser_content_tests)
     set_target_properties(ludus_editor_browser_content_tests PROPERTIES AUTOMOC ON)
     target_include_directories(ludus_editor_browser_content_tests PRIVATE src
         "${PROJECT_SOURCE_DIR}/modules/audio/tests")
@@ -810,6 +815,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/theme_preference_tests.cpp
         tests/viewport_legibility_tests.cpp
         tests/editor_icons_tests.cpp
+        tests/state_view_tests.cpp
         tests/activity_chip_tests.cpp
         tests/viewport_frame_pump_tests.cpp
         tests/viewport_frame_source_tests.cpp
@@ -970,6 +976,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/theme_fonts.cpp
         src/internal/editor_icons.h
         src/editor_icons.cpp
+        src/internal/state_view.h
+        src/state_view.cpp
         src/internal/activity_chip.h
         src/activity_chip.cpp
         src/window_size.cpp)
