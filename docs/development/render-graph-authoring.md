@@ -3350,10 +3350,11 @@ G-buffer is renderer-owned; its physical targets are not generic canvas MRT node
 The profile requires three RGBA16F attachments, attachment views, sampled private
 depth and sixteen binding slots. Unsupported devices fail explicitly. The initial
 profile admits one clear/store opaque color node and its optional immediately
-preceding prepass with the same camera/depth, plus an authored image upscale.
-The profile retains the graph adapter's conventional-depth requirement. Transparent and masked deferred materials, MSAA, baked
-lighting, GPU cluster assignment and arbitrary MRT graph authoring remain outside
-this profile.
+preceding prepass with the same camera/depth.
+The profile retains the graph adapter's conventional-depth requirement. Transparent
+and masked deferred materials, MSAA, baked lighting, GPU cluster assignment, image
+upscale integration and arbitrary MRT graph authoring remain outside this initial
+offline profile.
 
 Prepared scenes own immutable resolve bindings and private targets. Camera edits
 replace only the view bindings; resize/scene changes prepare a separate target set
