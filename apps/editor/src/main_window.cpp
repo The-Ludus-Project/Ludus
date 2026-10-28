@@ -977,6 +977,17 @@ void MainWindow::OnStateChanged()
     // If a close was requested and the workspace is now closeable, finish.
     RenderProperties();
     Timing_->Render();
+    // Timing is closed by default; the first play session of this editor run opens it, and closing it
+    // afterwards stays closed until Reset Window Layout.
+    const PlayPhase playPhase = Controller_->PlayState().Phase;
+    const bool isPlaySessionActive = playPhase == PlayPhase::Running || playPhase == PlayPhase::Paused;
+    if (isPlaySessionActive == true && mWasPlaySessionActive == false && mHasTimingOpenedForPlay == false &&
+        mIsViewportFocused == false)
+    {
+        mHasTimingOpenedForPlay = true;
+        openToolWindow(TimingDock_);
+    }
+    mWasPlaySessionActive = isPlaySessionActive;
     renderGraphCommands();
     renderDocumentTitles();
     if (CloseConfirmed_ && Controller_->Caps().CanCloseImmediately)

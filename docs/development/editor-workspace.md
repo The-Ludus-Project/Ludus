@@ -395,7 +395,7 @@ ludus project create /path/to/new-game --name MyGame --tools /path/to/Ludus
 
 ## Workspace layout
 
-![Default editor layout at 1920×1080: documents in the centre, Project Explorer and Properties on the right, Error List below](images/editor-workspace-vs-1920.png)
+![Calm default editor layout at 1920×1080: Project Explorer on the left, documents in the centre, Properties on the right, diagnostics closed](images/editor-workspace-vs-1920.png)
 
 The layout follows Visual Studio, built on Qt Widgets' own docking:
 
@@ -410,21 +410,26 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   **New Horizontal Tab Group** puts it below. **Move to Next/Previous Tab
   Group**, **Merge All Tab Groups** and the tab context menu move documents
   between groups. Groups share one direction at a time, up to four groups.
-- **Tool windows** dock around the documents. By default Project Explorer
-  (tabbed with Content and Render Preview) sits above Properties (tabbed with
-  Live Inspector) on the right, and the Error List (tabbed with Output and
-  Timing) sits below the documents. Drag a title bar to move, tab or float a
-  tool window. **View** shows and focuses one (Project Explorer Ctrl+Alt+L,
-  Properties F4, Error List Ctrl+Alt+E, Output Ctrl+Alt+O, Render Preview). The
-  **Window** menu lists every tool window with a check mark to show or hide it.
+- **Tool windows** dock around the documents. The calm default keeps the documents
+  as large as the window allows: Project Explorer (tabbed with Content and Render
+  Preview) is on the left, Properties (tabbed with Live Inspector, and Ray Paths
+  when a capture starts) is on the right, and the diagnostics group below the
+  documents starts **closed**: Error List tabbed with Output, Timing and
+  Profiling. Each opens when there is something to show: new errors or warnings
+  reveal the Error List, a build reveals Output, the first Play session of an
+  editor run reveals Timing, and recording reveals Profiling. Drag a title bar to
+  move, tab or float a tool window. **View** shows and focuses one (Project
+  Explorer Ctrl+Alt+L, Properties F4, Error List Ctrl+Alt+E, Output Ctrl+Alt+O,
+  Render Preview). The **Window** menu lists every tool window with a check mark
+  to show or hide it.
 - **Window → Reset Window Layout** restores the default documents-first
-  arrangement, all tool windows and toolbars, sized for the current window
-  (the right column takes about a fifth of the width and the bottom group about
-  a quarter of the height, enough for several Error List rows). Windows shorter
-  than 1000 pixels, such as a maximized window on a 13-inch laptop, start with the
-  bottom group closed so documents keep their height; new errors or warnings
-  open it, and **View** reopens any of its tool windows. Reset never changes
-  drafts, saved files or a Play session.
+  arrangement, all toolbars and the calm tool-window arrangement above, sized for
+  the current window (the outliner takes about a seventh of the width and
+  Properties a fifth). A bottom group that is closed opens at about a quarter of
+  the height, enough for several Error List rows. If problems are already listed,
+  Reset opens the Error List. Reset never changes drafts, saved files or a Play
+  session. The saved layout carries a version; an older one (before the calm
+  default) resets once to these defaults.
 - **View → Focus Viewport** (Shift+Alt+Enter; Shift+Option+Return on macOS)
   hides every tool window, the toolbars and the setup notice. When a render graph
   is active, it focuses that graph and hides its navigation, source tree and
