@@ -1262,19 +1262,21 @@ Debug views follow Lit in the selector. Each replaces shading with one quantity
 per pixel so you can inspect it directly:
 
 - **Normal — world-space normals as colour**: +X red, +Y green, +Z blue.
-- **Depth — distance from camera, near black to far white**: linear distance
+- **Depth — distance from camera, near purple to far yellow**: linear distance
   between the camera's near plane and far plane, tightened to the scene's
-  bounds so visible geometry spans the full range.
+  bounds so visible geometry spans the full range. Depth and Light count use
+  the perceptually uniform viridis ramp, and a key in the viewport's bottom
+  left names both ends.
 - **Roughness — smooth black to rough white**.
 - **Metallic — dielectric black to metal white**.
 - **UV — texture coordinates as red/green**: the first UV set.
-- **Light count — lights reaching each pixel as a heat map**: counts lights
-  whose shadowed contribution is nonzero: black for none, then blue (one) to
-  red (16 or more).
+- **Light count — lights reaching each pixel as a ramp**: counts lights
+  whose shadowed contribution is nonzero: dark purple for none, then through
+  teal and green to yellow (16 or more).
 
 Scenes with authored lights use the same surface maps, clusters and shadows as
 Lit. Authored Worlds without lights get editor-derived vertex normals when the
-mesh has none. Light count is black there because no lights exist. Overdraw is
+mesh has none. Light count is the ramp's dark purple end there because no lights exist. Overdraw is
 not offered, because the world pass has no additive blend state to count
 overlapping fragments. The debug view is saved like the other modes. Older
 preferences open in Solid.

@@ -2889,7 +2889,7 @@ camera movement and exposure do not change these view-independent irradiance cha
 material's shaded output with one inspection quantity per pixel: world-space
 normal as RGB (`n * 0.5 + 0.5`), linear depth, perceptual roughness, metallic,
 UV0 as red/green, or the number of lights whose shadowed contribution is nonzero
-as a blue-to-red heat ramp saturating at `MATERIAL_DEBUG_LIGHT_COUNT_SATURATION`.
+as a viridis ramp saturating at `MATERIAL_DEBUG_LIGHT_COUNT_SATURATION`.
 Only the debug recipes honour it: `renderer_lit_debug` and
 `renderer_clustered_authored_debug`, with matching shadow recipes. They compile
 the production sources with `LUDUS_DEBUG_VIEW`, keep the production binding and
