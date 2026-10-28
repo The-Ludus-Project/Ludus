@@ -1,3 +1,4 @@
+#pragma once
 // Thanks to Tomas Moller and Ben Trumbore, "Fast, Minimum Storage Ray-Triangle
 // Intersection", Journal of Graphics Tools 2(1), 1997, pp. 21-28, section 2:
 // https://doi.org/10.1080/10867651.1997.10487468 . Adapted from the simple

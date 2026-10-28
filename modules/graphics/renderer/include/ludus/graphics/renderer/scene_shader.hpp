@@ -11,6 +11,15 @@ namespace ludus::graphics::renderer
 {
 /// Logical scene API revision checked by generated graph headers and runtime identities.
 inline constexpr foundation::uint32 SCENE_SHADER_INTERFACE_VERSION = LUDUS_SCENE_SHADER_INTERFACE_VERSION;
+/// Maximum visible intervals in one `FindVisibleLineIntervals` result, the length of the Slang
+/// `LineVisibility::Intervals` array. The query keeps at most one fewer occluded intervals while it
+/// scans; a segment that needs more fails the query rather than approximating its visibility.
+inline constexpr foundation::uint32 SCENE_LINE_INTERVAL_CAPACITY = LUDUS_SCENE_LINE_INTERVAL_CAPACITY;
+/// Line visibility merge tolerance as a fraction of the segment, unitless in [0, 1]. Occluded
+/// intervals separated by at most this merge, and shorter visible intervals are dropped, so the
+/// rule can only shrink the visible set; it never reports an occluded point as visible.
+inline constexpr foundation::float32 SCENE_LINE_INTERVAL_MERGE_TOLERANCE =
+    static_cast<foundation::float32>(LUDUS_SCENE_LINE_INTERVAL_MERGE_TOLERANCE);
 /// Explicitly unassigned material slot: use neutral rough non-emissive material.
 inline constexpr foundation::uint32 DEFAULT_SCENE_MATERIAL = ~foundation::uint32{0};
 /// Instance override sentinel: retain the mesh slot's assignment.

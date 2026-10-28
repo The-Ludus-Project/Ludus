@@ -41,6 +41,7 @@ class RenderGraphHistory;
 class RenderGraphComments;
 class RenderGraphReroutes;
 class RenderGraphDiagnostics;
+class RenderGraphExecutionPlan;
 /// Connection domain shown on the canvas (docs/architecture/render-graph-authoring.md,
 /// "Node and connection contracts"). Shader functions live in build manifests, not here.
 enum class RenderGraphDomain : foundation::uint8
@@ -162,6 +163,10 @@ public:
     [[nodiscard]] RenderGraphReroutes& GetReroutes() noexcept;
     /// Canvas-owned report counts, source freshness and diagnostic navigation; GUI thread only.
     [[nodiscard]] RenderGraphDiagnostics& GetDiagnostics() noexcept;
+    /// Canvas-owned accepted-plan overlay and Plan page; GUI thread only.
+    [[nodiscard]] RenderGraphExecutionPlan& GetExecutionPlan() noexcept;
+    /// Repaint plan badges/activity without changing selection, tracing, transforms or saved coordinates.
+    void RefreshPlanOverlay();
     /// Current document revision, for rejecting stale modal/gesture operations.
     [[nodiscard]] foundation::uint64 GetDocumentRevision() const noexcept;
     /// Copy authored card geometry without configuration interface boxes.
@@ -306,6 +311,7 @@ private:
     RenderGraphComments* mCommentsOrNull = nullptr;
     RenderGraphReroutes* mReroutesOrNull = nullptr;
     RenderGraphDiagnostics* mDiagnostics;
+    RenderGraphExecutionPlan* mExecutionPlanOrNull = nullptr;
     QAction* mFitGraphAction;
     QAction* mFitSelectionAction;
     QLabel* mZoomLabel;

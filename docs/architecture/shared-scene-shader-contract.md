@@ -182,6 +182,7 @@ EvaluateEmission(scene, hit, directionAwayWorld, textureEvaluation) -> float3
 GetLightInfo(scene, lightIndex) -> LightInfo
 GetDirectionalLight/GetPointLight/GetSpotLight/GetMeshEmitter/GetEnvironment(...)
 GetEmitterTriangle(scene, emitterIndex, primitiveInEmitter) -> TriangleData
+GetEmitterBounds(scene, emitterIndex) -> EmitterBounds
 
 SelectLight(scene, distribution, receiver, selectionAddress) -> SelectedLight
 EvaluateLightSelectionPmf(scene, distribution, receiver, lightIndex) -> float
@@ -196,7 +197,15 @@ TraceAndShade(scene, inout queries, ray, inout UserPayload) -> {Surface, Miss, F
 ```
 
 Expose resolved typed source data and a checked emitter-triangle iterator so
-authors can implement their own selection/sampling. The default proposal is
+authors can implement their own selection/sampling. `GetEmitterBounds` adds
+per-emitter world bounds computed once with the scene from the same
+positive-area triangles: a sphere around their vertex bounding box, the cone of
+their geometric normals (unit axis and the cosine of its half-angle, -1 when the
+normals cancel or span every direction) and the material's emission sidedness.
+A proposal can then weight each emitter in O(emitters) instead of iterating
+every emitter triangle per receiver. The bounds only shape a proposal: sampling
+and the reverse PMF must evaluate the same weight, which stays unbiased as long
+as it is positive wherever the emitter can contribute. The default proposal is
 optional. Its matched PDF routine applies only to that exact distribution;
 custom proposals supply their own probabilities. SelectedLight records its
 generation, distribution, source index and SelectionPmf. LightSample contains:

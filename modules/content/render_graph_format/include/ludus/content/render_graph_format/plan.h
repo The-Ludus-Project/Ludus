@@ -209,7 +209,8 @@ struct Camera final
 {
     foundation::uint32 Target; ///< Logical surface color or exported color/depth resource.
 };
-/// Traversal required by a ray pass; callback signatures are shared by both profiles.
+/// Traversal required by a ray pass; callback signatures are shared by every strategy.
+/// Compute strategies are the per-pass LUDUS_GRAPH_TRAVERSAL_* codes of the linked ray kernel.
 // NOLINTNEXTLINE(performance-enum-size): versioned numeric field has an explicit width.
 enum class RayTraversal : foundation::uint32
 {
@@ -217,6 +218,7 @@ enum class RayTraversal : foundation::uint32
     TriangleLoop,     ///< Ordinary GPU compute intersects packed World triangles; no native ray resources.
     Custom,           ///< Authored compute traversal supplies closest and visibility queries; no native ray resources.
     HardwarePipeline, ///< Native ray-generation/hit/miss stages with hardware BVH traversal.
+    ComputeBvh,       ///< Ordinary GPU compute walks the renderer's packed BVH; no native ray resources.
 };
 /// One retained scene raster or triangle ray operation; indices are checked before GPU setup.
 struct Pass final

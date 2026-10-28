@@ -395,7 +395,7 @@ ludus project create /path/to/new-game --name MyGame --tools /path/to/Ludus
 
 ## Workspace layout
 
-![Default editor layout at 1920×1080: documents in the centre, Project Explorer and Properties on the right, Error List below](images/editor-workspace-vs-1920.png)
+![Calm default editor layout at 1920×1080: Project Explorer on the left, documents in the centre, Properties on the right, diagnostics closed](images/editor-workspace-vs-1920.png)
 
 The layout follows Visual Studio, built on Qt Widgets' own docking:
 
@@ -410,21 +410,26 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   **New Horizontal Tab Group** puts it below. **Move to Next/Previous Tab
   Group**, **Merge All Tab Groups** and the tab context menu move documents
   between groups. Groups share one direction at a time, up to four groups.
-- **Tool windows** dock around the documents. By default Project Explorer
-  (tabbed with Content and Render Preview) sits above Properties (tabbed with
-  Live Inspector) on the right, and the Error List (tabbed with Output and
-  Timing) sits below the documents. Drag a title bar to move, tab or float a
-  tool window. **View** shows and focuses one (Project Explorer Ctrl+Alt+L,
-  Properties F4, Error List Ctrl+Alt+E, Output Ctrl+Alt+O, Render Preview). The
-  **Window** menu lists every tool window with a check mark to show or hide it.
+- **Tool windows** dock around the documents. The calm default keeps the documents
+  as large as the window allows: Project Explorer (tabbed with Content and Render
+  Preview) is on the left, Properties (tabbed with Live Inspector, and Ray Paths
+  when a capture starts) is on the right, and the diagnostics group below the
+  documents starts **closed**: Error List tabbed with Output, Timing and
+  Profiling. Each opens when there is something to show: new errors or warnings
+  reveal the Error List, a build reveals Output, the first Play session of an
+  editor run reveals Timing, and recording reveals Profiling. Drag a title bar to
+  move, tab or float a tool window. **View** shows and focuses one (Project
+  Explorer Ctrl+Alt+L, Properties F4, Error List Ctrl+Alt+E, Output Ctrl+Alt+O,
+  Render Preview). The **Window** menu lists every tool window with a check mark
+  to show or hide it.
 - **Window → Reset Window Layout** restores the default documents-first
-  arrangement, all tool windows and toolbars, sized for the current window
-  (the right column takes about a fifth of the width and the bottom group about
-  a quarter of the height, enough for several Error List rows). Windows shorter
-  than 1000 pixels, such as a maximized window on a 13-inch laptop, start with the
-  bottom group closed so documents keep their height; new errors or warnings
-  open it, and **View** reopens any of its tool windows. Reset never changes
-  drafts, saved files or a Play session.
+  arrangement, all toolbars and the calm tool-window arrangement above, sized for
+  the current window (the outliner takes about a seventh of the width and
+  Properties a fifth). A bottom group that is closed opens at about a quarter of
+  the height, enough for several Error List rows. If problems are already listed,
+  Reset opens the Error List. Reset never changes drafts, saved files or a Play
+  session. The saved layout carries a version; an older one (before the calm
+  default) resets once to these defaults.
 - **View → Focus Viewport** (Shift+Alt+Enter; Shift+Option+Return on macOS)
   hides every tool window, the toolbars and the setup notice. When a render graph
   is active, it focuses that graph and hides its navigation, source tree and
@@ -469,9 +474,8 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   shortcut. The primary commands (Open, Save, Build, Run, Play, Stop) also show an
   icon beside the label; every other button stays text only. Project Explorer
   rows and the Error List severities carry icons too. The icons are Lucide
-  drawings (ISC) in `apps/editor/icons`, parsed once into painter paths and drawn
-  in the palette's button text colour, with one bounded pixmap cache per size,
-  pixel ratio and colour (`apps/editor/icons/README.md` says how to add one).
+  drawings (ISC), drawn in the palette's button text colour; see
+  [Editor icons](#editor-icons) for attribution and contribution instructions.
   **View → Toolbars** hides or shows the Standard and Game toolbars. Documents have no
   command rows of their own: **File → New Render Graph...** and **Open Render
   Graph...** open graphs, and the **Build** menu holds every render-graph
@@ -666,9 +670,21 @@ keeps the window and its draft open.
 | Ctrl+Alt+L / F4 | Show Project Explorer / Properties |
 | Ctrl+Alt+E / Ctrl+Alt+O | Show Error List / Output |
 | Shift+Alt+Enter | Focus Viewport on or off |
+| Ctrl+K (Cmd+K on macOS) / F3 | Command Palette / Run Command in Context |
 | F1 | Keyboard Shortcuts help |
 
-The help dialog reads the same QAction bindings used by menus/toolbars. Qt's
+The **Command Palette** (Ctrl/Cmd+K) searches every menu command by name with fuzzy
+matching: letters must appear in order, and consecutive letters, word starts and
+short names rank higher. A command that is not available now is shown dimmed
+after the available ones and cannot run. **Run Command in Context** (F3) lists
+only the commands that can run right now. Enter runs the chosen command after
+the palette closes; Up and Down move through the list; Esc closes it. Both read
+the menu bar when they open and keep nothing while closed, so a command added
+to a menu appears in the palette and the F1 list with its label, shortcut and
+availability.
+
+The help dialog reads the same QAction bindings used by menus/toolbars, groups
+them by menu and has a search box. Qt's
 standard New/Open/Save bindings follow the platform; actions remain window-scoped
 and use controller capability gates. Configurable mappings remain future work.
 See [art direction](../architecture/editor-art-direction.md) and
@@ -1255,19 +1271,21 @@ Debug views follow Lit in the selector. Each replaces shading with one quantity
 per pixel so you can inspect it directly:
 
 - **Normal — world-space normals as colour**: +X red, +Y green, +Z blue.
-- **Depth — distance from camera, near black to far white**: linear distance
+- **Depth — distance from camera, near purple to far yellow**: linear distance
   between the camera's near plane and far plane, tightened to the scene's
-  bounds so visible geometry spans the full range.
+  bounds so visible geometry spans the full range. Depth and Light count use
+  the perceptually uniform viridis ramp, and a key in the viewport's bottom
+  left names both ends.
 - **Roughness — smooth black to rough white**.
 - **Metallic — dielectric black to metal white**.
 - **UV — texture coordinates as red/green**: the first UV set.
-- **Light count — lights reaching each pixel as a heat map**: counts lights
-  whose shadowed contribution is nonzero: black for none, then blue (one) to
-  red (16 or more).
+- **Light count — lights reaching each pixel as a ramp**: counts lights
+  whose shadowed contribution is nonzero: dark purple for none, then through
+  teal and green to yellow (16 or more).
 
 Scenes with authored lights use the same surface maps, clusters and shadows as
 Lit. Authored Worlds without lights get editor-derived vertex normals when the
-mesh has none. Light count is black there because no lights exist. Overdraw is
+mesh has none. Light count is the ramp's dark purple end there because no lights exist. Overdraw is
 not offered, because the world pass has no additive blend state to count
 overlapping fragments. The debug view is saved like the other modes. Older
 preferences open in Solid.
@@ -1467,7 +1485,7 @@ writes the linear `LUHDR01` capture and, beside it, a PNG with the same base nam
 A capture saved before it finishes is marked partial and keeps exact per-pixel
 sample counts. Convert the HDR file with
 [`scripts/reference-hdr`](../architecture/renderer-systems.md#reference-workflow-and-frozen-profile).
-The PNG uses the viewport's display transform: exposure one, Reinhard, then sRGB.
+The PNG uses the viewport's display transform: exposure one, Khronos PBR Neutral, then sRGB.
 
 The capture builds its own renderer on the viewport's GPU device. It loads the
 same meshes, textures and Lit materials as the viewport, but no shadow atlas. The
@@ -1943,6 +1961,39 @@ supported; do not distribute layout blobs with projects.
 See [architecture](../architecture/editor-architecture.md),
 [interaction design](../architecture/editor-interaction-design.md), and
 [post-design reference review](../architecture/editor-design-review.md).
+
+## Editor icons
+
+The outline icons for the toolbars, Project Explorer and Error List are taken
+unchanged from [Lucide](https://lucide.dev) 1.62.0, commit
+`2ca268e74888d3506b3319fb8f94aaaaf70ceca9` of
+[lucide-icons/lucide](https://github.com/lucide-icons/lucide).
+Thanks to the Lucide authors for these drawings. Lucide is ISC licensed; some
+of its drawings derive from Feather (MIT). The licence file at
+`apps/editor/icons/LICENSE` carries both notices and must ship with the icons.
+
+The SVG files live in `apps/editor/icons` and are Qt resources under `:/icons`.
+`apps/editor/src/editor_icons.cpp` parses each one once, on first use, into a
+`QPainterPath` on a 24 unit grid and draws it with a 1.5 unit round stroke in the
+palette's button text colour. Disabled icons use disabled button text; Play and
+Stop are filled to identify live-state actions. No SVG is parsed while painting,
+and no Qt SVG module is needed. One bounded pixmap cache keys entries by icon,
+size, device pixel ratio, mode and colour. The parser supports `path`, `circle`
+and `rect` elements and the M, L, H, V, C, S, Q, T, A and Z path commands; a new
+icon that needs anything else fails the icon tests.
+
+To add an icon:
+
+1. Copy its SVG from the pinned Lucide commit into `apps/editor/icons`.
+2. Add it to `EditorIcon` in `apps/editor/src/internal/editor_icons.h` and to
+   `ICON_DESCRIPTORS` in `apps/editor/src/editor_icons.cpp`, and keep
+   `EDITOR_ICON_COUNT` in step.
+3. Run the editor tests tagged `[icons]`. The resource helper in
+   `apps/editor/CMakeLists.txt` discovers SVG files in that directory automatically.
+
+Engine concepts that Lucide has no drawing for (entity, probe, cook) will be
+drawn in house on the same grid and stroke. List their attribution here when
+added.
 
 ## macOS validation
 

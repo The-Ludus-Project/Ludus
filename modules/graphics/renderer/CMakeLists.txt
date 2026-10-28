@@ -2,7 +2,7 @@
 if(LUDUS_BUILD_TESTS)
     set_source_files_properties(src/renderer.cpp src/gpu_preview_ray.cpp src/render_graph.cpp PROPERTIES COMPILE_DEFINITIONS LUDUS_RENDERER_TEST_READBACK=1)
 endif()
-add_library(ludus_graphics_renderer STATIC src/gpu_denoiser.cpp src/render_graph.cpp src/render_graph_forward.cpp src/render_graph_scene_resources.cpp src/visibility_buffer.cpp src/render_graph_ray.cpp src/render_graph_ray_path.cpp src/render_graph_upscale.cpp src/render_graph_metalfx.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/gpu_preview_camera.cpp src/gpu_preview_graph.cpp src/render_graph_storage.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/lighting.cpp src/static_lighting.cpp src/environment.cpp src/reference_bsdf.cpp src/reference_scene.cpp src/reference_path.cpp src/reference_compute.cpp)
+add_library(ludus_graphics_renderer STATIC src/gpu_denoiser.cpp src/render_graph.cpp src/render_graph_forward.cpp src/render_graph_scene_resources.cpp src/visibility_buffer.cpp src/render_graph_ray.cpp src/render_graph_ray_path.cpp src/render_graph_upscale.cpp src/render_graph_metalfx.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/gpu_preview_camera.cpp src/gpu_preview_graph.cpp src/render_graph_storage.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/lighting.cpp src/static_lighting.cpp src/environment.cpp src/reference_bsdf.cpp src/ltc_table.cpp src/reference_scene.cpp src/reference_path.cpp src/reference_compute.cpp)
 add_library(Ludus::GraphicsRenderer ALIAS ludus_graphics_renderer)
 include(EngineDenoiserOptions)
 if(LUDUS_ENABLE_OIDN)
@@ -38,6 +38,7 @@ target_sources(ludus_graphics_renderer PUBLIC FILE_SET public_headers TYPE HEADE
     include/ludus/graphics/renderer/lighting_layout.h
     include/ludus/graphics/renderer/light_selection.hpp
     include/ludus/graphics/renderer/lighting.hpp
+    include/ludus/graphics/renderer/tone_mapping.hpp
     include/ludus/graphics/renderer/reference.hpp
     include/ludus/graphics/renderer/gpu_preview.hpp
     include/ludus/graphics/renderer/viewport_frame.hpp
@@ -54,7 +55,7 @@ endif()
 install(TARGETS ludus_graphics_renderer EXPORT LudusTargets ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     FILE_SET public_headers DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 # Source is cooked by the existing installed shader helper; no runtime compiler dependency.
-install(FILES "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/scene_data.h" include/ludus/graphics/renderer/scene_shader_layout.h include/ludus/graphics/renderer/lighting_layout.h shaders/recipes.json shaders/renderer_gpu_preview_layout.h shaders/scene_shader.slang shaders/scene_payload.slang shaders/visibility_buffer.slang shaders/ray_shader.slang shaders/ray_triangle_loop.slang shaders/renderer_flat.slang shaders/renderer_composite.slang shaders/renderer_overlay.slang shaders/renderer_material.slang shaders/renderer_lit.slang shaders/renderer_clustered.slang shaders/renderer_shadow.slang shaders/renderer_output.slang shaders/renderer_gpu_preview.slang shaders/renderer_gpu_preview_visibility_full.slang shaders/renderer_gpu_preview_hit_cached.slang shaders/renderer_gpu_preview_group32.slang shaders/renderer_gpu_preview_group64.slang shaders/renderer_gpu_preview_group128.slang shaders/renderer_gpu_preview_group8x8.slang shaders/renderer_gpu_preview_image.slang shaders/renderer_reference.slang shaders/renderer_reference_layout.h shaders/renderer_surface.slang shaders/renderer_clustered_surface.slang shaders/renderer_surface_functions.slang shaders/renderer_authored.slang shaders/renderer_clustered_authored.slang shaders/renderer_lit_debug.slang shaders/renderer_clustered_authored_debug.slang shaders/renderer_environment_layout.h DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
+install(FILES "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/scene_data.h" include/ludus/graphics/renderer/scene_shader_layout.h include/ludus/graphics/renderer/lighting_layout.h shaders/recipes.json shaders/renderer_gpu_preview_layout.h shaders/scene_shader.slang shaders/scene_payload.slang shaders/visibility_buffer.slang shaders/ray_shader.slang shaders/ray_triangle_loop.slang shaders/ray_line_visibility.slang shaders/ray_bvh_traversal.slang shaders/renderer_flat.slang shaders/renderer_composite.slang shaders/renderer_overlay.slang shaders/renderer_material.slang shaders/renderer_lit.slang shaders/renderer_clustered.slang shaders/renderer_shadow.slang shaders/renderer_output.slang shaders/renderer_gpu_preview.slang shaders/renderer_gpu_preview_visibility_full.slang shaders/renderer_gpu_preview_hit_cached.slang shaders/renderer_gpu_preview_group32.slang shaders/renderer_gpu_preview_group64.slang shaders/renderer_gpu_preview_group128.slang shaders/renderer_gpu_preview_group8x8.slang shaders/renderer_gpu_preview_image.slang shaders/renderer_reference.slang shaders/renderer_reference_layout.h shaders/renderer_surface.slang shaders/renderer_clustered_surface.slang shaders/renderer_surface_functions.slang shaders/renderer_authored.slang shaders/renderer_clustered_authored.slang shaders/renderer_lit_debug.slang shaders/renderer_clustered_authored_debug.slang shaders/renderer_environment_layout.h shaders/ltc_table.slang shaders/ltc_table_data.inc DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
 # Engine-owned default render graph: the RendererStatic static opaque profile the editor
 # shows when a project has no graph of its own, and the read-only starting point a project
 # copies when it customizes the renderer. Profiles follow the host device family, as the
@@ -90,7 +91,7 @@ install(DIRECTORY "${default_render_graph}/" DESTINATION "${CMAKE_INSTALL_DATADI
 if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
     # Exercise the production renderer/RHI registry with the existing deterministic backend.
-    add_executable(ludus_renderer_tests tests/renderer_tests.cpp tests/world_grid_tests.cpp tests/reference_backend.cpp src/gpu_denoiser.cpp src/render_graph.cpp src/render_graph_forward.cpp src/render_graph_scene_resources.cpp src/visibility_buffer.cpp src/render_graph_ray.cpp src/render_graph_ray_path.cpp src/render_graph_upscale.cpp src/render_graph_metalfx.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/gpu_preview_camera.cpp src/gpu_preview_graph.cpp src/render_graph_storage.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/lighting.cpp src/static_lighting.cpp src/environment.cpp src/reference_bsdf.cpp src/reference_scene.cpp src/reference_path.cpp src/reference_compute.cpp tests/views_tests.cpp tests/static_lighting_tests.cpp tests/render_graph_tests.cpp tests/render_graph_ray_path_decode_tests.cpp tests/render_graph_activation_tests.cpp tests/render_graph_pool_tests.cpp tests/scene_shader_tests.cpp tests/reference_emitter_selection_tests.cpp tests/reference_bvh_tests.cpp
+    add_executable(ludus_renderer_tests tests/renderer_tests.cpp tests/world_grid_tests.cpp tests/tone_mapping_tests.cpp tests/reference_backend.cpp src/gpu_denoiser.cpp src/render_graph.cpp src/render_graph_forward.cpp src/render_graph_scene_resources.cpp src/visibility_buffer.cpp src/render_graph_ray.cpp src/render_graph_ray_path.cpp src/render_graph_upscale.cpp src/render_graph_metalfx.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/gpu_preview_camera.cpp src/gpu_preview_graph.cpp src/render_graph_storage.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/lighting.cpp src/static_lighting.cpp src/environment.cpp src/reference_bsdf.cpp src/ltc_table.cpp src/reference_scene.cpp src/reference_path.cpp src/reference_compute.cpp tests/views_tests.cpp tests/static_lighting_tests.cpp tests/render_graph_tests.cpp tests/render_graph_ray_path_decode_tests.cpp tests/render_graph_activation_tests.cpp tests/render_graph_pool_tests.cpp tests/scene_shader_tests.cpp tests/reference_emitter_selection_tests.cpp tests/ltc_table_tests.cpp tests/reference_bvh_tests.cpp
         ../rhi/src/rhi.cpp ../rhi/src/device.cpp ../rhi/src/dxil_container.cpp ../rhi/src/gpu_scope.cpp ../rhi/src/gpu_pass_timing_buffer.cpp ../rhi/src/profile.cpp ../rhi/src/raster.cpp ../rhi/tests/reference_raster.cpp ../rhi/src/ray_unsupported.cpp)
     target_include_directories(ludus_renderer_tests PRIVATE include ../rhi/include ../rhi/src ../rhi/tests "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
     target_link_libraries(ludus_renderer_tests PRIVATE Ludus::FoundationStrings Ludus::RenderGraphFormat Ludus::Platform Ludus::FoundationContainers Ludus::FoundationMath Ludus::FoundationThreading Ludus::FoundationThreadingProfiling Ludus::FoundationTime Ludus::Resources Ludus::FoundationHash Catch2::Catch2WithMain)
@@ -108,7 +109,7 @@ if(LUDUS_BUILD_THREADING_BENCHMARK AND NOT EMSCRIPTEN)
     ludus_apply_project_defaults(ludus_static_lighting_benchmark)
 endif()
 if(TARGET ludus_rhi_render_tests)
-    add_executable(ludus_renderer_render_tests tests/render_tests.cpp tests/denoising_tests.cpp tests/gpu_preview_tests.cpp tests/ray_opacity_tests.cpp tests/visibility_tests.cpp tests/reference_compute_tests.cpp tests/gpu_random_tests.cpp tests/projected_solid_angle_parity_tests.cpp tests/power_cdf_parity_tests.cpp tests/restir_selection_tests.cpp tests/authored_tests.cpp tests/render_graph_render_tests.cpp tests/render_graph_pool_render_tests.cpp)
+    add_executable(ludus_renderer_render_tests tests/render_tests.cpp tests/denoising_tests.cpp tests/gpu_preview_tests.cpp tests/ray_opacity_tests.cpp tests/visibility_tests.cpp tests/reference_compute_tests.cpp tests/gpu_random_tests.cpp tests/projected_solid_angle_parity_tests.cpp src/ltc_table.cpp tests/power_cdf_parity_tests.cpp tests/restir_selection_tests.cpp tests/authored_tests.cpp tests/render_graph_render_tests.cpp tests/render_graph_pool_render_tests.cpp)
     target_include_directories(ludus_renderer_render_tests PRIVATE ../rhi/src "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
     target_link_libraries(ludus_renderer_render_tests PRIVATE Ludus::GraphicsText Ludus::FoundationMath Ludus::FoundationTime Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_renderer_render_tests)
@@ -124,6 +125,15 @@ if(TARGET ludus_rhi_render_tests)
     # Test-only kernel comparing FoundationMath's shader projected solid angle sampling with C++.
     ludus_compile_shader(TARGET ludus_renderer_render_tests NAME projected_solid_angle_parity
         SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/projected_solid_angle_parity.slang" COMPUTE ComputeMain
+        INCLUDES "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders")
+    # Test-only kernel comparing the shader lookup of the generated LTC table with src/ltc_table.cpp.
+    ludus_compile_shader(TARGET ludus_renderer_render_tests NAME ltc_table_parity
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/ltc_table_parity.slang" COMPUTE ComputeMain
+        INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/shaders" "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ltc_table.slang" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ltc_table_data.inc")
+    # Test-only kernel comparing FoundationMath's shader linearly transformed cosines with C++.
+    ludus_compile_shader(TARGET ludus_renderer_render_tests NAME linearly_transformed_cosine_parity
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/linearly_transformed_cosine_parity.slang" COMPUTE ComputeMain
         INCLUDES "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders")
     # Test-only kernel comparing the public power-CDF scene accessors with the CPU reference.
     ludus_get_renderer_shader_roots(renderer_shader_directory renderer_shader_includes)
@@ -188,8 +198,7 @@ if(TARGET ludus_renderer_render_tests)
     foreach(kind surface offscreen depth bound masked_color masked_depth independent)
         set(input "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/${kind}")
         set(staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${kind}")
-        file(COPY "${input}/" DESTINATION "${staged}" PATTERN "*.in" EXCLUDE)
-        configure_file("${input}/main.lushader.json.in" "${staged}/main.lushader.json" @ONLY)
+        ludus_stage_render_graph_fixture("${input}" "${staged}")
         ludus_compile_render_graph(TARGET ludus_renderer_render_tests NAME rg2_${kind}
             MANIFEST "${staged}/main.lushader.json" RUNTIME_PACKAGE)
     endforeach()
@@ -237,8 +246,7 @@ if(TARGET ludus_renderer_render_tests)
     ludus_compile_renderer_shaders(TARGET ludus_render_graph_ray_tests SHADERS renderer_composite)
     set(ray_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/raytracing")
     set(ray_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/raytracing")
-    file(COPY "${ray_source}/" DESTINATION "${ray_staged}" PATTERN "*.in" EXCLUDE)
-    configure_file("${ray_source}/main.lushader.json.in" "${ray_staged}/main.lushader.json" @ONLY)
+    ludus_stage_render_graph_fixture("${ray_source}" "${ray_staged}")
     ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_raytracing
         MANIFEST "${ray_staged}/main.lushader.json" RUNTIME_PACKAGE)
     cmake_path(GET rg2_raytracing_RUNTIME_PACKAGE PARENT_PATH ray_package_directory)
@@ -246,8 +254,7 @@ if(TARGET ludus_renderer_render_tests)
         LUDUS_RG3_RAYTRACING_DIRECTORY="${ray_package_directory}")
     set(visibility_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/visibility")
     set(visibility_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/visibility")
-    file(COPY "${visibility_source}/" DESTINATION "${visibility_staged}" PATTERN "*.in" EXCLUDE)
-    configure_file("${visibility_source}/main.lushader.json.in" "${visibility_staged}/main.lushader.json" @ONLY)
+    ludus_stage_render_graph_fixture("${visibility_source}" "${visibility_staged}")
     ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_visibility
         MANIFEST "${visibility_staged}/main.lushader.json" RUNTIME_PACKAGE)
     cmake_path(GET rg2_visibility_RUNTIME_PACKAGE PARENT_PATH visibility_package_directory)
@@ -258,11 +265,11 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_visibility_ordinary_RUNTIME_PACKAGE PARENT_PATH visibility_ordinary_package_directory)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_VISIBILITY_ORDINARY_DIRECTORY="${visibility_ordinary_package_directory}")
-    foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing simple_compute_ray_tracing veach_guibas_mis)
+    foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing
+            simple_compute_ray_tracing veach_guibas_mis line_sampling)
         set(template_source "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/${template_directory}")
         set(template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${template_directory}_template")
-        file(COPY "${template_source}/" DESTINATION "${template_staged}" PATTERN "*.in" EXCLUDE)
-        configure_file("${template_source}/main.lushader.json.in" "${template_staged}/main.lushader.json" @ONLY)
+        ludus_stage_render_graph_fixture("${template_source}" "${template_staged}")
         ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME "rg2_${template_directory}_template"
             MANIFEST "${template_staged}/main.lushader.json" RUNTIME_PACKAGE)
         set(template_package "rg2_${template_directory}_template_RUNTIME_PACKAGE")
@@ -273,9 +280,8 @@ if(TARGET ludus_renderer_render_tests)
     endforeach()
     set(shared_ray_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/shared_ray")
     set(shared_ray_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/shared_ray")
-    file(COPY "${shared_ray_source}/" DESTINATION "${shared_ray_staged}" PATTERN "*.in" EXCLUDE)
-    configure_file("${shared_ray_source}/main.lushader.json.in" "${shared_ray_staged}/main.lushader.json" @ONLY)
-    foreach(configuration IN ITEMS Default Native)
+    ludus_stage_render_graph_fixture("${shared_ray_source}" "${shared_ray_staged}")
+    foreach(configuration IN ITEMS Default Native ComputeBvh)
         string(TOLOWER "${configuration}" configuration_suffix)
         ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_shared_ray_${configuration_suffix}
             MANIFEST "${shared_ray_staged}/main.lushader.json" CONFIGURATION "${configuration}" RUNTIME_PACKAGE)
@@ -284,10 +290,29 @@ if(TARGET ludus_renderer_render_tests)
         target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
             "LUDUS_RG3_SHARED_RAY_${configuration_definition}_DIRECTORY=\"${shared_ray_package_directory}\"")
     endforeach()
+    # One package per traversal strategy over the same callbacks; the GPU test compares their images.
+    set(traversal_parity_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/traversal_parity")
+    set(traversal_parity_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/traversal_parity")
+    ludus_stage_render_graph_fixture("${traversal_parity_source}" "${traversal_parity_staged}")
+    foreach(configuration IN ITEMS TriangleLoop Native ComputeBvh)
+        string(TOLOWER "${configuration}" configuration_suffix)
+        ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_traversal_parity_${configuration_suffix}
+            MANIFEST "${traversal_parity_staged}/main.lushader.json" CONFIGURATION "${configuration}" RUNTIME_PACKAGE)
+        cmake_path(GET rg2_traversal_parity_${configuration_suffix}_RUNTIME_PACKAGE PARENT_PATH traversal_parity_package_directory)
+        string(TOUPPER "${configuration}" configuration_definition)
+        target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+            "LUDUS_RG3_TRAVERSAL_PARITY_${configuration_definition}_DIRECTORY=\"${traversal_parity_package_directory}\"")
+    endforeach()
+    # The compute ray-tracing template's extra configuration runs without native ray tracing.
+    ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_compute_ray_tracing_bvh_template
+        MANIFEST "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/compute_ray_tracing_template/main.lushader.json"
+        CONFIGURATION ComputeBvh RUNTIME_PACKAGE)
+    cmake_path(GET rg2_compute_ray_tracing_bvh_template_RUNTIME_PACKAGE PARENT_PATH compute_bvh_template_directory)
+    target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+        "LUDUS_RG3_COMPUTE_RAY_TRACING_BVH_TEMPLATE_DIRECTORY=\"${compute_bvh_template_directory}\"")
     set(scene_ray_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/scene_ray")
     set(scene_ray_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/scene_ray")
-    file(COPY "${scene_ray_source}/" DESTINATION "${scene_ray_staged}" PATTERN "*.in" EXCLUDE)
-    configure_file("${scene_ray_source}/main.lushader.json.in" "${scene_ray_staged}/main.lushader.json" @ONLY)
+    ludus_stage_render_graph_fixture("${scene_ray_source}" "${scene_ray_staged}")
     ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_scene_ray
         MANIFEST "${scene_ray_staged}/main.lushader.json" RUNTIME_PACKAGE)
     cmake_path(GET rg2_scene_ray_RUNTIME_PACKAGE PARENT_PATH scene_ray_package_directory)
@@ -295,8 +320,9 @@ if(TARGET ludus_renderer_render_tests)
         LUDUS_RG3_SCENE_RAY_DIRECTORY="${scene_ray_package_directory}")
     function(ludus_stage_ray_invocation_fixture original destination mode)
         # Reuse authored callbacks and change only the invocation on each logical RT node.
-        file(COPY "${original}/" DESTINATION "${destination}")
-        file(READ "${destination}/main.lurender.json" document)
+        # The rewritten graph is written only when it changes, so reconfiguring does not recook it.
+        ludus_stage_render_graph_inputs("${original}" "${destination}" main.lurender.json)
+        file(READ "${original}/main.lurender.json" document)
         string(JSON node_count LENGTH "${document}" configurations 0 nodes)
         math(EXPR last_node "${node_count} - 1")
         set(ray_index 0)
@@ -317,7 +343,8 @@ if(TARGET ludus_renderer_render_tests)
                 math(EXPR ray_index "${ray_index} + 1")
             endif()
         endforeach()
-        file(WRITE "${destination}/main.lurender.json" "${document}")
+        file(WRITE "${destination}.lurender.json" "${document}")
+        file(COPY_FILE "${destination}.lurender.json" "${destination}/main.lurender.json" ONLY_IF_DIFFERENT)
     endfunction()
     if(APPLE)
         set(native_visibility_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/native_visibility")
@@ -337,8 +364,7 @@ if(TARGET ludus_renderer_render_tests)
     endif()
     set(ordered_ray_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/ordered_ray")
     set(ordered_ray_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/ordered_ray")
-    file(COPY "${ordered_ray_source}/" DESTINATION "${ordered_ray_staged}" PATTERN "*.in" EXCLUDE)
-    configure_file("${ordered_ray_source}/main.lushader.json.in" "${ordered_ray_staged}/main.lushader.json" @ONLY)
+    ludus_stage_render_graph_fixture("${ordered_ray_source}" "${ordered_ray_staged}")
     ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_ordered_ray
         MANIFEST "${ordered_ray_staged}/main.lushader.json" RUNTIME_PACKAGE)
     cmake_path(GET rg2_ordered_ray_RUNTIME_PACKAGE PARENT_PATH ordered_ray_package_directory)
@@ -355,8 +381,7 @@ if(TARGET ludus_renderer_render_tests)
     endif()
     set(compute_split_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/compute_split")
     set(compute_split_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/compute_split")
-    file(COPY "${compute_split_source}/" DESTINATION "${compute_split_staged}" PATTERN "*.in" EXCLUDE)
-    configure_file("${compute_split_source}/main.lushader.json.in" "${compute_split_staged}/main.lushader.json" @ONLY)
+    ludus_stage_render_graph_fixture("${compute_split_source}" "${compute_split_staged}")
     ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_compute_split
         MANIFEST "${compute_split_staged}/main.lushader.json" RUNTIME_PACKAGE)
     cmake_path(GET rg2_compute_split_RUNTIME_PACKAGE PARENT_PATH compute_split_package_directory)
@@ -366,27 +391,30 @@ if(TARGET ludus_renderer_render_tests)
     # configuration for renderer selection, and a mixed compute + ray sequence.
     set(scene_compute_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/scene_compute")
     set(scene_compute_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/scene_compute")
-    file(COPY "${scene_compute_source}/" DESTINATION "${scene_compute_staged}" PATTERN "*.in" EXCLUDE)
-    configure_file("${scene_compute_source}/main.lushader.json.in" "${scene_compute_staged}/main.lushader.json" @ONLY)
+    ludus_stage_render_graph_fixture("${scene_compute_source}" "${scene_compute_staged}")
     ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_scene_compute
         MANIFEST "${scene_compute_staged}/main.lushader.json" RUNTIME_PACKAGE)
     cmake_path(GET rg2_scene_compute_RUNTIME_PACKAGE PARENT_PATH scene_compute_package_directory)
     ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_scene_compute_raster
         MANIFEST "${scene_compute_staged}/main.lushader.json" CONFIGURATION Raster RUNTIME_PACKAGE)
     cmake_path(GET rg2_scene_compute_raster_RUNTIME_PACKAGE PARENT_PATH scene_compute_raster_package_directory)
+    # GetEmitterBounds: a compute pass compares the packed emitter bounds with their triangles.
+    set(emitter_bounds_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/emitter_bounds")
+    set(emitter_bounds_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/emitter_bounds")
+    ludus_stage_render_graph_fixture("${emitter_bounds_source}" "${emitter_bounds_staged}")
+    ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_emitter_bounds
+        MANIFEST "${emitter_bounds_staged}/main.lushader.json" RUNTIME_PACKAGE)
+    cmake_path(GET rg2_emitter_bounds_RUNTIME_PACKAGE PARENT_PATH emitter_bounds_package_directory)
     set(compute_mixed_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/compute_mixed")
     set(compute_mixed_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/compute_mixed")
-    file(COPY "${compute_mixed_source}/" DESTINATION "${compute_mixed_staged}" PATTERN "*.in" EXCLUDE)
-    configure_file("${compute_mixed_source}/main.lushader.json.in" "${compute_mixed_staged}/main.lushader.json" @ONLY)
+    ludus_stage_render_graph_fixture("${compute_mixed_source}" "${compute_mixed_staged}")
     ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_compute_mixed
         MANIFEST "${compute_mixed_staged}/main.lushader.json" RUNTIME_PACKAGE)
     cmake_path(GET rg2_compute_mixed_RUNTIME_PACKAGE PARENT_PATH compute_mixed_package_directory)
     # Single-pass RayTracingPipeline reference for the compute-ray-tracing template (C4).
     set(direct_lighting_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/direct_lighting_reference")
     set(direct_lighting_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/direct_lighting_reference")
-    file(COPY "${direct_lighting_source}/" DESTINATION "${direct_lighting_staged}" PATTERN "*.in" EXCLUDE)
-    configure_file("${direct_lighting_source}/main.lushader.json.in"
-        "${direct_lighting_staged}/main.lushader.json" @ONLY)
+    ludus_stage_render_graph_fixture("${direct_lighting_source}" "${direct_lighting_staged}")
     ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_direct_lighting_reference
         MANIFEST "${direct_lighting_staged}/main.lushader.json" RUNTIME_PACKAGE)
     cmake_path(GET rg2_direct_lighting_reference_RUNTIME_PACKAGE PARENT_PATH direct_lighting_package_directory)
@@ -397,9 +425,7 @@ if(TARGET ludus_renderer_render_tests)
         list(GET veach_guibas_variant 0 veach_guibas_name)
         list(GET veach_guibas_variant 1 LUDUS_VEACH_GUIBAS_REFERENCE_STRATEGY)
         set(veach_guibas_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/veach_guibas_reference_${veach_guibas_name}")
-        file(COPY "${veach_guibas_reference_source}/" DESTINATION "${veach_guibas_staged}" PATTERN "*.in" EXCLUDE)
-        configure_file("${veach_guibas_reference_source}/main.lushader.json.in"
-            "${veach_guibas_staged}/main.lushader.json" @ONLY)
+        ludus_stage_render_graph_fixture("${veach_guibas_reference_source}" "${veach_guibas_staged}")
         ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests
             NAME "rg2_veach_guibas_reference_${veach_guibas_name}"
             MANIFEST "${veach_guibas_staged}/main.lushader.json" RUNTIME_PACKAGE)
@@ -429,7 +455,7 @@ if(TARGET ludus_renderer_render_tests)
         list(GET mis_variant 0 mis_name)
         list(GET mis_variant 1 mis_value)
         set(mis_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/veach_guibas_mis_${mis_name}")
-        file(COPY "${veach_guibas_template_staged}/" DESTINATION "${mis_staged}" PATTERN "main.lushader.json" EXCLUDE)
+        ludus_stage_render_graph_inputs("${veach_guibas_template_staged}" "${mis_staged}" main.lushader.json)
         string(JSON mis_manifest SET "${veach_guibas_manifest}" settings ${mis_heuristic_index} value ${mis_value})
         # Rewrite the staged manifest only when it changes, so reconfiguring does not rebuild the package.
         file(WRITE "${mis_staged}.lushader.json" "${mis_manifest}\n")
@@ -441,16 +467,52 @@ if(TARGET ludus_renderer_render_tests)
         target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
             "LUDUS_RG3_VEACH_GUIBAS_MIS_${mis_definition}_DIRECTORY=\"${mis_package_directory}\"")
     endforeach()
+    # The Veach and Guibas template with every scene compute pass on the triangle loop, so the
+    # line-sampling comparison with its lightSampling output needs no native ray profile.
+    set(veach_guibas_loop_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/veach_guibas_mis_triangle_loop")
+    ludus_stage_render_graph_inputs("${veach_guibas_template_staged}" "${veach_guibas_loop_staged}" library.lurender.json)
+    file(READ "${veach_guibas_template_staged}/library.lurender.json" veach_guibas_library)
+    string(JSON veach_guibas_node_count LENGTH "${veach_guibas_library}" configurations 0 nodes)
+    math(EXPR veach_guibas_node_last "${veach_guibas_node_count} - 1")
+    foreach(node_index RANGE ${veach_guibas_node_last})
+        string(JSON node_kind GET "${veach_guibas_library}" configurations 0 nodes ${node_index} kind)
+        if(node_kind STREQUAL "ComputePipeline")
+            string(JSON veach_guibas_library SET "${veach_guibas_library}"
+                configurations 0 nodes ${node_index} invocation traversal "\"TriangleLoop\"")
+        endif()
+    endforeach()
+    file(WRITE "${veach_guibas_loop_staged}.lurender.json" "${veach_guibas_library}\n")
+    file(COPY_FILE "${veach_guibas_loop_staged}.lurender.json" "${veach_guibas_loop_staged}/library.lurender.json"
+        ONLY_IF_DIFFERENT)
+    ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_veach_guibas_mis_triangle_loop
+        MANIFEST "${veach_guibas_loop_staged}/main.lushader.json" RUNTIME_PACKAGE)
+    cmake_path(GET rg2_veach_guibas_mis_triangle_loop_RUNTIME_PACKAGE PARENT_PATH veach_guibas_loop_package_directory)
+    target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+        LUDUS_RG3_VEACH_GUIBAS_MIS_TRIANGLE_LOOP_DIRECTORY="${veach_guibas_loop_package_directory}")
+    # FindVisibleLineIntervals against analytic intervals (point-line PL1), once with a TriangleLoop
+    # pass and once with a NativeQuery pass, which must give the same software line traversal.
+    set(line_visibility_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/line_visibility")
+    set(line_visibility_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/line_visibility")
+    ludus_stage_render_graph_fixture("${line_visibility_source}" "${line_visibility_staged}")
+    foreach(configuration IN ITEMS Loop Native)
+        string(TOLOWER "${configuration}" configuration_suffix)
+        string(TOUPPER "${configuration}" configuration_definition)
+        ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_line_visibility_${configuration_suffix}
+            MANIFEST "${line_visibility_staged}/main.lushader.json" CONFIGURATION "${configuration}" RUNTIME_PACKAGE)
+        cmake_path(GET rg2_line_visibility_${configuration_suffix}_RUNTIME_PACKAGE PARENT_PATH
+            line_visibility_package_directory)
+        target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+            "LUDUS_RG3_LINE_VISIBILITY_${configuration_definition}_DIRECTORY=\"${line_visibility_package_directory}\"")
+    endforeach()
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_SCENE_COMPUTE_DIRECTORY="${scene_compute_package_directory}"
         LUDUS_RG3_SCENE_COMPUTE_RASTER_DIRECTORY="${scene_compute_raster_package_directory}"
+        LUDUS_RG3_EMITTER_BOUNDS_DIRECTORY="${emitter_bounds_package_directory}"
         LUDUS_RG3_COMPUTE_MIXED_DIRECTORY="${compute_mixed_package_directory}"
         LUDUS_RG3_DIRECT_LIGHTING_REFERENCE_DIRECTORY="${direct_lighting_package_directory}")
     set(visibility_sequence_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/visibility_sequence")
     set(visibility_sequence_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/visibility_sequence")
-    file(COPY "${visibility_sequence_source}/" DESTINATION "${visibility_sequence_staged}" PATTERN "*.in" EXCLUDE)
-    configure_file("${visibility_sequence_source}/main.lushader.json.in"
-        "${visibility_sequence_staged}/main.lushader.json" @ONLY)
+    ludus_stage_render_graph_fixture("${visibility_sequence_source}" "${visibility_sequence_staged}")
     ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_visibility_sequence
         MANIFEST "${visibility_sequence_staged}/main.lushader.json" RUNTIME_PACKAGE)
     cmake_path(GET rg2_visibility_sequence_RUNTIME_PACKAGE PARENT_PATH visibility_sequence_package_directory)
@@ -458,8 +520,7 @@ if(TARGET ludus_renderer_render_tests)
         LUDUS_RG3_VISIBILITY_SEQUENCE_DIRECTORY="${visibility_sequence_package_directory}")
     set(restir_source "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/restir_di")
     set(restir_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/restir_di")
-    file(COPY "${restir_source}/" DESTINATION "${restir_staged}" PATTERN "*.in" EXCLUDE)
-    configure_file("${restir_source}/main.lushader.json.in" "${restir_staged}/main.lushader.json" @ONLY)
+    ludus_stage_render_graph_fixture("${restir_source}" "${restir_staged}")
     ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_restir_di
         MANIFEST "${restir_staged}/main.lushader.json" RUNTIME_PACKAGE)
     cmake_path(GET rg2_restir_di_RUNTIME_PACKAGE PARENT_PATH restir_package_directory)
@@ -467,7 +528,7 @@ if(TARGET ludus_renderer_render_tests)
         LUDUS_RG3_RESTIR_DIRECTORY="${restir_package_directory}")
     set(storage_ray_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/storage_ray")
     set(storage_ray_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/storage_ray")
-    file(COPY "${scene_ray_source}/" DESTINATION "${storage_ray_staged}" PATTERN "*.in" EXCLUDE)
+    ludus_stage_render_graph_inputs("${scene_ray_source}" "${storage_ray_staged}" main.lurender.json)
     configure_file("${storage_ray_source}/main.lurender.json" "${storage_ray_staged}/main.lurender.json" COPYONLY)
     configure_file("${storage_ray_source}/reservoir.slang" "${storage_ray_staged}/main_shaders/reservoir.slang" COPYONLY)
     configure_file("${storage_ray_source}/main.lushader.json.in" "${storage_ray_staged}/main.lushader.json" @ONLY)
@@ -488,8 +549,7 @@ if(TARGET ludus_renderer_render_tests)
         foreach(shape IN ITEMS linear tiled)
             set(source "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/${graph}")
             set(staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/workgroups_${graph}_${shape}")
-            file(COPY "${source}/" DESTINATION "${staged}" PATTERN "*.in" EXCLUDE)
-            configure_file("${source}/main.lushader.json.in" "${staged}/main.lushader.json" @ONLY)
+            ludus_stage_render_graph_fixture("${source}" "${staged}" library.lurender.json)
             file(READ "${source}/library.lurender.json" library)
             if(shape STREQUAL tiled)
                 string(REPLACE "\"state\": {}" "\"state\": {\"group_size\": [8, 8, 1]}" library "${library}")
@@ -505,7 +565,10 @@ if(TARGET ludus_renderer_render_tests)
         endforeach()
     endforeach()
     add_test(NAME ludus_graph_workgroup_pixels COMMAND ludus_graph_workgroup_tests)
-    set_tests_properties(ludus_graph_workgroup_pixels PROPERTIES LABELS "renderer;gpu;ray" TIMEOUT 120)
+    # Both cases skip without native ray queries (lavapipe); Catch2 then returns 4, reported as
+    # Skipped like ludus_render_graph_ray_path_capture below.
+    set_tests_properties(ludus_graph_workgroup_pixels PROPERTIES
+        LABELS "renderer;gpu;ray" TIMEOUT 120 SKIP_RETURN_CODE 4)
     # Ray path capture: each node form's diagnostic LUDUS_RAY_PATH_CAPTURE variant is compiled
     # from the same staged snapshot as its plain header, which the bit-identity checks compare.
     add_executable(ludus_render_graph_ray_path_tests tests/render_graph_ray_path_tests.cpp)
@@ -516,8 +579,7 @@ if(TARGET ludus_renderer_render_tests)
     ludus_compile_renderer_shaders(TARGET ludus_render_graph_ray_path_tests SHADERS renderer_composite)
     set(ray_path_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/ray_path")
     set(ray_path_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/ray_path")
-    file(COPY "${ray_path_source}/" DESTINATION "${ray_path_staged}" PATTERN "*.in" EXCLUDE)
-    configure_file("${ray_path_source}/main.lushader.json.in" "${ray_path_staged}/main.lushader.json" @ONLY)
+    ludus_stage_render_graph_fixture("${ray_path_source}" "${ray_path_staged}")
     set(raytracing_staged "${ray_staged}")
     foreach(ray_path_form IN ITEMS raytracing scene_ray visibility ordered_ray ray_path)
         ludus_compile_render_graph(TARGET ludus_render_graph_ray_path_tests NAME rg2_${ray_path_form}_plain

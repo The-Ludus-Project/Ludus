@@ -12,6 +12,8 @@
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/raster.h>
 
+#include "internal/viewport_tone_curve.h"
+#include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/graphics/renderer/reference.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
@@ -91,12 +93,14 @@ enum class ViewportReferencePhase : foundation::uint8
 /// Returns an empty size when drawable or longSide is not positive.
 [[nodiscard]] QSize ComputeReferenceExtent(const QSize& drawable, foundation::uint32 longSide) noexcept;
 
-/// Encode one scene-linear radiance the way the raster viewport displays it: exposure one,
-/// per-channel Reinhard, then sRGB. Returns a display value in [0, 1]; non-finite or negative
+/// Encode one scene-linear colour the way the raster viewport displays it: exposure one, the
+/// viewport's tone curve, then sRGB. Returns display values in [0, 1]; non-finite or negative
 /// radiance encodes as zero.
-[[nodiscard]] foundation::float32 EncodeReferenceDisplayValue(foundation::float32 radiance) noexcept;
+[[nodiscard]] foundation::math::Vector3 EncodeReferenceDisplayColor(foundation::math::Vector3 radiance) noexcept;
+/// One channel of EncodeReferenceDisplayColor for a grey radiance, where all three channels are equal.
+[[nodiscard]] foundation::float32 EncodeReferenceDisplayValue(foundation::float32 greyRadiance) noexcept;
 /// EncodeReferenceDisplayValue rounded to eight bits.
-[[nodiscard]] foundation::uint8 EncodeReferenceDisplayChannel(foundation::float32 radiance) noexcept;
+[[nodiscard]] foundation::uint8 EncodeReferenceDisplayChannel(foundation::float32 greyRadiance) noexcept;
 
 /// Copy the analytic lights of a raster light selection into outLights and return their count.
 /// The area proxies the raster viewport derives from emissive surfaces are omitted: RT1 samples

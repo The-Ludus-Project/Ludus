@@ -496,7 +496,6 @@ private:
     CodeDocumentController* mSourceController;
     CodeFormatter* mSourceFormatter;
     QPlainTextEdit* mSourceInterface;
-    QPlainTextEdit* mPlan;
     RenderGraphBuildSettings mBuildSettings;
     RenderGraphBuildTools mResolvedTools;
     QString mResolvedSdk;

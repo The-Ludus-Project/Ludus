@@ -65,26 +65,26 @@ namespace ludus::editor
 {
 namespace
 {
-// Version 5: the render-graph Render Preview tool window; older layouts reset.
-constexpr foundation::int32 LAYOUT_VERSION = 5;
+// Version 6: the calm default (Project Explorer left, Properties right, diagnostics closed until needed);
+// older layouts reset. Version 5 added the render-graph Render Preview tool window.
+constexpr foundation::int32 LAYOUT_VERSION = 6;
 constexpr foundation::int32 PERCENT = 100;
 // First-run window: this share of the screen, at least the minimum below.
 constexpr foundation::int32 DEFAULT_WINDOW_PERCENT = 85;
 constexpr foundation::int32 MIN_WINDOW_WIDTH_PIXELS = 1100;
 constexpr foundation::int32 MIN_WINDOW_HEIGHT_PIXELS = 760;
-// Default tool-window extents leave documents roughly two thirds of the window.
-constexpr foundation::int32 SIDE_DOCK_PERCENT = 22;
-constexpr foundation::int32 MIN_SIDE_DOCK_PIXELS = 260;
-constexpr foundation::int32 MAX_SIDE_DOCK_PIXELS = 420;
+// Default tool-window extents leave documents about three fifths of the window: the outliner is the
+// narrower side, Properties the wider one.
+constexpr foundation::int32 EXPLORER_DOCK_PERCENT = 15;
+constexpr foundation::int32 MIN_EXPLORER_DOCK_PIXELS = 220;
+constexpr foundation::int32 MAX_EXPLORER_DOCK_PIXELS = 320;
+constexpr foundation::int32 PROPERTIES_DOCK_PERCENT = 20;
+constexpr foundation::int32 MIN_PROPERTIES_DOCK_PIXELS = 260;
+constexpr foundation::int32 MAX_PROPERTIES_DOCK_PIXELS = 380;
 // The bottom group needs a tab bar, the Error List filters and header, and a few rows.
 constexpr foundation::int32 BOTTOM_DOCK_PERCENT = 27;
 constexpr foundation::int32 MIN_BOTTOM_DOCK_PIXELS = 160;
 constexpr foundation::int32 MAX_BOTTOM_DOCK_PIXELS = 300;
-// Below this window height (a 13-inch laptop at its default scale) the bottom group starts
-// closed so the documents keep their height; new errors or warnings open it again.
-constexpr foundation::int32 SHORT_WINDOW_HEIGHT_PIXELS = 1000;
-// Project Explorer's share of the right column; Properties gets the rest.
-constexpr foundation::int32 EXPLORER_SHARE_PERCENT = 40;
 constexpr foundation::int32 PROPERTIES_HINT_MARGIN_PIXELS = 8;
 constexpr foundation::int64 MAX_SETTINGS_BYTES = foundation::int64{64} * 1024;
 constexpr foundation::int32 MAX_STATE_BYTES = 32 * 1024;
@@ -566,19 +566,20 @@ void MainWindow::showEvent(QShowEvent* event)
 
 void MainWindow::arrangeDefaultDocks()
 {
-    // Right: Project Explorer (with Content and Render Preview) above Properties (with Live
-    // Inspector), so a node's properties stay visible beside its preview. Bottom, under the
-    // documents: Error List with Output and Timing.
+    // Calm default: the documents get the window. Left: Project Explorer (with Content and Render
+    // Preview). Right: Properties (with Live Inspector), so a node's properties stay visible beside
+    // its preview. Bottom, under the documents: Error List with Output, Timing and Profiling; that
+    // group starts closed and opens when there is something to show (see applyDefaultDockSizes).
     const QList<QDockWidget*> docks = getToolWindows();
     for (QDockWidget* dock : docks)
     {
         dock->setFloating(false);
         removeDockWidget(dock);
     }
-    addDockWidget(Qt::RightDockWidgetArea, mProjectExplorerDock);
-    splitDockWidget(mProjectExplorerDock, mPropertiesDock, Qt::Vertical);
+    addDockWidget(Qt::LeftDockWidgetArea, mProjectExplorerDock);
     tabifyDockWidget(mProjectExplorerDock, mContentDock);
     tabifyDockWidget(mProjectExplorerDock, mRenderPreviewDock);
+    addDockWidget(Qt::RightDockWidgetArea, mPropertiesDock);
     tabifyDockWidget(mPropertiesDock, InspectorDock_);
     addDockWidget(Qt::BottomDockWidgetArea, mErrorListDock);
     tabifyDockWidget(mErrorListDock, OutputDock_);
@@ -678,26 +679,27 @@ foundation::int32 MainWindow::getDefaultBottomDockHeight() const
 
 void MainWindow::applyDefaultDockSizes()
 {
-    const foundation::int32 side =
-        qBound(MIN_SIDE_DOCK_PIXELS, width() * SIDE_DOCK_PERCENT / PERCENT, MAX_SIDE_DOCK_PIXELS);
-    const bool isShortWindow = height() < SHORT_WINDOW_HEIGHT_PIXELS;
+    const foundation::int32 explorer =
+        qBound(MIN_EXPLORER_DOCK_PIXELS, width() * EXPLORER_DOCK_PERCENT / PERCENT, MAX_EXPLORER_DOCK_PIXELS);
+    const foundation::int32 properties =
+        qBound(MIN_PROPERTIES_DOCK_PIXELS, width() * PROPERTIES_DOCK_PERCENT / PERCENT, MAX_PROPERTIES_DOCK_PIXELS);
+    // The diagnostics group is closed until it has something to show: new errors or warnings reveal the
+    // Error List, a build reveals Output, a play session reveals Timing and recording reveals Profiling.
     for (QDockWidget* dock : {mErrorListDock, OutputDock_, TimingDock_, mProfilingDock})
     {
-        dock->setVisible(isShortWindow == false);
+        dock->hide();
     }
-    resizeDocks({mProjectExplorerDock}, {side}, Qt::Horizontal);
-    if (isShortWindow == false)
+    if (mErrorList->GetCount(ErrorListSeverity::Error) != 0 || mErrorList->GetCount(ErrorListSeverity::Warning) != 0)
     {
-        mErrorListDock->raise();
-        resizeDocks({mErrorListDock}, {getDefaultBottomDockHeight()}, Qt::Vertical);
+        openToolWindow(mErrorListDock);
     }
-    const foundation::int32 explorer = height() * EXPLORER_SHARE_PERCENT / PERCENT;
-    resizeDocks({mProjectExplorerDock, mPropertiesDock}, {explorer, height() - explorer}, Qt::Vertical);
+    resizeDocks({mProjectExplorerDock, mPropertiesDock}, {explorer, properties}, Qt::Horizontal);
 }
 
 void MainWindow::ResetWorkspaceLayout()
 {
     setViewportFocused(false);
+    mHasTimingOpenedForPlay = false;
     (void)restoreState(DefaultLayout_, LAYOUT_VERSION);
     // Also recover panes that were floating, closed or moved when the user requested reset.
     arrangeDefaultDocks();

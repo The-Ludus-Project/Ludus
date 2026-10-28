@@ -561,6 +561,15 @@ RenderGraphDocumentStatus PrepareConfigurationTemplate(RenderGraphSnapshot& inou
                                           {},
                                           inoutBudgetOrNull);
     }
+    if (templateIdentity == QStringLiteral("line-sampling"))
+    {
+        return PrepareLineSamplingConfiguration(inoutSnapshot,
+                                                rootGraph,
+                                                targetFile,
+                                                configuration,
+                                                outError,
+                                                inoutBudgetOrNull);
+    }
     if (templateIdentity == QStringLiteral("compute-ray-tracing") ||
         templateIdentity == QStringLiteral("simple-compute-ray-tracing") ||
         templateIdentity == QStringLiteral("veach-guibas-mis"))

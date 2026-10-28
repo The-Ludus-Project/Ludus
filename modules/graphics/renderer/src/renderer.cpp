@@ -1720,7 +1720,7 @@ Status Renderer::PreparePresentationData(rhi::TextureHandle source,
         for (usize mode = 0; mode < 2 && Accepted(status); ++mode)
         {
             const math::Vector4 parameters{lighting->Exposure,
-                                           lighting->ToneMap ? 1.0F : 0.0F,
+                                           lighting->ToneMap == true ? static_cast<float32>(lighting->Curve) : 0.0F,
                                            mode != 0 && lighting->Encode ? 1.0F : 0.0F,
                                            0};
             status = rhi::CreateBuffer(s.Device,
@@ -4047,8 +4047,9 @@ Status Renderer::CreateLitMaterial(MaterialProgram program,
         math::IsFinite(description.Roughness) == false || description.Roughness < MIN_ROUGHNESS ||
         description.Roughness > 1 || bounded(description.Emission) == false ||
         bounded(description.EnvironmentIrradiance) == false || bounded(description.EnvironmentRadiance) == false ||
-        bounded(bake.Scale) == false || math::IsFinite(bake.UvTransform) == false ||
-        math::IsFinite(bake.Transform) == false)
+        math::IsFinite(description.EnvironmentGroundScale) == false || description.EnvironmentGroundScale < 0 ||
+        description.EnvironmentGroundScale > 1 || bounded(bake.Scale) == false ||
+        math::IsFinite(bake.UvTransform) == false || math::IsFinite(bake.Transform) == false)
     {
         return Status::InvalidDescription;
     }
@@ -4277,7 +4278,7 @@ Status Renderer::CreateLitMaterial(MaterialProgram program,
     parameters.EnvironmentIrradiance = {description.EnvironmentIrradiance.X,
                                         description.EnvironmentIrradiance.Y,
                                         description.EnvironmentIrradiance.Z,
-                                        0};
+                                        description.EnvironmentGroundScale};
     parameters.EnvironmentRadiance = {description.EnvironmentRadiance.X,
                                       description.EnvironmentRadiance.Y,
                                       description.EnvironmentRadiance.Z,

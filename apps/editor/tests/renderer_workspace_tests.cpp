@@ -14,6 +14,7 @@
 #    include "internal/render_preview.h"
 #endif
 #include "internal/workspace_style.h"
+#include "render_graph_helper_fixture.h"
 
 #include <ludus/foundation/base/types.h>
 
@@ -152,21 +153,6 @@ QByteArray RunCli(const QString& python, const QStringList& arguments)
 {
     return RunToolCli(python, QStringList{QStringLiteral("render-graph")} + arguments);
 }
-
-void MakeShaderHelper(const QString& directory)
-{
-    const QDir helper(directory);
-    for (const QString& file : {QStringLiteral("cmake/shaders/compile_shader.py"),
-                                QStringLiteral("cmake/shaders/compile_raster.py"),
-                                QStringLiteral("cmake/shaders/compile_graph_stage.py"),
-                                QStringLiteral("cmake/shaders/native_worker.py"),
-                                QStringLiteral("config/shader_toolchain.json"),
-                                QStringLiteral("config/spirv_cross_toolchain.json")})
-    {
-        WriteFile(helper.filePath(QFileInfo(file).fileName()),
-                  ReadFile(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/") + file));
-    }
-}
 } // namespace
 
 TEST_CASE("Renderer creates a complete project-owned graph with New Graph", "[editor][render-graph][creation]")
@@ -287,7 +273,7 @@ TEST_CASE("New Graph builds and cooks with the project's SDK without manual shad
     const QString manifest = QDir(sdk).filePath(QStringLiteral("share/Ludus/LudusSdkManifest.json"));
     const QByteArray sdkIdentity = ReadFile(QStringLiteral(LUDUS_EDITOR_SDK_MANIFEST));
     WriteFile(manifest, sdkIdentity);
-    MakeShaderHelper(QDir(sdk).filePath(QStringLiteral("lib/cmake/Ludus/shaders")));
+    tests::CopyRenderGraphBuildHelpers(QDir(sdk).filePath(QStringLiteral("lib/cmake/Ludus/shaders")));
     const QString project = QDir(root).filePath(QStringLiteral("Game"));
     const QByteArray created = RunToolCli(python,
                                           {QStringLiteral("project"),
@@ -511,7 +497,7 @@ TEST_CASE("Preview build failures expose the current graph problem and ignore st
     workspace.SetProject(project.path(), 1);
     REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
     const QString helper = QDir(project.path()).filePath(QStringLiteral("shader-helper"));
-    MakeShaderHelper(helper);
+    tests::CopyRenderGraphBuildHelpers(helper);
     // The malformed interface is rejected before compiler invocation. Use a known local
     // executable for tool hashing so this regression needs no installed shader compiler.
     workspace.SetBuildTools(helper, python);
@@ -656,7 +642,7 @@ TEST_CASE("RG3 a real compiler error opens the authored shader line", "[editor][
     const QString package = MakePackage(project);
     // The helper directory has the installed SDK layout: shader drivers beside their locks.
     const QDir helper(QDir(project.path()).filePath(QStringLiteral("sdk")));
-    MakeShaderHelper(helper.path());
+    tests::CopyRenderGraphBuildHelpers(helper.path());
     // An undefined identifier on line 3 of the authored color function.
     const QString color = QDir(package).filePath(QStringLiteral("main_shaders/color.slang"));
     QByteArray broken = ReadFile(color);

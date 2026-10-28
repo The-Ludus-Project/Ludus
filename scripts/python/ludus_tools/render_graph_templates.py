@@ -4,24 +4,34 @@ from pathlib import Path
 import json
 
 
+# Directory, label and the editor template registry's requirement (render_graph_templates.json):
+# None for portable templates, otherwise a requirement that needs a Metal or Vulkan profile.
 TEMPLATES = {
-    'forward-lit': ('forward_lit', 'Forward lit', False),
-    'restir-di': ('restir_di', 'ReSTIR DI', True),
-    'visibility-buffer': ('visibility_buffer', 'Visibility buffer', False),
-    'visibility-secondary-rays': ('visibility_secondary_rays', 'Visibility + secondary rays', True),
-    'tiled-vbuffer-nee': ('tiled_vbuffer_nee', 'Tiled visibility-buffer NEE', True),
-    'simple-compute-ray-tracing': ('simple_compute_ray_tracing', 'Simple compute ray tracing', True),
-    'compute-ray-tracing': ('compute_ray_tracing', 'Compute ray tracing', True),
-    'veach-guibas-mis': ('veach_guibas_mis', 'Veach and Guibas MIS', True),
+    'raster': ('default', 'Raster', None),
+    'forward-lit': ('forward_lit', 'Forward lit', None),
+    'restir-di': ('restir_di', 'ReSTIR DI', 'native-ray-tracing'),
+    'visibility-buffer': ('visibility_buffer', 'Visibility buffer', None),
+    'visibility-secondary-rays': ('visibility_secondary_rays', 'Visibility + secondary rays', 'native-ray-tracing'),
+    'tiled-vbuffer-nee': ('tiled_vbuffer_nee', 'Tiled visibility-buffer NEE', 'native-ray-tracing'),
+    'simple-compute-ray-tracing': ('simple_compute_ray_tracing', 'Simple compute ray tracing', 'native-ray-tracing'),
+    'compute-ray-tracing': ('compute_ray_tracing', 'Compute ray tracing', 'native-ray-tracing'),
+    'veach-guibas-mis': ('veach_guibas_mis', 'Veach and Guibas MIS', 'native-ray-tracing'),
+    'line-sampling': ('line_sampling', 'Line sampling', 'compute-ray-tracing'),
+}
+# What each requirement needs, as the capability repair names it.
+REQUIREMENT_REPAIRS = {
+    'native-ray-tracing': 'native ray tracing',
+    'compute-ray-tracing': 'Metal or Vulkan compute',
 }
 
 
 def template_files(identity, profiles, graph):
     """Load one canonical source/installed template and validate its complete editable closure."""
     from . import render_graph_build as build
-    directory, label, requires_native_rays = TEMPLATES[identity]
-    graph._require(not requires_native_rays or any(target in ('metal', 'spirv') for target in profiles),
-                   'Capability', label, 'select Metal or Vulkan; this template requires native ray tracing')
+    directory, label, requirement = TEMPLATES[identity]
+    graph._require(requirement is None or any(target in ('metal', 'spirv') for target in profiles),
+                   'Capability', label,
+                   f'select Metal or Vulkan; this template requires {REQUIREMENT_REPAIRS.get(requirement)}')
     candidates = (Path(__file__).resolve().parents[3] / 'modules/graphics/renderer/render_graphs' / directory,
                   Path(__file__).resolve().parent.parent / 'templates' / directory)
     source = next((path for path in candidates if path.is_dir()), None)

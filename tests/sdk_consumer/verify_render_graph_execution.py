@@ -18,9 +18,17 @@ import sys
 SOURCE_TOOLS = Path(__file__).resolve().parents[2] / 'scripts/python'
 # Mirrors render_graph_format/runtime_package.h: ten uint32 header fields, then the identities.
 PACKAGE_MAGIC = 0x4752554C
-PACKAGE_VERSION = 2
+FORMAT_HEADER = (Path(__file__).resolve().parents[2]
+                 / 'modules/content/render_graph_format/include/ludus/content/render_graph_format/runtime_package.h')
 HEADER_FIELDS = 10
 IDENTITY_BYTES = 32
+
+
+def read_package_version():
+    """The generation version the cooker writes, as its C++ format owner declares it."""
+    constants = dict(re.findall(r'inline constexpr foundation::uint32 (\w+) = (\w+);', FORMAT_HEADER.read_text()))
+    version = constants['PACKAGE_VERSION']
+    return int(constants.get(version, version))
 
 
 def main():
@@ -121,7 +129,8 @@ def verify_runtime_package(output, header, runtime, package):
                    check=True, cwd=output, env=environment, stdout=subprocess.DEVNULL)
     assert source.read_bytes() == cli, 'installed and source-tree runtime generations differ'
     magic, version, *_, stages = struct.unpack_from('<' + 'I' * HEADER_FIELDS, cli)
-    assert (magic, version) == (PACKAGE_MAGIC, PACKAGE_VERSION) and stages == runtime['stages'], runtime
+    assert (magic, version) == (PACKAGE_MAGIC, read_package_version()) and stages == runtime['stages'], \
+        (hex(magic), version, stages, runtime)
     identity = cli[HEADER_FIELDS * 4:HEADER_FIELDS * 4 + IDENTITY_BYTES]
     generation = cli[HEADER_FIELDS * 4 + IDENTITY_BYTES:HEADER_FIELDS * 4 + 2 * IDENTITY_BYTES]
     assert identity.hex() == runtime['interface_identity'] and generation.hex() == runtime['generation'], runtime

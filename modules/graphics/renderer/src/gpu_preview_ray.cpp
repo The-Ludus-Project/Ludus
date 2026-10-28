@@ -33,6 +33,12 @@ void SetGpuPreviewOpacityPartitioningForTesting(bool shouldPartition) noexcept
 void PackGpuPreviewRayOrder(const ReferenceSceneData& scene, bool shouldPartition, math::Vector4* outOrder) noexcept
 {
     LUDUS_ASSERT(outOrder != nullptr);
+    // Z always keeps the BVH leaf order for compute traversal (ray_bvh_traversal.slang), so
+    // ComputeBvh passes can share one packed scene with native-query opacity ranges in X.
+    for (usize i = 0; i < scene.Order.GetSize(); ++i)
+    {
+        std::memcpy(&outOrder[i].Z, &scene.Order[i], sizeof(uint32));
+    }
     if (shouldPartition == false)
     {
         for (usize i = 0; i < scene.Order.GetSize(); ++i)

@@ -4,6 +4,7 @@
 #endif
 #include "internal/audio_workspace.h"
 #include "internal/code_editor.h"
+#include "internal/command_palette.h"
 #include "internal/configuration_workspace.h"
 #include "internal/content_browser.h"
 #include "internal/document_well.h"
@@ -100,6 +101,8 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
       mCookGraphAction(CreateEditorCommand(RENDER_GRAPH_COOK_COMMAND, this)),
       mCancelGraphAction(CreateEditorCommand(RENDER_GRAPH_CANCEL_COMMAND, this)),
       mOptionsAction(CreateEditorCommand(TOOLS_OPTIONS_COMMAND, this)),
+      mCommandPaletteAction(CreateEditorCommand(TOOLS_COMMAND_PALETTE_COMMAND, this)),
+      mRunInContextAction(CreateEditorCommand(TOOLS_RUN_IN_CONTEXT_COMMAND, this)),
       mProjectSettingsAction(CreateEditorCommand(PROJECT_SETTINGS_COMMAND, this)),
       mResetLayoutAction(CreateEditorCommand(WINDOW_RESET_LAYOUT_COMMAND, this)),
       mFocusViewportAction(CreateEditorCommand(VIEW_FOCUS_VIEWPORT_COMMAND, this))
@@ -574,11 +577,16 @@ void MainWindow::BuildMenus()
 
     // Visual Studio keeps editor-wide preferences in Tools > Options.
     QMenu* toolsMenu = menuBar()->addMenu(QStringLiteral("&Tools"));
+    toolsMenu->addAction(mCommandPaletteAction);
+    toolsMenu->addAction(mRunInContextAction);
+    toolsMenu->addSeparator();
     toolsMenu->addAction(mRecordProfileAction);
     toolsMenu->addAction(QStringLiteral("Profiling..."), this, [this]() { showToolWindow(mProfilingDock); });
     toolsMenu->setObjectName(QStringLiteral("toolsMenu"));
     toolsMenu->addAction(mOptionsAction);
     connect(mOptionsAction, &QAction::triggered, this, &MainWindow::showOptions);
+    connect(mCommandPaletteAction, &QAction::triggered, this, [this]() { showCommandPalette(false); });
+    connect(mRunInContextAction, &QAction::triggered, this, [this]() { showCommandPalette(true); });
 
     QMenu* windowMenu = menuBar()->addMenu(QStringLiteral("&Window"));
     windowMenu->setObjectName(QStringLiteral("windowMenu"));
@@ -1010,6 +1018,17 @@ void MainWindow::OnStateChanged()
     // If a close was requested and the workspace is now closeable, finish.
     RenderProperties();
     Timing_->Render();
+    // Timing is closed by default; the first play session of this editor run opens it, and closing it
+    // afterwards stays closed until Reset Window Layout.
+    const PlayPhase playPhase = Controller_->PlayState().Phase;
+    const bool isPlaySessionActive = playPhase == PlayPhase::Running || playPhase == PlayPhase::Paused;
+    if (isPlaySessionActive == true && mWasPlaySessionActive == false && mHasTimingOpenedForPlay == false &&
+        mIsViewportFocused == false)
+    {
+        mHasTimingOpenedForPlay = true;
+        openToolWindow(TimingDock_);
+    }
+    mWasPlaySessionActive = isPlaySessionActive;
     renderGraphCommands();
     renderDocumentTitles();
     if (CloseConfirmed_ && Controller_->Caps().CanCloseImmediately)
@@ -1563,49 +1582,16 @@ void MainWindow::OnCloseProject()
 
 void MainWindow::ShowShortcuts()
 {
-    auto* dialog = new QDialog(this);
-    dialog->setAttribute(Qt::WA_DeleteOnClose);
-    dialog->setWindowTitle(QStringLiteral("Keyboard Shortcuts"));
-    auto* layout = new QFormLayout(dialog);
-    QList<QAction*> actions{NewProjectAction_,
-                            OpenAction_,
-                            SaveAction_,
-                            UndoAction_,
-                            RedoAction_,
-                            CloseProjectAction_,
-                            BuildAction_,
-                            BuildRunAction_,
-                            BuildDebugAction_,
-                            PlayAction_,
-                            StopAction_};
-    // Catalogue commands (render graph, tool windows, window management) that have shortcuts.
-    for (QAction* action : findChildren<QAction*>(Qt::FindDirectChildrenOnly))
-    {
-        const QString id = action->objectName();
-        if (action->shortcut().isEmpty() == false && actions.contains(action) == false &&
-            (id.startsWith(QStringLiteral("renderGraph.")) == true || id.startsWith(QStringLiteral("view.")) == true ||
-             id.startsWith(QStringLiteral("window.")) == true))
-        {
-            actions.append(action);
-        }
-    }
-    for (QAction* action : actions)
-    {
-        QString label = action->text();
-        label.remove(QLatin1Char('&'));
-        layout->addRow(label, new QLabel(action->shortcut().toString(QKeySequence::NativeText), dialog));
-    }
-    auto* note = new QLabel(QStringLiteral("Shortcuts follow the same availability rules as menu actions. "
-                                           "Save and Undo follow the active document tab. Undo edits focused text "
-                                           "first; Project Settings also has document history. Stop active work "
-                                           "before closing a project."),
-                            dialog);
-    note->setWordWrap(true);
-    layout->addRow(note);
-    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
-    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
-    layout->addRow(buttons);
-    dialog->open();
+    // The same entries as the command palette: whatever the menus hold, grouped by menu.
+    ShortcutList* list = new ShortcutList(CollectPaletteEntries(*menuBar()), this);
+    list->open();
+}
+
+void MainWindow::showCommandPalette(bool isEnabledOnly)
+{
+    // Built on demand and deleted on close, so a closed palette costs nothing.
+    CommandPalette* palette = new CommandPalette(CollectPaletteEntries(*menuBar()), isEnabledOnly, this);
+    palette->open();
 }
 
 void MainWindow::OnSetupRelease()

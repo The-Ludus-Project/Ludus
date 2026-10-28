@@ -13,6 +13,7 @@
 #include "internal/item_selection.h"
 #include "internal/render_graph_comments.h"
 #include "internal/render_graph_diagnostics.h"
+#include "internal/render_graph_execution_plan.h"
 #include "internal/render_graph_history.h"
 #include "internal/render_graph_options.h"
 #include "internal/render_graph_pipeline.h"
@@ -520,8 +521,8 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
       mSourceFile(new QComboBox(this)), mSource(new CodeEditor(this)),
       mSourceController(new CodeDocumentController(*mSource, this)),
       mSourceFormatter(new CodeFormatter(*mSourceController, this)), mSourceInterface(new QPlainTextEdit(this)),
-      mPlan(new QPlainTextEdit(this)), mCustomize(new QAction(QStringLiteral("&Customize in Project"), this)),
-      mStatus(new QLabel(this)), mCanvas(new RenderGraphCanvas(mDocument, this)),
+      mCustomize(new QAction(QStringLiteral("&Customize in Project"), this)), mStatus(new QLabel(this)),
+      mCanvas(new RenderGraphCanvas(mDocument, this)),
       mQuickAdd(new RenderGraphQuickAdd(RenderGraphTemplateRegistry::GetBuiltIn(), this)),
       mPreviewPage(new QWidget(this)), mPreviewImage(new PreviewImage(mPreviewPage)),
       mPreviewStatus(new QLabel(mPreviewPage)),
@@ -700,10 +701,6 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     sourceSplit->setStretchFactor(1, 1);
     sourceLayout->addWidget(sourceSplit, 1);
 
-    mPlan->setObjectName(QStringLiteral("renderGraphPlan"));
-    mPlan->setReadOnly(true);
-    mPlan->setPlaceholderText(QStringLiteral("Validate the draft to inspect its deterministic serial plan."));
-
     QSettings settings;
     mBuildSettings.WorkerSocket =
         settings.value(WORKER_SOCKET_KEY, qEnvironmentVariable("LUDUS_SHADER_WORKER_SOCKET")).toString();
@@ -729,7 +726,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mViews->setDocumentMode(true);
     mViews->insertTab(CANVAS_VIEW, mCanvas, QStringLiteral("Canvas"));
     mViews->insertTab(SOURCE_VIEW, sourcePage, QStringLiteral("Source"));
-    mViews->insertTab(PLAN_VIEW, mPlan, QStringLiteral("Plan"));
+    mViews->insertTab(PLAN_VIEW, mCanvas->GetExecutionPlan().GetPage(), QStringLiteral("Plan"));
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     // Textures: any target or attachment of the previewed generation (native GPU builds).
     mTextureViewerOrNull = new TextureViewer(this);
@@ -1273,7 +1270,7 @@ void RendererWorkspace::SetProject(const QString& root, uint64 epoch)
     mLastResult = {};
     mHasResult = false;
     mIsValidated = false;
-    mPlan->clear();
+    mCanvas->GetExecutionPlan().Reset();
     mPath->setText(QStringLiteral("No render graph is open."));
     renderTree();
     renderSource();
@@ -1467,7 +1464,7 @@ void RendererWorkspace::showDocument(const RenderGraphDocument& document)
     mLastResult = {};
     mHasResult = false;
     mIsValidated = false;
-    mPlan->clear();
+    mCanvas->GetExecutionPlan().Reset();
     renderTree();
     renderSource();
     renderStatus();
@@ -2260,6 +2257,7 @@ void RendererWorkspace::AcceptResult(const RenderGraphJobResult& result)
     mLastResult = result;
     mHasResult = true;
     mCanvas->GetDiagnostics().SetResult(result);
+    mCanvas->GetExecutionPlan().SetResult(result);
     updateCanvasDiagnostics();
     updateSourceDiagnostics(true);
     if (result.IsSuccessful == true)
@@ -2276,16 +2274,10 @@ void RendererWorkspace::AcceptResult(const RenderGraphJobResult& result)
             };
             mResolvedSdk = toolchain.value(QStringLiteral("sdk")).toString();
         }
-        const QJsonObject plan = result.Payload.value(QStringLiteral("plan")).toObject();
         if (result.Request.Action == QStringLiteral("dump"))
         {
             mIsValidated = true;
             mValidatedRevision = result.Request.Revision;
-            mPlan->setPlainText(QString::fromUtf8(QJsonDocument(plan).toJson(QJsonDocument::Indented)));
-        }
-        else
-        {
-            mPlan->setPlainText(QString::fromUtf8(QJsonDocument(result.Payload).toJson(QJsonDocument::Indented)));
         }
     }
     else if (result.Request.Action == QStringLiteral("dump"))
@@ -3194,6 +3186,7 @@ void RendererWorkspace::renderStatus()
 {
     updateResourceInspection();
     updateCanvasDiagnostics();
+    mCanvas->GetExecutionPlan().Refresh(mConfiguration->currentText());
     if (mCreation.IsActive() == true)
     {
         mStatus->setText(QStringLiteral("Creating the graph and shader sources in your project..."));
