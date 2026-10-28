@@ -13,6 +13,7 @@
 #    include "internal/crash_reporting.h"
 #endif
 #include "internal/qt_accessibility.h"
+#include "internal/window_size.h"
 
 #include <ludus/foundation/base/types.h>
 
@@ -25,6 +26,7 @@
 #include <QCommandLineOption>
 #include <QCommandLineParser>
 #include <QIcon>
+#include <QScreen>
 #include <QString>
 #if defined(LUDUS_EDITOR_CRASH_CAPTURE)
 #    include <QTimer>
@@ -125,7 +127,9 @@ int main(int argc, char** argv)
 
     ludus::editor::EditorController controller(tooling);
     ludus::editor::MainWindow window(&controller);
-    window.resize(900, 700);
+    const QScreen* const screenOrNull = QApplication::primaryScreen();
+    window.resize(screenOrNull == nullptr ? ludus::editor::FALLBACK_WINDOW_SIZE
+                                          : ludus::editor::ComputeDefaultWindowSize(screenOrNull->availableSize()));
 #if defined(Q_OS_WASM)
     window.showMaximized();
     QString sample;

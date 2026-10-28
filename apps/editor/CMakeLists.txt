@@ -506,6 +506,8 @@ qt_add_executable(ludus_editor
     src/project_setup_dialog.cpp
     src/project_creation_dialog.cpp
     src/workspace_style.cpp
+    src/internal/window_size.h
+    src/window_size.cpp
     src/controller.cpp
     src/controller_play.cpp
 )
@@ -743,6 +745,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/viewport_debug_tests.cpp
         tests/preview_generation_tests.cpp
         tests/viewport_navigation_tests.cpp
+        tests/viewport_legibility_tests.cpp
         tests/viewport_frame_pump_tests.cpp
         tests/viewport_frame_source_tests.cpp
         tests/world_demo_workspace_tests.cpp
@@ -886,7 +889,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/timing_panel.cpp
         src/project_setup_dialog.cpp
         src/project_creation_dialog.cpp
-        src/workspace_style.cpp)
+        src/workspace_style.cpp
+        src/window_size.cpp)
     target_link_libraries(ludus_editor_tests
         PRIVATE
             Ludus::RenderGraphFormat
