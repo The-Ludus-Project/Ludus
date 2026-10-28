@@ -93,6 +93,8 @@ void OpenWorkspace(RendererWorkspace& inoutWorkspace, const QTemporaryDir& proje
     inoutWorkspace.show();
     QCoreApplication::processEvents();
     inoutWorkspace.SetChromeVisible(false);
+    // Settle the canvas at its chrome-free size, so view states are captured after the resize.
+    QCoreApplication::processEvents();
 }
 void ScheduleInspectMenu(bool shouldChangeDocument, RendererWorkspace& inoutWorkspace)
 {

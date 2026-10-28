@@ -582,13 +582,65 @@ TEST_CASE("Legacy software ray packages require recooking", "[render-graph][ray-
     REQUIRE(read.BytesRead == bytes.GetSize());
     renderer::RenderGraphPackage package;
     REQUIRE(package.Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
+    constexpr usize WORD_BYTES = sizeof(uint32);
+    const auto readWord = [&bytes](usize offset) {
+        uint32 value = 0;
+        REQUIRE(TryReadLittleEndian({bytes.GetData() + offset, WORD_BYTES}, value) == true);
+        return value;
+    };
+    const auto padWord = [](uint32 byteCount) { return ((byteCount + WORD_BYTES - 1) / WORD_BYTES) * WORD_BYTES; };
+    constexpr usize RESOURCE_COUNT_OFFSET = 2 * WORD_BYTES;
+    constexpr usize PASS_COUNT_OFFSET = 3 * WORD_BYTES;
+    constexpr usize CAMERA_COUNT_OFFSET = 4 * WORD_BYTES;
+    constexpr usize UNIFORM_BINDING_COUNT_OFFSET = 6 * WORD_BYTES;
+    constexpr usize UNIFORM_BLOCK_COUNT_OFFSET = 7 * WORD_BYTES;
+    constexpr usize UNIFORM_FIELD_COUNT_OFFSET = 8 * WORD_BYTES;
+    constexpr usize STAGE_COUNT_OFFSET = 9 * WORD_BYTES;
+    const uint32 resourceCount = readWord(RESOURCE_COUNT_OFFSET);
+    const uint32 cameraCount = readWord(CAMERA_COUNT_OFFSET);
+    // Version 21 inserts workgroup words into each ray compute stage and version 20 admits a
+    // native ray-stage record. Stages follow every fixed-width record; strip them first.
+    const uint32 stageCount = readWord(STAGE_COUNT_OFFSET);
+    usize stage = format::HEADER_BYTES + resourceCount * format::RESOURCE_RECORD_BYTES +
+                  cameraCount * format::CAMERA_RECORD_BYTES + readWord(PASS_COUNT_OFFSET) * format::PASS_RECORD_BYTES +
+                  readWord(UNIFORM_BINDING_COUNT_OFFSET) * format::UNIFORM_BINDING_RECORD_BYTES +
+                  readWord(UNIFORM_BLOCK_COUNT_OFFSET) * format::UNIFORM_BLOCK_RECORD_BYTES +
+                  readWord(UNIFORM_FIELD_COUNT_OFFSET) * format::UNIFORM_FIELD_RECORD_BYTES;
+    uint32 legacyStageCount = 0;
+    for (uint32 i = 0; i < stageCount; ++i)
+    {
+        const uint32 role = readWord(stage);
+        const uint32 inputCount = readWord(stage + 2 * WORD_BYTES);
+        const uint32 entryBytes = readWord(stage + 3 * WORD_BYTES);
+        const uint32 artifactBytes = readWord(stage + 4 * WORD_BYTES);
+        const uint32 blockCount = readWord(stage + 5 * WORD_BYTES);
+        // Forward stages carry a texture-name table this walk does not skip; none are expected here.
+        REQUIRE((role < format::FORWARD_STAGE_ROLE_FIRST || role == format::NATIVE_RAY_STAGE_ROLE) == true);
+        usize end = stage + format::STAGE_FIELD_COUNT * WORD_BYTES;
+        if (role == static_cast<uint32>(format::StageRole::RayCompute) ||
+            role == static_cast<uint32>(format::StageRole::SceneRayCompute) ||
+            role == static_cast<uint32>(format::StageRole::PersistentRayCompute))
+        {
+            bytes.RemoveRange(end, end + format::RAY_WORKGROUP_DIMENSIONS * WORD_BYTES);
+        }
+        end += inputCount * format::INPUT_RECORD_BYTES;
+        for (uint32 block = 0; block < blockCount; ++block)
+        {
+            end += 2 * WORD_BYTES + padWord(readWord(end + WORD_BYTES));
+        }
+        end += padWord(entryBytes) + padWord(artifactBytes);
+        if (role == format::NATIVE_RAY_STAGE_ROLE)
+        {
+            bytes.RemoveRange(stage, end);
+        }
+        else
+        {
+            stage = end;
+            ++legacyStageCount;
+        }
+    }
+    REQUIRE(TryWriteLittleEndian(legacyStageCount, {bytes.GetData() + STAGE_COUNT_OFFSET, WORD_BYTES}) == true);
     // Versions 6 through 8 lack the three per-pass words added in version 9.
-    uint32 resourceCount = 0;
-    uint32 cameraCount = 0;
-    constexpr usize RESOURCE_COUNT_OFFSET = 2 * sizeof(uint32);
-    constexpr usize CAMERA_COUNT_OFFSET = 4 * sizeof(uint32);
-    REQUIRE(TryReadLittleEndian({bytes.GetData() + RESOURCE_COUNT_OFFSET, sizeof(uint32)}, resourceCount) == true);
-    REQUIRE(TryReadLittleEndian({bytes.GetData() + CAMERA_COUNT_OFFSET, sizeof(uint32)}, cameraCount) == true);
     constexpr usize LEGACY_PASS_FIELDS = 10;
     const usize extension = format::HEADER_BYTES + resourceCount * format::RESOURCE_RECORD_BYTES +
                             cameraCount * format::CAMERA_RECORD_BYTES + LEGACY_PASS_FIELDS * sizeof(uint32);
@@ -603,7 +655,6 @@ TEST_CASE("Legacy software ray packages require recooking", "[render-graph][ray-
             true);
     renderer::RenderGraphPackage storageGeneration;
     REQUIRE(storageGeneration.Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
-    constexpr usize WORD_BYTES = sizeof(uint32);
     const usize nameBytes = package.GetPlan().PassNames[0].GetSize();
     const usize paddedNameBytes = ((nameBytes + WORD_BYTES - 1) / WORD_BYTES) * WORD_BYTES;
     const usize storageCountOffset = bytes.GetSize() - paddedNameBytes - 2 * WORD_BYTES;
