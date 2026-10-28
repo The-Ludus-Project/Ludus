@@ -8,7 +8,8 @@ namespace ludus::editor
 /// Reconcile previous assignments, preserving authored bytes on rename and stage edits.
 /// Program receives a generated name; unreferenced untouched generated drafts are removed.
 /// The document commits all files together. No disk writes occur here.
-/// When supplied, outErrorOrNull receives an actionable program-capacity diagnostic.
+/// Creating programs grows program/artifact budgets to fit, retaining larger authored values.
+/// Supported artifact limits still reject; outErrorOrNull receives the repair diagnostic when supplied.
 [[nodiscard]] RenderGraphDocumentStatus PreparePipelineShaders(RenderGraphSnapshot& inoutSnapshot,
                                                                QJsonObject& inoutNode,
                                                                const QJsonObject& previousNode,

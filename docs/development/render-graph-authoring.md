@@ -97,13 +97,21 @@ when a pair differs; legacy Raster assignments remain unchanged. In Shaders,
 select the desired program IDs. To share one source with different entry points,
 register separate programs in the manifest with the same `source` and different
 `function` values, then select those programs on the nodes. The compiler preserves
-these choices in both compiled headers and runtime packages. Exhausted manifest
-budgets preserve the draft and explain the repair. When **Add** reaches the
-program limit, its error names the root shader manifest, current program count
-and minimum required `budgets.programs` value. Increase that field in the named
-manifest and retry, or enter an existing compatible program ID to reuse it.
-A new triangle ray pipeline needs room for three programs (`ray_generation`,
-`miss` and `closest_hit`). Ray callbacks still share the single bounded ray technique.
+these choices in both compiled headers and runtime packages. Adding a new shader
+program automatically grows `budgets.programs` and `budgets.artifacts` to the
+required counts, including every target profile. You do not need to edit the
+manifest first. Larger authored budgets are retained. Budget changes, source
+creation and node assignments share the same undo step and **Save** operation;
+undo restores the previous budgets too. Reusing an existing compatible program
+creates no additional program or budget change. Direct manifest edits and CLI
+builds continue to enforce their declared budgets.
+The build service's supported artifact ceiling and package file/byte limits still
+apply. Exceeding the artifact ceiling names the manifest, program/profile counts
+and supported limit, and preserves the complete draft. Reuse compatible programs,
+remove unused shaders or reduce target profiles before retrying.
+A new triangle ray pipeline needs three programs (`ray_generation`, `miss` and
+`closest_hit`); each addition grows the relevant budgets as needed. Ray callbacks
+still share the single bounded ray technique.
 To clean up the open package, choose **Edit → Remove Unused Shaders**, or
 **Remove Unused Shaders** in the canvas context menu. The command checks every
 loaded graph file and configuration (including disconnected nodes and unselected
@@ -3526,7 +3534,8 @@ recipe/node names and camera/extent values do not create extra shader programs.
 
 Program counts have no separate fixed engine ceiling: `budgets.programs` is a
 positive integer chosen by the author. Adding programs beyond 32 is supported
-when that authored budget admits them. Independent ceilings remain 8
+when that authored budget admits them; editor shader creation grows it as needed.
+Independent ceilings remain 8
 configurations, 128 target artifacts and 64 target pipeline recipes; source and
 package byte/file limits also apply. Target artifacts count registered programs
 multiplied by target profiles, so increasing the program budget does not bypass

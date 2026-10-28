@@ -99,6 +99,20 @@ endforeach()
 set_source_files_properties(src/render_graph_settings_editor.cpp src/render_graph_configuration_template.cpp
     PROPERTIES COMPILE_DEFINITIONS "${graph_settings_definitions}")
 
+# Shader authoring shares the build service's target-artifact ceiling.
+set(shader_build_policy "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/render_graph_build.py")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${shader_build_policy}")
+execute_process(COMMAND "${Python3_EXECUTABLE}" -c
+    "import sys; sys.path.insert(0,sys.argv[1]); from ludus_tools.render_graph_build import LIMITS; print(LIMITS['artifacts'])"
+    "${PROJECT_SOURCE_DIR}/scripts/python"
+    RESULT_VARIABLE shader_build_status OUTPUT_VARIABLE shader_artifact_limit ERROR_VARIABLE shader_build_error
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(NOT shader_build_status EQUAL 0)
+    message(FATAL_ERROR "Cannot read shader artifact limit: ${shader_build_error}")
+endif()
+set_source_files_properties(src/render_graph_shader_creation.cpp PROPERTIES
+    COMPILE_DEFINITIONS "LUDUS_EDITOR_MAX_SHADER_ARTIFACTS=${shader_artifact_limit}")
+
 # Finite option admission has one owner shared with installed host tooling.
 set(graph_options_policy "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/render_graph_options.py")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${graph_options_policy}")
