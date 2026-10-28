@@ -1587,7 +1587,8 @@ TEST_CASE("deferred runtime roles are complete per target and require version tw
                                                                format::StageRole::DeferredDepthCopyFragment}};
     const auto makeDeferred = [&](uint32 version,
                                   uint32 omittedRole,
-                                  format::ShaderTarget target = format::ShaderTarget::Wgsl) {
+                                  format::ShaderTarget target = format::ShaderTarget::Wgsl,
+                                  format::StageRole blockRole = format::StageRole::DeferredLightingFragment) {
         PackageWriter writer;
         PackageOptions options;
         options.Version = version;
@@ -1612,8 +1613,7 @@ TEST_CASE("deferred runtime roles are complete per target and require version tw
             writer.WriteWord(inputCount);
             writer.WriteWord(static_cast<uint32>(ENTRY.size()));
             writer.WriteWord(static_cast<uint32>(FRAGMENT_TEXT.size()));
-            const bool hasViewBlock =
-                target == format::ShaderTarget::GlslEs && role == format::StageRole::DeferredLightingFragment;
+            const bool hasViewBlock = target == format::ShaderTarget::GlslEs && role == blockRole;
             writer.WriteWord(hasViewBlock == true ? 1 : 0);
             for (uint32 input = 0; input < inputCount; ++input)
             {
@@ -1669,6 +1669,17 @@ TEST_CASE("deferred runtime roles are complete per target and require version tw
         REQUIRE(package->Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
         const renderer::RenderGraphPrograms programs = package->GetPrograms({}, {});
         CHECK(programs.DeferredLightingFragment.UniformBlocks[15] == "deferred_view");
+    }
+    {
+        const Array<uint8> bytes = makeDeferred(format::PACKAGE_VERSION,
+                                                format::ABSENT,
+                                                format::ShaderTarget::GlslEs,
+                                                format::StageRole::ClusteredForwardFragment);
+        renderer::RenderGraphPackage* allocationOrNull = new (std::nothrow) renderer::RenderGraphPackage;
+        core::UniquePtr<renderer::RenderGraphPackage> package{allocationOrNull};
+        REQUIRE(package.Get() != nullptr);
+        // Earlier role layouts retain their eight-slot uniform-name bounds.
+        CHECK(package->Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Malformed);
     }
     for (usize role = format::DEFERRED_STAGE_ROLE_FIRST; role < format::STAGE_ROLE_COUNT; ++role)
     {

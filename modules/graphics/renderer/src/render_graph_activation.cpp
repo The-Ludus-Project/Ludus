@@ -320,7 +320,7 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
             const uint32 slot = inoutReader.ReadWord();
             const uint32 nameBytes = inoutReader.ReadWord();
             if (inoutReader.IsOk() == false ||
-                slot >= (isForwardRole == true ? rhi::RASTER_BINDING_COUNT : format::UNIFORM_SLOT_COUNT) ||
+                slot >= (isDeferredRole == true ? rhi::RASTER_BINDING_COUNT : format::UNIFORM_SLOT_COUNT) ||
                 nameBytes > format::MAX_ENTRY_BYTES || view.Blocks[slot].empty() == false)
             {
                 return RenderGraphPackageStatus::Malformed;
