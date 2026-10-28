@@ -193,6 +193,13 @@ MergeComputeRayTechnique(QJsonObject& inoutManifest, const QJsonObject& source, 
                 interface.insert(field, defaultInterface.value(field));
             }
         }
+        // Helper requirements are additive: a template that needs the polygonal-light helpers enables them,
+        // and a technique that already has them keeps them.
+        const QString polygonalLightSampling = QStringLiteral("polygonal_light_sampling");
+        if (defaultInterface.value(polygonalLightSampling).toBool() == true)
+        {
+            interface.insert(polygonalLightSampling, true);
+        }
         technique.insert(QStringLiteral("scene_interface"), interface);
         techniques.replace(index, technique);
         inoutManifest.insert(QStringLiteral("techniques"), techniques);
@@ -374,6 +381,11 @@ RenderGraphDocumentStatus PrepareComputeRayTracingConfiguration(
     {
         selected.ProgramPrefix = QStringLiteral("VeachMis");
         selected.Name = QStringLiteral("Veach and Guibas MIS");
+    }
+    else if (templateIdentity == QStringLiteral("ris-projected-solid-angle"))
+    {
+        selected.ProgramPrefix = QStringLiteral("RisProjectedSolidAngle");
+        selected.Name = QStringLiteral("RIS and projected solid angle");
     }
     else
     {

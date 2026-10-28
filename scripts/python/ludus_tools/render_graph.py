@@ -1350,7 +1350,7 @@ def new_workspace(destination, *, output="presentation", renderer_static=False, 
 
     template selects raster (the default), forward-lit, restir-di, visibility-buffer,
     visibility-secondary-rays, tiled-vbuffer-nee, compute-ray-tracing, simple-compute-ray-tracing,
-    veach-guibas-mis or line-sampling. Offscreen Renderer raster creation copies
+    veach-guibas-mis, line-sampling or ris-projected-solid-angle. Offscreen Renderer raster creation copies
     the engine default package, including its shaders and shared view-relative
     RenderSize controls. Other Renderer templates also use offscreen output.
     output is presentation, offscreen or depth. Creation never overwrites an
