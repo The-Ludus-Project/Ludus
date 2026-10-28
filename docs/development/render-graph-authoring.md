@@ -2012,8 +2012,29 @@ samples) are not part of this template. Line samples cost line queries, and
 traversal is a linear scan of the World triangles, so use small scenes. There is no
 indirect bounce.
 
-`ludus_render_graph_ray_tests` renders the template on Metal with the triangle loop
-(POINT_LINE_EVIDENCE).
+`ludus_render_graph_ray_tests` renders the template on Metal with the triangle loop:
+
+- A [weights and densities fixture](../../tests/sdk_consumer/rg2/point_line_densities/main.lurender.json),
+  which includes the template's own `line_sampling.slang` and
+  `multiple_importance.slang`, checks that the three weights sum to one over
+  densities from zero to 1e12, under both heuristics, including a delta light
+  shared by the two line strategies. With no occluder, each line strategy's density
+  at an area point equals `EvaluateLightPdfSolidAngle` within the test's 1e-5
+  relative tolerance (largest measured difference 9.6e-7).
+- In the Cornell-box-style room, where the block casts a penumbra from the
+  two-triangle quad light, `color`, `lineSampling` and `pointSampling` converge to
+  one mean within 2% at 256 samples per pixel under both heuristics, and match the
+  light-sampling output of the Veach and Guibas template.
+- With an analytic point light and a constant sky instead of the ceiling light, the
+  three outputs converge to one mean in the same way.
+- After 16 samples per pixel, `color` has about half the mean squared error of
+  `pointSampling` in the penumbra on the floor, against an independently seeded
+  1024-sample image. The test reports the GPU time of each pass beside it. Line
+  samples cost line queries, so this is an equal-sample comparison and supports no
+  speed claim.
+
+A masked occluder cannot be tested yet, because render-graph scenes cannot hold
+alpha-tested triangles. Vulkan has not been run for this template.
 
 See the canonical
 [package](../../modules/graphics/renderer/render_graphs/salesin_jarosz_lines/main.lurender.json).

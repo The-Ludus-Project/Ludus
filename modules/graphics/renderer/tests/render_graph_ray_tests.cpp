@@ -3982,10 +3982,10 @@ void CheckPointLineOutputsAgree(const GraphGpuFixture& fixture,
     const math::Vector3 lines = ComputeMeanRadiance(outPixels[POINT_LINE_LINE_SAMPLING]);
     const math::Vector3 points = ComputeMeanRadiance(outPixels[POINT_LINE_POINT_SAMPLING]);
     const math::Vector3 lightSampling = ComputeMeanRadiance(veachPixels[VEACH_GUIBAS_LIGHT_SAMPLING]);
-    WARN("MIS mean=" << mis.X << ',' << mis.Y << ',' << mis.Z << ", line sampling mean=" << lines.X << ','
-                     << lines.Y << ',' << lines.Z << ", point sampling mean=" << points.X << ',' << points.Y << ','
-                     << points.Z << ", Veach and Guibas light sampling mean=" << lightSampling.X << ','
-                     << lightSampling.Y << ',' << lightSampling.Z);
+    WARN("MIS mean=" << mis.X << ',' << mis.Y << ',' << mis.Z << ", line sampling mean=" << lines.X << ',' << lines.Y
+                     << ',' << lines.Z << ", point sampling mean=" << points.X << ',' << points.Y << ',' << points.Z
+                     << ", Veach and Guibas light sampling mean=" << lightSampling.X << ',' << lightSampling.Y << ','
+                     << lightSampling.Z);
     constexpr float32 MINIMUM_MEAN_RADIANCE = .01F;
     REQUIRE(points.X > MINIMUM_MEAN_RADIANCE);
     // Estimates of one integral, compared after decoding the tone-mapped running means, at 256
@@ -4169,8 +4169,8 @@ TEST_CASE("After 16 samples per pixel point-and-line MIS has less penumbra error
     for (usize pixel = 0; pixel < penumbra.GetSize(); ++pixel)
     {
         const float32 visible = DecodeToneMapped(fractionPixels[pixel * 4]);
-        penumbra[pixel] = pixel / WIDTH >= HEIGHT / 2 && visible > PENUMBRA_LOWEST_FRACTION &&
-                          visible < PENUMBRA_HIGHEST_FRACTION;
+        penumbra[pixel] =
+            pixel / WIDTH >= HEIGHT / 2 && visible > PENUMBRA_LOWEST_FRACTION && visible < PENUMBRA_HIGHEST_FRACTION;
         penumbraPixels += penumbra[pixel] == true ? 1 : 0;
     }
     constexpr usize MINIMUM_PENUMBRA_PIXELS = 32;
@@ -4204,11 +4204,10 @@ TEST_CASE("After 16 samples per pixel point-and-line MIS has less penumbra error
     for (usize pass = 0; pass < timings.Count; ++pass)
     {
         const rhi::GpuPassTiming& timing = timings.Passes[pass];
-        WARN("mean GPU ms per frame over " << timings.FrameCount << " frames: " << timing.Scope.Name.GetData()
-                                           << " operation " << timing.ScopePassIndex << " (kind "
-                                           << static_cast<uint32>(timing.Kind) << ")="
-                                           << timings.Nanoseconds[pass] / static_cast<float64>(timings.FrameCount) /
-                                                  NANOSECONDS_PER_MILLISECOND);
+        WARN("mean GPU ms per frame over "
+             << timings.FrameCount << " frames: " << timing.Scope.Name.GetData() << " operation "
+             << timing.ScopePassIndex << " (kind " << static_cast<uint32>(timing.Kind) << ")="
+             << timings.Nanoseconds[pass] / static_cast<float64>(timings.FrameCount) / NANOSECONDS_PER_MILLISECOND);
     }
     CHECK(misError < pointError);
 }

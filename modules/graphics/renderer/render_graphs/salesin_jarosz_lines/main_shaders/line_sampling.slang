@@ -154,8 +154,7 @@ float ComputeLineDensitySolidAngle(float selectionPmf,
                                    float distanceWorld,
                                    float cosLight)
 {
-    if (selectionPmf <= 0 || chordLengthWorld <= 0 || emitterAreaWorld <= 0 || visibleLengthWorld <= 0 ||
-        cosLight <= 0)
+    if (selectionPmf <= 0 || chordLengthWorld <= 0 || emitterAreaWorld <= 0 || visibleLengthWorld <= 0 || cosLight <= 0)
         return 0;
     float densitySolidAngle = selectionPmf * chordLengthWorld / (emitterAreaWorld * visibleLengthWorld) *
                               distanceWorld * distanceWorld / cosLight;

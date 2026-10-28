@@ -22,7 +22,7 @@
 #include "multiple_importance.slang"
 
 static const uint DENSITY_COUNT = 8;
-static const float DENSITIES[DENSITY_COUNT] = { 0.0, 1.0e-20, 1.0e-6, 0.03125, 0.5, 1.0, 37.0, 1.0e12 };
+static const float DENSITIES[DENSITY_COUNT] = {0.0, 1.0e-20, 1.0e-6, 0.03125, 0.5, 1.0, 37.0, 1.0e12};
 static const uint WEIGHT_ROW_COUNT = 8;
 static const uint SINGLE_WEIGHT_ROW = 8;
 static const uint DENSITY_FIRST_ROW = 16;

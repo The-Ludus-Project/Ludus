@@ -128,7 +128,8 @@ float3 SampleLineStrategy(SceneContext scene,
 
 /// Area point strategy: one light proposal from the line U selection and shape dimensions and its
 /// shadow ray, weighted against BSDF sampling. A delta light keeps weight one.
-float3 SamplePointStrategy(SceneContext scene, RayLaunch launch, ShadingPoint shadingPoint, inout RayQueryContext queries)
+float3
+SamplePointStrategy(SceneContext scene, RayLaunch launch, ShadingPoint shadingPoint, inout RayQueryContext queries)
 {
     SelectedLight selected = SelectLight(scene, launch, SHADE_POINT_DIMENSION_FIRST);
     if (selected.HasSample == false)

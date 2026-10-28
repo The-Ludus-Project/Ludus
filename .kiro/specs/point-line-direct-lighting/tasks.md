@@ -228,47 +228,123 @@ Vulkan was not run: no Linux or Vulkan host was available.
 
 ## PL2 Point-and-line MIS template
 
-- [ ] `render_graphs/salesin_jarosz_lines/`: library and main graphs, manifest
+Evidence is from an Apple M5 on Metal (macOS 26.6), `macos-clang-development`,
+on the branch merged with `develop` `0b87e2e1`. Vulkan was not run: no Linux or
+Vulkan host was available, so the llvmpipe run is left to batch CI.
+
+- [x] `render_graphs/salesin_jarosz_lines/`: library and main graphs, manifest
       and `main_shaders/` (D8b), all passes `TriangleLoop`, Graph settings
       `MIS_HEURISTIC` and `MIS_POWER_EXPONENT`.
-- [ ] `main_shaders/line_sampling.slang`: PL1's single-direction strategy
+      *Library configuration `PointLineMis` with `primary`, `shade`,
+      `shadeLines` and `shadePoints` over one 32-byte hit Buffer; outputs
+      `color`, `lineSampling` and `pointSampling`, each with its own Accumulate,
+      ToneMap and Export. `MIS_HEURISTIC` defaults to `0` (balance) with range
+      `0`-`1`; `MIS_POWER_EXPONENT` defaults to 2.*
+- [x] `main_shaders/line_sampling.slang`: PL1's single-direction strategy
       extended to both directions, plus the D7 density evaluation at a given
       point.
-- [ ] `main_shaders/multiple_importance.slang`: the three-strategy weight for
+      *A copy of PL1's file, because a template directory imports only its own
+      include closure. `ProposeLine` takes `LINE_DIRECTION_U` or
+      `LINE_DIRECTION_V`; `EvaluateLineDensity` is D7. Both run their query in
+      a `[noinline]` function that copies `RayQueryContext` in and out: inlined,
+      the ten line queries made the merged Metal stage 2.10 MB, over the 2 MiB
+      artifact limit, and Slang inlines `[noinline]` functions with `inout`
+      parameters (design D8b, "PL2 notes"). The stage is now 1.09 MB.*
+- [x] `main_shaders/multiple_importance.slang`: the three-strategy weight for
       balance and power, with the Veach and Guibas attribution.
-- [ ] Shading passes `shade`, `shadeLines` and `shadePoints` with the D8 random
+      *`ComputeMisWeight(sampledDensity, otherDensity0, otherDensity1)`, with
+      the Veach and Guibas and the Salesin and Jarosz attributions. A zero
+      other density drops that strategy, and `pow` is skipped for it because
+      Metal compiles with fast math.*
+- [x] Shading passes `shade`, `shadeLines` and `shadePoints` with the D8 random
       layout and budgets.
-- [ ] Registration (design D8c): `TEMPLATES`, CLI choices, graph and snippet
+      *Dimensions 2-6 line `U`, 7-11 line `V`, 12-14 BSDF; `shadePoints` draws
+      its point from 2-5. The scene interface declares surface 1, visibility 2
+      and line 6. A non-mesh light keeps the point proposal in both line
+      strategies, which then share it equally.*
+- [x] Registration (design D8c): `TEMPLATES`, CLI choices, graph and snippet
       registry entries declaring `compute-ray-tracing`, embedding list,
       `PreparePointLineConfiguration`, installed SDK template files.
-- [ ] Python tests: the template builds, has four passes, declares the D8b
+      *`PreparePointLineConfiguration` is in
+      `render_graph_point_line_template.cpp` and imports `PointLine`-prefixed
+      programs through `PrepareSceneComputeTemplateConfiguration`. The
+      registry tests list both new entries and their requirement.*
+- [x] Python tests: the template builds, has four passes, declares the D8b
       budgets, rejects a heuristic outside `0`-`1`, and is a
       `ComputeRayTracing` package; `render-graph new --template
       salesin-jarosz-lines` succeeds for `metal` and `spirv`.
-- [ ] GPU tests (`TriangleLoop`, Metal; Vulkan through llvmpipe in batch CI):
-  - [ ] three-strategy weights sum to one within float tolerance over sampled
+      *`SalesinJaroszLinesTemplateTests` (7 tests) also checks the random
+      layout, the attributions, a `wgsl`-only `Capability` diagnostic and the
+      relocated SDK copy. It rejects heuristic values -1, 2, 3, 0.5, `true` and
+      `null`. The render-graph Python suites ran 417 tests: all pass, 18
+      skipped for missing local tools.*
+- [x] GPU tests (`TriangleLoop`, Metal; Vulkan through llvmpipe in batch CI):
+  - [x] three-strategy weights sum to one within float tolerance over sampled
         densities, including zero and delta cases;
-  - [ ] with no occluder, a line strategy's density equals
+        *`point_line_densities` fixture, which compiles the template's own
+        `line_sampling.slang` and `multiple_importance.slang`, under both
+        heuristics. Over every triple of 0, 1e-20, 1e-6, 1/32, 1/2, 1, 37 and
+        1e12 the largest error is 1.2e-7 (tolerance 2e-6). The delta case
+        `ComputeMisWeight(p, p, 0)` gives 1/2, and the single weights 1, 0 and
+        1/3 are exact within 3e-8.*
+  - [x] with no occluder, a line strategy's density equals
         `EvaluateLightPdfSolidAngle` for the same point;
-  - [ ] `color`, `lineSampling` and `pointSampling` converge to one mean within
+        *1305 receivers per direction in the room without its block: largest
+        relative difference 9.2e-7 (`U`) and 9.6e-7 (`V`), tolerance 1e-5.
+        Pixel-center rays first landed on floor-wall seams, where the query
+        clips the grazing wall (design D8b, "PL2 seam finding"). The fixture
+        now traces off-center rays.*
+  - [x] `color`, `lineSampling` and `pointSampling` converge to one mean within
         2% at 256 samples per pixel, in a Cornell-style room with an occluder
         casting a penumbra from a two-triangle quad light, under both
         heuristics;
-  - [ ] after 16 samples per pixel, `color` has lower mean squared error than
+        *Red channel means at 256 samples. Balance: `color` 0.20378,
+        `lineSampling` 0.20376, `pointSampling` 0.20373. Power: 0.20376,
+        0.20376, 0.20371. The Veach and Guibas triangle-loop light-sampling
+        image gives 0.20372. All channels agree within 0.03%.*
+  - [x] after 16 samples per pixel, `color` has lower mean squared error than
         `pointSampling` in the penumbra region, against an independently seeded
         1024-sample reference. Timing is reported beside it;
+        *The penumbra is the 215 pixels below eye height whose mean visible
+        chord fraction from the line-sampling template lies in (0.1, 0.9). MSE:
+        `color` 3.05e-4, `lineSampling` 3.06e-4, `pointSampling` 6.93e-4. Mean
+        GPU time per frame at 96×64 over 16 frames: `primary` 0.05 ms, `shade`
+        0.77 ms, `shadeLines` 0.58 ms, `shadePoints` 0.12 ms, on a heavily
+        loaded machine. This is an equal-sample comparison and supports no speed
+        claim. Pixels at the light's edge are excluded: they mix emission 12
+        with the dark ceiling, and one tone-mapped byte there decodes to a
+        large radiance.*
   - [ ] a masked occluder scene converges to the `pointSampling` mean;
-  - [ ] an analytic point light and a constant environment converge to the
+        *Not run: render-graph scenes still cannot hold alpha-tested
+        triangles (`SceneShaderMaterial` has no alpha mode and non-opaque items
+        are rejected), as PL1 found (design D4).*
+  - [x] an analytic point light and a constant environment converge to the
         same mean in all three outputs (non-mesh fallback, D6).
-- [ ] Editor tests: New Render Graph → Template, Quick Add and Apply
+        *The room with the ceiling light's emission removed, a 2 cd point light
+        and a 0.5 sky. Red channel means, balance: 0.38617, 0.38620, 0.38615;
+        power: 0.38616, 0.38620, 0.38619; Veach and Guibas light sampling
+        0.38612.*
+- [x] Editor tests: New Render Graph → Template, Quick Add and Apply
       Configuration Template create the configuration, and the Graph settings
       edit and save through the canvas's **Edit Graph Settings...** action with
       Properties hidden, as well as through Properties.
+      *Four tests in `render_graph_template_tests.cpp`, all passing. With
+      Properties hidden, the picker creates the graph and the canvas
+      **Edit Graph Settings...** dialog sets `MIS_HEURISTIC` to 1, with undo,
+      redo, save, validation and a reload from disk. Through Properties,
+      `MIS_HEURISTIC` and `MIS_POWER_EXPONENT` are edited and saved. Quick Add
+      and the canvas **Configurations → Apply Configuration Template...**
+      import `PointLineMis` with Properties hidden.
+      `ludus_render_graph_configuration_tests` passes all 214 test cases.*
 - [ ] SDK consumer fixture for the template.
-- [ ] Documentation: a "Combine point and line samples" section after "Compare
+      *SDK_CONSUMER_EVIDENCE*
+- [x] Documentation: a "Combine point and line samples" section after "Compare
       light and BSDF sampling with MIS", with the passes, outputs, settings,
       evidence, scope limits and attribution.
+      *Placed after "Sample lights along lines", which it builds on and which
+      itself follows the MIS section. PL1's scope paragraph now links to it.*
 - [ ] Gates as in PL1.
+      *GATES_EVIDENCE*
 
 ## PL3 BVH line traversal
 

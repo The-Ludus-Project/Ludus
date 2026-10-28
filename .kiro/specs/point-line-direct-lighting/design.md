@@ -442,6 +442,15 @@ parameter, hence the copy in and out. SPIRV-Cross still marks the MSL functions
 `always_inline`, so Metal compiles the same kernel, and each function still reads
 its `LineVisibility` only where it ran the query (D3, "PL1 storage").
 
+PL2 seam finding. A receiver exactly on the seam where the floor meets a wall lies in
+the wall's plane. The line query then clips that wall at grazing incidence, and a
+line strategy's density there can drop to zero while a shadow ray from the same
+receiver misses the wall. The PL2 density fixture first met this with pixel-center
+camera rays, which the Cornell room's symmetry lands exactly on the seams, and now
+traces off-center rays. Seams have zero area, so jittered rendering does not meet
+them, and the convergence tests show no bias. A robust treatment, such as excluding
+occluders that contain the apex, belongs with PL3's traversal work.
+
 #### D8c Registration
 
 Each template is registered everywhere `veach-guibas-mis` is:
