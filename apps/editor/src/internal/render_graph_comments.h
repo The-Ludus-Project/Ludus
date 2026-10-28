@@ -117,6 +117,7 @@ private:
     };
     QVector<BoundaryPort> mBoundaryPorts;
     QHash<QString, QGraphicsSimpleTextItem*> mCounts;
+    QHash<QString, QGraphicsSimpleTextItem*> mPlanSummaries;
     QVector<QGraphicsRectItem*> mItems;
     QString mFile;
     QString mConfiguration;

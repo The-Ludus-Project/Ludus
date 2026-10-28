@@ -411,6 +411,71 @@ bool RenderGraphHistory::VisitAncestor(int32 index)
     return true;
 }
 
+bool RenderGraphHistory::VisitNodePath(const QVector<RenderGraphHistoryLocation>& path, const QString& node)
+{
+    if (path.isEmpty() == true || path.size() > MAX_PATH_DEPTH || node.isEmpty() == true ||
+        path.first().Instance.isEmpty() == false)
+    {
+        return false;
+    }
+    Entry target{path};
+    RenderGraphHistoryRecordCache records(mDocument);
+    if (reconcile(target, records) == false || target.Path.size() != path.size())
+    {
+        return false;
+    }
+    for (int32 index = 0; index < path.size(); ++index)
+    {
+        if (target.Path.at(index).File != path.at(index).File ||
+            target.Path.at(index).Configuration != path.at(index).Configuration ||
+            target.Path.at(index).Instance != path.at(index).Instance)
+        {
+            return false;
+        }
+    }
+    bool hasNode = false;
+    for (const QJsonValueConstRef value : records.Get(path.last()).value(QStringLiteral("nodes")).toArray())
+    {
+        hasNode = hasNode == true || value.toObject().value(QStringLiteral("id")).toString() == node;
+    }
+    if (hasNode == false)
+    {
+        return false;
+    }
+    saveCurrentView();
+    prune();
+    const QVector<RenderGraphHistoryLocation> current = GetPath();
+    int32 sharedPrefix = 0;
+    for (int32 index = 0; index < qMin(current.size(), target.Path.size()); ++index)
+    {
+        if (current.at(index).File != target.Path.at(index).File ||
+            current.at(index).Configuration != target.Path.at(index).Configuration ||
+            current.at(index).Instance != target.Path.at(index).Instance)
+        {
+            break;
+        }
+        target.Path[index].View = current.at(index).View;
+        target.Path[index].HasView = current.at(index).HasView;
+        ++sharedPrefix;
+    }
+    target.Path.last().View = mCanvas.CaptureViewState();
+    target.Path.last().View.Selection = {node};
+    if (sharedPrefix != target.Path.size() || sharedPrefix != current.size())
+    {
+        target.Path.last().View.RevealedFrames.clear();
+    }
+    target.Path.last().HasView = true;
+    if (showEntry(target) == false)
+    {
+        return false;
+    }
+    appendVisit(target);
+    mCanvas.RevealNode(node);
+    mCanvas.FitSelection();
+    mCanvas.setFocus();
+    return true;
+}
+
 QVector<RenderGraphHistoryLocation> RenderGraphHistory::GetPath() const
 {
     return mCurrent >= 0 ? mEntries.at(mCurrent).Path : QVector<RenderGraphHistoryLocation>{};
@@ -481,5 +546,6 @@ void RenderGraphHistory::refresh()
         mBreadcrumbs.append(action);
     }
     setAccessibleDescription(names.join(QStringLiteral(" → ")));
+    Q_EMIT Changed();
 }
 } // namespace ludus::editor
