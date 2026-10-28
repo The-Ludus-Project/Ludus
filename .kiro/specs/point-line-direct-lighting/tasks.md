@@ -221,8 +221,9 @@ Vulkan was not run: no Linux or Vulkan host was available.
       (expects `RayPipelines` false on Metal), one legacy-package case in
       `ludus_render_graph_ray_pixels` (`storageGeneration.Decode`), and five
       `renderer_workspace_tests` cases in `ludus_editor_tests` whose fake SDK
-      lacks `compile_metal_ray.py`. `check-wiki --documentation-only` reports
-      only the missing Doxygen API pages (Doxygen bootstrap is Linux-only).
+      lacks `compile_metal_ray.py`. `scripts/build-api --bootstrap` (pinned
+      Doxygen, baseline `4011adfc`) reports no new gaps, and
+      `check-wiki --documentation-only` then passes.
       Ruff was not run (not installed locally). Vulkan was not run.*
 
 ## PL2 Point-and-line MIS template
