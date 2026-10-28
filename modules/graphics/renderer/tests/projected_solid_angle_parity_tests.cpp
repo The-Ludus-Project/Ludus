@@ -1,5 +1,8 @@
+#include "../src/internal/ltc_table.h"
 #include "linearly_transformed_cosine_parity.h"
 #include "linearly_transformed_cosine_parity_layout.h"
+#include "ltc_table_parity.h"
+#include "ltc_table_parity_layout.h"
 #include "projected_solid_angle_parity.h"
 #include "projected_solid_angle_parity_layout.h"
 
@@ -24,7 +27,8 @@
 
 // GPU evidence for FoundationMath's shader ports of projected solid angle sampling
 // (modules/foundation/math/shaders/projected_solid_angle.slang) and of linearly transformed cosines over
-// polygons (shaders/linearly_transformed_cosine.slang). The C++ implementation is the
+// polygons (shaders/linearly_transformed_cosine.slang), and for the renderer's shader lookup of its generated LTC table
+// (shaders/ltc_table.slang). The C++ implementation is the
 // reference; its accuracy against an exact float64 oracle is established by the FoundationMath
 // tests. GPU transcendental functions differ by a few ulps, which the paper's single-precision
 // analysis (Peters 2021, section 3.6) amplifies only for small projected solid angles and near the
@@ -555,4 +559,105 @@ TEST_CASE("GPU linearly transformed cosine sampling matches the C++ implementati
     REQUIRE(GetPercentile(densityErrors, 0.99F) <= 5.0e-4F);
     REQUIRE(GetPercentile(directionErrors, 0.99F) <= 5.0e-4F);
     REQUIRE(GetPercentile(directionErrors, 1.0F) <= 5.0e-2F);
+}
+
+TEST_CASE("GPU LTC table lookups match the C++ lookup", "[renderer][gpu][ltc]")
+{
+    rhi::Shutdown();
+    struct Guard
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+
+    constexpr uint32 LOOKUP_CASE_COUNT = 64 * LUDUS_LTC_TABLE_PARITY_GROUP_SIZE;
+    constexpr uint32 INVERSE_COLUMN_COUNT = 3;
+    // Roughness outside the table and views below the horizon or along the normal exercise the clamps.
+    constexpr float32 FIXED_CASES[][4] = {
+        {0.0F, 0.0F, 0.0F, 1.0F},
+        {0.045F, 0.0F, 0.0F, 1.0F},
+        {1.0F, 1.0F, 0.0F, 0.0F},
+        {1.5F, 0.6F, 0.0F, 0.8F},
+        {0.3F, 0.0F, 0.6F, -0.8F},
+        {0.3F, -0.6F, 0.0F, 0.8F},
+    };
+    constexpr uint32 FIXED_CASE_COUNT = sizeof(FIXED_CASES) / sizeof(FIXED_CASES[0]);
+    math::RandomStream random;
+    REQUIRE(random.TryReseed(RANDOM_SEED, 6) == true);
+    Array<float32> cases;
+    REQUIRE(cases.TryResize(usize{LOOKUP_CASE_COUNT} * LUDUS_LTC_TABLE_PARITY_WORDS_PER_CASE * FLOATS_PER_WORD, 0.0F) ==
+            true);
+    for (uint32 i = 0; i < LOOKUP_CASE_COUNT; ++i)
+    {
+        float32* words = cases.GetData() + usize{i} * LUDUS_LTC_TABLE_PARITY_WORDS_PER_CASE * FLOATS_PER_WORD;
+        if (i < FIXED_CASE_COUNT)
+        {
+            for (uint32 j = 0; j < FLOATS_PER_WORD; ++j)
+            {
+                words[j] = FIXED_CASES[i][j];
+            }
+            continue;
+        }
+        const float32 cosine = random.NextFloat01();
+        const float32 sine = math::Sqrt(1.0F - cosine * cosine);
+        const float32 azimuth = Draw(random, 0.0F, math::kTauF);
+        words[0] = Draw(random, 0.045F, 1.0F);
+        words[1] = sine * math::Cos(azimuth);
+        words[2] = sine * math::Sin(azimuth);
+        words[3] = cosine;
+    }
+    const usize resultBytes =
+        usize{LOOKUP_CASE_COUNT} * LUDUS_LTC_TABLE_PARITY_WORDS_PER_RESULT * FLOATS_PER_WORD * sizeof(float32);
+    Array<uint8> resultBytesStorage;
+    if (RunParityKernel(ludus::shaders::ltc_table_parity::Compute(),
+                        cases,
+                        LOOKUP_CASE_COUNT / LUDUS_LTC_TABLE_PARITY_GROUP_SIZE,
+                        resultBytes,
+                        resultBytesStorage) == false)
+    {
+        SKIP("No native GPU adapter");
+    }
+
+    Array<float32> errors;
+    for (uint32 i = 0; i < LOOKUP_CASE_COUNT; ++i)
+    {
+        float32 words[LUDUS_LTC_TABLE_PARITY_WORDS_PER_RESULT * FLOATS_PER_WORD];
+        std::memcpy(words, resultBytesStorage.GetData() + usize{i} * sizeof(words), sizeof(words));
+        const float32* parameters = cases.GetData() + usize{i} * FLOATS_PER_WORD;
+        INFO("case " << i << ", roughness " << parameters[0] << ", view z " << parameters[3]);
+        const ludus::graphics::renderer::internal::SpecularLtc expected =
+            ludus::graphics::renderer::internal::LookupSpecularLtc(
+                parameters[0],
+                math::Vector3{parameters[1], parameters[2], parameters[3]});
+        // Entries are compared relative to the matrix's largest entry, the scale the LTC is invariant to.
+        float32 scale = 0.0F;
+        for (uint32 j = 0; j < INVERSE_COLUMN_COUNT; ++j)
+        {
+            scale = math::Max(scale,
+                              math::Max(math::Abs(expected.InverseTransform.Columns[j].X),
+                                        math::Max(math::Abs(expected.InverseTransform.Columns[j].Y),
+                                                  math::Abs(expected.InverseTransform.Columns[j].Z))));
+        }
+        float32 error = 0.0F;
+        for (uint32 j = 0; j < INVERSE_COLUMN_COUNT; ++j)
+        {
+            const math::Vector3 column{words[j * FLOATS_PER_WORD],
+                                       words[j * FLOATS_PER_WORD + 1],
+                                       words[j * FLOATS_PER_WORD + 2]};
+            error = math::Max(error, math::Length(column - expected.InverseTransform.Columns[j]) / scale);
+        }
+        const float32* moments = words + INVERSE_COLUMN_COUNT * FLOATS_PER_WORD;
+        error = math::Max(error, math::Abs(moments[0] - expected.Norm));
+        error = math::Max(error, math::Abs(moments[1] - expected.FresnelNorm));
+        REQUIRE(errors.TryAdd(error) == true);
+        if (i < FIXED_CASE_COUNT)
+        {
+            REQUIRE(error <= 1.0e-5F);
+        }
+    }
+    // Apple M5 measured a p99 of 1.5e-6 and a largest error of 1.6e-5; the GPU's arctangent differs by a few ulps.
+    REQUIRE(GetPercentile(errors, 0.99F) <= 1.0e-5F);
+    REQUIRE(GetPercentile(errors, 1.0F) <= 1.0e-4F);
 }
