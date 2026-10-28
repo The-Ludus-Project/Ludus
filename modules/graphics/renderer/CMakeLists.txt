@@ -316,6 +316,14 @@ if(TARGET ludus_renderer_render_tests)
     ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_scene_compute_raster
         MANIFEST "${scene_compute_staged}/main.lushader.json" CONFIGURATION Raster RUNTIME_PACKAGE)
     cmake_path(GET rg2_scene_compute_raster_RUNTIME_PACKAGE PARENT_PATH scene_compute_raster_package_directory)
+    # GetEmitterBounds: a compute pass compares the packed emitter bounds with their triangles.
+    set(emitter_bounds_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/emitter_bounds")
+    set(emitter_bounds_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/emitter_bounds")
+    file(COPY "${emitter_bounds_source}/" DESTINATION "${emitter_bounds_staged}" PATTERN "*.in" EXCLUDE)
+    configure_file("${emitter_bounds_source}/main.lushader.json.in" "${emitter_bounds_staged}/main.lushader.json" @ONLY)
+    ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_emitter_bounds
+        MANIFEST "${emitter_bounds_staged}/main.lushader.json" RUNTIME_PACKAGE)
+    cmake_path(GET rg2_emitter_bounds_RUNTIME_PACKAGE PARENT_PATH emitter_bounds_package_directory)
     set(compute_mixed_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/compute_mixed")
     set(compute_mixed_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/compute_mixed")
     file(COPY "${compute_mixed_source}/" DESTINATION "${compute_mixed_staged}" PATTERN "*.in" EXCLUDE)
@@ -386,6 +394,7 @@ if(TARGET ludus_renderer_render_tests)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_SCENE_COMPUTE_DIRECTORY="${scene_compute_package_directory}"
         LUDUS_RG3_SCENE_COMPUTE_RASTER_DIRECTORY="${scene_compute_raster_package_directory}"
+        LUDUS_RG3_EMITTER_BOUNDS_DIRECTORY="${emitter_bounds_package_directory}"
         LUDUS_RG3_COMPUTE_MIXED_DIRECTORY="${compute_mixed_package_directory}"
         LUDUS_RG3_DIRECT_LIGHTING_REFERENCE_DIRECTORY="${direct_lighting_package_directory}")
     set(visibility_sequence_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/visibility_sequence")

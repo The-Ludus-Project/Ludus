@@ -79,6 +79,18 @@ struct ReferenceTriangle final
     uint32 ShaderEmitter = DEFAULT_SCENE_MATERIAL;
     uint64 ShaderSourceId = 0;
 };
+/// World bounds of one authored-graph mesh emitter's positive-area triangles, read by
+/// scene_shader.slang GetEmitterBounds. Fixed for the scene's SourceGeneration.
+struct ReferenceEmitterBounds final
+{
+    /// Centred on the vertex AABB; encloses every vertex up to float32 rounding.
+    math::Sphere SphereWorld;
+    /// Unit area-weighted mean geometric normal; +Z when the normals cancel.
+    math::Vector3 NormalAxisWorld = {0, 0, 1};
+    /// Every geometric normal is within acos(CosConeHalfAngle) of the axis; -1 covers all directions.
+    float32 CosConeHalfAngle = -1;
+    bool IsEmissionTwoSided = true;
+};
 struct ReferenceInstance final
 {
     const ReferenceSurfaceData* Surface = nullptr;
@@ -230,6 +242,7 @@ struct ReferenceJob final
     uint64 SourceGeneration = 0;
     uint32 SceneData = ::ludus::content::render_graph_format::SCENE_DATA_ALL;
     Array<math::Vector4> ShaderEmitters;
+    Array<ReferenceEmitterBounds> ShaderEmitterBounds; // Parallel to ShaderEmitters.
     Array<uint8> ShaderTextureBytes;
     Array<ReferenceAccumulator> Pixels;
     Array<ReferencePath> Paths;

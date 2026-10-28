@@ -6,6 +6,7 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/addressed_random.hpp>
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 using namespace ludus::foundation;
@@ -456,4 +457,54 @@ TEST_CASE("GPU opacity partition order preserves original triangle identities an
     packed[0].X = 1;
     internal::PackGpuPreviewRayOrder(scene, true, packed.GetData());
     CHECK(packed[0].X == 1);
+}
+TEST_CASE("Emitter bounds enclose their triangles with a normal cone and emission sidedness", "[scene-shader]")
+{
+    SceneFixture fixture;
+    core::UniquePtr<internal::ReferenceJob> job;
+    REQUIRE(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(job->ShaderEmitterBounds.GetSize() == job->ShaderEmitters.GetSize());
+    // The emitter is the single triangle (1,0), (1,1), (0,1) at z = 0.5.
+    const internal::ReferenceEmitterBounds& triangle = job->ShaderEmitterBounds[0];
+    CHECK(triangle.SphereWorld.Center.X == .5F);
+    CHECK(triangle.SphereWorld.Center.Y == .5F);
+    CHECK(triangle.SphereWorld.Center.Z == .5F);
+    CHECK(triangle.SphereWorld.Radius == Catch::Approx(0.70710678F));
+    CHECK(triangle.NormalAxisWorld.Z == 1);
+    CHECK(triangle.CosConeHalfAngle == 1);
+    CHECK(triangle.IsEmissionTwoSided == false);
+    job.Reset();
+    fixture.Materials[1].IsEmissionTwoSided = true;
+    fixture.Slots[0] = 1; // Both triangles emit; lifting a corner folds them along the diagonal.
+    fixture.Positions[0].Z = 1.5F;
+    REQUIRE(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(job->ShaderEmitterBounds.GetSize() == 1);
+    const internal::ReferenceEmitterBounds& folded = job->ShaderEmitterBounds[0];
+    CHECK(folded.IsEmissionTwoSided == true);
+    CHECK(folded.SphereWorld.Center.Z == 1);
+    CHECK(math::Length(folded.NormalAxisWorld) == Catch::Approx(1));
+    CHECK(folded.CosConeHalfAngle < 1);
+    for (const internal::ReferenceTriangle& face : job->Scene.Triangles)
+    {
+        CHECK(math::Dot(face.GeometricNormal, folded.NormalAxisWorld) >= folded.CosConeHalfAngle);
+        for (const math::Vector3 positionWorld : face.Positions)
+        {
+            CHECK(math::Length(positionWorld - folded.SphereWorld.Center) <= folded.SphereWorld.Radius);
+        }
+    }
+    job.Reset();
+    fixture.Positions[0].Z = .5F;
+    fixture.Indices = {{0, 1, 3, 0, 3, 1}}; // The same face twice, wound both ways: the normals cancel.
+    REQUIRE(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(job->ShaderEmitterBounds.GetSize() == 1);
+    CHECK(job->ShaderEmitterBounds[0].CosConeHalfAngle == -1);
+    CHECK(job->ShaderEmitterBounds[0].NormalAxisWorld.Z == 1);
+    job.Reset();
+    fixture.Materials[1].Emission = {0, 0, 0};
+    REQUIRE(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
+            rhi::RasterStatus::Ready);
+    CHECK(job->ShaderEmitterBounds.GetSize() == 0);
 }
