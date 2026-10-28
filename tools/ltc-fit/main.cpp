@@ -74,6 +74,7 @@ struct TextBuilder final
         }
     }
     /// Scientific notation with significantDigits digits, for example -1.25e-3.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): value then digit count, like printf's precision.
     void AppendScientific(float64 value, uint32 significantDigits, bool isFloat32) noexcept
     {
         if (value == 0.0)
