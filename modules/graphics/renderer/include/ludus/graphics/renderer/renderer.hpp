@@ -47,6 +47,8 @@ struct GpuPreviewGraphInvocation final
     /// enabled compute shader declares that binding. Size is a positive multiple of four. Caller-owned,
     /// shared by every pass of the graph and retained through job release and submitted completion.
     GpuPreviewGraphBuffer RayPathCapture{};
+    /// Execute the enabled native ray stages. False selects the ordinary compute artifact.
+    bool HasNativeRayInvocation = false;
 };
 namespace internal
 {

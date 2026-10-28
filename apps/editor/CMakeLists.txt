@@ -65,12 +65,12 @@ endforeach()
 set_source_files_properties(src/render_graph_scene_authoring.cpp
     PROPERTIES COMPILE_DEFINITIONS "${scene_query_definitions}")
 
-# Scene compute nodes accept only the builder's fixed wrapper workgroup as an explicit group size.
-set(scene_compute_policy "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/render_graph_compute.py")
+# Import the compiler's admitted workgroup shapes into the shared canvas/Properties form.
+set(scene_compute_policy "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/render_graph_ray.py")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${scene_compute_policy}")
 execute_process(
     COMMAND "${Python3_EXECUTABLE}" -c
-        "import sys; sys.path.insert(0, sys.argv[1]); from ludus_tools.render_graph_compute import GROUP_SIZE; assert GROUP_SIZE[1:] == [1, 1]; print(GROUP_SIZE[0])"
+        "import sys; sys.path.insert(0, sys.argv[1]); import json; from ludus_tools.render_graph_ray import SUPPORTED_WORKGROUP_SIZES; print(json.dumps(SUPPORTED_WORKGROUP_SIZES,separators=(',',':')))"
         "${PROJECT_SOURCE_DIR}/scripts/python"
     RESULT_VARIABLE scene_compute_status OUTPUT_VARIABLE scene_compute_group_width ERROR_VARIABLE scene_compute_error
     OUTPUT_STRIP_TRAILING_WHITESPACE)
@@ -78,7 +78,7 @@ if(NOT scene_compute_status EQUAL 0)
     message(FATAL_ERROR "Cannot read the scene compute group size: ${scene_compute_error}")
 endif()
 set_source_files_properties(src/render_graph_pipeline_node.cpp
-    PROPERTIES COMPILE_DEFINITIONS "LUDUS_EDITOR_SCENE_COMPUTE_GROUP_WIDTH=${scene_compute_group_width}")
+    PROPERTIES COMPILE_DEFINITIONS "LUDUS_EDITOR_SCENE_COMPUTE_GROUPS=R\"policy(${scene_compute_group_width})policy\"")
 
 # The settings form mirrors the build service's admission policy, not a second copy.
 set(graph_settings_policy "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/render_graph_settings.py")
@@ -506,6 +506,8 @@ qt_add_executable(ludus_editor
     src/project_setup_dialog.cpp
     src/project_creation_dialog.cpp
     src/workspace_style.cpp
+    src/internal/window_size.h
+    src/window_size.cpp
     src/controller.cpp
     src/controller_play.cpp
 )
@@ -743,6 +745,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/viewport_debug_tests.cpp
         tests/preview_generation_tests.cpp
         tests/viewport_navigation_tests.cpp
+        tests/viewport_legibility_tests.cpp
         tests/viewport_frame_pump_tests.cpp
         tests/viewport_frame_source_tests.cpp
         tests/world_demo_workspace_tests.cpp
@@ -886,7 +889,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/timing_panel.cpp
         src/project_setup_dialog.cpp
         src/project_creation_dialog.cpp
-        src/workspace_style.cpp)
+        src/workspace_style.cpp
+        src/window_size.cpp)
     target_link_libraries(ludus_editor_tests
         PRIVATE
             Ludus::RenderGraphFormat

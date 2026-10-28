@@ -445,7 +445,8 @@ void ProfilingController::acceptPassBatch(uint64 frameId,
             .ScopeIdentity = pass.Scope.Identity,
             .ScopePassIndex = pass.ScopePassIndex,
             .LogicalPassCount = pass.Scope.LogicalPassCount,
-            .IsCompute = pass.Kind == graphics::rhi::GpuPassKind::Compute,
+            .IsCompute = pass.Kind != graphics::rhi::GpuPassKind::Raster,
+            .IsRayTracing = pass.Kind == graphics::rhi::GpuPassKind::RayTracing,
         };
         if (pass.HasCpuInterval == true)
         {

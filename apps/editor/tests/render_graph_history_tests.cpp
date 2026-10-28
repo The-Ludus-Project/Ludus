@@ -97,7 +97,7 @@ RenderGraphViewState SetView(RenderGraphCanvas& inoutCanvas,
                              float64 zoom,
                              RenderGraphTraceDirection trace)
 {
-    REQUIRE(inoutCanvas.RestoreViewState({selection, centreScene, zoom, trace}) == true);
+    REQUIRE(inoutCanvas.RestoreViewState({selection, centreScene, zoom, trace, {}}) == true);
     QCoreApplication::processEvents();
     return inoutCanvas.CaptureViewState();
 }

@@ -1039,6 +1039,9 @@ TEST_CASE("runtime packages preserve relative policies and decode fixed legacy v
                                  format::BILINEAR_PACKAGE_VERSION,
                                  format::DENOISING_PACKAGE_VERSION,
                                  format::METALFX_SPATIAL_PACKAGE_VERSION,
+                                 format::SOFTWARE_RAY_PACKAGE_VERSION,
+                                 format::CUSTOM_RAY_PACKAGE_VERSION,
+                                 format::NATIVE_RAY_PIPELINE_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         PackageOptions options;
@@ -1119,6 +1122,23 @@ TEST_CASE("runtime packages preserve scene selection and default legacy packages
     CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
 }
 
+TEST_CASE("Native stage requirements are distinct from inline ray queries", "[render-graph][activation]")
+{
+    format::Pass pass{};
+    pass.Program = format::Technique::RayTracing;
+    pass.Traversal = format::RayTraversal::HardwarePipeline;
+    renderer::RenderGraphPlan plan{};
+    plan.Passes = {&pass, 1};
+    CHECK(renderer::RequiresNativeRayPipeline(plan) == true);
+    CHECK(renderer::RequiresHardwareRayTracing(plan) == true);
+    pass.Traversal = format::RayTraversal::NativeQuery;
+    CHECK(renderer::RequiresNativeRayPipeline(plan) == false);
+    CHECK(renderer::RequiresHardwareRayTracing(plan) == true);
+    pass.Traversal = format::RayTraversal::Custom;
+    CHECK(renderer::RequiresNativeRayPipeline(plan) == false);
+    CHECK(renderer::RequiresHardwareRayTracing(plan) == false);
+}
+
 TEST_CASE("Runtime packages preserve explicit software traversal and legacy native requirements",
           "[render-graph][activation]")
 {
@@ -1132,7 +1152,15 @@ TEST_CASE("Runtime packages preserve explicit software traversal and legacy nati
     options.Version = format::METALFX_SPATIAL_PACKAGE_VERSION;
     CHECK(renderer::RequiresHardwareRayTracing(MakePackage(options)->GetPlan()) == true);
     options.Version = format::PACKAGE_VERSION;
-    options.Traversal = static_cast<format::RayTraversal>(2);
+    options.Traversal = format::RayTraversal::Custom;
+    const core::UniquePtr<renderer::RenderGraphPackage> custom = MakePackage(options);
+    CHECK(renderer::UsesRayTracing(custom->GetPlan()) == true);
+    CHECK(renderer::RequiresHardwareRayTracing(custom->GetPlan()) == false);
+    CHECK(custom->GetPlan().Passes[0].Traversal == format::RayTraversal::Custom);
+    options.Version = format::SOFTWARE_RAY_PACKAGE_VERSION;
+    CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
+    options.Version = format::PACKAGE_VERSION;
+    options.Traversal = static_cast<format::RayTraversal>(static_cast<uint32>(format::RayTraversal::Custom) + 1);
     CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
     options.Traversal = format::RayTraversal::TriangleLoop;
     options.Program = format::Technique::ColorAndDepth;
@@ -1209,6 +1237,9 @@ TEST_CASE("runtime independent shader pairs decode with their own stage and bind
                                  format::BILINEAR_PACKAGE_VERSION,
                                  format::DENOISING_PACKAGE_VERSION,
                                  format::METALFX_SPATIAL_PACKAGE_VERSION,
+                                 format::SOFTWARE_RAY_PACKAGE_VERSION,
+                                 format::CUSTOM_RAY_PACKAGE_VERSION,
+                                 format::NATIVE_RAY_PIPELINE_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         constexpr format::Technique GBUFFER_PROGRAM = static_cast<format::Technique>(format::LEGACY_TECHNIQUE_COUNT);
@@ -1325,6 +1356,9 @@ TEST_CASE("legacy scene-ray packages preserve implicit tone mapping independentl
                                  format::BILINEAR_PACKAGE_VERSION,
                                  format::DENOISING_PACKAGE_VERSION,
                                  format::METALFX_SPATIAL_PACKAGE_VERSION,
+                                 format::SOFTWARE_RAY_PACKAGE_VERSION,
+                                 format::CUSTOM_RAY_PACKAGE_VERSION,
+                                 format::NATIVE_RAY_PIPELINE_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         for (const format::StageRole compute : {format::StageRole::RayCompute,
@@ -1337,9 +1371,14 @@ TEST_CASE("legacy scene-ray packages preserve implicit tone mapping independentl
             options.AccumulationSamples = 2;
             PackageWriter writer;
             WritePlan(writer, options, 3);
+            const usize computeStage = writer.Bytes.GetSize();
+            constexpr usize STAGES = 3;
+            StaticArray<usize, STAGES> stageOffsets{};
+            usize stageIndex = 0;
             for (const format::StageRole role :
                  {compute, format::StageRole::RayImageVertex, format::StageRole::RayImageFragment})
             {
+                stageOffsets[stageIndex++] = writer.Bytes.GetSize();
                 const bool isImageVertex = role == format::StageRole::RayImageVertex;
                 writer.WriteWord(static_cast<uint32>(role));
                 writer.WriteWord(static_cast<uint32>(format::ShaderTarget::Wgsl));
@@ -1348,6 +1387,12 @@ TEST_CASE("legacy scene-ray packages preserve implicit tone mapping independentl
                 writer.WriteWord(static_cast<uint32>(ENTRY.size()));
                 writer.WriteWord(static_cast<uint32>(FRAGMENT_TEXT.size()));
                 writer.WriteWord(0);
+                if (role == compute && version >= format::RAY_WORKGROUP_PACKAGE_VERSION)
+                {
+                    writer.WriteWord(8);
+                    writer.WriteWord(8);
+                    writer.WriteWord(1);
+                }
                 if (isImageVertex == true)
                 {
                     writer.WriteWord(0);
@@ -1356,12 +1401,53 @@ TEST_CASE("legacy scene-ray packages preserve implicit tone mapping independentl
                 writer.WritePadded(ENTRY);
                 writer.WritePadded(FRAGMENT_TEXT);
             }
+            const usize stagesEnd = writer.Bytes.GetSize();
             writer.WriteWord(0); // Structured storage count.
             writer.WriteWord(static_cast<uint32>(options.PassName.size()));
             writer.WritePadded(options.PassName);
             renderer::RenderGraphPackage package;
             REQUIRE(package.Decode({writer.Bytes.GetData(), writer.Bytes.GetSize()}) ==
                     renderer::RenderGraphPackageStatus::Ready);
+            const renderer::RenderGraphPrograms programs = package.GetPrograms({}, {});
+            CHECK(programs.RayCompute.WorkgroupSize[0] == (version >= format::RAY_WORKGROUP_PACKAGE_VERSION ? 8 : 64));
+            CHECK(programs.RayCompute.WorkgroupSize[1] == (version >= format::RAY_WORKGROUP_PACKAGE_VERSION ? 8 : 1));
+            CHECK(programs.RayCompute.WorkgroupSize[2] == 1);
+            if (version >= format::RAY_WORKGROUP_PACKAGE_VERSION)
+            {
+                const usize dimensions = computeStage + format::STAGE_FIELD_COUNT * sizeof(uint32);
+                for (const usize axis : {usize{0}, usize{1}, usize{2}})
+                {
+                    Array<uint8> invalid = writer.Bytes;
+                    invalid[dimensions + axis * sizeof(uint32)] = 0;
+                    CHECK(DecodeBytes(invalid) == renderer::RenderGraphPackageStatus::Malformed);
+                }
+                Array<uint8> invalidDepth = writer.Bytes;
+                invalidDepth[dimensions + 2 * sizeof(uint32)] = 2;
+                CHECK(DecodeBytes(invalidDepth) == renderer::RenderGraphPackageStatus::Malformed);
+                renderer::RenderGraphPackage truncated;
+                CHECK(truncated.Decode({writer.Bytes.GetData(), dimensions + 2 * sizeof(uint32)}) ==
+                      renderer::RenderGraphPackageStatus::Malformed);
+                // A second target of the same role must describe the same workgroup.
+                for (const uint8 width : {uint8{8}, uint8{64}})
+                {
+                    PackageWriter multiple;
+                    for (usize byte = 0; byte < stagesEnd; ++byte)
+                        multiple.Bytes.Add(writer.Bytes[byte]);
+                    const usize second = multiple.Bytes.GetSize();
+                    for (usize byte = computeStage; byte < stagesEnd; ++byte)
+                        multiple.Bytes.Add(writer.Bytes[byte]);
+                    for (const usize offset : stageOffsets)
+                        multiple.Bytes[second + offset - computeStage + sizeof(uint32)] =
+                            static_cast<uint8>(format::ShaderTarget::Metal);
+                    multiple.Bytes[second + format::STAGE_FIELD_COUNT * sizeof(uint32)] = width;
+                    for (usize byte = stagesEnd; byte < writer.Bytes.GetSize(); ++byte)
+                        multiple.Bytes.Add(writer.Bytes[byte]);
+                    constexpr usize STAGE_COUNT_OFFSET = 9 * sizeof(uint32);
+                    multiple.Bytes[STAGE_COUNT_OFFSET] = STAGES * 2;
+                    CHECK(DecodeBytes(multiple.Bytes) == (width == 8 ? renderer::RenderGraphPackageStatus::Ready
+                                                                     : renderer::RenderGraphPackageStatus::Malformed));
+                }
+            }
             CHECK(package.GetPlan().Passes[0].ToneMappingExposure ==
                   (version < format::TONE_MAPPING_PACKAGE_VERSION && compute != format::StageRole::RayCompute ? 1 : 0));
             const uint32 expectedSamples = version >= format::ACCUMULATION_PACKAGE_VERSION ? 2

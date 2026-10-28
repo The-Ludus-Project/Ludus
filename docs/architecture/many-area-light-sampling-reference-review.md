@@ -79,10 +79,10 @@ template and RT1 differ only where noted.
    on an emitter selects the *emissive set* with probability `P_E` (`Ne/N`), and
    its specific emitter is discarded. Only the emissive branch changes.
 2. **Candidate density.** `p_src` is the existing power-weighted triangle CDF
-   that RT1 already packs. For graph shaders, expose it as two additive
-   scene-interface v1 functions: one selects a triangle from an explicit
-   dimension, the other returns a triangle's probability. Every positive emitter
-   keeps a nonzero probability.
+   that RT1 already packs. Graph shaders read it through two additive
+   scene-interface v1 functions: `SelectEmissiveTriangle` selects a triangle
+   from an explicit dimension, and `EvaluateEmissiveTriangleSelectionPmf` returns
+   a triangle's probability. Every positive emitter keeps a nonzero probability.
 3. **Per-receiver LTC setup.** Look up the specular LTC once per receiver from
    roughness, `dot(n, ωo)` and `F0`. This gives `M₁⁻¹` and specular albedo `a₁`.
    The diffuse technique is the identity LTC `M₀ = I`, with albedo `a₀`
@@ -350,7 +350,8 @@ aligned to Philox's four-lane blocks:
 | Sequential weighted reservoir | FoundationMath | Implemented as `weighted_reservoir.hpp` and `shaders/weighted_reservoir.slang` ([contract](randomness.md#sequential-weighted-reservoir)): explicit order, zero totals, and selection-frequency tests on exact small integers. The ReSTIR template may adopt it separately; this design does not change that template. |
 | LTC table for Ludus GGX/correlated Smith/Schlick, its fitter and provenance | Renderer (generated include) plus an offline Ludus tool. **Owned by this RIS/many-area-light workstream** (decided October 27, 2026). The polygonal-light LTC templates reuse the same table and fitter rather than building their own. | Reimplemented from Heitz et al. and Peters §4.1, not from GPLv3 utilities. Must cover roughness down to 0.045, where fits are least accurate. A poor fit costs variance, not correctness. |
 | Compute-BVH graph traversal strategy | Renderer, at the shared traversal boundary | Shared with the polygonal-light templates; a prerequisite for both |
-| Power-CDF scene-interface accessors, diffuse albedo approximation, RT1 path state | Renderer | One packed CDF serves RT1 and graph shaders |
+| Power-CDF scene-interface accessors | Renderer | Implemented as `SelectEmissiveTriangle` and `EvaluateEmissiveTriangleSelectionPmf` in `scene_shader.slang` ([usage](../development/render-graph-authoring.md#select-emissive-triangles-by-power)). They read the CDF that `PackReferenceEmitterSelection` packs for RT1, and the private C++ counterparts `SelectReferenceEmissiveTriangle` and `EvaluateReferenceEmissiveTriangleSelectionPmf` match them in the `[power-cdf]` GPU parity test |
+| Diffuse albedo approximation, RT1 path state | Renderer | One packed CDF serves RT1 and graph shaders |
 
 ## Acceptance
 

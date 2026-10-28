@@ -1,6 +1,9 @@
 #include "internal/render_graph_comments.h"
+#include "internal/render_graph_diagnostics.h"
+#include "internal/render_graph_history.h"
 #include "internal/render_graph_live_build.h"
 #include "internal/render_graph_navigation.h"
+#include "internal/render_graph_reroutes.h"
 #include "internal/renderer_workspace.h"
 
 #include <ludus/foundation/base/types.h>
@@ -9,12 +12,17 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QComboBox>
 #include <QContextMenuEvent>
 #include <QCoreApplication>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QFile>
+#include <QGraphicsEllipseItem>
+#include <QGraphicsPathItem>
+#include <QGraphicsScene>
+#include <QGraphicsSimpleTextItem>
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
@@ -97,7 +105,8 @@ RenderGraphViewState SelectTrace(RenderGraphCanvas& inoutCanvas)
     REQUIRE(inoutCanvas.RestoreViewState({{QStringLiteral("first"), QStringLiteral("third")},
                                           QPointF(400, 200),
                                           0.8,
-                                          RenderGraphTraceDirection::Downstream}) == true);
+                                          RenderGraphTraceDirection::Downstream,
+                                          {}}) == true);
     return inoutCanvas.CaptureViewState();
 }
 void CheckSelectionTrace(const RenderGraphCanvas& canvas, const RenderGraphViewState& expected)
@@ -544,4 +553,429 @@ TEST_CASE("failed grouped frame transactions restore the drawable preview and se
     CHECK(canvas.GetComments().GetFrameBounds(QStringLiteral("fill%1").arg(layout_policy::MAX_COMMENT_FRAMES - 1)) ==
           GetRenderGraphCommentBounds(MakeFrame()));
     CheckSelectionTrace(canvas, selected);
+}
+
+namespace
+{
+QGraphicsItem* FindCardOrNull(const RenderGraphCanvas& canvas, const QString& identity)
+{
+    for (QGraphicsItem* item : canvas.scene()->items())
+    {
+        if (item->data(0).toString() == identity)
+        {
+            return item;
+        }
+    }
+    return nullptr;
+}
+QJsonObject MakeStageLocation(const QString& node)
+{
+    return {{QStringLiteral("source"), GetRoot()},
+            {QStringLiteral("configuration"), GetDefault()},
+            {QStringLiteral("node"), node},
+            {QStringLiteral("field"), QStringLiteral("exposure")}};
+}
+void AcceptStageErrors(RendererWorkspace& inoutWorkspace)
+{
+    RenderGraphJobResult result;
+    result.Request.ProjectEpoch = 1;
+    result.Request.Revision = inoutWorkspace.GetDocument().GetRevision();
+    const QComboBox* configurationOrNull =
+        inoutWorkspace.findChild<QComboBox*>(QStringLiteral("renderGraphConfiguration"));
+    REQUIRE(configurationOrNull != nullptr);
+    result.Request.InputIdentity = ComputeRenderGraphBuildIdentity(inoutWorkspace.GetDocument(),
+                                                                   configurationOrNull->currentText(),
+                                                                   RenderGraphSource::Draft);
+    result.Request.Action = QStringLiteral("validate");
+    for (const QString& node : {QStringLiteral("first"), QStringLiteral("second"), QStringLiteral("third")})
+    {
+        result.Diagnostics.append(QJsonObject{{QStringLiteral("code"), QStringLiteral("Field")},
+                                              {QStringLiteral("message"), QStringLiteral("Repair exposure")},
+                                              {QStringLiteral("severity"), QStringLiteral("error")},
+                                              {QStringLiteral("location"), MakeStageLocation(node)}});
+    }
+    inoutWorkspace.AcceptResult(result);
+}
+} // namespace
+
+TEST_CASE("stage collapse schema is optional boolean and remains layout-only through save and undo",
+          "[editor][render-graph][stages]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    OpenWorkspace(workspace, project);
+    SeedFrame(workspace);
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    const RenderGraphViewState view = SelectTrace(canvas);
+    const QByteArray before = workspace.GetDocument().GetDraft(GetRoot());
+    const QByteArray identity =
+        ComputeRenderGraphBuildIdentity(workspace.GetDocument(), GetDefault(), RenderGraphSource::Draft);
+    const uint64 revision = workspace.GetDocument().GetRevision();
+    for (const QJsonValue& value : {QJsonValue(1), QJsonValue(QStringLiteral("true")), QJsonValue(QJsonValue::Null)})
+    {
+        QJsonObject invalid = MakeFrame();
+        invalid.insert(QStringLiteral("collapsed"), value);
+        CHECK(AreRenderGraphCommentFramesValid({invalid}) == false);
+        CHECK(workspace.GetDocument().ReplaceCommentFrames(GetRoot(), GetDefault(), {invalid}) ==
+              RenderGraphDocumentStatus::InvalidEdit);
+    }
+    canvas.GetComments().SetCollapsed(QStringLiteral("stage"), true);
+    const QByteArray collapsed = workspace.GetDocument().GetDraft(GetRoot());
+    CHECK(workspace.GetDocument().GetRevision() == revision + 1);
+    CHECK(GetFrames(workspace.GetDocument()).first().toObject().value(QStringLiteral("collapsed")).toBool() == true);
+    CHECK(ComputeRenderGraphBuildIdentity(workspace.GetDocument(), GetDefault(), RenderGraphSource::Draft) == identity);
+    CheckSelectionTrace(canvas, view);
+    CHECK(FindCardOrNull(canvas, QStringLiteral("first"))->isVisible() == false);
+    CHECK(FindCardOrNull(canvas, QStringLiteral("second"))->isVisible() == false);
+    CHECK(FindCardOrNull(canvas, QStringLiteral("third"))->isVisible() == true);
+    workspace.Undo();
+    CHECK(workspace.GetDocument().GetDraft(GetRoot()) == before);
+    CHECK(FindCardOrNull(canvas, QStringLiteral("first"))->isVisible() == true);
+    CheckSelectionTrace(canvas, view);
+    workspace.Redo();
+    CHECK(workspace.GetDocument().GetDraft(GetRoot()) == collapsed);
+    CHECK(FindCardOrNull(canvas, QStringLiteral("first"))->isVisible() == false);
+    CheckSelectionTrace(canvas, view);
+    QStringList saved;
+    REQUIRE(workspace.GetDocument().Save(saved) == RenderGraphDocumentStatus::Ok);
+    RenderGraphDocument reopened;
+    REQUIRE(reopened.Load(project.path(), GetRoot()) == RenderGraphDocumentStatus::Ok);
+    CHECK(reopened.GetDraft(GetRoot()) == collapsed);
+    RenderGraphCanvas other(reopened);
+    other.ShowConfiguration(GetRoot(), GetDefault());
+    CHECK(other.GetComments().GetCollapsedFrame(QStringLiteral("second")) == QStringLiteral("stage"));
+}
+
+TEST_CASE("collapsed stage wires expose original crossing endpoints and preserve saved reroutes and trace",
+          "[editor][render-graph][stages]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    OpenWorkspace(workspace, project);
+    SeedFrame(workspace);
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    const RenderGraphViewState view = SelectTrace(canvas);
+    const QPointF first = canvas.GetNodePosition(QStringLiteral("first"));
+    const QPointF second = canvas.GetNodePosition(QStringLiteral("second"));
+    canvas.GetReroutes().AddPoint(QStringLiteral("second.color"), QStringLiteral("third.color"), 0, QPointF(700, 500));
+    const QVector<QPointF> route =
+        canvas.GetReroutes().GetPoints(QStringLiteral("second.color"), QStringLiteral("third.color"));
+    canvas.GetComments().SetCollapsed(QStringLiteral("stage"), true);
+    CHECK(canvas.GetNodeCount() == 3);
+    CHECK(canvas.GetEdgeCount() == 4);
+    CHECK(canvas.GetComments().GetBoundaryPortOrNull(QStringLiteral("first.color"), false) != nullptr);
+    CHECK(canvas.GetComments().GetBoundaryPortOrNull(QStringLiteral("second.color"), true) != nullptr);
+    CHECK(canvas.GetComments().GetBoundaryPortOrNull(QStringLiteral("first.color"), true) == nullptr);
+    CHECK(canvas.GetComments().GetBoundaryPortOrNull(QStringLiteral("second.color"), false) == nullptr);
+    CHECK(canvas.GetReroutes().GetBounds().isEmpty() == true);
+    CHECK(canvas.GetReroutes().GetPoints(QStringLiteral("second.color"), QStringLiteral("third.color")) == route);
+    QGraphicsEllipseItem* boundary = canvas.GetComments().GetBoundaryPortOrNull(QStringLiteral("second.color"), true);
+    REQUIRE(boundary != nullptr);
+    CHECK(canvas.GetPortPosition(QStringLiteral("second.color"), true) ==
+          boundary->mapToScene(boundary->rect().center()));
+    bool isOutput = false;
+    CHECK(canvas.GetComments().GetPortAt(canvas.GetPortPosition(QStringLiteral("second.color"), true), isOutput) ==
+          QStringLiteral("second.color"));
+    CHECK(isOutput == true);
+    CHECK(boundary->pen().widthF() == 2);
+    QSignalSpy replaced(&canvas, &RenderGraphCanvas::ReplaceConnectionRequested);
+    canvas.FitGraph();
+    const QPoint source = canvas.mapFromScene(canvas.GetPortPosition(QStringLiteral("input.color"), true));
+    const QPoint destination = canvas.mapFromScene(canvas.GetPortPosition(QStringLiteral("first.color"), false));
+    QTest::mousePress(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, source);
+    QTest::mouseMove(canvas.viewport(), destination);
+    QTest::mouseRelease(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, destination);
+    REQUIRE(replaced.size() == 1);
+    CHECK(replaced.first().at(0).toString() == QStringLiteral("input.color"));
+    CHECK(replaced.first().at(1).toString() == QStringLiteral("first.color"));
+    CheckSelectionTrace(canvas, view);
+    QSignalSpy inspected(&canvas, &RenderGraphCanvas::ResourceInspectionRequested);
+    canvas.FitGraph();
+    QTimer::singleShot(0, [&canvas]() {
+        QMenu* menuOrNull = canvas.findChild<QMenu*>(QStringLiteral("renderGraphConnectionMenu"));
+        REQUIRE(menuOrNull != nullptr);
+        QAction* inspectOrNull = menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphInspectResource"));
+        REQUIRE(inspectOrNull != nullptr);
+        inspectOrNull->trigger();
+        menuOrNull->close();
+    });
+    const QPoint port = canvas.mapFromScene(canvas.GetPortPosition(QStringLiteral("second.color"), true));
+    QContextMenuEvent context(QContextMenuEvent::Mouse, port, canvas.viewport()->mapToGlobal(port));
+    QCoreApplication::sendEvent(canvas.viewport(), &context);
+    REQUIRE(inspected.size() == 1);
+    CHECK(inspected.first().at(0).toString() == QStringLiteral("second.color"));
+    const uint64 revision = workspace.GetDocument().GetRevision();
+    canvas.GetReroutes().AddPoint(QStringLiteral("second.color"), QStringLiteral("third.color"), 0, QPointF(600, 400));
+    CHECK(workspace.GetDocument().GetRevision() == revision);
+    canvas.GetComments().SetCollapsed(QStringLiteral("stage"), false);
+    CHECK(canvas.GetNodePosition(QStringLiteral("first")) == first);
+    CHECK(canvas.GetNodePosition(QStringLiteral("second")) == second);
+    CHECK(canvas.GetReroutes().GetPoints(QStringLiteral("second.color"), QStringLiteral("third.color")) == route);
+    CHECK(canvas.GetReroutes().GetBounds().isEmpty() == false);
+    CheckSelectionTrace(canvas, view);
+}
+
+TEST_CASE("empty overlapping and nested frames stay expanded even with saved collapsed metadata",
+          "[editor][render-graph][stages]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    OpenWorkspace(workspace, project);
+    QJsonObject stage = MakeFrame();
+    stage.insert(QStringLiteral("collapsed"), true);
+    for (const QRectF& bounds : {QRectF(-40, -110, 600, 400), QRectF(-100, -150, 750, 500), QRectF(400, 0, 600, 400)})
+    {
+        const QJsonObject other = SetRenderGraphCommentBounds(MakeFrame(QStringLiteral("other")), bounds);
+        REQUIRE(workspace.GetDocument().ReplaceCommentFrames(GetRoot(), GetDefault(), {stage, other}) ==
+                RenderGraphDocumentStatus::Ok);
+        workspace.GetCanvas().Rebuild();
+        CHECK(workspace.GetCanvas().GetComments().CanCollapse(QStringLiteral("stage")) == false);
+        CHECK(FindCardOrNull(workspace.GetCanvas(), QStringLiteral("first"))->isVisible() == true);
+        CHECK(workspace.GetCanvas().GetComments().GetCollapsedFrame(QStringLiteral("first")).isEmpty() == true);
+    }
+    stage = SetRenderGraphCommentBounds(stage, QRectF(-2000, -2000, 600, 400));
+    REQUIRE(workspace.GetDocument().ReplaceCommentFrames(GetRoot(), GetDefault(), {stage}) ==
+            RenderGraphDocumentStatus::Ok);
+    workspace.GetCanvas().Rebuild();
+    CHECK(workspace.GetCanvas().GetComments().CanCollapse(QStringLiteral("stage")) == false);
+}
+
+TEST_CASE("moving collapsed stages preserves expanded geometry membership selection and undo",
+          "[editor][render-graph][stages]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    OpenWorkspace(workspace, project);
+    SeedFrame(workspace);
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    const RenderGraphViewState view = SelectTrace(canvas);
+    canvas.GetComments().SetCollapsed(QStringLiteral("stage"), true);
+    const QByteArray before = workspace.GetDocument().GetDraft(GetRoot());
+    const QRectF expanded = GetRenderGraphCommentBounds(GetFrames(workspace.GetDocument()).first().toObject());
+    const QPointF first = canvas.GetNodePosition(QStringLiteral("first"));
+    const QPointF third = canvas.GetNodePosition(QStringLiteral("third"));
+    const QPointF press = canvas.GetComments().GetFrameBounds(QStringLiteral("stage")).topLeft() + QPointF(20, 15);
+    REQUIRE(canvas.GetComments().BeginGesture(press) == true);
+    REQUIRE(canvas.GetComments().UpdateGesture(press + QPointF(100, 150)) == true);
+    REQUIRE(canvas.GetComments().EndGesture() == true);
+    CHECK(canvas.GetNodePosition(QStringLiteral("first")) == first + QPointF(100, 150));
+    CHECK(canvas.GetNodePosition(QStringLiteral("third")) == third);
+    CHECK(GetRenderGraphCommentBounds(GetFrames(workspace.GetDocument()).first().toObject()) ==
+          expanded.translated(100, 150));
+    CHECK(canvas.GetComments().GetCollapsedFrame(QStringLiteral("first")) == QStringLiteral("stage"));
+    CheckSelectionTrace(canvas, view);
+    workspace.Undo();
+    CHECK(workspace.GetDocument().GetDraft(GetRoot()) == before);
+    CHECK(canvas.GetNodePosition(QStringLiteral("first")) == first);
+    CheckSelectionTrace(canvas, view);
+    REQUIRE(canvas.GetComments().BeginGesture(press) == true);
+    REQUIRE(canvas.GetComments().UpdateGesture(press + QPointF(50, 50)) == true);
+    REQUIRE(canvas.GetComments().CancelGesture() == true);
+    CHECK(workspace.GetDocument().GetDraft(GetRoot()) == before);
+    CHECK(canvas.GetNodePosition(QStringLiteral("first")) == first);
+}
+
+TEST_CASE("Find Node temporarily reveals a collapsed stage and browser snapshots restore reveal preferences",
+          "[editor][render-graph][stages]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    OpenWorkspace(workspace, project);
+    SeedFrame(workspace);
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    canvas.GetComments().SetCollapsed(QStringLiteral("stage"), true);
+    const RenderGraphViewState before = SelectTrace(canvas);
+    const QByteArray bytes = workspace.GetDocument().GetDraft(GetRoot());
+    const uint64 revision = workspace.GetDocument().GetRevision();
+    RenderGraphNavigation* navigationOrNull = canvas.findChild<RenderGraphNavigation*>();
+    REQUIRE(navigationOrNull != nullptr);
+    navigationOrNull->NodeRequested(QStringLiteral("second"));
+    CHECK(FindCardOrNull(canvas, QStringLiteral("second"))->isVisible() == true);
+    CHECK(canvas.GetSelectedNodes() == QStringList{QStringLiteral("second")});
+    CHECK(canvas.CaptureViewState().RevealedFrames == QStringList{QStringLiteral("stage")});
+    CHECK(workspace.GetDocument().GetDraft(GetRoot()) == bytes);
+    CHECK(workspace.GetDocument().GetRevision() == revision);
+    const RenderGraphViewState revealed = canvas.CaptureViewState();
+    REQUIRE(canvas.RestoreViewState(before) == true);
+    CHECK(FindCardOrNull(canvas, QStringLiteral("second"))->isVisible() == false);
+    CheckSelectionTrace(canvas, before);
+    REQUIRE(canvas.RestoreViewState(revealed) == true);
+    CHECK(FindCardOrNull(canvas, QStringLiteral("second"))->isVisible() == true);
+    canvas.GetComments().SetCollapsed(QStringLiteral("stage"), true);
+    CHECK(FindCardOrNull(canvas, QStringLiteral("second"))->isVisible() == false);
+    CHECK(workspace.GetDocument().GetRevision() == revision);
+}
+
+TEST_CASE("diagnostics count stage errors and reveal exact fields with Back Forward and stale labels",
+          "[editor][render-graph][stages]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    OpenWorkspace(workspace, project);
+    SeedFrame(workspace);
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    canvas.GetComments().SetCollapsed(QStringLiteral("stage"), true);
+    const RenderGraphViewState before = SelectTrace(canvas);
+    AcceptStageErrors(workspace);
+    CHECK(canvas.GetDiagnostics().CountNodeErrors(GetRoot(),
+                                                  GetDefault(),
+                                                  {QStringLiteral("first"), QStringLiteral("second")}) == 2);
+    bool hasCounts = false;
+    for (QGraphicsItem* item : canvas.scene()->items())
+    {
+        const QGraphicsSimpleTextItem* labelOrNull = qgraphicsitem_cast<QGraphicsSimpleTextItem*>(item);
+        if (labelOrNull != nullptr && labelOrNull->text() == QStringLiteral("2 nodes · 2 errors"))
+        {
+            hasCounts = true;
+        }
+    }
+    CHECK(hasCounts == true);
+    const QByteArray bytes = workspace.GetDocument().GetDraft(GetRoot());
+    QTimer::singleShot(0, []() {
+        QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        REQUIRE(dialogOrNull != nullptr);
+        dialogOrNull->reject();
+    });
+    REQUIRE(canvas.GetDiagnostics().Next() == true);
+    CHECK(FindCardOrNull(canvas, QStringLiteral("first"))->isVisible() == true);
+    CHECK(canvas.GetDiagnosticLocation().value(QStringLiteral("field")).toString() == QStringLiteral("exposure"));
+    REQUIRE(canvas.GetHistory().Back() == true);
+    CHECK(FindCardOrNull(canvas, QStringLiteral("first"))->isVisible() == false);
+    CheckSelectionTrace(canvas, before);
+    REQUIRE(canvas.GetHistory().Forward() == true);
+    CHECK(FindCardOrNull(canvas, QStringLiteral("first"))->isVisible() == true);
+    CHECK(workspace.GetDocument().GetDraft(GetRoot()) == bytes);
+    canvas.GetComments().SetCollapsed(QStringLiteral("stage"), true);
+    canvas.GetDiagnostics().Refresh(RenderGraphDiagnosticFreshness::Stale);
+    bool hasStaleCounts = false;
+    for (QGraphicsItem* item : canvas.scene()->items())
+    {
+        const QGraphicsSimpleTextItem* labelOrNull = qgraphicsitem_cast<QGraphicsSimpleTextItem*>(item);
+        if (labelOrNull != nullptr && labelOrNull->text() == QStringLiteral("2 nodes · 2 errors · stale"))
+        {
+            hasStaleCounts = true;
+        }
+    }
+    CHECK(hasStaleCounts == true);
+    const QString captures = qEnvironmentVariable("LUDUS_EDITOR_GRAPH_STAGES_CAPTURE");
+    if (captures.isEmpty() == false)
+    {
+        REQUIRE(QDir().mkpath(captures) == true);
+        canvas.FitGraph();
+        QCoreApplication::processEvents();
+        REQUIRE(canvas.grab().save(QDir(captures).filePath(QStringLiteral("collapsed-stage.png"))) == true);
+    }
+}
+
+TEST_CASE("stage context collapse and double-click expansion work with Properties hidden",
+          "[editor][render-graph][stages]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    OpenWorkspace(workspace, project);
+    SeedFrame(workspace);
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    const RenderGraphViewState view = SelectTrace(canvas);
+    canvas.FitGraph();
+    QTimer::singleShot(0, []() {
+        QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        REQUIRE(menuOrNull != nullptr);
+        QAction* toggleOrNull = menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphToggleStage"));
+        REQUIRE(toggleOrNull != nullptr);
+        CHECK(toggleOrNull->isEnabled() == true);
+        QTest::mouseClick(menuOrNull,
+                          Qt::LeftButton,
+                          Qt::NoModifier,
+                          menuOrNull->actionGeometry(toggleOrNull).center());
+    });
+    QPoint point = canvas.mapFromScene(QPointF(-20, -95));
+    QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
+    QCoreApplication::sendEvent(canvas.viewport(), &context);
+    CHECK(FindCardOrNull(canvas, QStringLiteral("first"))->isVisible() == false);
+    CheckSelectionTrace(canvas, view);
+    point = canvas.mapFromScene(QPointF(-20, -95));
+    QTest::mouseDClick(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, point);
+    CHECK(FindCardOrNull(canvas, QStringLiteral("first"))->isVisible() == true);
+    CheckSelectionTrace(canvas, view);
+    workspace.Undo();
+    CHECK(FindCardOrNull(canvas, QStringLiteral("first"))->isVisible() == false);
+    QTest::keyClick(&canvas, Qt::Key_A, Qt::ControlModifier);
+    CHECK(canvas.GetSelectedNodes() ==
+          QStringList{QStringLiteral("first"), QStringLiteral("second"), QStringLiteral("third")});
+}
+
+TEST_CASE("boundary ports between collapsed stages and interfaces follow rename disconnect delete and undo",
+          "[editor][render-graph][stages]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    OpenWorkspace(workspace, project);
+    QJsonObject other = SetRenderGraphCommentBounds(MakeFrame(QStringLiteral("other")), QRectF(860, 390, 500, 400));
+    REQUIRE(workspace.GetDocument().ReplaceCommentFrames(GetRoot(), GetDefault(), {MakeFrame(), other}) ==
+            RenderGraphDocumentStatus::Ok);
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    canvas.Rebuild();
+    canvas.GetComments().SetCollapsed(QStringLiteral("stage"), true);
+    canvas.GetComments().SetCollapsed(QStringLiteral("other"), true);
+    CHECK(canvas.GetComments().GetCollapsedFrame(QStringLiteral("third")) == QStringLiteral("other"));
+    CHECK(canvas.GetComments().GetBoundaryPortOrNull(QStringLiteral("second.color"), true) != nullptr);
+    CHECK(canvas.GetComments().GetBoundaryPortOrNull(QStringLiteral("third.color"), false) != nullptr);
+    CHECK(canvas.GetComments().GetBoundaryPortOrNull(QStringLiteral("third.color"), true) != nullptr);
+    QString error;
+    REQUIRE(workspace.GetDocument().RenameNode(GetRoot(),
+                                               GetDefault(),
+                                               QStringLiteral("second"),
+                                               QStringLiteral("toned"),
+                                               error) == RenderGraphDocumentStatus::Ok);
+    canvas.Rebuild();
+    CHECK(canvas.GetComments().GetBoundaryPortOrNull(QStringLiteral("second.color"), true) == nullptr);
+    CHECK(canvas.GetComments().GetBoundaryPortOrNull(QStringLiteral("toned.color"), true) != nullptr);
+    REQUIRE(workspace.GetDocument().Disconnect(GetRoot(),
+                                               GetDefault(),
+                                               QStringLiteral("toned.color"),
+                                               QStringLiteral("third.color")) == RenderGraphDocumentStatus::Ok);
+    canvas.Rebuild();
+    CHECK(canvas.GetComments().GetBoundaryPortOrNull(QStringLiteral("toned.color"), true) == nullptr);
+    CHECK(canvas.GetComments().GetBoundaryPortOrNull(QStringLiteral("third.color"), false) == nullptr);
+    workspace.Undo();
+    CHECK(canvas.GetComments().GetBoundaryPortOrNull(QStringLiteral("toned.color"), true) != nullptr);
+    REQUIRE(workspace.GetDocument().RemoveNodes(GetRoot(),
+                                                GetDefault(),
+                                                {QStringLiteral("first"), QStringLiteral("toned")}) ==
+            RenderGraphDocumentStatus::Ok);
+    canvas.Rebuild();
+    CHECK(canvas.GetComments().CanCollapse(QStringLiteral("stage")) == false);
+    CHECK(canvas.GetComments().GetBoundaryPortOrNull(QStringLiteral("first.color"), false) == nullptr);
+    workspace.Undo();
+    CHECK(canvas.GetComments().GetCollapsedFrame(QStringLiteral("toned")) == QStringLiteral("stage"));
+}
+
+TEST_CASE("temporary stage reveal extends the scroll range to distant hidden nodes without editing layout",
+          "[editor][render-graph][stages]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    OpenWorkspace(workspace, project);
+    REQUIRE(workspace.GetDocument().MoveNodes(GetRoot(), GetDefault(), {{QStringLiteral("third"), 10000, 5000}}) ==
+            RenderGraphDocumentStatus::Ok);
+    const QJsonObject frame = SetRenderGraphCommentBounds(MakeFrame(), QRectF(-40, -110, 10500, 5500));
+    REQUIRE(workspace.GetDocument().ReplaceCommentFrames(GetRoot(), GetDefault(), {frame}) ==
+            RenderGraphDocumentStatus::Ok);
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    canvas.Rebuild();
+    canvas.GetComments().SetCollapsed(QStringLiteral("stage"), true);
+    canvas.FitGraph();
+    canvas.ResetZoom();
+    const QByteArray before = workspace.GetDocument().GetDraft(GetRoot());
+    const RenderGraphViewState view = canvas.CaptureViewState();
+    const QRectF target = FindCardOrNull(canvas, QStringLiteral("third"))->sceneBoundingRect();
+    REQUIRE(canvas.sceneRect().contains(target) == false);
+    canvas.GetComments().RevealNode(QStringLiteral("third"));
+    CHECK(canvas.sceneRect().contains(target) == true);
+    CHECK(canvas.CaptureViewState().Zoom == view.Zoom);
+    CHECK(qAbs(canvas.CaptureViewState().CentreScene.x() - view.CentreScene.x()) < 1);
+    CHECK(qAbs(canvas.CaptureViewState().CentreScene.y() - view.CentreScene.y()) < 1);
+    canvas.RevealNode(QStringLiteral("third"));
+    CHECK(canvas.mapToScene(canvas.viewport()->rect()).boundingRect().contains(target.center()) == true);
+    CHECK(workspace.GetDocument().GetDraft(GetRoot()) == before);
 }
