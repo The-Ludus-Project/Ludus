@@ -20,16 +20,13 @@ StructuredBuffer<NativeRayFunctionTableToken> NativeRayFunctions;
 LUDUS_SHADER_BINDING(LUDUS_METAL_RAY_INTERSECTION_TABLE_BINDING)
 StructuredBuffer<NativeRayIntersectionTableToken> NativeRayIntersections;
 
-[noinline]
-uint LudusNativeResolveTriangle(uint primitive, uint geometry)
-{
+[noinline] uint LudusNativeResolveTriangle(uint primitive, uint geometry) {
     if ((Sampling.z & LUDUS_GPU_PREVIEW_MIXED_OPACITY_FLAG) != 0 && geometry != 0)
         primitive += asuint(SceneValue(Offsets.y).y);
     return asuint(SceneValue(Offsets.y + primitive).x);
 }
 
-[noinline]
-bool LudusNativeAcceptTriangle(uint primitive, uint geometry, float2 barycentric)
+    [noinline] bool LudusNativeAcceptTriangle(uint primitive, uint geometry, float2 barycentric)
 {
     if ((Sampling.z & LUDUS_GPU_PREVIEW_OPAQUE_FLAG) != 0 ||
         ((Sampling.z & LUDUS_GPU_PREVIEW_MIXED_OPACITY_FLAG) != 0 && geometry == 0))
@@ -44,14 +41,14 @@ bool LudusNativeAcceptTriangle(uint primitive, uint geometry, float2 barycentric
 // Opaque compiler tokens are legalized only by the independently verified MSL
 // adapter. They are never uploaded as buffers, dereferenced, or exposed in the
 // public shader layout. The resource registry owns the actual native tables.
-__target_intrinsic(metal, "LudusTraceNative($0, $1, $2, $3, $4, $5, $6, LUDUS_NATIVE_CONTEXT)")
-uint4 TraceMetalRayPipeline(RaytracingAccelerationStructure scene,
-                            StructuredBuffer<NativeRayIntersectionTableToken> intersections,
-                            float3 originWorld,
-                            float3 directionWorld,
-                            float nearDistanceWorld,
-                            float farDistanceWorld,
-                            bool isVisibility);
+__target_intrinsic(metal, "LudusTraceNative($0, $1, $2, $3, $4, $5, $6, LUDUS_NATIVE_CONTEXT)") uint4
+    TraceMetalRayPipeline(RaytracingAccelerationStructure scene,
+                          StructuredBuffer<NativeRayIntersectionTableToken> intersections,
+                          float3 originWorld,
+                          float3 directionWorld,
+                          float nearDistanceWorld,
+                          float farDistanceWorld,
+                          bool isVisibility);
 
 Hit TraceNative(float3 originWorld,
                 float3 directionWorld,
@@ -70,8 +67,13 @@ Hit TraceNative(float3 originWorld,
         hit.Barycentric = 0;
         return hit;
     }
-    uint4 result = TraceMetalRayPipeline(rayScene, NativeRayIntersections, originWorld, directionWorld,
-                                        nearDistanceWorld, farDistanceWorld, isVisibility);
+    uint4 result = TraceMetalRayPipeline(rayScene,
+                                         NativeRayIntersections,
+                                         originWorld,
+                                         directionWorld,
+                                         nearDistanceWorld,
+                                         farDistanceWorld,
+                                         isVisibility);
     hit.Triangle = result.x;
     hit.DistanceWorld = asfloat(result.y);
     hit.Barycentric = asfloat(result.zw);

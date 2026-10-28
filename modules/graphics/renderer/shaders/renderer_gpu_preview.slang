@@ -402,10 +402,9 @@ Hit TraceWorld(float3 originWorld,
         Hit hit = TraceCustomWorld(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
         if (hit.Triangle == LUDUS_GPU_PREVIEW_INVALID_TRIANGLE || hit.Triangle == LUDUS_GPU_PREVIEW_FAILED_TRIANGLE)
             return hit;
-        if (hit.Triangle >= Counts.x || isfinite(hit.DistanceWorld) == false ||
-            hit.DistanceWorld < nearDistanceWorld || hit.DistanceWorld >= farDistanceWorld ||
-            all(isfinite(hit.Barycentric)) == false || any(hit.Barycentric < 0) ||
-            hit.Barycentric.x + hit.Barycentric.y > 1)
+        if (hit.Triangle >= Counts.x || isfinite(hit.DistanceWorld) == false || hit.DistanceWorld < nearDistanceWorld ||
+            hit.DistanceWorld >= farDistanceWorld || all(isfinite(hit.Barycentric)) == false ||
+            any(hit.Barycentric < 0) || hit.Barycentric.x + hit.Barycentric.y > 1)
         {
             hit.Triangle = LUDUS_GPU_PREVIEW_FAILED_TRIANGLE;
         }
