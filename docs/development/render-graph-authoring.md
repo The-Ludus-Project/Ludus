@@ -5076,6 +5076,11 @@ replacement previews until retained GPU uses retire. The device-wide RHI resourc
 budget and each device's storage-buffer binding range apply independently; a
 larger graph ceiling cannot override either one. The supplied imported Sponza
 World's two million triangles require more than the previous 256 MiB ceilings.
+Native ray geometry and acceleration-structure build scratch use the backend's
+enabled allocation range, rather than the former fixed 64 MiB ceiling. Each
+creation still checks its explicit byte budget. Packed opacity metadata retains
+its separate exact-float32-addressing bound; a larger native allocation range
+does not enlarge that representation.
 
 When measured byte admission fails, `RenderGraphReport::SceneDiagnostics` names
 the exceeded budget and records required and available bytes. The editor displays
