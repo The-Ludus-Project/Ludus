@@ -99,6 +99,20 @@ endforeach()
 set_source_files_properties(src/render_graph_settings_editor.cpp src/render_graph_configuration_template.cpp
     PROPERTIES COMPILE_DEFINITIONS "${graph_settings_definitions}")
 
+# Shader authoring shares the build service's target-artifact ceiling.
+set(shader_build_policy "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/render_graph_build.py")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${shader_build_policy}")
+execute_process(COMMAND "${Python3_EXECUTABLE}" -c
+    "import sys; sys.path.insert(0,sys.argv[1]); from ludus_tools.render_graph_build import LIMITS; print(LIMITS['artifacts'])"
+    "${PROJECT_SOURCE_DIR}/scripts/python"
+    RESULT_VARIABLE shader_build_status OUTPUT_VARIABLE shader_artifact_limit ERROR_VARIABLE shader_build_error
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(NOT shader_build_status EQUAL 0)
+    message(FATAL_ERROR "Cannot read shader artifact limit: ${shader_build_error}")
+endif()
+set_source_files_properties(src/render_graph_shader_creation.cpp PROPERTIES
+    COMPILE_DEFINITIONS "LUDUS_EDITOR_MAX_SHADER_ARTIFACTS=${shader_artifact_limit}")
+
 # Finite option admission has one owner shared with installed host tooling.
 set(graph_options_policy "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/render_graph_options.py")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${graph_options_policy}")
@@ -298,7 +312,7 @@ function(ludus_editor_add_default_render_graph target)
         FILES "${restir_template}/library.lurender.json" "${restir_template}/main.lushader.json.in"
               ${restir_template_shaders})
     foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing
-            simple_compute_ray_tracing veach_guibas_mis line_sampling)
+            simple_compute_ray_tracing veach_guibas_mis line_sampling ris_projected_solid_angle)
         string(REPLACE "_" "-" template_identity "${template_directory}")
         set(visibility_template "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/render_graphs/${template_directory}")
         file(GLOB visibility_template_shaders CONFIGURE_DEPENDS "${visibility_template}/main_shaders/*.slang")
@@ -550,6 +564,8 @@ qt_add_executable(ludus_editor
     src/theme_fonts.cpp
     src/internal/editor_icons.h
     src/editor_icons.cpp
+    src/internal/state_view.h
+    src/state_view.cpp
     src/internal/activity_chip.h
     src/activity_chip.cpp
     src/internal/window_size.h
@@ -731,7 +747,10 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/main.cpp tests/content_browser_tests.cpp
         src/internal/content_browser.h src/content_catalog_model.cpp
         src/content_import.cpp src/content_jobs.cpp src/content_workspace.cpp
+        src/internal/state_view.h src/state_view.cpp src/internal/editor_icons.h src/editor_icons.cpp
+        src/internal/theme_fonts.h src/theme_fonts.cpp
         src/editor_files.cpp src/scene_archive.cpp)
+    ludus_editor_add_icons(ludus_editor_browser_content_tests)
     set_target_properties(ludus_editor_browser_content_tests PROPERTIES AUTOMOC ON)
     target_include_directories(ludus_editor_browser_content_tests PRIVATE src
         "${PROJECT_SOURCE_DIR}/modules/audio/tests")
@@ -810,6 +829,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/theme_preference_tests.cpp
         tests/viewport_legibility_tests.cpp
         tests/editor_icons_tests.cpp
+        tests/state_view_tests.cpp
         tests/activity_chip_tests.cpp
         tests/viewport_frame_pump_tests.cpp
         tests/viewport_frame_source_tests.cpp
@@ -970,6 +990,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/theme_fonts.cpp
         src/internal/editor_icons.h
         src/editor_icons.cpp
+        src/internal/state_view.h
+        src/state_view.cpp
         src/internal/activity_chip.h
         src/activity_chip.cpp
         src/window_size.cpp)

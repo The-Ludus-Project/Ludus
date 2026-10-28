@@ -518,7 +518,9 @@ tuples, unique stage programs, emitted target artifacts and pipeline recipes
 separately. Deduplicate identical canonical programs across graph instances;
 never count deduplication as permission to expose an unbounded source space.
 Budget failure reports the authoring nodes/choices responsible, without silently
-dropping profiles, outputs or features. New budget values require measured review.
+dropping profiles, outputs or features. Changes to supported build-service ceilings
+require measured review. Explicit shader creation may grow authored program/artifact
+budgets within those ceilings; see the [authoring workflow](../development/render-graph-authoring.md).
 
 An exposed shader-function/material slot is an author-declared extension point,
 with stage/schema/effect and technique constraints. List the concrete project

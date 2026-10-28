@@ -545,9 +545,12 @@ TEST_CASE("LTC samples cover the polygon's support with the stated density", "[m
         float64 sum = 0.0;
         for (uint32 i = 0; i < STRATA_PER_AXIS * STRATA_PER_AXIS; ++i)
         {
+            // Integer stratum coordinates; the division deliberately truncates to the row.
+            const uint32 column = i % STRATA_PER_AXIS;
+            const uint32 row = i / STRATA_PER_AXIS;
             const Vector2 randomNumbers{
-                (static_cast<float32>(i % STRATA_PER_AXIS) + random.NextFloat01()) / STRATA_PER_AXIS,
-                (static_cast<float32>(i / STRATA_PER_AXIS) + random.NextFloat01()) / STRATA_PER_AXIS,
+                (static_cast<float32>(column) + random.NextFloat01()) / STRATA_PER_AXIS,
+                (static_cast<float32>(row) + random.NextFloat01()) / STRATA_PER_AXIS,
             };
             Vector3 direction;
             REQUIRE(TrySampleLinearlyTransformedCosinePolygon(

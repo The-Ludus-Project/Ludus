@@ -133,6 +133,52 @@ QByteArray MakeSource(QJsonObject& inoutProgram, const QJsonArray& schemas)
     inoutProgram.insert(QStringLiteral("output"), output);
     return source.toUtf8();
 }
+RenderGraphDocumentStatus GrowShaderBudgets(QJsonObject& inoutManifest,
+                                            qsizetype programCount,
+                                            const QString& manifestFile,
+                                            QString* outErrorOrNull)
+{
+    constexpr qsizetype MAX_SHADER_ARTIFACTS = LUDUS_EDITOR_MAX_SHADER_ARTIFACTS;
+    const qsizetype profileCount = inoutManifest.value(QStringLiteral("profiles")).toArray().size();
+    if (profileCount == 0)
+    {
+        if (outErrorOrNull != nullptr)
+        {
+            *outErrorOrNull = QStringLiteral("Cannot add shader: %1 needs at least one target profile. "
+                                             "The draft was preserved.")
+                                  .arg(manifestFile);
+        }
+        return RenderGraphDocumentStatus::Malformed;
+    }
+    if (programCount > MAX_SHADER_ARTIFACTS / profileCount)
+    {
+        if (outErrorOrNull != nullptr)
+        {
+            *outErrorOrNull =
+                QStringLiteral("Cannot add shader: %1 would contain %2 programs across %3 target profiles, "
+                               "exceeding the supported limit of %4 target artifacts. Reuse existing programs, "
+                               "remove unused shaders or reduce target profiles. The draft was preserved.")
+                    .arg(manifestFile)
+                    .arg(programCount)
+                    .arg(profileCount)
+                    .arg(MAX_SHADER_ARTIFACTS);
+        }
+        return RenderGraphDocumentStatus::Capacity;
+    }
+    const qsizetype artifactCount = programCount * profileCount;
+    QJsonObject budgets = inoutManifest.value(QStringLiteral("budgets")).toObject();
+    if (budgets.value(QStringLiteral("programs")).toDouble() < static_cast<foundation::float64>(programCount))
+    {
+        budgets.insert(QStringLiteral("programs"), programCount);
+    }
+    if (budgets.value(QStringLiteral("artifacts")).toDouble() < static_cast<foundation::float64>(artifactCount))
+    {
+        budgets.insert(QStringLiteral("artifacts"), artifactCount);
+    }
+    inoutManifest.insert(QStringLiteral("budgets"), budgets);
+    return RenderGraphDocumentStatus::Ok;
+}
+
 QString MakeGeneratedName(const QJsonObject& node, const QString& identity)
 {
     return QStringLiteral("Shader_%1_%2")
@@ -424,7 +470,8 @@ RenderGraphDocumentStatus PreparePipelineShaders(RenderGraphSnapshot& inoutSnaps
                                                  QJsonObject& inoutNode,
                                                  const QJsonObject& previousNode,
                                                  const QString& manifestFile,
-                                                 const QString& packageRoot)
+                                                 const QString& packageRoot,
+                                                 QString* outErrorOrNull)
 {
     const RenderGraphSnapshot originalSnapshot = inoutSnapshot;
     const QJsonArray originalShaders = inoutNode.value(QStringLiteral("shaders")).toArray();
@@ -509,6 +556,7 @@ RenderGraphDocumentStatus PreparePipelineShaders(RenderGraphSnapshot& inoutSnaps
         }
     }
     QJsonArray shaders;
+    bool hasCreatedProgram = false;
     QStringList identities;
     for (qsizetype shaderIndex = 0; shaderIndex < originalShaders.size(); ++shaderIndex)
     {
@@ -610,17 +658,21 @@ RenderGraphDocumentStatus PreparePipelineShaders(RenderGraphSnapshot& inoutSnaps
             {
                 return RenderGraphDocumentStatus::InvalidEdit;
             }
-            const foundation::int32 programBudget =
-                manifest.value(QStringLiteral("budgets")).toObject().value(QStringLiteral("programs")).toInt();
-            if (programs.size() >= programBudget)
-            {
-                return RenderGraphDocumentStatus::Capacity;
-            }
+            hasCreatedProgram = true;
             programs.append(program);
             inoutSnapshot.Files.insert(sourceFile, source);
         }
         shader.insert(QStringLiteral("program"), name);
         shaders.append(shader);
+    }
+    if (hasCreatedProgram == true)
+    {
+        const RenderGraphDocumentStatus budgetStatus =
+            GrowShaderBudgets(manifest, programs.size(), manifestFile, outErrorOrNull);
+        if (budgetStatus != RenderGraphDocumentStatus::Ok)
+        {
+            return budgetStatus;
+        }
     }
     manifest.insert(QStringLiteral("programs"), programs);
     if (manifest != manifestDocument.object())

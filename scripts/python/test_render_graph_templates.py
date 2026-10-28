@@ -612,6 +612,201 @@ class LineSamplingTemplateTests(unittest.TestCase):
             self.assertEqual(arguments.template, 'line-sampling')
 
 
+class RisProjectedSolidAngleTemplateTests(unittest.TestCase):
+    """Shah, KT and Narayanan's resampled projected-solid-angle estimator beside its light and BSDF strategies."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+
+    def create(self, profiles=('metal', 'wgsl'), name='Ris'):
+        return graph.new_workspace(Path(self.directory.name) / name, output='offscreen', renderer_static=True,
+                                   profiles=profiles, template='ris-projected-solid-angle')
+
+    def test_four_compute_bvh_passes_share_the_hit_buffer_and_accumulate_separately(self):
+        for profile in ('metal', 'spirv'):
+            with self.subTest(profile=profile):
+                root = self.create((profile,), name=profile)
+                plan = graph.compile_graph(root)
+                rays = [operation for operation in plan['passes'] if operation['kind'] == 'RayTracing']
+                self.assertEqual([operation['id'].rsplit('/', 1)[-1] for operation in rays],
+                                 ['primary', 'shade', 'shadeLight', 'shadeBsdf'])
+                # Every pass walks the renderer's compute BVH, so no native ray profile is needed.
+                for operation in rays:
+                    self.assertEqual(operation['pipeline']['kind'], 'ComputePipeline')
+                    self.assertEqual(ray.program_tuple(operation['pipeline'])[-1], ray.COMPUTE_BVH_TAG)
+                self.assertFalse(ray.requires_native_queries(plan))
+                buffers = [resource for resource in plan['resources'].values() if resource['type'] == 'Buffer']
+                self.assertEqual([resource['bytes_per_pixel'] for resource in buffers], [32])
+                self.assertNotIn('accumulation', rays[0])
+                for target in ('lightSampling', 'bsdfSampling'):
+                    self.assertEqual(plan['resources'][f'RisProjectedSolidAngle/transport/{target}']['type'],
+                                     'ColorTexture')
+                for operation in rays[1:]:
+                    self.assertEqual(4096, operation['accumulation']['samples'])
+                    self.assertEqual(1, operation['tone_mapping']['exposure'])
+                exports = [operation['id'].rsplit('/', 1)[-1] for operation in plan['passes']
+                           if operation['kind'] == 'Export']
+                # The combined estimator is the first export, which the editor viewport shows by default.
+                self.assertEqual(exports, ['output', 'lightSamplingOutput', 'bsdfSamplingOutput'])
+
+    def test_manifest_declares_budgets_settings_and_the_polygonal_light_helpers(self):
+        root = self.create()
+        manifest = json.loads(root.with_name('main.lushader.json').read_text())
+        build.validate_manifest(manifest)
+        technique = next(technique for technique in manifest['techniques'] if technique['id'] == ray.TECHNIQUE)
+        self.assertFalse(any(stage in technique for stage in ray.STAGES))
+        # One BSDF ray; two shadow rays for the selected triangle's diffuse and LTC samples.
+        self.assertEqual(technique['scene_interface'], {'version': 1, 'surface_queries': 1, 'visibility_queries': 2,
+                                                        'polygonal_light_sampling': True})
+        compute = [program for program in manifest['programs'] if program['stage'] == 'compute']
+        self.assertEqual([(program['id'], program['function']) for program in compute],
+                         [('Primary', 'TracePrimaryHit'), ('ShadeMultipleImportance', 'ShadeMultipleImportance'),
+                          ('ShadeLightSampling', 'ShadeLightSampling'), ('ShadeBsdfSampling', 'ShadeBsdfSampling')])
+        values = {setting['id']: (setting['type'], setting['value'], setting['minimum'], setting['maximum'])
+                  for setting in manifest['settings']}
+        self.assertEqual(values, {'RIS_CANDIDATE_COUNT': ('UInt32', 32, 1, 32),
+                                  'RIS_NORMALIZATION_CANDIDATE_COUNT': ('UInt32', 8, 1, 16),
+                                  'PROJECTED_SOLID_ANGLE_MIS_VISIBILITY': ('Float32', 0.5, 0, 1)})
+
+    def test_shaders_use_the_shared_primitives_and_credit_their_sources(self):
+        root = self.create()
+        shaders = root.with_name('main_shaders')
+        shade = shaders.joinpath('shade.slang').read_text()
+        resampled = shaders.joinpath('resampled_light.slang').read_text()
+        light = shaders.joinpath('projected_solid_angle_light.slang').read_text()
+        for call in ('SelectLight', 'SampleIncidentLight', 'SampleStandardBsdf', 'TraceClosest', 'TestVisibility',
+                     'EvaluateEmission', 'GetSurfaceHit', 'EvaluateEnvironmentPdfSolidAngle',
+                     'EvaluateEmissiveTriangleSelectionPmf', 'TrySampleProjectedSolidAnglePolygon',
+                     'TrySampleLinearlyTransformedCosinePolygon', 'ComputeClampedOptimalMisWeights',
+                     'ComputePowerHeuristicWeight', 'EvaluateSurrogateTriangleProbability'):
+            self.assertIn(call, shade)
+        for call in ('SelectEmissiveTriangle', 'GetTriangle', 'TryAddReservoirCandidate',
+                     'TryComputeReservoirContributionWeight'):
+            self.assertIn(call, resampled)
+        for call in ('LookupSpecularLtc', 'ComputeSpecularLtcAlbedo', 'TryMakeLinearlyTransformedCosine',
+                     'TryPrepareProjectedSolidAnglePolygon', 'TryPrepareLinearlyTransformedCosinePolygon'):
+            self.assertIn(call, light)
+        # The helpers come from the wrapper, never from copies inside the package.
+        self.assertEqual(sorted(path.name for path in shaders.iterdir()),
+                         ['color.slang', 'depth.slang', 'geometry.slang', 'hit_record.slang', 'primary.slang',
+                          'projected_solid_angle_light.slang', 'resampled_light.slang', 'shade.slang'])
+        for name in ('Shah', 'Narayanan', '10.1145/3610543.3626165'):
+            self.assertIn(name, light)
+            self.assertIn(name, resampled)
+        for name in ('Peters', '10.1145/3450626.3459672'):
+            self.assertIn(name, light)
+        for name in ('Wyman', 'Ray Tracing Gems II', 'chapter 22'):
+            self.assertIn(name, resampled)
+        # Only the combined pass weights its strategies; each single-strategy pass keeps weight one.
+        self.assertIn('SampleLightStrategy(scene, launch, shadingPoint, true, context, passQueries)', shade)
+        self.assertIn('SampleBsdfStrategy(scene, launch, shadingPoint, true, context, passQueries)', shade)
+        self.assertIn('SampleLightStrategy(scene, launch, shadingPoint, false, context, passQueries)', shade)
+        self.assertIn('SampleBsdfStrategy(scene, launch, shadingPoint, false, context, passQueries)', shade)
+
+    def test_random_dimensions_follow_the_review_table(self):
+        import re
+        root = self.create()
+        shaders = root.with_name('main_shaders')
+        header = shaders.joinpath('hit_record.slang').read_text()
+        definitions = dict(re.findall(r'static const uint ([A-Z_]+) =\s*([^;]+);', header))
+
+        def evaluate(name):
+            expression = definitions[name]
+            for other in sorted(definitions, key=len, reverse=True):
+                if other in expression:
+                    expression = expression.replace(other, str(evaluate(other)))
+            return eval(expression, {'__builtins__': {}})
+
+        # Dimensions 2 to 8 keep their veach-guibas-mis meanings.
+        self.assertEqual([evaluate(name) for name in ('PRIMARY_RANDOM_DIMENSION_FIRST',
+                                                      'PRIMARY_RANDOM_DIMENSION_COUNT',
+                                                      'SHADE_LIGHT_SELECTION_DIMENSION',
+                                                      'SHADE_LIGHT_SHAPE_DIMENSION_FIRST',
+                                                      'SHADE_BSDF_DIMENSION_FIRST')], [0, 2, 2, 3, 6])
+        self.assertEqual(evaluate('SHADE_DIFFUSE_TECHNIQUE_DIMENSION_FIRST'), 9)
+        self.assertEqual(evaluate('SHADE_SPECULAR_TECHNIQUE_DIMENSION_FIRST'), 12)
+        self.assertEqual(evaluate('RIS_CANDIDATE_DIMENSION_FIRST'), 16)
+        self.assertEqual(evaluate('RIS_DIMENSIONS_PER_CANDIDATE'), 2)
+        self.assertEqual(evaluate('RIS_MAX_CANDIDATE_COUNT'), 32)
+        self.assertEqual(evaluate('RIS_NORMALIZATION_DIMENSION_FIRST'), 80)
+        self.assertEqual(evaluate('RIS_MAX_NORMALIZATION_CANDIDATE_COUNT'), 16)
+        self.assertEqual(evaluate('SHADE_RANDOM_DIMENSION_COUNT'), 94)
+        # The table's capacities are the settings' maximums, so a setting never renumbers a dimension.
+        manifest = json.loads(root.with_name('main.lushader.json').read_text())
+        maximums = {setting['id']: setting['maximum'] for setting in manifest['settings']}
+        self.assertEqual(maximums['RIS_CANDIDATE_COUNT'], evaluate('RIS_MAX_CANDIDATE_COUNT'))
+        self.assertEqual(maximums['RIS_NORMALIZATION_CANDIDATE_COUNT'],
+                         evaluate('RIS_MAX_NORMALIZATION_CANDIDATE_COUNT'))
+        # Every pass reads explicit addresses, never the automatic stream.
+        for kernel in ('primary', 'shade', 'resampled_light'):
+            source = shaders.joinpath(f'{kernel}.slang').read_text()
+            self.assertNotIn('SampleSceneRandom(queries', source)
+            self.assertNotIn('SelectLight(scene, queries', source)
+
+    def test_the_wrapper_includes_the_polygonal_light_helpers_only_when_declared(self):
+        snapshot = build.Snapshot(self.directory.name)
+        snapshot.files[ray.DEFAULT_PAYLOAD] = (
+            Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/shaders/scene_payload.slang').read_bytes()
+        selected = {stage: {'source': 'main_shaders/shade.slang', 'function': function, 'output': 'ScenePayload'}
+                    for stage, function in zip(ray.STAGES, ('Generate', 'Miss', 'Closest'))}
+        interface = {'version': 1, 'surface_queries': 1, 'visibility_queries': 2}
+        recipe = {'source': 'renderer_gpu_preview.slang'}
+        plain = ray.scene_wrapper(selected, interface, snapshot, build, recipe)
+        requested = ray.scene_wrapper(selected, dict(interface, polygonal_light_sampling=True), snapshot, build, recipe)
+        includes = ['#include "_ludus_ray/' + source + '"' for source in ray.POLYGONAL_LIGHT_INCLUDES]
+        for include in includes:
+            self.assertNotIn(include, plain)
+            self.assertIn(include, requested)
+        # The helpers precede the payload and authored sources, in dependency order.
+        positions = [requested.index(include) for include in includes]
+        self.assertEqual(positions, sorted(positions))
+        self.assertLess(positions[-1], requested.index('#include "main_shaders/shade.slang"'))
+        # Every staged helper has one installed owner; the table data enters only through ltc_table.slang.
+        self.assertEqual(set(ray.POLYGONAL_LIGHT_HELPERS) - set(ray.POLYGONAL_LIGHT_INCLUDES), {'ltc_table_data.inc'})
+        self.assertFalse(set(ray.POLYGONAL_LIGHT_HELPERS) & set(ray.HELPERS))
+
+    def test_the_polygonal_light_requirement_is_a_boolean(self):
+        root = self.create()
+        manifest = json.loads(root.with_name('main.lushader.json').read_text())
+        technique = next(technique for technique in manifest['techniques'] if technique['id'] == ray.TECHNIQUE)
+        technique['scene_interface']['polygonal_light_sampling'] = 1
+        with self.assertRaises(ToolingError) as caught:
+            build.validate_manifest(manifest)
+        self.assertIn('polygonal_light_sampling', caught.exception.message)
+        # An unknown requirement is rejected rather than ignored, as older SDKs reject this one.
+        del technique['scene_interface']['polygonal_light_sampling']
+        technique['scene_interface']['polygonal_lights'] = True
+        with self.assertRaises(ToolingError):
+            build.validate_manifest(manifest)
+
+    def test_browser_only_profiles_name_metal_or_vulkan_compute(self):
+        with self.assertRaises(ToolingError) as caught:
+            self.create(('wgsl',), name='Browser')
+        self.assertEqual(caught.exception.code, 'RenderGraphCapability')
+        self.assertIn('Metal or Vulkan compute', caught.exception.message)
+        self.assertNotIn('native ray tracing', caught.exception.message)
+        self.assertFalse((Path(self.directory.name) / 'Browser').exists())
+
+    def test_relocated_sdk_and_cli_expose_the_template(self):
+        from ludus_tools import render_graph_templates
+        from ludus_tools.cli import build_parser
+        installed = Path(self.directory.name) / 'sdk/lib/cmake/Ludus/render_graph'
+        module = installed / 'ludus_tools/render_graph_templates.py'
+        module.parent.mkdir(parents=True)
+        source = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs/ris_projected_solid_angle'
+        shutil.copytree(source, installed / 'templates/ris_projected_solid_angle')
+        with patch.object(render_graph_templates, '__file__', str(module)):
+            files = render_graph_templates.template_files('ris-projected-solid-angle', ('spirv',), graph)
+        build.validate_manifest(json.loads(files['main.lushader.json']))
+        self.assertIn('ComputeClampedOptimalMisWeights', files['main_shaders/projected_solid_angle_light.slang'])
+        for profile in ('metal', 'spirv'):
+            arguments = build_parser().parse_args(['render-graph', 'new', 'graphs/Ris', '--template',
+                                                   'ris-projected-solid-angle', '--output', 'offscreen',
+                                                   '--renderer-static', '--profiles', profile])
+            self.assertEqual(arguments.template, 'ris-projected-solid-angle')
+
+
 class SimpleComputeRayTracingTemplateTests(unittest.TestCase):
     def test_single_compute_pass_has_no_hit_buffer_or_accumulation(self):
         with tempfile.TemporaryDirectory() as directory:

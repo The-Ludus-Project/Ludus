@@ -5,9 +5,11 @@
 
 #include "internal/controller.h"
 #include "internal/editor_files.h"
+#include "internal/editor_icons.h"
 #include "internal/editor_identity.h"
 #include "internal/level_workspace.h"
 #include "internal/render_panel.h"
+#include "internal/state_view.h"
 #include "internal/world_demo_adapter.h"
 
 #include <ludus/foundation/base/core.h>
@@ -1174,10 +1176,20 @@ void WorldWorkspace::RenderInspector()
     const auto entity = Document_.Entity(Selected_);
     if (entity.isEmpty())
     {
+        if (Document_.Loaded() == false)
+        {
+            StateView* empty = new StateView;
+            StateViewContent state;
+            state.Icon = EditorIcon::World;
+            state.Message = QStringLiteral("No world open.");
+            state.ShortcutHint = QStringLiteral("Open a world from the Project Explorer.");
+            empty->SetContent(state);
+            Inspector_->addWidget(empty);
+            Inspector_->addStretch();
+            return;
+        }
         auto* hint = new QLabel(
-            Document_.Loaded()
-                ? QStringLiteral("Select an entity. Add Entity starts with the components your project requires.")
-                : QStringLiteral("No world open."));
+            QStringLiteral("Select an entity. Add Entity starts with the components your project requires."));
         hint->setTextFormat(Qt::PlainText);
         hint->setWordWrap(true);
         Inspector_->addWidget(hint);

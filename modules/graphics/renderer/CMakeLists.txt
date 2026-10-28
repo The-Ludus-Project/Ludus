@@ -113,7 +113,7 @@ if(LUDUS_BUILD_THREADING_BENCHMARK AND NOT EMSCRIPTEN)
     ludus_apply_project_defaults(ludus_static_lighting_benchmark)
 endif()
 if(TARGET ludus_rhi_render_tests)
-    add_executable(ludus_renderer_render_tests tests/render_tests.cpp tests/denoising_tests.cpp tests/gpu_preview_tests.cpp tests/ray_opacity_tests.cpp tests/visibility_tests.cpp tests/reference_compute_tests.cpp tests/gpu_random_tests.cpp tests/projected_solid_angle_parity_tests.cpp src/ltc_table.cpp tests/power_cdf_parity_tests.cpp tests/restir_selection_tests.cpp tests/authored_tests.cpp tests/render_graph_render_tests.cpp tests/render_graph_pool_render_tests.cpp)
+    add_executable(ludus_renderer_render_tests tests/render_tests.cpp tests/denoising_tests.cpp tests/gpu_preview_tests.cpp tests/ray_opacity_tests.cpp tests/visibility_tests.cpp tests/reference_compute_tests.cpp tests/gpu_random_tests.cpp tests/projected_solid_angle_parity_tests.cpp src/ltc_table.cpp tests/power_cdf_parity_tests.cpp tests/ris_projected_solid_angle_weight_tests.cpp tests/restir_selection_tests.cpp tests/authored_tests.cpp tests/render_graph_render_tests.cpp tests/render_graph_pool_render_tests.cpp)
     target_include_directories(ludus_renderer_render_tests PRIVATE ../rhi/src "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
     target_link_libraries(ludus_renderer_render_tests PRIVATE Ludus::GraphicsText Ludus::FoundationMath Ludus::FoundationTime Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_renderer_render_tests)
@@ -146,6 +146,15 @@ if(TARGET ludus_rhi_render_tests)
         INCLUDES "${renderer_shader_directory}" ${renderer_shader_includes}
         DEPENDS "${renderer_shader_directory}/renderer_gpu_preview.slang" "${renderer_shader_directory}/scene_shader.slang"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/power_cdf_parity_layout.h")
+    # Test-only kernel running the ris-projected-solid-angle template's scene-independent MIS weights.
+    set(ris_projected_solid_angle_shaders "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/ris_projected_solid_angle/main_shaders")
+    ludus_compile_shader(TARGET ludus_renderer_render_tests NAME ris_projected_solid_angle_weights
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/ris_projected_solid_angle_weights.slang" COMPUTE ComputeMain
+        INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/shaders" "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders"
+                 "${ris_projected_solid_angle_shaders}"
+        DEPENDS "${ris_projected_solid_angle_shaders}/projected_solid_angle_light.slang"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/ris_projected_solid_angle_weights_layout.h"
+                "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ltc_table.slang" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ltc_table_data.inc")
     ludus_compile_shader(TARGET ludus_renderer_render_tests NAME restir_selection
         SOURCE "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/tests/restir_selection.slang" COMPUTE ComputeMain
         INCLUDES "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders"
@@ -293,7 +302,7 @@ if(TARGET ludus_renderer_render_tests)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_VISIBILITY_ORDINARY_DIRECTORY="${visibility_ordinary_package_directory}")
     foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing
-            simple_compute_ray_tracing veach_guibas_mis line_sampling)
+            simple_compute_ray_tracing veach_guibas_mis line_sampling ris_projected_solid_angle)
         set(template_source "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/${template_directory}")
         set(template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${template_directory}_template")
         ludus_stage_render_graph_fixture("${template_source}" "${template_staged}")
@@ -564,8 +573,14 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_storage_ray_RUNTIME_PACKAGE PARENT_PATH storage_ray_package_directory)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_STORAGE_RAY_DIRECTORY="${storage_ray_package_directory}")
-    add_test(NAME ludus_render_graph_ray_pixels COMMAND ludus_render_graph_ray_tests)
+    add_test(NAME ludus_render_graph_ray_pixels COMMAND ludus_render_graph_ray_tests "~[ris-projected-solid-angle]")
     set_tests_properties(ludus_render_graph_ray_pixels PROPERTIES LABELS "renderer;gpu;ray" TIMEOUT 60)
+    # The ris-projected-solid-angle template's convergence and error checks render about 2600 frames and
+    # need no native ray tracing, so they also run on software Vulkan adapters; they get their own timeout.
+    add_test(NAME ludus_render_graph_ris_projected_solid_angle_pixels
+        COMMAND ludus_render_graph_ray_tests "[ris-projected-solid-angle]")
+    set_tests_properties(ludus_render_graph_ris_projected_solid_angle_pixels PROPERTIES
+        LABELS "renderer;gpu;ray" TIMEOUT 600)
     add_executable(ludus_graph_workgroup_tests tests/graph_workgroup_tests.cpp)
     target_link_libraries(ludus_graph_workgroup_tests PRIVATE Ludus::GraphicsRenderer
         Ludus::FoundationTime Catch2::Catch2WithMain)

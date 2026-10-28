@@ -82,6 +82,7 @@ struct Lobe final
     float64 ViewLambda = 1.0;
 };
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): roughness then view cosine are the fitted table's axes.
 [[nodiscard]] Lobe MakeLobe(float64 roughness, float64 viewCosine) noexcept
 {
     Lobe result;
@@ -92,6 +93,7 @@ struct Lobe final
     return result;
 }
 /// GGX normal distribution in the renderer's cancellation-free form.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): GGX D(alpha, n.h) argument order.
 [[nodiscard]] float64 EvaluateDistribution(float64 alpha, float64 normalHalfCosine) noexcept
 {
     const float64 alphaSquared = alpha * alpha;
@@ -141,6 +143,7 @@ struct Lobe final
     return EvaluateDistribution(lobe.Alpha, half.Z) / (2.0 * (lobe.View.Z + lobe.ViewLambda));
 }
 /// Heitz 2018: reflect the view about a visible normal sampled from the stretched hemisphere.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (u, v) is the canonical uniform sample pair.
 [[nodiscard]] Vector3d SampleVisibleNormalReflection(const Lobe& lobe, float64 u, float64 v) noexcept
 {
     const float64 alpha = lobe.Alpha;
@@ -163,6 +166,7 @@ struct Lobe final
         Normalize(Vector3d{alpha * hemisphere.X, alpha * hemisphere.Y, hemisphere.Z > 0.0 ? hemisphere.Z : 0.0});
     return half * (2.0 * math::Dot(lobe.View, half)) - lobe.View;
 }
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (u, v) is the canonical uniform sample pair.
 [[nodiscard]] Vector3d SampleCosine(float64 u, float64 v) noexcept
 {
     const float64 radius = math::Sqrt(u);
@@ -242,12 +246,15 @@ struct ObjectiveSamples final
     Array<Vector3d> CosineDirections;
 };
 
+// The normalization, stratum count and seed are distinct quantities.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
 bool TryMakeObjectiveSamples(const Lobe& lobe,
                              float64 norm,
                              uint32 strata,
                              uint64 seed,
                              uint64 stream,
                              ObjectiveSamples& outSamples) noexcept
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     Array<float64> points;
     if (TryMakeStratifiedPoints(strata, seed, stream, points) == false)
@@ -321,11 +328,14 @@ EstimateError(const ObjectiveSamples& samples, const Parameters& parameters, uin
 }
 
 /// One Nelder-Mead start from inoutBest; replaces it when a better point is found.
+// The best value and the evaluation count are distinct accumulators.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
 void MinimizeFromStart(const ObjectiveSamples& samples,
                        uint32 maxIterations,
                        Parameters& inoutBest,
                        float64& inoutBestValue,
                        uint32& inoutEvaluationCount) noexcept
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     StaticArray<Parameters, SIMPLEX_SIZE> points{};
     StaticArray<float64, SIMPLEX_SIZE> values{};
