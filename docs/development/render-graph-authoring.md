@@ -2159,7 +2159,7 @@ indirect bounce.
   light-sampling output of the Veach and Guibas template.
 - With an analytic point light and a constant sky instead of the ceiling light, the
   three outputs converge to one mean in the same way.
-- After 16 samples per pixel, `color` has about half the mean squared error of
+- After 16 samples per pixel, `color` has less than half the mean squared error of
   `pointSampling` in the penumbra on the floor, against an independently seeded
   1024-sample image. The test reports the GPU time of each pass beside it. Line
   samples cost line queries, so this is an equal-sample comparison and supports no
