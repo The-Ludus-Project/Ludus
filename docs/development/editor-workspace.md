@@ -54,6 +54,41 @@ central document well, and **tool windows** dock around it (see
 | Timing | Runtime-reported frame pacing and interval statistics for the running session |
 | Profiling | Record editor CPU scopes, viewport GPU durations, or both into a Perfetto JSON trace |
 
+Right-click a Project Explorer category, file, or empty area to open its context
+menu. The **Add** button also offers **New World**, **New Render Graph**,
+**New Shader**, **New Script**, **New Sound**, **New Music**, and the audio/content
+import workflow. Worlds begin as unsaved drafts; Save creates the file. Render
+graphs use the existing template/package creation dialog. Shader and Luau source
+files start as unregistered source files: add their entry points/programs to the
+owning manifest/package before building or cooking. Script files and shaders
+without a graph owner open in the configured external code editor on native
+platforms; that external launch is unavailable in the browser. The Scripts
+category continues to open the project script workspace.
+
+**Add Existing File** copies a selected authored file into an existing project
+folder without replacing files. A file already inside the project is opened
+without copying it. Single-file imports retain their references; add companion
+files separately. Audio/content imports use the Content workspace's current
+WAV/FLAC importer and publish through its catalog. New sound/music definitions
+require an imported source selected in Audio. The audio/content categories keep
+their workspace operations; they do not expose raw file deletion or duplication
+of catalog-managed resources.
+
+For one authored file, choose **Duplicate** (Ctrl+D / Command+D) or **Remove**
+(Delete, or Backspace on macOS). A graph in a subdirectory duplicates its entire
+containing package into a new sibling folder, preserving companion paths.
+Root-level graphs, worlds, shaders and scripts duplicate only the saved file;
+references outside the copied package stay shared. Copies never overwrite a
+destination and reject child symlinks; package copies are bounded to 64 MiB,
+4096 entries and 12 directory levels, and publish only after the full copy succeeds.
+Remove asks for confirmation, then moves the file under the project's hidden
+`.ludus-trash` folder, preserving its relative path inside a unique recovery
+folder. Restore it manually to its original path and Refresh. References in
+other files are not rewritten. Switch away from a loaded World or graph package
+before removing its files; closing a tab retains its document. Select another
+script program before removing its loaded source. File actions operate on one item at a
+time; a multiple selection disables Duplicate and Remove.
+
 The Configuration workspace retains its explicitly loaded preview/draft across
 project changes. Quitting prompts for unsaved preferences. Project settings,
 audio definitions, offline preferences and live values have separate save owners.

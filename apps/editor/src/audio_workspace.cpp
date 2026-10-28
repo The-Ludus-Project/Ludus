@@ -711,3 +711,8 @@ void ludus::editor::AudioWorkspace::ResetPreview()
 {
     (void)Preview_->Reset();
 }
+
+void ludus::editor::AudioWorkspace::PromptCreateDefinition(bool isMusic)
+{
+    Create(isMusic);
+}
