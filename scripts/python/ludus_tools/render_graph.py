@@ -1350,8 +1350,9 @@ def new_workspace(destination, *, output="presentation", renderer_static=False, 
 
     template selects raster (the default), forward-lit, restir-di, visibility-buffer,
     visibility-secondary-rays, tiled-vbuffer-nee, compute-ray-tracing, simple-compute-ray-tracing,
-    veach-guibas-mis, line-sampling or salesin-jarosz-lines. All but raster create offscreen Renderer
-    packages containing their shaders and shared view-relative RenderSize controls.
+    veach-guibas-mis, line-sampling or salesin-jarosz-lines. Offscreen Renderer raster creation copies
+    the engine default package, including its shaders and shared view-relative
+    RenderSize controls. Other Renderer templates also use offscreen output.
     output is presentation, offscreen or depth. Creation never overwrites an
     existing directory; staged files are validated before publication and cleaned
     up on failure. This is graph source creation, not game-project/SDK setup.
@@ -1365,18 +1366,19 @@ def new_workspace(destination, *, output="presentation", renderer_static=False, 
     _require(renderer_static == (profiles is not None), "Schema", "new graph",
              "Renderer sources require --renderer-static and explicit --profiles together")
     from .render_graph_templates import TEMPLATES, template_files
-    _enum(template, ("raster", *TEMPLATES), "new graph template")
+    _enum(template, TEMPLATES, "new graph template")
     destination = Path(destination).absolute()
     files = [TemplateFile("rasterize.lurender.json", canonical_asset(_raster_asset()).decode()),
              TemplateFile("main.lurender.json", canonical_asset(_root_asset(output)).decode())]
-    if template != "raster":
+    should_copy_template = template != "raster" or (renderer_static and output == "offscreen")
+    if should_copy_template:
         _require(renderer_static and output == "offscreen", "Capability", template,
                  "this template creates an offscreen Renderer graph; select --renderer-static --output offscreen and explicit --profiles")
         files = [TemplateFile(path, text) for path, text in template_files(template, profiles, sys.modules[__name__]).items()]
     staged = stage_project(files, destination)
     try:
         compile_graph(staged.staging / "main.lurender.json")
-        if renderer_static and template == "raster":
+        if renderer_static and not should_copy_template:
             from .render_graph_build import new_build_sources
             new_build_sources(staged.staging / "main.lurender.json",
                               renderer_static=True, profiles=profiles)
