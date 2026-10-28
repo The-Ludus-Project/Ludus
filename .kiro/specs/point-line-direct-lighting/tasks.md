@@ -229,7 +229,7 @@ Vulkan was not run: no Linux or Vulkan host was available.
 ## PL2 Point-and-line MIS template
 
 Evidence is from an Apple M5 on Metal (macOS 26.6), `macos-clang-development`,
-on the branch merged with `develop` `221f7621`. Vulkan was not run: no Linux or
+on the branch merged with `develop` `221f7621` (rechecked on `ba249bff`). Vulkan was not run: no Linux or
 Vulkan host was available, so the llvmpipe run is left to batch CI.
 
 - [x] `render_graphs/salesin_jarosz_lines/`: library and main graphs, manifest
@@ -378,7 +378,14 @@ Vulkan host was available, so the llvmpipe run is left to batch CI.
       the Project Settings resolution case. Those six editor cases fail the same
       way in a build of plain `develop` `221f7621`. A seventh,
       the activity chip's rate limit, failed only under load and passes alone.
-      Ruff was not run (not installed locally). Vulkan was not run.*
+      After a final merge of `develop` `ba249bff` the tree builds with no
+      compiler warnings and the PL1 and PL2 ray tests and editor tests pass
+      again. #725 fixed the inspector case. #727 changed the built-in default
+      graph's program count, and three budget cases in
+      `ludus_render_graph_configuration_tests` now fail on `develop`'s own
+      expectations (`needs 8 shader programs`, 6 and 11 programs). This change
+      does not touch those lines. The full suites above were not rerun on that
+      merge. Ruff was not run (not installed locally). Vulkan was not run.*
 
 ## PL3 BVH line traversal
 
