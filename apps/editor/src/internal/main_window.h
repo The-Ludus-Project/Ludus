@@ -52,6 +52,7 @@ class ErrorList;
 class ProjectExplorer;
 struct ErrorListEntry;
 enum class ProjectItemKind : foundation::uint8;
+enum class ProjectItemAction : foundation::uint8;
 class ScriptWorkspace;
 class RendererWorkspace;
 class ProjectRenderingSettings;
@@ -134,6 +135,7 @@ private:
     void buildWindowMenu(QMenu* menu);
     void renderWindowDocuments(QMenu* menu);
     void openProjectItem(ProjectItemKind kind, const QString& path);
+    void changeProjectItem(ProjectItemAction action, ProjectItemKind kind, const QString& path);
     void activateErrorEntry(const ErrorListEntry& entry);
     void renderActiveDocument();
     void renderDocumentTitles();

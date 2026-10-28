@@ -118,6 +118,23 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
     InitializeWorkspace();
     connect(mDocuments, &DocumentWell::ActiveDocumentChanged, this, &MainWindow::renderActiveDocument);
     connect(mProjectExplorer, &ProjectExplorer::OpenRequested, this, &MainWindow::openProjectItem);
+    connect(mProjectExplorer, &ProjectExplorer::ActionRequested, this, &MainWindow::changeProjectItem);
+    connect(Renderer_, &RendererWorkspace::DocumentChanged, this, [this]() {
+        const RenderGraphDocument& graph = Renderer_->GetDocument();
+        const QString path = QDir(graph.GetPackageRoot()).filePath(graph.GetRootGraph());
+        if (graph.IsLoaded() == true && graph.IsBuiltIn() == false && QFileInfo(path).isFile() == true &&
+            mProjectExplorer->GetFiles(ProjectItemKind::RenderGraph).contains(path) == false)
+        {
+            mProjectExplorer->Refresh();
+        }
+    });
+    connect(World_, &WorldWorkspace::DocumentChanged, this, [this]() {
+        if (QFileInfo(World_->Path()).isFile() == true &&
+            mProjectExplorer->GetFiles(ProjectItemKind::World).contains(World_->Path()) == false)
+        {
+            mProjectExplorer->Refresh();
+        }
+    });
     connect(mErrorList, &ErrorList::EntryActivated, this, &MainWindow::activateErrorEntry);
     connect(mErrorList, &ErrorList::ProblemsReported, this, &MainWindow::revealErrorList);
     mBuildErrorsTimer.setSingleShot(true);
