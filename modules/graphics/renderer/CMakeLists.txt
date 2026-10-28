@@ -126,6 +126,10 @@ if(TARGET ludus_rhi_render_tests)
     ludus_compile_shader(TARGET ludus_renderer_render_tests NAME projected_solid_angle_parity
         SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/projected_solid_angle_parity.slang" COMPUTE ComputeMain
         INCLUDES "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders")
+    # Test-only kernel comparing FoundationMath's shader linearly transformed cosines with C++.
+    ludus_compile_shader(TARGET ludus_renderer_render_tests NAME linearly_transformed_cosine_parity
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/linearly_transformed_cosine_parity.slang" COMPUTE ComputeMain
+        INCLUDES "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders")
     # Test-only kernel comparing the public power-CDF scene accessors with the CPU reference.
     ludus_get_renderer_shader_roots(renderer_shader_directory renderer_shader_includes)
     ludus_compile_shader(TARGET ludus_renderer_render_tests NAME power_cdf_parity

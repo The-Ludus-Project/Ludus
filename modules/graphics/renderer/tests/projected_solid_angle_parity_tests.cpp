@@ -1,8 +1,12 @@
+#include "linearly_transformed_cosine_parity.h"
+#include "linearly_transformed_cosine_parity_layout.h"
 #include "projected_solid_angle_parity.h"
 #include "projected_solid_angle_parity_layout.h"
 
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/sort.hpp>
+#include <ludus/foundation/math/linearly_transformed_cosine.hpp>
+#include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/projected_solid_angle.hpp>
 #include <ludus/foundation/math/random.hpp>
 #include <ludus/foundation/math/scalar.hpp>
@@ -15,10 +19,12 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstring>
+#include <limits>
 #include <span>
 
-// GPU evidence for FoundationMath's shader port of projected solid angle sampling
-// (modules/foundation/math/shaders/projected_solid_angle.slang). The C++ implementation is the
+// GPU evidence for FoundationMath's shader ports of projected solid angle sampling
+// (modules/foundation/math/shaders/projected_solid_angle.slang) and of linearly transformed cosines over
+// polygons (shaders/linearly_transformed_cosine.slang). The C++ implementation is the
 // reference; its accuracy against an exact float64 oracle is established by the FoundationMath
 // tests. GPU transcendental functions differ by a few ulps, which the paper's single-precision
 // analysis (Peters 2021, section 3.6) amplifies only for small projected solid angles and near the
@@ -98,6 +104,119 @@ math::ProjectedPolygonInput MakeRandomPolygon(math::RandomStream& inoutRandom) n
     return result;
 }
 
+/// Run a parity kernel over host-supplied cases on a native compute device and read back its results.
+/// @return false when no native GPU adapter is available; other failures fail the test.
+bool RunParityKernel(const rhi::RasterShaderDescription& shader,
+                     const Array<float32>& cases,
+                     uint32 groupCount,
+                     usize resultBytes,
+                     Array<uint8>& outResults)
+{
+    const usize caseBytes = cases.GetSize() * sizeof(float32);
+
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    rhi::DeviceDescription description;
+    description.Required.Compute = true;
+    description.RequiredProfile.Raster.MinBufferSize = caseBytes;
+    description.RequiredProfile.Compute.MinStorageRange = caseBytes;
+    const rhi::DeviceStatus started = rhi::CreateDevice({}, { .Width = 8, .Height = 8 }, description, device, surface);
+    if (started != rhi::DeviceStatus::Ready && rhi::GetStartup().Error == rhi::StartupError::AdapterUnavailable)
+    {
+        return false;
+    }
+    REQUIRE(started == rhi::DeviceStatus::Ready);
+
+    rhi::BufferHandle caseBuffer;
+    rhi::BufferHandle resultBuffer;
+    REQUIRE(outResults.TryResize(resultBytes, uint8{0}) == true);
+    const std::span<const uint8> caseSource{reinterpret_cast<const uint8*>(cases.GetData()), caseBytes};
+    REQUIRE(IsAccepted(rhi::CreateBuffer(device,
+                                         {
+                                             .Role = rhi::BufferRole::Storage,
+                                             .Size = caseBytes,
+                                         },
+                                         caseSource,
+                                         caseBuffer)) == true);
+    REQUIRE(IsAccepted(rhi::CreateBuffer(device,
+                                         { .Role = rhi::BufferRole::Storage, .Size = resultBytes },
+                                         std::span<const uint8>{outResults.GetData(), resultBytes},
+                                         resultBuffer)) == true);
+    rhi::RasterShaderHandle shaderHandle;
+    rhi::BindingLayoutHandle layout;
+    REQUIRE(IsAccepted(rhi::CreateRasterShader(device, shader, shaderHandle)) == true);
+    REQUIRE(IsAccepted(rhi::CreateBindingLayout(device, shader.Bindings, layout)) == true);
+    WaitReady(device, caseBuffer);
+    WaitReady(device, resultBuffer);
+    WaitReady(device, shaderHandle);
+    WaitReady(device, layout);
+    const rhi::RasterBindingResource resources[] = {
+        { .Binding = 0, .Buffer = caseBuffer, .Size = caseBytes },
+        { .Binding = 1, .Buffer = resultBuffer, .Size = resultBytes },
+    };
+    rhi::BindingSetHandle set;
+    rhi::ComputePipelineHandle pipeline;
+    REQUIRE(IsAccepted(rhi::CreateBindingSet(device, layout, resources, set)) == true);
+    REQUIRE(IsAccepted(rhi::CreateComputePipeline(device, { .Shader = shaderHandle, .Layout = layout }, pipeline)) ==
+            true);
+    WaitReady(device, set);
+    WaitReady(device, pipeline);
+
+    rhi::OrderedGraph graph;
+    REQUIRE(rhi::CreateOrderedGraph(device, graph) == S::Ready);
+    rhi::GraphVersion caseVersion;
+    rhi::GraphVersion initialResults;
+    rhi::GraphVersion results;
+    REQUIRE(rhi::ImportGraphBuffer(device, graph, caseBuffer, caseVersion) == S::Ready);
+    REQUIRE(rhi::ImportGraphBuffer(device, graph, resultBuffer, initialResults) == S::Ready);
+    REQUIRE(rhi::NextGraphVersion(device, graph, initialResults, results) == S::Ready);
+    const rhi::GraphUse uses[] = {
+        {caseVersion, rhi::GraphAccessMode::StorageRead, 0, caseBytes, rhi::RasterVisibility::Compute},
+        {results, rhi::GraphAccessMode::StorageReadWrite, 0, resultBytes, rhi::RasterVisibility::Compute},
+    };
+    const rhi::ComputeDispatch dispatch
+    {
+        .Pipeline = pipeline,
+        .Bindings = set,
+        .Groups = {groupCount, 1, 1},
+    };
+    rhi::GraphPassDescription pass;
+    pass.Name = "FoundationMath parity";
+    pass.Uses = uses;
+    pass.UseCount = 2;
+    pass.SideEffect = true;
+    pass.Dispatch = &dispatch;
+    REQUIRE(rhi::AddGraphPass(device, graph, pass) == S::Ready);
+    rhi::GraphReport report;
+    REQUIRE(rhi::CompileOrderedGraph(device, graph, report) == S::Ready);
+    REQUIRE(rhi::SetFrameTarget(device, surface, {16, 16, 0, 0, 0, 1}) == rhi::DeviceStatus::Ready);
+    rhi::SubmissionToken completion;
+    const uint64 start = time::NowTicks();
+    S executed = rhi::ExecuteOrderedGraph(device, surface, graph, completion);
+    while (executed == S::NotReady && time::NowTicks() - start < TIMEOUT_NANOSECONDS)
+    {
+        executed = rhi::ExecuteOrderedGraph(device, surface, graph, completion);
+    }
+    REQUIRE(executed == S::Ready);
+    WaitReady(device, completion);
+    for (usize offset = 0; offset < resultBytes; offset += READBACK_CHUNK_BYTES)
+    {
+        const usize size = resultBytes - offset < READBACK_CHUNK_BYTES ? resultBytes - offset : READBACK_CHUNK_BYTES;
+        rhi::ReadbackTicket ticket;
+        S readback = rhi::RequestBufferReadback(device, resultBuffer, offset, size, ticket);
+        const uint64 readbackStart = time::NowTicks();
+        while (readback == S::Pending && time::NowTicks() - readbackStart < TIMEOUT_NANOSECONDS)
+        {
+            REQUIRE(rhi::PollLifetime(device) == S::Ready);
+            readback = rhi::GetStatus(device, ticket);
+        }
+        REQUIRE(readback == S::Ready);
+        REQUIRE(rhi::CopyReadback(device, ticket, outResults.GetData() + offset, size) == S::Ready);
+        REQUIRE(rhi::Release(device, ticket) == S::Ready);
+    }
+    return true;
+}
+
 float32 GetPercentile(Array<float32>& inoutValues, float32 fraction) noexcept
 {
     Sort(inoutValues.GetData(), inoutValues.GetSize(), [](float32 a, float32 b) noexcept { return a < b; });
@@ -169,111 +288,16 @@ TEST_CASE("GPU projected solid angle sampling matches the C++ implementation", "
         parameters[1] = randomNumbers[i].X;
         parameters[2] = randomNumbers[i].Y;
     }
-    const usize caseBytes = cases.GetSize() * sizeof(float32);
     const usize resultBytes =
         usize{CASE_COUNT} * LUDUS_PROJECTED_SOLID_ANGLE_PARITY_WORDS_PER_RESULT * FLOATS_PER_WORD * sizeof(float32);
-
-    rhi::DeviceHandle device;
-    rhi::SurfaceHandle surface;
-    rhi::DeviceDescription description;
-    description.Required.Compute = true;
-    description.RequiredProfile.Raster.MinBufferSize = caseBytes;
-    description.RequiredProfile.Compute.MinStorageRange = caseBytes;
-    const rhi::DeviceStatus started = rhi::CreateDevice({}, { .Width = 8, .Height = 8 }, description, device, surface);
-    if (started != rhi::DeviceStatus::Ready && rhi::GetStartup().Error == rhi::StartupError::AdapterUnavailable)
+    Array<uint8> resultBytesStorage;
+    if (RunParityKernel(ludus::shaders::projected_solid_angle_parity::Compute(),
+                        cases,
+                        CASE_COUNT / LUDUS_PROJECTED_SOLID_ANGLE_PARITY_GROUP_SIZE,
+                        resultBytes,
+                        resultBytesStorage) == false)
     {
         SKIP("No native GPU adapter");
-    }
-    REQUIRE(started == rhi::DeviceStatus::Ready);
-
-    rhi::BufferHandle caseBuffer;
-    rhi::BufferHandle resultBuffer;
-    Array<uint8> resultBytesStorage;
-    REQUIRE(resultBytesStorage.TryResize(resultBytes, uint8{0}) == true);
-    const std::span<const uint8> caseSource{reinterpret_cast<const uint8*>(cases.GetData()), caseBytes};
-    REQUIRE(IsAccepted(rhi::CreateBuffer(device,
-                                         {
-                                             .Role = rhi::BufferRole::Storage,
-                                             .Size = caseBytes,
-                                         },
-                                         caseSource,
-                                         caseBuffer)) == true);
-    REQUIRE(IsAccepted(rhi::CreateBuffer(device,
-                                         { .Role = rhi::BufferRole::Storage, .Size = resultBytes },
-                                         std::span<const uint8>{resultBytesStorage.GetData(), resultBytes},
-                                         resultBuffer)) == true);
-    const rhi::RasterShaderDescription shader = ludus::shaders::projected_solid_angle_parity::Compute();
-    rhi::RasterShaderHandle shaderHandle;
-    rhi::BindingLayoutHandle layout;
-    REQUIRE(IsAccepted(rhi::CreateRasterShader(device, shader, shaderHandle)) == true);
-    REQUIRE(IsAccepted(rhi::CreateBindingLayout(device, shader.Bindings, layout)) == true);
-    WaitReady(device, caseBuffer);
-    WaitReady(device, resultBuffer);
-    WaitReady(device, shaderHandle);
-    WaitReady(device, layout);
-    const rhi::RasterBindingResource resources[] = {
-        { .Binding = 0, .Buffer = caseBuffer, .Size = caseBytes },
-        { .Binding = 1, .Buffer = resultBuffer, .Size = resultBytes },
-    };
-    rhi::BindingSetHandle set;
-    rhi::ComputePipelineHandle pipeline;
-    REQUIRE(IsAccepted(rhi::CreateBindingSet(device, layout, resources, set)) == true);
-    REQUIRE(IsAccepted(rhi::CreateComputePipeline(device, { .Shader = shaderHandle, .Layout = layout }, pipeline)) ==
-            true);
-    WaitReady(device, set);
-    WaitReady(device, pipeline);
-
-    rhi::OrderedGraph graph;
-    REQUIRE(rhi::CreateOrderedGraph(device, graph) == S::Ready);
-    rhi::GraphVersion caseVersion;
-    rhi::GraphVersion initialResults;
-    rhi::GraphVersion results;
-    REQUIRE(rhi::ImportGraphBuffer(device, graph, caseBuffer, caseVersion) == S::Ready);
-    REQUIRE(rhi::ImportGraphBuffer(device, graph, resultBuffer, initialResults) == S::Ready);
-    REQUIRE(rhi::NextGraphVersion(device, graph, initialResults, results) == S::Ready);
-    const rhi::GraphUse uses[] = {
-        {caseVersion, rhi::GraphAccessMode::StorageRead, 0, caseBytes, rhi::RasterVisibility::Compute},
-        {results, rhi::GraphAccessMode::StorageReadWrite, 0, resultBytes, rhi::RasterVisibility::Compute},
-    };
-    const rhi::ComputeDispatch dispatch
-    {
-        .Pipeline = pipeline,
-        .Bindings = set,
-        .Groups = {CASE_COUNT / LUDUS_PROJECTED_SOLID_ANGLE_PARITY_GROUP_SIZE, 1, 1},
-    };
-    rhi::GraphPassDescription pass;
-    pass.Name = "projected solid angle parity";
-    pass.Uses = uses;
-    pass.UseCount = 2;
-    pass.SideEffect = true;
-    pass.Dispatch = &dispatch;
-    REQUIRE(rhi::AddGraphPass(device, graph, pass) == S::Ready);
-    rhi::GraphReport report;
-    REQUIRE(rhi::CompileOrderedGraph(device, graph, report) == S::Ready);
-    REQUIRE(rhi::SetFrameTarget(device, surface, {16, 16, 0, 0, 0, 1}) == rhi::DeviceStatus::Ready);
-    rhi::SubmissionToken completion;
-    const uint64 start = time::NowTicks();
-    S executed = rhi::ExecuteOrderedGraph(device, surface, graph, completion);
-    while (executed == S::NotReady && time::NowTicks() - start < TIMEOUT_NANOSECONDS)
-    {
-        executed = rhi::ExecuteOrderedGraph(device, surface, graph, completion);
-    }
-    REQUIRE(executed == S::Ready);
-    WaitReady(device, completion);
-    for (usize offset = 0; offset < resultBytes; offset += READBACK_CHUNK_BYTES)
-    {
-        const usize size = resultBytes - offset < READBACK_CHUNK_BYTES ? resultBytes - offset : READBACK_CHUNK_BYTES;
-        rhi::ReadbackTicket ticket;
-        S readback = rhi::RequestBufferReadback(device, resultBuffer, offset, size, ticket);
-        const uint64 readbackStart = time::NowTicks();
-        while (readback == S::Pending && time::NowTicks() - readbackStart < TIMEOUT_NANOSECONDS)
-        {
-            REQUIRE(rhi::PollLifetime(device) == S::Ready);
-            readback = rhi::GetStatus(device, ticket);
-        }
-        REQUIRE(readback == S::Ready);
-        REQUIRE(rhi::CopyReadback(device, ticket, resultBytesStorage.GetData() + offset, size) == S::Ready);
-        REQUIRE(rhi::Release(device, ticket) == S::Ready);
     }
 
     Array<float32> areaErrors;
@@ -317,5 +341,218 @@ TEST_CASE("GPU projected solid angle sampling matches the C++ implementation", "
     REQUIRE(centralCount < sampledCount);
     REQUIRE(GetPercentile(areaErrors, 0.99F) <= 1.0e-4F);
     REQUIRE(GetPercentile(directionErrors, 0.99F) <= 1.0e-4F);
+    REQUIRE(GetPercentile(directionErrors, 1.0F) <= 5.0e-2F);
+}
+
+namespace
+{
+constexpr uint32 LTC_CASE_COUNT = 64 * LUDUS_LINEARLY_TRANSFORMED_COSINE_PARITY_GROUP_SIZE;
+constexpr uint32 LTC_MATRIX_COLUMN_COUNT = 3;
+// The sharpest specular lobe the renderer admits: perceptual roughness 0.045, alpha = 0.045^2.
+constexpr float32 MINIMUM_ALPHA = 0.045F * 0.045F;
+// LTC integrals below this may sample inaccurately in single precision (Peters 2021, section 3.7); their samples are
+// not compared.
+constexpr float32 NEGLIGIBLE_INTEGRAL = 1.0e-6F;
+// Smaller integrals belong to slivers whose relative error is dominated by rounding of the transformed vertices
+// (compare Peters 2021, section 3.6); they are held to the absolute bound only.
+constexpr float32 MINIMUM_STATISTICS_INTEGRAL = 1.0e-4F;
+
+/// An isotropic BRDF fit's inverse transform (the planar form of Heitz et al. 2016, Equation 6), rotated by a random
+/// azimuth about the normal.
+math::Matrix3 MakeRandomInverseTransform(math::RandomStream& inoutRandom) noexcept
+{
+    const float32 logInverseMinimum = static_cast<float32>(-math::Log(static_cast<float64>(MINIMUM_ALPHA)));
+    const float32 inverseAlphaX =
+        static_cast<float32>(math::Exp(static_cast<float64>(Draw(inoutRandom, 0.0F, logInverseMinimum))));
+    const float32 inverseAlphaY =
+        static_cast<float32>(math::Exp(static_cast<float64>(Draw(inoutRandom, 0.0F, logInverseMinimum))));
+    const math::Matrix3 canonical{{
+        math::Vector3{inverseAlphaX, 0.0F, Draw(inoutRandom, -0.7F, 0.7F)},
+        math::Vector3{0.0F, inverseAlphaY, 0.0F},
+        math::Vector3{Draw(inoutRandom, -0.7F, 0.7F) * inverseAlphaX, 0.0F, 1.0F},
+    }};
+    const float32 azimuth = Draw(inoutRandom, 0.0F, math::kTauF);
+    const float32 cosine = math::Cos(azimuth);
+    const float32 sine = math::Sin(azimuth);
+    const math::Matrix3 rotationTransposed{{
+        math::Vector3{cosine, -sine, 0.0F},
+        math::Vector3{sine, cosine, 0.0F},
+        math::Vector3{0.0F, 0.0F, 1.0F},
+    }};
+    return canonical * rotationTransposed;
+}
+} // namespace
+
+TEST_CASE("GPU linearly transformed cosine sampling matches the C++ implementation",
+          "[renderer][gpu][polygon-sampling]")
+{
+    rhi::Shutdown();
+    struct Guard
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+
+    // Boundary configurations first: the identity, a shear whose support reaches below the horizon, a shear whose
+    // support excludes the light, then rejected matrices (zero, mirror, nonfinite); then a random corpus.
+    const float32 notANumber = std::numeric_limits<float32>::quiet_NaN();
+    const math::Matrix3 fixedMatrices[] = {
+        math::Matrix3::Identity(),
+        math::Matrix3{{math::Vector3{1, 0, 0.5F}, math::Vector3{0, 1, 0}, math::Vector3{0, 0, 1}}},
+        math::Matrix3{{math::Vector3{1, 0, -4}, math::Vector3{0, 1, 0}, math::Vector3{0, 0, 1}}},
+        math::Matrix3::Zero(),
+        math::Matrix3{{math::Vector3{1, 0, 0}, math::Vector3{0, 1, 0}, math::Vector3{0, 0, -1}}},
+        math::Matrix3{{math::Vector3{1, 0, 0}, math::Vector3{0, notANumber, 0}, math::Vector3{0, 0, 1}}},
+    };
+    constexpr uint32 FIXED_MATRIX_COUNT = sizeof(fixedMatrices) / sizeof(fixedMatrices[0]);
+    constexpr uint32 CASES_PER_FIXED_MATRIX = 16;
+    math::ProjectedPolygonInput straddling;
+    straddling.VertexCount = 4;
+    straddling.PositionsTangent[0] = math::Vector3{1, -0.5F, -0.3F};
+    straddling.PositionsTangent[1] = math::Vector3{1, 0.5F, -0.3F};
+    straddling.PositionsTangent[2] = math::Vector3{1, 0.5F, 0.3F};
+    straddling.PositionsTangent[3] = math::Vector3{1, -0.5F, 0.3F};
+    Array<math::ProjectedPolygonInput> polygons;
+    Array<math::Matrix3> matrices;
+    Array<math::Vector2> randomNumbers;
+    REQUIRE(polygons.TryResize(LTC_CASE_COUNT) == true);
+    REQUIRE(matrices.TryResize(LTC_CASE_COUNT) == true);
+    REQUIRE(randomNumbers.TryResize(LTC_CASE_COUNT) == true);
+    math::RandomStream random;
+    REQUIRE(random.TryReseed(RANDOM_SEED, 5) == true);
+    for (uint32 i = 0; i < LTC_CASE_COUNT; ++i)
+    {
+        if (i < FIXED_MATRIX_COUNT * CASES_PER_FIXED_MATRIX)
+        {
+            matrices[i] = fixedMatrices[i / CASES_PER_FIXED_MATRIX];
+            polygons[i] = straddling;
+        }
+        else
+        {
+            matrices[i] = MakeRandomInverseTransform(random);
+            polygons[i] = MakeRandomPolygon(random);
+        }
+        randomNumbers[i] = math::Vector2{random.NextFloat01(), random.NextFloat01()};
+    }
+
+    Array<float32> cases;
+    REQUIRE(cases.TryResize(usize{LTC_CASE_COUNT} * LUDUS_LINEARLY_TRANSFORMED_COSINE_PARITY_WORDS_PER_CASE *
+                                FLOATS_PER_WORD,
+                            0.0F) == true);
+    for (uint32 i = 0; i < LTC_CASE_COUNT; ++i)
+    {
+        float32* words =
+            cases.GetData() + usize{i} * LUDUS_LINEARLY_TRANSFORMED_COSINE_PARITY_WORDS_PER_CASE * FLOATS_PER_WORD;
+        for (uint32 j = 0; j < math::MAX_PROJECTED_POLYGON_INPUT_VERTICES; ++j)
+        {
+            words[j * FLOATS_PER_WORD] = polygons[i].PositionsTangent[j].X;
+            words[j * FLOATS_PER_WORD + 1] = polygons[i].PositionsTangent[j].Y;
+            words[j * FLOATS_PER_WORD + 2] = polygons[i].PositionsTangent[j].Z;
+        }
+        float32* parameters = words + math::MAX_PROJECTED_POLYGON_INPUT_VERTICES * FLOATS_PER_WORD;
+        parameters[0] = static_cast<float32>(polygons[i].VertexCount);
+        parameters[1] = randomNumbers[i].X;
+        parameters[2] = randomNumbers[i].Y;
+        for (uint32 j = 0; j < LTC_MATRIX_COLUMN_COUNT; ++j)
+        {
+            float32* column = parameters + (j + 1) * FLOATS_PER_WORD;
+            column[0] = matrices[i].Columns[j].X;
+            column[1] = matrices[i].Columns[j].Y;
+            column[2] = matrices[i].Columns[j].Z;
+        }
+    }
+    const usize resultBytes = usize{LTC_CASE_COUNT} * LUDUS_LINEARLY_TRANSFORMED_COSINE_PARITY_WORDS_PER_RESULT *
+                              FLOATS_PER_WORD * sizeof(float32);
+    Array<uint8> resultBytesStorage;
+    if (RunParityKernel(ludus::shaders::linearly_transformed_cosine_parity::Compute(),
+                        cases,
+                        LTC_CASE_COUNT / LUDUS_LINEARLY_TRANSFORMED_COSINE_PARITY_GROUP_SIZE,
+                        resultBytes,
+                        resultBytesStorage) == false)
+    {
+        SKIP("No native GPU adapter");
+    }
+
+    Array<float32> integralErrors;
+    Array<float32> directionErrors;
+    Array<float32> densityErrors;
+    uint32 rejectedCount = 0;
+    uint32 emptyCount = 0;
+    uint32 sampledCount = 0;
+    uint32 belowHorizonCount = 0;
+    for (uint32 i = 0; i < LTC_CASE_COUNT; ++i)
+    {
+        float32 words[LUDUS_LINEARLY_TRANSFORMED_COSINE_PARITY_WORDS_PER_RESULT * FLOATS_PER_WORD];
+        std::memcpy(words, resultBytesStorage.GetData() + usize{i} * sizeof(words), sizeof(words));
+        INFO("case " << i << ", vertices " << polygons[i].VertexCount);
+        math::LinearlyTransformedCosine distribution;
+        const bool isMade =
+            math::TryMakeLinearlyTransformedCosine(matrices[i], distribution) == math::MathStatus::Success;
+        REQUIRE(words[0] == (isMade == true ? 1.0F : 0.0F));
+        if (isMade == false)
+        {
+            ++rejectedCount;
+            continue;
+        }
+        REQUIRE(math::Abs(words[10] - distribution.InverseDeterminant) <= 1.0e-5F * distribution.InverseDeterminant);
+        math::LinearlyTransformedCosinePolygon expected;
+        REQUIRE(math::TryPrepareLinearlyTransformedCosinePolygon(polygons[i], distribution, expected) ==
+                math::MathStatus::Success);
+        REQUIRE(words[1] == 1.0F);
+        REQUIRE(words[3] == static_cast<float32>(expected.TransformedPolygon.VertexCount));
+        const float32 integral = math::GetLinearlyTransformedCosinePolygonIntegral(expected);
+        REQUIRE(math::Abs(words[2] - integral) <= 1.0e-6F + 1.0e-3F * integral);
+        if (integral < NEGLIGIBLE_INTEGRAL)
+        {
+            if (integral == 0.0F && words[2] == 0.0F)
+            {
+                // An empty clip disables the technique on both sides. Rounding may leave one side a sliver.
+                ++emptyCount;
+                REQUIRE(words[4] == 0.0F);
+            }
+            continue;
+        }
+        if (integral >= MINIMUM_STATISTICS_INTEGRAL)
+        {
+            REQUIRE(integralErrors.TryAdd(math::Abs(words[2] - integral) / integral) == true);
+        }
+        math::Vector3 expectedDirection;
+        REQUIRE(math::TrySampleLinearlyTransformedCosinePolygon(expected, randomNumbers[i], expectedDirection) ==
+                math::MathStatus::Success);
+        REQUIRE(words[4] == 1.0F);
+        ++sampledCount;
+        const math::Vector3 direction{words[5], words[6], words[7]};
+        belowHorizonCount += direction.Z < 0.0F ? 1 : 0;
+        REQUIRE(math::Abs(math::Length(direction) - 1.0F) <= 1.0e-5F);
+        if (integral >= MINIMUM_STATISTICS_INTEGRAL)
+        {
+            if (integral >= MINIMUM_STATISTICS_INTEGRAL)
+            {
+                REQUIRE(directionErrors.TryAdd(math::Length(direction - expectedDirection)) == true);
+            }
+        }
+        // Evaluate the C++ densities at the GPU's direction to compare the evaluators alone.
+        const float32 expectedDensity = math::EvaluateLinearlyTransformedCosinePolygonDensity(expected, direction);
+        REQUIRE(expectedDensity > 0.0F);
+        if (integral >= MINIMUM_STATISTICS_INTEGRAL)
+        {
+            REQUIRE(densityErrors.TryAdd(math::Abs(words[8] - expectedDensity) / expectedDensity) == true);
+        }
+        const float32 expectedLobe = math::EvaluateLinearlyTransformedCosine(distribution, direction);
+        REQUIRE(math::Abs(words[9] - expectedLobe) <= 1.0e-4F * expectedLobe);
+    }
+    CAPTURE(rejectedCount, emptyCount, sampledCount, belowHorizonCount);
+    REQUIRE(rejectedCount == 3 * CASES_PER_FIXED_MATRIX);
+    REQUIRE(emptyCount >= CASES_PER_FIXED_MATRIX);
+    REQUIRE(sampledCount > LTC_CASE_COUNT / 4);
+    REQUIRE(belowHorizonCount > 0);
+    // Apple M5 measured p99 relative integral and density errors of 1.9e-4 (largest 5.2e-4) and a p99 direction
+    // error of 1.8e-4 (largest 1.5e-3); the GPU rounds the transformed vertices differently.
+    REQUIRE(GetPercentile(integralErrors, 0.99F) <= 5.0e-4F);
+    REQUIRE(GetPercentile(integralErrors, 1.0F) <= 2.0e-3F);
+    REQUIRE(GetPercentile(densityErrors, 0.99F) <= 5.0e-4F);
+    REQUIRE(GetPercentile(directionErrors, 0.99F) <= 5.0e-4F);
     REQUIRE(GetPercentile(directionErrors, 1.0F) <= 5.0e-2F);
 }
