@@ -348,6 +348,33 @@ inline constexpr uint32 REFERENCE_EMITTER_WEIGHT_TOTAL = uint32{1} << 24;
 [[nodiscard]] bool FindReferenceEmitter(const ReferenceSceneData& scene, uint32 triangle, usize& outEmitter) noexcept;
 /// Probability that the emitter CDF selects `emitter`, or zero for an empty total.
 [[nodiscard]] float32 GetReferenceEmitterProbability(const ReferenceSceneData& scene, usize emitter) noexcept;
+/// Writes the one packed power CDF that GPU reference, preview and graph kernels read:
+/// emitter `i` stores its ascending triangle index in X and its inclusive cumulative
+/// weight in Y, both as uint32 bits; Z and W are left unchanged. Returns false and
+/// writes nothing when `EmitterCdf` is stale or `outWords` holds fewer than one word
+/// per emitter.
+[[nodiscard]] bool PackReferenceEmitterSelection(const ReferenceSceneData& scene,
+                                                 BorrowedView<math::Vector4> outWords) noexcept;
+/// Emissive triangle drawn from the power-weighted CDF; scene_shader.slang's
+/// EmissiveTriangleSelection mirrors it field by field.
+struct ReferenceEmissiveTriangleSelection final
+{
+    /// Scene triangle index, or LUDUS_GPU_PREVIEW_INVALID_TRIANGLE without a sample.
+    uint32 TriangleIndex = LUDUS_GPU_PREVIEW_INVALID_TRIANGLE;
+    /// Discrete probability of TriangleIndex among emissive triangles; zero without a sample.
+    float32 SelectionPmf = 0;
+    bool HasSample = false;
+};
+/// C++ counterpart of scene_shader.slang's SelectEmissiveTriangle: one bounded draw at
+/// `address` over the CDF total, then the triangle whose interval contains it. An empty
+/// or zero-total CDF, a stale CDF and an exhausted bounded draw return no sample.
+[[nodiscard]] ReferenceEmissiveTriangleSelection SelectReferenceEmissiveTriangle(const ReferenceSceneData& scene,
+                                                                                 math::RandomKey key,
+                                                                                 math::RandomAddress address) noexcept;
+/// C++ counterpart of scene_shader.slang's EvaluateEmissiveTriangleSelectionPmf: the
+/// probability that the power CDF selects `triangle`, or zero when it is not an emitter.
+[[nodiscard]] float32 EvaluateReferenceEmissiveTriangleSelectionPmf(const ReferenceSceneData& scene,
+                                                                    uint32 triangle) noexcept;
 [[nodiscard]] rhi::RasterStatus
 TraceReferenceOracle(const ReferenceSceneData&, const rhi::RayInput&, rhi::RayResult&) noexcept;
 [[nodiscard]] math::Vector4 SampleReferenceTexture(const ReferenceInstance&, math::Vector2) noexcept;

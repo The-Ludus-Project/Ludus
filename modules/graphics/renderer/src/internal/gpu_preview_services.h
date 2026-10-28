@@ -234,10 +234,9 @@ Status PackGpuScene(const ReferenceJob& job,
         out[2] = {GpuBits(n.First), GpuBits(n.Count), GpuBits(n.SplitAxis), 0};
     }
     internal::PackGpuPreviewRayOrder(scene, shouldPartitionNativeOpacity, data.GetData() + order);
-    for (usize i = 0; i < scene.Emitters.GetSize(); ++i)
+    if (internal::PackReferenceEmitterSelection(scene, {data.GetData() + emitters, scene.Emitters.GetSize()}) == false)
     {
-        data[emitters + i].X = GpuBits(scene.Emitters[i]);
-        data[emitters + i].Y = GpuBits(scene.EmitterCdf[i]);
+        return Status::InvalidDescription;
     }
     for (usize i = 0; i < job.ShaderEmitters.GetSize(); ++i)
     {

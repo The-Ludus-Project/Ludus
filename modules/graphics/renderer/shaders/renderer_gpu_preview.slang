@@ -540,13 +540,20 @@ bool FindEmitter(uint t, out uint outEmitter)
     outEmitter = low;
     return true;
 }
-float EmitterSelection(uint emitter, uint lightCount)
+// GetReferenceEmitterProbability: the power CDF's probability of emitter, zero for an empty total.
+float EmitterProbability(uint emitter)
 {
     uint total = Counts.z == 0 ? 0 : EmitterCumulative(Counts.z - 1);
-    if (lightCount == 0 || emitter >= Counts.z || total == 0)
+    if (emitter >= Counts.z || total == 0)
         return 0;
     uint previous = emitter == 0 ? 0 : EmitterCumulative(emitter - 1);
-    return float(EmitterCumulative(emitter) - previous) / float(total) * (float(Counts.z) / float(lightCount));
+    return float(EmitterCumulative(emitter) - previous) / float(total);
+}
+float EmitterSelection(uint emitter, uint lightCount)
+{
+    if (lightCount == 0)
+        return 0;
+    return EmitterProbability(emitter) * (float(Counts.z) / float(lightCount));
 }
 float HitEmitterSelection(uint t, uint lightCount)
 {
