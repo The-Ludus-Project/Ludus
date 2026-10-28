@@ -3062,6 +3062,7 @@ Status RenderGraph::GetResourceAllocation(uint32 resource,
     outAspect = logical.Kind == format::Aspect::Color ? rhi::TextureAspect::Color : rhi::TextureAspect::Depth;
     return Status::Ready;
 }
+#if defined(LUDUS_RENDERER_TEST_READBACK)
 Status internal::RenderGraphRayPass::GetGraphAccumulationForTesting(RenderGraph& inoutGraph,
                                                                     uint32 pass,
                                                                     rhi::BufferHandle& outBuffer) noexcept
@@ -3075,4 +3076,5 @@ Status internal::RenderGraphRayPass::GetGraphAccumulationForTesting(RenderGraph&
                                      state.Current->RayPasses[pass].GetJob(),
                                      outBuffer);
 }
+#endif
 } // namespace ludus::graphics::renderer
