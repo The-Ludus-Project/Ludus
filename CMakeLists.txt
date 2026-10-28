@@ -604,11 +604,14 @@ install(FILES cmake/LudusDependencies.cmake cmake/LudusShaders.cmake cmake/Ludus
 install(FILES cmake/render_graph/build.py DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/render_graph")
 install(FILES scripts/python/ludus_tools/__init__.py scripts/python/ludus_tools/errors.py
     scripts/python/ludus_tools/buildlock.py scripts/python/ludus_tools/render_graph.py
+    scripts/python/ludus_tools/render_graph_layout.py
     scripts/python/ludus_tools/render_graph_upscale.py scripts/python/ludus_tools/render_graph_sizes.py
     scripts/python/ludus_tools/render_graph_quality.py
     scripts/python/ludus_tools/render_graph_diagnostics.py
     scripts/python/ludus_tools/render_graph_build.py scripts/python/ludus_tools/render_graph_execution.py
     scripts/python/ludus_tools/render_graph_pipeline.py scripts/python/ludus_tools/render_graph_options.py scripts/python/ludus_tools/render_graph_ray.py
+    scripts/python/ludus_tools/render_graph_ray_invocation.py
+    scripts/python/ludus_tools/render_graph_metal_ray.py
     scripts/python/ludus_tools/render_graph_compute.py
     scripts/python/ludus_tools/render_graph_forward.py
     scripts/python/ludus_tools/render_graph_buffers.py scripts/python/ludus_tools/render_graph_scene.py
@@ -629,7 +632,7 @@ if(NOT EMSCRIPTEN)
     install(FILES apps/game_host/main.cpp
         DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus" RENAME LudusGameHostMain.cpp)
 endif()
-install(FILES modules/graphics/rhi/shaders/raster_bindings.slang modules/graphics/rhi/shaders/runtime_bindings.slang modules/graphics/rhi/shaders/ray_query.slang cmake/shaders/compile_ray.py cmake/shaders/compile_shader.py cmake/shaders/compile_raster.py cmake/shaders/compile_graph_stage.py cmake/shaders/native_worker.py cmake/shaders/cook_texture.py config/shader_toolchain.json config/spirv_cross_toolchain.json DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
+install(FILES modules/graphics/rhi/shaders/metal_ray_pipeline_layout.h modules/graphics/renderer/shaders/native_metal_ray.slang modules/graphics/rhi/shaders/raster_bindings.slang modules/graphics/rhi/shaders/runtime_bindings.slang modules/graphics/rhi/shaders/ray_query.slang cmake/shaders/compile_ray.py cmake/shaders/compile_shader.py cmake/shaders/compile_raster.py cmake/shaders/compile_graph_stage.py cmake/shaders/compile_metal_ray.py cmake/shaders/native_worker.py cmake/shaders/cook_texture.py config/shader_toolchain.json config/spirv_cross_toolchain.json DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
 
 install(FILES third_party/xxhash/LICENSE DESTINATION "${CMAKE_INSTALL_DATADIR}/${LUDUS_ENGINE_PACKAGE_NAME}/licenses" RENAME xxhash-LICENSE)
 

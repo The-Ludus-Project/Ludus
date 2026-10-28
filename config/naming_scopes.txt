@@ -21,6 +21,11 @@ modules/foundation/math/include/ludus/foundation/math/enclosure.hpp
 modules/foundation/math/src/enclosure.cpp
 modules/foundation/math/tests/enclosure_oracle.hpp
 modules/foundation/math/tests/enclosure_tests.cpp
+modules/foundation/math/include/ludus/foundation/math/projected_solid_angle.hpp
+modules/foundation/math/src/projected_solid_angle.cpp
+modules/foundation/math/src/internal/projected_solid_angle.hpp
+modules/foundation/math/tests/projected_solid_angle_tests.cpp
+modules/graphics/renderer/tests/projected_solid_angle_parity_tests.cpp
 modules/foundation/math/include/ludus/foundation/math/random_domains.hpp
 modules/foundation/math/tests/random_domains_tests.cpp
 modules/foundation/geometry

@@ -43,11 +43,15 @@ bool AreRenderGraphCommentFramesValid(const QJsonArray& frames)
     for (const QJsonValueConstRef value : frames)
     {
         const QJsonObject frame = value.toObject();
+        QJsonObject expanded = frame;
+        expanded.remove(QStringLiteral("collapsed"));
         const QString name = frame.value(QStringLiteral("id")).toString();
         const QJsonValue title = frame.value(QStringLiteral("title"));
         const QJsonValue notes = frame.value(QStringLiteral("notes"));
-        if (value.isObject() == false || frame.keys() != fields || identity.match(name).hasMatch() == false ||
-            claimed.contains(name) == true || title.isString() == false ||
+        if (value.isObject() == false || expanded.keys() != fields ||
+            (frame.contains(QStringLiteral("collapsed")) == true &&
+             frame.value(QStringLiteral("collapsed")).isBool() == false) ||
+            identity.match(name).hasMatch() == false || claimed.contains(name) == true || title.isString() == false ||
             title.toString().trimmed().isEmpty() == true ||
             title.toString().toUcs4().size() > layout_policy::MAX_COMMENT_TITLE_CODEPOINTS ||
             title.toString().contains(QLatin1Char('\n')) == true ||

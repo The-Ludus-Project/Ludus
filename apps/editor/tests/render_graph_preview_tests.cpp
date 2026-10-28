@@ -12,7 +12,9 @@
 #include "internal/offscreen_frame_reader.h"
 #include "internal/preview_viewport.h"
 #include "internal/render_graph_defaults.h"
+#include "internal/render_graph_navigation.h"
 #include "internal/render_graph_preview.h"
+#include "internal/render_graph_resource_inspection.h"
 #include "internal/render_graph_targets.h"
 #include "internal/render_preview.h"
 #include "internal/render_target_reader.h"
@@ -36,6 +38,7 @@
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/profile.h>
 
+#include <cstddef>
 #include <cstring>
 #include <initializer_list>
 #include <new>
@@ -45,6 +48,7 @@
 
 #include <QApplication>
 #include <QComboBox>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
@@ -58,6 +62,7 @@
 #include <QListWidget>
 #include <QMouseEvent>
 #include <QPlainTextEdit>
+#include <QPushButton>
 #include <QQuickWindow>
 #include <QSaveFile>
 #include <QSignalSpy>
@@ -648,7 +653,8 @@ TEST_CASE("Ray preview advances stochastic samples without a scene edit and rast
     preview.Detach();
 }
 
-TEST_CASE("RG3b failed and pending candidates keep the last drawable view", "[editor][render-graph][preview]")
+TEST_CASE("RG3b failed and pending candidates keep the last drawable view",
+          "[editor][render-graph][preview][resource-inspection-preview]")
 {
     DeviceFixture device;
     if (device.IsAvailable == false)
@@ -657,11 +663,21 @@ TEST_CASE("RG3b failed and pending candidates keep the last drawable view", "[ed
     }
     QTemporaryDir directory;
     const QByteArray bytes = ReadFixture();
+    QFile names(GetTargetNamesPath(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)));
+    REQUIRE(names.open(QIODevice::ReadOnly) == true);
+    const RenderGraphPreviewSource provenance{
+        QByteArrayLiteral("verified-source"),
+        QStringLiteral("Default"),
+        QJsonDocument::fromJson(names.readAll()).object().value(QStringLiteral("generation")).toString().toLatin1(),
+        QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex()};
     RenderGraphPreview preview = MakePreview();
     REQUIRE(preview.Attach(device.Device, device.Surface) == true);
     preview.SetExtraction(MakeExtraction({0, 1, 0, 1}, 1));
-    REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
+    REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE), {}, provenance) ==
+            RenderGraphPreviewLoad::Staged);
+    CHECK(preview.GetActiveSource().InputIdentity.isEmpty() == true);
     REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedGeneration() == 1; }) == true);
+    CHECK(preview.GetActiveSource().InputIdentity == provenance.InputIdentity);
     const QImage green = preview.GetImage();
     const usize sampleCount = preview.GetStatistics().GetCpuMilliseconds().GetCount();
     REQUIRE(sampleCount != 0);
@@ -676,6 +692,7 @@ TEST_CASE("RG3b failed and pending candidates keep the last drawable view", "[ed
         CHECK(preview.GetStatistics().GetReadbackMilliseconds().GetCount() == sampleCount);
         CHECK(preview.GetPresentedGeneration() == 1);
         CHECK(preview.GetReport().ActiveGeneration == 1);
+        CHECK(preview.GetActiveSource().InputIdentity == provenance.InputIdentity);
     };
 
     // A truncated generation is rejected at decode; nothing is staged.
@@ -700,7 +717,14 @@ TEST_CASE("RG3b failed and pending candidates keep the last drawable view", "[ed
 
     // Pending replacement: until the new candidate activates and renders, generation 1 stays
     // shown. Every Stage takes a serial, including the restart-requiring attempt above.
-    REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
+    // Configurations may share a build generation; the exact runtime digest must match too.
+    const RenderGraphPreviewSource wrongProvenance{QByteArrayLiteral("another-source"),
+                                                   QStringLiteral("Default"),
+                                                   provenance.Generation,
+                                                   QByteArrayLiteral("wrong-runtime-package")};
+    REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE), {}, wrongProvenance) ==
+            RenderGraphPreviewLoad::Staged);
+    CHECK(preview.GetActiveSource().InputIdentity == provenance.InputIdentity);
     const uint64 replacement = preview.GetReport().CandidateGeneration;
     CHECK(replacement > 1);
     CHECK(preview.GetImage() == green);
@@ -716,6 +740,7 @@ TEST_CASE("RG3b failed and pending candidates keep the last drawable view", "[ed
     CHECK(hasRegressed == false);
     CheckCenter(preview.GetImage(), 255, 0, 0);
     const QImage red = preview.GetImage();
+    CHECK(preview.GetActiveSource().InputIdentity.isEmpty() == true);
 
     // Stopping the viewport device keeps the last presented frame and reports it as such.
     preview.Detach();
@@ -841,9 +866,11 @@ TEST_CASE("Editors without OIDN preview a denoising graph unfiltered and say so"
                            readWord(CAMERA_COUNT_FIELD * sizeof(uint32)) * format::CAMERA_RECORD_BYTES;
     REQUIRE(readWord(PASS_COUNT_FIELD * sizeof(uint32)) != 0);
     REQUIRE(readWord(passesAt) == static_cast<uint32>(format::Technique::RayTracing));
-    // DenoisingQuality is the last word of a pass record: what a Denoise node after this ray pass cooks to.
+    // DenoisingQuality is what a Denoise node after this ray pass cooks to; later fields follow it.
+    static_assert(offsetof(format::Pass, DenoisingQuality) == format::PASS_DENOISING_QUALITY_FIELD * sizeof(uint32));
+    const usize qualityAt = passesAt + format::PASS_DENOISING_QUALITY_FIELD * sizeof(uint32);
     const uint32 quality = static_cast<uint32>(format::ProcessingQuality::Balanced);
-    std::memcpy(bytes.data() + passesAt + format::PASS_RECORD_BYTES - sizeof(uint32), &quality, sizeof(quality));
+    std::memcpy(bytes.data() + qualityAt, &quality, sizeof(quality));
     QTemporaryDir directory;
     const QString denoised = WriteBytes(directory, QStringLiteral("denoised.lurgrt"), bytes);
     DeviceFixture device({}, true);
@@ -1014,6 +1041,26 @@ TEST_CASE("Texture viewer names every generation texture and resolves canvas nod
         MakeTargetCatalogue(package.GetPlan(), package.GetGenerationIdentity(), names);
     INFO(catalogue.NamesProblem.toStdString());
     REQUIRE(catalogue.HasNames == true);
+    const QByteArray runtimeIdentity = QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex();
+    const RenderGraphTargetCatalogue exact =
+        MakeTargetCatalogue(package.GetPlan(), package.GetGenerationIdentity(), names, runtimeIdentity);
+    CHECK(exact.HasExactRuntimeNames == true);
+    QJsonObject otherConfiguration = QJsonDocument::fromJson(names).object();
+    otherConfiguration.insert(QStringLiteral("runtime_sha256"), QStringLiteral("another-runtime"));
+    const RenderGraphTargetCatalogue mismatched = MakeTargetCatalogue(package.GetPlan(),
+                                                                      package.GetGenerationIdentity(),
+                                                                      QJsonDocument(otherConfiguration).toJson(),
+                                                                      runtimeIdentity);
+    CHECK(mismatched.HasNames == false);
+    CHECK(mismatched.NamesProblem.contains(QStringLiteral("configuration")) == true);
+    otherConfiguration.remove(QStringLiteral("runtime_sha256"));
+    const RenderGraphTargetCatalogue legacy = MakeTargetCatalogue(package.GetPlan(),
+                                                                  package.GetGenerationIdentity(),
+                                                                  QJsonDocument(otherConfiguration).toJson(),
+                                                                  runtimeIdentity);
+    CHECK(legacy.HasNames == true);
+    CHECK(legacy.HasExactRuntimeNames == false);
+
     // Every texture, not only the export: the transient depth target is listed too.
     REQUIRE(catalogue.Targets.size() == 2);
     const qsizetype color = catalogue.Find(QStringLiteral("Main/color"));
@@ -1230,6 +1277,73 @@ TEST_CASE("Texture viewer follows Live Preview frames and rebuilt generations by
     CHECK(viewer.GetDisplaySettings().Maximum == 1.0F);
     CHECK(viewer.GetDisplayImage().pixelColor(WIDTH / 2, HEIGHT / 2) == QColor(255, 0, 0));
     preview.Detach();
+}
+
+TEST_CASE("canvas resource inspection opens the existing viewer and shares its GPU readback",
+          "[editor][render-graph][resource-inspection-preview]")
+{
+    DeviceFixture device;
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    QTemporaryDir project;
+    const QDir source(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT) + QStringLiteral("/tests/sdk_consumer/rg2/offscreen"));
+    for (const QString& file : {QStringLiteral("main.lurender.json"), QStringLiteral("rasterize.lurender.json")})
+    {
+        REQUIRE(QFile::copy(source.filePath(file), QDir(project.path()).filePath(file)) == true);
+    }
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.OpenGraph(QDir(project.path()).filePath(QStringLiteral("main.lurender.json"))) == true);
+    RenderGraphPreview* previewOrNull = workspace.GetPreviewOrNull();
+    TextureViewer* viewerOrNull = workspace.findChild<TextureViewer*>();
+    RenderGraphResourceInspector* inspectorOrNull = workspace.findChild<RenderGraphResourceInspector*>();
+    REQUIRE(previewOrNull != nullptr);
+    REQUIRE(viewerOrNull != nullptr);
+    REQUIRE(inspectorOrNull != nullptr);
+    RenderGraphPreview& preview = *previewOrNull;
+    REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Waiting);
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    preview.SetExtraction(MakeExtraction({0, 1, 0, 1}, 1));
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedGeneration() != 0; }) == true);
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    canvas.SelectNode(QStringLiteral("color"));
+    RenderGraphNavigation* navigationOrNull = canvas.findChild<RenderGraphNavigation*>();
+    REQUIRE(navigationOrNull != nullptr);
+    navigationOrNull->SetTraceDirection(RenderGraphTraceDirection::Downstream);
+    const RenderGraphViewState state = canvas.CaptureViewState();
+    const QByteArray before = workspace.GetDocument().GetDraft(QStringLiteral("main.lurender.json"));
+    Q_EMIT canvas.ResourceInspectionRequested(QStringLiteral("raster.depth"), true);
+    CHECK(inspectorOrNull->CanOpenInTextures() == true);
+    CHECK(inspectorOrNull->GetStatusText().startsWith(QStringLiteral("Unverified")) == true);
+    QPushButton* openOrNull = inspectorOrNull->findChild<QPushButton*>(QStringLiteral("renderGraphOpenInTextures"));
+    REQUIRE(openOrNull != nullptr);
+    openOrNull->click();
+    CHECK(viewerOrNull->GetSelectedTarget() == QStringLiteral("Main/depth"));
+    REQUIRE(TickUntil(preview, [&]() {
+                return preview.GetInspectedTarget() == QStringLiteral("Main/depth") &&
+                       preview.GetInspectedTexture().Encoding == TexelEncoding::Depth32Float &&
+                       preview.GetInspectedTexture().IsValid() == true;
+            }) == true);
+    CHECK(viewerOrNull->GetDisplayImage().isNull() == false);
+    inspectorOrNull->SetPinned(true);
+    Q_EMIT canvas.NodeSelected(QStringLiteral("color"));
+    CHECK(viewerOrNull->GetSelectedTarget() == QStringLiteral("Main/depth"));
+    CHECK(canvas.GetSelectedNodes() == state.Selection);
+    CHECK(canvas.CaptureViewState().Trace == state.Trace);
+    CHECK(canvas.CaptureViewState().CentreScene == state.CentreScene);
+    CHECK(canvas.CaptureViewState().Zoom == state.Zoom);
+    CHECK(workspace.GetDocument().GetDraft(QStringLiteral("main.lurender.json")) == before);
+    inspectorOrNull->SetPinned(false);
+    Q_EMIT canvas.NodeSelected(QStringLiteral("color"));
+    CHECK(viewerOrNull->GetSelectedTarget() == QStringLiteral("Main/color"));
+    const QImage retained = preview.GetImage();
+    preview.Detach();
+    CHECK(inspectorOrNull->CanOpenInTextures() == false);
+    CHECK(preview.GetImage() == retained);
+    inspectorOrNull->close();
 }
 
 TEST_CASE("Cold project shader timeout keeps the default rendering the current World",
@@ -2041,7 +2155,7 @@ TEST_CASE("World grid uses scene depth without writing it in the project graph",
 }
 
 TEST_CASE("view-relative preview resizes without losing its last completed image",
-          "[editor][render-graph][preview][size]")
+          "[editor][render-graph][preview][size][resource-inspection-preview]")
 {
     DeviceFixture device;
     if (device.IsAvailable == false)
@@ -2056,8 +2170,8 @@ TEST_CASE("view-relative preview resizes without losing its last completed image
         const qsizetype start = static_cast<qsizetype>(format::HEADER_BYTES) +
                                 resource * static_cast<qsizetype>(format::RESOURCE_RECORD_BYTES);
         // Fixture is little-endian; a one-byte change suffices for the small test ratios.
-        relative[start + VIEW_NUMERATOR_FIELD * sizeof(uint32)] = 1;
-        relative[start + VIEW_DENOMINATOR_FIELD * sizeof(uint32)] = 2;
+        relative[start + VIEW_NUMERATOR_FIELD * static_cast<qsizetype>(sizeof(uint32))] = 1;
+        relative[start + VIEW_DENOMINATOR_FIELD * static_cast<qsizetype>(sizeof(uint32))] = 2;
     }
     QTemporaryDir directory;
     const QString runtime = WriteBytes(directory, QStringLiteral("relative.lurgrt"), relative);
@@ -2068,9 +2182,18 @@ TEST_CASE("view-relative preview resizes without losing its last completed image
     REQUIRE(preview.Load(runtime) == RenderGraphPreviewLoad::Staged);
     REQUIRE(TickUntil(preview, [&]() { return preview.GetImage().size() == QSize(96, 64); }) == true);
     const QImage first = preview.GetImage();
+    CHECK(preview.HasPresentedCatalogue() == true);
+    bool hasAwaitedPresentation = false;
+    QObject resizeObserver;
+    QObject::connect(&preview, &RenderGraphPreview::TargetsChanged, &resizeObserver, [&]() {
+        CHECK(preview.HasPresentedCatalogue() == false);
+        hasAwaitedPresentation = true;
+    });
     preview.SetReferenceSize({193, 129});
     CHECK(preview.GetImage() == first);
     REQUIRE(TickUntil(preview, [&]() { return preview.GetImage().size() == QSize(97, 65); }) == true);
+    CHECK(hasAwaitedPresentation == true);
+    CHECK(preview.HasPresentedCatalogue() == true);
     CHECK(preview.GetPresentedGeneration() == 1);
     CHECK(preview.GetPresentedRevision() == 1);
     const QImage resized = preview.GetImage();

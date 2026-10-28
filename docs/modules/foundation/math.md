@@ -153,6 +153,53 @@ Game Programming Gems 1 §2.0, 2 §1.16, and 3 §2.1. The
 [chapter review](../../architecture/randomness-gems-review.md) explain
 the selected ideas and limitations. Random123's BSD notice ships in the SDK.
 
+### Weighted reservoir for resampling
+
+`weighted_reservoir.hpp` streams weighted candidates in a fixed order and keeps
+one, with replacement, for resampled importance sampling. Give each candidate
+its own ticket dimension and record the payload of the candidate the update
+selects:
+
+```cpp
+#include <ludus/foundation/math/addressed_random.hpp>
+#include <ludus/foundation/math/weighted_reservoir.hpp>
+
+WeightedReservoir reservoir;
+uint32 selectedLight = 0;
+float32 selectedTarget = 0.0f;
+for (uint32 i = 0; i < candidateCount; ++i)
+{
+    const RandomAddress ticketAddress{ pixelScope, sampleIndex, static_cast<uint16>(13u + 2u * i) };
+    const ReservoirCandidate candidate{ .Weight = targets[i] / sourcePdfs[i],
+                                        .Ticket = SampleFloat01(key, ticketAddress) };
+    bool isSelected = false;
+    if (TryAddReservoirCandidate(candidate, reservoir, isSelected) != MathStatus::Success)
+    {
+        return; // invalid weight: fail the sample explicitly
+    }
+    if (isSelected == true)
+    {
+        selectedLight = lights[i];
+        selectedTarget = targets[i];
+    }
+}
+float32 contributionWeight = 0.0f; // zero for an empty reservoir
+(void)TryComputeReservoirContributionWeight(reservoir, selectedTarget, contributionWeight);
+```
+
+The rule is `w_sum += w`, then select when `ticket * w_sum < w`. Zero weights
+never win, an all-zero stream is a valid empty result, and the contribution
+weight is `w_sum / (M * target(selected))`. NaN, infinite or negative weights,
+tickets outside `[0,1)`, overflow and invalid targets fail with `MathStatus`
+and leave outputs unchanged. Weights below `WeightedReservoirMinimumWeight`
+(`2^-102`) count as zero, so that CPU and GPU selections agree. Kernels use the
+same contract through `weighted_reservoir.slang`, installed beside `math.slang`:
+`MakeWeightedReservoir`, `TryAddReservoirCandidate`, `HasReservoirSelection` and
+`TryComputeReservoirContributionWeight` return `false` on failure. See the
+[sequential weighted reservoir](../../architecture/randomness.md#sequential-weighted-reservoir)
+contract, its exact-frequency and GPU parity evidence, and the credit to Chris
+Wyman's *Ray Tracing Gems II* chapter 22.
+
 ### Repeatable random stream
 
 ```cpp
@@ -237,6 +284,87 @@ Dekker sums and products on the pinned native toolchain (`[enclosure]` tests)
 and on the pinned Emscripten toolchain (`ludus_web_math_corpus`). They are not a
 general interval library: there is no division, transcendental function or
 dependency tracking.
+
+## Projected solid angle sampling
+
+`projected_solid_angle.hpp` samples a convex polygonal light uniformly in
+projected solid angle: directions are distributed proportionally to cos θ inside
+the polygon, which removes the cosine term from a diffuse light estimate. It
+implements section 3 and supplement A of Christoph Peters, "BRDF Importance
+Sampling for Polygonal Lights", *ACM Transactions on Graphics* 40(4), Article 140,
+2021 ([DOI](https://doi.org/10.1145/3450626.3459672)). The shader port
+`shaders/projected_solid_angle.slang` is installed beside `math.slang` and
+evaluates the same operations.
+
+```cpp
+#include <ludus/foundation/math/projected_solid_angle.hpp>
+
+// Vertices relative to the shading point, in a frame whose +z is the shading normal.
+ProjectedPolygonInput light;
+light.VertexCount = 4;
+light.PositionsTangent[0] = Vector3{1, -1, 0.5f};
+light.PositionsTangent[1] = Vector3{1, -1, 2};
+light.PositionsTangent[2] = Vector3{1, 1, 2};
+light.PositionsTangent[3] = Vector3{1, 1, 0.5f};
+ProjectedSolidAnglePolygon polygon;
+if (TryPrepareProjectedSolidAnglePolygon(light, polygon) == MathStatus::Success && polygon.ProjectedSolidAngle > 0)
+{
+    Vector3 direction;
+    if (TrySampleProjectedSolidAnglePolygon(polygon, Vector2{u0, u1}, direction) == MathStatus::Success)
+    {
+        const float density = EvaluateProjectedSolidAnglePolygonDensity(polygon, direction); // per steradian
+    }
+}
+```
+
+The polygon must be convex and planar with no three collinear vertices and at
+most `MAX_PROJECTED_POLYGON_INPUT_VERTICES` (7) vertices; either winding is
+accepted. FoundationGeometry's convex polygon partition produces such polygons
+from emissive meshes. Preparation clips to the horizon (at most eight vertices
+remain), assigns each edge's great circle an ellipse in the projected disk, sorts
+vertices with the paper's bitonic sorting networks and computes the sector areas
+of Equation (1). A polygon below the horizon or edge-on to the shading point
+prepares successfully with zero projected solid angle. Sampling is continuous in
+both random numbers, so stratification carries over. Decentral samples (the zenith
+outside the polygon) use the two-quad initialization and exactly
+`PROJECTED_POLYGON_ITERATION_COUNT` (2) tangent-line iterations; the iteration is
+skipped within 1e-5 of a sector boundary, as in the paper. The density evaluator
+assumes the direction lies in the polygon, for example because another technique
+of the same light sampled it or a ray hit the light.
+
+Departures from the author's `polygon_sampling.glsl`, none of which changes the
+sampled distribution:
+
+- Ellipse kinds (outer, inner, degenerate) are stored explicitly instead of in
+  the sign bit of u.x and as an infinite u.x, and `positive_atan(y / x)` never
+  divides by zero. Ludus compiles Metal shaders with fast math and WGSL does not
+  guarantee infinities, NaNs or signed zeros; the paper's encoding produced NaN
+  for a vertex at the zenith on Metal. The shader tests finiteness on bit patterns.
+- Sector selection skips sectors without area, so rounding at the end of the
+  distribution cannot select an empty sector, where the original produces NaN.
+- The iteration's approximate exponent-flip reciprocal is an exact reciprocal,
+  the variant the author's comment offers for ports.
+- Horizon clipping is an independent implementation with the same result as
+  supplement A.1, not its generated code. Its output index is dynamic on GPUs;
+  the paper's spill-free switch is a possible later optimization.
+- The paper's biased variant (section 6.4) is not provided.
+
+Kahan's difference of products needs a fused multiply-add. The implementation
+calls `std::fma` explicitly; contraction stays disabled. Shader targets that
+evaluate `fma` unfused keep the algorithm but lose its 1.5 ulp bound.
+
+Evidence: `projected_solid_angle_tests.cpp` checks 4000 random polygons and the
+boundary cases of supplement A.2 against an independent float64 oracle, which
+clips the polygon, integrates the cosine with Lambert's edge formula and inverts
+the distribution by bisection. On Apple M5 the backward error scaled by the
+projected solid angle has a 99th percentile of 1.1e-7, matching the paper's
+Fig. 6b; the relative backward error grows only for small projected solid angles
+(99th percentile 4.2e-5). Two iterations bring the residual sector area below
+2e-7 for 99% of samples, against 4.8e-2 relative error for the initialization
+alone (paper section 3.6 reports 0.02). A stratified quadrature integrates the
+density to one within 0.5%. The renderer's `[polygon-sampling]` GPU test compares
+the shader with C++ on 4096 cases; it runs natively on Metal here, and the
+Vulkan/SPIR-V and WGSL builds compile but are first executed in CI.
 
 ## GPU transfer
 

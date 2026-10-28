@@ -665,19 +665,39 @@ nodes use `"state": {}` and inherit the bundle workgroup (64×1×1 when no pass 
 must have all three callbacks and no `compute` shader. Existing single-kernel
 compute nodes remain supported.
 
-Use **Invocation → Ray traversal** in the pipeline editor, accessible from both
-Properties and the canvas pipeline editor, to choose the intersection strategy:
+The graph node is a logical ray program. **Invocation → Invocation type** in the
+pipeline editor, accessible from both Properties and the canvas pipeline editor,
+selects its execution model without changing the node kind or its callbacks:
+
+| Invocation type | Contract |
+| --- | --- |
+| Hardware RT pipeline (`RayTracing`) | Uses Metal native intersectors, an intersection function table for alpha acceptance, and visible function tables for ray-generation, closest-hit and miss callbacks. Requires hardware ray traversal and function pointers. Other backends reject this invocation explicitly; it never selects inline-query compute as a fallback. |
+| Compute pipeline (`Compute`) | Runs the ray callbacks through a compute entry and selects their query implementation with **Ray traversal**. |
+
+An omitted `invocation.type` retains the legacy compute execution model. Selecting
+an explicit Compute invocation defaults to the engine's triangle loop when no
+traversal is specified. A logical RayTracingPipeline may select either invocation;
+a scene ComputePipeline remains a compute invocation. Metal uses a native function-table backend because the pinned Slang compiler
+does not emit Metal ray-generation stages directly. The offline compiler retains
+the authored Slang callbacks and lowers the reserved stage/table ABI to native MSL.
+Hardware invocation requires the scene callback interface (`scene_interface.version: 1`);
+legacy callback signatures use that interface's existing adapters. The driver
+independently compiles and links all stages. This does not promise a
+performance improvement over inline queries; measure the same scene and settings.
+
+Use **Invocation → Ray traversal** to choose the compute intersection strategy:
 
 | Selection | Behavior |
 | --- | --- |
-| Automatic | Shared callbacks in a ComputePipeline use `TriangleLoop`; a RayTracingPipeline and existing single-kernel compute passes use `NativeQuery`. |
+| Automatic | An explicit Compute invocation uses `TriangleLoop`. Legacy documents without an invocation type retain their defaults: shared callbacks in a ComputePipeline use `TriangleLoop`; a RayTracingPipeline and existing single-kernel compute passes use `NativeQuery`. |
 | Triangle loop (`TriangleLoop`) | Renderer-owned two-sided ray/triangle intersections scan the selected World's packed triangles. Closest queries retain the nearest accepted hit; visibility queries stop at the first accepted hit. |
 | Native ray query (`NativeQuery`) | Inline native acceleration-structure queries perform triangle traversal. |
+| Custom traversal (`Custom`) | The package-relative **Traversal source** implements closest and visibility queries in compute. No native acceleration structure is created or bound. |
 
 The optional JSON field is `invocation.traversal`:
 
 ```json
-"invocation": {"dimensions": "ColorTarget", "traversal": "TriangleLoop"}
+"invocation": {"type": "Compute", "dimensions": "ColorTarget", "traversal": "TriangleLoop"}
 ```
 
 Both strategies apply to `TraceClosest`, `TestVisibility` and `TraceAndShade`,
@@ -686,6 +706,35 @@ the same authored callbacks and preserves payload, query budgets and failure
 status. Passes sharing the same callbacks can select different strategies in one
 package; the cooked variant includes the strategy so one pass cannot overwrite
 another's selection. Changing it rebuilds the wrapper without rewriting shaders.
+
+For custom compute queries, supply a source implementing this function:
+
+```slang
+Hit TraceWorld(float3 originWorld, float3 directionWorld,
+               float nearDistanceWorld, float farDistanceWorld, bool isVisibility)
+{
+    return TraceTriangleLoop(originWorld, directionWorld,
+                             nearDistanceWorld, farDistanceWorld, isVisibility);
+}
+```
+
+Select it with
+`"invocation": {"type": "Compute", "dimensions": "ColorTarget", "traversal": "Custom", "traversal_source": "queries/custom.slang"}`.
+The example delegates to the engine default; replace its body with the desired
+query algorithm. Custom sources can access the selected World's packed geometry
+and the existing `GraphBuffer0`/`GraphBuffer1` persistent storage slots, so preceding
+compute passes can build an acceleration structure in authored Buffer resources.
+The custom source must return a packed World triangle index, distance in world
+meters and barycentrics through `Hit`. Return `LUDUS_GPU_PREVIEW_INVALID_TRIANGLE`
+for a miss or `LUDUS_GPU_PREVIEW_FAILED_TRIANGLE` for failure. Closest queries
+return the nearest accepted triangle; visibility queries may return any accepted
+triangle. The implementation owns interval bounds, alpha acceptance and bounded
+traversal storage; the engine does not substitute another query on failure.
+Procedural geometry that cannot identify a packed World triangle is outside this
+callback contract. Each pass retains its own source selection, even when callbacks
+are shared. Sources and literal includes enter the immutable build snapshot, cache
+identity and compiler diagnostics. Shader compilation or publication failure keeps
+the preceding active generation.
 
 The loop uses the same fixed-mip material alpha acceptance as native traversal.
 Its relative parallel tolerance rejects degenerate and nearly parallel triangles;
@@ -709,9 +758,16 @@ silently changed to another traversal. Native and software configurations can sh
 one package and the same authored callback functions. Cooking a configuration selects
 its matching compute artifact and records each pass's traversal requirement in
 version 18 runtime packages. Earlier package versions retain native-ray requirements.
-Browser rendering remains outside this profile. The current native RayTracingPipeline
-also uses inline queries in a compute wrapper; dedicated ray stages and shader tables
-are not implemented. Any-hit, procedural intersection and callable stages
+Version 19 additionally records custom software traversal distinctly from the
+engine triangle loop. Version 20 carries a separate native Metal stage artifact
+and records hardware invocation per pass, allowing mixed native/compute sequences.
+Older runtimes reject the new package versions.
+Browser rendering remains outside this profile. The legacy RayTracingPipeline
+invocation uses inline queries in a compute wrapper. Explicit hardware invocation
+uses native stage and intersection function tables on supported Metal devices.
+Profiling labels those operations **Native RT** (`gpu.raytracing`); Metal submits
+them through a compute encoder, so physical encoder type alone does not identify
+the traversal or callback execution model. The final image copy remains raster. Any-hit, procedural intersection and callable stages
 remain outside this triangle callback profile.
 
 ### Support developers and players without RT hardware
@@ -1017,7 +1073,7 @@ that choice. With no override the bundle uses 64×1×1. Conflicts and unsupporte
 shapes fail the build without rewriting sources. Partial edge groups are bounds
 checked. See the [measured scope and reproduction workflow](../architecture/renderer-systems.md#authored-graph-workgroup-experiment).
 
-Runtime package version 19 stores reflected X/Y/Z dimensions after the six fixed
+Runtime package version 21 stores reflected X/Y/Z dimensions after the six fixed
 fields of every ray compute stage. All target artifacts for a role must agree.
 Earlier packages retain their implicit 64×1×1 grouping. Cooked headers and runtime
 packages dispatch the same reflected dimensions; device limits still apply.
@@ -1855,6 +1911,7 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | GetSurfaceHit | Surface endpoint from triangle/barycentrics, without tracing; IncomingRay and DistanceWorld are zero |
 | SelectLight / SampleIncidentLight | Optional default source selection and incident-light proposal; SelectLight(scene, queries) uses the invocation stream; no radiance estimate is added |
 | EvaluateLightSelectionPmf / EvaluateLightPdfSolidAngle | Matching source PMF / emitter-endpoint joint solid-angle density |
+| SelectEmissiveTriangle / EvaluateEmissiveTriangleSelectionPmf | [Power-weighted emissive triangle](#select-emissive-triangles-by-power) at an explicit dimension / that selection's probability for a triangle |
 | EvaluateEnvironment / EvaluateEnvironmentPdfSolidAngle | Environment emission and joint density under the uniform-source proposal |
 | TraceClosest / TestVisibility | Closest or occlusion query with explicit miss/surface/failure status |
 | SpawnSurfaceRay | Error-bound origin offset for a unit world direction and explicit maximum distance |
@@ -2140,6 +2197,49 @@ then sampled uniformly on the triangle. Splitting a triangle does not multiply
 its source selection probability. Emission maps are sampled at the actual UV;
 black texels and back-side one-sided samples remain zero-contribution events.
 The initial environment proposal is uniform sphere, including HDR maps.
+
+### Select emissive triangles by power
+
+For estimators that choose among emissive triangles themselves, such as
+resampled importance sampling, the interface exposes the renderer's
+power-weighted triangle distribution. It is the same packed CDF that the RT1
+reference uses for its emitter ticket, so graph and reference estimators draw
+from one distribution:
+
+```slang
+EmissiveTriangleSelection candidate = SelectEmissiveTriangle(scene, launch, dimension);
+if (candidate.HasSample == true)
+{
+    // candidate.TriangleIndex ~ p_src, with p_src(t) = candidate.SelectionPmf.
+    SurfaceHit point = GetSurfaceHit(scene, candidate.TriangleIndex, barycentric);
+}
+float pmf = EvaluateEmissiveTriangleSelectionPmf(scene, hit.TriangleIndex);
+```
+
+- A triangle's weight is the BT.709 luminance of its surface's constant emission
+  factor, with negative channels clamped to zero, times its world area. The
+  renderer quantizes the weights against 2²⁴ and keeps at least one unit for
+  every positive weight, so every emitting triangle stays selectable.
+- `SelectEmissiveTriangle` makes one bounded integer draw over the CDF total at
+  the explicit `launch`/`dimension` address, in the same way as
+  `SelectLight(scene, launch, dimension)`. It does not advance the automatic
+  stream. `SelectionPmf` is the triangle's discrete probability among emissive
+  triangles. It excludes any category choice such as `SelectLight`.
+- `EvaluateEmissiveTriangleSelectionPmf` returns that probability for any
+  triangle index, for example `SurfaceHit.TriangleIndex` from `TraceClosest`. It
+  returns zero for triangles without emitted power and for out-of-range indices.
+- A Scene connection without the lights group, a scene without emitted power
+  and an invalid or exhausted random address return `HasSample == false` and a
+  zero PMF. These are ordinary no-sample results; they do not latch `HasFailed`.
+- Weights use the constant emission factor only. Emission maps, alpha cutoff,
+  sidedness and visibility can only make the true contribution smaller, so
+  evaluate them at the sampled point with `GetSurfaceHit`, `EvaluateEmission` and
+  `TestVisibility`.
+
+The C++ reference counterparts (`SelectReferenceEmissiveTriangle` and
+`EvaluateReferenceEmissiveTriangleSelectionPmf`) are private to the renderer. The
+`[power-cdf]` GPU test compares the two implementations: triangle selections must
+match exactly, and PMFs must agree within the division error of Metal's fast math.
 
 LightSample exposes SelectionPmf and ConditionalPdf separately. Continuous
 sources use inverse-steradian density; delta sources set IsDiscrete and sampled
@@ -4200,6 +4300,47 @@ Comment metadata does not affect dependencies, semantic build identity, compiled
 passes or rendering. The CLI validates and preserves it as authored source, and
 the editor's live-build identity excludes it with the rest of `layout`.
 
+### Collapse pipeline stages
+
+Right-click a comment frame and choose **Collapse Stage** to show a compact stage
+card. Choose **Expand Stage** from its context menu, or double-click the collapsed
+card, to restore the full frame. Title, notes and colour remain editable from the
+same menu. Only nonempty frames whose saved rectangles do not intersect another
+frame can collapse; nested and overlapping frames stay expanded, including when
+Source requests collapse. Membership is full containment of authored node cards
+in the saved expanded rectangle. Configuration interface boxes remain visible.
+
+The collapsed card shows its node count and node-targeted report error count.
+**No report**, **stale** and **unverified** labels distinguish unavailable or older
+results from current validation. Graph-level problems remain in the diagnostic
+toolbar and Error List. Hover an abbreviated count to read it in full.
+
+Boundary ports represent the original endpoints of connections crossing the stage,
+with separate input and output ports even when they share a name. Shared output
+endpoints appear once for fan-out; hover for the complete node/port name and type.
+Internal connections are hidden. Boundary ports support the existing connection
+replacement/removal and **Inspect Resource** actions. Tracing still follows the
+complete logical graph, highlighting stage cards and crossing wires. Selection,
+pan, zoom, node coordinates and saved wire routes survive collapse and expansion.
+**Fit Selection** frames a collapsed card when its selected nodes are hidden.
+Saved reroutes on wires touching a collapsed stage are retained but not displayed
+or edited until the stage expands.
+
+Dragging the collapsed card moves its saved expanded rectangle and all enclosed
+nodes together in one undo step. Its compact dimensions never replace the saved
+expanded dimensions. Expand before resizing the frame. Collapse/expand uses the
+same document undo history as other frame edits; Save retains the optional boolean
+`collapsed` field in `layout.frames`. Missing means expanded. It does not affect
+build identity or rendering. Moving, arranging or deleting nodes re-evaluates
+membership from the saved rectangle; no separate node group is serialized.
+
+**Find Node**, node reveal and diagnostic navigation temporarily expand the
+containing stage so the real node, port or field can be inspected. These reveals
+do not edit the saved collapse state or create an undo step. Use **Collapse Stage**
+on the revealed frame to fold it again. Back/Forward snapshots restore temporary
+reveals alongside selection, pan, zoom and tracing. Switching configurations starts
+with their saved collapse states; returning through history restores that visit.
+
 ### Route wires around pipeline stages
 
 Double-click a wire, or right-click it and choose **Add Reroute Point**, to insert
@@ -4241,6 +4382,62 @@ Save publishes route metadata. It does not affect resource ownership, dependency
 traces, semantic build identity, compiled passes or rendering. The CLI validates
 and preserves routes, while the semantic digest and live-build identity exclude
 them with the rest of `layout`.
+
+### Inspect a resource from the canvas
+
+Right-click a wire, reroute point or input/output port and choose **Inspect
+Resource**. A modeless window shows the endpoint type, its producer and consumers
+in the displayed configuration, the existing draft size/format description, and
+the fully expanded resource name when the caller instance can be established.
+Unconnected, ambiguous, removed or cyclic bindings show an explanation. Graph
+values such as Scene and RenderSize can be described but are not texture images.
+
+The window follows other ports and wires as you hover while it is open and
+unpinned. **Pin resource** holds the endpoint, breadcrumb caller path and resolved
+resource identity while selecting, navigating or tracing other nodes. A changed
+binding cannot silently substitute another resource: the window reports
+Unavailable until you unpin or explicitly inspect again. An explicit **Inspect
+Resource** request deliberately replaces the current pin. Closing (including
+Escape), opening another package or changing projects releases it. This window
+works with Properties hidden and never changes selection, pan, zoom, dependency
+trace, navigation visits, document undo or saved layout.
+
+Draft details and generation metadata are separate. The latter reuses the existing
+texture viewer's verified resource-name catalogue, dimensions, formats and uses:
+
+- **Current** means the presented generation's verified build source identity and
+  root configuration match the draft. Layout-only changes do not make it stale.
+- **Stale** means the presented generation describes older graph/shader sources
+  or another root configuration. Its generation details stay explicitly labelled.
+- **Unverified** means the runtime package has no verified source provenance from
+  an accepted build. Names may still be verified against that exact package;
+  **Build & Preview** supplies source provenance for the package it builds.
+  The cooker reports its runtime SHA-256 (`runtime.sha256`); admission checks both
+  that digest and the build-generation identity, so configurations sharing a build
+  generation cannot inherit each other's provenance. Resource-name sidecars also
+  carry `runtime_sha256`; port inspection requires that exact runtime binding.
+  Legacy catalogues remain usable in the existing viewer, and the inspector asks
+  for Build & Preview to regenerate their exact binding.
+- **Unavailable** explains a missing port/resource, unbound caller, missing names,
+  absent native preview, buffer/presentation surface, or active generation still
+  awaiting presentation for its current drawable extent/device session. The existing
+  last drawable view is retained.
+
+**Open in Textures** selects the exact expanded resource in the existing Textures
+page. It rechecks the attached and presented generation at activation time.
+An older named image can still be opened with the Stale/Unverified label visible.
+Buffers and presentation surfaces have metadata but no viewer image. A library
+opened directly has no unique caller instance: enter it through the root graph's
+Subgraph breadcrumbs instead. Repeated instances are resolved by the full caller
+path, never by matching a node-name suffix.
+
+Inspection and hover only read metadata. Opening Textures reuses its existing
+single target selection and GPU readback; no additional device, image copy or
+readback loop is created. While pinned, ordinary node clicks do not automatically
+retarget that viewer. The viewer displays the generation's final resource
+contents, rather than a historical version at the clicked wire; its own readback
+status and pixel probe remain authoritative for the sampled image. Current refers
+to graph sources, not to completion of a pending World edit or GPU readback.
 
 ### Find existing nodes and trace dependencies
 

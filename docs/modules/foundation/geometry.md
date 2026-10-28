@@ -455,6 +455,51 @@ Failure behavior is explicit:
 measured against the prepared float32 patches; `TryPrepareSurface` checks source
 narrowing separately. Every failure keeps the previous mesh.
 
+## Convex polygon partition
+
+`TryPartitionConvexPolygons` turns a triangle mesh, such as an emissive light
+mesh, into the convex planar polygons that FoundationMath's
+[projected solid angle sampling](math.md#projected-solid-angle-sampling) expects:
+at most seven vertices, no three collinear, as Peters 2021 requires in section 3.1
+and supplement A.2.
+
+```cpp
+#include <ludus/foundation/geometry/convex_polygon.hpp>
+
+ConvexPolygonPartition partition;
+if (IsSuccess(TryPartitionConvexPolygons({positions, positionCount}, {indices, indexCount}, partition)))
+{
+    for (const ConvexPolygon& polygon : partition.Polygons)
+    {
+        // polygon.PositionsMesh[0 .. VertexCount) wind counterclockwise about polygon.NormalMesh;
+        // partition.Triangles[FirstTriangle .. FirstTriangle + TriangleCount) are its source triangles.
+    }
+}
+```
+
+Triangles are matched by equal positions, so split vertices along normal or UV
+seams still share edges. Two pieces merge across a shared edge when the edge has
+exactly two triangles of opposite direction and the union stays coplanar, convex,
+simple and within seven vertices once collinear vertices are removed. Merging
+follows the whole chain of edges the pieces share, so a fan around a center
+vertex or a tessellated grid can collapse into one polygon. Non-convex patches and
+patches with holes become several convex polygons, as the paper asks, instead of
+being rejected. This adapts the inessential-diagonal removal of Hertel and
+Mehlhorn, "Fast triangulation of simple polygons", FCT 1983, LNCS 158,
+pp. 207-218; the greedy order is deterministic but the partition is not minimal.
+
+Every nondegenerate triangle belongs to exactly one polygon, and a lone triangle
+is a polygon of three vertices. Output positions are bitwise source positions.
+Triangles with coincident or collinear corners are counted in
+`DegenerateTriangleCount` and left out; edges with more than two triangles or
+inconsistent winding are counted in `UnmergeableEdgeCount` and never crossed.
+Coplanarity and collinearity use tolerances relative to the polygon's extent with
+a floor relative to float32 coordinate magnitude; far from the origin, rounding
+can keep a fan's center vertex visibly off its chord, leaving several convex
+pieces. Invalid views or index counts, out-of-range indices and nonfinite
+positions fail without changing the output. The partition is CPU preparation
+work; it allocates its scratch and output arrays.
+
 ## Not yet provided
 
 Path cursors for coherent traversal, a Visual-only Estimated distance build,

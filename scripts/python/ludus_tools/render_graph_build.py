@@ -39,7 +39,7 @@ RESERVED = {'class', 'struct', 'namespace', 'auto', 'const', 'float', 'int', 'vo
 RESERVED.update(('alignas alignof and and_eq asm atomic_cancel atomic_commit atomic_noexcept bitand bitor catch char char8_t char16_t char32_t compl consteval constexpr constinit const_cast co_await co_return co_yield decltype double dynamic_cast explicit export extern friend goto inline int long mutable noexcept not not_eq or or_eq reflexpr reinterpret_cast requires short signed static_assert static_cast template thread_local throw try typeid typename unsigned virtual volatile wchar_t xor xor_eq concept final override float2 float3 float4 uint uint2 uint3 uint4').split())
 NAME = re.compile(r'[A-Za-z][A-Za-z0-9_]{0,62}\Z')
 NATIVE_WORKER_HELPER = 'native_worker.py'
-HELPERS = ('compile_shader.py', 'compile_raster.py', 'compile_graph_stage.py', 'shader_toolchain.json', 'spirv_cross_toolchain.json')
+HELPERS = ('compile_shader.py', 'compile_raster.py', 'compile_graph_stage.py', 'compile_metal_ray.py', 'shader_toolchain.json', 'spirv_cross_toolchain.json')
 LIMITS = {'configurations': 8, 'programs': 32, 'artifacts': 128, 'pipelines': 64}
 MAX_FILE = 128 * 1024
 MAX_BYTES = 4 * 1024 * 1024
@@ -522,6 +522,8 @@ def tool_identity(helper, compiler, validator, cross, *, worker_socket=None, has
     paths['generator/render_graph_upscale.py'] = Path(graph.upscale.__file__)
     paths['generator/render_graph_sizes.py'] = Path(graph.sizes.__file__)
     paths['generator/render_graph_ray.py'] = Path(ray.__file__)
+    paths['generator/render_graph_metal_ray.py'] = Path(ray.metal_ray.__file__)
+    paths['generator/render_graph_ray_invocation.py'] = Path(ray.invocation.__file__)
     paths['generator/render_graph_compute.py'] = Path(compute.__file__)
     paths['generator/render_graph_forward.py'] = Path(forward.__file__)
     paths['tool/slangc'] = Path(compiler).resolve()
@@ -746,6 +748,8 @@ def compile_program(program, schemas, closure, snapshot, work, helper, tools, ta
                '--lock', str(helper / 'shader_toolchain.json'), '--graph-stage', program['stage'], '--graph-target', target]
     if program.get('forward_wrapper'):
         command += ['--graph-forward-material']
+    if program.get('native_ray_pipeline'):
+        command += ['--native-ray-pipeline', '--native-ray-storage', json.dumps({binding['id']: binding['slot'] for binding in program.get('storage_bindings', [])})]
     if program.get('native_ray_queries'):
         command += ['--native-ray-queries']
     if program.get('software_ray_queries'):
@@ -937,11 +941,17 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                 technique['scene_interface']['visibility_buffer'] = profile['visibility_buffer']
             expanded = ray.expand_programs(authored_programs, technique, snapshot, helper, sys.modules[__name__],
                                           profile['variants'], profile['persistent'], schemas, profile['compute'],
-                                          profile['native_ray_queries'], ray_path_capture, profile['workgroup'])
+                                          profile['native_ray_queries'], ray_path_capture, workgroup=profile['workgroup'])
             linked_programs.update(expanded)
+            if profile['native_pipeline']:
+                require('metal' in value['profiles'], 'Capability', 'RayTracing',
+                        'hardware ray-stage invocation requires the native Metal backend; select Compute explicitly on other backends')
+                profile['native_compute'] = profile['compute'] + 'NativeStages'
+                linked_programs.update(ray.expand_programs(authored_programs, technique, snapshot, helper, sys.modules[__name__],
+                    profile['variants'], profile['persistent'], schemas, profile['native_compute'], True, ray_path_capture, True))
         programs = linked_programs
-        for program_identity in (*ray.COMPUTE_IDS, ray.IMAGE_VERTEX_ID, ray.IMAGE_FRAGMENT_ID):
-            if program_identity in programs:
+        for program_identity in programs:
+            if 'ray_wrapper' in programs[program_identity]:
                 closures[program_identity] = ray.capture_program_closure(programs[program_identity], snapshot,
                                                                         sys.modules[__name__])
     programs = forward.expand(programs, techniques, snapshot, helper, sys.modules[__name__])
@@ -972,6 +982,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
             compiled, entries, hits, misses = {}, {}, 0, 0
             for pid, program in sorted(programs.items()):
                 for target in sorted(value['profiles']):
+                    if program.get('native_ray_pipeline') and target != 'metal':
+                        continue
                     if program.get('native_ray_profile') and target not in ('metal', 'spirv'):
                         continue
                     checkpoint(cancel)
@@ -1019,6 +1031,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                             record['ray_programs'] = [list(variant) for variant in profile['variants']]
                             record['persistent_buffers'] = profile['persistent']
                             record['native_ray_queries'] = profile['native_ray_queries']
+                            if profile.get('native_compute') and target == 'metal':
+                                record['native_pipeline'] = entries[(profile['native_compute'], target)]
                             record['scene_interface_version'] = technique.get('scene_interface', {}).get('version', 0)
                             record['visibility_buffer'] = profile['visibility_buffer']
                             if ray_path_capture:

@@ -1240,8 +1240,11 @@ Vulkan negotiates API 1.2, buffer device address, acceleration structures, ray
 queries and deferred host operations independently of ordinary Vulkan 1.1 raster
 startup. Metal checks `supportsRaytracing` and compiles MSL 2.4. Browser/native
 adapters without the optional profile reject native queries; preferred requests
-preserve raster, required requests fail startup explicitly. Neither ray pipelines,
-updates/refits, procedural primitives, motion nor asynchronous compute are exposed.
+preserve raster, required requests fail startup explicitly. Metal additionally exposes
+native ray stage/function-table execution on hardware-ray devices supporting function
+pointers. The logical RT node selects this separately from inline-query compute or
+custom/software compute traversal; see [ray invocation authoring](../development/render-graph-authoring.md).
+Updates/refits, procedural primitives, motion and asynchronous compute remain unavailable.
 
 The installed `ludus_compile_ray_queries(TARGET ... NAME ...)` helper cooks the
 fixed query kernel with verified Slang/SPIRV-Cross source and binary provenance.
@@ -1523,9 +1526,11 @@ distinguishes shared acceleration structures from query and pipeline execution.
 Queries fit ordinary shader passes; dedicated stages offer different scheduling
 choices. Begin with query-based compute effects and a loop-based path integrator.
 Keep nearest accepted hit and early-exit visibility as separate shader operations.
-Add native ray pipelines only when measured traversal/shading divergence or a
-required intersection program warrants them. Shader binding tables, native
-addresses, hit-group indexing and recursion limits then remain backend details;
+Native Metal stage execution uses visible function tables for ray-generation,
+closest-hit and miss callbacks, plus intersection function tables for alpha acceptance.
+Vulkan native stage pipelines remain unavailable. Backend stage support does not
+promise a speedup over inline queries. Shader binding tables, native
+addresses, hit-group indexing and recursion limits remain backend details;
 do not force Metal's model into a Vulkan-shaped public table abstraction.
 
 The existing Vulkan subset does not establish support: negotiate the necessary
@@ -2899,12 +2904,18 @@ fragment counts.
 
 ### Authored graph workgroup experiment
 
+The measurements below were collected before native ray-stage invocation was added,
+using commit `44ade68e` and the generated-code hashes recorded below. They describe
+the compute invocation on that revision; native ray-stage dispatch does not use the
+scene-compute workgroup override. Runtime packages now use version 21 so versions
+19 (custom traversal) and 20 (native ray stages) retain their existing layouts.
+
 Scene-compute bundles can opt into 8×8 groups using
 `"state": {"group_size": [8, 8, 1]}` on a scene compute node. All explicit
 sizes across the bundle's configurations must agree; automatic members inherit
 that choice. No override means 64×1. The editor exposes the same shapes through
 **Pipeline State → Advanced overrides → Group size**, including the canvas form.
-Runtime package version 19 carries reflected dimensions for every ray compute
+Runtime package version 21 carries reflected dimensions for every ray compute
 stage; older packages retain 64×1. Device limits and edge bounds checks apply.
 
 The `ludus_graph_workgroup_tests` target cooks the actual ComputeRayTracing and

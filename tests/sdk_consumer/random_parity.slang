@@ -1,11 +1,12 @@
 #include "math.slang"
 #include "random_parity_layout.h"
 #include "raster_bindings.slang"
+#include "weighted_reservoir.slang"
 
 // Test-only kernel for the native renderer test (gpu_random_tests.cpp) and the
 // WebGPU browser fixture (random_parity.cpp): evaluates FoundationMath's shader
-// addressed-random port for host-supplied cases so the host can compare every
-// word with the CPU reference. random_parity_layout.h owns the case ABI and
+// addressed-random and weighted-reservoir ports for host-supplied cases so the
+// host can compare every word with the CPU reference. random_parity_layout.h owns the case ABI and
 // random_parity_corpus.h the cases.
 
 LUDUS_SHADER_BINDING(0) StructuredBuffer<uint4> Cases;
@@ -44,7 +45,36 @@ uint4 BoundedResult(bool isSampled, uint value)
     return uint4(value, isSampled ? LUDUS_RANDOM_PARITY_IS_SAMPLED : 0, 0, 0);
 }
 
-uint4 EvaluateCase(uint4 header, uint4 operand)
+// Streams the candidate cases that follow a reservoir case, stopping at the
+// first rejected candidate, as the CPU corpus builder does.
+uint4 EvaluateReservoir(uint index, uint candidateCount, float selectedTarget)
+{
+    WeightedReservoir reservoir = MakeWeightedReservoir();
+    uint flags = 0;
+    uint count = min(candidateCount, LUDUS_RANDOM_PARITY_MAX_RESERVOIR_CANDIDATES);
+    for (uint i = 0; i < count; ++i)
+    {
+        uint4 candidate = Cases[(index + 1 + i) * LUDUS_RANDOM_PARITY_WORDS_PER_CASE + 1];
+        bool isSelected;
+        if (TryAddReservoirCandidate(reservoir, asfloat(candidate.x), asfloat(candidate.y), isSelected) == false)
+        {
+            flags |= LUDUS_RANDOM_PARITY_RESERVOIR_IS_REJECTED;
+            break;
+        }
+        if (isSelected == true)
+            flags |= 1u << (LUDUS_RANDOM_PARITY_RESERVOIR_SELECTED_SHIFT + i);
+    }
+    flags |= reservoir.CandidateCount;
+    if (HasReservoirSelection(reservoir) == true)
+        flags |= LUDUS_RANDOM_PARITY_RESERVOIR_HAS_SELECTION;
+    float contribution = 0;
+    if ((flags & LUDUS_RANDOM_PARITY_RESERVOIR_IS_REJECTED) == 0 &&
+        TryComputeReservoirContributionWeight(reservoir, selectedTarget, contribution) == true)
+        flags |= LUDUS_RANDOM_PARITY_RESERVOIR_HAS_CONTRIBUTION;
+    return uint4(reservoir.SelectedIndex, asuint(reservoir.WeightSum), asuint(contribution), flags);
+}
+
+uint4 EvaluateCase(uint index, uint4 header, uint4 operand)
 {
     uint2 key = header.yz;
     uint bound = header.w;
@@ -91,6 +121,10 @@ uint4 EvaluateCase(uint4 header, uint4 operand)
         }
         case LUDUS_RANDOM_PARITY_CASE_FLOAT:
             return uint4(asuint(RandomFloat01(operand.x)), 0, 0, 0);
+        case LUDUS_RANDOM_PARITY_CASE_RESERVOIR:
+            return EvaluateReservoir(index, bound, asfloat(operand.x));
+        case LUDUS_RANDOM_PARITY_CASE_RESERVOIR_CONSTANTS:
+            return uint4(WEIGHTED_RESERVOIR_SELECTION_VERSION, WEIGHTED_RESERVOIR_MINIMUM_WEIGHT_BITS, 0, 0);
         default:
             return uint4(0);
     }
@@ -99,6 +133,7 @@ uint4 EvaluateCase(uint4 header, uint4 operand)
 [shader("compute")][numthreads(LUDUS_RANDOM_PARITY_GROUP_SIZE, 1, 1)] void
 ComputeMain(uint3 dispatchThreadId : SV_DispatchThreadID) {
     uint index = dispatchThreadId.x;
-    Results[index] = EvaluateCase(Cases[index * LUDUS_RANDOM_PARITY_WORDS_PER_CASE],
+    Results[index] = EvaluateCase(index,
+                                  Cases[index * LUDUS_RANDOM_PARITY_WORDS_PER_CASE],
                                   Cases[index * LUDUS_RANDOM_PARITY_WORDS_PER_CASE + 1]);
 }

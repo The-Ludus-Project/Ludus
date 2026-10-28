@@ -18,6 +18,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QTableWidget>
@@ -2782,6 +2783,44 @@ TEST_CASE("shared ray callbacks expose traversal selection in the canvas pipelin
           QStringLiteral("NativeQuery"));
     traversal->setCurrentIndex(0);
     CHECK(applied == node);
+}
+
+TEST_CASE("logical ray nodes select execution independently in the canvas editor",
+          "[editor][render-graph][pipeline][ray-invocation]")
+{
+    const QJsonObject node = MakePipelineNode(QStringLiteral("RayTracingPipeline"), QStringLiteral("trace"));
+    RenderGraphPipelineEditor editor(node);
+    editor.ShowParts();
+    QComboBox* execution = editor.findChild<QComboBox*>(QStringLiteral("renderGraphRayInvocationType"));
+    QComboBox* traversal = editor.findChild<QComboBox*>(QStringLiteral("renderGraphTraversal"));
+    QLineEdit* source = editor.findChild<QLineEdit*>(QStringLiteral("renderGraphTraversalSource"));
+    REQUIRE(execution != nullptr);
+    REQUIRE(traversal != nullptr);
+    REQUIRE(source != nullptr);
+    CHECK(execution->currentData() == QStringLiteral("Compute"));
+    QJsonObject applied;
+    QObject::connect(&editor, &RenderGraphPipelineEditor::Edited, &editor, [&applied](const QJsonObject& candidate) {
+        applied = candidate;
+    });
+    execution->setCurrentIndex(execution->findData(QStringLiteral("RayTracing")));
+    CHECK(applied.value(QStringLiteral("kind")) == QStringLiteral("RayTracingPipeline"));
+    CHECK(applied.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("type")) ==
+          QStringLiteral("RayTracing"));
+    CHECK(traversal->isEnabled() == false);
+    execution->setCurrentIndex(execution->findData(QStringLiteral("Compute")));
+    CHECK(applied.value(QStringLiteral("kind")) == QStringLiteral("RayTracingPipeline"));
+    CHECK(traversal->currentData() == QStringLiteral("TriangleLoop"));
+    traversal->setCurrentIndex(traversal->findData(QStringLiteral("NativeQuery")));
+    CHECK(applied.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("traversal")) ==
+          QStringLiteral("NativeQuery"));
+    source->setText(QStringLiteral("queries/custom.slang"));
+    traversal->setCurrentIndex(traversal->findData(QStringLiteral("Custom")));
+    CHECK(source->isEnabled() == true);
+    CHECK(applied.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("traversal_source")) ==
+          QStringLiteral("queries/custom.slang"));
+    execution->setCurrentIndex(execution->findData(QStringLiteral("RayTracing")));
+    CHECK(applied.value(QStringLiteral("invocation")).toObject().contains(QStringLiteral("traversal")) == false);
+    CHECK(applied.value(QStringLiteral("invocation")).toObject().contains(QStringLiteral("traversal_source")) == false);
 }
 
 TEST_CASE("scene compute callback programs use scene stubs and survive document save and undo",

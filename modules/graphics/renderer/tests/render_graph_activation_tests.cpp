@@ -1040,6 +1040,8 @@ TEST_CASE("runtime packages preserve relative policies and decode fixed legacy v
                                  format::DENOISING_PACKAGE_VERSION,
                                  format::METALFX_SPATIAL_PACKAGE_VERSION,
                                  format::SOFTWARE_RAY_PACKAGE_VERSION,
+                                 format::CUSTOM_RAY_PACKAGE_VERSION,
+                                 format::NATIVE_RAY_PIPELINE_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         PackageOptions options;
@@ -1120,6 +1122,23 @@ TEST_CASE("runtime packages preserve scene selection and default legacy packages
     CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
 }
 
+TEST_CASE("Native stage requirements are distinct from inline ray queries", "[render-graph][activation]")
+{
+    format::Pass pass{};
+    pass.Program = format::Technique::RayTracing;
+    pass.Traversal = format::RayTraversal::HardwarePipeline;
+    renderer::RenderGraphPlan plan{};
+    plan.Passes = {&pass, 1};
+    CHECK(renderer::RequiresNativeRayPipeline(plan) == true);
+    CHECK(renderer::RequiresHardwareRayTracing(plan) == true);
+    pass.Traversal = format::RayTraversal::NativeQuery;
+    CHECK(renderer::RequiresNativeRayPipeline(plan) == false);
+    CHECK(renderer::RequiresHardwareRayTracing(plan) == true);
+    pass.Traversal = format::RayTraversal::Custom;
+    CHECK(renderer::RequiresNativeRayPipeline(plan) == false);
+    CHECK(renderer::RequiresHardwareRayTracing(plan) == false);
+}
+
 TEST_CASE("Runtime packages preserve explicit software traversal and legacy native requirements",
           "[render-graph][activation]")
 {
@@ -1133,7 +1152,15 @@ TEST_CASE("Runtime packages preserve explicit software traversal and legacy nati
     options.Version = format::METALFX_SPATIAL_PACKAGE_VERSION;
     CHECK(renderer::RequiresHardwareRayTracing(MakePackage(options)->GetPlan()) == true);
     options.Version = format::PACKAGE_VERSION;
-    options.Traversal = static_cast<format::RayTraversal>(2);
+    options.Traversal = format::RayTraversal::Custom;
+    const core::UniquePtr<renderer::RenderGraphPackage> custom = MakePackage(options);
+    CHECK(renderer::UsesRayTracing(custom->GetPlan()) == true);
+    CHECK(renderer::RequiresHardwareRayTracing(custom->GetPlan()) == false);
+    CHECK(custom->GetPlan().Passes[0].Traversal == format::RayTraversal::Custom);
+    options.Version = format::SOFTWARE_RAY_PACKAGE_VERSION;
+    CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
+    options.Version = format::PACKAGE_VERSION;
+    options.Traversal = static_cast<format::RayTraversal>(static_cast<uint32>(format::RayTraversal::Custom) + 1);
     CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
     options.Traversal = format::RayTraversal::TriangleLoop;
     options.Program = format::Technique::ColorAndDepth;
@@ -1211,6 +1238,8 @@ TEST_CASE("runtime independent shader pairs decode with their own stage and bind
                                  format::DENOISING_PACKAGE_VERSION,
                                  format::METALFX_SPATIAL_PACKAGE_VERSION,
                                  format::SOFTWARE_RAY_PACKAGE_VERSION,
+                                 format::CUSTOM_RAY_PACKAGE_VERSION,
+                                 format::NATIVE_RAY_PIPELINE_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         constexpr format::Technique GBUFFER_PROGRAM = static_cast<format::Technique>(format::LEGACY_TECHNIQUE_COUNT);
@@ -1328,6 +1357,8 @@ TEST_CASE("legacy scene-ray packages preserve implicit tone mapping independentl
                                  format::DENOISING_PACKAGE_VERSION,
                                  format::METALFX_SPATIAL_PACKAGE_VERSION,
                                  format::SOFTWARE_RAY_PACKAGE_VERSION,
+                                 format::CUSTOM_RAY_PACKAGE_VERSION,
+                                 format::NATIVE_RAY_PIPELINE_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         for (const format::StageRole compute : {format::StageRole::RayCompute,

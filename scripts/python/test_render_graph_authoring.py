@@ -348,7 +348,7 @@ def parse_runtime(data):
               'fields': [take(5) for _ in range(fields)], 'stages': []}
     for _ in range(stages):
         role, target, inputs, entry_bytes, artifact_bytes, block_count = take(6)
-        workgroup = take(3) if version >= 19 and role in (8, 11, execution.PERSISTENT_RAY_STAGE_ROLE) else (64, 1, 1)
+        workgroup = take(3) if version >= 21 and role in (8, 11, execution.PERSISTENT_RAY_STAGE_ROLE) else (64, 1, 1)
         stage_inputs = [take(2) for _ in range(inputs)]
         names = []
         for _ in range(block_count):

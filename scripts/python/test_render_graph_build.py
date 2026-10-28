@@ -736,5 +736,33 @@ class CompilerAcceptance(unittest.TestCase):
                 subprocess.run([str(temp / 'pack')], check=True)
 
 
+class InstalledToolsTests(unittest.TestCase):
+    """The SDK installs a hand-listed subset of ludus_tools beside cmake/render_graph/build.py."""
+
+    def test_installed_modules_import_without_the_source_tree(self):
+        # A module-level import of an uninstalled module (render_graph_layout) only failed in the
+        # batch's installed-SDK consumers; integration PRs do not run them.
+        import re
+        import subprocess
+        import sys
+        listing = re.search(r'install\(FILES (scripts/python/ludus_tools/__init__\.py.*?)\s+DESTINATION '
+                            r'"\$\{CMAKE_INSTALL_LIBDIR\}/cmake/Ludus/render_graph/ludus_tools"\)',
+                            (ROOT / 'CMakeLists.txt').read_text(), re.DOTALL)
+        self.assertIsNotNone(listing, 'CMakeLists.txt no longer installs ludus_tools for render graphs')
+        with tempfile.TemporaryDirectory() as temporary:
+            package = Path(temporary) / 'ludus_tools'
+            package.mkdir()
+            for name in listing.group(1).split():
+                shutil.copy(ROOT / name, package)
+            # build.py's own imports, resolved against only the installed copy (-E -s also drop
+            # PYTHONPATH and user site-packages, which may hold the full ludus_tools).
+            probe = ('import sys; sys.path.insert(0, sys.argv[1]); '
+                     'from ludus_tools import render_graph_build, render_graph_execution; '
+                     'assert render_graph_build.__file__.startswith(sys.argv[1]), render_graph_build.__file__')
+            result = subprocess.run([sys.executable, '-E', '-s', '-c', probe, temporary],
+                                    capture_output=True, text=True, check=False)
+            self.assertEqual(0, result.returncode, result.stderr)
+
+
 if __name__ == '__main__':
     unittest.main()
