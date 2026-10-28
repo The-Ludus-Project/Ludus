@@ -1276,6 +1276,96 @@ TEST_CASE("A scene compute pass traces the World and feeds Accumulate and ToneMa
     CHECK(fixture.Pixels[center] == one); // A camera revision restarts at sample 1.
 }
 
+TEST_CASE("Emitter bounds read on the GPU match their packed emitter triangles",
+          "[render-graph][gpu][compute-ray-tracing][scene-shader]")
+{
+    // emitter_bounds.slang recomputes every emitter's bounds from GetEmitterTriangle and GetMaterial:
+    // green columns agree with GetEmitterBounds, red columns do not, and the column past the last
+    // emitter is blue when that out-of-range read reports IsValid=false.
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_EMITTER_BOUNDS_DIRECTORY, "rg2_emitter_bounds.lurgrt"});
+    const renderer::RenderGraphPrograms decoded =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    REQUIRE(decoded.HasSceneShaderInterface == true);
+    renderer::RenderGraphPlan plan = package->GetPlan();
+    constexpr usize PASS_COUNT = 1;
+    REQUIRE(plan.Passes.GetSize() == PASS_COUNT);
+    StaticArray<format::Pass, PASS_COUNT> passes{{plan.Passes[0]}};
+    passes[0].ToneMappingExposure = 0; // Bypass ToneMap: linear 1 reads back as 255.
+    plan.Passes = {passes.GetData(), passes.GetSize()};
+    const auto finish = [&fixture](rhi::RasterStatus status) {
+        const uint64 beginning = time::NowTicks();
+        constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
+        while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+        {
+            status = fixture.Graph.Poll();
+        }
+        REQUIRE(status == rhi::RasterStatus::Ready);
+    };
+    finish(fixture.Graph.Initialize(fixture.Device, plan, decoded));
+    fixture.Cameras[0].OrthographicCamera = true;
+    // A one-sided triangle emitter, a folded two-sided quad emitter under a mirrored transform,
+    // and a non-emissive copy of the triangle that must not become an emitter.
+    constexpr usize MATERIAL_COUNT = 3;
+    constexpr uint32 SURFACE_MATERIAL = 0;
+    constexpr uint32 ONE_SIDED_MATERIAL = 1;
+    constexpr uint32 TWO_SIDED_MATERIAL = 2;
+    StaticArray<renderer::SceneShaderMaterial, MATERIAL_COUNT> materials{};
+    materials[ONE_SIDED_MATERIAL].Emission = {1, 1, 1};
+    materials[TWO_SIDED_MATERIAL].Emission = {1, 1, 1};
+    materials[TWO_SIDED_MATERIAL].IsEmissionTwoSided = true;
+    constexpr usize QUAD_VERTEX_COUNT = 4;
+    constexpr usize QUAD_INDEX_COUNT = 6;
+    const StaticArray<math::Vector3, QUAD_VERTEX_COUNT> quadPositions{{{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {1, 1, .5F}}};
+    const StaticArray<uint32, QUAD_INDEX_COUNT> quadIndices{{0, 1, 2, 1, 3, 2}};
+    constexpr usize MESH_COUNT = 3;
+    StaticArray<uint32, MESH_COUNT> bindings{{ONE_SIDED_MATERIAL, TWO_SIDED_MATERIAL, SURFACE_MATERIAL}};
+    StaticArray<renderer::RenderGraphMesh, MESH_COUNT> meshes{};
+    StaticArray<renderer::RenderGraphItem, MESH_COUNT> items{};
+    for (usize i = 0; i < MESH_COUNT; ++i)
+    {
+        meshes[i] = fixture.Meshes[0];
+        meshes[i].MaterialBindings = {&bindings[i], 1};
+        items[i].SourceId = i + 1;
+        items[i].MeshIndex = static_cast<uint32>(i);
+    }
+    meshes[1].Geometry = {quadPositions.GetData(),
+                          quadPositions.GetSize(),
+                          quadIndices.GetData(),
+                          quadIndices.GetSize()};
+    items[0].MeshToWorld.Translation = {3, 0, 0};
+    items[0].MeshToWorld.Columns[1].Y = 2;
+    items[1].MeshToWorld.Columns[0].X = -2;
+    items[2].MeshToWorld.Translation = {-3, 0, 0};
+    renderer::SceneShaderInputs inputs;
+    inputs.Materials = {materials.GetData(), materials.GetSize()};
+    renderer::RenderGraphReport report;
+    finish(fixture.Graph.Update({meshes.GetData(), meshes.GetSize()},
+                                {items.GetData(), items.GetSize()},
+                                {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                1,
+                                renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                report,
+                                &inputs));
+    uint32 output = 0;
+    for (uint32 resource = 0; resource < plan.Resources.GetSize(); ++resource)
+    {
+        output = plan.Resources[resource].IsExported == 1 ? resource : output;
+    }
+    ReadGraphFrame(fixture, output);
+    constexpr usize EMITTER_COUNT = 2;
+    const usize row = HEIGHT / 2;
+    for (usize column = 0; column < EMITTER_COUNT; ++column)
+    {
+        CAPTURE(column);
+        CHECK(fixture.Pixels[GetPixel(column, row)] == 0);
+        CHECK(fixture.Pixels[GetPixel(column, row) + 1] == 255);
+    }
+    CHECK(fixture.Pixels[GetPixel(EMITTER_COUNT, row) + 1] == 0);
+    CHECK(fixture.Pixels[GetPixel(EMITTER_COUNT, row) + 2] == 255);
+}
+
 TEST_CASE("Scene compute packages are ray packages for renderer selection",
           "[render-graph][gpu][compute-ray-tracing][selection]")
 {
