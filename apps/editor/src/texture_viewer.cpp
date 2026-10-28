@@ -1,4 +1,5 @@
 #include "internal/texture_viewer.h"
+#include "design_tokens.h"
 
 #include "internal/render_graph_preview.h"
 #include "internal/render_graph_targets.h"
@@ -37,7 +38,7 @@ constexpr int32 MINIMUM_CANVAS_EXTENT = 160;
 constexpr int32 LIST_WIDTH = 220;
 /// A press that moves less than this is a click, not a pan.
 constexpr float64 CLICK_SLOP = 3.0;
-constexpr QRgb BACKGROUND_COLOUR = qRgb(9, 12, 15);
+constexpr QRgb BACKGROUND_COLOUR = design::GetThemeArgb(design::ThemeColour::SurfaceViewport, true);
 constexpr QRgb FRAME_COLOUR = qRgb(80, 88, 96);
 
 struct ChannelChoice final
