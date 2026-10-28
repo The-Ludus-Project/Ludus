@@ -146,7 +146,10 @@ Vulkan was not run: no Linux or Vulkan host was available.
       configurations.*
 - [x] SDK consumer: cook the fixture in the installed renderer consumer and pass
       against a local `macos-clang-development` SDK install.
-      *SDK_CONSUMER_EVIDENCE*
+      *`ludus_sdk_scene_shader_contract_consumer` cooks
+      `rg2_line_visibility_loop` through the installed helper (which now ships
+      `ray_line_visibility.slang`) and checks the installed constants; it passed
+      against a local `macos-clang-development` SDK install.*
 - [x] `line-sampling` template (design D8a):
   - [x] `render_graphs/line_sampling/` graphs, manifest and `main_shaders/`,
         with `primary`, `shade` and `shadeVisibleFraction`, all `TriangleLoop`;
@@ -177,14 +180,21 @@ Vulkan was not run: no Linux or Vulkan host was available.
         (design D8c);
   - [x] editor tests: New Render Graph → Template, Quick Add and Apply
         Configuration Template create the configuration;
-        *EDITOR_EVIDENCE*
+        *In `ludus_render_graph_configuration_tests`: the New Render Graph
+        picker and the Quick Add snippet each run with Properties hidden, with
+        undo, redo, save and validation; a document-level import shows that
+        `line_queries` rises to 1 and keeps a larger authored value. The
+        registry tests cover the new entries and the requirement label.*
   - [x] GPU tests: `color` converges within 2% at 256 samples per pixel to
         `veach-guibas-mis` `lightSampling` on the same scene;
         `visibleFraction` is 1 in a lit region and 0 in umbra.
         *Compared with the Veach and Guibas template cooked with every pass on
         the triangle loop (`rg2_veach_guibas_mis_triangle_loop`), so no native
-        ray profile is needed. The lit floor decodes to 1.01 (one ToneMap byte
-        step) and the umbra pixels to exactly 0.*
+        ray profile is needed. Means: line sampling 0.20376, 0.20380, 0.18602;
+        light sampling 0.20372, 0.20375, 0.18599 (within 0.03%). The lit floor
+        decodes to 1.01 (one ToneMap byte step) and the umbra pixels to
+        exactly 0. Before the fix recorded in design D3 ("PL1 storage"), Metal
+        dropped the intervals and this check caught a 2.6% bias.*
 - [x] Documentation: the guide's "Author scene-aware ray shaders" section gains
       the line query, bounds, alpha policy and budget. A new "Sample lights
       along lines" section documents the `line-sampling` template like the MIS
@@ -196,6 +206,24 @@ Vulkan was not run: no Linux or Vulkan host was available.
       `./scripts/check --format` and `--tidy`, `source_policy.py --base` with
       the real merge base and `--clang-format`, `check-docs`, strict MkDocs and
       `check-wiki --documentation-only`.
+      *Run on the branch merged with `develop` `4011adfc`:
+      `macos-clang-development` builds with no compiler warnings; `--format`,
+      `--tidy-changed` (base `4011adfc`) and `source_policy.py --base 4011adfc
+      --clang-format` pass. The full targeted `--tidy` fails in 188 translation
+      units with 301 findings, all on lines this change does not touch except one
+      `bugprone-easily-swappable-parameters` on a new test helper, now
+      suppressed with a reason as in the neighboring ray tests; `check-docs`, strict MkDocs and the
+      `test_docs.py`/`test_wiki.py` suites pass. `macos-clang-asan-ubsan`
+      (tests on, editor off) passes 107/107 tests, but that preset runs neither
+      the GPU ray-pixel suite nor the editor. Left open because three
+      `macos-clang-development` suites fail, in code this change does not touch,
+      after `develop`'s native Metal ray-stage merge: `ludus_rhi_ray_queries`
+      (expects `RayPipelines` false on Metal), one legacy-package case in
+      `ludus_render_graph_ray_pixels` (`storageGeneration.Decode`), and five
+      `renderer_workspace_tests` cases in `ludus_editor_tests` whose fake SDK
+      lacks `compile_metal_ray.py`. `check-wiki --documentation-only` reports
+      only the missing Doxygen API pages (Doxygen bootstrap is Linux-only).
+      Ruff was not run (not installed locally). Vulkan was not run.*
 
 ## PL2 Point-and-line MIS template
 

@@ -3332,6 +3332,7 @@ StaticArray<uint32, LINE_SAMPLING_OUTPUT_COUNT> GetLineSamplingExports(const ren
 }
 
 /// Mean decoded value over a square of pixels centered on (column, row).
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): a pixel column and row, then the square's radius
 float32 ComputeRegionMean(const Array<uint8>& pixels, usize column, usize row, usize radius)
 {
     float32 sum = 0;
