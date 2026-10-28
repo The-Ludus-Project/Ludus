@@ -110,7 +110,7 @@ QGraphicsPathItem& GetWire(RenderGraphCanvas& inoutCanvas)
 void SelectTrace(RenderGraphCanvas& inoutCanvas)
 {
     REQUIRE(inoutCanvas.RestoreViewState(
-                {{QStringLiteral("first")}, QPointF(400, 80), 1, RenderGraphTraceDirection::Downstream}) == true);
+                {{QStringLiteral("first")}, QPointF(400, 80), 1, RenderGraphTraceDirection::Downstream, {}}) == true);
 }
 void CheckTrace(RenderGraphCanvas& inoutCanvas)
 {

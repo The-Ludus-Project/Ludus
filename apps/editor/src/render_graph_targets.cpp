@@ -59,6 +59,7 @@ bool ReadNames(const renderer::RenderGraphPlan& plan,
                const QString& generation,
                const QByteArray& document,
                RenderGraphTargetCatalogue& inoutCatalogue,
+               const QByteArray& runtimeIdentity,
                QString& outProblem)
 {
     QJsonParseError error;
@@ -79,6 +80,13 @@ bool ReadNames(const renderer::RenderGraphPlan& plan,
         outProblem = QStringLiteral("the resource names file belongs to another generation");
         return false;
     }
+    const QByteArray declaredRuntime = root.value(QStringLiteral("runtime_sha256")).toString().toLatin1();
+    if (runtimeIdentity.isEmpty() == false && declaredRuntime.isEmpty() == false && declaredRuntime != runtimeIdentity)
+    {
+        outProblem = QStringLiteral("the resource names file belongs to another runtime configuration");
+        return false;
+    }
+    inoutCatalogue.HasExactRuntimeNames = runtimeIdentity.isEmpty() == false && declaredRuntime == runtimeIdentity;
     const QJsonArray resources = root.value(QStringLiteral("resources")).toArray();
     if (static_cast<usize>(resources.size()) != plan.Resources.GetSize())
     {
@@ -105,7 +113,7 @@ bool ReadNames(const renderer::RenderGraphPlan& plan,
         seen.insert(name);
         inoutCatalogue.Targets[i].Name = name;
     }
-    for (const QJsonValue& value : root.value(QStringLiteral("operations")).toArray())
+    for (const QJsonValueConstRef value : root.value(QStringLiteral("operations")).toArray())
     {
         const QJsonObject object = value.toObject();
         RenderGraphOperation operation;
@@ -126,7 +134,7 @@ bool ReadNames(const renderer::RenderGraphPlan& plan,
         }
         inoutCatalogue.Operations.append(operation);
     }
-    for (const QJsonValue& value : root.value(QStringLiteral("cameras")).toArray())
+    for (const QJsonValueConstRef value : root.value(QStringLiteral("cameras")).toArray())
     {
         const QJsonObject object = value.toObject();
         inoutCatalogue.Cameras.append(
@@ -216,7 +224,8 @@ QString GetTargetNamesPath(const QString& runtimePackagePath)
 
 RenderGraphTargetCatalogue MakeTargetCatalogue(const renderer::RenderGraphPlan& plan,
                                                BorrowedView<const uint8> generationIdentity,
-                                               const QByteArray& namesDocument)
+                                               const QByteArray& namesDocument,
+                                               const QByteArray& runtimeIdentity)
 {
     RenderGraphTargetCatalogue catalogue;
     for (usize i = 0; i < plan.Resources.GetSize(); ++i)
@@ -238,7 +247,7 @@ RenderGraphTargetCatalogue MakeTargetCatalogue(const renderer::RenderGraphPlan& 
     {
         RenderGraphTargetCatalogue named = catalogue;
         QString problem;
-        if (ReadNames(plan, ToHex(generationIdentity), namesDocument, named, problem) == true)
+        if (ReadNames(plan, ToHex(generationIdentity), namesDocument, named, runtimeIdentity, problem) == true)
         {
             catalogue = named;
             catalogue.HasNames = true;

@@ -14,7 +14,10 @@ def validate_frames(frames, location, graph):
     graph._list(frames, MAX_COMMENT_FRAMES, location)
     claimed = set()
     for frame in frames:
-        graph._keys(frame, ('id', 'title', 'notes', 'colour', 'x', 'y', 'width', 'height'), location)
+        graph._keys(frame, ('id', 'title', 'notes', 'colour', 'x', 'y', 'width', 'height'), location,
+                    optional=('collapsed',))
+        graph._require(type(frame.get('collapsed', False)) is bool,
+                       'Schema', location, 'comment collapsed state must be boolean')
         graph._identifier(frame['id'], location)
         graph._require(frame['id'] not in claimed, 'Schema', location, 'duplicate comment frame')
         claimed.add(frame['id'])

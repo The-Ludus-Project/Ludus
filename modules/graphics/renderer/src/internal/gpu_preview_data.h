@@ -48,6 +48,7 @@ struct GpuFrameRecord final
 };
 struct GpuPreviewRecord final
 {
+    bool HasNativeRayInvocation = false;
     uint64 Generation = 1;
     bool Used = false;
     bool Owned = false;
@@ -110,6 +111,10 @@ struct GpuPreviewState final
     bool IndicesCreated = false;
     rhi::RasterStatus Setup = rhi::RasterStatus::Pending;
     rhi::RasterShaderHandle ComputeShader{};
+    rhi::RasterShaderHandle NativeRayShader{};
+    rhi::ComputePipelineHandle NativeRayPipeline{};
+    bool HasNativeRayShader = false;
+    bool HasCreatedNativeRayPipeline = false;
     rhi::RasterShaderHandle VertexShader{};
     rhi::RasterShaderHandle FragmentShader{};
     rhi::BindingLayoutHandle ComputeLayout{};

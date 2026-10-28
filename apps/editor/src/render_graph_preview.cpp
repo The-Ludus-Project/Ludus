@@ -10,6 +10,7 @@
 #include "internal/render_graph_resources.h"
 #include "internal/render_target_reader.h"
 
+#include <QCryptographicHash>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
@@ -344,6 +345,7 @@ struct RenderGraphPreview::State final
         /// Runtime package and generation identity, for ray path capture of this generation.
         QString PackagePath;
         QByteArray GenerationIdentity;
+        RenderGraphPreviewSource Source;
         StaticArray<format::Resource, format::MAX_RESOURCES> Descriptions{};
     };
     StaticArray<uint8, format::IDENTITY_BYTES> Interface{};
@@ -395,6 +397,7 @@ struct RenderGraphPreview::State final
     /// Incremented per Attach; activation serials restart with every device session.
     uint64 Session = 0;
     QString RequestedPath;
+    RenderGraphPreviewSource RequestedSource;
     QString RasterFallbackPath;
     bool ShouldForceRaster = false;
     bool ShouldReselectRenderer = false;
@@ -491,7 +494,7 @@ bool RenderGraphPreview::Attach(rhi::DeviceHandle device, rhi::SurfaceHandle sur
     // Re-evaluate the enabled logical device, including a change of API or adapter.
     if (state.RequestedPath.isEmpty() == false)
     {
-        static_cast<void>(Load(state.RequestedPath, state.RasterFallbackPath));
+        static_cast<void>(Load(state.RequestedPath, state.RasterFallbackPath, state.RequestedSource));
     }
     Q_EMIT Changed();
     return true;
@@ -550,15 +553,19 @@ bool RenderGraphPreview::ShouldForceRaster() const noexcept
 {
     return mState->ShouldForceRaster;
 }
-RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePath, const QString& rasterFallbackPath)
+RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePath,
+                                                const QString& rasterFallbackPath,
+                                                const RenderGraphPreviewSource& source)
 {
     State& state = *mState;
     state.RequestedPath = runtimePackagePath;
+    state.RequestedSource = source;
     state.RasterFallbackPath = rasterFallbackPath;
     state.ShouldReselectRenderer = false;
     state.WaitingOrNull.Reset();
     UniquePtr<renderer::RenderGraphPackage> package;
-    const auto readPackage = [this, &package](const QString& path) {
+    QByteArray decodedRuntimeIdentity;
+    const auto readPackage = [this, &package, &decodedRuntimeIdentity](const QString& path) {
         QFile file(path);
         if (QFileInfo(path).isFile() == false || QFileInfo(path).size() > MAX_PACKAGE_BYTES ||
             file.open(QIODevice::ReadOnly) == false)
@@ -573,6 +580,7 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
             setStatus(QStringLiteral("The runtime generation exceeds the 16 MiB runtime bound."));
             return RenderGraphPreviewLoad::Unreadable;
         }
+        decodedRuntimeIdentity = QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex();
         package.Reset(new (std::nothrow) renderer::RenderGraphPackage);
         if (package.Get() == nullptr)
         {
@@ -640,8 +648,8 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
         else
         {
             rendererStatus = hasNativeRayQueries == true
-                                 ? QStringLiteral("Hardware raytracing renderer.")
-                                 : QStringLiteral("Compute raytracing renderer (software triangle traversal).");
+                                 ? QStringLiteral("Compute raytracing renderer (native hardware BVH queries).")
+                                 : QStringLiteral("Compute raytracing renderer (shader traversal).");
         }
     }
     // Denoising only filters the image. Without the optional denoiser, preview the graph as if its
@@ -685,11 +693,17 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
     QFile names(GetTargetNamesPath(selectedPath));
     const QByteArray namesDocument =
         names.open(QIODevice::ReadOnly) == true ? names.read(MAX_PACKAGE_BYTES) : QByteArray();
-    target.Catalogue = MakeTargetCatalogue(plan, package->GetGenerationIdentity(), namesDocument);
+    target.Catalogue =
+        MakeTargetCatalogue(plan, package->GetGenerationIdentity(), namesDocument, decodedRuntimeIdentity);
     target.PackagePath = Move(selectedPath);
     const BorrowedView<const uint8> generationIdentity = package->GetGenerationIdentity();
     target.GenerationIdentity = QByteArray(reinterpret_cast<const char*>(generationIdentity.GetDataOrNull()),
                                            static_cast<qsizetype>(generationIdentity.GetSize()));
+    if (target.PackagePath == runtimePackagePath && target.GenerationIdentity.toHex() == source.Generation &&
+        source.Generation.isEmpty() == false && decodedRuntimeIdentity == source.RuntimeIdentity)
+    {
+        target.Source = source;
+    }
     state.ResolveTarget(target);
     state.Waiting = target;
     state.WaitingOrNull.Swap(package);
@@ -1006,7 +1020,7 @@ void RenderGraphPreview::tick()
     }
     if (state.ShouldReselectRenderer == true)
     {
-        static_cast<void>(Load(state.RequestedPath, state.RasterFallbackPath));
+        static_cast<void>(Load(state.RequestedPath, state.RasterFallbackPath, state.RequestedSource));
     }
     else if (state.WaitingOrNull.Get() != nullptr)
     {
@@ -1249,6 +1263,15 @@ void RenderGraphPreview::advance()
     state.ProducerTimer.start();
 }
 
+const RenderGraphPreviewSource& RenderGraphPreview::GetActiveSource() const noexcept
+{
+    return mState->Active.Source;
+}
+bool RenderGraphPreview::HasPresentedCatalogue() const noexcept
+{
+    return mState->IsAttached == true && mPresentedSession == mState->Session && mPresentedGeneration != 0 &&
+           mState->Activation.GetReport().ActiveGeneration == mPresentedGeneration;
+}
 const RenderGraphTargetCatalogue& RenderGraphPreview::GetTargetCatalogue() const noexcept
 {
     return mState->Active.Catalogue;

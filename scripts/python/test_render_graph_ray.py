@@ -12,6 +12,7 @@ from ludus_tools import render_graph as graph, render_graph_build as build, rend
 from ludus_tools.errors import ToolingError
 from ludus_tools import render_graph_pipeline as pipeline
 from ludus_tools import render_graph_execution as execution
+from ludus_tools import render_graph_ray_invocation as invocation
 from ludus_tools import render_graph_reload as reload
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -255,6 +256,57 @@ class RayPipelineTests(unittest.TestCase):
             self.node['invocation']['traversal'] = strategy
             with self.assertRaisesRegex(ToolingError, 'traversal'):
                 self.compile()
+
+    def test_invocation_type_is_independent_of_logical_ray_node_and_preserves_legacy(self):
+        self.assertEqual('Compute', invocation.resolve_type(self.node))
+        self.assertEqual('NativeQuery', invocation.resolve_traversal(self.node))
+        self.node['invocation']['type'] = 'Compute'
+        self.assertEqual('TriangleLoop', invocation.resolve_traversal(self.node))
+        self.assertEqual('RayTracingPipeline', self.compile()['passes'][0]['pipeline']['kind'])
+        self.node['invocation']['traversal'] = 'NativeQuery'
+        self.assertTrue(ray.requires_native_queries(self.compile()))
+        self.node['invocation'] = {'type': 'RayTracing', 'dimensions': 'ColorTarget'}
+        plan = self.compile()
+        self.assertEqual(ray.HARDWARE_PIPELINE_TAG, ray.program_tuple(self.node)[-1])
+        profiles = ray.group_profiles([plan], {}, build)
+        self.assertTrue(profiles[0]['native_pipeline'])
+        self.assertFalse(profiles[0]['persistent'])
+        self.assertTrue(ray.requires_native_queries(plan))
+
+    def test_native_invocation_choices_share_a_callback_set_without_forcing_persistent_storage(self):
+        inline = self.compile()
+        self.node['invocation']['type'] = 'RayTracing'
+        native = self.compile()
+        profiles = ray.group_profiles([inline, native], {}, build)
+        self.assertEqual(1, len(profiles))
+        self.assertEqual(1, len(profiles[0]['variants']))
+        self.assertFalse(profiles[0]['persistent'])
+        self.assertTrue(profiles[0]['native_pipeline'])
+
+    def test_hardware_invocation_rejects_compute_traversal_fields(self):
+        self.node['invocation'].update(type='RayTracing', traversal='NativeQuery')
+        with self.assertRaisesRegex(ToolingError, 'owns native traversal'):
+            self.compile()
+        self.node['invocation'] = {'type': 'Unknown', 'dimensions': 'ColorTarget'}
+        with self.assertRaises(ToolingError):
+            self.compile()
+
+    def test_custom_traversal_is_validated_and_keeps_its_source_in_variant_identity(self):
+        self.node['invocation'].update(type='Compute', traversal='Custom', traversal_source='queries/first.slang')
+        plan = self.compile()
+        first = ray.program_tuple(self.node)
+        self.assertEqual('queries/first.slang', ray.get_custom_traversal_source(first))
+        self.assertFalse(ray.requires_native_queries(plan))
+        self.node['invocation']['traversal_source'] = 'queries/second.slang'
+        self.assertNotEqual(first, ray.program_tuple(self.node))
+        self.assertEqual(ray.callback_programs(first), ray.callback_programs(ray.program_tuple(self.node)))
+        for source in ('../escape.slang', '/absolute.slang', 'query.txt', '', None, 'queries\\escape.slang'):
+            with self.subTest(source=source), self.assertRaises(ToolingError):
+                self.node['invocation']['traversal_source'] = source
+                self.compile()
+        self.node['invocation'].pop('traversal_source')
+        with self.assertRaisesRegex(ToolingError, 'requires traversal_source'):
+            self.compile()
 
     def connect_members(self, members):
         configuration = self.document['configurations'][0]
@@ -625,6 +677,117 @@ class RayPipelineTests(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('LUDUS_RG1_SLANG') and os.environ.get('LUDUS_RG1_HELPER') and os.environ.get('LUDUS_RG1_CROSS'),
                      'set LUDUS_RG1_SLANG, LUDUS_RG1_HELPER and LUDUS_RG1_CROSS for native ray compiler acceptance')
 class RayCompilerAcceptance(unittest.TestCase):
+    def test_native_metal_stages_are_distinct_from_inline_query_compute(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'source'
+            shutil.copytree(ROOT / 'tests/sdk_consumer/rg2/scene_ray', source)
+            path = source / 'main.lurender.json'
+            document = json.loads(path.read_text())
+            hardware = deepcopy(document['configurations'][0])
+            hardware['id'] = 'Hardware'
+            node = next(item for item in hardware['nodes'] if item['kind'] == 'RayTracingPipeline')
+            node['invocation']['type'] = 'RayTracing'
+            document['configurations'].append(hardware)
+            # One bundle combines an 8x8 compute override with independently compiled native stages.
+            compute_node = next(item for item in document['configurations'][0]['nodes']
+                                if item['kind'] == 'RayTracingPipeline')
+            compute_node['kind'] = 'ComputePipeline'
+            compute_node['state'] = {'group_size': [8, 8, 1]}
+            compute_node['invocation'].update(type='Compute', traversal='NativeQuery')
+            path.write_bytes(graph.canonical_asset(document))
+            manifest = source / 'main.lushader.json'
+            manifest.write_text((source / 'main.lushader.json.in').read_text().replace('@RG2_TEST_PROFILES@', '["metal"]'))
+            result = build.build_package(manifest, root / 'build', helper=os.environ['LUDUS_RG1_HELPER'],
+                                         compiler=os.environ['LUDUS_RG1_SLANG'], spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+            package = Path(result['package'])
+            descriptor = json.loads((package / 'package.json').read_text())
+            native = next(item for item in descriptor['programs'] if item['id'].endswith('NativeStages'))
+            code = (package / 'programs' / native['key'] / native['descriptor']['artifact']).read_text()
+            self.assertNotIn('intersection_query<', code)
+            for stage in ('LudusNativeRayGeneration', 'LudusNativeClosestHit', 'LudusNativeMiss'):
+                self.assertIn('[[visible]] void ' + stage, code)
+            self.assertIn('intersector.intersect(ray, scene', code)
+            self.assertIn('functions[stage](packet, context)', code)
+            self.assertEqual(set(range(8)), {entry['binding'] for entry in native['descriptor']['interface']['entries']})
+            hardware_contents = execution._runtime_contents(str(package), 'Hardware')
+            self.assertEqual('HardwarePipeline', hardware_contents['passes'][0]['Traversal'])
+            self.assertIn(('NativeRayStages', 'compute', 'metal'), hardware_contents['artifacts'])
+            default_contents = execution._runtime_contents(str(package), 'Default')
+            self.assertNotIn(('NativeRayStages', 'compute', 'metal'), default_contents['artifacts'])
+            compute_artifact = default_contents['artifacts'][('RayTracing', 'compute', 'metal')]
+            self.assertEqual([8, 8, 1], compute_artifact['descriptor']['interface']['workgroup'])
+            self.assertEqual([64, 1, 1], native['descriptor']['interface']['workgroup'])
+            execution.emit_runtime(str(package), root / 'default.h', configuration='Default')
+            self.assertNotIn('result.NativeRayStages.Artifact.HasNativeRayStages = true', (root / 'default.h').read_text())
+            execution.cook_runtime(str(package), root / 'hardware.lurgrt', configuration='Hardware')
+            execution.emit_runtime(str(package), root / 'hardware.h', name='Hardware', configuration='Hardware')
+            self.assertIn('result.NativeRayStages.Artifact.HasNativeRayStages = true', (root / 'hardware.h').read_text())
+
+    def test_custom_traversal_compiles_without_native_queries_and_invalidates_with_its_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'source'
+            shutil.copytree(ROOT / 'tests/sdk_consumer/rg2/scene_ray', source)
+            path = source / 'main.lurender.json'
+            document = json.loads(path.read_text())
+            native_configuration = deepcopy(document['configurations'][0])
+            native_configuration['id'] = 'Native'
+            node = next(item for item in document['configurations'][0]['nodes'] if item['kind'] == 'RayTracingPipeline')
+            node['invocation'].update(type='Compute', traversal='Custom', traversal_source='query.slang')
+            other_configuration = deepcopy(document['configurations'][0])
+            other_configuration['id'] = 'OtherCustom'
+            other_node = next(item for item in other_configuration['nodes'] if item['kind'] == 'RayTracingPipeline')
+            other_node['invocation']['traversal_source'] = 'alternate.slang'
+            document['configurations'].extend((other_configuration, native_configuration))
+            custom = source / 'query.slang'
+            custom.write_text('''Hit TraceWorld(float3 originWorld, float3 directionWorld, float nearDistanceWorld,
+                                      float farDistanceWorld, bool isVisibility)
+{
+    return TraceTriangleLoop(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
+}
+''')
+            (source / 'alternate.slang').write_text('''Hit TraceWorld(float3 originWorld, float3 directionWorld,
+    float nearDistanceWorld, float farDistanceWorld, bool isVisibility)
+{
+    Hit miss = (Hit)0;
+    miss.Triangle = LUDUS_GPU_PREVIEW_INVALID_TRIANGLE;
+    miss.DistanceWorld = farDistanceWorld;
+    return miss;
+}
+''')
+            path.write_bytes(graph.canonical_asset(document))
+            manifest = source / 'main.lushader.json'
+            manifest.write_text((source / 'main.lushader.json.in').read_text().replace(
+                '@RG2_TEST_PROFILES@', '["metal"]'))
+            options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
+                           spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+            result = build.build_package(manifest, root / 'build', **options)
+            package = Path(result['package'])
+            descriptor = json.loads((package / 'package.json').read_text())
+            self.assertEqual({False, True}, {item['native_ray_queries'] for item in descriptor['recipes']
+                                            if item['technique'] == ray.TECHNIQUE})
+            _, _, passes, _ = execution.lower_plan(descriptor, 'Default')
+            self.assertEqual('Custom', next(item['Traversal'] for item in passes if item['Program'] == 'RayTracing'))
+            _, _, other_passes, _ = execution.lower_plan(descriptor, 'OtherCustom')
+            self.assertNotEqual(next(item['RayProgram'] for item in passes if item['Program'] == 'RayTracing'),
+                                next(item['RayProgram'] for item in other_passes if item['Program'] == 'RayTracing'))
+            stage = next(item for item in descriptor['programs'] if item['id'] == ray.SOFTWARE_COMPUTE_ID)
+            self.assertNotIn('RayScene', {item['kind'] for item in stage['descriptor']['interface']['entries']})
+            metal = (package / 'programs' / stage['key'] / stage['descriptor']['artifact']).read_text()
+            self.assertNotIn('intersection_query<', metal)
+            destination = root / 'custom.lurgrt'
+            execution.cook_runtime(str(package), destination)
+            self.assertEqual(execution.PACKAGE_VERSION, struct.unpack_from('<I', destination.read_bytes(), 4)[0])
+            custom.write_text(custom.read_text() + '\n// Authored traversal revision.\n')
+            rebuilt = build.build_package(manifest, root / 'build', **options)
+            self.assertNotEqual(result['generation'], rebuilt['generation'])
+            published = (root / 'build/current.json').read_bytes()
+            custom.write_text('This is not a valid traversal shader.\n')
+            with self.assertRaises(ToolingError):
+                build.build_package(manifest, root / 'build', **options)
+            self.assertEqual(published, (root / 'build/current.json').read_bytes())
+
     def test_shared_ray_callbacks_compile_with_both_traversals_and_pipeline_kinds(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

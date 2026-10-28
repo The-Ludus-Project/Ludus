@@ -306,10 +306,14 @@ bool AppendGpuExecutionSlices(std::string& inoutJson,
         inoutJson += ",\n{\"pid\":2,\"tid\":";
         AppendUint(inoutJson, GPU_FIRST_EXECUTION_THREAD + lane);
         inoutJson += ",\"ph\":\"X\",\"cat\":\"";
-        inoutJson += sample.IsCompute == true ? "gpu.compute" : "gpu.raster";
+        inoutJson += sample.IsRayTracing == true ? "gpu.raytracing"
+                     : sample.IsCompute == true  ? "gpu.compute"
+                                                 : "gpu.raster";
         inoutJson += "\",\"name\":\"";
         AppendJsonEscaped(inoutJson, GetPassName(sample));
-        inoutJson += sample.IsCompute == true ? " (Compute)" : " (Raster)";
+        inoutJson += sample.IsRayTracing == true ? " (Native RT)"
+                     : sample.IsCompute == true  ? " (Compute)"
+                                                 : " (Raster)";
         inoutJson += "\",\"ts\":";
         AppendMicros(inoutJson, sample.ExecutionStartTicks);
         inoutJson += ",\"dur\":";
@@ -714,7 +718,9 @@ bool SerializePerfettoTrace(Array<uint8>& outBytes,
                 AppendUint(out, sample.ScopeIdentity);
                 out += ':';
                 AppendUint(out, sample.ScopePassIndex);
-                out += sample.IsCompute == true ? ":Compute]/DurationNanoseconds" : ":Raster]/DurationNanoseconds";
+                out += sample.IsRayTracing == true ? ":NativeRT]/DurationNanoseconds"
+                       : sample.IsCompute == true  ? ":Compute]/DurationNanoseconds"
+                                                   : ":Raster]/DurationNanoseconds";
             }
             out += "\",\"ts\":";
             AppendMicros(out, sample.SubmissionTicks);
@@ -736,6 +742,8 @@ bool SerializePerfettoTrace(Array<uint8>& outBytes,
             AppendJsonEscaped(out, {sample.PassName.GetDataOrNull(), sample.PassName.GetSize()});
             out += "\",\"isCompute\":";
             out += sample.IsCompute == true ? "true" : "false";
+            out += ",\"isRayTracing\":";
+            out += sample.IsRayTracing == true ? "true" : "false";
             out += ",\"collectionNanoseconds\":";
             AppendUint(out, sample.CollectionTicks);
             out += "}}";

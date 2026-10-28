@@ -521,7 +521,7 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
         {
             return Status::InvalidDescription;
         }
-        if (static_cast<uint32>(pass.Traversal) > static_cast<uint32>(format::RayTraversal::TriangleLoop) ||
+        if (static_cast<uint32>(pass.Traversal) > static_cast<uint32>(format::RayTraversal::HardwarePipeline) ||
             (pass.Program != format::Technique::RayTracing && pass.Traversal != format::RayTraversal::NativeQuery))
         {
             return Status::InvalidDescription;
@@ -1332,7 +1332,10 @@ struct RenderGraph::State final
                                                                {},
                                                                Passes[i].AccumulationSamples,
                                                                Passes[i].ToneMappingExposure,
-                                                               Passes[i].DenoisingQuality};
+                                                               Passes[i].DenoisingQuality,
+                                                               {},
+                                                               Passes[i].Traversal ==
+                                                                   format::RayTraversal::HardwarePipeline};
                     const Status created =
                         inoutScene.RayPasses[i].Initialize(context,
                                                            inoutScene.Snapshots[i],
@@ -1631,6 +1634,19 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
             programs.HasPersistentRayBuffers == false)
         {
             return Status::Unsupported;
+        }
+    }
+    if (RequiresNativeRayPipeline(plan) == true)
+    {
+        if (programs.NativeRayStages.Artifact.HasNativeRayStages == false)
+        {
+            return Status::InvalidDescription;
+        }
+        rhi::RayCapabilities capabilities;
+        const Status capabilityStatus = rhi::GetRayCapabilities(device, capabilities);
+        if (capabilityStatus != Status::Ready || capabilities.RayPipelines == false)
+        {
+            return capabilityStatus == Status::Ready ? Status::Unsupported : capabilityStatus;
         }
     }
     bool hasNativeRayBinding = false;
@@ -2100,7 +2116,10 @@ Status RenderGraph::Poll() noexcept
                     {internal::GRAPH_RAY_CPU_BYTES,
                      internal::GRAPH_RAY_GPU_BYTES,
                      1,
-                     {state.StorageBuffers.GetData(), state.StorageBufferCount}});
+                     {state.StorageBuffers.GetData(), state.StorageBufferCount},
+                     state.Programs.NativeRayStages.Artifact.HasNativeRayStages == true
+                         ? &state.Programs.NativeRayStages
+                         : nullptr});
                 if (IsAccepted(status) == false)
                 {
                     return status;
@@ -2666,7 +2685,8 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             operation.AccumulationSamples,
             operation.ToneMappingExposure,
             operation.DenoisingQuality,
-            state.RayPathCapture.GetBuffer()};
+            state.RayPathCapture.GetBuffer(),
+            operation.Traversal == format::RayTraversal::HardwarePipeline};
         const Status created =
             candidate->RayPasses[pass].Initialize(state.Contexts[static_cast<usize>(operation.Program)],
                                                   {},
@@ -3041,5 +3061,18 @@ Status RenderGraph::GetResourceAllocation(uint32 resource,
     outTexture = state.Textures[logical.Backing];
     outAspect = logical.Kind == format::Aspect::Color ? rhi::TextureAspect::Color : rhi::TextureAspect::Depth;
     return Status::Ready;
+}
+Status internal::RenderGraphRayPass::GetGraphAccumulationForTesting(RenderGraph& inoutGraph,
+                                                                    uint32 pass,
+                                                                    rhi::BufferHandle& outBuffer) noexcept
+{
+    if (inoutGraph.mState.Get() == nullptr || inoutGraph.mState->Current.Get() == nullptr)
+        return Status::NotReady;
+    RenderGraph::State& state = *inoutGraph.mState;
+    if (pass >= state.Header.PassCount || state.Passes[pass].Program != format::Technique::RayTracing)
+        return Status::InvalidDescription;
+    return GetAccumulationForTesting(state.Contexts[static_cast<usize>(format::Technique::RayTracing)],
+                                     state.Current->RayPasses[pass].GetJob(),
+                                     outBuffer);
 }
 } // namespace ludus::graphics::renderer

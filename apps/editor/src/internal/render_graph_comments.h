@@ -3,18 +3,31 @@
 #include "internal/render_graph_comment_frame.h"
 #include "internal/render_graph_document.h"
 
+#include <QHash>
 #include <QObject>
 #include <QPointF>
+#include <QSet>
 #include <QVector>
 
 QT_BEGIN_NAMESPACE
 class QGraphicsRectItem;
 class QGraphicsScene;
+class QGraphicsEllipseItem;
+class QGraphicsSimpleTextItem;
 QT_END_NAMESPACE
 
 namespace ludus::editor
 {
 class RenderGraphCanvas;
+
+/// Logical emphasis shared by full node cards and their collapsed stage proxies; contains no scene pointers.
+struct RenderGraphCommentHighlights final
+{
+    QStringList Selection;     ///< Authored selection IDs, including hidden nodes.
+    QSet<QString> TracedNodes; ///< All logical nodes visited by the active dependency trace.
+    QSet<QString> Inputs;      ///< Emphasized input endpoint identities.
+    QSet<QString> Outputs;     ///< Emphasized output endpoint identities.
+};
 
 /// Canvas-owned comment presentation and gestures. Scene items are borrowed until Clear;
 /// copied frame metadata never owns graph nodes. GUI thread only. Edits are requested through
@@ -34,6 +47,26 @@ public:
     [[nodiscard]] QRectF GetBounds() const;
     /// Displayed rectangle for one frame, empty if missing. Includes live gesture preview.
     [[nodiscard]] QRectF GetFrameBounds(const QString& identity) const;
+    /// True only for nonempty stages whose saved bounds intersect no other comment frame.
+    [[nodiscard]] bool CanCollapse(const QString& identity) const;
+    /// Effective hidden owner for an authored node; empty for visible nodes.
+    [[nodiscard]] QString GetCollapsedFrame(const QString& node) const;
+    /// Save one collapse/expand edit without changing node coordinates, selection or trace.
+    void SetCollapsed(const QString& identity, bool isCollapsed);
+    /// Temporarily expand a node's stage for search/diagnostics, without a document edit.
+    void RevealNode(const QString& node);
+    /// Temporary expansion IDs captured/restored by browser history; unknown IDs are ignored.
+    [[nodiscard]] QStringList GetRevealedFrames() const;
+    /// Restore temporary expansion IDs in this configuration; unknown and duplicate IDs are ignored.
+    void SetRevealedFrames(const QStringList& frames);
+    /// Boundary connectors keep the original endpoint identity and direction. Borrowed scene item.
+    [[nodiscard]] QGraphicsEllipseItem* GetBoundaryPortOrNull(const QString& endpoint, bool isOutput) const;
+    /// Hit a visible boundary connector, returning its original endpoint; empty on a miss.
+    [[nodiscard]] QString GetPortAt(QPointF position, bool& outIsOutput) const;
+    /// Update stage selection/trace emphasis and original endpoint port emphasis, without rebuilding items.
+    void RefreshHighlights(const RenderGraphCommentHighlights& highlights);
+    /// Refresh node/report error counts and freshness labels on existing stage cards.
+    void RefreshCounts();
     /// Create a frame around selected nodes, or at position when selection is empty; opens shared edit controls.
     void CreateFrame(QPointF position);
     /// Edit title, plain-text notes and RGB colour, preserving geometry. Missing IDs are a no-op.
@@ -42,7 +75,7 @@ public:
     void RemoveFrame(const QString& identity);
     /// Open frame actions when a header/resize handle is hit; returns whether handled.
     [[nodiscard]] bool ShowContextMenu(QPointF position, const QPoint& globalPosition);
-    /// Edit a hit header on double-click; body space remains available to node/wire gestures.
+    /// Edit an expanded header or expand a collapsed card on double-click; no node/trace selection change.
     [[nodiscard]] bool ActivateAt(QPointF position);
     /// Start a header move or bottom-right resize. Group membership is full node containment at press.
     /// Does not change node selection/trace; returns false on empty space or stale metadata.
@@ -64,6 +97,7 @@ private:
     [[nodiscard]] foundation::int32 findFrame(const QString& identity) const;
     [[nodiscard]] foundation::int32 hitFrame(QPointF position) const;
     void renderFrames();
+    void refreshPresentation();
     void editFrame(QJsonObject frame, bool isNew);
     [[nodiscard]] bool isCurrent() const;
     void publish(const QJsonArray& frames, const QVector<RenderGraphNodePosition>& positions = {});
@@ -71,6 +105,18 @@ private:
     RenderGraphCanvas& mCanvas;
     QGraphicsScene& mScene;
     QJsonArray mFrames;
+    QJsonObject mConfigurationRecord;
+    QHash<QString, QStringList> mMembers;
+    QHash<QString, QString> mCollapsedOwners;
+    QStringList mRevealedFrames;
+    struct BoundaryPort final
+    {
+        QString Endpoint;
+        bool IsOutput = false;
+        QGraphicsEllipseItem* Item;
+    };
+    QVector<BoundaryPort> mBoundaryPorts;
+    QHash<QString, QGraphicsSimpleTextItem*> mCounts;
     QVector<QGraphicsRectItem*> mItems;
     QString mFile;
     QString mConfiguration;

@@ -18,6 +18,7 @@
 #include "internal/render_graph_pipeline.h"
 #include "internal/render_graph_quick_add.h"
 #include "internal/render_graph_reroutes.h"
+#include "internal/render_graph_resource_inspection.h"
 #include "internal/render_graph_resources.h"
 #include "internal/render_graph_shader_creation.h"
 #include "internal/render_graph_shader_interface.h"
@@ -870,6 +871,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         syncTreeSelection();
     });
     connect(mTree, &QTreeWidget::itemDoubleClicked, this, [this]() { activateSelectedNode(); });
+    setupResourceInspection();
     connect(mCanvas, &RenderGraphCanvas::InterfaceEditRequested, this, &RendererWorkspace::editConfigurationInterface);
     connect(mCanvas, &RenderGraphCanvas::NodeDetailsRequested, this, [this](const QString& node) {
         static_cast<void>(SelectNode(mCanvas->GetFile(), mCanvas->GetConfiguration(), node));
@@ -883,7 +885,8 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
         // A node that writes or publishes textures shows them in the texture viewer.
         QJsonObject graph;
-        if (mTextureViewerOrNull != nullptr && mDocument.GetGraph(mSelectedFile, graph) == true)
+        if (mTextureViewerOrNull != nullptr && mResourceInspectorOrNull->IsPinned() == false &&
+            mDocument.GetGraph(mSelectedFile, graph) == true)
         {
             static_cast<void>(
                 mTextureViewerOrNull->SelectCanvasNode(graph.value(QStringLiteral("id")).toString(), node));
@@ -1046,6 +1049,9 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         renderPreview();
     });
     mTextureViewerOrNull->SetPreview(mPreviewOrNull);
+    connect(mPreviewOrNull, &RenderGraphPreview::TargetsChanged, this, &RendererWorkspace::updateResourceInspection);
+    connect(mPreviewOrNull, &RenderGraphPreview::FramePresented, this, &RendererWorkspace::updateResourceInspection);
+    connect(mPreviewOrNull, &RenderGraphPreview::Changed, this, &RendererWorkspace::updateResourceInspection);
     mRayPathsOrNull = new RayPathInspection(this);
     mRayPathsOrNull->SetPreview(mPreviewOrNull);
     connect(mRayPathsOrNull, &RayPathInspection::BuildRequested, this, &RendererWorkspace::startRayPathBuild);
@@ -1210,6 +1216,8 @@ void RendererWorkspace::SetChromeVisible(bool isVisible)
 
 RendererWorkspace::~RendererWorkspace()
 {
+    delete mResourceInspectorOrNull;
+    mResourceInspectorOrNull = nullptr;
     delete mSourceFormatter;
     delete mSourceController;
 }
@@ -1251,6 +1259,7 @@ void RendererWorkspace::SetProject(const QString& root, uint64 epoch)
     mResolvedTools = {};
     mResolvedSdk.clear();
     mSourceDocument.ResetBinding();
+    mResourceInspectorOrNull->Reset();
     mCanvas->GetHistory().Reset();
     mDocument.Reset();
     mBuildProblem.clear();
@@ -1442,6 +1451,7 @@ void RendererWorkspace::showDocument(const RenderGraphDocument& document)
     mSourceEditDebounce.stop();
     mSourceDocument.ResetBinding();
     mCanvas->ShowConfiguration({}, {});
+    mResourceInspectorOrNull->Reset();
     mDocument = document;
     mBuildProblem.clear();
     mSourceProblem.clear();
@@ -3182,6 +3192,7 @@ void RendererWorkspace::updateCanvasDiagnostics()
 
 void RendererWorkspace::renderStatus()
 {
+    updateResourceInspection();
     updateCanvasDiagnostics();
     if (mCreation.IsActive() == true)
     {
@@ -4455,7 +4466,31 @@ bool RendererWorkspace::PreviewRuntime(RenderGraphSource source)
     }
     const bool isPreviousPreviewDefault = mIsDefaultPreview;
     mIsDefaultPreview = runtime == GetDefaultRenderGraphRuntime();
-    const RenderGraphPreviewLoad loaded = mPreviewOrNull->Load(runtime, GetDefaultRenderGraphRuntime());
+    RenderGraphPreviewSource provenance;
+    if (mHasResult == true && mLastResult.IsSuccessful == true &&
+        (mLastResult.Request.Action == QStringLiteral("build") ||
+         mLastResult.Request.Action == QStringLiteral("cook-runtime")) &&
+        mLastResult.Request.InputIdentity.isEmpty() == false &&
+        mLastResult.Request.InputIdentity == getBuildIdentity(source) && mLastResult.Request.Source == source)
+    {
+        const QByteArray rootBytes = source == RenderGraphSource::Saved ? mDocument.GetSaved(mDocument.GetRootGraph())
+                                                                        : mDocument.GetDraft(mDocument.GetRootGraph());
+        const QJsonObject root = QJsonDocument::fromJson(rootBytes).object();
+        provenance.Configuration = mConfiguration->currentText() == DEFAULT_CONFIGURATION
+                                       ? root.value(QStringLiteral("default")).toString()
+                                       : mConfiguration->currentText();
+        provenance.InputIdentity = ComputeRenderGraphBuildIdentity(mDocument, provenance.Configuration, source);
+        provenance.RootFile = mDocument.GetRootGraph();
+        const QJsonObject runtimeResult = mLastResult.Payload.value(QStringLiteral("runtime")).toObject();
+        if (QDir::cleanPath(runtimeResult.value(QStringLiteral("runtime_package")).toString()) ==
+                QDir::cleanPath(runtime) &&
+            runtimeResult.value(QStringLiteral("configuration")).toString() == provenance.Configuration)
+        {
+            provenance.Generation = runtimeResult.value(QStringLiteral("generation")).toString().toLatin1();
+            provenance.RuntimeIdentity = runtimeResult.value(QStringLiteral("sha256")).toString().toLatin1();
+        }
+    }
+    const RenderGraphPreviewLoad loaded = mPreviewOrNull->Load(runtime, GetDefaultRenderGraphRuntime(), provenance);
     if (loaded == RenderGraphPreviewLoad::Staged || loaded == RenderGraphPreviewLoad::Waiting)
     {
         mPreviewInputIdentity = getBuildIdentity(source);

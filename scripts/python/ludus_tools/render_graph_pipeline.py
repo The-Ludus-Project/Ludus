@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+from . import render_graph_ray_invocation as ray_invocation
+
 KINDS = ('GraphicsPipeline', 'ComputePipeline', 'RayTracingPipeline')
 RESOURCE_TYPES = ('ColorTexture', 'DepthTexture', 'Buffer')
 INPUT_TYPES = ('Scene', 'SceneGeometry', 'SceneMaterials', 'SceneLights', 'View', *RESOURCE_TYPES, 'AccelerationStructure',
@@ -149,11 +151,11 @@ def validate(node, where, graph):
             _check_field(graph._identifier, invocation[name], f'Invocation → {name}', where, graph)
     elif is_scene_compute(node):
         # Scene compute passes use the ray wrapper's automatic workgroup and the ray launch
-        # size. Lowering rejects any group_size other than [64, 1, 1] with a repair that clears it.
+        # size. Lowering admits the supported ray workgroup shapes and offers automatic inheritance.
         graph._keys(state, (), where, ('group_size',))
         if 'group_size' in state:
             _dimensions(state['group_size'], where, graph, 'Pipeline State → group_size')
-        graph._keys(invocation, ('dimensions',), where, ('traversal',))
+        graph._keys(invocation, ('dimensions',), where, ('type', 'traversal', 'traversal_source'))
         if invocation['dimensions'] != 'ColorTarget':
             _dimensions(invocation['dimensions'], where, graph, 'Invocation → dimensions')
     elif node['kind'] == 'ComputePipeline':
@@ -168,15 +170,14 @@ def validate(node, where, graph):
         for field in ('payload_bytes', 'attribute_bytes'):
             if field in state:
                 _check_field(graph._integer, state[field], f'Pipeline State → {field} (bytes)', where, graph, 0, 4096)
-        graph._keys(invocation, ('dimensions',), where, ('traversal',))
+        graph._keys(invocation, ('dimensions',), where, ('type', 'traversal', 'traversal_source'))
         if invocation['dimensions'] != 'ColorTarget':
             _dimensions(invocation['dimensions'], where, graph, 'Invocation → dimensions')
 
-    if 'traversal' in invocation:
+    if any(field in invocation for field in ('type', 'traversal', 'traversal_source')):
         graph._require(node['kind'] == 'RayTracingPipeline' or is_scene_compute(node),
-                       'Capability', where, 'traversal requires a ray pipeline or scene compute pass')
-        _check_field(graph._enum, invocation['traversal'], 'Invocation → traversal', where, graph,
-                     ('TriangleLoop', 'NativeQuery'))
+                       'Capability', where, 'ray invocation requires a ray pipeline or scene compute pass')
+        ray_invocation.validate(node, where + '/Invocation → traversal', graph)
 
     graph.options.validate_pipeline(node, where, graph)
 

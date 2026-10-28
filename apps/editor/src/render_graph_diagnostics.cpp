@@ -221,6 +221,31 @@ void RenderGraphDiagnostics::refreshControls()
             .arg(freshness,
                  mResult.Request.Source == RenderGraphSource::Draft ? QStringLiteral("draft") : QStringLiteral("saved"))
             .arg(mResult.Request.Revision));
+    Q_EMIT Changed();
+}
+
+int32 RenderGraphDiagnostics::CountNodeErrors(const QString& file,
+                                              const QString& configuration,
+                                              const QStringList& nodes) const
+{
+    int32 count = 0;
+    for (const int32 row : mAvailableRows)
+    {
+        const QJsonObject diagnostic = mResult.GetDiagnostic(row);
+        if (diagnostic.value(QStringLiteral("severity")).toString().toLower() == QStringLiteral("warning"))
+        {
+            continue;
+        }
+        const QJsonObject target =
+            ResolveRenderGraphDiagnosticTarget(mDocument, diagnostic.value(QStringLiteral("location")).toObject());
+        if (target.value(QStringLiteral("source")).toString() == file &&
+            target.value(QStringLiteral("configuration")).toString() == configuration &&
+            nodes.contains(target.value(QStringLiteral("node")).toString()) == true)
+        {
+            ++count;
+        }
+    }
+    return count;
 }
 
 bool RenderGraphDiagnostics::step(int32 direction)

@@ -215,6 +215,14 @@ If parallel reduction or order-independent selection is required, specify and
 verify that algorithm separately. Zero/empty totals are checked explicitly;
 the engine must not rely on a NaN comparison to mask an invalid division.
 
+**Adopted** for the first such consumer, the
+[many-area-light resampling estimator](many-area-light-sampling-reference-review.md):
+FoundationMath's [sequential weighted reservoir](randomness.md#sequential-weighted-reservoir)
+implements the chapter's single-sample, with-replacement update over an explicit
+order, with bit-level validation and an explicit empty result. The minimum
+weight, subnormal flushing and contribution-weight helper are Ludus additions for
+CPU/GPU parity and RIS.
+
 ## GPU generation and consumption
 
 **Source:** Lee Howes and David Thomas, “Efficient Random Number Generation

@@ -6,6 +6,8 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstring>
+
 using namespace ludus::foundation;
 namespace internal = ludus::graphics::renderer::internal;
 namespace rhi = ludus::graphics::rhi;
@@ -138,4 +140,76 @@ TEST_CASE("Reference emitter selection rejects unordered emitter lists without c
     CHECK(internal::BuildReferenceEmitterSelection(empty) == rhi::RasterStatus::Ready);
     CHECK(empty.EmitterCdf.GetSize() == 0);
     CHECK(internal::GetReferenceEmitterProbability(empty, 0) == 0);
+}
+
+TEST_CASE("Reference emissive triangle accessors draw and evaluate the power CDF by scene triangle",
+          "[renderer][reference]")
+{
+    StaticArray<internal::ReferenceSurfaceData, SURFACE_COUNT> surfaces;
+    internal::ReferenceSceneData scene;
+    BuildScene(surfaces, scene);
+    REQUIRE(internal::BuildReferenceEmitterSelection(scene) == rhi::RasterStatus::Ready);
+
+    // Probabilities are keyed by scene triangle; triangle 1 is not emissive and 5 is outside the scene.
+    CHECK(internal::EvaluateReferenceEmissiveTriangleSelectionPmf(scene, 3) ==
+          internal::GetReferenceEmitterProbability(scene, 2));
+    CHECK(internal::EvaluateReferenceEmissiveTriangleSelectionPmf(scene, 1) == 0);
+    CHECK(internal::EvaluateReferenceEmissiveTriangleSelectionPmf(scene, 5) == 0);
+
+    // Each draw reproduces RT1's bounded ticket over the integer total, then its interval search.
+    const math::RandomKey key{0x5eedULL};
+    const uint32 total = scene.EmitterCdf[scene.EmitterCdf.GetSize() - 1];
+    StaticArray<uint32, 5> histogram{};
+    constexpr uint16 DRAW_COUNT = 4096;
+    for (uint16 dimension = 0; dimension < DRAW_COUNT; ++dimension)
+    {
+        const math::RandomAddress address{ .Scope = 7, .Event = 2, .Dimension = dimension };
+        uint32 value = 0;
+        REQUIRE(math::TrySampleBounded(key, address, total, value) == math::MathStatus::Success);
+        const internal::ReferenceEmissiveTriangleSelection selection =
+            internal::SelectReferenceEmissiveTriangle(scene, key, address);
+        REQUIRE(selection.HasSample == true);
+        CHECK(selection.TriangleIndex == scene.Emitters[internal::SelectReferenceEmitter(scene, value)]);
+        CHECK(selection.SelectionPmf ==
+              internal::EvaluateReferenceEmissiveTriangleSelectionPmf(scene, selection.TriangleIndex));
+        ++histogram[selection.TriangleIndex];
+    }
+    CHECK(histogram[1] == 0);
+    // Panels carry 8/18 of the power each; flames 1/18. Margins exceed six standard deviations.
+    CHECK(histogram[3] > 1600);
+    CHECK(histogram[4] > 1600);
+    CHECK(histogram[0] + histogram[2] < 650);
+
+    // The packer writes exactly the words that GPU kernels search.
+    StaticArray<math::Vector4, 4> words{};
+    REQUIRE(internal::PackReferenceEmitterSelection(scene, {words.GetData(), words.GetSize()}) == true);
+    for (usize emitter = 0; emitter < words.GetSize(); ++emitter)
+    {
+        uint32 triangle = 0;
+        uint32 cumulative = 0;
+        std::memcpy(&triangle, &words[emitter].X, sizeof(triangle));
+        std::memcpy(&cumulative, &words[emitter].Y, sizeof(cumulative));
+        CHECK(triangle == scene.Emitters[emitter]);
+        CHECK(cumulative == scene.EmitterCdf[emitter]);
+    }
+    words[0] = {1, 2, 3, 4};
+    CHECK(internal::PackReferenceEmitterSelection(scene, {words.GetData(), words.GetSize() - 1}) == false);
+    CHECK(words[0].X == 1);
+
+    // Zero total power, an empty list and a stale CDF select nothing.
+    surfaces[0].Emission = {};
+    surfaces[1].Emission = {};
+    REQUIRE(internal::BuildReferenceEmitterSelection(scene) == rhi::RasterStatus::Ready);
+    const internal::ReferenceEmissiveTriangleSelection powerless =
+        internal::SelectReferenceEmissiveTriangle(scene, key, {});
+    CHECK(powerless.HasSample == false);
+    CHECK(powerless.TriangleIndex == LUDUS_GPU_PREVIEW_INVALID_TRIANGLE);
+    CHECK(powerless.SelectionPmf == 0);
+    CHECK(internal::EvaluateReferenceEmissiveTriangleSelectionPmf(scene, 3) == 0);
+    REQUIRE(scene.Emitters.TryAdd(5) == true);
+    CHECK(internal::SelectReferenceEmissiveTriangle(scene, key, {}).HasSample == false);
+    CHECK(internal::EvaluateReferenceEmissiveTriangleSelectionPmf(scene, 0) == 0);
+    CHECK(internal::PackReferenceEmitterSelection(scene, {words.GetData(), words.GetSize()}) == false);
+    internal::ReferenceSceneData empty;
+    CHECK(internal::SelectReferenceEmissiveTriangle(empty, key, {}).HasSample == false);
 }

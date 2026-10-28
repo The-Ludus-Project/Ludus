@@ -395,6 +395,52 @@ SelectedLight SelectLight(SceneContext scene, RayLaunch launch, uint dimension)
     result.SelectionPmf = result.HasSample == true ? 1.0 / float(count) : 0;
     return result;
 }
+/// One emissive triangle drawn from the renderer's power-weighted triangle CDF.
+struct EmissiveTriangleSelection
+{
+    uint TriangleIndex; ///< Scene triangle index; SCENE_INVALID_INDEX without a sample.
+    float SelectionPmf; ///< Discrete probability of TriangleIndex among emissive triangles.
+    bool HasSample;
+};
+// The scene's power CDF over emissive triangles, which RT1 also reads. Every triangle
+// with positive area and emitted luminance keeps a nonzero probability.
+static bool HasEmissiveTriangleCdf(SceneContext scene)
+{
+    return scene.Version == SCENE_INTERFACE_VERSION && (asuint(Options.w) & SCENE_DATA_LIGHTS) != 0 && Counts.z != 0 &&
+           EmitterCumulative(Counts.z - 1) != 0;
+}
+/// Select an emissive triangle in proportion to emitted luminance times area, at an explicit
+/// random address and without advancing queries. Consumes one bounded draw over the CDF's integer
+/// total, as RT1 does. Scenes without lights or emitted power, and invalid/exhausted bounded
+/// addresses, return HasSample=false. SelectionPmf equals EvaluateEmissiveTriangleSelectionPmf.
+EmissiveTriangleSelection SelectEmissiveTriangle(SceneContext scene, RayLaunch launch, uint dimension)
+{
+    EmissiveTriangleSelection result = (EmissiveTriangleSelection)0;
+    result.TriangleIndex = SCENE_INVALID_INDEX;
+    if (HasEmissiveTriangleCdf(scene) == false)
+        return result;
+    uint pixel = launch.PositionPixel.y * launch.ExtentPixel.x + launch.PositionPixel.x;
+    uint value;
+    if (TrySampleRandomBounded(launch.Seed,
+                               PixelRandomAddress(pixel, launch.SampleIndex, dimension),
+                               EmitterCumulative(Counts.z - 1),
+                               value) == false)
+        return result;
+    uint emitter = SelectEmitter(value);
+    result.TriangleIndex = sceneWords[Offsets.z + emitter].x;
+    result.SelectionPmf = EmitterProbability(emitter);
+    result.HasSample = true;
+    return result;
+}
+/// Probability that SelectEmissiveTriangle returns triangleIndex: zero for triangles without
+/// emitted power, out-of-range indices and scenes without lights.
+float EvaluateEmissiveTriangleSelectionPmf(SceneContext scene, uint triangleIndex)
+{
+    uint emitter;
+    if (HasEmissiveTriangleCdf(scene) == false || FindEmitter(triangleIndex, emitter) == false)
+        return 0;
+    return EmitterProbability(emitter);
+}
 float EvaluateLightPdfSolidAngle(SceneContext scene, float3 receiverPositionWorld, SurfaceHit endpoint)
 {
     if (endpoint.EmitterIndex >= GetEmitterCount(scene))

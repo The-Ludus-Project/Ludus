@@ -95,6 +95,9 @@ struct ShaderDescription final
     ///
     /// A container records one entry; a different name or stage fails CreateShader.
     std::string_view DxilEntry = "";
+    /// Native Metal ray stages and alpha intersection function, linked through immutable function tables.
+    /// Compute stage only; unsupported APIs reject creation without substituting inline queries.
+    bool HasNativeRayStages = false;
 };
 /// One binding: set/group 0, binding 0, visible to vertex and fragment.
 struct PipelineDescription final

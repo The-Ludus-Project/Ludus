@@ -1240,8 +1240,11 @@ Vulkan negotiates API 1.2, buffer device address, acceleration structures, ray
 queries and deferred host operations independently of ordinary Vulkan 1.1 raster
 startup. Metal checks `supportsRaytracing` and compiles MSL 2.4. Browser/native
 adapters without the optional profile reject native queries; preferred requests
-preserve raster, required requests fail startup explicitly. Neither ray pipelines,
-updates/refits, procedural primitives, motion nor asynchronous compute are exposed.
+preserve raster, required requests fail startup explicitly. Metal additionally exposes
+native ray stage/function-table execution on hardware-ray devices supporting function
+pointers. The logical RT node selects this separately from inline-query compute or
+custom/software compute traversal; see [ray invocation authoring](../development/render-graph-authoring.md).
+Updates/refits, procedural primitives, motion and asynchronous compute remain unavailable.
 
 The installed `ludus_compile_ray_queries(TARGET ... NAME ...)` helper cooks the
 fixed query kernel with verified Slang/SPIRV-Cross source and binary provenance.
@@ -1523,9 +1526,11 @@ distinguishes shared acceleration structures from query and pipeline execution.
 Queries fit ordinary shader passes; dedicated stages offer different scheduling
 choices. Begin with query-based compute effects and a loop-based path integrator.
 Keep nearest accepted hit and early-exit visibility as separate shader operations.
-Add native ray pipelines only when measured traversal/shading divergence or a
-required intersection program warrants them. Shader binding tables, native
-addresses, hit-group indexing and recursion limits then remain backend details;
+Native Metal stage execution uses visible function tables for ray-generation,
+closest-hit and miss callbacks, plus intersection function tables for alpha acceptance.
+Vulkan native stage pipelines remain unavailable. Backend stage support does not
+promise a speedup over inline queries. Shader binding tables, native
+addresses, hit-group indexing and recursion limits remain backend details;
 do not force Metal's model into a Vulkan-shaped public table abstraction.
 
 The existing Vulkan subset does not establish support: negotiate the necessary
@@ -2310,8 +2315,8 @@ The standalone native-preview transport uses an 8×8 workgroup. Dispatch and ima
 admission use the supplied compute artifact's reflected X/Y dimensions, including
 partial edge groups; Z must be one. Zero dimensions reject as `InvalidDescription`,
 and workgroup volume/dimensions or dispatch counts exceeding device limits reject
-as `Unsupported`. Authored render-graph callback entry points retain their existing
-64×1 grouping. This experiment qualifies the standalone preview workload, with
+as `Unsupported`. Authored render-graph callback entry points default to 64×1 and can opt into
+8×8 through the scene compute state; see the authored-graph experiment below. This experiment qualifies the standalone preview workload, with
 performance evidence from the M5 backend below.
 
 Reproduce workgroup comparisons against the former 64×1 shape with:
@@ -2896,3 +2901,134 @@ clips inverted values above about 0.73. Overdraw is not a debug view.
 Translucent painter layers draw in a separate overlay pass with their own
 transform, and the world pass has no additive, depth-off state to accumulate
 fragment counts.
+
+### Authored graph workgroup experiment
+
+The measurements below were collected before native ray-stage invocation was added,
+using commit `44ade68e` and the generated-code hashes recorded below. They describe
+the compute invocation on that revision; native ray-stage dispatch does not use the
+scene-compute workgroup override. Runtime packages now use version 21 so versions
+19 (custom traversal) and 20 (native ray stages) retain their existing layouts.
+
+Scene-compute bundles can opt into 8×8 groups using
+`"state": {"group_size": [8, 8, 1]}` on a scene compute node. All explicit
+sizes across the bundle's configurations must agree; automatic members inherit
+that choice. No override means 64×1. The editor exposes the same shapes through
+**Pipeline State → Advanced overrides → Group size**, including the canvas form.
+Runtime package version 21 carries reflected dimensions for every ray compute
+stage; older packages retain 64×1. Device limits and edge bounds checks apply.
+
+The `ludus_graph_workgroup_tests` target cooks the actual ComputeRayTracing and
+VeachGuibasMis templates twice, using 64×1 and 8×8, without editing the source
+templates. It compares generated-header/runtime dimensions and shader text,
+then executes the runtime packages. The two-pass compute graph has three physical
+operations: primary compute, shade compute and output raster. The four-pass MIS
+graph has seven: primary compute, then MIS, light-only and BSDF-only compute/raster
+pairs. The unused primary color is not rasterized. Physical operation position
+identifies these intervals; the backend's retained scope name/index is also saved.
+Scope names may cover the shared ordered sequence rather than identify each callback.
+
+Reproduce with a native ray-query/timestamp-capable build and an idle viewport:
+
+```sh
+cmake --build out/build/<preset> --target ludus_graph_workgroup_tests
+out/build/<preset>/modules/graphics/renderer/ludus_graph_workgroup_tests '[graph-workgroups]'
+LUDUS_GRAPH_WORKGROUP_ODD_EXTENT=1 \
+  out/build/<preset>/modules/graphics/renderer/ludus_graph_workgroup_tests '[graph-workgroups]'
+python3 scripts/python/benchmark_graph_workgroups.py \
+  --executable out/build/<preset>/modules/graphics/renderer/ludus_graph_workgroup_tests \
+  --output out/graph-workgroups/confirmation --runs 5
+```
+
+Each independent process runs both graphs over opaque, geometric-cutout and
+bilinearly textured planar fixtures under a constant environment. Cutouts omit
+alternating geometry columns; these are **not alpha-masked materials**. The graph
+material interface does not expose alpha coverage. The CPU oracle and all shaded
+GPU outputs estimate the same first-hit direct-lighting integral, with no
+indirect bounce, temporal reuse or denoising. Normal regressions compare 64×64
+raw linear means within `0.002 + 0.02 * CPU mean` per channel and normalized RGB
+RMSE ≤0.12, using 128 samples and matched camera/seed. Every pixel/pass must record
+exactly 128 samples. Variant RGB differences must be ≤1e-5 after dividing by the
+sample count, and every exported RGBA8 image must match exactly. The odd-extent
+mode repeats those checks at 67×67, including partial groups.
+
+Timing uses 512×512, 128 total samples, 16 warmups and 112 measured AB/BA frame
+pairs, with both frame and pass probes armed on both variants. Readback and image
+comparison happen after the paired sequence. Each block also runs a 64×1/64×1
+A/A process. Blocks alternate experimental/control process order and reverse the
+first frame pair. Confidence intervals bootstrap independent process medians;
+AB/BA splits, all physical pass durations, timestamp precision and scope metadata
+remain in the JSON/raw output. The tool rejects unavailable timings, incomplete
+sample coverage, nonfinite RGB, missing exports and variant changes.
+
+Generated code was checked before timing on Apple M5 / Metal, macOS 26.6,
+Clang 23.1.3 `RelWithDebInfo` (`-O2`). ComputeRayTracing emitted identical
+209,456-byte MSL for both shapes (SHA-256
+`0905586217d0b369125770e0b2324c4def5c01b00d1c866055dcb40ffa3c7bb8`);
+MIS emitted identical 510,545-byte MSL (SHA-256
+`fdf3f5fda75e93d539df7692f4542ab37f3babd8da132664c9051bad876e12a1`).
+Reflection changed only the dispatch shape. Offline Metal register/spill reports
+were unavailable, so the evidence does not establish an occupancy explanation.
+The three-block screen found a large benefit for geometric cutouts and little
+change for opaque/textured fixtures; this supports an opt-in, not a new general
+default. Performance qualification is specific to this adapter and these fixtures.
+
+Five fresh confirmation blocks used executable SHA-256
+`b51f3f555fa3ffe470250b7e551c3c21718deddec1a1fe01056a7f024a9c5c1a`,
+from base `5d718cf6` plus this change (the base includes the merged editor test-link
+fix and preserves the screened ray kernels). The paired full-frame results were:
+
+| Graph / fixture | GPU time reduction [95% process interval] | A/A reduction |
+| --- | ---: | ---: |
+| compute-opaque | 0.68% [-0.19, 0.87] | 0.09% |
+| compute-cutout | 27.98% [27.43, 28.35] | -0.17% |
+| compute-textured | 0.73% [-0.69, 0.77] | 0.40% |
+| mis-opaque | 0.24% [-0.85, 0.43] | 0.09% |
+| mis-cutout | 31.18% [31.10, 31.48] | -0.05% |
+| mis-textured | 0.23% [0.12, 0.28] | 0.02% |
+
+Every confirmation raw buffer was bit-identical between variants, and all
+exported RGBA8 images matched exactly, in both A/B and A/A. Only the cutout
+workload establishes a material improvement. The opaque/textured changes are
+small relative to controls/order effects; no general default changes.
+
+For cutout geometry, the separately recorded physical GPU intervals were:
+
+| Graph / physical operation | 64×1 (ms) | 8×8 (ms) | Paired reduction |
+| --- | ---: | ---: | ---: |
+| compute / frame | 1.4541 | 1.0494 | 27.98% |
+| compute / primary | 0.4558 | 0.4100 | 10.49% |
+| compute / shade | 0.9379 | 0.5777 | 37.76% |
+| compute / shade_raster | 1.4350 | 1.0311 | 28.22% |
+| mis / frame | 3.6816 | 2.5358 | 31.18% |
+| mis / primary | 0.4549 | 0.4089 | 10.16% |
+| mis / mis | 1.3609 | 0.8779 | 35.58% |
+| mis / mis_raster | 2.0125 | 1.4676 | 27.08% |
+| mis / light | 0.9430 | 0.6106 | 35.33% |
+| mis / light_raster | 2.7861 | 1.9829 | 30.41% |
+| mis / bsdf | 0.8780 | 0.5905 | 32.77% |
+| mis / bsdf_raster | 3.6063 | 2.4598 | 31.89% |
+
+Time columns are medians of independent process medians; percentage reductions
+use matched per-frame ratios before taking process medians. They need not equal
+the ratio of the displayed marginal medians. Metal raster probes span the earliest
+vertex/fragment start through the latest end. They can overlap compute and include
+dependency waits: the raster envelopes above are not isolated fragment costs,
+and neither their durations nor their reductions are additive. Full-frame timing
+independently establishes the improvement.
+
+Native viewport acceptance uses the selected temporary starter World, an explicitly
+authored point light, the cooked runtime and the free editor camera. Run the
+`[viewport-native-input]` case in `ludus_editor_tests` on an awake, exposed Cocoa
+desktop with `LUDUS_NATIVE_GRAPH_RUNTIME` set to the absolute cooked variant path;
+`LUDUS_NATIVE_GRAPH_CAPTURE` optionally saves its final framebuffer. The fixture
+checks native orbit/pan/fly/frame gestures, resize, a reloaded World transform edit,
+GPU-frame retention and publication revision. Framebuffer capture follows interaction
+so it does not perturb the graph texture leases during navigation.
+
+The 8×8 compute graph passed that native check on this host. MIS native presentation
+remains an acceptance gap: both 64×1 and 8×8 publish the GPU generation, but the Qt
+paint counter does not advance reliably. Equal offscreen outputs and ready GPU
+resources do not establish native MIS viewport acceptance. This experiment therefore
+qualifies the measured transport and output equality, with MIS viewport qualification
+still open.

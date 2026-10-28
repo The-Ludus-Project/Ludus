@@ -7,6 +7,11 @@
 #include <ludus/graphics/renderer/reference.hpp>
 #include <ludus/graphics/rhi/lifetime.h>
 
+namespace ludus::graphics::rhi
+{
+struct RasterShaderDescription;
+}
+
 namespace ludus::graphics::renderer
 {
 /// Optional progressive GPU path-tracing settings. No CPU transport or readback fallback.
@@ -36,6 +41,9 @@ struct GpuPreviewOptions final
     // Keep partial aggregate callers warning-clean when this optional field is omitted.
     // NOLINTNEXTLINE(readability-redundant-member-init)
     foundation::BorrowedView<const content::render_graph_format::StorageBuffer> StorageBuffers{};
+    /// Optional native Metal stage artifact, borrowed only during Enable. Requires the same public
+    /// binding/workgroup ABI as the compute artifact. Unsupported devices reject explicitly.
+    const rhi::RasterShaderDescription* NativeRayStagesOrNull = nullptr;
 };
 /// Renderer-owned immutable GPU scene and progressive accumulation. Copies borrow;
 /// Release cancels future dispatches, while acquired output frames retain the job.

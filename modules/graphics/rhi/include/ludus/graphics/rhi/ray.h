@@ -45,7 +45,7 @@ struct RayCapabilities final
     bool StaticTriangles = false;
     /// Nearest accepted hit and early-exit accepted visibility with opacity filtering.
     bool InlineQueries = false;
-    /// Dedicated ray shader stages; false for RT0.
+    /// Native ray stage/function-table execution. Metal requires hardware traversal and function pointers.
     bool RayPipelines = false;
     /// Procedural intersections; false for RT0.
     bool ProceduralIntersections = false;
