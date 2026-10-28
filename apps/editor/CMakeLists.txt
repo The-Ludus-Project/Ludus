@@ -134,6 +134,9 @@ configure_file(src/internal/render_graph_layout_policy.h.in
     "${graph_layout_directory}/render_graph_layout_policy.h" @ONLY)
 include_directories("${graph_layout_directory}")
 
+# One colour and spacing token file shared with the init window and the browser editor.
+include(DesignTokens.cmake)
+
 set(editor_viewport_sources
     src/internal/viewport_frame_pump.h
     src/viewport_frame_pump.cpp
@@ -743,6 +746,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/viewport_debug_tests.cpp
         tests/preview_generation_tests.cpp
         tests/viewport_navigation_tests.cpp
+        tests/design_token_tests.cpp
         tests/viewport_frame_pump_tests.cpp
         tests/viewport_frame_source_tests.cpp
         tests/world_demo_workspace_tests.cpp
