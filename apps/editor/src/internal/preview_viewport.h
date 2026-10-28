@@ -145,6 +145,7 @@ private:
     struct State;
     foundation::UniquePtr<State> mState;
     ViewportObjectInteraction* mObjectInteraction;
+    void updateObjectInteractionAvailability();
     [[nodiscard]] QRectF getInteractionFrame() const;
     [[nodiscard]] QPointF getInteractionPosition(QPointF globalPosition) const;
     void resizeSurface();

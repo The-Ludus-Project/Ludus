@@ -13,7 +13,7 @@
 #include <QJsonArray>
 #include <QPainter>
 #include <QPen>
-#include <QStringList>
+#include <QString>
 
 namespace ludus::editor
 {
@@ -21,9 +21,8 @@ using namespace foundation;
 namespace math = foundation::math;
 namespace
 {
-constexpr int32 AXIS_COUNT = 3;
+constexpr int32 AXIS_COUNT = ViewportObjectInteraction::AXIS_COUNT;
 constexpr int32 TRIANGLE_VERTICES = 3;
-constexpr int32 RING_SEGMENTS = 64;
 constexpr int32 MAX_WIRE_TRIANGLES = 12000;
 constexpr float32 PROJECTION_EPSILON = 0.000001F;
 constexpr float64 HANDLE_PIXELS = 80;
@@ -124,9 +123,8 @@ ViewportObjectInteraction::ViewportObjectInteraction(RenderPreview& inoutPreview
     connect(&inoutPreview, &RenderPreview::NavigationChanged, this, &ViewportObjectInteraction::Changed);
     connect(&inoutPreview, &RenderPreview::Changed, this, &ViewportObjectInteraction::Changed);
     connect(&inoutPreview, &QObject::destroyed, this, [this]() {
-        Cancel();
         mCanEdit = false;
-        Q_EMIT Changed();
+        SetActive(false);
     });
 }
 void ViewportObjectInteraction::SetWorld(const WorldDocument& world, const QString& selected, bool canEdit)
@@ -151,9 +149,11 @@ void ViewportObjectInteraction::SetWorld(const WorldDocument& world, const QStri
         {
             mPlacement.insert(QStringLiteral("basis"), QJsonArray{1, 0, 0, 0, 1, 0, 0, 0, 1});
             mPlacement.insert(QStringLiteral("parent"), QString());
-            const QStringList keys{QStringLiteral("position"), QStringLiteral("rotation"), QStringLiteral("scale")};
-            const QStringList prefixes{QString(), QStringLiteral("r"), QStringLiteral("s")};
-            for (int32 kind = 0; kind < AXIS_COUNT; ++kind)
+            const TransformPropertyNames keys{QStringLiteral("position"),
+                                              QStringLiteral("rotation"),
+                                              QStringLiteral("scale")};
+            const TransformPropertyNames prefixes{QString(), QStringLiteral("r"), QStringLiteral("s")};
+            for (usize kind = 0; kind < keys.GetSize(); ++kind)
             {
                 QJsonArray axes;
                 for (int32 axis = 0; axis < AXIS_COUNT; ++axis)
@@ -336,7 +336,7 @@ math::Affine3 ViewportObjectInteraction::makeTransform(const QJsonObject& placem
 }
 void ViewportObjectInteraction::buildHandles()
 {
-    mHandles.clear();
+    mHandles.Clear();
     if (mCanEdit == false || mTool == Tool::Select)
     {
         return;
@@ -393,7 +393,12 @@ void ViewportObjectInteraction::buildHandles()
         {
             if (length >= MINIMUM_AXIS_PIXELS)
             {
-                mHandles.append({QLineF(mPivotPixel, mPivotPixel + directionPixel * (HANDLE_PIXELS / length)), axis});
+                if (mHandles.TryAdd(
+                        {QLineF(mPivotPixel, mPivotPixel + directionPixel * (HANDLE_PIXELS / length)), axis}) == false)
+                {
+                    mHandles.Clear();
+                    return;
+                }
             }
         }
         else
@@ -419,7 +424,11 @@ void ViewportObjectInteraction::buildHandles()
                                 (ringXWorld * math::Cos(angle2) + ringYWorld * math::Sin(angle2)) * radiusWorld,
                             secondPixel) == true)
                 {
-                    mHandles.append({QLineF(firstPixel, secondPixel), axis});
+                    if (mHandles.TryAdd({QLineF(firstPixel, secondPixel), axis}) == false)
+                    {
+                        mHandles.Clear();
+                        return;
+                    }
                 }
             }
         }

@@ -1695,6 +1695,16 @@ TEST_CASE("World viewport mouse events select objects while Alt keeps camera nav
     REQUIRE(viewport.layout() != nullptr);
     REQUIRE(viewport.layout()->count() >= 2);
     const QPoint centerPixel = viewport.layout()->itemAt(1)->geometry().center();
+    if (interaction.IsActive() == false)
+    {
+        QTest::mouseClick(&viewport, Qt::LeftButton, Qt::NoModifier, centerPixel);
+        CHECK(selection.count() == 0);
+        QComboBox* toolOrNull = viewport.findChild<QComboBox*>(QStringLiteral("viewportObjectTool"));
+        REQUIRE(toolOrNull != nullptr);
+        CHECK(toolOrNull->isEnabled() == false);
+    }
+    // Inject admission for this input-proxy test; no GPU image is needed to test event coordinates.
+    interaction.SetActive(true);
     QTest::mouseClick(&viewport, Qt::LeftButton, Qt::NoModifier, centerPixel);
     REQUIRE(selection.count() == 1);
     CHECK(selection[0][0].toString() == scene.Objects[0].Id);
@@ -1723,6 +1733,7 @@ TEST_CASE("Destroying a viewport renderer cancels its outstanding object gesture
     REQUIRE(interaction.Press(frame.center() + QPointF(70, 0), frame) == true);
     REQUIRE(interaction.Move(frame.center() + QPointF(110, 0), false) == true);
     delete preview;
+    CHECK(interaction.IsActive() == false);
     CHECK(interaction.Release() == false);
     CHECK(interaction.Pick(frame.center(), frame).isEmpty() == true);
     CHECK(committed.count() == 0);

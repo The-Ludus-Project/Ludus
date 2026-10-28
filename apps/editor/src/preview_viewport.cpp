@@ -1304,6 +1304,7 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     LUDUS_REQUIRE(frameSource != nullptr);
     mObjectInteraction = new ViewportObjectInteraction(*preview, this);
     mState.Reset(new State);
+    updateObjectInteractionAvailability();
     setMinimumSize(160, 160);
     setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     setFocusPolicy(Qt::StrongFocus);
@@ -1497,6 +1498,13 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
                                           "Shift snaps; Escape cancels. Alt-drag or right-drag navigates."));
     objectTool->hide();
     controls->addWidget(objectTool);
+    updateObjectInteractionAvailability();
+    if (mObjectInteraction->IsActive() == false)
+    {
+        objectTool->setToolTip(
+            QStringLiteral("Object interaction is unavailable in this viewport. "
+                           "Select objects in the hierarchy and edit their transforms in Properties."));
+    }
     connect(objectTool, &QComboBox::currentIndexChanged, this, [this](int32 index) {
         mObjectInteraction->SetTool(static_cast<ViewportObjectInteraction::Tool>(index));
     });
@@ -1876,7 +1884,7 @@ void PreviewViewport::updateRayPathInspection()
     }
     mObjectInteraction->SetImageSize(shouldInspect == true ? QSize{} : mState->ProjectGraph->GetTargetSize());
     mIsInspectingRayPaths = shouldInspect;
-    mObjectInteraction->SetActive(shouldInspect == false);
+    updateObjectInteractionAvailability();
     // The inspection view is the built-in raster preview from the free camera; never the frozen graph image.
     Preview_->SetRayPathInspection(shouldInspect);
     if (mState->Window != nullptr)
@@ -1901,6 +1909,19 @@ void PreviewViewport::updateRayPathOverlay()
     const bool hasBounds = Preview_->Scene().TryGetBounds({}, boundsWorld);
     Preview_->SetRayPathOverlay(mRayPaths->BuildOverlay(hasBounds == true ? &boundsWorld : nullptr));
 #endif
+}
+void PreviewViewport::updateObjectInteractionAvailability()
+{
+    const ViewportPresentation presentation = GetPresentation();
+    const bool canShowOverlay =
+        presentation == ViewportPresentation::SharedDevice || presentation == ViewportPresentation::OffscreenReadback;
+    const bool canInteract = canShowOverlay == true && mPlayEndpointOrNull == nullptr && mIsInspectingRayPaths == false;
+    mObjectInteraction->SetActive(canInteract);
+    QComboBox* toolOrNull = findChild<QComboBox*>(QStringLiteral("viewportObjectTool"));
+    if (toolOrNull != nullptr)
+    {
+        toolOrNull->setEnabled(canInteract);
+    }
 }
 QRectF PreviewViewport::getInteractionFrame() const
 {

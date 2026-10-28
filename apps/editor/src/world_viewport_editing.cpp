@@ -9,14 +9,14 @@
 #include <QKeySequence>
 #include <QPushButton>
 #include <QShortcut>
-#include <QStringList>
+#include <QString>
 
 namespace ludus::editor
 {
 using namespace foundation;
 namespace
 {
-constexpr int32 AXIS_COUNT = 3;
+constexpr int32 AXIS_COUNT = ViewportObjectInteraction::AXIS_COUNT;
 }
 void WorldWorkspace::bindViewportInteraction()
 {
@@ -74,7 +74,9 @@ void WorldWorkspace::commitViewportPlacement(const QString& id, const QJsonObjec
     QJsonObject components = entity.value(QStringLiteral("components")).toObject();
     QJsonObject scene = entity.value(QStringLiteral("scene")).toObject();
     const QJsonObject sceneBinding = Document_.Schema().value(QStringLiteral("scene_transform")).toObject();
-    const QStringList keys{QStringLiteral("position"), QStringLiteral("rotation"), QStringLiteral("scale")};
+    const ViewportObjectInteraction::TransformPropertyNames keys{QStringLiteral("position"),
+                                                                 QStringLiteral("rotation"),
+                                                                 QStringLiteral("scale")};
     if (scene.isEmpty() == false && sceneBinding.isEmpty() == true)
     {
         for (const QString& key : keys)
@@ -92,8 +94,10 @@ void WorldWorkspace::commitViewportPlacement(const QString& id, const QJsonObjec
             return;
         }
         QJsonObject values = components.value(component).toObject();
-        const QStringList prefixes{QString(), QStringLiteral("r"), QStringLiteral("s")};
-        for (int32 kind = 0; kind < AXIS_COUNT; ++kind)
+        const ViewportObjectInteraction::TransformPropertyNames prefixes{QString(),
+                                                                         QStringLiteral("r"),
+                                                                         QStringLiteral("s")};
+        for (usize kind = 0; kind < keys.GetSize(); ++kind)
         {
             const QJsonArray axes = placement.value(keys[kind]).toArray();
             const QJsonArray properties = binding.value(keys[kind]).toArray();

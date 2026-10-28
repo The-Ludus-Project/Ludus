@@ -234,26 +234,29 @@ void PreviewViewport::keyPressEvent(QKeyEvent* event)
     }
     if (mIsFlying == false && event->modifiers() == Qt::NoModifier)
     {
-        switch (event->key())
+        if (mObjectInteraction->IsActive() == true)
         {
-            case Qt::Key_Q:
-                mObjectInteraction->SetTool(ViewportObjectInteraction::Tool::Select);
-                event->accept();
-                return;
-            case Qt::Key_W:
-                mObjectInteraction->SetTool(ViewportObjectInteraction::Tool::Move);
-                event->accept();
-                return;
-            case Qt::Key_E:
-                mObjectInteraction->SetTool(ViewportObjectInteraction::Tool::Rotate);
-                event->accept();
-                return;
-            case Qt::Key_R:
-                mObjectInteraction->SetTool(ViewportObjectInteraction::Tool::Scale);
-                event->accept();
-                return;
-            default:
-                break;
+            switch (event->key())
+            {
+                case Qt::Key_Q:
+                    mObjectInteraction->SetTool(ViewportObjectInteraction::Tool::Select);
+                    event->accept();
+                    return;
+                case Qt::Key_W:
+                    mObjectInteraction->SetTool(ViewportObjectInteraction::Tool::Move);
+                    event->accept();
+                    return;
+                case Qt::Key_E:
+                    mObjectInteraction->SetTool(ViewportObjectInteraction::Tool::Rotate);
+                    event->accept();
+                    return;
+                case Qt::Key_R:
+                    mObjectInteraction->SetTool(ViewportObjectInteraction::Tool::Scale);
+                    event->accept();
+                    return;
+                default:
+                    break;
+            }
         }
         if (event->key() == Qt::Key_F)
         {
