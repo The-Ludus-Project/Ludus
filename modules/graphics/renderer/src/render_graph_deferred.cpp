@@ -74,33 +74,47 @@ Status RenderGraphDeferredProgram::Initialize(rhi::DeviceHandle device,
     mDevice = device;
     Status status = rhi::CreateRasterShader(device, vertex, mVertex);
     if (IsAccepted(status) == true)
+    {
         status = rhi::CreateRasterShader(device, lighting, mLighting);
+    }
     if (IsAccepted(status) == true)
+    {
         status = rhi::CreateRasterShader(device, depth, mDepth);
+    }
     if (IsAccepted(status) == true)
+    {
         status = rhi::CreateBindingLayout(device, lighting.Bindings, mLayout);
+    }
     if (IsAccepted(status) == true)
+    {
         status = rhi::CreateBindingLayout(device, depth.Bindings, mDepthLayout);
+    }
     const StaticArray<math::Vector4, QUAD_VERTEX_COUNT> vertices{
         {{-1, 1, 0, 0}, {1, 1, 1, 0}, {1, -1, 1, 1}, {-1, -1, 0, 1}}};
     const StaticArray<uint32, QUAD_INDEX_COUNT> indices{{0, 1, 2, 2, 3, 0}};
     if (IsAccepted(status) == true)
+    {
         status = rhi::CreateBuffer(device,
                                    {rhi::BufferRole::Vertex, QUAD_VERTEX_BYTES},
                                    {reinterpret_cast<const uint8*>(vertices.GetData()), QUAD_VERTEX_BYTES},
                                    mVertices);
+    }
     if (IsAccepted(status) == true)
+    {
         status = rhi::CreateBuffer(device,
                                    {rhi::BufferRole::Index32, QUAD_INDEX_BYTES},
                                    {reinterpret_cast<const uint8*>(indices.GetData()), QUAD_INDEX_BYTES},
                                    mIndices);
+    }
     mStatus = status;
     return IsAccepted(status) == true ? Poll() : status;
 }
 Status RenderGraphDeferredProgram::Poll() noexcept
 {
     if (mIsInitialized == false || IsAccepted(mStatus) == false)
+    {
         return mStatus;
+    }
     constexpr usize DEPENDENCY_COUNT = 7;
     const StaticArray<Status, DEPENDENCY_COUNT> dependencies{{rhi::GetStatus(mDevice, mVertex),
                                                               rhi::GetStatus(mDevice, mLighting),
@@ -110,8 +124,12 @@ Status RenderGraphDeferredProgram::Poll() noexcept
                                                               rhi::GetStatus(mDevice, mVertices),
                                                               rhi::GetStatus(mDevice, mIndices)}};
     for (const Status status : dependencies)
+    {
         if (status != Status::Ready)
+        {
             return mStatus = status;
+        }
+    }
     if (mHasPipelines == false)
     {
         const StaticArray<rhi::RasterVertexStream, QUAD_STREAM_COUNT> streams{{{sizeof(math::Vector4), false}}};
@@ -131,7 +149,9 @@ Status RenderGraphDeferredProgram::Poll() noexcept
             status = rhi::CreateRasterPipeline(mDevice, description, mDepthPipeline);
         }
         if (IsAccepted(status) == false)
+        {
             return mStatus = status;
+        }
         mHasPipelines = true;
     }
     const Status status = rhi::GetStatus(mDevice, mPipeline);
@@ -148,7 +168,9 @@ Status RenderGraphDeferredProgram::draw(rhi::RasterPipelineHandle pipeline, rhi:
 RenderGraphDeferredTargets::~RenderGraphDeferredTargets() noexcept
 {
     if (mProgramOrNull == nullptr)
+    {
         return;
+    }
     const rhi::DeviceHandle device = mProgramOrNull->mDevice;
     static_cast<void>(rhi::Destroy(device, mDepthBindings));
     static_cast<void>(rhi::Destroy(device, mDepth));
@@ -166,7 +188,9 @@ Status RenderGraphDeferredTargets::Initialize(RenderGraphDeferredProgram& inoutP
                                               uint32 height) noexcept
 {
     if (mProgramOrNull != nullptr || inoutProgram.mStatus != Status::Ready)
+    {
         return Status::InvalidState;
+    }
     mProgramOrNull = &inoutProgram;
     mOutput = output;
     mWidth = width;
@@ -174,20 +198,26 @@ Status RenderGraphDeferredTargets::Initialize(RenderGraphDeferredProgram& inoutP
     const rhi::TextureDescription description{width, height, rhi::RasterFormat::Rgba16Float, true};
     Status status = Status::Ready;
     for (usize index = 0; index < DEFERRED_TARGET_COUNT && IsAccepted(status) == true; ++index)
+    {
         status = rhi::CreateTexture(inoutProgram.mDevice, description, {}, mTextures[index]);
+    }
     mStatus = status;
     return IsAccepted(status) == true ? Poll() : status;
 }
 Status RenderGraphDeferredTargets::Poll() noexcept
 {
     if (mProgramOrNull == nullptr || IsAccepted(mStatus) == false)
+    {
         return mStatus;
+    }
     const rhi::DeviceHandle device = mProgramOrNull->mDevice;
     for (const rhi::TextureHandle texture : mTextures)
     {
         const Status status = rhi::GetStatus(device, texture);
         if (status != Status::Ready)
+        {
             return mStatus = status;
+        }
     }
     if (mHasViews == false)
     {
@@ -205,11 +235,17 @@ Status RenderGraphDeferredTargets::Poll() noexcept
         rhi::TextureViewDescription depth;
         depth.Aspect = rhi::TextureAspect::Depth;
         if (IsAccepted(status) == true)
+        {
             status = rhi::CreateTextureView(device, mTextures[0], depth, mDepth);
+        }
         if (IsAccepted(status) == true)
+        {
             status = rhi::CreateTextureView(device, mOutput, depth, mOutputDepth);
+        }
         if (IsAccepted(status) == false)
+        {
             return mStatus = status;
+        }
         mHasViews = true;
     }
     for (usize index = 0; index < DEFERRED_TARGET_COUNT; ++index)
@@ -217,19 +253,25 @@ Status RenderGraphDeferredTargets::Poll() noexcept
         const Status sampled = rhi::GetStatus(device, mSampled[index]);
         const Status attachment = rhi::GetStatus(device, mAttachments[index]);
         if (sampled != Status::Ready || attachment != Status::Ready)
+        {
             return mStatus = sampled != Status::Ready ? sampled : attachment;
+        }
     }
     const Status depth = rhi::GetStatus(device, mDepth);
     const Status outputDepth = rhi::GetStatus(device, mOutputDepth);
     if (depth != Status::Ready || outputDepth != Status::Ready)
+    {
         return mStatus = depth != Status::Ready ? depth : outputDepth;
+    }
     if (mHasBindings == false)
     {
         const rhi::RasterBindingResource resource{ .Binding = 0, .Texture = mOutputDepth };
         const Status status =
             rhi::CreateBindingSet(device, mProgramOrNull->mDepthLayout, {&resource, 1}, mDepthBindings);
         if (IsAccepted(status) == false)
+        {
             return mStatus = status;
+        }
         mHasBindings = true;
     }
     return mStatus = rhi::GetStatus(device, mDepthBindings);
@@ -250,25 +292,35 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
                                            const ViewDescription& camera) noexcept
 {
     if (mTargetsOrNull != nullptr || inoutTargets.mStatus != Status::Ready)
+    {
         return Status::InvalidState;
+    }
     math::Matrix4 clipToWorld;
     if (math::TryInverse(camera.WorldToClip, clipToWorld) != math::MathStatus::Success)
+    {
         return Status::InvalidDescription;
+    }
     Status status = inoutRenderer.getDeferredMaterial(view, mMaterial);
     if (status != Status::Ready)
+    {
         return status;
+    }
     mTargetsOrNull = &inoutTargets;
     mClearDepth = camera.Depth == DepthConvention::ReverseZ ? 0.0F : 1.0F;
     ViewParameters parameters;
     const math::Matrix4 rows = math::Transpose(clipToWorld);
     for (usize row = 0; row < DEFERRED_VIEW_ROWS; ++row)
+    {
         parameters.ClipToWorldRows[row] = rows.Columns[row];
+    }
     parameters.EyeWorld = {camera.CameraPosition.X, camera.CameraPosition.Y, camera.CameraPosition.Z, 1};
     if (camera.OrthographicCamera == true)
     {
         math::Vector3 forwardWorld;
         if (math::TryNormalize(camera.CameraForward, forwardWorld) != math::MathStatus::Success)
+        {
             return Status::InvalidDescription;
+        }
         parameters.EyeWorld = {-forwardWorld.X, -forwardWorld.Y, -forwardWorld.Z, ORTHOGRAPHIC_EYE_FLAGS};
     }
     parameters.TargetSizePixel = {static_cast<float32>(inoutTargets.mWidth),
@@ -286,18 +338,26 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
 Status RenderGraphDeferredPass::Poll() noexcept
 {
     if (mTargetsOrNull == nullptr || IsAccepted(mStatus) == false)
+    {
         return mStatus;
+    }
     RenderGraphDeferredProgram& program = *mTargetsOrNull->mProgramOrNull;
     const Status ready = rhi::GetStatus(program.mDevice, mParameters);
     if (ready != Status::Ready)
+    {
         return mStatus = ready;
+    }
     if (mMaterial.HasMaterial == false)
+    {
         return mStatus = Status::Ready;
+    }
     if (mHasBindings == false)
     {
         StaticArray<rhi::RasterBindingResource, DEFERRED_BINDING_COUNT> bindings{};
         for (usize slot = 0; slot < CLUSTERED_AUTHORED_BINDING_COUNT; ++slot)
+        {
             bindings[slot] = mMaterial.Resources[slot];
+        }
         for (usize target = 0; target < DEFERRED_TARGET_COUNT; ++target)
         {
             const uint32 slot = DEFERRED_NORMAL_BINDING + static_cast<uint32>(target);
@@ -313,7 +373,9 @@ Status RenderGraphDeferredPass::Poll() noexcept
         };
         const Status status = rhi::CreateBindingSet(program.mDevice, program.mLayout, bindings.AsSpan(), mBindings);
         if (IsAccepted(status) == false)
+        {
             return mStatus = status;
+        }
         mHasBindings = true;
     }
     return mStatus = rhi::GetStatus(program.mDevice, mBindings);
@@ -323,7 +385,9 @@ Status RenderGraphDeferredPass::Draw(Renderer& inoutRenderer,
                                      const rhi::RasterPassDescription& description) noexcept
 {
     if (mStatus != Status::Ready || mTargetsOrNull == nullptr)
+    {
         return Status::NotReady;
+    }
     RenderGraphDeferredTargets& targets = *mTargetsOrNull;
     RenderGraphDeferredProgram& program = *targets.mProgramOrNull;
     if (description.DepthLoad == rhi::RasterLoad::Load)
@@ -336,9 +400,13 @@ Status RenderGraphDeferredPass::Draw(Renderer& inoutRenderer,
         copy.DepthStore = rhi::RasterStore::Store;
         Status status = rhi::BeginRasterPass(program.mDevice, copy);
         if (status == Status::Ready)
+        {
             status = program.draw(program.mDepthPipeline, targets.mDepthBindings);
+        }
         if (status != Status::Ready)
+        {
             return status;
+        }
     }
     StaticArray<rhi::RasterColorAttachment, DEFERRED_TARGET_COUNT> colors{};
     for (usize target = 0; target < DEFERRED_TARGET_COUNT; ++target)
@@ -361,12 +429,18 @@ Status RenderGraphDeferredPass::Draw(Renderer& inoutRenderer,
     {
         const rhi::GpuScope scope(program.mDevice, program.mLightingScope);
         if (status == Status::Ready)
+        {
             status = rhi::BeginRasterPass(program.mDevice, lighting);
+        }
         if (status == Status::Ready && mMaterial.HasMaterial == true)
+        {
             status = program.draw(program.mPipeline, mBindings);
+        }
     }
     if (status != Status::Ready)
+    {
         return status;
+    }
     lighting.ColorLoad = rhi::RasterLoad::Load;
     lighting.DepthLoad = rhi::RasterLoad::Load;
     const rhi::GpuScope scope(program.mDevice, program.mOverlayScope);
