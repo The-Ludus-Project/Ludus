@@ -462,7 +462,13 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   Game (build, run, debug and Play controls) and Render Graph (Validate, Build
   Graph, Build & Preview, Live Preview, Cancel). Toolbar buttons use short labels
   so a 1280-pixel window shows them all; tooltips give the full name and
-  shortcut. **View → Toolbars** hides or shows each toolbar. Documents have no
+  shortcut. The primary commands (Open, Save, Build, Run, Play, Stop) also show an
+  icon beside the label; every other button stays text only. Project Explorer
+  rows and the Error List severities carry icons too. The icons are Lucide
+  drawings (ISC) in `apps/editor/icons`, parsed once into painter paths and drawn
+  in the palette's button text colour, with one bounded pixmap cache per size,
+  pixel ratio and colour (`apps/editor/icons/README.md` says how to add one).
+  **View → Toolbars** hides or shows each toolbar. Documents have no
   command rows of their own: **File → New Render Graph...** and **Open Render
   Graph...** open graphs, and the **Build** menu holds every render-graph
   command, including Cook Render Graph Runtime and Cancel Render Graph Job.
