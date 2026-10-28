@@ -1105,8 +1105,9 @@ RenderGraphDocumentStatus RenderGraphDocument::ApplyPipeline(const QString& file
 {
     if (outErrorOrNull != nullptr)
     {
-        *outErrorOrNull = QStringLiteral("Cannot create shader sources: check program stages, names, file conflicts "
-                                         "and the manifest program budget. The draft was preserved.");
+        *outErrorOrNull = QStringLiteral(
+            "Cannot create shader sources: check program stages, names, file conflicts "
+            "and the manifest configuration budget or supported package limits. The draft was preserved.");
     }
     if (IsPipelineNode(node.value(QStringLiteral("kind")).toString()) == false)
     {
