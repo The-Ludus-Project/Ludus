@@ -1332,6 +1332,12 @@ CreateRasterShader(DeviceHandle device, const RasterShaderDescription& descripti
     RasterShaderInfo info;
     info.ShouldPrepareAsynchronously = description.ShouldPrepareAsynchronously;
     info.Stage = description.Artifact.Stage;
+    info.HasNativeRayStages = description.Artifact.HasNativeRayStages;
+    if (info.HasNativeRayStages == true && (info.Stage != ShaderStage::Compute || backend::Kind() != Backend::Metal ||
+                                            backend::RayLimits().RayPipelines == false))
+    {
+        return RasterStatus::Unsupported;
+    }
     if ((info.Stage != ShaderStage::Vertex && info.Stage != ShaderStage::Fragment &&
          info.Stage != ShaderStage::Compute) ||
         CopyLayout(description.Bindings, info.Layout) == false)

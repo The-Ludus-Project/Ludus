@@ -20,9 +20,10 @@ namespace ludus::editor
 /// True when the node's invocation is a ray launch: a RayTracingPipeline or a scene compute pass.
 /// Its dimensions are "ColorTarget" or an explicit [width, height, 1].
 [[nodiscard]] bool UsesRayLaunch(const QJsonObject& node);
-/// The scene compute workgroup, fixed by the persistent ray wrapper; the only explicit group size
-/// a scene compute pass accepts.
+/// Default scene compute workgroup used when no pass in the shader bundle overrides it.
 [[nodiscard]] QJsonArray GetSceneComputeGroupSize();
+/// Admitted explicit shapes, imported from the compiler policy; every explicit override in a bundle must agree.
+[[nodiscard]] QJsonArray GetSupportedSceneComputeGroupSizes();
 /// Reconcile state and invocation when an edit adds or removes a ComputePipeline's Scene input.
 /// A new scene compute pass gets automatic state ({}) and Match color target. A pass that loses its
 /// Scene input gets the generic [1, 1, 1] group size and dimensions where they are missing.

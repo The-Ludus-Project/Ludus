@@ -3,14 +3,13 @@
 #include <ludus/foundation/base/types.h>
 
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QStringList>
 
 namespace ludus::editor
 {
 namespace
 {
-// The builder's render_graph_compute.GROUP_SIZE: the persistent ray wrapper's workgroup width.
-constexpr foundation::int32 SCENE_COMPUTE_GROUP_WIDTH = LUDUS_EDITOR_SCENE_COMPUTE_GROUP_WIDTH;
 
 bool HasInputType(const QJsonObject& node, const QString& type)
 {
@@ -124,9 +123,14 @@ bool UsesRayLaunch(const QJsonObject& node)
            IsSceneComputeNode(node) == true;
 }
 
+QJsonArray GetSupportedSceneComputeGroupSizes()
+{
+    return QJsonDocument::fromJson(QByteArrayLiteral(LUDUS_EDITOR_SCENE_COMPUTE_GROUPS)).array();
+}
+
 QJsonArray GetSceneComputeGroupSize()
 {
-    return QJsonArray{SCENE_COMPUTE_GROUP_WIDTH, 1, 1};
+    return GetSupportedSceneComputeGroupSizes().at(0).toArray();
 }
 
 QJsonObject ApplyComputeProfile(const QJsonObject& previousNode, const QJsonObject& node)

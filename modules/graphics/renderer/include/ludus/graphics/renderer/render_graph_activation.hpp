@@ -118,6 +118,9 @@ enum class RenderGraphRenderer : foundation::uint8
 };
 /// Whether a validated plan contains a pass requiring native ray queries. No allocation or GPU work.
 [[nodiscard]] bool RequiresHardwareRayTracing(const RenderGraphPlan& plan) noexcept;
+/// True when any ray pass requests native stage/function-table execution, requiring RayCapabilities::RayPipelines.
+/// Compute invocations with inline queries return false. Performs no allocation or device access.
+[[nodiscard]] bool RequiresNativeRayPipeline(const RenderGraphPlan& plan) noexcept;
 /// Whether a validated plan contains any software or native triangle ray pass. No allocation or GPU work.
 [[nodiscard]] bool UsesRayTracing(const RenderGraphPlan& plan) noexcept;
 /// Whether a validated plan denoises any ray pass (an authored Denoise node). No allocation or GPU work.

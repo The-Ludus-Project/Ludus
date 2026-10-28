@@ -56,6 +56,7 @@ class RenderGraphPreview;
 class RenderGraphWorker;
 class RenderPreview;
 class TextureViewer;
+class RenderGraphResourceInspector;
 // RG3 Renderer workspace: edits one render-graph package through the typed
 // RenderGraphDocument, and runs validation, builds and runtime cooking through
 // the shared `ludus render-graph` backend on explicit immutable draft snapshots.
@@ -439,6 +440,8 @@ private:
     [[nodiscard]] QString buildDirectory() const;
     [[nodiscard]] QString manifestFile() const;
     void renderCanvas();
+    void setupResourceInspection();
+    void updateResourceInspection();
     void renderPreview();
     void openSubgraph(const QString& asset, const QString& configuration, const QString& instance);
 
@@ -513,6 +516,7 @@ private:
     QString mActivationProblem;
     QLabel* mStatus;
     RenderGraphCanvas* mCanvas;
+    RenderGraphResourceInspector* mResourceInspectorOrNull = nullptr;
     RenderGraphQuickAdd* mQuickAdd;
     /// Canvas scene position where Quick Add last opened; chosen nodes are placed there.
     QPointF mQuickAddPosition;

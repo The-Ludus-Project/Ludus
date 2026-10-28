@@ -138,6 +138,26 @@ TEST_CASE("shader cleanup scans every configuration subgraph and technique and p
     CHECK(QFileInfo::exists(QDir(directory.path()).filePath(QStringLiteral("exclusive.slang"))) == true);
 }
 
+TEST_CASE("shader cleanup preserves an authored traversal source after removing its unused program",
+          "[editor][render-graph][shader-cleanup]")
+{
+    QTemporaryDir directory;
+    MakePackage(directory);
+    WriteSource(directory, ROOT_GRAPH, R"json({"version":1,"id":"Main","default":"Default","configurations":[
+      {"id":"Default","nodes":[{"id":"trace","kind":"RayTracingPipeline",
+       "invocation":{"type":"Compute","traversal":"Custom","traversal_source":"exclusive.slang"}}]}
+    ]})json");
+    RenderGraphDocument document;
+    REQUIRE(document.Load(directory.path(), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    QStringList programs;
+    QStringList sources;
+    QString error;
+    REQUIRE(document.RemoveUnusedShaders(programs, sources, error) == RenderGraphDocumentStatus::Ok);
+    CHECK(programs.contains(MANIFEST + QStringLiteral("#ExclusiveUnused")) == true);
+    CHECK(sources.contains(QStringLiteral("exclusive.slang")) == false);
+    CHECK(document.GetDraft(QStringLiteral("exclusive.slang")).isEmpty() == false);
+}
+
 TEST_CASE("shader cleanup rejects incomplete reference data without changing history or outputs",
           "[editor][render-graph][shader-cleanup]")
 {

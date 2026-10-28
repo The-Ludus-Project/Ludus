@@ -89,9 +89,11 @@ struct RenderGraphPrograms final
     rhi::RasterShaderDescription MaskedColorFragment{}; ///< Authored masked color entry with its coverage function.
     rhi::RasterShaderDescription MaskedDepthVertex{};   ///< Authored MaskedDepthOnly geometry entry.
     rhi::RasterShaderDescription MaskedDepthFragment{}; ///< Separately authored void masked coverage entry.
-    rhi::RasterShaderDescription RayCompute{};          ///< Linked authored triangle ray functions and BVH traversal.
-    rhi::RasterShaderDescription RayImageVertex{};      ///< Renderer-owned GPU-produced pixel presentation.
-    rhi::RasterShaderDescription RayImageFragment{};    ///< Renderer-owned color copy; no host pixel transfer.
+    /// Native Metal ray stages; borrowed through graph preparation like RayCompute. Empty when unused.
+    rhi::RasterShaderDescription NativeRayStages{};
+    rhi::RasterShaderDescription RayCompute{};       ///< Linked authored triangle ray functions and BVH traversal.
+    rhi::RasterShaderDescription RayImageVertex{};   ///< Renderer-owned GPU-produced pixel presentation.
+    rhi::RasterShaderDescription RayImageFragment{}; ///< Renderer-owned color copy; no host pixel transfer.
     /// Independent raster stage pairs in numeric technique order after the legacy roles.
     /// Index (Program - LEGACY_TECHNIQUE_COUNT) * TECHNIQUE_STAGE_COUNT selects a
     /// vertex description; the following entry is its fragment description. All
@@ -121,7 +123,8 @@ struct RenderGraphPrograms final
 /// Attach the frozen triangle-ray compute/image interface metadata to a cooked stage.
 /// Does not compile, allocate or change artifact bytes. Used by generated headers and
 /// runtime decoders; the RHI independently checks actual native shader reflection.
-/// @param inoutDescription Receives binding metadata, and workgroup size for Compute.
+/// @param inoutDescription Receives binding metadata and the legacy 64x1x1 Compute default.
+/// Cooked headers and version 19+ packages replace that default with reflected dimensions.
 /// @param stage Compute for the linked ray kernel, Vertex/Fragment for the image recipe.
 /// @param hasVisibilityBuffer Adds paired unfiltered visibility/depth compute texture inputs.
 /// @param hasPersistentBuffers Use the extended two-buffer compute ABI; image stages are unchanged.
@@ -357,6 +360,7 @@ struct RenderGraphReport final
 };
 namespace internal
 {
+class RenderGraphRayPass;
 /// Private access from RenderGraph to its attachment pool.
 struct RenderGraphPoolAccess;
 } // namespace internal
@@ -633,6 +637,8 @@ public:
     void Reset() noexcept;
 
 private:
+    /// Allow the internal parity fixture to borrow completed pass history without a public readback API.
+    friend class internal::RenderGraphRayPass;
     struct State;
     foundation::core::UniquePtr<State> mState;
 };

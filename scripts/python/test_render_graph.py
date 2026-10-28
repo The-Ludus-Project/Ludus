@@ -374,6 +374,12 @@ class RenderGraphTests(unittest.TestCase):
         after = graph.compile_graph(self.path)
         self.assertEqual(before["semantic_digest"], after["semantic_digest"])
         self.assertEqual(before["passes"], after["passes"])
+        frame['collapsed'] = True
+        self.assertEqual(json.loads(graph.canonical_asset(value)), value)
+        self.write(value)
+        collapsed = graph.compile_graph(self.path)
+        self.assertEqual(before["semantic_digest"], collapsed["semantic_digest"])
+        self.assertEqual(before["passes"], collapsed["passes"])
 
     def test_comment_frame_schema_is_bounded_and_rejects_malformed_metadata(self):
         from ludus_tools import render_graph_layout as policy
@@ -384,7 +390,8 @@ class RenderGraphTests(unittest.TestCase):
                    dict(notes="a" * (policy.MAX_COMMENT_NOTES_CODEPOINTS + 1)),
                    dict(colour="red"), dict(colour="#FF000080"), dict(x=0.5), dict(x=True),
                    dict(width=policy.MIN_COMMENT_WIDTH-1), dict(height=policy.MIN_COMMENT_HEIGHT-1),
-                   dict(x=policy.MAX_COORDINATE), dict(id="bad.id"), dict(extra=True)]
+                   dict(x=policy.MAX_COORDINATE), dict(id="bad.id"), dict(extra=True),
+                   dict(collapsed=1), dict(collapsed="true"), dict(collapsed=None)]
         for change in changes:
             with self.subTest(change=change):
                 value = self.read()

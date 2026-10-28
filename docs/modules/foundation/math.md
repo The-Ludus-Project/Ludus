@@ -153,6 +153,53 @@ Game Programming Gems 1 §2.0, 2 §1.16, and 3 §2.1. The
 [chapter review](../../architecture/randomness-gems-review.md) explain
 the selected ideas and limitations. Random123's BSD notice ships in the SDK.
 
+### Weighted reservoir for resampling
+
+`weighted_reservoir.hpp` streams weighted candidates in a fixed order and keeps
+one, with replacement, for resampled importance sampling. Give each candidate
+its own ticket dimension and record the payload of the candidate the update
+selects:
+
+```cpp
+#include <ludus/foundation/math/addressed_random.hpp>
+#include <ludus/foundation/math/weighted_reservoir.hpp>
+
+WeightedReservoir reservoir;
+uint32 selectedLight = 0;
+float32 selectedTarget = 0.0f;
+for (uint32 i = 0; i < candidateCount; ++i)
+{
+    const RandomAddress ticketAddress{ pixelScope, sampleIndex, static_cast<uint16>(13u + 2u * i) };
+    const ReservoirCandidate candidate{ .Weight = targets[i] / sourcePdfs[i],
+                                        .Ticket = SampleFloat01(key, ticketAddress) };
+    bool isSelected = false;
+    if (TryAddReservoirCandidate(candidate, reservoir, isSelected) != MathStatus::Success)
+    {
+        return; // invalid weight: fail the sample explicitly
+    }
+    if (isSelected == true)
+    {
+        selectedLight = lights[i];
+        selectedTarget = targets[i];
+    }
+}
+float32 contributionWeight = 0.0f; // zero for an empty reservoir
+(void)TryComputeReservoirContributionWeight(reservoir, selectedTarget, contributionWeight);
+```
+
+The rule is `w_sum += w`, then select when `ticket * w_sum < w`. Zero weights
+never win, an all-zero stream is a valid empty result, and the contribution
+weight is `w_sum / (M * target(selected))`. NaN, infinite or negative weights,
+tickets outside `[0,1)`, overflow and invalid targets fail with `MathStatus`
+and leave outputs unchanged. Weights below `WeightedReservoirMinimumWeight`
+(`2^-102`) count as zero, so that CPU and GPU selections agree. Kernels use the
+same contract through `weighted_reservoir.slang`, installed beside `math.slang`:
+`MakeWeightedReservoir`, `TryAddReservoirCandidate`, `HasReservoirSelection` and
+`TryComputeReservoirContributionWeight` return `false` on failure. See the
+[sequential weighted reservoir](../../architecture/randomness.md#sequential-weighted-reservoir)
+contract, its exact-frequency and GPU parity evidence, and the credit to Chris
+Wyman's *Ray Tracing Gems II* chapter 22.
+
 ### Repeatable random stream
 
 ```cpp

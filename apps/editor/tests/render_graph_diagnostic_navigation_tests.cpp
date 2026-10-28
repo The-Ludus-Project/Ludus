@@ -116,7 +116,8 @@ RenderGraphViewState SetView(RenderGraphCanvas& inoutCanvas)
     REQUIRE(inoutCanvas.RestoreViewState({{QStringLiteral("first"), QStringLiteral("second")},
                                           QPointF(200, 170),
                                           0.7,
-                                          RenderGraphTraceDirection::Upstream}) == true);
+                                          RenderGraphTraceDirection::Upstream,
+                                          {}}) == true);
     return inoutCanvas.CaptureViewState();
 }
 void CheckView(const RenderGraphCanvas& canvas, const RenderGraphViewState& expected)
@@ -238,7 +239,7 @@ TEST_CASE("nested diagnostic visits preserve same-configuration instance paths a
     const QVector<RenderGraphHistoryLocation> path = canvas.GetHistory().GetPath();
     REQUIRE(path.size() == 2);
     REQUIRE(canvas.RestoreViewState(
-                {{QStringLiteral("tone")}, QPointF(100, 80), 1.2, RenderGraphTraceDirection::Downstream}) == true);
+                {{QStringLiteral("tone")}, QPointF(100, 80), 1.2, RenderGraphTraceDirection::Downstream, {}}) == true);
     const RenderGraphViewState child = canvas.CaptureViewState();
     workspace.AcceptResult(MakeResult(workspace,
                                       {MakeIssue(QStringLiteral("A"), MakeLocation(QStringLiteral("tone"), GetChild())),

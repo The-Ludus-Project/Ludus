@@ -3,6 +3,11 @@
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/graphics/renderer/renderer.hpp>
 
+namespace ludus::graphics::renderer
+{
+class RenderGraph;
+}
+
 namespace ludus::graphics::renderer::internal
 {
 /// Bounded setup ceiling for imported multi-million-triangle scenes, including packing scratch.
@@ -34,6 +39,11 @@ public:
     // through the readback; this never becomes part of the installed renderer API.
     [[nodiscard]] static rhi::RasterStatus
     GetAccumulationForTesting(Renderer& inoutRenderer, GpuPreview preview, rhi::BufferHandle& outBuffer) noexcept;
+    // Borrow a completed graph pass's raw history for parity checks. The graph and
+    // completed frame remain alive; no production readback or installed API is added.
+    [[nodiscard]] static rhi::RasterStatus GetGraphAccumulationForTesting(RenderGraph& inoutGraph,
+                                                                          foundation::uint32 pass,
+                                                                          rhi::BufferHandle& outBuffer) noexcept;
     [[nodiscard]] rhi::RasterStatus Poll() noexcept;
     [[nodiscard]] rhi::RasterStatus PrepareCamera(const ViewDescription& camera, foundation::uint64 revision) noexcept;
     [[nodiscard]] rhi::RasterStatus PollCamera() noexcept;
