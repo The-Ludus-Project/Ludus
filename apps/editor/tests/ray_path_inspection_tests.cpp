@@ -14,6 +14,7 @@
 #include "internal/render_graph_preview.h"
 #include "internal/render_preview.h"
 #include "internal/renderer_workspace.h"
+#include "internal/workspace_style.h"
 #include "renderer_composite.h"
 
 #include <ludus/foundation/base/types.h>
@@ -28,15 +29,27 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
+#include <QColor>
+#include <QComboBox>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QFontMetrics>
 #include <QMenu>
+#include <QObject>
+#include <QPalette>
+#include <QPixmap>
+#include <QPlainTextEdit>
+#include <QPushButton>
+#include <QScrollBar>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QThread>
 #include <QTimer>
+#include <QTreeWidget>
+#include <QtGlobal>
 
 using namespace ludus::editor;
 using namespace ludus::foundation;
@@ -161,6 +174,49 @@ MakeEvent(uint32 sample, renderer::RayPathEventKind kind, renderer::RayPathOutco
     return event;
 }
 } // namespace
+
+TEST_CASE("Ray path inspector keeps controls readable in a narrow dock and synchronizes overlay settings",
+          "[editor][ray-paths][layout]")
+{
+    RenderGraphPreview preview = MakePreview();
+    RayPathInspection inspection;
+    inspection.SetPreview(&preview);
+    RayPathInspector inspector(inspection);
+    ApplyWorkspaceStyle(&inspector);
+    inspector.resize(280, 720);
+    inspector.show();
+    QCoreApplication::processEvents();
+    QComboBox* colorOrNull = inspector.findChild<QComboBox*>(QStringLiteral("rayPathColorMode"));
+    QComboBox* sampleOrNull = inspector.findChild<QComboBox*>(QStringLiteral("rayPathSample"));
+    QCheckBox* xRayOrNull = inspector.findChild<QCheckBox*>(QStringLiteral("rayPathXRay"));
+    QPushButton* captureOrNull = inspector.findChild<QPushButton*>(QStringLiteral("rayPathCaptureAgain"));
+    QPushButton* leaveOrNull = inspector.findChild<QPushButton*>(QStringLiteral("rayPathLeave"));
+    REQUIRE(colorOrNull != nullptr);
+    REQUIRE(sampleOrNull != nullptr);
+    REQUIRE(xRayOrNull != nullptr);
+    REQUIRE(captureOrNull != nullptr);
+    REQUIRE(leaveOrNull != nullptr);
+    CHECK(inspector.width() == 280);
+    CHECK(inspector.GetStatusText().contains(QStringLiteral("Start the World viewport")) == true);
+    CHECK(colorOrNull->isEnabled() == false);
+    CHECK(sampleOrNull->isEnabled() == false);
+    CHECK(sampleOrNull->currentText() == QStringLiteral("All samples"));
+    CHECK(xRayOrNull->isEnabled() == false);
+    CHECK(captureOrNull->isEnabled() == false);
+    CHECK(leaveOrNull->isEnabled() == false);
+    CHECK(colorOrNull->width() >= colorOrNull->fontMetrics().horizontalAdvance(QStringLiteral("Bounce depth")));
+    CHECK(captureOrNull->width() >= captureOrNull->fontMetrics().horizontalAdvance(captureOrNull->text()));
+    CHECK(leaveOrNull->width() >= leaveOrNull->fontMetrics().horizontalAdvance(leaveOrNull->text()));
+    CHECK(colorOrNull->mapTo(&inspector, colorOrNull->rect().bottomRight()).x() < inspector.width());
+    CHECK(sampleOrNull->mapTo(&inspector, sampleOrNull->rect().bottomRight()).x() < inspector.width());
+    CHECK(colorOrNull->mapTo(&inspector, QPoint{}).y() < sampleOrNull->mapTo(&inspector, QPoint{}).y());
+    inspection.SetXRay(true);
+    inspection.SetColorMode(RayPathColorMode::BounceDepth);
+    CHECK(xRayOrNull->isChecked() == true);
+    CHECK(colorOrNull->currentData().toInt() == static_cast<int32>(RayPathColorMode::BounceDepth));
+    CHECK(inspector.SelectEventRow(-1) == false);
+    CHECK(inspector.GetDetailsText().isEmpty() == true);
+}
 
 TEST_CASE("Ray path overlays draw the frozen camera, color events and stay within the overlay limit",
           "[editor][ray-paths]")
@@ -300,6 +356,12 @@ TEST_CASE("Frozen ray paths survive navigation, go stale on World edits and leav
         SKIP("Native ray queries are unavailable on this host; the unavailable case covers it");
     }
     RenderGraphPreview preview = MakePreview();
+    RayPathInspection inspection;
+    inspection.SetPreview(&preview);
+    RayPathInspector inspector(inspection);
+    QPushButton* captureButtonOrNull = inspector.findChild<QPushButton*>(QStringLiteral("rayPathCaptureAgain"));
+    REQUIRE(captureButtonOrNull != nullptr);
+    CHECK(captureButtonOrNull->isEnabled() == false);
     REQUIRE(preview.Attach(device.Device, device.Surface) == true);
     preview.SetExtraction(MakeExtraction({1, 0, 0, 1}, 1));
     REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RAY_GRAPH_FIXTURE), GetDefaultRenderGraphRuntime()) ==
@@ -310,9 +372,7 @@ TEST_CASE("Frozen ray paths survive navigation, go stale on World edits and leav
     REQUIRE(preview.GetReport().ActiveRenderer == renderer::RenderGraphRenderer::HardwareRayTracing);
     REQUIRE(preview.DescribeRayPathCaptureProblem().isEmpty() == true);
 
-    RayPathInspection inspection;
-    inspection.SetPreview(&preview);
-    RayPathInspector inspector(inspection);
+    CHECK(captureButtonOrNull->isEnabled() == true);
     QSignalSpy builds(&inspection, &RayPathInspection::BuildRequested);
     REQUIRE(inspection.Begin(GetTraceTarget()) == true);
     CHECK(inspection.GetStage() == RayPathInspectionStage::PickingPixel);
@@ -355,6 +415,100 @@ TEST_CASE("Frozen ray paths survive navigation, go stale on World edits and leav
     const RayPathOverlay overlay = inspection.BuildOverlay(nullptr);
     CHECK(static_cast<usize>(overlay.Lines.size()) > CAMERA_LINES);
 
+    SECTION("Sample filtering keeps the event list, selection and overlay in agreement")
+    {
+        QComboBox* sampleOrNull = inspector.findChild<QComboBox*>(QStringLiteral("rayPathSample"));
+        QTreeWidget* treeOrNull = inspector.findChild<QTreeWidget*>(QStringLiteral("rayPathEvents"));
+        REQUIRE(sampleOrNull != nullptr);
+        REQUIRE(treeOrNull != nullptr);
+        REQUIRE(treeOrNull->topLevelItemCount() > 1);
+        CHECK(treeOrNull->columnCount() == 1);
+        CHECK(treeOrNull->topLevelItem(0)->isExpanded() == true);
+        CHECK(treeOrNull->topLevelItem(1)->isExpanded() == false);
+        sampleOrNull->setCurrentIndex(2);
+        CHECK(inspection.GetSampleFilter() == 1);
+        CHECK(inspection.GetSelectedEvent() == -1);
+        CHECK(inspector.GetDetailsText().isEmpty() == true);
+        CHECK(treeOrNull->topLevelItem(0)->isHidden() == true);
+        CHECK(treeOrNull->topLevelItem(1)->isHidden() == false);
+        CHECK(treeOrNull->topLevelItem(1)->isExpanded() == true);
+        CHECK(inspector.SelectEventRow(0) == false);
+        treeOrNull->setCurrentItem(treeOrNull->topLevelItem(1)->child(0));
+        CHECK(inspector.GetDetailsText().contains(QStringLiteral("Radiance (linear RGB)")) == true);
+        inspection.SetSampleFilter(-1);
+        CHECK(sampleOrNull->currentData().toInt() == -1);
+        CHECK(treeOrNull->topLevelItem(0)->isHidden() == false);
+        REQUIRE(inspector.SelectEventRow(0) == true);
+        CHECK(inspector.GetDetailsText().contains(QStringLiteral("Hit distance:")) == true);
+        CHECK(inspector.GetDetailsText().contains(QStringLiteral("Object: object")) == true);
+        inspection.SelectEvent(-1);
+        CHECK(treeOrNull->currentItem() == nullptr);
+        CHECK(inspector.GetDetailsText().isEmpty() == true);
+        REQUIRE(inspector.SelectEventRow(0) == true);
+        QPushButton* collapseOrNull = inspector.findChild<QPushButton*>(QStringLiteral("rayPathCollapseAll"));
+        REQUIRE(collapseOrNull != nullptr);
+        collapseOrNull->click();
+        CHECK(treeOrNull->topLevelItem(0)->isExpanded() == false);
+        REQUIRE(inspector.SelectEventRow(0) == true);
+        CHECK(treeOrNull->topLevelItem(0)->isExpanded() == true);
+        CHECK(treeOrNull->topLevelItem(0)->child(0)->isExpanded() == true);
+    }
+    SECTION("Event details wrap and scroll independently at dock width")
+    {
+        ApplyWorkspaceStyle(&inspector);
+        inspector.resize(320, 720);
+        inspector.show();
+        QCoreApplication::processEvents();
+        QPlainTextEdit* detailsOrNull = inspector.findChild<QPlainTextEdit*>(QStringLiteral("rayPathDetails"));
+        REQUIRE(detailsOrNull != nullptr);
+        CHECK(detailsOrNull->horizontalScrollBar()->maximum() == 0);
+        CHECK(detailsOrNull->verticalScrollBar()->maximum() > 0);
+        CHECK(detailsOrNull->isReadOnly() == true);
+        // Optional render evidence from the real GPU capture; normal test runs write no image.
+        const QString screenshotPath = qEnvironmentVariable("LUDUS_RAY_INSPECTOR_SCREENSHOT");
+        if (screenshotPath.isEmpty() == false)
+        {
+            const QPalette originalPalette = QApplication::palette();
+            QPalette palette = originalPalette;
+            palette.setColor(QPalette::Window, QColor(QStringLiteral("#18242c")));
+            QApplication::setPalette(palette);
+            ApplyWorkspaceStyle(&inspector);
+            QApplication::setPalette(inspector.palette());
+            QCoreApplication::processEvents();
+            const bool isSaved = inspector.grab().save(screenshotPath);
+            QApplication::setPalette(originalPalette);
+            REQUIRE(isSaved == true);
+        }
+    }
+    SECTION("A hit-selection listener may leave inspection without retaining deleted tree rows")
+    {
+        inspection.SelectEvent(-1);
+        QObject::connect(&inspection,
+                         &RayPathInspection::ObjectSelectionRequested,
+                         &inspector,
+                         [&inspection](const QString&) { inspection.Leave(); });
+        REQUIRE(inspector.SelectEventRow(0) == true);
+        CHECK(inspection.GetStage() == RayPathInspectionStage::Inactive);
+        CHECK(inspector.GetEventRowCount() == 0);
+        CHECK(inspector.GetDetailsText().isEmpty() == true);
+        CHECK(preview.IsRayPathFrozen() == false);
+    }
+    SECTION("A new capture resets the displayed sample filter")
+    {
+        inspection.SetSampleFilter(1);
+        REQUIRE(inspection.Begin(GetTraceTarget()) == true);
+        REQUIRE(inspection.PickPixel({.5F, .5F}) == true);
+        QComboBox* sampleOrNull = inspector.findChild<QComboBox*>(QStringLiteral("rayPathSample"));
+        REQUIRE(sampleOrNull != nullptr);
+        CHECK(sampleOrNull->currentData().toInt() == -1);
+        CHECK(inspection.GetSampleFilter() == -1);
+        CHECK(inspector.GetEventRowCount() == 0);
+        CHECK(inspector.GetDetailsText().isEmpty() == true);
+        inspection.RejectBuild(QStringLiteral("test build failure"));
+        CHECK(inspector.GetStatusText().contains(QStringLiteral("test build failure")) == true);
+        CHECK(sampleOrNull->isEnabled() == false);
+        inspection.Leave();
+    }
     SECTION("Navigation keeps the frozen paths")
     {
         const uint64 presentedRevision = preview.GetPresentedRevision();
@@ -385,6 +539,9 @@ TEST_CASE("Frozen ray paths survive navigation, go stale on World edits and leav
         CHECK(preview.GetRayPathStaleReason().isEmpty() == false);
         CHECK(inspection.GetStatus().startsWith(QStringLiteral("Stale:")) == true);
         CHECK(inspector.GetStatusText().startsWith(QStringLiteral("Stale:")) == true);
+        CHECK(inspection.GetSelectedEvent() == 0);
+        CHECK(inspector.GetDetailsText().contains(QStringLiteral("Object: object")) == true);
+        CHECK(inspector.GetEventRowCount() == static_cast<int32>(capture.GetEvents().size()));
         // The stale capture keeps its paths; it is never mixed with the newer World.
         CHECK(preview.GetRayPathCapture().GetEvents().size() == capture.GetEvents().size());
         CHECK(preview.GetPresentedRevision() == 1);
@@ -395,6 +552,21 @@ TEST_CASE("Frozen ray paths survive navigation, go stale on World edits and leav
         // The edit made while frozen reaches the live graph once inspection ends.
         REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedRevision() == 3; }) == true);
         CHECK(preview.GetPresentedGeneration() == 1);
+    }
+    SECTION("The panel can start a new all-pass capture and cancel pixel picking")
+    {
+        inspection.Leave();
+        QPushButton* leaveOrNull = inspector.findChild<QPushButton*>(QStringLiteral("rayPathLeave"));
+        REQUIRE(captureButtonOrNull != nullptr);
+        REQUIRE(leaveOrNull != nullptr);
+        REQUIRE(captureButtonOrNull->isEnabled() == true);
+        captureButtonOrNull->click();
+        CHECK(inspection.GetStage() == RayPathInspectionStage::PickingPixel);
+        CHECK(inspection.GetTarget().NodeId.isEmpty() == true);
+        CHECK(leaveOrNull->text() == QStringLiteral("Cancel picking"));
+        leaveOrNull->click();
+        CHECK(inspection.GetStage() == RayPathInspectionStage::Inactive);
+        CHECK(preview.IsRayPathFrozen() == false);
     }
     SECTION("A resize marks the capture stale")
     {

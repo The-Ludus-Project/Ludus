@@ -1919,7 +1919,9 @@ VkResult VulkanRasterPreparation::Build() noexcept
         output[i]->reference = info.StencilReference;
     }
     VkPipelineColorBlendAttachmentState color{};
-    color.colorWriteMask = 15;
+    constexpr VkColorComponentFlags COLOR_CHANNELS =
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    color.colorWriteMask = info.ShouldWriteColor == true ? COLOR_CHANNELS : 0;
     color.blendEnable = info.Blend;
     color.srcColorBlendFactor = color.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
     color.dstColorBlendFactor = color.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;

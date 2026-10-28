@@ -41,8 +41,11 @@ static_assert(ROUGHNESS_COUNT >= 2 && VIEW_COUNT >= 2);
     };
 }
 /// Bilinear interpolation of one entry of the four cells around (row, column).
+// Row then column, each followed by its fraction, is the table's (roughness, view cosine) order.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
 [[nodiscard]] LtcTableEntry
 Interpolate(uint32 row, float32 rowFraction, uint32 column, float32 columnFraction, uint32 entry) noexcept
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     const auto at = [entry](uint32 r, uint32 c) noexcept {
         return LUDUS_LTC_TABLE[(usize{r} * VIEW_COUNT + c) * ENTRIES_PER_CELL + entry];

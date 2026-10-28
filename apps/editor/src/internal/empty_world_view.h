@@ -17,6 +17,7 @@ struct WorldGridLine;
 namespace ludus::editor
 {
 class RenderPreview;
+class StateView;
 
 /// Axis a world grid line lies along (0 X, 1 Y, 2 Z), or a negative value for a line off the axes.
 [[nodiscard]] foundation::int32 GetAxisIndexOrNegative(const graphics::renderer::WorldGridLine& line) noexcept;
@@ -31,6 +32,12 @@ public:
     /// The borrowed preview must outlive this widget.
     EmptyWorldView(RenderPreview& inoutPreview, QWidget* parentOrNull);
 
+    /// Show a plain prompt over the grid, such as "Open or create a World", and drop any problem state.
+    void SetPrompt(const QString& text);
+    /// Replace the prompt with a centred StateView for a viewport failure; status is the reason as reported.
+    void ShowProblem(const QString& status);
+    [[nodiscard]] bool HasProblem() const noexcept;
+
 protected:
     void paintEvent(QPaintEvent* event) override;
 
@@ -38,5 +45,6 @@ private:
     /// Draws the label text over the viewport background in the fixed caption colour.
     void drawCaption(QPainter& inoutPainter) const;
     RenderPreview& mPreview;
+    StateView* mProblemOrNull = nullptr;
 };
 } // namespace ludus::editor

@@ -12,7 +12,7 @@ namespace ludus::editor
 /// How much of a graph a template creates.
 enum class RenderGraphTemplateKind : foundation::uint8
 {
-    /// A complete editable graph package, created through the shared tooling backend.
+    /// A complete graph template, or a package graph reference offered by Quick Add.
     Graph,
     /// A reusable configuration inserted into an open graph.
     Snippet,
@@ -24,7 +24,8 @@ enum class RenderGraphTemplateKind : foundation::uint8
 struct RenderGraphTemplate final
 {
     RenderGraphTemplateKind Kind = RenderGraphTemplateKind::Node;
-    /// Graph and snippet: the shared tooling template identity. Node: the authored node kind.
+    /// Catalog graph/snippet: tooling identity. Quick Add graph: package-relative asset path.
+    /// Node: the authored node kind.
     QString Identity;
     /// Upscale presets only: the stable algorithm identity from GetUpscaleAlgorithms().
     QString Algorithm;
@@ -34,7 +35,7 @@ struct RenderGraphTemplate final
     QString Description;
     /// Grouping identity from the kind's fixed vocabulary.
     QString Category;
-    /// Snippets only: the configuration name the Apply dialog proposes.
+    /// Snippet: proposed configuration name. Quick Add graph: the asset default at palette opening.
     QString DefaultConfiguration;
     /// Capabilities the template needs to preview: native-ray-tracing (hardware ray queries),
     /// compute-ray-tracing (Metal or Vulkan compute running the software triangle loop), denoiser or metalfx.

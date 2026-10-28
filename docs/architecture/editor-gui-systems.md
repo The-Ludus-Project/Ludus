@@ -297,7 +297,11 @@ the same order.
 The built-in templates live in one catalog, `apps/editor/resources/render_graph_templates.json`:
 complete graphs for New Render Graph, snippets for Apply Configuration Template, node
 types for Add Node and Create Node, and snippets and nodes for the canvas Quick Add palette
-(`RenderGraphQuickAdd`). `RenderGraphTemplateRegistry` validates it, and each
+(`RenderGraphQuickAdd`). Quick Add also discovers existing package graphs from the
+current document draft through `BuildRenderGraphQuickAddGraphs`, shows their default
+interfaces, and blocks recursive references before insertion. These are Subgraph
+references; complete built-in templates still open New Render Graph.
+`RenderGraphTemplateRegistry` validates the built-in catalog, and each
 picker offers its kind in catalog order. A new graph or snippet entry also needs its
 sources under `modules/graphics/renderer/render_graphs/` and its identity in the
 tooling's `render_graph_templates.TEMPLATES` and `render-graph new --template` choices.

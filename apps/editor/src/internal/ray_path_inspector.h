@@ -10,6 +10,7 @@
 class QCheckBox;
 class QComboBox;
 class QLabel;
+class QPlainTextEdit;
 class QPushButton;
 class QTreeWidget;
 class QTreeWidgetItem;
@@ -28,18 +29,21 @@ public:
     explicit RayPathInspector(RayPathInspection& inoutInspection, QWidget* parentOrNull = nullptr);
     /// Status line as shown.
     [[nodiscard]] QString GetStatusText() const;
-    /// Fields of the selected event as shown; empty without a selection.
+    /// Fields of the selected event or invocation as shown; empty without a selection.
     [[nodiscard]] QString GetDetailsText() const;
-    /// Number of event rows in the tree.
+    /// Number of decoded event rows, including rows hidden by the sample filter.
     [[nodiscard]] foundation::int32 GetEventRowCount() const;
-    /// Select the tree row of a decoded event, as a click does.
-    /// @return False when no row shows that event.
+    /// Select a decoded event, expanding its ancestors and scrolling it into view.
+    /// @return False for a negative index or an event absent from the current sample filter.
     bool SelectEventRow(foundation::int32 event);
 
 private:
+    static constexpr foundation::int32 UNSHOWN_SAMPLE_FILTER = -2;
     void refresh();
     void rebuildTree();
     void showDetails(foundation::int32 event);
+    void showInvocationDetails(const QTreeWidgetItem* itemOrNull);
+    void syncPresentation();
     RayPathInspection& mInspection;
     QLabel* mStatus;
     QCheckBox* mXRay;
@@ -48,9 +52,10 @@ private:
     QPushButton* mCaptureAgain;
     QPushButton* mLeave;
     QTreeWidget* mEvents;
-    QLabel* mDetails;
+    QPlainTextEdit* mDetails;
     /// What the tree shows; every new capture passes through Building, so a state change rebuilds it.
     RayPathInspectionStage mShownStage = RayPathInspectionStage::Inactive;
     RayPathCaptureState mShownState = RayPathCaptureState::Idle;
+    foundation::int32 mShownSampleFilter = UNSHOWN_SAMPLE_FILTER;
 };
 } // namespace ludus::editor

@@ -78,7 +78,7 @@ public:
     [[nodiscard]] RayPathOverlay BuildOverlay(const foundation::math::Aabb3* sceneBoundsOrNull) const;
 
 Q_SIGNALS:
-    /// Stage, capture state, staleness or status changed.
+    /// Stage, capture availability/state, staleness or status changed.
     void Changed();
     /// What the overlay draws changed (capture results or presentation settings).
     void OverlayChanged();
@@ -98,5 +98,6 @@ private:
     foundation::int32 mSampleFilter = -1;
     foundation::int32 mSelectedEvent = -1;
     QMetaObject::Connection mCaptureConnection;
+    QMetaObject::Connection mPreviewConnection;
 };
 } // namespace ludus::editor

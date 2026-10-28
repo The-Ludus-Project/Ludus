@@ -49,10 +49,13 @@ class ConfigurationWorkspace;
 class ContentWorkspace;
 class DocumentWell;
 class ErrorList;
+class StatusActivityBar;
 class ProjectExplorer;
 struct ErrorListEntry;
 enum class ProjectItemKind : foundation::uint8;
+enum class ProjectItemAction : foundation::uint8;
 class ScriptWorkspace;
+class StateView;
 class RendererWorkspace;
 class ProjectRenderingSettings;
 class TimingPanel;
@@ -134,8 +137,14 @@ private:
     void buildWindowMenu(QMenu* menu);
     void renderWindowDocuments(QMenu* menu);
     void openProjectItem(ProjectItemKind kind, const QString& path);
+    void changeProjectItem(ProjectItemAction action, ProjectItemKind kind, const QString& path);
     void activateErrorEntry(const ErrorListEntry& entry);
     void renderActiveDocument();
+    /// Show the context strip (Render Graph toolbar) only while a render graph is the active document and Focus
+    /// Viewport is off.
+    void updateContextStrip();
+    /// Refresh the status bar's activity chip and problem counts from the current work.
+    void renderActivity();
     void renderDocumentTitles();
     void renderGraphCommands();
     void showOptions();
@@ -250,6 +259,8 @@ private:
     QWidget* mFocusRestoreDocumentOrNull = nullptr;
     bool mIsViewportFocused = false;
     QToolBar* GameToolbar_ = nullptr;
+    StatusActivityBar* mActivityBarOrNull = nullptr;
+    QAction* mSessionSeparatorActionOrNull = nullptr;
     // Build output is parsed for the Error List after it stops changing briefly.
     QTimer mBuildErrorsTimer;
     QString mParsedBuildOutput;
@@ -288,7 +299,7 @@ private:
     QPushButton* WelcomeNewButton_ = nullptr;
     QAction* CloseProjectAction_ = nullptr;
     QListWidget* RecentList_ = nullptr;
-    QLabel* RecentEmptyLabel_ = nullptr;
+    StateView* mRecentEmptyStateOrNull = nullptr;
     QPushButton* RecentOpenButton_ = nullptr;
     QPushButton* BrowseProjectButton_ = nullptr;
     QMenu* RecentMenu_ = nullptr;

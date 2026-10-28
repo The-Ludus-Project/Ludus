@@ -605,15 +605,23 @@ public:
     /// Advance lighting setup without blocking, between frames.
     [[nodiscard]] rhi::RasterStatus PollLighting() noexcept;
     /// Validate renderer_lit.slang or renderer_clustered.slang and prewarm linear RGBA8/RGBA16F plus masked shadows.
-    /// Clustered programs require eight bindings and a 16096-byte fragment uniform range;
-    /// pass LitMaterialDescription::Clusters when creating their materials. Unsupported capabilities reject.
+    /// Clustered programs require their reflected binding/uniform range; pass
+    /// LitMaterialDescription::Clusters when creating their materials. Unsupported capabilities reject.
     /// Shadow fragment uses the same typed uniform schema and a subset of the lit bindings.
     /// Sixteen vertex locations required; HDR variants are omitted when HdrColor is false.
     /// Ready/Pending grants program ownership; failure preserves null output.
-    [[nodiscard]] rhi::RasterStatus PrewarmLitProgram(const rhi::RasterShaderDescription& vertex,
-                                                      const rhi::RasterShaderDescription& fragment,
-                                                      const rhi::RasterShaderDescription& shadowFragment,
-                                                      MaterialProgram& output) noexcept;
+    /// @param vertex Cooked geometry stage shared by color and optional depth pipelines.
+    /// @param fragment Cooked material-shading stage with the selected lit ABI.
+    /// @param shadowFragment Coverage stage with the matching material uniform schema.
+    /// @param outProgram Receives an owned program on Ready/Pending; preserved on failure.
+    /// @param depthOrNull Optional void depth fragment using the same retained vertex stage
+    /// and binding layout. It is prewarmed for conventional-depth RGBA8 DrawDepthView calls.
+    [[nodiscard]] rhi::RasterStatus
+    PrewarmLitProgram(const rhi::RasterShaderDescription& vertex,
+                      const rhi::RasterShaderDescription& fragment,
+                      const rhi::RasterShaderDescription& shadowFragment,
+                      MaterialProgram& outProgram,
+                      const rhi::RasterShaderDescription* depthOrNull = nullptr) noexcept;
     /// Copy an immutable lit material and normalized bounded light list, between frames.
     /// Report and null output are preserved on failure. Shadows must be rendered and Ready;
     /// bake/shadow views are retained even after their owners are released.
@@ -729,6 +737,14 @@ public:
     /// the caller ends the frame with R2 EndFrame. Later rejection does not undo earlier work.
     [[nodiscard]] rhi::RasterStatus DrawView(PreparedView handle,
                                              const rhi::RasterPassDescription& description) noexcept;
+    /// Draw opaque depth using each material's prewarmed void fragment and the exact retained
+    /// geometry stage of the color pass. Skips overlays/grid; no material evaluation or color output.
+    /// Requires an offscreen RGBA8 attachment, conventional depth and depth-enabled lit programs.
+    /// @pre Owner thread inside an acquired frame; view and attachment must be Ready.
+    /// @return Unsupported before recording when a packet lacks a prewarmed depth program.
+    [[nodiscard]] rhi::RasterStatus DrawDepthView(PreparedView handle,
+                                                  const rhi::RasterPassDescription& description) noexcept;
+
     /// Copy presentation geometry/mapping and retain the sampled linear RGBA8 attachment.
     /// Four presentation slots, one vertex buffer and binding snapshot each; shared RHI
     /// budgets may exhaust earlier. Ready/Pending publishes output; failure preserves it.
@@ -753,10 +769,13 @@ public:
     [[nodiscard]] rhi::RasterStatus Release(PreparedView& handle) noexcept;
 
 private:
-    [[nodiscard]] rhi::RasterStatus PrewarmProgram(const rhi::RasterShaderDescription& vertex,
+    [[nodiscard]] rhi::RasterStatus
+    drawView(PreparedView handle, const rhi::RasterPassDescription& description, bool isDepthOnly) noexcept;
+    [[nodiscard]] rhi::RasterStatus prewarmProgram(const rhi::RasterShaderDescription& vertex,
                                                    const rhi::RasterShaderDescription& fragment,
-                                                   const rhi::RasterShaderDescription* shadow,
-                                                   MaterialProgram& output) noexcept;
+                                                   const rhi::RasterShaderDescription* shadowOrNull,
+                                                   MaterialProgram& outProgram,
+                                                   const rhi::RasterShaderDescription* depthOrNull = nullptr) noexcept;
     [[nodiscard]] rhi::RasterStatus CreateMaterialData(MaterialProgram program,
                                                        const MaterialDescription& description,
                                                        const ludus::foundation::uint8* bytes,

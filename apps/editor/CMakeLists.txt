@@ -99,6 +99,20 @@ endforeach()
 set_source_files_properties(src/render_graph_settings_editor.cpp src/render_graph_configuration_template.cpp
     PROPERTIES COMPILE_DEFINITIONS "${graph_settings_definitions}")
 
+# Shader authoring shares the build service's target-artifact ceiling.
+set(shader_build_policy "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/render_graph_build.py")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${shader_build_policy}")
+execute_process(COMMAND "${Python3_EXECUTABLE}" -c
+    "import sys; sys.path.insert(0,sys.argv[1]); from ludus_tools.render_graph_build import LIMITS; print(LIMITS['artifacts'])"
+    "${PROJECT_SOURCE_DIR}/scripts/python"
+    RESULT_VARIABLE shader_build_status OUTPUT_VARIABLE shader_artifact_limit ERROR_VARIABLE shader_build_error
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(NOT shader_build_status EQUAL 0)
+    message(FATAL_ERROR "Cannot read shader artifact limit: ${shader_build_error}")
+endif()
+set_source_files_properties(src/render_graph_shader_creation.cpp PROPERTIES
+    COMPILE_DEFINITIONS "LUDUS_EDITOR_MAX_SHADER_ARTIFACTS=${shader_artifact_limit}")
+
 # Finite option admission has one owner shared with installed host tooling.
 set(graph_options_policy "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/render_graph_options.py")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${graph_options_policy}")
@@ -151,6 +165,8 @@ set(editor_viewport_sources
     src/internal/ray_path_overlay.h
     src/ray_path_overlay.cpp
     src/preview_viewport.cpp
+    src/internal/viewport_object_interaction.h
+    src/viewport_object_interaction.cpp
     src/viewport_navigation.cpp
     src/viewport_play_input.cpp
     src/internal/texture_inspection.h
@@ -296,7 +312,7 @@ function(ludus_editor_add_default_render_graph target)
         FILES "${restir_template}/library.lurender.json" "${restir_template}/main.lushader.json.in"
               ${restir_template_shaders})
     foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing
-            simple_compute_ray_tracing veach_guibas_mis line_sampling salesin_jarosz_lines)
+            simple_compute_ray_tracing veach_guibas_mis line_sampling ris_projected_solid_angle salesin_jarosz_lines)
         string(REPLACE "_" "-" template_identity "${template_directory}")
         set(visibility_template "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/render_graphs/${template_directory}")
         file(GLOB visibility_template_shaders CONFIGURE_DEPENDS "${visibility_template}/main_shaders/*.slang")
@@ -451,6 +467,7 @@ qt_add_executable(ludus_editor
     src/world_document.cpp
     src/world_demo_adapter.cpp
     src/world_workspace.cpp
+    src/world_viewport_editing.cpp
     src/internal/controller.h
     src/internal/configuration_workspace.h
     src/internal/main_window.h
@@ -481,6 +498,8 @@ qt_add_executable(ludus_editor
     src/render_graph_template_registry.cpp
     src/internal/render_graph_quick_add.h
     src/render_graph_quick_add.cpp
+    src/internal/render_graph_quick_add_graphs.h
+    src/render_graph_quick_add_graphs.cpp
     src/internal/render_graph_settings_editor.h
     src/render_graph_settings_editor.cpp
     src/internal/render_graph_configuration_editor.h
@@ -532,6 +551,8 @@ qt_add_executable(ludus_editor
     src/error_list.cpp
     src/internal/project_explorer.h
     src/project_explorer.cpp
+    src/internal/project_files.h src/project_files.cpp
+    src/main_window_project_files.cpp
     src/internal/timing_panel.h
     src/timing_panel.cpp
     src/project_setup_dialog.cpp
@@ -543,6 +564,10 @@ qt_add_executable(ludus_editor
     src/theme_fonts.cpp
     src/internal/editor_icons.h
     src/editor_icons.cpp
+    src/internal/state_view.h
+    src/state_view.cpp
+    src/internal/activity_chip.h
+    src/activity_chip.cpp
     src/internal/window_size.h
     src/window_size.cpp
     src/controller.cpp
@@ -722,7 +747,10 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/main.cpp tests/content_browser_tests.cpp
         src/internal/content_browser.h src/content_catalog_model.cpp
         src/content_import.cpp src/content_jobs.cpp src/content_workspace.cpp
+        src/internal/state_view.h src/state_view.cpp src/internal/editor_icons.h src/editor_icons.cpp
+        src/internal/theme_fonts.h src/theme_fonts.cpp
         src/editor_files.cpp src/scene_archive.cpp)
+    ludus_editor_add_icons(ludus_editor_browser_content_tests)
     set_target_properties(ludus_editor_browser_content_tests PROPERTIES AUTOMOC ON)
     target_include_directories(ludus_editor_browser_content_tests PRIVATE src
         "${PROJECT_SOURCE_DIR}/modules/audio/tests")
@@ -735,6 +763,19 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     add_test(NAME ludus_editor_browser_content_tests COMMAND ludus_editor_browser_content_tests)
     set_tests_properties(ludus_editor_browser_content_tests PROPERTIES
         LABELS "unit;editor;browser" TIMEOUT 60 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_executable(ludus_project_explorer_tests tests/main.cpp tests/project_explorer_tests.cpp
+        src/internal/project_explorer.h src/project_explorer.cpp src/project_files.cpp
+        src/internal/editor_icons.h src/editor_icons.cpp)
+    set_target_properties(ludus_project_explorer_tests PROPERTIES AUTOMOC ON)
+    ludus_editor_add_icons(ludus_project_explorer_tests)
+    target_include_directories(ludus_project_explorer_tests PRIVATE src)
+    target_compile_definitions(ludus_project_explorer_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
+    target_link_libraries(ludus_project_explorer_tests PRIVATE Qt6::Widgets Qt6::Test Ludus::FoundationBase Catch2::Catch2)
+    ludus_apply_project_defaults(ludus_project_explorer_tests)
+    ludus_enable_test_exceptions(ludus_project_explorer_tests)
+    add_test(NAME ludus_project_explorer_tests COMMAND ludus_project_explorer_tests)
+    set_tests_properties(ludus_project_explorer_tests PROPERTIES LABELS "unit;editor" TIMEOUT 30
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(ludus_editor_tests
         ${editor_profiling_sources}
         tests/profiling_tests.cpp
@@ -776,6 +817,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/world_document.cpp
         src/world_demo_adapter.cpp
         src/world_workspace.cpp
+    src/world_viewport_editing.cpp
             tests/world_workspace_tests.cpp
         tests/level_workspace_tests.cpp
         tests/render_authoring_tests.cpp
@@ -787,6 +829,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/theme_preference_tests.cpp
         tests/viewport_legibility_tests.cpp
         tests/editor_icons_tests.cpp
+        tests/state_view_tests.cpp
+        tests/activity_chip_tests.cpp
         tests/viewport_frame_pump_tests.cpp
         tests/viewport_frame_source_tests.cpp
         tests/world_demo_workspace_tests.cpp
@@ -821,6 +865,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/render_graph_template_registry.cpp
         src/internal/render_graph_quick_add.h
         src/render_graph_quick_add.cpp
+        src/internal/render_graph_quick_add_graphs.h
+        src/render_graph_quick_add_graphs.cpp
         src/internal/render_graph_settings_editor.h src/render_graph_settings_editor.cpp
         src/internal/render_graph_configuration_editor.h
         src/render_graph_configuration_editor.cpp
@@ -931,6 +977,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/error_list.cpp
         src/internal/project_explorer.h
         src/project_explorer.cpp
+        src/internal/project_files.h src/project_files.cpp
+        src/main_window_project_files.cpp
         src/internal/timing_panel.h
         src/timing_panel.cpp
         src/project_setup_dialog.cpp
@@ -942,6 +990,10 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/theme_fonts.cpp
         src/internal/editor_icons.h
         src/editor_icons.cpp
+        src/internal/state_view.h
+        src/state_view.cpp
+        src/internal/activity_chip.h
+        src/activity_chip.cpp
         src/window_size.cpp)
     target_link_libraries(ludus_editor_tests
         PRIVATE
@@ -1198,6 +1250,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/internal/render_graph_creation.h src/render_graph_creation.cpp
         src/internal/render_graph_template_registry.h src/render_graph_template_registry.cpp
         src/internal/render_graph_quick_add.h src/render_graph_quick_add.cpp
+        src/internal/render_graph_quick_add_graphs.h src/render_graph_quick_add_graphs.cpp
         src/internal/render_graph_settings_editor.h src/render_graph_settings_editor.cpp
         src/internal/render_graph_live_build.h src/render_graph_live_build.cpp
         src/internal/render_graph_source_watch.h src/render_graph_source_watch.cpp
@@ -1258,7 +1311,7 @@ endif()
 # the editor CTest label, including during the promotion of newer workflow code.
 if(TARGET ludus_editor_tests)
     foreach(target IN ITEMS ludus_editor_accessibility_tests ludus_code_editor_tests
-            ludus_editor_browser_content_tests ludus_render_graph_pipeline_tests
+            ludus_project_explorer_tests ludus_editor_browser_content_tests ludus_render_graph_pipeline_tests
             ludus_shader_interface_tests ludus_render_graph_configuration_tests
             ludus_render_graph_live_build_tests)
         if(TARGET ${target})
@@ -1301,6 +1354,7 @@ ludus_editor_apply_precompiled_headers(
     ludus_editor_code
     ludus_editor
     ludus_code_editor_tests
+    ludus_project_explorer_tests
     ludus_editor_browser_content_tests
     ludus_editor_tests
     ludus_render_graph_pipeline_tests

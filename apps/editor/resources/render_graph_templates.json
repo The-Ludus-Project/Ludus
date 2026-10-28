@@ -90,6 +90,15 @@
     },
     {
       "kind": "graph",
+      "identity": "ris-projected-solid-angle",
+      "label": "RIS + projected solid angle — many area lights",
+      "category": "ray-traced",
+      "requirements": ["compute-ray-tracing"],
+      "keywords": ["ris", "resampled importance sampling", "projected solid angle", "ltc", "peters", "shah", "many lights", "area light", "emissive", "mis", "direct lighting"],
+      "description": "Resampled importance and projected solid angle sampling from Shah, KT and Narayanan (2023): after a primary-hits pass, one shading pass resamples an emissive triangle from power-weighted candidates by its unshadowed LTC shading, samples it with Peters' (2021) projected-solid-angle and LTC techniques, and combines that with a BSDF sample through a surrogate light density; the light strategy alone and the BSDF sample alone are exported beside it. Every pass uses the compute BVH, so it needs Metal or Vulkan compute but no hardware ray tracing."
+    },
+    {
+      "kind": "graph",
       "identity": "salesin-jarosz-lines",
       "label": "Salesin & Jarosz — point and line samples with MIS",
       "category": "ray-traced",
@@ -156,6 +165,16 @@
       "requirements": ["compute-ray-tracing"],
       "keywords": ["line sampling", "billen", "dutre", "salesin", "jarosz", "soft shadows", "penumbra", "area light", "direct lighting"],
       "description": "A primary-hits scene compute pass and two triangle-loop shading passes that share one automatically sized hit buffer: one line sample per pixel over the visible parts of an emitter chord, and the chord's visible fraction. Connect scene, view and color; outputs color plus an optional visibleFraction image. Needs Metal or Vulkan compute."
+    },
+    {
+      "kind": "snippet",
+      "identity": "ris-projected-solid-angle",
+      "label": "RIS + projected solid angle — many area lights",
+      "category": "lighting",
+      "defaultConfiguration": "RisProjectedSolidAngle",
+      "requirements": ["compute-ray-tracing"],
+      "keywords": ["ris", "resampled importance sampling", "projected solid angle", "ltc", "peters", "shah", "many lights", "area light", "emissive", "mis", "direct lighting"],
+      "description": "A primary-hits scene compute pass and three compute-BVH shading passes that share one automatically sized hit buffer: resampled emissive-triangle sampling with projected-solid-angle and LTC samples combined with a BSDF sample by MIS, the light strategy alone and the BSDF sample alone. Connect scene, view and color; outputs color plus optional lightSampling and bsdfSampling images. Needs Metal or Vulkan compute."
     },
     {
       "kind": "snippet",

@@ -147,6 +147,8 @@ struct RenderScene final
     QByteArray PacketIdentity;
     QByteArray AssetsIdentity;
     QJsonObject RenderableBinding;
+    /// Project-owned position/Euler-degree/scale property binding for viewport manipulation.
+    QJsonObject TransformBinding;
     /// Camera the viewport looks through until the user picks another; -1 is the editor camera.
     foundation::int32 DefaultCamera = -1;
     /// Choose the extraction source for a World in a project root; reads only file metadata.

@@ -1993,6 +1993,7 @@ ValidatePipeline(DeviceHandle device, const RasterPipelineDescription& descripti
     }
     info.DepthWrite = description.DepthWrite;
     info.DepthCompare = description.DepthCompare;
+    info.ShouldWriteColor = description.ShouldWriteColor;
     if (description.ColorFormats.size() > 4 ||
         description.ColorFormats.size() > internal::CurrentDeviceProfile().Interface.MaxColorAttachments ||
         (description.SampleCount != 1 && description.SampleCount != 4) ||

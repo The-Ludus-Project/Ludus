@@ -104,14 +104,19 @@ struct RenderGraphPrograms final
                                 content::render_graph_format::TECHNIQUE_STAGE_COUNT>
         AdditionalRasterStages{};
     rhi::RasterShaderDescription
-        ForwardVertex{}; ///< Opt-in authored material geometry, supplied together with all forward stages.
-    rhi::RasterShaderDescription ForwardFragment{};  ///< Same scene-material/light ABI as renderer_authored.
+        ForwardVertex{}; ///< Authored material geometry, supplied together with all forward stages.
+    rhi::RasterShaderDescription
+        ForwardFragment{}; ///< Authored material ABI; HasClusteredForward selects its complete light-list layout.
     rhi::RasterShaderDescription ForwardShadow{};    ///< Matching material shadow ABI used by program qualification.
     rhi::RasterShaderDescription LightingVertex{};   ///< Renderer output preparation support.
     rhi::RasterShaderDescription LightingFragment{}; ///< Renderer output preparation support.
-    rhi::RasterShaderDescription LightingShadow{};   ///< Flat caster support for lighting initialization.
+    /// Void opaque prepass fragment, required with HasClusteredForward; uses ForwardVertex unchanged.
+    rhi::RasterShaderDescription ForwardDepth{};
+    rhi::RasterShaderDescription LightingShadow{}; ///< Flat caster support for lighting initialization.
     /// Linked ray kernel reads the paired raster visibility/depth inputs declared by the plan.
     bool HasVisibilityBuffer = false;
+    /// Use the complete clustered material ABI and conservative spatial light lists.
+    bool HasClusteredForward = false;
     bool HasPersistentRayBuffers = false; ///< Extended ordered ray ABI with two persistent uint4 storage slots.
     bool HasSceneShaderInterface = false; ///< Opt-in material/light/query callback ABI, encoded in cooked stage roles.
     /// RayCompute is the diagnostic ray path capture variant (`LUDUS_RAY_PATH_CAPTURE`) of the same
@@ -138,9 +143,11 @@ void SetRenderGraphRayInterface(rhi::RasterShaderDescription& inoutDescription,
 /// Attach the immutable forward recipe ABI to one cooked support stage. Artifact bytes
 /// remain untouched; shader reflection and Renderer prewarming independently validate it.
 /// @param inoutDescription Receives exact inputs, bindings and uniform member metadata.
-/// @param role One of the six forward StageRole values; other roles leave the description unchanged.
+/// @param role A forward material/output role or ForwardDepth; other roles leave the description unchanged.
+/// @param isClustered Select the clustered material layout; old forward packages retain their ABI.
 void SetRenderGraphForwardInterface(rhi::RasterShaderDescription& inoutDescription,
-                                    content::render_graph_format::StageRole role) noexcept;
+                                    content::render_graph_format::StageRole role,
+                                    bool isClustered = false) noexcept;
 /// Triangle, instance and primitive value of a ray path event without a committed hit.
 inline constexpr foundation::uint32 RAY_PATH_INVALID_INDEX = 0xffffffffU;
 /// Default number of progressive samples a ray path capture records.
@@ -338,11 +345,14 @@ struct RenderGraphSceneRevisions final
 /// updates do not change these. Reuse compares complete copied content, never pointers.
 struct RenderGraphSceneResourceReport final
 {
-    foundation::uint64 CreatedMeshes = 0;   ///< Immutable mesh uploads admitted by the cache.
-    foundation::uint64 ReusedMeshes = 0;    ///< Exact cached mesh acquisitions.
-    foundation::uint64 CreatedTextures = 0; ///< Immutable texture uploads admitted by the cache.
-    foundation::uint64 ReusedTextures = 0;  ///< Exact cached texture acquisitions.
-    foundation::uint32 DroppedLights = 0;   ///< Latest forward material's L4 light-selection overflow.
+    foundation::uint64 CreatedMeshes = 0;      ///< Immutable mesh uploads admitted by the cache.
+    foundation::uint64 ReusedMeshes = 0;       ///< Exact cached mesh acquisitions.
+    foundation::uint64 CreatedTextures = 0;    ///< Immutable texture uploads admitted by the cache.
+    foundation::uint64 ReusedTextures = 0;     ///< Exact cached texture acquisitions.
+    foundation::uint32 OverflowClusters = 0;   ///< Latest material's cells using the full light-list fallback.
+    foundation::uint32 ClusterAssignments = 0; ///< Latest material's stored cell/light intersections.
+    foundation::uint32 DroppedLights =
+        0; ///< Latest forward material's dropped light count; clustered shading retains all admitted lights.
 };
 /// Summary of the latest candidate, separately from the last rendered image.
 struct RenderGraphReport final

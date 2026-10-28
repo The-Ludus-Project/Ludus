@@ -40,8 +40,13 @@ RESERVED.update(('alignas alignof and and_eq asm atomic_cancel atomic_commit ato
 NAME = re.compile(r'[A-Za-z][A-Za-z0-9_]{0,62}\Z')
 NATIVE_WORKER_HELPER = 'native_worker.py'
 HELPERS = ('compile_shader.py', 'compile_raster.py', 'compile_graph_stage.py', 'compile_metal_ray.py', 'shader_toolchain.json', 'spirv_cross_toolchain.json')
-LIMITS = {'configurations': 8, 'programs': 32, 'artifacts': 128, 'pipelines': 64}
+# Program counts are governed by the authored budget, not a second fixed ceiling.
+# Artifact, source-byte and package bounds independently constrain admitted work.
+LIMITS = {'configurations': 8, 'programs': None, 'artifacts': 128, 'pipelines': 64}
 MAX_FILE = 128 * 1024
+# Engine-owned ray helper sources staged from the SDK, which are larger than authored files: the generated LTC table
+# (ltc_table_data.inc) is about 0.5 MiB. Authored sources keep MAX_FILE.
+MAX_HELPER_FILE = 1024 * 1024
 MAX_BYTES = 4 * 1024 * 1024
 # A package combines independent stage closures, graph metadata and SDK helpers.
 # Keep its aggregate bound separate from the native compiler's per-request bound.
@@ -184,7 +189,10 @@ class Snapshot:
 
     def verify(self):
         for relative, data in self.files.items():
-            require(read(self.external.get(relative, self.path(relative))) == data, 'Stale', relative, 'source changed during build; prior package retained')
+            # Engine helpers staged from the SDK keep their own, larger read limit.
+            limit = MAX_HELPER_FILE if relative in self.external else MAX_FILE
+            require(read(self.external.get(relative, self.path(relative)), limit) == data, 'Stale', relative,
+                    'source changed during build; prior package retained')
 
 
 def validate_manifest(value):
@@ -199,7 +207,11 @@ def validate_manifest(value):
     require(value['profiles'] and len(set(value['profiles'])) == len(value['profiles']), 'Schema', 'profiles', 'nonempty unique targets required')
     keys(value['budgets'], LIMITS, 'budgets')
     for key, maximum in LIMITS.items():
-        integer(value['budgets'][key], 1, maximum, 'budget ' + key)
+        if maximum is None:
+            require(type(value['budgets'][key]) is int and value['budgets'][key] >= 1,
+                    'Capacity', 'budget ' + key, 'positive integer required')
+        else:
+            integer(value['budgets'][key], 1, maximum, 'budget ' + key)
     schemas, programs = {}, {}
     bounded_list(value['schemas'], 16, 'schemas')
     for schema in value['schemas']:
@@ -231,7 +243,11 @@ def validate_manifest(value):
                 elif field['semantic'] == 'SV_Position':
                     require(field['type'] == 'Float4', 'Schema', field['id'], 'position requires Float4')
         schemas[schema['id']] = schema
-    bounded_list(value['programs'], LIMITS['programs'], 'programs')
+    require(type(value['programs']) is list, 'Schema', 'programs', 'array required')
+    program_count = len(value['programs'])
+    require(program_count <= value['budgets']['programs'], 'Capacity', 'programs',
+            f'{program_count} exceeds authored budget {value["budgets"]["programs"]}; '
+            f'increase budgets.programs to at least {program_count} or reuse existing programs')
     for program in value['programs']:
         keys(program, ('id', 'stage', 'source', 'function', 'input', 'output', 'bindings'), 'program')
         name(program['id'], 'program id')
@@ -282,9 +298,13 @@ def validate_manifest(value):
             scene_interface = technique.get('scene_interface')
             if scene_interface is not None:
                 keys(scene_interface, ('version', 'surface_queries', 'visibility_queries'), 'scene interface',
-                     ('payload', 'local_payload_bytes', 'visibility_buffer', 'line_queries'))
+                     ('payload', 'local_payload_bytes', 'visibility_buffer', 'line_queries', 'polygonal_light_sampling'))
                 if 'visibility_buffer' in scene_interface:
                     require(type(scene_interface['visibility_buffer']) is bool, 'Schema', 'visibility_buffer', 'Boolean required')
+                # Optional and additive: stages the projected-solid-angle, LTC, reservoir and LTC-table helpers.
+                if 'polygonal_light_sampling' in scene_interface:
+                    require(type(scene_interface['polygonal_light_sampling']) is bool, 'Schema',
+                            'polygonal_light_sampling', 'Boolean required')
                 if 'local_payload_bytes' in scene_interface:
                     integer(scene_interface['local_payload_bytes'], ray.PAYLOAD_FIELD_ALIGNMENT_BYTES,
                             ray.MAX_LOCAL_PAYLOAD_BYTES, 'shader-local payload budget')
@@ -1049,13 +1069,16 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                             record['key'] = identity(record['canonical'])
                             recipes.append(record)
                         continue
-                    if forward.is_forward(technique):
+                    is_clustered_depth = tid == 'DefaultStaticOpaque.DepthOnly' and any(forward.is_clustered(item) for item in techniques.values())
+                    if forward.is_forward(technique) or is_clustered_depth:
                         record = {'technique': tid, 'profile': target, 'state': technique['recipes'][0],
                                   'vertex': entries[('ForwardSetupVertex', target)],
-                                  'fragment': entries[('ForwardSetupFragment', target)],
+                                  'fragment': entries[(technique['fragment'] if is_clustered_depth else 'ForwardSetupFragment', target)],
                                   'vertex_schema': schemas['RendererStatic'], 'bindings': {'vertex': [], 'fragment': []},
-                                  'forward_stages': {group + ':' + stage: entries[(technique[stage] if group == 'ForwardLit' else group + stage.title(), target)]
-                                                     for group, (_, stages) in forward.SUPPORT.items() for stage in stages}}
+                                  'clustered_forward': is_clustered_depth or forward.is_clustered(technique),
+                                  'forward_stages': {group + ':' + stage: entries[(forward.support_program(techniques, group, stage), target)]
+                                                     for group, (_, stages) in forward.SUPPORT.items() for stage in stages
+                                                     if group != 'ForwardDepth' or is_clustered_depth or forward.is_clustered(technique)}}
                         record['canonical'] = deepcopy(record)
                         record['key'] = identity(record['canonical'])
                         recipes.append(record)

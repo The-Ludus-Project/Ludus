@@ -6,6 +6,7 @@
 #include "internal/world_workspace.h"
 
 #include <QDockWidget>
+#include <QSizePolicy>
 
 namespace ludus::editor
 {
@@ -19,8 +20,8 @@ void MainWindow::setupRayPaths()
     mRayPathsDockOrNull = new QDockWidget(QStringLiteral("Ray Paths"), this);
     mRayPathsDockOrNull->setObjectName(QStringLiteral("rayPathsDock"));
     RayPathInspector* inspector = new RayPathInspector(*rayPathsOrNull, mRayPathsDockOrNull);
-    // Like the other tool windows, the panel never widens the dock area it shares with Properties.
-    inspector->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
+    // Keep controls readable in the shared dock; the event/details splitter owns vertical sizing.
+    inspector->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Ignored);
     mRayPathsDockOrNull->setWidget(inspector);
     // Docked beside Properties only once opened, so the default layout keeps its dock sizes.
     addDockWidget(Qt::RightDockWidgetArea, mRayPathsDockOrNull);

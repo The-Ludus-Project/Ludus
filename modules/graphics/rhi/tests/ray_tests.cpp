@@ -1,10 +1,12 @@
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/types.h>
+#include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 
 #include <ludus/foundation/logging/log_system.hpp>
 #include <ludus/foundation/time/time.hpp>
 
+#include <ludus/graphics/rhi/compute.h>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/ray.h>
 
@@ -358,4 +360,69 @@ TEST_CASE("Opaque geometry prefixes preserve full primitive identities and maske
     }
     REQUIRE(rhi::Destroy(device, geometry) == rhi::RasterStatus::Ready);
     REQUIRE(rhi::Destroy(device, program) == rhi::RasterStatus::Ready);
+}
+
+TEST_CASE("Native ray geometry uses the device buffer range beyond the legacy 64 MiB ceiling",
+          "[rhi][gpu][ray][capacity]")
+{
+    rhi::Shutdown();
+    struct DeviceGuard final
+    {
+        ~DeviceGuard() noexcept
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceDescription description;
+    description.Required.PortableRaster = true;
+    description.Preferred.RayQueries = true;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    const rhi::DeviceStatus started = rhi::CreateDevice({}, { .Width = 1, .Height = 1 }, description, device, surface);
+    if (started != rhi::DeviceStatus::Ready && rhi::GetStartup().Error == rhi::StartupError::AdapterUnavailable)
+    {
+        SKIP("No GPU adapter");
+    }
+    REQUIRE(started == rhi::DeviceStatus::Ready);
+    rhi::RayCapabilities capabilities;
+    if (rhi::GetRayCapabilities(device, capabilities) == rhi::RasterStatus::Unsupported)
+    {
+        SKIP("Native ray queries are unavailable");
+    }
+    rhi::ComputeCapabilities compute;
+    REQUIRE(rhi::GetComputeCapabilities(device, compute) == rhi::RasterStatus::Ready);
+    CHECK(capabilities.MaxBufferBytes == compute.MaxStorageRange);
+    constexpr usize LEGACY_BUFFER_BYTES = usize{64} * 1024 * 1024;
+    constexpr usize POSITION_COMPONENTS = 3;
+    constexpr usize TRIANGLE_CORNERS = 3;
+    constexpr usize VERTEX_COUNT = LEGACY_BUFFER_BYTES / (POSITION_COMPONENTS * sizeof(float32)) + 1;
+    constexpr usize VERTEX_BYTES = VERTEX_COUNT * POSITION_COMPONENTS * sizeof(float32);
+    if (compute.MaxStorageRange < VERTEX_BYTES)
+    {
+        SKIP("The device's native buffer range does not exceed the legacy ceiling");
+    }
+    // Only the first three vertices are referenced. The complete input buffer must
+    // nevertheless be admitted, without requiring a large acceleration structure.
+    Array<float32> positionsMesh;
+    REQUIRE(positionsMesh.TryResize(VERTEX_COUNT * POSITION_COMPONENTS) == true);
+    positionsMesh[POSITION_COMPONENTS] = 1;
+    positionsMesh[2 * POSITION_COMPONENTS + 1] = 1;
+    const StaticArray<uint32, TRIANGLE_CORNERS> indices{{0, 1, 2}};
+    rhi::RayGeometryDescription geometryDescription;
+    geometryDescription.Positions = positionsMesh.GetData();
+    geometryDescription.VertexCount = VERTEX_COUNT;
+    geometryDescription.Indices = indices.GetData();
+    geometryDescription.IndexCount = indices.GetSize();
+    geometryDescription.ByteBudget = 2 * VERTEX_BYTES;
+    rhi::RayGeometryHandle geometry;
+    rhi::RayGeometryDescription rejected = geometryDescription;
+    rejected.ByteBudget = VERTEX_BYTES - 1;
+    CHECK(rhi::CreateRayGeometry(device, rejected, geometry) == rhi::RasterStatus::CapacityExceeded);
+    CHECK(rhi::GetStatus(device, geometry) == rhi::RasterStatus::InvalidHandle);
+    REQUIRE(rhi::CreateRayGeometry(device, geometryDescription, geometry) == rhi::RasterStatus::Pending);
+    REQUIRE(Poll(device, geometry) == rhi::RasterStatus::Ready);
+    rhi::RayAllocation allocation;
+    REQUIRE(rhi::GetRayAllocation(device, geometry, allocation) == rhi::RasterStatus::Ready);
+    CHECK(allocation.ResidentBytes >= VERTEX_BYTES);
+    REQUIRE(rhi::Destroy(device, geometry) == rhi::RasterStatus::Ready);
 }

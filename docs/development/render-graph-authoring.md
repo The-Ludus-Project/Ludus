@@ -56,7 +56,11 @@ Undo restores the complete record and document version. Double-click any ordinar
 node to open **Details**. A pipeline's clickable parts are **Read Inputs**,
 **Writable Resources**, **Shaders**, **Pipeline State**, **Invocation** and
 **Public Options**. Each part opens the same controls used by Properties;
-Properties may remain hidden. Double-clicking a Subgraph enters its graph.
+Properties may remain hidden. Click an individual shader card to select its assignment;
+double-click it to close **Details** and open that shader in the **Source** editor.
+The source comes from the current build-manifest program reference, including any
+per-use program override. An unmapped shader keeps **Details** open and reports the
+missing source. Double-clicking a Subgraph enters its graph.
 Right-click a pipeline and choose **View Shaders** to open a mapped source through
 its explicit build-manifest program reference. **Show Details / Edit Node** opens
 a Subgraph instance's choices without entering its shared source.
@@ -93,9 +97,21 @@ when a pair differs; legacy Raster assignments remain unchanged. In Shaders,
 select the desired program IDs. To share one source with different entry points,
 register separate programs in the manifest with the same `source` and different
 `function` values, then select those programs on the nodes. The compiler preserves
-these choices in both compiled headers and runtime packages. Exhausted manifest
-budgets preserve the draft and explain the repair. Ray callbacks still share the
-single bounded ray technique.
+these choices in both compiled headers and runtime packages. Adding a new shader
+program automatically grows `budgets.programs` and `budgets.artifacts` to the
+required counts, including every target profile. You do not need to edit the
+manifest first. Larger authored budgets are retained. Budget changes, source
+creation and node assignments share the same undo step and **Save** operation;
+undo restores the previous budgets too. Reusing an existing compatible program
+creates no additional program or budget change. Direct manifest edits and CLI
+builds continue to enforce their declared budgets.
+The build service's supported artifact ceiling and package file/byte limits still
+apply. Exceeding the artifact ceiling names the manifest, program/profile counts
+and supported limit, and preserves the complete draft. Reuse compatible programs,
+remove unused shaders or reduce target profiles before retrying.
+A new triangle ray pipeline needs three programs (`ray_generation`, `miss` and
+`closest_hit`); each addition grows the relevant budgets as needed. Ray callbacks
+still share the single bounded ray technique.
 To clean up the open package, choose **Edit → Remove Unused Shaders**, or
 **Remove Unused Shaders** in the canvas context menu. The command checks every
 loaded graph file and configuration (including disconnected nodes and unselected
@@ -1787,6 +1803,122 @@ highlights and BSDF sampling is noisy on the diffuse walls:
 See the canonical
 [package](../../modules/graphics/renderer/render_graphs/veach_guibas_mis/main.lurender.json).
 
+### Resample many area lights with projected solid angle sampling
+
+The **RIS + projected solid angle — many area lights** template
+(`ris-projected-solid-angle`) estimates first-hit direct lighting from many
+emissive triangles. It implements Ishaan Shah, Aakash KT and P. J. Narayanan,
+[*Combining Resampled Importance and Projected Solid Angle Samplings for Many Area Light Rendering*, SIGGRAPH Asia 2023 Technical Communications](https://doi.org/10.1145/3610543.3626165),
+with both sampling techniques of Christoph Peters,
+[*BRDF Importance Sampling for Polygonal Lights*, ACM TOG 40(4), article 140, 2021](https://doi.org/10.1145/3450626.3459672).
+It adds BSDF-hit MIS through a surrogate light density. The estimator, its
+decisions and its random layout are owned by the
+[many-area-light sampling review](../architecture/many-area-light-sampling-reference-review.md#template-ris-projected-solid-angle).
+Create it from **New Render Graph → Template**, or with the CLI:
+
+```bash
+ludus render-graph new graphs/Ris --template ris-projected-solid-angle --output offscreen \
+  --renderer-static --profiles metal wgsl
+```
+
+Use `spirv wgsl` for Vulkan. A `wgsl`-only package is rejected with a `Capability`
+diagnostic that names Metal or Vulkan compute. **Apply Configuration Template...**
+and Quick Add also offer the `RisProjectedSolidAngle` configuration. Its inputs and
+outputs match the [MIS template](#compare-light-and-bsdf-sampling-with-mis): `scene`,
+`view` and `color` in, a required `color` output and optional `lightSampling` and
+`bsdfSampling` outputs.
+
+Every pass selects the `ComputeBvh` traversal, so the package needs Metal or Vulkan
+compute but no hardware ray tracing. Its registry requirement is
+`compute-ray-tracing`. Browser execution is outside the graph ray profile.
+
+The package has the MIS template's shape: one `primary` pass, a 32-byte hit record,
+and three shade passes with their own **Accumulate → ToneMap → Export** chains.
+
+| Pipeline node | Function in `main_shaders/shade.slang` | Estimate | Output |
+| --- | --- | --- | --- |
+| `shade` | `ShadeMultipleImportance` | Emission plus the resampled light strategy and one BSDF sample, MIS-weighted | `color` → `output` export |
+| `shadeLight` | `ShadeLightSampling` | Emission plus the light strategy alone: Shah et al.'s estimator | `lightSampling` → `lightSamplingOutput` |
+| `shadeBsdf` | `ShadeBsdfSampling` | Emission plus the BSDF sample alone | `bsdfSampling` → `bsdfSamplingOutput` |
+
+The **light strategy** keeps `SelectLight`'s uniform category draw. Analytic lights
+and the environment use `SampleIncidentLight`, as in the MIS template. When the draw
+lands on a mesh emitter, the strategy works on the whole emissive set, chosen with
+probability `P_E` (emitters over lights):
+
+1. `MakeReceiverLightingFrame` looks up the receiver's specular LTC once, and sets
+   the diffuse technique's albedo, clamped to 0.01 per channel.
+2. `RIS_CANDIDATE_COUNT` candidates are drawn with `SelectEmissiveTriangle`. Each is
+   weighted by its target `p̂ / p_src` and streamed through the weighted reservoir.
+   The target `p̂` is the triangle's unshadowed LTC shading (constant emission
+   luminance times the albedo-weighted diffuse and LTC integrals), and zero for a
+   one-sided emitter seen from behind.
+3. The selected triangle receives one diffuse projected-solid-angle sample and,
+   unless its LTC-space clip is empty, one LTC sample. Peters' clamped optimal MIS
+   weights them, with visibility estimate `PROJECTED_SOLID_ANGLE_MIS_VISIBILITY`.
+4. Each direction is mapped to a point on the triangle. Emission maps and sidedness
+   are evaluated there, and `TestVisibility` traces the shadow ray. Emissive NEE
+   therefore costs up to two shadow rays.
+
+The **BSDF strategy** is the MIS template's. RIS has no tractable density, so a BSDF
+ray that reaches an emissive triangle uses a surrogate density. It is built from
+`RIS_NORMALIZATION_CANDIDATE_COUNT` further, independent power-CDF draws
+(`TryEnsureTargetTotalEstimate`) and capped by the triangle's chance of being a
+candidate at all. The light group and the BSDF sample are weighted against each
+other with the power heuristic, so the combined image converges to the same
+integral as each strategy alone. The scene interface declares `surface_queries: 1`,
+`visibility_queries: 2` and `polygonal_light_sampling: true`.
+
+| Graph setting | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `RIS_CANDIDATE_COUNT` | `32` | `1`–`32` | Candidates `M` per receiver |
+| `RIS_NORMALIZATION_CANDIDATE_COUNT` | `8` | `1`–`16` | Normalization candidates `K` for the BSDF-hit density |
+| `PROJECTED_SOLID_ANGLE_MIS_VISIBILITY` | `0.5` | `0`–`1` | Peters' `v`: `1` is the weighted balance heuristic, `0` the balance heuristic |
+
+Settings never change the random layout. Dimensions 2–8 keep the MIS template's
+meanings, so analytic, environment and BSDF draws are paired across the two
+templates. The table is in `main_shaders/hit_record.slang` and in the review.
+
+New shader programs have `RisProjectedSolidAngle`-prefixed IDs and sources under
+`ris_projected_solid_angle/main_shaders/`. The settings join the manifest's Graph
+settings, and existing values are kept. The shared ray technique is extended as for
+the compute ray-tracing template, and it gains `polygonal_light_sampling`.
+
+Scope and limits:
+
+- Light samples do not apply the emitter's own alpha cutoff, because the scene
+  interface has no alpha-acceptance query. This is the same as the MIS template.
+- Emission maps are integrated but not importance sampled.
+- The diffuse technique's albedo uses Schlick's reflectance at normal incidence.
+- The fixed two-iteration inversion of Peters' sampler has a small backward error;
+  a direction that misses its triangle in float32 contributes zero.
+- There is no indirect bounce and no reservoir reuse.
+
+`ludus_render_graph_ray_tests` renders the template on Metal, with its compute BVH.
+These cases run as their own CTest entry,
+`ludus_render_graph_ris_projected_solid_angle_pixels`. The fixtures are the glossy
+Cornell-box-style room under a sky, a room with sixteen small emitters whose power
+spans a factor of 64, and a two-sided emitter over minimum-roughness metal:
+
+- At 256 samples per pixel, all three outputs converge to the MIS template's
+  light-sampling output within 2%. The exception is the two-sided case, where they
+  are compared with its MIS output instead. There the light lies 2 cm below the
+  ceiling, so area-uniform light sampling has unbounded variance and its 256-sample
+  mean reads about 4% low.
+- After 16 samples in the many-emitter room, the combined image has a lower mean
+  squared error than the MIS template's, measured against a 1024-sample image of the
+  MIS template with an independent seed. The error is measured on the tone-mapped
+  image, about 0.0011 against 0.0025 on Apple M5. The decoded linear error is
+  reported beside it but is dominated by pixels that see an emitter directly.
+
+`ludus_renderer_render_tests` runs the weights on the GPU. It checks that Peters'
+weights and the light/BSDF split sum to one wherever a technique can sample, that
+`Ẑ = 0` applies the inclusion cap, and that an empty LTC clip leaves the diffuse
+technique all the weight. Vulkan has not been run for this template.
+
+See the canonical
+[package](../../modules/graphics/renderer/render_graphs/ris_projected_solid_angle/main.lurender.json).
+
 ### Sample lights along lines
 
 The **Line sampling — visible chords of area lights** template (`line-sampling`)
@@ -2119,6 +2251,25 @@ triangle recipe state. Add this record to the manifest's
 Add `"line_queries": 1` (up to 8) only when a callback calls
 `FindVisibleLineIntervals`. An absent field means 0, and the generated wrapper is
 then byte-identical to one without the field.
+
+Add `"polygonal_light_sampling": true` to use the polygonal-light primitives in
+callbacks. The wrapper then stages and includes, before your sources:
+
+- FoundationMath's `projected_solid_angle.slang` (Peters' projected-solid-angle
+  clipping, integral and sampler);
+- `linearly_transformed_cosine.slang` (the LTC polygon transform);
+- `weighted_reservoir.slang` (the sequential weighted reservoir);
+- the renderer's `ltc_table.slang` (`LookupSpecularLtc`, `ComputeSpecularLtcAlbedo`)
+  with its generated table.
+
+Their contracts are on the
+[FoundationMath page](../modules/foundation/math.md#linearly-transformed-cosines-over-polygons),
+in [randomness](../architecture/randomness.md#sequential-weighted-reservoir) and in
+the [LTC table guide](ltc-table.md). The table adds about 0.5 MB to the source
+snapshot, so omit the field when you do not need them. It must be a Boolean, and
+older SDKs reject the unknown field instead of building without the helpers. The
+[RIS and projected-solid-angle template](#resample-many-area-lights-with-projected-solid-angle-sampling)
+declares it.
 
 Scene-aware programs use these manifest input/output names and signatures.
 The pipeline can also retain legacy `RayLaunch / Ray`, `Ray / Color` and
@@ -3011,6 +3162,8 @@ explore with the free camera. It is not a GPU frame debugger.
    `ComputePipeline` node and choose **Capture Ray Paths**. To capture every ray
    pass of the configuration, right-click the canvas background and choose
    **Capture Ray Paths (All Ray Passes)** instead. The **Ray Paths** panel opens.
+   You can also start an all-pass capture with **Capture ray paths** in that
+   panel when the viewport is ready.
 3. Click a pixel of the graph output in the World viewport. Esc cancels. The
    editor then freezes the graph camera, the World revision (which also seeds
    sampling), the drawing generation and the viewport size.
@@ -3028,10 +3181,19 @@ explore with the free camera. It is not a GPU frame debugger.
    depth-tested against the scene; **X-ray** draws them through geometry. The
    overlay passes through the viewport's display conversion, so its colors look
    slightly muted.
-6. The panel groups events by sample, then pass, then sequence, with each pass's
-   sample radiance. Selecting a row highlights its segment and shows its fields.
-   Selecting a hit also selects its World entity. A sample filter limits the
-   drawing to one sample.
+6. The panel groups events by sample, then invocation (pass), then sequence.
+   The first sample starts expanded, as do failed or truncated samples so their
+   warnings remain visible. Use **Expand all** or **Collapse all** to explore
+   larger captures. Event names and hit distances share a full-width list, with
+   complete labels available on hover. Select an invocation to see its event
+   count, linear RGB radiance and truncation/failure status. Select an event to
+   highlight its segment and read its world-space origin, direction, interval,
+   hit distance and full object ID in the selectable **Details** area. Drag the
+   divider to resize the list and details; long details scroll independently.
+   Selecting a hit also selects its World entity. **Sample** filters both the
+   list and viewport, clearing a selection hidden by the filter. **Color by**
+   and **X-ray** control the viewport overlay. These are event counts and ray
+   distances; capture does not report GPU invocation timings.
 7. Choose **Leave Inspection** to return to the live graph from the current editor
    camera. **Capture Again** picks another pixel for the same target.
 
@@ -3291,6 +3453,42 @@ Limits:
 - Opening or saving an unedited default writes nothing. Project loading never bootstraps
   tools or repairs an SDK. Missing tools are build diagnostics; use project setup to repair them.
 
+## Default clustered forward lighting
+
+The engine default and the **Raster** starter use the `ClusteredForward` scene
+profile. They shade the current World's authored materials, textures, analytic
+lights and environment; an unlit World with no emission or environment is dark.
+They require static opaque triangles with normals. Masked/transparent materials
+and invalid inputs reject preparation and retain the last drawable generation.
+No proxy lights, ray tracing, shadow maps or indirect illumination are added.
+The color target remains linear RGBA8, so radiance above one clips.
+
+`Default` runs one color/depth pass. Select **ZPrepass** in the preview configuration
+selector to enable a separate depth-only pass. That pass clears and stores depth;
+the color pass loads the same depth and uses `LessEqual`. Both passes use the same
+geometry transforms, camera and viewport-relative extent. The prepass uses the same authored vertex stage, calls the editable
+`main_shaders/depth.slang` coverage function, and writes no color or material shading. It is disabled in `Default`; choose it after
+measuring geometry and fragment costs for the target workload. The canvas shows
+both passes in `rasterize.lurender.json` → `ColorAndDepthWithPrepass`.
+
+Light assignment reuses the [portable L5 clustered profile](../architecture/renderer-systems.md#l5-opt-in-portable-scaling).
+The CPU builds conservative 8×8×8 world-space cells over the scene's transformed
+geometry bounds, padded by half a metre and clamped to the profile's coordinate
+limits. Shading runs on the GPU. All admitted lights (up to 128) are retained;
+each cell stores up to 32 indices. Overflowing cells and samples outside the grid
+evaluate the complete list. `RenderGraphReport::Resources` exposes dropped lights,
+overflow cells and stored assignments. Camera-only edits reuse the scene's lists;
+changed scene/light inputs prepare immutable replacement materials and lists.
+This first integration uses the existing per-material list texture/upload path,
+not GPU light assignment, projection-shaped clusters or depth occupancy pruning.
+
+The manifest selects `"scene_interface": {"version": 1, "profile": "ClusteredForward"}`
+on `DefaultStaticOpaque.ColorAndDepth`, with a `LessEqual` recipe. The optional
+`DefaultStaticOpaque.DepthOnly` technique shares the renderer setup geometry stage.
+Other raster technique families are rejected by this profile. Existing `ForwardLit`
+packages keep their original eight-light ABI and behavior; runtime package version
+23 distinguishes the clustered fragment role without changing record widths.
+
 ## Create a saved graph and import it
 
 In the native editor, open your game project and choose **File → New Render Graph...**.
@@ -3300,8 +3498,8 @@ choose **Create**. The editor creates `graphs/<name>/` inside the selected game
 project, including `main.lurender.json`, the reusable `rasterize.lurender.json`,
 `main.lushader.json` and editable `main_shaders/*.slang` functions, then opens the
 graph on the canvas. The Raster starter copies the same canonical package used by
-the engine default, with viewport-relative color/depth targets and editable unlit
-color shaders. It exports a color image and uses the RendererStatic interface
+the engine default, with viewport-relative color/depth targets and editable clustered
+forward material shaders. It exports a color image and uses the RendererStatic interface
 required by the editor preview. Target profiles are
 Metal/WGSL on macOS and SPIR-V/WGSL on Linux. Creation needs no shader compiler or
 running viewport and never overwrites an existing graph folder. A failed creation
@@ -3635,8 +3833,14 @@ to the graph plan, rather than the shader program. Recipe keys compare complete
 canonical state, stage identities, vertex schema and target binding layouts;
 recipe/node names and camera/extent values do not create extra shader programs.
 
-Budget ceilings are 8 configurations, 32 programs, 128 target artifacts and
-64 target pipeline recipes. The author may choose smaller bounds. The
+Program counts have no separate fixed engine ceiling: `budgets.programs` is a
+positive integer chosen by the author. Adding programs beyond 32 is supported
+when that authored budget admits them; editor shader creation grows it as needed.
+Independent ceilings remain 8
+configurations, 128 target artifacts and 64 target pipeline recipes; source and
+package byte/file limits also apply. Target artifacts count registered programs
+multiplied by target profiles, so increasing the program budget does not bypass
+the artifact budget. The author may choose smaller bounds. The
 configuration bound counts authored techniques and the root graph's own
 configurations. Imported configurations that Subgraph nodes reach do not spend
 it: they expand into the root plans, whose techniques, programs, ray variants,
@@ -4533,7 +4737,7 @@ undoable edit; **Save** writes it to the project.
 
 #### Add nodes with Quick Add
 
-Quick Add finds a node or snippet by name without scrolling through a list. Open it
+Quick Add finds a node, snippet or existing package graph by name without scrolling through a list. Open it
 with **Shift+A** over the canvas, by double-clicking empty canvas, or with
 **Quick Add...** at the top of the canvas context menu. It opens where you asked:
 Shift+A uses the pointer (or the view centre when the pointer is outside), and a
@@ -4544,7 +4748,8 @@ double-click or context menu uses that spot.
 | Type in the search field | Matches names, purposes and common terms, such as `hdr` for ToneMap or `fsr` for the FSR upscalers; the category list shows how many matches each category has |
 | Up/Down, Enter or a click | Choose a result. A node is added at the opening position in one undoable edit; an Upscale preset places its Upscale node there and arranges its helpers automatically |
 | Choose a snippet | Opens **Apply Configuration Template** with that snippet selected, so you still name the configuration and confirm any budget increase. Snippets: ReSTIR DI, Tiled vbuffer NEE, [Compute ray tracing](#use-the-compute-ray-tracing-template), [Simple triangle loop](#use-the-simple-triangle-loop-template), Visibility buffer + depth and Visibility + secondary rays |
-| Tab / Shift+Tab | Switch between All, Snippets and Nodes |
+| Choose a graph | Inserts a Subgraph reference to its default configuration at the opening position, in one undoable edit; change the referenced configuration afterward through the canvas node fields or Properties |
+| Tab / Shift+Tab | Switch between All, Snippets, Nodes and Graphs |
 | Click a category | Show only that category |
 | ☆, or **Pin** | Keep a template under Suggested |
 | Esc or click outside | Close without editing the draft |
@@ -4554,6 +4759,16 @@ to keep typing or pick a category. With an empty search it opens on your three m
 recent templates and your pinned ones; the editor remembers both between sessions.
 When the search also matches complete graphs, a link opens **New Render Graph** with
 the best match selected. Quick Add never creates a complete graph on the canvas.
+The **Graphs** tab lists graph assets loaded in the package, including unused sources;
+**All** searches them alongside nodes and snippets. Search matches graph names, paths,
+configuration names, descriptions and exposed port names/types. The detail preview shows
+the package-relative path, default configuration and its inputs/outputs. Insertion adds
+a reference without copying or changing the graph source. Graphs that would introduce
+a dependency cycle, have a missing default configuration or an unavailable dependency
+stay visible with the reason and insertion disabled. Recent and pinned graph entries
+use the asset path, so identically named graphs remain distinct. Reopening refreshes
+the catalog from the current draft; insertion rechecks the default and dependencies.
+
 Templates that cannot preview in this editor, such as Denoise without the OIDN
 denoiser, stay listed with the reason, because the graph remains portable.
 
@@ -4563,14 +4778,16 @@ dragging. Quick Add opens with a context line such as
 `Connect from tonemap.color · ColorTexture` and lists only nodes that have an input
 accepting that output. Each candidate input goes through the same link pre-check as a
 drag onto an existing input, including type, cycle and texture-contract checks, so an
-incompatible template is never offered. When you choose a node, Quick Add adds it with
+incompatible node template is never offered. Compatible graph references are ranked
+first; other graphs stay visible with insertion disabled and an explanation. When you
+choose a node or graph, Quick Add adds it with
 the first accepting input lined up on the drop point, or one column gap to the right of
 a clicked port. The node, its layout position and the new connection form one undoable
 edit. An Upscale preset connects the wire to that input instead of creating a helper
 target for it. Snippets are not offered while the filter is on: they apply through
 **Apply Configuration Template** as a separate edit, so the wire could not be part of
 the same undo step. **Show all**, or Backspace in an empty search, clears the filter.
-After that, a chosen node is added at the same spot without a connection. Esc closes
+After that, a chosen node or graph is added at the same spot without a connection. Esc closes
 the palette and leaves the draft unchanged. Releasing on a node body does nothing, and
 releasing on a port connects or rejects as usual.
 
@@ -5227,6 +5444,11 @@ replacement previews until retained GPU uses retire. The device-wide RHI resourc
 budget and each device's storage-buffer binding range apply independently; a
 larger graph ceiling cannot override either one. The supplied imported Sponza
 World's two million triangles require more than the previous 256 MiB ceilings.
+Native ray geometry and acceleration-structure build scratch use the backend's
+enabled allocation range, rather than the former fixed 64 MiB ceiling. Each
+creation still checks its explicit byte budget. Packed opacity metadata retains
+its separate exact-float32-addressing bound; a larger native allocation range
+does not enlarge that representation.
 
 When measured byte admission fails, `RenderGraphReport::SceneDiagnostics` names
 the exceeded budget and records required and available bytes. The editor displays

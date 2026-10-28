@@ -1044,6 +1044,138 @@ TEST_CASE("independent entry points render different colors in one graph", "[ren
     CHECK(fixture.Pixels[RIGHT + 1] > 0);
 }
 
+TEST_CASE("default clustered forward matches full light evaluation with and without the z prepass",
+          "[render-graph][clustered-forward][gpu]")
+{
+    constexpr usize LIGHT_COUNT = 40;
+    constexpr usize LIGHTING_CASE_COUNT = 2;
+    constexpr usize POLL_ATTEMPTS = 10000;
+    StaticArray<StaticArray<uint8, PIXEL_BYTES>, LIGHTING_CASE_COUNT> ordinaryPixels{};
+    for (const bool shouldUsePrepass : {false, true})
+    {
+        GraphGpuFixture fixture;
+        const PackageLocation location =
+            shouldUsePrepass == true
+                ? PackageLocation{LUDUS_RG3_CLUSTERED_ZPREPASS_DIRECTORY, "rg2_clustered_ZPrepass.lurgrt"}
+                : PackageLocation{LUDUS_RG3_CLUSTERED_DEFAULT_DIRECTORY, "rg2_clustered_Default.lurgrt"};
+        const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(location);
+        const renderer::RenderGraphPrograms programs =
+            package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+        REQUIRE(programs.HasClusteredForward == true);
+        CHECK(package->GetPlan().Passes.GetSize() == (shouldUsePrepass == true ? 2 : 1));
+        if (shouldUsePrepass == true)
+        {
+            CHECK(package->GetPlan().Passes[0].AllowsRepeatedCoverage == 1);
+            CHECK(package->GetPlan().Passes[1].AllowsRepeatedCoverage == 1);
+        }
+        const auto poll = [&](rhi::RasterStatus status) {
+            for (usize attempt = 0; attempt < POLL_ATTEMPTS && status == rhi::RasterStatus::Pending; ++attempt)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                status = fixture.Graph.Poll();
+            }
+            return status;
+        };
+        REQUIRE(poll(fixture.Graph.Initialize(fixture.Device, package->GetPlan(), programs, nullptr, WIDTH, HEIGHT)) ==
+                rhi::RasterStatus::Ready);
+        const StaticArray<math::Vector3, VERTEX_COUNT> normals{{{0, 0, 1}, {0, 0, 1}, {0, 0, 1}}};
+        fixture.Meshes[0].Geometry.Normals = normals.GetData();
+        const uint32 materialIndex = 0;
+        fixture.Meshes[0].MaterialBindings = {&materialIndex, 1};
+        renderer::SceneShaderMaterial material;
+        renderer::SceneShaderInputs inputs;
+        inputs.Materials = {&material, 1};
+        StaticArray<renderer::DirectLight, LIGHT_COUNT> lights{};
+        inputs.Lights = {lights.GetData(), lights.GetSize()};
+        uint64 revision = 0;
+        const auto update = [&]() {
+            renderer::RenderGraphReport report;
+            ++revision;
+            return poll(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                             {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                             {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                             revision,
+                                             renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                             report,
+                                             &inputs,
+                                             revision));
+        };
+        rhi::TextureHandle texture;
+        rhi::TextureAspect aspect;
+        REQUIRE(fixture.Graph.GetExportAllocation(0, texture, aspect) == rhi::RasterStatus::Ready);
+        renderer::Renderer compositor;
+        REQUIRE(compositor.Initialize(fixture.Device, programs.ColorVertex, programs.ColorFragment) ==
+                rhi::RasterStatus::Ready);
+        REQUIRE(compositor.InitializeViews(shaders::renderer_composite::Vertex(),
+                                           shaders::renderer_composite::Fragment()) == rhi::RasterStatus::Ready);
+        renderer::ViewMapping mapping;
+        REQUIRE(renderer::ResolveViewMapping({WIDTH, HEIGHT, renderer::ScreenFit::Stretch},
+                                             {0, 0, WIDTH, HEIGHT},
+                                             WIDTH,
+                                             HEIGHT,
+                                             mapping) == rhi::RasterStatus::Ready);
+        renderer::Presentation presentation;
+        REQUIRE(compositor.PreparePresentation(texture, mapping, presentation) == rhi::RasterStatus::Ready);
+        const auto render = [&]() {
+            REQUIRE(rhi::BeginFrame(fixture.Device, fixture.Surface) == rhi::DeviceStatus::Ready);
+            REQUIRE(fixture.Graph.Encode(fixture.Surface) == rhi::RasterStatus::Ready);
+            REQUIRE(compositor.DrawPresentation(presentation) == rhi::RasterStatus::Ready);
+            rhi::SubmissionToken completion;
+            REQUIRE(rhi::EndFrame(fixture.Device, completion) == rhi::RasterStatus::Ready);
+            const rhi::RasterStatus confirmed = fixture.Graph.ConfirmSubmission(completion);
+            REQUIRE((confirmed == rhi::RasterStatus::Ready || confirmed == rhi::RasterStatus::Pending));
+            REQUIRE(rhi::backend::ReadHeadlessPixels(fixture.Pixels.AsSpan()) == true);
+        };
+        for (usize lightingCase = 0; lightingCase < LIGHTING_CASE_COUNT; ++lightingCase)
+        {
+            for (usize light = 0; light < LIGHT_COUNT; ++light)
+            {
+                lights[light].SourceId = light + 1;
+                lights[light].Color = light + 1 == LIGHT_COUNT ? math::Vector3{0, 0, 1} : math::Vector3{1, 0, 0};
+                lights[light].Direction = {0, 0, -1};
+                lights[light].Intensity = light + 1 == LIGHT_COUNT ? 0.5F : 0.02F;
+                lights[light].Kind = lightingCase == 0 ? renderer::LightKind::Directional : renderer::LightKind::Point;
+                lights[light].Position = {100 + static_cast<float32>(light), 0, 1};
+                lights[light].Range = 0.1F;
+            }
+            lights[LIGHT_COUNT - 1].Position = {0, 0, 1};
+            lights[LIGHT_COUNT - 1].Range = 2;
+            fixture.Cameras[0].DirectLighting = false;
+            REQUIRE(update() == rhi::RasterStatus::Ready);
+            const renderer::RenderGraphSceneResourceReport report = fixture.Graph.GetReport().Resources;
+            CHECK(report.DroppedLights == 0);
+            CHECK(report.OverflowClusters == (lightingCase == 0 ? 512 : 0));
+            render();
+            CHECK(fixture.Pixels[GetPixel(WIDTH / 2, HEIGHT / 2) + 2] > 10);
+            const StaticArray<uint8, PIXEL_BYTES> clustered = fixture.Pixels;
+            if (shouldUsePrepass == false)
+            {
+                ordinaryPixels[lightingCase] = clustered;
+            }
+            else
+            {
+                CHECK(clustered == ordinaryPixels[lightingCase]);
+            }
+            fixture.Cameras[0].DirectLighting = true;
+            REQUIRE(update() == rhi::RasterStatus::Ready);
+            render();
+            for (usize channel = 0; channel < PIXEL_BYTES; ++channel)
+            {
+                CHECK(math::Abs(static_cast<float32>(clustered[channel]) -
+                                static_cast<float32>(fixture.Pixels[channel])) <= 1);
+            }
+            // Failed replacement retains the last successfully published scene and pixels.
+            const StaticArray<uint8, PIXEL_BYTES> lastDrawable = fixture.Pixels;
+            lights[LIGHT_COUNT - 1].Color = {0, 1, 0};
+            lights[LIGHT_COUNT - 1].SourceId = lights[0].SourceId;
+            REQUIRE(update() != rhi::RasterStatus::Ready);
+            CHECK(fixture.Graph.GetDrawableSceneRevision() == revision - 1);
+            render();
+            CHECK(fixture.Pixels == lastDrawable);
+        }
+    }
+}
+
 TEST_CASE("forward-lit reuses immutable assets and preserves the drawable scene on rejection",
           "[render-graph][forward-lit][gpu]")
 {

@@ -118,6 +118,12 @@ SelectDirectLights(const DirectLight* lights, ludus::foundation::usize count, Li
 /// reference transport, where silently dropping illumination would change the integral.
 [[nodiscard]] rhi::RasterStatus
 NormalizeDirectLights(const DirectLight* lights, ludus::foundation::usize count, LightSelection& output) noexcept;
+/// Largest absolute grid bound coordinate in metres for the portable clustered profile.
+inline constexpr foundation::float32 MAX_CLUSTER_COORDINATE = 1000000;
+/// Minimum grid extent per axis in metres; prevents unstable reciprocal cell sizes.
+inline constexpr foundation::float32 MIN_CLUSTER_EXTENT = 0.01F;
+/// Maximum grid extent per axis in metres.
+inline constexpr foundation::float32 MAX_CLUSTER_EXTENT = 2 * MAX_CLUSTER_COORDINATE;
 /// Regular 8x8x8 grid in a rigidly transformed space, independent of opaque depth.
 struct LightClusterDescription final
 {

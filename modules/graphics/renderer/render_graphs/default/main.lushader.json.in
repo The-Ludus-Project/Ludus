@@ -108,11 +108,15 @@
           "topology": "TriangleList",
           "cull": "None",
           "front": "CounterClockwise",
-          "depth_compare": "Less",
+          "depth_compare": "LessEqual",
           "depth_write": true,
           "blend": "Opaque"
         }
-      ]
+      ],
+      "scene_interface": {
+        "version": 1,
+        "profile": "ClusteredForward"
+      }
     },
     {
       "id": "DefaultStaticOpaque.DepthOnly",

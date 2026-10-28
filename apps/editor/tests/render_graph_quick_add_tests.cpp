@@ -2,6 +2,7 @@
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_quick_add.h"
+#include "internal/render_graph_quick_add_graphs.h"
 #include "internal/render_graph_template_registry.h"
 #include "internal/renderer_workspace.h"
 
@@ -346,6 +347,225 @@ TEST_CASE("Quick Add inserts with the keyboard and remembers recent and pinned t
     CHECK(palette.isVisible() == false);
 }
 
+TEST_CASE("Quick Add discovers unused graphs and searches their interfaces and configurations",
+          "[editor][render-graph][quick-add]")
+{
+    QTemporaryDir project;
+    const QString package = MakeQuickAddTestPackage(project);
+    const QString asset = QStringLiteral("sampling/SliceSampling.lurender.json");
+    REQUIRE(QDir(package).mkpath(QStringLiteral("sampling")) == true);
+    REQUIRE(QFile::copy(QDir(package).filePath(QStringLiteral("rasterize.lurender.json")),
+                        QDir(package).filePath(asset)) == true);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, GetRoot()) == RenderGraphDocumentStatus::Ok);
+    QJsonObject graph;
+    REQUIRE(document.GetGraph(asset, graph) == true);
+    graph.insert(QStringLiteral("id"), QStringLiteral("SliceSampling"));
+    graph.insert(QStringLiteral("default"), QStringLiteral("DepthOnly"));
+    REQUIRE(document.SetText(asset, EncodeCanonicalJson(graph)) == RenderGraphDocumentStatus::Ok);
+
+    RenderGraphQuickAdd palette(RenderGraphTemplateRegistry::GetBuiltIn());
+    palette.SetGraphs(BuildRenderGraphQuickAddGraphs(document, GetRoot(), QStringLiteral("Default")));
+    palette.Open(QPoint(40, 40));
+    QLineEdit* searchOrNull = palette.findChild<QLineEdit*>(QStringLiteral("renderGraphQuickAddSearch"));
+    REQUIRE(searchOrNull != nullptr);
+    const QString key = QStringLiteral("graph:") + asset;
+    searchOrNull->setText(QStringLiteral("slicesampl"));
+    CHECK(palette.GetListedKeys() == QStringList{key});
+    palette.SetKind(RenderGraphQuickAddKind::Graphs);
+    for (const QString& query : {QStringLiteral("DepthOnly"),
+                                 QStringLiteral("Scene"),
+                                 QStringLiteral("reference"),
+                                 QStringLiteral("sampling/SliceSampling")})
+    {
+        searchOrNull->setText(query);
+        CHECK(palette.GetListedKeys().contains(key) == true);
+    }
+    searchOrNull->setText(QStringLiteral("slicesampl"));
+    QLabel* portsOrNull = palette.findChild<QLabel*>(QStringLiteral("renderGraphQuickAddPorts"));
+    REQUIRE(portsOrNull != nullptr);
+    CHECK(portsOrNull->text().contains(asset) == true);
+    CHECK(portsOrNull->text().contains(QStringLiteral("Default configuration: DepthOnly")) == true);
+    CHECK(portsOrNull->text().contains(QStringLiteral("depth (DepthTexture)")) == true);
+    const QString capture = qEnvironmentVariable("LUDUS_EDITOR_QUICK_ADD_CAPTURE");
+    if (capture.isEmpty() == false)
+    {
+        REQUIRE(palette.grab().save(capture + QStringLiteral("-graphs.png")) == true);
+    }
+    QSignalSpy inserted(&palette, &RenderGraphQuickAdd::InsertRequested);
+    REQUIRE(palette.InsertHighlighted() == true);
+    REQUIRE(inserted.size() == 1);
+    const RenderGraphTemplate entry = inserted.at(0).at(0).value<RenderGraphTemplate>();
+    CHECK(entry.Identity == asset);
+    CHECK(entry.DefaultConfiguration == QStringLiteral("DepthOnly"));
+    palette.Open(QPoint(40, 40));
+    CHECK(palette.GetListedKeys().contains(key) == true);
+    palette.TogglePinned(key);
+    CHECK(palette.GetPinned().contains(key) == true);
+    palette.close();
+
+    // Recheck the selected default before insertion instead of silently using a new interface.
+    graph.insert(QStringLiteral("default"), QStringLiteral("ColorAndDepth"));
+    REQUIRE(document.SetText(asset, EncodeCanonicalJson(graph)) == RenderGraphDocumentStatus::Ok);
+    CHECK(CheckRenderGraphQuickAddGraph(document, GetRoot(), QStringLiteral("Default"), entry)
+              .contains(QStringLiteral("default configuration changed")) == true);
+}
+
+TEST_CASE("Quick Add graph references preserve layout and undo with Properties hidden",
+          "[editor][render-graph][quick-add]")
+{
+    QuickAddCanvasFixture fixture;
+    RendererWorkspace& workspace = fixture.Workspace;
+    RenderGraphQuickAdd& palette = *fixture.PaletteOrNull;
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QByteArray original = document.GetDraft(GetRoot());
+    const QByteArray library = document.GetDraft(QStringLiteral("rasterize.lurender.json"));
+    workspace.TakeInspectorPanel(&workspace)->hide();
+    REQUIRE(workspace.ShowQuickAdd(QPointF(320.0, 240.0)) == true);
+    QLineEdit* searchOrNull = palette.findChild<QLineEdit*>(QStringLiteral("renderGraphQuickAddSearch"));
+    REQUIRE(searchOrNull != nullptr);
+    searchOrNull->setText(QStringLiteral("RasterizeGraph"));
+    REQUIRE(palette.InsertHighlighted() == true);
+    const QJsonArray nodes = GetConfiguration(document).value(QStringLiteral("nodes")).toArray();
+    const QJsonObject inserted = nodes.last().toObject();
+    CHECK(inserted.value(QStringLiteral("kind")).toString() == QStringLiteral("Subgraph"));
+    CHECK(inserted.value(QStringLiteral("asset")).toString() == QStringLiteral("rasterize.lurender.json"));
+    CHECK(inserted.value(QStringLiteral("configuration")).toString() == QStringLiteral("ColorAndDepth"));
+    CHECK(GetLayoutPosition(document, QStringLiteral("subgraph")) == QPoint(320, 240));
+    CHECK(document.GetDraft(QStringLiteral("rasterize.lurender.json")) == library);
+    workspace.Undo();
+    CHECK(document.GetDraft(GetRoot()) == original);
+    workspace.Redo();
+    CHECK(HasNode(document, QStringLiteral("subgraph")) == true);
+    REQUIRE(workspace.ShowQuickAdd(QPointF(400.0, 300.0)) == true);
+    searchOrNull->setText(QStringLiteral("RasterizeGraph"));
+    REQUIRE(palette.InsertHighlighted() == true);
+    CHECK(HasNode(document, QStringLiteral("subgraph2")) == true);
+}
+
+TEST_CASE("Quick Add keeps recursive and invalid graphs inspectable but blocks insertion",
+          "[editor][render-graph][quick-add]")
+{
+    QuickAddCanvasFixture fixture;
+    RendererWorkspace& workspace = fixture.Workspace;
+    RenderGraphQuickAdd& palette = *fixture.PaletteOrNull;
+    REQUIRE(workspace.SelectNode(QStringLiteral("rasterize.lurender.json"), QStringLiteral("ColorAndDepth"), {}) ==
+            true);
+    REQUIRE(workspace.ShowQuickAdd(QPointF(0.0, 0.0)) == true);
+    QLineEdit* searchOrNull = palette.findChild<QLineEdit*>(QStringLiteral("renderGraphQuickAddSearch"));
+    QLabel* warningOrNull = palette.findChild<QLabel*>(QStringLiteral("renderGraphQuickAddWarning"));
+    QPushButton* insertOrNull = palette.findChild<QPushButton*>(QStringLiteral("renderGraphQuickAddInsert"));
+    REQUIRE(searchOrNull != nullptr);
+    REQUIRE(warningOrNull != nullptr);
+    REQUIRE(insertOrNull != nullptr);
+    palette.SetKind(RenderGraphQuickAddKind::Graphs);
+    QSignalSpy inserted(&palette, &RenderGraphQuickAdd::InsertRequested);
+    const uint64 revision = workspace.GetDocument().GetRevision();
+    for (const QString& query : {QStringLiteral("RasterizeGraph"), QStringLiteral("Main")})
+    {
+        searchOrNull->setText(query);
+        REQUIRE(palette.GetListedKeys().size() == 1);
+        CHECK(warningOrNull->text().contains(QStringLiteral("cycle")) == true);
+        CHECK(insertOrNull->isEnabled() == false);
+        CHECK(palette.InsertHighlighted() == false);
+    }
+    CHECK(inserted.isEmpty() == true);
+    CHECK(workspace.GetDocument().GetRevision() == revision);
+    palette.close();
+    REQUIRE(workspace.SelectNode(QStringLiteral("rasterize.lurender.json"), QStringLiteral("DepthOnly"), {}) == true);
+    REQUIRE(workspace.ShowQuickAdd(QPointF(0.0, 0.0)) == true);
+    searchOrNull->setText(QStringLiteral("Main"));
+    palette.SetKind(RenderGraphQuickAddKind::Graphs);
+    // Imports are recursive across files even when the selected configuration is different.
+    CHECK(warningOrNull->text().contains(QStringLiteral("cycle")) == true);
+    CHECK(palette.InsertHighlighted() == false);
+    palette.close();
+
+    QJsonObject graph;
+    REQUIRE(workspace.GetDocument().GetGraph(QStringLiteral("rasterize.lurender.json"), graph) == true);
+    graph.insert(QStringLiteral("default"), QStringLiteral("Missing"));
+    REQUIRE(workspace.GetDocument().SetText(QStringLiteral("rasterize.lurender.json"), EncodeCanonicalJson(graph)) ==
+            RenderGraphDocumentStatus::Ok);
+    REQUIRE(workspace.SelectNode(GetRoot(), QStringLiteral("Default"), {}) == true);
+    REQUIRE(workspace.ShowQuickAdd(QPointF(0.0, 0.0)) == true);
+    searchOrNull->setText(QStringLiteral("RasterizeGraph"));
+    CHECK(warningOrNull->text().contains(QStringLiteral("no valid interface")) == true);
+    CHECK(palette.InsertHighlighted() == false);
+    palette.close();
+}
+
+TEST_CASE("Quick Add rechecks graph defaults before editing the draft", "[editor][render-graph][quick-add]")
+{
+    QuickAddCanvasFixture fixture;
+    RendererWorkspace& workspace = fixture.Workspace;
+    RenderGraphQuickAdd& palette = *fixture.PaletteOrNull;
+    RenderGraphDocument& document = workspace.GetDocument();
+    REQUIRE(workspace.ShowQuickAdd(QPointF(100.0, 200.0)) == true);
+    QLineEdit* searchOrNull = palette.findChild<QLineEdit*>(QStringLiteral("renderGraphQuickAddSearch"));
+    REQUIRE(searchOrNull != nullptr);
+    searchOrNull->setText(QStringLiteral("RasterizeGraph"));
+    QJsonObject graph;
+    REQUIRE(document.GetGraph(QStringLiteral("rasterize.lurender.json"), graph) == true);
+    graph.insert(QStringLiteral("default"), QStringLiteral("DepthOnly"));
+    REQUIRE(document.SetText(QStringLiteral("rasterize.lurender.json"), EncodeCanonicalJson(graph)) ==
+            RenderGraphDocumentStatus::Ok);
+    const uint64 revision = document.GetRevision();
+    const QByteArray root = document.GetDraft(GetRoot());
+    REQUIRE(palette.InsertHighlighted() == true);
+    CHECK(document.GetRevision() == revision);
+    CHECK(document.GetDraft(GetRoot()) == root);
+    REQUIRE(workspace.ShowQuickAdd(QPointF(100.0, 200.0)) == true);
+    searchOrNull->setText(QStringLiteral("RasterizeGraph"));
+    REQUIRE(palette.InsertHighlighted() == true);
+    const QJsonArray nodes = GetConfiguration(document).value(QStringLiteral("nodes")).toArray();
+    CHECK(nodes.last().toObject().value(QStringLiteral("configuration")).toString() == QStringLiteral("DepthOnly"));
+}
+
+TEST_CASE("Quick Add connects graph interfaces in one undo step and ranks compatible graphs first",
+          "[editor][render-graph][quick-add]")
+{
+    QuickAddCanvasFixture fixture;
+    RendererWorkspace& workspace = fixture.Workspace;
+    RenderGraphQuickAdd& palette = *fixture.PaletteOrNull;
+    const QByteArray original = workspace.GetDocument().GetDraft(GetRoot());
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    const QPoint drop =
+        fixture.FindEmptyPoint(canvas.mapFromScene(canvas.GetPortPosition(QStringLiteral("scene.scene"), true)));
+    fixture.DragWire(QStringLiteral("scene.scene"), drop);
+    REQUIRE(palette.isVisible() == true);
+    palette.SetKind(RenderGraphQuickAddKind::Graphs);
+    REQUIRE(palette.GetListedKeys().size() == 2);
+    CHECK(palette.GetListedKeys().first() == QStringLiteral("graph:rasterize.lurender.json"));
+    CHECK(palette.GetPortFilter().Inputs.value(palette.GetHighlightedKey()) == QStringLiteral("scene"));
+    REQUIRE(palette.InsertHighlighted() == true);
+    CHECK(HasEdge(workspace.GetDocument(), QStringLiteral("scene.scene"), QStringLiteral("subgraph.scene")) == true);
+    workspace.Undo();
+    CHECK(workspace.GetDocument().GetDraft(GetRoot()) == original);
+    workspace.Redo();
+    CHECK(HasEdge(workspace.GetDocument(), QStringLiteral("scene.scene"), QStringLiteral("subgraph.scene")) == true);
+
+    QJsonObject graph;
+    REQUIRE(workspace.GetDocument().GetGraph(QStringLiteral("rasterize.lurender.json"), graph) == true);
+    graph.insert(QStringLiteral("default"), QStringLiteral("DepthOnly"));
+    REQUIRE(workspace.GetDocument().SetText(QStringLiteral("rasterize.lurender.json"), EncodeCanonicalJson(graph)) ==
+            RenderGraphDocumentStatus::Ok);
+    REQUIRE(workspace.ShowConnectQuickAdd(QStringLiteral("color.texture"), QPointF(300.0, 200.0)) == true);
+    palette.SetKind(RenderGraphQuickAddKind::Graphs);
+    QLineEdit* searchOrNull = palette.findChild<QLineEdit*>(QStringLiteral("renderGraphQuickAddSearch"));
+    REQUIRE(searchOrNull != nullptr);
+    searchOrNull->setText(QStringLiteral("RasterizeGraph"));
+    QLabel* warningOrNull = palette.findChild<QLabel*>(QStringLiteral("renderGraphQuickAddWarning"));
+    REQUIRE(warningOrNull != nullptr);
+    CHECK(warningOrNull->text().contains(QStringLiteral("No input accepts")) == true);
+    CHECK(palette.InsertHighlighted() == false);
+    palette.ClearPortFilter();
+    searchOrNull->setText(QStringLiteral("RasterizeGraph"));
+    const QJsonArray edgesBefore = GetConfiguration(workspace.GetDocument()).value(QStringLiteral("edges")).toArray();
+    REQUIRE(palette.InsertHighlighted() == true);
+    CHECK(HasNode(workspace.GetDocument(), QStringLiteral("subgraph2")) == true);
+    CHECK(GetConfiguration(workspace.GetDocument()).value(QStringLiteral("edges")).toArray() == edgesBefore);
+}
+
 TEST_CASE("Quick Add places nodes where it opened in one undo step", "[editor][render-graph][quick-add]")
 {
     QTemporaryDir project;
@@ -455,6 +675,8 @@ TEST_CASE("Quick Add lists only nodes that accept a port filter, and can clear i
     CHECK(snippetsOrNull->isEnabled() == false);
     QTest::keyClick(searchOrNull, Qt::Key_Tab);
     CHECK(palette.GetKind() == RenderGraphQuickAddKind::Nodes);
+    QTest::keyClick(searchOrNull, Qt::Key_Tab);
+    CHECK(palette.GetKind() == RenderGraphQuickAddKind::Graphs);
     QTest::keyClick(searchOrNull, Qt::Key_Tab);
     CHECK(palette.GetKind() == RenderGraphQuickAddKind::All);
     QTest::keyClicks(searchOrNull, QStringLiteral("scene"));

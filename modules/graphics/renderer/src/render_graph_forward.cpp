@@ -13,9 +13,11 @@ namespace
 constexpr usize FORWARD_BINDING_COUNT = 10;
 constexpr usize FORWARD_MEMBER_COUNT = 14;
 constexpr usize OUTPUT_BINDING_COUNT = 3;
+constexpr usize CLUSTERED_BINDING_COUNT = FORWARD_BINDING_COUNT + 1;
+constexpr usize CLUSTERED_MEMBER_COUNT = FORWARD_MEMBER_COUNT + CLUSTERED_GRID_ROWS;
 constexpr usize FLOAT4_BYTES = sizeof(float32) * 4;
 constexpr usize PARAMETER_BYTES = FORWARD_SURFACE_OFFSET + FLOAT4_BYTES * (1 + LUDUS_AUTHORED_PARAMETER_WORDS);
-const StaticArray<rhi::RasterShaderInput, format::FORWARD_INPUT_COUNT> FORWARD_INPUTS{
+constexpr StaticArray<rhi::RasterShaderInput, format::FORWARD_INPUT_COUNT> FORWARD_INPUTS{
     {{0, rhi::RasterVertexFormat::Float3},
      {1, rhi::RasterVertexFormat::Float4},
      {2, rhi::RasterVertexFormat::Float4},
@@ -33,7 +35,7 @@ const StaticArray<rhi::RasterShaderInput, format::FORWARD_INPUT_COUNT> FORWARD_I
      {14, rhi::RasterVertexFormat::Float4},
      {15, rhi::RasterVertexFormat::Float2}},
 };
-const StaticArray<rhi::RasterBinding, FORWARD_BINDING_COUNT> FORWARD_BINDINGS{
+constexpr StaticArray<rhi::RasterBinding, FORWARD_BINDING_COUNT> FORWARD_BINDINGS{
     {{0, rhi::RasterBindingKind::UniformBuffer, rhi::RasterVisibility::Fragment, PARAMETER_BYTES},
      {1, rhi::RasterBindingKind::Texture2D, rhi::RasterVisibility::Fragment, 0},
      {2, rhi::RasterBindingKind::Sampler, rhi::RasterVisibility::Fragment, 0},
@@ -45,7 +47,7 @@ const StaticArray<rhi::RasterBinding, FORWARD_BINDING_COUNT> FORWARD_BINDINGS{
      {8, rhi::RasterBindingKind::Sampler, rhi::RasterVisibility::Fragment, 0},
      {9, rhi::RasterBindingKind::Texture2D, rhi::RasterVisibility::Fragment, 0}},
 };
-const StaticArray<rhi::RasterUniformMember, FORWARD_MEMBER_COUNT> FORWARD_MEMBERS{
+constexpr StaticArray<rhi::RasterUniformMember, FORWARD_MEMBER_COUNT> FORWARD_MEMBERS{
     {{0, "Tint", 0, rhi::RasterUniformShape::Float4},
      {0, "UvTransform", FLOAT4_BYTES, rhi::RasterUniformShape::Float4},
      {0, "Options", 2 * FLOAT4_BYTES, rhi::RasterUniformShape::Float4},
@@ -61,18 +63,60 @@ const StaticArray<rhi::RasterUniformMember, FORWARD_MEMBER_COUNT> FORWARD_MEMBER
      {0, "Authored", FORWARD_SURFACE_OFFSET + FLOAT4_BYTES, rhi::RasterUniformShape::Float4},
      {0, "IrradianceSh", FORWARD_SURFACE_OFFSET + 2 * FLOAT4_BYTES, rhi::RasterUniformShape::Float4Array}},
 };
-const StaticArray<rhi::RasterBinding, OUTPUT_BINDING_COUNT> OUTPUT_BINDINGS{
+constexpr StaticArray<rhi::RasterBinding, CLUSTERED_BINDING_COUNT> CLUSTERED_BINDINGS = []() noexcept {
+    StaticArray<rhi::RasterBinding, CLUSTERED_BINDING_COUNT> bindings;
+    for (usize i = 0; i < FORWARD_BINDING_COUNT; ++i)
+    {
+        bindings[i] = FORWARD_BINDINGS[i];
+    }
+    bindings[0].MinSize = CLUSTERED_SURFACE_OFFSET + FLOAT4_BYTES * (1 + LUDUS_AUTHORED_PARAMETER_WORDS);
+    constexpr usize ENVIRONMENT_SLOT = 8;
+    constexpr usize ENVIRONMENT_SAMPLER_SLOT = 9;
+    constexpr usize EMISSION_SLOT = 10;
+    bindings[ENVIRONMENT_SLOT].Kind = rhi::RasterBindingKind::Texture2D;
+    bindings[ENVIRONMENT_SAMPLER_SLOT].Kind = rhi::RasterBindingKind::Sampler;
+    bindings[EMISSION_SLOT] = {EMISSION_SLOT, rhi::RasterBindingKind::Texture2D, rhi::RasterVisibility::Fragment, 0};
+    return bindings;
+}();
+constexpr StaticArray<rhi::RasterUniformMember, CLUSTERED_MEMBER_COUNT> CLUSTERED_MEMBERS = []() noexcept {
+    StaticArray<rhi::RasterUniformMember, CLUSTERED_MEMBER_COUNT> members{};
+    for (usize i = 0; i < FORWARD_MEMBER_COUNT; ++i)
+    {
+        members[i] = FORWARD_MEMBERS[i];
+        if (members[i].Offset >= FORWARD_SURFACE_OFFSET)
+        {
+            members[i].Offset += CLUSTERED_SURFACE_OFFSET - FORWARD_SURFACE_OFFSET;
+        }
+        else if (members[i].Offset == FORWARD_SHADOW_OFFSET)
+        {
+            members[i].Offset = CLUSTERED_SHADOW_OFFSET;
+        }
+    }
+    members[FORWARD_MEMBER_COUNT] = {0, "GridRows", CLUSTERED_GRID_OFFSET, rhi::RasterUniformShape::Float4Array};
+    members[FORWARD_MEMBER_COUNT + 1] = {0,
+                                         "GridMinimum",
+                                         CLUSTERED_GRID_OFFSET + CLUSTERED_GRID_ROWS * FLOAT4_BYTES,
+                                         rhi::RasterUniformShape::Float4};
+    members[FORWARD_MEMBER_COUNT + 2] = {0,
+                                         "GridScale",
+                                         CLUSTERED_GRID_OFFSET + (CLUSTERED_GRID_ROWS + 1) * FLOAT4_BYTES,
+                                         rhi::RasterUniformShape::Float4};
+    return members;
+}();
+constexpr StaticArray<rhi::RasterBinding, OUTPUT_BINDING_COUNT> OUTPUT_BINDINGS{
     {{0, rhi::RasterBindingKind::UniformBuffer, rhi::RasterVisibility::Fragment, FLOAT4_BYTES},
      {1, rhi::RasterBindingKind::Texture2D, rhi::RasterVisibility::Fragment, 0},
      {2, rhi::RasterBindingKind::Sampler, rhi::RasterVisibility::Fragment, 0}},
 };
-const StaticArray<rhi::RasterUniformMember, 1> OUTPUT_MEMBERS{{{0, "Output", 0, rhi::RasterUniformShape::Float4}}};
-const StaticArray<rhi::RasterShaderInput, 1> OUTPUT_INPUTS{{{0, rhi::RasterVertexFormat::Float4}}};
+constexpr StaticArray<rhi::RasterUniformMember, 1> OUTPUT_MEMBERS{{{0, "Output", 0, rhi::RasterUniformShape::Float4}}};
+constexpr StaticArray<rhi::RasterShaderInput, 1> OUTPUT_INPUTS{{{0, rhi::RasterVertexFormat::Float4}}};
 } // namespace
-void SetRenderGraphForwardInterface(rhi::RasterShaderDescription& inoutDescription, format::StageRole role) noexcept
+void SetRenderGraphForwardInterface(rhi::RasterShaderDescription& inoutDescription,
+                                    format::StageRole role,
+                                    bool isClustered) noexcept
 {
     if (static_cast<uint32>(role) < format::FORWARD_STAGE_ROLE_FIRST ||
-        static_cast<uint32>(role) >= format::STAGE_ROLE_COUNT)
+        (static_cast<uint32>(role) >= format::NATIVE_RAY_STAGE_ROLE && role != format::StageRole::ForwardDepth))
     {
         return;
     }
@@ -81,6 +125,9 @@ void SetRenderGraphForwardInterface(rhi::RasterShaderDescription& inoutDescripti
     inoutDescription.UniformMembers = {};
     switch (role)
     {
+        case format::StageRole::ForwardDepth:
+            inoutDescription.Artifact.Stage = rhi::ShaderStage::Fragment;
+            break;
         case format::StageRole::ForwardVertex:
             inoutDescription.Artifact.Stage = rhi::ShaderStage::Vertex;
             inoutDescription.Inputs = FORWARD_INPUTS.AsSpan();
@@ -88,10 +135,13 @@ void SetRenderGraphForwardInterface(rhi::RasterShaderDescription& inoutDescripti
         case format::StageRole::ForwardFragment:
         case format::StageRole::ForwardShadow:
             inoutDescription.Artifact.Stage = rhi::ShaderStage::Fragment;
-            inoutDescription.Bindings = {FORWARD_BINDINGS.GetData(),
+            inoutDescription.Bindings = {isClustered == true ? CLUSTERED_BINDINGS.GetData()
+                                                             : FORWARD_BINDINGS.GetData(),
                                          role == format::StageRole::ForwardShadow ? OUTPUT_BINDING_COUNT
+                                         : isClustered == true                    ? CLUSTERED_BINDING_COUNT
                                                                                   : FORWARD_BINDING_COUNT};
-            inoutDescription.UniformMembers = FORWARD_MEMBERS.AsSpan();
+            inoutDescription.UniformMembers =
+                isClustered == true ? CLUSTERED_MEMBERS.AsSpan() : FORWARD_MEMBERS.AsSpan();
             break;
         case format::StageRole::LightingVertex:
             inoutDescription.Artifact.Stage = rhi::ShaderStage::Vertex;

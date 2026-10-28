@@ -1,5 +1,6 @@
 #include "internal/content_browser.h"
 #include "internal/content_import.h"
+#include "internal/state_view.h"
 #include "wav_fixture.h"
 
 #include <ludus/audio/content/definitions.h>
@@ -295,6 +296,14 @@ TEST_CASE("Content workspace preserves focused search and selection and rejects 
     Wait(workspace);
     CHECK(table->model()->rowCount() == 1);
     CHECK(workspace.findChild<QLabel*>(QStringLiteral("contentStatus"))->text().contains(QStringLiteral("last valid")));
+    // The failure also reads as a state: a sentence, the worker's message as the cause, a fix and a Refresh action.
+    StateView* problem = workspace.findChild<StateView*>(QStringLiteral("contentProblem"));
+    REQUIRE(problem != nullptr);
+    CHECK(problem->isVisibleTo(&workspace) == true);
+    CHECK(problem->GetContent().Message == QStringLiteral("The content catalog could not be read."));
+    CHECK(problem->GetContent().Cause.contains(QStringLiteral("last valid")) == true);
+    CHECK(problem->GetContent().Fix.isEmpty() == false);
+    CHECK(problem->GetContent().ActionLabel == QStringLiteral("Refresh"));
     workspace.Shutdown();
     CHECK(workspace.Finished());
 }

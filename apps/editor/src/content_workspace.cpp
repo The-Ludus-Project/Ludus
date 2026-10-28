@@ -1,6 +1,8 @@
 #include "internal/content_browser.h"
 #include "internal/editor_files.h"
+#include "internal/editor_icons.h"
 #include "internal/item_selection.h"
+#include "internal/state_view.h"
 
 #include <QAbstractItemView>
 #include <QFileInfo>
@@ -61,6 +63,11 @@ ContentWorkspace::ContentWorkspace(QWidget* parent) : QWidget(parent)
     Status_->setObjectName(QStringLiteral("contentStatus"));
     Status_->setWordWrap(true);
     Status_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    mProblemOrNull = new StateView(this);
+    mProblemOrNull->setObjectName(QStringLiteral("contentProblem"));
+    mProblemOrNull->hide();
+    connect(mProblemOrNull, &StateView::ActionTriggered, this, &ContentWorkspace::Refresh);
+    layout->addWidget(mProblemOrNull, 0, Qt::AlignHCenter);
     layout->addWidget(Status_);
     Jobs_ = new ContentJobs(this);
     connect(Jobs_, &ContentJobs::Completed, this, &ContentWorkspace::Accept);
@@ -138,6 +145,7 @@ void ContentWorkspace::SetProject(const QString& root, foundation::uint64 epoch)
     mSelectedIds.clear();
     Applying_ = true;
     Model_->SetRows({});
+    mProblemOrNull->hide();
     Applying_ = false;
     RefreshPending_ = Busy() && Root_.isEmpty() == false;
     if (Root_.isEmpty() == false && Busy() == false)
@@ -168,6 +176,7 @@ void ContentWorkspace::Refresh()
     auto request = Request();
     request.Operation = ++NextOperation_;
     ActiveOperation_ = request.Operation;
+    mProblemOrNull->hide();
     Status_->setText(QStringLiteral("Reading content catalog…"));
     if (Jobs_->Start(request) == false)
     {
@@ -185,6 +194,7 @@ bool ContentWorkspace::Import(const QString& file, const QString& id)
     request.File = file;
     request.Id = id;
     ActiveOperation_ = request.Operation;
+    mProblemOrNull->hide();
     Status_->setText(QStringLiteral("Reading and validating source and saved dependencies…"));
     return Jobs_->Start(request);
 }
@@ -238,6 +248,7 @@ void ContentWorkspace::Accept(const ContentResult& result)
         return;
     }
     Status_->setText(result.Message);
+    showProblem(result);
     if (result.Status != content::Status::Ok)
     {
         return;
@@ -261,6 +272,55 @@ void ContentWorkspace::Accept(const ContentResult& result)
     Model_->SetRows(result.Rows);
     Applying_ = false;
     RestoreSelection();
+}
+void ContentWorkspace::showProblem(const ContentResult& result)
+{
+    // A failure says what failed, why (the worker's message), and what to do. Cancelling is the user's choice,
+    // not a problem.
+    if (result.Status == content::Status::Ok || result.Status == content::Status::Cancelled ||
+        result.Status == content::Status::Pending)
+    {
+        mProblemOrNull->hide();
+        return;
+    }
+    const bool isImport = result.Request.Id.isEmpty() == false;
+    StateViewContent state;
+    state.Icon = EditorIcon::Error;
+    state.Message = isImport ? QStringLiteral("The import did not finish.")
+                             : QStringLiteral("The content catalog could not be read.");
+    state.Cause = result.Message;
+    state.Details = result.Message;
+    switch (result.Status)
+    {
+        case content::Status::Limit:
+            state.Fix = QStringLiteral("Use a smaller file or fewer entries, then try again.");
+            break;
+        case content::Status::OutOfMemory:
+            state.Fix = QStringLiteral("Close other applications or use a smaller file, then try again.");
+            break;
+        case content::Status::IoError:
+            state.Fix =
+                QStringLiteral("Check that the file exists and the project folder can be written, then try again.");
+            break;
+        case content::Status::Conflict:
+            state.Fix = QStringLiteral("The catalog changed underneath this action. Refresh, then repeat it.");
+            break;
+        case content::Status::NotFound:
+            state.Fix = QStringLiteral("Check the file path and the resource ID, then try again.");
+            break;
+        case content::Status::Unsupported:
+            state.Fix = QStringLiteral("Use a WAV or FLAC file.");
+            break;
+        default:
+            state.Fix = QStringLiteral("Fix the source file or catalog entry the message names, then try again.");
+            break;
+    }
+    if (isImport == false)
+    {
+        state.ActionLabel = QStringLiteral("Refresh");
+    }
+    mProblemOrNull->SetContent(state);
+    mProblemOrNull->show();
 }
 void ContentWorkspace::RestoreSelection()
 {
