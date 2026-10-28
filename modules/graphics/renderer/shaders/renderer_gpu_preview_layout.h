@@ -10,7 +10,12 @@
 // Strides count float4 words, not bytes. Update the version when changing layout.
 #define LUDUS_GPU_PREVIEW_SURFACE_WORDS 9
 #define LUDUS_GPU_PREVIEW_LIGHT_WORDS 4
-#define LUDUS_GPU_PREVIEW_KERNEL_VERSION 8 // BVH leaf order in order word Z, beside native opacity ranges in X.
+// 9: emitter bounds after the emitter records; 8: BVH leaf order in order word Z, beside native opacity ranges in X.
+#define LUDUS_GPU_PREVIEW_KERNEL_VERSION 9
+// Words per mesh emitter in the bounds records that follow the emitter records:
+// sphere centre/radius, normal-cone axis/cosine, then flag bits in word 2 X.
+#define LUDUS_GPU_PREVIEW_EMITTER_BOUNDS_WORDS 3
+#define LUDUS_GPU_PREVIEW_EMITTER_BOUNDS_TWO_SIDED 1u
 
 #define LUDUS_GPU_PREVIEW_TRIANGLE_WORDS 16
 

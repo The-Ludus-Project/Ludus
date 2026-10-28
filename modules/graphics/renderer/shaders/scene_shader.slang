@@ -160,6 +160,41 @@ float4 GetEmitter(SceneContext scene, uint emitterIndex)
 {
     return emitterIndex < GetEmitterCount(scene) ? SceneValue(Offsets.z + Counts.z + emitterIndex) : float4(0);
 }
+/// World bounds of one mesh emitter's positive-area triangles, precomputed with the scene.
+/// One importance weight per emitter can use them instead of iterating GetEmitterTriangle.
+struct EmitterBounds
+{
+    /// Centred on the vertices' bounding box; encloses every vertex up to float32 rounding.
+    float3 CenterWorld;
+    float RadiusWorld;
+    /// Unit area-weighted mean geometric normal; +Z when the normals cancel.
+    float3 NormalAxisWorld;
+    /// Every geometric normal lies within acos(CosConeHalfAngle) of the axis; -1 covers all directions.
+    float CosConeHalfAngle;
+    /// The emitter's material emits from both faces, as MaterialData.IsEmissionTwoSided.
+    bool IsEmissionTwoSided;
+    /// False when emitterIndex is not below GetEmitterCount; every field is then zero.
+    bool IsValid;
+};
+/// Read the bounds of mesh emitter emitterIndex (the GetEmitter index).
+/// Constant for one scene source generation; an index outside GetEmitterCount returns IsValid=false.
+EmitterBounds GetEmitterBounds(SceneContext scene, uint emitterIndex)
+{
+    EmitterBounds result = (EmitterBounds)0;
+    const uint emitterCount = GetEmitterCount(scene);
+    if (emitterIndex >= emitterCount)
+        return result;
+    const uint offset = Offsets.z + Counts.z + emitterCount + emitterIndex * LUDUS_GPU_PREVIEW_EMITTER_BOUNDS_WORDS;
+    const float4 sphereWorld = SceneValue(offset);
+    const float4 normalConeWorld = SceneValue(offset + 1);
+    result.CenterWorld = sphereWorld.xyz;
+    result.RadiusWorld = sphereWorld.w;
+    result.NormalAxisWorld = normalConeWorld.xyz;
+    result.CosConeHalfAngle = normalConeWorld.w;
+    result.IsEmissionTwoSided = (asuint(SceneValue(offset + 2).x) & LUDUS_GPU_PREVIEW_EMITTER_BOUNDS_TWO_SIDED) != 0;
+    result.IsValid = true;
+    return result;
+}
 LightInfo GetLightInfo(SceneContext scene, uint lightIndex)
 {
     LightInfo result = (LightInfo)0;

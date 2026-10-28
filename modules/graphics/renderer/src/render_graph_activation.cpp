@@ -260,9 +260,13 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         if (HasExplicitRayWorkgroup == true && isCompute == true)
         {
             for (uint32& dimension : workgroup)
+            {
                 dimension = inoutReader.ReadWord();
+            }
             if (inoutReader.IsOk() == false || workgroup[0] == 0 || workgroup[1] == 0 || workgroup[2] != 1)
+            {
                 return RenderGraphPackageStatus::Malformed;
+            }
         }
         for (uint32 input = 0; input < inputCount; ++input)
         {
@@ -1058,9 +1062,15 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
                 state.HasExplicitRayWorkgroup == true)
             {
                 for (const State::StageView& view : views)
+                {
                     if (view.IsPresent == true)
+                    {
                         for (usize axis = 0; axis < format::RAY_WORKGROUP_DIMENSIONS; ++axis)
+                        {
                             description.WorkgroupSize[axis] = view.WorkgroupSize[axis];
+                        }
+                    }
+                }
             }
         }
         if (role >= format::FORWARD_STAGE_ROLE_FIRST && role < format::NATIVE_RAY_STAGE_ROLE)

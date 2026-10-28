@@ -1445,16 +1445,24 @@ TEST_CASE("legacy scene-ray packages preserve implicit tone mapping independentl
                 {
                     PackageWriter multiple;
                     for (usize byte = 0; byte < stagesEnd; ++byte)
+                    {
                         multiple.Bytes.Add(writer.Bytes[byte]);
+                    }
                     const usize second = multiple.Bytes.GetSize();
                     for (usize byte = computeStage; byte < stagesEnd; ++byte)
+                    {
                         multiple.Bytes.Add(writer.Bytes[byte]);
+                    }
                     for (const usize offset : stageOffsets)
+                    {
                         multiple.Bytes[second + offset - computeStage + sizeof(uint32)] =
                             static_cast<uint8>(format::ShaderTarget::Metal);
+                    }
                     multiple.Bytes[second + format::STAGE_FIELD_COUNT * sizeof(uint32)] = width;
                     for (usize byte = stagesEnd; byte < writer.Bytes.GetSize(); ++byte)
+                    {
                         multiple.Bytes.Add(writer.Bytes[byte]);
+                    }
                     constexpr usize STAGE_COUNT_OFFSET = 9 * sizeof(uint32);
                     multiple.Bytes[STAGE_COUNT_OFFSET] = STAGES * 2;
                     CHECK(DecodeBytes(multiple.Bytes) == (width == 8 ? renderer::RenderGraphPackageStatus::Ready

@@ -287,6 +287,7 @@ add_subdirectory(modules/foundation/time)
 add_subdirectory(modules/foundation/logging)
 add_subdirectory(modules/foundation/profiling)
 add_subdirectory(tools/memory-bench)
+add_subdirectory(tools/ltc-fit)
 # Runtime Ui has no Platform/RHI/Text dependency and builds on both toolchains.
 add_subdirectory(modules/ui)
 # Input is configured before Platform: Platform depends on Input for the

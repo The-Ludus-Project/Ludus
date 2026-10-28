@@ -2068,6 +2068,7 @@ wrappers include it automatically. Authors do not read private packed buffers.
 | EvaluateEmission | Emission at a hit or sampled surface, respecting geometric sidedness |
 | GetLightInfo | Checked typed record for directional, point, spot, mesh or aggregate environment source |
 | GetEmitter / GetEmitterTriangle / GetTriangle | Emitter range/area and checked world geometry for custom proposals |
+| GetEmitterBounds | Precomputed emitter bounding sphere, geometric-normal cone and emission sidedness, for one weight per emitter without a triangle loop |
 | GetSurfaceHit | Surface endpoint from triangle/barycentrics, without tracing; IncomingRay and DistanceWorld are zero |
 | SelectLight / SampleIncidentLight | Optional default source selection and incident-light proposal; SelectLight(scene, queries) uses the invocation stream; no radiance estimate is added |
 | EvaluateLightSelectionPmf / EvaluateLightPdfSolidAngle | Matching source PMF / emitter-endpoint joint solid-angle density |
