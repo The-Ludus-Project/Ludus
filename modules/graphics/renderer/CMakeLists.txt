@@ -585,7 +585,10 @@ if(TARGET ludus_renderer_render_tests)
         endforeach()
     endforeach()
     add_test(NAME ludus_graph_workgroup_pixels COMMAND ludus_graph_workgroup_tests)
-    set_tests_properties(ludus_graph_workgroup_pixels PROPERTIES LABELS "renderer;gpu;ray" TIMEOUT 120)
+    # Both cases skip without native ray queries (lavapipe); Catch2 then returns 4, reported as
+    # Skipped like ludus_render_graph_ray_path_capture below.
+    set_tests_properties(ludus_graph_workgroup_pixels PROPERTIES
+        LABELS "renderer;gpu;ray" TIMEOUT 120 SKIP_RETURN_CODE 4)
     # Ray path capture: each node form's diagnostic LUDUS_RAY_PATH_CAPTURE variant is compiled
     # from the same staged snapshot as its plain header, which the bit-identity checks compare.
     add_executable(ludus_render_graph_ray_path_tests tests/render_graph_ray_path_tests.cpp)
