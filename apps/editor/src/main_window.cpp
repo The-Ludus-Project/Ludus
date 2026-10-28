@@ -132,6 +132,9 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
     connect(&mBuildErrorsTimer, &QTimer::timeout, this, &MainWindow::renderBuildErrors);
     connect(Audio_, &AudioWorkspace::DocumentChanged, this, &MainWindow::RenderDocumentActions);
     connect(Content_, &ContentWorkspace::BusyChanged, this, &MainWindow::RenderCapabilities);
+    connect(Content_, &ContentWorkspace::BusyChanged, this, &MainWindow::renderActivity);
+    connect(Renderer_, &RendererWorkspace::CommandsChanged, this, &MainWindow::renderActivity);
+    connect(Renderer_, &RendererWorkspace::JobFinished, this, &MainWindow::renderActivity);
     connect(Content_, &ContentWorkspace::CatalogChanged, Audio_, &AudioWorkspace::RefreshCatalog);
     connect(Audio_, &AudioWorkspace::ImportRequested, this, [this]() {
         showToolWindow(mContentDock);
@@ -1407,6 +1410,7 @@ void MainWindow::RenderStatus()
         status += QStringLiteral("  —  ") + setupSummary;
     }
     StatusLabel_->setText(status);
+    renderActivity();
     StatusLabel_->setToolTip(status + QStringLiteral("\n") + state.Result.Message + QStringLiteral("\n") +
                              state.SetupStatus);
 
