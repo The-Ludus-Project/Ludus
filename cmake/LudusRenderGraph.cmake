@@ -1,5 +1,6 @@
 include_guard(GLOBAL)
 include("${CMAKE_CURRENT_LIST_DIR}/LudusDependencies.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/LudusRendererShaders.cmake")
 
 # Shared RG1 builder and RG2 lowering, also installed for relocated SDK consumers.
 # Dependencies stay within ROOT; generated package/build output must be outside it.
@@ -36,34 +37,45 @@ function(ludus_compile_render_graph)
     set(driver "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/render_graph/build.py")
     set(package "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/render_graph")
     set(helper "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders")
+    # Every file the helper reads, named as the SDK installs them flat in its shaders directory.
+    # The cook depends on each one, so the stage list and DEPENDS cannot drift apart.
+    ludus_get_renderer_shader_roots(renderer_directory renderer_includes)
+    file(READ "${renderer_directory}/recipes.json" renderer_recipes)
+    set(helper_files compile_shader.py compile_raster.py compile_graph_stage.py compile_metal_ray.py native_worker.py
+        recipes.json renderer_lit.slang renderer_environment_layout.h renderer_gpu_preview_layout.h native_metal_ray.slang
+        renderer_surface_functions.slang scene_shader.slang scene_payload.slang visibility_buffer.slang ray_shader.slang
+        ray_triangle_loop.slang ray_line_visibility.slang ray_bvh_traversal.slang renderer_reference_layout.h scene_data.h
+        scene_shader_layout.h lighting_layout.h math.slang raster_bindings.slang metal_ray_pipeline_layout.h
+        shader_toolchain.json spirv_cross_toolchain.json)
+    foreach(recipe renderer_gpu_preview renderer_gpu_preview_image renderer_authored renderer_authored_shadow renderer_flat renderer_output renderer_shadow)
+        string(JSON source GET "${renderer_recipes}" "${recipe}" source)
+        list(APPEND helper_files "${source}")
+    endforeach()
+    list(REMOVE_DUPLICATES helper_files)
     if(EXISTS "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../scripts/python/ludus_tools/render_graph_build.py")
         set(package "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../scripts/python")
         # Build dependencies read only installed/tool/source files. Writable staging belongs to this target.
         set(helper "${CMAKE_CURRENT_BINARY_DIR}/ludus-graphs/${GRAPH_TARGET}/${GRAPH_NAME}/helper")
         file(MAKE_DIRECTORY "${helper}")
-        foreach(source compile_shader.py compile_raster.py compile_graph_stage.py compile_metal_ray.py native_worker.py)
-            configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders/${source}" "${helper}/${source}" COPYONLY)
-        endforeach()
-        ludus_get_renderer_shader_roots(renderer_directory renderer_includes)
-        configure_file("${renderer_directory}/recipes.json" "${helper}/recipes.json" COPYONLY)
-        file(READ "${renderer_directory}/recipes.json" renderer_recipes)
-        foreach(recipe renderer_gpu_preview renderer_gpu_preview_image renderer_authored renderer_authored_shadow renderer_flat renderer_output renderer_shadow)
-            string(JSON source GET "${renderer_recipes}" "${recipe}" source)
-            configure_file("${renderer_directory}/${source}" "${helper}/${source}" COPYONLY)
-        endforeach()
-        foreach(source renderer_lit.slang renderer_environment_layout.h renderer_gpu_preview_layout.h native_metal_ray.slang renderer_surface_functions.slang scene_shader.slang scene_payload.slang visibility_buffer.slang ray_shader.slang ray_triangle_loop.slang ray_line_visibility.slang ray_bvh_traversal.slang renderer_reference_layout.h)
-            configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../modules/graphics/renderer/shaders/${source}" "${helper}/${source}" COPYONLY)
-        endforeach()
-        configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../modules/content/render_graph_format/include/ludus/content/render_graph_format/scene_data.h" "${helper}/scene_data.h" COPYONLY)
-        configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../modules/graphics/renderer/include/ludus/graphics/renderer/scene_shader_layout.h" "${helper}/scene_shader_layout.h" COPYONLY)
-        configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../modules/graphics/renderer/include/ludus/graphics/renderer/lighting_layout.h" "${helper}/lighting_layout.h" COPYONLY)
-        configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../modules/foundation/math/shaders/math.slang" "${helper}/math.slang" COPYONLY)
-        configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../modules/graphics/rhi/shaders/raster_bindings.slang" "${helper}/raster_bindings.slang" COPYONLY)
-        configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../modules/graphics/rhi/shaders/metal_ray_pipeline_layout.h" "${helper}/metal_ray_pipeline_layout.h" COPYONLY)
-        foreach(lock shader_toolchain.json spirv_cross_toolchain.json)
-            configure_file("${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../config/${lock}" "${helper}/${lock}" COPYONLY)
+        # The source tree spreads the helper over the renderer include roots; each name has one owner.
+        # configure_file reruns CMake when a source changes, and rewrites the copy only if its content does.
+        set(helper_roots "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders" "${renderer_directory}" ${renderer_includes}
+            "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../config")
+        foreach(name IN LISTS helper_files)
+            set(owners)
+            foreach(directory IN LISTS helper_roots)
+                if(EXISTS "${directory}/${name}")
+                    list(APPEND owners "${directory}/${name}")
+                endif()
+            endforeach()
+            list(LENGTH owners owner_count)
+            if(NOT owner_count EQUAL 1)
+                message(FATAL_ERROR "Render graph helper ${name} needs exactly one source owner; found: ${owners}")
+            endif()
+            configure_file("${owners}" "${helper}/${name}" COPYONLY)
         endforeach()
     endif()
+    list(TRANSFORM helper_files PREPEND "${helper}/" OUTPUT_VARIABLE helper_dependencies)
     set(tools "${LUDUS_SLANG_COMPILER}")
     set(arguments)
     if(LUDUS_SHADER_WORKER_SOCKET)
@@ -115,11 +127,7 @@ function(ludus_compile_render_graph)
             --header "${output}/${GRAPH_NAME}.h" --name "${GRAPH_NAME}" --configuration "${GRAPH_CONFIGURATION}"
             --helper "${helper}" --compiler "${LUDUS_SLANG_COMPILER}" ${arguments}
         DEPENDS ${inputs} ${modules} ${tools} "${driver}"
-            "${package}/ludus_tools/buildlock.py" "${package}/ludus_tools/errors.py"
-            "${helper}/compile_shader.py" "${helper}/compile_raster.py" "${helper}/compile_graph_stage.py" "${helper}/compile_metal_ray.py" "${helper}/native_worker.py"
-            "${helper}/shader_toolchain.json" "${helper}/spirv_cross_toolchain.json" "${helper}/scene_data.h"
-            "${helper}/native_metal_ray.slang" "${helper}/metal_ray_pipeline_layout.h"
-            "${helper}/visibility_buffer.slang"
+            "${package}/ludus_tools/buildlock.py" "${package}/ludus_tools/errors.py" ${helper_dependencies}
         VERBATIM)
     target_sources(${GRAPH_TARGET} PRIVATE "${output}/${GRAPH_NAME}.h")
     target_include_directories(${GRAPH_TARGET} PRIVATE "${output}")
