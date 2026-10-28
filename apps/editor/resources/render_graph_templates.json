@@ -80,6 +80,15 @@
       "description": "Multiple importance sampling from Veach and Guibas (1995): after a primary-hits pass, three shading passes estimate direct lighting with one light sample and one BSDF sample combined by the balance, power, cutoff or maximum heuristic, with the light sample alone, and with the BSDF sample alone. Each image is accumulated and exported for comparison; the MIS image is shown first. Requires native ray tracing."
     },
     {
+      "kind": "graph",
+      "identity": "line-sampling",
+      "label": "Line sampling — visible chords of area lights",
+      "category": "ray-traced",
+      "requirements": ["compute-ray-tracing"],
+      "keywords": ["line sampling", "billen", "dutre", "salesin", "jarosz", "soft shadows", "penumbra", "area light", "direct lighting"],
+      "description": "Line sampling from Billen and Dutré (2016): after a primary-hits pass, one shading pass draws a chord across an emissive triangle, finds its visible parts with the scene line query and samples a point on them; a second pass shows the chord's visible fraction (1 lit, 0 in umbra; not radiance). Every pass uses the triangle loop, so it needs Metal or Vulkan compute but no hardware ray tracing."
+    },
+    {
       "kind": "snippet",
       "identity": "restir-di",
       "label": "ReSTIR DI — mesh emitter lighting",
@@ -128,6 +137,16 @@
       "requirements": ["native-ray-tracing"],
       "keywords": ["veach", "guibas", "mis", "multiple importance sampling", "light sampling", "bsdf sampling", "direct lighting", "ray tracing"],
       "description": "A primary-hits scene compute pass and three shading passes that share one automatically sized hit buffer: MIS of a light and a BSDF sample (Veach and Guibas), the light sample alone and the BSDF sample alone. Connect scene, view and color; outputs color plus optional lightSampling and bsdfSampling images. Requires native ray tracing."
+    },
+    {
+      "kind": "snippet",
+      "identity": "line-sampling",
+      "label": "Line sampling — visible chords of area lights",
+      "category": "lighting",
+      "defaultConfiguration": "LineSampling",
+      "requirements": ["compute-ray-tracing"],
+      "keywords": ["line sampling", "billen", "dutre", "salesin", "jarosz", "soft shadows", "penumbra", "area light", "direct lighting"],
+      "description": "A primary-hits scene compute pass and two triangle-loop shading passes that share one automatically sized hit buffer: one line sample per pixel over the visible parts of an emitter chord, and the chord's visible fraction. Connect scene, view and color; outputs color plus an optional visibleFraction image. Needs Metal or Vulkan compute."
     },
     {
       "kind": "snippet",

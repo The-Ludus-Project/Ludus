@@ -1,10 +1,17 @@
 // Legibility of the viewport chrome: the empty-viewport caption, the controls row on narrow windows and the
 // size of the first window (docs/architecture/editor-art-direction.md).
 
+#include "internal/empty_world_view.h"
 #include "internal/preview_viewport.h"
 #include "internal/render_preview.h"
 #include "internal/window_size.h"
 #include "internal/workspace_style.h"
+
+#include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/math/scalar.hpp>
+
+#include <ludus/graphics/renderer/renderer.hpp>
+#include <ludus/graphics/renderer/world_grid.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -23,6 +30,7 @@
 #include <QWidget>
 #include <QWidgetAction>
 
+#include <algorithm>
 #include <cmath>
 
 using namespace ludus::editor;
@@ -49,6 +57,8 @@ constexpr double CHANNEL_MAXIMUM = 255.0;
 /// Height of the strip at the bottom of the viewport that holds the caption.
 constexpr int CAPTION_STRIP_HEIGHT = 48;
 /// Width of the viewport used by the roomy and narrow cases.
+/// Pixels of an axis letter's exact colour (glyph cores) that must appear on the viewport.
+constexpr int MINIMUM_LETTER_PIXELS = 4;
 constexpr int ROOMY_WIDTH = 1600;
 constexpr int NARROW_WIDTH = 360;
 constexpr int VIEWPORT_HEIGHT = 480;
@@ -82,8 +92,28 @@ QPalette MakePalette(bool isDark)
     return palette;
 }
 
-/// Counts pixels in the bottom strip that are exactly the caption colour, i.e. glyph cores that no style
-/// sheet or palette recoloured.
+/// A glyph pixel is a blend of the caption colour over the background. It counts as caption-coloured when it lies
+/// on the background-to-caption line: at least CAPTION_COVERAGE of the way along, with all three channels agreeing
+/// within BLEND_SPREAD. Exact matches are not required because hinting and font choice decide whether any glyph
+/// pixel is fully covered.
+constexpr double CAPTION_COVERAGE = 0.4;
+constexpr double BLEND_SPREAD = 0.1;
+
+bool IsCaptionBlend(QRgb pixel)
+{
+    const auto fraction = [](int value, int caption, int background) {
+        return static_cast<double>(value - background) / static_cast<double>(caption - background);
+    };
+    const double red = fraction(qRed(pixel), qRed(CAPTION), qRed(BACKGROUND));
+    const double green = fraction(qGreen(pixel), qGreen(CAPTION), qGreen(BACKGROUND));
+    const double blue = fraction(qBlue(pixel), qBlue(CAPTION), qBlue(BACKGROUND));
+    const double lowest = std::min({red, green, blue});
+    const double highest = std::max({red, green, blue});
+    return lowest >= CAPTION_COVERAGE && highest <= 1.0 && highest - lowest <= BLEND_SPREAD;
+}
+
+/// Counts pixels in the bottom strip that are mostly the caption colour, i.e. glyph cores that no style sheet or
+/// palette recoloured.
 int CountCaptionPixels(const QImage& image)
 {
     int count = 0;
@@ -91,7 +121,7 @@ int CountCaptionPixels(const QImage& image)
     {
         for (int x = 0; x < image.width(); ++x)
         {
-            count += image.pixel(x, y) == CAPTION ? 1 : 0;
+            count += IsCaptionBlend(image.pixel(x, y)) ? 1 : 0;
         }
     }
     return count;
@@ -123,6 +153,62 @@ TEST_CASE("Empty viewport caption keeps its contrast under both workspace palett
         CHECK(CountCaptionPixels(image) > 0);
     }
     QApplication::setPalette(original);
+}
+
+TEST_CASE("Empty viewport letters its axes in a colour that keeps text contrast", "[editor][viewport][legibility]")
+{
+    namespace renderer = ludus::graphics::renderer;
+    namespace foundation = ludus::foundation;
+    RenderPreview preview;
+    QWidget host;
+    ApplyWorkspaceStyle(&host);
+    QVBoxLayout layout(&host);
+    layout.setContentsMargins(0, 0, 0, 0);
+    PreviewViewport viewport(&preview);
+    layout.addWidget(&viewport);
+    host.resize(ROOMY_WIDTH, VIEWPORT_HEIGHT);
+    host.show();
+    QApplication::processEvents();
+    QLabel* caption = viewport.findChild<QLabel*>(QStringLiteral("emptyWorldView"));
+    REQUIRE(caption != nullptr);
+    renderer::ViewDescription view;
+    QString error;
+    REQUIRE(preview.DescribeView(static_cast<foundation::uint32>(caption->width()),
+                                 static_cast<foundation::uint32>(caption->height()),
+                                 view,
+                                 error) == true);
+    foundation::StaticArray<renderer::WorldGridLine, renderer::WORLD_GRID_LINE_CAPACITY> lines;
+    foundation::usize count = 0;
+    foundation::float32 step = 0;
+    REQUIRE(renderer::BuildWorldGridLines(view, {lines.GetData(), lines.GetSize()}, count, step) == true);
+    const QImage image = caption->grab().toImage();
+    int letteredAxes = 0;
+    for (foundation::usize i = 0; i < count; ++i)
+    {
+        const foundation::int32 axis = GetAxisIndexOrNegative(lines[i]);
+        if (axis < 0)
+        {
+            continue;
+        }
+        const QColor axisColour =
+            QColor::fromRgbF(static_cast<qreal>(ludus::foundation::math::EncodeSrgb(lines[i].Color.X)),
+                             static_cast<qreal>(ludus::foundation::math::EncodeSrgb(lines[i].Color.Y)),
+                             static_cast<qreal>(ludus::foundation::math::EncodeSrgb(lines[i].Color.Z)));
+        const QRgb letterColour = GetAxisLetterColour(axisColour).rgb();
+        CHECK(ContrastRatio(letterColour, BACKGROUND) >= MINIMUM_TEXT_CONTRAST);
+        int letterPixels = 0;
+        for (int y = 0; y < image.height(); ++y)
+        {
+            for (int x = 0; x < image.width(); ++x)
+            {
+                letterPixels += image.pixel(x, y) == letterColour ? 1 : 0;
+            }
+        }
+        INFO("axis " << axis);
+        CHECK(letterPixels >= MINIMUM_LETTER_PIXELS);
+        ++letteredAxes;
+    }
+    CHECK(letteredAxes == static_cast<int>(renderer::WORLD_GRID_AXIS_COUNT));
 }
 
 TEST_CASE("Viewport controls overflow instead of truncating", "[editor][viewport][legibility]")

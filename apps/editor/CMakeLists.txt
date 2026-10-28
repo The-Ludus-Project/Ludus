@@ -288,7 +288,8 @@ function(ludus_editor_add_default_render_graph target)
         PREFIX "/render-graph/templates/restir-di" BASE "${restir_template}"
         FILES "${restir_template}/library.lurender.json" "${restir_template}/main.lushader.json.in"
               ${restir_template_shaders})
-    foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing simple_compute_ray_tracing veach_guibas_mis)
+    foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing
+            simple_compute_ray_tracing veach_guibas_mis line_sampling)
         string(REPLACE "_" "-" template_identity "${template_directory}")
         set(visibility_template "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/render_graphs/${template_directory}")
         file(GLOB visibility_template_shaders CONFIGURE_DEPENDS "${visibility_template}/main_shaders/*.slang")
@@ -457,7 +458,7 @@ qt_add_executable(ludus_editor
     src/script_workspace.cpp
     src/internal/render_graph_document.h
     src/internal/render_graph_source.h
-    src/render_graph_document.cpp src/render_graph_node_ports.cpp src/render_graph_configuration_template.cpp src/render_graph_visibility_template.cpp src/render_graph_compute_template.cpp src/render_graph_node_transfer.cpp
+    src/render_graph_document.cpp src/render_graph_node_ports.cpp src/render_graph_configuration_template.cpp src/render_graph_visibility_template.cpp src/render_graph_compute_template.cpp src/render_graph_line_sampling_template.cpp src/render_graph_node_transfer.cpp
     src/internal/render_graph_shader_creation.h
     src/render_graph_shader_cleanup.cpp src/render_graph_shader_creation.cpp src/render_graph_scene_authoring.cpp src/render_graph_scene_bundle.cpp src/render_graph_techniques.cpp
     src/internal/render_graph_pipeline.h
@@ -515,6 +516,8 @@ qt_add_executable(ludus_editor
     src/document_well.cpp
     src/internal/editor_commands.h
     src/editor_commands.cpp
+    src/internal/command_palette.h
+    src/command_palette.cpp
     src/internal/options_dialog.h
     src/options_dialog.cpp
     src/internal/render_graph_build_settings.h
@@ -527,6 +530,10 @@ qt_add_executable(ludus_editor
     src/project_setup_dialog.cpp
     src/project_creation_dialog.cpp
     src/workspace_style.cpp
+    src/internal/theme_preferences.h
+    src/theme_preferences.cpp
+    src/internal/theme_fonts.h
+    src/theme_fonts.cpp
     src/internal/window_size.h
     src/window_size.cpp
     src/controller.cpp
@@ -767,6 +774,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/preview_generation_tests.cpp
         tests/viewport_navigation_tests.cpp
         tests/design_token_tests.cpp
+        tests/theme_preference_tests.cpp
         tests/viewport_legibility_tests.cpp
         tests/viewport_frame_pump_tests.cpp
         tests/viewport_frame_source_tests.cpp
@@ -786,7 +794,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/script_workspace.cpp
         src/internal/render_graph_document.h
         src/internal/render_graph_source.h
-        src/render_graph_document.cpp src/render_graph_node_ports.cpp src/render_graph_configuration_template.cpp src/render_graph_visibility_template.cpp src/render_graph_compute_template.cpp src/render_graph_node_transfer.cpp
+        src/render_graph_document.cpp src/render_graph_node_ports.cpp src/render_graph_configuration_template.cpp src/render_graph_visibility_template.cpp src/render_graph_compute_template.cpp src/render_graph_line_sampling_template.cpp src/render_graph_node_transfer.cpp
         src/internal/render_graph_shader_creation.h
         src/render_graph_shader_cleanup.cpp src/render_graph_shader_creation.cpp src/render_graph_scene_authoring.cpp src/render_graph_scene_bundle.cpp src/render_graph_techniques.cpp
         src/internal/render_graph_pipeline.h
@@ -854,6 +862,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/project_lifecycle_tests.cpp
         tests/workspace_layout_tests.cpp
         tests/editor_shell_tests.cpp
+        tests/command_palette_tests.cpp
         tests/recent_projects_tests.cpp
         tests/source_watch_tests.cpp
         tests/script_workspace_tests.cpp
@@ -901,6 +910,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/document_well.cpp
         src/internal/editor_commands.h
         src/editor_commands.cpp
+        src/internal/command_palette.h
+        src/command_palette.cpp
         src/internal/options_dialog.h
         src/options_dialog.cpp
         src/internal/render_graph_build_settings.h
@@ -913,6 +924,10 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/project_setup_dialog.cpp
         src/project_creation_dialog.cpp
         src/workspace_style.cpp
+        src/internal/theme_preferences.h
+        src/theme_preferences.cpp
+        src/internal/theme_fonts.h
+        src/theme_fonts.cpp
         src/window_size.cpp)
     target_link_libraries(ludus_editor_tests
         PRIVATE
@@ -1102,7 +1117,7 @@ endif()
 if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     add_executable(ludus_render_graph_pipeline_tests tests/main.cpp tests/render_graph_pipeline_tests.cpp tests/render_graph_shader_cleanup_tests.cpp
         src/internal/render_graph_pipeline.h src/render_graph_pipeline.cpp
-        src/render_graph_document.cpp src/render_graph_node_ports.cpp src/render_graph_configuration_template.cpp src/render_graph_visibility_template.cpp src/render_graph_compute_template.cpp src/render_graph_node_transfer.cpp src/render_graph_shader_cleanup.cpp src/render_graph_shader_creation.cpp src/render_graph_scene_authoring.cpp src/render_graph_scene_bundle.cpp src/render_graph_techniques.cpp src/internal/render_graph_pipeline_node.h src/render_graph_pipeline_node.cpp src/render_graph_upscale_node.cpp
+        src/render_graph_document.cpp src/render_graph_node_ports.cpp src/render_graph_configuration_template.cpp src/render_graph_visibility_template.cpp src/render_graph_compute_template.cpp src/render_graph_line_sampling_template.cpp src/render_graph_node_transfer.cpp src/render_graph_shader_cleanup.cpp src/render_graph_shader_creation.cpp src/render_graph_scene_authoring.cpp src/render_graph_scene_bundle.cpp src/render_graph_techniques.cpp src/internal/render_graph_pipeline_node.h src/render_graph_pipeline_node.cpp src/render_graph_upscale_node.cpp
         src/internal/render_graph_canvas.h src/render_graph_canvas.cpp src/render_graph_resources.cpp src/render_graph_canvas_feedback.cpp
         src/internal/render_graph_navigation.h src/render_graph_navigation.cpp
         src/internal/render_graph_diagnostics.h src/render_graph_diagnostics.cpp
@@ -1149,7 +1164,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/main.cpp tests/render_graph_upscale_tests.cpp tests/render_graph_configuration_tests.cpp tests/render_graph_template_tests.cpp tests/render_graph_template_registry_tests.cpp tests/render_graph_quick_add_tests.cpp tests/render_graph_rename_tests.cpp tests/render_graph_selection_tests.cpp tests/render_graph_canvas_tests.cpp tests/render_graph_navigation_tests.cpp tests/render_graph_history_tests.cpp tests/render_graph_layout_tests.cpp tests/render_graph_execution_plan_tests.cpp tests/render_graph_comment_tests.cpp tests/render_graph_reroute_tests.cpp tests/render_graph_resource_inspection_tests.cpp tests/render_graph_canvas_feedback_tests.cpp tests/render_graph_diagnostic_tests.cpp tests/render_graph_diagnostic_navigation_tests.cpp
         src/internal/renderer_workspace.h src/renderer_workspace.cpp src/renderer_workspace_selection.cpp
         src/internal/viewport_frame_pump.h src/viewport_frame_pump.cpp
-        src/render_graph_document.cpp src/render_graph_node_ports.cpp src/render_graph_configuration_template.cpp src/render_graph_visibility_template.cpp src/render_graph_compute_template.cpp src/render_graph_node_transfer.cpp src/render_graph_shader_cleanup.cpp src/render_graph_shader_creation.cpp src/render_graph_scene_authoring.cpp src/render_graph_scene_bundle.cpp src/render_graph_techniques.cpp src/render_graph_pipeline_node.cpp src/render_graph_upscale_node.cpp
+        src/render_graph_document.cpp src/render_graph_node_ports.cpp src/render_graph_configuration_template.cpp src/render_graph_visibility_template.cpp src/render_graph_compute_template.cpp src/render_graph_line_sampling_template.cpp src/render_graph_node_transfer.cpp src/render_graph_shader_cleanup.cpp src/render_graph_shader_creation.cpp src/render_graph_scene_authoring.cpp src/render_graph_scene_bundle.cpp src/render_graph_techniques.cpp src/render_graph_pipeline_node.cpp src/render_graph_upscale_node.cpp
         src/internal/render_graph_configuration_editor.h src/render_graph_configuration_editor.cpp
         src/render_graph_configuration_interface.cpp
         src/internal/render_graph_canvas.h src/render_graph_canvas.cpp src/render_graph_resources.cpp src/render_graph_canvas_feedback.cpp
@@ -1204,7 +1219,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
     add_executable(ludus_render_graph_live_build_tests tests/main.cpp tests/render_graph_live_build_tests.cpp
-        src/render_graph_document.cpp src/render_graph_node_ports.cpp src/render_graph_configuration_template.cpp src/render_graph_visibility_template.cpp src/render_graph_compute_template.cpp src/render_graph_node_transfer.cpp
+        src/render_graph_document.cpp src/render_graph_node_ports.cpp src/render_graph_configuration_template.cpp src/render_graph_visibility_template.cpp src/render_graph_compute_template.cpp src/render_graph_line_sampling_template.cpp src/render_graph_node_transfer.cpp
         src/internal/render_graph_shader_creation.h
         src/render_graph_shader_cleanup.cpp src/render_graph_shader_creation.cpp src/render_graph_scene_authoring.cpp src/render_graph_scene_bundle.cpp src/render_graph_techniques.cpp src/render_graph_pipeline_node.cpp src/render_graph_upscale_node.cpp
         src/render_graph_configuration_interface.cpp

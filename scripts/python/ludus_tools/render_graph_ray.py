@@ -140,6 +140,8 @@ SCENE_QUERY_LIMITS = {
     'MAX_SURFACE_QUERIES': 8,
     'MIN_VISIBILITY_QUERIES': 0,
     'MAX_VISIBILITY_QUERIES': 16,
+    'MIN_LINE_QUERIES': 0,
+    'MAX_LINE_QUERIES': 8,
 }
 
 COMPUTE_ID = 'GraphRayCompute'
@@ -153,7 +155,7 @@ IMAGE_FRAGMENT_ID = 'GraphRayImageFragment'
 # Files are installed by their owning renderer/math/RHI targets beside the helper.
 HELPERS = ('scene_data.h', 'renderer_gpu_preview_layout.h', 'renderer_surface_functions.slang', 'recipes.json',
            'native_metal_ray.slang', 'metal_ray_pipeline_layout.h',
-           'ray_triangle_loop.slang', 'ray_bvh_traversal.slang', 'renderer_reference_layout.h', 'lighting_layout.h', 'math.slang', 'raster_bindings.slang', 'scene_shader.slang', 'scene_payload.slang', 'scene_shader_layout.h', 'ray_shader.slang', 'visibility_buffer.slang')
+           'ray_triangle_loop.slang', 'ray_line_visibility.slang', 'ray_bvh_traversal.slang', 'renderer_reference_layout.h', 'lighting_layout.h', 'math.slang', 'raster_bindings.slang', 'scene_shader.slang', 'scene_payload.slang', 'scene_shader_layout.h', 'ray_shader.slang', 'visibility_buffer.slang')
 
 
 def resolve_state(state):
@@ -576,6 +578,7 @@ float3 EvaluateGraphRay(uint pixel)
     RayQueryContext queries = (RayQueryContext)0;
     queries.MaximumSurfaceQueries = MAX_SURFACE_QUERIES;
     queries.MaximumVisibilityQueries = MAX_VISIBILITY_QUERIES;
+    queries.MaximumLineQueries = MAX_LINE_QUERIES;
     RayLaunch launch;
     launch.PositionPixel = uint2(pixel % Dimensions.x, pixel / Dimensions.x);
     launch.ExtentPixel = Dimensions.xy;
@@ -609,6 +612,11 @@ float3 EvaluateGraphRay(uint pixel)
         wrapper = wrapper.replace('float3 EvaluateGraphRay(uint pixel)\n{', VISIBILITY_SHADE + 'float3 EvaluateGraphRay(uint pixel)\n{', 1)
     wrapper = wrapper.replace('MAX_SURFACE_QUERIES', str(interface['surface_queries']))
     wrapper = wrapper.replace('MAX_VISIBILITY_QUERIES', str(interface['visibility_queries']))
+    # An absent or zero line budget keeps the zero-initialized maximum and omits the assignment, so
+    # packages without line queries keep their wrapper bytes.
+    line_queries = interface.get('line_queries', 0)
+    wrapper = (wrapper.replace('MAX_LINE_QUERIES', str(line_queries)) if line_queries else
+               wrapper.replace('    queries.MaximumLineQueries = MAX_LINE_QUERIES;\n', '', 1))
     for token, stage in (('RAY_GENERATION', 'ray_generation'), ('RAY_MISS', 'miss'), ('RAY_CLOSEST_HIT', 'closest_hit')):
         wrapper = wrapper.replace(token, callbacks[stage])
     return wrapper.replace('_ludus_ray/renderer_gpu_preview.slang', '_ludus_ray/' + recipe['source'])

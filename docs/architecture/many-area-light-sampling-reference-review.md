@@ -2,8 +2,9 @@
 
 Status: proposed design, reviewed October 27, 2026. Revised the same day to
 reconcile it with the CPU and GPU reference requirement and with the
-polygonal-light work's licensing, traversal and primitive decisions. Nothing
-below is implemented.
+polygonal-light work's licensing, traversal and primitive decisions. The
+FoundationMath primitives listed under [Ownership](#ownership) are implemented;
+the estimator itself is not.
 This review is the estimator review that
 [hybrid and real-time transport](renderer-systems.md#hybrid-and-real-time-transport)
 requires before resampling enters a Ludus estimator. It covers next-event
@@ -27,15 +28,13 @@ projected-solid-angle primitives and the template shadow-ray traversal.
 | --- | --- |
 | Ishaan Shah, Aakash KT and P. J. Narayanan, [“Combining Resampled Importance and Projected Solid Angle Samplings for Many Area Light Rendering”](https://doi.org/10.1145/3610543.3626165), SIGGRAPH Asia 2023 Technical Communications; [author PDF](https://cdn.iiit.ac.in/cdn/cvit.iiit.ac.in/images/ConferencePapers/2023/ris_proj_sa.pdf) §§2–6 and Algorithm 1 read in full | Resample *lights*, not points. The candidate density is `p(A_j|x)`, the target is the unshadowed LTC shading of the whole light, `M = 32`, candidates stream through a weighted reservoir, and the selected light then receives one projected-solid-angle/LTC sample. The naive variant (their §3.1), which runs the expensive point sampler once per candidate, is rejected for the reason they give. Their renderer computes direct lighting only, with no BSDF-hit MIS and no reuse. Their §6 single-lobe limitation is addressed below rather than inherited. |
 | Christoph Peters, [“BRDF Importance Sampling for Polygonal Lights”](https://doi.org/10.1145/3450626.3459672), ACM TOG 40(4), article 140, 2021; [author PDF](https://cg.ivd.kit.edu/publications/2021/polygonal_lights/peters2021-brdf_importance_sampling_for_polygonal_lights-paper.pdf) §§3.1, 3.7, 4.1–4.3, 6.1 and 6.5 | Projected-solid-angle sampling of a convex polygon clipped to `z ≥ 0` in the shading frame, with clockwise winding (flip `y` when the polygon is seen from behind), FP32 stability notes and a fixed two-iteration inversion. LTC sampling transforms the polygon by `M⁻¹`, clips only in LTC space, and disables the specular technique when that clip is empty. Mixed BRDFs take one sample per technique and combine them with clamped optimal MIS, `v = 1/2`; the paper recommends against the one-sample estimator (§4.2). Diffuse albedo in the MIS coefficients is clamped to at least 0.01 per channel so the diffuse technique always covers the polygon. |
+| Eric Heitz, Jonathan Dupuy, Stephen Hill and David Neubelt, [“Real-Time Polygonal-Light Shading with Linearly Transformed Cosines”](https://doi.org/10.1145/2897824.2925895), ACM TOG 35(4), article 41, 2016 (SIGGRAPH 2016); author preprint §§3.1–3.2, 4 and 5.1, reviewed for the LTC transform | The LTC density (Eq. 1) is the clamped cosine (Eq. 4) of `M⁻¹ω/‖M⁻¹ω‖` times the Jacobian `|M⁻¹|/‖M⁻¹ω‖³`. It is invariant to scaling `M`, its polygon integral is the clamped-cosine integral over `M⁻¹P` (Eq. 3), and it is sampled by mapping a cosine sample through `M` (Algorithm 1). Isotropic BRDF fits use the four-parameter form of Eq. 6 with the L3 error and store `M⁻¹` plus the BRDF norm over `(θ, √α)`. The fitter must reimplement this from the text, because the published utilities are not used. |
 | Chris Wyman, “Weighted Reservoir Sampling,” *Ray Tracing Gems II*, chapter 22, via the existing [streaming selection review](randomness-gems-review.md#streaming-selection) | Sequential, with-replacement reservoir over an explicit candidate order, with zero totals handled explicitly. |
 
 Cited through those sources but **not separately reviewed in this pass**. Review
 the cited sections before implementing the corresponding piece, and add their
 attribution beside the code:
 
-- Eric Heitz, Jonathan Dupuy, Stephen Hill and David Neubelt, “Real-Time
-  Polygonal-Light Shading with Linearly Transformed Cosines,” ACM TOG 35(4), 2016:
-  LTC definition, fitting and the clipped-polygon edge integral.
 - Stephen Hill and Eric Heitz, “Real-Time Area Lighting: a Journey from Research
   to Production,” SIGGRAPH 2016 Advances course: the approximate form-factor
   evaluation that Shah et al. use for speed.
@@ -62,10 +61,11 @@ attribution beside the code:
 | `tiled-vbuffer-nee` template | A per-tile emitter CDF with floors, combined with the BSDF by the power heuristic. |
 
 None of these accounts for the cosine and BSDF when sampling a point on a
-triangle, and only ReSTIR adapts light choice to the receiver. `develop` has no
-LTC, projected-solid-angle or polygon-clipping code yet. The polygonal-light work
-is adding the clipping and projected-solid-angle primitives (see
-[Ownership](#ownership)). The reservoir helpers are private to the ReSTIR template.
+triangle, and only ReSTIR adapts light choice to the receiver. When this review
+was written, `develop` had no LTC, projected-solid-angle or polygon-clipping code.
+FoundationMath has since gained the projected-solid-angle primitives, the
+sequential reservoir and the LTC polygon transform (see [Ownership](#ownership)).
+The ReSTIR template still uses its private reservoir helpers.
 
 ## Proposed estimator
 
@@ -346,9 +346,9 @@ aligned to Philox's four-lane blocks:
 | Piece | Owner | Notes |
 | --- | --- | --- |
 | Convex polygon horizon clipping (up to seven input vertices), clipped projected-solid-angle integral, Peters sampler and density | FoundationMath `projected_solid_angle.hpp` and `shaders/projected_solid_angle.slang`, being added by the polygonal-light work | The sampler is ported from the BSD-licensed `polygon_sampling.glsl` with its notice. Clipping is an independent reimplementation. This design consumes these primitives and adds none of its own. |
-| Generic LTC polygon transform | FoundationMath, beside those primitives | Transform the vertices by `M⁻¹`, then reuse the same clipping and integral |
+| Generic LTC polygon transform | FoundationMath, beside those primitives | Implemented as `linearly_transformed_cosine.hpp` and `shaders/linearly_transformed_cosine.slang` ([contract](../modules/foundation/math.md#linearly-transformed-cosines-over-polygons)): transform the vertices by `M⁻¹`, then reuse the same clipping, integral and sampler. Credits Heitz et al. 2016 (§3.1, Eq. 3, Algorithm 1) and Peters 2021 §4.1. |
 | Sequential weighted reservoir | FoundationMath | Implemented as `weighted_reservoir.hpp` and `shaders/weighted_reservoir.slang` ([contract](randomness.md#sequential-weighted-reservoir)): explicit order, zero totals, and selection-frequency tests on exact small integers. The ReSTIR template may adopt it separately; this design does not change that template. |
-| LTC table for Ludus GGX/correlated Smith/Schlick, its fitter and provenance | Renderer (generated include) plus an offline Ludus tool, shared with the polygonal-light LTC templates | Reimplemented from Heitz et al. and Peters §4.1, not from GPLv3 utilities. Must cover roughness down to 0.045, where fits are least accurate. A poor fit costs variance, not correctness. Agree on one owner before either workstream builds it. |
+| LTC table for Ludus GGX/correlated Smith/Schlick, its fitter and provenance | Renderer (generated include) plus an offline Ludus tool. **Owned by this RIS/many-area-light workstream** (decided October 27, 2026). The polygonal-light LTC templates reuse the same table and fitter rather than building their own. | Implemented as `tools/ltc-fit`, `shaders/ltc_table_data.inc` with its provenance, and the `ltc_table.slang` and CPU lookups ([fit, regeneration and accuracy](../development/ltc-table.md)). Reimplemented from Heitz et al. §4 and Peters §§4.1–4.2, not from GPLv3 utilities. It covers roughness down to 0.045, where every view up to 81° fits within 1% relative L1. `F0` stays exact in the tabulated albedo instead of forming a third axis. A poor fit costs variance, not correctness. |
 | Compute-BVH graph traversal strategy | Renderer, at the shared traversal boundary | Implemented as `ComputeBvh`, sharing the RT1 GPU reference's BVH traversal. Shared with the polygonal-light templates; a prerequisite for both |
 | Power-CDF scene-interface accessors | Renderer | Implemented as `SelectEmissiveTriangle` and `EvaluateEmissiveTriangleSelectionPmf` in `scene_shader.slang` ([usage](../development/render-graph-authoring.md#select-emissive-triangles-by-power)). They read the CDF that `PackReferenceEmitterSelection` packs for RT1, and the private C++ counterparts `SelectReferenceEmissiveTriangle` and `EvaluateReferenceEmissiveTriangleSelectionPmf` match them in the `[power-cdf]` GPU parity test |
 | Diffuse albedo approximation, RT1 path state | Renderer | One packed CDF serves RT1 and graph shaders |
@@ -392,5 +392,6 @@ Out of scope:
 Open questions, to settle by measurement:
 - `K`, and Peters' `v`;
 - the diffuse albedo approximation;
-- LTC table resolution and `F0` handling;
+- LTC table resolution and `F0` handling (the first table uses 64 × 64 cells and
+  an exact `F0` albedo; see [its accuracy](../development/ltc-table.md#accuracy));
 - whether two shadow rays beat Peters' one-sample variant for this workload.

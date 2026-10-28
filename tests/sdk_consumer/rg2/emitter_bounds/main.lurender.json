@@ -1,0 +1,126 @@
+{
+  "configurations": [
+    {
+      "id": "Default",
+      "inputs": [],
+      "outputs": [],
+      "nodes": [
+        {
+          "id": "scene",
+          "kind": "Scene"
+        },
+        {
+          "active": true,
+          "id": "camera",
+          "kind": "Camera",
+          "role": "Offscreen",
+          "target_type": "ColorTexture"
+        },
+        {
+          "extent": [
+            96,
+            64
+          ],
+          "format": "RGBA8Unorm",
+          "id": "color",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "id": "output",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "bounds",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "EmitterBounds"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget"
+          }
+        },
+        {
+          "id": "accumulate",
+          "kind": "Accumulate",
+          "samples": 2
+        },
+        {
+          "id": "tonemap",
+          "kind": "ToneMap",
+          "exposure": 1
+        }
+      ],
+      "edges": [
+        {
+          "from": "color.texture",
+          "to": "camera.target"
+        },
+        {
+          "from": "scene.scene",
+          "to": "bounds.scene"
+        },
+        {
+          "from": "camera.view",
+          "to": "bounds.view"
+        },
+        {
+          "from": "color.texture",
+          "to": "bounds.color"
+        },
+        {
+          "from": "bounds.color",
+          "to": "accumulate.color"
+        },
+        {
+          "from": "accumulate.color",
+          "to": "tonemap.color"
+        },
+        {
+          "from": "tonemap.color",
+          "to": "output.texture"
+        }
+      ]
+    }
+  ],
+  "default": "Default",
+  "id": "Main",
+  "version": 2
+}

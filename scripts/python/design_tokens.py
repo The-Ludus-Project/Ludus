@@ -12,7 +12,10 @@ contrast pairs that must hold. Consumers:
   test) fails when it is stale.
 
 Colour names are ``role.name`` (for example ``surface.workspace``); each has a
-``dark`` and a ``light`` value as ``#rrggbb``.
+``dark`` and a ``light`` value as ``#rrggbb``. ``highContrast`` lists replacement
+values per appearance for the tokens that change when the system asks for more
+contrast; every contrast pair also holds its ``highContrastMinimum`` there.
+``type`` holds font-size multipliers of the system font.
 """
 from __future__ import annotations
 
@@ -69,6 +72,15 @@ def validate(document: dict) -> None:
             value = entry.get(appearance, "")
             if COLOUR_PATTERN.match(value) is None:
                 raise TokenError(f"colour '{name}' {appearance} value '{value}' must be #rrggbb in lowercase")
+    for appearance in APPEARANCES:
+        for name, value in document.get("highContrast", {}).get(appearance, {}).items():
+            if name not in colours:
+                raise TokenError(f"highContrast {appearance} names unknown colour '{name}'")
+            if COLOUR_PATTERN.match(value) is None:
+                raise TokenError(f"highContrast {appearance} '{name}' value '{value}' must be #rrggbb in lowercase")
+    for role, scale in document.get("type", {}).items():
+        if not isinstance(scale, (int, float)) or not 0.5 <= scale <= 3:
+            raise TokenError(f"type role '{role}' needs a scale between 0.5 and 3")
     for pair in document.get("contrast", []):
         for role in ("foreground", "background"):
             if pair.get(role) not in colours:
@@ -80,8 +92,12 @@ def validate(document: dict) -> None:
             raise TokenError(f"{group} values must be positive integers")
 
 
-def colour(document: dict, name: str, appearance: str) -> str:
-    """Return ``#rrggbb`` of token ``name`` for ``appearance``."""
+def colour(document: dict, name: str, appearance: str, is_high_contrast: bool = False) -> str:
+    """Return ``#rrggbb`` of token ``name`` for ``appearance``, with high-contrast replacements when asked."""
+    if is_high_contrast:
+        replacement = document.get("highContrast", {}).get(appearance, {}).get(name)
+        if replacement is not None:
+            return replacement
     return document["colours"][name][appearance]
 
 
@@ -99,14 +115,17 @@ def contrast_ratio(first: str, second: str) -> float:
 
 
 def failing_pairs(document: dict) -> list[str]:
-    """Descriptions of every contrast pair that fails in either appearance."""
+    """Descriptions of every contrast pair that fails in either appearance, normal or high contrast."""
     failures = []
     for appearance in APPEARANCES:
-        for pair in document["contrast"]:
-            ratio = contrast_ratio(colour(document, pair["foreground"], appearance),
-                                   colour(document, pair["background"], appearance))
-            if ratio < pair["minimum"]:
-                failures.append(f"{appearance}: {pair['label']} is {ratio:.2f}:1, needs {pair['minimum']}:1")
+        for is_high_contrast in (False, True):
+            for pair in document["contrast"]:
+                minimum = pair.get("highContrastMinimum", pair["minimum"]) if is_high_contrast else pair["minimum"]
+                ratio = contrast_ratio(colour(document, pair["foreground"], appearance, is_high_contrast),
+                                       colour(document, pair["background"], appearance, is_high_contrast))
+                if ratio < minimum:
+                    mode = f"{appearance} high contrast" if is_high_contrast else appearance
+                    failures.append(f"{mode}: {pair['label']} is {ratio:.2f}:1, needs {minimum}:1")
     return failures
 
 
@@ -117,8 +136,12 @@ def css_variable(name: str) -> str:
 
 def render_css(document: dict) -> str:
     """The generated block, markers included, with dark values by default and light ones on request."""
-    def declarations(appearance: str, indent: str) -> list[str]:
-        return [f"{indent}{css_variable(name)}: {entry[appearance]};" for name, entry in document["colours"].items()]
+    def declarations(appearance: str, indent: str, is_high_contrast: bool = False) -> list[str]:
+        names = document["colours"]
+        if is_high_contrast:
+            names = [name for name in names if name in document.get("highContrast", {}).get(appearance, {})]
+        return [f"{indent}{css_variable(name)}: {colour(document, name, appearance, is_high_contrast)};"
+                for name in names]
 
     lines = [BEGIN_MARKER, ":root {", "  color-scheme: dark light;"]
     lines += declarations(DARK, "  ")
@@ -127,6 +150,10 @@ def render_css(document: dict) -> str:
     lines += [f"  --ludus-radius-{key}: {value}px;" for key, value in document["radius"].items()]
     lines += ["}", "@media (prefers-color-scheme: light) {", "  :root {"]
     lines += declarations(LIGHT, "    ")
+    lines += ["  }", "}", "@media (prefers-contrast: more) {", "  :root {"]
+    lines += declarations(DARK, "    ", True)
+    lines += ["  }", "}", "@media (prefers-contrast: more) and (prefers-color-scheme: light) {", "  :root {"]
+    lines += declarations(LIGHT, "    ", True)
     lines += ["  }", "}", END_MARKER]
     return "\n".join(lines) + "\n"
 

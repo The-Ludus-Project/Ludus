@@ -77,9 +77,43 @@ PrepareComputeRayTracingConfiguration(RenderGraphSnapshot& inoutSnapshot,
                                       QString& outError,
                                       const QString& templateIdentity,
                                       RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr);
+/// A renderer-owned scene compute template: its registry identity (the embedded resource directory
+/// and, with '-' replaced by '_', the destination source directory), the prefix that keeps its
+/// imported program IDs distinct, and the display name used in repairs.
+struct SceneComputeTemplate final
+{
+    QString Identity;
+    QString ProgramPrefix;
+    QString Name;
+};
+/// Shared import of a scene compute template, with the contract of PrepareComputeRayTracingConfiguration:
+/// prefixed kernels with their include closure, Graph settings, and the ray technique's
+/// scene_interface with every query budget the template declares (surface, visibility and, when
+/// present, line) raised to the template's. Caller owns/discards the snapshot; GUI thread; no disk writes.
+[[nodiscard]] RenderGraphDocumentStatus
+PrepareSceneComputeTemplateConfiguration(RenderGraphSnapshot& inoutSnapshot,
+                                         const QString& rootGraph,
+                                         const QString& file,
+                                         const QString& configuration,
+                                         QString& outError,
+                                         const SceneComputeTemplate& selectedTemplate,
+                                         RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr);
+/// Prepare the line-sampling template (point-line design D8a) in an absent/empty library: a
+/// primary-hits pass and the ShadeLineSampling and ShadeVisibleFraction triangle-loop passes sharing
+/// one render-size hit Buffer, imported under line_sampling/ with LineSampling-prefixed program IDs;
+/// visibleFraction is an optional library output. The ray technique's scene_interface gains the
+/// template's line_queries budget. Requires a Metal or Vulkan profile but no native ray tracing.
+/// Same transaction contract as PrepareComputeRayTracingConfiguration.
+[[nodiscard]] RenderGraphDocumentStatus
+PrepareLineSamplingConfiguration(RenderGraphSnapshot& inoutSnapshot,
+                                 const QString& rootGraph,
+                                 const QString& file,
+                                 const QString& configuration,
+                                 QString& outError,
+                                 RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr);
 /// Prepare a built-in configuration, inserting a library/Subgraph when selected on the root canvas.
 /// Supports restir-di, visibility-buffer, visibility-secondary-rays, tiled-vbuffer-nee,
-/// compute-ray-tracing, simple-compute-ray-tracing and veach-guibas-mis. Same transaction contract
+/// compute-ray-tracing, simple-compute-ray-tracing, veach-guibas-mis and line-sampling. Same transaction contract
 /// as PrepareRestirTemplate; invalid identities and conflicts leave publication to the caller.
 [[nodiscard]] RenderGraphDocumentStatus
 PrepareConfigurationTemplate(RenderGraphSnapshot& inoutSnapshot,

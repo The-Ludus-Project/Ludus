@@ -30,6 +30,7 @@ target_sources(
         src/summation.cpp
         src/enclosure.cpp
         src/projected_solid_angle.cpp
+        src/linearly_transformed_cosine.cpp
         src/weighted_reservoir.cpp
     PUBLIC
         FILE_SET public_headers
@@ -57,6 +58,7 @@ target_sources(
             include/ludus/foundation/math/patch.hpp
             include/ludus/foundation/math/enclosure.hpp
             include/ludus/foundation/math/projected_solid_angle.hpp
+            include/ludus/foundation/math/linearly_transformed_cosine.hpp
             include/ludus/foundation/math/weighted_reservoir.hpp
 )
 
@@ -115,6 +117,7 @@ if(LUDUS_BUILD_TESTS)
             tests/summation_tests.cpp
             tests/enclosure_tests.cpp
             tests/projected_solid_angle_tests.cpp
+            tests/linearly_transformed_cosine_tests.cpp
             tests/weighted_reservoir_tests.cpp
     )
     target_include_directories(ludus_foundation_math_tests PRIVATE tests src)
@@ -161,4 +164,4 @@ if(LUDUS_BUILD_TESTS)
     endif()
 endif()
 
-install(FILES shaders/math.slang shaders/projected_solid_angle.slang shaders/weighted_reservoir.slang DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
+install(FILES shaders/math.slang shaders/projected_solid_angle.slang shaders/linearly_transformed_cosine.slang shaders/weighted_reservoir.slang DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
