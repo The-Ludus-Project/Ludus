@@ -5,6 +5,7 @@
 #include "internal/render_graph_job.h"
 
 #include <QObject>
+#include <QStringList>
 #include <QVector>
 
 QT_BEGIN_NAMESPACE
@@ -60,6 +61,9 @@ public:
     /// Report error/warning counts, independently of whether their targets are still available.
     [[nodiscard]] foundation::int32 GetErrorCount() const noexcept;
     [[nodiscard]] foundation::int32 GetWarningCount() const noexcept;
+    /// Error rows targeting these authored nodes in this exact graph/configuration. Excludes unavailable targets.
+    [[nodiscard]] foundation::int32
+    CountNodeErrors(const QString& file, const QString& configuration, const QStringList& nodes) const;
     /// Number of currently available canvas targets.
     [[nodiscard]] foundation::int32 GetAvailableCount() const noexcept;
     /// Last visited source row in RenderGraphJobResult, or -1 before navigation/new result.
@@ -68,6 +72,8 @@ public:
     [[nodiscard]] RenderGraphDiagnosticFreshness GetFreshness() const noexcept;
 
 Q_SIGNALS:
+    /// Report counts or freshness changed; presentation listeners must not mutate the report.
+    void Changed();
     /// Synchronous request for the owner to refresh source identity before an explicit step.
     void RefreshRequested();
     /// Synchronous reveal through the shared Error List activation path; row is a source result index.

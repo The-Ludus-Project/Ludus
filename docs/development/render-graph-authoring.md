@@ -4189,6 +4189,47 @@ Comment metadata does not affect dependencies, semantic build identity, compiled
 passes or rendering. The CLI validates and preserves it as authored source, and
 the editor's live-build identity excludes it with the rest of `layout`.
 
+### Collapse pipeline stages
+
+Right-click a comment frame and choose **Collapse Stage** to show a compact stage
+card. Choose **Expand Stage** from its context menu, or double-click the collapsed
+card, to restore the full frame. Title, notes and colour remain editable from the
+same menu. Only nonempty frames whose saved rectangles do not intersect another
+frame can collapse; nested and overlapping frames stay expanded, including when
+Source requests collapse. Membership is full containment of authored node cards
+in the saved expanded rectangle. Configuration interface boxes remain visible.
+
+The collapsed card shows its node count and node-targeted report error count.
+**No report**, **stale** and **unverified** labels distinguish unavailable or older
+results from current validation. Graph-level problems remain in the diagnostic
+toolbar and Error List. Hover an abbreviated count to read it in full.
+
+Boundary ports represent the original endpoints of connections crossing the stage,
+with separate input and output ports even when they share a name. Shared output
+endpoints appear once for fan-out; hover for the complete node/port name and type.
+Internal connections are hidden. Boundary ports support the existing connection
+replacement/removal and **Inspect Resource** actions. Tracing still follows the
+complete logical graph, highlighting stage cards and crossing wires. Selection,
+pan, zoom, node coordinates and saved wire routes survive collapse and expansion.
+**Fit Selection** frames a collapsed card when its selected nodes are hidden.
+Saved reroutes on wires touching a collapsed stage are retained but not displayed
+or edited until the stage expands.
+
+Dragging the collapsed card moves its saved expanded rectangle and all enclosed
+nodes together in one undo step. Its compact dimensions never replace the saved
+expanded dimensions. Expand before resizing the frame. Collapse/expand uses the
+same document undo history as other frame edits; Save retains the optional boolean
+`collapsed` field in `layout.frames`. Missing means expanded. It does not affect
+build identity or rendering. Moving, arranging or deleting nodes re-evaluates
+membership from the saved rectangle; no separate node group is serialized.
+
+**Find Node**, node reveal and diagnostic navigation temporarily expand the
+containing stage so the real node, port or field can be inspected. These reveals
+do not edit the saved collapse state or create an undo step. Use **Collapse Stage**
+on the revealed frame to fold it again. Back/Forward snapshots restore temporary
+reveals alongside selection, pan, zoom and tracing. Switching configurations starts
+with their saved collapse states; returning through history restores that visit.
+
 ### Route wires around pipeline stages
 
 Double-click a wire, or right-click it and choose **Add Reroute Point**, to insert

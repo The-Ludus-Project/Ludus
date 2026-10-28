@@ -647,6 +647,7 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
     mHistoryOrNull = new RenderGraphHistory(mDocument, *this);
     mCommentsOrNull = new RenderGraphComments(*this, *mScene);
     mReroutesOrNull = new RenderGraphReroutes(*this);
+    connect(mDiagnostics, &RenderGraphDiagnostics::Changed, mCommentsOrNull, &RenderGraphComments::RefreshCounts);
     connect(mReroutesOrNull, &RenderGraphReroutes::PreviewChanged, this, &RenderGraphCanvas::updateEdges);
     setViewportMargins(0, mFramingToolbar->sizeHint().height() + mHistoryOrNull->sizeHint().height(), 0, 0);
     connect(mNavigation, &RenderGraphNavigation::TraceChanged, this, &RenderGraphCanvas::updateConnectionHighlight);
@@ -657,6 +658,7 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
             return;
         }
         mHoveredPort.clear();
+        mCommentsOrNull->RevealNode(identity);
         SelectNode(identity);
         notifySelection();
         Q_EMIT NodeSelected(identity);
@@ -732,6 +734,7 @@ void RenderGraphCanvas::ShowConfiguration(const QString& file, const QString& co
     const bool isSame = file == mFile && configuration == mConfiguration;
     if (isSame == false)
     {
+        mCommentsOrNull->SetRevealedFrames({});
         mNavigation->SetTraceDirection(RenderGraphTraceDirection::None);
     }
     mFile = file;
@@ -795,7 +798,10 @@ void RenderGraphCanvas::FitGraph()
     QRectF bounds;
     for (const NodeView* view : std::as_const(mNodes))
     {
-        bounds = bounds.united(view->Frame->sceneBoundingRect());
+        if (view->Frame->isVisible() == true)
+        {
+            bounds = bounds.united(view->Frame->sceneBoundingRect());
+        }
     }
     bounds = bounds.united(mCommentsOrNull->GetBounds()).united(mReroutesOrNull->GetBounds());
     fitBounds(bounds);
@@ -807,7 +813,9 @@ void RenderGraphCanvas::FitSelection()
     QRectF bounds;
     for (const QString& identity : GetSelectedNodes())
     {
-        bounds = bounds.united(mNodes.value(identity)->Frame->sceneBoundingRect());
+        const QString stage = mCommentsOrNull->GetCollapsedFrame(identity);
+        bounds = bounds.united(stage.isEmpty() == true ? mNodes.value(identity)->Frame->sceneBoundingRect()
+                                                       : mCommentsOrNull->GetFrameBounds(stage));
     }
     fitBounds(bounds);
 }
@@ -846,6 +854,7 @@ RenderGraphViewState RenderGraphCanvas::CaptureViewState() const
             viewportTransform().inverted().map(QPointF(viewport()->width() * 0.5, viewport()->height() * 0.5)),
         .Zoom = math::Clamp(transform().m11(), MINIMUM_VIEW_SCALE, MAXIMUM_VIEW_SCALE),
         .Trace = mNavigation->GetTraceDirection(),
+        .RevealedFrames = mCommentsOrNull->GetRevealedFrames(),
     };
 }
 
@@ -862,6 +871,7 @@ bool RenderGraphCanvas::RestoreViewState(const RenderGraphViewState& state)
     }
     mShouldFitOnShow = false;
     mHoveredPort.clear();
+    mCommentsOrNull->SetRevealedFrames(state.RevealedFrames);
     SelectNodes(state.Selection);
     mNavigation->SetTraceDirection(state.Trace);
     applyViewTransform(state);
@@ -1016,6 +1026,7 @@ void RenderGraphCanvas::Rebuild()
     mHoveredPort.clear();
     qDeleteAll(mNodes);
     mNodes.clear();
+    mHiddenSelection.clear();
     qDeleteAll(mEdges);
     mEdges.clear();
     mCommentsOrNull->Clear();
@@ -1265,7 +1276,10 @@ void RenderGraphCanvas::Rebuild()
     QRectF nodeBounds = mCommentsOrNull->GetBounds().united(mReroutesOrNull->GetBounds());
     for (const NodeView* view : std::as_const(mNodes))
     {
-        nodeBounds = nodeBounds.united(view->Frame->sceneBoundingRect());
+        if (view->Frame->isVisible() == true)
+        {
+            nodeBounds = nodeBounds.united(view->Frame->sceneBoundingRect());
+        }
     }
     mScene->setSceneRect(
         nodeBounds.adjusted(-SCENE_SCROLL_PADDING, -SCENE_SCROLL_PADDING, SCENE_SCROLL_PADDING, SCENE_SCROLL_PADDING));
@@ -1525,10 +1539,47 @@ void RenderGraphCanvas::SetSceneBundleExpanded(const QString& node, bool isExpan
     ShowConfiguration(mFile, mConfiguration);
 }
 
+bool RenderGraphCanvas::IsWireCollapsed(const QString& from, const QString& to) const
+{
+    return mCommentsOrNull->GetCollapsedFrame(GetEndpointNode(from)).isEmpty() == false ||
+           mCommentsOrNull->GetCollapsedFrame(GetEndpointNode(to)).isEmpty() == false;
+}
+
+void RenderGraphCanvas::RefreshCommentPresentation()
+{
+    const RenderGraphViewState viewState = CaptureViewState();
+    const QStringList selection = GetSelectedNodes();
+    // Qt clears selection when hiding a card. Retain the logical IDs before changing visibility.
+    mHiddenSelection = selection;
+    for (NodeView* view : std::as_const(mNodes))
+    {
+        view->Frame->setVisible(mCommentsOrNull->GetCollapsedFrame(view->Id).isEmpty());
+    }
+    SelectNodes(selection);
+    updateEdges();
+    updateConnectionHighlight();
+    QRectF bounds = mCommentsOrNull->GetBounds().united(mReroutesOrNull->GetBounds());
+    for (const NodeView* view : std::as_const(mNodes))
+    {
+        if (view->Frame->isVisible() == true)
+        {
+            bounds = bounds.united(view->Frame->sceneBoundingRect());
+        }
+    }
+    // Revealed nodes may be outside the compact stage's former scroll range. Growing it must
+    // preserve the current view; explicit search/diagnostic reveal performs the subsequent pan.
+    mScene->setSceneRect(mScene->sceneRect().united(
+        bounds.adjusted(-SCENE_SCROLL_PADDING, -SCENE_SCROLL_PADDING, SCENE_SCROLL_PADDING, SCENE_SCROLL_PADDING)));
+    applyViewTransform(viewState);
+}
+
 void RenderGraphCanvas::updateEdges()
 {
     for (EdgeView* edge : std::as_const(mEdges))
     {
+        const QString sourceStage = mCommentsOrNull->GetCollapsedFrame(GetEndpointNode(edge->From));
+        const QString destinationStage = mCommentsOrNull->GetCollapsedFrame(GetEndpointNode(edge->To));
+        edge->Path->setVisible(sourceStage.isEmpty() == true || sourceStage != destinationStage);
         const QPointF from = GetPortPosition(edge->From, true);
         const QPointF to = GetPortPosition(edge->To, false);
         if (from.isNull() == true || to.isNull() == true)
@@ -1539,7 +1590,10 @@ void RenderGraphCanvas::updateEdges()
         }
         QPainterPath path(from);
         QPointF previous = from;
-        for (QPointF point : mReroutesOrNull->GetPoints(edge->From, edge->To))
+        const QVector<QPointF> points = IsWireCollapsed(edge->From, edge->To) == true
+                                            ? QVector<QPointF>{}
+                                            : mReroutesOrNull->GetPoints(edge->From, edge->To);
+        for (QPointF point : points)
         {
             path.connectPath(MakeCurve(previous, point));
             previous = point;
@@ -1600,6 +1654,11 @@ QPointF RenderGraphCanvas::GetNodePosition(const QString& node) const
 
 QPointF RenderGraphCanvas::GetPortPosition(const QString& endpoint, bool isOutput) const
 {
+    const QGraphicsEllipseItem* boundaryOrNull = mCommentsOrNull->GetBoundaryPortOrNull(endpoint, isOutput);
+    if (boundaryOrNull != nullptr)
+    {
+        return boundaryOrNull->mapToScene(boundaryOrNull->rect().center());
+    }
     const NodeView* viewOrNull = mNodes.value(GetEndpointNode(endpoint), nullptr);
     if (viewOrNull == nullptr)
     {
@@ -1637,9 +1696,15 @@ void RenderGraphCanvas::SelectNodes(const QStringList& nodes)
     {
         static_cast<void>(mReroutesOrNull->ClearSelection());
     }
+    mHiddenSelection.clear();
     for (NodeView* view : std::as_const(mNodes))
     {
-        view->Frame->setSelected(view->IsMovable == true && nodes.contains(view->Id) == true);
+        const bool isSelected = view->IsMovable == true && nodes.contains(view->Id) == true;
+        if (isSelected == true && view->Frame->isVisible() == false)
+        {
+            mHiddenSelection.append(view->Id);
+        }
+        view->Frame->setSelected(isSelected == true && view->Frame->isVisible() == true);
     }
     updateSelection();
 }
@@ -1661,6 +1726,7 @@ void RenderGraphCanvas::notifySelection()
 
 void RenderGraphCanvas::RevealNode(const QString& node)
 {
+    mCommentsOrNull->RevealNode(node);
     for (const NodeView* view : std::as_const(mNodes))
     {
         if (view->Id == node)
@@ -1696,6 +1762,7 @@ bool RenderGraphCanvas::ShowDiagnostic(const QJsonObject& location, const QStrin
     {
         return false;
     }
+    mCommentsOrNull->RevealNode(owner);
     mDiagnosticLocation = location;
     setAccessibleDescription(description);
     mDiagnosticMarkerOrNull = new QGraphicsRectItem(viewOrNull->Frame->rect(), viewOrNull->Frame);
@@ -1836,6 +1903,13 @@ void RenderGraphCanvas::updateConnectionHighlight()
             }
         }
     }
+    mCommentsOrNull->RefreshHighlights(
+    {
+        .Selection = selected,
+        .TracedNodes = hasTrace == true ? trace.Nodes : QSet<QString>{},
+        .Inputs = highlightedInputs,
+        .Outputs = highlightedOutputs,
+    });
     mReroutesOrNull->RefreshStyles();
 }
 
@@ -1844,7 +1918,8 @@ QStringList RenderGraphCanvas::GetSelectedNodes() const
     QStringList selected;
     for (const NodeView* view : std::as_const(mNodes))
     {
-        if (view->IsMovable == true && view->Frame->isSelected() == true)
+        if (view->IsMovable == true &&
+            (view->Frame->isSelected() == true || mHiddenSelection.contains(view->Id) == true))
         {
             selected.append(view->Id);
         }
@@ -2135,7 +2210,7 @@ QString RenderGraphCanvas::nodeAt(QPointF position) const
 {
     for (const NodeView* view : std::as_const(mNodes))
     {
-        if (view->Frame->sceneBoundingRect().contains(position) == true)
+        if (view->Frame->isVisible() == true && view->Frame->sceneBoundingRect().contains(position) == true)
         {
             return view->Id;
         }
@@ -2145,8 +2220,17 @@ QString RenderGraphCanvas::nodeAt(QPointF position) const
 
 QString RenderGraphCanvas::portAt(QPointF position, bool& outIsOutput) const
 {
+    QString boundary = mCommentsOrNull->GetPortAt(position, outIsOutput);
+    if (boundary.isEmpty() == false)
+    {
+        return boundary;
+    }
     for (const NodeView* view : std::as_const(mNodes))
     {
+        if (view->Frame->isVisible() == false)
+        {
+            continue;
+        }
         for (const bool isOutput : {true, false})
         {
             const QHash<QString, QGraphicsEllipseItem*>& items =
@@ -2174,7 +2258,8 @@ QString RenderGraphCanvas::edgeAt(QPointF position, QString& outTo) const
     stroker.setWidth(EDGE_HIT_WIDTH);
     for (const EdgeView* edge : std::as_const(mEdges))
     {
-        if (edge->IsEditable == true && stroker.createStroke(edge->Path->path()).contains(position) == true)
+        if (edge->Path->isVisible() == true && edge->IsEditable == true &&
+            stroker.createStroke(edge->Path->path()).contains(position) == true)
         {
             outTo = edge->To;
             return edge->From;
@@ -2264,6 +2349,7 @@ void RenderGraphCanvas::contextMenuEvent(QContextMenuEvent* event)
             const QString configuration = mConfiguration;
             QAction* add = menu.addAction(QStringLiteral("Add Reroute Point"));
             add->setObjectName(QStringLiteral("renderGraphAddReroute"));
+            add->setEnabled(IsWireCollapsed(from, to) == false);
             connect(add,
                     &QAction::triggered,
                     this,
@@ -2476,7 +2562,8 @@ void RenderGraphCanvas::mouseMoveEvent(QMouseEvent* event)
         QStringList selected = mSelectionBeforeBox;
         for (const NodeView* view : std::as_const(mNodes))
         {
-            if (view->IsMovable == true && sceneRectangle.intersects(view->Frame->sceneBoundingRect()) == true &&
+            if (view->IsMovable == true && view->Frame->isVisible() == true &&
+                sceneRectangle.intersects(view->Frame->sceneBoundingRect()) == true &&
                 selected.contains(view->Id) == false)
             {
                 selected.append(view->Id);
@@ -2666,11 +2753,7 @@ void RenderGraphCanvas::keyPressEvent(QKeyEvent* event)
     if (event->matches(QKeySequence::SelectAll) == true)
     {
         static_cast<void>(mReroutesOrNull->ClearSelection());
-        for (NodeView* view : std::as_const(mNodes))
-        {
-            view->Frame->setSelected(view->IsMovable);
-        }
-        updateSelection();
+        SelectNodes(mNodes.keys());
         notifySelection();
         event->accept();
         return;
