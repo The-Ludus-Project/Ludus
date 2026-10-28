@@ -3494,8 +3494,12 @@ and rejects recursive shader calls or duplicate callbacks. Unguarded include cyc
 report the complete cycle, separately from the include-depth limit. Conditional
 includes are conservatively tracked; a conditional pragma is not treated as a guard.
 The compiler reads staged captured sources only, and its dependency file is
-checked against that closure. Sources are bounded to 64 files/4 MiB, each at
-most 128 KiB, with include depth 16; generated artifacts are at most 2 MiB each
+checked against that closure. The combined build snapshot is bounded to 128
+files/4 MiB, including graph metadata, authored shaders and SDK helpers; each
+file is at most 128 KiB, with include depth 16. The native shader worker retains
+its separate 64-file request limit, including the generated wrapper. Each stage
+receives only its captured closure from the larger package snapshot. Source or
+compiler limit failures preserve the prior package. Generated artifacts are at most 2 MiB each
 and a generation is at most 64 MiB/1024 files. Use `--root` for a containing
 package when the sibling root/manifest lives in a subdirectory; program source
 paths are relative to that package root, not the manifest directory.
