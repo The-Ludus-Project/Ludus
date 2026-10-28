@@ -528,6 +528,10 @@ qt_add_executable(ludus_editor
     src/project_setup_dialog.cpp
     src/project_creation_dialog.cpp
     src/workspace_style.cpp
+    src/internal/theme_preferences.h
+    src/theme_preferences.cpp
+    src/internal/theme_fonts.h
+    src/theme_fonts.cpp
     src/internal/window_size.h
     src/window_size.cpp
     src/controller.cpp
@@ -768,6 +772,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/preview_generation_tests.cpp
         tests/viewport_navigation_tests.cpp
         tests/design_token_tests.cpp
+        tests/theme_preference_tests.cpp
         tests/viewport_legibility_tests.cpp
         tests/viewport_frame_pump_tests.cpp
         tests/viewport_frame_source_tests.cpp
@@ -914,6 +919,10 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/project_setup_dialog.cpp
         src/project_creation_dialog.cpp
         src/workspace_style.cpp
+        src/internal/theme_preferences.h
+        src/theme_preferences.cpp
+        src/internal/theme_fonts.h
+        src/theme_fonts.cpp
         src/window_size.cpp)
     target_link_libraries(ludus_editor_tests
         PRIVATE

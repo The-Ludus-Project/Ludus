@@ -1,9 +1,11 @@
 #include "internal/workspace_style.h"
 #include "design_tokens.h"
+#include "internal/theme_preferences.h"
 
 #include <QApplication>
 #include <QColor>
 #include <QEvent>
+#include <QMainWindow>
 #include <QObject>
 #include <QPalette>
 #include <QString>
@@ -13,6 +15,12 @@ namespace ludus::editor
 {
 namespace
 {
+/// Control edge and focus ring widths, in logical pixels; high contrast thickens both.
+constexpr int CONTROL_EDGE_WIDTH = 1;
+constexpr int HIGH_CONTRAST_CONTROL_EDGE_WIDTH = 2;
+constexpr int FOCUS_RING_WIDTH = 2;
+constexpr int HIGH_CONTRAST_FOCUS_RING_WIDTH = 3;
+
 void UpdateWorkspaceStyle(QWidget* widget)
 {
     // Thanks to David Lightbown, Designing the User Experience of Game
@@ -22,7 +30,12 @@ void UpdateWorkspaceStyle(QWidget* widget)
     // See docs/architecture/editor-art-direction.md and
     // https://www.uxofgametools.com/ (2015 edition consulted).
     const bool dark = QApplication::palette().color(QPalette::Window).lightness() < 128;
-    const auto token = [dark](design::ThemeColour role) { return QColor::fromRgb(design::GetThemeColour(role, dark)); };
+    const ThemePreferences preferences = GetThemePreferences();
+    const bool isHighContrast = preferences.IsHighContrast == true;
+    ApplyMotionPreference(preferences, qobject_cast<QMainWindow*>(widget));
+    const auto token = [dark, isHighContrast](design::ThemeColour role) {
+        return QColor::fromRgb(design::GetThemeColour(role, dark, isHighContrast));
+    };
     const QColor workspace = token(design::ThemeColour::SurfaceWorkspace);
     const QColor panel = token(design::ThemeColour::SurfacePanel);
     const QColor raised = token(design::ThemeColour::SurfaceRaised);
@@ -50,6 +63,8 @@ void UpdateWorkspaceStyle(QWidget* widget)
     {
         palette.setColor(QPalette::Disabled, role, secondary);
     }
+    const int controlEdgeWidth = isHighContrast == true ? HIGH_CONTRAST_CONTROL_EDGE_WIDTH : CONTROL_EDGE_WIDTH;
+    const int focusRingWidth = isHighContrast == true ? HIGH_CONTRAST_FOCUS_RING_WIDTH : FOCUS_RING_WIDTH;
     auto style =
         QStringLiteral(
             "QLabel, QCheckBox, QRadioButton, QGroupBox, QToolButton, QTabBar, QStatusBar, QDockWidget { color: "
@@ -86,11 +101,18 @@ void UpdateWorkspaceStyle(QWidget* widget)
             "QHeaderView::section { background: palette(button); color: palette(text); padding: 4px; "
             "border: none; border-bottom: 1px solid palette(mid); } "
             "QPushButton:focus, QLineEdit:focus, QAbstractSpinBox:focus, QComboBox:focus, QAbstractItemView:focus, "
-            "QPlainTextEdit:focus, QTextEdit:focus { border: 2px solid %1; } "
-            "QToolButton:focus, QTabBar::tab:focus { outline: 2px solid %1; } "
+            "QPlainTextEdit:focus, QTextEdit:focus { border: %5px solid %1; } "
+            "QToolButton:focus, QTabBar::tab:focus { outline: %5px solid %1; } "
             "QLabel[visualRole=secondary] { color: palette(placeholder-text); } "
             "QStatusBar { border-top: 1px solid %4; }")
-            .arg(accent.name(), accentText.name(), QString::number(design::RADIUS_CONTROL), subtleBorder.name());
+            .arg(accent.name(),
+                 accentText.name(),
+                 QString::number(design::RADIUS_CONTROL),
+                 subtleBorder.name(),
+                 QString::number(focusRingWidth));
+    // Control edges are 1px in the stylesheet text; high contrast thickens them.
+    style.replace(QStringLiteral("1px solid palette(mid)"),
+                  QStringLiteral("%1px solid palette(mid)").arg(controlEdgeWidth));
     style.replace(QStringLiteral("palette(window)"), workspace.name());
     style.replace(QStringLiteral("palette(base)"), panel.name());
     style.replace(QStringLiteral("palette(button)"), raised.name());

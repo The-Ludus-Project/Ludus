@@ -609,14 +609,17 @@ preserves it. This is explicit quality selection, not a failed-frame fallback.
 
 `PrepareLightingPresentation` retains an immutable source, mapping and manual
 exposure. It precreates both output encoding choices and selects one using the
-acquired `FrameInfo.Encoding`. Apply exposure and guarded per-channel Reinhard once.
+acquired `FrameInfo.Encoding`. Apply exposure and the selected `ToneCurve` once: guarded per-channel
+Reinhard by default, or Khronos PBR Neutral (`LightingOutput::Curve`, `RasterViewport::Initialize`'s
+`toneCurve`), which keeps hue and saturation below 0.76 and compresses highlights toward white.
+The Editor viewport uses PBR Neutral; the engine, the SDK and the graph `ToneMap` node stay on Reinhard.
 For UI composition, tone-map scene into a **linear RGBA8 display intermediate** with
 `Encode=false`, blend linear UI there, then present with `ToneMap=false`, exposure
 one and `Encode=true`. Hardware sRGB attachments encode automatically; unorm surfaces
 use the shader's sRGB curve, so conversion occurs once. Draw-time encoding selection
 creates no resource. Old unlit textured materials are not admitted to HDR targets;
 flat overlays remain available. Exposure is manual; auto exposure and tone-map curves
-beyond Reinhard remain planned.
+beyond Reinhard and PBR Neutral remain planned.
 
 Default renderer budgets are eight prepared views (four shadow views plus scene/UI
 and overlap), two atlases, two programs, eight materials, four snapshots and four
@@ -2980,10 +2983,12 @@ fails `PrepareView` with `InvalidDescription`. The range rides in the unused
 per-instance `Color.zw` of lit items.
 
 Debug colours are display values. Each debug shader inverts the viewport output
-pass (Reinhard, then sRGB encoding at exposure 1) so the encoded pixel equals the
-intended colour. Inversion is capped just below 1, so pure white encodes at about
-99.5%. Render debug views into an HDR (`PreferHdr`) target: an RGBA8 target
-clips inverted values above about 0.73. Overdraw is not a debug view.
+pass (PBR Neutral, then sRGB encoding at exposure 1; `InvertPbrNeutral` is the CPU twin) so the
+encoded pixel equals the intended colour. Inversion is capped just below 1, so pure white encodes
+at about 99.5%. Compression desaturates toward white, so a saturated colour with a peak above about
+0.95 (for example a pure blue) cannot keep its dark channels and shifts slightly toward white.
+Render debug views into an HDR (`PreferHdr`) target: an RGBA8 target clips the inverted
+values at one, which limits white to 0.87 display-linear. Overdraw is not a debug view.
 Translucent painter layers draw in a separate overlay pass with their own
 transform, and the world pass has no additive, depth-off state to accumulate
 fragment counts.
