@@ -586,7 +586,5 @@ float3 ComputeDebugColour(int mode,
 #ifdef LUDUS_CLUSTERED
 // The prepass retains the exact color vertex entry and evaluates no material terms.
 // This profile accepts opaque coverage only; masked coverage needs its own qualified entry.
-void OpaqueDepthMain(in Varying input)
-{
-}
+void OpaqueDepthMain(in Varying input) {}
 #endif

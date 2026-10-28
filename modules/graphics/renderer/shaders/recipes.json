@@ -160,6 +160,7 @@
   },
   "renderer_clustered_authored_depth": {
     "source": "renderer_clustered_authored.slang",
+    "vertex": "VertexMain",
     "fragment": "OpaqueDepthMain"
   }
 }
