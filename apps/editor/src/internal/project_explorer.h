@@ -2,12 +2,12 @@
 
 // ProjectExplorer: the Project Explorer tool window (private editor header, not installed).
 //
-// A read-only tree of the open project's documents: project settings, worlds,
+// A tree of the open project's documents: project settings, worlds,
 // render graphs, shaders, scripts, audio and content. Activating an item asks the
-// shell to open the matching document; the explorer never opens, edits or writes
-// files itself. The tree is a bounded snapshot of the project folder, refreshed on
-// project changes, saves and explicit Refresh. Symbolic links, hidden folders and
-// build output folders are not scanned.
+// shell to open the matching document; context-menu actions also go through the shell.
+// The explorer never opens, edits or writes files itself. The tree is a bounded snapshot of the project folder,
+// refreshed on project changes, saves and explicit Refresh. Symbolic links, hidden folders and build output folders are
+// not scanned.
 
 #include <ludus/foundation/base/types.h>
 
@@ -17,6 +17,8 @@
 
 QT_BEGIN_NAMESPACE
 class QLabel;
+class QMenu;
+class QPoint;
 class QLineEdit;
 class QTreeWidget;
 class QTreeWidgetItem;
@@ -36,6 +38,17 @@ enum class ProjectItemKind : foundation::uint8
     Audio,
     Content,
     Configuration,
+};
+
+/// File operation requested by the tree; the shell owns validation, prompts and writes.
+enum class ProjectItemAction : foundation::uint8
+{
+    Create,
+    AddExisting,
+    CreateSound,
+    CreateMusic,
+    Duplicate,
+    Remove,
 };
 
 /// Most project files one scan lists; the tree says when a project has more.
@@ -65,6 +78,9 @@ public:
 Q_SIGNALS:
     /// The user asked to open an item. path is absolute for file items, else empty.
     void OpenRequested(ludus::editor::ProjectItemKind kind, const QString& path);
+    /// Create/import targets a category; duplicate/remove targets one absolute file path.
+    void
+    ActionRequested(ludus::editor::ProjectItemAction action, ludus::editor::ProjectItemKind kind, const QString& path);
 
 private:
     [[nodiscard]] QTreeWidgetItem*
@@ -75,8 +91,12 @@ private:
         QTreeWidgetItem* Worlds;
         QTreeWidgetItem* RenderGraphs;
         QTreeWidgetItem* Shaders;
+        QTreeWidgetItem* Scripts;
     };
     void scan(const ScanFolders& folders);
+    void showContextMenu(const QPoint& position);
+    void populateAddMenu(QMenu* menu, ProjectItemKind kind);
+    void requestSelectedAction(ProjectItemAction action);
     void applyFilter();
     void activate(const QTreeWidgetItem* item);
 

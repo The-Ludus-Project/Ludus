@@ -313,7 +313,7 @@ QMap<CacheKey, QPixmap>& GetCache()
 [[nodiscard]] QSize GetLogicalIconSize(const QSize& size, qreal scale)
 {
 #if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
-    static_cast<void>(scale);
+    (void)scale;
     return size;
 #else
     const qreal safeScale = scale < 1.0 ? 1.0 : scale;

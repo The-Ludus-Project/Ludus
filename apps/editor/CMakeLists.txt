@@ -151,6 +151,8 @@ set(editor_viewport_sources
     src/internal/ray_path_overlay.h
     src/ray_path_overlay.cpp
     src/preview_viewport.cpp
+    src/internal/viewport_object_interaction.h
+    src/viewport_object_interaction.cpp
     src/viewport_navigation.cpp
     src/viewport_play_input.cpp
     src/internal/texture_inspection.h
@@ -451,6 +453,7 @@ qt_add_executable(ludus_editor
     src/world_document.cpp
     src/world_demo_adapter.cpp
     src/world_workspace.cpp
+    src/world_viewport_editing.cpp
     src/internal/controller.h
     src/internal/configuration_workspace.h
     src/internal/main_window.h
@@ -534,6 +537,8 @@ qt_add_executable(ludus_editor
     src/error_list.cpp
     src/internal/project_explorer.h
     src/project_explorer.cpp
+    src/internal/project_files.h src/project_files.cpp
+    src/main_window_project_files.cpp
     src/internal/timing_panel.h
     src/timing_panel.cpp
     src/project_setup_dialog.cpp
@@ -545,6 +550,8 @@ qt_add_executable(ludus_editor
     src/theme_fonts.cpp
     src/internal/editor_icons.h
     src/editor_icons.cpp
+    src/internal/activity_chip.h
+    src/activity_chip.cpp
     src/internal/window_size.h
     src/window_size.cpp
     src/controller.cpp
@@ -737,6 +744,19 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     add_test(NAME ludus_editor_browser_content_tests COMMAND ludus_editor_browser_content_tests)
     set_tests_properties(ludus_editor_browser_content_tests PROPERTIES
         LABELS "unit;editor;browser" TIMEOUT 60 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    add_executable(ludus_project_explorer_tests tests/main.cpp tests/project_explorer_tests.cpp
+        src/internal/project_explorer.h src/project_explorer.cpp src/project_files.cpp
+        src/internal/editor_icons.h src/editor_icons.cpp)
+    set_target_properties(ludus_project_explorer_tests PROPERTIES AUTOMOC ON)
+    ludus_editor_add_icons(ludus_project_explorer_tests)
+    target_include_directories(ludus_project_explorer_tests PRIVATE src)
+    target_compile_definitions(ludus_project_explorer_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
+    target_link_libraries(ludus_project_explorer_tests PRIVATE Qt6::Widgets Qt6::Test Ludus::FoundationBase Catch2::Catch2)
+    ludus_apply_project_defaults(ludus_project_explorer_tests)
+    ludus_enable_test_exceptions(ludus_project_explorer_tests)
+    add_test(NAME ludus_project_explorer_tests COMMAND ludus_project_explorer_tests)
+    set_tests_properties(ludus_project_explorer_tests PROPERTIES LABELS "unit;editor" TIMEOUT 30
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(ludus_editor_tests
         ${editor_profiling_sources}
         tests/profiling_tests.cpp
@@ -778,6 +798,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/world_document.cpp
         src/world_demo_adapter.cpp
         src/world_workspace.cpp
+    src/world_viewport_editing.cpp
             tests/world_workspace_tests.cpp
         tests/level_workspace_tests.cpp
         tests/render_authoring_tests.cpp
@@ -789,6 +810,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/theme_preference_tests.cpp
         tests/viewport_legibility_tests.cpp
         tests/editor_icons_tests.cpp
+        tests/activity_chip_tests.cpp
         tests/viewport_frame_pump_tests.cpp
         tests/viewport_frame_source_tests.cpp
         tests/world_demo_workspace_tests.cpp
@@ -935,6 +957,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/error_list.cpp
         src/internal/project_explorer.h
         src/project_explorer.cpp
+        src/internal/project_files.h src/project_files.cpp
+        src/main_window_project_files.cpp
         src/internal/timing_panel.h
         src/timing_panel.cpp
         src/project_setup_dialog.cpp
@@ -946,6 +970,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/theme_fonts.cpp
         src/internal/editor_icons.h
         src/editor_icons.cpp
+        src/internal/activity_chip.h
+        src/activity_chip.cpp
         src/window_size.cpp)
     target_link_libraries(ludus_editor_tests
         PRIVATE
@@ -1263,7 +1289,7 @@ endif()
 # the editor CTest label, including during the promotion of newer workflow code.
 if(TARGET ludus_editor_tests)
     foreach(target IN ITEMS ludus_editor_accessibility_tests ludus_code_editor_tests
-            ludus_editor_browser_content_tests ludus_render_graph_pipeline_tests
+            ludus_project_explorer_tests ludus_editor_browser_content_tests ludus_render_graph_pipeline_tests
             ludus_shader_interface_tests ludus_render_graph_configuration_tests
             ludus_render_graph_live_build_tests)
         if(TARGET ${target})
@@ -1306,6 +1332,7 @@ ludus_editor_apply_precompiled_headers(
     ludus_editor_code
     ludus_editor
     ludus_code_editor_tests
+    ludus_project_explorer_tests
     ludus_editor_browser_content_tests
     ludus_editor_tests
     ludus_render_graph_pipeline_tests

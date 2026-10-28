@@ -56,7 +56,11 @@ Undo restores the complete record and document version. Double-click any ordinar
 node to open **Details**. A pipeline's clickable parts are **Read Inputs**,
 **Writable Resources**, **Shaders**, **Pipeline State**, **Invocation** and
 **Public Options**. Each part opens the same controls used by Properties;
-Properties may remain hidden. Double-clicking a Subgraph enters its graph.
+Properties may remain hidden. Click an individual shader card to select its assignment;
+double-click it to close **Details** and open that shader in the **Source** editor.
+The source comes from the current build-manifest program reference, including any
+per-use program override. An unmapped shader keeps **Details** open and reports the
+missing source. Double-clicking a Subgraph enters its graph.
 Right-click a pipeline and choose **View Shaders** to open a mapped source through
 its explicit build-manifest program reference. **Show Details / Edit Node** opens
 a Subgraph instance's choices without entering its shared source.
@@ -5085,6 +5089,11 @@ replacement previews until retained GPU uses retire. The device-wide RHI resourc
 budget and each device's storage-buffer binding range apply independently; a
 larger graph ceiling cannot override either one. The supplied imported Sponza
 World's two million triangles require more than the previous 256 MiB ceilings.
+Native ray geometry and acceleration-structure build scratch use the backend's
+enabled allocation range, rather than the former fixed 64 MiB ceiling. Each
+creation still checks its explicit byte budget. Packed opacity metadata retains
+its separate exact-float32-addressing bound; a larger native allocation range
+does not enlarge that representation.
 
 When measured byte admission fails, `RenderGraphReport::SceneDiagnostics` names
 the exceeded budget and records required and available bytes. The editor displays

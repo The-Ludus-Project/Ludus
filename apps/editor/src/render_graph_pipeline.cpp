@@ -5,6 +5,7 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QEvent>
 #include <QFormLayout>
 #include <QGridLayout>
 #include <QGroupBox>
@@ -14,6 +15,8 @@
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMouseEvent>
+#include <QObject>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSignalBlocker>
@@ -359,7 +362,9 @@ void RenderGraphPipelineEditor::ShowParts()
         part->setObjectName(QStringLiteral("renderGraphShaderPart_") + shader.value(QStringLiteral("id")).toString());
         part->setText(QStringLiteral("%1\n%2").arg(shader.value(QStringLiteral("stage")).toString(),
                                                    shader.value(QStringLiteral("program")).toString()));
-        part->setToolTip(QStringLiteral("Edit this shader assignment in Shaders"));
+        part->setToolTip(QStringLiteral("Click to edit the assignment; double-click to open the shader source"));
+        part->setProperty("renderGraphShaderId", shader.value(QStringLiteral("id")).toString());
+        part->installEventFilter(this);
         part->setIcon(style()->standardIcon(QStyle::SP_FileIcon));
         part->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
         part->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
@@ -380,6 +385,21 @@ void RenderGraphPipelineEditor::ShowParts()
     });
     mTabs->tabBar()->hide();
     static_cast<QVBoxLayout*>(layout())->insertWidget(0, overview);
+}
+
+bool RenderGraphPipelineEditor::eventFilter(QObject* watched, QEvent* event)
+{
+    LUDUS_REQUIRE(watched != nullptr && event != nullptr);
+    if (event->type() == QEvent::MouseButtonDblClick && static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton)
+    {
+        const QString shaderId = watched->property("renderGraphShaderId").toString();
+        if (shaderId.isEmpty() == false)
+        {
+            Q_EMIT ShaderOpenRequested(shaderId);
+            return true;
+        }
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 void RenderGraphPipelineEditor::AddSceneQueryBudgets(const RenderGraphSceneQueryBudgets& budgets)

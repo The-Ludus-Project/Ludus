@@ -54,6 +54,41 @@ central document well, and **tool windows** dock around it (see
 | Timing | Runtime-reported frame pacing and interval statistics for the running session |
 | Profiling | Record editor CPU scopes, viewport GPU durations, or both into a Perfetto JSON trace |
 
+Right-click a Project Explorer category, file, or empty area to open its context
+menu. The **Add** button also offers **New World**, **New Render Graph**,
+**New Shader**, **New Script**, **New Sound**, **New Music**, and the audio/content
+import workflow. Worlds begin as unsaved drafts; Save creates the file. Render
+graphs use the existing template/package creation dialog. Shader and Luau source
+files start as unregistered source files: add their entry points/programs to the
+owning manifest/package before building or cooking. Script files and shaders
+without a graph owner open in the configured external code editor on native
+platforms; that external launch is unavailable in the browser. The Scripts
+category continues to open the project script workspace.
+
+**Add Existing File** copies a selected authored file into an existing project
+folder without replacing files. A file already inside the project is opened
+without copying it. Single-file imports retain their references; add companion
+files separately. Audio/content imports use the Content workspace's current
+WAV/FLAC importer and publish through its catalog. New sound/music definitions
+require an imported source selected in Audio. The audio/content categories keep
+their workspace operations; they do not expose raw file deletion or duplication
+of catalog-managed resources.
+
+For one authored file, choose **Duplicate** (Ctrl+D / Command+D) or **Remove**
+(Delete, or Backspace on macOS). A graph in a subdirectory duplicates its entire
+containing package into a new sibling folder, preserving companion paths.
+Root-level graphs, worlds, shaders and scripts duplicate only the saved file;
+references outside the copied package stay shared. Copies never overwrite a
+destination and reject child symlinks; package copies are bounded to 64 MiB,
+4096 entries and 12 directory levels, and publish only after the full copy succeeds.
+Remove asks for confirmation, then moves the file under the project's hidden
+`.ludus-trash` folder, preserving its relative path inside a unique recovery
+folder. Restore it manually to its original path and Refresh. References in
+other files are not rewritten. Switch away from a loaded World or graph package
+before removing its files; closing a tab retains its document. Select another
+script program before removing its loaded source. File actions operate on one item at a
+time; a multiple selection disables Duplicate and Remove.
+
 The Configuration workspace retains its explicitly loaded preview/draft across
 project changes. Quitting prompts for unsaved preferences. Project settings,
 audio definitions, offline preferences and live values have separate save owners.
@@ -480,6 +515,14 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   command rows of their own: **File → New Render Graph...** and **Open Render
   Graph...** open graphs, and the **Build** menu holds every render-graph
   command, including Cook Render Graph Runtime and Cancel Render Graph Job.
+- The right side of the status bar shows the **activity chip**: while a build,
+  configure, render-graph job or content import runs it shows a dot and one
+  label (an operation phase wins over a render-graph job, which wins over an
+  import); a job that reports progress shows a determinate bar instead. The chip
+  is hidden when nothing runs and never opens a toast. Beside it, **Problems**
+  and **Warnings** counts from the Error List open that tool window when
+  clicked. The chip applies at most ten changes a second, so a fast job cannot
+  flicker the status bar.
 - **Tools → Options...** edits editor preferences. Its **Render Graph** page
   holds the advanced shader-tool overrides and the native shader worker socket
   ([build settings](render-graph-authoring.md#build-settings)).
@@ -953,6 +996,39 @@ project assets. Unsaved inspector buffers are not part of this preference file.
 Browser builds and native builds without `LUDUS_EDITOR_RENDER_PREVIEW` explain
 why rendering is unavailable. The game adapter chooses the trusted preview for
 the open World; it does not introduce another authoring workspace.
+
+### Select and transform objects in the World viewport
+
+Click a visible object's triangles to select it. The hierarchy and Properties
+follow the same stable entity ID; clicking empty space clears the selection.
+The selected object has an amber wireframe, drawn over the rendered image so its
+shape stays visible against dark surfaces. Selection works with the inspector
+hidden. Picking chooses the nearest geometric triangle, including back faces;
+texture alpha masks and shader displacement do not alter this editor query.
+
+Choose **Select (Q)**, **Move (W)**, **Rotate (E)** or **Scale (R)** in the viewport
+tool menu. Drag a red X, green Y or blue Z handle; rotation uses rings. Move
+changes the parent-local position, rotation changes the stored Euler degree
+component, and scale changes one positive local scale component. Hold **Shift**
+for 0.1 metre movement, 15 degree rotation or 0.1 scale-factor increments.
+The wireframe previews the candidate throughout a drag. Release applies one
+validated World edit and refreshes the shaded scene; **Undo** restores the entire
+gesture. **Delete** and **Ctrl+D** use the hierarchy’s delete and duplicate
+commands while the viewport has focus. **Escape**, a tool change, hiding the view
+or losing focus cancels the candidate. **Save World** persists the accepted placement.
+
+Imported scene instances and project preview transform bindings expose these
+handles. Other extractors can still select and highlight their objects; they need
+an explicit authoring transform binding before the editor can manipulate them.
+A multiple selection, unapplied inspector fields or a running scene operation
+disables transform handles. Axis handles viewed directly end-on are hidden;
+orbit to expose them. Wireframes sample very dense meshes to bound overlay cost.
+The native shared-device viewport and native readback fallback show the same
+selection overlay. The browser's separate GPU canvas does not yet composite it.
+
+Alt/Option-drag orbit, middle-drag pan, right-drag navigation and Play input keep
+their existing behavior. Q/W/E/R choose tools only while the editor camera is not
+flying; the fly movement keys keep working while the right button is held.
 
 ### World viewport navigation
 

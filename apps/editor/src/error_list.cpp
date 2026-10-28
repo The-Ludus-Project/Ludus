@@ -367,6 +367,7 @@ void ErrorList::ReplaceEntries(ErrorListProducer producer, const QList<ErrorList
     kept.append(entries);
     mEntries = foundation::Move(kept);
     render();
+    Q_EMIT CountsChanged();
     if (isChanged == true && hasProblem == true)
     {
         Q_EMIT ProblemsReported();

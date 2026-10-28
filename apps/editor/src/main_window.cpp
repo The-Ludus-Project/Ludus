@@ -128,6 +128,23 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
             Qt::QueuedConnection);
     updateContextStrip();
     connect(mProjectExplorer, &ProjectExplorer::OpenRequested, this, &MainWindow::openProjectItem);
+    connect(mProjectExplorer, &ProjectExplorer::ActionRequested, this, &MainWindow::changeProjectItem);
+    connect(Renderer_, &RendererWorkspace::DocumentChanged, this, [this]() {
+        const RenderGraphDocument& graph = Renderer_->GetDocument();
+        const QString path = QDir(graph.GetPackageRoot()).filePath(graph.GetRootGraph());
+        if (graph.IsLoaded() == true && graph.IsBuiltIn() == false && QFileInfo(path).isFile() == true &&
+            mProjectExplorer->GetFiles(ProjectItemKind::RenderGraph).contains(path) == false)
+        {
+            mProjectExplorer->Refresh();
+        }
+    });
+    connect(World_, &WorldWorkspace::DocumentChanged, this, [this]() {
+        if (QFileInfo(World_->Path()).isFile() == true &&
+            mProjectExplorer->GetFiles(ProjectItemKind::World).contains(World_->Path()) == false)
+        {
+            mProjectExplorer->Refresh();
+        }
+    });
     connect(mErrorList, &ErrorList::EntryActivated, this, &MainWindow::activateErrorEntry);
     connect(mErrorList, &ErrorList::ProblemsReported, this, &MainWindow::revealErrorList);
     mBuildErrorsTimer.setSingleShot(true);
@@ -135,6 +152,9 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
     connect(&mBuildErrorsTimer, &QTimer::timeout, this, &MainWindow::renderBuildErrors);
     connect(Audio_, &AudioWorkspace::DocumentChanged, this, &MainWindow::RenderDocumentActions);
     connect(Content_, &ContentWorkspace::BusyChanged, this, &MainWindow::RenderCapabilities);
+    connect(Content_, &ContentWorkspace::BusyChanged, this, &MainWindow::renderActivity);
+    connect(Renderer_, &RendererWorkspace::CommandsChanged, this, &MainWindow::renderActivity);
+    connect(Renderer_, &RendererWorkspace::JobFinished, this, &MainWindow::renderActivity);
     connect(Content_, &ContentWorkspace::CatalogChanged, Audio_, &AudioWorkspace::RefreshCatalog);
     connect(Audio_, &AudioWorkspace::ImportRequested, this, [this]() {
         showToolWindow(mContentDock);
@@ -1426,6 +1446,7 @@ void MainWindow::RenderStatus()
         status += QStringLiteral("  —  ") + setupSummary;
     }
     StatusLabel_->setText(status);
+    renderActivity();
     StatusLabel_->setToolTip(status + QStringLiteral("\n") + state.Result.Message + QStringLiteral("\n") +
                              state.SetupStatus);
 

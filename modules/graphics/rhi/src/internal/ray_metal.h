@@ -83,8 +83,7 @@ RayCapabilities RayLimits() noexcept
         .RayPipelines = gDevice.supportsFunctionPointers == true,
         .MaxInstances = internal::CurrentStorageLimits().RayInstances,
         .MaxRays = 4096,
-        .MaxBufferBytes =
-            gDevice.maxBufferLength < usize{64} * 1024 * 1024 ? gDevice.maxBufferLength : usize{64} * 1024 * 1024,
+        .MaxBufferBytes = internal::GetResourceSizeLimit(gDevice.maxBufferLength),
     };
 }
 void BindRayMetalScene(id<MTLComputeCommandEncoder> encoder, const RayMetalSceneBinding& description) noexcept

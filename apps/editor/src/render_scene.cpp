@@ -650,6 +650,7 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
     }
     RenderScene candidate;
     candidate.RenderableBinding = renderable;
+    candidate.TransformBinding = transform;
     QByteArray identity = world.Encode() + bytes;
     QByteArray assetsIdentity;
     const auto meshes = descriptor.value(QStringLiteral("meshes")).toArray();
@@ -1320,6 +1321,7 @@ bool RenderScene::Merge(const RenderScene& authored,
     }
     candidate.AuthoredLights = authored.AuthoredLights;
     candidate.RenderableBinding = authored.RenderableBinding;
+    candidate.TransformBinding = authored.TransformBinding;
     if (authored.Cameras.isEmpty() == false)
     {
         candidate.Cameras = authored.Cameras;

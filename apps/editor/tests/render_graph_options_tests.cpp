@@ -21,6 +21,7 @@
 #include <QLabel>
 #include <QMenu>
 #include <QPixmap>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QTabWidget>
@@ -195,6 +196,111 @@ TEST_CASE("pipeline details expose clickable parts and per-use choices with Prop
     workspace.Redo();
     REQUIRE(workspace.Save() == true);
     CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH) == workspace.GetDocument().GetSaved(ROOT_GRAPH));
+}
+TEST_CASE("double-clicking a pipeline shader opens its source with Properties hidden",
+          "[editor][render-graph][options][shader-navigation]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    QWidget inspectorHost;
+    RendererWorkspace workspace({});
+    workspace.resize(DETAILS_WIDTH, DETAILS_HEIGHT);
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    AddOptions(workspace.GetDocument(), ROOT_GRAPH, DEFAULT);
+    QString shaderId = QStringLiteral("vertex");
+    QString sourceFile = QStringLiteral("main_shaders/geometry.slang");
+    bool isSourceMapped = true;
+    SECTION("explicit vertex program") {}
+    SECTION("fragment assignment with a different source")
+    {
+        QJsonObject node = GetNode(workspace.GetDocument(), ROOT_GRAPH, DEFAULT, WORK);
+        QJsonArray shaders = node.value(QStringLiteral("shaders")).toArray();
+        shaders.append(QJsonObject{{QStringLiteral("id"), QStringLiteral("pixel")},
+                                   {QStringLiteral("stage"), QStringLiteral("fragment")},
+                                   {QStringLiteral("program"), QStringLiteral("Color")}});
+        node.insert(QStringLiteral("shaders"), shaders);
+        sourceFile = QStringLiteral("main_shaders/color.slang");
+        SECTION("base program") {}
+        SECTION("per-use program override")
+        {
+            QJsonObject option = MakeOption(QStringLiteral("shaders.pixel.program"));
+            option.insert(QStringLiteral("default"), QStringLiteral("Color"));
+            option.insert(QStringLiteral("values"), QJsonArray{QStringLiteral("Color"), QStringLiteral("Depth")});
+            node.insert(QStringLiteral("options"), QJsonArray{option});
+            node.insert(QStringLiteral("overrides"), QJsonObject{{CULL, QStringLiteral("Depth")}});
+            sourceFile = QStringLiteral("main_shaders/depth.slang");
+        }
+        QString error;
+        REQUIRE(workspace.GetDocument().ReplaceNode(ROOT_GRAPH, DEFAULT, node, &error) ==
+                RenderGraphDocumentStatus::Ok);
+        shaderId = QStringLiteral("pixel");
+    }
+    SECTION("unmapped program preserves Details")
+    {
+        const QString manifestFile = QStringLiteral("main.lushader.json");
+        QByteArray manifest = workspace.GetDocument().GetDraft(manifestFile);
+        manifest.replace("main_shaders/geometry.slang", "main_shaders/missing.slang");
+        REQUIRE(workspace.GetDocument().SetText(manifestFile, manifest) == RenderGraphDocumentStatus::Ok);
+        isSourceMapped = false;
+    }
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, DEFAULT, WORK) == true);
+    workspace.TakeInspectorPanel(&inspectorHost)->hide();
+    workspace.show();
+    QCoreApplication::processEvents();
+    const uint64 revision = workspace.GetDocument().GetRevision();
+    const QByteArray before = workspace.GetDocument().GetDraft(ROOT_GRAPH);
+    const QByteArray saved = workspace.GetDocument().GetSaved(ROOT_GRAPH);
+    bool hasShader = false;
+    bool hasClosedDetails = false;
+    QTimer::singleShot(0, &workspace, [&]() {
+        QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        if (dialogOrNull == nullptr)
+        {
+            return;
+        }
+        QToolButton* shaderOrNull =
+            dialogOrNull->findChild<QToolButton*>(QStringLiteral("renderGraphShaderPart_") + shaderId);
+        hasShader = shaderOrNull != nullptr;
+        if (shaderOrNull != nullptr)
+        {
+            QTest::mouseDClick(shaderOrNull, Qt::RightButton);
+            CHECK(dialogOrNull->isVisible() == true);
+            QTest::mouseDClick(shaderOrNull, Qt::LeftButton);
+            hasClosedDetails = dialogOrNull->isVisible() == false;
+        }
+        // Keep a failed navigation assertion from blocking the modal test indefinitely.
+        dialogOrNull->reject();
+    });
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    const QPointF position = canvas.GetNodePosition(WORK);
+    canvas.centerOn(position);
+    QTest::mouseDClick(canvas.viewport(),
+                       Qt::LeftButton,
+                       Qt::NoModifier,
+                       canvas.mapFromScene(position + QPointF(30, 8)));
+    REQUIRE(hasShader == true);
+    CHECK(hasClosedDetails == isSourceMapped);
+    if (isSourceMapped == true)
+    {
+        QComboBox* sourceFileOrNull = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphSourceFile"));
+        QPlainTextEdit* sourceOrNull = workspace.findChild<QPlainTextEdit*>(QStringLiteral("renderGraphSource"));
+        REQUIRE(sourceFileOrNull != nullptr);
+        REQUIRE(sourceOrNull != nullptr);
+        CHECK(sourceFileOrNull->currentText() == sourceFile);
+        CHECK(sourceOrNull->isVisible() == true);
+        CHECK(sourceOrNull->toPlainText().toUtf8() == workspace.GetDocument().GetDraft(sourceFile));
+    }
+    else
+    {
+        const QLabel* statusOrNull = workspace.findChild<QLabel*>(QStringLiteral("renderGraphStatus"));
+        REQUIRE(statusOrNull != nullptr);
+        CHECK(statusOrNull->text().contains(QStringLiteral("No source is mapped to shader")) == true);
+    }
+    CHECK(workspace.GetDocument().GetRevision() == revision);
+    CHECK(workspace.GetDocument().GetDraft(ROOT_GRAPH) == before);
+    CHECK(workspace.GetDocument().GetSaved(ROOT_GRAPH) == saved);
 }
 TEST_CASE("exposed option declarations protect existing overrides and rename bindings atomically",
           "[editor][render-graph][options]")

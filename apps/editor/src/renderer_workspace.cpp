@@ -2661,6 +2661,9 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
             // Refresh the other surface while retaining the controls that submitted this edit.
             documentEdited(status, mInspector->isAncestorOf(editor) == false, editor);
         });
+        connect(editor, &RenderGraphPipelineEditor::ShaderOpenRequested, this, [this, editor](const QString& shaderId) {
+            openNodeShader(shaderId, editor);
+        });
         editor->AddOptionsEditor(createNodeOptionsEditor(inoutParent));
         if (qobject_cast<QDialog*>(inoutParent.window()) != nullptr)
         {
