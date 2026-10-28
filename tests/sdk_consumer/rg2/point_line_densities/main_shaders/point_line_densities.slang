@@ -9,11 +9,14 @@
 //   probability and BSDF sampling never proposes, ComputeMisWeight(p, p, 0) = 1/2; column 1 the only
 //   strategy, ComputeMisWeight(p, 0, 0) = 1; column 2 a strategy that did not propose the sample,
 //   ComputeMisWeight(0, p, p) = 0; column 3 three equal densities, 1/3;
-// - rows 16-63: trace the camera ray through the pixel center; for a surface that is not a mesh
+// - rows 16-63: trace the camera ray through RECEIVER_JITTER_PIXEL; for a surface that is not a mesh
 //   emitter, draw an area-uniform light point (dimensions 2-5) and write
 //   |EvaluateLineDensity / EvaluateLightPdfSolidAngle - 1| * ERROR_SCALE, for direction U in even
 //   columns and V in odd ones. Without occluders the two densities are equal (design D6 step 6).
-//   A primary miss or an emitter receiver writes SKIPPED.
+//   A primary miss or an emitter receiver writes SKIPPED. The jitter is off center: by the room's
+//   symmetry, pixel-center rays land exactly on the seams where floor and walls meet, where the
+//   receiver lies in an adjacent wall's plane and the line query clips that wall at grazing incidence
+//   while a shadow ray does not. Seams have zero area, so jittered sampling never meets them.
 // Errors are clamped below SKIPPED.
 #include "line_sampling.slang"
 #include "multiple_importance.slang"
@@ -25,6 +28,7 @@ static const uint SINGLE_WEIGHT_ROW = 8;
 static const uint DENSITY_FIRST_ROW = 16;
 static const uint POINT_DIMENSION_FIRST = 2;
 static const float DELTA_PROBABILITY = 0.25;
+static const float2 RECEIVER_JITTER_PIXEL = float2(0.37, 0.61);
 static const float ERROR_SCALE = 1000.0;
 static const float LARGEST_ERROR = 0.999;
 static const float SKIPPED = 1.0;
@@ -70,7 +74,7 @@ float3 ReadPointLineDensities(SceneContext scene, RayLaunch launch, inout RayQue
     if (pixel.y < DENSITY_FIRST_ROW)
         return float3(0);
     SurfaceHit receiver;
-    if (TraceClosest(scene, queries, MakeCameraRay(launch, float2(0.5, 0.5)), receiver) != SCENE_QUERY_SURFACE ||
+    if (TraceClosest(scene, queries, MakeCameraRay(launch, RECEIVER_JITTER_PIXEL), receiver) != SCENE_QUERY_SURFACE ||
         receiver.EmitterIndex < GetEmitterCount(scene))
         return EncodeFixed24(SKIPPED);
     SelectedLight selected = SelectLight(scene, launch, POINT_DIMENSION_FIRST);
