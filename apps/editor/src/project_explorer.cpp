@@ -1,4 +1,5 @@
 #include "internal/project_explorer.h"
+#include "internal/editor_icons.h"
 #include "internal/item_selection.h"
 
 #include <QDir>
@@ -24,6 +25,31 @@ constexpr QLatin1StringView WORLD_SUFFIX{".world.json"};
 constexpr QLatin1StringView RENDER_GRAPH_SUFFIX{".lurender.json"};
 constexpr QLatin1StringView SHADER_MANIFEST_SUFFIX{".lushader.json"};
 constexpr QLatin1StringView SHADER_SOURCE_SUFFIX{".slang"};
+
+[[nodiscard]] EditorIcon GetKindIcon(ProjectItemKind kind)
+{
+    switch (kind)
+    {
+        case ProjectItemKind::Folder:
+            return EditorIcon::Folder;
+        case ProjectItemKind::ProjectSettings:
+            return EditorIcon::ProjectSettings;
+        case ProjectItemKind::World:
+            return EditorIcon::World;
+        case ProjectItemKind::RenderGraph:
+            return EditorIcon::RenderGraph;
+        case ProjectItemKind::Shader:
+        case ProjectItemKind::Scripts:
+            return EditorIcon::Code;
+        case ProjectItemKind::Audio:
+            return EditorIcon::Audio;
+        case ProjectItemKind::Content:
+            return EditorIcon::Content;
+        case ProjectItemKind::Configuration:
+            break;
+    }
+    return EditorIcon::Configuration;
+}
 
 /// Folders that hold generated output, dependencies or tool state rather than authored documents.
 [[nodiscard]] bool IsSkippedFolder(const QString& name)
@@ -90,6 +116,7 @@ ProjectExplorer::addItem(QTreeWidgetItem* parentOrNull, const QString& text, Pro
 {
     QTreeWidgetItem* item = parentOrNull != nullptr ? new QTreeWidgetItem(parentOrNull) : new QTreeWidgetItem(mTree);
     item->setText(0, text);
+    item->setIcon(0, GetEditorIcon(GetKindIcon(kind)));
     item->setData(0, KIND_ROLE, static_cast<foundation::int32>(kind));
     item->setData(0, PATH_ROLE, path);
     item->setToolTip(0, path.isEmpty() == true ? text : QDir::toNativeSeparators(path));

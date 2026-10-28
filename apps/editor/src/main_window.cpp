@@ -9,6 +9,7 @@
 #include "internal/document_well.h"
 #include "internal/editor_commands.h"
 #include "internal/editor_files.h"
+#include "internal/editor_icons.h"
 #include "internal/error_list.h"
 #include "internal/profiling_panel.h"
 #include "internal/project_creation_dialog.h"
@@ -57,6 +58,7 @@
 #include <QTableWidget>
 #include <QTimer>
 #include <QToolBar>
+#include <QToolButton>
 #include <QWidget>
 
 #include <ludus/foundation/base/core.h>
@@ -378,7 +380,8 @@ void MainWindow::BuildMenus()
     });
 
     // Toolbars use short text labels (QAction::iconText) so every command stays readable
-    // in a 1280-pixel window; menus and tooltips keep the full names.
+    // in a 1280-pixel window; menus and tooltips keep the full names. The primary commands also
+    // carry an icon beside their label (see usePrimaryIcons below).
     mStandardToolbar->setObjectName(QStringLiteral("standardToolbar"));
     mStandardToolbar->setToolButtonStyle(Qt::ToolButtonTextOnly);
     addToolBar(mStandardToolbar);
@@ -494,6 +497,27 @@ void MainWindow::BuildMenus()
     {
         mRenderGraphToolbar->addAction(action);
     }
+
+    // Icons plus labels for the primary actions, labels only elsewhere (docs/architecture/editor-art-direction.md).
+    // The action keeps its icon for menus; only its toolbar button changes style.
+    const auto usePrimaryIcon = [](QToolBar* toolbar, QAction* action, EditorIcon icon) {
+        action->setIcon(GetEditorIcon(icon));
+        QToolButton* button = qobject_cast<QToolButton*>(toolbar->widgetForAction(action));
+        if (button != nullptr)
+        {
+            button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        }
+    };
+    for (QToolBar* toolbar : {mStandardToolbar, GameToolbar_})
+    {
+        toolbar->setIconSize(QSize(EDITOR_ICON_SIZE, EDITOR_ICON_SIZE));
+    }
+    usePrimaryIcon(mStandardToolbar, OpenAction_, EditorIcon::OpenProject);
+    usePrimaryIcon(mStandardToolbar, SaveAction_, EditorIcon::Save);
+    usePrimaryIcon(GameToolbar_, BuildAction_, EditorIcon::Build);
+    usePrimaryIcon(GameToolbar_, BuildRunAction_, EditorIcon::Run);
+    usePrimaryIcon(GameToolbar_, PlayAction_, EditorIcon::Play);
+    usePrimaryIcon(GameToolbar_, StopAction_, EditorIcon::Stop);
 
     // Output commands live on the Output tool window's own toolbar.
     ClearAction_ = new QAction(QStringLiteral("&Clear Output"), this);
