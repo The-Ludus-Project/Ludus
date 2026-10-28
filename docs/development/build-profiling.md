@@ -77,6 +77,54 @@ parallelism. All reported project headers passed their existing limits. The
 aggregate limit remains 120 s; compare future profiles at the same concurrency
 before treating timing changes as include regressions.
 
+## Runner speed normalization
+
+Hosted `ubuntu-24.04` runners differ in speed by more than the budget's
+headroom. Across eight batch profiles of essentially the same graph (555 to 576
+compilations, the same LLVM 23.1.5 snapshot), summed frontend parsing ranged
+from 227.6 s to 490.5 s. Every header slowed together, including libstdc++'s
+`<string>`, whose average went from 111 ms to 217 ms with an almost unchanged
+include count. Three batches failed the raw 440-second aggregate only because
+they ran on slow runners.
+
+`check-build-budget` therefore divides measured times by a runner-speed factor
+before comparing them with the budgets. The factor is the summed per-include
+parse time (total milliseconds over include count) of `<string>`, `<span>`,
+`<string_view>` and `<array>`, divided by the same sum from the reference run
+recorded in `runner_speed_reference`. The gate prints the factor and both the
+measured and normalized values:
+
+| Batch run | Raw frontend | Factor | Normalized |
+| --- | ---: | ---: | ---: |
+| [40346740570](https://github.com/The-Ludus-Project/Ludus/actions/runs/40346740570) | 310.2 s | 1.35 | 229.4 s |
+| [40396154838](https://github.com/The-Ludus-Project/Ludus/actions/runs/40396154838) | 479.8 s | 2.10 | 228.5 s |
+| [40424045059](https://github.com/The-Ludus-Project/Ludus/actions/runs/40424045059) | 464.5 s | 2.04 | 227.8 s |
+| [40536739338](https://github.com/The-Ludus-Project/Ludus/actions/runs/40536739338) | 373.3 s | 1.60 | 233.0 s |
+| [40580197167](https://github.com/The-Ludus-Project/Ludus/actions/runs/40580197167) | 320.4 s | 1.36 | 235.2 s |
+| [40606244392](https://github.com/The-Ludus-Project/Ludus/actions/runs/40606244392) | 227.6 s | 0.94 | 241.7 s |
+| [40639240762](https://github.com/The-Ludus-Project/Ludus/actions/runs/40639240762) (reference) | 242.8 s | 1.00 | 242.8 s |
+| [40735340923](https://github.com/The-Ludus-Project/Ludus/actions/runs/40735340923) | 490.5 s | 2.09 | 234.3 s |
+
+The aggregate budget is now in reference-run seconds. It was recalibrated from
+440 s to 290 s, about 20% above the highest normalized run, following the
+existing headroom policy. Per-header limits are unchanged and are compared
+after the same normalization; the largest normalized project header in these
+runs was `environment.hpp` at 341 ms against 2000 ms.
+
+Limitations:
+
+- A different libstdc++ (a new runner image) or reference compiler changes the
+  reference headers' cost. Their paths then disappear from the report or the
+  factor shifts, so re-baseline `runner_speed_reference` from a CI profile and
+  recalibrate the aggregate in the same change.
+- When a reference header is absent from the report (for example, a local libc++
+  host) or the factor lies outside the configured bounds, the gate falls back to
+  raw timings and prints why.
+- The factor removes the host's speed, not CPU contention. Keep the job's
+  two-job concurrency unchanged.
+- Normalized totals still varied by about 7% across these runs. Treat a single
+  run near the limit as a prompt to profile, not as proof of a regression.
+
 ## Baseline
 
 ### LLVM 23 reference-toolchain calibration

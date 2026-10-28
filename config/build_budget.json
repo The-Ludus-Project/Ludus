@@ -95,7 +95,27 @@
   ],
   "preset": "linux-clang-development",
   "default_header_avg_ms": 2000,
-  "total_frontend_seconds": 440,
+  "total_frontend_seconds": 290,
+  "runner_speed_reference": {
+    "$comment": [
+      "Budgets are compared with measured times divided by this host's speed factor:",
+      "the summed per-include averages (total ms / include count) of these unchanged",
+      "libstdc++ headers, over the same sums from the baseline run. Baseline: run",
+      "40639240762, ubuntu-24.04, LLVM 23.1.5 (20261023 snapshot),",
+      "libstdc++ 14, two uncached build jobs. If a header is absent from the report",
+      "(another libstdc++, a local libc++ host) or the factor leaves the bounds, the",
+      "gate falls back to raw timings and says so. Re-baseline when libstdc++ or the",
+      "reference compiler changes."
+    ],
+    "header_avg_ms": {
+      "/usr/include/c++/14/string": 111.28,
+      "/usr/include/c++/14/span": 39.77,
+      "/usr/include/c++/14/string_view": 24.99,
+      "/usr/include/c++/14/array": 25.86
+    },
+    "minimum_factor": 0.25,
+    "maximum_factor": 4.0
+  },
   "header_overrides_avg_ms": {
     "modules/foundation/logging/src/internal/backend.hpp": 4000
   },
@@ -162,5 +182,16 @@
     "measured LLVM 23 baseline. Keep header limits, overrides, tests and profile",
     "inputs unchanged. Do not substitute this calibration for include optimization.",
     "Evidence, limitations and next-run verification: docs/development/build-profiling.md."
+  ],
+  "$runner_speed_note": [
+    "Hosted ubuntu-24.04 runners parsed the unchanged graph between 0.94x and 2.10x",
+    "the baseline time across eight batches (227.6 to 490.5 s raw; 555 to 576",
+    "compilations; same compiler). Three batches failed the raw 440 s aggregate on",
+    "slow runners only. Normalized by runner_speed_reference, the same eight runs",
+    "measured 227.8 to 242.8 s. The aggregate is now in reference-run seconds:",
+    "290 s, about 20% over the highest normalized run, following the existing",
+    "headroom policy. Per-header limits are unchanged and also compared after",
+    "normalization (largest normalized project header: 341 ms). Evidence:",
+    "docs/development/build-profiling.md, Runner speed normalization."
   ]
 }

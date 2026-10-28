@@ -34,6 +34,14 @@ through include hygiene.
   with how many translation units include a header (grows with the codebase even
   if the header is unchanged), whereas the average measures the header's
   intrinsic weight — the thing an author controls.
+- Both limits are expressed at the speed of a recorded reference run. Hosted
+  runners parse the same unchanged graph at severalfold different speeds, so the
+  gate divides measured times by a runner-speed factor: the per-include parse
+  time of unchanged libstdc++ headers (`<string>`, `<span>`, `<string_view>`,
+  `<array>`) relative to their averages in the reference run
+  (`runner_speed_reference` in `config/build_budget.json`). When those headers are
+  absent from the report or the factor is implausible, the gate compares raw
+  timings and says so.
 
 `misc-include-cleaner` and IWYU remain available as **advisory, non-gating**
 tools (`./scripts/check --include-cleaner`) for pruning includes on demand.
@@ -53,8 +61,14 @@ tools (`./scripts/check --include-cleaner`) for pruning includes on demand.
 Regressions of the kind ADR 0004 fixed now fail CI with a specific, actionable
 message naming the offending header, instead of being noticed months later.
 Budgets carry deliberate headroom over the baseline and target regressions, not
-run-to-run noise; absolute milliseconds are host-dependent, so the job is
-advisory about exact timings but strict about the ratio to budget.
+run-to-run noise. Absolute milliseconds are host-dependent; normalizing by the
+reference headers removes the runner's speed while keeping the project's own
+include growth visible, because the reference headers' per-include cost does not
+depend on how many project files include them. The normalization assumes the
+reference headers parse at a stable relative cost: a libstdc++ or reference
+compiler change requires a new baseline, and include-order changes that shift
+nested standard headers into or out of the reference headers can move the factor
+by a few percent.
 
 Raising a budget is allowed but must come with a `profile-build` measurement and
 a justification in the PR — the same discipline as any other optimization
