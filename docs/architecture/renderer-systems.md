@@ -3026,9 +3026,39 @@ checks native orbit/pan/fly/frame gestures, resize, a reloaded World transform e
 GPU-frame retention and publication revision. Framebuffer capture follows interaction
 so it does not perturb the graph texture leases during navigation.
 
-The 8×8 compute graph passed that native check on this host. MIS native presentation
-remains an acceptance gap: both 64×1 and 8×8 publish the GPU generation, but the Qt
-paint counter does not advance reliably. Equal offscreen outputs and ready GPU
-resources do not establish native MIS viewport acceptance. This experiment therefore
-qualifies the measured transport and output equality, with MIS viewport qualification
-still open.
+The original MIS native acceptance attempt published the GPU generation but stalled
+while waiting for Qt to paint it. The fixture polled `QTest::qWaitFor`, which manually
+pumps events rather than entering Cocoa's normal `NSApp` run path. The native fixture
+now uses a bounded `QEventLoop::exec()` wait, allowing display-link/main-queue delivery
+while retaining the original deadlines and normal GPU texture leases. See The Qt
+Company's [Qt 6.12 Cocoa event dispatcher](https://github.com/qt/qtbase/blob/v6.12.0/src/plugins/platforms/cocoa/qcocoaeventdispatcher.mm)
+(`QCocoaEventDispatcher::processEvents`) for that distinction. Production presentation
+and transport scheduling are unchanged. The ready-state overlay now recognizes GPU-only
+snapshots, so an empty CPU readback image no longer leaves “Preparing renderer…” over
+a completed native view. The fixture supplies cooked candidates directly,
+so it disables the built-in document's debounced live build; a late default preview
+must not overwrite the MIS runtime being tested.
+
+The editor build cooks the canonical MIS template at 64×1 and 8×8 for the dedicated
+native case:
+
+```bash
+cmake --build out/build/<preset> --target ludus_editor_tests
+QT_QPA_PLATFORM=cocoa out/build/<preset>/apps/editor/ludus_editor_tests '[viewport-native-mis]'
+```
+
+This case checks native orbit, trackpad/middle-button pan, look/fly and framing;
+each navigation wait requires a newer rendered camera revision as well as another
+presented image. Resize changes both the embedded surface and graph extent. The
+World edit moves `starter.cube` through the project's normal extraction boundary.
+A valid runtime with deliberately broken Metal shader source exercises asynchronous
+replacement failure while the prior GPU view remains drawable and navigable. A
+subsequent valid replacement must retain that view until its new generation presents.
+A runtime load can queue staging behind an export copy, so the test observes the new
+candidate serial after the safe boundary rather than assuming the immediate activation
+report already describes it. Every graph presentation wait checks the serial actually
+sampled by Qt against the first snapshot published for the required revision/generation;
+painting another sample of the old view cannot satisfy it.
+Framebuffer capture remains optional and follows interaction, so it cannot drive the
+paint waits itself. These checks qualify presentation separately from the historical
+transport timings and CPU/GPU parity above.
