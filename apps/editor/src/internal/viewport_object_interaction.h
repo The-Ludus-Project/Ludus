@@ -7,6 +7,8 @@
 #include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/transform.hpp>
 
+#include "viewport_object_overlay.h"
+
 #include <QJsonObject>
 #include <QLineF>
 #include <QObject>
@@ -28,9 +30,9 @@ class ViewportObjectInteraction final : public QObject
     Q_OBJECT
 public:
     /// Number of spatial axes exposed by the transform tools.
-    static constexpr foundation::int32 AXIS_COUNT = 3;
+    static constexpr foundation::int32 AXIS_COUNT = ViewportObjectOverlay::AXIS_COUNT;
     /// Line segments in each rotation ring.
-    static constexpr foundation::int32 RING_SEGMENTS = 64;
+    static constexpr foundation::int32 RING_SEGMENTS = ViewportObjectOverlay::RING_SEGMENTS;
     /// Position, rotation and scale are distinct authoring properties.
     static constexpr foundation::usize TRANSFORM_PROPERTY_COUNT = 3;
     /// Bounded property names or schema prefixes, kept in their shared property order.
@@ -64,6 +66,9 @@ public:
     void Cancel();
     /// Paint in the same logical coordinates used by Press. No device or image readback required.
     void Paint(QPainter& inoutPainter, const QRectF& framePixel);
+    /// Project bounded wire/handle strokes on the GUI thread. Failure clears output, retaining buffer capacity.
+    /// The same geometry feeds the native scene graph and the readback painter.
+    void BuildOverlay(const QRectF& framePixel, ViewportObjectOverlay& outOverlay);
     /// Closest triangle under a point; empty means background. Handles perspective and orthographic views.
     [[nodiscard]] QString Pick(QPointF positionPixel, const QRectF& framePixel) const;
 Q_SIGNALS:
@@ -99,6 +104,7 @@ private:
     static constexpr foundation::usize MAX_HANDLE_LINES =
         static_cast<foundation::usize>(AXIS_COUNT) * static_cast<foundation::usize>(RING_SEGMENTS);
     foundation::FixedArray<HandleLine, MAX_HANDLE_LINES> mHandles;
+    ViewportObjectOverlay mPaintOverlay;
     Tool mTool = Tool::Move;
     foundation::int32 mDragAxis = -1;
     bool mCanEdit = false;
