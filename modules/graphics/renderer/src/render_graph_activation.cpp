@@ -35,6 +35,13 @@ constexpr uint32 MAX_VISIBILITY = static_cast<uint32>(format::Visibility::Both);
 constexpr uint32 MAX_TARGET = static_cast<uint32>(format::ShaderTarget::GlslEs);
 constexpr uint32 MAX_LOAD = static_cast<uint32>(format::Load::Discard);
 constexpr uint32 MAX_STORE = static_cast<uint32>(format::Store::Discard);
+static_assert(static_cast<uint32>(format::RayTraversal::NativeQuery) == LUDUS_GRAPH_TRAVERSAL_NATIVE_QUERY &&
+                  static_cast<uint32>(format::RayTraversal::TriangleLoop) == LUDUS_GRAPH_TRAVERSAL_TRIANGLE_LOOP &&
+                  static_cast<uint32>(format::RayTraversal::Custom) == LUDUS_GRAPH_TRAVERSAL_CUSTOM &&
+                  static_cast<uint32>(format::RayTraversal::HardwarePipeline) ==
+                      LUDUS_GRAPH_TRAVERSAL_HARDWARE_PIPELINE &&
+                  static_cast<uint32>(format::RayTraversal::ComputeBvh) == LUDUS_GRAPH_TRAVERSAL_COMPUTE_BVH,
+              "cooked pass traversal codes select the linked kernel's strategy");
 constexpr uint32 FIRST_ENTRY_CHARACTER = 0x21;
 constexpr uint32 LAST_ENTRY_CHARACTER = 0x7E;
 bool IsAccepted(Status status) noexcept
@@ -159,6 +166,7 @@ struct RenderGraphPackage::State final
     bool HasExplicitRayTraversal = false;
     bool HasCustomRayTraversal = false;
     bool HasNativeRayPipeline = false;
+    bool HasComputeBvhTraversal = false;
     bool HasNativeRayQueries = false;
     bool HasIndependentPrograms = false;
     bool HasVisibilityFields = false;
@@ -584,7 +592,8 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeRecords(ByteReader& in
         pass.DenoisingQuality = HasDenoising == true ? inoutReader.ReadWord() : 0;
         const uint32 traversal = HasExplicitRayTraversal == true ? inoutReader.ReadWord() : 0;
         const uint32 maximumTraversal =
-            static_cast<uint32>(HasNativeRayPipeline == true    ? format::RayTraversal::HardwarePipeline
+            static_cast<uint32>(HasComputeBvhTraversal == true  ? format::RayTraversal::ComputeBvh
+                                : HasNativeRayPipeline == true  ? format::RayTraversal::HardwarePipeline
                                 : HasCustomRayTraversal == true ? format::RayTraversal::Custom
                                                                 : format::RayTraversal::TriangleLoop);
         if (traversal > maximumTraversal ||
@@ -664,16 +673,17 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
-        (version != format::RAY_WORKGROUP_PACKAGE_VERSION && version != format::NATIVE_RAY_PIPELINE_PACKAGE_VERSION &&
-         version != format::CUSTOM_RAY_PACKAGE_VERSION && version != format::SOFTWARE_RAY_PACKAGE_VERSION &&
-         version != format::METALFX_SPATIAL_PACKAGE_VERSION && version != format::DENOISING_PACKAGE_VERSION &&
-         version != format::BILINEAR_PACKAGE_VERSION && version != format::TONE_MAPPING_PACKAGE_VERSION &&
-         version != format::ACCUMULATION_PACKAGE_VERSION && version != format::FORWARD_PACKAGE_VERSION &&
-         version != format::PIXEL_BUFFER_PACKAGE_VERSION && version != format::VISIBILITY_PACKAGE_VERSION &&
-         version != format::ORDERED_PACKAGE_VERSION && version != format::STORAGE_PACKAGE_VERSION &&
-         version != format::INDEPENDENT_PROGRAM_PACKAGE_VERSION && version != format::NATIVE_RAY_PACKAGE_VERSION &&
-         version != format::SCENE_PACKAGE_VERSION && version != format::VIEW_PACKAGE_VERSION &&
-         version != format::NAMED_PACKAGE_VERSION && version != format::LEGACY_PACKAGE_VERSION))
+        (version != format::COMPUTE_BVH_PACKAGE_VERSION && version != format::RAY_WORKGROUP_PACKAGE_VERSION &&
+         version != format::NATIVE_RAY_PIPELINE_PACKAGE_VERSION && version != format::CUSTOM_RAY_PACKAGE_VERSION &&
+         version != format::SOFTWARE_RAY_PACKAGE_VERSION && version != format::METALFX_SPATIAL_PACKAGE_VERSION &&
+         version != format::DENOISING_PACKAGE_VERSION && version != format::BILINEAR_PACKAGE_VERSION &&
+         version != format::TONE_MAPPING_PACKAGE_VERSION && version != format::ACCUMULATION_PACKAGE_VERSION &&
+         version != format::FORWARD_PACKAGE_VERSION && version != format::PIXEL_BUFFER_PACKAGE_VERSION &&
+         version != format::VISIBILITY_PACKAGE_VERSION && version != format::ORDERED_PACKAGE_VERSION &&
+         version != format::STORAGE_PACKAGE_VERSION && version != format::INDEPENDENT_PROGRAM_PACKAGE_VERSION &&
+         version != format::NATIVE_RAY_PACKAGE_VERSION && version != format::SCENE_PACKAGE_VERSION &&
+         version != format::VIEW_PACKAGE_VERSION && version != format::NAMED_PACKAGE_VERSION &&
+         version != format::LEGACY_PACKAGE_VERSION))
     {
         return RenderGraphPackageStatus::UnsupportedVersion;
     }
@@ -692,6 +702,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     candidate->HasExplicitRayTraversal = version >= format::SOFTWARE_RAY_PACKAGE_VERSION;
     candidate->HasCustomRayTraversal = version >= format::CUSTOM_RAY_PACKAGE_VERSION;
     candidate->HasNativeRayPipeline = version >= format::NATIVE_RAY_PIPELINE_PACKAGE_VERSION;
+    candidate->HasComputeBvhTraversal = version >= format::COMPUTE_BVH_PACKAGE_VERSION;
     candidate->HasNativeRay = version >= format::NATIVE_RAY_PACKAGE_VERSION;
     candidate->HasIndependentPrograms = version >= format::INDEPENDENT_PROGRAM_PACKAGE_VERSION;
     candidate->HasVisibilityFields = version >= format::VISIBILITY_PACKAGE_VERSION;

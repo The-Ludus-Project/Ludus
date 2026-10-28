@@ -1,0 +1,465 @@
+{
+  "version": 1,
+  "description": "Single source of Ludus colour and spacing tokens. Read by the Qt editor (generated header at configure time), the init window (scripts/python/init_theme.py) and the browser editor (generated block in apps/editor/browser/editor.css; refresh it with scripts/python/design_tokens.py --write). Every pair in `contrast` is checked in both appearances by the editor tests and scripts/python/test_design_tokens.py. The `highContrast` colours replace the listed tokens when the system asks for more contrast (or LUDUS_HIGH_CONTRAST=1); each pair also holds its `highContrastMinimum` there. `type` holds font-size multipliers of the system font.",
+  "colours": {
+    "surface.workspace": {
+      "dark": "#18232c",
+      "light": "#f1efea",
+      "use": "Window background and gaps between panels"
+    },
+    "surface.panel": {
+      "dark": "#222f39",
+      "light": "#ffffff",
+      "use": "Docks, fields and lists"
+    },
+    "surface.raised": {
+      "dark": "#2c3c47",
+      "light": "#e6e3dc",
+      "use": "Buttons, headers and hover"
+    },
+    "surface.viewport": {
+      "dark": "#090c0f",
+      "light": "#090c0f",
+      "use": "3D viewport, texture viewer and graph canvas base; dark in both appearances so lighting judgements do not change with the UI theme"
+    },
+    "surface.log": {
+      "dark": "#111a21",
+      "light": "#18232c",
+      "use": "Setup log pane"
+    },
+    "text.primary": {
+      "dark": "#e9f2f1",
+      "light": "#18232c",
+      "use": "Body text and values"
+    },
+    "text.secondary": {
+      "dark": "#b5c5c9",
+      "light": "#4c6267",
+      "use": "Labels and descriptions"
+    },
+    "text.tertiary": {
+      "dark": "#9bafb4",
+      "light": "#4f6468",
+      "use": "Hints, units and captions"
+    },
+    "text.disabled": {
+      "dark": "#71858c",
+      "light": "#7f9195",
+      "use": "Disabled text"
+    },
+    "text.log": {
+      "dark": "#d7e3e2",
+      "light": "#e9f2f1",
+      "use": "Setup log text"
+    },
+    "text.hud": {
+      "dark": "#e8ecf0",
+      "light": "#e8ecf0",
+      "use": "Text over the viewport"
+    },
+    "text.hudQuiet": {
+      "dark": "#9bafb4",
+      "light": "#9bafb4",
+      "use": "Quiet text over the viewport, such as the empty-viewport caption"
+    },
+    "border.subtle": {
+      "dark": "#3a4d59",
+      "light": "#d3d0c8",
+      "use": "Decorative dividers and card edges"
+    },
+    "border.control": {
+      "dark": "#80969e",
+      "light": "#71878b",
+      "use": "Field and button edges"
+    },
+    "accent.primary": {
+      "dark": "#57d2c1",
+      "light": "#14786f",
+      "use": "Primary action, focus ring and links"
+    },
+    "accent.primaryActive": {
+      "dark": "#7fe0d3",
+      "light": "#0f5f58",
+      "use": "Primary action while hovered or pressed"
+    },
+    "accent.onPrimary": {
+      "dark": "#18232c",
+      "light": "#ffffff",
+      "use": "Text on the primary fill"
+    },
+    "accent.surface": {
+      "dark": "#294b4b",
+      "light": "#d5eee8",
+      "use": "Selected rows and tabs"
+    },
+    "selection.amber": {
+      "dark": "#ffd25a",
+      "light": "#ffd25a",
+      "use": "Selected object in the viewport and graph canvas"
+    },
+    "status.success": {
+      "dark": "#74d68f",
+      "light": "#1a7535",
+      "use": "Done, ready"
+    },
+    "status.warning": {
+      "dark": "#f2c25b",
+      "light": "#865300",
+      "use": "Needs attention"
+    },
+    "status.danger": {
+      "dark": "#ff9a8f",
+      "light": "#b42318",
+      "use": "Failed"
+    },
+    "status.successSurface": {
+      "dark": "#1f3a2b",
+      "light": "#e2f3e7",
+      "use": "Success banner"
+    },
+    "status.warningSurface": {
+      "dark": "#3f3419",
+      "light": "#fbf0d4",
+      "use": "Warning banner"
+    },
+    "status.dangerSurface": {
+      "dark": "#46252a",
+      "light": "#fce9e7",
+      "use": "Error banner"
+    },
+    "grid.minor": {
+      "dark": "#303e49",
+      "light": "#303e49",
+      "use": "Viewport grid, minor lines"
+    },
+    "grid.major": {
+      "dark": "#4a5a65",
+      "light": "#4a5a65",
+      "use": "Viewport grid, every tenth line"
+    },
+    "axis.x": {
+      "dark": "#e5645c",
+      "light": "#e5645c",
+      "use": "X axis, always with the letter X"
+    },
+    "axis.y": {
+      "dark": "#6cc27a",
+      "light": "#6cc27a",
+      "use": "Y axis, always with the letter Y"
+    },
+    "axis.z": {
+      "dark": "#5b8ee6",
+      "light": "#5b8ee6",
+      "use": "Z axis, always with the letter Z"
+    }
+  },
+  "highContrast": {
+    "dark": {
+      "surface.workspace": "#000000",
+      "surface.panel": "#0b0f12",
+      "surface.raised": "#1c262c",
+      "surface.log": "#000000",
+      "text.primary": "#ffffff",
+      "text.secondary": "#e6eef0",
+      "text.tertiary": "#d3dfe2",
+      "text.disabled": "#9fb0b5",
+      "text.log": "#ffffff",
+      "text.hudQuiet": "#c4d2d6",
+      "border.subtle": "#7d9299",
+      "border.control": "#b9cbd0",
+      "accent.primary": "#7ff0e0",
+      "accent.primaryActive": "#b0f7ee",
+      "accent.onPrimary": "#000000",
+      "accent.surface": "#0f4a4a",
+      "status.success": "#8ef0a8",
+      "status.warning": "#ffd873",
+      "status.danger": "#ffb3aa",
+      "status.successSurface": "#0b2a18",
+      "status.warningSurface": "#2e2400",
+      "status.dangerSurface": "#3a0f14"
+    },
+    "light": {
+      "surface.workspace": "#ffffff",
+      "surface.panel": "#ffffff",
+      "surface.raised": "#e9e9e9",
+      "surface.log": "#000000",
+      "text.primary": "#000000",
+      "text.secondary": "#1a2a2e",
+      "text.tertiary": "#22343a",
+      "text.disabled": "#5b6c70",
+      "text.log": "#ffffff",
+      "text.hudQuiet": "#c4d2d6",
+      "border.subtle": "#5c7076",
+      "border.control": "#34484d",
+      "accent.primary": "#00524b",
+      "accent.primaryActive": "#003b36",
+      "accent.onPrimary": "#ffffff",
+      "accent.surface": "#bfeae2",
+      "status.success": "#0b5a22",
+      "status.warning": "#6b4000",
+      "status.danger": "#8f1a10",
+      "status.successSurface": "#d8f0df",
+      "status.warningSurface": "#f8e8bd",
+      "status.dangerSurface": "#f8d9d5"
+    }
+  },
+  "spacing": {
+    "extraSmall": 4,
+    "small": 8,
+    "medium": 12,
+    "large": 16,
+    "extraLarge": 24,
+    "page": 32
+  },
+  "radius": {
+    "control": 4,
+    "group": 6,
+    "card": 8
+  },
+  "type": {
+    "caption": 0.9,
+    "body": 1.0,
+    "title": 1.2,
+    "heading": 1.5
+  },
+  "contrast": [
+    {
+      "label": "Body text on workspace",
+      "foreground": "text.primary",
+      "background": "surface.workspace",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Secondary text on workspace",
+      "foreground": "text.secondary",
+      "background": "surface.workspace",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Hint text on workspace",
+      "foreground": "text.tertiary",
+      "background": "surface.workspace",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Body text on panel",
+      "foreground": "text.primary",
+      "background": "surface.panel",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Secondary text on panel",
+      "foreground": "text.secondary",
+      "background": "surface.panel",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Hint text on panel",
+      "foreground": "text.tertiary",
+      "background": "surface.panel",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Body text on raised",
+      "foreground": "text.primary",
+      "background": "surface.raised",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Secondary text on raised",
+      "foreground": "text.secondary",
+      "background": "surface.raised",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Hint text on raised",
+      "foreground": "text.tertiary",
+      "background": "surface.raised",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Accent text and focus ring on workspace",
+      "foreground": "accent.primary",
+      "background": "surface.workspace",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Control edge on workspace",
+      "foreground": "border.control",
+      "background": "surface.workspace",
+      "minimum": 3,
+      "highContrastMinimum": 4.5
+    },
+    {
+      "label": "Success on workspace",
+      "foreground": "status.success",
+      "background": "surface.workspace",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Warning on workspace",
+      "foreground": "status.warning",
+      "background": "surface.workspace",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Danger on workspace",
+      "foreground": "status.danger",
+      "background": "surface.workspace",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Accent text and focus ring on panel",
+      "foreground": "accent.primary",
+      "background": "surface.panel",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Control edge on panel",
+      "foreground": "border.control",
+      "background": "surface.panel",
+      "minimum": 3,
+      "highContrastMinimum": 4.5
+    },
+    {
+      "label": "Success on panel",
+      "foreground": "status.success",
+      "background": "surface.panel",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Warning on panel",
+      "foreground": "status.warning",
+      "background": "surface.panel",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Danger on panel",
+      "foreground": "status.danger",
+      "background": "surface.panel",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Text on the primary fill",
+      "foreground": "accent.onPrimary",
+      "background": "accent.primary",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Text on the pressed primary fill",
+      "foreground": "accent.onPrimary",
+      "background": "accent.primaryActive",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Text on a selected row",
+      "foreground": "text.primary",
+      "background": "accent.surface",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Text on the success banner",
+      "foreground": "text.primary",
+      "background": "status.successSurface",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Text on the warning banner",
+      "foreground": "text.primary",
+      "background": "status.warningSurface",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Text on the error banner",
+      "foreground": "text.primary",
+      "background": "status.dangerSurface",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Log text on the log pane",
+      "foreground": "text.log",
+      "background": "surface.log",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "HUD text on viewport",
+      "foreground": "text.hud",
+      "background": "surface.viewport",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Quiet HUD text and empty-viewport caption on viewport",
+      "foreground": "text.hudQuiet",
+      "background": "surface.viewport",
+      "minimum": 4.5,
+      "highContrastMinimum": 7
+    },
+    {
+      "label": "Selection amber on viewport",
+      "foreground": "selection.amber",
+      "background": "surface.viewport",
+      "minimum": 3,
+      "highContrastMinimum": 4.5
+    },
+    {
+      "label": "Axis X on viewport",
+      "foreground": "axis.x",
+      "background": "surface.viewport",
+      "minimum": 3,
+      "highContrastMinimum": 4.5
+    },
+    {
+      "label": "Axis Y on viewport",
+      "foreground": "axis.y",
+      "background": "surface.viewport",
+      "minimum": 3,
+      "highContrastMinimum": 4.5
+    },
+    {
+      "label": "Axis Z on viewport",
+      "foreground": "axis.z",
+      "background": "surface.viewport",
+      "minimum": 3,
+      "highContrastMinimum": 4.5
+    },
+    {
+      "label": "Minor grid on viewport (a guide, not text)",
+      "foreground": "grid.minor",
+      "background": "surface.viewport",
+      "minimum": 1.5,
+      "highContrastMinimum": 1.5
+    },
+    {
+      "label": "Major grid on viewport (a guide, not text)",
+      "foreground": "grid.major",
+      "background": "surface.viewport",
+      "minimum": 2.2,
+      "highContrastMinimum": 2.2
+    }
+  ]
+}

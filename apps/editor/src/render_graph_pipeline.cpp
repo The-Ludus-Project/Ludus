@@ -614,12 +614,14 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
         traversal->setProperty("renderGraphField", QStringLiteral("invocation.traversal"));
         traversal->addItem(QStringLiteral("Automatic"), QString());
         traversal->addItem(QStringLiteral("Triangle loop"), QStringLiteral("TriangleLoop"));
+        traversal->addItem(QStringLiteral("Compute BVH"), QStringLiteral("ComputeBvh"));
         traversal->addItem(QStringLiteral("Native ray query"), QStringLiteral("NativeQuery"));
         traversal->addItem(QStringLiteral("Custom traversal"), QStringLiteral("Custom"));
         const QString selection = mNode.value(name).toObject().value(QStringLiteral("traversal")).toString();
         traversal->setCurrentIndex(traversal->findData(selection));
         traversal->setToolTip(QStringLiteral(
-            "Compute invocation uses native hardware BVH queries, the engine triangle loop, or your traversal source. "
+            "Compute invocation uses native hardware BVH queries, the engine triangle loop, the renderer's BVH in "
+            "ordinary compute (Compute BVH, for larger scenes without ray hardware), or your traversal source. "
             "Automatic on an explicit Compute invocation uses the triangle loop. Legacy graphs retain their prior "
             "default. Hardware RT invocation owns its traversal."));
         QLineEdit* source = new QLineEdit(invocation.value(QStringLiteral("traversal_source")).toString(), this);

@@ -198,8 +198,9 @@ TEST_CASE("Linear comparison uses raw radiance and relative MSE for RGBA16F outp
     CHECK(comparison.MeanAbsoluteError == Catch::Approx(1));
     CHECK(comparison.MeanSignedLuminanceError == Catch::Approx(1));
     CHECK(comparison.RelativeMeanSquareError == Catch::Approx(1 / (1 + REFERENCE_RELATIVE_ERROR_EPSILON)));
-    // Reinhard maps 2 and 1 to display values more than the visible threshold apart.
-    CHECK(comparison.VisiblyDifferentFraction == 1);
+    // The viewport's tone curve compresses highlights: 1 and 2 display 0.94 and 0.98, closer than the visible
+    // threshold even though the linear error is one, so the difference image is faint but not empty.
+    CHECK(comparison.VisiblyDifferentFraction == 0);
     CHECK(qRed(difference.pixel(0, 0)) > 0);
     CHECK(MakeReferenceComparisonJson(comparison).contains(QStringLiteral("relativeMeanSquareError")) == true);
 }

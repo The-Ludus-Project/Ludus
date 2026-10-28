@@ -3,6 +3,7 @@
 #include "internal/preview_lighting.h"
 #include "internal/preview_shading.h"
 #include "internal/render_scene_limits.h"
+#include "internal/viewport_tone_curve.h"
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 #    include "renderer_overlay.h"
 #endif
@@ -1692,11 +1693,11 @@ void RenderPreview::Tick()
             usesLitMaterials() == true && mIsInspectingRayPaths == false ? rr::ViewportColorMode::PreferHdr
                                                                          : rr::ViewportColorMode::Linear8,
 #    if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
-            true
+            true,
 #    else
-            false
+            false,
 #    endif
-        );
+            VIEWPORT_TONE_CURVE);
         if (Accepted(created) == false)
         {
             fail(QStringLiteral("GPU viewport allocation failed. World edits are preserved."));

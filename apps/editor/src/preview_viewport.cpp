@@ -70,6 +70,7 @@ constexpr float64 FIELD_OF_VIEW_STEP_DEGREES = 5;
 constexpr QRgb FRAME_OUTLINE = qRgb(58, 66, 76);
 /// Width of the shading menu in characters; longer labels are cut, and the full text is in the tooltip.
 constexpr int SHADING_COMBO_CHARACTERS = 12;
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 /// Shows or hides a widget that was added to the controls toolbar. A toolbar owns the visibility of its
 /// widgets through their actions, so hiding the widget itself would be undone on the next layout.
 void SetControlVisible(QToolBar& inoutControls, QWidget* controlOrNull, bool isVisible)
@@ -88,6 +89,7 @@ void SetControlVisible(QToolBar& inoutControls, QWidget* controlOrNull, bool isV
         }
     }
 }
+#endif
 /// Places every presentation widget (message and grid, render surface, readback canvas, graph
 /// view or browser proxy) on the frame of the current size preset, centred in the layout's area.
 /// Only one of them is visible at a time, so they share the frame instead of stacking.
@@ -1732,6 +1734,17 @@ bool PreviewViewport::HasRetainedGraphFrame() const noexcept
 #else
     return false;
 #endif
+}
+uint64 PreviewViewport::GetPresentedGraphFrameSerial() const noexcept
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mState->ProjectGraph.isNull() == false && mState->Source == &mState->ProjectGraph->GetDisplayFrames() &&
+        mState->Active >= 0)
+    {
+        return mState->Frames[mState->Active].Read.Token;
+    }
+#endif
+    return 0;
 }
 void PreviewViewport::ClearFrame(const QString& text)
 {

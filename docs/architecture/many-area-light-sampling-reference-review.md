@@ -219,11 +219,11 @@ library: hits Buffer (32 B/px, RenderSize)
 - **Traversal.** Shadow and BSDF rays use the renderer's GPU-compute BVH, the same
   decision as the polygonal-light templates, so the template does not require
   native ray tracing.
-  - Today graph passes choose only `NativeQuery` or `TriangleLoop`, and
-    `TriangleLoop` is a linear scan meant for small scenes. A compute-BVH strategy
-    is therefore a prerequisite, added once at the shared
+  - Graph passes select it with `"traversal": "ComputeBvh"`, the strategy added
+    once at the shared
     [traversal boundary](../development/render-graph-authoring.md#reuse-ray-callbacks-in-compute-pipelines)
-    rather than inside either template's callbacks.
+    rather than inside either template's callbacks. `TriangleLoop` remains a
+    linear scan meant for small scenes.
   - A `NativeQuery` configuration can follow later as a separate configuration.
   - Browser execution stays outside the graph ray profile until that profile
     admits it.
@@ -349,7 +349,7 @@ aligned to Philox's four-lane blocks:
 | Generic LTC polygon transform | FoundationMath, beside those primitives | Transform the vertices by `M⁻¹`, then reuse the same clipping and integral |
 | Sequential weighted reservoir | FoundationMath | Implemented as `weighted_reservoir.hpp` and `shaders/weighted_reservoir.slang` ([contract](randomness.md#sequential-weighted-reservoir)): explicit order, zero totals, and selection-frequency tests on exact small integers. The ReSTIR template may adopt it separately; this design does not change that template. |
 | LTC table for Ludus GGX/correlated Smith/Schlick, its fitter and provenance | Renderer (generated include) plus an offline Ludus tool, shared with the polygonal-light LTC templates | Reimplemented from Heitz et al. and Peters §4.1, not from GPLv3 utilities. Must cover roughness down to 0.045, where fits are least accurate. A poor fit costs variance, not correctness. Agree on one owner before either workstream builds it. |
-| Compute-BVH graph traversal strategy | Renderer, at the shared traversal boundary | Shared with the polygonal-light templates; a prerequisite for both |
+| Compute-BVH graph traversal strategy | Renderer, at the shared traversal boundary | Implemented as `ComputeBvh`, sharing the RT1 GPU reference's BVH traversal. Shared with the polygonal-light templates; a prerequisite for both |
 | Power-CDF scene-interface accessors | Renderer | Implemented as `SelectEmissiveTriangle` and `EvaluateEmissiveTriangleSelectionPmf` in `scene_shader.slang` ([usage](../development/render-graph-authoring.md#select-emissive-triangles-by-power)). They read the CDF that `PackReferenceEmitterSelection` packs for RT1, and the private C++ counterparts `SelectReferenceEmissiveTriangle` and `EvaluateReferenceEmissiveTriangleSelectionPmf` match them in the `[power-cdf]` GPU parity test |
 | Diffuse albedo approximation, RT1 path state | Renderer | One packed CDF serves RT1 and graph shaders |
 
