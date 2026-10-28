@@ -93,7 +93,12 @@ Status PackGpuScene(const ReferenceJob& job,
     const uint64 nodesWide = visibilityWide + (shouldPackVisibility == true ? scene.Triangles.GetSize() : 0);
     const uint64 orderWide = nodesWide + uint64(scene.Nodes.GetSize()) * 3;
     const uint64 emittersWide = orderWide + scene.Order.GetSize();
-    const uint64 surfacesWide = emittersWide + scene.Emitters.GetSize() + job.ShaderEmitters.GetSize();
+    if (job.ShaderEmitterBounds.GetSize() != job.ShaderEmitters.GetSize())
+    {
+        return Status::InvalidDescription;
+    }
+    const uint64 surfacesWide = emittersWide + scene.Emitters.GetSize() +
+                                uint64(job.ShaderEmitters.GetSize()) * (1 + LUDUS_GPU_PREVIEW_EMITTER_BOUNDS_WORDS);
     const uint64 lightsWide = surfacesWide + uint64(scene.InstanceCount) * LUDUS_GPU_PREVIEW_SURFACE_WORDS;
     const uint64 environmentWide = lightsWide + uint64(job.Description.LightCount) * LUDUS_GPU_PREVIEW_LIGHT_WORDS;
     const uint64 sizeWide =
@@ -241,6 +246,18 @@ Status PackGpuScene(const ReferenceJob& job,
     for (usize i = 0; i < job.ShaderEmitters.GetSize(); ++i)
     {
         data[emitters + scene.Emitters.GetSize() + i] = job.ShaderEmitters[i];
+    }
+    math::Vector4* boundsWords = data.GetData() + emitters + scene.Emitters.GetSize() + job.ShaderEmitters.GetSize();
+    for (usize i = 0; i < job.ShaderEmitterBounds.GetSize(); ++i)
+    {
+        const internal::ReferenceEmitterBounds& bounds = job.ShaderEmitterBounds[i];
+        math::Vector4* out = boundsWords + i * LUDUS_GPU_PREVIEW_EMITTER_BOUNDS_WORDS;
+        out[0] = GpuVector(bounds.SphereWorld.Center, bounds.SphereWorld.Radius);
+        out[1] = GpuVector(bounds.NormalAxisWorld, bounds.CosConeHalfAngle);
+        out[2] = {GpuBits(bounds.IsEmissionTwoSided == true ? LUDUS_GPU_PREVIEW_EMITTER_BOUNDS_TWO_SIDED : 0U),
+                  0,
+                  0,
+                  0};
     }
     for (usize i = 0; i < scene.InstanceCount; ++i)
     {

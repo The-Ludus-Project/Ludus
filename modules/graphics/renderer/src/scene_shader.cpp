@@ -20,6 +20,48 @@ constexpr float32 MAX_EMISSION = 10000;
 constexpr float32 MIN_ROUGHNESS = 0.045F;
 constexpr float32 MAX_NORMAL_SCALE = 8;
 constexpr float32 POSITION_ROUNDING = 2e-6F;
+// Bounds of the emitter triangles scene.Emitters[firstEmitter, end), all of positive area:
+// a sphere around their vertex AABB centre and the cone of their geometric normals.
+ReferenceEmitterBounds
+ComputeEmitterBounds(const ReferenceSceneData& scene, usize firstEmitter, bool isEmissionTwoSided) noexcept
+{
+    ReferenceEmitterBounds bounds;
+    bounds.IsEmissionTwoSided = isEmissionTwoSided;
+    math::Aabb3 boxWorld = math::EmptyAabb3();
+    math::Vector3 normalSumWorld = {0, 0, 0};
+    for (usize i = firstEmitter; i < scene.Emitters.GetSize(); ++i)
+    {
+        const ReferenceTriangle& triangle = scene.Triangles[scene.Emitters[i]];
+        for (const math::Vector3 positionWorld : triangle.Positions)
+        {
+            boxWorld = math::Merge(boxWorld, {positionWorld, positionWorld});
+        }
+        normalSumWorld = normalSumWorld + triangle.GeometricNormal * triangle.Area;
+    }
+    bounds.SphereWorld.Center = (boxWorld.Min + boxWorld.Max) * 0.5F;
+    const bool hasAxis = math::TryNormalize(normalSumWorld, bounds.NormalAxisWorld) == math::MathStatus::Success;
+    bounds.CosConeHalfAngle = hasAxis == true ? 1.F : -1.F;
+    for (usize i = firstEmitter; i < scene.Emitters.GetSize(); ++i)
+    {
+        const ReferenceTriangle& triangle = scene.Triangles[scene.Emitters[i]];
+        for (const math::Vector3 positionWorld : triangle.Positions)
+        {
+            bounds.SphereWorld.Radius =
+                math::Max(bounds.SphereWorld.Radius, math::Length(positionWorld - bounds.SphereWorld.Center));
+        }
+        if (hasAxis == true)
+        {
+            bounds.CosConeHalfAngle = math::Max(
+                math::Min(bounds.CosConeHalfAngle, math::Dot(triangle.GeometricNormal, bounds.NormalAxisWorld)),
+                -1.F);
+        }
+    }
+    if (hasAxis == false)
+    {
+        bounds.NormalAxisWorld = {0, 0, 1};
+    }
+    return bounds;
+}
 bool TryAddSceneAllocation(usize count, usize stride, uint64& inoutBytes) noexcept
 {
     uint64 bytes = 0;
@@ -189,7 +231,8 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& source,
                               sizeof(math::Vector4) + sizeof(float64),
                               peak) == false ||
         TryAddSceneAllocation(surfaceCapacity,
-                              sizeof(ReferenceInstance) + sizeof(ReferenceSurfaceData) + sizeof(math::Vector4),
+                              sizeof(ReferenceInstance) + sizeof(ReferenceSurfaceData) + sizeof(math::Vector4) +
+                                  sizeof(ReferenceEmitterBounds),
                               peak) == false ||
         TryAddSceneAllocation(triangleCapacity,
                               sizeof(ReferenceTriangle) + 2 * sizeof(ReferenceBvhNode) +
@@ -273,6 +316,7 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& source,
         candidate->Scene.Triangles.TryEnsureCapacity(triangleCapacity) == false ||
         candidate->Scene.Emitters.TryEnsureCapacity(triangleCapacity) == false ||
         candidate->ShaderEmitters.TryEnsureCapacity(surfaceCapacity) == false ||
+        candidate->ShaderEmitterBounds.TryEnsureCapacity(surfaceCapacity) == false ||
         candidate->ShaderTextureBytes.TryResize(textureBytes) == false)
     {
         return Status::OutOfMemory;
@@ -537,7 +581,9 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& source,
                         {static_cast<float32>(firstEmitter),
                          static_cast<float32>(candidate->Scene.Emitters.GetSize() - firstEmitter),
                          totalArea,
-                         static_cast<float32>(surfaceIndex)}) == false)
+                         static_cast<float32>(surfaceIndex)}) == false ||
+                    candidate->ShaderEmitterBounds.TryAdd(
+                        ComputeEmitterBounds(candidate->Scene, firstEmitter, material.IsEmissionTwoSided)) == false)
                 {
                     return Status::OutOfMemory;
                 }

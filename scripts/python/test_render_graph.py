@@ -407,6 +407,44 @@ class RenderGraphTests(unittest.TestCase):
         self.config(value)["layout"] = dict(positions=[], frames=[original | dict(title="🌟" * policy.MAX_COMMENT_TITLE_CODEPOINTS)])
         graph.canonical_asset(value)
 
+    def test_activity_provenance_includes_retained_values_and_excludes_pruned_nodes(self):
+        value = self.read()
+        unused = copy.deepcopy(self.node(value, 'color'))
+        unused['id'] = 'unused'
+        self.config(value)['nodes'].append(unused)
+        self.write(value)
+        plan = graph.compile_graph(self.path)
+        contexts = {item['instance']: item for item in plan['activity']}
+        self.assertEqual(plan['source'], 'main.lurender.json')
+        self.assertEqual(contexts['Main']['source'], 'main.lurender.json')
+        self.assertIn('scene', contexts['Main']['retained'])
+        self.assertIn('camera', contexts['Main']['retained'])
+        self.assertIn('raster', contexts['Main']['retained'])
+        self.assertNotIn('unused', contexts['Main']['retained'])
+        self.assertEqual(contexts['Main/raster']['retained'], ['draw'])
+        self.assertLessEqual(sum(len(item['retained']) for item in plan['activity']), graph.MAX_EXPANDED_NODES)
+
+    def test_activity_provenance_respects_requested_outputs_per_shared_instance(self):
+        target = self.node(self.read(), 'color')
+        target.update(imported=True, presentation=False, initialized=True)
+        targets = [dict(target, id=identity) for identity in ('a', 'b')]
+        child = dict(version=2, id='Choice', default='Default', configurations=[dict(
+            id='Default', inputs=[], outputs=[dict(id=identity, type='ColorTexture',
+                source=identity+'.texture', required=False) for identity in ('a', 'b')], nodes=targets, edges=[])])
+        self.write(child, 'choice.lurender.json')
+        value = dict(version=2, id='Main', default='Default', configurations=[dict(
+            id='Default', inputs=[], outputs=[], nodes=[
+                dict(id=identity, kind='Subgraph', asset='choice.lurender.json', configuration='Default')
+                for identity in ('first', 'second')] + [dict(id='out_'+identity, kind='Export', type='ColorTexture')
+                for identity in ('a', 'b')], edges=[dict(**{'from': 'first.a', 'to': 'out_a.texture'}),
+                                                 dict(**{'from': 'second.b', 'to': 'out_b.texture'})])])
+        self.write(value)
+        plan = graph.compile_graph(self.path)
+        contexts = {item['instance']: item for item in plan['activity']}
+        self.assertEqual(contexts['Main/first']['retained'], ['a'])
+        self.assertEqual(contexts['Main/second']['retained'], ['b'])
+        self.assertEqual(contexts['Main/first']['source'], contexts['Main/second']['source'])
+
     def test_plan_is_deterministic_after_relocation_and_repeat(self):
         before = graph.compile_graph(self.path)
         other = graph.new_workspace(self.directory.parent / "relocated")
@@ -568,16 +606,14 @@ class RenderGraphTests(unittest.TestCase):
             self.assertTrue((destination / program["source"]).is_file())
         plan = graph.compile_graph(destination / "main.lurender.json")
         self.assertEqual("Export", plan["roots"][0]["kind"])
-        separate = graph.new_workspace(self.directory.parent / "separate", output="offscreen")
-        from ludus_tools.render_graph_build import new_build_sources
-        new_build_sources(separate, renderer_static=True, profiles=["metal", "wgsl"])
+        from ludus_tools.render_graph_templates import template_files
         self.assertEqual({p.relative_to(destination): p.read_bytes() for p in destination.rglob("*") if p.is_file()},
-                         {p.relative_to(separate.parent): p.read_bytes() for p in separate.parent.rglob("*") if p.is_file()})
+                         {Path(name): text.encode() for name, text in
+                          template_files('raster', ('metal', 'wgsl'), graph).items()})
 
     def test_renderer_creation_failure_never_publishes_partial_graph(self):
-        from ludus_tools import render_graph_build
         destination = self.directory.parent / "failed-renderer"
-        with patch.object(render_graph_build, "new_build_sources", side_effect=ToolingError("Injected", "fail")):
+        with patch.object(graph, "compile_graph", side_effect=ToolingError("Injected", "fail")):
             with self.assertRaises(ToolingError):
                 graph.new_workspace(destination, output="offscreen", renderer_static=True, profiles=["metal"])
         self.assertFalse(destination.exists())

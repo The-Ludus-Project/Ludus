@@ -24,7 +24,7 @@ enum class PreviewShading : foundation::uint8
     Lit,
     /// Shaded world-space normal as RGB.
     Normal,
-    /// Linear camera distance between the camera's near and far planes, near black to far white.
+    /// Linear camera distance between the camera's near and far planes, near purple to far yellow on the viridis ramp.
     Depth,
     /// Perceptual roughness as grey.
     Roughness,
@@ -32,7 +32,7 @@ enum class PreviewShading : foundation::uint8
     Metallic,
     /// Fractional mesh UV0 as red/green.
     Uv,
-    /// Direct lights affecting each pixel, as a heat ramp.
+    /// Direct lights affecting each pixel, as a viridis ramp.
     LightCount,
 };
 /// Number of PreviewShading values, for enumeration and validation.
@@ -51,6 +51,28 @@ inline constexpr foundation::usize PREVIEW_SHADING_COUNT =
 [[nodiscard]] QString GetPreviewShadingLabel(PreviewShading shading);
 /// Short status-line suffix describing what the viewport shows, starting with " · ".
 [[nodiscard]] QString GetPreviewShadingStatus(PreviewShading shading);
+/// Colour ramp a legend draws; matches how the renderer colours the debug view.
+enum class PreviewLegendRamp : foundation::uint8
+{
+    /// Linear grey, dark to bright.
+    Grey,
+    /// Perceptually uniform viridis, dark purple through teal and green to yellow.
+    Viridis,
+};
+/// Key printed over a debug view: a title, the meaning of each end of the ramp, and the ramp.
+struct PreviewLegend final
+{
+    QString Title;
+    QString LowLabel;
+    QString HighLabel;
+    PreviewLegendRamp Ramp = PreviewLegendRamp::Grey;
+};
+/// Legend of a debug mode with a scalar ramp (Depth, Roughness, Metallic, Light count); false for the others,
+/// which keep outLegend unchanged.
+[[nodiscard]] bool TryGetPreviewLegend(PreviewShading shading, PreviewLegend& outLegend);
+/// Display-space sRGB colour of the ramp at position in [0,1], equal to what renderer_lit.slang draws.
+[[nodiscard]] foundation::math::Vector3 GetPreviewRampColour(PreviewLegendRamp ramp,
+                                                             foundation::float32 position) noexcept;
 /// Depth-view distance range {near, far} for a prepared view and its camera clip planes.
 /// Starts from the camera's near plane (at least zero) and finite far plane. With
 /// boundsWorldOrNull, both tighten to the scene's nearest and farthest extent (radial distance

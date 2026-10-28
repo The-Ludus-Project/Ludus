@@ -13,6 +13,7 @@
 #include <ludus/graphics/renderer/light_selection.hpp>
 #include <ludus/graphics/renderer/lighting_layout.h>
 #include <ludus/graphics/renderer/materials.hpp>
+#include <ludus/graphics/renderer/tone_mapping.hpp>
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/graphics/rhi/raster.h>
 
@@ -184,15 +185,17 @@ struct BakedLighting final
 };
 /// Diagnostic output selected by the debug-view lit recipes (`renderer_lit_debug`,
 /// `renderer_clustered_authored_debug`). Ordinary lit programs ignore it and shade normally.
-/// Debug colours are pre-compensated for RasterViewport's Reinhard + sRGB presentation at
-/// exposure one, so they display as described; RGBA8 scene targets clip values above 0.73.
+/// Debug colours are pre-compensated for RasterViewport's PBR Neutral (ToneCurve::PbrNeutral) + sRGB
+/// presentation at exposure one (InvertPbrNeutral), so they display as described; RGBA8 scene targets clip scene values
+/// above one, which limits a white debug colour to 0.87 display-linear.
 enum class MaterialDebugView : ludus::foundation::uint8
 {
     /// Ordinary lit shading.
     None = MATERIAL_DEBUG_VIEW_NONE,
     /// Shaded world-space normal mapped from [-1,1] to [0,1] RGB.
     NormalWorld = MATERIAL_DEBUG_VIEW_NORMAL_WORLD,
-    /// Camera distance mapped linearly over ViewDescription::DebugDepthRange, near black to far white.
+    /// Camera distance mapped linearly over ViewDescription::DebugDepthRange, near dark purple to far yellow on the
+    /// viridis ramp.
     LinearDepth = MATERIAL_DEBUG_VIEW_LINEAR_DEPTH,
     /// Perceptual roughness after surface-map scaling, as grey.
     Roughness = MATERIAL_DEBUG_VIEW_ROUGHNESS,
@@ -200,8 +203,8 @@ enum class MaterialDebugView : ludus::foundation::uint8
     Metallic = MATERIAL_DEBUG_VIEW_METALLIC,
     /// Fractional mesh UV0 as red (U) and green (V).
     TexcoordUv = MATERIAL_DEBUG_VIEW_TEXCOORD_UV,
-    /// Direct lights with a nonzero shadowed contribution at the pixel, as a blue-to-red heat
-    /// ramp saturating at MATERIAL_DEBUG_LIGHT_COUNT_SATURATION; black means no direct light.
+    /// Direct lights with a nonzero shadowed contribution at the pixel, as a viridis
+    /// ramp saturating at MATERIAL_DEBUG_LIGHT_COUNT_SATURATION; dark purple means no direct light.
     LightCount = MATERIAL_DEBUG_VIEW_LIGHT_COUNT,
 };
 /// Immutable unlit base schema plus the L4 metallic/roughness lighting terms.
@@ -245,6 +248,10 @@ struct LitMaterialDescription final
     rhi::TextureHandle EmissionMap{};
     /// Constant diffuse irradiance in [0,10000], used when a baked chart is absent/invalid.
     ludus::foundation::math::Vector3 EnvironmentIrradiance{};
+    /// Hemispheric variation of the constant EnvironmentIrradiance in [0,1]: it is the irradiance of a surface
+    /// facing +Y (the sky), and a surface facing -Y receives that much times this scale, blended by the
+    /// normal's Y. One keeps the irradiance constant, as before. Ignored when baked or authored irradiance applies.
+    ludus::foundation::float32 EnvironmentGroundScale = 1;
     /// Constant filtered environment radiance in [0,10000]; single-scatter Fresnel approximation.
     ludus::foundation::math::Vector3 EnvironmentRadiance{};
     /// Borrowed list, validated and copied before CreateLitMaterial returns.
@@ -323,8 +330,10 @@ struct LightingOutput final
 {
     /// Manual scene exposure multiplier, [0.000001,1000], applied exactly once.
     ludus::foundation::float32 Exposure = 1;
-    /// Apply guarded per-channel Reinhard after exposure; false preserves linear RGB.
+    /// Apply the Curve after exposure; false preserves linear RGB.
     bool ToneMap = true;
+    /// Display curve used when ToneMap is true. Reinhard stays the default so existing presentations are unchanged.
+    ToneCurve Curve = ToneCurve::Reinhard;
     /// Encode to sRGB for unorm display textures/surfaces; hardware sRGB surfaces encode instead.
     /// False selects a linear display intermediate, suitable for subsequent linear UI blending.
     bool Encode = true;

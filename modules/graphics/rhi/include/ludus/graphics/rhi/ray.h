@@ -58,7 +58,8 @@ struct RayCapabilities final
     ludus::foundation::uint32 MaxInstances = 0;
     /// Maximum rays per submitted batch; larger jobs must explicitly tile.
     ludus::foundation::uint32 MaxRays = 0;
-    /// Maximum bytes for one native buffer, further bounded by each admission budget.
+    /// Enabled native buffer/acceleration-structure/build-scratch range, further bounded by each admission budget.
+    /// The packed opacity table has an independent float32 offset-representation bound.
     ludus::foundation::usize MaxBufferBytes = 0;
 };
 /// Borrowed local triangle-list inputs, copied/consumed before creation returns.

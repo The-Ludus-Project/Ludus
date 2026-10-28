@@ -2,11 +2,13 @@
 
 #include "internal/render_preview.h"
 #include "internal/viewport_frame_source.h"
+#include "internal/viewport_object_interaction.h"
 #include "internal/viewport_size.h"
 #if defined(Q_OS_MACOS)
 #    include "internal/viewport_relative_mouse.h"
 #endif
 
+#include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/input/key.h>
 
@@ -94,6 +96,11 @@ public:
     {
         return mIsInspectingRayPaths;
     }
+    /// Authoring interaction controller; GUI thread only, owned by this viewport.
+    [[nodiscard]] LUDUS_INLINE ViewportObjectInteraction& GetObjectInteraction() noexcept
+    {
+        return *mObjectInteraction;
+    }
     /// Retain the last shown frame while an import candidate awaits publication.
     void HoldFrame();
     void ShowFrame();
@@ -101,6 +108,9 @@ public:
     /// Whether a delegated graph image remains displayed, including after its device stops.
     /// GUI thread only. Native graph viewports only; false before the first image or after ClearFrame.
     [[nodiscard]] bool HasRetainedGraphFrame() const noexcept;
+    /// GUI thread only: serial of the graph snapshot currently sampled by the native scene graph.
+    /// Zero before its first GPU image, for another source, or for CPU/browser presentation.
+    [[nodiscard]] foundation::uint64 GetPresentedGraphFrameSerial() const noexcept;
     /// Text of the GPU/CPU statistics overlay as currently shown; empty while Stats is off.
     [[nodiscard]] QString GetStatisticsText() const;
     /// Live shader status shown below the statistics (reload notices and errors); empty when none.
@@ -134,6 +144,10 @@ protected:
 private:
     struct State;
     foundation::UniquePtr<State> mState;
+    ViewportObjectInteraction* mObjectInteraction;
+    void updateObjectInteractionAvailability();
+    [[nodiscard]] QRectF getInteractionFrame() const;
+    [[nodiscard]] QPointF getInteractionPosition(QPointF globalPosition) const;
     void resizeSurface();
     /// Letterbox the frame and resize the drawable for the preview's current size preset.
     void applyViewportSize();

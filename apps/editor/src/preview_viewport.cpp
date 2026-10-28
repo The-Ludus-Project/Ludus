@@ -9,6 +9,7 @@
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/time/time.hpp>
 
+#include <algorithm>
 #include <new>
 
 #include <QAction>
@@ -21,9 +22,11 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLayout>
+#include <QLinearGradient>
 #include <QList>
 #include <QMenu>
 #include <QPainter>
+#include <QPicture>
 #include <QPointer>
 #include <QPushButton>
 #include <QSignalBlocker>
@@ -70,6 +73,7 @@ constexpr float64 FIELD_OF_VIEW_STEP_DEGREES = 5;
 constexpr QRgb FRAME_OUTLINE = qRgb(58, 66, 76);
 /// Width of the shading menu in characters; longer labels are cut, and the full text is in the tooltip.
 constexpr int SHADING_COMBO_CHARACTERS = 12;
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 /// Shows or hides a widget that was added to the controls toolbar. A toolbar owns the visibility of its
 /// widgets through their actions, so hiding the widget itself would be undone on the next layout.
 void SetControlVisible(QToolBar& inoutControls, QWidget* controlOrNull, bool isVisible)
@@ -88,6 +92,7 @@ void SetControlVisible(QToolBar& inoutControls, QWidget* controlOrNull, bool isV
         }
     }
 }
+#endif
 /// Places every presentation widget (message and grid, render surface, readback canvas, graph
 /// view or browser proxy) on the frame of the current size preset, centred in the layout's area.
 /// Only one of them is visible at a time, so they share the frame instead of stacking.
@@ -265,9 +270,102 @@ QPointF GetShaderStatusOrigin(const QString& statisticsText)
     const qreal statisticsHeight = MeasureStatistics(statisticsText).height();
     return {STATISTICS_MARGIN, STATISTICS_MARGIN + (statisticsHeight > 0 ? statisticsHeight + STATISTICS_MARGIN : 0)};
 }
+/// Width of the legend's colour bar, in logical pixels.
+constexpr qreal LEGEND_BAR_WIDTH = 168;
+/// Height of the legend's colour bar, in logical pixels.
+constexpr qreal LEGEND_BAR_HEIGHT = 10;
+/// Gap between the legend's title, bar and end labels, in logical pixels.
+constexpr qreal LEGEND_GAP = 4;
+/// Colour stops sampled along the legend bar; the ramp is smooth enough that this matches the shader.
+constexpr int32 LEGEND_STOP_COUNT = 16;
+/// Outline around the legend bar so its dark end stays visible on the translucent panel.
+constexpr QRgb LEGEND_BAR_OUTLINE = qRgb(120, 130, 140);
+/// Space between the end labels of a legend, in logical pixels.
+constexpr qreal LEGEND_LABEL_GAP = 12;
+QLinearGradient MakeLegendGradient(PreviewLegendRamp ramp)
+{
+    QLinearGradient gradient(0, 0, 1, 0);
+    gradient.setCoordinateMode(QGradient::ObjectBoundingMode);
+    for (int32 stop = 0; stop < LEGEND_STOP_COUNT; ++stop)
+    {
+        const float32 position = static_cast<float32>(stop) / static_cast<float32>(LEGEND_STOP_COUNT - 1);
+        const math::Vector3 colour = GetPreviewRampColour(ramp, position);
+        gradient.setColorAt(static_cast<qreal>(position), QColor::fromRgbF(colour.X, colour.Y, colour.Z));
+    }
+    return gradient;
+}
+/// Size of the padded legend panel, in logical pixels.
+QSizeF MeasureLegend(const PreviewLegend& legend)
+{
+    const QFontMetricsF metrics(GetStatisticsFont());
+    const qreal labelsWidth =
+        metrics.horizontalAdvance(legend.LowLabel) + LEGEND_LABEL_GAP + metrics.horizontalAdvance(legend.HighLabel);
+    const qreal contentWidth = std::max({LEGEND_BAR_WIDTH, metrics.horizontalAdvance(legend.Title), labelsWidth});
+    const qreal contentHeight = 2 * metrics.height() + LEGEND_BAR_HEIGHT + 2 * LEGEND_GAP;
+    return {contentWidth + 2 * STATISTICS_PADDING, contentHeight + 2 * STATISTICS_PADDING};
+}
+/// Paint a legend panel with its top-left corner at origin: title, colour bar, then the two end labels.
+void PaintLegend(QPainter& inoutPainter, const PreviewLegend& legend, QPointF origin)
+{
+    const QSizeF size = MeasureLegend(legend);
+    const QFontMetricsF metrics(GetStatisticsFont());
+    inoutPainter.save();
+    inoutPainter.setRenderHint(QPainter::Antialiasing);
+    inoutPainter.setPen(Qt::NoPen);
+    inoutPainter.setBrush(QColor::fromRgba(STATISTICS_BACKGROUND));
+    inoutPainter.drawRoundedRect(QRectF(origin, size), STATISTICS_CORNER_RADIUS, STATISTICS_CORNER_RADIUS);
+    inoutPainter.setFont(GetStatisticsFont());
+    inoutPainter.setPen(QColor::fromRgb(STATISTICS_TEXT));
+    const qreal left = origin.x() + STATISTICS_PADDING;
+    const qreal contentWidth = size.width() - 2 * STATISTICS_PADDING;
+    qreal top = origin.y() + STATISTICS_PADDING;
+    inoutPainter.drawText(QRectF(left, top, contentWidth, metrics.height()),
+                          Qt::AlignLeft | Qt::AlignTop,
+                          legend.Title);
+    top += metrics.height() + LEGEND_GAP;
+    const QRectF bar(left, top, contentWidth, LEGEND_BAR_HEIGHT);
+    inoutPainter.setBrush(MakeLegendGradient(legend.Ramp));
+    inoutPainter.setPen(QColor::fromRgb(LEGEND_BAR_OUTLINE));
+    inoutPainter.drawRect(bar);
+    inoutPainter.setPen(QColor::fromRgb(STATISTICS_TEXT));
+    top += LEGEND_BAR_HEIGHT + LEGEND_GAP;
+    const QRectF labels(left, top, contentWidth, metrics.height());
+    inoutPainter.drawText(labels, Qt::AlignLeft | Qt::AlignTop, legend.LowLabel);
+    inoutPainter.drawText(labels, Qt::AlignRight | Qt::AlignTop, legend.HighLabel);
+    inoutPainter.restore();
+}
 /// Overlay panel inside the viewport's QQuickWindow. A sibling QWidget would sit under the
 /// native window that createWindowContainer embeds on macOS and Linux; a scene-graph item is
 /// composited by Qt Quick in the same Metal/Vulkan pass as the frame, so it is always on top.
+class ObjectInteractionItem final : public QQuickPaintedItem
+{
+public:
+    ObjectInteractionItem(ViewportObjectInteraction& inoutInteraction, QQuickItem* parent)
+        : QQuickPaintedItem(parent), mInteraction(inoutInteraction)
+    {
+        setObjectName(QStringLiteral("viewportObjectSelectionOverlay"));
+        setZ(STATISTICS_Z - 1);
+        setAntialiasing(true);
+        connect(&mInteraction, &ViewportObjectInteraction::Changed, this, [this]() { rebuildPicture(); });
+        connect(this, &QQuickItem::widthChanged, this, [this]() { rebuildPicture(); });
+        connect(this, &QQuickItem::heightChanged, this, [this]() { rebuildPicture(); });
+    }
+    void paint(QPainter* painter) override
+    {
+        painter->drawPicture(0, 0, mPicture);
+    }
+
+private:
+    void rebuildPicture()
+    {
+        mPicture = QPicture{};
+        QPainter painter(&mPicture);
+        mInteraction.Paint(painter, boundingRect());
+        update();
+    }
+    ViewportObjectInteraction& mInteraction;
+    QPicture mPicture;
+};
 class StatisticsItem final : public QQuickPaintedItem
 {
 public:
@@ -300,6 +398,53 @@ private:
     QString mText;
     QRgb mBackground = STATISTICS_BACKGROUND;
 };
+/// Legend key of the current debug view, anchored to the bottom-left corner of the viewport window.
+class LegendItem final : public QQuickPaintedItem
+{
+public:
+    explicit LegendItem(QQuickItem* parent) : QQuickPaintedItem(parent)
+    {
+        setObjectName(QStringLiteral("viewportLegendOverlay"));
+        setZ(STATISTICS_Z);
+        setAntialiasing(true);
+        setVisible(false);
+        connect(parent, &QQuickItem::heightChanged, this, [this]() { place(); });
+    }
+    /// Show the legend, or hide the panel when legendOrNull is null.
+    void SetLegend(const PreviewLegend* legendOrNull)
+    {
+        const bool wasLegendShown = mHasLegend;
+        mHasLegend = legendOrNull != nullptr;
+        if (mHasLegend == true)
+        {
+            if (wasLegendShown == true && mLegend.Title == legendOrNull->Title && mLegend.Ramp == legendOrNull->Ramp &&
+                mLegend.LowLabel == legendOrNull->LowLabel && mLegend.HighLabel == legendOrNull->HighLabel)
+            {
+                return;
+            }
+            mLegend = *legendOrNull;
+            setSize(MeasureLegend(mLegend));
+            place();
+        }
+        setVisible(mHasLegend);
+        update();
+    }
+    void paint(QPainter* painter) override
+    {
+        if (mHasLegend == true)
+        {
+            PaintLegend(*painter, mLegend, {0, 0});
+        }
+    }
+
+private:
+    void place()
+    {
+        setPosition({STATISTICS_MARGIN, parentItem()->height() - height() - STATISTICS_MARGIN});
+    }
+    PreviewLegend mLegend;
+    bool mHasLegend = false;
+};
 /// Plain widget that paints the last complete CPU or offscreen frame, scaled to its rectangle.
 class FrameCanvas final : public QWidget
 {
@@ -310,6 +455,11 @@ public:
         setAttribute(Qt::WA_OpaquePaintEvent);
         // The owning PreviewViewport keeps handling orbit, pan, zoom and framing.
         setAttribute(Qt::WA_TransparentForMouseEvents);
+    }
+    void SetInteraction(ViewportObjectInteraction& inoutInteraction)
+    {
+        mInteractionOrNull = &inoutInteraction;
+        connect(&inoutInteraction, &ViewportObjectInteraction::Changed, this, [this]() { update(); });
     }
     void SetImage(const QImage& image)
     {
@@ -335,6 +485,20 @@ public:
             update();
         }
     }
+    /// Legend key painted at the bottom-left; null hides it.
+    void SetLegend(const PreviewLegend* legendOrNull)
+    {
+        const bool wasLegendShown = mHasLegend;
+        mHasLegend = legendOrNull != nullptr;
+        if (mHasLegend == true)
+        {
+            mLegend = *legendOrNull;
+        }
+        if (wasLegendShown == true || mHasLegend == true)
+        {
+            update();
+        }
+    }
     [[nodiscard]] const QImage& GetImage() const noexcept
     {
         return mImage;
@@ -350,14 +514,27 @@ protected:
             painter.setRenderHint(QPainter::SmoothPixmapTransform);
             painter.drawImage(rect(), mImage);
         }
+        if (mInteractionOrNull != nullptr)
+        {
+            mInteractionOrNull->Paint(painter, rect());
+        }
         PaintStatistics(painter, mStatisticsText, {STATISTICS_MARGIN, STATISTICS_MARGIN});
         PaintStatistics(painter,
                         FitOverlayText(mShaderStatusText, width()),
                         GetShaderStatusOrigin(mStatisticsText),
                         mHasShaderError == true ? SHADER_ERROR_BACKGROUND : STATISTICS_BACKGROUND);
+        if (mHasLegend == true)
+        {
+            PaintLegend(painter,
+                        mLegend,
+                        {STATISTICS_MARGIN, height() - MeasureLegend(mLegend).height() - STATISTICS_MARGIN});
+        }
     }
 
 private:
+    ViewportObjectInteraction* mInteractionOrNull = nullptr;
+    PreviewLegend mLegend;
+    bool mHasLegend = false;
     QImage mImage;
     QString mStatisticsText;
     QString mShaderStatusText;
@@ -535,9 +712,11 @@ struct PreviewViewport::State final
     private:
         State& mState;
     };
+    ObjectInteractionItem* ObjectOverlayOrNull = nullptr;
     QQuickWindow* Window = nullptr;
     StatisticsItem* StatisticsOrNull = nullptr;
     StatisticsItem* ShaderStatusOrNull = nullptr;
+    LegendItem* LegendOrNull = nullptr;
     /// Live shader rebuilds of this viewport's preview; null where unsupported.
     PreviewShaderReload* ShaderReloadOrNull = nullptr;
     QWidget* Container = nullptr;
@@ -599,6 +778,20 @@ private:
         }
         applyShaderStatus();
     }
+    /// Show the key of a debug view's ramp over the frame, or hide it for the other modes.
+    void applyLegend(PreviewShading shading)
+    {
+        PreviewLegend legend;
+        const bool hasLegend = TryGetPreviewLegend(shading, legend);
+        if (LegendOrNull != nullptr)
+        {
+            LegendOrNull->SetLegend(hasLegend == true ? &legend : nullptr);
+        }
+        if (CanvasOrNull != nullptr)
+        {
+            CanvasOrNull->SetLegend(hasLegend == true ? &legend : nullptr);
+        }
+    }
     void applyShaderStatus()
     {
         if (ShaderStatusOrNull != nullptr)
@@ -636,8 +829,10 @@ private:
             return;
         }
         CanvasOrNull = new FrameCanvas(Widget, QStringLiteral("LudusOffscreenViewport"));
+        CanvasOrNull->SetInteraction(Widget->GetObjectInteraction());
         CanvasOrNull->SetStatisticsText(StatisticsText);
         CanvasOrNull->SetShaderStatusText(ShaderStatusText, HasShaderError);
+        applyLegend(Preview->GetShading());
         FrameLayoutOrNull->addWidget(CanvasOrNull);
         MessageOrNull->hide();
         CanvasOrNull->show();
@@ -845,10 +1040,14 @@ private:
             static_cast<PreviewViewport*>(Widget)->resizeSurface();
         });
         createItem();
+        ObjectOverlayOrNull = new ObjectInteractionItem(Widget->GetObjectInteraction(), Window->contentItem());
+        ObjectOverlayOrNull->setSize(Window->size());
         StatisticsOrNull = new StatisticsItem(Window->contentItem(), QStringLiteral("viewportStatisticsOverlay"));
         StatisticsOrNull->SetText(StatisticsText);
         ShaderStatusOrNull = new StatisticsItem(Window->contentItem(), QStringLiteral("viewportShaderStatusOverlay"));
         applyShaderStatus();
+        LegendOrNull = new LegendItem(Window->contentItem());
+        applyLegend(Preview->GetShading());
         Container = QWidget::createWindowContainer(Window, Widget);
         Container->setFocusPolicy(Qt::NoFocus);
         Container->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -1012,6 +1211,7 @@ private:
         }
         if (Container != nullptr)
         {
+            ObjectOverlayOrNull = nullptr;
             delete Container;
             Container = nullptr;
         }
@@ -1106,7 +1306,9 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
 {
     LUDUS_REQUIRE(preview != nullptr);
     LUDUS_REQUIRE(frameSource != nullptr);
+    mObjectInteraction = new ViewportObjectInteraction(*preview, this);
     mState.Reset(new State);
+    updateObjectInteractionAvailability();
     setMinimumSize(160, 160);
     setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     setFocusPolicy(Qt::StrongFocus);
@@ -1288,6 +1490,32 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
         const QSignalBlocker blocker(lookSensitivity);
         lookSensitivity->setValue(static_cast<float64>(preview->GetLookSensitivity()));
     });
+    QComboBox* objectTool = new QComboBox(this);
+    objectTool->setObjectName(QStringLiteral("viewportObjectTool"));
+    objectTool->setAccessibleName(QStringLiteral("Object interaction tool"));
+    objectTool->addItems({QStringLiteral("Select (Q)"),
+                          QStringLiteral("Move (W)"),
+                          QStringLiteral("Rotate (E)"),
+                          QStringLiteral("Scale (R)")});
+    objectTool->setCurrentIndex(static_cast<int32>(ViewportObjectInteraction::Tool::Move));
+    objectTool->setToolTip(QStringLiteral("Click an object to select it. Drag an axis handle to transform it. "
+                                          "Shift snaps; Escape cancels. Alt-drag or right-drag navigates."));
+    objectTool->hide();
+    controls->addWidget(objectTool);
+    updateObjectInteractionAvailability();
+    if (mObjectInteraction->IsActive() == false)
+    {
+        objectTool->setToolTip(
+            QStringLiteral("Object interaction is unavailable in this viewport. "
+                           "Select objects in the hierarchy and edit their transforms in Properties."));
+    }
+    connect(objectTool, &QComboBox::currentIndexChanged, this, [this](int32 index) {
+        mObjectInteraction->SetTool(static_cast<ViewportObjectInteraction::Tool>(index));
+    });
+    connect(mObjectInteraction, &ViewportObjectInteraction::Changed, objectTool, [this, objectTool]() {
+        const QSignalBlocker blocker(objectTool);
+        objectTool->setCurrentIndex(static_cast<int32>(mObjectInteraction->GetTool()));
+    });
     QToolButton* frameAll = new QToolButton(this);
     frameAll->setObjectName(QStringLiteral("viewportFrameAll"));
     frameAll->setText(QStringLiteral("Frame all"));
@@ -1397,12 +1625,23 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
         statistics->setChecked(preview->IsStatisticsVisible());
     });
     connect(preview, &RenderPreview::StatisticsChanged, this, [this]() { updateStatistics(); });
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    connect(preview, &RenderPreview::NavigationChanged, this, [this, preview]() {
+        mState->applyLegend(preview->GetShading());
+    });
+#endif
     mState->MessageOrNull = new EmptyWorldView(*preview, this);
     mState->MessageOrNull->SetPrompt(QStringLiteral("Open or create a World to start authoring."));
     mState->MessageOrNull->setWordWrap(true);
     mState->FrameLayoutOrNull = new ViewportFrameLayout;
     mState->Layout->addLayout(mState->FrameLayoutOrNull, 1);
     mState->FrameLayoutOrNull->addWidget(mState->MessageOrNull);
+    connect(preview, &RenderPreview::Failed, this, [this](const QString& error) {
+        mState->MessageOrNull->ShowProblem(error);
+#if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
+        mState->MessageOrNull->show();
+#endif
+    });
 #if defined(LUDUS_EDITOR_BROWSER_PREVIEW)
     mState->BrowserOrNull = new BrowserViewport(*preview, this);
     mState->BrowserOrNull->hide();
@@ -1418,18 +1657,9 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
             mState->MessageOrNull->show();
         }
     });
-    connect(preview, &RenderPreview::Failed, this, [this](const QString& error) {
-        mState->MessageOrNull->ShowProblem(error);
-        mState->MessageOrNull->show();
-    });
 #endif
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     connect(preview, &RenderPreview::DeviceRequested, this, [this]() { mState->createWindow(); });
-    // A stopped preview uncovers the message label; replace the workspace's
-    // placeholder with the failure so the viewport says why it is empty.
-    connect(preview, &RenderPreview::Failed, this, [this](const QString& error) {
-        mState->MessageOrNull->ShowProblem(error);
-    });
     connect(preview, &RenderPreview::Stopped, this, [this]() {
         if (mState->IsDestroyingWindow == true)
         {
@@ -1571,6 +1801,7 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
     synchronizeProblem();
     mState->ProjectGraph = inoutWorkspace.GetPreviewOrNull();
     mState->GraphViewOrNull = new WorldGraphView(inoutWorkspace, this);
+    mState->GraphViewOrNull->SetObjectInteraction(*mObjectInteraction);
     mState->GraphViewOrNull->setVisible(Preview_->Scene().Identity.isEmpty() == false);
     mState->GraphViewOrNull->SetCanPresent(mState->IsAutomatic);
     mState->FrameLayoutOrNull->addWidget(mState->GraphViewOrNull);
@@ -1601,6 +1832,12 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
             mState->applyStatistics();
         });
     }
+    connect(mState->ProjectGraph, &RenderGraphPreview::FramePresented, this, [this]() {
+        if (mIsInspectingRayPaths == false)
+        {
+            mObjectInteraction->SetImageSize(mState->ProjectGraph->GetTargetSize());
+        }
+    });
     updateStatistics();
     mRayPaths = inoutWorkspace.GetRayPathInspectionOrNull();
     mRayPathWorkspaceOrNull = &inoutWorkspace;
@@ -1648,7 +1885,9 @@ void PreviewViewport::updateRayPathInspection()
     {
         return;
     }
+    mObjectInteraction->SetImageSize(shouldInspect == true ? QSize{} : mState->ProjectGraph->GetTargetSize());
     mIsInspectingRayPaths = shouldInspect;
+    updateObjectInteractionAvailability();
     // The inspection view is the built-in raster preview from the free camera; never the frozen graph image.
     Preview_->SetRayPathInspection(shouldInspect);
     if (mState->Window != nullptr)
@@ -1673,6 +1912,27 @@ void PreviewViewport::updateRayPathOverlay()
     const bool hasBounds = Preview_->Scene().TryGetBounds({}, boundsWorld);
     Preview_->SetRayPathOverlay(mRayPaths->BuildOverlay(hasBounds == true ? &boundsWorld : nullptr));
 #endif
+}
+void PreviewViewport::updateObjectInteractionAvailability()
+{
+    const ViewportPresentation presentation = GetPresentation();
+    const bool canShowOverlay =
+        presentation == ViewportPresentation::SharedDevice || presentation == ViewportPresentation::OffscreenReadback;
+    const bool canInteract = canShowOverlay == true && mPlayEndpointOrNull == nullptr && mIsInspectingRayPaths == false;
+    mObjectInteraction->SetActive(canInteract);
+    QComboBox* toolOrNull = findChild<QComboBox*>(QStringLiteral("viewportObjectTool"));
+    if (toolOrNull != nullptr)
+    {
+        toolOrNull->setEnabled(canInteract);
+    }
+}
+QRectF PreviewViewport::getInteractionFrame() const
+{
+    return mState->FrameLayoutOrNull != nullptr ? mState->FrameLayoutOrNull->GetFrameRectangle() : QRectF{};
+}
+QPointF PreviewViewport::getInteractionPosition(QPointF globalPosition) const
+{
+    return mapFromGlobal(globalPosition);
 }
 bool PreviewViewport::pickRayPathPixel(QPointF globalPosition)
 {
@@ -1738,6 +1998,17 @@ bool PreviewViewport::HasRetainedGraphFrame() const noexcept
 #else
     return false;
 #endif
+}
+uint64 PreviewViewport::GetPresentedGraphFrameSerial() const noexcept
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mState->ProjectGraph.isNull() == false && mState->Source == &mState->ProjectGraph->GetDisplayFrames() &&
+        mState->Active >= 0)
+    {
+        return mState->Frames[mState->Active].Read.Token;
+    }
+#endif
+    return 0;
 }
 void PreviewViewport::ClearFrame(const QString& text)
 {
@@ -1932,6 +2203,11 @@ void PreviewViewport::resizeSurface()
         }
         mFrameSource->Resize(drawable.width(), drawable.height());
         mState->Item->setSize(QSizeF(mState->Window->size()));
+        if (mState->ObjectOverlayOrNull != nullptr)
+        {
+            mState->ObjectOverlayOrNull->setSize(mState->Window->size());
+            mState->ObjectOverlayOrNull->update();
+        }
         mState->Item->update();
         mState->applyShaderStatus();
     }

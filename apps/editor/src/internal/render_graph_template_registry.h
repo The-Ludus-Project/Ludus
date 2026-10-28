@@ -36,7 +36,8 @@ struct RenderGraphTemplate final
     QString Category;
     /// Snippets only: the configuration name the Apply dialog proposes.
     QString DefaultConfiguration;
-    /// Capabilities the template needs to preview: native-ray-tracing, denoiser or metalfx.
+    /// Capabilities the template needs to preview: native-ray-tracing (hardware ray queries),
+    /// compute-ray-tracing (Metal or Vulkan compute running the software triangle loop), denoiser or metalfx.
     QStringList Requirements;
     /// Extra lowercase search terms, such as synonyms people type for this template.
     QStringList Keywords;

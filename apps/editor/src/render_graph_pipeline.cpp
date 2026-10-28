@@ -5,6 +5,7 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QEvent>
 #include <QFormLayout>
 #include <QGridLayout>
 #include <QGroupBox>
@@ -14,6 +15,8 @@
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMouseEvent>
+#include <QObject>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSignalBlocker>
@@ -359,7 +362,9 @@ void RenderGraphPipelineEditor::ShowParts()
         part->setObjectName(QStringLiteral("renderGraphShaderPart_") + shader.value(QStringLiteral("id")).toString());
         part->setText(QStringLiteral("%1\n%2").arg(shader.value(QStringLiteral("stage")).toString(),
                                                    shader.value(QStringLiteral("program")).toString()));
-        part->setToolTip(QStringLiteral("Edit this shader assignment in Shaders"));
+        part->setToolTip(QStringLiteral("Click to edit the assignment; double-click to open the shader source"));
+        part->setProperty("renderGraphShaderId", shader.value(QStringLiteral("id")).toString());
+        part->installEventFilter(this);
         part->setIcon(style()->standardIcon(QStyle::SP_FileIcon));
         part->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
         part->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
@@ -380,6 +385,21 @@ void RenderGraphPipelineEditor::ShowParts()
     });
     mTabs->tabBar()->hide();
     static_cast<QVBoxLayout*>(layout())->insertWidget(0, overview);
+}
+
+bool RenderGraphPipelineEditor::eventFilter(QObject* watched, QEvent* event)
+{
+    LUDUS_REQUIRE(watched != nullptr && event != nullptr);
+    if (event->type() == QEvent::MouseButtonDblClick && static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton)
+    {
+        const QString shaderId = watched->property("renderGraphShaderId").toString();
+        if (shaderId.isEmpty() == false)
+        {
+            Q_EMIT ShaderOpenRequested(shaderId);
+            return true;
+        }
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 void RenderGraphPipelineEditor::AddSceneQueryBudgets(const RenderGraphSceneQueryBudgets& budgets)
@@ -614,12 +634,14 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
         traversal->setProperty("renderGraphField", QStringLiteral("invocation.traversal"));
         traversal->addItem(QStringLiteral("Automatic"), QString());
         traversal->addItem(QStringLiteral("Triangle loop"), QStringLiteral("TriangleLoop"));
+        traversal->addItem(QStringLiteral("Compute BVH"), QStringLiteral("ComputeBvh"));
         traversal->addItem(QStringLiteral("Native ray query"), QStringLiteral("NativeQuery"));
         traversal->addItem(QStringLiteral("Custom traversal"), QStringLiteral("Custom"));
         const QString selection = mNode.value(name).toObject().value(QStringLiteral("traversal")).toString();
         traversal->setCurrentIndex(traversal->findData(selection));
         traversal->setToolTip(QStringLiteral(
-            "Compute invocation uses native hardware BVH queries, the engine triangle loop, or your traversal source. "
+            "Compute invocation uses native hardware BVH queries, the engine triangle loop, the renderer's BVH in "
+            "ordinary compute (Compute BVH, for larger scenes without ray hardware), or your traversal source. "
             "Automatic on an explicit Compute invocation uses the triangle loop. Legacy graphs retain their prior "
             "default. Hardware RT invocation owns its traversal."));
         QLineEdit* source = new QLineEdit(invocation.value(QStringLiteral("traversal_source")).toString(), this);

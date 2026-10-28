@@ -400,6 +400,7 @@ private:
     [[nodiscard]] QWidget* createNodeOptionsEditor(QWidget& inoutParent);
     void editExposedOptionsOnCanvas();
     void editNodeOnCanvas(const QString& diagnosticField = {});
+    void openNodeShader(const QString& shaderId, QWidget* editor);
     void renderEdges();
     void renderSource();
     void restoreSourceHistory();
@@ -496,7 +497,6 @@ private:
     CodeDocumentController* mSourceController;
     CodeFormatter* mSourceFormatter;
     QPlainTextEdit* mSourceInterface;
-    QPlainTextEdit* mPlan;
     RenderGraphBuildSettings mBuildSettings;
     RenderGraphBuildTools mResolvedTools;
     QString mResolvedSdk;

@@ -41,6 +41,10 @@ namespace renderer = graphics::renderer;
 constexpr qsizetype TRIANGLE_INDEX_COUNT = 3;
 /// Lowest perceptual roughness CreateLitMaterial admits (its GGX alpha floor).
 constexpr float32 MINIMUM_LIT_ROUGHNESS = 0.045F;
+/// Irradiance of an upward-facing Solid surface, and the share of it that a downward-facing one receives. The
+/// sphere average, (1 + scale) / 2 of the sky value, stays at the previous constant 0.5.
+constexpr float32 SOLID_SKY_IRRADIANCE = 0.77F;
+constexpr float32 SOLID_GROUND_SCALE = 0.3F;
 /// Live material versions per material slot: shadow caster, lit, and the replacement
 /// generation's while it prepares.
 constexpr uint32 MATERIAL_VERSIONS_PER_SLOT = 3;
@@ -511,7 +515,10 @@ bool PreviewGpuGeneration::prepareAssets(QString& outError) noexcept
             lit.Metallic = 0;
             lit.Roughness = 1;
             lit.Emission = {};
-            lit.EnvironmentIrradiance = {.5F, .5F, .5F};
+            // Hemispheric ambient: faces that look up are brighter than faces that look down, which keeps the
+            // sphere-averaged ambient at the previous constant 0.5 while the form reads.
+            lit.EnvironmentIrradiance = {SOLID_SKY_IRRADIANCE, SOLID_SKY_IRRADIANCE, SOLID_SKY_IRRADIANCE};
+            lit.EnvironmentGroundScale = SOLID_GROUND_SCALE;
         }
         renderer::LightSelection selection;
         if (IsAccepted(shouldUseLitMaterials() == true
@@ -524,6 +531,7 @@ bool PreviewGpuGeneration::prepareAssets(QString& outError) noexcept
     mStage = PreparationStage::Snapshot;
     return true;
 #else
+    static_cast<void>(outError);
     return false;
 #endif
 }

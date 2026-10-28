@@ -181,11 +181,14 @@ MergeComputeRayTechnique(QJsonObject& inoutManifest, const QJsonObject& source, 
             return RenderGraphDocumentStatus::Conflict;
         }
         interface.insert(QStringLiteral("version"), defaultInterface.value(QStringLiteral("version")));
-        // Budgets are per-invocation maxima shared by every ray pass of the package.
-        for (const QString& field : {QStringLiteral("surface_queries"), QStringLiteral("visibility_queries")})
+        // Budgets are per-invocation maxima shared by every ray pass of the package. The optional line
+        // budget is raised only by templates that declare it, so other imports keep their manifests.
+        for (const QString& field :
+             {QStringLiteral("surface_queries"), QStringLiteral("visibility_queries"), QStringLiteral("line_queries")})
         {
-            if (interface.contains(field) == false ||
-                interface.value(field).toInt() < defaultInterface.value(field).toInt())
+            if (defaultInterface.contains(field) == true &&
+                (interface.contains(field) == false ||
+                 interface.value(field).toInt() < defaultInterface.value(field).toInt()))
             {
                 interface.insert(field, defaultInterface.value(field));
             }
@@ -211,38 +214,19 @@ MergeComputeRayTechnique(QJsonObject& inoutManifest, const QJsonObject& source, 
 
 // File and configuration identify distinct authored records.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-RenderGraphDocumentStatus PrepareComputeRayTracingConfiguration(
+RenderGraphDocumentStatus PrepareSceneComputeTemplateConfiguration(
     RenderGraphSnapshot& inoutSnapshot,
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): root path, library path and configuration identity
     const QString& rootGraph,
     const QString& file,
     const QString& configuration,
     QString& outError,
-    const QString& templateIdentity,
+    const SceneComputeTemplate& selectedTemplate,
     RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
 {
-    QString programPrefix;
-    QString name;
-    if (templateIdentity == QStringLiteral("simple-compute-ray-tracing"))
-    {
-        programPrefix = QStringLiteral("SimpleComputeRay");
-        name = QStringLiteral("Simple compute ray tracing");
-    }
-    else if (templateIdentity == QStringLiteral("compute-ray-tracing"))
-    {
-        programPrefix = QStringLiteral("ComputeRay");
-        name = QStringLiteral("Compute ray tracing");
-    }
-    else if (templateIdentity == QStringLiteral("veach-guibas-mis"))
-    {
-        programPrefix = QStringLiteral("VeachMis");
-        name = QStringLiteral("Veach and Guibas MIS");
-    }
-    else
-    {
-        outError = QStringLiteral("Choose a built-in scene compute template.");
-        return RenderGraphDocumentStatus::InvalidEdit;
-    }
+    const QString& templateIdentity = selectedTemplate.Identity;
+    const QString& programPrefix = selectedTemplate.ProgramPrefix;
+    const QString& name = selectedTemplate.Name;
     QString directory = templateIdentity;
     directory.replace(QLatin1Char('-'), QLatin1Char('_'));
     const ComputeTemplate selected{
@@ -290,7 +274,7 @@ RenderGraphDocumentStatus PrepareComputeRayTracingConfiguration(
     if (manifest.isEmpty() == true ||
         (profiles.contains(QStringLiteral("metal")) == false && profiles.contains(QStringLiteral("spirv")) == false))
     {
-        outError = QStringLiteral("Compute ray tracing requires a Renderer manifest with a Metal or Vulkan profile.");
+        outError = QStringLiteral("%1 requires a Renderer manifest with a Metal or Vulkan profile.").arg(name);
         return RenderGraphDocumentStatus::InvalidEdit;
     }
     QByteArray bytes = ReadComputeTemplate(selected, QStringLiteral("main.lushader.json.in"));
@@ -361,5 +345,47 @@ RenderGraphDocumentStatus PrepareComputeRayTracingConfiguration(
     inoutSnapshot.Files.insert(file, EncodeCanonicalJson(graph));
     inoutSnapshot.Files.insert(manifestFile, EncodeCanonicalJson(manifest));
     return PrepareRenderGraphTechniques(inoutSnapshot, rootGraph, outError);
+}
+
+// File and configuration identify distinct authored records.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+RenderGraphDocumentStatus PrepareComputeRayTracingConfiguration(
+    RenderGraphSnapshot& inoutSnapshot,
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): root path, library path and configuration identity
+    const QString& rootGraph,
+    const QString& file,
+    const QString& configuration,
+    QString& outError,
+    const QString& templateIdentity,
+    RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
+{
+    SceneComputeTemplate selected{templateIdentity, {}, {}};
+    if (templateIdentity == QStringLiteral("simple-compute-ray-tracing"))
+    {
+        selected.ProgramPrefix = QStringLiteral("SimpleComputeRay");
+        selected.Name = QStringLiteral("Simple compute ray tracing");
+    }
+    else if (templateIdentity == QStringLiteral("compute-ray-tracing"))
+    {
+        selected.ProgramPrefix = QStringLiteral("ComputeRay");
+        selected.Name = QStringLiteral("Compute ray tracing");
+    }
+    else if (templateIdentity == QStringLiteral("veach-guibas-mis"))
+    {
+        selected.ProgramPrefix = QStringLiteral("VeachMis");
+        selected.Name = QStringLiteral("Veach and Guibas MIS");
+    }
+    else
+    {
+        outError = QStringLiteral("Choose a built-in scene compute template.");
+        return RenderGraphDocumentStatus::InvalidEdit;
+    }
+    return PrepareSceneComputeTemplateConfiguration(inoutSnapshot,
+                                                    rootGraph,
+                                                    file,
+                                                    configuration,
+                                                    outError,
+                                                    selected,
+                                                    inoutBudgetOrNull);
 }
 } // namespace ludus::editor

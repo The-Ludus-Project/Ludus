@@ -293,9 +293,34 @@ float2 EvaluateEnvironmentDfg(float roughness, float cosineView)
 }
 #endif
 #ifdef LUDUS_DEBUG_VIEW
-// Largest display-linear value before the inverse Reinhard grows without bound (about 0.998 sRGB).
+// Largest display-linear value the inverse reproduces (about 0.998 sRGB); mirrors PBR_NEUTRAL_INVERSE_LIMIT.
 static const float DEBUG_DISPLAY_LINEAR_LIMIT = 0.995;
-// Inverts RasterViewport's presentation (renderer_output.slang: Reinhard, then sRGB encode at
+// Khronos PBR Neutral constants, as in renderer_output.slang.
+static const float PBR_NEUTRAL_FRESNEL = 0.04;
+static const float PBR_NEUTRAL_START = 0.8 - PBR_NEUTRAL_FRESNEL;
+static const float PBR_NEUTRAL_DESATURATION = 0.15;
+// Scene-linear colour that renderer_output.slang's PBR Neutral curve maps to a wanted display-linear colour;
+// mirrors InvertPbrNeutral in tone_mapping.hpp.
+float3 InvertPbrNeutral(float3 display)
+{
+    float peak = max(display.x, max(display.y, display.z));
+    float3 shifted = display;
+    if (peak > PBR_NEUTRAL_START)
+    {
+        float headroom = 1 - PBR_NEUTRAL_START;
+        float oldPeak = headroom * headroom / (1 - peak) - 1 + 2 * PBR_NEUTRAL_START;
+        float mixAmount = 1 / (PBR_NEUTRAL_DESATURATION * (oldPeak - peak) + 1);
+        float scale = peak / oldPeak * mixAmount;
+        shifted = max((display - peak * (1 - mixAmount)) / scale, float3(0));
+    }
+    float smallest = min(shifted.x, min(shifted.y, shifted.z));
+    float original =
+        smallest < PBR_NEUTRAL_FRESNEL ? 2 * sqrt(PBR_NEUTRAL_FRESNEL * smallest) : smallest + PBR_NEUTRAL_FRESNEL;
+    float offset = original <= 2 * PBR_NEUTRAL_FRESNEL ? original - original * original / (4 * PBR_NEUTRAL_FRESNEL)
+                                                       : PBR_NEUTRAL_FRESNEL;
+    return shifted + offset;
+}
+// Inverts RasterViewport's presentation (renderer_output.slang: PBR Neutral, then sRGB encode at
 // exposure one) so a diagnostic colour authored in display sRGB appears unchanged on screen.
 float3 EncodeDebugDisplay(float3 displaySrgb)
 {
@@ -303,14 +328,25 @@ float3 EncodeDebugDisplay(float3 displaySrgb)
     float3 linearColor = float3(encoded.x <= 0.04045 ? encoded.x / 12.92 : pow((encoded.x + 0.055) / 1.055, 2.4),
                                 encoded.y <= 0.04045 ? encoded.y / 12.92 : pow((encoded.y + 0.055) / 1.055, 2.4),
                                 encoded.z <= 0.04045 ? encoded.z / 12.92 : pow((encoded.z + 0.055) / 1.055, 2.4));
-    linearColor = min(linearColor, float3(DEBUG_DISPLAY_LINEAR_LIMIT));
-    return linearColor / (1 - linearColor);
+    return InvertPbrNeutral(min(linearColor, float3(DEBUG_DISPLAY_LINEAR_LIMIT)));
 }
-// Four-segment blue, cyan, green, yellow, red ramp over t in [0,1].
-float3 ComputeHeatColour(float t)
+// Perceptually uniform viridis ramp over t in [0,1], dark purple through teal to yellow, as display-space sRGB.
+// Thanks to Matt Zucker, "Viridis approximation" (Shadertoy WlfXRN), a degree-six polynomial fit of
+// matplotlib's viridis (Nathaniel Smith and Stefan van der Walt, CC0).
+float3 ComputeRampColour(float t)
 {
-    float x = saturate(t) * 4;
-    return saturate(float3(x - 2, x < 2 ? x : 4 - x, 2 - x));
+    const float3 coefficient0 = float3(0.2777273272234177, 0.005407344544966578, 0.3340998053353061);
+    const float3 coefficient1 = float3(0.1050930431085774, 1.404613529898575, 1.384590162594685);
+    const float3 coefficient2 = float3(-0.3308618287255563, 0.214847559468213, 0.09509516302823659);
+    const float3 coefficient3 = float3(-4.634230498983486, -5.799100973351585, -19.33244095627987);
+    const float3 coefficient4 = float3(6.228269936347081, 14.17993336680509, 56.69055260068105);
+    const float3 coefficient5 = float3(4.776384997670288, -13.74514537774601, -65.35303263337234);
+    const float3 coefficient6 = float3(-5.435455855934631, 4.645852612178535, 26.3124352495832);
+    float x = saturate(t);
+    return saturate(
+        coefficient0 +
+        x * (coefficient1 +
+             x * (coefficient2 + x * (coefficient3 + x * (coefficient4 + x * (coefficient5 + x * coefficient6))))));
 }
 float3 ComputeDebugColour(int mode,
                           Varying input,
@@ -329,7 +365,7 @@ float3 ComputeDebugColour(int mode,
         float distance = (GetEyeFlags(input) & 2) != 0 ? -dot(input.PositionWorld, input.EyeWorld.xyz)
                                                        : length(input.PositionWorld - input.EyeWorld.xyz);
         float span = input.DebugDepthRange.y - input.DebugDepthRange.x;
-        return float3(span > 0 ? saturate((distance - input.DebugDepthRange.x) / span) : 0);
+        return ComputeRampColour(span > 0 ? (distance - input.DebugDepthRange.x) / span : 0);
     }
     if (mode == int(MATERIAL_DEBUG_VIEW_ROUGHNESS))
         return float3(roughness);
@@ -338,8 +374,7 @@ float3 ComputeDebugColour(int mode,
     if (mode == int(MATERIAL_DEBUG_VIEW_TEXCOORD_UV))
         return float3(frac(input.TexcoordUv), 0);
     if (mode == int(MATERIAL_DEBUG_VIEW_LIGHT_COUNT))
-        return lightCount == 0 ? float3(0)
-                               : ComputeHeatColour(float(lightCount) / float(MATERIAL_DEBUG_LIGHT_COUNT_SATURATION));
+        return ComputeRampColour(float(lightCount) / float(MATERIAL_DEBUG_LIGHT_COUNT_SATURATION));
     return shaded;
 }
 #endif
@@ -396,7 +431,9 @@ float3 ComputeDebugColour(int mode,
     float nv = max(dot(normalWorld, viewDirectionWorld), 0);
     float3 f0 = lerp(float3(0.04), baseColor.rgb, metallic);
     float3 f = f0 + (1 - f0) * ComputeFifth(1 - nv);
-    float3 irradiance = material.EnvironmentIrradiance.rgb;
+    // Hemispheric constant environment: sky irradiance above, scaled by w toward the ground (+Y is up).
+    float3 irradiance =
+        material.EnvironmentIrradiance.rgb * lerp(material.EnvironmentIrradiance.w, 1, normalWorld.y * 0.5 + 0.5);
     float3 specularEnvironment = material.EnvironmentRadiance.rgb * f;
 #ifdef LUDUS_AUTHORED_INPUTS
     if (material.Authored.z > .5)

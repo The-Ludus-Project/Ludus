@@ -14,6 +14,7 @@
 #include <QDir>
 #include <QGuiApplication>
 #include <QLabel>
+#include <QPoint>
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QTemporaryDir>
@@ -100,9 +101,20 @@ TEST_CASE("The viewport swaps its prompt for a state view on failure and back", 
     QApplication::processEvents();
     CHECK(problem->isVisibleTo(&viewport) == true);
     CHECK(problem->GetContent().Cause == QStringLiteral("No GPU device meets the raster profile."));
+    QPushButton* copy = problem->findChild<QPushButton*>(QStringLiteral("stateCopyDetails"));
+    REQUIRE(copy != nullptr);
+    const QPoint positionViewport = viewport.mapFromGlobal(copy->mapToGlobal(copy->rect().center()));
+    QWidget* targetOrNull = viewport.childAt(positionViewport);
+    REQUIRE(targetOrNull == copy);
+    QGuiApplication::clipboard()->clear();
+    QTest::mouseClick(targetOrNull, Qt::LeftButton);
+    CHECK(QGuiApplication::clipboard()->text() == GetStateDetailsText(problem->GetContent()));
     viewport.ClearFrame(QStringLiteral("Open a World to render it here."));
     QApplication::processEvents();
     CHECK(problem->isVisibleTo(&viewport) == false);
+    QWidget* promptOrNull = viewport.findChild<QWidget*>(QStringLiteral("emptyWorldView"));
+    REQUIRE(promptOrNull != nullptr);
+    CHECK(promptOrNull->testAttribute(Qt::WA_TransparentForMouseEvents) == true);
 }
 
 TEST_CASE("The Start Page says what to do when there are no recent projects", "[editor][state][shell]")

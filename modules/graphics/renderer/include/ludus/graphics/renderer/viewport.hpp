@@ -46,6 +46,8 @@ public:
     /// @param shouldPresentToSurface Also composite the encoded display image to the acquired
     /// surface in the same submission, without CPU transfer or a second color encoding.
     /// The surface extent must equal width/height; default false leaves surface presentation to the consumer.
+    /// @param toneCurve Display curve of the presentation. The Editor uses PbrNeutral; its debug shading views are
+    /// pre-compensated for that curve (MaterialDebugView), so use another curve only without debug views.
     /// Failure leaves this empty. Resize by preparing a separate candidate, then
     /// retiring this instance after its producers/consumers finish.
     [[nodiscard]] rhi::RasterStatus Initialize(Renderer& renderer,
@@ -54,7 +56,8 @@ public:
                                                ludus::foundation::uint32 height,
                                                ludus::foundation::float32 exposure = 1,
                                                ViewportColorMode colorMode = ViewportColorMode::PreferHdr,
-                                               bool shouldPresentToSurface = false) noexcept;
+                                               bool shouldPresentToSurface = false,
+                                               ToneCurve toneCurve = ToneCurve::Reinhard) noexcept;
     /// Poll setup/producer completion and publish a pending view only when Ready.
     /// A failed candidate is discarded, preserving the prior drawable view.
     /// Returns that failure once; a later poll may use the preserved view.

@@ -9,6 +9,7 @@
 #include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QLabel>
 #include <QSpinBox>
 #include <QVBoxLayout>
@@ -65,6 +66,44 @@ void RendererWorkspace::editNodeOnCanvas(const QString& diagnosticField)
         }
     });
     static_cast<void>(dialog.exec());
+}
+
+void RendererWorkspace::openNodeShader(const QString& shaderId, QWidget* editor)
+{
+    LUDUS_REQUIRE(editor != nullptr);
+    QJsonObject effective;
+    QString error;
+    if (ResolveRenderGraphPipelineOptions(selectedNode(), effective, error) == false)
+    {
+        mStatus->setText(error);
+        return;
+    }
+    const QJsonObject manifest = QJsonDocument::fromJson(mDocument.GetDraft(manifestFile())).object();
+    const QJsonArray programs = manifest.value(QStringLiteral("programs")).toArray();
+    for (const QJsonValueConstRef shader : effective.value(QStringLiteral("shaders")).toArray())
+    {
+        if (shader.toObject().value(QStringLiteral("id")).toString() != shaderId)
+        {
+            continue;
+        }
+        for (const QJsonValueConstRef program : programs)
+        {
+            const QJsonObject record = program.toObject();
+            const QString source = record.value(QStringLiteral("source")).toString();
+            if (record.value(QStringLiteral("id")) == shader.toObject().value(QStringLiteral("program")) &&
+                mDocument.GetFiles().contains(source) == true)
+            {
+                QDialog* dialogOrNull = qobject_cast<QDialog*>(editor->window());
+                if (dialogOrNull != nullptr)
+                {
+                    dialogOrNull->accept();
+                }
+                openSourceLine(source, 1);
+                return;
+            }
+        }
+    }
+    mStatus->setText(QStringLiteral("No source is mapped to shader '%1' in the package manifest.").arg(shaderId));
 }
 
 QWidget* RendererWorkspace::createNodeOptionsEditor(QWidget& inoutParent)

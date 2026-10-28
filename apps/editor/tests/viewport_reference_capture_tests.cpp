@@ -163,12 +163,14 @@ TEST_CASE("Reference extent keeps the viewport aspect on the requested long side
     CHECK(ComputeReferenceExtent(QSize(640, 480), 0).isEmpty() == true);
 }
 
-TEST_CASE("Reference display encoding matches the viewport's exposure-one Reinhard sRGB output",
+TEST_CASE("Reference display encoding matches the viewport's exposure-one PBR Neutral sRGB output",
           "[editor][reference-capture]")
 {
     CHECK(EncodeReferenceDisplayChannel(0) == 0);
-    // Reinhard maps 1 to 0.5, which sRGB encodes as 0.7354, i.e. 188 of 255.
-    CHECK(EncodeReferenceDisplayChannel(1) == 188);
+    // PBR Neutral leaves a grey of 0.3 at 0.26 once its 0.04 offset is removed, which sRGB encodes as 139 of 255.
+    CHECK(EncodeReferenceDisplayChannel(0.3F) == 139);
+    // Grey 1 compresses to 0.8691 (0.96 peak, 0.44 divisor), which sRGB encodes as 240 of 255.
+    CHECK(EncodeReferenceDisplayChannel(1) == 240);
     CHECK(EncodeReferenceDisplayChannel(1.0e30F) == 255);
     CHECK(EncodeReferenceDisplayChannel(-1) == 0);
     CHECK(EncodeReferenceDisplayChannel(__builtin_nanf("")) == 0);

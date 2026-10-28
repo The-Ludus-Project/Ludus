@@ -11,6 +11,8 @@ constexpr usize RAY_TRIANGLE_CORNER_COUNT = 3;
 constexpr usize RAY_OPACITY_WORD_SCALARS = 4;
 constexpr usize RAY_TRIANGLE_UV_SCALARS = RAY_TRIANGLE_CORNER_COUNT * 2;
 constexpr usize RAY_TRIANGLE_UV_PADDED_SCALARS = 8;
+/// Opacity-table offsets are encoded as float32; preserve exact integer addressing.
+constexpr usize MAX_RAY_OPACITY_SCALARS = 1U << 24;
 /// Ray visibility masks use the low eight bits.
 constexpr uint32 MAX_RAY_INSTANCE_MASK = 255;
 float32 RayScalar(const void* data, usize index) noexcept
@@ -262,9 +264,10 @@ CreateRayScene(DeviceHandle device, const RaySceneDescription& description, RayS
     Collect();
     StorageArray<NativeRayInstance> instances;
     StorageArray<float32> opacity;
-    const usize maxScalars =
+    const usize availableScalars =
         (description.ByteBudget < limits.MaxBufferBytes ? description.ByteBudget : limits.MaxBufferBytes) /
         sizeof(float32);
+    const usize maxScalars = availableScalars < MAX_RAY_OPACITY_SCALARS ? availableScalars : MAX_RAY_OPACITY_SCALARS;
     constexpr usize EMPTY_SCENE_OPACITY_SCALARS = 4;
     constexpr usize INSTANCE_OPACITY_SCALARS = 12;
     if ((description.Count == 0 ? EMPTY_SCENE_OPACITY_SCALARS : description.Count * INSTANCE_OPACITY_SCALARS) >

@@ -7,6 +7,7 @@
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_job.h"
 #include "internal/renderer_workspace.h"
+#include "render_graph_helper_fixture.h"
 
 #include <ludus/foundation/base/types.h>
 
@@ -279,16 +280,7 @@ TEST_CASE("Build & Preview builds an edited default like any project graph", "[e
     // Explicit tools stand in for project SDK detection, which this bare folder has no setup for.
     QTemporaryDir tools;
     const QDir helper(QDir(tools.path()).filePath(QStringLiteral("shaders")));
-    for (const QString& file : {QStringLiteral("cmake/shaders/compile_shader.py"),
-                                QStringLiteral("cmake/shaders/compile_raster.py"),
-                                QStringLiteral("cmake/shaders/compile_graph_stage.py"),
-                                QStringLiteral("cmake/shaders/native_worker.py"),
-                                QStringLiteral("config/shader_toolchain.json"),
-                                QStringLiteral("config/spirv_cross_toolchain.json")})
-    {
-        WriteFile(helper.filePath(QFileInfo(file).fileName()),
-                  ReadFile(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/") + file));
-    }
+    tests::CopyRenderGraphBuildHelpers(helper.path());
     QTemporaryDir project;
     RendererWorkspace workspace({python, {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
     workspace.SetWorkerSocket({});

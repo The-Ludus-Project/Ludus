@@ -259,6 +259,26 @@ inline constexpr EditorCommand TOOLS_OPTIONS_COMMAND
     .IsCheckable = false,
 };
 
+// The command palette searches every menu command; Run Command in Context lists only those available now.
+inline constexpr EditorCommand TOOLS_COMMAND_PALETTE_COMMAND
+{
+    .Id = "tools.commandPalette",
+    .Text = "&Command Palette...",
+    .ToolbarText = "",
+    .Shortcut = "Ctrl+K",
+    .Help = "Search every command by name and run it.",
+    .IsCheckable = false,
+};
+inline constexpr EditorCommand TOOLS_RUN_IN_CONTEXT_COMMAND
+{
+    .Id = "tools.runInContext",
+    .Text = "Run Command in &Context...",
+    .ToolbarText = "",
+    .Shortcut = "F3",
+    .Help = "Search only the commands that can run right now, and run one.",
+    .IsCheckable = false,
+};
+
 // Window commands arrange documents and tool windows.
 // Qt maps Meta to the physical Control key on macOS; Ctrl maps to Command.
 #if defined(Q_OS_MACOS)
