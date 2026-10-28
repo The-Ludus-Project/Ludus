@@ -165,8 +165,8 @@ bool ProposeLineU(SceneContext scene,
     if (visibility.IntervalCount == 0)
         return true;
     // Map one uniform draw linearly across the concatenated visible intervals.
-    float remaining = SampleSceneRandom(launch, positionDimension) * visibility.VisibleLengthWorld /
-                      outProposal.Chord.LengthWorld;
+    float remaining =
+        SampleSceneRandom(launch, positionDimension) * visibility.VisibleLengthWorld / outProposal.Chord.LengthWorld;
     outProposal.DrawnParameter = visibility.Intervals[visibility.IntervalCount - 1].y;
     for (uint i = 0; i < visibility.IntervalCount; ++i)
     {
@@ -221,8 +221,9 @@ float3 EstimateLineProposal(SceneContext scene,
     }
     if (proposal.VisibleLengthWorld <= 0)
         return float3(0);
-    SurfaceHit endpoint = GetSurfaceHit(
-        scene, proposal.Chord.Segment.TriangleIndex, GetChordBarycentric(proposal.Chord, proposal.DrawnParameter));
+    SurfaceHit endpoint = GetSurfaceHit(scene,
+                                        proposal.Chord.Segment.TriangleIndex,
+                                        GetChordBarycentric(proposal.Chord, proposal.DrawnParameter));
     if (endpoint.IsValid == false)
     {
         queries.HasFailed = true;
