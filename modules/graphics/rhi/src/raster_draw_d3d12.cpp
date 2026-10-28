@@ -211,7 +211,8 @@ RasterStatus RasterCreatePipeline(usize slot, const RasterPipelineInfo& info, ui
         blend.DestBlendAlpha = blend.DestBlend;
         blend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
         blend.LogicOp = D3D12_LOGIC_OP_NOOP;
-        blend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        blend.RenderTargetWriteMask =
+            static_cast<UINT8>(info.ShouldWriteColor == true ? D3D12_COLOR_WRITE_ENABLE_ALL : 0);
     }
     native.BlendState.IndependentBlendEnable = TRUE;
     ID3D12PipelineState* stateOrNull = nullptr;

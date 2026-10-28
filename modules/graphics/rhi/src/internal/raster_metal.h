@@ -865,6 +865,7 @@ RasterStatus MetalRasterPreparation::Build() noexcept
         for (usize i = 0; i < (info.ColorCount == 0 ? 1 : info.ColorCount); ++i)
         {
             MTLRenderPipelineColorAttachmentDescriptor* color = descriptor.colorAttachments[i];
+            color.writeMask = info.ShouldWriteColor == true ? MTLColorWriteMaskAll : MTLColorWriteMaskNone;
             color.blendingEnabled = info.Blend;
             color.sourceRGBBlendFactor = color.sourceAlphaBlendFactor = MTLBlendFactorOne;
             color.destinationRGBBlendFactor = color.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;

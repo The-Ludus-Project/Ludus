@@ -712,6 +712,9 @@ struct RasterPipelineDescription final
     ludus::foundation::uint32 StencilReference = 0;
     /// Queue native driver creation; also enabled by either asynchronous shader input.
     bool ShouldPrepareAsynchronously = false;
+    /// Enable writes to every color channel/attachment. False permits a void fragment
+    /// stage and preserves color during draws; attachment load/store operations still apply.
+    bool ShouldWriteColor = true;
 };
 /// One vertex-stream slice, borrowed during DrawIndexed and retained through submission.
 struct RasterVertexSlice final

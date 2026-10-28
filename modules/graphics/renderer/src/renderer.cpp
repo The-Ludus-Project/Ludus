@@ -2424,6 +2424,7 @@ Status Renderer::GetStatus(MaterialProgram handle) noexcept
                 return ready;
             }
             description.Fragment = p->DepthFragment;
+            description.ShouldWriteColor = false;
             description.Target = rhi::RasterTarget::Rgba8Unorm;
             description.Depth = true;
             description.DepthWrite = true;

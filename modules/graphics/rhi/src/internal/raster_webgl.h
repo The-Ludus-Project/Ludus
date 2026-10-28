@@ -922,6 +922,8 @@ RasterStatus RasterDraw(const internal::RasterPacket& packet) noexcept
               static_cast<GLsizei>(c.Height));
     glDepthFunc(comparisons[static_cast<usize>(info.DepthCompare)]);
     glDepthMask(info.Depth && info.DepthWrite ? GL_TRUE : GL_FALSE);
+    const GLboolean shouldWriteColor = info.ShouldWriteColor == true ? GL_TRUE : GL_FALSE;
+    glColorMask(shouldWriteColor, shouldWriteColor, shouldWriteColor, shouldWriteColor);
     if (info.Blend)
     {
         glEnable(GL_BLEND);

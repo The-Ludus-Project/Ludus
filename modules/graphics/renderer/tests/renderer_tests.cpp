@@ -973,6 +973,8 @@ TEST_CASE("lit depth prepass shares the retained color vertex and omits material
     CHECK(prepass.DepthCompare == rhi::RasterDepthCompare::Less);
     CHECK(color.DepthCompare == rhi::RasterDepthCompare::LessEqual);
     CHECK(prepass.DepthWrite == true);
+    CHECK(prepass.ShouldWriteColor == false);
+    CHECK(color.ShouldWriteColor == true);
     CHECK(prepass.Target == rhi::RasterTarget::Rgba8Unorm);
     CHECK(prepass.AttributeCount == color.AttributeCount);
     rhi::SubmissionToken completion;

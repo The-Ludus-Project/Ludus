@@ -824,6 +824,35 @@ TEST_CASE("Pipeline cache canonicalizes attributes and distinguishes immutable f
     REQUIRE(Release(session.Device, c) == RasterStatus::Ready);
     REQUIRE(Release(session.Device, d) == RasterStatus::Ready);
 }
+TEST_CASE("Color-write policy distinguishes pipeline requests", "[rhi][raster][color-mask]")
+{
+    Session session;
+    Scene scene(session.Device);
+    const RasterVertexStream stream{12, false};
+    const RasterVertexAttribute attribute{0, 0, 0, RasterVertexFormat::Float3};
+    RasterPipelineDescription description{scene.Vertex,
+                                          scene.Fragment,
+                                          scene.Layout,
+                                          {&stream, 1},
+                                          {&attribute, 1},
+                                          true};
+    PipelineRequest colorRequest;
+    REQUIRE(RequestPipeline(session.Device, description, colorRequest) == RasterStatus::Pending);
+    REQUIRE(GetStatus(session.Device, colorRequest) == RasterStatus::Ready);
+    constexpr usize PIPELINE_KIND = static_cast<usize>(internal::RasterKind::Pipeline);
+    const usize created = reference::Creates[PIPELINE_KIND];
+    description.ShouldWriteColor = false;
+    PipelineRequest depthRequest;
+    REQUIRE(RequestPipeline(session.Device, description, depthRequest) == RasterStatus::Pending);
+    REQUIRE(GetStatus(session.Device, depthRequest) == RasterStatus::Ready);
+    CHECK(reference::Creates[PIPELINE_KIND] == created + 1);
+    PipelineRequest sameDepthRequest;
+    REQUIRE(RequestPipeline(session.Device, description, sameDepthRequest) == RasterStatus::Ready);
+    CHECK(reference::Creates[PIPELINE_KIND] == created + 1);
+    REQUIRE(Release(session.Device, colorRequest) == RasterStatus::Ready);
+    REQUIRE(Release(session.Device, depthRequest) == RasterStatus::Ready);
+    REQUIRE(Release(session.Device, sameDepthRequest) == RasterStatus::Ready);
+}
 TEST_CASE("Cancelled pipeline callbacks retain detached shader and layout dependencies", "[rhi][lifetime]")
 {
     Session session;
