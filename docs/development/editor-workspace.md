@@ -465,9 +465,8 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   shortcut. The primary commands (Open, Save, Build, Run, Play, Stop) also show an
   icon beside the label; every other button stays text only. Project Explorer
   rows and the Error List severities carry icons too. The icons are Lucide
-  drawings (ISC) in `apps/editor/icons`, parsed once into painter paths and drawn
-  in the palette's button text colour, with one bounded pixmap cache per size,
-  pixel ratio and colour (`apps/editor/icons/README.md` says how to add one).
+  drawings (ISC), drawn in the palette's button text colour; see
+  [Editor icons](#editor-icons) for attribution and contribution instructions.
   **View → Toolbars** hides or shows each toolbar. Documents have no
   command rows of their own: **File → New Render Graph...** and **Open Render
   Graph...** open graphs, and the **Build** menu holds every render-graph
@@ -1939,6 +1938,39 @@ supported; do not distribute layout blobs with projects.
 See [architecture](../architecture/editor-architecture.md),
 [interaction design](../architecture/editor-interaction-design.md), and
 [post-design reference review](../architecture/editor-design-review.md).
+
+## Editor icons
+
+The outline icons for the toolbars, Project Explorer and Error List are taken
+unchanged from [Lucide](https://lucide.dev) 1.62.0, commit
+`2ca268e74888d3506b3319fb8f94aaaaf70ceca9` of
+[lucide-icons/lucide](https://github.com/lucide-icons/lucide).
+Thanks to the Lucide authors for these drawings. Lucide is ISC licensed; some
+of its drawings derive from Feather (MIT). The licence file at
+`apps/editor/icons/LICENSE` carries both notices and must ship with the icons.
+
+The SVG files live in `apps/editor/icons` and are Qt resources under `:/icons`.
+`apps/editor/src/editor_icons.cpp` parses each one once, on first use, into a
+`QPainterPath` on a 24 unit grid and draws it with a 1.5 unit round stroke in the
+palette's button text colour. Disabled icons use disabled button text; Play and
+Stop are filled to identify live-state actions. No SVG is parsed while painting,
+and no Qt SVG module is needed. One bounded pixmap cache keys entries by icon,
+size, device pixel ratio, mode and colour. The parser supports `path`, `circle`
+and `rect` elements and the M, L, H, V, C, S, Q, T, A and Z path commands; a new
+icon that needs anything else fails the icon tests.
+
+To add an icon:
+
+1. Copy its SVG from the pinned Lucide commit into `apps/editor/icons`.
+2. Add it to `EditorIcon` in `apps/editor/src/internal/editor_icons.h` and to
+   `ICON_DESCRIPTORS` in `apps/editor/src/editor_icons.cpp`, and keep
+   `EDITOR_ICON_COUNT` in step.
+3. Run the editor tests tagged `[icons]`. The resource helper in
+   `apps/editor/CMakeLists.txt` discovers SVG files in that directory automatically.
+
+Engine concepts that Lucide has no drawing for (entity, probe, cook) will be
+drawn in house on the same grid and stroke. List their attribution here when
+added.
 
 ## macOS validation
 
