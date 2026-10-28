@@ -31,7 +31,7 @@ def lower(node, where, graph):
     graph._require(group_size in ray.SUPPORTED_WORKGROUP_SIZES, 'Capability', where,
                    f'scene compute passes support {ray.SUPPORTED_WORKGROUP_SIZES}; '
                    f'the authored group_size {group_size} is not supported',
-                   field='state.group_size', expected=GROUP_SIZE, actual=group_size,
+                   field='state.group_size', expected=list(ray.SUPPORTED_WORKGROUP_SIZES), actual=group_size,
                    repair='Clear group_size so Pipeline State is automatic (state: {}).')
     mappings, outputs, color = ray.lower_ports(node, where, graph, 'scene compute', 'scene compute')
     record = {'id': node['id'], 'kind': 'RayTracing', 'color_load': color['load'], 'color_store': color['store']}

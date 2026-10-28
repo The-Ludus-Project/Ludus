@@ -23,6 +23,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QQuickWindow>
+#include <QStringList>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QToolButton>
@@ -258,6 +259,22 @@ TEST_CASE("Cocoa embedded Metal viewport routes native navigation and releases c
                 return graph.GetPresentedGeneration() == candidate && viewport.PresentedFrames() > previousPaint;
             },
             30000);
+        QStringList windows;
+        for (const QWindow* window : QGuiApplication::allWindows())
+        {
+            if (window->objectName() == QStringLiteral("LudusGpuViewport"))
+                windows.append(QStringLiteral("%1x%2 at %3,%4 exposed=%5 visible=%6")
+                                   .arg(window->width())
+                                   .arg(window->height())
+                                   .arg(window->x())
+                                   .arg(window->y())
+                                   .arg(window->isExposed() == true ? 1 : 0)
+                                   .arg(window->isVisible() == true ? 1 : 0));
+        }
+        INFO(windows.join(QStringLiteral("; ")).toStdString());
+        INFO("viewport " << viewport.width() << "x" << viewport.height() << ", paints=" << viewport.PresentedFrames()
+                         << ", latest=" << graph.GetDisplayFrames().GetLatestSerial()
+                         << ", gpu=" << graph.HasGpuFrame());
         INFO(graph.GetStatus().toStdString());
         INFO("candidate=" << candidate << ", presented=" << graph.GetPresentedGeneration()
                           << ", active=" << graph.GetReport().ActiveGeneration

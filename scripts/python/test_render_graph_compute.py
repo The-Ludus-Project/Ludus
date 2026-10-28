@@ -146,6 +146,7 @@ class SceneComputeLoweringTests(SceneComputeFixture):
         before = graph.canonical_asset(self.document)
         error = self.fails('Capability', 'support')
         self.assertEqual('state.group_size', error.target['field'])
+        self.assertEqual('[[64, 1, 1], [8, 8, 1]]', error.details['expected'])
         self.assertIn('Clear group_size', error.details['repair'])
         self.assertEqual(before, self.path.read_bytes())
         for state in ({'group_size': [0, 1, 1]}, {'max_recursion': 1}):
