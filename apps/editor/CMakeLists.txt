@@ -741,8 +741,10 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     set_tests_properties(ludus_editor_browser_content_tests PROPERTIES
         LABELS "unit;editor;browser" TIMEOUT 60 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(ludus_project_explorer_tests tests/main.cpp tests/project_explorer_tests.cpp
-        src/internal/project_explorer.h src/project_explorer.cpp src/project_files.cpp)
+        src/internal/project_explorer.h src/project_explorer.cpp src/project_files.cpp
+        src/internal/editor_icons.h src/editor_icons.cpp)
     set_target_properties(ludus_project_explorer_tests PROPERTIES AUTOMOC ON)
+    ludus_editor_add_icons(ludus_project_explorer_tests)
     target_include_directories(ludus_project_explorer_tests PRIVATE src)
     target_compile_definitions(ludus_project_explorer_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
     target_link_libraries(ludus_project_explorer_tests PRIVATE Qt6::Widgets Qt6::Test Ludus::FoundationBase Catch2::Catch2)
