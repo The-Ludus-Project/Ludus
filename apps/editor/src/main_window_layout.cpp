@@ -661,6 +661,7 @@ void MainWindow::setViewportFocused(bool isFocused)
         static_cast<void>(mDocuments->OpenDocument(previousOrNull));
     }
     // The setup notice follows project state, not the restored toolbar visibility.
+    updateContextStrip();
     RenderStatus();
 }
 
@@ -699,10 +700,11 @@ void MainWindow::ResetWorkspaceLayout()
     (void)restoreState(DefaultLayout_, LAYOUT_VERSION);
     // Also recover panes that were floating, closed or moved when the user requested reset.
     arrangeDefaultDocks();
-    for (QToolBar* toolbar : {mStandardToolbar, GameToolbar_, mRenderGraphToolbar})
+    for (QToolBar* toolbar : {mStandardToolbar, GameToolbar_})
     {
         toolbar->show();
     }
+    updateContextStrip();
     applyDefaultDockSizes();
     RenderStatus();
 }

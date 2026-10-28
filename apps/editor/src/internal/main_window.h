@@ -136,6 +136,9 @@ private:
     void openProjectItem(ProjectItemKind kind, const QString& path);
     void activateErrorEntry(const ErrorListEntry& entry);
     void renderActiveDocument();
+    /// Show the context strip (Render Graph toolbar) only while a render graph is the active document and Focus
+    /// Viewport is off.
+    void updateContextStrip();
     void renderDocumentTitles();
     void renderGraphCommands();
     void showOptions();
@@ -244,6 +247,7 @@ private:
     QWidget* mFocusRestoreDocumentOrNull = nullptr;
     bool mIsViewportFocused = false;
     QToolBar* GameToolbar_ = nullptr;
+    QAction* mSessionSeparatorActionOrNull = nullptr;
     // Build output is parsed for the Error List after it stops changing briefly.
     QTimer mBuildErrorsTimer;
     QString mParsedBuildOutput;

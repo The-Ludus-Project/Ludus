@@ -46,6 +46,7 @@
 #include <QSize>
 #include <QSpinBox>
 #include <QStackedWidget>
+#include <QStringList>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTemporaryDir>
@@ -226,7 +227,8 @@ void CheckToolbarsUnclipped(const MainWindow& window)
         CHECK((overflowOrNull == nullptr || overflowOrNull->isVisible() == false));
         for (QAction* action : toolbar->actions())
         {
-            if (action->isSeparator() == true)
+            // Separators and commands hidden by context (session commands while no game runs) draw nothing.
+            if (action->isSeparator() == true || action->isVisible() == false)
             {
                 continue;
             }
@@ -438,13 +440,14 @@ TEST_CASE("Window menu shows hides and resets every tool window", "[editor][layo
     Action(window, QStringLiteral("resetWorkspaceLayout"))->trigger();
     Settle();
     CheckDefaultToolWindows(window);
-    for (const QString& name :
-         {QStringLiteral("standardToolbar"), QStringLiteral("gameToolbar"), QStringLiteral("renderGraphToolbar")})
+    for (const QString& name : {QStringLiteral("standardToolbar"), QStringLiteral("gameToolbar")})
     {
         QToolBar* toolbar = window.findChild<QToolBar*>(name);
         REQUIRE(toolbar != nullptr);
         CHECK(toolbar->isHidden() == false);
     }
+    // The context strip follows the active document, and a World is not a render graph.
+    CHECK(window.findChild<QToolBar*>(QStringLiteral("renderGraphToolbar"))->isHidden() == true);
 }
 
 TEST_CASE("Tool windows and document groups restore and corrupt layouts fall back", "[editor][layout][shell]")
@@ -1512,4 +1515,84 @@ TEST_CASE("Primary toolbar commands show an icon beside the label and every expl
         ++rowCount;
     }
     CHECK(rowCount > 0);
+}
+
+TEST_CASE("Toolbars group commands, hide session commands until a game runs and show graph commands only for graphs",
+          "[editor][layout][shell][toolbars]")
+{
+    QTemporaryDir directory;
+    QTemporaryDir settings;
+    EditorController controller(ToolingPaths{}, nullptr, QDir(settings.path()).filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, QDir(settings.path()).filePath(QStringLiteral("workspace.json")));
+    window.show();
+    controller.OpenProject(WriteProject(directory));
+    Settle();
+    QToolBar* standard = window.findChild<QToolBar*>(QStringLiteral("standardToolbar"));
+    QToolBar* game = window.findChild<QToolBar*>(QStringLiteral("gameToolbar"));
+    QToolBar* strip = window.findChild<QToolBar*>(QStringLiteral("renderGraphToolbar"));
+    REQUIRE(standard != nullptr);
+    REQUIRE(game != nullptr);
+    REQUIRE(strip != nullptr);
+    const auto labels = [](const QToolBar* toolbar) {
+        QStringList names;
+        for (const QAction* action : toolbar->actions())
+        {
+            names.append(action->isSeparator() ? QStringLiteral("|") : action->iconText());
+        }
+        return names;
+    };
+    // History is its own group, after File.
+    CHECK(labels(standard) == QStringList{QStringLiteral("Open"),
+                                          QStringLiteral("Save"),
+                                          QStringLiteral("|"),
+                                          QStringLiteral("Undo"),
+                                          QStringLiteral("Redo")});
+    // Run leads, then Launch, then the session commands.
+    const QStringList gameLabels = labels(game);
+    REQUIRE(gameLabels.size() >= 3);
+    CHECK(gameLabels.mid(0, 3) == QStringList{QStringLiteral("Play"), QStringLiteral("Build"), QStringLiteral("Stop")});
+    CHECK(gameLabels.count(QStringLiteral("|")) == 2);
+    // No game is running: the session commands and their separator are hidden.
+    for (const QString& label :
+         {QStringLiteral("Pause"), QStringLiteral("Step"), QStringLiteral("Resume"), QStringLiteral("Reload Code")})
+    {
+        for (const QAction* action : game->actions())
+        {
+            if (action->iconText() == label)
+            {
+                CHECK(action->isVisible() == false);
+            }
+        }
+    }
+    // The context strip appears for a render graph and goes away for a World.
+    CHECK(strip->isHidden() == true);
+    RendererWorkspace* renderer = window.findChild<RendererWorkspace*>();
+    WorldWorkspace* world = window.findChild<WorldWorkspace*>();
+    REQUIRE(renderer != nullptr);
+    REQUIRE(world != nullptr);
+    REQUIRE(Well(window).OpenDocument(renderer) == true);
+    Settle();
+    CHECK(strip->isHidden() == false);
+    REQUIRE(Well(window).OpenDocument(world) == true);
+    Settle();
+    CHECK(strip->isHidden() == true);
+    // It cannot be forced on by restoring or toggling visibility outside the rule.
+    strip->show();
+    Settle();
+    CHECK(strip->isHidden() == true);
+    // Its entry is not in View > Toolbars.
+    for (const QAction* action : window.menuBar()->actions())
+    {
+        if (action->menu() != nullptr && action->text().remove(QLatin1Char('&')) == QStringLiteral("View"))
+        {
+            for (const QAction* entry : action->menu()->actions())
+            {
+                if (entry->menu() != nullptr && entry->text().remove(QLatin1Char('&')) == QStringLiteral("Toolbars"))
+                {
+                    CHECK(entry->menu()->actions().contains(strip->toggleViewAction()) == false);
+                    CHECK(entry->menu()->actions().contains(game->toggleViewAction()) == true);
+                }
+            }
+        }
+    }
 }
