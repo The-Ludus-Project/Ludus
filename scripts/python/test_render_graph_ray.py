@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import struct
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
@@ -252,10 +253,36 @@ class RayPipelineTests(unittest.TestCase):
         self.assertEqual([original], groups[1]['variants'])
         self.assertTrue(groups[1]['native_ray_queries'])
         self.assertTrue(groups[0]['persistent'])
-        for strategy in ('Unknown', '', 1, None):
+        for strategy in ('Unknown', '', 1, None, 'computebvh'):
             self.node['invocation']['traversal'] = strategy
             with self.assertRaisesRegex(ToolingError, 'traversal'):
                 self.compile()
+
+    def test_compute_bvh_is_a_software_strategy_with_its_own_variant(self):
+        original = ray.program_tuple(self.node)
+        self.node['invocation']['traversal'] = 'ComputeBvh'
+        bvh_plan = self.compile()
+        bvh = ray.program_tuple(bvh_plan['passes'][0]['pipeline'])
+        self.assertEqual(original + (ray.COMPUTE_BVH_TAG,), bvh)
+        self.assertEqual(original, ray.callback_programs(bvh))
+        self.assertEqual('ComputeBvh', ray.get_traversal(bvh))
+        self.assertFalse(ray.requires_native_queries(bvh_plan))
+        loop_plan = deepcopy(bvh_plan)
+        loop_plan['passes'][0]['pipeline']['invocation']['traversal'] = 'TriangleLoop'
+        loop = ray.program_tuple(loop_plan['passes'][0]['pipeline'])
+        self.assertEqual('TriangleLoop', ray.get_traversal(loop))
+        native_plan = deepcopy(bvh_plan)
+        native_plan['passes'][0]['pipeline']['invocation']['traversal'] = 'NativeQuery'
+        self.assertEqual('NativeQuery', ray.get_traversal(ray.program_tuple(native_plan['passes'][0]['pipeline'])))
+        # Both software strategies share one persistent software group with distinct cooked variants.
+        groups = ray.group_profiles([bvh_plan, loop_plan, native_plan], {}, build)
+        self.assertEqual(sorted([bvh, loop]), groups[0]['variants'])
+        self.assertFalse(groups[0]['native_ray_queries'])
+        self.assertTrue(groups[0]['persistent'])
+        self.assertEqual([original], groups[1]['variants'])
+        self.assertTrue(groups[1]['native_ray_queries'])
+        self.assertEqual(('NativeQuery', 'TriangleLoop', 'Custom', 'HardwarePipeline', 'ComputeBvh'),
+                         ray.TRAVERSAL_CODES)
 
     def test_invocation_type_is_independent_of_logical_ray_node_and_preserves_legacy(self):
         self.assertEqual('Compute', invocation.resolve_type(self.node))
@@ -771,7 +798,8 @@ class RayCompilerAcceptance(unittest.TestCase):
             wrapper = next(path.read_text() for path in (package / 'programs').glob('*/wrapper.slang')
                            if 'GetGraphTraversalStrategy' in path.read_text())
             self.assertIn('#define LUDUS_SOFTWARE_RAY_TRAVERSAL 1', wrapper)
-            self.assertIn('const uint strategies[] = { 1 }', wrapper)
+            self.assertIn('const uint strategies[] = { LUDUS_GRAPH_TRAVERSAL_TRIANGLE_LOOP }', wrapper)
+            self.assertNotIn('#define LUDUS_GRAPH_COMPUTE_BVH_TRAVERSAL', wrapper)
             descriptor = json.loads((package / 'package.json').read_text())
             recipes = [recipe for recipe in descriptor['recipes'] if recipe['technique'] == ray.TECHNIQUE]
             self.assertEqual({False, True}, {recipe['native_ray_queries'] for recipe in recipes})
@@ -801,6 +829,55 @@ class RayCompilerAcceptance(unittest.TestCase):
                                    if 'float3 EvaluateGraphRay' in path.read_text())
             self.assertNotIn('GetGraphTraversalStrategy', rebuilt_wrapper)
             self.assertEqual(shader_bytes, {path: path.read_bytes() for path in shader_bytes})
+
+    def test_compute_bvh_and_triangle_loop_share_one_software_kernel(self):
+        from test_render_graph_authoring import parse_runtime
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'source'
+            shutil.copytree(ROOT / 'tests/sdk_consumer/rg2/traversal_parity', source)
+            manifest = source / 'main.lushader.json'
+            manifest.write_text((source / 'main.lushader.json.in').read_text().replace(
+                '@RG2_TEST_PROFILES@', '["metal", "wgsl"]'))
+            result = build.build_package(manifest, root / 'build', helper=os.environ['LUDUS_RG1_HELPER'],
+                                         compiler=os.environ['LUDUS_RG1_SLANG'], spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+            package = Path(result['package'])
+            descriptor = json.loads((package / 'package.json').read_text())
+            recipes = [recipe for recipe in descriptor['recipes'] if recipe['technique'] == ray.TECHNIQUE]
+            software = next(recipe for recipe in recipes if not recipe['native_ray_queries'])
+            callbacks = ['Generate', 'Miss', 'Closest']
+            self.assertEqual([callbacks + [ray.COMPUTE_BVH_TAG], callbacks + [ray.TRIANGLE_LOOP_TAG]],
+                             software['ray_programs'])
+            wrapper_path = next(path for path in (package / 'programs').glob('*/wrapper.slang')
+                                if 'GetGraphTraversalStrategy' in path.read_text())
+            wrapper = wrapper_path.read_text()
+            self.assertIn('const uint strategies[] = { LUDUS_GRAPH_TRAVERSAL_COMPUTE_BVH, '
+                          'LUDUS_GRAPH_TRAVERSAL_TRIANGLE_LOOP }', wrapper)
+            for define in ('LUDUS_SOFTWARE_RAY_TRAVERSAL', 'LUDUS_GRAPH_COMPUTE_BVH_TRAVERSAL'):
+                self.assertIn(f'#define {define} 1', wrapper)
+            for stage in (program for program in descriptor['programs'] if program['id'] == ray.SOFTWARE_COMPUTE_ID):
+                self.assertNotIn('RayScene', {entry['kind'] for entry in stage['descriptor']['interface']['entries']})
+                metal = (package / 'programs' / stage['key'] / stage['descriptor']['artifact']).read_text()
+                self.assertNotIn('metal_raytracing', metal)
+                self.assertNotIn('intersection_query<', metal)
+            for configuration, index, strategy in (('ComputeBvh', 0, 'ComputeBvh'), ('TriangleLoop', 1, 'TriangleLoop'),
+                                                   ('Native', 0, 'NativeQuery')):
+                _, _, passes, _ = execution.lower_plan(descriptor, configuration)
+                operation = next(item for item in passes if item['Program'] == 'RayTracing')
+                self.assertEqual((index, strategy), (operation['RayProgram'], operation['Traversal']))
+            destination = root / 'bvh.lurgrt'
+            execution.cook_runtime(str(package), destination, configuration='ComputeBvh')
+            self.assertEqual(ray.TRAVERSAL_CODES.index('ComputeBvh'), parse_runtime(destination.read_bytes())['passes'][0][-1])
+            # The graph profile emits no browser ray recipe, but the same linked kernel already
+            # compiles to WGSL with the pinned compiler: it uses no native ray-query constructs.
+            tree = root / 'wgsl'
+            shutil.copytree(source / 'main_shaders', tree / 'main_shaders')
+            shutil.copytree(os.environ['LUDUS_RG1_HELPER'], tree / '_ludus_ray')
+            shutil.copy(wrapper_path, tree / 'wrapper.slang')
+            output = tree / 'kernel.wgsl'
+            subprocess.run([os.environ['LUDUS_RG1_SLANG'], str(tree / 'wrapper.slang'), '-target', 'wgsl', '-entry', 'rgEntry',
+                            '-stage', 'compute', '-o', str(output)], check=True, cwd=tree, capture_output=True)
+            self.assertIn('@compute', output.read_text())
 
     def test_ray_path_capture_variant_has_its_own_identity_and_is_never_cooked(self):
         with tempfile.TemporaryDirectory() as temporary:

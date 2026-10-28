@@ -1,0 +1,19 @@
+#pragma once
+
+#include <ludus/foundation/base/types.h>
+
+namespace ludus::editor::plan_policy
+{
+/// Existing compiler JSON plan version; independent of numeric runtime plan versions.
+inline constexpr foundation::int32 VERSION = @PLAN_PLAN_VERSION@;
+/// Existing compiler per-configuration node admission bound.
+inline constexpr foundation::int32 MAX_NODES = @PLAN_MAX_NODES@;
+/// Existing compiler expansion budget; bounds retained IDs across all instance records.
+inline constexpr foundation::int32 MAX_EXPANDED_NODES = @PLAN_MAX_EXPANDED_NODES@;
+/// Existing serial operation budget, including contract-only operations such as Export.
+inline constexpr foundation::int32 MAX_PASSES = @PLAN_MAX_PASSES@;
+/// Existing compiler instance-depth admission bound.
+inline constexpr foundation::int32 MAX_DEPTH = @PLAN_MAX_DEPTH@;
+/// Existing root-configuration admission bound.
+inline constexpr foundation::int32 MAX_CONFIGURATIONS = @PLAN_MAX_CONFIGURATIONS@;
+} // namespace ludus::editor::plan_policy

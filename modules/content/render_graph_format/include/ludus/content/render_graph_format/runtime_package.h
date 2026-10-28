@@ -51,6 +51,7 @@
 /// Version 21 inserts RAY_WORKGROUP_DIMENSIONS uint32 values after the six fixed fields
 /// of each RayCompute/SceneRayCompute/PersistentRayCompute stage record. X/Y must be positive and Z
 /// must be one; targets of the same role must agree. Earlier compute stages imply 64x1x1.
+/// Version 22 admits RayTraversal::ComputeBvh in each pass's traversal word.
 namespace ludus::content::render_graph_format
 {
 /// "LURG" read as a little-endian uint32.
@@ -70,8 +71,10 @@ inline constexpr foundation::uint32 CUSTOM_RAY_PACKAGE_VERSION = 19;
 inline constexpr foundation::uint32 NATIVE_RAY_PIPELINE_PACKAGE_VERSION = 20;
 /// First generation carrying reflected X/Y/Z dimensions on ray compute stages.
 inline constexpr foundation::uint32 RAY_WORKGROUP_PACKAGE_VERSION = 21;
+/// First generation admitting the ComputeBvh pass traversal; version 21's layout is unchanged.
+inline constexpr foundation::uint32 COMPUTE_BVH_PACKAGE_VERSION = 22;
 /// Current runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = RAY_WORKGROUP_PACKAGE_VERSION;
+inline constexpr foundation::uint32 PACKAGE_VERSION = COMPUTE_BVH_PACKAGE_VERSION;
 /// First package carrying explicit OIDN denoising quality per ray pass.
 inline constexpr foundation::uint32 DENOISING_PACKAGE_VERSION = 16;
 /// First package carrying the renderer-owned bilinear image operation.
