@@ -366,9 +366,9 @@ TEST_CASE("Native ray geometry uses the device buffer range beyond the legacy 64
           "[rhi][gpu][ray][capacity]")
 {
     rhi::Shutdown();
-    struct Guard final
+    struct DeviceGuard final
     {
-        ~Guard() noexcept
+        ~DeviceGuard() noexcept
         {
             rhi::Shutdown();
         }
@@ -403,13 +403,13 @@ TEST_CASE("Native ray geometry uses the device buffer range beyond the legacy 64
     }
     // Only the first three vertices are referenced. The complete input buffer must
     // nevertheless be admitted, without requiring a large acceleration structure.
-    Array<float32> positions;
-    REQUIRE(positions.TryResize(VERTEX_COUNT * POSITION_COMPONENTS) == true);
-    positions[POSITION_COMPONENTS] = 1;
-    positions[2 * POSITION_COMPONENTS + 1] = 1;
+    Array<float32> positionsMesh;
+    REQUIRE(positionsMesh.TryResize(VERTEX_COUNT * POSITION_COMPONENTS) == true);
+    positionsMesh[POSITION_COMPONENTS] = 1;
+    positionsMesh[2 * POSITION_COMPONENTS + 1] = 1;
     const StaticArray<uint32, TRIANGLE_CORNERS> indices{{0, 1, 2}};
     rhi::RayGeometryDescription geometryDescription;
-    geometryDescription.Positions = positions.GetData();
+    geometryDescription.Positions = positionsMesh.GetData();
     geometryDescription.VertexCount = VERTEX_COUNT;
     geometryDescription.Indices = indices.GetData();
     geometryDescription.IndexCount = indices.GetSize();
