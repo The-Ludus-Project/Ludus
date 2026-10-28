@@ -395,6 +395,8 @@ def main():
     parser.add_argument('--raster', action='store_true')
     parser.add_argument('--fragment-storage', action='store_true')
     parser.add_argument('--native-ray-queries', action='store_true')
+    parser.add_argument('--native-ray-pipeline', action='store_true')
+    parser.add_argument('--native-ray-storage', default='{}')
     parser.add_argument('--graph-software-rays', action='store_true')
     parser.add_argument('--native-binding-arrays', action='store_true')
     parser.add_argument('--runtime-binding-arrays', action='store_true')
@@ -411,7 +413,7 @@ def main():
     if args.graph_forward_material and args.graph_stage not in ('vertex', 'fragment'):
         raise RuntimeError('Forward material resources require a closed generated raster graph stage')
     lock = json.loads(Path(args.lock).read_text())
-    uses_native_worker = args.worker_socket and (not args.native_ray_queries or args.graph_stage)
+    uses_native_worker = args.worker_socket and not args.native_ray_pipeline and (not args.native_ray_queries or args.graph_stage)
     if not uses_native_worker and run([args.compiler, '-version']).strip() != lock['slang']['version']:
         raise RuntimeError('Slang version differs from SDK pin')
     if not re.fullmatch(r'[A-Za-z_][A-Za-z_0-9]*', args.name):

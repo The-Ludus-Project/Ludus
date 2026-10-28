@@ -4,6 +4,8 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/status.hpp>
 
+#include <cstring>
+
 // Thanks to Sven Woop, Carsten Benthin and Ingo Wald, "Watertight Ray/Triangle
 // Intersection", JCGT 2(1), 2013, section 3,
 // https://jcgt.org/published/0002/01/05/paper.pdf: use one ray-dependent axis
@@ -531,6 +533,51 @@ float32 GetReferenceEmitterProbability(const ReferenceSceneData& scene, usize em
     }
     const uint32 previous = emitter == 0 ? 0 : scene.EmitterCdf[emitter - 1];
     return float32(scene.EmitterCdf[emitter] - previous) / float32(scene.EmitterCdf[count - 1]);
+}
+bool PackReferenceEmitterSelection(const ReferenceSceneData& scene, BorrowedView<math::Vector4> outWords) noexcept
+{
+    const usize count = scene.Emitters.GetSize();
+    if (scene.EmitterCdf.GetSize() != count || outWords.GetSize() < count)
+    {
+        return false;
+    }
+    for (usize emitter = 0; emitter < count; ++emitter)
+    {
+        std::memcpy(&outWords[emitter].X, &scene.Emitters[emitter], sizeof(uint32));
+        std::memcpy(&outWords[emitter].Y, &scene.EmitterCdf[emitter], sizeof(uint32));
+    }
+    return true;
+}
+ReferenceEmissiveTriangleSelection SelectReferenceEmissiveTriangle(const ReferenceSceneData& scene,
+                                                                   math::RandomKey key,
+                                                                   math::RandomAddress address) noexcept
+{
+    ReferenceEmissiveTriangleSelection result;
+    const usize count = scene.EmitterCdf.GetSize();
+    if (count == 0 || count != scene.Emitters.GetSize() || scene.EmitterCdf[count - 1] == 0)
+    {
+        return result;
+    }
+    uint32 value = 0;
+    if (math::TrySampleBounded(key, address, scene.EmitterCdf[count - 1], value) != math::MathStatus::Success)
+    {
+        return result;
+    }
+    const usize emitter = SelectReferenceEmitter(scene, value);
+    result.TriangleIndex = scene.Emitters[emitter];
+    result.SelectionPmf = GetReferenceEmitterProbability(scene, emitter);
+    result.HasSample = true;
+    return result;
+}
+float32 EvaluateReferenceEmissiveTriangleSelectionPmf(const ReferenceSceneData& scene, uint32 triangle) noexcept
+{
+    usize emitter = 0;
+    if (scene.EmitterCdf.GetSize() != scene.Emitters.GetSize() ||
+        FindReferenceEmitter(scene, triangle, emitter) == false)
+    {
+        return 0;
+    }
+    return GetReferenceEmitterProbability(scene, emitter);
 }
 math::Vector4 SampleReferenceImage(const ReferenceSurfaceData& surface,
                                    const rhi::TextureCpuContent& texture,

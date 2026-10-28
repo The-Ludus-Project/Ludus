@@ -1,5 +1,7 @@
 #include "internal/render_graph_comments.h"
 #include "internal/render_graph_canvas.h"
+#include "internal/render_graph_diagnostics.h"
+#include "internal/render_graph_execution_plan.h"
 
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/math/scalar.hpp>
@@ -13,6 +15,7 @@
 #include <QFont>
 #include <QFontMetricsF>
 #include <QFormLayout>
+#include <QGraphicsEllipseItem>
 #include <QGraphicsRectItem>
 #include <QGraphicsScene>
 #include <QGraphicsSimpleTextItem>
@@ -36,11 +39,24 @@ using namespace foundation;
 namespace
 {
 constexpr float64 HEADER_HEIGHT = 34;
+constexpr float64 STAGE_WIDTH = 320;
+constexpr float64 STAGE_ROW_HEIGHT = 24;
+constexpr int32 STAGE_METADATA_ROWS = 3;
+constexpr float64 STAGE_PORT_RADIUS = 5;
+constexpr float64 STAGE_PORT_HIT_RADIUS = 12;
+constexpr float64 STAGE_DIMMED_OPACITY = 0.25;
+constexpr QRgb STAGE_HIGHLIGHT_COLOUR = 0xffffcc55;
+
+QString GetNode(const QString& endpoint)
+{
+    return endpoint.section(QLatin1Char('.'), 0, 0);
+}
 constexpr float64 NOTES_HEIGHT = 50;
 constexpr float64 CONTENT_PADDING = 24;
 constexpr float64 LABEL_PADDING = 8;
 constexpr float64 RESIZE_HANDLE = 18;
 constexpr int32 BACKGROUND_ALPHA = 28;
+constexpr int32 STAGE_BACKGROUND_ALPHA = 235;
 constexpr int32 HEADER_ALPHA = 155;
 constexpr float64 FRAME_DEPTH = -2;
 constexpr float64 DEFAULT_WIDTH = 360;
@@ -81,15 +97,25 @@ void RenderGraphComments::Clear()
     mPreviewPositions.clear();
     qDeleteAll(mItems);
     mItems.clear();
+    mBoundaryPorts.clear();
+    mCounts.clear();
+    mPlanSummaries.clear();
+    mCollapsedOwners.clear();
+    mMembers.clear();
     mFrames = {};
 }
 
 void RenderGraphComments::Rebuild(const QJsonObject& configuration)
 {
     Clear();
+    if (mFile != mCanvas.GetFile() || mConfiguration != mCanvas.GetConfiguration())
+    {
+        mRevealedFrames.clear();
+    }
     mFile = mCanvas.GetFile();
     mConfiguration = mCanvas.GetConfiguration();
     mRevision = mCanvas.GetDocumentRevision();
+    mConfigurationRecord = configuration;
     mHasValidMetadata = true;
     const QJsonValue frames = configuration.value(QStringLiteral("layout")).toObject().value(QStringLiteral("frames"));
     if (frames.isUndefined() == true)
@@ -103,7 +129,7 @@ void RenderGraphComments::Rebuild(const QJsonObject& configuration)
         return;
     }
     mFrames = frames.toArray();
-    renderFrames();
+    refreshPresentation();
 }
 
 bool RenderGraphComments::isCurrent() const
@@ -129,7 +155,9 @@ int32 RenderGraphComments::hitFrame(QPointF position) const
     for (int32 index = static_cast<int32>(mItems.size()); index > 0; --index)
     {
         const QRectF bounds = mItems.at(index - 1)->rect().translated(mItems.at(index - 1)->pos());
-        if (QRectF(bounds.topLeft(), QSizeF(bounds.width(), HEADER_HEIGHT + NOTES_HEIGHT)).contains(position) == true ||
+        const QString identity = mFrames.at(index - 1).toObject().value(QStringLiteral("id")).toString();
+        if ((mCollapsedOwners.values().contains(identity) == true && bounds.contains(position) == true) ||
+            QRectF(bounds.topLeft(), QSizeF(bounds.width(), HEADER_HEIGHT + NOTES_HEIGHT)).contains(position) == true ||
             GetResizeHandle(bounds).contains(position) == true)
         {
             return index - 1;
@@ -153,17 +181,266 @@ QRectF RenderGraphComments::GetFrameBounds(const QString& identity) const
     return index < 0 ? QRectF{} : mItems.at(index)->rect().translated(mItems.at(index)->pos());
 }
 
+bool RenderGraphComments::CanCollapse(const QString& identity) const
+{
+    const int32 index = findFrame(identity);
+    if (index < 0 || mMembers.value(identity).isEmpty() == true)
+    {
+        return false;
+    }
+    const QRectF bounds = GetRenderGraphCommentBounds(mFrames.at(index).toObject());
+    for (int32 other = 0; other < mFrames.size(); ++other)
+    {
+        if (other != index && bounds.intersects(GetRenderGraphCommentBounds(mFrames.at(other).toObject())) == true)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+QString RenderGraphComments::GetCollapsedFrame(const QString& node) const
+{
+    return mCollapsedOwners.value(node);
+}
+
+void RenderGraphComments::refreshPresentation()
+{
+    mMembers.clear();
+    mCollapsedOwners.clear();
+    const QVector<RenderGraphLayoutNode> nodes = mCanvas.GetAuthoredNodeBounds();
+    for (const QJsonValueConstRef value : mFrames)
+    {
+        const QJsonObject frame = value.toObject();
+        QStringList members;
+        const QRectF bounds = GetRenderGraphCommentBounds(frame);
+        for (const RenderGraphLayoutNode& node : nodes)
+        {
+            if (bounds.contains(node.Bounds) == true)
+            {
+                members.append(node.Identity);
+            }
+        }
+        mMembers.insert(frame.value(QStringLiteral("id")).toString(), members);
+    }
+    for (const QJsonValueConstRef value : mFrames)
+    {
+        const QJsonObject frame = value.toObject();
+        const QString identity = frame.value(QStringLiteral("id")).toString();
+        if (frame.value(QStringLiteral("collapsed")).toBool() == true && CanCollapse(identity) == true &&
+            mRevealedFrames.contains(identity) == false)
+        {
+            for (const QString& node : mMembers.value(identity))
+            {
+                mCollapsedOwners.insert(node, identity);
+            }
+        }
+    }
+    renderFrames();
+    mCanvas.RefreshCommentPresentation();
+}
+
+void RenderGraphComments::SetCollapsed(const QString& identity, bool isCollapsed)
+{
+    const int32 index = findFrame(identity);
+    if (index < 0 || isCurrent() == false)
+    {
+        return;
+    }
+    if (isCollapsed == true && CanCollapse(identity) == false)
+    {
+        Q_EMIT Rejected(
+            QStringLiteral("Collapse requires a nonempty frame that does not overlap or nest another frame."));
+        return;
+    }
+    mRevealedFrames.removeAll(identity);
+    QJsonArray frames = mFrames;
+    QJsonObject frame = frames.at(index).toObject();
+    frame.insert(QStringLiteral("collapsed"), isCollapsed);
+    frames.replace(index, frame);
+    if (frames == mFrames)
+    {
+        refreshPresentation();
+    }
+    else
+    {
+        publish(frames);
+    }
+}
+
+void RenderGraphComments::RevealNode(const QString& node)
+{
+    const QString identity = GetCollapsedFrame(node);
+    if (identity.isEmpty() == false)
+    {
+        mRevealedFrames.append(identity);
+        refreshPresentation();
+    }
+}
+QStringList RenderGraphComments::GetRevealedFrames() const
+{
+    return mRevealedFrames;
+}
+void RenderGraphComments::SetRevealedFrames(const QStringList& frames)
+{
+    mRevealedFrames.clear();
+    for (const QString& identity : frames)
+    {
+        if (findFrame(identity) >= 0 && mRevealedFrames.contains(identity) == false)
+        {
+            mRevealedFrames.append(identity);
+        }
+    }
+    refreshPresentation();
+}
+QGraphicsEllipseItem* RenderGraphComments::GetBoundaryPortOrNull(const QString& endpoint, bool isOutput) const
+{
+    for (const BoundaryPort& port : mBoundaryPorts)
+    {
+        if (port.Endpoint == endpoint && port.IsOutput == isOutput)
+        {
+            return port.Item;
+        }
+    }
+    return nullptr;
+}
+QString RenderGraphComments::GetPortAt(QPointF position, bool& outIsOutput) const
+{
+    for (const BoundaryPort& port : mBoundaryPorts)
+    {
+        const QPointF offset = port.Item->mapToScene(port.Item->rect().center()) - position;
+        if (QPointF::dotProduct(offset, offset) <= STAGE_PORT_HIT_RADIUS * STAGE_PORT_HIT_RADIUS)
+        {
+            outIsOutput = port.IsOutput;
+            return port.Endpoint;
+        }
+    }
+    return {};
+}
+void RenderGraphComments::RefreshCounts()
+{
+    for (const QString& identity : mCounts.keys())
+    {
+        const int32 errors = mCanvas.GetDiagnostics().CountNodeErrors(mFile, mConfiguration, mMembers.value(identity));
+        const RenderGraphDiagnosticFreshness freshness = mCanvas.GetDiagnostics().GetFreshness();
+        const QString suffix = freshness == RenderGraphDiagnosticFreshness::None    ? QStringLiteral(" · no report")
+                               : freshness == RenderGraphDiagnosticFreshness::Stale ? QStringLiteral(" · stale")
+                               : freshness == RenderGraphDiagnosticFreshness::Unverified
+                                   ? QStringLiteral(" · unverified")
+                                   : QString{};
+        QGraphicsSimpleTextItem* label = mCounts.value(identity);
+        const QString text =
+            QStringLiteral("%1 nodes · %2 errors%3").arg(mMembers.value(identity).size()).arg(errors).arg(suffix);
+        label->setText(QFontMetricsF(label->font())
+                           .elidedText(text, Qt::ElideRight, GetFrameBounds(identity).width() - 2 * LABEL_PADDING));
+        label->setToolTip(text +
+                          QStringLiteral(". Node-targeted report errors; graph-level errors remain in the toolbar."));
+    }
+    for (const QString& identity : mPlanSummaries.keys())
+    {
+        if (mCanvas.GetExecutionPlan().IsEnabled() == false)
+        {
+            mPlanSummaries.value(identity)->hide();
+            continue;
+        }
+        const RenderGraphPlanAnnotation annotation =
+            mCanvas.GetExecutionPlan().GetStageAnnotation(mMembers.value(identity));
+        QGraphicsSimpleTextItem* label = mPlanSummaries.value(identity);
+        label->setText(
+            QFontMetricsF(label->font())
+                .elidedText(annotation.Label, Qt::ElideRight, GetFrameBounds(identity).width() - 2 * LABEL_PADDING));
+        label->setToolTip(annotation.Explanation.toHtmlEscaped());
+        label->setVisible(mCanvas.GetExecutionPlan().IsEnabled());
+    }
+}
+void RenderGraphComments::RefreshHighlights(const RenderGraphCommentHighlights& highlights)
+{
+    for (int32 index = 0; index < mFrames.size(); ++index)
+    {
+        const QJsonObject frame = mFrames.at(index).toObject();
+        const QString identity = frame.value(QStringLiteral("id")).toString();
+        bool isSelected = false;
+        bool isTraced = false;
+        for (const QString& node : mMembers.value(identity))
+        {
+            isSelected = isSelected == true || highlights.Selection.contains(node) == true;
+            isTraced = isTraced == true || highlights.TracedNodes.contains(node) == true;
+        }
+        QPen pen(isSelected == true || isTraced == true ? QColor::fromRgba(STAGE_HIGHLIGHT_COLOUR)
+                                                        : QColor(frame.value(QStringLiteral("colour")).toString()),
+                 2);
+        pen.setCosmetic(true);
+        mItems.at(index)->setPen(pen);
+        const bool isPruned = mCanvas.GetExecutionPlan().IsEnabled() == true &&
+                              mCanvas.GetExecutionPlan().GetStageAnnotation(mMembers.value(identity)).IsPruned == true;
+        mItems.at(index)->setOpacity(
+            isPruned == true || (highlights.TracedNodes.isEmpty() == false && isTraced == false) ? STAGE_DIMMED_OPACITY
+                                                                                                 : 1);
+    }
+    for (const BoundaryPort& port : mBoundaryPorts)
+    {
+        const bool isHighlighted =
+            (port.IsOutput == true ? highlights.Outputs : highlights.Inputs).contains(port.Endpoint);
+        QPen pen(isHighlighted == true ? QColor::fromRgba(STAGE_HIGHLIGHT_COLOUR) : QColor(Qt::white),
+                 isHighlighted == true ? 2 : 1);
+        pen.setCosmetic(true);
+        port.Item->setPen(pen);
+    }
+}
+
 void RenderGraphComments::renderFrames()
 {
     qDeleteAll(mItems);
     mItems.clear();
+    mBoundaryPorts.clear();
+    mCounts.clear();
+    mPlanSummaries.clear();
     for (const QJsonValueConstRef value : mFrames)
     {
         const QJsonObject frame = value.toObject();
-        const QRectF bounds = GetRenderGraphCommentBounds(frame);
+        const QString identity = frame.value(QStringLiteral("id")).toString();
+        const QStringList members = mMembers.value(identity);
+        const bool isCollapsed = members.isEmpty() == false && GetCollapsedFrame(members.first()) == identity;
+        QStringList inputs;
+        QStringList outputs;
+        QJsonArray connections = mConfigurationRecord.value(QStringLiteral("edges")).toArray();
+        for (const QJsonValueConstRef output : mConfigurationRecord.value(QStringLiteral("outputs")).toArray())
+        {
+            const QJsonObject record = output.toObject();
+            connections.append(QJsonObject{
+                {QStringLiteral("from"), record.value(QStringLiteral("source"))},
+                {QStringLiteral("to"), QStringLiteral("#outputs.") + record.value(QStringLiteral("id")).toString()}});
+        }
+        for (const QJsonValueConstRef connection : connections)
+        {
+            const QJsonObject edge = connection.toObject();
+            const QString from = edge.value(QStringLiteral("from")).toString();
+            const QString to = edge.value(QStringLiteral("to")).toString();
+            if (members.contains(GetNode(from)) != members.contains(GetNode(to)))
+            {
+                if (members.contains(GetNode(from)) == true && outputs.contains(from) == false)
+                {
+                    outputs.append(from);
+                }
+                if (members.contains(GetNode(to)) == true && inputs.contains(to) == false)
+                {
+                    inputs.append(to);
+                }
+            }
+        }
+        inputs.sort();
+        outputs.sort();
+        QRectF bounds = GetRenderGraphCommentBounds(frame);
+        if (isCollapsed == true)
+        {
+            bounds.setSize(
+                QSizeF(qMin(bounds.width(), STAGE_WIDTH),
+                       HEADER_HEIGHT + STAGE_ROW_HEIGHT * (STAGE_METADATA_ROWS +
+                                                           static_cast<float64>(qMax(inputs.size(), outputs.size())))));
+        }
         QColor colour(frame.value(QStringLiteral("colour")).toString());
         const QColor border = colour;
-        colour.setAlpha(BACKGROUND_ALPHA);
+        colour.setAlpha(isCollapsed == true ? STAGE_BACKGROUND_ALPHA : BACKGROUND_ALPHA);
         QPen pen(border, 2);
         pen.setCosmetic(true);
         QGraphicsRectItem* item = mScene.addRect(bounds, pen, colour);
@@ -187,10 +464,58 @@ void RenderGraphComments::renderFrames()
         font.setBold(true);
         title->setFont(font);
         title->setBrush(Qt::white);
-        title->setText(QFontMetricsF(font).elidedText(frame.value(QStringLiteral("title")).toString(),
+        title->setText(QFontMetricsF(font).elidedText((isCollapsed == true ? QStringLiteral("▶ ") : QString{}) +
+                                                          frame.value(QStringLiteral("title")).toString(),
                                                       Qt::ElideRight,
                                                       bounds.width() - 2 * LABEL_PADDING));
         title->setPos(bounds.topLeft() + QPointF(LABEL_PADDING, LABEL_PADDING));
+        if (isCollapsed == true)
+        {
+            QGraphicsSimpleTextItem* counts = new QGraphicsSimpleTextItem(item);
+            counts->setBrush(Qt::white);
+            counts->setPos(bounds.topLeft() + QPointF(LABEL_PADDING, HEADER_HEIGHT));
+            counts->setToolTip(QStringLiteral(
+                "Node-targeted report errors in this stage; graph-level errors remain in the diagnostic toolbar."));
+            mCounts.insert(identity, counts);
+            QGraphicsSimpleTextItem* summary = new QGraphicsSimpleTextItem(item);
+            summary->setBrush(Qt::white);
+            summary->setPos(bounds.topLeft() + QPointF(LABEL_PADDING, HEADER_HEIGHT + STAGE_ROW_HEIGHT));
+            mPlanSummaries.insert(identity, summary);
+            for (const bool isOutput : {false, true})
+            {
+                const QStringList& endpoints = isOutput == true ? outputs : inputs;
+                for (int32 row = 0; row < endpoints.size(); ++row)
+                {
+                    const QString endpoint = endpoints.at(row);
+                    const QPointF position(isOutput == true ? bounds.right() : bounds.left(),
+                                           bounds.top() + HEADER_HEIGHT +
+                                               STAGE_ROW_HEIGHT * (STAGE_METADATA_ROWS + row));
+                    QGraphicsEllipseItem* connector = new QGraphicsEllipseItem(-STAGE_PORT_RADIUS,
+                                                                               -STAGE_PORT_RADIUS,
+                                                                               2 * STAGE_PORT_RADIUS,
+                                                                               2 * STAGE_PORT_RADIUS,
+                                                                               item);
+                    connector->setPos(position);
+                    connector->setBrush(QColor(QStringLiteral("#76c49b")));
+                    connector->setPen(QPen(Qt::white));
+                    const QString description =
+                        endpoint + QStringLiteral(" · ") + mCanvas.GetPortType(endpoint, isOutput);
+                    connector->setToolTip(description.toHtmlEscaped());
+                    connector->setData(0, QStringLiteral("#stage-port:") + endpoint);
+                    QGraphicsSimpleTextItem* label = new QGraphicsSimpleTextItem(item);
+                    label->setBrush(Qt::white);
+                    const float64 labelWidth = bounds.width() / 2 - 2 * LABEL_PADDING;
+                    label->setText(QFontMetricsF(label->font()).elidedText(endpoint, Qt::ElideMiddle, labelWidth));
+                    label->setToolTip(description.toHtmlEscaped());
+                    label->setPos(isOutput == true ? bounds.right() - LABEL_PADDING - label->boundingRect().width()
+                                                   : bounds.left() + LABEL_PADDING,
+                                  position.y() - label->boundingRect().height() / 2);
+                    mBoundaryPorts.append({endpoint, isOutput, connector});
+                }
+            }
+            mItems.append(item);
+            continue;
+        }
         // Plain text only: notes cannot become HTML, external links or executable document content.
         QGraphicsTextItem* notes = new QGraphicsTextItem(item);
         notes->setDefaultTextColor(Qt::white);
@@ -211,6 +536,7 @@ void RenderGraphComments::renderFrames()
         handle->setToolTip(QStringLiteral("Drag to resize this comment frame"));
         mItems.append(item);
     }
+    RefreshCounts();
 }
 
 void RenderGraphComments::publish(const QJsonArray& frames, const QVector<RenderGraphNodePosition>& positions)
@@ -382,6 +708,15 @@ bool RenderGraphComments::ShowContextMenu(QPointF position, const QPoint& global
     const uint64 revision = mRevision;
     QMenu menu(&mCanvas);
     menu.setObjectName(QStringLiteral("renderGraphCommentMenu"));
+    const bool isCollapsed = mCollapsedOwners.values().contains(identity) == true ||
+                             (mFrames.at(index).toObject().value(QStringLiteral("collapsed")).toBool() == true &&
+                              CanCollapse(identity) == false);
+    QAction* collapse =
+        menu.addAction(isCollapsed == true ? QStringLiteral("Expand Stage") : QStringLiteral("Collapse Stage"));
+    collapse->setObjectName(QStringLiteral("renderGraphToggleStage"));
+    collapse->setEnabled(isCollapsed == true || CanCollapse(identity) == true);
+    collapse->setToolTip(QStringLiteral("Collapse nonempty, non-overlapping frames. Double-click a collapsed card to "
+                                        "expand. Saved node and wire positions are retained."));
     QAction* edit = menu.addAction(QStringLiteral("Edit Comment Frame…"));
     edit->setObjectName(QStringLiteral("renderGraphEditComment"));
     QAction* remove = menu.addAction(QStringLiteral("Remove Comment Frame"));
@@ -389,7 +724,11 @@ bool RenderGraphComments::ShowContextMenu(QPointF position, const QPoint& global
     QAction* chosenOrNull = menu.exec(globalPosition);
     if (isCurrent() == true && file == mFile && configuration == mConfiguration && revision == mRevision)
     {
-        if (chosenOrNull == edit)
+        if (chosenOrNull == collapse)
+        {
+            SetCollapsed(identity, isCollapsed == false);
+        }
+        else if (chosenOrNull == edit)
         {
             EditFrame(identity);
         }
@@ -408,7 +747,15 @@ bool RenderGraphComments::ActivateAt(QPointF position)
     {
         return false;
     }
-    EditFrame(mFrames.at(index).toObject().value(QStringLiteral("id")).toString());
+    const QString identity = mFrames.at(index).toObject().value(QStringLiteral("id")).toString();
+    if (mCollapsedOwners.values().contains(identity) == true)
+    {
+        SetCollapsed(identity, false);
+    }
+    else
+    {
+        EditFrame(identity);
+    }
     return true;
 }
 
@@ -427,7 +774,9 @@ bool RenderGraphComments::BeginGesture(QPointF position)
     mPressPosition = position;
     mBeforeBounds = GetRenderGraphCommentBounds(mFrames.at(index).toObject());
     mPreviewBounds = mBeforeBounds;
-    mIsResizing = GetResizeHandle(mBeforeBounds).contains(position);
+    const QString identity = mFrames.at(index).toObject().value(QStringLiteral("id")).toString();
+    mIsResizing =
+        mCollapsedOwners.values().contains(identity) == false && GetResizeHandle(mBeforeBounds).contains(position);
     mBeforePositions.clear();
     if (mIsResizing == false)
     {
@@ -489,6 +838,7 @@ bool RenderGraphComments::UpdateGesture(QPointF position)
         renderFrames();
         mFrames = saved;
     }
+    mCanvas.RefreshCommentPresentation();
     return true;
 }
 
@@ -524,6 +874,7 @@ bool RenderGraphComments::CancelGesture()
     mGestureIndex = -1;
     mCanvas.PreviewNodePositions(mBeforePositions);
     renderFrames();
+    mCanvas.RefreshCommentPresentation();
     return true;
 }
 } // namespace ludus::editor

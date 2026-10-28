@@ -74,7 +74,8 @@ void SelectTrace(RenderGraphCanvas& inoutCanvas)
     REQUIRE(inoutCanvas.RestoreViewState({{QStringLiteral("first"), QStringLiteral("second"), QStringLiteral("third")},
                                           QPointF(250, 200),
                                           0.8,
-                                          RenderGraphTraceDirection::Downstream}) == true);
+                                          RenderGraphTraceDirection::Downstream,
+                                          {}}) == true);
 }
 } // namespace
 

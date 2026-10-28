@@ -35,6 +35,13 @@ constexpr uint32 MAX_VISIBILITY = static_cast<uint32>(format::Visibility::Both);
 constexpr uint32 MAX_TARGET = static_cast<uint32>(format::ShaderTarget::GlslEs);
 constexpr uint32 MAX_LOAD = static_cast<uint32>(format::Load::Discard);
 constexpr uint32 MAX_STORE = static_cast<uint32>(format::Store::Discard);
+static_assert(static_cast<uint32>(format::RayTraversal::NativeQuery) == LUDUS_GRAPH_TRAVERSAL_NATIVE_QUERY &&
+                  static_cast<uint32>(format::RayTraversal::TriangleLoop) == LUDUS_GRAPH_TRAVERSAL_TRIANGLE_LOOP &&
+                  static_cast<uint32>(format::RayTraversal::Custom) == LUDUS_GRAPH_TRAVERSAL_CUSTOM &&
+                  static_cast<uint32>(format::RayTraversal::HardwarePipeline) ==
+                      LUDUS_GRAPH_TRAVERSAL_HARDWARE_PIPELINE &&
+                  static_cast<uint32>(format::RayTraversal::ComputeBvh) == LUDUS_GRAPH_TRAVERSAL_COMPUTE_BVH,
+              "cooked pass traversal codes select the linked kernel's strategy");
 constexpr uint32 FIRST_ENTRY_CHARACTER = 0x21;
 constexpr uint32 LAST_ENTRY_CHARACTER = 0x7E;
 bool IsAccepted(Status status) noexcept
@@ -131,6 +138,7 @@ struct RenderGraphPackage::State final
     {
         bool IsPresent = false;
         uint32 InputCount = 0;
+        StaticArray<uint32, format::RAY_WORKGROUP_DIMENSIONS> WorkgroupSize{};
         std::string_view Entry;
         std::string_view Text;
         Array<uint32> Words;
@@ -154,7 +162,11 @@ struct RenderGraphPackage::State final
     bool HasPixelBuffers = false;
     bool HasSceneData = false;
     bool HasNativeRay = false;
+    bool HasExplicitRayWorkgroup = false;
     bool HasExplicitRayTraversal = false;
+    bool HasCustomRayTraversal = false;
+    bool HasNativeRayPipeline = false;
+    bool HasComputeBvhTraversal = false;
     bool HasNativeRayQueries = false;
     bool HasIndependentPrograms = false;
     bool HasVisibilityFields = false;
@@ -207,14 +219,21 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         {
             return RenderGraphPackageStatus::Malformed;
         }
-        const bool isForwardRole = role >= format::FORWARD_STAGE_ROLE_FIRST;
+        const bool isNativeRayRole = role == format::NATIVE_RAY_STAGE_ROLE;
+        if (isNativeRayRole == true &&
+            (HasNativeRayPipeline == false || target != static_cast<uint32>(format::ShaderTarget::Metal)))
+        {
+            return RenderGraphPackageStatus::Malformed;
+        }
+        const bool isForwardRole = role >= format::FORWARD_STAGE_ROLE_FIRST && role < format::NATIVE_RAY_STAGE_ROLE;
         if (isForwardRole == true && HasForwardStages == false)
         {
             return RenderGraphPackageStatus::UnsupportedVersion;
         }
         const bool isRayRole =
             (role >= static_cast<uint32>(format::StageRole::RayCompute) && role < format::LEGACY_STAGE_ROLE_COUNT) ||
-            role == static_cast<uint32>(format::StageRole::PersistentRayCompute);
+            role == static_cast<uint32>(format::StageRole::PersistentRayCompute) ||
+            role == format::NATIVE_RAY_STAGE_ROLE;
         const bool isVertex = isForwardRole == true ? (role == static_cast<uint32>(format::StageRole::ForwardVertex) ||
                                                        role == static_cast<uint32>(format::StageRole::LightingVertex))
                               : isRayRole == true   ? role == static_cast<uint32>(format::StageRole::RayImageVertex)
@@ -233,6 +252,17 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
              (HasVisibilityFields == false || inputCount != format::VISIBILITY_INPUT_COUNT)))
         {
             return RenderGraphPackageStatus::Malformed;
+        }
+        const bool isCompute = role == static_cast<uint32>(format::StageRole::RayCompute) ||
+                               role == static_cast<uint32>(format::StageRole::SceneRayCompute) ||
+                               role == static_cast<uint32>(format::StageRole::PersistentRayCompute);
+        StaticArray<uint32, format::RAY_WORKGROUP_DIMENSIONS> workgroup{};
+        if (HasExplicitRayWorkgroup == true && isCompute == true)
+        {
+            for (uint32& dimension : workgroup)
+                dimension = inoutReader.ReadWord();
+            if (inoutReader.IsOk() == false || workgroup[0] == 0 || workgroup[1] == 0 || workgroup[2] != 1)
+                return RenderGraphPackageStatus::Malformed;
         }
         for (uint32 input = 0; input < inputCount; ++input)
         {
@@ -254,13 +284,14 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         }
         for (const StageView& other : Stages[role])
         {
-            if (other.IsPresent == true && other.InputCount != inputCount)
+            if (other.IsPresent == true && (other.InputCount != inputCount || other.WorkgroupSize != workgroup))
             {
                 return RenderGraphPackageStatus::Malformed;
             }
         }
         StageView& view = Stages[role][target];
         view.InputCount = inputCount;
+        view.WorkgroupSize = workgroup;
         for (uint32 block = 0; block < blockCount; ++block)
         {
             const uint32 slot = inoutReader.ReadWord();
@@ -358,13 +389,24 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
     for (usize target = 0; target < format::SHADER_TARGET_COUNT; ++target)
     {
         const bool hasForward = Stages[format::FORWARD_STAGE_ROLE_FIRST][target].IsPresent;
-        for (usize role = format::FORWARD_STAGE_ROLE_FIRST; role < format::STAGE_ROLE_COUNT; ++role)
+        for (usize role = format::FORWARD_STAGE_ROLE_FIRST; role < format::NATIVE_RAY_STAGE_ROLE; ++role)
         {
             if (Stages[role][target].IsPresent != hasForward)
             {
                 return RenderGraphPackageStatus::Malformed;
             }
         }
+    }
+    bool hasNativeRayInvocation = false;
+    for (usize pass = 0; pass < Header.PassCount; ++pass)
+    {
+        hasNativeRayInvocation =
+            hasNativeRayInvocation == true || Passes[pass].Traversal == format::RayTraversal::HardwarePipeline;
+    }
+    if (Stages[format::NATIVE_RAY_STAGE_ROLE][static_cast<usize>(format::ShaderTarget::Metal)].IsPresent !=
+        hasNativeRayInvocation)
+    {
+        return RenderGraphPackageStatus::Malformed;
     }
     bool hasLegacyProfile = false;
     bool hasSceneProfile = false;
@@ -549,7 +591,12 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeRecords(ByteReader& in
         pass.SourceColor = HasBilinearUpscale == true ? inoutReader.ReadWord() : format::ABSENT;
         pass.DenoisingQuality = HasDenoising == true ? inoutReader.ReadWord() : 0;
         const uint32 traversal = HasExplicitRayTraversal == true ? inoutReader.ReadWord() : 0;
-        if (traversal > static_cast<uint32>(format::RayTraversal::TriangleLoop) ||
+        const uint32 maximumTraversal =
+            static_cast<uint32>(HasComputeBvhTraversal == true  ? format::RayTraversal::ComputeBvh
+                                : HasNativeRayPipeline == true  ? format::RayTraversal::HardwarePipeline
+                                : HasCustomRayTraversal == true ? format::RayTraversal::Custom
+                                                                : format::RayTraversal::TriangleLoop);
+        if (traversal > maximumTraversal ||
             (program != static_cast<uint32>(format::Technique::RayTracing) && traversal != 0))
         {
             return RenderGraphPackageStatus::Malformed;
@@ -557,7 +604,8 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeRecords(ByteReader& in
         pass.Traversal = static_cast<format::RayTraversal>(traversal);
         HasNativeRayQueries =
             HasNativeRayQueries == true || (program == static_cast<uint32>(format::Technique::RayTracing) &&
-                                            pass.Traversal == format::RayTraversal::NativeQuery);
+                                            (pass.Traversal == format::RayTraversal::NativeQuery ||
+                                             pass.Traversal == format::RayTraversal::HardwarePipeline));
         const bool isUpscale = format::IsImageTechnique(static_cast<format::Technique>(program)) == true;
         if (pass.DenoisingQuality > static_cast<uint32>(format::ProcessingQuality::High) ||
             (isUpscale == true && (HasBilinearUpscale == false || pass.SceneData != 0)) ||
@@ -625,7 +673,9 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
-        (version != format::SOFTWARE_RAY_PACKAGE_VERSION && version != format::METALFX_SPATIAL_PACKAGE_VERSION &&
+        (version != format::COMPUTE_BVH_PACKAGE_VERSION && version != format::RAY_WORKGROUP_PACKAGE_VERSION &&
+         version != format::NATIVE_RAY_PIPELINE_PACKAGE_VERSION && version != format::CUSTOM_RAY_PACKAGE_VERSION &&
+         version != format::SOFTWARE_RAY_PACKAGE_VERSION && version != format::METALFX_SPATIAL_PACKAGE_VERSION &&
          version != format::DENOISING_PACKAGE_VERSION && version != format::BILINEAR_PACKAGE_VERSION &&
          version != format::TONE_MAPPING_PACKAGE_VERSION && version != format::ACCUMULATION_PACKAGE_VERSION &&
          version != format::FORWARD_PACKAGE_VERSION && version != format::PIXEL_BUFFER_PACKAGE_VERSION &&
@@ -648,7 +698,11 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     candidate->HasBilinearUpscale = version >= format::BILINEAR_PACKAGE_VERSION;
     candidate->HasMetalFxSpatialUpscale = version >= format::METALFX_SPATIAL_PACKAGE_VERSION;
     candidate->HasDenoising = version >= format::DENOISING_PACKAGE_VERSION;
+    candidate->HasExplicitRayWorkgroup = version >= format::RAY_WORKGROUP_PACKAGE_VERSION;
     candidate->HasExplicitRayTraversal = version >= format::SOFTWARE_RAY_PACKAGE_VERSION;
+    candidate->HasCustomRayTraversal = version >= format::CUSTOM_RAY_PACKAGE_VERSION;
+    candidate->HasNativeRayPipeline = version >= format::NATIVE_RAY_PIPELINE_PACKAGE_VERSION;
+    candidate->HasComputeBvhTraversal = version >= format::COMPUTE_BVH_PACKAGE_VERSION;
     candidate->HasNativeRay = version >= format::NATIVE_RAY_PACKAGE_VERSION;
     candidate->HasIndependentPrograms = version >= format::INDEPENDENT_PROGRAM_PACKAGE_VERSION;
     candidate->HasVisibilityFields = version >= format::VISIBILITY_PACKAGE_VERSION;
@@ -731,7 +785,9 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
             {
                 return RenderGraphPackageStatus::Malformed;
             }
-            for (const format::StageRole role : {format::StageRole::RayCompute, format::StageRole::SceneRayCompute})
+            for (const format::StageRole role : {format::StageRole::RayCompute,
+                                                 format::StageRole::SceneRayCompute,
+                                                 format::StageRole::NativeRayStages})
             {
                 const usize index = static_cast<usize>(role);
                 rhi::RasterShaderDescription description;
@@ -938,7 +994,8 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
     for (usize role = 0; role < format::STAGE_ROLE_COUNT; ++role)
     {
         rhi::RasterShaderDescription& description =
-            role >= format::FORWARD_STAGE_ROLE_FIRST ? *forwardMembers[role - format::FORWARD_STAGE_ROLE_FIRST]
+            role == format::NATIVE_RAY_STAGE_ROLE      ? result.NativeRayStages
+            : role >= format::FORWARD_STAGE_ROLE_FIRST ? *forwardMembers[role - format::FORWARD_STAGE_ROLE_FIRST]
             : role == static_cast<usize>(format::StageRole::PersistentRayCompute) ? result.RayCompute
             : role < format::LEGACY_STAGE_ROLE_COUNT
                 ? *members[role]
@@ -957,7 +1014,8 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
         }
         const bool isRayRole =
             (role >= static_cast<uint32>(format::StageRole::RayCompute) && role < format::LEGACY_STAGE_ROLE_COUNT) ||
-            role == static_cast<uint32>(format::StageRole::PersistentRayCompute);
+            role == static_cast<uint32>(format::StageRole::PersistentRayCompute) ||
+            role == format::NATIVE_RAY_STAGE_ROLE;
         const bool isVertex = isRayRole == true ? role == static_cast<uint32>(format::StageRole::RayImageVertex)
                                                 : role % format::TECHNIQUE_STAGE_COUNT == 0;
         description.Artifact.Stage = isVertex == true ? rhi::ShaderStage::Vertex : rhi::ShaderStage::Fragment;
@@ -978,9 +1036,12 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
         }
         if (isRayRole == true)
         {
-            const bool isPersistentCompute = role == static_cast<usize>(format::StageRole::PersistentRayCompute);
-            const bool isSceneCompute =
-                role == static_cast<usize>(format::StageRole::SceneRayCompute) || isPersistentCompute == true;
+            const bool isPersistentCompute =
+                role == static_cast<usize>(format::StageRole::PersistentRayCompute) ||
+                (role == format::NATIVE_RAY_STAGE_ROLE && result.HasPersistentRayBuffers == true);
+            description.Artifact.HasNativeRayStages = role == format::NATIVE_RAY_STAGE_ROLE;
+            const bool isSceneCompute = role == static_cast<usize>(format::StageRole::SceneRayCompute) ||
+                                        isPersistentCompute == true || role == format::NATIVE_RAY_STAGE_ROLE;
             result.HasPersistentRayBuffers = result.HasPersistentRayBuffers == true || isPersistentCompute == true;
             result.HasSceneShaderInterface = result.HasSceneShaderInterface == true || isSceneCompute == true;
             description.Artifact.Stage =
@@ -993,8 +1054,16 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
                                        isPersistentCompute,
                                        result.HasVisibilityBuffer,
                                        state.HasNativeRayQueries);
+            if (description.Artifact.Stage == rhi::ShaderStage::Compute && role != format::NATIVE_RAY_STAGE_ROLE &&
+                state.HasExplicitRayWorkgroup == true)
+            {
+                for (const State::StageView& view : views)
+                    if (view.IsPresent == true)
+                        for (usize axis = 0; axis < format::RAY_WORKGROUP_DIMENSIONS; ++axis)
+                            description.WorkgroupSize[axis] = view.WorkgroupSize[axis];
+            }
         }
-        if (role >= format::FORWARD_STAGE_ROLE_FIRST)
+        if (role >= format::FORWARD_STAGE_ROLE_FIRST && role < format::NATIVE_RAY_STAGE_ROLE)
         {
             SetRenderGraphForwardInterface(description, static_cast<format::StageRole>(role));
         }
@@ -1084,7 +1153,20 @@ bool RequiresHardwareRayTracing(const RenderGraphPlan& plan) noexcept
     for (usize i = 0; i < plan.Passes.GetSize(); ++i)
     {
         if (plan.Passes[i].Program == format::Technique::RayTracing &&
-            plan.Passes[i].Traversal == format::RayTraversal::NativeQuery)
+            (plan.Passes[i].Traversal == format::RayTraversal::NativeQuery ||
+             plan.Passes[i].Traversal == format::RayTraversal::HardwarePipeline))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+bool RequiresNativeRayPipeline(const RenderGraphPlan& plan) noexcept
+{
+    for (usize index = 0; index < plan.Passes.GetSize(); ++index)
+    {
+        const format::Pass& pass = plan.Passes[index];
+        if (pass.Program == format::Technique::RayTracing && pass.Traversal == format::RayTraversal::HardwarePipeline)
         {
             return true;
         }
@@ -1317,6 +1399,20 @@ Status RenderGraphActivation::StageSelected(core::UniquePtr<RenderGraphPackage> 
         RequiresHardwareRayTracing(rayPackageOrNull->GetPlan()) == false)
     {
         return Stage(core::Move(rayPackageOrNull));
+    }
+    if (selected == RenderGraphRenderer::HardwareRayTracing && rayPackageOrNull.Get() != nullptr &&
+        RequiresNativeRayPipeline(rayPackageOrNull->GetPlan()) == true)
+    {
+        rhi::RayCapabilities capabilities;
+        const Status capabilityStatus = rhi::GetRayCapabilities(mState->Device, capabilities);
+        if (capabilityStatus != Status::Ready && capabilityStatus != Status::Unsupported)
+        {
+            return capabilityStatus;
+        }
+        if (capabilities.RayPipelines == false)
+        {
+            selected = RenderGraphRenderer::Raster;
+        }
     }
     return selected == RenderGraphRenderer::HardwareRayTracing && rayPackageOrNull.Get() != nullptr
                ? Stage(core::Move(rayPackageOrNull))

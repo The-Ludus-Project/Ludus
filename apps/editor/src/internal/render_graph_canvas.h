@@ -41,6 +41,7 @@ class RenderGraphHistory;
 class RenderGraphComments;
 class RenderGraphReroutes;
 class RenderGraphDiagnostics;
+class RenderGraphExecutionPlan;
 /// Connection domain shown on the canvas (docs/architecture/render-graph-authoring.md,
 /// "Node and connection contracts"). Shader functions live in build manifests, not here.
 enum class RenderGraphDomain : foundation::uint8
@@ -154,10 +155,18 @@ public:
     [[nodiscard]] RenderGraphHistory& GetHistory() noexcept;
     /// Canvas-owned comment editing and grouped gestures; GUI thread only.
     [[nodiscard]] RenderGraphComments& GetComments() noexcept;
+    /// Apply comment stage visibility/proxy routing, retaining logical selection and trace. GUI thread only.
+    void RefreshCommentPresentation();
+    /// Whether either logical wire endpoint is hidden in a stage; reroutes remain saved until expansion.
+    [[nodiscard]] bool IsWireCollapsed(const QString& from, const QString& to) const;
     /// Canvas-owned reroute presentation and gestures; GUI thread only, valid for canvas lifetime.
     [[nodiscard]] RenderGraphReroutes& GetReroutes() noexcept;
     /// Canvas-owned report counts, source freshness and diagnostic navigation; GUI thread only.
     [[nodiscard]] RenderGraphDiagnostics& GetDiagnostics() noexcept;
+    /// Canvas-owned accepted-plan overlay and Plan page; GUI thread only.
+    [[nodiscard]] RenderGraphExecutionPlan& GetExecutionPlan() noexcept;
+    /// Repaint plan badges/activity without changing selection, tracing, transforms or saved coordinates.
+    void RefreshPlanOverlay();
     /// Current document revision, for rejecting stale modal/gesture operations.
     [[nodiscard]] foundation::uint64 GetDocumentRevision() const noexcept;
     /// Copy authored card geometry without configuration interface boxes.
@@ -178,7 +187,7 @@ public:
     [[nodiscard]] bool HasNode(const QString& node) const;
     /// Displayed scene position of a node's top-left corner.
     [[nodiscard]] QPointF GetNodePosition(const QString& node) const;
-    /// Scene position of a port connector; outputs are on the right edge.
+    /// Scene position of a port connector or its collapsed-stage boundary proxy; outputs are on the right edge.
     [[nodiscard]] QPointF GetPortPosition(const QString& endpoint, bool isOutput) const;
     /// Type of a displayed port, such as ColorTexture; empty when the canvas does not show it.
     [[nodiscard]] QString GetPortType(const QString& endpoint, bool isOutput) const;
@@ -302,6 +311,7 @@ private:
     RenderGraphComments* mCommentsOrNull = nullptr;
     RenderGraphReroutes* mReroutesOrNull = nullptr;
     RenderGraphDiagnostics* mDiagnostics;
+    RenderGraphExecutionPlan* mExecutionPlanOrNull = nullptr;
     QAction* mFitGraphAction;
     QAction* mFitSelectionAction;
     QLabel* mZoomLabel;
@@ -314,6 +324,7 @@ private:
     QString mConfiguration;
     QHash<QString, NodeView*> mNodes;
     QStringList mExpandedSceneBundles;
+    QStringList mHiddenSelection;
     QVector<EdgeView*> mEdges;
     QStringList mDragNodes;
     QHash<QString, QPointF> mDragOrigins;

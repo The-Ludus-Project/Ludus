@@ -239,10 +239,9 @@ Status PackGpuScene(const ReferenceJob& job,
         out[2] = {GpuBits(n.First), GpuBits(n.Count), GpuBits(n.SplitAxis), 0};
     }
     internal::PackGpuPreviewRayOrder(scene, shouldPartitionNativeOpacity, data.GetData() + order);
-    for (usize i = 0; i < scene.Emitters.GetSize(); ++i)
+    if (internal::PackReferenceEmitterSelection(scene, {data.GetData() + emitters, scene.Emitters.GetSize()}) == false)
     {
-        data[emitters + i].X = GpuBits(scene.Emitters[i]);
-        data[emitters + i].Y = GpuBits(scene.EmitterCdf[i]);
+        return Status::InvalidDescription;
     }
     for (usize i = 0; i < job.ShaderEmitters.GetSize(); ++i)
     {
@@ -787,6 +786,8 @@ void Renderer::State::ClearGpuPreview() noexcept
     }
     internal::GpuPreviewState& state = *GpuPreview;
     static_cast<void>(rhi::Destroy(Device, state.ComputePipeline));
+    static_cast<void>(rhi::Destroy(Device, state.NativeRayPipeline));
+    static_cast<void>(rhi::Destroy(Device, state.NativeRayShader));
     static_cast<void>(rhi::Destroy(Device, state.ImagePipeline));
     static_cast<void>(rhi::Destroy(Device, state.ComputeLayout));
     static_cast<void>(rhi::Destroy(Device, state.ImageLayout));
@@ -965,6 +966,7 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     {
         state->StorageDescriptions[i] = options.StorageBuffers[i];
     }
+    state->Options.NativeRayStagesOrNull = nullptr;
     state->Options.StorageBuffers = {state->StorageDescriptions.GetData(), options.StorageBuffers.GetSize()};
     state->WorkgroupWidth = compute.WorkgroupSize[0];
     state->WorkgroupHeight = compute.WorkgroupSize[1];
@@ -984,6 +986,34 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     }
     mState->GpuPreview = core::Move(state);
     internal::GpuPreviewState& target = *mState->GpuPreview;
+    if (options.NativeRayStagesOrNull != nullptr)
+    {
+        const rhi::RasterShaderDescription& native = *options.NativeRayStagesOrNull;
+        if (native.Artifact.HasNativeRayStages == false || native.Artifact.Stage != rhi::ShaderStage::Compute ||
+            native.WorkgroupSize[0] != compute.WorkgroupSize[0] ||
+            native.WorkgroupSize[1] != compute.WorkgroupSize[1] || native.WorkgroupSize[2] != compute.WorkgroupSize[2])
+        {
+            mState->ClearGpuPreview();
+            mState->ClearReference();
+            return Status::InvalidDescription;
+        }
+        rhi::RayCapabilities rayCapabilities;
+        status = rhi::GetRayCapabilities(mState->Device, rayCapabilities);
+        if (status != Status::Ready || rayCapabilities.RayPipelines == false)
+        {
+            mState->ClearGpuPreview();
+            mState->ClearReference();
+            return Status::Unsupported;
+        }
+        status = rhi::CreateRasterShader(mState->Device, *options.NativeRayStagesOrNull, target.NativeRayShader);
+        target.HasNativeRayShader = Accepted(status);
+        if (Accepted(status) == false)
+        {
+            mState->ClearGpuPreview();
+            mState->ClearReference();
+            return status;
+        }
+    }
     status = rhi::CreateRasterShader(mState->Device, compute, target.ComputeShader);
     if (Accepted(status))
     {
@@ -1044,6 +1074,14 @@ Status Renderer::PollGpuPreview() noexcept
         switch (state.Phase)
         {
             case 0:
+                if (state.HasNativeRayShader == true)
+                {
+                    status = rhi::GetStatus(mState->Device, state.NativeRayShader);
+                    if (status != Status::Ready)
+                    {
+                        break;
+                    }
+                }
                 status = rhi::GetStatus(mState->Device, state.ComputeShader);
                 if (status == Status::Ready)
                 {
@@ -1080,6 +1118,25 @@ Status Renderer::PollGpuPreview() noexcept
                 }
                 break;
             case 3:
+                if (state.HasNativeRayShader == true)
+                {
+                    if (state.HasCreatedNativeRayPipeline == false)
+                    {
+                        status = rhi::CreateComputePipeline(mState->Device,
+                                                            {state.NativeRayShader, state.ComputeLayout},
+                                                            state.NativeRayPipeline);
+                        state.HasCreatedNativeRayPipeline = Accepted(status);
+                        if (status != Status::Ready)
+                        {
+                            break;
+                        }
+                    }
+                    status = rhi::GetStatus(mState->Device, state.NativeRayPipeline);
+                    if (status != Status::Ready)
+                    {
+                        break;
+                    }
+                }
                 status = rhi::GetStatus(mState->Device, state.ComputePipeline);
                 if (status == Status::Ready)
                 {
@@ -1167,6 +1224,11 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     if (status != Status::Ready)
     {
         return status;
+    }
+    if (invocationOrNull != nullptr && invocationOrNull->HasNativeRayInvocation == true &&
+        mState->GpuPreview->HasNativeRayShader == false)
+    {
+        return Status::Unsupported;
     }
     if (Access::Owner(outOutput) != 0)
     {
@@ -1439,6 +1501,7 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
         uniform.Sampling[SAMPLE_LIMIT_COMPONENT] = invocationOrNull->AccumulationSamples;
     }
     uniform.Options.Y = invocationOrNull != nullptr ? invocationOrNull->ToneMappingExposure : state.Options.Exposure;
+    job.HasNativeRayInvocation = invocationOrNull != nullptr && invocationOrNull->HasNativeRayInvocation == true;
     job.DenoisingQuality = invocationOrNull != nullptr ? invocationOrNull->DenoisingQuality : 0;
     job.RayPathCapture = hasRayPathCapture == true ? invocationOrNull->RayPathCapture : GpuPreviewGraphBuffer{};
     uniform.Sampling[2] |= job.DenoisingQuality != 0 ? LUDUS_GPU_PREVIEW_DENOISING_FLAG : 0;

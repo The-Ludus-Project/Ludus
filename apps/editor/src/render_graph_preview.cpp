@@ -648,8 +648,8 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
         else
         {
             rendererStatus = hasNativeRayQueries == true
-                                 ? QStringLiteral("Hardware raytracing renderer.")
-                                 : QStringLiteral("Compute raytracing renderer (software triangle traversal).");
+                                 ? QStringLiteral("Compute raytracing renderer (native hardware BVH queries).")
+                                 : QStringLiteral("Compute raytracing renderer (shader traversal).");
         }
     }
     // Denoising only filters the image. Without the optional denoiser, preview the graph as if its
@@ -1602,7 +1602,8 @@ QString RenderGraphPreview::GetDisplayStatus() const
         case renderer::RenderGraphCandidateState::RestartRequired:
             break;
         case renderer::RenderGraphCandidateState::None:
-            return mImage.isNull() == true ? QStringLiteral("Preparing renderer…") : QString();
+            return mImage.isNull() == true && mState->HasGpuFrame == false ? QStringLiteral("Preparing renderer…")
+                                                                           : QString();
     }
     return {};
 }

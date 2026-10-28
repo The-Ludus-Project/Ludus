@@ -114,6 +114,7 @@ inline foundation::uint32 CollectDynamicOffsets(const RasterLayout& layout,
 }
 struct RasterShaderInfo final
 {
+    bool HasNativeRayStages = false;
     ShaderStage Stage = ShaderStage::Vertex;
     RasterLayout Layout;
     RasterShaderInput Inputs[16]{};

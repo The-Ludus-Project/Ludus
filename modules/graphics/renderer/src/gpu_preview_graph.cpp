@@ -318,11 +318,11 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
                                           rhi::RasterVisibility::Compute};
     }
     const rhi::ComputeDispatch dispatch{
-        state.ComputePipeline,
+        job.HasNativeRayInvocation == true ? state.NativeRayPipeline : state.ComputePipeline,
         job.ComputeBindings,
         {(job.Width - 1) / state.WorkgroupWidth + 1, (job.Height - 1) / state.WorkgroupHeight + 1, 1}};
     rhi::GraphPassDescription compute;
-    compute.Name = "GPU preview transport";
+    compute.Name = job.HasNativeRayInvocation == true ? "Native Metal ray stages" : "GPU preview transport";
     compute.Uses = computeUses.GetData();
     compute.UseCount = computeUseCount;
     compute.Dispatch = &dispatch;

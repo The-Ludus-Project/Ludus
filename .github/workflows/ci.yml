@@ -526,6 +526,8 @@ jobs:
           path: out/quality/tooling/
           if-no-files-found: error
           retention-days: 14
+      - name: Test design tokens and their consumers
+        run: PYTHONPATH=scripts/python python3 -m unittest test_design_tokens -v
       - name: Test formatting and staged-file preservation
         run: python3 -m unittest discover -s scripts/python -p 'test_formatting.py' -v
       - name: Test reproducible packs with the independent LZ4 decoder

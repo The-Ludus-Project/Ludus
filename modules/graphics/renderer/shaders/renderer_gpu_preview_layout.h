@@ -10,7 +10,8 @@
 // Strides count float4 words, not bytes. Update the version when changing layout.
 #define LUDUS_GPU_PREVIEW_SURFACE_WORDS 9
 #define LUDUS_GPU_PREVIEW_LIGHT_WORDS 4
-#define LUDUS_GPU_PREVIEW_KERNEL_VERSION 8 // Emitter bounds after the emitter records.
+// 9: emitter bounds after the emitter records; 8: BVH leaf order in order word Z, beside native opacity ranges in X.
+#define LUDUS_GPU_PREVIEW_KERNEL_VERSION 9
 // Words per mesh emitter in the bounds records that follow the emitter records:
 // sphere centre/radius, normal-cone axis/cosine, then flag bits in word 2 X.
 #define LUDUS_GPU_PREVIEW_EMITTER_BOUNDS_WORDS 3
@@ -110,6 +111,13 @@
 #define LUDUS_GRAPH_BUFFER0_BINDING 6
 #define LUDUS_GRAPH_BUFFER1_BINDING 7
 #define LUDUS_GRAPH_COMPUTE_BINDING_COUNT 8
+// Per-pass ray traversal codes, matching render_graph_format::RayTraversal. The build writes one
+// code per ordered pass into the linked kernel's strategy table.
+#define LUDUS_GRAPH_TRAVERSAL_NATIVE_QUERY 0
+#define LUDUS_GRAPH_TRAVERSAL_TRIANGLE_LOOP 1
+#define LUDUS_GRAPH_TRAVERSAL_CUSTOM 2
+#define LUDUS_GRAPH_TRAVERSAL_HARDWARE_PIPELINE 3
+#define LUDUS_GRAPH_TRAVERSAL_COMPUTE_BVH 4
 
 // Ray path capture: diagnostic LUDUS_RAY_PATH_CAPTURE kernels only. One uint32-word
 // storage buffer holds a CPU-written header, a summary per selected pixel, sample and

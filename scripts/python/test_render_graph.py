@@ -374,6 +374,12 @@ class RenderGraphTests(unittest.TestCase):
         after = graph.compile_graph(self.path)
         self.assertEqual(before["semantic_digest"], after["semantic_digest"])
         self.assertEqual(before["passes"], after["passes"])
+        frame['collapsed'] = True
+        self.assertEqual(json.loads(graph.canonical_asset(value)), value)
+        self.write(value)
+        collapsed = graph.compile_graph(self.path)
+        self.assertEqual(before["semantic_digest"], collapsed["semantic_digest"])
+        self.assertEqual(before["passes"], collapsed["passes"])
 
     def test_comment_frame_schema_is_bounded_and_rejects_malformed_metadata(self):
         from ludus_tools import render_graph_layout as policy
@@ -384,7 +390,8 @@ class RenderGraphTests(unittest.TestCase):
                    dict(notes="a" * (policy.MAX_COMMENT_NOTES_CODEPOINTS + 1)),
                    dict(colour="red"), dict(colour="#FF000080"), dict(x=0.5), dict(x=True),
                    dict(width=policy.MIN_COMMENT_WIDTH-1), dict(height=policy.MIN_COMMENT_HEIGHT-1),
-                   dict(x=policy.MAX_COORDINATE), dict(id="bad.id"), dict(extra=True)]
+                   dict(x=policy.MAX_COORDINATE), dict(id="bad.id"), dict(extra=True),
+                   dict(collapsed=1), dict(collapsed="true"), dict(collapsed=None)]
         for change in changes:
             with self.subTest(change=change):
                 value = self.read()
@@ -399,6 +406,44 @@ class RenderGraphTests(unittest.TestCase):
         value = self.read()
         self.config(value)["layout"] = dict(positions=[], frames=[original | dict(title="🌟" * policy.MAX_COMMENT_TITLE_CODEPOINTS)])
         graph.canonical_asset(value)
+
+    def test_activity_provenance_includes_retained_values_and_excludes_pruned_nodes(self):
+        value = self.read()
+        unused = copy.deepcopy(self.node(value, 'color'))
+        unused['id'] = 'unused'
+        self.config(value)['nodes'].append(unused)
+        self.write(value)
+        plan = graph.compile_graph(self.path)
+        contexts = {item['instance']: item for item in plan['activity']}
+        self.assertEqual(plan['source'], 'main.lurender.json')
+        self.assertEqual(contexts['Main']['source'], 'main.lurender.json')
+        self.assertIn('scene', contexts['Main']['retained'])
+        self.assertIn('camera', contexts['Main']['retained'])
+        self.assertIn('raster', contexts['Main']['retained'])
+        self.assertNotIn('unused', contexts['Main']['retained'])
+        self.assertEqual(contexts['Main/raster']['retained'], ['draw'])
+        self.assertLessEqual(sum(len(item['retained']) for item in plan['activity']), graph.MAX_EXPANDED_NODES)
+
+    def test_activity_provenance_respects_requested_outputs_per_shared_instance(self):
+        target = self.node(self.read(), 'color')
+        target.update(imported=True, presentation=False, initialized=True)
+        targets = [dict(target, id=identity) for identity in ('a', 'b')]
+        child = dict(version=2, id='Choice', default='Default', configurations=[dict(
+            id='Default', inputs=[], outputs=[dict(id=identity, type='ColorTexture',
+                source=identity+'.texture', required=False) for identity in ('a', 'b')], nodes=targets, edges=[])])
+        self.write(child, 'choice.lurender.json')
+        value = dict(version=2, id='Main', default='Default', configurations=[dict(
+            id='Default', inputs=[], outputs=[], nodes=[
+                dict(id=identity, kind='Subgraph', asset='choice.lurender.json', configuration='Default')
+                for identity in ('first', 'second')] + [dict(id='out_'+identity, kind='Export', type='ColorTexture')
+                for identity in ('a', 'b')], edges=[dict(**{'from': 'first.a', 'to': 'out_a.texture'}),
+                                                 dict(**{'from': 'second.b', 'to': 'out_b.texture'})])])
+        self.write(value)
+        plan = graph.compile_graph(self.path)
+        contexts = {item['instance']: item for item in plan['activity']}
+        self.assertEqual(contexts['Main/first']['retained'], ['a'])
+        self.assertEqual(contexts['Main/second']['retained'], ['b'])
+        self.assertEqual(contexts['Main/first']['source'], contexts['Main/second']['source'])
 
     def test_plan_is_deterministic_after_relocation_and_repeat(self):
         before = graph.compile_graph(self.path)

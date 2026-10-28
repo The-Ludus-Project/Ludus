@@ -46,6 +46,12 @@
 /// Version 16 appends DenoisingQuality for OIDN RT HDR filtering before display conversion.
 /// Version 17 admits MetalFX Spatial roles without changing the version 16 record layout.
 /// Version 18 appends Traversal to every pass; earlier ray records require native queries.
+/// Version 19 admits authored custom compute traversal; the version 18 record layout is unchanged.
+/// Version 20 admits native ray-stage artifacts and explicit hardware invocation.
+/// Version 21 inserts RAY_WORKGROUP_DIMENSIONS uint32 values after the six fixed fields
+/// of each RayCompute/SceneRayCompute/PersistentRayCompute stage record. X/Y must be positive and Z
+/// must be one; targets of the same role must agree. Earlier compute stages imply 64x1x1.
+/// Version 22 admits RayTraversal::ComputeBvh in each pass's traversal word.
 namespace ludus::content::render_graph_format
 {
 /// "LURG" read as a little-endian uint32.
@@ -59,8 +65,16 @@ inline constexpr foundation::uint32 RAY_PATH_CAPTURE_PACKAGE_MAGIC = 0x5052554CU
 inline constexpr foundation::uint32 METALFX_SPATIAL_PACKAGE_VERSION = 17;
 /// First generation carrying software/native ray traversal requirements per pass.
 inline constexpr foundation::uint32 SOFTWARE_RAY_PACKAGE_VERSION = 18;
+/// First generation admitting authored custom compute traversal without native ray resources.
+inline constexpr foundation::uint32 CUSTOM_RAY_PACKAGE_VERSION = 19;
+/// First generation carrying native ray-stage artifacts and explicit hardware invocation.
+inline constexpr foundation::uint32 NATIVE_RAY_PIPELINE_PACKAGE_VERSION = 20;
+/// First generation carrying reflected X/Y/Z dimensions on ray compute stages.
+inline constexpr foundation::uint32 RAY_WORKGROUP_PACKAGE_VERSION = 21;
+/// First generation admitting the ComputeBvh pass traversal; version 21's layout is unchanged.
+inline constexpr foundation::uint32 COMPUTE_BVH_PACKAGE_VERSION = 22;
 /// Current runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = SOFTWARE_RAY_PACKAGE_VERSION;
+inline constexpr foundation::uint32 PACKAGE_VERSION = COMPUTE_BVH_PACKAGE_VERSION;
 /// First package carrying explicit OIDN denoising quality per ray pass.
 inline constexpr foundation::uint32 DENOISING_PACKAGE_VERSION = 16;
 /// First package carrying the renderer-owned bilinear image operation.
@@ -103,8 +117,8 @@ inline constexpr foundation::usize MAX_ARTIFACT_BYTES = foundation::usize{2} * 1
 inline constexpr foundation::usize MAX_ENTRY_BYTES = 63;
 /// Legacy and scene callback compute roles plus shared image stages.
 inline constexpr foundation::usize LEGACY_RAY_STAGE_ROLE_COUNT = 4;
-/// Compute/image roles including the separately appended persistent compute role.
-inline constexpr foundation::usize RAY_STAGE_ROLE_COUNT = LEGACY_RAY_STAGE_ROLE_COUNT + 1;
+/// Compute/image roles including persistent compute and native ray-stage roles.
+inline constexpr foundation::usize RAY_STAGE_ROLE_COUNT = LEGACY_RAY_STAGE_ROLE_COUNT + 2;
 /// Legacy stage-role prefix, including ray roles whose IDs remain stable.
 inline constexpr foundation::usize LEGACY_STAGE_ROLE_COUNT =
     RASTER_TECHNIQUE_COUNT * TECHNIQUE_STAGE_COUNT + LEGACY_RAY_STAGE_ROLE_COUNT;
@@ -118,8 +132,10 @@ inline constexpr foundation::usize FORWARD_STAGE_ROLE_FIRST =
 inline constexpr foundation::usize FORWARD_STAGE_ROLE_COUNT = 6;
 /// Authored forward vertex interface size.
 inline constexpr foundation::usize FORWARD_INPUT_COUNT = 16;
-/// All admitted stage roles, including independent raster pairs.
-inline constexpr foundation::usize STAGE_ROLE_COUNT = FORWARD_STAGE_ROLE_FIRST + FORWARD_STAGE_ROLE_COUNT;
+/// Appended native Metal stage role; earlier role identifiers stay stable.
+inline constexpr foundation::usize NATIVE_RAY_STAGE_ROLE = FORWARD_STAGE_ROLE_FIRST + FORWARD_STAGE_ROLE_COUNT;
+/// All admitted raster, compute and native ray stage roles.
+inline constexpr foundation::usize STAGE_ROLE_COUNT = NATIVE_RAY_STAGE_ROLE + 1;
 /// Return a raster pair's vertex (stage 0) or fragment (stage 1) role.
 /// @pre technique is a bounded raster role and stage is below TECHNIQUE_STAGE_COUNT.
 [[nodiscard]] LUDUS_INLINE constexpr foundation::usize GetRasterStageRole(Technique technique,
@@ -131,9 +147,7 @@ inline constexpr foundation::usize STAGE_ROLE_COUNT = FORWARD_STAGE_ROLE_FIRST +
                : LEGACY_STAGE_ROLE_COUNT + (index - LEGACY_TECHNIQUE_COUNT) * TECHNIQUE_STAGE_COUNT + stage;
 }
 /// Largest stage table: one artifact per role and target.
-inline constexpr foundation::usize MAX_STAGES =
-    (MAX_AUTHORED_TECHNIQUES * TECHNIQUE_STAGE_COUNT + RAY_STAGE_ROLE_COUNT) * SHADER_TARGET_COUNT +
-    FORWARD_STAGE_ROLE_COUNT * SHADER_TARGET_COUNT;
+inline constexpr foundation::usize MAX_STAGES = STAGE_ROLE_COUNT * SHADER_TARGET_COUNT;
 /// Renderer static vertex/instance interface: position plus four transform rows and color.
 inline constexpr foundation::usize STATIC_INPUT_COUNT = 6;
 /// Fixed uint32 fields before the identities.
@@ -159,6 +173,8 @@ inline constexpr foundation::usize UNIFORM_BLOCK_RECORD_BYTES = 3 * sizeof(found
 inline constexpr foundation::usize UNIFORM_FIELD_RECORD_BYTES = 5 * sizeof(foundation::uint32);
 /// Fixed uint32 fields at the start of each stage record.
 inline constexpr foundation::usize STAGE_FIELD_COUNT = 6;
+/// Reflected X, Y and Z words on a ray compute stage in version 19 and later.
+inline constexpr foundation::usize RAY_WORKGROUP_DIMENSIONS = 3;
 /// Serialized width of one (location, format) stage input pair.
 inline constexpr foundation::usize INPUT_RECORD_BYTES = 2 * sizeof(foundation::uint32);
 /// Explicit program role: raster vertex/fragment pairs, followed by three linked ray roles.
@@ -186,6 +202,7 @@ enum class StageRole : foundation::uint32
     LightingVertex,                           ///< Renderer lighting composition vertex.
     LightingFragment,                         ///< Renderer lighting composition fragment.
     LightingShadow,                           ///< Renderer flat shadow fragment.
+    NativeRayStages = NATIVE_RAY_STAGE_ROLE,  ///< Linked native ray stages sharing the persistent scene ABI.
 };
 /// Float vertex input width of one stage input record.
 // NOLINTNEXTLINE(performance-enum-size): versioned numeric fields have explicit 32-bit widths.

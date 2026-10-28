@@ -18,6 +18,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QTableWidget>
@@ -2474,7 +2475,7 @@ TEST_CASE("scene compute nodes use automatic state and launch size while generic
     QComboBox* mode = editor.findChild<QComboBox*>(QStringLiteral("rayLaunchSizeMode"));
     QSpinBox* width = editor.findChild<QSpinBox*>(QStringLiteral("rayLaunchDimension0"));
     QGroupBox* advanced = editor.findChild<QGroupBox*>(QStringLiteral("renderGraphComputeAdvanced"));
-    QLabel* groupSize = editor.findChild<QLabel*>(QStringLiteral("renderGraphComputeGroupSize"));
+    QComboBox* groupSize = editor.findChild<QComboBox*>(QStringLiteral("renderGraphComputeGroupSize"));
     QLabel* warning = editor.findChild<QLabel*>(QStringLiteral("renderGraphComputeGroupSizeWarning"));
     QPushButton* automatic = editor.findChild<QPushButton*>(QStringLiteral("renderGraphComputeAutomatic"));
     REQUIRE(mode != nullptr);
@@ -2485,7 +2486,7 @@ TEST_CASE("scene compute nodes use automatic state and launch size while generic
     REQUIRE(automatic != nullptr);
     CHECK(mode->currentText() == QStringLiteral("Match color target"));
     CHECK(advanced->isChecked() == false);
-    CHECK(groupSize->text() == QStringLiteral("64 × 1 × 1"));
+    CHECK(groupSize->currentText() == QStringLiteral("64 × 1 × 1"));
     CHECK(warning->isHidden() == true);
     CHECK(applied.isEmpty() == true);
     mode->setCurrentIndex(1);
@@ -2499,12 +2500,32 @@ TEST_CASE("scene compute nodes use automatic state and launch size while generic
     CHECK(applied.value(QStringLiteral("state")).toObject() ==
           QJsonObject{{QStringLiteral("group_size"), GetSceneComputeGroupSize()}});
     CHECK(GetSceneComputeGroupSize() == QJsonArray{64, 1, 1});
+    groupSize->setCurrentIndex(1);
+    CHECK(applied.value(QStringLiteral("state")).toObject().value(QStringLiteral("group_size")).toArray() ==
+          QJsonArray{8, 8, 1});
     advanced->setChecked(false);
     CHECK(applied.value(QStringLiteral("state")).toObject().isEmpty() == true);
 
+    // The canvas field form uses the same operation while the Properties inspector is absent.
+    RenderGraphPipelineEditor canvasEditor(scene);
+    canvasEditor.ShowParts();
+    QJsonObject canvasEdit;
+    QObject::connect(&canvasEditor,
+                     &RenderGraphPipelineEditor::Edited,
+                     &canvasEditor,
+                     [&canvasEdit](const QJsonObject& candidate) { canvasEdit = candidate; });
+    QGroupBox* canvasAdvanced = canvasEditor.findChild<QGroupBox*>(QStringLiteral("renderGraphComputeAdvanced"));
+    QComboBox* canvasGroup = canvasEditor.findChild<QComboBox*>(QStringLiteral("renderGraphComputeGroupSize"));
+    REQUIRE(canvasAdvanced != nullptr);
+    REQUIRE(canvasGroup != nullptr);
+    canvasAdvanced->setChecked(true);
+    canvasGroup->setCurrentIndex(1);
+    CHECK(canvasEdit.value(QStringLiteral("state")).toObject().value(QStringLiteral("group_size")).toArray() ==
+          QJsonArray{8, 8, 1});
+
     // A saved draft with an unsupported group size opens unchanged and offers the repair.
     QJsonObject unsupported = scene;
-    unsupported.insert(QStringLiteral("state"), QJsonObject{{QStringLiteral("group_size"), QJsonArray{8, 8, 1}}});
+    unsupported.insert(QStringLiteral("state"), QJsonObject{{QStringLiteral("group_size"), QJsonArray{32, 2, 1}}});
     RenderGraphPipelineEditor unsupportedEditor(unsupported);
     QJsonObject repaired;
     QObject::connect(&unsupportedEditor,
@@ -2515,7 +2536,7 @@ TEST_CASE("scene compute nodes use automatic state and launch size while generic
         unsupportedEditor.findChild<QLabel*>(QStringLiteral("renderGraphComputeGroupSizeWarning"));
     REQUIRE(unsupportedWarning != nullptr);
     CHECK(unsupportedWarning->isHidden() == false);
-    CHECK(unsupportedWarning->text().contains(QStringLiteral("8,8,1")) == true);
+    CHECK(unsupportedWarning->text().contains(QStringLiteral("32,2,1")) == true);
     CHECK(repaired.isEmpty() == true);
     unsupportedEditor.findChild<QPushButton*>(QStringLiteral("renderGraphComputeAutomatic"))->click();
     CHECK(repaired.value(QStringLiteral("state")).toObject().isEmpty() == true);
@@ -2757,11 +2778,53 @@ TEST_CASE("shared ray callbacks expose traversal selection in the canvas pipelin
     CHECK(applied.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("traversal")) ==
           QStringLiteral("TriangleLoop"));
     CHECK(applied.value(QStringLiteral("shaders")) == shaders);
+    traversal->setCurrentIndex(traversal->findData(QStringLiteral("ComputeBvh")));
+    CHECK(applied.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("traversal")) ==
+          QStringLiteral("ComputeBvh"));
+    CHECK(applied.value(QStringLiteral("shaders")) == shaders);
     traversal->setCurrentIndex(traversal->findData(QStringLiteral("NativeQuery")));
     CHECK(applied.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("traversal")) ==
           QStringLiteral("NativeQuery"));
     traversal->setCurrentIndex(0);
     CHECK(applied == node);
+}
+
+TEST_CASE("logical ray nodes select execution independently in the canvas editor",
+          "[editor][render-graph][pipeline][ray-invocation]")
+{
+    const QJsonObject node = MakePipelineNode(QStringLiteral("RayTracingPipeline"), QStringLiteral("trace"));
+    RenderGraphPipelineEditor editor(node);
+    editor.ShowParts();
+    QComboBox* execution = editor.findChild<QComboBox*>(QStringLiteral("renderGraphRayInvocationType"));
+    QComboBox* traversal = editor.findChild<QComboBox*>(QStringLiteral("renderGraphTraversal"));
+    QLineEdit* source = editor.findChild<QLineEdit*>(QStringLiteral("renderGraphTraversalSource"));
+    REQUIRE(execution != nullptr);
+    REQUIRE(traversal != nullptr);
+    REQUIRE(source != nullptr);
+    CHECK(execution->currentData() == QStringLiteral("Compute"));
+    QJsonObject applied;
+    QObject::connect(&editor, &RenderGraphPipelineEditor::Edited, &editor, [&applied](const QJsonObject& candidate) {
+        applied = candidate;
+    });
+    execution->setCurrentIndex(execution->findData(QStringLiteral("RayTracing")));
+    CHECK(applied.value(QStringLiteral("kind")) == QStringLiteral("RayTracingPipeline"));
+    CHECK(applied.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("type")) ==
+          QStringLiteral("RayTracing"));
+    CHECK(traversal->isEnabled() == false);
+    execution->setCurrentIndex(execution->findData(QStringLiteral("Compute")));
+    CHECK(applied.value(QStringLiteral("kind")) == QStringLiteral("RayTracingPipeline"));
+    CHECK(traversal->currentData() == QStringLiteral("TriangleLoop"));
+    traversal->setCurrentIndex(traversal->findData(QStringLiteral("NativeQuery")));
+    CHECK(applied.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("traversal")) ==
+          QStringLiteral("NativeQuery"));
+    source->setText(QStringLiteral("queries/custom.slang"));
+    traversal->setCurrentIndex(traversal->findData(QStringLiteral("Custom")));
+    CHECK(source->isEnabled() == true);
+    CHECK(applied.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("traversal_source")) ==
+          QStringLiteral("queries/custom.slang"));
+    execution->setCurrentIndex(execution->findData(QStringLiteral("RayTracing")));
+    CHECK(applied.value(QStringLiteral("invocation")).toObject().contains(QStringLiteral("traversal")) == false);
+    CHECK(applied.value(QStringLiteral("invocation")).toObject().contains(QStringLiteral("traversal_source")) == false);
 }
 
 TEST_CASE("scene compute callback programs use scene stubs and survive document save and undo",

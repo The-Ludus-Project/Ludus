@@ -10,6 +10,12 @@
 #include "rg2_restir_di.h"
 #include "rg2_scene_compute.h"
 #include "rg2_scene_ray.h"
+#include "rg2_shared_ray_computebvh.h"
+#if defined(__APPLE__)
+#    include "rg2_mixed_invocation.h"
+#    include "rg2_native_ray.h"
+#    include "rg2_native_visibility.h"
+#endif
 #include "rg2_shared_ray_default.h"
 #include "rg2_simple_compute_ray_tracing_template.h"
 #include "rg2_storage_ray.h"
@@ -35,6 +41,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <new>
+#include <string>
 #include <string_view>
 
 using namespace ludus::foundation;
@@ -291,23 +298,49 @@ TEST_CASE("Authored ray graph shades World triangles and preserves the drawable 
 TEST_CASE("Scene callbacks preserve material and scene generation through native GPU rendering",
           "[render-graph][gpu][scene-shader]")
 {
-    bool shouldUseSoftwareTraversal = false;
+    format::RayTraversal traversal = format::RayTraversal::NativeQuery;
+    bool shouldUseNativeStages = false;
     SECTION("native traversal") {}
-    SECTION("software traversal without requested ray features")
+#if defined(__APPLE__)
+    SECTION("native ray stage function tables")
     {
-        shouldUseSoftwareTraversal = true;
+        shouldUseNativeStages = true;
     }
+#endif
+    SECTION("triangle-loop traversal without requested ray features")
+    {
+        traversal = format::RayTraversal::TriangleLoop;
+    }
+    SECTION("compute BVH traversal without requested ray features")
+    {
+        traversal = format::RayTraversal::ComputeBvh;
+    }
+    const bool shouldUseSoftwareTraversal = traversal != format::RayTraversal::NativeQuery;
     GraphGpuFixture fixture(false, shouldUseSoftwareTraversal == false);
     const renderer::RenderGraphPrograms programs =
-        shouldUseSoftwareTraversal == true
+#if defined(__APPLE__)
+        shouldUseNativeStages == true ? packages::rg2_native_ray::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                                               shaders::renderer_composite::Fragment())
+        :
+#endif
+        traversal == format::RayTraversal::ComputeBvh
+            ? packages::rg2_shared_ray_computebvh::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                                shaders::renderer_composite::Fragment())
+        : traversal == format::RayTraversal::TriangleLoop
             ? packages::rg2_shared_ray_default::MakePrograms(shaders::renderer_composite::Vertex(),
                                                              shaders::renderer_composite::Fragment())
             : packages::rg2_scene_ray::MakePrograms(shaders::renderer_composite::Vertex(),
                                                     shaders::renderer_composite::Fragment());
-    const core::UniquePtr<renderer::RenderGraphPackage> package =
-        LoadPackage(shouldUseSoftwareTraversal == true
-                        ? PackageLocation{LUDUS_RG3_SHARED_RAY_DEFAULT_DIRECTORY, "rg2_shared_ray_default.lurgrt"}
-                        : PackageLocation{LUDUS_RG3_SCENE_RAY_DIRECTORY, "rg2_scene_ray.lurgrt"});
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(
+#if defined(__APPLE__)
+        shouldUseNativeStages == true ? PackageLocation{LUDUS_RG3_NATIVE_RAY_DIRECTORY, "rg2_native_ray.lurgrt"} :
+#endif
+        traversal == format::RayTraversal::ComputeBvh
+            ? PackageLocation{LUDUS_RG3_SHARED_RAY_COMPUTEBVH_DIRECTORY, "rg2_shared_ray_computebvh.lurgrt"}
+        : traversal == format::RayTraversal::TriangleLoop
+            ? PackageLocation{LUDUS_RG3_SHARED_RAY_DEFAULT_DIRECTORY, "rg2_shared_ray_default.lurgrt"}
+            : PackageLocation{LUDUS_RG3_SCENE_RAY_DIRECTORY, "rg2_scene_ray.lurgrt"});
+    CHECK((shouldUseNativeStages == true || package->GetPlan().Passes[0].Traversal == traversal));
     const renderer::RenderGraphPrograms decoded =
         package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
     CHECK(renderer::RequiresHardwareRayTracing(package->GetPlan()) == (shouldUseSoftwareTraversal == false));
@@ -324,6 +357,17 @@ TEST_CASE("Scene callbacks preserve material and scene generation through native
     CheckSameStage(decoded.RayCompute, programs.RayCompute);
     CheckSameStage(decoded.RayImageVertex, programs.RayImageVertex);
     CheckSameStage(decoded.RayImageFragment, programs.RayImageFragment);
+    CHECK(decoded.NativeRayStages.Artifact.HasNativeRayStages == shouldUseNativeStages);
+    if (shouldUseNativeStages == true)
+    {
+        CheckSameStage(decoded.NativeRayStages, programs.NativeRayStages);
+        for (const usize axis : {usize{0}, usize{1}, usize{2}})
+        {
+            CHECK(decoded.NativeRayStages.WorkgroupSize[axis] == programs.NativeRayStages.WorkgroupSize[axis]);
+            CHECK(decoded.NativeRayStages.WorkgroupSize[axis] > 0);
+        }
+        CHECK(package->GetPlan().Passes[0].Traversal == format::RayTraversal::HardwarePipeline);
+    }
     uint32 selection = format::SCENE_DATA_ALL;
     SECTION("full Scene") {}
     SECTION("Geometry only")
@@ -471,6 +515,57 @@ TEST_CASE("Scene callbacks preserve material and scene generation through native
     CHECK(fixture.Pixels[center + 1] == 0);
     CHECK(fixture.Pixels[center + 2] == 188);
 }
+
+#if defined(__APPLE__)
+TEST_CASE("Native Metal intersection callbacks read bound scene data and reject opaque candidates",
+          "[render-graph][gpu][native-ray]")
+{
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_NATIVE_RAY_DIRECTORY, "rg2_native_ray.lurgrt"});
+    renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    // Replace only the intersection callback's final predicate. Reading the first
+    // packed World position proves its private buffer binding reaches the callback;
+    // rejecting an opaque triangle proves the intersector invokes the function table.
+    std::string source(programs.NativeRayStages.Artifact.Msl);
+    const usize predicate = source.rfind("return LudusNativeAcceptTriangle_");
+    REQUIRE(predicate != std::string::npos);
+    const usize end = source.find(';', predicate);
+    REQUIRE(end != std::string::npos);
+    source.replace(predicate, end - predicate + 1, "return as_type<float>(sceneWords_1[0].x) != -0.5f;");
+    programs.NativeRayStages.Artifact.Msl = source;
+    rhi::RasterStatus status = fixture.Graph.Initialize(fixture.Device, package->GetPlan(), programs);
+    const uint64 beginning = time::NowTicks();
+    constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
+    while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+    {
+        status = fixture.Graph.Poll();
+    }
+    REQUIRE(status == rhi::RasterStatus::Ready);
+    fixture.Cameras[0].OrthographicCamera = true;
+    renderer::SceneShaderInputs inputs;
+    inputs.Environment = {0, 0, 1};
+    renderer::RenderGraphReport report;
+    status = fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                  {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                  {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                  1,
+                                  renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                  report,
+                                  &inputs);
+    while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+    {
+        status = fixture.Graph.Poll();
+    }
+    REQUIRE(status == rhi::RasterStatus::Ready);
+    ReadGraphFrame(fixture);
+    const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+    CHECK(fixture.Pixels[center] == 0);
+    constexpr uint8 EXPECTED_BLUE = 188;
+    CHECK(fixture.Pixels[center + 2] == EXPECTED_BLUE);
+}
+#endif
 
 TEST_CASE("Legacy software ray packages require recooking", "[render-graph][ray-pipeline][activation]")
 {
@@ -748,14 +843,34 @@ TEST_CASE("Measure engine-only ray navigation and image output at 640 by 480", "
 
 TEST_CASE("Ordered ray callbacks share zeroed storage across passes and frames", "[render-graph][gpu][ray-history]")
 {
-    GraphGpuFixture fixture;
-    const core::UniquePtr<renderer::RenderGraphPackage> package =
-        LoadPackage({LUDUS_RG3_ORDERED_RAY_DIRECTORY, "rg2_ordered_ray.lurgrt"});
+    bool hasMixedInvocations = false;
+    SECTION("compute invocations") {}
+#if defined(__APPLE__)
+    SECTION("native stages, inline query compute and software compute")
+    {
+        hasMixedInvocations = true;
+    }
+#endif
+    GraphGpuFixture fixture(hasMixedInvocations);
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(
+#if defined(__APPLE__)
+        hasMixedInvocations == true
+            ? PackageLocation{LUDUS_RG3_MIXED_INVOCATION_DIRECTORY, "rg2_mixed_invocation.lurgrt"}
+            :
+#endif
+            PackageLocation{LUDUS_RG3_ORDERED_RAY_DIRECTORY, "rg2_ordered_ray.lurgrt"});
     const renderer::RenderGraphPrograms decoded =
         package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
     const renderer::RenderGraphPrograms compiled =
-        packages::rg2_ordered_ray::MakePrograms(shaders::renderer_composite::Vertex(),
-                                                shaders::renderer_composite::Fragment());
+#if defined(__APPLE__)
+        hasMixedInvocations == true
+            ? packages::rg2_mixed_invocation::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                           shaders::renderer_composite::Fragment())
+            :
+#endif
+            packages::rg2_ordered_ray::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                    shaders::renderer_composite::Fragment());
+    CHECK(decoded.NativeRayStages.Artifact.HasNativeRayStages == hasMixedInvocations);
     REQUIRE(decoded.HasPersistentRayBuffers == true);
     REQUIRE(decoded.HasSceneShaderInterface == true);
     CheckSameStage(decoded.RayCompute, compiled.RayCompute);
@@ -808,6 +923,10 @@ TEST_CASE("Ordered ray callbacks share zeroed storage across passes and frames",
                 }
                 REQUIRE(status == rhi::RasterStatus::Ready);
             }
+            if (hasMixedInvocations == true)
+            {
+                REQUIRE(rhi::ArmGpuPassTimings(fixture.Device) == rhi::RasterStatus::Ready);
+            }
             rhi::SubmissionToken completion;
             REQUIRE(fixture.Graph.Render(fixture.Surface, WIDTH, HEIGHT, completion) == rhi::RasterStatus::Ready);
             status = rhi::GetStatus(fixture.Device, completion);
@@ -816,6 +935,25 @@ TEST_CASE("Ordered ray callbacks share zeroed storage across passes and frames",
                 status = rhi::GetStatus(fixture.Device, completion);
             }
             REQUIRE(status == rhi::RasterStatus::Ready);
+            if (hasMixedInvocations == true)
+            {
+                rhi::GpuPassTimings timings;
+                REQUIRE(rhi::GetGpuPassTimings(fixture.Device, timings) == rhi::RasterStatus::Ready);
+                bool hasNativeTiming = false;
+                bool hasComputeTiming = false;
+                bool hasRasterTiming = false;
+                for (usize index = 0; index < timings.Count; ++index)
+                {
+                    hasNativeTiming =
+                        hasNativeTiming == true || timings.Passes[index].Kind == rhi::GpuPassKind::RayTracing;
+                    hasComputeTiming =
+                        hasComputeTiming == true || timings.Passes[index].Kind == rhi::GpuPassKind::Compute;
+                    hasRasterTiming = hasRasterTiming == true || timings.Passes[index].Kind == rhi::GpuPassKind::Raster;
+                }
+                CHECK(hasNativeTiming == true);
+                CHECK(hasComputeTiming == true);
+                CHECK(hasRasterTiming == true);
+            }
             rhi::TextureHandle texture;
             rhi::TextureAspect aspect;
             uint32 resource = 0;
@@ -1379,6 +1517,13 @@ TEST_CASE("Visibility raster IDs reconstruct instance materials and launch secon
 {
     GraphGpuFixture fixture;
     bool hasVisibility = true;
+    bool hasNativeStages = false;
+#if defined(__APPLE__)
+    SECTION("native stages reconstruct visibility and launch secondary rays")
+    {
+        hasNativeStages = true;
+    }
+#endif
     SECTION("visibility configuration") {}
     SECTION("visibility configuration with editor grid")
     {
@@ -1388,18 +1533,28 @@ TEST_CASE("Visibility raster IDs reconstruct instance materials and launch secon
     {
         hasVisibility = false;
     }
-    const core::UniquePtr<renderer::RenderGraphPackage> package =
-        LoadPackage(hasVisibility == true
-                        ? PackageLocation{LUDUS_RG3_VISIBILITY_DIRECTORY, "rg2_visibility.lurgrt"}
-                        : PackageLocation{LUDUS_RG3_VISIBILITY_ORDINARY_DIRECTORY, "rg2_visibility_ordinary.lurgrt"});
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(
+#if defined(__APPLE__)
+        hasNativeStages == true ? PackageLocation{LUDUS_RG3_NATIVE_VISIBILITY_DIRECTORY, "rg2_native_visibility.lurgrt"}
+        :
+#endif
+        hasVisibility == true
+            ? PackageLocation{LUDUS_RG3_VISIBILITY_DIRECTORY, "rg2_visibility.lurgrt"}
+            : PackageLocation{LUDUS_RG3_VISIBILITY_ORDINARY_DIRECTORY, "rg2_visibility_ordinary.lurgrt"});
     const renderer::RenderGraphPrograms decoded =
         package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
     const renderer::RenderGraphPrograms compiled =
+#if defined(__APPLE__)
+        hasNativeStages == true ? packages::rg2_native_visibility::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                                                shaders::renderer_composite::Fragment())
+        :
+#endif
         hasVisibility == true
             ? packages::rg2_visibility::MakePrograms(shaders::renderer_composite::Vertex(),
                                                      shaders::renderer_composite::Fragment())
             : packages::rg2_visibility_ordinary::MakePrograms(shaders::renderer_composite::Vertex(),
                                                               shaders::renderer_composite::Fragment());
+    CHECK(decoded.NativeRayStages.Artifact.HasNativeRayStages == hasNativeStages);
     CheckSameStage(decoded.ColorVertex, compiled.ColorVertex);
     CheckSameStage(decoded.RayCompute, compiled.RayCompute);
     REQUIRE(decoded.HasVisibilityBuffer == hasVisibility);
@@ -2558,6 +2713,256 @@ TEST_CASE("The compute ray-tracing template matches a single-pass direct-lightin
         CHECK(CountFailurePixels(pixels) == 0);
         CHECK(ComputeMeanRadiance(pixels).X > MINIMUM_MEAN_RADIANCE);
     }
+}
+
+namespace
+{
+constexpr uint64 TRAVERSAL_TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
+/// The room plus smaller copies of it inside, which add occluders and deepen the BVH.
+constexpr usize TRAVERSAL_ITEM_COUNT = 3;
+/// Uniform scale and World translations of the nested copies.
+constexpr float32 TRAVERSAL_BLOCK_SCALE = .3F;
+constexpr StaticArray<math::Vector3, TRAVERSAL_ITEM_COUNT - 1> TRAVERSAL_BLOCK_OFFSETS_WORLD{{
+    {-.45F, -.65F, -.2F},
+    {.4F, -.55F, .25F},
+}};
+
+/// Poll one graph operation until it is ready.
+void WaitForGraph(renderer::RenderGraph& inoutGraph, rhi::RasterStatus initial)
+{
+    rhi::RasterStatus status = initial;
+    const uint64 beginning = time::NowTicks();
+    while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TRAVERSAL_TIMEOUT)
+    {
+        status = inoutGraph.Poll();
+    }
+    REQUIRE(status == rhi::RasterStatus::Ready);
+}
+
+/// Initialize a graph from a decoded package, submit the World and return its exported resource.
+uint32 PrepareRoomGraph(renderer::RenderGraph& inoutGraph,
+                        const GraphGpuFixture& fixture,
+                        const renderer::RenderGraphPackage& package,
+                        const CornellBox& room,
+                        const StaticArray<renderer::RenderGraphItem, TRAVERSAL_ITEM_COUNT>& items,
+                        usize itemCount)
+{
+    const renderer::RenderGraphPlan plan = package.GetPlan();
+    const renderer::RenderGraphPrograms programs =
+        package.GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    WaitForGraph(inoutGraph, inoutGraph.Initialize(fixture.Device, plan, programs, nullptr, WIDTH, HEIGHT));
+    renderer::RenderGraphReport report;
+    constexpr uint64 REVISION = 1;
+    WaitForGraph(inoutGraph,
+                 inoutGraph.Update({room.Meshes.GetData(), room.Meshes.GetSize()},
+                                   {items.GetData(), itemCount},
+                                   {room.Cameras.GetData(), room.Cameras.GetSize()},
+                                   REVISION,
+                                   renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                   report,
+                                   &room.Inputs,
+                                   REVISION));
+    uint32 output = 0;
+    for (uint32 resource = 0; resource < plan.Resources.GetSize(); ++resource)
+    {
+        output = plan.Resources[resource].IsExported == 1 ? resource : output;
+    }
+    return output;
+}
+
+/// The room's item followed by its nested copies.
+StaticArray<renderer::RenderGraphItem, TRAVERSAL_ITEM_COUNT> MakeTraversalItems(const CornellBox& room)
+{
+    StaticArray<renderer::RenderGraphItem, TRAVERSAL_ITEM_COUNT> items{};
+    items[0] = room.Items[0];
+    for (usize block = 1; block < TRAVERSAL_ITEM_COUNT; ++block)
+    {
+        items[block] = room.Items[0];
+        items[block].SourceId = block + 1;
+        items[block].MeshToWorld.Columns[0] = {TRAVERSAL_BLOCK_SCALE, 0, 0};
+        items[block].MeshToWorld.Columns[1] = {0, TRAVERSAL_BLOCK_SCALE, 0};
+        items[block].MeshToWorld.Columns[2] = {0, 0, TRAVERSAL_BLOCK_SCALE};
+        items[block].MeshToWorld.Translation = TRAVERSAL_BLOCK_OFFSETS_WORLD[block - 1];
+    }
+    return items;
+}
+
+/// Pixels of two equally sized RGBA8 images with an RGB byte difference above channelTolerance.
+usize CountDifferentPixels(const Array<uint8>& left, const Array<uint8>& right, uint8 channelTolerance)
+{
+    usize count = 0;
+    for (usize address = 0; address + 3 < left.GetSize(); address += 4)
+    {
+        bool isDifferent = false;
+        for (usize channel = 0; channel < 3; ++channel)
+        {
+            const uint8 high = math::Max(left[address + channel], right[address + channel]);
+            const uint8 low = math::Min(left[address + channel], right[address + channel]);
+            isDifferent = isDifferent == true || high - low > channelTolerance;
+        }
+        count += isDifferent == true ? 1 : 0;
+    }
+    return count;
+}
+} // namespace
+
+TEST_CASE("Compute BVH traversal reports the same hits and visibility as the other strategies",
+          "[render-graph][gpu][ray-traversal]")
+{
+    bool shouldCompareNative = false;
+    SECTION("triangle loop without requested ray features") {}
+    SECTION("native ray queries")
+    {
+        shouldCompareNative = true;
+    }
+    GraphGpuFixture fixture(false, shouldCompareNative);
+    const core::UniquePtr<renderer::RenderGraphPackage> bvhPackage =
+        LoadPackage({LUDUS_RG3_TRAVERSAL_PARITY_COMPUTEBVH_DIRECTORY, "rg2_traversal_parity_computebvh.lurgrt"});
+    const core::UniquePtr<renderer::RenderGraphPackage> baselinePackage =
+        LoadPackage(shouldCompareNative == true ? PackageLocation{LUDUS_RG3_TRAVERSAL_PARITY_NATIVE_DIRECTORY,
+                                                                  "rg2_traversal_parity_native.lurgrt"}
+                                                : PackageLocation{LUDUS_RG3_TRAVERSAL_PARITY_TRIANGLELOOP_DIRECTORY,
+                                                                  "rg2_traversal_parity_triangleloop.lurgrt"});
+    REQUIRE(bvhPackage->GetPlan().Passes[0].Traversal == format::RayTraversal::ComputeBvh);
+    CHECK(baselinePackage->GetPlan().Passes[0].Traversal ==
+          (shouldCompareNative == true ? format::RayTraversal::NativeQuery : format::RayTraversal::TriangleLoop));
+    CHECK(renderer::RequiresHardwareRayTracing(bvhPackage->GetPlan()) == false);
+    const renderer::RenderGraphPrograms bvhPrograms =
+        bvhPackage->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    for (const rhi::RasterBinding& binding : bvhPrograms.RayCompute.Bindings)
+    {
+        CHECK(binding.Kind != rhi::RasterBindingKind::RayScene);
+    }
+
+    const CornellBox room;
+    const StaticArray<renderer::RenderGraphItem, TRAVERSAL_ITEM_COUNT> items = MakeTraversalItems(room);
+    usize itemCount = TRAVERSAL_ITEM_COUNT;
+    SECTION("room with nested blocks") {}
+    SECTION("empty World")
+    {
+        itemCount = 0;
+    }
+    renderer::RenderGraph baseline;
+    const uint32 bvhOutput = PrepareRoomGraph(fixture.Graph, fixture, *bvhPackage, room, items, itemCount);
+    const uint32 baselineOutput = PrepareRoomGraph(baseline, fixture, *baselinePackage, room, items, itemCount);
+    Array<uint8> pixels;
+    Array<uint8> baselinePixels;
+    RenderExport(fixture.Graph, fixture, bvhOutput, {}, pixels);
+    RenderExport(baseline, fixture, baselineOutput, {}, baselinePixels);
+    REQUIRE(pixels.GetSize() == baselinePixels.GetSize());
+    // Failed queries, exhausted budgets and traversal stack overflow show magenta.
+    REQUIRE(CountFailurePixels(pixels) == 0);
+    REQUIRE(CountFailurePixels(baselinePixels) == 0);
+    constexpr uint8 VISIBLE_LEVEL = 255;
+    constexpr uint8 OCCLUDED_LEVEL = 128;
+    usize primaryHits = 0;
+    usize secondaryHits = 0;
+    usize visible = 0;
+    usize occluded = 0;
+    for (usize address = 0; address + 3 < pixels.GetSize(); address += 4)
+    {
+        primaryHits += pixels[address] != 0 ? 1 : 0;
+        secondaryHits += pixels[address + 1] != 0 ? 1 : 0;
+        visible += pixels[address] != 0 && pixels[address + 2] == VISIBLE_LEVEL ? 1 : 0;
+        occluded += pixels[address] != 0 && pixels[address + 2] == OCCLUDED_LEVEL ? 1 : 0;
+    }
+    // Query outcomes are encoded exactly, so any byte difference is a different hit or visibility.
+    const usize differences = CountDifferentPixels(pixels, baselinePixels, 0);
+    INFO("primary hits=" << primaryHits << ", secondary hits=" << secondaryHits << ", visible=" << visible
+                         << ", occluded=" << occluded << ", different pixels=" << differences);
+    if (itemCount == 0)
+    {
+        CHECK(primaryHits == 0);
+        CHECK(differences == 0);
+        return;
+    }
+    // The fixture exercises surface hits, occluded and unoccluded shadow rays.
+    const usize pixelCount = pixels.GetSize() / 4;
+    CHECK(primaryHits > pixelCount / 2);
+    CHECK(secondaryHits > 0);
+    CHECK(visible > 0);
+    CHECK(occluded > 0);
+    // Watertight, Moller-Trumbore and hardware intersection can differ only where a query grazes an
+    // edge or ties two triangles; allow one pixel in a thousand for those.
+    constexpr usize DIFFERING_PIXEL_DIVISOR = 1000;
+    CHECK(differences <= static_cast<usize>(WIDTH) * HEIGHT / DIFFERING_PIXEL_DIVISOR);
+}
+
+TEST_CASE("The compute ray-tracing template runs its ComputeBvh configuration without native rays",
+          "[render-graph][gpu][compute-ray-tracing][template][ray-traversal]")
+{
+    bool shouldCompareNative = false;
+    SECTION("without requested ray features") {}
+    SECTION("against the native default configuration")
+    {
+        shouldCompareNative = true;
+    }
+    GraphGpuFixture fixture(false, shouldCompareNative);
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(
+        {LUDUS_RG3_COMPUTE_RAY_TRACING_BVH_TEMPLATE_DIRECTORY, "rg2_compute_ray_tracing_bvh_template.lurgrt"});
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    REQUIRE(renderer::RequiresHardwareRayTracing(plan) == false);
+    constexpr usize PASS_COUNT = 2;
+    REQUIRE(plan.Passes.GetSize() == PASS_COUNT);
+    for (usize index = 0; index < plan.Passes.GetSize(); ++index)
+    {
+        CHECK(plan.Passes[index].Traversal == format::RayTraversal::ComputeBvh);
+    }
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    for (const rhi::RasterBinding& binding : programs.RayCompute.Bindings)
+    {
+        CHECK(binding.Kind != rhi::RasterBindingKind::RayScene);
+    }
+    const CornellBox room;
+    const StaticArray<renderer::RenderGraphItem, TRAVERSAL_ITEM_COUNT> items = MakeTraversalItems(room);
+    const uint32 output = PrepareRoomGraph(fixture.Graph, fixture, *package, room, items, 1);
+    constexpr usize FRAME_COUNT = 64;
+    Array<uint8> pixels;
+    if (shouldCompareNative == false)
+    {
+        for (usize frame = 0; frame < FRAME_COUNT; ++frame)
+        {
+            RenderExport(fixture.Graph, fixture, output, {}, pixels);
+            REQUIRE(CountFailurePixels(pixels) == 0);
+        }
+        // The room is lit: the back wall at the center is white, the left wall red and the right wall green.
+        const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+        const usize left = GetPixel(WIDTH / 2 - WIDTH * 3 / 10, HEIGHT / 2);
+        const usize right = GetPixel(WIDTH / 2 + WIDTH * 3 / 10, HEIGHT / 2);
+        CHECK(pixels[center] > 0);
+        CHECK(pixels[left] > pixels[left + 1]);
+        CHECK(pixels[right + 1] > pixels[right]);
+        return;
+    }
+    const core::UniquePtr<renderer::RenderGraphPackage> nativePackage =
+        LoadPackage({LUDUS_RG3_COMPUTE_RAY_TRACING_TEMPLATE_DIRECTORY, "rg2_compute_ray_tracing_template.lurgrt"});
+    REQUIRE(renderer::RequiresHardwareRayTracing(nativePackage->GetPlan()) == true);
+    renderer::RenderGraph native;
+    const uint32 nativeOutput = PrepareRoomGraph(native, fixture, *nativePackage, room, items, 1);
+    Array<uint8> nativePixels;
+    for (usize frame = 0; frame < FRAME_COUNT; ++frame)
+    {
+        RenderExport(fixture.Graph, fixture, output, {}, pixels);
+        RenderExport(native, fixture, nativeOutput, {}, nativePixels);
+        REQUIRE(CountFailurePixels(pixels) == 0);
+        REQUIRE(CountFailurePixels(nativePixels) == 0);
+    }
+    // Both configurations draw the same random values; only the traversal differs, so the
+    // accumulated images agree except where a shadow ray grazes an edge differently.
+    const math::Vector3 mean = ComputeMeanRadiance(pixels);
+    const math::Vector3 nativeMean = ComputeMeanRadiance(nativePixels);
+    INFO("ComputeBvh mean=" << mean.X << ',' << mean.Y << ',' << mean.Z << ", native mean=" << nativeMean.X << ','
+                            << nativeMean.Y << ',' << nativeMean.Z);
+    constexpr float32 RELATIVE_MEAN_TOLERANCE = .02F;
+    CHECK(math::Abs(mean.X - nativeMean.X) < RELATIVE_MEAN_TOLERANCE * nativeMean.X);
+    CHECK(math::Abs(mean.Y - nativeMean.Y) < RELATIVE_MEAN_TOLERANCE * nativeMean.Y);
+    CHECK(math::Abs(mean.Z - nativeMean.Z) < RELATIVE_MEAN_TOLERANCE * nativeMean.Z);
+    // Hardware and watertight barycentrics differ in their last bits, so shading may differ by a byte.
+    constexpr uint8 CHANNEL_TOLERANCE = 2;
+    constexpr usize DIFFERING_PIXEL_DIVISOR = 1000;
+    CHECK(CountDifferentPixels(pixels, nativePixels, CHANNEL_TOLERANCE) <=
+          static_cast<usize>(WIDTH) * HEIGHT / DIFFERING_PIXEL_DIVISOR);
 }
 
 namespace

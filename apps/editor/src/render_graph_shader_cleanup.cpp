@@ -71,6 +71,40 @@ bool CollectProgramReferences(const QJsonValue& value, QStringList& inoutReferen
     return true;
 }
 
+bool CollectTraversalSources(const QJsonValue& value, QStringList& inoutSources)
+{
+    if (value.isArray() == true)
+    {
+        for (const QJsonValueConstRef item : value.toArray())
+        {
+            if (CollectTraversalSources(item, inoutSources) == false)
+            {
+                return false;
+            }
+        }
+    }
+    else if (value.isObject() == true)
+    {
+        const QJsonObject object = value.toObject();
+        for (QJsonObject::const_iterator field = object.constBegin(); field != object.constEnd(); ++field)
+        {
+            if (field.key() == QStringLiteral("traversal_source"))
+            {
+                if (field.value().isString() == false)
+                {
+                    return false;
+                }
+                inoutSources.append(QDir::cleanPath(field.value().toString()));
+            }
+            else if (CollectTraversalSources(field.value(), inoutSources) == false)
+            {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 QString ResolveSourcePath(const QString& manifest, const QString& source)
 {
     return QDir::cleanPath(QDir(QFileInfo(manifest).path()).filePath(source));
@@ -182,6 +216,7 @@ RenderGraphDocument::RemoveUnusedShaders(QStringList& outPrograms, QStringList& 
         return RenderGraphDocumentStatus::NotFound;
     }
     QStringList references;
+    QStringList traversalSources;
     QMap<QString, QJsonObject> manifests;
     QMap<QString, foundation::int32> sourceUses;
     for (QMap<QString, QByteArray>::const_iterator file = mDraft.Files.constBegin(); file != mDraft.Files.constEnd();
@@ -202,7 +237,8 @@ RenderGraphDocument::RemoveUnusedShaders(QStringList& outPrograms, QStringList& 
         {
             hasCompleteReferences = hasCompleteReferences == true &&
                                     HasCompleteGraphReferences(file.key(), object, mDraft) == true &&
-                                    CollectProgramReferences(object, references, false) == true;
+                                    CollectProgramReferences(object, references, false) == true &&
+                                    CollectTraversalSources(object, traversalSources) == true;
         }
         else
         {
@@ -238,7 +274,7 @@ RenderGraphDocument::RemoveUnusedShaders(QStringList& outPrograms, QStringList& 
     RenderGraphSnapshot candidate = mDraft;
     QStringList programs;
     QStringList sources;
-    QStringList retainedSources;
+    QStringList retainedSources = traversalSources;
     for (QMap<QString, QJsonObject>::const_iterator manifest = manifests.constBegin(); manifest != manifests.constEnd();
          ++manifest)
     {

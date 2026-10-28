@@ -595,19 +595,66 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
     }
     if (name == QStringLiteral("invocation") && UsesRayLaunch(mNode) == true)
     {
+        const QJsonObject invocation = mNode.value(name).toObject();
+        QComboBox* execution = new QComboBox(this);
+        execution->setObjectName(QStringLiteral("renderGraphRayInvocationType"));
+        execution->setProperty("renderGraphField", QStringLiteral("invocation.type"));
+        execution->addItem(QStringLiteral("Compute pipeline"), QStringLiteral("Compute"));
+        if (mNode.value(QStringLiteral("kind")).toString() == QStringLiteral("RayTracingPipeline"))
+        {
+            execution->addItem(QStringLiteral("Hardware RT pipeline"), QStringLiteral("RayTracing"));
+        }
+        execution->setCurrentIndex(
+            execution->findData(invocation.value(QStringLiteral("type")).toString(QStringLiteral("Compute"))));
+        execution->setToolTip(QStringLiteral("Select how this logical ray node executes. Hardware RT requires a "
+                                             "native ray-stage backend and never silently lowers to compute."));
+        outForm.addRow(QStringLiteral("Invocation type"), execution);
         QComboBox* traversal = new QComboBox(this);
         traversal->setObjectName(QStringLiteral("renderGraphTraversal"));
         traversal->setProperty("renderGraphField", QStringLiteral("invocation.traversal"));
         traversal->addItem(QStringLiteral("Automatic"), QString());
         traversal->addItem(QStringLiteral("Triangle loop"), QStringLiteral("TriangleLoop"));
+        traversal->addItem(QStringLiteral("Compute BVH"), QStringLiteral("ComputeBvh"));
         traversal->addItem(QStringLiteral("Native ray query"), QStringLiteral("NativeQuery"));
+        traversal->addItem(QStringLiteral("Custom traversal"), QStringLiteral("Custom"));
         const QString selection = mNode.value(name).toObject().value(QStringLiteral("traversal")).toString();
         traversal->setCurrentIndex(traversal->findData(selection));
         traversal->setToolTip(QStringLiteral(
-            "Shared ray callbacks default to triangle intersections in a compute pipeline and native queries in "
-            "a ray pipeline. Existing compute kernels default to native queries. Triangle loop needs ordinary compute; "
-            "native queries require enabled ray hardware. The choice applies to surface and visibility queries."));
-        connect(traversal, &QComboBox::currentIndexChanged, this, [this, traversal](int32 index) {
+            "Compute invocation uses native hardware BVH queries, the engine triangle loop, the renderer's BVH in "
+            "ordinary compute (Compute BVH, for larger scenes without ray hardware), or your traversal source. "
+            "Automatic on an explicit Compute invocation uses the triangle loop. Legacy graphs retain their prior "
+            "default. Hardware RT invocation owns its traversal."));
+        QLineEdit* source = new QLineEdit(invocation.value(QStringLiteral("traversal_source")).toString(), this);
+        source->setObjectName(QStringLiteral("renderGraphTraversalSource"));
+        source->setProperty("renderGraphField", QStringLiteral("invocation.traversal_source"));
+        source->setPlaceholderText(QStringLiteral("Package-relative .slang traversal source"));
+        source->setToolTip(QStringLiteral("Defines Hit TraceWorld(float3 originWorld, float3 directionWorld, "
+                                          "float nearDistanceWorld, float farDistanceWorld, bool isVisibility). "
+                                          "The same source handles closest and visibility queries."));
+        traversal->setEnabled(execution->currentData().toString() == QStringLiteral("Compute"));
+        source->setEnabled(traversal->isEnabled() == true && selection == QStringLiteral("Custom"));
+        connect(execution, &QComboBox::currentIndexChanged, this, [this, execution, traversal, source]() {
+            QJsonObject candidate = mNode.value(QStringLiteral("invocation")).toObject();
+            const bool isCompute = execution->currentData().toString() == QStringLiteral("Compute");
+            candidate.insert(QStringLiteral("type"), execution->currentData().toString());
+            if (isCompute == false)
+            {
+                candidate.remove(QStringLiteral("traversal"));
+                candidate.remove(QStringLiteral("traversal_source"));
+            }
+            else
+            {
+                candidate.insert(QStringLiteral("traversal"), QStringLiteral("TriangleLoop"));
+            }
+            const QSignalBlocker blocker(traversal);
+            traversal->setCurrentIndex(
+                traversal->findData(isCompute == true ? QStringLiteral("TriangleLoop") : QString()));
+            traversal->setEnabled(isCompute);
+            source->setEnabled(false);
+            mNode.insert(QStringLiteral("invocation"), candidate);
+            publishEdit();
+        });
+        connect(traversal, &QComboBox::currentIndexChanged, this, [this, traversal, source](int32 index) {
             QJsonObject invocation = mNode.value(QStringLiteral("invocation")).toObject();
             const QString strategy = traversal->itemData(index).toString();
             if (strategy.isEmpty() == true)
@@ -618,16 +665,39 @@ void RenderGraphPipelineEditor::addProperties(QFormLayout& outForm, const QStrin
             {
                 invocation.insert(QStringLiteral("traversal"), strategy);
             }
+            const bool isCustom = strategy == QStringLiteral("Custom");
+            source->setEnabled(isCustom);
+            if (isCustom == true)
+            {
+                invocation.insert(QStringLiteral("traversal_source"), source->text().trimmed());
+            }
+            else
+            {
+                invocation.remove(QStringLiteral("traversal_source"));
+            }
             mNode.insert(QStringLiteral("invocation"), invocation);
             publishEdit();
         });
         outForm.addRow(QStringLiteral("Ray traversal"), traversal);
+        connect(source, &QLineEdit::editingFinished, this, [this, source]() {
+            if (source->isEnabled() == false)
+            {
+                return;
+            }
+            QJsonObject candidate = mNode.value(QStringLiteral("invocation")).toObject();
+            candidate.insert(QStringLiteral("traversal_source"), source->text().trimmed());
+            mNode.insert(QStringLiteral("invocation"), candidate);
+            publishEdit();
+        });
+        outForm.addRow(QStringLiteral("Traversal source"), source);
     }
     const QJsonObject properties = mNode.value(name).toObject();
     for (QJsonObject::const_iterator property = properties.begin(); property != properties.end(); ++property)
     {
         const QString key = property.key();
-        if (name == QStringLiteral("invocation") && key == QStringLiteral("traversal") && UsesRayLaunch(mNode) == true)
+        if (name == QStringLiteral("invocation") && UsesRayLaunch(mNode) == true &&
+            (key == QStringLiteral("type") || key == QStringLiteral("traversal") ||
+             key == QStringLiteral("traversal_source")))
         {
             continue;
         }
@@ -818,15 +888,16 @@ void RenderGraphPipelineEditor::addRayStateProperties(QFormLayout& outForm)
 
 void RenderGraphPipelineEditor::addSceneComputeStateProperties(QFormLayout& outForm)
 {
-    const QJsonArray fixedGroupSize = GetSceneComputeGroupSize();
-    const QString fixedText = QStringLiteral("%1 × %2 × %3")
-                                  .arg(fixedGroupSize.at(0).toInteger())
-                                  .arg(fixedGroupSize.at(1).toInteger())
-                                  .arg(fixedGroupSize.at(2).toInteger());
+    const QJsonArray defaultGroupSize = GetSceneComputeGroupSize();
+    const QJsonArray supported = GetSupportedSceneComputeGroupSizes();
+    const QString defaultText = QStringLiteral("%1 × %2 × %3")
+                                    .arg(defaultGroupSize.at(0).toInteger())
+                                    .arg(defaultGroupSize.at(1).toInteger())
+                                    .arg(defaultGroupSize.at(2).toInteger());
     QLabel* explanation = new QLabel(
-        QStringLiteral("Automatic: a scene compute pass runs once per launch pixel in the ray wrapper's fixed %1 "
-                       "workgroup. Query budgets are shared with the package's ray passes.")
-            .arg(fixedText),
+        QStringLiteral("Automatic: inherit the shader bundle's explicit workgroup, or use %1. "
+                       "All explicit scene compute overrides in one bundle must agree. Query budgets are shared.")
+            .arg(defaultText),
         this);
     explanation->setWordWrap(true);
     outForm.addRow(explanation);
@@ -836,36 +907,52 @@ void RenderGraphPipelineEditor::addSceneComputeStateProperties(QFormLayout& outF
     advanced->setCheckable(true);
     QFormLayout* form = new QFormLayout(advanced);
     form->setRowWrapPolicy(QFormLayout::WrapLongRows);
-    QLabel* groupSize = new QLabel(advanced);
+    QComboBox* groupSize = new QComboBox(advanced);
     groupSize->setObjectName(QStringLiteral("renderGraphComputeGroupSize"));
+    for (const QJsonValueConstRef shape : supported)
+    {
+        const QJsonArray dimensions = shape.toArray();
+        groupSize->addItem(QStringLiteral("%1 × %2 × %3")
+                               .arg(dimensions.at(0).toInteger())
+                               .arg(dimensions.at(1).toInteger())
+                               .arg(dimensions.at(2).toInteger()));
+    }
     form->addRow(QStringLiteral("Group size"), groupSize);
     QLabel* warning = new QLabel(advanced);
     warning->setObjectName(QStringLiteral("renderGraphComputeGroupSizeWarning"));
     warning->setWordWrap(true);
     form->addRow(warning);
-    // The only accepted explicit size is the fixed one; any other authored size is shown for repair.
-    const auto showState = [this, advanced, groupSize, warning, fixedGroupSize, fixedText]() {
+    const auto showState = [this, advanced, groupSize, warning, supported]() {
         const QJsonValue authored = mNode.value(QStringLiteral("state")).toObject().value(QStringLiteral("group_size"));
-        const QSignalBlocker blocker(advanced);
+        const QSignalBlocker advancedBlocker(advanced);
+        const QSignalBlocker groupBlocker(groupSize);
         advanced->setChecked(authored.isUndefined() == false);
-        groupSize->setText(fixedText);
-        warning->setVisible(authored.isUndefined() == false && authored != fixedGroupSize);
-        warning->setText(
-            QStringLiteral("Authored group size %1 is not supported: the build rejects it. Use automatic settings "
-                           "to clear it.")
-                .arg(QString::fromUtf8(QJsonDocument(authored.toArray()).toJson(QJsonDocument::Compact))));
+        foundation::int32 index = authored.isUndefined() == true ? 0 : -1;
+        for (foundation::int32 candidate = 0; candidate < supported.size(); ++candidate)
+            if (supported.at(candidate) == authored)
+                index = candidate;
+        groupSize->setCurrentIndex(index);
+        warning->setVisible(index < 0);
+        warning->setText(QStringLiteral("Authored group size %1 is unsupported and the build rejects it. "
+                                        "Select a supported shape or use automatic settings to repair it.")
+                             .arg(QString::fromUtf8(QJsonDocument(authored.toArray()).toJson(QJsonDocument::Compact))));
     };
     showState();
-    connect(advanced, &QGroupBox::toggled, this, [this, fixedGroupSize, showState](bool isChecked) {
+    connect(groupSize, &QComboBox::currentIndexChanged, this, [this, supported, showState](foundation::int32 index) {
+        if (index < 0 || index >= supported.size())
+            return;
+        QJsonObject state = mNode.value(QStringLiteral("state")).toObject();
+        state.insert(QStringLiteral("group_size"), supported.at(index));
+        mNode.insert(QStringLiteral("state"), state);
+        showState();
+        publishEdit();
+    });
+    connect(advanced, &QGroupBox::toggled, this, [this, defaultGroupSize, showState](bool isChecked) {
         QJsonObject state = mNode.value(QStringLiteral("state")).toObject();
         if (isChecked == true)
-        {
-            state.insert(QStringLiteral("group_size"), fixedGroupSize);
-        }
+            state.insert(QStringLiteral("group_size"), defaultGroupSize);
         else
-        {
             state.remove(QStringLiteral("group_size"));
-        }
         mNode.insert(QStringLiteral("state"), state);
         showState();
         publishEdit();

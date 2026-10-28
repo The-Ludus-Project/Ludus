@@ -38,6 +38,8 @@ enum class GpuPassKind : foundation::uint8
     Raster,
     /// Physical compute operation, including GPU stalls.
     Compute,
+    /// Native ray-stage/function-table pipeline; Metal measures its compute encoder interval.
+    RayTracing,
 };
 /// One physical operation inside a named scope; native objects are never exposed or borrowed.
 struct GpuPassTiming final

@@ -429,6 +429,10 @@ TEST_CASE("GPU opacity partition order preserves original triangle identities an
         std::memcpy(&actual, &packed[i].X, sizeof(actual));
         CHECK(actual == expected[i]);
         CHECK(scene.Order[i] == original[i]);
+        // Compute BVH leaves address the unpartitioned order beside the native ranges.
+        uint32 leaf = 0;
+        std::memcpy(&leaf, &packed[i].Z, sizeof(leaf));
+        CHECK(leaf == original[i]);
     }
     uint32 base = 0;
     std::memcpy(&base, &packed[0].Y, sizeof(base));
@@ -438,8 +442,11 @@ TEST_CASE("GPU opacity partition order preserves original triangle identities an
     for (usize i = 0; i < TRIANGLE_COUNT; ++i)
     {
         uint32 actual = 0;
+        uint32 leaf = 0;
         std::memcpy(&actual, &packed[i].X, sizeof(actual));
+        std::memcpy(&leaf, &packed[i].Z, sizeof(leaf));
         CHECK(actual == original[i]);
+        CHECK(leaf == original[i]);
     }
     for (renderer::MaterialAlpha alpha : {renderer::MaterialAlpha::Opaque, renderer::MaterialAlpha::Masked})
     {

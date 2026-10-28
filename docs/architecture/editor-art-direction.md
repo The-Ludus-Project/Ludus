@@ -103,8 +103,9 @@ Selected combination: Quiet Studio's attention model, Instrument Panel's truthfu
 status/recovery, and Open Workshop's plain language. Keep one coherent default;
 do not combine all three layouts or add permanent guidance/status columns.
 Dark/light appearance is an accessibility and environment preference. Both
-appearances use the same mint/teal identity; amber and cobalt from the earlier
-studies are not alternate brand palettes to ship.
+appearances use the same mint/teal identity; cobalt from the earlier studies is
+not an alternate brand palette to ship. Amber is a functional role (the selected
+object), like success and danger, not a second brand colour.
 
 The captured concept views are [Quiet Studio](../development/images/editor-direction-studio.jpg),
 [Instrument Panel](../development/images/editor-direction-instrument.jpg), and
@@ -150,15 +151,31 @@ rounding. Translate the logo's construction into clear panel grouping and
 strong silhouettes. Controls remain flat and easy to scan; isometric faces,
 bevels and shaded blocks belong to brand artwork, not every button or panel.
 
+The tokens live in one file, [`config/design-tokens.json`](../../config/design-tokens.json).
+The Editor reads a header generated from it at configure time
+(`apps/editor/DesignTokens.cmake`), the setup window reads it through
+`scripts/python/design_tokens.py`, and the browser editor's `editor.css` carries a
+generated block of `--ludus-*` custom properties (`python3
+scripts/python/design_tokens.py --write` refreshes it). The file also lists the
+contrast pairs that must hold in both appearances; the Editor tests
+(`[design-tokens]`) and `scripts/python/test_design_tokens.py` fail when a value
+breaks one. The table shows the core roles; the file is authoritative.
+
 | Semantic token | Dark appearance | Light appearance |
 | --- | --- | --- |
-| Workspace / panel | `#18232c` / `#222f39` | `#edf3f2` / `#ffffff` |
-| Raised surface | `#2c3c47` | `#e1ece9` |
-| Text / secondary text | `#e9f2f1` / `#b5c5c9` | `#18232c` / `#4c6267` |
-| Border | `#80969e` | `#71878b` |
+| Workspace / panel | `#18232c` / `#222f39` | `#f1efea` / `#ffffff` |
+| Raised surface | `#2c3c47` | `#e6e3dc` |
+| Text / secondary text / hints | `#e9f2f1` / `#b5c5c9` / `#9bafb4` | `#18232c` / `#4c6267` / `#4f6468` |
+| Border (controls) / divider | `#80969e` / `#3a4d59` | `#71878b` / `#d3d0c8` |
 | Primary fill / text on fill | `#57d2c1` / `#18232c` | `#14786f` / `#ffffff` |
 | Focus ring / interactive text | `#57d2c1` | `#14786f` |
 | Selected surface / text | `#294b4b` / `#e9f2f1` | `#d5eee8` / `#18232c` |
+| Viewport (both appearances) | `#090c0f` | `#090c0f` |
+| Selection amber (viewport and graph canvas) | `#ffd25a` | `#ffd25a` |
+
+The light appearance uses warm paper neutrals rather than mint-grey, while the
+mint/teal brand colours are unchanged. The viewport stays dark in both
+appearances so lighting judgements do not change with the interface theme.
 
 Mint is the recognizable brand color in both appearances. On a light surface,
 use the darker semantic teal for interactive text, focus rings and primary
