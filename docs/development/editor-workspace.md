@@ -463,16 +463,20 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   closed, without taking focus; repeating an unchanged result does not, so a list
   you closed stays closed. A details pane under the table shows the selected
   description only when its row cannot: multi-line or elided descriptions.
-- **Toolbars** share the menus' commands: Standard (Open, Save, Undo, Redo),
-  Game (build, run, debug and Play controls) and Render Graph (Validate, Build
-  Graph, Build & Preview, Live Preview, Cancel). Toolbar buttons use short labels
+- **Toolbars** share the menus' commands, in groups told apart by a separator: Standard
+  holds File (Open, Save) and History (Undo, Redo); Game holds Run (Play, Build, Stop),
+  Launch (Run, Debug) and Session (Pause, Step, Resume, Reload Code). The Session group
+  is shown only while a game is running or paused. The Render Graph toolbar is the
+  context strip: it appears only while a render graph is the active document (Validate,
+  Build Graph, Build & Preview, Live Preview, Cancel), so a World tab keeps one row of
+  commands. Toolbar buttons use short labels
   so a 1280-pixel window shows them all; tooltips give the full name and
   shortcut. The primary commands (Open, Save, Build, Run, Play, Stop) also show an
   icon beside the label; every other button stays text only. Project Explorer
   rows and the Error List severities carry icons too. The icons are Lucide
   drawings (ISC), drawn in the palette's button text colour; see
   [Editor icons](#editor-icons) for attribution and contribution instructions.
-  **View → Toolbars** hides or shows each toolbar. Documents have no
+  **View → Toolbars** hides or shows the Standard and Game toolbars. Documents have no
   command rows of their own: **File → New Render Graph...** and **Open Render
   Graph...** open graphs, and the **Build** menu holds every render-graph
   command, including Cook Render Graph Runtime and Cancel Render Graph Job.
