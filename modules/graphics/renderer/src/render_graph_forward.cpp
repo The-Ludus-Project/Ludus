@@ -2,6 +2,7 @@
 
 #include "../shaders/renderer_environment_layout.h"
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/graphics/renderer/deferred_layout.h>
 #include <ludus/graphics/renderer/lighting_layout.h>
 
 namespace ludus::graphics::renderer
@@ -110,13 +111,59 @@ constexpr StaticArray<rhi::RasterBinding, OUTPUT_BINDING_COUNT> OUTPUT_BINDINGS{
 };
 constexpr StaticArray<rhi::RasterUniformMember, 1> OUTPUT_MEMBERS{{{0, "Output", 0, rhi::RasterUniformShape::Float4}}};
 constexpr StaticArray<rhi::RasterShaderInput, 1> OUTPUT_INPUTS{{{0, rhi::RasterVertexFormat::Float4}}};
+constexpr usize DEFERRED_MEMBER_COUNT = CLUSTERED_MEMBER_COUNT + DEFERRED_VIEW_ROWS;
+constexpr StaticArray<rhi::RasterBinding, DEFERRED_BINDING_COUNT> DEFERRED_BINDINGS = []() noexcept {
+    StaticArray<rhi::RasterBinding, DEFERRED_BINDING_COUNT> bindings{};
+    for (usize index = 0; index < CLUSTERED_BINDING_COUNT; ++index)
+    {
+        bindings[index] = CLUSTERED_BINDINGS[index];
+    }
+    for (uint32 slot = DEFERRED_NORMAL_BINDING; slot < DEFERRED_VIEW_BINDING; ++slot)
+    {
+        bindings[slot] = {slot, rhi::RasterBindingKind::Texture2D, rhi::RasterVisibility::Fragment, 0};
+    }
+    bindings[DEFERRED_DEPTH_BINDING].Kind = rhi::RasterBindingKind::TextureDepth2D;
+    bindings[DEFERRED_VIEW_BINDING] = {DEFERRED_VIEW_BINDING,
+                                       rhi::RasterBindingKind::UniformBuffer,
+                                       rhi::RasterVisibility::Fragment,
+                                       DEFERRED_VIEW_WORDS * FLOAT4_BYTES};
+    return bindings;
+}();
+constexpr StaticArray<rhi::RasterUniformMember, DEFERRED_MEMBER_COUNT> DEFERRED_MEMBERS = []() noexcept {
+    StaticArray<rhi::RasterUniformMember, DEFERRED_MEMBER_COUNT> members{};
+    for (usize index = 0; index < CLUSTERED_MEMBER_COUNT; ++index)
+    {
+        members[index] = CLUSTERED_MEMBERS[index];
+    }
+    members[CLUSTERED_MEMBER_COUNT] = {DEFERRED_VIEW_BINDING,
+                                       "ClipToWorldRows",
+                                       0,
+                                       rhi::RasterUniformShape::Float4Array};
+    members[CLUSTERED_MEMBER_COUNT + 1] = {DEFERRED_VIEW_BINDING,
+                                           "EyeWorld",
+                                           DEFERRED_VIEW_ROWS * FLOAT4_BYTES,
+                                           rhi::RasterUniformShape::Float4};
+    members[CLUSTERED_MEMBER_COUNT + 2] = {DEFERRED_VIEW_BINDING,
+                                           "TargetSizePixel",
+                                           (DEFERRED_VIEW_ROWS + 1) * FLOAT4_BYTES,
+                                           rhi::RasterUniformShape::Float4};
+    members[DEFERRED_MEMBER_COUNT - 1] = {DEFERRED_VIEW_BINDING,
+                                          "Options",
+                                          (DEFERRED_VIEW_ROWS + 2) * FLOAT4_BYTES,
+                                          rhi::RasterUniformShape::Float4};
+    return members;
+}();
+constexpr StaticArray<rhi::RasterBinding, 1> DEPTH_COPY_BINDINGS{
+    {{0, rhi::RasterBindingKind::TextureDepth2D, rhi::RasterVisibility::Fragment, 0}}};
 } // namespace
 void SetRenderGraphForwardInterface(rhi::RasterShaderDescription& inoutDescription,
                                     format::StageRole role,
                                     bool isClustered) noexcept
 {
-    if (static_cast<uint32>(role) < format::FORWARD_STAGE_ROLE_FIRST ||
-        (static_cast<uint32>(role) >= format::NATIVE_RAY_STAGE_ROLE && role != format::StageRole::ForwardDepth))
+    if (static_cast<uint32>(role) >= format::STAGE_ROLE_COUNT ||
+        static_cast<uint32>(role) < format::FORWARD_STAGE_ROLE_FIRST ||
+        (static_cast<uint32>(role) >= format::NATIVE_RAY_STAGE_ROLE && role != format::StageRole::ForwardDepth &&
+         static_cast<uint32>(role) < format::DEFERRED_STAGE_ROLE_FIRST))
     {
         return;
     }
@@ -125,6 +172,24 @@ void SetRenderGraphForwardInterface(rhi::RasterShaderDescription& inoutDescripti
     inoutDescription.UniformMembers = {};
     switch (role)
     {
+        case format::StageRole::DeferredGBufferFragment:
+            inoutDescription.Artifact.Stage = rhi::ShaderStage::Fragment;
+            inoutDescription.Bindings = CLUSTERED_BINDINGS.AsSpan();
+            inoutDescription.UniformMembers = CLUSTERED_MEMBERS.AsSpan();
+            break;
+        case format::StageRole::DeferredLightingVertex:
+            inoutDescription.Artifact.Stage = rhi::ShaderStage::Vertex;
+            inoutDescription.Inputs = OUTPUT_INPUTS.AsSpan();
+            break;
+        case format::StageRole::DeferredLightingFragment:
+            inoutDescription.Artifact.Stage = rhi::ShaderStage::Fragment;
+            inoutDescription.Bindings = DEFERRED_BINDINGS.AsSpan();
+            inoutDescription.UniformMembers = DEFERRED_MEMBERS.AsSpan();
+            break;
+        case format::StageRole::DeferredDepthCopyFragment:
+            inoutDescription.Artifact.Stage = rhi::ShaderStage::Fragment;
+            inoutDescription.Bindings = DEPTH_COPY_BINDINGS.AsSpan();
+            break;
         case format::StageRole::ForwardDepth:
             inoutDescription.Artifact.Stage = rhi::ShaderStage::Fragment;
             break;

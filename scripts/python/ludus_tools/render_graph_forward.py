@@ -2,6 +2,7 @@
 import re
 
 PROFILE = {'version': 1, 'profile': 'ForwardLit'}
+DEFERRED_PROFILE = {'version': 1, 'profile': 'ClusteredDeferred'}
 CLUSTERED_PROFILE = {'version': 1, 'profile': 'ClusteredForward'}
 # Appended roles preserve every historical raster/ray role and record width.
 SUPPORT = {
@@ -10,24 +11,34 @@ SUPPORT = {
     'ForwardOutput': ('renderer_output', ('vertex', 'fragment')),
     'ForwardFlatShadow': ('renderer_shadow', ('fragment',)),
     'ForwardDepth': ('renderer_clustered_authored_depth', ('fragment',)),
+    'DeferredGBuffer': ('renderer_deferred_material', ('fragment',)),
+    'DeferredLighting': ('renderer_deferred_lighting', ('vertex', 'fragment')),
+    'DeferredDepthCopy': ('renderer_deferred_depth', ('fragment',)),
 }
 ROLE_KEYS = [('ForwardLit', 'vertex'), ('ForwardLit', 'fragment'), ('ForwardShadow', 'fragment'),
              ('ForwardOutput', 'vertex'), ('ForwardOutput', 'fragment'), ('ForwardFlatShadow', 'fragment'),
-             ('ForwardDepth', 'fragment')]
-MEMBERS = ['ForwardVertex', 'ForwardFragment', 'ForwardShadow', 'LightingVertex', 'LightingFragment', 'LightingShadow', 'ForwardDepth']
+             ('ForwardDepth', 'fragment'), ('DeferredGBuffer', 'fragment'), ('DeferredLighting', 'vertex'),
+             ('DeferredLighting', 'fragment'), ('DeferredDepthCopy', 'fragment')]
+MEMBERS = ['ForwardVertex', 'ForwardFragment', 'ForwardShadow', 'LightingVertex', 'LightingFragment', 'LightingShadow', 'ForwardDepth', 'DeferredGBufferFragment', 'DeferredLightingVertex', 'DeferredLightingFragment', 'DeferredDepthCopyFragment']
 INPUTS = [{'location': i, 'format': 'Float3' if i in (0, 7) else 'Float2' if i in (6, 13, 15) else 'Float4'} for i in range(16)]
 
 
 def is_forward(technique):
-    return technique.get('scene_interface') in (PROFILE, CLUSTERED_PROFILE)
+    return technique.get('scene_interface') in (PROFILE, CLUSTERED_PROFILE, DEFERRED_PROFILE)
 
 
 def is_clustered(technique):
-    return technique.get('scene_interface') == CLUSTERED_PROFILE
+    return technique.get('scene_interface') in (CLUSTERED_PROFILE, DEFERRED_PROFILE)
+
+
+def is_deferred(technique):
+    return technique.get('scene_interface') == DEFERRED_PROFILE
 
 
 def support_program(techniques, group, stage):
     owner = next(item for item in techniques.values() if is_forward(item))
+    if group == 'DeferredLighting' and stage == 'fragment':
+        return 'DeferredLighting'
     if group == 'ForwardLit':
         return owner[stage]
     if group == 'ForwardDepth' and 'DefaultStaticOpaque.DepthOnly' in techniques:
@@ -63,6 +74,7 @@ def expand(programs, techniques, snapshot, helper, build):
     selected = [technique for technique in techniques.values() if is_forward(technique)]
     if not selected:
         return programs
+    is_deferred_profile = len(selected) == 1 and is_deferred(selected[0])
     is_clustered_profile = len(selected) == 1 and is_clustered(selected[0])
     allowed = {'DefaultStaticOpaque.ColorAndDepth', 'DefaultStaticOpaque.DepthOnly'} if is_clustered_profile else {'DefaultStaticOpaque.ColorAndDepth'}
     build.require(len(selected) == 1 and set(techniques) <= allowed and selected[0]['id'] == 'DefaultStaticOpaque.ColorAndDepth',
@@ -91,8 +103,12 @@ def expand(programs, techniques, snapshot, helper, build):
     depth = techniques.get('DefaultStaticOpaque.DepthOnly')
     build.require(depth is None or depth['vertex'] == technique['vertex'], 'Capability', 'ClusteredForward',
                   'the prepass must declare the same authored geometry program as color')
+    build.require(is_deferred_profile is False or programs.get('DeferredLighting', {}).get('stage') == 'fragment',
+                  'Capability', 'ClusteredDeferred', 'an authored DeferredLighting fragment callback is required')
     result = dict(programs)
     for group, (recipe_name, stages) in SUPPORT.items():
+        if group.startswith('Deferred') and not is_deferred_profile:
+            continue
         if group == 'ForwardDepth' and not is_clustered_profile:
             continue
         if is_clustered_profile and group in ('ForwardLit', 'ForwardShadow'):
@@ -101,23 +117,24 @@ def expand(programs, techniques, snapshot, helper, build):
         capture(recipe['source'])
         for stage in stages:
             identity = support_program(techniques, group, stage)
-            original = programs.get(identity)
+            original = programs.get(technique['fragment'] if group == 'DeferredGBuffer' else identity)
             source = '#include "_ludus_forward/' + recipe['source'] + '"\n'
             if original is not None:
                 source += '#include "' + original['source'] + '"\n'
             function = original['function'] if original is not None else recipe[stage]
-            argument = 'Input' if stage == 'vertex' else 'Varying' if group in ('ForwardLit', 'ForwardShadow') else 'Input' if group == 'ForwardFlatShadow' else 'Varying'
-            # Output/shadow recipes have their own concrete stage type names.
-            if group == 'ForwardOutput':
-                argument = 'Input' if stage == 'vertex' else 'Varying'
-            if group == 'ForwardFlatShadow':
-                argument = 'Varying'
-            output = 'Varying' if stage == 'vertex' else 'void' if group == 'ForwardDepth' else 'float4'
-            source += '[shader("' + stage + '")]\n' + output + ' rgEntry(' + argument + ' value)' + (' : SV_Target0' if stage == 'fragment' and group != 'ForwardDepth' else '') + '\n{\n    ' + ('' if group == 'ForwardDepth' else 'return ') + function + '(value);\n}\n'
+            argument = ('DeferredInput' if stage == 'vertex' else 'DeferredVarying') if group in ('DeferredLighting', 'DeferredDepthCopy') else 'Input' if stage == 'vertex' else 'Varying'
+            output = ('DeferredVarying' if group == 'DeferredLighting' else 'Varying') if stage == 'vertex' else 'void' if group == 'ForwardDepth' else 'GBufferOutput' if group == 'DeferredGBuffer' else 'DeferredLightingOutput' if group == 'DeferredLighting' else 'DeferredDepthOutput' if group == 'DeferredDepthCopy' else 'float4'
+            expression = function + '(value)'
+            if is_deferred_profile and group == 'ForwardLit' and stage == 'fragment':
+                expression = 'ShadeMaterial(' + expression + ', value)'
+            elif group == 'DeferredGBuffer':
+                expression = 'PackDeferredMaterial(' + expression + ')'
+            semantic = ' : SV_Target0' if stage == 'fragment' and output == 'float4' else ''
+            source += '[shader("' + stage + '")]\n' + output + ' rgEntry(' + argument + ' value)' + semantic + '\n{\n    ' + ('' if group == 'ForwardDepth' else 'return ') + expression + ';\n}\n'
             result[identity] = {'id': identity, 'stage': stage, 'source': original['source'] if original else '_ludus_forward/' + recipe['source'],
                                 'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [],
                                 'forward_wrapper': source, 'forward_group': group,
-                                'forward_layout': material_layout(snapshot, build, is_clustered_profile) if group in ('ForwardLit', 'ForwardShadow') else None}
+                                'forward_layout': material_layout(snapshot, build, is_clustered_profile) if group in ('ForwardLit', 'ForwardShadow', 'DeferredGBuffer', 'DeferredLighting') else None}
     # The existing flat pair initializes the renderer's shared mesh/view services.
     recipe = recipes['renderer_flat']
     capture(recipe['source'])
@@ -145,11 +162,27 @@ def check_interface(program, result, build):
     group, stage = program['forward_group'], program['stage']
     inputs = INPUTS if group == 'ForwardLit' and stage == 'vertex' else [
         {'location': i, 'format': 'Float3' if i == 0 else 'Float4'} for i in range(6)
-    ] if group == 'ForwardSetup' and stage == 'vertex' else [{'location': 0, 'format': 'Float4'}] if group == 'ForwardOutput' and stage == 'vertex' else []
+    ] if group == 'ForwardSetup' and stage == 'vertex' else [{'location': 0, 'format': 'Float4'}] if group in ('ForwardOutput', 'DeferredLighting') and stage == 'vertex' else []
     actual = [{k: v for k, v in entry.items() if k != 'name'} for entry in result['interface']['inputs']]
     build.require(actual == inputs, 'Layout', program['id'], 'forward recipe vertex interface mismatch')
     entries = result['interface']['entries']
     is_clustered_profile = program.get('forward_layout') is not None and 'GridRows' in program['forward_layout']['offsets']
+    if group.startswith('Deferred'):
+        kinds = ('UniformBuffer', 'Texture2D', 'Sampler', 'Texture2D', 'Texture2D', 'Sampler', 'Texture2D', 'Texture2D', 'Texture2D', 'Sampler', 'Texture2D', 'Texture2D', 'Texture2D', 'Texture2D', 'TextureDepth2D', 'UniformBuffer')
+        allowed = {0: 'TextureDepth2D'} if group == 'DeferredDepthCopy' else dict(enumerate(kinds[:11] if group == 'DeferredGBuffer' else kinds))
+        build.require(all(allowed.get(entry['binding']) == entry['kind'] for entry in entries),
+                      'Layout', program['id'], 'deferred resources differ from the owned ABI')
+        if stage == 'fragment' and group != 'DeferredDepthCopy':
+            uniform = next((entry for entry in entries if entry['binding'] == 0), {})
+            build.require(all(uniform.get(field) == value for field, value in program['forward_layout'].items()),
+                          'Layout', program['id'], 'deferred material layout differs from the owned ABI')
+        if group == 'DeferredLighting' and stage == 'fragment':
+            view = next((entry for entry in entries if entry['binding'] == 15), {})
+            layout = {'size': 112, 'offsets': {'ClipToWorldRows': 0, 'EyeWorld': 64, 'TargetSizePixel': 80, 'Options': 96},
+                      'shapes': {'ClipToWorldRows': 'Float4Array', 'EyeWorld': 'Float4', 'TargetSizePixel': 'Float4', 'Options': 'Float4'}}
+            build.require(all(view.get(field) == value for field, value in layout.items()),
+                          'Layout', program['id'], 'deferred view layout differs from the owned ABI')
+        return []
     expected = (11 if is_clustered_profile else 10) if group == 'ForwardLit' and stage == 'fragment' else 3 if stage == 'fragment' and group in ('ForwardShadow', 'ForwardOutput') else 0
     build.require(len(entries) == expected, 'Layout', program['id'], 'forward recipe binding interface mismatch')
     if expected:

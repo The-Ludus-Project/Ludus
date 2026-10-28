@@ -574,6 +574,11 @@ publication boundaries belong to the linked graph workflow and
 
 ## L5: opt-in portable scaling
 
+The engine default now uses these conservative light lists in the
+[clustered deferred graph](../development/render-graph-authoring.md#default-clustered-deferred-lighting),
+with shared material/light evaluation and an optional z-prepass. The L5 forward
+recipes and their measurements below remain independently available.
+
 L5 adds CPU-built clustered forward lighting, conservative grouped visibility,
 and caller-authored screen-size LOD. The ordinary L4 shader and eight-light path
 remain available. These additions are opt-in; performance qualification is

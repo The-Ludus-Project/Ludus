@@ -1,6 +1,7 @@
 """Renderer recipe ownership and source/installed CMake boundary regressions."""
 
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -69,11 +70,19 @@ class RendererShaderRecipesTests(unittest.TestCase):
                     self.assertEqual(fragment, recipe.get("fragment", ""))
                     self.assertEqual(compute, recipe.get("compute", ""))
                     self.assertEqual(Path(dependency).name, "recipes.json")
-                    # Diagnostic and material wrappers share production entries.
-                    text = (SHADERS / recipe["source"]).read_text()
-                    for shared in ["renderer_lit.slang", "renderer_gpu_preview.slang"]:
-                        if f'#include "{shared}"' in text:
-                            text += (SHADERS / shared).read_text()
+                    # Follow literal source includes so composed recipes retain their real stage owners.
+                    pending = [SHADERS / recipe["source"]]
+                    seen = set()
+                    text = ""
+                    while pending:
+                        included = pending.pop()
+                        if included in seen:
+                            continue
+                        seen.add(included)
+                        body = included.read_text()
+                        text += body
+                        pending.extend(child for relative in re.findall(r'^\s*#\s*include\s+"([^"\n]+)"', body, re.M)
+                                       if (child := included.parent / relative).is_file())
                     for entry in [vertex, fragment, compute]:
                         if entry:
                             self.assertIn(entry + "(", text)

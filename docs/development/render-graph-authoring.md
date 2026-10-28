@@ -3140,9 +3140,11 @@ Limits:
 - Opening or saving an unedited default writes nothing. Project loading never bootstraps
   tools or repairs an SDK. Missing tools are build diagnostics; use project setup to repair them.
 
-## Default clustered forward lighting
+<a id="default-clustered-forward-lighting"></a>
 
-The engine default and the **Raster** starter use the `ClusteredForward` scene
+## Default clustered deferred lighting
+
+The engine default and the **Raster** starter use the `ClusteredDeferred` scene
 profile. They shade the current World's authored materials, textures, analytic
 lights and environment; an unlit World with no emission or environment is dark.
 They require static opaque triangles with normals. Masked/transparent materials
@@ -3150,9 +3152,23 @@ and invalid inputs reject preparation and retain the last drawable generation.
 No proxy lights, ray tracing, shadow maps or indirect illumination are added.
 The color target remains linear RGBA8, so radiance above one clips.
 
-`Default` runs one color/depth pass. Select **ZPrepass** in the preview configuration
+The logical color/depth node runs an opaque material pass followed by a fullscreen
+clustered lighting resolve. Its three single-sample RGBA16F targets store world
+normal/roughness, linear base color/metallic, and emission/coverage. The resolve
+reconstructs world position from sampled depth and the inverse camera transform,
+then shares the forward renderer's GGX and environment evaluation. It writes both
+the linear RGBA8 color output and the logical scene depth. Grid/overlay rendering
+loads that output afterward. Background coverage remains clear. Half-float material
+storage and reconstructed positions introduce numerical differences; native tests
+compare against the same material callback in clustered forward within two linear
+RGBA8 codes per channel. This is a correctness tolerance, not a performance claim.
+
+Select **ZPrepass** in the preview configuration
 selector to enable a separate depth-only pass. That pass clears and stores depth;
-the color pass loads the same depth and uses `LessEqual`. Both passes use the same
+a GPU-only fullscreen transfer copies it into the G-buffer depth owner, and the
+material pass loads it with `LessEqual`. RHI currently associates private depth with
+the first color attachment, so the transfer avoids sampling a bound allocation.
+The resolve exports the resulting depth back to the logical output. Both geometry passes use the same
 geometry transforms, camera and viewport-relative extent. The prepass uses the same authored vertex stage, calls the editable
 `main_shaders/depth.slang` coverage function, and writes no color or material shading. It is disabled in `Default`; choose it after
 measuring geometry and fragment costs for the target workload. The canvas shows
@@ -3169,12 +3185,33 @@ changed scene/light inputs prepare immutable replacement materials and lists.
 This first integration uses the existing per-material list texture/upload path,
 not GPU light assignment, projection-shaped clusters or depth occupancy pruning.
 
-The manifest selects `"scene_interface": {"version": 1, "profile": "ClusteredForward"}`
+Edit `main_shaders/color.slang::MaterialMain` to return the sampled `SurfaceSample`,
+and `main_shaders/lighting.slang::LightingMain` to customize the fullscreen lighting
+callback. Geometry and optional coverage remain separately editable. The fixed
+G-buffer is renderer-owned; its physical targets are not generic canvas MRT nodes.
+The profile requires three RGBA16F attachments, attachment views, sampled private
+depth and sixteen binding slots. Unsupported devices fail explicitly. The initial
+profile admits one clear/store opaque color node and its optional immediately
+preceding prepass with the same camera/depth, plus an authored image upscale.
+The profile retains the graph adapter's conventional-depth requirement. Transparent and masked deferred materials, MSAA, baked
+lighting, GPU cluster assignment and arbitrary MRT graph authoring remain outside
+this profile.
+
+Prepared scenes own immutable resolve bindings and private targets. Camera edits
+replace only the view bindings; resize/scene changes prepare a separate target set
+before publication. Pending or failed changes retain the last drawable scene.
+`GetAllocationReport()` separates live deferred allocations and their logical color
+plus private depth bytes from plan allocations, including pending scenes (36 bytes
+per pixel per set under the current RHI). Native padding and per-view bindings are
+excluded. GPU scopes identify material, lighting, optional depth transfer and overlays.
+
+The manifest selects `"scene_interface": {"version": 1, "profile": "ClusteredDeferred"}`
 on `DefaultStaticOpaque.ColorAndDepth`, with a `LessEqual` recipe. The optional
 `DefaultStaticOpaque.DepthOnly` technique shares the renderer setup geometry stage.
 Other raster technique families are rejected by this profile. Existing `ForwardLit`
-packages keep their original eight-light ABI and behavior; runtime package version
-23 distinguishes the clustered fragment role without changing record widths.
+and `ClusteredForward` packages keep their existing lighting ABI and behavior.
+Runtime package version 24 appends four deferred support roles without changing
+record widths or older role IDs; older packages remain readable.
 
 ## Create a saved graph and import it
 
@@ -3186,7 +3223,7 @@ project, including `main.lurender.json`, the reusable `rasterize.lurender.json`,
 `main.lushader.json` and editable `main_shaders/*.slang` functions, then opens the
 graph on the canvas. The Raster starter copies the same canonical package used by
 the engine default, with viewport-relative color/depth targets and editable clustered
-forward material shaders. It exports a color image and uses the RendererStatic interface
+deferred material and lighting shaders. It exports a color image and uses the RendererStatic interface
 required by the editor preview. Target profiles are
 Metal/WGSL on macOS and SPIR-V/WGSL on Linux. Creation needs no shader compiler or
 running viewport and never overwrites an existing graph folder. A failed creation

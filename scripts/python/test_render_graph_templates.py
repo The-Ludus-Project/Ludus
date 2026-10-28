@@ -699,7 +699,7 @@ class RasterTemplateTests(unittest.TestCase):
             build.validate_manifest(manifest)
             technique = next(item for item in manifest['techniques']
                              if item['id'] == 'DefaultStaticOpaque.ColorAndDepth')
-            self.assertEqual(technique['scene_interface'], {'version': 1, 'profile': 'ClusteredForward'})
+            self.assertEqual(technique['scene_interface'], {'version': 1, 'profile': 'ClusteredDeferred'})
             self.assertEqual(technique['recipes'][0]['depth_compare'], 'LessEqual')
             self.assertEqual(json.loads(root.read_text())['default'], 'Default')
             ordinary = graph.compile_graph(root)

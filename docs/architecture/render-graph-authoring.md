@@ -1506,3 +1506,13 @@ for exact-content identity when admitting a new asset. General raster scene buff
 GPU light assignment, arbitrary material interfaces and cross-device caches remain
 separate extensions. See the [canonical workflow](../development/render-graph-authoring.md#use-the-forward-lit-template)
 for limits, shader editing and installed-SDK usage.
+
+The default `ClusteredDeferred` profile retains this scene-generation boundary and
+adds renderer-owned G-buffer targets and immutable per-view resolve bindings.
+Version 24 appends material, fullscreen lighting and prepass depth-copy stage roles;
+all four must exist for every clustered target. Mixed or partial profiles fail
+decoding. Geometry uses the exact authored forward vertex entry. Material sampling
+and GGX/environment lighting remain shared shader functions, with material and
+lighting callbacks separated by three RGBA16F targets. The logical output keeps
+its RGBA8/private-depth contract. See the [default deferred workflow](../development/render-graph-authoring.md#default-clustered-deferred-lighting)
+for layout, capabilities, optional prepass, precision and memory limits.

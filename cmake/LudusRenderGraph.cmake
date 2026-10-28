@@ -45,9 +45,9 @@ function(ludus_compile_render_graph)
         recipes.json renderer_lit.slang renderer_environment_layout.h renderer_gpu_preview_layout.h native_metal_ray.slang
         renderer_surface_functions.slang scene_shader.slang scene_payload.slang visibility_buffer.slang ray_shader.slang
         ray_triangle_loop.slang ray_line_visibility.slang ray_bvh_traversal.slang renderer_reference_layout.h scene_data.h
-        scene_shader_layout.h lighting_layout.h math.slang raster_bindings.slang metal_ray_pipeline_layout.h
+        scene_shader_layout.h lighting_layout.h deferred_layout.h deferred_binding_slots.inc renderer_deferred_fullscreen.slang math.slang raster_bindings.slang metal_ray_pipeline_layout.h
         shader_toolchain.json spirv_cross_toolchain.json)
-    foreach(recipe renderer_gpu_preview renderer_gpu_preview_image renderer_authored renderer_authored_shadow renderer_clustered_authored renderer_clustered_authored_shadow renderer_flat renderer_output renderer_shadow)
+    foreach(recipe renderer_gpu_preview renderer_gpu_preview_image renderer_authored renderer_authored_shadow renderer_clustered_authored renderer_clustered_authored_shadow renderer_deferred_material renderer_deferred_lighting renderer_deferred_depth renderer_flat renderer_output renderer_shadow)
         string(JSON source GET "${renderer_recipes}" "${recipe}" source)
         list(APPEND helper_files "${source}")
     endforeach()

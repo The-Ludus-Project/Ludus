@@ -21,6 +21,7 @@
 namespace ludus::graphics::renderer
 {
 struct RenderGraphSceneDescription;
+class RenderGraph;
 /// Borrowed persistent storage bound to one graph ray slot; the graph owns its lifetime.
 struct GpuPreviewGraphBuffer final
 {
@@ -52,6 +53,8 @@ struct GpuPreviewGraphInvocation final
 };
 namespace internal
 {
+class RenderGraphDeferredPass;
+struct DeferredMaterialBindings;
 /// Private access to renderer logical identities.
 struct Access;
 class RenderGraphRayPass;
@@ -769,13 +772,28 @@ public:
     [[nodiscard]] rhi::RasterStatus Release(PreparedView& handle) noexcept;
 
 private:
+    /// Grants graph preparation access to the fixed deferred material pipeline.
+    friend class RenderGraph;
+    /// Grants the renderer-owned deferred resolve access to immutable view/material bindings.
+    friend class internal::RenderGraphDeferredPass;
+    enum class DrawMode : foundation::uint8
+    {
+        Color,
+        Depth,
+        GBuffer,
+        Overlays
+    };
     [[nodiscard]] rhi::RasterStatus
-    drawView(PreparedView handle, const rhi::RasterPassDescription& description, bool isDepthOnly) noexcept;
-    [[nodiscard]] rhi::RasterStatus prewarmProgram(const rhi::RasterShaderDescription& vertex,
-                                                   const rhi::RasterShaderDescription& fragment,
-                                                   const rhi::RasterShaderDescription* shadowOrNull,
-                                                   MaterialProgram& outProgram,
-                                                   const rhi::RasterShaderDescription* depthOrNull = nullptr) noexcept;
+    drawView(PreparedView handle, const rhi::RasterPassDescription& description, DrawMode mode) noexcept;
+    [[nodiscard]] rhi::RasterStatus getDeferredMaterial(PreparedView handle,
+                                                        internal::DeferredMaterialBindings& outBindings) noexcept;
+    [[nodiscard]] rhi::RasterStatus
+    prewarmProgram(const rhi::RasterShaderDescription& vertex,
+                   const rhi::RasterShaderDescription& fragment,
+                   const rhi::RasterShaderDescription* shadowOrNull,
+                   MaterialProgram& outProgram,
+                   const rhi::RasterShaderDescription* depthOrNull = nullptr,
+                   const rhi::RasterShaderDescription* gBufferOrNull = nullptr) noexcept;
     [[nodiscard]] rhi::RasterStatus CreateMaterialData(MaterialProgram program,
                                                        const MaterialDescription& description,
                                                        const ludus::foundation::uint8* bytes,
