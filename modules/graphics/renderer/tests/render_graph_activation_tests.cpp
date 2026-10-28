@@ -1,3 +1,4 @@
+#include "../shaders/renderer_gpu_preview_layout.h"
 #include "internal/lifecycle.h"
 #include "reference_raster.h"
 #include "render_graph_scratch.h"
@@ -58,6 +59,18 @@ struct PackageWriter final
         for (usize i = 0; i < sizeof(uint32); ++i)
         {
             Bytes.Add(static_cast<uint8>((value >> (8U * i)) & 0xFFU));
+        }
+    }
+    /// Empty structured storage records, then the version 24 scene resource word.
+    void WriteSceneResources(uint32 version, uint32 sceneResources = 0)
+    {
+        if (version >= format::STORAGE_PACKAGE_VERSION)
+        {
+            WriteWord(0);
+        }
+        if (version >= format::LTC_TABLE_PACKAGE_VERSION)
+        {
+            WriteWord(sceneResources);
         }
     }
     void WritePadded(std::string_view text)
@@ -266,10 +279,7 @@ Array<uint8> MakePackageBytes(const PackageOptions& options)
         WriteStage(writer, format::StageRole::DepthVertex, VERTEX_TEXT, "VertexMain");
         WriteStage(writer, format::StageRole::DepthFragment, FRAGMENT_TEXT, "FragmentMain");
     }
-    if (options.Version >= format::STORAGE_PACKAGE_VERSION)
-    {
-        writer.WriteWord(0);
-    }
+    writer.WriteSceneResources(options.Version);
     if (options.Version >= format::NAMED_PACKAGE_VERSION)
     {
         writer.WriteWord(static_cast<uint32>(options.PassName.size()));
@@ -313,7 +323,7 @@ Array<uint8> MakeMultiTargetPackageBytes(std::string_view vertexSpirv, bool hasF
     }
     WriteStage(writer, format::StageRole::ColorFragment, format::ShaderTarget::Wgsl, FRAGMENT_TEXT, "FragmentMain");
     WriteStage(writer, format::StageRole::ColorFragment, format::ShaderTarget::GlslEs, GLSL_TEXT, "main");
-    writer.WriteWord(0);
+    writer.WriteSceneResources(format::PACKAGE_VERSION);
     writer.WriteWord(static_cast<uint32>(PackageOptions{}.PassName.size()));
     writer.WritePadded(PackageOptions{}.PassName);
     return Move(writer.Bytes);
@@ -830,7 +840,7 @@ TEST_CASE("RG3 runtime packages carry GLSL ES block names and reject malformed u
                    FRAGMENT_TEXT,
                    "FragmentMain",
                    blockTarget == format::ShaderTarget::Wgsl ? block : std::string_view{});
-        writer.WriteWord(0);
+        writer.WriteSceneResources(options.Version);
         writer.WriteWord(static_cast<uint32>(options.PassName.size()));
         writer.WritePadded(options.PassName);
         return Move(writer.Bytes);
@@ -1292,10 +1302,7 @@ TEST_CASE("runtime independent shader pairs decode with their own stage and bind
             WriteStage(writer, vertexRole, target, VERTEX_TEXT, "GBufferVertex");
             WriteStage(writer, fragmentRole, target, FRAGMENT_TEXT, "GBufferFragment");
         }
-        if (version >= format::STORAGE_PACKAGE_VERSION)
-        {
-            writer.WriteWord(0);
-        }
+        writer.WriteSceneResources(version);
         writer.WriteWord(static_cast<uint32>(options.PassName.size()));
         writer.WritePadded(options.PassName);
         renderer::RenderGraphPackage package;
@@ -1417,7 +1424,7 @@ TEST_CASE("legacy scene-ray packages preserve implicit tone mapping independentl
                 writer.WritePadded(FRAGMENT_TEXT);
             }
             const usize stagesEnd = writer.Bytes.GetSize();
-            writer.WriteWord(0); // Structured storage count.
+            writer.WriteSceneResources(version);
             writer.WriteWord(static_cast<uint32>(options.PassName.size()));
             writer.WritePadded(options.PassName);
             renderer::RenderGraphPackage package;
@@ -1566,4 +1573,96 @@ TEST_CASE("runtime denoising fields preserve modes and reject invalid raster use
     options.Version = format::PACKAGE_VERSION;
     options.DenoisingQuality = static_cast<uint32>(format::ProcessingQuality::High) + 1;
     CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
+}
+
+namespace
+{
+/// One WGSL ray generation: the given compute role and the ray image pair, then the scene resource word.
+Array<uint8> MakeRayPackageBytes(format::StageRole compute, uint32 sceneResources)
+{
+    PackageOptions options;
+    options.Program = format::Technique::RayTracing;
+    options.AccumulationSamples = 2;
+    PackageWriter writer;
+    WritePlan(writer, options, 3);
+    for (const format::StageRole role :
+         {compute, format::StageRole::RayImageVertex, format::StageRole::RayImageFragment})
+    {
+        const bool isImageVertex = role == format::StageRole::RayImageVertex;
+        constexpr std::string_view ENTRY = "Main";
+        constexpr uint32 WORKGROUP_WIDTH = 8;
+        writer.WriteWord(static_cast<uint32>(role));
+        writer.WriteWord(static_cast<uint32>(format::ShaderTarget::Wgsl));
+        writer.WriteWord(isImageVertex == true ? 1 : 0);
+        writer.WriteWord(static_cast<uint32>(ENTRY.size()));
+        writer.WriteWord(static_cast<uint32>(FRAGMENT_TEXT.size()));
+        writer.WriteWord(0);
+        if (role == compute)
+        {
+            writer.WriteWord(WORKGROUP_WIDTH);
+            writer.WriteWord(WORKGROUP_WIDTH);
+            writer.WriteWord(1);
+        }
+        if (isImageVertex == true)
+        {
+            writer.WriteWord(0);
+            writer.WriteWord(static_cast<uint32>(format::InputFormat::Float2));
+        }
+        writer.WritePadded(ENTRY);
+        writer.WritePadded(FRAGMENT_TEXT);
+    }
+    writer.WriteSceneResources(options.Version, sceneResources);
+    writer.WriteWord(static_cast<uint32>(options.PassName.size()));
+    writer.WritePadded(options.PassName);
+    return Move(writer.Bytes);
+}
+} // namespace
+
+TEST_CASE("RG3 version 24 packages append the LTC table binding to each scene compute role",
+          "[render-graph][activation][ltc]")
+{
+    for (const format::StageRole compute :
+         {format::StageRole::RayCompute, format::StageRole::SceneRayCompute, format::StageRole::PersistentRayCompute})
+    {
+        renderer::RenderGraphPackage without;
+        const Array<uint8> withoutBytes = MakeRayPackageBytes(compute, 0);
+        REQUIRE(without.Decode({withoutBytes.GetData(), withoutBytes.GetSize()}) ==
+                renderer::RenderGraphPackageStatus::Ready);
+        const renderer::RenderGraphPrograms ordinary = without.GetPrograms({}, {});
+        CHECK(ordinary.HasLtcTable == false);
+        REQUIRE(ordinary.RayCompute.Bindings.empty() == false);
+        CHECK(ordinary.RayCompute.Bindings.back().Binding != LUDUS_GRAPH_LTC_TABLE_BINDING);
+
+        renderer::RenderGraphPackage with;
+        const Array<uint8> withBytes = MakeRayPackageBytes(compute, format::SCENE_RESOURCE_LTC_TABLE);
+        REQUIRE(with.Decode({withBytes.GetData(), withBytes.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
+        const renderer::RenderGraphPrograms table = with.GetPrograms({}, {});
+        CHECK(table.HasLtcTable == true);
+        // The frozen ABI is unchanged; the table slot follows it, as reflection orders it in a header.
+        REQUIRE(table.RayCompute.Bindings.size() ==
+                ordinary.RayCompute.Bindings.size() + LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT);
+        for (usize i = 0; i < ordinary.RayCompute.Bindings.size(); ++i)
+        {
+            CHECK(table.RayCompute.Bindings[i].Binding == ordinary.RayCompute.Bindings[i].Binding);
+            CHECK(table.RayCompute.Bindings[i].Kind == ordinary.RayCompute.Bindings[i].Kind);
+        }
+        const rhi::RasterBinding& last = table.RayCompute.Bindings.back();
+        CHECK(last.Binding == LUDUS_GRAPH_LTC_TABLE_BINDING);
+        CHECK(last.Kind == rhi::RasterBindingKind::StorageRead);
+        CHECK(last.Visibility == rhi::RasterVisibility::Compute);
+        CHECK(last.MinSize == LUDUS_GPU_PREVIEW_VECTOR_BYTES);
+    }
+    // Undefined scene resource bits, and a table without a ray kernel to read it, are malformed.
+    constexpr uint32 UNDEFINED_SCENE_RESOURCE = 2;
+    CHECK(DecodeBytes(MakeRayPackageBytes(format::StageRole::SceneRayCompute, UNDEFINED_SCENE_RESOURCE)) ==
+          renderer::RenderGraphPackageStatus::Malformed);
+    PackageWriter raster;
+    PackageOptions options;
+    WritePlan(raster, options, 2);
+    WriteStage(raster, format::StageRole::ColorVertex, VERTEX_TEXT, "VertexMain");
+    WriteStage(raster, format::StageRole::ColorFragment, FRAGMENT_TEXT, "FragmentMain");
+    raster.WriteSceneResources(options.Version, format::SCENE_RESOURCE_LTC_TABLE);
+    raster.WriteWord(static_cast<uint32>(options.PassName.size()));
+    raster.WritePadded(options.PassName);
+    CHECK(DecodeBytes(raster.Bytes) == renderer::RenderGraphPackageStatus::Malformed);
 }

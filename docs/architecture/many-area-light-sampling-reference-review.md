@@ -254,13 +254,19 @@ library: hits Buffer (32 B/px, RenderSize)
 **Shader helpers.**
 - The projected-solid-angle shader source from the polygonal-light work is
   reused, not duplicated. FoundationMath adds the sequential reservoir beside it.
-- The renderer owns a generated LTC-table include, shared with the
-  polygonal-light LTC templates.
-- Stage them through the engine ray helpers (`HELPERS` in `render_graph_ray.py`
-  and the installed shader directory).
-- The wrapper includes them only when the technique declares a new
-  `scene_interface` requirement, in the same way `visibility_buffer` adds its
-  include today. Older SDKs reject that requirement explicitly.
+- The renderer owns the LTC table, shared with the polygonal-light LTC
+  templates. Its 64 × 64 × 51 transforms (3.4 MB) are too large for shader
+  constants, so shaders read the renderer's GPU copy from a read-only storage
+  buffer through `ltc_table.slang`.
+- Stage them through the engine ray helpers (`POLYGONAL_LIGHT_HELPERS` in
+  `render_graph_ray.py` and the installed shader directory).
+- The technique declares `scene_interface.polygonal_light_sampling`, in the same
+  way `visibility_buffer` adds its include and textures. The wrapper then includes
+  the helpers, and the renderer binds the table buffer at slot 13, which every
+  backend leaves free, when the linked kernel's reflection keeps it. Version 24
+  runtime packages record that binding. Older SDKs reject the key explicitly. The
+  passes must be compute-invoked: native ray stages cannot bind the table
+  ([use the table](../development/ltc-table.md#use-the-table)).
 
 ### Implementation notes
 
@@ -275,9 +281,12 @@ these departures and choices:
   because the selected triangle's diffuse and LTC samples each trace a shadow ray.
 - **Helper requirement.** The requirement is `scene_interface.polygonal_light_sampling: true`.
   It stages and includes the projected-solid-angle, LTC and reservoir primitives and
-  the LTC table, which together add about 0.5 MB to the source snapshot. Packages
-  without it keep their snapshots. The builder rejects a non-Boolean value, and
-  older SDKs reject the unknown field.
+  the LTC table lookup, and binds the renderer's table buffer (see the shader
+  helpers above). Packages without it keep their snapshots. The builder rejects a
+  non-Boolean value, and older SDKs reject the unknown field.
+- **`F0` slice.** `MakeReceiverLightingFrame` looks up the specular LTC with the
+  receiver's `F0`, `0.04 · (1 − metallic) + baseColor · metallic`, so the
+  table's Peters slice matches the albedo it scales.
 - **Emitter alpha.** Light samples do not apply the emitter's own alpha cutoff,
   because the scene interface has no alpha-acceptance query. `veach-guibas-mis`
   light sampling behaves the same way. Emission maps, sidedness and occlusion are
@@ -398,7 +407,7 @@ aligned to Philox's four-lane blocks:
 | Convex polygon horizon clipping (up to seven input vertices), clipped projected-solid-angle integral, Peters sampler and density | FoundationMath `projected_solid_angle.hpp` and `shaders/projected_solid_angle.slang`, being added by the polygonal-light work | The sampler is ported from the BSD-licensed `polygon_sampling.glsl` with its notice. Clipping is an independent reimplementation. This design consumes these primitives and adds none of its own. |
 | Generic LTC polygon transform | FoundationMath, beside those primitives | Implemented as `linearly_transformed_cosine.hpp` and `shaders/linearly_transformed_cosine.slang` ([contract](../modules/foundation/math.md#linearly-transformed-cosines-over-polygons)): transform the vertices by `M⁻¹`, then reuse the same clipping, integral and sampler. Credits Heitz et al. 2016 (§3.1, Eq. 3, Algorithm 1) and Peters 2021 §4.1. |
 | Sequential weighted reservoir | FoundationMath | Implemented as `weighted_reservoir.hpp` and `shaders/weighted_reservoir.slang` ([contract](randomness.md#sequential-weighted-reservoir)): explicit order, zero totals, and selection-frequency tests on exact small integers. The ReSTIR template may adopt it separately; this design does not change that template. |
-| LTC table for Ludus GGX/correlated Smith/Schlick, its fitter and provenance | Renderer (generated include) plus an offline Ludus tool. **Owned by this RIS/many-area-light workstream** (decided October 27, 2026). The polygonal-light LTC templates reuse the same table and fitter rather than building their own. | Implemented as `tools/ltc-fit`, `shaders/ltc_table_data.inc` with its provenance, and the `ltc_table.slang` and CPU lookups ([fit, regeneration and accuracy](../development/ltc-table.md)). Reimplemented from Heitz et al. §4 and Peters §§4.1–4.2, not from GPLv3 utilities. It covers roughness down to 0.045, where every view up to 81° fits within 1% relative L1. `F0` stays exact in the tabulated albedo instead of forming a third axis. A poor fit costs variance, not correctness. |
+| LTC table for Ludus GGX/correlated Smith/Schlick, its fitter and provenance | Renderer (embedded table and a GPU buffer) plus an offline Ludus tool. **Owned by this RIS/many-area-light workstream** (decided October 27, 2026). The polygonal-light LTC templates reuse the same table and fitter rather than building their own. | Implemented as `tools/ltc-fit`, `data/ltc_table.bin` with its provenance and `shaders/ltc_table_layout.h`, and the `ltc_table.slang` and CPU lookups ([fit, regeneration and accuracy](../development/ltc-table.md)). Reimplemented from Heitz et al. §4 and Peters §§4.1–4.2, not from GPLv3 utilities. Like Peters' renderer it has 51 `F0` slices, chosen by the luminance of `F0`; the albedo stays exact per channel. It covers roughness down to 0.045. A poor fit costs variance, not correctness. Render graphs bind it with `scene_interface.polygonal_light_sampling`. |
 | Compute-BVH graph traversal strategy | Renderer, at the shared traversal boundary | Implemented as `ComputeBvh`, sharing the RT1 GPU reference's BVH traversal. Shared with the polygonal-light templates; a prerequisite for both |
 | Power-CDF scene-interface accessors | Renderer | Implemented as `SelectEmissiveTriangle` and `EvaluateEmissiveTriangleSelectionPmf` in `scene_shader.slang` ([usage](../development/render-graph-authoring.md#select-emissive-triangles-by-power)). They read the CDF that `PackReferenceEmitterSelection` packs for RT1, and the private C++ counterparts `SelectReferenceEmissiveTriangle` and `EvaluateReferenceEmissiveTriangleSelectionPmf` match them in the `[power-cdf]` GPU parity test |
 | Diffuse albedo approximation, RT1 path state | Renderer | One packed CDF serves RT1 and graph shaders |
@@ -442,6 +451,6 @@ Out of scope:
 Open questions, to settle by measurement:
 - `K`, and Peters' `v`;
 - the diffuse albedo approximation;
-- LTC table resolution and `F0` handling (the first table uses 64 × 64 cells and
-  an exact `F0` albedo; see [its accuracy](../development/ltc-table.md#accuracy));
+- LTC table resolution (the table follows Peters' 64 × 64 × 51 cells; see
+  [its accuracy](../development/ltc-table.md#accuracy));
 - whether two shadow rays beat Peters' one-sample variant for this workload.

@@ -19,10 +19,13 @@ namespace ludus::graphics::renderer::internal
 {
 inline constexpr usize GPU_PREVIEW_JOB_COUNT = 16; // Four passes, three retained scenes and retiring work.
 inline constexpr usize GPU_GRAPH_BUFFER_COUNT = 2;
-/// Every compute binding of one job: the frozen ABI, visibility textures, structured storage and,
-/// last, the ray path capture buffer of a diagnostic capture-variant kernel.
-inline constexpr usize GPU_PREVIEW_COMPUTE_BINDING_CAPACITY =
-    LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + content::render_graph_format::MAX_STORAGE_BUFFERS + 1;
+/// Every compute binding of one job: the frozen ABI, visibility textures, structured storage, the
+/// ray path capture buffer of a diagnostic capture-variant kernel and, last, the LTC table.
+inline constexpr usize GPU_PREVIEW_COMPUTE_BINDING_CAPACITY = LUDUS_GRAPH_VISIBILITY_BINDING_COUNT +
+                                                              content::render_graph_format::MAX_STORAGE_BUFFERS + 1 +
+                                                              LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT;
+/// The presentation quad's four float2 corners and six uint16 indices.
+inline constexpr usize GPU_PREVIEW_QUAD_BYTES = 44;
 struct GpuPreviewUniform final
 {
     math::Matrix4 ClipToWorld;
@@ -102,6 +105,8 @@ struct GpuPreviewState final
     uint32 WorkgroupWidth = 1;
     uint32 WorkgroupHeight = 1;
     bool HasRayPathCapture = false;
+    /// The kernel reads the renderer's LTC table; LtcTable holds the uploaded copy.
+    bool HasLtcTable = false;
     bool IsGraphRayScene = false;
     bool HasNativeRayQueries = true;
     bool HasVisibilityBuffer = false;
@@ -109,6 +114,7 @@ struct GpuPreviewState final
     uint32 Phase = 0;
     bool QuadCreated = false;
     bool IndicesCreated = false;
+    bool IsLtcTableCreated = false;
     rhi::RasterStatus Setup = rhi::RasterStatus::Pending;
     rhi::RasterShaderHandle ComputeShader{};
     rhi::RasterShaderHandle NativeRayShader{};
@@ -123,6 +129,7 @@ struct GpuPreviewState final
     rhi::RasterPipelineHandle ImagePipeline{};
     rhi::BufferHandle Quad{};
     rhi::BufferHandle Indices{};
+    rhi::BufferHandle LtcTable{};
     GpuPreviewRecord Jobs[GPU_PREVIEW_JOB_COUNT];
     usize GpuBytes = 0;
 };

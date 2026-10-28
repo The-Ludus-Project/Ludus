@@ -21,6 +21,7 @@
 
 #include "internal/environment_data.h"
 #include "internal/gpu_preview_data.h"
+#include "internal/ltc_table_data.h"
 #include "internal/reference_data.h"
 #include "internal/render_graph_ray.h"
 #include "internal/uniform_set_table.h"
@@ -4810,7 +4811,8 @@ Status Renderer::prepareGpuPreviewCamera(GpuPreview handle, const ViewDescriptio
     if (mState->GpuPreview->HasVisibilityBuffer == true)
     {
         const usize firstTexture = mState->GpuPreview->ComputeBindingCount - LUDUS_GRAPH_VISIBILITY_TEXTURE_COUNT -
-                                   (mState->GpuPreview->HasRayPathCapture == true ? 1 : 0);
+                                   (mState->GpuPreview->HasRayPathCapture == true ? 1 : 0) -
+                                   (mState->GpuPreview->HasLtcTable == true ? LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT : 0);
         bindings[firstTexture] = { .Binding = LUDUS_GRAPH_VISIBILITY_BINDING, .Texture = job.VisibilityView };
         bindings[firstTexture + 1] =
         {
@@ -4820,10 +4822,16 @@ Status Renderer::prepareGpuPreviewCamera(GpuPreview handle, const ViewDescriptio
     }
     if (mState->GpuPreview->HasRayPathCapture == true)
     {
-        bindings[mState->GpuPreview->ComputeBindingCount - 1] = {LUDUS_RAY_PATH_CAPTURE_BINDING,
-                                                                 job.RayPathCapture.Buffer,
+        const usize capture = mState->GpuPreview->ComputeBindingCount - 1 -
+                              (mState->GpuPreview->HasLtcTable == true ? LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT : 0);
+        bindings[capture] = {LUDUS_RAY_PATH_CAPTURE_BINDING, job.RayPathCapture.Buffer, 0, job.RayPathCapture.Size};
+    }
+    if (mState->GpuPreview->HasLtcTable == true)
+    {
+        bindings[mState->GpuPreview->ComputeBindingCount - 1] = {LUDUS_GRAPH_LTC_TABLE_BINDING,
+                                                                 mState->GpuPreview->LtcTable,
                                                                  0,
-                                                                 job.RayPathCapture.Size};
+                                                                 sizeof(internal::LTC_TABLE)};
     }
     if (sizeof(internal::GpuPreviewUniform) > mState->GpuPreview->Options.GpuByteBudget - mState->GpuPreview->GpuBytes)
     {

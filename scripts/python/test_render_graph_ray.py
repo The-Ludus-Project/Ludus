@@ -751,6 +751,43 @@ class RayCompilerAcceptance(unittest.TestCase):
             execution.emit_runtime(str(package), root / 'hardware.h', name='Hardware', configuration='Hardware')
             self.assertIn('result.NativeRayStages.Artifact.HasNativeRayStages = true', (root / 'hardware.h').read_text())
 
+    def test_ltc_table_reads_reach_slot_13_and_the_runtime_scene_resource_word(self):
+        from test_render_graph_authoring import parse_runtime
+        for reads_table in (True, False):
+            with self.subTest(reads_table=reads_table), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                source = root / 'source'
+                shutil.copytree(ROOT / 'tests/sdk_consumer/rg2/scene_ray', source)
+                value = json.loads((source / 'main.lushader.json.in').read_text()
+                                   .replace('@RG2_TEST_PROFILES@', '["metal"]'))
+                next(item for item in value['techniques'] if item['id'] == ray.TECHNIQUE)['scene_interface']['polygonal_light_sampling'] = True
+                manifest = source / 'main.lushader.json'
+                manifest.write_text(json.dumps(value))
+                if reads_table:
+                    closest = source / 'main_shaders/closest.slang'
+                    closest.write_text(closest.read_text().replace(
+                        '    payload.Radiance = material.BaseColor',
+                        '    payload.Radiance = LookupSpecularLtc(0.5, float3(0, 0, 1), float3(0.04)).Norm * material.BaseColor', 1))
+                result = build.build_package(manifest, root / 'build', helper=os.environ['LUDUS_RG1_HELPER'],
+                                             compiler=os.environ['LUDUS_RG1_SLANG'], spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+                package = Path(result['package'])
+                contents = execution._runtime_contents(str(package), 'Default')
+                # Reflection keeps the table only when a callback reads it; the flag alone binds nothing.
+                self.assertEqual(reads_table, contents['ltc_table'])
+                compute = contents['artifacts'][('RayTracing', 'compute', 'metal')]
+                entries = {entry['binding']: entry for entry in compute['descriptor']['interface']['entries']}
+                self.assertEqual(reads_table, ray.LTC_TABLE_SLOT in entries)
+                if reads_table:
+                    self.assertEqual(('StorageRead', ray.LTC_TABLE_STRIDE),
+                                     (entries[ray.LTC_TABLE_SLOT]['kind'], entries[ray.LTC_TABLE_SLOT]['size']))
+                    # SPIRV-Cross keeps the declared slot as the Metal buffer index the renderer binds.
+                    self.assertIn(b'[[buffer(13)]]', compute['bytes'])
+                execution.cook_runtime(str(package), root / 'graph.lurgrt', configuration='Default')
+                parsed = parse_runtime((root / 'graph.lurgrt').read_bytes())
+                self.assertEqual(execution.SCENE_RESOURCE_LTC_TABLE if reads_table else 0, parsed['scene_resources'])
+                execution.emit_runtime(str(package), root / 'graph.h', name='Graph', configuration='Default')
+                self.assertEqual(reads_table, 'result.HasLtcTable = true;' in (root / 'graph.h').read_text())
+
     def test_custom_traversal_compiles_without_native_queries_and_invalidates_with_its_source(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -309,7 +309,9 @@ TARGET_FIELDS = {'metal': 'Msl', 'spirv': 'Spirv', 'wgsl': 'Wgsl', 'glsl': 'Glsl
 PACKAGE_MAGIC = 0x4752554C
 # Editor-only diagnostic ray path capture generation; same layout, refused by runtime decoding.
 RAY_PATH_CAPTURE_PACKAGE_MAGIC = 0x5052554C
-PACKAGE_VERSION = 23
+PACKAGE_VERSION = 24
+# Version 24 scene resource word: the linked ray kernel reads the renderer's LTC table.
+SCENE_RESOURCE_LTC_TABLE = 1
 RESOURCE_FIELD_COUNT = 9
 RESOURCE_RECORD_BYTES = RESOURCE_FIELD_COUNT * 4
 MAX_PASS_NAME_BYTES = 127
@@ -537,7 +539,12 @@ def _runtime_contents(path, configuration):
                   'ray visibility inputs must match scene_interface.visibility_buffer')
     persistent = ray.TECHNIQUE in selected_techniques and any(recipe.get('persistent_buffers', False) for recipe in ray_recipes)
     ray_path_capture = ray.TECHNIQUE in selected_techniques and any(recipe.get('ray_path_capture', False) for recipe in ray_recipes)
-    return {'clustered_forward': is_clustered_forward, 'forward_lit': has_forward, 'persistent_buffers': persistent, 'ray_path_capture': ray_path_capture, 'visibility_buffer': has_visibility, 'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
+    # Every target of the linked ray kernel must agree whether reflection kept the LTC table binding.
+    ltc_profiles = {any(entry['binding'] == ray.LTC_TABLE_SLOT for entry in item['descriptor']['interface']['entries'])
+                    for key, item in artifacts.items() if key[0] == 'RayTracing' and key[1] == 'compute'}
+    build.require(len(ltc_profiles) <= 1, 'ShaderInterface', 'ltc_table',
+                  'targets of the linked ray kernel disagree whether they read the LTC table')
+    return {'ltc_table': ltc_profiles == {True}, 'clustered_forward': is_clustered_forward, 'forward_lit': has_forward, 'persistent_buffers': persistent, 'ray_path_capture': ray_path_capture, 'visibility_buffer': has_visibility, 'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
             'cameras': cameras, 'camera_targets': camera_targets, 'artifacts': artifacts,
             'uniform_values': value_count, 'bindings': bindings, 'blocks': blocks, 'fields': fields,
             'storage_buffers': storage_buffers, 'uniform_interface': uniform_interface,
@@ -679,6 +686,8 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
         lines.append('    result.HasVisibilityBuffer = true;')
     if contents.get('ray_path_capture', False):
         lines.append('    result.HasRayPathCapture = true;')
+    if contents.get('ltc_table', False):
+        lines.append('    result.HasLtcTable = true;')
     for program_name in (*PROGRAM_CODES, *forward.SUPPORT, 'NativeRayStages'):
         stages_for_program = (forward.SUPPORT[program_name][1] if program_name in forward.SUPPORT else
                               ('compute',) if program_name == 'NativeRayStages' else
@@ -813,6 +822,7 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
     data += u32(len(storage))
     for buffer in storage:
         data += u32(buffer['Slot'], buffer['Stride'], buffer['Count'], buffer['IsReadOnly'])
+    data += u32(SCENE_RESOURCE_LTC_TABLE if contents.get('ltc_table', False) else 0)
     for operation in contents['plan']['passes']:
         if operation['kind'] not in ('Raster', 'RayTracing', 'Upscale'):
             continue

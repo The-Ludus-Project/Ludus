@@ -10,6 +10,7 @@
 
 #include "gpu_preview_graph.h"
 #include "gpu_preview_ray.h"
+#include "ltc_table_data.h"
 #include "render_graph_ray_scene.h"
 #include "scene_memory.h"
 // Included only by renderer.cpp. CPU work here only
@@ -570,6 +571,13 @@ Status PollGpuJob(rhi::DeviceHandle device, GpuPreviewState& inoutState, GpuPrev
                                          0,
                                          inoutJob.RayPathCapture.Size};
                 }
+                if (inoutState.HasLtcTable == true)
+                {
+                    bindings[count++] = {LUDUS_GRAPH_LTC_TABLE_BINDING,
+                                         inoutState.LtcTable,
+                                         0,
+                                         sizeof(internal::LTC_TABLE)};
+                }
                 return rhi::CreateBindingSet(device,
                                              inoutState.ComputeLayout,
                                              {bindings.GetData(), count},
@@ -796,6 +804,7 @@ void Renderer::State::ClearGpuPreview() noexcept
     static_cast<void>(rhi::Destroy(Device, state.FragmentShader));
     static_cast<void>(rhi::Destroy(Device, state.Quad));
     static_cast<void>(rhi::Destroy(Device, state.Indices));
+    static_cast<void>(rhi::Destroy(Device, state.LtcTable));
     GpuPreview.Reset();
 }
 Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
@@ -816,7 +825,7 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     {
         return status;
     }
-    if (options.CpuByteBudget <= sizeof(GpuPreviewState) || options.GpuByteBudget < 44 ||
+    if (options.CpuByteBudget <= sizeof(GpuPreviewState) || options.GpuByteBudget < internal::GPU_PREVIEW_QUAD_BYTES ||
         math::IsFinite(options.Exposure) == false || options.Exposure <= 0 ||
         options.Exposure > MAX_GPU_PREVIEW_EXPOSURE)
     {
@@ -828,10 +837,27 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     {
         return status;
     }
-    // A diagnostic capture-variant kernel declares its capture buffer last, after every frozen ABI slot.
-    const rhi::RasterBinding* captureBindingOrNull =
-        compute.Bindings.empty() == false && compute.Bindings.back().Binding == LUDUS_RAY_PATH_CAPTURE_BINDING
+    // A kernel reading the renderer's LTC table declares it last, after every other slot.
+    const rhi::RasterBinding* ltcTableBindingOrNull =
+        compute.Bindings.empty() == false && compute.Bindings.back().Binding == LUDUS_GRAPH_LTC_TABLE_BINDING
             ? &compute.Bindings.back()
+            : nullptr;
+    if (ltcTableBindingOrNull != nullptr &&
+        (ltcTableBindingOrNull->Kind != rhi::RasterBindingKind::StorageRead ||
+         ltcTableBindingOrNull->Visibility != rhi::RasterVisibility::Compute ||
+         ltcTableBindingOrNull->MinSize != LUDUS_GPU_PREVIEW_VECTOR_BYTES ||
+         ltcTableBindingOrNull->HasDynamicOffset == true || ltcTableBindingOrNull->Count != 1 ||
+         ltcTableBindingOrNull->IsRuntimeSized == true || ltcTableBindingOrNull->HasPartialBinding == true ||
+         ltcTableBindingOrNull->Indexing != rhi::RasterBindingIndexing::Constant))
+    {
+        return Status::InvalidDescription;
+    }
+    const std::span<const rhi::RasterBinding> leadingBindings = compute.Bindings.first(
+        compute.Bindings.size() - (ltcTableBindingOrNull != nullptr ? LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT : 0));
+    // A diagnostic capture-variant kernel declares its capture buffer after every frozen ABI slot.
+    const rhi::RasterBinding* captureBindingOrNull =
+        leadingBindings.empty() == false && leadingBindings.back().Binding == LUDUS_RAY_PATH_CAPTURE_BINDING
+            ? &leadingBindings.back()
             : nullptr;
     if (captureBindingOrNull != nullptr &&
         (captureBindingOrNull->Kind != rhi::RasterBindingKind::StorageReadWrite ||
@@ -844,7 +870,7 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
         return Status::InvalidDescription;
     }
     const std::span<const rhi::RasterBinding> kernelBindings =
-        compute.Bindings.first(compute.Bindings.size() - (captureBindingOrNull != nullptr ? 1 : 0));
+        leadingBindings.first(leadingBindings.size() - (captureBindingOrNull != nullptr ? 1 : 0));
     bool hasNativeRayQueries = false;
     for (const rhi::RasterBinding& binding : kernelBindings)
     {
@@ -977,6 +1003,12 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     }
     state->HasVisibilityBuffer = hasVisibilityBuffer;
     state->HasRayPathCapture = captureBindingOrNull != nullptr;
+    state->HasLtcTable = ltcTableBindingOrNull != nullptr;
+    if (state->HasLtcTable == true &&
+        options.GpuByteBudget - internal::GPU_PREVIEW_QUAD_BYTES < sizeof(internal::LTC_TABLE))
+    {
+        return Status::CapacityExceeded;
+    }
     status = EnableReferenceRendering(
         {},
         {ReferenceTraversal::CpuOracle, options.CpuByteBudget - sizeof(GpuPreviewState), 0, 1});
@@ -1177,6 +1209,15 @@ Status Renderer::PollGpuPreview() noexcept
                                                state.Indices);
                     state.IndicesCreated = Accepted(status);
                 }
+                if (Accepted(status) == true && state.HasLtcTable == true && state.IsLtcTableCreated == false)
+                {
+                    status = rhi::CreateBuffer(
+                        mState->Device,
+                        {rhi::BufferRole::Storage, sizeof(internal::LTC_TABLE)},
+                        {reinterpret_cast<const uint8*>(internal::LTC_TABLE.GetData()), sizeof(internal::LTC_TABLE)},
+                        state.LtcTable);
+                    state.IsLtcTableCreated = Accepted(status);
+                }
                 if (Accepted(status))
                 {
                     status = rhi::GetStatus(mState->Device, state.Quad);
@@ -1185,9 +1226,15 @@ Status Renderer::PollGpuPreview() noexcept
                 {
                     status = rhi::GetStatus(mState->Device, state.Indices);
                 }
+                if (status == Status::Ready && state.HasLtcTable == true)
+                {
+                    status = rhi::GetStatus(mState->Device, state.LtcTable);
+                }
                 if (status == Status::Ready)
                 {
-                    state.GpuBytes = sizeof(corners) + sizeof(indices);
+                    static_assert(sizeof(corners) + sizeof(indices) == internal::GPU_PREVIEW_QUAD_BYTES);
+                    state.GpuBytes = internal::GPU_PREVIEW_QUAD_BYTES +
+                                     (state.HasLtcTable == true ? sizeof(internal::LTC_TABLE) : 0);
                     state.Setup = Status::Ready;
                     return status;
                 }

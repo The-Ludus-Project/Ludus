@@ -1,3 +1,4 @@
+#include "../src/internal/ltc_table_data.h"
 #include "ris_projected_solid_angle_weights.h"
 #include "ris_projected_solid_angle_weights_layout.h"
 
@@ -25,6 +26,7 @@ namespace
 {
 using namespace ludus::foundation;
 namespace rhi = ludus::graphics::rhi;
+namespace internal = ludus::graphics::renderer::internal;
 using rhi::RasterStatus;
 
 constexpr uint64 TIMEOUT_NANOSECONDS = 10 * time::NANOSECONDS_PER_SECOND;
@@ -65,7 +67,10 @@ bool RunWeightKernel(Array<uint8>& outBytes)
     rhi::SurfaceHandle surface;
     rhi::DeviceDescription description;
     description.Required.Compute = true;
-    description.RequiredProfile.Compute.MinStorageRange = RESULT_BYTES;
+    constexpr usize TABLE_BYTES = sizeof(internal::LTC_TABLE);
+    constexpr usize LARGEST_BYTES = RESULT_BYTES > TABLE_BYTES ? RESULT_BYTES : TABLE_BYTES;
+    description.RequiredProfile.Raster.MinBufferSize = LARGEST_BYTES;
+    description.RequiredProfile.Compute.MinStorageRange = LARGEST_BYTES;
     const rhi::DeviceStatus started = rhi::CreateDevice({}, { .Width = 8, .Height = 8 }, description, device, surface);
     if (started != rhi::DeviceStatus::Ready && rhi::GetStartup().Error == rhi::StartupError::AdapterUnavailable)
     {
@@ -78,18 +83,29 @@ bool RunWeightKernel(Array<uint8>& outBytes)
                                          { .Role = rhi::BufferRole::Storage, .Size = RESULT_BYTES },
                                          {outBytes.GetData(), outBytes.GetSize()},
                                          results)) == true);
+    // The kernel's receiver frames look up the renderer's LTC table, which the renderer binds as a storage buffer.
+    rhi::BufferHandle table;
+    REQUIRE(IsAccepted(rhi::CreateBuffer(device,
+                                         { .Role = rhi::BufferRole::Storage, .Size = TABLE_BYTES },
+                                         {reinterpret_cast<const uint8*>(internal::LTC_TABLE.GetData()), TABLE_BYTES},
+                                         table)) == true);
     const rhi::RasterShaderDescription shader = ludus::shaders::ris_projected_solid_angle_weights::Compute();
     rhi::RasterShaderHandle shaderHandle;
     rhi::BindingLayoutHandle layout;
     REQUIRE(IsAccepted(rhi::CreateRasterShader(device, shader, shaderHandle)) == true);
     REQUIRE(IsAccepted(rhi::CreateBindingLayout(device, shader.Bindings, layout)) == true);
     WaitReady(device, results);
+    WaitReady(device, table);
     WaitReady(device, shaderHandle);
     WaitReady(device, layout);
-    const rhi::RasterBindingResource resource{ .Binding = 0, .Buffer = results, .Size = RESULT_BYTES };
+    constexpr usize BINDING_COUNT = 2;
+    const StaticArray<rhi::RasterBindingResource, BINDING_COUNT> resources{{
+        { .Binding = 0, .Buffer = results, .Size = RESULT_BYTES },
+        { .Binding = LUDUS_RIS_WEIGHTS_LTC_TABLE_BINDING, .Buffer = table, .Size = TABLE_BYTES },
+    }};
     rhi::BindingSetHandle set;
     rhi::ComputePipelineHandle pipeline;
-    REQUIRE(IsAccepted(rhi::CreateBindingSet(device, layout, {&resource, 1}, set)) == true);
+    REQUIRE(IsAccepted(rhi::CreateBindingSet(device, layout, resources.AsSpan(), set)) == true);
     REQUIRE(IsAccepted(rhi::CreateComputePipeline(device, { .Shader = shaderHandle, .Layout = layout }, pipeline)) ==
             true);
     WaitReady(device, set);
@@ -98,13 +114,14 @@ bool RunWeightKernel(Array<uint8>& outBytes)
     REQUIRE(rhi::CreateOrderedGraph(device, graph) == RasterStatus::Ready);
     rhi::GraphVersion original;
     rhi::GraphVersion version;
+    rhi::GraphVersion tableVersion;
     REQUIRE(rhi::ImportGraphBuffer(device, graph, results, original) == RasterStatus::Ready);
     REQUIRE(rhi::NextGraphVersion(device, graph, original, version) == RasterStatus::Ready);
-    const rhi::GraphUse use{version,
-                            rhi::GraphAccessMode::StorageReadWrite,
-                            0,
-                            RESULT_BYTES,
-                            rhi::RasterVisibility::Compute};
+    REQUIRE(rhi::ImportGraphBuffer(device, graph, table, tableVersion) == RasterStatus::Ready);
+    const StaticArray<rhi::GraphUse, BINDING_COUNT> uses{{
+        {version, rhi::GraphAccessMode::StorageReadWrite, 0, RESULT_BYTES, rhi::RasterVisibility::Compute},
+        {tableVersion, rhi::GraphAccessMode::StorageRead, 0, TABLE_BYTES, rhi::RasterVisibility::Compute},
+    }};
     const rhi::ComputeDispatch dispatch
     {
         .Pipeline = pipeline,
@@ -113,8 +130,8 @@ bool RunWeightKernel(Array<uint8>& outBytes)
     };
     rhi::GraphPassDescription pass;
     pass.Name = "ris projected solid angle weights";
-    pass.Uses = &use;
-    pass.UseCount = 1;
+    pass.Uses = uses.GetData();
+    pass.UseCount = static_cast<uint32>(uses.GetSize());
     pass.SideEffect = true;
     pass.Dispatch = &dispatch;
     REQUIRE(rhi::AddGraphPass(device, graph, pass) == RasterStatus::Ready);

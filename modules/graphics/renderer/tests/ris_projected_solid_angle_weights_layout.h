@@ -11,6 +11,8 @@
 //   5: empty LTC clip: (prepared ? 1 : 0, E_0, E_1, p_1 at the diffuse sample)
 //   6: empty LTC clip weights: (w_0, w_1, diffuse sampled ? 1 : 0, p_0 at the diffuse sample)
 //   7: receiver chain: (w_0 + w_1, p_0, p_1, technique sampled ? 1 : 0) for a drawn receiver, LTC and triangle
+// Slot 0 holds the results; the renderer's LTC table is bound read-only at this slot.
+#define LUDUS_RIS_WEIGHTS_LTC_TABLE_BINDING 1
 #define LUDUS_RIS_WEIGHTS_RECORDS_PER_INVOCATION 8
 #define LUDUS_RIS_WEIGHTS_GROUP_SIZE 64
 #define LUDUS_RIS_WEIGHTS_CLAMPED_RECORD 0

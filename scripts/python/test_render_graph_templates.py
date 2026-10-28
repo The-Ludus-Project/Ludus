@@ -762,8 +762,13 @@ class RisProjectedSolidAngleTemplateTests(unittest.TestCase):
         positions = [requested.index(include) for include in includes]
         self.assertEqual(positions, sorted(positions))
         self.assertLess(positions[-1], requested.index('#include "main_shaders/shade.slang"'))
-        # Every staged helper has one installed owner; the table data enters only through ltc_table.slang.
-        self.assertEqual(set(ray.POLYGONAL_LIGHT_HELPERS) - set(ray.POLYGONAL_LIGHT_INCLUDES), {'ltc_table_data.inc'})
+        # ltc_table.slang reads the renderer-bound table at the graph's slot, defined before the include.
+        binding = '#define LUDUS_LTC_TABLE_BINDING LUDUS_GRAPH_LTC_TABLE_BINDING\n'
+        self.assertNotIn(binding, plain)
+        self.assertEqual(1, requested.count(binding))
+        self.assertLess(requested.index(binding), requested.index('#include "_ludus_ray/ltc_table.slang"'))
+        # Every staged helper has one installed owner; the table layout enters only through ltc_table.slang.
+        self.assertEqual(set(ray.POLYGONAL_LIGHT_HELPERS) - set(ray.POLYGONAL_LIGHT_INCLUDES), {'ltc_table_layout.h'})
         self.assertFalse(set(ray.POLYGONAL_LIGHT_HELPERS) & set(ray.HELPERS))
 
     def test_the_polygonal_light_requirement_is_a_boolean(self):

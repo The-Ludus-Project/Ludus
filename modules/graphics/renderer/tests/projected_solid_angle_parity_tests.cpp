@@ -1,4 +1,5 @@
 #include "../src/internal/ltc_table.h"
+#include "../src/internal/ltc_table_data.h"
 #include "linearly_transformed_cosine_parity.h"
 #include "linearly_transformed_cosine_parity_layout.h"
 #include "ltc_table_parity.h"
@@ -38,6 +39,7 @@ namespace
 using namespace ludus::foundation;
 namespace math = ludus::foundation::math;
 namespace rhi = ludus::graphics::rhi;
+namespace internal = ludus::graphics::renderer::internal;
 using S = rhi::RasterStatus;
 
 constexpr uint64 TIMEOUT_NANOSECONDS = 10 * time::NANOSECONDS_PER_SECOND;
@@ -108,22 +110,26 @@ math::ProjectedPolygonInput MakeRandomPolygon(math::RandomStream& inoutRandom) n
     return result;
 }
 
-/// Run a parity kernel over host-supplied cases on a native compute device and read back its results.
+/// Run a parity kernel over host-supplied cases on a native compute device and read back its results. Cases are bound
+/// at slot 0 and results at slot 1; a nonempty table is bound read-only at slot 2.
 /// @return false when no native GPU adapter is available; other failures fail the test.
 bool RunParityKernel(const rhi::RasterShaderDescription& shader,
                      const Array<float32>& cases,
                      uint32 groupCount,
                      usize resultBytes,
-                     Array<uint8>& outResults)
+                     Array<uint8>& outResults,
+                     std::span<const uint8> table = {})
 {
+    constexpr usize MAX_RESOURCES = 3;
     const usize caseBytes = cases.GetSize() * sizeof(float32);
+    const usize largestBytes = math::Max(math::Max(caseBytes, resultBytes), table.size());
 
     rhi::DeviceHandle device;
     rhi::SurfaceHandle surface;
     rhi::DeviceDescription description;
     description.Required.Compute = true;
-    description.RequiredProfile.Raster.MinBufferSize = caseBytes;
-    description.RequiredProfile.Compute.MinStorageRange = caseBytes;
+    description.RequiredProfile.Raster.MinBufferSize = largestBytes;
+    description.RequiredProfile.Compute.MinStorageRange = largestBytes;
     const rhi::DeviceStatus started = rhi::CreateDevice({}, { .Width = 8, .Height = 8 }, description, device, surface);
     if (started != rhi::DeviceStatus::Ready && rhi::GetStartup().Error == rhi::StartupError::AdapterUnavailable)
     {
@@ -133,6 +139,16 @@ bool RunParityKernel(const rhi::RasterShaderDescription& shader,
 
     rhi::BufferHandle caseBuffer;
     rhi::BufferHandle resultBuffer;
+    rhi::BufferHandle tableBuffer;
+    const bool hasTable = table.empty() == false;
+    if (hasTable == true)
+    {
+        REQUIRE(IsAccepted(rhi::CreateBuffer(device,
+                                             { .Role = rhi::BufferRole::Storage, .Size = table.size() },
+                                             table,
+                                             tableBuffer)) == true);
+        WaitReady(device, tableBuffer);
+    }
     REQUIRE(outResults.TryResize(resultBytes, uint8{0}) == true);
     const std::span<const uint8> caseSource{reinterpret_cast<const uint8*>(cases.GetData()), caseBytes};
     REQUIRE(IsAccepted(rhi::CreateBuffer(device,
@@ -154,13 +170,19 @@ bool RunParityKernel(const rhi::RasterShaderDescription& shader,
     WaitReady(device, resultBuffer);
     WaitReady(device, shaderHandle);
     WaitReady(device, layout);
-    const rhi::RasterBindingResource resources[] = {
+    const StaticArray<rhi::RasterBindingResource, MAX_RESOURCES> resources{{
         { .Binding = 0, .Buffer = caseBuffer, .Size = caseBytes },
         { .Binding = 1, .Buffer = resultBuffer, .Size = resultBytes },
-    };
+        { .Binding = 2, .Buffer = tableBuffer, .Size = table.size() },
+    }};
+    const usize resourceCount = hasTable == true ? MAX_RESOURCES : MAX_RESOURCES - 1;
     rhi::BindingSetHandle set;
     rhi::ComputePipelineHandle pipeline;
-    REQUIRE(IsAccepted(rhi::CreateBindingSet(device, layout, resources, set)) == true);
+    REQUIRE(IsAccepted(
+                rhi::CreateBindingSet(device,
+                                      layout,
+                                      std::span<const rhi::RasterBindingResource>{resources.GetData(), resourceCount},
+                                      set)) == true);
     REQUIRE(IsAccepted(rhi::CreateComputePipeline(device, { .Shader = shaderHandle, .Layout = layout }, pipeline)) ==
             true);
     WaitReady(device, set);
@@ -174,10 +196,16 @@ bool RunParityKernel(const rhi::RasterShaderDescription& shader,
     REQUIRE(rhi::ImportGraphBuffer(device, graph, caseBuffer, caseVersion) == S::Ready);
     REQUIRE(rhi::ImportGraphBuffer(device, graph, resultBuffer, initialResults) == S::Ready);
     REQUIRE(rhi::NextGraphVersion(device, graph, initialResults, results) == S::Ready);
-    const rhi::GraphUse uses[] = {
+    rhi::GraphVersion tableVersion;
+    if (hasTable == true)
+    {
+        REQUIRE(rhi::ImportGraphBuffer(device, graph, tableBuffer, tableVersion) == S::Ready);
+    }
+    const StaticArray<rhi::GraphUse, MAX_RESOURCES> uses{{
         {caseVersion, rhi::GraphAccessMode::StorageRead, 0, caseBytes, rhi::RasterVisibility::Compute},
         {results, rhi::GraphAccessMode::StorageReadWrite, 0, resultBytes, rhi::RasterVisibility::Compute},
-    };
+        {tableVersion, rhi::GraphAccessMode::StorageRead, 0, table.size(), rhi::RasterVisibility::Compute},
+    }};
     const rhi::ComputeDispatch dispatch
     {
         .Pipeline = pipeline,
@@ -186,8 +214,8 @@ bool RunParityKernel(const rhi::RasterShaderDescription& shader,
     };
     rhi::GraphPassDescription pass;
     pass.Name = "FoundationMath parity";
-    pass.Uses = uses;
-    pass.UseCount = 2;
+    pass.Uses = uses.GetData();
+    pass.UseCount = static_cast<uint32>(resourceCount);
     pass.SideEffect = true;
     pass.Dispatch = &dispatch;
     REQUIRE(rhi::AddGraphPass(device, graph, pass) == S::Ready);
@@ -574,15 +602,21 @@ TEST_CASE("GPU LTC table lookups match the C++ lookup", "[renderer][gpu][ltc]")
 
     constexpr uint32 LOOKUP_CASE_COUNT = 64 * LUDUS_LTC_TABLE_PARITY_GROUP_SIZE;
     constexpr uint32 INVERSE_COLUMN_COUNT = 3;
-    // Roughness outside the table and views below the horizon or along the normal exercise the clamps.
-    constexpr float32 FIXED_CASES[][4] = {
-        {0.0F, 0.0F, 0.0F, 1.0F},
-        {0.045F, 0.0F, 0.0F, 1.0F},
-        {1.0F, 1.0F, 0.0F, 0.0F},
-        {1.5F, 0.6F, 0.0F, 0.8F},
-        {0.3F, 0.0F, 0.6F, -0.8F},
-        {0.3F, -0.6F, 0.0F, 0.8F},
+    // Roughness outside the table, views below the horizon or along the normal, and F0 outside [0, 1] exercise the
+    // clamps: (roughness, view xyz, F0 rgb).
+    constexpr usize FIXED_CASE_FLOATS = 7;
+    constexpr float32 FIXED_CASES[][FIXED_CASE_FLOATS] = {
+        {0.0F, 0.0F, 0.0F, 1.0F, 0.04F, 0.04F, 0.04F},
+        {0.045F, 0.0F, 0.0F, 1.0F, 1.0F, 1.0F, 1.0F},
+        {1.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F},
+        {1.5F, 0.6F, 0.0F, 0.8F, 2.0F, 2.0F, 2.0F},
+        {0.3F, 0.0F, 0.6F, -0.8F, -1.0F, 0.5F, 0.2F},
+        {0.3F, -0.6F, 0.0F, 0.8F, 0.95F, 0.64F, 0.54F},
     };
+    // A random F0 is redrawn when its luminance lies this close to the boundary between two slices, where the GPU's
+    // rounding of the luminance could select the other slice.
+    constexpr float32 SLICE_BOUNDARY_MARGIN = 1.0e-3F;
+    constexpr math::Vector3 LUMINANCE_WEIGHTS{0.2126F, 0.7152F, 0.0722F};
     constexpr uint32 FIXED_CASE_COUNT = sizeof(FIXED_CASES) / sizeof(FIXED_CASES[0]);
     math::RandomStream random;
     REQUIRE(random.TryReseed(RANDOM_SEED, 6) == true);
@@ -594,7 +628,7 @@ TEST_CASE("GPU LTC table lookups match the C++ lookup", "[renderer][gpu][ltc]")
         float32* words = cases.GetData() + usize{i} * LUDUS_LTC_TABLE_PARITY_WORDS_PER_CASE * FLOATS_PER_WORD;
         if (i < FIXED_CASE_COUNT)
         {
-            for (uint32 j = 0; j < FLOATS_PER_WORD; ++j)
+            for (usize j = 0; j < FIXED_CASE_FLOATS; ++j)
             {
                 words[j] = FIXED_CASES[i][j];
             }
@@ -607,6 +641,19 @@ TEST_CASE("GPU LTC table lookups match the C++ lookup", "[renderer][gpu][ltc]")
         words[1] = sine * math::Cos(azimuth);
         words[2] = sine * math::Sin(azimuth);
         words[3] = cosine;
+        float32 boundaryDistance = 0.0F;
+        while (boundaryDistance < SLICE_BOUNDARY_MARGIN)
+        {
+            for (uint32 j = 0; j < 3; ++j)
+            {
+                words[FLOATS_PER_WORD + j] = random.NextFloat01();
+            }
+            const float32 slice =
+                math::Dot(math::Vector3{words[FLOATS_PER_WORD], words[FLOATS_PER_WORD + 1], words[FLOATS_PER_WORD + 2]},
+                          LUMINANCE_WEIGHTS) *
+                static_cast<float32>(LUDUS_LTC_TABLE_FRESNEL_COUNT - 1);
+            boundaryDistance = math::Abs(slice - static_cast<float32>(static_cast<uint32>(slice)) - 0.5F);
+        }
     }
     const usize resultBytes =
         usize{LOOKUP_CASE_COUNT} * LUDUS_LTC_TABLE_PARITY_WORDS_PER_RESULT * FLOATS_PER_WORD * sizeof(float32);
@@ -615,7 +662,9 @@ TEST_CASE("GPU LTC table lookups match the C++ lookup", "[renderer][gpu][ltc]")
                         cases,
                         LOOKUP_CASE_COUNT / LUDUS_LTC_TABLE_PARITY_GROUP_SIZE,
                         resultBytes,
-                        resultBytesStorage) == false)
+                        resultBytesStorage,
+                        std::span<const uint8>{reinterpret_cast<const uint8*>(internal::LTC_TABLE.GetData()),
+                                               sizeof(internal::LTC_TABLE)}) == false)
     {
         SKIP("No native GPU adapter");
     }
@@ -625,12 +674,15 @@ TEST_CASE("GPU LTC table lookups match the C++ lookup", "[renderer][gpu][ltc]")
     {
         float32 words[LUDUS_LTC_TABLE_PARITY_WORDS_PER_RESULT * FLOATS_PER_WORD];
         std::memcpy(words, resultBytesStorage.GetData() + usize{i} * sizeof(words), sizeof(words));
-        const float32* parameters = cases.GetData() + usize{i} * FLOATS_PER_WORD;
-        INFO("case " << i << ", roughness " << parameters[0] << ", view z " << parameters[3]);
-        const ludus::graphics::renderer::internal::SpecularLtc expected =
-            ludus::graphics::renderer::internal::LookupSpecularLtc(
-                parameters[0],
-                math::Vector3{parameters[1], parameters[2], parameters[3]});
+        const float32* parameters =
+            cases.GetData() + usize{i} * LUDUS_LTC_TABLE_PARITY_WORDS_PER_CASE * FLOATS_PER_WORD;
+        const math::Vector3 f0{parameters[FLOATS_PER_WORD],
+                               parameters[FLOATS_PER_WORD + 1],
+                               parameters[FLOATS_PER_WORD + 2]};
+        INFO("case " << i << ", roughness " << parameters[0] << ", view z " << parameters[3] << ", F0 slice "
+                     << internal::GetLtcTableFresnelSlice(f0));
+        const internal::SpecularLtc expected =
+            internal::LookupSpecularLtc(parameters[0], math::Vector3{parameters[1], parameters[2], parameters[3]}, f0);
         // Entries are compared relative to the matrix's largest entry, the scale the LTC is invariant to.
         float32 scale = 0.0F;
         for (uint32 j = 0; j < INVERSE_COLUMN_COUNT; ++j)
@@ -657,7 +709,7 @@ TEST_CASE("GPU LTC table lookups match the C++ lookup", "[renderer][gpu][ltc]")
             REQUIRE(error <= 1.0e-5F);
         }
     }
-    // Apple M5 measured a p99 of 1.5e-6 and a largest error of 1.6e-5; the GPU's arctangent differs by a few ulps.
+    // Apple M5 measured a p99 of 1.4e-6 and a largest error of 1.2e-5; the GPU's arctangent differs by a few ulps.
     REQUIRE(GetPercentile(errors, 0.99F) <= 1.0e-5F);
     REQUIRE(GetPercentile(errors, 1.0F) <= 1.0e-4F);
 }

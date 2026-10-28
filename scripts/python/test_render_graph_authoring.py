@@ -362,6 +362,7 @@ def parse_runtime(data):
         result['stages'].append({'role': role, 'target': target, 'inputs': stage_inputs, 'entry': entry,
                                  'artifact': artifact, 'blocks': names, 'workgroup': workgroup})
     result['storage_buffers'] = [take(4) for _ in range(take(1)[0])] if version >= 8 else []
+    result['scene_resources'] = take(1)[0] if version >= 24 else 0
     result['pass_names'] = []
     if version >= 3:
         for _ in range(passes):

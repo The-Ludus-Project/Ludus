@@ -55,6 +55,9 @@
 /// Version 23 admits ClusteredForwardFragment in place of ForwardFragment; other forward
 /// stages then use the clustered material ABI. ForwardDepth carries its matching opaque
 /// depth-only fragment. It preserves the version 22 record widths.
+/// Version 24 appends one scene resource word after the storage records. Bit
+/// SCENE_RESOURCE_LTC_TABLE means the linked scene ray kernel reads the renderer's LTC table at
+/// LUDUS_GRAPH_LTC_TABLE_BINDING; other bits must be zero. Earlier packages bind no table.
 namespace ludus::content::render_graph_format
 {
 /// "LURG" read as a little-endian uint32.
@@ -78,8 +81,12 @@ inline constexpr foundation::uint32 RAY_WORKGROUP_PACKAGE_VERSION = 21;
 inline constexpr foundation::uint32 COMPUTE_BVH_PACKAGE_VERSION = 22;
 /// First generation admitting the clustered forward fragment role; record widths are unchanged.
 inline constexpr foundation::uint32 CLUSTERED_FORWARD_PACKAGE_VERSION = 23;
+/// First generation carrying the scene resource word after the storage records.
+inline constexpr foundation::uint32 LTC_TABLE_PACKAGE_VERSION = 24;
+/// Scene resource bit: the linked scene ray kernel reads the renderer-owned LTC table.
+inline constexpr foundation::uint32 SCENE_RESOURCE_LTC_TABLE = 1U;
 /// Current runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = CLUSTERED_FORWARD_PACKAGE_VERSION;
+inline constexpr foundation::uint32 PACKAGE_VERSION = LTC_TABLE_PACKAGE_VERSION;
 /// First package carrying explicit OIDN denoising quality per ray pass.
 inline constexpr foundation::uint32 DENOISING_PACKAGE_VERSION = 16;
 /// First package carrying the renderer-owned bilinear image operation.

@@ -2105,14 +2105,20 @@ callbacks. The wrapper then stages and includes, before your sources:
 - `linearly_transformed_cosine.slang` (the LTC polygon transform);
 - `weighted_reservoir.slang` (the sequential weighted reservoir);
 - the renderer's `ltc_table.slang` (`LookupSpecularLtc`, `ComputeSpecularLtcAlbedo`)
-  with its generated table.
+  with its layout.
 
 Their contracts are on the
 [FoundationMath page](../modules/foundation/math.md#linearly-transformed-cosines-over-polygons),
 in [randomness](../architecture/randomness.md#sequential-weighted-reservoir) and in
-the [LTC table guide](ltc-table.md). The table adds about 0.5 MB to the source
-snapshot, so omit the field when you do not need them. It must be a Boolean, and
-older SDKs reject the unknown field instead of building without the helpers. The
+the [LTC table guide](ltc-table.md). The table itself is 3.4 MB, so it is not
+part of the source snapshot: the renderer uploads it once and binds it read-only
+at slot 13 when the linked kernel's reflection keeps that binding. A flag
+without a `LookupSpecularLtc` call binds nothing. Version 24 runtime packages
+record the binding in one scene resource word. Native ray stages
+(`"type": "RayTracing"` invocations) cannot bind the table, so read it from a
+compute-invoked pass. Omit the field when you do not need the helpers. It must
+be a Boolean, and older SDKs reject the unknown field instead of building
+without the helpers. The
 [RIS and projected-solid-angle template](#resample-many-area-lights-with-projected-solid-angle-sampling)
 declares it.
 

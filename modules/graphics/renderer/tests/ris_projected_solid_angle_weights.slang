@@ -1,6 +1,4 @@
 #include "linearly_transformed_cosine.slang"
-#include "ltc_table.slang"
-#include "projected_solid_angle_light.slang"
 #include "raster_bindings.slang"
 #include "ris_projected_solid_angle_weights_layout.h"
 
@@ -11,6 +9,11 @@
 // ABI.
 
 LUDUS_SHADER_BINDING(0) RWStructuredBuffer<uint4> Results;
+// The host binds the renderer's LTC table here. Declared after Results: Slang numbers Metal buffers in declaration
+// order.
+#define LUDUS_LTC_TABLE_BINDING LUDUS_RIS_WEIGHTS_LTC_TABLE_BINDING
+#include "ltc_table.slang"
+#include "projected_solid_angle_light.slang"
 
 static const uint2 WEIGHT_TEST_RANDOM_KEY = uint2(0x52495331u, 0x50534131u);
 // Shares of drawn values set to exactly zero, so zero-density and zero-coefficient branches are covered.
