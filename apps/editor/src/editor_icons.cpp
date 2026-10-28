@@ -310,6 +310,17 @@ QMap<CacheKey, QPixmap>& GetCache()
                                    : palette.color(QPalette::Active, QPalette::ButtonText);
 }
 
+[[nodiscard]] QSize GetLogicalIconSize(const QSize& size, qreal scale)
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
+    return size;
+#else
+    const qreal safeScale = scale < 1.0 ? 1.0 : scale;
+    return QSize(static_cast<int>(std::lround(static_cast<qreal>(size.width()) / safeScale)),
+                 static_cast<int>(std::lround(static_cast<qreal>(size.height()) / safeScale)));
+#endif
+}
+
 [[nodiscard]] QPixmap Rasterise(EditorIcon icon, const QSize& deviceSize, qreal scale, const QColor& colour)
 {
     QPixmap pixmap(deviceSize);
@@ -380,16 +391,7 @@ public:
     QPixmap scaledPixmap(const QSize& size, QIcon::Mode mode, QIcon::State state, qreal scale) override
     {
         Q_UNUSED(state);
-#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 0)
-        // Since Qt 6.8 QIcon passes the device independent size.
-        const QSize logicalSize = size;
-#else
-        // Before Qt 6.8 QIcon passes the size in device pixels (size times scale).
-        const qreal safeScale = scale < 1.0 ? 1.0 : scale;
-        const QSize logicalSize(static_cast<int>(std::lround(static_cast<qreal>(size.width()) / safeScale)),
-                                static_cast<int>(std::lround(static_cast<qreal>(size.height()) / safeScale)));
-#endif
-        return GetCachedPixmap(mIcon, logicalSize, mode, scale);
+        return GetCachedPixmap(mIcon, GetLogicalIconSize(size, scale), mode, scale);
     }
 
     QSize actualSize(const QSize& size, QIcon::Mode mode, QIcon::State state) override
