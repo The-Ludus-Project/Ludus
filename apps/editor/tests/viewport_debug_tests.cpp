@@ -69,6 +69,73 @@ TEST_CASE("Viewport shading modes have unique keys, self-explaining labels and r
     CHECK(unchanged == PreviewShading::Metallic);
 }
 
+TEST_CASE("Debug ramps match viridis and brighten steadily from end to end", "[editor][viewport][shading]")
+{
+    constexpr float32 VIRIDIS_TOLERANCE = .02F;
+    const math::Vector3 start = GetPreviewRampColour(PreviewLegendRamp::Viridis, 0);
+    const math::Vector3 middle = GetPreviewRampColour(PreviewLegendRamp::Viridis, .5F);
+    const math::Vector3 end = GetPreviewRampColour(PreviewLegendRamp::Viridis, 1);
+    // Anchors of matplotlib's viridis at 0, 0.5 and 1.
+    CHECK(start.X == Catch::Approx(.267F).margin(VIRIDIS_TOLERANCE));
+    CHECK(start.Y == Catch::Approx(.005F).margin(VIRIDIS_TOLERANCE));
+    CHECK(start.Z == Catch::Approx(.329F).margin(VIRIDIS_TOLERANCE));
+    CHECK(middle.X == Catch::Approx(.128F).margin(VIRIDIS_TOLERANCE));
+    CHECK(middle.Y == Catch::Approx(.567F).margin(VIRIDIS_TOLERANCE));
+    CHECK(middle.Z == Catch::Approx(.551F).margin(VIRIDIS_TOLERANCE));
+    CHECK(end.X == Catch::Approx(.993F).margin(VIRIDIS_TOLERANCE));
+    CHECK(end.Y == Catch::Approx(.906F).margin(VIRIDIS_TOLERANCE));
+    CHECK(end.Z == Catch::Approx(.144F).margin(VIRIDIS_TOLERANCE));
+    // Positions outside [0,1] clamp to the ends.
+    CHECK(GetPreviewRampColour(PreviewLegendRamp::Viridis, -3).X == Catch::Approx(start.X));
+    CHECK(GetPreviewRampColour(PreviewLegendRamp::Viridis, 3).Y == Catch::Approx(end.Y));
+    // Luma (Rec. 709 weights on the display values) rises at every step, which is what a heat map hides.
+    constexpr usize STEP_COUNT = 32;
+    constexpr float32 RED_LUMA = .2126F;
+    constexpr float32 GREEN_LUMA = .7152F;
+    constexpr float32 BLUE_LUMA = .0722F;
+    for (const PreviewLegendRamp ramp : {PreviewLegendRamp::Viridis, PreviewLegendRamp::Grey})
+    {
+        float32 previousLuma = -1;
+        for (usize step = 0; step <= STEP_COUNT; ++step)
+        {
+            const math::Vector3 colour =
+                GetPreviewRampColour(ramp, static_cast<float32>(step) / static_cast<float32>(STEP_COUNT));
+            const float32 luma = RED_LUMA * colour.X + GREEN_LUMA * colour.Y + BLUE_LUMA * colour.Z;
+            CHECK(luma > previousLuma);
+            previousLuma = luma;
+        }
+    }
+}
+
+TEST_CASE("Scalar debug views have a legend and the other modes do not", "[editor][viewport][shading]")
+{
+    PreviewLegend legend;
+    legend.Title = QStringLiteral("unchanged");
+    for (const PreviewShading shading : {PreviewShading::Solid,
+                                         PreviewShading::Albedo,
+                                         PreviewShading::Lit,
+                                         PreviewShading::Normal,
+                                         PreviewShading::Uv})
+    {
+        CHECK(TryGetPreviewLegend(shading, legend) == false);
+        CHECK(legend.Title == QStringLiteral("unchanged"));
+    }
+    for (const PreviewShading shading :
+         {PreviewShading::Depth, PreviewShading::Roughness, PreviewShading::Metallic, PreviewShading::LightCount})
+    {
+        INFO(GetPreviewShadingKey(shading).toStdString());
+        REQUIRE(TryGetPreviewLegend(shading, legend) == true);
+        CHECK(legend.Title.isEmpty() == false);
+        CHECK(legend.LowLabel.isEmpty() == false);
+        CHECK(legend.HighLabel.isEmpty() == false);
+    }
+    REQUIRE(TryGetPreviewLegend(PreviewShading::LightCount, legend) == true);
+    CHECK(legend.HighLabel == QStringLiteral("16 or more"));
+    CHECK(legend.Ramp == PreviewLegendRamp::Viridis);
+    REQUIRE(TryGetPreviewLegend(PreviewShading::Metallic, legend) == true);
+    CHECK(legend.Ramp == PreviewLegendRamp::Grey);
+}
+
 TEST_CASE("Debug depth range follows the camera lens and tightens to scene bounds", "[editor][viewport][shading]")
 {
     renderer::ViewDescription view;

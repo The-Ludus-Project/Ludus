@@ -9,6 +9,7 @@
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/time/time.hpp>
 
+#include <algorithm>
 #include <new>
 
 #include <QAction>
@@ -21,6 +22,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLayout>
+#include <QLinearGradient>
 #include <QList>
 #include <QMenu>
 #include <QPainter>
@@ -265,6 +267,70 @@ QPointF GetShaderStatusOrigin(const QString& statisticsText)
     const qreal statisticsHeight = MeasureStatistics(statisticsText).height();
     return {STATISTICS_MARGIN, STATISTICS_MARGIN + (statisticsHeight > 0 ? statisticsHeight + STATISTICS_MARGIN : 0)};
 }
+/// Width of the legend's colour bar, in logical pixels.
+constexpr qreal LEGEND_BAR_WIDTH = 168;
+/// Height of the legend's colour bar, in logical pixels.
+constexpr qreal LEGEND_BAR_HEIGHT = 10;
+/// Gap between the legend's title, bar and end labels, in logical pixels.
+constexpr qreal LEGEND_GAP = 4;
+/// Colour stops sampled along the legend bar; the ramp is smooth enough that this matches the shader.
+constexpr int32 LEGEND_STOP_COUNT = 16;
+/// Outline around the legend bar so its dark end stays visible on the translucent panel.
+constexpr QRgb LEGEND_BAR_OUTLINE = qRgb(120, 130, 140);
+/// Space between the end labels of a legend, in logical pixels.
+constexpr qreal LEGEND_LABEL_GAP = 12;
+QLinearGradient MakeLegendGradient(PreviewLegendRamp ramp)
+{
+    QLinearGradient gradient(0, 0, 1, 0);
+    gradient.setCoordinateMode(QGradient::ObjectBoundingMode);
+    for (int32 stop = 0; stop < LEGEND_STOP_COUNT; ++stop)
+    {
+        const float32 position = static_cast<float32>(stop) / static_cast<float32>(LEGEND_STOP_COUNT - 1);
+        const math::Vector3 colour = GetPreviewRampColour(ramp, position);
+        gradient.setColorAt(static_cast<qreal>(position), QColor::fromRgbF(colour.X, colour.Y, colour.Z));
+    }
+    return gradient;
+}
+/// Size of the padded legend panel, in logical pixels.
+QSizeF MeasureLegend(const PreviewLegend& legend)
+{
+    const QFontMetricsF metrics(GetStatisticsFont());
+    const qreal labelsWidth =
+        metrics.horizontalAdvance(legend.LowLabel) + LEGEND_LABEL_GAP + metrics.horizontalAdvance(legend.HighLabel);
+    const qreal contentWidth = std::max({LEGEND_BAR_WIDTH, metrics.horizontalAdvance(legend.Title), labelsWidth});
+    const qreal contentHeight = 2 * metrics.height() + LEGEND_BAR_HEIGHT + 2 * LEGEND_GAP;
+    return {contentWidth + 2 * STATISTICS_PADDING, contentHeight + 2 * STATISTICS_PADDING};
+}
+/// Paint a legend panel with its top-left corner at origin: title, colour bar, then the two end labels.
+void PaintLegend(QPainter& inoutPainter, const PreviewLegend& legend, QPointF origin)
+{
+    const QSizeF size = MeasureLegend(legend);
+    const QFontMetricsF metrics(GetStatisticsFont());
+    inoutPainter.save();
+    inoutPainter.setRenderHint(QPainter::Antialiasing);
+    inoutPainter.setPen(Qt::NoPen);
+    inoutPainter.setBrush(QColor::fromRgba(STATISTICS_BACKGROUND));
+    inoutPainter.drawRoundedRect(QRectF(origin, size), STATISTICS_CORNER_RADIUS, STATISTICS_CORNER_RADIUS);
+    inoutPainter.setFont(GetStatisticsFont());
+    inoutPainter.setPen(QColor::fromRgb(STATISTICS_TEXT));
+    const qreal left = origin.x() + STATISTICS_PADDING;
+    const qreal contentWidth = size.width() - 2 * STATISTICS_PADDING;
+    qreal top = origin.y() + STATISTICS_PADDING;
+    inoutPainter.drawText(QRectF(left, top, contentWidth, metrics.height()),
+                          Qt::AlignLeft | Qt::AlignTop,
+                          legend.Title);
+    top += metrics.height() + LEGEND_GAP;
+    const QRectF bar(left, top, contentWidth, LEGEND_BAR_HEIGHT);
+    inoutPainter.setBrush(MakeLegendGradient(legend.Ramp));
+    inoutPainter.setPen(QColor::fromRgb(LEGEND_BAR_OUTLINE));
+    inoutPainter.drawRect(bar);
+    inoutPainter.setPen(QColor::fromRgb(STATISTICS_TEXT));
+    top += LEGEND_BAR_HEIGHT + LEGEND_GAP;
+    const QRectF labels(left, top, contentWidth, metrics.height());
+    inoutPainter.drawText(labels, Qt::AlignLeft | Qt::AlignTop, legend.LowLabel);
+    inoutPainter.drawText(labels, Qt::AlignRight | Qt::AlignTop, legend.HighLabel);
+    inoutPainter.restore();
+}
 /// Overlay panel inside the viewport's QQuickWindow. A sibling QWidget would sit under the
 /// native window that createWindowContainer embeds on macOS and Linux; a scene-graph item is
 /// composited by Qt Quick in the same Metal/Vulkan pass as the frame, so it is always on top.
@@ -299,6 +365,53 @@ public:
 private:
     QString mText;
     QRgb mBackground = STATISTICS_BACKGROUND;
+};
+/// Legend key of the current debug view, anchored to the bottom-left corner of the viewport window.
+class LegendItem final : public QQuickPaintedItem
+{
+public:
+    explicit LegendItem(QQuickItem* parent) : QQuickPaintedItem(parent)
+    {
+        setObjectName(QStringLiteral("viewportLegendOverlay"));
+        setZ(STATISTICS_Z);
+        setAntialiasing(true);
+        setVisible(false);
+        connect(parent, &QQuickItem::heightChanged, this, [this]() { place(); });
+    }
+    /// Show the legend, or hide the panel when legendOrNull is null.
+    void SetLegend(const PreviewLegend* legendOrNull)
+    {
+        const bool wasLegendShown = mHasLegend;
+        mHasLegend = legendOrNull != nullptr;
+        if (mHasLegend == true)
+        {
+            if (wasLegendShown == true && mLegend.Title == legendOrNull->Title && mLegend.Ramp == legendOrNull->Ramp &&
+                mLegend.LowLabel == legendOrNull->LowLabel && mLegend.HighLabel == legendOrNull->HighLabel)
+            {
+                return;
+            }
+            mLegend = *legendOrNull;
+            setSize(MeasureLegend(mLegend));
+            place();
+        }
+        setVisible(mHasLegend);
+        update();
+    }
+    void paint(QPainter* painter) override
+    {
+        if (mHasLegend == true)
+        {
+            PaintLegend(*painter, mLegend, {0, 0});
+        }
+    }
+
+private:
+    void place()
+    {
+        setPosition({STATISTICS_MARGIN, parentItem()->height() - height() - STATISTICS_MARGIN});
+    }
+    PreviewLegend mLegend;
+    bool mHasLegend = false;
 };
 /// Plain widget that paints the last complete CPU or offscreen frame, scaled to its rectangle.
 class FrameCanvas final : public QWidget
@@ -335,6 +448,20 @@ public:
             update();
         }
     }
+    /// Legend key painted at the bottom-left; null hides it.
+    void SetLegend(const PreviewLegend* legendOrNull)
+    {
+        const bool wasLegendShown = mHasLegend;
+        mHasLegend = legendOrNull != nullptr;
+        if (mHasLegend == true)
+        {
+            mLegend = *legendOrNull;
+        }
+        if (wasLegendShown == true || mHasLegend == true)
+        {
+            update();
+        }
+    }
     [[nodiscard]] const QImage& GetImage() const noexcept
     {
         return mImage;
@@ -355,9 +482,17 @@ protected:
                         FitOverlayText(mShaderStatusText, width()),
                         GetShaderStatusOrigin(mStatisticsText),
                         mHasShaderError == true ? SHADER_ERROR_BACKGROUND : STATISTICS_BACKGROUND);
+        if (mHasLegend == true)
+        {
+            PaintLegend(painter,
+                        mLegend,
+                        {STATISTICS_MARGIN, height() - MeasureLegend(mLegend).height() - STATISTICS_MARGIN});
+        }
     }
 
 private:
+    PreviewLegend mLegend;
+    bool mHasLegend = false;
     QImage mImage;
     QString mStatisticsText;
     QString mShaderStatusText;
@@ -538,6 +673,7 @@ struct PreviewViewport::State final
     QQuickWindow* Window = nullptr;
     StatisticsItem* StatisticsOrNull = nullptr;
     StatisticsItem* ShaderStatusOrNull = nullptr;
+    LegendItem* LegendOrNull = nullptr;
     /// Live shader rebuilds of this viewport's preview; null where unsupported.
     PreviewShaderReload* ShaderReloadOrNull = nullptr;
     QWidget* Container = nullptr;
@@ -599,6 +735,20 @@ private:
         }
         applyShaderStatus();
     }
+    /// Show the key of a debug view's ramp over the frame, or hide it for the other modes.
+    void applyLegend(PreviewShading shading)
+    {
+        PreviewLegend legend;
+        const bool hasLegend = TryGetPreviewLegend(shading, legend);
+        if (LegendOrNull != nullptr)
+        {
+            LegendOrNull->SetLegend(hasLegend == true ? &legend : nullptr);
+        }
+        if (CanvasOrNull != nullptr)
+        {
+            CanvasOrNull->SetLegend(hasLegend == true ? &legend : nullptr);
+        }
+    }
     void applyShaderStatus()
     {
         if (ShaderStatusOrNull != nullptr)
@@ -638,6 +788,7 @@ private:
         CanvasOrNull = new FrameCanvas(Widget, QStringLiteral("LudusOffscreenViewport"));
         CanvasOrNull->SetStatisticsText(StatisticsText);
         CanvasOrNull->SetShaderStatusText(ShaderStatusText, HasShaderError);
+        applyLegend(Preview->GetShading());
         FrameLayoutOrNull->addWidget(CanvasOrNull);
         Message->hide();
         CanvasOrNull->show();
@@ -845,6 +996,8 @@ private:
         StatisticsOrNull->SetText(StatisticsText);
         ShaderStatusOrNull = new StatisticsItem(Window->contentItem(), QStringLiteral("viewportShaderStatusOverlay"));
         applyShaderStatus();
+        LegendOrNull = new LegendItem(Window->contentItem());
+        applyLegend(Preview->GetShading());
         Container = QWidget::createWindowContainer(Window, Widget);
         Container->setFocusPolicy(Qt::NoFocus);
         Container->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -1393,6 +1546,11 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
         statistics->setChecked(preview->IsStatisticsVisible());
     });
     connect(preview, &RenderPreview::StatisticsChanged, this, [this]() { updateStatistics(); });
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    connect(preview, &RenderPreview::NavigationChanged, this, [this, preview]() {
+        mState->applyLegend(preview->GetShading());
+    });
+#endif
     mState->Message = new EmptyWorldView(*preview, this);
     mState->Message->setText(QStringLiteral("Open or create a World to start authoring."));
     mState->Message->setWordWrap(true);
