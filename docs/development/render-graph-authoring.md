@@ -4418,7 +4418,7 @@ undoable edit; **Save** writes it to the project.
 
 #### Add nodes with Quick Add
 
-Quick Add finds a node or snippet by name without scrolling through a list. Open it
+Quick Add finds a node, snippet or existing package graph by name without scrolling through a list. Open it
 with **Shift+A** over the canvas, by double-clicking empty canvas, or with
 **Quick Add...** at the top of the canvas context menu. It opens where you asked:
 Shift+A uses the pointer (or the view centre when the pointer is outside), and a
@@ -4429,7 +4429,8 @@ double-click or context menu uses that spot.
 | Type in the search field | Matches names, purposes and common terms, such as `hdr` for ToneMap or `fsr` for the FSR upscalers; the category list shows how many matches each category has |
 | Up/Down, Enter or a click | Choose a result. A node is added at the opening position in one undoable edit; an Upscale preset places its Upscale node there and arranges its helpers automatically |
 | Choose a snippet | Opens **Apply Configuration Template** with that snippet selected, so you still name the configuration and confirm any budget increase. Snippets: ReSTIR DI, Tiled vbuffer NEE, [Compute ray tracing](#use-the-compute-ray-tracing-template), [Simple triangle loop](#use-the-simple-triangle-loop-template), Visibility buffer + depth and Visibility + secondary rays |
-| Tab / Shift+Tab | Switch between All, Snippets and Nodes |
+| Choose a graph | Inserts a Subgraph reference to its default configuration at the opening position, in one undoable edit; change the referenced configuration afterward through the canvas node fields or Properties |
+| Tab / Shift+Tab | Switch between All, Snippets, Nodes and Graphs |
 | Click a category | Show only that category |
 | ☆, or **Pin** | Keep a template under Suggested |
 | Esc or click outside | Close without editing the draft |
@@ -4439,6 +4440,16 @@ to keep typing or pick a category. With an empty search it opens on your three m
 recent templates and your pinned ones; the editor remembers both between sessions.
 When the search also matches complete graphs, a link opens **New Render Graph** with
 the best match selected. Quick Add never creates a complete graph on the canvas.
+The **Graphs** tab lists graph assets loaded in the package, including unused sources;
+**All** searches them alongside nodes and snippets. Search matches graph names, paths,
+configuration names, descriptions and exposed port names/types. The detail preview shows
+the package-relative path, default configuration and its inputs/outputs. Insertion adds
+a reference without copying or changing the graph source. Graphs that would introduce
+a dependency cycle, have a missing default configuration or an unavailable dependency
+stay visible with the reason and insertion disabled. Recent and pinned graph entries
+use the asset path, so identically named graphs remain distinct. Reopening refreshes
+the catalog from the current draft; insertion rechecks the default and dependencies.
+
 Templates that cannot preview in this editor, such as Denoise without the OIDN
 denoiser, stay listed with the reason, because the graph remains portable.
 
@@ -4448,14 +4459,16 @@ dragging. Quick Add opens with a context line such as
 `Connect from tonemap.color · ColorTexture` and lists only nodes that have an input
 accepting that output. Each candidate input goes through the same link pre-check as a
 drag onto an existing input, including type, cycle and texture-contract checks, so an
-incompatible template is never offered. When you choose a node, Quick Add adds it with
+incompatible node template is never offered. Compatible graph references are ranked
+first; other graphs stay visible with insertion disabled and an explanation. When you
+choose a node or graph, Quick Add adds it with
 the first accepting input lined up on the drop point, or one column gap to the right of
 a clicked port. The node, its layout position and the new connection form one undoable
 edit. An Upscale preset connects the wire to that input instead of creating a helper
 target for it. Snippets are not offered while the filter is on: they apply through
 **Apply Configuration Template** as a separate edit, so the wire could not be part of
 the same undo step. **Show all**, or Backspace in an empty search, clears the filter.
-After that, a chosen node is added at the same spot without a connection. Esc closes
+After that, a chosen node or graph is added at the same spot without a connection. Esc closes
 the palette and leaves the draft unchanged. Releasing on a node body does nothing, and
 releasing on a port connects or rejects as usual.
 

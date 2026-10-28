@@ -484,6 +484,8 @@ qt_add_executable(ludus_editor
     src/render_graph_template_registry.cpp
     src/internal/render_graph_quick_add.h
     src/render_graph_quick_add.cpp
+    src/internal/render_graph_quick_add_graphs.h
+    src/render_graph_quick_add_graphs.cpp
     src/internal/render_graph_settings_editor.h
     src/render_graph_settings_editor.cpp
     src/internal/render_graph_configuration_editor.h
@@ -843,6 +845,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/render_graph_template_registry.cpp
         src/internal/render_graph_quick_add.h
         src/render_graph_quick_add.cpp
+        src/internal/render_graph_quick_add_graphs.h
+        src/render_graph_quick_add_graphs.cpp
         src/internal/render_graph_settings_editor.h src/render_graph_settings_editor.cpp
         src/internal/render_graph_configuration_editor.h
         src/render_graph_configuration_editor.cpp
@@ -1224,6 +1228,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/internal/render_graph_creation.h src/render_graph_creation.cpp
         src/internal/render_graph_template_registry.h src/render_graph_template_registry.cpp
         src/internal/render_graph_quick_add.h src/render_graph_quick_add.cpp
+        src/internal/render_graph_quick_add_graphs.h src/render_graph_quick_add_graphs.cpp
         src/internal/render_graph_settings_editor.h src/render_graph_settings_editor.cpp
         src/internal/render_graph_live_build.h src/render_graph_live_build.cpp
         src/internal/render_graph_source_watch.h src/render_graph_source_watch.cpp
