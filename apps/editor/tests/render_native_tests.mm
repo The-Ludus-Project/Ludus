@@ -5,6 +5,7 @@
 #include "internal/preview_viewport.h"
 #include "internal/readback.h"
 #include "internal/render_preview.h"
+#include "internal/viewport_reference_capture.h"
 #include "internal/world_workspace.h"
 #include "renderer_composite.h"
 #include "renderer_flat.h"
@@ -830,13 +831,7 @@ TEST_CASE("Native World-demo World renders its game extraction in the shared vie
     QPoint playerPixel;
     REQUIRE(locate(before, playerPixel));
     // The player's linear colour through the Renderer's display transform: an 8-bit linear target,
-    // per-channel Reinhard, then sRGB (renderer_output.slang). The player presents the same codes.
-    const auto getDisplayCode = [](float32 linear) {
-        const float32 stored = std::round(linear * 255.0F) / 255.0F;
-        const float32 mapped = stored / (1 + stored);
-        const float32 encoded = mapped <= 0.0031308F ? 12.92F * mapped : 1.055F * std::pow(mapped, 1 / 2.4F) - 0.055F;
-        return static_cast<int32>(std::lround(encoded * 255.0F));
-    };
+    // the viewport's tone curve (PBR Neutral), then sRGB (renderer_output.slang). The player presents the same codes.
     const QColor drawn = before.pixelColor(playerPixel);
     math::Vector4 playerColor{};
     for (const PreviewObject& object : preview.Scene().Objects)
@@ -846,10 +841,18 @@ TEST_CASE("Native World-demo World renders its game extraction in the shared vie
             playerColor = object.Tint;
         }
     }
+    const auto quantize = [](float32 linear) { return std::round(linear * 255.0F) / 255.0F; };
+    const math::Vector3 mapped = ludus::graphics::renderer::ApplyToneCurve(
+        VIEWPORT_TONE_CURVE,
+        {quantize(playerColor.X), quantize(playerColor.Y), quantize(playerColor.Z)});
+    const auto getDisplayCode = [](float32 linear) {
+        const float32 encoded = linear <= 0.0031308F ? 12.92F * linear : 1.055F * std::pow(linear, 1 / 2.4F) - 0.055F;
+        return static_cast<int32>(std::lround(encoded * 255.0F));
+    };
     constexpr int32 DISPLAY_TOLERANCE = 3;
-    CHECK(std::abs(drawn.red() - getDisplayCode(playerColor.X)) <= DISPLAY_TOLERANCE);
-    CHECK(std::abs(drawn.green() - getDisplayCode(playerColor.Y)) <= DISPLAY_TOLERANCE);
-    CHECK(std::abs(drawn.blue() - getDisplayCode(playerColor.Z)) <= DISPLAY_TOLERANCE);
+    CHECK(std::abs(drawn.red() - getDisplayCode(mapped.X)) <= DISPLAY_TOLERANCE);
+    CHECK(std::abs(drawn.green() - getDisplayCode(mapped.Y)) <= DISPLAY_TOLERANCE);
+    CHECK(std::abs(drawn.blue() - getDisplayCode(mapped.Z)) <= DISPLAY_TOLERANCE);
     CHECK(drawn != before.pixelColor(0, 0));
 
     // An applied World edit re-extracts, and the player leaves its old pixel.

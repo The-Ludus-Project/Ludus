@@ -1457,7 +1457,7 @@ writes the linear `LUHDR01` capture and, beside it, a PNG with the same base nam
 A capture saved before it finishes is marked partial and keeps exact per-pixel
 sample counts. Convert the HDR file with
 [`scripts/reference-hdr`](../architecture/renderer-systems.md#reference-workflow-and-frozen-profile).
-The PNG uses the viewport's display transform: exposure one, Reinhard, then sRGB.
+The PNG uses the viewport's display transform: exposure one, Khronos PBR Neutral, then sRGB.
 
 The capture builds its own renderer on the viewport's GPU device. It loads the
 same meshes, textures and Lit materials as the viewport, but no shadow atlas. The
