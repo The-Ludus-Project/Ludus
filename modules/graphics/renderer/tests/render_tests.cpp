@@ -13,8 +13,10 @@
 #include "renderer_output.h"
 #include "renderer_overlay.h"
 #include "renderer_shadow.h"
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -772,6 +774,267 @@ TEST_CASE("L4 GGX lighting and linear HDR/LDR output match independent interior 
                 REQUIRE(rhi::Destroy(device, target) == rhi::RasterStatus::Ready);
             }
             CHECK(std::memcmp(images[0], images[1], sizeof(images[0])) == 0);
+        }
+    }
+}
+
+TEST_CASE("L4 hemispheric constant environment scales irradiance by the normal's vertical component",
+          "[renderer][l4][gpu][environment]")
+{
+    rhi::Shutdown();
+    struct Guard
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    rhi::StartupInfo failure;
+    rhi::DeviceDescription description;
+    description.Required.PortableRaster = true;
+    const rhi::DeviceStatus started =
+        rhi::CreateDevice({}, { .Width = 96, .Height = 64 }, description, device, surface, &failure);
+#if defined(LUDUS_TEST_METAL)
+    if (started != rhi::DeviceStatus::Ready && failure.Error == rhi::StartupError::AdapterUnavailable)
+    {
+        SKIP("No Metal adapter on this host");
+    }
+#endif
+    REQUIRE(started == rhi::DeviceStatus::Ready);
+    const math::Vector3 positions[]{{-1, -1, .5F}, {1, -1, .5F}, {1, 1, .5F}, {-1, 1, .5F}};
+    const uint32 indices[]{0, 1, 2, 0, 2, 3};
+    constexpr float32 GROUND_SCALE = .25F;
+    constexpr float32 SRGB_THRESHOLD = .04045F;
+    constexpr float32 ONE_CODE = 1.0F / 255.0F;
+    // Renders one lit quad with the given normal with no lights and returns the display-linear Reinhard input of its
+    // centre pixel, which is proportional to the irradiance the shader used.
+    const auto renderRadiance = [&](math::Vector3 normal, float32 groundScale) -> float32 {
+        rr::Renderer renderer;
+        auto wait = [&](auto handle) {
+            rhi::RasterStatus status = renderer.GetStatus(handle);
+            for (usize i = 0; i < 100000 && status == rhi::RasterStatus::Pending; ++i)
+            {
+                status = renderer.GetStatus(handle);
+            }
+            REQUIRE(status == rhi::RasterStatus::Ready);
+        };
+        REQUIRE(renderer.Initialize(device,
+                                    ludus::shaders::renderer_flat::Vertex(),
+                                    ludus::shaders::renderer_flat::Fragment()) == rhi::RasterStatus::Ready);
+        REQUIRE(renderer.InitializeViews(ludus::shaders::renderer_composite::Vertex(),
+                                         ludus::shaders::renderer_composite::Fragment()) == rhi::RasterStatus::Ready);
+        REQUIRE(renderer.InitializeLighting(ludus::shaders::renderer_output::Vertex(),
+                                            ludus::shaders::renderer_output::Fragment(),
+                                            ludus::shaders::renderer_shadow::Fragment()) == rhi::RasterStatus::Ready);
+        rr::MaterialProgram program;
+        const rhi::RasterStatus warming = renderer.PrewarmLitProgram(ludus::shaders::renderer_lit::Vertex(),
+                                                                     ludus::shaders::renderer_lit::Fragment(),
+                                                                     ludus::shaders::renderer_lit_shadow::Fragment(),
+                                                                     program);
+        REQUIRE((warming == rhi::RasterStatus::Ready || warming == rhi::RasterStatus::Pending));
+        wait(program);
+        const math::Vector3 normals[]{normal, normal, normal, normal};
+        rr::Mesh mesh;
+        rr::MeshDescription geometry{positions, 4, indices, 6};
+        geometry.Normals = normals;
+        REQUIRE(renderer.CreateMesh(geometry, mesh) == rhi::RasterStatus::Ready);
+        rr::LitMaterialDescription material;
+        material.Surface.Tint = {.8F, .8F, .8F, 1};
+        material.Roughness = 1;
+        material.LightCount = 0;
+        material.EnvironmentIrradiance = {2, 2, 2};
+        material.EnvironmentGroundScale = groundScale;
+        rr::MaterialVersion version;
+        rr::LightSelection lights;
+        const rhi::RasterStatus created = renderer.CreateLitMaterial(program, material, version, lights);
+        REQUIRE((created == rhi::RasterStatus::Ready || created == rhi::RasterStatus::Pending));
+        wait(version);
+        rr::SceneItem item;
+        item.Geometry = mesh;
+        item.Surface = version;
+        item.SourceId = 1;
+        rr::Snapshot snapshot;
+        REQUIRE(renderer.CreateSnapshot(&item, 1, snapshot) == rhi::RasterStatus::Ready);
+        rr::PreparedView view;
+        rr::ViewReport report;
+        const rhi::RasterStatus prepared = renderer.PrepareView(snapshot, {}, view, report);
+        REQUIRE((prepared == rhi::RasterStatus::Ready || prepared == rhi::RasterStatus::Pending));
+        wait(view);
+        rhi::TextureHandle target;
+        REQUIRE(rhi::CreateTexture(device, {96, 64, rhi::RasterFormat::Rgba8Unorm, true}, {}, target) ==
+                rhi::RasterStatus::Ready);
+        rr::ViewMapping mapping;
+        REQUIRE(rr::ResolveViewMapping({96, 64}, {0, 0, 96, 64}, 96, 64, mapping) == rhi::RasterStatus::Ready);
+        rr::Presentation output;
+        const rhi::RasterStatus composed = renderer.PrepareLightingPresentation(target, mapping, {}, output);
+        REQUIRE((composed == rhi::RasterStatus::Ready || composed == rhi::RasterStatus::Pending));
+        wait(output);
+        REQUIRE(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Ready);
+        rhi::RasterPassDescription pass;
+        pass.Color = target;
+        REQUIRE(renderer.DrawView(view, pass) == rhi::RasterStatus::Ready);
+        REQUIRE(renderer.DrawLightingPresentation(output) == rhi::RasterStatus::Ready);
+        rhi::SubmissionToken completion;
+        REQUIRE(rhi::EndFrame(device, completion) == rhi::RasterStatus::Ready);
+        uint8 image[96 * 64 * 4];
+        REQUIRE(rhi::backend::ReadHeadlessPixels(image));
+        REQUIRE(rhi::Destroy(device, target) == rhi::RasterStatus::Ready);
+        const float32 encoded = static_cast<float32>(image[(usize{32} * 96 + 48) * 4]) * ONE_CODE;
+        const float32 display =
+            encoded <= SRGB_THRESHOLD ? encoded / 12.92F : std::pow((encoded + .055F) / 1.055F, 2.4F);
+        return display / (1 - display);
+    };
+    // The camera looks down -Z, so the normals tilt up or down while still facing it.
+    const math::Vector3 tiltedUp{0, .6F, .8F};
+    const math::Vector3 tiltedDown{0, -.6F, .8F};
+    const math::Vector3 facing{0, 0, 1};
+    const float32 upConstant = renderRadiance(tiltedUp, 1);
+    const float32 downConstant = renderRadiance(tiltedDown, 1);
+    CHECK(upConstant > .05F);
+    // A scale of one keeps the old constant irradiance whatever the normal says.
+    CHECK(downConstant == Catch::Approx(upConstant).epsilon(.03));
+    // The irradiance factor is lerp(scale, 1, y / 2 + 1 / 2): 0.85 tilted up, 0.4 tilted down, 0.625 level.
+    CHECK(renderRadiance(tiltedUp, GROUND_SCALE) == Catch::Approx(upConstant * .85F).epsilon(.03));
+    CHECK(renderRadiance(tiltedDown, GROUND_SCALE) == Catch::Approx(upConstant * .4F).epsilon(.04));
+    CHECK(renderRadiance(facing, GROUND_SCALE) == Catch::Approx(upConstant * .625F).epsilon(.03));
+}
+
+TEST_CASE("L4 PBR Neutral output matches the CPU curve and keeps hue where Reinhard does not",
+          "[renderer][l4][gpu][tone-mapping]")
+{
+    rhi::Shutdown();
+    struct Guard
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    rhi::StartupInfo failure;
+    rhi::DeviceDescription description;
+    description.Required.PortableRaster = true;
+    const rhi::DeviceStatus started =
+        rhi::CreateDevice({}, { .Width = 96, .Height = 64 }, description, device, surface, &failure);
+#if defined(LUDUS_TEST_METAL)
+    if (started != rhi::DeviceStatus::Ready && failure.Error == rhi::StartupError::AdapterUnavailable)
+    {
+        SKIP("No Metal adapter on this host");
+    }
+#endif
+    REQUIRE(started == rhi::DeviceStatus::Ready);
+    rhi::RasterCapabilities caps;
+    REQUIRE(rhi::GetRasterCapabilities(device, caps) == rhi::RasterStatus::Ready);
+    const math::Vector3 positions[]{{-1, -1, .5F}, {1, -1, .5F}, {1, 1, .5F}, {-1, 1, .5F}};
+    const math::Vector3 normals[]{{0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1}};
+    const uint32 indices[]{0, 1, 2, 0, 2, 3};
+    // An eight-bit target stores at most one, so the brighter colours need a half-float target.
+    const math::Vector3 emissions[]{{.02F, .02F, .02F},
+                                    {.3F, .3F, .3F},
+                                    {.2F, .5F, .7F},
+                                    {1, .5F, .1F},
+                                    {4, 1, 0},
+                                    {16, 8, 8},
+                                    {1000, 1000, 1000}};
+    constexpr usize SCENARIO_COUNT = sizeof(emissions) / sizeof(emissions[0]);
+    constexpr usize EIGHT_BIT_SCENARIO_COUNT = 4;
+    constexpr int32 CHANNEL_TOLERANCE = 2;
+    for (const rr::ToneCurve curve : {rr::ToneCurve::Reinhard, rr::ToneCurve::PbrNeutral})
+    {
+        for (usize scenario = 0; scenario < (caps.HdrColor ? SCENARIO_COUNT : EIGHT_BIT_SCENARIO_COUNT); ++scenario)
+        {
+            rr::Renderer renderer;
+            auto wait = [&](auto handle) {
+                rhi::RasterStatus status = renderer.GetStatus(handle);
+                for (usize i = 0; i < 100000 && status == rhi::RasterStatus::Pending; ++i)
+                {
+                    status = renderer.GetStatus(handle);
+                }
+                REQUIRE(status == rhi::RasterStatus::Ready);
+            };
+            REQUIRE(renderer.Initialize(device,
+                                        ludus::shaders::renderer_flat::Vertex(),
+                                        ludus::shaders::renderer_flat::Fragment()) == rhi::RasterStatus::Ready);
+            REQUIRE(renderer.InitializeViews(ludus::shaders::renderer_composite::Vertex(),
+                                             ludus::shaders::renderer_composite::Fragment()) ==
+                    rhi::RasterStatus::Ready);
+            REQUIRE(renderer.InitializeLighting(ludus::shaders::renderer_output::Vertex(),
+                                                ludus::shaders::renderer_output::Fragment(),
+                                                ludus::shaders::renderer_shadow::Fragment()) ==
+                    rhi::RasterStatus::Ready);
+            rr::MaterialProgram program;
+            const rhi::RasterStatus warming =
+                renderer.PrewarmLitProgram(ludus::shaders::renderer_lit::Vertex(),
+                                           ludus::shaders::renderer_lit::Fragment(),
+                                           ludus::shaders::renderer_lit_shadow::Fragment(),
+                                           program);
+            REQUIRE((warming == rhi::RasterStatus::Ready || warming == rhi::RasterStatus::Pending));
+            wait(program);
+            rr::Mesh mesh;
+            rr::MeshDescription geometry{positions, 4, indices, 6};
+            geometry.Normals = normals;
+            REQUIRE(renderer.CreateMesh(geometry, mesh) == rhi::RasterStatus::Ready);
+            rr::LitMaterialDescription material;
+            material.Surface.Tint = {0, 0, 0, 1};
+            material.Roughness = 1;
+            material.Emission = emissions[scenario];
+            material.LightCount = 0;
+            rr::MaterialVersion version;
+            rr::LightSelection lights;
+            const rhi::RasterStatus created = renderer.CreateLitMaterial(program, material, version, lights);
+            REQUIRE((created == rhi::RasterStatus::Ready || created == rhi::RasterStatus::Pending));
+            wait(version);
+            rr::SceneItem item;
+            item.Geometry = mesh;
+            item.Surface = version;
+            item.SourceId = 1;
+            rr::Snapshot snapshot;
+            REQUIRE(renderer.CreateSnapshot(&item, 1, snapshot) == rhi::RasterStatus::Ready);
+            rr::PreparedView view;
+            rr::ViewReport report;
+            const rhi::RasterStatus prepared = renderer.PrepareView(snapshot, {}, view, report);
+            REQUIRE((prepared == rhi::RasterStatus::Ready || prepared == rhi::RasterStatus::Pending));
+            wait(view);
+            rhi::TextureHandle target;
+            const bool isHdr = caps.HdrColor == true;
+            REQUIRE(rhi::CreateTexture(
+                        device,
+                        {96, 64, isHdr ? rhi::RasterFormat::Rgba16Float : rhi::RasterFormat::Rgba8Unorm, true},
+                        {},
+                        target) == rhi::RasterStatus::Ready);
+            rr::ViewMapping mapping;
+            REQUIRE(rr::ResolveViewMapping({96, 64}, {0, 0, 96, 64}, 96, 64, mapping) == rhi::RasterStatus::Ready);
+            rr::Presentation output;
+            const rhi::RasterStatus composed =
+                renderer.PrepareLightingPresentation(target,
+                                                     mapping,
+                                                     { .ToneMap = true, .Curve = curve, .Encode = true },
+                                                     output);
+            REQUIRE((composed == rhi::RasterStatus::Ready || composed == rhi::RasterStatus::Pending));
+            wait(output);
+            REQUIRE(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Ready);
+            rhi::RasterPassDescription pass;
+            pass.Color = target;
+            REQUIRE(renderer.DrawView(view, pass) == rhi::RasterStatus::Ready);
+            REQUIRE(renderer.DrawLightingPresentation(output) == rhi::RasterStatus::Ready);
+            rhi::SubmissionToken completion;
+            REQUIRE(rhi::EndFrame(device, completion) == rhi::RasterStatus::Ready);
+            uint8 image[96 * 64 * 4];
+            REQUIRE(rhi::backend::ReadHeadlessPixels(image));
+            const usize center = (usize{32} * 96 + 48) * 4;
+            const math::Vector3 mapped = rr::ApplyToneCurve(curve, emissions[scenario]);
+            for (usize channel = 0; channel < 3; ++channel)
+            {
+                const float32 linear = channel == 0 ? mapped.X : channel == 1 ? mapped.Y : mapped.Z;
+                const int32 code = static_cast<int32>(math::EncodeSrgb(math::Clamp(linear, 0.0F, 1.0F)) * 255.0F + .5F);
+                INFO("curve " << static_cast<int>(curve) << " scenario " << scenario << " channel " << channel);
+                CHECK(std::abs(static_cast<int32>(image[center + channel]) - code) <= CHANNEL_TOLERANCE);
+            }
+            CHECK(image[center + 3] == 255);
+            REQUIRE(rhi::Destroy(device, target) == rhi::RasterStatus::Ready);
         }
     }
 }

@@ -35,6 +35,7 @@
 #include <QSettings>
 #include <QSignalSpy>
 #include <QStandardPaths>
+#include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
@@ -819,6 +820,67 @@ TEST_CASE("Editor shows the unified World as a document beside tool windows", "[
     QDockWidget* properties = window.findChild<QDockWidget*>(QStringLiteral("propertiesDock"));
     REQUIRE(properties != nullptr);
     CHECK(properties->isAncestorOf(window.findChild<QWidget*>(QStringLiteral("worldProperties"))) == true);
+}
+
+TEST_CASE("World tab titles follow document changes without a render graph refresh", "[editor][world][tabs]")
+{
+    QTemporaryDir directory;
+    const QString firstPath = Fixture(directory);
+    const QString secondPath = QFileInfo(firstPath).dir().filePath(QStringLiteral("staircase2.world.json"));
+    Write(secondPath, Starter().replace("Starter Cube", "Staircase Landing"));
+    ToolingPaths tools;
+    EditorController controller(tools, nullptr, directory.filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, directory.filePath(QStringLiteral("workspace.json")));
+    WorldWorkspace* world = window.findChild<WorldWorkspace*>();
+    REQUIRE(world != nullptr);
+    DocumentWell& well = window.GetDocumentWell();
+    world->SetProject(directory.path(), 1);
+    well.SetDocumentAvailable(world, true);
+    REQUIRE(well.OpenDocument(world));
+    // The well owns the actual tab strip as well as the title used when reopening it.
+    QTabWidget* group = window.findChild<QTabWidget*>(QStringLiteral("documentGroup"));
+    REQUIRE(group != nullptr);
+    const auto checkTitle = [&well, world, group](const QString& expected) {
+        CHECK(well.GetDocumentTitle(world) == expected);
+        const ludus::foundation::int32 index = group->indexOf(world);
+        REQUIRE(index >= 0);
+        CHECK(group->tabText(index) == expected);
+        CHECK(group->tabToolTip(index) == expected);
+    };
+
+    REQUIRE(world->Open(firstPath));
+    checkTitle(QStringLiteral("starter.world.json"));
+    REQUIRE(world->Open(secondPath));
+    CHECK(well.GetActiveDocumentOrNull() == world);
+    CHECK(world->Path() == secondPath);
+    CHECK(world->Document().Entity(QStringLiteral("starter.cube")).value(QStringLiteral("name")).toString() ==
+          QStringLiteral("Staircase Landing"));
+    checkTitle(QStringLiteral("staircase2.world.json"));
+    CHECK_FALSE(world->Open(directory.filePath(QStringLiteral("missing.world.json"))));
+    CHECK(world->Path() == secondPath);
+    checkTitle(QStringLiteral("staircase2.world.json"));
+
+    QPushButton* add = world->findChild<QPushButton*>(QStringLiteral("worldAdd"));
+    REQUIRE(add != nullptr);
+    REQUIRE(add->isEnabled());
+    add->click();
+    REQUIRE(world->Dirty());
+    checkTitle(QStringLiteral("staircase2.world.json*"));
+    world->Undo();
+    REQUIRE(world->Dirty() == false);
+    checkTitle(QStringLiteral("staircase2.world.json"));
+
+    well.CloseDocument(world);
+    REQUIRE(world->Open(firstPath));
+    CHECK(well.GetDocumentTitle(world) == QStringLiteral("starter.world.json"));
+    REQUIRE(well.OpenDocument(world));
+    checkTitle(QStringLiteral("starter.world.json"));
+    REQUIRE(world->Create(QFileInfo(firstPath).dir().filePath(QStringLiteral("new.world.json"))));
+    checkTitle(QStringLiteral("new.world.json*"));
+    REQUIRE(world->Save());
+    checkTitle(QStringLiteral("new.world.json"));
+    world->SetProject({}, 2);
+    checkTitle(QStringLiteral("World"));
 }
 
 TEST_CASE("Renderer preview follows the viewport the World shows", "[editor][world][render-graph]")

@@ -1602,7 +1602,8 @@ QString RenderGraphPreview::GetDisplayStatus() const
         case renderer::RenderGraphCandidateState::RestartRequired:
             break;
         case renderer::RenderGraphCandidateState::None:
-            return mImage.isNull() == true ? QStringLiteral("Preparing renderer…") : QString();
+            return mImage.isNull() == true && mState->HasGpuFrame == false ? QStringLiteral("Preparing renderer…")
+                                                                           : QString();
     }
     return {};
 }

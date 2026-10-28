@@ -4,6 +4,8 @@
 #include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 
+#include <iterator>
+
 namespace ludus::editor
 {
 namespace
@@ -46,8 +48,8 @@ constexpr ShadingDescription SHADING_DESCRIPTIONS[PREVIEW_SHADING_COUNT]{
      rr::MaterialDebugView::NormalWorld},
     {PreviewShading::Depth,
      "depth",
-     "Depth — distance from camera, near black to far white",
-     " · Depth: linear camera distance, near black to far white",
+     "Depth — distance from camera, near purple to far yellow",
+     " · Depth: linear camera distance, near purple to far yellow",
      rr::MaterialDebugView::LinearDepth},
     {PreviewShading::Roughness,
      "roughness",
@@ -66,10 +68,25 @@ constexpr ShadingDescription SHADING_DESCRIPTIONS[PREVIEW_SHADING_COUNT]{
      rr::MaterialDebugView::TexcoordUv},
     {PreviewShading::LightCount,
      "lightCount",
-     "Light count — lights reaching each pixel as a heat map",
-     " · Light count: direct lights per pixel, black none, blue few to red many",
+     "Light count — lights reaching each pixel as a ramp",
+     " · Light count: direct lights per pixel, dark purple none to yellow many",
      rr::MaterialDebugView::LightCount},
 };
+/// Degree of the viridis polynomial that renderer_lit.slang evaluates.
+constexpr usize VIRIDIS_DEGREE = 6;
+/// Colour channels per coefficient.
+constexpr usize VIRIDIS_CHANNELS = 3;
+/// Number of coefficients, one per degree and channel.
+constexpr usize VIRIDIS_COEFFICIENT_COUNT = (VIRIDIS_DEGREE + 1) * VIRIDIS_CHANNELS;
+/// Coefficients of the degree-six viridis fit, lowest degree first, red, green and blue of each degree in turn.
+/// Thanks to Matt Zucker, "Viridis approximation" (Shadertoy WlfXRN), a fit of matplotlib's viridis
+/// (Nathaniel Smith and Stefan van der Walt, CC0).
+constexpr float32 VIRIDIS_COEFFICIENTS[VIRIDIS_COEFFICIENT_COUNT] = {
+    0.2777273272234177F, 0.005407344544966578F, 0.3340998053353061F, 0.1050930431085774F,  1.404613529898575F,
+    1.384590162594685F,  -0.3308618287255563F,  0.214847559468213F,  0.09509516302823659F, -4.634230498983486F,
+    -5.799100973351585F, -19.33244095627987F,   6.228269936347081F,  14.17993336680509F,   56.69055260068105F,
+    4.776384997670288F,  -13.74514537774601F,   -65.35303263337234F, -5.435455855934631F,  4.645852612178535F,
+    26.3124352495832F};
 const ShadingDescription& Describe(PreviewShading shading) noexcept
 {
     const usize index = static_cast<usize>(shading);
@@ -107,6 +124,58 @@ QString GetPreviewShadingLabel(PreviewShading shading)
 QString GetPreviewShadingStatus(PreviewShading shading)
 {
     return QString::fromUtf8(Describe(shading).Status);
+}
+math::Vector3 GetPreviewRampColour(PreviewLegendRamp ramp, float32 position) noexcept
+{
+    const float32 x = math::Clamp(position, 0.0F, 1.0F);
+    if (ramp == PreviewLegendRamp::Grey)
+    {
+        return {x, x, x};
+    }
+    float32 channels[VIRIDIS_CHANNELS]{};
+    for (usize channel = 0; channel < VIRIDIS_CHANNELS; ++channel)
+    {
+        float32 value = VIRIDIS_COEFFICIENTS[VIRIDIS_DEGREE * VIRIDIS_CHANNELS + channel];
+        for (usize degree = VIRIDIS_DEGREE; degree > 0; --degree)
+        {
+            value = VIRIDIS_COEFFICIENTS[(degree - 1) * VIRIDIS_CHANNELS + channel] + value * x;
+        }
+        channels[channel] = math::Clamp(value, 0.0F, 1.0F);
+    }
+    return {channels[0], channels[1], channels[2]};
+}
+bool TryGetPreviewLegend(PreviewShading shading, PreviewLegend& outLegend)
+{
+    switch (shading)
+    {
+        case PreviewShading::Depth:
+            outLegend = {QStringLiteral("Distance from camera"),
+                         QStringLiteral("near"),
+                         QStringLiteral("far"),
+                         PreviewLegendRamp::Viridis};
+            return true;
+        case PreviewShading::Roughness:
+            outLegend = {QStringLiteral("Roughness"),
+                         QStringLiteral("smooth"),
+                         QStringLiteral("rough"),
+                         PreviewLegendRamp::Grey};
+            return true;
+        case PreviewShading::Metallic:
+            outLegend = {QStringLiteral("Metallic"),
+                         QStringLiteral("dielectric"),
+                         QStringLiteral("metal"),
+                         PreviewLegendRamp::Grey};
+            return true;
+        case PreviewShading::LightCount:
+            outLegend = {
+                QStringLiteral("Lights reaching the pixel"),
+                QStringLiteral("0"),
+                QStringLiteral("%1 or more").arg(static_cast<int32>(rr::MATERIAL_DEBUG_LIGHT_COUNT_SATURATION)),
+                PreviewLegendRamp::Viridis};
+            return true;
+        default:
+            return false;
+    }
 }
 math::Vector2 ComputeDebugDepthRange(const rr::ViewDescription& view,
                                      float32 nearPlane,

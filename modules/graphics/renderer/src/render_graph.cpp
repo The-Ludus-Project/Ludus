@@ -521,7 +521,7 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
         {
             return Status::InvalidDescription;
         }
-        if (static_cast<uint32>(pass.Traversal) > static_cast<uint32>(format::RayTraversal::HardwarePipeline) ||
+        if (static_cast<uint32>(pass.Traversal) > static_cast<uint32>(format::RayTraversal::ComputeBvh) ||
             (pass.Program != format::Technique::RayTracing && pass.Traversal != format::RayTraversal::NativeQuery))
         {
             return Status::InvalidDescription;
@@ -3068,10 +3068,14 @@ Status internal::RenderGraphRayPass::GetGraphAccumulationForTesting(RenderGraph&
                                                                     rhi::BufferHandle& outBuffer) noexcept
 {
     if (inoutGraph.mState.Get() == nullptr || inoutGraph.mState->Current.Get() == nullptr)
+    {
         return Status::NotReady;
+    }
     RenderGraph::State& state = *inoutGraph.mState;
     if (pass >= state.Header.PassCount || state.Passes[pass].Program != format::Technique::RayTracing)
+    {
         return Status::InvalidDescription;
+    }
     return GetAccumulationForTesting(state.Contexts[static_cast<usize>(format::Technique::RayTracing)],
                                      state.Current->RayPasses[pass].GetJob(),
                                      outBuffer);

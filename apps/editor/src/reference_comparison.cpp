@@ -116,12 +116,19 @@ bool CompareRasterWithReference(BorrowedView<const renderer::ReferencePixel> ref
             RgbValue referenceValue{};
             RgbValue rasterDisplay{};
             RgbValue referenceDisplay{};
+            const math::Vector3 storedColor{texel.Channels[0], texel.Channels[1], texel.Channels[2]};
+            const math::Vector3 referenceEncoded = EncodeReferenceDisplayColor(pixel.Radiance);
+            const math::Vector3 rasterEncoded = EncodeReferenceDisplayColor(storedColor);
             for (usize channel = 0; channel < RGB_CHANNELS; ++channel)
             {
                 const float32 stored = texel.Channels[channel];
-                referenceDisplay[channel] = EncodeReferenceDisplayValue(referenceLinear[channel]);
+                referenceDisplay[channel] = channel == 0   ? referenceEncoded.X
+                                            : channel == 1 ? referenceEncoded.Y
+                                                           : referenceEncoded.Z;
                 rasterDisplay[channel] = comparison.Space == ReferenceComparisonSpace::Linear
-                                             ? EncodeReferenceDisplayValue(stored)
+                                             ? (channel == 0   ? rasterEncoded.X
+                                                : channel == 1 ? rasterEncoded.Y
+                                                               : rasterEncoded.Z)
                                              : math::Clamp(stored, 0.0F, 1.0F);
                 rasterValue[channel] =
                     comparison.Space == ReferenceComparisonSpace::Linear ? stored : rasterDisplay[channel];

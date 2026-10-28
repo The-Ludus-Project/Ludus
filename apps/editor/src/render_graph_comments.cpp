@@ -1,6 +1,7 @@
 #include "internal/render_graph_comments.h"
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_diagnostics.h"
+#include "internal/render_graph_execution_plan.h"
 
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/math/scalar.hpp>
@@ -40,6 +41,7 @@ namespace
 constexpr float64 HEADER_HEIGHT = 34;
 constexpr float64 STAGE_WIDTH = 320;
 constexpr float64 STAGE_ROW_HEIGHT = 24;
+constexpr int32 STAGE_METADATA_ROWS = 3;
 constexpr float64 STAGE_PORT_RADIUS = 5;
 constexpr float64 STAGE_PORT_HIT_RADIUS = 12;
 constexpr float64 STAGE_DIMMED_OPACITY = 0.25;
@@ -97,6 +99,7 @@ void RenderGraphComments::Clear()
     mItems.clear();
     mBoundaryPorts.clear();
     mCounts.clear();
+    mPlanSummaries.clear();
     mCollapsedOwners.clear();
     mMembers.clear();
     mFrames = {};
@@ -333,6 +336,22 @@ void RenderGraphComments::RefreshCounts()
         label->setToolTip(text +
                           QStringLiteral(". Node-targeted report errors; graph-level errors remain in the toolbar."));
     }
+    for (const QString& identity : mPlanSummaries.keys())
+    {
+        if (mCanvas.GetExecutionPlan().IsEnabled() == false)
+        {
+            mPlanSummaries.value(identity)->hide();
+            continue;
+        }
+        const RenderGraphPlanAnnotation annotation =
+            mCanvas.GetExecutionPlan().GetStageAnnotation(mMembers.value(identity));
+        QGraphicsSimpleTextItem* label = mPlanSummaries.value(identity);
+        label->setText(
+            QFontMetricsF(label->font())
+                .elidedText(annotation.Label, Qt::ElideRight, GetFrameBounds(identity).width() - 2 * LABEL_PADDING));
+        label->setToolTip(annotation.Explanation.toHtmlEscaped());
+        label->setVisible(mCanvas.GetExecutionPlan().IsEnabled());
+    }
 }
 void RenderGraphComments::RefreshHighlights(const RenderGraphCommentHighlights& highlights)
 {
@@ -352,8 +371,11 @@ void RenderGraphComments::RefreshHighlights(const RenderGraphCommentHighlights& 
                  2);
         pen.setCosmetic(true);
         mItems.at(index)->setPen(pen);
+        const bool isPruned = mCanvas.GetExecutionPlan().IsEnabled() == true &&
+                              mCanvas.GetExecutionPlan().GetStageAnnotation(mMembers.value(identity)).IsPruned == true;
         mItems.at(index)->setOpacity(
-            highlights.TracedNodes.isEmpty() == false && isTraced == false ? STAGE_DIMMED_OPACITY : 1);
+            isPruned == true || (highlights.TracedNodes.isEmpty() == false && isTraced == false) ? STAGE_DIMMED_OPACITY
+                                                                                                 : 1);
     }
     for (const BoundaryPort& port : mBoundaryPorts)
     {
@@ -372,6 +394,7 @@ void RenderGraphComments::renderFrames()
     mItems.clear();
     mBoundaryPorts.clear();
     mCounts.clear();
+    mPlanSummaries.clear();
     for (const QJsonValueConstRef value : mFrames)
     {
         const QJsonObject frame = value.toObject();
@@ -410,9 +433,10 @@ void RenderGraphComments::renderFrames()
         QRectF bounds = GetRenderGraphCommentBounds(frame);
         if (isCollapsed == true)
         {
-            bounds.setSize(QSizeF(qMin(bounds.width(), STAGE_WIDTH),
-                                  HEADER_HEIGHT + STAGE_ROW_HEIGHT *
-                                                      (2 + static_cast<float64>(qMax(inputs.size(), outputs.size())))));
+            bounds.setSize(
+                QSizeF(qMin(bounds.width(), STAGE_WIDTH),
+                       HEADER_HEIGHT + STAGE_ROW_HEIGHT * (STAGE_METADATA_ROWS +
+                                                           static_cast<float64>(qMax(inputs.size(), outputs.size())))));
         }
         QColor colour(frame.value(QStringLiteral("colour")).toString());
         const QColor border = colour;
@@ -453,6 +477,10 @@ void RenderGraphComments::renderFrames()
             counts->setToolTip(QStringLiteral(
                 "Node-targeted report errors in this stage; graph-level errors remain in the diagnostic toolbar."));
             mCounts.insert(identity, counts);
+            QGraphicsSimpleTextItem* summary = new QGraphicsSimpleTextItem(item);
+            summary->setBrush(Qt::white);
+            summary->setPos(bounds.topLeft() + QPointF(LABEL_PADDING, HEADER_HEIGHT + STAGE_ROW_HEIGHT));
+            mPlanSummaries.insert(identity, summary);
             for (const bool isOutput : {false, true})
             {
                 const QStringList& endpoints = isOutput == true ? outputs : inputs;
@@ -460,7 +488,8 @@ void RenderGraphComments::renderFrames()
                 {
                     const QString endpoint = endpoints.at(row);
                     const QPointF position(isOutput == true ? bounds.right() : bounds.left(),
-                                           bounds.top() + HEADER_HEIGHT + STAGE_ROW_HEIGHT * (2 + row));
+                                           bounds.top() + HEADER_HEIGHT +
+                                               STAGE_ROW_HEIGHT * (STAGE_METADATA_ROWS + row));
                     QGraphicsEllipseItem* connector = new QGraphicsEllipseItem(-STAGE_PORT_RADIUS,
                                                                                -STAGE_PORT_RADIUS,
                                                                                2 * STAGE_PORT_RADIUS,

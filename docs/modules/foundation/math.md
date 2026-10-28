@@ -340,6 +340,13 @@ sampled distribution:
   divides by zero. Ludus compiles Metal shaders with fast math and WGSL does not
   guarantee infinities, NaNs or signed zeros; the paper's encoding produced NaN
   for a vertex at the zenith on Metal. The shader tests finiteness on bit patterns.
+- The arctangent is `ComputeArctangent` from FoundationMath's `math.slang`, not
+  the backend's `atan`. Vulkan bounds `atan` only to 4096 ulp. Mesa lowers it to a
+  polynomial whose absolute error reaches 3.3e-6 near |x| = 1 on lavapipe 25.2.
+  Sector areas are differences of these angles, so on that driver the
+  99th-percentile relative area error against C++ was 1.5e-3.
+  `ComputeArctangent` uses Stephen L. Moshier's Cephes `atanf` range reduction and
+  polynomial and stays within 3 ulp of float64 on every backend.
 - Sector selection skips sectors without area, so rounding at the end of the
   distribution cannot select an empty sector, where the original produces NaN.
 - The iteration's approximate exponent-flip reciprocal is an exact reciprocal,
@@ -364,7 +371,134 @@ Fig. 6b; the relative backward error grows only for small projected solid angles
 alone (paper section 3.6 reports 0.02). A stratified quadrature integrates the
 density to one within 0.5%. The renderer's `[polygon-sampling]` GPU test compares
 the shader with C++ on 4096 cases; it runs natively on Metal here, and the
-Vulkan/SPIR-V and WGSL builds compile but are first executed in CI.
+WGSL build compiles but is first executed in CI. On Mesa lavapipe 25.2 (Vulkan)
+the relative area error has a 99th percentile of 8.8e-5 and the direction error
+1.6e-5.
+
+## Linearly transformed cosines over polygons
+
+`linearly_transformed_cosine.hpp` integrates and samples a linearly transformed
+cosine (LTC) inside a convex polygon. An LTC with linear transform `M` has the
+density `p(ω) = max(0, (M⁻¹ω).z) · |M⁻¹| / (π · ‖M⁻¹ω‖⁴)`. That is a clamped
+cosine of the direction `M⁻¹ω / ‖M⁻¹ω‖`, times the Jacobian of that map. Fitted
+LTCs approximate specular BRDF lobes.
+
+The header implements these sources from their text:
+
+- Eric Heitz, Jonathan Dupuy, Stephen Hill and David Neubelt, "Real-Time
+  Polygonal-Light Shading with Linearly Transformed Cosines", *ACM Transactions
+  on Graphics* 35(4), Article 41, 2016, SIGGRAPH 2016
+  ([DOI](https://doi.org/10.1145/2897824.2925895)):
+  - section 3.1, Equation 1: the density;
+  - section 3.2, Equation 3: the polygon integral;
+  - Algorithm 1: importance sampling.
+- Christoph Peters, "BRDF Importance Sampling for Polygonal Lights", section 4.1
+  ([DOI](https://doi.org/10.1145/3450626.3459672)): combining the LTC with
+  [projected solid angle sampling](#projected-solid-angle-sampling).
+
+No code from either paper's GPL-licensed utilities is used. The shader port
+`shaders/linearly_transformed_cosine.slang` is installed beside
+`projected_solid_angle.slang`, which it includes.
+
+```cpp
+#include <ludus/foundation/math/linearly_transformed_cosine.hpp>
+
+// M^-1 in the shading frame (+z is the shading normal), for example a fitted BRDF lobe
+// rotated so that its view direction matches the receiver's.
+LinearlyTransformedCosine lobe;
+if (TryMakeLinearlyTransformedCosine(inverseTransform, lobe) == MathStatus::Success)
+{
+    LinearlyTransformedCosinePolygon polygon;
+    if (TryPrepareLinearlyTransformedCosinePolygon(light, lobe, polygon) == MathStatus::Success &&
+        GetLinearlyTransformedCosinePolygonIntegral(polygon) > 0)
+    {
+        Vector3 direction;
+        if (TrySampleLinearlyTransformedCosinePolygon(polygon, Vector2{u0, u1}, direction) == MathStatus::Success)
+        {
+            const float density = EvaluateLinearlyTransformedCosinePolygonDensity(polygon, direction);
+        }
+    }
+}
+```
+
+**Preparation.** Preparation transforms the polygon's vertices by `M⁻¹`, clips
+them to `z ≥ 0` and prepares the result for projected solid angle sampling.
+
+- **Integral.** The LTC's integral over the polygon (Heitz et al., Equation 3)
+  is the transformed polygon's projected solid angle divided by π, a value in
+  `[0, 1]`.
+- **Empty clip.** If the transformed polygon is empty, the integral is zero. The
+  caller must then disable the LTC technique, as Peters prescribes.
+- **No horizon clip.** As in Peters' implementation, the polygon is **not**
+  clipped against its own shading horizon. The LTC can be positive slightly
+  below the horizon, so a sample can point below it, and the caller's BSDF then
+  evaluates to zero.
+
+**Sampling.** A sample maps the transformed polygon's projected-solid-angle
+sample back with `M` and normalizes it (Heitz et al., Algorithm 1). Its density
+is `p(ω)` divided by the integral. As for projected solid angle sampling, the
+density evaluator assumes the direction lies in the polygon.
+
+A sharp lobe pointing away from a light squeezes the transformed polygon into a
+sliver. When the integral is negligible (the tests observe it below 1e-6), the
+single-precision sample of that sliver can be inaccurate and can miss the
+polygon. That is the same limit the paper reports for tiny, distant polygons
+(section 3.7). A renderer that intersects the sampled direction with the light
+then adds nothing for that sample. Its MIS weight is proportional to the
+negligible integral.
+
+**Representation.** The distribution depends only on the direction of `M⁻¹ω`
+(Heitz et al., section 3.1).
+
+- `TryMakeLinearlyTransformedCosine` stores `M⁻¹` scaled by an exact power of
+  two, so its largest-magnitude entry lies in `[1, 2)`.
+- For `M` it stores the adjugate of the scaled `M⁻¹`. The adjugate is a positive
+  multiple of `M`, so no division is needed.
+- Matrices that are not invertible with a positive determinant are rejected.
+  Peters requires `|M| > 0`, and a negative determinant would mirror the
+  hemisphere.
+- Scaled determinants below `MIN_LINEARLY_TRANSFORMED_COSINE_DETERMINANT` (2⁻³²)
+  are rejected as ill-conditioned.
+- The renderer's sharpest lobe, at perceptual roughness 0.045, has a scaled
+  determinant of about `α = 0.002`, far above that limit.
+
+**Shader port.** Metal compiles shaders with fast math, so the port classifies
+the scale exponent, determinant and finiteness on bit patterns. It passes
+matrices as three `float3` columns, the layout of the C++ `Matrix3`.
+
+**Evidence.** `linearly_transformed_cosine_tests.cpp` compares against an
+independent float64 oracle:
+
+- integrals, on 2000 random polygons and lobes with α down to 0.002, against
+  the transform and Lambert's formula evaluated in float64;
+- densities, against Equation 1;
+- integrals, against area-sampled Monte Carlo integration of Equation 1;
+- `E[1/pdf]`, against the solid angle of the polygon's support (Van Oosterom
+  and Strackee's formula);
+- the density's integral over the sphere.
+
+It also covers the identity LTC, scale invariance, empty clips, samples below
+the horizon and invalid inputs.
+
+Measured results:
+
+- The integrals agree with the float64 transform within `1e-6 + 1e-3 · integral`.
+- Densities match Equation 1 to a 99th-percentile relative error of 5e-6.
+- Samples fall outside the polygon at 3 in 14,176 (edge rounding), once
+  negligible integrals are excluded.
+
+The renderer's `[polygon-sampling]` GPU test compares the shader with C++ on
+4096 cases. These include the identity, a shear reaching below the horizon, an
+empty clip, rejected matrices, and random lobes down to α = 0.002.
+
+| Metal on Apple M5, integrals ≥ 1e-4 | 99th percentile | Largest |
+| --- | --- | --- |
+| Relative integral and density error | 1.9e-4 | 5.2e-4 |
+| Direction error | 1.8e-4 | 1.5e-3 |
+
+These errors are larger than the projected-solid-angle port's, because the GPU
+rounds the transformed vertices differently. The Vulkan/SPIR-V and WGSL builds
+compile but are first executed in CI.
 
 ## GPU transfer
 

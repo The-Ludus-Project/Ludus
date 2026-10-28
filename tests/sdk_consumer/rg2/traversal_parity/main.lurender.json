@@ -1,0 +1,355 @@
+{
+  "configurations": [
+    {
+      "edges": [
+        {
+          "from": "scene.scene",
+          "to": "trace.scene"
+        },
+        {
+          "from": "camera.view",
+          "to": "trace.view"
+        },
+        {
+          "from": "color.texture",
+          "to": "trace.color"
+        },
+        {
+          "from": "color.texture",
+          "to": "camera.target"
+        },
+        {
+          "from": "trace.color",
+          "to": "output.texture"
+        }
+      ],
+      "id": "TriangleLoop",
+      "inputs": [],
+      "nodes": [
+        {
+          "id": "scene",
+          "kind": "Scene"
+        },
+        {
+          "active": true,
+          "id": "camera",
+          "kind": "Camera",
+          "role": "Offscreen",
+          "target_type": "ColorTexture"
+        },
+        {
+          "extent": [
+            96,
+            64
+          ],
+          "format": "RGBA8Unorm",
+          "id": "color",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "id": "output",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "trace",
+          "inputs": [
+            {
+              "id": "scene",
+              "required": true,
+              "type": "Scene"
+            },
+            {
+              "id": "view",
+              "required": true,
+              "type": "View"
+            },
+            {
+              "id": "color",
+              "required": true,
+              "type": "ColorTexture"
+            }
+          ],
+          "invocation": {
+            "dimensions": [
+              96,
+              64,
+              1
+            ],
+            "traversal": "TriangleLoop"
+          },
+          "kind": "ComputePipeline",
+          "outputs": [
+            {
+              "format": "RGBA8Unorm",
+              "id": "color",
+              "load": "Clear",
+              "store": "Store",
+              "target": "color",
+              "type": "ColorTexture"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "ray_generation",
+              "program": "Generate",
+              "stage": "ray_generation"
+            },
+            {
+              "id": "miss",
+              "program": "Miss",
+              "stage": "miss"
+            },
+            {
+              "id": "closest_hit",
+              "program": "Closest",
+              "stage": "closest_hit"
+            }
+          ],
+          "state": {}
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "edges": [
+        {
+          "from": "scene.scene",
+          "to": "trace.scene"
+        },
+        {
+          "from": "camera.view",
+          "to": "trace.view"
+        },
+        {
+          "from": "color.texture",
+          "to": "trace.color"
+        },
+        {
+          "from": "color.texture",
+          "to": "camera.target"
+        },
+        {
+          "from": "trace.color",
+          "to": "output.texture"
+        }
+      ],
+      "id": "Native",
+      "inputs": [],
+      "nodes": [
+        {
+          "id": "scene",
+          "kind": "Scene"
+        },
+        {
+          "active": true,
+          "id": "camera",
+          "kind": "Camera",
+          "role": "Offscreen",
+          "target_type": "ColorTexture"
+        },
+        {
+          "extent": [
+            96,
+            64
+          ],
+          "format": "RGBA8Unorm",
+          "id": "color",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "id": "output",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "trace",
+          "inputs": [
+            {
+              "id": "scene",
+              "required": true,
+              "type": "Scene"
+            },
+            {
+              "id": "view",
+              "required": true,
+              "type": "View"
+            },
+            {
+              "id": "color",
+              "required": true,
+              "type": "ColorTexture"
+            }
+          ],
+          "invocation": {
+            "dimensions": [
+              96,
+              64,
+              1
+            ],
+            "traversal": "NativeQuery"
+          },
+          "kind": "ComputePipeline",
+          "outputs": [
+            {
+              "format": "RGBA8Unorm",
+              "id": "color",
+              "load": "Clear",
+              "store": "Store",
+              "target": "color",
+              "type": "ColorTexture"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "ray_generation",
+              "program": "Generate",
+              "stage": "ray_generation"
+            },
+            {
+              "id": "miss",
+              "program": "Miss",
+              "stage": "miss"
+            },
+            {
+              "id": "closest_hit",
+              "program": "Closest",
+              "stage": "closest_hit"
+            }
+          ],
+          "state": {}
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "edges": [
+        {
+          "from": "scene.scene",
+          "to": "trace.scene"
+        },
+        {
+          "from": "camera.view",
+          "to": "trace.view"
+        },
+        {
+          "from": "color.texture",
+          "to": "trace.color"
+        },
+        {
+          "from": "color.texture",
+          "to": "camera.target"
+        },
+        {
+          "from": "trace.color",
+          "to": "output.texture"
+        }
+      ],
+      "id": "ComputeBvh",
+      "inputs": [],
+      "nodes": [
+        {
+          "id": "scene",
+          "kind": "Scene"
+        },
+        {
+          "active": true,
+          "id": "camera",
+          "kind": "Camera",
+          "role": "Offscreen",
+          "target_type": "ColorTexture"
+        },
+        {
+          "extent": [
+            96,
+            64
+          ],
+          "format": "RGBA8Unorm",
+          "id": "color",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "id": "output",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "trace",
+          "inputs": [
+            {
+              "id": "scene",
+              "required": true,
+              "type": "Scene"
+            },
+            {
+              "id": "view",
+              "required": true,
+              "type": "View"
+            },
+            {
+              "id": "color",
+              "required": true,
+              "type": "ColorTexture"
+            }
+          ],
+          "invocation": {
+            "dimensions": [
+              96,
+              64,
+              1
+            ],
+            "traversal": "ComputeBvh"
+          },
+          "kind": "ComputePipeline",
+          "outputs": [
+            {
+              "format": "RGBA8Unorm",
+              "id": "color",
+              "load": "Clear",
+              "store": "Store",
+              "target": "color",
+              "type": "ColorTexture"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "ray_generation",
+              "program": "Generate",
+              "stage": "ray_generation"
+            },
+            {
+              "id": "miss",
+              "program": "Miss",
+              "stage": "miss"
+            },
+            {
+              "id": "closest_hit",
+              "program": "Closest",
+              "stage": "closest_hit"
+            }
+          ],
+          "state": {}
+        }
+      ],
+      "outputs": []
+    }
+  ],
+  "default": "TriangleLoop",
+  "id": "Main",
+  "version": 2
+}

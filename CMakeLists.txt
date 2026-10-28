@@ -287,6 +287,7 @@ add_subdirectory(modules/foundation/time)
 add_subdirectory(modules/foundation/logging)
 add_subdirectory(modules/foundation/profiling)
 add_subdirectory(tools/memory-bench)
+add_subdirectory(tools/ltc-fit)
 # Runtime Ui has no Platform/RHI/Text dependency and builds on both toolchains.
 add_subdirectory(modules/ui)
 # Input is configured before Platform: Platform depends on Input for the
@@ -618,8 +619,8 @@ install(FILES scripts/python/ludus_tools/__init__.py scripts/python/ludus_tools/
     scripts/python/ludus_tools/render_graph_settings.py scripts/python/ludus_tools/render_graph_templates.py
     scripts/python/ludus_tools/render_graph_template_update.py
     DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/render_graph/ludus_tools")
-foreach(template_directory IN ITEMS forward_lit restir_di visibility_buffer visibility_secondary_rays tiled_vbuffer_nee
-        compute_ray_tracing simple_compute_ray_tracing veach_guibas_mis)
+foreach(template_directory IN ITEMS default forward_lit restir_di visibility_buffer visibility_secondary_rays tiled_vbuffer_nee
+        compute_ray_tracing simple_compute_ray_tracing veach_guibas_mis line_sampling)
     install(DIRECTORY "modules/graphics/renderer/render_graphs/${template_directory}/"
         DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/render_graph/templates/${template_directory}")
 endforeach()

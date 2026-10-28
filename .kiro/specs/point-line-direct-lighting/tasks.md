@@ -60,26 +60,47 @@ was available.
 
 ## PL1 Line visibility query and line-sampling template
 
-- [ ] `scene_shader_layout.h`: `LUDUS_SCENE_LINE_INTERVAL_CAPACITY` and
+Evidence is from an Apple M5 on Metal (macOS 26.6), `macos-clang-development`.
+Vulkan was not run: no Linux or Vulkan host was available.
+
+- [x] `scene_shader_layout.h`: `LUDUS_SCENE_LINE_INTERVAL_CAPACITY` and
       `LUDUS_SCENE_LINE_INTERVAL_MERGE_TOLERANCE` with their units and purpose.
       Mirror them in `scene_shader.hpp` with Doxygen comments, and in
       `scene_shader.slang`.
-- [ ] `ray_line_visibility.slang`: the D2 clip, with canonical edge order (D2
+      *32 intervals and 1e-6 of the segment, as `SCENE_LINE_INTERVAL_CAPACITY`
+      and `SCENE_LINE_INTERVAL_MERGE_TOLERANCE` in C++ and Slang. The installed
+      SDK consumer `static_assert`s the C++ capacity against the macro.*
+- [x] `ray_line_visibility.slang`: the D2 clip, with canonical edge order (D2
       step 2), and the D3 interval set over a linear scan, with alpha-tested
       candidates reported, not clipped (D4).
       Attribution comments for Billen and Dutré (2016) and Salesin and Jarosz
       (2019), with the departures in design section 2.
-- [ ] `scene_shader.slang`: `LineSegment`, `LineVisibility` and
+      *The occluded set lives in `LineVisibility.Intervals` and is complemented
+      in place. A separate occluded array lost its stores on Metal in the
+      template's merged kernel at capacity 32 (design D3, "PL1 storage").*
+- [x] `scene_shader.slang`: `LineSegment`, `LineVisibility` and
       `FindVisibleLineIntervals`. Budget accounting, the PL03 offsets and index
       exclusions, failure latching, zeroed output on failure.
-- [ ] `RayQueryContext`: `LineQueries` and `MaximumLineQueries`.
-- [ ] Builder (D9):
-  - [ ] optional `line_queries` in `scene_interface`, with
+      *Also `ClearLineVisibility`, a field-by-field reset that replaces
+      `(LineVisibility)0` for the same Metal problem. `ray_triangle_loop.slang`
+      gained `#pragma once` so the query can use
+      `TRIANGLE_PARALLEL_COSINE_TOLERANCE` in `NativeQuery`-only passes.*
+- [x] `RayQueryContext`: `LineQueries` and `MaximumLineQueries`.
+- [x] Builder (D9):
+  - [x] optional `line_queries` in `scene_interface`, with
         `MIN_LINE_QUERIES`/`MAX_LINE_QUERIES` in `SCENE_QUERY_LIMITS`;
-  - [ ] wrapper substitution of `MAX_LINE_QUERIES`;
-  - [ ] Python tests: an absent field means 0, the bounds are rejected with
+  - [x] wrapper substitution of `MAX_LINE_QUERIES`;
+  - [x] Python tests: an absent field means 0, the bounds are rejected with
         repairs, and a negative or nonintegral value is rejected.
-- [ ] Compatibility (PL07). These build byte-identical plans, wrappers and
+  *`test_line_query_budget_is_optional_bounded_and_integral` rejects -1, 9,
+  1.5, `true`, `"1"` and `null` with a `Capacity` diagnostic naming `[0,8]`.
+  `test_line_query_budget_reaches_the_wrapper_only_when_nonzero` shows that an
+  absent or zero budget gives identical wrapper bytes with no assignment. The
+  render-graph Python suites ran 400 tests: 399 pass.
+  `test_real_target_entries_layouts_determinism_and_generated_cpp` fails the
+  same way on unmodified `develop` with the local tools (a compiler diagnostic
+  now reports a column).*
+- [x] Compatibility (PL07). These build byte-identical plans, wrappers and
       Metal artifacts before and after:
   - fixtures under `tests/sdk_consumer/rg2/`: `ordered_ray`,
     `visibility_sequence`, `compute_split`, `compute_mixed`, `scene_compute`,
@@ -90,55 +111,120 @@ was available.
 
   Plan `VERSION` and `PACKAGE_VERSION` are unchanged. If either must change,
   stop and record why in design D9.
-- [ ] GPU tests in `render_graph_ray_tests.cpp`, through a `TriangleLoop`
+  *Cooked with `develop` `52ed0f97` and with this branch: all 12 give identical
+  plans, wrappers, Metal artifacts, stage descriptors and generated headers.
+  Each `.lurgrt` has the same size and differs only in its 32-byte generation
+  identity (bytes 73-104), a hash over the helper sources' provenance, which any
+  `scene_shader.slang` change moves. Slang drops the unused line fields of
+  `RayQueryContext` from the emitted MSL. No version changed.*
+- [x] GPU tests in `render_graph_ray_tests.cpp`, through a `TriangleLoop`
       fixture under `tests/sdk_consumer/rg2/line_visibility/`. Each case
       compares intervals with analytic values within a stated tolerance:
-  - [ ] an unoccluded segment returns `SCENE_QUERY_MISS` and one interval
+  - [x] an unoccluded segment returns `SCENE_QUERY_MISS` and one interval
         `[0, 1]`;
-  - [ ] one occluder, and two overlapping occluders that merge;
-  - [ ] an occluder mesh with abutting triangles leaves no crack;
-  - [ ] a coplanar occluder does not occlude;
-  - [ ] occluders behind the receiver and beyond the segment do not occlude;
-  - [ ] the receiver and carrying triangles are excluded;
+  - [x] one occluder, and two overlapping occluders that merge;
+  - [x] an occluder mesh with abutting triangles leaves no crack;
+  - [x] a coplanar occluder does not occlude;
+  - [x] occluders behind the receiver and beyond the segment do not occlude;
+  - [x] the receiver and carrying triangles are excluded;
   - [ ] a masked occluder sets `HasMaskedOccluders` and removes no length, and
         an opaque scene never sets it;
-  - [ ] a fully occluded segment returns `SCENE_QUERY_SURFACE` with zero
+  - [x] a fully occluded segment returns `SCENE_QUERY_SURFACE` with zero
         intervals;
-  - [ ] capacity overflow, budget exhaustion and a degenerate segment latch
+  - [x] capacity overflow, budget exhaustion and a degenerate segment latch
         failure and produce the magenta pixel.
-- [ ] Run the same fixture under a `NativeQuery` pass on Metal. It must give the
+  *"Line visibility queries match analytic intervals through a triangle-loop
+  scene compute pass": tolerance 1e-6 of the segment, largest measured error
+  9.6e-8. Also a full-capacity case (31 slats, 32 visible intervals) passes and
+  32 slats overflow; a receiver in the segment's line fails too. The masked box
+  stays open: render-graph scenes cannot hold alpha-tested triangles
+  (`SceneShaderMaterial` has no alpha mode and non-opaque items are rejected),
+  so only "an opaque scene never sets it" is tested (design D4, PL1 finding).*
+- [x] Run the same fixture under a `NativeQuery` pass on Metal. It must give the
       same intervals, since line traversal is software in both (PL06).
-- [ ] SDK consumer: cook the fixture in the installed renderer consumer and pass
+      *Every case is byte-identical between the `Loop` and `Native`
+      configurations.*
+- [x] SDK consumer: cook the fixture in the installed renderer consumer and pass
       against a local `macos-clang-development` SDK install.
-- [ ] `line-sampling` template (design D8a):
-  - [ ] `render_graphs/line_sampling/` graphs, manifest and `main_shaders/`,
+      *`ludus_sdk_scene_shader_contract_consumer` cooks
+      `rg2_line_visibility_loop` through the installed helper (which now ships
+      `ray_line_visibility.slang`) and checks the installed constants; it passed
+      against a local `macos-clang-development` SDK install.*
+- [x] `line-sampling` template (design D8a):
+  - [x] `render_graphs/line_sampling/` graphs, manifest and `main_shaders/`,
         with `primary`, `shade` and `shadeVisibleFraction`, all `TriangleLoop`;
-  - [ ] `main_shaders/line_sampling.slang`: the D6 strategy for one direction.
+  - [x] `main_shaders/line_sampling.slang`: the D6 strategy for one direction.
         PL2 extends this file rather than copying it, if the template layout
         allows sharing; otherwise PL2 copies it and records why;
-  - [ ] registration (design D8c): `TEMPLATES`, CLI choices, graph and
+        *Its chord, proposal and estimate functions take their random
+        dimensions as arguments, so PL2 can add direction `V` without changing
+        PL1's layout. Template directories import only their own include
+        closure, so PL2 will likely need a copy.*
+  - [x] registration (design D8c): `TEMPLATES`, CLI choices, graph and
         snippet registry entries, embedding list,
         `PrepareLineSamplingConfiguration`, installed SDK template files;
-  - [ ] registry requirement `compute-ray-tracing` with its label and registry
+        *`PrepareLineSamplingConfiguration` is in
+        `render_graph_line_sampling_template.cpp` and shares
+        `PrepareSceneComputeTemplateConfiguration` with the compute templates.
+        Imports raise `line_queries` only when the template declares it.*
+  - [x] registry requirement `compute-ray-tracing` with its label and registry
         tests (design D8c);
-  - [ ] Python tests: the template builds, declares the D8a budgets and is a
+        *Label "Metal or Vulkan compute". `TEMPLATES` now records each
+        template's registry requirement, and the CLI repair text follows it.
+        `simple-compute-ray-tracing` still declares `native-ray-tracing`; that
+        correction is a separate change.*
+  - [x] Python tests: the template builds, declares the D8a budgets and is a
         `ComputeRayTracing` package; `render-graph new --template
         line-sampling` succeeds for `metal` and `spirv`, and for `wgsl` alone
         fails with a `Capability` diagnostic naming Metal or Vulkan compute
         (design D8c);
-  - [ ] editor tests: New Render Graph → Template, Quick Add and Apply
+  - [x] editor tests: New Render Graph → Template, Quick Add and Apply
         Configuration Template create the configuration;
-  - [ ] GPU tests: `color` converges within 2% at 256 samples per pixel to
+        *In `ludus_render_graph_configuration_tests`: the New Render Graph
+        picker and the Quick Add snippet each run with Properties hidden, with
+        undo, redo, save and validation; a document-level import shows that
+        `line_queries` rises to 1 and keeps a larger authored value. The
+        registry tests cover the new entries and the requirement label.*
+  - [x] GPU tests: `color` converges within 2% at 256 samples per pixel to
         `veach-guibas-mis` `lightSampling` on the same scene;
         `visibleFraction` is 1 in a lit region and 0 in umbra.
-- [ ] Documentation: the guide's "Author scene-aware ray shaders" section gains
+        *Compared with the Veach and Guibas template cooked with every pass on
+        the triangle loop (`rg2_veach_guibas_mis_triangle_loop`), so no native
+        ray profile is needed. Means: line sampling 0.20376, 0.20380, 0.18602;
+        light sampling 0.20372, 0.20375, 0.18599 (within 0.03%). The lit floor
+        decodes to 1.01 (one ToneMap byte step) and the umbra pixels to
+        exactly 0. Before the fix recorded in design D3 ("PL1 storage"), Metal
+        dropped the intervals and this check caught a 2.6% bias.*
+- [x] Documentation: the guide's "Author scene-aware ray shaders" section gains
       the line query, bounds, alpha policy and budget. A new "Sample lights
       along lines" section documents the `line-sampling` template like the MIS
       template section, including that `visibleFraction` is not radiance.
+      *"Find the visible parts of a segment" and "Sample lights along lines"
+      in `docs/development/render-graph-authoring.md`, with the
+      `ClearLineVisibility` note.*
 - [ ] Gates: build warning-clean, unit tests, ASan/UBSan,
       `./scripts/check --format` and `--tidy`, `source_policy.py --base` with
       the real merge base and `--clang-format`, `check-docs`, strict MkDocs and
       `check-wiki --documentation-only`.
+      *Run on the branch merged with `develop` `4011adfc`:
+      `macos-clang-development` builds with no compiler warnings; `--format`,
+      `--tidy-changed` (base `4011adfc`) and `source_policy.py --base 4011adfc
+      --clang-format` pass. The full targeted `--tidy` fails in 188 translation
+      units with 301 findings, all on lines this change does not touch except one
+      `bugprone-easily-swappable-parameters` on a new test helper, now
+      suppressed with a reason as in the neighboring ray tests; `check-docs`, strict MkDocs and the
+      `test_docs.py`/`test_wiki.py` suites pass. `macos-clang-asan-ubsan`
+      (tests on, editor off) passes 107/107 tests, but that preset runs neither
+      the GPU ray-pixel suite nor the editor. Left open because three
+      `macos-clang-development` suites fail, in code this change does not touch,
+      after `develop`'s native Metal ray-stage merge: `ludus_rhi_ray_queries`
+      (expects `RayPipelines` false on Metal), one legacy-package case in
+      `ludus_render_graph_ray_pixels` (`storageGeneration.Decode`), and five
+      `renderer_workspace_tests` cases in `ludus_editor_tests` whose fake SDK
+      lacks `compile_metal_ray.py`. `scripts/build-api --bootstrap` (pinned
+      Doxygen, baseline `4011adfc`) reports no new gaps, and
+      `check-wiki --documentation-only` then passes.
+      Ruff was not run (not installed locally). Vulkan was not run.*
 
 ## PL2 Point-and-line MIS template
 

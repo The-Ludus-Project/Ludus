@@ -53,6 +53,7 @@ class StatusActivityBar;
 class ProjectExplorer;
 struct ErrorListEntry;
 enum class ProjectItemKind : foundation::uint8;
+enum class ProjectItemAction : foundation::uint8;
 class ScriptWorkspace;
 class RendererWorkspace;
 class ProjectRenderingSettings;
@@ -94,6 +95,7 @@ private Q_SLOTS:
     void OnNewProject();
     void OnCloseProject();
     void ShowShortcuts();
+    void showCommandPalette(bool isEnabledOnly);
     void OnSetupRelease();
     void OnPackageRelease();
 
@@ -134,6 +136,7 @@ private:
     void buildWindowMenu(QMenu* menu);
     void renderWindowDocuments(QMenu* menu);
     void openProjectItem(ProjectItemKind kind, const QString& path);
+    void changeProjectItem(ProjectItemAction action, ProjectItemKind kind, const QString& path);
     void activateErrorEntry(const ErrorListEntry& entry);
     void renderActiveDocument();
     /// Show the context strip (Render Graph toolbar) only while a render graph is the active document and Focus
@@ -201,6 +204,10 @@ private:
     bool mIsPlayRunInViewport = false;
     /// A launch is running a game in its own window; the World viewport is labelled meanwhile.
     bool mIsRunElsewhere = false;
+    /// A play session was running at the last state change; the next one is a start.
+    bool mWasPlaySessionActive = false;
+    /// Timing has been opened by a play session since the editor started or the layout was reset.
+    bool mHasTimingOpenedForPlay = false;
     void SetProjectWorkspace(const QString& root, bool restore);
     void SaveProjectWorkspace() const;
     QByteArray DefaultLayout_;
@@ -240,6 +247,8 @@ private:
     QAction* mCookGraphAction;
     QAction* mCancelGraphAction;
     QAction* mOptionsAction;
+    QAction* mCommandPaletteAction;
+    QAction* mRunInContextAction;
     QAction* mProjectSettingsAction;
     QAction* mResetLayoutAction;
     QAction* mFocusViewportAction;

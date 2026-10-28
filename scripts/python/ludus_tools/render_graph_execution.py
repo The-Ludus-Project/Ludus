@@ -242,11 +242,8 @@ def lower_plan(package, configuration):
     for operation, record in zip(operations, pass_records):
         record.setdefault('SourceColor', ABSENT)
         record['DenoisingQuality'] = quality.QUALITY_CODES[operation['denoising']['quality']] if 'denoising' in operation else 0
-        record['Traversal'] = ('HardwarePipeline' if operation['kind'] == 'RayTracing' and
-                               ray.program_tuple(operation['pipeline'])[-1] == ray.HARDWARE_PIPELINE_TAG else 'Custom' if operation['kind'] == 'RayTracing' and
-                               ray.get_custom_traversal_source(ray.program_tuple(operation['pipeline'])) else
-                               'TriangleLoop' if operation['kind'] == 'RayTracing' and
-                               ray.program_tuple(operation['pipeline'])[-1] == ray.TRIANGLE_LOOP_TAG else 'NativeQuery')
+        record['Traversal'] = (ray.get_traversal(ray.program_tuple(operation['pipeline']))
+                               if operation['kind'] == 'RayTracing' else 'NativeQuery')
     return plan, resource_records, pass_records, cameras
 
 
@@ -295,7 +292,7 @@ TARGET_FIELDS = {'metal': 'Msl', 'spirv': 'Spirv', 'wgsl': 'Wgsl', 'glsl': 'Glsl
 PACKAGE_MAGIC = 0x4752554C
 # Editor-only diagnostic ray path capture generation; same layout, refused by runtime decoding.
 RAY_PATH_CAPTURE_PACKAGE_MAGIC = 0x5052554C
-PACKAGE_VERSION = 21
+PACKAGE_VERSION = 22
 RESOURCE_FIELD_COUNT = 9
 RESOURCE_RECORD_BYTES = RESOURCE_FIELD_COUNT * 4
 MAX_PASS_NAME_BYTES = 127
@@ -752,7 +749,7 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
         data += struct.pack('<f', p.get('ToneMappingExposure', 0))
         data += u32(p.get('SourceColor', ABSENT))
         data += u32(p.get('DenoisingQuality', 0))
-        data += u32({'NativeQuery': 0, 'TriangleLoop': 1, 'Custom': 2, 'HardwarePipeline': 3}[p.get('Traversal', 'NativeQuery')])
+        data += u32(ray.TRAVERSAL_CODES.index(p.get('Traversal', 'NativeQuery')))
     for b in contents['bindings']:
         data += u32(PROGRAM_CODES[b['Program']], b['Slot'], VISIBILITY[b['Stages']], b['ValueOffset'], b['ValueCount'])
     for b in contents['blocks']:
