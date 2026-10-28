@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "bytes": 3375104,
+  "roughness_count": 64,
+  "inclination_count": 64,
+  "fresnel_count": 51,
+  "target": "Ludus reference BSDF specular lobe: GGX, height-correlated Smith, Schlick F0",
+  "error": "L3, balance-heuristic MIS of visible-normal BSDF and LTC samples",
+  "error_sample_grid": 32,
+  "albedo_sample_grid": 256,
+  "optimizer": "Nelder-Mead over a, c, s of M = R(average direction) [[a, 0, s], [0, c, 0], [0, 0, 1]], warm-started, one restart",
+  "max_simplex_iterations": 1200,
+  "generator": "tools/ltc-fitter"
+}

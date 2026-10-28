@@ -39,6 +39,7 @@ target_sources(ludus_graphics_renderer PUBLIC FILE_SET public_headers TYPE HEADE
     include/ludus/graphics/renderer/light_selection.hpp
     include/ludus/graphics/renderer/lighting.hpp
     include/ludus/graphics/renderer/reference.hpp
+    include/ludus/graphics/renderer/ltc_table.hpp
     include/ludus/graphics/renderer/gpu_preview.hpp
     include/ludus/graphics/renderer/viewport_frame.hpp
     include/ludus/graphics/renderer/viewport.hpp)
@@ -46,6 +47,22 @@ target_link_libraries(ludus_graphics_renderer PUBLIC Ludus::FoundationBase Ludus
     PRIVATE Ludus::FoundationContainers Ludus::FoundationHash Ludus::FoundationThreadingProfiling Ludus::FoundationTime Ludus::Resources Ludus::SceneFormat)
 target_compile_options(ludus_graphics_renderer PRIVATE $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-ffp-contract=off>)
 ludus_apply_project_defaults(ludus_graphics_renderer)
+# The GGX LTC table (ltc_table.hpp) is fitted offline by tools/ltc-fitter; the checked-in
+# binary and its provenance become a generated source of exact float literals.
+find_package(Python3 3.10 REQUIRED COMPONENTS Interpreter)
+set(ludus_ltc_table_source "${CMAKE_CURRENT_BINARY_DIR}/generated/ltc_table_data.cpp")
+add_custom_command(
+    OUTPUT "${ludus_ltc_table_source}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/generated"
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/cmake/generate_ltc_table.py"
+            --table "${CMAKE_CURRENT_SOURCE_DIR}/data/ggx_ltc_table.bin"
+            --provenance "${CMAKE_CURRENT_SOURCE_DIR}/data/ggx_ltc_table.json"
+            --output "${ludus_ltc_table_source}"
+    DEPENDS "${PROJECT_SOURCE_DIR}/cmake/generate_ltc_table.py" "${CMAKE_CURRENT_SOURCE_DIR}/data/ggx_ltc_table.bin"
+            "${CMAKE_CURRENT_SOURCE_DIR}/data/ggx_ltc_table.json"
+    VERBATIM)
+target_sources(ludus_graphics_renderer PRIVATE src/ltc_table.cpp "${ludus_ltc_table_source}")
+target_include_directories(ludus_graphics_renderer PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 if(EMSCRIPTEN)
     # Activation runs beneath the host's frame on the browser's default 64 KiB stack; catch
     # tens-of-KiB RenderGraphPrograms temporaries during compilation, as Resources does.
@@ -91,8 +108,9 @@ if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
     # Exercise the production renderer/RHI registry with the existing deterministic backend.
     add_executable(ludus_renderer_tests tests/renderer_tests.cpp tests/world_grid_tests.cpp tests/reference_backend.cpp src/gpu_denoiser.cpp src/render_graph.cpp src/render_graph_forward.cpp src/render_graph_scene_resources.cpp src/visibility_buffer.cpp src/render_graph_ray.cpp src/render_graph_ray_path.cpp src/render_graph_upscale.cpp src/render_graph_metalfx.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/gpu_preview_camera.cpp src/gpu_preview_graph.cpp src/render_graph_storage.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/lighting.cpp src/static_lighting.cpp src/environment.cpp src/reference_bsdf.cpp src/reference_scene.cpp src/reference_path.cpp src/reference_compute.cpp tests/views_tests.cpp tests/static_lighting_tests.cpp tests/render_graph_tests.cpp tests/render_graph_ray_path_decode_tests.cpp tests/render_graph_activation_tests.cpp tests/render_graph_pool_tests.cpp tests/scene_shader_tests.cpp tests/reference_emitter_selection_tests.cpp tests/reference_bvh_tests.cpp
+        tests/ltc_table_tests.cpp src/ltc_table.cpp "${ludus_ltc_table_source}"
         ../rhi/src/rhi.cpp ../rhi/src/device.cpp ../rhi/src/dxil_container.cpp ../rhi/src/gpu_scope.cpp ../rhi/src/gpu_pass_timing_buffer.cpp ../rhi/src/profile.cpp ../rhi/src/raster.cpp ../rhi/tests/reference_raster.cpp ../rhi/src/ray_unsupported.cpp)
-    target_include_directories(ludus_renderer_tests PRIVATE include ../rhi/include ../rhi/src ../rhi/tests "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
+    target_include_directories(ludus_renderer_tests PRIVATE include src ../rhi/include ../rhi/src ../rhi/tests "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
     target_link_libraries(ludus_renderer_tests PRIVATE Ludus::FoundationStrings Ludus::RenderGraphFormat Ludus::Platform Ludus::FoundationContainers Ludus::FoundationMath Ludus::FoundationThreading Ludus::FoundationThreadingProfiling Ludus::FoundationTime Ludus::Resources Ludus::FoundationHash Catch2::Catch2WithMain)
     target_compile_options(ludus_renderer_tests PRIVATE $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-ffp-contract=off>)
     ludus_apply_project_defaults(ludus_renderer_tests)

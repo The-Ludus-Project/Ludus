@@ -461,6 +461,84 @@ avoids frame-order flicker; it does not promise brightness-optimal selection.
 Shader radiance clamps finite output to 65504 before attachment conversion. Emissive
 materials do not create lights. Clustered lists belong to L5.
 
+### GGX linearly transformed cosine table
+
+`ltc_table.hpp` embeds one linearly transformed cosine (LTC) per perceptual roughness,
+view inclination and Schlick F0. Each approximates the specular lobe of the reference
+BSDF (GGX, height-correlated Smith, Schlick) times the cosine, which is the material
+model above with metallic one. Polygonal-light sampling uses it to draw directions in
+proportion to the specular lobe (Christoph Peters, "BRDF Importance Sampling for
+Polygonal Lights", *ACM TOG* 40(4), 2021, section 4.1); FoundationMath's
+[LTC sampling](../modules/foundation/math.md#linearly-transformed-cosines) consumes the
+looked-up matrix. The LTC only guides sampling, so a poor fit costs variance, never
+correctness, as long as it is combined with projected solid angle sampling.
+
+| Axis | Samples | Range |
+| --- | --- | --- |
+| Perceptual roughness √α | 64 | [0, 1]; rows below the reference BSDF's 0.045 floor repeat that fit |
+| View inclination θ | 64 | [0, π/2]; the last row is fitted at cos θ = 0.001 |
+| Schlick F0 | 51 | [0, 1] (Peters section 4.1) |
+
+Each transform stores the four entries of the isotropic M⁻¹ of Heitz et al.
+Equation (6), scaled so its last diagonal entry is one, in a tangent frame with the
+normal on z and the view in the xz half-plane (`TryMakeLtcTangentFrame`). A second
+64 × 64 table splits the specular albedo as F0 · scale + bias, which Schlick's
+Fresnel makes exact, so albedo is per color channel even though the F0 axis selects
+a single slice. `TryLookupSpecularLtc` interpolates the transforms trilinearly, as
+Heitz et al. interpolate M⁻¹ linearly, and selects the F0 slice by the Rec. 709
+luminance of a colored F0; that choice is a Ludus decision, since the paper's F0 is
+scalar.
+
+The checked-in `modules/graphics/renderer/data/ggx_ltc_table.bin` (3.3 MB of
+little-endian float32: every transform, then every albedo entry) and its provenance
+`ggx_ltc_table.json` become a generated source of exact hexadecimal float literals
+at build time (`cmake/generate_ltc_table.py`), which validates the byte count against
+the provenance. Regenerate them with the offline fitter, in an optimized build:
+
+```bash
+cmake --preset macos-clang-release -DLUDUS_BUILD_LTC_FITTER=ON
+cmake --build out/build/macos-clang-release --target ludus_ltc_fitter
+out/build/macos-clang-release/tools/ltc-fitter/ludus_ltc_fitter modules/graphics/renderer/data --workers 8
+```
+
+The fit follows Heitz et al., "Real-Time Polygonal-Light Shading with Linearly
+Transformed Cosines", *ACM TOG* 35(4), Article 41, 2016, section 4: for each entry it
+minimizes the L3 error between the LTC and the albedo-normalized lobe. The papers do
+not specify an optimizer or how the error is evaluated; the fitter's choices are:
+
+- The error is estimated with the balance heuristic over fixed 32 × 32 stratified
+  sample sets of the BSDF's visible-normal sampling and of the candidate LTC, so the
+  objective is deterministic.
+- M = R · [[a, 0, s], [0, c, 0], [0, 0, 1]], where the rotation R about y takes the
+  LTC's median vector (Heitz et al. section 3.1) onto the lobe's cosine-weighted
+  average direction, and Nelder–Mead ("A Simplex Method for Function Minimization",
+  *The Computer Journal* 7(4), 1965) fits a, c and s. M keeps the zero pattern of
+  Equation (6) and det M = a c, so no fit can approach a singular matrix. Fitting all
+  four entries of Equation (6) freely let some fits collapse onto near-singular
+  matrices that the finite sample set could not penalize.
+- Each fit starts from its neighbor at the next higher roughness, or at the previous
+  inclination, and restarts once from its best vertex. Each F0 slice is one
+  FoundationThreading job.
+- The target is the reference BSDF itself, not the Frostbite BRDF of Peters' table,
+  and no third-party table or GPLv3 utility is used.
+
+A full fit takes about 15 minutes with eight workers on an Apple M5. Near-mirror
+roughness with grazing views produces legitimately extreme inverse entries (up to
+about 10⁷), which stay within single-precision range in the LTC density; the F0 = 0
+slice, a pure grazing Fresnel lobe with almost no albedo, fits less well.
+
+Evidence (`[ltc]` in `ludus_renderer_tests`): every entry is finite with a positive
+determinant; the L1 distance between a fitted LTC and its normalized lobe over the
+sphere (0 for a perfect fit, 2 for disjoint densities) has a median near 0.05 and is
+at most 0.34 at roughness 0.2–1, inclinations up to 57° and F0 0.04 or 1; the
+tabulated albedo matches Monte Carlo estimates of the exact BSDF
+within 2% plus 0.01 at off-grid lookups with a colored F0, and matches the analytic
+1 − ln 2 at roughness one and normal incidence; and one sample each of projected
+solid angle and LTC sampling, combined with the balance heuristic, agrees with a
+65,536-sample reference over a quad light for roughness 0.15–0.7, cosines 0.5–0.9 and
+F0 0.04 or 1, with less than half the variance of two cosine samples for roughness up
+to 0.35.
+
 ### Baked chart admission and replacement
 
 The offline raw-texel cooker accepts optional `bake` metadata only for linear

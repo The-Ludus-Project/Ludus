@@ -3,6 +3,8 @@
 
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/sort.hpp>
+#include <ludus/foundation/math/linearly_transformed_cosine.hpp>
+#include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/projected_solid_angle.hpp>
 #include <ludus/foundation/math/random.hpp>
 #include <ludus/foundation/math/scalar.hpp>
@@ -36,6 +38,13 @@ constexpr usize READBACK_CHUNK_BYTES = usize{64} * 1024;
 constexpr uint32 CASE_COUNT = 64 * LUDUS_PROJECTED_SOLID_ANGLE_PARITY_GROUP_SIZE;
 constexpr uint64 RANDOM_SEED = 0x50E7E125ULL;
 constexpr usize FLOATS_PER_WORD = 4;
+constexpr usize MATRIX_ROWS = 3;
+constexpr float32 MINIMUM_DETERMINANT_FACTOR = 0.02F;
+// LTC integrals below this contribute nothing measurable; sampling may succeed on only one side.
+constexpr float32 NEGLIGIBLE_LTC_INTEGRAL = 1.0e-7F;
+// Relative statistics exclude tiny lights, whose sector areas cancel in single precision (Peters section 3.6); every
+// case still meets the absolute bound.
+constexpr float32 MINIMUM_STATISTICS_SOLID_ANGLE = 1.0e-3F;
 
 template <typename Handle>
 void WaitReady(rhi::DeviceHandle device, Handle handle)
@@ -121,6 +130,8 @@ TEST_CASE("GPU projected solid angle sampling matches the C++ implementation", "
     Array<math::Vector2> randomNumbers;
     REQUIRE(polygons.TryResize(CASE_COUNT) == true);
     REQUIRE(randomNumbers.TryResize(CASE_COUNT) == true);
+    Array<math::Matrix3> inverseTransforms;
+    REQUIRE(inverseTransforms.TryResize(CASE_COUNT) == true);
     const math::Vector3 fixed[][4] = {
         {{-1, -1, 1}, {1, -1, 1}, {1, 1, 1}, {-1, 1, 1}},
         {{0, 0, 1}, {1, 0, 1}, {0, 1, 1}, {}},
@@ -149,6 +160,15 @@ TEST_CASE("GPU projected solid angle sampling matches the C++ implementation", "
             polygons[i] = MakeRandomPolygon(random);
         }
         randomNumbers[i] = math::Vector2{random.NextFloat01(), random.NextFloat01()};
+        // An isotropic LTC, M = [[a, 0, b], [0, c, 0], [d, 0, 1]] (Heitz et al. 2016, Equation 6).
+        const float32 a = Draw(random, 0.05F, 1.5F);
+        const float32 b = Draw(random, -0.6F, 0.6F);
+        const float32 c = Draw(random, 0.05F, 1.5F);
+        const float32 skew = Draw(random, -0.6F, 0.6F);
+        // Keep det(M) = c (a - b d) clearly positive.
+        const float32 d = a - b * skew > MINIMUM_DETERMINANT_FACTOR ? skew : 0.0F;
+        const math::Matrix3 transform{{math::Vector3{a, 0, d}, math::Vector3{0, c, 0}, math::Vector3{b, 0, 1}}};
+        REQUIRE(math::TryInverse(transform, inverseTransforms[i]) == math::MathStatus::Success);
     }
 
     Array<float32> cases;
@@ -168,6 +188,14 @@ TEST_CASE("GPU projected solid angle sampling matches the C++ implementation", "
         parameters[0] = static_cast<float32>(polygons[i].VertexCount);
         parameters[1] = randomNumbers[i].X;
         parameters[2] = randomNumbers[i].Y;
+        float32* rows = words + LUDUS_PROJECTED_SOLID_ANGLE_PARITY_LTC_WORD * FLOATS_PER_WORD;
+        for (usize row = 0; row < MATRIX_ROWS; ++row)
+        {
+            for (usize column = 0; column < MATRIX_ROWS; ++column)
+            {
+                rows[row * FLOATS_PER_WORD + column] = inverseTransforms[i].At(row, column);
+            }
+        }
     }
     const usize caseBytes = cases.GetSize() * sizeof(float32);
     const usize resultBytes =
@@ -280,6 +308,10 @@ TEST_CASE("GPU projected solid angle sampling matches the C++ implementation", "
     Array<float32> directionErrors;
     uint32 sampledCount = 0;
     uint32 centralCount = 0;
+    Array<float32> ltcIntegralErrors;
+    Array<float32> ltcDirectionErrors;
+    Array<float32> ltcDensityErrors;
+    uint32 ltcSampledCount = 0;
     for (uint32 i = 0; i < CASE_COUNT; ++i)
     {
         float32 words[LUDUS_PROJECTED_SOLID_ANGLE_PARITY_WORDS_PER_RESULT * FLOATS_PER_WORD];
@@ -298,19 +330,55 @@ TEST_CASE("GPU projected solid angle sampling matches the C++ implementation", "
             math::TrySampleProjectedSolidAnglePolygon(expected, randomNumbers[i], expectedDirection) ==
             math::MathStatus::Success;
         REQUIRE(words[4] == (isSampled == true ? 1.0F : 0.0F));
-        if (isSampled == false)
+        if (isSampled == true)
         {
-            continue;
+            ++sampledCount;
+            REQUIRE(words[9] == (expected.IsCentralCase == true ? 1.0F : 0.0F));
+            centralCount += expected.IsCentralCase == true ? 1 : 0;
+            const math::Vector3 direction{words[5], words[6], words[7]};
+            REQUIRE(math::Abs(math::Length(direction) - 1.0F) <= 1.0e-5F);
+            if (expected.ProjectedSolidAngle >= MINIMUM_STATISTICS_SOLID_ANGLE)
+            {
+                REQUIRE(areaErrors.TryAdd(math::Abs(projectedSolidAngle - expected.ProjectedSolidAngle) /
+                                          expected.ProjectedSolidAngle) == true);
+                REQUIRE(directionErrors.TryAdd(math::Length(direction - expectedDirection)) == true);
+            }
+            REQUIRE(math::Abs(words[8] - direction.Z / projectedSolidAngle) <= 1.0e-6F * words[8]);
         }
-        ++sampledCount;
-        REQUIRE(words[9] == (expected.IsCentralCase == true ? 1.0F : 0.0F));
-        centralCount += expected.IsCentralCase == true ? 1 : 0;
-        const math::Vector3 direction{words[5], words[6], words[7]};
-        REQUIRE(math::Abs(math::Length(direction) - 1.0F) <= 1.0e-5F);
-        REQUIRE(areaErrors.TryAdd(math::Abs(projectedSolidAngle - expected.ProjectedSolidAngle) /
-                                  expected.ProjectedSolidAngle) == true);
-        REQUIRE(directionErrors.TryAdd(math::Length(direction - expectedDirection)) == true);
-        REQUIRE(math::Abs(words[8] - direction.Z / projectedSolidAngle) <= 1.0e-6F * words[8]);
+
+        // The LTC technique of Peters section 4.1 on the same polygon.
+        const float32* ltcWords = words + 3 * FLOATS_PER_WORD;
+        math::LtcPolygon expectedLtc;
+        REQUIRE(math::TryPrepareLtcPolygon(polygons[i], inverseTransforms[i], expectedLtc) ==
+                math::MathStatus::Success);
+        REQUIRE(ltcWords[0] == 1.0F);
+        const float32 expectedIntegral = math::GetLtcPolygonIntegral(expectedLtc);
+        REQUIRE(math::Abs(ltcWords[1] - expectedIntegral) <= 1.0e-6F + 1.0e-3F * expectedIntegral);
+        math::Vector3 expectedLtcDirection;
+        const math::MathStatus ltcStatus =
+            math::TrySampleLtcPolygon(expectedLtc, randomNumbers[i], expectedLtcDirection);
+        const bool isLtcSampled = ltcStatus == math::MathStatus::Success;
+        INFO("LTC status " << static_cast<int>(ltcStatus) << ", integral " << expectedIntegral << " vs " << ltcWords[1]
+                           << ", clipped " << expectedLtc.Polygon.VertexCount);
+        if (isLtcSampled == true && ltcWords[2] == 1.0F)
+        {
+            ++ltcSampledCount;
+            const math::Vector3 ltcDirection{ltcWords[4], ltcWords[5], ltcWords[6]};
+            REQUIRE(math::Abs(math::Length(ltcDirection) - 1.0F) <= 1.0e-5F);
+            if (expectedLtc.Polygon.ProjectedSolidAngle >= MINIMUM_STATISTICS_SOLID_ANGLE)
+            {
+                REQUIRE(ltcIntegralErrors.TryAdd(math::Abs(ltcWords[1] - expectedIntegral) / expectedIntegral) == true);
+                REQUIRE(ltcDirectionErrors.TryAdd(math::Length(ltcDirection - expectedLtcDirection)) == true);
+                const float32 density = math::EvaluateLtcPolygonDensity(expectedLtc, ltcDirection);
+                REQUIRE(ltcDensityErrors.TryAdd(math::Abs(ltcWords[3] - density) / density) == true);
+            }
+        }
+        else if (expectedIntegral > NEGLIGIBLE_LTC_INTEGRAL || ltcWords[1] > NEGLIGIBLE_LTC_INTEGRAL)
+        {
+            // Only a transformed polygon with no measurable integral may disable the technique on one side: an
+            // edge-on polygon rounds to zero area in one precision and to about 1e-11 in the other.
+            REQUIRE(ltcWords[2] == (isLtcSampled == true ? 1.0F : 0.0F));
+        }
     }
     REQUIRE(sampledCount > CASE_COUNT / 2);
     REQUIRE(centralCount > 0);
@@ -318,4 +386,10 @@ TEST_CASE("GPU projected solid angle sampling matches the C++ implementation", "
     REQUIRE(GetPercentile(areaErrors, 0.99F) <= 1.0e-4F);
     REQUIRE(GetPercentile(directionErrors, 0.99F) <= 1.0e-4F);
     REQUIRE(GetPercentile(directionErrors, 1.0F) <= 5.0e-2F);
+    // The GPU inverts M^-1 in single precision, C++ in double precision.
+    REQUIRE(ltcSampledCount > CASE_COUNT / 2);
+    REQUIRE(GetPercentile(ltcIntegralErrors, 0.99F) <= 1.0e-4F);
+    REQUIRE(GetPercentile(ltcDirectionErrors, 0.99F) <= 1.0e-4F);
+    REQUIRE(GetPercentile(ltcDirectionErrors, 1.0F) <= 5.0e-2F);
+    REQUIRE(GetPercentile(ltcDensityErrors, 0.99F) <= 1.0e-4F);
 }

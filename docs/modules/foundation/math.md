@@ -319,6 +319,50 @@ density to one within 0.5%. The renderer's `[polygon-sampling]` GPU test compare
 the shader with C++ on 4096 cases; it runs natively on Metal here, and the
 Vulkan/SPIR-V and WGSL builds compile but are first executed in CI.
 
+## Linearly transformed cosines
+
+`linearly_transformed_cosine.hpp` samples a convex polygonal light in proportion to
+a linearly transformed cosine (LTC), the distribution that approximates a specular
+BRDF times the cosine. It implements Eric Heitz, Jonathan Dupuy, Stephen Hill and
+David Neubelt, "Real-Time Polygonal-Light Shading with Linearly Transformed
+Cosines", *ACM Transactions on Graphics* 35(4), Article 41, 2016, sections 3–4
+([DOI](https://doi.org/10.1145/2897824.2925895)), and the LTC technique of Peters'
+section 4.1. The shader port is `shaders/linearly_transformed_cosine.slang`.
+
+```cpp
+#include <ludus/foundation/math/linearly_transformed_cosine.hpp>
+
+// inverseTransform is M^-1 in the light's tangent space, for example from the renderer's LTC table.
+LtcPolygon polygon;
+if (TryPrepareLtcPolygon(light, inverseTransform, polygon) == MathStatus::Success && GetLtcPolygonIntegral(polygon) > 0)
+{
+    Vector3 direction;
+    if (TrySampleLtcPolygon(polygon, Vector2{u0, u1}, direction) == MathStatus::Success)
+    {
+        const float density = EvaluateLtcPolygonDensity(polygon, direction); // per steradian
+    }
+}
+```
+
+Preparation transforms the vertices by M⁻¹ and runs projected solid angle
+preparation on the result, so the LTC's integral over the polygon is the transformed
+polygon's projected solid angle divided by π (Heitz et al. Equation 3). Sampling
+draws a projected-solid-angle sample of the transformed polygon and maps it back
+through M (Heitz et al. Algorithm 1). As in Peters' implementation, the polygon is
+clipped only against the cosine space's horizon: a sample can fall below the true
+horizon, where the BRDF is zero, and an empty transformed polygon disables the
+technique. The LTC density is zero wherever M⁻¹ω points below that horizon, so the
+technique alone does not cover the whole polygon; Peters section 4.2 combines it
+with projected solid angle sampling, which does. `EvaluateLtcDensity` gives the
+unnormalized density of Heitz et al. Equation (1), and the C++ code inverts M⁻¹ in
+double precision while the shader uses single precision.
+
+Evidence: `linearly_transformed_cosine_tests.cpp` checks that the density integrates
+to one over the sphere and over the polygon against float64 quadrature, that the
+identity matrix reproduces projected solid angle sampling, and that samples are
+unbiased estimators of a bounded integrand. The renderer's `[polygon-sampling]` GPU
+test also compares the shader port with C++ on random isotropic LTCs.
+
 ## GPU transfer
 
 CPU value layout is **not** a shader ABI. Use explicit flat-column export helpers

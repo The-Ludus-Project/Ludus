@@ -23,3 +23,6 @@ modules/content/scene_cook/tests/fixtures/**/*.exr binary
 modules/content/scene_cook/tests/fixtures/**/*.hdr binary
 modules/content/scene_cook/tests/fixtures/**/*.jpg binary
 modules/content/scene_cook/tests/fixtures/**/*.png binary
+
+# The renderer's fitted LTC table is little-endian float32 data and must never be normalized.
+modules/graphics/renderer/data/*.bin binary

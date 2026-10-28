@@ -1,9 +1,9 @@
-#include "projected_solid_angle.slang"
+#include "linearly_transformed_cosine.slang"
 #include "projected_solid_angle_parity_layout.h"
 #include "raster_bindings.slang"
 
-// Test-only kernel for projected_solid_angle_parity_tests.cpp: runs FoundationMath's shader port of
-// projected solid angle sampling on host-supplied polygons so the host can compare it with the C++
+// Test-only kernel for projected_solid_angle_parity_tests.cpp: runs FoundationMath's shader ports of
+// projected solid angle and LTC sampling on host-supplied polygons so the host can compare it with the C++
 // implementation. projected_solid_angle_parity_layout.h owns the case ABI.
 
 LUDUS_SHADER_BINDING(0) StructuredBuffer<float4> Cases;
@@ -34,4 +34,15 @@ ComputeMain(uint3 dispatchThreadId : SV_DispatchThreadID) {
                                      polygon.IsCentralCase == true ? 1.0 : 0.0,
                                      0.0,
                                      0.0);
+    uint ltcBase = caseBase + LUDUS_PROJECTED_SOLID_ANGLE_PARITY_LTC_WORD;
+    float3x3 inverseTransform = float3x3(Cases[ltcBase].xyz, Cases[ltcBase + 1].xyz, Cases[ltcBase + 2].xyz);
+    LtcPolygon ltc;
+    bool isLtcPrepared = TryPrepareLtcPolygon(input, inverseTransform, ltc);
+    float3 ltcDirection;
+    bool isLtcSampled = TrySampleLtcPolygon(ltc, parameters.yz, ltcDirection);
+    Results[resultBase + 3] = float4(isLtcPrepared == true ? 1.0 : 0.0,
+                                     GetLtcPolygonIntegral(ltc),
+                                     isLtcSampled == true ? 1.0 : 0.0,
+                                     EvaluateLtcPolygonDensity(ltc, ltcDirection));
+    Results[resultBase + 4] = float4(ltcDirection, 0.0);
 }
