@@ -151,7 +151,7 @@ def validate(node, where, graph):
             _check_field(graph._identifier, invocation[name], f'Invocation → {name}', where, graph)
     elif is_scene_compute(node):
         # Scene compute passes use the ray wrapper's automatic workgroup and the ray launch
-        # size. Lowering rejects any group_size other than [64, 1, 1] with a repair that clears it.
+        # size. Lowering admits the supported ray workgroup shapes and offers automatic inheritance.
         graph._keys(state, (), where, ('group_size',))
         if 'group_size' in state:
             _dimensions(state['group_size'], where, graph, 'Pipeline State → group_size')

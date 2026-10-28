@@ -3062,4 +3062,17 @@ Status RenderGraph::GetResourceAllocation(uint32 resource,
     outAspect = logical.Kind == format::Aspect::Color ? rhi::TextureAspect::Color : rhi::TextureAspect::Depth;
     return Status::Ready;
 }
+Status internal::RenderGraphRayPass::GetGraphAccumulationForTesting(RenderGraph& inoutGraph,
+                                                                    uint32 pass,
+                                                                    rhi::BufferHandle& outBuffer) noexcept
+{
+    if (inoutGraph.mState.Get() == nullptr || inoutGraph.mState->Current.Get() == nullptr)
+        return Status::NotReady;
+    RenderGraph::State& state = *inoutGraph.mState;
+    if (pass >= state.Header.PassCount || state.Passes[pass].Program != format::Technique::RayTracing)
+        return Status::InvalidDescription;
+    return GetAccumulationForTesting(state.Contexts[static_cast<usize>(format::Technique::RayTracing)],
+                                     state.Current->RayPasses[pass].GetJob(),
+                                     outBuffer);
+}
 } // namespace ludus::graphics::renderer

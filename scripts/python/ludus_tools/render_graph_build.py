@@ -941,7 +941,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                 technique['scene_interface']['visibility_buffer'] = profile['visibility_buffer']
             expanded = ray.expand_programs(authored_programs, technique, snapshot, helper, sys.modules[__name__],
                                           profile['variants'], profile['persistent'], schemas, profile['compute'],
-                                          profile['native_ray_queries'], ray_path_capture)
+                                          profile['native_ray_queries'], ray_path_capture, workgroup=profile['workgroup'])
             linked_programs.update(expanded)
             if profile['native_pipeline']:
                 require('metal' in value['profiles'], 'Capability', 'RayTracing',

@@ -349,6 +349,11 @@ TEST_CASE("Scene callbacks preserve material and scene generation through native
     if (shouldUseNativeStages == true)
     {
         CheckSameStage(decoded.NativeRayStages, programs.NativeRayStages);
+        for (const usize axis : {usize{0}, usize{1}, usize{2}})
+        {
+            CHECK(decoded.NativeRayStages.WorkgroupSize[axis] == programs.NativeRayStages.WorkgroupSize[axis]);
+            CHECK(decoded.NativeRayStages.WorkgroupSize[axis] > 0);
+        }
         CHECK(package->GetPlan().Passes[0].Traversal == format::RayTraversal::HardwarePipeline);
     }
     uint32 selection = format::SCENE_DATA_ALL;

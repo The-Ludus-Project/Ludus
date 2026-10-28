@@ -131,6 +131,7 @@ struct RenderGraphPackage::State final
     {
         bool IsPresent = false;
         uint32 InputCount = 0;
+        StaticArray<uint32, format::RAY_WORKGROUP_DIMENSIONS> WorkgroupSize{};
         std::string_view Entry;
         std::string_view Text;
         Array<uint32> Words;
@@ -154,6 +155,7 @@ struct RenderGraphPackage::State final
     bool HasPixelBuffers = false;
     bool HasSceneData = false;
     bool HasNativeRay = false;
+    bool HasExplicitRayWorkgroup = false;
     bool HasExplicitRayTraversal = false;
     bool HasCustomRayTraversal = false;
     bool HasNativeRayPipeline = false;
@@ -243,6 +245,17 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         {
             return RenderGraphPackageStatus::Malformed;
         }
+        const bool isCompute = role == static_cast<uint32>(format::StageRole::RayCompute) ||
+                               role == static_cast<uint32>(format::StageRole::SceneRayCompute) ||
+                               role == static_cast<uint32>(format::StageRole::PersistentRayCompute);
+        StaticArray<uint32, format::RAY_WORKGROUP_DIMENSIONS> workgroup{};
+        if (HasExplicitRayWorkgroup == true && isCompute == true)
+        {
+            for (uint32& dimension : workgroup)
+                dimension = inoutReader.ReadWord();
+            if (inoutReader.IsOk() == false || workgroup[0] == 0 || workgroup[1] == 0 || workgroup[2] != 1)
+                return RenderGraphPackageStatus::Malformed;
+        }
         for (uint32 input = 0; input < inputCount; ++input)
         {
             const uint32 location = inoutReader.ReadWord();
@@ -263,13 +276,14 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& ino
         }
         for (const StageView& other : Stages[role])
         {
-            if (other.IsPresent == true && other.InputCount != inputCount)
+            if (other.IsPresent == true && (other.InputCount != inputCount || other.WorkgroupSize != workgroup))
             {
                 return RenderGraphPackageStatus::Malformed;
             }
         }
         StageView& view = Stages[role][target];
         view.InputCount = inputCount;
+        view.WorkgroupSize = workgroup;
         for (uint32 block = 0; block < blockCount; ++block)
         {
             const uint32 slot = inoutReader.ReadWord();
@@ -650,16 +664,16 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
-        (version != format::NATIVE_RAY_PIPELINE_PACKAGE_VERSION && version != format::CUSTOM_RAY_PACKAGE_VERSION &&
-         version != format::SOFTWARE_RAY_PACKAGE_VERSION && version != format::METALFX_SPATIAL_PACKAGE_VERSION &&
-         version != format::DENOISING_PACKAGE_VERSION && version != format::BILINEAR_PACKAGE_VERSION &&
-         version != format::TONE_MAPPING_PACKAGE_VERSION && version != format::ACCUMULATION_PACKAGE_VERSION &&
-         version != format::FORWARD_PACKAGE_VERSION && version != format::PIXEL_BUFFER_PACKAGE_VERSION &&
-         version != format::VISIBILITY_PACKAGE_VERSION && version != format::ORDERED_PACKAGE_VERSION &&
-         version != format::STORAGE_PACKAGE_VERSION && version != format::INDEPENDENT_PROGRAM_PACKAGE_VERSION &&
-         version != format::NATIVE_RAY_PACKAGE_VERSION && version != format::SCENE_PACKAGE_VERSION &&
-         version != format::VIEW_PACKAGE_VERSION && version != format::NAMED_PACKAGE_VERSION &&
-         version != format::LEGACY_PACKAGE_VERSION))
+        (version != format::RAY_WORKGROUP_PACKAGE_VERSION && version != format::NATIVE_RAY_PIPELINE_PACKAGE_VERSION &&
+         version != format::CUSTOM_RAY_PACKAGE_VERSION && version != format::SOFTWARE_RAY_PACKAGE_VERSION &&
+         version != format::METALFX_SPATIAL_PACKAGE_VERSION && version != format::DENOISING_PACKAGE_VERSION &&
+         version != format::BILINEAR_PACKAGE_VERSION && version != format::TONE_MAPPING_PACKAGE_VERSION &&
+         version != format::ACCUMULATION_PACKAGE_VERSION && version != format::FORWARD_PACKAGE_VERSION &&
+         version != format::PIXEL_BUFFER_PACKAGE_VERSION && version != format::VISIBILITY_PACKAGE_VERSION &&
+         version != format::ORDERED_PACKAGE_VERSION && version != format::STORAGE_PACKAGE_VERSION &&
+         version != format::INDEPENDENT_PROGRAM_PACKAGE_VERSION && version != format::NATIVE_RAY_PACKAGE_VERSION &&
+         version != format::SCENE_PACKAGE_VERSION && version != format::VIEW_PACKAGE_VERSION &&
+         version != format::NAMED_PACKAGE_VERSION && version != format::LEGACY_PACKAGE_VERSION))
     {
         return RenderGraphPackageStatus::UnsupportedVersion;
     }
@@ -674,6 +688,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     candidate->HasBilinearUpscale = version >= format::BILINEAR_PACKAGE_VERSION;
     candidate->HasMetalFxSpatialUpscale = version >= format::METALFX_SPATIAL_PACKAGE_VERSION;
     candidate->HasDenoising = version >= format::DENOISING_PACKAGE_VERSION;
+    candidate->HasExplicitRayWorkgroup = version >= format::RAY_WORKGROUP_PACKAGE_VERSION;
     candidate->HasExplicitRayTraversal = version >= format::SOFTWARE_RAY_PACKAGE_VERSION;
     candidate->HasCustomRayTraversal = version >= format::CUSTOM_RAY_PACKAGE_VERSION;
     candidate->HasNativeRayPipeline = version >= format::NATIVE_RAY_PIPELINE_PACKAGE_VERSION;
@@ -1028,6 +1043,14 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
                                        isPersistentCompute,
                                        result.HasVisibilityBuffer,
                                        state.HasNativeRayQueries);
+            if (description.Artifact.Stage == rhi::ShaderStage::Compute && role != format::NATIVE_RAY_STAGE_ROLE &&
+                state.HasExplicitRayWorkgroup == true)
+            {
+                for (const State::StageView& view : views)
+                    if (view.IsPresent == true)
+                        for (usize axis = 0; axis < format::RAY_WORKGROUP_DIMENSIONS; ++axis)
+                            description.WorkgroupSize[axis] = view.WorkgroupSize[axis];
+            }
         }
         if (role >= format::FORWARD_STAGE_ROLE_FIRST && role < format::NATIVE_RAY_STAGE_ROLE)
         {

@@ -886,15 +886,16 @@ void RenderGraphPipelineEditor::addRayStateProperties(QFormLayout& outForm)
 
 void RenderGraphPipelineEditor::addSceneComputeStateProperties(QFormLayout& outForm)
 {
-    const QJsonArray fixedGroupSize = GetSceneComputeGroupSize();
-    const QString fixedText = QStringLiteral("%1 × %2 × %3")
-                                  .arg(fixedGroupSize.at(0).toInteger())
-                                  .arg(fixedGroupSize.at(1).toInteger())
-                                  .arg(fixedGroupSize.at(2).toInteger());
+    const QJsonArray defaultGroupSize = GetSceneComputeGroupSize();
+    const QJsonArray supported = GetSupportedSceneComputeGroupSizes();
+    const QString defaultText = QStringLiteral("%1 × %2 × %3")
+                                    .arg(defaultGroupSize.at(0).toInteger())
+                                    .arg(defaultGroupSize.at(1).toInteger())
+                                    .arg(defaultGroupSize.at(2).toInteger());
     QLabel* explanation = new QLabel(
-        QStringLiteral("Automatic: a scene compute pass runs once per launch pixel in the ray wrapper's fixed %1 "
-                       "workgroup. Query budgets are shared with the package's ray passes.")
-            .arg(fixedText),
+        QStringLiteral("Automatic: inherit the shader bundle's explicit workgroup, or use %1. "
+                       "All explicit scene compute overrides in one bundle must agree. Query budgets are shared.")
+            .arg(defaultText),
         this);
     explanation->setWordWrap(true);
     outForm.addRow(explanation);
@@ -904,36 +905,52 @@ void RenderGraphPipelineEditor::addSceneComputeStateProperties(QFormLayout& outF
     advanced->setCheckable(true);
     QFormLayout* form = new QFormLayout(advanced);
     form->setRowWrapPolicy(QFormLayout::WrapLongRows);
-    QLabel* groupSize = new QLabel(advanced);
+    QComboBox* groupSize = new QComboBox(advanced);
     groupSize->setObjectName(QStringLiteral("renderGraphComputeGroupSize"));
+    for (const QJsonValueConstRef shape : supported)
+    {
+        const QJsonArray dimensions = shape.toArray();
+        groupSize->addItem(QStringLiteral("%1 × %2 × %3")
+                               .arg(dimensions.at(0).toInteger())
+                               .arg(dimensions.at(1).toInteger())
+                               .arg(dimensions.at(2).toInteger()));
+    }
     form->addRow(QStringLiteral("Group size"), groupSize);
     QLabel* warning = new QLabel(advanced);
     warning->setObjectName(QStringLiteral("renderGraphComputeGroupSizeWarning"));
     warning->setWordWrap(true);
     form->addRow(warning);
-    // The only accepted explicit size is the fixed one; any other authored size is shown for repair.
-    const auto showState = [this, advanced, groupSize, warning, fixedGroupSize, fixedText]() {
+    const auto showState = [this, advanced, groupSize, warning, supported]() {
         const QJsonValue authored = mNode.value(QStringLiteral("state")).toObject().value(QStringLiteral("group_size"));
-        const QSignalBlocker blocker(advanced);
+        const QSignalBlocker advancedBlocker(advanced);
+        const QSignalBlocker groupBlocker(groupSize);
         advanced->setChecked(authored.isUndefined() == false);
-        groupSize->setText(fixedText);
-        warning->setVisible(authored.isUndefined() == false && authored != fixedGroupSize);
-        warning->setText(
-            QStringLiteral("Authored group size %1 is not supported: the build rejects it. Use automatic settings "
-                           "to clear it.")
-                .arg(QString::fromUtf8(QJsonDocument(authored.toArray()).toJson(QJsonDocument::Compact))));
+        foundation::int32 index = authored.isUndefined() == true ? 0 : -1;
+        for (foundation::int32 candidate = 0; candidate < supported.size(); ++candidate)
+            if (supported.at(candidate) == authored)
+                index = candidate;
+        groupSize->setCurrentIndex(index);
+        warning->setVisible(index < 0);
+        warning->setText(QStringLiteral("Authored group size %1 is unsupported and the build rejects it. "
+                                        "Select a supported shape or use automatic settings to repair it.")
+                             .arg(QString::fromUtf8(QJsonDocument(authored.toArray()).toJson(QJsonDocument::Compact))));
     };
     showState();
-    connect(advanced, &QGroupBox::toggled, this, [this, fixedGroupSize, showState](bool isChecked) {
+    connect(groupSize, &QComboBox::currentIndexChanged, this, [this, supported, showState](foundation::int32 index) {
+        if (index < 0 || index >= supported.size())
+            return;
+        QJsonObject state = mNode.value(QStringLiteral("state")).toObject();
+        state.insert(QStringLiteral("group_size"), supported.at(index));
+        mNode.insert(QStringLiteral("state"), state);
+        showState();
+        publishEdit();
+    });
+    connect(advanced, &QGroupBox::toggled, this, [this, defaultGroupSize, showState](bool isChecked) {
         QJsonObject state = mNode.value(QStringLiteral("state")).toObject();
         if (isChecked == true)
-        {
-            state.insert(QStringLiteral("group_size"), fixedGroupSize);
-        }
+            state.insert(QStringLiteral("group_size"), defaultGroupSize);
         else
-        {
             state.remove(QStringLiteral("group_size"));
-        }
         mNode.insert(QStringLiteral("state"), state);
         showState();
         publishEdit();

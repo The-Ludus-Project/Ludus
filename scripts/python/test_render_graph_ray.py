@@ -646,6 +646,12 @@ class RayCompilerAcceptance(unittest.TestCase):
             node = next(item for item in hardware['nodes'] if item['kind'] == 'RayTracingPipeline')
             node['invocation']['type'] = 'RayTracing'
             document['configurations'].append(hardware)
+            # One bundle combines an 8x8 compute override with independently compiled native stages.
+            compute_node = next(item for item in document['configurations'][0]['nodes']
+                                if item['kind'] == 'RayTracingPipeline')
+            compute_node['kind'] = 'ComputePipeline'
+            compute_node['state'] = {'group_size': [8, 8, 1]}
+            compute_node['invocation'].update(type='Compute', traversal='NativeQuery')
             path.write_bytes(graph.canonical_asset(document))
             manifest = source / 'main.lushader.json'
             manifest.write_text((source / 'main.lushader.json.in').read_text().replace('@RG2_TEST_PROFILES@', '["metal"]'))
@@ -660,12 +666,15 @@ class RayCompilerAcceptance(unittest.TestCase):
                 self.assertIn('[[visible]] void ' + stage, code)
             self.assertIn('intersector.intersect(ray, scene', code)
             self.assertIn('functions[stage](packet, context)', code)
-            self.assertEqual(set(range(6)), {entry['binding'] for entry in native['descriptor']['interface']['entries']})
+            self.assertEqual(set(range(8)), {entry['binding'] for entry in native['descriptor']['interface']['entries']})
             hardware_contents = execution._runtime_contents(str(package), 'Hardware')
             self.assertEqual('HardwarePipeline', hardware_contents['passes'][0]['Traversal'])
             self.assertIn(('NativeRayStages', 'compute', 'metal'), hardware_contents['artifacts'])
             default_contents = execution._runtime_contents(str(package), 'Default')
             self.assertNotIn(('NativeRayStages', 'compute', 'metal'), default_contents['artifacts'])
+            compute_artifact = default_contents['artifacts'][('RayTracing', 'compute', 'metal')]
+            self.assertEqual([8, 8, 1], compute_artifact['descriptor']['interface']['workgroup'])
+            self.assertEqual([64, 1, 1], native['descriptor']['interface']['workgroup'])
             execution.emit_runtime(str(package), root / 'default.h', configuration='Default')
             self.assertNotIn('result.NativeRayStages.Artifact.HasNativeRayStages = true', (root / 'default.h').read_text())
             execution.cook_runtime(str(package), root / 'hardware.lurgrt', configuration='Hardware')

@@ -13,6 +13,8 @@ from . import render_graph_metal_ray as metal_ray
 TECHNIQUE = 'RendererTriangles.RayTracing'
 STAGES = ('ray_generation', 'miss', 'closest_hit')
 MAX_RAY_PASSES = 4
+DEFAULT_WORKGROUP_SIZE = [64, 1, 1]
+SUPPORTED_WORKGROUP_SIZES = (DEFAULT_WORKGROUP_SIZE, [8, 8, 1])
 MAX_BUFFERS = 2
 BUFFER_WORD_BYTES = 16
 MAX_BUFFER_PIXEL_BYTES = 4096
@@ -262,6 +264,13 @@ def migrate_legacy_scene_sources(sources, snapshot):
 def group_profiles(plans, technique, build):
     """Separate ordinary and visibility callback sets without changing their shared payload."""
     groups = {}
+    explicit_workgroups = {tuple(operation['pipeline']['state']['group_size'])
+                           for plan in plans for operation in plan['passes']
+                           if operation['kind'] == 'RayTracing' and
+                           'group_size' in operation['pipeline']['state']}
+    build.require(len(explicit_workgroups) <= 1, 'Capability', 'ray workgroups',
+                  'all scene compute passes in one shader bundle must use one workgroup shape')
+    workgroup = list(next(iter(explicit_workgroups))) if explicit_workgroups else list(DEFAULT_WORKGROUP_SIZE)
     for plan in plans:
         operations = [operation for operation in plan['passes'] if operation['kind'] == 'RayTracing']
         if not operations:
@@ -296,7 +305,7 @@ def group_profiles(plans, technique, build):
         build.require(not (group['persistent'] or len(group['variants']) > 1) or not group['structured_buffers'],
                       'Capability', 'ray storage',
                       'ordered ray passes use shared Buffer nodes; StructuredBuffer nodes remain private to one ray job')
-        result.append({'visibility_buffer': has_visibility, 'native_ray_queries': has_native_queries,
+        result.append({'workgroup': workgroup, 'visibility_buffer': has_visibility, 'native_ray_queries': has_native_queries,
                        'native_pipeline': group.get('native_pipeline', False),
                        'variants': sorted(group['variants']),
                        'persistent': group['persistent'] or len(group['variants']) > 1,
@@ -307,7 +316,7 @@ def group_profiles(plans, technique, build):
 
 def expand_programs(programs, technique, snapshot, helper, build, variants=None, persistent=False, schemas=None,
                     compute_identity=COMPUTE_ID, native_ray_queries=True, ray_path_capture=False,
-                    native_ray_pipeline=False):
+                    native_ray_pipeline=False, workgroup=None):
     """Capture the engine kernel and all three functions in one linked compute entry.
 
     ray_path_capture links the diagnostic LUDUS_RAY_PATH_CAPTURE variant of the same
@@ -395,6 +404,10 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
                       'native ray stages, ordered ray passes and persistent buffers require the scene callback interface')
         wrapper = persistent_wrapper(programs, technique, variants, snapshot, build, compute_recipe, compatibility,
                                      native_ray_queries, native_ray_pipeline, persistent, storage_source)
+    workgroup = list(workgroup or DEFAULT_WORKGROUP_SIZE)
+    build.require(workgroup in SUPPORTED_WORKGROUP_SIZES, 'Capability', 'ray workgroups', 'unsupported ray workgroup')
+    wrapper = wrapper.replace('[numthreads(LUDUS_GPU_PREVIEW_GROUP_WIDTH, 1, 1)]',
+                              '[numthreads(' + ', '.join(str(value) for value in workgroup) + ')]')
     if not native_ray_queries:
         wrapper = '#define LUDUS_SOFTWARE_RAY_TRAVERSAL 1\n' + wrapper
     if ray_path_capture:
@@ -402,7 +415,7 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
     result = {identity: deepcopy(program) for identity, program in programs.items()
               if program['stage'] not in (*STAGES, COMPUTE_STAGE)}
     result[compute_identity] = {'id': compute_identity, 'stage': 'compute', 'source': selected['ray_generation']['source'],
-                          'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': wrapper, 'native_ray_queries': native_ray_queries, 'software_ray_queries': not native_ray_queries, 'native_ray_profile': True, 'persistent_ray_profile': persistent, 'storage_bindings': storage, 'storage_schemas': {binding['schema']: schemas[binding['schema']] for binding in storage}, 'visibility_buffer': technique.get('scene_interface', {}).get('visibility_buffer', False)}
+                          'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': wrapper, 'ray_workgroup': workgroup, 'native_ray_queries': native_ray_queries, 'software_ray_queries': not native_ray_queries, 'native_ray_profile': True, 'persistent_ray_profile': persistent, 'storage_bindings': storage, 'storage_schemas': {binding['schema']: schemas[binding['schema']] for binding in storage}, 'visibility_buffer': technique.get('scene_interface', {}).get('visibility_buffer', False)}
     if compatibility['sources']:
         result[compute_identity]['source_overrides'] = compatibility['sources']
     if native_ray_pipeline:
@@ -447,7 +460,7 @@ def check_interface(program, result, build):
             expected = [entry for entry in expected if entry[1] != 'RayScene']
         if program.get('persistent_ray_profile'):
             expected += [(6, 'StorageReadWrite', 16), (7, 'StorageReadWrite', 16)]
-        build.require(interface.get('workgroup') == [64, 1, 1] and interface['inputs'] == [] and
+        build.require(interface.get('workgroup') == program.get('ray_workgroup', DEFAULT_WORKGROUP_SIZE) and interface['inputs'] == [] and
                       [(entry['binding'], entry['kind'], entry['size']) for entry in entries if program.get('persistent_ray_profile') or entry['binding'] < buffers.FIRST_SLOT or entry['binding'] >= VISIBILITY_SLOT] ==
                       expected + ([(VISIBILITY_SLOT, 'Texture2D', 0), (VISIBILITY_SLOT + 1, 'TextureDepth2D', 0)] if program.get('visibility_buffer', False) else []) +
                       ([(RAY_PATH_CAPTURE_SLOT, 'StorageReadWrite', RAY_PATH_CAPTURE_STRIDE)] if program.get('ray_path_capture', False) else []),
