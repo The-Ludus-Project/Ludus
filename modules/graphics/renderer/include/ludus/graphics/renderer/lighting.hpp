@@ -245,6 +245,10 @@ struct LitMaterialDescription final
     rhi::TextureHandle EmissionMap{};
     /// Constant diffuse irradiance in [0,10000], used when a baked chart is absent/invalid.
     ludus::foundation::math::Vector3 EnvironmentIrradiance{};
+    /// Hemispheric variation of the constant EnvironmentIrradiance in [0,1]: it is the irradiance of a surface
+    /// facing +Y (the sky), and a surface facing -Y receives that much times this scale, blended by the
+    /// normal's Y. One keeps the irradiance constant, as before. Ignored when baked or authored irradiance applies.
+    ludus::foundation::float32 EnvironmentGroundScale = 1;
     /// Constant filtered environment radiance in [0,10000]; single-scatter Fresnel approximation.
     ludus::foundation::math::Vector3 EnvironmentRadiance{};
     /// Borrowed list, validated and copied before CreateLitMaterial returns.
