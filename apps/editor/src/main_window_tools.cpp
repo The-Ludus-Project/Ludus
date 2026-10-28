@@ -194,10 +194,10 @@ void MainWindow::renderActiveDocument()
         mProperties->setCurrentIndex(EMPTY_PROPERTIES_PAGE);
     }
     RenderDocumentActions();
-    UpdateContextStrip();
+    updateContextStrip();
 }
 
-void MainWindow::UpdateContextStrip()
+void MainWindow::updateContextStrip()
 {
     const bool shouldShow = mIsViewportFocused == false && mDocuments->GetActiveDocumentOrNull() == Renderer_;
     if (mRenderGraphToolbar->isHidden() == shouldShow)

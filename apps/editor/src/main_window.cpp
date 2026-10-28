@@ -121,9 +121,9 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
     connect(mRenderGraphToolbar,
             &QToolBar::visibilityChanged,
             this,
-            &MainWindow::UpdateContextStrip,
+            &MainWindow::updateContextStrip,
             Qt::QueuedConnection);
-    UpdateContextStrip();
+    updateContextStrip();
     connect(mProjectExplorer, &ProjectExplorer::OpenRequested, this, &MainWindow::openProjectItem);
     connect(mErrorList, &ErrorList::EntryActivated, this, &MainWindow::activateErrorEntry);
     connect(mErrorList, &ErrorList::ProblemsReported, this, &MainWindow::revealErrorList);
@@ -501,7 +501,7 @@ void MainWindow::BuildMenus()
     GameToolbar_->addAction(BuildReloadAction_);
 
     // The Render Graph toolbar is the context strip: it shows only while a render graph is the active document
-    // (UpdateContextStrip), so a World tab keeps one row of commands about the project and the game.
+    // (updateContextStrip), so a World tab keeps one row of commands about the project and the game.
     mRenderGraphToolbar->setObjectName(QStringLiteral("renderGraphToolbar"));
     mRenderGraphToolbar->setToolButtonStyle(Qt::ToolButtonTextOnly);
     addToolBar(mRenderGraphToolbar);

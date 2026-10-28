@@ -137,7 +137,7 @@ private:
     void renderActiveDocument();
     /// Show the context strip (Render Graph toolbar) only while a render graph is the active document and Focus
     /// Viewport is off.
-    void UpdateContextStrip();
+    void updateContextStrip();
     void renderDocumentTitles();
     void renderGraphCommands();
     void showOptions();

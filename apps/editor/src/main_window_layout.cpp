@@ -662,7 +662,7 @@ void MainWindow::setViewportFocused(bool isFocused)
         static_cast<void>(mDocuments->OpenDocument(previousOrNull));
     }
     // The setup notice follows project state, not the restored toolbar visibility.
-    UpdateContextStrip();
+    updateContextStrip();
     RenderStatus();
 }
 
@@ -705,7 +705,7 @@ void MainWindow::ResetWorkspaceLayout()
     {
         toolbar->show();
     }
-    UpdateContextStrip();
+    updateContextStrip();
     applyDefaultDockSizes();
     RenderStatus();
 }
