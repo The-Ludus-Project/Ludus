@@ -521,7 +521,7 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
         {
             return Status::InvalidDescription;
         }
-        if (static_cast<uint32>(pass.Traversal) > static_cast<uint32>(format::RayTraversal::HardwarePipeline) ||
+        if (static_cast<uint32>(pass.Traversal) > static_cast<uint32>(format::RayTraversal::ComputeBvh) ||
             (pass.Program != format::Technique::RayTracing && pass.Traversal != format::RayTraversal::NativeQuery))
         {
             return Status::InvalidDescription;

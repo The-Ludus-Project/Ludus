@@ -22,7 +22,8 @@ Identity
 
 Appearance
     Colours are the semantic tokens of the Ludus Block identity in
-    docs/architecture/editor-art-direction.md, in its dark and light
+    config/design-tokens.json (see docs/architecture/editor-art-direction.md),
+    shared with the Editor and the browser editor, in its dark and light
     appearances, plus success, warning and error roles that keep at least
     4.5:1 contrast on every surface they are drawn on (see the tests). The
     appearance follows the desktop (macOS dark mode, GNOME ``color-scheme``,
@@ -54,6 +55,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+import design_tokens
 import init_progress
 
 
@@ -79,12 +81,13 @@ LINUX_SET_PROCESS_NAME = 15
 REFERENCE_DOTS_PER_INCH = 96.0
 POINTS_PER_INCH = 72.0
 
-# Spacing scale in logical pixels.
-SPACE_EXTRA_SMALL = 4
-SPACE_SMALL = 8
-SPACE_MEDIUM = 12
-SPACE_LARGE = 16
-SPACE_EXTRA_LARGE = 24
+# Spacing scale in logical pixels, from config/design-tokens.json.
+TOKENS = design_tokens.load()
+SPACE_EXTRA_SMALL = TOKENS["spacing"]["extraSmall"]
+SPACE_SMALL = TOKENS["spacing"]["small"]
+SPACE_MEDIUM = TOKENS["spacing"]["medium"]
+SPACE_LARGE = TOKENS["spacing"]["large"]
+SPACE_EXTRA_LARGE = TOKENS["spacing"]["extraLarge"]
 
 # Type ramp relative to the platform's default user-interface font size.
 TITLE_SIZE_STEP = 8
@@ -147,24 +150,27 @@ class Palette:
     log_text: str
 
 
-LIGHT_PALETTE = Palette(
-    workspace="#edf3f2", panel="#ffffff", raised="#e1ece9",
-    text="#18232c", secondary_text="#4c6267", disabled_text="#7f9195", border="#71878b", card_border="#c3d2cf",
-    primary="#14786f", primary_active="#0f5f58", on_primary="#ffffff", focus="#14786f",
-    selected="#d5eee8", selected_text="#18232c",
-    success="#1a7535", warning="#865300", error="#b42318",
-    success_surface="#e2f3e7", warning_surface="#fbf0d4", error_surface="#fce9e7",
-    log_background="#18232c", log_text="#e9f2f1",
-)
-DARK_PALETTE = Palette(
-    workspace="#18232c", panel="#222f39", raised="#2c3c47",
-    text="#e9f2f1", secondary_text="#b5c5c9", disabled_text="#71858c", border="#80969e", card_border="#3a4d59",
-    primary="#57d2c1", primary_active="#7fe0d3", on_primary="#18232c", focus="#57d2c1",
-    selected="#294b4b", selected_text="#e9f2f1",
-    success="#74d68f", warning="#f2c25b", error="#ff9a8f",
-    success_surface="#1f3a2b", warning_surface="#3f3419", error_surface="#46252a",
-    log_background="#111a21", log_text="#d7e3e2",
-)
+def build_palette(appearance: str) -> Palette:
+    """The init window's roles, resolved from the shared tokens for one appearance."""
+    def token(name: str) -> str:
+        return design_tokens.colour(TOKENS, name, appearance)
+
+    return Palette(
+        workspace=token("surface.workspace"), panel=token("surface.panel"), raised=token("surface.raised"),
+        text=token("text.primary"), secondary_text=token("text.secondary"), disabled_text=token("text.disabled"),
+        border=token("border.control"), card_border=token("border.subtle"),
+        primary=token("accent.primary"), primary_active=token("accent.primaryActive"),
+        on_primary=token("accent.onPrimary"), focus=token("accent.primary"),
+        selected=token("accent.surface"), selected_text=token("text.primary"),
+        success=token("status.success"), warning=token("status.warning"), error=token("status.danger"),
+        success_surface=token("status.successSurface"), warning_surface=token("status.warningSurface"),
+        error_surface=token("status.dangerSurface"),
+        log_background=token("surface.log"), log_text=token("text.log"),
+    )
+
+
+LIGHT_PALETTE = build_palette(LIGHT)
+DARK_PALETTE = build_palette(DARK)
 PALETTES = {LIGHT: LIGHT_PALETTE, DARK: DARK_PALETTE}
 
 # ttk style surfaces: widgets sit either on the window background or on a card.

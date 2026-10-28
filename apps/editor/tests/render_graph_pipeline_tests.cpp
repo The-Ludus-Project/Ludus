@@ -2778,6 +2778,10 @@ TEST_CASE("shared ray callbacks expose traversal selection in the canvas pipelin
     CHECK(applied.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("traversal")) ==
           QStringLiteral("TriangleLoop"));
     CHECK(applied.value(QStringLiteral("shaders")) == shaders);
+    traversal->setCurrentIndex(traversal->findData(QStringLiteral("ComputeBvh")));
+    CHECK(applied.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("traversal")) ==
+          QStringLiteral("ComputeBvh"));
+    CHECK(applied.value(QStringLiteral("shaders")) == shaders);
     traversal->setCurrentIndex(traversal->findData(QStringLiteral("NativeQuery")));
     CHECK(applied.value(QStringLiteral("invocation")).toObject().value(QStringLiteral("traversal")) ==
           QStringLiteral("NativeQuery"));

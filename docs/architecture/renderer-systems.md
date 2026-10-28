@@ -1445,7 +1445,10 @@ texture mip and binned-SAH BVH, packed once in the GPU preview's scene layout. E
 submits one ordered graph with two compute passes in a frame of `surface`. The
 transport pass traces one sample for every pixel at the image's minimum committed
 count. It walks the BVH with float32 ports of the oracle's slab and watertight
-triangle tests and applies the same masked opacity, light proposals, power MIS,
+triangle tests (`ray_bvh_traversal.slang`, shared with render-graph `ComputeBvh`
+ray passes). Each edge function is evaluated in a canonical vertex order, so fast-math
+multiply-add contraction cannot open cracks between triangles that share an edge. The
+pass applies the same masked opacity, light proposals, power MIS,
 visible-GGX/Lambert sampling and compensated roulette. It adds emission, direct
 and indirect transport to Kahan-compensated device sums. Every random value uses
 the oracle's Philox address, so both implementations trace matching paths. A
@@ -1617,9 +1620,12 @@ compiler output. [Metal acceleration structures](https://developer.apple.com/doc
 also require device/OS/compiler evidence; the pinned MSL 2.3 raster target is not
 proof that a proposed ray shader works. A newer ray target needs an explicit
 toolchain/profile change. Ludus's current WebGPU/WebGL paths have no hardware
-ray contract. A bounded software BVH compute experiment is possible after compute
-support, but it is another implementation with its own cost, not a hardware
-capability or a required browser fallback. Do not hide CPU readbacks behind it.
+ray contract. Render-graph ray passes can select the `ComputeBvh` strategy, which
+walks the renderer's packed BVH in ordinary compute with the RT1 reference's
+traversal; it is another implementation with its own cost, not a hardware
+capability or an automatic fallback. Its kernel already compiles to WGSL, but the
+graph ray profile does not yet admit browser targets. Do not hide CPU readbacks
+behind it.
 
 ### Scene and acceleration-structure ownership
 
@@ -2045,8 +2051,10 @@ reads the prefix count from private metadata preceding the existing triangle-UV 
 The renderer's packed indirection preserves original shading, material, emitter and
 visibility identities independently of the CPU oracle's unchanged BVH order.
 Software GPU reference packing also retains that original BVH order. The native
-indirection's first word stores the masked range's primitive base. This is private preview kernel
-ABI version 5; recook preview and graph shaders with the matching runtime/SDK.
+indirection's first word stores the masked range's primitive base. Each indirection word's Z
+component keeps the unpartitioned BVH leaf order, so compute traversal can share the packed scene
+with native opacity ranges. This is private preview kernel ABI version 8; recook preview and graph
+shaders with the matching runtime/SDK.
 Native geometry opacity bypasses opaque candidates for first-accepted-hit visibility
 queries. Mixed-scene closest-hit queries retain forced nonopaque traversal and
 commit opaque-range candidates directly without material/alpha lookups; masked
@@ -3104,9 +3112,39 @@ checks native orbit/pan/fly/frame gestures, resize, a reloaded World transform e
 GPU-frame retention and publication revision. Framebuffer capture follows interaction
 so it does not perturb the graph texture leases during navigation.
 
-The 8×8 compute graph passed that native check on this host. MIS native presentation
-remains an acceptance gap: both 64×1 and 8×8 publish the GPU generation, but the Qt
-paint counter does not advance reliably. Equal offscreen outputs and ready GPU
-resources do not establish native MIS viewport acceptance. This experiment therefore
-qualifies the measured transport and output equality, with MIS viewport qualification
-still open.
+The original MIS native acceptance attempt published the GPU generation but stalled
+while waiting for Qt to paint it. The fixture polled `QTest::qWaitFor`, which manually
+pumps events rather than entering Cocoa's normal `NSApp` run path. The native fixture
+now uses a bounded `QEventLoop::exec()` wait, allowing display-link/main-queue delivery
+while retaining the original deadlines and normal GPU texture leases. See The Qt
+Company's [Qt 6.12 Cocoa event dispatcher](https://github.com/qt/qtbase/blob/v6.12.0/src/plugins/platforms/cocoa/qcocoaeventdispatcher.mm)
+(`QCocoaEventDispatcher::processEvents`) for that distinction. Production presentation
+and transport scheduling are unchanged. The ready-state overlay now recognizes GPU-only
+snapshots, so an empty CPU readback image no longer leaves “Preparing renderer…” over
+a completed native view. The fixture supplies cooked candidates directly,
+so it disables the built-in document's debounced live build; a late default preview
+must not overwrite the MIS runtime being tested.
+
+The editor build cooks the canonical MIS template at 64×1 and 8×8 for the dedicated
+native case:
+
+```bash
+cmake --build out/build/<preset> --target ludus_editor_tests
+QT_QPA_PLATFORM=cocoa out/build/<preset>/apps/editor/ludus_editor_tests '[viewport-native-mis]'
+```
+
+This case checks native orbit, trackpad/middle-button pan, look/fly and framing;
+each navigation wait requires a newer rendered camera revision as well as another
+presented image. Resize changes both the embedded surface and graph extent. The
+World edit moves `starter.cube` through the project's normal extraction boundary.
+A valid runtime with deliberately broken Metal shader source exercises asynchronous
+replacement failure while the prior GPU view remains drawable and navigable. A
+subsequent valid replacement must retain that view until its new generation presents.
+A runtime load can queue staging behind an export copy, so the test observes the new
+candidate serial after the safe boundary rather than assuming the immediate activation
+report already describes it. Every graph presentation wait checks the serial actually
+sampled by Qt against the first snapshot published for the required revision/generation;
+painting another sample of the old view cannot satisfy it.
+Framebuffer capture remains optional and follows interaction, so it cannot drive the
+paint waits itself. These checks qualify presentation separately from the historical
+transport timings and CPU/GPU parity above.
