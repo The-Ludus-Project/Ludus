@@ -250,6 +250,9 @@ MainWindow::~MainWindow()
     {
         disconnect(child, nullptr, this, nullptr);
     }
+    // The preview panel is reparented into a dock and may die before its workspace.
+    // Retire the graph consumer while its UI and the World producer are still alive.
+    Renderer_->SetPreviewSource(nullptr);
 }
 
 void MainWindow::BuildMenus()

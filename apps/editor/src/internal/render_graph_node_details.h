@@ -21,6 +21,8 @@ public:
     explicit RenderGraphNodeDetails(QWidget* parentOrNull = nullptr);
     /// Replace fields while preserving the selected pipeline part; retired controls stop emitting.
     void Refresh(const QString& title, const QString& path);
+    /// Show a selectable failure and repair instruction above the fields; empty text clears it.
+    void ShowError(const QString& message);
     /// True when an originating control belongs to the current detail fields.
     [[nodiscard]] bool ContainsControl(const QWidget* controlOrNull) const;
     /// Reveal and mark a field from a validator diagnostic; unknown fields leave focus unchanged.
@@ -34,5 +36,6 @@ private:
     QWidget mRetiredFields;
     QScrollArea* mScroll;
     QLabel* mPath;
+    QLabel* mError;
 };
 } // namespace ludus::editor

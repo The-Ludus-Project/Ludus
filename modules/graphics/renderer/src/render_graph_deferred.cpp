@@ -1,4 +1,5 @@
 #include "internal/render_graph_deferred.h"
+#include "internal/ltc_table_data.h"
 
 #include <ludus/content/render_graph_format/plan.h>
 
@@ -24,7 +25,7 @@ struct ViewParameters final
 {
     StaticArray<math::Vector4, DEFERRED_VIEW_ROWS> ClipToWorldRows;
     math::Vector4 EyeWorld;
-    math::Vector4 TargetSizePixel;
+    math::Vector4 TargetSizePixel; // XY: dimensions in pixels. Z: mesh-light triangle count. W: reserved.
     math::Vector4 Options;
 };
 static_assert(sizeof(ViewParameters) == VIEW_BYTES);
@@ -42,6 +43,7 @@ RenderGraphDeferredProgram::~RenderGraphDeferredProgram() noexcept
     static_cast<void>(rhi::Destroy(mDevice, mDepthLayout));
     static_cast<void>(rhi::Destroy(mDevice, mVertices));
     static_cast<void>(rhi::Destroy(mDevice, mIndices));
+    static_cast<void>(rhi::Destroy(mDevice, mLtcTable));
     static_cast<void>(rhi::Destroy(mDevice, mVertex));
     static_cast<void>(rhi::Destroy(mDevice, mLighting));
     static_cast<void>(rhi::Destroy(mDevice, mDepth));
@@ -106,6 +108,13 @@ Status RenderGraphDeferredProgram::Initialize(rhi::DeviceHandle device,
                                    {reinterpret_cast<const uint8*>(indices.GetData()), QUAD_INDEX_BYTES},
                                    mIndices);
     }
+    if (IsAccepted(status) == true)
+    {
+        status = rhi::CreateBuffer(device,
+                                   {rhi::BufferRole::Storage, sizeof(LTC_TABLE)},
+                                   {reinterpret_cast<const uint8*>(LTC_TABLE.GetData()), sizeof(LTC_TABLE)},
+                                   mLtcTable);
+    }
     mStatus = status;
     return IsAccepted(status) == true ? Poll() : status;
 }
@@ -115,14 +124,15 @@ Status RenderGraphDeferredProgram::Poll() noexcept
     {
         return mStatus;
     }
-    constexpr usize DEPENDENCY_COUNT = 7;
+    constexpr usize DEPENDENCY_COUNT = 8;
     const StaticArray<Status, DEPENDENCY_COUNT> dependencies{{rhi::GetStatus(mDevice, mVertex),
                                                               rhi::GetStatus(mDevice, mLighting),
                                                               rhi::GetStatus(mDevice, mDepth),
                                                               rhi::GetStatus(mDevice, mLayout),
                                                               rhi::GetStatus(mDevice, mDepthLayout),
                                                               rhi::GetStatus(mDevice, mVertices),
-                                                              rhi::GetStatus(mDevice, mIndices)}};
+                                                              rhi::GetStatus(mDevice, mIndices),
+                                                              rhi::GetStatus(mDevice, mLtcTable)}};
     for (const Status status : dependencies)
     {
         if (status != Status::Ready)
@@ -289,7 +299,9 @@ RenderGraphDeferredPass::~RenderGraphDeferredPass() noexcept
 Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTargets,
                                            Renderer& inoutRenderer,
                                            PreparedView view,
-                                           const ViewDescription& camera) noexcept
+                                           const ViewDescription& camera,
+                                           rhi::RasterBindingResource meshLights,
+                                           uint32 meshLightCount) noexcept
 {
     if (mTargetsOrNull != nullptr || inoutTargets.mStatus != Status::Ready)
     {
@@ -306,6 +318,7 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
         return status;
     }
     mTargetsOrNull = &inoutTargets;
+    mMeshLights = meshLights;
     mClearDepth = camera.Depth == DepthConvention::ReverseZ ? 0.0F : 1.0F;
     ViewParameters parameters;
     const math::Matrix4 rows = math::Transpose(clipToWorld);
@@ -325,7 +338,7 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
     }
     parameters.TargetSizePixel = {static_cast<float32>(inoutTargets.mWidth),
                                   static_cast<float32>(inoutTargets.mHeight),
-                                  0,
+                                  static_cast<float32>(meshLightCount),
                                   0};
     parameters.Options = {camera.Reference == true || camera.DirectLighting == true ? 1.0F : 0.0F, mClearDepth, 0, 0};
     status = rhi::CreateBuffer(inoutTargets.mProgramOrNull->mDevice,
@@ -358,6 +371,13 @@ Status RenderGraphDeferredPass::Poll() noexcept
         {
             bindings[slot] = mMaterial.Resources[slot];
         }
+        bindings[DEFERRED_MESH_LIGHT_BINDING] = mMeshLights;
+        bindings[DEFERRED_LTC_BINDING] =
+        {
+            .Binding = DEFERRED_LTC_BINDING,
+            .Buffer = program.mLtcTable,
+            .Size = sizeof(LTC_TABLE),
+        };
         for (usize target = 0; target < DEFERRED_TARGET_COUNT; ++target)
         {
             const uint32 slot = DEFERRED_NORMAL_BINDING + static_cast<uint32>(target);

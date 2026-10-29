@@ -38,7 +38,7 @@ constexpr usize READBACK_CHUNK_BYTES = usize{64} * 1024;
 constexpr usize GROUP_COUNT = 64;
 constexpr usize INVOCATION_COUNT = GROUP_COUNT * LUDUS_POLYGONAL_LIGHT_ESTIMATORS_GROUP_SIZE;
 static_assert(LUDUS_POLYGONAL_LIGHT_ESTIMATORS_LTC_TABLE_BINDING == LUDUS_GRAPH_BUFFER0_BINDING + 1,
-              "The LTC table directly follows the results, so Metal and Vulkan number it alike");
+              "The LTC table directly follows the results");
 constexpr usize WORDS_PER_RECORD = 4;
 // Integrals below this belong to slivers whose relative error is dominated by rounding of the transformed vertices, and
 // whose LTC samples may land inaccurately in single precision (Peters 2021, sections 3.6 and 3.7); the threshold is

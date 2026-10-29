@@ -16,9 +16,8 @@
 //   12: (c_0 rgb, 1 if the receiver has a specular LTC, else 0)
 //   13: (c_1 rgb, unused)
 // The results occupy LUDUS_GRAPH_BUFFER0_BINDING (renderer_gpu_preview_layout.h), as in graph wrappers, and the
-// renderer's LTC table is bound read-only at the next slot. Slang numbers Metal buffers in declaration order, and the
-// preview's six earlier declarations precede both, so the next slot keeps the Metal and Vulkan numbers equal where
-// the graph wrappers' slot 13 would not.
+// renderer's LTC table is bound read-only at the next slot; ltc_table.slang gives it an explicit native register, so
+// Metal and Vulkan number it alike.
 #define LUDUS_POLYGONAL_LIGHT_ESTIMATORS_LTC_TABLE_BINDING 7
 #define LUDUS_POLYGONAL_LIGHT_ESTIMATORS_RECORDS_PER_INVOCATION 14
 #define LUDUS_POLYGONAL_LIGHT_ESTIMATORS_GROUP_SIZE 64

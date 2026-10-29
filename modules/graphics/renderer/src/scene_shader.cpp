@@ -271,8 +271,7 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& source,
     }
     for (usize i = 0; i < lights.Count; ++i)
     {
-        if (lights.Lights[i].Kind != LightKind::Point && lights.Lights[i].Kind != LightKind::Directional &&
-            lights.Lights[i].Kind != LightKind::Spot)
+        if (IsSceneShaderLightKindSupported(lights.Lights[i].Kind) == false)
         {
             return Status::Unsupported;
         }

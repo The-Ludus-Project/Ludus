@@ -359,6 +359,8 @@ Q_SIGNALS:
     /// Node fields changed; the originating surface may retain its active controls.
     /// editOriginOrNull is borrowed during synchronous notification, or null for a full refresh.
     void NodeFieldsChanged(QWidget* editOriginOrNull);
+    /// A node edit or shader navigation failed; includes the cause and repair instruction.
+    void NodeOperationFailed(const QString& message);
     void JobFinished();
     /// What CanBuild, CanCreateGraph, IsJobActive or IsDirty report may have changed.
     void CommandsChanged();

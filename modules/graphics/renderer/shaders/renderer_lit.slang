@@ -39,8 +39,16 @@ struct Parameters
 LUDUS_SHADER_BINDING(0) ConstantBuffer<Parameters> material : register(b0);
 LUDUS_SHADER_BINDING(1) Texture2D<float4> colorTexture : register(t1);
 LUDUS_SHADER_BINDING(2) SamplerState colorSampler : register(s2);
+#ifdef LUDUS_DEFERRED_MESH_LIGHTS
+#    include "deferred_layout.h"
+LUDUS_SHADER_BINDING(LUDUS_DEFERRED_MESH_LIGHT_BINDING)
+StructuredBuffer<float4> meshLightWords LUDUS_SHADER_TEXTURE_REGISTER(LUDUS_DEFERRED_MESH_LIGHT_BINDING);
+#    define LUDUS_LTC_TABLE_BINDING LUDUS_DEFERRED_LTC_BINDING
+#    include "ltc_table.slang"
+#else
 LUDUS_SHADER_BINDING(3) Texture2D<float4> bakeTexture : register(t3);
 LUDUS_SHADER_BINDING(4) Texture2D<float4> shadowTexture : register(t4);
+#endif
 LUDUS_SHADER_BINDING(5) SamplerState shadowSampler : register(s5);
 #ifdef LUDUS_CLUSTERED
 LUDUS_SHADER_BINDING(6) Texture2D<float4> clusterTexture : register(t6);
@@ -202,6 +210,9 @@ int GetEyeFlags(Varying input)
 }
 float ComputeShadowVisibility(int light, Varying input)
 {
+#ifdef LUDUS_DEFERRED_MESH_LIGHTS
+    return 1;
+#else
     if ((GetEyeFlags(input) & 1) == 0)
         return 1;
     bool hasLocalShadowCoverage = false;
@@ -239,6 +250,7 @@ float ComputeShadowVisibility(int light, Varying input)
     return hasLocalShadowCoverage
                ? 0
                : 1; // Local coverage gaps conservatively occlude; directional cascade contract stays explicit.
+#endif
 }
 float4 SampleBaseTexel(Varying input)
 {
@@ -494,11 +506,13 @@ float4 ShadeMaterial(in SurfaceSample surface, in Varying input)
         specularEnvironment = radiance * (f0 * dfg.x + dfg.y);
     }
 #endif
+#ifndef LUDUS_DEFERRED_MESH_LIGHTS
     if (input.IsBakeValid > 0.5)
         irradiance =
             bakeTexture.SampleLevel(colorSampler, saturate(input.BakeUv) * material.BakeUv.xy + material.BakeUv.zw, 0)
                 .rgb *
             material.BakeScale.rgb;
+#endif
     float3 result = surface.Emission;
     if (nv > 0)
         result += irradiance * baseColor.rgb * (1 - metallic) * (1 - f) / PI + specularEnvironment;

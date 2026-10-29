@@ -11,7 +11,6 @@
 #include "scene_shader.slang"
 
 LUDUS_SHADER_BINDING(LUDUS_GRAPH_BUFFER0_BINDING) RWStructuredBuffer<uint4> Results;
-// Declared after Results: Slang numbers Metal buffers in declaration order.
 #define LUDUS_LTC_TABLE_BINDING LUDUS_POLYGONAL_LIGHT_ESTIMATORS_LTC_TABLE_BINDING
 #include "linearly_transformed_cosine.slang"
 #include "ltc_table.slang"

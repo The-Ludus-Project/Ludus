@@ -173,7 +173,7 @@ def compile_graph_stage(args, lock):
         verify_storage_record_strides(intermediate.read_bytes(), interface)
     allowed = ('UniformBuffer', 'StorageRead') if stage == 'fragment' and getattr(args, 'fragment_storage', False) else ('UniformBuffer',)
     if getattr(args, 'graph_forward_material', False) and stage == 'fragment':
-        allowed = ('UniformBuffer', 'Texture2D', 'TextureDepth2D', 'Sampler')
+        allowed = ('UniformBuffer', 'Texture2D', 'TextureDepth2D', 'Sampler') + (('StorageRead',) if getattr(args, 'fragment_storage', False) else ())
     if stage != 'compute' and any(x['kind'] not in allowed for x in interface['entries']):
         raise RuntimeError('RG1 initial schema profile permits uniform buffers only')
     links = [] if stage == 'compute' else varying_interface(points[0], stage)

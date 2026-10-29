@@ -90,6 +90,15 @@ struct ProjectedSolidAnglePolygon final
     bool IsMirrored = false;
 };
 
+/// Clip a finite convex polygon to the receiver horizon z >= 0 before another transform.
+/// @param polygon Three to MAX_PROJECTED_POLYGON_INPUT_VERTICES tangent-space vertices.
+/// @param outPolygon Clipped directions with a positive common scale removed, or
+/// VertexCount zero for an empty/all-zero polygon. Absolute vertex distances are not retained.
+/// @return Success; InvalidArgument for an invalid count or a clipped result too large
+/// for ProjectedPolygonInput; NonFiniteInput for a nonfinite position. Failure preserves output.
+[[nodiscard]] MathStatus TryClipProjectedPolygonToUpperHemisphere(const ProjectedPolygonInput& polygon,
+                                                                  ProjectedPolygonInput& outPolygon) noexcept;
+
 /// @brief Clip a convex polygon to z >= 0 and prepare it for projected solid angle sampling.
 ///
 /// A polygon entirely below the horizon, or one whose plane contains the shading

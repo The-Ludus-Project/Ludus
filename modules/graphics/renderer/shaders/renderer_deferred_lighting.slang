@@ -1,12 +1,14 @@
+#define LUDUS_DEFERRED_MESH_LIGHTS 1
 #include "deferred_layout.h"
 #include "renderer_clustered_authored.slang"
 #include "renderer_deferred_fullscreen.slang"
+#include "renderer_mesh_lights.slang"
 
 struct DeferredViewParameters
 {
     float4 ClipToWorldRows[DEFERRED_VIEW_ROWS];
     float4 EyeWorld;
-    float4 TargetSizePixel;
+    float4 TargetSizePixel; // XY: dimensions in pixels. Z: mesh-light triangle count. W: reserved.
     float4 Options;
 };
 LUDUS_SHADER_BINDING(LUDUS_DEFERRED_NORMAL_BINDING)
@@ -62,6 +64,7 @@ DeferredLightingOutput ResolveDeferredLighting(in DeferredVarying value)
     surface.Alpha = 1;
     input.NormalWorld = surface.NormalWorld;
     output.Color = ShadeMaterial(surface, input);
+    output.Color.rgb += EvaluateRasterMeshLights(surface, input.PositionWorld, uint(deferredView.TargetSizePixel.z));
     output.Depth = depth;
     return output;
 }

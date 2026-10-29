@@ -916,7 +916,8 @@ bool WorldDocument::ReplaceEntity(const QJsonObject& entity, QString& error)
 bool WorldDocument::CreateEntity(const foundation::identity::EntropySource& entropy,
                                  QString& outError,
                                  const QString& name,
-                                 QString& outId)
+                                 QString& outId,
+                                 const QJsonObject& initialComponents)
 {
     const bool hasUuidRecords = HasUuidRecords();
     const bool isWorldDemo = Schema_.value(QStringLiteral("id")) == QJsonValue(QStringLiteral("ludus.world-demo.v1"));
@@ -940,6 +941,11 @@ bool WorldDocument::CreateEntity(const foundation::identity::EntropySource& entr
         {
             components.insert(c.value(QStringLiteral("id")).toString(), Defaults(c));
         }
+    }
+    for (QJsonObject::const_iterator entry = initialComponents.constBegin(); entry != initialComponents.constEnd();
+         ++entry)
+    {
+        components.insert(entry.key(), entry.value());
     }
     auto candidate = Draft_;
     auto entities = candidate.value(QStringLiteral("entities")).toArray();

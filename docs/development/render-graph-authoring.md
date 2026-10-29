@@ -82,9 +82,16 @@ The command writes only stdout (`--json` returns a `document` object). It does
 not replace files or convert imported assets automatically.
 
 In **Properties → Shaders** or the canvas node editor, add a row, choose its stage
-and set its shader ID. Completed edits automatically create a `.slang` template and registers a program in the root
+and set its shader ID. Completed edits automatically create a `.slang` template and register a program in the root
 `.lushader.json` for each new program name. The initial `Program` value
-receives a unique name from the node and shader IDs. To share a shader, enter an existing
+receives a unique name from the node and shader IDs. Program IDs belong to the root
+shader manifest and are shared across all imported graphs and configurations;
+graph-local node names do not create separate program namespaces. Generated names
+choose an available suffix on creation and shader-row rename, including when a
+source file already occupies the suggested name. Select a shader row to inspect
+and copy its full program ID above the table; shader cards also show it in their
+tooltip. Rejected edits show their cause and repair instruction above the fields
+in **Details**, preserving the accepted draft. To share a shader, enter an existing
 program name with a matching stage. New sources appear immediately in **Source**;
 **Save** writes them beside the manifest. Creation, manifest registration and node
 assignments form one undo step. Completing an executable graphics or triangle ray
@@ -1896,9 +1903,15 @@ Scope and limits:
 
 `ludus_render_graph_ray_tests` renders the template on Metal, with its compute BVH.
 These cases run as their own CTest entry,
-`ludus_render_graph_ris_projected_solid_angle_pixels`. The fixtures are the glossy
-Cornell-box-style room under a sky, a room with sixteen small emitters whose power
-spans a factor of 64, and a two-sided emitter over minimum-roughness metal:
+`ludus_render_graph_ris_projected_solid_angle_pixels`. The fixtures are:
+
+- the glossy Cornell-box-style room under a sky;
+- a room with sixteen small emitters whose power spans a factor of 64;
+- a ceiling light with a 4 × 4 emission map, which is black on a quarter of its
+  area, over rough dielectric surfaces;
+- a two-sided emitter over minimum-roughness metal.
+
+They check two properties:
 
 - At 256 samples per pixel, all three outputs converge to the MIS template's
   light-sampling output within 2%. The exception is the two-sided case, where they
@@ -1910,6 +1923,19 @@ spans a factor of 64, and a two-sided emitter over minimum-roughness metal:
   MIS template with an independent seed. The error is measured on the tone-mapped
   image, about 0.0011 against 0.0025 on Apple M5. The decoded linear error is
   reported beside it but is dominated by pixels that see an emitter directly.
+
+The opt-in `[.ris-projected-solid-angle-benchmark]` case of the same executable
+compares this template with the MIS template at equal samples and at equal kernel
+time. CTest does not run it. Its room has 3200 emissive triangles, and it has a
+diffuse and a specular variant:
+
+```bash
+out/build/macos-clang-debug/modules/graphics/renderer/ludus_render_graph_ray_tests "[.ris-projected-solid-angle-benchmark]"
+```
+
+It reports kernel times, shadow rays per pixel, MAPE, linear RMSE and tone-mapped
+error for each template. The method and the recorded results are in the
+[review's evidence](../architecture/many-area-light-sampling-reference-review.md#equal-time-benchmark).
 
 `ludus_renderer_render_tests` runs the weights on the GPU. It checks that Peters'
 weights and the light/BSDF split sum to one wherever a technique can sample, that
@@ -3613,7 +3639,7 @@ profile. They shade the current World's authored materials, textures, analytic
 lights and environment; an unlit World with no emission or environment is dark.
 They require static opaque triangles with normals. Masked/transparent materials
 and invalid inputs reject preparation and retain the last drawable generation.
-No proxy lights, ray tracing, shadow maps or indirect illumination are added.
+Emissive meshes also provide unshadowed direct area lighting. No proxy lights, ray tracing, shadow maps or indirect illumination are added.
 The color target remains linear RGBA8, so radiance above one clips.
 
 The logical color/depth node runs an opaque material pass followed by a fullscreen
@@ -3626,6 +3652,33 @@ loads that output afterward. Background coverage remains clear. Half-float mater
 storage and reconstructed positions introduce numerical differences; native tests
 compare against the same material callback in clustered forward within two linear
 RGBA8 codes per channel. This is a correctness tolerance, not a performance claim.
+
+Emissive triangles are integrated over their actual transformed geometry. The
+Lambert term uses the polygon's projected solid angle with view-dependent Schlick
+Fresnel; specular uses the renderer's [LTC table](ltc-table.md), an approximation to
+GGX. The receiver horizon is clipped before transforming the polygon. Emission
+sidedness uses the inverse-transpose geometric normal, including reflected and
+nonuniform instances. Exactly collapsed triangles contribute nothing. A plane
+tolerance of 10 micrometres plus two parts per million of coordinate magnitude
+suppresses coplanar self-lighting from depth reconstruction; distinct surfaces
+closer than that tolerance are also treated as coplanar. Constant
+emission is integrated per triangle; an emission map splits each source triangle
+into four equal-area patches and samples fixed-mip emission at each centroid,
+including UV transforms, address/filter policy and sRGB decoding. This piecewise
+constant texture approximation can miss small features; it is not the reference
+path tracer's textured-emitter estimator.
+
+There is no mesh-light visibility test yet: area lights can illuminate through
+walls. Every admitted emitter triangle is evaluated, independently of the analytic
+light clusters, with no finite-distance cutoff. At most 4096 nonzero-emission
+triangles/patches are admitted per scene; excess geometry rejects preparation and
+retains the last drawable generation. The immutable scene upload uses four Float4
+words per triangle plus a dummy record for an empty light set. Camera-only updates
+reuse it. Fragment read-only storage is required for this upload and the shared
+LTC table; the resolve repurposes unused bake/shadow slots three and four, keeping
+sixteen total slots. Forward-only profiles retain their existing behavior. Runtime
+package version 26 changes these two deferred binding kinds; older deferred packages
+must be cooked again. Linear RGBA8 output still clips bright radiance.
 
 Select **ZPrepass** in the preview configuration
 selector to enable a separate depth-only pass. That pass clears and stores depth;
@@ -3641,7 +3694,9 @@ both passes in `rasterize.lurender.json` → `ColorAndDepthWithPrepass`.
 Light assignment reuses the [portable L5 clustered profile](../architecture/renderer-systems.md#l5-opt-in-portable-scaling).
 The CPU builds conservative 8×8×8 world-space cells over the scene's transformed
 geometry bounds, padded by half a metre and clamped to the profile's coordinate
-limits. Shading runs on the GPU. All admitted lights (up to 128) are retained;
+limits. Shading runs on the GPU. Only directional, point and spot records are admitted in the analytic list; legacy
+area quadrature proxies reject preparation to avoid double-counting mesh emitters.
+All admitted analytic lights (up to 128) are retained;
 each cell stores up to 32 indices. Overflowing cells and samples outside the grid
 evaluate the complete list. `RenderGraphReport::Resources` exposes dropped lights,
 overflow cells and stored assignments. Camera-only edits reuse the scene's lists;

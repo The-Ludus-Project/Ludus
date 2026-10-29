@@ -4,8 +4,8 @@
 // Lookup of the renderer's linearly transformed cosine (LTC) table, fitted by tools/ltc-fit into data/ltc_table.bin
 // with its layout in ltc_table_layout.h. The table is too large for shader constants: the includer defines
 // LUDUS_LTC_TABLE_BINDING, and binds the renderer's GPU copy, LUDUS_LTC_TABLE_ENTRY_COUNT float4 entries, at that slot
-// of the raster binding vocabulary (raster_bindings.slang). Include it after the declarations of every lower binding:
-// Slang numbers Metal buffers in declaration order. The CPU lookup with the same arithmetic
+// of the raster binding vocabulary (raster_bindings.slang). Its explicit native register keeps Metal buffer numbering
+// independent of declaration order. The CPU lookup with the same arithmetic
 // is src/ltc_table.cpp. Thanks to Eric Heitz, Jonathan Dupuy, Stephen Hill and David Neubelt, "Real-Time
 // Polygonal-Light Shading with Linearly Transformed Cosines", ACM Transactions on Graphics 35(4), Article 41, 2016
 // (SIGGRAPH 2016), section 4, https://doi.org/10.1145/2897824.2925895, and to Christoph Peters, "BRDF Importance
@@ -20,7 +20,8 @@
 #    error                                                                                                             \
         "Define LUDUS_LTC_TABLE_BINDING, the slot of the renderer's LTC table buffer, before including ltc_table.slang"
 #endif
-LUDUS_SHADER_BINDING(LUDUS_LTC_TABLE_BINDING) StructuredBuffer<float4> LudusLtcTable;
+LUDUS_SHADER_BINDING(LUDUS_LTC_TABLE_BINDING)
+StructuredBuffer<float4> LudusLtcTable LUDUS_SHADER_TEXTURE_REGISTER(LUDUS_LTC_TABLE_BINDING);
 
 // Rec.709 luminance weights, with which Peters' renderer reduces an RGB F0 to the scalar that selects a slice.
 static const float3 LTC_FRESNEL_LUMINANCE_WEIGHTS = float3(0.2126, 0.7152, 0.0722);

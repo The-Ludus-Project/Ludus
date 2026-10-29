@@ -30,6 +30,15 @@ static const LightingLayoutValue DEFERRED_DEPTH_BINDING = LUDUS_DEFERRED_DEPTH_B
 static const LightingLayoutValue DEFERRED_VIEW_BINDING = LUDUS_DEFERRED_VIEW_BINDING;
 /// Complete immutable resolve binding layout; at most the RHI's sixteen slots.
 static const LightingLayoutValue DEFERRED_BINDING_COUNT = DEFERRED_VIEW_BINDING + 1;
+/// Resolve-only triangle storage replaces the unused baked-light texture at slot three.
+static const LightingLayoutValue DEFERRED_MESH_LIGHT_BINDING = LUDUS_DEFERRED_MESH_LIGHT_BINDING;
+/// Resolve-only LTC table storage replaces the unused shadow texture at slot four.
+static const LightingLayoutValue DEFERRED_LTC_BINDING = LUDUS_DEFERRED_LTC_BINDING;
+/// Float4 words per emitter triangle: three positions with normal components, then emission/sidedness.
+static const LightingLayoutValue MESH_LIGHT_TRIANGLE_WORDS = 4;
+/// Maximum retained emitter triangles, including four subtriangles per textured source triangle.
+/// Exceeding this admission limit rejects the candidate without truncating lights.
+static const LightingLayoutValue MAX_RASTER_MESH_LIGHT_TRIANGLES = 4096;
 /// Largest finite half-float value; emission is nonnegative and saturates before G-buffer storage.
 static const LightingLayoutValue DEFERRED_MAX_HALF = 65504;
 #ifdef __cplusplus
