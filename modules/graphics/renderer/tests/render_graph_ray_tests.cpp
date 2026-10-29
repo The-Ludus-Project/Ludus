@@ -94,11 +94,18 @@ struct GraphGpuFixture final
     StaticArray<renderer::RenderGraphItem, TABLE_COUNT> Items{};
     StaticArray<renderer::ViewDescription, TABLE_COUNT> Cameras{};
     StaticArray<uint8, PIXEL_BYTES> Pixels{};
-    explicit GraphGpuFixture(bool shouldEnableGpuTiming = false, bool shouldRequireNativeRays = true)
+    /// @param resourceBytes Device-wide logical RHI resource budget; zero keeps rhi::StorageLimits' default.
+    explicit GraphGpuFixture(bool shouldEnableGpuTiming = false,
+                             bool shouldRequireNativeRays = true,
+                             uint64 resourceBytes = 0)
     {
         rhi::DeviceDescription description;
         description.Required.PortableRaster = true;
         description.Storage.ResourcesPerGraph = renderer::VISIBILITY_GRAPH_RESOURCE_CAPACITY;
+        if (resourceBytes != 0)
+        {
+            description.Storage.ResourceBytes = resourceBytes;
+        }
         description.EnableGpuTiming = shouldEnableGpuTiming;
         description.Preferred.RayQueries = shouldRequireNativeRays;
         rhi::StartupInfo failure;
@@ -3120,14 +3127,19 @@ struct PreparedGraph final
     {
         wait(Graph.Initialize(fixture.Device, Plan, Programs, nullptr, Extent.Width, Extent.Height));
         renderer::RenderGraphReport report;
-        wait(Graph.Update({room.Meshes.GetData(), room.Meshes.GetSize()},
-                          {room.Items.GetData(), room.Items.GetSize()},
-                          {room.Cameras.GetData(), room.Cameras.GetSize()},
-                          revision,
-                          renderer::RenderGraphCoveragePolicy::RejectIncomplete,
-                          report,
-                          &room.Inputs,
-                          revision));
+        const rhi::RasterStatus updated = Graph.Update({room.Meshes.GetData(), room.Meshes.GetSize()},
+                                                       {room.Items.GetData(), room.Items.GetSize()},
+                                                       {room.Cameras.GetData(), room.Cameras.GetSize()},
+                                                       revision,
+                                                       renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                                       report,
+                                                       &room.Inputs,
+                                                       revision);
+        // A rejected scene names the byte ceiling it exceeded (renderer::SceneMemoryBudget).
+        INFO("scene budget " << static_cast<uint32>(report.SceneDiagnostics.ExceededBudget) << " required "
+                             << report.SceneDiagnostics.RequiredBytes << " available "
+                             << report.SceneDiagnostics.AvailableBytes);
+        wait(updated);
     }
     PreparedGraph(const PreparedGraph&) = delete;
     PreparedGraph& operator=(const PreparedGraph&) = delete;
@@ -4961,7 +4973,8 @@ namespace
 /// LUDUS_LINE_TRAVERSAL_SCENE names: a little-endian uint32 vertex count and index count, then float32
 /// x, y, z World positions and uint32 triangle indices, as export_line_traversal_scene.py writes them
 /// from a glTF file. A square emitter facing down is added above the scene's horizontal center, and
-/// the camera looks along -X from inside its bounds.
+/// the camera looks along -X from inside its bounds. A generated floor and ceiling stand in for the
+/// file where a test needs a large scene without the reference assets.
 struct LargeLineScene final
 {
     static constexpr usize MATERIAL_COUNT = 2;
@@ -5004,11 +5017,7 @@ struct LargeLineScene final
         const usize indexCount = readWord();
         REQUIRE(indexCount % 3 == 0);
         REQUIRE(bytes.GetSize() == (2 + vertexCount * 3 + indexCount) * WORD_BYTES);
-        REQUIRE(Positions.TryResize(vertexCount + LIGHT_CORNERS) == true);
-        REQUIRE(Indices.TryResize(indexCount + LIGHT_INDEX_COUNT) == true);
-        REQUIRE(Slots.TryResize((indexCount + LIGHT_INDEX_COUNT) / 3) == true);
-        math::Vector3 minimumWorld{1e30F, 1e30F, 1e30F};
-        math::Vector3 maximumWorld{-1e30F, -1e30F, -1e30F};
+        reserve(vertexCount, indexCount);
         for (usize vertex = 0; vertex < vertexCount; ++vertex)
         {
             StaticArray<float32, 3> coordinates{};
@@ -5018,17 +5027,92 @@ struct LargeLineScene final
                 std::memcpy(&coordinates[axis], &bits, sizeof(bits));
             }
             Positions[vertex] = {coordinates[0], coordinates[1], coordinates[2]};
-            minimumWorld = {math::Min(minimumWorld.X, coordinates[0]),
-                            math::Min(minimumWorld.Y, coordinates[1]),
-                            math::Min(minimumWorld.Z, coordinates[2])};
-            maximumWorld = {math::Max(maximumWorld.X, coordinates[0]),
-                            math::Max(maximumWorld.Y, coordinates[1]),
-                            math::Max(maximumWorld.Z, coordinates[2])};
         }
         for (usize index = 0; index < indexCount; ++index)
         {
             Indices[index] = readWord();
             REQUIRE(Indices[index] < vertexCount);
+        }
+        finish(vertexCount, indexCount);
+    }
+    /// A floor and a ceiling, each a square grid of gridQuads x gridQuads quads: 4 * gridQuads^2 triangles.
+    explicit LargeLineScene(uint32 gridQuads)
+    {
+        constexpr usize GRID_COUNT = 2;
+        constexpr float32 GRID_WIDTH_WORLD = 20;
+        constexpr float32 CEILING_HEIGHT_WORLD = 4;
+        constexpr usize QUAD_INDEX_COUNT = 6;
+        const usize rowVertices = usize{gridQuads} + 1;
+        const usize gridVertices = rowVertices * rowVertices;
+        const usize vertexCount = GRID_COUNT * gridVertices;
+        const usize indexCount = GRID_COUNT * usize{gridQuads} * gridQuads * QUAD_INDEX_COUNT;
+        reserve(vertexCount, indexCount);
+        const float32 spacingWorld = GRID_WIDTH_WORLD / static_cast<float32>(gridQuads);
+        usize index = 0;
+        for (usize grid = 0; grid < GRID_COUNT; ++grid)
+        {
+            const bool isCeiling = grid == 1;
+            const float32 heightWorld = isCeiling == true ? CEILING_HEIGHT_WORLD : 0;
+            const usize first = grid * gridVertices;
+            for (usize row = 0; row < rowVertices; ++row)
+            {
+                for (usize column = 0; column < rowVertices; ++column)
+                {
+                    Positions[first + row * rowVertices + column] = {static_cast<float32>(column) * spacingWorld,
+                                                                     heightWorld,
+                                                                     static_cast<float32>(row) * spacingWorld};
+                }
+            }
+            for (usize row = 0; row < gridQuads; ++row)
+            {
+                for (usize column = 0; column < gridQuads; ++column)
+                {
+                    const uint32 corner = static_cast<uint32>(first + row * rowVertices + column);
+                    const uint32 nextRow = corner + static_cast<uint32>(rowVertices);
+                    // The floor faces +Y and the ceiling -Y, both toward the room.
+                    const StaticArray<uint32, QUAD_INDEX_COUNT> quad =
+                        isCeiling == true ? StaticArray<uint32, QUAD_INDEX_COUNT>{{corner,
+                                                                                   corner + 1,
+                                                                                   nextRow,
+                                                                                   corner + 1,
+                                                                                   nextRow + 1,
+                                                                                   nextRow}}
+                                          : StaticArray<uint32, QUAD_INDEX_COUNT>{
+                                                {corner, nextRow, corner + 1, corner + 1, nextRow, nextRow + 1}};
+                    for (uint32 vertex : quad)
+                    {
+                        Indices[index++] = vertex;
+                    }
+                }
+            }
+        }
+        finish(vertexCount, indexCount);
+    }
+    LargeLineScene(const LargeLineScene&) = delete;
+    LargeLineScene& operator=(const LargeLineScene&) = delete;
+
+private:
+    /// Size the arrays for the scene's vertices and indices plus the added emitter.
+    void reserve(usize vertexCount, usize indexCount)
+    {
+        REQUIRE(Positions.TryResize(vertexCount + LIGHT_CORNERS) == true);
+        REQUIRE(Indices.TryResize(indexCount + LIGHT_INDEX_COUNT) == true);
+        REQUIRE(Slots.TryResize((indexCount + LIGHT_INDEX_COUNT) / 3) == true);
+    }
+    /// Add the emitter, materials and camera around the first vertexCount positions.
+    void finish(usize vertexCount, usize indexCount)
+    {
+        math::Vector3 minimumWorld{1e30F, 1e30F, 1e30F};
+        math::Vector3 maximumWorld{-1e30F, -1e30F, -1e30F};
+        for (usize vertex = 0; vertex < vertexCount; ++vertex)
+        {
+            const math::Vector3 positionWorld = Positions[vertex];
+            minimumWorld = {math::Min(minimumWorld.X, positionWorld.X),
+                            math::Min(minimumWorld.Y, positionWorld.Y),
+                            math::Min(minimumWorld.Z, positionWorld.Z)};
+            maximumWorld = {math::Max(maximumWorld.X, positionWorld.X),
+                            math::Max(maximumWorld.Y, positionWorld.Y),
+                            math::Max(maximumWorld.Z, positionWorld.Z)};
         }
         for (usize triangle = 0; triangle < indexCount / 3; ++triangle)
         {
@@ -5086,8 +5170,6 @@ struct LargeLineScene final
         WARN("large line scene: " << vertexCount << " vertices, " << indexCount / 3 << " triangles, light at y="
                                   << lightY << ", eye " << eyeWorld.X << ',' << eyeWorld.Y << ',' << eyeWorld.Z);
     }
-    LargeLineScene(const LargeLineScene&) = delete;
-    LargeLineScene& operator=(const LargeLineScene&) = delete;
 };
 } // namespace
 
@@ -5103,7 +5185,10 @@ TEST_CASE("Measure BVH line queries against the line scan on a large reference s
         SKIP("Set LUDUS_LINE_TRAVERSAL_SCENE to an exported scene, for example Intel Sponza.");
     }
     const LargeLineScene scene(pathOrNull);
-    GraphGpuFixture fixture(true, false);
+    // The Editor viewport's device budget (MakeViewportDeviceDescription), so the measurement admits
+    // what the Editor admits rather than rhi::StorageLimits' 512 MiB default.
+    constexpr uint64 EDITOR_RESOURCE_BYTES = uint64{2} * 1024 * 1024 * 1024;
+    GraphGpuFixture fixture(true, false, EDITOR_RESOURCE_BYTES);
     const StaticArray<PackageLocation, 2> locations{{
         {LUDUS_RG3_LINE_SAMPLING_COMPUTE_BVH_DIRECTORY, "rg2_line_sampling_compute_bvh.lurgrt"},
         {LUDUS_RG3_LINE_SAMPLING_COMPUTE_BVH_LINE_SCAN_DIRECTORY, "rg2_line_sampling_compute_bvh_line_scan.lurgrt"},
@@ -5176,6 +5261,47 @@ TEST_CASE("Measure BVH line queries against the line scan on a large reference s
         INFO("output " << output);
         CHECK(CountFailurePixels(pixels[0][output]) == 0);
         CHECK(CountDifferingPixels(pixels[0][output], pixels[1][output], 0) == 0);
+    }
+}
+
+TEST_CASE("Ray passes that read the same scene data upload and charge one packed copy of the scene",
+          "[render-graph][gpu][line-sampling][scene-capacity]")
+{
+    // The ComputeBvh line-sampling template has three ray passes over the same scene data. Each pass
+    // used to pack and upload its own copy of the triangles and BVH, so every scene byte budget held
+    // a third of the scene it should: Intel Sponza's first million triangles needed three copies of
+    // 321,936,656 bytes against rhi::StorageLimits' 512 MiB default and failed CapacityExceeded. The
+    // passes now share the first pass's copy, so the graph's logical RHI bytes grow by one copy.
+    constexpr uint32 GRID_QUADS = 160; // 102,400 triangles
+    const LargeLineScene scene(GRID_QUADS);
+    GraphGpuFixture fixture(false, false);
+    rhi::StorageUsage before;
+    REQUIRE(rhi::GetStorageUsage(fixture.Device, before) == rhi::RasterStatus::Ready);
+    PreparedGraph graph(fixture,
+                        {LUDUS_RG3_LINE_SAMPLING_COMPUTE_BVH_DIRECTORY, "rg2_line_sampling_compute_bvh.lurgrt"},
+                        scene,
+                        1);
+    REQUIRE(renderer::RequiresHardwareRayTracing(graph.Plan) == false);
+    const StaticArray<uint32, LINE_SAMPLING_OUTPUT_COUNT> exports = GetLineSamplingExports(graph.Plan);
+    rhi::StorageUsage after;
+    REQUIRE(rhi::GetStorageUsage(fixture.Device, after) == rhi::RasterStatus::Ready);
+    // Each packed triangle takes LUDUS_GPU_PREVIEW_TRIANGLE_WORDS float4 words before its BVH nodes,
+    // order word and the scene's surfaces, so this is a lower bound on one copy. The graph's targets,
+    // accumulation and LTC table take a few MiB, well under one copy of this scene.
+    const uint64 copyLowerBound =
+        uint64{scene.Indices.GetSize() / 3} * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS * sizeof(math::Vector4);
+    const uint64 graphBytes = after.ResourceBytes - before.ResourceBytes;
+    INFO("graph RHI bytes " << graphBytes << ", one packed copy is at least " << copyLowerBound);
+    CHECK(graphBytes >= copyLowerBound);
+    CHECK(graphBytes < 2 * copyLowerBound);
+    // Every pass reads the shared copy: each output renders without failure pixels.
+    RenderFrame(graph.Graph, fixture);
+    for (usize output = 0; output < LINE_SAMPLING_OUTPUT_COUNT; ++output)
+    {
+        INFO("output " << output);
+        Array<uint8> pixels;
+        ReadExport(graph.Graph, fixture, exports[output], {}, pixels);
+        CHECK(CountFailurePixels(pixels) == 0);
     }
 }
 
