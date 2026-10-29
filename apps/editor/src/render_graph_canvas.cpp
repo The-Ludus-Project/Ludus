@@ -61,6 +61,7 @@ namespace
 {
 constexpr float64 NODE_BORDER_WIDTH = 1.5;
 constexpr float64 FOCUSED_EDGE_WIDTH = 3;
+constexpr float64 UNAVAILABLE_EDGE_WIDTH = 1.5;
 constexpr float64 UNRELATED_EDGE_OPACITY = 0.18;
 constexpr float64 UNRELATED_NODE_OPACITY = 0.25;
 constexpr float64 NODE_WIDTH = 190;
@@ -1341,7 +1342,8 @@ void RenderGraphCanvas::Rebuild()
         edge->Path->setZValue(-1);
         if (edge->IsEditable == false)
         {
-            edge->Path->setPen(QPen(GetCanvasColour(design::ThemeColour::TextHudQuiet), 1.5, Qt::DashLine));
+            edge->Path->setPen(
+                QPen(GetCanvasColour(design::ThemeColour::TextHudQuiet), UNAVAILABLE_EDGE_WIDTH, Qt::DashLine));
             edge->Path->setToolTip(QStringLiteral("Configuration output %1").arg(GetEndpointPort(edge->To)));
         }
         else
