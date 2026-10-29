@@ -16,6 +16,7 @@ import init_theme
 
 MINIMUM_TEXT_CONTRAST = 4.5
 MINIMUM_CONTROL_CONTRAST = 3.0
+HIGH_CONTRAST_TEXT_CONTRAST = 7.0
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
@@ -47,9 +48,43 @@ class PaletteTests(unittest.TestCase):
                     self.assertGreaterEqual(init_theme.contrast_ratio(palette.border, getattr(palette, surface)),
                                             MINIMUM_CONTROL_CONTRAST)
 
+    def test_high_contrast_palettes_meet_the_higher_ratio(self):
+        for appearance, palette in init_theme.HIGH_CONTRAST_PALETTES.items():
+            for surface in ("workspace", "panel", "raised"):
+                for role in ("text", "secondary_text"):
+                    with self.subTest(appearance=appearance, role=role, surface=surface):
+                        self.assertGreaterEqual(init_theme.contrast_ratio(getattr(palette, role),
+                                                                          getattr(palette, surface)),
+                                                HIGH_CONTRAST_TEXT_CONTRAST)
+            self.assertNotEqual(palette, init_theme.PALETTES[appearance])
+
     def test_contrast_ratio_extremes(self):
         self.assertAlmostEqual(init_theme.contrast_ratio("#000000", "#ffffff"), 21.0, places=3)
         self.assertAlmostEqual(init_theme.contrast_ratio("#57d2c1", "#57d2c1"), 1.0)
+
+
+class HighContrastTests(unittest.TestCase):
+    def test_override_wins(self):
+        for value, expected in (("1", True), ("true", True), ("ON", True), ("0", False), ("off", False)):
+            run = Mock()
+            self.assertIs(init_theme.detect_high_contrast(environment={"LUDUS_HIGH_CONTRAST": value}, system="Linux",
+                                                          run=run), expected)
+            run.assert_not_called()
+
+    def test_linux_reads_gnome(self):
+        on = Mock(return_value=SimpleNamespace(returncode=0, stdout="true\n"))
+        off = Mock(return_value=SimpleNamespace(returncode=0, stdout="false\n"))
+        self.assertTrue(init_theme.detect_high_contrast(environment={}, system="Linux", run=on))
+        self.assertFalse(init_theme.detect_high_contrast(environment={}, system="Linux", run=off))
+        missing = Mock(side_effect=FileNotFoundError("gsettings"))
+        self.assertFalse(init_theme.detect_high_contrast(environment={}, system="Linux", run=missing))
+
+    def test_macos_reads_increase_contrast(self):
+        on = Mock(return_value=SimpleNamespace(returncode=0, stdout="1\n"))
+        unset = Mock(return_value=SimpleNamespace(returncode=1, stdout=""))
+        self.assertTrue(init_theme.detect_high_contrast(environment={}, system="Darwin", run=on))
+        self.assertEqual(on.call_args.args[0][:3], ["defaults", "read", "com.apple.universalaccess"])
+        self.assertFalse(init_theme.detect_high_contrast(environment={}, system="Darwin", run=unset))
 
 
 class AppearanceTests(unittest.TestCase):

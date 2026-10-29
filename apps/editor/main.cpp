@@ -6,6 +6,7 @@
 // by scripts/editor (never read from a project descriptor). See design.md
 // sections 2, 7.
 
+#include "internal/application_icon.h"
 #include "internal/controller.h"
 #include "internal/editor_files.h"
 #include "internal/main_window.h"
@@ -75,7 +76,7 @@ int main(int argc, char** argv)
 #endif
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("Ludus Editor"));
-    QApplication::setWindowIcon(QIcon(QStringLiteral(":/ludus/ludus-icon.png")));
+    QApplication::setWindowIcon(ludus::editor::MakeApplicationIcon());
     ludus::editor::ApplyThemeFonts();
 
     namespace logging = ludus::foundation::logging;
