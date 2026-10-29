@@ -1994,9 +1994,9 @@ grid, with ribbons and with the analytic plane, each including clear and readbac
 subtract `none` for the pass cost. Set `LUDUS_GRID_IMAGE=<prefix>` to also write
 both images as PPM files.
 
-Measured on the software Vulkan device (lavapipe, 8 cores, 1080p, 40 frames, six
-runs), a frame with the grid hidden took 0.11 ms, with ribbons 0.12 to 0.14 ms and
-with the analytic plane 0.17 to 0.19 ms, including clear and readback. The analytic
+Measured on the software Vulkan device (lavapipe, 8 cores, 1080p, 40 frames, eleven
+runs), a frame with the grid hidden took 0.11 ms, with ribbons 0.12 ms and
+with the analytic plane 0.17 ms, including clear and readback. The analytic
 pass therefore costs about 0.06 ms more than the ribbons on a software rasteriser,
 which shades every covered pixel on the CPU. A hardware GPU has not been measured
 yet; run the benchmark there before changing the default.
