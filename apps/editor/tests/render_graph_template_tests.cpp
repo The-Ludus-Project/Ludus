@@ -21,6 +21,7 @@
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QDirIterator>
+#include <QDoubleSpinBox>
 #include <QFile>
 #include <QFileInfo>
 #include <QGraphicsScene>
@@ -31,12 +32,15 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSignalSpy>
 #include <QSpinBox>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
+#include <QToolButton>
+#include <QVBoxLayout>
 
 using namespace ludus::editor;
 using namespace ludus::foundation;
@@ -45,6 +49,8 @@ namespace
 constexpr int32 TEMPLATE_JOB_TIMEOUT_MILLISECONDS = 60000;
 constexpr int32 TEMPLATE_WORKSPACE_WIDTH = 1280;
 constexpr int32 TEMPLATE_WORKSPACE_HEIGHT = 800;
+constexpr int32 TEMPLATE_PROPERTIES_WIDTH = 320;
+constexpr int32 TEMPLATE_PROPERTIES_HEIGHT = 700;
 const QString ROOT_GRAPH = QStringLiteral("main.lurender.json");
 QString FindTemplatePython()
 {
@@ -1938,6 +1944,339 @@ TEST_CASE("RIS projected-solid-angle import enables the polygonal-light helpers 
               .toObject()
               .value(QStringLiteral("polygonal_light_sampling"))
               .toBool() == true);
+}
+
+namespace
+{
+/// The point-and-line MIS template's registry identity.
+QString GetPointLineTemplate()
+{
+    return QStringLiteral("salesin-jarosz-lines");
+}
+
+/// A Graph setting's current value in a manifest draft.
+float64 GetGraphSetting(const QByteArray& manifest, const QString& identity)
+{
+    for (const QJsonValueConstRef value :
+         QJsonDocument::fromJson(manifest).object().value(QStringLiteral("settings")).toArray())
+    {
+        if (value.toObject().value(QStringLiteral("id")).toString() == identity)
+        {
+            return value.toObject().value(QStringLiteral("value")).toDouble();
+        }
+    }
+    FAIL("missing Graph setting " << identity.toStdString());
+    return 0;
+}
+
+/// The imported template's PointLine-prefixed passes, settings and declared query budgets.
+void CheckPointLineImport(const RenderGraphDocument& document, const QString& library)
+{
+    const QByteArray graph = document.GetDraft(library);
+    for (const char* program : {"PointLinePrimary",
+                                "PointLineShadeMultipleImportance",
+                                "PointLineShadeLineSampling",
+                                "PointLineShadePointSampling"})
+    {
+        INFO(program);
+        CHECK(graph.contains(program) == true);
+    }
+    CHECK(graph.count("\"TriangleLoop\"") == 4);
+    CHECK(graph.contains("NativeQuery") == false);
+    CHECK(graph.contains("lineSampling") == true);
+    CHECK(graph.contains("pointSampling") == true);
+    for (const QString& source : {QStringLiteral("salesin_jarosz_lines/main_shaders/primary.slang"),
+                                  QStringLiteral("salesin_jarosz_lines/main_shaders/shade.slang"),
+                                  QStringLiteral("salesin_jarosz_lines/main_shaders/hit_record.slang"),
+                                  QStringLiteral("salesin_jarosz_lines/main_shaders/line_sampling.slang"),
+                                  QStringLiteral("salesin_jarosz_lines/main_shaders/multiple_importance.slang")})
+    {
+        INFO(source.toStdString());
+        CHECK(document.GetDraft(source).isEmpty() == false);
+    }
+    const QByteArray manifest = document.GetDraft(COMPUTE_MANIFEST);
+    CHECK(GetGraphSetting(manifest, QStringLiteral("MIS_HEURISTIC")) == 0);
+    CHECK(GetGraphSetting(manifest, QStringLiteral("MIS_POWER_EXPONENT")) == 2);
+    const QJsonObject interface = FindRayTechnique(manifest).value(QStringLiteral("scene_interface")).toObject();
+    CHECK(interface.value(QStringLiteral("version")).toInt() == 1);
+    CHECK(interface.value(QStringLiteral("surface_queries")).toInt() >= 1);
+    CHECK(interface.value(QStringLiteral("visibility_queries")).toInt() >= 2);
+    CHECK(interface.value(QStringLiteral("line_queries")).toInt() == 6);
+}
+} // namespace
+
+TEST_CASE("Salesin and Jarosz template settings edit and save from the canvas with Properties hidden",
+          "[editor][render-graph][point-line-template]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    QWidget properties;
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    workspace.resize(TEMPLATE_WORKSPACE_WIDTH, TEMPLATE_WORKSPACE_HEIGHT);
+    QWidget* inspector = workspace.TakeInspectorPanel(&properties);
+    inspector->hide();
+    properties.hide();
+    workspace.show();
+    CreateGraphFromPicker(workspace, GetPointLineTemplate());
+    CHECK(inspector->isVisible() == false);
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QByteArray library = document.GetDraft(QStringLiteral("library.lurender.json"));
+    for (const char* program : {"Primary", "ShadeMultipleImportance", "ShadeLineSampling", "ShadePointSampling"})
+    {
+        INFO(program);
+        CHECK(library.contains(program) == true);
+    }
+    // Every pass selects the software triangle loop, so the package needs no ray hardware.
+    CHECK(library.count("\"TriangleLoop\"") == 4);
+    CHECK(library.contains("NativeQuery") == false);
+    const QByteArray root = document.GetDraft(ROOT_GRAPH);
+    // The combined image is exported first, so the viewport shows it by default.
+    CHECK(root.indexOf("\"output\"") < root.indexOf("\"lineSamplingOutput\""));
+    CHECK(root.indexOf("\"lineSamplingOutput\"") < root.indexOf("\"pointSamplingOutput\""));
+    CHECK(root.count("\"Accumulate\"") == 3);
+    CHECK(root.count("\"Export\"") == 3);
+    CHECK(document.GetDraft(QStringLiteral("main_shaders/multiple_importance.slang")).contains("ComputeMisWeight") ==
+          true);
+    CHECK(document.GetDraft(QStringLiteral("main_shaders/line_sampling.slang")).contains("EvaluateLineDensity") ==
+          true);
+    const QJsonObject interface =
+        FindRayTechnique(document.GetDraft(COMPUTE_MANIFEST)).value(QStringLiteral("scene_interface")).toObject();
+    CHECK(interface.value(QStringLiteral("visibility_queries")).toInt() == 2);
+    CHECK(interface.value(QStringLiteral("line_queries")).toInt() == 6);
+    const QByteArray original = document.GetDraft(COMPUTE_MANIFEST);
+    REQUIRE(GetGraphSetting(original, QStringLiteral("MIS_HEURISTIC")) == 0);
+
+    // Background menu -> Edit Graph Settings...: choose the power heuristic and commit with Return.
+    bool hasOpenedSettings = false;
+    QTimer::singleShot(0, &workspace, [&workspace, &hasOpenedSettings]() {
+        QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        REQUIRE(menuOrNull != nullptr);
+        QAction* settingsOrNull = menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphEditSettingsAction"));
+        REQUIRE(settingsOrNull != nullptr);
+        REQUIRE(settingsOrNull->isEnabled() == true);
+        menuOrNull->close();
+        QTimer::singleShot(0, &workspace, [&hasOpenedSettings]() {
+            QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            REQUIRE(dialogOrNull != nullptr);
+            QSpinBox* heuristicOrNull =
+                dialogOrNull->findChild<QSpinBox*>(QStringLiteral("renderGraphSetting_MIS_HEURISTIC"));
+            REQUIRE(heuristicOrNull != nullptr);
+            // Only balance (0) and power (1) are offered.
+            CHECK(heuristicOrNull->maximum() == 1);
+            heuristicOrNull->setFocus();
+            heuristicOrNull->selectAll();
+            QTest::keyClicks(heuristicOrNull, QStringLiteral("1"));
+            QSignalSpy committed(heuristicOrNull, &QSpinBox::editingFinished);
+            QTest::keyClick(heuristicOrNull, Qt::Key_Return);
+            CHECK(committed.count() > 0);
+            hasOpenedSettings = true;
+            dialogOrNull->reject();
+        });
+        settingsOrNull->trigger();
+    });
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    const QPointF background = canvas.scene()->itemsBoundingRect().bottomRight() + QPointF(100, 100);
+    canvas.centerOn(background);
+    const QPoint position = canvas.mapFromScene(background);
+    QContextMenuEvent context(QContextMenuEvent::Mouse, position, canvas.viewport()->mapToGlobal(position));
+    QCoreApplication::sendEvent(canvas.viewport(), &context);
+    REQUIRE(hasOpenedSettings == true);
+    CHECK(inspector->isVisible() == false);
+    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("MIS_HEURISTIC")) == 1);
+    CHECK(document.GetSaved(COMPUTE_MANIFEST) == original);
+    REQUIRE(workspace.CanUndo() == true);
+    workspace.Undo();
+    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("MIS_HEURISTIC")) == 0);
+    workspace.Redo();
+    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("MIS_HEURISTIC")) == 1);
+    REQUIRE(workspace.Save() == true);
+    RequireValidation(workspace);
+    RenderGraphDocument reloaded;
+    const QString path = QDir(project.path()).filePath(QStringLiteral("graphs/Main/main.lurender.json"));
+    REQUIRE(reloaded.Load(QFileInfo(path).absolutePath(), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    CHECK(GetGraphSetting(reloaded.GetDraft(COMPUTE_MANIFEST), QStringLiteral("MIS_HEURISTIC")) == 1);
+}
+
+TEST_CASE("Salesin and Jarosz template settings edit and save through Properties",
+          "[editor][render-graph][point-line-template]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    QWidget properties;
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    QScrollArea* inspector = qobject_cast<QScrollArea*>(workspace.TakeInspectorPanel(&properties));
+    REQUIRE(inspector != nullptr);
+    QVBoxLayout* layout = new QVBoxLayout(&properties);
+    layout->addWidget(inspector);
+    inspector->show();
+    workspace.show();
+    CreateGraphFromPicker(workspace, GetPointLineTemplate());
+    properties.resize(TEMPLATE_PROPERTIES_WIDTH, TEMPLATE_PROPERTIES_HEIGHT);
+    properties.show();
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, QStringLiteral("Default"), QStringLiteral("output")) == true);
+    QApplication::processEvents();
+    QToolButton* sectionOrNull = inspector->findChild<QToolButton*>(QStringLiteral("renderGraphToggleSettings"));
+    REQUIRE(sectionOrNull != nullptr);
+    if (sectionOrNull->isChecked() == false)
+    {
+        sectionOrNull->click();
+    }
+    QApplication::processEvents();
+    QSpinBox* heuristicOrNull = inspector->findChild<QSpinBox*>(QStringLiteral("renderGraphSetting_MIS_HEURISTIC"));
+    QDoubleSpinBox* exponentOrNull =
+        inspector->findChild<QDoubleSpinBox*>(QStringLiteral("renderGraphSetting_MIS_POWER_EXPONENT"));
+    REQUIRE(heuristicOrNull != nullptr);
+    REQUIRE(exponentOrNull != nullptr);
+    CHECK(heuristicOrNull->isVisible() == true);
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QByteArray original = document.GetDraft(COMPUTE_MANIFEST);
+    heuristicOrNull->setValue(1);
+    Q_EMIT heuristicOrNull->editingFinished();
+    constexpr float64 POWER_EXPONENT = 3;
+    exponentOrNull->setValue(POWER_EXPONENT);
+    Q_EMIT exponentOrNull->editingFinished();
+    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("MIS_HEURISTIC")) == 1);
+    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("MIS_POWER_EXPONENT")) == POWER_EXPONENT);
+    CHECK(document.GetSaved(COMPUTE_MANIFEST) == original);
+    REQUIRE(workspace.CanUndo() == true);
+    workspace.Undo();
+    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("MIS_POWER_EXPONENT")) == 2);
+    workspace.Redo();
+    REQUIRE(workspace.Save() == true);
+    CHECK(GetGraphSetting(document.GetSaved(COMPUTE_MANIFEST), QStringLiteral("MIS_HEURISTIC")) == 1);
+    CHECK(GetGraphSetting(document.GetSaved(COMPUTE_MANIFEST), QStringLiteral("MIS_POWER_EXPONENT")) == POWER_EXPONENT);
+    RequireValidation(workspace);
+}
+
+TEST_CASE("Salesin and Jarosz snippet applies from Quick Add on the canvas with Properties hidden",
+          "[editor][render-graph][point-line-configuration]")
+{
+    QTemporaryDir project;
+    QWidget properties;
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    QWidget* inspector = workspace.TakeInspectorPanel(&properties);
+    inspector->hide();
+    properties.hide();
+    workspace.resize(TEMPLATE_WORKSPACE_WIDTH, TEMPLATE_WORKSPACE_HEIGHT);
+    workspace.show();
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QByteArray beforeRoot = document.GetDraft(ROOT_GRAPH);
+    const QByteArray beforeManifest = document.GetDraft(COMPUTE_MANIFEST);
+    const QStringList beforeFiles = document.GetFiles();
+    RenderGraphQuickAdd* paletteOrNull =
+        workspace.findChild<RenderGraphQuickAdd*>(QStringLiteral("renderGraphQuickAdd"));
+    REQUIRE(paletteOrNull != nullptr);
+    paletteOrNull->SetRecent({});
+    paletteOrNull->SetPinned({});
+    QString offeredConfiguration;
+    QTimer::singleShot(0, &workspace, [&offeredConfiguration]() {
+        QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        REQUIRE(dialogOrNull != nullptr);
+        QComboBox* choiceOrNull =
+            dialogOrNull->findChild<QComboBox*>(QStringLiteral("renderGraphConfigurationTemplate"));
+        REQUIRE(choiceOrNull != nullptr);
+        CHECK(choiceOrNull->currentData().toString() == GetPointLineTemplate());
+        QLineEdit* nameOrNull = dialogOrNull->findChild<QLineEdit*>(QStringLiteral("renderGraphTemplateConfiguration"));
+        REQUIRE(nameOrNull != nullptr);
+        offeredConfiguration = nameOrNull->text();
+        QDialogButtonBox* buttonsOrNull = dialogOrNull->findChild<QDialogButtonBox*>();
+        REQUIRE(buttonsOrNull != nullptr);
+        buttonsOrNull->button(QDialogButtonBox::Apply)->click();
+        CHECK(dialogOrNull->isVisible() == false);
+        dialogOrNull->reject();
+    });
+    REQUIRE(workspace.ShowQuickAdd(QPointF(0.0, 0.0)) == true);
+    QLineEdit* searchOrNull = paletteOrNull->findChild<QLineEdit*>(QStringLiteral("renderGraphQuickAddSearch"));
+    REQUIRE(searchOrNull != nullptr);
+    searchOrNull->setText(QStringLiteral("salesin"));
+    paletteOrNull->SetKind(RenderGraphQuickAddKind::Snippets);
+    REQUIRE(paletteOrNull->GetHighlightedKey() == QStringLiteral("snippet:salesin-jarosz-lines"));
+    REQUIRE(paletteOrNull->InsertHighlighted() == true);
+    CHECK(inspector->isVisible() == false);
+    CHECK(offeredConfiguration == QStringLiteral("PointLineMis"));
+    CheckPointLineImport(document, QStringLiteral("PointLineMis.lurender.json"));
+    const QByteArray afterRoot = document.GetDraft(ROOT_GRAPH);
+    const QByteArray afterManifest = document.GetDraft(COMPUTE_MANIFEST);
+    workspace.Undo();
+    CHECK(document.GetDraft(ROOT_GRAPH) == beforeRoot);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST) == beforeManifest);
+    CHECK(document.GetFiles() == beforeFiles);
+    workspace.Redo();
+    CHECK(document.GetDraft(ROOT_GRAPH) == afterRoot);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST) == afterManifest);
+
+    ReplaceRasterSubgraph(document, QStringLiteral("PointLineMis"));
+    REQUIRE(workspace.Save() == true);
+    RequireValidation(workspace);
+}
+
+TEST_CASE("Salesin and Jarosz configuration applies from the canvas Configurations menu with Properties hidden",
+          "[editor][render-graph][point-line-configuration]")
+{
+    QTemporaryDir project;
+    QWidget properties;
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    QWidget* inspector = workspace.TakeInspectorPanel(&properties);
+    inspector->hide();
+    properties.hide();
+    workspace.resize(TEMPLATE_WORKSPACE_WIDTH, TEMPLATE_WORKSPACE_HEIGHT);
+    workspace.show();
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QByteArray beforeManifest = document.GetDraft(COMPUTE_MANIFEST);
+    bool hasAppliedTemplate = false;
+    QTimer::singleShot(0, &workspace, [&workspace, &hasAppliedTemplate]() {
+        QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        REQUIRE(menuOrNull != nullptr);
+        QAction* actionOrNull =
+            menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphApplyConfigurationTemplate"));
+        REQUIRE(actionOrNull != nullptr);
+        REQUIRE(actionOrNull->isEnabled() == true);
+        menuOrNull->close();
+        QTimer::singleShot(0, &workspace, [&hasAppliedTemplate]() {
+            QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            REQUIRE(dialogOrNull != nullptr);
+            QComboBox* choiceOrNull =
+                dialogOrNull->findChild<QComboBox*>(QStringLiteral("renderGraphConfigurationTemplate"));
+            REQUIRE(choiceOrNull != nullptr);
+            const int32 selected = choiceOrNull->findData(GetPointLineTemplate());
+            REQUIRE(selected >= 0);
+            choiceOrNull->setCurrentIndex(selected);
+            QLineEdit* nameOrNull =
+                dialogOrNull->findChild<QLineEdit*>(QStringLiteral("renderGraphTemplateConfiguration"));
+            REQUIRE(nameOrNull != nullptr);
+            CHECK(nameOrNull->text() == QStringLiteral("PointLineMis"));
+            QDialogButtonBox* buttonsOrNull = dialogOrNull->findChild<QDialogButtonBox*>();
+            REQUIRE(buttonsOrNull != nullptr);
+            buttonsOrNull->button(QDialogButtonBox::Apply)->click();
+            hasAppliedTemplate = true;
+        });
+        actionOrNull->trigger();
+    });
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    canvas.centerOn(canvas.scene()->itemsBoundingRect().bottomRight() + QPointF(100, 100));
+    QContextMenuEvent event(QContextMenuEvent::Mouse,
+                            canvas.viewport()->rect().center(),
+                            canvas.viewport()->mapToGlobal(canvas.viewport()->rect().center()));
+    QApplication::sendEvent(canvas.viewport(), &event);
+    REQUIRE(hasAppliedTemplate == true);
+    CHECK(inspector->isVisible() == false);
+    CheckPointLineImport(document, QStringLiteral("PointLineMis.lurender.json"));
+    workspace.Undo();
+    CHECK(document.GetDraft(COMPUTE_MANIFEST) == beforeManifest);
+    workspace.Redo();
+    ReplaceRasterSubgraph(document, QStringLiteral("PointLineMis"));
+    REQUIRE(workspace.Save() == true);
+    RequireValidation(workspace);
 }
 
 TEST_CASE("Compute ray-tracing import extends a shared ray technique and preserves conflicting edits",

@@ -812,6 +812,167 @@ class RisProjectedSolidAngleTemplateTests(unittest.TestCase):
             self.assertEqual(arguments.template, 'ris-projected-solid-angle')
 
 
+class SalesinJaroszLinesTemplateTests(unittest.TestCase):
+    """Salesin and Jarosz's MIS of BSDF samples and line samples in two directions, beside each strategy set."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+
+    def create(self, profiles=('metal', 'wgsl'), name='PointLine'):
+        return graph.new_workspace(Path(self.directory.name) / name, output='offscreen', renderer_static=True,
+                                   profiles=profiles, template='salesin-jarosz-lines')
+
+    def test_four_triangle_loop_passes_share_the_hit_buffer_and_accumulate_separately(self):
+        for profile in ('metal', 'spirv'):
+            with self.subTest(profile=profile):
+                root = self.create((profile,), name=profile)
+                plan = graph.compile_graph(root)
+                rays = [operation for operation in plan['passes'] if operation['kind'] == 'RayTracing']
+                self.assertEqual([operation['id'].rsplit('/', 1)[-1] for operation in rays],
+                                 ['primary', 'shade', 'shadeLines', 'shadePoints'])
+                # Every pass uses the software triangle loop, so no native ray profile is needed.
+                for operation in rays:
+                    self.assertEqual(operation['pipeline']['kind'], 'ComputePipeline')
+                    self.assertEqual(ray.program_tuple(operation['pipeline'])[-1], ray.TRIANGLE_LOOP_TAG)
+                self.assertFalse(ray.requires_native_queries(plan))
+                buffers = [resource for resource in plan['resources'].values() if resource['type'] == 'Buffer']
+                self.assertEqual([resource['bytes_per_pixel'] for resource in buffers], [32])
+                for target in ('lineSampling', 'pointSampling'):
+                    self.assertEqual(plan['resources'][f'SalesinJaroszLines/transport/{target}']['type'],
+                                     'ColorTexture')
+                self.assertNotIn('accumulation', rays[0])
+                for operation in rays[1:]:
+                    self.assertEqual(4096, operation['accumulation']['samples'])
+                    self.assertEqual(1, operation['tone_mapping']['exposure'])
+                exports = [operation['id'].rsplit('/', 1)[-1] for operation in plan['passes']
+                           if operation['kind'] == 'Export']
+                # The combined image is the first export, which the editor viewport shows by default.
+                self.assertEqual(exports, ['output', 'lineSamplingOutput', 'pointSamplingOutput'])
+
+    def test_manifest_declares_the_budgets_settings_and_random_layout(self):
+        import re
+        root = self.create()
+        manifest = json.loads(root.with_name('main.lushader.json').read_text())
+        build.validate_manifest(manifest)
+        technique = next(technique for technique in manifest['techniques'] if technique['id'] == ray.TECHNIQUE)
+        self.assertFalse(any(stage in technique for stage in ray.STAGES))
+        # The maximum over the passes (design D8b): shade needs one BSDF ray, two visibility queries
+        # (one per line strategy) and six line queries.
+        self.assertEqual(technique['scene_interface'],
+                         {'version': 1, 'surface_queries': 1, 'visibility_queries': 2, 'line_queries': 6})
+        compute = [program for program in manifest['programs'] if program['stage'] == 'compute']
+        self.assertEqual([(program['id'], program['function']) for program in compute],
+                         [('Primary', 'TracePrimaryHit'), ('ShadeMultipleImportance', 'ShadeMultipleImportance'),
+                          ('ShadeLineSampling', 'ShadeLineSampling'), ('ShadePointSampling', 'ShadePointSampling')])
+        values = {setting['id']: setting for setting in manifest['settings']}
+        self.assertEqual(sorted(values), ['MIS_HEURISTIC', 'MIS_POWER_EXPONENT'])
+        # Balance is the default, as in Salesin and Jarosz; only balance and power are offered.
+        self.assertEqual(values['MIS_HEURISTIC']['value'], 0)
+        self.assertEqual((values['MIS_HEURISTIC']['minimum'], values['MIS_HEURISTIC']['maximum']), (0, 1))
+        self.assertEqual(values['MIS_POWER_EXPONENT']['value'], 2)
+        shaders = root.with_name('main_shaders')
+        header = shaders.joinpath('hit_record.slang').read_text()
+        constant = lambda name: int(re.search(rf'static const uint {name} = (\d+);', header).group(1))
+        self.assertEqual(constant('PRIMARY_RANDOM_DIMENSION_COUNT'), 2)
+        self.assertEqual(constant('SHADE_RANDOM_DIMENSION_COUNT'), 13)
+        # Dimensions 2-6 line U, 7-11 line V, 12-14 BSDF; the area point reuses line U's 2-5.
+        for line in ('SHADE_LINE_U_DIMENSION_FIRST = SHADE_RANDOM_DIMENSION_FIRST;',
+                     'SHADE_LINE_U_POSITION_DIMENSION = SHADE_LINE_U_DIMENSION_FIRST + 4;',
+                     'SHADE_LINE_V_DIMENSION_FIRST = SHADE_LINE_U_POSITION_DIMENSION + 1;',
+                     'SHADE_LINE_V_POSITION_DIMENSION = SHADE_LINE_V_DIMENSION_FIRST + 4;',
+                     'SHADE_BSDF_DIMENSION_FIRST = SHADE_LINE_V_POSITION_DIMENSION + 1;',
+                     'SHADE_POINT_DIMENSION_FIRST = SHADE_LINE_U_DIMENSION_FIRST;'):
+            self.assertIn(line, header)
+        for kernel in ('primary', 'shade', 'line_sampling', 'multiple_importance'):
+            source = shaders.joinpath(f'{kernel}.slang').read_text()
+            self.assertNotIn('SampleSceneRandom(queries', source)
+            self.assertNotIn('SelectLight(scene, queries', source)
+
+    def test_shade_passes_combine_three_strategies_with_attribution(self):
+        root = self.create()
+        shaders = root.with_name('main_shaders')
+        shade = shaders.joinpath('shade.slang').read_text()
+        strategy = shaders.joinpath('line_sampling.slang').read_text()
+        weights = shaders.joinpath('multiple_importance.slang').read_text()
+        for call in ('SampleStandardBsdf', 'TraceClosest', 'TestVisibility', 'EvaluateLightPdfSolidAngle',
+                     'EvaluateEnvironmentPdfSolidAngle', 'EvaluateLineDensity', 'ComputeMisWeight'):
+            self.assertIn(call, shade)
+        for call in ('SampleIncidentLight', 'FindVisibleLineIntervals', 'HasMaskedOccluders', 'LINE_DIRECTION_U',
+                     'LINE_DIRECTION_V', 'EvaluateLineDensity'):
+            self.assertIn(call, strategy)
+        # MIS weights all three strategies in shade; shadeLines drops BSDF sampling.
+        self.assertIn('SampleLineStrategy(scene, launch, shadingPoint, LINE_DIRECTION_U, true, queries)', shade)
+        self.assertIn('SampleLineStrategy(scene, launch, shadingPoint, LINE_DIRECTION_V, false, queries)', shade)
+        self.assertIn('SampleBsdfStrategy(scene, launch, shadingPoint, true, queries)', shade)
+        self.assertIn('SampleBsdfStrategy(scene, launch, shadingPoint, false, queries)', shade)
+        self.assertIn('float ComputeMisWeight(float sampledDensity, float otherDensity0, float otherDensity1)', weights)
+        for heuristic in ('MIS_HEURISTIC_BALANCE = 0', 'MIS_HEURISTIC_POWER = 1'):
+            self.assertIn(heuristic, weights)
+        self.assertNotIn('MIS_CUTOFF_THRESHOLD', weights)
+        for name in ('Veach', 'Guibas', 'SIGGRAPH 1995', '10.1145/218380.218498', 'Salesin', 'Jarosz',
+                     '10.1111/cgf.13779'):
+            self.assertIn(name, weights)
+        for name in ('Billen', 'Dutre', '10/f84z2h', 'Salesin', 'Jarosz', '10.1111/cgf.13779'):
+            self.assertIn(name, strategy)
+
+    def test_heuristic_outside_balance_and_power_is_rejected(self):
+        root = self.create()
+        original = json.loads(root.with_name('main.lushader.json').read_text())
+        index = next(index for index, setting in enumerate(original['settings']) if setting['id'] == 'MIS_HEURISTIC')
+        for value in (-1, 2, 3, 0.5, True, None):
+            with self.subTest(value=value):
+                manifest = copy.deepcopy(original)
+                manifest['settings'][index]['value'] = value
+                with self.assertRaises(ToolingError):
+                    build.validate_manifest(manifest)
+        for value in (0, 1):
+            manifest = copy.deepcopy(original)
+            manifest['settings'][index]['value'] = value
+            build.validate_manifest(manifest)
+
+    def test_browser_only_profiles_name_metal_or_vulkan_compute(self):
+        with self.assertRaises(ToolingError) as caught:
+            self.create(('wgsl',), name='Browser')
+        self.assertEqual(caught.exception.code, 'RenderGraphCapability')
+        self.assertIn('Metal or Vulkan compute', caught.exception.message)
+        self.assertFalse((Path(self.directory.name) / 'Browser').exists())
+
+    def test_relocated_sdk_and_cli_expose_the_template(self):
+        from ludus_tools import render_graph_templates
+        from ludus_tools.cli import build_parser
+        installed = Path(self.directory.name) / 'sdk/lib/cmake/Ludus/render_graph'
+        module = installed / 'ludus_tools/render_graph_templates.py'
+        module.parent.mkdir(parents=True)
+        source = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs/salesin_jarosz_lines'
+        shutil.copytree(source, installed / 'templates/salesin_jarosz_lines')
+        with patch.object(render_graph_templates, '__file__', str(module)):
+            files = render_graph_templates.template_files('salesin-jarosz-lines', ('spirv',), graph)
+        build.validate_manifest(json.loads(files['main.lushader.json']))
+        self.assertIn('EvaluateLineDensity', files['main_shaders/line_sampling.slang'])
+        self.assertIn('ComputeMisWeight', files['main_shaders/multiple_importance.slang'])
+        self.assertEqual(render_graph_templates.TEMPLATES['salesin-jarosz-lines'][2], 'compute-ray-tracing')
+        for profile in ('metal', 'spirv'):
+            arguments = build_parser().parse_args(['render-graph', 'new', 'graphs/PointLine', '--template',
+                                                   'salesin-jarosz-lines', '--output', 'offscreen',
+                                                   '--renderer-static', '--profiles', profile])
+            self.assertEqual(arguments.template, 'salesin-jarosz-lines')
+
+    def test_cli_creates_the_template_for_metal_and_vulkan(self):
+        from ludus_tools.cli import main
+        for profile in ('metal', 'spirv'):
+            with self.subTest(profile=profile):
+                destination = Path(self.directory.name) / f'cli-{profile}'
+                with patch('sys.stdout'):
+                    status = main(['render-graph', 'new', str(destination), '--template', 'salesin-jarosz-lines',
+                                   '--output', 'offscreen', '--renderer-static', '--profiles', profile])
+                self.assertEqual(status, 0)
+                self.assertTrue((destination / 'main_shaders/multiple_importance.slang').is_file())
+                plan = graph.compile_graph(destination / 'main.lurender.json')
+                self.assertEqual(len([operation for operation in plan['passes']
+                                      if operation['kind'] == 'RayTracing']), 4)
+
+
 class SimpleComputeRayTracingTemplateTests(unittest.TestCase):
     def test_single_compute_pass_has_no_hit_buffer_or_accumulation(self):
         with tempfile.TemporaryDirectory() as directory:
