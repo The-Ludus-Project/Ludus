@@ -3523,7 +3523,9 @@ both passes in `rasterize.lurender.json` → `ColorAndDepthWithPrepass`.
 Light assignment reuses the [portable L5 clustered profile](../architecture/renderer-systems.md#l5-opt-in-portable-scaling).
 The CPU builds conservative 8×8×8 world-space cells over the scene's transformed
 geometry bounds, padded by half a metre and clamped to the profile's coordinate
-limits. Shading runs on the GPU. All admitted lights (up to 128) are retained;
+limits. Shading runs on the GPU. Only directional, point and spot records are admitted in the analytic list; legacy
+area quadrature proxies reject preparation to avoid double-counting mesh emitters.
+All admitted analytic lights (up to 128) are retained;
 each cell stores up to 32 indices. Overflowing cells and samples outside the grid
 evaluate the complete list. `RenderGraphReport::Resources` exposes dropped lights,
 overflow cells and stored assignments. Camera-only edits reuse the scene's lists;

@@ -1756,5 +1756,15 @@ TEST_CASE("default deferred mesh area lights illuminate a receiver with CPU chec
         CHECK(fixture.Graph.GetDrawableSceneRevision() == lastRevision);
         render();
         CHECK(fixture.Pixels == lastDrawable);
+        meshes[1].Geometry.Indices = reversed.GetData();
+        meshes[1].Geometry.IndexCount = reversed.GetSize();
+        renderer::DirectLight proxy;
+        proxy.SourceId = 1;
+        proxy.Kind = renderer::LightKind::AreaOneSided;
+        inputs.Lights = {&proxy, 1};
+        CHECK(update() == rhi::RasterStatus::Unsupported);
+        CHECK(fixture.Graph.GetDrawableSceneRevision() == lastRevision);
+        render();
+        CHECK(fixture.Pixels == lastDrawable);
     }
 }

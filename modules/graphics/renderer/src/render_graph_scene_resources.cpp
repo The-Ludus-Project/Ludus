@@ -536,6 +536,13 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
     {
         return normalizedStatus;
     }
+    for (usize light = 0; light < normalized.Count; ++light)
+    {
+        if (IsSceneShaderLightKindSupported(normalized.Lights[light].Kind) == false)
+        {
+            return Status::Unsupported;
+        }
+    }
     // Reserve pin arrays before any acquisition, so failed allocation cannot leak pins.
     if (candidate.MeshPins.TryEnsureCapacity(format::MAX_ITEMS) == false ||
         candidate.TexturePins.TryEnsureCapacity(format::MAX_ITEMS * MATERIAL_TEXTURE_COUNT) == false ||
