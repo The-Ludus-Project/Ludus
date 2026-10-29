@@ -9,13 +9,17 @@
 #include <QFontDatabase>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QHideEvent>
 #include <QLabel>
 #include <QListWidget>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QShowEvent>
 #include <QSplitter>
 #include <QVBoxLayout>
 #include <QWheelEvent>
+
+#include <ludus/foundation/profiling/profiling.hpp>
 
 #include <cmath>
 
@@ -146,10 +150,34 @@ TextureViewer::TextureViewer(QWidget* parentOrNull)
     refreshTargets();
 }
 
+TextureViewer::~TextureViewer()
+{
+    SetPreview(nullptr);
+}
+
+void TextureViewer::showEvent(QShowEvent* event)
+{
+    QWidget::showEvent(event);
+    if (mPreview != nullptr)
+    {
+        mPreview->SetInspectionEnabled(true);
+    }
+}
+
+void TextureViewer::hideEvent(QHideEvent* event)
+{
+    if (mPreview != nullptr)
+    {
+        mPreview->SetInspectionEnabled(false);
+    }
+    QWidget::hideEvent(event);
+}
+
 void TextureViewer::SetPreview(RenderGraphPreview* previewOrNull)
 {
     if (mPreview != nullptr)
     {
+        mPreview->SetInspectionEnabled(false);
         disconnect(mPreview, nullptr, this, nullptr);
     }
     mPreview = previewOrNull;
@@ -157,6 +185,7 @@ void TextureViewer::SetPreview(RenderGraphPreview* previewOrNull)
     {
         connect(mPreview, &RenderGraphPreview::TargetsChanged, this, &TextureViewer::refreshTargets);
         connect(mPreview, &RenderGraphPreview::TargetInspected, this, &TextureViewer::refreshTexture);
+        mPreview->SetInspectionEnabled(isVisible());
         mPreview->SetInspectedTarget(mSelected);
     }
     refreshTargets();
@@ -331,6 +360,11 @@ void TextureViewer::refreshTexture()
 
 void TextureViewer::refreshDisplay()
 {
+    if (isVisible() == false)
+    {
+        return;
+    }
+    LUDUS_PROFILE_SCOPE(EditorTextureInspectionDisplayConversion);
     refreshControls();
     const TextureDisplaySettings settings = GetDisplaySettings();
     mDisplay = MakeDisplayImage(mTexture, settings, mAppliedRange);

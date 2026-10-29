@@ -39,8 +39,9 @@ public:
                              graphics::rhi::TextureHandle texture,
                              foundation::uint32 width,
                              foundation::uint32 height);
-    /// Issue more band requests and collect finished ones without waiting.
-    [[nodiscard]] OffscreenReadStatus Poll() noexcept;
+    /// Collect completed bands and optionally issue more, without waiting.
+    /// @param shouldRequestBands False yields shared staging capacity while retaining the unfinished image.
+    [[nodiscard]] OffscreenReadStatus Poll(bool shouldRequestBands = true) noexcept;
     /// Move the completed frame out and return to Idle. Valid only after Poll returned Complete.
     [[nodiscard]] QImage TakeImage() noexcept;
     /// Drop every in-flight ticket; the RHI retires their staging after GPU completion.
