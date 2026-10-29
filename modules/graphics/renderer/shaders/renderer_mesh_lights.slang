@@ -60,9 +60,8 @@ float3 EvaluateRasterMeshLights(in SurfaceSample surface, in float3 positionWorl
         polygon.PositionsTangent[2] = float3(dot(deltaWorld, tangentWorld),
                                              dot(deltaWorld, bitangentWorld),
                                              dot(deltaWorld, surface.NormalWorld));
-        float3 heightsTangent = float3(polygon.PositionsTangent[0].z,
-                                         polygon.PositionsTangent[1].z,
-                                         polygon.PositionsTangent[2].z);
+        float3 heightsTangent =
+            float3(polygon.PositionsTangent[0].z, polygon.PositionsTangent[1].z, polygon.PositionsTangent[2].z);
         if (all(heightsTangent <= 0) == true)
         {
             continue;
@@ -78,12 +77,10 @@ float3 EvaluateRasterMeshLights(in SurfaceSample surface, in float3 positionWorl
             }
             polygon = clipped;
         }
-        float diffuseIntegral =
-            isAboveHorizon == true
-                ? ComputeProjectedTriangleIntegral(polygon.PositionsTangent[0],
-                                                     polygon.PositionsTangent[1],
-                                                     polygon.PositionsTangent[2])
-                : ComputeProjectedSolidAngleIntegral(polygon);
+        float diffuseIntegral = isAboveHorizon == true ? ComputeProjectedTriangleIntegral(polygon.PositionsTangent[0],
+                                                                                          polygon.PositionsTangent[1],
+                                                                                          polygon.PositionsTangent[2])
+                                                       : ComputeProjectedSolidAngleIntegral(polygon);
         float3 contribution = diffuseAlbedo * (diffuseIntegral / PI);
         if (hasSpecular == true)
         {
@@ -97,12 +94,11 @@ float3 EvaluateRasterMeshLights(in SurfaceSample surface, in float3 positionWorl
                         MultiplyColumns(distribution.InverseTransform, polygon.PositionsTangent[corner]);
                 }
             }
-            float specularIntegral =
-                isAboveHorizon == true
-                    ? ComputeProjectedTriangleIntegral(transformed.PositionsTangent[0],
-                                                         transformed.PositionsTangent[1],
-                                                         transformed.PositionsTangent[2])
-                    : ComputeProjectedSolidAngleIntegral(transformed);
+            float specularIntegral = isAboveHorizon == true
+                                         ? ComputeProjectedTriangleIntegral(transformed.PositionsTangent[0],
+                                                                            transformed.PositionsTangent[1],
+                                                                            transformed.PositionsTangent[2])
+                                         : ComputeProjectedSolidAngleIntegral(transformed);
             contribution += specularAlbedo * (specularIntegral / PI);
         }
         result += emission.rgb * contribution;
