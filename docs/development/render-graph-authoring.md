@@ -2391,6 +2391,15 @@ each pass's `invocation.traversal` to `ComputeBvh`. There is no indirect bounce.
   plus `shadePoints`). With 102-106 samples in the time of 16, `pointSampling`
   reached a penumbra mean squared error of 9.9e-5, against 3.05e-4 for `color`.
   The hidden test `[.point-line-performance]` repeats this measurement.
+- On the 500,000-triangle Sponza export under a 6 m square light, with every pass
+  on `ComputeBvh`, a `color` sample cost 23-30 times a `pointSampling` sample in
+  three runs. Line queries took most of that time. At equal GPU time
+  `pointSampling` reached 7-9% of `color`'s penumbra mean squared error, against
+  a 32,768-sample reference. The hidden test
+  `[.point-line-large-scene-performance]` repeats this measurement. The
+  [point-and-line design](../../.kiro/specs/point-line-direct-lighting/design.md#5-large-scene-equal-time-measurement)
+  records the setup, the device and the clock variation. These two scenes on one
+  Metal device support no general claim.
 
 A masked occluder cannot be tested yet, because render-graph scenes cannot hold
 alpha-tested triangles. Vulkan has not been run for this template.

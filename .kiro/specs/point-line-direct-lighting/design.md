@@ -2,7 +2,8 @@
 
 Status: proposed, 2026-10-27. Baseline `origin/develop` `02df0b37`. PL0
 evidence recorded 2026-10-27 on `431613a2` (section 4). D5 revised 2026-10-29 for
-PL3 on `c08ffec7`. This describes work to
+PL3 on `c08ffec7`. Large-scene equal-time measurement recorded 2026-10-29 on
+`d00cd9eb` (section 5). This describes work to
 build. Read [requirements](requirements.md) and
 [tasks](tasks.md). AGENTS.md, steering, ADR 0003, the
 [compute ray-tracing spec](../compute-ray-tracing/design.md) and the canonical
@@ -798,7 +799,113 @@ overflows on blinds 16 and stops early, so its time there is not comparable.
 For comparison, the paper reports 1.2-55× with a CPU BVH. These linear-scan
 ratios are context, not an acceptance threshold, and support no speed claim.
 
-## 5. Risks
+## 5. Large-scene equal-time measurement
+
+PL3 compared `color` with `pointSampling` at equal GPU time only on the
+14-triangle Cornell room ([tasks](tasks.md), PL3). This section repeats the
+comparison on a large scene with real occluders and soft shadows. It records
+measurements of one scene on one device and makes no general claim.
+
+Recorded 2026-10-29 on `origin/develop` `d00cd9eb` plus this change (runs A and
+B). Run C repeated the measurement after merging `develop` `f3bdd943`, which
+includes #745's shared scene upload.
+
+- **Device.** Apple M5 (MacBook Air, Mac17,3, 16 GB), macOS 26.6 (25G72),
+  Metal 4, `macos-clang-development` preset. Other agents' builds shared the
+  machine, with load averages from 9 to 66 during the runs.
+- **Vulkan.** Not run. Every number below is Metal only.
+
+**Setup.** The hidden test `[.point-line-large-scene-performance]` in
+`render_graph_ray_tests.cpp`:
+
+- **Scene.** The 500,000-triangle Sponza export from PL3's line traversal
+  measurement: the first 500,000 triangles of Intel's
+  `NewSponza_Main_glTF_003.gltf` (274,307 vertices), named by
+  `LUDUS_LINE_TRAVERSAL_SCENE`. The camera is the same, at
+  `(10.94, 1.69, 0.50)` m looking along -X, with 96×64 pixels.
+- **Light.** A 6 m square emitter facing down at `y = 10.14` m with emission 50,
+  above the scene's horizontal center. PL3 used a 2 m light. The wider light
+  casts wide penumbrae: a fifth of the image is penumbra.
+- **Templates.** `line-sampling` and `salesin-jarosz-lines`, each cooked with
+  every `ComputePipeline` on `ComputeBvh`. Line queries use PL3's BVH walk. A
+  `TriangleLoop` pass would scan all 500,000 triangles per ray.
+- **Device budget.** `rhi::StorageLimits::ResourceBytes` is 2 GiB, the Editor
+  viewport's budget. On `d00cd9eb` the default 512 MiB rejected the four-pass
+  graph with `CapacityExceeded`. `SceneMemoryBudget::RhiResources` needed
+  160,481,248 bytes with 55,083,060 left, because each ray pass uploaded its own
+  copy of the scene. `develop` #745 now shares one copy.
+- **Masks.** The penumbra mask is PL2's. It uses the line-sampling template's
+  `visibleFraction` after 256 samples. A pixel is in the penumbra when it lies in
+  the lower half of the image (below eye height) and its fraction is strictly
+  between 0.1 and 0.9. That gives 1,278 penumbra pixels. The other 1,794
+  lower-half pixels form the "outside" mask, of 6,144 pixels in all.
+- **Equal time.** The point-and-line graph renders 64 timed frames, which give a
+  mean GPU time for each pass. As in PL3, a `color` sample costs the primary pass
+  plus `shade`, and a `pointSampling` sample costs the primary pass plus
+  `shadePoints`. For budgets of 16 and 64 `color` samples, point sampling gets
+  `round(budget × color cost / point cost)` samples. The cap is 4,096, and no
+  budget reached it.
+- **Estimates.** One graph at scene revision 1 accumulates up to the largest
+  point count. `color` and `pointSampling` are read from it at each count.
+- **Reference.** `color` averaged over 8 graphs at scene revisions 2-9, each
+  accumulated to 4,096 samples, for 32,768 samples per pixel. A single graph
+  cannot give more, because accumulation stops at
+  `format::MAX_ACCUMULATION_SAMPLES` (4,096). The reference noise estimate is the
+  mean, over masked values, of the variance across the 8 references divided
+  by 8. It is 1.45e-6 in the penumbra and 2.52e-7 outside. Those are 3.3% and 4.8%
+  of the smallest MSE measured in each mask. The expected MSE against the
+  reference is the estimator's MSE plus this noise. Five earlier runs used a
+  single 4,096-sample reference, whose penumbra noise of 1.35e-5 was 27% of the
+  smallest MSE. Those runs were discarded.
+- **Error.** The MSE is computed per channel on decoded linear radiance (the
+  inverse of the tone map) against the reference mean, over the masked pixels.
+
+**Failure pixels.** Across the 8 references, 12 `color` and 12 `lineSampling`
+pixels showed the failure color, summed over the references. No `pointSampling`
+pixel did. The estimate graph, at up to 1,906 samples, had none. Failures appear
+only in outputs that make line queries. Their cause was not traced. A pixel that
+fails in any reference or estimate leaves both masks. That removed 2 penumbra
+and 8 outside pixels, leaving 1,276 and 1,786.
+
+**GPU time per frame** in ms, the mean over 64 frames for each run:
+
+| Run | Start (load) | Primary | `shade` | `shadeLines` | `shadePoints` | `color` sample | `pointSampling` sample | Ratio |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| A | 13:40 (9.5) | 0.200 | 15.43 | 14.69 | 0.325 | 15.63 | 0.525 | 29.8 |
+| B | 14:24 (60.5) | 0.364 | 16.80 | 15.71 | 0.391 | 17.17 | 0.755 | 22.7 |
+| C | 16:50 (29.6) | 0.220 | 15.35 | 14.58 | 0.325 | 15.57 | 0.544 | 28.6 |
+
+At equal time, point sampling got 477 and 1,906 samples in run A, 364 and 1,455
+in run B and 458 and 1,831 in run C, against 16 and 64 `color` samples. From A to B, the primary pass
+slowed 1.82×, a point sample 1.44× and a `color` sample 1.10×. Eight timed runs
+of this test that day gave a primary pass of 0.195-0.527 ms (2.7×),
+`shadePoints` of 0.313-0.473 ms, a `color` sample of 15.3-17.7 ms and a cost
+ratio of 17.7-30.2. Those runs include the five discarded ones, whose timings
+are valid. The `color` cost is almost entirely line queries: `shadeLines` alone
+takes 93-95% of `shade`.
+
+**Mean squared error.** Images are deterministic for each scene revision. All
+runs therefore give the same `color` errors, and the same point errors at a
+given sample count. The runs differ only in the point sample counts their
+timings produced. Run C, after the merge, reproduced the reference, its noise
+estimate, the failure counts and the `color` errors bit for bit.
+
+| Mask | `color` samples | `color` MSE | `pointSampling` MSE at equal time, A / B / C | Point/`color`, A / B / C | `pointSampling` MSE at equal samples |
+| --- | --- | --- | --- | --- | --- |
+| Penumbra | 16 | 2.73e-3 | 1.94e-4 / 2.41e-4 / 1.91e-4 | 0.071 / 0.088 / 0.070 | 4.69e-3 |
+| Penumbra | 64 | 6.62e-4 | 4.42e-5 / 5.62e-5 / 4.50e-5 | 0.067 / 0.085 / 0.068 | 1.21e-3 |
+| Outside | 16 | 2.86e-4 | 1.89e-5 / 2.70e-5 / 2.01e-5 | 0.066 / 0.095 / 0.070 | 6.39e-4 |
+| Outside | 64 | 6.45e-5 | 5.22e-6 / 6.73e-6 / 5.68e-6 | 0.081 / 0.104 / 0.088 | 1.37e-4 |
+
+At equal sample count, `color` has 0.58 and 0.55 times `pointSampling`'s
+penumbra MSE at 16 and 64 samples. Outside the penumbra the ratios are 0.45 and
+0.47. A `color` sample cost 23-30 times a `pointSampling` sample in these runs, against
+6.4-6.6 on the room. At equal GPU time, in this scene on this device,
+`pointSampling` reached 7-9% of `color`'s MSE in the penumbra and 7-10% outside
+it. The measurement covers one scene, one light, one camera and one device. It
+supports no claim about other scenes or GPUs.
+
+## 6. Risks
 
 - **Linear cost.** Six line queries per pixel, each scanning every triangle,
   limited PL1/PL2 to small scenes. PL3's BVH walk removes the scan from line
@@ -813,4 +920,8 @@ ratios are context, not an acceptance threshold, and support no speed claim.
   it with the same 2% tolerance as the MIS template's same-integral check.
 - **Equal-sample, not equal-time.** Line samples cost more per sample. The PL2
   error comparison is at equal sample count and reports timing separately, so
-  it supports no speed claim.
+  it supports no speed claim. The equal-time measurements found point sampling
+  with lower error on both scenes measured: about a third of `color`'s penumbra
+  MSE on the 14-triangle room (PL3) and 7-9% on the 500,000-triangle Sponza
+  export (section 5), on one Metal device. They measure two scenes and support
+  no general claim.
