@@ -15,6 +15,8 @@
 #include "renderer_surface.h"
 #include "renderer_surface_shadow.h"
 
+#include <cstdio>
+#include <cstdlib>
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
@@ -490,6 +492,53 @@ TEST_CASE("Interactive raster viewport shows a gradient backdrop only when asked
     {
         CHECK(top[channel] == 0);
         CHECK(bottom[channel] == 0);
+    }
+    if (std::getenv("LUDUS_RENDERER_BENCHMARK") != nullptr)
+    {
+        // Frame time of a 1080p viewport, render to acquire, with and without the backdrop in the output pass.
+        constexpr uint32 BENCHMARK_WIDTH = 1920;
+        constexpr uint32 BENCHMARK_HEIGHT = 1080;
+        constexpr uint32 BENCHMARK_FRAMES = 40;
+        for (const bool hasBackdrop : {false, true})
+        {
+            rr::RasterViewport viewport;
+            REQUIRE(viewport.Initialize(renderer,
+                                        device,
+                                        BENCHMARK_WIDTH,
+                                        BENCHMARK_HEIGHT,
+                                        1,
+                                        rr::ViewportColorMode::Linear8,
+                                        false,
+                                        rr::ToneCurve::Reinhard,
+                                        hasBackdrop) == S::Ready);
+            rr::ViewDescription camera;
+            rr::ViewReport report;
+            REQUIRE(viewport.Update(world, camera, report) == S::Ready);
+            uint64 totalTicks = 0;
+            for (uint32 frameIndex = 0; frameIndex < BENCHMARK_FRAMES; ++frameIndex)
+            {
+                const uint64 start = time::NowTicks();
+                rhi::SubmissionToken producer;
+                REQUIRE(viewport.Render(surface, producer) == S::Ready);
+                rr::ViewportFrame frame;
+                rr::ViewportImage image;
+                S status = S::Pending;
+                while (status == S::Pending)
+                {
+                    status = viewport.Acquire(frame, image);
+                }
+                REQUIRE(status == S::Ready);
+                totalTicks += time::NowTicks() - start;
+                REQUIRE(viewport.Release(frame) == S::Ready);
+            }
+            std::printf("BACKDROPBENCH,%s,%ux%u,%u,%llu\n",
+                        hasBackdrop == true ? "backdrop" : "flat",
+                        BENCHMARK_WIDTH,
+                        BENCHMARK_HEIGHT,
+                        BENCHMARK_FRAMES,
+                        static_cast<unsigned long long>(totalTicks));
+            viewport.Reset();
+        }
     }
     REQUIRE(renderer.Release(world) == S::Ready);
     REQUIRE(renderer.Release(mesh) == S::Ready);
