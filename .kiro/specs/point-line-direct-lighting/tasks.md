@@ -532,6 +532,51 @@ available, so llvmpipe is left to batch CI.
       idle. No open pull request fixes them. Ruff was not run (not installed
       locally). Vulkan was not run.*
 
+## Large-scene equal-time measurement (after PL3)
+
+PL3's equal-time comparison ran only on the 14-triangle room. Record results in
+[design section 5](design.md#5-large-scene-equal-time-measurement). Evidence is
+from an Apple M5 on Metal (macOS 26.6), `macos-clang-development`, measured on
+`develop` `d00cd9eb`. Vulkan was not run: no Linux or Vulkan host was available.
+
+- [x] Measure `salesin-jarosz-lines`' `color` against `pointSampling` at equal
+      GPU time on at least 500,000 triangles with real occluders and a large
+      area light. Use PL2's penumbra mask and an independently seeded reference
+      whose noise is negligible. Record measurements only.
+      *Hidden test `[.point-line-large-scene-performance]`. It runs on the
+      500,000-triangle Sponza export named by `LUDUS_LINE_TRAVERSAL_SCENE`, lit
+      by a 6 m square light, with both line templates cooked with every ray pass
+      on `ComputeBvh` and a 2 GiB device budget. Penumbra: 1,278 pixels with
+      line-sampling visible fraction in (0.1, 0.9) below eye height. Outside:
+      1,794 other lower-half pixels. Reference: 8 independently seeded `color`
+      images of 4,096 samples each (32,768 per pixel, since accumulation stops at
+      4,096). Its noise is 1.45e-6 in the penumbra and 2.52e-7 outside, 3-5% of
+      the smallest MSE. Two runs on `d00cd9eb`: a `color` sample cost 15.63 and
+      17.17 ms, a `pointSampling` sample 0.525 and 0.755 ms (ratio 29.8 and
+      22.7). Point sampling therefore got 477 and 364 samples against 16, and
+      1,906 and 1,455 against 64. Penumbra MSE: `color` 2.73e-3 at 16 samples and 6.62e-4 at 64.
+      `pointSampling` at equal time: 1.94e-4 and 2.41e-4, then 4.42e-5 and
+      5.62e-5 (ratios 0.067-0.088). Outside: ratios 0.066-0.104. A third run
+      after merging `develop` `f3bdd943` (#745) gave ratio 28.6 and point/`color`
+      MSE ratios 0.068-0.088, with the reference and `color` errors bit-identical. At equal samples
+      `color` has 0.55-0.58 times `pointSampling`'s penumbra MSE. Across eight
+      timed runs that day, the primary pass varied 2.7× and the cost ratio ranged
+      from 17.7 to 30.2. Line queries failed on 12 `color` and 12 `lineSampling`
+      pixels, summed over the eight 4,096-sample references; the cause was not
+      traced. Those pixels leave the masks. One scene on one device; no general
+      claim.*
+- [x] Gates for a change to a test, its CMake staging and documentation.
+      *On `develop` `f3bdd943` merged: `macos-clang-development` and
+      `macos-clang-asan-ubsan` build `ludus_render_graph_ray_tests` with no
+      compiler warnings. The `[point-line]`, `[line-bvh]`, `[line-sampling]` and
+      `[scene-capacity]` cases (9 cases, 14,397 assertions) pass under both, with
+      no sanitizer report. `--format`, `source_policy.py --base f3bdd943
+      --clang-format` and `--tidy-changed --base f3bdd943` pass. `check-docs`,
+      strict MkDocs, `check-wiki --documentation-only` and the
+      `test_docs.py`/`test_wiki.py` suites pass. The full CTest suites,
+      `install-sdk` and Ruff were not run: no product, SDK or shader source
+      changed, and Ruff is not installed locally. Vulkan was not run.*
+
 ## PL4 Deferred (not scheduled)
 
 Each needs its own spec revision before work starts:
