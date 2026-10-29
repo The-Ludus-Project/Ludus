@@ -28,16 +28,22 @@ Appearance
     4.5:1 contrast on every surface they are drawn on (see the tests). The
     appearance follows the desktop (macOS dark mode, GNOME ``color-scheme``,
     ``GTK_THEME`` ending in ``:dark``, the Windows app theme) unless
-    ``LUDUS_SETUP_APPEARANCE`` is ``dark`` or ``light``. Spacing uses the
+    ``LUDUS_SETUP_APPEARANCE`` is ``dark`` or ``light``. When the desktop asks
+    for more contrast (Windows high contrast, macOS "Increase contrast", GNOME
+    ``high-contrast``) or ``LUDUS_HIGH_CONTRAST`` is 1, the tokens' ``highContrast``
+    values replace the standard ones, as in the Editor. Spacing uses the
     4/8/12/16/24 logical pixel scale, multiplied by the display scale on
     X11/Windows (macOS already measures in points); ``LUDUS_SETUP_SCALE``
     overrides it.
 
 Icons
-    ``init_assets/ludus-icon-<size>.png`` are Lanczos downscales of the
-    approved docs/wiki/assets/ludus-icon.png. Regenerate them with ImageMagick::
+    ``init_assets/ludus-icon-<size>.png`` for 16, 24 and 32 are drawn, not scaled:
+    ``render_small_icons.py`` redraws the tile and the L on the pixel grid with
+    flat brand planes, so the silhouette stays clear at small sizes. The larger
+    sizes are Lanczos downscales of the approved docs/wiki/assets/ludus-icon.png.
+    Regenerate those with ImageMagick::
 
-        for size in 16 24 32 48 64 96 128 256; do
+        for size in 48 64 96 128 256; do
             convert docs/wiki/assets/ludus-icon.png -filter Lanczos -resize ${size}x${size} \\
                 -strip PNG32:scripts/python/init_assets/ludus-icon-${size}.png
         done
@@ -70,10 +76,13 @@ STATUS_ICON_POINTS = 16
 BANNER_ICON_POINTS = 18
 
 APPEARANCE_ENVIRONMENT = "LUDUS_SETUP_APPEARANCE"
+HIGH_CONTRAST_ENVIRONMENT = "LUDUS_HIGH_CONTRAST"
 SCALE_ENVIRONMENT = "LUDUS_SETUP_SCALE"
 DARK = "dark"
 LIGHT = "light"
 APPEARANCE_PROBE_SECONDS = 2
+SPI_GETHIGHCONTRAST = 0x0042
+HCF_HIGHCONTRASTON = 0x00000001
 
 # Linux prctl option that renames the calling thread (and, for the main
 # thread, the process "comm" field). Names longer than 15 bytes are cut.
@@ -103,6 +112,7 @@ PREFERRED_MONOSPACE = {
 PROGRESS_THICKNESS_POINTS = 8
 CHECKBOX_INDICATOR_POINTS = 14
 FOCUS_THICKNESS_POINTS = 1
+HIGH_CONTRAST_FOCUS_THICKNESS_POINTS = 2
 SYMBOL_STROKE_DIVISOR = 8.0
 PENDING_STROKE_DIVISOR = 12.0
 MINIMUM_STROKE_PIXELS = 1.5
@@ -150,10 +160,10 @@ class Palette:
     log_text: str
 
 
-def build_palette(appearance: str) -> Palette:
+def build_palette(appearance: str, is_high_contrast: bool = False) -> Palette:
     """The init window's roles, resolved from the shared tokens for one appearance."""
     def token(name: str) -> str:
-        return design_tokens.colour(TOKENS, name, appearance)
+        return design_tokens.colour(TOKENS, name, appearance, is_high_contrast)
 
     return Palette(
         workspace=token("surface.workspace"), panel=token("surface.panel"), raised=token("surface.raised"),
@@ -172,6 +182,7 @@ def build_palette(appearance: str) -> Palette:
 LIGHT_PALETTE = build_palette(LIGHT)
 DARK_PALETTE = build_palette(DARK)
 PALETTES = {LIGHT: LIGHT_PALETTE, DARK: DARK_PALETTE}
+HIGH_CONTRAST_PALETTES = {LIGHT: build_palette(LIGHT, True), DARK: build_palette(DARK, True)}
 
 # ttk style surfaces: widgets sit either on the window background or on a card.
 WORKSPACE_SURFACE = "Workspace"
@@ -368,6 +379,45 @@ def detect_appearance(root=None, *, environment=None, system: str | None = None,
     return LIGHT
 
 
+def detect_high_contrast(*, environment=None, system: str | None = None, run=subprocess.run) -> bool:
+    """True when the desktop asks for more contrast, as the Editor's ``theme_preferences`` reads it.
+
+    ``LUDUS_HIGH_CONTRAST`` (1/true/on or 0/false/off) wins over the system.
+    """
+    environment = os.environ if environment is None else environment
+    requested = environment.get(HIGH_CONTRAST_ENVIRONMENT, "").strip().lower()
+    if requested in ("1", "true", "on"):
+        return True
+    if requested in ("0", "false", "off"):
+        return False
+    system = system or platform.system()
+    if system == "Windows":
+        return windows_high_contrast()
+    if system == "Darwin":
+        command, positive = ["defaults", "read", "com.apple.universalaccess", "increaseContrast"], "1"
+    else:
+        command, positive = ["gsettings", "get", "org.gnome.desktop.a11y.interface", "high-contrast"], "true"
+    try:
+        result = run(command, capture_output=True, text=True, timeout=APPEARANCE_PROBE_SECONDS, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0 and result.stdout.strip().lower() == positive
+
+
+def windows_high_contrast() -> bool:
+    """The ``HCF_HIGHCONTRASTON`` flag of ``SystemParametersInfo(SPI_GETHIGHCONTRAST)``."""
+    try:
+        class HighContrast(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_uint), ("dwFlags", ctypes.c_uint), ("lpszDefaultScheme", ctypes.c_void_p)]
+
+        state = HighContrast(ctypes.sizeof(HighContrast), 0, None)
+        if not ctypes.windll.user32.SystemParametersInfoW(SPI_GETHIGHCONTRAST, state.cbSize, ctypes.byref(state), 0):
+            return False
+    except (AttributeError, OSError):
+        return False
+    return bool(state.dwFlags & HCF_HIGHCONTRASTON)
+
+
 def windows_appearance() -> str:
     try:
         import winreg
@@ -457,12 +507,15 @@ def create_fonts(root, system: str) -> Fonts:
 class Theme:
     """Fonts, colours, spacing, ttk styles and icons for one Tk root."""
 
-    def __init__(self, root, ttk, *, appearance: str | None = None, environment=None, system: str | None = None):
+    def __init__(self, root, ttk, *, appearance: str | None = None, environment=None, system: str | None = None,
+                 high_contrast: bool | None = None):
         self.root = root
         self.ttk = ttk
         self.system = system or platform.system()
         self.appearance = appearance or detect_appearance(root, environment=environment, system=self.system)
-        self.palette = PALETTES[self.appearance]
+        self.is_high_contrast = (detect_high_contrast(environment=environment, system=self.system)
+                                 if high_contrast is None else high_contrast)
+        self.palette = (HIGH_CONTRAST_PALETTES if self.is_high_contrast else PALETTES)[self.appearance]
         self.scale = interface_scale(root, environment=environment, system=self.system)
         self.fonts = create_fonts(root, self.system)
         self._images: dict[int, object] = {}
@@ -510,6 +563,7 @@ class Theme:
 
     def _configure_styles(self) -> None:
         palette, fonts, style = self.palette, self.fonts, self.style
+        focus_thickness = HIGH_CONTRAST_FOCUS_THICKNESS_POINTS if self.is_high_contrast else FOCUS_THICKNESS_POINTS
         if "clam" in style.theme_names():
             style.theme_use("clam")
         self.root.configure(background=palette.workspace)
@@ -547,7 +601,7 @@ class Theme:
         # Cards differ from the window by surface colour; their edge is decorative,
         # so it uses the softer card border rather than the 3:1 control border.
         style.configure("Card.TFrame", background=palette.panel, bordercolor=palette.card_border, relief="solid",
-                        borderwidth=FOCUS_THICKNESS_POINTS)
+                        borderwidth=focus_thickness)
         style.configure("Panel.TFrame", background=palette.panel)
         style.configure("Header.TFrame", background=palette.panel)
         for name in ("Title", "Secondary", "Mono", "TLabel", "Strong", "Heading"):
@@ -559,7 +613,7 @@ class Theme:
         padding = (self.space(SPACE_LARGE), self.space(SPACE_SMALL) - 1)
         style.configure("TButton", background=palette.raised, foreground=palette.text, bordercolor=palette.border,
                         lightcolor=palette.raised, darkcolor=palette.raised, focuscolor=palette.focus,
-                        focusthickness=FOCUS_THICKNESS_POINTS, padding=padding, font=fonts.body, anchor="center")
+                        focusthickness=focus_thickness, padding=padding, font=fonts.body, anchor="center")
         style.map("TButton",
                   background=[("disabled", palette.workspace), ("pressed", palette.selected),
                               ("active", palette.selected)],
