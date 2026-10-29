@@ -16,9 +16,10 @@
 //   12: (random u_0, random u_1, technique, unused) of that sample
 //   13: plane intersection of the sampled direction: (hit ? 1 : 0, distance, barycentric x, barycentric y)
 //   14: empty LTC clip: (prepared ? 1 : 0, E_0, E_1, w_1 at a diffuse sample)
+//   15: sampler version 3's approximate integrals of record 6-8's triangle: (approximated ? 1 : 0, E_0, E_1, unused)
 // Slot 0 holds the results; the renderer's LTC table is bound read-only at this slot.
 #define LUDUS_REFERENCE_LIGHT_PARITY_LTC_TABLE_BINDING 1
-#define LUDUS_REFERENCE_LIGHT_PARITY_RECORDS_PER_INVOCATION 15
+#define LUDUS_REFERENCE_LIGHT_PARITY_RECORDS_PER_INVOCATION 16
 #define LUDUS_REFERENCE_LIGHT_PARITY_GROUP_SIZE 64
 #define LUDUS_REFERENCE_LIGHT_PARITY_WEIGHT_INPUT_RECORD 0
 #define LUDUS_REFERENCE_LIGHT_PARITY_WEIGHT_RECORD 1
@@ -33,5 +34,6 @@
 #define LUDUS_REFERENCE_LIGHT_PARITY_RANDOM_RECORD 12
 #define LUDUS_REFERENCE_LIGHT_PARITY_PLANE_RECORD 13
 #define LUDUS_REFERENCE_LIGHT_PARITY_EMPTY_CLIP_RECORD 14
+#define LUDUS_REFERENCE_LIGHT_PARITY_APPROXIMATE_RECORD 15
 // The empty-clip LTC: M^-1 = [[1, 0, 0], [0, 1, 0], [1, 0, 0.2]] is zero where x + 0.2 z <= 0.
 #define LUDUS_REFERENCE_LIGHT_PARITY_EMPTY_CLIP_M22 0.2

@@ -1059,14 +1059,20 @@ TEST_CASE("Resampled light sampling agrees with UniformArea across seeds and dep
                 REQUIRE(built == S::Ready);
             }
             const rr::Snapshot snapshot = cpu.Snapshot;
-            SeedMeans uniform;
-            SeedMeans resampled;
+            // UniformArea, then both resampled modes, which differ only in their RIS target.
+            constexpr usize MODE_COUNT = 3;
+            constexpr StaticArray<rr::ReferenceLightSampling, MODE_COUNT> MODES{
+                {rr::ReferenceLightSampling::UniformArea,
+                 rr::ReferenceLightSampling::ResampledProjectedSolidAngle,
+                 rr::ReferenceLightSampling::ResampledFormFactor}};
+            constexpr StaticArray<uint32, MODE_COUNT> SAMPLER_VERSIONS{{1, 2, 3}};
+            StaticArray<SeedMeans, MODE_COUNT> means{};
             for (usize seed = 0; seed < RESAMPLED_SEED_COUNT; ++seed)
             {
                 capture.Seed = 40 + seed;
-                for (const rr::ReferenceLightSampling mode : {rr::ReferenceLightSampling::UniformArea,
-                                                              rr::ReferenceLightSampling::ResampledProjectedSolidAngle})
+                for (usize modeIndex = 0; modeIndex < MODE_COUNT; ++modeIndex)
                 {
+                    const rr::ReferenceLightSampling mode = MODES[modeIndex];
                     capture.LightSampling = mode;
                     Array<rr::ReferencePixel> pixels;
                     rr::ReferenceCaptureInfo info;
@@ -1077,23 +1083,28 @@ TEST_CASE("Resampled light sampling agrees with UniformArea across seeds and dep
                     REQUIRE(cpu.Renderer.GetReferenceCaptureInfo(handle, info) == S::Ready);
                     CHECK(info.InvalidContributions == 0);
                     CHECK(info.LightSampling == mode);
-                    CHECK(info.SamplerVersion ==
-                          (mode == rr::ReferenceLightSampling::UniformArea ? uint32{1} : uint32{2}));
+                    CHECK(info.SamplerVersion == SAMPLER_VERSIONS[modeIndex]);
                     REQUIRE(pixels.TryResize(usize(capture.Width) * capture.Height) == true);
                     REQUIRE(cpu.Renderer.CopyReferencePixels(handle, pixels.GetData(), pixels.GetSize()) == S::Ready);
                     REQUIRE(cpu.Renderer.Release(handle) == S::Ready);
-                    RecordSeed(pixels, seed, mode == rr::ReferenceLightSampling::UniformArea ? uniform : resampled);
+                    RecordSeed(pixels, seed, means[modeIndex]);
                 }
                 // Primary rays and primary emission use the unchanged dimensions 0 and 1.
-                CHECK(uniform.Emission[seed] == resampled.Emission[seed]);
+                CHECK(means[0].Emission[seed] == means[1].Emission[seed]);
+                CHECK(means[0].Emission[seed] == means[2].Emission[seed]);
             }
-            const float32 direct = MeasureSeparation(uniform.Direct, resampled.Direct);
-            const float32 indirect = MeasureSeparation(uniform.Indirect, resampled.Indirect);
-            const float32 radiance = MeasureSeparation(uniform.Radiance, resampled.Radiance);
-            CAPTURE(direct, indirect, radiance, uniform.Radiance[0], resampled.Radiance[0]);
-            CHECK(direct <= RESAMPLED_STANDARD_ERRORS);
-            CHECK(indirect <= RESAMPLED_STANDARD_ERRORS);
-            CHECK(radiance <= RESAMPLED_STANDARD_ERRORS);
+            for (usize modeIndex = 1; modeIndex < MODE_COUNT; ++modeIndex)
+            {
+                const SeedMeans& uniform = means[0];
+                const SeedMeans& resampled = means[modeIndex];
+                const float32 direct = MeasureSeparation(uniform.Direct, resampled.Direct);
+                const float32 indirect = MeasureSeparation(uniform.Indirect, resampled.Indirect);
+                const float32 radiance = MeasureSeparation(uniform.Radiance, resampled.Radiance);
+                CAPTURE(modeIndex, direct, indirect, radiance, uniform.Radiance[0], resampled.Radiance[0]);
+                CHECK(direct <= RESAMPLED_STANDARD_ERRORS);
+                CHECK(indirect <= RESAMPLED_STANDARD_ERRORS);
+                CHECK(radiance <= RESAMPLED_STANDARD_ERRORS);
+            }
         }
     }
 }
@@ -1161,7 +1172,6 @@ TEST_CASE("GPU-compute resampled reference matches the CPU oracle",
             capture.Environment = test.Fixture == Scene::Room ? math::Vector3{} : math::Vector3{.2F, .25F, .3F};
             capture.Lights = &sun;
             capture.LightCount = test.Fixture == Scene::L6 ? 1 : 0;
-            capture.LightSampling = rr::ReferenceLightSampling::ResampledProjectedSolidAngle;
             // Each session holds one fixture at a time within the renderer's material capacity.
             if (test.Fixture != Scene::L6)
             {
@@ -1181,49 +1191,58 @@ TEST_CASE("GPU-compute resampled reference matches the CPU oracle",
                     REQUIRE(built == S::Ready);
                 }
             }
-            Array<rr::ReferencePixel> oracle;
-            Array<rr::ReferencePixel> compute;
-            rr::ReferenceCaptureInfo oracleInfo;
-            rr::ReferenceCaptureInfo computeInfo;
-            Capture(cpu, capture, surface, oracle, oracleInfo);
-            Capture(gpu, capture, surface, compute, computeInfo);
-            CHECK(oracleInfo.SamplerVersion == 2);
-            CHECK(computeInfo.SamplerVersion == 2);
-            CHECK(computeInfo.LightSampling == rr::ReferenceLightSampling::ResampledProjectedSolidAngle);
-            CHECK(oracleInfo.InvalidContributions == 0);
-            CHECK(computeInfo.InvalidContributions == 0);
-            CHECK(computeInfo.Complete == true);
-            CHECK(computeInfo.CommittedSamples == oracleInfo.CommittedSamples);
-            const Comparison comparison = Compare(oracle, compute, capture.TargetSamples);
-            const float32 radianceMean = math::Distance(MeasureImage(oracle).Radiance, MeasureImage(compute).Radiance);
-            CAPTURE(comparison.MaximumRadiance,
-                    comparison.MaximumEmission,
-                    comparison.MaximumDirect,
-                    comparison.MaximumIndirect,
-                    math::Sqrt(comparison.SquaredRadiance),
-                    radianceMean,
-                    oracleInfo.ClosestQueries,
-                    computeInfo.ClosestQueries,
-                    oracleInfo.VisibilityQueries,
-                    computeInfo.VisibilityQueries);
-            // The same addressed candidates and tickets select the same emitters in both precisions on these
-            // fixtures, so the UniformArea parity tolerances hold per pixel.
-            CHECK(comparison.MaximumRadiance <= 2e-3F);
-            CHECK(comparison.MaximumEmission <= 2e-3F);
-            CHECK(comparison.MaximumDirect <= 2e-3F);
-            CHECK(comparison.MaximumIndirect <= 2e-3F);
-            CHECK(math::Sqrt(comparison.SquaredRadiance) <= 2e-4F);
-            CHECK(radianceMean <= 1e-4F);
-            CHECK(computeInfo.ClosestQueries == oracleInfo.ClosestQueries);
-            CHECK(computeInfo.NullBsdfSamples == oracleInfo.NullBsdfSamples);
-            CHECK(computeInfo.RouletteTerminations == oracleInfo.RouletteTerminations);
-            // A light sample whose contribution rounds to zero in one precision skips its shadow ray; with two
-            // techniques per vertex a few such samples remain where emitters are rarely selected.
-            constexpr uint64 VISIBILITY_COUNT_DIVISOR = 100;
-            const uint64 visibilityDifference = computeInfo.VisibilityQueries > oracleInfo.VisibilityQueries
-                                                    ? computeInfo.VisibilityQueries - oracleInfo.VisibilityQueries
-                                                    : oracleInfo.VisibilityQueries - computeInfo.VisibilityQueries;
-            CHECK(visibilityDifference <= oracleInfo.VisibilityQueries / VISIBILITY_COUNT_DIVISOR + 3);
+            for (const rr::ReferenceLightSampling mode : {rr::ReferenceLightSampling::ResampledProjectedSolidAngle,
+                                                          rr::ReferenceLightSampling::ResampledFormFactor})
+            {
+                capture.LightSampling = mode;
+                CAPTURE(static_cast<uint32>(mode));
+                Array<rr::ReferencePixel> oracle;
+                Array<rr::ReferencePixel> compute;
+                rr::ReferenceCaptureInfo oracleInfo;
+                rr::ReferenceCaptureInfo computeInfo;
+                Capture(cpu, capture, surface, oracle, oracleInfo);
+                Capture(gpu, capture, surface, compute, computeInfo);
+                const uint32 samplerVersion =
+                    capture.LightSampling == rr::ReferenceLightSampling::ResampledFormFactor ? 3 : 2;
+                CHECK(oracleInfo.SamplerVersion == samplerVersion);
+                CHECK(computeInfo.SamplerVersion == samplerVersion);
+                CHECK(computeInfo.LightSampling == capture.LightSampling);
+                CHECK(oracleInfo.InvalidContributions == 0);
+                CHECK(computeInfo.InvalidContributions == 0);
+                CHECK(computeInfo.Complete == true);
+                CHECK(computeInfo.CommittedSamples == oracleInfo.CommittedSamples);
+                const Comparison comparison = Compare(oracle, compute, capture.TargetSamples);
+                const float32 radianceMean =
+                    math::Distance(MeasureImage(oracle).Radiance, MeasureImage(compute).Radiance);
+                CAPTURE(comparison.MaximumRadiance,
+                        comparison.MaximumEmission,
+                        comparison.MaximumDirect,
+                        comparison.MaximumIndirect,
+                        math::Sqrt(comparison.SquaredRadiance),
+                        radianceMean,
+                        oracleInfo.ClosestQueries,
+                        computeInfo.ClosestQueries,
+                        oracleInfo.VisibilityQueries,
+                        computeInfo.VisibilityQueries);
+                // The same addressed candidates and tickets select the same emitters in both precisions on these
+                // fixtures, so the UniformArea parity tolerances hold per pixel.
+                CHECK(comparison.MaximumRadiance <= 2e-3F);
+                CHECK(comparison.MaximumEmission <= 2e-3F);
+                CHECK(comparison.MaximumDirect <= 2e-3F);
+                CHECK(comparison.MaximumIndirect <= 2e-3F);
+                CHECK(math::Sqrt(comparison.SquaredRadiance) <= 2e-4F);
+                CHECK(radianceMean <= 1e-4F);
+                CHECK(computeInfo.ClosestQueries == oracleInfo.ClosestQueries);
+                CHECK(computeInfo.NullBsdfSamples == oracleInfo.NullBsdfSamples);
+                CHECK(computeInfo.RouletteTerminations == oracleInfo.RouletteTerminations);
+                // A light sample whose contribution rounds to zero in one precision skips its shadow ray; with two
+                // techniques per vertex a few such samples remain where emitters are rarely selected.
+                constexpr uint64 VISIBILITY_COUNT_DIVISOR = 100;
+                const uint64 visibilityDifference = computeInfo.VisibilityQueries > oracleInfo.VisibilityQueries
+                                                        ? computeInfo.VisibilityQueries - oracleInfo.VisibilityQueries
+                                                        : oracleInfo.VisibilityQueries - computeInfo.VisibilityQueries;
+                CHECK(visibilityDifference <= oracleInfo.VisibilityQueries / VISIBILITY_COUNT_DIVISOR + 3);
+            }
         }
     }
 }
@@ -1268,8 +1287,9 @@ TEST_CASE("Resampled light sampling ignores emitters behind every receiver in bo
     capture.TargetSamples = 16;
     capture.MaxDepth = 4;
     capture.Seed = 17;
-    for (const rr::ReferenceLightSampling mode :
-         {rr::ReferenceLightSampling::UniformArea, rr::ReferenceLightSampling::ResampledProjectedSolidAngle})
+    for (const rr::ReferenceLightSampling mode : {rr::ReferenceLightSampling::UniformArea,
+                                                  rr::ReferenceLightSampling::ResampledProjectedSolidAngle,
+                                                  rr::ReferenceLightSampling::ResampledFormFactor})
     {
         capture.LightSampling = mode;
         for (Session* session : {&cpu, &gpu})
@@ -1317,7 +1337,7 @@ TEST_CASE("GPU-compute light-sampling mode is part of the integral and the raw c
     capture.Seed = 3;
     capture.Environment = {.3F, .4F, .5F};
     rr::ReferenceCaptureDescription invalid = capture;
-    invalid.LightSampling = static_cast<rr::ReferenceLightSampling>(2);
+    invalid.LightSampling = static_cast<rr::ReferenceLightSampling>(3);
     rr::ReferenceCapture rejected;
     CHECK(gpu.Renderer.BeginReferenceCapture(gpu.Snapshot, invalid, rejected) == S::InvalidDescription);
     rr::ReferenceCapture handle;
@@ -1354,5 +1374,19 @@ TEST_CASE("GPU-compute light-sampling mode is part of the integral and the raw c
     const uint32 flags = uint32(bytes[FLAGS_OFFSET]) | (uint32(bytes[FLAGS_OFFSET + 1]) << 8);
     CHECK((flags & GPU_COMPUTE_FLAG) != 0);
     CHECK((flags & RESAMPLED_LIGHT_FLAG) != 0);
+    // The approximate target is another sampler version and another integral key.
+    resampled.LightSampling = rr::ReferenceLightSampling::ResampledFormFactor;
+    const S approximated = gpu.Renderer.UpdateReferenceCapture(handle, gpu.Snapshot, resampled);
+    REQUIRE((approximated == S::Ready || approximated == S::Pending));
+    REQUIRE(Run(gpu.Renderer, handle, surface) == S::Ready);
+    REQUIRE(gpu.Renderer.GetReferenceCaptureInfo(handle, info) == S::Ready);
+    CHECK(info.Revision == 3);
+    CHECK(info.SamplerVersion == 3);
+    CHECK(info.LightSampling == rr::ReferenceLightSampling::ResampledFormFactor);
+    CHECK(info.CommittedSamples == uint64{4} * capture.Width * capture.Height);
+    REQUIRE(gpu.Renderer.EncodeReferenceHdr(handle, bytes.GetData(), bytes.GetSize(), written) == S::Ready);
+    CHECK(bytes[SAMPLER_OFFSET] == 3);
+    const uint32 approximatedFlags = uint32(bytes[FLAGS_OFFSET]) | (uint32(bytes[FLAGS_OFFSET + 1]) << 8);
+    CHECK((approximatedFlags & RESAMPLED_LIGHT_FLAG) != 0);
     REQUIRE(gpu.Renderer.Release(handle) == S::Ready);
 }

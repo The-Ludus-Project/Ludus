@@ -67,7 +67,7 @@ constexpr uint32 BSDF_SECOND_SLOT = 5;
 constexpr uint32 ROULETTE_SLOT = 6;
 bool IsResampled(const ReferenceJob& job) noexcept
 {
-    return job.Description.LightSampling == ReferenceLightSampling::ResampledProjectedSolidAngle;
+    return IsReferenceResampled(job.Description.LightSampling);
 }
 // Dimension `slot` of the path's current scattering event under the job's sampler version.
 uint16 Dimension(const ReferenceJob& job, const ReferencePath& path, uint32 slot) noexcept

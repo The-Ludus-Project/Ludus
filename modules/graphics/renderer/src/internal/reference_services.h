@@ -35,7 +35,8 @@ constexpr uint32 FINGERPRINT_SURFACE_MAP_TAG = 0x53555246; // Numeric SURF tag; 
 constexpr uint32 MAXIMUM_REFERENCE_TILE_PIXELS = 2048;
 /// LUHDR01 flags bit identifying a GPU-compute capture.
 constexpr uint32 HDR_GPU_COMPUTE_FLAG = 64;
-/// LUHDR01 flags bit identifying a ReferenceLightSampling::ResampledProjectedSolidAngle capture (sampler version 2).
+/// LUHDR01 flags bit identifying a resampled capture: ResampledProjectedSolidAngle (sampler version 2) or
+/// ResampledFormFactor (sampler version 3), which the sampler field distinguishes.
 constexpr uint32 HDR_RESAMPLED_LIGHT_FLAG = 128;
 
 usize GetReferenceGpuBytes(const ReferenceJob& job) noexcept
@@ -54,9 +55,13 @@ Status PrepareReferenceCompute(ReferenceJob& inoutJob, usize cpuRemaining, usize
     {
         return status;
     }
-    if (inoutJob.Description.LightSampling == ReferenceLightSampling::ResampledProjectedSolidAngle)
+    if (internal::IsReferenceResampled(inoutJob.Description.LightSampling) == true)
     {
         uniform.Sampling[2] |= LUDUS_REFERENCE_RESAMPLED_LIGHT_FLAG;
+    }
+    if (inoutJob.Description.LightSampling == ReferenceLightSampling::ResampledFormFactor)
+    {
+        uniform.Sampling[2] |= LUDUS_REFERENCE_FORM_FACTOR_TARGET_FLAG;
     }
     const usize packedBytes = (data.GetSize() + texels.GetSize()) * sizeof(math::Vector4);
     const usize pixels = usize(inoutJob.Description.Width) * inoutJob.Description.Height;
@@ -124,7 +129,7 @@ Status ValidateReferenceDescription(const ReferenceCaptureDescription& d, LightS
         return Status::InvalidDescription;
     }
     if (d.LightSampling != ReferenceLightSampling::UniformArea &&
-        d.LightSampling != ReferenceLightSampling::ResampledProjectedSolidAngle)
+        internal::IsReferenceResampled(d.LightSampling) == false)
     {
         return Status::InvalidDescription;
     }
@@ -992,9 +997,7 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
     }
     job->Info.Traversal = Reference->Options.Traversal;
     job->Info.LightSampling = description.LightSampling;
-    job->Info.SamplerVersion = description.LightSampling == ReferenceLightSampling::ResampledProjectedSolidAngle
-                                   ? internal::REFERENCE_RESAMPLED_SAMPLER_VERSION
-                                   : internal::REFERENCE_UNIFORM_AREA_SAMPLER_VERSION;
+    job->Info.SamplerVersion = internal::GetReferenceSamplerVersion(description.LightSampling);
     job->Info.Seed = description.Seed;
     job->Info.Width = description.Width;
     job->Info.Height = description.Height;
@@ -1699,14 +1702,13 @@ Renderer::EncodeReferenceHdr(ReferenceCapture handle, uint8* output, usize capac
     Put32(output + 32, job.Description.TargetSamples);
     Put32(output + 36, job.Description.MaxDepth);
     Put32(output + 40, job.Description.RouletteDepth);
-    const uint32 flags = (job.Info.Traversal == ReferenceTraversal::CpuOracle ? 1U : 0U) |
-                         (job.Info.Traversal == ReferenceTraversal::GpuCompute ? HDR_GPU_COMPUTE_FLAG : 0U) |
-                         (job.Description.CenterRays ? 2U : 0U) | (job.Description.OrthographicCamera ? 4U : 0U) |
-                         (job.Description.ReverseZ ? 8U : 0U) | (job.Description.InfiniteFar ? 16U : 0U) |
-                         (job.Info.Complete == false ? 32U : 0U) |
-                         (job.Description.LightSampling == ReferenceLightSampling::ResampledProjectedSolidAngle
-                              ? HDR_RESAMPLED_LIGHT_FLAG
-                              : 0U);
+    const uint32 flags =
+        (job.Info.Traversal == ReferenceTraversal::CpuOracle ? 1U : 0U) |
+        (job.Info.Traversal == ReferenceTraversal::GpuCompute ? HDR_GPU_COMPUTE_FLAG : 0U) |
+        (job.Description.CenterRays ? 2U : 0U) | (job.Description.OrthographicCamera ? 4U : 0U) |
+        (job.Description.ReverseZ ? 8U : 0U) | (job.Description.InfiniteFar ? 16U : 0U) |
+        (job.Info.Complete == false ? 32U : 0U) |
+        (internal::IsReferenceResampled(job.Description.LightSampling) == true ? HDR_RESAMPLED_LIGHT_FLAG : 0U);
     Put32(output + 44, flags);
     Put64(output + 48, job.Description.Seed);
     Put64(output + 56, job.Info.Revision);

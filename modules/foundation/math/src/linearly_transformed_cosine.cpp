@@ -72,6 +72,40 @@ constexpr uint32 TWICE_FLOAT32_EXPONENT_BIAS = 254;
     const float32 result = cosine * (distribution.InverseDeterminant * (inverseLength * inverseLength * inverseLength));
     return IsFiniteBits(result) == true ? result : 0.0F;
 }
+
+// Hill and Heitz 2016, slide 77: theta / sin(theta) ~ a + (b + c y) y with y = |cos(theta)| on [0, 1]; an obtuse edge
+// uses pi / sin(theta) minus the acute value.
+constexpr float32 EDGE_RATIO_FIT_CONSTANT = 1.5708F;
+constexpr float32 EDGE_RATIO_FIT_LINEAR = -0.879406F;
+constexpr float32 EDGE_RATIO_FIT_QUADRATIC = 0.308609F;
+// sin^2(theta) floor (2^-23) of an obtuse edge's reciprocal. Only an edge within rounding of pi reaches it, where the
+// receiver lies on the edge's line and the edge's cross product, which scales the ratio, vanishes.
+constexpr float32 MIN_EDGE_SINE_SQUARED = 1.1920928955078125e-7F;
+constexpr float32 INVERSE_TWO_PI = 0.5F / kPiF;
+
+/// The unit direction of a vertex, or zero when its squared length is not a positive normal float.
+[[nodiscard]] Vector3 NormalizeVertexDirection(Vector3 positionTangent) noexcept
+{
+    const float32 lengthSquared = Dot(positionTangent, positionTangent);
+    if (IsPositiveNormalBits(lengthSquared) == false)
+    {
+        return {};
+    }
+    return positionTangent * (1.0F / std::sqrt(lengthSquared));
+}
+/// theta / sin(theta) times d0 x d1 for the edge between unit directions d0 and d1 (slides 72-77).
+[[nodiscard]] Vector3 IntegrateApproximateEdge(Vector3 direction0, Vector3 direction1) noexcept
+{
+    const float32 cosine = Dot(direction0, direction1);
+    const float32 magnitude = Abs(cosine);
+    float32 ratio =
+        EDGE_RATIO_FIT_CONSTANT + (EDGE_RATIO_FIT_LINEAR + EDGE_RATIO_FIT_QUADRATIC * magnitude) * magnitude;
+    if (cosine < 0.0F)
+    {
+        ratio = kPiF / std::sqrt(Max(1.0F - cosine * cosine, MIN_EDGE_SINE_SQUARED)) - ratio;
+    }
+    return Cross(direction0, direction1) * ratio;
+}
 } // namespace
 
 MathStatus TryMakeLinearlyTransformedCosine(const Matrix3& inverseTransform,
@@ -163,6 +197,94 @@ MathStatus TryPrepareLinearlyTransformedCosinePolygon(const ProjectedPolygonInpu
 float32 GetLinearlyTransformedCosinePolygonIntegral(const LinearlyTransformedCosinePolygon& polygon) noexcept
 {
     return polygon.TransformedPolygon.ProjectedSolidAngle / kPiF;
+}
+
+MathStatus TryApproximateClampedCosinePolygonIntegral(const ProjectedPolygonInput& polygon,
+                                                      ApproximatePolygonIntegral& outIntegral) noexcept
+{
+    if (polygon.VertexCount < MIN_PROJECTED_POLYGON_VERTICES ||
+        polygon.VertexCount > MAX_PROJECTED_POLYGON_INPUT_VERTICES)
+    {
+        return MathStatus::InvalidArgument;
+    }
+    float32 largestMagnitude = 0.0F;
+    for (uint32 i = 0; i < polygon.VertexCount; ++i)
+    {
+        if (IsFinite(polygon.PositionsTangent[i]) == false)
+        {
+            return MathStatus::NonFiniteInput;
+        }
+        largestMagnitude = Max(largestMagnitude, GetLargestMagnitude(polygon.PositionsTangent[i]));
+    }
+    ApproximatePolygonIntegral result;
+    if ((largestMagnitude > 0.0F) == false)
+    {
+        outIntegral = result;
+        return MathStatus::Success;
+    }
+    // Only directions matter; the common scale keeps the largest vertex's squared length normal.
+    Vector3 directions[MAX_PROJECTED_POLYGON_INPUT_VERTICES]{};
+    bool hasVertexAboveHorizon = false;
+    bool hasVertexBelowHorizon = false;
+    for (uint32 i = 0; i < polygon.VertexCount; ++i)
+    {
+        directions[i] = NormalizeVertexDirection(polygon.PositionsTangent[i] / largestMagnitude);
+        hasVertexAboveHorizon = hasVertexAboveHorizon || directions[i].Z > 0.0F;
+        hasVertexBelowHorizon = hasVertexBelowHorizon || directions[i].Z < 0.0F;
+    }
+    // The sign of the triple product is the polygon's winding as seen from the origin; zero means the polygon's plane
+    // contains the origin (or a vertex is the origin), where the clipped integral is zero too.
+    const float32 tripleProduct = Dot(directions[0], Cross(directions[1], directions[2]));
+    if ((tripleProduct > 0.0F || tripleProduct < 0.0F) == false)
+    {
+        outIntegral = result;
+        return MathStatus::Success;
+    }
+    // Slides 90-92: the edge integrals without the projection onto the normal, oriented towards the polygon. The
+    // fitted edge ratio can carry an integral near one slightly past it, so integrals are clamped to [0, 1].
+    Vector3 vectorFormFactor{};
+    for (uint32 i = 0; i < polygon.VertexCount; ++i)
+    {
+        const uint32 next = i + 1 < polygon.VertexCount ? i + 1 : 0;
+        vectorFormFactor = vectorFormFactor + IntegrateApproximateEdge(directions[i], directions[next]);
+    }
+    result.VectorFormFactor = vectorFormFactor * (tripleProduct > 0.0F ? INVERSE_TWO_PI : -INVERSE_TWO_PI);
+    result.UnitTripleProduct = Abs(tripleProduct);
+    if (hasVertexAboveHorizon == true && hasVertexBelowHorizon == false)
+    {
+        result.Integral = Min(Max(result.VectorFormFactor.Z, 0.0F), 1.0F);
+    }
+    else if (hasVertexAboveHorizon == true)
+    {
+        // Slide 102: the horizon-clipped form factor of the sphere with the same vector form factor.
+        const float32 length = std::sqrt(Dot(result.VectorFormFactor, result.VectorFormFactor));
+        result.Integral = Min(Max((length * length + result.VectorFormFactor.Z) / (length + 1.0F), 0.0F), 1.0F);
+    }
+    outIntegral = result;
+    return MathStatus::Success;
+}
+
+MathStatus TryApproximateLinearlyTransformedCosinePolygonIntegral(const ProjectedPolygonInput& polygon,
+                                                                  const LinearlyTransformedCosine& distribution,
+                                                                  ApproximatePolygonIntegral& outIntegral) noexcept
+{
+    if (polygon.VertexCount < MIN_PROJECTED_POLYGON_VERTICES ||
+        polygon.VertexCount > MAX_PROJECTED_POLYGON_INPUT_VERTICES)
+    {
+        return MathStatus::InvalidArgument;
+    }
+    // Equation 3 of Heitz et al. 2016: the LTC integral over P is the clamped-cosine integral over M^-1 P.
+    ProjectedPolygonInput transformed;
+    transformed.VertexCount = polygon.VertexCount;
+    for (uint32 i = 0; i < polygon.VertexCount; ++i)
+    {
+        if (IsFinite(polygon.PositionsTangent[i]) == false)
+        {
+            return MathStatus::NonFiniteInput;
+        }
+        transformed.PositionsTangent[i] = distribution.InverseTransform * polygon.PositionsTangent[i];
+    }
+    return TryApproximateClampedCosinePolygonIntegral(transformed, outIntegral);
 }
 
 MathStatus TrySampleLinearlyTransformedCosinePolygon(const LinearlyTransformedCosinePolygon& polygon,

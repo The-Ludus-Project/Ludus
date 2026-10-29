@@ -152,10 +152,16 @@ struct ReferenceAccumulator final
 /// Most visibility queries one path vertex issues: one per light technique of the resampled estimator, and one
 /// for UniformArea.
 inline constexpr usize REFERENCE_MAX_SHADOWS_PER_VERTEX = REFERENCE_LIGHT_TECHNIQUE_COUNT;
+/// Whether `sampling` resamples emitters (sampler versions 2 and 3), which share one estimator and random layout.
+[[nodiscard]] inline constexpr bool IsReferenceResampled(ReferenceLightSampling sampling) noexcept
+{
+    return sampling == ReferenceLightSampling::ResampledProjectedSolidAngle ||
+           sampling == ReferenceLightSampling::ResampledFormFactor;
+}
 /// Native queries one tile path may submit in a bounce: its shadow rays and its continuation.
 [[nodiscard]] inline constexpr usize GetReferenceRaysPerPath(ReferenceLightSampling sampling) noexcept
 {
-    return sampling == ReferenceLightSampling::ResampledProjectedSolidAngle ? REFERENCE_MAX_SHADOWS_PER_VERTEX + 1 : 2;
+    return IsReferenceResampled(sampling) == true ? REFERENCE_MAX_SHADOWS_PER_VERTEX + 1 : 2;
 }
 struct ReferencePath final
 {
@@ -169,7 +175,7 @@ struct ReferencePath final
     uint32 Pixel = 0, Sample = 0, Depth = 0, DirectDepth = 0;
     uint32 ShadowCount = 0;
     float32 PreviousPdf = 0;
-    /// ResampledProjectedSolidAngle: the previous vertex's receiver and its Z-hat cache, read bit-identically by the
+    /// Resampled modes: the previous vertex's receiver and its Z-hat cache, read bit-identically by the
     /// BSDF-hit MIS density of the emitter that the continuation reaches.
     ReferenceReceiverFrame PreviousReceiver{};
     ReferenceTargetTotal PreviousTargetTotal{};
@@ -329,6 +335,32 @@ ReferenceRandom(const ReferenceJob& job, const ReferencePath& path, uint16 dimen
 /// ReferenceCaptureInfo::SamplerVersion of each light-sampling mode.
 inline constexpr uint32 REFERENCE_UNIFORM_AREA_SAMPLER_VERSION = 1;
 inline constexpr uint32 REFERENCE_RESAMPLED_SAMPLER_VERSION = 2;
+inline constexpr uint32 REFERENCE_RESAMPLED_FORM_FACTOR_SAMPLER_VERSION = 3;
+[[nodiscard]] inline constexpr uint32 GetReferenceSamplerVersion(ReferenceLightSampling sampling) noexcept
+{
+    return sampling == ReferenceLightSampling::ResampledFormFactor ? REFERENCE_RESAMPLED_FORM_FACTOR_SAMPLER_VERSION
+           : sampling == ReferenceLightSampling::ResampledProjectedSolidAngle ? REFERENCE_RESAMPLED_SAMPLER_VERSION
+                                                                              : REFERENCE_UNIFORM_AREA_SAMPLER_VERSION;
+}
+/// M, the frozen RIS candidate count of a resampled mode's sampler version.
+[[nodiscard]] inline constexpr uint32 GetReferenceRisCandidateCount(ReferenceLightSampling sampling) noexcept
+{
+    return sampling == ReferenceLightSampling::ResampledFormFactor ? LUDUS_REFERENCE_FORM_FACTOR_RIS_CANDIDATE_COUNT
+                                                                   : LUDUS_REFERENCE_RIS_CANDIDATE_COUNT;
+}
+/// K, the frozen normalization candidate count of a resampled mode's sampler version.
+[[nodiscard]] inline constexpr uint32 GetReferenceRisNormalizationCount(ReferenceLightSampling sampling) noexcept
+{
+    return sampling == ReferenceLightSampling::ResampledFormFactor
+               ? LUDUS_REFERENCE_FORM_FACTOR_RIS_NORMALIZATION_CANDIDATE_COUNT
+               : LUDUS_REFERENCE_RIS_NORMALIZATION_CANDIDATE_COUNT;
+}
+static_assert(LUDUS_REFERENCE_FORM_FACTOR_RIS_CANDIDATE_COUNT >= 1 &&
+                  LUDUS_REFERENCE_FORM_FACTOR_RIS_CANDIDATE_COUNT <= LUDUS_REFERENCE_RIS_CANDIDATE_COUNT &&
+                  LUDUS_REFERENCE_FORM_FACTOR_RIS_NORMALIZATION_CANDIDATE_COUNT >= 1 &&
+                  LUDUS_REFERENCE_FORM_FACTOR_RIS_NORMALIZATION_CANDIDATE_COUNT <=
+                      LUDUS_REFERENCE_RIS_NORMALIZATION_CANDIDATE_COUNT,
+              "sampler version 3 reads a prefix of version 2's candidate and normalization slots");
 static_assert(LUDUS_PATH_RANDOM_FIRST_BOUNCE_DIMENSION +
                       LUDUS_REFERENCE_MAX_DEPTH * LUDUS_PATH_RANDOM_DIMENSIONS_PER_BOUNCE - 1 <=
                   math::RandomMaxDimension,
@@ -347,9 +379,8 @@ static_assert(LUDUS_GPU_PREVIEW_MAX_DEPTH <= LUDUS_REFERENCE_MAX_DEPTH, "GPU pre
 /// Dimensions per scattering event of `sampling`'s sampler version.
 [[nodiscard]] inline constexpr uint32 GetReferenceDimensionsPerBounce(ReferenceLightSampling sampling) noexcept
 {
-    return sampling == ReferenceLightSampling::ResampledProjectedSolidAngle
-               ? LUDUS_PATH_RANDOM_VERSION2_DIMENSIONS_PER_BOUNCE
-               : LUDUS_PATH_RANDOM_DIMENSIONS_PER_BOUNCE;
+    return IsReferenceResampled(sampling) == true ? LUDUS_PATH_RANDOM_VERSION2_DIMENSIONS_PER_BOUNCE
+                                                  : LUDUS_PATH_RANDOM_DIMENSIONS_PER_BOUNCE;
 }
 // Dimension `slot` of scattering event `depth` under `sampling`'s sampler version. Admission bounds MaxDepth by
 // LUDUS_REFERENCE_MAX_DEPTH, so the result never narrows a wider value.
@@ -465,7 +496,7 @@ struct ReferenceProbeAddress final
 };
 // Reads the job immutably, so disjoint probes may run concurrently against one
 // prepared job. Path diagnostics go to the caller's counters, never job.Info.
-// UniformArea only: a ResampledProjectedSolidAngle job returns Unsupported and leaves the output unchanged.
+// UniformArea only: a resampled job returns Unsupported and leaves the output unchanged.
 [[nodiscard]] rhi::RasterStatus EvaluateReferenceDiffuseProbe(const ReferenceJob& job,
                                                               ReferenceCaptureInfo& inoutInfo,
                                                               const ReferenceProbeAddress& address,

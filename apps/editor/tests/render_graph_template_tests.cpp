@@ -1880,8 +1880,10 @@ TEST_CASE("RIS projected-solid-angle template is created from the editor picker 
     CHECK(document.GetDraft(QStringLiteral("main_shaders/projected_solid_angle_light.slang"))
               .contains("ComputeClampedOptimalMisWeights") == true);
     const QByteArray manifest = document.GetDraft(COMPUTE_MANIFEST);
-    for (const char* setting :
-         {"RIS_CANDIDATE_COUNT", "RIS_NORMALIZATION_CANDIDATE_COUNT", "PROJECTED_SOLID_ANGLE_MIS_VISIBILITY"})
+    for (const char* setting : {"RIS_CANDIDATE_COUNT",
+                                "RIS_NORMALIZATION_CANDIDATE_COUNT",
+                                "RIS_TARGET",
+                                "PROJECTED_SOLID_ANGLE_MIS_VISIBILITY"})
     {
         INFO(setting);
         CHECK(manifest.contains(setting) == true);

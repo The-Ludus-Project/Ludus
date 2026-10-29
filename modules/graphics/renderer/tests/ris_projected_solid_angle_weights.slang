@@ -170,4 +170,13 @@ ComputeMain(uint3 dispatchThreadId : SV_DispatchThreadID) {
                                                               asuint(receiverDensities.x),
                                                               asuint(receiverDensities.y),
                                                               isSampled == true ? 1 : 0);
+    float2 approximateIntegrals = float2(-1);
+    if (TryApproximateTriangleLightIntegrals(frame,
+                                             triangleWorld[0],
+                                             triangleWorld[1],
+                                             triangleWorld[2],
+                                             approximateIntegrals) == false)
+        approximateIntegrals = float2(-1);
+    Results[base + LUDUS_RIS_WEIGHTS_TARGET_RECORD] =
+        PackFloats(polygons.DiffuseIntegral, approximateIntegrals.x, polygons.SpecularIntegral, approximateIntegrals.y);
 }

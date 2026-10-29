@@ -3,15 +3,19 @@
 
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/addressed_random.hpp>
+#include <ludus/foundation/math/linearly_transformed_cosine.hpp>
+#include <ludus/foundation/math/projected_solid_angle.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <cstring>
 
-// Unit tests of RT1's ResampledProjectedSolidAngle estimator (reference_light_sampling.h): the MIS weights partition
-// unity, the surrogate density's Z-hat = 0 rule, the empty LTC-space clip, emitters behind the receiver, invalid
-// inputs, and the bit-identical light density at both MIS sites. Statistical agreement with UniformArea is checked on
+// Unit tests of RT1's resampled estimators, ResampledProjectedSolidAngle and ResampledFormFactor
+// (reference_light_sampling.h): the MIS weights partition unity, the surrogate density's Z-hat = 0 rule, the empty
+// LTC-space clip, emitters behind the receiver, invalid inputs, the bit-identical light density at both MIS sites,
+// and the approximate target's support. Statistical agreement with UniformArea is checked on
 // whole captures in reference_compute_tests.cpp. The estimator is
 // docs/architecture/many-area-light-sampling-reference-review.md.
 using namespace ludus::foundation;
@@ -73,12 +77,15 @@ struct EmitterInput final
     math::Vector3 Emission{};
     bool IsTwoSided = true;
 };
-void BuildEmitterScene(const EmitterInput* inputs, usize count, EmitterScene& outScene)
+void BuildEmitterScene(const EmitterInput* inputs,
+                       usize count,
+                       EmitterScene& outScene,
+                       rr::ReferenceLightSampling mode = rr::ReferenceLightSampling::ResampledProjectedSolidAngle)
 {
     REQUIRE(count <= EMITTER_CAPACITY);
     internal::ReferenceJob& job = outScene.Job;
     job.IsCpuOnly = true;
-    job.Description.LightSampling = rr::ReferenceLightSampling::ResampledProjectedSolidAngle;
+    job.Description.LightSampling = mode;
     job.Key = TEST_KEY;
     REQUIRE(job.Scene.Instances.TryResize(count) == true);
     REQUIRE(job.Scene.Triangles.TryResize(count) == true);
@@ -264,8 +271,11 @@ TEST_CASE("Resampled light sampling ignores emitters behind the receiver", "[ren
         MakeHorizontalEmitter({0, 0, 2}, 1, {4, 4, 4}, false),
         MakeHorizontalEmitter({1, 0, 3}, 1, {9, 9, 9}, false),
     };
+    const rr::ReferenceLightSampling mode = GENERATE(rr::ReferenceLightSampling::ResampledProjectedSolidAngle,
+                                                     rr::ReferenceLightSampling::ResampledFormFactor);
+    CAPTURE(static_cast<uint32>(mode));
     EmitterScene scene;
-    BuildEmitterScene(inputs, 2, scene);
+    BuildEmitterScene(inputs, 2, scene, mode);
     rr::ReferenceBsdf bsdf;
     const internal::ReferenceReceiverFrame frame =
         internal::MakeReferenceReceiverFrame({}, {0, 0, 1}, internal::ReferenceNormalize({0.3F, 0, 1}), bsdf);
@@ -299,8 +309,11 @@ TEST_CASE("Resampled light densities agree bit for bit at both MIS sites", "[ren
         MakeHorizontalEmitter({0.2F, 0.1F, 1.5F}, -1, {50, 50, 50}, true),
         MakeHorizontalEmitter({0, 0, 3}, 1, {5000, 5000, 5000}, false),
     };
+    const rr::ReferenceLightSampling mode = GENERATE(rr::ReferenceLightSampling::ResampledProjectedSolidAngle,
+                                                     rr::ReferenceLightSampling::ResampledFormFactor);
+    CAPTURE(static_cast<uint32>(mode));
     EmitterScene scene;
-    BuildEmitterScene(inputs, 2, scene);
+    BuildEmitterScene(inputs, 2, scene, mode);
     rr::ReferenceBsdf bsdf;
     bsdf.BaseColor = {0.8F, 0.6F, 0.4F};
     bsdf.Roughness = 0.3F;
@@ -369,7 +382,7 @@ TEST_CASE("Resampled light densities agree bit for bit at both MIS sites", "[ren
                 // Z-hat = 0: the inclusion bound alone sets P-tilde.
                 const float32 surrogate =
                     EMISSIVE_PROBABILITY *
-                    math::Min(1.0F, static_cast<float32>(LUDUS_REFERENCE_RIS_CANDIDATE_COUNT) * dimPmf);
+                    math::Min(1.0F, static_cast<float32>(internal::GetReferenceRisCandidateCount(mode)) * dimPmf);
                 const math::Vector2 densities =
                     internal::EvaluateReferenceLightTechniqueDensities(frame, dimLight, lightSample.DirectionWorld);
                 CHECK(HasSameBits(density, surrogate * (densities.X + densities.Y)) == true);
@@ -384,11 +397,82 @@ TEST_CASE("Diffuse probes reject the resampled light-sampling mode", "[renderer]
 {
     // A probe's first event is a virtual receiver with no stored frame for the BSDF-hit density.
     const EmitterInput inputs[]{MakeHorizontalEmitter({0, 0, 2}, -1, {4, 4, 4}, true)};
+    const rr::ReferenceLightSampling mode = GENERATE(rr::ReferenceLightSampling::ResampledProjectedSolidAngle,
+                                                     rr::ReferenceLightSampling::ResampledFormFactor);
     EmitterScene scene;
-    BuildEmitterScene(inputs, 1, scene);
+    BuildEmitterScene(inputs, 1, scene, mode);
     rr::ReferenceCaptureInfo info;
     math::Vector3 irradiance{1, 2, 3};
     CHECK(internal::EvaluateReferenceDiffuseProbe(scene.Job, info, {}, irradiance) == rhi::RasterStatus::Unsupported);
     CHECK(irradiance == math::Vector3{1, 2, 3});
     CHECK(info.InvalidContributions == 0);
+}
+
+TEST_CASE("The approximate resampling target is positive wherever the exact one is",
+          "[renderer][reference][resampled-light]")
+{
+    // The support invariant of sampler version 3: E_0 > 0 whenever the triangle has area above the horizon, including
+    // triangles that cross it, where Hill and Heitz's proxy sphere can lie below the horizon.
+    const internal::ReferenceReceiverFrame frame = MakeTestFrame(math::Matrix3::Identity());
+    constexpr uint32 TRIANGLE_COUNT = 20000;
+    constexpr float32 RADIUS_WORLD = 2;
+    uint32 crossingCount = 0;
+    uint32 defendedCount = 0;
+    uint32 belowCount = 0;
+    for (uint32 index = 0; index < TRIANGLE_COUNT; ++index)
+    {
+        StaticArray<math::Vector3, 3> positions{};
+        for (uint16 corner = 0; corner < 3; ++corner)
+        {
+            const uint16 dimension = static_cast<uint16>(corner * 3);
+            positions[corner] = math::Vector3{Draw(index, dimension) * 2 - 1,
+                                              Draw(index, static_cast<uint16>(dimension + 1)) * 2 - 1,
+                                              Draw(index, static_cast<uint16>(dimension + 2)) * 2 - 1.2F} *
+                                RADIUS_WORLD;
+        }
+        CAPTURE(index);
+        internal::ReferenceTriangleLight exact;
+        REQUIRE(internal::TryPrepareReferenceTriangleLight(frame, positions[0], positions[1], positions[2], exact) ==
+                true);
+        math::Vector2 approximate{-1, -1};
+        REQUIRE(internal::TryApproximateReferenceTriangleIntegrals(frame,
+                                                                   positions[0],
+                                                                   positions[1],
+                                                                   positions[2],
+                                                                   approximate) == true);
+        CHECK(approximate.X >= 0);
+        CHECK(approximate.X <= 1);
+        CHECK(approximate.Y >= 0);
+        const bool hasVertexAbove = positions[0].Z > 0 || positions[1].Z > 0 || positions[2].Z > 0;
+        const bool hasVertexBelow = positions[0].Z < 0 || positions[1].Z < 0 || positions[2].Z < 0;
+        if (exact.DiffuseIntegral > 0)
+        {
+            REQUIRE(approximate.X > 0);
+        }
+        if (hasVertexAbove == false)
+        {
+            ++belowCount;
+            CHECK(approximate.X == 0);
+        }
+        else if (hasVertexBelow == true)
+        {
+            ++crossingCount;
+            // The defensive term is what keeps these positive.
+            math::ProjectedPolygonInput polygon;
+            polygon.VertexCount = 3;
+            for (usize corner = 0; corner < 3; ++corner)
+            {
+                polygon.PositionsTangent[corner] = math::Vector3{math::Dot(positions[corner], frame.TangentWorld),
+                                                                 math::Dot(positions[corner], frame.BitangentWorld),
+                                                                 math::Dot(positions[corner], frame.NormalWorld)};
+            }
+            math::ApproximatePolygonIntegral sphere;
+            REQUIRE(math::TryApproximateClampedCosinePolygonIntegral(polygon, sphere) == math::MathStatus::Success);
+            defendedCount += sphere.Integral == 0 && exact.DiffuseIntegral > 0 ? 1U : 0U;
+        }
+    }
+    CAPTURE(crossingCount, defendedCount, belowCount);
+    CHECK(crossingCount > TRIANGLE_COUNT / 10);
+    CHECK(belowCount > 0);
+    CHECK(defendedCount > 0);
 }

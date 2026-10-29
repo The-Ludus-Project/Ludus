@@ -119,6 +119,54 @@ TryPrepareLinearlyTransformedCosinePolygon(const ProjectedPolygonInput& polygon,
 [[nodiscard]] float32
 GetLinearlyTransformedCosinePolygonIntegral(const LinearlyTransformedCosinePolygon& polygon) noexcept;
 
+/// @brief Hill and Heitz's approximation of a polygon's horizon-clipped cosine integral, without clipping.
+///
+/// Thanks to Stephen Hill and Eric Heitz, "Real-Time Area Lighting: a Journey from Research to Production",
+/// SIGGRAPH 2016 Advances in Real-Time Rendering course, https://advances.realtimerendering.com/s2016/: the vector form
+/// factor F of the unclipped polygon, whose norm is the form factor in the direction of F (slides 90-93), and the
+/// clipped form factor of a proxy sphere with the same F, max((|F|^2 + F.z) / (|F| + 1), 0) (slides 94-97 and 102).
+/// Edges use their quadratic fit of theta / sin(theta) (slide 77, at most 0.73% from the exact ratio). Departure: a
+/// polygon entirely above the horizon uses F.z, the unclipped form factor, which the course's tabulated variant also
+/// reproduces there, and a polygon with no vertex above the horizon has a zero integral.
+struct ApproximatePolygonIntegral final
+{
+    /// F: the polygon's vector form factor, oriented towards the polygon; zero when the polygon's plane contains the
+    /// origin.
+    Vector3 VectorFormFactor{};
+    /// The approximate clipped integral in [0, 1]. Zero when no vertex lies above the horizon. It may also be zero for
+    /// a polygon that crosses the horizon, where the proxy sphere lies below it.
+    float32 Integral = 0.0F;
+    /// |d0 . (d1 x d2)| for the first three unit vertex directions d_i. It is positive exactly when the integral is
+    /// computed, so a caller can add a positive defensive term wherever the polygon has area above the horizon.
+    float32 UnitTripleProduct = 0.0F;
+};
+
+/// @brief Approximate the clamped-cosine (diffuse form factor) integral of a convex polygon clipped to z >= 0.
+///
+/// The cost is one normalization, one cross product and one fitted edge integral per vertex, with no clipping. A
+/// polygon whose plane contains the origin, including one with a zero vertex, succeeds with every output zero.
+/// @param polygon Convex polygon in tangent space; see ProjectedPolygonInput.
+/// @param outIntegral The approximation; written only on success.
+/// @return Success; NonFiniteInput for a nonfinite coordinate or InvalidArgument for a vertex count outside
+/// [MIN_PROJECTED_POLYGON_VERTICES, MAX_PROJECTED_POLYGON_INPUT_VERTICES]. outIntegral is unchanged on failure.
+[[nodiscard]] MathStatus TryApproximateClampedCosinePolygonIntegral(const ProjectedPolygonInput& polygon,
+                                                                    ApproximatePolygonIntegral& outIntegral) noexcept;
+
+/// @brief Approximate GetLinearlyTransformedCosinePolygonIntegral without clipping or preparing the polygon.
+///
+/// Applies TryApproximateClampedCosinePolygonIntegral to the polygon transformed by M^-1, as Hill and Heitz do for
+/// their specular term (slide 63). Only the transformed polygon's horizon matters, as for
+/// TryPrepareLinearlyTransformedCosinePolygon.
+/// @param polygon Convex polygon in tangent space; see ProjectedPolygonInput.
+/// @param distribution Output of TryMakeLinearlyTransformedCosine.
+/// @param outIntegral The approximation in the LTC's cosine space; written only on success.
+/// @return Success; NonFiniteInput for a nonfinite coordinate before or after the transform, or InvalidArgument for
+/// an invalid vertex count. outIntegral is unchanged on failure.
+[[nodiscard]] MathStatus
+TryApproximateLinearlyTransformedCosinePolygonIntegral(const ProjectedPolygonInput& polygon,
+                                                       const LinearlyTransformedCosine& distribution,
+                                                       ApproximatePolygonIntegral& outIntegral) noexcept;
+
 /// @brief Map two uniform random numbers to a direction in the polygon distributed proportionally to the LTC.
 ///
 /// Samples the transformed polygon in projected solid angle, maps the sample back with M and normalizes it (Heitz et

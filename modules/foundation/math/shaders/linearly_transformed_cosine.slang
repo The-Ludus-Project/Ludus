@@ -197,3 +197,147 @@ float EvaluateLinearlyTransformedCosinePolygonDensity(LinearlyTransformedCosineP
         EvaluateLinearlyTransformedCosineJacobian(polygon.Distribution, directionTangent) / projectedSolidAngle;
     return IsFiniteBits(result) == true ? result : 0.0;
 }
+
+// Hill and Heitz's approximation of the horizon-clipped cosine integral without clipping; the port of
+// TryApproximateClampedCosinePolygonIntegral and TryApproximateLinearlyTransformedCosinePolygonIntegral. Thanks to
+// Stephen Hill and Eric Heitz, "Real-Time Area Lighting: a Journey from Research to Production", SIGGRAPH 2016
+// Advances in Real-Time Rendering course, https://advances.realtimerendering.com/s2016/: the vector form factor (slides
+// 90-93), the proxy sphere's clipped form factor max((|F|^2 + F.z) / (|F| + 1), 0) (slides 94-97 and 102) and the
+// quadratic theta / sin(theta) edge fit (slide 77). Polygons entirely above the horizon use F.z; see the C++ header.
+static const float APPROXIMATE_EDGE_RATIO_FIT_CONSTANT = 1.5708;
+static const float APPROXIMATE_EDGE_RATIO_FIT_LINEAR = -0.879406;
+static const float APPROXIMATE_EDGE_RATIO_FIT_QUADRATIC = 0.308609;
+// sin^2(theta) floor (2^-23) of an obtuse edge's reciprocal; the edge's vanishing cross product scales the ratio there.
+static const float APPROXIMATE_EDGE_MIN_SINE_SQUARED = 1.1920928955078125e-7;
+
+// The same fields as the C++ ApproximatePolygonIntegral.
+struct ApproximatePolygonIntegral
+{
+    // F, oriented towards the polygon; zero when the polygon's plane contains the origin.
+    float3 VectorFormFactor;
+    // The approximate clipped integral in [0, 1]; zero without a vertex above the horizon.
+    float Integral;
+    // |d0 . (d1 x d2)| of the first three unit directions, positive exactly when Integral is computed.
+    float UnitTripleProduct;
+};
+
+ApproximatePolygonIntegral MakeEmptyApproximatePolygonIntegral()
+{
+    ApproximatePolygonIntegral result;
+    result.VectorFormFactor = float3(0.0);
+    result.Integral = 0.0;
+    result.UnitTripleProduct = 0.0;
+    return result;
+}
+float3 NormalizeApproximateVertexDirection(float3 positionTangent)
+{
+    float lengthSquared = dot(positionTangent, positionTangent);
+    if (IsPositiveNormalBits(lengthSquared) == false)
+    {
+        return float3(0.0);
+    }
+    return positionTangent * (1.0 / sqrt(lengthSquared));
+}
+float3 IntegrateApproximateEdge(float3 direction0, float3 direction1)
+{
+    float cosine = dot(direction0, direction1);
+    float magnitude = abs(cosine);
+    float ratio = APPROXIMATE_EDGE_RATIO_FIT_CONSTANT +
+                  (APPROXIMATE_EDGE_RATIO_FIT_LINEAR + APPROXIMATE_EDGE_RATIO_FIT_QUADRATIC * magnitude) * magnitude;
+    if (cosine < 0.0)
+    {
+        ratio = PI / sqrt(max(1.0 - cosine * cosine, APPROXIMATE_EDGE_MIN_SINE_SQUARED)) - ratio;
+    }
+    return cross(direction0, direction1) * ratio;
+}
+// Returns false, leaving outIntegral empty, for a vertex count outside [3, 7] or a nonfinite coordinate, the C++
+// InvalidArgument and NonFiniteInput statuses; a polygon whose plane contains the origin succeeds with zero outputs.
+bool TryApproximateClampedCosinePolygonIntegral(ProjectedPolygonInput polygon,
+                                                out ApproximatePolygonIntegral outIntegral)
+{
+    outIntegral = MakeEmptyApproximatePolygonIntegral();
+    if (polygon.VertexCount < 3 || polygon.VertexCount > MAX_PROJECTED_POLYGON_INPUT_VERTICES)
+    {
+        return false;
+    }
+    float largestMagnitude = 0.0;
+    [unroll] for (uint i = 0; i < MAX_PROJECTED_POLYGON_INPUT_VERTICES; ++i)
+    {
+        if (i < polygon.VertexCount)
+        {
+            if (IsFiniteBits(polygon.PositionsTangent[i]) == false)
+            {
+                return false;
+            }
+            largestMagnitude = max(largestMagnitude, GetLargestMagnitude(polygon.PositionsTangent[i]));
+        }
+    }
+    if ((largestMagnitude > 0.0) == false)
+    {
+        return true;
+    }
+    float3 directions[MAX_PROJECTED_POLYGON_INPUT_VERTICES];
+    bool hasVertexAboveHorizon = false;
+    bool hasVertexBelowHorizon = false;
+    [unroll] for (uint i = 0; i < MAX_PROJECTED_POLYGON_INPUT_VERTICES; ++i)
+    {
+        directions[i] = float3(0.0);
+        if (i < polygon.VertexCount)
+        {
+            directions[i] = NormalizeApproximateVertexDirection(polygon.PositionsTangent[i] / largestMagnitude);
+            hasVertexAboveHorizon = hasVertexAboveHorizon || directions[i].z > 0.0;
+            hasVertexBelowHorizon = hasVertexBelowHorizon || directions[i].z < 0.0;
+        }
+    }
+    float tripleProduct = dot(directions[0], cross(directions[1], directions[2]));
+    if ((tripleProduct > 0.0 || tripleProduct < 0.0) == false)
+    {
+        return true;
+    }
+    float3 vectorFormFactor = float3(0.0);
+    [unroll] for (uint i = 0; i < MAX_PROJECTED_POLYGON_INPUT_VERTICES; ++i)
+    {
+        if (i < polygon.VertexCount)
+        {
+            vectorFormFactor +=
+                IntegrateApproximateEdge(directions[i], directions[i + 1 < polygon.VertexCount ? i + 1 : 0]);
+        }
+    }
+    ApproximatePolygonIntegral result = MakeEmptyApproximatePolygonIntegral();
+    result.VectorFormFactor = vectorFormFactor * (tripleProduct > 0.0 ? 0.5 / PI : -0.5 / PI);
+    result.UnitTripleProduct = abs(tripleProduct);
+    if (hasVertexAboveHorizon == true && hasVertexBelowHorizon == false)
+    {
+        result.Integral = min(max(result.VectorFormFactor.z, 0.0), 1.0);
+    }
+    else if (hasVertexAboveHorizon == true)
+    {
+        float length = sqrt(dot(result.VectorFormFactor, result.VectorFormFactor));
+        result.Integral = min(max((length * length + result.VectorFormFactor.z) / (length + 1.0), 0.0), 1.0);
+    }
+    outIntegral = result;
+    return true;
+}
+// Transform by M^-1 and approximate there; the same failures as TryApproximateClampedCosinePolygonIntegral, plus a
+// nonfinite transformed coordinate.
+bool TryApproximateLinearlyTransformedCosinePolygonIntegral(ProjectedPolygonInput polygon,
+                                                            LinearlyTransformedCosine distribution,
+                                                            out ApproximatePolygonIntegral outIntegral)
+{
+    outIntegral = MakeEmptyApproximatePolygonIntegral();
+    if (polygon.VertexCount < 3 || polygon.VertexCount > MAX_PROJECTED_POLYGON_INPUT_VERTICES)
+    {
+        return false;
+    }
+    ProjectedPolygonInput transformed;
+    transformed.VertexCount = polygon.VertexCount;
+    [unroll] for (uint i = 0; i < MAX_PROJECTED_POLYGON_INPUT_VERTICES; ++i)
+    {
+        if (i < polygon.VertexCount && IsFiniteBits(polygon.PositionsTangent[i]) == false)
+        {
+            return false;
+        }
+        transformed.PositionsTangent[i] = MultiplyColumns(distribution.InverseTransform, polygon.PositionsTangent[i]);
+    }
+    return TryApproximateClampedCosinePolygonIntegral(transformed, outIntegral);
+}

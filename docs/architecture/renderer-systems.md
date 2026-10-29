@@ -1354,7 +1354,7 @@ work and retires accepted native uses through completion.
 #### Light-sampling modes
 
 `ReferenceCaptureDescription::LightSampling` selects the next-event estimator for
-emissive triangles. Both modes estimate the same truncated integral under the same
+emissive triangles. All modes estimate the same truncated integral under the same
 `ProfileVersion`, so their means agree statistically, never per pixel. The mode joins
 the integral key: changing it replaces the job and restarts accumulation.
 `ReferenceCaptureInfo` records it with its sampler version.
@@ -1363,6 +1363,7 @@ the integral key: changing it replaces the job and restarts accumulation.
 | --- | --- | --- |
 | `UniformArea` (default) | 1, 8 dimensions per bounce | One power-CDF triangle, one uniform area sample, one shadow ray. Existing captures stay bit-identical. |
 | `ResampledProjectedSolidAngle` | 2, 128 dimensions per bounce | Resampled importance sampling of one triangle from 32 power-CDF candidates with an unshadowed LTC target, then one projected-solid-angle and one LTC sample of it, so up to two shadow rays per vertex. |
+| `ResampledFormFactor` | 3, 128 dimensions per bounce | The same estimator with a cheaper target: Hill and Heitz's approximate horizon-clipped form factors instead of clipped polygon integrals, kept positive wherever the triangle is above the horizon, and its own frozen candidate counts. The selected triangle's samples and MIS weights are unchanged. |
 
 The resampled estimator, its random slots and its BSDF-hit MIS are the
 [many-area-light resampling review](many-area-light-sampling-reference-review.md).
@@ -1380,13 +1381,18 @@ The category draw at slot 0, analytic lights and the environment are unchanged.
   surrogate density `P̃ (p₀ + p₁)` of the previous vertex. The path keeps that
   vertex's frame, LTC and albedo luminances, and its `Ẑ` once computed, so both MIS
   sites evaluate the same function of the direction from identical inputs.
-- **Cost.** Each vertex evaluates up to 41 triangle targets (32 candidates, the
-  selected triangle and 8 normalization candidates), each with two polygon clips.
+- **Cost.** A `ResampledProjectedSolidAngle` vertex evaluates up to 41 triangle
+  targets (32 candidates, the selected triangle and 8 normalization candidates),
+  each with two polygon clips. A `ResampledFormFactor` vertex evaluates its
+  candidates' approximate targets without clipping and prepares polygons only for
+  the selected triangle and a BSDF hit's
+  ([approximate target](many-area-light-sampling-reference-review.md#approximate-target)).
   `NativeQueries` tiles need three queries per path, so a resampled capture
   requires `3 × TilePixels` within `RayCapabilities::MaxRays` and returns
   `Unsupported` otherwise.
 - **Probes.** Static-lighting diffuse probes stay on `UniformArea`; their virtual
-  first receiver has no stored frame for the BSDF-hit density.
+  first receiver has no stored frame for the BSDF-hit density. Both resampled modes
+  are rejected there.
 
 The opt-in Catch2 tag `[.reference-light-sampling-benchmark]` in
 `ludus_renderer_render_tests` compares the two modes on 3200 emissive triangles, a

@@ -1860,7 +1860,14 @@ probability `P_E` (emitters over lights):
    weighted by its target `p̂ / p_src` and streamed through the weighted reservoir.
    The target `p̂` is the triangle's unshadowed LTC shading (constant emission
    luminance times the albedo-weighted diffuse and LTC integrals), and zero for a
-   one-sided emitter seen from behind.
+   one-sided emitter seen from behind. By default (`RIS_TARGET` 1) the integrals
+   are Stephen Hill and Eric Heitz's approximate horizon-clipped form factors,
+   [*Real-Time Area Lighting: a Journey from Research to Production*, SIGGRAPH 2016 course](https://advances.realtimerendering.com/s2016/),
+   with a defensive term that keeps the target positive wherever the triangle is
+   above the horizon. That costs about a quarter as much per sample as the exact
+   clipped integrals, with the same image error at equal samples
+   ([measurements](../architecture/many-area-light-sampling-reference-review.md#approximate-target-measurements)).
+   Only the selected triangle and a BSDF hit's triangle prepare exact polygons.
 3. The selected triangle receives one diffuse projected-solid-angle sample and,
    unless its LTC-space clip is empty, one LTC sample. Peters' clamped optimal MIS
    weights them, with visibility estimate `PROJECTED_SOLID_ANGLE_MIS_VISIBILITY`.
@@ -1879,8 +1886,9 @@ integral as each strategy alone. The scene interface declares `surface_queries: 
 
 | Graph setting | Default | Range | Meaning |
 | --- | --- | --- | --- |
-| `RIS_CANDIDATE_COUNT` | `32` | `1`–`32` | Candidates `M` per receiver |
-| `RIS_NORMALIZATION_CANDIDATE_COUNT` | `8` | `1`–`16` | Normalization candidates `K` for the BSDF-hit density |
+| `RIS_CANDIDATE_COUNT` | `8` | `1`–`32` | Candidates `M` per receiver |
+| `RIS_NORMALIZATION_CANDIDATE_COUNT` | `4` | `1`–`16` | Normalization candidates `K` for the BSDF-hit density |
+| `RIS_TARGET` | `1` | `0`–`1` | How the target evaluates its integrals: `1` Hill and Heitz's approximate form factors, `0` the exact clipped polygon integrals |
 | `PROJECTED_SOLID_ANGLE_MIS_VISIBILITY` | `0.5` | `0`–`1` | Peters' `v`: `1` is the weighted balance heuristic, `0` the balance heuristic |
 
 Settings never change the random layout. Dimensions 2–8 keep the MIS template's
@@ -1935,13 +1943,26 @@ out/build/macos-clang-debug/modules/graphics/renderer/ludus_render_graph_ray_tes
 ```
 
 It reports kernel times, shadow rays per pixel, MAPE, linear RMSE and tone-mapped
-error for each template. The method and the recorded results are in the
-[review's evidence](../architecture/many-area-light-sampling-reference-review.md#equal-time-benchmark).
+error for each template. By default it measures two cooks of this template: the
+exact target with `M = 32`, `K = 8`, and the defaults. To measure other settings in
+the same run, list `RIS_TARGET:RIS_CANDIDATE_COUNT:RIS_NORMALIZATION_CANDIDATE_COUNT`
+triples in the CMake cache variable `LUDUS_RIS_PROJECTED_SOLID_ANGLE_BENCHMARK_VARIANTS`
+and rebuild; each triple cooks one more package:
+
+```bash
+cmake -S . -B out/build/macos-clang-debug \
+  "-DLUDUS_RIS_PROJECTED_SOLID_ANGLE_BENCHMARK_VARIANTS=0:32:8;1:32:8;1:16:4;1:8:4"
+```
+
+The method and the recorded results are in the
+[review's evidence](../architecture/many-area-light-sampling-reference-review.md#equal-time-benchmark)
+and its [approximate target measurements](../architecture/many-area-light-sampling-reference-review.md#approximate-target-measurements).
 
 `ludus_renderer_render_tests` runs the weights on the GPU. It checks that Peters'
 weights and the light/BSDF split sum to one wherever a technique can sample, that
-`Ẑ = 0` applies the inclusion cap, and that an empty LTC clip leaves the diffuse
-technique all the weight. Vulkan has not been run for this template.
+`Ẑ = 0` applies the inclusion cap, that an empty LTC clip leaves the diffuse
+technique all the weight, and that the approximate target is positive wherever the
+exact diffuse integral is. Vulkan has not been run for this template.
 
 See the canonical
 [package](../../modules/graphics/renderer/render_graphs/ris_projected_solid_angle/main.lurender.json).
