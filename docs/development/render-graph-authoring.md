@@ -3666,16 +3666,27 @@ time measurements average the last 30 completed samples:
   It shows zero before two images arrive and after one second without a new image;
   a new interaction after that idle gap starts a fresh rate window.
 - **CPU** sums active owner-thread World/camera extraction, graph preparation,
-  submission, polling and output conversion work per delivered image. It excludes
+  submission, polling, texture inspection and output conversion work per delivered image. It excludes
   the wall-clock gaps between asynchronous service calls and other editor work.
 - **GPU** uses the existing asynchronous device timestamp probe for graph frame
   execution. It excludes CPU conversion and is not input-to-display latency.
   `…` means no sample has completed; `n/a` means timestamps are unavailable.
   The overlay and profiling recorder share the device's timing owner.
-- **Readback** measures elapsed time from requesting the output copy until its
+- **Output readback** measures elapsed time from requesting the output copy until its
   CPU display image is ready, including asynchronous copy waits, polling cadence
   and image conversion. It excludes the earlier graph render and final Qt paint.
-  Shared-device GPU snapshots report zero because they perform no CPU readback.
+  Shared-device GPU output snapshots report zero because output presentation performs no CPU readback.
+- **Inspection CPU** sums active GPU snapshot setup, band readback, polling and
+  texture viewer image conversion per completed inspection attempt. It is also
+  included in CPU service work; these series have different sample counts and
+  should not be added together. Its conversion has an
+  `EditorTextureInspectionDisplayConversion` profiling scope.
+- **Inspection readback** measures elapsed time from starting the diagnostic
+  snapshot through texture viewer conversion, including asynchronous waits.
+  Inspection series update independently of output delivery, so GPU output cannot
+  overwrite diagnostic readback measurements with zero. The overlay shows
+  **Inspection: paused** while the viewer is hidden. The last 30 completed attempts
+  are retained for resuming; cancelled inspections do not add samples.
 
 Pending or failed output copies do not publish successful frame samples or erase
 last-completed time averages. Device replacement clears the graph series. These
@@ -5977,21 +5988,27 @@ the Preview page.
   `colour attachment of Main/raster/draw (Clear → Store)`. It also notes
   `exported by …`, the shared allocation for a depth texture, or `transient`.
 
-Readback never stalls the GUI thread:
+Inspection is visibility-aware and uses independent snapshots:
 
-- The preview reads the selected texture after each presented frame. This happens
-  only between frames, once the export copy finishes and before the next Poll or
-  Render. While the read is outstanding, the graph's attachments are not
-  rewritten or released.
-- Colour textures use the same banded RGBA8 copy as the preview image.
-- RHI readback is RGBA8 only. So an editor shader
-  (`apps/editor/shaders/texture_depth_pack.slang`) first draws the depth aspect
-  into an RGBA8 attachment, packing each texel's IEEE bits into its four bytes.
-  The editor then copies that attachment and rebuilds the depth bit-exactly.
-- Every step is a request polled on later ticks. Nothing waits on a fence.
-- The textures come from `RenderGraph::GetResourceAllocation`. It hands out a
-  graph's non-surface allocation once the producer has completed, under the same
-  rules as an export lease, and it is meant for diagnostics only.
+- Hiding the Textures page (including switching tabs or hiding its dock) cancels
+  pending inspection and stops new reads and CPU image conversion. Selection and
+  the last completed image survive. Showing it requests a fresh snapshot.
+- Selecting or reselecting a texture requests a snapshot of the presented frame.
+  While visible, subsequent frames refresh it at most four times per second.
+  A pending refresh does not delay rendering during that interval.
+- Between frames, colour textures receive an exact-format GPU copy into an owned
+  texture. RHI readback is RGBA8 only, so the editor's
+  `apps/editor/shaders/texture_depth_pack.slang` packs depth IEEE bits into an
+  owned RGBA8 attachment instead. Both preserve the captured frame's pixels.
+- Only GPU snapshot completion gates reuse of the source attachment. Subsequent
+  band reads use the owned texture while the live graph renders newer frames or
+  activates another generation. Nothing waits on a fence inside a service call.
+- Diagnostic bands yield shared readback capacity to viewport output. Inspection
+  images can arrive later during heavy output readback.
+- CPU image conversion remains on the GUI thread, but only runs for visible,
+  completed inspections at the bounded refresh rate. Its cost is measured.
+- Textures come from `RenderGraph::GetResourceAllocation`, which exposes the
+  non-surface allocation after its producer completes, for diagnostics only.
 
 What the viewer shows is the allocation's contents at the end of the frame:
 
@@ -6004,9 +6021,8 @@ What the viewer shows is the allocation's contents at the end of the frame:
 
 With **Live Preview**, the selection is kept by name:
 
-- Every new World revision re-reads it.
-- Every rebuilt generation re-reads it as soon as that generation's first frame
-  is presented.
+- New World revisions request a refresh at the bounded rate while visible.
+- Rebuilt generations request a refresh after their first presented frame.
 - If a rebuild removes the texture, the viewer reports that it is not part of
   the active generation.
 

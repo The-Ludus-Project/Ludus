@@ -204,11 +204,14 @@ public:
     [[nodiscard]] bool HasPresentedCatalogue() const noexcept;
     /// Textures of the active generation; empty before one is active.
     [[nodiscard]] const RenderGraphTargetCatalogue& GetTargetCatalogue() const noexcept;
+    /// Suspend diagnostics while the texture viewer is hidden; cancels unfinished reads.
+    /// The selection and last completed snapshot survive. Re-enabling requests a fresh snapshot.
+    void SetInspectionEnabled(bool isEnabled) noexcept;
     /// Choose the texture the viewer reads back, by expanded resource name; empty stops reading.
     /// The name is resolved against each newly active generation, so a selection survives
-    /// rebuilds while the texture still exists. The texture is read after every presented
-    /// frame (and once immediately when a frame is already shown), never while a frame or the
-    /// export copy is in flight, and without waiting for the GPU.
+    /// rebuilds while the texture still exists. When enabled, selection requests an immediate
+    /// snapshot between frames; automatic refreshes are limited to four per second.
+    /// Band readbacks use an independent GPU snapshot and do not hold up later rendering.
     void SetInspectedTarget(const QString& name);
     [[nodiscard]] const QString& GetInspectedTarget() const noexcept;
     /// Last read of the inspected texture; invalid when none completed or the texture was undefined.

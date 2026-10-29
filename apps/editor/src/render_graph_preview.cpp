@@ -414,10 +414,15 @@ struct RenderGraphPreview::State final
     QElapsedTimer ProducerTimer;
     uint64 RenderedGeneration = 0;
     uint64 RenderedRevision = 0;
-    /// Texture viewer readback; runs only between frames, after the export copy.
+    /// Texture inspection owns a GPU snapshot; band readback can overlap later frames.
     RenderTargetReader Inspector;
     QString InspectedName;
     bool IsInspectionRequested = false;
+    bool IsInspectionEnabled = true;
+    QElapsedTimer InspectionTimer;
+    float64 InspectionCpuMilliseconds = 0;
+    /// Limit automatic diagnostic snapshots to four per second during navigation.
+    static constexpr int64 INSPECTION_INTERVAL_MILLISECONDS = 250;
     uint64 InspectingGeneration = 0;
     uint64 InspectingRevision = 0;
     /// Ray path inspection: while frozen the live graph keeps Extraction as it was at the freeze.
@@ -522,6 +527,7 @@ void RenderGraphPreview::Detach() noexcept
     state.Statistics.Reset();
     state.ReadbackTimer.invalidate();
     state.Inspector.Release();
+    state.InspectionTimer.invalidate();
     state.Activation.Reset();
     state.Device = {};
     state.Surface = {};
@@ -713,7 +719,7 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
                                  "device."));
         return RenderGraphPreviewLoad::Waiting;
     }
-    if (state.Reader.IsBusy() == true || state.Inspector.IsBusy() == true || state.IsAwaitingProducer == true)
+    if (state.Reader.IsBusy() == true || state.Inspector.IsSourcePending() == true || state.IsAwaitingProducer == true)
     {
         return RenderGraphPreviewLoad::Staged;
     }
@@ -866,13 +872,18 @@ void RenderGraphPreview::Tick(float64 preparationMilliseconds)
     const bool hasActiveWork =
         state.IsAttached == true &&
         (hasPendingSamples == true || state.IsCopyingDisplay == true || state.Reader.IsBusy() == true ||
-         state.IsAwaitingProducer == true || state.Candidate.Serial != 0 ||
+         state.IsAwaitingProducer == true || state.Inspector.IsBusy() == true || state.IsInspectionRequested == true ||
+         state.Candidate.Serial != 0 ||
          (state.HasExtraction == true &&
           (state.Extraction.Revision != mPresentedRevision || state.Session != mPresentedSession)));
     QElapsedTimer timer;
     timer.start();
     state.HasCompletedStatisticsFrame = false;
     tick();
+    if (state.IsAttached == false)
+    {
+        return;
+    }
     if (hasActiveWork == true || state.HasCompletedStatisticsFrame == true)
     {
         state.Statistics.AddCpuWork(preparationMilliseconds +
@@ -900,6 +911,29 @@ void RenderGraphPreview::tick()
     {
         return;
     }
+    if (state.Inspector.IsBusy() == true)
+    {
+        const QElapsedTimer inspectionTimer = state.InspectionTimer;
+        QElapsedTimer inspectionCpuTimer;
+        inspectionCpuTimer.start();
+        finishInspection();
+        if (state.IsAttached == false)
+        {
+            return;
+        }
+        state.InspectionCpuMilliseconds +=
+            static_cast<float64>(inspectionCpuTimer.nsecsElapsed()) / NANOSECONDS_PER_MILLISECOND;
+        if (state.Inspector.IsBusy() == false)
+        {
+            state.Statistics.AddInspection(state.InspectionCpuMilliseconds,
+                                           static_cast<float64>(inspectionTimer.nsecsElapsed()) /
+                                               NANOSECONDS_PER_MILLISECOND);
+        }
+        if (state.Inspector.IsSourcePending() == true)
+        {
+            return;
+        }
+    }
     if (state.IsCopyingDisplay == true)
     {
         finishDisplayCopy();
@@ -908,11 +942,6 @@ void RenderGraphPreview::tick()
     if (state.Reader.IsBusy() == true)
     {
         finishCopy();
-        return;
-    }
-    if (state.Inspector.IsBusy() == true)
-    {
-        finishInspection();
         return;
     }
     if (state.IsAwaitingProducer == true)
@@ -1014,7 +1043,8 @@ void RenderGraphPreview::tick()
     }
     // No frame is open and no export copy is in flight: the active graph's attachments hold
     // the last completed frame until the next Render, so the viewer reads them now.
-    if (state.IsInspectionRequested == true && beginInspection() == true)
+    if (state.IsInspectionEnabled == true && state.IsInspectionRequested == true && state.Inspector.IsBusy() == false &&
+        beginInspection() == true)
     {
         return;
     }
@@ -1074,7 +1104,7 @@ void RenderGraphPreview::publishFrame(bool isGpuFrame)
     mPresentedRevision = state.RenderedRevision;
     mPresentedSession = state.Session;
     setStatus(mPresentedRevision == state.MaterialStatusRevision ? state.MaterialStatus : QString{});
-    state.IsInspectionRequested = state.InspectedName.isEmpty() == false;
+    state.IsInspectionRequested = state.IsInspectionEnabled == true && state.InspectedName.isEmpty() == false;
     state.HasCompletedStatisticsFrame = true;
 }
 void RenderGraphPreview::finishDisplayCopy()
@@ -1277,13 +1307,28 @@ const RenderGraphTargetCatalogue& RenderGraphPreview::GetTargetCatalogue() const
     return mState->Active.Catalogue;
 }
 
+void RenderGraphPreview::SetInspectionEnabled(bool isEnabled) noexcept
+{
+    State& state = *mState;
+    if (state.IsInspectionEnabled == isEnabled)
+    {
+        return;
+    }
+    state.IsInspectionEnabled = isEnabled;
+    state.Statistics.SetInspectionEnabled(isEnabled);
+    state.Inspector.Cancel();
+    state.InspectionTimer.invalidate();
+    state.IsInspectionRequested = isEnabled == true && state.InspectedName.isEmpty() == false;
+}
+
 void RenderGraphPreview::SetInspectedTarget(const QString& name)
 {
     State& state = *mState;
     // Reselecting reads again; a read already in flight for the old choice is dropped.
     state.Inspector.Cancel();
     state.InspectedName = name;
-    state.IsInspectionRequested = name.isEmpty() == false;
+    state.InspectionTimer.invalidate();
+    state.IsInspectionRequested = state.IsInspectionEnabled == true && name.isEmpty() == false;
     if (name.isEmpty() == true)
     {
         mInspected = {};
@@ -1302,11 +1347,17 @@ const QString& RenderGraphPreview::GetInspectedTarget() const noexcept
 bool RenderGraphPreview::beginInspection()
 {
     State& state = *mState;
+    if (state.InspectionTimer.isValid() == true &&
+        state.InspectionTimer.elapsed() < State::INSPECTION_INTERVAL_MILLISECONDS)
+    {
+        return false;
+    }
     renderer::RenderGraph* activeOrNull = state.Activation.GetActiveOrNull();
     if (activeOrNull == nullptr || mPresentedSession != state.Session || mPresentedGeneration == 0)
     {
         return false;
     }
+    LUDUS_PROFILE_SCOPE(EditorTextureInspectionSnapshot);
     const qsizetype index = state.Active.Catalogue.Find(state.InspectedName);
     if (index < 0)
     {
@@ -1339,12 +1390,20 @@ bool RenderGraphPreview::beginInspection()
     }
     state.InspectingGeneration = mPresentedGeneration;
     state.InspectingRevision = mPresentedRevision;
+    state.InspectionTimer.start();
+    QElapsedTimer inspectionCpuTimer;
+    inspectionCpuTimer.start();
     const RenderTargetReadStatus started =
-        state.Inspector.Begin(state.Device, state.Surface, texture, aspect, target.Width, target.Height);
+        state.Inspector.Begin(state.Device, state.Surface, texture, aspect, target.Width, target.Height, true);
+    state.InspectionCpuMilliseconds =
+        static_cast<float64>(inspectionCpuTimer.nsecsElapsed()) / NANOSECONDS_PER_MILLISECOND;
     if (started == RenderTargetReadStatus::Pending)
     {
         return true;
     }
+    state.Statistics.AddInspection(state.InspectionCpuMilliseconds,
+                                   static_cast<float64>(state.InspectionTimer.nsecsElapsed()) /
+                                       NANOSECONDS_PER_MILLISECOND);
     mInspected = {};
     mInspectedGeneration = state.InspectingGeneration;
     mInspectedRevision = state.InspectingRevision;
@@ -1360,8 +1419,10 @@ bool RenderGraphPreview::beginInspection()
 
 void RenderGraphPreview::finishInspection()
 {
+    LUDUS_PROFILE_SCOPE(EditorTextureInspectionPoll);
     State& state = *mState;
-    const RenderTargetReadStatus status = state.Inspector.Poll();
+    // Retire finished diagnostic bands first, leaving staging capacity for the delivered image.
+    const RenderTargetReadStatus status = state.Inspector.Poll(state.Reader.IsBusy() == false);
     if (status == RenderTargetReadStatus::Pending)
     {
         return;

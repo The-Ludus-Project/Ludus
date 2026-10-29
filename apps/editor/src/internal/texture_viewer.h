@@ -11,8 +11,10 @@
 
 class QComboBox;
 class QDoubleSpinBox;
+class QHideEvent;
 class QLabel;
 class QListWidget;
+class QShowEvent;
 
 namespace ludus::editor
 {
@@ -29,6 +31,7 @@ class TextureViewer final : public QWidget
     Q_OBJECT
 public:
     explicit TextureViewer(QWidget* parentOrNull = nullptr);
+    ~TextureViewer() override;
 
     /// Follow a preview's generations and readbacks; null detaches.
     void SetPreview(RenderGraphPreview* previewOrNull);
@@ -55,6 +58,10 @@ public:
     [[nodiscard]] QString GetInfoText() const;
     [[nodiscard]] QString GetProbeText() const;
     [[nodiscard]] QString GetStatusText() const;
+
+protected:
+    void showEvent(QShowEvent* event) override;
+    void hideEvent(QHideEvent* event) override;
 
 private:
     void refreshTargets();

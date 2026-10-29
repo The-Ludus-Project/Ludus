@@ -66,6 +66,18 @@ public:
     void Reset() noexcept;
     /// Accumulate finite nonnegative CPU work in milliseconds toward the next delivered image.
     void AddCpuWork(foundation::float64 milliseconds) noexcept;
+    /// Reflect whether the viewer permits inspection; keeps completed samples while paused.
+    void SetInspectionEnabled(bool isEnabled) noexcept;
+    /// Whether inspection measurements describe an enabled viewer rather than retained history.
+    [[nodiscard]] bool IsInspectionEnabled() const noexcept;
+    /// Record one completed texture inspection independently of output delivery. CPU is the
+    /// sum of active snapshot/readback/conversion calls; elapsed includes asynchronous gaps.
+    /// Completed attempts include failures; cancelled attempts are omitted. GUI-thread only.
+    void AddInspection(foundation::float64 cpuMilliseconds, foundation::float64 elapsedMilliseconds) noexcept;
+    /// Active milliseconds per completed inspection attempt, including synchronous viewer conversion.
+    [[nodiscard]] const RollingAverage& GetInspectionCpuMilliseconds() const noexcept;
+    /// Elapsed milliseconds per completed inspection attempt, including time between service calls.
+    [[nodiscard]] const RollingAverage& GetInspectionReadbackMilliseconds() const noexcept;
     /// Commit one successfully read and converted image. Timestamps use one monotonic CPU clock.
     /// Readback is elapsed milliseconds from copy request through display-image conversion.
     void CompleteFrame(foundation::uint64 nowNanoseconds, foundation::float64 readbackMilliseconds) noexcept;
@@ -78,9 +90,12 @@ private:
     RollingAverage mCpuMilliseconds;
     RollingAverage mReadbackMilliseconds;
     RollingAverage mFrameNanoseconds;
+    RollingAverage mInspectionCpuMilliseconds;
+    RollingAverage mInspectionReadbackMilliseconds;
     foundation::float64 mPendingCpuMilliseconds = 0;
     foundation::uint64 mLastFrameNanoseconds = 0;
     bool mHasFrame = false;
+    bool mIsInspectionEnabled = true;
 };
 
 /// Graph overlay: delivered-image FPS, active CPU work, device GPU time, and elapsed readback.
