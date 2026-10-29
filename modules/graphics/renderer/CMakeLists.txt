@@ -73,7 +73,7 @@ install(TARGETS ludus_graphics_renderer EXPORT LudusTargets ARCHIVE DESTINATION 
 # Source is cooked by the existing installed shader helper; no runtime compiler dependency.
 install(FILES include/ludus/graphics/renderer/detail/deferred_binding_slots.inc
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/ludus/graphics/renderer/detail")
-install(FILES "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/scene_data.h" include/ludus/graphics/renderer/scene_shader_layout.h include/ludus/graphics/renderer/lighting_layout.h include/ludus/graphics/renderer/deferred_layout.h include/ludus/graphics/renderer/detail/deferred_binding_slots.inc shaders/renderer_deferred_fullscreen.slang shaders/renderer_deferred_material.slang shaders/renderer_deferred_lighting.slang shaders/renderer_deferred_depth.slang shaders/recipes.json shaders/renderer_gpu_preview_layout.h shaders/scene_shader.slang shaders/scene_payload.slang shaders/visibility_buffer.slang shaders/ray_shader.slang shaders/ray_triangle_loop.slang shaders/ray_line_visibility.slang shaders/ray_bvh_traversal.slang shaders/renderer_flat.slang shaders/renderer_composite.slang shaders/renderer_overlay.slang shaders/renderer_material.slang shaders/renderer_lit.slang shaders/renderer_clustered.slang shaders/renderer_shadow.slang shaders/renderer_output.slang shaders/renderer_gpu_preview.slang shaders/renderer_gpu_preview_visibility_full.slang shaders/renderer_gpu_preview_hit_cached.slang shaders/renderer_gpu_preview_group32.slang shaders/renderer_gpu_preview_group64.slang shaders/renderer_gpu_preview_group128.slang shaders/renderer_gpu_preview_group8x8.slang shaders/renderer_gpu_preview_image.slang shaders/renderer_reference.slang shaders/renderer_reference_layout.h shaders/renderer_surface.slang shaders/renderer_clustered_surface.slang shaders/renderer_surface_functions.slang shaders/renderer_authored.slang shaders/renderer_clustered_authored.slang shaders/renderer_lit_debug.slang shaders/renderer_clustered_authored_debug.slang shaders/renderer_environment_layout.h shaders/ltc_table.slang shaders/ltc_table_layout.h DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
+install(FILES "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/scene_data.h" include/ludus/graphics/renderer/scene_shader_layout.h include/ludus/graphics/renderer/lighting_layout.h include/ludus/graphics/renderer/deferred_layout.h include/ludus/graphics/renderer/detail/deferred_binding_slots.inc shaders/renderer_deferred_fullscreen.slang shaders/renderer_deferred_material.slang shaders/renderer_deferred_lighting.slang shaders/renderer_deferred_depth.slang shaders/recipes.json shaders/renderer_gpu_preview_layout.h shaders/scene_shader.slang shaders/scene_payload.slang shaders/visibility_buffer.slang shaders/ray_shader.slang shaders/ray_triangle_loop.slang shaders/ray_line_visibility.slang shaders/ray_bvh_nodes.slang shaders/ray_bvh_traversal.slang shaders/renderer_flat.slang shaders/renderer_composite.slang shaders/renderer_overlay.slang shaders/renderer_material.slang shaders/renderer_lit.slang shaders/renderer_clustered.slang shaders/renderer_shadow.slang shaders/renderer_output.slang shaders/renderer_gpu_preview.slang shaders/renderer_gpu_preview_visibility_full.slang shaders/renderer_gpu_preview_hit_cached.slang shaders/renderer_gpu_preview_group32.slang shaders/renderer_gpu_preview_group64.slang shaders/renderer_gpu_preview_group128.slang shaders/renderer_gpu_preview_group8x8.slang shaders/renderer_gpu_preview_image.slang shaders/renderer_reference.slang shaders/renderer_reference_layout.h shaders/renderer_surface.slang shaders/renderer_clustered_surface.slang shaders/renderer_surface_functions.slang shaders/renderer_authored.slang shaders/renderer_clustered_authored.slang shaders/renderer_lit_debug.slang shaders/renderer_clustered_authored_debug.slang shaders/renderer_environment_layout.h shaders/ltc_table.slang shaders/ltc_table_layout.h DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
 # Engine-owned default render graph: the RendererStatic static opaque profile the editor
 # shows when a project has no graph of its own, and the read-only starting point a project
 # copies when it customizes the renderer. Profiles follow the host device family, as the
@@ -626,6 +626,88 @@ if(TARGET ludus_renderer_render_tests)
             line_visibility_package_directory)
         target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
             "LUDUS_RG3_LINE_VISIBILITY_${configuration_definition}_DIRECTORY=\"${line_visibility_package_directory}\"")
+    endforeach()
+    # The point-line PL3 parity oracle: a staged graph cooked again with scene_interface.line_traversal
+    # "TriangleLoop", so the GPU tests compare the default BVH line walk with the linear scan.
+    function(ludus_stage_line_scan_variant staged destination)
+        ludus_stage_render_graph_inputs("${staged}" "${destination}" main.lushader.json)
+        file(READ "${staged}/main.lushader.json" manifest)
+        string(JSON technique_count LENGTH "${manifest}" techniques)
+        math(EXPR technique_last "${technique_count} - 1")
+        set(has_scene_interface FALSE)
+        foreach(technique_index RANGE ${technique_last})
+            string(JSON interface_type ERROR_VARIABLE interface_error
+                TYPE "${manifest}" techniques ${technique_index} scene_interface)
+            if(interface_error STREQUAL "NOTFOUND" AND interface_type STREQUAL "OBJECT")
+                string(JSON manifest SET "${manifest}"
+                    techniques ${technique_index} scene_interface line_traversal "\"TriangleLoop\"")
+                set(has_scene_interface TRUE)
+            endif()
+        endforeach()
+        if(NOT has_scene_interface)
+            message(FATAL_ERROR "${staged}/main.lushader.json declares no scene_interface.")
+        endif()
+        # Rewrite the staged manifest only when it changes, so reconfiguring does not rebuild the package.
+        file(WRITE "${destination}.lushader.json" "${manifest}\n")
+        file(COPY_FILE "${destination}.lushader.json" "${destination}/main.lushader.json" ONLY_IF_DIFFERENT)
+    endfunction()
+    set(line_visibility_scan_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/line_visibility_line_scan")
+    ludus_stage_line_scan_variant("${line_visibility_staged}" "${line_visibility_scan_staged}")
+    foreach(configuration IN ITEMS Loop Native)
+        string(TOLOWER "${configuration}" configuration_suffix)
+        string(TOUPPER "${configuration}" configuration_definition)
+        ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests
+            NAME rg2_line_visibility_${configuration_suffix}_line_scan
+            MANIFEST "${line_visibility_scan_staged}/main.lushader.json" CONFIGURATION "${configuration}"
+            RUNTIME_PACKAGE)
+        cmake_path(GET rg2_line_visibility_${configuration_suffix}_line_scan_RUNTIME_PACKAGE PARENT_PATH
+            line_visibility_scan_package_directory)
+        target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+            "LUDUS_RG3_LINE_VISIBILITY_${configuration_definition}_LINE_SCAN_DIRECTORY=\"${line_visibility_scan_package_directory}\"")
+    endforeach()
+    foreach(template_directory IN ITEMS line_sampling salesin_jarosz_lines)
+        set(template_scan_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${template_directory}_line_scan")
+        ludus_stage_line_scan_variant("${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${template_directory}_template"
+            "${template_scan_staged}")
+        ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME "rg2_${template_directory}_line_scan"
+            MANIFEST "${template_scan_staged}/main.lushader.json" RUNTIME_PACKAGE)
+        cmake_path(GET "rg2_${template_directory}_line_scan_RUNTIME_PACKAGE" PARENT_PATH template_scan_package_directory)
+        string(TOUPPER "${template_directory}" template_definition)
+        target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+            "LUDUS_RG3_${template_definition}_LINE_SCAN_DIRECTORY=\"${template_scan_package_directory}\"")
+    endforeach()
+    # The line-sampling template with every pass on ComputeBvh rays, with each line traversal, for the
+    # hidden large-scene line query measurement: a triangle-loop primary ray would dominate there.
+    set(line_sampling_bvh_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/line_sampling_compute_bvh")
+    ludus_stage_render_graph_inputs("${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/line_sampling_template"
+        "${line_sampling_bvh_staged}" library.lurender.json)
+    file(READ "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/line_sampling_template/library.lurender.json"
+        line_sampling_library)
+    string(JSON line_sampling_node_count LENGTH "${line_sampling_library}" configurations 0 nodes)
+    math(EXPR line_sampling_node_last "${line_sampling_node_count} - 1")
+    foreach(node_index RANGE ${line_sampling_node_last})
+        string(JSON node_kind GET "${line_sampling_library}" configurations 0 nodes ${node_index} kind)
+        if(node_kind STREQUAL "ComputePipeline")
+            string(JSON line_sampling_library SET "${line_sampling_library}"
+                configurations 0 nodes ${node_index} invocation traversal "\"ComputeBvh\"")
+        endif()
+    endforeach()
+    file(WRITE "${line_sampling_bvh_staged}.lurender.json" "${line_sampling_library}\n")
+    file(COPY_FILE "${line_sampling_bvh_staged}.lurender.json" "${line_sampling_bvh_staged}/library.lurender.json"
+        ONLY_IF_DIFFERENT)
+    set(line_sampling_bvh_scan_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/line_sampling_compute_bvh_line_scan")
+    ludus_stage_line_scan_variant("${line_sampling_bvh_staged}" "${line_sampling_bvh_scan_staged}")
+    foreach(line_sampling_variant IN ITEMS "compute_bvh;${line_sampling_bvh_staged}"
+            "compute_bvh_line_scan;${line_sampling_bvh_scan_staged}")
+        list(GET line_sampling_variant 0 line_sampling_name)
+        list(GET line_sampling_variant 1 line_sampling_directory)
+        ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME "rg2_line_sampling_${line_sampling_name}"
+            MANIFEST "${line_sampling_directory}/main.lushader.json" RUNTIME_PACKAGE)
+        cmake_path(GET "rg2_line_sampling_${line_sampling_name}_RUNTIME_PACKAGE" PARENT_PATH
+            line_sampling_package_directory)
+        string(TOUPPER "${line_sampling_name}" line_sampling_definition)
+        target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+            "LUDUS_RG3_LINE_SAMPLING_${line_sampling_definition}_DIRECTORY=\"${line_sampling_package_directory}\"")
     endforeach()
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_SCENE_COMPUTE_DIRECTORY="${scene_compute_package_directory}"

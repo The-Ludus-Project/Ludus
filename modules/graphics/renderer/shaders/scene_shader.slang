@@ -654,14 +654,15 @@ void ClearLineVisibility(out LineVisibility outVisibility)
 /// a light endpoint. The receiver and carrying triangles are excluded; coplanar occluders, occluders
 /// behind the receiver and occluders beyond the segment do not occlude. Occluded intervals within
 /// SCENE_LINE_INTERVAL_MERGE_TOLERANCE merge, and shorter visible intervals are dropped. Every pass
-/// uses the same software scan of the packed triangles, whatever its traversal strategy, and the
-/// query draws no random dimensions.
+/// walks the packed BVH in software, whatever its traversal strategy, or scans every packed triangle
+/// when scene_interface.line_traversal is "TriangleLoop"; both give the same intervals. The query
+/// draws no random dimensions. HasMaskedOccluders is false when no length is visible.
 /// Returns SCENE_QUERY_MISS when no opaque occluder removes any length, SCENE_QUERY_SURFACE when one
 /// does (a fully occluded segment has zero intervals), and SCENE_QUERY_FAILURE for an exhausted line
 /// budget, an earlier failure, an invalid receiver or segment triangle, nonfinite positions, a segment
-/// shorter than SCENE_UNIT_TOLERANCE, a receiver in the segment's line, a nonfinite interval or more
-/// than SCENE_LINE_INTERVAL_CAPACITY - 1 running occluded intervals. Failure latches queries.HasFailed
-/// and zeroes outVisibility.
+/// shorter than SCENE_UNIT_TOLERANCE, a receiver in the segment's line, a nonfinite interval, more
+/// than SCENE_LINE_INTERVAL_CAPACITY - 1 running occluded intervals or an exhausted BVH stack.
+/// Failure latches queries.HasFailed and zeroes outVisibility.
 uint FindVisibleLineIntervals(SceneContext scene,
                               inout RayQueryContext queries,
                               SurfaceHit receiver,
@@ -712,13 +713,13 @@ uint FindVisibleLineIntervals(SceneContext scene,
     }
     uint receiverTriangle = receiver.TriangleIndex < Counts.x ? receiver.TriangleIndex : SCENE_INVALID_INDEX;
     bool isOccluded;
-    if (TraceLineTriangleLoop(apexWorld,
-                              startWorld,
-                              endWorld,
-                              receiverTriangle,
-                              segment.TriangleIndex,
-                              outVisibility,
-                              isOccluded) == false)
+    if (TraceLineVisibility(apexWorld,
+                            startWorld,
+                            endWorld,
+                            receiverTriangle,
+                            segment.TriangleIndex,
+                            outVisibility,
+                            isOccluded) == false)
     {
         ClearLineVisibility(outVisibility);
         queries.HasFailed = true;

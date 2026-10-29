@@ -146,6 +146,10 @@ SCENE_QUERY_LIMITS = {
     'MIN_LINE_QUERIES': 0,
     'MAX_LINE_QUERIES': 8,
 }
+# scene_interface.line_traversal: how FindVisibleLineIntervals finds occluders in every pass, whatever
+# the pass's ray traversal. The packed BVH is the default; the linear scan remains for comparison.
+LINE_TRAVERSALS = ('ComputeBvh', 'TriangleLoop')
+DEFAULT_LINE_TRAVERSAL = 'ComputeBvh'
 
 COMPUTE_ID = 'GraphRayCompute'
 VISIBILITY_COMPUTE_ID = 'GraphVisibilityRayCompute'
@@ -158,7 +162,7 @@ IMAGE_FRAGMENT_ID = 'GraphRayImageFragment'
 # Files are installed by their owning renderer/math/RHI targets beside the helper.
 HELPERS = ('scene_data.h', 'renderer_gpu_preview_layout.h', 'renderer_surface_functions.slang', 'recipes.json',
            'native_metal_ray.slang', 'metal_ray_pipeline_layout.h',
-           'ray_triangle_loop.slang', 'ray_line_visibility.slang', 'ray_bvh_traversal.slang', 'renderer_reference_layout.h', 'lighting_layout.h', 'math.slang', 'raster_bindings.slang', 'scene_shader.slang', 'scene_payload.slang', 'scene_shader_layout.h', 'ray_shader.slang', 'visibility_buffer.slang')
+           'ray_triangle_loop.slang', 'ray_line_visibility.slang', 'ray_bvh_nodes.slang', 'ray_bvh_traversal.slang', 'renderer_reference_layout.h', 'lighting_layout.h', 'math.slang', 'raster_bindings.slang', 'scene_shader.slang', 'scene_payload.slang', 'scene_shader_layout.h', 'ray_shader.slang', 'visibility_buffer.slang')
 # Staged and included only for scene_interface.polygonal_light_sampling: FoundationMath's projected-solid-angle,
 # LTC and weighted-reservoir primitives and the renderer's LTC table lookup, in include order, so packages that do
 # not request them keep their snapshot and cache identity. The table itself is a renderer-bound buffer.
@@ -561,6 +565,9 @@ def scene_wrapper(selected, interface, snapshot, build, recipe, storage_source='
 #include "_ludus_ray/renderer_gpu_preview.slang"
 #include "_ludus_ray/scene_shader.slang"
 '''
+    if interface.get('line_traversal', DEFAULT_LINE_TRAVERSAL) == 'TriangleLoop':
+        # Read by ray_line_visibility.slang; the default BVH walk adds nothing, keeping wrapper bytes.
+        wrapper = '#define LUDUS_SCENE_LINE_TRIANGLE_LOOP 1\n' + wrapper
     wrapper += storage_source
     compatibility = compatibility or {'sources': {}, 'callbacks': []}
     if interface.get('visibility_buffer', False):

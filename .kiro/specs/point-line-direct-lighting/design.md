@@ -1,7 +1,8 @@
 # Point and line direct lighting design
 
 Status: proposed, 2026-10-27. Baseline `origin/develop` `02df0b37`. PL0
-evidence recorded 2026-10-27 on `431613a2` (section 4). This describes work to
+evidence recorded 2026-10-27 on `431613a2` (section 4). D5 revised 2026-10-29 for
+PL3 on `c08ffec7`. This describes work to
 build. Read [requirements](requirements.md) and
 [tasks](tasks.md). AGENTS.md, steering, ADR 0003, the
 [compute ray-tracing spec](../compute-ray-tracing/design.md) and the canonical
@@ -31,7 +32,9 @@ remain authoritative. Line references drift; symbol names are the stable anchors
   bound and one child index, upper bound and the other, triangle range) and `Order`
   at `Offsets.y`. `TraceScene` in `renderer_reference.slang` traverses it with a
   bounded stack and reports `HasExceededStack`. Render-graph ray passes do not
-  traverse it today.
+  traverse it today. (Since #676, `ray_bvh_traversal.slang` holds that walk,
+  `ComputeBvh` graph passes use it, and order word Z keeps the BVH leaf order;
+  see D5.)
 - **Opacity.** `LUDUS_GPU_PREVIEW_OPAQUE_FLAG` in `Sampling.z` marks a scene
   whose instances are all opaque. Otherwise a triangle is alpha-tested when its
   `LUDUS_GPU_PREVIEW_TEXTURE_OPTIONS_WORD` `.z` is nonzero. `TraceTriangleLoop`
@@ -237,6 +240,11 @@ light sampling within 0.03%. The emitted MSL was logically correct, so this is a
 Metal compiler problem. PL2 and PL3 should follow the same pattern, and PL3's BVH
 stack adds thread memory that should be checked against it.
 
+PL3 check. The BVH walk adds a 64-entry `uint` stack to every line query site and
+keeps the single interval array. Both templates' merged kernels still pass the PL1
+and PL2 convergence tests, and their images match the scan's byte for byte
+(tasks PL3).
+
 ### D4 Alpha-tested occluders
 
 An exact interval set through an alpha-tested triangle would need the alpha
@@ -277,18 +285,89 @@ triangles, as `TraceTriangleLoop` does: cost linear in triangle count per query,
 for small scenes and comparison. It reads the packed triangle words directly,
 not through `GetTriangle`, to avoid copying texture coordinates per triangle.
 
-**PL3, BVH traversal.** Traverse the packed `ReferenceBvhNode` array with a
-bounded stack, following `TraceScene` in `renderer_reference.slang`. Visit a
-node when its box overlaps the shadow triangle, using the separating-axis test
-of Tomas Akenine-Möller, "Fast 3D Triangle-Box Overlap Testing", *Journal of
-Graphics Tools* 6(1), 2001, pp. 29-33. Stack exhaustion fails (PL12). The node
-test is conservative, so the BVH visits a superset of the triangles that clip,
-and each interval is computed from the same per-triangle arithmetic. Results
-therefore equal the loop's for non-overflowing fixtures. PL0 confirmed that
-render-graph scene packs contain the nodes under both traversal strategies
-(section 4.4). In a plan with any `NativeQuery` pass, however, `Order` is
-partitioned by opacity, so leaf ranges do not address it in a scene with masked
-triangles. PL3 traverses leaves through an unpartitioned order in that case.
+**PL3, BVH traversal** (revised 2026-10-29, after #676). The first version of
+this decision planned a private walk of the packed `ReferenceBvhNode` array
+modeled on the RT1 kernel. Since then #676 moved that walk into
+`ray_bvh_traversal.slang` and made it a graph ray strategy, `ComputeBvh`. The
+line query now shares its boundary instead of duplicating it:
+
+- **Shared node reader.** A new private source, `ray_bvh_nodes.slang`, holds
+  what both walks need: `BVH_NODE_WORDS`, `BVH_MAXIMUM_PENDING`
+  (`LUDUS_REFERENCE_STACK_SIZE - 2`), `LoadBvhNode` (bounds, `Left`/`Right`,
+  `First`, `Count`, `SplitAxis`) and `GetBvhLeafTriangle`. `TraceBvh` and the
+  line walk both use it, so the node layout, the leaf order and the stack bound
+  have one owner.
+- **Leaf order.** #676 keeps the BVH leaf order in order word Z whatever the
+  native opacity partition in word X (preview kernel ABI 8,
+  `PackGpuPreviewRayOrder`). `GetBvhLeafTriangle` reads word Z. That settles the
+  PL0 finding (section 4.4) with no packing change and no extra permutation:
+  leaf ranges address the unpartitioned order in every plan, including plans
+  with a `NativeQuery` pass and scenes with masked triangles.
+- **Separate loop body.** `TraceBvh` orders children by the ray direction,
+  culls by the closest distance and stops at the first visibility hit. The line
+  walk has no direction or distance. It visits every leaf whose box overlaps the
+  shadow triangle and runs the D2 clip on each leaf triangle. A generic walk with
+  a visitor interface was considered and rejected: the shared part is the node
+  decode and the stack bound, about ten lines, and a visitor would pass the
+  interval array between functions, the pattern that lost stores on Metal (D3,
+  "PL1 storage").
+- **Node test.** A node is visited when its box overlaps the shadow triangle
+  `(x, a, b)`, by the separating-axis test of Tomas Akenine-Möller, "Fast 3D
+  Triangle-Box Overlap Testing", *Journal of Graphics Tools* 6(1), 2001,
+  pp. 29-33: the three box axes, the shadow plane's normal and the nine edge
+  cross products. The test is exact in real arithmetic. In float the box's half
+  extents grow by a margin of `64 * 2^-24 * scale / sine`, where `scale` is the
+  largest coordinate magnitude among the apex, the endpoints and the box, and
+  `sine` is the apex angle's sine that the query already bounds below by
+  `TRIANGLE_PARALLEL_COSINE_TOLERANCE`. The clip's own rounding grows as
+  `1 / sine` in the shadow plane's coordinates, so a thin shadow triangle gets a
+  wider margin; a wider margin only visits more nodes. The node boxes are float
+  bounds of the packed float vertices, so every leaf box contains its triangles.
+- **Stack exhaustion fails** (PL12) with the `TraceBvh` bound: pushing two
+  children with more than `BVH_MAXIMUM_PENDING` entries pending fails the query.
+  The walk keeps at most one deferred sibling per level, and `BuildReferenceBvh`
+  bounds the depth to `REFERENCE_BVH_MAX_DEPTH = 48`, so a packed scene cannot
+  reach it. The check guards a malformed pack and has no GPU test, since the
+  public API cannot build a deeper tree. A pack with triangles but no nodes also
+  fails.
+- **Full occlusion stops the walk.** Once the occluded set is one interval
+  whose gaps to 0 and 1 are both within the merge tolerance, no visible length
+  can remain and later insertions only merge into it. Both traversals then stop.
+  `HasMaskedOccluders` is false whenever no length is visible, because no line
+  point is drawn, so the early stop does not depend on visiting order.
+
+Why results equal the loop's. The node test is conservative, so the BVH visits
+a superset of the triangles that the loop clips, and each candidate runs the same
+`ClipLineOccluder` arithmetic. The merged occluded set does not depend on
+insertion order: two intervals end up in one entry exactly when a chain of
+intervals, each within the tolerance of the next, joins them, and `min`/`max` are
+exact. Its complement, the status and `VisibleLengthWorld` are therefore
+bitwise equal. Two cases may differ, both from insertion order (D3): overflow,
+because the running set can exceed the final union; and a nonfinite interval,
+which fails only if it is met before the segment is fully occluded.
+
+**Selection.** The scene interface gains an optional `line_traversal`,
+`"ComputeBvh"` (the default) or `"TriangleLoop"`. Like `line_queries` it is a
+builder and wrapper input, not a plan or package field (D9, PL07). The wrapper
+defines `LUDUS_SCENE_LINE_TRIANGLE_LOOP` for `"TriangleLoop"`. It is independent
+of each pass's `invocation.traversal`, because the line query is software in
+every pass (PL06). Alternatives considered:
+
+- **Follow the pass strategy** (`TriangleLoop` scans, `ComputeBvh` and
+  `NativeQuery` walk the BVH). Rejected: the shipped templates select
+  `TriangleLoop` for their rays (D8) and would keep scanning, and a BVH
+  comparison would also change their ray tests (Möller-Trumbore against the
+  watertight test), so their images could not be compared byte for byte.
+- **BVH only, loop removed.** Rejected: the loop is the oracle for the parity
+  tests and for authors checking a scene of their own.
+
+PL3 notes. On an Apple M5 the walk and the scan gave byte-identical readouts and
+images on every PL1 and PL2 fixture and on a 500,000-triangle part of Intel's
+Sponza. There a line-sampling pass with one query per pixel took 2.2 ms with the
+BVH against 427-452 ms with the scan at 96×64. On the 14-triangle Cornell room the
+walk was 13-28% slower than the scan. At equal GPU time on that room, PL2's
+penumbra comparison reverses: point sampling with about 6.5 times the samples has
+about a third of `color`'s error. These are measurements (tasks PL3), not claims.
 
 **Native.** Not provided. Inline `RayQuery` and Metal intersection queries
 accept rays only, and the native acceleration structure is opaque, so its nodes
@@ -489,6 +568,11 @@ PL1 makes the text follow the template's registry requirement, so a
   and generates the same wrapper bytes as today.
 - `render_graph_ray.py` substitutes `MAX_LINE_QUERIES` into
   `queries.MaximumLineQueries` beside the other limits.
+- PL3: `render_graph_build.py` accepts optional `line_traversal` in
+  `scene_interface`, `"ComputeBvh"` or `"TriangleLoop"`, and rejects anything
+  else with a repair naming both. `render_graph_ray.py` defines
+  `LUDUS_SCENE_LINE_TRIANGLE_LOOP` for `"TriangleLoop"`. An absent field and
+  `"ComputeBvh"` generate the same wrapper bytes (D5, "Selection").
 - The plan and package formats are unchanged (PL07). PL1 confirms this with
   byte-identical cooked outputs for the existing ray fixtures and templates.
 
@@ -502,6 +586,9 @@ These are deferred, each with its own reason:
 - **Path capture.** Line queries are not recorded by the ray path capture.
 - **Native and browser.** No native line query exists, and browser ray
   execution is not provided.
+- **Seam receivers** (PL2 seam finding, D8b). Excluding occluders that contain
+  the apex would change intervals, and PL3 must keep them bitwise equal to the
+  loop's, so it is left for its own change with its own evidence.
 
 ## 4. PL0 evidence
 
@@ -714,8 +801,9 @@ ratios are context, not an acceptance threshold, and support no speed claim.
 ## 5. Risks
 
 - **Linear cost.** Six line queries per pixel, each scanning every triangle,
-  limit PL1/PL2 to small scenes. PL3's BVH is the remedy; tests use small
-  fixtures until then.
+  limited PL1/PL2 to small scenes. PL3's BVH walk removes the scan from line
+  queries; the templates' `TriangleLoop` rays still scan, so large scenes need
+  their passes on `ComputeBvh`.
 - **Register pressure.** A 32-entry `float2` array per thread can spill. On
   Metal, PL0 found no occupancy change and no capacity-ordered time difference
   (section 4.2). Register counts and Vulkan were not measured.

@@ -769,7 +769,8 @@ each author's callbacks.
 graph; it adds no structure and no preparation work. The kernel shares its node
 walk and float32 port of Woop, Benthin and Wald's watertight triangle test with the
 [GPU-compute RT1 reference](../architecture/renderer-systems.md#gpu-compute-reference)
-(`ray_bvh_traversal.slang`). Its ray interval is closed: a hit exactly at the
+(`ray_bvh_traversal.slang`, which reads nodes through `ray_bvh_nodes.slang`, shared
+with the [line query](#find-the-visible-parts-of-a-segment)). Its ray interval is closed: a hit exactly at the
 maximum distance is accepted, and equal-distance hits keep the lowest packed
 triangle. Candidates pass the same fixed-mip material alpha acceptance as the other
 strategies. Each ray's traversal stack holds 64 nodes, and the builder's 48-level
@@ -1998,8 +1999,10 @@ the compute ray-tracing template, and its `line_queries` rises to at least 1.
 Scope and limits. Lines are chords of one emitter triangle in one direction;
 chords across coplanar triangles and the paper's solid-angle strategy are not part
 of this template. The paper's second line direction and MIS with BSDF samples are in
-the [point-and-line template](#combine-point-and-line-samples). Traversal is a
-linear scan of the World triangles, so use small scenes.
+the [point-and-line template](#combine-point-and-line-samples). Line queries walk
+the packed BVH ([Find the visible parts of a segment](#find-the-visible-parts-of-a-segment)),
+but the template's rays use `TriangleLoop`, which scans every triangle, so for large
+scenes set each pass's `invocation.traversal` to `ComputeBvh`.
 
 `ludus_render_graph_ray_tests` renders the template in the Cornell-box-style room on
 Metal with the triangle loop:
@@ -2008,11 +2011,14 @@ Metal with the triangle loop:
   [Veach and Guibas template](#compare-light-and-bsdf-sampling-with-mis), cooked with
   every pass on the triangle loop, within 2% at 256 samples per pixel;
 - `visibleFraction` is 1 on a fully lit floor region and 0 in the umbra of the
-  block.
+  block;
+- both outputs are byte-identical, after one sample and after 64, to the template
+  cooked with `line_traversal` `"TriangleLoop"`.
 
 The query itself is tested against analytic intervals by the
 [line visibility fixture](../../tests/sdk_consumer/rg2/line_visibility/main.lurender.json),
-under both traversal strategies. Vulkan has not been run for this template.
+under both ray strategies and both line traversals, whose readouts must agree byte
+for byte. Vulkan has not been run for this template.
 
 See the canonical
 [package](../../modules/graphics/renderer/render_graphs/line_sampling/main.lurender.json).
@@ -2140,9 +2146,9 @@ you add another query site.
 Scope and limits. Lines are chords of one emitter triangle; chords across coplanar
 triangles, the paper's solid-angle line strategy (which needs parallelogram
 emitters) and its discontinuity-smoothing heuristic (which needs stratified
-samples) are not part of this template. Line samples cost line queries, and
-traversal is a linear scan of the World triangles, so use small scenes. There is no
-indirect bounce.
+samples) are not part of this template. Line samples cost line queries. Those walk
+the packed BVH, but the template's rays use `TriangleLoop`, so for large scenes set
+each pass's `invocation.traversal` to `ComputeBvh`. There is no indirect bounce.
 
 `ludus_render_graph_ray_tests` renders the template on Metal with the triangle loop:
 
@@ -2164,6 +2170,13 @@ indirect bounce.
   1024-sample image. The test reports the GPU time of each pass beside it. Line
   samples cost line queries, so this is an equal-sample comparison and supports no
   speed claim.
+- All three outputs are byte-identical, after one sample and after 64, to the
+  template cooked with `line_traversal` `"TriangleLoop"`.
+- At equal GPU time the result reverses on this 14-triangle room. A `color` sample
+  (primary plus `shade` pass) cost 6.4-6.6 times a `pointSampling` sample (primary
+  plus `shadePoints`). With 102-106 samples in the time of 16, `pointSampling`
+  reached a penumbra mean squared error of 9.9e-5, against 3.05e-4 for `color`.
+  The hidden test `[.point-line-performance]` repeats this measurement.
 
 A masked occluder cannot be tested yet, because render-graph scenes cannot hold
 alpha-tested triangles. Vulkan has not been run for this template.
@@ -2251,6 +2264,14 @@ triangle recipe state. Add this record to the manifest's
 Add `"line_queries": 1` (up to 8) only when a callback calls
 `FindVisibleLineIntervals`. An absent field means 0, and the generated wrapper is
 then byte-identical to one without the field.
+
+`"line_traversal"` chooses how that query finds occluders: `"ComputeBvh"`, the
+default, walks the packed BVH; `"TriangleLoop"` scans every packed triangle. Both
+give the same intervals (see [Find the visible parts of a segment](#find-the-visible-parts-of-a-segment)),
+so the scan is for comparison. The choice applies to every pass that shares the
+technique, whatever each pass's `invocation.traversal`, and any other value is
+rejected when the package is built. An absent field and `"ComputeBvh"` generate the
+same wrapper.
 
 Add `"polygonal_light_sampling": true` to use the polygonal-light primitives in
 callbacks. The wrapper then stages and includes, before your sources:
@@ -2460,13 +2481,33 @@ materials have no alpha mode, so the flag is never set there.
 
 Budget. Each call counts against the scene interface's `line_queries`, which is 0
 when absent; see the [manual manifest record](#author-scene-aware-ray-shaders)
-above. Traversal is a linear scan of the packed World triangles in every pass,
-whatever the pass's `TriangleLoop` or `NativeQuery` choice, because native ray
-queries cannot be walked with a triangle. Calling the query therefore never makes a
-package require ray hardware. Its cost grows with the triangle count; keep scenes
-small until a BVH traversal replaces the scan. On an Apple M5 with about 4,000
-triangles, one query cost about as much as one `TriangleLoop` shadow ray; that is a
-measurement, not a performance claim.
+above.
+
+Traversal. In every pass, whatever its `TriangleLoop`, `ComputeBvh` or `NativeQuery`
+choice, the query walks the renderer's packed BVH in ordinary compute, because
+native ray queries cannot be walked with a triangle. Calling it therefore never
+makes a package require ray hardware. The walk shares the `ComputeBvh` ray
+strategy's node reader, leaf order and 64-entry stack (`ray_bvh_nodes.slang`). It
+visits a node when its box overlaps the shadow triangle, by the separating-axis test
+of Tomas Akenine-Möller,
+[*Fast 3D Triangle-Box Overlap Testing*, Journal of Graphics Tools 6(1), 2001](https://doi.org/10.1080/10867651.2001.10487535).
+Each box is widened by a rounding margin, so the walk visits every triangle that a
+scan would clip and computes each interval with the same arithmetic. The intervals
+are therefore bitwise equal to a scan's except where insertion order matters: a
+segment that overflows the occluded capacity, or a nonfinite interval met before the
+segment is fully occluded. Once the segment is fully occluded, the walk stops, and
+`HasMaskedOccluders` is false whenever no length is visible. An exhausted stack fails
+the query; the BVH builder's 48-level depth limit keeps admitted scenes within it.
+Set the scene interface's `line_traversal` to `"TriangleLoop"` to scan every packed
+triangle instead, for example to compare on a scene of your own.
+
+Measured on an Apple M5 (macOS 26.6) at 96×64 pixels, with one line query per pixel
+in the [line-sampling template](#sample-lights-along-lines)'s shading pass and
+`ComputeBvh` rays in both runs, the first 500,000 triangles of Intel's Sponza took
+2.2 ms per frame with the BVH and 427-452 ms with the scan, with byte-identical
+images. On the 14-triangle Cornell-style room the BVH pass was 13-28% slower than
+the scan. These are measurements, not performance claims; see the
+[point-line PL3 evidence](../../.kiro/specs/point-line-direct-lighting/tasks.md#pl3-bvh-line-traversal).
 
 ### Raster first hits and secondary rays
 

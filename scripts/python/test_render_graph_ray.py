@@ -680,6 +680,53 @@ class RayPipelineTests(unittest.TestCase):
             self.assertEqual(wrappers['three'].count(assignment), 1)
             self.assertEqual(wrappers['three'].replace(assignment, '', 1), wrappers['absent'])
 
+    def test_line_traversal_is_optional_and_names_its_choices(self):
+        fixture = ROOT / 'tests/sdk_consumer/rg2/scene_ray/main.lushader.json.in'
+        value = json.loads(fixture.read_text().replace('@RG2_TEST_PROFILES@', '["metal"]'))
+        interface = next(item for item in value['techniques'] if item['id'] == ray.TECHNIQUE)['scene_interface']
+        # Absent means the packed BVH walk (point-line design D5).
+        self.assertNotIn('line_traversal', interface)
+        build.validate_manifest(value)
+        self.assertEqual(ray.LINE_TRAVERSALS, ('ComputeBvh', 'TriangleLoop'))
+        self.assertEqual(ray.DEFAULT_LINE_TRAVERSAL, 'ComputeBvh')
+        for accepted in ray.LINE_TRAVERSALS:
+            interface['line_traversal'] = accepted
+            build.validate_manifest(value)
+        for rejected in ('NativeQuery', 'Custom', 'computebvh', '', 1, True, None):
+            with self.subTest(line_traversal=rejected):
+                interface['line_traversal'] = rejected
+                with self.assertRaises(ToolingError) as caught:
+                    build.validate_manifest(value)
+                self.assertEqual(caught.exception.code, 'RenderGraphBuildSchema')
+                # The diagnostic names the field and both admitted values, which is the repair.
+                self.assertIn('line_traversal', caught.exception.message)
+                self.assertIn("'ComputeBvh'", caught.exception.message)
+                self.assertIn("'TriangleLoop'", caught.exception.message)
+
+    def test_line_traversal_defines_the_scan_only_for_triangle_loop(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'kernel.slang').write_text('// LineKernel\n')
+            (root / 'payload.slang').write_text('struct ScenePayload { float3 Radiance; };\n')
+            programs = {'Kernel': {'id': 'Kernel', 'stage': 'compute', 'source': 'kernel.slang',
+                                   'function': 'LineKernel', 'output': 'Radiance'}}
+            recipe = {'source': 'renderer_gpu_preview.slang'}
+            interface = {'version': 1, 'payload': 'payload.slang', 'surface_queries': 1, 'visibility_queries': 0,
+                         'line_queries': 1}
+            wrappers = {}
+            for name, traversal in (('absent', None), ('bvh', 'ComputeBvh'), ('scan', 'TriangleLoop')):
+                value = dict(interface) if traversal is None else dict(interface, line_traversal=traversal)
+                wrappers[name] = ray.persistent_wrapper(programs, {'scene_interface': value}, [('Kernel',)],
+                                                        build.Snapshot(root), build, recipe)
+            # The default BVH walk adds nothing, so existing line-query packages keep their wrapper bytes.
+            self.assertEqual(wrappers['absent'], wrappers['bvh'])
+            definition = '#define LUDUS_SCENE_LINE_TRIANGLE_LOOP 1\n'
+            self.assertNotIn('LUDUS_SCENE_LINE_TRIANGLE_LOOP', wrappers['absent'])
+            self.assertEqual(wrappers['scan'].count(definition), 1)
+            # It precedes the helper includes that read it.
+            self.assertLess(wrappers['scan'].index(definition), wrappers['scan'].index('_ludus_ray/scene_shader.slang'))
+            self.assertEqual(wrappers['scan'].replace(definition, '', 1), wrappers['absent'])
+
     def test_scene_pipeline_adapts_legacy_stages_without_project_helpers(self):
         value = json.loads((FIXTURE / 'main.lushader.json.in').read_text().replace('@RG2_TEST_PROFILES@', '["metal"]'))
         technique = next(item for item in value['techniques'] if item['id'] == ray.TECHNIQUE)
