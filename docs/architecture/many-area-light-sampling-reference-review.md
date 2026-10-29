@@ -29,7 +29,12 @@ projected-solid-angle primitives and the template shadow-ray traversal. Its
 comparison template, `polygonal-light-sampling`, is implemented as of October 28,
 2026: it shades every emissive triangle, without light selection, with clamped
 optimal MIS, the balance heuristic and each technique alone, and has a CPU oracle
-with GPU parity tests. Its usage, departures and evidence are in the
+with GPU parity tests. On October 29, 2026 it gained Peters' §6.1 clip of the
+shading normal to the view's hemisphere, in the template and the oracle, and an
+occluded-penumbra fixture after his Fig. 10, where the GPU shows clamped optimal
+MIS beating the weighted balance heuristic. Its limit of eight emissive triangles
+stays: lifting it needs a change to the scene-interface contract. Its usage,
+departures, evidence and those options are in the
 [authoring guide](../development/render-graph-authoring.md#compare-brdf-importance-sampling-for-polygonal-lights).
 
 ## Sources reviewed

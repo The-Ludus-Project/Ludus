@@ -1988,24 +1988,28 @@ same random numbers.
 For each receiver and each emissive triangle, `main_shaders/polygonal_light.slang`
 follows the paper section by section:
 
-1. `MakePolygonalLightReceiver` builds the shading frame and looks up the specular
+1. `ClipShadingNormalToOutgoingHemisphere` clips the shading normal to the
+   hemisphere of the view direction, as Peters' renderer does "to avoid black pixels
+   due to normal mapping" (§6.1). The shading frame, both techniques and the BSDF use
+   the clipped normal. `shade.slang` clips front faces only.
+2. `MakePolygonalLightReceiver` builds the shading frame and looks up the specular
    LTC `M₁` with the receiver's `F0` from the renderer's
    [LTC table](ltc-table.md), which the technique's
    `scene_interface.polygonal_light_sampling` binds. The diffuse technique uses
    `M₀ = I` (§4.2).
-2. `TryPreparePolygonalLight` clips the triangle to the horizon for projected
+3. `TryPreparePolygonalLight` clips the triangle to the horizon for projected
    solid angle sampling (§3, supplement A.1) and transforms it by `M₁⁻¹` before
    clipping it there for LTC sampling (§4.1). An empty LTC clip disables that
    technique. It computes Peters' coefficients `c_j = L_e a_j E_j` **per color
    channel**, with the diffuse albedo `a₀` clamped to 0.01 per channel (§4.2).
-3. `TrySamplePolygonalLight` draws a direction with FoundationMath's
+4. `TrySamplePolygonalLight` draws a direction with FoundationMath's
    [projected solid angle](../modules/foundation/math.md) or LTC sampler, evaluates
    both densities at the normalized direction and maps it to a point on the
    triangle.
-4. `ComputePolygonalLightWeight` returns the estimator's weight per channel:
+5. `ComputePolygonalLightWeight` returns the estimator's weight per channel:
    `v·c_j p_j / Σ c_k p_k + (1 − v)·p_j / Σ p_k` for clamped optimal MIS,
    `p_j / Σ p_k` for the balance heuristic, and one for a single technique.
-5. `shade.slang` evaluates the emission at the sampled point, including emission
+6. `shade.slang` evaluates the emission at the sampled point, including emission
    maps and sidedness, and traces the shadow ray with `TestVisibility`.
 
 | Graph setting | Default | Range | Meaning |
@@ -2025,6 +2029,20 @@ interface's maximum of `visibility_queries: 16`, so a scene may have at most **e
 emissive triangles**. A larger scene fails explicitly with the failure color rather
 than dropping lights; use the RIS template for many lights.
 
+The limit cannot be lifted without changing the scene-interface contract.
+`TestVisibility` counts the budget per invocation of each pass, and it is the
+contract's only shadow-ray query, so a loop of shadow rays inside the shader spends
+the same budget. Calling the traversal directly (`Trace`) would bypass the budget and
+tie the template to the compute BVH, which the contract keeps behind
+`TestVisibility`. The options, none of them implemented:
+
+| Option | What it changes |
+| --- | --- |
+| Raise `MAX_VISIBILITY_QUERIES` in `scripts/python/ludus_tools/render_graph_ray.py` | The contract's limit, which the build admission, the editor's **Visibility queries** control (0–16) and every ray technique share. Each extra pair of queries admits one more triangle; the limit still exists |
+| Add a scene-interface query that tests many shadow rays at once, or one that is not budgeted | A new contract operation with its own budget, implemented for every traversal |
+| Split the triangles across more shade passes and add a pass that sums them | Eight more triangles per pass, still a fixed number, and a different graph from Peters' one pass per estimator |
+| Shade a randomly selected subset of triangles | Leaves Peters' protocol of shading every light; the RIS template already does this |
+
 New shader programs have `PolygonalLight`-prefixed IDs and sources under
 `polygonal_light_sampling/main_shaders/`. The setting joins the manifest's Graph
 settings, and existing values are kept. The shared ray technique is extended as for
@@ -2037,8 +2055,12 @@ Departures from the paper, also listed in `polygonal_light.slang`:
 - The diffuse albedo `a₀` is `baseColor · (1 − metallic) · (1 − F0)`, Schlick's
   reflectance at normal incidence for Ludus's Fresnel-weighted Lambert lobe. Peters
   uses the Frostbite BRDF's diffuse albedo.
-- Shading normals are not clipped to the hemisphere of the outgoing direction
-  (§6.1); the BSDF is zero there.
+- §6.1 gives no margin for the clipped shading normal. Ludus keeps its cosine with
+  the view direction at least 0.01 (`MINIMUM_OUTGOING_COSINE`; after renormalizing,
+  at least 0.01/√1.0001), because the BSDF is zero on the shading horizon.
+- §6.1 does not discuss back faces. Only front faces are clipped, so a one-sided
+  surface seen from behind stays black, as in the other templates. A normal clipped
+  towards the viewer would light such a surface through itself.
 - A sampled direction that misses its triangle in float32 contributes zero.
 - Analytic lights and the environment do not light surfaces. A camera ray that
   misses the scene shows the environment.
@@ -2058,21 +2080,28 @@ Evidence:
   compares each estimator's mean over 65,536 oracle samples with a midpoint
   quadrature of the same integral over 512² subtriangles. Every channel agrees
   within four standard errors plus 0.2% for a rough dielectric, glossy metal with
-  the triangle in its highlight, and a two-sided triangle straddling the horizon
-  with `v = 1`. The LTC estimator is compared with the integral over the LTC's
+  the triangle in its highlight, a two-sided triangle straddling the horizon
+  with `v = 1`, and a normal-mapped receiver whose shading normal faces away from
+  the view (cosine −0.28), which only §6.1's clip lights. A separate case checks
+  the clip itself: a facing normal is unchanged, a normal facing directly away
+  becomes the view direction, and a grazing one ends 0.01 inside the hemisphere. The LTC estimator is compared with the integral over the LTC's
   support. On the glossy case the variance is 0.087 for clamped optimal MIS, 0.34
   for the balance heuristic and 3.6 for projected solid angle sampling alone, the
   ordering of Peters' Fig. 10.
 - **CPU and GPU parity.** `ludus_renderer_render_tests` runs
   `polygonal_light.slang` in a test kernel on 4,096 drawn receivers, materials and
   triangles, a quarter of them at the minimum roughness, and compares the raw
-  linear radiance of all four estimators with the oracle. On Apple M5 the integrals
-  and coefficients agree to a p99 relative difference of 5·10⁻⁵, the per-case
-  radiance to p90 2.8·10⁻⁵ and p99 2.8·10⁻³, and the summed radiance to 6.1·10⁻⁴;
-  the test allows 5·10⁻⁴, 10⁻⁴, 5·10⁻³ and 2·10⁻³. LTC clips with an integral
-  below 10⁻⁴ are slivers whose samples are not reproducible across precisions
-  (Peters §3.7), so the estimators that use the LTC sample skip them, as
-  FoundationMath's LTC parity test does.
+  linear radiance of all four estimators with the oracle. A quarter of the
+  receivers have their view mirrored below the shading horizon, so the kernel and
+  the oracle each clip the normal (§6.1); 980 receivers are clipped and 268 of them
+  are lit. On Apple M5 the integrals and coefficients agree to a p99 relative
+  difference of 5·10⁻⁵, the per-case radiance to p90 3.2·10⁻⁵ and p99 1.7·10⁻³,
+  and the summed radiance to 6.4·10⁻⁴; the test allows 5·10⁻⁴, 10⁻⁴, 5·10⁻³ and
+  2·10⁻³. LTC clips with an integral below 10⁻⁴ are slivers whose samples are not
+  reproducible across precisions (Peters §3.7), so the estimators that use the LTC
+  sample skip them, as FoundationMath's LTC parity test does. A sliver on either
+  side counts: at the minimum roughness and a grazing view, the GPU finds LTC
+  integrals of 10⁻¹³ to 10⁻¹⁰ where the oracle's clip is empty.
 - **Template.** `ludus_render_graph_ray_tests` runs as its own CTest entry,
   `ludus_render_graph_polygonal_light_sampling_pixels`. At 256 samples per pixel,
   the clamped optimal MIS, balance-heuristic and projected-solid-angle outputs agree
@@ -2083,10 +2112,24 @@ Evidence:
   1.24·10⁻⁴ for clamped optimal MIS, 1.25·10⁻⁴ for the balance heuristic and
   1.46·10⁻⁴ for projected solid angle sampling alone; the test requires the first
   to be below the last. A room with 32 emissive triangles shows the failure color.
+- **Occluded penumbra.** Like Peters' Fig. 10, a blue diffuse plane and a white
+  glossy plane are lit by a rectangular emitter, and a wall casts a large penumbra
+  over their lower halves. The test renders the template and a test-only copy with
+  `PROJECTED_SOLID_ANGLE_MIS_VISIBILITY = 1`, whose color output is the weighted
+  balance heuristic (§4.2), at 16 samples with the same random numbers, and
+  compares both with a 1024-sample clamped optimal MIS image of another seed. The
+  three outputs that do not depend on `v` must match byte for byte. On Apple M5,
+  over six seeds against a 4096-sample reference, the tone-mapped error of clamped
+  optimal MIS was 0.63–0.67 times the weighted balance heuristic's in the diffuse
+  plane's penumbra, 0.82–0.86 times in the glossy plane's, equal in the fully lit
+  strip and 0.93–0.96 times over the image. Peters reports the same ordering with
+  clamped pixels (RMSE 0.188 against 0.202). The test requires ratios below 0.8,
+  0.95 and 1, each at least four seed-to-seed standard deviations away.
 - **Not covered.** Vulkan has not been run; it first runs in batch CI. There is no
-  textured-emitter, occluded-penumbra (Peters' Fig. 10 wall) or equal-time fixture,
-  and no test asserts that clamped optimal MIS beats the balance heuristic on the
-  GPU, where the glossy room measures them almost equal.
+  textured-emitter or equal-time fixture. No GPU test shows clamped optimal MIS
+  beating Veach's balance heuristic (`v = 0`): in the glossy room and in the
+  occluded penumbra their errors agree within 1%, where Peters' Fig. 10 measures
+  0.188 against 0.198.
 
 See the canonical
 [package](../../modules/graphics/renderer/render_graphs/polygonal_light_sampling/main.lurender.json).

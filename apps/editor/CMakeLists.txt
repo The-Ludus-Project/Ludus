@@ -169,6 +169,8 @@ set(editor_viewport_sources
     src/internal/viewport_object_interaction.h
     src/viewport_object_interaction.cpp
     src/viewport_navigation.cpp
+    src/internal/orientation_widget.h
+    src/orientation_widget.cpp
     src/viewport_play_input.cpp
     src/internal/texture_inspection.h
     src/texture_inspection.cpp)
@@ -853,6 +855,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/preview_generation_tests.cpp
         tests/viewport_navigation_tests.cpp
         tests/viewport_object_overlay_tests.cpp
+        tests/orientation_widget_tests.cpp
         tests/design_token_tests.cpp
         tests/theme_preference_tests.cpp
         tests/viewport_legibility_tests.cpp

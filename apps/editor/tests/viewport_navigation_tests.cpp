@@ -1,4 +1,5 @@
 #include "internal/editor_camera_controller.h"
+#include "internal/orientation_widget.h"
 #include "internal/preview_viewport.h"
 #include "internal/render_preview.h"
 #include "internal/render_scene.h"
@@ -55,6 +56,8 @@ void ActivateViewportForPacing(PreviewViewport& inoutViewport);
 #endif
 namespace
 {
+constexpr QSize ORIENTATION_TEST_VIEWPORT_SIZE(800, 600);
+constexpr int ORIENTATION_TEST_WAIT_MILLISECONDS = 120000;
 RenderScene MakeNavigationScene()
 {
     RenderScene scene;
@@ -322,6 +325,43 @@ TEST_CASE("Antialiasing defaults to Fast, persists with the navigation state and
     CHECK(preview.GetAntialiasing() == rr::SpatialAntialiasing::Fast);
     off->trigger();
     CHECK(preview.GetAntialiasing() == rr::SpatialAntialiasing::Off);
+}
+
+TEST_CASE("Clicking an orientation handle snaps the viewport to that axis view",
+          "[editor][navigation][orientation-widget][gpu]")
+{
+    if (PreviewViewport::CanPresent() == false)
+    {
+        SKIP("A native display and GPU presentation path are required");
+    }
+    QTemporaryDir directory;
+    RenderScene scene;
+    tests::MakeLitScene(QFileInfo(directory.path()).canonicalFilePath(), scene, {});
+    RenderPreview preview;
+    PreviewViewport viewport(&preview);
+    viewport.resize(ORIENTATION_TEST_VIEWPORT_SIZE);
+    viewport.show();
+    REQUIRE(preview.SetScene(scene) == true);
+    preview.SetShading(PreviewShading::Lit);
+    REQUIRE(preview.Start() == true);
+    REQUIRE(QTest::qWaitFor([&viewport]() { return viewport.PresentedFrames() > 0; },
+                            ORIENTATION_TEST_WAIT_MILLISECONDS) == true);
+    REQUIRE(viewport.IsOrientationWidgetShown() == true);
+    preview.Navigate(0, {25, 20}, 3, false);
+    QWidget* surfaceOrNull = viewport.findChild<QWidget*>(QStringLiteral("viewportRenderSurface"));
+    if (surfaceOrNull == nullptr)
+    {
+        surfaceOrNull = viewport.findChild<QWidget*>(QStringLiteral("LudusOffscreenViewport"));
+    }
+    REQUIRE(surfaceOrNull != nullptr);
+    const QRectF rect = GetOrientationWidgetRect(static_cast<qreal>(surfaceOrNull->width()));
+    const OrientationLayout layout = BuildOrientationLayout(preview.GetVisibleCameraSample(), rect);
+    const OrientationHandle& nearest = layout.Handles[ORIENTATION_HANDLE_COUNT - 1];
+    const QPoint click = surfaceOrNull->mapTo(&viewport, nearest.CentrePixel.toPoint());
+    QTest::mouseClick(&viewport, Qt::LeftButton, Qt::NoModifier, click);
+    EditorAxisView found = EditorAxisView::Top;
+    REQUIRE(TryGetEditorAxisView(preview.GetVisibleCameraSample(), found) == true);
+    CHECK(found == nearest.View);
 }
 
 TEST_CASE("Orthographic pan uses the active width constraint and invalid restore preserves the camera",

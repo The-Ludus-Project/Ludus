@@ -132,8 +132,8 @@ float ToneMapGrey(float grey)
         {
             return 1;
         }
-        float offset = value <= 2 * PBR_NEUTRAL_FRESNEL ? value - value * value / (4 * PBR_NEUTRAL_FRESNEL)
-                                                        : PBR_NEUTRAL_FRESNEL;
+        float offset =
+            value <= 2 * PBR_NEUTRAL_FRESNEL ? value - value * value / (4 * PBR_NEUTRAL_FRESNEL) : PBR_NEUTRAL_FRESNEL;
         value -= offset;
         if (value > PBR_NEUTRAL_START)
         {
@@ -247,9 +247,9 @@ float3 AntialiasedColor(int2 pixel, int2 size, bool hasBackdrop, int mode)
         if (isAfterDone == false)
         {
             int2 pixelAfter = pixel + offset;
-            lumaEndAfter = 0.5 * (LoadLuma(pixelAfter, size, hasBackdrop) +
-                                  LoadLuma(pixelAfter + acrossEdge, size, hasBackdrop)) -
-                           lumaPairAverage;
+            lumaEndAfter =
+                0.5 * (LoadLuma(pixelAfter, size, hasBackdrop) + LoadLuma(pixelAfter + acrossEdge, size, hasBackdrop)) -
+                lumaPairAverage;
             isAfterDone = abs(lumaEndAfter) >= gradientScaled;
             distanceAfter = isAfterDone ? float(SEARCH_OFFSETS[searchIndex]) : distanceAfter;
         }
@@ -271,7 +271,9 @@ float3 AntialiasedColor(int2 pixel, int2 size, bool hasBackdrop, int mode)
     float subpixelBlend = (3 - 2 * subpixelContrast) * subpixelContrast * subpixelContrast;
     subpixelBlend = subpixelBlend * subpixelBlend * subpixel;
     float blend = saturate(max(edgeBlend, subpixelBlend));
-    return lerp(DisplayColor(sceneCentre, uvCentreY, hasBackdrop), LoadColor(pixel + acrossEdge, size, hasBackdrop), blend);
+    return lerp(DisplayColor(sceneCentre, uvCentreY, hasBackdrop),
+                LoadColor(pixel + acrossEdge, size, hasBackdrop),
+                blend);
 }
 [shader("vertex")] Varying VertexMain(Input input) {
     Varying output;

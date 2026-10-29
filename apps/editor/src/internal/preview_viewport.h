@@ -111,6 +111,8 @@ public:
     /// GUI thread only: serial of the graph snapshot currently sampled by the native scene graph.
     /// Zero before its first GPU image, for another source, or for CPU/browser presentation.
     [[nodiscard]] foundation::uint64 GetPresentedGraphFrameSerial() const noexcept;
+    /// True while the axis orientation widget is drawn: a frame is on screen and the game is not playing.
+    [[nodiscard]] bool IsOrientationWidgetShown() const noexcept;
     /// Text of the GPU/CPU statistics overlay as currently shown; empty while Stats is off.
     [[nodiscard]] QString GetStatisticsText() const;
     /// Live shader status shown below the statistics (reload notices and errors); empty when none.
@@ -148,6 +150,9 @@ private:
     void updateObjectInteractionAvailability();
     [[nodiscard]] QRectF getInteractionFrame() const;
     [[nodiscard]] QPointF getInteractionPosition(QPointF globalPosition) const;
+    /// Snap the camera to the axis view of the orientation handle under globalPosition. False when the
+    /// widget is hidden or the point misses every handle.
+    [[nodiscard]] bool tryPickOrientationWidget(QPointF globalPosition);
     void resizeSurface();
     /// Letterbox the frame and resize the drawable for the preview's current size preset.
     void applyViewportSize();
