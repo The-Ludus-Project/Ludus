@@ -360,6 +360,17 @@ public:
     /// Advance asynchronous shader/layout/pipeline setup without blocking. Ready permits scene setup.
     /// Pending/failure retains ownership until Reset; no automatic backend switch.
     [[nodiscard]] rhi::RasterStatus Poll() noexcept;
+    /// Opt in to the analytic world grid after Initialize is Ready, using the shipped renderer_grid.slang
+    /// stages. A visible ViewDescription::WorldGrid then draws one world-space plane whose fragment stage
+    /// computes antialiased lines, plus one ribbon for the axis off the plane, instead of 165 ribbons.
+    /// Views prepared before this call keep their ribbons. Pending shaders make PrepareView return Pending
+    /// for grid views; failed shaders fall back to ribbons. Unsupported with uniform-bound or visibility
+    /// flat programs. Between frames, owner thread.
+    /// @param vertex Cooked renderer_grid vertex stage: twelve locations, no bindings.
+    /// @param fragment Cooked renderer_grid fragment stage: no inputs or bindings.
+    /// @return Ready, Pending while the shaders are created, or the failure; the ribbon grid is unaffected.
+    [[nodiscard]] rhi::RasterStatus InitializeGrid(const rhi::RasterShaderDescription& vertex,
+                                                   const rhi::RasterShaderDescription& fragment) noexcept;
     /// Opt in to retained CPU geometry and the selected RT0/RT1 traversal before
     /// any meshes or material versions are live. Native mode requires ready optional RHI ray support and
     /// the installed fixed query shader; CpuOracle ignores the shader explicitly.

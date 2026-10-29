@@ -29,9 +29,10 @@ enum class PreviewShaderProgram : foundation::uint8
     ClusteredAuthoredShadow,      ///< renderer_clustered_authored_shadow: their shadow casters.
     ClusteredAuthoredDebug,       ///< renderer_clustered_authored_debug: debug views of cooked scenes.
     ClusteredAuthoredDebugShadow, ///< renderer_clustered_authored_debug_shadow: their shadow casters.
+    Grid,                         ///< renderer_grid: analytic world grid.
 };
 /// Number of PreviewShaderProgram values.
-inline constexpr foundation::usize PREVIEW_SHADER_PROGRAM_COUNT = 13;
+inline constexpr foundation::usize PREVIEW_SHADER_PROGRAM_COUNT = 14;
 /// Raster stage of one PreviewShaderProgram.
 enum class PreviewShaderStage : foundation::uint8
 {

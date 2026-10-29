@@ -181,6 +181,7 @@ private:
     PreparationStage mStage = PreparationStage::Renderer;
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
     bool mIsLightingInitialized = false;
+    bool mIsGridInitialized = false;
     bool mAreAssetsCreated = false;
 #endif
     bool mHasFailed = false;
