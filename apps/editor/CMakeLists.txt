@@ -304,6 +304,17 @@ function(ludus_editor_add_icons target)
         PREFIX "/icons" BASE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/icons" FILES ${editor_icon_files})
 endfunction()
 
+# Default World schema, mesh assets and extraction bindings.
+function(ludus_editor_add_builtin_world target)
+    qt_add_resources(${target} ludus_builtin_world
+        PREFIX "/world" BASE "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world"
+        FILES "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/world.schema.json"
+              "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/render.preview.json"
+              "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/cube.mesh.json"
+              "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/plane.mesh.json"
+              "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/resources/world/sphere.mesh.json")
+endfunction()
+
 # The default graph's authored sources, read-only inside the editor (also in builds
 # without the native preview), so the Renderer tab can show and copy them.
 function(ludus_editor_add_default_render_graph target)
@@ -467,6 +478,7 @@ qt_add_executable(ludus_editor
     src/internal/import_report.h
     src/import_report.cpp
     src/internal/world_workspace.h
+    src/builtin_world.cpp
     src/world_document.cpp
     src/world_demo_adapter.cpp
     src/world_workspace.cpp
@@ -591,6 +603,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/EditorSampleResources.cmake")
 ludus_collect_editor_sample_files(editor_sample_files "${PROJECT_SOURCE_DIR}/examples"
     cornell-box live-edit-game scripted-game editor-sdk-project)
 set(world_demo_schema "${PROJECT_SOURCE_DIR}/apps/world_demo/authoring/world.schema.json")
+ludus_editor_add_builtin_world(ludus_editor)
 qt_add_resources(ludus_editor world_demo_schema PREFIX "/world-demo" BASE "${PROJECT_SOURCE_DIR}/apps/world_demo/authoring" FILES ${world_demo_schema})
 qt_add_resources(ludus_editor ludus_samples
     PREFIX "/samples" BASE "${PROJECT_SOURCE_DIR}/examples" FILES ${editor_sample_files})
@@ -826,6 +839,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/import_report.cpp
         tests/import_report_tests.cpp
         src/internal/world_workspace.h
+        src/builtin_world.cpp
         src/world_document.cpp
         src/world_demo_adapter.cpp
         src/world_workspace.cpp
@@ -955,6 +969,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         PREFIX "/ludus"
         BASE "${PROJECT_SOURCE_DIR}/docs/wiki/assets"
         FILES ${editor_brand_assets})
+    ludus_editor_add_builtin_world(ludus_editor_tests)
     qt_add_resources(ludus_editor_tests world_demo_schema PREFIX "/world-demo" BASE "${PROJECT_SOURCE_DIR}/apps/world_demo/authoring" FILES ${world_demo_schema})
     qt_add_resources(ludus_editor_tests ludus_samples
         PREFIX "/samples" BASE "${PROJECT_SOURCE_DIR}/examples" FILES ${editor_sample_files})
