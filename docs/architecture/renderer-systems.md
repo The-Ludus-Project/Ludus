@@ -554,6 +554,23 @@ The shader's endpoint constants must equal the tokens; `test_design_tokens.py` e
 lavapipe at 1080p over 15 runs of 40 frames, a viewport frame (render to acquire) has a median of 7.8 ms
 with the backdrop and 8.6 ms without it: no measurable difference.
 
+Spatial antialiasing is FXAA 3.11 in that same output pass (`LightingOutput::Antialiasing`, `SpatialAntialiasing`
+Off, Fast or Balanced; `Output.w` carries `backdrop + 2 * mode`, so the 16-byte uniform did not grow). It runs on
+the display colour, after exposure, tone mapping, encoding and the backdrop, so its edge test sees what the viewer
+sees; object overlays are drawn into the scene target first and are filtered with the scene. Every pixel loads
+itself and its four neighbours and rejects flat ones there, with a square-root brightness in place of the sRGB
+encode so the rejection test costs no powers. An edge pixel loads its corners, walks both ways along the edge
+until the brightness pair average departs by a quarter of the gradient (four pixels in Fast, sixteen in
+Balanced, with the 3.11 thresholds and sub-pixel weights of each) and blends toward the neighbour across the
+edge. The taps are exact texel loads, not the half-pixel bilinear taps of the reference algorithm, so the shared
+nearest sampler is unchanged and the pair average costs two loads. The editor starts with Fast and offers Off,
+Fast and Balanced in the View menu; the choice persists with the navigation state and rebuilds the viewport.
+The filter assumes the image maps one to one onto the target, as `RasterViewport`'s does; Off leaves the
+single-sample path and every existing pixel unchanged. Measured on lavapipe at 1080p over 15 runs of 40 frames
+(a software rasterizer, so pessimistic for the five loads per pixel), the median viewport frame (render to
+acquire) is 6.7 ms with Off, 12.5 ms with Fast and 12.2 ms with Balanced (5.7, 10.7 and 10.4 ms in an earlier run; the two modes cost the same because the rejection test of flat pixels dominates); a hardware
+GPU is not measured.
+
 Default renderer budgets are eight prepared views (four shadow views plus scene/UI
 and overlap), two atlases, two programs, eight materials, four snapshots and four
 presentations. RHI tables grow to 64 per kind: two seven-variant lit programs,
@@ -1183,8 +1200,8 @@ HDR attachments/blending and multisampling require format/capability checks;
 the portable baseline has an authored LDR path. Hardware sRGB output and shader
 encoding are mutually exclusive. On a nonlinear unorm target lacking linear
 blending, composite into a supported linear intermediate then encode once.
-Antialiasing starts with a simple spatial variant or verified MSAA path; TAA
-is a later feature needing motion vectors, jitter and history rejection tests.
+Antialiasing starts with a simple spatial variant or verified MSAA path (the Editor viewport's FXAA is the
+spatial variant; see the output pass above); TAA is a later feature needing motion vectors, jitter and history rejection tests.
 
 ## Ray tracing and path tracing
 

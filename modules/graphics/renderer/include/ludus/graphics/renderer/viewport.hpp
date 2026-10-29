@@ -50,7 +50,9 @@ public:
     /// pre-compensated for that curve (MaterialDebugView), so use another curve only without debug views.
     /// @param hasBackdrop Show the editor backdrop gradient behind uncovered scene pixels
     /// (LightingOutput::HasBackdrop); the scene pass then clears alpha to zero. Default false keeps the flat black
-    /// background. Failure leaves this empty. Resize by preparing a separate candidate, then retiring this instance
+    /// background.
+    /// @param antialiasing Spatial antialiasing of the display image (LightingOutput::Antialiasing). Default Off.
+    /// Failure leaves this empty. Resize by preparing a separate candidate, then retiring this instance
     /// after its producers/consumers finish.
     [[nodiscard]] rhi::RasterStatus Initialize(Renderer& renderer,
                                                rhi::DeviceHandle device,
@@ -60,7 +62,8 @@ public:
                                                ViewportColorMode colorMode = ViewportColorMode::PreferHdr,
                                                bool shouldPresentToSurface = false,
                                                ToneCurve toneCurve = ToneCurve::Reinhard,
-                                               bool hasBackdrop = false) noexcept;
+                                               bool hasBackdrop = false,
+                                               SpatialAntialiasing antialiasing = SpatialAntialiasing::Off) noexcept;
     /// Poll setup/producer completion and publish a pending view only when Ready.
     /// A failed candidate is discarded, preserving the prior drawable view.
     /// Returns that failure once; a later poll may use the preserved view.

@@ -723,6 +723,62 @@ void RenderPreview::SetForceRaster(bool shouldForceRaster)
     Q_EMIT RendererPreferenceChanged(shouldForceRaster);
     Q_EMIT NavigationChanged();
 }
+void RenderPreview::SetAntialiasing(rr::SpatialAntialiasing antialiasing)
+{
+    if (antialiasing == mAntialiasing || antialiasing > rr::SpatialAntialiasing::Balanced)
+    {
+        return;
+    }
+    mAntialiasing = antialiasing;
+    if (mHasViewport == true)
+    {
+        mIsViewportStale = true;
+        if (Running() == true && mFramePump.IsActive() == false)
+        {
+            mFramePump.Start();
+        }
+    }
+    Q_EMIT NavigationChanged();
+}
+QString GetViewportAntialiasingKey(rr::SpatialAntialiasing antialiasing)
+{
+    switch (antialiasing)
+    {
+        case rr::SpatialAntialiasing::Off:
+            return QStringLiteral("off");
+        case rr::SpatialAntialiasing::Fast:
+            return QStringLiteral("fast");
+        case rr::SpatialAntialiasing::Balanced:
+            return QStringLiteral("balanced");
+    }
+    return QStringLiteral("fast");
+}
+bool TryParseViewportAntialiasing(const QString& key, rr::SpatialAntialiasing& outAntialiasing)
+{
+    for (const rr::SpatialAntialiasing candidate :
+         {rr::SpatialAntialiasing::Off, rr::SpatialAntialiasing::Fast, rr::SpatialAntialiasing::Balanced})
+    {
+        if (key == GetViewportAntialiasingKey(candidate))
+        {
+            outAntialiasing = candidate;
+            return true;
+        }
+    }
+    return false;
+}
+QString GetViewportAntialiasingLabel(rr::SpatialAntialiasing antialiasing)
+{
+    switch (antialiasing)
+    {
+        case rr::SpatialAntialiasing::Off:
+            return QStringLiteral("AA off");
+        case rr::SpatialAntialiasing::Fast:
+            return QStringLiteral("AA fast");
+        case rr::SpatialAntialiasing::Balanced:
+            return QStringLiteral("AA balanced");
+    }
+    return QStringLiteral("AA fast");
+}
 void RenderPreview::SetStatisticsVisible(bool isVisible)
 {
     if (isVisible == mIsStatisticsVisible)
@@ -1244,6 +1300,7 @@ QJsonObject RenderPreview::Navigation() const
             {QStringLiteral("shading"), GetPreviewShadingKey(mShading)},
             {QStringLiteral("statistics"), mIsStatisticsVisible},
             {QStringLiteral("forceRaster"), mShouldForceRaster},
+            {QStringLiteral("antialiasing"), GetViewportAntialiasingKey(mAntialiasing)},
             {QStringLiteral("x"), OrbitCenter_.X},
             {QStringLiteral("y"), OrbitCenter_.Y},
             {QStringLiteral("z"), OrbitCenter_.Z},
@@ -1370,6 +1427,10 @@ void RenderPreview::RestoreNavigation(const QJsonObject& state)
     SetShading(shading);
     SetStatisticsVisible(state.value(QStringLiteral("statistics")).toBool(false));
     SetForceRaster(state.value(QStringLiteral("forceRaster")).toBool(false));
+    rr::SpatialAntialiasing antialiasing = DEFAULT_VIEWPORT_ANTIALIASING;
+    static_cast<void>(
+        TryParseViewportAntialiasing(state.value(QStringLiteral("antialiasing")).toString(), antialiasing));
+    SetAntialiasing(antialiasing);
     SetLookSensitivity(static_cast<float32>(number(QStringLiteral("lookSensitivity"), 1)));
     usize viewportSize = 0;
     static_cast<void>(TryParseViewportSizeKey(state.value(QStringLiteral("viewportSize")).toString(), viewportSize));
@@ -1676,7 +1737,7 @@ void RenderPreview::Tick()
         return;
     }
     if (mResources->IsPrepared() == true &&
-        (mHasViewport == false || Width_ != RequestedWidth_ || Height_ != RequestedHeight_))
+        (mHasViewport == false || mIsViewportStale == true || Width_ != RequestedWidth_ || Height_ != RequestedHeight_))
     {
         if (mHasViewport == true)
         {
@@ -1699,7 +1760,9 @@ void RenderPreview::Tick()
 #    endif
             VIEWPORT_TONE_CURVE,
             // Solid and Albedo show the backdrop; Lit keeps the scene's own background.
-            usesLitMaterials() == false);
+            usesLitMaterials() == false,
+            mAntialiasing);
+        mIsViewportStale = false;
         if (Accepted(created) == false)
         {
             fail(QStringLiteral("GPU viewport allocation failed. World edits are preserved."));

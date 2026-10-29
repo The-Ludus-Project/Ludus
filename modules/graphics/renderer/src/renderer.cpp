@@ -183,6 +183,14 @@ constexpr float32 MAX_DEBUG_DEPTH_DISTANCE = 10000000.0F;
 /// Accepted scene lighting exposure multiplier.
 constexpr float32 MIN_EXPOSURE = 0.000001F;
 constexpr float32 MAX_EXPOSURE = 1000;
+/// The output pass's flags word is backdrop + ANTIALIASING_FLAG_SCALE * mode (renderer_output.slang).
+constexpr float32 ANTIALIASING_FLAG_SCALE = 2;
+/// The output flags as the shader reads them: bit 0 the backdrop, the bits above the antialiasing mode.
+float32 GetOutputFlags(const LightingOutput& lighting) noexcept
+{
+    return (lighting.HasBackdrop == true ? 1.0F : 0.0F) +
+           ANTIALIASING_FLAG_SCALE * static_cast<float32>(static_cast<uint8>(lighting.Antialiasing));
+}
 /// Smallest perceptual roughness a lit surface accepts; lower values alias badly.
 constexpr float32 MIN_ROUGHNESS = 0.045F;
 /// Pipeline variants a scene program compiles: lit programs without HDR need fewer.
@@ -2009,8 +2017,9 @@ Status Renderer::PreparePresentationData(rhi::TextureHandle source,
     {
         return Status::NotReady;
     }
-    if (lighting != nullptr && (math::IsFinite(lighting->Exposure) == false || lighting->Exposure < MIN_EXPOSURE ||
-                                lighting->Exposure > MAX_EXPOSURE))
+    if (lighting != nullptr &&
+        (math::IsFinite(lighting->Exposure) == false || lighting->Exposure < MIN_EXPOSURE ||
+         lighting->Exposure > MAX_EXPOSURE || lighting->Antialiasing > SpatialAntialiasing::Balanced))
     {
         return Status::InvalidDescription;
     }
@@ -2068,7 +2077,7 @@ Status Renderer::PreparePresentationData(rhi::TextureHandle source,
             const math::Vector4 parameters{lighting->Exposure,
                                            lighting->ToneMap == true ? static_cast<float32>(lighting->Curve) : 0.0F,
                                            mode != 0 && lighting->Encode ? 1.0F : 0.0F,
-                                           lighting->HasBackdrop == true ? 1.0F : 0.0F};
+                                           GetOutputFlags(*lighting)};
             status = rhi::CreateBuffer(s.Device,
                                        {rhi::BufferRole::Uniform, sizeof(parameters)},
                                        {reinterpret_cast<const uint8*>(&parameters), sizeof(parameters)},
