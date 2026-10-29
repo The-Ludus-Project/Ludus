@@ -22,6 +22,7 @@ using namespace ludus::editor;
 
 namespace
 {
+constexpr int FADE_SETTLE_MILLISECONDS = 150;
 PaletteEntry MakeEntry(const QString& label, const QString& group, bool isEnabled)
 {
     PaletteEntry entry;
@@ -117,6 +118,29 @@ TEST_CASE("The palette runs the chosen command and skips unavailable ones", "[ed
     contextPalette->show();
     CHECK(contextPalette->GetShownIndices() == QList<int>{0, 2});
     contextPalette->close();
+}
+
+TEST_CASE("The palette fades in over 100 ms and appears at once under reduced motion", "[editor][palette][motion]")
+{
+    QWidget host;
+    const QList<PaletteEntry> entries{MakeEntry(QStringLiteral("Alpha"), QStringLiteral("Tools"), true)};
+    qputenv("LUDUS_REDUCE_MOTION", QByteArrayLiteral("0"));
+    CommandPalette* fading = new CommandPalette(entries, false, &host);
+    fading->show();
+    CHECK(fading->IsFading() == true);
+    CHECK(fading->windowOpacity() < 1.0);
+    QTest::qWait(PALETTE_FADE_MILLISECONDS + FADE_SETTLE_MILLISECONDS);
+    CHECK(fading->IsFading() == false);
+    CHECK(fading->windowOpacity() == 1.0);
+    fading->close();
+
+    qputenv("LUDUS_REDUCE_MOTION", QByteArrayLiteral("1"));
+    CommandPalette* instant = new CommandPalette(entries, false, &host);
+    instant->show();
+    CHECK(instant->IsFading() == false);
+    CHECK(instant->windowOpacity() == 1.0);
+    instant->close();
+    qunsetenv("LUDUS_REDUCE_MOTION");
 }
 
 TEST_CASE("Ctrl+K and F3 open the palette; F3 lists only what can run", "[editor][palette][shell]")

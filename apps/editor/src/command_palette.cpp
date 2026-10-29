@@ -1,5 +1,7 @@
 #include "internal/command_palette.h"
 
+#include "internal/theme_preferences.h"
+
 #include <QAction>
 #include <QApplication>
 #include <QDialogButtonBox>
@@ -10,6 +12,8 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QPainter>
+#include <QPropertyAnimation>
+#include <QShowEvent>
 #include <QStyledItemDelegate>
 #include <QTimer>
 #include <QTreeWidget>
@@ -276,6 +280,37 @@ PaletteIndexList CommandPalette::GetShownIndices() const
         }
     }
     return indices;
+}
+
+bool CommandPalette::IsFading() const
+{
+    return mFadeOrNull != nullptr && mFadeOrNull->state() == QAbstractAnimation::Running;
+}
+
+void CommandPalette::showEvent(QShowEvent* event)
+{
+    QDialog::showEvent(event);
+    const int duration = GetMotionDurationMilliseconds(GetThemePreferences(), PALETTE_FADE_MILLISECONDS);
+    if (duration <= 0)
+    {
+        // Reduced motion: appear at once, never half transparent.
+        if (mFadeOrNull != nullptr)
+        {
+            mFadeOrNull->stop();
+        }
+        setWindowOpacity(1.0);
+        return;
+    }
+    if (mFadeOrNull == nullptr)
+    {
+        mFadeOrNull = new QPropertyAnimation(this, QByteArrayLiteral("windowOpacity"), this);
+        mFadeOrNull->setStartValue(0.0);
+        mFadeOrNull->setEndValue(1.0);
+        mFadeOrNull->setEasingCurve(QEasingCurve::OutCubic);
+    }
+    mFadeOrNull->setDuration(duration);
+    setWindowOpacity(0.0);
+    mFadeOrNull->start();
 }
 
 bool CommandPalette::eventFilter(QObject* watched, QEvent* event)
