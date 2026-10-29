@@ -15,6 +15,9 @@ namespace
 {
 // All viewport creation shares the RHI's single owner-thread affinity.
 uint64 NextViewportOwner = 1;
+// The scene target's clear alpha: opaque by default, zero when the output pass composites a backdrop under it.
+constexpr float32 OPAQUE_CLEAR_ALPHA = 1;
+constexpr float32 BACKDROP_CLEAR_ALPHA = 0;
 bool Accepted(Status status) noexcept
 {
     return status == Status::Ready || status == Status::Pending;
@@ -82,6 +85,8 @@ struct RasterViewport::State final
     }
     float32 Exposure = 1;
     ToneCurve Curve = ToneCurve::Reinhard;
+    bool HasBackdrop = false;
+    SpatialAntialiasing Antialiasing = SpatialAntialiasing::Off;
     ~State() noexcept
     {
         static_cast<void>(SceneRenderer->Release(PendingView));
@@ -111,7 +116,9 @@ Status RasterViewport::Initialize(Renderer& renderer,
                                   float32 exposure,
                                   ViewportColorMode colorMode,
                                   bool shouldPresentToSurface,
-                                  ToneCurve toneCurve) noexcept
+                                  ToneCurve toneCurve,
+                                  bool hasBackdrop,
+                                  SpatialAntialiasing antialiasing) noexcept
 {
     if (mState)
     {
@@ -119,7 +126,8 @@ Status RasterViewport::Initialize(Renderer& renderer,
     }
     if (width == 0 || height == 0 || math::IsFinite(exposure) == false || exposure < .000001F || exposure > 1000 ||
         (colorMode != ViewportColorMode::PreferHdr && colorMode != ViewportColorMode::Linear8) ||
-        (toneCurve != ToneCurve::Reinhard && toneCurve != ToneCurve::PbrNeutral))
+        (toneCurve != ToneCurve::Reinhard && toneCurve != ToneCurve::PbrNeutral) ||
+        antialiasing > SpatialAntialiasing::Balanced)
     {
         return Status::InvalidDescription;
     }
@@ -182,6 +190,8 @@ Status RasterViewport::Initialize(Renderer& renderer,
     candidate->ShouldPresentToSurface = shouldPresentToSurface;
     candidate->Exposure = exposure;
     candidate->Curve = toneCurve;
+    candidate->HasBackdrop = hasBackdrop;
+    candidate->Antialiasing = antialiasing;
     mState = Move(candidate);
     const Status setup = Poll();
     if (Accepted(setup) == false)
@@ -208,11 +218,17 @@ Status RasterViewport::Poll() noexcept
     }
     if (state.DisplayCreated == false)
     {
-        const Status created = state.SceneRenderer->PrepareLightingPresentation(
-            state.SceneColor,
-            state.Mapping,
-            { .Exposure = state.Exposure, .ToneMap = true, .Curve = state.Curve, .Encode = true },
-            state.Display);
+        const Status created = state.SceneRenderer->PrepareLightingPresentation(state.SceneColor,
+                                                                                state.Mapping,
+                                                                                {
+                                                                                    .Exposure = state.Exposure,
+                                                                                    .ToneMap = true,
+                                                                                    .Curve = state.Curve,
+                                                                                    .Encode = true,
+                                                                                    .HasBackdrop = state.HasBackdrop,
+                                                                                    .Antialiasing = state.Antialiasing,
+                                                                                },
+                                                                                state.Display);
         if (Accepted(created) == false)
         {
             return created;
@@ -379,6 +395,7 @@ Status RasterViewport::Render(rhi::SurfaceHandle surface, rhi::SubmissionToken& 
             state.View,
             {
                 .Color = state.SceneColor,
+                .Clear = {0, 0, 0, state.HasBackdrop == true ? BACKDROP_CLEAR_ALPHA : OPAQUE_CLEAR_ALPHA},
                 .DepthStore = hasOverlay == true ? rhi::RasterStore::Store : rhi::RasterStore::Discard,
             });
     }

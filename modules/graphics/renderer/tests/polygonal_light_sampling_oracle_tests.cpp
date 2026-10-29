@@ -12,7 +12,8 @@
 // "BRDF Importance Sampling for Polygonal Lights", ACM Transactions on Graphics 40(4), Article 140, 2021,
 // https://doi.org/10.1145/3450626.3459672: section 4.2 shows that the MIS estimators are unbiased for any BRDF because
 // their weights sum to one where a technique samples, and section 4.1 notes that the LTC may be zero where the BRDF is
-// not, which is why the LTC estimator is compared with the integral over the LTC's support.
+// not, which is why the LTC estimator is compared with the integral over the LTC's support. Section 6.1 clips the
+// shading normal to the view's hemisphere; the quadrature integrates with that clipped normal.
 namespace
 {
 using namespace ludus::foundation;
@@ -225,4 +226,46 @@ TEST_CASE("Polygonal-light-sampling estimators are unbiased against a converged 
         REQUIRE(oracle.Diffuse.VertexCount == 4);
         static_cast<void>(CheckUnbiased(lightCase));
     }
+    SECTION("a normal-mapped receiver whose shading normal faces away from the view (section 6.1)")
+    {
+        testing::PolygonalLightCase lightCase = MakeCase({0.6F, 0.7F, 0.5F}, 0.3F, 0.4F);
+        // cos = -0.28 against the view: without the clip the BSDF, and so every estimate, would be zero.
+        lightCase.NormalWorld = {-0.8F, 0.0F, 0.6F};
+        lightCase.ViewDirectionWorld = {0.8F, 0.0F, 0.6F};
+        testing::PolygonalLightOracle oracle;
+        REQUIRE(testing::TryPreparePolygonalLightOracle(lightCase, oracle) == true);
+        REQUIRE(math::Dot(oracle.NormalWorld, lightCase.ViewDirectionWorld) > 0.0F);
+        static_cast<void>(CheckUnbiased(lightCase));
+    }
+}
+
+TEST_CASE("The polygonal-light-sampling oracle clips shading normals to the view's hemisphere",
+          "[renderer][polygonal-light-sampling]")
+{
+    // Peters 2021, section 6.1, with Ludus's margin: the clipped normal is unit, at least 0.01 / sqrt(1 + 0.01^2)
+    // inside the view's hemisphere, unchanged once its cosine reaches 0.01, and the view itself when it faces away.
+    constexpr float32 MINIMUM_OUTGOING_COSINE = 0.01F;
+    constexpr float32 UNIT_TOLERANCE = 1.0e-5F;
+    const math::Vector3 view{0.0F, 0.6F, 0.8F};
+    const auto clip = [view](math::Vector3 normal) -> math::Vector3 {
+        testing::PolygonalLightCase lightCase = MakeCase({0.5F, 0.5F, 0.5F}, 0.0F, 0.5F);
+        lightCase.NormalWorld = normal;
+        lightCase.ViewDirectionWorld = view;
+        testing::PolygonalLightOracle oracle;
+        REQUIRE(testing::TryPreparePolygonalLightOracle(lightCase, oracle) == true);
+        return oracle.NormalWorld;
+    };
+    const math::Vector3 facing{0.0F, 0.0F, 1.0F};
+    const math::Vector3 unchanged = clip(facing);
+    CHECK(unchanged.X == facing.X);
+    CHECK(unchanged.Y == facing.Y);
+    CHECK(unchanged.Z == facing.Z);
+    const math::Vector3 away = clip(view * -1.0F);
+    CHECK(math::Abs(math::Dot(away, view) - 1.0F) <= UNIT_TOLERANCE);
+    const math::Vector3 grazing = clip({0.0F, 0.8F, -0.6F});
+    CHECK(math::Abs(math::Length(grazing) - 1.0F) <= UNIT_TOLERANCE);
+    CHECK(math::Dot(grazing, view) >=
+          MINIMUM_OUTGOING_COSINE / math::Sqrt(1.0F + MINIMUM_OUTGOING_COSINE * MINIMUM_OUTGOING_COSINE) -
+              UNIT_TOLERANCE);
+    CHECK(math::Dot(grazing, view) <= MINIMUM_OUTGOING_COSINE + UNIT_TOLERANCE);
 }

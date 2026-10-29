@@ -11,7 +11,7 @@
 // Importance Sampling for Polygonal Lights", ACM Transactions on Graphics 40(4), Article 140, 2021,
 // https://doi.org/10.1145/3450626.3459672: section 3 (projected solid angle sampling), 4.1 (LTC sampling and the
 // empty-clip rule), 4.2 (the weighted balance heuristic, per color channel, with the diffuse albedo clamped to 0.01)
-// and 4.3 (clamped optimal MIS).
+// and 4.3 (clamped optimal MIS), and section 6.1's clip of the shading normal to the view's hemisphere.
 namespace ludus::graphics::renderer::testing
 {
 using namespace foundation;
@@ -22,6 +22,7 @@ namespace
 constexpr float32 MINIMUM_DIFFUSE_TECHNIQUE_ALBEDO = 0.01F;
 constexpr float32 DIELECTRIC_SPECULAR_REFLECTANCE = 0.04F;
 constexpr float32 FRAME_HELPER_AXIS_LIMIT = 0.999F;
+constexpr float32 MINIMUM_OUTGOING_COSINE = 0.01F;
 constexpr usize PROJECTED_SOLID_ANGLE_TECHNIQUE = 0;
 constexpr usize LTC_TECHNIQUE = 1;
 constexpr usize TECHNIQUE_COUNT = 2;
@@ -36,18 +37,30 @@ math::Vector3 TransformWorldToTangent(const PolygonalLightOracle& oracle, math::
 {
     return {math::Dot(vectorWorld, oracle.TangentWorld),
             math::Dot(vectorWorld, oracle.BitangentWorld),
-            math::Dot(vectorWorld, oracle.Case.NormalWorld)};
+            math::Dot(vectorWorld, oracle.NormalWorld)};
 }
 
 math::Vector3 TransformTangentToWorld(const PolygonalLightOracle& oracle, math::Vector3 vectorTangent) noexcept
 {
     return oracle.TangentWorld * vectorTangent.X + oracle.BitangentWorld * vectorTangent.Y +
-           oracle.Case.NormalWorld * vectorTangent.Z;
+           oracle.NormalWorld * vectorTangent.Z;
 }
 
 math::Vector3 MaxZero(math::Vector3 value) noexcept
 {
     return {math::Max(value.X, 0.0F), math::Max(value.Y, 0.0F), math::Max(value.Z, 0.0F)};
+}
+
+/// ClipShadingNormalToOutgoingHemisphere (Peters 2021, section 6.1).
+math::Vector3 ClipShadingNormalToOutgoingHemisphere(math::Vector3 normalWorld,
+                                                    math::Vector3 viewDirectionWorld) noexcept
+{
+    const float32 cosine = math::Dot(normalWorld, viewDirectionWorld);
+    if (cosine >= MINIMUM_OUTGOING_COSINE)
+    {
+        return normalWorld;
+    }
+    return NormalizeOrZero(normalWorld + viewDirectionWorld * (MINIMUM_OUTGOING_COSINE - cosine));
 }
 
 bool IsUsedTechnique(PolygonalLightEstimator estimator, usize technique) noexcept
@@ -127,11 +140,8 @@ bool TryEvaluateBsdf(const PolygonalLightOracle& oracle, math::Vector3 direction
 {
     const ReferenceBsdf bsdf{oracle.Case.BaseColor, oracle.Case.Metallic, oracle.Case.Roughness};
     ReferenceBsdfEvaluation evaluation;
-    if (EvaluateReferenceBsdf(bsdf,
-                              oracle.Case.NormalWorld,
-                              oracle.Case.ViewDirectionWorld,
-                              directionWorld,
-                              evaluation) != rhi::RasterStatus::Ready)
+    if (EvaluateReferenceBsdf(bsdf, oracle.NormalWorld, oracle.Case.ViewDirectionWorld, directionWorld, evaluation) !=
+        rhi::RasterStatus::Ready)
     {
         return false;
     }
@@ -144,8 +154,9 @@ bool TryPreparePolygonalLightOracle(const PolygonalLightCase& lightCase, Polygon
 {
     PolygonalLightOracle oracle;
     oracle.Case = lightCase;
-    // MakePolygonalLightReceiver.
-    const math::Vector3 normal = lightCase.NormalWorld;
+    // TryLoadShadingPoint's clip, then MakePolygonalLightReceiver.
+    oracle.NormalWorld = ClipShadingNormalToOutgoingHemisphere(lightCase.NormalWorld, lightCase.ViewDirectionWorld);
+    const math::Vector3 normal = oracle.NormalWorld;
     const math::Vector3 helper =
         math::Abs(normal.Z) < FRAME_HELPER_AXIS_LIMIT ? math::Vector3{0, 0, 1} : math::Vector3{0, 1, 0};
     oracle.TangentWorld = NormalizeOrZero(math::Cross(helper, normal));
@@ -245,7 +256,7 @@ bool TryEstimatePolygonalLight(const PolygonalLightOracle& oracle,
                 math::EvaluateProjectedSolidAnglePolygonDensity(oracle.Diffuse, normalizedTangent),
                 math::EvaluateLinearlyTransformedCosinePolygonDensity(oracle.SpecularPolygon, normalizedTangent)};
             const float32 techniqueDensity = technique == PROJECTED_SOLID_ANGLE_TECHNIQUE ? densities.X : densities.Y;
-            const float32 cosine = math::Dot(oracle.Case.NormalWorld, direction);
+            const float32 cosine = math::Dot(oracle.NormalWorld, direction);
             if ((techniqueDensity > 0.0F) == false || (cosine > 0.0F) == false ||
                 IsTriangleHit(oracle, direction) == false)
             {
@@ -275,7 +286,7 @@ bool TryEvaluatePolygonalLightIntegrand(const PolygonalLightOracle& oracle,
                                         math::Vector3 directionWorld,
                                         math::Vector3& outIntegrand) noexcept
 {
-    const float32 cosine = math::Dot(oracle.Case.NormalWorld, directionWorld);
+    const float32 cosine = math::Dot(oracle.NormalWorld, directionWorld);
     const math::Vector3 coefficient = oracle.DiffuseCoefficient;
     if ((cosine > 0.0F) == false || (coefficient.X > 0.0F || coefficient.Y > 0.0F || coefficient.Z > 0.0F) == false)
     {

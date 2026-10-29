@@ -95,11 +95,18 @@ struct GraphGpuFixture final
     StaticArray<renderer::RenderGraphItem, TABLE_COUNT> Items{};
     StaticArray<renderer::ViewDescription, TABLE_COUNT> Cameras{};
     StaticArray<uint8, PIXEL_BYTES> Pixels{};
-    explicit GraphGpuFixture(bool shouldEnableGpuTiming = false, bool shouldRequireNativeRays = true)
+    /// @param resourceBytes Device-wide logical RHI resource budget; zero keeps rhi::StorageLimits' default.
+    explicit GraphGpuFixture(bool shouldEnableGpuTiming = false,
+                             bool shouldRequireNativeRays = true,
+                             uint64 resourceBytes = 0)
     {
         rhi::DeviceDescription description;
         description.Required.PortableRaster = true;
         description.Storage.ResourcesPerGraph = renderer::VISIBILITY_GRAPH_RESOURCE_CAPACITY;
+        if (resourceBytes != 0)
+        {
+            description.Storage.ResourceBytes = resourceBytes;
+        }
         description.EnableGpuTiming = shouldEnableGpuTiming;
         description.Preferred.RayQueries = shouldRequireNativeRays;
         rhi::StartupInfo failure;
@@ -3121,14 +3128,19 @@ struct PreparedGraph final
     {
         wait(Graph.Initialize(fixture.Device, Plan, Programs, nullptr, Extent.Width, Extent.Height));
         renderer::RenderGraphReport report;
-        wait(Graph.Update({room.Meshes.GetData(), room.Meshes.GetSize()},
-                          {room.Items.GetData(), room.Items.GetSize()},
-                          {room.Cameras.GetData(), room.Cameras.GetSize()},
-                          revision,
-                          renderer::RenderGraphCoveragePolicy::RejectIncomplete,
-                          report,
-                          &room.Inputs,
-                          revision));
+        const rhi::RasterStatus updated = Graph.Update({room.Meshes.GetData(), room.Meshes.GetSize()},
+                                                       {room.Items.GetData(), room.Items.GetSize()},
+                                                       {room.Cameras.GetData(), room.Cameras.GetSize()},
+                                                       revision,
+                                                       renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                                       report,
+                                                       &room.Inputs,
+                                                       revision);
+        // A rejected scene names the byte ceiling it exceeded (renderer::SceneMemoryBudget).
+        INFO("scene budget " << static_cast<uint32>(report.SceneDiagnostics.ExceededBudget) << " required "
+                             << report.SceneDiagnostics.RequiredBytes << " available "
+                             << report.SceneDiagnostics.AvailableBytes);
+        wait(updated);
     }
     PreparedGraph(const PreparedGraph&) = delete;
     PreparedGraph& operator=(const PreparedGraph&) = delete;
@@ -3913,6 +3925,214 @@ TEST_CASE("The polygonal-light-sampling template fails explicitly beyond its emi
         // The room fills most of the view; only the open front shows the environment.
         CHECK(CountFailurePixels(pixels[output]) > static_cast<usize>(WIDTH) * HEIGHT / 2);
     }
+}
+
+namespace
+{
+// An occluded penumbra after Peters 2021, Fig. 10 and section 4.3: a blue diffuse plane and a white glossy plane lit
+// by a rectangular Lambertian emitter, with a wall between them that casts a large penumbra over the lower half of both
+// planes. Outside the specular highlight the specular coefficient c_1 is small, so the weighted balance heuristic
+// (v = 1) gives the LTC samples almost no weight in the penumbra; clamped optimal MIS (v = 1/2) keeps half of the
+// balance heuristic there. The planes face the camera at z = -1. The wall is a one-sided quad facing the emitter, so
+// the camera sees its black back face; shadow rays meet it from either side.
+constexpr usize PENUMBRA_QUAD_COUNT = 4;
+constexpr usize PENUMBRA_VERTEX_COUNT = PENUMBRA_QUAD_COUNT * MANY_EMITTER_QUAD_CORNERS;
+constexpr usize PENUMBRA_INDEX_COUNT = PENUMBRA_QUAD_COUNT * MANY_EMITTER_QUAD_INDICES;
+constexpr usize PENUMBRA_TRIANGLE_COUNT = PENUMBRA_QUAD_COUNT * 2;
+constexpr uint32 PENUMBRA_DIFFUSE = 0;
+constexpr uint32 PENUMBRA_GLOSSY = 1;
+constexpr uint32 PENUMBRA_WALL = 2;
+constexpr uint32 PENUMBRA_LIGHT = 3;
+constexpr usize PENUMBRA_MATERIAL_COUNT = 4;
+/// Each quad's corners wind counterclockwise seen from the side its geometric normal faces.
+constexpr StaticArray<math::Vector3, PENUMBRA_VERTEX_COUNT> PENUMBRA_CORNERS_WORLD{{
+    // The blue diffuse plane (left) and the white glossy plane (right), facing the camera.
+    {-1.6F, -1.2F, -1},
+    {0, -1.2F, -1},
+    {0, 1, -1},
+    {-1.6F, 1, -1},
+    {0, -1.2F, -1},
+    {1.6F, -1.2F, -1},
+    {1.6F, 1, -1},
+    {0, 1, -1},
+    // The wall, horizontal below the emitter and facing it, 0.45 in front of the planes so light passes beneath it.
+    {-1.6F, .5F, .6F},
+    {1.6F, .5F, .6F},
+    {1.6F, .5F, -.55F},
+    {-1.6F, .5F, -.55F},
+    // The one-sided emitter, facing down.
+    {-.8F, 1.1F, -.8F},
+    {.8F, 1.1F, -.8F},
+    {.8F, 1.1F, .2F},
+    {-.8F, 1.1F, .2F},
+}};
+constexpr StaticArray<uint32, PENUMBRA_QUAD_COUNT> PENUMBRA_QUAD_MATERIALS{
+    {PENUMBRA_DIFFUSE, PENUMBRA_GLOSSY, PENUMBRA_WALL, PENUMBRA_LIGHT}};
+
+/// The occluded-penumbra scene with the Cornell room's camera. The mesh borrows this object's arrays, so it is neither
+/// copied nor moved.
+struct OccludedPenumbraRoom final
+{
+    StaticArray<math::Vector3, PENUMBRA_VERTEX_COUNT> Positions = PENUMBRA_CORNERS_WORLD;
+    StaticArray<uint32, PENUMBRA_INDEX_COUNT> Indices{};
+    StaticArray<uint32, PENUMBRA_TRIANGLE_COUNT> Slots{};
+    StaticArray<uint32, PENUMBRA_MATERIAL_COUNT> Bindings{
+        {PENUMBRA_DIFFUSE, PENUMBRA_GLOSSY, PENUMBRA_WALL, PENUMBRA_LIGHT}};
+    StaticArray<renderer::SceneShaderMaterial, PENUMBRA_MATERIAL_COUNT> Materials{};
+    StaticArray<renderer::RenderGraphMesh, 1> Meshes{};
+    StaticArray<renderer::RenderGraphItem, 1> Items{};
+    StaticArray<renderer::ViewDescription, 1> Cameras{};
+    renderer::SceneShaderInputs Inputs;
+    OccludedPenumbraRoom()
+    {
+        for (usize quad = 0; quad < PENUMBRA_QUAD_COUNT; ++quad)
+        {
+            WriteQuad(quad, PENUMBRA_QUAD_MATERIALS[quad], Indices.GetData(), Slots.GetData());
+        }
+        constexpr float32 DIFFUSE_ROUGHNESS = 1;
+        constexpr float32 GLOSSY_ROUGHNESS = .25F;
+        Materials[PENUMBRA_DIFFUSE].BaseColor = {.1F, .2F, .8F};
+        Materials[PENUMBRA_DIFFUSE].Roughness = DIFFUSE_ROUGHNESS;
+        Materials[PENUMBRA_GLOSSY].BaseColor = {.8F, .8F, .8F};
+        Materials[PENUMBRA_GLOSSY].Roughness = GLOSSY_ROUGHNESS;
+        Materials[PENUMBRA_WALL].BaseColor = {.5F, .5F, .5F};
+        Materials[PENUMBRA_LIGHT].BaseColor = {.8F, .8F, .8F};
+        Materials[PENUMBRA_LIGHT].Emission = {6, 6, 6};
+        Meshes[0].Geometry = {Positions.GetData(), Positions.GetSize(), Indices.GetData(), Indices.GetSize()};
+        Meshes[0].MaterialSlots = {Slots.GetData(), Slots.GetSize()};
+        Meshes[0].MaterialBindings = {Bindings.GetData(), Bindings.GetSize()};
+        Items[0].SourceId = 1;
+        Inputs.Materials = {Materials.GetData(), Materials.GetSize()};
+        const CornellBox cornell;
+        Cameras[0] = cornell.Cameras[0];
+    }
+    OccludedPenumbraRoom(const OccludedPenumbraRoom&) = delete;
+    OccludedPenumbraRoom& operator=(const OccludedPenumbraRoom&) = delete;
+};
+
+/// Pixels [FirstColumn, EndColumn) x [FirstRow, EndRow) of a WIDTH x HEIGHT image.
+struct PixelRegion final
+{
+    uint32 FirstColumn = 0;
+    uint32 EndColumn = WIDTH;
+    uint32 FirstRow = 0;
+    uint32 EndRow = HEIGHT;
+};
+
+// The Cornell camera maps a point (x, y, -1) on the planes to column 48 + 16 x and row 32 - 16 y. The penumbra covers
+// the planes below y = 0.2, down to their lower edge at y = -1.2; the planes meet at x = 0.
+constexpr PixelRegion PENUMBRA_DIFFUSE_REGION{23, 48, 29, 51};
+constexpr PixelRegion PENUMBRA_GLOSSY_REGION{48, 73, 29, 51};
+
+/// ComputeDisplayMeanSquaredError over one region of RGBA8 images of WIDTH x HEIGHT pixels.
+float64 ComputeDisplayMeanSquaredError(const Array<uint8>& pixels, const Array<uint8>& converged, PixelRegion region)
+{
+    constexpr usize CHANNEL_COUNT = 3;
+    constexpr usize BYTES_PER_PIXEL = 4;
+    constexpr float64 MAXIMUM_CHANNEL = 255;
+    REQUIRE(pixels.GetSize() == PIXEL_BYTES);
+    REQUIRE(converged.GetSize() == pixels.GetSize());
+    REQUIRE(region.FirstColumn < region.EndColumn);
+    REQUIRE(region.EndColumn <= WIDTH);
+    REQUIRE(region.FirstRow < region.EndRow);
+    REQUIRE(region.EndRow <= HEIGHT);
+    float64 sum = 0;
+    for (uint32 row = region.FirstRow; row < region.EndRow; ++row)
+    {
+        for (uint32 column = region.FirstColumn; column < region.EndColumn; ++column)
+        {
+            const usize address = (static_cast<usize>(row) * WIDTH + column) * BYTES_PER_PIXEL;
+            for (usize channel = 0; channel < CHANNEL_COUNT; ++channel)
+            {
+                const float64 difference = (static_cast<float64>(pixels[address + channel]) -
+                                            static_cast<float64>(converged[address + channel])) /
+                                           MAXIMUM_CHANNEL;
+                sum += difference * difference;
+            }
+        }
+    }
+    const usize pixelCount =
+        static_cast<usize>(region.EndColumn - region.FirstColumn) * (region.EndRow - region.FirstRow);
+    return sum / static_cast<float64>(pixelCount * CHANNEL_COUNT);
+}
+
+} // namespace
+
+TEST_CASE("Polygonal-light clamped optimal MIS beats the weighted balance heuristic in an occluded penumbra",
+          "[render-graph][gpu][polygonal-light-sampling][template][mis]")
+{
+    // Peters 2021, section 4.3 and Fig. 10: the weighted balance heuristic is optimal without occlusion but noisy in a
+    // diffuse penumbra, which clamped optimal MIS with v = 1/2 fixes. Peters reports the error with overexposed pixels
+    // clamped, where clamped optimal MIS wins (RMSE 0.188 against 0.202); the tone-mapped error here is bounded the
+    // same way. The two packages share the scene revision, so they draw the same samples, and the converged reference
+    // has its own. On Apple M5, over six independent revisions against a 4096-sample reference, the clamped optimal
+    // MIS error was 0.63 to 0.67 times the weighted balance heuristic's in the diffuse plane's penumbra, 0.82 to 0.86
+    // times in the glossy plane's, about equal in the fully lit strip above the wall, and 0.93 to 0.96 times over the
+    // image; the bounds below leave at least four of those revisions' standard deviations.
+    GraphGpuFixture fixture(false, false);
+    const OccludedPenumbraRoom room;
+    constexpr usize LOW_FRAME_COUNT = 16;
+    StaticArray<Array<uint8>, POLYGONAL_LIGHT_OUTPUT_COUNT> pixels;
+    {
+        PreparedGraph polygonal(fixture, POLYGONAL_LIGHT_SAMPLING_TEMPLATE, room, 1);
+        RenderPolygonalLightOutputs(polygonal, fixture, LOW_FRAME_COUNT, pixels);
+    }
+    // The template staged with PROJECTED_SOLID_ANGLE_MIS_VISIBILITY = 1 (CMakeLists.txt): its color output is the
+    // weighted balance heuristic, and its other outputs do not depend on v.
+    const PackageLocation weightedTemplate{LUDUS_RG3_POLYGONAL_LIGHT_SAMPLING_WEIGHTED_DIRECTORY,
+                                           "rg2_polygonal_light_sampling_weighted.lurgrt"};
+    StaticArray<Array<uint8>, POLYGONAL_LIGHT_OUTPUT_COUNT> weightedPixels;
+    {
+        PreparedGraph weighted(fixture, weightedTemplate, room, 1);
+        RenderPolygonalLightOutputs(weighted, fixture, LOW_FRAME_COUNT, weightedPixels);
+    }
+    constexpr uint64 CONVERGED_REVISION = 2;
+    constexpr usize CONVERGED_FRAME_COUNT = 1024;
+    StaticArray<Array<uint8>, POLYGONAL_LIGHT_OUTPUT_COUNT> converged;
+    {
+        PreparedGraph convergedGraph(fixture, POLYGONAL_LIGHT_SAMPLING_TEMPLATE, room, CONVERGED_REVISION);
+        RenderPolygonalLightOutputs(convergedGraph, fixture, CONVERGED_FRAME_COUNT, converged);
+    }
+    for (usize output = 0; output < POLYGONAL_LIGHT_OUTPUT_COUNT; ++output)
+    {
+        INFO("output " << output);
+        REQUIRE(CountFailurePixels(pixels[output]) == 0);
+        REQUIRE(CountFailurePixels(weightedPixels[output]) == 0);
+        // Only the color output depends on v.
+        if (output != POLYGONAL_LIGHT_CLAMPED_OPTIMAL_MIS)
+        {
+            CHECK(CountDifferingPixels(pixels[output], weightedPixels[output], 0) == 0);
+        }
+    }
+    const Array<uint8>& reference = converged[POLYGONAL_LIGHT_CLAMPED_OPTIMAL_MIS];
+    const float64 clamped = ComputeDisplayMeanSquaredError(pixels[POLYGONAL_LIGHT_CLAMPED_OPTIMAL_MIS], reference);
+    const float64 weighted =
+        ComputeDisplayMeanSquaredError(weightedPixels[POLYGONAL_LIGHT_CLAMPED_OPTIMAL_MIS], reference);
+    const float64 balance = ComputeDisplayMeanSquaredError(pixels[POLYGONAL_LIGHT_BALANCE_HEURISTIC], reference);
+    const float64 clampedDiffusePenumbra =
+        ComputeDisplayMeanSquaredError(pixels[POLYGONAL_LIGHT_CLAMPED_OPTIMAL_MIS], reference, PENUMBRA_DIFFUSE_REGION);
+    const float64 weightedDiffusePenumbra =
+        ComputeDisplayMeanSquaredError(weightedPixels[POLYGONAL_LIGHT_CLAMPED_OPTIMAL_MIS],
+                                       reference,
+                                       PENUMBRA_DIFFUSE_REGION);
+    const float64 clampedGlossyPenumbra =
+        ComputeDisplayMeanSquaredError(pixels[POLYGONAL_LIGHT_CLAMPED_OPTIMAL_MIS], reference, PENUMBRA_GLOSSY_REGION);
+    const float64 weightedGlossyPenumbra =
+        ComputeDisplayMeanSquaredError(weightedPixels[POLYGONAL_LIGHT_CLAMPED_OPTIMAL_MIS],
+                                       reference,
+                                       PENUMBRA_GLOSSY_REGION);
+    INFO("tone-mapped mean squared error at "
+         << LOW_FRAME_COUNT << " samples: clamped optimal MIS=" << clamped
+         << ", weighted balance heuristic=" << weighted << ", balance heuristic=" << balance
+         << "; diffuse penumbra: clamped optimal MIS=" << clampedDiffusePenumbra << ", weighted balance heuristic="
+         << weightedDiffusePenumbra << "; glossy penumbra: clamped optimal MIS=" << clampedGlossyPenumbra
+         << ", weighted balance heuristic=" << weightedGlossyPenumbra);
+    constexpr float64 DIFFUSE_PENUMBRA_ERROR_RATIO = .8;
+    constexpr float64 GLOSSY_PENUMBRA_ERROR_RATIO = .95;
+    REQUIRE(weightedDiffusePenumbra > 0);
+    CHECK(clampedDiffusePenumbra < DIFFUSE_PENUMBRA_ERROR_RATIO * weightedDiffusePenumbra);
+    CHECK(clampedGlossyPenumbra < GLOSSY_PENUMBRA_ERROR_RATIO * weightedGlossyPenumbra);
+    CHECK(clamped < weighted);
 }
 
 namespace
@@ -5004,7 +5224,8 @@ namespace
 /// LUDUS_LINE_TRAVERSAL_SCENE names: a little-endian uint32 vertex count and index count, then float32
 /// x, y, z World positions and uint32 triangle indices, as export_line_traversal_scene.py writes them
 /// from a glTF file. A square emitter facing down is added above the scene's horizontal center, and
-/// the camera looks along -X from inside its bounds.
+/// the camera looks along -X from inside its bounds. A generated floor and ceiling stand in for the
+/// file where a test needs a large scene without the reference assets.
 struct LargeLineScene final
 {
     static constexpr usize MATERIAL_COUNT = 2;
@@ -5047,11 +5268,7 @@ struct LargeLineScene final
         const usize indexCount = readWord();
         REQUIRE(indexCount % 3 == 0);
         REQUIRE(bytes.GetSize() == (2 + vertexCount * 3 + indexCount) * WORD_BYTES);
-        REQUIRE(Positions.TryResize(vertexCount + LIGHT_CORNERS) == true);
-        REQUIRE(Indices.TryResize(indexCount + LIGHT_INDEX_COUNT) == true);
-        REQUIRE(Slots.TryResize((indexCount + LIGHT_INDEX_COUNT) / 3) == true);
-        math::Vector3 minimumWorld{1e30F, 1e30F, 1e30F};
-        math::Vector3 maximumWorld{-1e30F, -1e30F, -1e30F};
+        reserve(vertexCount, indexCount);
         for (usize vertex = 0; vertex < vertexCount; ++vertex)
         {
             StaticArray<float32, 3> coordinates{};
@@ -5061,17 +5278,92 @@ struct LargeLineScene final
                 std::memcpy(&coordinates[axis], &bits, sizeof(bits));
             }
             Positions[vertex] = {coordinates[0], coordinates[1], coordinates[2]};
-            minimumWorld = {math::Min(minimumWorld.X, coordinates[0]),
-                            math::Min(minimumWorld.Y, coordinates[1]),
-                            math::Min(minimumWorld.Z, coordinates[2])};
-            maximumWorld = {math::Max(maximumWorld.X, coordinates[0]),
-                            math::Max(maximumWorld.Y, coordinates[1]),
-                            math::Max(maximumWorld.Z, coordinates[2])};
         }
         for (usize index = 0; index < indexCount; ++index)
         {
             Indices[index] = readWord();
             REQUIRE(Indices[index] < vertexCount);
+        }
+        finish(vertexCount, indexCount);
+    }
+    /// A floor and a ceiling, each a square grid of gridQuads x gridQuads quads: 4 * gridQuads^2 triangles.
+    explicit LargeLineScene(uint32 gridQuads)
+    {
+        constexpr usize GRID_COUNT = 2;
+        constexpr float32 GRID_WIDTH_WORLD = 20;
+        constexpr float32 CEILING_HEIGHT_WORLD = 4;
+        constexpr usize QUAD_INDEX_COUNT = 6;
+        const usize rowVertices = usize{gridQuads} + 1;
+        const usize gridVertices = rowVertices * rowVertices;
+        const usize vertexCount = GRID_COUNT * gridVertices;
+        const usize indexCount = GRID_COUNT * usize{gridQuads} * gridQuads * QUAD_INDEX_COUNT;
+        reserve(vertexCount, indexCount);
+        const float32 spacingWorld = GRID_WIDTH_WORLD / static_cast<float32>(gridQuads);
+        usize index = 0;
+        for (usize grid = 0; grid < GRID_COUNT; ++grid)
+        {
+            const bool isCeiling = grid == 1;
+            const float32 heightWorld = isCeiling == true ? CEILING_HEIGHT_WORLD : 0;
+            const usize first = grid * gridVertices;
+            for (usize row = 0; row < rowVertices; ++row)
+            {
+                for (usize column = 0; column < rowVertices; ++column)
+                {
+                    Positions[first + row * rowVertices + column] = {static_cast<float32>(column) * spacingWorld,
+                                                                     heightWorld,
+                                                                     static_cast<float32>(row) * spacingWorld};
+                }
+            }
+            for (usize row = 0; row < gridQuads; ++row)
+            {
+                for (usize column = 0; column < gridQuads; ++column)
+                {
+                    const uint32 corner = static_cast<uint32>(first + row * rowVertices + column);
+                    const uint32 nextRow = corner + static_cast<uint32>(rowVertices);
+                    // The floor faces +Y and the ceiling -Y, both toward the room.
+                    const StaticArray<uint32, QUAD_INDEX_COUNT> quad =
+                        isCeiling == true ? StaticArray<uint32, QUAD_INDEX_COUNT>{{corner,
+                                                                                   corner + 1,
+                                                                                   nextRow,
+                                                                                   corner + 1,
+                                                                                   nextRow + 1,
+                                                                                   nextRow}}
+                                          : StaticArray<uint32, QUAD_INDEX_COUNT>{
+                                                {corner, nextRow, corner + 1, corner + 1, nextRow, nextRow + 1}};
+                    for (uint32 vertex : quad)
+                    {
+                        Indices[index++] = vertex;
+                    }
+                }
+            }
+        }
+        finish(vertexCount, indexCount);
+    }
+    LargeLineScene(const LargeLineScene&) = delete;
+    LargeLineScene& operator=(const LargeLineScene&) = delete;
+
+private:
+    /// Size the arrays for the scene's vertices and indices plus the added emitter.
+    void reserve(usize vertexCount, usize indexCount)
+    {
+        REQUIRE(Positions.TryResize(vertexCount + LIGHT_CORNERS) == true);
+        REQUIRE(Indices.TryResize(indexCount + LIGHT_INDEX_COUNT) == true);
+        REQUIRE(Slots.TryResize((indexCount + LIGHT_INDEX_COUNT) / 3) == true);
+    }
+    /// Add the emitter, materials and camera around the first vertexCount positions.
+    void finish(usize vertexCount, usize indexCount)
+    {
+        math::Vector3 minimumWorld{1e30F, 1e30F, 1e30F};
+        math::Vector3 maximumWorld{-1e30F, -1e30F, -1e30F};
+        for (usize vertex = 0; vertex < vertexCount; ++vertex)
+        {
+            const math::Vector3 positionWorld = Positions[vertex];
+            minimumWorld = {math::Min(minimumWorld.X, positionWorld.X),
+                            math::Min(minimumWorld.Y, positionWorld.Y),
+                            math::Min(minimumWorld.Z, positionWorld.Z)};
+            maximumWorld = {math::Max(maximumWorld.X, positionWorld.X),
+                            math::Max(maximumWorld.Y, positionWorld.Y),
+                            math::Max(maximumWorld.Z, positionWorld.Z)};
         }
         for (usize triangle = 0; triangle < indexCount / 3; ++triangle)
         {
@@ -5129,8 +5421,6 @@ struct LargeLineScene final
         WARN("large line scene: " << vertexCount << " vertices, " << indexCount / 3 << " triangles, light at y="
                                   << lightY << ", eye " << eyeWorld.X << ',' << eyeWorld.Y << ',' << eyeWorld.Z);
     }
-    LargeLineScene(const LargeLineScene&) = delete;
-    LargeLineScene& operator=(const LargeLineScene&) = delete;
 };
 } // namespace
 
@@ -5146,7 +5436,10 @@ TEST_CASE("Measure BVH line queries against the line scan on a large reference s
         SKIP("Set LUDUS_LINE_TRAVERSAL_SCENE to an exported scene, for example Intel Sponza.");
     }
     const LargeLineScene scene(pathOrNull);
-    GraphGpuFixture fixture(true, false);
+    // The Editor viewport's device budget (MakeViewportDeviceDescription), so the measurement admits
+    // what the Editor admits rather than rhi::StorageLimits' 512 MiB default.
+    constexpr uint64 EDITOR_RESOURCE_BYTES = uint64{2} * 1024 * 1024 * 1024;
+    GraphGpuFixture fixture(true, false, EDITOR_RESOURCE_BYTES);
     const StaticArray<PackageLocation, 2> locations{{
         {LUDUS_RG3_LINE_SAMPLING_COMPUTE_BVH_DIRECTORY, "rg2_line_sampling_compute_bvh.lurgrt"},
         {LUDUS_RG3_LINE_SAMPLING_COMPUTE_BVH_LINE_SCAN_DIRECTORY, "rg2_line_sampling_compute_bvh_line_scan.lurgrt"},
@@ -5219,6 +5512,47 @@ TEST_CASE("Measure BVH line queries against the line scan on a large reference s
         INFO("output " << output);
         CHECK(CountFailurePixels(pixels[0][output]) == 0);
         CHECK(CountDifferingPixels(pixels[0][output], pixels[1][output], 0) == 0);
+    }
+}
+
+TEST_CASE("Ray passes that read the same scene data upload and charge one packed copy of the scene",
+          "[render-graph][gpu][line-sampling][scene-capacity]")
+{
+    // The ComputeBvh line-sampling template has three ray passes over the same scene data. Each pass
+    // used to pack and upload its own copy of the triangles and BVH, so every scene byte budget held
+    // a third of the scene it should: Intel Sponza's first million triangles needed three copies of
+    // 321,936,656 bytes against rhi::StorageLimits' 512 MiB default and failed CapacityExceeded. The
+    // passes now share the first pass's copy, so the graph's logical RHI bytes grow by one copy.
+    constexpr uint32 GRID_QUADS = 160; // 102,400 triangles
+    const LargeLineScene scene(GRID_QUADS);
+    GraphGpuFixture fixture(false, false);
+    rhi::StorageUsage before;
+    REQUIRE(rhi::GetStorageUsage(fixture.Device, before) == rhi::RasterStatus::Ready);
+    PreparedGraph graph(fixture,
+                        {LUDUS_RG3_LINE_SAMPLING_COMPUTE_BVH_DIRECTORY, "rg2_line_sampling_compute_bvh.lurgrt"},
+                        scene,
+                        1);
+    REQUIRE(renderer::RequiresHardwareRayTracing(graph.Plan) == false);
+    const StaticArray<uint32, LINE_SAMPLING_OUTPUT_COUNT> exports = GetLineSamplingExports(graph.Plan);
+    rhi::StorageUsage after;
+    REQUIRE(rhi::GetStorageUsage(fixture.Device, after) == rhi::RasterStatus::Ready);
+    // Each packed triangle takes LUDUS_GPU_PREVIEW_TRIANGLE_WORDS float4 words before its BVH nodes,
+    // order word and the scene's surfaces, so this is a lower bound on one copy. The graph's targets,
+    // accumulation and LTC table take a few MiB, well under one copy of this scene.
+    const uint64 copyLowerBound =
+        uint64{scene.Indices.GetSize() / 3} * LUDUS_GPU_PREVIEW_TRIANGLE_WORDS * sizeof(math::Vector4);
+    const uint64 graphBytes = after.ResourceBytes - before.ResourceBytes;
+    INFO("graph RHI bytes " << graphBytes << ", one packed copy is at least " << copyLowerBound);
+    CHECK(graphBytes >= copyLowerBound);
+    CHECK(graphBytes < 2 * copyLowerBound);
+    // Every pass reads the shared copy: each output renders without failure pixels.
+    RenderFrame(graph.Graph, fixture);
+    for (usize output = 0; output < LINE_SAMPLING_OUTPUT_COUNT; ++output)
+    {
+        INFO("output " << output);
+        Array<uint8> pixels;
+        ReadExport(graph.Graph, fixture, exports[output], {}, pixels);
+        CHECK(CountFailurePixels(pixels) == 0);
     }
 }
 

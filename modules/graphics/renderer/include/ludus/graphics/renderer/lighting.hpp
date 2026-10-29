@@ -331,6 +331,18 @@ struct ShadowAtlasDescription final
                                                              ludus::foundation::math::Vector3 direction,
                                                              ludus::foundation::uint32 resolution,
                                                              ludus::foundation::math::Matrix4& output) noexcept;
+/// Spatial antialiasing applied to the display image in the output pass, after exposure, tone mapping and encoding.
+/// FXAA 3.11 on the display colour: one fullscreen pass that touches only edge pixels beyond five loads.
+/// It acts on the source texels, so it assumes the image maps to the target one to one, as RasterViewport's does.
+enum class SpatialAntialiasing : ludus::foundation::uint8
+{
+    /// No filtering; the output pass takes its single sample as before.
+    Off,
+    /// Wider contrast threshold, edge walks of up to four pixels and a lighter blend for isolated bright pixels.
+    Fast,
+    /// Tighter threshold, edge walks of up to sixteen pixels and the full sub-pixel blend.
+    Balanced,
+};
 /// Display composition parameters for one immutable presentation version.
 struct LightingOutput final
 {
@@ -343,6 +355,12 @@ struct LightingOutput final
     /// Encode to sRGB for unorm display textures/surfaces; hardware sRGB surfaces encode instead.
     /// False selects a linear display intermediate, suitable for subsequent linear UI blending.
     bool Encode = true;
+    /// Show the editor backdrop (a vertical gradient between the surface.viewportTop and surface.viewport tokens)
+    /// behind every pixel the scene left uncovered. The scene target must be cleared to alpha zero, which
+    /// RasterViewport does for the viewports it prepares with a backdrop. False leaves the image unchanged.
+    bool HasBackdrop = false;
+    /// Spatial antialiasing of the display image; Off leaves the image unchanged.
+    SpatialAntialiasing Antialiasing = SpatialAntialiasing::Off;
 };
 /// Independent CPU reference for the documented single-scatter GGX/Smith/Schlick + Lambert BRDF.
 /// Base color and metallic [0,1], roughness [0.045,1]; directions normalized on admission.

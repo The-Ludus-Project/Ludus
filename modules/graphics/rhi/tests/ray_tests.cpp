@@ -33,6 +33,57 @@ rhi::RasterStatus Poll(rhi::DeviceHandle device, T handle) noexcept
     return rhi::RasterStatus::Pending;
 }
 } // namespace
+// Runs on every adapter, so a device without the optional ray profile (CI's llvmpipe) still
+// validates this binary under Vulkan validation instead of skipping every case.
+TEST_CASE("Ray capability reports match the adapter and leave raster usable", "[rhi][gpu][ray]")
+{
+    rhi::Shutdown();
+    logging::LogConfig loggingConfig;
+    loggingConfig.Mode = logging::LogMode::Synchronous;
+    loggingConfig.EnableFile = false;
+    loggingConfig.EnableDebugger = false;
+    static_cast<void>(logging::LogSystem::Initialize(loggingConfig));
+    struct Guard final
+    {
+        ~Guard() noexcept
+        {
+            rhi::Shutdown();
+            logging::LogSystem::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    rhi::DeviceDescription description;
+    description.Required.PortableRaster = true;
+    description.Preferred.RayQueries = true;
+    const rhi::DeviceStatus started = rhi::CreateDevice({}, { .Width = 8, .Height = 8 }, description, device, surface);
+#if defined(LUDUS_TEST_METAL)
+    if (started != rhi::DeviceStatus::Ready && rhi::GetStartup().Error == rhi::StartupError::AdapterUnavailable)
+    {
+        SKIP("No Metal adapter");
+    }
+#endif
+    REQUIRE(started == rhi::DeviceStatus::Ready);
+    rhi::RayCapabilities capabilities;
+    const rhi::RasterStatus status = rhi::GetRayCapabilities(device, capabilities);
+    // The RT0 profile is exactly static triangles with inline queries; Unsupported reports lack it.
+    const bool hasProfile = capabilities.StaticTriangles == true && capabilities.InlineQueries == true;
+    if (status == rhi::RasterStatus::Unsupported)
+    {
+        CHECK(hasProfile == false);
+    }
+    else
+    {
+        REQUIRE(status == rhi::RasterStatus::Ready);
+        CHECK(hasProfile == true);
+    }
+    // RT0 never negotiates procedural intersections or geometry updates.
+    CHECK(capabilities.ProceduralIntersections == false);
+    CHECK(capabilities.Updates == false);
+    CHECK(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Ready);
+    CHECK(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
+}
+
 TEST_CASE("Native RT0 filters opacity, traces offscreen instances and retains detached resources", "[rhi][gpu][ray]")
 {
     rhi::Shutdown();
@@ -64,9 +115,7 @@ TEST_CASE("Native RT0 filters opacity, traces offscreen instances and retains de
     rhi::RayCapabilities capabilities;
     if (rhi::GetRayCapabilities(device, capabilities) == rhi::RasterStatus::Unsupported)
     {
-        CHECK_FALSE(capabilities.InlineQueries);
-        CHECK(rhi::BeginFrame(device, surface) == rhi::DeviceStatus::Ready);
-        CHECK(rhi::EndFrame(device) == rhi::DeviceStatus::Ready);
+        // The capability case above covers the unsupported report and the raster frame.
         SKIP("Native adapter does not implement the optional ray profile; raster remains usable");
     }
     REQUIRE(capabilities.InlineQueries);

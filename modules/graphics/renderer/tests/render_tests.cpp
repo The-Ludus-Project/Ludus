@@ -8,6 +8,7 @@
 #include "renderer_clustered_shadow.h"
 #include "renderer_composite.h"
 #include "renderer_flat.h"
+#include "renderer_grid.h"
 #include "renderer_lit.h"
 #include "renderer_lit_shadow.h"
 #include "renderer_output.h"
@@ -1294,6 +1295,220 @@ TEST_CASE("L5 clustered lighting matches full-list pixels with many objects and 
             CHECK(maximum < 170);
         }
     }
+}
+
+namespace
+{
+constexpr uint32 GRID_WIDTH = 256;
+constexpr uint32 GRID_HEIGHT = 192;
+constexpr float32 GRID_HALF_HEIGHT = 6;
+constexpr float32 GRID_PIXELS_PER_UNIT = static_cast<float32>(GRID_HEIGHT) / (2 * GRID_HALF_HEIGHT);
+constexpr uint32 GRID_CHANNELS = 4;
+constexpr uint32 GRID_BENCHMARK_FRAMES = 40;
+
+/// Top-down orthographic camera over the XZ plane; world +X is right and +Z is down the image.
+/// Clip depth falls with height, so anything above the plane is in front of the grid.
+ludus::graphics::renderer::ViewDescription MakeGridView(uint32 width, uint32 height, bool isGridVisible) noexcept
+{
+    rr::ViewDescription view;
+    const float32 halfWidth = GRID_HALF_HEIGHT * static_cast<float32>(width) / static_cast<float32>(height);
+    // Matrix4 lists columns: x scales clip x, z flips into clip y, height lowers clip depth from one half.
+    view.WorldToClip = {{{1 / halfWidth, 0, 0, 0}, {0, 0, -.04F, 0}, {0, -1 / GRID_HALF_HEIGHT, 0, 0}, {0, 0, .5F, 1}}};
+    view.OrthographicCamera = true;
+    view.CameraPosition = {0, 10, 0};
+    view.CameraForward = {0, -1, 0};
+    view.WorldGrid = { .IsVisible = isGridVisible, .FocusDistance = 5, .Width = width, .Height = height };
+    return view;
+}
+
+usize GetGridPixel(uint32 width, uint32 column, uint32 row) noexcept
+{
+    return (static_cast<usize>(row) * width + column) * GRID_CHANNELS;
+}
+} // namespace
+
+TEST_CASE("Analytic world grids draw antialiased lines, axes and fades behind nearer geometry", "[renderer][grid][gpu]")
+{
+    const bool isBenchmark = std::getenv("LUDUS_RENDERER_BENCHMARK") != nullptr;
+    const uint32 width = isBenchmark ? 1920U : GRID_WIDTH;
+    const uint32 height = isBenchmark ? 1080U : GRID_HEIGHT;
+    rhi::Shutdown();
+    struct Guard
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    rhi::StartupInfo failure;
+    rhi::DeviceDescription description;
+    description.Required.PortableRaster = true;
+    const rhi::DeviceStatus started =
+        rhi::CreateDevice({}, { .Width = width, .Height = height }, description, device, surface, &failure);
+#if defined(LUDUS_TEST_METAL)
+    if (started != rhi::DeviceStatus::Ready && failure.Error == rhi::StartupError::AdapterUnavailable)
+    {
+        SKIP("No Metal adapter on this host");
+    }
+#endif
+    REQUIRE(started == rhi::DeviceStatus::Ready);
+    // One opaque quad above the plane at world (3, 2, 0), twice the L0 quad size, covers x 2.6..3.4 and z -.4..+.4.
+    rr::SceneItem item;
+    rr::Renderer ribbons;
+    rr::Renderer analytic;
+    rr::Mesh meshes[2];
+    rr::Snapshot snapshots[2];
+    rr::PreparedView views[2];
+    rr::Renderer* renderers[2]{&ribbons, &analytic};
+    for (usize variant = 0; variant < 2; ++variant)
+    {
+        rr::Renderer& renderer = *renderers[variant];
+        REQUIRE(renderer.Initialize(device,
+                                    ludus::shaders::renderer_flat::Vertex(),
+                                    ludus::shaders::renderer_flat::Fragment()) == rhi::RasterStatus::Ready);
+        if (variant == 1)
+        {
+            REQUIRE(renderer.InitializeGrid(ludus::shaders::renderer_grid::Vertex(),
+                                            ludus::shaders::renderer_grid::Fragment()) == rhi::RasterStatus::Ready);
+        }
+        REQUIRE(renderer.CreateMesh({ludus::qa::L0_QUAD, 4, ludus::qa::L0_INDICES, 6}, meshes[variant]) ==
+                rhi::RasterStatus::Ready);
+        item.Geometry = meshes[variant];
+        item.SourceId = 1;
+        item.Transform.Columns[0] = {2, 0, 0};
+        item.Transform.Columns[1] = {0, 0, 2};
+        item.Transform.Columns[2] = {0, 1, 0};
+        item.Transform.Translation = {3, 2, 0};
+        item.Material.Color = {1, 0, 0, 1};
+        REQUIRE(renderer.CreateSnapshot(&item, 1, snapshots[variant]) == rhi::RasterStatus::Ready);
+        rr::ViewReport report;
+        REQUIRE(renderer.PrepareView(snapshots[variant], MakeGridView(width, height, true), views[variant], report) ==
+                rhi::RasterStatus::Ready);
+        CHECK(report.Draws == (variant == 0 ? 2U : 3U));
+    }
+    Array<uint8> images[2];
+    for (usize variant = 0; variant < 2; ++variant)
+    {
+        REQUIRE(images[variant].TryResize(static_cast<usize>(width) * height * GRID_CHANNELS) == true);
+        rhi::SubmissionToken completion;
+        REQUIRE(renderers[variant]->Submit(views[variant], surface, completion) == rhi::RasterStatus::Ready);
+        REQUIRE(rhi::backend::ReadHeadlessPixels({images[variant].GetData(), images[variant].GetSize()}));
+    }
+    if (isBenchmark)
+    {
+        using Clock = std::chrono::steady_clock;
+        const auto ns = [](Clock::time_point start) {
+            return static_cast<uint64>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start).count());
+        };
+        // The pass cost is the difference from the same frame without a grid; both include clear and readback.
+        rr::PreparedView hidden;
+        rr::ViewReport hiddenReport;
+        REQUIRE(analytic.PrepareView(snapshots[1], MakeGridView(width, height, false), hidden, hiddenReport) ==
+                rhi::RasterStatus::Ready);
+        struct Variant final
+        {
+            const char* Name;
+            rr::Renderer* Renderer;
+            rr::PreparedView View;
+        };
+        const Variant variants[]{{"none", &analytic, hidden},
+                                 {"ribbons", &ribbons, views[0]},
+                                 {"analytic", &analytic, views[1]}};
+        for (const Variant& variant : variants)
+        {
+            uint64 total = 0;
+            for (uint32 frame = 0; frame < GRID_BENCHMARK_FRAMES; ++frame)
+            {
+                const Clock::time_point start = Clock::now();
+                rhi::SubmissionToken completion;
+                REQUIRE(variant.Renderer->Submit(variant.View, surface, completion) == rhi::RasterStatus::Ready);
+                REQUIRE(rhi::backend::ReadHeadlessPixels({images[0].GetData(), images[0].GetSize()}));
+                total += ns(start);
+            }
+            std::printf("GRIDBENCH,%s,%ux%u,%u,%llu\n",
+                        variant.Name,
+                        width,
+                        height,
+                        GRID_BENCHMARK_FRAMES,
+                        static_cast<unsigned long long>(total / GRID_BENCHMARK_FRAMES));
+        }
+        if (const char* path = std::getenv("LUDUS_GRID_IMAGE"))
+        {
+            for (usize variant = 0; variant < 2; ++variant)
+            {
+                rhi::SubmissionToken completion;
+                REQUIRE(renderers[variant]->Submit(views[variant], surface, completion) == rhi::RasterStatus::Ready);
+                REQUIRE(rhi::backend::ReadHeadlessPixels({images[variant].GetData(), images[variant].GetSize()}));
+            }
+            for (usize variant = 0; variant < 2; ++variant)
+            {
+                char name[512];
+                std::snprintf(name, sizeof(name), "%s-%s.ppm", path, variant == 0 ? "ribbons" : "analytic");
+                if (std::FILE* file = std::fopen(name, "wb"))
+                {
+                    std::fprintf(file, "P6\n%u %u\n255\n", width, height);
+                    for (usize pixel = 0; pixel < static_cast<usize>(width) * height; ++pixel)
+                    {
+                        std::fwrite(&images[variant][pixel * GRID_CHANNELS], 1, 3, file);
+                    }
+                    std::fclose(file);
+                }
+            }
+        }
+        return;
+    }
+    const uint8* image = images[1].GetData();
+    const uint32 centerColumn = width / 2;
+    const uint32 centerRow = height / 2;
+    const uint32 unit = static_cast<uint32>(GRID_PIXELS_PER_UNIT);
+    const usize background = GetGridPixel(width, centerColumn + unit / 2, centerRow + unit / 2);
+    // Mid-cell pixels keep the cleared colour, so the grid does not tint the surface.
+    const usize farCell = GetGridPixel(width, centerColumn - 5 * unit + unit / 2, centerRow - 3 * unit + unit / 2);
+    CHECK(image[background] == image[farCell]);
+    // The X axis is red, the Z axis blue, and both are exact lines through the origin.
+    const usize xAxis = GetGridPixel(width, centerColumn + 2 * unit + unit / 2, centerRow);
+    CHECK(image[xAxis] > image[xAxis + 2]);
+    CHECK(image[xAxis] > image[background] + 40);
+    const usize zAxis = GetGridPixel(width, centerColumn, centerRow + 3 * unit + unit / 2);
+    CHECK(image[zAxis + 2] > image[zAxis]);
+    CHECK(image[zAxis + 2] > image[background + 2] + 40);
+    // A minor line at x = 2 sits on a pixel boundary: both neighbours are partly covered, and
+    // coverage is gone two pixels away, so the edge is antialiased rather than a hard two-level step.
+    const uint32 lineColumn = centerColumn + 2 * unit;
+    const uint32 row = centerRow + unit / 2 + unit;
+    const uint8 base = image[GetGridPixel(width, lineColumn + 3, row) + 1];
+    const uint8 left = image[GetGridPixel(width, lineColumn - 1, row) + 1];
+    const uint8 right = image[GetGridPixel(width, lineColumn, row) + 1];
+    CHECK(left > base);
+    CHECK(right > base);
+    CHECK(image[GetGridPixel(width, lineColumn - 3, row) + 1] == base);
+    // Geometry above the plane hides the grid: inside the quad the line at x = 3 is pure item red,
+    // and outside the quad the same line is drawn.
+    const uint32 occludedColumn = centerColumn + 3 * unit - 1;
+    const usize occluded = GetGridPixel(width, occludedColumn, centerRow + unit / 4);
+    CHECK(image[occluded] == 255);
+    CHECK(image[occluded + 1] == 0);
+    CHECK(image[occluded + 2] == 0);
+    const usize visible = GetGridPixel(width, occludedColumn, centerRow + 3 * unit + unit / 2);
+    CHECK(image[visible + 1] > image[background + 1]);
+    // The analytic and ribbon grids agree on where the lines are: the same pixels differ from the background.
+    uint32 differing = 0;
+    uint32 ribbonOnly = 0;
+    uint32 analyticOnly = 0;
+    for (usize pixel = 0; pixel < static_cast<usize>(width) * height; ++pixel)
+    {
+        const bool isRibbon = images[0][pixel * GRID_CHANNELS + 1] != images[0][background + 1];
+        const bool isAnalytic = images[1][pixel * GRID_CHANNELS + 1] != image[background + 1];
+        differing += isRibbon && isAnalytic ? 1U : 0U;
+        ribbonOnly += isRibbon && isAnalytic == false ? 1U : 0U;
+        analyticOnly += isRibbon == false && isAnalytic ? 1U : 0U;
+    }
+    CHECK(differing > 0);
+    CHECK(differing > ribbonOnly * 4);
+    CHECK(differing > analyticOnly / 2);
 }
 
 #if defined(LUDUS_TEST_RAY)

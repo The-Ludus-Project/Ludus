@@ -169,6 +169,8 @@ set(editor_viewport_sources
     src/internal/viewport_object_interaction.h
     src/viewport_object_interaction.cpp
     src/viewport_navigation.cpp
+    src/internal/orientation_widget.h
+    src/orientation_widget.cpp
     src/viewport_play_input.cpp
     src/internal/texture_inspection.h
     src/texture_inspection.cpp)
@@ -573,6 +575,8 @@ qt_add_executable(ludus_editor
     src/timing_panel.cpp
     src/project_setup_dialog.cpp
     src/project_creation_dialog.cpp
+    src/editor_style.cpp
+    src/internal/editor_style.h
     src/workspace_style.cpp
     src/internal/theme_preferences.h
     src/theme_preferences.cpp
@@ -586,13 +590,18 @@ qt_add_executable(ludus_editor
     src/activity_chip.cpp
     src/internal/window_size.h
     src/window_size.cpp
+    src/internal/application_icon.h
+    src/application_icon.cpp
     src/controller.cpp
     src/controller_play.cpp
 )
 set_target_properties(ludus_editor PROPERTIES AUTOMOC ON)
 set(editor_brand_assets
     "${PROJECT_SOURCE_DIR}/docs/wiki/assets/ludus-icon.png"
-    "${PROJECT_SOURCE_DIR}/docs/wiki/assets/ludus-mark.png")
+    "${PROJECT_SOURCE_DIR}/docs/wiki/assets/ludus-mark.png"
+    "${PROJECT_SOURCE_DIR}/docs/wiki/assets/small/ludus-icon-16.png"
+    "${PROJECT_SOURCE_DIR}/docs/wiki/assets/small/ludus-icon-24.png"
+    "${PROJECT_SOURCE_DIR}/docs/wiki/assets/small/ludus-icon-32.png")
 qt_add_resources(ludus_editor ludus_brand
     PREFIX "/ludus"
     BASE "${PROJECT_SOURCE_DIR}/docs/wiki/assets"
@@ -699,7 +708,7 @@ if(EMSCRIPTEN)
     target_link_libraries(ludus_editor PRIVATE Ludus::GraphicsRhi)
     ludus_compile_renderer_shaders(TARGET ludus_editor SHADERS
         renderer_flat renderer_composite renderer_material renderer_lit renderer_output renderer_shadow
-        renderer_lit_shadow renderer_clustered_authored renderer_clustered_authored_shadow
+        renderer_grid renderer_lit_shadow renderer_clustered_authored renderer_clustered_authored_shadow
         renderer_lit_debug renderer_lit_debug_shadow
         renderer_clustered_authored_debug renderer_clustered_authored_debug_shadow)
 endif()
@@ -708,7 +717,7 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     target_link_libraries(ludus_editor PRIVATE Ludus::GraphicsRhi Qt6::Quick)
     ludus_compile_renderer_shaders(TARGET ludus_editor SHADERS
         renderer_flat renderer_composite renderer_material renderer_lit renderer_output renderer_shadow
-        renderer_overlay)
+        renderer_overlay renderer_grid)
     ludus_compile_renderer_shaders(TARGET ludus_editor SHADERS
         renderer_lit_shadow renderer_clustered renderer_clustered_shadow
         renderer_clustered_authored renderer_clustered_authored_shadow
@@ -853,7 +862,9 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/preview_generation_tests.cpp
         tests/viewport_navigation_tests.cpp
         tests/viewport_object_overlay_tests.cpp
+        tests/orientation_widget_tests.cpp
         tests/design_token_tests.cpp
+        tests/editor_style_tests.cpp
         tests/theme_preference_tests.cpp
         tests/viewport_legibility_tests.cpp
         tests/editor_icons_tests.cpp
@@ -984,6 +995,11 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         "LUDUS_EDITOR_TEST_SPIRV_VALIDATOR=\"${LUDUS_SPIRV_VALIDATOR}\"")
     target_compile_definitions(ludus_editor_tests PRIVATE
         "LUDUS_EDITOR_SDK_MANIFEST=\"${PROJECT_BINARY_DIR}/cmake/LudusSdkManifest.json\"")
+    # Substitute SDKs in the render-graph build tests copy the installed shader-helper layout from here.
+    set(editor_test_render_graph_helper "${CMAKE_CURRENT_BINARY_DIR}/render-graph-helper/ludus_editor_tests")
+    _ludus_stage_render_graph_helpers("${editor_test_render_graph_helper}")
+    target_compile_definitions(ludus_editor_tests PRIVATE
+        "LUDUS_EDITOR_TEST_RENDER_GRAPH_HELPER=\"${editor_test_render_graph_helper}\"")
     # Controller/MainWindow sources are compiled directly into the test binary so
     # tests can drive the controller and (offscreen) widgets.
     target_sources(ludus_editor_tests PRIVATE
@@ -1012,6 +1028,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/timing_panel.cpp
         src/project_setup_dialog.cpp
         src/project_creation_dialog.cpp
+        src/editor_style.cpp
         src/workspace_style.cpp
         src/internal/theme_preferences.h
         src/theme_preferences.cpp
@@ -1023,7 +1040,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/state_view.cpp
         src/internal/activity_chip.h
         src/activity_chip.cpp
-        src/window_size.cpp)
+        src/window_size.cpp
+        src/application_icon.cpp)
     target_link_libraries(ludus_editor_tests
         PRIVATE
             Ludus::RenderGraphFormat
@@ -1062,7 +1080,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         target_link_libraries(ludus_editor_tests PRIVATE Ludus::GraphicsRhi Qt6::Quick)
         ludus_compile_renderer_shaders(TARGET ludus_editor_tests SHADERS
             renderer_flat renderer_composite renderer_material renderer_lit renderer_output renderer_shadow
-            renderer_overlay)
+            renderer_overlay renderer_grid)
         ludus_compile_renderer_shaders(TARGET ludus_editor_tests SHADERS
             renderer_lit_shadow renderer_clustered renderer_clustered_shadow
             renderer_clustered_authored renderer_clustered_authored_shadow

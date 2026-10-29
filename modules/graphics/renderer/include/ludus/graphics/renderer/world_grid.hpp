@@ -38,6 +38,45 @@ struct WorldGridLine final
     /// Straight linear RGBA guide color; alpha is one.
     foundation::math::Vector4 Color{};
 };
+/// Camera-relative plane of an adaptive world grid, drawn analytically by renderer_grid.slang.
+/// Lines sit at integer multiples of SpacingWorld along the two unit axes; every tenth is major.
+struct WorldGridPlane final
+{
+    /// Snapped grid centre on the plane, in world units; the radial fade is measured from it.
+    foundation::math::Vector3 CenterWorld{};
+    /// Unit direction of the first plane coordinate (the X axis, or the orthographic horizontal).
+    foundation::math::Vector3 HorizontalWorld{1, 0, 0};
+    /// Unit direction of the second plane coordinate (the Z axis, or the orthographic vertical).
+    foundation::math::Vector3 VerticalWorld{0, 0, 1};
+    /// Minor line spacing in world units, a power of ten.
+    foundation::float32 SpacingWorld = 1;
+    /// Half the side of the drawn quad in world units; lines are fully faded at this distance.
+    foundation::float32 ExtentWorld = 0;
+    /// Distance from the centre where the radial fade begins, in world units.
+    foundation::float32 FadeStartWorld = 0;
+    /// Width in pixels of minor and major lines.
+    foundation::float32 LinePixels = 1;
+    /// Width in pixels of the two coordinate axis lines on the plane.
+    foundation::float32 AxisPixels = 1;
+    /// Straight linear RGBA colour of minor lines.
+    foundation::math::Vector4 MinorColor{};
+    /// Straight linear RGBA colour of every tenth line.
+    foundation::math::Vector4 MajorColor{};
+    /// Straight linear RGBA colour of the line along HorizontalWorld through the origin (a coordinate axis).
+    foundation::math::Vector4 HorizontalAxisColor{};
+    /// Straight linear RGBA colour of the line along VerticalWorld through the origin (a coordinate axis).
+    foundation::math::Vector4 VerticalAxisColor{};
+    /// Index (0 X, 1 Y, 2 Z) of the coordinate axis perpendicular to the plane. It is not on the
+    /// plane, so it stays the ribbon among the last WORLD_GRID_AXIS_COUNT lines of BuildWorldGridLines.
+    foundation::usize NormalAxisIndex = 1;
+};
+/// Build the plane that BuildWorldGridLines draws as ribbons, for the analytic grid path.
+/// @param view Camera, projection and WorldGrid inputs, validated as BuildWorldGridLines does.
+/// @param outPlane Receives the plane; untouched on failure or for a disabled grid.
+/// @param outIsVisible Receives false for a disabled grid or a shadow caster view, true otherwise.
+/// @return False for invalid visible-grid camera inputs. No allocation, GPU work or thread affinity.
+[[nodiscard]] bool
+BuildWorldGridPlane(const ViewDescription& view, WorldGridPlane& outPlane, bool& outIsVisible) noexcept;
 /// Build an adaptive XZ grid (perspective), or the Cartesian plane most facing an orthographic
 /// camera, plus red X, green Y and blue Z axes. Storage is borrowed only during this call.
 /// @param view Camera, projection and optional WorldGrid inputs. Shadow caster views omit the guide.

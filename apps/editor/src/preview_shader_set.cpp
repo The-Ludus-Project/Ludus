@@ -9,6 +9,7 @@
 #    include "renderer_clustered_authored_shadow.h"
 #    include "renderer_composite.h"
 #    include "renderer_flat.h"
+#    include "renderer_grid.h"
 #    include "renderer_lit.h"
 #    include "renderer_lit_debug.h"
 #    include "renderer_lit_debug_shadow.h"
@@ -68,6 +69,8 @@ const char* GetPreviewShaderRecipeName(PreviewShaderProgram program) noexcept
             return "renderer_clustered_authored_debug";
         case PreviewShaderProgram::ClusteredAuthoredDebugShadow:
             return "renderer_clustered_authored_debug_shadow";
+        case PreviewShaderProgram::Grid:
+            return "renderer_grid";
     }
     return "";
 }
@@ -114,6 +117,8 @@ rhi::RasterShaderDescription GetBuiltInPreviewShader(PreviewShaderProgram progra
             return SelectStage(stage,
                                shaders::renderer_clustered_authored_debug_shadow::Vertex,
                                shaders::renderer_clustered_authored_debug_shadow::Fragment);
+        case PreviewShaderProgram::Grid:
+            return SelectStage(stage, shaders::renderer_grid::Vertex, shaders::renderer_grid::Fragment);
     }
 #else
     static_cast<void>(program);

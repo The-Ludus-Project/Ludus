@@ -5,6 +5,7 @@
   --ludus-surface-panel: #222f39;
   --ludus-surface-raised: #2c3c47;
   --ludus-surface-viewport: #090c0f;
+  --ludus-surface-viewport-top: #0f151b;
   --ludus-surface-log: #111a21;
   --ludus-text-primary: #e9f2f1;
   --ludus-text-secondary: #b5c5c9;
@@ -47,6 +48,7 @@
     --ludus-surface-panel: #ffffff;
     --ludus-surface-raised: #e6e3dc;
     --ludus-surface-viewport: #090c0f;
+    --ludus-surface-viewport-top: #0f151b;
     --ludus-surface-log: #18232c;
     --ludus-text-primary: #18232c;
     --ludus-text-secondary: #4c6267;

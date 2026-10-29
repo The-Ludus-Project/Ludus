@@ -450,7 +450,7 @@ TEST_CASE("Root canvas inserts a ReSTIR subgraph transactionally and rejects con
     QString error;
     CHECK(document.ApplyRestirTemplate(ROOT_GRAPH, QStringLiteral("Lighting"), error) ==
           RenderGraphDocumentStatus::Capacity);
-    CHECK(error.contains(QStringLiteral("needs 8 shader programs")) == true);
+    CHECK(error.contains(QStringLiteral("needs 9 shader programs")) == true);
     CHECK(error.contains(QStringLiteral("budgets.programs is 1")) == true);
     CHECK(document.GetDraft(ROOT_GRAPH) == beforeRoot);
     CHECK(document.GetDraft(QStringLiteral("main.lushader.json")) == constrained);
@@ -483,14 +483,14 @@ TEST_CASE("ReSTIR import upgrades default budgets beside an existing ray pipelin
     const QByteArray beforeManifest = document.GetDraft(manifestFile);
     const QJsonObject before = QJsonDocument::fromJson(beforeManifest).object();
     const QJsonArray previousPrograms = before.value(QStringLiteral("programs")).toArray();
-    CHECK(previousPrograms.size() == 6);
+    CHECK(previousPrograms.size() == 7);
     QString error;
     REQUIRE(document.ApplyRestirTemplate(ROOT_GRAPH, QStringLiteral("Lighting"), error) ==
             RenderGraphDocumentStatus::Ok);
     CHECK(error.isEmpty() == true);
     const QByteArray afterManifest = document.GetDraft(manifestFile);
     const QJsonObject after = QJsonDocument::fromJson(afterManifest).object();
-    CHECK(after.value(QStringLiteral("programs")).toArray().size() == 11);
+    CHECK(after.value(QStringLiteral("programs")).toArray().size() == 12);
     CHECK(after.value(QStringLiteral("budgets")).toObject().value(QStringLiteral("programs")).toInt() == 16);
     CHECK(after.value(QStringLiteral("budgets")).toObject().value(QStringLiteral("artifacts")).toInt() == 64);
     for (const QJsonValueConstRef program : previousPrograms)
@@ -1094,7 +1094,7 @@ TEST_CASE("Visibility custom program limits identify the required budget and pre
                                               QStringLiteral("visibility-secondary-rays"),
                                               error) == RenderGraphDocumentStatus::Conflict);
     CHECK(error.contains(QStringLiteral("budgets.programs")) == true);
-    CHECK(error.contains(QStringLiteral("needs 8")) == true);
+    CHECK(error.contains(QStringLiteral("needs 9")) == true);
     CHECK(document.GetDraft(manifestFile) == before);
     CHECK(document.GetFiles() == files);
 }

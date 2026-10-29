@@ -14,6 +14,11 @@
     "vertex": "vertexMain",
     "fragment": "fragmentMain"
   },
+  "renderer_grid": {
+    "source": "renderer_grid.slang",
+    "vertex": "GridVertexMain",
+    "fragment": "GridFragmentMain"
+  },
   "renderer_material": {
     "source": "renderer_material.slang",
     "vertex": "vertexMain",

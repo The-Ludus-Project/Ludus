@@ -19,17 +19,25 @@
 //   diffuse technique covers the whole polygon above the horizon, and a_1 the LTC table's Fresnel-weighted albedo.
 // - 4.3 (clamped optimal MIS): v times the weighted balance heuristic plus (1 - v) times the balance heuristic. With
 //   v = 1 it is section 4.2's weighted balance heuristic, and with v = 0 Veach's balance heuristic (Fig. 10b).
+// - 6.1 (Peters' renderer): the shading normal is clipped to the hemisphere of the outgoing direction
+//   (ClipShadingNormalToOutgoingHemisphere); the shading frame, both techniques and the BSDF use the clipped normal.
 // Departures, all named in docs/development/render-graph-authoring.md:
 // - Polygons are the scene's emissive triangles; a quad light is two triangles, each with its own two samples.
 // - The diffuse albedo a_0 approximates Ludus's Fresnel-weighted Lambert lobe with Schlick's reflectance at normal
 //   incidence, baseColor (1 - metallic) (1 - F0), where Peters uses the Frostbite BRDF's diffuse albedo (section 6.1).
-// - Shading normals are not clipped to the hemisphere of the outgoing direction (section 6.1); the BSDF is zero there.
+// - Section 6.1 gives no margin for the clipped shading normal. Ludus keeps it MINIMUM_OUTGOING_COSINE inside the
+//   hemisphere, because the BSDF is zero for an outgoing direction on the shading horizon.
+// - Section 6.1 does not discuss back faces. shade.slang clips front faces only, so a one-sided surface seen from
+//   behind stays black, as in the other templates, instead of being lit through the surface.
 // - A sample whose direction misses the triangle in FP32 contributes zero (compare section 3.7).
 
 // Peters 2021, section 4.2: the diffuse technique alone covers the whole polygon above the horizon.
 static const float MINIMUM_DIFFUSE_TECHNIQUE_ALBEDO = 0.01;
 // The dielectric Schlick F0 of the standard BSDF (Evaluate in renderer_gpu_preview.slang).
 static const float DIELECTRIC_SPECULAR_REFLECTANCE = 0.04;
+// Peters 2021, section 6.1 clips shading normals to the outgoing direction's hemisphere without naming a margin; this
+// cosine is Ludus's (ClipShadingNormalToOutgoingHemisphere).
+static const float MINIMUM_OUTGOING_COSINE = 0.01;
 // SampleStandardBsdf's switch between helper axes for its tangent frame.
 static const float FRAME_HELPER_AXIS_LIMIT = 0.999;
 static const uint COLOR_CHANNEL_COUNT = 3;
@@ -77,7 +85,24 @@ float3 TransformTangentToWorld(PolygonalLightReceiver receiver, float3 vectorTan
            receiver.NormalWorld * vectorTangent.z;
 }
 
-/// Build the frame and both techniques once per receiver. normalWorld and viewDirectionWorld are unit vectors;
+/// Peters 2021, section 6.1: "Shading normals get clipped to the hemisphere of the outgoing light direction to avoid
+/// black pixels due to normal mapping." normalWorld and viewDirectionWorld are unit vectors. A normal whose cosine
+/// against viewDirectionWorld is at least MINIMUM_OUTGOING_COSINE is returned unchanged. Otherwise it moves along
+/// viewDirectionWorld until that cosine is MINIMUM_OUTGOING_COSINE and is renormalized, which keeps the result
+/// continuous in both inputs; the clipped cosine is then at least MINIMUM_OUTGOING_COSINE / sqrt(1 +
+/// MINIMUM_OUTGOING_COSINE^2), and a normal facing directly away becomes viewDirectionWorld. Callers shade with the
+/// result everywhere: the receiver frame, both techniques' clips and the BSDF.
+float3 ClipShadingNormalToOutgoingHemisphere(float3 normalWorld, float3 viewDirectionWorld)
+{
+    float cosine = dot(normalWorld, viewDirectionWorld);
+    if (cosine >= MINIMUM_OUTGOING_COSINE)
+        return normalWorld;
+    // |n + (m - c) v|^2 = 1 + m^2 - c^2 >= m^2 for unit n and v and c in [-1, m), so the length is never zero.
+    return normalize(normalWorld + (MINIMUM_OUTGOING_COSINE - cosine) * viewDirectionWorld);
+}
+
+/// Build the frame and both techniques once per receiver. normalWorld, already clipped by
+/// ClipShadingNormalToOutgoingHemisphere, and viewDirectionWorld are unit vectors;
 /// roughness is the standard BSDF's perceptual roughness. The specular LTC comes from the table slice of this
 /// receiver's F0 (section 4.1); a failed LTC construction disables the specular technique.
 PolygonalLightReceiver MakePolygonalLightReceiver(float3 positionWorld,

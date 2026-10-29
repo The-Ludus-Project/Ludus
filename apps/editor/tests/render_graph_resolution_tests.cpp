@@ -280,14 +280,18 @@ TEST_CASE("Project Settings exposes the built-in viewport-sized renderer and sav
     QPushButton* enable = settings.findChild<QPushButton*>(QStringLiteral("projectEnableResolution"));
     REQUIRE(enable != nullptr);
     CHECK(enable->isVisibleTo(&settings) == false);
+    // Default and its ZPrepass variant each size their own targets from the viewport.
     const QVector<RenderGraphResolutionSelection> selections =
         FindRenderGraphResolutionSettings(renderer.GetDocument());
-    REQUIRE(selections.size() == 1);
+    REQUIRE(selections.size() == 2);
     QJsonValue extent;
     QJsonArray scale;
-    REQUIRE(ReadRenderGraphResolutionSettings(renderer.GetDocument(), selections.at(0), extent, scale) == true);
-    CHECK(extent == QJsonValue(QStringLiteral("Viewport")));
-    CHECK(scale == QJsonArray{1, 1});
+    for (const RenderGraphResolutionSelection& selection : selections)
+    {
+        REQUIRE(ReadRenderGraphResolutionSettings(renderer.GetDocument(), selection, extent, scale) == true);
+        CHECK(extent == QJsonValue(QStringLiteral("Viewport")));
+        CHECK(scale == QJsonArray{1, 1});
+    }
     CHECK(renderer.IsDirty() == false);
     QString error;
     REQUIRE(renderer.SetResolutionSettings(selections.at(0), extent, QJsonArray{1, 2}, error) == true);
@@ -298,8 +302,11 @@ TEST_CASE("Project Settings exposes the built-in viewport-sized renderer and sav
     RenderGraphDocument reopened;
     REQUIRE(reopened.Load(destination, renderer.GetDocument().GetRootGraph()) == RenderGraphDocumentStatus::Ok);
     const QVector<RenderGraphResolutionSelection> saved = FindRenderGraphResolutionSettings(reopened);
-    REQUIRE(saved.size() == 1);
+    REQUIRE(saved.size() == 2);
     REQUIRE(ReadRenderGraphResolutionSettings(reopened, saved.at(0), extent, scale) == true);
     CHECK(extent == QJsonValue(QStringLiteral("Viewport")));
     CHECK(scale == QJsonArray{1, 2});
+    // Only the edited configuration changed.
+    REQUIRE(ReadRenderGraphResolutionSettings(reopened, saved.at(1), extent, scale) == true);
+    CHECK(scale == QJsonArray{1, 1});
 }

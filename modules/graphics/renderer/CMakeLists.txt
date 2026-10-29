@@ -73,7 +73,7 @@ install(TARGETS ludus_graphics_renderer EXPORT LudusTargets ARCHIVE DESTINATION 
 # Source is cooked by the existing installed shader helper; no runtime compiler dependency.
 install(FILES include/ludus/graphics/renderer/detail/deferred_binding_slots.inc
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/ludus/graphics/renderer/detail")
-install(FILES "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/scene_data.h" include/ludus/graphics/renderer/scene_shader_layout.h include/ludus/graphics/renderer/lighting_layout.h include/ludus/graphics/renderer/deferred_layout.h include/ludus/graphics/renderer/detail/deferred_binding_slots.inc shaders/renderer_deferred_fullscreen.slang shaders/renderer_deferred_material.slang shaders/renderer_deferred_lighting.slang shaders/renderer_mesh_lights.slang shaders/renderer_deferred_depth.slang shaders/recipes.json shaders/renderer_gpu_preview_layout.h shaders/scene_shader.slang shaders/scene_payload.slang shaders/visibility_buffer.slang shaders/ray_shader.slang shaders/ray_triangle_loop.slang shaders/ray_line_visibility.slang shaders/ray_bvh_nodes.slang shaders/ray_bvh_traversal.slang shaders/renderer_flat.slang shaders/renderer_composite.slang shaders/renderer_overlay.slang shaders/renderer_material.slang shaders/renderer_lit.slang shaders/renderer_clustered.slang shaders/renderer_shadow.slang shaders/renderer_output.slang shaders/renderer_gpu_preview.slang shaders/renderer_gpu_preview_visibility_full.slang shaders/renderer_gpu_preview_hit_cached.slang shaders/renderer_gpu_preview_group32.slang shaders/renderer_gpu_preview_group64.slang shaders/renderer_gpu_preview_group128.slang shaders/renderer_gpu_preview_group8x8.slang shaders/renderer_gpu_preview_image.slang shaders/renderer_reference.slang shaders/renderer_reference_layout.h shaders/reference_light_sampling.slang shaders/renderer_surface.slang shaders/renderer_clustered_surface.slang shaders/renderer_surface_functions.slang shaders/renderer_authored.slang shaders/renderer_clustered_authored.slang shaders/renderer_lit_debug.slang shaders/renderer_clustered_authored_debug.slang shaders/renderer_environment_layout.h shaders/ltc_table.slang shaders/ltc_table_layout.h DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
+install(FILES "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/scene_data.h" include/ludus/graphics/renderer/scene_shader_layout.h include/ludus/graphics/renderer/lighting_layout.h include/ludus/graphics/renderer/deferred_layout.h include/ludus/graphics/renderer/detail/deferred_binding_slots.inc shaders/renderer_deferred_fullscreen.slang shaders/renderer_deferred_material.slang shaders/renderer_deferred_lighting.slang shaders/renderer_mesh_lights.slang shaders/renderer_deferred_depth.slang shaders/recipes.json shaders/renderer_gpu_preview_layout.h shaders/scene_shader.slang shaders/scene_payload.slang shaders/visibility_buffer.slang shaders/ray_shader.slang shaders/ray_triangle_loop.slang shaders/ray_line_visibility.slang shaders/ray_bvh_nodes.slang shaders/ray_bvh_traversal.slang shaders/renderer_flat.slang shaders/renderer_composite.slang shaders/renderer_overlay.slang shaders/renderer_grid.slang shaders/renderer_material.slang shaders/renderer_lit.slang shaders/renderer_clustered.slang shaders/renderer_shadow.slang shaders/renderer_output.slang shaders/renderer_gpu_preview.slang shaders/renderer_gpu_preview_visibility_full.slang shaders/renderer_gpu_preview_hit_cached.slang shaders/renderer_gpu_preview_group32.slang shaders/renderer_gpu_preview_group64.slang shaders/renderer_gpu_preview_group128.slang shaders/renderer_gpu_preview_group8x8.slang shaders/renderer_gpu_preview_image.slang shaders/renderer_reference.slang shaders/renderer_reference_layout.h shaders/reference_light_sampling.slang shaders/renderer_surface.slang shaders/renderer_clustered_surface.slang shaders/renderer_surface_functions.slang shaders/renderer_authored.slang shaders/renderer_clustered_authored.slang shaders/renderer_lit_debug.slang shaders/renderer_clustered_authored_debug.slang shaders/renderer_environment_layout.h shaders/ltc_table.slang shaders/ltc_table_layout.h DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
 # Engine-owned default render graph: the RendererStatic static opaque profile the editor
 # shows when a project has no graph of its own, and the read-only starting point a project
 # copies when it customizes the renderer. Profiles follow the host device family, as the
@@ -206,6 +206,7 @@ if(TARGET ludus_rhi_render_tests)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_flat)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_composite)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_overlay)
+    ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_grid)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_material)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_clustered)
     ludus_compile_renderer_shaders(TARGET ludus_renderer_render_tests SHADERS renderer_clustered_shadow)
@@ -730,6 +731,38 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_salesin_jarosz_lines_power_RUNTIME_PACKAGE PARENT_PATH point_line_power_package_directory)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_SALESIN_JAROSZ_LINES_POWER_DIRECTORY="${point_line_power_package_directory}")
+    # The polygonal-light-sampling template with PROJECTED_SOLID_ANGLE_MIS_VISIBILITY set to 1, so its color output is
+    # Peters' weighted balance heuristic (2021, section 4.2), for the occluded-penumbra comparison with v = 1/2.
+    set(polygonal_light_template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/polygonal_light_sampling_template")
+    file(READ "${polygonal_light_template_staged}/main.lushader.json" polygonal_light_manifest)
+    string(JSON polygonal_light_setting_count LENGTH "${polygonal_light_manifest}" settings)
+    set(polygonal_light_visibility_index -1)
+    math(EXPR polygonal_light_setting_last "${polygonal_light_setting_count} - 1")
+    foreach(setting_index RANGE ${polygonal_light_setting_last})
+        string(JSON setting_id GET "${polygonal_light_manifest}" settings ${setting_index} id)
+        if(setting_id STREQUAL "PROJECTED_SOLID_ANGLE_MIS_VISIBILITY")
+            set(polygonal_light_visibility_index ${setting_index})
+        endif()
+    endforeach()
+    if(polygonal_light_visibility_index LESS 0)
+        message(FATAL_ERROR
+            "The polygonal-light-sampling template manifest has no PROJECTED_SOLID_ANGLE_MIS_VISIBILITY setting.")
+    endif()
+    set(polygonal_light_weighted_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/polygonal_light_sampling_weighted")
+    file(COPY "${polygonal_light_template_staged}/" DESTINATION "${polygonal_light_weighted_staged}"
+        PATTERN "main.lushader.json" EXCLUDE)
+    string(JSON polygonal_light_weighted_manifest SET "${polygonal_light_manifest}"
+        settings ${polygonal_light_visibility_index} value 1)
+    # Rewrite the staged manifest only when it changes, so reconfiguring does not rebuild the package.
+    file(WRITE "${polygonal_light_weighted_staged}.lushader.json" "${polygonal_light_weighted_manifest}\n")
+    file(COPY_FILE "${polygonal_light_weighted_staged}.lushader.json"
+        "${polygonal_light_weighted_staged}/main.lushader.json" ONLY_IF_DIFFERENT)
+    ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_polygonal_light_sampling_weighted
+        MANIFEST "${polygonal_light_weighted_staged}/main.lushader.json" RUNTIME_PACKAGE)
+    cmake_path(GET rg2_polygonal_light_sampling_weighted_RUNTIME_PACKAGE PARENT_PATH
+        polygonal_light_weighted_package_directory)
+    target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+        LUDUS_RG3_POLYGONAL_LIGHT_SAMPLING_WEIGHTED_DIRECTORY="${polygonal_light_weighted_package_directory}")
     set(point_line_densities_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/point_line_densities")
     set(point_line_densities_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/point_line_densities")
     file(COPY "${point_line_densities_source}/" DESTINATION "${point_line_densities_staged}" PATTERN "*.in" EXCLUDE)
