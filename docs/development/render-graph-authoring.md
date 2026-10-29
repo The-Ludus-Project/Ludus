@@ -82,9 +82,16 @@ The command writes only stdout (`--json` returns a `document` object). It does
 not replace files or convert imported assets automatically.
 
 In **Properties → Shaders** or the canvas node editor, add a row, choose its stage
-and set its shader ID. Completed edits automatically create a `.slang` template and registers a program in the root
+and set its shader ID. Completed edits automatically create a `.slang` template and register a program in the root
 `.lushader.json` for each new program name. The initial `Program` value
-receives a unique name from the node and shader IDs. To share a shader, enter an existing
+receives a unique name from the node and shader IDs. Program IDs belong to the root
+shader manifest and are shared across all imported graphs and configurations;
+graph-local node names do not create separate program namespaces. Generated names
+choose an available suffix on creation and shader-row rename, including when a
+source file already occupies the suggested name. Select a shader row to inspect
+and copy its full program ID above the table; shader cards also show it in their
+tooltip. Rejected edits show their cause and repair instruction above the fields
+in **Details**, preserving the accepted draft. To share a shader, enter an existing
 program name with a matching stage. New sources appear immediately in **Source**;
 **Save** writes them beside the manifest. Creation, manifest registration and node
 assignments form one undo step. Completing an executable graphics or triangle ray

@@ -59,12 +59,18 @@ void RendererWorkspace::editNodeOnCanvas(const QString& diagnosticField)
     };
     refresh();
     dialog.RevealDiagnostic(diagnosticField, mStatus->text());
+    if (diagnosticField.isEmpty() == false)
+    {
+        dialog.ShowError(mStatus->text());
+    }
     connect(this, &RendererWorkspace::NodeFieldsChanged, &dialog, [&dialog, refresh](QWidget* editOriginOrNull) {
+        dialog.ShowError({});
         if (dialog.ContainsControl(editOriginOrNull) == false)
         {
             refresh();
         }
     });
+    connect(this, &RendererWorkspace::NodeOperationFailed, &dialog, &RenderGraphNodeDetails::ShowError);
     static_cast<void>(dialog.exec());
 }
 
@@ -76,6 +82,7 @@ void RendererWorkspace::openNodeShader(const QString& shaderId, QWidget* editor)
     if (ResolveRenderGraphPipelineOptions(selectedNode(), effective, error) == false)
     {
         mStatus->setText(error);
+        Q_EMIT NodeOperationFailed(error);
         return;
     }
     const QJsonObject manifest = QJsonDocument::fromJson(mDocument.GetDraft(manifestFile())).object();
@@ -103,7 +110,10 @@ void RendererWorkspace::openNodeShader(const QString& shaderId, QWidget* editor)
             }
         }
     }
-    mStatus->setText(QStringLiteral("No source is mapped to shader '%1' in the package manifest.").arg(shaderId));
+    mStatus->setText(QStringLiteral("No source is mapped to shader '%1' in '%2'. In Shaders, assign a program with an "
+                                    "available source, or restore its source path in the manifest using Source.")
+                         .arg(shaderId, manifestFile()));
+    Q_EMIT NodeOperationFailed(mStatus->text());
 }
 
 QWidget* RendererWorkspace::createNodeOptionsEditor(QWidget& inoutParent)

@@ -269,6 +269,14 @@ TEST_CASE("double-clicking a pipeline shader opens its source with Properties hi
             CHECK(dialogOrNull->isVisible() == true);
             QTest::mouseDClick(shaderOrNull, Qt::LeftButton);
             hasClosedDetails = dialogOrNull->isVisible() == false;
+            if (isSourceMapped == false)
+            {
+                QLabel* errorOrNull = dialogOrNull->findChild<QLabel*>(QStringLiteral("renderGraphNodeError"));
+                REQUIRE(errorOrNull != nullptr);
+                CHECK(errorOrNull->isVisible() == true);
+                CHECK(errorOrNull->text().contains(QStringLiteral("main.lushader.json")) == true);
+                CHECK(errorOrNull->text().contains(QStringLiteral("restore its source path")) == true);
+            }
         }
         // Keep a failed navigation assertion from blocking the modal test indefinitely.
         dialogOrNull->reject();

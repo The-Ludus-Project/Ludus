@@ -14,6 +14,16 @@ namespace
 {
 constexpr qsizetype GENERATED_NAME_PART_LENGTH = 20;
 
+RenderGraphDocumentStatus
+ReportShaderFailure(RenderGraphDocumentStatus status, QString* outErrorOrNull, const QString& message)
+{
+    if (outErrorOrNull != nullptr)
+    {
+        *outErrorOrNull = message + QStringLiteral(" The draft was preserved.");
+    }
+    return status;
+}
+
 bool IsIdentifier(const QString& text)
 {
     static const QRegularExpression expression(QStringLiteral("\\A[A-Za-z][A-Za-z0-9_]{0,62}\\z"));
@@ -288,6 +298,33 @@ bool HasSourceConflict(const RenderGraphSnapshot& snapshot,
            (destination.exists() == true || destination.isSymLink() == true);
 }
 
+QString MakeAvailableGeneratedName(const QJsonObject& node,
+                                   const QString& identity,
+                                   const QJsonArray& programs,
+                                   const RenderGraphSnapshot& snapshot,
+                                   const RenderGraphSnapshot& originalSnapshot,
+                                   const QString& packageRoot,
+                                   const QString& previous = {},
+                                   const QString& previousSource = {})
+{
+    const QString directory = previousSource.isEmpty() == true ? QString() : QFileInfo(previousSource).path();
+    const QString base = MakeGeneratedName(node, identity);
+    QString name = base;
+    for (qsizetype suffix = 2;
+         name != previous && (FindProgram(programs, name) >= 0 ||
+                              HasSourceConflict(snapshot,
+                                                QDir::cleanPath(QDir(directory).filePath(
+                                                    QStringLiteral("shader_") + name + QStringLiteral(".slang"))),
+                                                previousSource,
+                                                packageRoot,
+                                                originalSnapshot) == true);
+         ++suffix)
+    {
+        name = base + QLatin1Char('_') + QString::number(suffix);
+    }
+    return name;
+}
+
 RenderGraphDocumentStatus ReconcileShader(RenderGraphSnapshot& inoutSnapshot,
                                           QJsonObject& inoutNode,
                                           QJsonObject& inoutManifest,
@@ -295,7 +332,8 @@ RenderGraphDocumentStatus ReconcileShader(RenderGraphSnapshot& inoutSnapshot,
                                           QJsonObject& inoutShader,
                                           const QJsonObject& previousShader,
                                           const QString& packageRoot,
-                                          const RenderGraphSnapshot& originalSnapshot)
+                                          const RenderGraphSnapshot& originalSnapshot,
+                                          QString* outErrorOrNull)
 {
     const QString previous = previousShader.value(QStringLiteral("program")).toString();
     const qsizetype index = FindProgram(inoutPrograms, previous);
@@ -307,7 +345,7 @@ RenderGraphDocumentStatus ReconcileShader(RenderGraphSnapshot& inoutSnapshot,
     QString name = inoutShader.value(QStringLiteral("program")).toString();
     if (name == QStringLiteral("Program"))
     {
-        name = previous;
+        return RenderGraphDocumentStatus::Ok;
     }
     const QString identity = inoutShader.value(QStringLiteral("id")).toString();
     const QString previousIdentity = previousShader.value(QStringLiteral("id")).toString();
@@ -315,11 +353,14 @@ RenderGraphDocumentStatus ReconcileShader(RenderGraphSnapshot& inoutSnapshot,
         (previous == MakeGeneratedName(inoutNode, previousIdentity) ||
          previous.startsWith(MakeGeneratedName(inoutNode, previousIdentity) + QLatin1Char('_')) == true))
     {
-        name = MakeGeneratedName(inoutNode, identity);
-        if (name != previous && FindProgram(inoutPrograms, name) >= 0)
-        {
-            return RenderGraphDocumentStatus::Conflict;
-        }
+        name = MakeAvailableGeneratedName(inoutNode,
+                                          identity,
+                                          inoutPrograms,
+                                          inoutSnapshot,
+                                          originalSnapshot,
+                                          packageRoot,
+                                          previous,
+                                          program.value(QStringLiteral("source")).toString());
     }
     // Selecting an existing different program is an assignment, never an overwrite.
     if (name != previous && FindProgram(inoutPrograms, name) >= 0)
@@ -329,7 +370,12 @@ RenderGraphDocumentStatus ReconcileShader(RenderGraphSnapshot& inoutSnapshot,
     const QString source = program.value(QStringLiteral("source")).toString();
     if (inoutSnapshot.Files.contains(source) == false)
     {
-        return RenderGraphDocumentStatus::InvalidEdit;
+        return ReportShaderFailure(
+            RenderGraphDocumentStatus::InvalidEdit,
+            outErrorOrNull,
+            QStringLiteral(
+                "Program '%1' references missing source '%2'. Restore that file or assign a different program.")
+                .arg(previous, source));
     }
     const QJsonArray schemas = inoutManifest.value(QStringLiteral("schemas")).toArray();
     QJsonObject templateProgram = program;
@@ -342,13 +388,25 @@ RenderGraphDocumentStatus ReconcileShader(RenderGraphSnapshot& inoutSnapshot,
             GetReferencedPrograms(inoutSnapshot, inoutManifest.value(QStringLiteral("techniques")).toArray());
         if (references.count(previous) > 1)
         {
-            return RenderGraphDocumentStatus::InvalidEdit;
+            return ReportShaderFailure(
+                RenderGraphDocumentStatus::InvalidEdit,
+                outErrorOrNull,
+                QStringLiteral(
+                    "Cannot change program '%1' from %2 to %3: it is shared by other assignments or techniques. "
+                    "Set this row's program to Program to create an independent shader, then change its stage.")
+                    .arg(previous, program.value(QStringLiteral("stage")).toString(), stage));
         }
         program.insert(QStringLiteral("stage"), stage);
         const QByteArray replacement = MakeSource(program, schemas);
         if (replacement.isEmpty() == true)
         {
-            return RenderGraphDocumentStatus::InvalidEdit;
+            return ReportShaderFailure(
+                RenderGraphDocumentStatus::InvalidEdit,
+                outErrorOrNull,
+                QStringLiteral(
+                    "Cannot generate program '%1' for stage '%2': the manifest needs Vertex and Varying schemas for "
+                    "graphics stages. Add those schemas in Source or assign an existing compatible program.")
+                    .arg(name, stage));
         }
         if (inoutSnapshot.Files.value(source) == originalTemplate)
         {
@@ -369,7 +427,11 @@ RenderGraphDocumentStatus ReconcileShader(RenderGraphSnapshot& inoutSnapshot,
         const QByteArray replacement = MakeSource(program, schemas);
         if (replacement.isEmpty() == true)
         {
-            return RenderGraphDocumentStatus::InvalidEdit;
+            return ReportShaderFailure(RenderGraphDocumentStatus::InvalidEdit,
+                                       outErrorOrNull,
+                                       QStringLiteral("Cannot regenerate compute program '%1'. Restore its manifest "
+                                                      "interface or assign a new Program shader.")
+                                           .arg(name));
         }
         inoutSnapshot.Files.insert(source, replacement);
     }
@@ -377,17 +439,30 @@ RenderGraphDocumentStatus ReconcileShader(RenderGraphSnapshot& inoutSnapshot,
     {
         if (HasRenderGraphOptionProgram(inoutSnapshot.Files, previous) == true)
         {
-            return RenderGraphDocumentStatus::Conflict;
+            return ReportShaderFailure(RenderGraphDocumentStatus::Conflict,
+                                       outErrorOrNull,
+                                       QStringLiteral("Cannot rename program '%1': a public option references it. "
+                                                      "Update or remove that option before renaming.")
+                                           .arg(previous));
         }
         if (IsIdentifier(name) == false)
         {
-            return RenderGraphDocumentStatus::InvalidEdit;
+            return ReportShaderFailure(
+                RenderGraphDocumentStatus::InvalidEdit,
+                outErrorOrNull,
+                QStringLiteral(
+                    "Program name '%1' is invalid. Use 1–63 ASCII letters, digits or '_', starting with a letter.")
+                    .arg(name));
         }
         const QString destination = QDir::cleanPath(
             QDir(QFileInfo(source).path()).filePath(QStringLiteral("shader_") + name + QStringLiteral(".slang")));
         if (HasSourceConflict(inoutSnapshot, destination, source, packageRoot, originalSnapshot) == true)
         {
-            return RenderGraphDocumentStatus::Conflict;
+            return ReportShaderFailure(RenderGraphDocumentStatus::Conflict,
+                                       outErrorOrNull,
+                                       QStringLiteral("Cannot rename program '%1' to '%2': source '%3' already exists. "
+                                                      "Choose a different program name or move the conflicting file.")
+                                           .arg(previous, name, destination));
         }
         // A source shared by multiple programs cannot be moved independently.
         for (const QJsonValueConstRef value : inoutPrograms)
@@ -396,7 +471,12 @@ RenderGraphDocumentStatus ReconcileShader(RenderGraphSnapshot& inoutSnapshot,
             if (other.value(QStringLiteral("id")).toString() != previous &&
                 other.value(QStringLiteral("source")).toString() == source)
             {
-                return RenderGraphDocumentStatus::Conflict;
+                return ReportShaderFailure(
+                    RenderGraphDocumentStatus::Conflict,
+                    outErrorOrNull,
+                    QStringLiteral("Cannot rename program '%1': source '%2' is also used by '%3'. Keep the shared "
+                                   "source path and edit the program ID and references in Source.")
+                        .arg(previous, source, other.value(QStringLiteral("id")).toString()));
             }
         }
         inoutSnapshot.Files.insert(destination, inoutSnapshot.Files.take(source));
@@ -483,14 +563,32 @@ RenderGraphDocumentStatus PreparePipelineShaders(RenderGraphSnapshot& inoutSnaps
     if (manifestDocument.isObject() == false ||
         manifestDocument.object().value(QStringLiteral("programs")).isArray() == false)
     {
-        return RenderGraphDocumentStatus::Malformed;
+        return ReportShaderFailure(
+            RenderGraphDocumentStatus::Malformed,
+            outErrorOrNull,
+            QStringLiteral(
+                "Shader manifest '%1' has no valid programs array. Repair its JSON in Source before editing shaders.")
+                .arg(manifestFile));
     }
     QJsonObject manifest = manifestDocument.object();
     const RenderGraphDocumentStatus defaultStatus =
         PrepareSceneRayDefaults(inoutSnapshot, manifest, inoutNode, packageRoot);
     if (defaultStatus != RenderGraphDocumentStatus::Ok)
     {
-        return defaultStatus;
+        const qsizetype requiredCount = manifest.value(QStringLiteral("techniques")).toArray().size() + 1;
+        return ReportShaderFailure(
+            defaultStatus,
+            outErrorOrNull,
+            QStringLiteral(
+                "Cannot add the scene-ray technique to '%1': budgets.configurations is %2, but at least %3 are needed. "
+                "Open this manifest in Source and increase budgets.configurations to %3, or remove an unused "
+                "technique.")
+                .arg(manifestFile)
+                .arg(manifest.value(QStringLiteral("budgets"))
+                         .toObject()
+                         .value(QStringLiteral("configurations"))
+                         .toInt())
+                .arg(requiredCount));
     }
     QJsonArray programs = manifest.value(QStringLiteral("programs")).toArray();
     // Reclaim only untouched generated leftovers. Authored or shared sources survive.
@@ -563,11 +661,30 @@ RenderGraphDocumentStatus PreparePipelineShaders(RenderGraphSnapshot& inoutSnaps
         QJsonObject shader = inoutNode.value(QStringLiteral("shaders")).toArray().at(shaderIndex).toObject();
         const QString identity = shader.value(QStringLiteral("id")).toString();
         const QString stage = shader.value(QStringLiteral("stage")).toString();
-        if (IsIdentifier(QString(identity).replace(QLatin1Char('-'), QLatin1Char('_'))) == false ||
-            identities.contains(identity) == true ||
-            GetPipelineShaderStages(inoutNode.value(QStringLiteral("kind")).toString()).contains(stage) == false)
+        if (IsIdentifier(QString(identity).replace(QLatin1Char('-'), QLatin1Char('_'))) == false)
         {
-            return RenderGraphDocumentStatus::InvalidEdit;
+            return ReportShaderFailure(
+                RenderGraphDocumentStatus::InvalidEdit,
+                outErrorOrNull,
+                QStringLiteral(
+                    "Shader ID '%1' is invalid. Use 1–63 ASCII letters, digits, '_' or '-', starting with a letter.")
+                    .arg(identity));
+        }
+        if (identities.contains(identity) == true)
+        {
+            return ReportShaderFailure(
+                RenderGraphDocumentStatus::InvalidEdit,
+                outErrorOrNull,
+                QStringLiteral("Shader ID '%1' appears more than once in this pipeline. Give this row a unique ID.")
+                    .arg(identity));
+        }
+        if (GetPipelineShaderStages(inoutNode.value(QStringLiteral("kind")).toString()).contains(stage) == false)
+        {
+            return ReportShaderFailure(
+                RenderGraphDocumentStatus::InvalidEdit,
+                outErrorOrNull,
+                QStringLiteral("Stage '%1' is unsupported by %2. Choose a supported stage from the stage menu.")
+                    .arg(stage, inoutNode.value(QStringLiteral("kind")).toString()));
         }
         identities.append(identity);
         QJsonObject previousShader;
@@ -591,7 +708,8 @@ RenderGraphDocumentStatus PreparePipelineShaders(RenderGraphSnapshot& inoutSnaps
                                                                           shader,
                                                                           previousShader,
                                                                           packageRoot,
-                                                                          originalSnapshot);
+                                                                          originalSnapshot,
+                                                                          outErrorOrNull);
         if (reconcileStatus != RenderGraphDocumentStatus::Ok)
         {
             return reconcileStatus;
@@ -599,21 +717,17 @@ RenderGraphDocumentStatus PreparePipelineShaders(RenderGraphSnapshot& inoutSnaps
         QString name = shader.value(QStringLiteral("program")).toString();
         if (name == QStringLiteral("Program"))
         {
-            const QString base = MakeGeneratedName(inoutNode, identity);
-            QStringList names;
-            for (const QJsonValueConstRef program : programs)
-            {
-                names.append(program.toObject().value(QStringLiteral("id")).toString());
-            }
-            name = base;
-            for (qsizetype suffix = 2; names.contains(name) == true; ++suffix)
-            {
-                name = base + QLatin1Char('_') + QString::number(suffix);
-            }
+            name =
+                MakeAvailableGeneratedName(inoutNode, identity, programs, inoutSnapshot, originalSnapshot, packageRoot);
         }
         if (IsIdentifier(name) == false)
         {
-            return RenderGraphDocumentStatus::InvalidEdit;
+            return ReportShaderFailure(
+                RenderGraphDocumentStatus::InvalidEdit,
+                outErrorOrNull,
+                QStringLiteral(
+                    "Program name '%1' is invalid. Use 1–63 ASCII letters, digits or '_', starting with a letter.")
+                    .arg(name));
         }
         bool hasProgram = false;
         for (const QJsonValueConstRef program : programs)
@@ -622,10 +736,35 @@ RenderGraphDocumentStatus PreparePipelineShaders(RenderGraphSnapshot& inoutSnaps
             {
                 continue;
             }
-            if (hasProgram == true || program.toObject().value(QStringLiteral("stage")).toString() != stage ||
-                inoutSnapshot.Files.contains(program.toObject().value(QStringLiteral("source")).toString()) == false)
+            const QJsonObject existing = program.toObject();
+            const QString existingStage = existing.value(QStringLiteral("stage")).toString();
+            const QString source = existing.value(QStringLiteral("source")).toString();
+            if (existingStage != stage)
             {
-                return RenderGraphDocumentStatus::InvalidEdit;
+                return ReportShaderFailure(
+                    RenderGraphDocumentStatus::InvalidEdit,
+                    outErrorOrNull,
+                    QStringLiteral("Cannot assign program '%1' (%2) to shader '%3' (%4) in '%5'. "
+                                   "Program IDs are package-wide across graphs and configurations. Set program to "
+                                   "Program for a new unique shader, "
+                                   "or select an existing %4 program.")
+                        .arg(name, existingStage, identity, stage, manifestFile));
+            }
+            if (hasProgram == true)
+            {
+                return ReportShaderFailure(RenderGraphDocumentStatus::InvalidEdit,
+                                           outErrorOrNull,
+                                           QStringLiteral("Program '%1' is declared more than once in '%2'. Remove or "
+                                                          "rename the duplicate manifest entry in Source.")
+                                               .arg(name, manifestFile));
+            }
+            if (inoutSnapshot.Files.contains(source) == false)
+            {
+                return ReportShaderFailure(RenderGraphDocumentStatus::InvalidEdit,
+                                           outErrorOrNull,
+                                           QStringLiteral("Program '%1' references missing source '%2' in '%3'. "
+                                                          "Restore that file or assign a different program.")
+                                               .arg(name, source, manifestFile));
             }
             hasProgram = true;
         }
@@ -635,7 +774,12 @@ RenderGraphDocumentStatus PreparePipelineShaders(RenderGraphSnapshot& inoutSnaps
             const QString sourceFile = QStringLiteral("shader_") + name + QStringLiteral(".slang");
             if (HasSourceConflict(inoutSnapshot, sourceFile, QString(), packageRoot, originalSnapshot) == true)
             {
-                return RenderGraphDocumentStatus::Conflict;
+                return ReportShaderFailure(
+                    RenderGraphDocumentStatus::Conflict,
+                    outErrorOrNull,
+                    QStringLiteral("Cannot create program '%1': source '%2' already exists. Choose a different program "
+                                   "name or register the existing file in '%3'.")
+                        .arg(name, sourceFile, manifestFile));
             }
             QJsonObject program{{QStringLiteral("id"), name},
                                 {QStringLiteral("stage"), stage},
@@ -656,7 +800,13 @@ RenderGraphDocumentStatus PreparePipelineShaders(RenderGraphSnapshot& inoutSnaps
             const QByteArray source = MakeSource(program, manifest.value(QStringLiteral("schemas")).toArray());
             if (source.isEmpty() == true)
             {
-                return RenderGraphDocumentStatus::InvalidEdit;
+                return ReportShaderFailure(
+                    RenderGraphDocumentStatus::InvalidEdit,
+                    outErrorOrNull,
+                    QStringLiteral(
+                        "Cannot generate program '%1' for stage '%2': '%3' needs Vertex and Varying schemas for "
+                        "graphics shaders. Add those schemas in Source or assign an existing compatible program.")
+                        .arg(name, stage, manifestFile));
             }
             hasCreatedProgram = true;
             programs.append(program);

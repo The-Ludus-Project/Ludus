@@ -307,6 +307,16 @@ rejects the explicit `== true`/`== false` style.
   document operations and field controls so both paths preserve the same
   validation, undo and save behavior; test the canvas path with Properties hidden.
 
+- Report rejected edits and failed navigation in the surface where the user acted,
+  including modal node Details. Keep the cause and explicit repair visible without
+  requiring access to the main editor's status or Error List; preserve the accepted
+  draft. Test the modal path with Properties hidden and clear the failure after a
+  successful repair.
+- Show inspectable, copyable full shader program IDs and explain their owning
+  manifest scope. Graph-local node IDs do not scope manifest program IDs. Generated
+  names must avoid existing package-wide program IDs and source files on creation
+  and row rename; explicit compatible program assignments remain shareable.
+
 - Read current human PR reviews and inline threads before claiming readiness,
   and again after the final implementation. Passing CI does not address a review.
   Reconcile each comment with code/evidence; preserve unresolved scope questions.
