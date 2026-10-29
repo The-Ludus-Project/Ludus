@@ -1388,6 +1388,36 @@ The category draw at slot 0, analytic lights and the environment are unchanged.
 - **Probes.** Static-lighting diffuse probes stay on `UniformArea`; their virtual
   first receiver has no stored frame for the BSDF-hit density.
 
+The opt-in Catch2 tag `[.reference-light-sampling-benchmark]` in
+`ludus_renderer_render_tests` compares the two modes on 3200 emissive triangles, a
+third of them textured. It reports the transport kernel's device time per sample,
+shadow rays per pixel, and MAPE and RMSE against a high-sample `UniformArea`
+reference, at equal samples and at equal kernel time. It takes 4–7 minutes on Apple
+M5 and is not part of the CTest run:
+
+```bash
+out/build/macos-clang-development/modules/graphics/renderer/ludus_renderer_render_tests \
+  "[.reference-light-sampling-benchmark]"
+```
+
+On Apple M5 Metal (macOS 26.6, `macos-clang-development` with Clang 23.1.3 and
+Slang 2026.1.2), on October 29, 2026, at 288 × 192:
+- **Cost.** One `ResampledProjectedSolidAngle` sample took 17–38 times as much
+  kernel time as a `UniformArea` sample: 20–22 ms against 0.9–1.3 ms with direct
+  lighting only, and 82–90 ms against 2.3–4.1 ms at depth 4. It traced twice as
+  many shadow rays: 0.92 against 0.46 per pixel with direct lighting only, and
+  1.98–2.10 against 0.99–1.06 at depth 4.
+- **Equal samples.** The resampled mode had lower error in every case, on the GPU
+  and on the CPU oracle. With direct lighting only, MAPE fell by 2.0–2.3× and RMSE
+  by 1.6–2.3×; at depth 4, by 1.4–1.6× and 1.6–1.9×.
+- **Equal time.** `UniformArea` had lower error in every case: 1.7–3.3× lower MAPE
+  and 1.8–3.7× lower RMSE, in three runs.
+
+So `ResampledProjectedSolidAngle` is the lower-variance estimator per sample, but not
+per unit of time on this workload. The
+[review's evaluation](many-area-light-sampling-reference-review.md#rt1-equal-time-evaluation)
+has the method, all measurements and the comparison with the template benchmark.
+
 CPU budgets cover renderer-owned mesh/material/job arrays and setup scratch,
 including simultaneous old/new jobs during reset. They exclude existing renderer
 state, RHI CPU upload shadows/registry storage, caller arrays and tool/driver memory.
