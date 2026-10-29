@@ -113,7 +113,7 @@ constexpr StaticArray<rhi::RasterUniformMember, 1> OUTPUT_MEMBERS{{{0, "Output",
 constexpr StaticArray<rhi::RasterShaderInput, 1> OUTPUT_INPUTS{{{0, rhi::RasterVertexFormat::Float4}}};
 constexpr usize DEFERRED_MEMBER_COUNT = CLUSTERED_MEMBER_COUNT + DEFERRED_VIEW_ROWS;
 constexpr StaticArray<rhi::RasterBinding, DEFERRED_BINDING_COUNT> DEFERRED_BINDINGS = []() noexcept {
-    StaticArray<rhi::RasterBinding, DEFERRED_BINDING_COUNT> bindings{};
+    StaticArray<rhi::RasterBinding, DEFERRED_BINDING_COUNT> bindings;
     for (usize index = 0; index < CLUSTERED_BINDING_COUNT; ++index)
     {
         bindings[index] = CLUSTERED_BINDINGS[index];
