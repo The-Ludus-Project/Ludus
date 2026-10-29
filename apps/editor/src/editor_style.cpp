@@ -161,7 +161,7 @@ int EditorStyle::GetFocusRingWidth() const noexcept
 void EditorStyle::polish(QWidget* widget)
 {
     QProxyStyle::polish(widget);
-    if (auto* label = qobject_cast<QLabel*>(widget);
+    if (QLabel* label = qobject_cast<QLabel*>(widget);
         label != nullptr && HasProperty(label, VISUAL_ROLE_PROPERTY, "secondary") == true)
     {
         // PlaceholderText carries the secondary text colour in MakeEditorPalette, so palette changes follow.
@@ -233,7 +233,7 @@ void EditorStyle::drawPrimitive(PrimitiveElement element,
     switch (element)
     {
         case PE_PanelButtonCommand: {
-            const auto* button = qstyleoption_cast<const QStyleOptionButton*>(option);
+            const QStyleOptionButton* button = qstyleoption_cast<const QStyleOptionButton*>(option);
             const bool isPrimary =
                 isEnabled == true &&
                 (HasProperty(widgetOrNull, VISUAL_ROLE_PROPERTY, "primary") == true ||
@@ -267,7 +267,7 @@ void EditorStyle::drawPrimitive(PrimitiveElement element,
             return;
         }
         case PE_PanelLineEdit: {
-            const auto* frame = qstyleoption_cast<const QStyleOptionFrame*>(option);
+            const QStyleOptionFrame* frame = qstyleoption_cast<const QStyleOptionFrame*>(option);
             if (frame == nullptr || frame->lineWidth <= 0)
             {
                 break;
@@ -347,7 +347,7 @@ void EditorStyle::drawControl(ControlElement element,
     switch (element)
     {
         case CE_PushButtonLabel: {
-            const auto* button = qstyleoption_cast<const QStyleOptionButton*>(option);
+            const QStyleOptionButton* button = qstyleoption_cast<const QStyleOptionButton*>(option);
             const bool isPrimary = isEnabled == true && button != nullptr &&
                                    (HasProperty(widgetOrNull, VISUAL_ROLE_PROPERTY, "primary") == true ||
                                     button->features.testFlag(QStyleOptionButton::DefaultButton));
@@ -361,7 +361,7 @@ void EditorStyle::drawControl(ControlElement element,
             break;
         }
         case CE_TabBarTabShape: {
-            const auto* tab = qstyleoption_cast<const QStyleOptionTab*>(option);
+            const QStyleOptionTab* tab = qstyleoption_cast<const QStyleOptionTab*>(option);
             if (tab == nullptr || (tab->shape != QTabBar::RoundedNorth && tab->shape != QTabBar::TriangularNorth))
             {
                 break;
@@ -393,7 +393,7 @@ void EditorStyle::drawControl(ControlElement element,
             return;
         }
         case CE_DockWidgetTitle: {
-            const auto* dock = qstyleoption_cast<const QStyleOptionDockWidget*>(option);
+            const QStyleOptionDockWidget* dock = qstyleoption_cast<const QStyleOptionDockWidget*>(option);
             if (dock == nullptr || dock->verticalTitleBar == true)
             {
                 break;
@@ -453,7 +453,7 @@ void EditorStyle::drawComplexControl(ComplexControl control,
     };
     if (control == CC_ComboBox)
     {
-        const auto* combo = qstyleoption_cast<const QStyleOptionComboBox*>(option);
+        const QStyleOptionComboBox* combo = qstyleoption_cast<const QStyleOptionComboBox*>(option);
         if (combo != nullptr)
         {
             if (combo->frame == true)
@@ -471,7 +471,7 @@ void EditorStyle::drawComplexControl(ComplexControl control,
     }
     if (control == CC_SpinBox)
     {
-        const auto* spin = qstyleoption_cast<const QStyleOptionSpinBox*>(option);
+        const QStyleOptionSpinBox* spin = qstyleoption_cast<const QStyleOptionSpinBox*>(option);
         if (spin != nullptr)
         {
             if (spin->frame == true)
