@@ -79,7 +79,7 @@ def export_context(manifest, output, source, *, helper, context=None, root=None)
     absolute paths inside this snapshot. No compiler/tool process or project write.
     Unmappable compatibility rewrites/repeated source occurrences fail explicitly.
     """
-    snapshot, value, schemas, programs, _, _, closures, _, _, _ = build.prepare_sources(manifest, helper, root=root)
+    snapshot, value, schemas, programs, _, _, closures, _, _, _, _ = build.prepare_sources(manifest, helper, root=root)
     snapshot.path(source)
     build.require(source in snapshot.files, 'Source', source, 'source is outside the selected build closure')
     output = Path(output).resolve()
