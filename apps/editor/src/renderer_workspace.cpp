@@ -2635,6 +2635,7 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
                                 mStatus->setText(error);
                                 renderInspector();
                                 Q_EMIT NodeFieldsChanged(nullptr);
+                                Q_EMIT NodeOperationFailed(error);
                                 return;
                             }
                             documentEdited(status, mInspector->isAncestorOf(editor) == false, editor);
@@ -2651,6 +2652,7 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
                 mStatus->setText(error);
                 renderInspector();
                 Q_EMIT NodeFieldsChanged(nullptr);
+                Q_EMIT NodeOperationFailed(error);
                 return;
             }
             if (hasChangedProfile == true)
@@ -3387,6 +3389,7 @@ void RendererWorkspace::replaceSelectedNode(const QJsonObject& node)
         {
             mStatus->setText(error);
         }
+        Q_EMIT NodeOperationFailed(mStatus->text());
     }
 }
 

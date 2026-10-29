@@ -6,7 +6,9 @@ namespace ludus::editor
 {
 /// Prepare new sources and manifest entries for a pipeline in caller-owned candidates.
 /// Reconcile previous assignments, preserving authored bytes on rename and stage edits.
-/// Program receives a generated name; unreferenced untouched generated drafts are removed.
+/// Program requests an independent generated name, including for an existing assignment.
+/// Generated creation/row renames avoid package-wide program IDs and source paths;
+/// unreferenced untouched generated drafts are removed.
 /// The document commits all files together. No disk writes occur here.
 /// Creating programs grows program/artifact budgets to fit, retaining larger authored values.
 /// Supported artifact limits still reject; outErrorOrNull receives the repair diagnostic when supplied.

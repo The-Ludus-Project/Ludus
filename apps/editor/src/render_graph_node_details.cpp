@@ -20,12 +20,18 @@ constexpr int32 NODE_EDITOR_WIDTH = 900;
 constexpr int32 NODE_EDITOR_HEIGHT = 700;
 } // namespace
 RenderGraphNodeDetails::RenderGraphNodeDetails(QWidget* parentOrNull)
-    : QDialog(parentOrNull), mScroll(new QScrollArea(this)), mPath(new QLabel(this))
+    : QDialog(parentOrNull), mScroll(new QScrollArea(this)), mPath(new QLabel(this)), mError(new QLabel(this))
 {
     setObjectName(QStringLiteral("renderGraphNodeEditor"));
     QVBoxLayout* layout = new QVBoxLayout(this);
     mPath->setTextFormat(Qt::PlainText);
     layout->addWidget(mPath);
+    mError->setObjectName(QStringLiteral("renderGraphNodeError"));
+    mError->setTextFormat(Qt::PlainText);
+    mError->setWordWrap(true);
+    mError->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    mError->hide();
+    layout->addWidget(mError);
     mScroll->setWidgetResizable(true);
     layout->addWidget(mScroll);
     QDialogButtonBox* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
@@ -60,6 +66,11 @@ void RenderGraphNodeDetails::Refresh(const QString& title, const QString& path)
         partsOrNull->setCurrentIndex(selectedPart);
     }
     mScroll->setWidget(fields);
+}
+void RenderGraphNodeDetails::ShowError(const QString& message)
+{
+    mError->setText(message);
+    mError->setVisible(message.isEmpty() == false);
 }
 bool RenderGraphNodeDetails::ContainsControl(const QWidget* controlOrNull) const
 {
