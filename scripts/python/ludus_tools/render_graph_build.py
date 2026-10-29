@@ -824,7 +824,8 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False):
     """Capture and lower the same immutable shader contexts for compilation and editing.
 
     No compiler execution or output publication. Returns package metadata, exact
-    generated wrappers and their captured include closures. All normal graph,
+    generated wrappers, their captured include closures and the grouped ray profiles
+    (empty without a ray technique) that select linked ray kernels. All normal graph,
     schema and capacity validation remains authoritative here.
     """
     manifest = Path(manifest).resolve()
@@ -918,6 +919,7 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False):
     programs = {identity: program for identity, program in programs.items() if identity in selected_programs}
     require(not ray_path_capture or ray.TECHNIQUE in techniques, 'Capability', 'ray path capture',
             'ray path capture requires a RayTracingPipeline or scene ComputePipeline node')
+    ray_profiles = []
     if ray.TECHNIQUE in techniques:
         require(any(target in ('metal', 'spirv') for target in value['profiles']), 'Capability', 'profiles',
                 'Hardware raytracing requires native Metal or Vulkan; select an authored raster configuration on unsupported APIs')
@@ -958,7 +960,7 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False):
     counts['graph_configurations'] = sum(len(identities) for identities in reachable.values())
     require(len(plans) <= value['budgets']['configurations'], 'Capacity', 'root configurations',
             f'{len(plans)} root configurations exceed budgets.configurations {value["budgets"]["configurations"]}')
-    return snapshot, value, schemas, programs, techniques, counts, closures, plans, library, graph_path
+    return snapshot, value, schemas, programs, techniques, counts, closures, plans, library, graph_path, ray_profiles
 
 
 def build_package(manifest, output, *, helper, compiler, validator=None, spirv_cross=None, root=None, cancel=None, worker_socket=None,
@@ -978,7 +980,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     started = time.monotonic()
     manifest = Path(manifest).resolve()
     helper = Path(helper).resolve()
-    snapshot, value, schemas, programs, techniques, counts, closures, plans, library, graph_path = prepare_sources(
+    snapshot, value, schemas, programs, techniques, counts, closures, plans, library, graph_path, ray_profiles = prepare_sources(
         manifest, helper, root=root, ray_path_capture=ray_path_capture)
     manifest_label = manifest.relative_to(snapshot.root).as_posix()
     worker_socket = worker_socket or os.environ.get('LUDUS_SHADER_WORKER_SOCKET')
