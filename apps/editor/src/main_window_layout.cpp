@@ -4,6 +4,7 @@
 #include "internal/content_browser.h"
 #include "internal/document_well.h"
 #include "internal/editor_commands.h"
+#include "internal/editor_style.h"
 #include "internal/error_list.h"
 #include "internal/item_selection.h"
 #include "internal/main_window.h"
@@ -426,7 +427,7 @@ void MainWindow::BuildUi()
     RecentList_->setObjectName(QStringLiteral("recentProjectsList"));
     RecentList_->setAccessibleName(QStringLiteral("Recent projects"));
     RecentList_->setWordWrap(true);
-    RecentList_->setProperty("itemPadding", 8);
+    RecentList_->setProperty(ITEM_PADDING_PROPERTY, RECENT_PROJECT_ITEM_PADDING);
     RecentOpenButton_ = new QPushButton(QStringLiteral("Open Selected"), recentPanel);
     RecentOpenButton_->setObjectName(QStringLiteral("openRecentProjectButton"));
     BrowseProjectButton_ = new QPushButton(QStringLiteral("Open Project..."), recentPanel);

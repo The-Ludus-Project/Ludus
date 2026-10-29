@@ -47,10 +47,11 @@ constexpr int HEADER_PADDING = 4;
 constexpr int TOOL_BAR_SPACING = 4;
 constexpr int SEPARATOR_EXTENT = 4;
 constexpr qreal HALF = 0.5;
+/// Window lightness (of 255) below which the application palette counts as dark.
+constexpr int DARK_LIGHTNESS_LIMIT = 128;
 const char* const STYLE_OBJECT_NAME = "LudusEditorStyle";
 const char* const VISUAL_ROLE_PROPERTY = "visualRole";
 const char* const DENSITY_PROPERTY = "density";
-const char* const ITEM_PADDING_PROPERTY = "itemPadding";
 const char* const SECONDARY_LABEL_MARKER = "ludusSecondaryLabel";
 
 QColor Token(design::ThemeColour role, bool isDark, bool isHighContrast)
@@ -60,7 +61,7 @@ QColor Token(design::ThemeColour role, bool isDark, bool isHighContrast)
 
 bool IsDarkPalette(const QPalette& palette)
 {
-    return palette.color(QPalette::Window).lightness() < 128;
+    return palette.color(QPalette::Window).lightness() < DARK_LIGHTNESS_LIMIT;
 }
 
 bool HasProperty(const QWidget* widgetOrNull, const char* name, const char* value)

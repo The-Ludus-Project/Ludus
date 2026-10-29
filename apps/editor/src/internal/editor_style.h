@@ -5,6 +5,11 @@
 
 namespace ludus::editor
 {
+/// Dynamic property naming the padding, in logical pixels, an item view adds around each row.
+inline constexpr const char* ITEM_PADDING_PROPERTY = "itemPadding";
+/// Row padding of the Welcome recent-projects list.
+inline constexpr int RECENT_PROJECT_ITEM_PADDING = 8;
+
 /// The editor palette: the platform palette with every role the widgets read taken from the design tokens, so the
 /// style needs no per-widget colour rules. Appearance and contrast pick the token set.
 [[nodiscard]] QPalette MakeEditorPalette(const QPalette& platform, bool isDark, bool isHighContrast);
