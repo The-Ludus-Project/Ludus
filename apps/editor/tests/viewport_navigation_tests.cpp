@@ -288,6 +288,42 @@ TEST_CASE("Viewport input frames selection, consumes fractional scrolling and st
     QTest::mouseRelease(&viewport, Qt::RightButton);
 }
 
+TEST_CASE("Antialiasing defaults to Fast, persists with the navigation state and follows the View menu",
+          "[editor][navigation][antialiasing]")
+{
+    RenderPreview preview;
+    CHECK(preview.GetAntialiasing() == rr::SpatialAntialiasing::Fast);
+    CHECK(preview.Navigation().value(QStringLiteral("antialiasing")).toString() == QStringLiteral("fast"));
+    PreviewViewport viewport(&preview);
+    QAction* off = viewport.findChild<QAction*>(QStringLiteral("viewportAntialiasing_off"));
+    QAction* fast = viewport.findChild<QAction*>(QStringLiteral("viewportAntialiasing_fast"));
+    QAction* balanced = viewport.findChild<QAction*>(QStringLiteral("viewportAntialiasing_balanced"));
+    REQUIRE(off != nullptr);
+    REQUIRE(fast != nullptr);
+    REQUIRE(balanced != nullptr);
+    CHECK(fast->isChecked() == true);
+    balanced->trigger();
+    CHECK(preview.GetAntialiasing() == rr::SpatialAntialiasing::Balanced);
+    CHECK(balanced->isChecked() == true);
+    CHECK(fast->isChecked() == false);
+    const QJsonObject saved = preview.Navigation();
+    CHECK(saved.value(QStringLiteral("antialiasing")).toString() == QStringLiteral("balanced"));
+    preview.SetAntialiasing(rr::SpatialAntialiasing::Off);
+    CHECK(off->isChecked() == true);
+    preview.RestoreNavigation(saved);
+    CHECK(preview.GetAntialiasing() == rr::SpatialAntialiasing::Balanced);
+    // A state saved before the setting existed, or with an unknown key, starts at the default.
+    QJsonObject legacy = saved;
+    legacy.remove(QStringLiteral("antialiasing"));
+    preview.RestoreNavigation(legacy);
+    CHECK(preview.GetAntialiasing() == rr::SpatialAntialiasing::Fast);
+    legacy.insert(QStringLiteral("antialiasing"), QStringLiteral("ultra"));
+    preview.RestoreNavigation(legacy);
+    CHECK(preview.GetAntialiasing() == rr::SpatialAntialiasing::Fast);
+    off->trigger();
+    CHECK(preview.GetAntialiasing() == rr::SpatialAntialiasing::Off);
+}
+
 TEST_CASE("Orthographic pan uses the active width constraint and invalid restore preserves the camera",
           "[editor][navigation]")
 {

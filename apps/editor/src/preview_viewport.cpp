@@ -13,6 +13,7 @@
 #include <new>
 
 #include <QAction>
+#include <QActionGroup>
 #include <QApplication>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -1425,6 +1426,38 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
     QWidgetAction* lookSensitivityAction = new QWidgetAction(viewMenu);
     lookSensitivityAction->setDefaultWidget(lookSensitivity);
     viewMenu->addAction(lookSensitivityAction);
+    // Edge filtering of the displayed frame (FXAA in the output pass). Fast is the default; Balanced searches farther
+    // along each edge for smoother long edges; Off shows the raw rasterized image.
+    viewMenu->addSeparator();
+    QMenu* antialiasingMenu = viewMenu->addMenu(QStringLiteral("Antialiasing"));
+    antialiasingMenu->setObjectName(QStringLiteral("viewportAntialiasing"));
+    antialiasingMenu->setToolTipsVisible(true);
+    QActionGroup* antialiasingGroup = new QActionGroup(antialiasingMenu);
+    QList<QAction*> antialiasingActions;
+    for (const graphics::renderer::SpatialAntialiasing choice : {graphics::renderer::SpatialAntialiasing::Off,
+                                                                 graphics::renderer::SpatialAntialiasing::Fast,
+                                                                 graphics::renderer::SpatialAntialiasing::Balanced})
+    {
+        QAction* action = antialiasingMenu->addAction(GetViewportAntialiasingLabel(choice));
+        action->setObjectName(QStringLiteral("viewportAntialiasing_%1").arg(GetViewportAntialiasingKey(choice)));
+        action->setCheckable(true);
+        action->setActionGroup(antialiasingGroup);
+        action->setChecked(preview->GetAntialiasing() == choice);
+        antialiasingActions.append(action);
+        connect(action, &QAction::triggered, preview, [preview, choice]() { preview->SetAntialiasing(choice); });
+    }
+    antialiasingActions[0]->setToolTip(QStringLiteral("No edge filtering: the raw rasterized image."));
+    antialiasingActions[1]->setToolTip(
+        QStringLiteral("Smooths jagged edges and shimmering thin lines with a short search along each edge."));
+    antialiasingActions[2]->setToolTip(
+        QStringLiteral("Searches farther along each edge, for smoother long edges at a slightly higher cost."));
+    connect(preview, &RenderPreview::NavigationChanged, antialiasingMenu, [preview, antialiasingActions]() {
+        for (foundation::usize index = 0; index < VIEWPORT_ANTIALIASING_COUNT; ++index)
+        {
+            antialiasingActions[static_cast<qsizetype>(index)]->setChecked(
+                static_cast<foundation::usize>(preview->GetAntialiasing()) == index);
+        }
+    });
     view->setMenu(viewMenu);
     controls->addWidget(view);
     connect(fieldOfView, &QDoubleSpinBox::valueChanged, preview, [preview](float64 degrees) {
