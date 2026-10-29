@@ -3047,3 +3047,138 @@ TEST_CASE("shader authoring preserves larger budgets and assignments at capacity
         CHECK(after == manifest);
     }
 }
+
+TEST_CASE("generated shader row renames avoid programs in other graph scopes",
+          "[editor][render-graph][pipeline][shader-creation]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    QJsonObject node = MakePipelineNode(QStringLiteral("ComputePipeline"), QStringLiteral("work"));
+    REQUIRE(document.AddNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(document.AddNode(LIBRARY, QStringLiteral("ColorAndDepth"), node) == RenderGraphDocumentStatus::Ok);
+    const auto assignShader = [&document](const QString& file,
+                                          const QString& configuration,
+                                          QJsonObject candidate,
+                                          const QString& identity,
+                                          const QString& program) {
+        candidate.insert(QStringLiteral("shaders"),
+                         QJsonArray{QJsonObject{{QStringLiteral("id"), identity},
+                                                {QStringLiteral("stage"), QStringLiteral("compute")},
+                                                {QStringLiteral("program"), program}}});
+        QString error;
+        REQUIRE(document.ApplyPipeline(file, configuration, candidate, &error) == RenderGraphDocumentStatus::Ok);
+    };
+    assignShader(LIBRARY, QStringLiteral("ColorAndDepth"), node, QStringLiteral("kernel"), QStringLiteral("Program"));
+    assignShader(ROOT_GRAPH, DEFAULT_CONFIGURATION, node, QStringLiteral("shader"), QStringLiteral("Program"));
+    const QByteArray imported = document.GetDraft(LIBRARY);
+    const QByteArray sharedSource = document.GetDraft(QStringLiteral("shader_Shader_work_kernel.slang"));
+    const QByteArray authored("// preserve authored source through a generated rename\n");
+    REQUIRE(document.SetText(QStringLiteral("shader_Shader_work_shader.slang"), authored) ==
+            RenderGraphDocumentStatus::Ok);
+    assignShader(ROOT_GRAPH,
+                 DEFAULT_CONFIGURATION,
+                 GetNode(document, QStringLiteral("work")),
+                 QStringLiteral("kernel"),
+                 QStringLiteral("Shader_work_shader"));
+    CHECK(document.GetDraft(LIBRARY) == imported);
+    CHECK(document.GetDraft(QStringLiteral("shader_Shader_work_kernel.slang")) == sharedSource);
+    CHECK(document.GetDraft(QStringLiteral("shader_Shader_work_kernel_2.slang")) == authored);
+    CHECK(GetNode(document, QStringLiteral("work"))
+              .value(QStringLiteral("shaders"))
+              .toArray()
+              .at(0)
+              .toObject()
+              .value(QStringLiteral("program"))
+              .toString() == QStringLiteral("Shader_work_kernel_2"));
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetDraft(QStringLiteral("shader_Shader_work_shader.slang")) == authored);
+    REQUIRE(document.Redo() == true);
+    CHECK(document.GetDraft(QStringLiteral("shader_Shader_work_kernel_2.slang")) == authored);
+}
+
+TEST_CASE("program assignment failure names the shared manifest and offers a working repair",
+          "[editor][render-graph][pipeline][shader-creation]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    QJsonObject node = MakePipelineNode(QStringLiteral("ComputePipeline"), QStringLiteral("work"));
+    REQUIRE(document.AddNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    QJsonObject shader{{QStringLiteral("id"), QStringLiteral("kernel")},
+                       {QStringLiteral("stage"), QStringLiteral("compute")},
+                       {QStringLiteral("program"), QStringLiteral("Geometry")}};
+    node.insert(QStringLiteral("shaders"), QJsonArray{shader});
+    const uint64 revision = document.GetRevision();
+    QString error;
+    CHECK(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node, &error) ==
+          RenderGraphDocumentStatus::InvalidEdit);
+    CHECK(document.GetRevision() == revision);
+    CHECK(error.contains(QStringLiteral("Geometry")) == true);
+    CHECK(error.contains(QStringLiteral("main.lushader.json")) == true);
+    CHECK(error.contains(QStringLiteral("package-wide")) == true);
+    CHECK(error.contains(QStringLiteral("Set program to Program")) == true);
+    shader.insert(QStringLiteral("program"), QStringLiteral("Program"));
+    node.insert(QStringLiteral("shaders"), QJsonArray{shader});
+    REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node, &error) == RenderGraphDocumentStatus::Ok);
+    CHECK(error.isEmpty() == true);
+}
+
+TEST_CASE("generated program names skip external source conflicts without overwriting files",
+          "[editor][render-graph][pipeline][shader-creation]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QByteArray external("// external source\n");
+    QFile source(QDir(package).filePath(QStringLiteral("shader_Shader_work_kernel.slang")));
+    REQUIRE(source.open(QIODevice::WriteOnly) == true);
+    REQUIRE(source.write(external) == external.size());
+    source.close();
+    QJsonObject node = MakePipelineNode(QStringLiteral("ComputePipeline"), QStringLiteral("work"));
+    REQUIRE(document.AddNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    node.insert(QStringLiteral("shaders"),
+                QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("kernel")},
+                                       {QStringLiteral("stage"), QStringLiteral("compute")},
+                                       {QStringLiteral("program"), QStringLiteral("Program")}}});
+    REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    CHECK(document.GetFiles().contains(QStringLiteral("shader_Shader_work_kernel_2.slang")) == true);
+    REQUIRE(source.open(QIODevice::ReadOnly) == true);
+    CHECK(source.readAll() == external);
+}
+
+TEST_CASE("scene technique budget failure gives the exact manifest setting and required value",
+          "[editor][render-graph][pipeline][shader-creation]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    const QString manifestFile = QStringLiteral("main.lushader.json");
+    QJsonObject manifest = QJsonDocument::fromJson(document.GetDraft(manifestFile)).object();
+    const qsizetype requiredCount = manifest.value(QStringLiteral("techniques")).toArray().size() + 1;
+    QJsonObject budgets = manifest.value(QStringLiteral("budgets")).toObject();
+    budgets.insert(QStringLiteral("configurations"), requiredCount - 1);
+    manifest.insert(QStringLiteral("budgets"), budgets);
+    REQUIRE(document.SetText(manifestFile, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
+    QJsonObject node = MakePipelineNode(QStringLiteral("RayTracingPipeline"), QStringLiteral("trace"));
+    REQUIRE(document.AddNode(ROOT_GRAPH, DEFAULT_CONFIGURATION, node) == RenderGraphDocumentStatus::Ok);
+    node.insert(QStringLiteral("shaders"),
+                QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("raygen")},
+                                       {QStringLiteral("stage"), QStringLiteral("ray_generation")},
+                                       {QStringLiteral("program"), QStringLiteral("Program")}}});
+    const uint64 revision = document.GetRevision();
+    QString error;
+    CHECK(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node, &error) ==
+          RenderGraphDocumentStatus::Capacity);
+    CHECK(document.GetRevision() == revision);
+    CHECK(error.contains(manifestFile) == true);
+    CHECK(error.contains(QStringLiteral("increase budgets.configurations to %1").arg(requiredCount)) == true);
+    budgets.insert(QStringLiteral("configurations"), requiredCount);
+    manifest.insert(QStringLiteral("budgets"), budgets);
+    REQUIRE(document.SetText(manifestFile, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
+    CHECK(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node, &error) == RenderGraphDocumentStatus::Ok);
+}

@@ -83,16 +83,19 @@ public:
     [[nodiscard]] QString FindEntityKey(const QString& label) const;
     [[nodiscard]] QJsonObject Component(const QString& id) const;
     [[nodiscard]] QJsonObject Entity(const QString& id) const;
-    // New entity keys are minted from `entropy` (see internal/editor_identity.h).
-    // A version-2 entity receives a fresh SourceObjectId, checked against every
-    // identity of the World, and a unique label derived from its name. When the
-    // source is unavailable, or every candidate collides, the draft, history and
-    // `outId` stay unchanged and `outError` explains the failure; there is no
-    // fallback source. Duplication points the copy's self-references at the copy.
+    /// New entity keys are minted from `entropy` (see internal/editor_identity.h).
+    /// A version-2 entity receives a fresh SourceObjectId, checked against every
+    /// identity of the World, and a unique label derived from its name. When the
+    /// source is unavailable, or every candidate collides, the draft, history and
+    /// `outId` stay unchanged and `outError` explains the failure; there is no
+    /// fallback source. Initial components replace required defaults and validate
+    /// atomically with creation; unknown components/fields reject the entire edit.
+    /// Duplication points the copy's self-references at the copy.
     [[nodiscard]] bool CreateEntity(const foundation::identity::EntropySource& entropy,
                                     QString& outError,
                                     const QString& name,
-                                    QString& outId);
+                                    QString& outId,
+                                    const QJsonObject& initialComponents = {});
     [[nodiscard]] bool DuplicateEntity(const foundation::identity::EntropySource& entropy,
                                        QString& outError,
                                        const QString& source,

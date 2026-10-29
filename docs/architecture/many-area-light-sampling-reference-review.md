@@ -21,7 +21,12 @@ estimation (NEE) for emissive triangles, delivered in two stages:
 
 Spatiotemporal reservoir reuse remains a separate RT4 upgrade. The Peters 2021
 polygonal-light work runs in parallel and shares two pieces with this design: the
-projected-solid-angle primitives and the template shadow-ray traversal.
+projected-solid-angle primitives and the template shadow-ray traversal. Its
+comparison template, `polygonal-light-sampling`, is implemented as of October 28,
+2026: it shades every emissive triangle, without light selection, with clamped
+optimal MIS, the balance heuristic and each technique alone, and has a CPU oracle
+with GPU parity tests. Its usage, departures and evidence are in the
+[authoring guide](../development/render-graph-authoring.md#compare-brdf-importance-sampling-for-polygonal-lights).
 
 ## Sources reviewed
 
@@ -314,11 +319,125 @@ these departures and choices:
 Evidence and remaining acceptance work, against [Acceptance](#acceptance) item 3:
 
 - **Tested.** The GPU tests on Metal cover the glossy Cornell room, the
-  many-emitter room and two-sided emitters over minimum-roughness metal. The weight
-  unit test covers the MIS partition of unity, `Ẑ = 0` and the empty LTC clip.
-- **Not yet covered.** Textured emitters and the opt-in equal-time benchmark have no
-  fixture yet.
+  many-emitter room, a textured emitter and two-sided emitters over
+  minimum-roughness metal. The weight unit test covers the MIS partition of unity,
+  `Ẑ = 0` and the empty LTC clip.
+  - The textured fixture puts a 4 × 4 linear emission map on the Cornell light,
+    over rough dielectric surfaces. The map is white, warm, cool and black in
+    diagonal stripes, so it is zero on a quarter of the light. The power CDF and the
+    RIS target see only the material's constant `Emission`, so a light sample that
+    ignored the map would bias the image.
+  - At 256 samples per pixel on Apple M5, the three outputs' image means are within
+    0.2% of the MIS template's light-sampling output. Without the map, the image mean
+    rises from 0.116 to 0.204, so the map does reach every estimate.
+- **Equal-time benchmark.** Measured; see below.
 - **Not run.** Vulkan first runs in batch CI.
+
+#### Equal-time benchmark
+
+The opt-in Catch2 tag `[.ris-projected-solid-angle-benchmark]` in
+`ludus_render_graph_ray_tests` measures Shah et al.'s claim: lower error at equal
+time with many lights. Its
+[usage](../development/render-graph-authoring.md#resample-many-area-lights-with-projected-solid-angle-sampling)
+is in the authoring guide.
+
+- **Scene.** The Cornell room has its light replaced by a 40 × 40 field of one-sided
+  emitters 3 cm wide, 3200 emissive triangles in all. Four power levels spanning a
+  factor of 64 and three tints vary between neighbors.
+  - The diffuse variant has white rough dielectric surfaces (roughness 1).
+  - The specular variant has white metal at roughness 0.2, which mirrors the emitter
+    field. The two variants follow the paper's diffuse and glossy scenes.
+- **Packages.** Both templates are cooked with every pass on `ComputeBvh`, so both
+  use one traversal.
+  - The BSDF-only program of each is replaced by a test program
+    (`tests/render_graph_query_count.slang`). It runs the template's own
+    `ShadeMultipleImportance` unchanged and outputs the number of visibility and
+    surface queries it issued, which gives rays per pixel without instrumenting the
+    template.
+  - The MIS output is each template's own.
+- **Timing.**
+  - The image is 288 × 192: one RGBA8 readback slice holds at most 256 KiB, and
+    the next size up of this aspect ratio does not fit.
+  - Each package renders 8 warmup and 64 timed frames with per-pass GPU timing, in
+    the order RIS, Veach–Guibas, Veach–Guibas, RIS. Its cost per sample is the mean
+    of its two runs' median kernel times, primary plus MIS shade.
+  - Accumulate and ToneMap are identical in both templates and are left out.
+- **Error.**
+  - The reference is the Veach–Guibas MIS output at 4096 samples per pixel, with an
+    independent seed. RIS is read at 4, 16 and 64 samples. Veach–Guibas is read at
+    the same samples, and at the same kernel time.
+  - MAPE is `|x − r| / (r + 0.01)`. MAPE is the metric Shah et al. report; the 0.01
+    guard against black reference channels is this benchmark's own. It is averaged
+    with linear RMSE over the RGB channels of pixels whose decoded reference stays
+    below 4.
+  - Brighter pixels see emitters directly, and the 8-bit readback cannot resolve
+    them; they are about 1.5% of the image. Tone-mapped MSE covers every pixel.
+- **Failure pixels.** Both reference images show three failure pixels, which every
+  metric leaves out. They come from a scene-interface defect, not from either
+  estimator; see the paragraph after the results.
+
+Results on Apple M5 (Metal) with Slang and Clang 23 from `config/tool_versions.json`,
+October 29, 2026. The machine was shared with other builds, at a load average of 70–95.
+
+| Variant | Template | Primary + MIS kernel per sample | Shadow rays per pixel | BSDF rays per pixel |
+| --- | --- | --- | --- | --- |
+| Diffuse | `ris-projected-solid-angle` | 0.155 + 12.16 ms | 0.913 | 0.473 |
+| Diffuse | `veach-guibas-mis` | 0.411 + 2.28 ms | 0.463 | 0.473 |
+| Specular | `ris-projected-solid-angle` | 0.145 + 11.51 ms | 0.911 | 0.534 |
+| Specular | `veach-guibas-mis` | 0.411 + 2.08 ms | 0.463 | 0.534 |
+
+Rays are averaged over all pixels. About half the image is shaded surface: the BSDF
+ray count equals the shaded fraction, so each shaded pixel traces about 1.9 shadow
+rays with RIS and 1.0 with Veach–Guibas. One RIS sample costs 4.6 times as much
+kernel time as a Veach–Guibas sample (diffuse), or 4.7 times (specular). In an
+earlier run under heavier GPU contention, the diffuse ratio was about 9, so the
+equal-time sample counts below are specific to this run.
+
+Each cell gives MAPE / linear RMSE / tone-mapped MSE:
+
+| Variant | RIS samples | RIS | Veach–Guibas, equal samples | Veach–Guibas, equal time (samples) |
+| --- | --- | --- | --- | --- |
+| Diffuse | 4 | 0.136 / 0.288 / 0.0088 | 0.357 / 0.339 / 0.0191 | 0.181 / 0.163 / 0.0044 (18) |
+| Diffuse | 16 | 0.072 / 0.145 / 0.0021 | 0.192 / 0.172 / 0.0051 | 0.091 / 0.081 / 0.0010 (73) |
+| Diffuse | 64 | 0.039 / 0.073 / 0.00046 | 0.098 / 0.087 / 0.0012 | 0.047 / 0.041 / 0.00025 (293) |
+| Specular | 4 | 0.119 / 0.300 / 0.0086 | 0.274 / 0.349 / 0.0153 | 0.139 / 0.165 / 0.0033 (19) |
+| Specular | 16 | 0.064 / 0.151 / 0.0020 | 0.151 / 0.178 / 0.0040 | 0.071 / 0.083 / 0.00076 (75) |
+| Specular | 64 | 0.034 / 0.077 / 0.00044 | 0.077 / 0.090 / 0.00092 | 0.037 / 0.042 / 0.00019 (300) |
+
+What the results show:
+
+- **Equal samples.** RIS has lower error on every metric, in both variants. MAPE
+  falls by a factor of 2.2–2.7 and tone-mapped MSE by 1.8–2.6. This repeats, at 3200
+  emitters, the CTest MSE result for sixteen emitters.
+- **Equal time.**
+  - RIS keeps a lower MAPE, by 8–25%.
+  - Veach–Guibas has the lower linear RMSE, by a factor of about 1.8, and the lower
+    tone-mapped MSE, by 1.8–2.6.
+  - MAPE weights relative error, which is dominated by dim regions that uniform
+    emitter selection serves poorly. RMSE is dominated by bright pixels, where the
+    extra Veach–Guibas samples pay off.
+  - So, at equal time, this implementation reproduces the paper's claim only for
+    MAPE.
+- **Why RIS is expensive.** Its cost is the per-candidate target evaluation. Each of
+  the 32 candidates clips and integrates two polygons, diffuse and LTC. Shah et al.
+  evaluate an approximate form factor instead (Hill and Heitz, listed under sources
+  not yet reviewed). Lowering this cost, `M` and `K`, is the open measurement
+  question above. The benchmark is the way to evaluate such a change.
+
+The three failure pixels also appear with the stock `ris-projected-solid-angle`
+package, which shows one by sample 256 at another pixel with this seed.
+- **Location.** They are on the ceiling, where the emitter quads are. Every output
+  fails at the same pixel and sample, including the BSDF-only output, so the shared
+  surface load fails, not a sampling strategy.
+- **Not reproduced on the triangle loop.** With the same seed, the triangle-loop
+  Veach–Guibas package shows no failure through sample 1920, while the ComputeBvh
+  one fails by then.
+- **Not a stack overflow.** `REFERENCE_BVH_MAX_DEPTH` bounds the traversal stack.
+- **Probable cause.** `IntersectBvhTriangle` divides the edge functions separately.
+  A hit on the edge opposite vertex 0, here each quad's shared diagonal, can then
+  return barycentrics whose float32 sum exceeds 1. In emulation that happens for
+  about 0.9% of such edge hits. `GetSurfaceHit` rejects that sum, and the pass latches
+  a failure. This is outside the template and is not fixed here.
 
 **Registration** follows the existing template checklist:
 - `TEMPLATES` and the CLI `--template` choices;
@@ -404,7 +523,7 @@ aligned to Philox's four-lane blocks:
 
 | Piece | Owner | Notes |
 | --- | --- | --- |
-| Convex polygon horizon clipping (up to seven input vertices), clipped projected-solid-angle integral, Peters sampler and density | FoundationMath `projected_solid_angle.hpp` and `shaders/projected_solid_angle.slang`, being added by the polygonal-light work | The sampler is ported from the BSD-licensed `polygon_sampling.glsl` with its notice. Clipping is an independent reimplementation. This design consumes these primitives and adds none of its own. |
+| Convex polygon horizon clipping (up to seven input vertices), clipped projected-solid-angle integral, Peters sampler and density | FoundationMath `projected_solid_angle.hpp` and `shaders/projected_solid_angle.slang`, implemented by the polygonal-light work | The sampler is ported from the BSD-licensed `polygon_sampling.glsl` with its notice. Clipping is an independent reimplementation. This design consumes these primitives and adds none of its own. |
 | Generic LTC polygon transform | FoundationMath, beside those primitives | Implemented as `linearly_transformed_cosine.hpp` and `shaders/linearly_transformed_cosine.slang` ([contract](../modules/foundation/math.md#linearly-transformed-cosines-over-polygons)): transform the vertices by `M⁻¹`, then reuse the same clipping, integral and sampler. Credits Heitz et al. 2016 (§3.1, Eq. 3, Algorithm 1) and Peters 2021 §4.1. |
 | Sequential weighted reservoir | FoundationMath | Implemented as `weighted_reservoir.hpp` and `shaders/weighted_reservoir.slang` ([contract](randomness.md#sequential-weighted-reservoir)): explicit order, zero totals, and selection-frequency tests on exact small integers. The ReSTIR template may adopt it separately; this design does not change that template. |
 | LTC table for Ludus GGX/correlated Smith/Schlick, its fitter and provenance | Renderer (embedded table and a GPU buffer) plus an offline Ludus tool. **Owned by this RIS/many-area-light workstream** (decided October 27, 2026). The polygonal-light LTC templates reuse the same table and fitter rather than building their own. | Implemented as `tools/ltc-fit`, `data/ltc_table.bin` with its provenance and `shaders/ltc_table_layout.h`, and the `ltc_table.slang` and CPU lookups ([fit, regeneration and accuracy](../development/ltc-table.md)). Reimplemented from Heitz et al. §4 and Peters §§4.1–4.2, not from GPLv3 utilities. Like Peters' renderer it has 51 `F0` slices, chosen by the luminance of `F0`; the albedo stays exact per channel. It covers roughness down to 0.045. A poor fit costs variance, not correctness. Render graphs bind it with `scene_interface.polygonal_light_sampling`. |

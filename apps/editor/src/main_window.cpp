@@ -146,6 +146,7 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
             mProjectExplorer->Refresh();
         }
     });
+    connect(Renderer_, &RendererWorkspace::FocusViewRequested, mFocusViewportAction, &QAction::toggle);
     connect(mErrorList, &ErrorList::EntryActivated, this, &MainWindow::activateErrorEntry);
     connect(mErrorList, &ErrorList::ProblemsReported, this, &MainWindow::revealErrorList);
     mBuildErrorsTimer.setSingleShot(true);
@@ -250,6 +251,9 @@ MainWindow::~MainWindow()
     {
         disconnect(child, nullptr, this, nullptr);
     }
+    // The preview panel is reparented into a dock and may die before its workspace.
+    // Retire the graph consumer while its UI and the World producer are still alive.
+    Renderer_->SetPreviewSource(nullptr);
 }
 
 void MainWindow::BuildMenus()

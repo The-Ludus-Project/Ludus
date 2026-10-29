@@ -14,6 +14,7 @@
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QFontDatabase>
+#include <QFontInfo>
 #include <QHelpEvent>
 #include <QInputMethodEvent>
 #include <QKeySequence>
@@ -22,6 +23,7 @@
 #include <QPalette>
 #include <QPushButton>
 #include <QSignalSpy>
+#include <QSpinBox>
 #include <QSysInfo>
 #include <QTest>
 #include <QTextBlock>
@@ -557,4 +559,111 @@ TEST_CASE("native shortcut dispatch reaches the shared find command", "[editor][
     FinishHighlighting();
     QTest::keySequence(&editor, QKeySequence(QKeySequence::Find));
     CHECK(requested.count() == 1);
+}
+
+TEST_CASE("presentation preferences preserve source selection and undo", "[editor][text][presentation]")
+{
+    CodeEditor* editor = new CodeEditor;
+    CodeEditorPanel panel(editor);
+    for (const QString& family : QFontDatabase::families())
+    {
+        if (QFontDatabase::isFixedPitch(family) == true)
+        {
+            CHECK(QFontInfo(editor->font()).fixedPitch() == true);
+            break;
+        }
+    }
+    editor->setPlainText(QStringLiteral("    float4 Color();"));
+    SelectText(*editor, 4, 10);
+    editor->insertPlainText(QStringLiteral("float3"));
+    const QTextCursor selection = editor->textCursor();
+    const QString text = editor->toPlainText();
+    editor->SetFontPointSize(18);
+    editor->SetWordWrap(true);
+    editor->SetIndentGuidesVisible(false);
+    CHECK(editor->toPlainText() == text);
+    CHECK(editor->textCursor().position() == selection.position());
+    CHECK(editor->CanUndo() == true);
+    QSpinBox* size = panel.findChild<QSpinBox*>(QStringLiteral("codeEditorTextSize"));
+    REQUIRE(size != nullptr);
+    CHECK(size->value() == 18);
+    CHECK(editor->lineWrapMode() == QPlainTextEdit::WidgetWidth);
+    CodeEditor reopened;
+    CHECK(reopened.font().pointSize() == 18);
+    CHECK(reopened.lineWrapMode() == QPlainTextEdit::WidgetWidth);
+    CHECK(reopened.property("indentGuidesVisible").toBool() == false);
+    editor->SetFontPointSize(1000);
+    CHECK(editor->font().pointSize() == CodeEditor::MAXIMUM_FONT_POINTS);
+    TriggerAction(*editor, QStringLiteral("Reset Text Size"));
+    CHECK(size->value() == CodeEditor::DEFAULT_FONT_POINTS);
+    editor->Undo();
+    CHECK(editor->toPlainText() == QStringLiteral("    float4 Color();"));
+    editor->SetWordWrap(false);
+    editor->SetIndentGuidesVisible(true);
+}
+
+TEST_CASE("diagnostic navigation orders unsorted messages and wraps without changing text",
+          "[editor][text][diagnostics]")
+{
+    CodeEditor* editor = new CodeEditor;
+    CodeEditorPanel panel(editor);
+    editor->setPlainText(QStringLiteral("one\ntwo\nthree"));
+    editor->SetDiagnostics({{3, 1, 1, CodeDiagnosticSeverity::Warning, QStringLiteral("third")},
+                            {1, 2, 1, CodeDiagnosticSeverity::Error, QStringLiteral("first")}},
+                           true);
+    editor->GoToLine(1);
+    editor->GoToDiagnostic();
+    CHECK(editor->textCursor().selectionStart() == 1);
+    editor->GoToDiagnostic();
+    CHECK(editor->textCursor().blockNumber() == 2);
+    editor->GoToDiagnostic();
+    CHECK(editor->textCursor().selectionStart() == 1);
+    editor->GoToDiagnostic(true);
+    CHECK(editor->textCursor().blockNumber() == 2);
+    editor->insertPlainText(QStringLiteral("changed"));
+    QPushButton* issues = panel.findChild<QPushButton*>(QStringLiteral("codeEditorDiagnostics"));
+    REQUIRE(issues != nullptr);
+    CHECK(issues->text().contains(QStringLiteral("stale")) == true);
+    editor->SetDiagnostics({}, true);
+    CHECK(issues->isEnabled() == false);
+}
+
+TEST_CASE("automatic bracket pairs respect comments strings and native undo", "[editor][text][keyboard]")
+{
+    CodeEditor editor;
+    editor.SetLanguage(CodeLanguage::Slang);
+    QTest::keyClicks(&editor, QStringLiteral("("));
+    CHECK(editor.toPlainText() == QStringLiteral("()"));
+    CHECK(editor.textCursor().position() == 1);
+    editor.Undo();
+    CHECK(editor.toPlainText().isEmpty() == true);
+    editor.Redo();
+    SelectText(editor, 1, 1);
+    QTest::keyClick(&editor, Qt::Key_Backspace);
+    CHECK(editor.toPlainText().isEmpty() == true);
+    QTest::keyClicks(&editor, QStringLiteral("[]"));
+    CHECK(editor.toPlainText() == QStringLiteral("[]"));
+    CHECK(editor.textCursor().position() == 2);
+    for (const QString& prefix :
+         {QStringLiteral("// comment "), QStringLiteral("/* comment "), QStringLiteral("\"string ")})
+    {
+        editor.setPlainText(prefix);
+        editor.moveCursor(QTextCursor::End);
+        QTest::keyClicks(&editor, QStringLiteral("("));
+        CHECK(editor.toPlainText() == prefix + QStringLiteral("("));
+    }
+    editor.setPlainText(QStringLiteral("\"closed\" "));
+    editor.moveCursor(QTextCursor::End);
+    QTest::keyClicks(&editor, QStringLiteral("{"));
+    CHECK(editor.toPlainText() == QStringLiteral("\"closed\" {}"));
+    QTest::keyClick(&editor, Qt::Key_Return);
+    CHECK(editor.toPlainText() == QStringLiteral("\"closed\" {\n    \n}"));
+    CHECK(editor.textCursor().blockNumber() == 1);
+    CHECK(editor.textCursor().positionInBlock() == 4);
+    editor.Undo();
+    CHECK(editor.toPlainText() == QStringLiteral("\"closed\" {}"));
+    editor.setReadOnly(true);
+    const QString before = editor.toPlainText();
+    QTest::keyClicks(&editor, QStringLiteral("("));
+    CHECK(editor.toPlainText() == before);
 }

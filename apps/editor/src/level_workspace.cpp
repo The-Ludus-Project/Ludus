@@ -779,10 +779,10 @@ void LevelWorkspace::decodeCandidate()
             Success_ = authoredWorld.ImportScene(Candidate_, Error_);
         }
         if (Success_ == true && VerificationOnly_ == false && authoredWorld.Loaded() == true &&
-            QFileInfo::exists(QDir(Root_).filePath(QStringLiteral("authoring/render.preview.json"))))
+            RenderScene::GetSource(Root_, authoredWorld) == RenderSceneSource::ProjectBindings)
         {
             RenderScene authored;
-            Success_ = RenderScene::Load(Root_, authoredWorld, authored, Error_) &&
+            Success_ = RenderScene::Load(Root_, authoredWorld, authored, Error_, false) &&
                        RenderScene::Merge(authored, bytes, Candidate_, Scene_, Error_, CandidateRevisions_);
         }
     }

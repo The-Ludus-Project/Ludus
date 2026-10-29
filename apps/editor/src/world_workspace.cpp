@@ -1,4 +1,5 @@
 #include "internal/world_workspace.h"
+#include "internal/builtin_world.h"
 #include "internal/import_report.h"
 #include "internal/item_selection.h"
 #include "internal/preview_viewport.h"
@@ -331,6 +332,50 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
         commands->addWidget(button);
     }
     hierarchy->addLayout(commands);
+    QToolButton* addObject = new QToolButton(left);
+    addObject->setObjectName(QStringLiteral("worldAddObject"));
+    addObject->setText(QStringLiteral("Add Geometry / Light"));
+    addObject->setToolTip(QStringLiteral("Create geometry or lights in a default World. Project-owned schemas use Add "
+                                         "Entity and their declared components."));
+    addObject->setPopupMode(QToolButton::InstantPopup);
+    QMenu* objectMenu = new QMenu(addObject);
+    addObject->setMenu(objectMenu);
+    hierarchy->addWidget(addObject);
+    for (const QString& preset : {QStringLiteral("Cube"),
+                                  QStringLiteral("Plane"),
+                                  QStringLiteral("Sphere"),
+                                  QStringLiteral("Point Light"),
+                                  QStringLiteral("Spot Light"),
+                                  QStringLiteral("Directional Light")})
+    {
+        QAction* action = objectMenu->addAction(preset);
+        action->setObjectName(QStringLiteral("worldCreate") + QString(preset).remove(QLatin1Char(' ')));
+        connect(objectMenu, &QMenu::aboutToShow, action, [this, action]() {
+            action->setEnabled(Add_->isEnabled() == true && IsBuiltInWorld(Document_) == true);
+            action->setToolTip(
+                QStringLiteral("Create an object in a default World. Project schemas define their own components."));
+        });
+        connect(action, &QAction::triggered, this, [this, preset]() {
+            QString id;
+            QString error;
+            if (Add_->isEnabled() == false)
+            {
+                return;
+            }
+            if (CreateWorldObject(Document_, mEntropy, preset, id, error) == false)
+            {
+                Changed(error);
+                return;
+            }
+            Selected_ = id;
+            mSelectedEntities = {id};
+            Render();
+            Snapshot();
+            Changed(preset +
+                    QStringLiteral(" created. Edit its Transform and properties in the inspector. Undo is available."));
+        });
+    }
+
     BoundViewport_ = Render_->TakeViewport(split);
     Scene_ = new LevelWorkspace(tooling, this);
     Scene_->hide();
@@ -660,8 +705,11 @@ bool WorldWorkspace::LoadProjectSchema(WorldDocument& candidate, QByteArray& sch
         }
         else
         {
-            schema = QByteArrayLiteral("{\"version\":1,\"id\":\"ludus.world.default.v1\",\"label\":\"World\","
-                                       "\"components\":[],\"assets\":[]}");
+            if (ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == false)
+            {
+                Changed(error);
+                return false;
+            }
         }
         return candidate.LoadSchema(schema, error);
     }

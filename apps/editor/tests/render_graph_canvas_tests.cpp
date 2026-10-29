@@ -941,6 +941,11 @@ TEST_CASE("shader rows create registered sources through Properties and canvas c
         addShader->click();
         REQUIRE(workspace.GetSelectedShaderSources().size() == 1);
         CHECK(shaders->item(0, 2)->text() != QStringLiteral("Program"));
+        shaders->setCurrentCell(0, 2);
+        QLineEdit* programNameOrNull = editor->findChild<QLineEdit*>(QStringLiteral("renderGraphProgramName"));
+        REQUIRE(programNameOrNull != nullptr);
+        CHECK(programNameOrNull->isReadOnly() == true);
+        CHECK(programNameOrNull->text() == shaders->item(0, 2)->text());
         shaders->item(0, 0)->setText(QStringLiteral("raygen"));
         const QStringList firstSources = workspace.GetSelectedShaderSources();
         addShader->click();
@@ -1021,6 +1026,39 @@ TEST_CASE("shader rows create registered sources through Properties and canvas c
         for (const QString& source : sources)
         {
             CHECK(QFileInfo::exists(QDir(package).filePath(source)) == true);
+        }
+        QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        if (dialogOrNull != nullptr)
+        {
+            const uint64 revision = workspace.GetDocument().GetRevision();
+            QTableWidget* currentShadersOrNull = dialogOrNull->findChild<QTableWidget*>(QStringLiteral("shaders"));
+            REQUIRE(currentShadersOrNull != nullptr);
+            currentShadersOrNull->item(0, 2)->setText(QStringLiteral("Geometry"));
+            CHECK(workspace.GetDocument().GetRevision() == revision);
+            QLabel* errorOrNull = dialogOrNull->findChild<QLabel*>(QStringLiteral("renderGraphNodeError"));
+            REQUIRE(errorOrNull != nullptr);
+            CHECK(errorOrNull->isVisible() == true);
+            CHECK(errorOrNull->text().contains(QStringLiteral("Geometry")) == true);
+            CHECK(errorOrNull->text().contains(QStringLiteral("Set program to Program")) == true);
+            currentShadersOrNull = dialogOrNull->findChild<QTableWidget*>(QStringLiteral("shaders"));
+            REQUIRE(currentShadersOrNull != nullptr);
+            currentShadersOrNull->item(0, 2)->setText(QStringLiteral("Program"));
+            CHECK(workspace.GetDocument().GetRevision() == revision + 1);
+            CHECK(errorOrNull->isVisible() == false);
+            QLineEdit* currentNameOrNull =
+                dialogOrNull->findChild<QLineEdit*>(QStringLiteral("renderGraphProgramName"));
+            QPushButton* removeOrNull =
+                dialogOrNull->findChild<QPushButton*>(QStringLiteral("renderGraphRemove_shaders"));
+            REQUIRE(currentNameOrNull != nullptr);
+            REQUIRE(removeOrNull != nullptr);
+            while (currentShadersOrNull->rowCount() > 0)
+            {
+                const int32 count = currentShadersOrNull->rowCount();
+                currentShadersOrNull->setCurrentCell(count - 1, 0);
+                removeOrNull->click();
+                REQUIRE(currentShadersOrNull->rowCount() == count - 1);
+            }
+            CHECK(currentNameOrNull->text().isEmpty() == true);
         }
     };
     SECTION("Properties")

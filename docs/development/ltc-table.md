@@ -302,3 +302,10 @@ horizon or along the normal, and `F0` outside [0, 1]. On Metal (Apple M5),
 entries relative to the matrix's largest entry agree to a 99th percentile of
 1.4e-6 and at most 1.2e-5. The GPU's arctangent differs by a few ulps. Vulkan
 and WGSL first run in batch CI.
+
+The [default clustered deferred graph](render-graph-authoring.md#default-clustered-deferred-lighting)
+also uses this table for unshadowed direct mesh area lighting. It clips real emitter
+triangles against the receiver horizon before integrating the fitted specular lobe.
+The table is uploaded once per graph program; scene and camera replacements retain
+independent immutable resource bindings. This raster approximation does not change
+the CPU/GPU reference path estimators or establish shadow/indirect-light support.

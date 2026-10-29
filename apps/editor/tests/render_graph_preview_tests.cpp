@@ -669,7 +669,9 @@ TEST_CASE("RG3b failed and pending candidates keep the last drawable view",
         QByteArrayLiteral("verified-source"),
         QStringLiteral("Default"),
         QJsonDocument::fromJson(names.readAll()).object().value(QStringLiteral("generation")).toString().toLatin1(),
-        QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex()};
+        QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex(),
+        {},
+        42};
     RenderGraphPreview preview = MakePreview();
     REQUIRE(preview.Attach(device.Device, device.Surface) == true);
     preview.SetExtraction(MakeExtraction({0, 1, 0, 1}, 1));
@@ -693,6 +695,7 @@ TEST_CASE("RG3b failed and pending candidates keep the last drawable view",
         CHECK(preview.GetPresentedGeneration() == 1);
         CHECK(preview.GetReport().ActiveGeneration == 1);
         CHECK(preview.GetActiveSource().InputIdentity == provenance.InputIdentity);
+        CHECK(preview.GetActiveSource().SourceRevision == 42);
     };
 
     // A truncated generation is rejected at decode; nothing is staged.

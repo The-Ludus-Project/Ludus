@@ -309,7 +309,7 @@ TARGET_FIELDS = {'metal': 'Msl', 'spirv': 'Spirv', 'wgsl': 'Wgsl', 'glsl': 'Glsl
 PACKAGE_MAGIC = 0x4752554C
 # Editor-only diagnostic ray path capture generation; same layout, refused by runtime decoding.
 RAY_PATH_CAPTURE_PACKAGE_MAGIC = 0x5052554C
-PACKAGE_VERSION = 25
+PACKAGE_VERSION = 26
 # Version 25 scene resource word: the linked ray kernel reads the renderer's LTC table.
 SCENE_RESOURCE_LTC_TABLE = 1
 RESOURCE_FIELD_COUNT = 9

@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "schema": "ludus.world.default.v1",
+  "transform": {
+    "component": "transform",
+    "properties": {
+      "x": "x",
+      "y": "y",
+      "z": "z",
+      "rx": "rx",
+      "ry": "ry",
+      "rz": "rz",
+      "sx": "sx",
+      "sy": "sy",
+      "sz": "sz"
+    }
+  },
+  "renderable": {
+    "component": "renderable",
+    "properties": {
+      "mesh": "mesh",
+      "texture": "texture",
+      "visible": "visible",
+      "r": "r",
+      "g": "g",
+      "b": "b"
+    }
+  },
+  "camera": null,
+  "meshes": [
+    {
+      "id": "mesh.cube",
+      "path": "cube.mesh.json"
+    },
+    {
+      "id": "mesh.plane",
+      "path": "plane.mesh.json"
+    },
+    {
+      "id": "mesh.sphere",
+      "path": "sphere.mesh.json"
+    }
+  ],
+  "textures": [],
+  "light": {
+    "component": "light",
+    "properties": {
+      "kind": "kind",
+      "enabled": "enabled",
+      "r": "r",
+      "g": "g",
+      "b": "b",
+      "intensity": "intensity",
+      "range": "range",
+      "innerAngle": "innerAngle",
+      "outerAngle": "outerAngle"
+    }
+  }
+}
