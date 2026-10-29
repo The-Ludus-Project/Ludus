@@ -9,7 +9,7 @@ from .shader_tools import REPAIR_MESSAGE, required_shader_tools, verify_translat
 
 
 def resolve_build_tools(project, tooling_root, manifest, *, helper=None, compiler=None,
-                        validator=None, spirv_cross=None, store=None):
+                        validator=None, spirv_cross=None, store=None, assistance_only=False):
     """Resolve the current saved SDK and prepared tools for one immutable build.
 
     Explicit tool paths override detection for this operation. Project SDK
@@ -44,7 +44,7 @@ def resolve_build_tools(project, tooling_root, manifest, *, helper=None, compile
     cache = preset.get("cacheVariables", {})
     value = document(read(Path(manifest)), str(manifest))
     validate_manifest(value)
-    required = required_shader_tools(value)
+    required = set() if assistance_only else required_shader_tools(value)
 
     def configured_tool(key, fallback):
         name = cache.get(key)

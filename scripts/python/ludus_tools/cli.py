@@ -483,6 +483,27 @@ def cmd_render_graph(args) -> int:
             defaults = _read_json_argument(args.defaults, "--defaults") if args.defaults else None
             payload = {"migration": render_graph_authoring.migrate_values(Path(args.old), Path(args.new), values, defaults)}
         human = _json.dumps(payload, indent=2)
+    elif args.graph_action == "shader-context":
+        from contextlib import nullcontext
+        from .shader_context import capture_draft, export_context
+        if args.draft_stdin and not args.root:
+            raise ToolingError("RenderGraphSource", "--draft-stdin requires a new temporary --root directory.")
+        capture = capture_draft(sys.stdin.buffer, args.root) if args.draft_stdin else nullcontext()
+        with capture:
+            helper, compiler = args.helper, args.compiler
+            if args.project:
+                from .render_graph_project import resolve_build_tools
+                options, _ = resolve_build_tools(args.project, args.tooling_root, args.manifest,
+                    helper=helper, compiler=compiler, assistance_only=True, store=_store(args))
+                helper, compiler = options['helper'], options['compiler']
+            if not helper or not compiler:
+                raise ToolingError("MissingTools", "Select project shader tools or supply --helper and --compiler.")
+            payload = export_context(args.manifest, args.output, args.source, helper=helper,
+                                     context=args.context, root=args.root)
+            if args.project:
+                options['cancel']()  # Recheck the SDK selection after context generation too.
+            payload['server'] = str(Path(compiler).with_name('slangd.exe' if os.name == 'nt' else 'slangd'))
+            human = _json.dumps(payload, indent=2)
     elif args.graph_action in ("new-build", "build", "verify-package", "emit-runtime", "cook-runtime", "ray-path-capture"):
         from . import render_graph_build
         if args.graph_action == "cook-runtime":
@@ -573,6 +594,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--store", help="SDK store root (default: $LUDUS_SDK_STORE or the native user data directory)")
     sub = p.add_subparsers(dest="group", required=True)
     graphs = sub.add_parser("render-graph", help="graph contracts and offline shader packages (no GPU execution)").add_subparsers(dest="graph_action", required=True)
+    context = graphs.add_parser("shader-context", help="stage compiler-owned source for native Slang assistance; no compilation")
+    context.add_argument("manifest")
+    context.add_argument("output", help="separate owned temporary directory")
+    context.add_argument("--source", required=True, help="package-relative editable source")
+    context.add_argument("--draft-stdin", action="store_true", help="read an immutable captured package from stdin into a new temporary --root")
+    context.add_argument("--context", help="explicit linked program identity")
+    context.add_argument("--root")
+    context.add_argument("--helper")
+    context.add_argument("--compiler")
+    context.add_argument("--project")
+    context.add_argument("--tooling-root")
+    context.add_argument("--store")
+    context.set_defaults(func=cmd_render_graph)
     new_graph = graphs.add_parser("new", help="create an editable render graph package in a new directory")
     new_graph.add_argument("destination")
     new_graph.add_argument("--template", choices=("raster", "forward-lit", "restir-di", "visibility-buffer",

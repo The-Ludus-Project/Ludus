@@ -7,6 +7,7 @@
 #include <QList>
 #include <QPlainTextEdit>
 #include <QString>
+#include <QStringList>
 #include <QTextCursor>
 #include <QTextEdit>
 #include <QTimer>
@@ -21,6 +22,8 @@ class QMimeData;
 class QFocusEvent;
 class QHelpEvent;
 class QAction;
+class QListWidget;
+class QLabel;
 QT_END_NAMESPACE
 
 namespace ludus::editor
@@ -125,6 +128,11 @@ public:
     void Undo();
     void Redo();
     void SetCanFormat(bool canFormat);
+    /// Present copied assistance results at the caret. No text mutation; choosing
+    /// an item emits its row to the version-checking editing controller.
+    void ShowCompletions(const QStringList& labels, const QStringList& details);
+    void ShowSignature(const QString& html);
+    void HideAssistance();
     /// Nestable input/command boundaries, including edits spanning many ranges.
     void BeginEditOperation(CodeEditKind kind = CodeEditKind::Command);
     void EndEditOperation();
@@ -145,12 +153,19 @@ Q_SIGNALS:
     void EditBoundary();
     void FormatRequested();
     void ChooseFormatterRequested();
+    void AssistanceRequested(bool isSignature);
+    void AssistanceDismissed();
+    void CompletionChosen(foundation::int32 row);
+    void SignatureOverloadRequested(foundation::int32 direction);
 
 private:
+    QListWidget* mCompletionList;
+    QLabel* mSignature;
     friend class CodeEditorGutter;
     void resizeEvent(QResizeEvent* event) override;
     void paintEvent(QPaintEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    void handleKeyPress(QKeyEvent* event);
     void changeEvent(QEvent* event) override;
     void contextMenuEvent(QContextMenuEvent* event) override;
     void inputMethodEvent(QInputMethodEvent* event) override;

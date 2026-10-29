@@ -4803,8 +4803,8 @@ The **Source** pane uses the shared code editor: line numbers, Slang lexical
 coloring, current-line and matching-bracket highlighting, and native text
 selection, clipboard and navigation. Strings and comments are excluded from
 bracket matching; matching is bounded for responsiveness. Shader formatting and
-unified source/canvas undo are available; language-server hover and completion
-remain future increments, described in the
+unified source/canvas undo, native shader completion and signature help are
+available. Symbol hover remains a future increment, described in the
 [shared editor architecture](../architecture/editor-gui-systems.md#source-editing-direction).
 
 Use **Focus Source** or **Shift+Alt+Return** while Source is active to hide the
@@ -4862,6 +4862,48 @@ Find supports forward/backward wrapping, case matching, and replacement; Escape
 closes its controls and returns focus to the source. Go to line uses one-based
 line numbers. Ordinary text and JSON sources share the commands, with Slang
 coloring/comment toggling enabled only for `.slang` files.
+
+#### Shader completion and signature help
+
+In a native Source editor, press **Ctrl+Space** to complete a symbol, or type
+`.` for members. Type a prefix to narrow the suggestions. Up/Down selects an
+item; Enter or Tab accepts it; Escape dismisses assistance. Completion uses the
+current unsaved draft, including package includes, manifest-generated types and
+bindings, scene/material APIs and shader functions. An accepted completion and
+its additional source edits form one undo step; Save remains explicit.
+
+Press **Ctrl+Shift+Space** inside a call, or type `(` or `,`, for signature help.
+The active parameter is emphasized. **Alt+PageUp/PageDown** selects another
+overload when available. These two Space shortcuts use the physical **Control**
+key on macOS, unlike the Command mapping of the ordinary editing shortcuts above.
+The Edit/context menus also offer both commands.
+
+The **Shader context** selector identifies the linked program/stage used for
+semantics. A shared source can have several contexts; select the one whose
+bindings and callbacks you are editing. The selector's text is selectable and
+copyable; its tooltip names the owning package manifest. Context IDs identify
+linked compiler units, including generated scene kernels, rather than canvas
+node scopes. Changes to sources, schemas, authored settings or tool selection
+invalidate earlier assistance. Compilation and validation remain authoritative
+for target capabilities and build errors.
+
+Assistance starts Slang's `slangd` lazily beside the project's selected `slangc`
+(or the compiler override in **Tools → Options → Render Graph**). It captures a
+temporary draft package and uses the same source-generation owner as shader
+compilation. It does not download tools or save project files. Missing tools,
+invalid graph/interface inputs and process failures appear directly below the
+selector with a repair message. After repairing them, use **Retry assistance**
+to refresh available contexts and start again. Ordinary editing stays available.
+
+The initial provider needs an executable program context. Unassigned source files,
+legacy compatibility rewrites of the editable file, repeated inclusion of that
+file in one linked unit and include cycles through that file report an explicit
+mapping limitation. Completion edits must stay inside the current authored file;
+generated-file edits and unsolicited snippets are rejected. Literal package
+includes follow the build owner's existing rules; module imports are unsupported.
+The static browser editor has no native Slang process and reports that completion
+and signature help are unavailable. The searchable Shader API reference remains
+available independently.
 
 #### Compiler messages in the source
 

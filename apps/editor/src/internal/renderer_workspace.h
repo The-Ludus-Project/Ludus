@@ -52,6 +52,7 @@ struct RenderGraphResolutionSelection;
 class CodeEditor;
 class CodeDocumentController;
 class CodeFormatter;
+class RenderGraphShaderAssistance;
 class RayPathInspection;
 class RenderGraphPreview;
 class RenderGraphWorker;
@@ -506,6 +507,7 @@ private:
     CodeEditor* mSource;
     CodeDocumentController* mSourceController;
     CodeFormatter* mSourceFormatter;
+    RenderGraphShaderAssistance* mSourceAssistance;
     QPlainTextEdit* mSourceInterface;
     QSplitter* mSourceSplit;
     QPushButton* mSourceInterfaceToggle;

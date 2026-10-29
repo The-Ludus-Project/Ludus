@@ -5,6 +5,7 @@
 #include "internal/controller.h"
 #include "internal/render_graph_source.h"
 
+#include <QByteArray>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QObject>
@@ -30,6 +31,9 @@ struct RenderGraphJobRequest final
         RenderGraphSource::Draft; ///< Automatic previews capture Saved; explicit builds use Draft.
     QStringList Arguments;
     QString SnapshotDirectory;
+    /// Immutable stdin bytes, bounded by the producing operation's wire policy.
+    /// Empty closes stdin too. The job never interprets or logs this payload.
+    QByteArray StandardInput;
 };
 
 /// Copied CLI result. Payload holds the versioned success object; failures keep the
