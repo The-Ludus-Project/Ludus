@@ -557,6 +557,28 @@ navigation help is the **?** button's tooltip (click it to show it at once).
 The render surface receives the remaining height below its shading, framing and
 navigation controls, including after resize.
 
+In a default World (a project without `authoring/world.schema.json`), use
+**Add Geometry / Light** below the entity list to create a **Cube**, **Plane**,
+**Sphere**, **Point Light**, **Spot Light**, or **Directional Light**. Each command
+selects the new entity and creates one undo step. Geometry is one metre across,
+centred at the origin; the plane lies in XZ with its front face toward +Y.
+Use **Properties** to edit Transform, visibility and colour, or a light's kind,
+colour, intensity, range and spot angles, then **Apply Changes**. Save the World
+to retain the objects; duplication and deletion use the regular entity commands.
+Lights start two metres above and in front of the origin, aimed down 45 degrees.
+They use -Z as their forward direction and require unit scale. Point and spot
+intensity is candela; directional intensity is lux. Switch the viewport to
+**Lit** and position lights to illuminate the geometry; creation adds no implicit
+lighting. Renderer profiles retain their existing light support and limits.
+
+The geometry and default schema ship inside the editor, so this workflow needs
+no model import or project asset files. Imported scenes and these objects can
+share a default World. Project-owned schemas keep their existing component and
+asset contracts: the bundled creation commands are disabled for those Worlds;
+use **Add Entity** and the project's components instead. Existing default Worlds
+with empty entities remain readable without conversion.
+
+
 Native World viewports now use the [project render graph](render-graph-authoring.md#start-customizing-the-renderer),
 falling back to the engine default only when the project has none. Shader edits update
 that viewport automatically. Its selectors expose authored graph configurations and

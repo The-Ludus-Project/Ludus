@@ -1,4 +1,5 @@
 #include "entropy_fixture.h"
+#include "internal/builtin_world.h"
 #include "internal/controller.h"
 #include "internal/document_well.h"
 #include "internal/editor_identity.h"
@@ -6,6 +7,7 @@
 #include "internal/main_window.h"
 #include "internal/preview_viewport.h"
 #include "internal/render_preview.h"
+#include "internal/render_scene.h"
 #include "internal/renderer_workspace.h"
 #include "internal/viewport_object_interaction.h"
 #include "internal/world_document.h"
@@ -13,6 +15,7 @@
 #include "scene_fixture.h"
 #include <QColor>
 #include <QImage>
+#include <QMenu>
 #include <QPainter>
 
 #include "internal/workspace_style.h"
@@ -1874,4 +1877,196 @@ TEST_CASE("Viewport overlay projection reuses bounded buffers and follows gestur
     interaction.BuildOverlay(framePixel, overlay);
     CHECK(overlay.WireLinesPixel.IsEmpty() == false);
     CHECK(overlay.HandleStrokes.IsEmpty() == true);
+}
+
+TEST_CASE("Default World presets create renderable geometry and authored lights in one undo step",
+          "[editor][world][creation]")
+{
+    QTemporaryDir directory;
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    WorldWorkspace workspace;
+    workspace.SetProject(root, 1);
+    const QString path = QDir(root).filePath(QStringLiteral("objects.world.json"));
+    REQUIRE(workspace.Create(path) == true);
+    const QJsonObject empty = workspace.Document().Draft();
+    for (const QString& preset : {QStringLiteral("Cube"),
+                                  QStringLiteral("Plane"),
+                                  QStringLiteral("Sphere"),
+                                  QStringLiteral("Point Light"),
+                                  QStringLiteral("Spot Light"),
+                                  QStringLiteral("Directional Light")})
+    {
+        QToolButton* button = workspace.findChild<QToolButton*>(QStringLiteral("worldAddObject"));
+        REQUIRE(button != nullptr);
+        QAction* action = button->menu()->findChild<QAction*>(QStringLiteral("worldCreate") +
+                                                              QString(preset).remove(QLatin1Char(' ')));
+        REQUIRE(action != nullptr);
+        action->trigger();
+        const QJsonArray entities = workspace.Document().Draft().value(QStringLiteral("entities")).toArray();
+        REQUIRE(entities.size() == 1);
+        const QJsonObject entity = entities[0].toObject();
+        CHECK(entity.value(QStringLiteral("name")).toString() == preset);
+        CHECK(entity.value(QStringLiteral("components")).toObject().contains(QStringLiteral("transform")) == true);
+        RenderScene scene;
+        QString error;
+        INFO(error.toStdString());
+        REQUIRE(RenderScene::Load(directory.path(), workspace.Document(), scene, error) == true);
+        if (preset.endsWith(QStringLiteral("Light")) == true)
+        {
+            REQUIRE(scene.AuthoredLights.Count == 1);
+            const ludus::graphics::renderer::LightKind expectedKind =
+                preset == QStringLiteral("Point Light")  ? ludus::graphics::renderer::LightKind::Point
+                : preset == QStringLiteral("Spot Light") ? ludus::graphics::renderer::LightKind::Spot
+                                                         : ludus::graphics::renderer::LightKind::Directional;
+            CHECK(scene.AuthoredLights.Lights[0].Kind == expectedKind);
+            CHECK(scene.Objects.isEmpty() == true);
+        }
+        else
+        {
+            REQUIRE(scene.Objects.size() == 1);
+            CHECK(scene.Meshes[scene.Objects[0].Mesh].Id == QStringLiteral("mesh.") + preset.toLower());
+            CHECK(scene.Meshes[scene.Objects[0].Mesh].Indices.isEmpty() == false);
+            CHECK(scene.AuthoredLights.Count == 0);
+        }
+        workspace.Undo();
+        CHECK(workspace.Document().Draft() == empty);
+        workspace.Redo();
+        CHECK(workspace.Document().Draft().value(QStringLiteral("entities")).toArray() == entities);
+        workspace.Undo();
+    }
+    QString error;
+    workspace.findChild<QAction*>(QStringLiteral("worldCreateCube"))->trigger();
+    workspace.findChild<QAction*>(QStringLiteral("worldCreatePointLight"))->trigger();
+    RenderScene litScene;
+    REQUIRE(RenderScene::Load(directory.path(), workspace.Document(), litScene, error) == true);
+    CHECK(litScene.Objects.size() == 1);
+    CHECK(litScene.AuthoredLights.Count == 1);
+    RenderScene authored;
+    REQUIRE(RenderScene::Load(directory.path(), workspace.Document(), authored, error, false) == true);
+    CHECK(authored.Definition == nullptr);
+    REQUIRE(authored.Meshes.isEmpty() == false);
+    CHECK(authored.Meshes[0].Positions.isEmpty() == false);
+    QJsonObject level = ImportedLevel();
+    level.insert(QStringLiteral("objects"), QJsonArray{});
+    RenderScene composed;
+    REQUIRE(RenderScene::Merge(authored, {}, level, composed, error, {}) == true);
+    CHECK(composed.Objects.size() == 1);
+    CHECK(composed.AuthoredLights.Count == 1);
+    REQUIRE(workspace.Save() == true);
+    WorldWorkspace reopened;
+    reopened.SetProject(root, 2);
+    REQUIRE(reopened.Open(path) == true);
+    CHECK(reopened.Document().Draft() == workspace.Document().Draft());
+}
+
+TEST_CASE("Default World creation preserves drafts on entropy and validation failures", "[editor][world][creation]")
+{
+    QByteArray schema;
+    QString error;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument document;
+    REQUIRE(document.LoadSchema(schema, error) == true);
+    REQUIRE(document.New(error) == true);
+    const QJsonObject before = document.Draft();
+    QString id = QStringLiteral("unchanged");
+    CHECK(CreateWorldObject(document, tests::MakeUnavailableEntropySource(), QStringLiteral("Cube"), id, error) ==
+          false);
+    CHECK(document.Draft() == before);
+    CHECK(document.CanUndo() == false);
+    CHECK(id == QStringLiteral("unchanged"));
+    const ludus::foundation::identity::EntropySource entropy = ludus::platform::GetSystemEntropySource();
+    CHECK(document.CreateEntity(entropy,
+                                error,
+                                QStringLiteral("Bad"),
+                                id,
+                                QJsonObject{{QStringLiteral("unknown"), QJsonObject{}}}) == false);
+    CHECK(document.Draft() == before);
+    CHECK(document.CanUndo() == false);
+    CHECK(id == QStringLiteral("unchanged"));
+    CHECK(CreateWorldObject(document, entropy, QStringLiteral("Unknown"), id, error) == false);
+    WorldDocument project = Document();
+    const QJsonObject projectBefore = project.Draft();
+    CHECK(CreateWorldObject(project, entropy, QStringLiteral("Cube"), id, error) == false);
+    CHECK(project.Draft() == projectBefore);
+    // Worlds authored before bundled components existed can still open unchanged.
+    QJsonObject legacy = before;
+    legacy.insert(QStringLiteral("entities"),
+                  QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("old.entity")},
+                                         {QStringLiteral("name"), QStringLiteral("Old entity")},
+                                         {QStringLiteral("components"), QJsonObject{}}}});
+    REQUIRE(document.Load(QJsonDocument(legacy).toJson(), error) == true);
+    CHECK(document.Draft() == legacy);
+}
+
+TEST_CASE("Default World objects and lights survive imported scene composition", "[editor][world][creation]")
+{
+    QTemporaryDir directory;
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    const QString source = QDir(root).filePath(QStringLiteral("source"));
+    QString error;
+    REQUIRE(tests::CreateFixtureSource(source) == true);
+    REQUIRE(tests::PrepareImportedLevel(root, QStringLiteral("room.lulevel"), source, error) == true);
+    QByteArray schema;
+    REQUIRE(ReadBuiltInWorldAsset(QStringLiteral("world.schema.json"), schema, error) == true);
+    WorldDocument document;
+    REQUIRE(document.LoadSchema(schema, error) == true);
+    REQUIRE(document.New(error) == true);
+    QString id;
+    const ludus::foundation::identity::EntropySource entropy = ludus::platform::GetSystemEntropySource();
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("Cube"), id, error) == true);
+    REQUIRE(CreateWorldObject(document, entropy, QStringLiteral("Point Light"), id, error) == true);
+    const QJsonObject level =
+        QJsonDocument::fromJson(Read(QDir(root).filePath(QStringLiteral("room.lulevel")))).object();
+    REQUIRE(document.ImportScene(level, error) == true);
+    const QString path = QDir(root).filePath(QStringLiteral("mixed.world.json"));
+    Write(path, document.Encode());
+    ToolingPaths tools;
+    tools.ToolingRoot = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT);
+    WorldWorkspace workspace(tools, nullptr);
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Open(path) == true);
+    constexpr ludus::foundation::int64 MAX_SCENE_WAIT_MILLISECONDS = 15000;
+    constexpr ludus::foundation::int32 POLL_MILLISECONDS = 10;
+    QElapsedTimer timer;
+    timer.start();
+    while (workspace.CanSave() == false && timer.elapsed() < MAX_SCENE_WAIT_MILLISECONDS)
+    {
+        QTest::qWait(POLL_MILLISECONDS);
+    }
+    REQUIRE(workspace.CanSave() == true);
+    LevelWorkspace* scene = workspace.findChild<LevelWorkspace*>();
+    REQUIRE(scene != nullptr);
+    CHECK(scene->PreviewScene().Objects.size() == 2);
+    CHECK(scene->PreviewScene().AuthoredLights.Count == 1);
+    CHECK(workspace.Document().Draft() == document.Draft());
+    workspace.StopPreview();
+}
+
+TEST_CASE("Closing a World with created geometry and lighting retires the delegated preview safely",
+          "[editor][world][creation][layout]")
+{
+    QTemporaryDir directory;
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    const QString descriptor = QDir(root).filePath(QStringLiteral("ludus.project.json"));
+    Write(descriptor, QByteArrayLiteral(R"json({"version":1,"name":"objects","provider":"cmake",
+"source_dir":".","preset":"linux-clang-debug","target":"app","run":{"cwd":".","args":[]}})json"));
+    EditorController controller(ToolingPaths{}, nullptr, QDir(root).filePath(QStringLiteral("recent.json")));
+    {
+        MainWindow window(&controller, nullptr, QDir(root).filePath(QStringLiteral("workspace.json")));
+        window.show();
+        controller.OpenProject(descriptor);
+        WorldWorkspace* world = window.findChild<WorldWorkspace*>();
+        REQUIRE(world != nullptr);
+        REQUIRE(world->Create(QDir(root).filePath(QStringLiteral("objects.world.json"))) == true);
+        window.findChild<QAction*>(QStringLiteral("worldCreateCube"))->trigger();
+        window.findChild<QAction*>(QStringLiteral("worldCreatePointLight"))->trigger();
+        constexpr ludus::foundation::int32 MAX_PREVIEW_WAIT_MILLISECONDS = 15000;
+        REQUIRE(QTest::qWaitFor(
+                    [world]() {
+                        const RenderScene& scene = world->GetRenderPreview().Scene();
+                        return scene.Objects.size() == 1 && scene.AuthoredLights.Count == 1;
+                    },
+                    MAX_PREVIEW_WAIT_MILLISECONDS) == true);
+    }
+    QApplication::processEvents();
 }

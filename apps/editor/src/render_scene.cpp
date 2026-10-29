@@ -1,4 +1,5 @@
 #include "internal/render_scene.h"
+#include "internal/builtin_world.h"
 #include "internal/qt_numeric_stream.h"
 #include "internal/render_scene_limits.h"
 #include "internal/world_demo_adapter.h"
@@ -540,26 +541,36 @@ RenderSceneSource RenderScene::GetSource(const QString& root, const WorldDocumen
     const bool hasBindings =
         root.isEmpty() == false &&
         QFileInfo(QDir(root).filePath(QStringLiteral("authoring/render.preview.json"))).isFile() == true;
-    return hasBindings == true ? RenderSceneSource::ProjectBindings : RenderSceneSource::None;
+    return hasBindings == true || IsBuiltInWorld(world) == true ? RenderSceneSource::ProjectBindings
+                                                                : RenderSceneSource::None;
 }
-bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderScene& output, QString& error)
+bool RenderScene::Load(const QString& root,
+                       const WorldDocument& world,
+                       RenderScene& outScene,
+                       QString& outError,
+                       bool shouldComposeLighting)
 {
-    error.clear();
+    outError.clear();
     if (GetSource(root, world) == RenderSceneSource::WorldDemo)
     {
         // The game's own extraction, so the World viewport draws exactly what the player draws.
-        return LoadWorldDemoScene(world, output, error);
+        return LoadWorldDemoScene(world, outScene, outError);
     }
     const auto canonical = QFileInfo(root).canonicalFilePath();
     QByteArray bytes;
     QJsonObject descriptor;
-    if (world.Loaded() == false || canonical.isEmpty() ||
-        Read(canonical, QStringLiteral("authoring/render.preview.json"), bytes, error) == false ||
-        Object(bytes, descriptor, error) == false)
+    const QFileInfo descriptorFile(QDir(root).filePath(QStringLiteral("authoring/render.preview.json")));
+    const bool isBuiltIn =
+        IsBuiltInWorld(world) == true && descriptorFile.exists() == false && descriptorFile.isSymLink() == false;
+    const bool isDescriptorRead =
+        isBuiltIn == true ? ReadBuiltInWorldAsset(QStringLiteral("render.preview.json"), bytes, outError)
+                          : Read(canonical, QStringLiteral("authoring/render.preview.json"), bytes, outError);
+    if (world.Loaded() == false || canonical.isEmpty() || isDescriptorRead == false ||
+        Object(bytes, descriptor, outError) == false)
     {
-        return Fail(error,
-                    error.isEmpty() ? QStringLiteral("Open a world in a project with authoring/render.preview.json.")
-                                    : error);
+        return Fail(outError,
+                    outError.isEmpty() ? QStringLiteral("Open a world in a project with authoring/render.preview.json.")
+                                       : outError);
     }
     QJsonObject requiredDescriptor = descriptor;
     requiredDescriptor.remove(QStringLiteral("light"));
@@ -576,7 +587,7 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
         descriptor.value(QStringLiteral("meshes")).isArray() == false ||
         descriptor.value(QStringLiteral("textures")).isArray() == false)
     {
-        return Fail(error,
+        return Fail(outError,
                     QStringLiteral("Preview descriptor must use v1, this world schema and explicit bindings/assets."));
     }
     QJsonObject transform;
@@ -598,7 +609,7 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
                  QStringLiteral("sz")},
                 {number, number, number, number, number, number, number, number, number},
                 transform,
-                error) == false ||
+                outError) == false ||
         Binding(world,
                 descriptor,
                 QStringLiteral("renderable"),
@@ -610,7 +621,7 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
                  QStringLiteral("b")},
                 {QStringLiteral("asset"), QStringLiteral("asset"), QStringLiteral("boolean"), number, number, number},
                 renderable,
-                error) == false ||
+                outError) == false ||
         (descriptor.value(QStringLiteral("camera")).isNull() == false &&
          Binding(world,
                  descriptor,
@@ -623,7 +634,7 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
                   QStringLiteral("follow")},
                  {QStringLiteral("enum"), number, number, number, number, QStringLiteral("entity")},
                  cameraBinding,
-                 error) == false))
+                 outError) == false))
     {
         return false;
     }
@@ -644,7 +655,7 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
              QStringLiteral("outerAngle")},
             {QStringLiteral("enum"), QStringLiteral("boolean"), number, number, number, number, number, number, number},
             lightBinding,
-            error) == false)
+            outError) == false)
     {
         return false;
     }
@@ -657,7 +668,7 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
     const auto textures = descriptor.value(QStringLiteral("textures")).toArray();
     if (meshes.isEmpty() || meshes.size() > 6 || textures.size() > 8)
     {
-        return Fail(error, QStringLiteral("Preview supports 1–6 meshes and 0–8 PNG textures."));
+        return Fail(outError, QStringLiteral("Preview supports 1–6 meshes and 0–8 PNG textures."));
     }
     for (const bool texture : {false, true})
     {
@@ -676,16 +687,18 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
             }
             if (Fields(entry, {QStringLiteral("id"), QStringLiteral("path")}) == false || declared == false ||
                 seen.contains(id) == true ||
-                Read(canonical,
-                     entry.value(QStringLiteral("path")).toString(),
-                     bytes,
-                     error,
-                     static_cast<int64>(texture == true ? MAX_PREVIEW_TEXTURE_FILE_BYTES
-                                                        : MAX_PREVIEW_DOCUMENT_BYTES)) == false)
+                (isBuiltIn == true
+                     ? ReadBuiltInWorldAsset(entry.value(QStringLiteral("path")).toString(), bytes, outError)
+                     : Read(canonical,
+                            entry.value(QStringLiteral("path")).toString(),
+                            bytes,
+                            outError,
+                            static_cast<int64>(texture == true ? MAX_PREVIEW_TEXTURE_FILE_BYTES
+                                                               : MAX_PREVIEW_DOCUMENT_BYTES))) == false)
             {
                 return Fail(
-                    error,
-                    QStringLiteral("%1: invalid/duplicate asset or unreadable project file. %2").arg(id, error));
+                    outError,
+                    QStringLiteral("%1: invalid/duplicate asset or unreadable project file. %2").arg(id, outError));
             }
             seen.insert(id);
             assetsIdentity += texture ? 'T' : 'M';
@@ -699,12 +712,12 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
                 if (size.isValid() == false || size.width() > MAX_PREVIEW_TEXTURE_EXTENT ||
                     size.height() > MAX_PREVIEW_TEXTURE_EXTENT)
                 {
-                    return Fail(error, QStringLiteral("%1: PNG preview must be 1–2048 pixels per axis.").arg(id));
+                    return Fail(outError, QStringLiteral("%1: PNG preview must be 1–2048 pixels per axis.").arg(id));
                 }
                 auto image = reader.read().convertToFormat(QImage::Format_RGBA8888);
                 if (image.isNull() || image.size() != size)
                 {
-                    return Fail(error, QStringLiteral("%1: PNG could not be decoded.").arg(id));
+                    return Fail(outError, QStringLiteral("%1: PNG could not be decoded.").arg(id));
                 }
                 candidate.Textures.append({id, image});
             }
@@ -712,9 +725,9 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
             {
                 PreviewMesh mesh;
                 mesh.Id = id;
-                if (Mesh(bytes, mesh, error) == false)
+                if (Mesh(bytes, mesh, outError) == false)
                 {
-                    error = id + QStringLiteral(": ") + error;
+                    outError = id + QStringLiteral(": ") + outError;
                     return false;
                 }
                 candidate.Meshes.append(mesh);
@@ -740,9 +753,9 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
         const QString id = world.GetEntityKey(entity);
         const auto name = entity.value(QStringLiteral("name")).toString();
         math::TransformTRS trs;
-        if (Attached(entity, transform) == false || Transform(Values(entity, transform), trs, error) == false)
+        if (Attached(entity, transform) == false || Transform(Values(entity, transform), trs, outError) == false)
         {
-            return Fail(error, name + QStringLiteral(": missing or invalid transform. ") + error);
+            return Fail(outError, name + QStringLiteral(": missing or invalid transform. ") + outError);
         }
         if (Attached(entity, lightBinding) == true)
         {
@@ -768,7 +781,7 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
                     Number(values.value(QStringLiteral("outerAngle")), outerDegrees) == false || innerDegrees < 0 ||
                     innerDegrees >= outerDegrees || outerDegrees >= 90 || trs.Scale != math::Vector3{1, 1, 1})
                 {
-                    return Fail(error, name + QStringLiteral(": invalid light terms, cone or non-unit scale."));
+                    return Fail(outError, name + QStringLiteral(": invalid light terms, cone or non-unit scale."));
                 }
                 light.Position = trs.Translation;
                 light.Direction = math::Rotate(trs.Rotation, {0, 0, -1});
@@ -777,7 +790,7 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
                 light.SourceId = ComputeSourceId(id);
                 if (candidate.AuthoredLights.Count >= sizeof(candidate.AuthoredLights.Lights) / sizeof(rr::DirectLight))
                 {
-                    return Fail(error, QStringLiteral("World exceeds the authored-light capacity."));
+                    return Fail(outError, QStringLiteral("World exceeds the authored-light capacity."));
                 }
                 candidate.AuthoredLights.Lights[candidate.AuthoredLights.Count++] = light;
                 assetsIdentity += QJsonDocument(QJsonObject{{QStringLiteral("id"), id},
@@ -804,7 +817,7 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
                     object.Tint.X > 1 || object.Tint.Y < 0 || object.Tint.Y > 1 || object.Tint.Z < 0 ||
                     object.Tint.Z > 1 || math::TryToAffine3(trs, 1e-4F, object.Transform) != math::MathStatus::Success)
                 {
-                    return Fail(error, name + QStringLiteral(": choose mapped mesh/texture, RGB in [0,1]."));
+                    return Fail(outError, name + QStringLiteral(": choose mapped mesh/texture, RGB in [0,1]."));
                 }
                 if (object.Texture >= 0)
                 {
@@ -821,7 +834,7 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
                     {
                         if (candidate.Surfaces.size() == 8)
                         {
-                            return Fail(error,
+                            return Fail(outError,
                                         QStringLiteral("Preview supports eight distinct texture/tint combinations; "
                                                        "identical surfaces are shared."));
                         }
@@ -836,7 +849,7 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
                     if (math::IsFinite(p) == false || math::Abs(p.X) > MAX_PREVIEW_COORDINATE_FLOAT ||
                         math::Abs(p.Y) > MAX_PREVIEW_COORDINATE_FLOAT || math::Abs(p.Z) > MAX_PREVIEW_COORDINATE_FLOAT)
                     {
-                        return Fail(error, name + QStringLiteral(": transformed geometry exceeds preview bounds."));
+                        return Fail(outError, name + QStringLiteral(": transformed geometry exceeds preview bounds."));
                     }
                     if (bounds == false)
                     {
@@ -854,7 +867,7 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
             const auto values = Values(entity, cameraBinding);
             if (trs.Scale != math::Vector3{1, 1, 1})
             {
-                return Fail(error, name + QStringLiteral(": cameras require unit scale (a rigid pose)."));
+                return Fail(outError, name + QStringLiteral(": cameras require unit scale (a rigid pose)."));
             }
             camera::CameraRigDefinition definition;
             const auto authoredPose = Values(entity, transform);
@@ -874,7 +887,7 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
                 Number(values.value(QStringLiteral("near")), definition.Lens.NearPlane) == false ||
                 Number(values.value(QStringLiteral("far")), definition.Lens.FarPlane) == false)
             {
-                return Fail(error, name + QStringLiteral(": invalid camera lens."));
+                return Fail(outError, name + QStringLiteral(": invalid camera lens."));
             }
             definition.Lens.VerticalFov *= 0.01745329252F;
             camera::CameraTargetSample target;
@@ -883,9 +896,10 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
             {
                 const auto e = world.Entity(follow);
                 math::TransformTRS targetTransform;
-                if (Attached(e, transform) == false || Transform(Values(e, transform), targetTransform, error) == false)
+                if (Attached(e, transform) == false ||
+                    Transform(Values(e, transform), targetTransform, outError) == false)
                 {
-                    return Fail(error, name + QStringLiteral(": follow target needs a valid transform."));
+                    return Fail(outError, name + QStringLiteral(": follow target needs a valid transform."));
                 }
                 definition.Recipe = camera::CameraRecipe::OrthographicFollow;
                 const auto targetValues = Values(e, transform);
@@ -903,7 +917,7 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
                                           rig.Sample,
                                           &rig.Trace) != camera::CameraStatus::Success)
             {
-                return Fail(error, name + QStringLiteral(": lens/follow is unsupported by the C0 camera contract."));
+                return Fail(outError, name + QStringLiteral(": lens/follow is unsupported by the C0 camera contract."));
             }
             candidate.Cameras.append(rig);
         }
@@ -912,14 +926,14 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
     if (rr::NormalizeDirectLights(candidate.AuthoredLights.Lights, candidate.AuthoredLights.Count, normalized) !=
         graphics::rhi::RasterStatus::Ready)
     {
-        return Fail(error, QStringLiteral("Invalid light color/intensity/range or conflicting source identity."));
+        return Fail(outError, QStringLiteral("Invalid light color/intensity/range or conflicting source identity."));
     }
     candidate.AuthoredLights = normalized;
     candidate.Center = (low + high) * 0.5F;
     candidate.Radius = bounds ? math::Max(0.001F, math::Length(high - low) * 0.5F) : 1.0F;
     candidate.AssetsIdentity = QCryptographicHash::hash(assetsIdentity, QCryptographicHash::Sha256);
     candidate.Identity = QCryptographicHash::hash(identity + candidate.AssetsIdentity, QCryptographicHash::Sha256);
-    if (hasAuthoredLighting == true && candidate.Objects.isEmpty() == false)
+    if (shouldComposeLighting == true && hasAuthoredLighting == true && candidate.Objects.isEmpty() == false)
     {
         const math::Vector3 eye = candidate.Center + math::Vector3{0, 0, candidate.Radius * 3};
         const QJsonObject camera{
@@ -934,10 +948,10 @@ bool RenderScene::Load(const QString& root, const WorldDocument& world, RenderSc
         const QJsonObject level{{QStringLiteral("id"), QStringLiteral("schema-preview")},
                                 {QStringLiteral("objects"), QJsonArray{}},
                                 {QStringLiteral("camera"), camera}};
-        return Merge(candidate, {}, level, output, error, {});
+        return Merge(candidate, {}, level, outScene, outError, {});
     }
-    output = foundation::Move(candidate);
-    error.clear();
+    outScene = foundation::Move(candidate);
+    outError.clear();
     return true;
 }
 bool RenderScene::TryGetBounds(const QString& id, math::Aabb3& outBoundsWorld) const noexcept
