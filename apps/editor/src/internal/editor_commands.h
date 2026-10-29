@@ -222,7 +222,8 @@ inline constexpr EditorCommand VIEW_FOCUS_VIEWPORT_COMMAND
     .Text = "&Focus Viewport",
     .ToolbarText = "",
     .Shortcut = "Shift+Alt+Return",
-    .Help = "Hide tool windows, toolbars and document controls to focus the active render graph or World viewport. Run "
+    .Help = "Hide tool windows, toolbars and document controls to focus the active Source editor, render graph or "
+            "World viewport. Run "
             "again to "
             "restore the previous arrangement exactly.",
     .IsCheckable = true,

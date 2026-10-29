@@ -18,10 +18,19 @@ struct CodeBracket final
     QChar Character;
 };
 
-/// Only lexical brackets outside comments and strings, cached per text block.
+/// A comment/string span, including an unfinished span's insertion point.
+struct CodeExcludedRange final
+{
+    foundation::int32 Start = 0;
+    foundation::int32 End = 0;
+    bool IsOpenEnded = false;
+};
+
+/// Lexical information cached per text block for matching and automatic bracket pairs.
 struct CodeBlockData final : QTextBlockUserData
 {
     QVector<CodeBracket> Brackets;
+    QVector<CodeExcludedRange> ExcludedRanges;
 };
 
 /// Whether a palette's base is light, selecting the light code color set.

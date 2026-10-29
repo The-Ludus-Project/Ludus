@@ -11,7 +11,9 @@
 #include <QContextMenuEvent>
 #include <QEvent>
 #include <QFocusEvent>
+#include <QFont>
 #include <QFontDatabase>
+#include <QFontInfo>
 #include <QHelpEvent>
 #include <QInputMethodEvent>
 #include <QKeyEvent>
@@ -22,8 +24,10 @@
 #include <QPainter>
 #include <QPalette>
 #include <QPen>
+#include <QPointF>
 #include <QRectF>
 #include <QResizeEvent>
+#include <QSettings>
 #include <QStringList>
 #include <QStringView>
 #include <QTextBlock>
@@ -44,6 +48,7 @@ namespace
 {
 using namespace foundation;
 constexpr int32 INDENT_WIDTH = 4;
+constexpr int32 INDENT_GUIDE_ALPHA = 48;
 constexpr int32 GUTTER_MARGIN = 6;
 constexpr int32 DECIMAL_RADIX = 10;
 constexpr int32 MAX_BRACKET_SCAN_CHARACTERS = 32768;
@@ -124,8 +129,26 @@ CodeEditor::CodeEditor(QWidget* parentOrNull)
       mFormatAction(new QAction(QStringLiteral("Format Document"), this)),
       mChooseFormatterAction(new QAction(QStringLiteral("Choose Formatter..."), this))
 {
-    setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
-    setLineWrapMode(QPlainTextEdit::NoWrap);
+    QFont textFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+    textFont.setStyleHint(QFont::Monospace);
+    textFont.setFixedPitch(true);
+    // Some hosts provide a proportional fallback for the system's fixed-font alias.
+    if (QFontInfo(textFont).fixedPitch() == false)
+    {
+        for (const QString& family : QFontDatabase::families())
+        {
+            if (QFontDatabase::isFixedPitch(family) == true)
+            {
+                textFont.setFamily(family);
+                break;
+            }
+        }
+    }
+    setFont(textFont);
+    QSettings preferences;
+    SetFontPointSize(preferences.value(QStringLiteral("codeEditor/fontPoints"), DEFAULT_FONT_POINTS).toInt());
+    SetWordWrap(preferences.value(QStringLiteral("codeEditor/wordWrap"), false).toBool());
+    SetIndentGuidesVisible(preferences.value(QStringLiteral("codeEditor/indentGuides"), true).toBool());
     setTabStopDistance(fontMetrics().horizontalAdvance(QLatin1Char(' ')) * INDENT_WIDTH);
     mHighlighter->SetPalette(palette());
     mSelectionUpdate.setSingleShot(true);
@@ -167,6 +190,28 @@ CodeEditor::CodeEditor(QWidget* parentOrNull)
     addShortcut(QStringLiteral("Delete Lines"), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_K), [this]() {
         DeleteLines();
     });
+    addShortcut(QStringLiteral("Increase Text Size"), QKeySequence::ZoomIn, [this]() {
+        SetFontPointSize(font().pointSize() + 1);
+    });
+    addShortcut(QStringLiteral("Decrease Text Size"), QKeySequence::ZoomOut, [this]() {
+        SetFontPointSize(font().pointSize() - 1);
+    });
+    addShortcut(QStringLiteral("Reset Text Size"), QKeySequence(Qt::CTRL | Qt::Key_0), [this]() {
+        SetFontPointSize(DEFAULT_FONT_POINTS);
+    });
+    addShortcut(QStringLiteral("Next Diagnostic"), QKeySequence(Qt::Key_F8), [this]() { GoToDiagnostic(); });
+    addShortcut(QStringLiteral("Previous Diagnostic"), QKeySequence(Qt::SHIFT | Qt::Key_F8), [this]() {
+        GoToDiagnostic(true);
+    });
+    QAction* pairs = new QAction(QStringLiteral("Auto-close Brackets"), this);
+    pairs->setCheckable(true);
+    mShouldPairBrackets = preferences.value(QStringLiteral("codeEditor/autoCloseBrackets"), true).toBool();
+    pairs->setChecked(mShouldPairBrackets);
+    connect(pairs, &QAction::toggled, this, [this](bool shouldPair) {
+        mShouldPairBrackets = shouldPair;
+        QSettings().setValue(QStringLiteral("codeEditor/autoCloseBrackets"), shouldPair);
+    });
+    addAction(pairs);
     mFormatAction->setObjectName(QStringLiteral("codeEditorFormat"));
     mFormatAction->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_I));
     mFormatAction->setShortcutContext(Qt::WidgetShortcut);
@@ -177,6 +222,113 @@ CodeEditor::CodeEditor(QWidget* parentOrNull)
     connect(mFormatAction, &QAction::triggered, this, &CodeEditor::FormatRequested);
     connect(mChooseFormatterAction, &QAction::triggered, this, &CodeEditor::ChooseFormatterRequested);
     updateGutterWidth();
+}
+
+void CodeEditor::SetFontPointSize(int32 points)
+{
+    QFont textFont = font();
+    textFont.setPointSize(qBound(MINIMUM_FONT_POINTS, points, MAXIMUM_FONT_POINTS));
+    setFont(textFont);
+    QSettings().setValue(QStringLiteral("codeEditor/fontPoints"), textFont.pointSize());
+    Q_EMIT PresentationChanged();
+}
+
+void CodeEditor::SetWordWrap(bool shouldWrap)
+{
+    setLineWrapMode(shouldWrap == true ? QPlainTextEdit::WidgetWidth : QPlainTextEdit::NoWrap);
+    QSettings().setValue(QStringLiteral("codeEditor/wordWrap"), shouldWrap);
+    Q_EMIT PresentationChanged();
+}
+
+void CodeEditor::SetIndentGuidesVisible(bool isVisible)
+{
+    mShouldShowIndentGuides = isVisible;
+    setProperty("indentGuidesVisible", isVisible);
+    QSettings().setValue(QStringLiteral("codeEditor/indentGuides"), isVisible);
+    viewport()->update();
+    Q_EMIT PresentationChanged();
+}
+
+void CodeEditor::GoToDiagnostic(bool shouldGoBackward)
+{
+    if (mDiagnostics.isEmpty() == true)
+    {
+        return;
+    }
+    const int32 position = textCursor().selectionStart();
+    int32 selected = -1;
+    int32 boundary = 0;
+    for (int32 index = 0; index < mDiagnostics.size(); ++index)
+    {
+        const int32 candidate = mDiagnostics.at(index).Range.selectionStart();
+        const int32 extreme = mDiagnostics.at(boundary).Range.selectionStart();
+        if ((shouldGoBackward == true && candidate > extreme) || (shouldGoBackward == false && candidate < extreme))
+        {
+            boundary = index;
+        }
+        if ((shouldGoBackward == true && candidate < position) || (shouldGoBackward == false && candidate > position))
+        {
+            if (selected < 0 ||
+                (shouldGoBackward == true && candidate > mDiagnostics.at(selected).Range.selectionStart()) ||
+                (shouldGoBackward == false && candidate < mDiagnostics.at(selected).Range.selectionStart()))
+            {
+                selected = index;
+            }
+        }
+    }
+    setTextCursor(mDiagnostics.at(selected < 0 ? boundary : selected).Range);
+    ensureCursorVisible();
+    setFocus();
+}
+
+void CodeEditor::paintEvent(QPaintEvent* event)
+{
+    QPlainTextEdit::paintEvent(event);
+    if (mShouldShowIndentGuides == false)
+    {
+        return;
+    }
+    QPainter painter(viewport());
+    QColor color = palette().color(QPalette::Text);
+    color.setAlpha(INDENT_GUIDE_ALPHA);
+    painter.setPen(color);
+    const int32 spaceWidth = fontMetrics().horizontalAdvance(QLatin1Char(' '));
+    QTextBlock block = firstVisibleBlock();
+    while (block.isValid() == true)
+    {
+        const QRectF rectangle = blockBoundingGeometry(block).translated(contentOffset());
+        if (rectangle.top() > event->rect().bottom())
+        {
+            break;
+        }
+        if (block.isVisible() == true && rectangle.bottom() >= event->rect().top())
+        {
+            const QString text = block.text();
+            int32 columns = 0;
+            for (const QChar character : text)
+            {
+                if (character == QLatin1Char(' '))
+                {
+                    ++columns;
+                }
+                else if (character == QLatin1Char('\t'))
+                {
+                    columns += INDENT_WIDTH - columns % INDENT_WIDTH;
+                }
+                else
+                {
+                    break;
+                }
+            }
+            const int32 left = cursorRect(QTextCursor(block)).left();
+            for (int32 column = INDENT_WIDTH; column <= columns; column += INDENT_WIDTH)
+            {
+                const int32 x = left + (column - INDENT_WIDTH) * spaceWidth;
+                painter.drawLine(QPointF(x, rectangle.top()), QPointF(x, rectangle.top() + fontMetrics().height()));
+            }
+        }
+        block = block.next();
+    }
 }
 
 void CodeEditor::SetLanguage(CodeLanguage language)
@@ -349,6 +501,7 @@ void CodeEditor::SetDiagnostics(const QList<CodeDiagnostic>& diagnostics, bool i
         mDiagnostics.append(marker);
     }
     mAreDiagnosticsCurrent = isCurrent;
+    Q_EMIT DiagnosticsChanged();
     // Snapshot for telling highlighter reformatting apart from same-length edits.
     mDiagnosticText = isCurrent == true && mDiagnostics.isEmpty() == false ? document()->toRawText() : QString();
     mGutter->update();
@@ -424,6 +577,7 @@ void CodeEditor::markDiagnosticsOutOfDate(int32 position, int32 removed, int32 a
     if (isChanged == true)
     {
         mAreDiagnosticsCurrent = false;
+        Q_EMIT DiagnosticsChanged();
         mDiagnosticText.clear();
         mGutter->update();
         mSelectionUpdate.start(0);
@@ -956,6 +1110,67 @@ void CodeEditor::keyPressEvent(QKeyEvent* event)
         Redo();
         return;
     }
+    if (isReadOnly() == false && mShouldPairBrackets == true && mLanguage == CodeLanguage::Slang &&
+        (event->modifiers() == Qt::NoModifier || event->modifiers() == Qt::ShiftModifier) &&
+        textCursor().hasSelection() == false &&
+        ((event->text().size() == 1 && QStringView(u"()[]{}").contains(event->text().at(0)) == true) ||
+         event->key() == Qt::Key_Backspace))
+    {
+        QTextCursor cursor = textCursor();
+        const int32 position = cursor.positionInBlock();
+        // Refresh only this block so a just-typed comment/string is respected before Qt's queued pass.
+        mHighlighter->rehighlightBlock(cursor.block());
+        const CodeBlockData* dataOrNull = static_cast<CodeBlockData*>(cursor.block().userData());
+        bool canPair = dataOrNull != nullptr;
+        if (dataOrNull != nullptr)
+        {
+            for (const CodeExcludedRange& range : dataOrNull->ExcludedRanges)
+            {
+                if (position > range.Start &&
+                    (position < range.End || (position == range.End && range.IsOpenEnded == true)))
+                {
+                    canPair = false;
+                }
+            }
+        }
+        const QStringView pairs(u"()[]{}");
+        const QString typed = event->text();
+        const int32 pairIndex = typed.size() == 1 ? static_cast<int32>(pairs.indexOf(typed.at(0))) : -1;
+        const QChar next = document()->characterAt(cursor.position());
+        if (canPair == true && pairIndex >= 0)
+        {
+            if (pairIndex % 2 == 1 && next == typed.at(0))
+            {
+                cursor.movePosition(QTextCursor::NextCharacter);
+                setTextCursor(cursor);
+                Q_EMIT EditBoundary();
+                return;
+            }
+            if (pairIndex % 2 == 0 &&
+                (next.isSpace() == true || next.isNull() == true || QStringView(u")]}").contains(next) == true))
+            {
+                const CodeEditScope operation(*this);
+                cursor.beginEditBlock();
+                cursor.insertText(typed + pairs.at(pairIndex + 1));
+                cursor.movePosition(QTextCursor::PreviousCharacter);
+                cursor.endEditBlock();
+                setTextCursor(cursor);
+                return;
+            }
+        }
+        const int32 previousPair = static_cast<int32>(pairs.indexOf(document()->characterAt(cursor.position() - 1)));
+        if (canPair == true && event->key() == Qt::Key_Backspace && previousPair >= 0 && previousPair % 2 == 0 &&
+            next == pairs.at(previousPair + 1))
+        {
+            const CodeEditScope operation(*this);
+            cursor.beginEditBlock();
+            cursor.deletePreviousChar();
+            cursor.deleteChar();
+            cursor.endEditBlock();
+            setTextCursor(cursor);
+            return;
+        }
+    }
     CodeEditKind kind = CodeEditKind::Command;
     if (event->modifiers() == Qt::NoModifier || event->modifiers() == Qt::ShiftModifier)
     {
@@ -991,12 +1206,33 @@ void CodeEditor::keyPressEvent(QKeyEvent* event)
         cursor.beginEditBlock();
         cursor.removeSelectedText();
         const QString prefix = cursor.block().text().left(cursor.positionInBlock());
-        QString indentation = prefix.left(GetIndentLength(prefix));
+        const QString baseIndentation = prefix.left(GetIndentLength(prefix));
+        QString indentation = baseIndentation;
+        bool shouldExpandPair = false;
         if (mLanguage != CodeLanguage::PlainText && prefix.trimmed().endsWith(QLatin1Char('{')) == true)
         {
             indentation += QString(INDENT_WIDTH, QLatin1Char(' '));
+            if (mShouldPairBrackets == true && document()->characterAt(cursor.position()) == QLatin1Char('}'))
+            {
+                mHighlighter->rehighlightBlock(cursor.block());
+                const CodeBlockData* dataOrNull = static_cast<CodeBlockData*>(cursor.block().userData());
+                if (dataOrNull != nullptr)
+                {
+                    const isize opening = prefix.lastIndexOf(QLatin1Char('{'));
+                    for (const CodeBracket& bracket : dataOrNull->Brackets)
+                    {
+                        shouldExpandPair = shouldExpandPair == true || bracket.Position == opening;
+                    }
+                }
+            }
         }
         cursor.insertText(QLatin1Char('\n') + indentation);
+        if (shouldExpandPair == true)
+        {
+            const int32 contentPosition = cursor.position();
+            cursor.insertText(QLatin1Char('\n') + baseIndentation);
+            cursor.setPosition(contentPosition);
+        }
         cursor.endEditBlock();
         setTextCursor(cursor);
         return;

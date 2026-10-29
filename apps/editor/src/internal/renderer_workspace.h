@@ -37,6 +37,7 @@ class QPlainTextEdit;
 class QPushButton;
 class QScrollArea;
 class QSpinBox;
+class QSplitter;
 class QStackedWidget;
 class QTabWidget;
 class QTableWidget;
@@ -84,10 +85,13 @@ public:
     RendererWorkspace(const RendererWorkspace&) = delete;
     RendererWorkspace& operator=(const RendererWorkspace&) = delete;
 
-    /// Hide the document header, sources and status while the shell focuses the graph.
+    /// Hide the document header, sources and status while the shell focuses the active
+    /// Source view or graph canvas. The API panel hides temporarily in Source focus.
     /// Canvas breadcrumbs and Back/Forward remain available. Restoring chrome preserves
     /// the user's source-tree visibility preference and selection.
     void SetChromeVisible(bool isVisible);
+    /// Focus the active Source editor or graph canvas, preserving the selected view.
+    void FocusActiveView();
 
     /// Bind a project root and epoch; a different root closes the document and cancels jobs.
     /// The root is canonicalized, so a symlinked path binds the same project and its build
@@ -355,6 +359,8 @@ public:
     void ServicePreview();
 
 Q_SIGNALS:
+    /// Request that the shell toggle its reversible focus layout for this document.
+    void FocusViewRequested();
     void DocumentChanged();
     /// Node fields changed; the originating surface may retain its active controls.
     /// editOriginOrNull is borrowed during synchronous notification, or null for a full refresh.
@@ -444,6 +450,8 @@ private:
     void setupResourceInspection();
     void updateResourceInspection();
     void renderPreview();
+    void renderSourceStatus();
+    void updateSourceInterfaceVisibility();
     void openSubgraph(const QString& asset, const QString& configuration, const QString& instance);
 
     static constexpr foundation::int32 FILE_ROLE = Qt::UserRole;
@@ -497,6 +505,13 @@ private:
     CodeDocumentController* mSourceController;
     CodeFormatter* mSourceFormatter;
     QPlainTextEdit* mSourceInterface;
+    QSplitter* mSourceSplit;
+    QPushButton* mSourceInterfaceToggle;
+    QPushButton* mSourceFocusToggle;
+    QLabel* mSourceStatus;
+    foundation::uint64 mSourcePresentedGeneration = 0;
+    bool mHasSourcePresentedCatalogue = false;
+    bool mIsSourcePreviewPreparing = false;
     RenderGraphBuildSettings mBuildSettings;
     RenderGraphBuildTools mResolvedTools;
     QString mResolvedSdk;
