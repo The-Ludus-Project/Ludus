@@ -34,6 +34,8 @@ public:
                             const QStyleOptionComplex* option,
                             QPainter* painter,
                             const QWidget* widgetOrNull) const override;
+    [[nodiscard]] QRect
+    subElementRect(SubElement element, const QStyleOption* option, const QWidget* widgetOrNull) const override;
     [[nodiscard]] QSize sizeFromContents(ContentsType type,
                                          const QStyleOption* option,
                                          const QSize& contentsSize,

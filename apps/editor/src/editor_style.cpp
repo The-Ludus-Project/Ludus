@@ -2,6 +2,8 @@
 #include "design_tokens.h"
 #include "internal/theme_preferences.h"
 
+#include <algorithm>
+
 #include <QAbstractItemView>
 #include <QAbstractScrollArea>
 #include <QApplication>
@@ -47,6 +49,8 @@ constexpr qreal HALF = 0.5;
 const char* const STYLE_OBJECT_NAME = "LudusEditorStyle";
 const char* const VISUAL_ROLE_PROPERTY = "visualRole";
 const char* const DENSITY_PROPERTY = "density";
+const char* const ITEM_PADDING_PROPERTY = "itemPadding";
+const char* const SECONDARY_LABEL_MARKER = "ludusSecondaryLabel";
 
 QColor Token(design::ThemeColour role, bool isDark, bool isHighContrast)
 {
@@ -155,6 +159,14 @@ int EditorStyle::GetFocusRingWidth() const noexcept
 void EditorStyle::polish(QWidget* widget)
 {
     QProxyStyle::polish(widget);
+    if (auto* label = qobject_cast<QLabel*>(widget);
+        label != nullptr && HasProperty(label, VISUAL_ROLE_PROPERTY, "secondary") == true)
+    {
+        QPalette palette = label->palette();
+        palette.setColor(QPalette::WindowText, mColours.Secondary);
+        label->setPalette(palette);
+        label->setProperty(SECONDARY_LABEL_MARKER, true);
+    }
     // Hover repaints for the controls drawn here that the platform style does not already track.
     if (qobject_cast<QTabBar*>(widget) != nullptr || qobject_cast<QToolButton*>(widget) != nullptr)
     {
@@ -164,6 +176,11 @@ void EditorStyle::polish(QWidget* widget)
 
 void EditorStyle::unpolish(QWidget* widget)
 {
+    if (widget->property(SECONDARY_LABEL_MARKER).toBool() == true)
+    {
+        widget->setPalette(QPalette());
+        widget->setProperty(SECONDARY_LABEL_MARKER, QVariant());
+    }
     if (qobject_cast<QTabBar*>(widget) != nullptr || qobject_cast<QToolButton*>(widget) != nullptr)
     {
         widget->setAttribute(Qt::WA_Hover, false);
@@ -467,6 +484,32 @@ void EditorStyle::drawComplexControl(ComplexControl control,
     QProxyStyle::drawComplexControl(control, option, painter, widgetOrNull);
 }
 
+namespace
+{
+[[nodiscard]] int GetItemPadding(const QWidget* widgetOrNull)
+{
+    return widgetOrNull != nullptr ? widgetOrNull->property(ITEM_PADDING_PROPERTY).toInt() : 0;
+}
+} // namespace
+
+QRect EditorStyle::subElementRect(SubElement element, const QStyleOption* option, const QWidget* widgetOrNull) const
+{
+    QRect rect = QProxyStyle::subElementRect(element, option, widgetOrNull);
+    const QWidget* viewOrNull = widgetOrNull != nullptr ? widgetOrNull->parentWidget() : nullptr;
+    // Item views hand their viewport to the style, so the padding property lives on the view itself.
+    const int padding = std::max(GetItemPadding(widgetOrNull), GetItemPadding(viewOrNull));
+    if (padding > 0 && (element == SE_ItemViewItemText || element == SE_ItemViewItemDecoration ||
+                        element == SE_ItemViewItemCheckIndicator))
+    {
+        rect.translate(padding, 0);
+        if (element == SE_ItemViewItemText)
+        {
+            rect.setWidth(std::max(0, rect.width() - 2 * padding));
+        }
+    }
+    return rect;
+}
+
 QSize EditorStyle::sizeFromContents(ContentsType type,
                                     const QStyleOption* option,
                                     const QSize& contentsSize,
@@ -490,6 +533,13 @@ QSize EditorStyle::sizeFromContents(ContentsType type,
                    QSize(2 * edgeWidth + INPUT_PADDING + COMBO_ARROW_PADDING, 2 * (INPUT_PADDING + edgeWidth));
         case CT_TabBarTab:
             return contentsSize + QSize(2 * TAB_PADDING_HORIZONTAL, 2 * TAB_PADDING_VERTICAL + TAB_UNDERLINE_WIDTH);
+        case CT_ItemViewItem: {
+            const int padding =
+                std::max(GetItemPadding(widgetOrNull),
+                         GetItemPadding(widgetOrNull != nullptr ? widgetOrNull->parentWidget() : nullptr));
+            return QProxyStyle::sizeFromContents(type, option, contentsSize, widgetOrNull) +
+                   QSize(2 * padding, 2 * padding);
+        }
         case CT_HeaderSection:
             return contentsSize + QSize(2 * HEADER_PADDING, 2 * HEADER_PADDING + CONTROL_EDGE_WIDTH);
         default:

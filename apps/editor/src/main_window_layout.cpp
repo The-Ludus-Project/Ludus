@@ -416,6 +416,7 @@ void MainWindow::BuildUi()
     // https://www.uxofgametools.com/; docs/architecture/editor-design-review.md.
     Welcome_ = new QWidget(mDocuments);
     Welcome_->setObjectName(QStringLiteral("projectWelcome"));
+    Welcome_->setAutoFillBackground(true);
     auto* recentPanel = Welcome_;
     auto* recentLayout = new QVBoxLayout(recentPanel);
     mRecentEmptyStateOrNull = new StateView(recentPanel);
@@ -425,6 +426,7 @@ void MainWindow::BuildUi()
     RecentList_->setObjectName(QStringLiteral("recentProjectsList"));
     RecentList_->setAccessibleName(QStringLiteral("Recent projects"));
     RecentList_->setWordWrap(true);
+    RecentList_->setProperty("itemPadding", 8);
     RecentOpenButton_ = new QPushButton(QStringLiteral("Open Selected"), recentPanel);
     RecentOpenButton_->setObjectName(QStringLiteral("openRecentProjectButton"));
     BrowseProjectButton_ = new QPushButton(QStringLiteral("Open Project..."), recentPanel);

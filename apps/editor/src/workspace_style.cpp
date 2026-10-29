@@ -53,17 +53,11 @@ void UpdateWorkspaceStyle(QWidget* widget)
     const int focusRingWidth = isHighContrast == true ? HIGH_CONTRAST_FOCUS_RING_WIDTH : FOCUS_RING_WIDTH;
     auto style =
         QStringLiteral(
-            "QLabel, QCheckBox, QRadioButton, QGroupBox, QToolButton, QTabBar, QStatusBar, QDockWidget { color: "
-            "palette(text); } QCheckBox:disabled, QRadioButton:disabled, QToolButton:disabled { color: "
-            "palette(placeholder-text); } "
-            "QMainWindow, QDialog, QWidget#projectWelcome { background: palette(window); } "
-            "QDialog { border: 1px solid palette(mid); } "
             "QDockWidget::title { background: palette(button); padding: 6px; border-bottom: 1px solid %4; } "
             "QTabWidget::pane { border: 1px solid palette(mid); background: palette(base); } "
             "QTabBar::tab { background: palette(window); padding: 7px 12px; border-bottom: 2px solid transparent; } "
             "QTabBar::tab:selected { background: palette(base); border-bottom-color: %1; } "
             "QTabBar::tab:hover { background: palette(button); } "
-            "QMainWindow::separator { background: palette(mid); width: 4px; height: 4px; } "
             "QToolBar { spacing: 4px; padding: 4px; border-bottom: 1px solid %4; } "
             "QToolButton { padding: 4px; border-radius: %3px; } "
             "QToolButton:hover, QToolButton:checked { background: palette(button); } "
@@ -89,7 +83,6 @@ void UpdateWorkspaceStyle(QWidget* widget)
             "QPushButton:focus, QLineEdit:focus, QAbstractSpinBox:focus, QComboBox:focus, QAbstractItemView:focus, "
             "QPlainTextEdit:focus, QTextEdit:focus { border: %5px solid %1; } "
             "QToolButton:focus, QTabBar::tab:focus { outline: %5px solid %1; } "
-            "QLabel[visualRole=secondary] { color: palette(placeholder-text); } "
             "QStatusBar { border-top: 1px solid %4; }")
             .arg(accent.name(),
                  accentText.name(),
