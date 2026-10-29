@@ -3752,6 +3752,14 @@ including UV transforms, address/filter policy and sRGB decoding. This piecewise
 constant texture approximation can miss small features; it is not the reference
 path tracer's textured-emitter estimator.
 
+The raster resolve computes these integrals from spherical polygon edges, streaming
+horizon intersections without constructing the ellipse/sector state needed for
+importance sampling. The independent CPU check retains that sampling preparation.
+Polygons entirely below the receiver horizon contribute zero; crossing polygons
+are clipped before the LTC transform. This preserves emitter geometry and the
+lighting integral, without sampling lights or imposing a distance cutoff. The
+cost still grows with shaded pixels and admitted emitter triangles.
+
 There is no mesh-light visibility test yet: area lights can illuminate through
 walls. Every admitted emitter triangle is evaluated, independently of the analytic
 light clusters, with no finite-distance cutoff. At most 4096 nonzero-emission

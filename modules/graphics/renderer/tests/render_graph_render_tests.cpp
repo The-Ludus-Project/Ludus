@@ -1740,6 +1740,29 @@ TEST_CASE("default deferred mesh area lights illuminate a receiver with CPU chec
         REQUIRE(update() == rhi::RasterStatus::Ready);
         render();
         CHECK(fixture.Pixels[center] > 0);
+        // Retain every emitter contribution at the Staircase2 triangle count. Splitting
+        // constant radiance across coincident triangles leaves the receiver integral unchanged.
+        constexpr usize EMITTER_TRIANGLES = 336;
+        Array<uint32> repeatedIndices;
+        REQUIRE(repeatedIndices.TryResize(EMITTER_TRIANGLES * INDEX_COUNT) == true);
+        for (usize index = 0; index < repeatedIndices.GetSize(); ++index)
+        {
+            repeatedIndices[index] = fixture.Indices[index % INDEX_COUNT];
+        }
+        const StaticArray<uint8, PIXEL_BYTES> singleEmitter = fixture.Pixels;
+        meshes[1].Geometry.Indices = repeatedIndices.GetData();
+        meshes[1].Geometry.IndexCount = repeatedIndices.GetSize();
+        materials[1].Emission = materials[1].Emission / static_cast<float32>(EMITTER_TRIANGLES);
+        REQUIRE(update() == rhi::RasterStatus::Ready);
+        render();
+        CHECK(fixture.Graph.GetReport().Resources.MeshLightTriangles == EMITTER_TRIANGLES);
+        CHECK(math::Abs(float32(fixture.Pixels[center]) - float32(singleEmitter[center])) <= 2);
+        CHECK(math::Abs(float32(fixture.Pixels[center + 1]) - float32(singleEmitter[center + 1])) <= 2);
+        meshes[1].Geometry.Indices = fixture.Indices.GetData();
+        meshes[1].Geometry.IndexCount = fixture.Indices.GetSize();
+        materials[1].Emission = {.7F, .2F, 0};
+        REQUIRE(update() == rhi::RasterStatus::Ready);
+        render();
         const StaticArray<uint8, PIXEL_BYTES> lastDrawable = fixture.Pixels;
         const uint64 lastRevision = fixture.Graph.GetDrawableSceneRevision();
         // Too many emitter triangles rejects preparation and preserves the drawable generation.

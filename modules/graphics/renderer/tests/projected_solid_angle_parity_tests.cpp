@@ -282,8 +282,11 @@ TEST_CASE("GPU projected solid angle sampling matches the C++ implementation", "
         {{1, -1, 0.5F}, {1, -1, 2}, {1, 1, 2}, {1, 1, 0.5F}},
         {{1, -1, -1}, {1, 1, -1}, {1, 1, 1}, {1, -1, 1}},
         {{1, 0, -1}, {1, 1, -1}, {0, 1, -2}, {}},
+        {{0, 0, 0}, {1, 0, 1}, {0, 1, 1}, {}},
+        {{-1, -1, 0}, {1, -1, 0}, {0, 1, 0}, {}},
+        {{-1, -1.0e-5F, 1}, {1, -1.0e-5F, 1}, {0, 1.0e-5F, 1}, {}},
     };
-    constexpr uint32 FIXED_VERTEX_COUNTS[] = {4, 3, 4, 4, 4, 3};
+    constexpr uint32 FIXED_VERTEX_COUNTS[] = {4, 3, 4, 4, 4, 3, 3, 3, 3};
     constexpr uint32 FIXED_COUNT = sizeof(FIXED_VERTEX_COUNTS) / sizeof(FIXED_VERTEX_COUNTS[0]);
     math::RandomStream random;
     REQUIRE(random.TryReseed(RANDOM_SEED, 4) == true);
@@ -351,6 +354,12 @@ TEST_CASE("GPU projected solid angle sampling matches the C++ implementation", "
         REQUIRE(words[3] == static_cast<float32>(expected.VertexCount));
         const float32 projectedSolidAngle = words[1];
         REQUIRE(math::Abs(projectedSolidAngle - expected.ProjectedSolidAngle) <=
+                1.0e-6F + 1.0e-3F * expected.ProjectedSolidAngle);
+        // The raster integral must agree with the independent CPU sampling preparation,
+        // including reversed winding, horizon clips and thin/distant polygons.
+        REQUIRE(math::Abs(words[10] - expected.ProjectedSolidAngle) <=
+                1.0e-6F + 1.0e-3F * expected.ProjectedSolidAngle);
+        REQUIRE(math::Abs(words[11] - expected.ProjectedSolidAngle) <=
                 1.0e-6F + 1.0e-3F * expected.ProjectedSolidAngle);
         math::Vector3 expectedDirection;
         const bool isSampled =
@@ -548,6 +557,7 @@ TEST_CASE("GPU linearly transformed cosine sampling matches the C++ implementati
         REQUIRE(words[1] == 1.0F);
         REQUIRE(words[3] == static_cast<float32>(expected.TransformedPolygon.VertexCount));
         const float32 integral = math::GetLinearlyTransformedCosinePolygonIntegral(expected);
+        REQUIRE(math::Abs(words[11] - integral) <= 1.0e-6F + 1.0e-3F * integral);
         REQUIRE(math::Abs(words[2] - integral) <= 1.0e-6F + 1.0e-3F * integral);
         if (integral < NEGLIGIBLE_INTEGRAL)
         {
