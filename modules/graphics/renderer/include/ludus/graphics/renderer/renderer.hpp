@@ -50,6 +50,15 @@ struct GpuPreviewGraphInvocation final
     GpuPreviewGraphBuffer RayPathCapture{};
     /// Execute the enabled native ray stages. False selects the ordinary compute artifact.
     bool HasNativeRayInvocation = false;
+    /// Optional live job of this renderer whose uploaded scene this job shares instead of packing
+    /// another copy to the GPU: triangles, BVH, emitters, surfaces, lights, environment, texels and
+    /// native geometry, charged to the preview and RHI byte budgets once. Requires a graph scene
+    /// description with the same content and SceneData as the source's, such as another ray pass
+    /// of one RenderGraph update; the camera, extent and kernel may differ. The shared scene stays
+    /// alive until every job that references it is released and retired. A stale or released
+    /// source returns InvalidHandle; a scene that packs differently returns InvalidDescription.
+    /// Null uploads this job's own scene.
+    const GpuPreview* SceneSourceOrNull = nullptr;
 };
 namespace internal
 {

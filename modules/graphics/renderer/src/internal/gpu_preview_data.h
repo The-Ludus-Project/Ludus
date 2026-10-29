@@ -49,8 +49,33 @@ struct GpuFrameRecord final
     rhi::SubmissionToken Producer{};
     uint32 Samples = 0;
 };
+/// A job's slot in GpuPreviewState::Scenes when it holds no uploaded scene.
+inline constexpr usize NO_GPU_PREVIEW_SCENE = ~usize{0};
+/// One uploaded packed scene: triangles, BVH, emitters, surfaces, lights, environment, texels and
+/// native geometry. The ray jobs of one graph update that read the same scene data reference one
+/// record, so the scene is stored and charged to the preview and RHI budgets once. The last job
+/// dropped releases it, after its own producers retired.
+struct GpuPreviewSceneRecord final
+{
+    usize References = 0;
+    rhi::BufferHandle Data{};
+    rhi::BufferHandle Texels{};
+    rhi::RayGeometryHandle NativeGeometry{};
+    bool HasNativeGeometry = false;
+    usize DataBytes = 0;
+    usize TexelBytes = 0;
+    /// Data, texels and native geometry bytes, charged to GpuPreviewState::GpuBytes once.
+    usize GpuBytes = 0;
+    /// Scene data groups the record was packed from; a sharing job must request the same groups.
+    uint32 SceneData = 0;
+    /// Scene content consistency check for sharing jobs, alongside the exact sizes.
+    uint64 FingerprintLow = 0;
+    uint64 FingerprintHigh = 0;
+};
 struct GpuPreviewRecord final
 {
+    /// Referenced GpuPreviewState::Scenes slot; Data, Texels and NativeGeometry below copy its handles.
+    usize Scene = NO_GPU_PREVIEW_SCENE;
     bool HasNativeRayInvocation = false;
     uint64 Generation = 1;
     bool Used = false;
@@ -91,6 +116,7 @@ struct GpuPreviewRecord final
     bool ComputeBindingsCreated = false;
     bool ImageBindingsCreated = false;
     rhi::RasterStatus Setup = rhi::RasterStatus::Pending;
+    /// This job's own bytes; its referenced scene record charges the shared scene separately.
     usize GpuBytes = 0;
 };
 struct GpuPreviewState final
@@ -131,6 +157,8 @@ struct GpuPreviewState final
     rhi::BufferHandle Indices{};
     rhi::BufferHandle LtcTable{};
     GpuPreviewRecord Jobs[GPU_PREVIEW_JOB_COUNT];
+    /// At most one record per job, so a free record exists whenever a job slot does.
+    StaticArray<GpuPreviewSceneRecord, GPU_PREVIEW_JOB_COUNT> Scenes{};
     usize GpuBytes = 0;
 };
 } // namespace ludus::graphics::renderer::internal

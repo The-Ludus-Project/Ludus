@@ -2565,6 +2565,48 @@ fingerprint matches the CPU capture. The RGB output SHA-256 (including alpha) wa
 `e702b19b7f3f7235cbc6860e66c98c2279c1d81d743016d592679e2e974935dc`.
 See the [scene workflow](../examples/reference-scene.md#gpu-preview-acceptance).
 
+### Render-graph ray scene capacity
+
+Each render-graph ray pass is one preview job. Passes of one graph update that
+read the same scene data share the first pass's uploaded scene
+(`GpuPreviewGraphInvocation::SceneSourceOrNull`): its packed triangles, BVH,
+surfaces, lights, environment, texels and native geometry are stored once and
+charged to the preview and RHI budgets once. The last job released frees the
+copy. Each pass still keeps its own parameters, accumulation, images and TLAS.
+Before this sharing, a template with three ray passes uploaded three copies, so
+every byte ceiling admitted a third of the scene it could hold.
+
+Measured on Intel Sponza's glTF triangles with Metal on October 29, 2026:
+
+| Cost per triangle | Bytes | What it holds |
+| --- | --- | --- |
+| Packed GPU scene | about 322 | 16 float4 words per triangle, 3 per BVH node (about 1.03 nodes per triangle) and one order word |
+| CPU scene estimate | 364 | `ReferenceTriangle`, two BVH nodes and three index words, reserved before the build |
+| CPU fingerprint stream | 228 | Serialized triangle identity, checked against the scratch remaining after the scene |
+
+The first 999,981 triangles pack to 321,543,168 bytes; 1,999,967 pack to
+644,522,080 bytes. Three byte ceilings bound one prepared scene:
+
+| Ceiling | Owner | Scene limit |
+| --- | --- | --- |
+| `GRAPH_RAY_CPU_BYTES`, 2 GiB | Renderer (`render_graph_ray.h`) | Scene estimate plus fingerprint or packing scratch: about 3.1 million triangles |
+| `GRAPH_RAY_GPU_BYTES`, 2 GiB | Renderer (`render_graph_ray.h`) | Holds the current and the replacement scene until the old producers retire: about 3.3 million triangles under replacement |
+| `rhi::StorageLimits::ResourceBytes` | The device creator | All logical RHI buffers and textures on the device. The 512 MiB default holds about 1.6 million triangles; the Editor viewport sets 2 GiB |
+
+The full 3,747,018-triangle Sponza therefore fails on its first pass:
+`CpuScratch` needs 854,313,156 bytes with 783,538,976 left after the
+1,363,925,720-byte scene estimate. Raising that ceiling is a budget decision
+for the renderer, and the GPU and device budgets would also need to hold two
+1.2 GB copies during replacement. A rejected update reports the exceeded
+ceiling, its required bytes and the bytes available in
+`RenderGraphReport::SceneDiagnostics`.
+
+The `[scene-capacity]` regression in `render_graph_ray_tests.cpp` prepares a
+generated 102,400-triangle scene through the three-pass `ComputeBvh`
+line-sampling template. It checks that the graph's logical RHI bytes grow by
+less than two packed copies. The hidden `[.line-traversal-performance]`
+measurement runs with the Editor's 2 GiB device budget.
+
 
 ## Material and lighting fidelity
 
