@@ -2,6 +2,7 @@
 // Included only by renderer.cpp: captured jobs retain the existing snapshot,
 // mesh and material incarnations, while RHI retains accepted native work.
 
+#include "ltc_table_data.h"
 #include "reference_data.h"
 
 #include <ludus/foundation/base/byte_order.hpp>
@@ -34,6 +35,8 @@ constexpr uint32 FINGERPRINT_SURFACE_MAP_TAG = 0x53555246; // Numeric SURF tag; 
 constexpr uint32 MAXIMUM_REFERENCE_TILE_PIXELS = 2048;
 /// LUHDR01 flags bit identifying a GPU-compute capture.
 constexpr uint32 HDR_GPU_COMPUTE_FLAG = 64;
+/// LUHDR01 flags bit identifying a ReferenceLightSampling::ResampledProjectedSolidAngle capture (sampler version 2).
+constexpr uint32 HDR_RESAMPLED_LIGHT_FLAG = 128;
 
 usize GetReferenceGpuBytes(const ReferenceJob& job) noexcept
 {
@@ -50,6 +53,10 @@ Status PrepareReferenceCompute(ReferenceJob& inoutJob, usize cpuRemaining, usize
     if (status != Status::Ready)
     {
         return status;
+    }
+    if (inoutJob.Description.LightSampling == ReferenceLightSampling::ResampledProjectedSolidAngle)
+    {
+        uniform.Sampling[2] |= LUDUS_REFERENCE_RESAMPLED_LIGHT_FLAG;
     }
     const usize packedBytes = (data.GetSize() + texels.GetSize()) * sizeof(math::Vector4);
     const usize pixels = usize(inoutJob.Description.Width) * inoutJob.Description.Height;
@@ -92,7 +99,8 @@ bool SameReferenceIntegral(const ReferenceJob& a,
         d.Width != b.Width || d.Height != b.Height || d.MaxDepth != b.MaxDepth || d.RouletteDepth != b.RouletteDepth ||
         d.SecondaryDistance != b.SecondaryDistance || d.Environment != b.Environment ||
         a.EnvironmentOrNull != Access::GetEnvironment(b.EnvironmentTextureOrNull) || d.TextureMip != b.TextureMip ||
-        d.Seed != b.Seed || d.CenterRays != b.CenterRays || d.LightCount != lights.Count)
+        d.Seed != b.Seed || d.CenterRays != b.CenterRays || d.LightSampling != b.LightSampling ||
+        d.LightCount != lights.Count)
     {
         return false;
     }
@@ -112,6 +120,11 @@ Status ValidateReferenceDescription(const ReferenceCaptureDescription& d, LightS
         d.RouletteDepth == 0 || d.RouletteDepth > 64 || math::IsFinite(d.SecondaryDistance) == false ||
         d.SecondaryDistance <= 0 || d.SecondaryDistance > 2000000 ||
         internal::ReferenceColor(d.Environment, 10000) == false || d.TextureMip >= 16)
+    {
+        return Status::InvalidDescription;
+    }
+    if (d.LightSampling != ReferenceLightSampling::UniformArea &&
+        d.LightSampling != ReferenceLightSampling::ResampledProjectedSolidAngle)
     {
         return Status::InvalidDescription;
     }
@@ -585,6 +598,12 @@ Status Renderer::EnableReferenceRendering(const rhi::RasterShaderDescription& tr
     core::UniquePtr<internal::ReferenceState> state(allocation);
     state->Options = options;
     state->CpuBytes = sizeof(internal::ReferenceState);
+    // The shared LTC table is charged once to the budget, before any capture.
+    if (options.GpuByteBudget < sizeof(internal::LTC_TABLE))
+    {
+        return Status::CapacityExceeded;
+    }
+    state->GpuBytes = sizeof(internal::LTC_TABLE);
     Status status = internal::CreateReferenceComputePipelines(mState->Device, trace, reduce, state->Compute);
     if (status != Status::Ready)
     {
@@ -735,13 +754,27 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
     const bool isGpuCompute = gpuSetup == false && Reference->Options.Traversal == ReferenceTraversal::GpuCompute;
     const usize pixels = gpuSetup ? 0 : usize(description.Width) * description.Height;
     const usize tile = gpuSetup || isGpuCompute ? 0 : Reference->Options.TilePixels;
+    const usize raysPerPath = internal::GetReferenceRaysPerPath(description.LightSampling);
     const bool isOracle = gpuSetup || Reference->Options.Traversal != ReferenceTraversal::NativeQueries;
+    if (isOracle == false && raysPerPath > 2)
+    {
+        rhi::RayCapabilities capabilities;
+        status = rhi::GetRayCapabilities(Device, capabilities);
+        if (status != Status::Ready)
+        {
+            return status;
+        }
+        if (tile * raysPerPath > capabilities.MaxRays)
+        {
+            return Status::Unsupported;
+        }
+    }
     const uint64 bvhBytes =
         isOracle ? uint64(triangles) * (2 * sizeof(internal::ReferenceBvhNode) + sizeof(uint32)) : 0;
     const uint64 fixedWide =
         sizeof(ReferenceJob) + uint64(instances) * sizeof(internal::ReferenceInstance) +
         uint64(pixels) * sizeof(internal::ReferenceAccumulator) + uint64(tile) * sizeof(internal::ReferencePath) +
-        uint64(tile) * 2 * (sizeof(rhi::RayInput) + sizeof(rhi::RayResult)) +
+        uint64(tile) * raysPerPath * (sizeof(rhi::RayInput) + sizeof(rhi::RayResult)) +
         uint64(triangles) * sizeof(ReferenceTriangle) + bvhBytes + uint64(emitters) * 2 * sizeof(uint32);
     const uint64 signatureBytes =
         uint64(triangles) * FINGERPRINT_TRIANGLE_BYTES + uint64(instances) * FINGERPRINT_INSTANCE_BYTES +
@@ -791,9 +824,10 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
     if (job->Scene.Instances.TryEnsureCapacity(instances) == false ||
         job->Scene.Instances.TryResize(instances) == false || job->Pixels.TryEnsureCapacity(pixels) == false ||
         job->Pixels.TryResize(pixels) == false || job->Paths.TryEnsureCapacity(tile) == false ||
-        job->Paths.TryResize(tile) == false || job->Rays.TryEnsureCapacity(tile * 2) == false ||
-        job->Rays.TryResize(tile * 2) == false || job->Hits.TryEnsureCapacity(tile * 2) == false ||
-        job->Hits.TryResize(tile * 2) == false || job->Scene.Triangles.TryEnsureCapacity(triangles) == false ||
+        job->Paths.TryResize(tile) == false || job->Rays.TryEnsureCapacity(tile * raysPerPath) == false ||
+        job->Rays.TryResize(tile * raysPerPath) == false || job->Hits.TryEnsureCapacity(tile * raysPerPath) == false ||
+        job->Hits.TryResize(tile * raysPerPath) == false ||
+        job->Scene.Triangles.TryEnsureCapacity(triangles) == false ||
         job->Scene.Triangles.TryResize(triangles) == false || job->Scene.Emitters.TryEnsureCapacity(emitters) == false)
     {
         return Status::OutOfMemory;
@@ -957,6 +991,10 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
         return Status::OutOfMemory;
     }
     job->Info.Traversal = Reference->Options.Traversal;
+    job->Info.LightSampling = description.LightSampling;
+    job->Info.SamplerVersion = description.LightSampling == ReferenceLightSampling::ResampledProjectedSolidAngle
+                                   ? internal::REFERENCE_RESAMPLED_SAMPLER_VERSION
+                                   : internal::REFERENCE_UNIFORM_AREA_SAMPLER_VERSION;
     job->Info.Seed = description.Seed;
     job->Info.Width = description.Width;
     job->Info.Height = description.Height;
@@ -1229,7 +1267,12 @@ ReferenceQuery(ReferenceJob& job, rhi::RayQueryProgram program, ReferenceTravers
             for (usize path = 0; path < job.PathCount; ++path)
             {
                 const auto& candidate = job.Paths[path];
-                if ((job.Stage == ReferenceStage::Primary && path == i) || candidate.ShadowQuery == i ||
+                bool isShadowQuery = false;
+                for (uint32 shadow = 0; shadow < candidate.ShadowCount; ++shadow)
+                {
+                    isShadowQuery = isShadowQuery || candidate.ShadowQueries[shadow] == i;
+                }
+                if ((job.Stage == ReferenceStage::Primary && path == i) || isShadowQuery == true ||
                     candidate.NextQuery == i)
                 {
                     job.Info.FailurePixel = candidate.Pixel;
@@ -1418,11 +1461,11 @@ Status Renderer::AdvanceReferenceCapture(ReferenceCapture handle, rhi::SurfaceHa
         for (usize i = 0; i < job.PathCount; ++i)
         {
             auto& path = job.Paths[i];
-            path.ShadowQuery = path.NextQuery = ~usize{0};
-            if (path.HasShadow)
+            path.NextQuery = ~usize{0};
+            for (uint32 shadow = 0; shadow < path.ShadowCount; ++shadow)
             {
-                path.ShadowQuery = job.QueryCount;
-                job.Rays[job.QueryCount++] = path.Shadow;
+                path.ShadowQueries[shadow] = job.QueryCount;
+                job.Rays[job.QueryCount++] = path.Shadows[shadow];
             }
             if (path.HasNext)
             {
@@ -1457,9 +1500,9 @@ Status Renderer::AdvanceReferenceCapture(ReferenceCapture handle, rhi::SurfaceHa
         for (usize i = 0; i < job.PathCount; ++i)
         {
             auto& path = job.Paths[i];
-            if (path.ShadowQuery != ~usize{0})
+            for (uint32 shadow = 0; shadow < path.ShadowCount; ++shadow)
             {
-                const auto hit = job.Hits[path.ShadowQuery].Hit;
+                const uint32 hit = job.Hits[path.ShadowQueries[shadow]].Hit;
                 if (hit > 1)
                 {
                     return fail(Status::Failed);
@@ -1468,15 +1511,15 @@ Status Renderer::AdvanceReferenceCapture(ReferenceCapture handle, rhi::SurfaceHa
                 {
                     if (path.DirectDepth == 0)
                     {
-                        path.Direct = path.Direct + path.PendingDirect;
+                        path.Direct = path.Direct + path.PendingDirects[shadow];
                     }
                     else
                     {
-                        path.Indirect = path.Indirect + path.PendingDirect;
+                        path.Indirect = path.Indirect + path.PendingDirects[shadow];
                     }
                 }
             }
-            path.HasShadow = false;
+            path.ShadowCount = 0;
             if (path.NextQuery != ~usize{0})
             {
                 path.Ray = path.Next;
@@ -1660,7 +1703,10 @@ Renderer::EncodeReferenceHdr(ReferenceCapture handle, uint8* output, usize capac
                          (job.Info.Traversal == ReferenceTraversal::GpuCompute ? HDR_GPU_COMPUTE_FLAG : 0U) |
                          (job.Description.CenterRays ? 2U : 0U) | (job.Description.OrthographicCamera ? 4U : 0U) |
                          (job.Description.ReverseZ ? 8U : 0U) | (job.Description.InfiniteFar ? 16U : 0U) |
-                         (job.Info.Complete == false ? 32U : 0U);
+                         (job.Info.Complete == false ? 32U : 0U) |
+                         (job.Description.LightSampling == ReferenceLightSampling::ResampledProjectedSolidAngle
+                              ? HDR_RESAMPLED_LIGHT_FLAG
+                              : 0U);
     Put32(output + 44, flags);
     Put64(output + 48, job.Description.Seed);
     Put64(output + 56, job.Info.Revision);

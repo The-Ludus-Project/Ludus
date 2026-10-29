@@ -5,7 +5,9 @@ CPU and GPU reference requirement and with the polygonal-light work's licensing,
 traversal and primitive decisions. The primitives listed under
 [Ownership](#ownership) are implemented. The `ris-projected-solid-angle` template
 (stage 1) is implemented as of October 28, 2026, with the departures listed under
-[Implementation notes](#implementation-notes). The RT1 profile (stage 2) is not.
+[Implementation notes](#implementation-notes). The RT1 profile (stage 2) is
+implemented as of October 29, 2026, in the CPU oracle and the GPU-compute
+reference, with the choices listed under [RT1 implementation notes](#rt1-implementation-notes).
 This review is the estimator review that
 [hybrid and real-time transport](renderer-systems.md#hybrid-and-real-time-transport)
 requires before resampling enters a Ludus estimator. It covers next-event
@@ -21,7 +23,12 @@ estimation (NEE) for emissive triangles, delivered in two stages:
 
 Spatiotemporal reservoir reuse remains a separate RT4 upgrade. The Peters 2021
 polygonal-light work runs in parallel and shares two pieces with this design: the
-projected-solid-angle primitives and the template shadow-ray traversal.
+projected-solid-angle primitives and the template shadow-ray traversal. Its
+comparison template, `polygonal-light-sampling`, is implemented as of October 28,
+2026: it shades every emissive triangle, without light selection, with clamped
+optimal MIS, the balance heuristic and each technique alone, and has a CPU oracle
+with GPU parity tests. Its usage, departures and evidence are in the
+[authoring guide](../development/render-graph-authoring.md#compare-brdf-importance-sampling-for-polygonal-lights).
 
 ## Sources reviewed
 
@@ -367,9 +374,10 @@ is in the authoring guide.
     below 4.
   - Brighter pixels see emitters directly, and the 8-bit readback cannot resolve
     them; they are about 1.5% of the image. Tone-mapped MSE covers every pixel.
-- **Failure pixels.** Both reference images show three failure pixels, which every
-  metric leaves out. They come from a scene-interface defect, not from either
-  estimator; see the paragraph after the results.
+- **Failure pixels.** In the recorded run, both reference images showed three
+  failure pixels, which every metric leaves out. They came from a `ComputeBvh`
+  traversal defect, not from either estimator, and are now fixed; see the paragraph
+  after the results.
 
 Results on Apple M5 (Metal) with Slang and Clang 23 from `config/tool_versions.json`,
 October 29, 2026. The machine was shared with other builds, at a load average of 70–95.
@@ -419,20 +427,27 @@ What the results show:
   not yet reviewed). Lowering this cost, `M` and `K`, is the open measurement
   question above. The benchmark is the way to evaluate such a change.
 
-The three failure pixels also appear with the stock `ris-projected-solid-angle`
-package, which shows one by sample 256 at another pixel with this seed.
-- **Location.** They are on the ceiling, where the emitter quads are. Every output
-  fails at the same pixel and sample, including the BSDF-only output, so the shared
-  surface load fails, not a sampling strategy.
+The three failure pixels also appeared with the stock `ris-projected-solid-angle`
+package, which showed one by sample 256 at another pixel with this seed.
+- **Location.** They were on the ceiling, where the emitter quads are. Every output
+  failed at the same pixel and sample, including the BSDF-only output, so the shared
+  surface load failed, not a sampling strategy.
 - **Not reproduced on the triangle loop.** With the same seed, the triangle-loop
-  Veach–Guibas package shows no failure through sample 1920, while the ComputeBvh
-  one fails by then.
+  Veach–Guibas package showed no failure through sample 1920, while the ComputeBvh
+  one failed by then.
 - **Not a stack overflow.** `REFERENCE_BVH_MAX_DEPTH` bounds the traversal stack.
-- **Probable cause.** `IntersectBvhTriangle` divides the edge functions separately.
-  A hit on the edge opposite vertex 0, here each quad's shared diagonal, can then
-  return barycentrics whose float32 sum exceeds 1. In emulation that happens for
-  about 0.9% of such edge hits. `GetSurfaceHit` rejects that sum, and the pass latches
-  a failure. This is outside the template and is not fixed here.
+- **Cause.** `IntersectBvhTriangle` divided the edge functions separately. Near the
+  edge opposite a triangle's first corner, the two float32 quotients could round to
+  a sum above one. For these tiles that is an outer tile edge: their index order
+  puts the shared diagonal through the first corner. `GetSurfaceHit` rejects that
+  sum, so the pass latched a failure.
+- **Fix.** The traversal now clamps both barycentrics to [0, 1] and bounds the
+  third by one minus the second, so the float32 sum never exceeds one. The
+  `ComputeBvh` regression in `render_graph_ray_tests.cpp` traces 6144 rays down a
+  shared diagonal opposite both triangles' first corners. Before the fix, 118 of
+  those hits failed the reload on Apple M5 (Metal). The
+  [GPU-compute reference](renderer-systems.md#gpu-compute-reference) records this
+  float32 departure.
 
 **Registration** follows the existing template checklist:
 - `TEMPLATES` and the CLI `--template` choices;
@@ -462,7 +477,7 @@ deliverable.
 | `UniformArea` | The current estimator, including the power-weighted emitter CDF. It stays the default and bit-identical to existing captures (`SamplerVersion = 1`, 8 dimensions per bounce), and remains the validation oracle. |
 | `ResampledProjectedSolidAngle` | This review's estimator. `SamplerVersion = 2`, 128 dimensions per bounce. Requires the renderer's LTC table. |
 
-- **API.** A proposed `ReferenceLightSampling` enum on
+- **API.** The `ReferenceLightSampling` enum on
   `ReferenceCaptureDescription`, recorded in `ReferenceCaptureInfo`.
   - `CpuOracle` and `NativeQueries` share the CPU transport; `GpuCompute` runs
     the same estimator in its kernels.
@@ -514,11 +529,57 @@ aligned to Philox's four-lane blocks:
   `ReferenceBounceDimension` per sampler version.
 - `M`, `K` and the stride are frozen constants of version 2.
 
+### RT1 implementation notes
+
+Usage and evidence are in
+[Light-sampling modes](renderer-systems.md#light-sampling-modes) and the
+[GPU-compute reference](renderer-systems.md#gpu-compute-reference). The profile
+follows the estimator, BSDF-hit decision and random table above, with these
+choices:
+
+- **Owners.** The CPU estimator is
+  [`reference_light_sampling.cpp`](../../modules/graphics/renderer/src/reference_light_sampling.cpp),
+  called from `reference_path.cpp`. `renderer_reference.slang` ports it, with the
+  scene-independent pieces in
+  [`reference_light_sampling.slang`](../../modules/graphics/renderer/shaders/reference_light_sampling.slang).
+  The slot table and the frozen `M`, `K` are `renderer_reference_layout.h`
+  constants. The template keeps its own copy of the scene-independent pieces, so
+  either can change without renumbering the other; sharing one source is
+  possible follow-up work.
+- **Diffuse albedo and `v`.** As in the template: `baseColor · (1 − metallic) · (1 − F₀)`
+  clamped to 0.01, and `v = 1/2`. Both remain open questions.
+- **Emitter alpha.** Unlike the template, light samples apply the emitter's alpha
+  cutoff at the sampled point, because RT1's `UniformArea` already does. The
+  emitter's sidedness and the secondary range are applied there too.
+- **One kernel.** The GPU-compute trace kernel serves both modes; a parameter flag
+  selects sampler version 2. The LTC table is the kernel's sixth binding,
+  uploaded once per `EnableReferenceRendering` and charged to its GPU budget.
+  Kernels without the binding are rejected there, so no capture falls back.
+  `LUDUS_REFERENCE_KERNEL_VERSION` is 3.
+- **Shadow rays.** The CPU path queues up to two shadow rays per vertex, so
+  `NativeQueries` tiles need three queries per path. The GPU kernel traces each
+  technique's shadow ray as soon as it is sampled; the order of the sums matches
+  the CPU's.
+- **Probes.** Static-lighting diffuse probes reject the resampled mode, because
+  their first receiver is virtual and has no stored frame.
+
+Evidence against [Acceptance](#acceptance) item 4, on Apple M5 Metal:
+- **Tested.** Each mode agrees with `UniformArea` across six seeds at depths 1, 3,
+  4 and 6. CPU and GPU raw AOVs agree within the `UniformArea` parity tolerances.
+  Both implementations cover `Ẑ = 0`, an empty LTC clip, emitters behind every
+  receiver, finite contributions and weights that partition unity, in the CPU unit
+  tests, the shader parity kernel and the capture tests.
+- **`UniformArea`.** Captures stay bit-identical in both implementations.
+- **Not yet covered.** No fixture has textured emitters. Thousands of emissive
+  triangles and the equal-time evaluation of item 5 also remain open.
+- **Not run.** Vulkan, WebGPU and `NativeQueries` captures of the resampled mode,
+  and sanitizer builds, first run in batch CI.
+
 ## Ownership
 
 | Piece | Owner | Notes |
 | --- | --- | --- |
-| Convex polygon horizon clipping (up to seven input vertices), clipped projected-solid-angle integral, Peters sampler and density | FoundationMath `projected_solid_angle.hpp` and `shaders/projected_solid_angle.slang`, being added by the polygonal-light work | The sampler is ported from the BSD-licensed `polygon_sampling.glsl` with its notice. Clipping is an independent reimplementation. This design consumes these primitives and adds none of its own. |
+| Convex polygon horizon clipping (up to seven input vertices), clipped projected-solid-angle integral, Peters sampler and density | FoundationMath `projected_solid_angle.hpp` and `shaders/projected_solid_angle.slang`, implemented by the polygonal-light work | The sampler is ported from the BSD-licensed `polygon_sampling.glsl` with its notice. Clipping is an independent reimplementation. This design consumes these primitives and adds none of its own. |
 | Generic LTC polygon transform | FoundationMath, beside those primitives | Implemented as `linearly_transformed_cosine.hpp` and `shaders/linearly_transformed_cosine.slang` ([contract](../modules/foundation/math.md#linearly-transformed-cosines-over-polygons)): transform the vertices by `M⁻¹`, then reuse the same clipping, integral and sampler. Credits Heitz et al. 2016 (§3.1, Eq. 3, Algorithm 1) and Peters 2021 §4.1. |
 | Sequential weighted reservoir | FoundationMath | Implemented as `weighted_reservoir.hpp` and `shaders/weighted_reservoir.slang` ([contract](randomness.md#sequential-weighted-reservoir)): explicit order, zero totals, and selection-frequency tests on exact small integers. The ReSTIR template may adopt it separately; this design does not change that template. |
 | LTC table for Ludus GGX/correlated Smith/Schlick, its fitter and provenance | Renderer (embedded table and a GPU buffer) plus an offline Ludus tool. **Owned by this RIS/many-area-light workstream** (decided October 27, 2026). The polygonal-light LTC templates reuse the same table and fitter rather than building their own. | Implemented as `tools/ltc-fit`, `data/ltc_table.bin` with its provenance and `shaders/ltc_table_layout.h`, and the `ltc_table.slang` and CPU lookups ([fit, regeneration and accuracy](../development/ltc-table.md)). Reimplemented from Heitz et al. §4 and Peters §§4.1–4.2, not from GPLv3 utilities. Like Peters' renderer it has 51 `F0` slices, chosen by the luminance of `F0`; the albedo stays exact per channel. It covers roughness down to 0.045. A poor fit costs variance, not correctness. Render graphs bind it with `scene_interface.polygonal_light_sampling`. |

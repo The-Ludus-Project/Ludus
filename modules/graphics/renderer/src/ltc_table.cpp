@@ -15,8 +15,8 @@ using foundation::usize;
 constexpr uint32 ROUGHNESS_COUNT = LUDUS_LTC_TABLE_ROUGHNESS_COUNT;
 constexpr uint32 VIEW_COUNT = LUDUS_LTC_TABLE_VIEW_COUNT;
 constexpr uint32 FRESNEL_COUNT = LUDUS_LTC_TABLE_FRESNEL_COUNT;
-constexpr usize SLICE_ENTRY_COUNT = LUDUS_LTC_TABLE_SLICE_ENTRY_COUNT;
-constexpr usize MOMENT_OFFSET = LUDUS_LTC_TABLE_MOMENT_OFFSET;
+constexpr usize SLICE_ENTRY_COUNT = LTC_TABLE_SLICE_ENTRY_COUNT;
+constexpr usize MOMENT_OFFSET = LTC_TABLE_MOMENT_OFFSET;
 constexpr float32 MINIMUM_ROUGHNESS = LUDUS_LTC_TABLE_MINIMUM_ROUGHNESS;
 static_assert(ROUGHNESS_COUNT >= 2 && VIEW_COUNT >= 2 && FRESNEL_COUNT >= 2);
 // Rec.709 luminance weights, with which Peters' renderer reduces an RGB F0 to the scalar that selects a slice.
@@ -49,11 +49,17 @@ Interpolate(usize offset, uint32 row, float32 rowFraction, uint32 column, float3
 uint32 GetLtcTableFresnelSlice(math::Vector3 f0) noexcept
 {
     const float32 luminance = math::Clamp(math::Dot(f0, FRESNEL_LUMINANCE_WEIGHTS), 0.0F, 1.0F);
+    // The coordinate is non-negative, so truncating it plus one half rounds to nearest. It is the Slang lookup's
+    // uint(x + 0.5) in ltc_table.slang, so the CPU and GPU choose the same slice.
+    // NOLINTNEXTLINE(bugprone-incorrect-roundings)
     return math::Min(static_cast<uint32>(luminance * static_cast<float32>(FRESNEL_COUNT - 1) + 0.5F),
                      FRESNEL_COUNT - 1);
 }
 
+// The view direction and F0 are distinct quantities, in the order of the Slang LookupSpecularLtc.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
 SpecularLtc LookupSpecularLtc(float32 roughness, math::Vector3 viewTangent, math::Vector3 f0) noexcept
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     // Rows are linear in perceptual roughness, columns linear in the view inclination (Heitz et al. 2016, section 4).
     const float32 rowCoordinate =

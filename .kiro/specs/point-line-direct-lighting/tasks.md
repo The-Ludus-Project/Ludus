@@ -390,21 +390,147 @@ is left to batch CI.
 
 ## PL3 BVH line traversal
 
-- [ ] Traverse the packed `ReferenceBvhNode` array with a bounded stack and the
-      Akenine-Möller triangle-box test (D5), with attribution. Stack exhaustion
-      fails.
-- [ ] Add packed nodes to any strategy PL0 found without them. PL0 found none
-      missing, but plans with a `NativeQuery` pass partition `Order` by opacity.
-      Traverse leaves through an unpartitioned order there, and add a
-      masked-scene parity test under both strategies (design 4.4).
-- [ ] Parity: every PL1 and PL2 non-overflow fixture gives identical intervals
-      and byte-identical accumulated images with the loop and the BVH.
-- [ ] Both templates keep byte-identical accumulated images on their PL1 and
-      PL2 GPU fixtures, since the BVH changes only which triangles are visited.
-- [ ] Measure line query time against the loop on a larger reference scene,
-      such as Sponza, and record it with the device. Make no speed claim beyond
-      the measurement.
+Design D5 was revised before implementation (2026-10-29): the line walk shares
+`ComputeBvh`'s node reader, leaf order and stack bound (#676), and
+`scene_interface.line_traversal` selects the BVH (default) or the loop.
+Evidence is from an Apple M5 on Metal (macOS 26.6), `macos-clang-development`,
+on `develop` `c08ffec7`. Vulkan was not run: no Linux or Vulkan host was
+available, so llvmpipe is left to batch CI.
+
+- [x] `ray_bvh_nodes.slang`: `LoadBvhNode`, `GetBvhLeafTriangle` (order word Z),
+      `BVH_NODE_WORDS` and `BVH_MAXIMUM_PENDING`, used by `TraceBvh` and the
+      line walk. Register it with the helper sources and the SDK install. The
+      `ComputeBvh` and RT1 parity tests still pass.
+      *Registered in `render_graph_ray.py` `HELPERS`, the `LudusRenderGraph.cmake`
+      helper dependencies and the renderer's shader install list. `TraceBvh`
+      changed only in how it reads nodes. "Compute BVH traversal reports the same
+      hits and visibility as the other strategies", the ComputeBvh template test
+      and the GPU-compute RT1 reference tests pass (the last in
+      `ludus_renderer_pixels`, see the gates below).*
+- [x] `ray_line_visibility.slang`: the BVH walk with the Akenine-Möller
+      separating-axis node test and its conservative margin (D5), with
+      attribution; stack exhaustion and a pack without nodes fail; both
+      traversals stop at full occlusion and clear `HasMaskedOccluders` when no
+      length is visible.
+      *`TraceLineVisibility` replaces `TraceLineTriangleLoop`. The scan and the
+      walk share one candidate body (`ClipLineCandidate`, then the PL1 insertion)
+      and one in-place complement, so the interval array is still the only one
+      (D3, "PL1 storage"). The attribution cites JGT 6(1), pp. 29-33, DOI
+      10.1080/10867651.2001.10487535. Stack exhaustion has no GPU test: the
+      builder's 48-level depth limit keeps every pack the public API can produce
+      within the 64-entry stack (D5).*
+- [ ] Leaf order. Leaves address order word Z, which keeps the BVH order in
+      plans with a `NativeQuery` pass (no packing change, D5). Add a
+      masked-scene parity test under both strategies once scenes can hold
+      alpha-tested triangles (D4).
+      *Word Z is read through `GetBvhLeafTriangle`, as `TraceBvh` reads it, and
+      the `NativeQuery` parity below passes on opaque scenes. Left open because
+      the masked-scene test still cannot be written: render-graph scenes cannot
+      hold alpha-tested triangles (D4, PL1 finding).*
+- [x] Builder (D9): optional `line_traversal`, `"ComputeBvh"` or
+      `"TriangleLoop"`, with Python tests for the default, the rejection and
+      its repair, and identical wrapper bytes for an absent field and
+      `"ComputeBvh"`.
+      *`test_line_traversal_is_optional_and_names_its_choices` rejects
+      `"NativeQuery"`, `"Custom"`, `"computebvh"`, `""`, `1`, `true` and `null`
+      with a `Schema` diagnostic naming the field and both values.
+      `test_line_traversal_defines_the_scan_only_for_triangle_loop` shows that an
+      absent field and `"ComputeBvh"` give identical wrappers and that
+      `"TriangleLoop"` adds only the one define, ahead of the helper includes.*
+- [x] Parity: the PL1 analytic fixture gives byte-identical interval readouts
+      with the loop and the BVH, in `TriangleLoop` and `NativeQuery` passes.
+      *"Line visibility through the packed BVH equals the linear scan in
+      triangle-loop and native passes" cooks the fixture again with
+      `line_traversal` `"TriangleLoop"` and compares four packages. Every set
+      first passes the PL1 analytic checks; then all eight cases, including 31
+      and 32 slats (62 and 64 occluder triangles in a multi-level tree) and the
+      overflow, read back identically. The readout is the PL1 one: status, count
+      and flag bytes and 24-bit fixed-point bounds.*
+- [x] Both templates give byte-identical accumulated images on their PL1 and PL2
+      GPU fixtures with `line_traversal` `"TriangleLoop"` and the default BVH,
+      since the BVH changes only which triangles are visited. Their merged
+      kernels still pass the PL1 and PL2 convergence tests with the BVH stack
+      added (D3, "PL1 storage").
+      *Two `[line-bvh]` template tests compare the Cornell room's tone-mapped
+      RGBA8 running means after 1 and 64 samples: both line-sampling outputs and
+      all three point-and-line outputs, including the BSDF and point samples, are
+      identical. With the BVH as default, the PL1 and PL2 convergence, density
+      and fallback tests pass (9 test cases), and the PL2 penumbra errors repeat
+      PL2's to the printed digits: 3.04899e-4, 3.06474e-4 and 6.93375e-4. Each
+      BVH kernel now holds a 64-entry `uint` stack beside the 32 `float2`
+      intervals. The merged point-and-line Metal stage is 1,123,179 bytes, against
+      1,099,515 with the scan (2 MiB limit); line sampling's is 583,264 against
+      547,084.*
+- [x] Measure line query time against the loop on a larger reference scene,
+      such as Sponza, and record it with the device, with an interval parity
+      check on that scene. Make no speed claim beyond the measurement.
+      *Hidden test `[.line-traversal-performance]`. It reads a scene exported to
+      a raw position and index file, named by `LUDUS_LINE_TRAVERSAL_SCENE`, and
+      adds a 2 m square light facing down (emission 50). The line-sampling
+      template runs with every ray pass on `ComputeBvh`, so the two runs differ
+      only in `line_traversal`. Scene: the first 500,000 triangles of Intel's
+      `NewSponza_Main_glTF_003.gltf` (whole primitives in node order; 274,307
+      vertices), exported by
+      `modules/graphics/renderer/tests/export_line_traversal_scene.py
+      --maximum-triangles 500000`. The full 3,747,018 triangles, and exports capped at 2,000,000
+      and 1,000,000, fail scene preparation with `CapacityExceeded`; the cause
+      was not traced. 96×64 pixels, 8 frames, two runs. Primary pass 0.24 ms
+      either way. `shade`, one line query per pixel: BVH 2.24 and 2.24 ms, scan
+      452.3 and 426.6 ms. `shadeVisibleFraction`: BVH 3.59 and 3.56 ms, scan
+      327.6 and 324.5 ms. Both outputs are byte-identical between the
+      traversals, with no failure pixels; 1,239 of 6,144 `color` pixels and 3,894
+      `visibleFraction` pixels are nonzero. On the 14-triangle Cornell room the
+      BVH `shade` pass was 28% and 13% slower than the scan in two runs
+      (1.02 against 0.80 ms, 0.29 against 0.26 ms).*
+- [x] Re-run PL2's penumbra comparison of `color` against `pointSampling` at
+      equal GPU time rather than equal samples, and record it as a measurement.
+      *Hidden test `[.point-line-performance]`, same room, mask and reference as
+      PL2. Each estimator alone needs the primary pass and its own shading pass
+      per sample. Over 64 timed frames a `color` sample cost 6.62 and 6.37 times
+      a `pointSampling` sample in two runs (GPU clocks differed 3.5× between
+      them), so point sampling got 106 and 102 samples against 16. Penumbra MSE:
+      `color` at 16 samples 3.05e-4; `pointSampling` at 106 and 102 samples
+      9.93e-5 and 9.91e-5 (6.93e-4 at 16). At equal GPU time on this 14-triangle
+      room, point sampling has about a third of the error. This measures one small
+      scene and supports no general claim either way.*
 - [ ] Documentation and gates as in PL1.
+      *Documentation: the guide's "Find the visible parts of a segment" now
+      describes the BVH walk, `line_traversal`, the attribution and the
+      measurements. The manifest record, both template sections and the
+      `ComputeBvh` section were updated too.
+      Gates, on `develop` `c08ffec7` (no later `develop` commits): `macos-clang-development`
+      builds all targets with no compiler warnings (only the linker's notes that
+      Homebrew Qt targets macOS 14.4). `--format`, `--tidy-changed` (base
+      `c08ffec7`) and `source_policy.py --base c08ffec7 --clang-format` pass; the
+      targeted `--tidy` on the changed test file reports findings only on lines
+      this change does not touch. The render-graph Python suites pass 434 tests
+      (19 compiler-acceptance tests skipped without the tool variables). With
+      `LUDUS_RG1_SLANG`, `LUDUS_RG1_HELPER` and `LUDUS_RG1_CROSS` set to the
+      pinned tools, about twenty acceptance tests error with "vertex inputs
+      differ from schema" in this checkout and identically in a `c08ffec7`
+      snapshot, so they are not this change's; the CMake cooks with the same
+      Slang build every fixture and template. `check-docs`, strict MkDocs,
+      `scripts/build-api --bootstrap` (no new gaps), `check-wiki
+      --documentation-only` and the `test_docs.py`/`test_wiki.py` suites pass.
+      `install-sdk` passes, and the renderer consumer, configured by hand against
+      the install with the pinned Slang and SPIRV-Cross, cooks
+      `rg2_line_visibility_loop` and `salesin_jarosz_lines` through the installed
+      helper (which ships `ray_bvh_nodes.slang`) and its contract executable
+      passes. `macos-clang-asan-ubsan` (tests on, editor off, configured with the
+      shader tools) passes 121 of 122 with no sanitizer report, including
+      `ludus_render_graph_ray_pixels` and `ludus_renderer_pixels`.
+      Left open because `develop` fails in code this change does not touch.
+      `ludus_rhi_ray_queries` expects `RayPipelines` false on Metal (both presets,
+      as in PL1 and PL2). `macos-clang-development` CTest passes 139 of 142.
+      `ludus_render_graph_configuration_tests` fails 4 of 222 cases: those on
+      `develop`'s own program counts after #727 ("needs 8 shader programs", 7
+      against 6, 12 against 11) and the Project Settings resolution case. `ludus_editor_tests`
+      fails 13 cases (preview presentation timeouts, engine default,
+      Build & Preview, New Graph and project-SDK cooking, the workspace's fake
+      SDK, ray path capture without native rays). The same 13 fail with this
+      change's product files reverted to `c08ffec7` and rebuilt, with the machine
+      idle. No open pull request fixes them. Ruff was not run (not installed
+      locally). Vulkan was not run.*
 
 ## PL4 Deferred (not scheduled)
 

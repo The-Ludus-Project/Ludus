@@ -1946,6 +1946,77 @@ TEST_CASE("RIS projected-solid-angle import enables the polygonal-light helpers 
               .toBool() == true);
 }
 
+TEST_CASE("Polygonal-light-sampling template is created from the editor picker with four compared outputs",
+          "[editor][render-graph][polygonal-light-sampling-template]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    workspace.show();
+    CreateGraphFromPicker(workspace, QStringLiteral("polygonal-light-sampling"));
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QByteArray library = document.GetDraft(QStringLiteral("library.lurender.json"));
+    for (const char* program :
+         {"ShadeClampedOptimalMis", "ShadeBalanceHeuristic", "ShadeProjectedSolidAngle", "ShadeLtc"})
+    {
+        INFO(program);
+        CHECK(library.contains(program) == true);
+    }
+    // Every pass walks the compute BVH, so the package needs no ray hardware.
+    CHECK(library.count("\"ComputeBvh\"") == 4);
+    CHECK(library.contains("NativeQuery") == false);
+    const QByteArray root = document.GetDraft(ROOT_GRAPH);
+    // Clamped optimal MIS is exported first, so the viewport shows it by default.
+    CHECK(root.indexOf("\"output\"") < root.indexOf("\"balanceHeuristicOutput\""));
+    CHECK(root.count("\"Accumulate\"") == 4);
+    CHECK(root.count("\"Export\"") == 4);
+    CHECK(document.GetDraft(QStringLiteral("main_shaders/polygonal_light.slang"))
+              .contains("ComputePolygonalLightWeight") == true);
+    const QByteArray manifest = document.GetDraft(COMPUTE_MANIFEST);
+    CHECK(manifest.contains("PROJECTED_SOLID_ANGLE_MIS_VISIBILITY") == true);
+    const QJsonObject interface = FindRayTechnique(manifest).value(QStringLiteral("scene_interface")).toObject();
+    CHECK(interface.value(QStringLiteral("visibility_queries")).toInt() == 16);
+    CHECK(interface.value(QStringLiteral("polygonal_light_sampling")).toBool() == true);
+    RequireValidation(workspace);
+}
+
+TEST_CASE("Polygonal-light-sampling import prefixes its programs and raises the shared visibility budget",
+          "[editor][render-graph][polygonal-light-sampling-configuration]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    RenderGraphDocument& document = workspace.GetDocument();
+    QString error;
+    REQUIRE(document.ApplyConfigurationTemplate(ROOT_GRAPH,
+                                                QStringLiteral("Polygonal"),
+                                                QStringLiteral("polygonal-light-sampling"),
+                                                error) == RenderGraphDocumentStatus::Ok);
+    const QByteArray library = document.GetDraft(QStringLiteral("Polygonal.lurender.json"));
+    for (const char* program : {"PolygonalLightShadeClampedOptimalMis",
+                                "PolygonalLightShadeBalanceHeuristic",
+                                "PolygonalLightShadeProjectedSolidAngle",
+                                "PolygonalLightShadeLtc"})
+    {
+        INFO(program);
+        CHECK(library.contains(program) == true);
+    }
+    for (const QString& source : {QStringLiteral("polygonal_light_sampling/main_shaders/shade.slang"),
+                                  QStringLiteral("polygonal_light_sampling/main_shaders/hit_record.slang"),
+                                  QStringLiteral("polygonal_light_sampling/main_shaders/polygonal_light.slang")})
+    {
+        INFO(source.toStdString());
+        CHECK(document.GetDraft(source).isEmpty() == false);
+    }
+    const QJsonObject interface =
+        FindRayTechnique(document.GetDraft(COMPUTE_MANIFEST)).value(QStringLiteral("scene_interface")).toObject();
+    CHECK(interface.value(QStringLiteral("visibility_queries")).toInt() == 16);
+    CHECK(interface.value(QStringLiteral("polygonal_light_sampling")).toBool() == true);
+}
+
 namespace
 {
 /// The point-and-line MIS template's registry identity.

@@ -12,16 +12,12 @@
 // https://pbr-book.org/3ed-2018/Shapes/Managing_Rounding_Error, for widening the
 // float32 slab exit by 1 + 2 * gamma(3).
 //
-// The including kernel supplies SceneValue(uint) over the packed scene words, the
-// Parameters fields Offsets (x: nodes, y: leaf order) and Counts (y: node count), and
+// The including kernel supplies what ray_bvh_nodes.slang reads (SceneValue, Offsets and Counts) and
 // IsBvhCandidateAccepted, its material opacity test for a candidate triangle.
-#include "renderer_gpu_preview_layout.h"
-#include "renderer_reference_layout.h"
+#include "ray_bvh_nodes.slang"
 
 // 1 + 2 * gamma(3), gamma(n) = n * epsilon / (1 - n * epsilon), epsilon = 2^-24.
 static const float BVH_SLAB_EXIT_SCALE = 1.00000036;
-static const uint BVH_MAXIMUM_PENDING = LUDUS_REFERENCE_STACK_SIZE - 2;
-static const uint BVH_NODE_WORDS = 3;
 
 bool IsBvhCandidateAccepted(uint triangle, float2 barycentric);
 
@@ -132,7 +128,13 @@ bool IntersectBvhTriangle(uint triangle,
     if (distanceWorld < ray.MinimumDistanceWorld || distanceWorld > limitWorld)
         return false;
     outDistanceWorld = distanceWorld;
-    outBarycentric = float2(edge.y / determinant, edge.z / determinant);
+    // Near the edge opposite corner 0, edge.x is zero or negligible and the two separately rounded
+    // quotients can sum above one (Metal's fast-math division makes that more frequent), which
+    // GetSurfaceHit rejects. Bound the third by 1 - second: 1 - second is exact or within half an
+    // ulp, so the float32 sum rounds to at most one. The adjustment is within rounding error.
+    float second = saturate(edge.y / determinant);
+    float third = min(saturate(edge.z / determinant), 1 - second);
+    outBarycentric = float2(second, third);
     return true;
 }
 /// Trace the ray interval [MinimumDistanceWorld, MaximumDistanceWorld] through the packed BVH.
@@ -156,13 +158,10 @@ BvhHit TraceBvh(BvhRay ray, bool isVisibility)
     while (pending != 0)
     {
         --pending;
-        uint node = Offsets.x + stack[pending] * BVH_NODE_WORDS;
-        float4 lower = SceneValue(node);
-        float4 upper = SceneValue(node + 1);
-        uint3 range = asuint(SceneValue(node + 2).xyz); // first, count, split axis
-        if (IntersectBvhBox(ray, lower.xyz, upper.xyz, closestWorld) == false)
+        BvhNode node = LoadBvhNode(stack[pending]);
+        if (IntersectBvhBox(ray, node.MinimumWorld, node.MaximumWorld, closestWorld) == false)
             continue;
-        if (range.y == 0)
+        if (node.Count == 0)
         {
             if (pending > BVH_MAXIMUM_PENDING)
             {
@@ -170,16 +169,15 @@ BvhHit TraceBvh(BvhRay ray, bool isVisibility)
                 return result;
             }
             // Near child last so it pops first; its closest hit then culls the far child.
-            bool isReversed = ray.DirectionWorld[range.z] < 0;
-            stack[pending] = isReversed == true ? asuint(lower.w) : asuint(upper.w);
-            stack[pending + 1] = isReversed == true ? asuint(upper.w) : asuint(lower.w);
+            bool isReversed = ray.DirectionWorld[node.SplitAxis] < 0;
+            stack[pending] = isReversed == true ? node.Left : node.Right;
+            stack[pending + 1] = isReversed == true ? node.Right : node.Left;
             pending += 2;
             continue;
         }
-        for (uint slot = range.x; slot < range.x + range.y; ++slot)
+        for (uint slot = node.First; slot < node.First + node.Count; ++slot)
         {
-            // Order word Z keeps the BVH leaf order even when X holds native opacity ranges.
-            uint triangle = asuint(SceneValue(Offsets.y + slot).z);
+            uint triangle = GetBvhLeafTriangle(slot);
             float distanceWorld;
             float2 barycentric;
             if (IntersectBvhTriangle(triangle, ray, closestWorld, distanceWorld, barycentric) == false ||

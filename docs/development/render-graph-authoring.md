@@ -776,7 +776,8 @@ each author's callbacks.
 graph; it adds no structure and no preparation work. The kernel shares its node
 walk and float32 port of Woop, Benthin and Wald's watertight triangle test with the
 [GPU-compute RT1 reference](../architecture/renderer-systems.md#gpu-compute-reference)
-(`ray_bvh_traversal.slang`). Its ray interval is closed: a hit exactly at the
+(`ray_bvh_traversal.slang`, which reads nodes through `ray_bvh_nodes.slang`, shared
+with the [line query](#find-the-visible-parts-of-a-segment)). Its ray interval is closed: a hit exactly at the
 maximum distance is accepted, and equal-distance hits keep the lowest packed
 triangle. Candidates pass the same fixed-mip material alpha acceptance as the other
 strategies. Each ray's traversal stack holds 64 nodes, and the builder's 48-level
@@ -1945,6 +1946,151 @@ technique all the weight. Vulkan has not been run for this template.
 See the canonical
 [package](../../modules/graphics/renderer/render_graphs/ris_projected_solid_angle/main.lurender.json).
 
+### Compare BRDF importance sampling for polygonal lights
+
+The **Peters — BRDF importance sampling for polygonal lights** template
+(`polygonal-light-sampling`) reproduces the comparison in Christoph Peters,
+[*BRDF Importance Sampling for Polygonal Lights*, ACM TOG 40(4), article 140, 2021](https://doi.org/10.1145/3450626.3459672).
+Every emissive triangle of the scene is shaded with his two techniques, and each
+estimator that combines them is exported as its own image. Unlike the
+[RIS template](#resample-many-area-lights-with-projected-solid-angle-sampling), it
+selects no light: like Peters' renderer (section 6.1), it shades every light, traces
+one shadow ray per sample, and computes direct lighting only. Create it from
+**New Render Graph → Template**, or with the CLI:
+
+```bash
+ludus render-graph new graphs/Polygonal --template polygonal-light-sampling --output offscreen \
+  --renderer-static --profiles metal wgsl
+```
+
+Use `spirv wgsl` for Vulkan. A `wgsl`-only package is rejected with a `Capability`
+diagnostic that names Metal or Vulkan compute. **Apply Configuration Template...**
+and Quick Add also offer the `PolygonalLightSampling` configuration, with `scene`,
+`view` and `color` inputs, a required `color` output and optional
+`balanceHeuristic`, `projectedSolidAngle` and `ltc` outputs.
+
+Every pass selects the `ComputeBvh` traversal, so the package needs Metal or Vulkan
+compute but no hardware ray tracing. Its registry requirement is
+`compute-ray-tracing`. Browser execution is outside the graph ray profile.
+
+Four compute passes share a 32-byte hit record, each with its own
+**Accumulate → ToneMap → Export** chain. The first pass traces the camera ray and
+records the hit for the other three, so all four shade the same point with the
+same random numbers.
+
+| Pipeline node | Function in `main_shaders/shade.slang` | Estimate (paper section) | Output |
+| --- | --- | --- | --- |
+| `shade` | `ShadeClampedOptimalMis` | One projected-solid-angle and one LTC sample per triangle, combined by clamped optimal MIS (§4.3) | `color` → `output` export |
+| `shadeBalanceHeuristic` | `ShadeBalanceHeuristic` | The same two samples with Veach's balance heuristic (Fig. 10b) | `balanceHeuristic` → `balanceHeuristicOutput` |
+| `shadeProjectedSolidAngle` | `ShadeProjectedSolidAngle` | The projected-solid-angle sample alone (§3, Fig. 12l) | `projectedSolidAngle` → `projectedSolidAngleOutput` |
+| `shadeLtc` | `ShadeLtc` | The LTC sample alone (§4.1) | `ltc` → `ltcOutput` |
+
+For each receiver and each emissive triangle, `main_shaders/polygonal_light.slang`
+follows the paper section by section:
+
+1. `MakePolygonalLightReceiver` builds the shading frame and looks up the specular
+   LTC `M₁` with the receiver's `F0` from the renderer's
+   [LTC table](ltc-table.md), which the technique's
+   `scene_interface.polygonal_light_sampling` binds. The diffuse technique uses
+   `M₀ = I` (§4.2).
+2. `TryPreparePolygonalLight` clips the triangle to the horizon for projected
+   solid angle sampling (§3, supplement A.1) and transforms it by `M₁⁻¹` before
+   clipping it there for LTC sampling (§4.1). An empty LTC clip disables that
+   technique. It computes Peters' coefficients `c_j = L_e a_j E_j` **per color
+   channel**, with the diffuse albedo `a₀` clamped to 0.01 per channel (§4.2).
+3. `TrySamplePolygonalLight` draws a direction with FoundationMath's
+   [projected solid angle](../modules/foundation/math.md) or LTC sampler, evaluates
+   both densities at the normalized direction and maps it to a point on the
+   triangle.
+4. `ComputePolygonalLightWeight` returns the estimator's weight per channel:
+   `v·c_j p_j / Σ c_k p_k + (1 − v)·p_j / Σ p_k` for clamped optimal MIS,
+   `p_j / Σ p_k` for the balance heuristic, and one for a single technique.
+5. `shade.slang` evaluates the emission at the sampled point, including emission
+   maps and sidedness, and traces the shadow ray with `TestVisibility`.
+
+| Graph setting | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `PROJECTED_SOLID_ANGLE_MIS_VISIBILITY` | `0.5` | `0`–`1` | Peters' visibility estimate `v` (§4.3). `1` gives the weighted balance heuristic of §4.2 (Fig. 10c); `0` makes the color output equal to the balance-heuristic output |
+
+The setting is the RIS template's, with the same meaning, so a project that
+imports both shares one value. The random layout is in
+`main_shaders/hit_record.slang`: dimensions 0–1 jitter the camera ray, and emissive
+triangle `k` draws its projected-solid-angle sample at `2 + 4k` and `3 + 4k` and its
+LTC sample at `4 + 4k` and `5 + 4k`. The single-technique outputs therefore reuse
+the MIS outputs' samples.
+
+Each emissive triangle costs two shadow rays in the MIS passes and one in each
+single-technique pass. The technique declares `surface_queries: 1` and the scene
+interface's maximum of `visibility_queries: 16`, so a scene may have at most **eight
+emissive triangles**. A larger scene fails explicitly with the failure color rather
+than dropping lights; use the RIS template for many lights.
+
+New shader programs have `PolygonalLight`-prefixed IDs and sources under
+`polygonal_light_sampling/main_shaders/`. The setting joins the manifest's Graph
+settings, and existing values are kept. The shared ray technique is extended as for
+the compute ray-tracing template, and it gains `polygonal_light_sampling`.
+
+Departures from the paper, also listed in `polygonal_light.slang`:
+
+- Polygons are the scene's emissive triangles. A quad light is two triangles, each
+  with its own pair of samples, where Peters samples the whole convex polygon.
+- The diffuse albedo `a₀` is `baseColor · (1 − metallic) · (1 − F0)`, Schlick's
+  reflectance at normal incidence for Ludus's Fresnel-weighted Lambert lobe. Peters
+  uses the Frostbite BRDF's diffuse albedo.
+- Shading normals are not clipped to the hemisphere of the outgoing direction
+  (§6.1); the BSDF is zero there.
+- A sampled direction that misses its triangle in float32 contributes zero.
+- Analytic lights and the environment do not light surfaces. A camera ray that
+  misses the scene shows the environment.
+- Light samples do not apply the emitter's own alpha cutoff, as in the other
+  templates.
+
+The LTC output is not an unbiased image of the scene: the LTC can be zero where the
+BRDF is not (§4.1), so it estimates the shading only within the LTC's support. The
+MIS outputs need the diffuse technique for exactly this reason (§4.2).
+
+Evidence:
+
+- **CPU oracle.** `tests/polygonal_light_sampling_oracle.cpp` implements the same
+  four estimators with FoundationMath's C++ primitives, the CPU LTC lookup and the
+  RT1 reference BSDF, for one unoccluded triangle with constant emission.
+- **Unbiasedness.** `ludus_renderer_tests` (`[polygonal-light-sampling]`)
+  compares each estimator's mean over 65,536 oracle samples with a midpoint
+  quadrature of the same integral over 512² subtriangles. Every channel agrees
+  within four standard errors plus 0.2% for a rough dielectric, glossy metal with
+  the triangle in its highlight, and a two-sided triangle straddling the horizon
+  with `v = 1`. The LTC estimator is compared with the integral over the LTC's
+  support. On the glossy case the variance is 0.087 for clamped optimal MIS, 0.34
+  for the balance heuristic and 3.6 for projected solid angle sampling alone, the
+  ordering of Peters' Fig. 10.
+- **CPU and GPU parity.** `ludus_renderer_render_tests` runs
+  `polygonal_light.slang` in a test kernel on 4,096 drawn receivers, materials and
+  triangles, a quarter of them at the minimum roughness, and compares the raw
+  linear radiance of all four estimators with the oracle. On Apple M5 the integrals
+  and coefficients agree to a p99 relative difference of 5·10⁻⁵, the per-case
+  radiance to p90 2.8·10⁻⁵ and p99 2.8·10⁻³, and the summed radiance to 6.1·10⁻⁴;
+  the test allows 5·10⁻⁴, 10⁻⁴, 5·10⁻³ and 2·10⁻³. LTC clips with an integral
+  below 10⁻⁴ are slivers whose samples are not reproducible across precisions
+  (Peters §3.7), so the estimators that use the LTC sample skip them, as
+  FoundationMath's LTC parity test does.
+- **Template.** `ludus_render_graph_ray_tests` runs as its own CTest entry,
+  `ludus_render_graph_polygonal_light_sampling_pixels`. At 256 samples per pixel,
+  the clamped optimal MIS, balance-heuristic and projected-solid-angle outputs agree
+  with the [MIS template](#compare-light-and-bsdf-sampling-with-mis)'s MIS output
+  within 2% in a diffuse and a glossy-metal Cornell room (within 0.05% on Apple
+  M5). The LTC output is not above it. At 16 samples in the glossy room, against a
+  1024-sample image with an independent seed, the tone-mapped mean squared error is
+  1.24·10⁻⁴ for clamped optimal MIS, 1.25·10⁻⁴ for the balance heuristic and
+  1.46·10⁻⁴ for projected solid angle sampling alone; the test requires the first
+  to be below the last. A room with 32 emissive triangles shows the failure color.
+- **Not covered.** Vulkan has not been run; it first runs in batch CI. There is no
+  textured-emitter, occluded-penumbra (Peters' Fig. 10 wall) or equal-time fixture,
+  and no test asserts that clamped optimal MIS beats the balance heuristic on the
+  GPU, where the glossy room measures them almost equal.
+
+See the canonical
+[package](../../modules/graphics/renderer/render_graphs/polygonal_light_sampling/main.lurender.json).
+
 ### Sample lights along lines
 
 The **Line sampling — visible chords of area lights** template (`line-sampling`)
@@ -2024,8 +2170,10 @@ the compute ray-tracing template, and its `line_queries` rises to at least 1.
 Scope and limits. Lines are chords of one emitter triangle in one direction;
 chords across coplanar triangles and the paper's solid-angle strategy are not part
 of this template. The paper's second line direction and MIS with BSDF samples are in
-the [point-and-line template](#combine-point-and-line-samples). Traversal is a
-linear scan of the World triangles, so use small scenes.
+the [point-and-line template](#combine-point-and-line-samples). Line queries walk
+the packed BVH ([Find the visible parts of a segment](#find-the-visible-parts-of-a-segment)),
+but the template's rays use `TriangleLoop`, which scans every triangle, so for large
+scenes set each pass's `invocation.traversal` to `ComputeBvh`.
 
 `ludus_render_graph_ray_tests` renders the template in the Cornell-box-style room on
 Metal with the triangle loop:
@@ -2034,11 +2182,14 @@ Metal with the triangle loop:
   [Veach and Guibas template](#compare-light-and-bsdf-sampling-with-mis), cooked with
   every pass on the triangle loop, within 2% at 256 samples per pixel;
 - `visibleFraction` is 1 on a fully lit floor region and 0 in the umbra of the
-  block.
+  block;
+- both outputs are byte-identical, after one sample and after 64, to the template
+  cooked with `line_traversal` `"TriangleLoop"`.
 
 The query itself is tested against analytic intervals by the
 [line visibility fixture](../../tests/sdk_consumer/rg2/line_visibility/main.lurender.json),
-under both traversal strategies. Vulkan has not been run for this template.
+under both ray strategies and both line traversals, whose readouts must agree byte
+for byte. Vulkan has not been run for this template.
 
 See the canonical
 [package](../../modules/graphics/renderer/render_graphs/line_sampling/main.lurender.json).
@@ -2166,9 +2317,9 @@ you add another query site.
 Scope and limits. Lines are chords of one emitter triangle; chords across coplanar
 triangles, the paper's solid-angle line strategy (which needs parallelogram
 emitters) and its discontinuity-smoothing heuristic (which needs stratified
-samples) are not part of this template. Line samples cost line queries, and
-traversal is a linear scan of the World triangles, so use small scenes. There is no
-indirect bounce.
+samples) are not part of this template. Line samples cost line queries. Those walk
+the packed BVH, but the template's rays use `TriangleLoop`, so for large scenes set
+each pass's `invocation.traversal` to `ComputeBvh`. There is no indirect bounce.
 
 `ludus_render_graph_ray_tests` renders the template on Metal with the triangle loop:
 
@@ -2190,6 +2341,13 @@ indirect bounce.
   1024-sample image. The test reports the GPU time of each pass beside it. Line
   samples cost line queries, so this is an equal-sample comparison and supports no
   speed claim.
+- All three outputs are byte-identical, after one sample and after 64, to the
+  template cooked with `line_traversal` `"TriangleLoop"`.
+- At equal GPU time the result reverses on this 14-triangle room. A `color` sample
+  (primary plus `shade` pass) cost 6.4-6.6 times a `pointSampling` sample (primary
+  plus `shadePoints`). With 102-106 samples in the time of 16, `pointSampling`
+  reached a penumbra mean squared error of 9.9e-5, against 3.05e-4 for `color`.
+  The hidden test `[.point-line-performance]` repeats this measurement.
 
 A masked occluder cannot be tested yet, because render-graph scenes cannot hold
 alpha-tested triangles. Vulkan has not been run for this template.
@@ -2277,6 +2435,14 @@ triangle recipe state. Add this record to the manifest's
 Add `"line_queries": 1` (up to 8) only when a callback calls
 `FindVisibleLineIntervals`. An absent field means 0, and the generated wrapper is
 then byte-identical to one without the field.
+
+`"line_traversal"` chooses how that query finds occluders: `"ComputeBvh"`, the
+default, walks the packed BVH; `"TriangleLoop"` scans every packed triangle. Both
+give the same intervals (see [Find the visible parts of a segment](#find-the-visible-parts-of-a-segment)),
+so the scan is for comparison. The choice applies to every pass that shares the
+technique, whatever each pass's `invocation.traversal`, and any other value is
+rejected when the package is built. An absent field and `"ComputeBvh"` generate the
+same wrapper.
 
 Add `"polygonal_light_sampling": true` to use the polygonal-light primitives in
 callbacks. The wrapper then stages and includes, before your sources:
@@ -2486,13 +2652,33 @@ materials have no alpha mode, so the flag is never set there.
 
 Budget. Each call counts against the scene interface's `line_queries`, which is 0
 when absent; see the [manual manifest record](#author-scene-aware-ray-shaders)
-above. Traversal is a linear scan of the packed World triangles in every pass,
-whatever the pass's `TriangleLoop` or `NativeQuery` choice, because native ray
-queries cannot be walked with a triangle. Calling the query therefore never makes a
-package require ray hardware. Its cost grows with the triangle count; keep scenes
-small until a BVH traversal replaces the scan. On an Apple M5 with about 4,000
-triangles, one query cost about as much as one `TriangleLoop` shadow ray; that is a
-measurement, not a performance claim.
+above.
+
+Traversal. In every pass, whatever its `TriangleLoop`, `ComputeBvh` or `NativeQuery`
+choice, the query walks the renderer's packed BVH in ordinary compute, because
+native ray queries cannot be walked with a triangle. Calling it therefore never
+makes a package require ray hardware. The walk shares the `ComputeBvh` ray
+strategy's node reader, leaf order and 64-entry stack (`ray_bvh_nodes.slang`). It
+visits a node when its box overlaps the shadow triangle, by the separating-axis test
+of Tomas Akenine-Möller,
+[*Fast 3D Triangle-Box Overlap Testing*, Journal of Graphics Tools 6(1), 2001](https://doi.org/10.1080/10867651.2001.10487535).
+Each box is widened by a rounding margin, so the walk visits every triangle that a
+scan would clip and computes each interval with the same arithmetic. The intervals
+are therefore bitwise equal to a scan's except where insertion order matters: a
+segment that overflows the occluded capacity, or a nonfinite interval met before the
+segment is fully occluded. Once the segment is fully occluded, the walk stops, and
+`HasMaskedOccluders` is false whenever no length is visible. An exhausted stack fails
+the query; the BVH builder's 48-level depth limit keeps admitted scenes within it.
+Set the scene interface's `line_traversal` to `"TriangleLoop"` to scan every packed
+triangle instead, for example to compare on a scene of your own.
+
+Measured on an Apple M5 (macOS 26.6) at 96×64 pixels, with one line query per pixel
+in the [line-sampling template](#sample-lights-along-lines)'s shading pass and
+`ComputeBvh` rays in both runs, the first 500,000 triangles of Intel's Sponza took
+2.2 ms per frame with the BVH and 427-452 ms with the scan, with byte-identical
+images. On the 14-triangle Cornell-style room the BVH pass was 13-28% slower than
+the scan. These are measurements, not performance claims; see the
+[point-line PL3 evidence](../../.kiro/specs/point-line-direct-lighting/tasks.md#pl3-bvh-line-traversal).
 
 ### Raster first hits and secondary rays
 

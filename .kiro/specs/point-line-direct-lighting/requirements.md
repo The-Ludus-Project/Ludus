@@ -131,7 +131,9 @@ match `TestVisibility` as follows:
   remains a `ComputeRayTracing` package.
 - The first traversal SHALL scan all triangles. A bounding volume hierarchy
   (BVH) traversal over the packed nodes MAY replace it (PL3) only with
-  identical results on fixtures that do not overflow.
+  identical results on fixtures that do not overflow. When it does, the scan
+  SHALL remain selectable for comparison through an optional scene-interface
+  input that is not a plan or package field (design D5, D9).
 - No path SHALL add CPU tracing or a native line query.
 
 ## PL07 Budgets and package compatibility

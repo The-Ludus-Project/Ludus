@@ -387,6 +387,11 @@ RenderGraphDocumentStatus PrepareComputeRayTracingConfiguration(
         selected.ProgramPrefix = QStringLiteral("RisProjectedSolidAngle");
         selected.Name = QStringLiteral("RIS and projected solid angle");
     }
+    else if (templateIdentity == QStringLiteral("polygonal-light-sampling"))
+    {
+        selected.ProgramPrefix = QStringLiteral("PolygonalLight");
+        selected.Name = QStringLiteral("Polygonal light sampling");
+    }
     else
     {
         outError = QStringLiteral("Choose a built-in scene compute template.");

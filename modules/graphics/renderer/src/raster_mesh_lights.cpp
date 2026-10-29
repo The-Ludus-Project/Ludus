@@ -156,6 +156,8 @@ rhi::RasterStatus AppendRasterMeshLights(const MeshDescription& mesh,
     return inoutWords.TryAddRange({candidate.GetData(), candidate.GetSize()}) == true ? Status::Ready
                                                                                       : Status::OutOfMemory;
 }
+// Position, normal, view and base colour are distinct vectors, and metallic and roughness distinct material terms.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
 math::Vector3 EvaluateRasterMeshLight(BorrowedView<const math::Vector4> words,
                                       math::Vector3 positionWorld,
                                       math::Vector3 normalWorld,
@@ -163,6 +165,7 @@ math::Vector3 EvaluateRasterMeshLight(BorrowedView<const math::Vector4> words,
                                       math::Vector3 baseColor,
                                       float32 metallic,
                                       float32 roughness) noexcept
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     if (words.GetSize() != MESH_LIGHT_TRIANGLE_WORDS || math::Dot(normalWorld, viewWorld) <= 0)
     {

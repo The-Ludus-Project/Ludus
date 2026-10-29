@@ -46,6 +46,13 @@ LUDUS_SHADER_BINDING(LUDUS_REFERENCE_SCENE_BINDING) StructuredBuffer<uint4> scen
 LUDUS_SHADER_BINDING(LUDUS_REFERENCE_ACCUMULATION_BINDING) RWStructuredBuffer<float4> accumulation;
 LUDUS_SHADER_BINDING(LUDUS_REFERENCE_STATUS_BINDING) RWStructuredBuffer<uint4> status;
 LUDUS_SHADER_BINDING(LUDUS_REFERENCE_TEXELS_BINDING) StructuredBuffer<uint4> textureWords;
+// The renderer's LTC table, read only by ReferenceLightSampling::ResampledProjectedSolidAngle. Declared after every
+// lower binding: Slang numbers Metal buffers in declaration order.
+#define LUDUS_LTC_TABLE_BINDING LUDUS_REFERENCE_LTC_TABLE_BINDING
+#include "linearly_transformed_cosine.slang"
+#include "ltc_table.slang"
+#include "reference_light_sampling.slang"
+#include "weighted_reservoir.slang"
 
 // Keeps the conventional brace layout of both kernel entry points under the pinned formatter.
 #define LUDUS_REFERENCE_COMPUTE_ENTRY [numthreads(LUDUS_REFERENCE_GROUP_WIDTH, 1, 1)]
@@ -53,6 +60,7 @@ LUDUS_SHADER_BINDING(LUDUS_REFERENCE_TEXELS_BINDING) StructuredBuffer<uint4> tex
 static const uint REVERSE_Z_FLAG = 1;
 static const uint INFINITE_FAR_FLAG = 2;
 static const uint CENTER_RAYS_FLAG = 4;
+static const uint RESAMPLED_LIGHT_FLAG = LUDUS_REFERENCE_RESAMPLED_LIGHT_FLAG;
 static const uint LINEAR_FILTER_FLAG = 1;
 static const uint REPEAT_U_FLAG = 2;
 static const uint REPEAT_V_FLAG = 4;
@@ -91,6 +99,7 @@ static const uint BSDF_FIRST_SLOT = 4;
 static const uint BSDF_SECOND_SLOT = 5;
 static const uint ROULETTE_SLOT = 6;
 static const uint EMITTER_SLOT = LUDUS_PATH_RANDOM_EMITTER_SLOT;
+static const uint LTC_FIRST_SLOT = LUDUS_REFERENCE_LTC_FIRST_SLOT;
 
 float4 SceneValue(uint index)
 {
@@ -394,9 +403,16 @@ float RandomValue(uint pixel, uint sample, uint dimension)
 {
     return SampleRandomFloat01(Sampling.xy, PixelRandomAddress(pixel, sample, dimension));
 }
+// ReferenceLightSampling::ResampledProjectedSolidAngle: sampler version 2 and its 128 dimensions per bounce.
+bool IsResampled()
+{
+    return (Sampling.z & RESAMPLED_LIGHT_FLAG) != 0;
+}
 uint GetBounceDimension(uint depth, uint slot)
 {
-    return LUDUS_PATH_RANDOM_FIRST_BOUNCE_DIMENSION + depth * LUDUS_PATH_RANDOM_DIMENSIONS_PER_BOUNCE + slot;
+    uint stride = IsResampled() == true ? LUDUS_PATH_RANDOM_VERSION2_DIMENSIONS_PER_BOUNCE
+                                        : LUDUS_PATH_RANDOM_DIMENSIONS_PER_BOUNCE;
+    return LUDUS_PATH_RANDOM_FIRST_BOUNCE_DIMENSION + depth * stride + slot;
 }
 float PowerWeight(float pdf, float other)
 {
@@ -716,6 +732,8 @@ struct LightProposal
     float Pdf;
     bool IsDelta;
     bool HasFiniteEndpoint;
+    // ResampledProjectedSolidAngle drew the emissive category; the vertex resamples an emitter itself.
+    bool IsEmissiveCategory;
 };
 void MarkInvalid(inout PathSample inoutPath, uint depth, uint failure)
 {
@@ -752,6 +770,7 @@ LightProposal SampleLight(uint pixel, uint sample, uint depth, float3 positionWo
     result.Pdf = 0;
     result.IsDelta = false;
     result.HasFiniteEndpoint = false;
+    result.IsEmissiveCategory = false;
     uint count = GetLightCount();
     if (count == 0)
         return result;
@@ -820,6 +839,11 @@ LightProposal SampleLight(uint pixel, uint sample, uint depth, float3 positionWo
     }
     if (selected - Counts.w < Counts.z)
     {
+        if (IsResampled() == true)
+        {
+            result.IsEmissiveCategory = true;
+            return result;
+        }
         uint total = GetEmitterCumulative(Counts.z - 1);
         if (total == 0)
             return result; // No emitter carries power; the proposal contributes nothing.
@@ -906,6 +930,431 @@ bool TraceProposal(inout PathSample inoutPath,
     outIsVisible = blocker.Triangle == NO_TRIANGLE;
     return true;
 }
+// --- Resampled emitter light (reference_light_sampling.cpp) ----------------------
+// ReferenceLightSampling::ResampledProjectedSolidAngle replaces the power-CDF emitter draw of the emissive category:
+// RIS over the power CDF with the LTC target, then one projected-solid-angle and one LTC sample of the selected
+// triangle under clamped optimal MIS, each with its own shadow ray. The scene-independent pieces are in
+// reference_light_sampling.slang.
+
+// P_E: the uniform category draw's share of mesh emitters.
+float GetEmissiveCategoryProbability(uint lightCount)
+{
+    return lightCount == 0 ? 0 : float(Counts.z) / float(lightCount);
+}
+// GetReferenceEmitterProbability: the power CDF's probability of emitter `emitter`.
+float GetEmitterProbability(uint emitter)
+{
+    uint total = Counts.z == 0 ? 0 : GetEmitterCumulative(Counts.z - 1);
+    if (emitter >= Counts.z || total == 0)
+        return 0;
+    uint previous = emitter == 0 ? 0 : GetEmitterCumulative(emitter - 1);
+    return float(GetEmitterCumulative(emitter) - previous) / float(total);
+}
+// SelectReferenceEmissiveTriangle: one bounded draw over the CDF total; false without emitted power or for an
+// exhausted bounded draw.
+bool TrySelectEmissiveTriangle(uint pixel, uint sample, uint dimension, out uint outTriangle, out float outPmf)
+{
+    outTriangle = NO_TRIANGLE;
+    outPmf = 0;
+    uint total = Counts.z == 0 ? 0 : GetEmitterCumulative(Counts.z - 1);
+    uint value;
+    if (total == 0 ||
+        TrySampleRandomBounded(Sampling.xy, PixelRandomAddress(pixel, sample, dimension), total, value) == false)
+        return false;
+    uint emitter = SelectEmitter(value);
+    outTriangle = GetEmitterTriangle(emitter);
+    outPmf = GetEmitterProbability(emitter);
+    return true;
+}
+// EvaluateReferenceEmissiveTriangleSelectionPmf: zero when the triangle is not an emitter.
+float EvaluateEmissiveTriangleSelectionPmf(uint triangle)
+{
+    uint emitter;
+    return FindEmitter(triangle, emitter) == true ? GetEmitterProbability(emitter) : 0;
+}
+
+// One emissive triangle evaluated for one receiver.
+struct EmitterTarget
+{
+    ReferenceTriangleLight Light;
+    // (c_0, c_1); their sum is Target.
+    float2 Coefficients;
+    // p-hat: Y(L) (Y(a_0) E_0 + Y(a_1) E_1), zero for a one-sided emitter seen from behind.
+    float Target;
+};
+
+// TryEvaluateEmitterTarget. The constant emission factor bounds textured emission from above, so the target needs no
+// texture lookup. False for a nonfinite polygon or target.
+// Thanks to the Slang authors, core module noinline attribute reference:
+// https://docs.shader-slang.org/en/latest/external/core-module-reference/attributes/noinline.html
+// One copy of the two unrolled polygon preparations serves every candidate, normalization and BSDF-hit site.
+[noinline] bool TryEvaluateEmitterTarget(ReferenceReceiverFrame frame, uint triangle, out EmitterTarget outTarget) {
+    outTarget.Light = MakeEmptyReferenceTriangleLight(frame);
+    outTarget.Coefficients = float2(0);
+    outTarget.Target = 0;
+    uint instance = GetInstance(triangle);
+    float3 position0World = TriangleValue(triangle, 0).xyz;
+    float emissionLuminance = ComputeReferenceLuminance(max(SurfaceValue(instance, 4).xyz, float3(0)));
+    // A planar triangle faces the receiver from every point on it, as the emitter-hit test sees it at one point.
+    if (IsEmissionTwoSided(instance) == false &&
+        dot(GetGeometricNormalWorld(triangle), frame.PositionWorld - position0World) <= 0)
+        emissionLuminance = 0;
+    if ((emissionLuminance > 0) == false)
+        return true;
+    if (TryPrepareReferenceTriangleLight(frame,
+                                         position0World,
+                                         TriangleValue(triangle, 1).xyz,
+                                         TriangleValue(triangle, 2).xyz,
+                                         outTarget.Light) == false)
+        return false;
+    outTarget.Coefficients =
+        float2(emissionLuminance * frame.DiffuseAlbedoLuminance * outTarget.Light.DiffuseIntegral,
+               emissionLuminance * frame.SpecularAlbedoLuminance * outTarget.Light.SpecularIntegral);
+    outTarget.Target = outTarget.Coefficients.x + outTarget.Coefficients.y;
+    return IsFiniteBits(outTarget.Target);
+}
+
+// ReferenceTargetTotal: Z-hat and whether this vertex has computed it.
+struct TargetTotal
+{
+    float Value;
+    bool IsReady;
+};
+TargetTotal MakeTargetTotal()
+{
+    TargetTotal result;
+    result.Value = 0;
+    result.IsReady = false;
+    return result;
+}
+
+// TryEnsureTargetTotal: Z-hat = (1/K) sum_k p-hat(t'_k) / p_src(t'_k) over the vertex's normalization slots.
+bool TryEnsureTargetTotal(uint pixel,
+                          uint sample,
+                          uint depth,
+                          ReferenceReceiverFrame frame,
+                          inout TargetTotal inoutTotal)
+{
+    if (inoutTotal.IsReady == true)
+        return true;
+    float sum = 0;
+    for (uint k = 0; k < LUDUS_REFERENCE_RIS_NORMALIZATION_CANDIDATE_COUNT; ++k)
+    {
+        uint candidate;
+        float pmf;
+        if (TrySelectEmissiveTriangle(pixel,
+                                      sample,
+                                      GetBounceDimension(depth, LUDUS_REFERENCE_RIS_NORMALIZATION_FIRST_SLOT + k),
+                                      candidate,
+                                      pmf) == false)
+            continue;
+        EmitterTarget target;
+        if (TryEvaluateEmitterTarget(frame, candidate, target) == false)
+            return false;
+        sum += target.Target / pmf;
+    }
+    float estimate = sum / float(LUDUS_REFERENCE_RIS_NORMALIZATION_CANDIDATE_COUNT);
+    if (IsFiniteBits(estimate) == false)
+        return false;
+    inoutTotal.Value = estimate;
+    inoutTotal.IsReady = true;
+    return true;
+}
+
+// TryEvaluateSurrogate: P-tilde(t) for an evaluated emitter, computing Z-hat on first use.
+bool TryEvaluateSurrogate(uint pixel,
+                          uint sample,
+                          uint depth,
+                          ReferenceReceiverFrame frame,
+                          float emissiveCategoryProbability,
+                          uint triangle,
+                          EmitterTarget target,
+                          inout TargetTotal inoutTotal,
+                          out float outProbability)
+{
+    outProbability = 0;
+    float sourcePmf = EvaluateEmissiveTriangleSelectionPmf(triangle);
+    if ((sourcePmf > 0) == false || (target.Target > 0) == false || (emissiveCategoryProbability > 0) == false)
+        return true;
+    if (TryEnsureTargetTotal(pixel, sample, depth, frame, inoutTotal) == false)
+        return false;
+    outProbability = EvaluateReferenceSurrogateProbability(emissiveCategoryProbability,
+                                                           target.Target,
+                                                           sourcePmf,
+                                                           inoutTotal.Value,
+                                                           LUDUS_REFERENCE_RIS_CANDIDATE_COUNT);
+    return true;
+}
+
+// TryResampleEmitter: stream the vertex's M power-CDF candidates through the reservoir in slot order. A zero weight
+// sum succeeds without a selection. False for a failed target evaluation or reservoir update.
+bool TryResampleEmitter(uint pixel,
+                        uint sample,
+                        uint depth,
+                        ReferenceReceiverFrame frame,
+                        out uint outTriangle,
+                        out float outContributionWeight,
+                        out bool outHasSelection)
+{
+    outTriangle = NO_TRIANGLE;
+    outContributionWeight = 0;
+    outHasSelection = false;
+    WeightedReservoir reservoir = MakeWeightedReservoir();
+    uint selectedTriangle = NO_TRIANGLE;
+    float selectedTarget = 0;
+    for (uint i = 0; i < LUDUS_REFERENCE_RIS_CANDIDATE_COUNT; ++i)
+    {
+        uint slot = LUDUS_REFERENCE_RIS_CANDIDATE_FIRST_SLOT + i * LUDUS_REFERENCE_RIS_SLOTS_PER_CANDIDATE;
+        uint candidate;
+        float pmf;
+        if (TrySelectEmissiveTriangle(pixel, sample, GetBounceDimension(depth, slot), candidate, pmf) == false)
+            return true;
+        EmitterTarget target;
+        if (TryEvaluateEmitterTarget(frame, candidate, target) == false)
+            return false;
+        bool isSelected;
+        if (TryAddReservoirCandidate(reservoir,
+                                     target.Target / pmf,
+                                     RandomValue(pixel, sample, GetBounceDimension(depth, slot + 1)),
+                                     isSelected) == false)
+            return false;
+        if (isSelected == true)
+        {
+            selectedTriangle = candidate;
+            selectedTarget = target.Target;
+        }
+    }
+    if (HasReservoirSelection(reservoir) == false)
+        return true;
+    float contributionWeight;
+    if (TryComputeReservoirContributionWeight(reservoir, selectedTarget, contributionWeight) == false)
+        return false;
+    outTriangle = selectedTriangle;
+    outContributionWeight = contributionWeight;
+    outHasSelection = true;
+    return true;
+}
+
+// ReferenceResampledLightSample: one technique's sample of the resampled emitter.
+struct ResampledLightSample
+{
+    float3 DirectionWorld;
+    float3 PositionWorld;
+    float3 Radiance;
+    float DistanceWorld;
+    float TechniqueDensity;
+    float TechniqueWeight;
+    float LightDensity;
+    bool HasSample;
+};
+
+// SampleTechnique: the direction, where it meets the triangle and the emission found there. Densities are evaluated at
+// the normalized world direction, as the BSDF-hit density evaluates them. No sample when the technique is disabled or
+// cannot sample the direction, or the direction misses the triangle in FP32. Not inlined, like
+// TryEvaluateEmitterTarget, so both techniques share one copy.
+[noinline] ResampledLightSample SampleTechnique(ReferenceReceiverFrame frame,
+                                                uint triangle,
+                                                EmitterTarget target,
+                                                uint technique,
+                                                float2 randomNumbers,
+                                                float surrogateProbability) {
+    ResampledLightSample result;
+    result.DirectionWorld = 0;
+    result.PositionWorld = 0;
+    result.Radiance = 0;
+    result.DistanceWorld = 0;
+    result.TechniqueDensity = 0;
+    result.TechniqueWeight = 0;
+    result.LightDensity = 0;
+    result.HasSample = false;
+    float3 directionTangent = float3(0);
+    bool isSampled = false;
+    if (technique == REFERENCE_DIFFUSE_TECHNIQUE)
+        isSampled = TrySampleProjectedSolidAnglePolygon(target.Light.Diffuse, randomNumbers, directionTangent);
+    else if (target.Light.SpecularIntegral > 0)
+        isSampled = TrySampleLinearlyTransformedCosinePolygon(target.Light.Specular, randomNumbers, directionTangent);
+    if (isSampled == false)
+        return result;
+    float3 directionWorld = NormalizeOrZero(TransformReferenceTangentToWorld(frame, directionTangent));
+    float2 densities = EvaluateReferenceLightTechniqueDensities(frame, target.Light, directionWorld);
+    float techniqueDensity = technique == REFERENCE_DIFFUSE_TECHNIQUE ? densities.x : densities.y;
+    float distanceWorld;
+    float2 barycentric;
+    if ((techniqueDensity > 0) == false || TryIntersectReferenceTrianglePlane(frame.PositionWorld,
+                                                                              directionWorld,
+                                                                              TriangleValue(triangle, 0).xyz,
+                                                                              TriangleValue(triangle, 1).xyz,
+                                                                              TriangleValue(triangle, 2).xyz,
+                                                                              distanceWorld,
+                                                                              barycentric) == false)
+        return result;
+    uint instance = GetInstance(triangle);
+    float u = barycentric.x;
+    float v = barycentric.y;
+    float2 uv = GetTexcoordUv(triangle, u, v);
+    result.DirectionWorld = directionWorld;
+    result.PositionWorld = GetPositionWorld(triangle, u, v);
+    result.DistanceWorld = distanceWorld;
+    // Sidedness, range and opacity at the sampled point, as UniformArea applies them.
+    if ((IsEmissionTwoSided(instance) == true || dot(GetGeometricNormalWorld(triangle), -directionWorld) > 0) &&
+        distanceWorld <= Options.x && IsOpaque(instance, uv, GetVertexAlpha(triangle, u, v)) == true)
+        result.Radiance = SampleEmission(instance, uv);
+    float2 techniqueWeights =
+        ComputeReferenceLightTechniqueWeights(target.Coefficients, densities, REFERENCE_LIGHT_TECHNIQUE_VISIBILITY);
+    result.TechniqueDensity = techniqueDensity;
+    result.TechniqueWeight = technique == REFERENCE_DIFFUSE_TECHNIQUE ? techniqueWeights.x : techniqueWeights.y;
+    result.LightDensity = surrogateProbability * (densities.x + densities.y);
+    result.HasSample = true;
+    return result;
+}
+
+// SampleResampledEmitter (reference_path.cpp): the emissive branch of the light draw at positionWorld. Each technique's
+// sample that the BSDF and the receiver's geometric side admit traces its shadow ray at once; nothing else adds
+// transport between this vertex's emission and its continuation, so the sums follow the CPU oracle's order. False
+// after MarkInvalid.
+bool SampleResampledEmitter(inout PathSample inoutPath,
+                            uint pixel,
+                            uint sample,
+                            uint depth,
+                            uint triangle,
+                            float3 positionWorld,
+                            float3 geometricNormalWorld,
+                            float3 normalWorld,
+                            float3 viewWorld,
+                            Bsdf bsdf,
+                            float3 throughput,
+                            ReferenceReceiverFrame frame,
+                            float emissiveCategoryProbability,
+                            inout TargetTotal inoutTotal)
+{
+    uint emitter;
+    float contributionWeight;
+    bool hasSelection;
+    if (TryResampleEmitter(pixel, sample, depth, frame, emitter, contributionWeight, hasSelection) == false)
+    {
+        MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_INVALID_LIGHT_SAMPLE);
+        return false;
+    }
+    if (hasSelection == false || (contributionWeight > 0) == false || (emissiveCategoryProbability > 0) == false)
+        return true;
+    EmitterTarget target;
+    float surrogateProbability = 0;
+    if (TryEvaluateEmitterTarget(frame, emitter, target) == false ||
+        TryEvaluateSurrogate(pixel,
+                             sample,
+                             depth,
+                             frame,
+                             emissiveCategoryProbability,
+                             emitter,
+                             target,
+                             inoutTotal,
+                             surrogateProbability) == false)
+    {
+        MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_INVALID_LIGHT_SAMPLE);
+        return false;
+    }
+    float contributionScale = contributionWeight / emissiveCategoryProbability;
+    for (uint technique = REFERENCE_DIFFUSE_TECHNIQUE; technique <= REFERENCE_SPECULAR_TECHNIQUE; ++technique)
+    {
+        uint firstSlot = technique == REFERENCE_DIFFUSE_TECHNIQUE ? PROPOSAL_FIRST_SLOT : LTC_FIRST_SLOT;
+        float2 randomNumbers = float2(RandomValue(pixel, sample, GetBounceDimension(depth, firstSlot)),
+                                      RandomValue(pixel, sample, GetBounceDimension(depth, firstSlot + 1)));
+        ResampledLightSample light =
+            SampleTechnique(frame, emitter, target, technique, randomNumbers, surrogateProbability);
+        if (IsValidContribution(light.Radiance) == false)
+        {
+            MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_INVALID_LIGHT_SAMPLE);
+            return false;
+        }
+        float cosine = dot(normalWorld, light.DirectionWorld);
+        if (light.HasSample == false || HasPositiveComponent(light.Radiance) == false || cosine <= 0 ||
+            dot(geometricNormalWorld, light.DirectionWorld) <= 0)
+            continue;
+        if (IsValidBsdf(bsdf) == false || IsUnit(normalWorld) == false || IsUnit(viewWorld) == false ||
+            IsUnit(light.DirectionWorld) == false)
+        {
+            MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_INVALID_BSDF_EVALUATION);
+            return false;
+        }
+        float4 evaluation = EvaluateBsdf(bsdf, normalWorld, viewWorld, light.DirectionWorld);
+        if (IsFiniteVector(evaluation.xyz) == false || isfinite(evaluation.w) == false || evaluation.w < 0)
+        {
+            MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_INVALID_BSDF_EVALUATION);
+            return false;
+        }
+        float weight = light.TechniqueWeight * PowerWeight(light.LightDensity, evaluation.w);
+        float3 contribution = throughput * evaluation.xyz * light.Radiance *
+                              (cosine * weight / light.TechniqueDensity * contributionScale);
+        if (IsValidContribution(contribution) == false)
+        {
+            MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_INVALID_DIRECT_CONTRIBUTION);
+            return false;
+        }
+        if (HasPositiveComponent(contribution) == false)
+            continue;
+        LightProposal proposal;
+        proposal.DirectionWorld = light.DirectionWorld;
+        proposal.Radiance = light.Radiance;
+        proposal.PositionWorld = light.PositionWorld;
+        proposal.ErrorWorld = GetPositionErrorWorld(emitter);
+        proposal.NormalWorld = GetGeometricNormalWorld(emitter);
+        proposal.DistanceWorld = light.DistanceWorld;
+        proposal.Pdf = light.TechniqueDensity;
+        proposal.IsDelta = false;
+        proposal.HasFiniteEndpoint = true;
+        proposal.IsEmissiveCategory = false;
+        bool isVisible;
+        if (TraceProposal(inoutPath, proposal, triangle, positionWorld, depth, isVisible) == false)
+        {
+            MarkInvalid(inoutPath,
+                        depth,
+                        (inoutPath.Status & LUDUS_REFERENCE_CAPACITY_FLAG) != 0
+                            ? LUDUS_REFERENCE_FAILURE_TRAVERSAL_CAPACITY_EXCEEDED
+                            : LUDUS_REFERENCE_FAILURE_INVALID_SHADOW_SEGMENT);
+            return false;
+        }
+        if (isVisible == true)
+            AddTransport(inoutPath, contribution, depth, false);
+    }
+    return true;
+}
+
+// EvaluateReferenceResampledLightDensity: q = P-tilde(t) (p_0 + p_1) for a BSDF direction from the receiver of vertex
+// `depth` that reached emitter triangle `triangle`. False for a nonfinite evaluation.
+bool TryEvaluateResampledLightDensity(uint pixel,
+                                      uint sample,
+                                      uint depth,
+                                      ReferenceReceiverFrame frame,
+                                      float emissiveCategoryProbability,
+                                      uint triangle,
+                                      float3 directionWorld,
+                                      inout TargetTotal inoutTotal,
+                                      out float outDensity)
+{
+    outDensity = 0;
+    if ((EvaluateEmissiveTriangleSelectionPmf(triangle) > 0) == false)
+        return true;
+    EmitterTarget target;
+    float surrogateProbability;
+    if (TryEvaluateEmitterTarget(frame, triangle, target) == false ||
+        TryEvaluateSurrogate(pixel,
+                             sample,
+                             depth,
+                             frame,
+                             emissiveCategoryProbability,
+                             triangle,
+                             target,
+                             inoutTotal,
+                             surrogateProbability) == false)
+        return false;
+    float2 densities = EvaluateReferenceLightTechniqueDensities(frame, target.Light, directionWorld);
+    float density = surrogateProbability * (densities.x + densities.y);
+    if (IsFiniteBits(density) == false || density < 0)
+        return false;
+    outDensity = density;
+    return true;
+}
+
 PathSample TracePath(uint pixel, uint sample)
 {
     PathSample path;
@@ -929,6 +1378,11 @@ PathSample TracePath(uint pixel, uint sample)
     float3 previousPositionWorld = 0;
     float previousPdf = 0;
     uint lights = GetLightCount();
+    // ResampledProjectedSolidAngle keeps the previous vertex's receiver and Z-hat for the BSDF-hit density.
+    bool isResampled = IsResampled();
+    float emissiveCategoryProbability = GetEmissiveCategoryProbability(lights);
+    ReferenceReceiverFrame previousFrame = (ReferenceReceiverFrame)0;
+    TargetTotal previousTotal = MakeTargetTotal();
     for (uint depth = 0;;)
     {
         CountQuery(path, false);
@@ -960,9 +1414,26 @@ PathSample TracePath(uint pixel, uint sample)
         if (HasPositiveComponent(SurfaceValue(instance, 4).xyz) == true &&
             (IsEmissionTwoSided(instance) == true || dot(geometricNormalWorld, viewWorld) > 0))
         {
-            uint emitter;
-            float selection = FindEmitter(triangle, emitter) == true ? GetEmitterSelection(emitter, lights) : 0;
-            float pdf = GetAreaPdf(triangle, previousPositionWorld, positionWorld, selection);
+            float pdf = 0;
+            if (isResampled == false)
+            {
+                uint emitter;
+                float selection = FindEmitter(triangle, emitter) == true ? GetEmitterSelection(emitter, lights) : 0;
+                pdf = GetAreaPdf(triangle, previousPositionWorld, positionWorld, selection);
+            }
+            else if (depth > 0 && TryEvaluateResampledLightDensity(pixel,
+                                                                   sample,
+                                                                   depth - 1,
+                                                                   previousFrame,
+                                                                   emissiveCategoryProbability,
+                                                                   triangle,
+                                                                   ray.DirectionWorld,
+                                                                   previousTotal,
+                                                                   pdf) == false)
+            {
+                MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_EMITTER_PDF);
+                return path;
+            }
             if (isfinite(pdf) == false || pdf < 0)
             {
                 MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_EMITTER_PDF);
@@ -1001,12 +1472,36 @@ PathSample TracePath(uint pixel, uint sample)
             bsdf.Roughness = parameters.Roughness;
             normalWorld = ApplySurfaceNormal(triangle, instance, normalWorld, parameters.NormalTangent, u, v);
         }
+        ReferenceReceiverFrame frame = previousFrame;
+        TargetTotal targetTotal = MakeTargetTotal();
+        if (isResampled == true)
+            frame = MakeReferenceReceiverFrame(positionWorld,
+                                               normalWorld,
+                                               viewWorld,
+                                               bsdf.BaseColor,
+                                               bsdf.Metallic,
+                                               bsdf.Roughness);
         LightProposal proposal = SampleLight(pixel, sample, depth, positionWorld);
         if (isfinite(proposal.Pdf) == false || proposal.Pdf < 0 || IsValidContribution(proposal.Radiance) == false)
         {
             MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_LIGHT_SAMPLE);
             return path;
         }
+        if (proposal.IsEmissiveCategory == true && SampleResampledEmitter(path,
+                                                                          pixel,
+                                                                          sample,
+                                                                          depth,
+                                                                          triangle,
+                                                                          positionWorld,
+                                                                          geometricNormalWorld,
+                                                                          normalWorld,
+                                                                          viewWorld,
+                                                                          bsdf,
+                                                                          throughput,
+                                                                          frame,
+                                                                          emissiveCategoryProbability,
+                                                                          targetTotal) == false)
+            return path;
         bool hasShadow = false;
         float3 pendingDirect = 0;
         uint directDepth = depth;
@@ -1071,6 +1566,8 @@ PathSample TracePath(uint pixel, uint sample)
             {
                 previousPositionWorld = positionWorld;
                 previousPdf = evaluation.w;
+                previousFrame = frame;
+                previousTotal = targetTotal;
                 ++depth;
                 hasNext = true;
                 if (depth >= Dimensions.w)
