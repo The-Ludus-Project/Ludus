@@ -820,21 +820,13 @@ def compile_program(program, schemas, closure, snapshot, work, helper, tools, ta
     return output, result
 
 
-def build_package(manifest, output, *, helper, compiler, validator=None, spirv_cross=None, root=None, cancel=None, worker_socket=None,
-                  ray_path_capture=False):
-    """Build every authored technique/profile and atomically publish current.json.
+def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False):
+    """Capture and lower the same immutable shader contexts for compilation and editing.
 
-    Sources/tools must remain identical to their captured snapshot at publication.
-    Bounded errors, cancellation, corrupt caches, and concurrent writer rejection
-    preserve the prior package pointer. No download, device pipeline creation or
-    GPU execution. Return an immutable package path and separate hit/miss counts.
-    helper names the installed SDK shaders directory (or checkout cmake/shaders).
-    Runs on macOS/Linux, with one nonblocking writer per output tree.
-    ray_path_capture links every ray kernel as the diagnostic LUDUS_RAY_PATH_CAPTURE
-    variant from the same snapshot. Its stages have their own cache identities, and the
-    result is never cooked into a runtime package.
+    No compiler execution or output publication. Returns package metadata, exact
+    generated wrappers and their captured include closures. All normal graph,
+    schema and capacity validation remains authoritative here.
     """
-    started = time.monotonic()
     manifest = Path(manifest).resolve()
     snapshot = Snapshot(root if root is not None else manifest.parent)
     require(manifest.is_relative_to(snapshot.root), 'Source', str(manifest), 'manifest outside root')
@@ -847,35 +839,6 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
         snapshot.files['_ludus_visibility.slang'] = read(visibility_helper)
         snapshot.external['_ludus_visibility.slang'] = visibility_helper
         snapshot.total += len(snapshot.files['_ludus_visibility.slang'])
-    worker_socket = worker_socket or os.environ.get('LUDUS_SHADER_WORKER_SOCKET')
-    hash_file = ToolFileHashes()
-    tool_hashes, tool_paths = tool_identity(helper, compiler, validator, spirv_cross,
-                                           worker_socket=worker_socket, hash_file=hash_file)
-    worker_identity = None
-    if worker_socket:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location('_ludus_native_worker', helper / NATIVE_WORKER_HELPER)
-        native = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(native)
-        try:
-            descriptor = native.exchange(worker_socket, {'version': 1, 'identity': 0})
-        except (OSError, RuntimeError, ValueError, KeyError, TypeError) as error:
-            fail('Tools', 'native worker', str(error))
-        require(descriptor.get('compiler') == document(read(helper / 'shader_toolchain.json'), 'lock')['slang']['version'],
-                'Tools', 'native worker', 'compiler version differs from SDK pin')
-        require(descriptor.get('library_sha256') in tool_hashes.values(), 'Tools', 'native worker', 'loaded API library differs from the selected toolchain')
-        inventory = ''.join(key.removeprefix('slang/') + ':' + value + '\n'
-                            for key, value in sorted(tool_hashes.items()) if key.startswith('slang/'))
-        require(descriptor.get('library_inventory_sha256') == digest(inventory.encode()),
-                'Tools', 'native worker', 'loaded compiler/backend libraries differ from the selected toolchain')
-        worker_identity = descriptor.get('implementation')
-        require(isinstance(worker_identity, str) and len(worker_identity) == 64, 'Tools', 'native worker', 'missing implementation identity')
-        # Native compilation is a distinct implementation and owns separate artifact keys.
-        tool_hashes['native/implementation'] = worker_identity
-    if any(t in value['profiles'] for t in ('spirv', 'glsl')):
-        require(validator, 'Tools', 'profiles', 'SPIR-V/glsl requires --validator')
-    if 'glsl' in value['profiles']:
-        require(spirv_cross, 'Tools', 'profiles', 'glsl requires --spirv-cross')
     # Registered programs include authoring drafts. Only explicit techniques select
     # executable stages; unused callbacks must never be compiled as entry points.
     closures = {pid: snapshot.shader_closure(p['source']) for pid, p in programs.items()}
@@ -958,8 +921,6 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     if ray.TECHNIQUE in techniques:
         require(any(target in ('metal', 'spirv') for target in value['profiles']), 'Capability', 'profiles',
                 'Hardware raytracing requires native Metal or Vulkan; select an authored raster configuration on unsupported APIs')
-        require('metal' not in value['profiles'] or spirv_cross, 'Tools', 'profiles',
-                'Metal hardware raytracing requires the pinned --spirv-cross translator')
         ray_profiles = ray.group_profiles(plans, techniques[ray.TECHNIQUE], sys.modules[__name__])
         authored_programs = programs
         linked_programs = {}
@@ -997,6 +958,61 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     counts['graph_configurations'] = sum(len(identities) for identities in reachable.values())
     require(len(plans) <= value['budgets']['configurations'], 'Capacity', 'root configurations',
             f'{len(plans)} root configurations exceed budgets.configurations {value["budgets"]["configurations"]}')
+    return snapshot, value, schemas, programs, techniques, counts, closures, plans, library, graph_path
+
+
+def build_package(manifest, output, *, helper, compiler, validator=None, spirv_cross=None, root=None, cancel=None, worker_socket=None,
+                  ray_path_capture=False):
+    """Build every authored technique/profile and atomically publish current.json.
+
+    Sources/tools must remain identical to their captured snapshot at publication.
+    Bounded errors, cancellation, corrupt caches, and concurrent writer rejection
+    preserve the prior package pointer. No download, device pipeline creation or
+    GPU execution. Return an immutable package path and separate hit/miss counts.
+    helper names the installed SDK shaders directory (or checkout cmake/shaders).
+    Runs on macOS/Linux, with one nonblocking writer per output tree.
+    ray_path_capture links every ray kernel as the diagnostic LUDUS_RAY_PATH_CAPTURE
+    variant from the same snapshot. Its stages have their own cache identities, and the
+    result is never cooked into a runtime package.
+    """
+    started = time.monotonic()
+    manifest = Path(manifest).resolve()
+    helper = Path(helper).resolve()
+    snapshot, value, schemas, programs, techniques, counts, closures, plans, library, graph_path = prepare_sources(
+        manifest, helper, root=root, ray_path_capture=ray_path_capture)
+    manifest_label = manifest.relative_to(snapshot.root).as_posix()
+    worker_socket = worker_socket or os.environ.get('LUDUS_SHADER_WORKER_SOCKET')
+    hash_file = ToolFileHashes()
+    tool_hashes, tool_paths = tool_identity(helper, compiler, validator, spirv_cross,
+                                           worker_socket=worker_socket, hash_file=hash_file)
+    worker_identity = None
+    if worker_socket:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('_ludus_native_worker', helper / NATIVE_WORKER_HELPER)
+        native = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(native)
+        try:
+            descriptor = native.exchange(worker_socket, {'version': 1, 'identity': 0})
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError) as error:
+            fail('Tools', 'native worker', str(error))
+        require(descriptor.get('compiler') == document(read(helper / 'shader_toolchain.json'), 'lock')['slang']['version'],
+                'Tools', 'native worker', 'compiler version differs from SDK pin')
+        require(descriptor.get('library_sha256') in tool_hashes.values(), 'Tools', 'native worker', 'loaded API library differs from the selected toolchain')
+        inventory = ''.join(key.removeprefix('slang/') + ':' + value + '\n'
+                            for key, value in sorted(tool_hashes.items()) if key.startswith('slang/'))
+        require(descriptor.get('library_inventory_sha256') == digest(inventory.encode()),
+                'Tools', 'native worker', 'loaded compiler/backend libraries differ from the selected toolchain')
+        worker_identity = descriptor.get('implementation')
+        require(isinstance(worker_identity, str) and len(worker_identity) == 64, 'Tools', 'native worker', 'missing implementation identity')
+        # Native compilation is a distinct implementation and owns separate artifact keys.
+        tool_hashes['native/implementation'] = worker_identity
+    if any(t in value['profiles'] for t in ('spirv', 'glsl')):
+        require(validator, 'Tools', 'profiles', 'SPIR-V/glsl requires --validator')
+    if 'glsl' in value['profiles']:
+        require(spirv_cross, 'Tools', 'profiles', 'glsl requires --spirv-cross')
+    if ray.TECHNIQUE in techniques:
+        require('metal' not in value['profiles'] or spirv_cross, 'Tools', 'profiles',
+                'Metal hardware raytracing requires the pinned --spirv-cross translator')
     output = Path(output).resolve()
     require(not snapshot.root.is_relative_to(output), 'Source', str(output), 'output must not contain source root')
     output.mkdir(parents=True, exist_ok=True)

@@ -22,6 +22,7 @@
 #include "internal/render_graph_reroutes.h"
 #include "internal/render_graph_resource_inspection.h"
 #include "internal/render_graph_resources.h"
+#include "internal/render_graph_shader_assistance.h"
 #include "internal/render_graph_shader_creation.h"
 #include "internal/render_graph_shader_interface.h"
 #include "internal/render_graph_template_registry.h"
@@ -727,6 +728,8 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     chooseCodeEditor->setEnabled(false);
     openCodeEditor->setToolTip(QStringLiteral("External code editors are available in the native Ludus editor."));
 #endif
+    mSourceAssistance = new RenderGraphShaderAssistance(mDocument, *mSource, *mSourceController, mTooling, sourcePage);
+    sourceLayout->addWidget(mSourceAssistance);
     QWidget* interfacePage = CreateShaderInterfaceView(mSourceInterface, sourcePage);
     mSourceSplit = new QSplitter(Qt::Horizontal, sourcePage);
     mSourceSplit->setObjectName(QStringLiteral("renderGraphSourceSplitter"));
@@ -1289,6 +1292,7 @@ RendererWorkspace::~RendererWorkspace()
 {
     delete mResourceInspectorOrNull;
     mResourceInspectorOrNull = nullptr;
+    delete mSourceAssistance;
     delete mSourceFormatter;
     delete mSourceController;
 }
@@ -2303,6 +2307,7 @@ void RendererWorkspace::SetBuildSettings(const RenderGraphBuildSettings& setting
         preferences.setValue(WORKER_SOCKET_KEY, settings.WorkerSocket);
     }
     mBuildSettings = settings;
+    mSourceAssistance->Update(mProjectRoot, mEpoch, manifestFile(), mSourceFile->currentText(), mBuildSettings);
 }
 
 void RendererWorkspace::AcceptResult(const RenderGraphJobResult& result)
@@ -3253,6 +3258,7 @@ void RendererWorkspace::renderSourceStatus()
 void RendererWorkspace::renderSource()
 {
     const QString file = mSourceFile->currentText();
+    mSourceAssistance->Update(mProjectRoot, mEpoch, manifestFile(), file, mBuildSettings);
     mSourceDocument.Bind(file, mEpoch);
     mSourceController->Bind(file.isEmpty() == false && mDocument.IsLoaded() == true ? &mSourceDocument : nullptr);
     if (file.isEmpty() == true)

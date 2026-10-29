@@ -31,9 +31,13 @@ endif()
 # native system libraries or the pinned source-built WebAssembly Qt.
 # Qt is installed only by opted-in editor setup;
 # it is never added to the engine Conan recipe or SDK.
-find_package(Qt6 6.4 QUIET COMPONENTS Core Gui Widgets)
+if(EMSCRIPTEN)
+    find_package(Qt6 6.4 QUIET COMPONENTS Core Gui Widgets)
+else()
+    find_package(Qt6 6.4 QUIET COMPONENTS Core Gui Widgets Concurrent)
+endif()
 if(NOT Qt6_FOUND)
-    ludus_dependency_error("Editor workspace" "Qt 6.4+ Core, Gui and Widgets"
+    ludus_dependency_error("Editor workspace" "Qt 6.4+ Core, Gui, Widgets and native Concurrent"
         "Qt development packages are missing or incompatible. Qt6_DIR='${Qt6_DIR}'."
         "For native Linux setup, run ./init.sh --cli --with-editor from the repository root. For browser setup, follow docs/development/browser-editor.md. For an existing Qt installation set Qt6_DIR; or disable the editor with -DLUDUS_BUILD_EDITOR=OFF.")
 endif()
@@ -112,6 +116,20 @@ if(NOT shader_build_status EQUAL 0)
 endif()
 set_source_files_properties(src/render_graph_shader_creation.cpp PROPERTIES
     COMPILE_DEFINITIONS "LUDUS_EDITOR_MAX_SHADER_ARTIFACTS=${shader_artifact_limit}")
+
+# Native snapshot transport uses the backend owner's encoded admission policy.
+set(shader_context_policy "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/shader_context.py")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${shader_context_policy}")
+execute_process(COMMAND "${Python3_EXECUTABLE}" -c
+    "import sys; sys.path.insert(0,sys.argv[1]); from ludus_tools.shader_context import MAX_DRAFT_INPUT_BYTES; print(MAX_DRAFT_INPUT_BYTES)"
+    "${PROJECT_SOURCE_DIR}/scripts/python"
+    RESULT_VARIABLE shader_context_status OUTPUT_VARIABLE shader_context_input_limit ERROR_VARIABLE shader_context_error
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(NOT shader_context_status EQUAL 0)
+    message(FATAL_ERROR "Cannot read shader context wire limit: ${shader_context_error}")
+endif()
+set_source_files_properties(src/render_graph_shader_assistance.cpp PROPERTIES
+    COMPILE_DEFINITIONS "LUDUS_EDITOR_SHADER_CONTEXT_INPUT_BYTES=${shader_context_input_limit}")
 
 # Finite option admission has one owner shared with installed host tooling.
 set(graph_options_policy "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/render_graph_options.py")
@@ -407,7 +425,7 @@ set(editor_profiling_sources
     src/internal/profiling_panel.h src/profiling_panel.cpp
     src/main_window_profiling.cpp)
 
-# Reusable private text presentation; no renderer or shader-tool dependency.
+# Reusable private text presentation and async native assistance; no renderer link.
 add_library(ludus_editor_code STATIC
     src/internal/code_editor.h src/code_editor.cpp
     src/internal/code_editor_panel.h src/code_editor_panel.cpp
@@ -415,7 +433,9 @@ add_library(ludus_editor_code STATIC
     src/internal/code_document.h src/internal/code_edit_scope.h
     src/internal/code_text.h src/code_text.cpp
     src/internal/code_document_controller.h src/code_document_controller.cpp
-    src/internal/code_formatter.h src/code_formatter.cpp)
+    src/internal/code_formatter.h src/code_formatter.cpp
+    src/internal/slang_language_service.h src/slang_language_service.cpp
+    src/internal/code_assistance.h src/code_assistance.cpp)
 file(READ "${PROJECT_SOURCE_DIR}/config/tool_versions.json" editor_tool_versions)
 string(JSON editor_formatter_version GET "${editor_tool_versions}" minimum clang-format)
 get_filename_component(editor_compiler_directory "${CMAKE_CXX_COMPILER}" DIRECTORY)
@@ -431,6 +451,9 @@ target_include_directories(ludus_editor_code PRIVATE src)
 target_compile_definitions(ludus_editor_code PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
 target_link_libraries(ludus_editor_code PUBLIC Qt6::Widgets Ludus::FoundationContainers
     PRIVATE Ludus::FoundationBase)
+if(NOT EMSCRIPTEN)
+    target_link_libraries(ludus_editor_code PRIVATE Qt6::Concurrent)
+endif()
 ludus_apply_project_defaults(ludus_editor_code)
 
 # --- Editor application ------------------------------------------------------
@@ -541,6 +564,7 @@ qt_add_executable(ludus_editor
     src/renderer_workspace.cpp src/renderer_workspace_selection.cpp
     src/internal/render_graph_shader_interface.h
     src/render_graph_shader_interface.cpp
+    src/internal/render_graph_shader_assistance.h src/render_graph_shader_assistance.cpp
     src/internal/render_graph_defaults.h
     src/render_graph_defaults.cpp
     src/internal/render_graph_live_build.h
@@ -767,6 +791,10 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     target_include_directories(ludus_code_editor_tests PRIVATE src)
     target_compile_definitions(ludus_code_editor_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
     configure_file(tests/formatter_fixture.py generated/formatter_fixture.py COPYONLY)
+    configure_file(tests/slang_server_fixture.py generated/slang_server_fixture.py COPYONLY)
+    target_compile_definitions(ludus_code_editor_tests PRIVATE
+        "LUDUS_SLANG_FIXTURE=\"${CMAKE_CURRENT_BINARY_DIR}/generated/slang_server_fixture.py\""
+        "LUDUS_TEST_PYTHON=\"${Python3_EXECUTABLE}\"")
     target_compile_definitions(ludus_code_editor_tests PRIVATE
         "LUDUS_FORMATTER_FIXTURE=\"${CMAKE_CURRENT_BINARY_DIR}/generated/formatter_fixture.py\"")
     target_link_libraries(ludus_code_editor_tests PRIVATE ludus_editor_code Qt6::Test
@@ -928,6 +956,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/renderer_workspace.cpp src/renderer_workspace_selection.cpp
         src/internal/render_graph_shader_interface.h
         src/render_graph_shader_interface.cpp
+        src/internal/render_graph_shader_assistance.h src/render_graph_shader_assistance.cpp
         src/internal/render_graph_defaults.h
         src/render_graph_defaults.cpp
     src/internal/render_graph_live_build.h
@@ -1302,11 +1331,14 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/internal/render_graph_live_build.h src/render_graph_live_build.cpp
         src/internal/render_graph_source_watch.h src/render_graph_source_watch.cpp
         src/internal/viewport_frame_pump.h src/viewport_frame_pump.cpp
-        src/render_graph_defaults.cpp src/render_graph_shader_interface.cpp src/external_code_editor.cpp)
+        src/render_graph_defaults.cpp src/render_graph_shader_interface.cpp src/external_code_editor.cpp
+        src/internal/render_graph_shader_assistance.h src/render_graph_shader_assistance.cpp
+        tests/render_graph_shader_assistance_tests.cpp)
     set_target_properties(ludus_render_graph_configuration_tests PROPERTIES AUTOMOC ON)
     target_include_directories(ludus_render_graph_configuration_tests PRIVATE src)
     target_compile_definitions(ludus_render_graph_configuration_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII
-        LUDUS_EDITOR_PROJECT_ROOT="${PROJECT_SOURCE_DIR}")
+        LUDUS_EDITOR_PROJECT_ROOT="${PROJECT_SOURCE_DIR}"
+        "LUDUS_TEST_PYTHON=\"${Python3_EXECUTABLE}\"")
     # The workspace borrows viewport types, but this test never creates a device or
     # calls their compiled implementations. Keep those dependencies at the header boundary.
     # Thanks to Kitware, "cmake-generator-expressions(7)", COMPILE_ONLY, for the
