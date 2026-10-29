@@ -2,6 +2,7 @@
 // proven for every pair in both appearances and the workspace style really reads the tokens.
 
 #include "design_tokens.h"
+#include "internal/editor_style.h"
 #include "internal/theme_preferences.h"
 #include "internal/workspace_style.h"
 
@@ -12,8 +13,10 @@
 #include <QApplication>
 #include <QByteArray>
 #include <QColor>
+#include <QListWidget>
 #include <QPalette>
 #include <QString>
+#include <QStyle>
 #include <QWidget>
 
 #include <cmath>
@@ -124,14 +127,20 @@ TEST_CASE("High contrast changes the workspace style and keeps the viewport", "[
               design::GetThemeArgb(design::ThemeColour::TextPrimary, isDark, true));
         CHECK(widget.palette().color(QPalette::Mid).rgb() ==
               design::GetThemeArgb(design::ThemeColour::BorderControl, isDark, true));
-        CHECK(widget.styleSheet().contains(QStringLiteral("3px solid")) == true);
-        CHECK(widget.styleSheet().contains(QStringLiteral("2px solid")) == true);
+        const EditorStyle* style = GetEditorStyleOrNull();
+        REQUIRE(style != nullptr);
+        CHECK(style->GetFocusRingWidth() == 3);
+        CHECK(style->GetEdgeWidth() == 2);
+        QListWidget list;
+        CHECK(style->pixelMetric(QStyle::PM_DefaultFrameWidth, nullptr, &list) == 2);
     }
     qunsetenv(HIGH_CONTRAST_VARIABLE);
     QApplication::setPalette(MakeApplicationPalette(true));
     QWidget normal;
     ApplyWorkspaceStyle(&normal);
-    CHECK(normal.styleSheet().contains(QStringLiteral("3px solid")) == false);
+    REQUIRE(GetEditorStyleOrNull() != nullptr);
+    CHECK(GetEditorStyleOrNull()->GetFocusRingWidth() == 2);
+    CHECK(GetEditorStyleOrNull()->GetEdgeWidth() == 1);
     // The viewport colour never changes with the interface theme.
     CHECK(design::GetThemeColour(design::ThemeColour::SurfaceViewport, true, true) ==
           design::GetThemeColour(design::ThemeColour::SurfaceViewport, true, false));
@@ -180,8 +189,12 @@ TEST_CASE("Workspace style takes its palette from the design tokens", "[editor][
         CHECK(applied.color(QPalette::Mid).rgb() == design::GetThemeArgb(design::ThemeColour::BorderControl, isDark));
         CHECK(applied.color(QPalette::Highlight).rgb() ==
               design::GetThemeArgb(design::ThemeColour::AccentSurface, isDark));
-        CHECK(widget.styleSheet().contains(
-                  QColor::fromRgb(design::GetThemeArgb(design::ThemeColour::AccentPrimary, isDark)).name()) == true);
+        CHECK(applied.color(QPalette::Link).rgb() == design::GetThemeArgb(design::ThemeColour::AccentPrimary, isDark));
+        CHECK(applied.color(QPalette::Disabled, QPalette::WindowText).rgb() ==
+              design::GetThemeArgb(design::ThemeColour::TextSecondary, isDark));
+        // Colours come from the palette and EditorStyle; no stylesheet is applied.
+        CHECK(widget.styleSheet().isEmpty() == true);
+        CHECK(GetEditorStyleOrNull() != nullptr);
     }
     QApplication::setPalette(original);
 }

@@ -6,6 +6,7 @@
 
 #include <QAbstractItemView>
 #include <QAbstractScrollArea>
+#include <QAbstractSpinBox>
 #include <QApplication>
 #include <QComboBox>
 #include <QDockWidget>
@@ -162,9 +163,8 @@ void EditorStyle::polish(QWidget* widget)
     if (auto* label = qobject_cast<QLabel*>(widget);
         label != nullptr && HasProperty(label, VISUAL_ROLE_PROPERTY, "secondary") == true)
     {
-        QPalette palette = label->palette();
-        palette.setColor(QPalette::WindowText, mColours.Secondary);
-        label->setPalette(palette);
+        // PlaceholderText carries the secondary text colour in MakeEditorPalette, so palette changes follow.
+        label->setForegroundRole(QPalette::PlaceholderText);
         label->setProperty(SECONDARY_LABEL_MARKER, true);
     }
     // Hover repaints for the controls drawn here that the platform style does not already track.
@@ -178,7 +178,7 @@ void EditorStyle::unpolish(QWidget* widget)
 {
     if (widget->property(SECONDARY_LABEL_MARKER).toBool() == true)
     {
-        widget->setPalette(QPalette());
+        widget->setForegroundRole(QPalette::WindowText);
         widget->setProperty(SECONDARY_LABEL_MARKER, QVariant());
     }
     if (qobject_cast<QTabBar*>(widget) != nullptr || qobject_cast<QToolButton*>(widget) != nullptr)
@@ -196,6 +196,19 @@ int EditorStyle::pixelMetric(PixelMetric metric, const QStyleOption* optionOrNul
             return SEPARATOR_EXTENT;
         case PM_DockWidgetTitleMargin:
             return DOCK_TITLE_PADDING;
+        case PM_DefaultFrameWidth:
+            // Item views and text editors draw their own edge, so reserve its full width.
+            if (qobject_cast<const QAbstractItemView*>(widgetOrNull) != nullptr ||
+                qobject_cast<const QTextEdit*>(widgetOrNull) != nullptr ||
+                qobject_cast<const QPlainTextEdit*>(widgetOrNull) != nullptr)
+            {
+                return GetEdgeWidth();
+            }
+            break;
+        case PM_TabBarTabHSpace:
+            return 2 * TAB_PADDING_HORIZONTAL;
+        case PM_TabBarTabVSpace:
+            return 2 * TAB_PADDING_VERTICAL + TAB_UNDERLINE_WIDTH;
         case PM_ToolBarItemSpacing:
             return TOOL_BAR_SPACING;
         case PM_ToolBarFrameWidth:
@@ -527,12 +540,20 @@ QSize EditorStyle::sizeFromContents(ContentsType type,
         case CT_ToolButton:
             return contentsSize + QSize(2 * TOOL_BUTTON_PADDING, 2 * TOOL_BUTTON_PADDING);
         case CT_LineEdit:
+            // The editor inside a spin box or combo box sits inside the field's own padding.
+            if (widgetOrNull != nullptr &&
+                (qobject_cast<const QAbstractSpinBox*>(widgetOrNull->parentWidget()) != nullptr ||
+                 qobject_cast<const QComboBox*>(widgetOrNull->parentWidget()) != nullptr))
+            {
+                break;
+            }
             return contentsSize + QSize(2 * (INPUT_PADDING + edgeWidth), 2 * (INPUT_PADDING + edgeWidth));
+        case CT_SpinBox:
+            return QProxyStyle::sizeFromContents(type, option, contentsSize, widgetOrNull) +
+                   QSize(0, 2 * INPUT_PADDING);
         case CT_ComboBox:
             return contentsSize +
                    QSize(2 * edgeWidth + INPUT_PADDING + COMBO_ARROW_PADDING, 2 * (INPUT_PADDING + edgeWidth));
-        case CT_TabBarTab:
-            return contentsSize + QSize(2 * TAB_PADDING_HORIZONTAL, 2 * TAB_PADDING_VERTICAL + TAB_UNDERLINE_WIDTH);
         case CT_ItemViewItem: {
             const int padding =
                 std::max(GetItemPadding(widgetOrNull),
@@ -541,22 +562,29 @@ QSize EditorStyle::sizeFromContents(ContentsType type,
                    QSize(2 * padding, 2 * padding);
         }
         case CT_HeaderSection:
-            return contentsSize + QSize(2 * HEADER_PADDING, 2 * HEADER_PADDING + CONTROL_EDGE_WIDTH);
+            return QProxyStyle::sizeFromContents(type, option, contentsSize, widgetOrNull) +
+                   QSize(2 * HEADER_PADDING, 2 * HEADER_PADDING + CONTROL_EDGE_WIDTH);
         default:
             break;
     }
     return QProxyStyle::sizeFromContents(type, option, contentsSize, widgetOrNull);
 }
 
-void InstallEditorStyle()
+EditorStyle* GetEditorStyleOrNull()
 {
-    EditorStyle* style = nullptr;
     QStyle* current = QApplication::style();
+    // The class has no Q_OBJECT, so the object name marks it rather than qobject_cast.
     if (current != nullptr && current->objectName() == QLatin1String(STYLE_OBJECT_NAME))
     {
-        style = static_cast<EditorStyle*>(current);
+        return static_cast<EditorStyle*>(current);
     }
-    else
+    return nullptr;
+}
+
+void InstallEditorStyle()
+{
+    EditorStyle* style = GetEditorStyleOrNull();
+    if (style == nullptr)
     {
         style = new EditorStyle;
         QApplication::setStyle(style);

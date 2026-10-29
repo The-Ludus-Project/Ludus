@@ -68,4 +68,7 @@ private:
 
 /// Install an EditorStyle as the application style once, then refresh it from the current palette and preferences.
 void InstallEditorStyle();
+
+/// The installed editor style, or null before InstallEditorStyle runs.
+[[nodiscard]] EditorStyle* GetEditorStyleOrNull();
 } // namespace ludus::editor
