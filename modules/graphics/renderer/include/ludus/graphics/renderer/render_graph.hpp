@@ -134,6 +134,11 @@ struct RenderGraphPrograms final
     /// that binding when RayCompute.Bindings omit it. Such a graph requires RequestRayPathCapture
     /// before its first Update and accepts exactly one extraction. Runtime packages never carry this variant.
     bool HasRayPathCapture = false;
+    /// RayCompute reads the renderer-owned LTC table (`scene_interface.polygonal_light_sampling`) and ends its
+    /// bindings with the read-only table buffer at slot 13 (LUDUS_GRAPH_LTC_TABLE_BINDING). The
+    /// renderer uploads and binds that buffer; RayCompute.Bindings must name the slot exactly when
+    /// this is true. See docs/development/ltc-table.md.
+    bool HasLtcTable = false;
 };
 /// Attach the frozen triangle-ray compute/image interface metadata to a cooked stage.
 /// Does not compile, allocate or change artifact bytes. Used by generated headers and

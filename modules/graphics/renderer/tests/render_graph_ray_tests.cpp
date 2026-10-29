@@ -1,5 +1,8 @@
+#include "../shaders/renderer_gpu_preview_layout.h"
 #include "../src/internal/gpu_denoiser.h"
+#include "../src/internal/ltc_table.h"
 
+#include "ltc_lookup_cases.h"
 #include "renderer_composite.h"
 #include "rg2_compute_mixed.h"
 #include "rg2_compute_ray_tracing_template.h"
@@ -7,6 +10,7 @@
 #include "rg2_direct_lighting_reference.h"
 #include "rg2_line_sampling_template.h"
 #include "rg2_line_visibility_loop.h"
+#include "rg2_ltc_table.h"
 #include "rg2_ordered_ray.h"
 #include "rg2_raytracing.h"
 #include "rg2_restir_di.h"
@@ -652,12 +656,15 @@ TEST_CASE("Legacy software ray packages require recooking", "[render-graph][ray-
         const usize word = format::HEADER_BYTES + i * format::RESOURCE_RECORD_BYTES - sizeof(uint32);
         bytes.RemoveRange(word, word + sizeof(uint32));
     }
+    // Version 25 appends the scene resource word between the storage records and the pass names.
+    const usize nameBytes = package.GetPlan().PassNames[0].GetSize();
+    const usize paddedNameBytes = ((nameBytes + WORD_BYTES - 1) / WORD_BYTES) * WORD_BYTES;
+    const usize sceneResourceOffset = bytes.GetSize() - paddedNameBytes - 2 * WORD_BYTES;
+    bytes.RemoveRange(sceneResourceOffset, sceneResourceOffset + WORD_BYTES);
     REQUIRE(TryWriteLittleEndian(format::STORAGE_PACKAGE_VERSION, {bytes.GetData() + sizeof(uint32), sizeof(uint32)}) ==
             true);
     renderer::RenderGraphPackage storageGeneration;
     REQUIRE(storageGeneration.Decode({bytes.GetData(), bytes.GetSize()}) == renderer::RenderGraphPackageStatus::Ready);
-    const usize nameBytes = package.GetPlan().PassNames[0].GetSize();
-    const usize paddedNameBytes = ((nameBytes + WORD_BYTES - 1) / WORD_BYTES) * WORD_BYTES;
     const usize storageCountOffset = bytes.GetSize() - paddedNameBytes - 2 * WORD_BYTES;
     bytes.RemoveRange(storageCountOffset, storageCountOffset + WORD_BYTES);
     REQUIRE(TryWriteLittleEndian(format::NATIVE_RAY_PACKAGE_VERSION,
@@ -4355,4 +4362,83 @@ TEST_CASE("OIDN preserves scene material metadata and accepts material replaceme
         CHECK(fixture.Pixels[center + 1 - selectedChannel] <= 2);
         CHECK(fixture.Pixels[center + 2] <= 2);
     }
+}
+
+TEST_CASE("A render graph kernel reads the renderer-bound LTC table like the CPU lookup",
+          "[render-graph][gpu][compute-ray-tracing][scene-shader][ltc]")
+{
+    // ltc_lookup.slang writes, per target column, unit-range functions of LookupSpecularLtc for the
+    // cases of ltc_lookup_cases.h. They come from the table buffer the renderer binds at slot 13.
+    static_assert(LTC_LOOKUP_CASE_COUNT < WIDTH);
+    GraphGpuFixture fixture;
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_LTC_TABLE_DIRECTORY, "rg2_ltc_table.lurgrt"});
+    const renderer::RenderGraphPrograms decoded =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    const renderer::RenderGraphPrograms compiled =
+        packages::rg2_ltc_table::MakePrograms(shaders::renderer_composite::Vertex(),
+                                              shaders::renderer_composite::Fragment());
+    REQUIRE(decoded.HasLtcTable == true);
+    REQUIRE(compiled.HasLtcTable == true);
+    // The version 25 package rebuilds the reflected binding list of the generated header, table slot last.
+    CheckSameStage(decoded.RayCompute, compiled.RayCompute);
+    REQUIRE(decoded.RayCompute.Bindings.back().Binding == LUDUS_GRAPH_LTC_TABLE_BINDING);
+    renderer::RenderGraphPlan plan = package->GetPlan();
+    constexpr usize PASS_COUNT = 1;
+    REQUIRE(plan.Passes.GetSize() == PASS_COUNT);
+    StaticArray<format::Pass, PASS_COUNT> passes{{plan.Passes[0]}};
+    passes[0].ToneMappingExposure = 0; // Bypass ToneMap: linear values read back as 255 * value.
+    plan.Passes = {passes.GetData(), passes.GetSize()};
+    const auto finish = [&fixture](rhi::RasterStatus status) {
+        const uint64 beginning = time::NowTicks();
+        constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
+        while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+        {
+            status = fixture.Graph.Poll();
+        }
+        REQUIRE(status == rhi::RasterStatus::Ready);
+    };
+    finish(fixture.Graph.Initialize(fixture.Device, plan, decoded));
+    fixture.Cameras[0].OrthographicCamera = true;
+    renderer::RenderGraphReport report;
+    finish(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                1,
+                                renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                report));
+    uint32 output = 0;
+    for (uint32 resource = 0; resource < plan.Resources.GetSize(); ++resource)
+    {
+        output = plan.Resources[resource].IsExported == 1 ? resource : output;
+    }
+    ReadGraphFrame(fixture, output);
+    // RGBA8 quantization and rounding leave at most a step or two; a missing or misindexed table differs by far more.
+    constexpr float32 TOLERANCE_STEPS = 2.0F;
+    constexpr float32 UNORM_MAXIMUM = 255.0F;
+    const usize row = HEIGHT / 2;
+    for (uint32 column = 0; column < LTC_LOOKUP_CASE_COUNT; ++column)
+    {
+        const uint32 roughnessIndex = column % LTC_LOOKUP_ROUGHNESS_COUNT;
+        const uint32 viewIndex = (column / LTC_LOOKUP_ROUGHNESS_COUNT) % LTC_LOOKUP_VIEW_COUNT;
+        const uint32 fresnelIndex = column / (LTC_LOOKUP_ROUGHNESS_COUNT * LTC_LOOKUP_VIEW_COUNT);
+        const float32 roughness = (static_cast<float32>(roughnessIndex) + 0.5F) / LTC_LOOKUP_ROUGHNESS_COUNT;
+        const float32 viewCosine = (static_cast<float32>(viewIndex) + 0.5F) / LTC_LOOKUP_VIEW_COUNT;
+        const float32 f0 = static_cast<float32>(fresnelIndex) / (LTC_LOOKUP_FRESNEL_COUNT - 1);
+        const renderer::internal::SpecularLtc ltc =
+            renderer::internal::LookupSpecularLtc(roughness,
+                                                  {math::Sqrt(1 - viewCosine * viewCosine), 0, viewCosine},
+                                                  {f0, f0, f0});
+        const math::Matrix3& inverse = ltc.InverseTransform;
+        const float32 spread = math::Abs(inverse.Columns[0].Z) + math::Abs(inverse.Columns[1].Y) +
+                               math::Abs(inverse.Columns[2].X) + math::Abs(inverse.Columns[2].Z);
+        const StaticArray<float32, 3> expected{{ltc.Norm, ltc.FresnelNorm / ltc.Norm, 1 / (1 + spread)}};
+        for (usize channel = 0; channel < expected.GetSize(); ++channel)
+        {
+            CAPTURE(column, channel, expected[channel]);
+            const float32 actual = fixture.Pixels[GetPixel(column, row) + channel];
+            CHECK(math::Abs(actual - expected[channel] * UNORM_MAXIMUM) <= TOLERANCE_STEPS);
+        }
+    }
+    CHECK(fixture.Pixels[GetPixel(LTC_LOOKUP_CASE_COUNT, row)] == 0);
 }

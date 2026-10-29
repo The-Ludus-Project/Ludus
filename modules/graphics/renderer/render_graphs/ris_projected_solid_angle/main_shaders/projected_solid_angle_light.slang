@@ -80,8 +80,10 @@ ReceiverLightingFrame MakeReceiverLightingFrame(float3 positionWorld,
     float3 helperWorld = abs(normalWorld.z) < FRAME_HELPER_AXIS_LIMIT ? float3(0, 0, 1) : float3(0, 1, 0);
     frame.TangentWorld = NormalizeOrZero(cross(helperWorld, normalWorld));
     frame.BitangentWorld = cross(normalWorld, frame.TangentWorld);
-    SpecularLtc specular = LookupSpecularLtc(roughness, TransformWorldToTangent(frame, viewDirectionWorld));
     float3 specularReflectance = DIELECTRIC_SPECULAR_REFLECTANCE * (1 - metallic) + baseColor * metallic;
+    // The table's F0 slice follows the luminance of this receiver's F0 (Peters 2021, section 4.1).
+    SpecularLtc specular =
+        LookupSpecularLtc(roughness, TransformWorldToTangent(frame, viewDirectionWorld), specularReflectance);
     frame.HasSpecular = TryMakeLinearlyTransformedCosine(specular.InverseTransform, frame.Specular);
     frame.SpecularAlbedoLuminance =
         frame.HasSpecular == true ? max(ComputeLuminance(ComputeSpecularLtcAlbedo(specular, specularReflectance)), 0)

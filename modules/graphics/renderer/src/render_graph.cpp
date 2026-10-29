@@ -47,7 +47,8 @@ constexpr usize BOX_INDEX_COUNT = 36;
 constexpr usize FLAT_INPUT_COUNT = 6;
 constexpr usize MAX_RETAINED_SCENES = 3;
 /// Frozen ray compute ABI, visibility textures, structured storage and the diagnostic capture slot.
-constexpr usize RAY_COMPUTE_BINDING_CAPACITY = LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + format::MAX_STORAGE_BUFFERS + 1;
+constexpr usize RAY_COMPUTE_BINDING_CAPACITY =
+    LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + format::MAX_STORAGE_BUFFERS + 1 + LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT;
 constexpr usize MAX_COMPONENTS = 4;
 /// Largest packed uniform bytes of one technique: every slot at its largest block.
 constexpr usize MAX_TECHNIQUE_UNIFORM_BYTES = format::UNIFORM_SLOT_COUNT * format::MAX_UNIFORM_BLOCK_BYTES;
@@ -1976,6 +1977,17 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     {
         return Status::InvalidDescription;
     }
+    // The LTC table is the last ray compute binding exactly when the programs declare it.
+    const std::span<const rhi::RasterBinding> rayBindings = programs.RayCompute.Bindings;
+    const bool hasLtcBinding =
+        rayBindings.empty() == false && rayBindings.back().Binding == LUDUS_GRAPH_LTC_TABLE_BINDING;
+    if (hasLtcBinding != programs.HasLtcTable ||
+        (hasLtcBinding == true &&
+         (programs.HasSceneShaderInterface == false || rayBindings.back().Kind != rhi::RasterBindingKind::StorageRead ||
+          rayBindings.back().MinSize != LUDUS_GPU_PREVIEW_VECTOR_BYTES)))
+    {
+        return Status::InvalidDescription;
+    }
     State* allocationOrNull = new (std::nothrow) State;
     core::UniquePtr<State> candidate{allocationOrNull};
     if (candidate.Get() == nullptr)
@@ -1989,25 +2001,32 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     if (programs.HasRayPathCapture == true)
     {
         // Runtime-package stage metadata never names the diagnostic slot; generated headers reflect it.
+        // The capture slot precedes a trailing LTC table binding, keeping slot order.
         const std::span<const rhi::RasterBinding> bindings = programs.RayCompute.Bindings;
+        const usize kernelCount = bindings.size() - (hasLtcBinding == true ? LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT : 0);
         const bool hasCaptureBinding =
-            bindings.empty() == false && bindings.back().Binding == LUDUS_RAY_PATH_CAPTURE_BINDING;
+            kernelCount != 0 && bindings[kernelCount - 1].Binding == LUDUS_RAY_PATH_CAPTURE_BINDING;
         const usize count = bindings.size() + (hasCaptureBinding == true ? 0 : 1);
         if (isUsed[static_cast<usize>(format::Technique::RayTracing)] == false ||
             count > candidate->RayComputeBindings.GetSize())
         {
             return Status::InvalidDescription;
         }
-        for (usize i = 0; i < bindings.size(); ++i)
+        for (usize i = 0; i < kernelCount; ++i)
         {
             candidate->RayComputeBindings[i] = bindings[i];
         }
+        usize next = kernelCount;
         if (hasCaptureBinding == false)
         {
-            candidate->RayComputeBindings[count - 1] = {LUDUS_RAY_PATH_CAPTURE_BINDING,
-                                                        rhi::RasterBindingKind::StorageReadWrite,
-                                                        rhi::RasterVisibility::Compute,
-                                                        LUDUS_RAY_PATH_CAPTURE_WORD_BYTES};
+            candidate->RayComputeBindings[next++] = {LUDUS_RAY_PATH_CAPTURE_BINDING,
+                                                     rhi::RasterBindingKind::StorageReadWrite,
+                                                     rhi::RasterVisibility::Compute,
+                                                     LUDUS_RAY_PATH_CAPTURE_WORD_BYTES};
+        }
+        for (usize i = kernelCount; i < bindings.size(); ++i)
+        {
+            candidate->RayComputeBindings[next++] = bindings[i];
         }
         candidate->Programs.RayCompute.Bindings = {candidate->RayComputeBindings.GetData(), count};
     }

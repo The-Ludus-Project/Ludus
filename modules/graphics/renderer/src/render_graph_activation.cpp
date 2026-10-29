@@ -179,13 +179,16 @@ struct RenderGraphPackage::State final
     bool HasBilinearUpscale = false;
     bool HasMetalFxSpatialUpscale = false;
     bool HasDenoising = false;
+    /// The version 25 scene resource word names the LTC table: AppendLtcTableBindings adds its slot.
+    bool HasLtcTable = false;
     // DecodeUniforms validates and writes every active stage before any binding is published.
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     StaticArray<format::UniformBinding, format::MAX_UNIFORM_BINDINGS> UniformBindings{};
     StaticArray<format::UniformBlock, format::MAX_UNIFORM_BLOCKS> UniformBlocks{};
     StaticArray<format::UniformField, format::MAX_UNIFORM_FIELDS> UniformFields{};
     /// Stage binding requirements derived from the uniform records, one table per role.
-    static constexpr usize STAGE_BINDING_CAPACITY = LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + format::MAX_STORAGE_BUFFERS;
+    static constexpr usize STAGE_BINDING_CAPACITY =
+        LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + format::MAX_STORAGE_BUFFERS + LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT;
     // RasterBinding initializes Visibility to Both, including every nested array element.
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     StaticArray<StaticArray<rhi::RasterBinding, STAGE_BINDING_CAPACITY>, format::STAGE_ROLE_COUNT> Bindings{};
@@ -197,6 +200,7 @@ struct RenderGraphPackage::State final
     RenderGraphPackageStatus DecodeRecords(ByteReader& inoutReader) noexcept;
     RenderGraphPackageStatus DecodeUniforms(ByteReader& inoutReader) noexcept;
     void DeriveBindings() noexcept;
+    [[nodiscard]] RenderGraphPackageStatus AppendLtcTableBindings() noexcept;
     RenderGraphPackageStatus DecodeStages(ByteReader& inoutReader, uint32 stageCount) noexcept;
 };
 RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& inoutReader, uint32 stageCount) noexcept
@@ -583,6 +587,54 @@ void RenderGraphPackage::State::DeriveBindings() noexcept
         }
     }
 }
+RenderGraphPackageStatus RenderGraphPackage::State::AppendLtcTableBindings() noexcept
+{
+    // The generated header's reflected compute bindings end with the table slot; a package carries
+    // the frozen ABI, so the decoder appends that slot to each scene compute role it carries.
+    bool hasVisibilityBuffer = false;
+    for (usize i = 0; i < Header.PassCount; ++i)
+    {
+        hasVisibilityBuffer = hasVisibilityBuffer == true || Passes[i].Visibility != format::ABSENT;
+    }
+    bool hasComputeRole = false;
+    for (const format::StageRole stageRole :
+         {format::StageRole::RayCompute, format::StageRole::SceneRayCompute, format::StageRole::PersistentRayCompute})
+    {
+        const usize role = static_cast<usize>(stageRole);
+        bool hasArtifact = false;
+        for (const StageView& view : Stages[role])
+        {
+            hasArtifact = hasArtifact == true || view.IsPresent == true;
+        }
+        if (hasArtifact == false)
+        {
+            continue;
+        }
+        hasComputeRole = true;
+        if (BindingCounts[role] == 0)
+        {
+            rhi::RasterShaderDescription description;
+            SetRenderGraphRayInterface(description,
+                                       rhi::ShaderStage::Compute,
+                                       stageRole == format::StageRole::PersistentRayCompute,
+                                       hasVisibilityBuffer,
+                                       HasNativeRayQueries);
+            for (const rhi::RasterBinding& binding : description.Bindings)
+            {
+                Bindings[role][BindingCounts[role]++] = binding;
+            }
+        }
+        if (BindingCounts[role] == Bindings[role].GetSize())
+        {
+            return RenderGraphPackageStatus::CapacityExceeded;
+        }
+        Bindings[role][BindingCounts[role]++] = {LUDUS_GRAPH_LTC_TABLE_BINDING,
+                                                 rhi::RasterBindingKind::StorageRead,
+                                                 rhi::RasterVisibility::Compute,
+                                                 LUDUS_GPU_PREVIEW_VECTOR_BYTES};
+    }
+    return hasComputeRole == true ? RenderGraphPackageStatus::Ready : RenderGraphPackageStatus::Malformed;
+}
 RenderGraphPackageStatus RenderGraphPackage::State::DecodeRecords(ByteReader& inoutReader) noexcept
 {
     for (uint32 i = 0; i < Header.ResourceCount; ++i)
@@ -735,7 +787,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
-        (version != format::CLUSTERED_DEFERRED_PACKAGE_VERSION &&
+        (version != format::LTC_TABLE_PACKAGE_VERSION && version != format::CLUSTERED_DEFERRED_PACKAGE_VERSION &&
          version != format::CLUSTERED_FORWARD_PACKAGE_VERSION && version != format::COMPUTE_BVH_PACKAGE_VERSION &&
          version != format::RAY_WORKGROUP_PACKAGE_VERSION && version != format::NATIVE_RAY_PIPELINE_PACKAGE_VERSION &&
          version != format::CUSTOM_RAY_PACKAGE_VERSION && version != format::SOFTWARE_RAY_PACKAGE_VERSION &&
@@ -899,6 +951,15 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
             }
         }
     }
+    if (version >= format::LTC_TABLE_PACKAGE_VERSION)
+    {
+        const uint32 sceneResources = reader.ReadWord();
+        if (reader.IsOk() == false || (sceneResources & ~format::SCENE_RESOURCE_LTC_TABLE) != 0)
+        {
+            return RenderGraphPackageStatus::Malformed;
+        }
+        candidate->HasLtcTable = (sceneResources & format::SCENE_RESOURCE_LTC_TABLE) != 0;
+    }
     if (version >= format::NAMED_PACKAGE_VERSION)
     {
         for (uint32 index = 0; index < candidate->Header.PassCount; ++index)
@@ -975,6 +1036,14 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
         }
     }
     candidate->DeriveBindings();
+    if (candidate->HasLtcTable == true)
+    {
+        status = candidate->AppendLtcTableBindings();
+        if (status != RenderGraphPackageStatus::Ready)
+        {
+            return status;
+        }
+    }
     mState.Swap(candidate);
     return RenderGraphPackageStatus::Ready;
 }
@@ -1031,6 +1100,7 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
     }
     const State& state = *mState;
     result.HasRayPathCapture = state.IsRayPathCapture;
+    result.HasLtcTable = state.HasLtcTable;
     for (const State::StageView& view : state.Stages[format::CLUSTERED_FORWARD_FRAGMENT_ROLE])
     {
         result.HasClusteredForward = result.HasClusteredForward == true || view.IsPresent == true;

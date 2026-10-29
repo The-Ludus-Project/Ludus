@@ -32,6 +32,7 @@ modules/foundation/math/tests/linearly_transformed_cosine_tests.cpp
 tools/ltc-fit
 modules/graphics/renderer/src/ltc_table.cpp
 modules/graphics/renderer/src/internal/ltc_table.h
+modules/graphics/renderer/src/internal/ltc_table_data.h
 modules/graphics/renderer/tests/ltc_table_tests.cpp
 modules/foundation/math/include/ludus/foundation/math/random_domains.hpp
 modules/foundation/math/tests/random_domains_tests.cpp

@@ -1,4 +1,5 @@
 #include "internal/ltc_table.h"
+#include "internal/ltc_table_data.h"
 
 #include <ludus/foundation/math/scalar.hpp>
 
@@ -11,24 +12,15 @@ using foundation::float32;
 using foundation::uint32;
 using foundation::usize;
 
-/// One four-float entry of the generated table.
-struct LtcTableEntry final
-{
-    float32 X = 0.0F;
-    float32 Y = 0.0F;
-    float32 Z = 0.0F;
-    float32 W = 0.0F;
-};
-
-#define LUDUS_LTC_TABLE_ENTRY LtcTableEntry
-#include "../shaders/ltc_table_data.inc"
-#undef LUDUS_LTC_TABLE_ENTRY
-
 constexpr uint32 ROUGHNESS_COUNT = LUDUS_LTC_TABLE_ROUGHNESS_COUNT;
 constexpr uint32 VIEW_COUNT = LUDUS_LTC_TABLE_VIEW_COUNT;
-constexpr uint32 ENTRIES_PER_CELL = LUDUS_LTC_TABLE_ENTRIES_PER_CELL;
+constexpr uint32 FRESNEL_COUNT = LUDUS_LTC_TABLE_FRESNEL_COUNT;
+constexpr usize SLICE_ENTRY_COUNT = LUDUS_LTC_TABLE_SLICE_ENTRY_COUNT;
+constexpr usize MOMENT_OFFSET = LUDUS_LTC_TABLE_MOMENT_OFFSET;
 constexpr float32 MINIMUM_ROUGHNESS = LUDUS_LTC_TABLE_MINIMUM_ROUGHNESS;
-static_assert(ROUGHNESS_COUNT >= 2 && VIEW_COUNT >= 2);
+static_assert(ROUGHNESS_COUNT >= 2 && VIEW_COUNT >= 2 && FRESNEL_COUNT >= 2);
+// Rec.709 luminance weights, with which Peters' renderer reduces an RGB F0 to the scalar that selects a slice.
+constexpr math::Vector3 FRESNEL_LUMINANCE_WEIGHTS{0.2126F, 0.7152F, 0.0722F};
 
 [[nodiscard]] LtcTableEntry Mix(LtcTableEntry a, LtcTableEntry b, float32 t) noexcept
 {
@@ -40,23 +32,28 @@ static_assert(ROUGHNESS_COUNT >= 2 && VIEW_COUNT >= 2);
         .W = a.W + (b.W - a.W) * t,
     };
 }
-/// Bilinear interpolation of one entry of the four cells around (row, column).
+/// Bilinear interpolation of the four entries around (row, column) of the roughness x view grid starting at offset.
 // Row then column, each followed by its fraction, is the table's (roughness, view cosine) order.
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
 [[nodiscard]] LtcTableEntry
-Interpolate(uint32 row, float32 rowFraction, uint32 column, float32 columnFraction, uint32 entry) noexcept
+Interpolate(usize offset, uint32 row, float32 rowFraction, uint32 column, float32 columnFraction) noexcept
 // NOLINTEND(bugprone-easily-swappable-parameters)
 {
-    const auto at = [entry](uint32 r, uint32 c) noexcept {
-        return LUDUS_LTC_TABLE[(usize{r} * VIEW_COUNT + c) * ENTRIES_PER_CELL + entry];
-    };
+    const auto at = [offset](uint32 r, uint32 c) noexcept { return LTC_TABLE[offset + usize{r} * VIEW_COUNT + c]; };
     return Mix(Mix(at(row, column), at(row, column + 1), columnFraction),
                Mix(at(row + 1, column), at(row + 1, column + 1), columnFraction),
                rowFraction);
 }
 } // namespace
 
-SpecularLtc LookupSpecularLtc(float32 roughness, math::Vector3 viewTangent) noexcept
+uint32 GetLtcTableFresnelSlice(math::Vector3 f0) noexcept
+{
+    const float32 luminance = math::Clamp(math::Dot(f0, FRESNEL_LUMINANCE_WEIGHTS), 0.0F, 1.0F);
+    return math::Min(static_cast<uint32>(luminance * static_cast<float32>(FRESNEL_COUNT - 1) + 0.5F),
+                     FRESNEL_COUNT - 1);
+}
+
+SpecularLtc LookupSpecularLtc(float32 roughness, math::Vector3 viewTangent, math::Vector3 f0) noexcept
 {
     // Rows are linear in perceptual roughness, columns linear in the view inclination (Heitz et al. 2016, section 4).
     const float32 rowCoordinate =
@@ -68,8 +65,9 @@ SpecularLtc LookupSpecularLtc(float32 roughness, math::Vector3 viewTangent) noex
     const uint32 column = math::Min(static_cast<uint32>(columnCoordinate), VIEW_COUNT - 2);
     const float32 rowFraction = rowCoordinate - static_cast<float32>(row);
     const float32 columnFraction = columnCoordinate - static_cast<float32>(column);
-    const LtcTableEntry transform = Interpolate(row, rowFraction, column, columnFraction, 0);
-    const LtcTableEntry moments = Interpolate(row, rowFraction, column, columnFraction, 1);
+    const usize transformOffset = usize{GetLtcTableFresnelSlice(f0)} * SLICE_ENTRY_COUNT;
+    const LtcTableEntry transform = Interpolate(transformOffset, row, rowFraction, column, columnFraction);
+    const LtcTableEntry moments = Interpolate(MOMENT_OFFSET, row, rowFraction, column, columnFraction);
     // M^-1 in the table's frame is [[1, 0, M02], [0, M11, 0], [M20, 0, M22]]. The tangent frame is that frame rotated
     // about z by the view's azimuth R, so the tangent-space inverse is M^-1 R^T.
     const math::Matrix3 inverseCanonical{{

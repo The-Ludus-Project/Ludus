@@ -1,4 +1,5 @@
 #include "internal/gpu_preview_graph.h"
+#include "internal/ltc_table_data.h"
 
 #include <ludus/content/render_graph_format/plan.h>
 #include <ludus/foundation/containers/static_array.hpp>
@@ -235,8 +236,8 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
     // GraphUse::Visibility defaults to RasterVisibility::Both; LLVM 23 overlooks that
     // member initializer for the value-initialized tail of this array (.clang-tidy).
     // NOLINTBEGIN(bugprone-invalid-enum-default-initialization)
-    // One more use than the frozen ABI's bindings: a capture-variant kernel's ray path buffer.
-    StaticArray<rhi::GraphUse, LUDUS_GRAPH_COMPUTE_BINDING_COUNT + 1> computeUses{
+    // Beyond the frozen ABI's bindings: a capture-variant kernel's ray path buffer and the LTC table.
+    StaticArray<rhi::GraphUse, LUDUS_GRAPH_COMPUTE_BINDING_COUNT + 1 + LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT> computeUses{
         {{versions[0], rhi::GraphAccessMode::StorageRead, 0, job.DataBytes, rhi::RasterVisibility::Compute},
          {versions[1],
           rhi::GraphAccessMode::Uniform,
@@ -315,6 +316,21 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
                                           rhi::GraphAccessMode::StorageReadWrite,
                                           0,
                                           job.RayPathCapture.Size,
+                                          rhi::RasterVisibility::Compute};
+    }
+    if (state.HasLtcTable == true)
+    {
+        // Uploaded once at setup and only read afterwards, so every pass reads its imported version.
+        rhi::GraphVersion table;
+        status = inoutResources.ImportBuffer(device, graph, state.LtcTable, table);
+        if (status != Status::Ready)
+        {
+            return status;
+        }
+        computeUses[computeUseCount++] = {table,
+                                          rhi::GraphAccessMode::StorageRead,
+                                          0,
+                                          sizeof(LTC_TABLE),
                                           rhi::RasterVisibility::Compute};
     }
     const rhi::ComputeDispatch dispatch{

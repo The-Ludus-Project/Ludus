@@ -3,10 +3,10 @@
 //
 // The fitted BRDF is the specular lobe of EvaluateReferenceBsdf
 // (modules/graphics/renderer/src/reference_bsdf.cpp) and of the GPU preview's
-// Evaluate (shaders/renderer_gpu_preview.slang) with a Fresnel factor of one:
-// GGX with alpha = roughness^2, the height-correlated Smith visibility
-// 0.5 / (nl * lambdaView + nv * lambdaLight), and Schlick's Fresnel handled
-// through FresnelNorm. The fitter repeats that formula rather than linking the
+// Evaluate (shaders/renderer_gpu_preview.slang) for one scalar F0: GGX with
+// alpha = roughness^2, the height-correlated Smith visibility
+// 0.5 / (nl * lambdaView + nv * lambdaLight), and Schlick's Fresnel
+// F0 + (1 - F0) (1 - v.h)^5. The fitter repeats that formula rather than linking the
 // renderer, as cookers must not link their consumers.
 // Thanks to Eric Heitz, "Sampling the GGX Distribution of Visible Normals",
 // JCGT 7(4), 2018, sections 3-4, https://jcgt.org/published/0007/04/01/paper.pdf,
@@ -19,6 +19,7 @@
 #include <ludus/foundation/math/random.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
+#include <ludus/foundation/threading/jobs.hpp>
 
 namespace ludus::tools::ltc_fit
 {
@@ -46,6 +47,14 @@ constexpr StaticArray<float64, 4> ALIGNED_WIDTH_SCALES{0.5, 1.0, 2.0, 4.0};
 constexpr float64 RELATIVE_TOLERANCE = 1.0e-10;
 // Stand-in objective for matrices without a positive determinant.
 constexpr float64 INVALID_OBJECTIVE = 1.0e300;
+// The optimizer's search box. At low F0 and smooth roughness Schlick's (1 - v.h)^5 moves the target towards the
+// horizon, and an unbounded fit stretches the LTC there until its stored entries overflow float32. The F0 = 1 slice
+// stays within A in [0.004, 273], |B| <= 145 and |D| <= 0.4; the box leaves orders of magnitude of margin.
+constexpr float64 MINIMUM_DIAGONAL = 1.0e-6;
+constexpr float64 MAXIMUM_DIAGONAL = 1.0e6;
+constexpr float64 MAXIMUM_SKEW = 1.0e3;
+// Solid-angle density of uniform directions over the upper hemisphere.
+constexpr float64 UNIFORM_HEMISPHERE_DENSITY = 0.5 / math::kPi;
 // Schlick's Fresnel uses (1 - v.h)^5.
 constexpr uint32 SCHLICK_POWER = 5;
 // Independent jitter streams of the PCG generator for the fitting and residual sample sets.
@@ -73,20 +82,23 @@ using Matrix = StaticArray<Vector3d, MATRIX_COLUMN_COUNT>;
     return matrix[0] * value.X + matrix[1] * value.Y + matrix[2] * value.Z;
 }
 
-/// The specular lobe for one view direction in the fitting frame.
+/// The specular lobe for one view direction and F0 in the fitting frame.
 struct Lobe final
 {
     float64 Alpha = 1.0;
+    /// Schlick's F0.
+    float64 Fresnel = 1.0;
     Vector3d View{0.0, 0.0, 1.0};
     /// sqrt(nv^2 (1 - alpha^2) + alpha^2), the renderer's lambdaView.
     float64 ViewLambda = 1.0;
 };
 
-// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): roughness then view cosine are the fitted table's axes.
-[[nodiscard]] Lobe MakeLobe(float64 roughness, float64 viewCosine) noexcept
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): roughness, view cosine and F0 are the fitted table's axes.
+[[nodiscard]] Lobe MakeLobe(float64 roughness, float64 viewCosine, float64 fresnel) noexcept
 {
     Lobe result;
     result.Alpha = roughness * roughness;
+    result.Fresnel = fresnel;
     result.View = Vector3d{math::Sqrt(1.0 - viewCosine * viewCosine), 0.0, viewCosine};
     const float64 alphaSquared = result.Alpha * result.Alpha;
     result.ViewLambda = math::Sqrt(viewCosine * viewCosine * (1.0 - alphaSquared) + alphaSquared);
@@ -124,6 +136,13 @@ struct Lobe final
     }
     outFresnelWeight = fresnelWeight;
     return EvaluateDistribution(lobe.Alpha, normalHalfCosine) * visibility * normalLightCosine;
+}
+/// rho(v, l) * cos(theta_l) with Schlick's Fresnel for the lobe's F0: the fitted target before normalization.
+[[nodiscard]] float64 EvaluateTarget(const Lobe& lobe, Vector3d light) noexcept
+{
+    float64 fresnelWeight = 0.0;
+    const float64 value = EvaluateCosineWeightedBrdf(lobe, light, fresnelWeight);
+    return value * (lobe.Fresnel + (1.0 - lobe.Fresnel) * fresnelWeight);
 }
 /// Solid-angle density of SampleVisibleNormalReflection, including directions below the horizon.
 [[nodiscard]] float64 EvaluateSamplingDensity(const Lobe& lobe, Vector3d light) noexcept
@@ -165,6 +184,25 @@ struct Lobe final
     const Vector3d half =
         Normalize(Vector3d{alpha * hemisphere.X, alpha * hemisphere.Y, hemisphere.Z > 0.0 ? hemisphere.Z : 0.0});
     return half * (2.0 * math::Dot(lobe.View, half)) - lobe.View;
+}
+/// A uniform direction over the upper hemisphere. With a small F0, Schlick's (1 - v.h)^5 moves much of the lobe far
+/// from the mirror direction, where visible-normal samples are rare; these samples cover it.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (u, v) is the canonical uniform sample pair.
+[[nodiscard]] Vector3d SampleUniformHemisphere(float64 u, float64 v) noexcept
+{
+    const float64 radius = math::Sqrt(1.0 - u * u);
+    const float64 angle = math::kTau * v;
+    return Vector3d{radius * math::Cos(angle), radius * math::Sin(angle), u};
+}
+[[nodiscard]] float64 EvaluateUniformHemisphereDensity(Vector3d direction) noexcept
+{
+    return direction.Z > 0.0 ? UNIFORM_HEMISPHERE_DENSITY : 0.0;
+}
+/// Density of the fixed sample sets for the target, visible-normal reflections plus uniform hemisphere directions, one
+/// sample each, for the balance heuristic.
+[[nodiscard]] float64 EvaluateTargetSamplingDensity(const Lobe& lobe, Vector3d light) noexcept
+{
+    return EvaluateSamplingDensity(lobe, light) + EvaluateUniformHemisphereDensity(light);
 }
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (u, v) is the canonical uniform sample pair.
 [[nodiscard]] Vector3d SampleCosine(float64 u, float64 v) noexcept
@@ -209,7 +247,9 @@ struct Distribution final
     const float64 c = math::Exp(parameters[2]);
     const float64 d = parameters[3];
     const float64 skewDeterminant = a - b * d;
-    if ((skewDeterminant > 0.0) == false)
+    const bool isInBox = a >= MINIMUM_DIAGONAL && a <= MAXIMUM_DIAGONAL && c >= MINIMUM_DIAGONAL &&
+                         c <= MAXIMUM_DIAGONAL && math::Abs(b) <= MAXIMUM_SKEW && math::Abs(d) <= MAXIMUM_SKEW;
+    if (isInBox == false || (skewDeterminant > 0.0) == false)
     {
         return false;
     }
@@ -235,7 +275,8 @@ struct Distribution final
     return cosineDirection.Z / length * distribution.InverseDeterminant / (length * length * length) / math::kPi;
 }
 
-/// Fixed samples of the target, rho cos / Norm, and of the clamped cosine for one cell.
+/// Fixed samples for one cell: of the target, rho F cos / norm, by visible-normal reflection and uniformly over the
+/// hemisphere, and of the clamped cosine. Densities are the sum of both target techniques' densities.
 struct ObjectiveSamples final
 {
     Lobe Target{};
@@ -243,6 +284,9 @@ struct ObjectiveSamples final
     Array<Vector3d> BrdfDirections;
     Array<float64> BrdfTargets;
     Array<float64> BrdfDensities;
+    Array<Vector3d> UniformDirections;
+    Array<float64> UniformTargets;
+    Array<float64> UniformDensities;
     Array<Vector3d> CosineDirections;
 };
 
@@ -265,23 +309,29 @@ bool TryMakeObjectiveSamples(const Lobe& lobe,
     outSamples.Target = lobe;
     outSamples.Norm = norm;
     if (outSamples.BrdfDirections.TryResize(count) == false || outSamples.BrdfTargets.TryResize(count) == false ||
-        outSamples.BrdfDensities.TryResize(count) == false || outSamples.CosineDirections.TryResize(count) == false)
+        outSamples.BrdfDensities.TryResize(count) == false || outSamples.UniformDirections.TryResize(count) == false ||
+        outSamples.UniformTargets.TryResize(count) == false || outSamples.UniformDensities.TryResize(count) == false ||
+        outSamples.CosineDirections.TryResize(count) == false)
     {
         return false;
     }
     for (usize i = 0; i < count; ++i)
     {
         const Vector3d light = SampleVisibleNormalReflection(lobe, points[2 * i], points[2 * i + 1]);
-        float64 fresnelWeight = 0.0;
         outSamples.BrdfDirections[i] = light;
-        outSamples.BrdfTargets[i] = EvaluateCosineWeightedBrdf(lobe, light, fresnelWeight) / norm;
-        outSamples.BrdfDensities[i] = EvaluateSamplingDensity(lobe, light);
+        outSamples.BrdfTargets[i] = EvaluateTarget(lobe, light) / norm;
+        outSamples.BrdfDensities[i] = EvaluateTargetSamplingDensity(lobe, light);
+        const Vector3d uniform = SampleUniformHemisphere(points[2 * i], points[2 * i + 1]);
+        outSamples.UniformDirections[i] = uniform;
+        outSamples.UniformTargets[i] = EvaluateTarget(lobe, uniform) / norm;
+        outSamples.UniformDensities[i] = EvaluateTargetSamplingDensity(lobe, uniform);
         outSamples.CosineDirections[i] = SampleCosine(points[2 * i], points[2 * i + 1]);
     }
     return true;
 }
 
-/// The integral of |LTC - target|^power over the sphere, estimated from both sample sets with the balance heuristic.
+/// The integral of |LTC - target|^power over the sphere, estimated from the three sample sets with the balance
+/// heuristic.
 [[nodiscard]] float64
 EstimateError(const ObjectiveSamples& samples, const Parameters& parameters, uint32 power) noexcept
 {
@@ -294,7 +344,7 @@ EstimateError(const ObjectiveSamples& samples, const Parameters& parameters, uin
     const usize count = samples.BrdfDirections.GetSize();
     for (usize i = 0; i < count; ++i)
     {
-        // Sampled from the BRDF.
+        // Sampled from the BRDF and uniformly.
         const float64 density = EvaluateDistributionDensity(distribution, samples.BrdfDirections[i]);
         const float64 denominator = samples.BrdfDensities[i] + density;
         if (denominator > 0.0)
@@ -302,12 +352,18 @@ EstimateError(const ObjectiveSamples& samples, const Parameters& parameters, uin
             const float64 difference = math::Abs(density - samples.BrdfTargets[i]);
             sum += (power == 1 ? difference : difference * difference * difference) / denominator;
         }
+        const float64 uniformDensity = EvaluateDistributionDensity(distribution, samples.UniformDirections[i]);
+        const float64 uniformDenominator = samples.UniformDensities[i] + uniformDensity;
+        if (uniformDenominator > 0.0)
+        {
+            const float64 difference = math::Abs(uniformDensity - samples.UniformTargets[i]);
+            sum += (power == 1 ? difference : difference * difference * difference) / uniformDenominator;
+        }
         // Sampled from the LTC: w = M w_o / |M w_o| (Heitz et al. 2016, Algorithm 1).
         const Vector3d light = Normalize(Apply(distribution.Transform, samples.CosineDirections[i]));
-        float64 fresnelWeight = 0.0;
-        const float64 target = EvaluateCosineWeightedBrdf(samples.Target, light, fresnelWeight) / samples.Norm;
+        const float64 target = EvaluateTarget(samples.Target, light) / samples.Norm;
         const float64 lightDensity = EvaluateDistributionDensity(distribution, light);
-        const float64 lightDenominator = EvaluateSamplingDensity(samples.Target, light) + lightDensity;
+        const float64 lightDenominator = EvaluateTargetSamplingDensity(samples.Target, light) + lightDensity;
         if (lightDenominator > 0.0)
         {
             const float64 difference = math::Abs(lightDensity - target);
@@ -449,6 +505,58 @@ void MinimizeFromStart(const ObjectiveSamples& samples,
         }
     }
 }
+/// One F0 slice of the table, fitted by one job.
+struct SliceJob final
+{
+    /// Set before submission.
+    const FitSettings* SettingsOrNull = nullptr;
+    uint32 Fresnel = 0;
+    /// RoughnessCount * ViewCount cells, index roughness * ViewCount + view; set before submission.
+    FittedCell* CellsOrNull = nullptr;
+};
+
+[[nodiscard]] foundation::threading::JobOutcome FitSlice(void* context) noexcept
+{
+    const SliceJob& job = *static_cast<const SliceJob*>(context);
+    if (job.SettingsOrNull == nullptr || job.CellsOrNull == nullptr)
+    {
+        return foundation::threading::JobOutcome::Failed;
+    }
+    const FitSettings& settings = *job.SettingsOrNull;
+    FittedCell* const cells = job.CellsOrNull;
+    const float64 fresnel = GetTableFresnel(settings, job.Fresnel);
+    for (uint32 row = settings.RoughnessCount; row-- > 0;)
+    {
+        for (uint32 column = 0; column < settings.ViewCount; ++column)
+        {
+            // Start from the rougher neighbor and the less grazing neighbor; the table varies smoothly.
+            StaticArray<FittedCell, 2> guesses{};
+            usize guessCount = 0;
+            if (row + 1 < settings.RoughnessCount)
+            {
+                guesses[guessCount] = cells[usize{row + 1} * settings.ViewCount + column];
+                ++guessCount;
+            }
+            if (column > 0)
+            {
+                guesses[guessCount] = cells[usize{row} * settings.ViewCount + column - 1];
+                ++guessCount;
+            }
+            FittedCell cell;
+            if (FitCell(settings,
+                        GetTableRoughness(settings, row),
+                        GetTableViewCosine(settings, column),
+                        fresnel,
+                        foundation::BorrowedView<const FittedCell>(guesses.GetData(), guessCount),
+                        cell) == false)
+            {
+                return foundation::threading::JobOutcome::Failed;
+            }
+            cells[usize{row} * settings.ViewCount + column] = cell;
+        }
+    }
+    return foundation::threading::JobOutcome::Succeeded;
+}
 } // namespace
 
 float64 GetTableRoughness(const FitSettings& settings, uint32 index) noexcept
@@ -464,14 +572,20 @@ float64 GetTableViewCosine(const FitSettings& settings, uint32 index) noexcept
     return cosine > settings.MinimumViewCosine ? cosine : settings.MinimumViewCosine;
 }
 
+float64 GetTableFresnel(const FitSettings& settings, uint32 index) noexcept
+{
+    return index + 1 == settings.FresnelCount ? 1.0 : index / static_cast<float64>(settings.FresnelCount - 1);
+}
+
 bool FitCell(const FitSettings& settings,
              float64 roughness,
              float64 viewCosine,
+             float64 fresnel,
              foundation::BorrowedView<const FittedCell> initialGuesses,
              FittedCell& outCell) noexcept
 {
-    const Lobe lobe = MakeLobe(roughness, viewCosine);
-    // Moments of the exact lobe by visible-normal importance sampling: rho cos / pdf = 2 V nl (nv + lambdaView).
+    const Lobe lobe = MakeLobe(roughness, viewCosine, fresnel);
+    // Moments of the exact lobe by visible-normal and uniform hemisphere sampling.
     Array<float64> points;
     if (TryMakeStratifiedPoints(settings.MomentStrata, settings.Seed, MOMENT_STREAM, points) == false)
     {
@@ -482,27 +596,41 @@ bool FitCell(const FitSettings& settings,
     const usize momentCount = points.GetSize() / 2;
     for (usize i = 0; i < momentCount; ++i)
     {
-        const Vector3d light = SampleVisibleNormalReflection(lobe, points[2 * i], points[2 * i + 1]);
-        float64 fresnelWeight = 0.0;
-        const float64 value = EvaluateCosineWeightedBrdf(lobe, light, fresnelWeight);
-        const float64 density = EvaluateSamplingDensity(lobe, light);
-        if (value > 0.0 && density > 0.0)
+        // One visible-normal and one uniform sample per point, combined with the balance heuristic.
+        const StaticArray<Vector3d, 2> lights{{
+            SampleVisibleNormalReflection(lobe, points[2 * i], points[2 * i + 1]),
+            SampleUniformHemisphere(points[2 * i], points[2 * i + 1]),
+        }};
+        for (const Vector3d light : lights)
         {
-            result.Norm += value / density;
-            result.FresnelNorm += value / density * fresnelWeight;
-            averageDirection = averageDirection + light * (value / density);
+            float64 fresnelWeight = 0.0;
+            const float64 value = EvaluateCosineWeightedBrdf(lobe, light, fresnelWeight);
+            const float64 density = EvaluateTargetSamplingDensity(lobe, light);
+            if (value > 0.0 && density > 0.0)
+            {
+                result.Norm += value / density;
+                result.FresnelNorm += value / density * fresnelWeight;
+                averageDirection =
+                    averageDirection + light * (value / density * (fresnel + (1.0 - fresnel) * fresnelWeight));
+            }
         }
     }
     result.Norm /= static_cast<float64>(momentCount);
     result.FresnelNorm /= static_cast<float64>(momentCount);
-    if ((result.Norm > 0.0) == false)
+    // The norm of the lobe with this F0; Schlick's Fresnel is linear in F0.
+    const float64 fresnelLobeNorm = fresnel * (result.Norm - result.FresnelNorm) + result.FresnelNorm;
+    if ((result.Norm > 0.0) == false || (fresnelLobeNorm > 0.0) == false)
     {
         return false;
     }
 
     ObjectiveSamples fitting;
-    if (TryMakeObjectiveSamples(lobe, result.Norm, settings.ObjectiveStrata, settings.Seed, FITTING_STREAM, fitting) ==
-        false)
+    if (TryMakeObjectiveSamples(lobe,
+                                fresnelLobeNorm,
+                                settings.ObjectiveStrata,
+                                settings.Seed,
+                                FITTING_STREAM,
+                                fitting) == false)
     {
         return false;
     }
@@ -556,8 +684,12 @@ bool FitCell(const FitSettings& settings,
     result.Objective = bestValue;
 
     ObjectiveSamples residual;
-    if (TryMakeObjectiveSamples(lobe, result.Norm, settings.ResidualStrata, settings.Seed, RESIDUAL_STREAM, residual) ==
-        false)
+    if (TryMakeObjectiveSamples(lobe,
+                                fresnelLobeNorm,
+                                settings.ResidualStrata,
+                                settings.Seed,
+                                RESIDUAL_STREAM,
+                                residual) == false)
     {
         return false;
     }
@@ -566,42 +698,44 @@ bool FitCell(const FitSettings& settings,
     return true;
 }
 
-bool FitTable(const FitSettings& settings, Array<FittedCell>& outCells) noexcept
+bool FitTable(const FitSettings& settings, uint32 workerCount, Array<FittedCell>& outCells) noexcept
 {
     Array<FittedCell> cells;
-    if (settings.RoughnessCount < 2 || settings.ViewCount < 2 ||
-        cells.TryResize(usize{settings.RoughnessCount} * settings.ViewCount) == false)
+    Array<SliceJob> jobs;
+    const usize sliceSize = usize{settings.RoughnessCount} * settings.ViewCount;
+    if (settings.RoughnessCount < 2 || settings.ViewCount < 2 || settings.FresnelCount < 2 ||
+        cells.TryResize(sliceSize * settings.FresnelCount) == false || jobs.TryResize(settings.FresnelCount) == false)
     {
         return false;
     }
-    for (uint32 row = settings.RoughnessCount; row-- > 0;)
+    foundation::threading::JobSystem system;
+    foundation::threading::JobGraph graph;
+    if (system.Initialize({ .WorkerCount = workerCount }) != foundation::threading::JobStatus::Ok ||
+        graph.Initialize({ .MaxJobs = settings.FresnelCount }) != foundation::threading::JobStatus::Ok)
     {
-        for (uint32 column = 0; column < settings.ViewCount; ++column)
+        return false;
+    }
+    bool isOk = true;
+    for (uint32 fresnel = 0; fresnel < settings.FresnelCount && isOk == true; ++fresnel)
+    {
+        jobs[fresnel] = SliceJob
         {
-            // Start from the rougher neighbor and the less grazing neighbor; the table varies smoothly.
-            StaticArray<FittedCell, 2> guesses{};
-            usize guessCount = 0;
-            if (row + 1 < settings.RoughnessCount)
-            {
-                guesses[guessCount] = cells[usize{row + 1} * settings.ViewCount + column];
-                ++guessCount;
-            }
-            if (column > 0)
-            {
-                guesses[guessCount] = cells[usize{row} * settings.ViewCount + column - 1];
-                ++guessCount;
-            }
-            FittedCell cell;
-            if (FitCell(settings,
-                        GetTableRoughness(settings, row),
-                        GetTableViewCosine(settings, column),
-                        foundation::BorrowedView<const FittedCell>(guesses.GetData(), guessCount),
-                        cell) == false)
-            {
-                return false;
-            }
-            cells[usize{row} * settings.ViewCount + column] = cell;
-        }
+            .SettingsOrNull = &settings,
+            .Fresnel = fresnel,
+            .CellsOrNull = cells.GetData() + sliceSize * fresnel,
+        };
+        foundation::threading::JobHandle handle;
+        isOk = graph.Add(&FitSlice, &jobs[fresnel], handle) == foundation::threading::JobStatus::Ok;
+    }
+    foundation::threading::JobOutcome outcome = foundation::threading::JobOutcome::Pending;
+    isOk = isOk == true && graph.Seal() == foundation::threading::JobStatus::Ok &&
+           system.Submit(graph) == foundation::threading::JobStatus::Ok &&
+           system.Wait(outcome) == foundation::threading::JobStatus::Ok &&
+           outcome == foundation::threading::JobOutcome::Succeeded;
+    static_cast<void>(system.Shutdown());
+    if (isOk == false)
+    {
+        return false;
     }
     outCells = foundation::Move(cells);
     return true;

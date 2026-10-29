@@ -171,3 +171,10 @@
 #define LUDUS_RAY_PATH_OUTCOME_MISS 0
 #define LUDUS_RAY_PATH_OUTCOME_HIT 1
 #define LUDUS_RAY_PATH_OUTCOME_FAILURE 2
+
+// Renderer-owned read-only LTC table (Peters 2021 F0 axis; docs/development/ltc-table.md), bound
+// to a scene compute kernel whose technique sets scene_interface.polygonal_light_sampling and whose reflection
+// keeps this slot. Slots 11 and 12 hold the native Metal ray function tables. The table is the
+// last binding of a job, after the ray path capture buffer.
+#define LUDUS_GRAPH_LTC_TABLE_BINDING 13
+#define LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT 1

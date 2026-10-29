@@ -130,6 +130,9 @@ VISIBILITY_SLOT = buffers.FIRST_SLOT + buffers.MAX_BUFFERS
 # Diagnostic ray path capture buffer (LUDUS_RAY_PATH_CAPTURE_BINDING); uint32 words.
 RAY_PATH_CAPTURE_SLOT = 10
 RAY_PATH_CAPTURE_STRIDE = 4
+# Renderer-owned LTC table (LUDUS_GRAPH_LTC_TABLE_BINDING); float4 entries. See docs/development/ltc-table.md.
+LTC_TABLE_SLOT = 13
+LTC_TABLE_STRIDE = 16
 MAX_LOCAL_PAYLOAD_BYTES = 4096
 PAYLOAD_FIELD_ALIGNMENT_BYTES = 16
 DEFAULT_PAYLOAD = '_ludus_ray/scene_payload.slang'
@@ -157,10 +160,10 @@ HELPERS = ('scene_data.h', 'renderer_gpu_preview_layout.h', 'renderer_surface_fu
            'native_metal_ray.slang', 'metal_ray_pipeline_layout.h',
            'ray_triangle_loop.slang', 'ray_line_visibility.slang', 'ray_bvh_traversal.slang', 'renderer_reference_layout.h', 'lighting_layout.h', 'math.slang', 'raster_bindings.slang', 'scene_shader.slang', 'scene_payload.slang', 'scene_shader_layout.h', 'ray_shader.slang', 'visibility_buffer.slang')
 # Staged and included only for scene_interface.polygonal_light_sampling: FoundationMath's projected-solid-angle,
-# LTC and weighted-reservoir primitives and the renderer's LTC table, in include order. The table data is 0.5 MB,
-# so packages that do not request it keep their snapshot and cache identity.
+# LTC and weighted-reservoir primitives and the renderer's LTC table lookup, in include order, so packages that do
+# not request them keep their snapshot and cache identity. The table itself is a renderer-bound buffer.
 POLYGONAL_LIGHT_HELPERS = ('projected_solid_angle.slang', 'linearly_transformed_cosine.slang', 'weighted_reservoir.slang',
-                           'ltc_table.slang', 'ltc_table_data.inc')
+                           'ltc_table.slang', 'ltc_table_layout.h')
 POLYGONAL_LIGHT_INCLUDES = ('projected_solid_angle.slang', 'linearly_transformed_cosine.slang', 'weighted_reservoir.slang',
                             'ltc_table.slang')
 
@@ -361,7 +364,7 @@ def expand_programs(programs, technique, snapshot, helper, build, variants=None,
     polygonal_light_helpers = POLYGONAL_LIGHT_HELPERS if technique.get('scene_interface', {}).get(
         'polygonal_light_sampling', False) else ()
     for filename in (*HELPERS, *polygonal_light_helpers, compute_recipe['source'], image_recipe['source']):
-        data = build.read(helper / filename, build.MAX_HELPER_FILE)
+        data = build.read(helper / filename)
         relative = '_ludus_ray/' + filename
         if relative in snapshot.files:
             build.require(snapshot.external.get(relative) == helper / filename and snapshot.files[relative] == data,
@@ -430,6 +433,9 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
         compatibility = migrate_legacy_scene_sources(sources, snapshot)
         wrapper = scene_wrapper(selected, technique['scene_interface'], snapshot, build, compute_recipe, storage_source,
                                 compatibility)
+    build.require(not native_ray_pipeline or not technique.get('scene_interface', {}).get('polygonal_light_sampling', False),
+                  'Capability', TECHNIQUE, 'native ray stages cannot bind the LTC table of polygonal_light_sampling; '
+                  'use a scene compute pass')
     if persistent or native_ray_pipeline:
         build.require(technique.get('scene_interface') is not None, 'Capability', TECHNIQUE,
                       'native ray stages, ordered ray passes and persistent buffers require the scene callback interface')
@@ -446,7 +452,7 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
     result = {identity: deepcopy(program) for identity, program in programs.items()
               if program['stage'] not in (*STAGES, COMPUTE_STAGE)}
     result[compute_identity] = {'id': compute_identity, 'stage': 'compute', 'source': selected['ray_generation']['source'],
-                          'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': wrapper, 'ray_workgroup': workgroup, 'native_ray_queries': native_ray_queries, 'software_ray_queries': not native_ray_queries, 'native_ray_profile': True, 'persistent_ray_profile': persistent, 'storage_bindings': storage, 'storage_schemas': {binding['schema']: schemas[binding['schema']] for binding in storage}, 'visibility_buffer': technique.get('scene_interface', {}).get('visibility_buffer', False)}
+                          'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [], 'ray_wrapper': wrapper, 'ray_workgroup': workgroup, 'native_ray_queries': native_ray_queries, 'software_ray_queries': not native_ray_queries, 'native_ray_profile': True, 'persistent_ray_profile': persistent, 'storage_bindings': storage, 'storage_schemas': {binding['schema']: schemas[binding['schema']] for binding in storage}, 'visibility_buffer': technique.get('scene_interface', {}).get('visibility_buffer', False), 'ltc_table': technique.get('scene_interface', {}).get('polygonal_light_sampling', False)}
     if compatibility['sources']:
         result[compute_identity]['source_overrides'] = compatibility['sources']
     if native_ray_pipeline:
@@ -494,7 +500,10 @@ def check_interface(program, result, build):
         build.require(interface.get('workgroup') == program.get('ray_workgroup', DEFAULT_WORKGROUP_SIZE) and interface['inputs'] == [] and
                       [(entry['binding'], entry['kind'], entry['size']) for entry in entries if program.get('persistent_ray_profile') or entry['binding'] < buffers.FIRST_SLOT or entry['binding'] >= VISIBILITY_SLOT] ==
                       expected + ([(VISIBILITY_SLOT, 'Texture2D', 0), (VISIBILITY_SLOT + 1, 'TextureDepth2D', 0)] if program.get('visibility_buffer', False) else []) +
-                      ([(RAY_PATH_CAPTURE_SLOT, 'StorageReadWrite', RAY_PATH_CAPTURE_STRIDE)] if program.get('ray_path_capture', False) else []),
+                      ([(RAY_PATH_CAPTURE_SLOT, 'StorageReadWrite', RAY_PATH_CAPTURE_STRIDE)] if program.get('ray_path_capture', False) else []) +
+                      # Reflection drops the table when no callback reads it; the renderer then binds nothing.
+                      ([(LTC_TABLE_SLOT, 'StorageRead', LTC_TABLE_STRIDE)] if program.get('ltc_table', False) and
+                       any(entry['binding'] == LTC_TABLE_SLOT for entry in entries) else []),
                       'ShaderInterface', program['id'], 'ray compute reflection differs from the selected renderer ABI')
         declared = program.get('storage_bindings', [])
         extra = [entry for entry in entries if buffers.FIRST_SLOT <= entry['binding'] < VISIBILITY_SLOT and not program.get('persistent_ray_profile')]
@@ -557,6 +566,8 @@ def scene_wrapper(selected, interface, snapshot, build, recipe, storage_source='
     if interface.get('visibility_buffer', False):
         wrapper += '#define LUDUS_RENDER_GRAPH_VISIBILITY_INPUTS 1\n#include "_ludus_ray/visibility_buffer.slang"\n'
     if interface.get('polygonal_light_sampling', False):
+        # ltc_table.slang reads the renderer's LTC table at this slot; the renderer binds it when reflection keeps it.
+        wrapper += '#define LUDUS_LTC_TABLE_BINDING LUDUS_GRAPH_LTC_TABLE_BINDING\n'
         wrapper += ''.join('#include "_ludus_ray/' + source + '"\n' for source in POLYGONAL_LIGHT_INCLUDES)
     if compatibility['sources'] or any(program['output'] in ('Ray', 'Color') for program in selected.values()):
         wrapper += '#include "_ludus_ray/ray_shader.slang"\n'
