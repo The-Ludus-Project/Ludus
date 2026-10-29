@@ -1964,7 +1964,42 @@ The draw count includes its batch. Grid buffers belong to the immutable prepared
 view and retire through ordinary RHI retention; pending or failed preparation
 preserves the caller's previous view. Grid scratch and per-view ownership records
 are charged to the renderer host budget, and GPU buffers/pipelines consume ordinary
-RHI storage budgets. No runtime shader compiler or new shader recipe is required.
+RHI storage budgets. The ribbon grid needs no new shader recipe.
+
+### Analytic grid
+
+`Renderer::InitializeGrid` opts into the analytic grid after `Initialize` is Ready,
+with the cooked `renderer_grid` stages: twelve vertex locations (the flat program's
+position and instance streams, with the instance fields reused) and no bindings.
+A visible grid then draws one world-space quad on the grid plane, whose fragment
+stage measures each pixel's distance to the nearest minor, major and axis line
+(`BuildWorldGridPlane` supplies the plane, spacing, colours and fade distances).
+Coverage is computed in pixels, so lines keep their width at any zoom, are
+antialiased without a resolve, and fade out where neighbouring lines would be
+closer than ten pixels. A radial fade replaces the abrupt edge of the ribbon
+grid. Only the coordinate axis off the plane stays a ribbon. The pipelines
+blend premultiplied coverage and keep the ribbon grid's depth convention, so the
+draw count of a grid view is two instead of one.
+
+The ribbon grid remains the fallback: without `InitializeGrid`, with a flat
+program that binds uniforms or visibility inputs, or when the grid shaders fail,
+views keep their 165 ribbons. While the shaders are pending `PrepareView` returns
+Pending for grid views. The editor opts in when it starts a viewport generation,
+as `PreviewShaderProgram::Grid`.
+
+To measure the pass cost on the host's device, run
+`LUDUS_RENDERER_BENCHMARK=1 ludus_renderer_render_tests "[grid]"`. It prints
+`GRIDBENCH,<variant>,<size>,<frames>,<ns>` lines for the same 1080p frame with no
+grid, with ribbons and with the analytic plane, each including clear and readback;
+subtract `none` for the pass cost. Set `LUDUS_GRID_IMAGE=<prefix>` to also write
+both images as PPM files.
+
+Measured on the software Vulkan device (lavapipe, 8 cores, 1080p, 40 frames, six
+runs), a frame with the grid hidden took 0.11 ms, with ribbons 0.12 to 0.14 ms and
+with the analytic plane 0.17 to 0.19 ms, including clear and readback. The analytic
+pass therefore costs about 0.06 ms more than the ribbons on a software rasteriser,
+which shades every covered pixel on the CPU. A hardware GPU has not been measured
+yet; run the benchmark there before changing the default.
 
 The editor enables this option on its camera publications, including project
 render graphs. Games keep the default disabled option. Custom render-graph shaders

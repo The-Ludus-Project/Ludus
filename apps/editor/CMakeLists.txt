@@ -698,7 +698,7 @@ if(EMSCRIPTEN)
     target_link_libraries(ludus_editor PRIVATE Ludus::GraphicsRhi)
     ludus_compile_renderer_shaders(TARGET ludus_editor SHADERS
         renderer_flat renderer_composite renderer_material renderer_lit renderer_output renderer_shadow
-        renderer_lit_shadow renderer_clustered_authored renderer_clustered_authored_shadow
+        renderer_grid renderer_lit_shadow renderer_clustered_authored renderer_clustered_authored_shadow
         renderer_lit_debug renderer_lit_debug_shadow
         renderer_clustered_authored_debug renderer_clustered_authored_debug_shadow)
 endif()
@@ -707,7 +707,7 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     target_link_libraries(ludus_editor PRIVATE Ludus::GraphicsRhi Qt6::Quick)
     ludus_compile_renderer_shaders(TARGET ludus_editor SHADERS
         renderer_flat renderer_composite renderer_material renderer_lit renderer_output renderer_shadow
-        renderer_overlay)
+        renderer_overlay renderer_grid)
     ludus_compile_renderer_shaders(TARGET ludus_editor SHADERS
         renderer_lit_shadow renderer_clustered renderer_clustered_shadow
         renderer_clustered_authored renderer_clustered_authored_shadow
@@ -1061,7 +1061,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         target_link_libraries(ludus_editor_tests PRIVATE Ludus::GraphicsRhi Qt6::Quick)
         ludus_compile_renderer_shaders(TARGET ludus_editor_tests SHADERS
             renderer_flat renderer_composite renderer_material renderer_lit renderer_output renderer_shadow
-            renderer_overlay)
+            renderer_overlay renderer_grid)
         ludus_compile_renderer_shaders(TARGET ludus_editor_tests SHADERS
             renderer_lit_shadow renderer_clustered renderer_clustered_shadow
             renderer_clustered_authored renderer_clustered_authored_shadow

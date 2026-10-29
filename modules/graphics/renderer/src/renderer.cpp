@@ -301,6 +301,26 @@ constexpr StaticArray<rhi::RasterVertexAttribute, FLAT_ATTRIBUTE_COUNT> FLAT_ATT
     {4, 1, 3 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
     {5, 1, 4 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
 }};
+// Analytic grid pipelines read the same buffers through twelve attributes: position, the four
+// world-to-clip rows, then the instance's colour, world and normal rows (see renderer_grid.slang).
+constexpr usize GRID_ATTRIBUTE_COUNT = 12;
+constexpr usize GRID_COLOR_OFFSET = 4 * sizeof(math::Vector4);
+constexpr usize GRID_WORLD_ROWS_OFFSET = 5 * sizeof(math::Vector4);
+constexpr usize GRID_NORMAL_ROWS_OFFSET = 8 * sizeof(math::Vector4);
+constexpr StaticArray<rhi::RasterVertexAttribute, GRID_ATTRIBUTE_COUNT> GRID_ATTRIBUTES{{
+    {0, 0, 0, rhi::RasterVertexFormat::Float3},
+    {1, 1, 0, rhi::RasterVertexFormat::Float4},
+    {2, 1, sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
+    {3, 1, 2 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
+    {4, 1, 3 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
+    {5, 1, GRID_COLOR_OFFSET, rhi::RasterVertexFormat::Float4},
+    {6, 1, GRID_WORLD_ROWS_OFFSET, rhi::RasterVertexFormat::Float4},
+    {7, 1, GRID_WORLD_ROWS_OFFSET + sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
+    {8, 1, GRID_WORLD_ROWS_OFFSET + 2 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
+    {9, 1, GRID_NORMAL_ROWS_OFFSET, rhi::RasterVertexFormat::Float4},
+    {10, 1, GRID_NORMAL_ROWS_OFFSET + sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
+    {11, 1, GRID_NORMAL_ROWS_OFFSET + 2 * sizeof(math::Vector4), rhi::RasterVertexFormat::Float4},
+}};
 constexpr usize VISIBILITY_ATTRIBUTE_COUNT = 8;
 constexpr usize VISIBILITY_PRIMITIVE_LOCATION = 6;
 constexpr usize VISIBILITY_INSTANCE_LOCATION = 7;
@@ -325,8 +345,11 @@ struct WorldGridBuffers final
     rhi::BufferHandle Vertices{};
     rhi::BufferHandle Indices{};
     rhi::BufferHandle Instances{};
+    /// Axis ribbons drawn with the flat pipelines, always the first instances.
     uint32 Count = 0;
     usize PipelineCount = 0;
+    /// One analytic plane instance follows the ribbons, with its own four corners after the ribbon quad.
+    bool IsAnalytic = false;
     ~WorldGridBuffers() noexcept
     {
         static_cast<void>(rhi::Destroy(Device, Vertices));
@@ -347,8 +370,33 @@ struct WorldGridScratch final
     StaticArray<WorldGridLine, WORLD_GRID_LINE_CAPACITY> Lines{};
     StaticArray<Instance, WORLD_GRID_LINE_CAPACITY> Instances{};
 };
+constexpr usize WORLD_GRID_ANALYTIC_VERTEX_COUNT = 2 * WORLD_GRID_VERTEX_COUNT;
+/// Packs the plane into the instance fields renderer_grid.slang reads; the ribbons precede it.
+Instance PackWorldGridPlane(const math::Matrix4& worldToClip, const WorldGridPlane& plane) noexcept
+{
+    Instance instance{};
+    for (usize row = 0; row < WORLD_GRID_MATRIX_ROWS; ++row)
+    {
+        instance.Rows[row] = {worldToClip.At(row, 0),
+                              worldToClip.At(row, 1),
+                              worldToClip.At(row, 2),
+                              worldToClip.At(row, WORLD_GRID_MATRIX_ROWS - 1)};
+    }
+    instance.Color = {plane.MinorColor.X, plane.MinorColor.Y, plane.MinorColor.Z, plane.LinePixels};
+    instance.WorldRows[0] = {plane.MajorColor.X, plane.MajorColor.Y, plane.MajorColor.Z, plane.SpacingWorld};
+    instance.WorldRows[1] = {plane.HorizontalWorld.X,
+                             plane.HorizontalWorld.Y,
+                             plane.HorizontalWorld.Z,
+                             plane.FadeStartWorld};
+    instance.WorldRows[2] = {plane.VerticalWorld.X, plane.VerticalWorld.Y, plane.VerticalWorld.Z, plane.ExtentWorld};
+    instance.NormalRows[0] = {plane.CenterWorld.X, plane.CenterWorld.Y, plane.CenterWorld.Z, plane.AxisPixels};
+    instance.NormalRows[1] = {plane.HorizontalAxisColor.X, plane.HorizontalAxisColor.Y, plane.HorizontalAxisColor.Z, 0};
+    instance.NormalRows[2] = {plane.VerticalAxisColor.X, plane.VerticalAxisColor.Y, plane.VerticalAxisColor.Z, 0};
+    return instance;
+}
 Status PrepareWorldGridBuffers(rhi::DeviceHandle device,
                                const ViewDescription& description,
+                               bool isAnalytic,
                                WorldGridScratch& inoutScratch,
                                core::UniquePtr<WorldGridBuffers>& outBuffers) noexcept
 {
@@ -363,6 +411,18 @@ Status PrepareWorldGridBuffers(rhi::DeviceHandle device,
     {
         return Status::Ready;
     }
+    WorldGridPlane plane;
+    if (isAnalytic == true)
+    {
+        bool isVisible = false;
+        if (BuildWorldGridPlane(description, plane, isVisible) == false || isVisible == false)
+        {
+            return Status::InvalidDescription;
+        }
+        // The plane draws every line on it, axes included; only the axis off the plane stays a ribbon.
+        inoutScratch.Lines[0] = inoutScratch.Lines[count - WORLD_GRID_AXIS_COUNT + plane.NormalAxisIndex];
+        count = 1;
+    }
     core::UniquePtr<WorldGridBuffers> candidate;
     candidate.Reset(new (std::nothrow) WorldGridBuffers);
     if (candidate.Get() == nullptr)
@@ -370,11 +430,24 @@ Status PrepareWorldGridBuffers(rhi::DeviceHandle device,
         return Status::OutOfMemory;
     }
     candidate->Device = device;
-    StaticArray<Vertex, WORLD_GRID_VERTEX_COUNT> vertices{};
+    StaticArray<Vertex, WORLD_GRID_ANALYTIC_VERTEX_COUNT> vertices{};
     vertices[0].Position = {-1, -1, 0};
     vertices[1].Position = {1, -1, 0};
     vertices[2].Position = {1, 1, 0};
     vertices[WORLD_GRID_VERTEX_COUNT - 1].Position = {-1, 1, 0};
+    if (isAnalytic == true)
+    {
+        const math::Vector3 alongWorld = plane.HorizontalWorld * plane.ExtentWorld;
+        const math::Vector3 acrossWorld = plane.VerticalWorld * plane.ExtentWorld;
+        vertices[WORLD_GRID_VERTEX_COUNT].Position = plane.CenterWorld - alongWorld - acrossWorld;
+        vertices[WORLD_GRID_VERTEX_COUNT + 1].Position = plane.CenterWorld + alongWorld - acrossWorld;
+        vertices[WORLD_GRID_VERTEX_COUNT + 2].Position = plane.CenterWorld + alongWorld + acrossWorld;
+        vertices[WORLD_GRID_VERTEX_COUNT + 3].Position = plane.CenterWorld - alongWorld + acrossWorld;
+        inoutScratch.Instances[count] = PackWorldGridPlane(description.WorldToClip, plane);
+        candidate->IsAnalytic = true;
+    }
+    const usize vertexBytes =
+        (isAnalytic == true ? WORLD_GRID_ANALYTIC_VERTEX_COUNT : WORLD_GRID_VERTEX_COUNT) * sizeof(Vertex);
     constexpr StaticArray<uint32, WORLD_GRID_INDEX_COUNT> indices{0, 1, 2, 2, 3, 0};
     for (usize i = 0; i < count; ++i)
     {
@@ -395,8 +468,8 @@ Status PrepareWorldGridBuffers(rhi::DeviceHandle device,
         instance.Color = line.Color;
     }
     Status status = rhi::CreateBuffer(device,
-                                      {rhi::BufferRole::Vertex, sizeof(vertices)},
-                                      {reinterpret_cast<const uint8*>(vertices.GetData()), sizeof(vertices)},
+                                      {rhi::BufferRole::Vertex, vertexBytes},
+                                      {reinterpret_cast<const uint8*>(vertices.GetData()), vertexBytes},
                                       candidate->Vertices);
     if (Accepted(status) == false)
     {
@@ -412,7 +485,7 @@ Status PrepareWorldGridBuffers(rhi::DeviceHandle device,
         return status;
     }
     isPending = isPending == true || status == Status::Pending;
-    const usize bytes = count * sizeof(Instance);
+    const usize bytes = (count + (isAnalytic == true ? 1 : 0)) * sizeof(Instance);
     status = rhi::CreateBuffer(device,
                                {rhi::BufferRole::Vertex, bytes},
                                {reinterpret_cast<const uint8*>(inoutScratch.Instances.GetData()), bytes},
@@ -662,7 +735,13 @@ struct Renderer::State final
     core::UniquePtr<WorldGridScratch> GridScratch;
     StaticArray<rhi::RasterPipelineHandle, WORLD_GRID_PIPELINE_COUNT> GridPipelines{};
     StaticArray<bool, WORLD_GRID_PIPELINE_COUNT> HasGridPipelines{};
+    rhi::RasterShaderHandle AnalyticGridVertex{}, AnalyticGridFragment{};
+    bool HasAnalyticGrid = false;
+    StaticArray<rhi::RasterPipelineHandle, WORLD_GRID_PIPELINE_COUNT> AnalyticGridPipelines{};
+    StaticArray<bool, WORLD_GRID_PIPELINE_COUNT> HasAnalyticGridPipelines{};
     Status PrepareGridPipelines() noexcept;
+    Status PrepareAnalyticGridPipelines() noexcept;
+    Status GetAnalyticGridShaderStatus() const noexcept;
     Limits Capacities;
     usize HostBytes = 0;
     Status ReserveStorage(const Limits&) noexcept;
@@ -695,6 +774,12 @@ struct Renderer::State final
         {
             static_cast<void>(rhi::Destroy(Device, pipeline));
         }
+        for (rhi::RasterPipelineHandle pipeline : AnalyticGridPipelines)
+        {
+            static_cast<void>(rhi::Destroy(Device, pipeline));
+        }
+        static_cast<void>(rhi::Destroy(Device, AnalyticGridFragment));
+        static_cast<void>(rhi::Destroy(Device, AnalyticGridVertex));
         for (usize i = 0; i < ViewRecords.GetSize(); ++i)
         {
             if (ViewRecords[i].Used)
@@ -1270,6 +1355,51 @@ Status Renderer::Poll() noexcept
         }
     }
 }
+Status Renderer::InitializeGrid(const rhi::RasterShaderDescription& vertex,
+                                const rhi::RasterShaderDescription& fragment) noexcept
+{
+    if (mState.Get() == nullptr || mState->Setup != Status::Ready)
+    {
+        return Status::NotReady;
+    }
+    auto& s = *mState;
+    if (s.HasAnalyticGrid == true)
+    {
+        return Status::InvalidState;
+    }
+    if (s.HasVisibilityInputs == true || s.FlatUniforms.Count != 0)
+    {
+        return Status::Unsupported;
+    }
+    if (vertex.Artifact.Stage != rhi::ShaderStage::Vertex || fragment.Artifact.Stage != rhi::ShaderStage::Fragment ||
+        vertex.Inputs.size() != GRID_ATTRIBUTE_COUNT || vertex.Bindings.empty() == false ||
+        fragment.Inputs.empty() == false || fragment.Bindings.empty() == false)
+    {
+        return Status::InvalidDescription;
+    }
+    for (usize i = 0; i < GRID_ATTRIBUTE_COUNT; ++i)
+    {
+        if (vertex.Inputs[i].Location != i || vertex.Inputs[i].Format != GRID_ATTRIBUTES[i].Format)
+        {
+            return Status::InvalidDescription;
+        }
+    }
+    Status status = rhi::CreateRasterShader(s.Device, vertex, s.AnalyticGridVertex);
+    if (Accepted(status))
+    {
+        status = rhi::CreateRasterShader(s.Device, fragment, s.AnalyticGridFragment);
+    }
+    if (Accepted(status) == false)
+    {
+        static_cast<void>(rhi::Destroy(s.Device, s.AnalyticGridVertex));
+        static_cast<void>(rhi::Destroy(s.Device, s.AnalyticGridFragment));
+        s.AnalyticGridVertex = {};
+        s.AnalyticGridFragment = {};
+        return status;
+    }
+    s.HasAnalyticGrid = true;
+    return s.GetAnalyticGridShaderStatus();
+}
 Status Renderer::InitializeViews(const rhi::RasterShaderDescription& vertex,
                                  const rhi::RasterShaderDescription& fragment) noexcept
 {
@@ -1445,6 +1575,62 @@ Status Renderer::PollViews() noexcept
             return Status::Ready;
         }
     }
+}
+/// NotReady without InitializeGrid, Pending while either stage is being created, else their worst status.
+Status Renderer::State::GetAnalyticGridShaderStatus() const noexcept
+{
+    if (HasAnalyticGrid == false)
+    {
+        return Status::NotReady;
+    }
+    const Status vertex = rhi::GetStatus(Device, AnalyticGridVertex);
+    const Status fragment = rhi::GetStatus(Device, AnalyticGridFragment);
+    if (vertex == Status::Ready && fragment == Status::Ready)
+    {
+        return Status::Ready;
+    }
+    return vertex == Status::Pending || fragment == Status::Pending ? Status::Pending
+           : vertex != Status::Ready                                ? vertex
+                                                                    : fragment;
+}
+Status Renderer::State::PrepareAnalyticGridPipelines() noexcept
+{
+    const StaticArray<rhi::RasterVertexStream, FLAT_STREAM_COUNT>& streams = FLAT_STREAMS;
+    const StaticArray<rhi::RasterVertexAttribute, GRID_ATTRIBUTE_COUNT>& attributes = GRID_ATTRIBUTES;
+    bool isPending = false;
+    const usize count = Hdr == true ? WORLD_GRID_PIPELINE_COUNT : WORLD_GRID_HDR_PIPELINE;
+    for (usize i = 0; i < count; ++i)
+    {
+        Status status;
+        if (HasAnalyticGridPipelines[i] == false)
+        {
+            rhi::RasterPipelineDescription pipeline{AnalyticGridVertex,
+                                                    AnalyticGridFragment,
+                                                    Layout,
+                                                    streams,
+                                                    attributes,
+                                                    true};
+            pipeline.Blend = true;
+            pipeline.Target = i < WORLD_GRID_UNORM_PIPELINE ? rhi::RasterTarget::Surface
+                              : i < WORLD_GRID_HDR_PIPELINE ? rhi::RasterTarget::Rgba8Unorm
+                                                            : rhi::RasterTarget::Rgba16Float;
+            pipeline.DepthWrite = false;
+            pipeline.DepthCompare =
+                i % WORLD_GRID_TARGET_VARIANTS == 0 ? rhi::RasterDepthCompare::Less : rhi::RasterDepthCompare::Greater;
+            status = rhi::CreateRasterPipeline(Device, pipeline, AnalyticGridPipelines[i]);
+            HasAnalyticGridPipelines[i] = Accepted(status);
+        }
+        else
+        {
+            status = rhi::GetStatus(Device, AnalyticGridPipelines[i]);
+        }
+        if (Accepted(status) == false)
+        {
+            return status;
+        }
+        isPending = isPending == true || status == Status::Pending;
+    }
+    return isPending == true ? Status::Pending : Status::Ready;
 }
 Status Renderer::State::PrepareGridPipelines() noexcept
 {
@@ -1699,6 +1885,26 @@ Status Renderer::drawView(PreparedView handle, const rhi::RasterPassDescription&
                              : isSurface == true ? 0
                                                  : WORLD_GRID_UNORM_PIPELINE;
         const usize reverse = view.Depth == DepthConvention::ReverseZ ? 1 : 0;
+        if (grid.IsAnalytic == true)
+        {
+            // The plane is drawn first so the axis ribbon crosses over its lines.
+            const rhi::RasterVertexSlice planeSlices[]{
+                {grid.Vertices, WORLD_GRID_VERTEX_COUNT * sizeof(Vertex), WORLD_GRID_VERTEX_COUNT * sizeof(Vertex)},
+                {grid.Instances, grid.Count * sizeof(Instance), sizeof(Instance)}};
+            const Status plane = rhi::DrawIndexed(s.Device,
+                                                  {s.AnalyticGridPipelines[target + reverse],
+                                                   s.Bindings,
+                                                   planeSlices,
+                                                   grid.Indices,
+                                                   0,
+                                                   WORLD_GRID_INDEX_COUNT,
+                                                   WORLD_GRID_VERTEX_COUNT,
+                                                   1});
+            if (plane != Status::Ready)
+            {
+                return plane;
+            }
+        }
         return rhi::DrawIndexed(s.Device,
                                 {s.GridPipelines[target + reverse],
                                  s.Bindings,
@@ -3565,13 +3771,29 @@ Status Renderer::PrepareView(Snapshot handle,
         return Status::InvalidDescription;
     }
     core::UniquePtr<WorldGridBuffers> gridBuffers;
+    bool isAnalyticGrid = false;
     Status gridStatus = Status::Ready;
     if (description.WorldGrid.IsVisible == true && description.ShadowCasters == false)
     {
+        const Status analyticShaders = mState->GetAnalyticGridShaderStatus();
+        if (analyticShaders == Status::Pending)
+        {
+            return Status::Pending;
+        }
+        isAnalyticGrid = analyticShaders == Status::Ready;
         gridStatus = mState->PrepareGridPipelines();
         if (Accepted(gridStatus) == false)
         {
             return gridStatus;
+        }
+        if (isAnalyticGrid == true)
+        {
+            const Status analyticStatus = mState->PrepareAnalyticGridPipelines();
+            if (Accepted(analyticStatus) == false)
+            {
+                return analyticStatus;
+            }
+            gridStatus = analyticStatus == Status::Pending ? Status::Pending : gridStatus;
         }
         usize gridHostBytes = sizeof(WorldGridBuffers);
         if (mState->GridScratch.Get() == nullptr)
@@ -3593,7 +3815,8 @@ Status Renderer::PrepareView(Snapshot handle,
             }
             mState->HostBytes += sizeof(WorldGridScratch);
         }
-        const Status buffers = PrepareWorldGridBuffers(mState->Device, description, *mState->GridScratch, gridBuffers);
+        const Status buffers =
+            PrepareWorldGridBuffers(mState->Device, description, isAnalyticGrid, *mState->GridScratch, gridBuffers);
         if (Accepted(buffers) == false)
         {
             return buffers;
@@ -3896,7 +4119,9 @@ Status Renderer::PrepareView(Snapshot handle,
     ++mState->SnapshotRecords[view.SnapshotSlot].References;
     view.Used = view.Owned = true;
     view.HasRetry = false;
-    result.Draws = static_cast<uint32>(view.DrawCount + (view.Grid.Get() != nullptr ? 1 : 0));
+    result.Draws = static_cast<uint32>(view.DrawCount + (view.Grid.Get() == nullptr      ? 0
+                                                         : view.Grid->IsAnalytic == true ? 2
+                                                                                         : 1));
     for (usize i = 0; i < count; ++i)
     {
         if (result.SourceIdOutput != nullptr)
@@ -3953,6 +4178,14 @@ Status Renderer::GetStatus(PreparedView handle) const noexcept
             {
                 return ready;
             }
+            if (view->Grid->IsAnalytic == true)
+            {
+                const Status analyticReady = rhi::GetStatus(mState->Device, mState->AnalyticGridPipelines[i]);
+                if (analyticReady != Status::Ready)
+                {
+                    return analyticReady;
+                }
+            }
         }
         const WorldGridBuffers& grid = *view->Grid;
         const rhi::BufferHandle buffers[]{grid.Vertices, grid.Indices, grid.Instances};
@@ -4005,6 +4238,26 @@ Status Renderer::Submit(PreparedView handle, rhi::SurfaceHandle surface, rhi::Su
             const WorldGridBuffers& grid = *view.Grid;
             const rhi::RasterVertexSlice slices[]{{grid.Vertices, 0, WORLD_GRID_VERTEX_COUNT * sizeof(Vertex)},
                                                   {grid.Instances, 0, grid.Count * sizeof(Instance)}};
+            if (grid.IsAnalytic == true)
+            {
+                const rhi::RasterVertexSlice planeSlices[]{
+                    {grid.Vertices, WORLD_GRID_VERTEX_COUNT * sizeof(Vertex), WORLD_GRID_VERTEX_COUNT * sizeof(Vertex)},
+                    {grid.Instances, grid.Count * sizeof(Instance), sizeof(Instance)}};
+                const Status plane = rhi::RecordDraw(mState->Device,
+                                                     view.Retry,
+                                                     {mState->AnalyticGridPipelines[0],
+                                                      mState->Bindings,
+                                                      planeSlices,
+                                                      grid.Indices,
+                                                      0,
+                                                      WORLD_GRID_INDEX_COUNT,
+                                                      WORLD_GRID_VERTEX_COUNT,
+                                                      1});
+                if (plane != Status::Ready)
+                {
+                    return plane;
+                }
+            }
             return rhi::RecordDraw(mState->Device,
                                    view.Retry,
                                    {mState->GridPipelines[0],
