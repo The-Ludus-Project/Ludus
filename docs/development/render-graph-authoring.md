@@ -4621,7 +4621,33 @@ unified source/canvas undo are available; language-server hover and completion
 remain future increments, described in the
 [shared editor architecture](../architecture/editor-gui-systems.md#source-editing-direction).
 
-Right-click the source for the editing commands. On macOS, use Command where
+Use **Focus Source** or **Shift+Alt+Return** while Source is active to hide the
+surrounding tool windows, graph source tree and API reference. **Restore Layout**
+or the same shortcut restores the previous arrangement, selection and active
+source. The View menu's **Focus Viewport** command also supports Source.
+**Shader API** shows or hides the reference; it starts hidden, remembers the
+choice, and retains the reference split width across focus and source changes.
+External editor and reload actions are grouped under the **Source** menu.
+
+The compact editor strip exposes **Edit**, text size in points, **Wrap** and
+indentation **Guides**, plus the caret's line/Unicode-scalar column and a
+clickable diagnostic count. Text defaults to 13 points; size (8–32 points),
+wrapping and guides persist for subsequently opened editor views. These are
+presentation preferences: they never alter source bytes or undo history.
+Wrapping is visual; it does not insert newlines. The Edit menu lists commands
+with their shortcuts, and the context menu offers the same editing commands.
+
+The status beside the source separates the current draft revision and unsaved
+changes from compilation and the generation actually presented in the viewport.
+**Save** publishes files. **Live Preview** builds saved sources; when it is off,
+use **Build & Preview** explicitly. A successful compile alone does not mean its
+frame is presented. Verified presented sources show their captured document
+revision and whether their renderer inputs match the current draft (layout-only
+changes are excluded from that comparison). Pending or failed work keeps
+the last drawable view; project/setup failures are identified separately in the
+Error List. Older failed reports are labeled as earlier versions.
+
+On macOS, use Command where
 Ctrl is shown below (Qt's native shortcut mapping):
 
 | Action | Shortcut |
@@ -4634,9 +4660,18 @@ Ctrl is shown below (Qt's native shortcut mapping):
 | Move selected/current lines | Alt+Up / Alt+Down |
 | Delete selected/current lines | Ctrl+Shift+K |
 | Format shader document (native desktop) | Ctrl+Shift+I |
+| Increase / decrease text size | Platform Zoom In / Zoom Out shortcuts |
+| Reset text size to 13 points | Ctrl+0 |
+| Next / previous diagnostic in the current source | F8 / Shift+F8 |
+| Focus Source / restore layout | Shift+Alt+Return |
 
 Enter retains the current indentation and adds one level after an opening Slang
-brace. Line commands and Replace All each form one document undo step.
+brace. Slang automatically pairs parentheses, square brackets and braces outside
+comments and strings, skips an existing closing bracket, and deletes an empty
+pair together with Backspace. Enter inside an empty brace pair creates an indented
+line with the closing brace on its own line. Disable **Auto-close Brackets** in Edit or the
+context menu to retain ordinary insertion. Line commands, pair insertion/deletion
+and Replace All each form one document undo step.
 Find supports forward/backward wrapping, case matching, and replacement; Escape
 closes its controls and returns focus to the source. Go to line uses one-based
 line numbers. Ordinary text and JSON sources share the commands, with Slang
@@ -4697,9 +4732,9 @@ ordinary-line and plain-Qt comparison probes are opt-in `[.benchmark]` tests in
 
 ### Edit shader sources in a code editor
 
-On native desktop, select a file in the **Source** view and click **Open in Code
-Editor**. The first use opens a native application picker; **Choose Code
-Editor…** changes that saved preference. On macOS, select the editor's `.app`
+On native desktop, select a file in the **Source** view and choose **Source >
+Open in Code Editor**. The first use opens a native application picker; **Source >
+Choose Code Editor…** changes that saved preference. On macOS, select the editor's `.app`
 from Applications. No command-line launcher or shell command is required.
 The selected application receives the saved project file; completion and
 formatting come from that application's language support. This first launcher
@@ -4718,7 +4753,7 @@ the current draft is retained and the job does not start. Undo local edits or
 reopen the graph to resolve the conflict. Apply or revert unapplied text before
 reloading; source refresh never silently replaces that text.
 
-The Source view shows an **Inputs / Outputs** reference beside each Slang file.
+Use **Shader API** to show the **Inputs / Outputs** reference beside a Slang file.
 It reads the current draft build manifest and expands input and output schemas
 into field names, types, semantics and locations, with read-only uniform bindings
 and their slots. Every program sharing the source is listed by function and stage.

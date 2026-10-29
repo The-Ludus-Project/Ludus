@@ -1,8 +1,10 @@
 #include "internal/browser_player.h"
+#include "internal/code_editor.h"
 #include "internal/controller.h"
 #include "internal/document_well.h"
 #include "internal/error_list.h"
 #include "internal/main_window.h"
+#include "internal/renderer_workspace.h"
 #include "internal/world_workspace.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -10,6 +12,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QByteArray>
+#include <QComboBox>
 #include <QDockWidget>
 #include <QFile>
 #include <QFileInfo>
@@ -18,9 +21,11 @@
 #include <QJsonValue>
 #include <QKeySequence>
 #include <QPixmap>
+#include <QPushButton>
 #include <QScrollArea>
 #include <QSize>
 #include <QStatusBar>
+#include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QToolBar>
@@ -599,4 +604,66 @@ TEST_CASE("The World viewport keeps most of a MacBook Air-sized editor window", 
     {
         REQUIRE(window.grab().save(captures + QStringLiteral("-macbook-air.png")));
     }
+}
+
+TEST_CASE("Source focus uses shell layout restoration without switching to the graph canvas",
+          "[editor][layout][source-focus]")
+{
+    QTemporaryDir directory;
+    EditorController controller(ToolingPaths{}, nullptr, directory.filePath(QStringLiteral("recent.json")));
+    QFile descriptor(directory.filePath(QStringLiteral("ludus.project.json")));
+    REQUIRE(descriptor.open(QIODevice::WriteOnly) == true);
+    descriptor.write(QByteArrayLiteral(R"json({"version":1,"name":"demo","provider":"cmake",
+"source_dir":".","preset":"linux-clang-debug","target":"app","run":{"cwd":".","args":[]}})json"));
+    descriptor.close();
+    MainWindow window(&controller, nullptr, directory.filePath(QStringLiteral("workspace.json")));
+    controller.OpenProject(descriptor.fileName());
+    REQUIRE(controller.State().Document == DocumentState::ProjectLoaded);
+    RendererWorkspace* renderer = window.findChild<RendererWorkspace*>();
+    REQUIRE(renderer != nullptr);
+    renderer->SetLivePreview(false);
+    REQUIRE(window.GetDocumentWell().OpenDocument(renderer) == true);
+    QTabWidget* views = renderer->findChild<QTabWidget*>(QStringLiteral("renderGraphViews"));
+    CodeEditor* source = renderer->findChild<CodeEditor*>(QStringLiteral("renderGraphSource"));
+    QPushButton* button = renderer->findChild<QPushButton*>(QStringLiteral("renderGraphFocusSource"));
+    REQUIRE(views != nullptr);
+    REQUIRE(source != nullptr);
+    REQUIRE(button != nullptr);
+    QComboBox* files = renderer->findChild<QComboBox*>(QStringLiteral("renderGraphSourceFile"));
+    REQUIRE(files != nullptr);
+    for (const QString& file : renderer->GetDocument().GetFiles())
+    {
+        if (file.endsWith(QStringLiteral(".slang")) == true)
+        {
+            files->setCurrentText(file);
+            break;
+        }
+    }
+    views->setCurrentIndex(1);
+    window.resize(1470, 920);
+    window.show();
+    QApplication::processEvents();
+    const QByteArray before = window.saveState();
+    const QString captures = qEnvironmentVariable("LUDUS_EDITOR_LAYOUT_CAPTURE");
+    if (captures.isEmpty() == false)
+    {
+        REQUIRE(window.grab().save(captures + QStringLiteral("-source.png")) == true);
+    }
+    QAction* focus = window.findChild<QAction*>(QStringLiteral("view.focusViewport"));
+    REQUIRE(focus != nullptr);
+    button->click();
+    QApplication::processEvents();
+    CHECK(focus->isChecked() == true);
+    CHECK(views->currentIndex() == 1);
+    CHECK(source->isVisible() == true);
+    CHECK(Dock(window, QStringLiteral("projectExplorerDock"))->isHidden() == true);
+    if (captures.isEmpty() == false)
+    {
+        REQUIRE(window.grab().save(captures + QStringLiteral("-source-focused.png")) == true);
+    }
+    button->click();
+    QApplication::processEvents();
+    CHECK(focus->isChecked() == false);
+    CHECK(views->currentIndex() == 1);
+    CHECK(window.saveState() == before);
 }

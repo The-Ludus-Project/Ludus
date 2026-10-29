@@ -65,9 +65,23 @@ class CodeEditor final : public QPlainTextEdit
 {
     Q_OBJECT
 public:
+    /// Initial and reset text size in typographic points.
+    static constexpr foundation::int32 DEFAULT_FONT_POINTS = 13;
+    /// Lower bound for persisted and interactive text sizes, in points.
+    static constexpr foundation::int32 MINIMUM_FONT_POINTS = 8;
+    /// Upper bound for persisted and interactive text sizes, in points.
+    static constexpr foundation::int32 MAXIMUM_FONT_POINTS = 32;
     explicit CodeEditor(QWidget* parentOrNull = nullptr);
     /// Select coloring/comment syntax without changing text or undo history.
     void SetLanguage(CodeLanguage language);
+    /// Clamp and persist text size in points without changing text or history. GUI thread only.
+    void SetFontPointSize(foundation::int32 points);
+    /// Persist visual wrapping without inserting newlines or changing history. GUI thread only.
+    void SetWordWrap(bool shouldWrap);
+    /// Persist visible indentation guides; text and history are unchanged. GUI thread only.
+    void SetIndentGuidesVisible(bool isVisible);
+    /// Visit the next/previous anchored diagnostic in source order, wrapping at either end.
+    void GoToDiagnostic(bool shouldGoBackward = false);
     /// Current lexical/comment profile; independent of formatter availability.
     [[nodiscard]] LUDUS_INLINE CodeLanguage GetLanguage() const noexcept
     {
@@ -116,6 +130,10 @@ public:
     void EndEditOperation();
 
 Q_SIGNALS:
+    /// A font, wrapping or guide preference changed on the GUI thread.
+    void PresentationChanged();
+    /// Diagnostic markers were replaced or their freshness changed.
+    void DiagnosticsChanged();
     void FindRequested();
     void ReplaceRequested();
     void GoToLineRequested();
@@ -131,6 +149,7 @@ Q_SIGNALS:
 private:
     friend class CodeEditorGutter;
     void resizeEvent(QResizeEvent* event) override;
+    void paintEvent(QPaintEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
     void changeEvent(QEvent* event) override;
     void contextMenuEvent(QContextMenuEvent* event) override;
@@ -164,6 +183,8 @@ private:
     QList<DiagnosticMarker> mDiagnostics;
     QString mDiagnosticText;
     bool mAreDiagnosticsCurrent = true;
+    bool mShouldShowIndentGuides = true;
+    bool mShouldPairBrackets = true;
     bool mShouldUseDocumentHistory = false;
     bool mCanUndo = false;
     bool mCanRedo = false;

@@ -646,7 +646,7 @@ void MainWindow::setViewportFocused(bool isFocused)
         if (mFocusRestoreDocumentOrNull == Renderer_)
         {
             Renderer_->SetChromeVisible(false);
-            Renderer_->GetCanvas().setFocus(Qt::ShortcutFocusReason);
+            Renderer_->FocusActiveView();
         }
         else
         {

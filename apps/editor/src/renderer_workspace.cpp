@@ -679,10 +679,19 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mSourceFile->setObjectName(QStringLiteral("renderGraphSourceFile"));
     mSource->setObjectName(QStringLiteral("renderGraphSource"));
     mSource->setAccessibleName(QStringLiteral("Shader and render graph source"));
-    QLabel* sourceDraftHint = new QLabel(QStringLiteral("Edits update the draft; Save publishes files."), sourcePage);
+    mSourceFocusToggle = new QPushButton(QStringLiteral("Focus Source"), sourcePage);
+    mSourceFocusToggle->setObjectName(QStringLiteral("renderGraphFocusSource"));
+    mSourceFocusToggle->setToolTip(QStringLiteral("Hide surrounding panels; Shift+Alt+Return restores the layout."));
+    connect(mSourceFocusToggle, &QPushButton::clicked, this, &RendererWorkspace::FocusViewRequested);
+    mSourceInterfaceToggle = new QPushButton(QStringLiteral("Shader API"), sourcePage);
+    mSourceInterfaceToggle->setObjectName(QStringLiteral("renderGraphShaderApiToggle"));
+    mSourceInterfaceToggle->setCheckable(true);
+    mSourceInterfaceToggle->setChecked(
+        QSettings().value(QStringLiteral("renderGraph/shaderApiVisible"), false).toBool());
     QHBoxLayout* sourceRow = new QHBoxLayout;
     sourceRow->addWidget(mSourceFile, 1);
-    sourceRow->addWidget(sourceDraftHint);
+    sourceRow->addWidget(mSourceInterfaceToggle);
+    sourceRow->addWidget(mSourceFocusToggle);
     sourceLayout->addLayout(sourceRow);
     QPushButton* openCodeEditor = new QPushButton(QStringLiteral("Open in Code Editor"), sourcePage);
     QPushButton* chooseCodeEditor = new QPushButton(QStringLiteral("Choose Code Editor..."), sourcePage);
@@ -690,28 +699,62 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     openCodeEditor->setObjectName(QStringLiteral("renderGraphOpenCodeEditor"));
     chooseCodeEditor->setObjectName(QStringLiteral("renderGraphChooseCodeEditor"));
     reloadSources->setObjectName(QStringLiteral("renderGraphReloadSources"));
-    QHBoxLayout* editorRow = new QHBoxLayout;
-    editorRow->addWidget(openCodeEditor);
-    editorRow->addWidget(chooseCodeEditor);
-    editorRow->addWidget(reloadSources);
-    sourceLayout->addLayout(editorRow);
-    QLabel* sourceHint = new QLabel(QStringLiteral("Shader edits update the World viewport automatically. "
-                                                   "Save external edits in your code editor to reload them."),
-                                    sourcePage);
-    sourceHint->setWordWrap(true);
-    sourceLayout->addWidget(sourceHint);
+    QToolButton* sourceActions = new QToolButton(sourcePage);
+    sourceActions->setText(QStringLiteral("Source"));
+    sourceActions->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    sourceActions->setObjectName(QStringLiteral("renderGraphSourceActions"));
+    sourceActions->setPopupMode(QToolButton::InstantPopup);
+    QMenu* sourceMenu = new QMenu(sourceActions);
+    for (QPushButton* button : {openCodeEditor, chooseCodeEditor, reloadSources})
+    {
+        button->hide();
+        QAction* action = sourceMenu->addAction(button->text());
+        connect(action, &QAction::triggered, button, &QPushButton::click);
+#if defined(Q_OS_WASM)
+        action->setEnabled(button == reloadSources);
+#endif
+    }
+    sourceActions->setMenu(sourceMenu);
+    sourceRow->addWidget(sourceActions);
+    mSourceStatus = new QLabel(sourcePage);
+    mSourceStatus->setObjectName(QStringLiteral("renderGraphSourceStatus"));
+    mSourceStatus->setTextFormat(Qt::PlainText);
+    mSourceStatus->setWordWrap(true);
+    mSourceStatus->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    sourceLayout->addWidget(mSourceStatus);
 #if defined(Q_OS_WASM)
     openCodeEditor->setEnabled(false);
     chooseCodeEditor->setEnabled(false);
-    sourceHint->setText(QStringLiteral("External code editors are available in the native Ludus editor."));
+    openCodeEditor->setToolTip(QStringLiteral("External code editors are available in the native Ludus editor."));
 #endif
     QWidget* interfacePage = CreateShaderInterfaceView(mSourceInterface, sourcePage);
-    QSplitter* sourceSplit = new QSplitter(Qt::Horizontal, sourcePage);
-    sourceSplit->addWidget(new CodeEditorPanel(mSource, sourceSplit));
-    sourceSplit->addWidget(interfacePage);
-    sourceSplit->setStretchFactor(0, 2);
-    sourceSplit->setStretchFactor(1, 1);
-    sourceLayout->addWidget(sourceSplit, 1);
+    mSourceSplit = new QSplitter(Qt::Horizontal, sourcePage);
+    mSourceSplit->setObjectName(QStringLiteral("renderGraphSourceSplitter"));
+    mSourceSplit->addWidget(new CodeEditorPanel(mSource, mSourceSplit));
+    mSourceSplit->addWidget(interfacePage);
+    mSourceSplit->setCollapsible(0, false);
+    mSourceSplit->setStretchFactor(0, 2);
+    mSourceSplit->setStretchFactor(1, 1);
+    static_cast<void>(
+        mSourceSplit->restoreState(QSettings().value(QStringLiteral("renderGraph/sourceSplit")).toByteArray()));
+    sourceLayout->addWidget(mSourceSplit, 1);
+    connect(mSourceSplit, &QSplitter::splitterMoved, this, [this]() {
+        if (mIsChromeVisible == true)
+        {
+            const bool isVisible = mSourceSplit->sizes().value(1) > 0;
+            const QSignalBlocker blocker(mSourceInterfaceToggle);
+            mSourceInterfaceToggle->setChecked(isVisible);
+            QSettings().setValue(QStringLiteral("renderGraph/shaderApiVisible"), isVisible);
+        }
+        if (mSourceSplit->sizes().value(1) > 0)
+        {
+            QSettings().setValue(QStringLiteral("renderGraph/sourceSplit"), mSourceSplit->saveState());
+        }
+    });
+    connect(mSourceInterfaceToggle, &QPushButton::toggled, this, [this](bool isVisible) {
+        QSettings().setValue(QStringLiteral("renderGraph/shaderApiVisible"), isVisible);
+        updateSourceInterfaceVisibility();
+    });
 
     QSettings settings;
     mBuildSettings.WorkerSocket =
@@ -1155,6 +1198,8 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     connect(mSourceController, &CodeDocumentController::TextAccepted, this, [this]() {
         // History is immediate. Expensive tree/interface/watch refresh stays coalesced.
         mSourceEditDebounce.start();
+        mSourceStatus->setText(QStringLiteral("Draft r%1 · Unsaved · Save publishes files. Preview retained.")
+                                   .arg(mDocument.GetRevision()));
         Q_EMIT CommandsChanged();
     });
     connect(&mSourceEditDebounce, &QTimer::timeout, this, &RendererWorkspace::applySourceEdit);
@@ -1212,15 +1257,32 @@ void RendererWorkspace::SetChromeVisible(bool isVisible)
     if (isVisible == false)
     {
         mFocusRestoreView = mViews->currentIndex();
-        mViews->setCurrentWidget(mCanvas);
+        if (mFocusRestoreView != SOURCE_VIEW)
+        {
+            mViews->setCurrentWidget(mCanvas);
+        }
     }
     else
     {
         mViews->setCurrentIndex(mFocusRestoreView);
     }
+    mSourceFocusToggle->setText(isVisible == true ? QStringLiteral("Focus Source") : QStringLiteral("Restore Layout"));
+    updateSourceInterfaceVisibility();
     mNavigation->setVisible(isVisible);
     mStatusPanel->setVisible(isVisible);
     mTree->setVisible(isVisible == true && mSourcesToggle->isChecked() == true);
+}
+
+void RendererWorkspace::FocusActiveView()
+{
+    if (mViews->currentIndex() == SOURCE_VIEW)
+    {
+        mSource->setFocus(Qt::ShortcutFocusReason);
+    }
+    else
+    {
+        mCanvas->setFocus(Qt::ShortcutFocusReason);
+    }
 }
 
 RendererWorkspace::~RendererWorkspace()
@@ -2215,6 +2277,7 @@ void RendererWorkspace::SetLivePreview(bool isEnabled)
     {
         scheduleLiveBuild();
     }
+    renderSourceStatus();
     Q_EMIT LivePreviewChanged(isEnabled);
 }
 
@@ -3090,6 +3153,103 @@ void RendererWorkspace::renderEdges()
     }
 }
 
+void RendererWorkspace::updateSourceInterfaceVisibility()
+{
+    const bool isShader = mSourceFile->currentText().endsWith(QStringLiteral(".slang"));
+    mSourceInterfaceToggle->setEnabled(isShader);
+    QWidget* interfacePage = mSourceInterface->parentWidget();
+    const bool shouldShow = isShader == true && mSourceInterfaceToggle->isChecked() == true && mIsChromeVisible == true;
+    if (shouldShow == false && interfacePage->isHidden() == false && mSourceSplit->sizes().value(1) > 0)
+    {
+        QSettings().setValue(QStringLiteral("renderGraph/sourceSplit"), mSourceSplit->saveState());
+    }
+    const QSignalBlocker splitterBlocker(mSourceSplit);
+    interfacePage->setVisible(shouldShow);
+    if (shouldShow == true)
+    {
+        static_cast<void>(
+            mSourceSplit->restoreState(QSettings().value(QStringLiteral("renderGraph/sourceSplit")).toByteArray()));
+    }
+}
+
+void RendererWorkspace::renderSourceStatus()
+{
+    if (mDocument.IsLoaded() == false)
+    {
+        mSourceStatus->setText(QStringLiteral("Open a render graph to edit its sources."));
+        mSourceStatus->setToolTip({});
+        return;
+    }
+    QString state =
+        mDocument.IsDirty() == true ? QStringLiteral("Unsaved · Save publishes files.") : QStringLiteral("Saved.");
+    if (mDocument.IsBuiltIn() == true)
+    {
+        state = mDocument.IsDirty() == true ? QStringLiteral("Unsaved · Save creates a project copy.")
+                                            : QStringLiteral("Engine default · edits start a project copy.");
+    }
+    if (mJob.IsActive() == true || mHasPendingWorkerBuild == true)
+    {
+        state += QStringLiteral(" Compiling / validating; preview retained.");
+    }
+    else if (mSourceProblem.isEmpty() == false)
+    {
+        state += QStringLiteral(" Source conflict; see Error List. Preview retained.");
+    }
+    else if (mHasResult == true && mLastResult.IsSuccessful == false && mLastResult.IsCancelled == false)
+    {
+        const bool isCurrent = mLastResult.Request.InputIdentity.isEmpty() == false &&
+                               mLastResult.Request.InputIdentity == getBuildIdentity(RenderGraphSource::Draft);
+        state += isCurrent == true ? QStringLiteral(" Build / validation failed; see Error List.")
+                                   : QStringLiteral(" Earlier build / validation failed; validate current edits.");
+    }
+    else if (GetRenderProblem().isEmpty() == false)
+    {
+        state += QStringLiteral(" Preview blocked; see Error List. Last drawable view retained.");
+    }
+    else
+    {
+        state += mIsLivePreviewEnabled == true ? QStringLiteral(" Live Preview builds saved sources.")
+                                               : QStringLiteral(" Live Preview off · use Build & Preview.");
+    }
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mPreviewOrNull != nullptr)
+    {
+        const graphics::renderer::RenderGraphCandidateState candidate = mPreviewOrNull->GetReport().Candidate;
+        if (candidate == graphics::renderer::RenderGraphCandidateState::Preparing ||
+            candidate == graphics::renderer::RenderGraphCandidateState::NeedsUpdate)
+        {
+            state += QStringLiteral(" Preparing preview; last drawable view retained.");
+        }
+    }
+    if (mPreviewOrNull != nullptr && mPreviewOrNull->GetPresentedGeneration() != 0)
+    {
+        state += QStringLiteral(" Showing generation %1.").arg(mPreviewOrNull->GetPresentedGeneration());
+        if (mPreviewOrNull->HasPresentedCatalogue() == true)
+        {
+            const RenderGraphPreviewSource& source = mPreviewOrNull->GetActiveSource();
+            if (source.InputIdentity.isEmpty() == false)
+            {
+                state += QStringLiteral(" Source revision %1%2.")
+                             .arg(source.SourceRevision)
+                             .arg(source.InputIdentity == getBuildIdentity(RenderGraphSource::Draft)
+                                      ? QStringLiteral(" · current renderer inputs")
+                                      : QStringLiteral(" · earlier renderer inputs"));
+            }
+        }
+    }
+    else
+    {
+        state += QStringLiteral(" No graph frame presented yet.");
+    }
+#else
+    state += QStringLiteral(" GPU preview unavailable in this editor build.");
+#endif
+    mSourceStatus->setText(QStringLiteral("Draft r%1 · %2").arg(mDocument.GetRevision()).arg(state));
+    const QString problem = GetRenderProblem();
+    mSourceStatus->setToolTip(problem.isEmpty() == true ? QString()
+                                                        : QStringLiteral("<pre>%1</pre>").arg(problem.toHtmlEscaped()));
+}
+
 void RendererWorkspace::renderSource()
 {
     const QString file = mSourceFile->currentText();
@@ -3104,7 +3264,7 @@ void RendererWorkspace::renderSource()
     mSource->setEnabled(file.isEmpty() == false);
     mSource->SetCanFormat(CodeFormatter::IsAvailable() == true && mSourceFormatter->IsRunning() == false &&
                           mSource->GetLanguage() == CodeLanguage::Slang);
-    mSourceInterface->parentWidget()->setVisible(file.endsWith(QStringLiteral(".slang")));
+    updateSourceInterfaceVisibility();
     QMap<QString, QByteArray> sources;
     for (const QString& draftFile : mDocument.GetFiles())
     {
@@ -3204,6 +3364,7 @@ void RendererWorkspace::renderStatus()
     updateResourceInspection();
     updateCanvasDiagnostics();
     mCanvas->GetExecutionPlan().Refresh(mConfiguration->currentText());
+    renderSourceStatus();
     if (mCreation.IsActive() == true)
     {
         mStatus->setText(QStringLiteral("Creating the graph and shader sources in your project..."));
@@ -3251,7 +3412,7 @@ void RendererWorkspace::renderStatus()
         QString text = QStringLiteral("%1 - draft revision %2, %3.")
                            .arg(mDocument.GetRootGraph())
                            .arg(mDocument.GetRevision())
-                           .arg(mDocument.IsDirty() == true ? QStringLiteral("unsaved changes; Save to update preview")
+                           .arg(mDocument.IsDirty() == true ? QStringLiteral("unsaved changes; Save publishes files")
                                                             : QStringLiteral("matches saved sources"));
         if (mIsValidated == true)
         {
@@ -4504,6 +4665,7 @@ bool RendererWorkspace::PreviewRuntime(RenderGraphSource source)
         mLastResult.Request.InputIdentity.isEmpty() == false &&
         mLastResult.Request.InputIdentity == getBuildIdentity(source) && mLastResult.Request.Source == source)
     {
+        provenance.SourceRevision = mLastResult.Request.Revision;
         const QByteArray rootBytes = source == RenderGraphSource::Saved ? mDocument.GetSaved(mDocument.GetRootGraph())
                                                                         : mDocument.GetDraft(mDocument.GetRootGraph());
         const QJsonObject root = QJsonDocument::fromJson(rootBytes).object();
@@ -4662,7 +4824,24 @@ void RendererWorkspace::renderPreview()
             setProblem(mActivationProblem, {});
         }
         static_cast<PreviewImage*>(mPreviewImage)->SetImage(mPreviewOrNull->GetImage());
-        mPreviewStatus->setText(mPreviewOrNull->GetStatus());
+        const QString previewStatus = mPreviewOrNull->GetStatus();
+        if (mPreviewStatus->text() != previewStatus)
+        {
+            mPreviewStatus->setText(previewStatus);
+        }
+        const bool hasPresentedCatalogue = mPreviewOrNull->HasPresentedCatalogue();
+        const bool isPreparing = candidate == graphics::renderer::RenderGraphCandidateState::Preparing ||
+                                 candidate == graphics::renderer::RenderGraphCandidateState::NeedsUpdate;
+        // Camera revisions change the preview's detailed status every frame. Source currency
+        // depends on publication, not navigation; avoid hashing the source package for each frame.
+        if (mSourcePresentedGeneration != mPreviewOrNull->GetPresentedGeneration() ||
+            mHasSourcePresentedCatalogue != hasPresentedCatalogue || mIsSourcePreviewPreparing != isPreparing)
+        {
+            mSourcePresentedGeneration = mPreviewOrNull->GetPresentedGeneration();
+            mHasSourcePresentedCatalogue = hasPresentedCatalogue;
+            mIsSourcePreviewPreparing = isPreparing;
+            renderSourceStatus();
+        }
         mPreviewButton->setEnabled(mDocument.IsLoaded());
         return;
     }

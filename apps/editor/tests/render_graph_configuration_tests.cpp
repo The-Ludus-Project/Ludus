@@ -22,6 +22,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
+#include <QPixmap>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
@@ -1300,4 +1301,119 @@ TEST_CASE("Subgraph dropdowns clean missing connections through Properties and t
     RenderGraphDocument reopened;
     REQUIRE(reopened.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
     CHECK(reopened.GetDraft(ROOT_GRAPH) == document.GetDraft(ROOT_GRAPH));
+}
+
+TEST_CASE("Source focus retains the editor and restores tree and API preferences",
+          "[editor][render-graph][source-focus]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const QString package = MakePackage(project);
+    QFile shader(QDir(package).filePath(QStringLiteral("focus.slang")));
+    REQUIRE(shader.open(QIODevice::WriteOnly) == true);
+    shader.write("float4 Color();\n");
+    shader.close();
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    QTabWidget* views = workspace.findChild<QTabWidget*>(QStringLiteral("renderGraphViews"));
+    QComboBox* files = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphSourceFile"));
+    CodeEditor* source = workspace.findChild<CodeEditor*>(QStringLiteral("renderGraphSource"));
+    QPushButton* api = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphShaderApiToggle"));
+    QPushButton* focus = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphFocusSource"));
+    QSplitter* split = workspace.findChild<QSplitter*>(QStringLiteral("renderGraphSourceSplitter"));
+    REQUIRE(views != nullptr);
+    REQUIRE(files != nullptr);
+    REQUIRE(source != nullptr);
+    REQUIRE(api != nullptr);
+    REQUIRE(focus != nullptr);
+    REQUIRE(split != nullptr);
+    files->setCurrentText(QStringLiteral("focus.slang"));
+    views->setCurrentIndex(1);
+    workspace.resize(1400, 850);
+    workspace.show();
+    api->setChecked(true);
+    QCoreApplication::processEvents();
+    QWidget* reference = split->widget(1);
+    REQUIRE(reference->isVisible() == true);
+    source->GoToLine(1, 4);
+    const int32 position = source->textCursor().position();
+    const int32 editorWidth = source->width();
+    const QString captures = qEnvironmentVariable("LUDUS_EDITOR_LAYOUT_CAPTURE");
+    if (captures.isEmpty() == false)
+    {
+        REQUIRE(workspace.grab().save(captures + QStringLiteral("-source-workspace.png")) == true);
+    }
+    QObject::connect(&workspace, &RendererWorkspace::FocusViewRequested, &workspace, [&workspace, focus]() {
+        workspace.SetChromeVisible(focus->text() != QStringLiteral("Focus Source"));
+        workspace.FocusActiveView();
+    });
+    focus->click();
+    QCoreApplication::processEvents();
+    CHECK(views->currentIndex() == 1);
+    CHECK(source->isVisible() == true);
+    CHECK(reference->isVisible() == false);
+    CHECK(source->width() > editorWidth);
+    CHECK(source->textCursor().position() == position);
+    CHECK(api->isChecked() == true);
+    if (captures.isEmpty() == false)
+    {
+        REQUIRE(workspace.grab().save(captures + QStringLiteral("-source-workspace-focused.png")) == true);
+    }
+    focus->click();
+    QCoreApplication::processEvents();
+    CHECK(reference->isVisible() == true);
+    CHECK(views->currentIndex() == 1);
+    CHECK(source->textCursor().position() == position);
+    api->setChecked(false);
+    files->setCurrentText(ROOT_GRAPH);
+    files->setCurrentText(QStringLiteral("focus.slang"));
+    CHECK(reference->isHidden() == true);
+}
+
+TEST_CASE("Source status separates dirty files live preview and failed revisions",
+          "[editor][render-graph][source-status]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    QFile shader(QDir(package).filePath(QStringLiteral("status.slang")));
+    REQUIRE(shader.open(QIODevice::WriteOnly) == true);
+    shader.write("float4 Color();\n");
+    shader.close();
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(QDir(package).filePath(ROOT_GRAPH)) == true);
+    workspace.SetLivePreview(false);
+    QLabel* status = workspace.findChild<QLabel*>(QStringLiteral("renderGraphSourceStatus"));
+    REQUIRE(status != nullptr);
+    CHECK(status->text().contains(QStringLiteral("Live Preview off")) == true);
+    RenderGraphJobResult failure;
+    failure.Request.ProjectEpoch = 1;
+    failure.Request.Action = QStringLiteral("build");
+    QComboBox* configuration = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphConfiguration"));
+    REQUIRE(configuration != nullptr);
+    failure.Request.InputIdentity =
+        ComputeRenderGraphBuildIdentity(workspace.GetDocument(), configuration->currentText());
+    failure.Code = QStringLiteral("ShaderFailure");
+    failure.Message = QStringLiteral("Fix shader");
+    workspace.AcceptResult(failure);
+    INFO(status->text().toStdString());
+    CHECK(status->text().contains(QStringLiteral("Build / validation failed")) == true);
+    CHECK(status->text().contains(QStringLiteral("Earlier build")) == false);
+    RenderGraphJobResult obsolete = failure;
+    obsolete.Request.ProjectEpoch = 0;
+    obsolete.Message = QStringLiteral("Obsolete result");
+    workspace.AcceptResult(obsolete);
+    CHECK(status->text().contains(QStringLiteral("Obsolete")) == false);
+    CodeEditor* source = workspace.findChild<CodeEditor*>(QStringLiteral("renderGraphSource"));
+    QComboBox* files = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphSourceFile"));
+    REQUIRE(source != nullptr);
+    REQUIRE(files != nullptr);
+    files->setCurrentText(QStringLiteral("status.slang"));
+    source->moveCursor(QTextCursor::End);
+    source->insertPlainText(QStringLiteral(" "));
+    CHECK(status->text().contains(QStringLiteral("Unsaved")) == true);
+    CHECK(status->text().contains(QStringLiteral("Preview retained")) == true);
+    CHECK(QTest::qWaitFor([status]() { return status->text().contains(QStringLiteral("Earlier build")); }) == true);
 }

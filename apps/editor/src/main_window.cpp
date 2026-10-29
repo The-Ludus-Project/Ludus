@@ -146,6 +146,7 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
             mProjectExplorer->Refresh();
         }
     });
+    connect(Renderer_, &RendererWorkspace::FocusViewRequested, mFocusViewportAction, &QAction::toggle);
     connect(mErrorList, &ErrorList::EntryActivated, this, &MainWindow::activateErrorEntry);
     connect(mErrorList, &ErrorList::ProblemsReported, this, &MainWindow::revealErrorList);
     mBuildErrorsTimer.setSingleShot(true);
