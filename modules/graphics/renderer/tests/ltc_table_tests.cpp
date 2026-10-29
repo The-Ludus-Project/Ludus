@@ -196,7 +196,7 @@ TEST_CASE("The LTC table covers the renderer's roughness range with valid cells"
     {
         const internal::LtcTableEntry& entry = internal::LTC_TABLE[i];
         REQUIRE(math::IsFinite(math::Vector4{entry.X, entry.Y, entry.Z, entry.W}) == true);
-        if (i >= LUDUS_LTC_TABLE_MOMENT_OFFSET)
+        if (i >= internal::LTC_TABLE_MOMENT_OFFSET)
         {
             REQUIRE(entry.Z == 0.0F);
             REQUIRE(entry.W == 0.0F);

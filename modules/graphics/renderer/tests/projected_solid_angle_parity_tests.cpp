@@ -113,12 +113,15 @@ math::ProjectedPolygonInput MakeRandomPolygon(math::RandomStream& inoutRandom) n
 /// Run a parity kernel over host-supplied cases on a native compute device and read back its results. Cases are bound
 /// at slot 0 and results at slot 1; a nonempty table is bound read-only at slot 2.
 /// @return false when no native GPU adapter is available; other failures fail the test.
+// The dispatch's group count and the result buffer's byte size are distinct quantities.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
 bool RunParityKernel(const rhi::RasterShaderDescription& shader,
                      const Array<float32>& cases,
                      uint32 groupCount,
                      usize resultBytes,
                      Array<uint8>& outResults,
                      std::span<const uint8> table = {})
+// NOLINTEND(bugprone-easily-swappable-parameters)
 {
     constexpr usize MAX_RESOURCES = 3;
     const usize caseBytes = cases.GetSize() * sizeof(float32);
@@ -570,10 +573,7 @@ TEST_CASE("GPU linearly transformed cosine sampling matches the C++ implementati
         REQUIRE(math::Abs(math::Length(direction) - 1.0F) <= 1.0e-5F);
         if (integral >= MINIMUM_STATISTICS_INTEGRAL)
         {
-            if (integral >= MINIMUM_STATISTICS_INTEGRAL)
-            {
-                REQUIRE(directionErrors.TryAdd(math::Length(direction - expectedDirection)) == true);
-            }
+            REQUIRE(directionErrors.TryAdd(math::Length(direction - expectedDirection)) == true);
         }
         // Evaluate the C++ densities at the GPU's direction to compare the evaluators alone.
         const float32 expectedDensity = math::EvaluateLinearlyTransformedCosinePolygonDensity(expected, direction);
@@ -734,6 +734,7 @@ TEST_CASE("GPU LTC table lookups match the C++ lookup", "[renderer][gpu][ltc]")
         }
     }
     // Apple M5 measured a p99 of 1.4e-6 and a largest error of 1.2e-5; the GPU's arctangent differs by a few ulps.
-    REQUIRE(GetPercentile(errors, 0.99F) <= 1.0e-5F);
+    // Lavapipe measured a p99 of about 2e-5; Vulkan bounds atan only to 4096 ulps.
+    REQUIRE(GetPercentile(errors, 0.99F) <= 5.0e-5F);
     REQUIRE(GetPercentile(errors, 1.0F) <= 1.0e-4F);
 }
