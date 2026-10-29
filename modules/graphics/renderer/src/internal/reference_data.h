@@ -20,6 +20,7 @@
 #include "../../shaders/renderer_gpu_preview_layout.h"
 #include "../../shaders/renderer_reference_layout.h"
 #include "environment_data.h"
+#include "reference_light_sampling.h"
 
 namespace ludus::graphics::renderer::internal
 {
@@ -148,15 +149,34 @@ struct ReferenceAccumulator final
     ReferenceSum Emission, Direct, Indirect;
     uint32 Samples = 0;
 };
+/// Most visibility queries one path vertex issues: one per light technique of the resampled estimator, and one
+/// for UniformArea.
+inline constexpr usize REFERENCE_MAX_SHADOWS_PER_VERTEX = REFERENCE_LIGHT_TECHNIQUE_COUNT;
+/// Native queries one tile path may submit in a bounce: its shadow rays and its continuation.
+[[nodiscard]] inline constexpr usize GetReferenceRaysPerPath(ReferenceLightSampling sampling) noexcept
+{
+    return sampling == ReferenceLightSampling::ResampledProjectedSolidAngle ? REFERENCE_MAX_SHADOWS_PER_VERTEX + 1 : 2;
+}
 struct ReferencePath final
 {
     math::Vector3 Emission{}, Direct{}, Indirect{}, Throughput{1, 1, 1};
-    math::Vector3 PreviousPoint{}, PendingDirect{};
-    rhi::RayInput Ray{}, Shadow{}, Next{};
+    math::Vector3 PreviousPoint{};
+    /// Shadowed contributions of this vertex's light samples; ShadowCount entries are pending.
+    StaticArray<math::Vector3, REFERENCE_MAX_SHADOWS_PER_VERTEX> PendingDirects{};
+    rhi::RayInput Ray{};
+    rhi::RayInput Next{};
+    StaticArray<rhi::RayInput, REFERENCE_MAX_SHADOWS_PER_VERTEX> Shadows{};
     uint32 Pixel = 0, Sample = 0, Depth = 0, DirectDepth = 0;
+    uint32 ShadowCount = 0;
     float32 PreviousPdf = 0;
-    usize ShadowQuery = ~usize{0}, NextQuery = ~usize{0};
-    bool Active = true, HasShadow = false, HasNext = false;
+    /// ResampledProjectedSolidAngle: the previous vertex's receiver and its Z-hat cache, read bit-identically by the
+    /// BSDF-hit MIS density of the emitter that the continuation reaches.
+    ReferenceReceiverFrame PreviousReceiver{};
+    ReferenceTargetTotal PreviousTargetTotal{};
+    StaticArray<usize, REFERENCE_MAX_SHADOWS_PER_VERTEX> ShadowQueries{};
+    usize NextQuery = ~usize{0};
+    bool IsActive = true;
+    bool HasNext = false;
 };
 enum class ReferenceStage : uint8
 {
@@ -195,6 +215,8 @@ struct ReferenceComputePipelines final
     rhi::BindingLayoutHandle Layout{};
     rhi::ComputePipelineHandle TracePipeline{};
     rhi::ComputePipelineHandle ReducePipeline{};
+    /// The renderer's LTC table (ltc_table_data.h), uploaded once and bound by every capture's trace kernel.
+    rhi::BufferHandle LtcTable{};
     uint32 Phase = 0;
     rhi::RasterStatus Setup = rhi::RasterStatus::Pending;
 };
@@ -304,18 +326,51 @@ ReferenceRandom(const ReferenceJob& job, const ReferencePath& path, uint16 dimen
 {
     return math::SampleFloat01(job.Key, {path.Pixel, path.Sample, dimension});
 }
+/// ReferenceCaptureInfo::SamplerVersion of each light-sampling mode.
+inline constexpr uint32 REFERENCE_UNIFORM_AREA_SAMPLER_VERSION = 1;
+inline constexpr uint32 REFERENCE_RESAMPLED_SAMPLER_VERSION = 2;
 static_assert(LUDUS_PATH_RANDOM_FIRST_BOUNCE_DIMENSION +
                       LUDUS_REFERENCE_MAX_DEPTH * LUDUS_PATH_RANDOM_DIMENSIONS_PER_BOUNCE - 1 <=
                   math::RandomMaxDimension,
-              "every admitted bounce dimension must fit addressed-random layout v1");
+              "every admitted sampler version 1 bounce dimension must fit addressed-random layout v1");
+static_assert(LUDUS_PATH_RANDOM_FIRST_BOUNCE_DIMENSION +
+                      LUDUS_REFERENCE_MAX_DEPTH * LUDUS_PATH_RANDOM_VERSION2_DIMENSIONS_PER_BOUNCE - 1 <=
+                  math::RandomMaxDimension,
+              "every admitted sampler version 2 bounce dimension must fit addressed-random layout v1");
+static_assert(LUDUS_REFERENCE_RIS_NORMALIZATION_FIRST_SLOT + LUDUS_REFERENCE_RIS_NORMALIZATION_CANDIDATE_COUNT <=
+                      LUDUS_PATH_RANDOM_VERSION2_DIMENSIONS_PER_BOUNCE &&
+                  LUDUS_REFERENCE_RIS_CANDIDATE_FIRST_SLOT +
+                          LUDUS_REFERENCE_RIS_CANDIDATE_COUNT * LUDUS_REFERENCE_RIS_SLOTS_PER_CANDIDATE <=
+                      LUDUS_REFERENCE_RIS_NORMALIZATION_FIRST_SLOT,
+              "sampler version 2 slots stay disjoint within one bounce");
 static_assert(LUDUS_GPU_PREVIEW_MAX_DEPTH <= LUDUS_REFERENCE_MAX_DEPTH, "GPU preview mirrors reference addresses");
-// Dimension `slot` of scattering event `depth`. Admission bounds MaxDepth by
-// LUDUS_REFERENCE_MAX_DEPTH, so the result never narrows a wider value.
-[[nodiscard]] inline uint16 ReferenceBounceDimension(uint32 depth, uint32 slot) noexcept
+/// Dimensions per scattering event of `sampling`'s sampler version.
+[[nodiscard]] inline constexpr uint32 GetReferenceDimensionsPerBounce(ReferenceLightSampling sampling) noexcept
 {
-    LUDUS_ASSERT(depth < LUDUS_REFERENCE_MAX_DEPTH && slot < LUDUS_PATH_RANDOM_DIMENSIONS_PER_BOUNCE);
-    return static_cast<uint16>(LUDUS_PATH_RANDOM_FIRST_BOUNCE_DIMENSION +
-                               depth * LUDUS_PATH_RANDOM_DIMENSIONS_PER_BOUNCE + slot);
+    return sampling == ReferenceLightSampling::ResampledProjectedSolidAngle
+               ? LUDUS_PATH_RANDOM_VERSION2_DIMENSIONS_PER_BOUNCE
+               : LUDUS_PATH_RANDOM_DIMENSIONS_PER_BOUNCE;
+}
+// Dimension `slot` of scattering event `depth` under `sampling`'s sampler version. Admission bounds MaxDepth by
+// LUDUS_REFERENCE_MAX_DEPTH, so the result never narrows a wider value.
+[[nodiscard]] inline uint16
+ReferenceBounceDimension(ReferenceLightSampling sampling, uint32 depth, uint32 slot) noexcept
+{
+    const uint32 stride = GetReferenceDimensionsPerBounce(sampling);
+    LUDUS_ASSERT(depth < LUDUS_REFERENCE_MAX_DEPTH && slot < stride);
+    return static_cast<uint16>(LUDUS_PATH_RANDOM_FIRST_BOUNCE_DIMENSION + depth * stride + slot);
+}
+/// Point at barycentric (u, v) of `triangle`; u weights its second vertex and v its third.
+[[nodiscard]] inline math::Vector3
+InterpolateReferencePosition(const ReferenceTriangle& triangle, float32 u, float32 v) noexcept
+{
+    return triangle.Positions[0] * (1 - u - v) + triangle.Positions[1] * u + triangle.Positions[2] * v;
+}
+/// Texture coordinate at barycentric (u, v) of `triangle`.
+[[nodiscard]] inline math::Vector2
+InterpolateReferenceUv(const ReferenceTriangle& triangle, float32 u, float32 v) noexcept
+{
+    return triangle.Uvs[0] * (1 - u - v) + triangle.Uvs[1] * u + triangle.Uvs[2] * v;
 }
 [[nodiscard]] inline math::Vector3 ReferenceNormalize(math::Vector3 v) noexcept
 {
@@ -410,6 +465,7 @@ struct ReferenceProbeAddress final
 };
 // Reads the job immutably, so disjoint probes may run concurrently against one
 // prepared job. Path diagnostics go to the caller's counters, never job.Info.
+// UniformArea only: a ResampledProjectedSolidAngle job returns Unsupported and leaves the output unchanged.
 [[nodiscard]] rhi::RasterStatus EvaluateReferenceDiffuseProbe(const ReferenceJob& job,
                                                               ReferenceCaptureInfo& inoutInfo,
                                                               const ReferenceProbeAddress& address,

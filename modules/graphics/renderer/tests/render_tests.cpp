@@ -1327,9 +1327,23 @@ TEST_CASE("RT1 native and CPU captures agree on MIS emitter, environment and ind
     const bool native = rhi::GetRayCapabilities(device, capabilities) == rhi::RasterStatus::Ready;
     // The shifted primary plane lies at z=0: affine-only error was zero in
     // its normal component and native secondary rays could hit it again.
-    for (const auto worldZOffset : {0.0F, -0.7F})
+    // Both light-sampling modes; a resampled native tile submits up to three queries per path.
+    constexpr float32 SHIFTED_PLANE_OFFSET = -0.7F;
+    struct NativeCase final
     {
-        CAPTURE(worldZOffset);
+        rr::ReferenceLightSampling LightSampling = rr::ReferenceLightSampling::UniformArea;
+        float32 WorldZOffset = 0;
+    };
+    const NativeCase nativeCases[]{
+        {rr::ReferenceLightSampling::UniformArea, 0},
+        {rr::ReferenceLightSampling::UniformArea, SHIFTED_PLANE_OFFSET},
+        {rr::ReferenceLightSampling::ResampledProjectedSolidAngle, 0},
+        {rr::ReferenceLightSampling::ResampledProjectedSolidAngle, SHIFTED_PLANE_OFFSET},
+    };
+    for (const NativeCase& nativeCase : nativeCases)
+    {
+        const float32 worldZOffset = nativeCase.WorldZOffset;
+        CAPTURE(static_cast<uint32>(nativeCase.LightSampling), worldZOffset);
         rr::ReferencePixel images[2][4];
         for (usize variant = 0; variant < (native ? 2U : 1U); ++variant)
         {
@@ -1374,6 +1388,7 @@ TEST_CASE("RT1 native and CPU captures agree on MIS emitter, environment and ind
             captureDescription.MaxDepth = 4;
             captureDescription.Seed = 871;
             captureDescription.Environment = {.3F, .4F, .5F};
+            captureDescription.LightSampling = nativeCase.LightSampling;
             rr::ReferenceCapture capture;
             auto status = renderer.BeginReferenceCapture(snapshot, captureDescription, capture);
             REQUIRE((status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending));

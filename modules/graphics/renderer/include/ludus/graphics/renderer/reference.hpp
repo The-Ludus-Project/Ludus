@@ -70,6 +70,23 @@ enum class ReferenceTraversal : ludus::foundation::uint8
     /// not native ray queries. Committed sums are read back only for copy/export.
     GpuCompute,
 };
+/// Next-event estimator for emissive triangles, recorded in capture metadata. Both modes
+/// estimate the same truncated integral, so their means agree statistically, never per
+/// pixel. Analytic lights, the environment and the uniform category draw are shared. See
+/// docs/architecture/many-area-light-sampling-reference-review.md for the estimator.
+enum class ReferenceLightSampling : ludus::foundation::uint8
+{
+    /// Sampler version 1: one power-CDF emitter triangle, one uniform area sample and its
+    /// shadow ray. The default and the validation oracle; captures stay bit-identical.
+    UniformArea,
+    /// Sampler version 2: resampled importance sampling of one emitter triangle from 32
+    /// power-CDF candidates with an unshadowed LTC target, then one projected-solid-angle
+    /// and one LTC sample of it under clamped optimal MIS, so up to two shadow rays per
+    /// vertex. BSDF hits weigh against a surrogate density with an 8-candidate estimate of
+    /// the target's total. Requires the renderer's LTC table; GpuCompute kernels without it
+    /// are rejected when reference rendering is enabled.
+    ResampledProjectedSolidAngle,
+};
 /// Opt-in retained CPU geometry and native query setup; call before creating meshes.
 /// Buffers are admitted against explicit budgets, rather than silently truncating
 /// geometry, paths or pixels. Default zero budgets intentionally require authoring.
@@ -83,13 +100,17 @@ struct ReferenceRenderingOptions final
     /// raster allocations and opaque driver/pipeline allocations are reported separately.
     ludus::foundation::usize RayByteBudget = 0;
     /// At most this many pixels advance in one tile; positive and at most 2048.
-    /// Native mode also requires twice this count within RayCapabilities::MaxRays.
+    /// Native mode also requires twice this count within RayCapabilities::MaxRays, and a
+    /// ResampledProjectedSolidAngle capture three times it (two shadow rays per vertex);
+    /// a capture whose count exceeds MaxRays is rejected as Unsupported.
     /// GpuCompute advances every pixel by one sample per dispatch and ignores the value.
     ludus::foundation::uint32 TilePixels = 0;
     /// GpuCompute only: renderer-owned packed scene, texel, uniform, accumulation and
     /// status buffer bytes across live captures, including a replacement built by
-    /// UpdateReferenceCapture. Excludes RHI registries, transfer rings, pipelines and
-    /// driver padding. Positive for GpuCompute; other traversals ignore it.
+    /// UpdateReferenceCapture, plus the renderer's LTC table (3407872 bytes), which every
+    /// capture shares and which is charged when rendering is enabled. Excludes RHI
+    /// registries, transfer rings, pipelines and driver padding. At least the table's
+    /// size for GpuCompute; other traversals ignore it.
     ludus::foundation::usize GpuByteBudget = 0;
 };
 /// Immutable reference integral and stop target. Camera coordinates and matrices
@@ -144,6 +165,9 @@ struct ReferenceCaptureDescription final
     /// Disable pixel jitter for primary-ray AOV/raster parity experiments. Recorded
     /// in the integral key; this estimates center rays rather than pixel footprints.
     bool CenterRays = false;
+    /// Emissive-triangle next-event estimator. Recorded in the integral key: changing it
+    /// replaces the job and resets accumulation. Values outside the enumeration are rejected.
+    ReferenceLightSampling LightSampling = ReferenceLightSampling::UniformArea;
 };
 /// Renderer-scoped progressive job identity; copies borrow, Release cancels future
 /// work and detaches accepted query uses through their native completion.
@@ -217,8 +241,11 @@ struct ReferenceCaptureInfo final
     /// RGB surface/integrator schema: version 4 records emitter sidedness and
     /// weighted area samples; earlier surface-map/range semantics are preserved.
     ludus::foundation::uint32 ProfileVersion = LIGHTING_PROFILE_VERSION;
-    /// Frozen Philox address and dimension convention version.
+    /// Frozen Philox address and dimension convention version: 1 for UniformArea (8
+    /// dimensions per bounce), 2 for ResampledProjectedSolidAngle (128 per bounce).
     ludus::foundation::uint32 SamplerVersion = 1;
+    /// The capture's emissive-triangle next-event estimator.
+    ReferenceLightSampling LightSampling = ReferenceLightSampling::UniformArea;
     /// Original capture seed.
     ludus::foundation::uint64 Seed = 0;
     /// Nonwrapping accepted integral revision; changes reset every pixel's accumulation.

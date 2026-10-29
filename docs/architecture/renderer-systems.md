@@ -1311,7 +1311,8 @@ probability for MIS by binary search over the ascending emitter list. Many small
 bright emitters therefore no longer crowd out large, dim panels (for example the
 candle flames and ceiling light of the pbrt-v4 staircase). Analytic lights and the
 environment keep their uniform share; a power-weighted choice across categories is
-future work. Profile version 2 matches L4 point/spot range windows, the squared smooth cone
+future work. This is the default `ReferenceLightSampling::UniformArea` estimator;
+[Light-sampling modes](#light-sampling-modes) describes the resampled alternative. Profile version 2 matches L4 point/spot range windows, the squared smooth cone
 and the 1e-4 square-meter near-light attenuation floor. Version 1 used a different
 spot interpolation and unbounded nonzero-distance attenuation; old captures retain
 that profile identity and cannot be compared as the same integral. Emission is two-sided; reflection is restricted to the geometric and
@@ -1349,6 +1350,43 @@ failed replacement preserves the previous image. Scene fingerprints are diagnost
 XXH3-128 digests, never identity/reset authority. Retrying the identical failed
 request retries its uncommitted sample addresses. Release/disable cancels future
 work and retires accepted native uses through completion.
+
+#### Light-sampling modes
+
+`ReferenceCaptureDescription::LightSampling` selects the next-event estimator for
+emissive triangles. Both modes estimate the same truncated integral under the same
+`ProfileVersion`, so their means agree statistically, never per pixel. The mode joins
+the integral key: changing it replaces the job and restarts accumulation.
+`ReferenceCaptureInfo` records it with its sampler version.
+
+| Mode | Sampler | Emissive next-event estimation |
+| --- | --- | --- |
+| `UniformArea` (default) | 1, 8 dimensions per bounce | One power-CDF triangle, one uniform area sample, one shadow ray. Existing captures stay bit-identical. |
+| `ResampledProjectedSolidAngle` | 2, 128 dimensions per bounce | Resampled importance sampling of one triangle from 32 power-CDF candidates with an unshadowed LTC target, then one projected-solid-angle and one LTC sample of it, so up to two shadow rays per vertex. |
+
+The resampled estimator, its random slots and its BSDF-hit MIS are the
+[many-area-light resampling review](many-area-light-sampling-reference-review.md).
+The category draw at slot 0, analytic lights and the environment are unchanged.
+- **Receiver.** Each vertex builds its shading frame and the renderer's
+  [LTC table](../development/ltc-table.md) lookup at its roughness, view and
+  `F0 = 0.04 (1 − metallic) + baseColor · metallic`. The diffuse technique's
+  albedo is `baseColor · (1 − metallic) · (1 − F0)`, clamped to 0.01 per channel,
+  as in the `ris-projected-solid-angle` template.
+- **Light samples.** Each technique's direction is intersected with the selected
+  triangle's plane. Emission, sidedness, alpha and the secondary range are
+  evaluated at that point, as `UniformArea` evaluates its area sample, and the
+  shadow segment ends one representable step before it.
+- **BSDF hits.** A continuation that reaches an emitter is weighted against the
+  surrogate density `P̃ (p₀ + p₁)` of the previous vertex. The path keeps that
+  vertex's frame, LTC and albedo luminances, and its `Ẑ` once computed, so both MIS
+  sites evaluate the same function of the direction from identical inputs.
+- **Cost.** Each vertex evaluates up to 41 triangle targets (32 candidates, the
+  selected triangle and 8 normalization candidates), each with two polygon clips.
+  `NativeQueries` tiles need three queries per path, so a resampled capture
+  requires `3 × TilePixels` within `RayCapabilities::MaxRays` and returns
+  `Unsupported` otherwise.
+- **Probes.** Static-lighting diffuse probes stay on `UniformArea`; their virtual
+  first receiver has no stored frame for the BSDF-hit density.
 
 CPU budgets cover renderer-owned mesh/material/job arrays and setup scratch,
 including simultaneous old/new jobs during reset. They exclude existing renderer
@@ -1402,7 +1440,12 @@ cancels future dispatches; the RHI retains accepted dispatches and readbacks
 through completion. The GPU budget charges the packed scene and texels, the
 224-byte parameters, 96 accumulation bytes per pixel and the status record. The
 RHI resource budget, storage range and dispatch limits can reject a capture
-sooner. Transfer rings, pipelines and driver padding are excluded.
+sooner. Transfer rings, pipelines and driver padding are excluded. The trace kernel
+also binds the renderer's 3,407,872-byte LTC table at slot 5, uploaded once when
+rendering is enabled and charged to the GPU budget then. It reads the table only
+for `ResampledProjectedSolidAngle`, which a parameter flag selects at run time.
+Kernels cooked before the table binding fail `EnableReferenceRendering` with
+`InvalidDescription`.
 
 Normalized vertex colors and decoded sRGB texels stay in [0,1] in both paths.
 The FoundationMath CPU/shader sRGB conversion preserves exact black and white
@@ -1468,6 +1511,35 @@ fresh capture bit for bit. The editor's lit viewport fixture, with textures and
 point lamps, agrees within 0.002 per pixel. Vulkan and WebGPU compile the
 kernels, but their pixel parity is unqualified.
 
+On the same Apple M5 Metal debug build, `ResampledProjectedSolidAngle` is checked
+in both implementations by the
+[light-sampling unit tests](../../modules/graphics/renderer/tests/reference_light_sampling_tests.cpp),
+the [shader parity kernel](../../modules/graphics/renderer/tests/reference_light_sampling_parity_tests.cpp)
+and the capture tests in the renderer test above:
+- **CPU and GPU.** Raw AOVs agree within the `UniformArea` tolerances: at most
+  3.2e-5 RGB distance per pixel at 16×12 and 64 samples per pixel on the L6
+  fixture at depth 4 with a sun, the dense glossy sphere at depth 6 and a room
+  where most vertices estimate `Ẑ = 0`. Closest, null-BSDF and roulette counts are
+  equal; visibility counts differ by at most 3 of 16,160. Matching candidates and
+  tickets select the same emitters in both precisions on these fixtures; the
+  tests still allow a selection to flip.
+- **Against `UniformArea`.** Six seeds of 64 samples per pixel on the CPU oracle
+  agree in mean emission, direct, indirect and total radiance at depths 1, 3, 4
+  and 6. The largest difference is 1.4 combined seed standard errors (direct light
+  in the room); the test allows 5 plus a 2e-4 floor. Primary emission is
+  bit-identical. The seed standard error of direct light falls by 1.3× on L6, 1.4×
+  on the glossy sphere and 2.6× in the room, and of glossy-sphere indirect light
+  by 2×.
+- **Edge cases.** An emitter behind every receiver gives zero radiance and no
+  shadow rays in both modes and implementations. `Ẑ = 0` applies the inclusion
+  bound bit for bit, an empty LTC-space clip disables the specular technique, and
+  the light density is bit-identical at both MIS sites. The weights partition
+  unity. On the device, 3 of 4,096 drawn receivers differ from the host by more
+  than 1e-3 relative in an integral or density above 1e-5; smaller slivers are
+  limited by single precision in both.
+- **Identity.** `UniformArea` captures on both implementations, including query
+  and event counts, are bit-identical to those before the mode was added.
+
 ### Raw capture and installed SDK
 
 `CopyReferencePixels` copies raw linear means and committed counts without
@@ -1477,8 +1549,11 @@ magic `LUHDR01\0`, little-endian version/profile/sampler/header sizes at bytes
 64-bit scene digest words at 48–72, secondary range/mip/light count at 80–88,
 column-major world-to-clip floats at 96–159, eye at 160–171 and environment at
 172–183. Remaining header bytes are reserved zero. Flags encode CPU (1), center
-rays (2), orthographic (4), reverse-Z (8), infinite far (16), partial (32) and
-GPU compute (64); neither traversal bit marks native queries.
+rays (2), orthographic (4), reverse-Z (8), infinite far (16), partial (32),
+GPU compute (64) and `ResampledProjectedSolidAngle` light sampling (128); neither
+traversal bit marks native queries. The sampler field is 1 for `UniformArea` and 2
+with flag 128; `scripts/reference-hdr` rejects any other pairing and records
+`light_sampling` in its manifest.
 Each top-left ordered pixel contains three FP32 mean RGB channels and a uint32
 committed count. The light count/digest identify the retained scene; applications
 must save original light/asset inputs for independent scene reconstruction.
@@ -1737,8 +1812,9 @@ and validate it against the independent reference before adopting it. The
 [many-area-light resampling review](many-area-light-sampling-reference-review.md)
 proposes RIS over emissive triangles with projected solid angle/LTC sampling,
 first as a `ris-projected-solid-angle` render graph template and then as an
-explicit second RT1 light-sampling profile. It is not implemented; `UniformArea`
-remains the reference oracle.
+explicit second RT1 light-sampling profile. Both are implemented; the RT1 profile
+is [`ResampledProjectedSolidAngle`](#light-sampling-modes) in the CPU oracle and the
+GPU-compute reference, and `UniformArea` remains the default reference oracle.
 
 Keep a single loop kernel initially. A wavefront implementation can later split
 intersection, hit shading and shadow work into compact queues when divergence
@@ -2561,8 +2637,10 @@ allocation; they must be recooked with the installed sources. A regression verif
 this rejection, so an old six-word surface decoder cannot silently consume the new
 eight-word records. Unsupported runtime layout produces an error pixel.
 
-Reference `ProfileVersion` is 2. LUHDR file schema and addressed sampler version
-remain 1; the decoder retains versions 1/2 as distinct metadata. Maps extend the
+Reference `ProfileVersion` is 2. LUHDR file schema remains 1, and so does the
+addressed sampler version of the default `UniformArea` light sampling
+(`ResampledProjectedSolidAngle` captures record sampler 2); the decoder retains
+profile versions 1/2 as distinct metadata. Maps extend the
 canonical scene fingerprint with normal strength, image layout and immutable bytes;
 unmapped scene fingerprints remain stable. Comparisons require matching profile
 versions. Changing a material/map creates a new snapshot/integral and restarts

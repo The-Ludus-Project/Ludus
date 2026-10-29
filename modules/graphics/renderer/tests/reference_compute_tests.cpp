@@ -785,3 +785,574 @@ TEST_CASE("GPU-compute reference preserves bounded white sRGB textures and verte
     CHECK(comparison.MaximumDirect <= 2e-3F);
     CHECK(comparison.MaximumIndirect <= 2e-3F);
 }
+
+// --- ResampledProjectedSolidAngle -------------------------------------------------
+// RT1's second light-sampling mode, sampler version 2 (reference_light_sampling.h). Both modes estimate the same
+// integral, so agreement with UniformArea is statistical: image means over independent seeds. CPU and GPU-compute
+// share addressed randomness, but a reservoir decision can flip between FP32 roundings of the same target, so their
+// agreement is also judged on means rather than per pixel.
+namespace
+{
+constexpr usize RESAMPLED_SEED_COUNT = 6;
+// Seed-mean differences below this many combined standard errors, plus an absolute floor for AOVs that are zero or
+// nearly constant across seeds.
+constexpr float32 RESAMPLED_STANDARD_ERRORS = 5;
+constexpr float32 RESAMPLED_ABSOLUTE_FLOOR = 2e-4F;
+
+/// One AOV's image mean per seed.
+struct SeedMeans final
+{
+    StaticArray<math::Vector3, RESAMPLED_SEED_COUNT> Emission{};
+    StaticArray<math::Vector3, RESAMPLED_SEED_COUNT> Direct{};
+    StaticArray<math::Vector3, RESAMPLED_SEED_COUNT> Indirect{};
+    StaticArray<math::Vector3, RESAMPLED_SEED_COUNT> Radiance{};
+};
+struct ImageMeans final
+{
+    math::Vector3 Emission{};
+    math::Vector3 Direct{};
+    math::Vector3 Indirect{};
+    math::Vector3 Radiance{};
+};
+ImageMeans MeasureImage(const Array<rr::ReferencePixel>& pixels)
+{
+    ImageMeans result;
+    for (const rr::ReferencePixel& pixel : pixels)
+    {
+        result.Emission = result.Emission + pixel.Emission;
+        result.Direct = result.Direct + pixel.Direct;
+        result.Indirect = result.Indirect + pixel.Indirect;
+        result.Radiance = result.Radiance + pixel.Radiance;
+    }
+    const float32 scale = 1 / float32(pixels.GetSize());
+    result.Emission = result.Emission * scale;
+    result.Direct = result.Direct * scale;
+    result.Indirect = result.Indirect * scale;
+    result.Radiance = result.Radiance * scale;
+    return result;
+}
+/// The largest per-channel z-score |mean_a - mean_b| / (combined standard error + floor) of two seed sets; symmetric
+/// in its arguments.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+float32 MeasureSeparation(const StaticArray<math::Vector3, RESAMPLED_SEED_COUNT>& a,
+                          const StaticArray<math::Vector3, RESAMPLED_SEED_COUNT>& b)
+// NOLINTEND(bugprone-easily-swappable-parameters)
+{
+    float32 largest = 0;
+    for (usize channel = 0; channel < 3; ++channel)
+    {
+        const auto component = [channel](math::Vector3 value) noexcept {
+            return channel == 0 ? value.X : channel == 1 ? value.Y : value.Z;
+        };
+        float32 meanA = 0;
+        float32 meanB = 0;
+        for (usize seed = 0; seed < RESAMPLED_SEED_COUNT; ++seed)
+        {
+            meanA += component(a[seed]) / RESAMPLED_SEED_COUNT;
+            meanB += component(b[seed]) / RESAMPLED_SEED_COUNT;
+        }
+        float32 varianceA = 0;
+        float32 varianceB = 0;
+        for (usize seed = 0; seed < RESAMPLED_SEED_COUNT; ++seed)
+        {
+            varianceA += (component(a[seed]) - meanA) * (component(a[seed]) - meanA) / (RESAMPLED_SEED_COUNT - 1);
+            varianceB += (component(b[seed]) - meanB) * (component(b[seed]) - meanB) / (RESAMPLED_SEED_COUNT - 1);
+        }
+        const float32 error = math::Sqrt((varianceA + varianceB) / RESAMPLED_SEED_COUNT);
+        largest = math::Max(largest, math::Abs(meanA - meanB) / (error + RESAMPLED_ABSOLUTE_FLOOR));
+    }
+    return largest;
+}
+void RecordSeed(const Array<rr::ReferencePixel>& pixels, usize seed, SeedMeans& inoutMeans)
+{
+    const ImageMeans means = MeasureImage(pixels);
+    inoutMeans.Emission[seed] = means.Emission;
+    inoutMeans.Direct[seed] = means.Direct;
+    inoutMeans.Indirect[seed] = means.Indirect;
+    inoutMeans.Radiance[seed] = means.Radiance;
+}
+rr::ReferenceCaptureDescription MakePerspectiveCapture(math::Vector3 cameraPosition, uint32 width, uint32 height)
+{
+    rr::ReferenceCaptureDescription capture;
+    capture.Width = width;
+    capture.Height = height;
+    math::Matrix4 view;
+    math::Matrix4 projection;
+    capture.CameraPosition = cameraPosition;
+    REQUIRE(math::TryLookAt(capture.CameraPosition, {0, 0, 0}, {0, 1, 0}, view) == math::MathStatus::Success);
+    REQUIRE(math::TryPerspectiveReverseZ(1, float32(width) / float32(height), .1F, 20, projection) ==
+            math::MathStatus::Success);
+    capture.WorldToClip = projection * view;
+    capture.ReverseZ = true;
+    return capture;
+}
+bool StartComputeDevice(rhi::DeviceHandle& outDevice, rhi::SurfaceHandle& outSurface)
+{
+    rhi::DeviceDescription description;
+    description.Required.PortableRaster = true;
+    description.Required.Compute = true;
+    const rhi::DeviceStatus started =
+        rhi::CreateDevice({}, { .Width = 8, .Height = 8 }, description, outDevice, outSurface);
+#if defined(LUDUS_TEST_METAL)
+    if (started != rhi::DeviceStatus::Ready && rhi::GetStartup().Error == rhi::StartupError::AdapterUnavailable)
+    {
+        return false;
+    }
+#endif
+    REQUIRE(started == rhi::DeviceStatus::Ready);
+    return true;
+}
+
+/// One quad of a test room: its corners, material and emission sidedness.
+struct QuadItem final
+{
+    StaticArray<math::Vector3, 4> CornersWorld;
+    math::Vector3 Emission{};
+    bool IsEmissionTwoSided = true;
+    float32 Metallic = 0;
+    float32 Roughness = 1;
+};
+/// A snapshot of planar quads, wound so that each quad's geometric normal is cross(c1 - c0, c3 - c0).
+S BuildQuadSnapshot(rr::Renderer& inoutRenderer,
+                    rr::MaterialProgram program,
+                    const QuadItem* quads,
+                    usize count,
+                    rr::Snapshot& outSnapshot)
+{
+    constexpr usize MAXIMUM_QUADS = 4;
+    REQUIRE(count <= MAXIMUM_QUADS);
+    StaticArray<rr::Mesh, MAXIMUM_QUADS> meshes{};
+    StaticArray<rr::MaterialVersion, MAXIMUM_QUADS> materials{};
+    StaticArray<rr::SceneItem, MAXIMUM_QUADS> items{};
+    for (usize i = 0; i < count; ++i)
+    {
+        const QuadItem& quad = quads[i];
+        const math::Vector3 normal =
+            math::Cross(quad.CornersWorld[1] - quad.CornersWorld[0], quad.CornersWorld[3] - quad.CornersWorld[0]);
+        const math::Vector3 unitNormal = normal * (1 / math::Length(normal));
+        const math::Vector3 normals[]{unitNormal, unitNormal, unitNormal, unitNormal};
+        // Counterclockwise about the normal: (0, 1, 2) and (0, 2, 3).
+        const uint32 indices[]{0, 1, 2, 0, 2, 3};
+        rr::MeshDescription mesh{quad.CornersWorld.GetData(), 4, indices, 6};
+        mesh.Normals = normals;
+        S status = inoutRenderer.CreateMesh(mesh, meshes[i]);
+        uint64 start = time::NowTicks();
+        while (status == S::Pending && time::NowTicks() - start < TIMEOUT)
+        {
+            status = inoutRenderer.GetStatus(meshes[i]);
+        }
+        REQUIRE(status == S::Ready);
+        rr::LitMaterialDescription material;
+        material.Surface.Tint = {.7F, .6F, .5F, 1};
+        material.Metallic = quad.Metallic;
+        material.Roughness = quad.Roughness;
+        material.Emission = quad.Emission;
+        material.IsEmissionTwoSided = quad.IsEmissionTwoSided;
+        rr::LightSelection selection;
+        status = inoutRenderer.CreateLitMaterial(program, material, materials[i], selection);
+        start = time::NowTicks();
+        while (status == S::Pending && time::NowTicks() - start < TIMEOUT)
+        {
+            status = inoutRenderer.GetStatus(materials[i]);
+        }
+        REQUIRE(status == S::Ready);
+        items[i].Geometry = meshes[i];
+        items[i].Surface = materials[i];
+        items[i].SourceId = 100 + i;
+    }
+    const S created = inoutRenderer.CreateSnapshot(items.GetData(), count, outSnapshot);
+    for (usize i = 0; i < count; ++i)
+    {
+        static_cast<void>(inoutRenderer.Release(materials[i]));
+        static_cast<void>(inoutRenderer.Release(meshes[i]));
+    }
+    return created;
+}
+/// A glossy floor, a diffuse back wall and two emitters. `isBrightEmitterBehind` turns a bright one-sided ceiling panel
+/// away from the room, so its power dominates the CDF while every receiver sees it from behind: most vertices then
+/// estimate Z-hat = 0, and with `isDimEmitterPresent` false no emitter lights any receiver at all.
+usize MakeRoomQuads(bool isDimEmitterPresent, StaticArray<QuadItem, 4>& outQuads)
+{
+    QuadItem& floor = outQuads[0];
+    floor.CornersWorld = {{{-1, -1, -1}, {-1, -1, 1}, {1, -1, 1}, {1, -1, -1}}};
+    floor.Metallic = 1;
+    floor.Roughness = .25F;
+    QuadItem& wall = outQuads[1];
+    // Below the panel, so no receiver sees the panel's front.
+    wall.CornersWorld = {{{-1, -1, 1}, {-1, .8F, 1}, {1, .8F, 1}, {1, -1, 1}}};
+    QuadItem& bright = outQuads[2];
+    // Facing +y, away from the room below it.
+    bright.CornersWorld = {{{-.6F, .9F, -.6F}, {-.6F, .9F, .6F}, {.6F, .9F, .6F}, {.6F, .9F, -.6F}}};
+    bright.Emission = {400, 400, 400};
+    bright.IsEmissionTwoSided = false;
+    if (isDimEmitterPresent == false)
+    {
+        return 3;
+    }
+    QuadItem& dim = outQuads[3];
+    dim.CornersWorld = {{{-.9F, .2F, .1F}, {-.9F, .6F, .1F}, {-.9F, .6F, .5F}, {-.9F, .2F, .5F}}};
+    dim.Emission = {3, 2.5F, 2};
+    return 4;
+}
+} // namespace
+
+TEST_CASE("Resampled light sampling agrees with UniformArea across seeds and depths",
+          "[renderer][gpu][reference-compute][resampled-light]")
+{
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    if (StartComputeDevice(device, surface) == false)
+    {
+        SKIP("No Metal adapter");
+    }
+    Session cpu;
+    REQUIRE(Prepare(device, rr::ReferenceTraversal::CpuOracle, cpu) == S::Ready);
+    enum class Scene : uint8
+    {
+        L6,
+        Sphere,
+        Room,
+    };
+    struct Case final
+    {
+        const char* Name = "";
+        Scene Fixture = Scene::L6;
+        uint32 MaxDepth = 1;
+    };
+    const Case cases[]{
+        {"L6 single bounce", Scene::L6, 1},
+        {"L6 depth 4", Scene::L6, 4},
+        {"glossy sphere single bounce", Scene::Sphere, 1},
+        {"glossy sphere depth 3", Scene::Sphere, 3},
+        {"glossy sphere depth 6", Scene::Sphere, 6},
+        {"room where most vertices estimate Z-hat = 0, depth 4", Scene::Room, 4},
+    };
+    for (const Case& test : cases)
+    {
+        SECTION(test.Name)
+        {
+            rr::ReferenceCaptureDescription capture =
+                test.Fixture == Scene::Sphere ? MakePerspectiveCapture({.3F, .2F, -2}, 16, 12)
+                : test.Fixture == Scene::Room ? MakePerspectiveCapture({0, .1F, -2.4F}, 16, 12)
+                                              : MakePerspectiveCapture({.1F, -.2F, -2.5F}, 16, 12);
+            capture.TargetSamples = 64;
+            capture.MaxDepth = test.MaxDepth;
+            capture.RouletteDepth = 2;
+            capture.Environment = test.Fixture == Scene::Room ? math::Vector3{} : math::Vector3{.05F, .06F, .08F};
+            if (test.Fixture != Scene::L6)
+            {
+                StaticArray<QuadItem, 4> quads{};
+                const usize quadCount = MakeRoomQuads(true, quads);
+                REQUIRE(cpu.Renderer.Release(cpu.Snapshot) == S::Ready);
+                const S built =
+                    test.Fixture == Scene::Sphere
+                        ? BuildSphereSnapshot(device, cpu.Renderer, cpu.Program, cpu.Snapshot)
+                        : BuildQuadSnapshot(cpu.Renderer, cpu.Program, quads.GetData(), quadCount, cpu.Snapshot);
+                REQUIRE(built == S::Ready);
+            }
+            const rr::Snapshot snapshot = cpu.Snapshot;
+            SeedMeans uniform;
+            SeedMeans resampled;
+            for (usize seed = 0; seed < RESAMPLED_SEED_COUNT; ++seed)
+            {
+                capture.Seed = 40 + seed;
+                for (const rr::ReferenceLightSampling mode : {rr::ReferenceLightSampling::UniformArea,
+                                                              rr::ReferenceLightSampling::ResampledProjectedSolidAngle})
+                {
+                    capture.LightSampling = mode;
+                    Array<rr::ReferencePixel> pixels;
+                    rr::ReferenceCaptureInfo info;
+                    rr::ReferenceCapture handle;
+                    const S begun = cpu.Renderer.BeginReferenceCapture(snapshot, capture, handle);
+                    REQUIRE((begun == S::Ready || begun == S::Pending));
+                    REQUIRE(Run(cpu.Renderer, handle, surface) == S::Ready);
+                    REQUIRE(cpu.Renderer.GetReferenceCaptureInfo(handle, info) == S::Ready);
+                    CHECK(info.InvalidContributions == 0);
+                    CHECK(info.LightSampling == mode);
+                    CHECK(info.SamplerVersion ==
+                          (mode == rr::ReferenceLightSampling::UniformArea ? uint32{1} : uint32{2}));
+                    REQUIRE(pixels.TryResize(usize(capture.Width) * capture.Height) == true);
+                    REQUIRE(cpu.Renderer.CopyReferencePixels(handle, pixels.GetData(), pixels.GetSize()) == S::Ready);
+                    REQUIRE(cpu.Renderer.Release(handle) == S::Ready);
+                    RecordSeed(pixels, seed, mode == rr::ReferenceLightSampling::UniformArea ? uniform : resampled);
+                }
+                // Primary rays and primary emission use the unchanged dimensions 0 and 1.
+                CHECK(uniform.Emission[seed] == resampled.Emission[seed]);
+            }
+            const float32 direct = MeasureSeparation(uniform.Direct, resampled.Direct);
+            const float32 indirect = MeasureSeparation(uniform.Indirect, resampled.Indirect);
+            const float32 radiance = MeasureSeparation(uniform.Radiance, resampled.Radiance);
+            CAPTURE(direct, indirect, radiance, uniform.Radiance[0], resampled.Radiance[0]);
+            CHECK(direct <= RESAMPLED_STANDARD_ERRORS);
+            CHECK(indirect <= RESAMPLED_STANDARD_ERRORS);
+            CHECK(radiance <= RESAMPLED_STANDARD_ERRORS);
+        }
+    }
+}
+
+TEST_CASE("GPU-compute resampled reference matches the CPU oracle",
+          "[renderer][gpu][reference-compute][resampled-light]")
+{
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    if (StartComputeDevice(device, surface) == false)
+    {
+        SKIP("No Metal adapter");
+    }
+    Session gpu;
+    const S enabled = Prepare(device, rr::ReferenceTraversal::GpuCompute, gpu);
+    if (enabled == S::Unsupported)
+    {
+        SKIP("Compute storage is unavailable on this device");
+    }
+    REQUIRE(enabled == S::Ready);
+    Session cpu;
+    REQUIRE(Prepare(device, rr::ReferenceTraversal::CpuOracle, cpu) == S::Ready);
+    rr::DirectLight sun;
+    sun.SourceId = 7;
+    sun.Direction = math::Vector3{-.3F, -.4F, 1} / math::Length(math::Vector3{-.3F, -.4F, 1});
+    sun.Intensity = .4F;
+    enum class Scene : uint8
+    {
+        L6,
+        Sphere,
+        Room,
+    };
+    struct Case final
+    {
+        const char* Name = "";
+        Scene Fixture = Scene::L6;
+        uint32 MaxDepth = 4;
+        uint64 Seed = 1;
+    };
+    const Case cases[]{
+        {"L6 depth 4 with a sun", Scene::L6, 4, 871},
+        {"glossy sphere depth 6", Scene::Sphere, 6, 99},
+        {"room where most vertices estimate Z-hat = 0", Scene::Room, 4, 5},
+    };
+    for (const Case& test : cases)
+    {
+        SECTION(test.Name)
+        {
+            rr::ReferenceCaptureDescription capture =
+                test.Fixture == Scene::Sphere ? MakePerspectiveCapture({.3F, .2F, -2}, 16, 12)
+                : test.Fixture == Scene::Room ? MakePerspectiveCapture({0, .1F, -2.4F}, 16, 12)
+                                              : MakePerspectiveCapture({.1F, -.2F, -2.5F}, 16, 12);
+            capture.TargetSamples = 64;
+            capture.MaxDepth = test.MaxDepth;
+            capture.RouletteDepth = 2;
+            capture.Seed = test.Seed;
+            capture.Environment = test.Fixture == Scene::Room ? math::Vector3{} : math::Vector3{.2F, .25F, .3F};
+            capture.Lights = &sun;
+            capture.LightCount = test.Fixture == Scene::L6 ? 1 : 0;
+            capture.LightSampling = rr::ReferenceLightSampling::ResampledProjectedSolidAngle;
+            // Each session holds one fixture at a time within the renderer's material capacity.
+            if (test.Fixture != Scene::L6)
+            {
+                StaticArray<QuadItem, 4> quads{};
+                const usize quadCount = MakeRoomQuads(true, quads);
+                for (Session* session : {&cpu, &gpu})
+                {
+                    REQUIRE(session->Renderer.Release(session->Snapshot) == S::Ready);
+                    const S built =
+                        test.Fixture == Scene::Sphere
+                            ? BuildSphereSnapshot(device, session->Renderer, session->Program, session->Snapshot)
+                            : BuildQuadSnapshot(session->Renderer,
+                                                session->Program,
+                                                quads.GetData(),
+                                                quadCount,
+                                                session->Snapshot);
+                    REQUIRE(built == S::Ready);
+                }
+            }
+            Array<rr::ReferencePixel> oracle;
+            Array<rr::ReferencePixel> compute;
+            rr::ReferenceCaptureInfo oracleInfo;
+            rr::ReferenceCaptureInfo computeInfo;
+            Capture(cpu, capture, surface, oracle, oracleInfo);
+            Capture(gpu, capture, surface, compute, computeInfo);
+            CHECK(oracleInfo.SamplerVersion == 2);
+            CHECK(computeInfo.SamplerVersion == 2);
+            CHECK(computeInfo.LightSampling == rr::ReferenceLightSampling::ResampledProjectedSolidAngle);
+            CHECK(oracleInfo.InvalidContributions == 0);
+            CHECK(computeInfo.InvalidContributions == 0);
+            CHECK(computeInfo.Complete == true);
+            CHECK(computeInfo.CommittedSamples == oracleInfo.CommittedSamples);
+            const Comparison comparison = Compare(oracle, compute, capture.TargetSamples);
+            const float32 radianceMean = math::Distance(MeasureImage(oracle).Radiance, MeasureImage(compute).Radiance);
+            CAPTURE(comparison.MaximumRadiance,
+                    comparison.MaximumEmission,
+                    comparison.MaximumDirect,
+                    comparison.MaximumIndirect,
+                    math::Sqrt(comparison.SquaredRadiance),
+                    radianceMean,
+                    oracleInfo.ClosestQueries,
+                    computeInfo.ClosestQueries,
+                    oracleInfo.VisibilityQueries,
+                    computeInfo.VisibilityQueries);
+            // The same addressed candidates and tickets select the same emitters in both precisions on these
+            // fixtures, so the UniformArea parity tolerances hold per pixel.
+            CHECK(comparison.MaximumRadiance <= 2e-3F);
+            CHECK(comparison.MaximumEmission <= 2e-3F);
+            CHECK(comparison.MaximumDirect <= 2e-3F);
+            CHECK(comparison.MaximumIndirect <= 2e-3F);
+            CHECK(math::Sqrt(comparison.SquaredRadiance) <= 2e-4F);
+            CHECK(radianceMean <= 1e-4F);
+            CHECK(computeInfo.ClosestQueries == oracleInfo.ClosestQueries);
+            CHECK(computeInfo.NullBsdfSamples == oracleInfo.NullBsdfSamples);
+            CHECK(computeInfo.RouletteTerminations == oracleInfo.RouletteTerminations);
+            // A light sample whose contribution rounds to zero in one precision skips its shadow ray; with two
+            // techniques per vertex a few such samples remain where emitters are rarely selected.
+            constexpr uint64 VISIBILITY_COUNT_DIVISOR = 100;
+            const uint64 visibilityDifference = computeInfo.VisibilityQueries > oracleInfo.VisibilityQueries
+                                                    ? computeInfo.VisibilityQueries - oracleInfo.VisibilityQueries
+                                                    : oracleInfo.VisibilityQueries - computeInfo.VisibilityQueries;
+            CHECK(visibilityDifference <= oracleInfo.VisibilityQueries / VISIBILITY_COUNT_DIVISOR + 3);
+        }
+    }
+}
+
+TEST_CASE("Resampled light sampling ignores emitters behind every receiver in both implementations",
+          "[renderer][gpu][reference-compute][resampled-light]")
+{
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    if (StartComputeDevice(device, surface) == false)
+    {
+        SKIP("No Metal adapter");
+    }
+    Session gpu;
+    const S enabled = Prepare(device, rr::ReferenceTraversal::GpuCompute, gpu);
+    if (enabled == S::Unsupported)
+    {
+        SKIP("Compute storage is unavailable on this device");
+    }
+    REQUIRE(enabled == S::Ready);
+    Session cpu;
+    REQUIRE(Prepare(device, rr::ReferenceTraversal::CpuOracle, cpu) == S::Ready);
+    StaticArray<QuadItem, 4> quads{};
+    const usize quadCount = MakeRoomQuads(false, quads);
+    for (Session* session : {&cpu, &gpu})
+    {
+        REQUIRE(session->Renderer.Release(session->Snapshot) == S::Ready);
+        REQUIRE(BuildQuadSnapshot(session->Renderer, session->Program, quads.GetData(), quadCount, session->Snapshot) ==
+                S::Ready);
+    }
+    // The only emitter faces away from the room and there is no environment or analytic light, so both estimators
+    // see zero emission; the resampled one never selects an emitter and traces no shadow ray.
+    rr::ReferenceCaptureDescription capture = MakePerspectiveCapture({0, .1F, -2.4F}, 12, 9);
+    capture.TargetSamples = 16;
+    capture.MaxDepth = 4;
+    capture.Seed = 17;
+    for (const rr::ReferenceLightSampling mode :
+         {rr::ReferenceLightSampling::UniformArea, rr::ReferenceLightSampling::ResampledProjectedSolidAngle})
+    {
+        capture.LightSampling = mode;
+        for (Session* session : {&cpu, &gpu})
+        {
+            Array<rr::ReferencePixel> pixels;
+            rr::ReferenceCaptureInfo info;
+            Capture(*session, capture, surface, pixels, info);
+            CAPTURE(static_cast<uint32>(mode), static_cast<uint32>(info.Traversal));
+            CHECK(info.InvalidContributions == 0);
+            CHECK(info.VisibilityQueries == 0);
+            for (const rr::ReferencePixel& pixel : pixels)
+            {
+                CHECK(pixel.Radiance == math::Vector3{});
+            }
+        }
+    }
+}
+
+TEST_CASE("GPU-compute light-sampling mode is part of the integral and the raw capture",
+          "[renderer][gpu][reference-compute][resampled-light]")
+{
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    if (StartComputeDevice(device, surface) == false)
+    {
+        SKIP("No Metal adapter");
+    }
+    Session gpu;
+    const S enabled = Prepare(device, rr::ReferenceTraversal::GpuCompute, gpu);
+    if (enabled == S::Unsupported)
+    {
+        SKIP("Compute storage is unavailable on this device");
+    }
+    REQUIRE(enabled == S::Ready);
+    rr::ReferenceCaptureDescription capture = MakePerspectiveCapture({.1F, -.2F, -2.5F}, 9, 7);
+    capture.TargetSamples = 4;
+    capture.Seed = 3;
+    capture.Environment = {.3F, .4F, .5F};
+    rr::ReferenceCaptureDescription invalid = capture;
+    invalid.LightSampling = static_cast<rr::ReferenceLightSampling>(2);
+    rr::ReferenceCapture rejected;
+    CHECK(gpu.Renderer.BeginReferenceCapture(gpu.Snapshot, invalid, rejected) == S::InvalidDescription);
+    rr::ReferenceCapture handle;
+    const S begun = gpu.Renderer.BeginReferenceCapture(gpu.Snapshot, capture, handle);
+    REQUIRE((begun == S::Ready || begun == S::Pending));
+    REQUIRE(Run(gpu.Renderer, handle, surface) == S::Ready);
+    rr::ReferenceCaptureInfo info;
+    REQUIRE(gpu.Renderer.GetReferenceCaptureInfo(handle, info) == S::Ready);
+    CHECK(info.Revision == 1);
+    CHECK(info.SamplerVersion == 1);
+    CHECK(info.LightSampling == rr::ReferenceLightSampling::UniformArea);
+    // Changing only the light-sampling mode replaces the integral and restarts accumulation.
+    rr::ReferenceCaptureDescription resampled = capture;
+    resampled.LightSampling = rr::ReferenceLightSampling::ResampledProjectedSolidAngle;
+    const S replaced = gpu.Renderer.UpdateReferenceCapture(handle, gpu.Snapshot, resampled);
+    REQUIRE((replaced == S::Ready || replaced == S::Pending));
+    REQUIRE(Run(gpu.Renderer, handle, surface) == S::Ready);
+    REQUIRE(gpu.Renderer.GetReferenceCaptureInfo(handle, info) == S::Ready);
+    CHECK(info.Revision == 2);
+    CHECK(info.SamplerVersion == 2);
+    CHECK(info.LightSampling == rr::ReferenceLightSampling::ResampledProjectedSolidAngle);
+    CHECK(info.CommittedSamples == uint64{4} * capture.Width * capture.Height);
+    constexpr usize HEADER_BYTES = 256;
+    constexpr usize PIXEL_BYTES = 16;
+    constexpr usize SAMPLER_OFFSET = 16;
+    constexpr usize FLAGS_OFFSET = 44;
+    constexpr uint32 GPU_COMPUTE_FLAG = 64;
+    constexpr uint32 RESAMPLED_LIGHT_FLAG = 128;
+    Array<uint8> bytes;
+    REQUIRE(bytes.TryResize(HEADER_BYTES + usize(capture.Width) * capture.Height * PIXEL_BYTES) == true);
+    usize written = 0;
+    REQUIRE(gpu.Renderer.EncodeReferenceHdr(handle, bytes.GetData(), bytes.GetSize(), written) == S::Ready);
+    CHECK(bytes[SAMPLER_OFFSET] == 2);
+    const uint32 flags = uint32(bytes[FLAGS_OFFSET]) | (uint32(bytes[FLAGS_OFFSET + 1]) << 8);
+    CHECK((flags & GPU_COMPUTE_FLAG) != 0);
+    CHECK((flags & RESAMPLED_LIGHT_FLAG) != 0);
+    REQUIRE(gpu.Renderer.Release(handle) == S::Ready);
+}

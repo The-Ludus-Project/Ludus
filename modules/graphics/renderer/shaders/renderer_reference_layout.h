@@ -4,14 +4,33 @@
 // renderer_reference.slang. The packed scene and Parameters block reuse the GPU
 // preview layout (renderer_gpu_preview_layout.h); strides count 16-byte words.
 // Update the kernel version when changing anything below.
-#define LUDUS_REFERENCE_KERNEL_VERSION 2
+#define LUDUS_REFERENCE_KERNEL_VERSION 3
 
 #define LUDUS_REFERENCE_PARAMETERS_BINDING 0
 #define LUDUS_REFERENCE_SCENE_BINDING 1
 #define LUDUS_REFERENCE_ACCUMULATION_BINDING 2
 #define LUDUS_REFERENCE_STATUS_BINDING 3
 #define LUDUS_REFERENCE_TEXELS_BINDING 4
-#define LUDUS_REFERENCE_BINDING_COUNT 5
+// The renderer's LTC table (ltc_table_layout.h), read by ReferenceLightSampling::ResampledProjectedSolidAngle and
+// declared last: Slang numbers Metal buffers in declaration order.
+#define LUDUS_REFERENCE_LTC_TABLE_BINDING 5
+#define LUDUS_REFERENCE_BINDING_COUNT 6
+
+// Parameters Sampling.z flag selecting ReferenceLightSampling::ResampledProjectedSolidAngle; the low bits keep the
+// camera and opacity flags of renderer_gpu_preview_layout.h.
+#define LUDUS_REFERENCE_RESAMPLED_LIGHT_FLAG 64
+
+// Sampler version 2 bounce slots (docs/architecture/many-area-light-sampling-reference-review.md, "Random layout,
+// sampler version 2"). Slots 0-7 keep their version-1 meanings, with slots 1-2 also holding the diffuse
+// projected-solid-angle sample; 10-11 and 84-127 are reserved. Candidate i draws its power-CDF ticket at
+// RIS_CANDIDATE_FIRST_SLOT + 2i and its reservoir ticket at the next slot; normalization candidate k draws at
+// RIS_NORMALIZATION_FIRST_SLOT + k. The counts and slots are frozen constants of version 2.
+#define LUDUS_REFERENCE_LTC_FIRST_SLOT 8
+#define LUDUS_REFERENCE_RIS_CANDIDATE_FIRST_SLOT 12
+#define LUDUS_REFERENCE_RIS_SLOTS_PER_CANDIDATE 2
+#define LUDUS_REFERENCE_RIS_CANDIDATE_COUNT 32
+#define LUDUS_REFERENCE_RIS_NORMALIZATION_FIRST_SLOT 76
+#define LUDUS_REFERENCE_RIS_NORMALIZATION_CANDIDATE_COUNT 8
 
 // Accumulation holds every pixel's committed sums first, then their compensation
 // terms. Sum word 0 is emission plus the committed sample count, word 1 direct plus
