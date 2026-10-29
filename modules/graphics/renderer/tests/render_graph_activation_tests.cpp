@@ -62,7 +62,10 @@ struct PackageWriter final
         }
     }
     /// Empty structured storage records, then the version 25 scene resource word.
+    // The package version selects which words exist; the scene resource bits are that word's value.
+    // NOLINTBEGIN(bugprone-easily-swappable-parameters)
     void WriteSceneResources(uint32 version, uint32 sceneResources = 0)
+    // NOLINTEND(bugprone-easily-swappable-parameters)
     {
         if (version >= format::STORAGE_PACKAGE_VERSION)
         {
@@ -1685,10 +1688,13 @@ TEST_CASE("deferred runtime roles are complete per target and require the mesh-l
                                                                format::StageRole::DeferredLightingVertex,
                                                                format::StageRole::DeferredLightingFragment,
                                                                format::StageRole::DeferredDepthCopyFragment}};
+    // The package version and the omitted stage role are distinct quantities.
+    // NOLINTBEGIN(bugprone-easily-swappable-parameters)
     const auto makeDeferred = [&](uint32 version,
                                   uint32 omittedRole,
                                   format::ShaderTarget target = format::ShaderTarget::Wgsl,
                                   format::StageRole blockRole = format::StageRole::DeferredLightingFragment) {
+        // NOLINTEND(bugprone-easily-swappable-parameters)
         PackageWriter writer;
         PackageOptions options;
         options.Version = version;

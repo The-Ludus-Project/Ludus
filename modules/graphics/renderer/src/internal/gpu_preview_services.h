@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ludus/content/render_graph_format/plan.h>
+#include <ludus/foundation/base/assert.hpp>
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/containers/sort.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
@@ -736,11 +737,26 @@ void Renderer::State::DropGpuPreview(usize slot) noexcept
     job.VisibilityTexture = {};
     static_cast<void>(rhi::Destroy(Device, job.ImageBindings));
     static_cast<void>(rhi::Destroy(Device, job.NativeScene));
-    static_cast<void>(rhi::Destroy(Device, job.NativeGeometry));
+    if (job.Scene != internal::NO_GPU_PREVIEW_SCENE)
+    {
+        // The last referencing job releases the shared scene, once its own producers retired.
+        internal::GpuPreviewSceneRecord& scene = GpuPreview->Scenes[job.Scene];
+        scene.References -= 1;
+        if (scene.References == 0)
+        {
+            static_cast<void>(rhi::Destroy(Device, scene.NativeGeometry));
+            static_cast<void>(rhi::Destroy(Device, scene.Data));
+            static_cast<void>(rhi::Destroy(Device, scene.Texels));
+            GpuPreview->GpuBytes -= scene.GpuBytes;
+            scene = {};
+        }
+        job.Scene = internal::NO_GPU_PREVIEW_SCENE;
+    }
+    job.NativeGeometry = {};
+    job.Data = {};
+    job.Texels = {};
     job.HasNativeGeometry = false;
     job.IsNativeSceneCreated = false;
-    static_cast<void>(rhi::Destroy(Device, job.Data));
-    static_cast<void>(rhi::Destroy(Device, job.Texels));
     static_cast<void>(rhi::Destroy(Device, job.Parameters));
     static_cast<void>(rhi::Destroy(Device, job.Accumulation));
     static_cast<void>(rhi::Destroy(Device, job.Colors));
@@ -1327,6 +1343,18 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     {
         return Status::Unsupported;
     }
+    usize sharedScene = internal::NO_GPU_PREVIEW_SCENE;
+    if (invocationOrNull != nullptr && invocationOrNull->SceneSourceOrNull != nullptr)
+    {
+        const internal::GpuPreviewRecord* sceneSourceOrNull =
+            Resolve(state.Jobs, internal::GPU_PREVIEW_JOB_COUNT, mState->Owner, *invocationOrNull->SceneSourceOrNull);
+        if (graphSceneOrNull == nullptr || sceneSourceOrNull == nullptr ||
+            sceneSourceOrNull->Scene == internal::NO_GPU_PREVIEW_SCENE)
+        {
+            return Status::InvalidHandle;
+        }
+        sharedScene = sceneSourceOrNull->Scene;
+    }
     usize slot = 0;
     status = FreeSlot(state.Jobs, slot);
     if (status != Status::Ready)
@@ -1445,9 +1473,24 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     const usize dataBytes = data.GetSize() * sizeof(math::Vector4);
     const usize texelBytes = texels.GetSize() * sizeof(math::Vector4);
     const usize uploadBytes = dataBytes + texelBytes;
+    const bool isSceneShared = sharedScene != internal::NO_GPU_PREVIEW_SCENE;
+    if (isSceneShared == true)
+    {
+        // The caller vouches that both jobs packed the same scene description; a different
+        // packed layout means it did not, so reject rather than bind mismatched offsets.
+        const internal::GpuPreviewSceneRecord& record = state.Scenes[sharedScene];
+        if (record.SceneData != scene->SceneData || record.DataBytes != dataBytes || record.TexelBytes != texelBytes ||
+            record.FingerprintLow != scene->Scene.FingerprintLow ||
+            record.FingerprintHigh != scene->Scene.FingerprintHigh)
+        {
+            return Status::InvalidDescription;
+        }
+    }
+    // A shared scene is already uploaded and charged by its record.
+    const usize sceneUploadBytes = isSceneShared == true ? 0 : uploadBytes;
     usize gpuBytes = 0;
     if (foundation::TryMultiply(pixels, GPU_PREVIEW_BYTES_PER_PIXEL, gpuBytes) == false ||
-        foundation::TryAdd(gpuBytes, uploadBytes, gpuBytes) == false ||
+        foundation::TryAdd(gpuBytes, sceneUploadBytes, gpuBytes) == false ||
         foundation::TryAdd(gpuBytes, sizeof(uniform) + sizeof(math::Vector4), gpuBytes) == false)
     {
         return Status::CapacityExceeded;
@@ -1532,10 +1575,39 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     job.Setup = Status::Pending;
     job.Info = {};
     job.HasImage = false;
-    job.GpuBytes = gpuBytes;
+    job.GpuBytes = gpuBytes - sceneUploadBytes;
     state.GpuBytes += gpuBytes;
     job.DataBytes = dataBytes;
     job.TexelBytes = texelBytes;
+    if (isSceneShared == true)
+    {
+        internal::GpuPreviewSceneRecord& record = state.Scenes[sharedScene];
+        record.References += 1;
+        job.Scene = sharedScene;
+        job.Data = record.Data;
+        job.Texels = record.Texels;
+        job.NativeGeometry = record.NativeGeometry;
+        job.HasNativeGeometry = record.HasNativeGeometry;
+    }
+    else
+    {
+        // Each job holds at most one record, so a free record exists for this free job slot.
+        usize sceneSlot = 0;
+        while (sceneSlot < state.Scenes.GetSize() && state.Scenes[sceneSlot].References != 0)
+        {
+            ++sceneSlot;
+        }
+        LUDUS_ASSERT(sceneSlot < state.Scenes.GetSize());
+        internal::GpuPreviewSceneRecord& record = state.Scenes[sceneSlot];
+        record.References = 1;
+        record.DataBytes = dataBytes;
+        record.TexelBytes = texelBytes;
+        record.GpuBytes = sceneUploadBytes;
+        record.SceneData = scene->SceneData;
+        record.FingerprintLow = scene->Scene.FingerprintLow;
+        record.FingerprintHigh = scene->Scene.FingerprintHigh;
+        job.Scene = sceneSlot;
+    }
     job.Width = description.Width;
     job.Height = description.Height;
     job.Info.TargetSamples = description.TargetSamples;
@@ -1557,16 +1629,22 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
                                    float32(job.Height),
                                    job.DenoisingQuality != 0 ? uniform.Options.Y : 0,
                                    0};
-    status = rhi::CreateBuffer(mState->Device,
-                               {rhi::BufferRole::Storage, dataBytes},
-                               {reinterpret_cast<const uint8*>(data.GetData()), dataBytes},
-                               job.Data);
-    if (Accepted(status))
+    if (isSceneShared == false)
     {
+        internal::GpuPreviewSceneRecord& record = state.Scenes[job.Scene];
         status = rhi::CreateBuffer(mState->Device,
-                                   {rhi::BufferRole::Storage, texelBytes},
-                                   {reinterpret_cast<const uint8*>(texels.GetData()), texelBytes},
-                                   job.Texels);
+                                   {rhi::BufferRole::Storage, dataBytes},
+                                   {reinterpret_cast<const uint8*>(data.GetData()), dataBytes},
+                                   record.Data);
+        if (Accepted(status))
+        {
+            status = rhi::CreateBuffer(mState->Device,
+                                       {rhi::BufferRole::Storage, texelBytes},
+                                       {reinterpret_cast<const uint8*>(texels.GetData()), texelBytes},
+                                       record.Texels);
+        }
+        job.Data = record.Data;
+        job.Texels = record.Texels;
     }
     if (Accepted(status))
     {
@@ -1617,21 +1695,24 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
         job.GpuBytes += job.Storage.GetBytes();
         state.GpuBytes += job.Storage.GetBytes();
     }
-    if (Accepted(status) == true && state.HasNativeRayQueries == true)
+    if (Accepted(status) == true && state.HasNativeRayQueries == true && isSceneShared == false)
     {
+        internal::GpuPreviewSceneRecord& record = state.Scenes[job.Scene];
         rhi::RayAllocation allocation;
         status =
             internal::CreateGpuPreviewRayGeometry(mState->Device,
                                                   scene->Scene,
                                                   scratch - uploadBytes - pixels * LUDUS_GPU_PREVIEW_ACCUMULATION_BYTES,
                                                   state.Options.GpuByteBudget - state.GpuBytes,
-                                                  job.NativeGeometry,
+                                                  record.NativeGeometry,
                                                   allocation);
-        job.HasNativeGeometry = scene->Scene.Order.GetSize() != 0;
+        record.HasNativeGeometry = scene->Scene.Order.GetSize() != 0;
+        job.NativeGeometry = record.NativeGeometry;
+        job.HasNativeGeometry = record.HasNativeGeometry;
         if (Accepted(status) == true)
         {
             const usize nativeBytes = allocation.ResidentBytes + allocation.ScratchBytes;
-            job.GpuBytes += nativeBytes;
+            record.GpuBytes += nativeBytes;
             state.GpuBytes += nativeBytes;
         }
     }

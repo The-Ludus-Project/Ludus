@@ -2925,6 +2925,19 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
                 buffers[slot] = {buffer, preparingResources[index].Width};
             }
         }
+        // Ray passes reading the same scene data of this update share the first one's uploaded
+        // scene, so a graph stores and charges each distinct packed scene once, not once per pass.
+        GpuPreview sceneSource{};
+        bool hasSceneSource = false;
+        for (usize earlier = 0; earlier < pass && hasSceneSource == false; ++earlier)
+        {
+            if (state.Passes[earlier].Program == format::Technique::RayTracing &&
+                candidate->HasViews[earlier] == true && state.Passes[earlier].SceneData == operation.SceneData)
+            {
+                sceneSource = candidate->RayPasses[earlier].GetJob();
+                hasSceneSource = true;
+            }
+        }
         const GpuPreviewGraphInvocation invocation{
             operation.RayProgram,
             state.Programs.HasPersistentRayBuffers == true
@@ -2934,7 +2947,8 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             operation.ToneMappingExposure,
             operation.DenoisingQuality,
             state.RayPathCapture.GetBuffer(),
-            operation.Traversal == format::RayTraversal::HardwarePipeline};
+            operation.Traversal == format::RayTraversal::HardwarePipeline,
+            hasSceneSource == true ? &sceneSource : nullptr};
         const Status created = candidate->RayPasses[pass].Initialize(state.GetContext(operation.Program),
                                                                      {},
                                                                      cameras[operation.Camera],

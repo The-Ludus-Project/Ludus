@@ -1697,7 +1697,9 @@ void RenderPreview::Tick()
 #    else
             false,
 #    endif
-            VIEWPORT_TONE_CURVE);
+            VIEWPORT_TONE_CURVE,
+            // Solid and Albedo show the backdrop; Lit keeps the scene's own background.
+            usesLitMaterials() == false);
         if (Accepted(created) == false)
         {
             fail(QStringLiteral("GPU viewport allocation failed. World edits are preserved."));
