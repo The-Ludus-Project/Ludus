@@ -155,6 +155,22 @@ rounding. Translate the logo's construction into clear panel grouping and
 strong silhouettes. Controls remain flat and easy to scan; isometric faces,
 bevels and shaded blocks belong to brand artwork, not every button or panel.
 
+The Qt layer has no stylesheet. `ApplyWorkspaceStyle` completes a palette from the
+tokens (`MakeEditorPalette`: surfaces, text, mid and light roles, selection,
+placeholder as secondary text, disabled text) and installs one `EditorStyle`, a
+`QProxyStyle` over the platform style, that draws the pieces the palette cannot:
+button and field edges and focus rings, tab underlines, dock titles, toolbar and
+status bar rules, header sections and the dock separator. Controls therefore
+inherit palette changes normally, keep platform metrics where they are not
+overridden, and show the focus ring in the same widths (2 px, 3 px in high
+contrast) in both appearances. `visualRole` (`primary`, `secondary`) and
+`density=compact` properties are read by the style, and `itemPadding` pads a list's
+rows. The few per-widget `setStyleSheet` calls that remain (graph node details,
+quick add, the world graph view and the state view) are local and are the
+candidates for the next pass. The `[style][.gallery]` test writes a gallery of the
+controls in dark, light and high contrast to `LUDUS_STYLE_GALLERY_DIR` for visual
+comparison.
+
 The tokens live in one file, [`config/design-tokens.json`](../../config/design-tokens.json).
 The Editor reads a header generated from it at configure time
 (`apps/editor/DesignTokens.cmake`), the setup window reads it through
