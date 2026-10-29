@@ -5,7 +5,9 @@ CPU and GPU reference requirement and with the polygonal-light work's licensing,
 traversal and primitive decisions. The primitives listed under
 [Ownership](#ownership) are implemented. The `ris-projected-solid-angle` template
 (stage 1) is implemented as of October 28, 2026, with the departures listed under
-[Implementation notes](#implementation-notes). The RT1 profile (stage 2) is not.
+[Implementation notes](#implementation-notes). The RT1 profile (stage 2) is
+implemented as of October 29, 2026, in the CPU oracle and the GPU-compute
+reference, with the choices listed under [RT1 implementation notes](#rt1-implementation-notes).
 This review is the estimator review that
 [hybrid and real-time transport](renderer-systems.md#hybrid-and-real-time-transport)
 requires before resampling enters a Ludus estimator. It covers next-event
@@ -348,7 +350,7 @@ deliverable.
 | `UniformArea` | The current estimator, including the power-weighted emitter CDF. It stays the default and bit-identical to existing captures (`SamplerVersion = 1`, 8 dimensions per bounce), and remains the validation oracle. |
 | `ResampledProjectedSolidAngle` | This review's estimator. `SamplerVersion = 2`, 128 dimensions per bounce. Requires the renderer's LTC table. |
 
-- **API.** A proposed `ReferenceLightSampling` enum on
+- **API.** The `ReferenceLightSampling` enum on
   `ReferenceCaptureDescription`, recorded in `ReferenceCaptureInfo`.
   - `CpuOracle` and `NativeQueries` share the CPU transport; `GpuCompute` runs
     the same estimator in its kernels.
@@ -399,6 +401,52 @@ aligned to Philox's four-lane blocks:
   `2 + 63 · 128 + 127 = 8193 ≤ 65535`. Extend the `static_assert` and
   `ReferenceBounceDimension` per sampler version.
 - `M`, `K` and the stride are frozen constants of version 2.
+
+### RT1 implementation notes
+
+Usage and evidence are in
+[Light-sampling modes](renderer-systems.md#light-sampling-modes) and the
+[GPU-compute reference](renderer-systems.md#gpu-compute-reference). The profile
+follows the estimator, BSDF-hit decision and random table above, with these
+choices:
+
+- **Owners.** The CPU estimator is
+  [`reference_light_sampling.cpp`](../../modules/graphics/renderer/src/reference_light_sampling.cpp),
+  called from `reference_path.cpp`. `renderer_reference.slang` ports it, with the
+  scene-independent pieces in
+  [`reference_light_sampling.slang`](../../modules/graphics/renderer/shaders/reference_light_sampling.slang).
+  The slot table and the frozen `M`, `K` are `renderer_reference_layout.h`
+  constants. The template keeps its own copy of the scene-independent pieces, so
+  either can change without renumbering the other; sharing one source is
+  possible follow-up work.
+- **Diffuse albedo and `v`.** As in the template: `baseColor · (1 − metallic) · (1 − F₀)`
+  clamped to 0.01, and `v = 1/2`. Both remain open questions.
+- **Emitter alpha.** Unlike the template, light samples apply the emitter's alpha
+  cutoff at the sampled point, because RT1's `UniformArea` already does. The
+  emitter's sidedness and the secondary range are applied there too.
+- **One kernel.** The GPU-compute trace kernel serves both modes; a parameter flag
+  selects sampler version 2. The LTC table is the kernel's sixth binding,
+  uploaded once per `EnableReferenceRendering` and charged to its GPU budget.
+  Kernels without the binding are rejected there, so no capture falls back.
+  `LUDUS_REFERENCE_KERNEL_VERSION` is 3.
+- **Shadow rays.** The CPU path queues up to two shadow rays per vertex, so
+  `NativeQueries` tiles need three queries per path. The GPU kernel traces each
+  technique's shadow ray as soon as it is sampled; the order of the sums matches
+  the CPU's.
+- **Probes.** Static-lighting diffuse probes reject the resampled mode, because
+  their first receiver is virtual and has no stored frame.
+
+Evidence against [Acceptance](#acceptance) item 4, on Apple M5 Metal:
+- **Tested.** Each mode agrees with `UniformArea` across six seeds at depths 1, 3,
+  4 and 6. CPU and GPU raw AOVs agree within the `UniformArea` parity tolerances.
+  Both implementations cover `Ẑ = 0`, an empty LTC clip, emitters behind every
+  receiver, finite contributions and weights that partition unity, in the CPU unit
+  tests, the shader parity kernel and the capture tests.
+- **`UniformArea`.** Captures stay bit-identical in both implementations.
+- **Not yet covered.** No fixture has textured emitters. Thousands of emissive
+  triangles and the equal-time evaluation of item 5 also remain open.
+- **Not run.** Vulkan, WebGPU and `NativeQueries` captures of the resampled mode,
+  and sanitizer builds, first run in batch CI.
 
 ## Ownership
 
