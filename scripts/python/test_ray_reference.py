@@ -67,8 +67,26 @@ class ReferenceExportTests(unittest.TestCase):
         data = self.capture()
         struct.pack_into('<I', data, 44, 97)
         with self.assertRaises(ValueError): hdr.decode(data)
-        struct.pack_into('<I', data, 44, 160)
+        struct.pack_into('<I', data, 44, 288)
         with self.assertRaises(ValueError): hdr.decode(data)
+
+    def test_light_sampling_pairs_the_sampler_version_with_its_flag(self):
+        for sampler, flags, light_sampling in ((1, 96, 'uniform_area'), (2, 224, 'resampled_projected_solid_angle'),
+                                               (2, 161, 'resampled_projected_solid_angle')):
+            with self.subTest(sampler=sampler, flags=flags):
+                data = self.capture()
+                struct.pack_into('<I', data, 16, sampler)
+                struct.pack_into('<I', data, 44, flags)
+                metadata, _ = hdr.decode(data)
+                self.assertEqual(metadata['sampler'], sampler)
+                self.assertEqual(metadata['light_sampling'], light_sampling)
+        # A flag without its sampler version, the version without its flag, or an unknown version is refused.
+        for sampler, flags in ((1, 160), (2, 32), (3, 160)):
+            with self.subTest(sampler=sampler, flags=flags):
+                data = self.capture()
+                struct.pack_into('<I', data, 16, sampler)
+                struct.pack_into('<I', data, 44, flags)
+                with self.assertRaises(ValueError): hdr.decode(data)
 
     def test_complete_short_nonfinite_and_unknown_profile_reject(self):
         data = self.capture()

@@ -364,17 +364,18 @@ void CheckOracle(const Scene& scene, uint32 extent, uint32 samples, const Array<
             path.Pixel = static_cast<uint32>(pixel);
             path.Sample = sample;
             REQUIRE(internal::GenerateReferencePrimary(*job, path, path.Ray) == Status::Ready);
-            while (path.Active == true)
+            while (path.IsActive == true)
             {
                 rhi::RayResult hit;
                 REQUIRE(internal::TraceReferenceOracle(job->Scene, path.Ray, hit) == Status::Ready);
                 REQUIRE(internal::PrepareReferenceVertex(*job, information, path, hit) == Status::Ready);
-                if (path.HasShadow == true)
+                for (uint32 shadow = 0; shadow < path.ShadowCount; ++shadow)
                 {
                     rhi::RayResult visibility;
-                    REQUIRE(internal::TraceReferenceOracle(job->Scene, path.Shadow, visibility) == Status::Ready);
+                    REQUIRE(internal::TraceReferenceOracle(job->Scene, path.Shadows[shadow], visibility) ==
+                            Status::Ready);
                     if (visibility.Hit == 0)
-                        path.Direct = path.Direct + path.PendingDirect;
+                        path.Direct = path.Direct + path.PendingDirects[shadow];
                 }
                 if (path.HasNext == false)
                     break;
