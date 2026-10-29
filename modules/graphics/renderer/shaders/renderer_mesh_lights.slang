@@ -60,24 +60,46 @@ float3 EvaluateRasterMeshLights(in SurfaceSample surface, in float3 positionWorl
         polygon.PositionsTangent[2] = float3(dot(deltaWorld, tangentWorld),
                                              dot(deltaWorld, bitangentWorld),
                                              dot(deltaWorld, surface.NormalWorld));
-        ProjectedPolygonInput clipped = (ProjectedPolygonInput)0;
-        if (TryClipProjectedPolygonToUpperHemisphere(polygon, clipped) == false ||
-            clipped.VertexCount < MESH_LIGHT_CORNER_COUNT)
+        float3 heightsTangent =
+            float3(polygon.PositionsTangent[0].z, polygon.PositionsTangent[1].z, polygon.PositionsTangent[2].z);
+        if (all(heightsTangent <= 0) == true)
         {
             continue;
         }
-        polygon = clipped;
-        ProjectedSolidAnglePolygon diffuse;
-        float3 contribution = float3(0);
-        if (TryPrepareProjectedSolidAnglePolygon(polygon, diffuse) == true)
+        bool isAboveHorizon = all(heightsTangent >= 0);
+        if (isAboveHorizon == false)
         {
-            contribution = diffuseAlbedo * (diffuse.ProjectedSolidAngle / PI);
+            ProjectedPolygonInput clipped = (ProjectedPolygonInput)0;
+            if (TryClipProjectedPolygonToUpperHemisphere(polygon, clipped) == false ||
+                clipped.VertexCount < MESH_LIGHT_CORNER_COUNT)
+            {
+                continue;
+            }
+            polygon = clipped;
         }
-        LinearlyTransformedCosinePolygon specularPolygon;
-        if (hasSpecular == true &&
-            TryPrepareLinearlyTransformedCosinePolygon(polygon, distribution, specularPolygon) == true)
+        float diffuseIntegral = isAboveHorizon == true ? ComputeProjectedTriangleIntegral(polygon.PositionsTangent[0],
+                                                                                          polygon.PositionsTangent[1],
+                                                                                          polygon.PositionsTangent[2])
+                                                       : ComputeProjectedSolidAngleIntegral(polygon);
+        float3 contribution = diffuseAlbedo * (diffuseIntegral / PI);
+        if (hasSpecular == true)
         {
-            contribution += specularAlbedo * GetLinearlyTransformedCosinePolygonIntegral(specularPolygon);
+            ProjectedPolygonInput transformed = (ProjectedPolygonInput)0;
+            transformed.VertexCount = polygon.VertexCount;
+            [unroll] for (uint corner = 0; corner < MAX_PROJECTED_POLYGON_INPUT_VERTICES; ++corner)
+            {
+                if (corner < polygon.VertexCount)
+                {
+                    transformed.PositionsTangent[corner] =
+                        MultiplyColumns(distribution.InverseTransform, polygon.PositionsTangent[corner]);
+                }
+            }
+            float specularIntegral = isAboveHorizon == true
+                                         ? ComputeProjectedTriangleIntegral(transformed.PositionsTangent[0],
+                                                                            transformed.PositionsTangent[1],
+                                                                            transformed.PositionsTangent[2])
+                                         : ComputeProjectedSolidAngleIntegral(transformed);
+            contribution += specularAlbedo * (specularIntegral / PI);
         }
         result += emission.rgb * contribution;
     }
