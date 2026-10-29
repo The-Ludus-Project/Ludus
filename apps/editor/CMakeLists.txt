@@ -1418,6 +1418,8 @@ foreach(target IN ITEMS ludus_editor ludus_editor_tests ludus_render_graph_confi
 endforeach()
 
 if(TARGET ludus_render_graph_configuration_tests)
+    # Node details outline a diagnostic target in a token colour, which reads the contrast preference.
+    target_sources(ludus_render_graph_configuration_tests PRIVATE src/internal/theme_preferences.h src/theme_preferences.cpp)
     target_sources(ludus_render_graph_configuration_tests PRIVATE tests/render_graph_options_tests.cpp)
 endif()
 
