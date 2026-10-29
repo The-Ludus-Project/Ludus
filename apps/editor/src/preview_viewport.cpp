@@ -1,5 +1,6 @@
 #include "internal/preview_viewport.h"
 #include "internal/empty_world_view.h"
+#include "internal/orientation_widget.h"
 #include "internal/preview_shading.h"
 #include "internal/reference_capture_window.h"
 #include "internal/viewport_size.h"
@@ -417,6 +418,39 @@ private:
     bool mHasLegend = false;
 };
 /// Plain widget that paints the last complete CPU or offscreen frame, scaled to its rectangle.
+/// Axis orientation widget anchored to the top-right corner of the viewport window.
+class OrientationItem final : public QQuickPaintedItem
+{
+public:
+    explicit OrientationItem(QQuickItem* parent) : QQuickPaintedItem(parent)
+    {
+        setObjectName(QStringLiteral("viewportOrientationOverlay"));
+        setZ(STATISTICS_Z);
+        setAntialiasing(true);
+        setVisible(false);
+        setSize({ORIENTATION_WIDGET_SIZE_PIXEL, ORIENTATION_WIDGET_SIZE_PIXEL});
+        connect(parent, &QQuickItem::widthChanged, this, [this]() { place(); });
+    }
+    /// Show the widget for this camera, or hide it when isShown is false.
+    void SetCamera(const gameplay::camera::CameraSample& sample, bool isShown)
+    {
+        mSample = sample;
+        setVisible(isShown);
+        place();
+        update();
+    }
+    void paint(QPainter* painter) override
+    {
+        PaintOrientationWidget(*painter, BuildOrientationLayout(mSample, QRectF(QPointF(0, 0), size())), mSample);
+    }
+
+private:
+    void place()
+    {
+        setPosition(GetOrientationWidgetRect(parentItem()->width()).topLeft());
+    }
+    gameplay::camera::CameraSample mSample;
+};
 class FrameCanvas final : public QWidget
 {
 public:
@@ -456,6 +490,13 @@ public:
             update();
         }
     }
+    /// Orientation widget painted at the top-right; hidden when isShown is false.
+    void SetOrientation(const gameplay::camera::CameraSample& sample, bool isShown)
+    {
+        mOrientationSample = sample;
+        mIsOrientationShown = isShown;
+        update();
+    }
     /// Legend key painted at the bottom-left; null hides it.
     void SetLegend(const PreviewLegend* legendOrNull)
     {
@@ -494,6 +535,12 @@ protected:
                         FitOverlayText(mShaderStatusText, width()),
                         GetShaderStatusOrigin(mStatisticsText),
                         mHasShaderError == true ? SHADER_ERROR_BACKGROUND : STATISTICS_BACKGROUND);
+        if (mIsOrientationShown == true)
+        {
+            PaintOrientationWidget(painter,
+                                   BuildOrientationLayout(mOrientationSample, GetOrientationWidgetRect(width())),
+                                   mOrientationSample);
+        }
         if (mHasLegend == true)
         {
             PaintLegend(painter,
@@ -506,6 +553,8 @@ private:
     ViewportObjectInteraction* mInteractionOrNull = nullptr;
     PreviewLegend mLegend;
     bool mHasLegend = false;
+    gameplay::camera::CameraSample mOrientationSample;
+    bool mIsOrientationShown = false;
     QImage mImage;
     QString mStatisticsText;
     QString mShaderStatusText;
@@ -688,6 +737,7 @@ struct PreviewViewport::State final
     StatisticsItem* StatisticsOrNull = nullptr;
     StatisticsItem* ShaderStatusOrNull = nullptr;
     LegendItem* LegendOrNull = nullptr;
+    OrientationItem* OrientationOrNull = nullptr;
     /// Live shader rebuilds of this viewport's preview; null where unsupported.
     PreviewShaderReload* ShaderReloadOrNull = nullptr;
     QWidget* Container = nullptr;
@@ -763,6 +813,24 @@ private:
             CanvasOrNull->SetLegend(hasLegend == true ? &legend : nullptr);
         }
     }
+    /// Show the axis widget for the current camera while a frame is on screen and the game is not playing.
+    void applyOrientation()
+    {
+        if (Widget == nullptr || Preview == nullptr)
+        {
+            return;
+        }
+        const bool isShown = Widget->IsOrientationWidgetShown();
+        const gameplay::camera::CameraSample& sample = Preview->GetVisibleCameraSample();
+        if (OrientationOrNull != nullptr)
+        {
+            OrientationOrNull->SetCamera(sample, isShown);
+        }
+        if (CanvasOrNull != nullptr)
+        {
+            CanvasOrNull->SetOrientation(sample, isShown);
+        }
+    }
     void applyShaderStatus()
     {
         if (ShaderStatusOrNull != nullptr)
@@ -806,6 +874,7 @@ private:
         applyLegend(Preview->GetShading());
         FrameLayoutOrNull->addWidget(CanvasOrNull);
         MessageOrNull->hide();
+        applyOrientation();
         CanvasOrNull->show();
         if (Preview->AdmitOffscreenDevice() == false)
         {
@@ -1019,6 +1088,8 @@ private:
         applyShaderStatus();
         LegendOrNull = new LegendItem(Window->contentItem());
         applyLegend(Preview->GetShading());
+        OrientationOrNull = new OrientationItem(Window->contentItem());
+        applyOrientation();
         Container = QWidget::createWindowContainer(Window, Widget);
         Container->setFocusPolicy(Qt::NoFocus);
         Container->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -1197,6 +1268,8 @@ private:
         }
         StatisticsOrNull = nullptr;
         ShaderStatusOrNull = nullptr;
+        LegendOrNull = nullptr;
+        OrientationOrNull = nullptr;
         Window = nullptr;
         Device.Reset();
         IsDestroyingWindow = false;
@@ -1599,11 +1672,14 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     connect(preview, &RenderPreview::NavigationChanged, this, [this, preview]() {
         mState->applyLegend(preview->GetShading());
+        mState->applyOrientation();
     });
 #endif
     mState->MessageOrNull = new EmptyWorldView(*preview, this);
     mState->MessageOrNull->SetPrompt(QStringLiteral("Open or create a World to start authoring."));
     mState->MessageOrNull->setWordWrap(true);
+    // The orientation widget follows the message: it shows only while a frame is on screen.
+    mState->MessageOrNull->installEventFilter(this);
     mState->FrameLayoutOrNull = new ViewportFrameLayout;
     mState->Layout->addLayout(mState->FrameLayoutOrNull, 1);
     mState->FrameLayoutOrNull->addWidget(mState->MessageOrNull);
@@ -1896,6 +1972,33 @@ void PreviewViewport::updateObjectInteractionAvailability()
     {
         toolOrNull->setEnabled(canInteract);
     }
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    mState->applyOrientation();
+#endif
+}
+bool PreviewViewport::IsOrientationWidgetShown() const noexcept
+{
+    return mPlayEndpointOrNull == nullptr && mIsInspectingRayPaths == false && mState->MessageOrNull != nullptr &&
+           mState->MessageOrNull->isHidden() == true;
+}
+bool PreviewViewport::tryPickOrientationWidget(QPointF globalPosition)
+{
+    if (IsOrientationWidgetShown() == false || mState->FrameLayoutOrNull == nullptr)
+    {
+        return false;
+    }
+    const QRect frame = mState->FrameLayoutOrNull->GetFrameRectangle();
+    const QPointF local = getInteractionPosition(globalPosition) - QPointF(frame.topLeft());
+    EditorAxisView view = EditorAxisView::Front;
+    if (TryHitOrientationHandle(BuildOrientationLayout(Preview_->GetVisibleCameraSample(),
+                                                       GetOrientationWidgetRect(static_cast<qreal>(frame.width()))),
+                                local,
+                                view) == false)
+    {
+        return false;
+    }
+    Preview_->SetAxisView(view);
+    return true;
 }
 QRectF PreviewViewport::getInteractionFrame() const
 {
@@ -2079,6 +2182,10 @@ void PreviewViewport::updateStatistics()
 bool PreviewViewport::eventFilter(QObject* watched, QEvent* event)
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (watched == mState->MessageOrNull && (event->type() == QEvent::Show || event->type() == QEvent::Hide))
+    {
+        mState->applyOrientation();
+    }
     if (watched == mState->Window)
     {
         switch (event->type())
