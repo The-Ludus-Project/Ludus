@@ -2,6 +2,56 @@ include_guard(GLOBAL)
 include("${CMAKE_CURRENT_LIST_DIR}/LudusDependencies.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/LudusRendererShaders.cmake")
 
+# Every file the render-graph helper reads, named as the SDK installs them flat in its shaders
+# directory. Returns the names in <out>; ludus_compile_render_graph depends on each one.
+function(_ludus_render_graph_helper_files out)
+    ludus_get_renderer_shader_roots(renderer_directory renderer_includes)
+    file(READ "${renderer_directory}/recipes.json" renderer_recipes)
+    set(helper_files compile_shader.py compile_raster.py compile_graph_stage.py compile_metal_ray.py native_worker.py
+        recipes.json renderer_lit.slang renderer_environment_layout.h renderer_gpu_preview_layout.h native_metal_ray.slang
+        renderer_surface_functions.slang scene_shader.slang scene_payload.slang visibility_buffer.slang ray_shader.slang
+        ray_triangle_loop.slang ray_line_visibility.slang ray_bvh_nodes.slang ray_bvh_traversal.slang renderer_reference_layout.h scene_data.h
+        scene_shader_layout.h lighting_layout.h deferred_layout.h deferred_binding_slots.inc
+        renderer_deferred_fullscreen.slang renderer_mesh_lights.slang math.slang raster_bindings.slang metal_ray_pipeline_layout.h
+        projected_solid_angle.slang linearly_transformed_cosine.slang weighted_reservoir.slang ltc_table.slang
+        ltc_table_layout.h
+        shader_toolchain.json spirv_cross_toolchain.json)
+    foreach(recipe renderer_gpu_preview renderer_gpu_preview_image renderer_authored renderer_authored_shadow renderer_clustered_authored renderer_clustered_authored_shadow renderer_deferred_material renderer_deferred_lighting renderer_deferred_depth renderer_flat renderer_output renderer_shadow)
+        string(JSON source GET "${renderer_recipes}" "${recipe}" source)
+        list(APPEND helper_files "${source}")
+    endforeach()
+    list(REMOVE_DUPLICATES helper_files)
+    set(${out} "${helper_files}" PARENT_SCOPE)
+endfunction()
+
+# Source tree only: copy every helper file from its single owner into <destination>, the
+# installed SDK's flat shaders layout. Editor tests stage the same set for their substitute SDKs.
+function(_ludus_stage_render_graph_helpers destination)
+    if(NOT EXISTS "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../scripts/python/ludus_tools/render_graph_build.py")
+        message(FATAL_ERROR "Render graph helpers are staged only from the Ludus source tree")
+    endif()
+    _ludus_render_graph_helper_files(helper_files)
+    ludus_get_renderer_shader_roots(renderer_directory renderer_includes)
+    file(MAKE_DIRECTORY "${destination}")
+    # The source tree spreads the helper over the renderer include roots; each name has one owner.
+    # configure_file reruns CMake when a source changes, and rewrites the copy only if its content does.
+    set(helper_roots "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders" "${renderer_directory}" ${renderer_includes}
+        "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../config")
+    foreach(name IN LISTS helper_files)
+        set(owners)
+        foreach(directory IN LISTS helper_roots)
+            if(EXISTS "${directory}/${name}")
+                list(APPEND owners "${directory}/${name}")
+            endif()
+        endforeach()
+        list(LENGTH owners owner_count)
+        if(NOT owner_count EQUAL 1)
+            message(FATAL_ERROR "Render graph helper ${name} needs exactly one source owner; found: ${owners}")
+        endif()
+        configure_file("${owners}" "${destination}/${name}" COPYONLY)
+    endforeach()
+endfunction()
+
 # Shared RG1 builder and RG2 lowering, also installed for relocated SDK consumers.
 # Dependencies stay within ROOT; generated package/build output must be outside it.
 # RUNTIME_PACKAGE also cooks <NAME>.lurgrt for RG3 runtime activation and sets
@@ -37,46 +87,12 @@ function(ludus_compile_render_graph)
     set(driver "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/render_graph/build.py")
     set(package "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/render_graph")
     set(helper "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders")
-    # Every file the helper reads, named as the SDK installs them flat in its shaders directory.
-    # The cook depends on each one, so the stage list and DEPENDS cannot drift apart.
-    ludus_get_renderer_shader_roots(renderer_directory renderer_includes)
-    file(READ "${renderer_directory}/recipes.json" renderer_recipes)
-    set(helper_files compile_shader.py compile_raster.py compile_graph_stage.py compile_metal_ray.py native_worker.py
-        recipes.json renderer_lit.slang renderer_environment_layout.h renderer_gpu_preview_layout.h native_metal_ray.slang
-        renderer_surface_functions.slang scene_shader.slang scene_payload.slang visibility_buffer.slang ray_shader.slang
-        ray_triangle_loop.slang ray_line_visibility.slang ray_bvh_nodes.slang ray_bvh_traversal.slang renderer_reference_layout.h scene_data.h
-        scene_shader_layout.h lighting_layout.h deferred_layout.h deferred_binding_slots.inc
-        renderer_deferred_fullscreen.slang renderer_mesh_lights.slang math.slang raster_bindings.slang metal_ray_pipeline_layout.h
-        projected_solid_angle.slang linearly_transformed_cosine.slang weighted_reservoir.slang ltc_table.slang
-        ltc_table_layout.h
-        shader_toolchain.json spirv_cross_toolchain.json)
-    foreach(recipe renderer_gpu_preview renderer_gpu_preview_image renderer_authored renderer_authored_shadow renderer_clustered_authored renderer_clustered_authored_shadow renderer_deferred_material renderer_deferred_lighting renderer_deferred_depth renderer_flat renderer_output renderer_shadow)
-        string(JSON source GET "${renderer_recipes}" "${recipe}" source)
-        list(APPEND helper_files "${source}")
-    endforeach()
-    list(REMOVE_DUPLICATES helper_files)
+    _ludus_render_graph_helper_files(helper_files)
     if(EXISTS "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../scripts/python/ludus_tools/render_graph_build.py")
         set(package "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../scripts/python")
         # Build dependencies read only installed/tool/source files. Writable staging belongs to this target.
         set(helper "${CMAKE_CURRENT_BINARY_DIR}/ludus-graphs/${GRAPH_TARGET}/${GRAPH_NAME}/helper")
-        file(MAKE_DIRECTORY "${helper}")
-        # The source tree spreads the helper over the renderer include roots; each name has one owner.
-        # configure_file reruns CMake when a source changes, and rewrites the copy only if its content does.
-        set(helper_roots "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/shaders" "${renderer_directory}" ${renderer_includes}
-            "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../config")
-        foreach(name IN LISTS helper_files)
-            set(owners)
-            foreach(directory IN LISTS helper_roots)
-                if(EXISTS "${directory}/${name}")
-                    list(APPEND owners "${directory}/${name}")
-                endif()
-            endforeach()
-            list(LENGTH owners owner_count)
-            if(NOT owner_count EQUAL 1)
-                message(FATAL_ERROR "Render graph helper ${name} needs exactly one source owner; found: ${owners}")
-            endif()
-            configure_file("${owners}" "${helper}/${name}" COPYONLY)
-        endforeach()
+        _ludus_stage_render_graph_helpers("${helper}")
     endif()
     list(TRANSFORM helper_files PREPEND "${helper}/" OUTPUT_VARIABLE helper_dependencies)
     set(tools "${LUDUS_SLANG_COMPILER}")

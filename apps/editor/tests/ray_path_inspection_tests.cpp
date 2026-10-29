@@ -114,6 +114,8 @@ RenderGraphExtraction MakeExtraction(math::Vector4 tint, uint64 revision)
     mesh.Id = QStringLiteral("triangle");
     mesh.Positions = {{-.5F, -.5F, .5F}, {.5F, -.5F, .5F}, {0, .5F, .5F}};
     mesh.Indices = {0, 1, 2};
+    // The default's forward and deferred scene path needs a shading normal per vertex.
+    mesh.Normals = {{0, 0, 1}, {0, 0, 1}, {0, 0, 1}};
     scene.Meshes.append(mesh);
     PreviewObject object;
     object.Id = QStringLiteral("object");

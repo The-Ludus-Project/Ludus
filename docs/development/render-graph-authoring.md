@@ -3678,6 +3678,11 @@ Limits:
 The engine default and the **Raster** starter use the `ClusteredDeferred` scene
 profile. They shade the current World's authored materials, textures, analytic
 lights and environment; an unlit World with no emission or environment is dark.
+A World without a lighting model, such as the World demo's flat-coloured rooms, is
+extracted as each object's tint (times its colour texture) in emission over a black
+base colour. It shows its authored colours without an invented light; that emission
+also registers as mesh area lighting, which reflects from nothing because every base
+colour is black.
 They require static opaque triangles with normals. Masked/transparent materials
 and invalid inputs reject preparation and retain the last drawable generation.
 Emissive meshes also provide unshadowed direct area lighting. No proxy lights, ray tracing, shadow maps or indirect illumination are added.

@@ -125,6 +125,7 @@ TEST_CASE("A project without a render graph shows the engine default and writes 
                                               QStringLiteral("main_shaders/color.slang"),
                                               QStringLiteral("main_shaders/depth.slang"),
                                               QStringLiteral("main_shaders/geometry.slang"),
+                                              QStringLiteral("main_shaders/lighting.slang"),
                                               LIBRARY}));
     // The embedded sources are the engine-owned package (its manifest is configured per host).
     const QDir engine(QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/modules/graphics/renderer/render_graphs/default"));
