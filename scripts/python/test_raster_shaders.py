@@ -10,6 +10,22 @@ sys.path.insert(0,str(ROOT/'cmake/shaders'))
 from compile_raster import spirv_array_indexing, verify_native_metal_arrays, raster_interface, wgsl_contract, glsl_interface, glsl_varyings, verify_varyings, uniform_shape, wgsl_uniform_type, external_text_source
 
 class RasterReflectionTests(unittest.TestCase):
+    def test_metal_fragment_readonly_storage_ignores_unoccupied_resource_category(self):
+        document = {'parameters': [{'name': 'TriangleWords',
+                    'bindings': [{'kind': 'constantBuffer', 'index': 3},
+                                 {'kind': 'shaderResource', 'index': 0, 'count': 0}],
+                    'type': {'kind': 'resource', 'baseShape': 'structuredBuffer',
+                             'resultType': {'kind': 'vector', 'elementCount': 4,
+                                            'elementType': {'kind': 'scalar', 'scalarType': 'float32'}}}}],
+                    'entryPoints': [{'stage': 'fragment', 'bindings': [
+                        {'name': 'TriangleWords', 'binding': {'used': 1}}]}]}
+        interface = raster_interface(document, 'fragment', metal=True)
+        self.assertEqual([(e['binding'], e['kind'], e['size']) for e in interface['entries']],
+                         [(3, 'StorageRead', 16)])
+        document['parameters'][0]['bindings'][1]['count'] = 1
+        with self.assertRaises(RuntimeError):
+            raster_interface(document, 'fragment', metal=True)
+
     def test_native_ray_scene_is_scalar_compute_only(self):
         document = {'parameters': [{'name': 'Scene', 'binding': {'kind': 'descriptorTableSlot', 'index': 5},
                                     'type': {'kind': 'resource', 'baseShape': 'accelerationStructure'}}],

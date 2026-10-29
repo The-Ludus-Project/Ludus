@@ -362,7 +362,9 @@ void RenderGraphPipelineEditor::ShowParts()
         part->setObjectName(QStringLiteral("renderGraphShaderPart_") + shader.value(QStringLiteral("id")).toString());
         part->setText(QStringLiteral("%1\n%2").arg(shader.value(QStringLiteral("stage")).toString(),
                                                    shader.value(QStringLiteral("program")).toString()));
-        part->setToolTip(QStringLiteral("Click to edit the assignment; double-click to open the shader source"));
+        part->setToolTip(
+            QStringLiteral("Program: %1\nClick to edit the assignment; double-click to open the shader source")
+                .arg(shader.value(QStringLiteral("program")).toString()));
         part->setProperty("renderGraphShaderId", shader.value(QStringLiteral("id")).toString());
         part->installEventFilter(this);
         part->setIcon(style()->standardIcon(QStyle::SP_FileIcon));
@@ -496,6 +498,27 @@ RenderGraphPipelineEditor::createTable(const QString& name, const QStringList& f
                                            : value.toString(),
                     mNode.value(QStringLiteral("kind")).toString());
         }
+    }
+    if (name == QStringLiteral("shaders"))
+    {
+        QLabel* scope = new QLabel(
+            QStringLiteral("Program IDs are shared by every graph and configuration in the root shader manifest. "
+                           "Enter an existing program to share it, or Program to generate a unique name."),
+            panel);
+        scope->setWordWrap(true);
+        layout->addWidget(scope);
+        QLineEdit* programName = new QLineEdit(panel);
+        programName->setObjectName(QStringLiteral("renderGraphProgramName"));
+        programName->setReadOnly(true);
+        programName->setPlaceholderText(QStringLiteral("Select a shader to inspect and copy its full program ID"));
+        layout->addWidget(programName);
+        const auto showProgram = [table, programName]() {
+            const QTableWidgetItem* itemOrNull = table->item(table->currentRow(), 2);
+            programName->setText(itemOrNull != nullptr ? itemOrNull->text() : QString());
+            programName->setCursorPosition(0);
+        };
+        connect(table, &QTableWidget::currentCellChanged, programName, showProgram);
+        connect(table, &QTableWidget::itemChanged, programName, showProgram);
     }
     if (name == QStringLiteral("outputs"))
     {
@@ -995,6 +1018,16 @@ void RenderGraphPipelineEditor::SetShaderAssignments(const QJsonArray& shaders)
     for (int32 row = 0; row < shaders.size() && row < mShaders->rowCount(); ++row)
     {
         mShaders->item(row, 2)->setText(shaders.at(row).toObject().value(QStringLiteral("program")).toString());
+    }
+    QLineEdit* programNameOrNull =
+        mShaders->parentWidget()->findChild<QLineEdit*>(QStringLiteral("renderGraphProgramName"));
+    if (programNameOrNull != nullptr)
+    {
+        const int32 currentRow = mShaders->currentRow();
+        programNameOrNull->setText(currentRow >= 0 && currentRow < shaders.size()
+                                       ? shaders.at(currentRow).toObject().value(QStringLiteral("program")).toString()
+                                       : QString());
+        programNameOrNull->setCursorPosition(0);
     }
     if (mPartsOrNull != nullptr)
     {

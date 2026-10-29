@@ -3,6 +3,7 @@
 
 #include "../shaders/renderer_gpu_preview_layout.h"
 #include "internal/gpu_denoiser.h"
+#include "internal/ltc_table_data.h"
 #include "internal/render_graph_deferred.h"
 #include "internal/render_graph_metalfx.h"
 #include "internal/render_graph_pool.h"
@@ -989,7 +990,8 @@ struct RenderGraph::State final
     Status PrepareDeferredView(core::UniquePtr<internal::RenderGraphDeferredPass>& inoutPass,
                                internal::RenderGraphDeferredTargets& inoutTargets,
                                PreparedView view,
-                               const ViewDescription& camera) noexcept
+                               const ViewDescription& camera,
+                               const internal::ForwardSceneGeneration& lighting) noexcept
     {
         if (inoutPass.Get() == nullptr)
         {
@@ -999,8 +1001,12 @@ struct RenderGraph::State final
                 return Status::OutOfMemory;
             }
             inoutPass = core::UniquePtr<internal::RenderGraphDeferredPass>{allocationOrNull};
-            const Status status =
-                inoutPass->Initialize(inoutTargets, GetContext(format::Technique::ColorAndDepth), view, camera);
+            const Status status = inoutPass->Initialize(inoutTargets,
+                                                        GetContext(format::Technique::ColorAndDepth),
+                                                        view,
+                                                        camera,
+                                                        lighting.GetMeshLights(),
+                                                        lighting.GetMeshLightCount());
             if (IsAccepted(status) == false)
             {
                 return status;
@@ -1078,7 +1084,8 @@ struct RenderGraph::State final
                 status = PrepareDeferredView(update.DeferredPasses[i],
                                              *Current->DeferredTargets[i],
                                              update.Views[i],
-                                             update.Cameras[Passes[i].Camera]);
+                                             update.Cameras[Passes[i].Camera],
+                                             *Current->ForwardGeneration);
             }
             if (status != Status::Ready)
             {
@@ -1459,7 +1466,8 @@ struct RenderGraph::State final
                 const Status deferred = PrepareDeferredView(inoutScene.DeferredPasses[i],
                                                             *inoutScene.DeferredTargets[i],
                                                             inoutScene.Views[i],
-                                                            inoutScene.Cameras[Passes[i].Camera]);
+                                                            inoutScene.Cameras[Passes[i].Camera],
+                                                            *inoutScene.ForwardGeneration);
                 if (deferred != Status::Ready)
                 {
                     return deferred;
@@ -1851,6 +1859,8 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
         }
         if (information.Profile.Interface.MaxColorAttachments < DEFERRED_TARGET_COUNT ||
             information.Profile.Interface.MaxBindings < DEFERRED_BINDING_COUNT ||
+            information.Profile.Compute.MaxStorageBindings < 2 ||
+            information.Profile.Compute.MaxStorageRange < sizeof(internal::LTC_TABLE) ||
             formatCapabilities.DepthSampled == false || formatCapabilities.AttachmentViews == false ||
             formatCapabilities.Uses.ColorAttachment == false)
         {
@@ -2403,7 +2413,8 @@ Status RenderGraph::Poll() noexcept
             status = state.ForwardResources.Initialize(state.Device,
                                                        context,
                                                        state.ForwardProgram,
-                                                       state.Programs.HasClusteredForward);
+                                                       state.Programs.HasClusteredForward,
+                                                       state.Programs.HasClusteredDeferred);
             if (status != Status::Ready)
             {
                 return status;

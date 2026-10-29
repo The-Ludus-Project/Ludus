@@ -28,7 +28,7 @@ enum class RenderSceneSource : foundation::uint8
 {
     /// Nothing renders the World yet: no project bindings and no game adapter.
     None,
-    /// The project's authoring/render.preview.json binds World components to renderables.
+    /// The project's authoring/render.preview.json, or bundled default-World bindings, supplies renderables.
     ProjectBindings,
     /// The World-demo game extracts its own frame (apps/world_demo render_items).
     WorldDemo,
@@ -153,8 +153,13 @@ struct RenderScene final
     foundation::int32 DefaultCamera = -1;
     /// Choose the extraction source for a World in a project root; reads only file metadata.
     [[nodiscard]] static RenderSceneSource GetSource(const QString& root, const WorldDocument& world);
-    [[nodiscard]] static bool
-    Load(const QString& root, const WorldDocument& world, RenderScene& output, QString& error);
+    /// Load authored objects. Disable lighting composition when passing this snapshot to Merge,
+    /// which must consume the original mesh data rather than an already cooked scene.
+    [[nodiscard]] static bool Load(const QString& root,
+                                   const WorldDocument& world,
+                                   RenderScene& outScene,
+                                   QString& outError,
+                                   bool shouldComposeLighting = true);
     /// Bounds of the extracted visible objects, or one selected stable ID; failure preserves output.
     [[nodiscard]] bool TryGetBounds(const QString& id, foundation::math::Aabb3& outBoundsWorld) const noexcept;
     // camera=-1 selects the independent editor orbit. All failures preserve output.

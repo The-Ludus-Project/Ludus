@@ -82,9 +82,16 @@ The command writes only stdout (`--json` returns a `document` object). It does
 not replace files or convert imported assets automatically.
 
 In **Properties → Shaders** or the canvas node editor, add a row, choose its stage
-and set its shader ID. Completed edits automatically create a `.slang` template and registers a program in the root
+and set its shader ID. Completed edits automatically create a `.slang` template and register a program in the root
 `.lushader.json` for each new program name. The initial `Program` value
-receives a unique name from the node and shader IDs. To share a shader, enter an existing
+receives a unique name from the node and shader IDs. Program IDs belong to the root
+shader manifest and are shared across all imported graphs and configurations;
+graph-local node names do not create separate program namespaces. Generated names
+choose an available suffix on creation and shader-row rename, including when a
+source file already occupies the suggested name. Select a shader row to inspect
+and copy its full program ID above the table; shader cards also show it in their
+tooltip. Rejected edits show their cause and repair instruction above the fields
+in **Details**, preserving the accepted draft. To share a shader, enter an existing
 program name with a matching stage. New sources appear immediately in **Source**;
 **Save** writes them beside the manifest. Creation, manifest registration and node
 assignments form one undo step. Completing an executable graphics or triangle ray
@@ -1896,9 +1903,15 @@ Scope and limits:
 
 `ludus_render_graph_ray_tests` renders the template on Metal, with its compute BVH.
 These cases run as their own CTest entry,
-`ludus_render_graph_ris_projected_solid_angle_pixels`. The fixtures are the glossy
-Cornell-box-style room under a sky, a room with sixteen small emitters whose power
-spans a factor of 64, and a two-sided emitter over minimum-roughness metal:
+`ludus_render_graph_ris_projected_solid_angle_pixels`. The fixtures are:
+
+- the glossy Cornell-box-style room under a sky;
+- a room with sixteen small emitters whose power spans a factor of 64;
+- a ceiling light with a 4 × 4 emission map, which is black on a quarter of its
+  area, over rough dielectric surfaces;
+- a two-sided emitter over minimum-roughness metal.
+
+They check two properties:
 
 - At 256 samples per pixel, all three outputs converge to the MIS template's
   light-sampling output within 2%. The exception is the two-sided case, where they
@@ -1911,6 +1924,19 @@ spans a factor of 64, and a two-sided emitter over minimum-roughness metal:
   image, about 0.0011 against 0.0025 on Apple M5. The decoded linear error is
   reported beside it but is dominated by pixels that see an emitter directly.
 
+The opt-in `[.ris-projected-solid-angle-benchmark]` case of the same executable
+compares this template with the MIS template at equal samples and at equal kernel
+time. CTest does not run it. Its room has 3200 emissive triangles, and it has a
+diffuse and a specular variant:
+
+```bash
+out/build/macos-clang-debug/modules/graphics/renderer/ludus_render_graph_ray_tests "[.ris-projected-solid-angle-benchmark]"
+```
+
+It reports kernel times, shadow rays per pixel, MAPE, linear RMSE and tone-mapped
+error for each template. The method and the recorded results are in the
+[review's evidence](../architecture/many-area-light-sampling-reference-review.md#equal-time-benchmark).
+
 `ludus_renderer_render_tests` runs the weights on the GPU. It checks that Peters'
 weights and the light/BSDF split sum to one wherever a technique can sample, that
 `Ẑ = 0` applies the inclusion cap, and that an empty LTC clip leaves the diffuse
@@ -1918,6 +1944,151 @@ technique all the weight. Vulkan has not been run for this template.
 
 See the canonical
 [package](../../modules/graphics/renderer/render_graphs/ris_projected_solid_angle/main.lurender.json).
+
+### Compare BRDF importance sampling for polygonal lights
+
+The **Peters — BRDF importance sampling for polygonal lights** template
+(`polygonal-light-sampling`) reproduces the comparison in Christoph Peters,
+[*BRDF Importance Sampling for Polygonal Lights*, ACM TOG 40(4), article 140, 2021](https://doi.org/10.1145/3450626.3459672).
+Every emissive triangle of the scene is shaded with his two techniques, and each
+estimator that combines them is exported as its own image. Unlike the
+[RIS template](#resample-many-area-lights-with-projected-solid-angle-sampling), it
+selects no light: like Peters' renderer (section 6.1), it shades every light, traces
+one shadow ray per sample, and computes direct lighting only. Create it from
+**New Render Graph → Template**, or with the CLI:
+
+```bash
+ludus render-graph new graphs/Polygonal --template polygonal-light-sampling --output offscreen \
+  --renderer-static --profiles metal wgsl
+```
+
+Use `spirv wgsl` for Vulkan. A `wgsl`-only package is rejected with a `Capability`
+diagnostic that names Metal or Vulkan compute. **Apply Configuration Template...**
+and Quick Add also offer the `PolygonalLightSampling` configuration, with `scene`,
+`view` and `color` inputs, a required `color` output and optional
+`balanceHeuristic`, `projectedSolidAngle` and `ltc` outputs.
+
+Every pass selects the `ComputeBvh` traversal, so the package needs Metal or Vulkan
+compute but no hardware ray tracing. Its registry requirement is
+`compute-ray-tracing`. Browser execution is outside the graph ray profile.
+
+Four compute passes share a 32-byte hit record, each with its own
+**Accumulate → ToneMap → Export** chain. The first pass traces the camera ray and
+records the hit for the other three, so all four shade the same point with the
+same random numbers.
+
+| Pipeline node | Function in `main_shaders/shade.slang` | Estimate (paper section) | Output |
+| --- | --- | --- | --- |
+| `shade` | `ShadeClampedOptimalMis` | One projected-solid-angle and one LTC sample per triangle, combined by clamped optimal MIS (§4.3) | `color` → `output` export |
+| `shadeBalanceHeuristic` | `ShadeBalanceHeuristic` | The same two samples with Veach's balance heuristic (Fig. 10b) | `balanceHeuristic` → `balanceHeuristicOutput` |
+| `shadeProjectedSolidAngle` | `ShadeProjectedSolidAngle` | The projected-solid-angle sample alone (§3, Fig. 12l) | `projectedSolidAngle` → `projectedSolidAngleOutput` |
+| `shadeLtc` | `ShadeLtc` | The LTC sample alone (§4.1) | `ltc` → `ltcOutput` |
+
+For each receiver and each emissive triangle, `main_shaders/polygonal_light.slang`
+follows the paper section by section:
+
+1. `MakePolygonalLightReceiver` builds the shading frame and looks up the specular
+   LTC `M₁` with the receiver's `F0` from the renderer's
+   [LTC table](ltc-table.md), which the technique's
+   `scene_interface.polygonal_light_sampling` binds. The diffuse technique uses
+   `M₀ = I` (§4.2).
+2. `TryPreparePolygonalLight` clips the triangle to the horizon for projected
+   solid angle sampling (§3, supplement A.1) and transforms it by `M₁⁻¹` before
+   clipping it there for LTC sampling (§4.1). An empty LTC clip disables that
+   technique. It computes Peters' coefficients `c_j = L_e a_j E_j` **per color
+   channel**, with the diffuse albedo `a₀` clamped to 0.01 per channel (§4.2).
+3. `TrySamplePolygonalLight` draws a direction with FoundationMath's
+   [projected solid angle](../modules/foundation/math.md) or LTC sampler, evaluates
+   both densities at the normalized direction and maps it to a point on the
+   triangle.
+4. `ComputePolygonalLightWeight` returns the estimator's weight per channel:
+   `v·c_j p_j / Σ c_k p_k + (1 − v)·p_j / Σ p_k` for clamped optimal MIS,
+   `p_j / Σ p_k` for the balance heuristic, and one for a single technique.
+5. `shade.slang` evaluates the emission at the sampled point, including emission
+   maps and sidedness, and traces the shadow ray with `TestVisibility`.
+
+| Graph setting | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `PROJECTED_SOLID_ANGLE_MIS_VISIBILITY` | `0.5` | `0`–`1` | Peters' visibility estimate `v` (§4.3). `1` gives the weighted balance heuristic of §4.2 (Fig. 10c); `0` makes the color output equal to the balance-heuristic output |
+
+The setting is the RIS template's, with the same meaning, so a project that
+imports both shares one value. The random layout is in
+`main_shaders/hit_record.slang`: dimensions 0–1 jitter the camera ray, and emissive
+triangle `k` draws its projected-solid-angle sample at `2 + 4k` and `3 + 4k` and its
+LTC sample at `4 + 4k` and `5 + 4k`. The single-technique outputs therefore reuse
+the MIS outputs' samples.
+
+Each emissive triangle costs two shadow rays in the MIS passes and one in each
+single-technique pass. The technique declares `surface_queries: 1` and the scene
+interface's maximum of `visibility_queries: 16`, so a scene may have at most **eight
+emissive triangles**. A larger scene fails explicitly with the failure color rather
+than dropping lights; use the RIS template for many lights.
+
+New shader programs have `PolygonalLight`-prefixed IDs and sources under
+`polygonal_light_sampling/main_shaders/`. The setting joins the manifest's Graph
+settings, and existing values are kept. The shared ray technique is extended as for
+the compute ray-tracing template, and it gains `polygonal_light_sampling`.
+
+Departures from the paper, also listed in `polygonal_light.slang`:
+
+- Polygons are the scene's emissive triangles. A quad light is two triangles, each
+  with its own pair of samples, where Peters samples the whole convex polygon.
+- The diffuse albedo `a₀` is `baseColor · (1 − metallic) · (1 − F0)`, Schlick's
+  reflectance at normal incidence for Ludus's Fresnel-weighted Lambert lobe. Peters
+  uses the Frostbite BRDF's diffuse albedo.
+- Shading normals are not clipped to the hemisphere of the outgoing direction
+  (§6.1); the BSDF is zero there.
+- A sampled direction that misses its triangle in float32 contributes zero.
+- Analytic lights and the environment do not light surfaces. A camera ray that
+  misses the scene shows the environment.
+- Light samples do not apply the emitter's own alpha cutoff, as in the other
+  templates.
+
+The LTC output is not an unbiased image of the scene: the LTC can be zero where the
+BRDF is not (§4.1), so it estimates the shading only within the LTC's support. The
+MIS outputs need the diffuse technique for exactly this reason (§4.2).
+
+Evidence:
+
+- **CPU oracle.** `tests/polygonal_light_sampling_oracle.cpp` implements the same
+  four estimators with FoundationMath's C++ primitives, the CPU LTC lookup and the
+  RT1 reference BSDF, for one unoccluded triangle with constant emission.
+- **Unbiasedness.** `ludus_renderer_tests` (`[polygonal-light-sampling]`)
+  compares each estimator's mean over 65,536 oracle samples with a midpoint
+  quadrature of the same integral over 512² subtriangles. Every channel agrees
+  within four standard errors plus 0.2% for a rough dielectric, glossy metal with
+  the triangle in its highlight, and a two-sided triangle straddling the horizon
+  with `v = 1`. The LTC estimator is compared with the integral over the LTC's
+  support. On the glossy case the variance is 0.087 for clamped optimal MIS, 0.34
+  for the balance heuristic and 3.6 for projected solid angle sampling alone, the
+  ordering of Peters' Fig. 10.
+- **CPU and GPU parity.** `ludus_renderer_render_tests` runs
+  `polygonal_light.slang` in a test kernel on 4,096 drawn receivers, materials and
+  triangles, a quarter of them at the minimum roughness, and compares the raw
+  linear radiance of all four estimators with the oracle. On Apple M5 the integrals
+  and coefficients agree to a p99 relative difference of 5·10⁻⁵, the per-case
+  radiance to p90 2.8·10⁻⁵ and p99 2.8·10⁻³, and the summed radiance to 6.1·10⁻⁴;
+  the test allows 5·10⁻⁴, 10⁻⁴, 5·10⁻³ and 2·10⁻³. LTC clips with an integral
+  below 10⁻⁴ are slivers whose samples are not reproducible across precisions
+  (Peters §3.7), so the estimators that use the LTC sample skip them, as
+  FoundationMath's LTC parity test does.
+- **Template.** `ludus_render_graph_ray_tests` runs as its own CTest entry,
+  `ludus_render_graph_polygonal_light_sampling_pixels`. At 256 samples per pixel,
+  the clamped optimal MIS, balance-heuristic and projected-solid-angle outputs agree
+  with the [MIS template](#compare-light-and-bsdf-sampling-with-mis)'s MIS output
+  within 2% in a diffuse and a glossy-metal Cornell room (within 0.05% on Apple
+  M5). The LTC output is not above it. At 16 samples in the glossy room, against a
+  1024-sample image with an independent seed, the tone-mapped mean squared error is
+  1.24·10⁻⁴ for clamped optimal MIS, 1.25·10⁻⁴ for the balance heuristic and
+  1.46·10⁻⁴ for projected solid angle sampling alone; the test requires the first
+  to be below the last. A room with 32 emissive triangles shows the failure color.
+- **Not covered.** Vulkan has not been run; it first runs in batch CI. There is no
+  textured-emitter, occluded-penumbra (Peters' Fig. 10 wall) or equal-time fixture,
+  and no test asserts that clamped optimal MIS beats the balance heuristic on the
+  GPU, where the glossy room measures them almost equal.
+
+See the canonical
+[package](../../modules/graphics/renderer/render_graphs/polygonal_light_sampling/main.lurender.json).
 
 ### Sample lights along lines
 
@@ -3468,7 +3639,7 @@ profile. They shade the current World's authored materials, textures, analytic
 lights and environment; an unlit World with no emission or environment is dark.
 They require static opaque triangles with normals. Masked/transparent materials
 and invalid inputs reject preparation and retain the last drawable generation.
-No proxy lights, ray tracing, shadow maps or indirect illumination are added.
+Emissive meshes also provide unshadowed direct area lighting. No proxy lights, ray tracing, shadow maps or indirect illumination are added.
 The color target remains linear RGBA8, so radiance above one clips.
 
 The logical color/depth node runs an opaque material pass followed by a fullscreen
@@ -3481,6 +3652,33 @@ loads that output afterward. Background coverage remains clear. Half-float mater
 storage and reconstructed positions introduce numerical differences; native tests
 compare against the same material callback in clustered forward within two linear
 RGBA8 codes per channel. This is a correctness tolerance, not a performance claim.
+
+Emissive triangles are integrated over their actual transformed geometry. The
+Lambert term uses the polygon's projected solid angle with view-dependent Schlick
+Fresnel; specular uses the renderer's [LTC table](ltc-table.md), an approximation to
+GGX. The receiver horizon is clipped before transforming the polygon. Emission
+sidedness uses the inverse-transpose geometric normal, including reflected and
+nonuniform instances. Exactly collapsed triangles contribute nothing. A plane
+tolerance of 10 micrometres plus two parts per million of coordinate magnitude
+suppresses coplanar self-lighting from depth reconstruction; distinct surfaces
+closer than that tolerance are also treated as coplanar. Constant
+emission is integrated per triangle; an emission map splits each source triangle
+into four equal-area patches and samples fixed-mip emission at each centroid,
+including UV transforms, address/filter policy and sRGB decoding. This piecewise
+constant texture approximation can miss small features; it is not the reference
+path tracer's textured-emitter estimator.
+
+There is no mesh-light visibility test yet: area lights can illuminate through
+walls. Every admitted emitter triangle is evaluated, independently of the analytic
+light clusters, with no finite-distance cutoff. At most 4096 nonzero-emission
+triangles/patches are admitted per scene; excess geometry rejects preparation and
+retains the last drawable generation. The immutable scene upload uses four Float4
+words per triangle plus a dummy record for an empty light set. Camera-only updates
+reuse it. Fragment read-only storage is required for this upload and the shared
+LTC table; the resolve repurposes unused bake/shadow slots three and four, keeping
+sixteen total slots. Forward-only profiles retain their existing behavior. Runtime
+package version 26 changes these two deferred binding kinds; older deferred packages
+must be cooked again. Linear RGBA8 output still clips bright radiance.
 
 Select **ZPrepass** in the preview configuration
 selector to enable a separate depth-only pass. That pass clears and stores depth;
@@ -3496,7 +3694,9 @@ both passes in `rasterize.lurender.json` → `ColorAndDepthWithPrepass`.
 Light assignment reuses the [portable L5 clustered profile](../architecture/renderer-systems.md#l5-opt-in-portable-scaling).
 The CPU builds conservative 8×8×8 world-space cells over the scene's transformed
 geometry bounds, padded by half a metre and clamped to the profile's coordinate
-limits. Shading runs on the GPU. All admitted lights (up to 128) are retained;
+limits. Shading runs on the GPU. Only directional, point and spot records are admitted in the analytic list; legacy
+area quadrature proxies reject preparation to avoid double-counting mesh emitters.
+All admitted analytic lights (up to 128) are retained;
 each cell stores up to 32 indices. Overflowing cells and samples outside the grid
 evaluate the complete list. `RenderGraphReport::Resources` exposes dropped lights,
 overflow cells and stored assignments. Camera-only edits reuse the scene's lists;
@@ -4566,7 +4766,33 @@ unified source/canvas undo are available; language-server hover and completion
 remain future increments, described in the
 [shared editor architecture](../architecture/editor-gui-systems.md#source-editing-direction).
 
-Right-click the source for the editing commands. On macOS, use Command where
+Use **Focus Source** or **Shift+Alt+Return** while Source is active to hide the
+surrounding tool windows, graph source tree and API reference. **Restore Layout**
+or the same shortcut restores the previous arrangement, selection and active
+source. The View menu's **Focus Viewport** command also supports Source.
+**Shader API** shows or hides the reference; it starts hidden, remembers the
+choice, and retains the reference split width across focus and source changes.
+External editor and reload actions are grouped under the **Source** menu.
+
+The compact editor strip exposes **Edit**, text size in points, **Wrap** and
+indentation **Guides**, plus the caret's line/Unicode-scalar column and a
+clickable diagnostic count. Text defaults to 13 points; size (8–32 points),
+wrapping and guides persist for subsequently opened editor views. These are
+presentation preferences: they never alter source bytes or undo history.
+Wrapping is visual; it does not insert newlines. The Edit menu lists commands
+with their shortcuts, and the context menu offers the same editing commands.
+
+The status beside the source separates the current draft revision and unsaved
+changes from compilation and the generation actually presented in the viewport.
+**Save** publishes files. **Live Preview** builds saved sources; when it is off,
+use **Build & Preview** explicitly. A successful compile alone does not mean its
+frame is presented. Verified presented sources show their captured document
+revision and whether their renderer inputs match the current draft (layout-only
+changes are excluded from that comparison). Pending or failed work keeps
+the last drawable view; project/setup failures are identified separately in the
+Error List. Older failed reports are labeled as earlier versions.
+
+On macOS, use Command where
 Ctrl is shown below (Qt's native shortcut mapping):
 
 | Action | Shortcut |
@@ -4579,9 +4805,18 @@ Ctrl is shown below (Qt's native shortcut mapping):
 | Move selected/current lines | Alt+Up / Alt+Down |
 | Delete selected/current lines | Ctrl+Shift+K |
 | Format shader document (native desktop) | Ctrl+Shift+I |
+| Increase / decrease text size | Platform Zoom In / Zoom Out shortcuts |
+| Reset text size to 13 points | Ctrl+0 |
+| Next / previous diagnostic in the current source | F8 / Shift+F8 |
+| Focus Source / restore layout | Shift+Alt+Return |
 
 Enter retains the current indentation and adds one level after an opening Slang
-brace. Line commands and Replace All each form one document undo step.
+brace. Slang automatically pairs parentheses, square brackets and braces outside
+comments and strings, skips an existing closing bracket, and deletes an empty
+pair together with Backspace. Enter inside an empty brace pair creates an indented
+line with the closing brace on its own line. Disable **Auto-close Brackets** in Edit or the
+context menu to retain ordinary insertion. Line commands, pair insertion/deletion
+and Replace All each form one document undo step.
 Find supports forward/backward wrapping, case matching, and replacement; Escape
 closes its controls and returns focus to the source. Go to line uses one-based
 line numbers. Ordinary text and JSON sources share the commands, with Slang
@@ -4642,9 +4877,9 @@ ordinary-line and plain-Qt comparison probes are opt-in `[.benchmark]` tests in
 
 ### Edit shader sources in a code editor
 
-On native desktop, select a file in the **Source** view and click **Open in Code
-Editor**. The first use opens a native application picker; **Choose Code
-Editor…** changes that saved preference. On macOS, select the editor's `.app`
+On native desktop, select a file in the **Source** view and choose **Source >
+Open in Code Editor**. The first use opens a native application picker; **Source >
+Choose Code Editor…** changes that saved preference. On macOS, select the editor's `.app`
 from Applications. No command-line launcher or shell command is required.
 The selected application receives the saved project file; completion and
 formatting come from that application's language support. This first launcher
@@ -4663,7 +4898,7 @@ the current draft is retained and the job does not start. Undo local edits or
 reopen the graph to resolve the conflict. Apply or revert unapplied text before
 reloading; source refresh never silently replaces that text.
 
-The Source view shows an **Inputs / Outputs** reference beside each Slang file.
+Use **Shader API** to show the **Inputs / Outputs** reference beside a Slang file.
 It reads the current draft build manifest and expands input and output schemas
 into field names, types, semantics and locations, with read-only uniform bindings
 and their slots. Every program sharing the source is listed by function and stage.

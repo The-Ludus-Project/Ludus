@@ -57,14 +57,16 @@ PrepareVisibilityConfiguration(RenderGraphSnapshot& inoutSnapshot,
                                const QString& templateIdentity,
                                QString& outError,
                                RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr);
-/// Prepare the compute-ray-tracing, simple-compute-ray-tracing, veach-guibas-mis or ris-projected-solid-angle
-/// template in an absent/empty library. The simple template imports one triangle-loop kernel under
-/// simple_compute_ray_tracing/ with no Buffer. The original template imports a primary-hits and a shade
-/// scene compute pass sharing one render-size hit Buffer under compute_ray_tracing/. veach-guibas-mis
-/// imports the same primary-hits pass with three shade passes (MIS, light sampling and BSDF sampling)
-/// under veach_guibas_mis/; its light and BSDF images are optional library outputs. ris-projected-solid-angle has the
-/// same four-pass shape under ris_projected_solid_angle/, with compute-BVH passes, and also enables the ray technique's
-/// scene_interface.polygonal_light_sampling helpers. Kernels arrive with
+/// Prepare the compute-ray-tracing, simple-compute-ray-tracing, veach-guibas-mis, ris-projected-solid-angle or
+/// polygonal-light-sampling template in an absent/empty library. The simple template imports one triangle-loop kernel
+/// under simple_compute_ray_tracing/ with no Buffer. The original template imports a primary-hits and a shade scene
+/// compute pass sharing one render-size hit Buffer under compute_ray_tracing/. veach-guibas-mis imports the same
+/// primary-hits pass with three shade passes (MIS, light sampling and BSDF sampling) under veach_guibas_mis/; its light
+/// and BSDF images are optional library outputs. ris-projected-solid-angle has the same four-pass shape under
+/// ris_projected_solid_angle/, with compute-BVH passes, and also enables the ray technique's
+/// scene_interface.polygonal_light_sampling helpers. polygonal-light-sampling imports four compute-BVH shade passes
+/// under polygonal_light_sampling/, the first of which also records the hits, with the same helper requirement and a
+/// visibility budget of 16. Kernels arrive with
 /// their local include closure. A template's Graph settings merge like ReSTIR's (existing values are
 /// kept). The shared ray technique gains scene_interface version 1 when it
 /// lacks one, and its query budgets are raised to the template's; its callbacks, payload and larger
@@ -129,8 +131,8 @@ PreparePointLineConfiguration(RenderGraphSnapshot& inoutSnapshot,
                               RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull = nullptr);
 /// Prepare a built-in configuration, inserting a library/Subgraph when selected on the root canvas.
 /// Supports restir-di, visibility-buffer, visibility-secondary-rays, tiled-vbuffer-nee,
-/// compute-ray-tracing, simple-compute-ray-tracing, veach-guibas-mis, line-sampling, ris-projected-solid-angle
-/// and salesin-jarosz-lines.
+/// compute-ray-tracing, simple-compute-ray-tracing, veach-guibas-mis, line-sampling, ris-projected-solid-angle,
+/// salesin-jarosz-lines and polygonal-light-sampling.
 /// Same transaction contract as PrepareRestirTemplate; invalid identities and conflicts leave publication to the
 /// caller.
 [[nodiscard]] RenderGraphDocumentStatus

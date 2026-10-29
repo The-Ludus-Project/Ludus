@@ -1,0 +1,285 @@
+{
+  "version": 1,
+  "id": "ludus.world.default.v1",
+  "label": "World",
+  "components": [
+    {
+      "id": "transform",
+      "label": "Transform",
+      "help": "Place an entity in the world. Values are in metres.",
+      "required": false,
+      "properties": [
+        {
+          "id": "x",
+          "label": "X",
+          "type": "number",
+          "default": 0,
+          "help": "Horizontal position",
+          "unit": "m",
+          "min": -10000,
+          "max": 10000
+        },
+        {
+          "id": "y",
+          "label": "Y",
+          "type": "number",
+          "default": 0,
+          "help": "Vertical position",
+          "unit": "m",
+          "min": -10000,
+          "max": 10000
+        },
+        {
+          "id": "z",
+          "label": "Z",
+          "type": "number",
+          "default": 0,
+          "help": "Depth position",
+          "unit": "m",
+          "min": -10000,
+          "max": 10000
+        },
+        {
+          "id": "rx",
+          "label": "Rotation X",
+          "type": "number",
+          "default": 0,
+          "help": "Fixed-axis rotations: apply X, then Y, then Z.",
+          "unit": "\u00b0",
+          "min": -360,
+          "max": 360
+        },
+        {
+          "id": "ry",
+          "label": "Rotation Y",
+          "type": "number",
+          "default": 0,
+          "help": "Fixed-axis rotations: apply X, then Y, then Z.",
+          "unit": "\u00b0",
+          "min": -360,
+          "max": 360
+        },
+        {
+          "id": "rz",
+          "label": "Rotation Z",
+          "type": "number",
+          "default": 0,
+          "help": "Fixed-axis rotations: apply X, then Y, then Z.",
+          "unit": "\u00b0",
+          "min": -360,
+          "max": 360
+        },
+        {
+          "id": "sx",
+          "label": "Scale X",
+          "type": "number",
+          "default": 1,
+          "help": "Positive local axis scale.",
+          "unit": "",
+          "min": 0.001,
+          "max": 1000
+        },
+        {
+          "id": "sy",
+          "label": "Scale Y",
+          "type": "number",
+          "default": 1,
+          "help": "Positive local axis scale.",
+          "unit": "",
+          "min": 0.001,
+          "max": 1000
+        },
+        {
+          "id": "sz",
+          "label": "Scale Z",
+          "type": "number",
+          "default": 1,
+          "help": "Positive local axis scale.",
+          "unit": "",
+          "min": 0.001,
+          "max": 1000
+        }
+      ]
+    },
+    {
+      "id": "renderable",
+      "label": "Renderable",
+      "help": "Opaque flat or textured unlit preview. Tint is linear RGB; PNG colors are sRGB. Lighting/shadows are not previewed by this adapter.",
+      "required": false,
+      "properties": [
+        {
+          "id": "mesh",
+          "label": "Mesh",
+          "type": "asset",
+          "default": "",
+          "asset_kind": "mesh",
+          "unit": "",
+          "help": "Choose a project-declared mesh."
+        },
+        {
+          "id": "texture",
+          "label": "Color texture",
+          "type": "asset",
+          "default": "",
+          "asset_kind": "texture",
+          "unit": "",
+          "help": "Choose a project-declared texture."
+        },
+        {
+          "id": "visible",
+          "label": "Visible in preview",
+          "type": "boolean",
+          "default": true,
+          "unit": "",
+          "help": "Hidden objects are omitted from the preview."
+        },
+        {
+          "id": "r",
+          "label": "Tint R",
+          "type": "number",
+          "default": 1,
+          "min": 0,
+          "max": 1,
+          "unit": "",
+          "help": "Tint R for the 3D preview."
+        },
+        {
+          "id": "g",
+          "label": "Tint G",
+          "type": "number",
+          "default": 1,
+          "min": 0,
+          "max": 1,
+          "unit": "",
+          "help": "Tint G for the 3D preview."
+        },
+        {
+          "id": "b",
+          "label": "Tint B",
+          "type": "number",
+          "default": 1,
+          "min": 0,
+          "max": 1,
+          "unit": "",
+          "help": "Tint B for the 3D preview."
+        }
+      ]
+    },
+    {
+      "id": "light",
+      "label": "Light",
+      "help": "Authored photometric light. Uses a rigid Transform with -Z forward; no light is added automatically.",
+      "required": false,
+      "properties": [
+        {
+          "id": "kind",
+          "label": "Kind",
+          "type": "enum",
+          "choices": [
+            "point",
+            "spot",
+            "directional"
+          ],
+          "default": "point",
+          "help": "Point and spot intensity is candela; directional intensity is lux.",
+          "unit": ""
+        },
+        {
+          "id": "enabled",
+          "label": "Enabled",
+          "type": "boolean",
+          "default": true,
+          "help": "Enable this authored light in Lit mode.",
+          "unit": ""
+        },
+        {
+          "id": "r",
+          "label": "Red",
+          "type": "number",
+          "default": 1,
+          "help": "Linear RGB hue.",
+          "unit": "",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "g",
+          "label": "Green",
+          "type": "number",
+          "default": 1,
+          "help": "Linear RGB hue.",
+          "unit": "",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "b",
+          "label": "Blue",
+          "type": "number",
+          "default": 1,
+          "help": "Linear RGB hue.",
+          "unit": "",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "intensity",
+          "label": "Intensity",
+          "type": "number",
+          "default": 100,
+          "help": "Candela for point/spot; lux for directional.",
+          "unit": "cd / lx",
+          "min": 0,
+          "max": 1000000
+        },
+        {
+          "id": "range",
+          "label": "Range",
+          "type": "number",
+          "default": 10,
+          "help": "Finite point and spot attenuation range.",
+          "unit": "m",
+          "min": 0.01,
+          "max": 1000000
+        },
+        {
+          "id": "innerAngle",
+          "label": "Inner half angle",
+          "type": "number",
+          "default": 25,
+          "help": "Spot cone: inner must be less than outer.",
+          "unit": "\u00b0",
+          "min": 0,
+          "max": 89
+        },
+        {
+          "id": "outerAngle",
+          "label": "Outer half angle",
+          "type": "number",
+          "default": 30,
+          "help": "Spot cone half angle, less than 90 degrees.",
+          "unit": "\u00b0",
+          "min": 0.01,
+          "max": 89.9
+        }
+      ]
+    }
+  ],
+  "assets": [
+    {
+      "id": "mesh.cube",
+      "label": "Cube mesh",
+      "kind": "mesh"
+    },
+    {
+      "id": "mesh.plane",
+      "label": "Plane mesh",
+      "kind": "mesh"
+    },
+    {
+      "id": "mesh.sphere",
+      "label": "Sphere mesh",
+      "kind": "mesh"
+    }
+  ]
+}

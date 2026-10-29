@@ -2011,8 +2011,10 @@ viewport after its consumers finish. Reset the viewport before its borrowed
 Renderer/device; RHI interop leases independently retain external backing.
 
 Raster mode uses authored materials, direct lights, environment and admitted
-bakes/shadows. An emissive material is visible but does not automatically illuminate
-other objects: real-time emissive GI is still a separate lighting capability.
+bakes/shadows. The default clustered deferred graph evaluates unshadowed direct mesh area lighting
+from emissive triangles using polygon integrals and fitted LTC specular. Other
+raster profiles retain their existing emission behavior. Emissive indirect transport
+is still a separate lighting capability; see the [default raster contract](../development/render-graph-authoring.md#default-clustered-deferred-lighting).
 No editor lights or fake environment are added to hide that limitation. Choose
 optional GPU path tracing explicitly when emissive/indirect transport is wanted;
 do not make it the prerequisite for ordinary scene navigation.

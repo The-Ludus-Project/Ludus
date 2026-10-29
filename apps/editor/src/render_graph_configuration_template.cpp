@@ -582,7 +582,8 @@ RenderGraphDocumentStatus PrepareConfigurationTemplate(RenderGraphSnapshot& inou
     if (templateIdentity == QStringLiteral("compute-ray-tracing") ||
         templateIdentity == QStringLiteral("simple-compute-ray-tracing") ||
         templateIdentity == QStringLiteral("veach-guibas-mis") ||
-        templateIdentity == QStringLiteral("ris-projected-solid-angle"))
+        templateIdentity == QStringLiteral("ris-projected-solid-angle") ||
+        templateIdentity == QStringLiteral("polygonal-light-sampling"))
     {
         return PrepareComputeRayTracingConfiguration(inoutSnapshot,
                                                      rootGraph,

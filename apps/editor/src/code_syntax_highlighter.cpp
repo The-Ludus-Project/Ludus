@@ -119,6 +119,7 @@ void CodeSyntaxHighlighter::highlightBlock(const QString& text)
         setCurrentBlockUserData(dataOrNull);
     }
     dataOrNull->Brackets.clear();
+    dataOrNull->ExcludedRanges.clear();
     setCurrentBlockState(NORMAL_STATE);
     if (mLanguage == CodeLanguage::PlainText)
     {
@@ -137,16 +138,20 @@ void CodeSyntaxHighlighter::highlightBlock(const QString& text)
             const isize end = text.indexOf(QStringLiteral("*/"), position + (isBlockComment == true ? 0 : 2));
             isBlockComment = end < 0;
             position = isBlockComment == true ? text.size() : end + 2;
+            dataOrNull->ExcludedRanges.append(
+                {static_cast<int32>(start), static_cast<int32>(position), isBlockComment});
             setFormat(static_cast<int32>(start), static_cast<int32>(position - start), mCommentFormat);
             continue;
         }
         if (character == QLatin1Char('/') && next == QLatin1Char('/'))
         {
+            dataOrNull->ExcludedRanges.append({static_cast<int32>(start), static_cast<int32>(text.size()), true});
             setFormat(static_cast<int32>(position), static_cast<int32>(text.size() - position), mCommentFormat);
             break;
         }
         if (character == QLatin1Char('"') || character == QLatin1Char('\''))
         {
+            bool isClosed = false;
             ++position;
             while (position < text.size())
             {
@@ -157,9 +162,12 @@ void CodeSyntaxHighlighter::highlightBlock(const QString& text)
                 }
                 else if (current == character)
                 {
+                    isClosed = true;
                     break;
                 }
             }
+            dataOrNull->ExcludedRanges.append(
+                {static_cast<int32>(start), static_cast<int32>(position), isClosed == false});
             setFormat(static_cast<int32>(start), static_cast<int32>(position - start), mStringFormat);
             continue;
         }

@@ -507,6 +507,58 @@ uint32 ClipPolygonToUpperHemisphere(const Vector3 (&positions)[MAX_PROJECTED_POL
 }
 } // namespace internal
 
+MathStatus TryClipProjectedPolygonToUpperHemisphere(const ProjectedPolygonInput& polygon,
+                                                    ProjectedPolygonInput& outPolygon) noexcept
+{
+    constexpr uint32 MINIMUM_VERTEX_COUNT = 3;
+    if (polygon.VertexCount < MINIMUM_VERTEX_COUNT || polygon.VertexCount > MAX_PROJECTED_POLYGON_INPUT_VERTICES)
+    {
+        return MathStatus::InvalidArgument;
+    }
+    for (uint32 i = 0; i < polygon.VertexCount; ++i)
+    {
+        if (IsFinite(polygon.PositionsTangent[i]) == false)
+        {
+            return MathStatus::NonFiniteInput;
+        }
+    }
+    // A positive common scale preserves the polygon's angular domain and keeps
+    // the clipping denominator and interpolation finite for any finite input.
+    float32 maximumMagnitude = 0;
+    for (uint32 i = 0; i < polygon.VertexCount; ++i)
+    {
+        const Vector3 positionTangent = polygon.PositionsTangent[i];
+        maximumMagnitude =
+            Max(maximumMagnitude, Max(Abs(positionTangent.X), Max(Abs(positionTangent.Y), Abs(positionTangent.Z))));
+    }
+    if (maximumMagnitude == 0)
+    {
+        outPolygon = {};
+        return MathStatus::Success;
+    }
+    Vector3 positions[MAX_PROJECTED_POLYGON_INPUT_VERTICES]{};
+    for (uint32 i = 0; i < polygon.VertexCount; ++i)
+    {
+        // Divide components directly: the reciprocal may overflow for tiny inputs.
+        const Vector3 value = polygon.PositionsTangent[i];
+        positions[i] = {value.X / maximumMagnitude, value.Y / maximumMagnitude, value.Z / maximumMagnitude};
+    }
+    Vector3 clipped[MAX_PROJECTED_POLYGON_VERTICES]{};
+    const uint32 count = internal::ClipPolygonToUpperHemisphere(positions, polygon.VertexCount, clipped);
+    if (count > MAX_PROJECTED_POLYGON_INPUT_VERTICES)
+    {
+        return MathStatus::InvalidArgument;
+    }
+    ProjectedPolygonInput candidate;
+    candidate.VertexCount = count;
+    for (uint32 i = 0; i < count; ++i)
+    {
+        candidate.PositionsTangent[i] = clipped[i];
+    }
+    outPolygon = candidate;
+    return MathStatus::Success;
+}
+
 MathStatus TryPrepareProjectedSolidAnglePolygon(const ProjectedPolygonInput& polygon,
                                                 ProjectedSolidAnglePolygon& outPolygon) noexcept
 {
