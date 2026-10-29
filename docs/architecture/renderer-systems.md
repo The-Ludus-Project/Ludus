@@ -543,6 +543,17 @@ creates no resource. Old unlit textured materials are not admitted to HDR target
 flat overlays remain available. Exposure is manual; auto exposure and tone-map curves
 beyond Reinhard and PBR Neutral remain planned.
 
+The Editor's Solid and Albedo viewport shows a very subtle vertical gradient behind the scene
+(`surface.viewportTop` to `surface.viewport`, `config/design-tokens.json`); Lit keeps the scene's own
+background. It costs no pass, draw or attachment: `RasterViewport::Initialize`'s `hasBackdrop` clears the scene
+target to alpha zero, and the existing output pass adds the gradient, in display space, under each pixel by
+`1 - alpha` (`LightingOutput::HasBackdrop`, `Output.w`). Every scene blend is premultiplied, so a
+partly covered pixel such as a grid line keeps its share of the backdrop. The default is off, which leaves
+the clear colour, the image and the uniform contents of games, exports and reference captures unchanged.
+The shader's endpoint constants must equal the tokens; `test_design_tokens.py` enforces it. Measured on
+lavapipe at 1080p over 15 runs of 40 frames, a viewport frame (render to acquire) has a median of 7.8 ms
+with the backdrop and 8.6 ms without it: no measurable difference.
+
 Default renderer budgets are eight prepared views (four shadow views plus scene/UI
 and overlap), two atlases, two programs, eight materials, four snapshots and four
 presentations. RHI tables grow to 64 per kind: two seven-variant lit programs,

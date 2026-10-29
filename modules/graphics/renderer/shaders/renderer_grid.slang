@@ -80,7 +80,8 @@ float4 Over(float3 color, float coverage, float4 below)
 [shader("fragment")] float4 GridFragmentMain(Varying input) : SV_Target
 {
     float2 uv = float2(dot(input.PositionWorld, input.AxisU.xyz), dot(input.PositionWorld, input.AxisV.xyz));
-    float2 pixelSize = max(fwidth(uv), float2(MINIMUM_PIXEL_SIZE, MINIMUM_PIXEL_SIZE));
+    // fwidth spelled out: Slang 2026.1.2 rejects fwidth for Metal fragments but lowers ddx/ddy.
+    float2 pixelSize = max(abs(ddx(uv)) + abs(ddy(uv)), float2(MINIMUM_PIXEL_SIZE, MINIMUM_PIXEL_SIZE));
     float halfPixels = input.MinorColor.w * HALF;
     float spacing = input.MajorSpacing.w;
     float minorCoverage = LineLevel(uv, pixelSize, spacing, halfPixels);
