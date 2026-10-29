@@ -2878,9 +2878,9 @@ def load_build_budget(root: Path) -> dict[str, object]:
     return data
 
 
-def parse_expensive_headers(analysis_text: str) -> list[tuple[str, int, int]]:
-    """Return (absolute_path, include_count, avg_ms) for each Expensive-headers entry."""
-    results: list[tuple[str, int, int]] = []
+def parse_expensive_headers(analysis_text: str) -> list[tuple[str, int, int, int]]:
+    """Return (absolute_path, total_ms, include_count, avg_ms) for each Expensive-headers entry."""
+    results: list[tuple[str, int, int, int]] = []
     in_section = False
     for line in analysis_text.splitlines():
         if line.startswith("**** Expensive headers"):
@@ -2890,8 +2890,36 @@ def parse_expensive_headers(analysis_text: str) -> list[tuple[str, int, int]]:
             break
         match = _EXPENSIVE_HEADER_RE.match(line)
         if match:
-            results.append((match.group("path"), int(match.group("count")), int(match.group("avg"))))
+            results.append(
+                (match.group("path"), int(match.group(1)), int(match.group("count")), int(match.group("avg")))
+            )
     return results
+
+
+def measure_runner_speed(
+    headers: list[tuple[str, int, int, int]], reference: dict[str, object]
+) -> tuple[float | None, str]:
+    """Return (factor, explanation) comparing this host with the budget's reference run.
+
+    The factor is the summed per-include parse time of the reference standard
+    headers divided by their summed baseline averages: 2.0 means this host parsed
+    the same unchanged headers twice as slowly. A None factor means the report
+    cannot be compared (a header is missing, or the ratio is implausible), and the
+    caller must use raw timings.
+    """
+    baseline = {str(path): float(avg) for path, avg in dict(reference.get("header_avg_ms", {})).items()}
+    if not baseline:
+        return None, "no runner speed reference configured"
+    measured = {path: total_ms / count for path, total_ms, count, _avg in headers if count > 0}
+    missing = sorted(path for path in baseline if path not in measured)
+    if missing:
+        return None, f"runner speed reference header(s) absent from the report: {', '.join(missing)}"
+    factor = sum(measured[path] for path in baseline) / sum(baseline.values())
+    minimum = float(reference.get("minimum_factor", 0.0))
+    maximum = float(reference.get("maximum_factor", float("inf")))
+    if factor < minimum or factor > maximum:
+        return None, f"runner speed factor {factor:.2f} is outside [{minimum:g}, {maximum:g}]"
+    return factor, f"reference headers parsed {factor:.2f}x as long as the baseline run"
 
 
 def command_check_build_budget(args: argparse.Namespace) -> int:
@@ -2922,10 +2950,19 @@ def command_check_build_budget(args: argparse.Namespace) -> int:
     analysis_text = analysis_path.read_text(encoding="utf-8")
     headers = parse_expensive_headers(analysis_text)
 
+    # Hosted runners vary severalfold in speed while the source is unchanged, so
+    # budgets are expressed at the reference run's speed (ADR 0005).
+    factor, speed_note = measure_runner_speed(headers, dict(budget.get("runner_speed_reference", {})))
+    if factor is None:
+        print(f"Runner speed: {speed_note}; comparing raw timings with the budgets.")
+        factor = 1.0
+    else:
+        print(f"Runner speed: {speed_note}; budgets compare timings divided by {factor:.2f}.")
+
     root_str = str(root) + "/"
     breaches: list[str] = []
     checked = 0
-    for absolute_path, _count, avg_ms in headers:
+    for absolute_path, _total_ms, _count, avg_ms in headers:
         # Only budget the project's own headers (under modules/); third-party and
         # standard headers are out of our control and handled by include hygiene.
         if root_str not in absolute_path:
@@ -2937,22 +2974,29 @@ def command_check_build_budget(args: argparse.Namespace) -> int:
             continue
         checked += 1
         limit = overrides.get(relative, default_avg)
-        status = "OK" if avg_ms <= limit else "OVER"
-        print(f"  [{status}] {relative}: avg {avg_ms} ms (budget {limit} ms)")
-        if avg_ms > limit:
+        normalized_ms = avg_ms / factor
+        status = "OK" if normalized_ms <= limit else "OVER"
+        print(f"  [{status}] {relative}: avg {avg_ms} ms, {normalized_ms:.0f} ms normalized (budget {limit} ms)")
+        if normalized_ms > limit:
             breaches.append(
-                f"{relative}: average per-include parse {avg_ms} ms exceeds budget {limit} ms"
+                f"{relative}: average per-include parse {normalized_ms:.0f} ms normalized "
+                f"({avg_ms} ms measured) exceeds budget {limit} ms"
             )
 
     # Total frontend parse budget from the ClangBuildAnalyzer time summary.
     frontend_match = re.search(r"Parsing \(frontend\):\s*([\d.]+)\s*s", analysis_text)
     if frontend_match and total_frontend_budget_s > 0:
         frontend_s = float(frontend_match.group(1))
-        status = "OK" if frontend_s <= total_frontend_budget_s else "OVER"
-        print(f"  [{status}] total frontend parsing: {frontend_s:.1f} s (budget {total_frontend_budget_s:.0f} s)")
-        if frontend_s > total_frontend_budget_s:
+        normalized_s = frontend_s / factor
+        status = "OK" if normalized_s <= total_frontend_budget_s else "OVER"
+        print(
+            f"  [{status}] total frontend parsing: {frontend_s:.1f} s, {normalized_s:.1f} s normalized "
+            f"(budget {total_frontend_budget_s:.0f} s)"
+        )
+        if normalized_s > total_frontend_budget_s:
             breaches.append(
-                f"total frontend parsing {frontend_s:.1f} s exceeds budget {total_frontend_budget_s:.0f} s"
+                f"total frontend parsing {normalized_s:.1f} s normalized ({frontend_s:.1f} s measured) "
+                f"exceeds budget {total_frontend_budget_s:.0f} s"
             )
 
     print("")
