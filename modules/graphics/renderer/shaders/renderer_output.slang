@@ -21,9 +21,12 @@ static const float SRGB_LINEAR_SLOPE = 12.92;
 static const float SRGB_OFFSET = 0.055;
 float3 SrgbToLinear(float3 color)
 {
-    return float3(color.x <= SRGB_LINEAR_THRESHOLD ? color.x / SRGB_LINEAR_SLOPE : pow((color.x + SRGB_OFFSET) / (1 + SRGB_OFFSET), 2.4),
-                  color.y <= SRGB_LINEAR_THRESHOLD ? color.y / SRGB_LINEAR_SLOPE : pow((color.y + SRGB_OFFSET) / (1 + SRGB_OFFSET), 2.4),
-                  color.z <= SRGB_LINEAR_THRESHOLD ? color.z / SRGB_LINEAR_SLOPE : pow((color.z + SRGB_OFFSET) / (1 + SRGB_OFFSET), 2.4));
+    return float3(color.x <= SRGB_LINEAR_THRESHOLD ? color.x / SRGB_LINEAR_SLOPE
+                                                   : pow((color.x + SRGB_OFFSET) / (1 + SRGB_OFFSET), 2.4),
+                  color.y <= SRGB_LINEAR_THRESHOLD ? color.y / SRGB_LINEAR_SLOPE
+                                                   : pow((color.y + SRGB_OFFSET) / (1 + SRGB_OFFSET), 2.4),
+                  color.z <= SRGB_LINEAR_THRESHOLD ? color.z / SRGB_LINEAR_SLOPE
+                                                   : pow((color.z + SRGB_OFFSET) / (1 + SRGB_OFFSET), 2.4));
 }
 struct Input
 {
