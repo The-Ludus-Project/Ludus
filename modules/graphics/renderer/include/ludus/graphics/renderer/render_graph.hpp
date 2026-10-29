@@ -365,6 +365,8 @@ struct RenderGraphSceneResourceReport final
     foundation::uint64 ReusedMeshes = 0;       ///< Exact cached mesh acquisitions.
     foundation::uint64 CreatedTextures = 0;    ///< Immutable texture uploads admitted by the cache.
     foundation::uint64 ReusedTextures = 0;     ///< Exact cached texture acquisitions.
+    foundation::uint32 MeshLightTriangles = 0; ///< Latest prepared deferred scene's nonzero-emission triangles/patches.
+    foundation::uint64 MeshLightBytes = 0; ///< Immutable mesh-light upload bytes, including an empty-set dummy record.
     foundation::uint32 OverflowClusters = 0;   ///< Latest material's cells using the full light-list fallback.
     foundation::uint32 ClusterAssignments = 0; ///< Latest material's stored cell/light intersections.
     foundation::uint32 DroppedLights =

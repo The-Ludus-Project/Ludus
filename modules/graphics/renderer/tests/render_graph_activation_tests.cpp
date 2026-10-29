@@ -1670,7 +1670,8 @@ TEST_CASE("RG3 version 25 packages append the LTC table binding to each scene co
     CHECK(DecodeBytes(raster.Bytes) == renderer::RenderGraphPackageStatus::Malformed);
 }
 
-TEST_CASE("deferred runtime roles are complete per target and require version twenty four", "[render-graph][deferred]")
+TEST_CASE("deferred runtime roles are complete per target and require the mesh-light binding version",
+          "[render-graph][deferred]")
 {
     constexpr usize SUPPORT_COUNT = format::FORWARD_STAGE_ROLE_COUNT + 1 + format::DEFERRED_STAGE_ROLE_COUNT;
     const StaticArray<format::StageRole, SUPPORT_COUNT> roles{{format::StageRole::ForwardVertex,
@@ -1740,7 +1741,10 @@ TEST_CASE("deferred runtime roles are complete per target and require version tw
         writer.WritePadded(options.PassName);
         return Move(writer.Bytes);
     };
-    for (const uint32 version : {format::CLUSTERED_FORWARD_PACKAGE_VERSION, format::PACKAGE_VERSION})
+    for (const uint32 version : {format::CLUSTERED_FORWARD_PACKAGE_VERSION,
+                                 format::CLUSTERED_DEFERRED_PACKAGE_VERSION,
+                                 format::LTC_TABLE_PACKAGE_VERSION,
+                                 format::PACKAGE_VERSION})
     {
         const Array<uint8> bytes = makeDeferred(version, format::ABSENT);
         renderer::RenderGraphPackage* allocationOrNull = new (std::nothrow) renderer::RenderGraphPackage;

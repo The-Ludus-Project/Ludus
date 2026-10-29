@@ -1,5 +1,7 @@
 #include "internal/render_graph_scene_resources.h"
+#include "internal/raster_mesh_lights.h"
 #include "internal/scene_material_validation.h"
+#include <ludus/graphics/renderer/deferred_layout.h>
 
 #include <ludus/foundation/base/checked_integer.hpp>
 #include <ludus/foundation/containers/array.hpp>
@@ -125,6 +127,7 @@ struct ForwardSceneResources::State final
     Renderer* RendererOrNull = nullptr;
     MaterialProgram Program{};
     bool IsClustered = false;
+    bool HasMeshLights = false;
     StaticArray<MeshEntry, CACHE_MESH_COUNT> Meshes{};
     StaticArray<TextureEntry, CACHE_TEXTURE_COUNT> Textures{};
     usize IdentityBytes = 0;
@@ -330,6 +333,9 @@ struct ForwardSceneGeneration::State final
     Array<LitMaterialDescription> Descriptions;
     Array<MaterialVersion> Materials;
     Array<DirectLight> Lights;
+    Array<math::Vector4> MeshLightWords;
+    rhi::BufferHandle MeshLightBuffer{};
+    uint32 MeshLightCount = 0;
     LightClusterDescription Clusters;
     math::Aabb3 BoundsWorld = math::EmptyAabb3();
     EnvironmentMap Environment;
@@ -341,6 +347,7 @@ struct ForwardSceneGeneration::State final
         {
             return;
         }
+        static_cast<void>(rhi::Destroy(OwnerOrNull->Device, MeshLightBuffer));
         for (MaterialVersion& material : Materials)
         {
             static_cast<void>(OwnerOrNull->RendererOrNull->Release(material));
@@ -369,7 +376,8 @@ void ForwardSceneResources::Reset() noexcept
 Status ForwardSceneResources::Initialize(rhi::DeviceHandle device,
                                          Renderer& inoutRenderer,
                                          MaterialProgram program,
-                                         bool isClustered) noexcept
+                                         bool isClustered,
+                                         bool hasMeshLights) noexcept
 {
     if (mState.Get() != nullptr)
     {
@@ -384,6 +392,7 @@ Status ForwardSceneResources::Initialize(rhi::DeviceHandle device,
     allocationOrNull->RendererOrNull = &inoutRenderer;
     allocationOrNull->Program = program;
     allocationOrNull->IsClustered = isClustered;
+    allocationOrNull->HasMeshLights = hasMeshLights;
     mState.Reset(allocationOrNull);
     return Status::Ready;
 }
@@ -396,6 +405,23 @@ BorrowedView<const SceneItem> ForwardSceneGeneration::GetItems() const noexcept
     return mState.Get() == nullptr ? BorrowedView<const SceneItem>{}
                                    : BorrowedView<const SceneItem>{mState->Items.GetData(), mState->Items.GetSize()};
 }
+rhi::RasterBindingResource ForwardSceneGeneration::GetMeshLights() const noexcept
+{
+    if (mState.Get() == nullptr)
+    {
+        return {};
+    }
+    return
+    {
+        .Binding = DEFERRED_MESH_LIGHT_BINDING,
+        .Buffer = mState->MeshLightBuffer,
+        .Size = mState->MeshLightWords.GetSize() * sizeof(math::Vector4),
+    };
+}
+uint32 ForwardSceneGeneration::GetMeshLightCount() const noexcept
+{
+    return mState.Get() == nullptr ? 0 : mState->MeshLightCount;
+}
 Status ForwardSceneGeneration::Poll() noexcept
 {
     if (mState.Get() == nullptr)
@@ -404,6 +430,14 @@ Status ForwardSceneGeneration::Poll() noexcept
     }
     State& state = *mState;
     ForwardSceneResources::State& owner = *state.OwnerOrNull;
+    if (owner.HasMeshLights == true)
+    {
+        const Status status = rhi::GetStatus(owner.Device, state.MeshLightBuffer);
+        if (status != Status::Ready)
+        {
+            return status;
+        }
+    }
     for (const usize index : state.MeshPins)
     {
         const Status status = owner.RendererOrNull->GetStatus(owner.Meshes[index].Handle);
@@ -501,6 +535,13 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
     if (normalizedStatus != Status::Ready)
     {
         return normalizedStatus;
+    }
+    for (usize light = 0; light < normalized.Count; ++light)
+    {
+        if (IsSceneShaderLightKindSupported(normalized.Lights[light].Kind) == false)
+        {
+            return Status::Unsupported;
+        }
     }
     // Reserve pin arrays before any acquisition, so failed allocation cannot leak pins.
     if (candidate.MeshPins.TryEnsureCapacity(format::MAX_ITEMS) == false ||
@@ -662,6 +703,14 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
                 }
                 candidate.BoundsWorld = math::Merge(candidate.BoundsWorld, boundsWorld);
             }
+            if (owner.HasMeshLights == true)
+            {
+                status = AppendRasterMeshLights(geometry, item.MeshToWorld, material, candidate.MeshLightWords);
+                if (status != Status::Ready)
+                {
+                    return status;
+                }
+            }
             LitMaterialDescription description;
             description.AreAuthoredInputsEnabled = true;
             description.Surface.Tint = {material.BaseColor.X * item.SurfaceTint.X,
@@ -706,6 +755,30 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
             static_cast<void>(candidate.Items.TryAdd(drawing));
             static_cast<void>(candidate.Descriptions.TryAdd(description));
         }
+    }
+    if (owner.HasMeshLights == true)
+    {
+        candidate.MeshLightCount = static_cast<uint32>(candidate.MeshLightWords.GetSize() / MESH_LIGHT_TRIANGLE_WORDS);
+        if (candidate.MeshLightWords.IsEmpty() == true &&
+            candidate.MeshLightWords.TryResize(MESH_LIGHT_TRIANGLE_WORDS) == false)
+        {
+            return Status::OutOfMemory;
+        }
+        const usize byteCount = candidate.MeshLightWords.GetSize() * sizeof(math::Vector4);
+        const Status status =
+            rhi::CreateBuffer(owner.Device,
+                              {rhi::BufferRole::Storage, byteCount},
+                              {reinterpret_cast<const uint8*>(candidate.MeshLightWords.GetData()), byteCount},
+                              candidate.MeshLightBuffer);
+        if (IsAccepted(status) == false)
+        {
+            return status;
+        }
+    }
+    if (owner.HasMeshLights == true)
+    {
+        owner.Report.MeshLightTriangles = candidate.MeshLightCount;
+        owner.Report.MeshLightBytes = candidate.MeshLightWords.GetSize() * sizeof(math::Vector4);
     }
     if (owner.IsClustered == true && math::IsEmpty(candidate.BoundsWorld) == false)
     {

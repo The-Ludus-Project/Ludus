@@ -39,6 +39,7 @@ private:
     rhi::BindingLayoutHandle mDepthLayout{};
     rhi::BufferHandle mVertices{};
     rhi::BufferHandle mIndices{};
+    rhi::BufferHandle mLtcTable{};
     rhi::RasterPipelineHandle mPipeline{};
     rhi::RasterPipelineHandle mDepthPipeline{};
     rhi::RasterStatus mStatus = rhi::RasterStatus::NotReady;
@@ -90,7 +91,9 @@ public:
     [[nodiscard]] rhi::RasterStatus Initialize(RenderGraphDeferredTargets& inoutTargets,
                                                Renderer& inoutRenderer,
                                                PreparedView view,
-                                               const ViewDescription& camera) noexcept;
+                                               const ViewDescription& camera,
+                                               rhi::RasterBindingResource meshLights,
+                                               foundation::uint32 meshLightCount) noexcept;
     [[nodiscard]] rhi::RasterStatus Poll() noexcept;
     [[nodiscard]] rhi::RasterStatus
     Draw(Renderer& inoutRenderer, PreparedView view, const rhi::RasterPassDescription& description) noexcept;
@@ -100,6 +103,7 @@ private:
     rhi::BufferHandle mParameters{};
     rhi::BindingSetHandle mBindings{};
     DeferredMaterialBindings mMaterial;
+    rhi::RasterBindingResource mMeshLights{};
     bool mHasBindings = false;
     foundation::float32 mClearDepth = 1;
     rhi::RasterStatus mStatus = rhi::RasterStatus::NotReady;

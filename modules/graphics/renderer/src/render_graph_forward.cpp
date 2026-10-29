@@ -122,6 +122,10 @@ constexpr StaticArray<rhi::RasterBinding, DEFERRED_BINDING_COUNT> DEFERRED_BINDI
     {
         bindings[slot] = {slot, rhi::RasterBindingKind::Texture2D, rhi::RasterVisibility::Fragment, 0};
     }
+    bindings[DEFERRED_MESH_LIGHT_BINDING].Kind = rhi::RasterBindingKind::StorageRead;
+    bindings[DEFERRED_MESH_LIGHT_BINDING].MinSize = FLOAT4_BYTES;
+    bindings[DEFERRED_LTC_BINDING].MinSize = FLOAT4_BYTES;
+    bindings[DEFERRED_LTC_BINDING].Kind = rhi::RasterBindingKind::StorageRead;
     bindings[DEFERRED_DEPTH_BINDING].Kind = rhi::RasterBindingKind::TextureDepth2D;
     bindings[DEFERRED_VIEW_BINDING] = {DEFERRED_VIEW_BINDING,
                                        rhi::RasterBindingKind::UniformBuffer,
