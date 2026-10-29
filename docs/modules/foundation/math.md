@@ -497,7 +497,18 @@ empty clip, rejected matrices, and random lobes down to α = 0.002.
 | Direction error | 1.8e-4 | 1.5e-3 |
 
 These errors are larger than the projected-solid-angle port's, because the GPU
-rounds the transformed vertices differently. The Vulkan/SPIR-V and WGSL builds
+rounds the transformed vertices differently.
+
+Below 1e-4, a sliver can hug the transformed polygon's horizon so closely that
+its width in `1 - x² - y²` is less than one float32 step (2⁻²⁴). The lift
+`z = sqrt(1 - x² - y²)` then resolves `z` only in steps of about 2.4e-4. A GPU
+sample one ulp away from the C++ sample can round onto the horizon, where the
+density is zero. The sliver's sector areas are differences of O(1) angles, so a
+quarter-ulp change in the arctangent can move such a sample by about 2°. On
+Metal, one of 889 sliver samples lands on the horizon. The float64 ideal sample
+of that case lies between the C++ sample and the GPU sample. The test accepts
+such samples only for slivers within `sqrt(8 · 2⁻²⁴)` of the horizon, and only
+for at most 1% of sliver samples. The Vulkan/SPIR-V and WGSL builds
 compile but are first executed in CI.
 
 ## GPU transfer
