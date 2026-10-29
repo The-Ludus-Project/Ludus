@@ -1,5 +1,6 @@
 #include "internal/workspace_style.h"
 #include "design_tokens.h"
+#include "internal/editor_style.h"
 #include "internal/theme_preferences.h"
 
 #include <QApplication>
@@ -46,23 +47,8 @@ void UpdateWorkspaceStyle(QWidget* widget)
     const QColor accent = token(design::ThemeColour::AccentPrimary);
     const QColor accentText = token(design::ThemeColour::AccentOnPrimary);
     const QColor selected = token(design::ThemeColour::AccentSurface);
-    auto palette = QApplication::palette();
-    palette.setColor(QPalette::Window, workspace);
-    palette.setColor(QPalette::Base, panel);
-    palette.setColor(QPalette::AlternateBase, raised);
-    palette.setColor(QPalette::Button, raised);
-    palette.setColor(QPalette::WindowText, text);
-    palette.setColor(QPalette::Text, text);
-    palette.setColor(QPalette::ButtonText, text);
-    palette.setColor(QPalette::PlaceholderText, secondary);
-    palette.setColor(QPalette::Mid, border);
-    palette.setColor(QPalette::Highlight, selected);
-    palette.setColor(QPalette::HighlightedText, text);
-    palette.setColor(QPalette::Link, accent);
-    for (const auto role : {QPalette::WindowText, QPalette::Text, QPalette::ButtonText})
-    {
-        palette.setColor(QPalette::Disabled, role, secondary);
-    }
+    const QPalette palette = MakeEditorPalette(QApplication::palette(), dark, isHighContrast);
+    InstallEditorStyle();
     const int controlEdgeWidth = isHighContrast == true ? HIGH_CONTRAST_CONTROL_EDGE_WIDTH : CONTROL_EDGE_WIDTH;
     const int focusRingWidth = isHighContrast == true ? HIGH_CONTRAST_FOCUS_RING_WIDTH : FOCUS_RING_WIDTH;
     auto style =
