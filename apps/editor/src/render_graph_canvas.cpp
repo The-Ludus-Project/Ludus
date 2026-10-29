@@ -12,6 +12,7 @@
 #include "internal/render_graph_resources.h"
 #include "internal/render_graph_scene_bundle.h"
 #include "internal/render_graph_upscale_node.h"
+#include "internal/theme_colour.h"
 
 #include <ludus/foundation/math/scalar.hpp>
 
@@ -58,11 +59,7 @@ namespace ludus::editor
 using namespace foundation;
 namespace
 {
-constexpr QRgb NODE_BACKGROUND_COLOR = 0xFF2E3239;
-constexpr QRgb NODE_BORDER_COLOR = 0xFF101215;
 constexpr float64 NODE_BORDER_WIDTH = 1.5;
-constexpr QRgb SELECTION_COLOR = 0xFFFFD25A;
-constexpr QRgb EDITABLE_EDGE_COLOR = 0xFFB4BAC4;
 constexpr float64 FOCUSED_EDGE_WIDTH = 3;
 constexpr float64 UNRELATED_EDGE_OPACITY = 0.18;
 constexpr float64 UNRELATED_NODE_OPACITY = 0.25;
@@ -100,16 +97,53 @@ constexpr float64 INACTIVE_OPACITY = 0.55;
 constexpr float64 FEEDBACK_HEIGHT = 40;
 constexpr float64 LINK_HINT_WIDTH = 340;
 constexpr float64 LINK_HINT_OFFSET = 16;
-constexpr QRgb LINK_ACCEPT_COLOR = 0xFF79D69E;
-constexpr QRgb LINK_REJECT_COLOR = 0xFFFF9A88;
-constexpr QRgb WARNING_COLOR = 0xFFFFC857;
-constexpr QRgb LABEL_COLOR = 0xFFD6DAE0;
 constexpr float64 NODE_ROW_GAP = 30;
 // Clicking an output offers Quick Add for a node one ordinary column gap to its right.
 constexpr float64 QUICK_ADD_PORT_GAP = COLUMN_SPACING - NODE_WIDTH;
 /// Reserved display key for configuration outputs; not a valid authored identifier.
 const QString OUTPUTS_NODE = QStringLiteral("#outputs");
 const QString INPUT_NODE = QStringLiteral("input");
+
+QColor GetNodeBackground()
+{
+    return GetCanvasColour(design::ThemeColour::SurfaceRaised);
+}
+
+QColor GetNodeBorder()
+{
+    return GetCanvasColour(design::ThemeColour::BorderSubtle);
+}
+
+/// The one selection amber shared with the viewport.
+QColor GetSelectionColour()
+{
+    return GetCanvasColour(design::ThemeColour::SelectionAmber);
+}
+
+QColor GetEdgeColour()
+{
+    return GetCanvasColour(design::ThemeColour::TextSecondary);
+}
+
+QColor GetLinkAcceptColour()
+{
+    return GetCanvasColour(design::ThemeColour::StatusSuccess);
+}
+
+QColor GetLinkRejectColour()
+{
+    return GetCanvasColour(design::ThemeColour::StatusDanger);
+}
+
+QColor GetWarningColour()
+{
+    return GetCanvasColour(design::ThemeColour::StatusWarning);
+}
+
+QColor GetLabelColour()
+{
+    return GetCanvasColour(design::ThemeColour::TextHud);
+}
 
 enum class CanvasLabelRole : uint8
 {
@@ -618,7 +652,7 @@ RenderGraphCanvas::RenderGraphCanvas(const RenderGraphDocument& document, QWidge
     setMouseTracking(true);
     setTransformationAnchor(QGraphicsView::NoAnchor);
     setResizeAnchor(QGraphicsView::AnchorViewCenter);
-    setBackgroundBrush(QColor(28, 31, 36));
+    setBackgroundBrush(GetCanvasColour(design::ThemeColour::SurfaceViewport));
     mFramingToolbar->setObjectName(QStringLiteral("renderGraphFramingToolbar"));
     mFramingToolbar->setAccessibleName(QStringLiteral("Canvas framing"));
     mFramingToolbar->setMovable(false);
@@ -1152,8 +1186,8 @@ void RenderGraphCanvas::Rebuild()
         const float64 height =
             HEADER_HEIGHT + static_cast<float64>(rowCount) * PORT_SPACING + NODE_PADDING + FEEDBACK_HEIGHT;
         NodeView* view = new NodeView(mScene->addRect(QRectF(0, 0, NODE_WIDTH, height),
-                                                      QPen(QColor::fromRgba(NODE_BORDER_COLOR), NODE_BORDER_WIDTH),
-                                                      QColor::fromRgba(NODE_BACKGROUND_COLOR)));
+                                                      QPen(GetNodeBorder(), NODE_BORDER_WIDTH),
+                                                      GetNodeBackground()));
         view->Id = identity;
         view->Domain = domain;
         view->Ports = ports;
@@ -1181,7 +1215,7 @@ void RenderGraphCanvas::Rebuild()
                 new QGraphicsEllipseItem(QRectF(x - PORT_RADIUS, y - PORT_RADIUS, 2 * PORT_RADIUS, 2 * PORT_RADIUS),
                                          view->Frame);
             connector->setBrush(GetTypeColor(port.Type));
-            connector->setPen(QPen(QColor(16, 18, 21), 1));
+            connector->setPen(QPen(GetNodeBorder(), 1));
             connector->setToolTip(
                 QStringLiteral(
                     "%1.%2 : %3\nRight-click to connect or disconnect. Dropping a new wire replaces the input source.")
@@ -1190,7 +1224,7 @@ void RenderGraphCanvas::Rebuild()
             QFont small = name->font();
             small.setPointSize(LABEL_POINT_SIZE);
             name->setFont(small);
-            name->setBrush(QColor(214, 218, 224));
+            name->setBrush(GetLabelColour());
             name->setToolTip(connector->toolTip());
             const float64 labelX =
                 isOutput == true ? NODE_WIDTH - PORT_RADIUS - 4 - name->boundingRect().width() : PORT_RADIUS + 4;
@@ -1207,12 +1241,12 @@ void RenderGraphCanvas::Rebuild()
             addPort(ports.Outputs.at(i), outputRows.value(ports.Outputs.at(i).Id, i), true);
         }
         view->PlanBadgeOrNull = new QGraphicsRectItem(view->Frame);
-        view->PlanBadgeOrNull->setBrush(QColor::fromRgba(NODE_BACKGROUND_COLOR));
-        view->PlanBadgeOrNull->setPen(QPen(QColor::fromRgba(NODE_BORDER_COLOR)));
+        view->PlanBadgeOrNull->setBrush(GetNodeBackground());
+        view->PlanBadgeOrNull->setPen(QPen(GetNodeBorder()));
         view->PlanBadgeOrNull->setAcceptedMouseButtons(Qt::NoButton);
         view->PlanBadgeOrNull->setData(0, QStringLiteral("#plan-badge:") + identity);
         view->PlanLabelOrNull = new QGraphicsSimpleTextItem(view->PlanBadgeOrNull);
-        view->PlanLabelOrNull->setBrush(QColor::fromRgba(LABEL_COLOR));
+        view->PlanLabelOrNull->setBrush(GetLabelColour());
         view->PlanBadgeOrNull->hide();
         view->ActivityLabelOrNull = new QGraphicsSimpleTextItem(view->Frame);
         view->SizeLabelOrNull = new QGraphicsSimpleTextItem(view->Frame);
@@ -1221,7 +1255,7 @@ void RenderGraphCanvas::Rebuild()
             QFont small = annotation->font();
             small.setPointSize(LABEL_POINT_SIZE);
             annotation->setFont(small);
-            annotation->setBrush(QColor::fromRgba(LABEL_COLOR));
+            annotation->setBrush(GetLabelColour());
         }
         view->ActivityLabelOrNull->setPos(NODE_PADDING, height - FEEDBACK_HEIGHT);
         view->SizeLabelOrNull->setPos(NODE_PADDING, height - FEEDBACK_HEIGHT / 2);
@@ -1298,8 +1332,7 @@ void RenderGraphCanvas::Rebuild()
     }
     for (const CanvasLink& link : std::as_const(links))
     {
-        mEdges.append(
-            new EdgeView(link, mScene->addPath(QPainterPath(), QPen(QColor::fromRgba(EDITABLE_EDGE_COLOR), 2))));
+        mEdges.append(new EdgeView(link, mScene->addPath(QPainterPath(), QPen(GetEdgeColour(), 2))));
     }
     mReroutesOrNull->Rebuild(record);
     for (EdgeView* edge : std::as_const(mEdges))
@@ -1308,7 +1341,7 @@ void RenderGraphCanvas::Rebuild()
         edge->Path->setZValue(-1);
         if (edge->IsEditable == false)
         {
-            edge->Path->setPen(QPen(QColor(150, 150, 150), 1.5, Qt::DashLine));
+            edge->Path->setPen(QPen(GetCanvasColour(design::ThemeColour::TextHudQuiet), 1.5, Qt::DashLine));
             edge->Path->setToolTip(QStringLiteral("Configuration output %1").arg(GetEndpointPort(edge->To)));
         }
         else
@@ -1538,20 +1571,20 @@ void RenderGraphCanvas::updateLinkFeedback(QPointF position)
     mLinkEndpoint = endpoint;
     if (mLinkPortOrNull != nullptr)
     {
-        mLinkPortOrNull->setPen(QPen(QColor::fromRgba(NODE_BORDER_COLOR), 1));
+        mLinkPortOrNull->setPen(QPen(GetNodeBorder(), 1));
         mLinkPortOrNull->setToolTip(mLinkPortTooltip);
         mLinkPortOrNull = nullptr;
     }
     QString message = QStringLiteral(
         "Drop on an input port to connect or replace its source, or on empty canvas to add a connected node.");
-    QColor color = QColor::fromRgba(EDITABLE_EDGE_COLOR);
+    QColor color = GetEdgeColour();
     if (endpoint.isEmpty() == false && endpoint != mLinkFrom)
     {
         const RenderGraphLinkCheck check =
             isOutput == true ? RenderGraphLinkCheck{QStringLiteral("Port"),
                                                     QStringLiteral("Links end at an input; this is an output.")}
                              : CheckRenderGraphLink(mDocument, mFile, mConfiguration, mLinkFrom, endpoint, true);
-        color = QColor::fromRgba(check.IsLegal() == true ? LINK_ACCEPT_COLOR : LINK_REJECT_COLOR);
+        color = (check.IsLegal() == true ? GetLinkAcceptColour() : GetLinkRejectColour());
         message = check.IsLegal() == true
                       ? QStringLiteral("Compatible: %1 → %2. Drop to connect or replace.").arg(mLinkFrom, endpoint)
                       : check.Code + QStringLiteral(": ") + check.Reason;
@@ -1570,9 +1603,8 @@ void RenderGraphCanvas::updateLinkFeedback(QPointF position)
     }
     if (mLinkHintOrNull != nullptr)
     {
-        mLinkHintOrNull->setHtml(
-            QStringLiteral("<p style=\"background-color:%1; color:%2;\">%3</p>")
-                .arg(QColor::fromRgba(NODE_BACKGROUND_COLOR).name(), color.name(), message.toHtmlEscaped()));
+        mLinkHintOrNull->setHtml(QStringLiteral("<p style=\"background-color:%1; color:%2;\">%3</p>")
+                                     .arg(GetNodeBackground().name(), color.name(), message.toHtmlEscaped()));
         positionHint();
     }
     if (mLinkPreviewOrNull != nullptr)
@@ -1774,7 +1806,7 @@ void RenderGraphCanvas::notifySelection()
         edge->Path->setData(0, false);
         if (edge->IsEditable == true)
         {
-            edge->Path->setPen(QPen(QColor::fromRgba(EDITABLE_EDGE_COLOR), 2));
+            edge->Path->setPen(QPen(GetEdgeColour(), 2));
         }
     }
     updateConnectionHighlight();
@@ -1824,7 +1856,7 @@ bool RenderGraphCanvas::ShowDiagnostic(const QJsonObject& location, const QStrin
     setAccessibleDescription(description);
     mDiagnosticMarkerOrNull = new QGraphicsRectItem(viewOrNull->Frame->rect(), viewOrNull->Frame);
     mDiagnosticMarkerOrNull->setAcceptedMouseButtons(Qt::NoButton);
-    const QColor diagnosticColour = QColor::fromRgba(isWarning == true ? WARNING_COLOR : LINK_REJECT_COLOR);
+    const QColor diagnosticColour = (isWarning == true ? GetWarningColour() : GetLinkRejectColour());
     QPen diagnosticPen(diagnosticColour, NODE_BORDER_WIDTH * 2);
     diagnosticPen.setCosmetic(true);
     mDiagnosticMarkerOrNull->setPen(diagnosticPen);
@@ -1922,8 +1954,7 @@ void RenderGraphCanvas::updateConnectionHighlight()
         edge->Path->setOpacity(isHighlighted == true || isSelected == true ? 1
                                : hasFocus == true                          ? UNRELATED_EDGE_OPACITY
                                                                            : activityOpacity);
-        QPen pen(isHighlighted == true || isSelected == true ? QColor::fromRgba(SELECTION_COLOR)
-                                                             : QColor::fromRgba(EDITABLE_EDGE_COLOR),
+        QPen pen(isHighlighted == true || isSelected == true ? GetSelectionColour() : GetEdgeColour(),
                  isHighlighted == true || isSelected == true ? FOCUSED_EDGE_WIDTH : 2);
         pen.setCosmetic(true);
         if (edge->IsEditable == false)
@@ -1941,9 +1972,8 @@ void RenderGraphCanvas::updateConnectionHighlight()
         view->Frame->setOpacity(activityOpacity * (hasTrace == true && trace.Nodes.contains(view->Id) == false
                                                        ? UNRELATED_NODE_OPACITY
                                                        : 1));
-        view->Frame->setPen(
-            QPen(isHighlighted == true ? QColor::fromRgba(SELECTION_COLOR) : QColor::fromRgba(NODE_BORDER_COLOR),
-                 isHighlighted == true ? FOCUSED_EDGE_WIDTH : NODE_BORDER_WIDTH));
+        view->Frame->setPen(QPen(isHighlighted == true ? GetSelectionColour() : GetNodeBorder(),
+                                 isHighlighted == true ? FOCUSED_EDGE_WIDTH : NODE_BORDER_WIDTH));
         for (bool isOutput : {true, false})
         {
             const QHash<QString, QGraphicsEllipseItem*>& ports =
@@ -1959,8 +1989,7 @@ void RenderGraphCanvas::updateConnectionHighlight()
                 const QString endpoint = view->Id + QLatin1Char('.') + port;
                 const bool isPortHighlighted = highlighted.contains(endpoint) == true ||
                                                (mHoveredPort == endpoint && mIsHoveredOutput == isOutput);
-                QPen pen(isPortHighlighted == true ? QColor::fromRgba(SELECTION_COLOR)
-                                                   : QColor::fromRgba(NODE_BORDER_COLOR),
+                QPen pen(isPortHighlighted == true ? GetSelectionColour() : GetNodeBorder(),
                          isPortHighlighted == true ? FOCUSED_EDGE_WIDTH : 1);
                 pen.setCosmetic(true);
                 connector->setPen(pen);
@@ -2336,7 +2365,7 @@ void RenderGraphCanvas::cancelLink()
 {
     if (mLinkPortOrNull != nullptr)
     {
-        mLinkPortOrNull->setPen(QPen(QColor::fromRgba(NODE_BORDER_COLOR), 1));
+        mLinkPortOrNull->setPen(QPen(GetNodeBorder(), 1));
         mLinkPortOrNull->setToolTip(mLinkPortTooltip);
         mLinkPortOrNull = nullptr;
     }
@@ -2517,7 +2546,7 @@ void RenderGraphCanvas::mousePressEvent(QMouseEvent* event)
         static_cast<void>(mReroutesOrNull->ClearSelection());
         mLinkFrom = port;
         mLinkPreviewOrNull =
-            mScene->addPath(MakeCurve(position, position), QPen(QColor::fromRgba(SELECTION_COLOR), 2, Qt::DashLine));
+            mScene->addPath(MakeCurve(position, position), QPen(GetSelectionColour(), 2, Qt::DashLine));
         mLinkHintOrNull = new QGraphicsTextItem;
         mScene->addItem(mLinkHintOrNull);
         mLinkHintOrNull->setData(0, QStringLiteral("#link-feedback"));
@@ -2575,9 +2604,7 @@ void RenderGraphCanvas::mousePressEvent(QMouseEvent* event)
         edge->Path->setSelected(isSelected);
         if (edge->IsEditable == true)
         {
-            edge->Path->setPen(
-                QPen(isSelected == true ? QColor::fromRgba(SELECTION_COLOR) : QColor::fromRgba(EDITABLE_EDGE_COLOR),
-                     2));
+            edge->Path->setPen(QPen(isSelected == true ? GetSelectionColour() : GetEdgeColour(), 2));
         }
         edge->Path->setData(0, isSelected);
     }
@@ -2854,7 +2881,7 @@ void RenderGraphCanvas::keyPressEvent(QKeyEvent* event)
             edge->Path->setData(0, false);
             if (edge->IsEditable == true)
             {
-                edge->Path->setPen(QPen(QColor::fromRgba(EDITABLE_EDGE_COLOR), 2));
+                edge->Path->setPen(QPen(GetEdgeColour(), 2));
             }
         }
         updateSelection();

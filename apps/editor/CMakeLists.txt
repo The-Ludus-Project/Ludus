@@ -1231,7 +1231,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     add_executable(ludus_render_graph_pipeline_tests tests/main.cpp tests/render_graph_pipeline_tests.cpp tests/render_graph_shader_cleanup_tests.cpp
         src/internal/render_graph_pipeline.h src/render_graph_pipeline.cpp
         src/render_graph_document.cpp src/render_graph_node_ports.cpp src/render_graph_configuration_template.cpp src/render_graph_visibility_template.cpp src/render_graph_compute_template.cpp src/render_graph_line_sampling_template.cpp src/render_graph_point_line_template.cpp src/render_graph_node_transfer.cpp src/render_graph_shader_cleanup.cpp src/render_graph_shader_creation.cpp src/render_graph_scene_authoring.cpp src/render_graph_scene_bundle.cpp src/render_graph_techniques.cpp src/internal/render_graph_pipeline_node.h src/render_graph_pipeline_node.cpp src/render_graph_upscale_node.cpp
-        src/internal/render_graph_canvas.h src/render_graph_canvas.cpp src/render_graph_resources.cpp src/render_graph_canvas_feedback.cpp
+        src/internal/render_graph_canvas.h src/render_graph_canvas.cpp src/theme_preferences.cpp src/render_graph_resources.cpp src/render_graph_canvas_feedback.cpp
         src/internal/render_graph_navigation.h src/render_graph_navigation.cpp
         src/internal/render_graph_diagnostics.h src/render_graph_diagnostics.cpp
         src/internal/render_graph_execution_plan.h src/render_graph_execution_plan.cpp
@@ -1280,7 +1280,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/render_graph_document.cpp src/render_graph_node_ports.cpp src/render_graph_configuration_template.cpp src/render_graph_visibility_template.cpp src/render_graph_compute_template.cpp src/render_graph_line_sampling_template.cpp src/render_graph_point_line_template.cpp src/render_graph_node_transfer.cpp src/render_graph_shader_cleanup.cpp src/render_graph_shader_creation.cpp src/render_graph_scene_authoring.cpp src/render_graph_scene_bundle.cpp src/render_graph_techniques.cpp src/render_graph_pipeline_node.cpp src/render_graph_upscale_node.cpp
         src/internal/render_graph_configuration_editor.h src/render_graph_configuration_editor.cpp
         src/render_graph_configuration_interface.cpp
-        src/internal/render_graph_canvas.h src/render_graph_canvas.cpp src/render_graph_resources.cpp src/render_graph_canvas_feedback.cpp
+        src/internal/render_graph_canvas.h src/render_graph_canvas.cpp src/theme_preferences.cpp src/render_graph_resources.cpp src/render_graph_canvas_feedback.cpp
         src/internal/render_graph_navigation.h src/render_graph_navigation.cpp
         src/internal/render_graph_diagnostics.h src/render_graph_diagnostics.cpp
         src/internal/render_graph_execution_plan.h src/render_graph_execution_plan.cpp
