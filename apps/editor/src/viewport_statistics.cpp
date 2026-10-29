@@ -57,6 +57,8 @@ void GraphViewportStatistics::Reset() noexcept
     mFrameNanoseconds.Reset();
     mInspectionCpuMilliseconds.Reset();
     mInspectionReadbackMilliseconds.Reset();
+    mConversionWorkMilliseconds.Reset();
+    mConversionElapsedMilliseconds.Reset();
     mPendingCpuMilliseconds = 0;
     mLastFrameNanoseconds = 0;
     mHasFrame = false;
@@ -88,6 +90,19 @@ const RollingAverage& GraphViewportStatistics::GetInspectionCpuMilliseconds() co
 const RollingAverage& GraphViewportStatistics::GetInspectionReadbackMilliseconds() const noexcept
 {
     return mInspectionReadbackMilliseconds;
+}
+void GraphViewportStatistics::AddInspectionConversion(float64 workMilliseconds, float64 elapsedMilliseconds) noexcept
+{
+    mConversionWorkMilliseconds.Add(workMilliseconds);
+    mConversionElapsedMilliseconds.Add(elapsedMilliseconds);
+}
+const RollingAverage& GraphViewportStatistics::GetConversionWorkMilliseconds() const noexcept
+{
+    return mConversionWorkMilliseconds;
+}
+const RollingAverage& GraphViewportStatistics::GetConversionElapsedMilliseconds() const noexcept
+{
+    return mConversionElapsedMilliseconds;
 }
 void GraphViewportStatistics::CompleteFrame(uint64 nowNanoseconds, float64 readbackMilliseconds) noexcept
 {
@@ -139,9 +154,13 @@ QString FormatGraphViewportStatistics(const GraphViewportStatistics& statistics,
     {
         return frameText + QStringLiteral("\nInspection: paused");
     }
-    return frameText + QStringLiteral("\nInspection CPU: %1\nInspection readback: %2")
-                           .arg(FormatMilliseconds(statistics.GetInspectionCpuMilliseconds()),
-                                FormatMilliseconds(statistics.GetInspectionReadbackMilliseconds()));
+    return frameText +
+           QStringLiteral(
+               "\nInspection CPU: %1\nInspection readback: %2\nConversion worker: %3\nConversion elapsed: %4")
+               .arg(FormatMilliseconds(statistics.GetInspectionCpuMilliseconds()),
+                    FormatMilliseconds(statistics.GetInspectionReadbackMilliseconds()),
+                    FormatMilliseconds(statistics.GetConversionWorkMilliseconds()),
+                    FormatMilliseconds(statistics.GetConversionElapsedMilliseconds()));
 }
 QString FormatViewportStatistics(const ViewportStatistics& statistics)
 {

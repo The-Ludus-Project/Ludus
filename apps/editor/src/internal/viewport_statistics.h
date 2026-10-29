@@ -71,13 +71,19 @@ public:
     /// Whether inspection measurements describe an enabled viewer rather than retained history.
     [[nodiscard]] bool IsInspectionEnabled() const noexcept;
     /// Record one completed texture inspection independently of output delivery. CPU is the
-    /// sum of active snapshot/readback/conversion calls; elapsed includes asynchronous gaps.
+    /// sum of active GUI snapshot/readback calls; elapsed includes asynchronous gaps, ending at raw bytes.
     /// Completed attempts include failures; cancelled attempts are omitted. GUI-thread only.
     void AddInspection(foundation::float64 cpuMilliseconds, foundation::float64 elapsedMilliseconds) noexcept;
-    /// Active milliseconds per completed inspection attempt, including synchronous viewer conversion.
+    /// Active GUI milliseconds per completed inspection attempt; excludes worker conversion.
     [[nodiscard]] const RollingAverage& GetInspectionCpuMilliseconds() const noexcept;
     /// Elapsed milliseconds per completed inspection attempt, including time between service calls.
     [[nodiscard]] const RollingAverage& GetInspectionReadbackMilliseconds() const noexcept;
+    /// Accepted conversions only: active worker call and request-to-GUI-delivery durations in ms.
+    /// These samples are independent of readback and never contribute worker time to GUI CPU.
+    void AddInspectionConversion(foundation::float64 workMilliseconds,
+                                 foundation::float64 elapsedMilliseconds) noexcept;
+    [[nodiscard]] const RollingAverage& GetConversionWorkMilliseconds() const noexcept;
+    [[nodiscard]] const RollingAverage& GetConversionElapsedMilliseconds() const noexcept;
     /// Commit one successfully read and converted image. Timestamps use one monotonic CPU clock.
     /// Readback is elapsed milliseconds from copy request through display-image conversion.
     void CompleteFrame(foundation::uint64 nowNanoseconds, foundation::float64 readbackMilliseconds) noexcept;
@@ -92,6 +98,8 @@ private:
     RollingAverage mFrameNanoseconds;
     RollingAverage mInspectionCpuMilliseconds;
     RollingAverage mInspectionReadbackMilliseconds;
+    RollingAverage mConversionWorkMilliseconds;
+    RollingAverage mConversionElapsedMilliseconds;
     foundation::float64 mPendingCpuMilliseconds = 0;
     foundation::uint64 mLastFrameNanoseconds = 0;
     bool mHasFrame = false;

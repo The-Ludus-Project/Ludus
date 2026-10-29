@@ -3666,8 +3666,9 @@ time measurements average the last 30 completed samples:
   It shows zero before two images arrive and after one second without a new image;
   a new interaction after that idle gap starts a fresh rate window.
 - **CPU** sums active owner-thread World/camera extraction, graph preparation,
-  submission, polling, texture inspection and output conversion work per delivered image. It excludes
-  the wall-clock gaps between asynchronous service calls and other editor work.
+  submission, polling, texture inspection setup/readback, output conversion and image
+  publication work per delivered image. It excludes worker conversion, wall-clock
+  gaps between asynchronous service calls and other editor work.
 - **GPU** uses the existing asynchronous device timestamp probe for graph frame
   execution. It excludes CPU conversion and is not input-to-display latency.
   `…` means no sample has completed; `n/a` means timestamps are unavailable.
@@ -3676,17 +3677,24 @@ time measurements average the last 30 completed samples:
   CPU display image is ready, including asynchronous copy waits, polling cadence
   and image conversion. It excludes the earlier graph render and final Qt paint.
   Shared-device GPU output snapshots report zero because output presentation performs no CPU readback.
-- **Inspection CPU** sums active GPU snapshot setup, band readback, polling and
-  texture viewer image conversion per completed inspection attempt. It is also
-  included in CPU service work; these series have different sample counts and
-  should not be added together. Its conversion has an
-  `EditorTextureInspectionDisplayConversion` profiling scope.
+- **Inspection CPU** sums active GUI-thread GPU snapshot setup, band readback and
+  polling per completed inspection attempt. It is also included in CPU service
+  work; these series have different sample counts and should not be added together.
+  Worker conversion is excluded from both GUI CPU series.
 - **Inspection readback** measures elapsed time from starting the diagnostic
-  snapshot through texture viewer conversion, including asynchronous waits.
+  snapshot through raw CPU bytes being ready, including asynchronous waits.
   Inspection series update independently of output delivery, so GPU output cannot
   overwrite diagnostic readback measurements with zero. The overlay shows
   **Inspection: paused** while the viewer is hidden. The last 30 completed attempts
   are retained for resuming; cancelled inspections do not add samples.
+- **Conversion worker** measures the active worker call for each current, completed
+  conversion. It includes range scanning and display image creation, under the
+  `EditorTextureInspectionDisplayConversion` profiling scope on the worker thread.
+- **Conversion elapsed** measures conversion request through GUI completion delivery,
+  including time waiting for an older cancelled conversion to retire. These two
+  series update independently of raw readback and output frames. Superseded or
+  cancelled conversions add no samples; their profiling scopes still expose work
+  that ran. Only short GUI publication work contributes to the frame CPU series.
 
 Pending or failed output copies do not publish successful frame samples or erase
 last-completed time averages. Device replacement clears the graph series. These
@@ -6005,8 +6013,20 @@ Inspection is visibility-aware and uses independent snapshots:
   activates another generation. Nothing waits on a fence inside a service call.
 - Diagnostic bands yield shared readback capacity to viewport output. Inspection
   images can arrive later during heavy output readback.
-- CPU image conversion remains on the GUI thread, but only runs for visible,
-  completed inspections at the bounded refresh rate. Its cost is measured.
+- Range scanning, channel remapping and display image creation run on a native
+  worker using immutable CPU snapshots. The GUI only schedules work and publishes
+  completed images; it never joins or helps execute conversion. Visible readback
+  refreshes remain capped at four per second; control edits queue conversion directly.
+- Each viewer admits one active conversion and one replaceable latest request.
+  New snapshots or controls cancel superseded work, checked between rows in both
+  range scanning and pixel conversion. Hidden viewers drop queued work and cancel
+  the active conversion. Destruction disconnects completion without waiting; the
+  retiring worker owns its inputs until it exits.
+- Only the latest request may publish. Selection, preview/device replacement and
+  generation changes invalidate pending conversion. Image, probe bytes, applied
+  range and displayed generation/revision publish together, preserving the last
+  completed image on cancellation or failure. Worker completion uses the GUI event
+  loop and does not require another rendered frame.
 - Textures come from `RenderGraph::GetResourceAllocation`, which exposes the
   non-surface allocation after its producer completes, for diagnostics only.
 

@@ -273,6 +273,16 @@ bool TickUntil(RenderGraphPreview& inoutPreview, Predicate predicate)
     return predicate();
 }
 
+/// Queued conversion completions are delivered by the GUI event loop, independently of preview ticks.
+template <typename Predicate>
+bool TickUntilDisplay(RenderGraphPreview& inoutPreview, Predicate predicate)
+{
+    return TickUntil(inoutPreview, [&]() {
+        QApplication::processEvents();
+        return predicate();
+    });
+}
+
 // Channels are named in RGB order.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 void CheckCenter(const QImage& image, int32 red, int32 green, int32 blue)
@@ -1313,15 +1323,11 @@ TEST_CASE("Hidden texture viewers stop inspection and resume the preserved selec
 
     // A completion handler can hide an ancestor synchronously. Its completed timing must
     // remain valid even though hiding invalidates the next refresh and cancels reader ownership.
-    QObject::connect(&preview,
-                     &RenderGraphPreview::TargetInspected,
-                     &container,
-                     &QWidget::hide,
-                     Qt::SingleShotConnection);
+    QObject::connect(&viewer, &TextureViewer::DisplayUpdated, &container, &QWidget::hide, Qt::SingleShotConnection);
     QElapsedTimer observationTimer;
     observationTimer.start();
     container.show();
-    REQUIRE(TickUntil(preview, [&]() { return viewer.GetDisplayImage().isNull() == false; }) == true);
+    REQUIRE(TickUntilDisplay(preview, [&]() { return viewer.GetDisplayImage().isNull() == false; }) == true);
     const isize completed = inspected.count();
     REQUIRE(completed == 1);
     CHECK(container.isVisible() == false);
@@ -1329,6 +1335,9 @@ TEST_CASE("Hidden texture viewers stop inspection and resume the preserved selec
     CHECK(preview.GetStatistics().GetInspectionCpuMilliseconds().GetCount() == 1);
     CHECK(preview.GetStatistics().GetInspectionCpuMilliseconds().GetAverage() > 0);
     CHECK(preview.GetStatistics().GetInspectionReadbackMilliseconds().GetAverage() > 0);
+    CHECK(preview.GetStatistics().GetConversionWorkMilliseconds().GetCount() == 1);
+    CHECK(preview.GetStatistics().GetConversionElapsedMilliseconds().GetAverage() >=
+          preview.GetStatistics().GetConversionWorkMilliseconds().GetAverage());
     CHECK(preview.GetStatistics().GetInspectionReadbackMilliseconds().GetAverage() <=
           static_cast<float64>(observationTimer.nsecsElapsed()) / 1'000'000.0);
     const QImage accepted = viewer.GetDisplayImage();
@@ -1344,7 +1353,7 @@ TEST_CASE("Hidden texture viewers stop inspection and resume the preserved selec
     CHECK(viewer.GetSelectedTarget() == QStringLiteral("Main/depth"));
     CHECK(viewer.GetDisplayImage() == accepted);
     container.show();
-    REQUIRE(TickUntil(preview, [&]() { return preview.GetInspectedRevision() == 2; }) == true);
+    REQUIRE(TickUntilDisplay(preview, [&]() { return viewer.GetDisplayedRevision() == 2; }) == true);
     CHECK(preview.GetInspectedTexture().Encoding == TexelEncoding::Depth32Float);
     CHECK(preview.GetStatistics().IsInspectionEnabled() == true);
     preview.Detach();
@@ -1421,7 +1430,7 @@ TEST_CASE("Texture viewer follows Live Preview frames and rebuilt generations by
     REQUIRE(preview.Attach(device.Device, device.Surface) == true);
     preview.SetExtraction(MakeExtraction({0, 1, 0, 1}, 1));
     REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
-    REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedGeneration() == 1; }) == true);
+    REQUIRE(TickUntilDisplay(preview, [&]() { return preview.GetPresentedGeneration() == 1; }) == true);
     // Canvas selection: the Raster subgraph node selects its colour attachment, then its depth.
     REQUIRE(viewer.SelectCanvasNode(QStringLiteral("Main"), QStringLiteral("raster")) == true);
     CHECK(viewer.GetSelectedTarget() == QStringLiteral("Main/color"));
@@ -1430,7 +1439,7 @@ TEST_CASE("Texture viewer follows Live Preview frames and rebuilt generations by
     CHECK(viewer.SelectCanvasNode(QStringLiteral("Main"), QStringLiteral("scene")) == false);
     viewer.SelectCanvasNode(QStringLiteral("Main"), QStringLiteral("color"));
     REQUIRE(viewer.GetSelectedTarget() == QStringLiteral("Main/color"));
-    REQUIRE(TickUntil(preview, [&]() { return viewer.GetDisplayImage().isNull() == false; }) == true);
+    REQUIRE(TickUntilDisplay(preview, [&]() { return viewer.GetDisplayImage().isNull() == false; }) == true);
     CHECK(viewer.GetDisplayImage().pixelColor(WIDTH / 2, HEIGHT / 2) == QColor(0, 255, 0));
     CHECK(viewer.GetInfoText().startsWith(QStringLiteral("Main/color · 96 × 64 · RGBA8Unorm")) == true);
     viewer.ProbeTexel(WIDTH / 2, HEIGHT / 2);
@@ -1439,38 +1448,60 @@ TEST_CASE("Texture viewer follows Live Preview frames and rebuilt generations by
 
     // A new World revision re-reads the selected target after its frame is presented.
     preview.SetExtraction(MakeExtraction({1, 0, 0, 1}, 2));
-    REQUIRE(TickUntil(preview, [&]() { return preview.GetInspectedRevision() == 2; }) == true);
+    REQUIRE(TickUntilDisplay(preview, [&]() { return viewer.GetDisplayedRevision() == 2; }) == true);
     CHECK(viewer.GetDisplayImage().pixelColor(WIDTH / 2, HEIGHT / 2) == QColor(255, 0, 0));
     CHECK(viewer.GetProbeText().contains(QStringLiteral("R 255")) == true);
 
     // A rebuilt generation (Live Preview republishes the runtime) keeps the selection by name.
     REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
     const uint64 rebuilt = preview.GetReport().CandidateGeneration;
-    REQUIRE(TickUntil(preview, [&]() { return preview.GetInspectedGeneration() == rebuilt; }) == true);
+    REQUIRE(TickUntilDisplay(preview, [&]() { return viewer.GetDisplayedGeneration() == rebuilt; }) == true);
     CHECK(viewer.GetSelectedTarget() == QStringLiteral("Main/color"));
     CHECK(viewer.GetDisplayImage().pixelColor(WIDTH / 2, HEIGHT / 2) == QColor(255, 0, 0));
 
     // Depth remapped to its automatic range: the flat triangle is the range floor (black) and the
     // background, left out of the range, clamps to white.
     viewer.SelectTarget(QStringLiteral("Main/depth"));
-    REQUIRE(TickUntil(preview, [&]() {
+    REQUIRE(TickUntilDisplay(preview, [&]() {
                 return preview.GetInspectedTexture().Encoding == TexelEncoding::Depth32Float &&
-                       preview.GetInspectedTexture().IsValid() == true;
+                       preview.GetInspectedTexture().IsValid() == true &&
+                       viewer.GetDisplayImage().pixelColor(WIDTH / 2, HEIGHT / 2) == QColor(0, 0, 0);
             }) == true);
     CHECK(viewer.GetDisplaySettings().Range == TextureRangeMode::Automatic);
     CHECK(viewer.GetDisplayImage().pixelColor(WIDTH / 2, HEIGHT / 2) == QColor(0, 0, 0));
     CHECK(viewer.GetDisplayImage().pixelColor(0, 0) == QColor(255, 255, 255));
     // Back on colour: the measured depth range does not leak into the normalized colour range.
     viewer.SelectTarget(QStringLiteral("Main/color"));
-    REQUIRE(TickUntil(preview, [&]() {
+    REQUIRE(TickUntilDisplay(preview, [&]() {
                 return preview.GetInspectedTexture().Encoding == TexelEncoding::Rgba8Unorm &&
-                       preview.GetInspectedTexture().IsValid() == true;
+                       preview.GetInspectedTexture().IsValid() == true &&
+                       viewer.GetDisplayImage().pixelColor(WIDTH / 2, HEIGHT / 2) == QColor(255, 0, 0);
             }) == true);
     CHECK(viewer.GetDisplaySettings().Range == TextureRangeMode::Manual);
     CHECK(viewer.GetDisplaySettings().Minimum == 0.0F);
     CHECK(viewer.GetDisplaySettings().Maximum == 1.0F);
     CHECK(viewer.GetDisplayImage().pixelColor(WIDTH / 2, HEIGHT / 2) == QColor(255, 0, 0));
+    // Queued control changes cannot publish after hiding or detaching the preview.
+    const QImage retained = viewer.GetDisplayImage();
+    QSignalSpy displayed(&viewer, &TextureViewer::DisplayUpdated);
+    TextureDisplaySettings controls = viewer.GetDisplaySettings();
+    controls.Channel = TextureChannel::Green;
+    viewer.SetDisplaySettings(controls);
+    controls.Channel = TextureChannel::Red;
+    viewer.SetDisplaySettings(controls);
+    viewer.hide();
+    QApplication::processEvents();
+    CHECK(displayed.count() == 0);
+    CHECK(viewer.GetDisplayImage() == retained);
+    viewer.show();
+    REQUIRE(TickUntilDisplay(preview, [&]() { return displayed.count() == 1; }) == true);
+    CHECK(viewer.GetDisplayImage().pixelColor(WIDTH / 2, HEIGHT / 2) == QColor(255, 255, 255));
+    controls.Channel = TextureChannel::Green;
+    viewer.SetDisplaySettings(controls);
     preview.Detach();
+    QApplication::processEvents();
+    CHECK(displayed.count() == 1);
+    CHECK(preview.GetStatistics().GetConversionWorkMilliseconds().GetCount() == 0);
 }
 
 TEST_CASE("canvas resource inspection opens the existing viewer and shares its GPU readback",
@@ -1504,6 +1535,8 @@ TEST_CASE("canvas resource inspection opens the existing viewer and shares its G
     preview.SetExtraction(MakeExtraction({0, 1, 0, 1}, 1));
     REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedGeneration() != 0; }) == true);
     RenderGraphCanvas& canvas = workspace.GetCanvas();
+    // Settle the initial show/resize fit before taking the navigation baseline.
+    QApplication::processEvents();
     canvas.SelectNode(QStringLiteral("color"));
     RenderGraphNavigation* navigationOrNull = canvas.findChild<RenderGraphNavigation*>();
     REQUIRE(navigationOrNull != nullptr);
@@ -1517,10 +1550,11 @@ TEST_CASE("canvas resource inspection opens the existing viewer and shares its G
     REQUIRE(openOrNull != nullptr);
     openOrNull->click();
     CHECK(viewerOrNull->GetSelectedTarget() == QStringLiteral("Main/depth"));
-    REQUIRE(TickUntil(preview, [&]() {
+    REQUIRE(TickUntilDisplay(preview, [&]() {
                 return preview.GetInspectedTarget() == QStringLiteral("Main/depth") &&
                        preview.GetInspectedTexture().Encoding == TexelEncoding::Depth32Float &&
-                       preview.GetInspectedTexture().IsValid() == true;
+                       preview.GetInspectedTexture().IsValid() == true &&
+                       viewerOrNull->GetDisplayImage().isNull() == false;
             }) == true);
     CHECK(viewerOrNull->GetDisplayImage().isNull() == false);
     inspectorOrNull->SetPinned(true);
