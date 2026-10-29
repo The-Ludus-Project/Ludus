@@ -1,3 +1,4 @@
+#include "internal/code_assistance.h"
 #include "internal/code_document_controller.h"
 #include "internal/code_edit_scope.h"
 #include "internal/code_editor_panel.h"
@@ -12,16 +13,26 @@
 #include <QDir>
 #include <QFile>
 #include <QInputMethodEvent>
+#include <QLabel>
+#include <QListWidget>
 #include <QScrollBar>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTextDocument>
+#include <QUrl>
 
 using namespace ludus::editor;
 using namespace ludus::foundation;
 namespace
 {
+#if !defined(Q_OS_WASM)
+#    if defined(Q_OS_MACOS)
+constexpr Qt::KeyboardModifier ASSISTANCE_MODIFIER = Qt::MetaModifier;
+#    else
+constexpr Qt::KeyboardModifier ASSISTANCE_MODIFIER = Qt::ControlModifier;
+#    endif
+#endif
 struct MemoryTextState final
 {
     QByteArray Text;
@@ -229,13 +240,13 @@ TEST_CASE("stale formatting cannot replace current text or cross a binding", "[e
     const CodeTextCapture captured = controller.Capture();
     QTest::keyClicks(&editor, QStringLiteral("new"));
     const QByteArray edited = document.GetState().Text;
-    CHECK(controller.ApplyFormattedText(captured.Identity, QByteArrayLiteral("formatted"), {}) ==
+    CHECK(controller.ApplyServiceText(captured.Identity, QByteArrayLiteral("formatted"), {}) ==
           CodeEditStatus::Conflict);
     CHECK(document.GetState().Text == edited);
     const CodeTextCapture oldBinding = controller.Capture();
     ++document.Session;
     controller.Synchronize();
-    CHECK(controller.ApplyFormattedText(oldBinding.Identity, QByteArrayLiteral("formatted"), {}) ==
+    CHECK(controller.ApplyServiceText(oldBinding.Identity, QByteArrayLiteral("formatted"), {}) ==
           CodeEditStatus::Conflict);
     CHECK(document.GetState().Text == edited);
 }
@@ -452,3 +463,350 @@ TEST_CASE("unbound editor publishes native undo availability for its command hos
     CHECK(editor.CanRedo() == true);
     CHECK(availability.count() > beforeUndo);
 }
+
+#if !defined(Q_OS_WASM)
+TEST_CASE("Shader completion maps UTF-16 ranges and additional edits into one draft undo group",
+          "[editor][text][assistance]")
+{
+    MemoryCodeDocument host(
+        QByteArray("// additional-edit \xF0\x9F\x98\x80\r\nvoid Main() {\r\n    scene.Ve\r\n}\r\n"));
+    CodeEditor editor;
+    CodeDocumentController document(editor);
+    document.Bind(&host);
+    editor.SetLanguage(CodeLanguage::Slang);
+    CodeAssistance assistance(editor, document);
+    QTemporaryDir temporary;
+    QObject::connect(&assistance, &CodeAssistance::ContextRequested, &editor, [&]() {
+        assistance.SetContext(QString::fromUtf8(LUDUS_TEST_PYTHON),
+                              temporary.path(),
+                              QUrl::fromLocalFile(temporary.filePath(QStringLiteral("unit.slang"))).toString(),
+                              QStringLiteral("// generated\n"),
+                              QStringLiteral("\n// generated end"),
+                              {QString::fromUtf8(LUDUS_SLANG_FIXTURE)});
+    });
+    editor.resize(800, 500);
+    editor.show();
+    editor.setFocus();
+    editor.GoToLine(3, 13);
+    const QByteArray original = host.GetState().Text;
+    QTest::keyClick(&editor, Qt::Key_Space, ASSISTANCE_MODIFIER);
+    QListWidget* popupOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeCompletionList"));
+    REQUIRE(popupOrNull != nullptr);
+    REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
+    REQUIRE(popupOrNull->count() == 1);
+    REQUIRE(popupOrNull->item(0)->toolTip().contains(QStringLiteral("&lt;b&gt;untrusted markup&lt;/b&gt;")));
+    QTest::keyClick(&editor, Qt::Key_Tab);
+    REQUIRE(host.GetState().Text.contains("scene.Version\r\n"));
+    REQUIRE(host.GetState().Text.startsWith("// added\r\n// additional-edit"));
+    REQUIRE(host.GetState().Text.contains("\xF0\x9F\x98\x80"));
+    REQUIRE(host.Undo());
+    document.Synchronize(true);
+    REQUIRE(host.GetState().Text == original);
+    REQUIRE(host.CanUndo() == false);
+}
+
+TEST_CASE("Shader assistance rejects generated edits and unsolicited snippets", "[editor][text][assistance]")
+{
+    for (const QByteArray& marker : {QByteArray("generated-edit"), QByteArray("snippet")})
+    {
+        MemoryCodeDocument host("// " + marker + "\nscene.Ve");
+        CodeEditor editor;
+        CodeDocumentController document(editor);
+        document.Bind(&host);
+        editor.SetLanguage(CodeLanguage::Slang);
+        CodeAssistance assistance(editor, document);
+        QTemporaryDir temporary;
+        QObject::connect(&assistance, &CodeAssistance::ContextRequested, &editor, [&]() {
+            assistance.SetContext(QString::fromUtf8(LUDUS_TEST_PYTHON),
+                                  temporary.path(),
+                                  QUrl::fromLocalFile(temporary.filePath(QStringLiteral("unit.slang"))).toString(),
+                                  QStringLiteral("// generated\n"),
+                                  {},
+                                  {QString::fromUtf8(LUDUS_SLANG_FIXTURE)});
+        });
+        editor.show();
+        editor.setFocus();
+        editor.moveCursor(QTextCursor::End);
+        QSignalSpy status(&assistance, &CodeAssistance::StatusChanged);
+        assistance.Request(false);
+        QListWidget* popupOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeCompletionList"));
+        REQUIRE(popupOrNull != nullptr);
+        REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
+        QTest::keyClick(&editor, Qt::Key_Return);
+        REQUIRE(host.CanUndo() == false);
+        REQUIRE(host.GetState().Text.endsWith("scene.Ve"));
+        REQUIRE(status.last().at(0).toString().isEmpty() == false);
+    }
+}
+
+TEST_CASE("Shader signature help highlights the active parameter and escapes documentation",
+          "[editor][text][assistance]")
+{
+    MemoryCodeDocument host("EvaluateMaterial(scene, ");
+    CodeEditor editor;
+    CodeDocumentController document(editor);
+    document.Bind(&host);
+    editor.SetLanguage(CodeLanguage::Slang);
+    CodeAssistance assistance(editor, document);
+    QTemporaryDir temporary;
+    QObject::connect(&assistance, &CodeAssistance::ContextRequested, &editor, [&]() {
+        assistance.SetContext(QString::fromUtf8(LUDUS_TEST_PYTHON),
+                              temporary.path(),
+                              QUrl::fromLocalFile(temporary.filePath(QStringLiteral("unit.slang"))).toString(),
+                              {},
+                              {},
+                              {QString::fromUtf8(LUDUS_SLANG_FIXTURE)});
+    });
+    editor.show();
+    editor.setFocus();
+    editor.moveCursor(QTextCursor::End);
+    QTest::keyClick(&editor, Qt::Key_Space, ASSISTANCE_MODIFIER | Qt::ShiftModifier);
+    QLabel* signatureOrNull = editor.findChild<QLabel*>(QStringLiteral("codeSignatureHelp"));
+    REQUIRE(signatureOrNull != nullptr);
+    REQUIRE(QTest::qWaitFor([signatureOrNull]() { return signatureOrNull->isVisible() == true; }));
+    REQUIRE(signatureOrNull->text().contains(QStringLiteral("<b><u>SurfaceHit hit</u></b>")));
+    REQUIRE(signatureOrNull->text().contains(QStringLiteral("&lt;script&gt;")));
+    REQUIRE(signatureOrNull->text().contains(QStringLiteral("/private/tmp/generated")) == false);
+    QTest::keyClick(&editor, Qt::Key_PageDown, Qt::AltModifier);
+    REQUIRE(signatureOrNull->text().contains(QStringLiteral("uint index")));
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    REQUIRE(signatureOrNull->isVisible() == false);
+    REQUIRE(host.CanUndo() == false);
+}
+
+TEST_CASE("Shader replies are discarded after text navigation binding and context changes",
+          "[editor][text][assistance]")
+{
+    MemoryCodeDocument host("// hold-response\nscene.Ve");
+    CodeEditor editor;
+    CodeDocumentController document(editor);
+    document.Bind(&host);
+    editor.SetLanguage(CodeLanguage::Slang);
+    CodeAssistance assistance(editor, document);
+    QTemporaryDir temporary;
+    QObject::connect(&assistance, &CodeAssistance::ContextRequested, &editor, [&]() {
+        assistance.SetContext(QString::fromUtf8(LUDUS_TEST_PYTHON),
+                              temporary.path(),
+                              QUrl::fromLocalFile(temporary.filePath(QStringLiteral("unit.slang"))).toString(),
+                              {},
+                              {},
+                              {QString::fromUtf8(LUDUS_SLANG_FIXTURE)});
+    });
+    editor.show();
+    editor.setFocus();
+    editor.moveCursor(QTextCursor::End);
+    assistance.Request(false);
+    QTest::qWait(100);
+    host.Session = 2;
+    document.Synchronize();
+    editor.moveCursor(QTextCursor::End);
+    assistance.Request(false); // releases the previous binding's reply
+    QTest::qWait(100);
+    QListWidget* popupOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeCompletionList"));
+    REQUIRE(popupOrNull != nullptr);
+    REQUIRE(popupOrNull->isVisible() == false);
+    assistance.ClearContext();
+    editor.insertPlainText(QStringLiteral("r"));
+    REQUIRE(host.GetState().Text.endsWith("scene.Ver"));
+    REQUIRE(popupOrNull->isVisible() == false);
+}
+
+TEST_CASE("Slang protocol failures and crashes preserve text and allow a fresh retry", "[editor][text][assistance]")
+{
+    for (const QByteArray& marker : {QByteArray("malformed-server"), QByteArray("crash-server")})
+    {
+        MemoryCodeDocument host("// " + marker + "\nscene.Ve");
+        CodeEditor editor;
+        CodeDocumentController document(editor);
+        document.Bind(&host);
+        editor.SetLanguage(CodeLanguage::Slang);
+        CodeAssistance assistance(editor, document);
+        QTemporaryDir temporary;
+        QObject::connect(&assistance, &CodeAssistance::ContextRequested, &editor, [&]() {
+            assistance.SetContext(QString::fromUtf8(LUDUS_TEST_PYTHON),
+                                  temporary.path(),
+                                  QUrl::fromLocalFile(temporary.filePath(QStringLiteral("unit.slang"))).toString(),
+                                  {},
+                                  {},
+                                  {QString::fromUtf8(LUDUS_SLANG_FIXTURE)});
+        });
+        editor.show();
+        editor.setFocus();
+        editor.moveCursor(QTextCursor::End);
+        QSignalSpy status(&assistance, &CodeAssistance::StatusChanged);
+        assistance.Request(false);
+        REQUIRE(QTest::qWaitFor([&status]() {
+            return status.isEmpty() == false && status.last().at(0).toString().contains(QStringLiteral("Slang"));
+        }));
+        REQUIRE(host.CanUndo() == false);
+        const CodeTextCapture capture = document.Capture();
+        const QByteArray repaired("// repaired\nscene.Ve");
+        REQUIRE(document.ApplyServiceText(capture.Identity,
+                                          repaired,
+                                          {static_cast<usize>(repaired.size()), static_cast<usize>(repaired.size())}) ==
+                CodeEditStatus::Ok);
+        assistance.Request(false);
+        QListWidget* popupOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeCompletionList"));
+        REQUIRE(popupOrNull != nullptr);
+        REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
+        QTest::keyClick(&editor, Qt::Key_Return);
+        REQUIRE(host.GetState().Text.endsWith("scene.Version"));
+    }
+}
+
+TEST_CASE("Escape cancels pending shader assistance before a delayed reply", "[editor][text][assistance]")
+{
+    MemoryCodeDocument host("// hold-response\nscene.Ve");
+    CodeEditor editor;
+    CodeDocumentController document(editor);
+    document.Bind(&host);
+    editor.SetLanguage(CodeLanguage::Slang);
+    CodeAssistance assistance(editor, document);
+    QTemporaryDir temporary;
+    QObject::connect(&assistance, &CodeAssistance::ContextRequested, &editor, [&]() {
+        assistance.SetContext(QString::fromUtf8(LUDUS_TEST_PYTHON),
+                              temporary.path(),
+                              QUrl::fromLocalFile(temporary.filePath(QStringLiteral("unit.slang"))).toString(),
+                              {},
+                              {},
+                              {QString::fromUtf8(LUDUS_SLANG_FIXTURE)});
+    });
+    editor.show();
+    editor.setFocus();
+    editor.moveCursor(QTextCursor::End);
+    assistance.Request(false);
+    QTest::qWait(100);
+    QTest::keyClick(&editor, Qt::Key_Escape);
+    QTest::qWait(100);
+    QListWidget* popupOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeCompletionList"));
+    REQUIRE(popupOrNull != nullptr);
+    REQUIRE(popupOrNull->isVisible() == false);
+    REQUIRE(host.CanUndo() == false);
+}
+
+TEST_CASE("Typing while shader assistance starts retains the latest completion intent", "[editor][text][assistance]")
+{
+    MemoryCodeDocument host("scene.Ve");
+    CodeEditor editor;
+    CodeDocumentController document(editor);
+    document.Bind(&host);
+    editor.SetLanguage(CodeLanguage::Slang);
+    CodeAssistance assistance(editor, document);
+    QTemporaryDir temporary;
+    QObject::connect(&assistance, &CodeAssistance::ContextRequested, &editor, [&]() {
+        QTimer::singleShot(200, &assistance, [&]() {
+            assistance.SetContext(QString::fromUtf8(LUDUS_TEST_PYTHON),
+                                  temporary.path(),
+                                  QUrl::fromLocalFile(temporary.filePath(QStringLiteral("unit.slang"))).toString(),
+                                  {},
+                                  {},
+                                  {QString::fromUtf8(LUDUS_SLANG_FIXTURE)});
+        });
+    });
+    editor.show();
+    editor.setFocus();
+    editor.moveCursor(QTextCursor::End);
+    assistance.Request(false);
+    QTest::keyClicks(&editor, QStringLiteral("r"));
+    QListWidget* popupOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeCompletionList"));
+    REQUIRE(popupOrNull != nullptr);
+    REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
+    QTest::keyClick(&editor, Qt::Key_Tab);
+    REQUIRE(host.GetState().Text == QByteArray("scene.Version"));
+    REQUIRE(host.Undo());
+    document.Synchronize(true);
+    REQUIRE(host.GetState().Text == QByteArray("scene.Ver"));
+}
+
+TEST_CASE("Completion capacity rejection is visible beside the unchanged source", "[editor][text][assistance]")
+{
+    MemoryCodeDocument host("scene.Ve");
+    host.LimitBytes = static_cast<usize>(host.GetState().Text.size());
+    CodeEditor editor;
+    CodeDocumentController document(editor);
+    document.Bind(&host);
+    editor.SetLanguage(CodeLanguage::Slang);
+    CodeAssistance assistance(editor, document);
+    QTemporaryDir temporary;
+    QObject::connect(&assistance, &CodeAssistance::ContextRequested, &editor, [&]() {
+        assistance.SetContext(QString::fromUtf8(LUDUS_TEST_PYTHON),
+                              temporary.path(),
+                              QUrl::fromLocalFile(temporary.filePath(QStringLiteral("unit.slang"))).toString(),
+                              {},
+                              {},
+                              {QString::fromUtf8(LUDUS_SLANG_FIXTURE)});
+    });
+    editor.show();
+    editor.setFocus();
+    editor.moveCursor(QTextCursor::End);
+    QSignalSpy status(&assistance, &CodeAssistance::StatusChanged);
+    assistance.Request(false);
+    QListWidget* popupOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeCompletionList"));
+    REQUIRE(popupOrNull != nullptr);
+    REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }));
+    QTest::keyClick(&editor, Qt::Key_Tab);
+    REQUIRE(host.GetState().Text == QByteArray("scene.Ve"));
+    REQUIRE(host.CanUndo() == false);
+    REQUIRE(status.last().at(0).toString().contains(QStringLiteral("byte limit")));
+}
+
+TEST_CASE("Native Slang completion and signature help share the versioned editing controller",
+          "[editor][text][assistance][slang-native]")
+{
+    const QString server = qEnvironmentVariable("LUDUS_TEST_SLANGD");
+    if (server.isEmpty() == true)
+    {
+        SKIP("Set LUDUS_TEST_SLANGD to exercise the installed Slang server.");
+    }
+    const QString prefix = QStringLiteral("struct SceneContext { uint Version; };\nfloat EvaluateMaterial(SceneContext "
+                                          "scene, float value) { return value; }\n");
+    const QString source = QStringLiteral("// Unicode: \U0001f600\nvoid Main(SceneContext scene) { scene.Ve; }\n");
+    MemoryCodeDocument host(source.toUtf8());
+    CodeEditor editor;
+    CodeDocumentController document(editor);
+    document.Bind(&host);
+    editor.SetLanguage(CodeLanguage::Slang);
+    CodeAssistance assistance(editor, document);
+    QTemporaryDir temporary;
+    QFile unit(temporary.filePath(QStringLiteral("unit.slang")));
+    REQUIRE(unit.open(QIODevice::WriteOnly) == true);
+    REQUIRE(unit.write((prefix + source).toUtf8()) > 0);
+    unit.close();
+    QObject::connect(&assistance, &CodeAssistance::ContextRequested, &editor, [&]() {
+        assistance.SetContext(server, temporary.path(), QUrl::fromLocalFile(unit.fileName()).toString(), prefix, {});
+    });
+    editor.resize(900, 480);
+    editor.show();
+    editor.setFocus();
+    QTextCursor cursor = editor.textCursor();
+    cursor.setPosition(static_cast<int32>(source.indexOf(QStringLiteral("Ve"))) + 2);
+    editor.setTextCursor(cursor);
+    assistance.Request(false);
+    QListWidget* popupOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeCompletionList"));
+    REQUIRE(popupOrNull != nullptr);
+    REQUIRE(QTest::qWaitFor([popupOrNull]() { return popupOrNull->isVisible() == true; }, 15000));
+    REQUIRE(popupOrNull->item(0)->text().startsWith(QStringLiteral("Version")));
+    const QString capture = qEnvironmentVariable("LUDUS_ASSISTANCE_CAPTURE_DIR");
+    if (capture.isEmpty() == false)
+    {
+        REQUIRE(QDir().mkpath(capture) == true);
+        REQUIRE(editor.grab().save(QDir(capture).filePath(QStringLiteral("source.png"))) == true);
+        REQUIRE(popupOrNull->grab().save(QDir(capture).filePath(QStringLiteral("completion.png"))) == true);
+    }
+    QTest::keyClick(&editor, Qt::Key_Tab);
+    REQUIRE(host.GetState().Text.contains("scene.Version;"));
+    const QByteArray call("void Main(SceneContext scene) { EvaluateMaterial(scene, ); }\n");
+    const usize caret = static_cast<usize>(call.indexOf(", ")) + 2;
+    REQUIRE(document.ApplyServiceText(document.Capture().Identity, call, {caret, caret}) == CodeEditStatus::Ok);
+    assistance.Request(true);
+    QLabel* signatureOrNull = editor.findChild<QLabel*>(QStringLiteral("codeSignatureHelp"));
+    REQUIRE(signatureOrNull != nullptr);
+    REQUIRE(QTest::qWaitFor([signatureOrNull]() { return signatureOrNull->isVisible() == true; }, 15000));
+    REQUIRE(signatureOrNull->text().contains(QStringLiteral("<b><u>float value</u></b>")));
+    if (capture.isEmpty() == false)
+    {
+        REQUIRE(signatureOrNull->grab().save(QDir(capture).filePath(QStringLiteral("signature.png"))) == true);
+    }
+}
+
+#endif

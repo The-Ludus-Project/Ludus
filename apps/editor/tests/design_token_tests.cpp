@@ -3,6 +3,8 @@
 
 #include "design_tokens.h"
 #include "internal/editor_style.h"
+#include "internal/overlay_widgets.h"
+#include "internal/theme_colour.h"
 #include "internal/theme_preferences.h"
 #include "internal/workspace_style.h"
 
@@ -13,12 +15,15 @@
 #include <QApplication>
 #include <QByteArray>
 #include <QColor>
+#include <QImage>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QPalette>
 #include <QString>
 #include <QStyle>
 #include <QWidget>
 
+#include <algorithm>
 #include <cmath>
 
 using namespace ludus::editor;
@@ -196,5 +201,84 @@ TEST_CASE("Workspace style takes its palette from the design tokens", "[editor][
         CHECK(widget.styleSheet().isEmpty() == true);
         CHECK(GetEditorStyleOrNull() != nullptr);
     }
+    QApplication::setPalette(original);
+}
+
+TEST_CASE("Viewport and HUD colours come from the tokens", "[editor][design-tokens]")
+{
+    // The empty viewport, the statistics panel and the overlays draw in the dark viewport set in both appearances.
+    CHECK(GetViewportArgb(design::ThemeColour::SurfaceViewport) ==
+          design::GetThemeArgb(design::ThemeColour::SurfaceViewport, true));
+    CHECK(GetViewportArgb(design::ThemeColour::SurfaceViewport) ==
+          design::GetThemeArgb(design::ThemeColour::SurfaceViewport, false));
+    constexpr int OPACITY = 190;
+    constexpr double NORMAL_TEXT_CONTRAST = 4.5;
+    const QRgb translucent = WithAlpha(GetViewportArgb(design::ThemeColour::SurfaceViewport), OPACITY);
+    CHECK(qAlpha(translucent) == OPACITY);
+    CHECK((translucent & COLOUR_CHANNEL_MASK) ==
+          (GetViewportArgb(design::ThemeColour::SurfaceViewport) & COLOUR_CHANNEL_MASK));
+    // Text on the viewport keeps the body contrast.
+    CHECK(ContrastRatio(GetViewportArgb(design::ThemeColour::TextHud),
+                        GetViewportArgb(design::ThemeColour::SurfaceViewport)) >= NORMAL_TEXT_CONTRAST);
+    CHECK(ContrastRatio(GetViewportArgb(design::ThemeColour::TextHudQuiet),
+                        GetViewportArgb(design::ThemeColour::SurfaceViewport)) >= NORMAL_TEXT_CONTRAST);
+}
+
+TEST_CASE("Overlay widgets draw their token colours without a style sheet", "[editor][design-tokens]")
+{
+    const QPalette original = QApplication::palette();
+    QApplication::setPalette(MakeApplicationPalette(true));
+    QWidget host;
+    host.resize(240, 120);
+    QLineEdit field(&host);
+    field.setGeometry(20, 20, 120, 30);
+    DiagnosticOutline::Attach(&field);
+    DiagnosticOutline::Attach(&field);
+    host.show();
+    QApplication::processEvents();
+    CHECK(field.findChildren<QWidget*>(QStringLiteral("diagnosticOutline"), Qt::FindDirectChildrenOnly).size() == 1);
+    CHECK(field.styleSheet().isEmpty() == true);
+    const QImage frame = host.grab().toImage();
+    const QColor danger = GetThemeQColour(design::ThemeColour::StatusDanger);
+    CHECK(QColor(frame.pixel(60, 20)) == danger);
+    CHECK(QColor(frame.pixel(20, 35)) == danger);
+    // The field's own text area is untouched.
+    CHECK(QColor(frame.pixel(60, 35)) != danger);
+
+    HudLabel hud(&host);
+    hud.setText(QStringLiteral("60 fps"));
+    hud.move(100, 70);
+    hud.show();
+    QApplication::processEvents();
+    CHECK(hud.styleSheet().isEmpty() == true);
+    const QImage withHud = host.grab().toImage();
+    // The panel is darker than the host behind it and carries the HUD text colour.
+    CHECK(QColor(withHud.pixel(102, 80)).lightness() < QColor(withHud.pixel(5, 5)).lightness());
+    CHECK(hud.palette().color(QPalette::WindowText).rgb() == GetViewportArgb(design::ThemeColour::TextHud));
+
+    LeftAlignedButton button(QStringLiteral("Make a graph"), &host);
+    button.setFlat(true);
+    button.setGeometry(0, 0, 200, 24);
+    button.move(20, 90);
+    button.show();
+    QApplication::processEvents();
+    const QImage buttonImage = button.grab().toImage();
+    int firstInk = buttonImage.width();
+    int lastInk = 0;
+    const QColor surface = QColor(buttonImage.pixel(1, 1));
+    for (int x = 0; x < buttonImage.width(); ++x)
+    {
+        for (int y = 0; y < buttonImage.height(); ++y)
+        {
+            if (QColor(buttonImage.pixel(x, y)) != surface)
+            {
+                firstInk = std::min(firstInk, x);
+                lastInk = std::max(lastInk, x);
+            }
+        }
+    }
+    // Text starts near the left edge instead of centring in the 200 pixel button.
+    CHECK(firstInk < button.width() / 4);
+    CHECK(lastInk < button.width() / 2);
     QApplication::setPalette(original);
 }

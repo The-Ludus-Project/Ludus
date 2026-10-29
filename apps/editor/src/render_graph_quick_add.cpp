@@ -1,4 +1,5 @@
 #include "internal/render_graph_quick_add.h"
+#include "internal/overlay_widgets.h"
 
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/stable_sort.hpp>
@@ -297,7 +298,7 @@ RenderGraphQuickAdd::RenderGraphQuickAdd(const RenderGraphTemplateRegistry& regi
       mContextLabel(new QLabel(mContext)), mContextClear(new QToolButton(mContext)), mKindAll(new QToolButton(this)),
       mKindSnippets(new QToolButton(this)), mKindNodes(new QToolButton(this)), mKindGraphs(new QToolButton(this)),
       mCategories(new QTreeWidget(this)), mResults(new QTreeWidget(this)), mMore(new QLabel(this)),
-      mGraphHint(new QPushButton(this)), mTitle(new QLabel(this)), mDescription(new QLabel(this)),
+      mGraphHint(new LeftAlignedButton(this)), mTitle(new QLabel(this)), mDescription(new QLabel(this)),
       mPorts(new QLabel(this)), mWarning(new QLabel(this)), mInsert(new QPushButton(this)), mPin(new QPushButton(this))
 {
     setObjectName(QStringLiteral("renderGraphQuickAdd"));
@@ -452,7 +453,6 @@ RenderGraphQuickAdd::RenderGraphQuickAdd(const RenderGraphTemplateRegistry& regi
     mGraphHint->setFlat(true);
     mGraphHint->setFocusPolicy(Qt::NoFocus);
     mGraphHint->setCursor(Qt::PointingHandCursor);
-    mGraphHint->setStyleSheet(QStringLiteral("text-align: left;"));
     connect(mGraphHint, &QPushButton::clicked, this, [this]() {
         const QString identity = mGraphMatch;
         close();

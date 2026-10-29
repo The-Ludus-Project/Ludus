@@ -421,9 +421,9 @@ void CodeDocumentController::commitPending()
     Q_EMIT TextAccepted();
 }
 
-CodeEditStatus CodeDocumentController::ApplyFormattedText(const CodeDocumentIdentity& expected,
-                                                          const QByteArray& text,
-                                                          CodeTextSelection selection)
+CodeEditStatus CodeDocumentController::ApplyServiceText(const CodeDocumentIdentity& expected,
+                                                        const QByteArray& text,
+                                                        CodeTextSelection selection)
 {
     if (mHostOrNull == nullptr || mEditor.isReadOnly() == true)
     {

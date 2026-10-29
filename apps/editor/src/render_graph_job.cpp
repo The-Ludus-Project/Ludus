@@ -118,6 +118,19 @@ bool RenderGraphJob::Start(const ToolingPaths& tooling, const RenderGraphJobRequ
             finish(-1, true);
         }
     });
+    QProcess* process = mProcessOrNull;
+    connect(process, &QProcess::started, this, [this, process]() {
+        if (mProcessOrNull != process)
+        {
+            return;
+        }
+        const int64 written = process->write(mRequest.StandardInput);
+        if (written != mRequest.StandardInput.size())
+        {
+            process->kill();
+        }
+        process->closeWriteChannel();
+    });
     const QString python = tooling.PythonPath.isEmpty() == false ? tooling.PythonPath : QStringLiteral("python3");
     QStringList arguments{QStringLiteral("-m"),
                           QStringLiteral("ludus_tools"),

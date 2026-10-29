@@ -18,6 +18,8 @@
 #include <QInputMethodEvent>
 #include <QKeyEvent>
 #include <QKeySequence>
+#include <QLabel>
+#include <QListWidget>
 #include <QMenu>
 #include <QMimeData>
 #include <QPaintEvent>
@@ -27,6 +29,7 @@
 #include <QPointF>
 #include <QRectF>
 #include <QResizeEvent>
+#include <QScreen>
 #include <QSettings>
 #include <QStringList>
 #include <QStringView>
@@ -48,6 +51,14 @@ namespace
 {
 using namespace foundation;
 constexpr int32 INDENT_WIDTH = 4;
+#if defined(Q_OS_MACOS)
+constexpr Qt::KeyboardModifier ASSISTANCE_MODIFIER = Qt::MetaModifier; // physical Control on macOS
+#else
+constexpr Qt::KeyboardModifier ASSISTANCE_MODIFIER = Qt::ControlModifier;
+#endif
+constexpr int32 COMPLETION_VISIBLE_ROWS = 9;
+constexpr int32 COMPLETION_WIDTH = 420;
+constexpr int32 SIGNATURE_WIDTH = 680;
 constexpr int32 INDENT_GUIDE_ALPHA = 48;
 constexpr int32 GUTTER_MARGIN = 6;
 constexpr int32 DECIMAL_RADIX = 10;
@@ -129,6 +140,37 @@ CodeEditor::CodeEditor(QWidget* parentOrNull)
       mFormatAction(new QAction(QStringLiteral("Format Document"), this)),
       mChooseFormatterAction(new QAction(QStringLiteral("Choose Formatter..."), this))
 {
+    mCompletionList = new QListWidget(this);
+    mCompletionList->setWindowFlags(Qt::ToolTip);
+    mCompletionList->setAttribute(Qt::WA_ShowWithoutActivating);
+    mCompletionList->setFocusPolicy(Qt::NoFocus);
+    mCompletionList->setObjectName(QStringLiteral("codeCompletionList"));
+    mCompletionList->setAccessibleName(QStringLiteral("Shader completion suggestions"));
+    connect(mCompletionList, &QListWidget::itemClicked, this, [this](QListWidgetItem* item) {
+        Q_EMIT CompletionChosen(mCompletionList->row(item));
+    });
+    mSignature = new QLabel(this);
+    mSignature->setWindowFlags(Qt::ToolTip);
+    mSignature->setAttribute(Qt::WA_ShowWithoutActivating);
+    mSignature->setObjectName(QStringLiteral("codeSignatureHelp"));
+    mSignature->setAccessibleName(QStringLiteral("Shader signature help"));
+    mSignature->setMargin(INDENT_WIDTH);
+    mSignature->setTextFormat(Qt::RichText);
+    mSignature->setWordWrap(true);
+    mSignature->setMaximumWidth(SIGNATURE_WIDTH);
+    mCompletionList->hide();
+    mSignature->hide();
+
+    QAction* complete = new QAction(QStringLiteral("Complete Shader Symbol (Ctrl+Space)"), this);
+    connect(complete, &QAction::triggered, this, [this]() { Q_EMIT AssistanceRequested(false); });
+    complete->setObjectName(QStringLiteral("codeEditorComplete"));
+    complete->setEnabled(false);
+    addAction(complete);
+    QAction* signature = new QAction(QStringLiteral("Shader Signature Help (Ctrl+Shift+Space)"), this);
+    connect(signature, &QAction::triggered, this, [this]() { Q_EMIT AssistanceRequested(true); });
+    signature->setObjectName(QStringLiteral("codeEditorSignature"));
+    signature->setEnabled(false);
+    addAction(signature);
     QFont textFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     textFont.setStyleHint(QFont::Monospace);
     textFont.setFixedPitch(true);
@@ -334,6 +376,14 @@ void CodeEditor::paintEvent(QPaintEvent* event)
 void CodeEditor::SetLanguage(CodeLanguage language)
 {
     mLanguage = language;
+    for (QAction* action : actions())
+    {
+        if (action->objectName() == QStringLiteral("codeEditorComplete") ||
+            action->objectName() == QStringLiteral("codeEditorSignature"))
+        {
+            action->setEnabled(language == CodeLanguage::Slang);
+        }
+    }
     mHighlighter->SetLanguage(language);
     mSelectionUpdate.start(0);
 }
@@ -467,6 +517,8 @@ void CodeEditor::insertFromMimeData(const QMimeData* source)
 
 void CodeEditor::focusOutEvent(QFocusEvent* event)
 {
+    Q_EMIT AssistanceDismissed();
+    HideAssistance();
     QPlainTextEdit::focusOutEvent(event);
     Q_EMIT EditBoundary();
 }
@@ -1100,6 +1152,66 @@ void CodeEditor::GoToLine(int32 line, int32 column)
 
 void CodeEditor::keyPressEvent(QKeyEvent* event)
 {
+    const int32 revision = document()->revision();
+    handleKeyPress(event);
+    if (document()->revision() != revision && mLanguage == CodeLanguage::Slang && event->text().size() == 1 &&
+        (event->modifiers() & (Qt::ControlModifier | Qt::MetaModifier)) == Qt::NoModifier)
+    {
+        const QChar typed = event->text().at(0);
+        const bool isSignature = typed == QLatin1Char('(') || typed == QLatin1Char(',');
+        if (isSignature == true || typed == QLatin1Char('.'))
+        {
+            Q_EMIT AssistanceRequested(isSignature);
+        }
+    }
+}
+
+void CodeEditor::handleKeyPress(QKeyEvent* event)
+{
+    const bool hasPopup = mCompletionList->isVisible() == true || mSignature->isVisible() == true;
+    if (event->key() == Qt::Key_Escape)
+    {
+        Q_EMIT AssistanceDismissed();
+    }
+    if (event->key() == Qt::Key_Escape && hasPopup == true)
+    {
+        HideAssistance();
+        event->accept();
+        return;
+    }
+    if (mLanguage == CodeLanguage::Slang && isReadOnly() == false && event->key() == Qt::Key_Space &&
+        (event->modifiers() == ASSISTANCE_MODIFIER || event->modifiers() == (ASSISTANCE_MODIFIER | Qt::ShiftModifier)))
+    {
+        Q_EMIT AssistanceRequested(event->modifiers().testFlag(Qt::ShiftModifier));
+        event->accept();
+        return;
+    }
+    if (mSignature->isVisible() == true && event->modifiers() == Qt::AltModifier &&
+        (event->key() == Qt::Key_PageUp || event->key() == Qt::Key_PageDown))
+    {
+        Q_EMIT SignatureOverloadRequested(event->key() == Qt::Key_PageUp ? -1 : 1);
+        event->accept();
+        return;
+    }
+    if (mCompletionList->isVisible() == true)
+    {
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter || event->key() == Qt::Key_Tab)
+        {
+            Q_EMIT CompletionChosen(mCompletionList->currentRow());
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_Up || event->key() == Qt::Key_Down)
+        {
+            const int32 direction = event->key() == Qt::Key_Up ? -1 : 1;
+            mCompletionList->setCurrentRow((mCompletionList->currentRow() + direction + mCompletionList->count()) %
+                                           mCompletionList->count());
+            event->accept();
+            return;
+        }
+        mCompletionList->hide();
+    }
+
     if (event->matches(QKeySequence::Undo) == true)
     {
         Undo();
@@ -1239,4 +1351,51 @@ void CodeEditor::keyPressEvent(QKeyEvent* event)
     }
     QPlainTextEdit::keyPressEvent(event);
 }
+void CodeEditor::HideAssistance()
+{
+    mCompletionList->hide();
+    mSignature->hide();
+}
+
+void CodeEditor::ShowCompletions(const QStringList& labels, const QStringList& details)
+{
+    HideAssistance();
+    mCompletionList->clear();
+    for (int32 index = 0; index < labels.size(); ++index)
+    {
+        QListWidgetItem* item = new QListWidgetItem(labels.at(index), mCompletionList);
+        item->setToolTip(QStringLiteral("<pre>%1</pre>").arg(details.value(index).toHtmlEscaped()));
+    }
+    if (labels.isEmpty() == true || hasFocus() == false)
+    {
+        return;
+    }
+    mCompletionList->setCurrentRow(0);
+    mCompletionList->resize(COMPLETION_WIDTH,
+                            qMin(COMPLETION_VISIBLE_ROWS, static_cast<int32>(labels.size())) *
+                                    mCompletionList->sizeHintForRow(0) +
+                                INDENT_WIDTH);
+    const QPoint location = viewport()->mapToGlobal(cursorRect().bottomLeft());
+    const QRect available = screen()->availableGeometry();
+    mCompletionList->move(qBound(available.left(), location.x(), available.right() - mCompletionList->width()),
+                          qMin(location.y(), available.bottom() - mCompletionList->height()));
+    mCompletionList->show();
+}
+
+void CodeEditor::ShowSignature(const QString& html)
+{
+    mSignature->hide();
+    if (html.isEmpty() == true || hasFocus() == false)
+    {
+        return;
+    }
+    mSignature->setText(html);
+    mSignature->adjustSize();
+    const QPoint location = viewport()->mapToGlobal(cursorRect().bottomLeft());
+    const QRect available = screen()->availableGeometry();
+    mSignature->move(qBound(available.left(), location.x(), available.right() - mSignature->width()),
+                     qMin(location.y(), available.bottom() - mSignature->height()));
+    mSignature->show();
+}
+
 } // namespace ludus::editor

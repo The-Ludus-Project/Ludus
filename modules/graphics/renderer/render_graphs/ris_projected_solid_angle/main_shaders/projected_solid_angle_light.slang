@@ -3,8 +3,8 @@
 // per-triangle target, the light techniques' MIS weights and the surrogate light density for BSDF-hit MIS.
 // The estimator and its decisions are docs/architecture/many-area-light-sampling-reference-review.md, sections
 // "Proposed estimator" and "Decision: BSDF-hit MIS".
-// The graph wrapper includes FoundationMath's projected_solid_angle.slang and linearly_transformed_cosine.slang and
-// the renderer's ltc_table.slang before this source, because the technique declares
+// The graph wrapper includes FoundationMath's projected_solid_angle.slang, linearly_transformed_cosine.slang and
+// shading_normal.slang and the renderer's ltc_table.slang before this source, because the technique declares
 // scene_interface.polygonal_light_sampling.
 //
 // Thanks to Ishaan Shah, Aakash KT and P. J. Narayanan, "Combining Resampled Importance and Projected Solid Angle
@@ -15,10 +15,17 @@
 // Thanks to Christoph Peters, "BRDF Importance Sampling for Polygonal Lights", ACM Transactions on Graphics 40(4),
 // Article 140, 2021, https://doi.org/10.1145/3450626.3459672: section 4.1 (LTC sampling, which an empty LTC-space
 // clip disables), section 4.2 (the weighted balance heuristic with coefficients c_j = L_e a_j E_j, and diffuse albedo
-// clamped to 0.01 per channel) and section 4.3 (clamped optimal MIS, the blend with the balance heuristic by the
-// visibility estimate v). Implemented from the paper's text.
-// Departure, as the review specifies: the coefficients are reduced to BT.709 luminance, one scalar weight per
-// technique, where Peters weights each color channel.
+// clamped to 0.01 per channel), section 4.3 (clamped optimal MIS, the blend with the balance heuristic by the
+// visibility estimate v) and section 6.1 (the receiver's shading normal clipped to the hemisphere of the outgoing
+// direction by FoundationMath's ClipShadingNormalToOutgoingHemisphere, which shade.slang applies before
+// MakeReceiverLightingFrame). Implemented from the paper's text.
+// Departures, all named in docs/development/render-graph-authoring.md:
+// - As the review specifies, the coefficients are reduced to BT.709 luminance, one scalar weight per technique, where
+//   Peters weights each color channel.
+// - Section 6.1 gives no margin for the clipped shading normal. Ludus keeps it SHADING_NORMAL_MINIMUM_OUTGOING_COSINE
+//   (0.01) inside the hemisphere, because the BSDF is zero for an outgoing direction on the shading horizon.
+// - Section 6.1 does not discuss back faces. shade.slang clips front faces only, so a one-sided surface seen from
+//   behind stays black, as in the other templates, instead of being lit through the surface.
 // Thanks to Stephen Hill and Eric Heitz, "Real-Time Area Lighting: a Journey from Research to Production", SIGGRAPH
 // 2016 Advances in Real-Time Rendering course, https://advances.realtimerendering.com/s2016/, slides 77 and 90-102:
 // the approximate target evaluates their vector form factor and clipped proxy sphere (FoundationMath's
@@ -72,7 +79,8 @@ float3 TransformTangentToWorld(ReceiverLightingFrame frame, float3 vectorTangent
            frame.NormalWorld * vectorTangent.z;
 }
 
-/// Build the frame and both techniques once per receiver. normalWorld and viewDirectionWorld are unit vectors;
+/// Build the frame and both techniques once per receiver. normalWorld, already clipped by FoundationMath's
+/// ClipShadingNormalToOutgoingHemisphere for a front face, and viewDirectionWorld are unit vectors;
 /// roughness is the standard BSDF's perceptual roughness. The diffuse albedo a_0 approximates the Fresnel-weighted
 /// Lambert lobe with Schlick's reflectance at normal incidence, baseColor (1 - metallic) (1 - F0), clamped per
 /// channel to MINIMUM_DIFFUSE_TECHNIQUE_ALBEDO; a failed LTC construction disables the specular technique.

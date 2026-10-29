@@ -1,6 +1,7 @@
 #include "internal/empty_world_view.h"
 #include "internal/render_preview.h"
 #include "internal/state_view.h"
+#include "internal/theme_colour.h"
 
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/matrix.hpp>
@@ -24,9 +25,9 @@ namespace
 {
 constexpr int32 TEXT_MARGIN = 12;
 constexpr usize CLIP_PLANE_COUNT = 6;
-constexpr QRgb BACKGROUND = qRgb(9, 12, 15);
-constexpr QRgb CAPTION = qRgb(175, 184, 194);
-constexpr QRgb SECONDARY_CAPTION = qRgb(150, 160, 170);
+constexpr QRgb BACKGROUND = GetViewportArgb(design::ThemeColour::SurfaceViewport);
+constexpr QRgb CAPTION = GetViewportArgb(design::ThemeColour::TextHud);
+constexpr QRgb SECONDARY_CAPTION = GetViewportArgb(design::ThemeColour::TextHudQuiet);
 /// Share of white mixed into an axis colour for its letter, so the letter reads at text contrast.
 constexpr float32 AXIS_LETTER_LIGHTEN = 0.35F;
 /// Smallest spread between the brightest and darkest channel of a coloured axis line; grey grid lines have none.

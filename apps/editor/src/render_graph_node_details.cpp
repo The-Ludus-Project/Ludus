@@ -1,4 +1,5 @@
 #include "internal/render_graph_node_details.h"
+#include "internal/overlay_widgets.h"
 
 #include <ludus/foundation/base/types.h>
 
@@ -90,8 +91,7 @@ void RenderGraphNodeDetails::RevealDiagnostic(const QString& field, const QStrin
             continue;
         }
         control->setProperty("isRenderGraphDiagnosticTarget", true);
-        control->setStyleSheet(
-            QStringLiteral("*[isRenderGraphDiagnosticTarget=\"true\"] { border: 2px solid #ff9a88; }"));
+        DiagnosticOutline::Attach(control);
         for (QTabWidget* tabs : mScroll->findChildren<QTabWidget*>())
         {
             for (int32 index = 0; index < tabs->count(); ++index)

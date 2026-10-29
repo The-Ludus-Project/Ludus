@@ -1884,6 +1884,18 @@ other with the power heuristic, so the combined image converges to the same
 integral as each strategy alone. The scene interface declares `surface_queries: 1`,
 `visibility_queries: 2` and `polygonal_light_sampling: true`.
 
+Before either strategy, `TryLoadShadingPoint` clips a front face's shading normal
+to the hemisphere of the view direction with FoundationMath's
+`ClipShadingNormalToOutgoingHemisphere`, as Peters' renderer does "to avoid black
+pixels due to normal mapping" (§6.1). The receiver frame, both light techniques,
+BSDF sampling and the BSDF use the clipped normal in all three passes, so they
+still estimate one integral. The
+[polygonal-light template](#compare-brdf-importance-sampling-for-polygonal-lights)
+shares the function and its margin. The MIS template and RT1's reference path do
+not clip: where a shading normal faces away from the view, their BSDF is zero.
+Their images therefore differ from this template's only at normal-mapped pixels
+and within 0.01 of the shading horizon.
+
 | Graph setting | Default | Range | Meaning |
 | --- | --- | --- | --- |
 | `RIS_CANDIDATE_COUNT` | `8` | `1`–`32` | Candidates `M` per receiver |
@@ -1908,6 +1920,13 @@ Scope and limits:
 - The diffuse technique's albedo uses Schlick's reflectance at normal incidence.
 - The fixed two-iteration inversion of Peters' sampler has a small backward error;
   a direction that misses its triangle in float32 contributes zero.
+- §6.1 gives no margin for the clipped shading normal. Ludus keeps its cosine with
+  the view direction at least 0.01 (`SHADING_NORMAL_MINIMUM_OUTGOING_COSINE`; after
+  renormalizing, at least 0.01/√1.0001), because the BSDF is zero on the shading
+  horizon.
+- §6.1 does not discuss back faces. Only front faces are clipped, so a one-sided
+  surface seen from behind stays black, as in the other templates. A normal clipped
+  towards the viewer would light such a surface through itself.
 - There is no indirect bounce and no reservoir reuse.
 
 `ludus_render_graph_ray_tests` renders the template on Metal, with its compute BVH.
@@ -1962,7 +1981,29 @@ and its [approximate target measurements](../architecture/many-area-light-sampli
 weights and the light/BSDF split sum to one wherever a technique can sample, that
 `Ẑ = 0` applies the inclusion cap, that an empty LTC clip leaves the diffuse
 technique all the weight, and that the approximate target is positive wherever the
-exact diffuse integral is. Vulkan has not been run for this template.
+exact diffuse integral is.
+
+A second test kernel draws 4096 receivers whose view lies below
+the horizon of their shading normal, a quarter of them at the minimum roughness.
+It clips each normal as `TryLoadShadingPoint` does (§6.1), and the test compares
+the result with RT1's C++ twin of `projected_solid_angle_light.slang`:
+
+- the clipped normal agrees with FoundationMath's C++ clip within 10⁻⁵ per
+  component;
+- the albedo luminances, the LTC's existence and both integrals agree, with
+  integrals compared within 10⁻³ relative unless the larger of the CPU and GPU
+  integrals is a sliver below 10⁻⁵;
+- the diffuse density at the sampled direction agrees within 10⁻³, and the
+  sampled direction's weights sum to one.
+
+Without the clip every one of these receivers would be black. On Apple M5, 3121
+see the triangle and 3055 take a sample. A minimum-roughness LTC density reaches
+10⁶ per steradian and changes by its own magnitude within a degree, so the LTC
+densities are compared by percentile: over 1549 directions the 99th percentile
+relative difference is 5.4·10⁻⁴ (largest 2.3·10⁻³), and the test allows 10⁻³.
+With both receivers in one kernel, Metal results varied between runs; as separate
+kernels, each repeats bit for bit. Vulkan has not been run for this
+template.
 
 See the canonical
 [package](../../modules/graphics/renderer/render_graphs/ris_projected_solid_angle/main.lurender.json).
@@ -2009,7 +2050,9 @@ same random numbers.
 For each receiver and each emissive triangle, `main_shaders/polygonal_light.slang`
 follows the paper section by section:
 
-1. `ClipShadingNormalToOutgoingHemisphere` clips the shading normal to the
+1. FoundationMath's `ClipShadingNormalToOutgoingHemisphere`
+   ([shading normal clipping](../modules/foundation/math.md#shading-normal-clipping),
+   shared with the RIS template) clips the shading normal to the
    hemisphere of the view direction, as Peters' renderer does "to avoid black pixels
    due to normal mapping" (§6.1). The shading frame, both techniques and the BSDF use
    the clipped normal. `shade.slang` clips front faces only.
@@ -2077,7 +2120,7 @@ Departures from the paper, also listed in `polygonal_light.slang`:
   reflectance at normal incidence for Ludus's Fresnel-weighted Lambert lobe. Peters
   uses the Frostbite BRDF's diffuse albedo.
 - §6.1 gives no margin for the clipped shading normal. Ludus keeps its cosine with
-  the view direction at least 0.01 (`MINIMUM_OUTGOING_COSINE`; after renormalizing,
+  the view direction at least 0.01 (`SHADING_NORMAL_MINIMUM_OUTGOING_COSINE`; after renormalizing,
   at least 0.01/√1.0001), because the BSDF is zero on the shading horizon.
 - §6.1 does not discuss back faces. Only front faces are clipped, so a one-sided
   surface seen from behind stays black, as in the other templates. A normal clipped
@@ -2412,6 +2455,15 @@ each pass's `invocation.traversal` to `ComputeBvh`. There is no indirect bounce.
   plus `shadePoints`). With 102-106 samples in the time of 16, `pointSampling`
   reached a penumbra mean squared error of 9.9e-5, against 3.05e-4 for `color`.
   The hidden test `[.point-line-performance]` repeats this measurement.
+- On the 500,000-triangle Sponza export under a 6 m square light, with every pass
+  on `ComputeBvh`, a `color` sample cost 23-30 times a `pointSampling` sample in
+  three runs. Line queries took most of that time. At equal GPU time
+  `pointSampling` reached 7-9% of `color`'s penumbra mean squared error, against
+  a 32,768-sample reference. The hidden test
+  `[.point-line-large-scene-performance]` repeats this measurement. The
+  [point-and-line design](../../.kiro/specs/point-line-direct-lighting/design.md#5-large-scene-equal-time-measurement)
+  records the setup, the device and the clock variation. These two scenes on one
+  Metal device support no general claim.
 
 A masked occluder cannot be tested yet, because render-graph scenes cannot hold
 alpha-tested triangles. Vulkan has not been run for this template.
@@ -2515,6 +2567,8 @@ callbacks. The wrapper then stages and includes, before your sources:
   clipping, integral and sampler);
 - `linearly_transformed_cosine.slang` (the LTC polygon transform);
 - `weighted_reservoir.slang` (the sequential weighted reservoir);
+- `shading_normal.slang` (Peters' §6.1 clip of the shading normal to the view's
+  hemisphere);
 - the renderer's `ltc_table.slang` (`LookupSpecularLtc`, `ComputeSpecularLtcAlbedo`)
   with its layout.
 
@@ -4880,8 +4934,8 @@ The **Source** pane uses the shared code editor: line numbers, Slang lexical
 coloring, current-line and matching-bracket highlighting, and native text
 selection, clipboard and navigation. Strings and comments are excluded from
 bracket matching; matching is bounded for responsiveness. Shader formatting and
-unified source/canvas undo are available; language-server hover and completion
-remain future increments, described in the
+unified source/canvas undo, native shader completion and signature help are
+available. Symbol hover remains a future increment, described in the
 [shared editor architecture](../architecture/editor-gui-systems.md#source-editing-direction).
 
 Use **Focus Source** or **Shift+Alt+Return** while Source is active to hide the
@@ -4939,6 +4993,48 @@ Find supports forward/backward wrapping, case matching, and replacement; Escape
 closes its controls and returns focus to the source. Go to line uses one-based
 line numbers. Ordinary text and JSON sources share the commands, with Slang
 coloring/comment toggling enabled only for `.slang` files.
+
+#### Shader completion and signature help
+
+In a native Source editor, press **Ctrl+Space** to complete a symbol, or type
+`.` for members. Type a prefix to narrow the suggestions. Up/Down selects an
+item; Enter or Tab accepts it; Escape dismisses assistance. Completion uses the
+current unsaved draft, including package includes, manifest-generated types and
+bindings, scene/material APIs and shader functions. An accepted completion and
+its additional source edits form one undo step; Save remains explicit.
+
+Press **Ctrl+Shift+Space** inside a call, or type `(` or `,`, for signature help.
+The active parameter is emphasized. **Alt+PageUp/PageDown** selects another
+overload when available. These two Space shortcuts use the physical **Control**
+key on macOS, unlike the Command mapping of the ordinary editing shortcuts above.
+The Edit/context menus also offer both commands.
+
+The **Shader context** selector identifies the linked program/stage used for
+semantics. A shared source can have several contexts; select the one whose
+bindings and callbacks you are editing. The selector's text is selectable and
+copyable; its tooltip names the owning package manifest. Context IDs identify
+linked compiler units, including generated scene kernels, rather than canvas
+node scopes. Changes to sources, schemas, authored settings or tool selection
+invalidate earlier assistance. Compilation and validation remain authoritative
+for target capabilities and build errors.
+
+Assistance starts Slang's `slangd` lazily beside the project's selected `slangc`
+(or the compiler override in **Tools → Options → Render Graph**). It captures a
+temporary draft package and uses the same source-generation owner as shader
+compilation. It does not download tools or save project files. Missing tools,
+invalid graph/interface inputs and process failures appear directly below the
+selector with a repair message. After repairing them, use **Retry assistance**
+to refresh available contexts and start again. Ordinary editing stays available.
+
+The initial provider needs an executable program context. Unassigned source files,
+legacy compatibility rewrites of the editable file, repeated inclusion of that
+file in one linked unit and include cycles through that file report an explicit
+mapping limitation. Completion edits must stay inside the current authored file;
+generated-file edits and unsolicited snippets are rejected. Literal package
+includes follow the build owner's existing rules; module imports are unsupported.
+The static browser editor has no native Slang process and reports that completion
+and signature help are unavailable. The searchable Shader API reference remains
+available independently.
 
 #### Compiler messages in the source
 

@@ -3,6 +3,7 @@
 #include "internal/orientation_widget.h"
 #include "internal/preview_shading.h"
 #include "internal/reference_capture_window.h"
+#include "internal/theme_colour.h"
 #include "internal/viewport_size.h"
 #include "internal/viewport_statistics.h"
 
@@ -68,11 +69,11 @@ namespace rhi = graphics::rhi;
 namespace
 {
 /// Colour of the viewport background, also painted in the bars around a letterboxed frame.
-constexpr QRgb VIEWPORT_BACKGROUND = qRgb(9, 12, 15);
+constexpr QRgb VIEWPORT_BACKGROUND = GetViewportArgb(design::ThemeColour::SurfaceViewport);
 /// Arrow-key and spin-button step of the field of view control, in degrees.
 constexpr float64 FIELD_OF_VIEW_STEP_DEGREES = 5;
 /// Outline drawn around a letterboxed frame so its edge stays visible over a dark scene.
-constexpr QRgb FRAME_OUTLINE = qRgb(58, 66, 76);
+constexpr QRgb FRAME_OUTLINE = GetViewportArgb(design::ThemeColour::BorderSubtle);
 /// Width of the shading menu in characters; longer labels are cut, and the full text is in the tooltip.
 constexpr int SHADING_COMBO_CHARACTERS = 12;
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
@@ -194,12 +195,17 @@ constexpr qreal STATISTICS_MARGIN = 8;
 constexpr qreal STATISTICS_PADDING = 6;
 /// Corner radius of the statistics panel, in logical pixels.
 constexpr qreal STATISTICS_CORNER_RADIUS = 4;
+/// Opacity, of 255, of the statistics panel and of the shader error panel.
+constexpr int STATISTICS_BACKGROUND_OPACITY = 190;
+constexpr int SHADER_ERROR_OPACITY = 215;
 /// Translucent dark panel behind the statistics text, kept readable over any debug view.
-constexpr QRgb STATISTICS_BACKGROUND = qRgba(9, 12, 15, 190);
+constexpr QRgb STATISTICS_BACKGROUND =
+    WithAlpha(GetViewportArgb(design::ThemeColour::SurfaceViewport), STATISTICS_BACKGROUND_OPACITY);
 /// Statistics text colour.
-constexpr QRgb STATISTICS_TEXT = qRgb(232, 236, 240);
+constexpr QRgb STATISTICS_TEXT = GetViewportArgb(design::ThemeColour::TextHud);
 /// Translucent red panel behind live shader errors and restart notices.
-constexpr QRgb SHADER_ERROR_BACKGROUND = qRgba(110, 20, 24, 215);
+constexpr QRgb SHADER_ERROR_BACKGROUND =
+    WithAlpha(GetViewportArgb(design::ThemeColour::StatusDangerSurface), SHADER_ERROR_OPACITY);
 /// Live shaders toggle tooltip; while an error is shown the tooltip carries its full text instead.
 QString GetLiveShadersToolTip()
 {
@@ -281,7 +287,7 @@ constexpr qreal LEGEND_GAP = 4;
 /// Colour stops sampled along the legend bar; the ramp is smooth enough that this matches the shader.
 constexpr int32 LEGEND_STOP_COUNT = 16;
 /// Outline around the legend bar so its dark end stays visible on the translucent panel.
-constexpr QRgb LEGEND_BAR_OUTLINE = qRgb(120, 130, 140);
+constexpr QRgb LEGEND_BAR_OUTLINE = GetViewportArgb(design::ThemeColour::BorderControl);
 /// Space between the end labels of a legend, in logical pixels.
 constexpr qreal LEGEND_LABEL_GAP = 12;
 QLinearGradient MakeLegendGradient(PreviewLegendRamp ramp)

@@ -170,6 +170,16 @@ if(TARGET ludus_rhi_render_tests)
         DEPENDS "${ris_projected_solid_angle_shaders}/projected_solid_angle_light.slang"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/ris_projected_solid_angle_weights_layout.h"
                 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ltc_table.slang" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ltc_table_layout.h")
+    # The same template functions for receivers viewed from below their shading horizon (Peters 2021, section 6.1).
+    ludus_compile_shader(TARGET ludus_renderer_render_tests NAME ris_projected_solid_angle_clipped_receivers
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/ris_projected_solid_angle_clipped_receivers.slang"
+        COMPUTE ClippedReceiverMain
+        INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/shaders" "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders"
+                 "${ris_projected_solid_angle_shaders}"
+        DEPENDS "${ris_projected_solid_angle_shaders}/projected_solid_angle_light.slang"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/ris_projected_solid_angle_weights_layout.h"
+                "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders/shading_normal.slang"
+                "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ltc_table.slang" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ltc_table_layout.h")
     # Test-only kernel comparing the GPU-compute reference's resampled light pieces with src/reference_light_sampling.cpp.
     ludus_compile_shader(TARGET ludus_renderer_render_tests NAME reference_light_sampling_parity
         SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/reference_light_sampling_parity.slang" COMPUTE ComputeMain
@@ -185,6 +195,7 @@ if(TARGET ludus_rhi_render_tests)
         INCLUDES "${renderer_shader_directory}" ${renderer_shader_includes} "${polygonal_light_sampling_shaders}"
         DEPENDS "${polygonal_light_sampling_shaders}/polygonal_light.slang"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/polygonal_light_sampling_estimators_layout.h"
+                "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders/shading_normal.slang"
                 "${renderer_shader_directory}/renderer_gpu_preview.slang" "${renderer_shader_directory}/scene_shader.slang"
                 "${renderer_shader_directory}/ltc_table.slang" "${renderer_shader_directory}/ltc_table_layout.h")
     ludus_compile_shader(TARGET ludus_renderer_render_tests NAME restir_selection
@@ -860,38 +871,43 @@ if(TARGET ludus_renderer_render_tests)
         target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
             "LUDUS_RG3_${template_definition}_LINE_SCAN_DIRECTORY=\"${template_scan_package_directory}\"")
     endforeach()
-    # The line-sampling template with every pass on ComputeBvh rays, with each line traversal, for the
-    # hidden large-scene line query measurement: a triangle-loop primary ray would dominate there.
-    set(line_sampling_bvh_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/line_sampling_compute_bvh")
-    ludus_stage_render_graph_inputs("${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/line_sampling_template"
-        "${line_sampling_bvh_staged}" library.lurender.json)
-    file(READ "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/line_sampling_template/library.lurender.json"
-        line_sampling_library)
-    string(JSON line_sampling_node_count LENGTH "${line_sampling_library}" configurations 0 nodes)
-    math(EXPR line_sampling_node_last "${line_sampling_node_count} - 1")
-    foreach(node_index RANGE ${line_sampling_node_last})
-        string(JSON node_kind GET "${line_sampling_library}" configurations 0 nodes ${node_index} kind)
-        if(node_kind STREQUAL "ComputePipeline")
-            string(JSON line_sampling_library SET "${line_sampling_library}"
-                configurations 0 nodes ${node_index} invocation traversal "\"ComputeBvh\"")
-        endif()
+    # Both line templates with every pass on ComputeBvh rays, for the hidden large-scene measurements: a
+    # triangle-loop primary or shadow ray would dominate there. Line sampling is also cooked with the
+    # line scan for the line query measurement (point-line PL3); point-and-line MIS is compared with
+    # point sampling at equal GPU time (the large-scene measurement after PL3).
+    foreach(bvh_template IN ITEMS line_sampling salesin_jarosz_lines)
+        set(bvh_template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${bvh_template}_compute_bvh")
+        ludus_stage_render_graph_inputs("${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${bvh_template}_template"
+            "${bvh_template_staged}" library.lurender.json)
+        file(READ "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${bvh_template}_template/library.lurender.json"
+            bvh_template_library)
+        string(JSON bvh_template_node_count LENGTH "${bvh_template_library}" configurations 0 nodes)
+        math(EXPR bvh_template_node_last "${bvh_template_node_count} - 1")
+        foreach(node_index RANGE ${bvh_template_node_last})
+            string(JSON node_kind GET "${bvh_template_library}" configurations 0 nodes ${node_index} kind)
+            if(node_kind STREQUAL "ComputePipeline")
+                string(JSON bvh_template_library SET "${bvh_template_library}"
+                    configurations 0 nodes ${node_index} invocation traversal "\"ComputeBvh\"")
+            endif()
+        endforeach()
+        file(WRITE "${bvh_template_staged}.lurender.json" "${bvh_template_library}\n")
+        file(COPY_FILE "${bvh_template_staged}.lurender.json" "${bvh_template_staged}/library.lurender.json"
+            ONLY_IF_DIFFERENT)
     endforeach()
-    file(WRITE "${line_sampling_bvh_staged}.lurender.json" "${line_sampling_library}\n")
-    file(COPY_FILE "${line_sampling_bvh_staged}.lurender.json" "${line_sampling_bvh_staged}/library.lurender.json"
-        ONLY_IF_DIFFERENT)
+    set(line_sampling_bvh_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/line_sampling_compute_bvh")
     set(line_sampling_bvh_scan_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/line_sampling_compute_bvh_line_scan")
     ludus_stage_line_scan_variant("${line_sampling_bvh_staged}" "${line_sampling_bvh_scan_staged}")
-    foreach(line_sampling_variant IN ITEMS "compute_bvh;${line_sampling_bvh_staged}"
-            "compute_bvh_line_scan;${line_sampling_bvh_scan_staged}")
-        list(GET line_sampling_variant 0 line_sampling_name)
-        list(GET line_sampling_variant 1 line_sampling_directory)
-        ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME "rg2_line_sampling_${line_sampling_name}"
-            MANIFEST "${line_sampling_directory}/main.lushader.json" RUNTIME_PACKAGE)
-        cmake_path(GET "rg2_line_sampling_${line_sampling_name}_RUNTIME_PACKAGE" PARENT_PATH
-            line_sampling_package_directory)
-        string(TOUPPER "${line_sampling_name}" line_sampling_definition)
+    foreach(bvh_variant IN ITEMS "line_sampling_compute_bvh;${line_sampling_bvh_staged}"
+            "line_sampling_compute_bvh_line_scan;${line_sampling_bvh_scan_staged}"
+            "salesin_jarosz_lines_compute_bvh;${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/salesin_jarosz_lines_compute_bvh")
+        list(GET bvh_variant 0 bvh_variant_name)
+        list(GET bvh_variant 1 bvh_variant_directory)
+        ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME "rg2_${bvh_variant_name}"
+            MANIFEST "${bvh_variant_directory}/main.lushader.json" RUNTIME_PACKAGE)
+        cmake_path(GET "rg2_${bvh_variant_name}_RUNTIME_PACKAGE" PARENT_PATH bvh_variant_package_directory)
+        string(TOUPPER "${bvh_variant_name}" bvh_variant_definition)
         target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
-            "LUDUS_RG3_LINE_SAMPLING_${line_sampling_definition}_DIRECTORY=\"${line_sampling_package_directory}\"")
+            "LUDUS_RG3_${bvh_variant_definition}_DIRECTORY=\"${bvh_variant_package_directory}\"")
     endforeach()
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_SCENE_COMPUTE_DIRECTORY="${scene_compute_package_directory}"

@@ -5223,9 +5223,10 @@ namespace
 /// A large scene for the hidden line traversal measurement, read from the file that
 /// LUDUS_LINE_TRAVERSAL_SCENE names: a little-endian uint32 vertex count and index count, then float32
 /// x, y, z World positions and uint32 triangle indices, as export_line_traversal_scene.py writes them
-/// from a glTF file. A square emitter facing down is added above the scene's horizontal center, and
-/// the camera looks along -X from inside its bounds. A generated floor and ceiling stand in for the
-/// file where a test needs a large scene without the reference assets.
+/// from a glTF file. A square emitter facing down, lightHalfWidthWorld from its center to each side, is
+/// added above the scene's horizontal center, and the camera looks along -X from inside its bounds. A
+/// generated floor and ceiling stand in for the file where a test needs a large scene without the
+/// reference assets.
 struct LargeLineScene final
 {
     static constexpr usize MATERIAL_COUNT = 2;
@@ -5233,6 +5234,8 @@ struct LargeLineScene final
     static constexpr uint32 LIGHT = 1;
     static constexpr usize LIGHT_CORNERS = 4;
     static constexpr usize LIGHT_INDEX_COUNT = 6;
+    /// The 2 m square light of the line traversal measurement.
+    static constexpr float32 DEFAULT_LIGHT_HALF_WIDTH_WORLD = 1;
     Array<math::Vector3> Positions;
     Array<uint32> Indices;
     Array<uint32> Slots;
@@ -5243,7 +5246,7 @@ struct LargeLineScene final
     StaticArray<renderer::ViewDescription, 1> Cameras{};
     renderer::SceneShaderInputs Inputs;
 
-    explicit LargeLineScene(std::string_view path)
+    explicit LargeLineScene(std::string_view path, float32 lightHalfWidthWorld = DEFAULT_LIGHT_HALF_WIDTH_WORLD)
     {
         const usize separator = path.rfind('/');
         REQUIRE(separator != std::string_view::npos);
@@ -5284,7 +5287,7 @@ struct LargeLineScene final
             Indices[index] = readWord();
             REQUIRE(Indices[index] < vertexCount);
         }
-        finish(vertexCount, indexCount);
+        finish(vertexCount, indexCount, lightHalfWidthWorld);
     }
     /// A floor and a ceiling, each a square grid of gridQuads x gridQuads quads: 4 * gridQuads^2 triangles.
     explicit LargeLineScene(uint32 gridQuads)
@@ -5337,7 +5340,7 @@ struct LargeLineScene final
                 }
             }
         }
-        finish(vertexCount, indexCount);
+        finish(vertexCount, indexCount, DEFAULT_LIGHT_HALF_WIDTH_WORLD);
     }
     LargeLineScene(const LargeLineScene&) = delete;
     LargeLineScene& operator=(const LargeLineScene&) = delete;
@@ -5351,7 +5354,7 @@ private:
         REQUIRE(Slots.TryResize((indexCount + LIGHT_INDEX_COUNT) / 3) == true);
     }
     /// Add the emitter, materials and camera around the first vertexCount positions.
-    void finish(usize vertexCount, usize indexCount)
+    void finish(usize vertexCount, usize indexCount, float32 lightHalfWidthWorld)
     {
         math::Vector3 minimumWorld{1e30F, 1e30F, 1e30F};
         math::Vector3 maximumWorld{-1e30F, -1e30F, -1e30F};
@@ -5369,18 +5372,17 @@ private:
         {
             Slots[triangle] = SURFACE;
         }
-        // A 2 m square light, facing down, at 60% of the scene's height above its horizontal center.
-        constexpr float32 LIGHT_HALF_WIDTH_WORLD = 1;
+        // A square light, facing down, at 60% of the scene's height above its horizontal center.
         constexpr float32 LIGHT_HEIGHT_FRACTION = .6F;
         const float32 centerX = (minimumWorld.X + maximumWorld.X) * .5F;
         const float32 centerZ = (minimumWorld.Z + maximumWorld.Z) * .5F;
         const float32 lightY = minimumWorld.Y + (maximumWorld.Y - minimumWorld.Y) * LIGHT_HEIGHT_FRACTION;
         const uint32 firstCorner = static_cast<uint32>(vertexCount);
-        Positions[vertexCount] = {centerX - LIGHT_HALF_WIDTH_WORLD, lightY, centerZ - LIGHT_HALF_WIDTH_WORLD};
+        Positions[vertexCount] = {centerX - lightHalfWidthWorld, lightY, centerZ - lightHalfWidthWorld};
         // Counterclockwise seen from below, so the one-sided emitter faces -Y.
-        Positions[vertexCount + 1] = {centerX + LIGHT_HALF_WIDTH_WORLD, lightY, centerZ - LIGHT_HALF_WIDTH_WORLD};
-        Positions[vertexCount + 2] = {centerX + LIGHT_HALF_WIDTH_WORLD, lightY, centerZ + LIGHT_HALF_WIDTH_WORLD};
-        Positions[vertexCount + 3] = {centerX - LIGHT_HALF_WIDTH_WORLD, lightY, centerZ + LIGHT_HALF_WIDTH_WORLD};
+        Positions[vertexCount + 1] = {centerX + lightHalfWidthWorld, lightY, centerZ - lightHalfWidthWorld};
+        Positions[vertexCount + 2] = {centerX + lightHalfWidthWorld, lightY, centerZ + lightHalfWidthWorld};
+        Positions[vertexCount + 3] = {centerX - lightHalfWidthWorld, lightY, centerZ + lightHalfWidthWorld};
         const StaticArray<uint32, LIGHT_INDEX_COUNT> corners{{0, 1, 2, 0, 2, 3}};
         for (usize corner = 0; corner < LIGHT_INDEX_COUNT; ++corner)
         {
@@ -5418,8 +5420,9 @@ private:
                                   DEPTH_SCALE * (NEAR_WORLD - eyeWorld.X),
                                   eyeWorld.X};
         Cameras[0].CameraPosition = eyeWorld;
-        WARN("large line scene: " << vertexCount << " vertices, " << indexCount / 3 << " triangles, light at y="
-                                  << lightY << ", eye " << eyeWorld.X << ',' << eyeWorld.Y << ',' << eyeWorld.Z);
+        WARN("large line scene: " << vertexCount << " vertices, " << indexCount / 3 << " triangles, "
+                                  << 2 * lightHalfWidthWorld << " m square light at y=" << lightY << ", eye "
+                                  << eyeWorld.X << ',' << eyeWorld.Y << ',' << eyeWorld.Z);
     }
 };
 } // namespace
@@ -6079,6 +6082,301 @@ TEST_CASE("Measure point-and-line MIS against point sampling in the penumbra at 
                                 << " samples MSE=" << misError << ", point sampling at " << pointFrameCount
                                 << " samples MSE=" << pointError << " (at " << COLOR_FRAME_COUNT << " samples "
                                 << equalSamplePointError << ")");
+}
+
+TEST_CASE("Measure point-and-line MIS against point sampling in a large scene's penumbra at equal GPU time",
+          "[.point-line-large-scene-performance]")
+{
+    // A point-line measurement after PL3, not an acceptance threshold: GPU time varies with machine load
+    // and clock state. PL3's equal-time comparison ([.point-line-performance]) on the scene of the line
+    // traversal measurement, which LUDUS_LINE_TRAVERSAL_SCENE names, lit by a 6 m square light so that
+    // its occluders cast wide penumbrae. Both templates run with every ray pass on ComputeBvh. The
+    // penumbra is PL2's: pixels below eye height whose mean visible chord fraction, from the
+    // line-sampling template, lies strictly between 0.1 and 0.9. The rest of the lower half is reported
+    // separately. For each color budget, point sampling receives
+    // round(colorFrames * (primary + shade) / (primary + shadePoints)) samples.
+    const char* pathOrNull = std::getenv("LUDUS_LINE_TRAVERSAL_SCENE");
+    if (pathOrNull == nullptr)
+    {
+        SKIP("Set LUDUS_LINE_TRAVERSAL_SCENE to an exported scene, for example Intel Sponza.");
+    }
+    constexpr float32 LIGHT_HALF_WIDTH_WORLD = 3;
+    const LargeLineScene scene(pathOrNull, LIGHT_HALF_WIDTH_WORLD);
+    // The Editor viewport's device budget, as in the line traversal measurement.
+    constexpr uint64 EDITOR_RESOURCE_BYTES = uint64{2} * 1024 * 1024 * 1024;
+    GraphGpuFixture fixture(true, false, EDITOR_RESOURCE_BYTES);
+    // The graph is released before the template's graphs are prepared: the device holds two at once.
+    Array<uint8> fractionPixels;
+    {
+        PreparedGraph fraction(fixture,
+                               {LUDUS_RG3_LINE_SAMPLING_COMPUTE_BVH_DIRECTORY, "rg2_line_sampling_compute_bvh.lurgrt"},
+                               scene,
+                               1);
+        REQUIRE(renderer::RequiresHardwareRayTracing(fraction.Plan) == false);
+        constexpr usize FRACTION_FRAME_COUNT = 256;
+        for (usize frame = 0; frame < FRACTION_FRAME_COUNT; ++frame)
+        {
+            RenderFrame(fraction.Graph, fixture);
+        }
+        const StaticArray<uint32, LINE_SAMPLING_OUTPUT_COUNT> fractionExports = GetLineSamplingExports(fraction.Plan);
+        ReadExport(fraction.Graph, fixture, fractionExports[LINE_SAMPLING_VISIBLE_FRACTION], {}, fractionPixels);
+    }
+    constexpr usize MASK_COUNT = 2;
+    constexpr usize PENUMBRA = 0;
+    constexpr usize OUTSIDE_PENUMBRA = 1;
+    const StaticArray<const char*, MASK_COUNT> maskNames{{"penumbra", "outside the penumbra"}};
+    StaticArray<Array<bool>, MASK_COUNT> masks;
+    StaticArray<usize, MASK_COUNT> maskPixels{};
+    for (usize mask = 0; mask < MASK_COUNT; ++mask)
+    {
+        REQUIRE(masks[mask].TryResize(fractionPixels.GetSize() / 4) == true);
+    }
+    constexpr float32 PENUMBRA_LOWEST_FRACTION = .1F;
+    constexpr float32 PENUMBRA_HIGHEST_FRACTION = .9F;
+    for (usize pixel = 0; pixel < masks[PENUMBRA].GetSize(); ++pixel)
+    {
+        const float32 visible = DecodeToneMapped(fractionPixels[pixel * 4]);
+        const bool isBelowEye = pixel / WIDTH >= HEIGHT / 2;
+        const bool isPenumbra = visible > PENUMBRA_LOWEST_FRACTION && visible < PENUMBRA_HIGHEST_FRACTION;
+        // A visible fraction showing the error color says nothing about the penumbra.
+        const bool isFailure = fractionPixels[pixel * 4] == 255 && fractionPixels[pixel * 4 + 1] == 0 &&
+                               fractionPixels[pixel * 4 + 2] == 255;
+        masks[PENUMBRA][pixel] = isBelowEye == true && isFailure == false && isPenumbra == true;
+        masks[OUTSIDE_PENUMBRA][pixel] = isBelowEye == true && isFailure == false && isPenumbra == false;
+        for (usize mask = 0; mask < MASK_COUNT; ++mask)
+        {
+            maskPixels[mask] += masks[mask][pixel] == true ? 1 : 0;
+        }
+    }
+    constexpr usize MINIMUM_PENUMBRA_PIXELS = 32;
+    REQUIRE(maskPixels[PENUMBRA] >= MINIMUM_PENUMBRA_PIXELS);
+    REQUIRE(maskPixels[OUTSIDE_PENUMBRA] > 0);
+    WARN(maskPixels[PENUMBRA] << " penumbra pixels and " << maskPixels[OUTSIDE_PENUMBRA]
+                              << " other pixels below eye height, of " << WIDTH * HEIGHT << "; "
+                              << CountFailurePixels(fractionPixels) << " visible fraction failure pixels");
+
+    const PackageLocation location{LUDUS_RG3_SALESIN_JAROSZ_LINES_COMPUTE_BVH_DIRECTORY,
+                                   "rg2_salesin_jarosz_lines_compute_bvh.lurgrt"};
+    // Mean GPU time per frame of each pass: the ordered sequence's Compute operations in plan order.
+    constexpr usize TIMING_FRAME_COUNT = 64;
+    constexpr usize PASS_COUNT = POINT_LINE_FIRST_SHADE_PASS + POINT_LINE_OUTPUT_COUNT;
+    StaticArray<float64, PASS_COUNT> passNanoseconds{};
+    {
+        PreparedGraph timed(fixture, location, scene, 1);
+        REQUIRE(renderer::RequiresHardwareRayTracing(timed.Plan) == false);
+        StaticArray<Array<uint8>, POINT_LINE_OUTPUT_COUNT> ignored;
+        PassTimings timings;
+        RenderPointLineOutputs(timed, fixture, TIMING_FRAME_COUNT, ignored, &timings);
+        REQUIRE(timings.FrameCount > 0);
+        usize computePass = 0;
+        for (usize pass = 0; pass < timings.Count; ++pass)
+        {
+            if (timings.Passes[pass].Kind != rhi::GpuPassKind::Compute)
+            {
+                continue;
+            }
+            REQUIRE(computePass < PASS_COUNT);
+            passNanoseconds[computePass] = timings.Nanoseconds[pass] / static_cast<float64>(timings.FrameCount);
+            WARN("pass " << computePass << " mean GPU ns per frame over " << timings.FrameCount
+                         << " frames: " << passNanoseconds[computePass]);
+            computePass += 1;
+        }
+        REQUIRE(computePass == PASS_COUNT);
+    }
+    const float64 primary = passNanoseconds[0];
+    const float64 colorCost = primary + passNanoseconds[POINT_LINE_FIRST_SHADE_PASS + POINT_LINE_MIS];
+    const float64 pointCost = primary + passNanoseconds[POINT_LINE_FIRST_SHADE_PASS + POINT_LINE_POINT_SAMPLING];
+    REQUIRE(colorCost > 0);
+    REQUIRE(pointCost > 0);
+    WARN("GPU ns per sample: primary " << primary << ", color (primary + shade) " << colorCost
+                                       << ", pointSampling (primary + shadePoints) " << pointCost << ", ratio "
+                                       << colorCost / pointCost);
+
+    // A failed sample shows the error color in its output. At this scale a few pixels can fail over
+    // thousands of samples, so failures are counted per output and their pixels leave both masks
+    // instead of ending the measurement.
+    const auto renderOutputs = [&fixture](PreparedGraph& inoutGraph,
+                                          usize frameCount,
+                                          StaticArray<Array<uint8>, POINT_LINE_OUTPUT_COUNT>& outPixels) {
+        const StaticArray<uint32, POINT_LINE_OUTPUT_COUNT> exports = GetPointLineExports(inoutGraph.Plan);
+        for (usize frame = 0; frame < frameCount; ++frame)
+        {
+            RenderFrame(inoutGraph.Graph, fixture);
+        }
+        for (usize output = 0; output < POINT_LINE_OUTPUT_COUNT; ++output)
+        {
+            ReadExport(inoutGraph.Graph, fixture, exports[output], {}, outPixels[output]);
+        }
+    };
+
+    // Two color budgets, each with its equal-time point budget, read from one run in increasing order.
+    constexpr usize BUDGET_COUNT = 2;
+    const StaticArray<usize, BUDGET_COUNT> colorFrameCounts{{16, 64}};
+    StaticArray<usize, BUDGET_COUNT> pointFrameCounts{};
+    constexpr float64 MAXIMUM_POINT_FRAMES = 4096;
+    constexpr usize CHECKPOINT_COUNT = 2 * BUDGET_COUNT;
+    StaticArray<usize, CHECKPOINT_COUNT> checkpoints{};
+    for (usize budget = 0; budget < BUDGET_COUNT; ++budget)
+    {
+        pointFrameCounts[budget] = static_cast<usize>(
+            math::Min(MAXIMUM_POINT_FRAMES,
+                      math::Max(1.0, static_cast<float64>(colorFrameCounts[budget]) * colorCost / pointCost + .5)));
+        checkpoints[budget * 2] = colorFrameCounts[budget];
+        checkpoints[budget * 2 + 1] = pointFrameCounts[budget];
+    }
+    Sort(checkpoints.GetData(), checkpoints.GetSize(), [](usize left, usize right) noexcept { return left < right; });
+    StaticArray<StaticArray<Array<uint8>, POINT_LINE_OUTPUT_COUNT>, CHECKPOINT_COUNT> atCheckpoints;
+    {
+        PreparedGraph graph(fixture, location, scene, 1);
+        usize renderedFrames = 0;
+        for (usize checkpoint = 0; checkpoint < CHECKPOINT_COUNT; ++checkpoint)
+        {
+            // A repeated frame count renders no frame and reads the same running means again.
+            renderOutputs(graph, checkpoints[checkpoint] - renderedFrames, atCheckpoints[checkpoint]);
+            renderedFrames = checkpoints[checkpoint];
+        }
+    }
+    const auto getOutputsAt = [&checkpoints, &atCheckpoints](usize frameCount) {
+        usize found = 0;
+        while (checkpoints[found] != frameCount)
+        {
+            ++found;
+            REQUIRE(found < CHECKPOINT_COUNT);
+        }
+        return &atCheckpoints[found];
+    };
+
+    // The reference: the mean decoded color of independently seeded graph instances, whose scene
+    // revisions reseed sampling. A ray pass stops accumulating at MAX_ACCUMULATION_SAMPLES, so each
+    // instance contributes that many samples. The spread between instances estimates the noise that
+    // the reference adds to every error below: the sample variance over REFERENCE_COUNT.
+    constexpr usize REFERENCE_COUNT = 8;
+    constexpr uint64 FIRST_REFERENCE_REVISION = 2;
+    constexpr usize REFERENCE_FRAME_COUNT = format::MAX_ACCUMULATION_SAMPLES;
+    const usize valueCount = masks[PENUMBRA].GetSize() * 3;
+    Array<float64> referenceSum;
+    Array<float64> referenceSquareSum;
+    REQUIRE(referenceSum.TryResize(valueCount) == true);
+    REQUIRE(referenceSquareSum.TryResize(valueCount) == true);
+    for (usize value = 0; value < valueCount; ++value)
+    {
+        referenceSum[value] = 0;
+        referenceSquareSum[value] = 0;
+    }
+    const StaticArray<const char*, POINT_LINE_OUTPUT_COUNT> outputNames{{"color", "lineSampling", "pointSampling"}};
+    StaticArray<usize, POINT_LINE_OUTPUT_COUNT> referenceFailurePixels{};
+    const auto removeFailurePixels = [&masks](const Array<uint8>& pixels) {
+        for (usize pixel = 0; pixel < masks[PENUMBRA].GetSize(); ++pixel)
+        {
+            const bool isFailure =
+                pixels[pixel * 4] == 255 && pixels[pixel * 4 + 1] == 0 && pixels[pixel * 4 + 2] == 255;
+            for (usize mask = 0; mask < MASK_COUNT; ++mask)
+            {
+                masks[mask][pixel] = masks[mask][pixel] == true && isFailure == false;
+            }
+        }
+    };
+    for (usize reference = 0; reference < REFERENCE_COUNT; ++reference)
+    {
+        StaticArray<Array<uint8>, POINT_LINE_OUTPUT_COUNT> referencePixels;
+        {
+            PreparedGraph referenceGraph(fixture, location, scene, FIRST_REFERENCE_REVISION + reference);
+            renderOutputs(referenceGraph, REFERENCE_FRAME_COUNT, referencePixels);
+        }
+        for (usize output = 0; output < POINT_LINE_OUTPUT_COUNT; ++output)
+        {
+            referenceFailurePixels[output] += CountFailurePixels(referencePixels[output]);
+        }
+        removeFailurePixels(referencePixels[POINT_LINE_MIS]);
+        for (usize pixel = 0; pixel < masks[PENUMBRA].GetSize(); ++pixel)
+        {
+            for (usize channel = 0; channel < 3; ++channel)
+            {
+                const float64 radiance =
+                    static_cast<float64>(DecodeToneMapped(referencePixels[POINT_LINE_MIS][pixel * 4 + channel]));
+                referenceSum[pixel * 3 + channel] += radiance;
+                referenceSquareSum[pixel * 3 + channel] += radiance * radiance;
+            }
+        }
+    }
+    for (usize output = 0; output < POINT_LINE_OUTPUT_COUNT; ++output)
+    {
+        WARN(outputNames[output] << " failure pixels after " << checkpoints[CHECKPOINT_COUNT - 1]
+                                 << " samples: " << CountFailurePixels(atCheckpoints[CHECKPOINT_COUNT - 1][output])
+                                 << "; summed over " << REFERENCE_COUNT << " references of " << REFERENCE_FRAME_COUNT
+                                 << " samples: " << referenceFailurePixels[output]);
+    }
+    for (usize checkpoint = 0; checkpoint < CHECKPOINT_COUNT; ++checkpoint)
+    {
+        removeFailurePixels(atCheckpoints[checkpoint][POINT_LINE_MIS]);
+        removeFailurePixels(atCheckpoints[checkpoint][POINT_LINE_POINT_SAMPLING]);
+    }
+    const auto computeError = [&referenceSum](const Array<uint8>& pixels, const Array<bool>& mask) {
+        float64 sum = 0;
+        usize count = 0;
+        for (usize pixel = 0; pixel < mask.GetSize(); ++pixel)
+        {
+            for (usize channel = 0; mask[pixel] == true && channel < 3; ++channel)
+            {
+                const float64 difference = static_cast<float64>(DecodeToneMapped(pixels[pixel * 4 + channel])) -
+                                           referenceSum[pixel * 3 + channel] / static_cast<float64>(REFERENCE_COUNT);
+                sum += difference * difference;
+                ++count;
+            }
+        }
+        REQUIRE(count > 0);
+        return sum / static_cast<float64>(count);
+    };
+
+    math::Vector3 referenceMean{};
+    for (usize pixel = 0; pixel < masks[PENUMBRA].GetSize(); ++pixel)
+    {
+        referenceMean = referenceMean + math::Vector3{static_cast<float32>(referenceSum[pixel * 3]),
+                                                      static_cast<float32>(referenceSum[pixel * 3 + 1]),
+                                                      static_cast<float32>(referenceSum[pixel * 3 + 2])} /
+                                            static_cast<float32>(REFERENCE_COUNT * masks[PENUMBRA].GetSize());
+    }
+    WARN("reference color mean " << referenceMean.X << ',' << referenceMean.Y << ',' << referenceMean.Z << " from "
+                                 << REFERENCE_COUNT * REFERENCE_FRAME_COUNT << " samples");
+    for (usize mask = 0; mask < MASK_COUNT; ++mask)
+    {
+        usize keptPixels = 0;
+        float64 referenceNoise = 0;
+        for (usize pixel = 0; pixel < masks[mask].GetSize(); ++pixel)
+        {
+            if (masks[mask][pixel] == false)
+            {
+                continue;
+            }
+            keptPixels += 1;
+            for (usize channel = 0; channel < 3; ++channel)
+            {
+                const float64 mean = referenceSum[pixel * 3 + channel] / static_cast<float64>(REFERENCE_COUNT);
+                const float64 variance =
+                    (referenceSquareSum[pixel * 3 + channel] - mean * referenceSum[pixel * 3 + channel]) /
+                    static_cast<float64>(REFERENCE_COUNT - 1);
+                referenceNoise += variance / static_cast<float64>(REFERENCE_COUNT);
+            }
+        }
+        REQUIRE(keptPixels > 0);
+        referenceNoise /= static_cast<float64>(keptPixels * 3);
+        WARN(maskNames[mask] << " (" << keptPixels << " of " << maskPixels[mask]
+                             << " pixels without failures): estimated reference noise " << referenceNoise);
+        for (usize budget = 0; budget < BUDGET_COUNT; ++budget)
+        {
+            const float64 colorError =
+                computeError((*getOutputsAt(colorFrameCounts[budget]))[POINT_LINE_MIS], masks[mask]);
+            const float64 pointError =
+                computeError((*getOutputsAt(pointFrameCounts[budget]))[POINT_LINE_POINT_SAMPLING], masks[mask]);
+            const float64 equalSamplePointError =
+                computeError((*getOutputsAt(colorFrameCounts[budget]))[POINT_LINE_POINT_SAMPLING], masks[mask]);
+            WARN(maskNames[mask] << " at equal GPU time: color at " << colorFrameCounts[budget]
+                                 << " samples MSE=" << colorError << ", pointSampling at " << pointFrameCounts[budget]
+                                 << " samples MSE=" << pointError << ", point/color MSE ratio "
+                                 << pointError / colorError << " (pointSampling at " << colorFrameCounts[budget]
+                                 << " samples " << equalSamplePointError << ")");
+        }
+    }
 }
 
 TEST_CASE("ToneMap applies exposure after linear accumulation and can be bypassed",

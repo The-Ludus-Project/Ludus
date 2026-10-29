@@ -2,8 +2,9 @@
 """Export glTF triangle geometry for the hidden line traversal measurement, not an engine importer.
 
 Writes the file that LUDUS_LINE_TRAVERSAL_SCENE names for render_graph_ray_tests'
-[.line-traversal-performance] case: a little-endian uint32 vertex count and index count, then
-float32 x, y, z World positions and uint32 triangle indices. Node transforms are applied; materials,
+[.line-traversal-performance] and [.point-line-large-scene-performance] cases: a little-endian
+uint32 vertex count and index count, then float32 x, y, z World positions and uint32 triangle
+indices. Node transforms are applied; materials,
 textures and non-triangle primitives are ignored. --maximum-triangles keeps whole primitives in node
 order while they fit. Pure Python, so it needs no packages; output belongs in the caller's out/ tree.
 """
