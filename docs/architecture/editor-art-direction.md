@@ -43,8 +43,12 @@ These PNGs are the shared artwork source for Qt resources, wiki branding and
 browser packaging. The macOS bundle uses a derived ICNS file containing 16,
 32, 128, 256 and 512 logical pixel icons at 1× and 2×. Regenerate it with macOS
 `sips` exports named `icon_NxN.png` / `icon_NxN@2x.png` in a `.iconset` directory,
-then `iconutil -c icns`; preserve the approved source artwork. A production
-vector master and optically tuned small-size artwork remain future refinement.
+then `iconutil -c icns`; preserve the approved source artwork. The 16, 24 and 32 pixel
+icons are drawn rather than scaled: `scripts/python/render_small_icons.py` redraws the tile
+and the L's five planes from the reference's construction with flat brand colours, corners
+snapped to the pixel grid, into `docs/wiki/assets/small` (the Editor's window icon picks the
+nearest of these) and the setup window's `init_assets`. The ICNS still derives from the
+reference, and a production vector master remains future refinement.
 
 The letter should read as a building block: substantial, approachable and
 precise. Preserve the upright stem, projecting foot, open inner corner and

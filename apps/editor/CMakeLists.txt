@@ -588,13 +588,18 @@ qt_add_executable(ludus_editor
     src/activity_chip.cpp
     src/internal/window_size.h
     src/window_size.cpp
+    src/internal/application_icon.h
+    src/application_icon.cpp
     src/controller.cpp
     src/controller_play.cpp
 )
 set_target_properties(ludus_editor PROPERTIES AUTOMOC ON)
 set(editor_brand_assets
     "${PROJECT_SOURCE_DIR}/docs/wiki/assets/ludus-icon.png"
-    "${PROJECT_SOURCE_DIR}/docs/wiki/assets/ludus-mark.png")
+    "${PROJECT_SOURCE_DIR}/docs/wiki/assets/ludus-mark.png"
+    "${PROJECT_SOURCE_DIR}/docs/wiki/assets/small/ludus-icon-16.png"
+    "${PROJECT_SOURCE_DIR}/docs/wiki/assets/small/ludus-icon-24.png"
+    "${PROJECT_SOURCE_DIR}/docs/wiki/assets/small/ludus-icon-32.png")
 qt_add_resources(ludus_editor ludus_brand
     PREFIX "/ludus"
     BASE "${PROJECT_SOURCE_DIR}/docs/wiki/assets"
@@ -1031,7 +1036,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/state_view.cpp
         src/internal/activity_chip.h
         src/activity_chip.cpp
-        src/window_size.cpp)
+        src/window_size.cpp
+        src/application_icon.cpp)
     target_link_libraries(ludus_editor_tests
         PRIVATE
             Ludus::RenderGraphFormat

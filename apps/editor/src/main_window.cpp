@@ -2,6 +2,7 @@
 #if defined(LUDUS_EDITOR_CRASH_CAPTURE)
 #    include "internal/crash_reporting.h"
 #endif
+#include "internal/application_icon.h"
 #include "internal/audio_workspace.h"
 #include "internal/code_editor.h"
 #include "internal/command_palette.h"
@@ -109,7 +110,7 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
       mFocusViewportAction(CreateEditorCommand(VIEW_FOCUS_VIEWPORT_COMMAND, this))
 {
     setWindowTitle(QStringLiteral("Ludus Editor"));
-    setWindowIcon(QIcon(QStringLiteral(":/ludus/ludus-icon.png")));
+    setWindowIcon(MakeApplicationIcon());
     ApplyWorkspaceStyle(this);
     mProfilingDock->setObjectName(QStringLiteral("profilingDock"));
     BuildUi();
