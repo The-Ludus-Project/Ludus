@@ -1,0 +1,183 @@
+{
+  "version": 2,
+  "id": "PolygonalLightSampling",
+  "default": "Default",
+  "configurations": [
+    {
+      "id": "Default",
+      "inputs": [],
+      "outputs": [],
+      "nodes": [
+        {
+          "id": "scene",
+          "kind": "Scene"
+        },
+        {
+          "active": true,
+          "id": "camera",
+          "kind": "Camera",
+          "role": "Offscreen",
+          "target_type": "ColorTexture"
+        },
+        {
+          "extent": "RenderSize",
+          "format": "RGBA8Unorm",
+          "id": "color",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "id": "renderSize",
+          "kind": "RenderSize",
+          "extent": {
+            "reference": "View",
+            "scale": [
+              1,
+              1
+            ]
+          }
+        },
+        {
+          "id": "output",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "balanceHeuristicOutput",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "projectedSolidAngleOutput",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "ltcOutput",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "transport",
+          "kind": "Subgraph",
+          "asset": "library.lurender.json",
+          "configuration": "PolygonalLightSampling"
+        },
+        {
+          "id": "accumulate",
+          "kind": "Accumulate",
+          "samples": 4096
+        },
+        {
+          "id": "tonemap",
+          "kind": "ToneMap",
+          "exposure": 1
+        },
+        {
+          "id": "accumulateBalanceHeuristic",
+          "kind": "Accumulate",
+          "samples": 4096
+        },
+        {
+          "id": "tonemapBalanceHeuristic",
+          "kind": "ToneMap",
+          "exposure": 1
+        },
+        {
+          "id": "accumulateProjectedSolidAngle",
+          "kind": "Accumulate",
+          "samples": 4096
+        },
+        {
+          "id": "tonemapProjectedSolidAngle",
+          "kind": "ToneMap",
+          "exposure": 1
+        },
+        {
+          "id": "accumulateLtc",
+          "kind": "Accumulate",
+          "samples": 4096
+        },
+        {
+          "id": "tonemapLtc",
+          "kind": "ToneMap",
+          "exposure": 1
+        }
+      ],
+      "edges": [
+        {
+          "from": "scene.scene",
+          "to": "transport.scene"
+        },
+        {
+          "from": "camera.view",
+          "to": "transport.view"
+        },
+        {
+          "from": "color.texture",
+          "to": "transport.color"
+        },
+        {
+          "from": "color.texture",
+          "to": "camera.target"
+        },
+        {
+          "from": "renderSize.size",
+          "to": "color.size"
+        },
+        {
+          "from": "transport.color",
+          "to": "accumulate.color"
+        },
+        {
+          "from": "accumulate.color",
+          "to": "tonemap.color"
+        },
+        {
+          "from": "tonemap.color",
+          "to": "output.texture"
+        },
+        {
+          "from": "transport.balanceHeuristic",
+          "to": "accumulateBalanceHeuristic.color"
+        },
+        {
+          "from": "accumulateBalanceHeuristic.color",
+          "to": "tonemapBalanceHeuristic.color"
+        },
+        {
+          "from": "tonemapBalanceHeuristic.color",
+          "to": "balanceHeuristicOutput.texture"
+        },
+        {
+          "from": "transport.projectedSolidAngle",
+          "to": "accumulateProjectedSolidAngle.color"
+        },
+        {
+          "from": "accumulateProjectedSolidAngle.color",
+          "to": "tonemapProjectedSolidAngle.color"
+        },
+        {
+          "from": "tonemapProjectedSolidAngle.color",
+          "to": "projectedSolidAngleOutput.texture"
+        },
+        {
+          "from": "transport.ltc",
+          "to": "accumulateLtc.color"
+        },
+        {
+          "from": "accumulateLtc.color",
+          "to": "tonemapLtc.color"
+        },
+        {
+          "from": "tonemapLtc.color",
+          "to": "ltcOutput.texture"
+        }
+      ]
+    }
+  ]
+}

@@ -12,6 +12,7 @@
 #include "rg2_line_visibility_loop.h"
 #include "rg2_ltc_table.h"
 #include "rg2_ordered_ray.h"
+#include "rg2_polygonal_light_sampling_template.h"
 #include "rg2_raytracing.h"
 #include "rg2_restir_di.h"
 #include "rg2_ris_projected_solid_angle_template.h"
@@ -3611,6 +3612,193 @@ TEST_CASE("The RIS projected-solid-angle MIS output has less error than Veach an
                                       << "; decoded linear: RIS projected solid angle=" << risLinearError
                                       << ", Veach and Guibas=" << veachLinearError);
     CHECK(risError < veachError);
+}
+
+namespace
+{
+// polygonal-light-sampling template tests. Thanks to Christoph Peters, "BRDF Importance Sampling for Polygonal Lights",
+// ACM Transactions on Graphics 40(4), Article 140, 2021, https://doi.org/10.1145/3450626.3459672 : the template shades
+// every emissive triangle with his projected solid angle (section 3) and LTC (section 4.1) techniques and exports
+// clamped optimal MIS (section 4.3), the balance heuristic, and each technique alone. Every pass is a shade pass; the
+// first also records the primary hit. The CPU oracle and its parity with the template's estimators are in
+// polygonal_light_sampling_oracle_tests.cpp and polygonal_light_sampling_parity_tests.cpp.
+constexpr usize POLYGONAL_LIGHT_OUTPUT_COUNT = 4;
+constexpr usize POLYGONAL_LIGHT_CLAMPED_OPTIMAL_MIS = 0;
+constexpr usize POLYGONAL_LIGHT_BALANCE_HEURISTIC = 1;
+constexpr usize POLYGONAL_LIGHT_PROJECTED_SOLID_ANGLE = 2;
+constexpr usize POLYGONAL_LIGHT_LTC = 3;
+const PackageLocation POLYGONAL_LIGHT_SAMPLING_TEMPLATE{LUDUS_RG3_POLYGONAL_LIGHT_SAMPLING_TEMPLATE_DIRECTORY,
+                                                        "rg2_polygonal_light_sampling_template.lurgrt"};
+
+/// Render frameCount frames of the template and read each output's running mean after the last one. The template's
+/// four passes write its four outputs in output order.
+void RenderPolygonalLightOutputs(PreparedGraph& inoutTemplate,
+                                 const GraphGpuFixture& fixture,
+                                 usize frameCount,
+                                 StaticArray<Array<uint8>, POLYGONAL_LIGHT_OUTPUT_COUNT>& outPixels)
+{
+    REQUIRE(inoutTemplate.Plan.Passes.GetSize() == POLYGONAL_LIGHT_OUTPUT_COUNT);
+    StaticArray<uint32, POLYGONAL_LIGHT_OUTPUT_COUNT> exports{};
+    for (usize output = 0; output < POLYGONAL_LIGHT_OUTPUT_COUNT; ++output)
+    {
+        exports[output] = inoutTemplate.Plan.Passes[output].Color;
+        REQUIRE(exports[output] < inoutTemplate.Plan.Resources.GetSize());
+        REQUIRE(inoutTemplate.Plan.Resources[exports[output]].IsExported == 1);
+    }
+    for (usize frame = 0; frame < frameCount; ++frame)
+    {
+        RenderFrame(inoutTemplate.Graph, fixture);
+    }
+    for (usize output = 0; output < POLYGONAL_LIGHT_OUTPUT_COUNT; ++output)
+    {
+        ReadExport(inoutTemplate.Graph, fixture, exports[output], {}, outPixels[output]);
+    }
+}
+
+/// The Cornell room with glossy metal on its white surfaces and no sky: the template lights surfaces only from
+/// polygons, so the comparison with the Veach and Guibas template must not include environment lighting.
+void MakeRoomGlossyWithoutSky(CornellBox& inoutRoom)
+{
+    constexpr float32 GLOSSY_ROUGHNESS = .3F;
+    inoutRoom.Materials[CORNELL_WHITE].Metallic = 1;
+    inoutRoom.Materials[CORNELL_WHITE].Roughness = GLOSSY_ROUGHNESS;
+}
+
+/// Render the template and the Veach and Guibas triangle-loop template on one room at 256 samples per pixel. The
+/// three unbiased outputs must agree with Veach and Guibas MIS; the LTC output estimates only the part of the integral
+/// inside the LTC's support, so it may be lower but not higher.
+void CheckPolygonalLightOutputsAgreeWithVeachGuibas(const GraphGpuFixture& fixture, const CornellBox& room)
+{
+    constexpr usize FRAME_COUNT = 256;
+    StaticArray<Array<uint8>, POLYGONAL_LIGHT_OUTPUT_COUNT> pixels;
+    {
+        PreparedGraph polygonal(fixture, POLYGONAL_LIGHT_SAMPLING_TEMPLATE, room, 1);
+        REQUIRE(polygonal.Programs.HasPersistentRayBuffers == true);
+        // Every pass walks the compute BVH and accumulates its own output.
+        REQUIRE(renderer::RequiresHardwareRayTracing(polygonal.Plan) == false);
+        REQUIRE(renderer::UsesRayTracing(polygonal.Plan) == true);
+        for (usize pass = 0; pass < polygonal.Plan.Passes.GetSize(); ++pass)
+        {
+            INFO("pass " << pass);
+            CHECK(polygonal.Plan.Passes[pass].Program == format::Technique::RayTracing);
+            CHECK(polygonal.Plan.Passes[pass].Traversal == format::RayTraversal::ComputeBvh);
+            CHECK(polygonal.Plan.Passes[pass].AccumulationSamples > 0);
+        }
+        RenderPolygonalLightOutputs(polygonal, fixture, FRAME_COUNT, pixels);
+    }
+    StaticArray<Array<uint8>, VEACH_GUIBAS_OUTPUT_COUNT> veachPixels;
+    {
+        PreparedGraph veach(fixture, VEACH_GUIBAS_TRIANGLE_LOOP, room, 1);
+        RenderVeachGuibasOutputs(veach, fixture, FRAME_COUNT, veachPixels);
+    }
+    const math::Vector3 veachMean = ComputeMeanRadiance(veachPixels[VEACH_GUIBAS_MIS]);
+    constexpr float32 MINIMUM_MEAN_RADIANCE = .01F;
+    REQUIRE(veachMean.X > MINIMUM_MEAN_RADIANCE);
+    // Estimates of one integral, compared after decoding the tone-mapped running means, as for the other templates.
+    constexpr float32 RELATIVE_MEAN_TOLERANCE = .02F;
+    for (usize output = 0; output < POLYGONAL_LIGHT_OUTPUT_COUNT; ++output)
+    {
+        // Invalid hit records, exhausted budgets and failed queries would show magenta.
+        REQUIRE(CountFailurePixels(pixels[output]) == 0);
+        const math::Vector3 mean = ComputeMeanRadiance(pixels[output]);
+        INFO("polygonal-light output " << output << " mean=" << mean.X << ',' << mean.Y << ',' << mean.Z
+                                       << ", Veach and Guibas MIS mean=" << veachMean.X << ',' << veachMean.Y << ','
+                                       << veachMean.Z);
+        if (output == POLYGONAL_LIGHT_LTC)
+        {
+            CHECK(mean.X > MINIMUM_MEAN_RADIANCE);
+            CHECK(mean.X < (1 + RELATIVE_MEAN_TOLERANCE) * veachMean.X);
+            CHECK(mean.Y < (1 + RELATIVE_MEAN_TOLERANCE) * veachMean.Y);
+            CHECK(mean.Z < (1 + RELATIVE_MEAN_TOLERANCE) * veachMean.Z);
+            continue;
+        }
+        CheckMeansAgree(mean, veachMean, RELATIVE_MEAN_TOLERANCE);
+    }
+}
+} // namespace
+
+TEST_CASE("The polygonal-light-sampling template's unbiased outputs agree with Veach and Guibas MIS",
+          "[render-graph][gpu][polygonal-light-sampling][template]")
+{
+    GraphGpuFixture fixture(false, false);
+    {
+        PreparedGraph polygonal(fixture, POLYGONAL_LIGHT_SAMPLING_TEMPLATE, CornellBox{}, 1);
+        CheckSameStage(
+            polygonal.Programs.RayCompute,
+            packages::rg2_polygonal_light_sampling_template::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                                          shaders::renderer_composite::Fragment())
+                .RayCompute);
+    }
+    SECTION("diffuse Cornell room")
+    {
+        const CornellBox room;
+        CheckPolygonalLightOutputsAgreeWithVeachGuibas(fixture, room);
+    }
+    SECTION("glossy Cornell room")
+    {
+        CornellBox room;
+        MakeRoomGlossyWithoutSky(room);
+        CheckPolygonalLightOutputsAgreeWithVeachGuibas(fixture, room);
+    }
+}
+
+TEST_CASE("Polygonal-light clamped optimal MIS has less error than projected solid angle sampling on glossy metal",
+          "[render-graph][gpu][polygonal-light-sampling][template][mis]")
+{
+    // Peters 2021, sections 4.2 and 6.3 and Figs. 10 and 14: projected solid angle sampling suits diffuse shading but
+    // not specular highlights, which the LTC technique samples; MIS combines both. Compare low-sample images of each
+    // output with an independent converged clamped optimal MIS image, whose scene revision reseeds sampling. The
+    // error is measured on the tone-mapped image (ComputeDisplayMeanSquaredError); the decoded linear error and the
+    // balance heuristic's are reported beside it.
+    GraphGpuFixture fixture(false, false);
+    CornellBox room;
+    MakeRoomGlossyWithoutSky(room);
+    constexpr usize LOW_FRAME_COUNT = 16;
+    StaticArray<Array<uint8>, POLYGONAL_LIGHT_OUTPUT_COUNT> pixels;
+    {
+        PreparedGraph polygonal(fixture, POLYGONAL_LIGHT_SAMPLING_TEMPLATE, room, 1);
+        RenderPolygonalLightOutputs(polygonal, fixture, LOW_FRAME_COUNT, pixels);
+    }
+    constexpr uint64 CONVERGED_REVISION = 2;
+    constexpr usize CONVERGED_FRAME_COUNT = 1024;
+    StaticArray<Array<uint8>, POLYGONAL_LIGHT_OUTPUT_COUNT> converged;
+    {
+        PreparedGraph convergedGraph(fixture, POLYGONAL_LIGHT_SAMPLING_TEMPLATE, room, CONVERGED_REVISION);
+        RenderPolygonalLightOutputs(convergedGraph, fixture, CONVERGED_FRAME_COUNT, converged);
+    }
+    const Array<uint8>& reference = converged[POLYGONAL_LIGHT_CLAMPED_OPTIMAL_MIS];
+    const float64 clamped = ComputeDisplayMeanSquaredError(pixels[POLYGONAL_LIGHT_CLAMPED_OPTIMAL_MIS], reference);
+    const float64 balance = ComputeDisplayMeanSquaredError(pixels[POLYGONAL_LIGHT_BALANCE_HEURISTIC], reference);
+    const float64 projectedSolidAngle =
+        ComputeDisplayMeanSquaredError(pixels[POLYGONAL_LIGHT_PROJECTED_SOLID_ANGLE], reference);
+    const float64 clampedLinear = ComputeMeanSquaredError(pixels[POLYGONAL_LIGHT_CLAMPED_OPTIMAL_MIS], reference);
+    const float64 balanceLinear = ComputeMeanSquaredError(pixels[POLYGONAL_LIGHT_BALANCE_HEURISTIC], reference);
+    const float64 projectedSolidAngleLinear =
+        ComputeMeanSquaredError(pixels[POLYGONAL_LIGHT_PROJECTED_SOLID_ANGLE], reference);
+    INFO("mean squared error at " << LOW_FRAME_COUNT << " samples, tone-mapped: clamped optimal MIS=" << clamped
+                                  << ", balance heuristic=" << balance << ", projected solid angle="
+                                  << projectedSolidAngle << "; decoded linear: clamped optimal MIS=" << clampedLinear
+                                  << ", balance heuristic=" << balanceLinear
+                                  << ", projected solid angle=" << projectedSolidAngleLinear);
+    CHECK(clamped < projectedSolidAngle);
+}
+
+TEST_CASE("The polygonal-light-sampling template fails explicitly beyond its emissive triangle budget",
+          "[render-graph][gpu][polygonal-light-sampling][template]")
+{
+    // The many-emitter room has 32 emissive triangles. Both MIS passes would need 64 shadow rays against the
+    // technique's 16, so every pass reports the failure color where it shades a surface instead of dropping lights.
+    GraphGpuFixture fixture(false, false);
+    const ManyEmitterRoom room;
+    PreparedGraph polygonal(fixture, POLYGONAL_LIGHT_SAMPLING_TEMPLATE, room, 1);
+    StaticArray<Array<uint8>, POLYGONAL_LIGHT_OUTPUT_COUNT> pixels;
+    RenderPolygonalLightOutputs(polygonal, fixture, 1, pixels);
+    for (usize output = 0; output < POLYGONAL_LIGHT_OUTPUT_COUNT; ++output)
+    {
+        INFO("output " << output);
+        // The room fills most of the view; only the open front shows the environment.
+        CHECK(CountFailurePixels(pixels[output]) > static_cast<usize>(WIDTH) * HEIGHT / 2);
+    }
 }
 
 namespace

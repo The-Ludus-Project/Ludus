@@ -110,7 +110,7 @@ install(DIRECTORY "${default_render_graph}/" DESTINATION "${CMAKE_INSTALL_DATADI
 if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
     # Exercise the production renderer/RHI registry with the existing deterministic backend.
-    add_executable(ludus_renderer_tests tests/renderer_tests.cpp tests/world_grid_tests.cpp tests/tone_mapping_tests.cpp tests/reference_backend.cpp src/gpu_denoiser.cpp src/render_graph.cpp src/render_graph_forward.cpp src/render_graph_deferred.cpp src/render_graph_scene_resources.cpp src/visibility_buffer.cpp src/render_graph_ray.cpp src/render_graph_ray_path.cpp src/render_graph_upscale.cpp src/render_graph_metalfx.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/gpu_preview_camera.cpp src/gpu_preview_graph.cpp src/render_graph_storage.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/lighting.cpp src/static_lighting.cpp src/environment.cpp src/reference_bsdf.cpp src/ltc_table.cpp "${ludus_ltc_table_source}" src/reference_scene.cpp src/reference_path.cpp src/reference_compute.cpp tests/views_tests.cpp tests/static_lighting_tests.cpp tests/render_graph_tests.cpp tests/render_graph_ray_path_decode_tests.cpp tests/render_graph_activation_tests.cpp tests/render_graph_pool_tests.cpp tests/scene_shader_tests.cpp tests/reference_emitter_selection_tests.cpp tests/ltc_table_tests.cpp tests/reference_bvh_tests.cpp
+    add_executable(ludus_renderer_tests tests/renderer_tests.cpp tests/world_grid_tests.cpp tests/tone_mapping_tests.cpp tests/reference_backend.cpp src/gpu_denoiser.cpp src/render_graph.cpp src/render_graph_forward.cpp src/render_graph_deferred.cpp src/render_graph_scene_resources.cpp src/visibility_buffer.cpp src/render_graph_ray.cpp src/render_graph_ray_path.cpp src/render_graph_upscale.cpp src/render_graph_metalfx.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/gpu_preview_camera.cpp src/gpu_preview_graph.cpp src/render_graph_storage.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/lighting.cpp src/static_lighting.cpp src/environment.cpp src/reference_bsdf.cpp src/ltc_table.cpp "${ludus_ltc_table_source}" src/reference_scene.cpp src/reference_path.cpp src/reference_compute.cpp tests/views_tests.cpp tests/static_lighting_tests.cpp tests/render_graph_tests.cpp tests/render_graph_ray_path_decode_tests.cpp tests/render_graph_activation_tests.cpp tests/render_graph_pool_tests.cpp tests/scene_shader_tests.cpp tests/reference_emitter_selection_tests.cpp tests/ltc_table_tests.cpp tests/reference_bvh_tests.cpp tests/polygonal_light_sampling_oracle.cpp tests/polygonal_light_sampling_oracle_tests.cpp
         ../rhi/src/rhi.cpp ../rhi/src/device.cpp ../rhi/src/dxil_container.cpp ../rhi/src/gpu_scope.cpp ../rhi/src/gpu_pass_timing_buffer.cpp ../rhi/src/profile.cpp ../rhi/src/raster.cpp ../rhi/tests/reference_raster.cpp ../rhi/src/ray_unsupported.cpp)
     target_include_directories(ludus_renderer_tests PRIVATE include ../rhi/include ../rhi/src ../rhi/tests "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
     target_link_libraries(ludus_renderer_tests PRIVATE Ludus::FoundationStrings Ludus::RenderGraphFormat Ludus::Platform Ludus::FoundationContainers Ludus::FoundationMath Ludus::FoundationThreading Ludus::FoundationThreadingProfiling Ludus::FoundationTime Ludus::Resources Ludus::FoundationHash Catch2::Catch2WithMain)
@@ -128,7 +128,7 @@ if(LUDUS_BUILD_THREADING_BENCHMARK AND NOT EMSCRIPTEN)
     ludus_apply_project_defaults(ludus_static_lighting_benchmark)
 endif()
 if(TARGET ludus_rhi_render_tests)
-    add_executable(ludus_renderer_render_tests tests/render_tests.cpp tests/denoising_tests.cpp tests/gpu_preview_tests.cpp tests/ray_opacity_tests.cpp tests/visibility_tests.cpp tests/reference_compute_tests.cpp tests/gpu_random_tests.cpp tests/projected_solid_angle_parity_tests.cpp src/ltc_table.cpp "${ludus_ltc_table_source}" tests/power_cdf_parity_tests.cpp tests/ris_projected_solid_angle_weight_tests.cpp tests/restir_selection_tests.cpp tests/authored_tests.cpp tests/render_graph_render_tests.cpp tests/render_graph_pool_render_tests.cpp)
+    add_executable(ludus_renderer_render_tests tests/render_tests.cpp tests/denoising_tests.cpp tests/gpu_preview_tests.cpp tests/ray_opacity_tests.cpp tests/visibility_tests.cpp tests/reference_compute_tests.cpp tests/gpu_random_tests.cpp tests/projected_solid_angle_parity_tests.cpp src/ltc_table.cpp "${ludus_ltc_table_source}" tests/power_cdf_parity_tests.cpp tests/ris_projected_solid_angle_weight_tests.cpp tests/polygonal_light_sampling_oracle.cpp tests/polygonal_light_sampling_parity_tests.cpp tests/restir_selection_tests.cpp tests/authored_tests.cpp tests/render_graph_render_tests.cpp tests/render_graph_pool_render_tests.cpp)
     target_include_directories(ludus_renderer_render_tests PRIVATE ../rhi/src "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
     target_link_libraries(ludus_renderer_render_tests PRIVATE Ludus::GraphicsText Ludus::FoundationMath Ludus::FoundationTime Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_renderer_render_tests)
@@ -170,6 +170,15 @@ if(TARGET ludus_rhi_render_tests)
         DEPENDS "${ris_projected_solid_angle_shaders}/projected_solid_angle_light.slang"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/ris_projected_solid_angle_weights_layout.h"
                 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ltc_table.slang" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ltc_table_layout.h")
+    # Test-only kernel running the polygonal-light-sampling template's estimators against the CPU oracle.
+    set(polygonal_light_sampling_shaders "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/polygonal_light_sampling/main_shaders")
+    ludus_compile_shader(TARGET ludus_renderer_render_tests NAME polygonal_light_sampling_estimators
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/polygonal_light_sampling_estimators.slang" COMPUTE PolygonalLightEstimatorsMain
+        INCLUDES "${renderer_shader_directory}" ${renderer_shader_includes} "${polygonal_light_sampling_shaders}"
+        DEPENDS "${polygonal_light_sampling_shaders}/polygonal_light.slang"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/polygonal_light_sampling_estimators_layout.h"
+                "${renderer_shader_directory}/renderer_gpu_preview.slang" "${renderer_shader_directory}/scene_shader.slang"
+                "${renderer_shader_directory}/ltc_table.slang" "${renderer_shader_directory}/ltc_table_layout.h")
     ludus_compile_shader(TARGET ludus_renderer_render_tests NAME restir_selection
         SOURCE "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/tests/restir_selection.slang" COMPUTE ComputeMain
         INCLUDES "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders"
@@ -317,7 +326,8 @@ if(TARGET ludus_renderer_render_tests)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_VISIBILITY_ORDINARY_DIRECTORY="${visibility_ordinary_package_directory}")
     foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing
-            simple_compute_ray_tracing veach_guibas_mis line_sampling ris_projected_solid_angle salesin_jarosz_lines)
+            simple_compute_ray_tracing veach_guibas_mis line_sampling ris_projected_solid_angle salesin_jarosz_lines
+            polygonal_light_sampling)
         set(template_source "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/${template_directory}")
         set(template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${template_directory}_template")
         ludus_stage_render_graph_fixture("${template_source}" "${template_staged}")
@@ -661,13 +671,20 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_storage_ray_RUNTIME_PACKAGE PARENT_PATH storage_ray_package_directory)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_STORAGE_RAY_DIRECTORY="${storage_ray_package_directory}")
-    add_test(NAME ludus_render_graph_ray_pixels COMMAND ludus_render_graph_ray_tests "~[ris-projected-solid-angle]")
+    add_test(NAME ludus_render_graph_ray_pixels
+        COMMAND ludus_render_graph_ray_tests "~[ris-projected-solid-angle]~[polygonal-light-sampling]")
     set_tests_properties(ludus_render_graph_ray_pixels PROPERTIES LABELS "renderer;gpu;ray" TIMEOUT 60)
     # The ris-projected-solid-angle template's convergence and error checks render about 2600 frames and
     # need no native ray tracing, so they also run on software Vulkan adapters; they get their own timeout.
     add_test(NAME ludus_render_graph_ris_projected_solid_angle_pixels
         COMMAND ludus_render_graph_ray_tests "[ris-projected-solid-angle]")
     set_tests_properties(ludus_render_graph_ris_projected_solid_angle_pixels PROPERTIES
+        LABELS "renderer;gpu;ray" TIMEOUT 600)
+    # The polygonal-light-sampling template's comparisons render about 2100 compute-BVH frames (20 s on Apple M5)
+    # and need no native ray tracing, so they also run on software Vulkan adapters.
+    add_test(NAME ludus_render_graph_polygonal_light_sampling_pixels
+        COMMAND ludus_render_graph_ray_tests "[polygonal-light-sampling]")
+    set_tests_properties(ludus_render_graph_polygonal_light_sampling_pixels PROPERTIES
         LABELS "renderer;gpu;ray" TIMEOUT 600)
     add_executable(ludus_graph_workgroup_tests tests/graph_workgroup_tests.cpp)
     target_link_libraries(ludus_graph_workgroup_tests PRIVATE Ludus::GraphicsRenderer

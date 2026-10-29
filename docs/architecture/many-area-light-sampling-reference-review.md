@@ -21,7 +21,12 @@ estimation (NEE) for emissive triangles, delivered in two stages:
 
 Spatiotemporal reservoir reuse remains a separate RT4 upgrade. The Peters 2021
 polygonal-light work runs in parallel and shares two pieces with this design: the
-projected-solid-angle primitives and the template shadow-ray traversal.
+projected-solid-angle primitives and the template shadow-ray traversal. Its
+comparison template, `polygonal-light-sampling`, is implemented as of October 28,
+2026: it shades every emissive triangle, without light selection, with clamped
+optimal MIS, the balance heuristic and each technique alone, and has a CPU oracle
+with GPU parity tests. Its usage, departures and evidence are in the
+[authoring guide](../development/render-graph-authoring.md#compare-brdf-importance-sampling-for-polygonal-lights).
 
 ## Sources reviewed
 
@@ -404,7 +409,7 @@ aligned to Philox's four-lane blocks:
 
 | Piece | Owner | Notes |
 | --- | --- | --- |
-| Convex polygon horizon clipping (up to seven input vertices), clipped projected-solid-angle integral, Peters sampler and density | FoundationMath `projected_solid_angle.hpp` and `shaders/projected_solid_angle.slang`, being added by the polygonal-light work | The sampler is ported from the BSD-licensed `polygon_sampling.glsl` with its notice. Clipping is an independent reimplementation. This design consumes these primitives and adds none of its own. |
+| Convex polygon horizon clipping (up to seven input vertices), clipped projected-solid-angle integral, Peters sampler and density | FoundationMath `projected_solid_angle.hpp` and `shaders/projected_solid_angle.slang`, implemented by the polygonal-light work | The sampler is ported from the BSD-licensed `polygon_sampling.glsl` with its notice. Clipping is an independent reimplementation. This design consumes these primitives and adds none of its own. |
 | Generic LTC polygon transform | FoundationMath, beside those primitives | Implemented as `linearly_transformed_cosine.hpp` and `shaders/linearly_transformed_cosine.slang` ([contract](../modules/foundation/math.md#linearly-transformed-cosines-over-polygons)): transform the vertices by `M⁻¹`, then reuse the same clipping, integral and sampler. Credits Heitz et al. 2016 (§3.1, Eq. 3, Algorithm 1) and Peters 2021 §4.1. |
 | Sequential weighted reservoir | FoundationMath | Implemented as `weighted_reservoir.hpp` and `shaders/weighted_reservoir.slang` ([contract](randomness.md#sequential-weighted-reservoir)): explicit order, zero totals, and selection-frequency tests on exact small integers. The ReSTIR template may adopt it separately; this design does not change that template. |
 | LTC table for Ludus GGX/correlated Smith/Schlick, its fitter and provenance | Renderer (embedded table and a GPU buffer) plus an offline Ludus tool. **Owned by this RIS/many-area-light workstream** (decided October 27, 2026). The polygonal-light LTC templates reuse the same table and fitter rather than building their own. | Implemented as `tools/ltc-fit`, `data/ltc_table.bin` with its provenance and `shaders/ltc_table_layout.h`, and the `ltc_table.slang` and CPU lookups ([fit, regeneration and accuracy](../development/ltc-table.md)). Reimplemented from Heitz et al. §4 and Peters §§4.1–4.2, not from GPLv3 utilities. Like Peters' renderer it has 51 `F0` slices, chosen by the luminance of `F0`; the albedo stays exact per channel. It covers roughness down to 0.045. A poor fit costs variance, not correctness. Render graphs bind it with `scene_interface.polygonal_light_sampling`. |
