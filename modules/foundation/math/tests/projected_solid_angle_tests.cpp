@@ -717,3 +717,36 @@ TEST_CASE("Invalid inputs leave outputs unchanged", "[math][projected_solid_angl
                                                 unchanged) == MathStatus::NonFiniteInput);
     REQUIRE(unchanged == Vector3{7, 7, 7});
 }
+
+TEST_CASE("projected polygon horizon clipping precedes arbitrary lobe transforms", "[projected-solid-angle][clip]")
+{
+    ProjectedPolygonInput source;
+    source.VertexCount = 3;
+    source.PositionsTangent[0] = {-1, -1, 1};
+    source.PositionsTangent[1] = {1, -1, 1};
+    source.PositionsTangent[2] = {0, 1, -1};
+    ProjectedPolygonInput clipped;
+    REQUIRE(TryClipProjectedPolygonToUpperHemisphere(source, clipped) == MathStatus::Success);
+    CHECK(clipped.VertexCount == 4);
+    for (uint32 i = 0; i < clipped.VertexCount; ++i)
+    {
+        CHECK(clipped.PositionsTangent[i].Z >= 0);
+    }
+    ProjectedSolidAnglePolygon originalIntegral;
+    ProjectedSolidAnglePolygon clippedIntegral;
+    REQUIRE(TryPrepareProjectedSolidAnglePolygon(source, originalIntegral) == MathStatus::Success);
+    REQUIRE(TryPrepareProjectedSolidAnglePolygon(clipped, clippedIntegral) == MathStatus::Success);
+    CHECK(Abs(originalIntegral.ProjectedSolidAngle - clippedIntegral.ProjectedSolidAngle) < 1e-6F);
+    source.PositionsTangent[0].Z = -1;
+    source.PositionsTangent[1].Z = -1;
+    REQUIRE(TryClipProjectedPolygonToUpperHemisphere(source, clipped) == MathStatus::Success);
+    CHECK(clipped.VertexCount == 0);
+    clipped.VertexCount = 1;
+    source.VertexCount = 2;
+    CHECK(TryClipProjectedPolygonToUpperHemisphere(source, clipped) == MathStatus::InvalidArgument);
+    CHECK(clipped.VertexCount == 1);
+    source.VertexCount = 3;
+    source.PositionsTangent[0].X = std::numeric_limits<float32>::infinity();
+    CHECK(TryClipProjectedPolygonToUpperHemisphere(source, clipped) == MathStatus::NonFiniteInput);
+    CHECK(clipped.VertexCount == 1);
+}

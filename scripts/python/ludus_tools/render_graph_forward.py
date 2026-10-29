@@ -134,6 +134,7 @@ def expand(programs, techniques, snapshot, helper, build):
             result[identity] = {'id': identity, 'stage': stage, 'source': original['source'] if original else '_ludus_forward/' + recipe['source'],
                                 'function': 'rgEntry', 'input': '', 'output': '', 'bindings': [],
                                 'forward_wrapper': source, 'forward_group': group,
+                                'fragment_storage': group == 'DeferredLighting' and stage == 'fragment',
                                 'forward_layout': material_layout(snapshot, build, is_clustered_profile) if group in ('ForwardLit', 'ForwardShadow', 'DeferredGBuffer', 'DeferredLighting') else None}
     # The existing flat pair initializes the renderer's shared mesh/view services.
     recipe = recipes['renderer_flat']
@@ -169,6 +170,8 @@ def check_interface(program, result, build):
     is_clustered_profile = program.get('forward_layout') is not None and 'GridRows' in program['forward_layout']['offsets']
     if group.startswith('Deferred'):
         kinds = ('UniformBuffer', 'Texture2D', 'Sampler', 'Texture2D', 'Texture2D', 'Sampler', 'Texture2D', 'Texture2D', 'Texture2D', 'Sampler', 'Texture2D', 'Texture2D', 'Texture2D', 'Texture2D', 'TextureDepth2D', 'UniformBuffer')
+        if group == 'DeferredLighting':
+            kinds = kinds[:3] + ('StorageRead', 'StorageRead') + kinds[5:]
         allowed = {0: 'TextureDepth2D'} if group == 'DeferredDepthCopy' else dict(enumerate(kinds[:11] if group == 'DeferredGBuffer' else kinds))
         build.require(all(allowed.get(entry['binding']) == entry['kind'] for entry in entries),
                       'Layout', program['id'], 'deferred resources differ from the owned ABI')

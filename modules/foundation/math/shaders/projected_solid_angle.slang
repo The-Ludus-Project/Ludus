@@ -433,6 +433,53 @@ uint ClipPolygonToUpperHemisphere(float3 positions[MAX_PROJECTED_POLYGON_INPUT_V
     }
     return outCount >= 3 ? outCount : 0;
 }
+// Clip in the receiver frame before an LTC transform. Matches the C++ API; failure preserves output.
+bool TryClipProjectedPolygonToUpperHemisphere(in ProjectedPolygonInput polygon,
+                                              inout ProjectedPolygonInput inoutPolygon)
+{
+    static const uint MINIMUM_VERTEX_COUNT = 3;
+    if (polygon.VertexCount < MINIMUM_VERTEX_COUNT || polygon.VertexCount > MAX_PROJECTED_POLYGON_INPUT_VERTICES)
+    {
+        return false;
+    }
+    for (uint i = 0; i < polygon.VertexCount; ++i)
+    {
+        if (IsFiniteBits(polygon.PositionsTangent[i]) == false)
+        {
+            return false;
+        }
+    }
+    float maximumMagnitude = 0;
+    for (uint i = 0; i < polygon.VertexCount; ++i)
+    {
+        float3 value = abs(polygon.PositionsTangent[i]);
+        maximumMagnitude = max(maximumMagnitude, max(value.x, max(value.y, value.z)));
+    }
+    if (maximumMagnitude == 0)
+    {
+        inoutPolygon = (ProjectedPolygonInput)0;
+        return true;
+    }
+    float3 positions[MAX_PROJECTED_POLYGON_INPUT_VERTICES];
+    for (uint i = 0; i < MAX_PROJECTED_POLYGON_INPUT_VERTICES; ++i)
+    {
+        positions[i] = i < polygon.VertexCount ? polygon.PositionsTangent[i] / maximumMagnitude : float3(0);
+    }
+    float3 clipped[MAX_PROJECTED_POLYGON_VERTICES];
+    uint count = ClipPolygonToUpperHemisphere(positions, polygon.VertexCount, clipped);
+    if (count > MAX_PROJECTED_POLYGON_INPUT_VERTICES)
+    {
+        return false;
+    }
+    ProjectedPolygonInput result = (ProjectedPolygonInput)0;
+    result.VertexCount = count;
+    for (uint i = 0; i < count; ++i)
+    {
+        result.PositionsTangent[i] = clipped[i];
+    }
+    inoutPolygon = result;
+    return true;
+}
 ProjectedSolidAnglePolygon MakeEmptyProjectedSolidAnglePolygon(bool isMirrored)
 {
     ProjectedSolidAnglePolygon result;

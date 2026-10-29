@@ -3468,7 +3468,7 @@ profile. They shade the current World's authored materials, textures, analytic
 lights and environment; an unlit World with no emission or environment is dark.
 They require static opaque triangles with normals. Masked/transparent materials
 and invalid inputs reject preparation and retain the last drawable generation.
-No proxy lights, ray tracing, shadow maps or indirect illumination are added.
+Emissive meshes also provide unshadowed direct area lighting. No proxy lights, ray tracing, shadow maps or indirect illumination are added.
 The color target remains linear RGBA8, so radiance above one clips.
 
 The logical color/depth node runs an opaque material pass followed by a fullscreen
@@ -3481,6 +3481,33 @@ loads that output afterward. Background coverage remains clear. Half-float mater
 storage and reconstructed positions introduce numerical differences; native tests
 compare against the same material callback in clustered forward within two linear
 RGBA8 codes per channel. This is a correctness tolerance, not a performance claim.
+
+Emissive triangles are integrated over their actual transformed geometry. The
+Lambert term uses the polygon's projected solid angle with view-dependent Schlick
+Fresnel; specular uses the renderer's [LTC table](ltc-table.md), an approximation to
+GGX. The receiver horizon is clipped before transforming the polygon. Emission
+sidedness uses the inverse-transpose geometric normal, including reflected and
+nonuniform instances. Exactly collapsed triangles contribute nothing. A plane
+tolerance of 10 micrometres plus two parts per million of coordinate magnitude
+suppresses coplanar self-lighting from depth reconstruction; distinct surfaces
+closer than that tolerance are also treated as coplanar. Constant
+emission is integrated per triangle; an emission map splits each source triangle
+into four equal-area patches and samples fixed-mip emission at each centroid,
+including UV transforms, address/filter policy and sRGB decoding. This piecewise
+constant texture approximation can miss small features; it is not the reference
+path tracer's textured-emitter estimator.
+
+There is no mesh-light visibility test yet: area lights can illuminate through
+walls. Every admitted emitter triangle is evaluated, independently of the analytic
+light clusters, with no finite-distance cutoff. At most 4096 nonzero-emission
+triangles/patches are admitted per scene; excess geometry rejects preparation and
+retains the last drawable generation. The immutable scene upload uses four Float4
+words per triangle plus a dummy record for an empty light set. Camera-only updates
+reuse it. Fragment read-only storage is required for this upload and the shared
+LTC table; the resolve repurposes unused bake/shadow slots three and four, keeping
+sixteen total slots. Forward-only profiles retain their existing behavior. Runtime
+package version 26 changes these two deferred binding kinds; older deferred packages
+must be cooked again. Linear RGBA8 output still clips bright radiance.
 
 Select **ZPrepass** in the preview configuration
 selector to enable a separate depth-only pass. That pass clears and stores depth;

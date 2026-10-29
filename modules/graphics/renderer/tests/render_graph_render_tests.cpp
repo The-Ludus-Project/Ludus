@@ -1,3 +1,4 @@
+#include "../src/internal/raster_mesh_lights.h"
 #include "../src/internal/render_graph_metalfx.h"
 #include "../src/internal/render_graph_upscale.h"
 #include "internal/readback.h"
@@ -20,6 +21,7 @@
 #include <ludus/foundation/filesystem/filesystem.hpp>
 #include <ludus/foundation/filesystem/persistence.hpp>
 #include <ludus/foundation/time/time.hpp>
+#include <ludus/graphics/renderer/deferred_layout.h>
 #include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
 #include <ludus/graphics/renderer/views.hpp>
@@ -1563,4 +1565,196 @@ TEST_CASE("MetalFX preserves constant RGB through its private output and surface
         }
     }
     REQUIRE(rhi::Destroy(fixture.Device, source) == rhi::RasterStatus::Ready);
+}
+
+TEST_CASE("default deferred mesh area lights illuminate a receiver with CPU checked radiance", "[mesh-area][gpu]")
+{
+    constexpr usize SCENE_COUNT = 2;
+    constexpr usize POLL_ATTEMPTS = 10000;
+    StaticArray<uint8, PIXEL_BYTES> ordinary{};
+    for (const bool shouldUsePrepass : {false, true})
+    {
+        GraphGpuFixture fixture;
+        const PackageLocation location =
+            shouldUsePrepass == true
+                ? PackageLocation{LUDUS_RG3_CLUSTERED_ZPREPASS_DIRECTORY, "rg2_clustered_ZPrepass.lurgrt"}
+                : PackageLocation{LUDUS_RG3_CLUSTERED_DEFAULT_DIRECTORY, "rg2_clustered_Default.lurgrt"};
+        const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(location);
+        const renderer::RenderGraphPrograms programs =
+            package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+        const auto poll = [&](rhi::RasterStatus status) {
+            for (usize attempt = 0; attempt < POLL_ATTEMPTS && status == rhi::RasterStatus::Pending; ++attempt)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                status = fixture.Graph.Poll();
+            }
+            return status;
+        };
+        REQUIRE(poll(fixture.Graph.Initialize(fixture.Device, package->GetPlan(), programs, nullptr, WIDTH, HEIGHT)) ==
+                rhi::RasterStatus::Ready);
+        // This package exports an offscreen target; explicitly present it before reading the surface.
+        rhi::TextureHandle outputTexture;
+        rhi::TextureAspect outputAspect;
+        REQUIRE(fixture.Graph.GetExportAllocation(0, outputTexture, outputAspect) == rhi::RasterStatus::Ready);
+        renderer::Renderer compositor;
+        REQUIRE(compositor.Initialize(fixture.Device, programs.ColorVertex, programs.ColorFragment) ==
+                rhi::RasterStatus::Ready);
+        REQUIRE(compositor.InitializeViews(shaders::renderer_composite::Vertex(),
+                                           shaders::renderer_composite::Fragment()) == rhi::RasterStatus::Ready);
+        renderer::ViewMapping mapping;
+        REQUIRE(renderer::ResolveViewMapping({WIDTH, HEIGHT, renderer::ScreenFit::Stretch},
+                                             {0, 0, WIDTH, HEIGHT},
+                                             WIDTH,
+                                             HEIGHT,
+                                             mapping) == rhi::RasterStatus::Ready);
+        renderer::Presentation presentation;
+        REQUIRE(compositor.PreparePresentation(outputTexture, mapping, presentation) == rhi::RasterStatus::Ready);
+        const auto render = [&]() {
+            REQUIRE(rhi::BeginFrame(fixture.Device, fixture.Surface) == rhi::DeviceStatus::Ready);
+            REQUIRE(fixture.Graph.Encode(fixture.Surface) == rhi::RasterStatus::Ready);
+            REQUIRE(compositor.DrawPresentation(presentation) == rhi::RasterStatus::Ready);
+            rhi::SubmissionToken completion;
+            REQUIRE(rhi::EndFrame(fixture.Device, completion) == rhi::RasterStatus::Ready);
+            const rhi::RasterStatus status = fixture.Graph.ConfirmSubmission(completion);
+            REQUIRE((status == rhi::RasterStatus::Ready || status == rhi::RasterStatus::Pending));
+            REQUIRE(rhi::backend::ReadHeadlessPixels(fixture.Pixels.AsSpan()) == true);
+        };
+        const StaticArray<math::Vector3, VERTEX_COUNT> normals{{{0, 0, 1}, {0, 0, 1}, {0, 0, 1}}};
+        const StaticArray<uint32, INDEX_COUNT> reversed{{0, 2, 1}};
+        StaticArray<renderer::RenderGraphMesh, SCENE_COUNT> meshes{{fixture.Meshes[0], fixture.Meshes[0]}};
+        const uint32 receiverMaterial = 0;
+        const uint32 emitterMaterial = 1;
+        meshes[0].Geometry.Normals = normals.GetData();
+        meshes[1].Geometry.Normals = normals.GetData();
+        meshes[1].Geometry.Indices = reversed.GetData();
+        meshes[0].MaterialBindings = {&receiverMaterial, 1};
+        meshes[1].MaterialBindings = {&emitterMaterial, 1};
+        StaticArray<renderer::RenderGraphItem, SCENE_COUNT> items{{fixture.Items[0], fixture.Items[0]}};
+        items[1].SourceId = 2;
+        items[1].MeshIndex = 1;
+        items[1].MeshToWorld.Translation = {.8F, 0, .3F};
+        StaticArray<renderer::SceneShaderMaterial, SCENE_COUNT> materials{};
+        materials[1].BaseColor = {};
+        materials[1].Emission = {.7F, .2F, 0};
+        renderer::SceneShaderInputs inputs;
+        inputs.Materials = {materials.GetData(), materials.GetSize()};
+        fixture.Cameras[0].OrthographicCamera = true;
+        uint64 revision = 0;
+        uint64 contentRevision = 0;
+        const auto update = [&](bool hasSceneChanges = true) {
+            renderer::RenderGraphReport report;
+            ++revision;
+            if (hasSceneChanges == true)
+            {
+                ++contentRevision;
+            }
+            return poll(fixture.Graph.Update({meshes.GetData(), meshes.GetSize()},
+                                             {items.GetData(), items.GetSize()},
+                                             {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                             revision,
+                                             renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                             report,
+                                             &inputs,
+                                             contentRevision));
+        };
+        REQUIRE(update() == rhi::RasterStatus::Ready);
+        render();
+        CHECK(fixture.Graph.GetReport().Resources.MeshLightTriangles == 1);
+        const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+        CHECK(fixture.Pixels[center] > 0);
+        CHECK(fixture.Pixels[center + 1] > 0);
+        CHECK(fixture.Pixels[center + 2] == 0);
+        Array<math::Vector4> words;
+        REQUIRE(
+            renderer::internal::AppendRasterMeshLights(meshes[1].Geometry, items[1].MeshToWorld, materials[1], words) ==
+            rhi::RasterStatus::Ready);
+        const math::Vector3 positionWorld{1.F / WIDTH, -1.F / HEIGHT, .5F};
+        const math::Vector3 expected = renderer::internal::EvaluateRasterMeshLight({words.GetData(), words.GetSize()},
+                                                                                   positionWorld,
+                                                                                   {0, 0, 1},
+                                                                                   {0, 0, 1},
+                                                                                   {.5F, .5F, .5F},
+                                                                                   0,
+                                                                                   1);
+        CHECK(math::Abs(float32(fixture.Pixels[center]) - expected.X * 255) <= 2);
+        CHECK(math::Abs(float32(fixture.Pixels[center + 1]) - expected.Y * 255) <= 2);
+        if (shouldUsePrepass == true)
+        {
+            CHECK(fixture.Pixels == ordinary);
+        }
+        else
+        {
+            ordinary = fixture.Pixels;
+        }
+        // Exercise the specular table on rough and smooth metals, then change only the camera.
+        for (const float32 roughness : {.2F, .8F})
+        {
+            materials[0].Metallic = 1;
+            materials[0].Roughness = roughness;
+            REQUIRE(update() == rhi::RasterStatus::Ready);
+            render();
+            const math::Vector3 metalExpected =
+                renderer::internal::EvaluateRasterMeshLight({words.GetData(), words.GetSize()},
+                                                            positionWorld,
+                                                            {0, 0, 1},
+                                                            {0, 0, 1},
+                                                            {.5F, .5F, .5F},
+                                                            1,
+                                                            roughness);
+            CHECK(math::Abs(float32(fixture.Pixels[center]) - metalExpected.X * 255) <= 2);
+            CHECK(math::Abs(float32(fixture.Pixels[center + 1]) - metalExpected.Y * 255) <= 2);
+        }
+        materials[0] = {};
+        REQUIRE(update() == rhi::RasterStatus::Ready);
+        const renderer::RenderGraphSceneResourceReport beforeCamera = fixture.Graph.GetReport().Resources;
+        fixture.Cameras[0].CameraForward = {.3F, 0, -1};
+        REQUIRE(update(false) == rhi::RasterStatus::Ready);
+        render();
+        math::Vector3 viewWorld;
+        REQUIRE(math::TryNormalize(-fixture.Cameras[0].CameraForward, viewWorld) == math::MathStatus::Success);
+        const math::Vector3 cameraExpected =
+            renderer::internal::EvaluateRasterMeshLight({words.GetData(), words.GetSize()},
+                                                        positionWorld,
+                                                        {0, 0, 1},
+                                                        viewWorld,
+                                                        {.5F, .5F, .5F},
+                                                        0,
+                                                        1);
+        CHECK(math::Abs(float32(fixture.Pixels[center]) - cameraExpected.X * 255) <= 2);
+        CHECK(fixture.Graph.GetReport().Resources.CreatedMeshes == beforeCamera.CreatedMeshes);
+        CHECK(fixture.Graph.GetReport().Resources.MeshLightBytes == beforeCamera.MeshLightBytes);
+        fixture.Cameras[0].CameraForward = {0, 0, -1};
+        // Emission edits replace the immutable light generation, with no invented analytic source.
+        materials[1].Emission = {};
+        REQUIRE(update() == rhi::RasterStatus::Ready);
+        render();
+        CHECK(fixture.Pixels[center] == 0);
+        CHECK(fixture.Pixels[center + 1] == 0);
+        // Back-side emission contributes only when explicitly authored two-sided.
+        materials[1].Emission = {.7F, .2F, 0};
+        meshes[1].Geometry.Indices = fixture.Indices.GetData();
+        REQUIRE(update() == rhi::RasterStatus::Ready);
+        render();
+        CHECK(fixture.Pixels[center] == 0);
+        materials[1].IsEmissionTwoSided = true;
+        REQUIRE(update() == rhi::RasterStatus::Ready);
+        render();
+        CHECK(fixture.Pixels[center] > 0);
+        const StaticArray<uint8, PIXEL_BYTES> lastDrawable = fixture.Pixels;
+        const uint64 lastRevision = fixture.Graph.GetDrawableSceneRevision();
+        // Too many emitter triangles rejects preparation and preserves the drawable generation.
+        constexpr usize EXCESS_TRIANGLES = renderer::MAX_RASTER_MESH_LIGHT_TRIANGLES + 1;
+        Array<uint32> excessIndices;
+        REQUIRE(excessIndices.TryResize(EXCESS_TRIANGLES * INDEX_COUNT) == true);
+        for (usize index = 0; index < excessIndices.GetSize(); ++index)
+        {
+            excessIndices[index] = reversed[index % INDEX_COUNT];
+        }
+        meshes[1].Geometry.Indices = excessIndices.GetData();
+        meshes[1].Geometry.IndexCount = excessIndices.GetSize();
+        CHECK(update() == rhi::RasterStatus::CapacityExceeded);
+        CHECK(fixture.Graph.GetDrawableSceneRevision() == lastRevision);
+        render();
+        CHECK(fixture.Pixels == lastDrawable);
+    }
 }
