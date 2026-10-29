@@ -20,6 +20,7 @@
 #include "rg2_scene_compute.h"
 #include "rg2_scene_ray.h"
 #include "rg2_shared_ray_computebvh.h"
+#include "ris_projected_solid_angle_benchmark_variants.h"
 #if defined(__APPLE__)
 #    include "rg2_mixed_invocation.h"
 #    include "rg2_native_ray.h"
@@ -4249,8 +4250,18 @@ struct EmitterFieldRoom final
     EmitterFieldRoom& operator=(const EmitterFieldRoom&) = delete;
 };
 
-const PackageLocation RIS_PROJECTED_SOLID_ANGLE_BENCHMARK{LUDUS_RG3_RIS_PROJECTED_SOLID_ANGLE_BENCHMARK_DIRECTORY,
-                                                          "rg2_ris_projected_solid_angle_benchmark.lurgrt"};
+/// One ris-projected-solid-angle benchmark package and the Graph settings it was cooked with
+/// (LUDUS_RIS_PROJECTED_SOLID_ANGLE_BENCHMARK_VARIANTS in CMakeLists.txt).
+struct RisBenchmarkVariant final
+{
+    PackageLocation Location;
+    uint32 Target = 0;             ///< RIS_TARGET: 0 exact clipped integrals, 1 approximate form factor.
+    uint32 CandidateCount = 0;     ///< RIS_CANDIDATE_COUNT, M.
+    uint32 NormalizationCount = 0; ///< RIS_NORMALIZATION_CANDIDATE_COUNT, K.
+};
+constexpr usize RIS_BENCHMARK_VARIANT_COUNT = LUDUS_RG3_RIS_BENCHMARK_VARIANT_COUNT;
+const StaticArray<RisBenchmarkVariant, RIS_BENCHMARK_VARIANT_COUNT> RIS_BENCHMARK_VARIANTS{
+    {LUDUS_RG3_RIS_BENCHMARK_VARIANTS}};
 const PackageLocation VEACH_GUIBAS_BENCHMARK{LUDUS_RG3_VEACH_GUIBAS_MIS_BENCHMARK_DIRECTORY,
                                              "rg2_veach_guibas_mis_benchmark.lurgrt"};
 /// The benchmark packages' third output, which counts the MIS program's queries.
@@ -4452,7 +4463,8 @@ EstimatorCost MeasureEstimatorCost(const GraphGpuFixture& fixture,
     return cost;
 }
 
-constexpr usize BENCHMARK_MAXIMUM_CHECKPOINTS = BENCHMARK_SAMPLE_BUDGET_COUNT * 2;
+/// Veach and Guibas is read at each budget's equal samples and at each RIS variant's equal time.
+constexpr usize BENCHMARK_MAXIMUM_CHECKPOINTS = BENCHMARK_SAMPLE_BUDGET_COUNT * (1 + RIS_BENCHMARK_VARIANT_COUNT);
 
 /// Sample counts at which one package's MIS image is read, and the images read there.
 struct MisCheckpoints final
@@ -4506,19 +4518,36 @@ TEST_CASE("Measure RIS projected-solid-angle and Veach and Guibas MIS error at e
     rhi::MeasurementAdapter adapter;
     REQUIRE(rhi::GetMeasurementAdapter(fixture.Device, adapter) == rhi::RasterStatus::Ready);
     const EmitterFieldRoom room(finish);
-    // Timing rounds in RIS, Veach and Guibas, Veach and Guibas, RIS order, so drift in machine load or clocks affects
-    // both packages alike; each package's cost is the mean of its two rounds' medians. One graph at a time: the device
-    // admits a bounded number of ray graph jobs.
-    constexpr usize RIS = 0;
-    constexpr usize VEACH = 1;
-    constexpr usize ESTIMATOR_COUNT = 2;
-    const StaticArray<PackageLocation, ESTIMATOR_COUNT> locations{
-        {RIS_PROJECTED_SOLID_ANGLE_BENCHMARK, VEACH_GUIBAS_BENCHMARK}};
-    const StaticArray<std::string_view, ESTIMATOR_COUNT> names{{"ris-projected-solid-angle", "veach-guibas-mis"}};
+    // Estimators 0 to RIS_BENCHMARK_VARIANT_COUNT - 1 are the RIS variants; the last is Veach and Guibas. Timing rounds
+    // run every RIS variant, Veach and Guibas twice, then the RIS variants in reverse, so drift in machine load or
+    // clocks affects all packages alike; each package's cost is the mean of its two rounds' medians. One graph at a
+    // time: the device admits a bounded number of ray graph jobs.
+    constexpr usize VEACH = RIS_BENCHMARK_VARIANT_COUNT;
+    constexpr usize ESTIMATOR_COUNT = RIS_BENCHMARK_VARIANT_COUNT + 1;
+    StaticArray<PackageLocation, ESTIMATOR_COUNT> locations{};
+    StaticArray<std::string, ESTIMATOR_COUNT> names{};
+    for (usize variant = 0; variant < RIS_BENCHMARK_VARIANT_COUNT; ++variant)
+    {
+        const RisBenchmarkVariant& settings = RIS_BENCHMARK_VARIANTS[variant];
+        locations[variant] = settings.Location;
+        names[variant] = std::string("ris-projected-solid-angle (") +
+                         (settings.Target == 0 ? "exact target" : "form-factor target") +
+                         ", M=" + std::to_string(settings.CandidateCount) +
+                         ", K=" + std::to_string(settings.NormalizationCount) + ')';
+    }
+    locations[VEACH] = VEACH_GUIBAS_BENCHMARK;
+    names[VEACH] = "veach-guibas-mis";
     StaticArray<EstimatorCost, ESTIMATOR_COUNT> costs{};
-    constexpr usize ROUND_COUNT = 4;
-    constexpr StaticArray<usize, ROUND_COUNT> ROUND_ORDER{{RIS, VEACH, VEACH, RIS}};
-    for (const usize estimator : ROUND_ORDER)
+    constexpr usize ROUND_COUNT = 2 * ESTIMATOR_COUNT;
+    StaticArray<usize, ROUND_COUNT> roundOrder{};
+    for (usize variant = 0; variant < RIS_BENCHMARK_VARIANT_COUNT; ++variant)
+    {
+        roundOrder[variant] = variant;
+        roundOrder[ROUND_COUNT - 1 - variant] = variant;
+    }
+    roundOrder[RIS_BENCHMARK_VARIANT_COUNT] = VEACH;
+    roundOrder[RIS_BENCHMARK_VARIANT_COUNT + 1] = VEACH;
+    for (const usize estimator : roundOrder)
     {
         const EstimatorCost measured = MeasureEstimatorCost(fixture, locations[estimator], room, names[estimator]);
         costs[estimator].PrimaryMilliseconds += measured.PrimaryMilliseconds / 2;
@@ -4560,43 +4589,57 @@ TEST_CASE("Measure RIS projected-solid-angle and Veach and Guibas MIS error at e
                     << " samples per pixel, independent seed; " << CountFailurePixels(reference)
                     << " failure pixels; linear metrics cover " << resolvedPixels << " of " << pixelCount << " pixels");
     CHECK(CountFailurePixels(reference) == 0);
-    // RIS at each budget; Veach and Guibas at the same samples, then at the same primary and MIS kernel time.
-    MisCheckpoints ris;
+    // Veach and Guibas at each budget's samples, then at each RIS variant's primary and MIS kernel time.
     MisCheckpoints veach;
     for (usize budget = 0; budget < BENCHMARK_SAMPLE_BUDGET_COUNT; ++budget)
     {
         const usize samples = BENCHMARK_SAMPLE_BUDGETS[budget];
-        ris.FrameCounts[budget] = samples;
         veach.FrameCounts[budget] = samples;
-        const float64 equalTimeSamples =
-            static_cast<float64>(samples) * sampleMilliseconds[RIS] / sampleMilliseconds[VEACH];
-        veach.FrameCounts[BENCHMARK_SAMPLE_BUDGET_COUNT + budget] =
-            math::Min(math::Max(static_cast<usize>(equalTimeSamples + .5), usize{1}), BENCHMARK_MAXIMUM_FRAMES);
+        for (usize variant = 0; variant < RIS_BENCHMARK_VARIANT_COUNT; ++variant)
+        {
+            const float64 equalTimeSamples =
+                static_cast<float64>(samples) * sampleMilliseconds[variant] / sampleMilliseconds[VEACH];
+            veach.FrameCounts[BENCHMARK_SAMPLE_BUDGET_COUNT * (1 + variant) + budget] =
+                math::Min(math::Max(static_cast<usize>(equalTimeSamples + .5), usize{1}), BENCHMARK_MAXIMUM_FRAMES);
+        }
     }
-    ris.Count = BENCHMARK_SAMPLE_BUDGET_COUNT;
-    veach.Count = BENCHMARK_SAMPLE_BUDGET_COUNT * 2;
-    RenderMisCheckpoints(fixture, RIS_PROJECTED_SOLID_ANGLE_BENCHMARK, room, ris);
+    veach.Count = BENCHMARK_SAMPLE_BUDGET_COUNT * (1 + RIS_BENCHMARK_VARIANT_COUNT);
     RenderMisCheckpoints(fixture, VEACH_GUIBAS_BENCHMARK, room, veach);
     for (usize budget = 0; budget < BENCHMARK_SAMPLE_BUDGET_COUNT; ++budget)
     {
-        const ImageError risError = ComputeImageError(ris.Images[budget], reference);
         const ImageError equalSamples = ComputeImageError(veach.Images[budget], reference);
-        const ImageError equalTime = ComputeImageError(veach.Images[BENCHMARK_SAMPLE_BUDGET_COUNT + budget], reference);
-        WARN(finishName << " room, ris-projected-solid-angle at " << ris.FrameCounts[budget] << " samples ("
-                        << static_cast<float64>(ris.FrameCounts[budget]) * sampleMilliseconds[RIS]
-                        << " ms of kernel time): MAPE " << risError.MeanAbsolutePercentage << ", linear RMSE "
-                        << risError.LinearRootMeanSquare << ", tone-mapped MSE " << risError.DisplayMeanSquare
-                        << "; veach-guibas-mis at equal samples: MAPE " << equalSamples.MeanAbsolutePercentage
-                        << ", linear RMSE " << equalSamples.LinearRootMeanSquare << ", tone-mapped MSE "
-                        << equalSamples.DisplayMeanSquare << "; at equal time ("
-                        << veach.FrameCounts[BENCHMARK_SAMPLE_BUDGET_COUNT + budget] << " samples): MAPE "
-                        << equalTime.MeanAbsolutePercentage << ", linear RMSE " << equalTime.LinearRootMeanSquare
-                        << ", tone-mapped MSE " << equalTime.DisplayMeanSquare
-                        << "; failure pixels left out: " << risError.FailurePixels << ", " << equalSamples.FailurePixels
-                        << ", " << equalTime.FailurePixels);
-        CHECK(risError.FailurePixels == 0);
+        WARN(finishName << " room, veach-guibas-mis at " << veach.FrameCounts[budget] << " samples: MAPE "
+                        << equalSamples.MeanAbsolutePercentage << ", linear RMSE " << equalSamples.LinearRootMeanSquare
+                        << ", tone-mapped MSE " << equalSamples.DisplayMeanSquare
+                        << "; failure pixels left out: " << equalSamples.FailurePixels);
         CHECK(equalSamples.FailurePixels == 0);
-        CHECK(equalTime.FailurePixels == 0);
+    }
+    for (usize variant = 0; variant < RIS_BENCHMARK_VARIANT_COUNT; ++variant)
+    {
+        MisCheckpoints ris;
+        for (usize budget = 0; budget < BENCHMARK_SAMPLE_BUDGET_COUNT; ++budget)
+        {
+            ris.FrameCounts[budget] = BENCHMARK_SAMPLE_BUDGETS[budget];
+        }
+        ris.Count = BENCHMARK_SAMPLE_BUDGET_COUNT;
+        RenderMisCheckpoints(fixture, locations[variant], room, ris);
+        for (usize budget = 0; budget < BENCHMARK_SAMPLE_BUDGET_COUNT; ++budget)
+        {
+            const ImageError risError = ComputeImageError(ris.Images[budget], reference);
+            const usize equalTimeCheckpoint = BENCHMARK_SAMPLE_BUDGET_COUNT * (1 + variant) + budget;
+            const ImageError equalTime = ComputeImageError(veach.Images[equalTimeCheckpoint], reference);
+            WARN(finishName << " room, " << names[variant] << " at " << ris.FrameCounts[budget] << " samples ("
+                            << static_cast<float64>(ris.FrameCounts[budget]) * sampleMilliseconds[variant]
+                            << " ms of kernel time): MAPE " << risError.MeanAbsolutePercentage << ", linear RMSE "
+                            << risError.LinearRootMeanSquare << ", tone-mapped MSE " << risError.DisplayMeanSquare
+                            << "; veach-guibas-mis at equal time (" << veach.FrameCounts[equalTimeCheckpoint]
+                            << " samples): MAPE " << equalTime.MeanAbsolutePercentage << ", linear RMSE "
+                            << equalTime.LinearRootMeanSquare << ", tone-mapped MSE " << equalTime.DisplayMeanSquare
+                            << "; failure pixels left out: " << risError.FailurePixels << ", "
+                            << equalTime.FailurePixels);
+            CHECK(risError.FailurePixels == 0);
+            CHECK(equalTime.FailurePixels == 0);
+        }
     }
 }
 

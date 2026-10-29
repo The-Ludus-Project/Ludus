@@ -6,7 +6,8 @@
 // Test-only kernel for reference_light_sampling_parity_tests.cpp: runs the GPU-compute reference's scene-independent
 // resampled-light pieces (shaders/reference_light_sampling.slang) on drawn inputs, so the host can check that the
 // technique weights partition unity, that Z-hat = 0 applies the inclusion bound and that an empty LTC-space clip
-// disables the specular technique, and compare the receiver frame and polygons with src/reference_light_sampling.cpp.
+// disables the specular technique, and compare the receiver frame, polygons and sampler version 3's approximate
+// integrals with src/reference_light_sampling.cpp.
 
 LUDUS_SHADER_BINDING(0) RWStructuredBuffer<uint4> Results;
 // The host binds the renderer's LTC table here. Declared after Results: Slang numbers Metal buffers in declaration
@@ -109,6 +110,14 @@ ComputeMain(uint3 dispatchThreadId : SV_DispatchThreadID) {
                                                                         asuint(light.DiffuseIntegral),
                                                                         asuint(light.SpecularIntegral),
                                                                         asuint(frame.DiffuseAlbedoLuminance));
+    float2 approximateIntegrals;
+    bool isApproximated = TryApproximateReferenceTriangleIntegrals(frame,
+                                                                   triangleWorld[0],
+                                                                   triangleWorld[1],
+                                                                   triangleWorld[2],
+                                                                   approximateIntegrals);
+    Results[base + LUDUS_REFERENCE_LIGHT_PARITY_APPROXIMATE_RECORD] =
+        PackFloats(isApproximated == true ? 1 : 0, approximateIntegrals.x, approximateIntegrals.y, 0);
     float2 techniqueRandom = float2(DrawUniform(random), DrawUniform(random));
     uint technique = DrawUniform(random) < 0.5 ? REFERENCE_DIFFUSE_TECHNIQUE : REFERENCE_SPECULAR_TECHNIQUE;
     float3 directionTangent = float3(0);

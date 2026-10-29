@@ -626,18 +626,91 @@ if(TARGET ludus_renderer_render_tests)
                     configurations 0 nodes ${node_index} invocation traversal "\"ComputeBvh\"")
             endif()
         endforeach()
-        # Rewrite the staged files only when they change, so reconfiguring does not rebuild the package.
-        file(WRITE "${benchmark_staged}.lushader.json" "${benchmark_manifest}\n")
-        file(COPY_FILE "${benchmark_staged}.lushader.json" "${benchmark_staged}/main.lushader.json" ONLY_IF_DIFFERENT)
-        file(WRITE "${benchmark_staged}.lurender.json" "${benchmark_library}\n")
-        file(COPY_FILE "${benchmark_staged}.lurender.json" "${benchmark_staged}/library.lurender.json"
-            ONLY_IF_DIFFERENT)
-        ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME "rg2_${benchmark_template}_benchmark"
-            MANIFEST "${benchmark_staged}/main.lushader.json" RUNTIME_PACKAGE)
-        cmake_path(GET "rg2_${benchmark_template}_benchmark_RUNTIME_PACKAGE" PARENT_PATH benchmark_package_directory)
-        string(TOUPPER "${benchmark_template}" benchmark_definition)
-        target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
-            "LUDUS_RG3_${benchmark_definition}_BENCHMARK_DIRECTORY=\"${benchmark_package_directory}\"")
+        if(NOT benchmark_template STREQUAL "ris_projected_solid_angle")
+            # Rewrite the staged files only when they change, so reconfiguring does not rebuild the package.
+            file(WRITE "${benchmark_staged}.lushader.json" "${benchmark_manifest}\n")
+            file(COPY_FILE "${benchmark_staged}.lushader.json" "${benchmark_staged}/main.lushader.json"
+                ONLY_IF_DIFFERENT)
+            file(WRITE "${benchmark_staged}.lurender.json" "${benchmark_library}\n")
+            file(COPY_FILE "${benchmark_staged}.lurender.json" "${benchmark_staged}/library.lurender.json"
+                ONLY_IF_DIFFERENT)
+            ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME "rg2_${benchmark_template}_benchmark"
+                MANIFEST "${benchmark_staged}/main.lushader.json" RUNTIME_PACKAGE)
+            cmake_path(GET "rg2_${benchmark_template}_benchmark_RUNTIME_PACKAGE" PARENT_PATH
+                benchmark_package_directory)
+            string(TOUPPER "${benchmark_template}" benchmark_definition)
+            target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+                "LUDUS_RG3_${benchmark_definition}_BENCHMARK_DIRECTORY=\"${benchmark_package_directory}\"")
+            continue()
+        endif()
+        # One RIS package per RIS_TARGET:RIS_CANDIDATE_COUNT:RIS_NORMALIZATION_CANDIDATE_COUNT variant; the benchmark
+        # measures each against the same Veach and Guibas reference. The first variants are the template's exact
+        # target and its defaults; a longer list measures an M and K sweep without rebuilding the others.
+        set(LUDUS_RIS_PROJECTED_SOLID_ANGLE_BENCHMARK_VARIANTS "0:32:8;1:8:4" CACHE STRING
+            "RIS_TARGET:RIS_CANDIDATE_COUNT:RIS_NORMALIZATION_CANDIDATE_COUNT variants of the opt-in RIS benchmark")
+        foreach(setting_id IN ITEMS RIS_TARGET RIS_CANDIDATE_COUNT RIS_NORMALIZATION_CANDIDATE_COUNT)
+            set(benchmark_${setting_id}_index -1)
+        endforeach()
+        string(JSON benchmark_setting_count LENGTH "${benchmark_manifest}" settings)
+        math(EXPR benchmark_setting_last "${benchmark_setting_count} - 1")
+        foreach(setting_index RANGE ${benchmark_setting_last})
+            string(JSON setting_id GET "${benchmark_manifest}" settings ${setting_index} id)
+            set(benchmark_${setting_id}_index ${setting_index})
+        endforeach()
+        set(benchmark_variant_entries "")
+        set(benchmark_variant_count 0)
+        foreach(benchmark_variant IN LISTS LUDUS_RIS_PROJECTED_SOLID_ANGLE_BENCHMARK_VARIANTS)
+            string(REPLACE ":" ";" benchmark_variant_values "${benchmark_variant}")
+            list(LENGTH benchmark_variant_values benchmark_variant_length)
+            if(NOT benchmark_variant_length EQUAL 3)
+                message(FATAL_ERROR "RIS benchmark variant '${benchmark_variant}' is not TARGET:M:K.")
+            endif()
+            list(GET benchmark_variant_values 0 variant_target)
+            list(GET benchmark_variant_values 1 variant_candidates)
+            list(GET benchmark_variant_values 2 variant_normalization)
+            set(variant_manifest "${benchmark_manifest}")
+            foreach(setting_pair IN ITEMS "RIS_TARGET;${variant_target}" "RIS_CANDIDATE_COUNT;${variant_candidates}"
+                    "RIS_NORMALIZATION_CANDIDATE_COUNT;${variant_normalization}")
+                list(GET setting_pair 0 setting_id)
+                list(GET setting_pair 1 setting_value)
+                if(benchmark_${setting_id}_index LESS 0)
+                    message(FATAL_ERROR "The ris_projected_solid_angle template manifest has no ${setting_id} setting.")
+                endif()
+                string(JSON variant_manifest SET "${variant_manifest}"
+                    settings ${benchmark_${setting_id}_index} value ${setting_value})
+            endforeach()
+            set(variant_suffix "t${variant_target}_m${variant_candidates}_k${variant_normalization}")
+            set(variant_staged "${benchmark_staged}_${variant_suffix}")
+            ludus_stage_render_graph_inputs("${benchmark_source}" "${variant_staged}"
+                main.lushader.json library.lurender.json)
+            configure_file("${CMAKE_CURRENT_SOURCE_DIR}/tests/render_graph_query_count.slang"
+                "${variant_staged}/main_shaders/query_count.slang" COPYONLY)
+            # Rewrite the staged files only when they change, so reconfiguring does not rebuild the package.
+            file(WRITE "${variant_staged}.lushader.json" "${variant_manifest}\n")
+            file(COPY_FILE "${variant_staged}.lushader.json" "${variant_staged}/main.lushader.json" ONLY_IF_DIFFERENT)
+            file(WRITE "${variant_staged}.lurender.json" "${benchmark_library}\n")
+            file(COPY_FILE "${variant_staged}.lurender.json" "${variant_staged}/library.lurender.json"
+                ONLY_IF_DIFFERENT)
+            set(variant_name "rg2_ris_projected_solid_angle_benchmark_${variant_suffix}")
+            ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME "${variant_name}"
+                MANIFEST "${variant_staged}/main.lushader.json" RUNTIME_PACKAGE)
+            cmake_path(GET "${variant_name}_RUNTIME_PACKAGE" PARENT_PATH variant_package_directory)
+            string(APPEND benchmark_variant_entries
+                "    {{\"${variant_package_directory}\", \"${variant_name}.lurgrt\"}, "
+                "${variant_target}, ${variant_candidates}, ${variant_normalization}}, \\\n")
+            math(EXPR benchmark_variant_count "${benchmark_variant_count} + 1")
+        endforeach()
+        if(benchmark_variant_count EQUAL 0)
+            message(FATAL_ERROR "LUDUS_RIS_PROJECTED_SOLID_ANGLE_BENCHMARK_VARIANTS lists no variant.")
+        endif()
+        set(benchmark_variant_header "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/ris_projected_solid_angle_benchmark_variants")
+        file(WRITE "${benchmark_variant_header}/variants.h.staged"
+            "// Generated from LUDUS_RIS_PROJECTED_SOLID_ANGLE_BENCHMARK_VARIANTS by modules/graphics/renderer.\n"
+            "#define LUDUS_RG3_RIS_BENCHMARK_VARIANT_COUNT ${benchmark_variant_count}\n"
+            "#define LUDUS_RG3_RIS_BENCHMARK_VARIANTS \\\n${benchmark_variant_entries}\n")
+        file(COPY_FILE "${benchmark_variant_header}/variants.h.staged"
+            "${benchmark_variant_header}/ris_projected_solid_angle_benchmark_variants.h" ONLY_IF_DIFFERENT)
+        target_include_directories(ludus_render_graph_ray_tests PRIVATE "${benchmark_variant_header}")
     endforeach()
     # The salesin-jarosz-lines template with its MIS_HEURISTIC Graph setting set to power (the staged
     # default is balance), and the point_line_densities kernel over the template's own strategy and

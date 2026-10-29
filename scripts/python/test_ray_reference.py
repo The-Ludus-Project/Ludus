@@ -72,7 +72,8 @@ class ReferenceExportTests(unittest.TestCase):
 
     def test_light_sampling_pairs_the_sampler_version_with_its_flag(self):
         for sampler, flags, light_sampling in ((1, 96, 'uniform_area'), (2, 224, 'resampled_projected_solid_angle'),
-                                               (2, 161, 'resampled_projected_solid_angle')):
+                                               (2, 161, 'resampled_projected_solid_angle'),
+                                               (3, 224, 'resampled_form_factor')):
             with self.subTest(sampler=sampler, flags=flags):
                 data = self.capture()
                 struct.pack_into('<I', data, 16, sampler)
@@ -81,7 +82,7 @@ class ReferenceExportTests(unittest.TestCase):
                 self.assertEqual(metadata['sampler'], sampler)
                 self.assertEqual(metadata['light_sampling'], light_sampling)
         # A flag without its sampler version, the version without its flag, or an unknown version is refused.
-        for sampler, flags in ((1, 160), (2, 32), (3, 160)):
+        for sampler, flags in ((1, 160), (2, 32), (3, 32), (4, 160)):
             with self.subTest(sampler=sampler, flags=flags):
                 data = self.capture()
                 struct.pack_into('<I', data, 16, sampler)

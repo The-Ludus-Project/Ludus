@@ -46,7 +46,7 @@ LUDUS_SHADER_BINDING(LUDUS_REFERENCE_SCENE_BINDING) StructuredBuffer<uint4> scen
 LUDUS_SHADER_BINDING(LUDUS_REFERENCE_ACCUMULATION_BINDING) RWStructuredBuffer<float4> accumulation;
 LUDUS_SHADER_BINDING(LUDUS_REFERENCE_STATUS_BINDING) RWStructuredBuffer<uint4> status;
 LUDUS_SHADER_BINDING(LUDUS_REFERENCE_TEXELS_BINDING) StructuredBuffer<uint4> textureWords;
-// The renderer's LTC table, read only by ReferenceLightSampling::ResampledProjectedSolidAngle. Declared after every
+// The renderer's LTC table, read only by the resampled ReferenceLightSampling modes. Declared after every
 // lower binding: Slang numbers Metal buffers in declaration order.
 #define LUDUS_LTC_TABLE_BINDING LUDUS_REFERENCE_LTC_TABLE_BINDING
 #include "linearly_transformed_cosine.slang"
@@ -61,6 +61,7 @@ static const uint REVERSE_Z_FLAG = 1;
 static const uint INFINITE_FAR_FLAG = 2;
 static const uint CENTER_RAYS_FLAG = 4;
 static const uint RESAMPLED_LIGHT_FLAG = LUDUS_REFERENCE_RESAMPLED_LIGHT_FLAG;
+static const uint FORM_FACTOR_TARGET_FLAG = LUDUS_REFERENCE_FORM_FACTOR_TARGET_FLAG;
 static const uint LINEAR_FILTER_FLAG = 1;
 static const uint REPEAT_U_FLAG = 2;
 static const uint REPEAT_V_FLAG = 4;
@@ -403,10 +404,25 @@ float RandomValue(uint pixel, uint sample, uint dimension)
 {
     return SampleRandomFloat01(Sampling.xy, PixelRandomAddress(pixel, sample, dimension));
 }
-// ReferenceLightSampling::ResampledProjectedSolidAngle: sampler version 2 and its 128 dimensions per bounce.
+// The resampled ReferenceLightSampling modes: sampler versions 2 and 3 and their 128 dimensions per bounce.
 bool IsResampled()
 {
     return (Sampling.z & RESAMPLED_LIGHT_FLAG) != 0;
+}
+// ReferenceLightSampling::ResampledFormFactor, sampler version 3: the approximate target and its frozen counts.
+bool HasFormFactorTarget()
+{
+    return (Sampling.z & FORM_FACTOR_TARGET_FLAG) != 0;
+}
+uint GetRisCandidateCount()
+{
+    return HasFormFactorTarget() == true ? LUDUS_REFERENCE_FORM_FACTOR_RIS_CANDIDATE_COUNT
+                                         : LUDUS_REFERENCE_RIS_CANDIDATE_COUNT;
+}
+uint GetRisNormalizationCount()
+{
+    return HasFormFactorTarget() == true ? LUDUS_REFERENCE_FORM_FACTOR_RIS_NORMALIZATION_CANDIDATE_COUNT
+                                         : LUDUS_REFERENCE_RIS_NORMALIZATION_CANDIDATE_COUNT;
 }
 uint GetBounceDimension(uint depth, uint slot)
 {
@@ -732,7 +748,7 @@ struct LightProposal
     float Pdf;
     bool IsDelta;
     bool HasFiniteEndpoint;
-    // ResampledProjectedSolidAngle drew the emissive category; the vertex resamples an emitter itself.
+    // A resampled mode drew the emissive category; the vertex resamples an emitter itself.
     bool IsEmissiveCategory;
 };
 void MarkInvalid(inout PathSample inoutPath, uint depth, uint failure)
@@ -931,10 +947,10 @@ bool TraceProposal(inout PathSample inoutPath,
     return true;
 }
 // --- Resampled emitter light (reference_light_sampling.cpp) ----------------------
-// ReferenceLightSampling::ResampledProjectedSolidAngle replaces the power-CDF emitter draw of the emissive category:
-// RIS over the power CDF with the LTC target, then one projected-solid-angle and one LTC sample of the selected
-// triangle under clamped optimal MIS, each with its own shadow ray. The scene-independent pieces are in
-// reference_light_sampling.slang.
+// The resampled ReferenceLightSampling modes replace the power-CDF emitter draw of the emissive category: RIS over the
+// power CDF with the LTC target (exact, or approximate for ResampledFormFactor), then one projected-solid-angle and
+// one LTC sample of the selected triangle under clamped optimal MIS, each with its own shadow ray. The
+// scene-independent pieces are in reference_light_sampling.slang.
 
 // P_E: the uniform category draw's share of mesh emitters.
 float GetEmissiveCategoryProbability(uint lightCount)
@@ -973,36 +989,64 @@ float EvaluateEmissiveTriangleSelectionPmf(uint triangle)
     return FindEmitter(triangle, emitter) == true ? GetEmitterProbability(emitter) : 0;
 }
 
-// One emissive triangle evaluated for one receiver.
+// One emissive triangle evaluated for one receiver and prepared for both light techniques.
 struct EmitterTarget
 {
     ReferenceTriangleLight Light;
-    // (c_0, c_1); their sum is Target.
+    // (c_0, c_1) from the exact integrals: Peters' MIS coefficients.
     float2 Coefficients;
-    // p-hat: Y(L) (Y(a_0) E_0 + Y(a_1) E_1), zero for a one-sided emitter seen from behind.
+    // p-hat as the sampler version evaluates it: the coefficients' sum for version 2, the approximate integrals'
+    // coefficients for version 3. Zero for a one-sided emitter seen from behind.
     float Target;
 };
 
-// TryEvaluateEmitterTarget. The constant emission factor bounds textured emission from above, so the target needs no
-// texture lookup. False for a nonfinite polygon or target.
+// TryLoadEmitter: the luminance of the emitter's constant emission factor towards the receiver.
+float GetEmitterLuminanceTowards(ReferenceReceiverFrame frame, uint triangle)
+{
+    uint instance = GetInstance(triangle);
+    // A planar triangle faces the receiver from every point on it, as the emitter-hit test sees it at one point.
+    if (IsEmissionTwoSided(instance) == false &&
+        dot(GetGeometricNormalWorld(triangle), frame.PositionWorld - TriangleValue(triangle, 0).xyz) <= 0)
+        return 0;
+    return ComputeReferenceLuminance(max(SurfaceValue(instance, 4).xyz, float3(0)));
+}
+
+// TryApproximateEmitterTarget: sampler version 3's p-hat for an emitter with positive emission.
+bool TryApproximateEmitterTarget(ReferenceReceiverFrame frame,
+                                 uint triangle,
+                                 float emissionLuminance,
+                                 out float outTarget)
+{
+    outTarget = 0;
+    float2 integrals;
+    if (TryApproximateReferenceTriangleIntegrals(frame,
+                                                 TriangleValue(triangle, 0).xyz,
+                                                 TriangleValue(triangle, 1).xyz,
+                                                 TriangleValue(triangle, 2).xyz,
+                                                 integrals) == false)
+        return false;
+    float target = emissionLuminance * frame.DiffuseAlbedoLuminance * integrals.x +
+                   emissionLuminance * frame.SpecularAlbedoLuminance * integrals.y;
+    if (IsFiniteBits(target) == false)
+        return false;
+    outTarget = target;
+    return true;
+}
+
+// TryEvaluateEmitterTarget, for the selected emitter and BSDF hits. The constant emission factor bounds textured
+// emission from above, so the target needs no texture lookup. False for a nonfinite polygon, coefficient or target.
 // Thanks to the Slang authors, core module noinline attribute reference:
 // https://docs.shader-slang.org/en/latest/external/core-module-reference/attributes/noinline.html
-// One copy of the two unrolled polygon preparations serves every candidate, normalization and BSDF-hit site.
+// One copy of the two unrolled polygon preparations serves every site.
 [noinline] bool TryEvaluateEmitterTarget(ReferenceReceiverFrame frame, uint triangle, out EmitterTarget outTarget) {
     outTarget.Light = MakeEmptyReferenceTriangleLight(frame);
     outTarget.Coefficients = float2(0);
     outTarget.Target = 0;
-    uint instance = GetInstance(triangle);
-    float3 position0World = TriangleValue(triangle, 0).xyz;
-    float emissionLuminance = ComputeReferenceLuminance(max(SurfaceValue(instance, 4).xyz, float3(0)));
-    // A planar triangle faces the receiver from every point on it, as the emitter-hit test sees it at one point.
-    if (IsEmissionTwoSided(instance) == false &&
-        dot(GetGeometricNormalWorld(triangle), frame.PositionWorld - position0World) <= 0)
-        emissionLuminance = 0;
+    float emissionLuminance = GetEmitterLuminanceTowards(frame, triangle);
     if ((emissionLuminance > 0) == false)
         return true;
     if (TryPrepareReferenceTriangleLight(frame,
-                                         position0World,
+                                         TriangleValue(triangle, 0).xyz,
                                          TriangleValue(triangle, 1).xyz,
                                          TriangleValue(triangle, 2).xyz,
                                          outTarget.Light) == false)
@@ -1011,7 +1055,10 @@ struct EmitterTarget
         float2(emissionLuminance * frame.DiffuseAlbedoLuminance * outTarget.Light.DiffuseIntegral,
                emissionLuminance * frame.SpecularAlbedoLuminance * outTarget.Light.SpecularIntegral);
     outTarget.Target = outTarget.Coefficients.x + outTarget.Coefficients.y;
-    return IsFiniteBits(outTarget.Target);
+    if (IsFiniteBits(outTarget.Target) == false)
+        return false;
+    return HasFormFactorTarget() == false ||
+           TryApproximateEmitterTarget(frame, triangle, emissionLuminance, outTarget.Target);
 }
 
 // ReferenceTargetTotal: Z-hat and whether this vertex has computed it.
@@ -1028,6 +1075,23 @@ TargetTotal MakeTargetTotal()
     return result;
 }
 
+// TryEvaluateResamplingTarget: p-hat alone for the reservoir's and Z-hat's candidates, without preparing polygons under
+// sampler version 3.
+[noinline] bool TryEvaluateResamplingTarget(ReferenceReceiverFrame frame, uint triangle, out float outTarget) {
+    outTarget = 0;
+    if (HasFormFactorTarget() == false)
+    {
+        EmitterTarget target;
+        bool isEvaluated = TryEvaluateEmitterTarget(frame, triangle, target);
+        outTarget = target.Target;
+        return isEvaluated;
+    }
+    float emissionLuminance = GetEmitterLuminanceTowards(frame, triangle);
+    if ((emissionLuminance > 0) == false)
+        return true;
+    return TryApproximateEmitterTarget(frame, triangle, emissionLuminance, outTarget);
+}
+
 // TryEnsureTargetTotal: Z-hat = (1/K) sum_k p-hat(t'_k) / p_src(t'_k) over the vertex's normalization slots.
 bool TryEnsureTargetTotal(uint pixel,
                           uint sample,
@@ -1038,7 +1102,8 @@ bool TryEnsureTargetTotal(uint pixel,
     if (inoutTotal.IsReady == true)
         return true;
     float sum = 0;
-    for (uint k = 0; k < LUDUS_REFERENCE_RIS_NORMALIZATION_CANDIDATE_COUNT; ++k)
+    uint normalizationCount = GetRisNormalizationCount();
+    for (uint k = 0; k < normalizationCount; ++k)
     {
         uint candidate;
         float pmf;
@@ -1048,12 +1113,12 @@ bool TryEnsureTargetTotal(uint pixel,
                                       candidate,
                                       pmf) == false)
             continue;
-        EmitterTarget target;
-        if (TryEvaluateEmitterTarget(frame, candidate, target) == false)
+        float target;
+        if (TryEvaluateResamplingTarget(frame, candidate, target) == false)
             return false;
-        sum += target.Target / pmf;
+        sum += target / pmf;
     }
-    float estimate = sum / float(LUDUS_REFERENCE_RIS_NORMALIZATION_CANDIDATE_COUNT);
+    float estimate = sum / float(normalizationCount);
     if (IsFiniteBits(estimate) == false)
         return false;
     inoutTotal.Value = estimate;
@@ -1082,7 +1147,7 @@ bool TryEvaluateSurrogate(uint pixel,
                                                            target.Target,
                                                            sourcePmf,
                                                            inoutTotal.Value,
-                                                           LUDUS_REFERENCE_RIS_CANDIDATE_COUNT);
+                                                           GetRisCandidateCount());
     return true;
 }
 
@@ -1102,26 +1167,27 @@ bool TryResampleEmitter(uint pixel,
     WeightedReservoir reservoir = MakeWeightedReservoir();
     uint selectedTriangle = NO_TRIANGLE;
     float selectedTarget = 0;
-    for (uint i = 0; i < LUDUS_REFERENCE_RIS_CANDIDATE_COUNT; ++i)
+    uint candidateCount = GetRisCandidateCount();
+    for (uint i = 0; i < candidateCount; ++i)
     {
         uint slot = LUDUS_REFERENCE_RIS_CANDIDATE_FIRST_SLOT + i * LUDUS_REFERENCE_RIS_SLOTS_PER_CANDIDATE;
         uint candidate;
         float pmf;
         if (TrySelectEmissiveTriangle(pixel, sample, GetBounceDimension(depth, slot), candidate, pmf) == false)
             return true;
-        EmitterTarget target;
-        if (TryEvaluateEmitterTarget(frame, candidate, target) == false)
+        float target;
+        if (TryEvaluateResamplingTarget(frame, candidate, target) == false)
             return false;
         bool isSelected;
         if (TryAddReservoirCandidate(reservoir,
-                                     target.Target / pmf,
+                                     target / pmf,
                                      RandomValue(pixel, sample, GetBounceDimension(depth, slot + 1)),
                                      isSelected) == false)
             return false;
         if (isSelected == true)
         {
             selectedTriangle = candidate;
-            selectedTarget = target.Target;
+            selectedTarget = target;
         }
     }
     if (HasReservoirSelection(reservoir) == false)
@@ -1378,7 +1444,7 @@ PathSample TracePath(uint pixel, uint sample)
     float3 previousPositionWorld = 0;
     float previousPdf = 0;
     uint lights = GetLightCount();
-    // ResampledProjectedSolidAngle keeps the previous vertex's receiver and Z-hat for the BSDF-hit density.
+    // The resampled modes keep the previous vertex's receiver and Z-hat for the BSDF-hit density.
     bool isResampled = IsResampled();
     float emissiveCategoryProbability = GetEmissiveCategoryProbability(lights);
     ReferenceReceiverFrame previousFrame = (ReferenceReceiverFrame)0;

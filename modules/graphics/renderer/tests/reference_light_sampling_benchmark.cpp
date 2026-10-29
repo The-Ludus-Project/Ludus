@@ -23,16 +23,17 @@
 #include <cstring>
 
 // The opt-in [.reference-light-sampling-benchmark]: acceptance item 5 of
-// docs/architecture/many-area-light-sampling-reference-review.md. RT1's ResampledProjectedSolidAngle and UniformArea
-// modes render the ris-projected-solid-angle template's 40 x 40 emitter field (render_graph_ray_tests.cpp,
-// EmitterFieldRoom): the Cornell room lit by 3200 small one-sided emissive triangles whose power spans a factor of 64,
-// here with one tint's emitters multiplied by an emission map. Error is measured against a high-sample UniformArea
-// image with an independent seed, as MAPE (Ishaan Shah, Aakash KT and P. J. Narayanan, "Combining Resampled Importance
-// and Projected Solid Angle Samplings for Many Area Light Rendering", SIGGRAPH Asia 2023 Technical Communications,
-// section 5, https://doi.org/10.1145/3610543.3626165, with the template benchmark's 0.01 guard) and RMSE of the linear
-// Direct + Indirect AOVs. Primary emission is left out: both modes evaluate it identically from unchanged random
-// dimensions. Equal time compares the GPU-compute transport kernel's device time per sample. Recorded results: the
-// review's "RT1 equal-time evaluation" and docs/architecture/renderer-systems.md, "Light-sampling modes".
+// docs/architecture/many-area-light-sampling-reference-review.md. RT1's UniformArea, ResampledProjectedSolidAngle and
+// ResampledFormFactor modes render the ris-projected-solid-angle template's 40 x 40 emitter field
+// (render_graph_ray_tests.cpp, EmitterFieldRoom): the Cornell room lit by 3200 small one-sided emissive triangles whose
+// power spans a factor of 64, here with one tint's emitters multiplied by an emission map. Error is measured against a
+// high-sample UniformArea image with an independent seed, as MAPE (Ishaan Shah, Aakash KT and P. J. Narayanan,
+// "Combining Resampled Importance and Projected Solid Angle Samplings for Many Area Light Rendering", SIGGRAPH Asia
+// 2023 Technical Communications, section 5, https://doi.org/10.1145/3610543.3626165, with the template benchmark's 0.01
+// guard) and RMSE of the linear Direct + Indirect AOVs. Primary emission is left out: both modes evaluate it
+// identically from unchanged random dimensions. Equal time compares the GPU-compute transport kernel's device time per
+// sample. Recorded results: the review's "RT1 equal-time evaluation" and docs/architecture/renderer-systems.md,
+// "Light-sampling modes".
 namespace
 {
 using namespace ludus::foundation;
@@ -106,7 +107,10 @@ constexpr usize SAMPLE_BUDGET_COUNT = 3;
 constexpr StaticArray<uint32, SAMPLE_BUDGET_COUNT> SAMPLE_BUDGETS{{4, 16, 64}};
 constexpr usize CPU_SAMPLE_BUDGET_COUNT = 2;
 constexpr StaticArray<uint32, CPU_SAMPLE_BUDGET_COUNT> CPU_SAMPLE_BUDGETS{{4, 16}};
-constexpr usize MAXIMUM_CHECKPOINTS = SAMPLE_BUDGET_COUNT * 2;
+/// The resampled modes measured against UniformArea.
+constexpr usize RESAMPLED_MODE_COUNT = 2;
+/// UniformArea is read at each budget's equal samples and at each resampled mode's equal time.
+constexpr usize MAXIMUM_CHECKPOINTS = SAMPLE_BUDGET_COUNT * (1 + RESAMPLED_MODE_COUNT);
 /// Guards MAPE's relative error against black reference channels, as in the template benchmark.
 constexpr float64 PERCENTAGE_GUARD = .01;
 /// The ordered graph scopes each pass by name; see rhi::GpuPassTimings and ludus_reference_benchmark.
@@ -489,7 +493,9 @@ QueryCost MeasureQueries(const rr::ReferenceCaptureInfo& info)
 
 const char* GetModeName(rr::ReferenceLightSampling mode)
 {
-    return mode == rr::ReferenceLightSampling::UniformArea ? "UniformArea" : "ResampledProjectedSolidAngle";
+    return mode == rr::ReferenceLightSampling::UniformArea                    ? "UniformArea"
+           : mode == rr::ReferenceLightSampling::ResampledProjectedSolidAngle ? "ResampledProjectedSolidAngle"
+                                                                              : "ResampledFormFactor";
 }
 
 bool StartTimedComputeDevice(rhi::DeviceHandle& outDevice, rhi::SurfaceHandle& outSurface)
@@ -581,18 +587,25 @@ TEST_CASE("Measure RT1 resampled and uniform-area light sampling error at equal 
             REQUIRE(prepared == S::Ready);
             rr::ReferenceCaptureDescription capture = MakeFieldCapture({GPU_WIDTH, GPU_HEIGHT}, test.MaxDepth);
             capture.Seed = MEASURED_SEED;
-            // Timing rounds in uniform, resampled, resampled, uniform order, so drift in machine load or clocks affects
-            // both modes alike; each mode's cost is the mean of its two rounds' median dispatch times.
+            // Timing rounds run UniformArea, each resampled mode, then the resampled modes in reverse and UniformArea
+            // again, so drift in machine load or clocks affects every mode alike; each mode's cost is the mean of its
+            // two rounds' median dispatch times.
             constexpr usize UNIFORM = 0;
-            constexpr usize RESAMPLED = 1;
-            constexpr usize MODE_COUNT = 2;
+            constexpr usize MODE_COUNT = 1 + RESAMPLED_MODE_COUNT;
             constexpr StaticArray<rr::ReferenceLightSampling, MODE_COUNT> MODES{
-                {rr::ReferenceLightSampling::UniformArea, rr::ReferenceLightSampling::ResampledProjectedSolidAngle}};
-            constexpr usize ROUND_COUNT = 4;
-            constexpr StaticArray<usize, ROUND_COUNT> ROUND_ORDER{{UNIFORM, RESAMPLED, RESAMPLED, UNIFORM}};
+                {rr::ReferenceLightSampling::UniformArea,
+                 rr::ReferenceLightSampling::ResampledProjectedSolidAngle,
+                 rr::ReferenceLightSampling::ResampledFormFactor}};
+            constexpr usize ROUND_COUNT = 2 * MODE_COUNT;
+            StaticArray<usize, ROUND_COUNT> roundOrder{};
+            for (usize mode = 0; mode < MODE_COUNT; ++mode)
+            {
+                roundOrder[mode] = mode;
+                roundOrder[ROUND_COUNT - 1 - mode] = mode;
+            }
             StaticArray<float64, MODE_COUNT> sampleMilliseconds{};
             StaticArray<QueryCost, MODE_COUNT> queries{};
-            for (const usize mode : ROUND_ORDER)
+            for (const usize mode : roundOrder)
             {
                 capture.LightSampling = MODES[mode];
                 Checkpoints round;
@@ -613,27 +626,25 @@ TEST_CASE("Measure RT1 resampled and uniform-area light sampling error at equal 
                                << queries[mode].ClosestRaysPerPixel);
             }
             const Array<rr::ReferencePixel> reference = RenderReference(session, device, surface, capture);
-            // Resampled at each budget; UniformArea at the same samples, then at the same transport kernel time.
-            Checkpoints resampled;
+            // UniformArea at each budget's samples, then at each resampled mode's transport kernel time.
             Checkpoints uniform;
-            StaticArray<uint32, SAMPLE_BUDGET_COUNT> equalTimeSamples{};
+            StaticArray<StaticArray<uint32, SAMPLE_BUDGET_COUNT>, MODE_COUNT> equalTimeSamples{};
             for (usize budget = 0; budget < SAMPLE_BUDGET_COUNT; ++budget)
             {
-                resampled.Targets[budget] = SAMPLE_BUDGETS[budget];
-                const float64 samples = static_cast<float64>(SAMPLE_BUDGETS[budget]) * sampleMilliseconds[RESAMPLED] /
-                                        sampleMilliseconds[UNIFORM];
-                equalTimeSamples[budget] =
-                    math::Max(static_cast<uint32>(math::Floor(samples + ROUNDING_OFFSET)), uint32{1});
                 uniform.Targets[budget] = SAMPLE_BUDGETS[budget];
-                uniform.Targets[SAMPLE_BUDGET_COUNT + budget] = equalTimeSamples[budget];
+                for (usize mode = 1; mode < MODE_COUNT; ++mode)
+                {
+                    const float64 samples = static_cast<float64>(SAMPLE_BUDGETS[budget]) * sampleMilliseconds[mode] /
+                                            sampleMilliseconds[UNIFORM];
+                    equalTimeSamples[mode][budget] =
+                        math::Max(static_cast<uint32>(math::Floor(samples + ROUNDING_OFFSET)), uint32{1});
+                    uniform.Targets[SAMPLE_BUDGET_COUNT * mode + budget] = equalTimeSamples[mode][budget];
+                }
             }
-            resampled.Count = SAMPLE_BUDGET_COUNT;
-            uniform.Count = SAMPLE_BUDGET_COUNT * 2;
+            uniform.Count = SAMPLE_BUDGET_COUNT * MODE_COUNT;
             Sort(uniform.Targets.GetData(), uniform.Count, [](uint32 left, uint32 right) noexcept {
                 return left < right;
             });
-            capture.LightSampling = rr::ReferenceLightSampling::ResampledProjectedSolidAngle;
-            RenderCheckpoints(session, device, surface, capture, resampled);
             capture.LightSampling = rr::ReferenceLightSampling::UniformArea;
             RenderCheckpoints(session, device, surface, capture, uniform);
             const auto findUniform = [&uniform](uint32 samples) {
@@ -653,24 +664,41 @@ TEST_CASE("Measure RT1 resampled and uniform-area light sampling error at equal 
                            << referenceMean.MeanLuminance);
             for (usize budget = 0; budget < SAMPLE_BUDGET_COUNT; ++budget)
             {
-                const ImageError resampledError = ComputeTransportError(resampled.Images[budget], reference);
                 const usize equalSamplesIndex = findUniform(SAMPLE_BUDGETS[budget]);
-                const usize equalTimeIndex = findUniform(equalTimeSamples[budget]);
                 const ImageError equalSamples = ComputeTransportError(uniform.Images[equalSamplesIndex], reference);
-                const ImageError equalTime = ComputeTransportError(uniform.Images[equalTimeIndex], reference);
-                const QueryCost resampledQueries = MeasureQueries(resampled.Infos[budget]);
                 const QueryCost uniformQueries = MeasureQueries(uniform.Infos[equalSamplesIndex]);
-                WARN(test.Name << ", ResampledProjectedSolidAngle at " << SAMPLE_BUDGETS[budget] << " samples ("
-                               << static_cast<float64>(SAMPLE_BUDGETS[budget]) * sampleMilliseconds[RESAMPLED]
-                               << " ms of kernel time): MAPE " << resampledError.MeanAbsolutePercentage << ", RMSE "
-                               << resampledError.RootMeanSquare << ", mean luminance " << resampledError.MeanLuminance
-                               << ", shadow rays per pixel " << resampledQueries.ShadowRaysPerPixel
-                               << "; UniformArea at equal samples: MAPE " << equalSamples.MeanAbsolutePercentage
-                               << ", RMSE " << equalSamples.RootMeanSquare << ", mean luminance "
-                               << equalSamples.MeanLuminance << ", shadow rays per pixel "
-                               << uniformQueries.ShadowRaysPerPixel << "; at equal time (" << equalTimeSamples[budget]
-                               << " samples): MAPE " << equalTime.MeanAbsolutePercentage << ", RMSE "
-                               << equalTime.RootMeanSquare << ", mean luminance " << equalTime.MeanLuminance);
+                WARN(test.Name << ", UniformArea at " << SAMPLE_BUDGETS[budget] << " samples: MAPE "
+                               << equalSamples.MeanAbsolutePercentage << ", RMSE " << equalSamples.RootMeanSquare
+                               << ", mean luminance " << equalSamples.MeanLuminance << ", shadow rays per pixel "
+                               << uniformQueries.ShadowRaysPerPixel);
+            }
+            for (usize mode = 1; mode < MODE_COUNT; ++mode)
+            {
+                Checkpoints resampled;
+                for (usize budget = 0; budget < SAMPLE_BUDGET_COUNT; ++budget)
+                {
+                    resampled.Targets[budget] = SAMPLE_BUDGETS[budget];
+                }
+                resampled.Count = SAMPLE_BUDGET_COUNT;
+                capture.LightSampling = MODES[mode];
+                RenderCheckpoints(session, device, surface, capture, resampled);
+                for (usize budget = 0; budget < SAMPLE_BUDGET_COUNT; ++budget)
+                {
+                    const ImageError resampledError = ComputeTransportError(resampled.Images[budget], reference);
+                    const ImageError equalTime =
+                        ComputeTransportError(uniform.Images[findUniform(equalTimeSamples[mode][budget])], reference);
+                    const QueryCost resampledQueries = MeasureQueries(resampled.Infos[budget]);
+                    WARN(test.Name << ", " << GetModeName(MODES[mode]) << " at " << SAMPLE_BUDGETS[budget]
+                                   << " samples ("
+                                   << static_cast<float64>(SAMPLE_BUDGETS[budget]) * sampleMilliseconds[mode]
+                                   << " ms of kernel time): MAPE " << resampledError.MeanAbsolutePercentage << ", RMSE "
+                                   << resampledError.RootMeanSquare << ", mean luminance "
+                                   << resampledError.MeanLuminance << ", shadow rays per pixel "
+                                   << resampledQueries.ShadowRaysPerPixel << "; UniformArea at equal time ("
+                                   << equalTimeSamples[mode][budget] << " samples): MAPE "
+                                   << equalTime.MeanAbsolutePercentage << ", RMSE " << equalTime.RootMeanSquare
+                                   << ", mean luminance " << equalTime.MeanLuminance);
+                }
             }
             static_cast<void>(session.Renderer.Release(session.Snapshot));
         }
@@ -721,8 +749,9 @@ TEST_CASE("Measure RT1 resampled and uniform-area light sampling error on the CP
             FieldSession cpu;
             REQUIRE(PrepareFieldSession(device, rr::ReferenceTraversal::CpuOracle, SurfaceFinish::Diffuse, cpu) ==
                     S::Ready);
-            for (const rr::ReferenceLightSampling mode :
-                 {rr::ReferenceLightSampling::UniformArea, rr::ReferenceLightSampling::ResampledProjectedSolidAngle})
+            for (const rr::ReferenceLightSampling mode : {rr::ReferenceLightSampling::UniformArea,
+                                                          rr::ReferenceLightSampling::ResampledProjectedSolidAngle,
+                                                          rr::ReferenceLightSampling::ResampledFormFactor})
             {
                 capture.LightSampling = mode;
                 Checkpoints images;

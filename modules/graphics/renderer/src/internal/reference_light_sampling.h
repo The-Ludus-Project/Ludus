@@ -1,10 +1,12 @@
 #pragma once
 
-// RT1's ReferenceLightSampling::ResampledProjectedSolidAngle next-event estimator for emissive triangles (sampler
-// version 2). reference_path.cpp calls it for the emissive category of the uniform light draw and for the BSDF-hit
-// MIS density; renderer_reference.slang ports every function below with the same addressed dimensions. The estimator
-// and its decisions are docs/architecture/many-area-light-sampling-reference-review.md ("Proposed estimator",
-// "Decision: BSDF-hit MIS", "RT1 profile split and identity"); the ris-projected-solid-angle render graph template
+// RT1's resampled next-event estimator for emissive triangles: ReferenceLightSampling::ResampledProjectedSolidAngle
+// (sampler version 2) and ResampledFormFactor (sampler version 3), which differ only in how the RIS target evaluates
+// E_0 and E_1 and in their frozen candidate counts. reference_path.cpp calls it for the emissive category of the
+// uniform light draw and for the BSDF-hit MIS density; renderer_reference.slang ports every function below with the
+// same addressed dimensions. The estimator and its decisions are
+// docs/architecture/many-area-light-sampling-reference-review.md ("Proposed estimator", "Decision: BSDF-hit MIS", "RT1
+// profile split and identity"); the ris-projected-solid-angle render graph template
 // (render_graphs/ris_projected_solid_angle/main_shaders) implements the same estimator for one bounce.
 //
 // Thanks to Ishaan Shah, Aakash KT and P. J. Narayanan, "Combining Resampled Importance and Projected Solid Angle
@@ -19,6 +21,10 @@
 // to BT.709 luminance, one scalar weight per technique, where Peters weights each color channel.
 // Thanks to Chris Wyman, "Weighted Reservoir Sampling: Randomly Sampling Streams", Ray Tracing Gems II, chapter 22,
 // 2021, for the single-sample streaming update, used through FoundationMath's weighted_reservoir.hpp.
+// Thanks to Stephen Hill and Eric Heitz, "Real-Time Area Lighting: a Journey from Research to Production", SIGGRAPH
+// 2016 Advances in Real-Time Rendering course, https://advances.realtimerendering.com/s2016/, slides 77 and 90-102:
+// sampler version 3's target evaluates their vector form factor and clipped proxy sphere (FoundationMath's
+// TryApproximateClampedCosinePolygonIntegral) instead of clipped polygon integrals, as Shah et al. do for speed.
 
 #include <ludus/foundation/base/core.h>
 
@@ -40,6 +46,10 @@ struct ReferenceJob;
 inline constexpr foundation::float32 REFERENCE_LIGHT_TECHNIQUE_VISIBILITY = 0.5F;
 /// Light techniques of one resampled emitter: the diffuse projected-solid-angle sample and the specular LTC sample.
 inline constexpr foundation::usize REFERENCE_LIGHT_TECHNIQUE_COUNT = 2;
+/// Sampler version 3's approximate E_0 is at least this fraction of the unit-direction triple product, a positive proxy
+/// of the triangle's unclipped solid angle, whenever a vertex lies above the horizon: Hill and Heitz's proxy sphere can
+/// lie below the horizon while part of the triangle is above it, and the RIS support invariant needs p-hat > 0 there.
+inline constexpr foundation::float32 REFERENCE_APPROXIMATE_TARGET_DEFENSIVE_FRACTION = 0.015625F;
 
 /// The receiver's shading frame (+z the unit shading normal) and its two light techniques. They guide sampling and
 /// weights only; the BSDF is always evaluated exactly. A path stores the previous vertex's frame so that the BSDF-hit
@@ -134,6 +144,18 @@ struct ReferenceResampledLight final
                                                     foundation::math::Vector3 position2World,
                                                     ReferenceTriangleLight& outLight) noexcept;
 
+/// Sampler version 3's approximate (E_0, E_1) without clipping or preparing either polygon: Hill and Heitz's clipped
+/// proxy-sphere form factor of the triangle and of its transform by the specular LTC (zero without one). E_0 is zero
+/// when no vertex lies above the horizon and otherwise at least REFERENCE_APPROXIMATE_TARGET_DEFENSIVE_FRACTION of the
+/// unit-direction triple product, so it is positive wherever the exact E_0 is.
+/// @return False for a nonfinite vertex in the shading frame or after the LTC transform, leaving outIntegrals
+/// unchanged.
+[[nodiscard]] bool TryApproximateReferenceTriangleIntegrals(const ReferenceReceiverFrame& frame,
+                                                            foundation::math::Vector3 position0World,
+                                                            foundation::math::Vector3 position1World,
+                                                            foundation::math::Vector3 position2World,
+                                                            foundation::math::Vector2& outIntegrals) noexcept;
+
 /// The two techniques' solid-angle densities (p_0, p_1) for a unit world direction through the triangle; zero for a
 /// technique that cannot sample it. No containment test is performed.
 [[nodiscard]] foundation::math::Vector2
@@ -170,10 +192,10 @@ EvaluateReferenceLightTechniqueDensities(const ReferenceReceiverFrame& frame,
                                                       foundation::float32& outDistanceWorld,
                                                       foundation::math::Vector2& outBarycentric) noexcept;
 
-/// Resample one emitter at the receiver of vertex `depth` and draw one sample per light technique. Reads candidate
-/// slots 12-75, LTC slots 8-9, diffuse slots 1-2 and, through the surrogate density, normalization slots 76-83 of
-/// that vertex. emissiveCategoryProbability is P_E, the uniform category draw's emitter share. inoutTargetTotal caches
-/// Z-hat for the vertex's BSDF-hit density.
+/// Resample one emitter at the receiver of vertex `depth` and draw one sample per light technique, under the job's
+/// resampled light-sampling mode. Reads the mode's candidate slots (from 12), LTC slots 8-9, diffuse slots 1-2 and,
+/// through the surrogate density, its normalization slots (from 76) of that vertex. emissiveCategoryProbability is P_E,
+/// the uniform category draw's emitter share. inoutTargetTotal caches Z-hat for the vertex's BSDF-hit density.
 /// @return Ready, with outLight written (possibly without a selection); InvalidDescription for a nonfinite target,
 /// reservoir or Z-hat evaluation, leaving outLight unchanged.
 [[nodiscard]] rhi::RasterStatus SampleReferenceResampledLight(const ReferenceJob& job,

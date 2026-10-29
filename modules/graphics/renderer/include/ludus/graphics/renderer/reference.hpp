@@ -86,6 +86,14 @@ enum class ReferenceLightSampling : ludus::foundation::uint8
     /// the target's total. Requires the renderer's LTC table; GpuCompute kernels without it
     /// are rejected when reference rendering is enabled.
     ResampledProjectedSolidAngle,
+    /// Sampler version 3: ResampledProjectedSolidAngle with a cheaper target, Hill and
+    /// Heitz's approximate horizon-clipped form factors of the triangle and of its LTC
+    /// transform instead of clipped polygon integrals, kept positive wherever the triangle
+    /// has area above the horizon. It estimates the same integral with different variance
+    /// and cost, and has its own frozen candidate counts. The selected emitter's samples,
+    /// densities and MIS weights are those of ResampledProjectedSolidAngle. Same LTC table
+    /// requirement and random layout.
+    ResampledFormFactor,
 };
 /// Opt-in retained CPU geometry and native query setup; call before creating meshes.
 /// Buffers are admitted against explicit budgets, rather than silently truncating
@@ -101,7 +109,8 @@ struct ReferenceRenderingOptions final
     ludus::foundation::usize RayByteBudget = 0;
     /// At most this many pixels advance in one tile; positive and at most 2048.
     /// Native mode also requires twice this count within RayCapabilities::MaxRays, and a
-    /// ResampledProjectedSolidAngle capture three times it (two shadow rays per vertex);
+    /// ResampledProjectedSolidAngle or ResampledFormFactor capture three times it (two
+    /// shadow rays per vertex);
     /// a capture whose count exceeds MaxRays is rejected as Unsupported.
     /// GpuCompute advances every pixel by one sample per dispatch and ignores the value.
     ludus::foundation::uint32 TilePixels = 0;
@@ -242,7 +251,8 @@ struct ReferenceCaptureInfo final
     /// weighted area samples; earlier surface-map/range semantics are preserved.
     ludus::foundation::uint32 ProfileVersion = LIGHTING_PROFILE_VERSION;
     /// Frozen Philox address and dimension convention version: 1 for UniformArea (8
-    /// dimensions per bounce), 2 for ResampledProjectedSolidAngle (128 per bounce).
+    /// dimensions per bounce), 2 for ResampledProjectedSolidAngle and 3 for
+    /// ResampledFormFactor (128 per bounce).
     ludus::foundation::uint32 SamplerVersion = 1;
     /// The capture's emissive-triangle next-event estimator.
     ReferenceLightSampling LightSampling = ReferenceLightSampling::UniformArea;

@@ -4,21 +4,24 @@
 // renderer_reference.slang. The packed scene and Parameters block reuse the GPU
 // preview layout (renderer_gpu_preview_layout.h); strides count 16-byte words.
 // Update the kernel version when changing anything below.
-#define LUDUS_REFERENCE_KERNEL_VERSION 3
+#define LUDUS_REFERENCE_KERNEL_VERSION 4
 
 #define LUDUS_REFERENCE_PARAMETERS_BINDING 0
 #define LUDUS_REFERENCE_SCENE_BINDING 1
 #define LUDUS_REFERENCE_ACCUMULATION_BINDING 2
 #define LUDUS_REFERENCE_STATUS_BINDING 3
 #define LUDUS_REFERENCE_TEXELS_BINDING 4
-// The renderer's LTC table (ltc_table_layout.h), read by ReferenceLightSampling::ResampledProjectedSolidAngle and
+// The renderer's LTC table (ltc_table_layout.h), read by both resampled ReferenceLightSampling modes and
 // declared last: Slang numbers Metal buffers in declaration order.
 #define LUDUS_REFERENCE_LTC_TABLE_BINDING 5
 #define LUDUS_REFERENCE_BINDING_COUNT 6
 
 // Parameters Sampling.z flag selecting ReferenceLightSampling::ResampledProjectedSolidAngle; the low bits keep the
-// camera and opacity flags of renderer_gpu_preview_layout.h.
+// camera and opacity flags of renderer_gpu_preview_layout.h. ResampledFormFactor sets both flags.
 #define LUDUS_REFERENCE_RESAMPLED_LIGHT_FLAG 64
+// With LUDUS_REFERENCE_RESAMPLED_LIGHT_FLAG: ReferenceLightSampling::ResampledFormFactor (sampler version 3), whose
+// target approximates both integrals with Hill and Heitz's clipped form factor.
+#define LUDUS_REFERENCE_FORM_FACTOR_TARGET_FLAG 128
 
 // Sampler version 2 bounce slots (docs/architecture/many-area-light-sampling-reference-review.md, "Random layout,
 // sampler version 2"). Slots 0-7 keep their version-1 meanings, with slots 1-2 also holding the diffuse
@@ -31,6 +34,11 @@
 #define LUDUS_REFERENCE_RIS_CANDIDATE_COUNT 32
 #define LUDUS_REFERENCE_RIS_NORMALIZATION_FIRST_SLOT 76
 #define LUDUS_REFERENCE_RIS_NORMALIZATION_CANDIDATE_COUNT 8
+// Sampler version 3 keeps version 2's slots and has frozen counts of its own, at most version 2's, so candidate i and
+// normalization candidate k read the same slots as in version 2. The review's "Approximate target measurements" chose
+// them; they equal version 2's because fewer candidates cost RT1 more error than they saved time.
+#define LUDUS_REFERENCE_FORM_FACTOR_RIS_CANDIDATE_COUNT 32
+#define LUDUS_REFERENCE_FORM_FACTOR_RIS_NORMALIZATION_CANDIDATE_COUNT 8
 
 // Accumulation holds every pixel's committed sums first, then their compensation
 // terms. Sum word 0 is emission plus the committed sample count, word 1 direct plus

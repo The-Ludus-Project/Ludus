@@ -49,6 +49,8 @@ constexpr float32 ARITHMETIC_TOLERANCE = 1e-5F;
 constexpr float32 GEOMETRY_TOLERANCE = 1e-3F;
 // Technique integrals below this are slivers whose FP32 clipping and integration differ between implementations.
 constexpr float32 SLIVER_INTEGRAL = 1e-5F;
+// Absolute agreement of the approximate integrals, whose vector form factor sums edge terms that can cancel.
+constexpr float32 APPROXIMATION_TOLERANCE = 1e-5F;
 
 template <typename Handle>
 void WaitReady(rhi::DeviceHandle device, Handle handle)
@@ -224,6 +226,7 @@ TEST_CASE("GPU-compute resampled light pieces match the CPU oracle's",
     usize zeroTotalCount = 0;
     usize preparedCount = 0;
     usize geometryMismatchCount = 0;
+    usize approximationMismatchCount = 0;
     usize diffuseResolvedCount = 0;
     usize specularResolvedCount = 0;
     usize sampledCount = 0;
@@ -303,11 +306,29 @@ TEST_CASE("GPU-compute resampled light pieces match the CPU oracle's",
         CHECK((polygon.Words[0] == 1) == isPrepared);
         CHECK((density.Words[1] == 1) == frame.HasSpecular);
         CHECK(IsNear(polygon.GetFloat(3), frame.DiffuseAlbedoLuminance, ARITHMETIC_TOLERANCE));
+        // Sampler version 3's target: the same approximation, positive wherever the exact diffuse integral is.
+        const ParityRecord approximate = ReadRecord(bytes, invocation, LUDUS_REFERENCE_LIGHT_PARITY_APPROXIMATE_RECORD);
+        math::Vector2 hostApproximate{};
+        const bool isApproximated = internal::TryApproximateReferenceTriangleIntegrals(frame,
+                                                                                       vertices[0],
+                                                                                       vertices[1],
+                                                                                       vertices[2],
+                                                                                       hostApproximate);
+        CHECK((approximate.GetFloat(0) == 1) == isApproximated);
+        const bool isApproximationNear = math::Abs(approximate.GetFloat(1) - hostApproximate.X) <=
+                                             APPROXIMATION_TOLERANCE + GEOMETRY_TOLERANCE * hostApproximate.X &&
+                                         math::Abs(approximate.GetFloat(2) - hostApproximate.Y) <=
+                                             APPROXIMATION_TOLERANCE + GEOMETRY_TOLERANCE * hostApproximate.Y;
+        approximationMismatchCount += isApproximationNear == true ? 0U : 1U;
         if (isPrepared == false)
         {
             continue;
         }
         ++preparedCount;
+        if (light.DiffuseIntegral > 0)
+        {
+            CHECK(approximate.GetFloat(1) > 0);
+        }
         const ParityRecord direction = ReadRecord(bytes, invocation, LUDUS_REFERENCE_LIGHT_PARITY_DIRECTION_RECORD);
         const math::Vector3 directionWorld = ReadVector(direction);
         const math::Vector2 hostDensities =
@@ -353,6 +374,7 @@ TEST_CASE("GPU-compute resampled light pieces match the CPU oracle's",
     CHECK(preparedCount > INVOCATION_COUNT / 2);
     // Apple M5 Metal: 3 of 4096. Clipping at a vertex near the horizon can amplify an ulp of difference.
     CHECK(geometryMismatchCount <= preparedCount / 500);
+    CHECK(approximationMismatchCount <= preparedCount / 500);
     CHECK(diffuseResolvedCount > preparedCount / 2);
     CHECK(specularResolvedCount > preparedCount / 4);
     // A sample of the triangle's own solid angle meets its plane inside it, except at FP32 edges and for LTC sliver

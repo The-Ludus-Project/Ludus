@@ -197,7 +197,7 @@
       "id": "RIS_CANDIDATE_COUNT",
       "label": "RIS candidates M per receiver (power-CDF draws)",
       "type": "UInt32",
-      "value": 32,
+      "value": 8,
       "minimum": 1,
       "maximum": 32
     },
@@ -205,9 +205,17 @@
       "id": "RIS_NORMALIZATION_CANDIDATE_COUNT",
       "label": "Normalization candidates K for the BSDF-hit MIS density",
       "type": "UInt32",
-      "value": 8,
+      "value": 4,
       "minimum": 1,
       "maximum": 16
+    },
+    {
+      "id": "RIS_TARGET",
+      "label": "RIS target integrals (0 exact clipped polygons, 1 approximate form factor)",
+      "type": "UInt32",
+      "value": 1,
+      "minimum": 0,
+      "maximum": 1
     },
     {
       "id": "PROJECTED_SOLID_ANGLE_MIS_VISIBILITY",

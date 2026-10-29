@@ -665,8 +665,9 @@ class RisProjectedSolidAngleTemplateTests(unittest.TestCase):
                           ('ShadeLightSampling', 'ShadeLightSampling'), ('ShadeBsdfSampling', 'ShadeBsdfSampling')])
         values = {setting['id']: (setting['type'], setting['value'], setting['minimum'], setting['maximum'])
                   for setting in manifest['settings']}
-        self.assertEqual(values, {'RIS_CANDIDATE_COUNT': ('UInt32', 32, 1, 32),
-                                  'RIS_NORMALIZATION_CANDIDATE_COUNT': ('UInt32', 8, 1, 16),
+        self.assertEqual(values, {'RIS_CANDIDATE_COUNT': ('UInt32', 8, 1, 32),
+                                  'RIS_NORMALIZATION_CANDIDATE_COUNT': ('UInt32', 4, 1, 16),
+                                  'RIS_TARGET': ('UInt32', 1, 0, 1),
                                   'PROJECTED_SOLID_ANGLE_MIS_VISIBILITY': ('Float32', 0.5, 0, 1)})
 
     def test_shaders_use_the_shared_primitives_and_credit_their_sources(self):
@@ -685,8 +686,12 @@ class RisProjectedSolidAngleTemplateTests(unittest.TestCase):
                      'TryComputeReservoirContributionWeight'):
             self.assertIn(call, resampled)
         for call in ('LookupSpecularLtc', 'ComputeSpecularLtcAlbedo', 'TryMakeLinearlyTransformedCosine',
-                     'TryPrepareProjectedSolidAnglePolygon', 'TryPrepareLinearlyTransformedCosinePolygon'):
+                     'TryPrepareProjectedSolidAnglePolygon', 'TryPrepareLinearlyTransformedCosinePolygon',
+                     'TryApproximateClampedCosinePolygonIntegral',
+                     'TryApproximateLinearlyTransformedCosinePolygonIntegral'):
             self.assertIn(call, light)
+        for name in ('Hill', 'Heitz', 'advances.realtimerendering.com/s2016'):
+            self.assertIn(name, light)
         # The helpers come from the wrapper, never from copies inside the package.
         self.assertEqual(sorted(path.name for path in shaders.iterdir()),
                          ['color.slang', 'depth.slang', 'geometry.slang', 'hit_record.slang', 'primary.slang',

@@ -369,6 +369,7 @@ TEST_CASE("RIS projected-solid-angle MIS weights partition unity and handle Z-ha
     }
     usize zeroNormalizationCount = 0;
     usize receiverSampleCount = 0;
+    usize positiveTargetCount = 0;
     usize emptyClipSampleCount = 0;
     for (usize invocation = 0; invocation < INVOCATION_COUNT; ++invocation)
     {
@@ -451,7 +452,20 @@ TEST_CASE("RIS projected-solid-angle MIS weights partition unity and handle Z-ha
             CHECK(receiverSum == 0);
         }
         receiverSampleCount += receiver.Words[3] == 1 ? 1 : 0;
+        // RIS_TARGET_FORM_FACTOR's integrals are positive wherever the exact diffuse integral is (the support
+        // invariant), and lie in [0, 1].
+        const WeightRecord integrals = ReadRecord(bytes, invocation, LUDUS_RIS_WEIGHTS_TARGET_RECORD);
+        CHECK(integrals.GetFloat(1) >= 0);
+        CHECK(integrals.GetFloat(1) <= 1);
+        CHECK(integrals.GetFloat(3) >= 0);
+        CHECK(integrals.GetFloat(3) <= 1);
+        if (integrals.GetFloat(0) > 0)
+        {
+            CHECK(integrals.GetFloat(1) > 0);
+            ++positiveTargetCount;
+        }
     }
+    CHECK(positiveTargetCount > INVOCATION_COUNT / 4);
     // Every branch was exercised: Z-hat = 0 with a positive target, empty clips and sampled receivers.
     CHECK(zeroNormalizationCount > INVOCATION_COUNT / 4);
     CHECK(emptyClipSampleCount == INVOCATION_COUNT);

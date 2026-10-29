@@ -12,6 +12,7 @@
 //   5: empty LTC clip: (prepared ? 1 : 0, E_0, E_1, p_1 at the diffuse sample)
 //   6: empty LTC clip weights: (w_0, w_1, diffuse sampled ? 1 : 0, p_0 at the diffuse sample)
 //   7: receiver chain: (w_0 + w_1, p_0, p_1, technique sampled ? 1 : 0) for a drawn receiver, LTC and triangle
+//   8: the same triangle's exact and approximate target integrals: (E_0, approximate E_0, E_1, approximate E_1)
 // The clipped-receivers kernel draws a receiver viewed from below the horizon of its shading normal +z, which Peters
 // 2021, section 6.1 clips towards the view, and a triangle, and writes LUDUS_RIS_CLIPPED_RECORDS_PER_INVOCATION
 // records:
@@ -25,7 +26,7 @@
 //   7: (sampled world direction xyz, MIS visibility v)
 // In both kernels slot 0 holds the results; the renderer's LTC table is bound read-only at this slot.
 #define LUDUS_RIS_WEIGHTS_LTC_TABLE_BINDING 1
-#define LUDUS_RIS_WEIGHTS_RECORDS_PER_INVOCATION 8
+#define LUDUS_RIS_WEIGHTS_RECORDS_PER_INVOCATION 9
 #define LUDUS_RIS_WEIGHTS_GROUP_SIZE 64
 #define LUDUS_RIS_WEIGHTS_CLAMPED_RECORD 0
 #define LUDUS_RIS_WEIGHTS_CLAMPED_INPUT_RECORD 1
@@ -35,6 +36,7 @@
 #define LUDUS_RIS_WEIGHTS_EMPTY_CLIP_RECORD 5
 #define LUDUS_RIS_WEIGHTS_EMPTY_CLIP_WEIGHT_RECORD 6
 #define LUDUS_RIS_WEIGHTS_RECEIVER_RECORD 7
+#define LUDUS_RIS_WEIGHTS_TARGET_RECORD 8
 #define LUDUS_RIS_CLIPPED_RECORDS_PER_INVOCATION 8
 #define LUDUS_RIS_CLIPPED_VIEW_RECORD 0
 #define LUDUS_RIS_CLIPPED_MATERIAL_RECORD 1
