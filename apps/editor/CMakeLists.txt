@@ -987,6 +987,11 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         "LUDUS_EDITOR_TEST_SPIRV_VALIDATOR=\"${LUDUS_SPIRV_VALIDATOR}\"")
     target_compile_definitions(ludus_editor_tests PRIVATE
         "LUDUS_EDITOR_SDK_MANIFEST=\"${PROJECT_BINARY_DIR}/cmake/LudusSdkManifest.json\"")
+    # Substitute SDKs in the render-graph build tests copy the installed shader-helper layout from here.
+    set(editor_test_render_graph_helper "${CMAKE_CURRENT_BINARY_DIR}/render-graph-helper/ludus_editor_tests")
+    _ludus_stage_render_graph_helpers("${editor_test_render_graph_helper}")
+    target_compile_definitions(ludus_editor_tests PRIVATE
+        "LUDUS_EDITOR_TEST_RENDER_GRAPH_HELPER=\"${editor_test_render_graph_helper}\"")
     # Controller/MainWindow sources are compiled directly into the test binary so
     # tests can drive the controller and (offscreen) widgets.
     target_sources(ludus_editor_tests PRIVATE
