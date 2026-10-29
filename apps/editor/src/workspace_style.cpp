@@ -59,16 +59,6 @@ void UpdateWorkspaceStyle(QWidget* widget)
             "QTabBar::tab:selected { background: palette(base); border-bottom-color: %1; } "
             "QTabBar::tab:hover { background: palette(button); } "
             "QToolBar { spacing: 4px; padding: 4px; border-bottom: 1px solid %4; } "
-            "QToolButton { padding: 4px; border-radius: %3px; } "
-            "QToolButton:hover, QToolButton:checked { background: palette(button); } "
-            "QPushButton { background: palette(button); color: palette(button-text); border: 1px solid palette(mid); "
-            "border-radius: %3px; padding: 5px 12px; } "
-            "QPushButton[density=compact] { padding: 2px 8px; } "
-            "QPushButton:hover:enabled { border-color: %1; } "
-            "QPushButton:pressed, QPushButton:checked { background: palette(highlight); } "
-            "QPushButton[visualRole=primary]:enabled, QPushButton:default:enabled { background: %1; color: %2; "
-            "border-color: %1; } "
-            "QPushButton:disabled { color: palette(placeholder-text); background: palette(window); } "
             "QLineEdit, QAbstractSpinBox, QComboBox { background: palette(base); color: palette(text); "
             "border: 1px solid palette(mid); border-radius: %3px; padding: 4px; } "
             "QAbstractSpinBox QLineEdit { border: none; padding: 0px; background: transparent; } "
@@ -80,9 +70,9 @@ void UpdateWorkspaceStyle(QWidget* widget)
             "QAbstractItemView::item:selected { background: palette(highlight); color: palette(highlighted-text); } "
             "QHeaderView::section { background: palette(button); color: palette(text); padding: 4px; "
             "border: none; border-bottom: 1px solid palette(mid); } "
-            "QPushButton:focus, QLineEdit:focus, QAbstractSpinBox:focus, QComboBox:focus, QAbstractItemView:focus, "
+            "QLineEdit:focus, QAbstractSpinBox:focus, QComboBox:focus, QAbstractItemView:focus, "
             "QPlainTextEdit:focus, QTextEdit:focus { border: %5px solid %1; } "
-            "QToolButton:focus, QTabBar::tab:focus { outline: %5px solid %1; } "
+            "QTabBar::tab:focus { outline: %5px solid %1; } "
             "QStatusBar { border-top: 1px solid %4; }")
             .arg(accent.name(),
                  accentText.name(),
