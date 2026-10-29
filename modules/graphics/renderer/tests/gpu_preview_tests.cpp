@@ -376,6 +376,125 @@ TEST_CASE("Interactive raster viewport updates World snapshots and camera withou
     viewport.Reset();
 }
 
+TEST_CASE("Interactive raster viewport shows a gradient backdrop only when asked",
+          "[renderer][gpu][viewport][backdrop]")
+{
+    rhi::Shutdown();
+    struct Guard
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    constexpr uint32 WIDTH = 8;
+    constexpr uint32 HEIGHT = 32;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    rhi::DeviceDescription description;
+    description.Required.PortableRaster = true;
+    const rhi::DeviceStatus started =
+        rhi::CreateDevice({}, { .Width = WIDTH, .Height = HEIGHT }, description, device, surface);
+#if defined(LUDUS_TEST_METAL)
+    if (started != rhi::DeviceStatus::Ready && rhi::GetStartup().Error == rhi::StartupError::AdapterUnavailable)
+    {
+        SKIP("No Metal adapter");
+    }
+#endif
+    REQUIRE(started == rhi::DeviceStatus::Ready);
+    rr::Renderer renderer;
+    REQUIRE(renderer.Initialize(device, shaders::renderer_flat::Vertex(), shaders::renderer_flat::Fragment()) ==
+            S::Ready);
+    REQUIRE(renderer.InitializeViews(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment()) ==
+            S::Ready);
+    REQUIRE(renderer.InitializeLighting(shaders::renderer_output::Vertex(),
+                                        shaders::renderer_output::Fragment(),
+                                        shaders::renderer_shadow::Fragment()) == S::Ready);
+    // A red quad over the middle of the screen; the rows above and below it show the background.
+    constexpr float32 QUAD_DEPTH = .5F;
+    constexpr float32 QUAD_HALF_HEIGHT = .25F;
+    const math::Vector3 positions[]{{-1, -QUAD_HALF_HEIGHT, QUAD_DEPTH},
+                                    {1, -QUAD_HALF_HEIGHT, QUAD_DEPTH},
+                                    {1, QUAD_HALF_HEIGHT, QUAD_DEPTH},
+                                    {-1, QUAD_HALF_HEIGHT, QUAD_DEPTH}};
+    const uint32 indices[]{0, 1, 2, 0, 2, 3};
+    rr::Mesh mesh;
+    REQUIRE(renderer.CreateMesh({positions, 4, indices, 6}, mesh) == S::Ready);
+    rr::SceneItem item;
+    item.Geometry = mesh;
+    item.SourceId = 1;
+    item.Material.Color = {1, 0, 0, 1};
+    rr::Snapshot world;
+    REQUIRE(renderer.CreateSnapshot(&item, 1, world) == S::Ready);
+    constexpr usize CHANNELS = 4;
+    constexpr usize IMAGE_BYTES = WIDTH * HEIGHT * CHANNELS;
+    const auto readPixel = [&](bool hasBackdrop, uint32 row, uint8(&outPixel)[CHANNELS]) {
+        rr::RasterViewport viewport;
+        REQUIRE(viewport.Initialize(renderer,
+                                    device,
+                                    WIDTH,
+                                    HEIGHT,
+                                    1,
+                                    rr::ViewportColorMode::Linear8,
+                                    false,
+                                    rr::ToneCurve::Reinhard,
+                                    hasBackdrop) == S::Ready);
+        rr::ViewDescription camera;
+        rr::ViewReport report;
+        REQUIRE(viewport.Update(world, camera, report) == S::Ready);
+        rhi::SubmissionToken producer;
+        REQUIRE(viewport.Render(surface, producer) == S::Ready);
+        rr::ViewportFrame frame;
+        rr::ViewportImage image;
+        const uint64 timeout = time::NowTicks();
+        S status = S::Pending;
+        do
+        {
+            status = viewport.Acquire(frame, image);
+        } while (status == S::Pending && time::NowTicks() - timeout < 10 * time::NANOSECONDS_PER_SECOND);
+        REQUIRE(status == S::Ready);
+        uint8 pixels[IMAGE_BYTES];
+        ReadImage(device, {image.Texture, image.Producer, WIDTH, HEIGHT, 0}, pixels, sizeof(pixels));
+        for (usize channel = 0; channel < CHANNELS; ++channel)
+        {
+            outPixel[channel] = pixels[(usize{row} * WIDTH) * CHANNELS + channel];
+        }
+        REQUIRE(viewport.Release(frame) == S::Ready);
+        viewport.Reset();
+    };
+    constexpr uint32 TOP_ROW = 0;
+    constexpr uint32 MIDDLE_ROW = HEIGHT / 2;
+    constexpr uint32 BOTTOM_ROW = HEIGHT - 1;
+    // sRGB endpoints of the surface.viewportTop and surface.viewport tokens, within the gradient's one-row slack.
+    constexpr int SLACK = 2;
+    uint8 top[CHANNELS];
+    uint8 middle[CHANNELS];
+    uint8 bottom[CHANNELS];
+    readPixel(true, TOP_ROW, top);
+    readPixel(true, MIDDLE_ROW, middle);
+    readPixel(true, BOTTOM_ROW, bottom);
+    CHECK(std::abs(static_cast<int>(top[0]) - 15) <= SLACK);
+    CHECK(std::abs(static_cast<int>(top[1]) - 21) <= SLACK);
+    CHECK(std::abs(static_cast<int>(top[2]) - 27) <= SLACK);
+    CHECK(std::abs(static_cast<int>(bottom[0]) - 9) <= SLACK);
+    CHECK(std::abs(static_cast<int>(bottom[1]) - 12) <= SLACK);
+    CHECK(std::abs(static_cast<int>(bottom[2]) - 15) <= SLACK);
+    CHECK(top[2] > bottom[2]);
+    // Covered pixels are unchanged by the backdrop.
+    CHECK(middle[0] >= 126);
+    CHECK(middle[1] == 0);
+    // Without the option the background stays black, as before.
+    readPixel(false, TOP_ROW, top);
+    readPixel(false, BOTTOM_ROW, bottom);
+    for (usize channel = 0; channel < 3; ++channel)
+    {
+        CHECK(top[channel] == 0);
+        CHECK(bottom[channel] == 0);
+    }
+    REQUIRE(renderer.Release(world) == S::Ready);
+    REQUIRE(renderer.Release(mesh) == S::Ready);
+}
+
 TEST_CASE("Interactive raster viewport composes a depth-tested overlay into its scene", "[renderer][gpu][viewport]")
 {
     rhi::Shutdown();
