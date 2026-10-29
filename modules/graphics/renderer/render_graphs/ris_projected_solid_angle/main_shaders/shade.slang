@@ -19,13 +19,17 @@
 // - ShadeLightSampling: the light strategy alone (W_L = 1), Shah et al.'s estimator (lightSampling output).
 // - ShadeBsdfSampling: the BSDF strategy alone (bsdfSampling output). It never reaches a directional, point or spot
 //   light, so those lights are absent from this image.
-// The three passes read the same random dimensions (hit_record.slang), and dimensions 2 to 8 keep their
+// TryLoadShadingPoint clips a front face's shading normal to the hemisphere of the view direction, as Peters'
+// renderer does (Peters 2021, section 6.1, through FoundationMath's shading_normal.slang); every strategy shades with
+// that normal. The three passes read the same random dimensions (hit_record.slang), and dimensions 2 to 8 keep their
 // veach-guibas-mis meanings. All densities are solid-angle densities. A delta light sample keeps weight one under MIS.
 // A primary miss returns the environment. There is no indirect bounce. At most one surface query and two visibility
 // queries; the camera ray is not traced again, because the surface comes from the record.
-// Departure from the review: like veach-guibas-mis, light samples do not apply the emitter's own alpha cutoff, because
+// Departures from the review: like veach-guibas-mis, light samples do not apply the emitter's own alpha cutoff, because
 // the scene interface has no alpha-acceptance query; an alpha-cut emissive texel is therefore lit by light sampling
-// but transparent to BSDF rays. Emission maps, sidedness and occlusion are evaluated at the sampled point.
+// but transparent to BSDF rays. Emission maps, sidedness and occlusion are evaluated at the sampled point. The section
+// 6.1 clip departs from veach-guibas-mis and RT1, which shade with the unclipped normal; its own departures are
+// listed in projected_solid_angle_light.slang.
 // PROJECTED_SOLID_ANGLE_MIS_VISIBILITY is a Graph setting (main.lushader.json), Peters' v.
 
 static const float SHADE_MAXIMUM_TRACE_DISTANCE_WORLD = 3.402823466e38f;
@@ -103,6 +107,14 @@ ResampledLightContext MakeResampledLightContext(SceneContext scene)
         return false;
     }
     outPoint.ShadingNormalWorld = outPoint.Material.ShadingNormalWorld * rsqrt(normalLengthSquared);
+    // Peters 2021, section 6.1: the BSDF, BSDF sampling and both light techniques use the shading normal clipped to the
+    // view's hemisphere, in all three passes. Only a front face is clipped: a one-sided surface seen from behind keeps
+    // a zero BSDF, as in the other templates, because a normal clipped towards the viewer would light it from the far
+    // side of the surface.
+    if (outPoint.Hit.IsFrontFace == true)
+        outPoint.ShadingNormalWorld =
+            ClipShadingNormalToOutgoingHemisphere(outPoint.ShadingNormalWorld, outPoint.ViewDirectionWorld);
+    outPoint.Material.ShadingNormalWorld = outPoint.ShadingNormalWorld;
     if (hasLightFrame == true)
         outPoint.Frame = MakeReceiverLightingFrame(outPoint.Hit.PositionWorld,
                                                    outPoint.ShadingNormalWorld,

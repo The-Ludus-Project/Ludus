@@ -170,6 +170,16 @@ if(TARGET ludus_rhi_render_tests)
         DEPENDS "${ris_projected_solid_angle_shaders}/projected_solid_angle_light.slang"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/ris_projected_solid_angle_weights_layout.h"
                 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ltc_table.slang" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ltc_table_layout.h")
+    # The same template functions for receivers viewed from below their shading horizon (Peters 2021, section 6.1).
+    ludus_compile_shader(TARGET ludus_renderer_render_tests NAME ris_projected_solid_angle_clipped_receivers
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/ris_projected_solid_angle_clipped_receivers.slang"
+        COMPUTE ClippedReceiverMain
+        INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/shaders" "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders"
+                 "${ris_projected_solid_angle_shaders}"
+        DEPENDS "${ris_projected_solid_angle_shaders}/projected_solid_angle_light.slang"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/ris_projected_solid_angle_weights_layout.h"
+                "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders/shading_normal.slang"
+                "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ltc_table.slang" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ltc_table_layout.h")
     # Test-only kernel comparing the GPU-compute reference's resampled light pieces with src/reference_light_sampling.cpp.
     ludus_compile_shader(TARGET ludus_renderer_render_tests NAME reference_light_sampling_parity
         SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/reference_light_sampling_parity.slang" COMPUTE ComputeMain
@@ -185,6 +195,7 @@ if(TARGET ludus_rhi_render_tests)
         INCLUDES "${renderer_shader_directory}" ${renderer_shader_includes} "${polygonal_light_sampling_shaders}"
         DEPENDS "${polygonal_light_sampling_shaders}/polygonal_light.slang"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/polygonal_light_sampling_estimators_layout.h"
+                "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders/shading_normal.slang"
                 "${renderer_shader_directory}/renderer_gpu_preview.slang" "${renderer_shader_directory}/scene_shader.slang"
                 "${renderer_shader_directory}/ltc_table.slang" "${renderer_shader_directory}/ltc_table_layout.h")
     ludus_compile_shader(TARGET ludus_renderer_render_tests NAME restir_selection

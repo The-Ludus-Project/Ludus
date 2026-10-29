@@ -3,6 +3,7 @@
 #include "../src/internal/ltc_table.h"
 
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/math/shading_normal.hpp>
 #include <ludus/foundation/math/status.hpp>
 #include <ludus/graphics/renderer/reference.hpp>
 
@@ -11,7 +12,8 @@
 // Importance Sampling for Polygonal Lights", ACM Transactions on Graphics 40(4), Article 140, 2021,
 // https://doi.org/10.1145/3450626.3459672: section 3 (projected solid angle sampling), 4.1 (LTC sampling and the
 // empty-clip rule), 4.2 (the weighted balance heuristic, per color channel, with the diffuse albedo clamped to 0.01)
-// and 4.3 (clamped optimal MIS), and section 6.1's clip of the shading normal to the view's hemisphere.
+// and 4.3 (clamped optimal MIS), and section 6.1's clip of the shading normal to the view's hemisphere, through
+// FoundationMath's TryClipShadingNormalToOutgoingHemisphere, the C++ twin of the template's shading_normal.slang.
 namespace ludus::graphics::renderer::testing
 {
 using namespace foundation;
@@ -22,7 +24,6 @@ namespace
 constexpr float32 MINIMUM_DIFFUSE_TECHNIQUE_ALBEDO = 0.01F;
 constexpr float32 DIELECTRIC_SPECULAR_REFLECTANCE = 0.04F;
 constexpr float32 FRAME_HELPER_AXIS_LIMIT = 0.999F;
-constexpr float32 MINIMUM_OUTGOING_COSINE = 0.01F;
 constexpr usize PROJECTED_SOLID_ANGLE_TECHNIQUE = 0;
 constexpr usize LTC_TECHNIQUE = 1;
 constexpr usize TECHNIQUE_COUNT = 2;
@@ -49,18 +50,6 @@ math::Vector3 TransformTangentToWorld(const PolygonalLightOracle& oracle, math::
 math::Vector3 MaxZero(math::Vector3 value) noexcept
 {
     return {math::Max(value.X, 0.0F), math::Max(value.Y, 0.0F), math::Max(value.Z, 0.0F)};
-}
-
-/// ClipShadingNormalToOutgoingHemisphere (Peters 2021, section 6.1).
-math::Vector3 ClipShadingNormalToOutgoingHemisphere(math::Vector3 normalWorld,
-                                                    math::Vector3 viewDirectionWorld) noexcept
-{
-    const float32 cosine = math::Dot(normalWorld, viewDirectionWorld);
-    if (cosine >= MINIMUM_OUTGOING_COSINE)
-    {
-        return normalWorld;
-    }
-    return NormalizeOrZero(normalWorld + viewDirectionWorld * (MINIMUM_OUTGOING_COSINE - cosine));
 }
 
 bool IsUsedTechnique(PolygonalLightEstimator estimator, usize technique) noexcept
@@ -155,7 +144,12 @@ bool TryPreparePolygonalLightOracle(const PolygonalLightCase& lightCase, Polygon
     PolygonalLightOracle oracle;
     oracle.Case = lightCase;
     // TryLoadShadingPoint's clip, then MakePolygonalLightReceiver.
-    oracle.NormalWorld = ClipShadingNormalToOutgoingHemisphere(lightCase.NormalWorld, lightCase.ViewDirectionWorld);
+    if (math::TryClipShadingNormalToOutgoingHemisphere(lightCase.NormalWorld,
+                                                       lightCase.ViewDirectionWorld,
+                                                       oracle.NormalWorld) != math::MathStatus::Success)
+    {
+        return false;
+    }
     const math::Vector3 normal = oracle.NormalWorld;
     const math::Vector3 helper =
         math::Abs(normal.Z) < FRAME_HELPER_AXIS_LIMIT ? math::Vector3{0, 0, 1} : math::Vector3{0, 1, 0};
