@@ -657,6 +657,38 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_salesin_jarosz_lines_power_RUNTIME_PACKAGE PARENT_PATH point_line_power_package_directory)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_SALESIN_JAROSZ_LINES_POWER_DIRECTORY="${point_line_power_package_directory}")
+    # The polygonal-light-sampling template with PROJECTED_SOLID_ANGLE_MIS_VISIBILITY set to 1, so its color output is
+    # Peters' weighted balance heuristic (2021, section 4.2), for the occluded-penumbra comparison with v = 1/2.
+    set(polygonal_light_template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/polygonal_light_sampling_template")
+    file(READ "${polygonal_light_template_staged}/main.lushader.json" polygonal_light_manifest)
+    string(JSON polygonal_light_setting_count LENGTH "${polygonal_light_manifest}" settings)
+    set(polygonal_light_visibility_index -1)
+    math(EXPR polygonal_light_setting_last "${polygonal_light_setting_count} - 1")
+    foreach(setting_index RANGE ${polygonal_light_setting_last})
+        string(JSON setting_id GET "${polygonal_light_manifest}" settings ${setting_index} id)
+        if(setting_id STREQUAL "PROJECTED_SOLID_ANGLE_MIS_VISIBILITY")
+            set(polygonal_light_visibility_index ${setting_index})
+        endif()
+    endforeach()
+    if(polygonal_light_visibility_index LESS 0)
+        message(FATAL_ERROR
+            "The polygonal-light-sampling template manifest has no PROJECTED_SOLID_ANGLE_MIS_VISIBILITY setting.")
+    endif()
+    set(polygonal_light_weighted_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/polygonal_light_sampling_weighted")
+    file(COPY "${polygonal_light_template_staged}/" DESTINATION "${polygonal_light_weighted_staged}"
+        PATTERN "main.lushader.json" EXCLUDE)
+    string(JSON polygonal_light_weighted_manifest SET "${polygonal_light_manifest}"
+        settings ${polygonal_light_visibility_index} value 1)
+    # Rewrite the staged manifest only when it changes, so reconfiguring does not rebuild the package.
+    file(WRITE "${polygonal_light_weighted_staged}.lushader.json" "${polygonal_light_weighted_manifest}\n")
+    file(COPY_FILE "${polygonal_light_weighted_staged}.lushader.json"
+        "${polygonal_light_weighted_staged}/main.lushader.json" ONLY_IF_DIFFERENT)
+    ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_polygonal_light_sampling_weighted
+        MANIFEST "${polygonal_light_weighted_staged}/main.lushader.json" RUNTIME_PACKAGE)
+    cmake_path(GET rg2_polygonal_light_sampling_weighted_RUNTIME_PACKAGE PARENT_PATH
+        polygonal_light_weighted_package_directory)
+    target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+        LUDUS_RG3_POLYGONAL_LIGHT_SAMPLING_WEIGHTED_DIRECTORY="${polygonal_light_weighted_package_directory}")
     set(point_line_densities_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/point_line_densities")
     set(point_line_densities_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/point_line_densities")
     file(COPY "${point_line_densities_source}/" DESTINATION "${point_line_densities_staged}" PATTERN "*.in" EXCLUDE)

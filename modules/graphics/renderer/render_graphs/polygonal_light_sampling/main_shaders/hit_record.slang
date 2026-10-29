@@ -36,7 +36,8 @@ static const uint PRIMARY_RANDOM_DIMENSION_FIRST = 0;
 static const uint PRIMARY_RANDOM_DIMENSION_COUNT = 2;
 // Every pass shades each emissive triangle of the scene. Both MIS outputs trace two shadow rays per triangle, so the
 // technique's visibility budget (16, the scene interface's maximum) bounds the scene to this many emissive triangles;
-// a larger scene fails explicitly instead of dropping lights.
+// a larger scene fails explicitly instead of dropping lights. TestVisibility counts the budget per invocation, so a
+// loop of shadow rays inside the shader cannot lift it; docs/development/render-graph-authoring.md lists the options.
 static const uint MAX_POLYGONAL_LIGHT_COUNT = 8;
 static const uint POLYGONAL_LIGHT_DIMENSION_FIRST = PRIMARY_RANDOM_DIMENSION_FIRST + PRIMARY_RANDOM_DIMENSION_COUNT;
 static const uint POLYGONAL_LIGHT_DIMENSIONS_PER_LIGHT = 4;

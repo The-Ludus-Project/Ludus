@@ -23,7 +23,8 @@
 // materials and triangles; the CPU oracle (polygonal_light_sampling_oracle.cpp) implements the same estimators with
 // FoundationMath's C++ primitives, the CPU LTC table lookup and the RT1 reference BSDF. Thanks to Christoph Peters,
 // "BRDF Importance Sampling for Polygonal Lights", ACM Transactions on Graphics 40(4), Article 140, 2021,
-// https://doi.org/10.1145/3450626.3459672, sections 3 and 4.1-4.3, for the estimators compared here.
+// https://doi.org/10.1145/3450626.3459672, sections 3 and 4.1-4.3, for the estimators compared here, and section 6.1
+// for the shading normal clipped to the view's hemisphere, which a quarter of the drawn receivers need.
 namespace
 {
 using namespace ludus::foundation;
@@ -280,6 +281,8 @@ TEST_CASE("Polygonal-light-sampling estimators agree with the CPU oracle on raw 
     usize emptyLtcClipCount = 0;
     usize partialHorizonCount = 0;
     usize sliverCount = 0;
+    usize clippedNormalCount = 0;
+    usize litClippedNormalCount = 0;
     for (usize invocation = 0; invocation < INVOCATION_COUNT; ++invocation)
     {
         CAPTURE(invocation);
@@ -296,13 +299,22 @@ TEST_CASE("Polygonal-light-sampling estimators agree with the CPU oracle on raw 
         REQUIRE(isPrepared == true);
         REQUIRE(integral.Words[3] == 1);
         ++preparedCount;
+        // Section 6.1: the oracle's normal is the clipped one, inside the view's hemisphere.
+        const bool isNormalClipped = math::Dot(drawn.Case.NormalWorld, drawn.Case.ViewDirectionWorld) <
+                                     math::Dot(oracle.NormalWorld, drawn.Case.ViewDirectionWorld);
+        REQUIRE(math::Dot(oracle.NormalWorld, drawn.Case.ViewDirectionWorld) > 0.0F);
+        clippedNormalCount += isNormalClipped == true ? 1 : 0;
         REQUIRE((diffuseCoefficient.GetFloat(3) == 1.0F) == oracle.HasSpecular);
         emptyLtcClipCount += oracle.HasSpecular == true && oracle.SpecularIntegral == 0.0F ? 1 : 0;
         partialHorizonCount += oracle.DiffuseIntegral > 0.0F && oracle.Diffuse.VertexCount != 3 ? 1 : 0;
         // Relative statistics skip slivers, as FoundationMath's LTC parity test does.
         const bool isDiffuseCompared = oracle.DiffuseIntegral >= MINIMUM_STATISTICS_INTEGRAL;
+        // Either side may see a sliver where the other's clip is empty: at the minimum roughness and a grazing view,
+        // the GPU finds LTC integrals of 1e-13 to 1e-10 where the oracle's clip is empty, and the weights of both MIS
+        // estimators then differ.
+        const float32 largerSpecularIntegral = math::Max(oracle.SpecularIntegral, integral.GetFloat(2));
         const bool isSpecularSliver =
-            oracle.SpecularIntegral > 0.0F && oracle.SpecularIntegral < MINIMUM_STATISTICS_INTEGRAL;
+            largerSpecularIntegral > 0.0F && largerSpecularIntegral < MINIMUM_STATISTICS_INTEGRAL;
         sliverCount += isSpecularSliver == true ? 1 : 0;
         if (isDiffuseCompared == true)
         {
@@ -342,14 +354,26 @@ TEST_CASE("Polygonal-light-sampling estimators agree with the CPU oracle on raw 
             if (SumChannels(radiance) > 0.0F || SumChannels(expected[estimator]) > 0.0F)
             {
                 ++nonzeroCounts[estimator];
+                const bool isLitClippedCase =
+                    isNormalClipped == true &&
+                    estimator == static_cast<usize>(testing::PolygonalLightEstimator::ClampedOptimalMis);
+                litClippedNormalCount += isLitClippedCase == true ? 1 : 0;
                 REQUIRE(radianceErrors[estimator].TryAdd(GetRelativeDifference(radiance, expected[estimator])) == true);
             }
         }
     }
-    CAPTURE(preparedCount, emptyLtcClipCount, partialHorizonCount, sliverCount);
-    // The corpus covers empty LTC clips and triangles that straddle the horizon.
+    CAPTURE(preparedCount,
+            emptyLtcClipCount,
+            partialHorizonCount,
+            sliverCount,
+            clippedNormalCount,
+            litClippedNormalCount);
+    // The corpus covers empty LTC clips, triangles that straddle the horizon, and lit receivers whose shading normal
+    // section 6.1 clips; without the clip, their BSDF would be zero.
     CHECK(emptyLtcClipCount > 0);
     CHECK(partialHorizonCount > 0);
+    CHECK(clippedNormalCount > INVOCATION_COUNT / 8);
+    CHECK(litClippedNormalCount > clippedNormalCount / 8);
     const float32 integralP99 = GetPercentile(integralErrors, 0.99F);
     const float32 coefficientP99 = GetPercentile(coefficientErrors, 0.99F);
     CAPTURE(integralP99, coefficientP99);
@@ -367,8 +391,8 @@ TEST_CASE("Polygonal-light-sampling estimators agree with the CPU oracle on raw 
         INFO("estimator " << estimator << ": nonzero=" << nonzeroCounts[estimator] << ", p90=" << radianceP90
                           << ", p99=" << radianceP99 << ", maximum=" << radianceMaximum << ", total=" << totalError);
         CHECK(nonzeroCounts[estimator] > INVOCATION_COUNT / 4);
-        // Apple M5 measured p90 relative differences of at most 2.8e-5 and p99 of at most 2.8e-3 per invocation, and
-        // at most 6.1e-4 on the summed radiance. The largest single differences (up to 0.93) are samples whose
+        // Apple M5 measured p90 relative differences of at most 3.2e-5 and p99 of at most 1.7e-3 per invocation, and
+        // at most 6.4e-4 on the summed radiance. The largest single differences (up to 1) are samples whose
         // directions differ by an ulp at a triangle edge or a minimum-roughness highlight, where the integrand jumps.
         CHECK(radianceP90 <= 1.0e-4F);
         CHECK(radianceP99 <= 5.0e-3F);

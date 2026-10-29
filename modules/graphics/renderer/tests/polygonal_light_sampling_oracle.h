@@ -7,8 +7,8 @@
 // template adds in shade.slang; the oracle shades an unoccluded triangle with constant emission. The GPU parity test
 // (polygonal_light_sampling_parity_tests.cpp) and the unbiasedness test (polygonal_light_sampling_oracle_tests.cpp)
 // both use it. Thanks to Christoph Peters, "BRDF Importance Sampling for Polygonal Lights", ACM Transactions on
-// Graphics 40(4), Article 140, 2021, https://doi.org/10.1145/3450626.3459672, sections 3 and 4.1-4.3; the template's
-// source names the departures, which the oracle shares.
+// Graphics 40(4), Article 140, 2021, https://doi.org/10.1145/3450626.3459672, sections 3, 4.1-4.3 and 6.1; the
+// template's source names the departures, which the oracle shares.
 
 #include <ludus/foundation/base/core.h>
 
@@ -34,7 +34,7 @@ inline constexpr foundation::usize POLYGONAL_LIGHT_VERTEX_COUNT = 3;
 struct PolygonalLightCase final
 {
     foundation::math::Vector3 ReceiverPositionWorld{};
-    /// Unit shading normal.
+    /// Unit shading normal before section 6.1's clip to the hemisphere of ViewDirectionWorld.
     foundation::math::Vector3 NormalWorld{0, 0, 1};
     /// Unit direction towards the viewer.
     foundation::math::Vector3 ViewDirectionWorld{0, 0, 1};
@@ -54,6 +54,9 @@ struct PolygonalLightCase final
 struct PolygonalLightOracle final
 {
     PolygonalLightCase Case{};
+    /// The shading frame: Case.NormalWorld clipped to the view's hemisphere (Peters 2021, section 6.1), as
+    /// ClipShadingNormalToOutgoingHemisphere clips it. The BSDF and both techniques use this normal.
+    foundation::math::Vector3 NormalWorld{};
     foundation::math::Vector3 TangentWorld{};
     foundation::math::Vector3 BitangentWorld{};
     foundation::math::LinearlyTransformedCosine Specular{};

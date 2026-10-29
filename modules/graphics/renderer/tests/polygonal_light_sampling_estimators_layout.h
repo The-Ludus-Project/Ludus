@@ -4,7 +4,7 @@
 // invocation draws one receiver, material and emissive triangle from FoundationMath's addressed random stream, writes
 // those inputs and the template's four estimates for them as LUDUS_POLYGONAL_LIGHT_ESTIMATORS_RECORDS_PER_INVOCATION
 // uint4 records; floats are stored as their bits. The receiver is at the World origin.
-//   0: (shading normal xyz, metallic)
+//   0: (shading normal xyz before Peters' section 6.1 clip, metallic)
 //   1: (view direction xyz, roughness)
 //   2: (base color rgb, MIS visibility v)
 //   3: (triangle vertex 0 xyz, 1 if the emission is two-sided, else 0)

@@ -11,13 +11,14 @@
 // - ShadeProjectedSolidAngle: the projected solid angle sample alone (sections 3 and 6.2).
 // - ShadeLtc: the LTC sample alone (section 4.1). The LTC can be zero where the BRDF is not, so this output estimates
 //   the shading only within the LTC's support; it is not an unbiased image of the scene.
-// As in Peters' renderer (section 6.1), every light is shaded, shadows come from one shadow ray per sample, and the
-// estimate is direct lighting only. Every pass returns the surface's own emission plus the sum over triangles; a
-// primary miss returns the environment. Analytic lights and the environment do not light surfaces here: the paper's
-// techniques sample polygons. The emission at the sampled point (including emission maps and sidedness) and its
-// occlusion come from the scene; light samples do not apply the emitter's alpha cutoff, as in the other templates.
-// Each triangle costs up to two visibility queries in the MIS passes and one in the single-technique passes; a scene
-// with more than MAX_POLYGONAL_LIGHT_COUNT emissive triangles fails explicitly (hit_record.slang).
+// As in Peters' renderer (section 6.1), every light is shaded, shadows come from one shadow ray per sample, the
+// estimate is direct lighting only, and the shading normal is clipped to the hemisphere of the view direction. Every
+// pass returns the surface's own emission plus the sum over triangles; a primary miss returns the environment.
+// Analytic lights and the environment do not light surfaces here: the paper's techniques sample polygons. The emission
+// at the sampled point (including emission maps and sidedness) and its occlusion come from the scene; light samples do
+// not apply the emitter's alpha cutoff, as in the other templates. Each triangle costs up to two visibility queries in
+// the MIS passes and one in the single-technique passes; a scene with more than MAX_POLYGONAL_LIGHT_COUNT emissive
+// triangles fails explicitly (hit_record.slang).
 
 // Thanks to the Slang authors, core module noinline attribute reference:
 // https://docs.shader-slang.org/en/latest/external/core-module-reference/attributes/noinline.html
@@ -84,6 +85,12 @@ struct ShadingPoint
         return false;
     }
     outPoint.Material.ShadingNormalWorld *= rsqrt(normalLengthSquared);
+    // Peters 2021, section 6.1: the BSDF and both techniques use the shading normal clipped to the view's hemisphere.
+    // Only a front face is clipped: a one-sided surface seen from behind keeps a zero BSDF, as in the other templates,
+    // because a normal clipped towards the viewer would light it from the far side of the surface.
+    if (outPoint.Hit.IsFrontFace == true)
+        outPoint.Material.ShadingNormalWorld =
+            ClipShadingNormalToOutgoingHemisphere(outPoint.Material.ShadingNormalWorld, outPoint.ViewDirectionWorld);
     outPoint.Receiver = MakePolygonalLightReceiver(outPoint.Hit.PositionWorld,
                                                    outPoint.Material.ShadingNormalWorld,
                                                    outPoint.ViewDirectionWorld,

@@ -24,8 +24,11 @@ static const float METAL_SHARE = 2.0 / 3;
 // A quarter of the receivers use the LTC table's smallest roughness, where the specular technique dominates.
 static const float MINIMUM_ROUGHNESS_SHARE = 0.25;
 static const float MINIMUM_ROUGHNESS = LUDUS_LTC_TABLE_MINIMUM_ROUGHNESS;
-// Views stay at least this cosine above the shading horizon.
+// Views are drawn at least this cosine above the shading horizon. A share of them is then mirrored below it, as normal
+// mapping produces, and Peters 2021, section 6.1 clips those receivers' shading normals. The share is drawn last, so
+// the other receivers keep the draws of the corpus without clipped normals.
 static const float MINIMUM_VIEW_COSINE = 0.05;
+static const float CLIPPED_NORMAL_SHARE = 0.25;
 // Triangle centers lie at elevations down to this cosine, so some triangles straddle or sink below the horizon.
 static const float MINIMUM_LIGHT_COSINE = -0.3;
 static const float MINIMUM_LIGHT_DISTANCE_WORLD = 0.5;
@@ -91,7 +94,6 @@ PolygonalLightEstimatorsMain(uint3 dispatchThreadId : SV_DispatchThreadID) {
     material.Metallic = metallicSelector < DIELECTRIC_SHARE ? 0 : (metallicSelector < METAL_SHARE ? 1 : metallic);
     float roughness = DrawBetween(random, MINIMUM_ROUGHNESS, 1);
     material.Roughness = DrawUniform(random) < MINIMUM_ROUGHNESS_SHARE ? MINIMUM_ROUGHNESS : roughness;
-    material.ShadingNormalWorld = normalWorld;
     material.IsValid = true;
     float visibilityChoices[VISIBILITY_CHOICE_COUNT] = {0, 1, 0.5, DrawUniform(random)};
     float visibility =
@@ -111,6 +113,10 @@ PolygonalLightEstimatorsMain(uint3 dispatchThreadId : SV_DispatchThreadID) {
     bool isEmissionTwoSided = DrawUniform(random) < 0.5;
     float2 diffuseSample = float2(DrawUniform(random), DrawUniform(random));
     float2 specularSample = float2(DrawUniform(random), DrawUniform(random));
+    if (DrawUniform(random) < CLIPPED_NORMAL_SHARE)
+        viewWorld = reflect(viewWorld, normalWorld);
+    // TryLoadShadingPoint's clip (section 6.1); the record keeps the drawn normal, which the oracle clips itself.
+    material.ShadingNormalWorld = ClipShadingNormalToOutgoingHemisphere(normalWorld, viewWorld);
 
     Results[base + LUDUS_POLYGONAL_LIGHT_ESTIMATORS_NORMAL_RECORD] = PackFloats(normalWorld, material.Metallic);
     Results[base + LUDUS_POLYGONAL_LIGHT_ESTIMATORS_VIEW_RECORD] = PackFloats(viewWorld, material.Roughness);
@@ -123,7 +129,7 @@ PolygonalLightEstimatorsMain(uint3 dispatchThreadId : SV_DispatchThreadID) {
 
     // ShadePolygonalLights for one triangle, with EvaluateEmission's constant emission and no occluder.
     PolygonalLightReceiver receiver = MakePolygonalLightReceiver(float3(0),
-                                                                 normalWorld,
+                                                                 material.ShadingNormalWorld,
                                                                  viewWorld,
                                                                  material.BaseColor,
                                                                  material.Metallic,
