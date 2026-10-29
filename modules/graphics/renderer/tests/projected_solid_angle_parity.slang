@@ -30,8 +30,12 @@ ComputeMain(uint3 dispatchThreadId : SV_DispatchThreadID) {
                                  polygon.IsMirrored == true ? 1.0 : 0.0,
                                  float(polygon.VertexCount));
     Results[resultBase + 1] = float4(isSampled == true ? 1.0 : 0.0, direction);
-    Results[resultBase + 2] = float4(EvaluateProjectedSolidAnglePolygonDensity(polygon, direction),
-                                     polygon.IsCentralCase == true ? 1.0 : 0.0,
-                                     0.0,
-                                     0.0);
+    Results[resultBase + 2] =
+        float4(EvaluateProjectedSolidAnglePolygonDensity(polygon, direction),
+               polygon.IsCentralCase == true ? 1.0 : 0.0,
+               ComputeProjectedSolidAngleIntegral(input),
+               input.VertexCount == 3 ? ComputeProjectedTriangleIntegral(input.PositionsTangent[0],
+                                                                         input.PositionsTangent[1],
+                                                                         input.PositionsTangent[2])
+                                      : ComputeProjectedSolidAngleIntegral(input));
 }

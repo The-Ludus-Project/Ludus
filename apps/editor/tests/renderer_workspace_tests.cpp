@@ -208,7 +208,7 @@ TEST_CASE("Renderer creates a complete project-owned graph with New Graph", "[ed
     CHECK(workspace.GetDocument().IsLoaded() == true);
     CHECK(workspace.IsBuiltIn() == false);
     CHECK(workspace.GetDocument().IsDirty() == false);
-    CHECK(workspace.GetDocument().GetFiles().size() == 6);
+    CHECK(workspace.GetDocument().GetFiles().size() == 7);
     CHECK(workspace.GetRuntimePackagePath().startsWith(root + QStringLiteral("/out/render-graph/")) == true);
     CHECK(QFileInfo(root + QStringLiteral("/graphs/MyGraph/main.lushader.json")).isFile() == true);
     CHECK(workspace.GetCanvas().GetNodeCount() > 0);

@@ -480,6 +480,120 @@ bool TryClipProjectedPolygonToUpperHemisphere(in ProjectedPolygonInput polygon,
     inoutPolygon = result;
     return true;
 }
+// Integrate cosine over a convex polygon without constructing importance-sampling state.
+// Thanks to Eric Heitz, Jonathan Dupuy, Stephen Hill and David Neubelt,
+// "Real-Time Polygonal-Light Shading with Linearly Transformed Cosines", TOG 35(4),
+// Article 41 (2016), section 3 and Algorithm 1, https://doi.org/10.1145/2897824.2925895.
+// The spherical edge vector area is half the sum of edge angle times unit edge normal.
+// Clip first; abs preserves the sampling API's winding-independent polygon contract.
+float3 NormalizeProjectedDirection(float3 directionTangent)
+{
+    float magnitude = max(abs(directionTangent.x), max(abs(directionTangent.y), abs(directionTangent.z)));
+    return magnitude > 0 ? NormalizeOrZero(directionTangent / magnitude) : float3(0);
+}
+float ComputeProjectedSolidAngleEdge(float3 startTangent, float3 endTangent)
+{
+    float3 edgeNormalTangent = ComputeStableCross(startTangent, endTangent);
+    float sine = length(edgeNormalTangent);
+    if (sine == 0)
+    {
+        return 0;
+    }
+    return edgeNormalTangent.z * (atan2(sine, dot(startTangent, endTangent)) / sine);
+}
+// Returns steradians projected onto +z, in [0, PI]; invalid or empty inputs return zero.
+float ComputeProjectedSolidAngleIntegral(ProjectedPolygonInput polygon)
+{
+    static const uint MINIMUM_VERTEX_COUNT = 3;
+    if (polygon.VertexCount < MINIMUM_VERTEX_COUNT || polygon.VertexCount > MAX_PROJECTED_POLYGON_INPUT_VERTICES)
+    {
+        return 0;
+    }
+    float3 aTangent = NormalizeProjectedDirection(polygon.PositionsTangent[0]);
+    float3 bTangent = NormalizeProjectedDirection(polygon.PositionsTangent[1]);
+    float3 cTangent = NormalizeProjectedDirection(polygon.PositionsTangent[2]);
+    if (dot(aTangent, ComputeStableCross(bTangent, cTangent)) == 0)
+    {
+        return 0;
+    }
+    float3 firstTangent = float3(0);
+    float3 previousTangent = float3(0);
+    uint count = 0;
+    float integral = 0;
+    [unroll] for (uint i = 0; i < MAX_PROJECTED_POLYGON_INPUT_VERTICES; ++i)
+    {
+        if (i >= polygon.VertexCount)
+        {
+            break;
+        }
+        float3 startTangent = polygon.PositionsTangent[i];
+        float3 endTangent = polygon.PositionsTangent[0];
+        if (i + 1 < polygon.VertexCount)
+        {
+            endTangent = polygon.PositionsTangent[(i + 1) % MAX_PROJECTED_POLYGON_INPUT_VERTICES];
+        }
+        if (IsFiniteBits(startTangent) == false)
+        {
+            return 0;
+        }
+        // Positive per-vertex scaling preserves spherical edges and horizon intersections.
+        startTangent = NormalizeProjectedDirection(startTangent);
+        endTangent = NormalizeProjectedDirection(endTangent);
+        if (startTangent.z >= 0)
+        {
+            integral += ComputeProjectedSolidAngleEdge(previousTangent, startTangent);
+            if (count == 0)
+            {
+                firstTangent = startTangent;
+            }
+            previousTangent = startTangent;
+            ++count;
+        }
+        if ((startTangent.z > 0 && endTangent.z < 0) || (startTangent.z < 0 && endTangent.z > 0))
+        {
+            float t = startTangent.z / (startTangent.z - endTangent.z);
+            float3 intersectionTangent = NormalizeOrZero(float3(lerp(startTangent.xy, endTangent.xy, t), 0));
+            integral += ComputeProjectedSolidAngleEdge(previousTangent, intersectionTangent);
+            if (count == 0)
+            {
+                firstTangent = intersectionTangent;
+            }
+            previousTangent = intersectionTangent;
+            ++count;
+        }
+    }
+    integral += ComputeProjectedSolidAngleEdge(previousTangent, firstTangent);
+    return count >= MINIMUM_VERTEX_COUNT ? min(abs(integral) * 0.5, PI) : 0;
+}
+// Fast triangle case for raster area lights. Horizon crossings use the same streamed clip.
+float ComputeProjectedTriangleIntegral(float3 aTangent, float3 bTangent, float3 cTangent)
+{
+    if (IsFiniteBits(aTangent) == false || IsFiniteBits(bTangent) == false || IsFiniteBits(cTangent) == false)
+    {
+        return 0;
+    }
+    if (aTangent.z >= 0 && bTangent.z >= 0 && cTangent.z >= 0)
+    {
+        aTangent = NormalizeProjectedDirection(aTangent);
+        bTangent = NormalizeProjectedDirection(bTangent);
+        cTangent = NormalizeProjectedDirection(cTangent);
+        if (dot(aTangent, ComputeStableCross(bTangent, cTangent)) == 0)
+        {
+            return 0;
+        }
+        float integral = ComputeProjectedSolidAngleEdge(aTangent, bTangent) +
+                         ComputeProjectedSolidAngleEdge(bTangent, cTangent) +
+                         ComputeProjectedSolidAngleEdge(cTangent, aTangent);
+        return min(abs(integral) * 0.5, PI);
+    }
+    ProjectedPolygonInput polygon = (ProjectedPolygonInput)0;
+    static const uint TRIANGLE_CORNER_COUNT = 3;
+    polygon.VertexCount = TRIANGLE_CORNER_COUNT;
+    polygon.PositionsTangent[0] = aTangent;
+    polygon.PositionsTangent[1] = bTangent;
+    polygon.PositionsTangent[2] = cTangent;
+    return ComputeProjectedSolidAngleIntegral(polygon);
+}
 ProjectedSolidAnglePolygon MakeEmptyProjectedSolidAnglePolygon(bool isMirrored)
 {
     ProjectedSolidAnglePolygon result;

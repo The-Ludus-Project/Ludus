@@ -265,8 +265,30 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
         item.SurfaceTint = object.Tint;
         uint32 resolvedMaterial =
             object.Surface < 0 ? renderer::DEFAULT_SCENE_MATERIAL : static_cast<uint32>(object.Surface);
-        if (object.Surface >= 0 && object.Surface < extraction.Scene.Surfaces.size() &&
-            extraction.Scene.Surfaces[object.Surface].HasEmissionPower == true)
+        if (extraction.Scene.Lit == false)
+        {
+            // An unlit World has no lighting model; its tint (times its texture) is what it shows. The
+            // lit default receives that colour as emission over a black base, so no light is invented
+            // and nothing it emits is reflected.
+            renderer::SceneShaderMaterial unlit;
+            unlit.BaseColor = {0, 0, 0};
+            unlit.Emission = {object.Tint.X, object.Tint.Y, object.Tint.Z};
+            if (object.Surface >= 0 && object.Surface < extraction.Scene.Surfaces.size())
+            {
+                const PreviewSurface& source = extraction.Scene.Surfaces.at(object.Surface);
+                const renderer::SceneShaderMaterial& surfaceMaterial = extraction.Materials[object.Surface];
+                unlit.Emission = {unlit.Emission.X * source.Tint.X,
+                                  unlit.Emission.Y * source.Tint.Y,
+                                  unlit.Emission.Z * source.Tint.Z};
+                unlit.Sampler = surfaceMaterial.Sampler;
+                unlit.EmissionTexture = surfaceMaterial.ColorTexture;
+                unlit.HasError = surfaceMaterial.HasError;
+            }
+            resolvedMaterial = static_cast<uint32>(extraction.Materials.size());
+            extraction.Materials.append(unlit);
+        }
+        else if (object.Surface >= 0 && object.Surface < extraction.Scene.Surfaces.size() &&
+                 extraction.Scene.Surfaces[object.Surface].HasEmissionPower == true)
         {
             const PreviewSurface& source = extraction.Scene.Surfaces[object.Surface];
             renderer::SceneShaderMaterial resolved = extraction.Materials[object.Surface];

@@ -158,6 +158,8 @@ RenderScene MakeScene(math::Vector4 tint)
     mesh.Id = QStringLiteral("triangle");
     mesh.Positions = {{-.5F, -.5F, .5F}, {.5F, -.5F, .5F}, {0, .5F, .5F}};
     mesh.Indices = {0, 1, 2};
+    // The default's forward and deferred scene path needs a shading normal per vertex.
+    mesh.Normals = {{0, 0, 1}, {0, 0, 1}, {0, 0, 1}};
     scene.Meshes.append(mesh);
     PreviewObject object;
     object.Id = QStringLiteral("object");
@@ -340,6 +342,7 @@ QImage RenderLive(const DeviceFixture& device, math::Vector4 tint)
 TEST_CASE("RG3b World extraction maps objects to static opaque graph items", "[editor][render-graph][preview]")
 {
     RenderScene scene = MakeScene({1, .5F, .25F, 1});
+    scene.Lit = true;
     PreviewSurface surface;
     // The lit tint is not the static profile's color; the flat approximation is.
     surface.Tint = {.25F, 1, 1, 1};
@@ -384,6 +387,42 @@ TEST_CASE("RG3b World extraction maps objects to static opaque graph items", "[e
     CHECK(MakeRenderGraphExtraction(RenderScene{}, {}, 10, unchanged, error) == false);
     CHECK(unchanged.Revision == 9);
     CHECK(MakeRenderGraphExtraction(scene, {}, 0, unchanged, error) == false);
+}
+
+TEST_CASE("Unlit World objects reach the lit default as emission over a black base", "[editor][render-graph][preview]")
+{
+    RenderScene scene = MakeScene({.25F, .5F, .75F, 1});
+    REQUIRE(scene.Lit == false);
+    QImage texture(1, 1, QImage::Format_RGBA8888);
+    texture.fill(Qt::white);
+    scene.Textures.append({QStringLiteral("sprite"), texture});
+    PreviewSurface surface;
+    surface.Texture = 0;
+    surface.Tint = {1, .5F, 1, 1};
+    scene.Surfaces.append(surface);
+    PreviewObject textured = scene.Objects[0];
+    textured.Texture = 0;
+    textured.Surface = 0;
+    scene.Objects.append(textured);
+    RenderGraphExtraction extraction;
+    QString error;
+    REQUIRE(MakeRenderGraphExtraction(scene, {}, 3, extraction, error) == true);
+    // One material per unlit object follows the surface table; no light is added.
+    REQUIRE(extraction.ShaderInputs.Materials.GetSize() == 3);
+    CHECK(extraction.ShaderInputs.Lights.GetSize() == 0);
+    REQUIRE(extraction.Items.size() == 2);
+    const renderer::SceneShaderMaterial& plain = extraction.ShaderInputs.Materials[1];
+    CHECK(extraction.Items[0].MaterialOverrides[0] == 1);
+    CHECK(plain.BaseColor == math::Vector3{0, 0, 0});
+    CHECK(plain.Emission == math::Vector3{.25F, .5F, .75F});
+    CHECK(plain.EmissionTexture.Bytes == nullptr);
+    // A textured object's surface tint and colour texture modulate its emission.
+    const renderer::SceneShaderMaterial& sprite = extraction.ShaderInputs.Materials[2];
+    CHECK(extraction.Items[1].MaterialOverrides[0] == 2);
+    CHECK(sprite.BaseColor == math::Vector3{0, 0, 0});
+    CHECK(sprite.Emission == math::Vector3{.25F, .25F, .75F});
+    CHECK(sprite.EmissionTexture.Bytes == extraction.ShaderInputs.Materials[0].ColorTexture.Bytes);
+    CHECK(sprite.EmissionTexture.Bytes != nullptr);
 }
 
 TEST_CASE("RG3b World-demo Worlds feed the render-graph preview like any other World",
@@ -605,7 +644,12 @@ TEST_CASE("Ray preview advances stochastic samples without a scene edit and rast
     }
     RenderGraphPreview preview = MakePreview();
     REQUIRE(preview.Attach(device.Device, device.Surface) == true);
-    RenderGraphExtraction extraction = MakeExtraction({1, 0, 0, 1}, 1);
+    // A lit World: its default material scatters stochastic samples, which pure emission would not.
+    RenderScene scene = MakeScene({1, 0, 0, 1});
+    scene.Lit = true;
+    RenderGraphExtraction extraction;
+    QString error;
+    REQUIRE(MakeRenderGraphExtraction(scene, {}, 1, extraction, error) == true);
     extraction.View.OrthographicCamera = true;
     preview.SetExtraction(extraction);
     QSignalSpy presented(&preview, &RenderGraphPreview::FramePresented);
@@ -1514,15 +1558,36 @@ TEST_CASE("Graph viewport Stats toggle is visible and persists with navigation",
 TEST_CASE("World viewport follows project shaders and keeps drawable output after a failed edit",
           "[editor][render-graph][world-graph]")
 {
-    constexpr int32 TIMEOUT_MILLISECONDS = 60000;
+    // Each edit recooks the whole deferred default, as render_graph_default_tests.cpp's build does.
+    constexpr int32 TIMEOUT_MILLISECONDS = 120000;
     constexpr int32 GREEN_MINIMUM = 200;
     constexpr int32 DARK_MAXIMUM = 10;
+    constexpr int32 SAMPLE_STRIDE = 4;
+    constexpr usize COLORED_SAMPLE_MINIMUM = 100;
     const QString compiler = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/out/shader-tools/slang/bin/slangc");
     const QString python = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/out/host-tools/venv/bin/python");
     if (QFileInfo(compiler).isExecutable() == false || QFileInfo(python).isExecutable() == false)
     {
         SKIP("pinned shader tools are required for the real project reload test");
     }
+    // The World grid draws over part of the triangle, so count an area of the edited primary colour
+    // instead of reading one pixel a grid line may cross.
+    const auto countPrimarySamples = [](const QImage& image, bool isBlue) {
+        usize count = 0;
+        for (int32 y = 0; y < image.height(); y += SAMPLE_STRIDE)
+        {
+            for (int32 x = 0; x < image.width(); x += SAMPLE_STRIDE)
+            {
+                const QColor pixel = image.pixelColor(x, y);
+                const int32 primary = isBlue == true ? pixel.blue() : pixel.green();
+                if (primary > GREEN_MINIMUM && pixel.red() < DARK_MAXIMUM)
+                {
+                    ++count;
+                }
+            }
+        }
+        return count;
+    };
     rhi::Shutdown();
     QTemporaryDir project;
     REQUIRE(project.isValid() == true);
@@ -1589,14 +1654,22 @@ TEST_CASE("World viewport follows project shaders and keeps drawable output afte
         REQUIRE(output.write(text) == text.size());
         REQUIRE(output.commit() == true);
     };
-    QByteArray green = shader;
-    REQUIRE(green.replace("return value.Color;", "return float4(0, 1, 0, 1);") != shader);
+    // The default's material callback feeds both its forward and deferred profiles.
+    const auto makeEmissive = [&shader](const char* emission) {
+        QByteArray edited = shader;
+        edited.replace("return SampleMaterial(value);",
+                       QByteArray("SurfaceSample sample = SampleMaterial(value);\n"
+                                  "    sample.BaseColor = float4(0, 0, 0, 1);\n"
+                                  "    sample.Emission = ") +
+                           emission + ";\n    return sample;");
+        return edited;
+    };
+    const QByteArray green = makeEmissive("float3(0, 1, 0)");
+    REQUIRE(green != shader);
     saveShader(green);
     REQUIRE(waitFor([&]() {
-                const QImage& image = graphView->GetImage();
-                const QColor pixel = image.pixelColor(image.width() / 2, image.height() / 2);
                 return workspace.GetDocument().GetDraft(QStringLiteral("main_shaders/color.slang")) == green &&
-                       pixel.green() > GREEN_MINIMUM && pixel.red() < DARK_MAXIMUM;
+                       countPrimarySamples(graphView->GetImage(), false) >= COLORED_SAMPLE_MINIMUM;
             }) == true);
     const QString capture = qEnvironmentVariable("LUDUS_EDITOR_GRAPH_CAPTURE");
     if (capture.isEmpty() == false)
@@ -1633,18 +1706,15 @@ TEST_CASE("World viewport follows project shaders and keeps drawable output afte
     REQUIRE(sourceFiles != nullptr);
     REQUIRE(sourceText != nullptr);
     sourceFiles->setCurrentText(QStringLiteral("main_shaders/color.slang"));
-    QByteArray blue = shader;
-    blue.replace("return value.Color;", "return float4(0, 0, 1, 1);");
+    const QByteArray blue = makeEmissive("float3(0, 0, 1)");
+    REQUIRE(blue != shader);
     sourceText->setPlainText(QString::fromUtf8(blue));
     const uint64 beforeSave = workspace.GetPreviewOrNull()->GetPresentedGeneration();
     QTest::qWait(600);
     CHECK(workspace.GetPreviewOrNull()->GetPresentedGeneration() == beforeSave);
     REQUIRE(workspace.Save() == true);
-    REQUIRE(waitFor([&]() {
-                const QImage& image = graphView->GetImage();
-                const QColor pixel = image.pixelColor(image.width() / 2, image.height() / 2);
-                return pixel.blue() > GREEN_MINIMUM && pixel.red() < DARK_MAXIMUM;
-            }) == true);
+    REQUIRE(waitFor([&]() { return countPrimarySamples(graphView->GetImage(), true) >= COLORED_SAMPLE_MINIMUM; }) ==
+            true);
     REQUIRE(original.open(QIODevice::ReadOnly) == true);
     CHECK(original.readAll() == blue);
     original.close();
@@ -2103,6 +2173,7 @@ TEST_CASE("World grid uses scene depth without writing it in the project graph",
     RenderScene scene = MakeScene({.9F, .2F, .8F, 1});
     scene.Meshes[0].Positions = {{-.6F, -.6F, 1}, {.6F, -.6F, 1}, {.6F, .6F, 1}, {-.6F, .6F, 1}};
     scene.Meshes[0].Indices = {0, 1, 2, 2, 3, 0};
+    scene.Meshes[0].Normals = {{0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1}};
     renderer::ViewDescription view;
     view.OrthographicCamera = true;
     view.CameraPosition = {0, 0, 5};
@@ -2574,7 +2645,7 @@ TEST_CASE("Forward-lit template follows World materials camera and viewport exte
         SKIP("No GPU adapter on this host");
     }
     RenderScene scene = MakeScene({1, 1, 1, 1});
-    scene.Meshes[0].Normals = {{0, 0, 1}, {0, 0, 1}, {0, 0, 1}};
+    scene.Lit = true;
     PreviewSurface surface;
     surface.Emission = {1, 0, 0};
     scene.Surfaces.append(surface);

@@ -29,6 +29,11 @@ ComputeMain(uint3 dispatchThreadId : SV_DispatchThreadID) {
     bool isMade = TryMakeLinearlyTransformedCosine(inverseTransform, distribution);
     LinearlyTransformedCosinePolygon polygon;
     bool isPrepared = TryPrepareLinearlyTransformedCosinePolygon(input, distribution, polygon);
+    ProjectedPolygonInput transformed = input;
+    [unroll] for (uint i = 0; i < MAX_PROJECTED_POLYGON_INPUT_VERTICES; ++i)
+    {
+        transformed.PositionsTangent[i] = MultiplyColumns(distribution.InverseTransform, input.PositionsTangent[i]);
+    }
     float3 direction;
     bool isSampled = TrySampleLinearlyTransformedCosinePolygon(polygon, parameters.yz, direction);
     uint resultBase = index * LUDUS_LINEARLY_TRANSFORMED_COSINE_PARITY_WORDS_PER_RESULT;
@@ -40,5 +45,5 @@ ComputeMain(uint3 dispatchThreadId : SV_DispatchThreadID) {
     Results[resultBase + 2] = float4(EvaluateLinearlyTransformedCosinePolygonDensity(polygon, direction),
                                      EvaluateLinearlyTransformedCosine(distribution, direction),
                                      distribution.InverseDeterminant,
-                                     0.0);
+                                     ComputeProjectedSolidAngleIntegral(transformed) / PI);
 }
