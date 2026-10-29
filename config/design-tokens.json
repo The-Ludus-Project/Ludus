@@ -22,6 +22,11 @@
       "light": "#090c0f",
       "use": "3D viewport, texture viewer and graph canvas base; dark in both appearances so lighting judgements do not change with the UI theme"
     },
+    "surface.viewportTop": {
+      "dark": "#0f151b",
+      "light": "#0f151b",
+      "use": "Top of the Solid and Albedo viewport backdrop, a very subtle gradient down to surface.viewport; Lit keeps the scene background"
+    },
     "surface.log": {
       "dark": "#111a21",
       "light": "#18232c",

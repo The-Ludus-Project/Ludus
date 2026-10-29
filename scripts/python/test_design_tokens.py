@@ -76,6 +76,15 @@ class TokenFileTests(unittest.TestCase):
         self.assertLess(scales["body"], scales["title"])
         self.assertLess(scales["title"], scales["heading"])
 
+    def test_output_shader_backdrop_matches_the_viewport_tokens(self):
+        shader = (design_tokens.REPOSITORY_ROOT / "modules" / "graphics" / "renderer" / "shaders"
+                  / "renderer_output.slang").read_text(encoding="utf-8")
+        for constant, token in (("BACKDROP_TOP_SRGB", "surface.viewportTop"),
+                                ("BACKDROP_BOTTOM_SRGB", "surface.viewport")):
+            value = design_tokens.colour(self.document, token, "dark").lstrip("#")
+            channels = ", ".join(f"{int(value[index:index + 2], 16)}.0" for index in (0, 2, 4))
+            self.assertIn(f"{constant} = float3({channels}) / 255.0", shader, token)
+
     def test_viewport_stays_dark_in_both_appearances(self):
         viewport = self.document["colours"]["surface.viewport"]
         self.assertEqual(viewport["dark"], viewport["light"])
