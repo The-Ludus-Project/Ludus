@@ -86,6 +86,7 @@ struct RasterViewport::State final
     float32 Exposure = 1;
     ToneCurve Curve = ToneCurve::Reinhard;
     bool HasBackdrop = false;
+    SpatialAntialiasing Antialiasing = SpatialAntialiasing::Off;
     ~State() noexcept
     {
         static_cast<void>(SceneRenderer->Release(PendingView));
@@ -116,7 +117,8 @@ Status RasterViewport::Initialize(Renderer& renderer,
                                   ViewportColorMode colorMode,
                                   bool shouldPresentToSurface,
                                   ToneCurve toneCurve,
-                                  bool hasBackdrop) noexcept
+                                  bool hasBackdrop,
+                                  SpatialAntialiasing antialiasing) noexcept
 {
     if (mState)
     {
@@ -124,7 +126,8 @@ Status RasterViewport::Initialize(Renderer& renderer,
     }
     if (width == 0 || height == 0 || math::IsFinite(exposure) == false || exposure < .000001F || exposure > 1000 ||
         (colorMode != ViewportColorMode::PreferHdr && colorMode != ViewportColorMode::Linear8) ||
-        (toneCurve != ToneCurve::Reinhard && toneCurve != ToneCurve::PbrNeutral))
+        (toneCurve != ToneCurve::Reinhard && toneCurve != ToneCurve::PbrNeutral) ||
+        antialiasing > SpatialAntialiasing::Balanced)
     {
         return Status::InvalidDescription;
     }
@@ -188,6 +191,7 @@ Status RasterViewport::Initialize(Renderer& renderer,
     candidate->Exposure = exposure;
     candidate->Curve = toneCurve;
     candidate->HasBackdrop = hasBackdrop;
+    candidate->Antialiasing = antialiasing;
     mState = Move(candidate);
     const Status setup = Poll();
     if (Accepted(setup) == false)
@@ -222,6 +226,7 @@ Status RasterViewport::Poll() noexcept
                                                                                     .Curve = state.Curve,
                                                                                     .Encode = true,
                                                                                     .HasBackdrop = state.HasBackdrop,
+                                                                                    .Antialiasing = state.Antialiasing,
                                                                                 },
                                                                                 state.Display);
         if (Accepted(created) == false)

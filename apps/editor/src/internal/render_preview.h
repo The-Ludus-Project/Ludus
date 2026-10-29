@@ -19,6 +19,7 @@
 #include "internal/preview_shading.h"
 #include "internal/ray_path_overlay.h"
 #include "internal/render_scene.h"
+#include "internal/viewport_antialiasing.h"
 #include "internal/viewport_frame_pump.h"
 #include "internal/viewport_frame_source.h"
 #include "internal/viewport_size.h"
@@ -68,6 +69,13 @@ public:
     [[nodiscard]] LUDUS_INLINE bool ShouldForceRaster() const noexcept
     {
         return mShouldForceRaster;
+    }
+    /// Spatial antialiasing of the displayed frame (FXAA in the output pass). Changing it rebuilds the GPU viewport
+    /// on the next frame; every shading mode honours it. Persisted with the navigation state.
+    void SetAntialiasing(graphics::renderer::SpatialAntialiasing antialiasing);
+    [[nodiscard]] LUDUS_INLINE graphics::renderer::SpatialAntialiasing GetAntialiasing() const noexcept
+    {
+        return mAntialiasing;
     }
     void SetShading(PreviewShading shading);
     [[nodiscard]] LUDUS_INLINE PreviewShading GetShading() const noexcept
@@ -308,6 +316,9 @@ private:
     }
     PreviewShading mShading = PreviewShading::Solid;
     bool mShouldForceRaster = false;
+    graphics::renderer::SpatialAntialiasing mAntialiasing = DEFAULT_VIEWPORT_ANTIALIASING;
+    /// The GPU viewport was built with an older antialiasing choice and is rebuilt on the next frame.
+    bool mIsViewportStale = false;
     /// Read a completed GPU timing sample and re-arm the probe; call only between frames.
     void serviceGpuTiming(bool shouldArm) noexcept;
     bool mIsGpuProfilingEnabled = false;

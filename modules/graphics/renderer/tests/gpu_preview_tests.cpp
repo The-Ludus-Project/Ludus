@@ -15,6 +15,7 @@
 #include "renderer_surface.h"
 #include "renderer_surface_shadow.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <ludus/foundation/base/compiler.h>
@@ -538,6 +539,184 @@ TEST_CASE("Interactive raster viewport shows a gradient backdrop only when asked
                         BENCHMARK_FRAMES,
                         static_cast<unsigned long long>(totalTicks));
             viewport.Reset();
+        }
+    }
+    REQUIRE(renderer.Release(world) == S::Ready);
+    REQUIRE(renderer.Release(mesh) == S::Ready);
+}
+
+TEST_CASE("Interactive raster viewport antialiases display edges only when asked",
+          "[renderer][gpu][viewport][antialiasing]")
+{
+    rhi::Shutdown();
+    struct Guard
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    constexpr uint32 EXTENT = 32;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    rhi::DeviceDescription description;
+    description.Required.PortableRaster = true;
+    const rhi::DeviceStatus started =
+        rhi::CreateDevice({}, { .Width = EXTENT, .Height = EXTENT }, description, device, surface);
+#if defined(LUDUS_TEST_METAL)
+    if (started != rhi::DeviceStatus::Ready && rhi::GetStartup().Error == rhi::StartupError::AdapterUnavailable)
+    {
+        SKIP("No Metal adapter");
+    }
+#endif
+    REQUIRE(started == rhi::DeviceStatus::Ready);
+    rr::Renderer renderer;
+    REQUIRE(renderer.Initialize(device, shaders::renderer_flat::Vertex(), shaders::renderer_flat::Fragment()) ==
+            S::Ready);
+    REQUIRE(renderer.InitializeViews(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment()) ==
+            S::Ready);
+    REQUIRE(renderer.InitializeLighting(shaders::renderer_output::Vertex(),
+                                        shaders::renderer_output::Fragment(),
+                                        shaders::renderer_shadow::Fragment()) == S::Ready);
+    // A white triangle whose hypotenuse crosses the image diagonally, an edge at a 45 degree slope.
+    constexpr float32 TRIANGLE_DEPTH = .5F;
+    const math::Vector3 positions[]{{-1, -1, TRIANGLE_DEPTH}, {1, -1, TRIANGLE_DEPTH}, {-1, 1, TRIANGLE_DEPTH}};
+    const uint32 indices[]{0, 1, 2};
+    rr::Mesh mesh;
+    REQUIRE(renderer.CreateMesh({positions, 3, indices, 3}, mesh) == S::Ready);
+    rr::SceneItem item;
+    item.Geometry = mesh;
+    item.SourceId = 1;
+    item.Material.Color = {1, 1, 1, 1};
+    rr::Snapshot world;
+    REQUIRE(renderer.CreateSnapshot(&item, 1, world) == S::Ready);
+    constexpr usize CHANNELS = 4;
+    constexpr usize IMAGE_BYTES = EXTENT * EXTENT * CHANNELS;
+    const auto render = [&](rr::SpatialAntialiasing antialiasing, uint8(&outPixels)[IMAGE_BYTES]) {
+        rr::RasterViewport viewport;
+        REQUIRE(viewport.Initialize(renderer,
+                                    device,
+                                    EXTENT,
+                                    EXTENT,
+                                    1,
+                                    rr::ViewportColorMode::Linear8,
+                                    false,
+                                    rr::ToneCurve::Reinhard,
+                                    false,
+                                    antialiasing) == S::Ready);
+        rr::ViewDescription camera;
+        rr::ViewReport report;
+        REQUIRE(viewport.Update(world, camera, report) == S::Ready);
+        rhi::SubmissionToken producer;
+        REQUIRE(viewport.Render(surface, producer) == S::Ready);
+        rr::ViewportFrame frame;
+        rr::ViewportImage image;
+        const uint64 timeout = time::NowTicks();
+        S status = S::Pending;
+        do
+        {
+            status = viewport.Acquire(frame, image);
+        } while (status == S::Pending && time::NowTicks() - timeout < 10 * time::NANOSECONDS_PER_SECOND);
+        REQUIRE(status == S::Ready);
+        ReadImage(device, {image.Texture, image.Producer, EXTENT, EXTENT, 0}, outPixels, IMAGE_BYTES);
+        REQUIRE(viewport.Release(frame) == S::Ready);
+        viewport.Reset();
+    };
+    uint8 off[IMAGE_BYTES];
+    uint8 fast[IMAGE_BYTES];
+    uint8 balanced[IMAGE_BYTES];
+    render(rr::SpatialAntialiasing::Off, off);
+    render(rr::SpatialAntialiasing::Fast, fast);
+    render(rr::SpatialAntialiasing::Balanced, balanced);
+    uint8 fill = 0;
+    for (usize byte = 0; byte < IMAGE_BYTES; byte += CHANNELS)
+    {
+        fill = std::max(fill, off[byte]);
+    }
+    REQUIRE(fill > 0);
+    const auto countIntermediate = [&](const uint8(&pixels)[IMAGE_BYTES]) {
+        usize count = 0;
+        for (usize byte = 0; byte < IMAGE_BYTES; byte += CHANNELS)
+        {
+            count += pixels[byte] != 0 && pixels[byte] != fill ? 1 : 0;
+        }
+        return count;
+    };
+    // Without filtering the rasterized edge has only the two values; with it the edge gains intermediate steps.
+    CHECK(countIntermediate(off) == 0);
+    CHECK(countIntermediate(fast) > 0);
+    CHECK(countIntermediate(balanced) > 0);
+    for (const uint8* pixels : {static_cast<const uint8*>(fast), static_cast<const uint8*>(balanced)})
+    {
+        usize changed = 0;
+        for (usize byte = 0; byte < IMAGE_BYTES; byte += CHANNELS)
+        {
+            // Filtering blends between the two values and never overshoots them.
+            CHECK(pixels[byte] <= fill);
+            changed += pixels[byte] != off[byte] ? 1 : 0;
+        }
+        // Only a thin band along the edge changes; flat areas, such as the corners, are untouched.
+        CHECK(changed > 0);
+        CHECK(changed < usize{EXTENT} * 6);
+        CHECK(pixels[(usize{1} * EXTENT + EXTENT - 2) * CHANNELS] == off[(usize{1} * EXTENT + EXTENT - 2) * CHANNELS]);
+        CHECK(pixels[(usize{EXTENT - 2} * EXTENT + 1) * CHANNELS] == off[(usize{EXTENT - 2} * EXTENT + 1) * CHANNELS]);
+    }
+    if (std::getenv("LUDUS_RENDERER_BENCHMARK") != nullptr)
+    {
+        // Frame time of a 1080p viewport, render to acquire, per antialiasing mode. Timings on a software device are
+        // noisy, so each mode runs several times, interleaved, and the median is reported.
+        constexpr uint32 BENCHMARK_WIDTH = 1920;
+        constexpr uint32 BENCHMARK_HEIGHT = 1080;
+        constexpr uint32 BENCHMARK_FRAMES = 40;
+        constexpr usize BENCHMARK_RUNS = 15;
+        constexpr usize MODE_COUNT = 3;
+        uint64 totals[MODE_COUNT][BENCHMARK_RUNS]{};
+        for (usize run = 0; run < BENCHMARK_RUNS; ++run)
+        {
+            for (usize mode = 0; mode < MODE_COUNT; ++mode)
+            {
+                rr::RasterViewport viewport;
+                REQUIRE(viewport.Initialize(renderer,
+                                            device,
+                                            BENCHMARK_WIDTH,
+                                            BENCHMARK_HEIGHT,
+                                            1,
+                                            rr::ViewportColorMode::Linear8,
+                                            false,
+                                            rr::ToneCurve::Reinhard,
+                                            false,
+                                            static_cast<rr::SpatialAntialiasing>(mode)) == S::Ready);
+                rr::ViewDescription camera;
+                rr::ViewReport report;
+                REQUIRE(viewport.Update(world, camera, report) == S::Ready);
+                for (uint32 frameIndex = 0; frameIndex < BENCHMARK_FRAMES; ++frameIndex)
+                {
+                    const uint64 start = time::NowTicks();
+                    rhi::SubmissionToken producer;
+                    REQUIRE(viewport.Render(surface, producer) == S::Ready);
+                    rr::ViewportFrame frame;
+                    rr::ViewportImage image;
+                    S status = S::Pending;
+                    while (status == S::Pending)
+                    {
+                        status = viewport.Acquire(frame, image);
+                    }
+                    REQUIRE(status == S::Ready);
+                    totals[mode][run] += time::NowTicks() - start;
+                    REQUIRE(viewport.Release(frame) == S::Ready);
+                }
+                viewport.Reset();
+            }
+        }
+        for (usize mode = 0; mode < MODE_COUNT; ++mode)
+        {
+            std::sort(totals[mode], totals[mode] + BENCHMARK_RUNS);
+            std::printf("AABENCH,%s,%ux%u,%u,%llu\n",
+                        mode == 0 ? "off" : (mode == 1 ? "fast" : "balanced"),
+                        BENCHMARK_WIDTH,
+                        BENCHMARK_HEIGHT,
+                        BENCHMARK_FRAMES,
+                        static_cast<unsigned long long>(totals[mode][BENCHMARK_RUNS / 2]));
         }
     }
     REQUIRE(renderer.Release(world) == S::Ready);
