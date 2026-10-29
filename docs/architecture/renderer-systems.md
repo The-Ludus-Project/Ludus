@@ -1414,6 +1414,11 @@ this case independently of the supplied Staircase2 World acceptance test.
 Float32 is the only departure from the oracle's arithmetic. Slab exits widen by
 `1 + 2γ(3)` (Pharr, Jakob and Humphreys, PBRT 3rd edition, section 3.9.2). The
 watertight edge test omits the paper's float64 fallback for exactly-zero edges.
+Near the edge opposite a triangle's first corner, the two float32 barycentric
+quotients can round to a sum above one, which surface reloads such as
+`GetSurfaceHit` reject. The traversal therefore clamps both to [0,1] and bounds
+the third corner's weight by one minus the second's. The oracle's float64
+quotients, cast to float32, already satisfy that bound.
 Normalization and the environment CDF also use float32. These can change an
 individual path at grazing or near-edge hits; they do not change the declared
 integral. One dispatch covers the whole image, so very large dense scenes can

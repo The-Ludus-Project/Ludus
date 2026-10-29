@@ -132,7 +132,13 @@ bool IntersectBvhTriangle(uint triangle,
     if (distanceWorld < ray.MinimumDistanceWorld || distanceWorld > limitWorld)
         return false;
     outDistanceWorld = distanceWorld;
-    outBarycentric = float2(edge.y / determinant, edge.z / determinant);
+    // Near the edge opposite corner 0, edge.x is zero or negligible and the two separately rounded
+    // quotients can sum above one (Metal's fast-math division makes that more frequent), which
+    // GetSurfaceHit rejects. Bound the third by 1 - second: 1 - second is exact or within half an
+    // ulp, so the float32 sum rounds to at most one. The adjustment is within rounding error.
+    float second = saturate(edge.y / determinant);
+    float third = min(saturate(edge.z / determinant), 1 - second);
+    outBarycentric = float2(second, third);
     return true;
 }
 /// Trace the ray interval [MinimumDistanceWorld, MaximumDistanceWorld] through the packed BVH.
