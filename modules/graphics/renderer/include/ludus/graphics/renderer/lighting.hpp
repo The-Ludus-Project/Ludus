@@ -343,6 +343,10 @@ struct LightingOutput final
     /// Encode to sRGB for unorm display textures/surfaces; hardware sRGB surfaces encode instead.
     /// False selects a linear display intermediate, suitable for subsequent linear UI blending.
     bool Encode = true;
+    /// Show the editor backdrop (a vertical gradient between the surface.viewportTop and surface.viewport tokens)
+    /// behind every pixel the scene left uncovered. The scene target must be cleared to alpha zero, which
+    /// RasterViewport does for the viewports it prepares with a backdrop. False leaves the image unchanged.
+    bool HasBackdrop = false;
 };
 /// Independent CPU reference for the documented single-scatter GGX/Smith/Schlick + Lambert BRDF.
 /// Base color and metallic [0,1], roughness [0.045,1]; directions normalized on admission.

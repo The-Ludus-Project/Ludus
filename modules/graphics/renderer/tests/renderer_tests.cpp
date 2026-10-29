@@ -98,6 +98,24 @@ struct Session
         fragment.Bindings = bindings;
         REQUIRE(Renderer.InitializeViews(vertex, fragment) == rhi::RasterStatus::Ready);
     }
+    rhi::RasterStatus EnableGrid()
+    {
+        rhi::RasterShaderInput inputs[12];
+        for (uint32 i = 0; i < 12; ++i)
+        {
+            inputs[i] = {i, i == 0 ? rhi::RasterVertexFormat::Float3 : rhi::RasterVertexFormat::Float4};
+        }
+        rhi::RasterShaderDescription vertex;
+        rhi::RasterShaderDescription fragment;
+        vertex.Artifact.Stage = rhi::ShaderStage::Vertex;
+        vertex.Artifact.Wgsl = "grid vertex fixture";
+        vertex.Artifact.WgslEntry = "vertexMain";
+        vertex.Inputs = inputs;
+        fragment.Artifact.Stage = rhi::ShaderStage::Fragment;
+        fragment.Artifact.Wgsl = "grid fragment fixture";
+        fragment.Artifact.WgslEntry = "fragmentMain";
+        return Renderer.InitializeGrid(vertex, fragment);
+    }
     ~Session()
     {
         Renderer.Reset();
@@ -2456,6 +2474,79 @@ TEST_CASE("World grids use independent budgets and read-only conventional and re
         REQUIRE(session.Renderer.Release(view) == rhi::RasterStatus::Ready);
         CHECK(session.Renderer.GetHostBytes() < retainedHostBytes);
     }
+}
+
+TEST_CASE("Analytic world grids draw one blended plane and one axis ribbon, and are opt in", "[renderer][grid]")
+{
+    Session session;
+    session.EnableViews();
+    const rr::SceneItem item = session.Item(1);
+    rr::Snapshot snapshot;
+    REQUIRE(session.Renderer.CreateSnapshot(&item, 1, snapshot) == rhi::RasterStatus::Ready);
+    rr::ViewDescription description;
+    description.WorldGrid = { .IsVisible = true, .FocusDistance = 5, .Width = 64, .Height = 64 };
+    rr::PreparedView ribbons;
+    rr::ViewReport ribbonReport;
+    REQUIRE(session.Renderer.PrepareView(snapshot, description, ribbons, ribbonReport) == rhi::RasterStatus::Ready);
+    CHECK(ribbonReport.Draws == 2);
+    REQUIRE(session.EnableGrid() == rhi::RasterStatus::Ready);
+    CHECK(session.EnableGrid() == rhi::RasterStatus::InvalidState);
+    rr::PreparedView analytic;
+    rr::ViewReport analyticReport;
+    REQUIRE(session.Renderer.PrepareView(snapshot, description, analytic, analyticReport) == rhi::RasterStatus::Ready);
+    CHECK(analyticReport.Draws == 3);
+    CHECK(session.Renderer.GetHostBytes() > 0);
+    usize blended = 0;
+    for (const rhi::internal::RasterPipelineInfo& pipeline : rhi::reference::Pipelines)
+    {
+        if (pipeline.Blend == true && pipeline.AttributeCount == 12)
+        {
+            CHECK(pipeline.Depth == true);
+            CHECK(pipeline.DepthWrite == false);
+            CHECK(pipeline.StreamCount == 2);
+            ++blended;
+        }
+    }
+    CHECK(blended > 0);
+    REQUIRE(rhi::BeginFrame(session.Device, session.Surface) == rhi::DeviceStatus::Ready);
+    REQUIRE(session.Renderer.DrawView(ribbons, {}) == rhi::RasterStatus::Ready);
+    CHECK(rhi::reference::Draws == 2);
+    REQUIRE(session.Renderer.DrawView(analytic, {}) == rhi::RasterStatus::Ready);
+    CHECK(rhi::reference::Draws == 5);
+    rhi::SubmissionToken completion;
+    REQUIRE(rhi::EndFrame(session.Device, completion) == rhi::RasterStatus::Ready);
+    description.ShadowCasters = true;
+    rr::PreparedView casters;
+    rr::ViewReport casterReport;
+    REQUIRE(session.Renderer.PrepareView(snapshot, description, casters, casterReport) == rhi::RasterStatus::Ready);
+    CHECK(casterReport.Draws == 1);
+}
+
+TEST_CASE("Analytic grid shaders are validated before use", "[renderer][grid]")
+{
+    Session session;
+    rhi::RasterShaderInput inputs[12];
+    for (uint32 i = 0; i < 12; ++i)
+    {
+        inputs[i] = {i, i == 0 ? rhi::RasterVertexFormat::Float3 : rhi::RasterVertexFormat::Float4};
+    }
+    rhi::RasterShaderDescription vertex;
+    rhi::RasterShaderDescription fragment;
+    vertex.Artifact.Stage = rhi::ShaderStage::Vertex;
+    vertex.Artifact.Wgsl = "grid vertex fixture";
+    vertex.Artifact.WgslEntry = "vertexMain";
+    fragment.Artifact.Stage = rhi::ShaderStage::Fragment;
+    fragment.Artifact.Wgsl = "grid fragment fixture";
+    fragment.Artifact.WgslEntry = "fragmentMain";
+    vertex.Inputs = {inputs, 6};
+    CHECK(session.Renderer.InitializeGrid(vertex, fragment) == rhi::RasterStatus::InvalidDescription);
+    vertex.Inputs = inputs;
+    inputs[3].Format = rhi::RasterVertexFormat::Float3;
+    CHECK(session.Renderer.InitializeGrid(vertex, fragment) == rhi::RasterStatus::InvalidDescription);
+    inputs[3].Format = rhi::RasterVertexFormat::Float4;
+    rr::Renderer uninitialized;
+    CHECK(uninitialized.InitializeGrid(vertex, fragment) == rhi::RasterStatus::NotReady);
+    CHECK(session.Renderer.InitializeGrid(vertex, fragment) == rhi::RasterStatus::Ready);
 }
 
 TEST_CASE("Pending and failed grid preparation preserve the previous drawable view", "[renderer][grid]")

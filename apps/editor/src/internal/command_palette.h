@@ -18,6 +18,8 @@ class QAction;
 class QListWidget;
 class QLineEdit;
 class QMenuBar;
+class QPropertyAnimation;
+class QShowEvent;
 class QTreeWidget;
 
 namespace ludus::editor
@@ -57,6 +59,9 @@ RankPaletteEntries(const QList<PaletteEntry>& entries, const QString& query, boo
 /// Most commands the palette lists at once.
 inline constexpr int PALETTE_MAX_RESULTS = 50;
 
+/// How long the palette takes to fade in; zero when the user prefers reduced motion.
+inline constexpr int PALETTE_FADE_MILLISECONDS = 100;
+
 /// A search box over the commands. Enter runs the chosen command after the palette closes.
 class CommandPalette final : public QDialog
 {
@@ -68,8 +73,12 @@ public:
     /// Entry indices currently listed, best first.
     [[nodiscard]] PaletteIndexList GetShownIndices() const;
 
+    /// True while the fade-in is still running.
+    [[nodiscard]] bool IsFading() const;
+
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
+    void showEvent(QShowEvent* event) override;
 
 private:
     void refresh();
@@ -79,6 +88,7 @@ private:
     bool mIsEnabledOnly = false;
     QLineEdit* mSearchOrNull = nullptr;
     QListWidget* mListOrNull = nullptr;
+    QPropertyAnimation* mFadeOrNull = nullptr;
 };
 
 /// The F1 list: commands that have a shortcut, grouped by menu, filtered by the search box.

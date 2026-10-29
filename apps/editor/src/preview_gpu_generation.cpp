@@ -230,6 +230,15 @@ bool PreviewGpuGeneration::prepareViews() noexcept
 {
 #if defined(LUDUS_EDITOR_GPU_PREVIEW)
     const rhi::RasterStatus status = Renderer.Poll();
+    if (status == rhi::RasterStatus::Ready && mIsGridInitialized == false)
+    {
+        // Optional: without the analytic grid shaders, or when the program cannot take them, the
+        // viewport keeps the ribbon grid, so a refusal here is not a failure of the generation.
+        static_cast<void>(
+            Renderer.InitializeGrid(Shaders.Get(PreviewShaderProgram::Grid, PreviewShaderStage::Vertex),
+                                    Shaders.Get(PreviewShaderProgram::Grid, PreviewShaderStage::Fragment)));
+        mIsGridInitialized = true;
+    }
     return status == rhi::RasterStatus::Pending ||
            (status == rhi::RasterStatus::Ready &&
             acceptStage(

@@ -8,6 +8,8 @@ traversal and primitive decisions. The primitives listed under
 [Implementation notes](#implementation-notes). The RT1 profile (stage 2) is
 implemented as of October 29, 2026, in the CPU oracle and the GPU-compute
 reference, with the choices listed under [RT1 implementation notes](#rt1-implementation-notes).
+Acceptance item 5 was measured the same day; see
+[RT1 equal-time evaluation](#rt1-equal-time-evaluation).
 This review is the estimator review that
 [hybrid and real-time transport](renderer-systems.md#hybrid-and-real-time-transport)
 requires before resampling enters a Ludus estimator. It covers next-event
@@ -575,10 +577,127 @@ Evidence against [Acceptance](#acceptance) item 4, on Apple M5 Metal:
   receiver, finite contributions and weights that partition unity, in the CPU unit
   tests, the shader parity kernel and the capture tests.
 - **`UniformArea`.** Captures stay bit-identical in both implementations.
-- **Not yet covered.** No fixture has textured emitters. Thousands of emissive
-  triangles and the equal-time evaluation of item 5 also remain open.
+- **Textured emitters.** Only the item 5 benchmark below has them. There the image
+  means of both modes agree within 0.1%, but no test asserts that.
 - **Not run.** Vulkan, WebGPU and `NativeQueries` captures of the resampled mode,
   and sanitizer builds, first run in batch CI.
+
+#### RT1 equal-time evaluation
+
+Evidence against [Acceptance](#acceptance) item 5. The opt-in Catch2 tag
+`[.reference-light-sampling-benchmark]` in `ludus_renderer_render_tests`
+([source](../../modules/graphics/renderer/tests/reference_light_sampling_benchmark.cpp))
+renders RT1 in both modes. Its usage is under
+[Light-sampling modes](renderer-systems.md#light-sampling-modes).
+
+- **Scene.** The emitter field of the [template benchmark](#equal-time-benchmark),
+  rebuilt as renderer meshes: the Cornell room lit by 3200 one-sided emissive
+  triangles with power spanning a factor of 64.
+  - One tint's emitters, a third of the field, multiply their emission by a 4 × 4
+    checker of 1 and 0.25. The power CDF and the target use the constant emission
+    factor, which bounds the textured emission from above.
+  - The surface finishes match the template's diffuse and specular variants. Each
+    finish runs with direct lighting only (`MaxDepth` 1) and at depth 4.
+- **Timing.**
+  - Each mode renders 32 samples per pixel of the 288 × 192 image twice, in the
+    order `UniformArea`, resampled, resampled, `UniformArea`.
+  - Its cost per sample is the mean of the two runs' median device times of the
+    GPU-compute transport pass. Each pass traces one sample of every pixel.
+  - Shadow and closest rays per pixel come from `ReferenceCaptureInfo`'s visibility
+    and closest query counts.
+- **Error.**
+  - The reference is a GPU-compute `UniformArea` image at 8192 samples per pixel,
+    with an independent seed.
+  - The resampled mode is read at 4, 16 and 64 samples. `UniformArea` is read at the
+    same samples, and at the same transport kernel time.
+  - Metrics cover the linear `Direct + Indirect` AOVs of every pixel and RGB channel:
+    MAPE `|x − r| / (r + 0.01)`, with the template's guard, and RMSE. Float AOVs need
+    no tone-mapped readback or saturation cut.
+  - Primary emission is left out: both modes evaluate it bit-identically from
+    unchanged random dimensions.
+- **CPU oracle.** The diffuse room at 96 × 64 renders 4 and 16 samples per pixel in
+  both modes, at depths 1 and 4, against a GPU-compute `UniformArea` reference at
+  8192 samples. Larger extents and the equal-time comparison are GPU-only.
+
+Results on Apple M5 (Metal, macOS 26.6), with the `macos-clang-development` build
+(Clang 23.1.3, Slang 2026.1.2), October 29, 2026. The machine was shared, at a load
+average of 5–23. The tag ran three times, taking 4–7 minutes each. Runs 1 and 2
+built `develop` at `da35d03e`; run 3 built `a34fccf1`, the base of this change. All
+three runs produced bit-identical references and equal-sample images.
+
+| Case | `UniformArea` kernel per sample | Resampled kernel per sample | Cost ratio | Shadow rays per pixel, `UniformArea` / resampled |
+| --- | --- | --- | --- | --- |
+| Diffuse, direct | 1.13–1.15 ms | 20.5–21.0 ms | 17.9–18.3 | 0.458 / 0.916 |
+| Specular, direct | 0.88–1.29 ms | 20.6–22.1 ms | 16.7–25.2 | 0.458 / 0.913 |
+| Diffuse, depth 4 | 2.75–4.14 ms | 85.0–90.1 ms | 20.5–32.7 | 0.992 / 1.981 |
+| Specular, depth 4 | 2.29–4.00 ms | 81.6–86.0 ms | 20.4–37.6 | 1.055 / 2.099 |
+
+Closest rays per pixel are equal in both modes: 1.40–1.44 with direct lighting only
+and 1.97–2.12 at depth 4. As in the template benchmark, rays are averaged over all
+pixels.
+
+Each error cell gives MAPE / RMSE. The two equal-time columns are runs 1 and 2,
+whose cost ratios differ. Run 3 has the same ordering in every cell.
+
+| Case | Samples | Resampled | `UniformArea`, equal samples | `UniformArea`, equal time, run 1 (samples) | Run 2 (samples) |
+| --- | --- | --- | --- | --- | --- |
+| Diffuse, direct | 4 | 0.083 / 0.064 | 0.164 / 0.140 | 0.043 / 0.033 (73) | 0.043 / 0.033 (73) |
+| Diffuse, direct | 16 | 0.042 / 0.031 | 0.088 / 0.071 | 0.022 / 0.017 (292) | 0.022 / 0.017 (293) |
+| Diffuse, direct | 64 | 0.022 / 0.017 | 0.045 / 0.036 | 0.011 / 0.0091 (1166) | 0.011 / 0.0091 (1171) |
+| Specular, direct | 4 | 0.062 / 0.116 | 0.137 / 0.191 | 0.030 / 0.040 (101) | 0.037 / 0.048 (67) |
+| Specular, direct | 16 | 0.032 / 0.057 | 0.073 / 0.096 | 0.016 / 0.020 (403) | 0.019 / 0.024 (268) |
+| Specular, direct | 64 | 0.017 / 0.029 | 0.038 / 0.049 | 0.0084 / 0.011 (1610) | 0.010 / 0.013 (1070) |
+| Diffuse, depth 4 | 4 | 0.186 / 0.093 | 0.262 / 0.180 | 0.067 / 0.037 (92) | 0.057 / 0.031 (131) |
+| Diffuse, depth 4 | 16 | 0.098 / 0.047 | 0.147 / 0.090 | 0.036 / 0.019 (367) | 0.030 / 0.016 (524) |
+| Diffuse, depth 4 | 64 | 0.051 / 0.025 | 0.079 / 0.045 | 0.019 / 0.010 (1467) | 0.017 / 0.0087 (2095) |
+| Specular, depth 4 | 4 | 0.286 / 0.141 | 0.398 / 0.235 | 0.125 / 0.038 (150) | 0.159 / 0.052 (82) |
+| Specular, depth 4 | 16 | 0.183 / 0.071 | 0.274 / 0.116 | 0.069 / 0.019 (602) | 0.090 / 0.026 (327) |
+| Specular, depth 4 | 64 | 0.108 / 0.036 | 0.174 / 0.058 | 0.040 / 0.011 (2406) | 0.050 / 0.014 (1307) |
+
+On the CPU oracle at 96 × 64, with the same field and the diffuse finish:
+
+| Depth | Samples | `UniformArea` | Resampled |
+| --- | --- | --- | --- |
+| 1 | 4 | 0.184 / 0.141 | 0.104 / 0.064 |
+| 1 | 16 | 0.098 / 0.061 | 0.054 / 0.036 |
+| 4 | 4 | 0.279 / 0.168 | 0.207 / 0.095 |
+| 4 | 16 | 0.159 / 0.081 | 0.110 / 0.048 |
+
+In run 1, the oracle needed 137 ms of wall time for 16 `UniformArea` samples per
+pixel at depth 1 and 1516 ms for 16 resampled samples. At depth 4 it needed 103 ms
+and 1110 ms. These times include setup and are not equal-time measurements.
+
+What the results show:
+
+- **Equal samples.** The resampled mode has lower error in every case and in both
+  implementations.
+  - With direct lighting only, MAPE falls by 2.0–2.3× and RMSE by 1.6–2.3×.
+  - At depth 4, MAPE falls by 1.4–1.6× and RMSE by 1.6–1.9×. Indirect bounces gain
+    less than direct light.
+- **Equal time.** `UniformArea` has lower error in every case and in all three runs.
+  - Its MAPE is 1.7–2.1× lower with direct lighting only, and 1.8–3.3× lower at
+    depth 4. Its RMSE is 1.8–2.9× and 2.3–3.7× lower.
+  - Equal error per unit time needs a cost ratio near the square of the
+    equal-sample error ratio: about 3–5 with direct lighting only, and 2–4 at depth
+    4. The measured ratio is 17–38.
+- **Unlike the template.** There, RIS kept a lower MAPE at equal time against
+  Veach–Guibas. Two differences probably explain the change; neither was measured
+  on its own:
+  - RT1's `UniformArea` already selects triangles by power, where the template's
+    Veach–Guibas baseline selects emitters uniformly. RT1's baseline therefore has
+    less to gain from resampling.
+  - With direct lighting only, as in the template, RT1's `UniformArea` transport
+    costs 0.9–1.3 ms per sample, against 2.7 ms for the template's Veach–Guibas
+    primary and MIS kernels. The resampled transport costs 20–22 ms, against
+    12.3 ms for the template's RIS.
+- **Cost.** It comes from the per-vertex target evaluations; see the template's
+  explanation in [Equal-time benchmark](#equal-time-benchmark). A cheaper target or
+  smaller `M` and `K` would change the equal-time result. This benchmark measures
+  such a change.
+- **Bias.** At 64 samples, the resampled image's mean transport luminance is within
+  0.1% of the reference in each case: 0.07359 against 0.07358, 0.04461 against
+  0.04464, 0.12527 against 0.12519, and 0.07978 against 0.07972. The textured
+  emitters give no measurable bias, but this is not a test.
 
 ## Ownership
 

@@ -543,6 +543,17 @@ creates no resource. Old unlit textured materials are not admitted to HDR target
 flat overlays remain available. Exposure is manual; auto exposure and tone-map curves
 beyond Reinhard and PBR Neutral remain planned.
 
+The Editor's Solid and Albedo viewport shows a very subtle vertical gradient behind the scene
+(`surface.viewportTop` to `surface.viewport`, `config/design-tokens.json`); Lit keeps the scene's own
+background. It costs no pass, draw or attachment: `RasterViewport::Initialize`'s `hasBackdrop` clears the scene
+target to alpha zero, and the existing output pass adds the gradient, in display space, under each pixel by
+`1 - alpha` (`LightingOutput::HasBackdrop`, `Output.w`). Every scene blend is premultiplied, so a
+partly covered pixel such as a grid line keeps its share of the backdrop. The default is off, which leaves
+the clear colour, the image and the uniform contents of games, exports and reference captures unchanged.
+The shader's endpoint constants must equal the tokens; `test_design_tokens.py` enforces it. Measured on
+lavapipe at 1080p over 15 runs of 40 frames, a viewport frame (render to acquire) has a median of 7.8 ms
+with the backdrop and 8.6 ms without it: no measurable difference.
+
 Default renderer budgets are eight prepared views (four shadow views plus scene/UI
 and overlap), two atlases, two programs, eight materials, four snapshots and four
 presentations. RHI tables grow to 64 per kind: two seven-variant lit programs,
@@ -1387,6 +1398,36 @@ The category draw at slot 0, analytic lights and the environment are unchanged.
   `Unsupported` otherwise.
 - **Probes.** Static-lighting diffuse probes stay on `UniformArea`; their virtual
   first receiver has no stored frame for the BSDF-hit density.
+
+The opt-in Catch2 tag `[.reference-light-sampling-benchmark]` in
+`ludus_renderer_render_tests` compares the two modes on 3200 emissive triangles, a
+third of them textured. It reports the transport kernel's device time per sample,
+shadow rays per pixel, and MAPE and RMSE against a high-sample `UniformArea`
+reference, at equal samples and at equal kernel time. It takes 4–7 minutes on Apple
+M5 and is not part of the CTest run:
+
+```bash
+out/build/macos-clang-development/modules/graphics/renderer/ludus_renderer_render_tests \
+  "[.reference-light-sampling-benchmark]"
+```
+
+On Apple M5 Metal (macOS 26.6, `macos-clang-development` with Clang 23.1.3 and
+Slang 2026.1.2), on October 29, 2026, at 288 × 192:
+- **Cost.** One `ResampledProjectedSolidAngle` sample took 17–38 times as much
+  kernel time as a `UniformArea` sample: 20–22 ms against 0.9–1.3 ms with direct
+  lighting only, and 82–90 ms against 2.3–4.1 ms at depth 4. It traced twice as
+  many shadow rays: 0.92 against 0.46 per pixel with direct lighting only, and
+  1.98–2.10 against 0.99–1.06 at depth 4.
+- **Equal samples.** The resampled mode had lower error in every case, on the GPU
+  and on the CPU oracle. With direct lighting only, MAPE fell by 2.0–2.3× and RMSE
+  by 1.6–2.3×; at depth 4, by 1.4–1.6× and 1.6–1.9×.
+- **Equal time.** `UniformArea` had lower error in every case: 1.7–3.3× lower MAPE
+  and 1.8–3.7× lower RMSE, in three runs.
+
+So `ResampledProjectedSolidAngle` is the lower-variance estimator per sample, but not
+per unit of time on this workload. The
+[review's evaluation](many-area-light-sampling-reference-review.md#rt1-equal-time-evaluation)
+has the method, all measurements and the comparison with the template benchmark.
 
 CPU budgets cover renderer-owned mesh/material/job arrays and setup scratch,
 including simultaneous old/new jobs during reset. They exclude existing renderer
@@ -2564,6 +2605,48 @@ of the full scene; it does **not** qualify dense-scene pixel parity. The scene
 fingerprint matches the CPU capture. The RGB output SHA-256 (including alpha) was
 `e702b19b7f3f7235cbc6860e66c98c2279c1d81d743016d592679e2e974935dc`.
 See the [scene workflow](../examples/reference-scene.md#gpu-preview-acceptance).
+
+### Render-graph ray scene capacity
+
+Each render-graph ray pass is one preview job. Passes of one graph update that
+read the same scene data share the first pass's uploaded scene
+(`GpuPreviewGraphInvocation::SceneSourceOrNull`): its packed triangles, BVH,
+surfaces, lights, environment, texels and native geometry are stored once and
+charged to the preview and RHI budgets once. The last job released frees the
+copy. Each pass still keeps its own parameters, accumulation, images and TLAS.
+Before this sharing, a template with three ray passes uploaded three copies, so
+every byte ceiling admitted a third of the scene it could hold.
+
+Measured on Intel Sponza's glTF triangles with Metal on October 29, 2026:
+
+| Cost per triangle | Bytes | What it holds |
+| --- | --- | --- |
+| Packed GPU scene | about 322 | 16 float4 words per triangle, 3 per BVH node (about 1.03 nodes per triangle) and one order word |
+| CPU scene estimate | 364 | `ReferenceTriangle`, two BVH nodes and three index words, reserved before the build |
+| CPU fingerprint stream | 228 | Serialized triangle identity, checked against the scratch remaining after the scene |
+
+The first 999,981 triangles pack to 321,543,168 bytes; 1,999,967 pack to
+644,522,080 bytes. Three byte ceilings bound one prepared scene:
+
+| Ceiling | Owner | Scene limit |
+| --- | --- | --- |
+| `GRAPH_RAY_CPU_BYTES`, 2 GiB | Renderer (`render_graph_ray.h`) | Scene estimate plus fingerprint or packing scratch: about 3.1 million triangles |
+| `GRAPH_RAY_GPU_BYTES`, 2 GiB | Renderer (`render_graph_ray.h`) | Holds the current and the replacement scene until the old producers retire: about 3.3 million triangles under replacement |
+| `rhi::StorageLimits::ResourceBytes` | The device creator | All logical RHI buffers and textures on the device. The 512 MiB default holds about 1.6 million triangles; the Editor viewport sets 2 GiB |
+
+The full 3,747,018-triangle Sponza therefore fails on its first pass:
+`CpuScratch` needs 854,313,156 bytes with 783,538,976 left after the
+1,363,925,720-byte scene estimate. Raising that ceiling is a budget decision
+for the renderer, and the GPU and device budgets would also need to hold two
+1.2 GB copies during replacement. A rejected update reports the exceeded
+ceiling, its required bytes and the bytes available in
+`RenderGraphReport::SceneDiagnostics`.
+
+The `[scene-capacity]` regression in `render_graph_ray_tests.cpp` prepares a
+generated 102,400-triangle scene through the three-pass `ComputeBvh`
+line-sampling template. It checks that the graph's logical RHI bytes grow by
+less than two packed copies. The hidden `[.line-traversal-performance]`
+measurement runs with the Editor's 2 GiB device budget.
 
 
 ## Material and lighting fidelity
