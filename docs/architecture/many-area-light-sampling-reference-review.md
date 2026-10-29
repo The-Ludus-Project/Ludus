@@ -9,7 +9,9 @@ traversal and primitive decisions. The primitives listed under
 implemented as of October 29, 2026, in the CPU oracle and the GPU-compute
 reference, with the choices listed under [RT1 implementation notes](#rt1-implementation-notes).
 Acceptance item 5 was measured the same day; see
-[RT1 equal-time evaluation](#rt1-equal-time-evaluation).
+[RT1 equal-time evaluation](#rt1-equal-time-evaluation). Later that day both
+stages gained Hill and Heitz's [approximate target](#approximate-target), which
+lowers the per-candidate cost behind those equal-time results.
 This review is the estimator review that
 [hybrid and real-time transport](renderer-systems.md#hybrid-and-real-time-transport)
 requires before resampling enters a Ludus estimator. It covers next-event
@@ -489,6 +491,7 @@ deliverable.
 | --- | --- |
 | `UniformArea` | The current estimator, including the power-weighted emitter CDF. It stays the default and bit-identical to existing captures (`SamplerVersion = 1`, 8 dimensions per bounce), and remains the validation oracle. |
 | `ResampledProjectedSolidAngle` | This review's estimator. `SamplerVersion = 2`, 128 dimensions per bounce. Requires the renderer's LTC table. |
+| `ResampledFormFactor` | The same estimator with the [approximate target](#approximate-target). `SamplerVersion = 3`, version 2's random layout and its own frozen `M` and `K`. Requires the LTC table. |
 
 - **API.** The `ReferenceLightSampling` enum on
   `ReferenceCaptureDescription`, recorded in `ReferenceCaptureInfo`.
@@ -498,8 +501,8 @@ deliverable.
     replacement job and resets accumulation.
   - The separate GPU preview may adopt the mode later. That does not count toward
     the reference requirement, which the preview does not yet satisfy.
-- **LUHDR.** The sampler field carries 2, and new flag bit `128` marks the
-  resampled mode (bit 64 already means `gpu_compute`). Today
+- **LUHDR.** The sampler field carries 2 (3 for `ResampledFormFactor`), and new
+  flag bit `128` marks a resampled mode (bit 64 already means `gpu_compute`). Today
   `scripts/reference-hdr` rejects any sampler other than 1 and any flag above
   127, so old converters refuse these captures rather than mislabel them. Extend
   the converter and its manifest in the same change.
@@ -541,6 +544,8 @@ aligned to Philox's four-lane blocks:
   `2 + 63 · 128 + 127 = 8193 ≤ 65535`. Extend the `static_assert` and
   `ReferenceBounceDimension` per sampler version.
 - `M`, `K` and the stride are frozen constants of version 2.
+- Sampler version 3 uses this table unchanged. Its own frozen `M` and `K` may only
+  be smaller, so it reads a prefix of the candidate and normalization slots.
 
 ### RT1 implementation notes
 
@@ -564,11 +569,12 @@ choices:
 - **Emitter alpha.** Unlike the template, light samples apply the emitter's alpha
   cutoff at the sampled point, because RT1's `UniformArea` already does. The
   emitter's sidedness and the secondary range are applied there too.
-- **One kernel.** The GPU-compute trace kernel serves both modes; a parameter flag
-  selects sampler version 2. The LTC table is the kernel's sixth binding,
-  uploaded once per `EnableReferenceRendering` and charged to its GPU budget.
-  Kernels without the binding are rejected there, so no capture falls back.
-  `LUDUS_REFERENCE_KERNEL_VERSION` is 3.
+- **One kernel.** The GPU-compute trace kernel serves every mode; a parameter flag
+  selects sampler version 2, and a second flag (`128`) version 3's approximate
+  target. The LTC table is the kernel's sixth binding, uploaded once per
+  `EnableReferenceRendering` and charged to its GPU budget. Kernels without the
+  binding are rejected there, so no capture falls back.
+  `LUDUS_REFERENCE_KERNEL_VERSION` is 4 since version 3.
 - **Shadow rays.** The CPU path queues up to two shadow rays per vertex, so
   `NativeQueries` tiles need three queries per path. The GPU kernel traces each
   technique's shadow ray as soon as it is sampled; the order of the sums matches
@@ -756,8 +762,8 @@ Both opt-in benchmarks measured the approximate target with the method of
 [RT1 equal-time evaluation](#rt1-equal-time-evaluation), on Apple M5 (Metal,
 macOS 26.6), `macos-clang-development` with Clang 23.1.3 and Slang 2026.1.2, on
 October 29, 2026. The machine was shared with other builds, at a load average of
-22–52. Kernel times of one package vary by up to about 1.5× between runs under that
-load, so ratios are compared within one run.
+22–78. Kernel times of one package varied by up to 1.7× between runs under that
+load, so costs are compared within one run.
 
 **Template.** One run of `[.ris-projected-solid-angle-benchmark]` cooked the exact
 target and seven `RIS_TARGET = 1` variants
@@ -829,7 +835,118 @@ What the template results show:
   comes from pixels where emitter selection is not the bottleneck; which term of
   the estimator dominates there was not measured.
 
-RT1_PLACEHOLDER
+**RT1.** `[.reference-light-sampling-benchmark]` renders all three modes in each
+run, timed in the order `UniformArea`, version 2, version 3, version 3, version 2,
+`UniformArea`. Version 3's `M` and `K` are compile-time constants, so each setting
+needs its own build and run. Equal-sample errors are deterministic: every run that
+renders a given mode and setting reproduces them bit for bit.
+
+Transport kernel time per sample in run 1 (version 3 with `M = 32`, `K = 8`), and
+its ratio to `UniformArea`:
+
+| Case | `UniformArea` | Version 2, exact target | Version 3, form factor |
+| --- | --- | --- | --- |
+| Diffuse, direct | 1.10 ms | 21.8 ms (19.7×) | 4.15 ms (3.8×) |
+| Specular, direct | 1.63 ms | 20.5 ms (12.6×) | 4.42 ms (2.7×) |
+| Diffuse, depth 4 | 3.72 ms | 85.6 ms (23.0×) | 16.8 ms (4.5×) |
+| Specular, depth 4 | 3.40 ms | 87.8 ms (25.8×) | 18.1 ms (5.3×) |
+
+Shadow rays per pixel are those of version 2 within 0.2%. The specular
+`UniformArea` time above is high for this machine. In other runs it measured
+0.74–2.66 ms, so its ratios are less certain than the others.
+
+Version 3 against `UniformArea` at the same kernel time in run 1, as MAPE / RMSE
+(`UniformArea` samples in parentheses):
+
+| Case | Samples | Version 3 | `UniformArea`, equal time |
+| --- | --- | --- | --- |
+| Diffuse, direct | 4 | 0.084 / 0.064 | 0.090 / 0.074 (15) |
+| Diffuse, direct | 16 | 0.042 / 0.031 | 0.047 / 0.037 (60) |
+| Diffuse, direct | 64 | 0.022 / 0.017 | 0.024 / 0.019 (240) |
+| Specular, direct | 4 | 0.063 / 0.116 | 0.088 / 0.115 (11) |
+| Specular, direct | 16 | 0.032 / 0.057 | 0.045 / 0.060 (43) |
+| Specular, direct | 64 | 0.017 / 0.029 | 0.024 / 0.031 (173) |
+| Diffuse, depth 4 | 4 | 0.186 / 0.093 | 0.139 / 0.084 (18) |
+| Diffuse, depth 4 | 16 | 0.098 / 0.047 | 0.075 / 0.042 (72) |
+| Diffuse, depth 4 | 64 | 0.051 / 0.025 | 0.040 / 0.021 (289) |
+| Specular, depth 4 | 4 | 0.286 / 0.141 | 0.253 / 0.102 (21) |
+| Specular, depth 4 | 16 | 0.183 / 0.071 | 0.156 / 0.051 (85) |
+| Specular, depth 4 | 64 | 0.108 / 0.036 | 0.088 / 0.026 (340) |
+
+Version 3's equal-sample errors match version 2's within 1% in every case, as in the
+template. For comparison, version 2 at equal time in the same run lost by 1.5–2.8×
+in MAPE.
+
+Equal-sample MAPE / RMSE at 64 samples for each version 3 setting measured, with
+`UniformArea` at 64 samples:
+
+| Case | `M = 32`, `K = 8` | `M = 16`, `K = 8` | `M = 8`, `K = 4` | `UniformArea` |
+| --- | --- | --- | --- | --- |
+| Diffuse, direct | 0.0221 / 0.0171 | 0.0239 / 0.0200 | 0.0266 / 0.0226 | 0.0453 / 0.0358 |
+| Specular, direct | 0.0168 / 0.0289 | 0.0188 / 0.0313 | 0.0217 / 0.0355 | 0.0375 / 0.0494 |
+| Diffuse, depth 4 | 0.0514 / 0.0247 | 0.0543 / 0.0275 | 0.0582 / 0.0304 | 0.0793 / 0.0446 |
+| Specular, depth 4 | 0.108 / 0.0359 | 0.119 / 0.0395 | 0.132 / 0.0447 | 0.174 / 0.0582 |
+
+On the CPU oracle at 96 × 64 (diffuse room, run 1), version 3 also matched version
+2's error. Its wall time to 16 samples was 1.6 s against 2.4 s with direct lighting,
+and 3.6 s against 5.0 s at depth 4. These times include setup and are not
+equal-time measurements; the oracle's exact polygon preparation for the selected
+triangle and BSDF hits is a larger share of its time.
+
+Run 2 repeated `M = 32`, `K = 8` on this change's final code, merged with
+`develop`. It reproduced every equal-sample error of run 1 bit for bit. Its
+`UniformArea` kernel times differed by up to 1.7×: 0.65, 1.60, 5.00 and 4.86 ms
+per sample in the four cases. Version 3 took 4.26, 4.17, 18.7 and 16.9 ms. At equal
+time (MAPE / RMSE, `UniformArea` samples in parentheses):
+
+| Case | Samples | Version 3 | `UniformArea`, equal time |
+| --- | --- | --- | --- |
+| Diffuse, direct | 64 | 0.022 / 0.017 | 0.018 / 0.015 (419) |
+| Specular, direct | 64 | 0.017 / 0.029 | 0.024 / 0.031 (167) |
+| Diffuse, depth 4 | 64 | 0.051 / 0.025 | 0.043 / 0.023 (240) |
+| Specular, depth 4 | 64 | 0.108 / 0.036 | 0.106 / 0.032 (223) |
+
+Because the equal-sample errors are deterministic, the cost ratio at which version
+3 breaks even with `UniformArea` follows from them: the squared ratio of their
+64-sample errors. A measured cost ratio below it wins at equal time:
+
+| Case | Break-even cost ratio, RMSE / MAPE | Measured, run 1 / run 2 |
+| --- | --- | --- |
+| Diffuse, direct | 4.4 / 4.2 | 3.8 / 6.5 |
+| Specular, direct | 2.9 / 5.0 | 2.7 / 2.6 |
+| Diffuse, depth 4 | 3.3 / 2.4 | 4.5 / 3.7 |
+| Specular, depth 4 | 2.6 / 2.6 | 5.3 / 3.5 |
+
+Version 2's measured ratios were 12.6–30.6 in the same runs.
+
+What the RT1 results show:
+
+- **Cost.** The approximate target cuts version 2's transport kernel time by
+  4.6–5.3× at the same `M` and `K`, with the same equal-sample error.
+- **Equal time.** Version 3 moves RT1's resampled mode from a clear loss to
+  about break-even, so the outcome depends on this machine's timing noise.
+  - **Specular, direct.** Version 3 wins in both runs, by 28–30% in MAPE and 6–8%
+    in RMSE at 64 samples.
+  - **Diffuse, direct.** The cost ratio straddles break-even. Version 3 won in run 1
+    (by 7% in MAPE, 9% in RMSE at 64 samples) and lost in run 2 (by 20% and 17%),
+    where `UniformArea`'s kernel ran 1.7× faster.
+  - **Depth 4.** `UniformArea` still wins, by up to 1.3× in MAPE and 1.4× in RMSE.
+    In run 2's specular room the MAPE was nearly level (2%). Each indirect vertex pays for
+    resampling, and indirect bounces gain less from it.
+  - **Version 2.** It lost every case by 1.5–2.8× in MAPE.
+  So Shah et al.'s equal-time claim holds in RT1 for specular direct lighting. The
+  other cases now measure 0.9–2.0× their break-even cost, against 2.5–10× for
+  version 2.
+- **`M` and `K`.** Fewer candidates raise RT1's error faster than the template's.
+  From `M = 32` to `M = 8`, RMSE² grows by 1.5–1.75×, so `M = 8` would have to cost
+  under 0.57–0.66× as much; it measured about 0.7× at best, because the candidates
+  are only part of the kernel. Timing noise between runs is too large to separate
+  `M = 16` from `M = 32` on time: the same `M = 8` kernel measured 3.0 and 4.7 ms
+  with direct lighting. `M = 16`'s RMSE² is 17–37% higher, for about half of the
+  time `M = 8` saves. Version 3 therefore freezes `M = 32` and `K = 8`, version 2's
+  counts. `K = 4` at `M = 32` was not measured in RT1.
+
+
 
 ## Ownership
 
@@ -880,7 +997,9 @@ Out of scope:
 - Shah et al.'s naive per-candidate variant.
 
 Open questions, to settle by measurement:
-- `K`, and Peters' `v`;
+- Peters' `v`; `K` is settled for the template (`K = 4` changed no error at three
+  significant digits; see [Approximate target measurements](#approximate-target-measurements))
+  but not measured below 8 in RT1;
 - the diffuse albedo approximation;
 - LTC table resolution (the table follows Peters' 64 × 64 × 51 cells; see
   [its accuracy](../development/ltc-table.md#accuracy));

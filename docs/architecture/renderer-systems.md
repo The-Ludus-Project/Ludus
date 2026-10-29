@@ -1452,6 +1452,14 @@ per unit of time on this workload. The
 [review's evaluation](many-area-light-sampling-reference-review.md#rt1-equal-time-evaluation)
 has the method, all measurements and the comparison with the template benchmark.
 
+`ResampledFormFactor`, measured the same way on the same day in two runs, has
+`ResampledProjectedSolidAngle`'s equal-sample error within 1% for 4.6–5.3 times less
+transport kernel time: 2.6–6.5 times a `UniformArea` sample. At equal time it beat
+`UniformArea` with specular direct lighting in both runs. It was within timing noise
+of `UniformArea` with diffuse direct lighting, and still lost by up to 1.4× at
+depth 4. The [approximate target measurements](many-area-light-sampling-reference-review.md#approximate-target-measurements)
+have the tables and the `M` and `K` sweep.
+
 CPU budgets cover renderer-owned mesh/material/job arrays and setup scratch,
 including simultaneous old/new jobs during reset. They exclude existing renderer
 state, RHI CPU upload shadows/registry storage, caller arrays and tool/driver memory.
