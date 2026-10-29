@@ -29,6 +29,9 @@ modules/graphics/renderer/tests/projected_solid_angle_parity_tests.cpp
 modules/foundation/math/include/ludus/foundation/math/linearly_transformed_cosine.hpp
 modules/foundation/math/src/linearly_transformed_cosine.cpp
 modules/foundation/math/tests/linearly_transformed_cosine_tests.cpp
+modules/foundation/math/include/ludus/foundation/math/shading_normal.hpp
+modules/foundation/math/src/shading_normal.cpp
+modules/foundation/math/tests/shading_normal_tests.cpp
 tools/ltc-fit
 modules/graphics/renderer/src/ltc_table.cpp
 modules/graphics/renderer/src/internal/ltc_table.h

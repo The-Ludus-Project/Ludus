@@ -511,6 +511,59 @@ such samples only for slivers within `sqrt(8 · 2⁻²⁴)` of the horizon, and 
 for at most 1% of sliver samples. The Vulkan/SPIR-V and WGSL builds
 compile but are first executed in CI.
 
+## Shading normal clipping
+
+`shading_normal.hpp` clips a shading normal to the hemisphere of the outgoing
+(view) direction. It implements one sentence of Christoph Peters, "BRDF Importance
+Sampling for Polygonal Lights", section 6.1
+([DOI](https://doi.org/10.1145/3450626.3459672)), from its text: "Shading normals
+get clipped to the hemisphere of the outgoing light direction to avoid black
+pixels due to normal mapping." A normal-mapped normal can face away from the
+viewer although the surface faces it, and the BSDF is then zero.
+
+```cpp
+#include <ludus/foundation/math/shading_normal.hpp>
+
+// normal and view are unit vectors; view points from the surface to the viewer.
+Vector3 clipped;
+if (TryClipShadingNormalToOutgoingHemisphere(normal, view, clipped) == MathStatus::Success)
+{
+    // Build the shading frame, sample and evaluate the BSDF with `clipped`.
+}
+```
+
+The paper names neither the construction nor a margin. Ludus's choices:
+
+- A normal whose cosine with the view is at least
+  `SHADING_NORMAL_MINIMUM_OUTGOING_COSINE` (0.01) is returned unchanged.
+- Otherwise the normal moves along the view direction until that cosine is
+  0.01, and is renormalized. The result is continuous in both inputs; its cosine
+  with the view is at least 0.01/√1.0001, and a normal facing directly away
+  becomes the view direction.
+- The margin is not zero because the BSDF is zero for a view on the shading
+  horizon.
+
+Unit-length inputs are a precondition that is not detected. A nonfinite input
+returns `NonFiniteInput` and leaves the output unchanged.
+
+The shader port `shaders/shading_normal.slang`
+(`ClipShadingNormalToOutgoingHemisphere`) is installed beside `math.slang`, and
+render graphs that declare `polygonal_light_sampling` include it. Whether a back
+face is clipped is the caller's decision: the
+[polygonal-light](../../development/render-graph-authoring.md#compare-brdf-importance-sampling-for-polygonal-lights)
+and [RIS](../../development/render-graph-authoring.md#resample-many-area-lights-with-projected-solid-angle-sampling)
+templates clip front faces only.
+
+**Evidence.** `shading_normal_tests.cpp` checks a facing normal, the margin
+itself, a normal facing away, a grazing normal and nonfinite inputs. It compares
+4096 random pairs of unit vectors with a float64 evaluation of the same
+construction, within 10⁻⁶ divided by the length of `n + (m − c)·v`: that sum
+cancels for a normal facing nearly away, and normalization magnifies its float32
+rounding. The clipped cosine equals `m / √(1 + m² − c²)`, which is smallest at
+`c = 0`. The renderer's GPU tests compare the shader port with the C++ function:
+the RIS weight kernel on 4096 views below the shading horizon within 10⁻⁵ per
+component, and the polygonal-light estimators kernel through its CPU oracle.
+
 ## GPU transfer
 
 CPU value layout is **not** a shader ABI. Use explicit flat-column export helpers

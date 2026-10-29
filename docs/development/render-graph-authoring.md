@@ -1877,6 +1877,18 @@ other with the power heuristic, so the combined image converges to the same
 integral as each strategy alone. The scene interface declares `surface_queries: 1`,
 `visibility_queries: 2` and `polygonal_light_sampling: true`.
 
+Before either strategy, `TryLoadShadingPoint` clips a front face's shading normal
+to the hemisphere of the view direction with FoundationMath's
+`ClipShadingNormalToOutgoingHemisphere`, as Peters' renderer does "to avoid black
+pixels due to normal mapping" (§6.1). The receiver frame, both light techniques,
+BSDF sampling and the BSDF use the clipped normal in all three passes, so they
+still estimate one integral. The
+[polygonal-light template](#compare-brdf-importance-sampling-for-polygonal-lights)
+shares the function and its margin. The MIS template and RT1's reference path do
+not clip: where a shading normal faces away from the view, their BSDF is zero.
+Their images therefore differ from this template's only at normal-mapped pixels
+and within 0.01 of the shading horizon.
+
 | Graph setting | Default | Range | Meaning |
 | --- | --- | --- | --- |
 | `RIS_CANDIDATE_COUNT` | `32` | `1`–`32` | Candidates `M` per receiver |
@@ -1900,6 +1912,13 @@ Scope and limits:
 - The diffuse technique's albedo uses Schlick's reflectance at normal incidence.
 - The fixed two-iteration inversion of Peters' sampler has a small backward error;
   a direction that misses its triangle in float32 contributes zero.
+- §6.1 gives no margin for the clipped shading normal. Ludus keeps its cosine with
+  the view direction at least 0.01 (`SHADING_NORMAL_MINIMUM_OUTGOING_COSINE`; after
+  renormalizing, at least 0.01/√1.0001), because the BSDF is zero on the shading
+  horizon.
+- §6.1 does not discuss back faces. Only front faces are clipped, so a one-sided
+  surface seen from behind stays black, as in the other templates. A normal clipped
+  towards the viewer would light such a surface through itself.
 - There is no indirect bounce and no reservoir reuse.
 
 `ludus_render_graph_ray_tests` renders the template on Metal, with its compute BVH.
@@ -1941,7 +1960,29 @@ error for each template. The method and the recorded results are in the
 `ludus_renderer_render_tests` runs the weights on the GPU. It checks that Peters'
 weights and the light/BSDF split sum to one wherever a technique can sample, that
 `Ẑ = 0` applies the inclusion cap, and that an empty LTC clip leaves the diffuse
-technique all the weight. Vulkan has not been run for this template.
+technique all the weight.
+
+A second test kernel draws 4096 receivers whose view lies below
+the horizon of their shading normal, a quarter of them at the minimum roughness.
+It clips each normal as `TryLoadShadingPoint` does (§6.1), and the test compares
+the result with RT1's C++ twin of `projected_solid_angle_light.slang`:
+
+- the clipped normal agrees with FoundationMath's C++ clip within 10⁻⁵ per
+  component;
+- the albedo luminances, the LTC's existence and both integrals agree, with
+  integrals compared within 10⁻³ relative unless the larger of the CPU and GPU
+  integrals is a sliver below 10⁻⁵;
+- the diffuse density at the sampled direction agrees within 10⁻³, and the
+  sampled direction's weights sum to one.
+
+Without the clip every one of these receivers would be black. On Apple M5, 3121
+see the triangle and 3055 take a sample. A minimum-roughness LTC density reaches
+10⁶ per steradian and changes by its own magnitude within a degree, so the LTC
+densities are compared by percentile: over 1549 directions the 99th percentile
+relative difference is 5.4·10⁻⁴ (largest 2.3·10⁻³), and the test allows 10⁻³.
+With both receivers in one kernel, Metal results varied between runs; as separate
+kernels, each repeats bit for bit. Vulkan has not been run for this
+template.
 
 See the canonical
 [package](../../modules/graphics/renderer/render_graphs/ris_projected_solid_angle/main.lurender.json).
@@ -1988,7 +2029,9 @@ same random numbers.
 For each receiver and each emissive triangle, `main_shaders/polygonal_light.slang`
 follows the paper section by section:
 
-1. `ClipShadingNormalToOutgoingHemisphere` clips the shading normal to the
+1. FoundationMath's `ClipShadingNormalToOutgoingHemisphere`
+   ([shading normal clipping](../modules/foundation/math.md#shading-normal-clipping),
+   shared with the RIS template) clips the shading normal to the
    hemisphere of the view direction, as Peters' renderer does "to avoid black pixels
    due to normal mapping" (§6.1). The shading frame, both techniques and the BSDF use
    the clipped normal. `shade.slang` clips front faces only.
@@ -2056,7 +2099,7 @@ Departures from the paper, also listed in `polygonal_light.slang`:
   reflectance at normal incidence for Ludus's Fresnel-weighted Lambert lobe. Peters
   uses the Frostbite BRDF's diffuse albedo.
 - §6.1 gives no margin for the clipped shading normal. Ludus keeps its cosine with
-  the view direction at least 0.01 (`MINIMUM_OUTGOING_COSINE`; after renormalizing,
+  the view direction at least 0.01 (`SHADING_NORMAL_MINIMUM_OUTGOING_COSINE`; after renormalizing,
   at least 0.01/√1.0001), because the BSDF is zero on the shading horizon.
 - §6.1 does not discuss back faces. Only front faces are clipped, so a one-sided
   surface seen from behind stays black, as in the other templates. A normal clipped
@@ -2503,6 +2546,8 @@ callbacks. The wrapper then stages and includes, before your sources:
   clipping, integral and sampler);
 - `linearly_transformed_cosine.slang` (the LTC polygon transform);
 - `weighted_reservoir.slang` (the sequential weighted reservoir);
+- `shading_normal.slang` (Peters' §6.1 clip of the shading normal to the view's
+  hemisphere);
 - the renderer's `ltc_table.slang` (`LookupSpecularLtc`, `ComputeSpecularLtcAlbedo`)
   with its layout.
 

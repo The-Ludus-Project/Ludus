@@ -164,12 +164,12 @@ HELPERS = ('scene_data.h', 'renderer_gpu_preview_layout.h', 'renderer_surface_fu
            'native_metal_ray.slang', 'metal_ray_pipeline_layout.h',
            'ray_triangle_loop.slang', 'ray_line_visibility.slang', 'ray_bvh_nodes.slang', 'ray_bvh_traversal.slang', 'renderer_reference_layout.h', 'lighting_layout.h', 'math.slang', 'raster_bindings.slang', 'scene_shader.slang', 'scene_payload.slang', 'scene_shader_layout.h', 'ray_shader.slang', 'visibility_buffer.slang')
 # Staged and included only for scene_interface.polygonal_light_sampling: FoundationMath's projected-solid-angle,
-# LTC and weighted-reservoir primitives and the renderer's LTC table lookup, in include order, so packages that do
-# not request them keep their snapshot and cache identity. The table itself is a renderer-bound buffer.
+# LTC, weighted-reservoir and shading-normal primitives and the renderer's LTC table lookup, in include order, so
+# packages that do not request them keep their snapshot and cache identity. The table itself is a renderer-bound buffer.
 POLYGONAL_LIGHT_HELPERS = ('projected_solid_angle.slang', 'linearly_transformed_cosine.slang', 'weighted_reservoir.slang',
-                           'ltc_table.slang', 'ltc_table_layout.h')
+                           'shading_normal.slang', 'ltc_table.slang', 'ltc_table_layout.h')
 POLYGONAL_LIGHT_INCLUDES = ('projected_solid_angle.slang', 'linearly_transformed_cosine.slang', 'weighted_reservoir.slang',
-                            'ltc_table.slang')
+                            'shading_normal.slang', 'ltc_table.slang')
 
 
 def resolve_state(state):

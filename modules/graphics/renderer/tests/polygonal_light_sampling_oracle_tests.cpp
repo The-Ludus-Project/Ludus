@@ -3,6 +3,8 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/random.hpp>
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/math/shading_normal.hpp>
+#include <ludus/graphics/renderer/reference.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -165,16 +167,16 @@ CheckUnbiased(const testing::PolygonalLightCase& lightCase)
     return statistics;
 }
 
-/// A triangle 1.2 to 1.4 above a receiver at the origin with a +z normal, facing it.
-testing::PolygonalLightCase MakeCase(math::Vector3 baseColor, float32 metallic, float32 roughness)
+/// A triangle 1.2 to 1.4 above a receiver at the origin with a +z normal, facing it, shaded with bsdf.
+testing::PolygonalLightCase MakeCase(const ludus::graphics::renderer::ReferenceBsdf& bsdf)
 {
     testing::PolygonalLightCase lightCase;
     lightCase.NormalWorld = {0, 0, 1};
     // 30 degrees from the normal.
     lightCase.ViewDirectionWorld = {0.5F, 0.0F, 0.8660254F};
-    lightCase.BaseColor = baseColor;
-    lightCase.Metallic = metallic;
-    lightCase.Roughness = roughness;
+    lightCase.BaseColor = bsdf.BaseColor;
+    lightCase.Metallic = bsdf.Metallic;
+    lightCase.Roughness = bsdf.Roughness;
     lightCase.PositionsWorld = {{{-0.5F, -0.4F, 1.2F}, {0.0F, 0.7F, 1.4F}, {0.6F, -0.3F, 1.0F}}};
     lightCase.Emission = {4.0F, 3.0F, 2.0F};
     return lightCase;
@@ -186,7 +188,8 @@ TEST_CASE("Polygonal-light-sampling estimators are unbiased against a converged 
 {
     SECTION("rough dielectric")
     {
-        const testing::PolygonalLightCase lightCase = MakeCase({0.7F, 0.5F, 0.3F}, 0.0F, 0.6F);
+        const testing::PolygonalLightCase lightCase =
+            MakeCase({ .BaseColor = {0.7F, 0.5F, 0.3F}, .Metallic = 0.0F, .Roughness = 0.6F });
         // The triangle faces the receiver, so the one-sided emitter lights it.
         testing::PolygonalLightOracle oracle;
         REQUIRE(testing::TryPreparePolygonalLightOracle(lightCase, oracle) == true);
@@ -195,7 +198,8 @@ TEST_CASE("Polygonal-light-sampling estimators are unbiased against a converged 
     }
     SECTION("glossy metal with the triangle in the specular highlight")
     {
-        testing::PolygonalLightCase lightCase = MakeCase({0.9F, 0.6F, 0.4F}, 1.0F, 0.3F);
+        testing::PolygonalLightCase lightCase =
+            MakeCase({ .BaseColor = {0.9F, 0.6F, 0.4F}, .Metallic = 1.0F, .Roughness = 0.3F });
         // Mirror the view about the normal so the highlight falls inside the triangle.
         lightCase.ViewDirectionWorld = {-0.5F, 0.0F, 0.8660254F};
         lightCase.PositionsWorld = {{{0.3F, -0.4F, 1.2F}, {0.6F, 0.4F, 1.4F}, {1.1F, -0.3F, 1.0F}}};
@@ -215,7 +219,8 @@ TEST_CASE("Polygonal-light-sampling estimators are unbiased against a converged 
     }
     SECTION("a two-sided triangle straddling the horizon, with the weighted balance heuristic")
     {
-        testing::PolygonalLightCase lightCase = MakeCase({0.4F, 0.6F, 0.8F}, 0.5F, 0.45F);
+        testing::PolygonalLightCase lightCase =
+            MakeCase({ .BaseColor = {0.4F, 0.6F, 0.8F}, .Metallic = 0.5F, .Roughness = 0.45F });
         lightCase.PositionsWorld = {{{-0.8F, -0.2F, 0.6F}, {0.4F, 0.5F, -0.3F}, {0.3F, -0.6F, 0.5F}}};
         lightCase.IsEmissionTwoSided = true;
         // v = 1: section 4.2's weighted balance heuristic, still unbiased.
@@ -228,7 +233,8 @@ TEST_CASE("Polygonal-light-sampling estimators are unbiased against a converged 
     }
     SECTION("a normal-mapped receiver whose shading normal faces away from the view (section 6.1)")
     {
-        testing::PolygonalLightCase lightCase = MakeCase({0.6F, 0.7F, 0.5F}, 0.3F, 0.4F);
+        testing::PolygonalLightCase lightCase =
+            MakeCase({ .BaseColor = {0.6F, 0.7F, 0.5F}, .Metallic = 0.3F, .Roughness = 0.4F });
         // cos = -0.28 against the view: without the clip the BSDF, and so every estimate, would be zero.
         lightCase.NormalWorld = {-0.8F, 0.0F, 0.6F};
         lightCase.ViewDirectionWorld = {0.8F, 0.0F, 0.6F};
@@ -244,11 +250,12 @@ TEST_CASE("The polygonal-light-sampling oracle clips shading normals to the view
 {
     // Peters 2021, section 6.1, with Ludus's margin: the clipped normal is unit, at least 0.01 / sqrt(1 + 0.01^2)
     // inside the view's hemisphere, unchanged once its cosine reaches 0.01, and the view itself when it faces away.
-    constexpr float32 MINIMUM_OUTGOING_COSINE = 0.01F;
+    constexpr float32 MINIMUM_OUTGOING_COSINE = math::SHADING_NORMAL_MINIMUM_OUTGOING_COSINE;
     constexpr float32 UNIT_TOLERANCE = 1.0e-5F;
     const math::Vector3 view{0.0F, 0.6F, 0.8F};
     const auto clip = [view](math::Vector3 normal) -> math::Vector3 {
-        testing::PolygonalLightCase lightCase = MakeCase({0.5F, 0.5F, 0.5F}, 0.0F, 0.5F);
+        testing::PolygonalLightCase lightCase =
+            MakeCase({ .BaseColor = {0.5F, 0.5F, 0.5F}, .Metallic = 0.0F, .Roughness = 0.5F });
         lightCase.NormalWorld = normal;
         lightCase.ViewDirectionWorld = view;
         testing::PolygonalLightOracle oracle;

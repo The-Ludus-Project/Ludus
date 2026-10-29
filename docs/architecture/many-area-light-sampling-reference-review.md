@@ -24,15 +24,19 @@ estimation (NEE) for emissive triangles, delivered in two stages:
    delivered in the CPU oracle and the GPU-compute reference in the same change.
 
 Spatiotemporal reservoir reuse remains a separate RT4 upgrade. The Peters 2021
-polygonal-light work runs in parallel and shares two pieces with this design: the
-projected-solid-angle primitives and the template shadow-ray traversal. Its
+polygonal-light work runs in parallel and shares three pieces with this design: the
+projected-solid-angle primitives, the template shadow-ray traversal and, since
+October 29, 2026, the §6.1 shading-normal clip. Its
 comparison template, `polygonal-light-sampling`, is implemented as of October 28,
 2026: it shades every emissive triangle, without light selection, with clamped
 optimal MIS, the balance heuristic and each technique alone, and has a CPU oracle
 with GPU parity tests. On October 29, 2026 it gained Peters' §6.1 clip of the
 shading normal to the view's hemisphere, in the template and the oracle, and an
 occluded-penumbra fixture after his Fig. 10, where the GPU shows clamped optimal
-MIS beating the weighted balance heuristic. Its limit of eight emissive triangles
+MIS beating the weighted balance heuristic. The `ris-projected-solid-angle`
+template gained the same clip on October 29, 2026, through a FoundationMath
+function that both templates share. The polygonal-light template's limit of eight
+emissive triangles
 stays: lifting it needs a change to the scene-interface contract. Its usage,
 departures, evidence and those options are in the
 [authoring guide](../development/render-graph-authoring.md#compare-brdf-importance-sampling-for-polygonal-lights).
@@ -308,6 +312,15 @@ these departures and choices:
 - **Diffuse albedo.** `a₀ = baseColor · (1 − metallic) · (1 − F₀)` per channel,
   Schlick's reflectance at normal incidence, clamped to 0.01. This settles the
   open question for the template only; RT1 may measure another.
+- **Shading normal clip.** Since October 29, 2026, a front face's shading normal
+  is clipped to the hemisphere of the view direction, as in Peters' renderer
+  (§6.1), with FoundationMath's
+  [shared clip](../modules/foundation/math.md#shading-normal-clipping) and its 0.01
+  margin. Every strategy uses the clipped normal. RT1 does not clip, so the
+  template and RT1 estimate different integrals at normal-mapped pixels and within
+  0.01 of the shading horizon; RT1's shading normal is shared by all of its sampler
+  profiles, and clipping it there would be a separate, versioned change to the
+  reference.
 - **Other MIS pairs.** Analytic and environment light samples and the BSDF sample
   use the same power heuristic as `W_L`, and delta lights keep weight one.
 - **Consistent densities.** Both MIS sites evaluate `P̃` with
@@ -330,7 +343,8 @@ Evidence and remaining acceptance work, against [Acceptance](#acceptance) item 3
 - **Tested.** The GPU tests on Metal cover the glossy Cornell room, the
   many-emitter room, a textured emitter and two-sided emitters over
   minimum-roughness metal. The weight unit test covers the MIS partition of unity,
-  `Ẑ = 0` and the empty LTC clip.
+  `Ẑ = 0`, the empty LTC clip, and receivers viewed from below their shading
+  horizon, whose clipped frames it compares with RT1's C++ functions.
   - The textured fixture puts a 4 × 4 linear emission map on the Cornell light,
     over rough dielectric surfaces. The map is white, warm, cool and black in
     diagonal stripes, so it is zero on a quarter of the light. The power CDF and the
@@ -705,6 +719,7 @@ What the results show:
 | --- | --- | --- |
 | Convex polygon horizon clipping (up to seven input vertices), clipped projected-solid-angle integral, Peters sampler and density | FoundationMath `projected_solid_angle.hpp` and `shaders/projected_solid_angle.slang`, implemented by the polygonal-light work | The sampler is ported from the BSD-licensed `polygon_sampling.glsl` with its notice. Clipping is an independent reimplementation. This design consumes these primitives and adds none of its own. |
 | Generic LTC polygon transform | FoundationMath, beside those primitives | Implemented as `linearly_transformed_cosine.hpp` and `shaders/linearly_transformed_cosine.slang` ([contract](../modules/foundation/math.md#linearly-transformed-cosines-over-polygons)): transform the vertices by `M⁻¹`, then reuse the same clipping, integral and sampler. Credits Heitz et al. 2016 (§3.1, Eq. 3, Algorithm 1) and Peters 2021 §4.1. |
+| Shading normal clipped to the view's hemisphere (Peters §6.1) | FoundationMath | Implemented as `shading_normal.hpp` and `shaders/shading_normal.slang` ([contract](../modules/foundation/math.md#shading-normal-clipping)), with Ludus's 0.01 margin. The polygonal-light and RIS templates clip front faces with it; RT1 does not clip. |
 | Sequential weighted reservoir | FoundationMath | Implemented as `weighted_reservoir.hpp` and `shaders/weighted_reservoir.slang` ([contract](randomness.md#sequential-weighted-reservoir)): explicit order, zero totals, and selection-frequency tests on exact small integers. The ReSTIR template may adopt it separately; this design does not change that template. |
 | LTC table for Ludus GGX/correlated Smith/Schlick, its fitter and provenance | Renderer (embedded table and a GPU buffer) plus an offline Ludus tool. **Owned by this RIS/many-area-light workstream** (decided October 27, 2026). The polygonal-light LTC templates reuse the same table and fitter rather than building their own. | Implemented as `tools/ltc-fit`, `data/ltc_table.bin` with its provenance and `shaders/ltc_table_layout.h`, and the `ltc_table.slang` and CPU lookups ([fit, regeneration and accuracy](../development/ltc-table.md)). Reimplemented from Heitz et al. §4 and Peters §§4.1–4.2, not from GPLv3 utilities. Like Peters' renderer it has 51 `F0` slices, chosen by the luminance of `F0`; the albedo stays exact per channel. It covers roughness down to 0.045. A poor fit costs variance, not correctness. Render graphs bind it with `scene_interface.polygonal_light_sampling`. |
 | Compute-BVH graph traversal strategy | Renderer, at the shared traversal boundary | Implemented as `ComputeBvh`, sharing the RT1 GPU reference's BVH traversal. Shared with the polygonal-light templates; a prerequisite for both |

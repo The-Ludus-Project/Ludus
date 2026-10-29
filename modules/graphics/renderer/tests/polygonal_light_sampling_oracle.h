@@ -20,7 +20,7 @@
 namespace ludus::graphics::renderer::testing
 {
 /// The template's estimators, in output order (polygonal_light.slang).
-enum class PolygonalLightEstimator : foundation::uint32
+enum class PolygonalLightEstimator : foundation::uint8
 {
     ClampedOptimalMis = 0,   ///< One sample per technique, Peters 2021, section 4.3.
     BalanceHeuristic = 1,    ///< One sample per technique, Veach's balance heuristic.
@@ -74,7 +74,7 @@ struct PolygonalLightOracle final
     foundation::math::Vector3 SpecularCoefficient{};
 };
 
-/// Prepare a case. Returns false, leaving outOracle unspecified, for a nonfinite polygon or coefficient.
+/// Prepare a case. Returns false, leaving outOracle unspecified, for a nonfinite normal, view, polygon or coefficient.
 [[nodiscard]] bool TryPreparePolygonalLightOracle(const PolygonalLightCase& lightCase,
                                                   PolygonalLightOracle& outOracle) noexcept;
 
