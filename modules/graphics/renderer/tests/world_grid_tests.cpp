@@ -59,12 +59,12 @@ TEST_CASE("World grid generation preserves outputs on invalid inputs and omits s
 TEST_CASE("Orthographic world grids choose XY XZ and YZ without changing scene state", "[renderer][grid]")
 {
     constexpr usize PLANE_COUNT = 3;
-    constexpr StaticArray<math::Vector3, PLANE_COUNT> directions{{{0, 0, -1}, {0, -1, 0}, {-1, 0, 0}}};
+    constexpr StaticArray<math::Vector3, PLANE_COUNT> DIRECTIONS{{{0, 0, -1}, {0, -1, 0}, {-1, 0, 0}}};
     for (usize plane = 0; plane < PLANE_COUNT; ++plane)
     {
         renderer::ViewDescription view;
         view.OrthographicCamera = true;
-        view.CameraForward = directions[plane];
+        view.CameraForward = DIRECTIONS[plane];
         view.WorldGrid = { .IsVisible = true, .FocusDistance = 5, .Width = 640, .Height = 480 };
         StaticArray<renderer::WorldGridLine, renderer::WORLD_GRID_LINE_CAPACITY> lines{};
         usize count = 0;
@@ -73,9 +73,9 @@ TEST_CASE("Orthographic world grids choose XY XZ and YZ without changing scene s
         REQUIRE(count == renderer::WORLD_GRID_LINE_CAPACITY);
         for (usize i = 0; i + PLANE_COUNT < count; ++i)
         {
-            CHECK(math::Dot(lines[i].StartWorld, directions[plane]) == 0);
-            CHECK(math::Dot(lines[i].EndWorld, directions[plane]) == 0);
-            CHECK(math::Dot(lines[i].HalfWidthWorld, directions[plane]) == 0);
+            CHECK(math::Dot(lines[i].StartWorld, DIRECTIONS[plane]) == 0);
+            CHECK(math::Dot(lines[i].EndWorld, DIRECTIONS[plane]) == 0);
+            CHECK(math::Dot(lines[i].HalfWidthWorld, DIRECTIONS[plane]) == 0);
         }
     }
 }
@@ -123,19 +123,19 @@ TEST_CASE("Analytic world grid planes match the ribbon grid's spacing, axes and 
 TEST_CASE("Orthographic analytic grid planes pick the plane facing the camera", "[renderer][grid]")
 {
     constexpr usize PLANE_COUNT = 3;
-    constexpr StaticArray<math::Vector3, PLANE_COUNT> directions{{{0, 0, -1}, {0, -1, 0}, {-1, 0, 0}}};
-    constexpr StaticArray<usize, PLANE_COUNT> normals{{2, 1, 0}};
+    constexpr StaticArray<math::Vector3, PLANE_COUNT> DIRECTIONS{{{0, 0, -1}, {0, -1, 0}, {-1, 0, 0}}};
+    constexpr StaticArray<usize, PLANE_COUNT> NORMALS{{2, 1, 0}};
     for (usize plane = 0; plane < PLANE_COUNT; ++plane)
     {
         renderer::ViewDescription view;
         view.OrthographicCamera = true;
-        view.CameraForward = directions[plane];
+        view.CameraForward = DIRECTIONS[plane];
         view.WorldGrid = { .IsVisible = true, .FocusDistance = 5, .Width = 640, .Height = 480 };
         renderer::WorldGridPlane result;
         bool isVisible = false;
         REQUIRE(renderer::BuildWorldGridPlane(view, result, isVisible) == true);
-        CHECK(math::Dot(result.HorizontalWorld, directions[plane]) == 0);
-        CHECK(math::Dot(result.VerticalWorld, directions[plane]) == 0);
-        CHECK(result.NormalAxisIndex == normals[plane]);
+        CHECK(math::Dot(result.HorizontalWorld, DIRECTIONS[plane]) == 0);
+        CHECK(math::Dot(result.VerticalWorld, DIRECTIONS[plane]) == 0);
+        CHECK(result.NormalAxisIndex == NORMALS[plane]);
     }
 }

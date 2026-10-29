@@ -1329,8 +1329,9 @@ usize GetGridPixel(uint32 width, uint32 column, uint32 row) noexcept
 
 TEST_CASE("Analytic world grids draw antialiased lines, axes and fades behind nearer geometry", "[renderer][grid][gpu]")
 {
-    const bool benchmark = std::getenv("LUDUS_RENDERER_BENCHMARK") != nullptr;
-    const uint32 width = benchmark ? 1920U : GRID_WIDTH, height = benchmark ? 1080U : GRID_HEIGHT;
+    const bool isBenchmark = std::getenv("LUDUS_RENDERER_BENCHMARK") != nullptr;
+    const uint32 width = isBenchmark ? 1920U : GRID_WIDTH;
+    const uint32 height = isBenchmark ? 1080U : GRID_HEIGHT;
     rhi::Shutdown();
     struct Guard
     {
@@ -1344,7 +1345,7 @@ TEST_CASE("Analytic world grids draw antialiased lines, axes and fades behind ne
     rhi::StartupInfo failure;
     rhi::DeviceDescription description;
     description.Required.PortableRaster = true;
-    const auto started =
+    const rhi::DeviceStatus started =
         rhi::CreateDevice({}, { .Width = width, .Height = height }, description, device, surface, &failure);
 #if defined(LUDUS_TEST_METAL)
     if (started != rhi::DeviceStatus::Ready && failure.Error == rhi::StartupError::AdapterUnavailable)
@@ -1355,7 +1356,8 @@ TEST_CASE("Analytic world grids draw antialiased lines, axes and fades behind ne
     REQUIRE(started == rhi::DeviceStatus::Ready);
     // One opaque quad above the plane at world (3, 2, 0), twice the L0 quad size, covers x 2.6..3.4 and z -.4..+.4.
     rr::SceneItem item;
-    rr::Renderer ribbons, analytic;
+    rr::Renderer ribbons;
+    rr::Renderer analytic;
     rr::Mesh meshes[2];
     rr::Snapshot snapshots[2];
     rr::PreparedView views[2];
@@ -1394,7 +1396,7 @@ TEST_CASE("Analytic world grids draw antialiased lines, axes and fades behind ne
         REQUIRE(renderers[variant]->Submit(views[variant], surface, completion) == rhi::RasterStatus::Ready);
         REQUIRE(rhi::backend::ReadHeadlessPixels({images[variant].GetData(), images[variant].GetSize()}));
     }
-    if (benchmark)
+    if (isBenchmark)
     {
         using Clock = std::chrono::steady_clock;
         const auto ns = [](Clock::time_point start) {
@@ -1459,7 +1461,8 @@ TEST_CASE("Analytic world grids draw antialiased lines, axes and fades behind ne
         return;
     }
     const uint8* image = images[1].GetData();
-    const uint32 centerColumn = width / 2, centerRow = height / 2;
+    const uint32 centerColumn = width / 2;
+    const uint32 centerRow = height / 2;
     const uint32 unit = static_cast<uint32>(GRID_PIXELS_PER_UNIT);
     const usize background = GetGridPixel(width, centerColumn + unit / 2, centerRow + unit / 2);
     // Mid-cell pixels keep the cleared colour, so the grid does not tint the surface.
@@ -1492,7 +1495,9 @@ TEST_CASE("Analytic world grids draw antialiased lines, axes and fades behind ne
     const usize visible = GetGridPixel(width, occludedColumn, centerRow + 3 * unit + unit / 2);
     CHECK(image[visible + 1] > image[background + 1]);
     // The analytic and ribbon grids agree on where the lines are: the same pixels differ from the background.
-    uint32 differing = 0, ribbonOnly = 0, analyticOnly = 0;
+    uint32 differing = 0;
+    uint32 ribbonOnly = 0;
+    uint32 analyticOnly = 0;
     for (usize pixel = 0; pixel < static_cast<usize>(width) * height; ++pixel)
     {
         const bool isRibbon = images[0][pixel * GRID_CHANNELS + 1] != images[0][background + 1];

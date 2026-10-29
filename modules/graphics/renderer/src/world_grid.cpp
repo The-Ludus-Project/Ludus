@@ -43,8 +43,8 @@ usize GetAxisIndex(const math::Vector3& axisWorld) noexcept
 }
 math::Vector4 GetAxisColor(usize axisIndex) noexcept
 {
-    constexpr StaticArray<math::Vector4, WORLD_GRID_AXIS_COUNT> colours{{X_COLOR, Y_COLOR, Z_COLOR}};
-    return colours[axisIndex];
+    constexpr StaticArray<math::Vector4, WORLD_GRID_AXIS_COUNT> COLOURS{{X_COLOR, Y_COLOR, Z_COLOR}};
+    return COLOURS[axisIndex];
 }
 math::Vector4 GetGridColor(float32 coordinate) noexcept
 {

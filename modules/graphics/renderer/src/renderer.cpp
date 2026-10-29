@@ -358,6 +358,7 @@ struct WorldGridBuffers final
     }
 };
 constexpr usize WORLD_GRID_VERTEX_COUNT = 4;
+constexpr usize ANALYTIC_GRID_FOURTH_CORNER = 3;
 constexpr usize WORLD_GRID_INDEX_COUNT = 6;
 constexpr usize WORLD_GRID_PIPELINE_COUNT = 6;
 constexpr usize WORLD_GRID_TARGET_VARIANTS = 2;
@@ -442,7 +443,8 @@ Status PrepareWorldGridBuffers(rhi::DeviceHandle device,
         vertices[WORLD_GRID_VERTEX_COUNT].Position = plane.CenterWorld - alongWorld - acrossWorld;
         vertices[WORLD_GRID_VERTEX_COUNT + 1].Position = plane.CenterWorld + alongWorld - acrossWorld;
         vertices[WORLD_GRID_VERTEX_COUNT + 2].Position = plane.CenterWorld + alongWorld + acrossWorld;
-        vertices[WORLD_GRID_VERTEX_COUNT + 3].Position = plane.CenterWorld - alongWorld + acrossWorld;
+        vertices[WORLD_GRID_VERTEX_COUNT + ANALYTIC_GRID_FOURTH_CORNER].Position =
+            plane.CenterWorld - alongWorld + acrossWorld;
         inoutScratch.Instances[count] = PackWorldGridPlane(description.WorldToClip, plane);
         candidate->IsAnalytic = true;
     }
@@ -735,7 +737,8 @@ struct Renderer::State final
     core::UniquePtr<WorldGridScratch> GridScratch;
     StaticArray<rhi::RasterPipelineHandle, WORLD_GRID_PIPELINE_COUNT> GridPipelines{};
     StaticArray<bool, WORLD_GRID_PIPELINE_COUNT> HasGridPipelines{};
-    rhi::RasterShaderHandle AnalyticGridVertex{}, AnalyticGridFragment{};
+    rhi::RasterShaderHandle AnalyticGridVertex{};
+    rhi::RasterShaderHandle AnalyticGridFragment{};
     bool HasAnalyticGrid = false;
     StaticArray<rhi::RasterPipelineHandle, WORLD_GRID_PIPELINE_COUNT> AnalyticGridPipelines{};
     StaticArray<bool, WORLD_GRID_PIPELINE_COUNT> HasAnalyticGridPipelines{};
@@ -1362,12 +1365,12 @@ Status Renderer::InitializeGrid(const rhi::RasterShaderDescription& vertex,
     {
         return Status::NotReady;
     }
-    auto& s = *mState;
-    if (s.HasAnalyticGrid == true)
+    State& state = *mState;
+    if (state.HasAnalyticGrid == true)
     {
         return Status::InvalidState;
     }
-    if (s.HasVisibilityInputs == true || s.FlatUniforms.Count != 0)
+    if (state.HasVisibilityInputs == true || state.FlatUniforms.Count != 0)
     {
         return Status::Unsupported;
     }
@@ -1384,21 +1387,21 @@ Status Renderer::InitializeGrid(const rhi::RasterShaderDescription& vertex,
             return Status::InvalidDescription;
         }
     }
-    Status status = rhi::CreateRasterShader(s.Device, vertex, s.AnalyticGridVertex);
+    Status status = rhi::CreateRasterShader(state.Device, vertex, state.AnalyticGridVertex);
     if (Accepted(status))
     {
-        status = rhi::CreateRasterShader(s.Device, fragment, s.AnalyticGridFragment);
+        status = rhi::CreateRasterShader(state.Device, fragment, state.AnalyticGridFragment);
     }
     if (Accepted(status) == false)
     {
-        static_cast<void>(rhi::Destroy(s.Device, s.AnalyticGridVertex));
-        static_cast<void>(rhi::Destroy(s.Device, s.AnalyticGridFragment));
-        s.AnalyticGridVertex = {};
-        s.AnalyticGridFragment = {};
+        static_cast<void>(rhi::Destroy(state.Device, state.AnalyticGridVertex));
+        static_cast<void>(rhi::Destroy(state.Device, state.AnalyticGridFragment));
+        state.AnalyticGridVertex = {};
+        state.AnalyticGridFragment = {};
         return status;
     }
-    s.HasAnalyticGrid = true;
-    return s.GetAnalyticGridShaderStatus();
+    state.HasAnalyticGrid = true;
+    return state.GetAnalyticGridShaderStatus();
 }
 Status Renderer::InitializeViews(const rhi::RasterShaderDescription& vertex,
                                  const rhi::RasterShaderDescription& fragment) noexcept

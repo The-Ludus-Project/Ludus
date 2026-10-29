@@ -105,7 +105,8 @@ struct Session
         {
             inputs[i] = {i, i == 0 ? rhi::RasterVertexFormat::Float3 : rhi::RasterVertexFormat::Float4};
         }
-        rhi::RasterShaderDescription vertex, fragment;
+        rhi::RasterShaderDescription vertex;
+        rhi::RasterShaderDescription fragment;
         vertex.Artifact.Stage = rhi::ShaderStage::Vertex;
         vertex.Artifact.Wgsl = "grid vertex fixture";
         vertex.Artifact.WgslEntry = "vertexMain";
@@ -2496,7 +2497,7 @@ TEST_CASE("Analytic world grids draw one blended plane and one axis ribbon, and 
     CHECK(analyticReport.Draws == 3);
     CHECK(session.Renderer.GetHostBytes() > 0);
     usize blended = 0;
-    for (const auto& pipeline : rhi::reference::Pipelines)
+    for (const rhi::internal::RasterPipelineInfo& pipeline : rhi::reference::Pipelines)
     {
         if (pipeline.Blend == true && pipeline.AttributeCount == 12)
         {
@@ -2529,7 +2530,8 @@ TEST_CASE("Analytic grid shaders are validated before use", "[renderer][grid]")
     {
         inputs[i] = {i, i == 0 ? rhi::RasterVertexFormat::Float3 : rhi::RasterVertexFormat::Float4};
     }
-    rhi::RasterShaderDescription vertex, fragment;
+    rhi::RasterShaderDescription vertex;
+    rhi::RasterShaderDescription fragment;
     vertex.Artifact.Stage = rhi::ShaderStage::Vertex;
     vertex.Artifact.Wgsl = "grid vertex fixture";
     vertex.Artifact.WgslEntry = "vertexMain";

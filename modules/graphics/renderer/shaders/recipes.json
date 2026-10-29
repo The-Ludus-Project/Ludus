@@ -16,8 +16,8 @@
   },
   "renderer_grid": {
     "source": "renderer_grid.slang",
-    "vertex": "vertexMain",
-    "fragment": "fragmentMain"
+    "vertex": "GridVertexMain",
+    "fragment": "GridFragmentMain"
   },
   "renderer_material": {
     "source": "renderer_material.slang",
