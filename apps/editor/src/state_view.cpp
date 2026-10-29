@@ -178,12 +178,18 @@ void StateView::applyColours()
         mIconOrNull->SetColour(QColor());
         return;
     }
-    // Label colours come from a widget style sheet: the workspace sheet would otherwise win over a palette.
     mIconOrNull->SetColour(mColours.Text);
-    mMessageOrNull->setStyleSheet(QStringLiteral("QLabel { color: %1; }").arg(mColours.Text.name()));
+    const auto colourLabel = [](QLabel* label, const QColor& colour) {
+        // Secondary labels read PlaceholderText (EditorStyle), the rest WindowText; set both.
+        QPalette palette = label->palette();
+        palette.setColor(QPalette::WindowText, colour);
+        palette.setColor(QPalette::PlaceholderText, colour);
+        label->setPalette(palette);
+    };
+    colourLabel(mMessageOrNull, mColours.Text);
     for (QLabel* label : {mCauseOrNull, mFixOrNull, mShortcutOrNull})
     {
-        label->setStyleSheet(QStringLiteral("QLabel { color: %1; }").arg(mColours.Secondary.name()));
+        colourLabel(label, mColours.Secondary);
     }
 }
 } // namespace ludus::editor

@@ -4,6 +4,7 @@
 #include "internal/empty_world_view.h"
 #include "internal/preview_viewport.h"
 #include "internal/render_preview.h"
+#include "internal/theme_colour.h"
 #include "internal/window_size.h"
 #include "internal/workspace_style.h"
 
@@ -38,9 +39,9 @@ using namespace ludus::editor;
 namespace
 {
 /// Caption colour painted over the viewport background (src/empty_world_view.cpp).
-constexpr QRgb CAPTION = qRgb(175, 184, 194);
+constexpr QRgb CAPTION = GetViewportArgb(design::ThemeColour::TextHud);
 /// Fixed viewport background (src/empty_world_view.cpp).
-constexpr QRgb BACKGROUND = qRgb(9, 12, 15);
+constexpr QRgb BACKGROUND = GetViewportArgb(design::ThemeColour::SurfaceViewport);
 /// WCAG 2.2 success criterion 1.4.3 minimum for body text.
 constexpr double MINIMUM_TEXT_CONTRAST = 4.5;
 /// Gamma-encoded channel threshold and offsets from WCAG relative luminance.

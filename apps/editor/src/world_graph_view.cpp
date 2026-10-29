@@ -1,4 +1,5 @@
 #include "internal/world_graph_view.h"
+#include "internal/overlay_widgets.h"
 #include "internal/viewport_object_interaction.h"
 
 #include "internal/render_graph_preview.h"
@@ -24,7 +25,7 @@ constexpr foundation::int32 STATISTICS_MARGIN_PIXEL = 8;
 } // namespace
 WorldGraphView::WorldGraphView(RendererWorkspace& inoutWorkspace, QWidget* parent)
     : QWidget(parent), mWorkspace(inoutWorkspace), mPreview(*inoutWorkspace.GetPreviewOrNull()),
-      mTargets(new QComboBox(this)), mStatus(new QLabel(this)), mStatistics(new QLabel(this))
+      mTargets(new QComboBox(this)), mStatus(new QLabel(this)), mStatistics(new HudLabel(this))
 {
     setObjectName(QStringLiteral("worldGraphView"));
     setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -40,8 +41,6 @@ WorldGraphView::WorldGraphView(RendererWorkspace& inoutWorkspace, QWidget* paren
     mStatistics->setObjectName(QStringLiteral("worldGraphStatisticsOverlay"));
     mStatistics->setTextFormat(Qt::PlainText);
     mStatistics->setAttribute(Qt::WA_TransparentForMouseEvents);
-    mStatistics->setStyleSheet(QStringLiteral("QLabel { color: white; background: rgba(0, 0, 0, 190); "
-                                              "padding: 6px; border-radius: 4px; }"));
     mStatistics->move(STATISTICS_MARGIN_PIXEL, STATISTICS_MARGIN_PIXEL);
     mStatistics->hide();
     mStatisticsTimer.setInterval(STATISTICS_REFRESH_MILLISECONDS);
