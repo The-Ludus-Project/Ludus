@@ -51,6 +51,8 @@
 #include <ludus/graphics/rhi/measurement.h>
 
 #include <catch2/catch_test_macros.hpp>
+#include <cstdlib>
+#include <cstring>
 #include <new>
 #include <string>
 #include <string_view>
@@ -4750,6 +4752,40 @@ TEST_CASE("Line visibility in a NativeQuery pass uses the same software traversa
     }
 }
 
+TEST_CASE("Line visibility through the packed BVH equals the linear scan in triangle-loop and native passes",
+          "[render-graph][gpu][line-visibility][line-bvh]")
+{
+    // The default packages walk the packed BVH; the line-scan packages are the same fixture cooked with
+    // scene_interface.line_traversal "TriangleLoop" (point-line PL3, design D5). Each set first passes
+    // the analytic checks, then every readout byte must agree. The 31- and 32-slat cases pack 62 and
+    // 64 occluder triangles into a multi-level tree, and the overflow case must fail under both.
+    GraphGpuFixture fixture;
+    const StaticArray<PackageLocation, 2> walks{{
+        {LUDUS_RG3_LINE_VISIBILITY_LOOP_DIRECTORY, "rg2_line_visibility_loop.lurgrt"},
+        {LUDUS_RG3_LINE_VISIBILITY_NATIVE_DIRECTORY, "rg2_line_visibility_native.lurgrt"},
+    }};
+    const StaticArray<PackageLocation, 2> scans{{
+        {LUDUS_RG3_LINE_VISIBILITY_LOOP_LINE_SCAN_DIRECTORY, "rg2_line_visibility_loop_line_scan.lurgrt"},
+        {LUDUS_RG3_LINE_VISIBILITY_NATIVE_LINE_SCAN_DIRECTORY, "rg2_line_visibility_native_line_scan.lurgrt"},
+    }};
+    for (usize strategy = 0; strategy < walks.GetSize(); ++strategy)
+    {
+        INFO("ray strategy " << (strategy == 0 ? "TriangleLoop" : "NativeQuery"));
+        // The line traversal never changes whether a package needs hardware ray tracing (PL06).
+        CHECK(renderer::RequiresHardwareRayTracing(LoadPackage(walks[strategy])->GetPlan()) ==
+              renderer::RequiresHardwareRayTracing(LoadPackage(scans[strategy])->GetPlan()));
+        StaticArray<Array<uint8>, LINE_CASE_COUNT> walkImages;
+        CheckLineCases(fixture, walks[strategy], walkImages);
+        StaticArray<Array<uint8>, LINE_CASE_COUNT> scanImages;
+        CheckLineCases(fixture, scans[strategy], scanImages);
+        for (usize index = 0; index < LINE_CASE_COUNT; ++index)
+        {
+            INFO("case " << index);
+            CHECK(CountDifferingPixels(walkImages[index], scanImages[index], 0) == 0);
+        }
+    }
+}
+
 namespace
 {
 // Line-sampling template tests. Thanks to Billen and Dutre (2016), above, for the surface-area line
@@ -4876,6 +4912,271 @@ TEST_CASE("The line-sampling template converges to light sampling and shows its 
     INFO("visible fraction: lit=" << litFraction << ", largest in umbra=" << umbraFraction);
     CHECK(math::Abs(litFraction - 1) < FRACTION_TOLERANCE);
     CHECK(umbraFraction == 0);
+}
+
+TEST_CASE("The line-sampling template accumulates byte-identical images with the BVH and the line scan",
+          "[render-graph][gpu][line-sampling][template][line-bvh]")
+{
+    // The shipped template walks the packed BVH; the line-scan package is the same template cooked with
+    // scene_interface.line_traversal "TriangleLoop" (point-line PL3). Rays are unchanged, and the BVH
+    // changes only which triangles the line query visits, so every running mean is byte-identical
+    // after one sample and after many. Graphs are prepared one at a time: the device holds two.
+    GraphGpuFixture fixture(false, false);
+    CornellBox room;
+    const StaticArray<PackageLocation, 2> locations{{
+        {LUDUS_RG3_LINE_SAMPLING_TEMPLATE_DIRECTORY, "rg2_line_sampling_template.lurgrt"},
+        {LUDUS_RG3_LINE_SAMPLING_LINE_SCAN_DIRECTORY, "rg2_line_sampling_line_scan.lurgrt"},
+    }};
+    constexpr usize FRAME_COUNT = 64;
+    StaticArray<StaticArray<Array<uint8>, LINE_SAMPLING_OUTPUT_COUNT>, 2> first;
+    StaticArray<StaticArray<Array<uint8>, LINE_SAMPLING_OUTPUT_COUNT>, 2> last;
+    for (usize traversal = 0; traversal < locations.GetSize(); ++traversal)
+    {
+        PreparedGraph graph(fixture, locations[traversal], room, 1);
+        REQUIRE(renderer::RequiresHardwareRayTracing(graph.Plan) == false);
+        const StaticArray<uint32, LINE_SAMPLING_OUTPUT_COUNT> exports = GetLineSamplingExports(graph.Plan);
+        for (usize frame = 0; frame < FRAME_COUNT; ++frame)
+        {
+            RenderFrame(graph.Graph, fixture);
+            for (usize output = 0; output < LINE_SAMPLING_OUTPUT_COUNT && (frame == 0 || frame + 1 == FRAME_COUNT);
+                 ++output)
+            {
+                Array<uint8>& pixels = frame == 0 ? first[traversal][output] : last[traversal][output];
+                ReadExport(graph.Graph, fixture, exports[output], {}, pixels);
+                REQUIRE(CountFailurePixels(pixels) == 0);
+            }
+        }
+    }
+    for (usize output = 0; output < LINE_SAMPLING_OUTPUT_COUNT; ++output)
+    {
+        INFO("output " << output);
+        CHECK(CountDifferingPixels(first[0][output], first[1][output], 0) == 0);
+        CHECK(CountDifferingPixels(last[0][output], last[1][output], 0) == 0);
+    }
+}
+
+namespace
+{
+/// A large scene for the hidden line traversal measurement, read from the file that
+/// LUDUS_LINE_TRAVERSAL_SCENE names: a little-endian uint32 vertex count and index count, then float32
+/// x, y, z World positions and uint32 triangle indices, as export_line_traversal_scene.py writes them
+/// from a glTF file. A square emitter facing down is added above the scene's horizontal center, and
+/// the camera looks along -X from inside its bounds.
+struct LargeLineScene final
+{
+    static constexpr usize MATERIAL_COUNT = 2;
+    static constexpr uint32 SURFACE = 0;
+    static constexpr uint32 LIGHT = 1;
+    static constexpr usize LIGHT_CORNERS = 4;
+    static constexpr usize LIGHT_INDEX_COUNT = 6;
+    Array<math::Vector3> Positions;
+    Array<uint32> Indices;
+    Array<uint32> Slots;
+    StaticArray<uint32, MATERIAL_COUNT> Bindings{{SURFACE, LIGHT}};
+    StaticArray<renderer::SceneShaderMaterial, MATERIAL_COUNT> Materials{};
+    StaticArray<renderer::RenderGraphMesh, 1> Meshes{};
+    StaticArray<renderer::RenderGraphItem, 1> Items{};
+    StaticArray<renderer::ViewDescription, 1> Cameras{};
+    renderer::SceneShaderInputs Inputs;
+
+    explicit LargeLineScene(std::string_view path)
+    {
+        const usize separator = path.rfind('/');
+        REQUIRE(separator != std::string_view::npos);
+        filesystem::Directory directory;
+        REQUIRE(directory.Open(path.substr(0, separator)).Succeeded() == true);
+        filesystem::File file;
+        REQUIRE(directory.OpenRead(path.substr(separator + 1), file).Succeeded() == true);
+        Array<uint8> bytes;
+        REQUIRE(bytes.TryResize(static_cast<usize>(file.Size())) == true);
+        const filesystem::ReadResult read = file.ReadAt(0, bytes.AsSpan());
+        REQUIRE(read.Outcome.Succeeded() == true);
+        REQUIRE(read.BytesRead == bytes.GetSize());
+        constexpr usize WORD_BYTES = 4;
+        usize offset = 0;
+        const auto readWord = [&bytes, &offset]() {
+            uint32 word = 0;
+            REQUIRE(TryReadLittleEndian({bytes.GetData() + offset, bytes.GetSize() - offset}, word) == true);
+            offset += WORD_BYTES;
+            return word;
+        };
+        const usize vertexCount = readWord();
+        const usize indexCount = readWord();
+        REQUIRE(indexCount % 3 == 0);
+        REQUIRE(bytes.GetSize() == (2 + vertexCount * 3 + indexCount) * WORD_BYTES);
+        REQUIRE(Positions.TryResize(vertexCount + LIGHT_CORNERS) == true);
+        REQUIRE(Indices.TryResize(indexCount + LIGHT_INDEX_COUNT) == true);
+        REQUIRE(Slots.TryResize((indexCount + LIGHT_INDEX_COUNT) / 3) == true);
+        math::Vector3 minimumWorld{1e30F, 1e30F, 1e30F};
+        math::Vector3 maximumWorld{-1e30F, -1e30F, -1e30F};
+        for (usize vertex = 0; vertex < vertexCount; ++vertex)
+        {
+            StaticArray<float32, 3> coordinates{};
+            for (usize axis = 0; axis < 3; ++axis)
+            {
+                const uint32 bits = readWord();
+                std::memcpy(&coordinates[axis], &bits, sizeof(bits));
+            }
+            Positions[vertex] = {coordinates[0], coordinates[1], coordinates[2]};
+            minimumWorld = {math::Min(minimumWorld.X, coordinates[0]),
+                            math::Min(minimumWorld.Y, coordinates[1]),
+                            math::Min(minimumWorld.Z, coordinates[2])};
+            maximumWorld = {math::Max(maximumWorld.X, coordinates[0]),
+                            math::Max(maximumWorld.Y, coordinates[1]),
+                            math::Max(maximumWorld.Z, coordinates[2])};
+        }
+        for (usize index = 0; index < indexCount; ++index)
+        {
+            Indices[index] = readWord();
+            REQUIRE(Indices[index] < vertexCount);
+        }
+        for (usize triangle = 0; triangle < indexCount / 3; ++triangle)
+        {
+            Slots[triangle] = SURFACE;
+        }
+        // A 2 m square light, facing down, at 60% of the scene's height above its horizontal center.
+        constexpr float32 LIGHT_HALF_WIDTH_WORLD = 1;
+        constexpr float32 LIGHT_HEIGHT_FRACTION = .6F;
+        const float32 centerX = (minimumWorld.X + maximumWorld.X) * .5F;
+        const float32 centerZ = (minimumWorld.Z + maximumWorld.Z) * .5F;
+        const float32 lightY = minimumWorld.Y + (maximumWorld.Y - minimumWorld.Y) * LIGHT_HEIGHT_FRACTION;
+        const uint32 firstCorner = static_cast<uint32>(vertexCount);
+        Positions[vertexCount] = {centerX - LIGHT_HALF_WIDTH_WORLD, lightY, centerZ - LIGHT_HALF_WIDTH_WORLD};
+        // Counterclockwise seen from below, so the one-sided emitter faces -Y.
+        Positions[vertexCount + 1] = {centerX + LIGHT_HALF_WIDTH_WORLD, lightY, centerZ - LIGHT_HALF_WIDTH_WORLD};
+        Positions[vertexCount + 2] = {centerX + LIGHT_HALF_WIDTH_WORLD, lightY, centerZ + LIGHT_HALF_WIDTH_WORLD};
+        Positions[vertexCount + 3] = {centerX - LIGHT_HALF_WIDTH_WORLD, lightY, centerZ + LIGHT_HALF_WIDTH_WORLD};
+        const StaticArray<uint32, LIGHT_INDEX_COUNT> corners{{0, 1, 2, 0, 2, 3}};
+        for (usize corner = 0; corner < LIGHT_INDEX_COUNT; ++corner)
+        {
+            Indices[indexCount + corner] = firstCorner + corners[corner];
+        }
+        Slots[indexCount / 3] = LIGHT;
+        Slots[indexCount / 3 + 1] = LIGHT;
+        Materials[SURFACE].BaseColor = {.8F, .8F, .8F};
+        Materials[LIGHT].BaseColor = {.8F, .8F, .8F};
+        Materials[LIGHT].Emission = {50, 50, 50};
+        Meshes[0].Geometry = {Positions.GetData(), Positions.GetSize(), Indices.GetData(), Indices.GetSize()};
+        Meshes[0].MaterialSlots = {Slots.GetData(), Slots.GetSize()};
+        Meshes[0].MaterialBindings = {Bindings.GetData(), Bindings.GetSize()};
+        Items[0].SourceId = 1;
+        Inputs.Materials = {Materials.GetData(), Materials.GetSize()};
+        // Eye at 15% of the scene's height, a quarter of the X extent in from the +X end, looking along -X.
+        constexpr float32 EYE_HEIGHT_FRACTION = .15F;
+        constexpr float32 EYE_INSET_FRACTION = .25F;
+        const math::Vector3 eyeWorld{maximumWorld.X - (maximumWorld.X - minimumWorld.X) * EYE_INSET_FRACTION,
+                                     minimumWorld.Y + (maximumWorld.Y - minimumWorld.Y) * EYE_HEIGHT_FRACTION,
+                                     centerZ};
+        // View axes: right -Z, up +Y, forward -X; clip depth 0 at the near plane and 1 at the far plane.
+        constexpr float32 FOCAL_LENGTH = 1.2F;
+        constexpr float32 NEAR_WORLD = .1F;
+        constexpr float32 FAR_WORLD = 100;
+        constexpr float32 DEPTH_SCALE = FAR_WORLD / (NEAR_WORLD - FAR_WORLD);
+        const float32 aspect = static_cast<float32>(WIDTH) / static_cast<float32>(HEIGHT);
+        math::Matrix4& worldToClip = Cameras[0].WorldToClip;
+        // Rows of the view: x = -(z - eye.z), y = y - eye.y, view z = -forward = +(x - eye.x).
+        worldToClip.Columns[0] = {0, 0, DEPTH_SCALE, -1};
+        worldToClip.Columns[1] = {0, FOCAL_LENGTH, 0, 0};
+        worldToClip.Columns[2] = {-FOCAL_LENGTH / aspect, 0, 0, 0};
+        worldToClip.Columns[3] = {FOCAL_LENGTH / aspect * eyeWorld.Z,
+                                  -FOCAL_LENGTH * eyeWorld.Y,
+                                  DEPTH_SCALE * (NEAR_WORLD - eyeWorld.X),
+                                  eyeWorld.X};
+        Cameras[0].CameraPosition = eyeWorld;
+        WARN("large line scene: " << vertexCount << " vertices, " << indexCount / 3 << " triangles, light at y="
+                                  << lightY << ", eye " << eyeWorld.X << ',' << eyeWorld.Y << ',' << eyeWorld.Z);
+    }
+    LargeLineScene(const LargeLineScene&) = delete;
+    LargeLineScene& operator=(const LargeLineScene&) = delete;
+};
+} // namespace
+
+TEST_CASE("Measure BVH line queries against the line scan on a large reference scene", "[.line-traversal-performance]")
+{
+    // A measurement for point-line PL3, not an acceptance threshold. The line-sampling template runs
+    // with every ray pass on ComputeBvh, once with the default BVH line walk and once with the line
+    // scan, so the two runs differ only in the line traversal: their images must be byte-identical,
+    // and their shade passes' GPU times compare one line query per pixel (plus its shading).
+    const char* pathOrNull = std::getenv("LUDUS_LINE_TRAVERSAL_SCENE");
+    if (pathOrNull == nullptr)
+    {
+        SKIP("Set LUDUS_LINE_TRAVERSAL_SCENE to an exported scene, for example Intel Sponza.");
+    }
+    const LargeLineScene scene(pathOrNull);
+    GraphGpuFixture fixture(true, false);
+    const StaticArray<PackageLocation, 2> locations{{
+        {LUDUS_RG3_LINE_SAMPLING_COMPUTE_BVH_DIRECTORY, "rg2_line_sampling_compute_bvh.lurgrt"},
+        {LUDUS_RG3_LINE_SAMPLING_COMPUTE_BVH_LINE_SCAN_DIRECTORY, "rg2_line_sampling_compute_bvh_line_scan.lurgrt"},
+    }};
+    const StaticArray<const char*, 2> names{{"BVH", "scan"}};
+    constexpr usize FRAME_COUNT = 8;
+    constexpr usize PASS_COUNT = LINE_SAMPLING_FIRST_SHADE_PASS + LINE_SAMPLING_OUTPUT_COUNT;
+    StaticArray<StaticArray<Array<uint8>, LINE_SAMPLING_OUTPUT_COUNT>, 2> pixels;
+    StaticArray<StaticArray<float64, PASS_COUNT>, 2> passNanoseconds{};
+    for (usize traversal = 0; traversal < locations.GetSize(); ++traversal)
+    {
+        PreparedGraph graph(fixture, locations[traversal], scene, 1);
+        REQUIRE(renderer::RequiresHardwareRayTracing(graph.Plan) == false);
+        usize timedFrames = 0;
+        for (usize frame = 0; frame < FRAME_COUNT; ++frame)
+        {
+            REQUIRE(rhi::ArmGpuPassTimings(fixture.Device) == rhi::RasterStatus::Ready);
+            RenderFrame(graph.Graph, fixture);
+            rhi::GpuPassTimings timings;
+            if (rhi::GetGpuPassTimings(fixture.Device, timings) != rhi::RasterStatus::Ready)
+            {
+                continue;
+            }
+            timedFrames += 1;
+            // The ordered sequence's Compute operations are its passes in plan order.
+            usize computePass = 0;
+            for (usize pass = 0; pass < timings.Count; ++pass)
+            {
+                if (timings.Passes[pass].Kind != rhi::GpuPassKind::Compute)
+                {
+                    continue;
+                }
+                REQUIRE(computePass < PASS_COUNT);
+                if (timings.Passes[pass].Timing.State == rhi::GpuTimingState::Available)
+                {
+                    passNanoseconds[traversal][computePass] +=
+                        static_cast<float64>(timings.Passes[pass].Timing.DurationNanoseconds);
+                }
+                computePass += 1;
+            }
+            REQUIRE(computePass == PASS_COUNT);
+        }
+        REQUIRE(timedFrames > 0);
+        const StaticArray<uint32, LINE_SAMPLING_OUTPUT_COUNT> exports = GetLineSamplingExports(graph.Plan);
+        for (usize output = 0; output < LINE_SAMPLING_OUTPUT_COUNT; ++output)
+        {
+            ReadExport(graph.Graph, fixture, exports[output], {}, pixels[traversal][output]);
+            // Parity over a dark image would say little, so report how much of it is lit.
+            usize litPixels = 0;
+            for (usize address = 0; address + 3 < pixels[traversal][output].GetSize(); address += 4)
+            {
+                litPixels += pixels[traversal][output][address] != 0 ? 1 : 0;
+            }
+            const math::Vector3 mean = ComputeMeanRadiance(pixels[traversal][output]);
+            WARN(names[traversal] << " output " << output << ": " << CountFailurePixels(pixels[traversal][output])
+                                  << " failure pixels, " << litPixels << " of " << WIDTH * HEIGHT
+                                  << " pixels with nonzero red, mean " << mean.X << ',' << mean.Y << ',' << mean.Z);
+        }
+        constexpr float64 NANOSECONDS_PER_MILLISECOND = 1'000'000;
+        for (usize pass = 0; pass < PASS_COUNT; ++pass)
+        {
+            passNanoseconds[traversal][pass] /= static_cast<float64>(timedFrames);
+            WARN(names[traversal] << " pass " << pass << " mean GPU ms per frame over " << timedFrames << " frames at "
+                                  << WIDTH << 'x' << HEIGHT << ": "
+                                  << passNanoseconds[traversal][pass] / NANOSECONDS_PER_MILLISECOND);
+        }
+    }
+    for (usize output = 0; output < LINE_SAMPLING_OUTPUT_COUNT; ++output)
+    {
+        INFO("output " << output);
+        CHECK(CountFailurePixels(pixels[0][output]) == 0);
+        CHECK(CountDifferingPixels(pixels[0][output], pixels[1][output], 0) == 0);
+    }
 }
 
 namespace
@@ -5252,6 +5553,155 @@ TEST_CASE("After 16 samples per pixel point-and-line MIS has less penumbra error
              << timings.Nanoseconds[pass] / static_cast<float64>(timings.FrameCount) / NANOSECONDS_PER_MILLISECOND);
     }
     CHECK(misError < pointError);
+}
+
+TEST_CASE("The point-and-line MIS template accumulates byte-identical images with the BVH and the line scan",
+          "[render-graph][gpu][point-line][template][line-bvh]")
+{
+    // As for the line-sampling template: the line-scan package differs only in
+    // scene_interface.line_traversal "TriangleLoop" (point-line PL3), so all three outputs, including
+    // the BSDF and point samples that share their passes with line queries, must match byte for byte.
+    GraphGpuFixture fixture(false, false);
+    CornellBox room;
+    const StaticArray<PackageLocation, 2> locations{{
+        {LUDUS_RG3_SALESIN_JAROSZ_LINES_TEMPLATE_DIRECTORY, "rg2_salesin_jarosz_lines_template.lurgrt"},
+        {LUDUS_RG3_SALESIN_JAROSZ_LINES_LINE_SCAN_DIRECTORY, "rg2_salesin_jarosz_lines_line_scan.lurgrt"},
+    }};
+    constexpr usize SINGLE_FRAME_COUNT = 1;
+    constexpr usize FRAME_COUNT = 64;
+    StaticArray<StaticArray<Array<uint8>, POINT_LINE_OUTPUT_COUNT>, 2> first;
+    StaticArray<StaticArray<Array<uint8>, POINT_LINE_OUTPUT_COUNT>, 2> last;
+    for (usize traversal = 0; traversal < locations.GetSize(); ++traversal)
+    {
+        PreparedGraph graph(fixture, locations[traversal], room, 1);
+        REQUIRE(renderer::RequiresHardwareRayTracing(graph.Plan) == false);
+        RenderPointLineOutputs(graph, fixture, SINGLE_FRAME_COUNT, first[traversal]);
+        RenderPointLineOutputs(graph, fixture, FRAME_COUNT - SINGLE_FRAME_COUNT, last[traversal]);
+    }
+    for (usize output = 0; output < POINT_LINE_OUTPUT_COUNT; ++output)
+    {
+        INFO("output " << output);
+        CHECK(CountDifferingPixels(first[0][output], first[1][output], 0) == 0);
+        CHECK(CountDifferingPixels(last[0][output], last[1][output], 0) == 0);
+    }
+}
+
+TEST_CASE("Measure point-and-line MIS against point sampling in the penumbra at equal GPU time",
+          "[.point-line-performance]")
+{
+    // A measurement for point-line PL3, not an acceptance threshold: GPU time varies with machine load.
+    // Each estimator alone needs the primary pass and its own shading pass per sample, so point
+    // sampling receives round(colorFrames * (primary + shade) / (primary + shadePoints)) samples, and
+    // both are compared with the independently seeded 1024-sample reference over the PL2 penumbra.
+    GraphGpuFixture fixture(true, false);
+    CornellBox room;
+    Array<uint8> fractionPixels;
+    {
+        PreparedGraph fraction(fixture,
+                               {LUDUS_RG3_LINE_SAMPLING_TEMPLATE_DIRECTORY, "rg2_line_sampling_template.lurgrt"},
+                               room,
+                               1);
+        constexpr usize FRACTION_FRAME_COUNT = 256;
+        for (usize frame = 0; frame < FRACTION_FRAME_COUNT; ++frame)
+        {
+            RenderFrame(fraction.Graph, fixture);
+        }
+        const StaticArray<uint32, LINE_SAMPLING_OUTPUT_COUNT> fractionExports = GetLineSamplingExports(fraction.Plan);
+        ReadExport(fraction.Graph, fixture, fractionExports[LINE_SAMPLING_VISIBLE_FRACTION], {}, fractionPixels);
+    }
+    Array<bool> penumbra;
+    REQUIRE(penumbra.TryResize(fractionPixels.GetSize() / 4) == true);
+    constexpr float32 PENUMBRA_LOWEST_FRACTION = .1F;
+    constexpr float32 PENUMBRA_HIGHEST_FRACTION = .9F;
+    usize penumbraPixels = 0;
+    for (usize pixel = 0; pixel < penumbra.GetSize(); ++pixel)
+    {
+        const float32 visible = DecodeToneMapped(fractionPixels[pixel * 4]);
+        penumbra[pixel] =
+            pixel / WIDTH >= HEIGHT / 2 && visible > PENUMBRA_LOWEST_FRACTION && visible < PENUMBRA_HIGHEST_FRACTION;
+        penumbraPixels += penumbra[pixel] == true ? 1 : 0;
+    }
+    constexpr usize MINIMUM_PENUMBRA_PIXELS = 32;
+    REQUIRE(penumbraPixels >= MINIMUM_PENUMBRA_PIXELS);
+
+    const PackageLocation location{LUDUS_RG3_SALESIN_JAROSZ_LINES_TEMPLATE_DIRECTORY,
+                                   "rg2_salesin_jarosz_lines_template.lurgrt"};
+    // Mean GPU time per frame of each pass. The ordered sequence is one timing scope whose Compute
+    // operations are its passes in plan order; its Raster operations write the color targets.
+    constexpr usize TIMING_FRAME_COUNT = 64;
+    constexpr usize PASS_COUNT = POINT_LINE_FIRST_SHADE_PASS + POINT_LINE_OUTPUT_COUNT;
+    const StaticArray<PackageLocation, 2> timedLocations{{
+        location,
+        {LUDUS_RG3_SALESIN_JAROSZ_LINES_LINE_SCAN_DIRECTORY, "rg2_salesin_jarosz_lines_line_scan.lurgrt"},
+    }};
+    StaticArray<StaticArray<float64, PASS_COUNT>, 2> traversalNanoseconds{};
+    for (usize traversal = 0; traversal < timedLocations.GetSize(); ++traversal)
+    {
+        PreparedGraph timed(fixture, timedLocations[traversal], room, 1);
+        StaticArray<Array<uint8>, POINT_LINE_OUTPUT_COUNT> ignored;
+        PassTimings timings;
+        RenderPointLineOutputs(timed, fixture, TIMING_FRAME_COUNT, ignored, &timings);
+        REQUIRE(timings.FrameCount > 0);
+        usize computePass = 0;
+        for (usize pass = 0; pass < timings.Count; ++pass)
+        {
+            if (timings.Passes[pass].Kind != rhi::GpuPassKind::Compute)
+            {
+                continue;
+            }
+            REQUIRE(computePass < PASS_COUNT);
+            traversalNanoseconds[traversal][computePass] =
+                timings.Nanoseconds[pass] / static_cast<float64>(timings.FrameCount);
+            WARN((traversal == 0 ? "BVH" : "scan")
+                 << " pass " << computePass << " mean GPU ns per frame over " << timings.FrameCount
+                 << " frames: " << traversalNanoseconds[traversal][computePass]);
+            computePass += 1;
+        }
+        REQUIRE(computePass == PASS_COUNT);
+    }
+    const StaticArray<float64, PASS_COUNT>& passNanoseconds = traversalNanoseconds[0];
+    const float64 primary = passNanoseconds[0];
+    const float64 colorCost = primary + passNanoseconds[POINT_LINE_FIRST_SHADE_PASS + POINT_LINE_MIS];
+    const float64 pointCost = primary + passNanoseconds[POINT_LINE_FIRST_SHADE_PASS + POINT_LINE_POINT_SAMPLING];
+    REQUIRE(colorCost > 0);
+    REQUIRE(pointCost > 0);
+    constexpr usize COLOR_FRAME_COUNT = 16;
+    constexpr float64 MAXIMUM_POINT_FRAMES = 1024;
+    const usize pointFrameCount = static_cast<usize>(
+        math::Min(MAXIMUM_POINT_FRAMES,
+                  math::Max(1.0, static_cast<float64>(COLOR_FRAME_COUNT) * colorCost / pointCost + .5)));
+    // One run: the running means after the fewer frames, then after the more.
+    const usize fewerFrameCount = math::Min(COLOR_FRAME_COUNT, pointFrameCount);
+    const usize moreFrameCount = math::Max(COLOR_FRAME_COUNT, pointFrameCount);
+    StaticArray<Array<uint8>, POINT_LINE_OUTPUT_COUNT> atFewerFrames;
+    StaticArray<Array<uint8>, POINT_LINE_OUTPUT_COUNT> atMoreFrames;
+    {
+        PreparedGraph graph(fixture, location, room, 1);
+        RenderPointLineOutputs(graph, fixture, fewerFrameCount, atFewerFrames);
+        RenderPointLineOutputs(graph, fixture, moreFrameCount - fewerFrameCount, atMoreFrames);
+    }
+    const StaticArray<Array<uint8>, POINT_LINE_OUTPUT_COUNT>& atColorFrames =
+        COLOR_FRAME_COUNT == fewerFrameCount ? atFewerFrames : atMoreFrames;
+    const StaticArray<Array<uint8>, POINT_LINE_OUTPUT_COUNT>& atPointFrames =
+        pointFrameCount == moreFrameCount ? atMoreFrames : atFewerFrames;
+    StaticArray<Array<uint8>, POINT_LINE_OUTPUT_COUNT> reference;
+    {
+        constexpr uint64 REFERENCE_REVISION = 2;
+        PreparedGraph referenceGraph(fixture, location, room, REFERENCE_REVISION);
+        constexpr usize REFERENCE_FRAME_COUNT = 1024;
+        RenderPointLineOutputs(referenceGraph, fixture, REFERENCE_FRAME_COUNT, reference);
+    }
+    const float64 misError =
+        ComputeMaskedMeanSquaredError(atColorFrames[POINT_LINE_MIS], reference[POINT_LINE_MIS], penumbra);
+    const float64 pointError =
+        ComputeMaskedMeanSquaredError(atPointFrames[POINT_LINE_POINT_SAMPLING], reference[POINT_LINE_MIS], penumbra);
+    const float64 equalSamplePointError =
+        ComputeMaskedMeanSquaredError(atColorFrames[POINT_LINE_POINT_SAMPLING], reference[POINT_LINE_MIS], penumbra);
+    WARN("equal GPU time over " << penumbraPixels << " penumbra pixels: primary " << primary << " ns, MIS sample "
+                                << colorCost << " ns, point sample " << pointCost << " ns; MIS at " << COLOR_FRAME_COUNT
+                                << " samples MSE=" << misError << ", point sampling at " << pointFrameCount
+                                << " samples MSE=" << pointError << " (at " << COLOR_FRAME_COUNT << " samples "
+                                << equalSamplePointError << ")");
 }
 
 TEST_CASE("ToneMap applies exposure after linear accumulation and can be bypassed",

@@ -292,7 +292,8 @@ def validate_manifest(value):
             scene_interface = technique.get('scene_interface')
             if scene_interface is not None:
                 keys(scene_interface, ('version', 'surface_queries', 'visibility_queries'), 'scene interface',
-                     ('payload', 'local_payload_bytes', 'visibility_buffer', 'line_queries', 'polygonal_light_sampling'))
+                     ('payload', 'local_payload_bytes', 'visibility_buffer', 'line_queries', 'line_traversal',
+                      'polygonal_light_sampling'))
                 if 'visibility_buffer' in scene_interface:
                     require(type(scene_interface['visibility_buffer']) is bool, 'Schema', 'visibility_buffer', 'Boolean required')
                 # Optional and additive: stages the projected-solid-angle, LTC, reservoir and LTC-table helpers.
@@ -311,6 +312,9 @@ def validate_manifest(value):
                 if 'line_queries' in scene_interface:
                     integer(scene_interface['line_queries'], ray.SCENE_QUERY_LIMITS['MIN_LINE_QUERIES'],
                             ray.SCENE_QUERY_LIMITS['MAX_LINE_QUERIES'], 'line query budget')
+                # Optional: an absent line traversal means the packed BVH walk.
+                if 'line_traversal' in scene_interface:
+                    enum(scene_interface['line_traversal'], ray.LINE_TRAVERSALS, 'line_traversal')
                 if 'payload' in scene_interface:
                     require(type(scene_interface['payload']) is str and scene_interface['payload'].endswith('.slang'),
                             'Schema', 'payload', 'package-local Slang payload source required')
