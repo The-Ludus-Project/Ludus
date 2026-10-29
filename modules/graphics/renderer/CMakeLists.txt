@@ -549,6 +549,57 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_veach_guibas_mis_triangle_loop_RUNTIME_PACKAGE PARENT_PATH veach_guibas_loop_package_directory)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_VEACH_GUIBAS_MIS_TRIANGLE_LOOP_DIRECTORY="${veach_guibas_loop_package_directory}")
+    # The opt-in [.ris-projected-solid-angle-benchmark] packages: the ris-projected-solid-angle and Veach and Guibas
+    # templates with every scene compute pass on the compute BVH, so both trace with one traversal, and with the
+    # BSDF-only program replaced by tests/render_graph_query_count.slang, which runs the unchanged MIS program and
+    # returns its query counts. The MIS and light-only programs are the templates' own.
+    foreach(benchmark_template IN ITEMS ris_projected_solid_angle veach_guibas_mis)
+        set(benchmark_source "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${benchmark_template}_template")
+        set(benchmark_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${benchmark_template}_benchmark")
+        ludus_stage_render_graph_inputs("${benchmark_source}" "${benchmark_staged}"
+            main.lushader.json library.lurender.json)
+        configure_file("${CMAKE_CURRENT_SOURCE_DIR}/tests/render_graph_query_count.slang"
+            "${benchmark_staged}/main_shaders/query_count.slang" COPYONLY)
+        file(READ "${benchmark_source}/main.lushader.json" benchmark_manifest)
+        string(JSON benchmark_program_count LENGTH "${benchmark_manifest}" programs)
+        math(EXPR benchmark_program_last "${benchmark_program_count} - 1")
+        set(benchmark_program_found OFF)
+        foreach(program_index RANGE ${benchmark_program_last})
+            string(JSON program_id GET "${benchmark_manifest}" programs ${program_index} id)
+            if(program_id STREQUAL "ShadeBsdfSampling")
+                string(JSON benchmark_manifest SET "${benchmark_manifest}"
+                    programs ${program_index} source "\"main_shaders/query_count.slang\"")
+                string(JSON benchmark_manifest SET "${benchmark_manifest}"
+                    programs ${program_index} function "\"CountMultipleImportanceQueries\"")
+                set(benchmark_program_found ON)
+            endif()
+        endforeach()
+        if(NOT benchmark_program_found)
+            message(FATAL_ERROR "The ${benchmark_template} template manifest has no ShadeBsdfSampling program.")
+        endif()
+        file(READ "${benchmark_source}/library.lurender.json" benchmark_library)
+        string(JSON benchmark_node_count LENGTH "${benchmark_library}" configurations 0 nodes)
+        math(EXPR benchmark_node_last "${benchmark_node_count} - 1")
+        foreach(node_index RANGE ${benchmark_node_last})
+            string(JSON node_kind GET "${benchmark_library}" configurations 0 nodes ${node_index} kind)
+            if(node_kind STREQUAL "ComputePipeline")
+                string(JSON benchmark_library SET "${benchmark_library}"
+                    configurations 0 nodes ${node_index} invocation traversal "\"ComputeBvh\"")
+            endif()
+        endforeach()
+        # Rewrite the staged files only when they change, so reconfiguring does not rebuild the package.
+        file(WRITE "${benchmark_staged}.lushader.json" "${benchmark_manifest}\n")
+        file(COPY_FILE "${benchmark_staged}.lushader.json" "${benchmark_staged}/main.lushader.json" ONLY_IF_DIFFERENT)
+        file(WRITE "${benchmark_staged}.lurender.json" "${benchmark_library}\n")
+        file(COPY_FILE "${benchmark_staged}.lurender.json" "${benchmark_staged}/library.lurender.json"
+            ONLY_IF_DIFFERENT)
+        ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME "rg2_${benchmark_template}_benchmark"
+            MANIFEST "${benchmark_staged}/main.lushader.json" RUNTIME_PACKAGE)
+        cmake_path(GET "rg2_${benchmark_template}_benchmark_RUNTIME_PACKAGE" PARENT_PATH benchmark_package_directory)
+        string(TOUPPER "${benchmark_template}" benchmark_definition)
+        target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+            "LUDUS_RG3_${benchmark_definition}_BENCHMARK_DIRECTORY=\"${benchmark_package_directory}\"")
+    endforeach()
     # FindVisibleLineIntervals against analytic intervals (point-line PL1), once with a TriangleLoop
     # pass and once with a NativeQuery pass, which must give the same software line traversal.
     set(line_visibility_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/line_visibility")
@@ -600,7 +651,7 @@ if(TARGET ludus_renderer_render_tests)
         LUDUS_RG3_STORAGE_RAY_DIRECTORY="${storage_ray_package_directory}")
     add_test(NAME ludus_render_graph_ray_pixels COMMAND ludus_render_graph_ray_tests "~[ris-projected-solid-angle]")
     set_tests_properties(ludus_render_graph_ray_pixels PROPERTIES LABELS "renderer;gpu;ray" TIMEOUT 60)
-    # The ris-projected-solid-angle template's convergence and error checks render about 2600 frames and
+    # The ris-projected-solid-angle template's convergence and error checks render about 3100 frames and
     # need no native ray tracing, so they also run on software Vulkan adapters; they get their own timeout.
     add_test(NAME ludus_render_graph_ris_projected_solid_angle_pixels
         COMMAND ludus_render_graph_ray_tests "[ris-projected-solid-angle]")

@@ -37,6 +37,7 @@
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/sort.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/filesystem/filesystem.hpp>
 #include <ludus/foundation/math/scalar.hpp>
@@ -45,6 +46,7 @@
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
 #include <ludus/graphics/rhi/gpu_scope.h>
 #include <ludus/graphics/rhi/lifetime.h>
+#include <ludus/graphics/rhi/measurement.h>
 
 #include <catch2/catch_test_macros.hpp>
 #include <new>
@@ -3062,15 +3064,23 @@ struct PreparedGraph final
     renderer::RenderGraphPlan Plan;
     renderer::RenderGraphPrograms Programs;
     renderer::RenderGraph Graph;
+    ExportExtent Extent;
 
     /// @param room A scene fixture exposing Meshes, Items, Cameras and Inputs, such as CornellBox.
     /// @param revision Scene and camera revision; a different revision reseeds sampling.
+    /// @param extent The render size of the graph's view-relative resources; the surface keeps the fixture's size.
     template <typename Room>
-    PreparedGraph(const GraphGpuFixture& fixture, const PackageLocation& location, const Room& room, uint64 revision)
+    PreparedGraph(const GraphGpuFixture& fixture,
+                  const PackageLocation& location,
+                  const Room& room,
+                  uint64 revision,
+                  ExportExtent extent = {})
         : Package(LoadPackage(location)), Plan(Package->GetPlan()),
-          Programs(Package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment()))
+          Programs(
+              Package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment())),
+          Extent(extent)
     {
-        wait(Graph.Initialize(fixture.Device, Plan, Programs, nullptr, WIDTH, HEIGHT));
+        wait(Graph.Initialize(fixture.Device, Plan, Programs, nullptr, Extent.Width, Extent.Height));
         renderer::RenderGraphReport report;
         wait(Graph.Update({room.Meshes.GetData(), room.Meshes.GetSize()},
                           {room.Items.GetData(), room.Items.GetSize()},
@@ -3141,7 +3151,7 @@ void RenderVeachGuibasOutputs(PreparedGraph& inoutTemplate,
     }
     for (usize output = 0; output < VEACH_GUIBAS_OUTPUT_COUNT; ++output)
     {
-        ReadExport(inoutTemplate.Graph, fixture, exports[output], {}, outPixels[output]);
+        ReadExport(inoutTemplate.Graph, fixture, exports[output], inoutTemplate.Extent, outPixels[output]);
         // Invalid hit records, exhausted budgets and failed queries would show magenta.
         REQUIRE(CountFailurePixels(outPixels[output]) == 0);
     }
@@ -3398,6 +3408,20 @@ constexpr StaticArray<uint32, MANY_EMITTER_ROOM_QUAD_COUNT> MANY_EMITTER_ROOM_QU
                                                                                               MANY_EMITTER_GREEN,
                                                                                               MANY_EMITTER_WHITE}};
 
+/// Write the two triangles of quad `quad`, whose corners are positions 4 quad to 4 quad + 3 in winding order, into
+/// indices and give both the material slot `material`. indices and slots hold every quad's entries.
+void WriteQuad(usize quad, uint32 material, uint32* indices, uint32* slots)
+{
+    const uint32 first = static_cast<uint32>(quad * MANY_EMITTER_QUAD_CORNERS);
+    const StaticArray<uint32, MANY_EMITTER_QUAD_INDICES> corners{{0, 1, 2, 0, 2, 3}};
+    for (usize corner = 0; corner < MANY_EMITTER_QUAD_INDICES; ++corner)
+    {
+        indices[quad * MANY_EMITTER_QUAD_INDICES + corner] = first + corners[corner];
+    }
+    slots[quad * 2] = material;
+    slots[quad * 2 + 1] = material;
+}
+
 /// The Cornell room with its ceiling light replaced by a 4 x 4 grid of small one-sided emitters, each its own material,
 /// whose power spans a factor of 64. White surfaces are a rough dielectric, so both of Peters' techniques matter.
 /// Veach and Guibas light sampling picks emitters uniformly and points by area; RIS adapts to power and to the
@@ -3422,7 +3446,7 @@ struct ManyEmitterRoom final
                 Positions[quad * MANY_EMITTER_QUAD_CORNERS + corner] =
                     CORNELL_CORNERS_WORLD[MANY_EMITTER_ROOM_QUAD_FIRST_CORNERS[quad] + corner];
             }
-            setQuadMaterial(quad, MANY_EMITTER_ROOM_QUAD_MATERIALS[quad]);
+            WriteQuad(quad, MANY_EMITTER_ROOM_QUAD_MATERIALS[quad], Indices.GetData(), Slots.GetData());
         }
         // Tiles face down like the Cornell light, with its corner order; centers 0.4 apart, sides 0.16 long.
         constexpr float32 TILE_HEIGHT_WORLD = .98F;
@@ -3446,7 +3470,7 @@ struct ManyEmitterRoom final
             Positions[first + 2] = {centerX + TILE_HALF_SIDE_WORLD, TILE_HEIGHT_WORLD, centerZ + TILE_HALF_SIDE_WORLD};
             Positions[first + 3] = {centerX - TILE_HALF_SIDE_WORLD, TILE_HEIGHT_WORLD, centerZ + TILE_HALF_SIDE_WORLD};
             const uint32 material = MANY_EMITTER_FIRST_LIGHT + static_cast<uint32>(tile);
-            setQuadMaterial(quad, material);
+            WriteQuad(quad, material, Indices.GetData(), Slots.GetData());
             // Levels and tints cycle with different periods, so neighbors differ in both.
             Materials[material].BaseColor = {.8F, .8F, .8F};
             Materials[material].Emission =
@@ -3472,20 +3496,63 @@ struct ManyEmitterRoom final
     }
     ManyEmitterRoom(const ManyEmitterRoom&) = delete;
     ManyEmitterRoom& operator=(const ManyEmitterRoom&) = delete;
-
-private:
-    void setQuadMaterial(usize quad, uint32 material)
-    {
-        const uint32 first = static_cast<uint32>(quad * MANY_EMITTER_QUAD_CORNERS);
-        const StaticArray<uint32, MANY_EMITTER_QUAD_INDICES> corners{{0, 1, 2, 0, 2, 3}};
-        for (usize corner = 0; corner < MANY_EMITTER_QUAD_INDICES; ++corner)
-        {
-            Indices[quad * MANY_EMITTER_QUAD_INDICES + corner] = first + corners[corner];
-        }
-        Slots[quad * 2] = material;
-        Slots[quad * 2 + 1] = material;
-    }
 };
+
+constexpr uint32 EMISSION_MAP_SIDE = 4;
+constexpr usize EMISSION_MAP_TEXEL_BYTES = 4;
+constexpr usize EMISSION_MAP_BYTES =
+    static_cast<usize>(EMISSION_MAP_SIDE) * EMISSION_MAP_SIDE * EMISSION_MAP_TEXEL_BYTES;
+/// First corner of the Cornell light in CORNELL_CORNERS_WORLD.
+constexpr usize CORNELL_LIGHT_FIRST_CORNER = 20;
+
+/// A 4 x 4 linear emission map for the Cornell light, white, warm, cool and black texels in diagonal stripes, and the
+/// room's UVs, which span the map over the light. The light's emission varies by a factor of four per channel and is
+/// zero on a quarter of its area, while the emitter power CDF and the RIS target see its constant Emission: a light
+/// sample that ignored the map at the sampled point, or a density that assumed uniform emission, would bias the image.
+/// The room borrows this object's arrays, so it is neither copied nor moved.
+struct EmissionMap final
+{
+    StaticArray<math::Vector2, CORNELL_VERTEX_COUNT> Texcoords{};
+    StaticArray<uint8, EMISSION_MAP_BYTES> Texels{};
+    EmissionMap()
+    {
+        constexpr usize COLOR_COUNT = 4;
+        constexpr StaticArray<StaticArray<uint8, EMISSION_MAP_TEXEL_BYTES>, COLOR_COUNT> COLORS{
+            {{{255, 255, 255, 255}}, {{255, 128, 64, 255}}, {{64, 128, 255, 255}}, {{0, 0, 0, 255}}}};
+        for (uint32 y = 0; y < EMISSION_MAP_SIDE; ++y)
+        {
+            for (uint32 x = 0; x < EMISSION_MAP_SIDE; ++x)
+            {
+                const usize texel = (static_cast<usize>(y) * EMISSION_MAP_SIDE + x) * EMISSION_MAP_TEXEL_BYTES;
+                const StaticArray<uint8, EMISSION_MAP_TEXEL_BYTES>& color = COLORS[(x + y) % COLOR_COUNT];
+                for (usize channel = 0; channel < EMISSION_MAP_TEXEL_BYTES; ++channel)
+                {
+                    Texels[texel + channel] = color[channel];
+                }
+            }
+        }
+        // The light's corners in their winding order; every other corner keeps UV zero, where no map is bound.
+        Texcoords[CORNELL_LIGHT_FIRST_CORNER] = {0, 0};
+        Texcoords[CORNELL_LIGHT_FIRST_CORNER + 1] = {1, 0};
+        Texcoords[CORNELL_LIGHT_FIRST_CORNER + 2] = {1, 1};
+        Texcoords[CORNELL_LIGHT_FIRST_CORNER + 3] = {0, 1};
+    }
+    EmissionMap(const EmissionMap&) = delete;
+    EmissionMap& operator=(const EmissionMap&) = delete;
+};
+
+/// Bind map to the Cornell light of inoutRoom; both must outlive every Update that reads the room.
+void AttachEmissionMap(const EmissionMap& map, CornellBox& inoutRoom)
+{
+    inoutRoom.Meshes[0].Geometry.Texcoords = map.Texcoords.GetData();
+    inoutRoom.Materials[CORNELL_LIGHT].EmissionTexture = {map.Texels.GetData(),
+                                                          map.Texels.GetSize(),
+                                                          static_cast<usize>(EMISSION_MAP_SIDE) *
+                                                              EMISSION_MAP_TEXEL_BYTES,
+                                                          EMISSION_MAP_SIDE,
+                                                          EMISSION_MAP_SIDE,
+                                                          rhi::RasterFormat::Rgba8Unorm};
+}
 
 const PackageLocation RIS_PROJECTED_SOLID_ANGLE_TEMPLATE{LUDUS_RG3_RIS_PROJECTED_SOLID_ANGLE_TEMPLATE_DIRECTORY,
                                                          "rg2_ris_projected_solid_angle_template.lurgrt"};
@@ -3555,6 +3622,16 @@ TEST_CASE("The RIS projected-solid-angle template's outputs agree with the Veach
         const ManyEmitterRoom room;
         CheckRisOutputsAgreeWithVeachGuibas(fixture, room, VEACH_GUIBAS_LIGHT_SAMPLING);
     }
+    SECTION("a textured emitter over rough dielectric surfaces")
+    {
+        const EmissionMap map;
+        CornellBox room;
+        AttachEmissionMap(map, room);
+        // A rough dielectric, as in the many-emitter room, so the diffuse and LTC techniques both carry weight.
+        constexpr float32 DIELECTRIC_ROUGHNESS = .4F;
+        room.Materials[CORNELL_WHITE].Roughness = DIELECTRIC_ROUGHNESS;
+        CheckRisOutputsAgreeWithVeachGuibas(fixture, room, VEACH_GUIBAS_LIGHT_SAMPLING);
+    }
     SECTION("a two-sided emitter over minimum-roughness metal")
     {
         // The LTC table's smallest roughness, where the specular technique carries almost all the weight.
@@ -3610,6 +3687,467 @@ TEST_CASE("The RIS projected-solid-angle MIS output has less error than Veach an
                                       << "; decoded linear: RIS projected solid angle=" << risLinearError
                                       << ", Veach and Guibas=" << veachLinearError);
     CHECK(risError < veachError);
+}
+
+namespace
+{
+// The opt-in [.ris-projected-solid-angle-benchmark]: Shah et al.'s claim, lower error at equal time with many lights,
+// on a procedural room with thousands of emissive triangles, against the Veach and Guibas template. Both packages
+// trace with the compute BVH and replace their BSDF-only program by render_graph_query_count.slang (CMakeLists.txt),
+// so their MIS outputs are the templates' own, and their third output counts the MIS program's queries. Error is
+// measured against a high-sample Veach and Guibas MIS image as MAPE (Shah et al., section 5) and RMSE of decoded linear
+// radiance, beside the tone-mapped mean squared error the CTest comparison uses. The diffuse and specular variants
+// follow the paper's Figure 3. Method and recorded results:
+// docs/architecture/many-area-light-sampling-reference-review.md, "Equal-time benchmark".
+constexpr usize EMITTER_FIELD_GRID = 40;
+constexpr usize EMITTER_FIELD_TILE_COUNT = EMITTER_FIELD_GRID * EMITTER_FIELD_GRID;
+constexpr usize EMITTER_FIELD_QUAD_COUNT = MANY_EMITTER_ROOM_QUAD_COUNT + EMITTER_FIELD_TILE_COUNT;
+constexpr usize EMITTER_FIELD_LEVEL_COUNT = 4;
+constexpr usize EMITTER_FIELD_TINT_COUNT = 3;
+constexpr usize EMITTER_FIELD_MATERIAL_COUNT =
+    MANY_EMITTER_FIRST_LIGHT + EMITTER_FIELD_LEVEL_COUNT * EMITTER_FIELD_TINT_COUNT;
+
+/// Reflectance of the room's white surfaces, after the diffuse and glossy scenes of Shah et al.'s Figure 3.
+enum class SurfaceFinish : uint8
+{
+    Diffuse,  ///< Lambertian-like rough dielectric, roughness 1.
+    Specular, ///< Glossy metal, roughness 0.2, which mirrors the emitter field.
+};
+
+/// The Cornell room with its ceiling light replaced by a 40 x 40 field of small one-sided emitters (3200 emissive
+/// triangles), whose power spans a factor of 64 in four levels and three tints. The mesh borrows this object's arrays,
+/// so it is neither copied nor moved.
+struct EmitterFieldRoom final
+{
+    Array<math::Vector3> Positions;
+    Array<uint32> Indices;
+    Array<uint32> Slots;
+    StaticArray<uint32, EMITTER_FIELD_MATERIAL_COUNT> Bindings{};
+    StaticArray<renderer::SceneShaderMaterial, EMITTER_FIELD_MATERIAL_COUNT> Materials{};
+    StaticArray<renderer::RenderGraphMesh, 1> Meshes{};
+    StaticArray<renderer::RenderGraphItem, 1> Items{};
+    StaticArray<renderer::ViewDescription, 1> Cameras{};
+    renderer::SceneShaderInputs Inputs;
+    explicit EmitterFieldRoom(SurfaceFinish finish)
+    {
+        REQUIRE(Positions.TryResize(EMITTER_FIELD_QUAD_COUNT * MANY_EMITTER_QUAD_CORNERS) == true);
+        REQUIRE(Indices.TryResize(EMITTER_FIELD_QUAD_COUNT * MANY_EMITTER_QUAD_INDICES) == true);
+        REQUIRE(Slots.TryResize(EMITTER_FIELD_QUAD_COUNT * 2) == true);
+        for (usize quad = 0; quad < MANY_EMITTER_ROOM_QUAD_COUNT; ++quad)
+        {
+            for (usize corner = 0; corner < MANY_EMITTER_QUAD_CORNERS; ++corner)
+            {
+                Positions[quad * MANY_EMITTER_QUAD_CORNERS + corner] =
+                    CORNELL_CORNERS_WORLD[MANY_EMITTER_ROOM_QUAD_FIRST_CORNERS[quad] + corner];
+            }
+            WriteQuad(quad, MANY_EMITTER_ROOM_QUAD_MATERIALS[quad], Indices.GetData(), Slots.GetData());
+        }
+        // Tiles face down like the Cornell light, with its corner order; centers 0.05 apart, sides 0.03 long.
+        constexpr float32 TILE_HEIGHT_WORLD = .98F;
+        constexpr float32 TILE_SPACING_WORLD = 2.F / static_cast<float32>(EMITTER_FIELD_GRID);
+        constexpr float32 TILE_FIRST_CENTER_WORLD = -1 + TILE_SPACING_WORLD / 2;
+        constexpr float32 TILE_HALF_SIDE_WORLD = .015F;
+        for (usize tile = 0; tile < EMITTER_FIELD_TILE_COUNT; ++tile)
+        {
+            const float32 centerX =
+                TILE_FIRST_CENTER_WORLD + TILE_SPACING_WORLD * static_cast<float32>(tile % EMITTER_FIELD_GRID);
+            const float32 centerZ =
+                TILE_FIRST_CENTER_WORLD + TILE_SPACING_WORLD * static_cast<float32>(tile / EMITTER_FIELD_GRID);
+            const usize quad = MANY_EMITTER_ROOM_QUAD_COUNT + tile;
+            const usize first = quad * MANY_EMITTER_QUAD_CORNERS;
+            Positions[first] = {centerX - TILE_HALF_SIDE_WORLD, TILE_HEIGHT_WORLD, centerZ - TILE_HALF_SIDE_WORLD};
+            Positions[first + 1] = {centerX + TILE_HALF_SIDE_WORLD, TILE_HEIGHT_WORLD, centerZ - TILE_HALF_SIDE_WORLD};
+            Positions[first + 2] = {centerX + TILE_HALF_SIDE_WORLD, TILE_HEIGHT_WORLD, centerZ + TILE_HALF_SIDE_WORLD};
+            Positions[first + 3] = {centerX - TILE_HALF_SIDE_WORLD, TILE_HEIGHT_WORLD, centerZ + TILE_HALF_SIDE_WORLD};
+            // Levels and tints cycle with different periods along and across rows, so neighbors differ in both.
+            const usize level = (tile * 5 + tile / EMITTER_FIELD_GRID) % EMITTER_FIELD_LEVEL_COUNT;
+            const usize tint = tile % EMITTER_FIELD_TINT_COUNT;
+            const uint32 material =
+                MANY_EMITTER_FIRST_LIGHT + static_cast<uint32>(level * EMITTER_FIELD_TINT_COUNT + tint);
+            WriteQuad(quad, material, Indices.GetData(), Slots.GetData());
+        }
+        constexpr StaticArray<float32, EMITTER_FIELD_LEVEL_COUNT> EMISSION_LEVELS{{.25F, 1, 4, 16}};
+        constexpr StaticArray<math::Vector3, EMITTER_FIELD_TINT_COUNT> TINTS{{{1, 1, 1}, {1, .6F, .3F}, {.3F, .6F, 1}}};
+        for (usize level = 0; level < EMITTER_FIELD_LEVEL_COUNT; ++level)
+        {
+            for (usize tint = 0; tint < EMITTER_FIELD_TINT_COUNT; ++tint)
+            {
+                renderer::SceneShaderMaterial& light =
+                    Materials[MANY_EMITTER_FIRST_LIGHT + level * EMITTER_FIELD_TINT_COUNT + tint];
+                light.BaseColor = {.8F, .8F, .8F};
+                light.Emission = TINTS[tint] * EMISSION_LEVELS[level];
+            }
+        }
+        Materials[MANY_EMITTER_WHITE].BaseColor = {.8F, .8F, .8F};
+        if (finish == SurfaceFinish::Specular)
+        {
+            constexpr float32 GLOSSY_ROUGHNESS = .2F;
+            Materials[MANY_EMITTER_WHITE].Metallic = 1;
+            Materials[MANY_EMITTER_WHITE].Roughness = GLOSSY_ROUGHNESS;
+        }
+        Materials[MANY_EMITTER_RED].BaseColor = {.8F, .1F, .1F};
+        Materials[MANY_EMITTER_GREEN].BaseColor = {.1F, .8F, .1F};
+        for (uint32 material = 0; material < EMITTER_FIELD_MATERIAL_COUNT; ++material)
+        {
+            Bindings[material] = material;
+        }
+        Meshes[0].Geometry = {Positions.GetData(), Positions.GetSize(), Indices.GetData(), Indices.GetSize()};
+        Meshes[0].MaterialSlots = {Slots.GetData(), Slots.GetSize()};
+        Meshes[0].MaterialBindings = {Bindings.GetData(), Bindings.GetSize()};
+        Items[0].SourceId = 1;
+        Inputs.Materials = {Materials.GetData(), Materials.GetSize()};
+        // The Cornell room's camera.
+        const CornellBox cornell;
+        Cameras[0] = cornell.Cameras[0];
+    }
+    EmitterFieldRoom(const EmitterFieldRoom&) = delete;
+    EmitterFieldRoom& operator=(const EmitterFieldRoom&) = delete;
+};
+
+const PackageLocation RIS_PROJECTED_SOLID_ANGLE_BENCHMARK{LUDUS_RG3_RIS_PROJECTED_SOLID_ANGLE_BENCHMARK_DIRECTORY,
+                                                          "rg2_ris_projected_solid_angle_benchmark.lurgrt"};
+const PackageLocation VEACH_GUIBAS_BENCHMARK{LUDUS_RG3_VEACH_GUIBAS_MIS_BENCHMARK_DIRECTORY,
+                                             "rg2_veach_guibas_mis_benchmark.lurgrt"};
+/// The benchmark packages' third output, which counts the MIS program's queries.
+constexpr usize BENCHMARK_QUERY_COUNT_OUTPUT = VEACH_GUIBAS_BSDF_SAMPLING;
+/// render_graph_query_count.slang's QUERY_COUNT_SCALE.
+constexpr float64 BENCHMARK_QUERY_COUNT_SCALE = .25;
+/// The Cornell camera's aspect ratio at nine times the CTest image area: the largest such extent whose RGBA8 readback,
+/// with rows padded to 256 bytes, fits one default 256 KiB transfer slice (rhi::StorageLimits::TransferBytes).
+constexpr ExportExtent BENCHMARK_EXTENT{WIDTH * 3, HEIGHT * 3};
+constexpr usize BENCHMARK_WARMUP_FRAMES = 8;
+constexpr usize BENCHMARK_TIMED_FRAMES = 64;
+constexpr usize BENCHMARK_SAMPLE_BUDGET_COUNT = 3;
+/// Samples per pixel of the RIS image at each budget; Veach and Guibas gets as many at equal samples, and the same
+/// kernel time at equal time.
+constexpr StaticArray<usize, BENCHMARK_SAMPLE_BUDGET_COUNT> BENCHMARK_SAMPLE_BUDGETS{{4, 16, 64}};
+/// Accumulate's sample limit in both templates.
+constexpr usize BENCHMARK_MAXIMUM_FRAMES = 4096;
+constexpr usize BENCHMARK_REFERENCE_FRAMES = BENCHMARK_MAXIMUM_FRAMES;
+/// Reseeds sampling, so the reference is independent of the measured images.
+constexpr uint64 BENCHMARK_REFERENCE_REVISION = 2;
+/// Linear radiance above which the 8-bit tone-mapped readback no longer resolves a reference channel: at 4 one byte
+/// is about 2.5% of the value, and directly visible emitters (up to 16) saturate. Linear metrics skip such pixels,
+/// which see emitters, whose primary-hit emission both templates evaluate identically.
+constexpr float32 BENCHMARK_MAXIMUM_RESOLVED_RADIANCE = 4;
+/// Guards MAPE's relative error against black reference channels.
+constexpr float64 BENCHMARK_PERCENTAGE_GUARD = .01;
+constexpr float64 BENCHMARK_NANOSECONDS_PER_MILLISECOND = 1'000'000;
+
+/// Median kernel times and query counts per sample of one benchmark package.
+struct EstimatorCost final
+{
+    float64 PrimaryMilliseconds = 0; ///< The primary-hit pass's kernel.
+    float64 ShadeMilliseconds = 0;   ///< The MIS shade pass's kernel, without its Accumulate and ToneMap.
+    float64 ShadowRaysPerPixel = 0;  ///< Mean visibility queries of the MIS program per pixel and sample.
+    float64 BsdfRaysPerPixel = 0;    ///< Mean surface queries of the MIS program per pixel and sample.
+};
+
+/// Error of one image against the reference. Pixels that show the failure color in either image are left out of
+/// every metric and counted instead.
+struct ImageError final
+{
+    float64 MeanAbsolutePercentage = 0; ///< Mean |x - r| / (r + guard) over resolved RGB channels.
+    float64 LinearRootMeanSquare = 0;   ///< RMSE of decoded linear radiance over resolved RGB channels.
+    float64 DisplayMeanSquare = 0;      ///< Mean squared error of tone-mapped RGB in [0, 1] over every other pixel.
+    usize FailurePixels = 0;            ///< Pixels left out because either image shows the failure color.
+};
+
+bool IsFailurePixelAt(const Array<uint8>& pixels, usize address)
+{
+    return pixels[address] == 255 && pixels[address + 1] == 0 && pixels[address + 2] == 255;
+}
+
+bool IsResolvedReferencePixel(const Array<uint8>& reference, usize address)
+{
+    for (usize channel = 0; channel < 3; ++channel)
+    {
+        if (DecodeToneMapped(reference[address + channel]) > BENCHMARK_MAXIMUM_RESOLVED_RADIANCE)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+usize CountResolvedReferencePixels(const Array<uint8>& reference)
+{
+    usize count = 0;
+    for (usize address = 0; address + 3 < reference.GetSize(); address += 4)
+    {
+        count += IsResolvedReferencePixel(reference, address) == true ? 1 : 0;
+    }
+    return count;
+}
+
+ImageError ComputeImageError(const Array<uint8>& pixels, const Array<uint8>& reference)
+{
+    REQUIRE(pixels.GetSize() == reference.GetSize());
+    constexpr float64 MAXIMUM_CHANNEL = 255;
+    float64 percentageSum = 0;
+    float64 squareSum = 0;
+    float64 displaySquareSum = 0;
+    usize channelCount = 0;
+    usize displayChannelCount = 0;
+    ImageError error;
+    for (usize address = 0; address + 3 < pixels.GetSize(); address += 4)
+    {
+        if (IsFailurePixelAt(pixels, address) == true || IsFailurePixelAt(reference, address) == true)
+        {
+            ++error.FailurePixels;
+            continue;
+        }
+        for (usize channel = 0; channel < 3; ++channel)
+        {
+            const float64 difference =
+                (static_cast<float64>(pixels[address + channel]) - static_cast<float64>(reference[address + channel])) /
+                MAXIMUM_CHANNEL;
+            displaySquareSum += difference * difference;
+            ++displayChannelCount;
+        }
+        if (IsResolvedReferencePixel(reference, address) == false)
+        {
+            continue;
+        }
+        for (usize channel = 0; channel < 3; ++channel)
+        {
+            const float64 value = static_cast<float64>(DecodeToneMapped(pixels[address + channel]));
+            const float64 expected = static_cast<float64>(DecodeToneMapped(reference[address + channel]));
+            percentageSum += math::Abs(value - expected) / (expected + BENCHMARK_PERCENTAGE_GUARD);
+            squareSum += (value - expected) * (value - expected);
+            ++channelCount;
+        }
+    }
+    REQUIRE(channelCount > 0);
+    error.MeanAbsolutePercentage = percentageSum / static_cast<float64>(channelCount);
+    error.LinearRootMeanSquare = math::Sqrt(squareSum / static_cast<float64>(channelCount));
+    error.DisplayMeanSquare = displaySquareSum / static_cast<float64>(displayChannelCount);
+    return error;
+}
+
+float64 ComputeMedian(Array<float64>& inoutValues)
+{
+    REQUIRE(inoutValues.GetSize() > 0);
+    Sort(inoutValues.GetData(), inoutValues.GetSize(), [](float64 left, float64 right) noexcept {
+        return left < right;
+    });
+    const usize middle = inoutValues.GetSize() / 2;
+    return inoutValues.GetSize() % 2 == 1 ? inoutValues[middle] : (inoutValues[middle - 1] + inoutValues[middle]) / 2;
+}
+
+/// Render warmup and timed frames of one benchmark package, with per-pass GPU timing, and read its query counts. On
+/// Metal the ray passes share one GPU scope, whose compute operations are the passes' kernels in pass order, with
+/// each shade pass's Accumulate and ToneMap after its kernel.
+EstimatorCost MeasureEstimatorCost(const GraphGpuFixture& fixture,
+                                   const PackageLocation& location,
+                                   const EmitterFieldRoom& room,
+                                   std::string_view name)
+{
+    PreparedGraph graph(fixture, location, room, 1, BENCHMARK_EXTENT);
+    constexpr usize PRIMARY_KERNEL = 0;
+    constexpr usize SHADE_KERNEL = VEACH_GUIBAS_FIRST_SHADE_PASS + VEACH_GUIBAS_MIS;
+    Array<float64> primary;
+    Array<float64> shade;
+    REQUIRE(primary.TryEnsureCapacity(BENCHMARK_TIMED_FRAMES) == true);
+    REQUIRE(shade.TryEnsureCapacity(BENCHMARK_TIMED_FRAMES) == true);
+    for (usize frame = 0; frame < BENCHMARK_WARMUP_FRAMES + BENCHMARK_TIMED_FRAMES; ++frame)
+    {
+        REQUIRE(rhi::ArmGpuPassTimings(fixture.Device) == rhi::RasterStatus::Ready);
+        RenderFrame(graph.Graph, fixture);
+        rhi::GpuPassTimings timings;
+        REQUIRE(rhi::GetGpuPassTimings(fixture.Device, timings) == rhi::RasterStatus::Ready);
+        REQUIRE(timings.State == rhi::GpuTimingState::Available);
+        float64 primaryNanoseconds = -1;
+        float64 shadeNanoseconds = -1;
+        // The first timed frame's operations, as scope.operation, kind and milliseconds, show what is timed.
+        std::string operations;
+        usize kernel = 0;
+        for (usize index = 0; index < timings.Count; ++index)
+        {
+            const rhi::GpuPassTiming& pass = timings.Passes[index];
+            operations += ' ' + std::to_string(pass.Scope.Identity) + '.' + std::to_string(pass.ScopePassIndex) +
+                          (pass.Kind == rhi::GpuPassKind::Compute ? " compute " : " other ") +
+                          std::to_string(static_cast<float64>(pass.Timing.DurationNanoseconds) /
+                                         BENCHMARK_NANOSECONDS_PER_MILLISECOND) +
+                          ';';
+            if (pass.Kind != rhi::GpuPassKind::Compute)
+            {
+                continue;
+            }
+            REQUIRE(pass.Timing.State == rhi::GpuTimingState::Available);
+            const float64 duration = static_cast<float64>(pass.Timing.DurationNanoseconds);
+            primaryNanoseconds = kernel == PRIMARY_KERNEL ? duration : primaryNanoseconds;
+            shadeNanoseconds = kernel == SHADE_KERNEL ? duration : shadeNanoseconds;
+            ++kernel;
+        }
+        if (frame == BENCHMARK_WARMUP_FRAMES)
+        {
+            WARN(name << " GPU operations in one frame:" << operations);
+        }
+        INFO(name << " GPU operations:" << operations);
+        REQUIRE(kernel == graph.Plan.Passes.GetSize());
+        REQUIRE(primaryNanoseconds >= 0);
+        REQUIRE(shadeNanoseconds >= 0);
+        if (frame >= BENCHMARK_WARMUP_FRAMES)
+        {
+            REQUIRE(primary.TryAdd(primaryNanoseconds / BENCHMARK_NANOSECONDS_PER_MILLISECOND) == true);
+            REQUIRE(shade.TryAdd(shadeNanoseconds / BENCHMARK_NANOSECONDS_PER_MILLISECOND) == true);
+        }
+    }
+    const StaticArray<uint32, VEACH_GUIBAS_OUTPUT_COUNT> exports = graph.GetVeachGuibasExports();
+    Array<uint8> counts;
+    ReadExport(graph.Graph, fixture, exports[BENCHMARK_QUERY_COUNT_OUTPUT], graph.Extent, counts);
+    REQUIRE(CountFailurePixels(counts) == 0);
+    const math::Vector3 meanCounts = ComputeMeanRadiance(counts);
+    EstimatorCost cost;
+    cost.PrimaryMilliseconds = ComputeMedian(primary);
+    cost.ShadeMilliseconds = ComputeMedian(shade);
+    cost.ShadowRaysPerPixel = static_cast<float64>(meanCounts.X) / BENCHMARK_QUERY_COUNT_SCALE;
+    cost.BsdfRaysPerPixel = static_cast<float64>(meanCounts.Y) / BENCHMARK_QUERY_COUNT_SCALE;
+    return cost;
+}
+
+constexpr usize BENCHMARK_MAXIMUM_CHECKPOINTS = BENCHMARK_SAMPLE_BUDGET_COUNT * 2;
+
+/// Sample counts at which one package's MIS image is read, and the images read there.
+struct MisCheckpoints final
+{
+    StaticArray<usize, BENCHMARK_MAXIMUM_CHECKPOINTS> FrameCounts{};
+    usize Count = 0;
+    StaticArray<Array<uint8>, BENCHMARK_MAXIMUM_CHECKPOINTS> Images;
+};
+
+/// Render one package's MIS output and read it after each checkpoint's number of samples.
+void RenderMisCheckpoints(const GraphGpuFixture& fixture,
+                          const PackageLocation& location,
+                          const EmitterFieldRoom& room,
+                          MisCheckpoints& inoutCheckpoints)
+{
+    PreparedGraph graph(fixture, location, room, 1, BENCHMARK_EXTENT);
+    const uint32 output = graph.GetVeachGuibasExports()[VEACH_GUIBAS_MIS];
+    usize lastFrame = 0;
+    for (usize checkpoint = 0; checkpoint < inoutCheckpoints.Count; ++checkpoint)
+    {
+        REQUIRE(inoutCheckpoints.FrameCounts[checkpoint] >= 1);
+        REQUIRE(inoutCheckpoints.FrameCounts[checkpoint] <= BENCHMARK_MAXIMUM_FRAMES);
+        lastFrame = math::Max(lastFrame, inoutCheckpoints.FrameCounts[checkpoint]);
+    }
+    for (usize frame = 1; frame <= lastFrame; ++frame)
+    {
+        RenderFrame(graph.Graph, fixture);
+        for (usize checkpoint = 0; checkpoint < inoutCheckpoints.Count; ++checkpoint)
+        {
+            if (inoutCheckpoints.FrameCounts[checkpoint] == frame)
+            {
+                ReadExport(graph.Graph, fixture, output, graph.Extent, inoutCheckpoints.Images[checkpoint]);
+            }
+        }
+    }
+}
+} // namespace
+
+TEST_CASE("Measure RIS projected-solid-angle and Veach and Guibas MIS error at equal samples and equal time",
+          "[.ris-projected-solid-angle-benchmark]")
+{
+    SurfaceFinish finish = SurfaceFinish::Diffuse;
+    std::string_view finishName = "diffuse";
+    SECTION("diffuse surfaces") {}
+    SECTION("specular surfaces")
+    {
+        finish = SurfaceFinish::Specular;
+        finishName = "specular";
+    }
+    GraphGpuFixture fixture(true, false);
+    rhi::MeasurementAdapter adapter;
+    REQUIRE(rhi::GetMeasurementAdapter(fixture.Device, adapter) == rhi::RasterStatus::Ready);
+    const EmitterFieldRoom room(finish);
+    // Timing rounds in RIS, Veach and Guibas, Veach and Guibas, RIS order, so drift in machine load or clocks affects
+    // both packages alike; each package's cost is the mean of its two rounds' medians. One graph at a time: the device
+    // admits a bounded number of ray graph jobs.
+    constexpr usize RIS = 0;
+    constexpr usize VEACH = 1;
+    constexpr usize ESTIMATOR_COUNT = 2;
+    const StaticArray<PackageLocation, ESTIMATOR_COUNT> locations{
+        {RIS_PROJECTED_SOLID_ANGLE_BENCHMARK, VEACH_GUIBAS_BENCHMARK}};
+    const StaticArray<std::string_view, ESTIMATOR_COUNT> names{{"ris-projected-solid-angle", "veach-guibas-mis"}};
+    StaticArray<EstimatorCost, ESTIMATOR_COUNT> costs{};
+    constexpr usize ROUND_COUNT = 4;
+    constexpr StaticArray<usize, ROUND_COUNT> ROUND_ORDER{{RIS, VEACH, VEACH, RIS}};
+    for (const usize estimator : ROUND_ORDER)
+    {
+        const EstimatorCost measured = MeasureEstimatorCost(fixture, locations[estimator], room, names[estimator]);
+        costs[estimator].PrimaryMilliseconds += measured.PrimaryMilliseconds / 2;
+        costs[estimator].ShadeMilliseconds += measured.ShadeMilliseconds / 2;
+        costs[estimator].ShadowRaysPerPixel = measured.ShadowRaysPerPixel;
+        costs[estimator].BsdfRaysPerPixel = measured.BsdfRaysPerPixel;
+    }
+    StaticArray<float64, ESTIMATOR_COUNT> sampleMilliseconds{};
+    for (usize estimator = 0; estimator < ESTIMATOR_COUNT; ++estimator)
+    {
+        sampleMilliseconds[estimator] = costs[estimator].PrimaryMilliseconds + costs[estimator].ShadeMilliseconds;
+        REQUIRE(sampleMilliseconds[estimator] > 0);
+        WARN(finishName << " room, " << EMITTER_FIELD_TILE_COUNT * 2 << " emissive triangles, "
+                        << BENCHMARK_EXTENT.Width << 'x' << BENCHMARK_EXTENT.Height << ", " << adapter.Name << ": "
+                        << names[estimator] << " primary kernel " << costs[estimator].PrimaryMilliseconds
+                        << " ms, MIS shade kernel " << costs[estimator].ShadeMilliseconds
+                        << " ms per sample; shadow rays per pixel " << costs[estimator].ShadowRaysPerPixel
+                        << ", BSDF rays per pixel " << costs[estimator].BsdfRaysPerPixel);
+    }
+    // Only the MIS output is read: the reference may show rare failure pixels, which every metric leaves out.
+    Array<uint8> reference;
+    {
+        PreparedGraph referenceGraph(fixture,
+                                     VEACH_GUIBAS_BENCHMARK,
+                                     room,
+                                     BENCHMARK_REFERENCE_REVISION,
+                                     BENCHMARK_EXTENT);
+        const uint32 output = referenceGraph.GetVeachGuibasExports()[VEACH_GUIBAS_MIS];
+        for (usize frame = 0; frame < BENCHMARK_REFERENCE_FRAMES; ++frame)
+        {
+            RenderFrame(referenceGraph.Graph, fixture);
+        }
+        ReadExport(referenceGraph.Graph, fixture, output, referenceGraph.Extent, reference);
+    }
+    const usize pixelCount = static_cast<usize>(BENCHMARK_EXTENT.Width) * BENCHMARK_EXTENT.Height;
+    const usize resolvedPixels = CountResolvedReferencePixels(reference);
+    WARN(finishName << " room reference: veach-guibas-mis MIS at " << BENCHMARK_REFERENCE_FRAMES
+                    << " samples per pixel, independent seed; " << CountFailurePixels(reference)
+                    << " failure pixels; linear metrics cover " << resolvedPixels << " of " << pixelCount << " pixels");
+    // RIS at each budget; Veach and Guibas at the same samples, then at the same primary and MIS kernel time.
+    MisCheckpoints ris;
+    MisCheckpoints veach;
+    for (usize budget = 0; budget < BENCHMARK_SAMPLE_BUDGET_COUNT; ++budget)
+    {
+        const usize samples = BENCHMARK_SAMPLE_BUDGETS[budget];
+        ris.FrameCounts[budget] = samples;
+        veach.FrameCounts[budget] = samples;
+        const float64 equalTimeSamples =
+            static_cast<float64>(samples) * sampleMilliseconds[RIS] / sampleMilliseconds[VEACH];
+        veach.FrameCounts[BENCHMARK_SAMPLE_BUDGET_COUNT + budget] =
+            math::Min(math::Max(static_cast<usize>(equalTimeSamples + .5), usize{1}), BENCHMARK_MAXIMUM_FRAMES);
+    }
+    ris.Count = BENCHMARK_SAMPLE_BUDGET_COUNT;
+    veach.Count = BENCHMARK_SAMPLE_BUDGET_COUNT * 2;
+    RenderMisCheckpoints(fixture, RIS_PROJECTED_SOLID_ANGLE_BENCHMARK, room, ris);
+    RenderMisCheckpoints(fixture, VEACH_GUIBAS_BENCHMARK, room, veach);
+    for (usize budget = 0; budget < BENCHMARK_SAMPLE_BUDGET_COUNT; ++budget)
+    {
+        const ImageError risError = ComputeImageError(ris.Images[budget], reference);
+        const ImageError equalSamples = ComputeImageError(veach.Images[budget], reference);
+        const ImageError equalTime = ComputeImageError(veach.Images[BENCHMARK_SAMPLE_BUDGET_COUNT + budget], reference);
+        WARN(finishName << " room, ris-projected-solid-angle at " << ris.FrameCounts[budget] << " samples ("
+                        << static_cast<float64>(ris.FrameCounts[budget]) * sampleMilliseconds[RIS]
+                        << " ms of kernel time): MAPE " << risError.MeanAbsolutePercentage << ", linear RMSE "
+                        << risError.LinearRootMeanSquare << ", tone-mapped MSE " << risError.DisplayMeanSquare
+                        << "; veach-guibas-mis at equal samples: MAPE " << equalSamples.MeanAbsolutePercentage
+                        << ", linear RMSE " << equalSamples.LinearRootMeanSquare << ", tone-mapped MSE "
+                        << equalSamples.DisplayMeanSquare << "; at equal time ("
+                        << veach.FrameCounts[BENCHMARK_SAMPLE_BUDGET_COUNT + budget] << " samples): MAPE "
+                        << equalTime.MeanAbsolutePercentage << ", linear RMSE " << equalTime.LinearRootMeanSquare
+                        << ", tone-mapped MSE " << equalTime.DisplayMeanSquare
+                        << "; failure pixels left out: " << risError.FailurePixels << ", " << equalSamples.FailurePixels
+                        << ", " << equalTime.FailurePixels);
+    }
 }
 
 namespace

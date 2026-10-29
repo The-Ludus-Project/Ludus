@@ -1896,9 +1896,15 @@ Scope and limits:
 
 `ludus_render_graph_ray_tests` renders the template on Metal, with its compute BVH.
 These cases run as their own CTest entry,
-`ludus_render_graph_ris_projected_solid_angle_pixels`. The fixtures are the glossy
-Cornell-box-style room under a sky, a room with sixteen small emitters whose power
-spans a factor of 64, and a two-sided emitter over minimum-roughness metal:
+`ludus_render_graph_ris_projected_solid_angle_pixels`. The fixtures are:
+
+- the glossy Cornell-box-style room under a sky;
+- a room with sixteen small emitters whose power spans a factor of 64;
+- a ceiling light with a 4 × 4 emission map, which is black on a quarter of its
+  area, over rough dielectric surfaces;
+- a two-sided emitter over minimum-roughness metal.
+
+They check two properties:
 
 - At 256 samples per pixel, all three outputs converge to the MIS template's
   light-sampling output within 2%. The exception is the two-sided case, where they
@@ -1910,6 +1916,19 @@ spans a factor of 64, and a two-sided emitter over minimum-roughness metal:
   MIS template with an independent seed. The error is measured on the tone-mapped
   image, about 0.0011 against 0.0025 on Apple M5. The decoded linear error is
   reported beside it but is dominated by pixels that see an emitter directly.
+
+The opt-in `[.ris-projected-solid-angle-benchmark]` case of the same executable
+compares this template with the MIS template at equal samples and at equal kernel
+time. CTest does not run it. Its room has 3200 emissive triangles, and it has a
+diffuse and a specular variant:
+
+```bash
+out/build/macos-clang-debug/modules/graphics/renderer/ludus_render_graph_ray_tests "[.ris-projected-solid-angle-benchmark]"
+```
+
+It reports kernel times, shadow rays per pixel, MAPE, linear RMSE and tone-mapped
+error for each template. The method and the recorded results are in the
+[review's evidence](../architecture/many-area-light-sampling-reference-review.md#equal-time-benchmark).
 
 `ludus_renderer_render_tests` runs the weights on the GPU. It checks that Peters'
 weights and the light/BSDF split sum to one wherever a technique can sample, that
