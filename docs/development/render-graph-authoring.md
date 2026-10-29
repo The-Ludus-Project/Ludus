@@ -1996,8 +1996,9 @@ under `line_sampling/main_shaders/`. The shared ray technique is extended as for
 the compute ray-tracing template, and its `line_queries` rises to at least 1.
 
 Scope and limits. Lines are chords of one emitter triangle in one direction;
-chords across coplanar triangles, the paper's second line direction, MIS with BSDF
-samples and its solid-angle strategy are not part of this template. Traversal is a
+chords across coplanar triangles and the paper's solid-angle strategy are not part
+of this template. The paper's second line direction and MIS with BSDF samples are in
+the [point-and-line template](#combine-point-and-line-samples). Traversal is a
 linear scan of the World triangles, so use small scenes.
 
 `ludus_render_graph_ray_tests` renders the template in the Cornell-box-style room on
@@ -2015,6 +2016,160 @@ under both traversal strategies. Vulkan has not been run for this template.
 
 See the canonical
 [package](../../modules/graphics/renderer/render_graphs/line_sampling/main.lurender.json).
+
+### Combine point and line samples
+
+The **Salesin & Jarosz — point and line samples with MIS** template
+(`salesin-jarosz-lines`) combines BSDF samples with line samples in two directions
+by multiple importance sampling. It follows Katherine Salesin and Wojciech Jarosz,
+[*Combining Point and Line Samples for Direct Illumination*, Computer Graphics Forum 38(4), EGSR 2019, pp. 159–169](https://doi.org/10.1111/cgf.13779),
+section 4.2: a line sample is a point sample with the joint density
+`p(u, v) = p(v) p(u | v)`, so it can be weighted against any other point
+strategy. The weights are the balance and power heuristics of
+[Veach and Guibas](#compare-light-and-bsdf-sampling-with-mis), and each line is the
+surface-area line estimator of [the line-sampling template](#sample-lights-along-lines).
+Create it from **New Render Graph → Template**, or with the CLI:
+
+```bash
+ludus render-graph new graphs/PointLine --template salesin-jarosz-lines --output offscreen \
+  --renderer-static --profiles metal wgsl
+```
+
+Use `spirv wgsl` for Vulkan. A `wgsl`-only package is rejected with a `Capability`
+diagnostic that names Metal or Vulkan compute. **Apply Configuration Template...**
+and Quick Add also offer the `PointLineMis` configuration. It has the `scene`, `view`
+and `color` inputs of the
+[compute ray-tracing template](#use-the-compute-ray-tracing-template), a required
+`color` output and optional `lineSampling` and `pointSampling` outputs. Every pass
+selects the `TriangleLoop` traversal, so the package needs Metal or Vulkan compute
+but no hardware ray tracing (registry requirement `compute-ray-tracing`).
+
+It reuses the `primary` pass and 32-byte hit record, then runs three shade passes
+over every pixel. All three read one random layout:
+
+| Dimensions | Draws |
+| --- | --- |
+| 2–5 | line `U`: light selection and three `SampleIncidentLight` shape coordinates |
+| 6 | line `U`: position along the visible intervals |
+| 7–10 | line `V`: light selection and three shape coordinates |
+| 11 | line `V`: position along the visible intervals |
+| 12–14 | `SampleStandardBsdf`: lobe, radius and angle |
+
+`shadePoints` draws its area-light point from dimensions 2–5, so its point is the
+one that seeds the `U` chord in the other passes, and every image shares the same
+BSDF samples.
+
+| Pipeline node | Function in `main_shaders/shade.slang` | Estimate | Output |
+| --- | --- | --- | --- |
+| `shade` | `ShadeMultipleImportance` | Emission plus a BSDF sample, a line `U` sample and a line `V` sample, each weighted against the other two | `color` → `output` export |
+| `shadeLines` | `ShadeLineSampling` | Emission plus the two line samples, each weighted against the other | `lineSampling` → `lineSamplingOutput` |
+| `shadePoints` | `ShadePointSampling` | Emission plus a BSDF sample and an area-light point sample, each weighted against the other | `pointSampling` → `pointSamplingOutput` |
+
+Each output has its own **Accumulate → ToneMap → Export** chain. The viewport shows
+the combined image first; choose `lineSamplingOutput` or `pointSamplingOutput` in
+its output selector to compare. `pointSampling` is the
+[Veach and Guibas](#compare-light-and-bsdf-sampling-with-mis) estimator with the
+light strategy drawing area points, so it is the baseline the line samples improve
+on.
+
+**Line strategies.** `main_shaders/line_sampling.slang` extends the line-sampling
+strategy to two directions on the selected emitter triangle `T`: `U` along its first
+edge and `V = cross(n, U)` across it, in its plane. Each draws a chord through an
+area-uniform point, finds the chord's visible intervals with
+`FindVisibleLineIntervals`, draws a point uniformly by length over them and weights
+it by the joint density `P(light) * c / (A_light * L_visible)`, converted to solid
+angle. `EvaluateLineDensity` gives a strategy's density at a point drawn by another
+strategy: it builds the chord through that point in its own direction, runs a line
+query, and returns the joint density if the point lies in a visible interval and
+zero otherwise. A sample therefore costs a line query for each other line strategy
+that weights it. With no occluder both densities equal `EvaluateLightPdfSolidAngle`
+for the same point.
+
+**Weights.** `ComputeMisWeight(sampledDensity, otherDensity0, otherDensity1)` in
+`main_shaders/multiple_importance.slang` is `p_s^β / (p_s^β + p_0^β + p_1^β)`, with
+β = 1 for the balance heuristic and `MIS_POWER_EXPONENT` for the power heuristic. A
+zero other density drops that strategy: `shadeLines` and `shadePoints` pass zero for
+the strategy they omit, and a line strategy has zero density at a point that its
+chord query finds occluded. For finite positive densities the three weights sum to
+one, so the combined image converges to the same result as each other output.
+
+**Other lights.** A directional, point, spot or environment light keeps the ordinary
+point proposal in both line strategies, with its own density. The two line
+strategies then propose such a sample with the same density, so each takes half of
+it; BSDF sampling never reaches a delta light, and reaches the environment with
+`EvaluateEnvironmentPdfSolidAngle`. A sample that crosses alpha-tested triangles is
+confirmed with `TestVisibility`, as in the line-sampling template.
+
+| Graph setting | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `MIS_HEURISTIC` | `0` (balance) | `0`–`1` | `0` balance, `1` power |
+| `MIS_POWER_EXPONENT` | `2` | `1`–`16` | Exponent β of the power heuristic |
+
+Balance is the paper's choice. Change the settings in Properties or with the
+canvas's **Edit Graph Settings...** action. A value outside its range is rejected
+when the package is built.
+
+**Budgets.** Passes in one sequence share a scene interface, which declares the
+maximum over the passes:
+
+| Pass | Surface | Visibility | Line |
+| --- | --- | --- | --- |
+| `shade` | 1 | 2 | 6 |
+| `shadeLines` | 0 | 2 | 4 |
+| `shadePoints` | 1 | 1 | 0 |
+| declared | 1 | 2 | 6 |
+
+The two visibility queries are a masked confirmation or a non-mesh shadow ray, one
+per line strategy. The six line queries in `shade` are each line sample's own chord,
+the other direction's density at its point, and both densities at an emitter a BSDF
+sample reaches.
+
+New shader programs have `PointLine`-prefixed IDs (`PointLinePrimary`,
+`PointLineShadeMultipleImportance`, `PointLineShadeLineSampling`,
+`PointLineShadePointSampling`) and sources under `salesin_jarosz_lines/main_shaders/`.
+The MIS settings join the manifest's Graph settings, and the shared ray technique's
+`visibility_queries` and `line_queries` rise to at least the template's.
+
+`ProposeLine` and `EvaluateLineDensity` run their line queries in `[noinline]`
+functions that take the query context by value and return it through an `out`
+parameter. Inlined at every call path, the ten line queries of the three shade
+passes made the merged Metal stage exceed the 2 MiB generated-artifact limit. Slang
+inlines a `[noinline]` function that has an `inout` parameter, so keep that shape if
+you add another query site.
+
+Scope and limits. Lines are chords of one emitter triangle; chords across coplanar
+triangles, the paper's solid-angle line strategy (which needs parallelogram
+emitters) and its discontinuity-smoothing heuristic (which needs stratified
+samples) are not part of this template. Line samples cost line queries, and
+traversal is a linear scan of the World triangles, so use small scenes. There is no
+indirect bounce.
+
+`ludus_render_graph_ray_tests` renders the template on Metal with the triangle loop:
+
+- A [weights and densities fixture](../../tests/sdk_consumer/rg2/point_line_densities/main.lurender.json),
+  which includes the template's own `line_sampling.slang` and
+  `multiple_importance.slang`, checks that the three weights sum to one over
+  densities from zero to 1e12, under both heuristics, including a delta light
+  shared by the two line strategies. With no occluder, each line strategy's density
+  at an area point equals `EvaluateLightPdfSolidAngle` within the test's 1e-5
+  relative tolerance (largest measured difference 9.6e-7).
+- In the Cornell-box-style room, where the block casts a penumbra from the
+  two-triangle quad light, `color`, `lineSampling` and `pointSampling` converge to
+  one mean within 2% at 256 samples per pixel under both heuristics, and match the
+  light-sampling output of the Veach and Guibas template.
+- With an analytic point light and a constant sky instead of the ceiling light, the
+  three outputs converge to one mean in the same way.
+- After 16 samples per pixel, `color` has less than half the mean squared error of
+  `pointSampling` in the penumbra on the floor, against an independently seeded
+  1024-sample image. The test reports the GPU time of each pass beside it. Line
+  samples cost line queries, so this is an equal-sample comparison and supports no
+  speed claim.
+
+A masked occluder cannot be tested yet, because render-graph scenes cannot hold
+alpha-tested triangles. Vulkan has not been run for this template.
+
+See the canonical
+[package](../../modules/graphics/renderer/render_graphs/salesin_jarosz_lines/main.lurender.json).
 
 ## Author scene-aware ray shaders
 

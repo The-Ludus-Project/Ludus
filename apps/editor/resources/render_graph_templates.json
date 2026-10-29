@@ -98,6 +98,15 @@
       "description": "Resampled importance and projected solid angle sampling from Shah, KT and Narayanan (2023): after a primary-hits pass, one shading pass resamples an emissive triangle from power-weighted candidates by its unshadowed LTC shading, samples it with Peters' (2021) projected-solid-angle and LTC techniques, and combines that with a BSDF sample through a surrogate light density; the light strategy alone and the BSDF sample alone are exported beside it. Every pass uses the compute BVH, so it needs Metal or Vulkan compute but no hardware ray tracing."
     },
     {
+      "kind": "graph",
+      "identity": "salesin-jarosz-lines",
+      "label": "Salesin & Jarosz — point and line samples with MIS",
+      "category": "ray-traced",
+      "requirements": ["compute-ray-tracing"],
+      "keywords": ["line sampling", "point sampling", "salesin", "jarosz", "billen", "dutre", "veach", "guibas", "mis", "multiple importance sampling", "soft shadows", "penumbra", "area light", "direct lighting"],
+      "description": "Point and line samples combined with MIS, from Salesin and Jarosz (2019): after a primary-hits pass, three shading passes estimate direct lighting with a BSDF sample and line samples in two directions across an emissive triangle, MIS-weighted by the balance or power heuristic; with the two line samples alone; and with a BSDF sample and an area-light point sample. Each image is accumulated and exported for comparison; the combined image is shown first. Every pass uses the triangle loop, so it needs Metal or Vulkan compute but no hardware ray tracing."
+    },
+    {
       "kind": "snippet",
       "identity": "restir-di",
       "label": "ReSTIR DI — mesh emitter lighting",
@@ -166,6 +175,16 @@
       "requirements": ["compute-ray-tracing"],
       "keywords": ["ris", "resampled importance sampling", "projected solid angle", "ltc", "peters", "shah", "many lights", "area light", "emissive", "mis", "direct lighting"],
       "description": "A primary-hits scene compute pass and three compute-BVH shading passes that share one automatically sized hit buffer: resampled emissive-triangle sampling with projected-solid-angle and LTC samples combined with a BSDF sample by MIS, the light strategy alone and the BSDF sample alone. Connect scene, view and color; outputs color plus optional lightSampling and bsdfSampling images. Needs Metal or Vulkan compute."
+    },
+    {
+      "kind": "snippet",
+      "identity": "salesin-jarosz-lines",
+      "label": "Salesin & Jarosz — point and line samples with MIS",
+      "category": "lighting",
+      "defaultConfiguration": "PointLineMis",
+      "requirements": ["compute-ray-tracing"],
+      "keywords": ["line sampling", "point sampling", "salesin", "jarosz", "billen", "dutre", "veach", "guibas", "mis", "multiple importance sampling", "soft shadows", "penumbra", "area light", "direct lighting"],
+      "description": "A primary-hits scene compute pass and three triangle-loop shading passes that share one automatically sized hit buffer: MIS of a BSDF sample and line samples in two directions (Salesin and Jarosz), the two line samples alone, and a BSDF sample with an area-light point sample. Connect scene, view and color; outputs color plus optional lineSampling and pointSampling images. Needs Metal or Vulkan compute."
     },
     {
       "kind": "snippet",
