@@ -372,6 +372,15 @@ if(TARGET ludus_renderer_render_tests)
         target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
             "LUDUS_RG3_TRAVERSAL_PARITY_${configuration_definition}_DIRECTORY=\"${traversal_parity_package_directory}\"")
     endforeach()
+    # ComputeBvh rays along the edge opposite each triangle's first corner reload their hits.
+    set(bvh_edge_barycentrics_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/bvh_edge_barycentrics")
+    ludus_stage_render_graph_fixture("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/bvh_edge_barycentrics"
+        "${bvh_edge_barycentrics_staged}")
+    ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_bvh_edge_barycentrics
+        MANIFEST "${bvh_edge_barycentrics_staged}/main.lushader.json" CONFIGURATION ComputeBvh RUNTIME_PACKAGE)
+    cmake_path(GET rg2_bvh_edge_barycentrics_RUNTIME_PACKAGE PARENT_PATH bvh_edge_barycentrics_directory)
+    target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+        "LUDUS_RG3_BVH_EDGE_BARYCENTRICS_DIRECTORY=\"${bvh_edge_barycentrics_directory}\"")
     # The compute ray-tracing template's extra configuration runs without native ray tracing.
     ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_compute_ray_tracing_bvh_template
         MANIFEST "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/compute_ray_tracing_template/main.lushader.json"

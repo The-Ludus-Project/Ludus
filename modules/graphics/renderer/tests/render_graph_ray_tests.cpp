@@ -2953,6 +2953,40 @@ TEST_CASE("Compute BVH traversal reports the same hits and visibility as the oth
     CHECK(differences <= static_cast<usize>(WIDTH) * HEIGHT / DIFFERING_PIXEL_DIVISOR);
 }
 
+TEST_CASE("Compute BVH hits on the edge opposite a triangle's first corner reload as valid surface points",
+          "[render-graph][gpu][ray-traversal]")
+{
+    GraphGpuFixture fixture(false, false);
+    const core::UniquePtr<renderer::RenderGraphPackage> package =
+        LoadPackage({LUDUS_RG3_BVH_EDGE_BARYCENTRICS_DIRECTORY, "rg2_bvh_edge_barycentrics.lurgrt"});
+    REQUIRE(package->GetPlan().Passes[0].Traversal == format::RayTraversal::ComputeBvh);
+    // Both triangles name the diagonal (1, 0, 0)-(0, 1, 0) as their second and third corners, so its hits have a zero
+    // first barycentric and the other two must sum to one. Irregular first corners keep the watertight test's
+    // determinant off powers of two; correctly rounded float32 quotients then exceed one for about 0.7% of the rays.
+    constexpr usize EDGE_QUAD_CORNER_COUNT = 4;
+    constexpr usize EDGE_QUAD_INDEX_COUNT = 6;
+    constexpr usize EDGE_QUAD_TRIANGLE_COUNT = 2;
+    StaticArray<math::Vector3, EDGE_QUAD_CORNER_COUNT> positions{
+        {{-.15F, -.4F, 0}, {1, 0, 0}, {1.3F, .9F, 0}, {0, 1, 0}}};
+    StaticArray<uint32, EDGE_QUAD_INDEX_COUNT> indices{{0, 1, 3, 2, 3, 1}};
+    CornellBox room;
+    room.Meshes[0].Geometry = {positions.GetData(), positions.GetSize(), indices.GetData(), indices.GetSize()};
+    room.Meshes[0].MaterialSlots = {room.Slots.GetData(), EDGE_QUAD_TRIANGLE_COUNT};
+    const uint32 output = PrepareRoomGraph(fixture.Graph, fixture, *package, room, MakeTraversalItems(room), 1);
+    Array<uint8> pixels;
+    RenderExport(fixture.Graph, fixture, output, {}, pixels);
+    REQUIRE(CountFailurePixels(pixels) == 0);
+    usize misses = 0;
+    usize rejectedHits = 0;
+    for (usize address = 0; address + 3 < pixels.GetSize(); address += 4)
+    {
+        misses += pixels[address] == 0 ? 1 : 0;
+        rejectedHits += pixels[address] != 0 && pixels[address + 1] == 0 ? 1 : 0;
+    }
+    CHECK(misses == 0);
+    CHECK(rejectedHits == 0);
+}
+
 TEST_CASE("The compute ray-tracing template runs its ComputeBvh configuration without native rays",
           "[render-graph][gpu][compute-ray-tracing][template][ray-traversal]")
 {
@@ -4282,7 +4316,8 @@ TEST_CASE("Measure RIS projected-solid-angle and Veach and Guibas MIS error at e
                         << " ms per sample; shadow rays per pixel " << costs[estimator].ShadowRaysPerPixel
                         << ", BSDF rays per pixel " << costs[estimator].BsdfRaysPerPixel);
     }
-    // Only the MIS output is read: the reference may show rare failure pixels, which every metric leaves out.
+    // Only the MIS output is read. Failure pixels would be left out of every metric; none are expected since ComputeBvh
+    // barycentrics stay within the bound GetSurfaceHit checks.
     Array<uint8> reference;
     {
         PreparedGraph referenceGraph(fixture,
@@ -4302,6 +4337,7 @@ TEST_CASE("Measure RIS projected-solid-angle and Veach and Guibas MIS error at e
     WARN(finishName << " room reference: veach-guibas-mis MIS at " << BENCHMARK_REFERENCE_FRAMES
                     << " samples per pixel, independent seed; " << CountFailurePixels(reference)
                     << " failure pixels; linear metrics cover " << resolvedPixels << " of " << pixelCount << " pixels");
+    CHECK(CountFailurePixels(reference) == 0);
     // RIS at each budget; Veach and Guibas at the same samples, then at the same primary and MIS kernel time.
     MisCheckpoints ris;
     MisCheckpoints veach;
@@ -4336,6 +4372,9 @@ TEST_CASE("Measure RIS projected-solid-angle and Veach and Guibas MIS error at e
                         << ", tone-mapped MSE " << equalTime.DisplayMeanSquare
                         << "; failure pixels left out: " << risError.FailurePixels << ", " << equalSamples.FailurePixels
                         << ", " << equalTime.FailurePixels);
+        CHECK(risError.FailurePixels == 0);
+        CHECK(equalSamples.FailurePixels == 0);
+        CHECK(equalTime.FailurePixels == 0);
     }
 }
 

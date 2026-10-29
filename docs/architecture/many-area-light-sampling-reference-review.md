@@ -374,9 +374,10 @@ is in the authoring guide.
     below 4.
   - Brighter pixels see emitters directly, and the 8-bit readback cannot resolve
     them; they are about 1.5% of the image. Tone-mapped MSE covers every pixel.
-- **Failure pixels.** Both reference images show three failure pixels, which every
-  metric leaves out. They come from a scene-interface defect, not from either
-  estimator; see the paragraph after the results.
+- **Failure pixels.** In the recorded run, both reference images showed three
+  failure pixels, which every metric leaves out. They came from a `ComputeBvh`
+  traversal defect, not from either estimator, and are now fixed; see the paragraph
+  after the results.
 
 Results on Apple M5 (Metal) with Slang and Clang 23 from `config/tool_versions.json`,
 October 29, 2026. The machine was shared with other builds, at a load average of 70–95.
@@ -426,20 +427,27 @@ What the results show:
   not yet reviewed). Lowering this cost, `M` and `K`, is the open measurement
   question above. The benchmark is the way to evaluate such a change.
 
-The three failure pixels also appear with the stock `ris-projected-solid-angle`
-package, which shows one by sample 256 at another pixel with this seed.
-- **Location.** They are on the ceiling, where the emitter quads are. Every output
-  fails at the same pixel and sample, including the BSDF-only output, so the shared
-  surface load fails, not a sampling strategy.
+The three failure pixels also appeared with the stock `ris-projected-solid-angle`
+package, which showed one by sample 256 at another pixel with this seed.
+- **Location.** They were on the ceiling, where the emitter quads are. Every output
+  failed at the same pixel and sample, including the BSDF-only output, so the shared
+  surface load failed, not a sampling strategy.
 - **Not reproduced on the triangle loop.** With the same seed, the triangle-loop
-  Veach–Guibas package shows no failure through sample 1920, while the ComputeBvh
-  one fails by then.
+  Veach–Guibas package showed no failure through sample 1920, while the ComputeBvh
+  one failed by then.
 - **Not a stack overflow.** `REFERENCE_BVH_MAX_DEPTH` bounds the traversal stack.
-- **Probable cause.** `IntersectBvhTriangle` divides the edge functions separately.
-  A hit on the edge opposite vertex 0, here each quad's shared diagonal, can then
-  return barycentrics whose float32 sum exceeds 1. In emulation that happens for
-  about 0.9% of such edge hits. `GetSurfaceHit` rejects that sum, and the pass latches
-  a failure. This is outside the template and is not fixed here.
+- **Cause.** `IntersectBvhTriangle` divided the edge functions separately. Near the
+  edge opposite a triangle's first corner, the two float32 quotients could round to
+  a sum above one. For these tiles that is an outer tile edge: their index order
+  puts the shared diagonal through the first corner. `GetSurfaceHit` rejects that
+  sum, so the pass latched a failure.
+- **Fix.** The traversal now clamps both barycentrics to [0, 1] and bounds the
+  third by one minus the second, so the float32 sum never exceeds one. The
+  `ComputeBvh` regression in `render_graph_ray_tests.cpp` traces 6144 rays down a
+  shared diagonal opposite both triangles' first corners. Before the fix, 118 of
+  those hits failed the reload on Apple M5 (Metal). The
+  [GPU-compute reference](renderer-systems.md#gpu-compute-reference) records this
+  float32 departure.
 
 **Registration** follows the existing template checklist:
 - `TEMPLATES` and the CLI `--template` choices;

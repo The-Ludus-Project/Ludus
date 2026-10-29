@@ -195,3 +195,42 @@ TEST_CASE("Reference oracle near-first traversal returns the brute-force closest
     // The room has three walls, so roughly a third of the rays hit one or a small triangle.
     CHECK(hits > RAY_COUNT / 4);
 }
+
+TEST_CASE("Reference oracle barycentrics on the edge opposite the first corner sum to at most one",
+          "[renderer][reference]")
+{
+    // The ComputeBvh regression's quad (render_graph_ray_tests.cpp): rays straight down onto the diagonal from
+    // (1, 0, 0) to (0, 1, 0), which both triangles list as their second and third corners. The float32 traversal
+    // clamps its barycentrics to this bound; the oracle's float64 quotients must meet it without a clamp.
+    constexpr usize RAY_COLUMNS = 96;
+    constexpr usize RAY_ROWS = 64;
+    constexpr usize RAY_COUNT = RAY_COLUMNS * RAY_ROWS;
+    constexpr float32 ORIGIN_HEIGHT = 1;
+    constexpr float32 RAY_LENGTH = 2;
+    internal::ReferenceSurfaceData surface;
+    internal::ReferenceSceneData scene;
+    const math::Vector3 first{-.15F, -.4F, 0};
+    const math::Vector3 second{1, 0, 0};
+    const math::Vector3 opposite{1.3F, .9F, 0};
+    const math::Vector3 third{0, 1, 0};
+    AddTriangle(scene, first, second, third);
+    AddTriangle(scene, opposite, third, second);
+    REQUIRE(scene.Instances.TryResize(1) == true);
+    scene.Instances[0].Surface = &surface;
+    scene.Instances[0].TriangleCount = scene.Triangles.GetSize();
+    scene.InstanceCount = 1;
+    REQUIRE(internal::BuildReferenceBvh(scene) == rhi::RasterStatus::Ready);
+    for (usize i = 0; i < RAY_COUNT; ++i)
+    {
+        // x in [0.5, 1) makes 1 - x exact, so the origin lies on the diagonal x + y = 1.
+        const float32 x = .5F + (float32(i) + .5F) / float32(2 * RAY_COUNT);
+        const rhi::RayInput ray = internal::ReferenceRay({x, 1 - x, ORIGIN_HEIGHT}, {0, 0, -1}, RAY_LENGTH);
+        rhi::RayResult hit;
+        REQUIRE(internal::TraceReferenceOracle(scene, ray, hit) == rhi::RasterStatus::Ready);
+        CAPTURE(i, x, hit.U, hit.V);
+        REQUIRE(hit.Hit == 1);
+        CHECK(hit.U >= 0);
+        CHECK(hit.V >= 0);
+        CHECK(hit.U + hit.V <= 1);
+    }
+}
