@@ -414,13 +414,13 @@ TEST_CASE("Tool window tabs keep their icons and drop their text when the dock i
     QTabBar* tabBarOrNull = nullptr;
     for (QTabBar* candidate : window.findChildren<QTabBar*>())
     {
-        if (candidate->parentWidget() == &window && candidate->count() >= 3 &&
-            candidate->tabText(0).isEmpty() == false && candidate->tabIcon(0).isNull() == false)
+        if (candidate->parentWidget() == &window && candidate->count() >= 3 && candidate->tabText(0).isEmpty() == false)
         {
             tabBarOrNull = candidate;
         }
     }
     REQUIRE(tabBarOrNull != nullptr);
+    CHECK(tabBarOrNull->tabIcon(0).isNull() == false);
     const int iconTabWidth = tabBarOrNull->iconSize().width() + 2 * 8;
 
     window.resizeDocks({explorer}, {1200}, Qt::Horizontal);

@@ -57,6 +57,7 @@
 #include <QStackedWidget>
 #include <QStandardPaths>
 #include <QStatusBar>
+#include <QTabBar>
 #include <QTableWidget>
 #include <QTimer>
 #include <QToolBar>
@@ -569,6 +570,37 @@ void MainWindow::InitializeWorkspace()
         return;
     }
     mShouldSizeDefaultDocks = false;
+}
+
+bool MainWindow::event(QEvent* event)
+{
+    const bool wasHandled = QMainWindow::event(event);
+    // Dock tab bars are created and refilled by the layout, so follow its changes.
+    if (event->type() == QEvent::LayoutRequest || event->type() == QEvent::ChildAdded ||
+        event->type() == QEvent::Polish)
+    {
+        syncDockTabIcons();
+    }
+    return wasHandled;
+}
+
+void MainWindow::syncDockTabIcons()
+{
+    const QList<QDockWidget*> docks = findChildren<QDockWidget*>(Qt::FindDirectChildrenOnly);
+    for (QTabBar* tabBar : findChildren<QTabBar*>(Qt::FindDirectChildrenOnly))
+    {
+        for (int index = 0; index < tabBar->count(); ++index)
+        {
+            for (const QDockWidget* dock : docks)
+            {
+                if (dock->windowTitle() == tabBar->tabText(index) &&
+                    tabBar->tabIcon(index).cacheKey() != dock->windowIcon().cacheKey())
+                {
+                    tabBar->setTabIcon(index, dock->windowIcon());
+                }
+            }
+        }
+    }
 }
 
 void MainWindow::showEvent(QShowEvent* event)

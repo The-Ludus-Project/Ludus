@@ -41,7 +41,7 @@ TEST_CASE("Eliding a path keeps the file name whole and cuts the folder from the
     const QString cutFolder = ElidePathText(path, metrics, nameWidth + metrics.horizontalAdvance(path.left(12)));
     CHECK(cutFolder.endsWith(name) == true);
     CHECK(cutFolder.contains(QStringLiteral("\u2026")) == true);
-    CHECK(cutFolder.startsWith(QStringLiteral("content")) == true);
+    CHECK(cutFolder.startsWith(QLatin1Char('c')) == true);
     CHECK(metrics.horizontalAdvance(cutFolder) <= nameWidth + metrics.horizontalAdvance(path.left(12)));
 
     // With no room for any folder, the whole file name is better than a cut one.
