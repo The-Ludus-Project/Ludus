@@ -787,7 +787,8 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
-        (version != format::RASTER_MESH_LIGHT_PACKAGE_VERSION && version != format::LTC_TABLE_PACKAGE_VERSION &&
+        (version != format::RASTER_MESH_LIGHT_POLYGON_PACKAGE_VERSION &&
+         version != format::RASTER_MESH_LIGHT_PACKAGE_VERSION && version != format::LTC_TABLE_PACKAGE_VERSION &&
          version != format::CLUSTERED_DEFERRED_PACKAGE_VERSION &&
          version != format::CLUSTERED_FORWARD_PACKAGE_VERSION && version != format::COMPUTE_BVH_PACKAGE_VERSION &&
          version != format::RAY_WORKGROUP_PACKAGE_VERSION && version != format::NATIVE_RAY_PIPELINE_PACKAGE_VERSION &&
@@ -809,7 +810,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     candidate->HasPersistentBuffers = version >= format::ORDERED_PACKAGE_VERSION;
     candidate->HasPixelBuffers = version >= format::PIXEL_BUFFER_PACKAGE_VERSION;
     candidate->HasForwardStages = version >= format::FORWARD_PACKAGE_VERSION;
-    candidate->CanHaveClusteredDeferred = version >= format::RASTER_MESH_LIGHT_PACKAGE_VERSION;
+    candidate->CanHaveClusteredDeferred = version >= format::RASTER_MESH_LIGHT_POLYGON_PACKAGE_VERSION;
     candidate->CanHaveClusteredForward = version >= format::CLUSTERED_FORWARD_PACKAGE_VERSION;
     candidate->HasExplicitAccumulation = version >= format::ACCUMULATION_PACKAGE_VERSION;
     candidate->HasExplicitToneMapping = version >= format::TONE_MAPPING_PACKAGE_VERSION;

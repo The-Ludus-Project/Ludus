@@ -3859,32 +3859,56 @@ sidedness uses the inverse-transpose geometric normal, including reflected and
 nonuniform instances. Exactly collapsed triangles contribute nothing. A plane
 tolerance of 10 micrometres plus two parts per million of coordinate magnitude
 suppresses coplanar self-lighting from depth reconstruction; distinct surfaces
-closer than that tolerance are also treated as coplanar. Constant
-emission is integrated per triangle; an emission map splits each source triangle
-into four equal-area patches and samples fixed-mip emission at each centroid,
-including UV transforms, address/filter policy and sRGB decoding. This piecewise
-constant texture approximation can miss small features; it is not the reference
-path tracer's textured-emitter estimator.
+closer than that tolerance are also treated as coplanar. An emission map splits
+each source triangle into four equal-area patches and samples fixed-mip emission
+at each centroid, including UV transforms, address/filter policy and sRGB
+decoding. This piecewise constant texture approximation can miss small features;
+it is not the reference path tracer's textured-emitter estimator.
 
-The raster resolve computes these integrals from spherical polygon edges, streaming
-horizon intersections without constructing the ellipse/sector state needed for
-importance sampling. The independent CPU check retains that sampling preparation.
+Constant emission is integrated per convex polygon. Both integrals are additive
+over a partition of the emitter, and clipping to the receiver horizon distributes
+over it, so the host merges a mesh's coplanar, edge-adjacent triangles before
+upload. Triangles join across an edge whose welded endpoint positions they
+traverse in opposite directions, when exactly one partner's normal agrees within
+about 0.26 degrees; coincident copies and non-manifold fins never join. A joined
+region is replaced only when it is a topological disk, its vertices lie within
+10 parts per million of its extent (plus about eight float32 ulps of coordinate
+magnitude) of one plane, and its outline, after dropping vertices whose turn has
+a sine of at most 1e-5, is strictly convex and encloses the region's area within
+a relative 1e-5. That outline becomes one record of up to 64 corners; a longer
+outline is fanned into records of at most 64 corners. Every other triangle, every
+emission-mapped patch and every region that fails a test stays a three-corner
+record, so the merge changes the lit result only within those geometric
+tolerances. A Staircase2 small square light, a 17 x 17 vertex grid of 512
+triangles, becomes one quad; a 64-segment pbrt disk becomes one 64-corner record
+instead of 64 triangles.
+Non-convex coplanar regions are not yet split into convex pieces.
+
+The raster resolve computes these integrals from spherical polygon edges in one
+pass over each record's corners, holding no corner array: a Sutherland-Hodgman clip
+to the receiver horizon feeds the Lambert edge sum and, after the LTC transform, a
+second horizon clip feeds the specular edge sum. Each corner costs one edge term,
+and no ellipse/sector state for importance sampling is built. The independent CPU
+check fans each record into clip-safe pieces of at most six corners and retains that
+sampling preparation; both integrals are additive over the fan.
 Polygons entirely below the receiver horizon contribute zero; crossing polygons
 are clipped before the LTC transform. This preserves emitter geometry and the
 lighting integral, without sampling lights or imposing a distance cutoff. The
-cost still grows with shaded pixels and admitted emitter triangles.
+cost still grows with shaded pixels and with the admitted records' corners.
 
 There is no mesh-light visibility test yet: area lights can illuminate through
-walls. Every admitted emitter triangle is evaluated, independently of the analytic
+walls. Every admitted emitter record is evaluated, independently of the analytic
 light clusters, with no finite-distance cutoff. At most 4096 nonzero-emission
-triangles/patches are admitted per scene; excess geometry rejects preparation and
-retains the last drawable generation. The immutable scene upload uses four Float4
-words per triangle plus a dummy record for an empty light set. Camera-only updates
+polygon records are admitted per scene; excess geometry rejects preparation and
+retains the last drawable generation. The immutable scene upload stores each record
+as two Float4 header words (normal and sidedness, emission and corner count)
+followed by its corners, read in order, plus a zero header for an empty light set. Camera-only updates
 reuse it. Fragment read-only storage is required for this upload and the shared
 LTC table; the resolve repurposes unused bake/shadow slots three and four, keeping
 sixteen total slots. Forward-only profiles retain their existing behavior. Runtime
-package version 26 changes these two deferred binding kinds; older deferred packages
-must be cooked again. Linear RGBA8 output still clips bright radiance.
+package version 26 changed these two deferred binding kinds, and version 27 changes
+the mesh-light record layout its resolve reads; older deferred packages must be
+cooked again. Linear RGBA8 output still clips bright radiance.
 
 Select **ZPrepass** in the preview configuration
 selector to enable a separate depth-only pass. That pass clears and stores depth;
