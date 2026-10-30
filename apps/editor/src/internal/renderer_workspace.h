@@ -93,6 +93,19 @@ public:
     void SetChromeVisible(bool isVisible);
     /// Focus the active Source editor or graph canvas, preserving the selected view.
     void FocusActiveView();
+    /// Select Source without changing its accepted text/history, preferring a selected shader
+    /// when opening from the canvas. False when no source is available. GUI thread only.
+    [[nodiscard]] bool ShowSourceView();
+    /// Temporarily collapse graph navigation while Source shares the document well with a World.
+    /// Canvas/Plan navigation and the user's Sources visibility preference are preserved.
+    void SetSourceCompanionLayout(bool shouldUseCompactSource);
+    /// Local view preferences only: project-relative graph, source selection and selected view.
+    /// Never serializes draft bytes. Empty when no graph is loaded.
+    [[nodiscard]] QJsonObject GetSourceViewState() const;
+    /// Restore matching project-local view preferences through the existing graph owner.
+    /// Invalid/missing graphs and attempts to replace a dirty graph preserve the current draft.
+    /// No Save, setup repair or modal discard prompt. GUI thread only.
+    [[nodiscard]] bool RestoreSourceViewState(const QJsonObject& state);
 
     /// Bind a project root and epoch; a different root closes the document and cancels jobs.
     /// The root is canonicalized, so a symlinked path binds the same project and its build
@@ -365,6 +378,8 @@ public:
     void ServicePreview();
 
 Q_SIGNALS:
+    /// Ask the shell to show this Source editor beside the existing World document.
+    void CodeViewportRequested();
     /// Request that the shell toggle its reversible focus layout for this document.
     void FocusViewRequested();
     void DocumentChanged();
@@ -460,6 +475,7 @@ private:
     void renderPreview();
     void renderSourceStatus();
     void updateSourceInterfaceVisibility();
+    void updateChromeVisibility();
     void openSubgraph(const QString& asset, const QString& configuration, const QString& instance);
 
     static constexpr foundation::int32 FILE_ROLE = Qt::UserRole;
@@ -475,6 +491,7 @@ private:
     bool mIsRendering = false;
     bool mIsGraphSettingsSectionExpanded = false;
     bool mIsChromeVisible = true;
+    bool mShouldUseCompactSource = false;
     foundation::int32 mFocusRestoreView = 0;
     bool mHasResult = false;
     bool mIsLivePreviewEnabled = false;

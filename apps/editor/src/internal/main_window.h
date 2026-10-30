@@ -131,6 +131,8 @@ private:
     /// Focus Viewport: hide tool windows, toolbars and World chrome, or restore the exact
     /// arrangement captured on entry (dock state and the previously active document).
     void setViewportFocused(bool isFocused);
+    /// Arrange the existing Source and World documents together; never creates a viewport/device.
+    void showCodeAndViewport();
     /// The arrangement to persist: the one Focus Viewport returns to while it is active.
     [[nodiscard]] QByteArray getPersistentLayoutState() const;
     /// Show and raise dock without focusing it; a reopened bottom tool window gets the default height.
@@ -143,8 +145,7 @@ private:
     void changeProjectItem(ProjectItemAction action, ProjectItemKind kind, const QString& path);
     void activateErrorEntry(const ErrorListEntry& entry);
     void renderActiveDocument();
-    /// Show the context strip (Render Graph toolbar) only while a render graph is the active document and Focus
-    /// Viewport is off.
+    /// Show the context strip while a render graph is current in any group and Focus Viewport is off.
     void updateContextStrip();
     /// Refresh the status bar's activity chip and problem counts from the current work.
     void renderActivity();
@@ -256,6 +257,7 @@ private:
     QAction* mProjectSettingsAction;
     QAction* mResetLayoutAction;
     QAction* mFocusViewportAction;
+    QAction* mCodeViewportAction;
     /// Main-window state captured when Focus Viewport started; empty otherwise.
     QByteArray mFocusRestoreState;
     /// Document that was active when Focus Viewport started; reactivated on exit.

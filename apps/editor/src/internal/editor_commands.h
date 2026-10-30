@@ -229,6 +229,16 @@ inline constexpr EditorCommand VIEW_FOCUS_VIEWPORT_COMMAND
     .IsCheckable = true,
 };
 
+inline constexpr EditorCommand VIEW_CODE_VIEWPORT_COMMAND
+{
+    .Id = "view.codeAndViewport",
+    .Text = "Code and &Viewport",
+    .ToolbarText = "Code + Viewport",
+    .Shortcut = "Ctrl+Alt+V",
+    .Help = "Show Source beside the existing interactive World viewport. This project's split is remembered.",
+    .IsCheckable = false,
+};
+
 // Document commands open one document view in the central document well.
 inline constexpr EditorCommand PROJECT_SETTINGS_COMMAND
 {
