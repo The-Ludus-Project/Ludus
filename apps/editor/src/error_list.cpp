@@ -1,6 +1,7 @@
 #include "internal/error_list.h"
 #include "internal/editor_icons.h"
 #include "internal/item_selection.h"
+#include "internal/path_text.h"
 
 #include <ludus/foundation/base/core.h>
 
@@ -390,6 +391,7 @@ ErrorList::ErrorList(QWidget* parentOrNull)
     mTable->setColumnWidth(LOCATION_COLUMN, LOCATION_COLUMN_WIDTH);
     mTable->setColumnWidth(ORIGIN_COLUMN, ORIGIN_COLUMN_WIDTH);
     mTable->verticalHeader()->hide();
+    mTable->setItemDelegateForColumn(FILE_COLUMN, new PathItemDelegate(mTable));
     mTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     mTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     ConfigureItemSelection(*mTable);

@@ -79,6 +79,7 @@ public:
 protected:
     void closeEvent(QCloseEvent* event) override;
     void showEvent(QShowEvent* event) override;
+    bool event(QEvent* event) override;
 
 private Q_SLOTS:
     void OnStateChanged();
@@ -118,6 +119,8 @@ private:
     void InitializeWorkspace();
     void ResetWorkspaceLayout();
     void arrangeDefaultDocks();
+    /// Give each tool window tab its dock's icon. Qt names the tabs but does not set their icons.
+    void syncDockTabIcons();
     /// Size the default arrangement for this window: side column width, Project Explorer and
     /// Properties split, and the bottom group (closed on short windows).
     void applyDefaultDockSizes();
