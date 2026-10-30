@@ -117,9 +117,12 @@ Limitations:
   reference headers' cost. Their paths then disappear from the report or the
   factor shifts, so re-baseline `runner_speed_reference` from a CI profile and
   recalibrate the aggregate in the same change.
-- When a reference header is absent from the report (for example, a local libc++
-  host) or the factor lies outside the configured bounds, the gate falls back to
-  raw timings and prints why.
+- ClangBuildAnalyzer lists only its ten most expensive headers, and the cheaper
+  reference headers can drop out as project headers grow (run 41110487152 lost
+  `<string_view>`). The factor uses the reference headers listed, comparing the
+  same headers' baseline averages. With fewer than `minimum_headers` (two) listed,
+  for example on a local libc++ host, or a factor outside the configured bounds,
+  the gate falls back to raw timings and prints why.
 - The factor removes the host's speed, not CPU contention. Keep the job's
   two-job concurrency unchanged.
 - Normalized totals still varied by about 7% across these runs. Treat a single
