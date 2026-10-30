@@ -266,6 +266,19 @@ Status PackGpuScene(const ReferenceJob& job,
         const internal::ReferenceInstance& instance = scene.Instances[i];
         const internal::ReferenceSurfaceData& surface = *instance.Surface;
         math::Vector4* surfaceWords = data.GetData() + surfaces + i * LUDUS_GPU_PREVIEW_SURFACE_WORDS;
+        const content::scene_format::MaterialScattering& scattering = surface.Bsdf.Scattering;
+        surfaceWords[LUDUS_GPU_PREVIEW_SCATTERING_ETA_WORD] = {scattering.Eta[0],
+                                                               scattering.Eta[1],
+                                                               scattering.Eta[2],
+                                                               GpuBits(static_cast<uint32>(scattering.Model))};
+        surfaceWords[LUDUS_GPU_PREVIEW_SCATTERING_K_WORD] = {scattering.K[0],
+                                                             scattering.K[1],
+                                                             scattering.K[2],
+                                                             scattering.AlphaU};
+        surfaceWords[LUDUS_GPU_PREVIEW_SCATTERING_ALPHA_WORD] = {scattering.AlphaV,
+                                                                 scattering.CoatingEta,
+                                                                 scattering.CoatingThickness,
+                                                                 0};
         surfaceWords[LUDUS_GPU_PREVIEW_BASE_COLOR_WORD] = GpuVector(surface.Bsdf.BaseColor, surface.Bsdf.Metallic);
         surfaceWords[LUDUS_GPU_PREVIEW_ROUGHNESS_WORD] =
         {
@@ -386,6 +399,7 @@ Status PackGpuScene(const ReferenceJob& job,
     constexpr usize RANDOM_KEY_WORD_BITS = 32;
     constexpr uint32 CENTER_RAYS_FLAG = 4;
     outUniform.Dimensions[FOURTH_COMPONENT] = job.Description.RouletteDepth;
+    internal::SetGpuPreviewTile(outUniform, 0, 1);
     outUniform.Offsets[0] = static_cast<uint32>(nodes);
     outUniform.Offsets[1] = static_cast<uint32>(order);
     outUniform.Offsets[2] = static_cast<uint32>(emitters);
@@ -713,10 +727,34 @@ Status PrepareVisibilityInput(rhi::DeviceHandle device,
     return PollGpuJob(device, inoutState, inoutJob);
 }
 } // namespace
+} // namespace ludus::graphics::renderer
+
+namespace ludus::graphics::renderer::internal
+{
+/// Destroy a job's row bands, if any, and return their uniform bytes to the preview budget.
+inline void
+ReleaseGpuPreviewTiles(rhi::DeviceHandle device, GpuPreviewState& inoutState, GpuPreviewRecord& inoutJob) noexcept
+{
+    if (inoutJob.TilesOrNull.Get() == nullptr)
+    {
+        return;
+    }
+    GpuPreviewTiles& tiles = *inoutJob.TilesOrNull;
+    static_cast<void>(rhi::Destroy(device, tiles.Bindings));
+    static_cast<void>(rhi::Destroy(device, tiles.Parameters));
+    inoutJob.GpuBytes -= sizeof(GpuPreviewUniform);
+    inoutState.GpuBytes -= sizeof(GpuPreviewUniform);
+    inoutJob.TilesOrNull.Reset();
+}
+} // namespace ludus::graphics::renderer::internal
+
+namespace ludus::graphics::renderer
+{
 void Renderer::State::DropGpuPreview(usize slot) noexcept
 {
     GpuPreviewRecord& job = GpuPreview->Jobs[slot];
     job.CameraUpdate.Reset();
+    internal::ReleaseGpuPreviewTiles(Device, *GpuPreview, job);
     job.Denoiser.Reset();
     job.DenoisingQuality = 0;
     job.HasPendingCamera = false;
@@ -1323,7 +1361,7 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
               false) ||
          invocationOrNull->DenoisingQuality >
              static_cast<uint32>(content::render_graph_format::ProcessingQuality::High) ||
-         invocationOrNull->AccumulationSamples > content::render_graph_format::MAX_ACCUMULATION_SAMPLES ||
+         invocationOrNull->AccumulationSamples > MAX_RENDER_GRAPH_CAPTURE_SAMPLES ||
          invocationOrNull->Program >= content::render_graph_format::MAX_RAY_PASSES ||
          invocationOrNull->Buffers.IsValid() == false ||
          (invocationOrNull->Buffers.GetSize() != 0 &&
@@ -1821,6 +1859,14 @@ Status Renderer::PrepareGpuPreviewGraphSequence(BorrowedView<const renderer::Gpu
                                                 rhi::OrderedGraph& outGraph,
                                                 const VisibilityRasterPass* visibilityOrNull) noexcept
 {
+    return prepareGpuPreviewGraphSequence(jobs, targets, 0, outGraph, visibilityOrNull);
+}
+Status Renderer::prepareGpuPreviewGraphSequence(BorrowedView<const renderer::GpuPreview> jobs,
+                                                BorrowedView<const rhi::TextureHandle> targets,
+                                                uint32 tile,
+                                                rhi::OrderedGraph& outGraph,
+                                                const VisibilityRasterPass* visibilityOrNull) noexcept
+{
     if (mState.Get() == nullptr || mState->GpuPreview.Get() == nullptr)
     {
         return Status::InvalidState;
@@ -1876,6 +1922,12 @@ Status Renderer::PrepareGpuPreviewGraphSequence(BorrowedView<const renderer::Gpu
             (visibilityOrNull != nullptr && targets[index] == visibilityOrNull->Attachment.Color))
         {
             return Status::InvalidDescription;
+        }
+        // A tiled job dispatches only the band it prepared; whole-image jobs ignore the band.
+        const internal::GpuPreviewTiles* tilesOrNull = jobOrNull->TilesOrNull.Get();
+        if (tilesOrNull != nullptr && (tile != tilesOrNull->Tile || tilesOrNull->HasBindings == false))
+        {
+            return Status::InvalidState;
         }
         records[index] = jobOrNull;
     }

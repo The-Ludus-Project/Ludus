@@ -42,30 +42,42 @@ math::Vector3 ClampBelow(math::Vector3 value, float32 minimum) noexcept
 {
     return {math::Max(value.X, minimum), math::Max(value.Y, minimum), math::Max(value.Z, minimum)};
 }
-/// Sampler version 2 address of `slot` at scattering event `depth`.
+/// Address of `slot` at scattering event `depth`; sampler versions 2 and 3 share the layout.
 math::RandomAddress MakeAddress(uint32 pixel, uint32 sample, uint32 depth, uint32 slot) noexcept
 {
     return {pixel, sample, ReferenceBounceDimension(ReferenceLightSampling::ResampledProjectedSolidAngle, depth, slot)};
 }
+bool HasFormFactorTarget(const ReferenceJob& job) noexcept
+{
+    return job.Description.LightSampling == ReferenceLightSampling::ResampledFormFactor;
+}
+/// Peters' coefficients c_t = Y(L) Y(a_t) E_t from (E_0, E_1).
+math::Vector2
+ComputeCoefficients(const ReferenceReceiverFrame& frame, math::Vector2 integrals, float32 emissionLuminance) noexcept
+{
+    return {emissionLuminance * frame.DiffuseAlbedoLuminance * integrals.X,
+            emissionLuminance * frame.SpecularAlbedoLuminance * integrals.Y};
+}
 
-/// One emissive triangle evaluated for one receiver.
+/// One emissive triangle evaluated for one receiver and prepared for both light techniques.
 struct EmitterTarget final
 {
     /// The evaluated scene triangle.
     uint32 TriangleIndex = 0;
     ReferenceTriangleLight Light;
-    /// (c_0, c_1); their sum is Target.
+    /// (c_0, c_1) from the exact integrals: Peters' MIS coefficients.
     math::Vector2 Coefficients{};
-    /// p-hat: Y(L) (Y(a_0) E_0 + Y(a_1) E_1), zero for a one-sided emitter seen from behind.
+    /// p-hat as the job's mode evaluates it: Coefficients.X + Coefficients.Y for sampler version 2, the approximate
+    /// integrals' coefficients for version 3. Zero for a one-sided emitter seen from behind.
     float32 Target = 0;
 };
 
-/// Evaluate p-hat for an emitter triangle. The constant emission factor bounds textured emission from above, so the
-/// target needs no texture lookup. Returns false for an invalid triangle or a nonfinite polygon or target.
-bool TryEvaluateEmitterTarget(const ReferenceJob& job,
-                              const ReferenceReceiverFrame& frame,
-                              uint32 triangleIndex,
-                              EmitterTarget& outTarget) noexcept
+/// The emitter triangle and the luminance of its constant emission factor towards the receiver; false for an invalid
+/// triangle index.
+bool TryLoadEmitter(const ReferenceJob& job,
+                    const ReferenceReceiverFrame& frame,
+                    uint32 triangleIndex,
+                    float32& outEmissionLuminance) noexcept
 {
     if (triangleIndex >= job.Scene.Triangles.GetSize())
     {
@@ -73,8 +85,6 @@ bool TryEvaluateEmitterTarget(const ReferenceJob& job,
     }
     const ReferenceTriangle& triangle = job.Scene.Triangles[triangleIndex];
     const ReferenceSurfaceData& surface = *job.Scene.Instances[triangle.Instance].Surface;
-    EmitterTarget result;
-    result.TriangleIndex = triangleIndex;
     float32 emissionLuminance = ComputeReferenceLuminance(ClampBelow(surface.Emission, 0));
     // A planar triangle faces the receiver from every point on it, as the emitter-hit test sees it at one point.
     if (surface.IsEmissionTwoSided == false &&
@@ -82,6 +92,51 @@ bool TryEvaluateEmitterTarget(const ReferenceJob& job,
     {
         emissionLuminance = 0;
     }
+    outEmissionLuminance = emissionLuminance;
+    return true;
+}
+
+/// Sampler version 3's p-hat for a loaded emitter with positive emission. Returns false for a nonfinite target.
+bool TryApproximateEmitterTarget(const ReferenceReceiverFrame& frame,
+                                 const ReferenceTriangle& triangle,
+                                 float32 emissionLuminance,
+                                 float32& outTarget) noexcept
+{
+    math::Vector2 integrals{};
+    if (TryApproximateReferenceTriangleIntegrals(frame,
+                                                 triangle.Positions[0],
+                                                 triangle.Positions[1],
+                                                 triangle.Positions[2],
+                                                 integrals) == false)
+    {
+        return false;
+    }
+    const math::Vector2 coefficients = ComputeCoefficients(frame, integrals, emissionLuminance);
+    const float32 target = coefficients.X + coefficients.Y;
+    if (math::IsFinite(target) == false)
+    {
+        return false;
+    }
+    outTarget = target;
+    return true;
+}
+
+/// Evaluate p-hat for an emitter triangle and prepare its exact polygons, for the selected emitter and BSDF hits. The
+/// constant emission factor bounds textured emission from above, so the target needs no texture lookup. Returns false
+/// for an invalid triangle or a nonfinite polygon, coefficient or target.
+bool TryEvaluateEmitterTarget(const ReferenceJob& job,
+                              const ReferenceReceiverFrame& frame,
+                              uint32 triangleIndex,
+                              EmitterTarget& outTarget) noexcept
+{
+    float32 emissionLuminance = 0;
+    if (TryLoadEmitter(job, frame, triangleIndex, emissionLuminance) == false)
+    {
+        return false;
+    }
+    const ReferenceTriangle& triangle = job.Scene.Triangles[triangleIndex];
+    EmitterTarget result;
+    result.TriangleIndex = triangleIndex;
     if ((emissionLuminance > 0) == true)
     {
         if (TryPrepareReferenceTriangleLight(frame,
@@ -92,16 +147,50 @@ bool TryEvaluateEmitterTarget(const ReferenceJob& job,
         {
             return false;
         }
-        result.Coefficients = {emissionLuminance * frame.DiffuseAlbedoLuminance * result.Light.DiffuseIntegral,
-                               emissionLuminance * frame.SpecularAlbedoLuminance * result.Light.SpecularIntegral};
+        result.Coefficients =
+            ComputeCoefficients(frame,
+                                math::Vector2{result.Light.DiffuseIntegral, result.Light.SpecularIntegral},
+                                emissionLuminance);
         result.Target = result.Coefficients.X + result.Coefficients.Y;
-        if (math::IsFinite(result.Target) == false)
+        if (math::IsFinite(result.Target) == false ||
+            (HasFormFactorTarget(job) == true &&
+             TryApproximateEmitterTarget(frame, triangle, emissionLuminance, result.Target) == false))
         {
             return false;
         }
     }
     outTarget = result;
     return true;
+}
+
+/// p-hat alone, for the reservoir's and Z-hat's candidates: the value TryEvaluateEmitterTarget returns, without
+/// preparing polygons under sampler version 3. Returns false as TryEvaluateEmitterTarget does.
+bool TryEvaluateResamplingTarget(const ReferenceJob& job,
+                                 const ReferenceReceiverFrame& frame,
+                                 uint32 triangleIndex,
+                                 float32& outTarget) noexcept
+{
+    if (HasFormFactorTarget(job) == false)
+    {
+        EmitterTarget target;
+        if (TryEvaluateEmitterTarget(job, frame, triangleIndex, target) == false)
+        {
+            return false;
+        }
+        outTarget = target.Target;
+        return true;
+    }
+    float32 emissionLuminance = 0;
+    if (TryLoadEmitter(job, frame, triangleIndex, emissionLuminance) == false)
+    {
+        return false;
+    }
+    if ((emissionLuminance > 0) == false)
+    {
+        outTarget = 0;
+        return true;
+    }
+    return TryApproximateEmitterTarget(frame, job.Scene.Triangles[triangleIndex], emissionLuminance, outTarget);
 }
 
 /// Z-hat = (1/K) sum_k p-hat(t'_k) / p_src(t'_k) over K independent power-CDF draws from the normalization slots, so
@@ -119,7 +208,8 @@ bool TryEnsureTargetTotal(const ReferenceJob& job,
         return true;
     }
     float32 sum = 0;
-    for (uint32 k = 0; k < LUDUS_REFERENCE_RIS_NORMALIZATION_CANDIDATE_COUNT; ++k)
+    const uint32 normalizationCount = GetReferenceRisNormalizationCount(job.Description.LightSampling);
+    for (uint32 k = 0; k < normalizationCount; ++k)
     {
         const ReferenceEmissiveTriangleSelection candidate = SelectReferenceEmissiveTriangle(
             job.Scene,
@@ -129,14 +219,14 @@ bool TryEnsureTargetTotal(const ReferenceJob& job,
         {
             continue;
         }
-        EmitterTarget target;
-        if (TryEvaluateEmitterTarget(job, frame, candidate.TriangleIndex, target) == false)
+        float32 target = 0;
+        if (TryEvaluateResamplingTarget(job, frame, candidate.TriangleIndex, target) == false)
         {
             return false;
         }
-        sum += target.Target / candidate.SelectionPmf;
+        sum += target / candidate.SelectionPmf;
     }
-    const float32 estimate = sum / static_cast<float32>(LUDUS_REFERENCE_RIS_NORMALIZATION_CANDIDATE_COUNT);
+    const float32 estimate = sum / static_cast<float32>(normalizationCount);
     if (math::IsFinite(estimate) == false)
     {
         return false;
@@ -168,11 +258,12 @@ bool TryEvaluateSurrogate(const ReferenceJob& job,
     {
         return false;
     }
-    outProbability = EvaluateReferenceSurrogateProbability(emissiveCategoryProbability,
-                                                           target.Target,
-                                                           sourcePmf,
-                                                           inoutTotal.Value,
-                                                           LUDUS_REFERENCE_RIS_CANDIDATE_COUNT);
+    outProbability =
+        EvaluateReferenceSurrogateProbability(emissiveCategoryProbability,
+                                              target.Target,
+                                              sourcePmf,
+                                              inoutTotal.Value,
+                                              GetReferenceRisCandidateCount(job.Description.LightSampling));
     return true;
 }
 
@@ -196,7 +287,8 @@ bool TryResampleEmitter(const ReferenceJob& job,
     math::WeightedReservoir reservoir;
     ResampledTriangle result;
     float32 selectedTarget = 0;
-    for (uint32 i = 0; i < LUDUS_REFERENCE_RIS_CANDIDATE_COUNT; ++i)
+    const uint32 candidateCount = GetReferenceRisCandidateCount(job.Description.LightSampling);
+    for (uint32 i = 0; i < candidateCount; ++i)
     {
         const uint32 slot = LUDUS_REFERENCE_RIS_CANDIDATE_FIRST_SLOT + i * LUDUS_REFERENCE_RIS_SLOTS_PER_CANDIDATE;
         const ReferenceEmissiveTriangleSelection candidate =
@@ -206,14 +298,14 @@ bool TryResampleEmitter(const ReferenceJob& job,
             outSelection = {};
             return true;
         }
-        EmitterTarget target;
-        if (TryEvaluateEmitterTarget(job, frame, candidate.TriangleIndex, target) == false)
+        float32 target = 0;
+        if (TryEvaluateResamplingTarget(job, frame, candidate.TriangleIndex, target) == false)
         {
             return false;
         }
         const math::ReservoirCandidate entry
         {
-            .Weight = target.Target / candidate.SelectionPmf,
+            .Weight = target / candidate.SelectionPmf,
             .Ticket = math::SampleFloat01(job.Key, MakeAddress(pixel, sample, depth, slot + 1)),
         };
         bool isSelected = false;
@@ -224,7 +316,7 @@ bool TryResampleEmitter(const ReferenceJob& job,
         if (isSelected == true)
         {
             result.TriangleIndex = candidate.TriangleIndex;
-            selectedTarget = target.Target;
+            selectedTarget = target;
         }
     }
     if (reservoir.HasSelection() == true)
@@ -377,6 +469,47 @@ bool TryPrepareReferenceTriangleLight(const ReferenceReceiverFrame& frame,
         result.SpecularIntegral = math::GetLinearlyTransformedCosinePolygonIntegral(result.Specular);
     }
     outLight = result;
+    return true;
+}
+
+// The vertices follow the triangle's stored order, which fixes its winding.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+bool TryApproximateReferenceTriangleIntegrals(const ReferenceReceiverFrame& frame,
+                                              math::Vector3 position0World,
+                                              math::Vector3 position1World,
+                                              math::Vector3 position2World,
+                                              math::Vector2& outIntegrals) noexcept
+// NOLINTEND(bugprone-easily-swappable-parameters)
+{
+    math::ProjectedPolygonInput polygon;
+    polygon.VertexCount = TRIANGLE_VERTEX_COUNT;
+    polygon.PositionsTangent[0] = TransformWorldToTangent(frame, position0World - frame.PositionWorld);
+    polygon.PositionsTangent[1] = TransformWorldToTangent(frame, position1World - frame.PositionWorld);
+    polygon.PositionsTangent[2] = TransformWorldToTangent(frame, position2World - frame.PositionWorld);
+    math::ApproximatePolygonIntegral diffuse;
+    if (math::TryApproximateClampedCosinePolygonIntegral(polygon, diffuse) != math::MathStatus::Success)
+    {
+        return false;
+    }
+    const bool hasVertexAboveHorizon =
+        polygon.PositionsTangent[0].Z > 0 || polygon.PositionsTangent[1].Z > 0 || polygon.PositionsTangent[2].Z > 0;
+    math::Vector2 integrals{};
+    if (hasVertexAboveHorizon == true)
+    {
+        integrals.X =
+            math::Max(diffuse.Integral, REFERENCE_APPROXIMATE_TARGET_DEFENSIVE_FRACTION * diffuse.UnitTripleProduct);
+    }
+    if (frame.HasSpecular == true)
+    {
+        math::ApproximatePolygonIntegral specular;
+        if (math::TryApproximateLinearlyTransformedCosinePolygonIntegral(polygon, frame.Specular, specular) !=
+            math::MathStatus::Success)
+        {
+            return false;
+        }
+        integrals.Y = specular.Integral;
+    }
+    outIntegrals = integrals;
     return true;
 }
 

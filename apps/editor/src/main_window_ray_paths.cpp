@@ -1,3 +1,4 @@
+#include "internal/editor_icons.h"
 #include "internal/main_window.h"
 #include "internal/ray_path_inspection.h"
 #include "internal/ray_path_inspector.h"
@@ -19,6 +20,7 @@ void MainWindow::setupRayPaths()
     }
     mRayPathsDockOrNull = new QDockWidget(QStringLiteral("Ray Paths"), this);
     mRayPathsDockOrNull->setObjectName(QStringLiteral("rayPathsDock"));
+    mRayPathsDockOrNull->setWindowIcon(GetEditorIcon(EditorIcon::RayPaths));
     RayPathInspector* inspector = new RayPathInspector(*rayPathsOrNull, mRayPathsDockOrNull);
     // Keep controls readable in the shared dock; the event/details splitter owns vertical sizing.
     inspector->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Ignored);
@@ -45,5 +47,18 @@ void MainWindow::setupRayPaths()
     connect(rayPathsOrNull, &RayPathInspection::ObjectSelectionRequested, World_, [this](const QString& object) {
         static_cast<void>(World_->SelectEntity(object));
     });
+}
+
+void MainWindow::hideIdleRayPaths()
+{
+    const RayPathInspection* rayPathsOrNull = Renderer_->GetRayPathInspectionOrNull();
+    if (mRayPathsDockOrNull == nullptr || rayPathsOrNull == nullptr ||
+        rayPathsOrNull->GetStage() != RayPathInspectionStage::Inactive)
+    {
+        return;
+    }
+    mRayPathsDockOrNull->hide();
+    // The next capture opens it again.
+    mHasShownRayPaths = false;
 }
 } // namespace ludus::editor

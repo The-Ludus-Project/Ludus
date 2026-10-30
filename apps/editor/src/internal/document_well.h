@@ -88,6 +88,9 @@ public:
     void SetDocumentAvailable(QWidget* document, bool isAvailable);
     [[nodiscard]] bool IsDocumentAvailable(const QWidget* document) const;
     [[nodiscard]] bool IsDocumentOpen(const QWidget* document) const;
+    /// True when the view is the current tab of any group, including a background group.
+    /// Independent of whether the containing editor window is currently shown.
+    [[nodiscard]] bool IsDocumentCurrent(const QWidget* document) const;
     /// True for a registered view whose tab close is decided by its owner.
     [[nodiscard]] bool IsDocumentOwnerClosed(const QWidget* document) const;
     /// Change a view's tab title, for example to add a `*` while it has unsaved changes.
@@ -116,6 +119,11 @@ public:
     /// Move the active document into the neighbouring group (offset +1 or -1).
     /// @return False when there is no such group or document.
     bool MoveActiveDocument(foundation::int32 offset);
+    /// Show two distinct registered, available views in horizontal tab groups, focusing firstDocument.
+    /// Reuses existing groups and their sizes; a one-group well gets an equal split. Other tabs,
+    /// drafts and widget identities survive. Only firstDocument may move to another group.
+    /// False for unavailable/unregistered views or the same view, without changing the arrangement.
+    bool ShowDocumentsSideBySide(QWidget* firstDocument, QWidget* secondDocument);
     /// Move every open document into the first group and remove the others.
     void MergeGroups();
 

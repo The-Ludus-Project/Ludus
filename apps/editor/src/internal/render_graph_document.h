@@ -6,6 +6,7 @@
 #include <ludus/foundation/containers/borrowed_view.hpp>
 
 #include "render_graph_layout_policy.h"
+#include "render_graph_package_policy.h"
 
 #include "internal/code_document.h"
 #include "internal/document_history.h"
@@ -80,6 +81,19 @@ struct RenderGraphTemplateBudgetIncrease final
     foundation::int32 RequiredPrograms = 0;
 };
 
+/// What RemoveSubgraphLibrary removed from the draft. Paths are package-relative.
+struct RenderGraphLibraryRemoval final
+{
+    /// Library graph files removed: the node's library and any library only it imported.
+    QStringList Graphs;
+    /// Removed program registrations as manifest#program identities.
+    QStringList Programs;
+    /// Removed shader sources: the programs' sources and the helpers only they include.
+    QStringList Sources;
+    /// The graph file that still names the node's library when Graphs is empty.
+    QString RetainedBy;
+};
+
 enum class RenderGraphDocumentStatus : foundation::uint8
 {
     Ok,
@@ -97,6 +111,20 @@ enum class RenderGraphDocumentStatus : foundation::uint8
 /// an editor draft therefore produces the same bytes as the shared CLI backend.
 [[nodiscard]] QByteArray EncodeCanonicalJson(const QJsonObject& value);
 
+/// Remove node from one configuration record together with its edges, configuration-output
+/// sources (cleared, declarations kept) and layout position. False when node is absent.
+[[nodiscard]] bool RemoveRenderGraphNodeRecord(QJsonObject& inoutConfiguration, const QString& node);
+
+/// The package source limits and how to free space, for a load or edit that reports Capacity.
+[[nodiscard]] QString DescribePackageCapacity();
+/// Why templateName cannot copy newFiles more sources into a package that already holds
+/// existingFiles, with the limit and the canvas actions that free space.
+[[nodiscard]] QString
+DescribeTemplateFileCapacity(const QString& templateName, foundation::usize existingFiles, foundation::usize newFiles);
+/// Why templateName cannot add a configuration to file, which already holds the most a graph
+/// file can, with the canvas actions that make room.
+[[nodiscard]] QString DescribeConfigurationCapacity(const QString& templateName, const QString& file);
+
 // RG3 render-graph authoring document. It owns one package's saved and draft
 // sources (graph documents, build manifests and shader functions), a bounded
 // undo history and explicit save. Validation, lowering and builds stay in the
@@ -106,9 +134,18 @@ enum class RenderGraphDocumentStatus : foundation::uint8
 class RenderGraphDocument final
 {
 public:
-    static constexpr foundation::usize MAX_FILES = 64;
-    static constexpr qsizetype MAX_FILE_BYTES = qsizetype{128} * 1024;
-    static constexpr qsizetype MAX_TOTAL_BYTES = qsizetype{4} * 1024 * 1024;
+    /// Package limits are what the CLI admits: graph documents (render_graph.py) plus the
+    /// manifest and shader sources of one build snapshot (render_graph_build.py). The editor
+    /// therefore opens every package the CLI can build and never refuses a template the
+    /// builder would accept.
+    static constexpr foundation::usize MAX_FILES =
+        package_policy::MAX_GRAPH_DOCUMENTS + package_policy::MAX_BUILD_SOURCE_FILES;
+    static constexpr qsizetype MAX_FILE_BYTES =
+        static_cast<qsizetype>(package_policy::MAX_GRAPH_DOCUMENT_BYTES > package_policy::MAX_BUILD_SOURCE_FILE_BYTES
+                                   ? package_policy::MAX_GRAPH_DOCUMENT_BYTES
+                                   : package_policy::MAX_BUILD_SOURCE_FILE_BYTES);
+    static constexpr qsizetype MAX_TOTAL_BYTES =
+        static_cast<qsizetype>(package_policy::MAX_GRAPH_BYTES + package_policy::MAX_BUILD_SOURCE_BYTES);
     static constexpr foundation::usize HISTORY_CAPACITY = 64;
     /// Authoring limits mirrored from the shared render_graph.py format validator.
     static constexpr foundation::int32 MAX_CONFIGURATIONS = 8;
@@ -193,7 +230,7 @@ public:
                                                        QString& outError);
     /// Apply a pipeline and create missing shader programs and source templates as one
     /// undoable draft edit, including the selected technique and recipe. Program placeholders receive generated names.
-    /// New programs grow program/artifact budgets to fit within supported build limits; larger values are retained.
+    /// New programs grow budgets.programs to fit within supported build limits; a larger value is retained.
     /// Existing programs must match stage and source. Failure preserves all draft files; Save publishes new files
     /// without replacement.
     [[nodiscard]] RenderGraphDocumentStatus ApplyPipeline(const QString& file,
@@ -222,14 +259,30 @@ public:
     /// Repairs older packages without changing shaders. Conflict/capacity failures preserve the draft.
     [[nodiscard]] RenderGraphDocumentStatus PrepareTechniques(QString& outError);
     /// Remove programs unused by every loaded graph/configuration/subgraph and manifest technique.
-    /// Removes only their exclusive, unmentioned package-owned sources; shared files and
-    /// conservative include/import matches survive. Unregistered files and techniques are retained.
+    /// Removes their sources that no retained program uses, and the helpers that only removed
+    /// sources include. A source survives while a retained program, a remaining JSON field or a
+    /// surviving source could reach it (literal includes, and conservative filename/module-name
+    /// mentions in the surviving source's directory tree), checked to a fixed point. Loose files
+    /// and techniques are retained; an untracked or computed include in a survivor retains all files.
     /// One undo step; Save publishes removals with disk conflict checks. Malformed reference
     /// documents or missing subgraphs preserve draft/history and output lists; outError explains why.
     /// Success reports manifest#program identities and package-relative removed sources; no-op
     /// success creates no history entry. GUI thread only; no disk writes.
     [[nodiscard]] RenderGraphDocumentStatus
     RemoveUnusedShaders(QStringList& outPrograms, QStringList& outSources, QString& outError);
+    /// Remove a Subgraph node and what only it used, as one undoable draft edit: its edges and
+    /// output sources, its library graph unless another graph still names it, libraries only that
+    /// library imported, their programs that no remaining graph or technique names, and the
+    /// sources those programs free (see RemoveUnusedShaders; helpers only removed sources include
+    /// are removed with them, files a remaining source could include survive). The root graph,
+    /// loose graphs and loose sources are never removed. Unknown or non-Subgraph nodes, malformed
+    /// reference documents or missing subgraphs preserve draft/history and outRemoval; outError
+    /// says why. Save publishes the removals with disk conflict checks. GUI thread; no disk writes.
+    [[nodiscard]] RenderGraphDocumentStatus RemoveSubgraphLibrary(const QString& file,
+                                                                  const QString& configuration,
+                                                                  const QString& node,
+                                                                  RenderGraphLibraryRemoval& outRemoval,
+                                                                  QString& outError);
     /// Add one node. With a position, also record its canvas layout position, clamped to
     /// ±MAX_COORDINATE, in the same undoable edit. With a connection, also add that edge in the
     /// same edit; its To must be an input of node. Like Connect, the caller checks the edge first
@@ -265,7 +318,8 @@ public:
     /// to a library configuration, inserting a new library/Subgraph when file is the root. One undo step; no disk
     /// writes. Existing nonempty configurations, shader sources and incompatible ABIs are preserved on failure. An
     /// optional budget request reports a blocked program increase. Explicitly approved increases change only
-    /// budgets.programs to the required count, in the same undo step as the template.
+    /// budgets.programs to the required count, in the same undo step as the template; target artifacts are
+    /// derived from programs and profiles, and the legacy budgets.artifacts/pipelines fields are removed.
     [[nodiscard]] RenderGraphDocumentStatus
     ApplyConfigurationTemplate(const QString& file,
                                const QString& configuration,
@@ -283,6 +337,20 @@ public:
     /// GUI thread only. History restores the removed/surviving configuration selection.
     [[nodiscard]] RenderGraphDocumentStatus
     RemoveConfiguration(const QString& file, const QString& configuration, QString& outError);
+    /// Copy an existing configuration, including its interface, nodes, edges, options and layout,
+    /// as a new configuration named name in the same file. The default is unchanged. Unique ASCII
+    /// identifiers and the per-file configuration limit apply; outError names the repair. One undo
+    /// step; failure preserves the draft and history. GUI thread only; Save publishes.
+    [[nodiscard]] RenderGraphDocumentStatus
+    DuplicateConfiguration(const QString& file, const QString& configuration, const QString& name, QString& outError);
+    /// Copy a whole graph file, with every configuration, as a new package-root `<name>.lurender.json`
+    /// whose graph id is name. Subgraph references to the copied file itself are retargeted to the
+    /// copy; references to other files are kept. Existing files are never replaced, and the copy
+    /// is not referenced until a Subgraph node uses it. One undo step; failure preserves the draft
+    /// and history and outError names the repair. outAsset receives the new path only on success.
+    /// GUI thread only; Save publishes.
+    [[nodiscard]] RenderGraphDocumentStatus
+    DuplicateGraph(const QString& file, const QString& name, QString& outAsset, QString& outError);
     /// Copy authored nodes, their internal edges and displayed layout into a bounded payload.
     /// External connections and configuration interfaces are excluded. outPayload survives failure;
     /// outError describes a failure. GUI thread only.
@@ -435,6 +503,9 @@ public:
     [[nodiscard]] RenderGraphDocumentStatus RefreshFromDisk(bool& outHasChanged);
 
 private:
+    /// Check that name can create a new package-root `<name>.lurender.json` graph whose id is
+    /// unused and whose path is unused in the draft, saved sources, disk and case-insensitively.
+    [[nodiscard]] RenderGraphDocumentStatus checkNewGraphAsset(const QString& name) const;
     /// Replace a Subgraph and repair its direct uses in an unpublished snapshot; no disk writes.
     [[nodiscard]] RenderGraphDocumentStatus prepareSubgraphReplacement(RenderGraphSnapshot& inoutSnapshot,
                                                                        const QString& file,

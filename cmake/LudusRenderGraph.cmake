@@ -9,11 +9,11 @@ function(_ludus_render_graph_helper_files out)
     file(READ "${renderer_directory}/recipes.json" renderer_recipes)
     set(helper_files compile_shader.py compile_raster.py compile_graph_stage.py compile_metal_ray.py native_worker.py
         recipes.json renderer_lit.slang renderer_environment_layout.h renderer_gpu_preview_layout.h native_metal_ray.slang
-        renderer_surface_functions.slang scene_shader.slang scene_payload.slang visibility_buffer.slang ray_shader.slang
+        renderer_surface_functions.slang material_scattering.slang coated_diffuse.slang coated_diffuse_layout.h material.h scene_shader.slang scene_payload.slang visibility_buffer.slang ray_shader.slang
         ray_triangle_loop.slang ray_line_visibility.slang ray_bvh_nodes.slang ray_bvh_traversal.slang renderer_reference_layout.h scene_data.h
         scene_shader_layout.h lighting_layout.h deferred_layout.h deferred_binding_slots.inc
         renderer_deferred_fullscreen.slang renderer_mesh_lights.slang math.slang raster_bindings.slang metal_ray_pipeline_layout.h
-        projected_solid_angle.slang linearly_transformed_cosine.slang weighted_reservoir.slang ltc_table.slang
+        projected_solid_angle.slang linearly_transformed_cosine.slang weighted_reservoir.slang shading_normal.slang ltc_table.slang
         ltc_table_layout.h
         shader_toolchain.json spirv_cross_toolchain.json)
     foreach(recipe renderer_gpu_preview renderer_gpu_preview_image renderer_authored renderer_authored_shadow renderer_clustered_authored renderer_clustered_authored_shadow renderer_deferred_material renderer_deferred_lighting renderer_deferred_depth renderer_flat renderer_output renderer_shadow)
@@ -60,8 +60,11 @@ endfunction()
 # capture builds are never cooked into runtime packages. RAY_PATH_CAPTURE_PACKAGE (with
 # RAY_PATH_CAPTURE) also cooks the editor-only diagnostic <NAME>.lurgrd and sets
 # <NAME>_RAY_PATH_CAPTURE_PACKAGE in the caller's scope; runtime activation refuses it.
+# CAPTURE_PROFILE_PACKAGE links the ray kernels with scene_interface.capture_visibility_queries and
+# cooks the frame-capture-only <NAME>.lurgcp, setting <NAME>_CAPTURE_PROFILE_PACKAGE in the caller's
+# scope; only RenderGraphPackage::DecodeCaptureProfile admits it.
 function(ludus_compile_render_graph)
-    cmake_parse_arguments(PARSE_ARGV 0 GRAPH "RUNTIME_PACKAGE;RAY_PATH_CAPTURE;RAY_PATH_CAPTURE_PACKAGE"
+    cmake_parse_arguments(PARSE_ARGV 0 GRAPH "RUNTIME_PACKAGE;RAY_PATH_CAPTURE;RAY_PATH_CAPTURE_PACKAGE;CAPTURE_PROFILE_PACKAGE"
         "TARGET;NAME;MANIFEST;ROOT;CONFIGURATION" "")
     if(GRAPH_UNPARSED_ARGUMENTS OR NOT TARGET "${GRAPH_TARGET}" OR
        NOT GRAPH_NAME MATCHES "^[A-Za-z][A-Za-z0-9_]*$" OR NOT GRAPH_MANIFEST)
@@ -72,6 +75,10 @@ function(ludus_compile_render_graph)
     endif()
     if(GRAPH_RAY_PATH_CAPTURE_PACKAGE AND NOT GRAPH_RAY_PATH_CAPTURE)
         message(FATAL_ERROR "ludus_compile_render_graph: RAY_PATH_CAPTURE_PACKAGE requires RAY_PATH_CAPTURE")
+    endif()
+    if(GRAPH_CAPTURE_PROFILE_PACKAGE AND (GRAPH_RUNTIME_PACKAGE OR GRAPH_RAY_PATH_CAPTURE))
+        message(FATAL_ERROR "ludus_compile_render_graph: CAPTURE_PROFILE_PACKAGE is its own build, without "
+                            "RUNTIME_PACKAGE or RAY_PATH_CAPTURE")
     endif()
     get_filename_component(manifest "${GRAPH_MANIFEST}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
     if(NOT GRAPH_ROOT)
@@ -134,6 +141,11 @@ function(ludus_compile_render_graph)
         list(APPEND arguments --ray-path-capture-package "${output}/${GRAPH_NAME}.lurgrd")
         list(APPEND outputs "${output}/${GRAPH_NAME}.lurgrd" "${output}/${GRAPH_NAME}.lurgrd.resources.json")
         set(${GRAPH_NAME}_RAY_PATH_CAPTURE_PACKAGE "${output}/${GRAPH_NAME}.lurgrd" PARENT_SCOPE)
+    endif()
+    if(GRAPH_CAPTURE_PROFILE_PACKAGE)
+        list(APPEND arguments --capture-profile --capture-profile-package "${output}/${GRAPH_NAME}.lurgcp")
+        list(APPEND outputs "${output}/${GRAPH_NAME}.lurgcp" "${output}/${GRAPH_NAME}.lurgcp.resources.json")
+        set(${GRAPH_NAME}_CAPTURE_PROFILE_PACKAGE "${output}/${GRAPH_NAME}.lurgcp" PARENT_SCOPE)
     endif()
     if(GRAPH_RUNTIME_PACKAGE)
         list(APPEND arguments --runtime-package "${output}/${GRAPH_NAME}.lurgrt")

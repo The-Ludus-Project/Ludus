@@ -79,6 +79,7 @@ public:
 protected:
     void closeEvent(QCloseEvent* event) override;
     void showEvent(QShowEvent* event) override;
+    bool event(QEvent* event) override;
 
 private Q_SLOTS:
     void OnStateChanged();
@@ -118,6 +119,8 @@ private:
     void InitializeWorkspace();
     void ResetWorkspaceLayout();
     void arrangeDefaultDocks();
+    /// Give each tool window tab its dock's icon. Qt names the tabs but does not set their icons.
+    void syncDockTabIcons();
     /// Size the default arrangement for this window: side column width, Project Explorer and
     /// Properties split, and the bottom group (closed on short windows).
     void applyDefaultDockSizes();
@@ -128,6 +131,8 @@ private:
     /// Focus Viewport: hide tool windows, toolbars and World chrome, or restore the exact
     /// arrangement captured on entry (dock state and the previously active document).
     void setViewportFocused(bool isFocused);
+    /// Arrange the existing Source and World documents together; never creates a viewport/device.
+    void showCodeAndViewport();
     /// The arrangement to persist: the one Focus Viewport returns to while it is active.
     [[nodiscard]] QByteArray getPersistentLayoutState() const;
     /// Show and raise dock without focusing it; a reopened bottom tool window gets the default height.
@@ -140,8 +145,7 @@ private:
     void changeProjectItem(ProjectItemAction action, ProjectItemKind kind, const QString& path);
     void activateErrorEntry(const ErrorListEntry& entry);
     void renderActiveDocument();
-    /// Show the context strip (Render Graph toolbar) only while a render graph is the active document and Focus
-    /// Viewport is off.
+    /// Show the context strip while a render graph is current in any group and Focus Viewport is off.
     void updateContextStrip();
     /// Refresh the status bar's activity chip and problem counts from the current work.
     void renderActivity();
@@ -156,6 +160,9 @@ private:
     void setupProfiling();
     /// Native GPU preview only: the Ray Paths panel of the renderer's ray path inspection.
     void setupRayPaths();
+    /// Close the Ray Paths tool window when no capture is under way. A saved layout can bring it back
+    /// open; it belongs on screen only while a capture is picked, built or inspected.
+    void hideIdleRayPaths();
     void renderBuildErrors();
     void SaveWorkspaceLayout() const;
     [[nodiscard]] bool ConfirmProjectChange(const QString& action);
@@ -253,6 +260,7 @@ private:
     QAction* mProjectSettingsAction;
     QAction* mResetLayoutAction;
     QAction* mFocusViewportAction;
+    QAction* mCodeViewportAction;
     /// Main-window state captured when Focus Viewport started; empty otherwise.
     QByteArray mFocusRestoreState;
     /// Document that was active when Focus Viewport started; reactivated on exit.

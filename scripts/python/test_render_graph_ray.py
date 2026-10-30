@@ -1,6 +1,7 @@
 """Production validation for authored triangle ray graph contracts."""
 from copy import deepcopy
 import json
+import hashlib
 import os
 import shutil
 import struct
@@ -8,6 +9,7 @@ import subprocess
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from ludus_tools import render_graph as graph, render_graph_build as build, render_graph_ray as ray
 from ludus_tools.errors import ToolingError
@@ -18,6 +20,34 @@ from ludus_tools import render_graph_reload as reload
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / 'tests/sdk_consumer/rg2/raytracing'
+# The source-tree owners of the flat SDK shaders directory, in _ludus_stage_render_graph_helpers order.
+HELPER_ROOTS = ('cmake/shaders', 'modules/graphics/renderer/shaders',
+                'modules/content/scene_format/include/ludus/content/scene_format',
+                'modules/content/render_graph_format/include/ludus/content/render_graph_format',
+                'modules/foundation/math/shaders', 'modules/graphics/rhi/shaders',
+                'modules/graphics/renderer/include/ludus/graphics/renderer',
+                'modules/graphics/renderer/include/ludus/graphics/renderer/detail', 'config')
+
+
+def stage_helper(destination):
+    """Stage the installed helper layout without CMake; each name keeps its first owner."""
+    destination.mkdir()
+    for owner in HELPER_ROOTS:
+        for path in sorted((ROOT / owner).iterdir()):
+            if path.is_file() and not (destination / path.name).exists():
+                shutil.copy(path, destination / path.name)
+    return destination
+
+
+def compile_without_tools(program, schemas, closure, snapshot, work, helper, tools, target, cancel, *_):
+    """Stand in for the pinned compiler with a stage result that has no bindings."""
+    output = work / 'artifact'
+    output.mkdir()
+    (output / 'artifact.txt').write_text(program['id'] + ' ' + target + '\n')
+    result = {'version': 1, 'target': target, 'stage': program['stage'], 'source_entry': 'rgEntry', 'entry': 'rgEntry',
+              'artifact': 'artifact.txt', 'interface': {'entries': [], 'inputs': []}, 'links': [], 'layouts': {},
+              'sha256': build.digest((output / 'artifact.txt').read_bytes())}
+    return output, result
 
 
 def make_legacy_scene_bridge(root):
@@ -658,6 +688,24 @@ class RayPipelineTests(unittest.TestCase):
                 self.assertIn('line query budget', caught.exception.message)
                 self.assertIn('[0,8]', caught.exception.message)
 
+    def test_capture_visibility_budget_is_optional_and_never_below_the_interactive_budget(self):
+        fixture = ROOT / 'tests/sdk_consumer/rg2/scene_ray/main.lushader.json.in'
+        value = json.loads(fixture.read_text().replace('@RG2_TEST_PROFILES@', '["metal"]'))
+        interface = next(item for item in value['techniques'] if item['id'] == ray.TECHNIQUE)['scene_interface']
+        self.assertNotIn('capture_visibility_queries', interface)
+        build.validate_manifest(value)
+        maximum = ray.SCENE_QUERY_LIMITS['MAX_CAPTURE_VISIBILITY_QUERIES']
+        self.assertEqual(maximum, 256)
+        for accepted in (interface['visibility_queries'], maximum):
+            interface['capture_visibility_queries'] = accepted
+            build.validate_manifest(value)
+        for rejected in (interface['visibility_queries'] - 1, maximum + 1, 1.5, True, '64'):
+            with self.subTest(capture_visibility_queries=rejected):
+                interface['capture_visibility_queries'] = rejected
+                with self.assertRaises(ToolingError) as caught:
+                    build.validate_manifest(value)
+                self.assertIn('capture visibility query budget', caught.exception.message)
+
     def test_line_query_budget_reaches_the_wrapper_only_when_nonzero(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -746,6 +794,28 @@ class RayPipelineTests(unittest.TestCase):
             ray.validate_payload(b'struct ScenePayload { Texture2D<float4> Texture; };', 1024, build)
         with self.assertRaises(ToolingError):
             ray.validate_payload(b'struct ScenePayload { float Values[9999999999999999]; };', 1024, build)
+
+    def test_package_build_cooks_one_ray_recipe_per_prepared_profile(self):
+        # build_package must cook the ray profiles that prepare_sources grouped and linked.
+        root = Path(self.temporary.name)
+        source = root / 'source'
+        shutil.copytree(FIXTURE, source)
+        manifest = source / 'main.lushader.json'
+        manifest.write_text((source / 'main.lushader.json.in').read_text().replace('@RG2_TEST_PROFILES@', '["metal"]'))
+        helper = stage_helper(root / 'sdk')
+        tool = root / 'tool'
+        tool.write_text('test tool identity')
+        tool.with_name('tool.build.json').write_text('{}')
+        *_, ray_profiles = build.prepare_sources(manifest, helper)
+        self.assertTrue(ray_profiles)
+        with patch.object(build, 'compile_program', compile_without_tools):
+            result = build.build_package(manifest, root / 'build', helper=helper, compiler=tool, spirv_cross=tool)
+        descriptor = json.loads((Path(result['package']) / 'package.json').read_text())
+        recipes = [recipe for recipe in descriptor['recipes'] if recipe['technique'] == ray.TECHNIQUE]
+        self.assertEqual([[list(variant) for variant in profile['variants']] for profile in ray_profiles],
+                         [recipe['ray_programs'] for recipe in recipes])
+        keys = {program['key'] for program in descriptor['programs']}
+        self.assertTrue(all(recipe['compute'] in keys for recipe in recipes))
 
 
 @unittest.skipUnless(os.environ.get('LUDUS_RG1_SLANG') and os.environ.get('LUDUS_RG1_HELPER') and os.environ.get('LUDUS_RG1_CROSS'),
@@ -1046,6 +1116,84 @@ class RayCompilerAcceptance(unittest.TestCase):
             self.assertFalse(destination.exists())
             self.assertEqual(0, build.build_package(manifest, root / 'build', **options)['cache_misses'])
             self.assertEqual(original, {path.relative_to(source): path.read_bytes() for path in source.rglob('*') if path.is_file()})
+
+    def test_capture_profile_links_the_capture_budget_and_cooks_only_as_a_capture_profile(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'source'
+            shutil.copytree(ROOT / 'tests/sdk_consumer/rg2/scene_ray', source)
+            manifest = source / 'main.lushader.json'
+            value = json.loads((source / 'main.lushader.json.in').read_text().replace('@RG2_TEST_PROFILES@', '["metal"]'))
+            interface = next(item for item in value['techniques'] if item['id'] == ray.TECHNIQUE)['scene_interface']
+            capture_budget = 64
+            interface['capture_visibility_queries'] = capture_budget
+            manifest.write_text(json.dumps(value))
+            options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
+                           spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+            plain = build.build_package(manifest, root / 'plain', **options)
+            capture = build.build_package(manifest, root / 'capture', capture_profile=True, **options)
+
+            def wrappers(report):
+                return [path.read_text() for path in (Path(report['package']) / 'programs').glob('*/wrapper.slang')]
+            interactive = f"    queries.MaximumVisibilityQueries = {interface['visibility_queries']};"
+            captured = f'    queries.MaximumVisibilityQueries = {capture_budget};'
+            # Only the capture profile links the larger budget; interactive kernels keep visibility_queries.
+            self.assertTrue(any(interactive in text for text in wrappers(plain)))
+            self.assertFalse(any(captured in text for text in wrappers(plain)))
+            self.assertTrue(any(captured in text for text in wrappers(capture)))
+            descriptor = json.loads((Path(capture['package']) / 'package.json').read_text())
+            recipe = next(recipe for recipe in descriptor['recipes'] if recipe['technique'] == ray.TECHNIQUE)
+            self.assertTrue(recipe['capture_profile'])
+            # A capture profile is never a runtime package, and a plain build is never a capture profile.
+            with self.assertRaises(ToolingError):
+                execution.cook_runtime(capture['package'], root / 'refused.lurgrt')
+            with self.assertRaises(ToolingError):
+                execution.cook_capture_profile(plain['package'], root / 'refused.lurgcp')
+            self.assertFalse((root / 'refused.lurgrt').exists())
+            destination = root / 'scene.lurgcp'
+            cooked = execution.cook_capture_profile(capture['package'], destination)
+            data = destination.read_bytes()
+            self.assertEqual(struct.unpack_from('<I', data, 0)[0], execution.CAPTURE_PROFILE_PACKAGE_MAGIC)
+            self.assertEqual(data[:4], b'LURC')
+            self.assertEqual(cooked['sha256'], hashlib.sha256(data).hexdigest())
+            runtime = execution.cook_runtime(plain['package'], root / 'scene.lurgrt')
+            self.assertEqual(cooked['interface_identity'], runtime['interface_identity'])
+            with self.assertRaises(ToolingError):
+                build.build_package(manifest, root / 'both', capture_profile=True, ray_path_capture=True, **options)
+
+    def test_capture_profile_rebuilds_a_generation_only_when_it_declares_a_larger_budget(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'source'
+            shutil.copytree(ROOT / 'tests/sdk_consumer/rg2/scene_ray', source)
+            manifest = source / 'main.lushader.json'
+            value = json.loads((source / 'main.lushader.json.in').read_text().replace('@RG2_TEST_PROFILES@', '["metal"]'))
+            manifest.write_text(json.dumps(value))
+            options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
+                           spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+            # Without a larger capture budget the runtime package is the capture package: nothing compiles.
+            plain = build.build_package(manifest, root / 'plain', **options)
+            skipped = reload.rebuild_capture_profile(root / 'plain', root / 'plain-capture', root / 'plain.lurgcp',
+                                                     **options)
+            self.assertEqual(skipped, {'capture_profile': None, 'source_generation': plain['generation']})
+            self.assertFalse((root / 'plain-capture').exists())
+            self.assertFalse((root / 'plain.lurgcp').exists())
+
+            interface = next(item for item in value['techniques'] if item['id'] == ray.TECHNIQUE)['scene_interface']
+            interface['capture_visibility_queries'] = 64
+            manifest.write_text(json.dumps(value))
+            budgeted = build.build_package(manifest, root / 'build', **options)
+            runtime = execution.cook_runtime(budgeted['package'], root / 'scene.lurgrt')
+            # Later edits to the live sources must not reach the profile of the published generation.
+            interface['capture_visibility_queries'] = interface['visibility_queries']
+            manifest.write_text(json.dumps(value))
+            destination = root / 'scene.lurgcp'
+            result = reload.rebuild_capture_profile(root / 'build', root / 'capture', destination, **options)
+            self.assertEqual(result['source_generation'], budgeted['generation'])
+            self.assertEqual(destination.read_bytes()[:4], b'LURC')
+            self.assertEqual(result['capture_profile']['interface_identity'], runtime['interface_identity'])
+            self.assertTrue(any('    queries.MaximumVisibilityQueries = 64;' in path.read_text()
+                                for path in (Path(result['build']['package']) / 'programs').glob('*/wrapper.slang')))
 
     def test_ray_path_capture_rebuilds_a_generation_from_its_saved_sources(self):
         with tempfile.TemporaryDirectory() as temporary:

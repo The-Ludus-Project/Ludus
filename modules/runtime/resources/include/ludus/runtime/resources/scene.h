@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ludus/content/content.h>
+#include <ludus/content/scene_format/material.h>
 #include <ludus/foundation/base/core.h>
 
 #include <ludus/foundation/containers/array.hpp>
@@ -18,7 +20,9 @@ struct SceneTexture final
     /// Linear data (a v6 SceneMaterial::SurfaceTexture); false for sRGB colour textures.
     bool IsLinear = false;
 };
-/// Frozen RGB metallic/roughness reflection and authored emission profile.
+/// Bounded counted UTF-8 source material name; inline materials may have an empty name.
+using SceneMaterialName = content::Text<content::scene_format::MAX_MATERIAL_NAME_BYTES>;
+/// Versioned RGB reflection, source optical parameters and authored emission.
 struct SceneMaterial final
 {
     uint32 Texture = ~uint32{0};          ///< Scene-local texture index; all ones means black untextured surface.
@@ -41,6 +45,12 @@ struct SceneMaterial final
     /// v6 sRGB emission colour map index whose RGB multiplies Emission, or all ones.
     uint32 EmissionTexture = ~uint32{0};
     float32 NormalScale = 0; ///< Tangent-normal strength in [0,8]; zero without a surface map.
+    /// Original named material identity; empty for inline and legacy materials.
+    SceneMaterialName Name;
+    uint32 SourceIdentity = 0;                              ///< Source command index plus one; zero for legacy assets.
+    foundation::math::Vector3 Reflectance{1, 1, 1};         ///< Linear RGB factor; legacy NO_TEXTURE remains black.
+    content::scene_format::MaterialScattering Scattering{}; ///< Version 7 typed optical parameters.
+    bool HasSourceMaterial = false;                         ///< Version 7 retains reflectance even without a texture.
 };
 /// Owned immutable CPU mesh arrays. Renderer installation copies these attributes.
 struct SceneMesh final
@@ -108,8 +118,8 @@ struct SceneDefinition final
     foundation::math::Vector3 Target;           ///< Finite look-at target distinct from Eye.
     foundation::math::Vector3 Up;               ///< Camera up direction not parallel to its forward direction.
     float32 VerticalFov = 1;                    ///< Perspective vertical field of view in radians, in (0,pi).
-    /// Decode LUSCN01 versions one through six little-endian interchange, at most 64 MiB for versions one to
-    /// four and 384 MiB for versions five and six (BundleLimits::BundleBytes). No file I/O or source
+    /// Decode LUSCN01 versions one through seven little-endian interchange, at most 64 MiB for versions one to
+    /// four and 384 MiB for versions five through seven (BundleLimits::BundleBytes). No file I/O or source
     /// import. Failure preserves output; allocation failures return OutOfMemory. The caller owns all resulting arrays
     /// and must keep them immutable while any adapter/lease references them.
     [[nodiscard]] static Status Decode(const uint8* bytesOrNull, usize count, SceneDefinition& outScene) noexcept;

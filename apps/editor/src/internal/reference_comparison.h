@@ -5,6 +5,7 @@
 #include <ludus/foundation/containers/borrowed_view.hpp>
 
 #include <ludus/graphics/renderer/reference.hpp>
+#include <ludus/graphics/renderer/render_graph_capture.hpp>
 
 #include "internal/texture_inspection.h"
 
@@ -90,6 +91,23 @@ CompareRasterWithReference(foundation::BorrowedView<const graphics::renderer::Re
                            ReferenceComparison& outComparison,
                            QImage& outDifference,
                            QString& outError);
+
+/// Compare a render graph capture's linear means with reference means of the same extent and camera, in linear
+/// space. Pixels without graph samples are left uncompared, like pixels without reference samples.
+/// @param capture Width * Height top-left pixels from RenderGraphCapture, borrowed for the call.
+/// @param captureWidth Capture width in pixels; must equal the reference's.
+/// @param captureHeight Capture height in pixels; must equal the reference's.
+/// @return False with outError (outputs unchanged) for mismatched extents or no pixel compared.
+[[nodiscard]] bool
+CompareGraphCaptureWithReference(foundation::BorrowedView<const graphics::renderer::ReferencePixel> reference,
+                                 const graphics::renderer::ReferenceCaptureInfo& information,
+                                 bool hasReferenceFailed,
+                                 foundation::BorrowedView<const graphics::renderer::RenderGraphCapturePixel> capture,
+                                 foundation::uint32 captureWidth,
+                                 foundation::uint32 captureHeight,
+                                 ReferenceComparison& outComparison,
+                                 QImage& outDifference,
+                                 QString& outError);
 
 /// Machine-readable record of a comparison, with field names matching ReferenceComparison.
 [[nodiscard]] QJsonObject MakeReferenceComparisonJson(const ReferenceComparison& comparison);

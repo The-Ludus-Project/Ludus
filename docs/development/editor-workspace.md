@@ -445,6 +445,23 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   **New Horizontal Tab Group** puts it below. **Move to Next/Previous Tab
   Group**, **Merge All Tab Groups** and the tab context menu move documents
   between groups. Groups share one direction at a time, up to four groups.
+- **View → Code and Viewport** (Ctrl+Alt+V; Command+Option+V on macOS), also in
+  the Source pane's **Source** menu, opens the Source editor beside the existing
+  interactive World document. It reuses the World's viewport, camera and render
+  device; it does not open the Render Preview image panel or create another viewport.
+  Graph navigation temporarily collapses in Source to leave room for code; switch
+  to Canvas to show it again. The Sources visibility preference is preserved.
+  The World's header and hierarchy also collapse so its viewport fills the pane;
+  returning to a single World restores them and their splitter preference.
+  Drag the divider to size the two panes. Existing horizontal group sizes are
+  preserved when invoking the command again, and other open tabs and drafts stay
+  open. The project remembers the groups, divider, graph, source file and selected
+  Source view when the editor closes normally or switches projects. These are
+  view preferences, not a recovery copy of unsaved source text. Missing or invalid
+  saved graphs leave the current graph intact. Live Preview keeps its existing
+  saved-source policy; compilation progress remains in the status-bar activity
+  chip. The Render Graph toolbar stays visible while the graph is shown in either
+  group, so moving between code and viewport does not resize the document area.
 - **Tool windows** dock around the documents. The calm default keeps the documents
   as large as the window allows: Project Explorer (tabbed with Content and Render
   Preview) is on the left, Properties (tabbed with Live Inspector, and Ray Paths
@@ -502,12 +519,13 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   holds File (Open, Save) and History (Undo, Redo); Game holds Run (Play, Build, Stop),
   Launch (Run, Debug) and Session (Pause, Step, Resume, Reload Code). The Session group
   is shown only while a game is running or paused. The Render Graph toolbar is the
-  context strip: it appears only while a render graph is the active document (Validate,
-  Build Graph, Build & Preview, Live Preview, Cancel), so a World tab keeps one row of
-  commands. Toolbar buttons use short labels
+  context strip: it appears while a render graph is shown in any document group, so a World
+  shown alone keeps one row of commands. Its buttons show an icon beside the label: Validate,
+  a **Build Graph** split button whose arrow offers Build & Preview, a **Live Preview**
+  toggle that keeps an accent edge while it is on, and Cancel. Toolbar buttons use short labels
   so a 1280-pixel window shows them all; tooltips give the full name and
-  shortcut. The primary commands (Open, Save, Build, Run, Play, Stop) also show an
-  icon beside the label; every other button stays text only. Project Explorer
+  shortcut. The primary commands (Open, Save, Build, Run, Play, Stop) and the Render Graph
+  strip also show an icon beside the label; every other button stays text only. Project Explorer
   rows and the Error List severities carry icons too. The icons are Lucide
   drawings (ISC), drawn in the palette's button text colour; see
   [Editor icons](#editor-icons) for attribution and contribution instructions.
@@ -1590,11 +1608,14 @@ conversion/visual limitations and higher-quality offline capture evidence.
 
 ### Reference capture of the viewport
 
-**Reference…** in a World viewport's toolbar opens a window that path-traces the
-viewport's current camera with the renderer's RT1 progressive reference integrator.
+**Reference…** in a World viewport's toolbar opens a window that captures the
+viewport's current camera. Its **Source** is **RT1 reference** by default, which
+path-traces the camera with the renderer's RT1 progressive reference integrator.
 Use the result as ground truth for the raster image. Set the image's long side
 (the short side follows the viewport's aspect), the samples per pixel, the maximum
-scattering depth and the traversal, then choose **Capture viewport**.
+scattering depth and the traversal, then choose **Capture viewport**. The
+**Render graph** source captures the viewport's own graph instead; see
+[Capture the render graph](#capture-the-render-graph).
 
 The capture uses the scene and camera as they were when you clicked. Later
 navigation or edits do not change it; capture again to include them. The window
@@ -1635,13 +1656,64 @@ transmission or volumes, a fixed texture mip and a truncated depth. See the
 [reference workflow and frozen profile](../architecture/renderer-systems.md#reference-workflow-and-frozen-profile).
 Stopping the viewport's device cancels a running capture.
 
+#### Capture the render graph
+
+In the native editor, the **Render graph** source runs the World viewport's
+render graph, with its package and output, to the requested samples per pixel at
+the frozen camera, and saves the linear mean as a `.lurgcap` file with a PNG
+beside it. It needs a project graph in the viewport; otherwise the source is
+unavailable. Maximum depth, traversal and comparison describe RT1 and are disabled.
+
+The window has no graph selector of its own. Its **Graph** row names what the
+viewport currently draws, for example
+`Project graph main.lurender.json · configuration raytracing · Final output`, or
+**Engine default renderer** when the project has no render graph. It also shows
+**Force raster** when that is on. The row follows the viewport toolbar while the
+window is open, so choose a different configuration or output there. The
+comparison uses the same graph.
+
+The capture runs a private copy of the graph on the viewport's device. The
+viewport keeps drawing, and its image and accumulation are unchanged. The image
+fills in after the first sample and every 16 samples. The saved values are the
+Accumulate's own 32-bit mean and per-pixel sample counts, not the displayed or
+16-bit output. Only a ray-traced output with an **Accumulate** can be captured:
+- a raster output stores display colour, not linear radiance;
+- a ray output without an Accumulate shows individual samples;
+- **Force raster** draws the raster fallback.
+
+The window explains which applies. Pixels that show the graph's failure colour,
+for example where a shader exceeded its query budget, fail the capture and are
+counted.
+
+When the graph declares a larger
+[capture budget](render-graph-authoring.md#author-pipeline-nodes)
+(`capture_visibility_queries`), the capture uses the graph's capture profile. The
+window builds it while it is open with **Render graph** or a comparison selected,
+from the drawing generation's saved sources, and reuses it until the graph is
+rebuilt. **Capture viewport** waits while it builds, and the status line says
+which package the capture uses. Without saved sources, as for the engine's
+prebuilt default, the capture uses the viewport's runtime package.
+
+A long sample is split into row bands, each submitted to the GPU on its own, so no
+submission runs into the GPU timeout. The capture sizes the bands from the image
+and the scene's lights; the status line then reads **Rendering in N bands**. The
+image and its sample counts are the same as an unbanded capture's. A graph
+package cooked before banded capture fails with a request to rebuild the graph
+when its capture needs bands. `scripts/reference-hdr` converts the file to PFM with a JSON manifest,
+as it does reference captures. See the
+[frame capture design](../architecture/render-graph-frame-capture.md).
+
 #### Compare with the viewport's render graph
 
 In the native editor, **Compare with the viewport's render graph output** is on
 by default. Each capture then also renders the World viewport's current render
 graph: the same package, raster fallback, output target and **Force raster**
 choice the viewport shows. It uses a private producer on the same device, with
-the same frozen camera. The reference covers exactly the graph's output pixels.
+the same frozen camera. When the output can be
+[captured](#capture-the-render-graph), the graph side runs to the same samples per
+pixel as the reference and is compared in linear space, and **Save…** also writes
+`<base>.graph.lurgcap`. Otherwise one raster frame is compared, waiting up to 64
+frames for an accumulating graph, and the summary says why. The reference covers exactly the graph's output pixels.
 A graph that renders at a scaled resolution sets the extent, which can differ
 from **Long side**. The comparison measures the scheme the viewport actually
 uses. It is not the built-in Lit renderer. The editor's default graph draws
@@ -2081,9 +2153,28 @@ See [architecture](../architecture/editor-architecture.md),
 [interaction design](../architecture/editor-interaction-design.md), and
 [post-design reference review](../architecture/editor-design-review.md).
 
+## Truncation
+
+Text that does not fit is cut where it costs the least, and never silently:
+
+- **Paths** (Project Explorer, Graph Sources, the Error List's File column, the
+  render-graph document header and the source file selector) keep the file name
+  whole. The folder is dimmed and elided from the middle first; only a file name
+  wider than the field is elided itself, also from the middle. Text with no folder
+  part elides from the middle.
+- **Combo boxes** draw their current text with the same elision, never a cut
+  mid-word, and ask for a width that holds their longest item.
+- **Tool window tab bars** show each window's icon and title while they fit. When
+  the dock is too narrow for every title, the tab bar switches to icons only; every
+  tab keeps its full title as its tooltip.
+- Anything that is cut shows its full text as a tooltip.
+
+`PathItemDelegate`, `PathLabel` and `ElidePathText` in `apps/editor/src/path_text.cpp`
+implement the path rules.
+
 ## Editor icons
 
-The outline icons for the toolbars, Project Explorer and Error List are taken
+The outline icons for the toolbars, Project Explorer, Error List and tool window tabs are taken
 unchanged from [Lucide](https://lucide.dev) 1.62.0, commit
 `2ca268e74888d3506b3319fb8f94aaaaf70ceca9` of
 [lucide-icons/lucide](https://github.com/lucide-icons/lucide).
@@ -2099,7 +2190,8 @@ Stop are filled to identify live-state actions. No SVG is parsed while painting,
 and no Qt SVG module is needed. One bounded pixmap cache keys entries by icon,
 size, device pixel ratio, mode and colour. The parser supports `path`, `circle`
 and `rect` elements and the M, L, H, V, C, S, Q, T, A and Z path commands; a new
-icon that needs anything else fails the icon tests.
+icon that needs anything else fails the icon tests. The one drawing that used
+`line` elements (`timer`) has them written as equivalent two-point paths.
 
 To add an icon:
 

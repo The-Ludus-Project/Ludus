@@ -52,7 +52,9 @@ struct RenderGraphResolutionSelection;
 class CodeEditor;
 class CodeDocumentController;
 class CodeFormatter;
+class RenderGraphShaderAssistance;
 class RayPathInspection;
+class RenderGraphCaptureProfile;
 class RenderGraphPreview;
 class RenderGraphWorker;
 class RenderPreview;
@@ -92,6 +94,19 @@ public:
     void SetChromeVisible(bool isVisible);
     /// Focus the active Source editor or graph canvas, preserving the selected view.
     void FocusActiveView();
+    /// Select Source without changing its accepted text/history, preferring a selected shader
+    /// when opening from the canvas. False when no source is available. GUI thread only.
+    [[nodiscard]] bool ShowSourceView();
+    /// Temporarily collapse graph navigation while Source shares the document well with a World.
+    /// Canvas/Plan navigation and the user's Sources visibility preference are preserved.
+    void SetSourceCompanionLayout(bool shouldUseCompactSource);
+    /// Local view preferences only: project-relative graph, source selection and selected view.
+    /// Never serializes draft bytes. Empty when no graph is loaded.
+    [[nodiscard]] QJsonObject GetSourceViewState() const;
+    /// Restore matching project-local view preferences through the existing graph owner.
+    /// Invalid/missing graphs and attempts to replace a dirty graph preserve the current draft.
+    /// No Save, setup repair or modal discard prompt. GUI thread only.
+    [[nodiscard]] bool RestoreSourceViewState(const QJsonObject& state);
 
     /// Bind a project root and epoch; a different root closes the document and cancels jobs.
     /// The root is canonicalized, so a symlinked path binds the same project and its build
@@ -116,6 +131,16 @@ public:
     /// Create/select an empty configuration in the selected graph file. One undo step;
     /// Save publishes it. Invalid/duplicate names or external source conflicts preserve the draft.
     [[nodiscard]] bool CreateConfiguration(const QString& name);
+    /// Copy the selected configuration, with its interface, nodes, edges and layout, as name in
+    /// the same graph file and select the copy. One undo step; Save publishes. Invalid or
+    /// duplicate names, a full file or external source conflicts preserve the draft and report
+    /// the repair in the status line. GUI thread only.
+    [[nodiscard]] bool DuplicateSelectedConfiguration(const QString& name);
+    /// Copy the selected graph file, with every configuration, as a new `<name>.lurender.json`
+    /// in this package and open its default configuration. Quick Add then lists it for Subgraph
+    /// nodes. One undo step; Save publishes. Name or file conflicts, package limits or external
+    /// source conflicts preserve the draft and report the repair. GUI thread only.
+    [[nodiscard]] bool DuplicateSelectedGraph(const QString& name);
     /// Add or fill an empty reusable ReSTIR DI configuration in the selected graph file.
     /// Includes settings, shaders and automatically sized reservoirs in one undoable draft;
     /// Save publishes. Failures preserve sources and display a repair. GUI thread only.
@@ -145,6 +170,11 @@ public:
     /// Remove unused shader registrations and exclusive sources in one undoable draft edit.
     /// Checks the whole loaded package; reports counts or repair details. Save publishes deletions.
     [[nodiscard]] bool RemoveUnusedShaders();
+    /// Delete the selected Subgraph node with its library graph, the programs only that library
+    /// names and the sources they free, in one undoable draft edit (RenderGraphDocument::
+    /// RemoveSubgraphLibrary). Reports what was removed, or why nothing was, in the status line.
+    /// Requires one selected Subgraph node, no job and no external source conflict. GUI thread only.
+    [[nodiscard]] bool RemoveSelectedSubgraphLibrary();
     /// Shader sources mapped by the root manifest to the selected pipeline's program references
     /// or a legacy Raster's technique.
     /// Empty for resource/scene nodes or missing mappings. Never guesses from filenames.
@@ -349,6 +379,12 @@ public:
     {
         return mRayPathsOrNull;
     }
+    /// Frame capture profile of the World viewport's drawing generation, which the Reference window
+    /// requests before a graph capture; the workspace compiles it. Null without the native GPU preview.
+    [[nodiscard]] RenderGraphCaptureProfile* GetCaptureProfileOrNull() noexcept
+    {
+        return mCaptureProfileOrNull;
+    }
     /// Capture the rays a canvas node traces: a RayTracingPipeline or scene ComputePipeline node of
     /// the canvas document, or every ray pass of the drawing configuration for an empty node. The
     /// next click on the World viewport's graph output picks the pixel; the capture variant of the
@@ -359,6 +395,8 @@ public:
     void ServicePreview();
 
 Q_SIGNALS:
+    /// Ask the shell to show this Source editor beside the existing World document.
+    void CodeViewportRequested();
     /// Request that the shell toggle its reversible focus layout for this document.
     void FocusViewRequested();
     void DocumentChanged();
@@ -427,6 +465,8 @@ private:
     void syncTreeSelection();
     void syncCanvasSelection(const QStringList& nodes);
     void promptCreateConfiguration();
+    void promptDuplicateConfiguration();
+    void promptDuplicateGraph();
     void promptConfigurationTemplate(const QString& templateIdentity = {});
     /// Add one catalog node to the canvas configuration, optionally at a layout position.
     /// With from and input, the node's input is connected from `from` in the same edit, and
@@ -454,6 +494,7 @@ private:
     void renderPreview();
     void renderSourceStatus();
     void updateSourceInterfaceVisibility();
+    void updateChromeVisibility();
     void openSubgraph(const QString& asset, const QString& configuration, const QString& instance);
 
     static constexpr foundation::int32 FILE_ROLE = Qt::UserRole;
@@ -469,6 +510,9 @@ private:
     bool mIsRendering = false;
     bool mIsGraphSettingsSectionExpanded = false;
     bool mIsChromeVisible = true;
+    bool mShouldUseCompactSource = false;
+    /// The outline was open when the Source view hid it, and comes back with the next view.
+    bool mIsOutlineRestoredAfterSource = false;
     foundation::int32 mFocusRestoreView = 0;
     bool mHasResult = false;
     bool mIsLivePreviewEnabled = false;
@@ -506,6 +550,7 @@ private:
     CodeEditor* mSource;
     CodeDocumentController* mSourceController;
     CodeFormatter* mSourceFormatter;
+    RenderGraphShaderAssistance* mSourceAssistance;
     QPlainTextEdit* mSourceInterface;
     QSplitter* mSourceSplit;
     QPushButton* mSourceInterfaceToggle;
@@ -551,8 +596,19 @@ private:
     RayPathInspection* mRayPathsOrNull = nullptr;
     /// Diagnostic package the running ray-path-capture job writes.
     QString mRayPathPackage;
+    /// Capture profile of mPreviewOrNull's drawing generation; null without the native GPU preview.
+    RenderGraphCaptureProfile* mCaptureProfileOrNull = nullptr;
+    /// Generation and `.lurgcp` destination of the running capture-profile job.
+    QByteArray mCaptureProfileIdentity;
+    QString mCaptureProfilePackage;
     /// Compile the capture variant of the frozen generation from its saved source snapshot.
     void startRayPathBuild();
+    /// Compile, or reuse, the capture profile of a generation from its saved source snapshot.
+    void startCaptureProfileBuild(const QByteArray& generationIdentity);
+    /// Report the capture-profile job's outcome to mCaptureProfileOrNull and drop superseded profiles.
+    void finishCaptureProfileBuild(const RenderGraphJobResult& result);
+    /// Append the shader worker endpoint a capture build shares with graph builds, when one is available.
+    void appendWorkerSocketArgument(QStringList& inoutArguments);
     /// Shader tool selection shared by graph builds and capture builds.
     void appendBuildToolArguments(QStringList& inoutArguments) const;
     QTimer mSourceEditDebounce;

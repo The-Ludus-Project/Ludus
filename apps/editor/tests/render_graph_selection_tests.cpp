@@ -9,6 +9,7 @@
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QFile>
+#include <QFileInfo>
 #include <QGraphicsPathItem>
 #include <QGraphicsScene>
 #include <QInputDialog>
@@ -25,6 +26,7 @@
 #include <QSettings>
 #include <QSignalSpy>
 #include <QSplitter>
+#include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
@@ -698,6 +700,252 @@ TEST_CASE("Tree and canvas menus delete configurations with Properties hidden an
     CHECK(workspace.GetDocument().GetRevision() == beforeRejected);
 }
 
+TEST_CASE("Configuration duplication copies the complete record in one history step",
+          "[editor][render-graph][duplicate]")
+{
+    QTemporaryDir project;
+    const QString package = MakeSelectionPackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT) == RenderGraphDocumentStatus::Ok);
+    const QString copy = QStringLiteral("DefaultCopy");
+    const QByteArray original = document.GetDraft(ROOT);
+    const QByteArray library = document.GetDraft(LIBRARY);
+    QString error;
+    REQUIRE(document.DuplicateConfiguration(ROOT, DEFAULT, copy, error) == RenderGraphDocumentStatus::Ok);
+    CHECK(error.isEmpty() == true);
+    CHECK(document.GetRevision() == 1);
+    CHECK(document.GetHistoryNodeSelection().Configuration == copy);
+    QJsonObject expected = ReadConfiguration(document, ROOT, DEFAULT);
+    expected.insert(QStringLiteral("id"), copy);
+    CHECK(ReadConfiguration(document, ROOT, copy) == expected);
+    QJsonObject graph;
+    REQUIRE(document.GetGraph(ROOT, graph) == true);
+    CHECK(graph.value(QStringLiteral("default")).toString() == DEFAULT);
+    CHECK(document.GetDraft(LIBRARY) == library);
+    const QByteArray duplicated = document.GetDraft(ROOT);
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetDraft(ROOT) == original);
+    REQUIRE(document.Redo() == true);
+    CHECK(document.GetDraft(ROOT) == duplicated);
+    QStringList saved;
+    REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+    RenderGraphDocument reopened;
+    REQUIRE(reopened.Load(package, ROOT) == RenderGraphDocumentStatus::Ok);
+    CHECK(reopened.GetDraft(ROOT) == duplicated);
+}
+
+TEST_CASE("Configuration duplication rejects invalid requests without changing the draft",
+          "[editor][render-graph][duplicate]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakeSelectionPackage(project), ROOT) == RenderGraphDocumentStatus::Ok);
+    QString file = ROOT;
+    QString configuration = DEFAULT;
+    QString name = QStringLiteral("Copy");
+    RenderGraphDocumentStatus expected = RenderGraphDocumentStatus::InvalidEdit;
+    SECTION("existing name")
+    {
+        name = DEFAULT;
+    }
+    SECTION("invalid name")
+    {
+        name = QStringLiteral("bad name");
+    }
+    SECTION("missing configuration")
+    {
+        configuration = QStringLiteral("Missing");
+        expected = RenderGraphDocumentStatus::NotFound;
+    }
+    SECTION("missing file")
+    {
+        file = QStringLiteral("missing.lurender.json");
+        expected = RenderGraphDocumentStatus::NotFound;
+    }
+    SECTION("full file")
+    {
+        for (int32 i = 1; i < RenderGraphDocument::MAX_CONFIGURATIONS; ++i)
+        {
+            REQUIRE(document.AddConfiguration(ROOT, QStringLiteral("Configuration") + QString::number(i)) ==
+                    RenderGraphDocumentStatus::Ok);
+        }
+        expected = RenderGraphDocumentStatus::Capacity;
+    }
+    const QByteArray before = document.GetDraft(ROOT);
+    const uint64 revision = document.GetRevision();
+    QString error;
+    CHECK(document.DuplicateConfiguration(file, configuration, name, error) == expected);
+    CHECK(error.isEmpty() == false);
+    CHECK(document.GetDraft(ROOT) == before);
+    CHECK(document.GetRevision() == revision);
+}
+
+TEST_CASE("Graph duplication copies every configuration into a new package file", "[editor][render-graph][duplicate]")
+{
+    QTemporaryDir project;
+    const QString package = MakeSelectionPackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT) == RenderGraphDocumentStatus::Ok);
+    const QString alternate = QStringLiteral("Alternate");
+    REQUIRE(document.AddConfiguration(LIBRARY, alternate) == RenderGraphDocumentStatus::Ok);
+    // A same-file call must follow the copy; a call into another file keeps its target.
+    REQUIRE(document.AddNode(LIBRARY,
+                             alternate,
+                             {{QStringLiteral("id"), QStringLiteral("self")},
+                              {QStringLiteral("kind"), QStringLiteral("Subgraph")},
+                              {QStringLiteral("asset"), LIBRARY},
+                              {QStringLiteral("configuration"), DEFAULT}}) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(document.AddNode(LIBRARY,
+                             alternate,
+                             {{QStringLiteral("id"), QStringLiteral("other")},
+                              {QStringLiteral("kind"), QStringLiteral("Subgraph")},
+                              {QStringLiteral("asset"), ROOT},
+                              {QStringLiteral("configuration"), DEFAULT}}) == RenderGraphDocumentStatus::Ok);
+    const QByteArray root = document.GetDraft(ROOT);
+    const QByteArray library = document.GetDraft(LIBRARY);
+    const uint64 revision = document.GetRevision();
+    const QString copy = QStringLiteral("Variant.lurender.json");
+    QString asset;
+    QString error;
+    REQUIRE(document.DuplicateGraph(LIBRARY, QStringLiteral("Variant"), asset, error) == RenderGraphDocumentStatus::Ok);
+    CHECK(asset == copy);
+    CHECK(error.isEmpty() == true);
+    CHECK(document.GetRevision() == revision + 1);
+    CHECK(document.GetFiles().contains(copy) == true);
+    CHECK(document.GetDraft(ROOT) == root);
+    CHECK(document.GetDraft(LIBRARY) == library);
+    CHECK(document.GetHistoryNodeSelection().File == copy);
+    QJsonObject source;
+    QJsonObject duplicate;
+    REQUIRE(document.GetGraph(LIBRARY, source) == true);
+    REQUIRE(document.GetGraph(copy, duplicate) == true);
+    CHECK(duplicate.value(QStringLiteral("id")).toString() == QStringLiteral("Variant"));
+    CHECK(duplicate.value(QStringLiteral("default")) == source.value(QStringLiteral("default")));
+    CHECK(duplicate.value(QStringLiteral("configurations")).toArray().size() == 2);
+    CHECK(ReadConfiguration(document, copy, DEFAULT) == ReadConfiguration(document, LIBRARY, DEFAULT));
+    const QJsonArray nodes = ReadConfiguration(document, copy, alternate).value(QStringLiteral("nodes")).toArray();
+    REQUIRE(nodes.size() == 2);
+    CHECK(nodes.at(0).toObject().value(QStringLiteral("asset")).toString() == copy);
+    CHECK(nodes.at(1).toObject().value(QStringLiteral("asset")).toString() == ROOT);
+    const QByteArray duplicated = document.GetDraft(copy);
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetFiles().contains(copy) == false);
+    REQUIRE(document.Redo() == true);
+    CHECK(document.GetDraft(copy) == duplicated);
+    QStringList saved;
+    REQUIRE(document.Save(saved) == RenderGraphDocumentStatus::Ok);
+    CHECK(QFileInfo::exists(QDir(package).filePath(copy)) == true);
+    RenderGraphDocument reopened;
+    REQUIRE(reopened.Load(package, ROOT) == RenderGraphDocumentStatus::Ok);
+    CHECK(reopened.GetDraft(copy) == duplicated);
+}
+
+TEST_CASE("Graph duplication rejects used names and missing files without changing the draft",
+          "[editor][render-graph][duplicate]")
+{
+    QTemporaryDir project;
+    RenderGraphDocument document;
+    REQUIRE(document.Load(MakeSelectionPackage(project), ROOT) == RenderGraphDocumentStatus::Ok);
+    QString file = LIBRARY;
+    QString name;
+    RenderGraphDocumentStatus expected = RenderGraphDocumentStatus::InvalidEdit;
+    SECTION("existing file")
+    {
+        name = QStringLiteral("library");
+        expected = RenderGraphDocumentStatus::Conflict;
+    }
+    SECTION("existing file with different case")
+    {
+        name = QStringLiteral("Library");
+        expected = RenderGraphDocumentStatus::Conflict;
+    }
+    SECTION("existing graph id")
+    {
+        // Give the library an id that no file name uses, so only the id can collide.
+        QJsonObject graph;
+        REQUIRE(document.GetGraph(LIBRARY, graph) == true);
+        graph.insert(QStringLiteral("id"), QStringLiteral("Shared"));
+        REQUIRE(document.SetText(LIBRARY, EncodeCanonicalJson(graph)) == RenderGraphDocumentStatus::Ok);
+        name = QStringLiteral("Shared");
+    }
+    SECTION("invalid name")
+    {
+        name = QStringLiteral("bad name");
+    }
+    SECTION("missing file")
+    {
+        file = QStringLiteral("missing.lurender.json");
+        name = QStringLiteral("Variant");
+        expected = RenderGraphDocumentStatus::NotFound;
+    }
+    const QStringList files = document.GetFiles();
+    const uint64 revision = document.GetRevision();
+    const bool canUndo = document.CanUndo();
+    QString asset = QStringLiteral("preserved");
+    QString error;
+    CHECK(document.DuplicateGraph(file, name, asset, error) == expected);
+    CHECK(error.isEmpty() == false);
+    CHECK(asset == QStringLiteral("preserved"));
+    CHECK(document.GetFiles() == files);
+    CHECK(document.GetRevision() == revision);
+    CHECK(document.CanUndo() == canUndo);
+}
+
+TEST_CASE("Canvas menu duplicates the selected configuration and graph through name dialogs",
+          "[editor][render-graph][duplicate][selection]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    OpenSelectionPackage(workspace, project);
+    REQUIRE(workspace.SelectNode(LIBRARY, DEFAULT, {}) == true);
+    const QByteArray library = workspace.GetDocument().GetDraft(LIBRARY);
+    const auto triggerFromMenu = [&workspace](const QString& action, const QString& expectedName) {
+        QTimer::singleShot(0, &workspace, [&workspace, action, expectedName]() {
+            QMenu* menuOrNull = workspace.findChild<QMenu*>(QStringLiteral("renderGraphBackgroundMenu"));
+            REQUIRE(menuOrNull != nullptr);
+            QAction* duplicateOrNull = menuOrNull->findChild<QAction*>(action);
+            REQUIRE(duplicateOrNull != nullptr);
+            REQUIRE(duplicateOrNull->isEnabled() == true);
+            QTimer::singleShot(0, &workspace, [&workspace, expectedName]() {
+                QInputDialog* dialogOrNull = workspace.findChild<QInputDialog*>();
+                REQUIRE(dialogOrNull != nullptr);
+                CHECK(dialogOrNull->textValue() == expectedName);
+                dialogOrNull->accept();
+            });
+            menuOrNull->close();
+            duplicateOrNull->trigger();
+        });
+        RenderGraphCanvas& canvas = workspace.GetCanvas();
+        const QPoint point = canvas.viewport()->rect().bottomRight() - QPoint(20, 20);
+        QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
+        QCoreApplication::sendEvent(canvas.viewport(), &context);
+    };
+    SECTION("configuration")
+    {
+        triggerFromMenu(QStringLiteral("renderGraphDuplicateConfiguration"), QStringLiteral("DefaultCopy"));
+        CHECK(workspace.GetCanvas().GetFile() == LIBRARY);
+        CHECK(workspace.GetCanvas().GetConfiguration() == QStringLiteral("DefaultCopy"));
+        CHECK(workspace.GetCanvas().GetNodeCount() == 3);
+        CHECK(workspace.GetDocument().GetRevision() == 1);
+        workspace.Undo();
+        CHECK(workspace.GetDocument().GetDraft(LIBRARY) == library);
+        CHECK(workspace.GetCanvas().GetConfiguration() == DEFAULT);
+    }
+    SECTION("graph")
+    {
+        const QString copy = QStringLiteral("MainCopy.lurender.json");
+        triggerFromMenu(QStringLiteral("renderGraphDuplicateGraph"), QStringLiteral("MainCopy"));
+        CHECK(workspace.GetCanvas().GetFile() == copy);
+        CHECK(workspace.GetCanvas().GetConfiguration() == DEFAULT);
+        CHECK(workspace.GetCanvas().GetNodeCount() == 3);
+        CHECK(workspace.GetDocument().GetRevision() == 1);
+        CHECK(workspace.GetDocument().GetDraft(LIBRARY) == library);
+        workspace.Undo();
+        CHECK(workspace.GetDocument().GetFiles().contains(copy) == false);
+        CHECK(workspace.GetCanvas().GetFile() == LIBRARY);
+    }
+}
+
 TEST_CASE("graph connections highlight selection and port hover without editing the draft",
           "[editor][render-graph][usability]")
 {
@@ -789,6 +1037,110 @@ TEST_CASE("graph sources collapse and restore width without changing selection",
     QPushButton* restored = reopened.findChild<QPushButton*>(QStringLiteral("renderGraphToggleSources"));
     REQUIRE(restored != nullptr);
     CHECK(restored->isChecked() == false);
+    QSettings().remove(QStringLiteral("renderGraph/splitterState"));
+    QSettings().remove(QStringLiteral("renderGraph/sourcesVisible"));
+}
+
+TEST_CASE("The view modes are a segmented control in the document header and follow the views",
+          "[editor][render-graph][usability]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    OpenSelectionPackage(workspace, project);
+    QTabWidget* views = workspace.findChild<QTabWidget*>(QStringLiteral("renderGraphViews"));
+    QWidget* modes = workspace.findChild<QWidget*>(QStringLiteral("renderGraphModes"));
+    REQUIRE(views != nullptr);
+    REQUIRE(modes != nullptr);
+    CHECK(modes->isVisible() == true);
+    // The small bar under the document is gone; the header carries one button per view.
+    const QList<QTabBar*> tabBars = views->findChildren<QTabBar*>(QString(), Qt::FindDirectChildrenOnly);
+    REQUIRE(tabBars.size() == 1);
+    CHECK(tabBars.first()->isVisible() == false);
+    const QList<QPushButton*> buttons = modes->findChildren<QPushButton*>();
+    REQUIRE(buttons.size() == views->count());
+    for (int index = 0; index < views->count(); ++index)
+    {
+        CHECK(modes->findChild<QPushButton*>(QStringLiteral("renderGraphMode%1").arg(views->tabText(index))) !=
+              nullptr);
+    }
+    QPushButton* canvas = modes->findChild<QPushButton*>(QStringLiteral("renderGraphModeCanvas"));
+    QPushButton* source = modes->findChild<QPushButton*>(QStringLiteral("renderGraphModeSource"));
+    REQUIRE(canvas != nullptr);
+    REQUIRE(source != nullptr);
+    CHECK(canvas->isChecked() == true);
+    CHECK(source->isChecked() == false);
+    source->click();
+    CHECK(views->currentWidget() == views->widget(1));
+    CHECK(views->currentIndex() == 1);
+    CHECK(source->isChecked() == true);
+    CHECK(canvas->isChecked() == false);
+    // A view changed by the program, such as jumping to a diagnostic's source, moves the highlight too.
+    views->setCurrentIndex(0);
+    CHECK(canvas->isChecked() == true);
+    CHECK(source->isChecked() == false);
+    // Clicking the shown view keeps it shown.
+    canvas->click();
+    CHECK(views->currentIndex() == 0);
+    CHECK(canvas->isChecked() == true);
+}
+
+TEST_CASE("The outline lists configurations and opens only the displayed one, and steps aside in the Source view",
+          "[editor][render-graph][usability]")
+{
+    QSettings().remove(QStringLiteral("renderGraph/splitterState"));
+    QSettings().remove(QStringLiteral("renderGraph/sourcesVisible"));
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    OpenSelectionPackage(workspace, project);
+    QPushButton* sources = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphToggleSources"));
+    QTreeWidget* tree = workspace.findChild<QTreeWidget*>(QStringLiteral("renderGraphTree"));
+    QTabWidget* views = workspace.findChild<QTabWidget*>(QStringLiteral("renderGraphViews"));
+    REQUIRE(sources != nullptr);
+    REQUIRE(tree != nullptr);
+    REQUIRE(views != nullptr);
+    REQUIRE(workspace.SelectNode(ROOT, DEFAULT, QStringLiteral("output")) == true);
+    QApplication::processEvents();
+    CHECK(sources->text() == QStringLiteral("Outline"));
+    CHECK(tree->headerItem()->text(0) == QStringLiteral("Outline"));
+    // Every file lists its configurations; only the displayed configuration of the displayed file is open.
+    int displayedCount = 0;
+    for (int fileIndex = 0; fileIndex < tree->topLevelItemCount(); ++fileIndex)
+    {
+        QTreeWidgetItem* file = tree->topLevelItem(fileIndex);
+        CHECK(file->isExpanded() == true);
+        const bool isDisplayedFile = file->text(0) == ROOT;
+        for (int index = 0; index < file->childCount(); ++index)
+        {
+            QTreeWidgetItem* configuration = file->child(index);
+            const bool isDisplayed = isDisplayedFile == true && configuration->text(0) == QLatin1Char('#') + DEFAULT;
+            INFO(configuration->text(0).toStdString());
+            CHECK(configuration->isExpanded() == isDisplayed);
+            displayedCount += isDisplayed == true ? 1 : 0;
+        }
+    }
+    CHECK(displayedCount == 1);
+
+    // The Source view hides the outline without changing the saved choice, and the Canvas brings it back.
+    REQUIRE(tree->isVisible() == true);
+    views->setCurrentIndex(1);
+    QApplication::processEvents();
+    CHECK(tree->isVisible() == false);
+    CHECK(sources->isChecked() == false);
+    CHECK(QSettings().value(QStringLiteral("renderGraph/sourcesVisible"), true).toBool() == true);
+    views->setCurrentIndex(0);
+    QApplication::processEvents();
+    CHECK(tree->isVisible() == true);
+    CHECK(sources->isChecked() == true);
+
+    // Opening it by hand in the Source view is the user's answer: leaving that view changes nothing.
+    views->setCurrentIndex(1);
+    QApplication::processEvents();
+    sources->click();
+    QApplication::processEvents();
+    CHECK(tree->isVisible() == true);
+    views->setCurrentIndex(0);
+    QApplication::processEvents();
+    CHECK(tree->isVisible() == true);
     QSettings().remove(QStringLiteral("renderGraph/splitterState"));
     QSettings().remove(QStringLiteral("renderGraph/sourcesVisible"));
 }

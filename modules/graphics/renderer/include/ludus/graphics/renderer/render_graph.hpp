@@ -25,6 +25,19 @@ inline constexpr foundation::uint32 VISIBILITY_GRAPH_RESOURCE_CAPACITY =
     static_cast<foundation::uint32>(content::render_graph_format::MAX_STORAGE_BUFFERS) +
     2 * static_cast<foundation::uint32>(content::render_graph_format::MAX_MESHES);
 
+/// CPU preparation ceiling for graph ray scenes, including the frozen scene, BVH,
+/// fingerprint and packing/native-geometry scratch. Four GiB on 64-bit hosts; two
+/// GiB on 32-bit hosts. This is an admission ceiling, not an initial allocation.
+/// A device's storage-buffer range and physical allocation failures remain independent.
+inline constexpr foundation::usize RENDER_GRAPH_RAY_CPU_BYTES =
+    foundation::usize{2} * 1024 * 1024 * 1024 * (sizeof(foundation::usize) > sizeof(foundation::uint32) ? 2 : 1);
+/// Logical GPU ceiling across current/replacement graph ray scenes, per-pass images,
+/// native acceleration structures and pending producer/consumer holds. Six GiB on
+/// 64-bit hosts; two GiB on 32-bit hosts. Device creators must separately budget RHI
+/// resources, including raster geometry, textures and graph targets sharing the device.
+inline constexpr foundation::usize RENDER_GRAPH_RAY_GPU_BYTES =
+    foundation::usize{2} * 1024 * 1024 * 1024 * (sizeof(foundation::usize) > sizeof(foundation::uint32) ? 3 : 1);
+
 /// Numeric offline plan; all records are copied at initialization. Borrowed views
 /// must be valid for the call only. This is not a runtime graph/source parser.
 struct RenderGraphPlan final
@@ -139,6 +152,18 @@ struct RenderGraphPrograms final
     /// renderer uploads and binds that buffer; RayCompute.Bindings must name the slot exactly when
     /// this is true. See docs/development/ltc-table.md.
     bool HasLtcTable = false;
+    /// RayCompute offsets its dispatch by the ray uniform's tile region (runtime package version 28 and later,
+    /// and every generated header), so RenderGraph::SetRayTileCount may split a sample into row bands. Older
+    /// kernels cover the whole image on every dispatch and therefore cannot be tiled.
+    bool HasRayTiles = false;
+};
+/// Ray work of one sample of a RenderGraph's current scene, from which a frame capture sizes its tiles.
+struct RenderGraphRayWorkload final
+{
+    /// Pixels shaded per sample, summed over every ray pass.
+    foundation::uint64 Pixels = 0;
+    /// Emissive triangles plus analytic lights of the largest ray pass scene; an environment is not counted.
+    foundation::uint32 Lights = 0;
 };
 /// Attach the frozen triangle-ray compute/image interface metadata to a cooked stage.
 /// Does not compile, allocate or change artifact bytes. Used by generated headers and
@@ -168,6 +193,16 @@ void SetRenderGraphForwardInterface(rhi::RasterShaderDescription& inoutDescripti
 inline constexpr foundation::uint32 RAY_PATH_INVALID_INDEX = 0xffffffffU;
 /// Default number of progressive samples a ray path capture records.
 inline constexpr foundation::uint32 DEFAULT_RAY_PATH_SAMPLES = 16;
+/// Largest Accumulate sample limit a frame capture may set with RenderGraph::SetAccumulationLimitOverride.
+/// Interactive graphs keep RenderGraphFormat::MAX_ACCUMULATION_SAMPLES.
+inline constexpr foundation::uint32 MAX_RENDER_GRAPH_CAPTURE_SAMPLES = 65536;
+/// Most row bands RenderGraph::SetRayTileCount may split one ray sample into. Each band is a separate
+/// submission, so a long frame-capture sample stays under the GPU watchdog; see
+/// docs/architecture/render-graph-frame-capture.md.
+inline constexpr foundation::uint32 MAX_RENDER_GRAPH_RAY_TILES = 128;
+/// float4 values per pixel in a ray pass's accumulation buffer: the running sum with the committed
+/// count's uint32 bits in W, then the compensation with the history tag in W (odd after a latched failure).
+inline constexpr foundation::uint32 RENDER_GRAPH_ACCUMULATION_WORDS = 2;
 /// Largest number of progressive samples one ray path capture records.
 inline constexpr foundation::uint32 MAX_RAY_PATH_SAMPLES = 256;
 /// Default event record capacity of one ray path capture.
@@ -361,11 +396,11 @@ struct RenderGraphSceneRevisions final
 /// updates do not change these. Reuse compares complete copied content, never pointers.
 struct RenderGraphSceneResourceReport final
 {
-    foundation::uint64 CreatedMeshes = 0;      ///< Immutable mesh uploads admitted by the cache.
-    foundation::uint64 ReusedMeshes = 0;       ///< Exact cached mesh acquisitions.
-    foundation::uint64 CreatedTextures = 0;    ///< Immutable texture uploads admitted by the cache.
-    foundation::uint64 ReusedTextures = 0;     ///< Exact cached texture acquisitions.
-    foundation::uint32 MeshLightTriangles = 0; ///< Latest prepared deferred scene's nonzero-emission triangles/patches.
+    foundation::uint64 CreatedMeshes = 0;     ///< Immutable mesh uploads admitted by the cache.
+    foundation::uint64 ReusedMeshes = 0;      ///< Exact cached mesh acquisitions.
+    foundation::uint64 CreatedTextures = 0;   ///< Immutable texture uploads admitted by the cache.
+    foundation::uint64 ReusedTextures = 0;    ///< Exact cached texture acquisitions.
+    foundation::uint32 MeshLightPolygons = 0; ///< Latest prepared deferred scene's emitter polygon records.
     foundation::uint64 MeshLightBytes = 0; ///< Immutable mesh-light upload bytes, including an empty-set dummy record.
     foundation::uint32 OverflowClusters = 0;   ///< Latest material's cells using the full light-list fallback.
     foundation::uint32 ClusterAssignments = 0; ///< Latest material's stored cell/light intersections.
@@ -659,6 +694,41 @@ public:
     /// without a request or during an open/unconfirmed frame; a device or readback failure otherwise,
     /// which keeps the previously decoded capture.
     [[nodiscard]] rhi::RasterStatus PollRayPathCapture(RayPathCaptureReport& outReport) noexcept;
+    /// Replace every positive authored Accumulate sample limit with samples, for a graph instance that
+    /// captures a frame rather than drawing the viewport. Passes that output individual samples keep doing so.
+    /// Call between frames after Initialize reaches Ready and before the first Update; the override applies to
+    /// every later scene of this instance. See docs/architecture/render-graph-frame-capture.md.
+    /// @param samples New limit, from one to MAX_RENDER_GRAPH_CAPTURE_SAMPLES.
+    /// @return Ready when set; InvalidDescription for samples out of range; InvalidState when uninitialized,
+    /// not Ready, in a frame or after a scene was accepted. Failure leaves the graph unchanged.
+    [[nodiscard]] rhi::RasterStatus SetAccumulationLimitOverride(foundation::uint32 samples) noexcept;
+    /// Borrow the accumulation buffer of a ray pass after its producer completed, for a read-only consumer
+    /// such as a frame capture's readback. The buffer holds RENDER_GRAPH_ACCUMULATION_WORDS float4 values per
+    /// pixel of the pass's colour resource, in row-major order. The graph owns it; finish every use, including
+    /// readbacks, before the next Render, Update or Reset, and never write to it.
+    /// @param pass Plan pass index of a ray pass.
+    /// @param outBuffer Receives the borrowed buffer; unchanged on failure.
+    /// @return Ready after producer completion; NotReady while no completed output exists;
+    /// InvalidDescription for a pass that is not a ray pass. Outputs are preserved on failure.
+    [[nodiscard]] rhi::RasterStatus GetAccumulation(foundation::uint32 pass,
+                                                    rhi::BufferHandle& outBuffer) const noexcept;
+    /// Split every ray sample into tileCount row bands, rendering one band per Render, for a graph instance
+    /// that captures a frame. Each band dispatches every ray pass over the same rows, with the pixel indices,
+    /// sample streams and accumulation of an untiled sample, so only the submission boundaries change.
+    /// HasPendingSamples and GetSubmittedRaySamples count a sample once its last band was submitted. Call
+    /// between frames at a sample boundary; the count applies to later scenes of this instance too.
+    /// @param tileCount Bands per sample, from one (whole-image dispatches) to MAX_RENDER_GRAPH_RAY_TILES.
+    /// @return Ready when set; InvalidDescription for a count out of range; Unsupported for more than one band
+    /// when RenderGraphPrograms::HasRayTiles is false; InvalidState when uninitialized, not Ready, in a frame or
+    /// between the bands of a sample. Failure leaves the graph unchanged.
+    [[nodiscard]] rhi::RasterStatus SetRayTileCount(foundation::uint32 tileCount) noexcept;
+    /// Ray samples submitted for every pixel of the drawable scene: whole frames, or complete rounds of bands
+    /// after SetRayTileCount. Zero without a scene; a replaced scene or camera starts again from zero.
+    [[nodiscard]] foundation::uint32 GetSubmittedRaySamples() const noexcept;
+    /// Describe the ray work of one sample of the drawable scene, for sizing tiles.
+    /// @param outWorkload Receives the pixels and lights; unchanged on failure.
+    /// @return Ready; NotReady without a drawable scene or before its ray passes are prepared.
+    [[nodiscard]] rhi::RasterStatus GetRayWorkload(RenderGraphRayWorkload& outWorkload) const noexcept;
     /// Borrow the events of the last Ready PollRayPathCapture until the next poll, request or Reset.
     [[nodiscard]] foundation::BorrowedView<const RayPathEvent> GetRayPathEvents() const noexcept;
     /// Borrow the summaries of the last Ready PollRayPathCapture, sorted by pixel, sample and pass,

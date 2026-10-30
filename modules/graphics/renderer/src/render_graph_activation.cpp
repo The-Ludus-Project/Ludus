@@ -156,6 +156,8 @@ struct RenderGraphPackage::State final
     bool HasPassNames = false;
     /// Decoded by DecodeRayPathCapture: the ray kernel is the diagnostic capture variant.
     bool IsRayPathCapture = false;
+    /// Decoded by DecodeCaptureProfile: the ray kernels carry the capture shadow-query budget.
+    bool IsCaptureProfile = false;
     StaticArray<format::StorageBuffer, format::MAX_STORAGE_BUFFERS> StorageBuffers{};
     usize StorageBufferCount = 0;
     bool HasRelativeSizes = false;
@@ -181,6 +183,8 @@ struct RenderGraphPackage::State final
     bool HasDenoising = false;
     /// The version 25 scene resource word names the LTC table: AppendLtcTableBindings adds its slot.
     bool HasLtcTable = false;
+    /// Version 28 and later ray kernels dispatch the uniform's tile region.
+    bool HasRayTiles = false;
     // DecodeUniforms validates and writes every active stage before any binding is published.
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     StaticArray<format::UniformBinding, format::MAX_UNIFORM_BINDINGS> UniformBindings{};
@@ -757,6 +761,10 @@ RenderGraphPackageStatus RenderGraphPackage::DecodeRayPathCapture(BorrowedView<c
 {
     return decode(bytes, format::RAY_PATH_CAPTURE_PACKAGE_MAGIC);
 }
+RenderGraphPackageStatus RenderGraphPackage::DecodeCaptureProfile(BorrowedView<const uint8> bytes) noexcept
+{
+    return decode(bytes, format::CAPTURE_PROFILE_PACKAGE_MAGIC);
+}
 RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> bytes, uint32 expectedMagic) noexcept
 {
     if (mState.Get() != nullptr)
@@ -787,7 +795,8 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
-        (version != format::RASTER_MESH_LIGHT_PACKAGE_VERSION && version != format::LTC_TABLE_PACKAGE_VERSION &&
+        (version != format::TILED_RAY_PACKAGE_VERSION && version != format::RASTER_MESH_LIGHT_POLYGON_PACKAGE_VERSION &&
+         version != format::RASTER_MESH_LIGHT_PACKAGE_VERSION && version != format::LTC_TABLE_PACKAGE_VERSION &&
          version != format::CLUSTERED_DEFERRED_PACKAGE_VERSION &&
          version != format::CLUSTERED_FORWARD_PACKAGE_VERSION && version != format::COMPUTE_BVH_PACKAGE_VERSION &&
          version != format::RAY_WORKGROUP_PACKAGE_VERSION && version != format::NATIVE_RAY_PIPELINE_PACKAGE_VERSION &&
@@ -804,12 +813,14 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
         return RenderGraphPackageStatus::UnsupportedVersion;
     }
     candidate->IsRayPathCapture = expectedMagic == format::RAY_PATH_CAPTURE_PACKAGE_MAGIC;
+    candidate->IsCaptureProfile = expectedMagic == format::CAPTURE_PROFILE_PACKAGE_MAGIC;
     candidate->HasRelativeSizes = version >= format::VIEW_PACKAGE_VERSION;
     candidate->HasSceneData = version >= format::SCENE_PACKAGE_VERSION;
     candidate->HasPersistentBuffers = version >= format::ORDERED_PACKAGE_VERSION;
     candidate->HasPixelBuffers = version >= format::PIXEL_BUFFER_PACKAGE_VERSION;
     candidate->HasForwardStages = version >= format::FORWARD_PACKAGE_VERSION;
-    candidate->CanHaveClusteredDeferred = version >= format::RASTER_MESH_LIGHT_PACKAGE_VERSION;
+    candidate->CanHaveClusteredDeferred = version >= format::RASTER_MESH_LIGHT_POLYGON_PACKAGE_VERSION;
+    candidate->HasRayTiles = version >= format::TILED_RAY_PACKAGE_VERSION;
     candidate->CanHaveClusteredForward = version >= format::CLUSTERED_FORWARD_PACKAGE_VERSION;
     candidate->HasExplicitAccumulation = version >= format::ACCUMULATION_PACKAGE_VERSION;
     candidate->HasExplicitToneMapping = version >= format::TONE_MAPPING_PACKAGE_VERSION;
@@ -1056,6 +1067,10 @@ bool RenderGraphPackage::IsRayPathCapture() const noexcept
 {
     return mState.Get() != nullptr && mState->IsRayPathCapture == true;
 }
+bool RenderGraphPackage::IsCaptureProfile() const noexcept
+{
+    return mState.Get() != nullptr && mState->IsCaptureProfile == true;
+}
 void RenderGraphPackage::BypassDenoising() noexcept
 {
     if (mState.Get() == nullptr)
@@ -1102,6 +1117,7 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
     const State& state = *mState;
     result.HasRayPathCapture = state.IsRayPathCapture;
     result.HasLtcTable = state.HasLtcTable;
+    result.HasRayTiles = state.HasRayTiles;
     for (const State::StageView& view : state.Stages[format::CLUSTERED_FORWARD_FRAGMENT_ROLE])
     {
         result.HasClusteredForward = result.HasClusteredForward == true || view.IsPresent == true;
@@ -1484,8 +1500,9 @@ Status RenderGraphActivation::Stage(core::UniquePtr<RenderGraphPackage> package)
         return Status::InvalidState;
     }
     State& state = *mState;
-    // A diagnostic capture generation runs only in its own RenderGraph, never as drawing output.
-    if (package.Get() == nullptr || package->IsLoaded() == false || package->IsRayPathCapture() == true)
+    // Diagnostic and capture profile generations run only in their own RenderGraph, never as drawing output.
+    if (package.Get() == nullptr || package->IsLoaded() == false || package->IsRayPathCapture() == true ||
+        package->IsCaptureProfile() == true)
     {
         return Status::InvalidDescription;
     }

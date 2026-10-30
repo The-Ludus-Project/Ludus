@@ -159,6 +159,11 @@ public:
     [[nodiscard]] ViewportFrameTrace& GetFrameTrace() noexcept;
     /// Completed output statistics; retained while preparation is pending or fails, reset on Detach.
     [[nodiscard]] const GraphViewportStatistics& GetStatistics() const noexcept;
+    /// GUI-thread delivery of an accepted conversion. Worker execution is a separate series;
+    /// only publicationMilliseconds contributes to owner-thread CPU work. Ignored after Detach.
+    void RecordInspectionConversion(foundation::float64 workMilliseconds,
+                                    foundation::float64 elapsedMilliseconds,
+                                    foundation::float64 publicationMilliseconds) noexcept;
 
     /// Select shared-device GPU snapshots; CPU readback remains the explicit offscreen fallback.
     void SetDirectPresentation(bool shouldPresentDirectly) noexcept;
@@ -204,11 +209,14 @@ public:
     [[nodiscard]] bool HasPresentedCatalogue() const noexcept;
     /// Textures of the active generation; empty before one is active.
     [[nodiscard]] const RenderGraphTargetCatalogue& GetTargetCatalogue() const noexcept;
+    /// Suspend diagnostics while the texture viewer is hidden; cancels unfinished reads.
+    /// The selection and last completed snapshot survive. Re-enabling requests a fresh snapshot.
+    void SetInspectionEnabled(bool isEnabled) noexcept;
     /// Choose the texture the viewer reads back, by expanded resource name; empty stops reading.
     /// The name is resolved against each newly active generation, so a selection survives
-    /// rebuilds while the texture still exists. The texture is read after every presented
-    /// frame (and once immediately when a frame is already shown), never while a frame or the
-    /// export copy is in flight, and without waiting for the GPU.
+    /// rebuilds while the texture still exists. When enabled, selection requests an immediate
+    /// snapshot between frames; automatic refreshes are limited to four per second.
+    /// Band readbacks use an independent GPU snapshot and do not hold up later rendering.
     void SetInspectedTarget(const QString& name);
     [[nodiscard]] const QString& GetInspectedTarget() const noexcept;
     /// Last read of the inspected texture; invalid when none completed or the texture was undefined.

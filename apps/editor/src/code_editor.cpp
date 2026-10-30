@@ -14,19 +14,24 @@
 #include <QFont>
 #include <QFontDatabase>
 #include <QFontInfo>
+#include <QFontMetrics>
 #include <QHelpEvent>
 #include <QInputMethodEvent>
 #include <QKeyEvent>
 #include <QKeySequence>
+#include <QLabel>
+#include <QListWidget>
 #include <QMenu>
 #include <QMimeData>
 #include <QPaintEvent>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPalette>
 #include <QPen>
 #include <QPointF>
 #include <QRectF>
 #include <QResizeEvent>
+#include <QScreen>
 #include <QSettings>
 #include <QStringList>
 #include <QStringView>
@@ -48,6 +53,14 @@ namespace
 {
 using namespace foundation;
 constexpr int32 INDENT_WIDTH = 4;
+#if defined(Q_OS_MACOS)
+constexpr Qt::KeyboardModifier ASSISTANCE_MODIFIER = Qt::MetaModifier; // physical Control on macOS
+#else
+constexpr Qt::KeyboardModifier ASSISTANCE_MODIFIER = Qt::ControlModifier;
+#endif
+constexpr int32 COMPLETION_VISIBLE_ROWS = 9;
+constexpr int32 COMPLETION_WIDTH = 420;
+constexpr int32 SIGNATURE_WIDTH = 680;
 constexpr int32 INDENT_GUIDE_ALPHA = 48;
 constexpr int32 GUTTER_MARGIN = 6;
 constexpr int32 DECIMAL_RADIX = 10;
@@ -60,6 +73,17 @@ constexpr uint32 LIGHT_WARNING = 0x9A6700;
 constexpr uint32 DARK_WARNING = 0xE3B341;
 /// Marker diameter as a divisor of the line height.
 constexpr int32 DIAGNOSTIC_MARKER_DIVISOR = 2;
+/// An out-of-date report keeps its squiggle, drawn this much more faintly (alpha, 0-255).
+constexpr int32 STALE_UNDERLINE_ALPHA = 140;
+/// Message callout under the caret's line: spacing, shape and how much of the message it shows.
+constexpr int32 CALLOUT_MARGIN = 6;
+constexpr int32 CALLOUT_PADDING = 6;
+constexpr int32 CALLOUT_ARROW_SIZE = 5;
+constexpr int32 CALLOUT_CORNER_RADIUS = 4;
+constexpr int32 CALLOUT_MAX_LINES = 3;
+constexpr int32 CALLOUT_FILL_PERCENT = 16;
+constexpr int32 CALLOUT_BORDER_ALPHA = 170;
+constexpr int32 PERCENT = 100;
 
 int32 GetIndentLength(const QString& text)
 {
@@ -129,6 +153,37 @@ CodeEditor::CodeEditor(QWidget* parentOrNull)
       mFormatAction(new QAction(QStringLiteral("Format Document"), this)),
       mChooseFormatterAction(new QAction(QStringLiteral("Choose Formatter..."), this))
 {
+    mCompletionList = new QListWidget(this);
+    mCompletionList->setWindowFlags(Qt::ToolTip);
+    mCompletionList->setAttribute(Qt::WA_ShowWithoutActivating);
+    mCompletionList->setFocusPolicy(Qt::NoFocus);
+    mCompletionList->setObjectName(QStringLiteral("codeCompletionList"));
+    mCompletionList->setAccessibleName(QStringLiteral("Shader completion suggestions"));
+    connect(mCompletionList, &QListWidget::itemClicked, this, [this](QListWidgetItem* item) {
+        Q_EMIT CompletionChosen(mCompletionList->row(item));
+    });
+    mSignature = new QLabel(this);
+    mSignature->setWindowFlags(Qt::ToolTip);
+    mSignature->setAttribute(Qt::WA_ShowWithoutActivating);
+    mSignature->setObjectName(QStringLiteral("codeSignatureHelp"));
+    mSignature->setAccessibleName(QStringLiteral("Shader signature help"));
+    mSignature->setMargin(INDENT_WIDTH);
+    mSignature->setTextFormat(Qt::RichText);
+    mSignature->setWordWrap(true);
+    mSignature->setMaximumWidth(SIGNATURE_WIDTH);
+    mCompletionList->hide();
+    mSignature->hide();
+
+    QAction* complete = new QAction(QStringLiteral("Complete Shader Symbol (Ctrl+Space)"), this);
+    connect(complete, &QAction::triggered, this, [this]() { Q_EMIT AssistanceRequested(false); });
+    complete->setObjectName(QStringLiteral("codeEditorComplete"));
+    complete->setEnabled(false);
+    addAction(complete);
+    QAction* signature = new QAction(QStringLiteral("Shader Signature Help (Ctrl+Shift+Space)"), this);
+    connect(signature, &QAction::triggered, this, [this]() { Q_EMIT AssistanceRequested(true); });
+    signature->setObjectName(QStringLiteral("codeEditorSignature"));
+    signature->setEnabled(false);
+    addAction(signature);
     QFont textFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     textFont.setStyleHint(QFont::Monospace);
     textFont.setFixedPitch(true);
@@ -284,10 +339,15 @@ void CodeEditor::GoToDiagnostic(bool shouldGoBackward)
 void CodeEditor::paintEvent(QPaintEvent* event)
 {
     QPlainTextEdit::paintEvent(event);
-    if (mShouldShowIndentGuides == false)
+    if (mShouldShowIndentGuides == true)
     {
-        return;
+        paintIndentGuides(event);
     }
+    paintDiagnosticCallout();
+}
+
+void CodeEditor::paintIndentGuides(const QPaintEvent* event)
+{
     QPainter painter(viewport());
     QColor color = palette().color(QPalette::Text);
     color.setAlpha(INDENT_GUIDE_ALPHA);
@@ -331,9 +391,99 @@ void CodeEditor::paintEvent(QPaintEvent* event)
     }
 }
 
+/// The message of the diagnostics on the caret's line, under that line and pointing at the error.
+/// Painted over the lines below instead of shifting them, so the text never jumps; it goes away
+/// when the caret moves off the line or the line is edited.
+void CodeEditor::paintDiagnosticCallout()
+{
+    if (mDiagnostics.isEmpty() == true || mHasEditedSinceReport == true)
+    {
+        return;
+    }
+    const QTextBlock block = textCursor().block();
+    QStringList messages;
+    QTextCursor anchor;
+    CodeDiagnosticSeverity severity = CodeDiagnosticSeverity::Warning;
+    for (const DiagnosticMarker& marker : mDiagnostics)
+    {
+        if (document()->findBlock(marker.Range.selectionStart()) != block || marker.Message.isEmpty() == true)
+        {
+            continue;
+        }
+        if (messages.contains(marker.Message) == false)
+        {
+            messages.append(marker.Message);
+        }
+        if (anchor.isNull() == true)
+        {
+            anchor = marker.Range;
+            anchor.setPosition(marker.Range.selectionStart());
+        }
+        severity = marker.Severity == CodeDiagnosticSeverity::Error ? CodeDiagnosticSeverity::Error : severity;
+    }
+    if (messages.isEmpty() == true)
+    {
+        return;
+    }
+    const QFontMetrics metrics(font());
+    const int32 viewportWidth = viewport()->width();
+    const int32 textWidthLimit = viewportWidth - 2 * (CALLOUT_MARGIN + CALLOUT_PADDING);
+    if (textWidthLimit <= 0)
+    {
+        return;
+    }
+    const QString text = messages.join(QLatin1Char('\n'));
+    QRect textRect = metrics.boundingRect(QRect(0, 0, textWidthLimit, 0), Qt::TextWordWrap | Qt::AlignLeft, text);
+    textRect.setHeight(qMin(textRect.height(), metrics.lineSpacing() * CALLOUT_MAX_LINES));
+    const int32 boxWidth = textRect.width() + 2 * CALLOUT_PADDING;
+    const int32 boxHeight = textRect.height() + 2 * CALLOUT_PADDING;
+    const QRectF blockRect = blockBoundingGeometry(block).translated(contentOffset());
+    const int32 errorX = cursorRect(anchor).left();
+    const int32 boxLeft = qBound(CALLOUT_MARGIN,
+                                 errorX - CALLOUT_PADDING,
+                                 qMax(viewportWidth - boxWidth - CALLOUT_MARGIN, CALLOUT_MARGIN));
+    const int32 boxTop = static_cast<int32>(blockRect.bottom()) + CALLOUT_ARROW_SIZE;
+    const QRect box(boxLeft, boxTop, boxWidth, boxHeight);
+    const QColor accent = getDiagnosticColor(severity);
+    QColor fill = palette().color(QPalette::Base);
+    fill = QColor::fromRgb(
+        (fill.red() * (PERCENT - CALLOUT_FILL_PERCENT) + accent.red() * CALLOUT_FILL_PERCENT) / PERCENT,
+        (fill.green() * (PERCENT - CALLOUT_FILL_PERCENT) + accent.green() * CALLOUT_FILL_PERCENT) / PERCENT,
+        (fill.blue() * (PERCENT - CALLOUT_FILL_PERCENT) + accent.blue() * CALLOUT_FILL_PERCENT) / PERCENT);
+    QColor border = accent;
+    border.setAlpha(CALLOUT_BORDER_ALPHA);
+    QPainter painter(viewport());
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(QPen(border, 1, mAreDiagnosticsCurrent == true ? Qt::SolidLine : Qt::DashLine));
+    painter.setBrush(fill);
+    QPainterPath shape;
+    shape.addRoundedRect(QRectF(box), CALLOUT_CORNER_RADIUS, CALLOUT_CORNER_RADIUS);
+    const int32 arrowX = qBound(box.left() + CALLOUT_CORNER_RADIUS + CALLOUT_ARROW_SIZE,
+                                errorX,
+                                box.right() - CALLOUT_CORNER_RADIUS - CALLOUT_ARROW_SIZE);
+    QPainterPath arrow;
+    arrow.moveTo(arrowX - CALLOUT_ARROW_SIZE, box.top());
+    arrow.lineTo(arrowX, box.top() - CALLOUT_ARROW_SIZE);
+    arrow.lineTo(arrowX + CALLOUT_ARROW_SIZE, box.top());
+    arrow.closeSubpath();
+    painter.drawPath(shape.united(arrow));
+    painter.setPen(palette().color(QPalette::Text));
+    painter.drawText(box.adjusted(CALLOUT_PADDING, CALLOUT_PADDING, -CALLOUT_PADDING, -CALLOUT_PADDING),
+                     Qt::TextWordWrap | Qt::AlignLeft | Qt::AlignTop,
+                     text);
+}
+
 void CodeEditor::SetLanguage(CodeLanguage language)
 {
     mLanguage = language;
+    for (QAction* action : actions())
+    {
+        if (action->objectName() == QStringLiteral("codeEditorComplete") ||
+            action->objectName() == QStringLiteral("codeEditorSignature"))
+        {
+            action->setEnabled(language == CodeLanguage::Slang);
+        }
+    }
     mHighlighter->SetLanguage(language);
     mSelectionUpdate.start(0);
 }
@@ -467,6 +617,8 @@ void CodeEditor::insertFromMimeData(const QMimeData* source)
 
 void CodeEditor::focusOutEvent(QFocusEvent* event)
 {
+    Q_EMIT AssistanceDismissed();
+    HideAssistance();
     QPlainTextEdit::focusOutEvent(event);
     Q_EMIT EditBoundary();
 }
@@ -501,9 +653,10 @@ void CodeEditor::SetDiagnostics(const QList<CodeDiagnostic>& diagnostics, bool i
         mDiagnostics.append(marker);
     }
     mAreDiagnosticsCurrent = isCurrent;
+    mHasEditedSinceReport = false;
     Q_EMIT DiagnosticsChanged();
     // Snapshot for telling highlighter reformatting apart from same-length edits.
-    mDiagnosticText = isCurrent == true && mDiagnostics.isEmpty() == false ? document()->toRawText() : QString();
+    mDiagnosticText = mDiagnostics.isEmpty() == false ? document()->toRawText() : QString();
     mGutter->update();
     mSelectionUpdate.start(0);
 }
@@ -564,7 +717,7 @@ void CodeEditor::markDiagnosticsOutOfDate(int32 position, int32 removed, int32 a
         SetDiagnostics({}, true);
         return;
     }
-    if (mAreDiagnosticsCurrent == false)
+    if (mHasEditedSinceReport == true)
     {
         return;
     }
@@ -576,8 +729,14 @@ void CodeEditor::markDiagnosticsOutOfDate(int32 position, int32 removed, int32 a
     }
     if (isChanged == true)
     {
+        // A report that was already out of date stays so; either way the callout makes way for typing.
+        const bool wasCurrent = mAreDiagnosticsCurrent;
+        mHasEditedSinceReport = true;
         mAreDiagnosticsCurrent = false;
-        Q_EMIT DiagnosticsChanged();
+        if (wasCurrent == true)
+        {
+            Q_EMIT DiagnosticsChanged();
+        }
         mDiagnosticText.clear();
         mGutter->update();
         mSelectionUpdate.start(0);
@@ -623,9 +782,14 @@ void CodeEditor::appendDiagnosticSelections(QList<QTextEdit::ExtraSelection>& in
             {
                 continue;
             }
-            selection.format.setUnderlineStyle(mAreDiagnosticsCurrent == true ? QTextCharFormat::WaveUnderline
-                                                                              : QTextCharFormat::DotLine);
-            selection.format.setUnderlineColor(getDiagnosticColor(severity));
+            // An out-of-date report keeps its squiggle, fainter, so the error stays findable.
+            QColor underline = getDiagnosticColor(severity);
+            if (mAreDiagnosticsCurrent == false)
+            {
+                underline.setAlpha(STALE_UNDERLINE_ALPHA);
+            }
+            selection.format.setUnderlineStyle(QTextCharFormat::WaveUnderline);
+            selection.format.setUnderlineColor(underline);
             inoutSelections.append(selection);
         }
     }
@@ -1100,6 +1264,66 @@ void CodeEditor::GoToLine(int32 line, int32 column)
 
 void CodeEditor::keyPressEvent(QKeyEvent* event)
 {
+    const int32 revision = document()->revision();
+    handleKeyPress(event);
+    if (document()->revision() != revision && mLanguage == CodeLanguage::Slang && event->text().size() == 1 &&
+        (event->modifiers() & (Qt::ControlModifier | Qt::MetaModifier)) == Qt::NoModifier)
+    {
+        const QChar typed = event->text().at(0);
+        const bool isSignature = typed == QLatin1Char('(') || typed == QLatin1Char(',');
+        if (isSignature == true || typed == QLatin1Char('.'))
+        {
+            Q_EMIT AssistanceRequested(isSignature);
+        }
+    }
+}
+
+void CodeEditor::handleKeyPress(QKeyEvent* event)
+{
+    const bool hasPopup = mCompletionList->isVisible() == true || mSignature->isVisible() == true;
+    if (event->key() == Qt::Key_Escape)
+    {
+        Q_EMIT AssistanceDismissed();
+    }
+    if (event->key() == Qt::Key_Escape && hasPopup == true)
+    {
+        HideAssistance();
+        event->accept();
+        return;
+    }
+    if (mLanguage == CodeLanguage::Slang && isReadOnly() == false && event->key() == Qt::Key_Space &&
+        (event->modifiers() == ASSISTANCE_MODIFIER || event->modifiers() == (ASSISTANCE_MODIFIER | Qt::ShiftModifier)))
+    {
+        Q_EMIT AssistanceRequested(event->modifiers().testFlag(Qt::ShiftModifier));
+        event->accept();
+        return;
+    }
+    if (mSignature->isVisible() == true && event->modifiers() == Qt::AltModifier &&
+        (event->key() == Qt::Key_PageUp || event->key() == Qt::Key_PageDown))
+    {
+        Q_EMIT SignatureOverloadRequested(event->key() == Qt::Key_PageUp ? -1 : 1);
+        event->accept();
+        return;
+    }
+    if (mCompletionList->isVisible() == true)
+    {
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter || event->key() == Qt::Key_Tab)
+        {
+            Q_EMIT CompletionChosen(mCompletionList->currentRow());
+            event->accept();
+            return;
+        }
+        if (event->key() == Qt::Key_Up || event->key() == Qt::Key_Down)
+        {
+            const int32 direction = event->key() == Qt::Key_Up ? -1 : 1;
+            mCompletionList->setCurrentRow((mCompletionList->currentRow() + direction + mCompletionList->count()) %
+                                           mCompletionList->count());
+            event->accept();
+            return;
+        }
+        mCompletionList->hide();
+    }
+
     if (event->matches(QKeySequence::Undo) == true)
     {
         Undo();
@@ -1239,4 +1463,51 @@ void CodeEditor::keyPressEvent(QKeyEvent* event)
     }
     QPlainTextEdit::keyPressEvent(event);
 }
+void CodeEditor::HideAssistance()
+{
+    mCompletionList->hide();
+    mSignature->hide();
+}
+
+void CodeEditor::ShowCompletions(const QStringList& labels, const QStringList& details)
+{
+    HideAssistance();
+    mCompletionList->clear();
+    for (int32 index = 0; index < labels.size(); ++index)
+    {
+        QListWidgetItem* item = new QListWidgetItem(labels.at(index), mCompletionList);
+        item->setToolTip(QStringLiteral("<pre>%1</pre>").arg(details.value(index).toHtmlEscaped()));
+    }
+    if (labels.isEmpty() == true || hasFocus() == false)
+    {
+        return;
+    }
+    mCompletionList->setCurrentRow(0);
+    mCompletionList->resize(COMPLETION_WIDTH,
+                            qMin(COMPLETION_VISIBLE_ROWS, static_cast<int32>(labels.size())) *
+                                    mCompletionList->sizeHintForRow(0) +
+                                INDENT_WIDTH);
+    const QPoint location = viewport()->mapToGlobal(cursorRect().bottomLeft());
+    const QRect available = screen()->availableGeometry();
+    mCompletionList->move(qBound(available.left(), location.x(), available.right() - mCompletionList->width()),
+                          qMin(location.y(), available.bottom() - mCompletionList->height()));
+    mCompletionList->show();
+}
+
+void CodeEditor::ShowSignature(const QString& html)
+{
+    mSignature->hide();
+    if (html.isEmpty() == true || hasFocus() == false)
+    {
+        return;
+    }
+    mSignature->setText(html);
+    mSignature->adjustSize();
+    const QPoint location = viewport()->mapToGlobal(cursorRect().bottomLeft());
+    const QRect available = screen()->availableGeometry();
+    mSignature->move(qBound(available.left(), location.x(), available.right() - mSignature->width()),
+                     qMin(location.y(), available.bottom() - mSignature->height()));
+    mSignature->show();
+}
+
 } // namespace ludus::editor

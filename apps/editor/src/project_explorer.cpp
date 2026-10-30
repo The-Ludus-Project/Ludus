@@ -1,6 +1,7 @@
 #include "internal/project_explorer.h"
 #include "internal/editor_icons.h"
 #include "internal/item_selection.h"
+#include "internal/path_text.h"
 
 #include <QAction>
 #include <QDir>
@@ -101,6 +102,7 @@ ProjectExplorer::ProjectExplorer(QWidget* parentOrNull)
     mTree->setObjectName(QStringLiteral("projectExplorerTree"));
     mTree->setAccessibleName(QStringLiteral("Project documents"));
     mTree->setHeaderHidden(true);
+    mTree->setItemDelegate(new PathItemDelegate(mTree));
     ConfigureItemSelection(*mTree);
     mTree->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(mTree, &QTreeWidget::customContextMenuRequested, this, &ProjectExplorer::showContextMenu);

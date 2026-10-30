@@ -1554,6 +1554,7 @@ TEST_CASE("RT1 native and CPU captures agree on MIS emitter, environment and ind
         {rr::ReferenceLightSampling::UniformArea, SHIFTED_PLANE_OFFSET},
         {rr::ReferenceLightSampling::ResampledProjectedSolidAngle, 0},
         {rr::ReferenceLightSampling::ResampledProjectedSolidAngle, SHIFTED_PLANE_OFFSET},
+        {rr::ReferenceLightSampling::ResampledFormFactor, 0},
     };
     for (const NativeCase& nativeCase : nativeCases)
     {

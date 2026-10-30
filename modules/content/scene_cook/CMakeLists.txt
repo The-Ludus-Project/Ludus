@@ -6,7 +6,7 @@ add_library(ludus_scene_cook STATIC
     src/importers/budget_planner.cpp src/importers/best_effort_import.cpp src/importers/authored_lighting.cpp
     src/importers/image/image_reader.cpp src/importers/image/exr_reader.cpp src/importers/source_resolver.cpp
     src/importers/front_end_support.cpp src/importers/obj/obj_reader.cpp src/importers/tangent_generation.cpp
-    src/importers/name_index.cpp src/importers/gltf/gltf_reader.cpp src/importers/texture_decode_queue.cpp
+    src/importers/name_index.cpp src/importers/mesh_compaction.cpp src/importers/gltf/gltf_reader.cpp src/importers/texture_decode_queue.cpp
     src/importers/parallel_tasks.cpp src/file_digests.cpp)
 add_library(Ludus::SceneCook ALIAS ludus_scene_cook)
 set_target_properties(ludus_scene_cook PROPERTIES EXPORT_NAME SceneCook)
@@ -63,7 +63,7 @@ if(LUDUS_BUILD_TESTS)
 endif()
 
 if(LUDUS_BUILD_TESTS)
-    add_executable(ludus_best_effort_import_tests tests/best_effort_import_tests.cpp)
+    add_executable(ludus_best_effort_import_tests tests/best_effort_import_tests.cpp tests/mesh_compaction_tests.cpp)
     target_include_directories(ludus_best_effort_import_tests PRIVATE src)
     target_link_libraries(ludus_best_effort_import_tests PRIVATE
         Ludus::SceneCook Ludus::SceneFormat Ludus::Resources Ludus::FoundationMath Ludus::FoundationStrings

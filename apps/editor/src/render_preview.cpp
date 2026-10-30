@@ -3,6 +3,7 @@
 #include "internal/preview_lighting.h"
 #include "internal/preview_shading.h"
 #include "internal/render_scene_limits.h"
+#include "internal/viewport_device_description.h"
 #include "internal/viewport_tone_curve.h"
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
 #    include "renderer_overlay.h"
@@ -47,31 +48,7 @@ bool Accepted(rhi::RasterStatus s) noexcept
 {
     return s == rhi::RasterStatus::Ready || s == rhi::RasterStatus::Pending;
 }
-// Shared by the Qt-shared and offscreen devices: authored lighting needs the
-// same budgets whichever way the viewport presents.
-rhi::DeviceDescription MakeViewportDeviceDescription() noexcept
-{
-    rhi::DeviceDescription description;
-    description.Required.PortableRaster = true;
-    description.Preferred.RayQueries = true;
-    // Two retained GPU generations, 80 caster views, and direct-lighting material versions.
-    // These are explicit admission budgets, not allocations or inferred native limits.
-    description.Storage.ResourcesPerKind = 4096;
-    description.Storage.BindingDescriptors = 32768;
-    description.Storage.DrawsPerFrame = 32768;
-    description.Storage.DrawsPerPlan = 1024;
-    description.Storage.ResourcesPerGraph = rr::VISIBILITY_GRAPH_RESOURCE_CAPACITY;
-    description.Storage.HostBytes = usize{256} * 1024 * 1024;
-    description.Storage.ResourceBytes = uint64{2} * 1024 * 1024 * 1024;
-    description.RequiredProfile.Raster.MinBindings = 11;
-    description.RequiredProfile.Raster.MinUniformRange = 16384;
-    description.RequiredProfile.Raster.MinVertexAttributes = 16;
-    description.RequiredProfile.Raster.MinTextureDimension2D = preview_lighting::SHADOW_ATLAS_PIXELS;
-    // Optional frame timestamps for the viewport statistics overlay; backends without
-    // timestamp queries report Unavailable and the overlay shows "GPU: n/a".
-    description.EnableGpuTiming = true;
-    return description;
-}
+
 #endif
 } // namespace
 struct RenderPreview::Residency final

@@ -146,6 +146,43 @@ The Shader API pane is a reference view, not a second semantic authority.
 Hover appears after a short dwell and shows type/signature and documentation.
 Completion supports explicit invocation, member triggers, keyboard selection,
 replacement ranges, optional additional edits and bounded documentation.
+Native completion and signature help are implemented through a lazy workspace
+`slangd` process, a reusable editing controller and copied popup presentation.
+`render-graph shader-context` uses the compiler owner's `prepare_sources` and
+`shader_source` operations to capture and lower the current draft package. It
+stages dependencies and a virtual translation unit with one verbatim editable
+source span. Selected linked-program contexts preserve generated bindings,
+scene interfaces, payloads and authored setting defines. They do not turn the
+reference pane's declaration search into a shader parser. Compiler target
+capability checking remains part of validation/build.
+
+The controller maps negotiated UTF-16 LSP ranges through the editable span to the
+UTF-8 document seam. Text-only changes reuse the virtual URI and synchronize an
+incremental delta; changed dependencies or generated declarations select another
+URI. Package, source, project, context, caret and request changes invalidate
+replies. Plain replacements and additional edits are validated together and
+published as one document history operation. Generated spans, overlapping edits,
+unsolicited snippets and out-of-capacity results are rejected without publication.
+The provider explicitly rejects legacy rewrites, repeated editable occurrences
+and cycles that cannot preserve this single-span mapping.
+
+The native adapter keeps one assistance request and one JSON decode in flight.
+It parses protocol bodies off the input/paint thread, with a 4 MiB wire/buffer
+limit, 8 KiB header and diagnostic limits and a ten-second request deadline.
+Context preparation has a separate fifteen-second deadline and uses the existing
+bounded render-graph job adapter. Captured buffers travel through stdin under
+a separate 8 MiB encoded-input budget. The background context owner validates
+the existing decoded package limits, writes/removes private staging files and
+prunes only its marked obsolete contexts; typing performs no snapshot file writes.
+Presentation keeps at most 256 completions
+from 8192 inspected candidates, 32 signatures and 4096 UTF-16 documentation units;
+additional edits are bounded to 32. Obsolete requests are cancelled; decoder
+results also carry a connection generation. Tool failure preserves editing and
+appears locally with retry/repair guidance. Native interaction and latency targets
+below still need separate host measurements; these bounds are not performance
+claims. Symbol hover, completion-item resolution and snippet placeholders remain
+future work. The independent compiler report still owns displayed build errors.
+
 Explicit **Format Document** is implemented for native shader sources. The
 process adapter checks the exact `clang-format` pin from
 `config/tool_versions.json`, reads the captured source through stdin and requests

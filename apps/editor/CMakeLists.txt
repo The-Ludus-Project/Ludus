@@ -31,9 +31,13 @@ endif()
 # native system libraries or the pinned source-built WebAssembly Qt.
 # Qt is installed only by opted-in editor setup;
 # it is never added to the engine Conan recipe or SDK.
-find_package(Qt6 6.4 QUIET COMPONENTS Core Gui Widgets)
+if(EMSCRIPTEN)
+    find_package(Qt6 6.4 QUIET COMPONENTS Core Gui Widgets)
+else()
+    find_package(Qt6 6.4 QUIET COMPONENTS Core Gui Widgets Concurrent)
+endif()
 if(NOT Qt6_FOUND)
-    ludus_dependency_error("Editor workspace" "Qt 6.4+ Core, Gui and Widgets"
+    ludus_dependency_error("Editor workspace" "Qt 6.4+ Core, Gui, Widgets and native Concurrent"
         "Qt development packages are missing or incompatible. Qt6_DIR='${Qt6_DIR}'."
         "For native Linux setup, run ./init.sh --cli --with-editor from the repository root. For browser setup, follow docs/development/browser-editor.md. For an existing Qt installation set Qt6_DIR; or disable the editor with -DLUDUS_BUILD_EDITOR=OFF.")
 endif()
@@ -99,19 +103,38 @@ endforeach()
 set_source_files_properties(src/render_graph_settings_editor.cpp src/render_graph_configuration_template.cpp
     PROPERTIES COMPILE_DEFINITIONS "${graph_settings_definitions}")
 
-# Shader authoring shares the build service's target-artifact ceiling.
+# Shader authoring shares the build service's target-artifact and pipeline ceilings
+# (render_graph_build_limits.h). Both counts follow from the manifest; no authored budget bounds them.
 set(shader_build_policy "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/render_graph_build.py")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${shader_build_policy}")
 execute_process(COMMAND "${Python3_EXECUTABLE}" -c
-    "import sys; sys.path.insert(0,sys.argv[1]); from ludus_tools.render_graph_build import LIMITS; print(LIMITS['artifacts'])"
+    "import sys; sys.path.insert(0,sys.argv[1]); from ludus_tools.render_graph_build import LIMITS; print(LIMITS['artifacts'], LIMITS['pipelines'])"
     "${PROJECT_SOURCE_DIR}/scripts/python"
-    RESULT_VARIABLE shader_build_status OUTPUT_VARIABLE shader_artifact_limit ERROR_VARIABLE shader_build_error
+    RESULT_VARIABLE shader_build_status OUTPUT_VARIABLE shader_build_limits ERROR_VARIABLE shader_build_error
     OUTPUT_STRIP_TRAILING_WHITESPACE)
 if(NOT shader_build_status EQUAL 0)
-    message(FATAL_ERROR "Cannot read shader artifact limit: ${shader_build_error}")
+    message(FATAL_ERROR "Cannot read shader build limits: ${shader_build_error}")
 endif()
-set_source_files_properties(src/render_graph_shader_creation.cpp PROPERTIES
-    COMPILE_DEFINITIONS "LUDUS_EDITOR_MAX_SHADER_ARTIFACTS=${shader_artifact_limit}")
+separate_arguments(shader_build_limits)
+list(GET shader_build_limits 0 shader_artifact_limit)
+list(GET shader_build_limits 1 shader_pipeline_limit)
+set_property(SOURCE src/render_graph_shader_creation.cpp src/render_graph_configuration_template.cpp
+    src/render_graph_techniques.cpp tests/render_graph_template_tests.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+    "LUDUS_EDITOR_MAX_SHADER_ARTIFACTS=${shader_artifact_limit}" "LUDUS_EDITOR_MAX_SHADER_PIPELINES=${shader_pipeline_limit}")
+
+# Native snapshot transport uses the backend owner's encoded admission policy.
+set(shader_context_policy "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/shader_context.py")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${shader_context_policy}")
+execute_process(COMMAND "${Python3_EXECUTABLE}" -c
+    "import sys; sys.path.insert(0,sys.argv[1]); from ludus_tools.shader_context import MAX_DRAFT_INPUT_BYTES; print(MAX_DRAFT_INPUT_BYTES)"
+    "${PROJECT_SOURCE_DIR}/scripts/python"
+    RESULT_VARIABLE shader_context_status OUTPUT_VARIABLE shader_context_input_limit ERROR_VARIABLE shader_context_error
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(NOT shader_context_status EQUAL 0)
+    message(FATAL_ERROR "Cannot read shader context wire limit: ${shader_context_error}")
+endif()
+set_source_files_properties(src/render_graph_shader_assistance.cpp PROPERTIES
+    COMPILE_DEFINITIONS "LUDUS_EDITOR_SHADER_CONTEXT_INPUT_BYTES=${shader_context_input_limit}")
 
 # Finite option admission has one owner shared with installed host tooling.
 set(graph_options_policy "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/render_graph_options.py")
@@ -148,10 +171,31 @@ configure_file(src/internal/render_graph_layout_policy.h.in
     "${graph_layout_directory}/render_graph_layout_policy.h" @ONLY)
 include_directories("${graph_layout_directory}")
 
+# The CLI validator and package builder own the package source limits; the editor document holds
+# exactly what they admit, so a package the CLI can build always opens and accepts templates.
+set(graph_package_policies
+    "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/render_graph.py"
+    "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/render_graph_build.py")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${graph_package_policies})
+execute_process(COMMAND "${Python3_EXECUTABLE}" -c
+    "import json,sys; sys.path.insert(0,sys.argv[1]); from ludus_tools import render_graph as graph, render_graph_build as build; print(json.dumps({'MAX_ASSETS': graph.MAX_ASSETS, 'MAX_ASSET_BYTES': graph.MAX_ASSET_BYTES, 'MAX_TOTAL_BYTES': graph.MAX_TOTAL_BYTES, 'MAX_FILES': build.MAX_FILES, 'MAX_FILE': build.MAX_FILE, 'MAX_BYTES': build.MAX_BYTES}))"
+    "${PROJECT_SOURCE_DIR}/scripts/python"
+    RESULT_VARIABLE graph_package_status OUTPUT_VARIABLE graph_package_limits ERROR_VARIABLE graph_package_error)
+if(NOT graph_package_status EQUAL 0)
+    message(FATAL_ERROR "Cannot read render-graph package limits: ${graph_package_error}")
+endif()
+foreach(limit MAX_ASSETS MAX_ASSET_BYTES MAX_TOTAL_BYTES MAX_FILES MAX_FILE MAX_BYTES)
+    string(JSON ${limit} GET "${graph_package_limits}" "${limit}")
+endforeach()
+configure_file(src/internal/render_graph_package_policy.h.in
+    "${graph_layout_directory}/render_graph_package_policy.h" @ONLY)
+
 # One colour and spacing token file shared with the init window and the browser editor.
 include(DesignTokens.cmake)
 
 set(editor_viewport_sources
+    src/internal/viewport_device_description.h
+    src/viewport_device_description.cpp
     src/internal/viewport_frame_pump.h
     src/viewport_frame_pump.cpp
     src/internal/viewport_frame_source.h
@@ -186,6 +230,8 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     # RG3b trusted render-graph preview reads exported color back through the same frame reader.
     list(APPEND editor_viewport_sources src/internal/render_graph_preview.h src/render_graph_preview.cpp
         src/internal/viewport_raster_capture.h src/viewport_raster_capture.cpp
+        src/internal/viewport_graph_capture.h src/viewport_graph_capture.cpp
+        src/internal/render_graph_capture_profile.h src/render_graph_capture_profile.cpp
         src/internal/graph_display_frames.h src/graph_display_frames.cpp
         src/internal/world_graph_view.h src/world_graph_view.cpp
         src/internal/render_graph_worker.h src/render_graph_worker.cpp)
@@ -199,7 +245,8 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     list(APPEND editor_viewport_sources
         src/internal/render_graph_targets.h src/render_graph_targets.cpp
         src/internal/render_target_reader.h src/render_target_reader.cpp
-        src/internal/texture_viewer.h src/texture_viewer.cpp)
+        src/internal/texture_viewer.h src/texture_viewer.cpp
+        src/internal/texture_display_conversion.h src/texture_display_conversion.cpp)
     # Play in the viewport: the game's hosted window and its imported frames as a frame source.
     list(APPEND editor_viewport_sources src/internal/play_viewport_source.h src/play_viewport_source.cpp)
     if(APPLE)
@@ -407,7 +454,7 @@ set(editor_profiling_sources
     src/internal/profiling_panel.h src/profiling_panel.cpp
     src/main_window_profiling.cpp)
 
-# Reusable private text presentation; no renderer or shader-tool dependency.
+# Reusable private text presentation and async native assistance; no renderer link.
 add_library(ludus_editor_code STATIC
     src/internal/code_editor.h src/code_editor.cpp
     src/internal/code_editor_panel.h src/code_editor_panel.cpp
@@ -415,7 +462,9 @@ add_library(ludus_editor_code STATIC
     src/internal/code_document.h src/internal/code_edit_scope.h
     src/internal/code_text.h src/code_text.cpp
     src/internal/code_document_controller.h src/code_document_controller.cpp
-    src/internal/code_formatter.h src/code_formatter.cpp)
+    src/internal/code_formatter.h src/code_formatter.cpp
+    src/internal/slang_language_service.h src/slang_language_service.cpp
+    src/internal/code_assistance.h src/code_assistance.cpp)
 file(READ "${PROJECT_SOURCE_DIR}/config/tool_versions.json" editor_tool_versions)
 string(JSON editor_formatter_version GET "${editor_tool_versions}" minimum clang-format)
 get_filename_component(editor_compiler_directory "${CMAKE_CXX_COMPILER}" DIRECTORY)
@@ -431,6 +480,9 @@ target_include_directories(ludus_editor_code PRIVATE src)
 target_compile_definitions(ludus_editor_code PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
 target_link_libraries(ludus_editor_code PUBLIC Qt6::Widgets Ludus::FoundationContainers
     PRIVATE Ludus::FoundationBase)
+if(NOT EMSCRIPTEN)
+    target_link_libraries(ludus_editor_code PRIVATE Qt6::Concurrent)
+endif()
 ludus_apply_project_defaults(ludus_editor_code)
 
 # --- Editor application ------------------------------------------------------
@@ -541,6 +593,7 @@ qt_add_executable(ludus_editor
     src/renderer_workspace.cpp src/renderer_workspace_selection.cpp
     src/internal/render_graph_shader_interface.h
     src/render_graph_shader_interface.cpp
+    src/internal/render_graph_shader_assistance.h src/render_graph_shader_assistance.cpp
     src/internal/render_graph_defaults.h
     src/render_graph_defaults.cpp
     src/internal/render_graph_live_build.h
@@ -567,6 +620,8 @@ qt_add_executable(ludus_editor
     src/internal/render_graph_build_settings.h
     src/internal/error_list.h
     src/error_list.cpp
+    src/internal/path_text.h
+    src/path_text.cpp
     src/internal/project_explorer.h
     src/project_explorer.cpp
     src/internal/project_files.h src/project_files.cpp
@@ -750,6 +805,18 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     endif()
     find_package(Catch2 3 REQUIRED)
     find_package(Qt6 6.4 REQUIRED COMPONENTS Test)
+    add_executable(ludus_document_well_tests tests/main.cpp tests/document_pair_tests.cpp
+        src/internal/document_well.h src/document_well.cpp)
+    set_target_properties(ludus_document_well_tests PROPERTIES AUTOMOC ON)
+    target_include_directories(ludus_document_well_tests PRIVATE src)
+    target_compile_definitions(ludus_document_well_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
+    target_link_libraries(ludus_document_well_tests PRIVATE Qt6::Widgets Qt6::Test
+        Ludus::FoundationBase Catch2::Catch2)
+    ludus_apply_project_defaults(ludus_document_well_tests)
+    ludus_enable_test_exceptions(ludus_document_well_tests)
+    add_test(NAME ludus_document_well_tests COMMAND ludus_document_well_tests)
+    set_tests_properties(ludus_document_well_tests PROPERTIES LABELS "unit;editor;layout" TIMEOUT 30
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     if(APPLE)
         add_executable(ludus_editor_accessibility_tests tests/main.cpp tests/accessibility_tests.mm
             src/qt_accessibility_macos.mm)
@@ -767,6 +834,10 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     target_include_directories(ludus_code_editor_tests PRIVATE src)
     target_compile_definitions(ludus_code_editor_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
     configure_file(tests/formatter_fixture.py generated/formatter_fixture.py COPYONLY)
+    configure_file(tests/slang_server_fixture.py generated/slang_server_fixture.py COPYONLY)
+    target_compile_definitions(ludus_code_editor_tests PRIVATE
+        "LUDUS_SLANG_FIXTURE=\"${CMAKE_CURRENT_BINARY_DIR}/generated/slang_server_fixture.py\""
+        "LUDUS_TEST_PYTHON=\"${Python3_EXECUTABLE}\"")
     target_compile_definitions(ludus_code_editor_tests PRIVATE
         "LUDUS_FORMATTER_FIXTURE=\"${CMAKE_CURRENT_BINARY_DIR}/generated/formatter_fixture.py\"")
     target_link_libraries(ludus_code_editor_tests PRIVATE ludus_editor_code Qt6::Test
@@ -799,7 +870,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     set_tests_properties(ludus_editor_browser_content_tests PROPERTIES
         LABELS "unit;editor;browser" TIMEOUT 60 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(ludus_project_explorer_tests tests/main.cpp tests/project_explorer_tests.cpp
-        src/internal/project_explorer.h src/project_explorer.cpp src/project_files.cpp
+        src/internal/project_explorer.h src/project_explorer.cpp src/internal/path_text.h src/path_text.cpp src/project_files.cpp
         src/internal/editor_icons.h src/editor_icons.cpp)
     set_target_properties(ludus_project_explorer_tests PROPERTIES AUTOMOC ON)
     ludus_editor_add_icons(ludus_project_explorer_tests)
@@ -868,6 +939,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/theme_preference_tests.cpp
         tests/viewport_legibility_tests.cpp
         tests/editor_icons_tests.cpp
+        tests/path_text_tests.cpp
         tests/state_view_tests.cpp
         tests/activity_chip_tests.cpp
         tests/viewport_frame_pump_tests.cpp
@@ -928,6 +1000,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/renderer_workspace.cpp src/renderer_workspace_selection.cpp
         src/internal/render_graph_shader_interface.h
         src/render_graph_shader_interface.cpp
+        src/internal/render_graph_shader_assistance.h src/render_graph_shader_assistance.cpp
         src/internal/render_graph_defaults.h
         src/render_graph_defaults.cpp
     src/internal/render_graph_live_build.h
@@ -1020,6 +1093,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/internal/render_graph_build_settings.h
         src/internal/error_list.h
         src/error_list.cpp
+        src/internal/path_text.h
+        src/path_text.cpp
         src/internal/project_explorer.h
         src/project_explorer.cpp
         src/internal/project_files.h src/project_files.cpp
@@ -1092,7 +1167,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         target_sources(ludus_editor_tests PRIVATE tests/preview_shader_reload_tests.cpp)
         target_sources(ludus_editor_tests PRIVATE tests/viewport_reference_capture_tests.cpp
             tests/reference_comparison_tests.cpp)
-        target_sources(ludus_editor_tests PRIVATE tests/render_graph_preview_tests.cpp tests/restir_benchmark_tests.cpp)
+        target_sources(ludus_editor_tests PRIVATE tests/render_graph_preview_tests.cpp tests/restir_benchmark_tests.cpp
+            tests/raster_mesh_light_benchmark_tests.cpp tests/render_graph_capture_profile_tests.cpp)
         target_compile_definitions(ludus_editor_tests PRIVATE
             "LUDUS_EDITOR_RENDER_GRAPH_FIXTURE=\"${editor_renderer_static_RUNTIME_PACKAGE}\"")
         set(editor_ray_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/raytracing")
@@ -1140,6 +1216,11 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             MANIFEST "${progressive_staged}/main.lushader.json" RUNTIME_PACKAGE)
         target_compile_definitions(ludus_editor_tests PRIVATE
             "LUDUS_EDITOR_PROGRESSIVE_RAY_FIXTURE=\"${editor_progressive_ray_RUNTIME_PACKAGE}\"")
+        # The same sources' frame capture profile, as `render-graph capture-profile` cooks it.
+        ludus_compile_render_graph(TARGET ludus_editor_tests NAME editor_progressive_ray_capture
+            MANIFEST "${progressive_staged}/main.lushader.json" CAPTURE_PROFILE_PACKAGE)
+        target_compile_definitions(ludus_editor_tests PRIVATE
+            "LUDUS_EDITOR_PROGRESSIVE_CAPTURE_PROFILE_FIXTURE=\"${editor_progressive_ray_capture_CAPTURE_PROFILE_PACKAGE}\"")
     endif()
     if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT APPLE)
         target_sources(ludus_editor_tests PRIVATE tests/offscreen_viewport_tests.cpp tests/vulkan_viewport_tests.cpp)
@@ -1228,6 +1309,24 @@ if(EMSCRIPTEN)
 endif()
 
 if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
+    # Keep CPU conversion ownership/cancellation testable without the renderer or shader build.
+    add_executable(ludus_texture_display_conversion_tests tests/main.cpp
+        tests/texture_display_conversion_tests.cpp tests/texture_inspection_tests.cpp
+        tests/viewport_frame_pump_tests.cpp
+        src/internal/texture_display_conversion.h src/texture_display_conversion.cpp
+        src/internal/texture_inspection.h src/texture_inspection.cpp
+        src/internal/viewport_frame_pump.h src/viewport_frame_pump.cpp)
+    set_target_properties(ludus_texture_display_conversion_tests PROPERTIES AUTOMOC ON)
+    target_include_directories(ludus_texture_display_conversion_tests PRIVATE src)
+    target_compile_definitions(ludus_texture_display_conversion_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
+    target_link_libraries(ludus_texture_display_conversion_tests PRIVATE Qt6::Widgets Qt6::Test
+        Ludus::FoundationContainers Ludus::FoundationMath Ludus::FoundationProfiling Catch2::Catch2)
+    ludus_apply_project_defaults(ludus_texture_display_conversion_tests)
+    ludus_enable_test_exceptions(ludus_texture_display_conversion_tests)
+    add_test(NAME ludus_texture_display_conversion_tests COMMAND ludus_texture_display_conversion_tests)
+    set_tests_properties(ludus_texture_display_conversion_tests PROPERTIES LABELS "unit;editor" TIMEOUT 30
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
     add_executable(ludus_render_graph_pipeline_tests tests/main.cpp tests/render_graph_pipeline_tests.cpp tests/render_graph_shader_cleanup_tests.cpp
         src/internal/render_graph_pipeline.h src/render_graph_pipeline.cpp
         src/render_graph_document.cpp src/render_graph_node_ports.cpp src/render_graph_configuration_template.cpp src/render_graph_visibility_template.cpp src/render_graph_compute_template.cpp src/render_graph_line_sampling_template.cpp src/render_graph_point_line_template.cpp src/render_graph_node_transfer.cpp src/render_graph_shader_cleanup.cpp src/render_graph_shader_creation.cpp src/render_graph_scene_authoring.cpp src/render_graph_scene_bundle.cpp src/render_graph_techniques.cpp src/internal/render_graph_pipeline_node.h src/render_graph_pipeline_node.cpp src/render_graph_upscale_node.cpp
@@ -1293,7 +1392,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/internal/render_graph_view_state.h src/internal/render_graph_history.h src/render_graph_history.cpp
         src/internal/render_graph_pipeline.h src/render_graph_pipeline.cpp
         src/internal/render_graph_job.h src/render_graph_job.cpp
-        src/internal/error_list.h src/error_list.cpp src/internal/editor_icons.h src/editor_icons.cpp
+        src/internal/error_list.h src/error_list.cpp src/internal/path_text.h src/path_text.cpp src/internal/editor_icons.h src/editor_icons.cpp
         src/internal/render_graph_creation.h src/render_graph_creation.cpp
         src/internal/render_graph_template_registry.h src/render_graph_template_registry.cpp
         src/internal/render_graph_quick_add.h src/render_graph_quick_add.cpp
@@ -1302,11 +1401,14 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/internal/render_graph_live_build.h src/render_graph_live_build.cpp
         src/internal/render_graph_source_watch.h src/render_graph_source_watch.cpp
         src/internal/viewport_frame_pump.h src/viewport_frame_pump.cpp
-        src/render_graph_defaults.cpp src/render_graph_shader_interface.cpp src/external_code_editor.cpp)
+        src/render_graph_defaults.cpp src/render_graph_shader_interface.cpp src/external_code_editor.cpp
+        src/internal/render_graph_shader_assistance.h src/render_graph_shader_assistance.cpp
+        tests/render_graph_shader_assistance_tests.cpp tests/render_graph_source_view_tests.cpp)
     set_target_properties(ludus_render_graph_configuration_tests PROPERTIES AUTOMOC ON)
     target_include_directories(ludus_render_graph_configuration_tests PRIVATE src)
     target_compile_definitions(ludus_render_graph_configuration_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII
-        LUDUS_EDITOR_PROJECT_ROOT="${PROJECT_SOURCE_DIR}")
+        LUDUS_EDITOR_PROJECT_ROOT="${PROJECT_SOURCE_DIR}"
+        "LUDUS_TEST_PYTHON=\"${Python3_EXECUTABLE}\"")
     # The workspace borrows viewport types, but this test never creates a device or
     # calls their compiled implementations. Keep those dependencies at the header boundary.
     # Thanks to Kitware, "cmake-generator-expressions(7)", COMPILE_ONLY, for the
@@ -1357,10 +1459,10 @@ endif()
 # separate executables. Trusted batch workflows build this target before running
 # the editor CTest label, including during the promotion of newer workflow code.
 if(TARGET ludus_editor_tests)
-    foreach(target IN ITEMS ludus_editor_accessibility_tests ludus_code_editor_tests
+    foreach(target IN ITEMS ludus_editor_accessibility_tests ludus_code_editor_tests ludus_document_well_tests
             ludus_project_explorer_tests ludus_editor_browser_content_tests ludus_render_graph_pipeline_tests
             ludus_shader_interface_tests ludus_render_graph_configuration_tests
-            ludus_render_graph_live_build_tests)
+            ludus_render_graph_live_build_tests ludus_texture_display_conversion_tests)
         if(TARGET ${target})
             add_dependencies(ludus_editor_tests ${target})
         endif()
@@ -1408,6 +1510,7 @@ ludus_editor_apply_precompiled_headers(
     ludus_shader_interface_tests
     ludus_render_graph_configuration_tests
     ludus_render_graph_live_build_tests
+    ludus_texture_display_conversion_tests
 )
 
 # Finite choices are shared by document validation, Properties and canvas details.

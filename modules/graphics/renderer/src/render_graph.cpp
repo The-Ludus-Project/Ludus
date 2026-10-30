@@ -877,6 +877,10 @@ struct RenderGraph::State final
     StaticArray<rhi::RasterBinding, RAY_COMPUTE_BINDING_CAPACITY>
         RayComputeBindings{}; // NOLINT(bugprone-invalid-enum-default-initialization)
     internal::RenderGraphRayPathCapture RayPathCapture;
+    /// Capture-only replacement for every positive authored Accumulate limit; zero keeps the authored limits.
+    uint32 AccumulationLimitOverride = 0;
+    /// Capture-only row bands per ray sample (SetRayTileCount), each rendered by its own submission.
+    uint32 RayTileCount = 1;
     StaticArray<internal::RenderGraphUpscaleProgram, UPSCALE_TARGET_COUNT> UpscalePrograms{};
     StaticArray<bool, UPSCALE_TARGET_COUNT> HasUpscalePrograms{};
     /// Packed bytes of the distinct value sets of the technique being prepared; reused per Update.
@@ -889,6 +893,31 @@ struct RenderGraph::State final
     bool HasForwardLighting = false;
     bool HasForwardProgram = false;
     bool HasForwardResources = false;
+    /// The sample limit an Accumulate on operation averages to: the authored limit, or the capture override
+    /// when one is set and the pass accumulates at all. Zero outputs individual samples.
+    [[nodiscard]] LUDUS_INLINE uint32 GetAccumulationSamples(const format::Pass& operation) const noexcept
+    {
+        return operation.AccumulationSamples != 0 && AccumulationLimitOverride != 0 ? AccumulationLimitOverride
+                                                                                    : operation.AccumulationSamples;
+    }
+    /// The largest accumulation limit of this graph, which bounds the submitted-sample counter.
+    [[nodiscard]] LUDUS_INLINE uint32 GetMaximumAccumulationSamples() const noexcept
+    {
+        return AccumulationLimitOverride != 0 ? AccumulationLimitOverride : format::MAX_ACCUMULATION_SAMPLES;
+    }
+    /// Count one valid ray frame: the next band, and a sample once its last band was submitted.
+    void CountRayFrame() noexcept
+    {
+        if (HasRaySetup == false)
+        {
+            return;
+        }
+        Current->NextRayTile = Current->NextRayTile + 1 < RayTileCount ? Current->NextRayTile + 1 : 0;
+        if (Current->NextRayTile == 0 && Current->SubmittedRaySamples < GetMaximumAccumulationSamples())
+        {
+            ++Current->SubmittedRaySamples;
+        }
+    }
     [[nodiscard]] LUDUS_INLINE Renderer& GetContext(format::Technique technique) noexcept
     {
         const format::Technique context =
@@ -930,7 +959,10 @@ struct RenderGraph::State final
         uint64 DeferredAttachmentBytes = 0;
         RenderGraphSceneRevisions Revisions{};
         RenderGraphCoveragePolicy CoveragePolicy = RenderGraphCoveragePolicy::RejectIncomplete;
+        /// Samples whose every band was submitted; one per frame when untiled.
         uint32 SubmittedRaySamples = 0;
+        /// Band the next ray frame dispatches; zero at a sample boundary.
+        uint32 NextRayTile = 0;
         ~Scene() noexcept
         {
             if (OwnerOrNull != nullptr)
@@ -1122,6 +1154,7 @@ struct RenderGraph::State final
         Current->Cameras = update.Cameras;
         Current->Revision = update.Revision;
         Current->SubmittedRaySamples = 0;
+        Current->NextRayTile = 0;
         if (Report.SceneRevision == update.Revision)
         {
             Report.IsReady = true;
@@ -1384,7 +1417,7 @@ struct RenderGraph::State final
                 {
                     const GpuPreviewGraphInvocation invocation{0,
                                                                {},
-                                                               Passes[i].AccumulationSamples,
+                                                               GetAccumulationSamples(Passes[i]),
                                                                Passes[i].ToneMappingExposure,
                                                                Passes[i].DenoisingQuality,
                                                                {},
@@ -1574,10 +1607,9 @@ struct RenderGraph::State final
         {
             HasValidOutput = submitted == Status::Ready && RecordingStatus == Status::Ready;
             OutputRevision = HasValidOutput == true ? RecordingRevision : 0;
-            if (HasValidOutput == true && HasRaySetup == true &&
-                Current->SubmittedRaySamples < format::MAX_ACCUMULATION_SAMPLES)
+            if (HasValidOutput == true)
             {
-                ++Current->SubmittedRaySamples;
+                CountRayFrame();
             }
         }
         return RecordingStatus == Status::Ready ? submitted : RecordingStatus;
@@ -1613,6 +1645,100 @@ RenderGraph::~RenderGraph() noexcept = default;
 void RenderGraph::Reset() noexcept
 {
     mState.Reset();
+}
+Status RenderGraph::SetAccumulationLimitOverride(uint32 samples) noexcept
+{
+    if (mState.Get() == nullptr)
+    {
+        return Status::InvalidState;
+    }
+    State& state = *mState;
+    if (samples == 0 || samples > MAX_RENDER_GRAPH_CAPTURE_SAMPLES)
+    {
+        return Status::InvalidDescription;
+    }
+    if (state.IsReady == false || state.HasOpenFrame == true || state.HasExternalRecording == true ||
+        state.Current.Get() != nullptr || state.Pending.Get() != nullptr)
+    {
+        return Status::InvalidState;
+    }
+    state.AccumulationLimitOverride = samples;
+    return Status::Ready;
+}
+Status RenderGraph::SetRayTileCount(uint32 tileCount) noexcept
+{
+    if (mState.Get() == nullptr)
+    {
+        return Status::InvalidState;
+    }
+    State& state = *mState;
+    if (tileCount == 0 || tileCount > MAX_RENDER_GRAPH_RAY_TILES)
+    {
+        return Status::InvalidDescription;
+    }
+    if (state.IsReady == false || state.HasOpenFrame == true || state.HasExternalRecording == true ||
+        (state.Current.Get() != nullptr && state.Current->NextRayTile != 0))
+    {
+        return Status::InvalidState;
+    }
+    if (tileCount > 1 && state.Programs.HasRayTiles == false)
+    {
+        return Status::Unsupported;
+    }
+    state.RayTileCount = tileCount;
+    if (state.Current.Get() != nullptr)
+    {
+        // The prepared sequence dispatches the previous band layout.
+        state.Current->IsRayGraphPrepared = false;
+    }
+    return Status::Ready;
+}
+uint32 RenderGraph::GetSubmittedRaySamples() const noexcept
+{
+    return mState.Get() == nullptr || mState->Current.Get() == nullptr ? 0 : mState->Current->SubmittedRaySamples;
+}
+Status RenderGraph::GetRayWorkload(RenderGraphRayWorkload& outWorkload) const noexcept
+{
+    if (mState.Get() == nullptr || mState->Current.Get() == nullptr || mState->HasRaySetup == false)
+    {
+        return Status::NotReady;
+    }
+    const State& state = *mState;
+    RenderGraphRayWorkload workload;
+    for (usize pass = 0; pass < state.Header.PassCount; ++pass)
+    {
+        if (state.Passes[pass].Program != format::Technique::RayTracing)
+        {
+            continue;
+        }
+        const format::Resource& color = state.Resources[state.Passes[pass].Color];
+        workload.Pixels += uint64{color.Width} * color.Height;
+        workload.Lights = math::Max(workload.Lights, state.Current->RayPasses[pass].GetLightCount());
+    }
+    outWorkload = workload;
+    return Status::Ready;
+}
+Status RenderGraph::GetAccumulation(uint32 pass, rhi::BufferHandle& outBuffer) const noexcept
+{
+    if (mState.Get() == nullptr || mState->Current.Get() == nullptr)
+    {
+        return Status::NotReady;
+    }
+    const State& state = *mState;
+    if (pass >= state.Header.PassCount || state.Passes[pass].Program != format::Technique::RayTracing)
+    {
+        return Status::InvalidDescription;
+    }
+    if (state.HasValidOutput == false || state.Producer.IsNull() == true ||
+        rhi::GetStatus(state.Device, state.Producer) != Status::Ready)
+    {
+        return Status::NotReady;
+    }
+    // The lookup reads the context's job table without changing it; the internal bridge takes a mutable context.
+    return internal::RenderGraphRayPass::GetAccumulation(
+        const_cast<Renderer&>(state.Contexts[static_cast<usize>(format::Technique::RayTracing)]),
+        state.Current->RayPasses[pass].GetJob(),
+        outBuffer);
 }
 Status RenderGraph::RequestRayPathCapture(const RayPathCaptureDescription& description) noexcept
 {
@@ -2332,8 +2458,8 @@ Status RenderGraph::Poll() noexcept
                     state.Programs.RayCompute,
                     state.Programs.RayImageVertex,
                     state.Programs.RayImageFragment,
-                    {internal::GRAPH_RAY_CPU_BYTES,
-                     internal::GRAPH_RAY_GPU_BYTES,
+                    {RENDER_GRAPH_RAY_CPU_BYTES,
+                     RENDER_GRAPH_RAY_GPU_BYTES,
                      1,
                      {state.StorageBuffers.GetData(), state.StorageBufferCount},
                      state.Programs.NativeRayStages.Artifact.HasNativeRayStages == true
@@ -2943,7 +3069,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             state.Programs.HasPersistentRayBuffers == true
                 ? BorrowedView<const GpuPreviewGraphBuffer>{buffers.GetData(), buffers.GetSize()}
                 : BorrowedView<const GpuPreviewGraphBuffer>{},
-            operation.AccumulationSamples,
+            state.GetAccumulationSamples(operation),
             operation.ToneMappingExposure,
             operation.DenoisingQuality,
             state.RayPathCapture.GetBuffer(),
@@ -3038,8 +3164,9 @@ bool RenderGraph::HasPendingSamples() const noexcept
             hasLaterWriter = hasLaterWriter == true || (state.Passes[next].Program == format::Technique::RayTracing &&
                                                         state.Passes[next].Color == operation.Color);
         }
+        const uint32 limit = state.GetAccumulationSamples(operation);
         if (hasLaterWriter == false && operation.Program == format::Technique::RayTracing &&
-            (operation.AccumulationSamples == 0 || state.Current->SubmittedRaySamples < operation.AccumulationSamples))
+            (limit == 0 || state.Current->SubmittedRaySamples < limit))
         {
             return true;
         }
@@ -3104,6 +3231,13 @@ Status RenderGraph::PrepareEncoding() noexcept
             visibility.Attachment.DepthStore = static_cast<rhi::RasterStore>(producer.DepthStore);
             visibilityOrNull = &visibility;
         }
+        // Every pass dispatches the same band in each frame, from a uniform copy prepared for that band.
+        const Status tiles =
+            state.Current->RayPasses[pass].PrepareTiles(state.RayTileCount, state.Current->NextRayTile);
+        if (tiles != Status::Ready)
+        {
+            return tiles == Status::Pending ? Status::NotReady : tiles;
+        }
         jobs[count] = state.Current->RayPasses[pass].GetJob();
         targets[count++] = state.Textures[state.Passes[pass].Color];
     }
@@ -3111,9 +3245,10 @@ Status RenderGraph::PrepareEncoding() noexcept
     {
         static_cast<void>(rhi::DiscardOrderedGraph(state.Device, state.Current->RayGraph));
         const Status prepared =
-            state.Contexts[static_cast<usize>(format::Technique::RayTracing)].PrepareGpuPreviewGraphSequence(
+            state.Contexts[static_cast<usize>(format::Technique::RayTracing)].prepareGpuPreviewGraphSequence(
                 {jobs.GetData(), count},
                 {targets.GetData(), count},
+                state.Current->NextRayTile,
                 state.Current->RayGraph,
                 visibilityOrNull);
         if (prepared != Status::Ready)
@@ -3252,10 +3387,9 @@ Status RenderGraph::ConfirmSubmission(rhi::SubmissionToken completion) noexcept
         state.Producer = completion;
         state.HasValidOutput = state.RecordingStatus == Status::Ready && submitted != Status::Failed;
         state.OutputRevision = state.HasValidOutput == true ? state.RecordingRevision : 0;
-        if (state.HasValidOutput == true && state.HasRaySetup == true &&
-            state.Current->SubmittedRaySamples < format::MAX_ACCUMULATION_SAMPLES)
+        if (state.HasValidOutput == true)
         {
-            ++state.Current->SubmittedRaySamples;
+            state.CountRayFrame();
         }
         state.HasExternalRecording = false;
         return state.RecordingStatus == Status::Ready ? submitted : state.RecordingStatus;

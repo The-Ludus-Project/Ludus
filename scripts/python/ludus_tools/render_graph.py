@@ -38,6 +38,9 @@ PLAN_VERSION = 1
 MAX_ASSET_BYTES = 128 * 1024
 MAX_TOTAL_BYTES = 2 * 1024 * 1024
 MAX_ASSETS = 32
+GRAPH_SOURCE_REPAIR = ("Remove Subgraph nodes whose library graphs the package no longer needs (in the editor, "
+                       "right-click each one on the canvas and choose Delete Subgraph and Library, which also "
+                       "deletes the library and the shaders only it uses) and try again.")
 MAX_DEPTH = 8
 MAX_CONFIGURATIONS = 8
 MAX_NODES = 128
@@ -517,12 +520,18 @@ class _Library:
                  "recursive graph import: " + " -> ".join(self.label(p) for p in [*self.active, path]))
         if path in self.assets:
             return self.assets[path]
-        _require(len(self.active) < MAX_DEPTH and len(self.assets) < MAX_ASSETS,
-                 "Capacity", where, "import depth/file capacity exceeded")
+        _require(len(self.active) < MAX_DEPTH, "Capacity", where,
+                 f"subgraphs nest {len(self.active) + 1} levels deep, more than the {MAX_DEPTH} levels one graph may "
+                 "import. Flatten a nested Subgraph by moving its nodes into its parent configuration.")
+        _require(len(self.assets) < MAX_ASSETS, "Capacity", where,
+                 f"the graph already imports {len(self.assets)} graph documents, the most one package may "
+                 f"({MAX_ASSETS}). {GRAPH_SOURCE_REPAIR}")
         self.attempted.add(path)
         data = _read(path)
         self.total += len(data)
-        _require(self.total <= MAX_TOTAL_BYTES, "Capacity", where, "package exceeds 2 MiB of graph sources")
+        _require(self.total <= MAX_TOTAL_BYTES, "Capacity", where,
+                 f"the imported graph documents total {self.total} bytes, more than one package may "
+                 f"({MAX_TOTAL_BYTES}). {GRAPH_SOURCE_REPAIR}")
         # Disabled nodes are validated as authored, then forwarded out of every later stage.
         asset = _bypass_disabled(_parse(data, where), where)
         _require(asset["id"] not in self.identities, "DuplicateIdentity", where,

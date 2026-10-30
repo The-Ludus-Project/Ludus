@@ -3,6 +3,7 @@
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/content/scene_format/limits.h>
+#include <ludus/content/scene_format/material.h>
 
 #include <cstddef>
 #include <string_view>
@@ -33,6 +34,8 @@
 /// keeps the version 5 records except the materials (MaterialRecordV6 adds a
 /// linear surface map, an emission map and a normal-map strength) and the
 /// vertices (VertexRecordV6 adds a tangent frame), within the same import profile.
+/// Version 7 appends MaterialExtensionV7 after each MaterialRecordV6 to preserve
+/// source names, reflectance and typed optical parameters; other v6 records remain unchanged.
 ///
 /// The record structs document the exact wire layout and are checked with
 /// static_asserts; serialise them field by field in little-endian order rather
@@ -61,6 +64,29 @@ inline constexpr uint32 VERSION_5 = 5;
 /// Version 6: version 5 records with surface/emission maps (MaterialRecordV6) and
 /// per-vertex tangents (VertexRecordV6).
 inline constexpr uint32 VERSION_6 = 6;
+/// Version 7: version 6 plus counted source names, source identities, reflectance
+/// factors and typed optical parameters (MaterialExtensionV7 after each v6 material).
+inline constexpr uint32 VERSION_7 = 7;
+/// Exact serialized material extension width, derived from its field schema.
+inline constexpr usize MATERIAL_EXTENSION_V7_BYTES =
+    3 * sizeof(uint32) + MAX_MATERIAL_NAME_BYTES +
+    (MATERIAL_RGB_CHANNELS + MATERIAL_SCATTERING_FLOATS) * sizeof(float32);
+/// Version 7 extension field order, serialized individually without host padding.
+struct MaterialExtensionV7 final
+{
+    uint32 SourceIdentity;              ///< Source command index plus one, zero for non-source-authored materials.
+    uint32 NameBytes;                   ///< Counted UTF-8 bytes, at most MAX_MATERIAL_NAME_BYTES.
+    char Name[MAX_MATERIAL_NAME_BYTES]; ///< Name bytes followed by zero padding; inline materials may have no name.
+    uint32 Model;                       ///< MaterialModel tag.
+    float32 Reflectance[MATERIAL_RGB_CHANNELS]; ///< Linear RGB factor multiplying the base texture; [0,1].
+    float32 Eta[MATERIAL_RGB_CHANNELS];         ///< Real complex-IOR part.
+    float32 K[MATERIAL_RGB_CHANNELS];           ///< Imaginary complex-IOR part.
+    float32 AlphaU;                             ///< Resolved GGX alpha, preserving remaproughness=false semantics.
+    float32 AlphaV;                             ///< Resolved GGX alpha in the second tangent direction.
+    float32 CoatingEta;                         ///< Retained dielectric coating IOR.
+    float32 CoatingThickness;                   ///< Retained PBRT layer optical thickness.
+};
+static_assert(sizeof(MaterialExtensionV7) == MATERIAL_EXTENSION_V7_BYTES);
 /// Linear Rec.709 RGB photometric proxy; not a spectral PBRT representation.
 inline constexpr uint32 LIGHTING_PROFILE_REC709_PHOTOMETRIC = 1;
 /// Largest analytic light list; selection must never silently discard sources.
@@ -107,7 +133,7 @@ inline constexpr float32 MAX_EMISSION = 10000.0F;
 struct Header final
 {
     char Magic[8];        ///< MAGIC.
-    uint32 Version;       ///< VERSION_1 through VERSION_6.
+    uint32 Version;       ///< VERSION_1 through VERSION_7.
     uint32 MeshCount;     ///< 1..BundleLimits::Meshes of the version.
     uint32 MaterialCount; ///< 1..BundleLimits::Materials of the version.
     uint32 TextureCount;  ///< 0..BundleLimits::Textures of the version.
@@ -206,8 +232,8 @@ inline constexpr uint32 TRIANGLE_CORNERS = 3;
 /// Per-mesh header, followed by its vertices and uint32 triangle-list indices.
 struct MeshRecord final
 {
-    uint32 VertexCount; ///< 1..MAX_VERTICES.
-    uint32 IndexCount;  ///< 1..MAX_INDICES, a multiple of three.
+    uint32 VertexCount; ///< Positive; bounded by the version's BundleLimits and encoded payload.
+    uint32 IndexCount;  ///< Positive multiple of TRIANGLE_CORNERS; bounded by the version's BundleLimits.
 };
 /// Interleaved mesh vertex (versions 1, 2, 4 and 5).
 struct VertexRecord final
@@ -225,8 +251,6 @@ struct VertexRecordV3 final
     float32 Uv[2];       ///< Mip-zero surface texture coordinate.
     float32 BakeUv[2];   ///< Independent normalized bake chart coordinate.
 };
-/// Number of float32 components in a VertexRecord.
-inline constexpr usize VERTEX_COMPONENTS = 8;
 /// Components of a position, normal or direction (X, Y, Z).
 inline constexpr usize SPATIAL_COMPONENTS = 3;
 /// Tangent components of a VertexRecordV6: direction XYZ and handedness W.
@@ -404,10 +428,10 @@ static_assert(MAGIC.size() == sizeof(Header::Magic));
 /// True for a version this header describes.
 [[nodiscard]] constexpr bool IsSupportedVersion(uint32 version) noexcept
 {
-    return version >= VERSION_1 && version <= VERSION_6;
+    return version >= VERSION_1 && version <= VERSION_7;
 }
 /// True when the version carries version 3 material emission terms, object source
-/// IDs and the lighting trailer (versions 3 to 6).
+/// IDs and the lighting trailer (versions 3 through 7).
 [[nodiscard]] constexpr bool HasLightingRecords(uint32 version) noexcept
 {
     return version >= VERSION_3;
@@ -436,7 +460,7 @@ static_assert(MAGIC.size() == sizeof(Header::Magic));
     return version >= VERSION_6;
 }
 /// Admission ceilings for a supported version: the import profile for versions 5
-/// and 6, otherwise the resident reference profile.
+/// through 7, otherwise the resident reference profile.
 [[nodiscard]] constexpr const BundleLimits& GetBundleLimits(uint32 version) noexcept
 {
     return version >= VERSION_5 ? IMPORT_LIMITS : RESIDENT_REFERENCE_LIMITS;

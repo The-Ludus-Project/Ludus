@@ -90,6 +90,8 @@ struct IrTexture final
     float64 Gamma = IR_DEFAULT_TEXTURE_GAMMA;
     bool IsInverted = false;
     bool IsRepeated = true;
+    /// A PBRT float texture occupies a separate declaration namespace from spectrum textures.
+    bool IsScalar = false;
     /// Source location of the declaration.
     uint32 SourceFile = IR_NONE;
     uint32 Line = 0;
@@ -119,6 +121,10 @@ struct IrMaterial final
     String Name;
     /// Source material type (diffuse, conductor, ...), kept for the report.
     String SourceType;
+    /// Synthetic shape-coverage variant; not another source material declaration.
+    bool IsShapeVariant = false;
+    /// Original material index for a shape variant, or IR_NONE for the default.
+    uint32 VariantSource = IR_NONE;
     /// Linear RGB base colour (multiplied with the texture when present).
     float64 BaseColour[IR_RGB_CHANNEL_COUNT] = {.5, .5, .5};
     /// Index into SceneIr::Textures or IR_NONE.
@@ -156,6 +162,11 @@ struct IrMaterial final
     /// writes Opacity times the opacity source into the cooked base texture's alpha.
     float64 Opacity = 1.0;
     uint32 OpacityTexture = IR_NONE;
+    /// PBRT float imagemap: use non-opaque alpha, otherwise the decoded RGB mean;
+    /// apply the source encoding, scale and invert. Other opacity maps are raw data.
+    bool IsOpacityFloatImage = false;
+    /// Shape alpha supplies coverage independently of the base-colour image alpha.
+    bool IsBaseAlphaIgnored = false;
     /// Channel of OpacityTexture holding opacity (0-2 RGB, 3 alpha), or
     /// IR_DETECT_OPACITY_CHANNEL: alpha when the image has any, otherwise red.
     uint8 OpacityChannel = IR_DETECT_OPACITY_CHANNEL;
@@ -172,6 +183,9 @@ struct IrMaterial final
 /// Indexed triangle mesh in object space.
 struct IrMesh final
 {
+    /// Vertex records before exact compaction, or zero when not compacted. Used
+    /// only for source statistics; Positions owns the vertices used by geometry.
+    uint32 SourceVertexCount = 0;
     /// xyz triples.
     Array<float32> Positions;
     /// xyz triples, or empty when the source has none (computed by the planner).

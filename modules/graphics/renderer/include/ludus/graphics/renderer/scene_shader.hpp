@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ludus/content/scene_format/material.h>
+
 #include <ludus/foundation/base/types.h>
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/math/vector.hpp>
@@ -27,6 +29,10 @@ inline constexpr foundation::uint32 INHERIT_SCENE_MATERIAL = DEFAULT_SCENE_MATER
 /// Borrowed fixed-mip RGB reflection material. Scene graph Update copies all values
 /// and texture bytes before returning. Maps are RGBA8 unorm or sRGB color/emission;
 /// surface data is unorm RG normal, B roughness and A metallic. Omitted maps are white.
+/// Typed conductor evaluation uses constant Scattering alpha/Eta/K instead of the
+/// base colour and roughness/metallic multipliers; surface normals still apply.
+/// Layered coatings use the base colour for their diffuse substrate and keep the
+/// constant Scattering alpha/IOR/thickness; normal mapping still applies.
 struct SceneShaderMaterial final
 {
     foundation::math::Vector3 BaseColor{0.5F, 0.5F, 0.5F}; ///< Linear reflectance in [0,1].
@@ -41,6 +47,8 @@ struct SceneShaderMaterial final
     rhi::TextureCpuContent SurfaceTexture{};               ///< Optional linear data mip, copied synchronously.
     rhi::TextureCpuContent EmissionTexture{};              ///< Optional linear/sRGB emission multiplier.
     bool HasError = false; ///< Import diagnostic: error material in preview; reject strict admission.
+    /// Typed optical parameters; default preserves the legacy metallic/roughness model.
+    content::scene_format::MaterialScattering Scattering{};
 };
 /// Optional shared scene inputs. Empty material assignments use the neutral default;
 /// malformed references use diagnostic magenta only under DiagnosticColor admission.

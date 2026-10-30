@@ -230,7 +230,13 @@ void MainWindow::renderActivity()
 
 void MainWindow::updateContextStrip()
 {
-    const bool shouldShow = mIsViewportFocused == false && mDocuments->GetActiveDocumentOrNull() == Renderer_;
+    const bool isPaired = mDocuments->IsDocumentCurrent(Renderer_) == true &&
+                          mDocuments->IsDocumentCurrent(World_) == true &&
+                          mDocuments->GetGroupIndex(Renderer_) != mDocuments->GetGroupIndex(World_) &&
+                          mDocuments->GetSplitOrientation() == Qt::Horizontal;
+    Renderer_->SetSourceCompanionLayout(isPaired);
+    World_->SetChromeVisible(mIsViewportFocused == false && isPaired == false);
+    const bool shouldShow = mIsViewportFocused == false && mDocuments->IsDocumentCurrent(Renderer_) == true;
     if (mRenderGraphToolbar->isHidden() == shouldShow)
     {
         mRenderGraphToolbar->setVisible(shouldShow);
@@ -261,6 +267,9 @@ void MainWindow::renderDocumentTitles()
 
 void MainWindow::renderGraphCommands()
 {
+    mCodeViewportAction->setEnabled(Renderer_->GetDocument().IsLoaded() == true &&
+                                    mDocuments->IsDocumentAvailable(Renderer_) == true &&
+                                    mDocuments->IsDocumentAvailable(World_) == true);
     mRemoveUnusedShadersAction->setEnabled(Renderer_->CanRemoveUnusedShaders());
     const bool canBuild = Renderer_->CanBuild();
     for (QAction* action : {mValidateGraphAction, mBuildGraphAction, mBuildPreviewGraphAction, mCookGraphAction})

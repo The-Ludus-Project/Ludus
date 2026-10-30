@@ -45,3 +45,6 @@ failures carry an authored `location`. See [edit and reload graphs](render-graph
 `render-graph ray-path-capture` compiles the editor-only diagnostic capture
 variant of a published generation; see
 [capture ray paths for inspection](render-graph-authoring.md#capture-ray-paths-for-inspection).
+`render-graph capture-profile` compiles the frame capture profile of a published
+generation the same way; see the capture budget under
+[author pipeline nodes](render-graph-authoring.md#author-pipeline-nodes).

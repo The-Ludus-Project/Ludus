@@ -17,8 +17,9 @@ add_custom_command(
     COMMENT "Embedding the LTC table"
     VERBATIM)
 set_source_files_properties("${ludus_ltc_table_source}" PROPERTIES INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/src")
-add_library(ludus_graphics_renderer STATIC src/gpu_denoiser.cpp src/render_graph.cpp src/render_graph_forward.cpp src/render_graph_deferred.cpp src/raster_mesh_lights.cpp src/render_graph_scene_resources.cpp src/visibility_buffer.cpp src/render_graph_ray.cpp src/render_graph_ray_path.cpp src/render_graph_upscale.cpp src/render_graph_metalfx.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/gpu_preview_camera.cpp src/gpu_preview_graph.cpp src/render_graph_storage.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/lighting.cpp src/static_lighting.cpp src/environment.cpp src/reference_bsdf.cpp src/ltc_table.cpp "${ludus_ltc_table_source}" src/reference_scene.cpp src/reference_path.cpp src/reference_light_sampling.cpp src/reference_compute.cpp)
+add_library(ludus_graphics_renderer STATIC src/gpu_denoiser.cpp src/render_graph.cpp src/render_graph_forward.cpp src/render_graph_deferred.cpp src/raster_mesh_lights.cpp src/raster_mesh_light_polygons.cpp src/render_graph_scene_resources.cpp src/visibility_buffer.cpp src/render_graph_ray.cpp src/render_graph_ray_path.cpp src/render_graph_capture.cpp src/render_graph_upscale.cpp src/render_graph_metalfx.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/gpu_preview_camera.cpp src/gpu_preview_graph.cpp src/render_graph_storage.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/lighting.cpp src/static_lighting.cpp src/environment.cpp src/reference_bsdf.cpp src/reference_coating.cpp src/ltc_table.cpp "${ludus_ltc_table_source}" src/reference_scene.cpp src/reference_path.cpp src/reference_light_sampling.cpp src/reference_compute.cpp)
 add_library(Ludus::GraphicsRenderer ALIAS ludus_graphics_renderer)
+install(FILES "${PROJECT_SOURCE_DIR}/third_party/pbrt/LICENSE.txt" DESTINATION "${CMAKE_INSTALL_DATADIR}/${LUDUS_ENGINE_PACKAGE_NAME}/licenses" RENAME pbrt-LICENSE)
 include(EngineDenoiserOptions)
 if(LUDUS_ENABLE_OIDN)
     target_compile_definitions(ludus_graphics_renderer PRIVATE LUDUS_ENABLE_OIDN=1)
@@ -43,6 +44,7 @@ target_sources(ludus_graphics_renderer PUBLIC FILE_SET public_headers TYPE HEADE
     include/ludus/graphics/renderer/scene_shader.hpp
     include/ludus/graphics/renderer/render_graph.hpp
     include/ludus/graphics/renderer/render_graph_activation.hpp
+    include/ludus/graphics/renderer/render_graph_capture.hpp
     include/ludus/graphics/renderer/renderer.hpp
     include/ludus/graphics/renderer/world_grid.hpp
     include/ludus/graphics/renderer/views.hpp
@@ -59,8 +61,8 @@ target_sources(ludus_graphics_renderer PUBLIC FILE_SET public_headers TYPE HEADE
     include/ludus/graphics/renderer/gpu_preview.hpp
     include/ludus/graphics/renderer/viewport_frame.hpp
     include/ludus/graphics/renderer/viewport.hpp)
-target_link_libraries(ludus_graphics_renderer PUBLIC Ludus::FoundationBase Ludus::FoundationMath Ludus::FoundationThreading Ludus::GraphicsRhi Ludus::RenderGraphFormat
-    PRIVATE Ludus::FoundationContainers Ludus::FoundationHash Ludus::FoundationThreadingProfiling Ludus::FoundationTime Ludus::Resources Ludus::SceneFormat)
+target_link_libraries(ludus_graphics_renderer PUBLIC Ludus::FoundationBase Ludus::FoundationMath Ludus::FoundationThreading Ludus::GraphicsRhi Ludus::RenderGraphFormat Ludus::SceneFormat
+    PRIVATE Ludus::FoundationContainers Ludus::FoundationHash Ludus::FoundationThreadingProfiling Ludus::FoundationTime Ludus::Resources)
 target_compile_options(ludus_graphics_renderer PRIVATE $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-ffp-contract=off>)
 ludus_apply_project_defaults(ludus_graphics_renderer)
 if(EMSCRIPTEN)
@@ -73,7 +75,7 @@ install(TARGETS ludus_graphics_renderer EXPORT LudusTargets ARCHIVE DESTINATION 
 # Source is cooked by the existing installed shader helper; no runtime compiler dependency.
 install(FILES include/ludus/graphics/renderer/detail/deferred_binding_slots.inc
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/ludus/graphics/renderer/detail")
-install(FILES "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/scene_data.h" include/ludus/graphics/renderer/scene_shader_layout.h include/ludus/graphics/renderer/lighting_layout.h include/ludus/graphics/renderer/deferred_layout.h include/ludus/graphics/renderer/detail/deferred_binding_slots.inc shaders/renderer_deferred_fullscreen.slang shaders/renderer_deferred_material.slang shaders/renderer_deferred_lighting.slang shaders/renderer_mesh_lights.slang shaders/renderer_deferred_depth.slang shaders/recipes.json shaders/renderer_gpu_preview_layout.h shaders/scene_shader.slang shaders/scene_payload.slang shaders/visibility_buffer.slang shaders/ray_shader.slang shaders/ray_triangle_loop.slang shaders/ray_line_visibility.slang shaders/ray_bvh_nodes.slang shaders/ray_bvh_traversal.slang shaders/renderer_flat.slang shaders/renderer_composite.slang shaders/renderer_overlay.slang shaders/renderer_grid.slang shaders/renderer_material.slang shaders/renderer_lit.slang shaders/renderer_clustered.slang shaders/renderer_shadow.slang shaders/renderer_output.slang shaders/renderer_gpu_preview.slang shaders/renderer_gpu_preview_visibility_full.slang shaders/renderer_gpu_preview_hit_cached.slang shaders/renderer_gpu_preview_group32.slang shaders/renderer_gpu_preview_group64.slang shaders/renderer_gpu_preview_group128.slang shaders/renderer_gpu_preview_group8x8.slang shaders/renderer_gpu_preview_image.slang shaders/renderer_reference.slang shaders/renderer_reference_layout.h shaders/reference_light_sampling.slang shaders/renderer_surface.slang shaders/renderer_clustered_surface.slang shaders/renderer_surface_functions.slang shaders/renderer_authored.slang shaders/renderer_clustered_authored.slang shaders/renderer_lit_debug.slang shaders/renderer_clustered_authored_debug.slang shaders/renderer_environment_layout.h shaders/ltc_table.slang shaders/ltc_table_layout.h DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
+install(FILES "${PROJECT_SOURCE_DIR}/modules/content/scene_format/include/ludus/content/scene_format/material.h" "${PROJECT_SOURCE_DIR}/modules/content/render_graph_format/include/ludus/content/render_graph_format/scene_data.h" include/ludus/graphics/renderer/scene_shader_layout.h include/ludus/graphics/renderer/lighting_layout.h include/ludus/graphics/renderer/deferred_layout.h include/ludus/graphics/renderer/detail/deferred_binding_slots.inc shaders/renderer_deferred_fullscreen.slang shaders/renderer_deferred_material.slang shaders/renderer_deferred_lighting.slang shaders/renderer_mesh_lights.slang shaders/renderer_deferred_depth.slang shaders/recipes.json shaders/renderer_gpu_preview_layout.h shaders/scene_shader.slang shaders/scene_payload.slang shaders/visibility_buffer.slang shaders/ray_shader.slang shaders/ray_triangle_loop.slang shaders/ray_line_visibility.slang shaders/ray_bvh_nodes.slang shaders/ray_bvh_traversal.slang shaders/renderer_flat.slang shaders/renderer_composite.slang shaders/renderer_overlay.slang shaders/renderer_grid.slang shaders/renderer_material.slang shaders/renderer_lit.slang shaders/renderer_clustered.slang shaders/renderer_shadow.slang shaders/renderer_output.slang shaders/renderer_gpu_preview.slang shaders/renderer_gpu_preview_visibility_full.slang shaders/renderer_gpu_preview_hit_cached.slang shaders/renderer_gpu_preview_group32.slang shaders/renderer_gpu_preview_group64.slang shaders/renderer_gpu_preview_group128.slang shaders/renderer_gpu_preview_group8x8.slang shaders/renderer_gpu_preview_image.slang shaders/renderer_reference.slang shaders/renderer_reference_layout.h shaders/reference_light_sampling.slang shaders/renderer_surface.slang shaders/renderer_clustered_surface.slang shaders/renderer_surface_functions.slang shaders/material_scattering.slang shaders/coated_diffuse.slang shaders/coated_diffuse_layout.h shaders/renderer_authored.slang shaders/renderer_clustered_authored.slang shaders/renderer_lit_debug.slang shaders/renderer_clustered_authored_debug.slang shaders/renderer_environment_layout.h shaders/ltc_table.slang shaders/ltc_table_layout.h DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/Ludus/shaders")
 # Engine-owned default render graph: the RendererStatic static opaque profile the editor
 # shows when a project has no graph of its own, and the read-only starting point a project
 # copies when it customizes the renderer. Profiles follow the host device family, as the
@@ -110,13 +112,19 @@ install(DIRECTORY "${default_render_graph}/" DESTINATION "${CMAKE_INSTALL_DATADI
 if(LUDUS_BUILD_TESTS)
     find_package(Catch2 3 REQUIRED CONFIG)
     # Exercise the production renderer/RHI registry with the existing deterministic backend.
-    add_executable(ludus_renderer_tests tests/renderer_tests.cpp tests/world_grid_tests.cpp tests/tone_mapping_tests.cpp tests/reference_backend.cpp src/gpu_denoiser.cpp src/render_graph.cpp src/render_graph_forward.cpp src/render_graph_deferred.cpp src/raster_mesh_lights.cpp src/render_graph_scene_resources.cpp src/visibility_buffer.cpp src/render_graph_ray.cpp src/render_graph_ray_path.cpp src/render_graph_upscale.cpp src/render_graph_metalfx.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/gpu_preview_camera.cpp src/gpu_preview_graph.cpp src/render_graph_storage.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/lighting.cpp src/static_lighting.cpp src/environment.cpp src/reference_bsdf.cpp src/ltc_table.cpp "${ludus_ltc_table_source}" src/reference_scene.cpp src/reference_path.cpp src/reference_light_sampling.cpp src/reference_compute.cpp tests/views_tests.cpp tests/static_lighting_tests.cpp tests/render_graph_tests.cpp tests/render_graph_ray_path_decode_tests.cpp tests/render_graph_activation_tests.cpp tests/render_graph_pool_tests.cpp tests/scene_shader_tests.cpp tests/reference_emitter_selection_tests.cpp tests/ltc_table_tests.cpp tests/reference_light_sampling_tests.cpp tests/raster_mesh_lights_tests.cpp tests/reference_bvh_tests.cpp tests/polygonal_light_sampling_oracle.cpp tests/polygonal_light_sampling_oracle_tests.cpp
+    add_executable(ludus_renderer_tests tests/renderer_tests.cpp tests/world_grid_tests.cpp tests/tone_mapping_tests.cpp tests/reference_backend.cpp src/gpu_denoiser.cpp src/render_graph.cpp src/render_graph_forward.cpp src/render_graph_deferred.cpp src/raster_mesh_lights.cpp src/raster_mesh_light_polygons.cpp src/render_graph_scene_resources.cpp src/visibility_buffer.cpp src/render_graph_ray.cpp src/render_graph_ray_path.cpp src/render_graph_capture.cpp src/render_graph_upscale.cpp src/render_graph_metalfx.cpp src/render_graph_ray_scene.cpp src/gpu_preview_ray.cpp src/gpu_preview_camera.cpp src/gpu_preview_graph.cpp src/render_graph_storage.cpp src/scene_shader.cpp src/render_graph_activation.cpp src/render_graph_pool.cpp src/renderer.cpp src/world_grid.cpp src/uniform_set_table.cpp src/viewport.cpp src/views.cpp src/overlays.cpp src/lighting.cpp src/static_lighting.cpp src/environment.cpp src/reference_bsdf.cpp src/reference_coating.cpp src/ltc_table.cpp "${ludus_ltc_table_source}" src/reference_scene.cpp src/reference_path.cpp src/reference_light_sampling.cpp src/reference_compute.cpp tests/views_tests.cpp tests/static_lighting_tests.cpp tests/render_graph_tests.cpp tests/render_graph_ray_path_decode_tests.cpp tests/render_graph_activation_tests.cpp tests/render_graph_pool_tests.cpp tests/scene_shader_tests.cpp tests/reference_emitter_selection_tests.cpp tests/ltc_table_tests.cpp tests/reference_light_sampling_tests.cpp tests/raster_mesh_lights_tests.cpp tests/reference_bvh_tests.cpp tests/polygonal_light_sampling_oracle.cpp tests/polygonal_light_sampling_oracle_tests.cpp
         ../rhi/src/rhi.cpp ../rhi/src/device.cpp ../rhi/src/dxil_container.cpp ../rhi/src/gpu_scope.cpp ../rhi/src/gpu_pass_timing_buffer.cpp ../rhi/src/profile.cpp ../rhi/src/raster.cpp ../rhi/tests/reference_raster.cpp ../rhi/src/ray_unsupported.cpp)
     target_include_directories(ludus_renderer_tests PRIVATE include ../rhi/include ../rhi/src ../rhi/tests "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
     target_link_libraries(ludus_renderer_tests PRIVATE Ludus::FoundationStrings Ludus::RenderGraphFormat Ludus::Platform Ludus::FoundationContainers Ludus::FoundationMath Ludus::FoundationThreading Ludus::FoundationThreadingProfiling Ludus::FoundationTime Ludus::Resources Ludus::FoundationHash Catch2::Catch2WithMain)
     target_compile_options(ludus_renderer_tests PRIVATE $<$<CXX_COMPILER_ID:Clang,AppleClang,GNU>:-ffp-contract=off>)
     ludus_apply_project_defaults(ludus_renderer_tests)
     ludus_enable_test_exceptions(ludus_renderer_tests)
+    add_executable(ludus_reference_material_tests tests/reference_material_tests.cpp)
+    target_link_libraries(ludus_reference_material_tests PRIVATE Ludus::GraphicsRenderer Catch2::Catch2WithMain)
+    ludus_apply_project_defaults(ludus_reference_material_tests)
+    ludus_enable_test_exceptions(ludus_reference_material_tests)
+    add_test(NAME ludus_reference_material_tests COMMAND ludus_reference_material_tests)
+    set_tests_properties(ludus_reference_material_tests PROPERTIES LABELS "unit;renderer;build-contract")
     add_test(NAME ludus_renderer_tests COMMAND ludus_renderer_tests)
     set_tests_properties(ludus_renderer_tests PROPERTIES LABELS "unit;renderer;build-contract")
 endif()
@@ -170,6 +178,16 @@ if(TARGET ludus_rhi_render_tests)
         DEPENDS "${ris_projected_solid_angle_shaders}/projected_solid_angle_light.slang"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/ris_projected_solid_angle_weights_layout.h"
                 "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ltc_table.slang" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ltc_table_layout.h")
+    # The same template functions for receivers viewed from below their shading horizon (Peters 2021, section 6.1).
+    ludus_compile_shader(TARGET ludus_renderer_render_tests NAME ris_projected_solid_angle_clipped_receivers
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/ris_projected_solid_angle_clipped_receivers.slang"
+        COMPUTE ClippedReceiverMain
+        INCLUDES "${CMAKE_CURRENT_SOURCE_DIR}/shaders" "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders"
+                 "${ris_projected_solid_angle_shaders}"
+        DEPENDS "${ris_projected_solid_angle_shaders}/projected_solid_angle_light.slang"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/ris_projected_solid_angle_weights_layout.h"
+                "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders/shading_normal.slang"
+                "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ltc_table.slang" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/ltc_table_layout.h")
     # Test-only kernel comparing the GPU-compute reference's resampled light pieces with src/reference_light_sampling.cpp.
     ludus_compile_shader(TARGET ludus_renderer_render_tests NAME reference_light_sampling_parity
         SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/reference_light_sampling_parity.slang" COMPUTE ComputeMain
@@ -185,6 +203,7 @@ if(TARGET ludus_rhi_render_tests)
         INCLUDES "${renderer_shader_directory}" ${renderer_shader_includes} "${polygonal_light_sampling_shaders}"
         DEPENDS "${polygonal_light_sampling_shaders}/polygonal_light.slang"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/polygonal_light_sampling_estimators_layout.h"
+                "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders/shading_normal.slang"
                 "${renderer_shader_directory}/renderer_gpu_preview.slang" "${renderer_shader_directory}/scene_shader.slang"
                 "${renderer_shader_directory}/ltc_table.slang" "${renderer_shader_directory}/ltc_table_layout.h")
     ludus_compile_shader(TARGET ludus_renderer_render_tests NAME restir_selection
@@ -348,6 +367,14 @@ if(TARGET ludus_renderer_render_tests)
         target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
             "LUDUS_RG3_${template_definition}_TEMPLATE_DIRECTORY=\"${template_package_directory}\"")
     endforeach()
+    # The polygonal-light template's frame capture profile: its ray kernels link the template's
+    # scene_interface.capture_visibility_queries, which only RenderGraphPackage::DecodeCaptureProfile admits.
+    ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_polygonal_light_sampling_capture
+        MANIFEST "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/polygonal_light_sampling_template/main.lushader.json"
+        CAPTURE_PROFILE_PACKAGE)
+    cmake_path(GET rg2_polygonal_light_sampling_capture_CAPTURE_PROFILE_PACKAGE PARENT_PATH polygonal_capture_directory)
+    target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+        "LUDUS_RG3_POLYGONAL_LIGHT_SAMPLING_CAPTURE_DIRECTORY=\"${polygonal_capture_directory}\"")
     set(shared_ray_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/shared_ray")
     set(shared_ray_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/shared_ray")
     ludus_stage_render_graph_fixture("${shared_ray_source}" "${shared_ray_staged}")
@@ -615,20 +642,93 @@ if(TARGET ludus_renderer_render_tests)
                     configurations 0 nodes ${node_index} invocation traversal "\"ComputeBvh\"")
             endif()
         endforeach()
-        # Rewrite the staged files only when they change, so reconfiguring does not rebuild the package.
-        file(WRITE "${benchmark_staged}.lushader.json" "${benchmark_manifest}\n")
-        file(COPY_FILE "${benchmark_staged}.lushader.json" "${benchmark_staged}/main.lushader.json" ONLY_IF_DIFFERENT)
-        file(WRITE "${benchmark_staged}.lurender.json" "${benchmark_library}\n")
-        file(COPY_FILE "${benchmark_staged}.lurender.json" "${benchmark_staged}/library.lurender.json"
-            ONLY_IF_DIFFERENT)
-        ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME "rg2_${benchmark_template}_benchmark"
-            MANIFEST "${benchmark_staged}/main.lushader.json" RUNTIME_PACKAGE)
-        cmake_path(GET "rg2_${benchmark_template}_benchmark_RUNTIME_PACKAGE" PARENT_PATH benchmark_package_directory)
-        string(TOUPPER "${benchmark_template}" benchmark_definition)
-        target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
-            "LUDUS_RG3_${benchmark_definition}_BENCHMARK_DIRECTORY=\"${benchmark_package_directory}\"")
+        if(NOT benchmark_template STREQUAL "ris_projected_solid_angle")
+            # Rewrite the staged files only when they change, so reconfiguring does not rebuild the package.
+            file(WRITE "${benchmark_staged}.lushader.json" "${benchmark_manifest}\n")
+            file(COPY_FILE "${benchmark_staged}.lushader.json" "${benchmark_staged}/main.lushader.json"
+                ONLY_IF_DIFFERENT)
+            file(WRITE "${benchmark_staged}.lurender.json" "${benchmark_library}\n")
+            file(COPY_FILE "${benchmark_staged}.lurender.json" "${benchmark_staged}/library.lurender.json"
+                ONLY_IF_DIFFERENT)
+            ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME "rg2_${benchmark_template}_benchmark"
+                MANIFEST "${benchmark_staged}/main.lushader.json" RUNTIME_PACKAGE)
+            cmake_path(GET "rg2_${benchmark_template}_benchmark_RUNTIME_PACKAGE" PARENT_PATH
+                benchmark_package_directory)
+            string(TOUPPER "${benchmark_template}" benchmark_definition)
+            target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+                "LUDUS_RG3_${benchmark_definition}_BENCHMARK_DIRECTORY=\"${benchmark_package_directory}\"")
+            continue()
+        endif()
+        # One RIS package per RIS_TARGET:RIS_CANDIDATE_COUNT:RIS_NORMALIZATION_CANDIDATE_COUNT variant; the benchmark
+        # measures each against the same Veach and Guibas reference. The first variants are the template's exact
+        # target and its defaults; a longer list measures an M and K sweep without rebuilding the others.
+        set(LUDUS_RIS_PROJECTED_SOLID_ANGLE_BENCHMARK_VARIANTS "0:32:8;1:8:4" CACHE STRING
+            "RIS_TARGET:RIS_CANDIDATE_COUNT:RIS_NORMALIZATION_CANDIDATE_COUNT variants of the opt-in RIS benchmark")
+        foreach(setting_id IN ITEMS RIS_TARGET RIS_CANDIDATE_COUNT RIS_NORMALIZATION_CANDIDATE_COUNT)
+            set(benchmark_${setting_id}_index -1)
+        endforeach()
+        string(JSON benchmark_setting_count LENGTH "${benchmark_manifest}" settings)
+        math(EXPR benchmark_setting_last "${benchmark_setting_count} - 1")
+        foreach(setting_index RANGE ${benchmark_setting_last})
+            string(JSON setting_id GET "${benchmark_manifest}" settings ${setting_index} id)
+            set(benchmark_${setting_id}_index ${setting_index})
+        endforeach()
+        set(benchmark_variant_entries "")
+        set(benchmark_variant_count 0)
+        foreach(benchmark_variant IN LISTS LUDUS_RIS_PROJECTED_SOLID_ANGLE_BENCHMARK_VARIANTS)
+            string(REPLACE ":" ";" benchmark_variant_values "${benchmark_variant}")
+            list(LENGTH benchmark_variant_values benchmark_variant_length)
+            if(NOT benchmark_variant_length EQUAL 3)
+                message(FATAL_ERROR "RIS benchmark variant '${benchmark_variant}' is not TARGET:M:K.")
+            endif()
+            list(GET benchmark_variant_values 0 variant_target)
+            list(GET benchmark_variant_values 1 variant_candidates)
+            list(GET benchmark_variant_values 2 variant_normalization)
+            set(variant_manifest "${benchmark_manifest}")
+            foreach(setting_pair IN ITEMS "RIS_TARGET;${variant_target}" "RIS_CANDIDATE_COUNT;${variant_candidates}"
+                    "RIS_NORMALIZATION_CANDIDATE_COUNT;${variant_normalization}")
+                list(GET setting_pair 0 setting_id)
+                list(GET setting_pair 1 setting_value)
+                if(benchmark_${setting_id}_index LESS 0)
+                    message(FATAL_ERROR "The ris_projected_solid_angle template manifest has no ${setting_id} setting.")
+                endif()
+                string(JSON variant_manifest SET "${variant_manifest}"
+                    settings ${benchmark_${setting_id}_index} value ${setting_value})
+            endforeach()
+            set(variant_suffix "t${variant_target}_m${variant_candidates}_k${variant_normalization}")
+            set(variant_staged "${benchmark_staged}_${variant_suffix}")
+            ludus_stage_render_graph_inputs("${benchmark_source}" "${variant_staged}"
+                main.lushader.json library.lurender.json)
+            configure_file("${CMAKE_CURRENT_SOURCE_DIR}/tests/render_graph_query_count.slang"
+                "${variant_staged}/main_shaders/query_count.slang" COPYONLY)
+            # Rewrite the staged files only when they change, so reconfiguring does not rebuild the package.
+            file(WRITE "${variant_staged}.lushader.json" "${variant_manifest}\n")
+            file(COPY_FILE "${variant_staged}.lushader.json" "${variant_staged}/main.lushader.json" ONLY_IF_DIFFERENT)
+            file(WRITE "${variant_staged}.lurender.json" "${benchmark_library}\n")
+            file(COPY_FILE "${variant_staged}.lurender.json" "${variant_staged}/library.lurender.json"
+                ONLY_IF_DIFFERENT)
+            set(variant_name "rg2_ris_projected_solid_angle_benchmark_${variant_suffix}")
+            ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME "${variant_name}"
+                MANIFEST "${variant_staged}/main.lushader.json" RUNTIME_PACKAGE)
+            cmake_path(GET "${variant_name}_RUNTIME_PACKAGE" PARENT_PATH variant_package_directory)
+            string(APPEND benchmark_variant_entries
+                "    {{\"${variant_package_directory}\", \"${variant_name}.lurgrt\"}, "
+                "${variant_target}, ${variant_candidates}, ${variant_normalization}}, \\\n")
+            math(EXPR benchmark_variant_count "${benchmark_variant_count} + 1")
+        endforeach()
+        if(benchmark_variant_count EQUAL 0)
+            message(FATAL_ERROR "LUDUS_RIS_PROJECTED_SOLID_ANGLE_BENCHMARK_VARIANTS lists no variant.")
+        endif()
+        set(benchmark_variant_header "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/ris_projected_solid_angle_benchmark_variants")
+        file(WRITE "${benchmark_variant_header}/variants.h.staged"
+            "// Generated from LUDUS_RIS_PROJECTED_SOLID_ANGLE_BENCHMARK_VARIANTS by modules/graphics/renderer.\n"
+            "#define LUDUS_RG3_RIS_BENCHMARK_VARIANT_COUNT ${benchmark_variant_count}\n"
+            "#define LUDUS_RG3_RIS_BENCHMARK_VARIANTS \\\n${benchmark_variant_entries}\n")
+        file(COPY_FILE "${benchmark_variant_header}/variants.h.staged"
+            "${benchmark_variant_header}/ris_projected_solid_angle_benchmark_variants.h" ONLY_IF_DIFFERENT)
+        target_include_directories(ludus_render_graph_ray_tests PRIVATE "${benchmark_variant_header}")
     endforeach()
-    # The salesin-jarosz-lines template with its MIS_HEURISTIC Graph setting set to power (the staged
+    # The salesin-jarosz-lines template with its POINT_LINE_MIS_HEURISTIC Graph setting set to power (the staged
     # default is balance), and the point_line_densities kernel over the template's own strategy and
     # weight sources under each heuristic (point-line PL2).
     set(point_line_template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/salesin_jarosz_lines_template")
@@ -638,12 +738,12 @@ if(TARGET ludus_renderer_render_tests)
     math(EXPR point_line_setting_last "${point_line_setting_count} - 1")
     foreach(setting_index RANGE ${point_line_setting_last})
         string(JSON setting_id GET "${point_line_manifest}" settings ${setting_index} id)
-        if(setting_id STREQUAL "MIS_HEURISTIC")
+        if(setting_id STREQUAL "POINT_LINE_MIS_HEURISTIC")
             set(point_line_heuristic_index ${setting_index})
         endif()
     endforeach()
     if(point_line_heuristic_index LESS 0)
-        message(FATAL_ERROR "The salesin-jarosz-lines template manifest has no MIS_HEURISTIC setting.")
+        message(FATAL_ERROR "The salesin-jarosz-lines template manifest has no POINT_LINE_MIS_HEURISTIC setting.")
     endif()
     set(point_line_power_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/salesin_jarosz_lines_power")
     file(COPY "${point_line_template_staged}/" DESTINATION "${point_line_power_staged}"
@@ -701,8 +801,8 @@ if(TARGET ludus_renderer_render_tests)
         "${point_line_densities_staged}/balance.lushader.json" @ONLY)
     file(READ "${point_line_densities_staged}/balance.lushader.json" point_line_densities_manifest)
     string(JSON point_line_densities_heuristic GET "${point_line_densities_manifest}" settings 0 id)
-    if(NOT point_line_densities_heuristic STREQUAL "MIS_HEURISTIC")
-        message(FATAL_ERROR "The point_line_densities manifest must list MIS_HEURISTIC first.")
+    if(NOT point_line_densities_heuristic STREQUAL "POINT_LINE_MIS_HEURISTIC")
+        message(FATAL_ERROR "The point_line_densities manifest must list POINT_LINE_MIS_HEURISTIC first.")
     endif()
     foreach(point_line_variant IN ITEMS "balance;0" "power;1")
         list(GET point_line_variant 0 point_line_name)
@@ -787,38 +887,43 @@ if(TARGET ludus_renderer_render_tests)
         target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
             "LUDUS_RG3_${template_definition}_LINE_SCAN_DIRECTORY=\"${template_scan_package_directory}\"")
     endforeach()
-    # The line-sampling template with every pass on ComputeBvh rays, with each line traversal, for the
-    # hidden large-scene line query measurement: a triangle-loop primary ray would dominate there.
-    set(line_sampling_bvh_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/line_sampling_compute_bvh")
-    ludus_stage_render_graph_inputs("${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/line_sampling_template"
-        "${line_sampling_bvh_staged}" library.lurender.json)
-    file(READ "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/line_sampling_template/library.lurender.json"
-        line_sampling_library)
-    string(JSON line_sampling_node_count LENGTH "${line_sampling_library}" configurations 0 nodes)
-    math(EXPR line_sampling_node_last "${line_sampling_node_count} - 1")
-    foreach(node_index RANGE ${line_sampling_node_last})
-        string(JSON node_kind GET "${line_sampling_library}" configurations 0 nodes ${node_index} kind)
-        if(node_kind STREQUAL "ComputePipeline")
-            string(JSON line_sampling_library SET "${line_sampling_library}"
-                configurations 0 nodes ${node_index} invocation traversal "\"ComputeBvh\"")
-        endif()
+    # Both line templates with every pass on ComputeBvh rays, for the hidden large-scene measurements: a
+    # triangle-loop primary or shadow ray would dominate there. Line sampling is also cooked with the
+    # line scan for the line query measurement (point-line PL3); point-and-line MIS is compared with
+    # point sampling at equal GPU time (the large-scene measurement after PL3).
+    foreach(bvh_template IN ITEMS line_sampling salesin_jarosz_lines)
+        set(bvh_template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${bvh_template}_compute_bvh")
+        ludus_stage_render_graph_inputs("${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${bvh_template}_template"
+            "${bvh_template_staged}" library.lurender.json)
+        file(READ "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${bvh_template}_template/library.lurender.json"
+            bvh_template_library)
+        string(JSON bvh_template_node_count LENGTH "${bvh_template_library}" configurations 0 nodes)
+        math(EXPR bvh_template_node_last "${bvh_template_node_count} - 1")
+        foreach(node_index RANGE ${bvh_template_node_last})
+            string(JSON node_kind GET "${bvh_template_library}" configurations 0 nodes ${node_index} kind)
+            if(node_kind STREQUAL "ComputePipeline")
+                string(JSON bvh_template_library SET "${bvh_template_library}"
+                    configurations 0 nodes ${node_index} invocation traversal "\"ComputeBvh\"")
+            endif()
+        endforeach()
+        file(WRITE "${bvh_template_staged}.lurender.json" "${bvh_template_library}\n")
+        file(COPY_FILE "${bvh_template_staged}.lurender.json" "${bvh_template_staged}/library.lurender.json"
+            ONLY_IF_DIFFERENT)
     endforeach()
-    file(WRITE "${line_sampling_bvh_staged}.lurender.json" "${line_sampling_library}\n")
-    file(COPY_FILE "${line_sampling_bvh_staged}.lurender.json" "${line_sampling_bvh_staged}/library.lurender.json"
-        ONLY_IF_DIFFERENT)
+    set(line_sampling_bvh_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/line_sampling_compute_bvh")
     set(line_sampling_bvh_scan_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/line_sampling_compute_bvh_line_scan")
     ludus_stage_line_scan_variant("${line_sampling_bvh_staged}" "${line_sampling_bvh_scan_staged}")
-    foreach(line_sampling_variant IN ITEMS "compute_bvh;${line_sampling_bvh_staged}"
-            "compute_bvh_line_scan;${line_sampling_bvh_scan_staged}")
-        list(GET line_sampling_variant 0 line_sampling_name)
-        list(GET line_sampling_variant 1 line_sampling_directory)
-        ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME "rg2_line_sampling_${line_sampling_name}"
-            MANIFEST "${line_sampling_directory}/main.lushader.json" RUNTIME_PACKAGE)
-        cmake_path(GET "rg2_line_sampling_${line_sampling_name}_RUNTIME_PACKAGE" PARENT_PATH
-            line_sampling_package_directory)
-        string(TOUPPER "${line_sampling_name}" line_sampling_definition)
+    foreach(bvh_variant IN ITEMS "line_sampling_compute_bvh;${line_sampling_bvh_staged}"
+            "line_sampling_compute_bvh_line_scan;${line_sampling_bvh_scan_staged}"
+            "salesin_jarosz_lines_compute_bvh;${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/salesin_jarosz_lines_compute_bvh")
+        list(GET bvh_variant 0 bvh_variant_name)
+        list(GET bvh_variant 1 bvh_variant_directory)
+        ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME "rg2_${bvh_variant_name}"
+            MANIFEST "${bvh_variant_directory}/main.lushader.json" RUNTIME_PACKAGE)
+        cmake_path(GET "rg2_${bvh_variant_name}_RUNTIME_PACKAGE" PARENT_PATH bvh_variant_package_directory)
+        string(TOUPPER "${bvh_variant_name}" bvh_variant_definition)
         target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
-            "LUDUS_RG3_LINE_SAMPLING_${line_sampling_definition}_DIRECTORY=\"${line_sampling_package_directory}\"")
+            "LUDUS_RG3_${bvh_variant_definition}_DIRECTORY=\"${bvh_variant_package_directory}\"")
     endforeach()
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_SCENE_COMPUTE_DIRECTORY="${scene_compute_package_directory}"

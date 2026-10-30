@@ -11,6 +11,7 @@
 #include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/gpu_preview.hpp>
+#include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/rhi/compute.h>
 #include <ludus/graphics/rhi/graph.h>
@@ -26,6 +27,8 @@ inline constexpr usize GPU_PREVIEW_COMPUTE_BINDING_CAPACITY = LUDUS_GRAPH_VISIBI
                                                               LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT;
 /// The presentation quad's four float2 corners and six uint16 indices.
 inline constexpr usize GPU_PREVIEW_QUAD_BYTES = 44;
+/// Components of GpuPreviewUniform::Tile: origin x, y, then exclusive end x, y.
+inline constexpr usize GPU_PREVIEW_TILE_COMPONENT_COUNT = 4;
 struct GpuPreviewUniform final
 {
     math::Matrix4 ClipToWorld;
@@ -39,8 +42,41 @@ struct GpuPreviewUniform final
     math::Vector4 BoundsMinimumWorld;
     math::Vector4 BoundsMaximumWorld;
     uint32 SurfaceLayout[4]{};
+    /// Dispatched pixel region: origin x, y, then exclusive end x, y, at most Dimensions x, y. The whole image
+    /// unless a tiled capture selects one row band (GpuPreviewTiles).
+    uint32 Tile[GPU_PREVIEW_TILE_COMPONENT_COUNT]{};
 };
 static_assert(sizeof(GpuPreviewUniform) == LUDUS_GPU_PREVIEW_PARAMETERS_BYTES);
+/// Components of GpuPreviewUniform::Tile.
+inline constexpr usize GPU_PREVIEW_TILE_ORIGIN_X = 0;
+inline constexpr usize GPU_PREVIEW_TILE_ORIGIN_Y = 1;
+inline constexpr usize GPU_PREVIEW_TILE_END_X = 2;
+inline constexpr usize GPU_PREVIEW_TILE_END_Y = 3;
+/// Select row band `tile` of `count` equal bands of a width x height image in a uniform's Tile. Band edges
+/// are floor(tile * height / count), so the bands partition the rows; a band may be empty when count exceeds
+/// height, and its dispatch then returns without work.
+LUDUS_INLINE void SetGpuPreviewTile(GpuPreviewUniform& inoutUniform, uint32 tile, uint32 count) noexcept
+{
+    const uint64 height = inoutUniform.Dimensions[1];
+    inoutUniform.Tile[GPU_PREVIEW_TILE_ORIGIN_X] = 0;
+    inoutUniform.Tile[GPU_PREVIEW_TILE_ORIGIN_Y] = static_cast<uint32>(height * tile / count);
+    inoutUniform.Tile[GPU_PREVIEW_TILE_END_X] = inoutUniform.Dimensions[0];
+    inoutUniform.Tile[GPU_PREVIEW_TILE_END_Y] = static_cast<uint32>(height * (tile + 1) / count);
+}
+/// The band a tiled ray sample (RenderGraph::SetRayTileCount) dispatches next: a copy of the job's uniform whose
+/// Tile selects band Tile of Count, and compute bindings that read that copy. Each band is dispatched in its own
+/// submission, so a long sample stays under the GPU watchdog. Only the next band is held: the RHI bounds live
+/// buffers and binding descriptors per kind, so one copy per band would not scale to MAX_RENDER_GRAPH_RAY_TILES.
+/// The previous band's copy retires with its producer, which completes before the next frame is encoded. Built
+/// from the committed camera's uniform; a camera commit or a dropped job releases it. Owner thread only.
+struct GpuPreviewTiles final
+{
+    uint32 Count = 0;
+    uint32 Tile = 0;
+    rhi::BufferHandle Parameters{};
+    rhi::BindingSetHandle Bindings{};
+    bool HasBindings = false;
+};
 struct GpuFrameRecord final
 {
     uint64 Generation = 1;
@@ -103,6 +139,8 @@ struct GpuPreviewRecord final
     GpuPreviewInfo Info;
     GpuPreviewUniform Uniform{};
     GpuPreviewCameraUpdate CameraUpdate;
+    /// Row bands of a tiled capture; null for whole-image dispatches.
+    foundation::core::UniquePtr<GpuPreviewTiles> TilesOrNull;
     GpuDenoiser Denoiser;
     uint32 DenoisingQuality = 0;
     bool HasPendingCamera = false;

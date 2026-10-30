@@ -43,6 +43,11 @@ HELPERS = ('compile_shader.py', 'compile_raster.py', 'compile_graph_stage.py', '
 # Program counts are governed by the authored budget, not a second fixed ceiling.
 # Artifact, source-byte and package bounds independently constrain admitted work.
 LIMITS = {'configurations': 8, 'programs': None, 'artifacts': 128, 'pipelines': 64}
+# The author chooses these counts. Artifacts (programs x profiles) and pipelines
+# (raster recipes x profiles) follow from the manifest, so they have no authored
+# budget that could drift from it; only the engine ceilings above bound them.
+AUTHORED_BUDGETS = ('configurations', 'programs')
+DERIVED_BUDGETS = ('artifacts', 'pipelines')
 MAX_FILE = 128 * 1024
 MAX_BYTES = 4 * 1024 * 1024
 # A package combines independent stage closures, graph metadata and SDK helpers.
@@ -51,6 +56,9 @@ MAX_FILES = 128
 MAX_SHADER_INCLUDE_DEPTH = 16
 MAX_PACKAGE_FILES = 1024
 MAX_PACKAGE_BYTES = 64 * 1024 * 1024
+SOURCE_LIMIT_REPAIR = ('Remove shader programs and sources that the package no longer uses (in the editor, '
+                       'right-click the Subgraph node of a template you no longer need and choose Delete Subgraph '
+                       'and Library, or right-click the canvas and choose Remove Unused Shaders) and build again.')
 
 
 def fail(code, where, message):
@@ -141,10 +149,13 @@ class Snapshot:
     def load(self, relative):
         if relative not in self.files:
             require(len(self.files) < MAX_FILES, 'Capacity', relative,
-                    f'source file limit exceeded ({MAX_FILES} files per build snapshot)')
+                    f'source file limit exceeded: the build already reads {len(self.files)} manifest and shader '
+                    f'files, the most one build snapshot holds ({MAX_FILES}). {SOURCE_LIMIT_REPAIR}')
             self.files[relative] = read(self.path(relative))
             self.total += len(self.files[relative])
-            require(self.total <= MAX_BYTES, 'Capacity', relative, 'source byte limit exceeded')
+            require(self.total <= MAX_BYTES, 'Capacity', relative,
+                    f'source byte limit exceeded: the build reads {self.total} bytes of manifest and shader sources, '
+                    f'more than one build snapshot holds ({MAX_BYTES}). {SOURCE_LIMIT_REPAIR}')
         return self.files[relative]
 
     def shader_closure(self, relative, active=(), visited=None):
@@ -199,8 +210,12 @@ def validate_manifest(value):
     for target in value['profiles']:
         enum(target, TARGETS, 'profile')
     require(value['profiles'] and len(set(value['profiles'])) == len(value['profiles']), 'Schema', 'profiles', 'nonempty unique targets required')
-    keys(value['budgets'], LIMITS, 'budgets')
+    # Manifests written before the derived counts accepted their own budgets; those
+    # legacy values are validated for type and otherwise ignored.
+    keys(value['budgets'], AUTHORED_BUDGETS, 'budgets', DERIVED_BUDGETS)
     for key, maximum in LIMITS.items():
+        if key not in value['budgets']:
+            continue
         if maximum is None:
             require(type(value['budgets'][key]) is int and value['budgets'][key] >= 1,
                     'Capacity', 'budget ' + key, 'positive integer required')
@@ -293,7 +308,7 @@ def validate_manifest(value):
             if scene_interface is not None:
                 keys(scene_interface, ('version', 'surface_queries', 'visibility_queries'), 'scene interface',
                      ('payload', 'local_payload_bytes', 'visibility_buffer', 'line_queries', 'line_traversal',
-                      'polygonal_light_sampling'))
+                      'polygonal_light_sampling', 'capture_visibility_queries'))
                 if 'visibility_buffer' in scene_interface:
                     require(type(scene_interface['visibility_buffer']) is bool, 'Schema', 'visibility_buffer', 'Boolean required')
                 # Optional and additive: stages the projected-solid-angle, LTC, reservoir and LTC-table helpers.
@@ -308,6 +323,11 @@ def validate_manifest(value):
                         ray.SCENE_QUERY_LIMITS['MAX_SURFACE_QUERIES'], 'surface query budget')
                 integer(scene_interface['visibility_queries'], ray.SCENE_QUERY_LIMITS['MIN_VISIBILITY_QUERIES'],
                         ray.SCENE_QUERY_LIMITS['MAX_VISIBILITY_QUERIES'], 'visibility query budget')
+                # Optional: a frame capture's budget, never below the interactive one. Only a capture profile
+                # build (build_package(capture_profile=True)) links it; interactive kernels keep visibility_queries.
+                if 'capture_visibility_queries' in scene_interface:
+                    integer(scene_interface['capture_visibility_queries'], scene_interface['visibility_queries'],
+                            ray.SCENE_QUERY_LIMITS['MAX_CAPTURE_VISIBILITY_QUERIES'], 'capture visibility query budget')
                 # Optional and additive: an absent line budget means 0 (no FindVisibleLineIntervals calls).
                 if 'line_queries' in scene_interface:
                     integer(scene_interface['line_queries'], ray.SCENE_QUERY_LIMITS['MIN_LINE_QUERIES'],
@@ -382,11 +402,19 @@ def validate_manifest(value):
     masked_depth = techniques.get('DefaultStaticMasked.DepthOnly')
     require(opaque_depth is None or masked_depth is None or opaque_depth['fragment'] != masked_depth['fragment'],
             'Schema', 'DefaultStaticMasked.DepthOnly', 'masked coverage requires a separately authored depth function')
+    profile_count = len(value['profiles'])
+    recipe_count = sum(len(t['recipes']) for t in techniques.values())
     counts = {'configurations': len(techniques), 'programs': len(programs),
-              'artifacts': len(programs) * len(value['profiles']),
-              'pipelines': sum(len(t['recipes']) for t in techniques.values()) * len(value['profiles'])}
-    for key, count in counts.items():
-        require(count <= value['budgets'][key], 'Capacity', key, f'{count} exceeds authored budget {value["budgets"][key]}')
+              'artifacts': len(programs) * profile_count, 'pipelines': recipe_count * profile_count}
+    for key in AUTHORED_BUDGETS:
+        require(counts[key] <= value['budgets'][key], 'Capacity', key,
+                f'{counts[key]} exceeds authored budget {value["budgets"][key]}; increase budgets.{key} to at least {counts[key]}')
+    require(counts['artifacts'] <= LIMITS['artifacts'], 'Capacity', 'artifacts',
+            f'{len(programs)} programs across {profile_count} target profiles make {counts["artifacts"]} artifacts, '
+            f'over the supported {LIMITS["artifacts"]}; reuse compatible programs, remove unused shaders or reduce target profiles')
+    require(counts['pipelines'] <= LIMITS['pipelines'], 'Capacity', 'pipelines',
+            f'{recipe_count} raster recipes across {profile_count} target profiles make {counts["pipelines"]} pipelines, '
+            f'over the supported {LIMITS["pipelines"]}; reuse recipes or reduce target profiles')
     return schemas, programs, techniques, counts
 
 
@@ -820,21 +848,14 @@ def compile_program(program, schemas, closure, snapshot, work, helper, tools, ta
     return output, result
 
 
-def build_package(manifest, output, *, helper, compiler, validator=None, spirv_cross=None, root=None, cancel=None, worker_socket=None,
-                  ray_path_capture=False):
-    """Build every authored technique/profile and atomically publish current.json.
+def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capture_profile=False):
+    """Capture and lower the same immutable shader contexts for compilation and editing.
 
-    Sources/tools must remain identical to their captured snapshot at publication.
-    Bounded errors, cancellation, corrupt caches, and concurrent writer rejection
-    preserve the prior package pointer. No download, device pipeline creation or
-    GPU execution. Return an immutable package path and separate hit/miss counts.
-    helper names the installed SDK shaders directory (or checkout cmake/shaders).
-    Runs on macOS/Linux, with one nonblocking writer per output tree.
-    ray_path_capture links every ray kernel as the diagnostic LUDUS_RAY_PATH_CAPTURE
-    variant from the same snapshot. Its stages have their own cache identities, and the
-    result is never cooked into a runtime package.
+    No compiler execution or output publication. Returns package metadata, exact
+    generated wrappers, their captured include closures and the grouped ray profiles
+    (empty without a ray technique) that select linked ray kernels. All normal graph,
+    schema and capacity validation remains authoritative here.
     """
-    started = time.monotonic()
     manifest = Path(manifest).resolve()
     snapshot = Snapshot(root if root is not None else manifest.parent)
     require(manifest.is_relative_to(snapshot.root), 'Source', str(manifest), 'manifest outside root')
@@ -847,35 +868,6 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
         snapshot.files['_ludus_visibility.slang'] = read(visibility_helper)
         snapshot.external['_ludus_visibility.slang'] = visibility_helper
         snapshot.total += len(snapshot.files['_ludus_visibility.slang'])
-    worker_socket = worker_socket or os.environ.get('LUDUS_SHADER_WORKER_SOCKET')
-    hash_file = ToolFileHashes()
-    tool_hashes, tool_paths = tool_identity(helper, compiler, validator, spirv_cross,
-                                           worker_socket=worker_socket, hash_file=hash_file)
-    worker_identity = None
-    if worker_socket:
-        import importlib.util
-        spec = importlib.util.spec_from_file_location('_ludus_native_worker', helper / NATIVE_WORKER_HELPER)
-        native = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(native)
-        try:
-            descriptor = native.exchange(worker_socket, {'version': 1, 'identity': 0})
-        except (OSError, RuntimeError, ValueError, KeyError, TypeError) as error:
-            fail('Tools', 'native worker', str(error))
-        require(descriptor.get('compiler') == document(read(helper / 'shader_toolchain.json'), 'lock')['slang']['version'],
-                'Tools', 'native worker', 'compiler version differs from SDK pin')
-        require(descriptor.get('library_sha256') in tool_hashes.values(), 'Tools', 'native worker', 'loaded API library differs from the selected toolchain')
-        inventory = ''.join(key.removeprefix('slang/') + ':' + value + '\n'
-                            for key, value in sorted(tool_hashes.items()) if key.startswith('slang/'))
-        require(descriptor.get('library_inventory_sha256') == digest(inventory.encode()),
-                'Tools', 'native worker', 'loaded compiler/backend libraries differ from the selected toolchain')
-        worker_identity = descriptor.get('implementation')
-        require(isinstance(worker_identity, str) and len(worker_identity) == 64, 'Tools', 'native worker', 'missing implementation identity')
-        # Native compilation is a distinct implementation and owns separate artifact keys.
-        tool_hashes['native/implementation'] = worker_identity
-    if any(t in value['profiles'] for t in ('spirv', 'glsl')):
-        require(validator, 'Tools', 'profiles', 'SPIR-V/glsl requires --validator')
-    if 'glsl' in value['profiles']:
-        require(spirv_cross, 'Tools', 'profiles', 'glsl requires --spirv-cross')
     # Registered programs include authoring drafts. Only explicit techniques select
     # executable stages; unused callbacks must never be compiled as entry points.
     closures = {pid: snapshot.shader_closure(p['source']) for pid, p in programs.items()}
@@ -955,11 +947,14 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     programs = {identity: program for identity, program in programs.items() if identity in selected_programs}
     require(not ray_path_capture or ray.TECHNIQUE in techniques, 'Capability', 'ray path capture',
             'ray path capture requires a RayTracingPipeline or scene ComputePipeline node')
+    require(not capture_profile or ray.TECHNIQUE in techniques, 'Capability', 'capture profile',
+            'a capture profile requires a RayTracingPipeline or scene ComputePipeline node')
+    require(not (capture_profile and ray_path_capture), 'Capability', 'capture profile',
+            'a capture profile and a ray path capture are separate builds')
+    ray_profiles = []
     if ray.TECHNIQUE in techniques:
         require(any(target in ('metal', 'spirv') for target in value['profiles']), 'Capability', 'profiles',
                 'Hardware raytracing requires native Metal or Vulkan; select an authored raster configuration on unsupported APIs')
-        require('metal' not in value['profiles'] or spirv_cross, 'Tools', 'profiles',
-                'Metal hardware raytracing requires the pinned --spirv-cross translator')
         ray_profiles = ray.group_profiles(plans, techniques[ray.TECHNIQUE], sys.modules[__name__])
         authored_programs = programs
         linked_programs = {}
@@ -967,6 +962,11 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
             technique = deepcopy(techniques[ray.TECHNIQUE])
             if 'scene_interface' in technique:
                 technique['scene_interface']['visibility_buffer'] = profile['visibility_buffer']
+                # The capture profile links the larger capture budget into every wrapper of this build.
+                if capture_profile:
+                    interface = technique['scene_interface']
+                    interface['visibility_queries'] = interface.get('capture_visibility_queries',
+                                                                    interface['visibility_queries'])
             expanded = ray.expand_programs(authored_programs, technique, snapshot, helper, sys.modules[__name__],
                                           profile['variants'], profile['persistent'], schemas, profile['compute'],
                                           profile['native_ray_queries'], ray_path_capture, workgroup=profile['workgroup'])
@@ -997,6 +997,64 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     counts['graph_configurations'] = sum(len(identities) for identities in reachable.values())
     require(len(plans) <= value['budgets']['configurations'], 'Capacity', 'root configurations',
             f'{len(plans)} root configurations exceed budgets.configurations {value["budgets"]["configurations"]}')
+    return snapshot, value, schemas, programs, techniques, counts, closures, plans, library, graph_path, ray_profiles
+
+
+def build_package(manifest, output, *, helper, compiler, validator=None, spirv_cross=None, root=None, cancel=None, worker_socket=None,
+                  ray_path_capture=False, capture_profile=False):
+    """Build every authored technique/profile and atomically publish current.json.
+
+    Sources/tools must remain identical to their captured snapshot at publication.
+    Bounded errors, cancellation, corrupt caches, and concurrent writer rejection
+    preserve the prior package pointer. No download, device pipeline creation or
+    GPU execution. Return an immutable package path and separate hit/miss counts.
+    helper names the installed SDK shaders directory (or checkout cmake/shaders).
+    Runs on macOS/Linux, with one nonblocking writer per output tree.
+    ray_path_capture links every ray kernel as the diagnostic LUDUS_RAY_PATH_CAPTURE
+    variant from the same snapshot. Its stages have their own cache identities, and the
+    result is never cooked into a runtime package.
+    capture_profile links every ray kernel with scene_interface.capture_visibility_queries
+    in place of visibility_queries, for a frame capture's private graph; cook it with
+    cook_capture_profile, never cook_runtime.
+    """
+    started = time.monotonic()
+    manifest = Path(manifest).resolve()
+    helper = Path(helper).resolve()
+    snapshot, value, schemas, programs, techniques, counts, closures, plans, library, graph_path, ray_profiles = prepare_sources(
+        manifest, helper, root=root, ray_path_capture=ray_path_capture, capture_profile=capture_profile)
+    manifest_label = manifest.relative_to(snapshot.root).as_posix()
+    worker_socket = worker_socket or os.environ.get('LUDUS_SHADER_WORKER_SOCKET')
+    hash_file = ToolFileHashes()
+    tool_hashes, tool_paths = tool_identity(helper, compiler, validator, spirv_cross,
+                                           worker_socket=worker_socket, hash_file=hash_file)
+    worker_identity = None
+    if worker_socket:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('_ludus_native_worker', helper / NATIVE_WORKER_HELPER)
+        native = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(native)
+        try:
+            descriptor = native.exchange(worker_socket, {'version': 1, 'identity': 0})
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError) as error:
+            fail('Tools', 'native worker', str(error))
+        require(descriptor.get('compiler') == document(read(helper / 'shader_toolchain.json'), 'lock')['slang']['version'],
+                'Tools', 'native worker', 'compiler version differs from SDK pin')
+        require(descriptor.get('library_sha256') in tool_hashes.values(), 'Tools', 'native worker', 'loaded API library differs from the selected toolchain')
+        inventory = ''.join(key.removeprefix('slang/') + ':' + value + '\n'
+                            for key, value in sorted(tool_hashes.items()) if key.startswith('slang/'))
+        require(descriptor.get('library_inventory_sha256') == digest(inventory.encode()),
+                'Tools', 'native worker', 'loaded compiler/backend libraries differ from the selected toolchain')
+        worker_identity = descriptor.get('implementation')
+        require(isinstance(worker_identity, str) and len(worker_identity) == 64, 'Tools', 'native worker', 'missing implementation identity')
+        # Native compilation is a distinct implementation and owns separate artifact keys.
+        tool_hashes['native/implementation'] = worker_identity
+    if any(t in value['profiles'] for t in ('spirv', 'glsl')):
+        require(validator, 'Tools', 'profiles', 'SPIR-V/glsl requires --validator')
+    if 'glsl' in value['profiles']:
+        require(spirv_cross, 'Tools', 'profiles', 'glsl requires --spirv-cross')
+    if ray.TECHNIQUE in techniques:
+        require('metal' not in value['profiles'] or spirv_cross, 'Tools', 'profiles',
+                'Metal hardware raytracing requires the pinned --spirv-cross translator')
     output = Path(output).resolve()
     require(not snapshot.root.is_relative_to(output), 'Source', str(output), 'output must not contain source root')
     output.mkdir(parents=True, exist_ok=True)
@@ -1065,6 +1123,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                             record['visibility_buffer'] = profile['visibility_buffer']
                             if ray_path_capture:
                                 record['ray_path_capture'] = True
+                            if capture_profile:
+                                record['capture_profile'] = True
                             record['canonical'] = deepcopy(record)
                             record['key'] = identity(record['canonical'])
                             recipes.append(record)
@@ -1229,7 +1289,7 @@ def new_build_sources(path, *, profiles=('metal',), root=None, renderer_static=F
                                         'depth_write': True, 'blend': 'Opaque'}]})
     value = {'version': VERSION, 'id': 'DefaultRasterBuild', 'profiles': list(profiles),
              'schemas': [vertex, varying, material], 'programs': programs, 'techniques': techniques,
-             'budgets': {'configurations': 8, 'programs': 8, 'artifacts': 32, 'pipelines': 16}}
+             'budgets': {'configurations': 8, 'programs': 8}}
     validate_manifest(value)
     sources = {'geometry.slang': 'RasterVarying VSMain(RendererStatic value)\n{\n    RasterVarying result;\n    result.position = float4(value.position, 1);\n    return result;\n}\n',
                'color.slang': 'float4 PSMain(RasterVarying value)\n{\n    return float4(material.tint * material.gain, 1);\n}\n',

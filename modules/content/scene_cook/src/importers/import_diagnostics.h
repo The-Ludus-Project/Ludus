@@ -97,6 +97,8 @@ inline constexpr std::string_view PATH_NORMALIZED = "PATH_NORMALIZED";
 inline constexpr std::string_view DEPENDENCY_UNREADABLE = "DEPENDENCY_UNREADABLE";
 /// Degenerate triangles or nonfinite values were removed.
 inline constexpr std::string_view GEOMETRY_REPAIRED = "GEOMETRY_REPAIRED";
+/// Byte-identical vertex records shared without removing or reordering triangles.
+inline constexpr std::string_view VERTICES_COMPACTED = "VERTICES_COMPACTED";
 } // namespace codes
 
 /// One aggregated diagnostic: the first occurrence's location plus a count.

@@ -10,6 +10,8 @@
 #include <ludus/foundation/time/time.hpp>
 
 #include <ludus/content/content.h>
+#include <ludus/content/scene_format/limits.h>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/renderer/viewport.hpp>
 #include <ludus/graphics/rhi/lifetime.h>
@@ -31,6 +33,8 @@
 
 namespace
 {
+// This standalone reference consumer retains several texture views per material.
+constexpr ludus::foundation::uint32 REFERENCE_RESOURCES_PER_KIND = 256;
 using namespace ludus::foundation;
 namespace rr = ludus::graphics::renderer;
 namespace rhi = ludus::graphics::rhi;
@@ -108,7 +112,7 @@ bool Load(const uint8* bytes,
     evidence.Counts[1] = scene.Materials.GetSize();
     evidence.Counts[2] = scene.Meshes.GetSize();
     evidence.Counts[3] = scene.Objects.GetSize();
-    rhi::TextureHandle textures[8];
+    ludus::foundation::StaticArray<rhi::TextureHandle, ludus::content::scene_format::IMPORT_LIMITS.Textures> textures;
     for (usize i = 0; i < scene.Textures.GetSize(); ++i)
     {
         const auto& source = scene.Textures[i];
@@ -125,13 +129,20 @@ bool Load(const uint8* bytes,
             return false;
         }
     }
-    rr::MaterialVersion materials[8];
+    ludus::foundation::StaticArray<rr::MaterialVersion, ludus::content::scene_format::IMPORT_LIMITS.Materials>
+        materials;
     for (usize i = 0; i < scene.Materials.GetSize(); ++i)
     {
         const auto& source = scene.Materials[i];
         rr::LitMaterialDescription description;
         description.Metallic = source.Metallic;
         description.Roughness = source.Roughness;
+        description.Scattering = source.Scattering;
+        description.IsEmissionTwoSided = source.IsEmissionTwoSided;
+        if (source.HasSourceMaterial == true)
+        {
+            description.Surface.Tint = {source.Reflectance.X, source.Reflectance.Y, source.Reflectance.Z, 1};
+        }
         description.Emission = source.Emission;
         if (source.Texture != ~uint32{0})
         {
@@ -142,7 +153,10 @@ bool Load(const uint8* bytes,
         }
         else
         {
-            description.Surface.Tint = {0, 0, 0, 1};
+            if (source.HasSourceMaterial == false)
+            {
+                description.Surface.Tint = {0, 0, 0, 1};
+            }
         }
         rr::LightSelection selection;
         if (Wait(renderer, materials[i], renderer.CreateLitMaterial(program, description, materials[i], selection)) !=
@@ -151,7 +165,7 @@ bool Load(const uint8* bytes,
             return false;
         }
     }
-    rr::Mesh meshes[6];
+    ludus::foundation::StaticArray<rr::Mesh, ludus::content::scene_format::IMPORT_LIMITS.Meshes> meshes;
     for (usize i = 0; i < scene.Meshes.GetSize(); ++i)
     {
         const auto& source = scene.Meshes[i];
@@ -585,6 +599,7 @@ int Run(int argc, char** argv) noexcept
         return 3;
     }
     rhi::DeviceDescription request;
+    request.Storage.ResourcesPerKind = REFERENCE_RESOURCES_PER_KIND;
     request.Required.PortableRaster = true;
     request.Required.RayQueries = isNativeMode == true || isGpuMode == true;
     request.Required.Compute = isGpuMode;
@@ -602,9 +617,14 @@ int Run(int argc, char** argv) noexcept
         }
     } shutdown;
     rr::Renderer renderer;
+    rr::Limits limits;
+    limits.Meshes = ludus::content::scene_format::IMPORT_LIMITS.Meshes;
+    limits.Materials = ludus::content::scene_format::IMPORT_LIMITS.Materials;
+    limits.Objects = ludus::content::scene_format::IMPORT_LIMITS.Objects;
     if (renderer.Initialize(device,
                             ludus::shaders::renderer_flat::Vertex(),
-                            ludus::shaders::renderer_flat::Fragment()) != Status::Ready ||
+                            ludus::shaders::renderer_flat::Fragment(),
+                            limits) != Status::Ready ||
         renderer.InitializeViews(ludus::shaders::renderer_composite::Vertex(),
                                  ludus::shaders::renderer_composite::Fragment()) != Status::Ready ||
         renderer.InitializeLighting(ludus::shaders::renderer_output::Vertex(),

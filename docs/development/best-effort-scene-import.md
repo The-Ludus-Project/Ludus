@@ -3,7 +3,8 @@
 Status: glTF 2.0/GLB and Wavefront OBJ/MTL front-ends, October 18, 2026, on top
 of the authored-lighting pbrt import of October 13, 2026. Importer ids
 `pbrt-best-effort-v1`, `gltf-best-effort-v1` and `obj-best-effort-v1`; report
-schema `1`.
+schema `1`. October 30, 2026: exact vertex compaction retains the supplied PBRT
+Bistro's complete triangle geometry within the encoded bundle budget.
 
 `Ludus::SceneCook` has two pbrt paths. `pbrt-reference-v1` is the frozen,
 byte-identical cooker for the recorded goldens; it rejects anything it does
@@ -68,6 +69,36 @@ never perform file or network I/O themselves. Remote URIs are not fetched.
   An unreadable surface texture falls back to a swatch with `TEXTURE_UNREADABLE`,
   while an unreadable lighting environment rejects the import rather than
   discarding illumination.
+
+PBRT material `string normalmap` images use linear RGB data, the engine's
+MikkTSpace tangent frames and the existing v6 surface-map packing. Image rows
+and green values are preserved; the mesh UV conversion supplies the image's
+vertical orientation. This retains the authored detail under the engine's tangent
+convention, rather than establishing pixel parity with PBRT's shading frames.
+Triangle meshes and PLY triangles without stored UVs receive PBRT's per-triangle
+(0,0), (1,0), (1,1) defaults before tangent generation; corners split where the
+implicit coordinates differ. Other unavailable mappings are reported with
+`TANGENTS_GENERATED`.
+Normal image paths must remain inside the import root and join the input digest
+closure, including when declared in an included material file.
+
+Shape `float alpha` and `texture alpha` use independent material variants, cached
+per source material and coverage source. They do not mutate named materials or
+other instances. Constants and float `constant` textures are retained; float
+`imagemap` sources follow PBRT's scalar selection: non-opaque image alpha wins,
+otherwise the decoded RGB mean is used. PNG defaults to sRGB decoding, other
+containers to linear, with explicit `encoding`, `scale` and `invert` honored.
+The declared encoding also decodes alpha, matching PBRT's image-channel access.
+The resulting linear coverage is quantized to RGBA8 and tested
+at 0.5; fractional/stochastic transparency is approximated by this binary mask
+(`ALPHA_APPROXIMATED`, informational). The base image's alpha does not multiply
+PBRT shape coverage. Undefined or unreadable masks fall back to opaque with a
+diagnostic. Procedural float textures retain their reported constant fallback.
+
+These conventions follow Matt Pharr, Wenzel Jakob and Greg Humphreys's
+[pbrt-v4 input format](https://www.pbrt.org/fileformat-v4),
+[normal-image loading](https://github.com/mmp/pbrt-v4/blob/master/src/pbrt/scene.cpp)
+and [scalar image selection](https://github.com/mmp/pbrt-v4/blob/master/src/pbrt/util/mipmap.cpp).
 
 ## glTF 2.0 / GLB profile (`gltf-best-effort-v1`)
 
@@ -226,7 +257,7 @@ texture coordinates are reported instead.
 ## What LUSCN v6 cannot carry yet
 
 The planner fits the IR into the LUSCN v6 import profile (256 meshes, materials
-and textures, 1,024 objects, 2M unique vertices, 6M indices, 256 MiB of textures,
+and textures, 1,024 objects, 256 MiB of textures and a 384 MiB bundle,
 flattened instancing; see
 [the import profile](../architecture/content-resources.md#import-profile-and-alpha-masks-luscn-v5)
 and [surface maps](../architecture/content-resources.md#surface-maps-emission-maps-and-tangents-luscn-v6)).
@@ -313,13 +344,35 @@ area-light, shadow and indirect-transport limits.
 ## Budget planner
 
 The cooked scene must fit the LUSCN v6 import profile: 256 meshes, materials and
-textures, 2M unique vertices, 6M indices in total, 256 MiB of textures and a
-384 MiB bundle. Each cooked mesh carries one material, so the planner:
+textures, 256 MiB of textures and a 384 MiB bundle. The former independent
+2M-vertex and 6M-index ceilings are removed: geometry is admitted by its actual
+encoded bytes, including 48 bytes per v6 vertex and four per index. Every
+placement is retained, or the import fails explicitly before baking when its
+complete geometry cannot fit. Texture and lighting storage share the remaining
+bundle allowance; renderer CPU/GPU budgets still apply independently.
+
+Before planning, the shared cook compacts byte-identical
+position/normal/UV/tangent records within each mesh, after tangent generation.
+First-occurrence vertex order, every triangle, winding and attribute seams are
+preserved; signed zeros remain distinct. Meshes without normals keep their
+original topology so later generated smoothing does not change. The temporary
+index/remap arrays use eight bytes per source vertex, with one mesh processed at
+a time; this is separate from encoded file, cooked bundle and runtime budgets.
+
+The schema-1 report adds `source.indices` and `cooked.indices` (three indices per
+triangle). `source.vertices` counts authored records before tangent splitting and
+compaction, including expanded placements. Reduced cooked vertex counts accompanied by
+`VERTICES_COMPACTED` are exact sharing. Geometry admission retains every placement
+or rejects the import; the legacy dropped-placement counters remain zero. Source
+vertex/index counts saturate at the uint32 maximum. The frozen reference cooker is unchanged.
+
+Each cooked mesh carries one material, so the planner:
 
 1. reserves one slot per distinct emitter radiance, sidedness and power-normalization
    group; groups record their source shapes and area-light directives in the report.
-   Decorative groups are also split per source material and keep that material's
-   textures and maps; required (pbrt) emitters cook white and untextured;
+   Decorative groups keep their source material's textures and maps. Required PBRT
+   emitters retain the white base-colour approximation, split per source material
+   when normal detail or shape coverage differs, and retain those normal maps and masks;
 2. gives every other source material its own slot while they fit; beyond 256
    slots it ranks ordinary placements by world-space area and keeps the largest
    material groups;
@@ -327,11 +380,11 @@ textures, 2M unique vertices, 6M indices in total, 256 MiB of textures and a
    (`MATERIALS_MERGED`); a merged material takes its slot's alpha mask;
 4. merges all geometry of a slot into one world-space mesh;
 5. keeps each placement's vertices shared (consumers derive the guttered
-   per-triangle bake charts from the indices), then drops the smallest ordinary
-   placements if the vertex or index budget is exceeded (`GEOMETRY_DROPPED`);
-   required emitter geometry is never silently dropped;
+   per-triangle bake charts from the indices), and checks the complete geometry
+   against the bundle byte budget. An over-budget scene reports `LIMIT_EXCEEDED`
+   and produces no bundle; ordinary and emitter placements are never dropped;
 6. writes each masked slot's coverage into its cooked base texture's alpha:
-   the texture's own alpha (glTF), or the MTL opacity map sampled nearest at the
+   the texture's own alpha (glTF), or the MTL/PBRT opacity map sampled nearest at the
    base resolution, times the constant opacity. An untextured masked slot takes
    the opacity map's resolution. A mask that keeps every texel cooks opaque, and an
    unreadable opacity map leaves the slot opaque (`TEXTURE_UNREADABLE`);
@@ -339,8 +392,10 @@ textures, 2M unique vertices, 6M indices in total, 256 MiB of textures and a
    metallic channel (A) into one linear surface map at the normal map's resolution
    (otherwise the larger data texture's), sampling the others nearest; an absent
    normal is flat (0.5) and an absent multiplier one. Emissive slots cook their
-   emission texture as an sRGB emission map. These maps follow the base textures
-   while the bundle's 256 textures allow; beyond that a slot's roughness/metallic
+   emission texture as an sRGB emission map. Byte-identical base swatches are shared
+   after mask application; surface maps with identical source/channel selections
+   are shared with independent per-material strengths and scalar factors. These
+   maps follow the base textures while the bundle's 256 textures allow; beyond that a slot's roughness/metallic
    textures are averaged into its scalars;
 8. halves the largest texture, oversized ones first, until every texture fits
    4096 texels and 16 MiB and all fit the byte budget (`TEXTURE_DOWNSCALED`).
@@ -370,10 +425,11 @@ or `.zip` containing one). glTF and OBJ entries are routed to their best-effort
 importers by content. For pbrt, Ludus::SceneCook picks the importer from the
 file name:
 
-- `scene-v4.pbrt` is cooked with `pbrt-reference-v1` first, so staircase2 keeps
-  its byte-identical reference path. Only when the reference profile rejects
-  the scene does the import fall back to `pbrt-best-effort-v1`; the preview
-  says why.
+- `scene-v4.pbrt` first uses `pbrt-reference-materials-v2`, preserving staircase2's
+  source material identities and optical parameters. Only when that bounded
+  profile rejects the scene does import fall back to `pbrt-best-effort-v1`; the
+  preview says why. `AssetOptions::ShouldPreserveReferenceMaterials = false`
+  explicitly selects the frozen `pbrt-reference-v1` compatibility profile.
 - Any other `.pbrt` file uses `pbrt-best-effort-v1`.
 - A source directory (the older flow and its tests) stays on the reference
   profile with no fallback.
@@ -449,6 +505,74 @@ or fail with a report that explains why:
 LUDUS_GLTF_SCENES_DIR=~/glTF-Sample-Assets/Models LUDUS_OBJ_SCENES_DIR=~/mcguire \
   out/build/linux-clang-development/modules/content/scene_cook/ludus_scene_import_tests "[licensed]"
 ```
+
+### PBRT Bistro geometry acceptance
+
+The supplied `bistro/bistro_cafe.pbrt` uses 865 PLY meshes and 741 inline triangle
+meshes, with 1,606 placements and 2,838,960 triangles. Thanks to Amazon Lumberyard
+for the Bistro assets; retain the supplied `LICENSE.txt`. Assets and generated
+reports stay outside source control. With that licensed input available:
+
+```sh
+ludus-cook pbrt references/resources/scenes/bistro/bistro_cafe.pbrt out/bistro --workers 4
+LUDUS_PBRT_SCENES_DIR=references/resources/scenes \
+  out/build/macos-clang-development/modules/content/scene_cook/ludus_best_effort_import_tests '[bistro]'
+LUDUS_EDITOR_IMPORT_ENTRY=references/resources/scenes/bistro/bistro_cafe.pbrt \
+  out/build/macos-clang-development/modules/content/scene_cook/ludus_scene_assets_tests '[scene_assets][licensed]' -s
+```
+
+Use the equivalent native build directory on Linux. The optional test skips when
+the input is absent; when present it checks the supplied version's source counts,
+zero geometry drops, preservation of all indices and decoding through the runtime
+Resources consumer. Ordinary generated regressions independently compare every
+triangle corner's attribute bytes before/after compaction, including normal/UV/
+tangent seams, signed zeros, missing normals, malformed input and cancellation.
+The catalog test exercises Editor import, commit and assembly, then checks the
+same complete geometry through Resources decoding.
+
+The unshared input represents 442,773,216 bytes of v6 vertex/index records before
+headers or textures, already above 384 MiB. Exact sharing makes the complete
+geometry fit the byte-based admission policy without introducing another fixed
+vertex or triangle ceiling.
+
+Measured on October 30, 2026 with native macOS arm64 Clang 23.1.3, Development,
+warnings as errors, and four texture workers:
+
+| Quantity | Previous 2M-vertex / 6M-index profile | Compaction + complete-geometry byte admission |
+| --- | ---: | ---: |
+| Source vertex records | 8,514,702 | 8,514,702 |
+| Retained triangles | 667,392 | 2,838,960 |
+| Cooked vertices | 1,999,998 | 2,892,578 |
+| Dropped placements | 1,432 | 0 |
+| Bundle bytes | 368,253,580 | 402,583,744 |
+| Textures reported downscaled | 3 | 99 |
+
+The current report has `source.indices == cooked.indices == 8,516,880` and no
+shape failures or geometry drops. Bundle and texture byte ceilings remain
+384 MiB and 256 MiB; retained geometry takes priority over texture resolution.
+The initial Editor-path run rejected its dependency closure even though this
+bundle fit: material JSON, the scene manifest and license add encoded bytes that
+are absent from the bundle. `MAX_RESIDENT_CLOSURE_BYTES` now owns a separate
+512 MiB logical-closure ceiling, while single artifacts and assembled bundles
+retain their existing ceilings. Logical aliases are charged independently even
+when they share a physical artifact file. This admission limit does not describe
+peak import memory or decoded renderer residency.
+With PBRT normal maps and shape coverage enabled, the same scene keeps all
+1,606 placements and 8,516,880 indices, with 2,922,810 cooked vertices (MikkTSpace
+frames keep additional seams), 136 material/mesh slots and 252 texture images.
+All 131 used normal images survive, serving 135 material slots, and 17 material
+slots retain cutout masks, including emissive surfaces. No normal maps are dropped
+for texture capacity, and no texture reads fail. The bundle is 401,941,792 bytes;
+210 images are downscaled to preserve geometry under the existing byte limits.
+Eight light meshes omit UVs; retaining PBRT's implicit per-triangle coordinates
+lets them carry normal detail as well. The six dielectric transmission drops remain.
+The report now includes each slot's `normal_texture`, `alpha_masked` and
+`alpha_cutoff`; material declaration counts and labels exclude the synthetic
+shape-mask variants. Required PBRT emitters retain white base reflectance with
+their authored normal detail and shape masks. Full geometry import/runtime decoding does not qualify
+interactive viewport performance, GPU memory use or PBRT material/lighting parity.
+Earlier SDKs can reject the larger geometry counts even though the LUSCN v6 wire
+layout is unchanged.
 
 ## Third-party code
 

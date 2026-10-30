@@ -9,7 +9,9 @@ traversal and primitive decisions. The primitives listed under
 implemented as of October 29, 2026, in the CPU oracle and the GPU-compute
 reference, with the choices listed under [RT1 implementation notes](#rt1-implementation-notes).
 Acceptance item 5 was measured the same day; see
-[RT1 equal-time evaluation](#rt1-equal-time-evaluation).
+[RT1 equal-time evaluation](#rt1-equal-time-evaluation). Later that day both
+stages gained Hill and Heitz's [approximate target](#approximate-target), which
+lowers the per-candidate cost behind those equal-time results.
 This review is the estimator review that
 [hybrid and real-time transport](renderer-systems.md#hybrid-and-real-time-transport)
 requires before resampling enters a Ludus estimator. It covers next-event
@@ -24,15 +26,19 @@ estimation (NEE) for emissive triangles, delivered in two stages:
    delivered in the CPU oracle and the GPU-compute reference in the same change.
 
 Spatiotemporal reservoir reuse remains a separate RT4 upgrade. The Peters 2021
-polygonal-light work runs in parallel and shares two pieces with this design: the
-projected-solid-angle primitives and the template shadow-ray traversal. Its
+polygonal-light work runs in parallel and shares three pieces with this design: the
+projected-solid-angle primitives, the template shadow-ray traversal and, since
+October 29, 2026, the §6.1 shading-normal clip. Its
 comparison template, `polygonal-light-sampling`, is implemented as of October 28,
 2026: it shades every emissive triangle, without light selection, with clamped
 optimal MIS, the balance heuristic and each technique alone, and has a CPU oracle
 with GPU parity tests. On October 29, 2026 it gained Peters' §6.1 clip of the
 shading normal to the view's hemisphere, in the template and the oracle, and an
 occluded-penumbra fixture after his Fig. 10, where the GPU shows clamped optimal
-MIS beating the weighted balance heuristic. Its limit of eight emissive triangles
+MIS beating the weighted balance heuristic. The `ris-projected-solid-angle`
+template gained the same clip on October 29, 2026, through a FoundationMath
+function that both templates share. The polygonal-light template's limit of eight
+emissive triangles
 stays: lifting it needs a change to the scene-interface contract. Its usage,
 departures, evidence and those options are in the
 [authoring guide](../development/render-graph-authoring.md#compare-brdf-importance-sampling-for-polygonal-lights).
@@ -45,14 +51,16 @@ departures, evidence and those options are in the
 | Christoph Peters, [“BRDF Importance Sampling for Polygonal Lights”](https://doi.org/10.1145/3450626.3459672), ACM TOG 40(4), article 140, 2021; [author PDF](https://cg.ivd.kit.edu/publications/2021/polygonal_lights/peters2021-brdf_importance_sampling_for_polygonal_lights-paper.pdf) §§3.1, 3.7, 4.1–4.3, 6.1 and 6.5 | Projected-solid-angle sampling of a convex polygon clipped to `z ≥ 0` in the shading frame, with clockwise winding (flip `y` when the polygon is seen from behind), FP32 stability notes and a fixed two-iteration inversion. LTC sampling transforms the polygon by `M⁻¹`, clips only in LTC space, and disables the specular technique when that clip is empty. Mixed BRDFs take one sample per technique and combine them with clamped optimal MIS, `v = 1/2`; the paper recommends against the one-sample estimator (§4.2). Diffuse albedo in the MIS coefficients is clamped to at least 0.01 per channel so the diffuse technique always covers the polygon. |
 | Eric Heitz, Jonathan Dupuy, Stephen Hill and David Neubelt, [“Real-Time Polygonal-Light Shading with Linearly Transformed Cosines”](https://doi.org/10.1145/2897824.2925895), ACM TOG 35(4), article 41, 2016 (SIGGRAPH 2016); author preprint §§3.1–3.2, 4 and 5.1, reviewed for the LTC transform | The LTC density (Eq. 1) is the clamped cosine (Eq. 4) of `M⁻¹ω/‖M⁻¹ω‖` times the Jacobian `|M⁻¹|/‖M⁻¹ω‖³`. It is invariant to scaling `M`, its polygon integral is the clamped-cosine integral over `M⁻¹P` (Eq. 3), and it is sampled by mapping a cosine sample through `M` (Algorithm 1). Isotropic BRDF fits use the four-parameter form of Eq. 6 with the L3 error and store `M⁻¹` plus the BRDF norm over `(θ, √α)`. The fitter must reimplement this from the text, because the published utilities are not used. |
 | Chris Wyman, “Weighted Reservoir Sampling,” *Ray Tracing Gems II*, chapter 22, via the existing [streaming selection review](randomness-gems-review.md#streaming-selection) | Sequential, with-replacement reservoir over an explicit candidate order, with zero totals handled explicitly. |
+| Stephen Hill and Eric Heitz, [“Real-Time Area Lighting: a Journey from Research to Production”](https://advances.realtimerendering.com/s2016/), SIGGRAPH 2016 Advances in Real-Time Rendering course; slides and speaker notes 63–77 (edge integrals, θ/sin θ fits) and 87–102 (horizon clipping, vector form factor, proxy sphere), reviewed October 29, 2026 | The [approximate target](#approximate-target). Without its projection onto the normal, the sum of edge integrals is the polygon's vector form factor `F`, whose length is the form factor in the direction of `F` (slides 90–93). A sphere with the same `F` has angular extent `asin(√|F|)` (slides 94–96). Its horizon-clipped form factor is tabulated from Snyder's closed form (slide 97), or approximated by `max((|F|² + F.z) / (|F| + 1), 0)` without a table (slide 102). θ/sin θ uses a quadratic fit for diffuse (slide 77) and a cubic rational fit where accuracy matters (slides 72–74). For the LTC term, the course transforms the polygon by `M⁻¹` before integrating (slide 63). Ludus adopts the table-free sphere approximation and the quadratic fit for both terms, because a target needs only a positive weight that tracks the integral, not shading accuracy. |
 
 Cited through those sources but **not separately reviewed in this pass**. Review
 the cited sections before implementing the corresponding piece, and add their
 attribution beside the code:
 
-- Stephen Hill and Eric Heitz, “Real-Time Area Lighting: a Journey from Research
-  to Production,” SIGGRAPH 2016 Advances course: the approximate form-factor
-  evaluation that Shah et al. use for speed.
+- John Snyder, “Area Light Sources for Real-Time Graphics,” Microsoft Research
+  technical report MSR-TR-96-11, 1996: the exact horizon-clipped sphere form
+  factor that Hill and Heitz tabulate. Ludus uses only their table-free
+  approximation.
 - Benedikt Bitterli et al., “Spatiotemporal Reservoir Resampling for Real-Time Ray
   Tracing with Dynamic Direct Lighting,” ACM TOG 39(4), 2020, and Justin Talbot,
   David Cline and Parris Egbert, “Importance Resampling for Global Illumination,”
@@ -121,11 +129,12 @@ template and RT1 differ only where noted.
    - **Support invariant:** `p̂(t) > 0` whenever `t` has positive area above the
      shading horizon and `Y(L̄_t) > 0`. The clamped `a₀` and an exact clipped
      `E₀` guarantee it. Approximate evaluations need a new version that proves
-     the same invariant.
+     the same invariant; the [approximate target](#approximate-target) is one.
 5. **Resampled light selection.**
    - Draw `M` candidates `t_i ~ p_src` with replacement. The template's
-     `RIS_CANDIDATE_COUNT` setting defaults to 32 with a maximum of 32; RT1
-     fixes `M = 32`.
+     `RIS_CANDIDATE_COUNT` setting has a maximum of 32; RT1's sampler version 2
+     fixes `M = 32`. With the [approximate target](#approximate-target), the
+     template defaults to `M = 8` and RT1's version 3 fixes its own `M`.
    - Weight each candidate `w_i = p̂(t_i) / p_src(t_i)`.
    - Stream candidates in index order: `w_sum += w_i`, and accept `t_i` when
      `u_i · w_sum < w_i`. Zero-weight candidates are never selected. If
@@ -170,8 +179,9 @@ strategy cannot sample.
 
 The adopted surrogate draws `K` further candidates `t'_k ~ p_src` from their own
 dimensions. They are independent of the reservoir and of the BSDF sample. The
-template's `RIS_NORMALIZATION_CANDIDATE_COUNT` defaults to 8 with a maximum of
-16; RT1 fixes `K = 8`.
+template's `RIS_NORMALIZATION_CANDIDATE_COUNT` has a maximum of 16 and defaults to
+4 with the [approximate target](#approximate-target); RT1's sampler version 2
+fixes `K = 8`, and version 3 fixes its own `K`.
 
 ```text
 Ẑ     = (1/K) · Σ_k p̂(t'_k) / p_src(t'_k)
@@ -243,8 +253,10 @@ library: hits Buffer (32 B/px, RenderSize)
   - Browser execution stays outside the graph ray profile until that profile
     admits it.
 - **Settings.** Finite, author-declared values:
-  - `RIS_CANDIDATE_COUNT`: 32, range 1–32;
-  - `RIS_NORMALIZATION_CANDIDATE_COUNT`: 8, range 1–16;
+  - `RIS_CANDIDATE_COUNT`: 8, range 1–32 (32 before the approximate target);
+  - `RIS_NORMALIZATION_CANDIDATE_COUNT`: 4, range 1–16 (8 before it);
+  - `RIS_TARGET`: 1, the [approximate target](#approximate-target); 0 evaluates
+    the exact clipped integrals;
   - `PROJECTED_SOLID_ANGLE_MIS_VISIBILITY`: Peters' `v`, 0.5, range 0–1.
 
   Settings never change the random layout. Its ranges are sized for the maximums.
@@ -308,6 +320,15 @@ these departures and choices:
 - **Diffuse albedo.** `a₀ = baseColor · (1 − metallic) · (1 − F₀)` per channel,
   Schlick's reflectance at normal incidence, clamped to 0.01. This settles the
   open question for the template only; RT1 may measure another.
+- **Shading normal clip.** Since October 29, 2026, a front face's shading normal
+  is clipped to the hemisphere of the view direction, as in Peters' renderer
+  (§6.1), with FoundationMath's
+  [shared clip](../modules/foundation/math.md#shading-normal-clipping) and its 0.01
+  margin. Every strategy uses the clipped normal. RT1 does not clip, so the
+  template and RT1 estimate different integrals at normal-mapped pixels and within
+  0.01 of the shading horizon; RT1's shading normal is shared by all of its sampler
+  profiles, and clipping it there would be a separate, versioned change to the
+  reference.
 - **Other MIS pairs.** Analytic and environment light samples and the BSDF sample
   use the same power heuristic as `W_L`, and delta lights keep weight one.
 - **Consistent densities.** Both MIS sites evaluate `P̃` with
@@ -330,7 +351,8 @@ Evidence and remaining acceptance work, against [Acceptance](#acceptance) item 3
 - **Tested.** The GPU tests on Metal cover the glossy Cornell room, the
   many-emitter room, a textured emitter and two-sided emitters over
   minimum-roughness metal. The weight unit test covers the MIS partition of unity,
-  `Ẑ = 0` and the empty LTC clip.
+  `Ẑ = 0`, the empty LTC clip, and receivers viewed from below their shading
+  horizon, whose clipped frames it compares with RT1's C++ functions.
   - The textured fixture puts a 4 × 4 linear emission map on the Cornell light,
     over rough dielectric surfaces. The map is white, warm, cool and black in
     diagonal stripes, so it is zero on a quarter of the light. The power CDF and the
@@ -430,9 +452,9 @@ What the results show:
     MAPE.
 - **Why RIS is expensive.** Its cost is the per-candidate target evaluation. Each of
   the 32 candidates clips and integrates two polygons, diffuse and LTC. Shah et al.
-  evaluate an approximate form factor instead (Hill and Heitz, listed under sources
-  not yet reviewed). Lowering this cost, `M` and `K`, is the open measurement
-  question above. The benchmark is the way to evaluate such a change.
+  evaluate an approximate form factor instead (Hill and Heitz). The
+  [approximate target](#approximate-target) now does the same, and its
+  [measurements](#approximate-target-measurements) include an `M` and `K` sweep.
 
 The three failure pixels also appeared with the stock `ris-projected-solid-angle`
 package, which showed one by sample 256 at another pixel with this seed.
@@ -483,6 +505,7 @@ deliverable.
 | --- | --- |
 | `UniformArea` | The current estimator, including the power-weighted emitter CDF. It stays the default and bit-identical to existing captures (`SamplerVersion = 1`, 8 dimensions per bounce), and remains the validation oracle. |
 | `ResampledProjectedSolidAngle` | This review's estimator. `SamplerVersion = 2`, 128 dimensions per bounce. Requires the renderer's LTC table. |
+| `ResampledFormFactor` | The same estimator with the [approximate target](#approximate-target). `SamplerVersion = 3`, version 2's random layout and its own frozen `M` and `K`. Requires the LTC table. |
 
 - **API.** The `ReferenceLightSampling` enum on
   `ReferenceCaptureDescription`, recorded in `ReferenceCaptureInfo`.
@@ -492,8 +515,8 @@ deliverable.
     replacement job and resets accumulation.
   - The separate GPU preview may adopt the mode later. That does not count toward
     the reference requirement, which the preview does not yet satisfy.
-- **LUHDR.** The sampler field carries 2, and new flag bit `128` marks the
-  resampled mode (bit 64 already means `gpu_compute`). Today
+- **LUHDR.** The sampler field carries 2 (3 for `ResampledFormFactor`), and new
+  flag bit `128` marks a resampled mode (bit 64 already means `gpu_compute`). Today
   `scripts/reference-hdr` rejects any sampler other than 1 and any flag above
   127, so old converters refuse these captures rather than mislabel them. Extend
   the converter and its manifest in the same change.
@@ -535,6 +558,8 @@ aligned to Philox's four-lane blocks:
   `2 + 63 · 128 + 127 = 8193 ≤ 65535`. Extend the `static_assert` and
   `ReferenceBounceDimension` per sampler version.
 - `M`, `K` and the stride are frozen constants of version 2.
+- Sampler version 3 uses this table unchanged. Its own frozen `M` and `K` may only
+  be smaller, so it reads a prefix of the candidate and normalization slots.
 
 ### RT1 implementation notes
 
@@ -558,11 +583,12 @@ choices:
 - **Emitter alpha.** Unlike the template, light samples apply the emitter's alpha
   cutoff at the sampled point, because RT1's `UniformArea` already does. The
   emitter's sidedness and the secondary range are applied there too.
-- **One kernel.** The GPU-compute trace kernel serves both modes; a parameter flag
-  selects sampler version 2. The LTC table is the kernel's sixth binding,
-  uploaded once per `EnableReferenceRendering` and charged to its GPU budget.
-  Kernels without the binding are rejected there, so no capture falls back.
-  `LUDUS_REFERENCE_KERNEL_VERSION` is 3.
+- **One kernel.** The GPU-compute trace kernel serves every mode; a parameter flag
+  selects sampler version 2, and a second flag (`128`) version 3's approximate
+  target. The LTC table is the kernel's sixth binding, uploaded once per
+  `EnableReferenceRendering` and charged to its GPU budget. Kernels without the
+  binding are rejected there, so no capture falls back.
+  `LUDUS_REFERENCE_KERNEL_VERSION` is 4 since version 3.
 - **Shadow rays.** The CPU path queues up to two shadow rays per vertex, so
   `NativeQueries` tiles need three queries per path. The GPU kernel traces each
   technique's shadow ray as soon as it is sampled; the order of the sums matches
@@ -691,13 +717,250 @@ What the results show:
     primary and MIS kernels. The resampled transport costs 20–22 ms, against
     12.3 ms for the template's RIS.
 - **Cost.** It comes from the per-vertex target evaluations; see the template's
-  explanation in [Equal-time benchmark](#equal-time-benchmark). A cheaper target or
-  smaller `M` and `K` would change the equal-time result. This benchmark measures
-  such a change.
+  explanation in [Equal-time benchmark](#equal-time-benchmark). The
+  `ResampledFormFactor` mode lowers it; see
+  [Approximate target measurements](#approximate-target-measurements).
 - **Bias.** At 64 samples, the resampled image's mean transport luminance is within
   0.1% of the reference in each case: 0.07359 against 0.07358, 0.04461 against
   0.04464, 0.12527 against 0.12519, and 0.07978 against 0.07972. The textured
   emitters give no measurable bias, but this is not a test.
+
+## Approximate target
+
+Implemented October 29, 2026, as the template's `RIS_TARGET` setting and RT1's
+`ResampledFormFactor` mode (sampler version 3). It replaces the exact `E₀` and `E₁`
+of the [target](#proposed-estimator) by Hill and Heitz's approximation (see
+[Sources reviewed](#sources-reviewed)), which Shah et al. use for speed.
+
+- **Approximation.** For the triangle's unit vertex directions `dᵢ`, the vector
+  form factor is `F = (1/2π) Σ r(dᵢ·dᵢ₊₁) dᵢ × dᵢ₊₁`, oriented towards the triangle,
+  where `r` is the course's quadratic fit of θ/sin θ (within 0.73%). The integral is
+  `F.z` when no vertex lies below the horizon, zero when none lies above it, and
+  otherwise the clipped proxy sphere `max((|F|² + F.z) / (|F| + 1), 0)`. `E₁` applies
+  the same steps after transforming the vertices by `M₁⁻¹`. FoundationMath owns both
+  as `TryApproximateClampedCosinePolygonIntegral` and
+  `TryApproximateLinearlyTransformedCosinePolygonIntegral`, in C++ and Slang.
+- **Departure.** Using `F.z` for triangles entirely above the horizon reproduces
+  the course's tabulated variant there, where the table-free fit would not.
+  Results are clamped to `[0, 1]`, which the fitted ratio can exceed slightly.
+- **Support.** The proxy sphere can lie below the horizon while part of the
+  triangle is above it, so the approximate `E₀` alone can be zero where the exact
+  one is positive. The target therefore uses
+  `Ẽ₀ = max(E₀ approximation, 2⁻⁶ |d₀ · (d₁ × d₂)|)` whenever a vertex lies above the
+  horizon. The triple product is positive for every triangle whose plane does not
+  contain the receiver, which is exactly when the exact projected solid angle can be
+  positive. So `p̂ > 0` wherever the triangle has area above the horizon and positive
+  emission, and the estimator's expected value is unchanged. The FoundationMath, RT1
+  unit and template weight tests check this on random triangles, including ones the
+  sphere alone would drop.
+- **What stays exact.** The candidate weights, `Ẑ` and `P̃` all use the approximate
+  `p̂`, at both MIS sites. The selected triangle and a BSDF hit's triangle still
+  clip and prepare both polygons, because their samples, densities `p₀`, `p₁` and
+  Peters' coefficients `c_t` need the exact integrals. Changing the target changes
+  only variance and cost.
+- **Cost per vertex.** The exact target prepares two polygons for each of `M + K`
+  candidates and for the selected triangle. The approximate one evaluates three
+  fitted edge terms twice per candidate and prepares polygons only for the selected
+  triangle and BSDF hits.
+- **Identity.** RT1's version 2 keeps the exact target and its captures. Version 3
+  shares version 2's random slots and reads a prefix of its candidate and
+  normalization slots, with frozen `M` and `K` chosen from the
+  [measurements](#approximate-target-measurements). The LUHDR sampler field records
+  3, with the resampled flag 128. The template's `RIS_TARGET` defaults to the
+  approximation; `0` restores the exact target.
+
+### Approximate target measurements
+
+Both opt-in benchmarks measured the approximate target with the method of
+[Equal-time benchmark](#equal-time-benchmark) and
+[RT1 equal-time evaluation](#rt1-equal-time-evaluation), on Apple M5 (Metal,
+macOS 26.6), `macos-clang-development` with Clang 23.1.3 and Slang 2026.1.2, on
+October 29, 2026. The machine was shared with other builds, at a load average of
+22–78. Kernel times of one package varied by up to 1.7× between runs under that
+load, so costs are compared within one run.
+
+**Template.** One run of `[.ris-projected-solid-angle-benchmark]` cooked the exact
+target and seven `RIS_TARGET = 1` variants
+(`LUDUS_RIS_PROJECTED_SOLID_ANGLE_BENCHMARK_VARIANTS`), all measured against the
+same Veach–Guibas reference and its own timing rounds. In this run Veach–Guibas's
+MIS shade kernel took 0.56–0.69 ms per sample, against 2.08–2.28 ms in the earlier
+recorded run, so its equal-time sample counts are three times as high as there.
+
+Primary plus MIS shade kernel per sample, and its ratio to Veach–Guibas:
+
+| Target | `M` | `K` | Diffuse | Specular |
+| --- | --- | --- | --- | --- |
+| Exact | 32 | 8 | 13.25 ms (16.4×) | 12.13 ms (18.1×) |
+| Form factor | 32 | 8 | 3.33 ms (4.1×) | 3.07 ms (4.6×) |
+| Form factor | 16 | 8 | 2.60 ms (3.2×) | 2.37 ms (3.5×) |
+| Form factor | 16 | 4 | 2.51 ms (3.1×) | 2.14 ms (3.2×) |
+| Form factor | 8 | 8 | 2.21 ms (2.7×) | 2.13 ms (3.2×) |
+| **Form factor** | **8** | **4** | **1.95 ms (2.4×)** | **1.80 ms (2.7×)** |
+| Form factor | 8 | 2 | 1.97 ms (2.4×) | 1.82 ms (2.7×) |
+| Form factor | 4 | 8 | 1.88 ms (2.3×) | 1.70 ms (2.5×) |
+| Veach–Guibas | — | — | 0.81 ms | 0.67 ms |
+
+Shadow and BSDF rays per pixel do not depend on the target: 0.91 and 0.47
+(diffuse), 0.91 and 0.53 (specular).
+
+At 64 samples per pixel, each cell gives MAPE / linear RMSE / tone-mapped MSE, then
+Veach–Guibas at the same kernel time, with its sample count:
+
+| Target, `M`, `K` | Diffuse | Veach–Guibas, equal time | Specular | Veach–Guibas, equal time |
+| --- | --- | --- | --- | --- |
+| Exact, 32, 8 | 0.0387 / 0.0734 / 0.00046 | 0.0271 / 0.0248 / 0.000084 (1049) | 0.0341 / 0.0771 / 0.00044 | 0.0207 / 0.0249 / 0.000058 (1157) |
+| Form factor, 32, 8 | 0.0389 / 0.0734 / 0.00046 | 0.0498 / 0.0431 / 0.00028 (263) | 0.0342 / 0.0771 / 0.00044 | 0.0373 / 0.0428 / 0.00019 (293) |
+| Form factor, 16, 8 | 0.0409 / 0.0743 / 0.00048 | 0.0559 / 0.0488 / 0.00037 (206) | 0.0362 / 0.0788 / 0.00046 | 0.0422 / 0.0484 / 0.00025 (226) |
+| Form factor, 16, 4 | 0.0409 / 0.0743 / 0.00048 | 0.0568 / 0.0494 / 0.00038 (198) | 0.0362 / 0.0789 / 0.00046 | 0.0444 / 0.0504 / 0.00028 (204) |
+| Form factor, 8, 8 | 0.0438 / 0.0755 / 0.00051 | 0.0603 / 0.0527 / 0.00043 (175) | 0.0390 / 0.0804 / 0.00049 | 0.0444 / 0.0504 / 0.00028 (204) |
+| **Form factor, 8, 4** | **0.0439 / 0.0755 / 0.00051** | **0.0640 / 0.0559 / 0.00049 (155)** | **0.0390 / 0.0804 / 0.00049** | **0.0479 / 0.0541 / 0.00033 (172)** |
+| Form factor, 8, 2 | 0.0439 / 0.0755 / 0.00051 | 0.0638 / 0.0558 / 0.00049 (156) | 0.0390 / 0.0804 / 0.00049 | 0.0478 / 0.0541 / 0.00033 (173) |
+| Form factor, 4, 8 | 0.0478 / 0.0770 / 0.00056 | 0.0652 / 0.0572 / 0.00051 (149) | 0.0429 / 0.0829 / 0.00053 | 0.0493 / 0.0559 / 0.00036 (162) |
+
+Veach–Guibas at 64 samples measured 0.0976 / 0.0867 / 0.0012 (diffuse) and
+0.0767 / 0.0902 / 0.00092 (specular). The new defaults, `M = 8` and `K = 4`, at
+fewer samples:
+
+| Variant | Samples | Default RIS | Veach–Guibas, equal time (samples) |
+| --- | --- | --- | --- |
+| Diffuse | 4 | 0.157 / 0.295 / 0.0095 | 0.237 / 0.214 / 0.0082 (10) |
+| Diffuse | 16 | 0.083 / 0.149 / 0.0023 | 0.124 / 0.112 / 0.0019 (39) |
+| Specular | 4 | 0.141 / 0.316 / 0.0095 | 0.179 / 0.213 / 0.0061 (11) |
+| Specular | 16 | 0.074 / 0.159 / 0.0022 | 0.093 / 0.110 / 0.0013 (43) |
+
+What the template results show:
+
+- **Same error, a quarter of the cost.** At `M = 32`, `K = 8` the approximate
+  target has the exact target's error to within 1% at every budget, for 25% of its
+  kernel time. Its equal-sample gain over Veach–Guibas (MAPE 2.2–2.6×) is unchanged.
+- **`M` and `K`.** Fewer candidates raise equal-sample error slowly (MAPE +13% at
+  `M = 8`, +23% at `M = 4`) and lower cost. `K` changes no error at three
+  significant digits and costs about 0.1–0.35 ms per sample from 8 to 4. MAPE ×
+  √time is lowest at `M = 8`, `K = 4` in both variants, within about 7% of
+  `M = 16` and `M = 4`; `K = 2` measured no further gain. These are the new
+  defaults.
+- **Equal time.** With the defaults, RIS has a lower MAPE than Veach–Guibas at every
+  budget: 31–34% lower (diffuse) and 19–22% lower (specular). With the exact target
+  in the same run it was 42–65% *higher*, because this run's Veach–Guibas kernel was
+  fast. Veach–Guibas keeps the lower linear RMSE, by 1.3–1.5×, and the lower
+  tone-mapped MSE, by 1.04–1.19× (diffuse) and 1.5–1.7× (specular).
+- **What limits RMSE.** RIS's linear RMSE barely moves with `M`, `K` or the target
+  (0.073–0.077 diffuse at 64 samples), while MAPE does. The squared error therefore
+  comes from pixels where emitter selection is not the bottleneck; which term of
+  the estimator dominates there was not measured.
+
+**RT1.** `[.reference-light-sampling-benchmark]` renders all three modes in each
+run, timed in the order `UniformArea`, version 2, version 3, version 3, version 2,
+`UniformArea`. Version 3's `M` and `K` are compile-time constants, so each setting
+needs its own build and run. Equal-sample errors are deterministic: every run that
+renders a given mode and setting reproduces them bit for bit.
+
+Transport kernel time per sample in run 1 (version 3 with `M = 32`, `K = 8`), and
+its ratio to `UniformArea`:
+
+| Case | `UniformArea` | Version 2, exact target | Version 3, form factor |
+| --- | --- | --- | --- |
+| Diffuse, direct | 1.10 ms | 21.8 ms (19.7×) | 4.15 ms (3.8×) |
+| Specular, direct | 1.63 ms | 20.5 ms (12.6×) | 4.42 ms (2.7×) |
+| Diffuse, depth 4 | 3.72 ms | 85.6 ms (23.0×) | 16.8 ms (4.5×) |
+| Specular, depth 4 | 3.40 ms | 87.8 ms (25.8×) | 18.1 ms (5.3×) |
+
+Shadow rays per pixel are those of version 2 within 0.2%. The specular
+`UniformArea` time above is high for this machine. In other runs it measured
+0.74–2.66 ms, so its ratios are less certain than the others.
+
+Version 3 against `UniformArea` at the same kernel time in run 1, as MAPE / RMSE
+(`UniformArea` samples in parentheses):
+
+| Case | Samples | Version 3 | `UniformArea`, equal time |
+| --- | --- | --- | --- |
+| Diffuse, direct | 4 | 0.084 / 0.064 | 0.090 / 0.074 (15) |
+| Diffuse, direct | 16 | 0.042 / 0.031 | 0.047 / 0.037 (60) |
+| Diffuse, direct | 64 | 0.022 / 0.017 | 0.024 / 0.019 (240) |
+| Specular, direct | 4 | 0.063 / 0.116 | 0.088 / 0.115 (11) |
+| Specular, direct | 16 | 0.032 / 0.057 | 0.045 / 0.060 (43) |
+| Specular, direct | 64 | 0.017 / 0.029 | 0.024 / 0.031 (173) |
+| Diffuse, depth 4 | 4 | 0.186 / 0.093 | 0.139 / 0.084 (18) |
+| Diffuse, depth 4 | 16 | 0.098 / 0.047 | 0.075 / 0.042 (72) |
+| Diffuse, depth 4 | 64 | 0.051 / 0.025 | 0.040 / 0.021 (289) |
+| Specular, depth 4 | 4 | 0.286 / 0.141 | 0.253 / 0.102 (21) |
+| Specular, depth 4 | 16 | 0.183 / 0.071 | 0.156 / 0.051 (85) |
+| Specular, depth 4 | 64 | 0.108 / 0.036 | 0.088 / 0.026 (340) |
+
+Version 3's equal-sample errors match version 2's within 1% in every case, as in the
+template. For comparison, version 2 at equal time in the same run lost by 1.5–2.8×
+in MAPE.
+
+Equal-sample MAPE / RMSE at 64 samples for each version 3 setting measured, with
+`UniformArea` at 64 samples:
+
+| Case | `M = 32`, `K = 8` | `M = 16`, `K = 8` | `M = 8`, `K = 4` | `UniformArea` |
+| --- | --- | --- | --- | --- |
+| Diffuse, direct | 0.0221 / 0.0171 | 0.0239 / 0.0200 | 0.0266 / 0.0226 | 0.0453 / 0.0358 |
+| Specular, direct | 0.0168 / 0.0289 | 0.0188 / 0.0313 | 0.0217 / 0.0355 | 0.0375 / 0.0494 |
+| Diffuse, depth 4 | 0.0514 / 0.0247 | 0.0543 / 0.0275 | 0.0582 / 0.0304 | 0.0793 / 0.0446 |
+| Specular, depth 4 | 0.108 / 0.0359 | 0.119 / 0.0395 | 0.132 / 0.0447 | 0.174 / 0.0582 |
+
+On the CPU oracle at 96 × 64 (diffuse room, run 1), version 3 also matched version
+2's error. Its wall time to 16 samples was 1.6 s against 2.4 s with direct lighting,
+and 3.6 s against 5.0 s at depth 4. These times include setup and are not
+equal-time measurements; the oracle's exact polygon preparation for the selected
+triangle and BSDF hits is a larger share of its time.
+
+Run 2 repeated `M = 32`, `K = 8` on this change's final code, merged with
+`develop`. It reproduced every equal-sample error of run 1 bit for bit. Its
+`UniformArea` kernel times differed by up to 1.7×: 0.65, 1.60, 5.00 and 4.86 ms
+per sample in the four cases. Version 3 took 4.26, 4.17, 18.7 and 16.9 ms. At equal
+time (MAPE / RMSE, `UniformArea` samples in parentheses):
+
+| Case | Samples | Version 3 | `UniformArea`, equal time |
+| --- | --- | --- | --- |
+| Diffuse, direct | 64 | 0.022 / 0.017 | 0.018 / 0.015 (419) |
+| Specular, direct | 64 | 0.017 / 0.029 | 0.024 / 0.031 (167) |
+| Diffuse, depth 4 | 64 | 0.051 / 0.025 | 0.043 / 0.023 (240) |
+| Specular, depth 4 | 64 | 0.108 / 0.036 | 0.106 / 0.032 (223) |
+
+Because the equal-sample errors are deterministic, the cost ratio at which version
+3 breaks even with `UniformArea` follows from them: the squared ratio of their
+64-sample errors. A measured cost ratio below it wins at equal time:
+
+| Case | Break-even cost ratio, RMSE / MAPE | Measured, run 1 / run 2 |
+| --- | --- | --- |
+| Diffuse, direct | 4.4 / 4.2 | 3.8 / 6.5 |
+| Specular, direct | 2.9 / 5.0 | 2.7 / 2.6 |
+| Diffuse, depth 4 | 3.3 / 2.4 | 4.5 / 3.7 |
+| Specular, depth 4 | 2.6 / 2.6 | 5.3 / 3.5 |
+
+Version 2's measured ratios were 12.6–30.6 in the same runs.
+
+What the RT1 results show:
+
+- **Cost.** The approximate target cuts version 2's transport kernel time by
+  4.6–5.3× at the same `M` and `K`, with the same equal-sample error.
+- **Equal time.** Version 3 moves RT1's resampled mode from a clear loss to
+  about break-even, so the outcome depends on this machine's timing noise.
+  - **Specular, direct.** Version 3 wins in both runs, by 28–30% in MAPE and 6–8%
+    in RMSE at 64 samples.
+  - **Diffuse, direct.** The cost ratio straddles break-even. Version 3 won in run 1
+    (by 7% in MAPE, 9% in RMSE at 64 samples) and lost in run 2 (by 20% and 17%),
+    where `UniformArea`'s kernel ran 1.7× faster.
+  - **Depth 4.** `UniformArea` still wins, by up to 1.3× in MAPE and 1.4× in RMSE.
+    In run 2's specular room the MAPE was nearly level (2%). Each indirect vertex pays for
+    resampling, and indirect bounces gain less from it.
+  - **Version 2.** It lost every case by 1.5–2.8× in MAPE.
+  So Shah et al.'s equal-time claim holds in RT1 for specular direct lighting. The
+  other cases now measure 0.9–2.0× their break-even cost, against 2.5–10× for
+  version 2.
+- **`M` and `K`.** Fewer candidates raise RT1's error faster than the template's.
+  From `M = 32` to `M = 8`, RMSE² grows by 1.5–1.75×, so `M = 8` would have to cost
+  under 0.57–0.66× as much; it measured about 0.7× at best, because the candidates
+  are only part of the kernel. Timing noise between runs is too large to separate
+  `M = 16` from `M = 32` on time: the same `M = 8` kernel measured 3.0 and 4.7 ms
+  with direct lighting. `M = 16`'s RMSE² is 17–37% higher, for about half of the
+  time `M = 8` saves. Version 3 therefore freezes `M = 32` and `K = 8`, version 2's
+  counts. `K = 4` at `M = 32` was not measured in RT1.
+
+
 
 ## Ownership
 
@@ -705,6 +968,7 @@ What the results show:
 | --- | --- | --- |
 | Convex polygon horizon clipping (up to seven input vertices), clipped projected-solid-angle integral, Peters sampler and density | FoundationMath `projected_solid_angle.hpp` and `shaders/projected_solid_angle.slang`, implemented by the polygonal-light work | The sampler is ported from the BSD-licensed `polygon_sampling.glsl` with its notice. Clipping is an independent reimplementation. This design consumes these primitives and adds none of its own. |
 | Generic LTC polygon transform | FoundationMath, beside those primitives | Implemented as `linearly_transformed_cosine.hpp` and `shaders/linearly_transformed_cosine.slang` ([contract](../modules/foundation/math.md#linearly-transformed-cosines-over-polygons)): transform the vertices by `M⁻¹`, then reuse the same clipping, integral and sampler. Credits Heitz et al. 2016 (§3.1, Eq. 3, Algorithm 1) and Peters 2021 §4.1. |
+| Shading normal clipped to the view's hemisphere (Peters §6.1) | FoundationMath | Implemented as `shading_normal.hpp` and `shaders/shading_normal.slang` ([contract](../modules/foundation/math.md#shading-normal-clipping)), with Ludus's 0.01 margin. The polygonal-light and RIS templates clip front faces with it; RT1 does not clip. |
 | Sequential weighted reservoir | FoundationMath | Implemented as `weighted_reservoir.hpp` and `shaders/weighted_reservoir.slang` ([contract](randomness.md#sequential-weighted-reservoir)): explicit order, zero totals, and selection-frequency tests on exact small integers. The ReSTIR template may adopt it separately; this design does not change that template. |
 | LTC table for Ludus GGX/correlated Smith/Schlick, its fitter and provenance | Renderer (embedded table and a GPU buffer) plus an offline Ludus tool. **Owned by this RIS/many-area-light workstream** (decided October 27, 2026). The polygonal-light LTC templates reuse the same table and fitter rather than building their own. | Implemented as `tools/ltc-fit`, `data/ltc_table.bin` with its provenance and `shaders/ltc_table_layout.h`, and the `ltc_table.slang` and CPU lookups ([fit, regeneration and accuracy](../development/ltc-table.md)). Reimplemented from Heitz et al. §4 and Peters §§4.1–4.2, not from GPLv3 utilities. Like Peters' renderer it has 51 `F0` slices, chosen by the luminance of `F0`; the albedo stays exact per channel. It covers roughness down to 0.045. A poor fit costs variance, not correctness. Render graphs bind it with `scene_interface.polygonal_light_sampling`. |
 | Compute-BVH graph traversal strategy | Renderer, at the shared traversal boundary | Implemented as `ComputeBvh`, sharing the RT1 GPU reference's BVH traversal. Shared with the polygonal-light templates; a prerequisite for both |
@@ -748,7 +1012,9 @@ Out of scope:
 - Shah et al.'s naive per-candidate variant.
 
 Open questions, to settle by measurement:
-- `K`, and Peters' `v`;
+- Peters' `v`; `K` is settled for the template (`K = 4` changed no error at three
+  significant digits; see [Approximate target measurements](#approximate-target-measurements))
+  but not measured below 8 in RT1;
 - the diffuse albedo approximation;
 - LTC table resolution (the table follows Peters' 64 × 64 × 51 cells; see
   [its accuracy](../development/ltc-table.md#accuracy));

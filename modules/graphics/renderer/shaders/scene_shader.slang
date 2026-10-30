@@ -1,3 +1,4 @@
+#include "coated_diffuse.slang"
 // Public logical scene shader interface v1. Packed buffers and traversal remain Renderer-owned.
 // Thanks to Pharr, Jakob and Humphreys, PBRT 4e (2023), sections 12.1/12.6/13.4:
 // https://pbr-book.org/4ed/Light_Sources/Light_Interface
@@ -84,6 +85,13 @@ struct SurfaceHit
 };
 struct MaterialSample
 {
+    uint Model;
+    float3 Eta;
+    float3 K;
+    float AlphaU;
+    float AlphaV;
+    float CoatingEta;
+    float CoatingThickness;
     float3 BaseColor;
     float Metallic;
     float Roughness;
@@ -239,6 +247,15 @@ MaterialSample GetMaterial(SceneContext scene, uint materialIndex)
     if (result.IsValid == false)
         return result;
     uint base = Offsets.w + materialIndex * SurfaceLayout.x;
+    float4 etaAndModel = SceneValue(base + LUDUS_GPU_PREVIEW_SCATTERING_ETA_WORD);
+    float4 extinctionAndAlpha = SceneValue(base + LUDUS_GPU_PREVIEW_SCATTERING_K_WORD);
+    result.Model = asuint(etaAndModel.w);
+    result.Eta = etaAndModel.xyz;
+    result.K = extinctionAndAlpha.xyz;
+    result.AlphaU = extinctionAndAlpha.w;
+    result.AlphaV = SceneValue(base + LUDUS_GPU_PREVIEW_SCATTERING_ALPHA_WORD).x;
+    result.CoatingEta = SceneValue(base + LUDUS_GPU_PREVIEW_SCATTERING_ALPHA_WORD).y;
+    result.CoatingThickness = SceneValue(base + LUDUS_GPU_PREVIEW_SCATTERING_ALPHA_WORD).z;
     result.BaseColor = SceneValue(base).xyz;
     result.Metallic = SceneValue(base).w;
     result.Roughness = SceneValue(base + 1).x;
@@ -833,22 +850,100 @@ void EvaluateStandardBsdf(MaterialSample material,
                           out float3 outValue,
                           out float outPdf)
 {
-    Evaluate(material.BaseColor,
-             material.Metallic,
-             material.Roughness,
-             material.ShadingNormalWorld,
-             viewDirectionWorld,
-             lightDirectionWorld,
-             outValue,
-             outPdf);
+    EvaluateScattering(material.BaseColor,
+                       material.Metallic,
+                       material.Roughness,
+                       material.Model,
+                       material.Eta,
+                       material.K,
+                       material.AlphaU,
+                       material.ShadingNormalWorld,
+                       viewDirectionWorld,
+                       lightDirectionWorld,
+                       outValue,
+                       outPdf);
 }
 float3 SampleStandardBsdf(MaterialSample material, float3 viewDirectionWorld, float3 samples)
 {
-    return SampleBsdf(material.ShadingNormalWorld,
-                      viewDirectionWorld,
-                      material.Roughness,
-                      material.Metallic == 1 ? 1 : 0.5,
-                      samples);
+    return SampleScatteringBsdf(material.ShadingNormalWorld,
+                                viewDirectionWorld,
+                                ComputeMaterialAlpha(material.Model, material.Roughness, material.AlphaU),
+                                ComputeMaterialSpecularProbability(material.Model, material.Metallic),
+                                samples);
+}
+
+/// Complete continuation proposal for the typed reference models. Weight already
+/// contains f*cos/pdf; Pdf is solely the external MIS density (estimated for coatings).
+struct StandardBsdfTransportSample
+{
+    float3 DirectionWorld;
+    float3 Weight;
+    float Pdf;
+    bool HasSample;
+};
+CoatingMaterial MakeCoatingMaterial(MaterialSample material)
+{
+    CoatingMaterial coating;
+    coating.BaseColor = material.BaseColor;
+    coating.Alpha = material.AlphaU;
+    coating.Eta = material.CoatingEta;
+    coating.Thickness = material.CoatingThickness;
+    return coating;
+}
+/// Layered-aware evaluation with explicitly addressed independent value/PDF estimates.
+/// Pair this overload with SampleStandardBsdfTransport for matching MIS semantics.
+/// Requires a valid supported material and unit directions; material event is 0..255.
+void EvaluateStandardBsdf(MaterialSample material,
+                          float3 viewDirectionWorld,
+                          float3 lightDirectionWorld,
+                          CoatingRandomContext random,
+                          out float3 outValue,
+                          out float outPdf)
+{
+    if (material.Model == LUDUS_MATERIAL_MODEL_COATED_DIFFUSE)
+    {
+        CoatingEvaluation evaluated = EvaluateCoatedDiffuse(MakeCoatingMaterial(material),
+                                                            material.ShadingNormalWorld,
+                                                            viewDirectionWorld,
+                                                            lightDirectionWorld,
+                                                            random);
+        outValue = evaluated.Value;
+        outPdf = evaluated.Pdf;
+        return;
+    }
+    EvaluateStandardBsdf(material, viewDirectionWorld, lightDirectionWorld, outValue, outPdf);
+}
+/// Sample typed reference transport. Coatings use their bounded internal random
+/// walk; its path ratio must not be reconstructed from a fresh EvaluateStandardBsdf call.
+/// Requires a valid supported material and unit directions; material event is 0..255.
+StandardBsdfTransportSample SampleStandardBsdfTransport(MaterialSample material,
+                                                        float3 viewDirectionWorld,
+                                                        float3 samples,
+                                                        CoatingRandomContext random)
+{
+    StandardBsdfTransportSample result = (StandardBsdfTransportSample)0;
+    if (material.Model == LUDUS_MATERIAL_MODEL_COATED_DIFFUSE)
+    {
+        CoatingSample sampled = SampleCoatedDiffuse(MakeCoatingMaterial(material),
+                                                    material.ShadingNormalWorld,
+                                                    viewDirectionWorld,
+                                                    samples,
+                                                    random);
+        result.DirectionWorld = sampled.DirectionWorld;
+        result.Weight = sampled.Weight;
+        result.Pdf = sampled.MisPdf;
+        result.HasSample = sampled.Accepted;
+        return result;
+    }
+    result.DirectionWorld = SampleStandardBsdf(material, viewDirectionWorld, samples);
+    float3 value;
+    float pdf;
+    EvaluateStandardBsdf(material, viewDirectionWorld, result.DirectionWorld, value, pdf);
+    result.HasSample = pdf > 0;
+    result.Pdf = pdf;
+    result.Weight =
+        result.HasSample == true ? value * (dot(material.ShadingNormalWorld, result.DirectionWorld) / pdf) : float3(0);
+    return result;
 }
 
 // Construct a surface endpoint without issuing a ray. IncomingRay/Distance are zero.

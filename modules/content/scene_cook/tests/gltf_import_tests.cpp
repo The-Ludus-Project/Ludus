@@ -6,6 +6,8 @@
 
 #include <ludus/content/scene_cook/best_effort_import.h>
 #include <ludus/content/scene_format/luscn.h>
+#include <ludus/foundation/base/byte_order.hpp>
+#include <ludus/foundation/containers/array.hpp>
 #include <ludus/runtime/resources/scene.h>
 
 #include "importers/gltf/gltf_reader.h"
@@ -15,6 +17,7 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 
 namespace
@@ -509,4 +512,74 @@ TEST_CASE("local smoke test: licensed glTF/GLB and OBJ collections import or exp
     {
         SKIP("set LUDUS_GLTF_SCENES_DIR and/or LUDUS_OBJ_SCENES_DIR to licensed scene collections");
     }
+}
+
+TEST_CASE("glTF preserves complete geometry beyond both former count ceilings", "[scene_cook][gltf]")
+{
+    constexpr usize VERTEX_COUNT = 2000001;
+    constexpr usize INDEX_COUNT = VERTEX_COUNT * 3;
+    constexpr usize VECTOR_BYTES = 3 * sizeof(float32);
+    constexpr usize POSITION_BYTES = VERTEX_COUNT * VECTOR_BYTES;
+    constexpr usize ATTRIBUTE_BYTES = POSITION_BYTES * 2;
+    constexpr usize INDEX_BYTES = INDEX_COUNT * sizeof(uint32);
+    ludus::foundation::Array<uint8> bytes;
+    REQUIRE(bytes.TryResize(ATTRIBUTE_BYTES + INDEX_BYTES) == true);
+    // Triangles in distinct parallel planes cannot be compacted into one triangle.
+    // Authored normals keep vertices shared across repetitions of the index list.
+    const auto writeFloat = [&bytes](usize offset, float32 value) {
+        uint32 bits = 0;
+        std::memcpy(&bits, &value, sizeof(bits));
+        if (ludus::foundation::core::TryWriteLittleEndian<uint32>(bits, {bytes.GetData() + offset, sizeof(uint32)}) ==
+            false)
+        {
+            FAIL("bounded attribute encoding failed");
+        }
+    };
+    for (usize vertex = 0; vertex < VERTEX_COUNT; ++vertex)
+    {
+        const usize triangleIndex = vertex / 3;
+        writeFloat(vertex * VECTOR_BYTES, vertex % 3 == 1 ? 1.0F : 0.0F);
+        writeFloat(vertex * VECTOR_BYTES + sizeof(float32), vertex % 3 == 2 ? 1.0F : 0.0F);
+        writeFloat(vertex * VECTOR_BYTES + 2 * sizeof(float32), static_cast<float32>(triangleIndex));
+        writeFloat(POSITION_BYTES + vertex * VECTOR_BYTES, 0.0F);
+        writeFloat(POSITION_BYTES + vertex * VECTOR_BYTES + sizeof(float32), 0.0F);
+        writeFloat(POSITION_BYTES + vertex * VECTOR_BYTES + 2 * sizeof(float32), 1.0F);
+    }
+    for (usize i = 0; i < INDEX_COUNT; ++i)
+    {
+        if (ludus::foundation::core::TryWriteLittleEndian<uint32>(
+                static_cast<uint32>(i % VERTEX_COUNT),
+                {bytes.GetData() + ATTRIBUTE_BYTES + i * sizeof(uint32), sizeof(uint32)}) == false)
+        {
+            FAIL("bounded index encoding failed");
+        }
+    }
+    ScratchDirectory scratch;
+    WriteFile(scratch.Path / "mesh.bin", {reinterpret_cast<const char*>(bytes.GetData()), bytes.GetSize()});
+    const std::string document =
+        R"({"asset":{"version":"2.0"},"nodes":[{"mesh":0}],)"
+        R"("meshes":[{"primitives":[{"attributes":{"POSITION":0,"NORMAL":1},"indices":2}]}],)"
+        R"("buffers":[{"uri":"mesh.bin","byteLength":)" +
+        std::to_string(bytes.GetSize()) + R"(}],"bufferViews":[{"buffer":0,"byteLength":)" +
+        std::to_string(POSITION_BYTES) + R"(},{"buffer":0,"byteOffset":)" + std::to_string(POSITION_BYTES) +
+        R"(,"byteLength":)" + std::to_string(POSITION_BYTES) + R"(},{"buffer":0,"byteOffset":)" +
+        std::to_string(ATTRIBUTE_BYTES) + R"(,"byteLength":)" + std::to_string(INDEX_BYTES) +
+        R"(}],"accessors":[{"bufferView":0,"componentType":5126,"count":)" + std::to_string(VERTEX_COUNT) +
+        R"(,"type":"VEC3"},{"bufferView":1,"componentType":5126,"count":)" + std::to_string(VERTEX_COUNT) +
+        R"(,"type":"VEC3"},{"bufferView":2,"componentType":5125,"count":)" + std::to_string(INDEX_COUNT) +
+        R"(,"type":"SCALAR"}]})";
+    const fs::path entry = scratch.Path / "scene.gltf";
+    WriteFile(entry, document);
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportGltfBestEffort(entry.string(), {}, result, error) == true);
+    CHECK(result.Summary.DroppedPlacements == 0);
+    CHECK(result.Summary.CookedVertices == VERTEX_COUNT);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    REQUIRE(decoded.Meshes.GetSize() == 1);
+    CHECK(decoded.Meshes[0].Positions.GetSize() == VERTEX_COUNT);
+    CHECK(decoded.Meshes[0].Indices.GetSize() == INDEX_COUNT);
+    CHECK(decoded.Meshes[0].Indices.GetLast() == VERTEX_COUNT - 1);
 }

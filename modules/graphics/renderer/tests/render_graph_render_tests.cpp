@@ -20,6 +20,7 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/filesystem/filesystem.hpp>
 #include <ludus/foundation/filesystem/persistence.hpp>
+#include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/renderer/deferred_layout.h>
 #include <ludus/graphics/renderer/render_graph.hpp>
@@ -1659,15 +1660,18 @@ TEST_CASE("default deferred mesh area lights illuminate a receiver with CPU chec
         };
         REQUIRE(update() == rhi::RasterStatus::Ready);
         render();
-        CHECK(fixture.Graph.GetReport().Resources.MeshLightTriangles == 1);
+        CHECK(fixture.Graph.GetReport().Resources.MeshLightPolygons == 1);
         const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
         CHECK(fixture.Pixels[center] > 0);
         CHECK(fixture.Pixels[center + 1] > 0);
         CHECK(fixture.Pixels[center + 2] == 0);
         Array<math::Vector4> words;
-        REQUIRE(
-            renderer::internal::AppendRasterMeshLights(meshes[1].Geometry, items[1].MeshToWorld, materials[1], words) ==
-            rhi::RasterStatus::Ready);
+        uint32 recordCount = 0;
+        REQUIRE(renderer::internal::AppendRasterMeshLights(meshes[1].Geometry,
+                                                           items[1].MeshToWorld,
+                                                           materials[1],
+                                                           words,
+                                                           recordCount) == rhi::RasterStatus::Ready);
         const math::Vector3 positionWorld{1.F / WIDTH, -1.F / HEIGHT, .5F};
         const math::Vector3 expected = renderer::internal::EvaluateRasterMeshLight({words.GetData(), words.GetSize()},
                                                                                    positionWorld,
@@ -1724,6 +1728,63 @@ TEST_CASE("default deferred mesh area lights illuminate a receiver with CPU chec
         CHECK(fixture.Graph.GetReport().Resources.CreatedMeshes == beforeCamera.CreatedMeshes);
         CHECK(fixture.Graph.GetReport().Resources.MeshLightBytes == beforeCamera.MeshLightBytes);
         fixture.Cameras[0].CameraForward = {0, 0, -1};
+        // A fanned 64-segment disk merges into one 64-corner record. The resolve streams its edges and must match
+        // the CPU check, which fans the record into clip-safe pieces, on rough dielectrics and glossy metals.
+        constexpr usize DISK_SEGMENTS = 64;
+        // Centered 0.55 m from the checked receiver point in world space, close enough without covering it.
+        constexpr float32 DISK_RADIUS = .45F;
+        constexpr float32 DISK_CENTER_X = -.25F;
+        StaticArray<math::Vector3, DISK_SEGMENTS + 1> diskPositions{};
+        StaticArray<math::Vector3, DISK_SEGMENTS + 1> diskNormals{};
+        StaticArray<uint32, DISK_SEGMENTS * INDEX_COUNT> diskIndices{};
+        diskPositions[0] = {DISK_CENTER_X, 0, .5F};
+        diskNormals[0] = {0, 0, 1};
+        for (usize segment = 0; segment < DISK_SEGMENTS; ++segment)
+        {
+            const float32 angle = static_cast<float32>(segment) * 2 * math::kPiF / static_cast<float32>(DISK_SEGMENTS);
+            diskPositions[segment + 1] = {DISK_CENTER_X + DISK_RADIUS * math::Cos(angle),
+                                          DISK_RADIUS * math::Sin(angle),
+                                          .5F};
+            diskNormals[segment + 1] = {0, 0, 1};
+            diskIndices[segment * INDEX_COUNT] = 0;
+            diskIndices[segment * INDEX_COUNT + 1] = static_cast<uint32>(1 + (segment + 1) % DISK_SEGMENTS);
+            diskIndices[segment * INDEX_COUNT + 2] = static_cast<uint32>(1 + segment);
+        }
+        const renderer::RenderGraphMesh triangleEmitter = meshes[1];
+        meshes[1].Geometry = {diskPositions.GetData(),
+                              diskPositions.GetSize(),
+                              diskIndices.GetData(),
+                              diskIndices.GetSize()};
+        meshes[1].Geometry.Normals = diskNormals.GetData();
+        Array<math::Vector4> diskWords;
+        uint32 diskRecords = 0;
+        REQUIRE(renderer::internal::AppendRasterMeshLights(meshes[1].Geometry,
+                                                           items[1].MeshToWorld,
+                                                           materials[1],
+                                                           diskWords,
+                                                           diskRecords) == rhi::RasterStatus::Ready);
+        REQUIRE(diskRecords == 1);
+        for (const float32 metallic : {0.F, 1.F})
+        {
+            materials[0].Metallic = metallic;
+            materials[0].Roughness = metallic == 1 ? .3F : 1;
+            REQUIRE(update() == rhi::RasterStatus::Ready);
+            render();
+            CHECK(fixture.Graph.GetReport().Resources.MeshLightPolygons == 1);
+            const math::Vector3 diskExpected =
+                renderer::internal::EvaluateRasterMeshLight({diskWords.GetData(), diskWords.GetSize()},
+                                                            positionWorld,
+                                                            {0, 0, 1},
+                                                            {0, 0, 1},
+                                                            {.5F, .5F, .5F},
+                                                            metallic,
+                                                            materials[0].Roughness);
+            CHECK(diskExpected.X * 255 > 4);
+            CHECK(math::Abs(float32(fixture.Pixels[center]) - diskExpected.X * 255) <= 2);
+            CHECK(math::Abs(float32(fixture.Pixels[center + 1]) - diskExpected.Y * 255) <= 2);
+        }
+        materials[0] = {};
+        meshes[1] = triangleEmitter;
         // Emission edits replace the immutable light generation, with no invented analytic source.
         materials[1].Emission = {};
         REQUIRE(update() == rhi::RasterStatus::Ready);
@@ -1755,7 +1816,7 @@ TEST_CASE("default deferred mesh area lights illuminate a receiver with CPU chec
         materials[1].Emission = materials[1].Emission / static_cast<float32>(EMITTER_TRIANGLES);
         REQUIRE(update() == rhi::RasterStatus::Ready);
         render();
-        CHECK(fixture.Graph.GetReport().Resources.MeshLightTriangles == EMITTER_TRIANGLES);
+        CHECK(fixture.Graph.GetReport().Resources.MeshLightPolygons == EMITTER_TRIANGLES);
         CHECK(math::Abs(float32(fixture.Pixels[center]) - float32(singleEmitter[center])) <= 2);
         CHECK(math::Abs(float32(fixture.Pixels[center + 1]) - float32(singleEmitter[center + 1])) <= 2);
         meshes[1].Geometry.Indices = fixture.Indices.GetData();
@@ -1766,7 +1827,7 @@ TEST_CASE("default deferred mesh area lights illuminate a receiver with CPU chec
         const StaticArray<uint8, PIXEL_BYTES> lastDrawable = fixture.Pixels;
         const uint64 lastRevision = fixture.Graph.GetDrawableSceneRevision();
         // Too many emitter triangles rejects preparation and preserves the drawable generation.
-        constexpr usize EXCESS_TRIANGLES = renderer::MAX_RASTER_MESH_LIGHT_TRIANGLES + 1;
+        constexpr usize EXCESS_TRIANGLES = renderer::MAX_RASTER_MESH_LIGHT_POLYGONS + 1;
         Array<uint32> excessIndices;
         REQUIRE(excessIndices.TryResize(EXCESS_TRIANGLES * INDEX_COUNT) == true);
         for (usize index = 0; index < excessIndices.GetSize(); ++index)

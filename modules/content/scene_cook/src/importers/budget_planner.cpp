@@ -11,6 +11,7 @@ namespace ludus::content::scene_cook::importers
 namespace
 {
 namespace format = content::scene_format;
+constexpr uint32 MAX_REPORTED_COUNT = ~uint32{0};
 
 [[nodiscard]] bool IsCancelled(const Cancellation* cancelOrNull) noexcept
 {
@@ -99,8 +100,8 @@ struct EmitterUse final
     /// Every member is decorative (IrShape::IsEmissionOptional); the group may be demoted.
     bool IsOptional = false;
     bool IsDemoted = false;
-    /// Source material of a decorative group, whose surface terms and maps the slot keeps;
-    /// IR_NONE for required (pbrt area-light) groups, which cook as white untextured emitters.
+    /// Source material retained for decorative surfaces or required emitters with
+    /// normal detail/coverage; IR_NONE for required emitters without surface detail.
     uint32 Material = IR_NONE;
     float64 PowerLumens = 0.0;
     float64 Area = 0.0;
@@ -205,6 +206,7 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
         return Status::Invalid;
     }
     uint64 sourceVertices = 0;
+    uint64 sourceIndices = 0;
     for (Placement& placement : plan.Placements)
     {
         if (IsCancelled(cancelOrNull) == true)
@@ -213,11 +215,14 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
         }
         const IrMesh& mesh = scene.Meshes[scene.Shapes[placement.Shape].Mesh];
         placement.Area = ComputeWorldArea(mesh, placement.Transform);
-        sourceVertices += mesh.GetVertexCount();
+        sourceVertices += mesh.SourceVertexCount == 0 ? mesh.GetVertexCount() : mesh.SourceVertexCount;
+        sourceIndices += mesh.Indices.GetSize();
     }
-    plan.SourceVertices = sourceVertices > 0xffffffffULL ? 0xffffffffU : static_cast<uint32>(sourceVertices);
+    plan.SourceVertices =
+        sourceVertices > MAX_REPORTED_COUNT ? MAX_REPORTED_COUNT : static_cast<uint32>(sourceVertices);
+    plan.SourceIndices = sourceIndices > MAX_REPORTED_COUNT ? MAX_REPORTED_COUNT : static_cast<uint32>(sourceIndices);
 
-    // 2. Rank placements by area (ties by order) and keep them within the vertex budget.
+    // 2. Rank placements by area (ties by order) for deterministic material selection.
     Array<uint32> order;
     if (order.TryResize(plan.Placements.GetSize()) == false)
     {
@@ -269,7 +274,11 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
                                    "area-light normalization exceeds the finite RGB-nits profile");
                 return Status::Invalid;
             }
-            const uint32 emitterMaterial = shape.IsEmissionOptional == true ? shape.Material : IR_NONE;
+            const bool hasSurfaceDetail =
+                shape.Material != IR_NONE && (scene.Materials[shape.Material].NormalTexture != IR_NONE ||
+                                              scene.Materials[shape.Material].AlphaMode == IrAlphaMode::Mask);
+            const uint32 emitterMaterial =
+                shape.IsEmissionOptional == true || hasSurfaceDetail == true ? shape.Material : IR_NONE;
             for (usize i = 0; i < emitters.GetSize(); ++i)
             {
                 if (emitters[i].Emission == emission && emitters[i].IsTwoSided == shape.IsEmissionTwoSided &&
@@ -496,8 +505,16 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
         plannedOrNull->IsTextureRepeated = false;
         if (emitter.Material != IR_NONE)
         {
-            // A decorative group keeps its material's surface, alpha and maps.
             ApplyMaterialTerms(scene, emitter.Material, *plannedOrNull);
+            if (emitter.IsOptional == false)
+            {
+                // Required PBRT emission keeps its white surface approximation,
+                // with the authored shape coverage and normal detail intact.
+                plannedOrNull->BaseColour[0] = plannedOrNull->BaseColour[1] = plannedOrNull->BaseColour[2] = 1.0;
+                plannedOrNull->Texture = IR_NONE;
+                plannedOrNull->Metallic = 0.0;
+                plannedOrNull->Roughness = 1.0;
+            }
         }
         plannedOrNull->Area = emitter.Area;
         plannedOrNull->Emission[0] = static_cast<float64>(emitter.Emission.X);
@@ -530,7 +547,12 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
         (void)inoutLog.Add(DiagnosticSeverity::Warning, codes::MATERIALS_MERGED, {}, 0, std::string_view(text, length));
     }
 
-    // 4. Assign placements to slots within the vertex and index budgets, largest first.
+    // 4. Keep every placement. Geometry shares the encoded bundle budget with the
+    // remaining records; reject an oversized scene before baking rather than dropping shapes.
+    uint64 geometryBytes = sizeof(format::Header) + sizeof(format::LightingRecord) +
+                           scene.AnalyticLights.GetSize() * sizeof(format::LightRecord) +
+                           plan.Materials.GetSize() * (sizeof(format::MeshRecord) + sizeof(format::MaterialRecordV6) +
+                                                       sizeof(format::ObjectRecordV3));
     uint32 totalVertices = 0;
     uint32 totalIndices = 0;
     for (const uint32 index : order)
@@ -552,30 +574,27 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
             }
         }
         PlannedMaterial& planned = plan.Materials[slot];
-        // LUSCN v6 meshes stay indexed; consumers expand corners for bake charts,
-        // which the import profile's TotalIndices bounds across the bundle.
         const usize vertices = mesh.GetVertexCount();
         const usize indices = mesh.Indices.GetSize();
-        if (totalVertices + vertices > format::IMPORT_LIMITS.Vertices ||
-            totalIndices + indices > format::IMPORT_LIMITS.TotalIndices)
+        if (vertices > format::IMPORT_LIMITS.Vertices - totalVertices ||
+            indices > format::IMPORT_LIMITS.TotalIndices - totalIndices)
         {
-            if (isEmitting == true && shape.IsEmissionOptional == false)
-            {
-                (void)inoutLog.Add(DiagnosticSeverity::Error,
-                                   codes::LIMIT_EXCEEDED,
-                                   {},
-                                   shape.Line,
-                                   "emitter geometry exceeds the vertex/index budget; lighting cannot be preserved");
-                return Status::Invalid;
-            }
-            ++plan.DroppedPlacements;
-            plan.DroppedVertices += static_cast<uint32>(mesh.GetVertexCount());
-            (void)inoutLog.Add(DiagnosticSeverity::Warning,
-                               placement.IsInstanced == true ? codes::INSTANCES_DROPPED : codes::GEOMETRY_DROPPED,
+            (void)inoutLog.Add(DiagnosticSeverity::Error,
+                               codes::LIMIT_EXCEEDED,
                                {},
-                               0,
-                               "placement left out by the vertex/index budget (smallest area first)");
-            continue;
+                               shape.Line,
+                               "complete scene geometry exceeds the bundle byte budget; no placements were dropped");
+            return Status::Invalid;
+        }
+        geometryBytes += uint64{vertices} * sizeof(format::VertexRecordV6) + uint64{indices} * sizeof(uint32);
+        if (geometryBytes > format::IMPORT_LIMITS.BundleBytes)
+        {
+            (void)inoutLog.Add(DiagnosticSeverity::Error,
+                               codes::LIMIT_EXCEEDED,
+                               {},
+                               shape.Line,
+                               "complete scene geometry exceeds the bundle byte budget; no placements were dropped");
+            return Status::Invalid;
         }
         placement.IsKept = true;
         totalVertices += static_cast<uint32>(vertices);

@@ -3,8 +3,8 @@
 // per-triangle target, the light techniques' MIS weights and the surrogate light density for BSDF-hit MIS.
 // The estimator and its decisions are docs/architecture/many-area-light-sampling-reference-review.md, sections
 // "Proposed estimator" and "Decision: BSDF-hit MIS".
-// The graph wrapper includes FoundationMath's projected_solid_angle.slang and linearly_transformed_cosine.slang and
-// the renderer's ltc_table.slang before this source, because the technique declares
+// The graph wrapper includes FoundationMath's projected_solid_angle.slang, linearly_transformed_cosine.slang and
+// shading_normal.slang and the renderer's ltc_table.slang before this source, because the technique declares
 // scene_interface.polygonal_light_sampling.
 //
 // Thanks to Ishaan Shah, Aakash KT and P. J. Narayanan, "Combining Resampled Importance and Projected Solid Angle
@@ -15,10 +15,22 @@
 // Thanks to Christoph Peters, "BRDF Importance Sampling for Polygonal Lights", ACM Transactions on Graphics 40(4),
 // Article 140, 2021, https://doi.org/10.1145/3450626.3459672: section 4.1 (LTC sampling, which an empty LTC-space
 // clip disables), section 4.2 (the weighted balance heuristic with coefficients c_j = L_e a_j E_j, and diffuse albedo
-// clamped to 0.01 per channel) and section 4.3 (clamped optimal MIS, the blend with the balance heuristic by the
-// visibility estimate v). Implemented from the paper's text.
-// Departure, as the review specifies: the coefficients are reduced to BT.709 luminance, one scalar weight per
-// technique, where Peters weights each color channel.
+// clamped to 0.01 per channel), section 4.3 (clamped optimal MIS, the blend with the balance heuristic by the
+// visibility estimate v) and section 6.1 (the receiver's shading normal clipped to the hemisphere of the outgoing
+// direction by FoundationMath's ClipShadingNormalToOutgoingHemisphere, which shade.slang applies before
+// MakeReceiverLightingFrame). Implemented from the paper's text.
+// Departures, all named in docs/development/render-graph-authoring.md:
+// - As the review specifies, the coefficients are reduced to BT.709 luminance, one scalar weight per technique, where
+//   Peters weights each color channel.
+// - Section 6.1 gives no margin for the clipped shading normal. Ludus keeps it SHADING_NORMAL_MINIMUM_OUTGOING_COSINE
+//   (0.01) inside the hemisphere, because the BSDF is zero for an outgoing direction on the shading horizon.
+// - Section 6.1 does not discuss back faces. shade.slang clips front faces only, so a one-sided surface seen from
+//   behind stays black, as in the other templates, instead of being lit through the surface.
+// Thanks to Stephen Hill and Eric Heitz, "Real-Time Area Lighting: a Journey from Research to Production", SIGGRAPH
+// 2016 Advances in Real-Time Rendering course, https://advances.realtimerendering.com/s2016/, slides 77 and 90-102:
+// the approximate target evaluates their vector form factor and clipped proxy sphere (FoundationMath's
+// TryApproximateClampedCosinePolygonIntegral) instead of clipping and integrating both polygons, as Shah et al. do for
+// speed. A defensive term keeps it positive wherever the triangle has area above the horizon.
 
 static const float3 BT709_LUMINANCE_WEIGHTS = float3(0.2126, 0.7152, 0.0722);
 // Peters 2021, section 4.2: the diffuse technique alone covers the whole polygon above the horizon.
@@ -27,6 +39,10 @@ static const float MINIMUM_DIFFUSE_TECHNIQUE_ALBEDO = 0.01;
 static const float DIELECTRIC_SPECULAR_REFLECTANCE = 0.04;
 // SampleStandardBsdf's switch between helper axes for its tangent frame.
 static const float FRAME_HELPER_AXIS_LIMIT = 0.999;
+// The approximate target's diffuse integral is at least this fraction of the unit-direction triple product, a positive
+// proxy of the unclipped solid angle, whenever a vertex lies above the horizon: Hill and Heitz's proxy sphere can lie
+// below the horizon while part of the triangle is above it, and the RIS support invariant needs p-hat > 0 there.
+static const float APPROXIMATE_TARGET_DEFENSIVE_FRACTION = 0.015625;
 
 float ComputeLuminance(float3 value)
 {
@@ -63,7 +79,8 @@ float3 TransformTangentToWorld(ReceiverLightingFrame frame, float3 vectorTangent
            frame.NormalWorld * vectorTangent.z;
 }
 
-/// Build the frame and both techniques once per receiver. normalWorld and viewDirectionWorld are unit vectors;
+/// Build the frame and both techniques once per receiver. normalWorld, already clipped by FoundationMath's
+/// ClipShadingNormalToOutgoingHemisphere for a front face, and viewDirectionWorld are unit vectors;
 /// roughness is the standard BSDF's perceptual roughness. The diffuse albedo a_0 approximates the Fresnel-weighted
 /// Lambert lobe with Schlick's reflectance at normal incidence, baseColor (1 - metallic) (1 - F0), clamped per
 /// channel to MINIMUM_DIFFUSE_TECHNIQUE_ALBEDO; a failed LTC construction disables the specular technique.
@@ -109,6 +126,24 @@ struct TriangleLightPolygons
 
 /// Prepare a triangle's two polygons. Returns false for a nonfinite vertex in the shading frame or after the LTC
 /// transform; an empty or edge-on clip succeeds with a zero integral, which disables that technique.
+/// The triangle relative to the receiver, in its shading frame.
+ProjectedPolygonInput MakeTrianglePolygonInput(ReceiverLightingFrame frame,
+                                               float3 position0World,
+                                               float3 position1World,
+                                               float3 position2World)
+{
+    ProjectedPolygonInput polygon;
+    polygon.VertexCount = 3;
+    [unroll] for (uint i = 0; i < MAX_PROJECTED_POLYGON_INPUT_VERTICES; ++i)
+    {
+        polygon.PositionsTangent[i] = float3(0);
+    }
+    polygon.PositionsTangent[0] = TransformWorldToTangent(frame, position0World - frame.PositionWorld);
+    polygon.PositionsTangent[1] = TransformWorldToTangent(frame, position1World - frame.PositionWorld);
+    polygon.PositionsTangent[2] = TransformWorldToTangent(frame, position2World - frame.PositionWorld);
+    return polygon;
+}
+
 bool TryPrepareTriangleLightPolygons(ReceiverLightingFrame frame,
                                      float3 position0World,
                                      float3 position1World,
@@ -120,15 +155,7 @@ bool TryPrepareTriangleLightPolygons(ReceiverLightingFrame frame,
     outPolygons.Specular.Distribution = frame.Specular;
     outPolygons.DiffuseIntegral = 0;
     outPolygons.SpecularIntegral = 0;
-    ProjectedPolygonInput polygon;
-    polygon.VertexCount = 3;
-    [unroll] for (uint i = 0; i < MAX_PROJECTED_POLYGON_INPUT_VERTICES; ++i)
-    {
-        polygon.PositionsTangent[i] = float3(0);
-    }
-    polygon.PositionsTangent[0] = TransformWorldToTangent(frame, position0World - frame.PositionWorld);
-    polygon.PositionsTangent[1] = TransformWorldToTangent(frame, position1World - frame.PositionWorld);
-    polygon.PositionsTangent[2] = TransformWorldToTangent(frame, position2World - frame.PositionWorld);
+    ProjectedPolygonInput polygon = MakeTrianglePolygonInput(frame, position0World, position1World, position2World);
     if (TryPrepareProjectedSolidAnglePolygon(polygon, outPolygons.Diffuse) == false)
         return false;
     outPolygons.DiffuseIntegral = outPolygons.Diffuse.ProjectedSolidAngle / PI;
@@ -140,13 +167,54 @@ bool TryPrepareTriangleLightPolygons(ReceiverLightingFrame frame,
     return true;
 }
 
-/// Peters' coefficients c_t = Y(L) Y(a_t) E_t for both techniques; their sum is the resampling target p-hat.
-/// emissionLuminance is Y of the triangle's constant emission factor, zero for a one-sided emitter seen from behind.
+/// Approximate (E_0, E_1) without clipping or preparing either polygon: Hill and Heitz's clipped proxy-sphere form
+/// factor of the triangle and of its LTC transform. E_0 is at least APPROXIMATE_TARGET_DEFENSIVE_FRACTION of the
+/// unit-direction triple product when a vertex lies above the horizon, so it is positive wherever the exact E_0 is,
+/// and zero when no vertex does. Returns false for a nonfinite vertex in the shading frame or after the LTC transform.
+bool TryApproximateTriangleLightIntegrals(ReceiverLightingFrame frame,
+                                          float3 position0World,
+                                          float3 position1World,
+                                          float3 position2World,
+                                          out float2 outIntegrals)
+{
+    outIntegrals = float2(0);
+    ProjectedPolygonInput polygon = MakeTrianglePolygonInput(frame, position0World, position1World, position2World);
+    ApproximatePolygonIntegral diffuse;
+    if (TryApproximateClampedCosinePolygonIntegral(polygon, diffuse) == false)
+        return false;
+    bool hasVertexAboveHorizon =
+        polygon.PositionsTangent[0].z > 0 || polygon.PositionsTangent[1].z > 0 || polygon.PositionsTangent[2].z > 0;
+    float2 integrals = float2(0);
+    if (hasVertexAboveHorizon == true)
+        integrals.x = max(diffuse.Integral, APPROXIMATE_TARGET_DEFENSIVE_FRACTION * diffuse.UnitTripleProduct);
+    if (frame.HasSpecular == true)
+    {
+        ApproximatePolygonIntegral specular;
+        if (TryApproximateLinearlyTransformedCosinePolygonIntegral(polygon, frame.Specular, specular) == false)
+            return false;
+        integrals.y = specular.Integral;
+    }
+    outIntegrals = integrals;
+    return true;
+}
+
+/// Peters' coefficients c_t = Y(L) Y(a_t) E_t for both techniques from (E_0, E_1); their sum is the resampling target
+/// p-hat. emissionLuminance is Y of the triangle's constant emission factor, zero for a one-sided emitter seen from
+/// behind.
+float2
+ComputeLightTechniqueCoefficientsFromIntegrals(ReceiverLightingFrame frame, float2 integrals, float emissionLuminance)
+{
+    return emissionLuminance *
+           float2(frame.DiffuseAlbedoLuminance * integrals.x, frame.SpecularAlbedoLuminance * integrals.y);
+}
+
+/// Peters' coefficients for a prepared triangle's exact integrals.
 float2
 ComputeLightTechniqueCoefficients(ReceiverLightingFrame frame, TriangleLightPolygons polygons, float emissionLuminance)
 {
-    return emissionLuminance * float2(frame.DiffuseAlbedoLuminance * polygons.DiffuseIntegral,
-                                      frame.SpecularAlbedoLuminance * polygons.SpecularIntegral);
+    return ComputeLightTechniqueCoefficientsFromIntegrals(frame,
+                                                          float2(polygons.DiffuseIntegral, polygons.SpecularIntegral),
+                                                          emissionLuminance);
 }
 
 /// The two techniques' solid-angle densities (p_0, p_1) for a unit direction in the shading frame that passes through

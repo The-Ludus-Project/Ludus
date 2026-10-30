@@ -16,15 +16,20 @@ def main():
     parser.add_argument('--runtime-package')
     parser.add_argument('--ray-path-capture', action='store_true')
     parser.add_argument('--ray-path-capture-package')
+    parser.add_argument('--capture-profile', action='store_true')
+    parser.add_argument('--capture-profile-package')
     args = parser.parse_args()
     try:
         report = render_graph_build.build_package(args.manifest, args.output, root=args.root,
                     helper=args.helper, compiler=args.compiler, validator=args.validator, spirv_cross=args.spirv_cross, worker_socket=args.worker_socket,
-                    ray_path_capture=args.ray_path_capture)
+                    ray_path_capture=args.ray_path_capture, capture_profile=args.capture_profile)
         render_graph_execution.emit_runtime(report['package'], args.header,
                     configuration=args.configuration, name=args.name)
         if args.runtime_package:
             render_graph_execution.cook_runtime(report['package'], args.runtime_package,
+                    configuration=args.configuration)
+        if args.capture_profile_package:
+            render_graph_execution.cook_capture_profile(report['package'], args.capture_profile_package,
                     configuration=args.configuration)
         if args.ray_path_capture_package:
             render_graph_execution.cook_ray_path_capture(report['package'], args.ray_path_capture_package,

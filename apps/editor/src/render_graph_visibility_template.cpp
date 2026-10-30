@@ -403,7 +403,7 @@ RenderGraphDocumentStatus PrepareVisibilityConfiguration(RenderGraphSnapshot& in
     }
     if (destinationIndex < 0 && configurations.size() >= RenderGraphDocument::MAX_CONFIGURATIONS)
     {
-        outError = QStringLiteral("The graph has reached its configuration capacity. The draft was preserved.");
+        outError = DescribeConfigurationCapacity(selected.Name, file);
         return RenderGraphDocumentStatus::Capacity;
     }
     const QString manifestFile =
@@ -437,7 +437,7 @@ RenderGraphDocumentStatus PrepareVisibilityConfiguration(RenderGraphSnapshot& in
         (selected.HasRays == true &&
          MergeVisibilityRayInterface(inoutSnapshot, manifest, source, selected, outError) == false))
     {
-        outError += QStringLiteral(" The draft was preserved.");
+        AppendDraftPreserved(outError);
         return RenderGraphDocumentStatus::Conflict;
     }
     QJsonObject record = records.first().toObject();

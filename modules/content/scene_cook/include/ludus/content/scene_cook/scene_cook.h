@@ -18,6 +18,8 @@ namespace ludus::content::scene_cook
 {
 /// Profile identifier of the cooked bundle layout and manifest.
 inline constexpr std::string_view PROFILE = "pbrt-reference-v1";
+/// Source-preserving RGB material import profile; v1 remains the frozen compatibility cooker.
+inline constexpr std::string_view MATERIAL_PROFILE = "pbrt-reference-materials-v2";
 
 /// @brief Cooperative cancellation hook polled between bounded work units.
 struct Cancellation final
@@ -61,6 +63,20 @@ struct CookResult final
                         CookResult& outResult,
                         CookError& outError,
                         const Cancellation* cancelOrNull = nullptr) noexcept;
+
+/// Cook the staircase2 PBRT subset with named materials, original texture UVs,
+/// exact linear reflectance and retained GGX/complex-IOR parameters into LUSCN v7.
+/// Coated diffuse resolves scalar eta/thickness and admits zero medium albedo,
+/// isotropic rough interfaces and the shared default internal depth/sample policy.
+/// @param source Native source directory; synchronous bounded file reads, no symlinks.
+/// @param outResult Replaced only on success; preserved on failure or cancellation.
+/// @param outError Failure status and diagnostic; cleared on entry.
+/// @param cancelOrNull Optional thread-safe cooperative cancellation hook.
+/// @return True on success. Unsupported anisotropy, smooth conductors and roughness remapping reject.
+[[nodiscard]] bool CookMaterials(std::string_view source,
+                                 CookResult& outResult,
+                                 CookError& outError,
+                                 const Cancellation* cancelOrNull = nullptr) noexcept;
 
 /// Write scene.luscn, manifest.json and LICENSE.txt below output.
 /// @param output Native directory; created with its parents when absent.

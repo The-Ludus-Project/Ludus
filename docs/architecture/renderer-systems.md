@@ -1382,7 +1382,7 @@ work and retires accepted native uses through completion.
 #### Light-sampling modes
 
 `ReferenceCaptureDescription::LightSampling` selects the next-event estimator for
-emissive triangles. Both modes estimate the same truncated integral under the same
+emissive triangles. All modes estimate the same truncated integral under the same
 `ProfileVersion`, so their means agree statistically, never per pixel. The mode joins
 the integral key: changing it replaces the job and restarts accumulation.
 `ReferenceCaptureInfo` records it with its sampler version.
@@ -1391,6 +1391,7 @@ the integral key: changing it replaces the job and restarts accumulation.
 | --- | --- | --- |
 | `UniformArea` (default) | 1, 8 dimensions per bounce | One power-CDF triangle, one uniform area sample, one shadow ray. Existing captures stay bit-identical. |
 | `ResampledProjectedSolidAngle` | 2, 128 dimensions per bounce | Resampled importance sampling of one triangle from 32 power-CDF candidates with an unshadowed LTC target, then one projected-solid-angle and one LTC sample of it, so up to two shadow rays per vertex. |
+| `ResampledFormFactor` | 3, 128 dimensions per bounce | The same estimator with a cheaper target: Hill and Heitz's approximate horizon-clipped form factors instead of clipped polygon integrals, kept positive wherever the triangle is above the horizon, and its own frozen candidate counts. The selected triangle's samples and MIS weights are unchanged. |
 
 The resampled estimator, its random slots and its BSDF-hit MIS are the
 [many-area-light resampling review](many-area-light-sampling-reference-review.md).
@@ -1408,13 +1409,18 @@ The category draw at slot 0, analytic lights and the environment are unchanged.
   surrogate density `P̃ (p₀ + p₁)` of the previous vertex. The path keeps that
   vertex's frame, LTC and albedo luminances, and its `Ẑ` once computed, so both MIS
   sites evaluate the same function of the direction from identical inputs.
-- **Cost.** Each vertex evaluates up to 41 triangle targets (32 candidates, the
-  selected triangle and 8 normalization candidates), each with two polygon clips.
+- **Cost.** A `ResampledProjectedSolidAngle` vertex evaluates up to 41 triangle
+  targets (32 candidates, the selected triangle and 8 normalization candidates),
+  each with two polygon clips. A `ResampledFormFactor` vertex evaluates its
+  candidates' approximate targets without clipping and prepares polygons only for
+  the selected triangle and a BSDF hit's
+  ([approximate target](many-area-light-sampling-reference-review.md#approximate-target)).
   `NativeQueries` tiles need three queries per path, so a resampled capture
   requires `3 × TilePixels` within `RayCapabilities::MaxRays` and returns
   `Unsupported` otherwise.
 - **Probes.** Static-lighting diffuse probes stay on `UniformArea`; their virtual
-  first receiver has no stored frame for the BSDF-hit density.
+  first receiver has no stored frame for the BSDF-hit density. Both resampled modes
+  are rejected there.
 
 The opt-in Catch2 tag `[.reference-light-sampling-benchmark]` in
 `ludus_renderer_render_tests` compares the two modes on 3200 emissive triangles, a
@@ -1445,6 +1451,14 @@ So `ResampledProjectedSolidAngle` is the lower-variance estimator per sample, bu
 per unit of time on this workload. The
 [review's evaluation](many-area-light-sampling-reference-review.md#rt1-equal-time-evaluation)
 has the method, all measurements and the comparison with the template benchmark.
+
+`ResampledFormFactor`, measured the same way on the same day in two runs, has
+`ResampledProjectedSolidAngle`'s equal-sample error within 1% for 4.6–5.3 times less
+transport kernel time: 2.6–6.5 times a `UniformArea` sample. At equal time it beat
+`UniformArea` with specular direct lighting in both runs. It was within timing noise
+of `UniformArea` with diffuse direct lighting, and still lost by up to 1.4× at
+depth 4. The [approximate target measurements](many-area-light-sampling-reference-review.md#approximate-target-measurements)
+have the tables and the `M` and `K` sweep.
 
 CPU budgets cover renderer-owned mesh/material/job arrays and setup scratch,
 including simultaneous old/new jobs during reset. They exclude existing renderer
@@ -2075,7 +2089,7 @@ Renderer/device; RHI interop leases independently retain external backing.
 
 Raster mode uses authored materials, direct lights, environment and admitted
 bakes/shadows. The default clustered deferred graph evaluates unshadowed direct mesh area lighting
-from emissive triangles using polygon integrals and fitted LTC specular. Other
+from emissive triangles, merged into convex polygons where coplanar, using polygon integrals and fitted LTC specular. Other
 raster profiles retain their existing emission behavior. Emissive indirect transport
 is still a separate lighting capability; see the [default raster contract](../development/render-graph-authoring.md#default-clustered-deferred-lighting).
 No editor lights or fake environment are added to hide that limitation. Choose
@@ -2643,27 +2657,77 @@ Measured on Intel Sponza's glTF triangles with Metal on October 29, 2026:
 | CPU fingerprint stream | 228 | Serialized triangle identity, checked against the scratch remaining after the scene |
 
 The first 999,981 triangles pack to 321,543,168 bytes; 1,999,967 pack to
-644,522,080 bytes. Three byte ceilings bound one prepared scene:
+644,522,080 bytes. Independent byte ceilings bound scene preparation:
 
 | Ceiling | Owner | Scene limit |
 | --- | --- | --- |
-| `GRAPH_RAY_CPU_BYTES`, 2 GiB | Renderer (`render_graph_ray.h`) | Scene estimate plus fingerprint or packing scratch: about 3.1 million triangles |
-| `GRAPH_RAY_GPU_BYTES`, 2 GiB | Renderer (`render_graph_ray.h`) | Holds the current and the replacement scene until the old producers retire: about 3.3 million triangles under replacement |
-| `rhi::StorageLimits::ResourceBytes` | The device creator | All logical RHI buffers and textures on the device. The 512 MiB default holds about 1.6 million triangles; the Editor viewport sets 2 GiB |
+| `CACHE_IDENTITY_BYTES`, 1 GiB on 64-bit hosts | Raster renderer (`render_graph_scene_resources.cpp`) | Current/pending/idle mesh and texture identity copies; 32-bit hosts retain 128 MiB |
+| `RENDER_GRAPH_RAY_CPU_BYTES`, 4 GiB on 64-bit hosts | Renderer (`render_graph.hpp`) | Scene estimate plus fingerprint, packing and native-input scratch |
+| `RENDER_GRAPH_RAY_GPU_BYTES`, 6 GiB on 64-bit hosts | Renderer (`render_graph.hpp`) | Current and replacement scenes, images, native structures and pending GPU holds |
+| `rhi::StorageLimits::ResourceBytes` | The device creator | All logical RHI buffers and textures on the device. The 512 MiB default holds about 1.6 million triangles; the Editor viewport adds a separate 1 GiB raster/target allowance to the graph-ray GPU budget (7 GiB on 64-bit hosts) |
 
-The full 3,747,018-triangle Sponza therefore fails on its first pass:
-`CpuScratch` needs 854,313,156 bytes with 783,538,976 left after the
-1,363,925,720-byte scene estimate. Raising that ceiling is a budget decision
-for the renderer, and the GPU and device budgets would also need to hold two
-1.2 GB copies during replacement. A rejected update reports the exceeded
-ceiling, its required bytes and the bytes available in
-`RenderGraphReport::SceneDiagnostics`.
+The former 2 GiB CPU ceiling rejected the full 3,747,018-triangle Sponza on
+its first pass: `CpuScratch` needed 854,313,156 bytes with 783,538,976 left after
+the 1,363,925,720-byte scene estimate. The 64-bit policy now admits that setup
+and reserves GPU headroom for two complete scenes during replacement. On M5
+Metal, one complete diagnostic scene charges 2,147,831,068 GPU bytes; two
+exceed even 4 GiB before adding larger per-pass images or material texels. These
+are ceilings, not eager allocations or measurements of free RAM/VRAM. 32-bit
+hosts retain the 2 GiB CPU/GPU ceilings; device storage-buffer ranges and
+physical allocation failures still apply independently. The viewport's shared
+and offscreen devices use the same policy in `MakeViewportDeviceDescription`.
+Native ray scenes also admit aligned opacity/UV tables up to 256 MiB, subject
+to the device buffer range and byte budget. Float32 offsets remain exact because
+UV offsets count float4 words and alpha scalar offsets are four-aligned. The
+former 64 MiB scalar ceiling rejected full Sponza's 114 MiB UV table. The
+viewport allows 512 MiB of RHI host metadata, including overlapping native UV
+records and temporary opacity arrays during replacement. The raster identity
+cache likewise needs more than its former 128 MiB for the complete mesh/texture
+set; its independent 1 GiB native ceiling admits retained asset versions. The
+raster emitter-record ceiling is 8,192: Sponza authors 8,098 emissive light-bulb
+triangles, exceeding the former 4,096-record bound. Admission retains the
+authored emitters and their existing diffuse/LTC evaluation.
+Renderer ray scene/scratch/preview byte rejections report the exceeded ceiling,
+required bytes and available bytes in `RenderGraphReport::SceneDiagnostics`.
+Native/RHI and raster cache failures can report only their status.
 
 The `[scene-capacity]` regression in `render_graph_ray_tests.cpp` prepares a
 generated 102,400-triangle scene through the three-pass `ComputeBvh`
 line-sampling template. It checks that the graph's logical RHI bytes grow by
 less than two packed copies. The hidden `[.line-traversal-performance]`
-measurement runs with the Editor's 2 GiB device budget.
+measurement selects an explicit device budget; full-scene viewport acceptance
+uses the Editor's device policy.
+
+
+The optional editor tests prepare the supplied glTF through the production
+import/catalog path and require all 3,747,018 triangles. Use a **new**, isolated
+output project, leaving supplied resources and existing projects unchanged:
+
+```sh
+QT_QPA_PLATFORM=offscreen \
+LUDUS_FULL_SPONZA_PROJECT="$PWD/out/full-sponza" \
+LUDUS_FULL_SPONZA_ENTRY=/absolute/path/to/main_sponza/NewSponza_Main_glTF_003.gltf \
+  out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.prepare-full-sponza]'
+
+QT_QPA_PLATFORM=offscreen \
+LUDUS_SPONZA_TEST_PROJECT="$PWD/out/full-sponza" \
+LUDUS_SPONZA_TEST_RUNTIME=/absolute/path/to/authored-ray-graph.lurgrt \
+  out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.sponza-ray-project]'
+
+LUDUS_SPONZA_TEST_PROJECT="$PWD/out/full-sponza" \
+LUDUS_SPONZA_NATIVE_IMAGE="$PWD/out/sponza-native.png" \
+  out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.full-sponza-native]'
+```
+
+The authored-graph test checks camera navigation, a content replacement above
+2 GiB of logical RHI resources, and preservation of the last frame while pending.
+The native test requires a shared-device Qt presentation host. It presents the
+ordinary raster profile first, then the declared flat-color diagnostic ray
+profile, navigates and resizes, checks image variation/error pixels and verifies
+that graph presentation performs no CPU image readback. The diagnostic ray
+profile displays authored base-color averages; it adds no lights to compensate
+for the supplied glTF's zero-intensity punctual sources. This is viewport and
+capacity acceptance, not lighting fidelity or steady-state frame-rate evidence.
 
 
 ## Material and lighting fidelity
@@ -2772,6 +2836,131 @@ Thanks to Google/Filament's authors, [*Physically Based Rendering in Filament*,
 reflection/photometric conventions and tangent-normal surface-detail model. The
 packed layout, UV-derived frame and bounded immutable admission are Ludus choices.
 
+
+### Typed diffuse and conductor reference materials
+
+Reference profile 5 extends `ReferenceBsdf`, `LitMaterialDescription` and
+`SceneShaderMaterial` with format-owned `MaterialScattering` parameters. The
+legacy default retains GGX/Schlick plus Fresnel-weighted diffuse. `Diffuse`
+evaluates Lambertian reflectance without an added dielectric specular lobe and
+samples the cosine hemisphere. `Conductor` uses retained RGB complex-IOR Fresnel,
+GGX with directly supplied alpha, correlated Smith masking and visible-normal
+sampling with its matching PDF. Below-surface proposals remain null events;
+there is no retry, energy clamp or hidden change to conductor alpha. Storage
+preserves `AlphaU` and `AlphaV`; reference admission currently requires them to
+match, and requires positive alpha rather than implementing delta transport.
+
+CPU/native-query reference transport evaluates the CPU implementation;
+GPU-compute reference transport evaluates the corresponding Slang implementation.
+The authored graph's standard BSDF helpers use the same model selection. Existing
+custom BRDFs remain author-owned. The GPU material records extend the existing
+indexed read-only scene storage table, selected by each triangle's resolved
+material binding. Eta/model, K/alpha and coating metadata have shared named word
+addresses; the private scene-kernel ABI advances to 10. The table requires one
+storage binding and does not require a descriptor array of constant buffers or
+bindless textures. Existing resource retention and producer/consumer completion
+rules continue to protect the complete accepted snapshot.
+
+The source-preserving profile is an RGB proxy. Profile 5 retained coating parameters
+with approximate shading; profile 6 adds the bounded non-scattering layered model
+below. Raster lit shaders retain their approximation. Spectral PBRT equivalence is
+not claimed.
+References: thanks to Matt Pharr, Wenzel Jakob and Greg Humphreys,
+[*Physically Based Rendering*, fourth edition, §9.3](https://pbr-book.org/4ed/Reflection_Models/Specular_Reflection_and_Transmission),
+for complex-IOR Fresnel, and the existing Heitz visible-GGX sampling reference.
+
+Acceptance uses independent complex-amplitude Fresnel calculations, Lambertian
+throughput identities, invalid-input output preservation, source-material asset
+round trips and a mixed diffuse/conductor scene comparing raw CPU/GPU reference
+AOVs. Full staircase2 source-PBRT fidelity and the previously recorded dense
+native-query qualification gap remain separate acceptance items.
+
+### Non-scattering coated-diffuse reference
+
+Reference profile 6 evaluates staircase2's `Wood` and `FloorTiles` as an isotropic
+rough dielectric interface above a textured Lambertian base. Their direct GGX alpha
+values are 0.1 and 0.01 (`remaproughness=false`), with default coating IOR 1.5 and
+optical thickness 0.01. The intervening medium has zero scattering albedo and unit
+extinction in optical-depth coordinates: zero albedo still absorbs light. Every
+internal crossing applies `exp(-thickness / abs(directionTangent.z))`.
+
+CPU and GPU implement Fresnel reflection/refraction, total internal reflection,
+correlated Smith GGX, visible-normal sampling, internal interface/base reflections
+and absorption. The interfaces remain colocated at the shading point, as in PBRT's
+layered BSDF approximation; this does not add geometric refraction or transmission
+through the opaque base. The internal random walk has PBRT's default ten-event
+limit and compensated roulette after event three. It does not consume scene path
+depth or trace scene intersections. This finite limit is part of the declared
+profile, not a claim of an infinite-depth layer solution.
+
+The sampler returns a complete continuation `Weight` and a separate directional
+`MisPdf`. A layered sample's proportional `Evaluation` retains a valid `f*cos/pdf`
+ratio but its PDF must not drive external MIS. Direct-light evaluation estimates
+the layered BSDF, with an independently addressed approximate directional PDF for
+MIS. Both light-sampled and BSDF-hit contributions use those same semantics.
+Legacy/diffuse/conductor sampling and their exact proposal PDFs remain available.
+
+`ReferenceBsdfRandomContext` uses the caller's Philox key and logical receiver/path
+address. `Scope` identifies the path, `Event` its sample and `Dimension` the scene
+bounce/material event (0 through 255). Each event reserves 256 internal dimensions;
+evaluation, PDF estimation and continuation use distinct key domains from
+`coated_diffuse_layout.h`. The reference tracer supplies its pixel, committed sample
+and scene bounce. Internal branching cannot shift the outer sampler's dimensions.
+Null proposals, absorption and depth/roulette termination retain their probability
+mass; there is no retry, energy clamp or roughness remapping.
+
+LUSCN v7 and its existing indexed GPU table already carry alpha, IOR and thickness;
+no format extension is needed for this restricted medium. The cooker resolves
+explicit scalar `eta`/`thickness` and rejects scattering albedo, scattering textures,
+anisotropy, smooth interfaces, IOR below one, and nondefault `maxdepth`/`nsamples`.
+An explicit RGB zero albedo and default controls are admitted. Storage may retain
+parameters outside the renderer's supported profile; reference material admission
+rejects those inputs. Shader packages must be rebuilt for scene-kernel ABI 11 and
+reference kernel ABI 5. Capture profile 6 separates these results from older
+coating approximations and restarts accumulation under the new integral.
+
+The authored shader interface exposes `CoatingEta` and `CoatingThickness`.
+Use `EvaluateStandardBsdf` with `CoatingRandomContext` and
+`SampleStandardBsdfTransport` together for layered reference transport. The latter
+returns direction, complete throughput weight and the external MIS density.
+The original direction-only helpers retain their compatibility approximation for
+coatings; re-evaluating a sampled layered direction cannot reconstruct its internal
+path weight. Ordinary raster and GPU preview shading remain approximate.
+
+Thanks to Matt Pharr, Wenzel Jakob and Greg Humphreys,
+[*Physically Based Rendering*, fourth edition, §9.7 and §14.3](https://pbr-book.org/4ed/Light_Transport_II_Volume_Rendering/Scattering_from_Layered_Materials),
+and pbrt-v4 revision `b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f`, for the adapted
+dielectric and layered estimators. The implementation specializes their two-sided
+layer model to a rough isotropic top interface, opaque diffuse base and zero
+medium scattering, using RGB channels and Ludus Philox streams. The Apache-2.0
+license is retained in `third_party/pbrt/LICENSE.txt` and installed with the SDK.
+
+Validation includes independent black-base Fresnel and no-IOR-contrast absorption
+limits, internal-path replay, output preservation, source-parameter round trips,
+PBRT BSDF/continuation measurements, and matched raw CPU/GPU captures containing
+textured coatings at both staircase2 alpha values. Full scene geometry/traversal
+parity, spectral textures and texture footprint filtering remain separate limits.
+The frozen PBRT fixture uses 131072 samples per alpha/reflectance pair; the Ludus
+regression uses 32768 independent samples and accepts each BSDF, continuation and
+MIS-density mean within six combined standard errors plus an absolute `1e-5`
+rounding allowance. It also checks accepted-sample probability, mean reciprocity
+and energy no greater than one within sampling error. The mixed textured scene
+retains the existing raw linear CPU/GPU RMS tolerance of `1e-3`.
+
+The independent measurement harness uses PBRT's own build/toolchain outside the
+engine dependency graph. To reproduce the fixture in
+`modules/graphics/renderer/tests/reference_material_tests.cpp`, construct
+`CoatedDiffuseBxDF` with eta 1.5, alpha 0.1 or 0.01 on both axes, scalar base
+reflectance 0.2, 0.6 or 0.9, thickness 0.01, albedo/g zero, maxDepth 10 and nSamples
+one. Evaluate in radiance mode at `wo=(0.6,0,0.8)` and
+`wi=(-0.4,0,sqrt(0.84))`. For each pair, vary `GetOptions().seed` from zero through
+131071 and measure `f`, `PDF`, and `Sample_f`'s `f*abs(wi.z)/pdf` ratio. One external
+PBRT `RNG(871)` stream supplies three uniforms per continuation sample and advances
+across all six pairs in the fixture's order. Null proposals contribute zero to the
+mean; divide by the total sample count. Record each mean and its standard error
+`sqrt((mean(square)-square(mean))/count)`, plus the accepted-sample fraction.
+CPU/GPU branch replay is checked separately from agreement of independent sample
+means; numerical/statistical acceptance never uses tone mapping or denoising.
 
 ## Implementation phases and acceptance
 

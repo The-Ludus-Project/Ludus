@@ -87,6 +87,7 @@ TEST_CASE("Corners with different frames get their own vertices", "[scene_cook][
     Assign(mesh.Indices, {0, 1, 2, 0, 2, 3});
     REQUIRE(GenerateTangents(mesh) == Status::Ok);
     CHECK(mesh.GetVertexCount() > 4);
+    CHECK(mesh.SourceVertexCount == 4);
     CHECK(mesh.Normals.GetSize() == mesh.GetVertexCount() * 3);
     CHECK(mesh.Uvs.GetSize() == mesh.GetVertexCount() * 2);
     CHECK(mesh.Indices.GetSize() == 6);

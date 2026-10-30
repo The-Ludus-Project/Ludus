@@ -65,9 +65,13 @@ constexpr uint32 BSDF_LOBE_SLOT = 3;
 constexpr uint32 BSDF_FIRST_SLOT = 4;
 constexpr uint32 BSDF_SECOND_SLOT = 5;
 constexpr uint32 ROULETTE_SLOT = 6;
+ReferenceBsdfRandomContext MakeMaterialRandomContext(const ReferenceJob& job, const ReferencePath& path) noexcept
+{
+    return {job.Key, {path.Pixel, path.Sample, static_cast<uint16>(path.Depth)}};
+}
 bool IsResampled(const ReferenceJob& job) noexcept
 {
-    return job.Description.LightSampling == ReferenceLightSampling::ResampledProjectedSolidAngle;
+    return IsReferenceResampled(job.Description.LightSampling);
 }
 // Dimension `slot` of the path's current scattering event under the job's sampler version.
 uint16 Dimension(const ReferenceJob& job, const ReferencePath& path, uint32 slot) noexcept
@@ -347,8 +351,12 @@ rhi::RasterStatus SampleResampledEmitter(const ReferenceJob& job,
             continue;
         }
         ReferenceBsdfEvaluation evaluation;
-        if (EvaluateReferenceBsdf(bsdf, normalWorld, viewWorld, sample.DirectionWorld, evaluation) !=
-            rhi::RasterStatus::Ready)
+        if (EvaluateReferenceBsdf(bsdf,
+                                  normalWorld,
+                                  viewWorld,
+                                  sample.DirectionWorld,
+                                  evaluation,
+                                  MakeMaterialRandomContext(job, path)) != rhi::RasterStatus::Ready)
         {
             return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidBsdfEvaluation);
         }
@@ -532,7 +540,12 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
         math::Dot(triangle.GeometricNormal, proposal.Direction) > 0)
     {
         ReferenceBsdfEvaluation evaluation;
-        if (EvaluateReferenceBsdf(bsdf, normal, view, proposal.Direction, evaluation) != rhi::RasterStatus::Ready)
+        if (EvaluateReferenceBsdf(bsdf,
+                                  normal,
+                                  view,
+                                  proposal.Direction,
+                                  evaluation,
+                                  MakeMaterialRandomContext(job, path)) != rhi::RasterStatus::Ready)
         {
             return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidBsdfEvaluation);
         }
@@ -560,7 +573,8 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
                             {ReferenceRandom(job, path, Dimension(job, path, BSDF_LOBE_SLOT)),
                              ReferenceRandom(job, path, Dimension(job, path, BSDF_FIRST_SLOT)),
                              ReferenceRandom(job, path, Dimension(job, path, BSDF_SECOND_SLOT))},
-                            sample) != rhi::RasterStatus::Ready)
+                            sample,
+                            MakeMaterialRandomContext(job, path)) != rhi::RasterStatus::Ready)
     {
         return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidBsdfSample);
     }
@@ -569,8 +583,15 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
         ++inoutInfo.NullBsdfSamples;
         return rhi::RasterStatus::Ready;
     }
-    path.Throughput = math::Hadamard(path.Throughput, sample.Evaluation.Value) *
-                      (math::Dot(normal, sample.Direction) / sample.Evaluation.Pdf);
+    if (bsdf.Scattering.Model == content::scene_format::MaterialModel::CoatedDiffuse)
+    {
+        path.Throughput = math::Hadamard(path.Throughput, sample.Weight);
+    }
+    else
+    {
+        path.Throughput = math::Hadamard(path.Throughput, sample.Evaluation.Value) *
+                          (math::Dot(normal, sample.Direction) / sample.Evaluation.Pdf);
+    }
     if (ValidContribution(path.Throughput) == false)
     {
         return FailReferencePath(inoutInfo, path, ReferenceFailure::InvalidThroughput);
@@ -580,7 +601,7 @@ rhi::RasterStatus PrepareReferenceVertex(const ReferenceJob& job,
         return rhi::RasterStatus::Ready;
     }
     path.PreviousPoint = point;
-    path.PreviousPdf = sample.Evaluation.Pdf;
+    path.PreviousPdf = sample.MisPdf;
     path.PreviousReceiver = frame;
     path.PreviousTargetTotal = targetTotal;
     ++path.Depth;

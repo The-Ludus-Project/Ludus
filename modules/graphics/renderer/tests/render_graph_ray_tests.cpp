@@ -20,6 +20,7 @@
 #include "rg2_scene_compute.h"
 #include "rg2_scene_ray.h"
 #include "rg2_shared_ray_computebvh.h"
+#include "ris_projected_solid_angle_benchmark_variants.h"
 #if defined(__APPLE__)
 #    include "rg2_mixed_invocation.h"
 #    include "rg2_native_ray.h"
@@ -46,6 +47,7 @@
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/renderer/reference.hpp>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
+#include <ludus/graphics/renderer/render_graph_capture.hpp>
 #include <ludus/graphics/rhi/gpu_scope.h>
 #include <ludus/graphics/rhi/lifetime.h>
 #include <ludus/graphics/rhi/measurement.h>
@@ -133,7 +135,8 @@ struct PackageLocation final
     std::string_view Directory; ///< Absolute output directory of the graph.
     std::string_view File;      ///< `<NAME>.lurgrt` inside Directory.
 };
-core::UniquePtr<renderer::RenderGraphPackage> LoadPackage(const PackageLocation& location)
+/// Read a cooked package file whole.
+Array<uint8> ReadPackageBytes(const PackageLocation& location)
 {
     filesystem::Directory directory;
     REQUIRE(directory.Open(location.Directory).Succeeded() == true);
@@ -144,6 +147,11 @@ core::UniquePtr<renderer::RenderGraphPackage> LoadPackage(const PackageLocation&
     const filesystem::ReadResult read = file.ReadAt(0, bytes.AsSpan());
     REQUIRE(read.Outcome.Succeeded() == true);
     REQUIRE(read.BytesRead == bytes.GetSize());
+    return bytes;
+}
+core::UniquePtr<renderer::RenderGraphPackage> LoadPackage(const PackageLocation& location)
+{
+    const Array<uint8> bytes = ReadPackageBytes(location);
     renderer::RenderGraphPackage* allocationOrNull = new (std::nothrow) renderer::RenderGraphPackage;
     core::UniquePtr<renderer::RenderGraphPackage> package{allocationOrNull};
     REQUIRE(package.Get() != nullptr);
@@ -4249,8 +4257,18 @@ struct EmitterFieldRoom final
     EmitterFieldRoom& operator=(const EmitterFieldRoom&) = delete;
 };
 
-const PackageLocation RIS_PROJECTED_SOLID_ANGLE_BENCHMARK{LUDUS_RG3_RIS_PROJECTED_SOLID_ANGLE_BENCHMARK_DIRECTORY,
-                                                          "rg2_ris_projected_solid_angle_benchmark.lurgrt"};
+/// One ris-projected-solid-angle benchmark package and the Graph settings it was cooked with
+/// (LUDUS_RIS_PROJECTED_SOLID_ANGLE_BENCHMARK_VARIANTS in CMakeLists.txt).
+struct RisBenchmarkVariant final
+{
+    PackageLocation Location;
+    uint32 Target = 0;             ///< RIS_TARGET: 0 exact clipped integrals, 1 approximate form factor.
+    uint32 CandidateCount = 0;     ///< RIS_CANDIDATE_COUNT, M.
+    uint32 NormalizationCount = 0; ///< RIS_NORMALIZATION_CANDIDATE_COUNT, K.
+};
+constexpr usize RIS_BENCHMARK_VARIANT_COUNT = LUDUS_RG3_RIS_BENCHMARK_VARIANT_COUNT;
+const StaticArray<RisBenchmarkVariant, RIS_BENCHMARK_VARIANT_COUNT> RIS_BENCHMARK_VARIANTS{
+    {LUDUS_RG3_RIS_BENCHMARK_VARIANTS}};
 const PackageLocation VEACH_GUIBAS_BENCHMARK{LUDUS_RG3_VEACH_GUIBAS_MIS_BENCHMARK_DIRECTORY,
                                              "rg2_veach_guibas_mis_benchmark.lurgrt"};
 /// The benchmark packages' third output, which counts the MIS program's queries.
@@ -4452,7 +4470,8 @@ EstimatorCost MeasureEstimatorCost(const GraphGpuFixture& fixture,
     return cost;
 }
 
-constexpr usize BENCHMARK_MAXIMUM_CHECKPOINTS = BENCHMARK_SAMPLE_BUDGET_COUNT * 2;
+/// Veach and Guibas is read at each budget's equal samples and at each RIS variant's equal time.
+constexpr usize BENCHMARK_MAXIMUM_CHECKPOINTS = BENCHMARK_SAMPLE_BUDGET_COUNT * (1 + RIS_BENCHMARK_VARIANT_COUNT);
 
 /// Sample counts at which one package's MIS image is read, and the images read there.
 struct MisCheckpoints final
@@ -4506,19 +4525,36 @@ TEST_CASE("Measure RIS projected-solid-angle and Veach and Guibas MIS error at e
     rhi::MeasurementAdapter adapter;
     REQUIRE(rhi::GetMeasurementAdapter(fixture.Device, adapter) == rhi::RasterStatus::Ready);
     const EmitterFieldRoom room(finish);
-    // Timing rounds in RIS, Veach and Guibas, Veach and Guibas, RIS order, so drift in machine load or clocks affects
-    // both packages alike; each package's cost is the mean of its two rounds' medians. One graph at a time: the device
-    // admits a bounded number of ray graph jobs.
-    constexpr usize RIS = 0;
-    constexpr usize VEACH = 1;
-    constexpr usize ESTIMATOR_COUNT = 2;
-    const StaticArray<PackageLocation, ESTIMATOR_COUNT> locations{
-        {RIS_PROJECTED_SOLID_ANGLE_BENCHMARK, VEACH_GUIBAS_BENCHMARK}};
-    const StaticArray<std::string_view, ESTIMATOR_COUNT> names{{"ris-projected-solid-angle", "veach-guibas-mis"}};
+    // Estimators 0 to RIS_BENCHMARK_VARIANT_COUNT - 1 are the RIS variants; the last is Veach and Guibas. Timing rounds
+    // run every RIS variant, Veach and Guibas twice, then the RIS variants in reverse, so drift in machine load or
+    // clocks affects all packages alike; each package's cost is the mean of its two rounds' medians. One graph at a
+    // time: the device admits a bounded number of ray graph jobs.
+    constexpr usize VEACH = RIS_BENCHMARK_VARIANT_COUNT;
+    constexpr usize ESTIMATOR_COUNT = RIS_BENCHMARK_VARIANT_COUNT + 1;
+    StaticArray<PackageLocation, ESTIMATOR_COUNT> locations{};
+    StaticArray<std::string, ESTIMATOR_COUNT> names{};
+    for (usize variant = 0; variant < RIS_BENCHMARK_VARIANT_COUNT; ++variant)
+    {
+        const RisBenchmarkVariant& settings = RIS_BENCHMARK_VARIANTS[variant];
+        locations[variant] = settings.Location;
+        names[variant] = std::string("ris-projected-solid-angle (") +
+                         (settings.Target == 0 ? "exact target" : "form-factor target") +
+                         ", M=" + std::to_string(settings.CandidateCount) +
+                         ", K=" + std::to_string(settings.NormalizationCount) + ')';
+    }
+    locations[VEACH] = VEACH_GUIBAS_BENCHMARK;
+    names[VEACH] = "veach-guibas-mis";
     StaticArray<EstimatorCost, ESTIMATOR_COUNT> costs{};
-    constexpr usize ROUND_COUNT = 4;
-    constexpr StaticArray<usize, ROUND_COUNT> ROUND_ORDER{{RIS, VEACH, VEACH, RIS}};
-    for (const usize estimator : ROUND_ORDER)
+    constexpr usize ROUND_COUNT = 2 * ESTIMATOR_COUNT;
+    StaticArray<usize, ROUND_COUNT> roundOrder{};
+    for (usize variant = 0; variant < RIS_BENCHMARK_VARIANT_COUNT; ++variant)
+    {
+        roundOrder[variant] = variant;
+        roundOrder[ROUND_COUNT - 1 - variant] = variant;
+    }
+    roundOrder[RIS_BENCHMARK_VARIANT_COUNT] = VEACH;
+    roundOrder[RIS_BENCHMARK_VARIANT_COUNT + 1] = VEACH;
+    for (const usize estimator : roundOrder)
     {
         const EstimatorCost measured = MeasureEstimatorCost(fixture, locations[estimator], room, names[estimator]);
         costs[estimator].PrimaryMilliseconds += measured.PrimaryMilliseconds / 2;
@@ -4560,43 +4596,57 @@ TEST_CASE("Measure RIS projected-solid-angle and Veach and Guibas MIS error at e
                     << " samples per pixel, independent seed; " << CountFailurePixels(reference)
                     << " failure pixels; linear metrics cover " << resolvedPixels << " of " << pixelCount << " pixels");
     CHECK(CountFailurePixels(reference) == 0);
-    // RIS at each budget; Veach and Guibas at the same samples, then at the same primary and MIS kernel time.
-    MisCheckpoints ris;
+    // Veach and Guibas at each budget's samples, then at each RIS variant's primary and MIS kernel time.
     MisCheckpoints veach;
     for (usize budget = 0; budget < BENCHMARK_SAMPLE_BUDGET_COUNT; ++budget)
     {
         const usize samples = BENCHMARK_SAMPLE_BUDGETS[budget];
-        ris.FrameCounts[budget] = samples;
         veach.FrameCounts[budget] = samples;
-        const float64 equalTimeSamples =
-            static_cast<float64>(samples) * sampleMilliseconds[RIS] / sampleMilliseconds[VEACH];
-        veach.FrameCounts[BENCHMARK_SAMPLE_BUDGET_COUNT + budget] =
-            math::Min(math::Max(static_cast<usize>(equalTimeSamples + .5), usize{1}), BENCHMARK_MAXIMUM_FRAMES);
+        for (usize variant = 0; variant < RIS_BENCHMARK_VARIANT_COUNT; ++variant)
+        {
+            const float64 equalTimeSamples =
+                static_cast<float64>(samples) * sampleMilliseconds[variant] / sampleMilliseconds[VEACH];
+            veach.FrameCounts[BENCHMARK_SAMPLE_BUDGET_COUNT * (1 + variant) + budget] =
+                math::Min(math::Max(static_cast<usize>(equalTimeSamples + .5), usize{1}), BENCHMARK_MAXIMUM_FRAMES);
+        }
     }
-    ris.Count = BENCHMARK_SAMPLE_BUDGET_COUNT;
-    veach.Count = BENCHMARK_SAMPLE_BUDGET_COUNT * 2;
-    RenderMisCheckpoints(fixture, RIS_PROJECTED_SOLID_ANGLE_BENCHMARK, room, ris);
+    veach.Count = BENCHMARK_SAMPLE_BUDGET_COUNT * (1 + RIS_BENCHMARK_VARIANT_COUNT);
     RenderMisCheckpoints(fixture, VEACH_GUIBAS_BENCHMARK, room, veach);
     for (usize budget = 0; budget < BENCHMARK_SAMPLE_BUDGET_COUNT; ++budget)
     {
-        const ImageError risError = ComputeImageError(ris.Images[budget], reference);
         const ImageError equalSamples = ComputeImageError(veach.Images[budget], reference);
-        const ImageError equalTime = ComputeImageError(veach.Images[BENCHMARK_SAMPLE_BUDGET_COUNT + budget], reference);
-        WARN(finishName << " room, ris-projected-solid-angle at " << ris.FrameCounts[budget] << " samples ("
-                        << static_cast<float64>(ris.FrameCounts[budget]) * sampleMilliseconds[RIS]
-                        << " ms of kernel time): MAPE " << risError.MeanAbsolutePercentage << ", linear RMSE "
-                        << risError.LinearRootMeanSquare << ", tone-mapped MSE " << risError.DisplayMeanSquare
-                        << "; veach-guibas-mis at equal samples: MAPE " << equalSamples.MeanAbsolutePercentage
-                        << ", linear RMSE " << equalSamples.LinearRootMeanSquare << ", tone-mapped MSE "
-                        << equalSamples.DisplayMeanSquare << "; at equal time ("
-                        << veach.FrameCounts[BENCHMARK_SAMPLE_BUDGET_COUNT + budget] << " samples): MAPE "
-                        << equalTime.MeanAbsolutePercentage << ", linear RMSE " << equalTime.LinearRootMeanSquare
-                        << ", tone-mapped MSE " << equalTime.DisplayMeanSquare
-                        << "; failure pixels left out: " << risError.FailurePixels << ", " << equalSamples.FailurePixels
-                        << ", " << equalTime.FailurePixels);
-        CHECK(risError.FailurePixels == 0);
+        WARN(finishName << " room, veach-guibas-mis at " << veach.FrameCounts[budget] << " samples: MAPE "
+                        << equalSamples.MeanAbsolutePercentage << ", linear RMSE " << equalSamples.LinearRootMeanSquare
+                        << ", tone-mapped MSE " << equalSamples.DisplayMeanSquare
+                        << "; failure pixels left out: " << equalSamples.FailurePixels);
         CHECK(equalSamples.FailurePixels == 0);
-        CHECK(equalTime.FailurePixels == 0);
+    }
+    for (usize variant = 0; variant < RIS_BENCHMARK_VARIANT_COUNT; ++variant)
+    {
+        MisCheckpoints ris;
+        for (usize budget = 0; budget < BENCHMARK_SAMPLE_BUDGET_COUNT; ++budget)
+        {
+            ris.FrameCounts[budget] = BENCHMARK_SAMPLE_BUDGETS[budget];
+        }
+        ris.Count = BENCHMARK_SAMPLE_BUDGET_COUNT;
+        RenderMisCheckpoints(fixture, locations[variant], room, ris);
+        for (usize budget = 0; budget < BENCHMARK_SAMPLE_BUDGET_COUNT; ++budget)
+        {
+            const ImageError risError = ComputeImageError(ris.Images[budget], reference);
+            const usize equalTimeCheckpoint = BENCHMARK_SAMPLE_BUDGET_COUNT * (1 + variant) + budget;
+            const ImageError equalTime = ComputeImageError(veach.Images[equalTimeCheckpoint], reference);
+            WARN(finishName << " room, " << names[variant] << " at " << ris.FrameCounts[budget] << " samples ("
+                            << static_cast<float64>(ris.FrameCounts[budget]) * sampleMilliseconds[variant]
+                            << " ms of kernel time): MAPE " << risError.MeanAbsolutePercentage << ", linear RMSE "
+                            << risError.LinearRootMeanSquare << ", tone-mapped MSE " << risError.DisplayMeanSquare
+                            << "; veach-guibas-mis at equal time (" << veach.FrameCounts[equalTimeCheckpoint]
+                            << " samples): MAPE " << equalTime.MeanAbsolutePercentage << ", linear RMSE "
+                            << equalTime.LinearRootMeanSquare << ", tone-mapped MSE " << equalTime.DisplayMeanSquare
+                            << "; failure pixels left out: " << risError.FailurePixels << ", "
+                            << equalTime.FailurePixels);
+            CHECK(risError.FailurePixels == 0);
+            CHECK(equalTime.FailurePixels == 0);
+        }
     }
 }
 
@@ -5180,9 +5230,10 @@ namespace
 /// A large scene for the hidden line traversal measurement, read from the file that
 /// LUDUS_LINE_TRAVERSAL_SCENE names: a little-endian uint32 vertex count and index count, then float32
 /// x, y, z World positions and uint32 triangle indices, as export_line_traversal_scene.py writes them
-/// from a glTF file. A square emitter facing down is added above the scene's horizontal center, and
-/// the camera looks along -X from inside its bounds. A generated floor and ceiling stand in for the
-/// file where a test needs a large scene without the reference assets.
+/// from a glTF file. A square emitter facing down, lightHalfWidthWorld from its center to each side, is
+/// added above the scene's horizontal center, and the camera looks along -X from inside its bounds. A
+/// generated floor and ceiling stand in for the file where a test needs a large scene without the
+/// reference assets.
 struct LargeLineScene final
 {
     static constexpr usize MATERIAL_COUNT = 2;
@@ -5190,6 +5241,8 @@ struct LargeLineScene final
     static constexpr uint32 LIGHT = 1;
     static constexpr usize LIGHT_CORNERS = 4;
     static constexpr usize LIGHT_INDEX_COUNT = 6;
+    /// The 2 m square light of the line traversal measurement.
+    static constexpr float32 DEFAULT_LIGHT_HALF_WIDTH_WORLD = 1;
     Array<math::Vector3> Positions;
     Array<uint32> Indices;
     Array<uint32> Slots;
@@ -5200,7 +5253,7 @@ struct LargeLineScene final
     StaticArray<renderer::ViewDescription, 1> Cameras{};
     renderer::SceneShaderInputs Inputs;
 
-    explicit LargeLineScene(std::string_view path)
+    explicit LargeLineScene(std::string_view path, float32 lightHalfWidthWorld = DEFAULT_LIGHT_HALF_WIDTH_WORLD)
     {
         const usize separator = path.rfind('/');
         REQUIRE(separator != std::string_view::npos);
@@ -5241,7 +5294,7 @@ struct LargeLineScene final
             Indices[index] = readWord();
             REQUIRE(Indices[index] < vertexCount);
         }
-        finish(vertexCount, indexCount);
+        finish(vertexCount, indexCount, lightHalfWidthWorld);
     }
     /// A floor and a ceiling, each a square grid of gridQuads x gridQuads quads: 4 * gridQuads^2 triangles.
     explicit LargeLineScene(uint32 gridQuads)
@@ -5294,7 +5347,7 @@ struct LargeLineScene final
                 }
             }
         }
-        finish(vertexCount, indexCount);
+        finish(vertexCount, indexCount, DEFAULT_LIGHT_HALF_WIDTH_WORLD);
     }
     LargeLineScene(const LargeLineScene&) = delete;
     LargeLineScene& operator=(const LargeLineScene&) = delete;
@@ -5308,7 +5361,7 @@ private:
         REQUIRE(Slots.TryResize((indexCount + LIGHT_INDEX_COUNT) / 3) == true);
     }
     /// Add the emitter, materials and camera around the first vertexCount positions.
-    void finish(usize vertexCount, usize indexCount)
+    void finish(usize vertexCount, usize indexCount, float32 lightHalfWidthWorld)
     {
         math::Vector3 minimumWorld{1e30F, 1e30F, 1e30F};
         math::Vector3 maximumWorld{-1e30F, -1e30F, -1e30F};
@@ -5326,18 +5379,17 @@ private:
         {
             Slots[triangle] = SURFACE;
         }
-        // A 2 m square light, facing down, at 60% of the scene's height above its horizontal center.
-        constexpr float32 LIGHT_HALF_WIDTH_WORLD = 1;
+        // A square light, facing down, at 60% of the scene's height above its horizontal center.
         constexpr float32 LIGHT_HEIGHT_FRACTION = .6F;
         const float32 centerX = (minimumWorld.X + maximumWorld.X) * .5F;
         const float32 centerZ = (minimumWorld.Z + maximumWorld.Z) * .5F;
         const float32 lightY = minimumWorld.Y + (maximumWorld.Y - minimumWorld.Y) * LIGHT_HEIGHT_FRACTION;
         const uint32 firstCorner = static_cast<uint32>(vertexCount);
-        Positions[vertexCount] = {centerX - LIGHT_HALF_WIDTH_WORLD, lightY, centerZ - LIGHT_HALF_WIDTH_WORLD};
+        Positions[vertexCount] = {centerX - lightHalfWidthWorld, lightY, centerZ - lightHalfWidthWorld};
         // Counterclockwise seen from below, so the one-sided emitter faces -Y.
-        Positions[vertexCount + 1] = {centerX + LIGHT_HALF_WIDTH_WORLD, lightY, centerZ - LIGHT_HALF_WIDTH_WORLD};
-        Positions[vertexCount + 2] = {centerX + LIGHT_HALF_WIDTH_WORLD, lightY, centerZ + LIGHT_HALF_WIDTH_WORLD};
-        Positions[vertexCount + 3] = {centerX - LIGHT_HALF_WIDTH_WORLD, lightY, centerZ + LIGHT_HALF_WIDTH_WORLD};
+        Positions[vertexCount + 1] = {centerX + lightHalfWidthWorld, lightY, centerZ - lightHalfWidthWorld};
+        Positions[vertexCount + 2] = {centerX + lightHalfWidthWorld, lightY, centerZ + lightHalfWidthWorld};
+        Positions[vertexCount + 3] = {centerX - lightHalfWidthWorld, lightY, centerZ + lightHalfWidthWorld};
         const StaticArray<uint32, LIGHT_INDEX_COUNT> corners{{0, 1, 2, 0, 2, 3}};
         for (usize corner = 0; corner < LIGHT_INDEX_COUNT; ++corner)
         {
@@ -5375,8 +5427,9 @@ private:
                                   DEPTH_SCALE * (NEAR_WORLD - eyeWorld.X),
                                   eyeWorld.X};
         Cameras[0].CameraPosition = eyeWorld;
-        WARN("large line scene: " << vertexCount << " vertices, " << indexCount / 3 << " triangles, light at y="
-                                  << lightY << ", eye " << eyeWorld.X << ',' << eyeWorld.Y << ',' << eyeWorld.Z);
+        WARN("large line scene: " << vertexCount << " vertices, " << indexCount / 3 << " triangles, "
+                                  << 2 * lightHalfWidthWorld << " m square light at y=" << lightY << ", eye "
+                                  << eyeWorld.X << ',' << eyeWorld.Y << ',' << eyeWorld.Z);
     }
 };
 } // namespace
@@ -5532,6 +5585,13 @@ constexpr usize POINT_LINE_DENSITY_COUNT = 8;
 constexpr usize POINT_LINE_WEIGHT_ROW_COUNT = 8;
 constexpr usize POINT_LINE_SINGLE_WEIGHT_ROW = 8;
 constexpr usize POINT_LINE_DENSITY_FIRST_ROW = 16;
+constexpr usize POINT_LINE_VERTEX_CHORD_ROW = 9;
+constexpr usize POINT_LINE_VERTEX_CHORD_CASES = 6;
+constexpr float64 POINT_LINE_QUERYABLE_CHORD = .25;
+constexpr float64 POINT_LINE_DEGENERATE_CHORD = .5;
+constexpr float64 POINT_LINE_POSITIVE_DENSITY = .75;
+/// The vertex chord case along the first edge through vertex 2, whose chord always has zero length.
+constexpr usize POINT_LINE_U_VERTEX_2_CHORD = 4;
 constexpr float64 POINT_LINE_ERROR_SCALE = 1000;
 constexpr float64 POINT_LINE_SKIPPED = 1;
 
@@ -5750,6 +5810,30 @@ TEST_CASE("Point-and-line MIS weights sum to one and an unoccluded line density 
     CHECK(evaluatedPixels[1] > minimumEvaluated);
     CHECK(largestDensityError[0] <= DENSITY_RELATIVE_TOLERANCE);
     CHECK(largestDensityError[1] <= DENSITY_RELATIVE_TOLERANCE);
+
+    // Chords through a light triangle's vertices (design D6, section 5.1). IsEmitterChordQueryable rejects
+    // the zero-length chord along the first edge through vertex 2, and any other vertex chord that
+    // rounding leaves shorter than SCENE_UNIT_TOLERANCE. Such a chord latched a shader failure,
+    // which the failure-pixel check above would now catch. On Sponza, the area point at vertex 0
+    // did this across an acute angle. A rejected chord's density is zero.
+    constexpr float64 CHORD_FLAG_TOLERANCE = 1e-6;
+    usize degenerateChords = 0;
+    for (usize chordCase = 0; chordCase < POINT_LINE_VERTEX_CHORD_CASES; ++chordCase)
+    {
+        const float64 flag = DecodeLineFixed(pixels, chordCase * 2, POINT_LINE_VERTEX_CHORD_ROW);
+        const float64 density = DecodeLineFixed(pixels, chordCase * 2 + 1, POINT_LINE_VERTEX_CHORD_ROW);
+        const bool isDegenerate = math::Abs(flag - POINT_LINE_DEGENERATE_CHORD) <= CHORD_FLAG_TOLERANCE;
+        INFO("vertex chord case " << chordCase << ": flag " << flag << ", density flag " << density);
+        CHECK((isDegenerate == true || math::Abs(flag - POINT_LINE_QUERYABLE_CHORD) <= CHORD_FLAG_TOLERANCE));
+        CHECK((density == 0 || math::Abs(density - POINT_LINE_POSITIVE_DENSITY) <= CHORD_FLAG_TOLERANCE));
+        if (isDegenerate == true)
+        {
+            CHECK(density == 0);
+        }
+        CHECK((chordCase != POINT_LINE_U_VERTEX_2_CHORD || isDegenerate == true));
+        degenerateChords += isDegenerate == true ? 1 : 0;
+    }
+    WARN(degenerateChords << " of " << POINT_LINE_VERTEX_CHORD_CASES << " vertex chords rejected");
 }
 
 TEST_CASE("The point-and-line MIS template's three outputs estimate one integral under both heuristics",
@@ -6036,6 +6120,301 @@ TEST_CASE("Measure point-and-line MIS against point sampling in the penumbra at 
                                 << " samples MSE=" << misError << ", point sampling at " << pointFrameCount
                                 << " samples MSE=" << pointError << " (at " << COLOR_FRAME_COUNT << " samples "
                                 << equalSamplePointError << ")");
+}
+
+TEST_CASE("Measure point-and-line MIS against point sampling in a large scene's penumbra at equal GPU time",
+          "[.point-line-large-scene-performance]")
+{
+    // A point-line measurement after PL3, not an acceptance threshold: GPU time varies with machine load
+    // and clock state. PL3's equal-time comparison ([.point-line-performance]) on the scene of the line
+    // traversal measurement, which LUDUS_LINE_TRAVERSAL_SCENE names, lit by a 6 m square light so that
+    // its occluders cast wide penumbrae. Both templates run with every ray pass on ComputeBvh. The
+    // penumbra is PL2's: pixels below eye height whose mean visible chord fraction, from the
+    // line-sampling template, lies strictly between 0.1 and 0.9. The rest of the lower half is reported
+    // separately. For each color budget, point sampling receives
+    // round(colorFrames * (primary + shade) / (primary + shadePoints)) samples.
+    const char* pathOrNull = std::getenv("LUDUS_LINE_TRAVERSAL_SCENE");
+    if (pathOrNull == nullptr)
+    {
+        SKIP("Set LUDUS_LINE_TRAVERSAL_SCENE to an exported scene, for example Intel Sponza.");
+    }
+    constexpr float32 LIGHT_HALF_WIDTH_WORLD = 3;
+    const LargeLineScene scene(pathOrNull, LIGHT_HALF_WIDTH_WORLD);
+    // The Editor viewport's device budget, as in the line traversal measurement.
+    constexpr uint64 EDITOR_RESOURCE_BYTES = uint64{2} * 1024 * 1024 * 1024;
+    GraphGpuFixture fixture(true, false, EDITOR_RESOURCE_BYTES);
+    // The graph is released before the template's graphs are prepared: the device holds two at once.
+    Array<uint8> fractionPixels;
+    {
+        PreparedGraph fraction(fixture,
+                               {LUDUS_RG3_LINE_SAMPLING_COMPUTE_BVH_DIRECTORY, "rg2_line_sampling_compute_bvh.lurgrt"},
+                               scene,
+                               1);
+        REQUIRE(renderer::RequiresHardwareRayTracing(fraction.Plan) == false);
+        constexpr usize FRACTION_FRAME_COUNT = 256;
+        for (usize frame = 0; frame < FRACTION_FRAME_COUNT; ++frame)
+        {
+            RenderFrame(fraction.Graph, fixture);
+        }
+        const StaticArray<uint32, LINE_SAMPLING_OUTPUT_COUNT> fractionExports = GetLineSamplingExports(fraction.Plan);
+        ReadExport(fraction.Graph, fixture, fractionExports[LINE_SAMPLING_VISIBLE_FRACTION], {}, fractionPixels);
+    }
+    constexpr usize MASK_COUNT = 2;
+    constexpr usize PENUMBRA = 0;
+    constexpr usize OUTSIDE_PENUMBRA = 1;
+    const StaticArray<const char*, MASK_COUNT> maskNames{{"penumbra", "outside the penumbra"}};
+    StaticArray<Array<bool>, MASK_COUNT> masks;
+    StaticArray<usize, MASK_COUNT> maskPixels{};
+    for (usize mask = 0; mask < MASK_COUNT; ++mask)
+    {
+        REQUIRE(masks[mask].TryResize(fractionPixels.GetSize() / 4) == true);
+    }
+    constexpr float32 PENUMBRA_LOWEST_FRACTION = .1F;
+    constexpr float32 PENUMBRA_HIGHEST_FRACTION = .9F;
+    for (usize pixel = 0; pixel < masks[PENUMBRA].GetSize(); ++pixel)
+    {
+        const float32 visible = DecodeToneMapped(fractionPixels[pixel * 4]);
+        const bool isBelowEye = pixel / WIDTH >= HEIGHT / 2;
+        const bool isPenumbra = visible > PENUMBRA_LOWEST_FRACTION && visible < PENUMBRA_HIGHEST_FRACTION;
+        // A visible fraction showing the error color says nothing about the penumbra.
+        const bool isFailure = fractionPixels[pixel * 4] == 255 && fractionPixels[pixel * 4 + 1] == 0 &&
+                               fractionPixels[pixel * 4 + 2] == 255;
+        masks[PENUMBRA][pixel] = isBelowEye == true && isFailure == false && isPenumbra == true;
+        masks[OUTSIDE_PENUMBRA][pixel] = isBelowEye == true && isFailure == false && isPenumbra == false;
+        for (usize mask = 0; mask < MASK_COUNT; ++mask)
+        {
+            maskPixels[mask] += masks[mask][pixel] == true ? 1 : 0;
+        }
+    }
+    constexpr usize MINIMUM_PENUMBRA_PIXELS = 32;
+    REQUIRE(maskPixels[PENUMBRA] >= MINIMUM_PENUMBRA_PIXELS);
+    REQUIRE(maskPixels[OUTSIDE_PENUMBRA] > 0);
+    WARN(maskPixels[PENUMBRA] << " penumbra pixels and " << maskPixels[OUTSIDE_PENUMBRA]
+                              << " other pixels below eye height, of " << WIDTH * HEIGHT << "; "
+                              << CountFailurePixels(fractionPixels) << " visible fraction failure pixels");
+
+    const PackageLocation location{LUDUS_RG3_SALESIN_JAROSZ_LINES_COMPUTE_BVH_DIRECTORY,
+                                   "rg2_salesin_jarosz_lines_compute_bvh.lurgrt"};
+    // Mean GPU time per frame of each pass: the ordered sequence's Compute operations in plan order.
+    constexpr usize TIMING_FRAME_COUNT = 64;
+    constexpr usize PASS_COUNT = POINT_LINE_FIRST_SHADE_PASS + POINT_LINE_OUTPUT_COUNT;
+    StaticArray<float64, PASS_COUNT> passNanoseconds{};
+    {
+        PreparedGraph timed(fixture, location, scene, 1);
+        REQUIRE(renderer::RequiresHardwareRayTracing(timed.Plan) == false);
+        StaticArray<Array<uint8>, POINT_LINE_OUTPUT_COUNT> ignored;
+        PassTimings timings;
+        RenderPointLineOutputs(timed, fixture, TIMING_FRAME_COUNT, ignored, &timings);
+        REQUIRE(timings.FrameCount > 0);
+        usize computePass = 0;
+        for (usize pass = 0; pass < timings.Count; ++pass)
+        {
+            if (timings.Passes[pass].Kind != rhi::GpuPassKind::Compute)
+            {
+                continue;
+            }
+            REQUIRE(computePass < PASS_COUNT);
+            passNanoseconds[computePass] = timings.Nanoseconds[pass] / static_cast<float64>(timings.FrameCount);
+            WARN("pass " << computePass << " mean GPU ns per frame over " << timings.FrameCount
+                         << " frames: " << passNanoseconds[computePass]);
+            computePass += 1;
+        }
+        REQUIRE(computePass == PASS_COUNT);
+    }
+    const float64 primary = passNanoseconds[0];
+    const float64 colorCost = primary + passNanoseconds[POINT_LINE_FIRST_SHADE_PASS + POINT_LINE_MIS];
+    const float64 pointCost = primary + passNanoseconds[POINT_LINE_FIRST_SHADE_PASS + POINT_LINE_POINT_SAMPLING];
+    REQUIRE(colorCost > 0);
+    REQUIRE(pointCost > 0);
+    WARN("GPU ns per sample: primary " << primary << ", color (primary + shade) " << colorCost
+                                       << ", pointSampling (primary + shadePoints) " << pointCost << ", ratio "
+                                       << colorCost / pointCost);
+
+    // A failed sample shows the error color in its output. At this scale a few pixels can fail over
+    // thousands of samples, so failures are counted per output and their pixels leave both masks
+    // instead of ending the measurement.
+    const auto renderOutputs = [&fixture](PreparedGraph& inoutGraph,
+                                          usize frameCount,
+                                          StaticArray<Array<uint8>, POINT_LINE_OUTPUT_COUNT>& outPixels) {
+        const StaticArray<uint32, POINT_LINE_OUTPUT_COUNT> exports = GetPointLineExports(inoutGraph.Plan);
+        for (usize frame = 0; frame < frameCount; ++frame)
+        {
+            RenderFrame(inoutGraph.Graph, fixture);
+        }
+        for (usize output = 0; output < POINT_LINE_OUTPUT_COUNT; ++output)
+        {
+            ReadExport(inoutGraph.Graph, fixture, exports[output], {}, outPixels[output]);
+        }
+    };
+
+    // Two color budgets, each with its equal-time point budget, read from one run in increasing order.
+    constexpr usize BUDGET_COUNT = 2;
+    const StaticArray<usize, BUDGET_COUNT> colorFrameCounts{{16, 64}};
+    StaticArray<usize, BUDGET_COUNT> pointFrameCounts{};
+    constexpr float64 MAXIMUM_POINT_FRAMES = 4096;
+    constexpr usize CHECKPOINT_COUNT = 2 * BUDGET_COUNT;
+    StaticArray<usize, CHECKPOINT_COUNT> checkpoints{};
+    for (usize budget = 0; budget < BUDGET_COUNT; ++budget)
+    {
+        pointFrameCounts[budget] = static_cast<usize>(
+            math::Min(MAXIMUM_POINT_FRAMES,
+                      math::Max(1.0, static_cast<float64>(colorFrameCounts[budget]) * colorCost / pointCost + .5)));
+        checkpoints[budget * 2] = colorFrameCounts[budget];
+        checkpoints[budget * 2 + 1] = pointFrameCounts[budget];
+    }
+    Sort(checkpoints.GetData(), checkpoints.GetSize(), [](usize left, usize right) noexcept { return left < right; });
+    StaticArray<StaticArray<Array<uint8>, POINT_LINE_OUTPUT_COUNT>, CHECKPOINT_COUNT> atCheckpoints;
+    {
+        PreparedGraph graph(fixture, location, scene, 1);
+        usize renderedFrames = 0;
+        for (usize checkpoint = 0; checkpoint < CHECKPOINT_COUNT; ++checkpoint)
+        {
+            // A repeated frame count renders no frame and reads the same running means again.
+            renderOutputs(graph, checkpoints[checkpoint] - renderedFrames, atCheckpoints[checkpoint]);
+            renderedFrames = checkpoints[checkpoint];
+        }
+    }
+    const auto getOutputsAt = [&checkpoints, &atCheckpoints](usize frameCount) {
+        usize found = 0;
+        while (checkpoints[found] != frameCount)
+        {
+            ++found;
+            REQUIRE(found < CHECKPOINT_COUNT);
+        }
+        return &atCheckpoints[found];
+    };
+
+    // The reference: the mean decoded color of independently seeded graph instances, whose scene
+    // revisions reseed sampling. A ray pass stops accumulating at MAX_ACCUMULATION_SAMPLES, so each
+    // instance contributes that many samples. The spread between instances estimates the noise that
+    // the reference adds to every error below: the sample variance over REFERENCE_COUNT.
+    constexpr usize REFERENCE_COUNT = 8;
+    constexpr uint64 FIRST_REFERENCE_REVISION = 2;
+    constexpr usize REFERENCE_FRAME_COUNT = format::MAX_ACCUMULATION_SAMPLES;
+    const usize valueCount = masks[PENUMBRA].GetSize() * 3;
+    Array<float64> referenceSum;
+    Array<float64> referenceSquareSum;
+    REQUIRE(referenceSum.TryResize(valueCount) == true);
+    REQUIRE(referenceSquareSum.TryResize(valueCount) == true);
+    for (usize value = 0; value < valueCount; ++value)
+    {
+        referenceSum[value] = 0;
+        referenceSquareSum[value] = 0;
+    }
+    const StaticArray<const char*, POINT_LINE_OUTPUT_COUNT> outputNames{{"color", "lineSampling", "pointSampling"}};
+    StaticArray<usize, POINT_LINE_OUTPUT_COUNT> referenceFailurePixels{};
+    const auto removeFailurePixels = [&masks](const Array<uint8>& pixels) {
+        for (usize pixel = 0; pixel < masks[PENUMBRA].GetSize(); ++pixel)
+        {
+            const bool isFailure =
+                pixels[pixel * 4] == 255 && pixels[pixel * 4 + 1] == 0 && pixels[pixel * 4 + 2] == 255;
+            for (usize mask = 0; mask < MASK_COUNT; ++mask)
+            {
+                masks[mask][pixel] = masks[mask][pixel] == true && isFailure == false;
+            }
+        }
+    };
+    for (usize reference = 0; reference < REFERENCE_COUNT; ++reference)
+    {
+        StaticArray<Array<uint8>, POINT_LINE_OUTPUT_COUNT> referencePixels;
+        {
+            PreparedGraph referenceGraph(fixture, location, scene, FIRST_REFERENCE_REVISION + reference);
+            renderOutputs(referenceGraph, REFERENCE_FRAME_COUNT, referencePixels);
+        }
+        for (usize output = 0; output < POINT_LINE_OUTPUT_COUNT; ++output)
+        {
+            referenceFailurePixels[output] += CountFailurePixels(referencePixels[output]);
+        }
+        removeFailurePixels(referencePixels[POINT_LINE_MIS]);
+        for (usize pixel = 0; pixel < masks[PENUMBRA].GetSize(); ++pixel)
+        {
+            for (usize channel = 0; channel < 3; ++channel)
+            {
+                const float64 radiance =
+                    static_cast<float64>(DecodeToneMapped(referencePixels[POINT_LINE_MIS][pixel * 4 + channel]));
+                referenceSum[pixel * 3 + channel] += radiance;
+                referenceSquareSum[pixel * 3 + channel] += radiance * radiance;
+            }
+        }
+    }
+    for (usize output = 0; output < POINT_LINE_OUTPUT_COUNT; ++output)
+    {
+        WARN(outputNames[output] << " failure pixels after " << checkpoints[CHECKPOINT_COUNT - 1]
+                                 << " samples: " << CountFailurePixels(atCheckpoints[CHECKPOINT_COUNT - 1][output])
+                                 << "; summed over " << REFERENCE_COUNT << " references of " << REFERENCE_FRAME_COUNT
+                                 << " samples: " << referenceFailurePixels[output]);
+    }
+    for (usize checkpoint = 0; checkpoint < CHECKPOINT_COUNT; ++checkpoint)
+    {
+        removeFailurePixels(atCheckpoints[checkpoint][POINT_LINE_MIS]);
+        removeFailurePixels(atCheckpoints[checkpoint][POINT_LINE_POINT_SAMPLING]);
+    }
+    const auto computeError = [&referenceSum](const Array<uint8>& pixels, const Array<bool>& mask) {
+        float64 sum = 0;
+        usize count = 0;
+        for (usize pixel = 0; pixel < mask.GetSize(); ++pixel)
+        {
+            for (usize channel = 0; mask[pixel] == true && channel < 3; ++channel)
+            {
+                const float64 difference = static_cast<float64>(DecodeToneMapped(pixels[pixel * 4 + channel])) -
+                                           referenceSum[pixel * 3 + channel] / static_cast<float64>(REFERENCE_COUNT);
+                sum += difference * difference;
+                ++count;
+            }
+        }
+        REQUIRE(count > 0);
+        return sum / static_cast<float64>(count);
+    };
+
+    math::Vector3 referenceMean{};
+    for (usize pixel = 0; pixel < masks[PENUMBRA].GetSize(); ++pixel)
+    {
+        referenceMean = referenceMean + math::Vector3{static_cast<float32>(referenceSum[pixel * 3]),
+                                                      static_cast<float32>(referenceSum[pixel * 3 + 1]),
+                                                      static_cast<float32>(referenceSum[pixel * 3 + 2])} /
+                                            static_cast<float32>(REFERENCE_COUNT * masks[PENUMBRA].GetSize());
+    }
+    WARN("reference color mean " << referenceMean.X << ',' << referenceMean.Y << ',' << referenceMean.Z << " from "
+                                 << REFERENCE_COUNT * REFERENCE_FRAME_COUNT << " samples");
+    for (usize mask = 0; mask < MASK_COUNT; ++mask)
+    {
+        usize keptPixels = 0;
+        float64 referenceNoise = 0;
+        for (usize pixel = 0; pixel < masks[mask].GetSize(); ++pixel)
+        {
+            if (masks[mask][pixel] == false)
+            {
+                continue;
+            }
+            keptPixels += 1;
+            for (usize channel = 0; channel < 3; ++channel)
+            {
+                const float64 mean = referenceSum[pixel * 3 + channel] / static_cast<float64>(REFERENCE_COUNT);
+                const float64 variance =
+                    (referenceSquareSum[pixel * 3 + channel] - mean * referenceSum[pixel * 3 + channel]) /
+                    static_cast<float64>(REFERENCE_COUNT - 1);
+                referenceNoise += variance / static_cast<float64>(REFERENCE_COUNT);
+            }
+        }
+        REQUIRE(keptPixels > 0);
+        referenceNoise /= static_cast<float64>(keptPixels * 3);
+        WARN(maskNames[mask] << " (" << keptPixels << " of " << maskPixels[mask]
+                             << " pixels without failures): estimated reference noise " << referenceNoise);
+        for (usize budget = 0; budget < BUDGET_COUNT; ++budget)
+        {
+            const float64 colorError =
+                computeError((*getOutputsAt(colorFrameCounts[budget]))[POINT_LINE_MIS], masks[mask]);
+            const float64 pointError =
+                computeError((*getOutputsAt(pointFrameCounts[budget]))[POINT_LINE_POINT_SAMPLING], masks[mask]);
+            const float64 equalSamplePointError =
+                computeError((*getOutputsAt(colorFrameCounts[budget]))[POINT_LINE_POINT_SAMPLING], masks[mask]);
+            WARN(maskNames[mask] << " at equal GPU time: color at " << colorFrameCounts[budget]
+                                 << " samples MSE=" << colorError << ", pointSampling at " << pointFrameCounts[budget]
+                                 << " samples MSE=" << pointError << ", point/color MSE ratio "
+                                 << pointError / colorError << " (pointSampling at " << colorFrameCounts[budget]
+                                 << " samples " << equalSamplePointError << ")");
+        }
+    }
 }
 
 TEST_CASE("ToneMap applies exposure after linear accumulation and can be bypassed",
@@ -6367,4 +6746,622 @@ TEST_CASE("A render graph kernel reads the renderer-bound LTC table like the CPU
         }
     }
     CHECK(fixture.Pixels[GetPixel(LTC_LOOKUP_CASE_COUNT, row)] == 0);
+}
+
+namespace
+{
+/// Time allowed for one capture to finish, including its private graph's preparation.
+constexpr uint64 CAPTURE_TIMEOUT = 60 * time::NANOSECONDS_PER_SECOND;
+/// A small target keeps the GPU captures quick; it still exceeds the reduced authored limit below.
+constexpr uint32 CAPTURE_TARGET_SAMPLES = 6;
+/// An authored Accumulate limit below CAPTURE_TARGET_SAMPLES, so reaching the target needs the override.
+constexpr uint32 REDUCED_AUTHORED_LIMIT = 2;
+
+/// The polygonal-light template's clamped optimal MIS output: the first pass's colour.
+uint32 GetClampedMisOutput(const renderer::RenderGraphPlan& plan)
+{
+    REQUIRE(plan.Passes.IsEmpty() == false);
+    return plan.Passes[0].Color;
+}
+
+/// Service a capture until it ends, submitting the room when it waits for a scene.
+// The scene revision and the frame count that triggers Stop are distinct quantities.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+template <typename Room>
+renderer::RenderGraphCapturePhase
+FinishCapture(renderer::RenderGraphCapture& inoutCapture, const Room& room, uint64 revision, uint32 stopAfterOrZero = 0)
+// NOLINTEND(bugprone-easily-swappable-parameters)
+{
+    const uint64 beginning = time::NowTicks();
+    renderer::RenderGraphCapturePhase phase = inoutCapture.GetPhase();
+    while (time::NowTicks() - beginning < CAPTURE_TIMEOUT)
+    {
+        phase = inoutCapture.Service();
+        if (phase == renderer::RenderGraphCapturePhase::AwaitingScene)
+        {
+            const rhi::RasterStatus submitted =
+                inoutCapture.SubmitScene({room.Meshes.GetData(), room.Meshes.GetSize()},
+                                         {room.Items.GetData(), room.Items.GetSize()},
+                                         {room.Cameras.GetData(), room.Cameras.GetSize()},
+                                         revision,
+                                         &room.Inputs);
+            REQUIRE((submitted == rhi::RasterStatus::Ready || submitted == rhi::RasterStatus::Pending));
+        }
+        if (stopAfterOrZero != 0 && inoutCapture.GetInfo().SubmittedSamples >= stopAfterOrZero)
+        {
+            inoutCapture.Stop();
+        }
+        if (phase == renderer::RenderGraphCapturePhase::Complete ||
+            phase == renderer::RenderGraphCapturePhase::Stopped || phase == renderer::RenderGraphCapturePhase::Failed)
+        {
+            return phase;
+        }
+    }
+    FAIL("The capture did not finish");
+    return phase;
+}
+
+/// Read a ray pass's accumulation records after the graph's last producer completed.
+void ReadAccumulation(const renderer::RenderGraph& graph,
+                      const GraphGpuFixture& fixture,
+                      uint32 pass,
+                      Array<math::Vector4>& outRecords)
+{
+    rhi::BufferHandle buffer;
+    REQUIRE(graph.GetAccumulation(pass, buffer) == rhi::RasterStatus::Ready);
+    REQUIRE(outRecords.TryResize(usize{WIDTH} * HEIGHT * renderer::RENDER_GRAPH_ACCUMULATION_WORDS) == true);
+    rhi::LifetimeCapabilities capabilities;
+    REQUIRE(rhi::GetLifetimeCapabilities(fixture.Device, capabilities) == rhi::RasterStatus::Ready);
+    const usize totalBytes = outRecords.GetSize() * sizeof(math::Vector4);
+    for (usize offset = 0; offset < totalBytes; offset += capabilities.TransferBytes)
+    {
+        const usize bytes = math::Min(capabilities.TransferBytes, totalBytes - offset);
+        rhi::ReadbackTicket ticket;
+        rhi::RasterStatus status = rhi::RequestBufferReadback(fixture.Device, buffer, offset, bytes, ticket);
+        const uint64 beginning = time::NowTicks();
+        while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TRAVERSAL_TIMEOUT)
+        {
+            status = rhi::GetStatus(fixture.Device, ticket);
+        }
+        REQUIRE(status == rhi::RasterStatus::Ready);
+        REQUIRE(
+            rhi::CopyReadback(fixture.Device, ticket, reinterpret_cast<uint8*>(outRecords.GetData()) + offset, bytes) ==
+            rhi::RasterStatus::Ready);
+        REQUIRE(rhi::Release(fixture.Device, ticket) == rhi::RasterStatus::Ready);
+    }
+}
+
+uint32 ReadFileUint32(const Array<uint8>& bytes, usize offset)
+{
+    uint32 value = 0;
+    REQUIRE(TryReadLittleEndian(std::span<const uint8>{bytes.GetData() + offset, sizeof(uint32)}, value) == true);
+    return value;
+}
+} // namespace
+
+TEST_CASE("A render graph capture reaches its target past the authored limit and saves the graph's own mean",
+          "[render-graph][gpu][render-graph-capture]")
+{
+    GraphGpuFixture fixture(false, false);
+    CornellBox room;
+    MakeRoomGlossyWithoutSky(room);
+    constexpr uint64 REVISION = 3;
+    PreparedGraph live(fixture, POLYGONAL_LIGHT_SAMPLING_TEMPLATE, room, REVISION);
+    // Reduce the authored limit of every pass, so the capture's target is above it.
+    StaticArray<format::Pass, format::MAX_PASSES> passes{};
+    for (usize pass = 0; pass < live.Plan.Passes.GetSize(); ++pass)
+    {
+        passes[pass] = live.Plan.Passes[pass];
+        passes[pass].AccumulationSamples = REDUCED_AUTHORED_LIMIT;
+    }
+    renderer::RenderGraphPlan plan = live.Plan;
+    plan.Passes = {passes.GetData(), live.Plan.Passes.GetSize()};
+    renderer::RenderGraphCaptureSettings settings;
+    settings.Output = GetClampedMisOutput(plan);
+    settings.TargetSamples = CAPTURE_TARGET_SAMPLES;
+    settings.PackageIdentity[0] = 1;
+    StaticArray<Array<uint8>, 2> files;
+    for (Array<uint8>& file : files)
+    {
+        renderer::RenderGraphCapture capture;
+        const rhi::RasterStatus started =
+            capture.Start(fixture.Device, fixture.Surface, plan, live.Programs, WIDTH, HEIGHT, settings);
+        REQUIRE((started == rhi::RasterStatus::Ready || started == rhi::RasterStatus::Pending));
+        REQUIRE(FinishCapture(capture, room, REVISION) == renderer::RenderGraphCapturePhase::Complete);
+        const renderer::RenderGraphCaptureInfo info = capture.GetInfo();
+        CHECK(info.SubmittedSamples == CAPTURE_TARGET_SAMPLES);
+        CHECK(info.MinimumSamples == CAPTURE_TARGET_SAMPLES);
+        CHECK(info.AuthoredLimit == REDUCED_AUTHORED_LIMIT);
+        CHECK(info.FailedPixels == 0);
+        CHECK((info.Width == WIDTH && info.Height == HEIGHT));
+        REQUIRE(capture.Encode(file) == rhi::RasterStatus::Ready);
+        // The live graph with the authored package averages the same estimator from the same revision: its first
+        // pass after CAPTURE_TARGET_SAMPLES frames is the captured mean.
+        if (&file == &files[0])
+        {
+            for (uint32 frame = 0; frame < CAPTURE_TARGET_SAMPLES; ++frame)
+            {
+                RenderFrame(live.Graph, fixture);
+            }
+            Array<math::Vector4> records;
+            ReadAccumulation(live.Graph, fixture, 0, records);
+            const BorrowedView<const renderer::RenderGraphCapturePixel> pixels = capture.GetPixels();
+            REQUIRE(pixels.GetSize() == usize{WIDTH} * HEIGHT);
+            usize differing = 0;
+            for (usize pixel = 0; pixel < pixels.GetSize(); ++pixel)
+            {
+                const math::Vector4& sum = records[pixel * renderer::RENDER_GRAPH_ACCUMULATION_WORDS];
+                const float32 scale = 1.0F / static_cast<float32>(CAPTURE_TARGET_SAMPLES);
+                const math::Vector3 expected{sum.X * scale, sum.Y * scale, sum.Z * scale};
+                differing += expected == pixels[pixel].Mean ? 0 : 1;
+            }
+            CHECK(differing == 0);
+        }
+    }
+    // Equal inputs reproduce the file bit for bit.
+    CHECK(files[0] == files[1]);
+    const Array<uint8>& file = files[0];
+    REQUIRE(file.GetSize() == format::CAPTURE_HEADER_BYTES + usize{WIDTH} * HEIGHT * format::CAPTURE_PIXEL_BYTES);
+    CHECK(std::memcmp(file.GetData(), format::CAPTURE_MAGIC, format::CAPTURE_MAGIC_BYTES) == 0);
+    CHECK(ReadFileUint32(file, format::CAPTURE_TARGET_SAMPLES_OFFSET) == CAPTURE_TARGET_SAMPLES);
+    CHECK(ReadFileUint32(file, format::CAPTURE_SUBMITTED_SAMPLES_OFFSET) == CAPTURE_TARGET_SAMPLES);
+    CHECK(ReadFileUint32(file, format::CAPTURE_AUTHORED_LIMIT_OFFSET) == REDUCED_AUTHORED_LIMIT);
+    CHECK(ReadFileUint32(file, format::CAPTURE_OUTPUT_RESOURCE_OFFSET) == settings.Output);
+    CHECK(ReadFileUint32(file, format::CAPTURE_FLAGS_OFFSET) ==
+          static_cast<uint32>(format::CaptureFlag::LimitOverride));
+    CHECK(file[format::CAPTURE_PACKAGE_IDENTITY_OFFSET] == 1);
+}
+
+TEST_CASE("A stopped render graph capture keeps exact counts and leaves the live graph unchanged",
+          "[render-graph][gpu][render-graph-capture]")
+{
+    GraphGpuFixture fixture(false, false);
+    CornellBox room;
+    MakeRoomGlossyWithoutSky(room);
+    constexpr uint64 REVISION = 5;
+    PreparedGraph live(fixture, POLYGONAL_LIGHT_SAMPLING_TEMPLATE, room, REVISION);
+    constexpr uint32 LIVE_FRAMES = 2;
+    for (uint32 frame = 0; frame < LIVE_FRAMES; ++frame)
+    {
+        RenderFrame(live.Graph, fixture);
+    }
+    Array<math::Vector4> before;
+    ReadAccumulation(live.Graph, fixture, 0, before);
+    const bool wasPending = live.Graph.HasPendingSamples();
+    const uint64 drawableRevision = live.Graph.GetDrawableSceneRevision();
+
+    renderer::RenderGraphCaptureSettings settings;
+    settings.Output = GetClampedMisOutput(live.Plan);
+    settings.TargetSamples = CAPTURE_TARGET_SAMPLES * 2;
+    constexpr uint32 STOP_AFTER = 3;
+    renderer::RenderGraphCapture capture;
+    const rhi::RasterStatus started =
+        capture.Start(fixture.Device, fixture.Surface, live.Plan, live.Programs, WIDTH, HEIGHT, settings);
+    REQUIRE((started == rhi::RasterStatus::Ready || started == rhi::RasterStatus::Pending));
+    // A different revision reseeds the capture; the live graph must not notice it either way.
+    REQUIRE(FinishCapture(capture, room, REVISION + 1, STOP_AFTER) == renderer::RenderGraphCapturePhase::Stopped);
+    const renderer::RenderGraphCaptureInfo info = capture.GetInfo();
+    CHECK(info.SubmittedSamples == STOP_AFTER);
+    CHECK(info.MinimumSamples == STOP_AFTER);
+    Array<uint8> file;
+    REQUIRE(capture.Encode(file) == rhi::RasterStatus::Ready);
+    CHECK(
+        ReadFileUint32(file, format::CAPTURE_FLAGS_OFFSET) ==
+        (static_cast<uint32>(format::CaptureFlag::Partial) | static_cast<uint32>(format::CaptureFlag::LimitOverride)));
+    const BorrowedView<const renderer::RenderGraphCapturePixel> pixels = capture.GetPixels();
+    REQUIRE(pixels.GetSize() == usize{WIDTH} * HEIGHT);
+    for (usize pixel = 0; pixel < pixels.GetSize(); ++pixel)
+    {
+        REQUIRE(pixels[pixel].Samples == STOP_AFTER);
+    }
+    capture.Release();
+
+    Array<math::Vector4> after;
+    ReadAccumulation(live.Graph, fixture, 0, after);
+    CHECK(after == before);
+    CHECK(live.Graph.HasPendingSamples() == wasPending);
+    CHECK(live.Graph.GetDrawableSceneRevision() == drawableRevision);
+}
+
+TEST_CASE("A render graph capture fails with the latched pixel count beyond the template's emitter budget",
+          "[render-graph][gpu][render-graph-capture][polygonal-light-sampling]")
+{
+    GraphGpuFixture fixture(false, false);
+    const ManyEmitterRoom room;
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(POLYGONAL_LIGHT_SAMPLING_TEMPLATE);
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    renderer::RenderGraphCaptureSettings settings;
+    settings.Output = GetClampedMisOutput(plan);
+    settings.TargetSamples = 1;
+    renderer::RenderGraphCapture capture;
+    const rhi::RasterStatus started =
+        capture.Start(fixture.Device, fixture.Surface, plan, programs, WIDTH, HEIGHT, settings);
+    REQUIRE((started == rhi::RasterStatus::Ready || started == rhi::RasterStatus::Pending));
+    REQUIRE(FinishCapture(capture, room, 1) == renderer::RenderGraphCapturePhase::Failed);
+    CHECK(capture.GetProblem() == renderer::RenderGraphCaptureProblem::LatchedPixels);
+    // As in the template's own budget test, the room fills most of the view.
+    CHECK(capture.GetInfo().FailedPixels > WIDTH * HEIGHT / 2);
+    Array<uint8> file;
+    REQUIRE(capture.Encode(file) == rhi::RasterStatus::Ready);
+    CHECK((ReadFileUint32(file, format::CAPTURE_FLAGS_OFFSET) & static_cast<uint32>(format::CaptureFlag::Failed)) != 0);
+    CHECK(ReadFileUint32(file, format::CAPTURE_FAILED_PIXELS_OFFSET) == capture.GetInfo().FailedPixels);
+}
+
+TEST_CASE("A render graph capture rejects routes and settings it cannot capture without changing anything",
+          "[render-graph][gpu][render-graph-capture]")
+{
+    GraphGpuFixture fixture(false, false);
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(POLYGONAL_LIGHT_SAMPLING_TEMPLATE);
+    const renderer::RenderGraphPlan authored = package->GetPlan();
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    StaticArray<format::Pass, format::MAX_PASSES> passes{};
+    for (usize pass = 0; pass < authored.Passes.GetSize(); ++pass)
+    {
+        passes[pass] = authored.Passes[pass];
+    }
+    StaticArray<format::Resource, format::MAX_RESOURCES> resources{};
+    for (usize resource = 0; resource < authored.Resources.GetSize(); ++resource)
+    {
+        resources[resource] = authored.Resources[resource];
+    }
+    renderer::RenderGraphPlan plan = authored;
+    plan.Passes = {passes.GetData(), authored.Passes.GetSize()};
+    plan.Resources = {resources.GetData(), authored.Resources.GetSize()};
+    renderer::RenderGraphCaptureSettings settings;
+    settings.Output = GetClampedMisOutput(authored);
+    renderer::RenderGraphCaptureProblem expected = renderer::RenderGraphCaptureProblem::None;
+    SECTION("a surface-backed output, which would present the capture's frames")
+    {
+        resources[settings.Output].IsSurface = 1;
+        expected = renderer::RenderGraphCaptureProblem::NoOutput;
+    }
+    SECTION("several exports and no chosen output")
+    {
+        settings.Output = format::ABSENT;
+        expected = renderer::RenderGraphCaptureProblem::NoOutput;
+    }
+    SECTION("a ray pass without an Accumulate")
+    {
+        passes[0].AccumulationSamples = 0;
+        expected = renderer::RenderGraphCaptureProblem::NoAccumulation;
+    }
+    SECTION("a raster writer")
+    {
+        passes[0].Program = format::Technique::ColorAndDepth;
+        expected = renderer::RenderGraphCaptureProblem::RasterRoute;
+    }
+    SECTION("a target above the capture maximum")
+    {
+        settings.TargetSamples = renderer::MAX_RENDER_GRAPH_CAPTURE_SAMPLES + 1;
+        expected = renderer::RenderGraphCaptureProblem::InvalidSettings;
+    }
+    renderer::RenderGraphCapture capture;
+    CHECK(capture.Start(fixture.Device, fixture.Surface, plan, programs, WIDTH, HEIGHT, settings) ==
+          rhi::RasterStatus::InvalidDescription);
+    CHECK(capture.GetPhase() == renderer::RenderGraphCapturePhase::Failed);
+    CHECK(capture.GetProblem() == expected);
+    CHECK(capture.GetPixels().IsEmpty() == true);
+    Array<uint8> file;
+    CHECK(capture.Encode(file) == rhi::RasterStatus::NotReady);
+    CHECK(file.IsEmpty() == true);
+}
+
+TEST_CASE("Render graph capture progress read-backs show exact partial counts and then resume",
+          "[render-graph][gpu][render-graph-capture]")
+{
+    GraphGpuFixture fixture(false, false);
+    CornellBox room;
+    MakeRoomGlossyWithoutSky(room);
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(POLYGONAL_LIGHT_SAMPLING_TEMPLATE);
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    renderer::RenderGraphCaptureSettings settings;
+    settings.Output = GetClampedMisOutput(plan);
+    settings.TargetSamples = CAPTURE_TARGET_SAMPLES;
+    constexpr uint32 PREVIEW_INTERVAL = 2;
+    settings.PreviewInterval = PREVIEW_INTERVAL;
+    renderer::RenderGraphCapture capture;
+    const rhi::RasterStatus started =
+        capture.Start(fixture.Device, fixture.Surface, plan, programs, WIDTH, HEIGHT, settings);
+    REQUIRE((started == rhi::RasterStatus::Ready || started == rhi::RasterStatus::Pending));
+    // Progress read-backs follow the first sample and then every PREVIEW_INTERVAL samples.
+    Array<uint32> previews;
+    uint32 lastReadback = 0;
+    const uint64 beginning = time::NowTicks();
+    renderer::RenderGraphCapturePhase phase = capture.GetPhase();
+    while (phase != renderer::RenderGraphCapturePhase::Complete && phase != renderer::RenderGraphCapturePhase::Failed &&
+           time::NowTicks() - beginning < CAPTURE_TIMEOUT)
+    {
+        phase = capture.Service();
+        if (phase == renderer::RenderGraphCapturePhase::AwaitingScene)
+        {
+            const rhi::RasterStatus submitted = capture.SubmitScene({room.Meshes.GetData(), room.Meshes.GetSize()},
+                                                                    {room.Items.GetData(), room.Items.GetSize()},
+                                                                    {room.Cameras.GetData(), room.Cameras.GetSize()},
+                                                                    1,
+                                                                    &room.Inputs);
+            REQUIRE((submitted == rhi::RasterStatus::Ready || submitted == rhi::RasterStatus::Pending));
+        }
+        const renderer::RenderGraphCaptureInfo info = capture.GetInfo();
+        if (phase == renderer::RenderGraphCapturePhase::Rendering && info.ReadbackSamples != lastReadback)
+        {
+            lastReadback = info.ReadbackSamples;
+            REQUIRE(previews.TryAdd(lastReadback) == true);
+            const BorrowedView<const renderer::RenderGraphCapturePixel> pixels = capture.GetPixels();
+            REQUIRE(pixels.GetSize() == usize{WIDTH} * HEIGHT);
+            CHECK(pixels[0].Samples == lastReadback);
+            CHECK(info.MinimumSamples == lastReadback);
+        }
+    }
+    REQUIRE(phase == renderer::RenderGraphCapturePhase::Complete);
+    const Array<uint32> expected{1, 2, 4};
+    CHECK(previews == expected);
+    CHECK(capture.GetInfo().MinimumSamples == CAPTURE_TARGET_SAMPLES);
+    CHECK(capture.GetInfo().ReadbackSamples == CAPTURE_TARGET_SAMPLES);
+}
+
+TEST_CASE("Measure the GPU cost of polygonal-light shadow queries per emissive triangle",
+          "[.capture-budget-measurement]")
+{
+    // Phase 3 evidence for docs/architecture/render-graph-frame-capture.md: GPU time of the polygonal-light
+    // template's four shade passes as the number of emissive triangles grows. The many-emitter room keeps its
+    // geometry; only the first tiles emit, so the emitter loop is the variable. Clamped MIS and balance cost
+    // two shadow queries per triangle, projected solid angle and LTC one.
+    GraphGpuFixture fixture(true, false);
+    constexpr usize MEASURED_TILE_COUNTS = 4;
+    constexpr usize SHADE_KERNELS = 4;
+    const usize pixels = usize{BENCHMARK_EXTENT.Width} * BENCHMARK_EXTENT.Height;
+    std::string report = "pixels " + std::to_string(pixels) + "; per triangle count, median ms of the four passes:";
+    for (usize tiles = 1; tiles <= MEASURED_TILE_COUNTS; ++tiles)
+    {
+        ManyEmitterRoom room;
+        for (usize tile = tiles; tile < MANY_EMITTER_COUNT; ++tile)
+        {
+            room.Materials[MANY_EMITTER_FIRST_LIGHT + tile].Emission = {};
+        }
+        PreparedGraph graph(fixture, POLYGONAL_LIGHT_SAMPLING_TEMPLATE, room, 1, BENCHMARK_EXTENT);
+        StaticArray<Array<float64>, SHADE_KERNELS> durations;
+        for (Array<float64>& values : durations)
+        {
+            REQUIRE(values.TryEnsureCapacity(BENCHMARK_TIMED_FRAMES) == true);
+        }
+        for (usize frame = 0; frame < BENCHMARK_WARMUP_FRAMES + BENCHMARK_TIMED_FRAMES; ++frame)
+        {
+            const rhi::RasterStatus armed = rhi::ArmGpuPassTimings(fixture.Device);
+            if (armed == rhi::RasterStatus::Unsupported)
+            {
+                SKIP("Per-pass GPU timestamps are required for this measurement");
+            }
+            REQUIRE(armed == rhi::RasterStatus::Ready);
+            RenderFrame(graph.Graph, fixture);
+            rhi::GpuPassTimings timings;
+            REQUIRE(rhi::GetGpuPassTimings(fixture.Device, timings) == rhi::RasterStatus::Ready);
+            REQUIRE(timings.State == rhi::GpuTimingState::Available);
+            if (frame < BENCHMARK_WARMUP_FRAMES)
+            {
+                continue;
+            }
+            // The k-th compute operation of the ordered ray sequence is its k-th pass.
+            usize kernel = 0;
+            for (usize index = 0; index < timings.Count && kernel < SHADE_KERNELS; ++index)
+            {
+                const rhi::GpuPassTiming& pass = timings.Passes[index];
+                if (pass.Kind != rhi::GpuPassKind::Compute)
+                {
+                    continue;
+                }
+                REQUIRE(pass.Timing.State == rhi::GpuTimingState::Available);
+                REQUIRE(durations[kernel].TryAdd(static_cast<float64>(pass.Timing.DurationNanoseconds) /
+                                                 BENCHMARK_NANOSECONDS_PER_MILLISECOND) == true);
+                ++kernel;
+            }
+            REQUIRE(kernel == SHADE_KERNELS);
+        }
+        report += "\n  " + std::to_string(tiles * 2) + " triangles:";
+        for (Array<float64>& values : durations)
+        {
+            report += ' ' + std::to_string(ComputeMedian(values));
+        }
+    }
+    WARN(report);
+}
+
+TEST_CASE("A capture profile lets a frame capture shade the 32-emitter room that the interactive budget rejects",
+          "[render-graph][gpu][render-graph-capture][polygonal-light-sampling]")
+{
+    // The many-emitter room has 32 emissive triangles: 64 shadow queries per MIS invocation. The interactive
+    // package's budget of 16 fails explicitly; the capture profile links the template's
+    // capture_visibility_queries (256) and shades every triangle, as Peters' protocol requires.
+    GraphGpuFixture fixture(false, false);
+    const ManyEmitterRoom room;
+    const Array<uint8> bytes = ReadPackageBytes(
+        {LUDUS_RG3_POLYGONAL_LIGHT_SAMPLING_CAPTURE_DIRECTORY, "rg2_polygonal_light_sampling_capture.lurgcp"});
+    renderer::RenderGraphPackage refused;
+    // Runtime decoding refuses a capture profile, so its budget never reaches an interactive graph.
+    CHECK(refused.Decode({bytes.GetData(), bytes.GetSize()}) != renderer::RenderGraphPackageStatus::Ready);
+    CHECK(refused.IsLoaded() == false);
+    renderer::RenderGraphPackage* allocationOrNull = new (std::nothrow) renderer::RenderGraphPackage;
+    const core::UniquePtr<renderer::RenderGraphPackage> package{allocationOrNull};
+    REQUIRE(package.Get() != nullptr);
+    REQUIRE(package->DecodeCaptureProfile({bytes.GetData(), bytes.GetSize()}) ==
+            renderer::RenderGraphPackageStatus::Ready);
+    CHECK(package->IsCaptureProfile() == true);
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    renderer::RenderGraphCaptureSettings settings;
+    settings.Output = GetClampedMisOutput(plan);
+    settings.TargetSamples = 2;
+    renderer::RenderGraphCapture capture;
+    const rhi::RasterStatus started =
+        capture.Start(fixture.Device, fixture.Surface, plan, programs, WIDTH, HEIGHT, settings);
+    REQUIRE((started == rhi::RasterStatus::Ready || started == rhi::RasterStatus::Pending));
+    REQUIRE(FinishCapture(capture, room, 1) == renderer::RenderGraphCapturePhase::Complete);
+    const renderer::RenderGraphCaptureInfo info = capture.GetInfo();
+    CHECK(info.FailedPixels == 0);
+    CHECK(info.MinimumSamples == settings.TargetSamples);
+    // The tiles light the room. After two samples, surfaces the shadow rays found occluded and the open front's
+    // environment stay black; about half of the image receives radiance on Metal.
+    const BorrowedView<const renderer::RenderGraphCapturePixel> pixels = capture.GetPixels();
+    usize lit = 0;
+    for (usize pixel = 0; pixel < pixels.GetSize(); ++pixel)
+    {
+        lit += pixels[pixel].Mean.X + pixels[pixel].Mean.Y + pixels[pixel].Mean.Z > 0 ? 1 : 0;
+    }
+    constexpr usize MINIMUM_LIT_DIVISOR = 4;
+    CHECK(lit > pixels.GetSize() / MINIMUM_LIT_DIVISOR);
+}
+
+namespace
+{
+/// Render one frame of a graph, retrying while it prepares row bands, and wait for its producer.
+void RenderPreparedFrame(renderer::RenderGraph& inoutGraph, const GraphGpuFixture& fixture)
+{
+    constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
+    const uint64 beginning = time::NowTicks();
+    rhi::SubmissionToken completion;
+    rhi::RasterStatus rendered = inoutGraph.Render(fixture.Surface, WIDTH, HEIGHT, completion);
+    while (rendered == rhi::RasterStatus::NotReady && time::NowTicks() - beginning < TIMEOUT)
+    {
+        rendered = inoutGraph.Render(fixture.Surface, WIDTH, HEIGHT, completion);
+    }
+    REQUIRE(rendered == rhi::RasterStatus::Ready);
+    rhi::RasterStatus result = rhi::GetStatus(fixture.Device, completion);
+    while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+    {
+        result = rhi::GetStatus(fixture.Device, completion);
+    }
+    REQUIRE(result == rhi::RasterStatus::Ready);
+}
+} // namespace
+
+TEST_CASE("A tiled render graph capture accumulates exactly the pixels of an untiled one",
+          "[render-graph][gpu][render-graph-capture][render-graph-tiles]")
+{
+    // Bands change only the submission boundaries: pixel indices, sample streams and accumulation stay those of a
+    // whole-image dispatch, so the means must match bit for bit. The polygonal-light template's four passes share
+    // a hit record indexed by the full extent, so every pass must dispatch the same band. Five bands split the 64
+    // rows unevenly; MAX_RENDER_GRAPH_RAY_TILES bands outnumber the rows and leave empty bands.
+    GraphGpuFixture fixture(false, false);
+    CornellBox room;
+    MakeRoomGlossyWithoutSky(room);
+    constexpr uint64 REVISION = 7;
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(POLYGONAL_LIGHT_SAMPLING_TEMPLATE);
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    REQUIRE(programs.HasRayTiles == true);
+    constexpr uint32 UNEVEN_TILES = 5;
+    const StaticArray<uint32, 3> tileCounts{{1, UNEVEN_TILES, renderer::MAX_RENDER_GRAPH_RAY_TILES}};
+    StaticArray<Array<renderer::RenderGraphCapturePixel>, 3> captured;
+    for (usize run = 0; run < tileCounts.GetSize(); ++run)
+    {
+        renderer::RenderGraphCaptureSettings settings;
+        settings.Output = GetClampedMisOutput(plan);
+        settings.TargetSamples = CAPTURE_TARGET_SAMPLES;
+        settings.TileCount = tileCounts[run];
+        renderer::RenderGraphCapture capture;
+        const rhi::RasterStatus started =
+            capture.Start(fixture.Device, fixture.Surface, plan, programs, WIDTH, HEIGHT, settings);
+        REQUIRE((started == rhi::RasterStatus::Ready || started == rhi::RasterStatus::Pending));
+        const renderer::RenderGraphCapturePhase phase = FinishCapture(capture, room, REVISION);
+        CAPTURE(tileCounts[run], capture.GetProblem(), capture.GetStatus(), capture.GetInfo().SubmittedSamples);
+        REQUIRE(phase == renderer::RenderGraphCapturePhase::Complete);
+        const renderer::RenderGraphCaptureInfo info = capture.GetInfo();
+        CHECK(info.TileCount == tileCounts[run]);
+        CHECK(info.SubmittedSamples == CAPTURE_TARGET_SAMPLES);
+        CHECK(info.MinimumSamples == CAPTURE_TARGET_SAMPLES);
+        CHECK(info.FailedPixels == 0);
+        const BorrowedView<const renderer::RenderGraphCapturePixel> pixels = capture.GetPixels();
+        REQUIRE(pixels.GetSize() == usize{WIDTH} * HEIGHT);
+        REQUIRE(captured[run].TryResize(pixels.GetSize()) == true);
+        for (usize pixel = 0; pixel < pixels.GetSize(); ++pixel)
+        {
+            captured[run][pixel] = pixels[pixel];
+        }
+    }
+    for (usize run = 1; run < captured.GetSize(); ++run)
+    {
+        CAPTURE(tileCounts[run]);
+        usize differing = 0;
+        for (usize pixel = 0; pixel < captured[0].GetSize(); ++pixel)
+        {
+            differing += captured[run][pixel].Mean == captured[0][pixel].Mean &&
+                                 captured[run][pixel].Samples == captured[0][pixel].Samples
+                             ? 0
+                             : 1;
+        }
+        CHECK(differing == 0);
+    }
+}
+
+TEST_CASE("A tiled render graph counts a sample once every band was submitted",
+          "[render-graph][gpu][render-graph-tiles]")
+{
+    GraphGpuFixture fixture(false, false);
+    CornellBox room;
+    MakeRoomGlossyWithoutSky(room);
+    PreparedGraph live(fixture, POLYGONAL_LIGHT_SAMPLING_TEMPLATE, room, 1);
+    CHECK(live.Graph.SetRayTileCount(0) == rhi::RasterStatus::InvalidDescription);
+    CHECK(live.Graph.SetRayTileCount(renderer::MAX_RENDER_GRAPH_RAY_TILES + 1) ==
+          rhi::RasterStatus::InvalidDescription);
+    renderer::RenderGraphRayWorkload workload;
+    REQUIRE(live.Graph.GetRayWorkload(workload) == rhi::RasterStatus::Ready);
+    // Every pass renders at the drawable extent; the room's ceiling light is emissive geometry.
+    CHECK(workload.Pixels == uint64{WIDTH} * HEIGHT * live.Plan.Passes.GetSize());
+    CHECK(workload.Lights > 0);
+    constexpr uint32 TILES = 3;
+    REQUIRE(live.Graph.SetRayTileCount(TILES) == rhi::RasterStatus::Ready);
+    for (uint32 band = 0; band + 1 < TILES; ++band)
+    {
+        RenderPreparedFrame(live.Graph, fixture);
+        CHECK(live.Graph.GetSubmittedRaySamples() == 0);
+        CHECK(live.Graph.HasPendingSamples() == true);
+        // The band layout changes only at a sample boundary.
+        CHECK(live.Graph.SetRayTileCount(1) == rhi::RasterStatus::InvalidState);
+    }
+    RenderPreparedFrame(live.Graph, fixture);
+    CHECK(live.Graph.GetSubmittedRaySamples() == 1);
+    // Every pixel committed exactly one sample, in whichever band it was dispatched.
+    Array<math::Vector4> records;
+    ReadAccumulation(live.Graph, fixture, 0, records);
+    usize wrong = 0;
+    for (usize pixel = 0; pixel < usize{WIDTH} * HEIGHT; ++pixel)
+    {
+        uint32 count = 0;
+        std::memcpy(&count, &records[pixel * renderer::RENDER_GRAPH_ACCUMULATION_WORDS].W, sizeof(count));
+        wrong += count == 1 ? 0 : 1;
+    }
+    CHECK(wrong == 0);
+    CHECK(live.Graph.SetRayTileCount(1) == rhi::RasterStatus::Ready);
+    RenderPreparedFrame(live.Graph, fixture);
+    CHECK(live.Graph.GetSubmittedRaySamples() == 2);
+}
+
+TEST_CASE("A render graph capture refuses bands that its package's ray kernels cannot dispatch",
+          "[render-graph][gpu][render-graph-capture][render-graph-tiles]")
+{
+    GraphGpuFixture fixture(false, false);
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(POLYGONAL_LIGHT_SAMPLING_TEMPLATE);
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    // Kernels cooked before package version 28 cover the whole image on every dispatch.
+    programs.HasRayTiles = false;
+    renderer::RenderGraphCaptureSettings settings;
+    settings.Output = GetClampedMisOutput(plan);
+    settings.TileCount = 2;
+    renderer::RenderGraphCapture capture;
+    CHECK(capture.Start(fixture.Device, fixture.Surface, plan, programs, WIDTH, HEIGHT, settings) ==
+          rhi::RasterStatus::Unsupported);
+    CHECK(capture.GetPhase() == renderer::RenderGraphCapturePhase::Failed);
+    CHECK(capture.GetProblem() == renderer::RenderGraphCaptureProblem::UntiledPackage);
+    settings.TileCount = renderer::MAX_RENDER_GRAPH_RAY_TILES + 1;
+    CHECK(capture.Start(fixture.Device, fixture.Surface, plan, programs, WIDTH, HEIGHT, settings) ==
+          rhi::RasterStatus::InvalidDescription);
+    CHECK(capture.GetProblem() == renderer::RenderGraphCaptureProblem::InvalidSettings);
 }

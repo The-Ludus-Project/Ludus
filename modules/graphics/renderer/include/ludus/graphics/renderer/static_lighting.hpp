@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ludus/content/scene_format/material.h>
 #include <ludus/foundation/base/compiler.h>
 #include <ludus/foundation/base/core.h>
 
@@ -36,6 +37,8 @@ struct StaticLightingSurfaceDescription final
     bool ShouldRepeatTexture = false;            ///< Repeat UV addressing; false clamps.
     MaterialAlpha Alpha = MaterialAlpha::Opaque; ///< Opaque or Masked transport; Painter returns Unsupported.
     foundation::float32 AlphaCutoff = .5F;       ///< Masked alpha threshold in [0,1].
+    /// Typed source material parameters; default retains the legacy reflection model.
+    content::scene_format::MaterialScattering Scattering{};
 };
 /// Explicit static diffuse transport quality and exact authoring provenance.
 struct StaticLightingBakeDescription final

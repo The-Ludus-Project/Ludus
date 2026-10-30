@@ -128,7 +128,7 @@ TEST_CASE("import previews list source and cooked counts, budget and fallbacks",
     imported.insert(QStringLiteral("cooked"), cooked);
     const QString importedText = DescribeImportReport(imported);
     CHECK(importedText.contains(QStringLiteral("Cooked: 6/256 meshes, 6/256 materials, 6/256 textures")) == true);
-    CHECK(importedText.contains(QStringLiteral("1200 of 2000000 vertices")) == true);
+    CHECK(importedText.contains(QStringLiteral("1200 vertices (bundle byte budget)")) == true);
     CHECK(importedText.contains(QStringLiteral("2.0 MiB of 384.0 MiB")) == true);
 
     const QJsonObject manifest{{QStringLiteral("source"), QStringLiteral("Modern Hall / staircase2")},

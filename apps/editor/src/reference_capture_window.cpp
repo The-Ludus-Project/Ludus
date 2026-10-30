@@ -2,10 +2,17 @@
 
 #include "internal/reference_comparison.h"
 #include "internal/render_preview.h"
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "internal/render_graph_capture_profile.h"
+#    include "internal/render_graph_preview.h"
+#endif
 #include "internal/texture_inspection.h"
 #include "internal/viewport_reference_capture.h"
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "internal/render_graph_document.h"
 #    include "internal/render_graph_preview.h"
+#    include "internal/renderer_workspace.h"
+#    include "internal/viewport_graph_capture.h"
 #    include "internal/viewport_raster_capture.h"
 #endif
 
@@ -20,6 +27,7 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDateTime>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -33,9 +41,11 @@
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QSaveFile>
+#include <QShowEvent>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStandardItemModel>
+#include <QStringList>
 #include <QTabWidget>
 #include <QVBoxLayout>
 
@@ -116,7 +126,8 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
       mStopButton(new QPushButton(QStringLiteral("Stop"), this)),
       mSaveButton(new QPushButton(QStringLiteral("Save…"), this)), mProgress(new QProgressBar(this)),
       mStatus(new QLabel(this)), mComparisonText(new QLabel(this)), mImages(new QTabWidget(this)),
-      mImageLabel(new QLabel(this)), mRasterLabel(new QLabel(this)), mDifferenceLabel(new QLabel(this))
+      mImageLabel(new QLabel(this)), mRasterLabel(new QLabel(this)), mDifferenceLabel(new QLabel(this)),
+      mSource(new QComboBox(this)), mGraph(new QLabel(this))
 {
     setObjectName(QStringLiteral("referenceCaptureWindow"));
     setWindowTitle(QStringLiteral("Reference capture"));
@@ -149,7 +160,20 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
                                           "hardware. Neither GPU option falls back to the CPU."));
     mCompare->setObjectName(QStringLiteral("referenceCompare"));
     mCompare->setChecked(true);
+    mSource->setObjectName(QStringLiteral("referenceSource"));
+    mSource->insertItem(CAPTURE_SOURCE_REFERENCE_INDEX, QStringLiteral("RT1 reference"));
+    mSource->insertItem(CAPTURE_SOURCE_GRAPH_INDEX, QStringLiteral("Render graph"));
+    mSource->setToolTip(QStringLiteral("RT1 reference path-traces the scene as ground truth. Render graph runs the "
+                                       "viewport's graph, output and package to the sample count and saves the "
+                                       "linear mean of its Accumulate."));
     QFormLayout* form = new QFormLayout;
+    mGraph->setObjectName(QStringLiteral("referenceGraph"));
+    mGraph->setWordWrap(true);
+    mGraph->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    mGraph->setToolTip(QStringLiteral("The Render graph source and the comparison use the graph, configuration and "
+                                      "output selected in the viewport's toolbar. Change them there."));
+    form->addRow(QStringLiteral("Source"), mSource);
+    form->addRow(QStringLiteral("Graph"), mGraph);
     form->addRow(QStringLiteral("Long side"), mLongSide);
     form->addRow(QStringLiteral("Samples"), mSamples);
     form->addRow(QStringLiteral("Max depth"), mMaxDepth);
@@ -205,6 +229,16 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     connect(mStopButton, &QPushButton::clicked, this, &ReferenceCaptureWindow::StopCapture);
     connect(mSaveButton, &QPushButton::clicked, this, &ReferenceCaptureWindow::saveWithDialog);
     connect(mImages, &QTabWidget::currentChanged, this, [this]() { showScaledImages(); });
+    connect(mSource, &QComboBox::currentIndexChanged, this, [this]() {
+        requestCaptureProfile();
+        updateControls();
+        updateStatus();
+    });
+    connect(mCompare, &QCheckBox::toggled, this, [this]() {
+        requestCaptureProfile();
+        updateControls();
+        updateStatus();
+    });
     if (mPreview.isNull() == false)
     {
         // Both captures' renderers live on the preview's device and must go before it.
@@ -223,6 +257,7 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     mMessage = QStringLiteral("Captures the viewport's current camera with the RT1 progressive path tracer.");
     updateTraversalAvailability();
     updateComparisonAvailability();
+    updateGraphDescription();
     updateControls();
     updateStatus();
 }
@@ -233,14 +268,177 @@ ReferenceCaptureWindow::~ReferenceCaptureWindow()
     releaseCaptures();
 }
 
-void ReferenceCaptureWindow::SetProjectGraph(RenderGraphPreview* graphOrNull)
+void ReferenceCaptureWindow::SetProjectGraph(RendererWorkspace* workspaceOrNull)
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-    mProjectGraph = graphOrNull;
+    RenderGraphPreview* graphOrNull = workspaceOrNull != nullptr ? workspaceOrNull->GetPreviewOrNull() : nullptr;
+    if (mProjectWorkspace.data() != workspaceOrNull || mProjectGraph.data() != graphOrNull)
+    {
+        if (mProjectWorkspace.isNull() == false)
+        {
+            disconnect(mProjectWorkspace, nullptr, this, nullptr);
+        }
+        if (mProjectGraph.isNull() == false)
+        {
+            disconnect(mProjectGraph, nullptr, this, nullptr);
+        }
+        if (mCaptureProfile.isNull() == false)
+        {
+            disconnect(mCaptureProfile, nullptr, this, nullptr);
+        }
+        mProjectWorkspace = workspaceOrNull;
+        mProjectGraph = graphOrNull;
+        mCaptureProfile = workspaceOrNull != nullptr ? workspaceOrNull->GetCaptureProfileOrNull() : nullptr;
+        // The configuration, output and Force raster choice live in the viewport toolbar and can change while
+        // this window is open; keep naming what a capture would use now.
+        if (mProjectWorkspace.isNull() == false)
+        {
+            connect(mProjectWorkspace,
+                    &RendererWorkspace::DocumentChanged,
+                    this,
+                    &ReferenceCaptureWindow::updateGraphDescription);
+        }
+        if (mProjectGraph.isNull() == false)
+        {
+            connect(mProjectGraph, &RenderGraphPreview::Changed, this, &ReferenceCaptureWindow::updateGraphDescription);
+            // A new generation needs its own capture profile.
+            connect(mProjectGraph, &RenderGraphPreview::Changed, this, &ReferenceCaptureWindow::requestCaptureProfile);
+        }
+        // The profile's progress decides whether Capture may start and what the status line says.
+        if (mCaptureProfile.isNull() == false)
+        {
+            connect(mCaptureProfile, &RenderGraphCaptureProfile::Changed, this, [this]() {
+                updateControls();
+                updateStatus();
+            });
+        }
+    }
 #else
-    static_cast<void>(graphOrNull);
+    static_cast<void>(workspaceOrNull);
 #endif
     updateComparisonAvailability();
+    updateGraphDescription();
+    requestCaptureProfile();
+}
+
+QString ReferenceCaptureWindow::GetGraphText() const
+{
+    return mGraph->text();
+}
+
+void ReferenceCaptureWindow::updateGraphDescription()
+{
+    QString text = QStringLiteral("None. This viewport has no project render graph, so only the RT1 reference can "
+                                  "be captured.");
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mProjectWorkspace.isNull() == false && mProjectGraph.isNull() == false &&
+        mProjectGraph->GetRequestedPackagePath().isEmpty() == false)
+    {
+        QStringList parts;
+        if (mProjectWorkspace->IsUsingDefaultRenderer() == true)
+        {
+            // The engine default is one prebuilt generation; the configuration selector does not change it.
+            parts.append(QStringLiteral("Engine default renderer"));
+        }
+        else
+        {
+            parts.append(QStringLiteral("Project graph %1").arg(mProjectWorkspace->GetDocument().GetRootGraph()));
+            const QString configuration = mProjectWorkspace->GetConfiguration();
+            if (configuration.isEmpty() == false)
+            {
+                parts.append(QStringLiteral("configuration %1").arg(configuration));
+            }
+        }
+        const QString& output = mProjectGraph->GetOutputTarget();
+        parts.append(output.isEmpty() == true ? QStringLiteral("Final output")
+                                              : QStringLiteral("output %1").arg(output));
+        if (mProjectGraph->ShouldForceRaster() == true)
+        {
+            parts.append(QStringLiteral("Force raster"));
+        }
+        text = parts.join(QStringLiteral(" · "));
+    }
+#endif
+    mGraph->setText(text);
+}
+
+void ReferenceCaptureWindow::showEvent(QShowEvent* event)
+{
+    QWidget::showEvent(event);
+    requestCaptureProfile();
+}
+
+void ReferenceCaptureWindow::requestCaptureProfile()
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    const bool isGraphSelected =
+        isGraphSource() == true || (mIsComparisonAvailable == true && mCompare->isChecked() == true);
+    if (isVisible() == false || isGraphSelected == false || mCaptureProfile.isNull() == true ||
+        mProjectGraph.isNull() == true || isRasterRendering() == true)
+    {
+        return;
+    }
+    const ViewportRasterSource source = GetViewportRasterSource(*mProjectGraph);
+    const QFileInfo package(source.PackagePath);
+    const QString key = QStringLiteral("%1|%2|%3")
+                            .arg(source.PackagePath)
+                            .arg(package.size())
+                            .arg(package.lastModified().toMSecsSinceEpoch());
+    if (key != mCaptureProfileSourceKey)
+    {
+        QByteArray identity;
+        QString error;
+        // Without a readable generation there is nothing to compile yet; the capture itself reports why.
+        if (ViewportGraphCapture::ReadGenerationIdentity(source, identity, error) == false)
+        {
+            return;
+        }
+        mCaptureProfileSourceKey = key;
+        mCaptureProfileSourceIdentity = identity;
+    }
+    mCaptureProfile->Request(mCaptureProfileSourceIdentity);
+#endif
+}
+
+bool ReferenceCaptureWindow::isAwaitingCaptureProfile() const noexcept
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    const bool isGraphSelected =
+        isGraphSource() == true || (mIsComparisonAvailable == true && mCompare->isChecked() == true);
+    return isGraphSelected == true && mCaptureProfile.isNull() == false &&
+           mCaptureProfile->GetState() == CaptureProfileState::Building;
+#else
+    return false;
+#endif
+}
+
+QString ReferenceCaptureWindow::describeCaptureProfile() const
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    const bool isGraphSelected =
+        isGraphSource() == true || (mIsComparisonAvailable == true && mCompare->isChecked() == true);
+    if (isGraphSelected == false || mCaptureProfile.isNull() == true)
+    {
+        return {};
+    }
+    switch (mCaptureProfile->GetState())
+    {
+        case CaptureProfileState::Idle:
+            return {};
+        case CaptureProfileState::Building:
+            return QStringLiteral("Building the graph's capture profile, which links its capture shadow-query "
+                                  "budget; Capture is available when it is ready.");
+        case CaptureProfileState::Ready:
+            return mCaptureProfile->GetPackagePath().isEmpty() == true
+                       ? QStringLiteral("The graph declares no larger capture budget; captures use its runtime "
+                                        "package.")
+                       : QStringLiteral("Graph captures use the capture profile %1.")
+                             .arg(QFileInfo(mCaptureProfile->GetPackagePath()).fileName());
+        case CaptureProfileState::Failed:
+            return QStringLiteral("The capture profile could not be built: %1").arg(mCaptureProfile->GetError());
+    }
+#endif
+    return {};
 }
 
 void ReferenceCaptureWindow::releaseCaptures() noexcept
@@ -248,16 +446,22 @@ void ReferenceCaptureWindow::releaseCaptures() noexcept
     mCapture.Release();
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     mRasterCapture.Release();
+    mGraphCapture.Release();
 #endif
 }
 
 bool ReferenceCaptureWindow::isRasterRendering() const noexcept
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-    return mRasterCapture.GetPhase() == ViewportRasterPhase::Rendering;
+    return mRasterCapture.GetPhase() == ViewportRasterPhase::Rendering || mGraphCapture.IsRunning() == true;
 #else
     return false;
 #endif
+}
+
+bool ReferenceCaptureWindow::isGraphSource() const noexcept
+{
+    return mSource->currentIndex() == CAPTURE_SOURCE_GRAPH_INDEX;
 }
 
 void ReferenceCaptureWindow::updateTraversalAvailability()
@@ -301,6 +505,16 @@ void ReferenceCaptureWindow::updateComparisonAvailability()
     isAvailable = mProjectGraph.isNull() == false && mProjectGraph->GetRequestedPackagePath().isEmpty() == false;
 #endif
     mIsComparisonAvailable = isAvailable;
+    // The Render graph source needs the same live project graph as a comparison.
+    QStandardItemModel* sources = qobject_cast<QStandardItemModel*>(mSource->model());
+    if (sources != nullptr)
+    {
+        sources->item(CAPTURE_SOURCE_GRAPH_INDEX)->setEnabled(isAvailable);
+    }
+    if (isAvailable == false && isGraphSource() == true)
+    {
+        mSource->setCurrentIndex(CAPTURE_SOURCE_REFERENCE_INDEX);
+    }
     mCompare->setToolTip(
         isAvailable == true
             ? QStringLiteral("Also render the viewport's project render graph, with its output and Force raster "
@@ -345,6 +559,97 @@ bool ReferenceCaptureWindow::startRasterCapture(const QSize& requestedSize, QSiz
 #endif
 }
 
+bool ReferenceCaptureWindow::startGraphCapture(const QSize& requestedSize, QSize& outExtent, QString& outError)
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    mRasterSource = GetViewportRasterSource(*mProjectGraph);
+    // The profile must belong to the generation this capture decodes; a newer generation needs its own.
+    QString profilePath;
+    if (mCaptureProfile.isNull() == false)
+    {
+        QByteArray identity;
+        if (ViewportGraphCapture::ReadGenerationIdentity(mRasterSource, identity, outError) == false)
+        {
+            return false;
+        }
+        mCaptureProfile->Request(identity);
+        if (mCaptureProfile->IsReadyFor(identity) == false)
+        {
+            outError =
+                mCaptureProfile->GetState() == CaptureProfileState::Failed
+                    ? QStringLiteral("The capture profile could not be built: %1").arg(mCaptureProfile->GetError())
+                    : QStringLiteral("The graph's capture profile is still building; capture again when it "
+                                     "is ready.");
+            return false;
+        }
+        profilePath = mCaptureProfile->GetPackagePath();
+    }
+    QSize extent;
+    if (mGraphCapture.Load(mPreview->GetDevice(),
+                           mPreview->GetSurface(),
+                           mRasterSource,
+                           profilePath,
+                           requestedSize,
+                           static_cast<uint32>(mSamples->value()),
+                           extent,
+                           outError) == false)
+    {
+        return false;
+    }
+    renderer::ViewDescription view;
+    QString error;
+    if (mPreview->DescribeConventionalView(static_cast<uint32>(extent.width()),
+                                           static_cast<uint32>(extent.height()),
+                                           view,
+                                           error) == false)
+    {
+        mGraphCapture.Release();
+        outError = QStringLiteral("The viewport camera cannot be described for the graph capture: %1").arg(error);
+        return false;
+    }
+    if (mGraphCapture.Begin(mPreview->Scene(), view, outError) == false)
+    {
+        return false;
+    }
+    outExtent = extent;
+    return true;
+#else
+    static_cast<void>(requestedSize);
+    static_cast<void>(outExtent);
+    outError = QStringLiteral("Graph capture needs the native editor's project render graph viewport.");
+    return false;
+#endif
+}
+
+bool ReferenceCaptureWindow::startGraphSource()
+{
+    const QSize requestedExtent =
+        ComputeReferenceExtent(mPreview->GetDrawableSize(), static_cast<uint32>(mLongSide->value()));
+    QSize extent;
+    QString error;
+    if (mIsComparisonAvailable == false || startGraphCapture(requestedExtent, extent, error) == false)
+    {
+        releaseCaptures();
+        mMessage = error.isEmpty() == true ? QStringLiteral("Graph capture needs the viewport's project render graph.")
+                                           : error;
+        updateControls();
+        updateStatus();
+        return false;
+    }
+    mMessage = QStringLiteral("Render graph capture, %1 × %2, %3 requested samples/pixel.")
+                   .arg(extent.width())
+                   .arg(extent.height())
+                   .arg(mSamples->value());
+    mProgress->setRange(0, mSamples->value());
+    mProgress->setValue(0);
+    mCaptureTimer.start();
+    mRefreshTimer.start();
+    mServiceTimer.start();
+    updateControls();
+    updateStatus();
+    return true;
+}
+
 bool ReferenceCaptureWindow::StartCapture()
 {
     mServiceTimer.stop();
@@ -364,6 +669,16 @@ bool ReferenceCaptureWindow::StartCapture()
         updateStatus();
         return false;
     }
+    mIsCapturingGraph = isGraphSource();
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    mIsGraphComparison = false;
+    mGraphFallbackReason.clear();
+#endif
+    if (mIsCapturingGraph == true)
+    {
+        mIsComparing = false;
+        return startGraphSource();
+    }
     ViewportReferenceSettings settings;
     settings.LongSide = static_cast<uint32>(mLongSide->value());
     settings.Samples = static_cast<uint32>(mSamples->value());
@@ -372,14 +687,25 @@ bool ReferenceCaptureWindow::StartCapture()
     const QSize requestedExtent = ComputeReferenceExtent(mPreview->GetDrawableSize(), settings.LongSide);
     QSize extent = requestedExtent;
     mIsComparing = mIsComparisonAvailable == true && mCompare->isChecked() == true;
-    // The raster capture fixes the extent first: a graph may render at a scaled resolution, and the
-    // reference must cover exactly the pixels it is compared with.
-    if (mIsComparing == true && startRasterCapture(requestedExtent, extent, error) == false)
+    // The comparison side fixes the extent first: a graph may render at a scaled resolution, and the
+    // reference must cover exactly the pixels it is compared with. A converged graph capture is preferred;
+    // an output it cannot capture (raster, no Accumulate, Force raster) falls back to one raster frame.
+    if (mIsComparing == true)
     {
-        mMessage = error;
-        updateControls();
-        updateStatus();
-        return false;
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+        QString graphError;
+        mIsGraphComparison = startGraphCapture(requestedExtent, extent, graphError);
+        mGraphFallbackReason = mIsGraphComparison == true ? QString{} : graphError;
+        if (mIsGraphComparison == false && startRasterCapture(requestedExtent, extent, error) == false)
+#else
+        if (startRasterCapture(requestedExtent, extent, error) == false)
+#endif
+        {
+            mMessage = error;
+            updateControls();
+            updateStatus();
+            return false;
+        }
     }
     renderer::ViewDescription view;
     if (extent.isEmpty() == true || mPreview->DescribeView(static_cast<uint32>(extent.width()),
@@ -442,6 +768,12 @@ QString ReferenceCaptureWindow::GetComparisonPath(const QString& hdrPath, const 
 
 bool ReferenceCaptureWindow::SaveCapture(const QString& hdrPath, QString& outError) const
 {
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mIsCapturingGraph == true)
+    {
+        return mGraphCapture.Save(hdrPath, outError);
+    }
+#endif
     if (mCapture.Save(hdrPath, outError) == false)
     {
         return false;
@@ -457,9 +789,25 @@ bool ReferenceCaptureWindow::saveComparison(const QString& hdrPath, QString& out
     raster.insert(QStringLiteral("rasterFallback"), mRasterSource.FallbackPath);
     raster.insert(QStringLiteral("outputTarget"), mRasterSource.OutputTarget);
     raster.insert(QStringLiteral("forceRaster"), mRasterSource.ShouldForceRaster);
-    raster.insert(QStringLiteral("encoding"), GetEncodingName(mRasterCapture.GetTexture().Encoding));
-    raster.insert(QStringLiteral("frames"), static_cast<qint64>(mRasterCapture.GetFrameCount()));
-    raster.insert(QStringLiteral("stillAccumulating"), mRasterCapture.WasStillAccumulating());
+    raster.insert(QStringLiteral("capture"),
+                  mIsGraphComparison == true ? QStringLiteral("graph") : QStringLiteral("raster"));
+    if (mIsGraphComparison == true)
+    {
+        const QString graphPath = GetComparisonPath(hdrPath, QStringLiteral("graph.lurgcap"));
+        if (mGraphCapture.Save(graphPath, outError) == false)
+        {
+            return false;
+        }
+        raster.insert(QStringLiteral("file"), QFileInfo(graphPath).fileName());
+        raster.insert(QStringLiteral("samples"), static_cast<qint64>(mGraphCapture.GetInfo().ReadbackSamples));
+    }
+    else
+    {
+        raster.insert(QStringLiteral("encoding"), GetEncodingName(mRasterCapture.GetTexture().Encoding));
+        raster.insert(QStringLiteral("frames"), static_cast<qint64>(mRasterCapture.GetFrameCount()));
+        raster.insert(QStringLiteral("stillAccumulating"), mRasterCapture.WasStillAccumulating());
+        raster.insert(QStringLiteral("graphCaptureUnavailable"), mGraphFallbackReason);
+    }
 #endif
     graphics::renderer::ReferenceCaptureInfo info;
     QJsonObject reference;
@@ -504,6 +852,17 @@ void ReferenceCaptureWindow::service()
     {
         mComparisonError = mRasterCapture.GetError();
     }
+    const bool wasGraphRunning = mGraphCapture.IsRunning();
+    if (wasGraphRunning == true)
+    {
+        static_cast<void>(mGraphCapture.Service());
+    }
+    const bool hasGraphFinished = wasGraphRunning == true && mGraphCapture.IsRunning() == false;
+    if (hasGraphFinished == true && mGraphCapture.GetPhase() == renderer::RenderGraphCapturePhase::Failed &&
+        mIsCapturingGraph == false)
+    {
+        mComparisonError = mGraphCapture.GetError();
+    }
 #else
     const bool hasRasterFinished = false;
 #endif
@@ -515,7 +874,12 @@ void ReferenceCaptureWindow::service()
     {
         mServiceTimer.stop();
     }
-    if (isFinished == true || hasRasterFinished == true ||
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    const bool hasSideFinished = hasRasterFinished == true || hasGraphFinished == true;
+#else
+    const bool hasSideFinished = hasRasterFinished;
+#endif
+    if (isFinished == true || hasSideFinished == true ||
         mRefreshTimer.elapsed() >= REFERENCE_DISPLAY_REFRESH_MILLISECONDS)
     {
         refreshImage();
@@ -533,6 +897,18 @@ void ReferenceCaptureWindow::service()
 
 void ReferenceCaptureWindow::refreshImage()
 {
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mIsCapturingGraph == true)
+    {
+        const QImage image = mGraphCapture.MakeDisplayImage();
+        if (image.isNull() == false)
+        {
+            mImage = image;
+        }
+        mProgress->setValue(static_cast<int32>(mGraphCapture.GetInfo().ReadbackSamples));
+        return;
+    }
+#endif
     graphics::renderer::ReferenceCaptureInfo info;
     if (mCapture.GetInfo(info) == false)
     {
@@ -550,7 +926,9 @@ void ReferenceCaptureWindow::refreshImage()
 void ReferenceCaptureWindow::updateComparison()
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-    if (mIsComparing == false || mRasterCapture.GetPhase() != ViewportRasterPhase::Complete)
+    const bool hasGraphPixels = mIsGraphComparison == true && mGraphCapture.GetPixels().IsEmpty() == false;
+    if (mIsComparing == false ||
+        (hasGraphPixels == false && mRasterCapture.GetPhase() != ViewportRasterPhase::Complete))
     {
         return;
     }
@@ -567,13 +945,33 @@ void ReferenceCaptureWindow::updateComparison()
     }
     ReferenceComparison comparison;
     QImage difference;
-    if (CompareRasterWithReference({pixels.GetData(), pixels.GetSize()},
-                                   information,
-                                   mCapture.GetPhase() == ViewportReferencePhase::Failed,
-                                   mRasterCapture.GetTexture(),
-                                   comparison,
-                                   difference,
-                                   error) == false)
+    const bool hasReferenceFailed = mCapture.GetPhase() == ViewportReferencePhase::Failed;
+    bool isCompared = false;
+    if (hasGraphPixels == true)
+    {
+        const renderer::RenderGraphCaptureInfo graph = mGraphCapture.GetInfo();
+        mRasterImage = mGraphCapture.MakeDisplayImage();
+        isCompared = CompareGraphCaptureWithReference({pixels.GetData(), pixels.GetSize()},
+                                                      information,
+                                                      hasReferenceFailed,
+                                                      mGraphCapture.GetPixels(),
+                                                      graph.Width,
+                                                      graph.Height,
+                                                      comparison,
+                                                      difference,
+                                                      error);
+    }
+    else
+    {
+        isCompared = CompareRasterWithReference({pixels.GetData(), pixels.GetSize()},
+                                                information,
+                                                hasReferenceFailed,
+                                                mRasterCapture.GetTexture(),
+                                                comparison,
+                                                difference,
+                                                error);
+    }
+    if (isCompared == false)
     {
         mComparisonError = error;
         return;
@@ -604,18 +1002,25 @@ void ReferenceCaptureWindow::updateControls()
     const bool isRunning = phase == ViewportReferencePhase::Preparing || phase == ViewportReferencePhase::Tracing ||
                            isRasterRendering() == true;
     graphics::renderer::ReferenceCaptureInfo info;
-    const bool hasSamples = mCapture.GetInfo(info) == true;
-    mCaptureButton->setEnabled(isRunning == false);
+    bool hasSamples = mCapture.GetInfo(info) == true;
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    hasSamples = mIsCapturingGraph == true
+                     ? mGraphCapture.IsRunning() == false && mGraphCapture.GetPixels().IsEmpty() == false
+                     : hasSamples;
+#endif
+    const bool isReference = isGraphSource() == false;
+    mCaptureButton->setEnabled(isRunning == false && isAwaitingCaptureProfile() == false);
     mStopButton->setEnabled(isRunning == true);
     mSaveButton->setEnabled(hasSamples == true);
-    for (QWidget* setting : {static_cast<QWidget*>(mLongSide),
-                             static_cast<QWidget*>(mSamples),
-                             static_cast<QWidget*>(mMaxDepth),
-                             static_cast<QWidget*>(mTraversal)})
+    for (QWidget* setting :
+         {static_cast<QWidget*>(mSource), static_cast<QWidget*>(mLongSide), static_cast<QWidget*>(mSamples)})
     {
         setting->setEnabled(isRunning == false);
     }
-    mCompare->setEnabled(isRunning == false && mIsComparisonAvailable == true);
+    // Depth, traversal and comparison describe the RT1 reference; a graph capture runs the graph as authored.
+    mMaxDepth->setEnabled(isRunning == false && isReference == true);
+    mTraversal->setEnabled(isRunning == false && isReference == true);
+    mCompare->setEnabled(isRunning == false && isReference == true && mIsComparisonAvailable == true);
 }
 
 QString ReferenceCaptureWindow::describeRaster() const
@@ -637,6 +1042,15 @@ QString ReferenceCaptureWindow::describeRaster() const
     {
         QString text = DescribeReferenceComparison(mComparison);
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+        if (mIsGraphComparison == true)
+        {
+            text += QStringLiteral(" The render graph side is a converged capture of %1 samples per pixel.")
+                        .arg(mGraphCapture.GetInfo().ReadbackSamples);
+        }
+        else if (mGraphFallbackReason.isEmpty() == false)
+        {
+            text += QStringLiteral(" One raster frame was compared: %1").arg(mGraphFallbackReason);
+        }
         if (mRasterCapture.WasStillAccumulating() == true)
         {
             text += QStringLiteral(" The render graph was still accumulating after %1 frames.")
@@ -651,6 +1065,38 @@ QString ReferenceCaptureWindow::describeRaster() const
 
 QString ReferenceCaptureWindow::GetStatusText() const
 {
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mIsCapturingGraph == true && mGraphCapture.GetPhase() != renderer::RenderGraphCapturePhase::Idle)
+    {
+        const renderer::RenderGraphCaptureInfo info = mGraphCapture.GetInfo();
+        QString graphPhase;
+        switch (info.Phase)
+        {
+            case renderer::RenderGraphCapturePhase::Complete:
+                graphPhase = QStringLiteral("Complete");
+                break;
+            case renderer::RenderGraphCapturePhase::Stopped:
+                graphPhase = QStringLiteral("Stopped");
+                break;
+            case renderer::RenderGraphCapturePhase::Failed:
+                return QStringLiteral("%1\n%2").arg(mMessage, mGraphCapture.GetError());
+            case renderer::RenderGraphCapturePhase::Rendering:
+            case renderer::RenderGraphCapturePhase::ReadingBack:
+                // Each sample of a long capture is split into row bands submitted one at a time.
+                graphPhase = info.TileCount > 1 ? QStringLiteral("Rendering in %1 bands").arg(info.TileCount)
+                                                : QStringLiteral("Rendering");
+                break;
+            default:
+                graphPhase = QStringLiteral("Preparing the render graph");
+                break;
+        }
+        return QStringLiteral("%1\n%2 · %3/%4 samples per pixel · %5 s")
+            .arg(mMessage, graphPhase)
+            .arg(info.SubmittedSamples)
+            .arg(info.TargetSamples)
+            .arg(static_cast<float64>(mCaptureTimer.elapsed()) / MILLISECONDS_PER_SECOND, 0, 'f', 1);
+    }
+#endif
     QString phase;
     switch (mCapture.GetPhase())
     {
@@ -683,7 +1129,9 @@ QString ReferenceCaptureWindow::GetStatusText() const
 
 void ReferenceCaptureWindow::updateStatus()
 {
-    mStatus->setText(GetStatusText());
+    const QString profile = isRasterRendering() == true ? QString{} : describeCaptureProfile();
+    mStatus->setText(profile.isEmpty() == true ? GetStatusText()
+                                               : QStringLiteral("%1\n%2").arg(GetStatusText(), profile));
     const QString comparison = describeRaster();
     mComparisonText->setText(comparison);
     mComparisonText->setVisible(comparison.isEmpty() == false);
@@ -691,10 +1139,15 @@ void ReferenceCaptureWindow::updateStatus()
 
 void ReferenceCaptureWindow::saveWithDialog()
 {
-    const QString path = QFileDialog::getSaveFileName(this,
-                                                      QStringLiteral("Save reference capture"),
-                                                      QStringLiteral("reference.luhdr"),
-                                                      QStringLiteral("Ludus HDR capture (*.luhdr)"));
+    const QString path = mIsCapturingGraph == true
+                             ? QFileDialog::getSaveFileName(this,
+                                                            QStringLiteral("Save render graph capture"),
+                                                            QStringLiteral("render_graph.lurgcap"),
+                                                            QStringLiteral("Ludus render graph capture (*.lurgcap)"))
+                             : QFileDialog::getSaveFileName(this,
+                                                            QStringLiteral("Save reference capture"),
+                                                            QStringLiteral("reference.luhdr"),
+                                                            QStringLiteral("Ludus HDR capture (*.luhdr)"));
     if (path.isEmpty() == true)
     {
         return;

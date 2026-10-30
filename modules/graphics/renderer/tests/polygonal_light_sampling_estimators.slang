@@ -16,6 +16,7 @@ LUDUS_SHADER_BINDING(LUDUS_GRAPH_BUFFER0_BINDING) RWStructuredBuffer<uint4> Resu
 #include "ltc_table.slang"
 #include "polygonal_light.slang"
 #include "projected_solid_angle.slang"
+#include "shading_normal.slang"
 
 static const uint2 ESTIMATOR_TEST_RANDOM_KEY = uint2(0x504c5331u, 0x45535431u);
 // Shares of drawn materials: pure dielectric, pure metal, and otherwise a uniform metallic fraction.

@@ -1,4 +1,5 @@
 #include "internal/editor_commands.h"
+#include "internal/editor_icons.h"
 #include "internal/main_window.h"
 #include "internal/profiling_panel.h"
 #include "internal/world_workspace.h"
@@ -11,6 +12,7 @@ namespace ludus::editor
 void MainWindow::setupProfiling()
 {
     mProfilingDock->setObjectName(QStringLiteral("profilingDock"));
+    mProfilingDock->setWindowIcon(GetEditorIcon(EditorIcon::Profiling));
     mProfilingPanel = new ProfilingPanel(&World_->GetRenderPreview(), mRecordProfileAction, mProfilingDock);
     mProfilingDock->setWidget(mProfilingPanel);
     addDockWidget(Qt::BottomDockWidgetArea, mProfilingDock);

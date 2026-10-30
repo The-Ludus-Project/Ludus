@@ -37,6 +37,15 @@ ViewportRasterSource GetViewportRasterSource(const RenderGraphPreview& liveGraph
     source.PackagePath = liveGraph.GetRequestedPackagePath();
     source.FallbackPath = liveGraph.GetRasterFallbackPath();
     source.OutputTarget = liveGraph.GetOutputTarget();
+    if (source.OutputTarget.isEmpty() == false)
+    {
+        const RenderGraphTargetCatalogue& catalogue = liveGraph.GetTargetCatalogue();
+        const qsizetype index = catalogue.Find(source.OutputTarget);
+        if (index >= 0)
+        {
+            source.OutputResource = catalogue.Targets[index].Resource;
+        }
+    }
     source.ShouldForceRaster = liveGraph.ShouldForceRaster();
     return source;
 }

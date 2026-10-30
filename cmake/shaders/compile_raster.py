@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import struct
 
-from compile_shader import relative_line_directives
+from compile_shader import relative_line_directives, restore_metal_noinline
 
 # Thanks to the Slang team, "Using the Reflection API", User Guide,
 # https://docs.shader-slang.org/en/latest/external/slang/docs/user-guide/09-reflection.html
@@ -33,6 +33,11 @@ def uniform_shape(value):
     return 'Opaque'
 
 
+# C++ only guarantees string literals of 65,536 characters; longer text (FXAA's GLSL ES fragment
+# reached 76,764) moves to the companion source. The margin covers the raw-string delimiter.
+MAX_INLINE_TEXT_BYTES = 60000
+
+
 def external_text_source(namespace, label, data):
     """Store exact UTF-8 shader bytes in one compiled file, without giant literals."""
     encoded = data.encode("utf-8") + b"\0"
@@ -43,6 +48,20 @@ def external_text_source(namespace, label, data):
                   f"extern const char {label}[{len(encoded)}] = {{\n" +
                   ",\n".join(rows) + "\n};\n}\n")
     return declaration, definition
+
+
+def emit_text_artifact(namespace, label, data):
+    """Return (header, companion) text for one raster or compute shader source.
+
+    Short text stays an inline raw string literal; text of MAX_INLINE_TEXT_BYTES or more is
+    declared in the header and defined in the stage's companion source.
+    """
+    if len(data.encode("utf-8")) >= MAX_INLINE_TEXT_BYTES:
+        return external_text_source(namespace, label, data)
+    delimiter = 'R_' + label
+    if f'){delimiter}"' in data:
+        raise RuntimeError('Raster source conflicts with raw string delimiter')
+    return f'inline constexpr char {label}[] = R"{delimiter}(' + data + f'){delimiter}";\n', ''
 
 
 def verify_storage_record_strides(binary, interface):
@@ -273,6 +292,31 @@ def raster_interface(document, stage, metal=False, native_arrays=False, runtime_
             raise RuntimeError('Compute exceeds the implemented storage binding metadata capacity')
         result['workgroup'] = group
     return result
+
+
+def share_glsl_fetch_samplers(code, cross_reflection):
+    """Route a sampled texture's texel fetches and size queries through its one sampler.
+
+    SPIRV-Cross pairs Load/GetDimensions on a separate image with a dummy
+    sampler, so a stage that also samples that texture would need it on two
+    WebGL units. GLSL ES 3.00 texelFetch reads one unfiltered texel and
+    textureSize reports level dimensions (Khronos, "The OpenGL ES Shading
+    Language" 3.00.6, section 8.8), so neither uses the sampler's filter or
+    address modes and both may share the texture's single real combined sampler.
+    Textures with several real samplers stay unchanged; glsl_interface rejects them.
+    """
+    declared = dict((name, shape) for shape, name in re.findall(r'uniform\s+(?:highp\s+|mediump\s+|lowp\s+)?(\w+)\s+(SPIRV_Cross_Combined\w+)\s*;', code))
+    for image in cross_reflection.get('separate_images', []):
+        dummy = 'SPIRV_Cross_Combined' + image['name'] + 'SPIRV_Cross_DummySampler'
+        real = [name for name in ('SPIRV_Cross_Combined' + image['name'] + sampler['name'] for sampler in cross_reflection.get('separate_samplers', []))
+                if name in declared]
+        if dummy not in declared or len(real) != 1 or declared[real[0]] != declared[dummy]:
+            continue
+        code, count = re.subn(r'^[ \t]*uniform\s+(?:highp\s+|mediump\s+|lowp\s+)?\w+\s+' + dummy + r'\s*;[ \t]*\n', '', code, flags=re.M)
+        if count != 1:
+            raise RuntimeError('Cannot remove the GLSL ES dummy sampler declaration')
+        code = re.sub(r'\b' + dummy + r'\b', real[0], code)
+    return code
 
 
 def glsl_interface(code, reflected, cross_reflection):
@@ -751,7 +795,7 @@ def compile_raster(args, lock):
             artifacts[('metal', stage)] = (code, names[0])
             interfaces[('metal', stage)] = interface
         elif args.metal:
-            code = relative_line_directives(artifact.read_text(), roots)
+            code = relative_line_directives(restore_metal_noinline(artifact.read_text(), roots), roots)
             for binding in interfaces[(target, stage)]['entries']:
                 if binding['kind'] in ('TextureDepth2D', 'TextureStencil2D'):
                     variable = re.escape(binding['name']) + r'(?:_\d+)?'
@@ -774,6 +818,7 @@ def compile_raster(args, lock):
                 cross = json.loads(run([args.spirv_cross, str(artifact), '--reflect']))
                 interface = raster_interface(json.loads(reflection.read_text()), stage)
                 code, varyings = glsl_varyings(essl.read_text(), cross, stage)
+                code = share_glsl_fetch_samplers(code, cross)
                 essl.write_text(code)
                 interface['varyings'] = varyings
                 names, textures = glsl_interface(code, interface, cross)
@@ -826,15 +871,9 @@ def compile_raster(args, lock):
             words = struct.unpack('<' + 'I' * (len(data) // 4), data)
             header += f'inline constexpr foundation::uint32 {label}[] = {{' + ','.join(f'0x{x:08x}U' for x in words) + '};\n'
         else:
-            delimiter = 'R_' + label
-            if f'){delimiter}"' in data:
-                raise RuntimeError('Raster source conflicts with raw string delimiter')
-            if compute and len(data.encode("utf-8")) >= 60000:
-                declaration, definition = external_text_source(args.name, label, data)
-                header += declaration
-                companion += definition
-            else:
-                header += f'inline constexpr char {label}[] = R"{delimiter}(' + data + f'){delimiter}";\n'
+            declaration, definition = emit_text_artifact(args.name, label, data)
+            header += declaration
+            companion += definition
         if interface['entries']:
             header += f'inline constexpr graphics::rhi::RasterBinding {label}_BINDINGS[] = {{\n'
             for binding in interface['entries']:
@@ -900,5 +939,4 @@ def compile_raster(args, lock):
     escaped = str(dest).replace(' ', '\\ ').replace('#', '\\#')
     (output / 'shader.d').write_text(escaped + ': ' + ' '.join(dependencies) + '\n')
     dest.write_text(header)
-    if compute:
-        (output / f"{args.name}.cpp").write_text(companion or "// No external text artifacts in this profile.\n")
+    (output / f"{args.name}.cpp").write_text(companion or "// No external text artifacts in this profile.\n")

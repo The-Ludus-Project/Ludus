@@ -1255,7 +1255,7 @@ TEST_CASE("CPU and GPU reference transport retained HDR source radiance and auth
     REQUIRE(renderer.CopyReferencePixels(oracle, reference, CAPTURE_PIXELS) == S::Ready);
     rr::ReferenceCaptureInfo information;
     REQUIRE(renderer.GetReferenceCaptureInfo(oracle, information) == S::Ready);
-    CHECK(information.ProfileVersion == 4);
+    CHECK(information.ProfileVersion == rr::LIGHTING_PROFILE_VERSION);
     CHECK(information.InvalidContributions == 0);
     rhi::SubmissionToken completion;
     for (uint32 sample = 1; sample <= capture.TargetSamples; ++sample)

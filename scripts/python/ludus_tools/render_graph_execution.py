@@ -309,7 +309,10 @@ TARGET_FIELDS = {'metal': 'Msl', 'spirv': 'Spirv', 'wgsl': 'Wgsl', 'glsl': 'Glsl
 PACKAGE_MAGIC = 0x4752554C
 # Editor-only diagnostic ray path capture generation; same layout, refused by runtime decoding.
 RAY_PATH_CAPTURE_PACKAGE_MAGIC = 0x5052554C
-PACKAGE_VERSION = 26
+# Frame capture profile generation ("LURC"); same layout, admitted only by RenderGraphPackage::DecodeCaptureProfile.
+CAPTURE_PROFILE_PACKAGE_MAGIC = 0x4352554C
+# Version 28: ray kernels dispatch the ray uniform's tile region (a 240-byte uniform), so captures may tile.
+PACKAGE_VERSION = 28
 # Version 25 scene resource word: the linked ray kernel reads the renderer's LTC table.
 SCENE_RESOURCE_LTC_TABLE = 1
 RESOURCE_FIELD_COUNT = 9
@@ -541,12 +544,13 @@ def _runtime_contents(path, configuration):
                   'ray visibility inputs must match scene_interface.visibility_buffer')
     persistent = ray.TECHNIQUE in selected_techniques and any(recipe.get('persistent_buffers', False) for recipe in ray_recipes)
     ray_path_capture = ray.TECHNIQUE in selected_techniques and any(recipe.get('ray_path_capture', False) for recipe in ray_recipes)
+    capture_profile = ray.TECHNIQUE in selected_techniques and any(recipe.get('capture_profile', False) for recipe in ray_recipes)
     # Every target of the linked ray kernel must agree whether reflection kept the LTC table binding.
     ltc_profiles = {any(entry['binding'] == ray.LTC_TABLE_SLOT for entry in item['descriptor']['interface']['entries'])
                     for key, item in artifacts.items() if key[0] == 'RayTracing' and key[1] == 'compute'}
     build.require(len(ltc_profiles) <= 1, 'ShaderInterface', 'ltc_table',
                   'targets of the linked ray kernel disagree whether they read the LTC table')
-    return {'ltc_table': ltc_profiles == {True}, 'clustered_deferred': any(recipe.get('clustered_deferred', False) for recipe in package['recipes'] if recipe['technique'] in selected_techniques), 'clustered_forward': is_clustered_forward, 'forward_lit': has_forward, 'persistent_buffers': persistent, 'ray_path_capture': ray_path_capture, 'visibility_buffer': has_visibility, 'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
+    return {'ltc_table': ltc_profiles == {True}, 'clustered_deferred': any(recipe.get('clustered_deferred', False) for recipe in package['recipes'] if recipe['technique'] in selected_techniques), 'clustered_forward': is_clustered_forward, 'forward_lit': has_forward, 'persistent_buffers': persistent, 'ray_path_capture': ray_path_capture, 'capture_profile': capture_profile, 'visibility_buffer': has_visibility, 'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
             'cameras': cameras, 'camera_targets': camera_targets, 'artifacts': artifacts,
             'uniform_values': value_count, 'bindings': bindings, 'blocks': blocks, 'fields': fields,
             'storage_buffers': storage_buffers, 'uniform_interface': uniform_interface,
@@ -692,6 +696,9 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
         lines.append('    result.HasRayPathCapture = true;')
     if contents.get('ltc_table', False):
         lines.append('    result.HasLtcTable = true;')
+    # Generated headers always link the current ray kernel, which dispatches the uniform's tile region.
+    if any(operation['kind'] == 'RayTracing' for operation in contents['plan']['passes']):
+        lines.append('    result.HasRayTiles = true;')
     for program_name in (*PROGRAM_CODES, *forward.SUPPORT, 'NativeRayStages'):
         stages_for_program = (forward.SUPPORT[program_name][1] if program_name in forward.SUPPORT else
                               ('compute',) if program_name == 'NativeRayStages' else
@@ -882,6 +889,8 @@ def _cook_runtime(path, destination, *, configuration='Default'):
     contents = _runtime_contents(path, configuration)
     build.require(not contents['ray_path_capture'], 'Capability', 'ray path capture',
                   'diagnostic ray path capture builds are never cooked into runtime packages')
+    build.require(not contents['capture_profile'], 'Capability', 'capture profile',
+                  'capture profile builds are cooked with cook_capture_profile, never into runtime packages')
     data = encode_runtime_package(contents)
     destination = Path(destination).absolute()
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -923,6 +932,36 @@ def _cook_ray_path_capture(path, destination, *, configuration='Default'):
             'configuration': configuration, 'generation': contents['generation'],
             'interface_identity': contents['interface_identity'], 'bytes': len(data),
             'passes': len(contents['passes']), 'profiles': sorted({key[2] for key in contents['artifacts']})}
+
+
+def _cook_capture_profile(path, destination, *, configuration='Default'):
+    contents = _runtime_contents(path, configuration)
+    build.require(contents['capture_profile'], 'Capability', 'capture profile',
+                  'the build was not linked with the capture profile')
+    data = encode_runtime_package(contents, magic=CAPTURE_PROFILE_PACKAGE_MAGIC)
+    destination = Path(destination).absolute()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    build.atomic(resource_names_path(destination), encode_resource_names(contents, runtime_identity=build.digest(data)))
+    build.atomic(destination, data)
+    return {'capture_profile_package': str(destination), 'resource_names': str(resource_names_path(destination)),
+            'configuration': configuration, 'generation': contents['generation'],
+            'interface_identity': contents['interface_identity'], 'sha256': build.digest(data), 'bytes': len(data),
+            'passes': len(contents['passes']), 'profiles': sorted({key[2] for key in contents['artifacts']})}
+
+
+def cook_capture_profile(path, destination, *, configuration='Default'):
+    """Write the frame capture generation of a capture profile build.
+
+    The layout is cook_runtime's, with CAPTURE_PROFILE_PACKAGE_MAGIC in place of
+    PACKAGE_MAGIC: RenderGraphPackage::Decode and every interactive host refuse it,
+    and only RenderGraphPackage::DecodeCaptureProfile admits it, so its larger
+    shadow-query budget never reaches a viewport. The build must have been linked
+    with capture_profile=True. The destination is replaced atomically.
+    """
+    try:
+        return _cook_capture_profile(path, destination, configuration=configuration)
+    except (KeyError, TypeError, ValueError, IndexError, UnicodeError, struct.error) as error:
+        build.fail('Package', str(path), 'malformed execution metadata: ' + str(error))
 
 
 def cook_ray_path_capture(path, destination, *, configuration='Default'):

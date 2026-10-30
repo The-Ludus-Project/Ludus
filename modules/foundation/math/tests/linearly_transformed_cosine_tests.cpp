@@ -286,6 +286,42 @@ struct OraclePolygon final
     return true;
 }
 
+/// The unclipped polygon's vector form factor in float64 with exact edge angles, oriented towards the polygon by its
+/// plane rather than by its winding.
+[[nodiscard]] Vector3d ComputeOracleVectorFormFactor(const OraclePolygon& polygon) noexcept
+{
+    Vector3d sum{};
+    for (uint32 i = 0; i < polygon.Count; ++i)
+    {
+        const Vector3d start = Normalize(polygon.Positions[i]);
+        const Vector3d end = Normalize(polygon.Positions[(i + 1) % polygon.Count]);
+        const Vector3d normal = Cross(start, end);
+        const float64 normalLength = GetLength(normal);
+        if (normalLength > 0.0)
+        {
+            sum = sum + normal * (std::atan2(normalLength, Dot(start, end)) / normalLength);
+        }
+    }
+    const Vector3d planeNormal =
+        Cross(polygon.Positions[1] - polygon.Positions[0], polygon.Positions[2] - polygon.Positions[0]);
+    const float64 orientation = Dot(sum, planeNormal) * Dot(planeNormal, polygon.Positions[0]);
+    return sum * ((orientation < 0.0 ? -1.0 : 1.0) / kTau);
+}
+
+/// The sum of the polygon's edge angles over 2 pi: the fitted edge ratio is within 0.73% of theta / sin(theta), so
+/// each edge's term of the vector form factor is within 0.73% of theta.
+[[nodiscard]] float64 ComputeOracleEdgeAngleSum(const OraclePolygon& polygon) noexcept
+{
+    float64 sum = 0.0;
+    for (uint32 i = 0; i < polygon.Count; ++i)
+    {
+        const Vector3d start = Normalize(polygon.Positions[i]);
+        const Vector3d end = Normalize(polygon.Positions[(i + 1) % polygon.Count]);
+        sum += std::atan2(GetLength(Cross(start, end)), Dot(start, end));
+    }
+    return sum / kTau;
+}
+
 float64 GetPercentile(Array<float64>& inoutValues, float64 fraction) noexcept
 {
     ludus::foundation::Sort(inoutValues.GetData(), inoutValues.GetSize(), [](float64 a, float64 b) noexcept {
@@ -688,4 +724,154 @@ TEST_CASE("Invalid LTC inputs leave outputs unchanged", "[math][linearly_transfo
                                                       Vector2{std::numeric_limits<float32>::quiet_NaN(), 0.5F},
                                                       unchanged) == MathStatus::NonFiniteInput);
     REQUIRE(unchanged == Vector3{7, 7, 7});
+}
+
+TEST_CASE("Approximate LTC integrals follow Hill and Heitz's vector form factor", "[math][linearly_transformed_cosine]")
+{
+    // Fit error of theta / sin(theta) (0.73%) plus single-precision rounding.
+    constexpr float64 EDGE_FIT_TOLERANCE = 0.0075;
+    constexpr float64 ROUNDING_TOLERANCE = 2.0e-6;
+    RandomStream random;
+    REQUIRE(random.TryReseed(RANDOM_SEED, 9) == true);
+    uint32 aboveCount = 0;
+    uint32 belowCount = 0;
+    uint32 crossingCount = 0;
+    uint32 crossingZeroCount = 0;
+    for (uint32 polygonIndex = 0; polygonIndex < POLYGON_COUNT; ++polygonIndex)
+    {
+        const ProjectedPolygonInput input = MakeRandomPolygon(random);
+        const Matrix3 inverseTransform = MakeRandomInverseTransform(random, MINIMUM_ALPHA);
+        INFO("polygon " << polygonIndex);
+        LinearlyTransformedCosine distribution;
+        REQUIRE(TryMakeLinearlyTransformedCosine(inverseTransform, distribution) == MathStatus::Success);
+        ApproximatePolygonIntegral approximation;
+        REQUIRE(TryApproximateLinearlyTransformedCosinePolygonIntegral(input, distribution, approximation) ==
+                MathStatus::Success);
+        OraclePolygon transformed = WidenPolygon(input);
+        bool hasVertexAbove = false;
+        bool hasVertexBelow = false;
+        for (uint32 i = 0; i < transformed.Count; ++i)
+        {
+            transformed.Positions[i] = Apply(Widen(inverseTransform), transformed.Positions[i]);
+            hasVertexAbove = hasVertexAbove || transformed.Positions[i].Z > 0.0;
+            hasVertexBelow = hasVertexBelow || transformed.Positions[i].Z < 0.0;
+        }
+        const Vector3d expectedVector = ComputeOracleVectorFormFactor(transformed);
+        const float64 tolerance = EDGE_FIT_TOLERANCE * ComputeOracleEdgeAngleSum(transformed) + ROUNDING_TOLERANCE;
+        const Vector3d error = Widen(approximation.VectorFormFactor) - expectedVector;
+        REQUIRE(GetLength(error) <= tolerance);
+        const float64 exact = ComputeOracleIntegral(input, Widen(inverseTransform));
+        const float64 integral = static_cast<float64>(approximation.Integral);
+        REQUIRE(integral >= 0.0);
+        REQUIRE(integral <= 1.0);
+        // The defensive term's proxy is available wherever the polygon has area above the horizon.
+        if (exact > 0.0)
+        {
+            REQUIRE(approximation.UnitTripleProduct > 0.0F);
+        }
+        if (hasVertexAbove == false)
+        {
+            ++belowCount;
+            REQUIRE(integral == 0.0);
+        }
+        else if (hasVertexBelow == false)
+        {
+            // Entirely above the horizon the unclipped form factor is the clipped one.
+            ++aboveCount;
+            REQUIRE(std::abs(integral - exact) <= tolerance);
+        }
+        else
+        {
+            // The proxy sphere's clipped form factor never exceeds the length of F.
+            ++crossingCount;
+            crossingZeroCount += integral == 0.0 && exact > 0.0 ? 1 : 0;
+            REQUIRE(integral <= GetLength(Widen(approximation.VectorFormFactor)) + ROUNDING_TOLERANCE);
+        }
+    }
+    CAPTURE(aboveCount, belowCount, crossingCount, crossingZeroCount);
+    REQUIRE(aboveCount > POLYGON_COUNT / 10);
+    REQUIRE(belowCount > 0);
+    REQUIRE(crossingCount > POLYGON_COUNT / 10);
+}
+
+TEST_CASE("Approximate clipped integrals can vanish where the exact one does not",
+          "[math][linearly_transformed_cosine]")
+{
+    // A triangle mostly below the horizon with one corner just above it: the proxy sphere lies below the horizon.
+    const ProjectedPolygonInput input = MakePolygon({{1, 0, 0.05F}, {1, 0.5F, -1}, {1, -0.5F, -1}});
+    ApproximatePolygonIntegral approximation;
+    REQUIRE(TryApproximateClampedCosinePolygonIntegral(input, approximation) == MathStatus::Success);
+    const float64 exact =
+        ComputeLambertProjectedSolidAngle(ClipByPlane(WidenPolygon(input), Vector3d{0.0, 0.0, 1.0})) / kPi;
+    REQUIRE(exact > 0.0);
+    REQUIRE(approximation.Integral == 0.0F);
+    REQUIRE(approximation.VectorFormFactor.Z < 0.0F);
+    REQUIRE(approximation.UnitTripleProduct > 0.0F);
+    // Either winding gives the same result.
+    ApproximatePolygonIntegral reversed;
+    REQUIRE(TryApproximateClampedCosinePolygonIntegral(MakePolygon({{1, -0.5F, -1}, {1, 0.5F, -1}, {1, 0, 0.05F}}),
+                                                       reversed) == MathStatus::Success);
+    REQUIRE(Abs(reversed.VectorFormFactor.Z - approximation.VectorFormFactor.Z) <= 1.0e-6F);
+    REQUIRE(Abs(reversed.UnitTripleProduct - approximation.UnitTripleProduct) <= 1.0e-6F);
+    // A polygon straight overhead has the form factor of its exact unclipped integral, up to the fit.
+    REQUIRE(TryApproximateClampedCosinePolygonIntegral(MakePolygon({{-1, -1, 1}, {1, -1, 1}, {1, 1, 1}, {-1, 1, 1}}),
+                                                       approximation) == MathStatus::Success);
+    const OraclePolygon square = WidenPolygon(MakePolygon({{-1, -1, 1}, {1, -1, 1}, {1, 1, 1}, {-1, 1, 1}}));
+    const float64 overhead = ComputeLambertProjectedSolidAngle(square) / kPi;
+    REQUIRE(std::abs(static_cast<float64>(approximation.Integral) - overhead) <=
+            0.0075 * ComputeOracleEdgeAngleSum(square));
+    REQUIRE(approximation.VectorFormFactor.Z > 0.0F);
+}
+
+TEST_CASE("Approximate integrals reject invalid polygons and vanish for degenerate ones",
+          "[math][linearly_transformed_cosine]")
+{
+    ApproximatePolygonIntegral unchanged;
+    unchanged.Integral = 42.0F;
+    LinearlyTransformedCosine identity;
+    REQUIRE(TryMakeLinearlyTransformedCosine(Matrix3::Identity(), identity) == MathStatus::Success);
+    ProjectedPolygonInput input = MakePolygon({{1, 0, 1}, {1, 1, 1}});
+    REQUIRE(TryApproximateClampedCosinePolygonIntegral(input, unchanged) == MathStatus::InvalidArgument);
+    input.VertexCount = MAX_PROJECTED_POLYGON_INPUT_VERTICES + 1;
+    REQUIRE(TryApproximateLinearlyTransformedCosinePolygonIntegral(input, identity, unchanged) ==
+            MathStatus::InvalidArgument);
+    const float32 infinity = std::numeric_limits<float32>::infinity();
+    input = MakePolygon({{1, 0, 1}, {1, 1, infinity}, {0, 1, 1}});
+    REQUIRE(TryApproximateClampedCosinePolygonIntegral(input, unchanged) == MathStatus::NonFiniteInput);
+    LinearlyTransformedCosine stretched;
+    REQUIRE(TryMakeLinearlyTransformedCosine(Matrix3{{Vector3{1.5F, 0, 0}, Vector3{0, 1.5F, 0}, Vector3{0, 0, 1.5F}}},
+                                             stretched) == MathStatus::Success);
+    REQUIRE(TryApproximateLinearlyTransformedCosinePolygonIntegral(
+                MakePolygon({{3.0e38F, 0, 1}, {3.0e38F, 1, 1}, {0, 1, 1}}),
+                stretched,
+                unchanged) == MathStatus::NonFiniteInput);
+    REQUIRE(unchanged.Integral == 42.0F);
+
+    // A plane through the origin, a vertex at the origin and an all-zero polygon have nothing to integrate.
+    for (const ProjectedPolygonInput& degenerate : {MakePolygon({{1, 0, 0}, {0, 1, 0}, {-1, -1, 0}}),
+                                                    MakePolygon({{0, 0, 0}, {1, 0, 1}, {0, 1, 1}}),
+                                                    MakePolygon({{0, 0, 0}, {0, 0, 0}, {0, 0, 0}})})
+    {
+        ApproximatePolygonIntegral result;
+        result.Integral = 42.0F;
+        REQUIRE(TryApproximateClampedCosinePolygonIntegral(degenerate, result) == MathStatus::Success);
+        REQUIRE(result.Integral == 0.0F);
+        REQUIRE(result.UnitTripleProduct == 0.0F);
+        REQUIRE(result.VectorFormFactor == Vector3{});
+    }
+    // Tiny and huge polygons have the same directions as a unit one.
+    ApproximatePolygonIntegral unit;
+    ApproximatePolygonIntegral tiny;
+    ApproximatePolygonIntegral huge;
+    REQUIRE(TryApproximateClampedCosinePolygonIntegral(MakePolygon({{1, 0, 1}, {0, 1, 1}, {-1, -1, 1}}), unit) ==
+            MathStatus::Success);
+    REQUIRE(TryApproximateClampedCosinePolygonIntegral(
+                MakePolygon({{1.0e-30F, 0, 1.0e-30F}, {0, 1.0e-30F, 1.0e-30F}, {-1.0e-30F, -1.0e-30F, 1.0e-30F}}),
+                tiny) == MathStatus::Success);
+    REQUIRE(TryApproximateClampedCosinePolygonIntegral(
+                MakePolygon({{1.0e30F, 0, 1.0e30F}, {0, 1.0e30F, 1.0e30F}, {-1.0e30F, -1.0e30F, 1.0e30F}}),
+                huge) == MathStatus::Success);
+    REQUIRE(Abs(tiny.Integral - unit.Integral) <= 1.0e-6F);
+    REQUIRE(Abs(huge.Integral - unit.Integral) <= 1.0e-6F);
+    REQUIRE(unit.Integral > 0.0F);
 }

@@ -1,6 +1,7 @@
 #pragma once
 
-// Scene-independent pieces of RT1's ReferenceLightSampling::ResampledProjectedSolidAngle estimator (sampler version 2):
+// Scene-independent pieces of RT1's resampled estimator, ReferenceLightSampling::ResampledProjectedSolidAngle (sampler
+// version 2) and ResampledFormFactor (sampler version 3, with Hill and Heitz's approximate target):
 // the receiver frame and LTC, the triangle's two light techniques, Peters' clamped optimal MIS weights, the surrogate
 // light density and the triangle-plane intersection. Each function ports its C++ counterpart in
 // src/reference_light_sampling.cpp step for step; renderer_reference.slang adds the scene-dependent target, Z-hat and
@@ -22,8 +23,10 @@ static const float REFERENCE_MINIMUM_DIFFUSE_TECHNIQUE_ALBEDO = 0.01;
 static const float REFERENCE_DIELECTRIC_SPECULAR_REFLECTANCE = 0.04;
 // Above this |n.z| the frame's helper axis switches from +z to +y, as SampleBsdfDirection's frame does.
 static const float REFERENCE_FRAME_HELPER_AXIS_LIMIT = 0.999;
-// Peters' visibility estimate v; a frozen constant of sampler version 2.
+// Peters' visibility estimate v; a frozen constant of sampler versions 2 and 3.
 static const float REFERENCE_LIGHT_TECHNIQUE_VISIBILITY = 0.5;
+// REFERENCE_APPROXIMATE_TARGET_DEFENSIVE_FRACTION of reference_light_sampling.h; frozen with sampler version 3.
+static const float REFERENCE_APPROXIMATE_TARGET_DEFENSIVE_FRACTION = 0.015625;
 static const uint REFERENCE_DIFFUSE_TECHNIQUE = 0;
 static const uint REFERENCE_SPECULAR_TECHNIQUE = 1;
 
@@ -113,13 +116,12 @@ ReferenceTriangleLight MakeEmptyReferenceTriangleLight(ReferenceReceiverFrame fr
 
 // TryPrepareReferenceTriangleLight: false for a nonfinite vertex in the shading frame or after the LTC transform; an
 // empty or edge-on clip succeeds with a zero integral, which disables that technique.
-bool TryPrepareReferenceTriangleLight(ReferenceReceiverFrame frame,
-                                      float3 position0World,
-                                      float3 position1World,
-                                      float3 position2World,
-                                      out ReferenceTriangleLight outLight)
+// The triangle relative to the receiver, in its shading frame.
+ProjectedPolygonInput MakeReferenceTrianglePolygon(ReferenceReceiverFrame frame,
+                                                   float3 position0World,
+                                                   float3 position1World,
+                                                   float3 position2World)
 {
-    outLight = MakeEmptyReferenceTriangleLight(frame);
     ProjectedPolygonInput polygon;
     polygon.VertexCount = 3;
     [unroll] for (uint i = 0; i < MAX_PROJECTED_POLYGON_INPUT_VERTICES; ++i)
@@ -129,6 +131,17 @@ bool TryPrepareReferenceTriangleLight(ReferenceReceiverFrame frame,
     polygon.PositionsTangent[0] = TransformReferenceWorldToTangent(frame, position0World - frame.PositionWorld);
     polygon.PositionsTangent[1] = TransformReferenceWorldToTangent(frame, position1World - frame.PositionWorld);
     polygon.PositionsTangent[2] = TransformReferenceWorldToTangent(frame, position2World - frame.PositionWorld);
+    return polygon;
+}
+
+bool TryPrepareReferenceTriangleLight(ReferenceReceiverFrame frame,
+                                      float3 position0World,
+                                      float3 position1World,
+                                      float3 position2World,
+                                      out ReferenceTriangleLight outLight)
+{
+    outLight = MakeEmptyReferenceTriangleLight(frame);
+    ProjectedPolygonInput polygon = MakeReferenceTrianglePolygon(frame, position0World, position1World, position2World);
     if (TryPrepareProjectedSolidAnglePolygon(polygon, outLight.Diffuse) == false)
         return false;
     outLight.DiffuseIntegral = outLight.Diffuse.ProjectedSolidAngle / PI;
@@ -137,6 +150,36 @@ bool TryPrepareReferenceTriangleLight(ReferenceReceiverFrame frame,
     if (TryPrepareLinearlyTransformedCosinePolygon(polygon, frame.Specular, outLight.Specular) == false)
         return false;
     outLight.SpecularIntegral = GetLinearlyTransformedCosinePolygonIntegral(outLight.Specular);
+    return true;
+}
+
+// TryApproximateReferenceTriangleIntegrals: sampler version 3's (E_0, E_1) from Hill and Heitz's clipped proxy-sphere
+// form factor, with the defensive term on E_0. False for a nonfinite vertex before or after the LTC transform.
+bool TryApproximateReferenceTriangleIntegrals(ReferenceReceiverFrame frame,
+                                              float3 position0World,
+                                              float3 position1World,
+                                              float3 position2World,
+                                              out float2 outIntegrals)
+{
+    outIntegrals = float2(0);
+    ProjectedPolygonInput polygon = MakeReferenceTrianglePolygon(frame, position0World, position1World, position2World);
+    ApproximatePolygonIntegral diffuse;
+    if (TryApproximateClampedCosinePolygonIntegral(polygon, diffuse) == false)
+        return false;
+    bool hasVertexAboveHorizon =
+        polygon.PositionsTangent[0].z > 0 || polygon.PositionsTangent[1].z > 0 || polygon.PositionsTangent[2].z > 0;
+    float2 integrals = float2(0);
+    if (hasVertexAboveHorizon == true)
+        integrals.x =
+            max(diffuse.Integral, REFERENCE_APPROXIMATE_TARGET_DEFENSIVE_FRACTION * diffuse.UnitTripleProduct);
+    if (frame.HasSpecular == true)
+    {
+        ApproximatePolygonIntegral specular;
+        if (TryApproximateLinearlyTransformedCosinePolygonIntegral(polygon, frame.Specular, specular) == false)
+            return false;
+        integrals.y = specular.Integral;
+    }
+    outIntegrals = integrals;
     return true;
 }
 

@@ -50,7 +50,7 @@ enum MeshKeyPart : uint8
 constexpr usize NO_RESOURCE = ~usize{0};
 // Separate CPU identity-copy budget, covering current/pending/idle assets together.
 // RHI independently admits GPU allocations and upload staging against its device budgets.
-constexpr usize CACHE_IDENTITY_BYTES = usize{128} * 1024 * 1024;
+constexpr usize CACHE_IDENTITY_BYTES = usize{128} * 1024 * 1024 * (sizeof(usize) > sizeof(uint32) ? 8 : 1);
 constexpr usize ENVIRONMENT_CPU_BYTES = usize{64} * 1024 * 1024;
 constexpr uint32 ENVIRONMENT_FILTER_WIDTH = 32;
 constexpr uint32 ENVIRONMENT_FILTER_SAMPLES = 16;
@@ -705,7 +705,11 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
             }
             if (owner.HasMeshLights == true)
             {
-                status = AppendRasterMeshLights(geometry, item.MeshToWorld, material, candidate.MeshLightWords);
+                status = AppendRasterMeshLights(geometry,
+                                                item.MeshToWorld,
+                                                material,
+                                                candidate.MeshLightWords,
+                                                candidate.MeshLightCount);
                 if (status != Status::Ready)
                 {
                     return status;
@@ -722,6 +726,7 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
             description.Surface.Lod = 0;
             description.Metallic = material.Metallic;
             description.Roughness = material.Roughness;
+            description.Scattering = material.Scattering;
             description.NormalScale = material.NormalScale;
             description.Emission = material.Emission;
             description.IsEmissionTwoSided = material.IsEmissionTwoSided;
@@ -758,9 +763,9 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
     }
     if (owner.HasMeshLights == true)
     {
-        candidate.MeshLightCount = static_cast<uint32>(candidate.MeshLightWords.GetSize() / MESH_LIGHT_TRIANGLE_WORDS);
+        // An empty light set uploads one zero header, which the resolve never reads.
         if (candidate.MeshLightWords.IsEmpty() == true &&
-            candidate.MeshLightWords.TryResize(MESH_LIGHT_TRIANGLE_WORDS) == false)
+            candidate.MeshLightWords.TryResize(MESH_LIGHT_POLYGON_HEADER_WORDS) == false)
         {
             return Status::OutOfMemory;
         }
@@ -777,8 +782,8 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
     }
     if (owner.HasMeshLights == true)
     {
-        owner.Report.MeshLightTriangles = candidate.MeshLightCount;
-        owner.Report.MeshLightBytes = candidate.MeshLightWords.GetSize() * sizeof(math::Vector4);
+        owner.Report.MeshLightPolygons = candidate.MeshLightCount;
+        owner.Report.MeshLightBytes = uint64{candidate.MeshLightWords.GetSize()} * sizeof(math::Vector4);
     }
     if (owner.IsClustered == true && math::IsEmpty(candidate.BoundsWorld) == false)
     {

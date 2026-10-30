@@ -107,7 +107,8 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
       mRunInContextAction(CreateEditorCommand(TOOLS_RUN_IN_CONTEXT_COMMAND, this)),
       mProjectSettingsAction(CreateEditorCommand(PROJECT_SETTINGS_COMMAND, this)),
       mResetLayoutAction(CreateEditorCommand(WINDOW_RESET_LAYOUT_COMMAND, this)),
-      mFocusViewportAction(CreateEditorCommand(VIEW_FOCUS_VIEWPORT_COMMAND, this))
+      mFocusViewportAction(CreateEditorCommand(VIEW_FOCUS_VIEWPORT_COMMAND, this)),
+      mCodeViewportAction(CreateEditorCommand(VIEW_CODE_VIEWPORT_COMMAND, this))
 {
     setWindowTitle(QStringLiteral("Ludus Editor"));
     setWindowIcon(MakeApplicationIcon());
@@ -121,8 +122,9 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
     BuildMenus();
     InitializeWorkspace();
     connect(mDocuments, &DocumentWell::ActiveDocumentChanged, this, &MainWindow::renderActiveDocument);
+    connect(mDocuments, &DocumentWell::LayoutChanged, this, &MainWindow::updateContextStrip);
     // Restoring a saved layout, resetting it or leaving Focus Viewport can show or hide the strip; the queued
-    // check puts it back to what the active document asks for.
+    // check follows the documents currently shown in the tab groups.
     connect(mRenderGraphToolbar,
             &QToolBar::visibilityChanged,
             this,
@@ -148,6 +150,7 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
         }
     });
     connect(Renderer_, &RendererWorkspace::FocusViewRequested, mFocusViewportAction, &QAction::toggle);
+    connect(Renderer_, &RendererWorkspace::CodeViewportRequested, this, &MainWindow::showCodeAndViewport);
     connect(mErrorList, &ErrorList::EntryActivated, this, &MainWindow::activateErrorEntry);
     connect(mErrorList, &ErrorList::ProblemsReported, this, &MainWindow::revealErrorList);
     mBuildErrorsTimer.setSingleShot(true);
@@ -255,6 +258,9 @@ MainWindow::~MainWindow()
     // The preview panel is reparented into a dock and may die before its workspace.
     // Retire the graph consumer while its UI and the World producer are still alive.
     Renderer_->SetPreviewSource(nullptr);
+    // The World's graph views borrow the Renderer, and the document well may delete the
+    // Renderer first. Stop the World devices now so their frame reset reaches a live Renderer.
+    World_->StopPreview();
 }
 
 void MainWindow::BuildMenus()
@@ -532,16 +538,30 @@ void MainWindow::BuildMenus()
     // The Render Graph toolbar is the context strip: it shows only while a render graph is the active document
     // (updateContextStrip), so a World tab keeps one row of commands about the project and the game.
     mRenderGraphToolbar->setObjectName(QStringLiteral("renderGraphToolbar"));
-    mRenderGraphToolbar->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    mRenderGraphToolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    mRenderGraphToolbar->setIconSize(QSize(EDITOR_ICON_SIZE, EDITOR_ICON_SIZE));
+    mValidateGraphAction->setIcon(GetEditorIcon(EditorIcon::Validate));
+    mBuildGraphAction->setIcon(GetEditorIcon(EditorIcon::Build));
+    mBuildPreviewGraphAction->setIcon(GetEditorIcon(EditorIcon::Preview));
+    mLivePreviewGraphAction->setIcon(GetEditorIcon(EditorIcon::LivePreview));
+    mCancelGraphAction->setIcon(GetEditorIcon(EditorIcon::Cancel));
     addToolBar(mRenderGraphToolbar);
-    for (QAction* action : {mValidateGraphAction,
-                            mBuildGraphAction,
-                            mBuildPreviewGraphAction,
-                            mLivePreviewGraphAction,
-                            mCancelGraphAction})
-    {
-        mRenderGraphToolbar->addAction(action);
-    }
+    mRenderGraphToolbar->addAction(mValidateGraphAction);
+    // Build Graph and Build & Preview are one split button: the button runs Build Graph and its arrow offers
+    // Build & Preview. Live Preview is a separate toggle that shows its state.
+    QToolButton* buildButton = new QToolButton(mRenderGraphToolbar);
+    buildButton->setObjectName(QStringLiteral("renderGraphBuildButton"));
+    buildButton->setDefaultAction(mBuildGraphAction);
+    buildButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    buildButton->setPopupMode(QToolButton::MenuButtonPopup);
+    QMenu* buildSplitMenu = new QMenu(buildButton);
+    buildSplitMenu->setObjectName(QStringLiteral("renderGraphBuildMenu"));
+    buildSplitMenu->addAction(mBuildGraphAction);
+    buildSplitMenu->addAction(mBuildPreviewGraphAction);
+    buildButton->setMenu(buildSplitMenu);
+    mRenderGraphToolbar->addWidget(buildButton);
+    mRenderGraphToolbar->addAction(mLivePreviewGraphAction);
+    mRenderGraphToolbar->addAction(mCancelGraphAction);
 
     // Icons plus labels for the primary actions, labels only elsewhere (docs/architecture/editor-art-direction.md).
     // The action keeps its icon for menus; only its toolbar button changes style.
@@ -598,6 +618,8 @@ void MainWindow::BuildMenus()
         toolbars->addAction(toolbar->toggleViewAction());
     }
     viewMenu->addSeparator();
+    viewMenu->addAction(mCodeViewportAction);
+    connect(mCodeViewportAction, &QAction::triggered, this, &MainWindow::showCodeAndViewport);
     viewMenu->addAction(mFocusViewportAction);
     connect(mFocusViewportAction, &QAction::toggled, this, &MainWindow::setViewportFocused);
 
@@ -990,12 +1012,12 @@ void MainWindow::OnStateChanged()
         ProjectLayoutEpoch_ = state.ProjectEpoch;
         SetProjectWorkspace(root, false);
         World_->SetProject(root, state.ProjectEpoch);
+        Renderer_->SetProject(QFileInfo(state.DescriptorPath).absolutePath(), state.ProjectEpoch);
         if (restore)
         {
             SetProjectWorkspace(root, true);
         }
         Scripts_->SetProject(QFileInfo(state.DescriptorPath).absolutePath(), root, state.Saved.Preset);
-        Renderer_->SetProject(QFileInfo(state.DescriptorPath).absolutePath(), state.ProjectEpoch);
         if (restore == true)
         {
             // A new project identity retires the previous project's render-graph rows.
@@ -1353,8 +1375,9 @@ void MainWindow::RenderStatus()
         mDismissedSetupProblem.clear();
     }
     // Dismissed and Focus Viewport keep the notice hidden; the status bar still reports setup state.
-    mSetupNoticeOrNull->setVisible(hasSetupProblem == true && state.SetupProblem != mDismissedSetupProblem &&
-                                   mIsViewportFocused == false);
+    const bool isSetupNoticeShown =
+        hasSetupProblem == true && state.SetupProblem != mDismissedSetupProblem && mIsViewportFocused == false;
+    mSetupNoticeOrNull->setVisible(isSetupNoticeShown);
     mSetupNoticeTextOrNull->setToolTip(
         QStringLiteral("%1\n\nRepair now, or keep editing and repair later. Repair updates local build settings "
                        "and verifies a build and tests.")
@@ -1438,11 +1461,13 @@ void MainWindow::RenderStatus()
             break;
     }
 
+    // Each problem is said once: the banner and Error List carry the full text, so this line keeps
+    // the short reason (the result code and a pointer to the repair) and nothing that repeats it.
     QString status = phase;
     if (state.Result.Kind != Outcome::None)
     {
         status += QStringLiteral("  —  last result: %1").arg(QString::fromLatin1(ResultCodeName(state.Result.Code)));
-        if (state.Result.Message.isEmpty() == false)
+        if (hasSetupProblem == false && state.Result.Message.isEmpty() == false)
         {
             status += QStringLiteral(" (%1)").arg(state.Result.Message.section(QLatin1Char('\n'), 0, 0));
         }
@@ -1451,9 +1476,18 @@ void MainWindow::RenderStatus()
     {
         status += QStringLiteral("  —  operator recovery required; see Copy Job Details");
     }
-    // One status line: setup state is appended unless the last result already said it.
     const QString setupSummary = state.SetupStatus.section(QLatin1Char('\n'), 0, 0);
-    if (setupSummary.isEmpty() == false && setupSummary != state.Result.Message.section(QLatin1Char('\n'), 0, 0))
+    const QString resultSummary = state.Result.Message.section(QLatin1Char('\n'), 0, 0);
+    if (hasSetupProblem == true)
+    {
+        // The banner already shows the problem with its Repair button; only a hidden banner
+        // leaves this line to say what is wrong.
+        status += QStringLiteral("  —  ") + (isSetupNoticeShown == true
+                                                 ? QStringLiteral("Setup needs repair")
+                                                 : state.SetupProblem.section(QLatin1Char('\n'), 0, 0));
+    }
+    else if (setupSummary.isEmpty() == false &&
+             (resultSummary.isEmpty() == true || setupSummary.contains(resultSummary) == false))
     {
         status += QStringLiteral("  —  ") + setupSummary;
     }

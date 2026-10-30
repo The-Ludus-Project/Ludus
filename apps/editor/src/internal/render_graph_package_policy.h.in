@@ -1,0 +1,19 @@
+#pragma once
+
+#include <ludus/foundation/base/types.h>
+
+namespace ludus::editor::package_policy
+{
+/// Graph documents per package. Owned by ludus_tools.render_graph (MAX_ASSETS).
+inline constexpr foundation::usize MAX_GRAPH_DOCUMENTS = @MAX_ASSETS@;
+/// Bytes of one graph document. Owned by ludus_tools.render_graph (MAX_ASSET_BYTES).
+inline constexpr foundation::usize MAX_GRAPH_DOCUMENT_BYTES = @MAX_ASSET_BYTES@;
+/// Combined graph document bytes per package. Owned by ludus_tools.render_graph (MAX_TOTAL_BYTES).
+inline constexpr foundation::usize MAX_GRAPH_BYTES = @MAX_TOTAL_BYTES@;
+/// Manifest and shader files in one build snapshot. Owned by ludus_tools.render_graph_build (MAX_FILES).
+inline constexpr foundation::usize MAX_BUILD_SOURCE_FILES = @MAX_FILES@;
+/// Bytes of one build source. Owned by ludus_tools.render_graph_build (MAX_FILE).
+inline constexpr foundation::usize MAX_BUILD_SOURCE_FILE_BYTES = @MAX_FILE@;
+/// Combined build source bytes. Owned by ludus_tools.render_graph_build (MAX_BYTES).
+inline constexpr foundation::usize MAX_BUILD_SOURCE_BYTES = @MAX_BYTES@;
+} // namespace ludus::editor::package_policy

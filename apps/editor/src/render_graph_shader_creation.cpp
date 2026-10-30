@@ -1,4 +1,5 @@
 #include "internal/render_graph_shader_creation.h"
+#include "internal/render_graph_build_limits.h"
 #include "internal/render_graph_options.h"
 #include "internal/render_graph_pipeline_node.h"
 
@@ -148,7 +149,6 @@ RenderGraphDocumentStatus GrowShaderBudgets(QJsonObject& inoutManifest,
                                             const QString& manifestFile,
                                             QString* outErrorOrNull)
 {
-    constexpr qsizetype MAX_SHADER_ARTIFACTS = LUDUS_EDITOR_MAX_SHADER_ARTIFACTS;
     const qsizetype profileCount = inoutManifest.value(QStringLiteral("profiles")).toArray().size();
     if (profileCount == 0)
     {
@@ -175,16 +175,12 @@ RenderGraphDocumentStatus GrowShaderBudgets(QJsonObject& inoutManifest,
         }
         return RenderGraphDocumentStatus::Capacity;
     }
-    const qsizetype artifactCount = programCount * profileCount;
     QJsonObject budgets = inoutManifest.value(QStringLiteral("budgets")).toObject();
     if (budgets.value(QStringLiteral("programs")).toDouble() < static_cast<foundation::float64>(programCount))
     {
         budgets.insert(QStringLiteral("programs"), programCount);
     }
-    if (budgets.value(QStringLiteral("artifacts")).toDouble() < static_cast<foundation::float64>(artifactCount))
-    {
-        budgets.insert(QStringLiteral("artifacts"), artifactCount);
-    }
+    RemoveDerivedBudgets(budgets);
     inoutManifest.insert(QStringLiteral("budgets"), budgets);
     return RenderGraphDocumentStatus::Ok;
 }

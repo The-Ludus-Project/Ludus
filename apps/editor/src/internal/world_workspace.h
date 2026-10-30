@@ -128,7 +128,12 @@ public:
     [[nodiscard]] bool IsPlayingInViewport() const noexcept;
     void ResumePreview();
     [[nodiscard]] bool PreviewRunning() const noexcept;
+    /// Local World, camera, selection and splitter preferences. Hidden chrome records the
+    /// normal splitter arrangement that will return when its controls are shown again.
     [[nodiscard]] QJsonObject Session() const;
+    /// Restore local session preferences on the GUI thread. An accepted splitter state
+    /// also replaces the normal arrangement retained while chrome is hidden; restoring
+    /// preferences keeps that compact presentation active.
     void RestoreSession(const QJsonObject& state);
     void Undo();
     void Redo();

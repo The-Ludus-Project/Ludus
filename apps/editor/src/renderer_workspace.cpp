@@ -10,7 +10,9 @@
 #include "internal/code_editor.h"
 #include "internal/code_editor_panel.h"
 #include "internal/code_formatter.h"
+#include "internal/error_list.h"
 #include "internal/item_selection.h"
+#include "internal/path_text.h"
 #include "internal/render_graph_comments.h"
 #include "internal/render_graph_diagnostics.h"
 #include "internal/render_graph_execution_plan.h"
@@ -22,6 +24,7 @@
 #include "internal/render_graph_reroutes.h"
 #include "internal/render_graph_resource_inspection.h"
 #include "internal/render_graph_resources.h"
+#include "internal/render_graph_shader_assistance.h"
 #include "internal/render_graph_shader_creation.h"
 #include "internal/render_graph_shader_interface.h"
 #include "internal/render_graph_template_registry.h"
@@ -37,6 +40,7 @@
 #    include "editor_default_graph.h"
 #    include "editor_renderer_static.h"
 #    include "internal/ray_path_inspection.h"
+#    include "internal/render_graph_capture_profile.h"
 #    include "internal/render_graph_preview.h"
 #    include "internal/texture_viewer.h"
 #    include "renderer_composite.h"
@@ -44,6 +48,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
@@ -51,6 +56,7 @@
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFontDatabase>
@@ -77,6 +83,7 @@
 #include <QSpinBox>
 #include <QSplitter>
 #include <QStackedWidget>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTextBlock>
@@ -97,6 +104,8 @@ constexpr int32 MINIMUM_CANVAS_WIDTH = 360;
 constexpr int32 MINIMUM_SOURCE_TREE_WIDTH = 200;
 constexpr int32 STATUS_VISIBLE_LINES = 1;
 constexpr int32 STATUS_PADDING_PIXELS = 4;
+constexpr int32 SOURCE_VIEW_STATE_VERSION = 1;
+
 // Initial share of the document's width: source tree, then the Canvas/Source/Plan/Textures views.
 constexpr int32 SOURCE_TREE_SHARE = 1;
 constexpr int32 VIEWS_SHARE = 4;
@@ -114,6 +123,15 @@ const QString DEFAULT_CONFIGURATION = QStringLiteral("(asset default)");
 const QString WORKER_SOCKET_KEY = QStringLiteral("renderGraph/workerSocket");
 const QString SOURCES_VISIBLE_KEY = QStringLiteral("renderGraph/sourcesVisible");
 const QString SPLITTER_STATE_KEY = QStringLiteral("renderGraph/splitterState");
+
+void SetSourceStatus(QLabel& inoutLabel, const QString& status, const QString& problem = {})
+{
+    inoutLabel.setText(status);
+    inoutLabel.setToolTip(
+        QStringLiteral("<p>%1</p>%2")
+            .arg(status.toHtmlEscaped(),
+                 problem.isEmpty() == true ? QString() : QStringLiteral("<pre>%1</pre>").arg(problem.toHtmlEscaped())));
+}
 
 /// Paints the last presented preview frame, letterboxed to its aspect ratio.
 class PreviewImage final : public QWidget
@@ -445,7 +463,7 @@ QString DescribeStatus(RenderGraphDocumentStatus status)
         case RenderGraphDocumentStatus::NotFound:
             return QStringLiteral("The source is not part of this render-graph package.");
         case RenderGraphDocumentStatus::Capacity:
-            return QStringLiteral("The package exceeds the bounded source limits (64 files, 128 KiB each, 4 MiB).");
+            return DescribePackageCapacity();
         case RenderGraphDocumentStatus::Malformed:
             return QStringLiteral("The draft graph is not a JSON object; fix it in the Source tab first.");
         case RenderGraphDocumentStatus::InvalidEdit:
@@ -493,6 +511,25 @@ QString DescribeLocation(const QJsonObject& location)
     return parts.join(QLatin1Char(' '));
 }
 
+/// "1 error" or "2 errors, 1 warning": the Error List's rows for a failed job, so the count
+/// matches what the list shows.
+QString DescribeProblemCount(const RenderGraphJobResult& result)
+{
+    int32 errorCount = 0;
+    int32 warningCount = 0;
+    for (const ErrorListEntry& entry : MakeRenderGraphErrorEntries(result))
+    {
+        errorCount += entry.Severity == ErrorListSeverity::Error ? 1 : 0;
+        warningCount += entry.Severity == ErrorListSeverity::Warning ? 1 : 0;
+    }
+    QString text = errorCount == 1 ? QStringLiteral("1 error") : QStringLiteral("%1 errors").arg(errorCount);
+    if (warningCount > 0)
+    {
+        text += warningCount == 1 ? QStringLiteral(", 1 warning") : QStringLiteral(", %1 warnings").arg(warningCount);
+    }
+    return text;
+}
+
 QString DescribePackageOutsideProject()
 {
     return QStringLiteral("The render graph's package lies outside the project folder, so it has no build tree there.");
@@ -520,10 +557,10 @@ QString DescribeSceneComputeConversion()
 
 RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* parentOrNull)
     : QWidget(parentOrNull), mTooling(tooling), mSourceDocument(mDocument),
-      mPath(new QLabel(QStringLiteral("No render graph is open."), this)), mContent(new QStackedWidget(this)),
+      mPath(new PathLabel(QStringLiteral("No render graph is open."), this)), mContent(new QStackedWidget(this)),
       mEmptyMessage(new QLabel(this)), mCreateFirst(new QPushButton(QStringLiteral("Create Render Graph..."), this)),
       mConfiguration(new QComboBox(this)), mTree(new QTreeWidget(this)), mNavigation(new QWidget(this)),
-      mStatusPanel(new QScrollArea(this)), mSourcesToggle(new QPushButton(QStringLiteral("Graph Sources"), this)),
+      mStatusPanel(new QScrollArea(this)), mSourcesToggle(new QPushButton(QStringLiteral("Outline"), this)),
       mViews(new QTabWidget(this)), mInspectorPanel(new QScrollArea(this)), mInspector(new QWidget(mInspectorPanel)),
       mFields(new QFormLayout), mLayoutX(new QSpinBox(mInspector)), mLayoutY(new QSpinBox(mInspector)),
       mNewKind(new QComboBox(mInspector)), mNodeCreationMessage(new QLabel(mInspector)),
@@ -551,27 +588,43 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mConfiguration->setObjectName(QStringLiteral("renderGraphConfiguration"));
     mConfiguration->setToolTip(QStringLiteral("Root configuration to validate and cook; choices are authored."));
     mConfiguration->setSizeAdjustPolicy(QComboBox::AdjustToContents);
-    QHBoxLayout* header = new QHBoxLayout(mNavigation);
+    // Two rows: what is open and which view shows it, then the configuration it builds and its commands.
+    QVBoxLayout* navigation = new QVBoxLayout(mNavigation);
+    navigation->setContentsMargins(0, 0, 0, 0);
+    QHBoxLayout* header = new QHBoxLayout;
     header->setContentsMargins(0, 0, 0, 0);
+    navigation->addLayout(header);
+    QHBoxLayout* configurationRow = new QHBoxLayout;
+    configurationRow->setContentsMargins(0, 0, 0, 0);
+    navigation->addLayout(configurationRow);
     mSourcesToggle->setObjectName(QStringLiteral("renderGraphToggleSources"));
     mSourcesToggle->setCheckable(true);
     mSourcesToggle->setChecked(QSettings().value(SOURCES_VISIBLE_KEY, true).toBool());
     mSourcesToggle->setToolTip(
-        QStringLiteral("Show or hide graph sources. View > Focus Viewport maximizes the graph."));
+        QStringLiteral("Show or hide the graph outline: its files, configurations and nodes. The Source view hides it "
+                       "to give the code room. View > Focus Viewport maximizes the graph."));
     header->addWidget(mSourcesToggle);
+    // Which view of the graph is shown: a segmented control beside what is open, filled in once the views exist.
+    QWidget* modes = new QWidget(this);
+    modes->setObjectName(QStringLiteral("renderGraphModes"));
+    QHBoxLayout* modesLayout = new QHBoxLayout(modes);
+    modesLayout->setContentsMargins(0, 0, 0, 0);
+    modesLayout->setSpacing(0);
+    header->addWidget(modes);
     header->addWidget(mPath, 1);
-    header->addWidget(new QLabel(QStringLiteral("Configuration"), this));
-    header->addWidget(mConfiguration);
+    configurationRow->addWidget(new QLabel(QStringLiteral("Configuration"), this));
+    configurationRow->addWidget(mConfiguration);
+    configurationRow->addStretch(1);
     QPushButton* editInterface = new QPushButton(QStringLiteral("Edit Inputs / Outputs..."), this);
     editInterface->setObjectName(QStringLiteral("renderGraphEditInterface"));
-    header->addWidget(editInterface);
+    configurationRow->addWidget(editInterface);
     connect(editInterface, &QPushButton::clicked, this, &RendererWorkspace::editConfigurationInterface);
     connect(this, &RendererWorkspace::CommandsChanged, editInterface, [this, editInterface]() {
         editInterface->setEnabled(CanCreateSubgraph());
     });
     QPushButton* createSubgraph = new QPushButton(QStringLiteral("Create Subgraph..."), this);
     createSubgraph->setObjectName(QStringLiteral("renderGraphCreateSubgraph"));
-    header->addWidget(createSubgraph);
+    configurationRow->addWidget(createSubgraph);
     connect(createSubgraph, &QPushButton::clicked, this, [this]() { static_cast<void>(PromptCreateSubgraph()); });
     connect(this, &RendererWorkspace::CommandsChanged, createSubgraph, [this, createSubgraph]() {
         createSubgraph->setEnabled(CanCreateSubgraph());
@@ -579,7 +632,8 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
 
     mTree->setObjectName(QStringLiteral("renderGraphTree"));
     ConfigureItemSelection(*mTree);
-    mTree->setHeaderLabel(QStringLiteral("Graph sources"));
+    mTree->setHeaderLabel(QStringLiteral("Outline"));
+    mTree->setItemDelegate(new PathItemDelegate(mTree));
     mTree->setContextMenuPolicy(Qt::CustomContextMenu);
 
     // Inspector: fields of the selected node, its layout position, node creation and the
@@ -677,6 +731,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     QWidget* sourcePage = new QWidget(this);
     QVBoxLayout* sourceLayout = new QVBoxLayout(sourcePage);
     mSourceFile->setObjectName(QStringLiteral("renderGraphSourceFile"));
+    mSourceFile->setItemDelegate(new PathItemDelegate(mSourceFile));
     mSource->setObjectName(QStringLiteral("renderGraphSource"));
     mSource->setAccessibleName(QStringLiteral("Shader and render graph source"));
     mSourceFocusToggle = new QPushButton(QStringLiteral("Focus Source"), sourcePage);
@@ -705,6 +760,9 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     sourceActions->setObjectName(QStringLiteral("renderGraphSourceActions"));
     sourceActions->setPopupMode(QToolButton::InstantPopup);
     QMenu* sourceMenu = new QMenu(sourceActions);
+    QAction* codeViewport = sourceMenu->addAction(QStringLiteral("Code and Viewport"));
+    connect(codeViewport, &QAction::triggered, this, &RendererWorkspace::CodeViewportRequested);
+    sourceMenu->addSeparator();
     for (QPushButton* button : {openCodeEditor, chooseCodeEditor, reloadSources})
     {
         button->hide();
@@ -719,14 +777,17 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mSourceStatus = new QLabel(sourcePage);
     mSourceStatus->setObjectName(QStringLiteral("renderGraphSourceStatus"));
     mSourceStatus->setTextFormat(Qt::PlainText);
-    mSourceStatus->setWordWrap(true);
-    mSourceStatus->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    // Status changes must not resize the editor; the tooltip retains the full message.
+    mSourceStatus->setWordWrap(false);
+    mSourceStatus->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     sourceLayout->addWidget(mSourceStatus);
 #if defined(Q_OS_WASM)
     openCodeEditor->setEnabled(false);
     chooseCodeEditor->setEnabled(false);
     openCodeEditor->setToolTip(QStringLiteral("External code editors are available in the native Ludus editor."));
 #endif
+    mSourceAssistance = new RenderGraphShaderAssistance(mDocument, *mSource, *mSourceController, mTooling, sourcePage);
+    sourceLayout->addWidget(mSourceAssistance);
     QWidget* interfacePage = CreateShaderInterfaceView(mSourceInterface, sourcePage);
     mSourceSplit = new QSplitter(Qt::Horizontal, sourcePage);
     mSourceSplit->setObjectName(QStringLiteral("renderGraphSourceSplitter"));
@@ -787,6 +848,40 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mTextureViewerOrNull = new TextureViewer(this);
     mViews->insertTab(TEXTURES_VIEW, mTextureViewerOrNull, QStringLiteral("Textures"));
 #endif
+    // The views are chosen from the header's segmented control, not from a tab bar under the document.
+    if (QTabBar* tabBarOrNull = mViews->findChild<QTabBar*>(QString(), Qt::FindDirectChildrenOnly))
+    {
+        tabBarOrNull->hide();
+    }
+    QButtonGroup* modeGroup = new QButtonGroup(modes);
+    modeGroup->setExclusive(true);
+    for (int index = 0; index < mViews->count(); ++index)
+    {
+        QPushButton* mode = new QPushButton(mViews->tabText(index), modes);
+        mode->setObjectName(QStringLiteral("renderGraphMode%1").arg(mViews->tabText(index)));
+        mode->setCheckable(true);
+        mode->setChecked(index == mViews->currentIndex());
+        mode->setProperty("visualRole", QStringLiteral("segment"));
+        const bool isFirst = index == 0;
+        const bool isLast = index == mViews->count() - 1;
+        mode->setProperty("segmentPosition",
+                          isFirst == true && isLast == true ? QStringLiteral("only")
+                          : isFirst == true                 ? QStringLiteral("first")
+                          : isLast == true                  ? QStringLiteral("last")
+                                                            : QStringLiteral("middle"));
+        mode->setToolTip(QStringLiteral("Show the %1 view").arg(mViews->tabText(index)));
+        mode->setAccessibleDescription(QStringLiteral("View of the render graph"));
+        modesLayout->addWidget(mode);
+        modeGroup->addButton(mode, index);
+    }
+    connect(modeGroup, &QButtonGroup::idClicked, mViews, &QTabWidget::setCurrentIndex);
+    connect(mViews, &QTabWidget::currentChanged, modeGroup, [modeGroup](int index) {
+        QAbstractButton* buttonOrNull = modeGroup->button(index);
+        if (buttonOrNull != nullptr)
+        {
+            buttonOrNull->setChecked(true);
+        }
+    });
 
     mStatus->setObjectName(QStringLiteral("renderGraphStatus"));
     mStatus->setTextFormat(Qt::PlainText);
@@ -821,7 +916,9 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         {
             QSettings().setValue(SPLITTER_STATE_KEY, horizontal->saveState());
         }
-        mTree->setVisible(isVisible);
+        // Choosing in the Source view is the user's own answer, so leaving it changes nothing.
+        mIsOutlineRestoredAfterSource = false;
+        updateChromeVisibility();
         if (isVisible == true)
         {
             static_cast<void>(horizontal->restoreState(QSettings().value(SPLITTER_STATE_KEY).toByteArray()));
@@ -840,6 +937,26 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         if (isVisible == true)
         {
             QSettings().setValue(SPLITTER_STATE_KEY, horizontal->saveState());
+        }
+    });
+    // The Source view is for reading code: the outline steps aside there and returns with the next view.
+    connect(mViews, &QTabWidget::currentChanged, this, [this](int index) {
+        if (index == SOURCE_VIEW)
+        {
+            if (mSourcesToggle->isChecked() == true && mTree->isVisibleTo(this) == true)
+            {
+                mIsOutlineRestoredAfterSource = true;
+                const QSignalBlocker blocker(mSourcesToggle);
+                mSourcesToggle->setChecked(false);
+                mTree->setVisible(false);
+            }
+        }
+        else if (mIsOutlineRestoredAfterSource == true)
+        {
+            mIsOutlineRestoredAfterSource = false;
+            const QSignalBlocker blocker(mSourcesToggle);
+            mSourcesToggle->setChecked(true);
+            mTree->setVisible(mIsChromeVisible);
         }
     });
     QWidget* emptyPage = new QWidget(this);
@@ -913,6 +1030,25 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         static_cast<void>(buildAndPreview(RenderGraphSource::Saved));
     });
     connect(mTree, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem* current, QTreeWidgetItem*) {
+        if (current != nullptr)
+        {
+            // The outline opens the displayed configuration and closes its siblings, wherever the
+            // selection came from.
+            QTreeWidgetItem* configurationItem = current;
+            while (configurationItem->parent() != nullptr && configurationItem->parent()->parent() != nullptr)
+            {
+                configurationItem = configurationItem->parent();
+            }
+            if (configurationItem->parent() != nullptr)
+            {
+                QTreeWidgetItem* fileItem = configurationItem->parent();
+                fileItem->setExpanded(true);
+                for (int index = 0; index < fileItem->childCount(); ++index)
+                {
+                    fileItem->child(index)->setExpanded(fileItem->child(index) == configurationItem);
+                }
+            }
+        }
         if (mIsRendering == true || current == nullptr)
         {
             return;
@@ -1107,6 +1243,11 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mRayPathsOrNull = new RayPathInspection(this);
     mRayPathsOrNull->SetPreview(mPreviewOrNull);
     connect(mRayPathsOrNull, &RayPathInspection::BuildRequested, this, &RendererWorkspace::startRayPathBuild);
+    mCaptureProfileOrNull = new RenderGraphCaptureProfile(this);
+    connect(mCaptureProfileOrNull,
+            &RenderGraphCaptureProfile::BuildRequested,
+            this,
+            &RendererWorkspace::startCaptureProfileBuild);
     connect(mPreviewOrNull, &RenderGraphPreview::RayPathCaptureChanged, &mPreviewPump, &ViewportFramePump::Wake);
     connect(&mPreviewPump, &ViewportFramePump::WorkRequested, this, &RendererWorkspace::ServicePreview);
     connect(mPreviewOrNull, &RenderGraphPreview::FramePresented, &mPreviewPump, &ViewportFramePump::Wake);
@@ -1198,8 +1339,9 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     connect(mSourceController, &CodeDocumentController::TextAccepted, this, [this]() {
         // History is immediate. Expensive tree/interface/watch refresh stays coalesced.
         mSourceEditDebounce.start();
-        mSourceStatus->setText(QStringLiteral("Draft r%1 · Unsaved · Save publishes files. Preview retained.")
-                                   .arg(mDocument.GetRevision()));
+        SetSourceStatus(*mSourceStatus,
+                        QStringLiteral("Draft r%1 · Unsaved · Save publishes files. Preview retained.")
+                            .arg(mDocument.GetRevision()));
         Q_EMIT CommandsChanged();
     });
     connect(&mSourceEditDebounce, &QTimer::timeout, this, &RendererWorkspace::applySourceEdit);
@@ -1243,6 +1385,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
             Q_EMIT DocumentChanged();
         }
     });
+    connect(mViews, &QTabWidget::currentChanged, this, [this]() { updateChromeVisibility(); });
     renderStatus();
     renderPreview();
 }
@@ -1267,10 +1410,26 @@ void RendererWorkspace::SetChromeVisible(bool isVisible)
         mViews->setCurrentIndex(mFocusRestoreView);
     }
     mSourceFocusToggle->setText(isVisible == true ? QStringLiteral("Focus Source") : QStringLiteral("Restore Layout"));
+    updateChromeVisibility();
+}
+
+void RendererWorkspace::SetSourceCompanionLayout(bool shouldUseCompactSource)
+{
+    if (mShouldUseCompactSource != shouldUseCompactSource)
+    {
+        mShouldUseCompactSource = shouldUseCompactSource;
+        updateChromeVisibility();
+    }
+}
+
+void RendererWorkspace::updateChromeVisibility()
+{
+    const bool shouldShowNavigation =
+        mIsChromeVisible == true && (mShouldUseCompactSource == false || mViews->currentIndex() != SOURCE_VIEW);
     updateSourceInterfaceVisibility();
-    mNavigation->setVisible(isVisible);
-    mStatusPanel->setVisible(isVisible);
-    mTree->setVisible(isVisible == true && mSourcesToggle->isChecked() == true);
+    mNavigation->setVisible(shouldShowNavigation);
+    mStatusPanel->setVisible(shouldShowNavigation);
+    mTree->setVisible(shouldShowNavigation == true && mSourcesToggle->isChecked() == true);
 }
 
 void RendererWorkspace::FocusActiveView()
@@ -1285,10 +1444,89 @@ void RendererWorkspace::FocusActiveView()
     }
 }
 
+bool RendererWorkspace::ShowSourceView()
+{
+    if (mDocument.IsLoaded() == false || mSourceFile->count() == 0)
+    {
+        return false;
+    }
+    if (mViews->currentIndex() != SOURCE_VIEW)
+    {
+        const QStringList shaders = GetSelectedShaderSources();
+        if (shaders.isEmpty() == false)
+        {
+            mSourceFile->setCurrentText(shaders.first());
+        }
+        else if (mSourceFile->currentText().endsWith(QStringLiteral(".slang")) == false)
+        {
+            for (int32 index = 0; index < mSourceFile->count(); ++index)
+            {
+                if (mSourceFile->itemText(index).endsWith(QStringLiteral(".slang")) == true)
+                {
+                    mSourceFile->setCurrentIndex(index);
+                    break;
+                }
+            }
+        }
+    }
+    mViews->setCurrentIndex(SOURCE_VIEW);
+    FocusActiveView();
+    return true;
+}
+
+QJsonObject RendererWorkspace::GetSourceViewState() const
+{
+    if (mProjectRoot.isEmpty() == true || mDocument.IsLoaded() == false)
+    {
+        return {};
+    }
+    const QString graph =
+        QDir(mProjectRoot).relativeFilePath(QDir(mDocument.GetPackageRoot()).filePath(mDocument.GetRootGraph()));
+    return {{QStringLiteral("version"), SOURCE_VIEW_STATE_VERSION},
+            {QStringLiteral("graph"), graph},
+            {QStringLiteral("builtIn"), mDocument.IsBuiltIn()},
+            {QStringLiteral("source"), mSourceFile->currentText()},
+            {QStringLiteral("view"), mViews->currentIndex()}};
+}
+
+bool RendererWorkspace::RestoreSourceViewState(const QJsonObject& state)
+{
+    const QString graph = state.value(QStringLiteral("graph")).toString();
+    const int32 view = state.value(QStringLiteral("view")).toInt(-1);
+    if (mProjectRoot.isEmpty() == true || state.value(QStringLiteral("version")).toInt() != SOURCE_VIEW_STATE_VERSION ||
+        state.value(QStringLiteral("builtIn")).isBool() == false ||
+        state.value(QStringLiteral("source")).isString() == false || graph.isEmpty() == true ||
+        QDir::isAbsolutePath(graph) == true || QDir::cleanPath(graph) != graph || graph == QStringLiteral("..") ||
+        graph.startsWith(QStringLiteral("../")) == true || view < 0 || view >= mViews->count())
+    {
+        return false;
+    }
+    const QJsonObject current = GetSourceViewState();
+    if (current.value(QStringLiteral("graph")) != state.value(QStringLiteral("graph")) ||
+        current.value(QStringLiteral("builtIn")) != state.value(QStringLiteral("builtIn")))
+    {
+        // Preferences cannot discard an accepted draft. OpenGraph validates the canonical
+        // project boundary (including symlinks) and publishes a loaded candidate atomically.
+        if (mDocument.IsDirty() == true || state.value(QStringLiteral("builtIn")).toBool() == true ||
+            OpenGraph(QDir(mProjectRoot).filePath(graph)) == false)
+        {
+            return false;
+        }
+    }
+    const int32 sourceIndex = mSourceFile->findText(state.value(QStringLiteral("source")).toString());
+    if (sourceIndex >= 0)
+    {
+        mSourceFile->setCurrentIndex(sourceIndex);
+    }
+    mViews->setCurrentIndex(view);
+    return true;
+}
+
 RendererWorkspace::~RendererWorkspace()
 {
     delete mResourceInspectorOrNull;
     mResourceInspectorOrNull = nullptr;
+    delete mSourceAssistance;
     delete mSourceFormatter;
     delete mSourceController;
 }
@@ -2209,6 +2447,17 @@ void RendererWorkspace::startRayPathBuild()
                           QStringLiteral("--configuration"),
                           configuration};
     appendBuildToolArguments(arguments);
+    appendWorkerSocketArgument(arguments);
+    if (startJob(QStringLiteral("ray-path-capture"), arguments, false) == false)
+    {
+        mRayPathsOrNull->RejectBuild(mStatus->text());
+    }
+#endif
+}
+
+void RendererWorkspace::appendWorkerSocketArgument(QStringList& inoutArguments)
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     QString endpoint = mBuildSettings.WorkerSocket;
     if (endpoint.isEmpty() == true)
     {
@@ -2221,12 +2470,98 @@ void RendererWorkspace::startRayPathBuild()
     }
     if (endpoint.isEmpty() == false)
     {
-        arguments += {QStringLiteral("--worker-socket"), endpoint};
+        inoutArguments += {QStringLiteral("--worker-socket"), endpoint};
     }
-    if (startJob(QStringLiteral("ray-path-capture"), arguments, false) == false)
+#else
+    static_cast<void>(inoutArguments);
+#endif
+}
+
+void RendererWorkspace::startCaptureProfileBuild(const QByteArray& generationIdentity)
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    const QString hexIdentity = QString::fromLatin1(generationIdentity.toHex());
+    const QString build = buildDirectory();
+    const QString generation =
+        build.isEmpty() == true ? QString{} : QDir(build).filePath(QStringLiteral("generations/") + hexIdentity);
+    // Without saved sources, as for the prebuilt engine default, the runtime package is what can be captured.
+    if (generationIdentity.isEmpty() == true || generation.isEmpty() == true || QFileInfo(generation).isDir() == false)
     {
-        mRayPathsOrNull->RejectBuild(mStatus->text());
+        mCaptureProfileOrNull->AcceptBuild(generationIdentity, {});
+        return;
     }
+    // A generation's profile is deterministic, so one compiled for this generation is reused.
+    const QString profiles = QDir::cleanPath(QDir(build).filePath(QStringLiteral("../capture-profiles")));
+    const QString destination = QDir(profiles).filePath(hexIdentity + QStringLiteral(".lurgcp"));
+    if (QFileInfo(destination).isFile() == true)
+    {
+        mCaptureProfileOrNull->AcceptBuild(generationIdentity, destination);
+        return;
+    }
+    if (IsJobActive() == true)
+    {
+        mCaptureProfileOrNull->RejectBuild(generationIdentity,
+                                           QStringLiteral("Another render-graph job is running; capture again once "
+                                                          "it finishes to build the capture profile."));
+        return;
+    }
+    if (QDir().mkpath(profiles) == false)
+    {
+        mCaptureProfileOrNull->RejectBuild(
+            generationIdentity,
+            QStringLiteral("The capture profile folder %1 cannot be created.").arg(QDir::toNativeSeparators(profiles)));
+        return;
+    }
+    const QString configuration = mConfiguration->currentText() == DEFAULT_CONFIGURATION
+                                      ? QStringLiteral("Default")
+                                      : mConfiguration->currentText();
+    QStringList arguments{generation,
+                          QDir::cleanPath(QDir(build).filePath(QStringLiteral("../capture-profile"))),
+                          destination,
+                          QStringLiteral("--configuration"),
+                          configuration};
+    appendBuildToolArguments(arguments);
+    appendWorkerSocketArgument(arguments);
+    mCaptureProfileIdentity = generationIdentity;
+    mCaptureProfilePackage = destination;
+    if (startJob(QStringLiteral("capture-profile"), arguments, false) == false)
+    {
+        mCaptureProfileOrNull->RejectBuild(generationIdentity, mStatus->text());
+    }
+#else
+    static_cast<void>(generationIdentity);
+#endif
+}
+
+void RendererWorkspace::finishCaptureProfileBuild(const RenderGraphJobResult& result)
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (result.IsSuccessful == false)
+    {
+        mCaptureProfileOrNull->RejectBuild(mCaptureProfileIdentity,
+                                           result.IsCancelled == true
+                                               ? QStringLiteral("The capture profile build was cancelled.")
+                                               : QStringLiteral("%1: %2").arg(result.Code, result.Message));
+        return;
+    }
+    // A null profile means the graph declares no larger capture budget: the runtime package captures it.
+    if (result.Payload.value(QStringLiteral("capture_profile")).isNull() == true)
+    {
+        mCaptureProfileOrNull->AcceptBuild(mCaptureProfileIdentity, {});
+        return;
+    }
+    // Profiles of earlier generations are never drawn again; keep only this one and its resource names.
+    const QFileInfo profile(mCaptureProfilePackage);
+    for (const QFileInfo& entry : profile.dir().entryInfoList(QDir::Files))
+    {
+        if (entry.fileName().startsWith(profile.completeBaseName()) == false)
+        {
+            QFile::remove(entry.filePath());
+        }
+    }
+    mCaptureProfileOrNull->AcceptBuild(mCaptureProfileIdentity, mCaptureProfilePackage);
+#else
+    static_cast<void>(result);
 #endif
 }
 
@@ -2303,6 +2638,7 @@ void RendererWorkspace::SetBuildSettings(const RenderGraphBuildSettings& setting
         preferences.setValue(WORKER_SOCKET_KEY, settings.WorkerSocket);
     }
     mBuildSettings = settings;
+    mSourceAssistance->Update(mProjectRoot, mEpoch, manifestFile(), mSourceFile->currentText(), mBuildSettings);
 }
 
 void RendererWorkspace::AcceptResult(const RenderGraphJobResult& result)
@@ -2321,6 +2657,12 @@ void RendererWorkspace::AcceptResult(const RenderGraphJobResult& result)
         {
             mRayPathsOrNull->RejectBuild(QStringLiteral("The project or graph changed while the capture variant "
                                                         "compiled; capture again."));
+        }
+        if (result.Request.Action == QStringLiteral("capture-profile") && mCaptureProfileOrNull != nullptr)
+        {
+            mCaptureProfileOrNull->RejectBuild(mCaptureProfileIdentity,
+                                               QStringLiteral("The project or graph changed while the capture "
+                                                              "profile compiled; capture again."));
         }
 #endif
         Q_EMIT JobFinished();
@@ -2375,6 +2717,10 @@ void RendererWorkspace::AcceptResult(const RenderGraphJobResult& result)
         static_cast<void>(PreviewRuntime(result.Request.Source));
     }
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (result.Request.Action == QStringLiteral("capture-profile") && mCaptureProfileOrNull != nullptr)
+    {
+        finishCaptureProfileBuild(result);
+    }
     if (result.Request.Action == QStringLiteral("ray-path-capture") && mRayPathsOrNull != nullptr)
     {
         if (result.IsSuccessful == true)
@@ -2392,14 +2738,19 @@ void RendererWorkspace::AcceptResult(const RenderGraphJobResult& result)
     renderStatus();
     if (result.IsSuccessful == false)
     {
-        // The Error List shows every row; the status line names the first.
-        mStatus->setText(
-            QStringLiteral("%1 failed - %2: %3 [%4]. Preview unchanged.")
-                .arg(result.Request.Action, result.Code, result.Message, DescribeLocation(result.Location)));
+        // The Error List has the text of every problem; this line only says how many and where to look.
+        mStatus->setText(QStringLiteral("%1 failed - %2: %3, listed in the Error List [%4]. Preview unchanged.")
+                             .arg(result.Request.Action,
+                                  result.Code,
+                                  DescribeProblemCount(result),
+                                  DescribeLocation(result.Location)));
         if (result.Request.ShouldPreview == true &&
             result.Request.InputIdentity == getBuildIdentity(result.Request.Source))
         {
-            setProblem(mBuildProblem, mStatus->text());
+            // The preview's own problem line keeps the compiler's words, since it replaces the picture.
+            setProblem(mBuildProblem,
+                       QStringLiteral("%1 failed - %2: %3 [%4]. Preview unchanged.")
+                           .arg(result.Request.Action, result.Code, result.Message, DescribeLocation(result.Location)));
         }
     }
     Q_EMIT JobFinished();
@@ -2539,7 +2890,23 @@ void RendererWorkspace::renderTree(bool shouldRefreshInspector, QWidget* editOri
             }
         }
     }
-    mTree->expandAll();
+    // An outline, not a second file browser: files show their configurations, and only the displayed
+    // configuration shows its nodes.
+    mTree->expandToDepth(0);
+    if (currentOrNull != nullptr)
+    {
+        // Outermost first: a row opened inside a closed parent is forgotten when the parent opens.
+        QList<QTreeWidgetItem*> path;
+        for (QTreeWidgetItem* ancestor = currentOrNull; ancestor != nullptr; ancestor = ancestor->parent())
+        {
+            path.prepend(ancestor);
+        }
+        for (QTreeWidgetItem* item : path)
+        {
+            mTree->expandItem(item);
+        }
+        mTree->scrollToItem(currentOrNull);
+    }
     const int32 configurationIndex = mConfiguration->findText(selectedConfiguration);
     mConfiguration->setCurrentIndex(configurationIndex >= 0 ? configurationIndex : 0);
     if (currentOrNull != nullptr)
@@ -3176,8 +3543,7 @@ void RendererWorkspace::renderSourceStatus()
 {
     if (mDocument.IsLoaded() == false)
     {
-        mSourceStatus->setText(QStringLiteral("Open a render graph to edit its sources."));
-        mSourceStatus->setToolTip({});
+        SetSourceStatus(*mSourceStatus, QStringLiteral("Open a render graph to edit its sources."));
         return;
     }
     QString state =
@@ -3244,15 +3610,15 @@ void RendererWorkspace::renderSourceStatus()
 #else
     state += QStringLiteral(" GPU preview unavailable in this editor build.");
 #endif
-    mSourceStatus->setText(QStringLiteral("Draft r%1 · %2").arg(mDocument.GetRevision()).arg(state));
-    const QString problem = GetRenderProblem();
-    mSourceStatus->setToolTip(problem.isEmpty() == true ? QString()
-                                                        : QStringLiteral("<pre>%1</pre>").arg(problem.toHtmlEscaped()));
+    SetSourceStatus(*mSourceStatus,
+                    QStringLiteral("Draft r%1 · %2").arg(mDocument.GetRevision()).arg(state),
+                    GetRenderProblem());
 }
 
 void RendererWorkspace::renderSource()
 {
     const QString file = mSourceFile->currentText();
+    mSourceAssistance->Update(mProjectRoot, mEpoch, manifestFile(), file, mBuildSettings);
     mSourceDocument.Bind(file, mEpoch);
     mSourceController->Bind(file.isEmpty() == false && mDocument.IsLoaded() == true ? &mSourceDocument : nullptr);
     if (file.isEmpty() == true)
@@ -3590,6 +3956,56 @@ bool RendererWorkspace::RemoveUnusedShaders()
     return status == RenderGraphDocumentStatus::Ok;
 }
 
+bool RendererWorkspace::RemoveSelectedSubgraphLibrary()
+{
+    if (CanRemoveUnusedShaders() == false || ReloadSourcesFromDisk() == false)
+    {
+        mStatus->setText(QStringLiteral("Wait for the running job and resolve external source conflicts before "
+                                        "deleting a Subgraph and its library."));
+        return false;
+    }
+    const QString node = mSelectedNode;
+    if (mSelectedNodes.size() > 1 ||
+        selectedNode().value(QStringLiteral("kind")).toString() != QStringLiteral("Subgraph"))
+    {
+        mStatus->setText(QStringLiteral("Select one Subgraph node on the canvas to delete it with its library."));
+        return false;
+    }
+    mSourceEditDebounce.stop();
+    mSourceController->BreakUndoGroup();
+    RenderGraphLibraryRemoval removal;
+    QString error;
+    const RenderGraphDocumentStatus status =
+        mDocument.RemoveSubgraphLibrary(mSelectedFile, mCanvas->GetConfiguration(), node, removal, error);
+    if (status == RenderGraphDocumentStatus::Ok)
+    {
+        mSelectedNode.clear();
+        mSelectedNodes.clear();
+    }
+    documentEdited(status);
+    if (status != RenderGraphDocumentStatus::Ok)
+    {
+        mStatus->setText(error);
+    }
+    else if (removal.Graphs.isEmpty() == true)
+    {
+        mStatus->setText(
+            QStringLiteral("Deleted Subgraph %1. Its library is still used by %2, so the library and its "
+                           "shaders were kept. Save to publish; Undo to restore.")
+                .arg(node, removal.RetainedBy.isEmpty() == true ? QStringLiteral("the package") : removal.RetainedBy));
+    }
+    else
+    {
+        mStatus->setText(QStringLiteral("Deleted Subgraph %1 with %2, %3 shader programs and %4 source files from the "
+                                        "draft. Sources other shaders include were kept. Save to publish; Undo to "
+                                        "restore.")
+                             .arg(node, removal.Graphs.join(QStringLiteral(", ")))
+                             .arg(removal.Programs.size())
+                             .arg(removal.Sources.size()));
+    }
+    return status == RenderGraphDocumentStatus::Ok;
+}
+
 bool RendererWorkspace::CanCreateSubgraph() const
 {
     return mDocument.IsLoaded() == true && mCanvas->GetConfiguration().isEmpty() == false && IsJobActive() == false &&
@@ -3839,6 +4255,10 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition, bool i
         createConfiguration->setObjectName(QStringLiteral("renderGraphAddConfiguration"));
         createConfiguration->setEnabled(mDocument.IsLoaded() == true);
         connect(createConfiguration, &QAction::triggered, this, &RendererWorkspace::promptCreateConfiguration);
+        QAction* duplicateConfiguration = configurations->addAction(QStringLiteral("Duplicate Configuration..."));
+        duplicateConfiguration->setObjectName(QStringLiteral("renderGraphDuplicateConfiguration"));
+        duplicateConfiguration->setEnabled(CanCreateSubgraph() == true && selectedConfiguration().isEmpty() == false);
+        connect(duplicateConfiguration, &QAction::triggered, this, &RendererWorkspace::promptDuplicateConfiguration);
         QAction* configurationTemplate = configurations->addAction(QStringLiteral("Apply Configuration Template..."));
         configurationTemplate->setObjectName(QStringLiteral("renderGraphApplyConfigurationTemplate"));
         configurationTemplate->setEnabled(CanCreateSubgraph());
@@ -3849,6 +4269,14 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition, bool i
         connect(removeConfiguration, &QAction::triggered, this, [this]() {
             static_cast<void>(RemoveSelectedConfiguration());
         });
+        QJsonObject selectedGraph;
+        QAction* duplicateGraph = menu.addAction(QStringLiteral("Duplicate Graph..."));
+        duplicateGraph->setObjectName(QStringLiteral("renderGraphDuplicateGraph"));
+        duplicateGraph->setToolTip(QStringLiteral("Copy this graph file and all its configurations as a new graph in "
+                                                  "the package."));
+        duplicateGraph->setEnabled(CanCreateSubgraph() == true &&
+                                   mDocument.GetGraph(mSelectedFile, selectedGraph) == true);
+        connect(duplicateGraph, &QAction::triggered, this, &RendererWorkspace::promptDuplicateGraph);
         menu.addSeparator();
     }
     if (isNodeContext == true)
@@ -4028,6 +4456,19 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition, bool i
         remove->setObjectName(QStringLiteral("renderGraphRemoveNodeAction"));
         remove->setEnabled(true);
         connect(remove, &QAction::triggered, this, &RendererWorkspace::RemoveSelectedNodes);
+        if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Subgraph"))
+        {
+            QAction* removeLibrary = menu.addAction(QStringLiteral("Delete Subgraph and Library"));
+            removeLibrary->setObjectName(QStringLiteral("renderGraphRemoveSubgraphLibraryAction"));
+            removeLibrary->setEnabled(CanRemoveUnusedShaders());
+            removeLibrary->setToolTip(
+                QStringLiteral("Delete this node, its library graph unless another graph uses it, and the shader "
+                               "programs and sources only that library uses, such as an applied template's files. "
+                               "One undoable edit; Save publishes the deletions."));
+            connect(removeLibrary, &QAction::triggered, this, [this]() {
+                static_cast<void>(RemoveSelectedSubgraphLibrary());
+            });
+        }
     }
     if (isNodeContext == false && mCustomize->isVisible() == true)
     {

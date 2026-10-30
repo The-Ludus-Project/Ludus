@@ -13,35 +13,85 @@
 // Thanks to Chris Wyman, "Weighted Reservoir Sampling: Randomly Sampling Streams", Ray Tracing Gems II, chapter 22,
 // 2021, for the single-sample, with-replacement streaming update, used through FoundationMath's
 // weighted_reservoir.slang.
-// RIS_CANDIDATE_COUNT and RIS_NORMALIZATION_CANDIDATE_COUNT are Graph settings (main.lushader.json); the builder
-// declares them before this source and validates their ranges against the maximums in hit_record.slang.
+// RIS_CANDIDATE_COUNT, RIS_NORMALIZATION_CANDIDATE_COUNT and RIS_TARGET are Graph settings (main.lushader.json); the
+// builder declares them before this source and validates their ranges against the maximums in hit_record.slang.
+// RIS_TARGET selects how p-hat evaluates E_0 and E_1: RIS_TARGET_EXACT clips and integrates both polygons of every
+// candidate; RIS_TARGET_FORM_FACTOR uses Hill and Heitz's approximation (TryApproximateTriangleLightIntegrals). Either
+// target is positive wherever the triangle has area above the horizon and positive emission, so both estimate the
+// same integral; the choice changes only variance and cost. The selected light's samples, densities and MIS
+// coefficients always use the exact polygons.
 
 // The settings clamped to the dimension table's capacity; the builder already rejects larger values.
 static const uint RIS_ACTIVE_CANDIDATE_COUNT =
     RIS_CANDIDATE_COUNT < RIS_MAX_CANDIDATE_COUNT ? RIS_CANDIDATE_COUNT : RIS_MAX_CANDIDATE_COUNT;
+static const uint RIS_TARGET_EXACT = 0;
+static const uint RIS_TARGET_FORM_FACTOR = 1;
 static const uint RIS_ACTIVE_NORMALIZATION_CANDIDATE_COUNT =
     RIS_NORMALIZATION_CANDIDATE_COUNT < RIS_MAX_NORMALIZATION_CANDIDATE_COUNT ? RIS_NORMALIZATION_CANDIDATE_COUNT
                                                                               : RIS_MAX_NORMALIZATION_CANDIDATE_COUNT;
 
-/// One emissive triangle evaluated for one receiver.
+/// One emissive triangle evaluated for one receiver and prepared for both light techniques.
 struct EmissiveTriangleTarget
 {
     TriangleData Triangle;
     TriangleLightPolygons Polygons;
-    /// (c_0, c_1); their sum is Target.
+    /// (c_0, c_1) from the exact integrals: Peters' MIS coefficients.
     float2 Coefficients;
-    /// p-hat: Y(L) (Y(a_0) E_0 + Y(a_1) E_1), zero for a one-sided emitter seen from behind.
+    /// p-hat as RIS_TARGET evaluates it; Coefficients.x + Coefficients.y for RIS_TARGET_EXACT. Zero for a one-sided
+    /// emitter seen from behind.
     float Target;
     /// Y(L), the luminance of the triangle's constant emission factor (zero from behind).
     float EmissionLuminance;
 };
 
-/// Evaluate p-hat for a scene triangle. The constant emission factor bounds textured emission from above, so the
-/// target needs no texture lookup. Returns false for an invalid triangle or material or a nonfinite polygon.
+/// Load a scene triangle and the luminance of its constant emission factor towards the receiver. Returns false for
+/// an invalid triangle or material.
+bool TryLoadEmissiveTriangle(SceneContext scene,
+                             ReceiverLightingFrame frame,
+                             uint triangleIndex,
+                             out TriangleData outTriangle,
+                             out float outEmissionLuminance)
+{
+    outEmissionLuminance = 0;
+    outTriangle = GetTriangle(scene, triangleIndex);
+    if (outTriangle.IsValid == false)
+        return false;
+    MaterialSample material = GetMaterial(scene, outTriangle.MaterialIndex);
+    if (material.IsValid == false)
+        return false;
+    // A planar triangle faces the receiver from every point on it, as EvaluateEmission tests at one point.
+    if (material.IsEmissionTwoSided == true ||
+        dot(outTriangle.GeometricNormalWorld, frame.PositionWorld - outTriangle.Position0World) > 0)
+        outEmissionLuminance = ComputeLuminance(max(material.Emission, float3(0)));
+    return true;
+}
+
+/// p-hat from RIS_TARGET_FORM_FACTOR's approximate integrals; the exact target is the coefficients' sum.
+bool TryApproximateEmissiveTriangleTarget(ReceiverLightingFrame frame,
+                                          TriangleData triangle,
+                                          float emissionLuminance,
+                                          out float outTarget)
+{
+    outTarget = 0;
+    float2 integrals;
+    if (TryApproximateTriangleLightIntegrals(frame,
+                                             triangle.Position0World,
+                                             triangle.Position1World,
+                                             triangle.Position2World,
+                                             integrals) == false)
+        return false;
+    float2 coefficients = ComputeLightTechniqueCoefficientsFromIntegrals(frame, integrals, emissionLuminance);
+    outTarget = coefficients.x + coefficients.y;
+    return IsFiniteBits(outTarget);
+}
+
+/// Evaluate p-hat for a scene triangle and prepare its exact polygons, for the selected triangle and BSDF hits. The
+/// constant emission factor bounds textured emission from above, so the target needs no texture lookup. Returns false
+/// for an invalid triangle or material or a nonfinite polygon or target.
 // Thanks to the Slang authors, core module noinline attribute reference:
 // https://docs.shader-slang.org/en/latest/external/core-module-reference/attributes/noinline.html
-// One copy of the two unrolled polygon preparations serves every candidate, normalization and BSDF-hit site, which
-// keeps the generated Metal artifact below its size limit.
+// One copy of the two unrolled polygon preparations serves every site, which keeps the generated Metal artifact below
+// its size limit.
 [noinline] bool TryEvaluateEmissiveTriangleTarget(SceneContext scene,
                                                   ReceiverLightingFrame frame,
                                                   uint triangleIndex,
@@ -50,17 +100,8 @@ struct EmissiveTriangleTarget
     outTarget.Polygons.Diffuse = MakeEmptyProjectedSolidAnglePolygon(false);
     outTarget.Polygons.Specular.TransformedPolygon = MakeEmptyProjectedSolidAnglePolygon(false);
     outTarget.Polygons.Specular.Distribution = frame.Specular;
-    outTarget.Triangle = GetTriangle(scene, triangleIndex);
-    if (outTarget.Triangle.IsValid == false)
+    if (TryLoadEmissiveTriangle(scene, frame, triangleIndex, outTarget.Triangle, outTarget.EmissionLuminance) == false)
         return false;
-    MaterialSample material = GetMaterial(scene, outTarget.Triangle.MaterialIndex);
-    if (material.IsValid == false)
-        return false;
-    outTarget.EmissionLuminance = ComputeLuminance(max(material.Emission, float3(0)));
-    // A planar triangle faces the receiver from every point on it, as EvaluateEmission tests at one point.
-    if (material.IsEmissionTwoSided == false &&
-        dot(outTarget.Triangle.GeometricNormalWorld, frame.PositionWorld - outTarget.Triangle.Position0World) <= 0)
-        outTarget.EmissionLuminance = 0;
     if ((outTarget.EmissionLuminance > 0) == false)
         return true;
     if (TryPrepareTriangleLightPolygons(frame,
@@ -70,8 +111,16 @@ struct EmissiveTriangleTarget
                                         outTarget.Polygons) == false)
         return false;
     outTarget.Coefficients = ComputeLightTechniqueCoefficients(frame, outTarget.Polygons, outTarget.EmissionLuminance);
-    outTarget.Target = outTarget.Coefficients.x + outTarget.Coefficients.y;
-    return IsFiniteBits(outTarget.Target);
+    if (RIS_TARGET == RIS_TARGET_EXACT)
+    {
+        outTarget.Target = outTarget.Coefficients.x + outTarget.Coefficients.y;
+        return IsFiniteBits(outTarget.Target);
+    }
+    return IsFiniteBits(outTarget.Coefficients.x) == true && IsFiniteBits(outTarget.Coefficients.y) == true &&
+           TryApproximateEmissiveTriangleTarget(frame,
+                                                outTarget.Triangle,
+                                                outTarget.EmissionLuminance,
+                                                outTarget.Target);
 }
 
 /// Z-hat, the normalization estimate of the BSDF-hit surrogate density: an unbiased estimate of the target's total
@@ -88,6 +137,28 @@ TargetTotalEstimate MakeTargetTotalEstimate()
     result.Value = 0;
     result.IsReady = false;
     return result;
+}
+
+/// p-hat alone, for the reservoir's and Z-hat's candidates: the same value TryEvaluateEmissiveTriangleTarget
+/// returns, without preparing polygons under RIS_TARGET_FORM_FACTOR. Returns false as
+/// TryEvaluateEmissiveTriangleTarget does.
+[noinline] bool
+TryEvaluateResamplingTarget(SceneContext scene, ReceiverLightingFrame frame, uint triangleIndex, out float outTarget) {
+    outTarget = 0;
+    if (RIS_TARGET == RIS_TARGET_EXACT)
+    {
+        EmissiveTriangleTarget target;
+        bool isEvaluated = TryEvaluateEmissiveTriangleTarget(scene, frame, triangleIndex, target);
+        outTarget = target.Target;
+        return isEvaluated;
+    }
+    TriangleData triangle;
+    float emissionLuminance;
+    if (TryLoadEmissiveTriangle(scene, frame, triangleIndex, triangle, emissionLuminance) == false)
+        return false;
+    if ((emissionLuminance > 0) == false)
+        return true;
+    return TryApproximateEmissiveTriangleTarget(frame, triangle, emissionLuminance, outTarget);
 }
 
 /// Z-hat = (1/K) sum_k p-hat(t'_k) / p_src(t'_k) over K independent power-CDF draws from their own dimensions, so it is
@@ -107,10 +178,10 @@ bool TryEnsureTargetTotalEstimate(SceneContext scene,
             SelectEmissiveTriangle(scene, launch, RIS_NORMALIZATION_DIMENSION_FIRST + k);
         if (candidate.HasSample == false)
             continue;
-        EmissiveTriangleTarget target;
-        if (TryEvaluateEmissiveTriangleTarget(scene, frame, candidate.TriangleIndex, target) == false)
+        float target;
+        if (TryEvaluateResamplingTarget(scene, frame, candidate.TriangleIndex, target) == false)
             return false;
-        sum += target.Target / candidate.SelectionPmf;
+        sum += target / candidate.SelectionPmf;
     }
     float estimate = sum / float(RIS_ACTIVE_NORMALIZATION_CANDIDATE_COUNT);
     if (IsFiniteBits(estimate) == false)
@@ -148,12 +219,12 @@ bool TryResampleEmissiveTriangle(SceneContext scene,
         EmissiveTriangleSelection candidate = SelectEmissiveTriangle(scene, launch, dimension);
         if (candidate.HasSample == false)
             return true;
-        EmissiveTriangleTarget target;
-        if (TryEvaluateEmissiveTriangleTarget(scene, frame, candidate.TriangleIndex, target) == false)
+        float target;
+        if (TryEvaluateResamplingTarget(scene, frame, candidate.TriangleIndex, target) == false)
             return false;
         bool isSelected;
         if (TryAddReservoirCandidate(reservoir,
-                                     target.Target / candidate.SelectionPmf,
+                                     target / candidate.SelectionPmf,
                                      SampleSceneRandom(launch, dimension + 1),
                                      isSelected) == false)
             return false;
@@ -161,7 +232,7 @@ bool TryResampleEmissiveTriangle(SceneContext scene,
         {
             outSelection.TriangleIndex = candidate.TriangleIndex;
             outSelection.SelectionPmf = candidate.SelectionPmf;
-            outSelection.Target = target.Target;
+            outSelection.Target = target;
         }
     }
     if (HasReservoirSelection(reservoir) == false)

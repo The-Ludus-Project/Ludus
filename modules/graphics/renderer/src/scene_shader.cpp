@@ -1,3 +1,4 @@
+#include "internal/reference_coating.h"
 #include "internal/render_graph_ray_scene.h"
 #include "internal/scene_material_validation.h"
 #include "internal/scene_memory.h"
@@ -95,7 +96,11 @@ bool IsTextureValid(const rhi::TextureCpuContent& texture, bool isData) noexcept
 }
 bool IsMaterialValid(const SceneShaderMaterial& material) noexcept
 {
-    return material.HasError == false && ReferenceColor(material.BaseColor, 1) &&
+    return content::scene_format::IsMaterialScatteringValid(material.Scattering) == true &&
+           internal::IsReferenceCoatingSupported(material.Scattering) == true &&
+           (material.Scattering.Model != content::scene_format::MaterialModel::Conductor ||
+            material.Scattering.AlphaU == material.Scattering.AlphaV) &&
+           material.HasError == false && ReferenceColor(material.BaseColor, 1) &&
            ReferenceColor(material.Emission, MAX_EMISSION) && math::IsFinite(material.Metallic) &&
            material.Metallic >= 0 && material.Metallic <= 1 && math::IsFinite(material.Roughness) &&
            material.Roughness >= MIN_ROUGHNESS && material.Roughness <= 1 && math::IsFinite(material.NormalScale) &&
@@ -426,7 +431,8 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& source,
                     : math::Hadamard(material.BaseColor,
                                      math::Vector3{item.SurfaceTint.X, item.SurfaceTint.Y, item.SurfaceTint.Z}),
                 material.Metallic,
-                material.Roughness};
+                material.Roughness,
+                material.Scattering};
             surface.Emission = material.Emission;
             surface.IsEmissionTwoSided = material.IsEmissionTwoSided;
             surface.UvTransform = material.UvTransform;

@@ -50,7 +50,9 @@ struct LineProposal
 };
 
 /// Chord of the triangle through barycentric (b1, b2), along alongWorld in the triangle's plane.
-/// Returns false for a degenerate triangle or a chord of zero length.
+/// Returns false for a degenerate triangle or nonfinite bounds. Where the line leaves the triangle at
+/// once, as at a vertex whose interior angle excludes alongWorld, the chord is returned with zero
+/// length; IsEmitterChordQueryable rejects it.
 bool TryMakeEmitterChord(TriangleData triangle, float2 barycentric, float3 alongWorld, out EmitterChord outChord)
 {
     outChord = (EmitterChord)0;
@@ -74,8 +76,10 @@ bool TryMakeEmitterChord(TriangleData triangle, float2 barycentric, float3 along
         else if (deltas[k] < 0)
             maximum = min(maximum, -weights[k] / deltas[k]);
     }
-    if (maximum <= minimum || all(isfinite(float2(minimum, maximum))) == false)
+    if (all(isfinite(float2(minimum, maximum))) == false)
         return false;
+    // In exact arithmetic maximum == minimum only for a chord of zero length; rounding can reverse them.
+    maximum = max(maximum, minimum);
     outChord.StartBarycentric = barycentric + float2(deltaB1, deltaB2) * minimum;
     outChord.EndBarycentric = barycentric + float2(deltaB1, deltaB2) * maximum;
     float3 pointWorld = triangle.Position0World + edge1World * barycentric.x + edge2World * barycentric.y;
@@ -83,7 +87,19 @@ bool TryMakeEmitterChord(TriangleData triangle, float2 barycentric, float3 along
     outChord.Segment.EndWorld = pointWorld + alongWorld * maximum;
     outChord.Segment.TriangleIndex = triangle.TriangleIndex;
     outChord.LengthWorld = length(outChord.Segment.EndWorld - outChord.Segment.StartWorld);
-    return outChord.LengthWorld > 0;
+    return true;
+}
+
+/// True when FindVisibleLineIntervals accepts the chord's length, the same length it computes from
+/// the segment. A shorter chord lies within SCENE_UNIT_TOLERANCE of a vertex where the line direction
+/// leaves the triangle, or on an edge along the line that rounding makes it leave at once. The
+/// strategy proposes nothing there and its density there is zero, so the set of such points, which
+/// has zero area in exact arithmetic, only leaves the strategy's support (point-line design D6). The
+/// area-uniform point lands on vertex P0 exactly when its radial draw is zero, a probability of 2^-24
+/// with 24-bit draws, and the chord across the first edge through an acute P0 has zero length.
+bool IsEmitterChordQueryable(EmitterChord chord)
+{
+    return chord.LengthWorld >= SCENE_UNIT_TOLERANCE;
 }
 
 /// Barycentrics of chord parameter t in [0, 1], clamped into the triangle against rounding.
@@ -97,8 +113,9 @@ float2 GetChordBarycentric(EmitterChord chord, float t)
 /// Select a light, propose a point on it and, for a mesh light, build its U chord, find the chord's
 /// visible intervals and draw a chord parameter uniformly by length over them. Reads dimensions
 /// firstDimension to firstDimension + 3, and positionDimension, at explicit addresses. Consumes one
-/// line query for a mesh light unless the receiver lies in the emitter's plane or sees the whole
-/// chord below its horizon (both contribute zero). A failed line query latches queries.HasFailed.
+/// line query for a mesh light unless the receiver lies in the emitter's plane, the chord is too short
+/// to query (IsEmitterChordQueryable) or the receiver sees the whole chord below its horizon (all
+/// contribute zero). A failed line query latches queries.HasFailed.
 /// Returns false when there is nothing to estimate.
 bool ProposeLineU(SceneContext scene,
                   RayLaunch launch,
@@ -140,6 +157,11 @@ bool ProposeLineU(SceneContext scene,
                             outProposal.Chord) == false)
     {
         queries.HasFailed = true;
+        return false;
+    }
+    if (IsEmitterChordQueryable(outProposal.Chord) == false)
+    {
+        outProposal.HasProposal = false;
         return false;
     }
     outProposal.IsMeshChord = true;

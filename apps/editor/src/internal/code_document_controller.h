@@ -32,9 +32,10 @@ public:
     [[nodiscard]] CodeTextCapture Capture() const;
     [[nodiscard]] CodeTextSelection CaptureSelection() const;
     void RestoreSelection(CodeTextSelection selection);
-    /// Exact-identity publication. One history group; never writes a file.
+    /// Publish formatter/completion text with an exact identity. One history group;
+    /// never writes a file. Invalid/stale text preserves the accepted draft.
     [[nodiscard]] CodeEditStatus
-    ApplyFormattedText(const CodeDocumentIdentity& expected, const QByteArray& text, CodeTextSelection selection);
+    ApplyServiceText(const CodeDocumentIdentity& expected, const QByteArray& text, CodeTextSelection selection);
 
 Q_SIGNALS:
     void TextAccepted();

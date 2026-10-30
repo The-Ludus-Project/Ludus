@@ -417,7 +417,7 @@ void CodeFormatter::decodeSlice()
     }
     mResult.Text.append(mCapture.Text.constData() + mCopiedBytes, static_cast<isize>(suffix));
     const CodeTextSelection selection = mResult.MapSelection(mDocument.CaptureSelection());
-    const CodeEditStatus status = mDocument.ApplyFormattedText(mResult.Identity, mResult.Text, selection);
+    const CodeEditStatus status = mDocument.ApplyServiceText(mResult.Identity, mResult.Text, selection);
     finish(status == CodeEditStatus::Ok,
            status == CodeEditStatus::Ok
                ? QStringLiteral("Source formatted; Save publishes the draft.")

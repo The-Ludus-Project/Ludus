@@ -127,6 +127,8 @@ def select_callbacks(programs, variant):
 # retains that contract, but uses shader-local ScenePayload rather than a DXR payload.
 STATE = {'max_recursion': 1, 'payload_bytes': 0, 'attribute_bytes': 8}
 VISIBILITY_SLOT = buffers.FIRST_SLOT + buffers.MAX_BUFFERS
+# Ray uniform bytes (LUDUS_GPU_PREVIEW_PARAMETERS_BYTES), including the version 28 tile region.
+PARAMETERS_BYTES = 240
 # Diagnostic ray path capture buffer (LUDUS_RAY_PATH_CAPTURE_BINDING); uint32 words.
 RAY_PATH_CAPTURE_SLOT = 10
 RAY_PATH_CAPTURE_STRIDE = 4
@@ -143,6 +145,10 @@ SCENE_QUERY_LIMITS = {
     'MAX_SURFACE_QUERIES': 8,
     'MIN_VISIBILITY_QUERIES': 0,
     'MAX_VISIBILITY_QUERIES': 16,
+    # A capture profile (scene_interface.capture_visibility_queries) may grant a frame capture's private
+    # graph more shadow queries per invocation than interactive graphs; see
+    # docs/architecture/render-graph-frame-capture.md#phase-3-capture-budget-decision.
+    'MAX_CAPTURE_VISIBILITY_QUERIES': 256,
     'MIN_LINE_QUERIES': 0,
     'MAX_LINE_QUERIES': 8,
 }
@@ -160,16 +166,16 @@ IMAGE_VERTEX_ID = 'GraphRayImageVertex'
 IMAGE_INPUTS = [{'location': 0, 'format': 'Float2'}]
 IMAGE_FRAGMENT_ID = 'GraphRayImageFragment'
 # Files are installed by their owning renderer/math/RHI targets beside the helper.
-HELPERS = ('scene_data.h', 'renderer_gpu_preview_layout.h', 'renderer_surface_functions.slang', 'recipes.json',
+HELPERS = ('scene_data.h', 'renderer_gpu_preview_layout.h', 'renderer_surface_functions.slang', 'material_scattering.slang', 'material.h', 'recipes.json',
            'native_metal_ray.slang', 'metal_ray_pipeline_layout.h',
            'ray_triangle_loop.slang', 'ray_line_visibility.slang', 'ray_bvh_nodes.slang', 'ray_bvh_traversal.slang', 'renderer_reference_layout.h', 'lighting_layout.h', 'math.slang', 'raster_bindings.slang', 'scene_shader.slang', 'scene_payload.slang', 'scene_shader_layout.h', 'ray_shader.slang', 'visibility_buffer.slang')
 # Staged and included only for scene_interface.polygonal_light_sampling: FoundationMath's projected-solid-angle,
-# LTC and weighted-reservoir primitives and the renderer's LTC table lookup, in include order, so packages that do
-# not request them keep their snapshot and cache identity. The table itself is a renderer-bound buffer.
+# LTC, weighted-reservoir and shading-normal primitives and the renderer's LTC table lookup, in include order, so
+# packages that do not request them keep their snapshot and cache identity. The table itself is a renderer-bound buffer.
 POLYGONAL_LIGHT_HELPERS = ('projected_solid_angle.slang', 'linearly_transformed_cosine.slang', 'weighted_reservoir.slang',
-                           'ltc_table.slang', 'ltc_table_layout.h')
+                           'shading_normal.slang', 'ltc_table.slang', 'ltc_table_layout.h')
 POLYGONAL_LIGHT_INCLUDES = ('projected_solid_angle.slang', 'linearly_transformed_cosine.slang', 'weighted_reservoir.slang',
-                            'ltc_table.slang')
+                            'shading_normal.slang', 'ltc_table.slang')
 
 
 def resolve_state(state):
@@ -495,7 +501,7 @@ def check_interface(program, result, build):
     interface = result['interface']
     entries = sorted(interface['entries'], key=lambda value: value['binding'])
     if program['id'] in COMPUTE_IDS or program.get('native_ray_pipeline'):
-        expected = [(0, 'UniformBuffer', 224), (1, 'StorageRead', 16), (2, 'StorageReadWrite', 16),
+        expected = [(0, 'UniformBuffer', PARAMETERS_BYTES), (1, 'StorageRead', 16), (2, 'StorageReadWrite', 16),
                     (3, 'StorageReadWrite', 16), (4, 'StorageRead', 16), (5, 'RayScene', 0)]
         if not program.get('native_ray_queries', True):
             expected = [entry for entry in expected if entry[1] != 'RayScene']

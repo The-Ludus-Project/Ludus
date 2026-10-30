@@ -55,6 +55,10 @@ void GraphViewportStatistics::Reset() noexcept
     mCpuMilliseconds.Reset();
     mReadbackMilliseconds.Reset();
     mFrameNanoseconds.Reset();
+    mInspectionCpuMilliseconds.Reset();
+    mInspectionReadbackMilliseconds.Reset();
+    mConversionWorkMilliseconds.Reset();
+    mConversionElapsedMilliseconds.Reset();
     mPendingCpuMilliseconds = 0;
     mLastFrameNanoseconds = 0;
     mHasFrame = false;
@@ -65,6 +69,40 @@ void GraphViewportStatistics::AddCpuWork(float64 milliseconds) noexcept
     {
         mPendingCpuMilliseconds += milliseconds;
     }
+}
+void GraphViewportStatistics::SetInspectionEnabled(bool isEnabled) noexcept
+{
+    mIsInspectionEnabled = isEnabled;
+}
+bool GraphViewportStatistics::IsInspectionEnabled() const noexcept
+{
+    return mIsInspectionEnabled;
+}
+void GraphViewportStatistics::AddInspection(float64 cpuMilliseconds, float64 elapsedMilliseconds) noexcept
+{
+    mInspectionCpuMilliseconds.Add(cpuMilliseconds);
+    mInspectionReadbackMilliseconds.Add(elapsedMilliseconds);
+}
+const RollingAverage& GraphViewportStatistics::GetInspectionCpuMilliseconds() const noexcept
+{
+    return mInspectionCpuMilliseconds;
+}
+const RollingAverage& GraphViewportStatistics::GetInspectionReadbackMilliseconds() const noexcept
+{
+    return mInspectionReadbackMilliseconds;
+}
+void GraphViewportStatistics::AddInspectionConversion(float64 workMilliseconds, float64 elapsedMilliseconds) noexcept
+{
+    mConversionWorkMilliseconds.Add(workMilliseconds);
+    mConversionElapsedMilliseconds.Add(elapsedMilliseconds);
+}
+const RollingAverage& GraphViewportStatistics::GetConversionWorkMilliseconds() const noexcept
+{
+    return mConversionWorkMilliseconds;
+}
+const RollingAverage& GraphViewportStatistics::GetConversionElapsedMilliseconds() const noexcept
+{
+    return mConversionElapsedMilliseconds;
 }
 void GraphViewportStatistics::CompleteFrame(uint64 nowNanoseconds, float64 readbackMilliseconds) noexcept
 {
@@ -107,11 +145,22 @@ QString FormatGraphViewportStatistics(const GraphViewportStatistics& statistics,
     const QString gpu = deviceStatistics.GpuState == ViewportGpuTimeState::Unavailable
                             ? QStringLiteral("n/a")
                             : FormatMilliseconds(deviceStatistics.GpuMilliseconds);
-    return QStringLiteral("FPS (updates): %1\nCPU: %2\nGPU: %3\nReadback: %4")
-        .arg(statistics.GetFramesPerSecond(nowNanoseconds), 0, 'f', FPS_DECIMALS)
-        .arg(FormatMilliseconds(statistics.GetCpuMilliseconds()),
-             gpu,
-             FormatMilliseconds(statistics.GetReadbackMilliseconds()));
+    const QString frameText = QStringLiteral("FPS (updates): %1\nCPU: %2\nGPU: %3\nOutput readback: %4")
+                                  .arg(statistics.GetFramesPerSecond(nowNanoseconds), 0, 'f', FPS_DECIMALS)
+                                  .arg(FormatMilliseconds(statistics.GetCpuMilliseconds()),
+                                       gpu,
+                                       FormatMilliseconds(statistics.GetReadbackMilliseconds()));
+    if (statistics.IsInspectionEnabled() == false)
+    {
+        return frameText + QStringLiteral("\nInspection: paused");
+    }
+    return frameText +
+           QStringLiteral(
+               "\nInspection CPU: %1\nInspection readback: %2\nConversion worker: %3\nConversion elapsed: %4")
+               .arg(FormatMilliseconds(statistics.GetInspectionCpuMilliseconds()),
+                    FormatMilliseconds(statistics.GetInspectionReadbackMilliseconds()),
+                    FormatMilliseconds(statistics.GetConversionWorkMilliseconds()),
+                    FormatMilliseconds(statistics.GetConversionElapsedMilliseconds()));
 }
 QString FormatViewportStatistics(const ViewportStatistics& statistics)
 {

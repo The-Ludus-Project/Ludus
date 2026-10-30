@@ -731,6 +731,56 @@ QByteArray EncodeCanonicalJson(const QJsonObject& value)
 
 namespace
 {
+constexpr qsizetype BYTES_PER_KIBIBYTE = 1024;
+
+/// The canvas actions that free package sources, named as the menus show them.
+QString GetFreeSourcesRepair()
+{
+    return QStringLiteral("To make room, remove a template or library you no longer use: right-click its Subgraph "
+                          "node on the root canvas and choose Delete Subgraph and Library. That deletes its library "
+                          "graph and the shader programs and sources only it uses, in one undoable edit. "
+                          "Remove Unused Shaders (right-click the canvas) also drops programs no graph uses.");
+}
+} // namespace
+
+QString DescribePackageCapacity()
+{
+    return QStringLiteral("The package exceeds the render-graph source limits: %1 files, %2 KiB per file and %3 KiB "
+                          "in total. %4")
+        .arg(RenderGraphDocument::MAX_FILES)
+        .arg(RenderGraphDocument::MAX_FILE_BYTES / BYTES_PER_KIBIBYTE)
+        .arg(RenderGraphDocument::MAX_TOTAL_BYTES / BYTES_PER_KIBIBYTE)
+        .arg(GetFreeSourcesRepair());
+}
+
+QString DescribeTemplateFileCapacity(const QString& templateName, usize existingFiles, usize newFiles)
+{
+    return QStringLiteral("Template %1 needs %2 new files (its library graph and shader sources), but this package "
+                          "already has %3 of its %4 files. %5 Then apply the template again. The draft was preserved.")
+        .arg(templateName)
+        .arg(newFiles)
+        .arg(existingFiles)
+        .arg(RenderGraphDocument::MAX_FILES)
+        .arg(GetFreeSourcesRepair());
+}
+
+bool RemoveRenderGraphNodeRecord(QJsonObject& inoutConfiguration, const QString& node)
+{
+    return RemoveNodeEdit(inoutConfiguration, {node});
+}
+
+QString DescribeConfigurationCapacity(const QString& templateName, const QString& file)
+{
+    return QStringLiteral("%1 cannot add a configuration: %2 already has %3, the most one graph file can hold. "
+                          "Open the root graph and apply the template there to give it its own library file, or "
+                          "delete a configuration you no longer use (right-click the canvas and choose "
+                          "Configurations > Delete Configuration). The draft was preserved.")
+        .arg(templateName, file)
+        .arg(RenderGraphDocument::MAX_CONFIGURATIONS);
+}
+
+namespace
+{
 /// Read every authored source below root into outSnapshot (bounded, no symlinks, no hidden or
 /// `out` directories). root may be a Qt resource directory. outSnapshot is unchanged on failure.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters) — named package directory and root-graph identities.
@@ -1353,6 +1403,31 @@ RenderGraphDocument::ApplyConfigurationTemplate(const QString& file,
     return status;
 }
 
+RenderGraphDocumentStatus RenderGraphDocument::checkNewGraphAsset(const QString& name) const
+{
+    const QString asset = name + QStringLiteral(".lurender.json");
+    const QFileInfo destination(QDir(mPackageRoot).filePath(asset));
+    if (mDraft.Files.contains(asset) == true || mSaved.Files.contains(asset) == true || destination.exists() == true ||
+        destination.isSymLink() == true)
+    {
+        return RenderGraphDocumentStatus::Conflict;
+    }
+    for (const QString& source : GetFiles())
+    {
+        // Keep draft filenames portable to case-insensitive project filesystems too.
+        if (source.compare(asset, Qt::CaseInsensitive) == 0)
+        {
+            return RenderGraphDocumentStatus::Conflict;
+        }
+        QJsonObject existing;
+        if (GetGraph(source, existing) == true && existing.value(QStringLiteral("id")).toString() == name)
+        {
+            return RenderGraphDocumentStatus::InvalidEdit;
+        }
+    }
+    return RenderGraphDocumentStatus::Ok;
+}
+
 RenderGraphDocumentStatus RenderGraphDocument::CreateSubgraph(const QString& file,
                                                               const QString& configuration,
                                                               const QString& node,
@@ -1381,26 +1456,12 @@ RenderGraphDocumentStatus RenderGraphDocument::CreateSubgraph(const QString& fil
     {
         return RenderGraphDocumentStatus::InvalidEdit;
     }
+    const RenderGraphDocumentStatus available = checkNewGraphAsset(name);
+    if (available != RenderGraphDocumentStatus::Ok)
+    {
+        return available;
+    }
     const QString asset = name + QStringLiteral(".lurender.json");
-    const QFileInfo destination(QDir(mPackageRoot).filePath(asset));
-    if (mDraft.Files.contains(asset) == true || mSaved.Files.contains(asset) == true || destination.exists() == true ||
-        destination.isSymLink() == true)
-    {
-        return RenderGraphDocumentStatus::Conflict;
-    }
-    for (const QString& source : GetFiles())
-    {
-        // Keep draft filenames portable to case-insensitive project filesystems too.
-        if (source.compare(asset, Qt::CaseInsensitive) == 0)
-        {
-            return RenderGraphDocumentStatus::Conflict;
-        }
-        QJsonObject existing;
-        if (GetGraph(source, existing) == true && existing.value(QStringLiteral("id")).toString() == name)
-        {
-            return RenderGraphDocumentStatus::InvalidEdit;
-        }
-    }
     QJsonObject graph;
     if (GetGraph(file, graph) == false)
     {

@@ -9,6 +9,7 @@
 #include "internal/options_dialog.h"
 #include "internal/project_explorer.h"
 #include "internal/render_graph_canvas.h"
+#include "internal/render_preview.h"
 #include "internal/renderer_workspace.h"
 #include "internal/world_workspace.h"
 
@@ -47,6 +48,7 @@
 #include <QSpinBox>
 #include <QStackedWidget>
 #include <QStringList>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTemporaryDir>
@@ -397,6 +399,91 @@ TEST_CASE("Shell puts documents in the centre and tool windows around them", "[e
     }
 }
 
+TEST_CASE("A saved layout does not bring back the Ray Paths window while no capture is under way",
+          "[editor][layout][shell][ray-paths]")
+{
+    QTemporaryDir directory;
+    QTemporaryDir settings;
+    const QString preferences = QDir(settings.path()).filePath(QStringLiteral("workspace.json"));
+    const QString descriptor = WriteProject(directory);
+    const auto rayPathsDock = [](const MainWindow& window) {
+        return window.findChild<QDockWidget*>(QStringLiteral("rayPathsDock"));
+    };
+    {
+        EditorController controller(ToolingPaths{},
+                                    nullptr,
+                                    QDir(settings.path()).filePath(QStringLiteral("recent.json")));
+        MainWindow window(&controller, nullptr, preferences);
+        window.show();
+        controller.OpenProject(descriptor);
+        Settle();
+        QDockWidget* dock = rayPathsDock(window);
+        if (dock == nullptr)
+        {
+            SKIP("This build has no Ray Paths window.");
+        }
+        CHECK(dock->isVisible() == false);
+        // A session that ended with the window open saves it open.
+        window.tabifyDockWidget(Dock(window, QStringLiteral("propertiesDock")), dock);
+        dock->show();
+        Settle();
+        REQUIRE(dock->isVisible() == true);
+        CloseWindow(window);
+    }
+    {
+        EditorController controller(ToolingPaths{},
+                                    nullptr,
+                                    QDir(settings.path()).filePath(QStringLiteral("recent.json")));
+        MainWindow window(&controller, nullptr, preferences);
+        window.show();
+        controller.OpenProject(descriptor);
+        Settle();
+        REQUIRE(rayPathsDock(window) != nullptr);
+        CHECK(rayPathsDock(window)->isVisible() == false);
+        CloseWindow(window);
+    }
+}
+
+TEST_CASE("Tool window tabs keep their icons and drop their text when the dock is too narrow",
+          "[editor][layout][shell][truncation]")
+{
+    QTemporaryDir settings;
+    EditorController controller(ToolingPaths{}, nullptr, QDir(settings.path()).filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, QDir(settings.path()).filePath(QStringLiteral("workspace.json")));
+    window.show();
+    Settle();
+    QDockWidget* explorer = Dock(window, QStringLiteral("projectExplorerDock"));
+    REQUIRE(explorer->windowIcon().isNull() == false);
+    REQUIRE(Dock(window, QStringLiteral("contentDock"))->windowIcon().isNull() == false);
+    REQUIRE(Dock(window, QStringLiteral("renderPreviewDock"))->windowIcon().isNull() == false);
+    QTabBar* tabBarOrNull = nullptr;
+    for (QTabBar* candidate : window.findChildren<QTabBar*>())
+    {
+        if (candidate->parentWidget() == &window && candidate->count() >= 3 && candidate->tabText(0).isEmpty() == false)
+        {
+            tabBarOrNull = candidate;
+        }
+    }
+    REQUIRE(tabBarOrNull != nullptr);
+    CHECK(tabBarOrNull->tabIcon(0).isNull() == false);
+    const int iconTabWidth = tabBarOrNull->iconSize().width() + 2 * 8;
+
+    window.resizeDocks({explorer}, {1200}, Qt::Horizontal);
+    Settle();
+    const int wideTabWidth = tabBarOrNull->tabRect(0).width();
+    CHECK(wideTabWidth > iconTabWidth);
+
+    window.resizeDocks({explorer}, {1}, Qt::Horizontal);
+    Settle();
+    CHECK(tabBarOrNull->width() < 3 * wideTabWidth);
+    CHECK(tabBarOrNull->tabRect(0).width() <= iconTabWidth + tabBarOrNull->iconSize().width());
+    // Every tab still has its full title as a tooltip, so nothing needs the text to be identified.
+    for (int index = 0; index < tabBarOrNull->count(); ++index)
+    {
+        CHECK(tabBarOrNull->tabToolTip(index) == tabBarOrNull->tabText(index));
+    }
+}
+
 TEST_CASE("Window menu shows hides and resets every tool window", "[editor][layout][shell]")
 {
     QTemporaryDir settings;
@@ -593,6 +680,51 @@ TEST_CASE("Save and Undo follow the active document tab", "[editor][layout][shel
     CHECK(entities->count() == before);
     save->trigger();
     CHECK(world->Dirty() == false);
+}
+
+TEST_CASE("Destroying the window stops World previews before deleting the Render Graph they borrow",
+          "[editor][layout][shell][document]")
+{
+    QTemporaryDir directory;
+    QTemporaryDir settings;
+    EditorController controller(ToolingPaths{}, nullptr, QDir(settings.path()).filePath(QStringLiteral("recent.json")));
+    QStringList destroyed;
+    {
+        MainWindow window(&controller, nullptr, QDir(settings.path()).filePath(QStringLiteral("workspace.json")));
+        window.show();
+        window.activateWindow();
+        controller.OpenProject(WriteProject(directory));
+        Settle();
+        DocumentWell& well = Well(window);
+        WorldWorkspace* world = window.findChild<WorldWorkspace*>();
+        RendererWorkspace* renderer = window.findChild<RendererWorkspace*>();
+        REQUIRE(world != nullptr);
+        REQUIRE(renderer != nullptr);
+        const QString path = QFileInfo(directory.path()).canonicalFilePath() + QStringLiteral("/teardown.world.json");
+        REQUIRE(world->Create(path) == true);
+        REQUIRE(well.OpenDocument(world) == true);
+        REQUIRE(well.OpenDocument(renderer) == true);
+        REQUIRE(well.SplitActiveDocument(Qt::Horizontal) == true);
+        REQUIRE(well.OpenDocument(world) == true);
+        QPushButton* add = world->findChild<QPushButton*>(QStringLiteral("worldAdd"));
+        REQUIRE(add != nullptr);
+        add->click();
+        Settle();
+        Action(window, QStringLiteral("document.save"))->trigger();
+        REQUIRE(world->Dirty() == false);
+        // Only an admitted device resets its frames, which notifies the graph views, on stop.
+        constexpr int32 DEVICE_TIMEOUT_MILLISECONDS = 30000;
+        REQUIRE(QTest::qWaitFor([world]() { return world->GetRenderPreview().HasDevice(); },
+                                DEVICE_TIMEOUT_MILLISECONDS) == true);
+        // The World's viewport graph views read the Renderer while their device stops. Record
+        // which document the well deletes first; the order exercised is the one that faulted.
+        QObject::connect(renderer, &QObject::destroyed, [&destroyed]() {
+            destroyed.append(QStringLiteral("renderer"));
+        });
+        QObject::connect(world, &QObject::destroyed, [&destroyed]() { destroyed.append(QStringLiteral("world")); });
+        // No close event: closeEvent stops the previews itself, so only destruction is exercised.
+    }
+    CHECK(destroyed == QStringList{QStringLiteral("renderer"), QStringLiteral("world")});
 }
 
 TEST_CASE("Project Explorer opens documents and Error List navigates to graph nodes and lines",
@@ -1128,7 +1260,9 @@ TEST_CASE("The setup notice is one dismissible line and the status bar keeps one
     CHECK(noticeOrNull->height() <=
           2 * window.findChild<QPushButton*>(QStringLiteral("projectSetupNoticeRepair"))->sizeHint().height());
     CHECK(statusOrNull->text().contains(QLatin1Char('\n')) == false);
-    CHECK(statusOrNull->text().count(QStringLiteral("Rendering tools need preparation.")) == 1);
+    // The banner says what is wrong; the status line only says that setup needs repair.
+    CHECK(statusOrNull->text().count(QStringLiteral("Rendering tools need preparation.")) == 0);
+    CHECK(statusOrNull->text().contains(QStringLiteral("Setup needs repair")) == true);
 
     dismissOrNull->click();
     CHECK(noticeOrNull->isVisible() == false);
@@ -1407,6 +1541,9 @@ TEST_CASE("graph focus restores the active document and panel choices and resolv
         .Location = {},
         .Origin = QStringLiteral("Build"),
         .SourceIndex = 0,
+        .Details = {},
+        .Backends = {},
+        .Count = 1,
     };
     errors->ReplaceEntries(ErrorListProducer::Build, {problem});
     REQUIRE(Well(window).OpenDocument(renderer) == true);
@@ -1570,6 +1707,29 @@ TEST_CASE("Toolbars group commands, hide session commands until a game runs and 
     REQUIRE(Well(window).OpenDocument(renderer) == true);
     Settle();
     CHECK(strip->isHidden() == false);
+    // Every strip command carries an icon beside its label; Build Graph and Build & Preview are one split
+    // button, and Live Preview is a checkable toggle of its own.
+    QAction* validate = Action(window, QStringLiteral("renderGraph.validate"));
+    QAction* build = Action(window, QStringLiteral("renderGraph.build"));
+    QAction* buildPreview = Action(window, QStringLiteral("renderGraph.buildPreview"));
+    QAction* livePreview = Action(window, QStringLiteral("renderGraph.livePreview"));
+    QAction* cancelGraph = Action(window, QStringLiteral("renderGraph.cancel"));
+    for (const QAction* action : {validate, build, buildPreview, livePreview, cancelGraph})
+    {
+        CHECK(action->icon().isNull() == false);
+    }
+    QToolButton* buildButton = strip->findChild<QToolButton*>(QStringLiteral("renderGraphBuildButton"));
+    REQUIRE(buildButton != nullptr);
+    CHECK(buildButton->defaultAction() == build);
+    CHECK(buildButton->popupMode() == QToolButton::MenuButtonPopup);
+    REQUIRE(buildButton->menu() != nullptr);
+    CHECK(buildButton->menu()->actions() == QList<QAction*>{build, buildPreview});
+    CHECK(strip->actions().contains(buildPreview) == false);
+    CHECK(strip->widgetForAction(validate) != nullptr);
+    CHECK(strip->actions().contains(livePreview) == true);
+    CHECK(livePreview->isCheckable() == true);
+    CHECK(qobject_cast<QToolButton*>(strip->widgetForAction(livePreview))->toolButtonStyle() ==
+          Qt::ToolButtonTextBesideIcon);
     REQUIRE(Well(window).OpenDocument(world) == true);
     Settle();
     CHECK(strip->isHidden() == true);

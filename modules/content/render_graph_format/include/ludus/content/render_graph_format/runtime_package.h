@@ -68,6 +68,11 @@ inline constexpr foundation::uint32 PACKAGE_MAGIC = 0x4752554CU;
 /// compiled from the same source snapshot. Runtime decoding rejects this magic, so a shipping host
 /// never loads it; see docs/architecture/render-graph-authoring.md, "Ray path inspection".
 inline constexpr foundation::uint32 RAY_PATH_CAPTURE_PACKAGE_MAGIC = 0x5052554CU;
+/// "LURC" read as a little-endian uint32: a frame capture profile generation. Its layout is a runtime
+/// package's, but its ray kernels link scene_interface.capture_visibility_queries in place of
+/// visibility_queries. Runtime decoding rejects this magic, so the larger shadow-query budget never
+/// reaches an interactive graph; see docs/architecture/render-graph-frame-capture.md.
+inline constexpr foundation::uint32 CAPTURE_PROFILE_PACKAGE_MAGIC = 0x4352554CU;
 /// First generation admitting MetalFX Spatial roles; version 16's pass layout is unchanged.
 inline constexpr foundation::uint32 METALFX_SPATIAL_PACKAGE_VERSION = 17;
 /// First generation carrying software/native ray traversal requirements per pass.
@@ -90,8 +95,13 @@ inline constexpr foundation::uint32 LTC_TABLE_PACKAGE_VERSION = 25;
 inline constexpr foundation::uint32 SCENE_RESOURCE_LTC_TABLE = 1U;
 /// First generation using mesh-triangle and LTC storage in the deferred resolve.
 inline constexpr foundation::uint32 RASTER_MESH_LIGHT_PACKAGE_VERSION = 26;
+/// First generation whose deferred resolve reads convex emitter polygon records instead of triangles.
+inline constexpr foundation::uint32 RASTER_MESH_LIGHT_POLYGON_PACKAGE_VERSION = 27;
+/// First generation whose ray kernels dispatch the ray uniform's tile region, so a frame capture may split a
+/// sample into row bands (RenderGraph::SetRayTileCount); the record layout is unchanged.
+inline constexpr foundation::uint32 TILED_RAY_PACKAGE_VERSION = 28;
 /// Current runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = RASTER_MESH_LIGHT_PACKAGE_VERSION;
+inline constexpr foundation::uint32 PACKAGE_VERSION = TILED_RAY_PACKAGE_VERSION;
 /// First package carrying explicit OIDN denoising quality per ray pass.
 inline constexpr foundation::uint32 DENOISING_PACKAGE_VERSION = 16;
 /// First package carrying the renderer-owned bilinear image operation.

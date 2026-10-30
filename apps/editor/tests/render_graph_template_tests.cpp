@@ -1,5 +1,6 @@
 // Built-in creation and canvas settings use the real shared backend and document history.
 #include "internal/controller.h"
+#include "internal/render_graph_build_limits.h"
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_configuration_template.h"
 #include "internal/render_graph_document.h"
@@ -492,7 +493,7 @@ TEST_CASE("ReSTIR import upgrades default budgets beside an existing ray pipelin
     const QJsonObject after = QJsonDocument::fromJson(afterManifest).object();
     CHECK(after.value(QStringLiteral("programs")).toArray().size() == 12);
     CHECK(after.value(QStringLiteral("budgets")).toObject().value(QStringLiteral("programs")).toInt() == 16);
-    CHECK(after.value(QStringLiteral("budgets")).toObject().value(QStringLiteral("artifacts")).toInt() == 64);
+    CHECK(after.value(QStringLiteral("budgets")).toObject().contains(QStringLiteral("artifacts")) == false);
     for (const QJsonValueConstRef program : previousPrograms)
     {
         CHECK(after.value(QStringLiteral("programs")).toArray().contains(program) == true);
@@ -505,7 +506,8 @@ TEST_CASE("ReSTIR import upgrades default budgets beside an existing ray pipelin
     CHECK(document.GetDraft(manifestFile) == afterManifest);
 }
 
-TEST_CASE("ReSTIR import preserves custom admission budgets", "[editor][render-graph][restir-library]")
+TEST_CASE("ReSTIR import preserves custom admission budgets and drops derived legacy fields",
+          "[editor][render-graph][restir-library]")
 {
     QTemporaryDir project;
     RendererWorkspace workspace({});
@@ -523,8 +525,9 @@ TEST_CASE("ReSTIR import preserves custom admission budgets", "[editor][render-g
     QString error;
     REQUIRE(document.ApplyRestirTemplate(ROOT_GRAPH, QStringLiteral("Lighting"), error) ==
             RenderGraphDocumentStatus::Ok);
+    const QJsonObject authored{{QStringLiteral("configurations"), 4}, {QStringLiteral("programs"), 24}};
     CHECK(QJsonDocument::fromJson(document.GetDraft(manifestFile)).object().value(QStringLiteral("budgets")) ==
-          budgets);
+          authored);
 }
 
 TEST_CASE("ReSTIR import identifies conflicting authored inputs without changing the draft",
@@ -1297,6 +1300,61 @@ TEST_CASE("Template program budget approval is bounded and transactional", "[edi
     }
 }
 
+TEST_CASE("Template imports derive target artifacts instead of reading a legacy artifact budget",
+          "[editor][render-graph][template-budget]")
+{
+    // budgets.artifacts used to duplicate programs times profiles; a stale value below that product failed
+    // the build after a template import. Import now ignores and removes it.
+    const QString identity = GENERATE(QStringLiteral("restir-di"), QStringLiteral("polygonal-light-sampling"));
+    constexpr int32 GENEROUS_PROGRAMS = 64;
+    constexpr int32 STALE_ARTIFACTS = 2;
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QString manifestFile = QStringLiteral("main.lushader.json");
+    QJsonObject manifest = QJsonDocument::fromJson(document.GetDraft(manifestFile)).object();
+    QJsonObject budgets = manifest.value(QStringLiteral("budgets")).toObject();
+    budgets.insert(QStringLiteral("programs"), GENEROUS_PROGRAMS);
+    budgets.insert(QStringLiteral("artifacts"), STALE_ARTIFACTS);
+    budgets.insert(QStringLiteral("pipelines"), STALE_ARTIFACTS);
+    manifest.insert(QStringLiteral("budgets"), budgets);
+    REQUIRE(document.SetText(manifestFile, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
+    const QByteArray beforeManifest = document.GetDraft(manifestFile);
+    QString error;
+    RenderGraphTemplateBudgetIncrease budget;
+    REQUIRE(document.ApplyConfigurationTemplate(ROOT_GRAPH, QStringLiteral("Lighting"), identity, error, {}, &budget) ==
+            RenderGraphDocumentStatus::Ok);
+    CHECK(error.isEmpty() == true);
+    CHECK(budget.RequiredPrograms == 0);
+    const QJsonObject afterBudgets =
+        QJsonDocument::fromJson(document.GetDraft(manifestFile)).object().value(QStringLiteral("budgets")).toObject();
+    CHECK(afterBudgets.value(QStringLiteral("programs")).toInt() == GENEROUS_PROGRAMS);
+    CHECK(afterBudgets.contains(QStringLiteral("artifacts")) == false);
+    CHECK(afterBudgets.contains(QStringLiteral("pipelines")) == false);
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetDraft(manifestFile) == beforeManifest);
+}
+
+TEST_CASE("Template program budgets cannot approve past the supported artifact ceiling",
+          "[editor][render-graph][template-budget]")
+{
+    constexpr int32 PROFILE_COUNT = 2;
+    const int32 requiredPrograms = static_cast<int32>(MAX_SHADER_ARTIFACTS / PROFILE_COUNT) + 1;
+    QJsonObject manifest{{QStringLiteral("profiles"), QJsonArray{QStringLiteral("metal"), QStringLiteral("wgsl")}},
+                         {QStringLiteral("budgets"),
+                          QJsonObject{{QStringLiteral("configurations"), 8}, {QStringLiteral("programs"), 8}}}};
+    const QJsonObject before = manifest;
+    RenderGraphTemplateBudgetIncrease budget;
+    budget.ApprovedPrograms = requiredPrograms;
+    QString error;
+    CHECK(EnsureTemplateProgramBudget(manifest, requiredPrograms, QStringLiteral("Large"), error, &budget) == false);
+    CHECK(error.contains(QStringLiteral("supported limit of %1 target artifacts").arg(MAX_SHADER_ARTIFACTS)) == true);
+    CHECK(budget.RequiredPrograms == 0);
+    CHECK(manifest == before);
+}
+
 TEST_CASE("Canvas template picker confirms a shader program budget increase", "[editor][render-graph][template-budget]")
 {
     const bool shouldApprove = GENERATE(false, true);
@@ -1880,8 +1938,10 @@ TEST_CASE("RIS projected-solid-angle template is created from the editor picker 
     CHECK(document.GetDraft(QStringLiteral("main_shaders/projected_solid_angle_light.slang"))
               .contains("ComputeClampedOptimalMisWeights") == true);
     const QByteArray manifest = document.GetDraft(COMPUTE_MANIFEST);
-    for (const char* setting :
-         {"RIS_CANDIDATE_COUNT", "RIS_NORMALIZATION_CANDIDATE_COUNT", "PROJECTED_SOLID_ANGLE_MIS_VISIBILITY"})
+    for (const char* setting : {"RIS_CANDIDATE_COUNT",
+                                "RIS_NORMALIZATION_CANDIDATE_COUNT",
+                                "RIS_TARGET",
+                                "PROJECTED_SOLID_ANGLE_MIS_VISIBILITY"})
     {
         INFO(setting);
         CHECK(manifest.contains(setting) == true);
@@ -2066,8 +2126,8 @@ void CheckPointLineImport(const RenderGraphDocument& document, const QString& li
         CHECK(document.GetDraft(source).isEmpty() == false);
     }
     const QByteArray manifest = document.GetDraft(COMPUTE_MANIFEST);
-    CHECK(GetGraphSetting(manifest, QStringLiteral("MIS_HEURISTIC")) == 0);
-    CHECK(GetGraphSetting(manifest, QStringLiteral("MIS_POWER_EXPONENT")) == 2);
+    CHECK(GetGraphSetting(manifest, QStringLiteral("POINT_LINE_MIS_HEURISTIC")) == 0);
+    CHECK(GetGraphSetting(manifest, QStringLiteral("POINT_LINE_MIS_POWER_EXPONENT")) == 2);
     const QJsonObject interface = FindRayTechnique(manifest).value(QStringLiteral("scene_interface")).toObject();
     CHECK(interface.value(QStringLiteral("version")).toInt() == 1);
     CHECK(interface.value(QStringLiteral("surface_queries")).toInt() >= 1);
@@ -2117,7 +2177,7 @@ TEST_CASE("Salesin and Jarosz template settings edit and save from the canvas wi
     CHECK(interface.value(QStringLiteral("visibility_queries")).toInt() == 2);
     CHECK(interface.value(QStringLiteral("line_queries")).toInt() == 6);
     const QByteArray original = document.GetDraft(COMPUTE_MANIFEST);
-    REQUIRE(GetGraphSetting(original, QStringLiteral("MIS_HEURISTIC")) == 0);
+    REQUIRE(GetGraphSetting(original, QStringLiteral("POINT_LINE_MIS_HEURISTIC")) == 0);
 
     // Background menu -> Edit Graph Settings...: choose the power heuristic and commit with Return.
     bool hasOpenedSettings = false;
@@ -2132,7 +2192,7 @@ TEST_CASE("Salesin and Jarosz template settings edit and save from the canvas wi
             QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
             REQUIRE(dialogOrNull != nullptr);
             QSpinBox* heuristicOrNull =
-                dialogOrNull->findChild<QSpinBox*>(QStringLiteral("renderGraphSetting_MIS_HEURISTIC"));
+                dialogOrNull->findChild<QSpinBox*>(QStringLiteral("renderGraphSetting_POINT_LINE_MIS_HEURISTIC"));
             REQUIRE(heuristicOrNull != nullptr);
             // Only balance (0) and power (1) are offered.
             CHECK(heuristicOrNull->maximum() == 1);
@@ -2155,19 +2215,19 @@ TEST_CASE("Salesin and Jarosz template settings edit and save from the canvas wi
     QCoreApplication::sendEvent(canvas.viewport(), &context);
     REQUIRE(hasOpenedSettings == true);
     CHECK(inspector->isVisible() == false);
-    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("MIS_HEURISTIC")) == 1);
+    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("POINT_LINE_MIS_HEURISTIC")) == 1);
     CHECK(document.GetSaved(COMPUTE_MANIFEST) == original);
     REQUIRE(workspace.CanUndo() == true);
     workspace.Undo();
-    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("MIS_HEURISTIC")) == 0);
+    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("POINT_LINE_MIS_HEURISTIC")) == 0);
     workspace.Redo();
-    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("MIS_HEURISTIC")) == 1);
+    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("POINT_LINE_MIS_HEURISTIC")) == 1);
     REQUIRE(workspace.Save() == true);
     RequireValidation(workspace);
     RenderGraphDocument reloaded;
     const QString path = QDir(project.path()).filePath(QStringLiteral("graphs/Main/main.lurender.json"));
     REQUIRE(reloaded.Load(QFileInfo(path).absolutePath(), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
-    CHECK(GetGraphSetting(reloaded.GetDraft(COMPUTE_MANIFEST), QStringLiteral("MIS_HEURISTIC")) == 1);
+    CHECK(GetGraphSetting(reloaded.GetDraft(COMPUTE_MANIFEST), QStringLiteral("POINT_LINE_MIS_HEURISTIC")) == 1);
 }
 
 TEST_CASE("Salesin and Jarosz template settings edit and save through Properties",
@@ -2197,9 +2257,10 @@ TEST_CASE("Salesin and Jarosz template settings edit and save through Properties
         sectionOrNull->click();
     }
     QApplication::processEvents();
-    QSpinBox* heuristicOrNull = inspector->findChild<QSpinBox*>(QStringLiteral("renderGraphSetting_MIS_HEURISTIC"));
+    QSpinBox* heuristicOrNull =
+        inspector->findChild<QSpinBox*>(QStringLiteral("renderGraphSetting_POINT_LINE_MIS_HEURISTIC"));
     QDoubleSpinBox* exponentOrNull =
-        inspector->findChild<QDoubleSpinBox*>(QStringLiteral("renderGraphSetting_MIS_POWER_EXPONENT"));
+        inspector->findChild<QDoubleSpinBox*>(QStringLiteral("renderGraphSetting_POINT_LINE_MIS_POWER_EXPONENT"));
     REQUIRE(heuristicOrNull != nullptr);
     REQUIRE(exponentOrNull != nullptr);
     CHECK(heuristicOrNull->isVisible() == true);
@@ -2210,16 +2271,18 @@ TEST_CASE("Salesin and Jarosz template settings edit and save through Properties
     constexpr float64 POWER_EXPONENT = 3;
     exponentOrNull->setValue(POWER_EXPONENT);
     Q_EMIT exponentOrNull->editingFinished();
-    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("MIS_HEURISTIC")) == 1);
-    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("MIS_POWER_EXPONENT")) == POWER_EXPONENT);
+    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("POINT_LINE_MIS_HEURISTIC")) == 1);
+    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("POINT_LINE_MIS_POWER_EXPONENT")) ==
+          POWER_EXPONENT);
     CHECK(document.GetSaved(COMPUTE_MANIFEST) == original);
     REQUIRE(workspace.CanUndo() == true);
     workspace.Undo();
-    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("MIS_POWER_EXPONENT")) == 2);
+    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("POINT_LINE_MIS_POWER_EXPONENT")) == 2);
     workspace.Redo();
     REQUIRE(workspace.Save() == true);
-    CHECK(GetGraphSetting(document.GetSaved(COMPUTE_MANIFEST), QStringLiteral("MIS_HEURISTIC")) == 1);
-    CHECK(GetGraphSetting(document.GetSaved(COMPUTE_MANIFEST), QStringLiteral("MIS_POWER_EXPONENT")) == POWER_EXPONENT);
+    CHECK(GetGraphSetting(document.GetSaved(COMPUTE_MANIFEST), QStringLiteral("POINT_LINE_MIS_HEURISTIC")) == 1);
+    CHECK(GetGraphSetting(document.GetSaved(COMPUTE_MANIFEST), QStringLiteral("POINT_LINE_MIS_POWER_EXPONENT")) ==
+          POWER_EXPONENT);
     RequireValidation(workspace);
 }
 
@@ -2348,6 +2411,179 @@ TEST_CASE("Salesin and Jarosz configuration applies from the canvas Configuratio
     ReplaceRasterSubgraph(document, QStringLiteral("PointLineMis"));
     REQUIRE(workspace.Save() == true);
     RequireValidation(workspace);
+}
+
+TEST_CASE("Veach and Guibas and Salesin and Jarosz configurations apply to one package",
+          "[editor][render-graph][point-line-configuration]")
+{
+    // Graph settings are package-wide. Both MIS templates once declared MIS_HEURISTIC with
+    // different ranges, so the second import was rejected as a conflicting definition.
+    QTemporaryDir project;
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    RenderGraphDocument& document = workspace.GetDocument();
+    REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("Mis"), QStringLiteral("veach-guibas-mis")) == true);
+    // Return to the root canvas, as the user does, so the second import makes its own library.
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, QStringLiteral("Default"), QStringLiteral("output")) == true);
+    REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("PointLineMis"), GetPointLineTemplate()) == true);
+    const QByteArray manifest = document.GetDraft(COMPUTE_MANIFEST);
+    CHECK(GetGraphSetting(manifest, QStringLiteral("MIS_HEURISTIC")) == 1);
+    CHECK(GetGraphSetting(manifest, QStringLiteral("POINT_LINE_MIS_HEURISTIC")) == 0);
+    CHECK(GetGraphSetting(manifest, QStringLiteral("MIS_POWER_EXPONENT")) == 2);
+    CHECK(GetGraphSetting(manifest, QStringLiteral("POINT_LINE_MIS_POWER_EXPONENT")) == 2);
+    CHECK(document.GetDraft(QStringLiteral("Mis.lurender.json")).isEmpty() == false);
+    CheckPointLineImport(document, QStringLiteral("PointLineMis.lurender.json"));
+}
+
+namespace
+{
+/// Save the built-in package into project, then add unused shader sources until the package holds
+/// fileCount files. Returns the number of files written by the save.
+qsizetype PadSavedPackage(const QString& project, qsizetype fileCount)
+{
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project, 1);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    REQUIRE(workspace.Save() == true);
+    const QDir root(workspace.GetDocument().GetPackageRoot());
+    const qsizetype savedFiles = workspace.GetDocument().GetFiles().size();
+    REQUIRE(root.mkpath(QStringLiteral("padding")) == true);
+    for (qsizetype index = savedFiles; index < fileCount; ++index)
+    {
+        QFile padding(root.filePath(QStringLiteral("padding/padding_%1.slang").arg(index)));
+        REQUIRE(padding.open(QIODevice::WriteOnly) == true);
+        REQUIRE(padding.write("// Unused padding source.\n") > 0);
+    }
+    return savedFiles;
+}
+} // namespace
+
+TEST_CASE("A template applies to a package with more sources than the editor's former 64-file limit",
+          "[editor][render-graph][point-line-configuration]")
+{
+    // A package that already holds several templates passed 64 files, the old editor-only limit,
+    // although the CLI builds it. The editor now admits what the CLI admits.
+    constexpr qsizetype PACKAGE_FILES = 100;
+    QTemporaryDir project;
+    static_cast<void>(PadSavedPackage(project.path(), PACKAGE_FILES));
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 2);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.IsBuiltIn() == false);
+    REQUIRE(workspace.GetDocument().GetFiles().size() == PACKAGE_FILES);
+    INFO(workspace.GetStatusText().toStdString());
+    REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("PointLineMis"), GetPointLineTemplate()) == true);
+    CheckPointLineImport(workspace.GetDocument(), QStringLiteral("PointLineMis.lurender.json"));
+}
+
+TEST_CASE("A template that does not fit the package names the counts and its repair works",
+          "[editor][render-graph][point-line-configuration]")
+{
+    // Veach and Guibas adds its library graph and four sources; the point-and-line template needs its library
+    // graph and five more. Start eight files below the limit so the second template does not fit until the
+    // first is removed by following the message.
+    constexpr qsizetype ROOM_BELOW_LIMIT = 8;
+    QTemporaryDir project;
+    const qsizetype paddedFiles = static_cast<qsizetype>(RenderGraphDocument::MAX_FILES) - ROOM_BELOW_LIMIT;
+    static_cast<void>(PadSavedPackage(project.path(), paddedFiles));
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 2);
+    workspace.SetLivePreview(false);
+    RenderGraphDocument& document = workspace.GetDocument();
+    REQUIRE(document.GetFiles().size() == paddedFiles);
+    const QStringList packageFiles = document.GetFiles();
+    REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("Mis"), QStringLiteral("veach-guibas-mis")) == true);
+    REQUIRE(workspace.Save() == true);
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, QStringLiteral("Default"), QStringLiteral("output")) == true);
+    const QStringList beforeFiles = document.GetFiles();
+    const QByteArray beforeManifest = document.GetDraft(COMPUTE_MANIFEST);
+    CHECK(workspace.ApplyConfigurationTemplate(QStringLiteral("PointLineMis"), GetPointLineTemplate()) == false);
+    const QString status = workspace.GetStatusText();
+    INFO(status.toStdString());
+    CHECK(status.contains(QStringLiteral("Template salesin-jarosz-lines needs")) == true);
+    CHECK(status.contains(QStringLiteral("but this package already has %1 of its %2 files")
+                              .arg(beforeFiles.size())
+                              .arg(RenderGraphDocument::MAX_FILES)) == true);
+    CHECK(status.contains(QStringLiteral("choose Delete Subgraph and Library")) == true);
+    CHECK(status.contains(QStringLiteral("Project Explorer")) == false);
+    CHECK(status.count(QStringLiteral("The draft was preserved.")) == 1);
+    CHECK(document.GetFiles() == beforeFiles);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST) == beforeManifest);
+
+    // The repair the message names is one action on the template's Subgraph node: it deletes the node, the
+    // library graph and every file the template added, and nothing that the package had before.
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, QStringLiteral("Default"), QStringLiteral("Mis")) == true);
+    REQUIRE(workspace.RemoveSelectedSubgraphLibrary() == true);
+    INFO(workspace.GetStatusText().toStdString());
+    CHECK(workspace.GetStatusText().contains(QStringLiteral("Deleted Subgraph Mis with Mis.lurender.json, 4 shader "
+                                                            "programs and 4 source files")) == true);
+    CHECK(document.GetFiles() == packageFiles);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST).contains("VeachMis") == false);
+    // Undo restores the template; Redo removes it again.
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetFiles() == beforeFiles);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST) == beforeManifest);
+    REQUIRE(document.Redo() == true);
+    CHECK(document.GetFiles() == packageFiles);
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, QStringLiteral("Default"), QStringLiteral("output")) == true);
+    REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("PointLineMis"), GetPointLineTemplate()) == true);
+    CheckPointLineImport(document, QStringLiteral("PointLineMis.lurender.json"));
+    REQUIRE(workspace.Save() == true);
+    CHECK(QFileInfo::exists(QDir(document.GetPackageRoot()).filePath(QStringLiteral("Mis.lurender.json"))) == false);
+    CHECK(QDir(document.GetPackageRoot()).exists(QStringLiteral("veach_guibas_mis/main_shaders/shade.slang")) == false);
+}
+
+TEST_CASE("Delete Subgraph and Library is on a Subgraph node's canvas menu with Properties hidden",
+          "[editor][render-graph][point-line-configuration][library-removal]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QStringList files = document.GetFiles();
+    REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("Mis"), QStringLiteral("veach-guibas-mis")) == true);
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, QStringLiteral("Default"), QStringLiteral("Mis")) == true);
+    workspace.resize(TEMPLATE_WORKSPACE_WIDTH, TEMPLATE_WORKSPACE_HEIGHT);
+    workspace.show();
+    QWidget* propertiesOrNull = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
+    REQUIRE(propertiesOrNull != nullptr);
+    propertiesOrNull->hide();
+    QCoreApplication::processEvents();
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    REQUIRE(canvas.GetFile() == ROOT_GRAPH);
+    REQUIRE(canvas.HasNode(QStringLiteral("Mis")) == true);
+    bool isEnabled = false;
+    QTimer::singleShot(0, &canvas, [&isEnabled]() {
+        QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        REQUIRE(menuOrNull != nullptr);
+        QAction* removeOrNull =
+            menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphRemoveSubgraphLibraryAction"));
+        REQUIRE(removeOrNull != nullptr);
+        isEnabled = removeOrNull->isEnabled();
+        menuOrNull->close();
+        removeOrNull->trigger();
+    });
+    const QPoint point = canvas.mapFromScene(canvas.GetNodePosition(QStringLiteral("Mis")) + QPointF(20, 10));
+    QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
+    QApplication::sendEvent(canvas.viewport(), &context);
+    INFO(workspace.GetStatusText().toStdString());
+    CHECK(isEnabled == true);
+    CHECK(canvas.HasNode(QStringLiteral("Mis")) == false);
+    CHECK(document.GetFiles() == files);
+    CHECK(workspace.GetStatusText().contains(QStringLiteral("Deleted Subgraph Mis")) == true);
+    workspace.Undo();
+    CHECK(canvas.HasNode(QStringLiteral("Mis")) == true);
+    CHECK(document.GetFiles().contains(QStringLiteral("Mis.lurender.json")) == true);
+    // Any other node reports why it has no library where the user acted.
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, QStringLiteral("Default"), QStringLiteral("output")) == true);
+    CHECK(workspace.RemoveSelectedSubgraphLibrary() == false);
+    CHECK(workspace.GetStatusText().contains(QStringLiteral("Select one Subgraph node")) == true);
+    CHECK(document.GetFiles().contains(QStringLiteral("Mis.lurender.json")) == true);
 }
 
 TEST_CASE("Compute ray-tracing import extends a shared ray technique and preserves conflicting edits",

@@ -7,7 +7,7 @@ import struct
 import unittest
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'cmake/shaders'))
-from compile_raster import spirv_array_indexing, verify_native_metal_arrays, raster_interface, wgsl_contract, glsl_interface, glsl_varyings, verify_varyings, uniform_shape, wgsl_uniform_type, external_text_source
+from compile_raster import spirv_array_indexing, verify_native_metal_arrays, raster_interface, wgsl_contract, glsl_interface, share_glsl_fetch_samplers, glsl_varyings, verify_varyings, uniform_shape, wgsl_uniform_type, external_text_source, emit_text_artifact, MAX_INLINE_TEXT_BYTES
 
 class RasterReflectionTests(unittest.TestCase):
     def test_metal_fragment_readonly_storage_ignores_unoccupied_resource_category(self):
@@ -65,6 +65,21 @@ class RasterReflectionTests(unittest.TestCase):
         self.assertEqual(bytes(values), text.encode("utf-8") + b"\0")
         self.assertIn(f"[{len(values)}]", declaration)
         self.assertNotIn('R"', definition)
+
+    def test_long_raster_text_moves_to_the_companion_source(self):
+        # FXAA's GLSL ES fragment reached 76,764 bytes; C++ only guarantees 65,536-character literals.
+        self.assertLess(MAX_INLINE_TEXT_BYTES, 65536)
+        short = "void main() {}\n"
+        header, companion = emit_text_artifact("renderer_output", "GLSL_FRAGMENT", short)
+        self.assertEqual(header, 'inline constexpr char GLSL_FRAGMENT[] = R"R_GLSL_FRAGMENT(' + short + ')R_GLSL_FRAGMENT";\n')
+        self.assertEqual(companion, "")
+        long = "float x = 0.0;\n" * (MAX_INLINE_TEXT_BYTES // 15 + 1)
+        header, companion = emit_text_artifact("renderer_output", "GLSL_FRAGMENT", long)
+        self.assertNotIn('R"', header + companion)
+        self.assertEqual(header, f"extern const char GLSL_FRAGMENT[{len(long) + 1}];\n")
+        self.assertIn("namespace ludus::shaders::renderer_output {", companion)
+        with self.assertRaisesRegex(RuntimeError, 'raw string delimiter'):
+            emit_text_artifact("renderer_output", "GLSL_FRAGMENT", short + ')R_GLSL_FRAGMENT"')
 
     def test_native_arrays_require_bounded_counts_and_preserve_target_identity(self):
         texture = {'kind': 'resource', 'baseShape': 'texture2D', 'resultType': {'kind': 'vector', 'elementType': {'scalarType': 'float32'}}}
@@ -255,6 +270,31 @@ class RasterReflectionTests(unittest.TestCase):
             self.assertEqual(glsl_interface(emitted,value,cross)[1][2]['sampler'],0xffffffff)
             data['parameters'][0]['type']['array']=True
             with self.assertRaisesRegex(RuntimeError,'2D aspect view'):raster_interface(data,'fragment')
+
+    def test_texel_fetches_share_the_only_sampler_of_a_sampled_texture(self):
+        data={'parameters':[{'name':'image','binding':{'kind':'descriptorTableSlot','index':1},'type':{'kind':'resource','baseShape':'texture2D','resultType':{'kind':'vector','elementType':{'scalarType':'float32'}}}}], 'entryPoints':[{'stage':'fragment','bindings':[{'name':'image','binding':{'used':1}}]}]}
+        value=raster_interface(data,'fragment')
+        cross={'separate_images':[{'name':'image','binding':1}],'separate_samplers':[{'name':'imageSampler','binding':2}]}
+        emitted=('#version 300 es\nuniform highp sampler2D SPIRV_Cross_CombinedimageSPIRV_Cross_DummySampler;\n'
+                 'uniform highp sampler2D SPIRV_Cross_CombinedimageimageSampler;\n'
+                 'void main() { ivec2 size = textureSize(SPIRV_Cross_CombinedimageSPIRV_Cross_DummySampler, 0);'
+                 ' vec4 a = texelFetch(SPIRV_Cross_CombinedimageSPIRV_Cross_DummySampler, size, 0);'
+                 ' vec4 b = textureLod(SPIRV_Cross_CombinedimageimageSampler, vec2(0), 0.0); }')
+        with self.assertRaisesRegex(RuntimeError,'multiple samplers'):
+            glsl_interface(emitted,value,cross)
+        shared=share_glsl_fetch_samplers(emitted,cross)
+        self.assertNotIn('DummySampler',shared)
+        self.assertIn('texelFetch(SPIRV_Cross_CombinedimageimageSampler',shared)
+        self.assertIn('textureSize(SPIRV_Cross_CombinedimageimageSampler',shared)
+        self.assertEqual(glsl_interface(shared,value,cross)[1],{1:{'name':'SPIRV_Cross_CombinedimageimageSampler','sampler':2}})
+        # Fetch-only textures keep the dummy pairing, and two real samplers remain outside the profile.
+        fetch_only='#version 300 es\nuniform highp sampler2D SPIRV_Cross_CombinedimageSPIRV_Cross_DummySampler;\nvoid main() {}'
+        self.assertEqual(share_glsl_fetch_samplers(fetch_only,cross),fetch_only)
+        two={'separate_images':cross['separate_images'],'separate_samplers':[{'name':'imageSampler','binding':2},{'name':'other','binding':3}]}
+        doubled=emitted.replace('void main','uniform highp sampler2D SPIRV_Cross_Combinedimageother;\nvoid main')
+        self.assertEqual(share_glsl_fetch_samplers(doubled,two),doubled)
+        with self.assertRaisesRegex(RuntimeError,'multiple samplers'):
+            glsl_interface(share_glsl_fetch_samplers(doubled,two),value,two)
 
     def test_missing_stage_usage_is_rejected(self):
         data=self.fixture();data['entryPoints'][0]['bindings'][0]['binding']={}

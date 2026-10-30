@@ -182,15 +182,14 @@
         "version": 1,
         "surface_queries": 1,
         "visibility_queries": 16,
+        "capture_visibility_queries": 256,
         "polygonal_light_sampling": true
       }
     }
   ],
   "budgets": {
     "configurations": 8,
-    "programs": 16,
-    "artifacts": 64,
-    "pipelines": 16
+    "programs": 16
   },
   "settings": [
     {

@@ -105,9 +105,8 @@ select the desired program IDs. To share one source with different entry points,
 register separate programs in the manifest with the same `source` and different
 `function` values, then select those programs on the nodes. The compiler preserves
 these choices in both compiled headers and runtime packages. Adding a new shader
-program automatically grows `budgets.programs` and `budgets.artifacts` to the
-required counts, including every target profile. You do not need to edit the
-manifest first. Larger authored budgets are retained. Budget changes, source
+program automatically grows `budgets.programs` to the required count. You do not
+need to edit the manifest first. A larger authored budget is retained. Budget changes, source
 creation and node assignments share the same undo step and **Save** operation;
 undo restores the previous budgets too. Reusing an existing compatible program
 creates no additional program or budget change. Direct manifest edits and CLI
@@ -117,7 +116,7 @@ apply. Exceeding the artifact ceiling names the manifest, program/profile counts
 and supported limit, and preserves the complete draft. Reuse compatible programs,
 remove unused shaders or reduce target profiles before retrying.
 A new triangle ray pipeline needs three programs (`ray_generation`, `miss` and
-`closest_hit`); each addition grows the relevant budgets as needed. Ray callbacks
+`closest_hit`); each addition grows `budgets.programs` as needed. Ray callbacks
 still share the single bounded ray technique.
 To clean up the open package, choose **Edit → Remove Unused Shaders**, or
 **Remove Unused Shaders** in the canvas context menu. The command checks every
@@ -126,13 +125,19 @@ subgraphs), and every technique in every loaded shader manifest. Techniques rema
 authored build roots even when no node currently selects them; their programs survive.
 Remove an unwanted technique explicitly in **Source** before running cleanup.
 
-Unused program registrations are removed in one undoable draft edit. Their `.slang`
-files are removed only when exclusive to one registration and unmentioned by other
-loaded shader sources. Shared sources, includes, transitive includes, Slang imports
-and loose unregistered files are retained. Include/import protection is conservative:
-filename or module-name mentions, including comments, can retain an otherwise unused
-source. A computed include or an include outside the tracked snapshot retains all
-source files while still removing unused registrations. Programs with the same ID in different manifests are conservatively retained
+Unused program registrations are removed in one undoable draft edit, with the
+`.slang` sources that no remaining program uses and the helpers that only those
+sources include (for example a template's `hit_record.slang`). A file survives when
+a remaining program registers it, a remaining graph or manifest field names it (a
+traversal source or ray payload, for example), or a surviving source could include
+it, directly or through other survivors. Builds resolve literal includes relative to
+the including file and never through `..`, so besides its literal includes a source
+can only reach files in its own directory tree; there, any file-name or module-name
+mention, even in a comment, conservatively keeps the file. Sources removed in the
+same edit cannot keep each other. Loose files that no removed source includes are
+never removed. A computed include or an include outside the tracked snapshot in a
+surviving source retains all source files while still removing unused registrations.
+Programs with the same ID in different manifests are conservatively retained
 if that ID is referenced anywhere in the loaded package. References outside the open
 package are outside this scan; keep cross-package shared code outside package-owned
 shader files. Malformed graphs/manifests or missing subgraphs stop cleanup without
@@ -162,6 +167,30 @@ The optional [line visibility](#find-the-visible-parts-of-a-segment) budget,
 `line_queries` (0–8), has no Properties control yet: set it in the manifest's
 `scene_interface`. Editing the other two budgets keeps it.
 
+The optional `capture_visibility_queries` (from `visibility_queries` up to 256)
+is the shadow-query budget of a frame capture. It also has no Properties control
+yet. Interactive kernels keep `visibility_queries`. Only a capture profile build
+links the larger budget:
+- CMake builds it with `ludus_compile_render_graph(... CAPTURE_PROFILE_PACKAGE)`;
+- the CLI rebuilds it from a published generation's saved sources, never newer
+  edits, as the editor does before a graph capture:
+
+  ```bash
+  python -m ludus_tools --json render-graph capture-profile <build>/generations/<generation> <profile-build> <graph>.lurgcp --configuration <name> --project <project>
+  ```
+
+  A graph whose `capture_visibility_queries` equals `visibility_queries` (or is
+  absent) compiles nothing and reports `"capture_profile": null`; its runtime
+  package is then the capture package. The same tool options as `build` select the
+  shader tools, including `--worker-socket`;
+- the result is a `.lurgcp` package that only `RenderGraphPackage::DecodeCaptureProfile`
+  admits, so viewports and runtime hosts refuse it;
+- `RenderGraphCapture` runs it.
+
+Raising **Visibility queries** above a declared capture budget raises the capture
+budget with it. The measurements behind the 256 limit are in the
+[frame capture design](../architecture/render-graph-frame-capture.md#phase-3-capture-budget-decision).
+
 These budgets belong to the package's shared ray technique, so changing them
 affects every scene-aware ray pipeline using it, including imported subgraphs.
 Completed edits update the existing manifest interface as one undoable change;
@@ -177,7 +206,7 @@ The builder adapts the original shaders without rewriting their sources or addin
 project helper files. New stages use scene-aware callbacks; replace a legacy stage
 when its shading needs `EvaluateMaterial(scene, hit)` and the full material properties.
 The conversion reuses the existing program records, IDs and profile artifact slots.
-It works with full program/artifact budgets and preserves those authored limits;
+It works with a full program budget and preserves the authored limits;
 you do not need to edit the manifest before converting. **Save** publishes the manifest change.
 Projects converted by older editors may retain a generated `scene_legacy_callbacks.slang`
 helper that includes the original callbacks. The builder recognizes that generated
@@ -236,6 +265,30 @@ and the complete authored interface are checked before activation. Missing requi
 produce IncompletePipeline; an invalid/pending candidate leaves the current
 viewport generation intact. Blending/rasterization remain fields inside the
 node; separate state blocks and stream output are deferred.
+
+### Remove a template or library
+
+Every graph file counts as a user of the programs it names, even a library that no
+Subgraph node imports any more, so deleting only a template's Subgraph node frees
+none of its files. To remove a template or any other library in one step,
+right-click its Subgraph node on the canvas (or in the source tree) and choose
+**Delete Subgraph and Library**; Properties need not be open. The one undoable edit:
+
+- removes the node with its connections, layout position and configuration-output
+  sources, like **Remove Node**;
+- deletes the node's library graph, unless another graph file still names it, and
+  any library that only deleted libraries imported. The root graph and graphs that
+  nothing imports are never deleted;
+- removes the programs that only the deleted libraries named, and frees their
+  sources and helpers as **Remove Unused Shaders** does (above). Programs that
+  other graphs or techniques name, settings, and other unused programs are left
+  alone.
+
+When another Subgraph node still uses the library, only the node is removed and the
+status line names the graph that keeps the library. Failures, such as a malformed
+graph elsewhere in the package, leave the draft unchanged and are reported in the
+status line. **Undo** restores every file; **Save** deletes them on disk after the
+usual external-change check.
 
 ## Upscaling presets
 
@@ -993,8 +1046,8 @@ mesh/item limits. Multiple invocations or persistent buffers require the scene c
 any-hit/intersection/callable stages, resources beyond the two persistent buffer slots and optional visibility/depth pair, masked/transparent or
 deformed geometry, reverse-Z and infinite-far cameras. Color is the only produced
 aspect; no ray depth output is inferred. Ray preparation has renderer-owned
-2 GiB CPU and 2 GiB GPU limits across retained jobs; device storage limits can
-be tighter. The existing static opaque setup technique remains in the manifest
+4 GiB CPU and 6 GiB GPU limits on 64-bit hosts (2 GiB each on 32-bit hosts)
+across retained jobs; device storage limits can be tighter. The existing static opaque setup technique remains in the manifest
 for shared mesh/snapshot ownership and is never used to rasterize ray scene
 geometry. A complete source example is the
 [SDK ray fixture](../../tests/sdk_consumer/rg2/raytracing/main.lurender.json) and its
@@ -1138,6 +1191,13 @@ Runtime package version 21 stores reflected X/Y/Z dimensions after the six fixed
 fields of every ray compute stage. All target artifacts for a role must agree.
 Earlier packages retain their implicit 64×1×1 grouping. Cooked headers and runtime
 packages dispatch the same reflected dimensions; device limits still apply.
+
+Runtime package version 28 links ray kernels against a 240-byte ray uniform. Its
+last 16 bytes name the dispatched tile region. A frame capture can then submit
+each sample as row bands, below the GPU timeout; see
+[tiled submission](../architecture/render-graph-frame-capture.md#phase-4b-implementation-notes).
+Authored callbacks see the same `RayLaunch` pixel and extent either way. Rebuild an
+older graph to capture it in bands; it still runs interactively unchanged.
 
 ```json
 {
@@ -1323,7 +1383,7 @@ per-tile and per-cell light work this template adapts to one exact emitter CDF p
 
 ### Use the built-in ReSTIR DI template
 
-In an open graph, right-click the canvas or a configuration in **Graph sources**
+In an open graph, right-click the canvas or a configuration in **Outline**
 and choose **Apply Configuration Template... → ReSTIR DI — mesh emitter lighting**.
 In a library such as `raytracing.lurender.json`, enter `RestirDi` to add that
 configuration or populate an existing empty `#RestirDi`. Existing nonempty
@@ -1354,8 +1414,8 @@ application fails with its path instead of publishing a manifest that cannot bui
 Explicit **Build Graph** includes these new files in its immutable draft snapshot
 before Save; building does not publish them to the project. Existing callbacks remain unchanged; a shared custom payload
 keeps its fields and gains `RayLaunch Launch`. Importing upgrades unchanged Raster
-admission defaults to the ReSTIR template capacities (16 programs and 64 artifacts),
-so an existing ray pipeline can coexist with the five imported programs. Custom
+admission defaults to the ReSTIR template capacity of 16 programs, so an existing
+ray pipeline can coexist with the five imported programs. Custom
 admission limits are retained unless you approve a program-budget increase. If the
 merged programs exceed `budgets.programs`, the template picker shows the current
 and required counts and offers **Increase and apply** or **Cancel**. Approval raises
@@ -1860,7 +1920,14 @@ probability `P_E` (emitters over lights):
    weighted by its target `p̂ / p_src` and streamed through the weighted reservoir.
    The target `p̂` is the triangle's unshadowed LTC shading (constant emission
    luminance times the albedo-weighted diffuse and LTC integrals), and zero for a
-   one-sided emitter seen from behind.
+   one-sided emitter seen from behind. By default (`RIS_TARGET` 1) the integrals
+   are Stephen Hill and Eric Heitz's approximate horizon-clipped form factors,
+   [*Real-Time Area Lighting: a Journey from Research to Production*, SIGGRAPH 2016 course](https://advances.realtimerendering.com/s2016/),
+   with a defensive term that keeps the target positive wherever the triangle is
+   above the horizon. That costs about a quarter as much per sample as the exact
+   clipped integrals, with the same image error at equal samples
+   ([measurements](../architecture/many-area-light-sampling-reference-review.md#approximate-target-measurements)).
+   Only the selected triangle and a BSDF hit's triangle prepare exact polygons.
 3. The selected triangle receives one diffuse projected-solid-angle sample and,
    unless its LTC-space clip is empty, one LTC sample. Peters' clamped optimal MIS
    weights them, with visibility estimate `PROJECTED_SOLID_ANGLE_MIS_VISIBILITY`.
@@ -1877,10 +1944,23 @@ other with the power heuristic, so the combined image converges to the same
 integral as each strategy alone. The scene interface declares `surface_queries: 1`,
 `visibility_queries: 2` and `polygonal_light_sampling: true`.
 
+Before either strategy, `TryLoadShadingPoint` clips a front face's shading normal
+to the hemisphere of the view direction with FoundationMath's
+`ClipShadingNormalToOutgoingHemisphere`, as Peters' renderer does "to avoid black
+pixels due to normal mapping" (§6.1). The receiver frame, both light techniques,
+BSDF sampling and the BSDF use the clipped normal in all three passes, so they
+still estimate one integral. The
+[polygonal-light template](#compare-brdf-importance-sampling-for-polygonal-lights)
+shares the function and its margin. The MIS template and RT1's reference path do
+not clip: where a shading normal faces away from the view, their BSDF is zero.
+Their images therefore differ from this template's only at normal-mapped pixels
+and within 0.01 of the shading horizon.
+
 | Graph setting | Default | Range | Meaning |
 | --- | --- | --- | --- |
-| `RIS_CANDIDATE_COUNT` | `32` | `1`–`32` | Candidates `M` per receiver |
-| `RIS_NORMALIZATION_CANDIDATE_COUNT` | `8` | `1`–`16` | Normalization candidates `K` for the BSDF-hit density |
+| `RIS_CANDIDATE_COUNT` | `8` | `1`–`32` | Candidates `M` per receiver |
+| `RIS_NORMALIZATION_CANDIDATE_COUNT` | `4` | `1`–`16` | Normalization candidates `K` for the BSDF-hit density |
+| `RIS_TARGET` | `1` | `0`–`1` | How the target evaluates its integrals: `1` Hill and Heitz's approximate form factors, `0` the exact clipped polygon integrals |
 | `PROJECTED_SOLID_ANGLE_MIS_VISIBILITY` | `0.5` | `0`–`1` | Peters' `v`: `1` is the weighted balance heuristic, `0` the balance heuristic |
 
 Settings never change the random layout. Dimensions 2–8 keep the MIS template's
@@ -1900,6 +1980,13 @@ Scope and limits:
 - The diffuse technique's albedo uses Schlick's reflectance at normal incidence.
 - The fixed two-iteration inversion of Peters' sampler has a small backward error;
   a direction that misses its triangle in float32 contributes zero.
+- §6.1 gives no margin for the clipped shading normal. Ludus keeps its cosine with
+  the view direction at least 0.01 (`SHADING_NORMAL_MINIMUM_OUTGOING_COSINE`; after
+  renormalizing, at least 0.01/√1.0001), because the BSDF is zero on the shading
+  horizon.
+- §6.1 does not discuss back faces. Only front faces are clipped, so a one-sided
+  surface seen from behind stays black, as in the other templates. A normal clipped
+  towards the viewer would light such a surface through itself.
 - There is no indirect bounce and no reservoir reuse.
 
 `ludus_render_graph_ray_tests` renders the template on Metal, with its compute BVH.
@@ -1935,13 +2022,48 @@ out/build/macos-clang-debug/modules/graphics/renderer/ludus_render_graph_ray_tes
 ```
 
 It reports kernel times, shadow rays per pixel, MAPE, linear RMSE and tone-mapped
-error for each template. The method and the recorded results are in the
-[review's evidence](../architecture/many-area-light-sampling-reference-review.md#equal-time-benchmark).
+error for each template. By default it measures two cooks of this template: the
+exact target with `M = 32`, `K = 8`, and the defaults. To measure other settings in
+the same run, list `RIS_TARGET:RIS_CANDIDATE_COUNT:RIS_NORMALIZATION_CANDIDATE_COUNT`
+triples in the CMake cache variable `LUDUS_RIS_PROJECTED_SOLID_ANGLE_BENCHMARK_VARIANTS`
+and rebuild; each triple cooks one more package:
+
+```bash
+cmake -S . -B out/build/macos-clang-debug \
+  "-DLUDUS_RIS_PROJECTED_SOLID_ANGLE_BENCHMARK_VARIANTS=0:32:8;1:32:8;1:16:4;1:8:4"
+```
+
+The method and the recorded results are in the
+[review's evidence](../architecture/many-area-light-sampling-reference-review.md#equal-time-benchmark)
+and its [approximate target measurements](../architecture/many-area-light-sampling-reference-review.md#approximate-target-measurements).
 
 `ludus_renderer_render_tests` runs the weights on the GPU. It checks that Peters'
 weights and the light/BSDF split sum to one wherever a technique can sample, that
-`Ẑ = 0` applies the inclusion cap, and that an empty LTC clip leaves the diffuse
-technique all the weight. Vulkan has not been run for this template.
+`Ẑ = 0` applies the inclusion cap, that an empty LTC clip leaves the diffuse
+technique all the weight, and that the approximate target is positive wherever the
+exact diffuse integral is.
+
+A second test kernel draws 4096 receivers whose view lies below
+the horizon of their shading normal, a quarter of them at the minimum roughness.
+It clips each normal as `TryLoadShadingPoint` does (§6.1), and the test compares
+the result with RT1's C++ twin of `projected_solid_angle_light.slang`:
+
+- the clipped normal agrees with FoundationMath's C++ clip within 10⁻⁵ per
+  component;
+- the albedo luminances, the LTC's existence and both integrals agree, with
+  integrals compared within 10⁻³ relative unless the larger of the CPU and GPU
+  integrals is a sliver below 10⁻⁵;
+- the diffuse density at the sampled direction agrees within 10⁻³, and the
+  sampled direction's weights sum to one.
+
+Without the clip every one of these receivers would be black. On Apple M5, 3121
+see the triangle and 3055 take a sample. A minimum-roughness LTC density reaches
+10⁶ per steradian and changes by its own magnitude within a degree, so the LTC
+densities are compared by percentile: over 1549 directions the 99th percentile
+relative difference is 5.4·10⁻⁴ (largest 2.3·10⁻³), and the test allows 10⁻³.
+With both receivers in one kernel, Metal results varied between runs; as separate
+kernels, each repeats bit for bit. Vulkan has not been run for this
+template.
 
 See the canonical
 [package](../../modules/graphics/renderer/render_graphs/ris_projected_solid_angle/main.lurender.json).
@@ -1988,7 +2110,9 @@ same random numbers.
 For each receiver and each emissive triangle, `main_shaders/polygonal_light.slang`
 follows the paper section by section:
 
-1. `ClipShadingNormalToOutgoingHemisphere` clips the shading normal to the
+1. FoundationMath's `ClipShadingNormalToOutgoingHemisphere`
+   ([shading normal clipping](../modules/foundation/math.md#shading-normal-clipping),
+   shared with the RIS template) clips the shading normal to the
    hemisphere of the view direction, as Peters' renderer does "to avoid black pixels
    due to normal mapping" (§6.1). The shading frame, both techniques and the BSDF use
    the clipped normal. `shade.slang` clips front faces only.
@@ -2024,24 +2148,21 @@ LTC sample at `4 + 4k` and `5 + 4k`. The single-technique outputs therefore reus
 the MIS outputs' samples.
 
 Each emissive triangle costs two shadow rays in the MIS passes and one in each
-single-technique pass. The technique declares `surface_queries: 1` and the scene
-interface's maximum of `visibility_queries: 16`, so a scene may have at most **eight
-emissive triangles**. A larger scene fails explicitly with the failure color rather
-than dropping lights; use the RIS template for many lights.
+single-technique pass. The technique declares `surface_queries: 1`,
+`visibility_queries: 16` and `capture_visibility_queries: 256`.
+- **Interactive limit:** the viewport may shade at most **eight emissive triangles**.
+- **Capture limit:** a frame capture with the template's capture profile may shade
+  up to **128**.
+- **Beyond the limit:** a larger scene fails explicitly with the failure color rather
+  than dropping lights. The shader checks the light count against whichever budget
+  was linked.
 
-The limit cannot be lifted without changing the scene-interface contract.
-`TestVisibility` counts the budget per invocation of each pass, and it is the
-contract's only shadow-ray query, so a loop of shadow rays inside the shader spends
-the same budget. Calling the traversal directly (`Trace`) would bypass the budget and
-tie the template to the compute BVH, which the contract keeps behind
-`TestVisibility`. The options, none of them implemented:
-
-| Option | What it changes |
-| --- | --- |
-| Raise `MAX_VISIBILITY_QUERIES` in `scripts/python/ludus_tools/render_graph_ray.py` | The contract's limit, which the build admission, the editor's **Visibility queries** control (0–16) and every ray technique share. Each extra pair of queries admits one more triangle; the limit still exists |
-| Add a scene-interface query that tests many shadow rays at once, or one that is not budgeted | A new contract operation with its own budget, implemented for every traversal |
-| Split the triangles across more shade passes and add a pass that sums them | Eight more triangles per pass, still a fixed number, and a different graph from Peters' one pass per estimator |
-| Shade a randomly selected subset of triangles | Leaves Peters' protocol of shading every light; the RIS template already does this |
+Cost is linear in the number of lights. Each emissive triangle adds about 15 ns
+per pixel per MIS sample on an Apple M5, so a capture near the 128-triangle limit
+is slow at high resolution. For many lights, use the RIS template. The capture's
+tiled submission, which keeps a long capture under the GPU timeout, is not
+implemented yet; see the
+[frame capture design](../architecture/render-graph-frame-capture.md#phase-4a-implementation-notes).
 
 New shader programs have `PolygonalLight`-prefixed IDs and sources under
 `polygonal_light_sampling/main_shaders/`. The setting joins the manifest's Graph
@@ -2056,7 +2177,7 @@ Departures from the paper, also listed in `polygonal_light.slang`:
   reflectance at normal incidence for Ludus's Fresnel-weighted Lambert lobe. Peters
   uses the Frostbite BRDF's diffuse albedo.
 - §6.1 gives no margin for the clipped shading normal. Ludus keeps its cosine with
-  the view direction at least 0.01 (`MINIMUM_OUTGOING_COSINE`; after renormalizing,
+  the view direction at least 0.01 (`SHADING_NORMAL_MINIMUM_OUTGOING_COSINE`; after renormalizing,
   at least 0.01/√1.0001), because the BSDF is zero on the shading horizon.
 - §6.1 does not discuss back faces. Only front faces are clipped, so a one-sided
   surface seen from behind stays black, as in the other templates. A normal clipped
@@ -2198,7 +2319,10 @@ needed. With no occluder the density equals `EvaluateLightPdfSolidAngle` for the
 same point. If the result reports masked occluders, the drawn point is confirmed
 with `TestVisibility`. A directional, point, spot or environment light keeps the
 ordinary point proposal and its shadow ray. A receiver in an emitter's own plane
-receives nothing from it. Emission is evaluated at the drawn point, so textured
+receives nothing from it. A chord shorter than `SCENE_UNIT_TOLERANCE`, which the
+line query rejects, is not queried and contributes nothing either. An example is
+the zero-length chord through a vertex where the line leaves the triangle at once.
+Emission is evaluated at the drawn point, so textured
 emission is integrated but not importance sampled. There is no indirect bounce.
 
 The scene interface declares `surface_queries: 1` (the primary hit),
@@ -2303,11 +2427,15 @@ strategy: it builds the chord through that point in its own direction, runs a li
 query, and returns the joint density if the point lies in a visible interval and
 zero otherwise. A sample therefore costs a line query for each other line strategy
 that weights it. With no occluder both densities equal `EvaluateLightPdfSolidAngle`
-for the same point.
+for the same point. A chord shorter than `SCENE_UNIT_TOLERANCE` is never queried.
+Its strategy proposes nothing there, and its density there is zero. An example
+is the zero-length `V` chord through a vertex with an acute angle, which an area
+point reaches when its radial draw is exactly zero. BSDF sampling still covers
+those points in `color`.
 
 **Weights.** `ComputeMisWeight(sampledDensity, otherDensity0, otherDensity1)` in
 `main_shaders/multiple_importance.slang` is `p_s^β / (p_s^β + p_0^β + p_1^β)`, with
-β = 1 for the balance heuristic and `MIS_POWER_EXPONENT` for the power heuristic. A
+β = 1 for the balance heuristic and `POINT_LINE_MIS_POWER_EXPONENT` for the power heuristic. A
 zero other density drops that strategy: `shadeLines` and `shadePoints` pass zero for
 the strategy they omit, and a line strategy has zero density at a point that its
 chord query finds occluded. For finite positive densities the three weights sum to
@@ -2322,8 +2450,14 @@ confirmed with `TestVisibility`, as in the line-sampling template.
 
 | Graph setting | Default | Range | Meaning |
 | --- | --- | --- | --- |
-| `MIS_HEURISTIC` | `0` (balance) | `0`–`1` | `0` balance, `1` power |
-| `MIS_POWER_EXPONENT` | `2` | `1`–`16` | Exponent β of the power heuristic |
+| `POINT_LINE_MIS_HEURISTIC` | `0` (balance) | `0`–`1` | `0` balance, `1` power |
+| `POINT_LINE_MIS_POWER_EXPONENT` | `2` | `1`–`16` | Exponent β of the power heuristic |
+
+Graph settings are shared by every configuration in a package, so these names carry the
+template's prefix. The Veach & Guibas template's `MIS_HEURISTIC` has a different range
+(`0`–`3`), and Apply Configuration Template rejects two definitions of one setting, so
+both templates can be applied to the same package. Packages that imported this template
+before the rename keep their copied sources and settings and build unchanged.
 
 Balance is the paper's choice. Change the settings in Properties or with the
 canvas's **Edit Graph Settings...** action. A value outside its range is rejected
@@ -2372,7 +2506,9 @@ each pass's `invocation.traversal` to `ComputeBvh`. There is no indirect bounce.
   densities from zero to 1e12, under both heuristics, including a delta light
   shared by the two line strategies. With no occluder, each line strategy's density
   at an area point equals `EvaluateLightPdfSolidAngle` within the test's 1e-5
-  relative tolerance (largest measured difference 9.6e-7).
+  relative tolerance (largest measured difference 9.6e-7). Chords through the
+  light triangle's vertices raise no failure, and a rejected chord has zero
+  density.
 - In the Cornell-box-style room, where the block casts a penumbra from the
   two-triangle quad light, `color`, `lineSampling` and `pointSampling` converge to
   one mean within 2% at 256 samples per pixel under both heuristics, and match the
@@ -2391,6 +2527,15 @@ each pass's `invocation.traversal` to `ComputeBvh`. There is no indirect bounce.
   plus `shadePoints`). With 102-106 samples in the time of 16, `pointSampling`
   reached a penumbra mean squared error of 9.9e-5, against 3.05e-4 for `color`.
   The hidden test `[.point-line-performance]` repeats this measurement.
+- On the 500,000-triangle Sponza export under a 6 m square light, with every pass
+  on `ComputeBvh`, a `color` sample cost 23-30 times a `pointSampling` sample in
+  three runs. Line queries took most of that time. At equal GPU time
+  `pointSampling` reached 7-9% of `color`'s penumbra mean squared error, against
+  a 32,768-sample reference. The hidden test
+  `[.point-line-large-scene-performance]` repeats this measurement. The
+  [point-and-line design](../../.kiro/specs/point-line-direct-lighting/design.md#5-large-scene-equal-time-measurement)
+  records the setup, the device and the clock variation. These two scenes on one
+  Metal device support no general claim.
 
 A masked occluder cannot be tested yet, because render-graph scenes cannot hold
 alpha-tested triangles. Vulkan has not been run for this template.
@@ -2412,7 +2557,7 @@ A full **Scene → RayTracing** connection selects Geometry, Materials and Light
 from one immutable scene generation. New ray shaders use the scene-aware callback
 interface automatically. Connecting a complete legacy ray pipeline upgrades its
 callbacks through adapters in the same undo step, preserving the authored shader
-behavior and existing manifest program/artifact budgets. Source and manifest
+behavior and the existing manifest program budget. Source and manifest
 changes remain drafts until **Save**.
 
 Right-click the **Scene** or **RayTracing** node and choose **Expand Scene Bundle**
@@ -2494,6 +2639,8 @@ callbacks. The wrapper then stages and includes, before your sources:
   clipping, integral and sampler);
 - `linearly_transformed_cosine.slang` (the LTC polygon transform);
 - `weighted_reservoir.slang` (the sequential weighted reservoir);
+- `shading_normal.slang` (Peters' §6.1 clip of the shading normal to the view's
+  hemisphere);
 - the renderer's `ltc_table.slang` (`LookupSpecularLtc`, `ComputeSpecularLtcAlbedo`)
   with its layout.
 
@@ -2602,6 +2749,19 @@ shares the existing 256 MiB budgets. Unsupported masked/transmissive/deformed
 geometry rejects or uses the graph's explicit diagnostic coverage policy; it
 does not acquire transparent transport by connecting Scene. Material evaluation
 uses the supplied fixed mip and UV0; derivative mip selection is not inferred.
+
+Typed source materials also expose `MaterialSample.Model`, `Eta`, `K`, `AlphaU`
+and `AlphaV`. `EvaluateStandardBsdf`/`SampleStandardBsdf` select pure diffuse or
+isotropic conductor reflection when those models are bound. A custom shader using
+its own metallic/roughness formulas must handle the type explicitly to preserve
+source semantics. `MaterialSample.CoatingEta` and `CoatingThickness` expose the
+layer parameters. For layered coatings use the `EvaluateStandardBsdf` overload
+with an explicit `CoatingRandomContext` and `SampleStandardBsdfTransport`; the
+sample contains a complete throughput weight and a separate external MIS density.
+The original direction-only helpers retain their coating approximation. See
+[the layered reference contract](../architecture/renderer-systems.md#non-scattering-coated-diffuse-reference),
+[typed reference materials](../architecture/renderer-systems.md#typed-diffuse-and-conductor-reference-materials)
+and the [source-preserving importer](../examples/reference-scene.md#material-preserving-project-imports).
 
 ### Read surfaces, sample sources and trace visibility
 
@@ -2732,7 +2892,7 @@ Depth32Float aspect are sufficient. This follows the indirection in Christopher 
 Burns and Warren A. Hunt, [*The Visibility Buffer: A Cache-Friendly Approach to
 Deferred Shading*, JCGT 2(2), 2013](https://jcgt.org/published/0002/02/04/).
 
-In an open graph, right-click the canvas or a configuration in **Graph sources**
+In an open graph, right-click the canvas or a configuration in **Outline**
 and choose **Apply Configuration Template...**, then **Visibility buffer + depth**,
 **Visibility + secondary rays** or [**Tiled vbuffer NEE**](#select-emitters-per-screen-tile).
 Enter a new configuration name or select an
@@ -2768,8 +2928,9 @@ expand to the template's budgets; custom limits remain authoritative. If a custo
 program limit is too small, the picker offers **Increase and apply**, showing the
 current and required counts. Approval raises `budgets.programs` to the required
 count together with the template; **Cancel** preserves the draft. Undo/Redo restores
-both changes, and **Save** publishes them together. Other capacity failures still
-report the required repair.
+both changes, and **Save** publishes them together. Programs times target profiles
+beyond the supported 128 target artifacts cannot be approved; that error names the
+counts to reduce. Other capacity failures still report the required repair.
 Secondary rays require a native profile. Existing ordinary ray configurations can
 share the package: their callbacks, payload source and query limits are retained.
 The shared `ScenePayload` needs a `float3 Radiance` field; comments, whitespace and
@@ -3666,16 +3827,35 @@ time measurements average the last 30 completed samples:
   It shows zero before two images arrive and after one second without a new image;
   a new interaction after that idle gap starts a fresh rate window.
 - **CPU** sums active owner-thread World/camera extraction, graph preparation,
-  submission, polling and output conversion work per delivered image. It excludes
-  the wall-clock gaps between asynchronous service calls and other editor work.
+  submission, polling, texture inspection setup/readback, output conversion and image
+  publication work per delivered image. It excludes worker conversion, wall-clock
+  gaps between asynchronous service calls and other editor work.
 - **GPU** uses the existing asynchronous device timestamp probe for graph frame
   execution. It excludes CPU conversion and is not input-to-display latency.
   `…` means no sample has completed; `n/a` means timestamps are unavailable.
   The overlay and profiling recorder share the device's timing owner.
-- **Readback** measures elapsed time from requesting the output copy until its
+- **Output readback** measures elapsed time from requesting the output copy until its
   CPU display image is ready, including asynchronous copy waits, polling cadence
   and image conversion. It excludes the earlier graph render and final Qt paint.
-  Shared-device GPU snapshots report zero because they perform no CPU readback.
+  Shared-device GPU output snapshots report zero because output presentation performs no CPU readback.
+- **Inspection CPU** sums active GUI-thread GPU snapshot setup, band readback and
+  polling per completed inspection attempt. It is also included in CPU service
+  work; these series have different sample counts and should not be added together.
+  Worker conversion is excluded from both GUI CPU series.
+- **Inspection readback** measures elapsed time from starting the diagnostic
+  snapshot through raw CPU bytes being ready, including asynchronous waits.
+  Inspection series update independently of output delivery, so GPU output cannot
+  overwrite diagnostic readback measurements with zero. The overlay shows
+  **Inspection: paused** while the viewer is hidden. The last 30 completed attempts
+  are retained for resuming; cancelled inspections do not add samples.
+- **Conversion worker** measures the active worker call for each current, completed
+  conversion. It includes range scanning and display image creation, under the
+  `EditorTextureInspectionDisplayConversion` profiling scope on the worker thread.
+- **Conversion elapsed** measures conversion request through GUI completion delivery,
+  including time waiting for an older cancelled conversion to retire. These two
+  series update independently of raw readback and output frames. Superseded or
+  cancelled conversions add no samples; their profiling scopes still expose work
+  that ran. Only short GUI publication work contributes to the frame CPU series.
 
 Pending or failed output copies do not publish successful frame samples or erase
 last-completed time averages. Device replacement clears the graph series. These
@@ -3750,32 +3930,56 @@ sidedness uses the inverse-transpose geometric normal, including reflected and
 nonuniform instances. Exactly collapsed triangles contribute nothing. A plane
 tolerance of 10 micrometres plus two parts per million of coordinate magnitude
 suppresses coplanar self-lighting from depth reconstruction; distinct surfaces
-closer than that tolerance are also treated as coplanar. Constant
-emission is integrated per triangle; an emission map splits each source triangle
-into four equal-area patches and samples fixed-mip emission at each centroid,
-including UV transforms, address/filter policy and sRGB decoding. This piecewise
-constant texture approximation can miss small features; it is not the reference
-path tracer's textured-emitter estimator.
+closer than that tolerance are also treated as coplanar. An emission map splits
+each source triangle into four equal-area patches and samples fixed-mip emission
+at each centroid, including UV transforms, address/filter policy and sRGB
+decoding. This piecewise constant texture approximation can miss small features;
+it is not the reference path tracer's textured-emitter estimator.
 
-The raster resolve computes these integrals from spherical polygon edges, streaming
-horizon intersections without constructing the ellipse/sector state needed for
-importance sampling. The independent CPU check retains that sampling preparation.
+Constant emission is integrated per convex polygon. Both integrals are additive
+over a partition of the emitter, and clipping to the receiver horizon distributes
+over it, so the host merges a mesh's coplanar, edge-adjacent triangles before
+upload. Triangles join across an edge whose welded endpoint positions they
+traverse in opposite directions, when exactly one partner's normal agrees within
+about 0.26 degrees; coincident copies and non-manifold fins never join. A joined
+region is replaced only when it is a topological disk, its vertices lie within
+10 parts per million of its extent (plus about eight float32 ulps of coordinate
+magnitude) of one plane, and its outline, after dropping vertices whose turn has
+a sine of at most 1e-5, is strictly convex and encloses the region's area within
+a relative 1e-5. That outline becomes one record of up to 64 corners; a longer
+outline is fanned into records of at most 64 corners. Every other triangle, every
+emission-mapped patch and every region that fails a test stays a three-corner
+record, so the merge changes the lit result only within those geometric
+tolerances. A Staircase2 small square light, a 17 x 17 vertex grid of 512
+triangles, becomes one quad; a 64-segment pbrt disk becomes one 64-corner record
+instead of 64 triangles.
+Non-convex coplanar regions are not yet split into convex pieces.
+
+The raster resolve computes these integrals from spherical polygon edges in one
+pass over each record's corners, holding no corner array: a Sutherland-Hodgman clip
+to the receiver horizon feeds the Lambert edge sum and, after the LTC transform, a
+second horizon clip feeds the specular edge sum. Each corner costs one edge term,
+and no ellipse/sector state for importance sampling is built. The independent CPU
+check fans each record into clip-safe pieces of at most six corners and retains that
+sampling preparation; both integrals are additive over the fan.
 Polygons entirely below the receiver horizon contribute zero; crossing polygons
 are clipped before the LTC transform. This preserves emitter geometry and the
 lighting integral, without sampling lights or imposing a distance cutoff. The
-cost still grows with shaded pixels and admitted emitter triangles.
+cost still grows with shaded pixels and with the admitted records' corners.
 
 There is no mesh-light visibility test yet: area lights can illuminate through
-walls. Every admitted emitter triangle is evaluated, independently of the analytic
-light clusters, with no finite-distance cutoff. At most 4096 nonzero-emission
-triangles/patches are admitted per scene; excess geometry rejects preparation and
-retains the last drawable generation. The immutable scene upload uses four Float4
-words per triangle plus a dummy record for an empty light set. Camera-only updates
+walls. Every admitted emitter record is evaluated, independently of the analytic
+light clusters, with no finite-distance cutoff. At most 8192 nonzero-emission
+polygon records are admitted per scene; excess geometry rejects preparation and
+retains the last drawable generation. The immutable scene upload stores each record
+as two Float4 header words (normal and sidedness, emission and corner count)
+followed by its corners, read in order, plus a zero header for an empty light set. Camera-only updates
 reuse it. Fragment read-only storage is required for this upload and the shared
 LTC table; the resolve repurposes unused bake/shadow slots three and four, keeping
 sixteen total slots. Forward-only profiles retain their existing behavior. Runtime
-package version 26 changes these two deferred binding kinds; older deferred packages
-must be cooked again. Linear RGBA8 output still clips bright radiance.
+package version 26 changed these two deferred binding kinds, and version 27 changes
+the mesh-light record layout its resolve reads; older deferred packages must be
+cooked again. Linear RGBA8 output still clips bright radiance.
 
 Select **ZPrepass** in the preview configuration
 selector to enable a separate depth-only pass. That pass clears and stores depth;
@@ -4174,15 +4378,19 @@ to the graph plan, rather than the shader program. Recipe keys compare complete
 canonical state, stage identities, vertex schema and target binding layouts;
 recipe/node names and camera/extent values do not create extra shader programs.
 
+A manifest authors two budgets, `budgets.configurations` and `budgets.programs`.
 Program counts have no separate fixed engine ceiling: `budgets.programs` is a
 positive integer chosen by the author. Adding programs beyond 32 is supported
 when that authored budget admits them; editor shader creation grows it as needed.
-Independent ceilings remain 8
-configurations, 128 target artifacts and 64 target pipeline recipes; source and
-package byte/file limits also apply. Target artifacts count registered programs
-multiplied by target profiles, so increasing the program budget does not bypass
-the artifact budget. The author may choose smaller bounds. The
-configuration bound counts authored techniques and the root graph's own
+The configuration budget is at most 8. Target artifacts (registered programs
+multiplied by target profiles) and target pipelines (raster recipes multiplied by
+target profiles) follow from the manifest itself, so they have no authored budget:
+only the supported ceilings of 128 target artifacts and 64 target pipelines bound
+them, and the error names the counts to reduce. Source and package byte/file limits
+also apply. Manifests written by older tools may still carry `budgets.artifacts` and
+`budgets.pipelines`; the builder accepts and ignores them, and the editor removes them
+when it next changes the budgets, so a stale value can no longer fail a build after
+programs are added. The configuration bound counts authored techniques and the root graph's own
 configurations. Imported configurations that Subgraph nodes reach do not spend
 it: they expand into the root plans, whose techniques, programs, ray variants,
 expanded nodes, passes, files and depth keep their own bounds. The package
@@ -4522,9 +4730,21 @@ Open a project and open the **Render Graph** document. It shows the project's
 **File → Open Render Graph...** and select a root `.lurender.json` inside the
 project, or double-click a render graph or shader in Project Explorer. Its
 directory is the package root. The document
-loads every `.lurender.json`, `.lushader.json` and `.slang` file below it (at
-most 64 files, 128 KiB each and 4 MiB in total; hidden and `out` directories and
-symlinks are skipped).
+loads every `.lurender.json`, `.lushader.json` and `.slang` file below it; hidden
+and `out` directories and symlinks are skipped. Its limits are what the CLI accepts:
+the 32 graph documents of `ludus_tools.render_graph` plus the 128 manifest and shader
+files of one `ludus_tools.render_graph_build` snapshot, so 160 files of at most
+128 KiB each and 6 MiB in total. The editor reads these numbers from the two modules
+when it is configured, so a package the CLI can build always opens.
+
+When a template or an edit would exceed a limit, the message names the limit, the
+package's current count and what the change needs, and the draft is preserved. To
+make room, remove a template or library you no longer use: right-click its Subgraph
+node on the root canvas and choose **Delete Subgraph and Library**. That one undoable
+edit deletes the node, its library graph and the shader programs and sources that only
+that library uses, such as a template's `veach_guibas_mis/main_shaders/` files; **Save**
+publishes the deletions. See [remove a template or library](#remove-a-template-or-library)
+for what it keeps.
 
 For a project without graph sources, the document shows the engine default, and build
 actions work on it right away. Use **File → New Render Graph...**, as described in
@@ -4532,9 +4752,11 @@ actions work on it right away. Use **File → New Render Graph...**, as describe
 
 ![The Render Graph document at 1280×800: source tree and node canvas in the centre, the node inspector in Properties on the right](images/editor-render-graph-document-1280.png)
 
-The document is the package's source tree beside three views, switched by the tabs
-below them: **Canvas**, **Source** and **Plan**. A bar above them shows the open
-graph's path and the root **Configuration** to validate and cook. The document has
+The document is the package's source tree beside three views, switched by the
+segmented control in the document header: **Canvas**, **Source**, **Plan** (and
+**Textures** on native builds). The header's first row has the **Outline** button,
+that control and the open graph's path; its second row has the root **Configuration**
+to validate and cook. The document has
 no command buttons of its own; its commands are in the **File** and **Build** menus
 and on the Render Graph toolbar (see the
 [editor workspace layout](editor-workspace.md#workspace-layout)).
@@ -4859,8 +5081,8 @@ The **Source** pane uses the shared code editor: line numbers, Slang lexical
 coloring, current-line and matching-bracket highlighting, and native text
 selection, clipboard and navigation. Strings and comments are excluded from
 bracket matching; matching is bounded for responsiveness. Shader formatting and
-unified source/canvas undo are available; language-server hover and completion
-remain future increments, described in the
+unified source/canvas undo, native shader completion and signature help are
+available. Symbol hover remains a future increment, described in the
 [shared editor architecture](../architecture/editor-gui-systems.md#source-editing-direction).
 
 Use **Focus Source** or **Shift+Alt+Return** while Source is active to hide the
@@ -4918,6 +5140,48 @@ Find supports forward/backward wrapping, case matching, and replacement; Escape
 closes its controls and returns focus to the source. Go to line uses one-based
 line numbers. Ordinary text and JSON sources share the commands, with Slang
 coloring/comment toggling enabled only for `.slang` files.
+
+#### Shader completion and signature help
+
+In a native Source editor, press **Ctrl+Space** to complete a symbol, or type
+`.` for members. Type a prefix to narrow the suggestions. Up/Down selects an
+item; Enter or Tab accepts it; Escape dismisses assistance. Completion uses the
+current unsaved draft, including package includes, manifest-generated types and
+bindings, scene/material APIs and shader functions. An accepted completion and
+its additional source edits form one undo step; Save remains explicit.
+
+Press **Ctrl+Shift+Space** inside a call, or type `(` or `,`, for signature help.
+The active parameter is emphasized. **Alt+PageUp/PageDown** selects another
+overload when available. These two Space shortcuts use the physical **Control**
+key on macOS, unlike the Command mapping of the ordinary editing shortcuts above.
+The Edit/context menus also offer both commands.
+
+The **Shader context** selector identifies the linked program/stage used for
+semantics. A shared source can have several contexts; select the one whose
+bindings and callbacks you are editing. The selector's text is selectable and
+copyable; its tooltip names the owning package manifest. Context IDs identify
+linked compiler units, including generated scene kernels, rather than canvas
+node scopes. Changes to sources, schemas, authored settings or tool selection
+invalidate earlier assistance. Compilation and validation remain authoritative
+for target capabilities and build errors.
+
+Assistance starts Slang's `slangd` lazily beside the project's selected `slangc`
+(or the compiler override in **Tools → Options → Render Graph**). It captures a
+temporary draft package and uses the same source-generation owner as shader
+compilation. It does not download tools or save project files. Missing tools,
+invalid graph/interface inputs and process failures appear directly below the
+selector with a repair message. After repairing them, use **Retry assistance**
+to refresh available contexts and start again. Ordinary editing stays available.
+
+The initial provider needs an executable program context. Unassigned source files,
+legacy compatibility rewrites of the editable file, repeated inclusion of that
+file in one linked unit and include cycles through that file report an explicit
+mapping limitation. Completion edits must stay inside the current authored file;
+generated-file edits and unsolicited snippets are rejected. Literal package
+includes follow the build owner's existing rules; module imports are unsupported.
+The static browser editor has no native Slang process and reports that completion
+and signature help are unavailable. The searchable Shader API reference remains
+available independently.
 
 #### Compiler messages in the source
 
@@ -5011,7 +5275,7 @@ the editable source, preserving saved bytes and compiler diagnostic line numbers
 
 ### Create a subgraph without leaving the editor
 
-Select the containing configuration in **Graph sources**, then choose **Create
+Select the containing configuration in **Outline**, then choose **Create
 Subgraph...** above the canvas or from the source-tree/canvas right-click menu.
 Enter a unique name starting with an ASCII letter, followed by letters, digits,
 `_` or `-` (up to 63 characters). The action creates `<name>.lurender.json` in
@@ -5033,11 +5297,11 @@ authored. It does not add ray-tracing or compute
 support; the supported node kinds above still apply. The original root remains
 the execution root when editing the library.
 
-Right-click a node in **Graph sources** or on the **Canvas** to use its menu:
+Right-click a node in **Outline** or on the **Canvas** to use its menu:
 
 - **Create Node** lists Scene, Camera, Target, Raster, Subgraph Reference, Export
   and Present. It is also available on empty canvas space and configuration/file
-  rows in Graph sources. Choose a type to add it to the displayed configuration
+  rows in the Outline. Choose a type to add it to the displayed configuration
   with a unique ID, selected and scrolled into view. This uses the same undoable
   operation as Properties' **Add Node**. Creation is disabled while a job runs or
   Source text needs applying/reverting. **Subgraph Reference** adds a reference
@@ -5076,7 +5340,10 @@ node. It is another view of the same typed draft: every canvas edit is a
 `RenderGraphDocument` operation, so undo, explicit save, validation and Properties
 stay in step.
 
-Use **Graph Sources** in the document header to hide or restore the source tree.
+Use **Outline** in the document header to hide or restore the graph outline. It lists each
+file's configurations and shows the nodes of the displayed configuration; other
+configurations stay collapsed until you open them. The Source view hides the outline to give
+the code room, and the next view brings it back if it was open.
 Its visibility and splitter width are remembered between sessions. The status
 strip reserves one line; longer reports remain scrollable. **View → Focus
 Viewport** (Shift+Alt+Enter; Shift+Option+Return on macOS), while the graph is
@@ -5178,6 +5445,7 @@ releasing on a port connects or rejects as usual.
 | Right-click a node → Edit Node... | Edit the same authored fields, pipeline controls and layout coordinates as Properties, without opening that panel. |
 | Right-click Accumulate, Denoise or ToneMap → Disable Node | Toggle its `enabled` field as one undoable edit; the compiler [forwards its input](#disable-a-node) |
 | Select a node and press Delete | `RemoveNode` (also drops its links and layout position) |
+| Right-click a Subgraph node → Delete Subgraph and Library | `RemoveSubgraphLibrary`: also deletes its library graph and the shader files only that library uses ([details](#remove-a-template-or-library)) |
 | Double-click a Subgraph node | Opens its asset's configuration on the canvas, in the tree and in the Source view; not an edit |
 | Double-click an ordinary node | Opens Details; pipeline parts share their controls with Properties |
 | Pinch apart/together on a supported trackpad | Zoom in/out around the gesture position; does not edit the draft |
@@ -5490,7 +5758,7 @@ search lists every authored node. Configuration interface boxes are not search
 results because they are not authored-node selections.
 
 Use Up/Down to choose a result and Enter or a double-click to select and frame
-it. The selection also updates Graph sources and Properties. Search does not
+it. The selection also updates the Outline and Properties. Search does not
 preview selection as you type: Escape or clicking outside closes the popup and
 keeps the previous view and selection. No matches leaves the popup open on Enter.
 Edits, rebuilds and configuration switches close stale results. Text editing in
@@ -5530,16 +5798,16 @@ Long paths remain accessible through the toolbar's overflow menu.
 Use **Back** and **Forward**, or the platform navigation shortcuts shown in their
 tooltips while the canvas has focus, to return through visited configurations.
 Returning restores the saved node selection, magnification, scene centre and
-upstream/downstream trace mode. Graph sources, Properties and the Source file also
+upstream/downstream trace mode. The Outline, Properties and the Source file also
 follow the restored location. The scene centre remains the reference point if the
 window size changed while you were away. Scrollable background space may expand
 to keep that point reachable; node positions and port geometry do not change.
-The breadcrumb bar stays available in Focus Viewport mode with Graph sources and
+The breadcrumb bar stays available in Focus Viewport mode with the Outline and
 Properties hidden.
 
 Click an ancestor breadcrumb to return to its saved view. This is a new visit and
 discards Forward history, as does entering another Subgraph or jumping to another
-configuration through Graph sources. Selection changes and ordinary rebuilds in
+configuration through the Outline. Selection changes and ordinary rebuilds in
 the current configuration do not add visits. Navigation is separate from document
 undo: it always shows the current draft, preserves draft bytes/revisions and does
 not undo edits made since the previous visit.
@@ -5679,6 +5947,26 @@ Deleting the asset default makes the first remaining configuration its default.
 If a surviving Subgraph node in the loaded package references the configuration,
 deletion is rejected with the caller's location: remove or rebind that node first.
 
+Choose **Configurations > Duplicate Configuration...** to copy the selected
+configuration under a new name in the same file. The copy keeps its inputs,
+outputs, nodes, connections, options, comment frames and layout, opens
+immediately, and does not change the asset default. The dialog suggests an
+unused `<name>Copy`; the naming rules and eight-configuration limit above apply.
+
+Choose **Duplicate Graph...** to copy the selected `.lurender.json` file, with every
+configuration, as a new `<name>.lurender.json` in the package root whose graph `id`
+is the new name. The name follows the same identifier rules and must not match an
+existing graph `id` or file, including one differing only in case. Subgraph nodes
+that call another configuration of the copied file are retargeted to the copy;
+calls into other graph files keep their targets. Nothing references the new graph
+until you insert it with **Quick Add** or rebind a Subgraph node, so the World
+output does not change. The copy opens on its default configuration.
+
+Both duplications are one undo step that never modifies the original; Undo removes
+the copy, and Save publishes it. Invalid names, a full file, package source
+limits or an unresolved external source conflict preserve the draft and show the
+repair in the status line.
+
 Left-drag empty canvas space to box-select nodes. Shift-drag adds to the selection;
 Shift-click adds a node and Ctrl-click toggles one. **Select All** and **Escape**
 select or clear the group. Pan with middle-drag, hold Space while left-dragging,
@@ -5812,14 +6100,17 @@ straight tint with alpha below one is declared `Transparent`, and the editor's
 hiding them. Textures, lights and other materials are outside the current static
 profile. An authored surface's flat tint is its schema tint.
 
-Triangle-ray graphs admit up to **2 GiB of CPU preparation** and **2 GiB of GPU
-preview resources**. These are ceilings, not allocations made when a graph opens.
+Triangle-ray graphs on 64-bit hosts admit up to **4 GiB of CPU preparation** and
+**6 GiB of GPU preview resources**; 32-bit hosts retain 2 GiB ceilings. These are ceilings, not allocations made when a graph opens.
 CPU preparation includes frozen triangles, BVH construction, material and texture
 data, fingerprints and upload scratch. The GPU ceiling includes current and
 replacement previews until retained GPU uses retire. The device-wide RHI resource
 budget and each device's storage-buffer binding range apply independently; a
 larger graph ceiling cannot override either one. The supplied imported Sponza
-World's two million triangles require more than the previous 256 MiB ceilings.
+World's complete 3,747,018 triangles require more than the former 2 GiB CPU
+preparation ceiling. The editor device separately admits the ray GPU budget plus
+1 GiB for raster geometry, material textures and graph targets, so replacement
+can retain the last drawable scene while the next complete scene prepares.
 Native ray geometry and acceleration-structure build scratch use the backend's
 enabled allocation range, rather than the former fixed 64 MiB ceiling. Each
 creation still checks its explicit byte budget. Packed opacity metadata retains
@@ -5990,21 +6281,39 @@ the Preview page.
   `colour attachment of Main/raster/draw (Clear → Store)`. It also notes
   `exported by …`, the shared allocation for a depth texture, or `transient`.
 
-Readback never stalls the GUI thread:
+Inspection is visibility-aware and uses independent snapshots:
 
-- The preview reads the selected texture after each presented frame. This happens
-  only between frames, once the export copy finishes and before the next Poll or
-  Render. While the read is outstanding, the graph's attachments are not
-  rewritten or released.
-- Colour textures use the same banded RGBA8 copy as the preview image.
-- RHI readback is RGBA8 only. So an editor shader
-  (`apps/editor/shaders/texture_depth_pack.slang`) first draws the depth aspect
-  into an RGBA8 attachment, packing each texel's IEEE bits into its four bytes.
-  The editor then copies that attachment and rebuilds the depth bit-exactly.
-- Every step is a request polled on later ticks. Nothing waits on a fence.
-- The textures come from `RenderGraph::GetResourceAllocation`. It hands out a
-  graph's non-surface allocation once the producer has completed, under the same
-  rules as an export lease, and it is meant for diagnostics only.
+- Hiding the Textures page (including switching tabs or hiding its dock) cancels
+  pending inspection and stops new reads and CPU image conversion. Selection and
+  the last completed image survive. Showing it requests a fresh snapshot.
+- Selecting or reselecting a texture requests a snapshot of the presented frame.
+  While visible, subsequent frames refresh it at most four times per second.
+  A pending refresh does not delay rendering during that interval.
+- Between frames, colour textures receive an exact-format GPU copy into an owned
+  texture. RHI readback is RGBA8 only, so the editor's
+  `apps/editor/shaders/texture_depth_pack.slang` packs depth IEEE bits into an
+  owned RGBA8 attachment instead. Both preserve the captured frame's pixels.
+- Only GPU snapshot completion gates reuse of the source attachment. Subsequent
+  band reads use the owned texture while the live graph renders newer frames or
+  activates another generation. Nothing waits on a fence inside a service call.
+- Diagnostic bands yield shared readback capacity to viewport output. Inspection
+  images can arrive later during heavy output readback.
+- Range scanning, channel remapping and display image creation run on a native
+  worker using immutable CPU snapshots. The GUI only schedules work and publishes
+  completed images; it never joins or helps execute conversion. Visible readback
+  refreshes remain capped at four per second; control edits queue conversion directly.
+- Each viewer admits one active conversion and one replaceable latest request.
+  New snapshots or controls cancel superseded work, checked between rows in both
+  range scanning and pixel conversion. Hidden viewers drop queued work and cancel
+  the active conversion. Destruction disconnects completion without waiting; the
+  retiring worker owns its inputs until it exits.
+- Only the latest request may publish. Selection, preview/device replacement and
+  generation changes invalidate pending conversion. Image, probe bytes, applied
+  range and displayed generation/revision publish together, preserving the last
+  completed image on cancellation or failure. Worker completion uses the GUI event
+  loop and does not require another rendered frame.
+- Textures come from `RenderGraph::GetResourceAllocation`, which exposes the
+  non-surface allocation after its producer completes, for diagnostics only.
 
 What the viewer shows is the allocation's contents at the end of the frame:
 
@@ -6017,9 +6326,8 @@ What the viewer shows is the allocation's contents at the end of the frame:
 
 With **Live Preview**, the selection is kept by name:
 
-- Every new World revision re-reads it.
-- Every rebuilt generation re-reads it as soon as that generation's first frame
-  is presented.
+- New World revisions request a refresh at the bounded rate while visible.
+- Rebuilt generations request a refresh after their first presented frame.
 - If a rebuild removes the texture, the viewer reports that it is not part of
   the active generation.
 

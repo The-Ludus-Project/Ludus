@@ -1,5 +1,7 @@
 #include "internal/editor_style.h"
 #include "design_tokens.h"
+#include "internal/editor_icons.h"
+#include "internal/path_text.h"
 #include "internal/theme_preferences.h"
 
 #include <algorithm>
@@ -12,6 +14,7 @@
 #include <QDockWidget>
 #include <QFontMetrics>
 #include <QLabel>
+#include <QMainWindow>
 #include <QPainter>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -42,6 +45,9 @@ constexpr int TAB_PADDING_VERTICAL = 7;
 constexpr int TAB_PADDING_HORIZONTAL = 12;
 constexpr int TAB_UNDERLINE_WIDTH = 2;
 constexpr int DOCK_TITLE_PADDING = 6;
+/// Space between a dock tab's icon and its text, and around an icon-only tab's icon.
+constexpr int TAB_ICON_GAP = 6;
+constexpr int ICON_ONLY_TAB_PADDING = 8;
 constexpr int TOOL_BUTTON_PADDING = 4;
 constexpr int HEADER_PADDING = 4;
 constexpr int TOOL_BAR_SPACING = 4;
@@ -51,6 +57,7 @@ constexpr qreal HALF = 0.5;
 constexpr int DARK_LIGHTNESS_LIMIT = 128;
 const char* const STYLE_OBJECT_NAME = "LudusEditorStyle";
 const char* const VISUAL_ROLE_PROPERTY = "visualRole";
+const char* const SEGMENT_POSITION_PROPERTY = "segmentPosition";
 const char* const DENSITY_PROPERTY = "density";
 const char* const SECONDARY_LABEL_MARKER = "ludusSecondaryLabel";
 
@@ -80,6 +87,28 @@ void DrawControlBody(QPainter* painter, const QRect& rect, const QColor& fill, c
     painter->drawRoundedRect(QRectF(rect).adjusted(inset, inset, -inset, -inset),
                              design::RADIUS_CONTROL,
                              design::RADIUS_CONTROL);
+    painter->restore();
+}
+
+/// One button of a segmented control: the rounded outline belongs to the whole row, so only the outer
+/// corners of the first and last segments are rounded and neighbours share a divider.
+void DrawSegmentBody(QPainter* painter,
+                     const QRect& rect,
+                     const QColor& fill,
+                     const QColor& edge,
+                     int edgeWidth,
+                     bool isFirst,
+                     bool isLast)
+{
+    painter->save();
+    painter->setClipRect(rect);
+    const int overhang = static_cast<int>(design::RADIUS_CONTROL) * 2;
+    const QRect body = rect.adjusted(isFirst == true ? 0 : -overhang, 0, isLast == true ? 0 : overhang, 0);
+    DrawControlBody(painter, body, fill, edge, edgeWidth);
+    if (isFirst == false)
+    {
+        painter->fillRect(QRect(rect.left(), rect.top(), edgeWidth, rect.height()), edge);
+    }
     painter->restore();
 }
 } // namespace
@@ -234,6 +263,25 @@ void EditorStyle::drawPrimitive(PrimitiveElement element,
     {
         case PE_PanelButtonCommand: {
             const QStyleOptionButton* button = qstyleoption_cast<const QStyleOptionButton*>(option);
+            if (HasProperty(widgetOrNull, VISUAL_ROLE_PROPERTY, "segment") == true)
+            {
+                const bool isSelected = option->state.testFlag(State_On);
+                const QColor fill = isEnabled == false   ? mColours.Workspace
+                                    : isSelected == true ? mColours.Accent
+                                    : isHovered == true  ? mColours.Selected
+                                                         : mColours.Raised;
+                const QColor edge = isFocused == true && isEnabled == true ? mColours.Accent : mColours.Border;
+                DrawSegmentBody(painter,
+                                option->rect,
+                                fill,
+                                edge,
+                                isFocused == true && isEnabled == true ? ringWidth : edgeWidth,
+                                HasProperty(widgetOrNull, SEGMENT_POSITION_PROPERTY, "middle") == false &&
+                                    HasProperty(widgetOrNull, SEGMENT_POSITION_PROPERTY, "last") == false,
+                                HasProperty(widgetOrNull, SEGMENT_POSITION_PROPERTY, "middle") == false &&
+                                    HasProperty(widgetOrNull, SEGMENT_POSITION_PROPERTY, "first") == false);
+                return;
+            }
             const bool isPrimary =
                 isEnabled == true &&
                 (HasProperty(widgetOrNull, VISUAL_ROLE_PROPERTY, "primary") == true ||
@@ -314,7 +362,12 @@ void EditorStyle::drawPrimitive(PrimitiveElement element,
             }
             break;
         case PE_PanelButtonTool: {
-            if (isHovered == true || option->state.testFlag(State_On) == true)
+            // A checked toggle (Live Preview) keeps an accent edge so its state reads without hovering.
+            if (option->state.testFlag(State_On) == true)
+            {
+                DrawControlBody(painter, option->rect, mColours.Raised, mColours.Accent, CONTROL_EDGE_WIDTH);
+            }
+            else if (isHovered == true)
             {
                 DrawControlBody(painter, option->rect, mColours.Raised, Qt::transparent, 0);
             }
@@ -338,6 +391,33 @@ void EditorStyle::drawPrimitive(PrimitiveElement element,
     QProxyStyle::drawPrimitive(element, option, painter, widgetOrNull);
 }
 
+namespace
+{
+/// A tab bar owned by the main window is a dock tab bar. It shows icons only when its full labels
+/// (icon, text and padding for every tab) would not fit its width, and every tab has an icon.
+[[nodiscard]] bool IsIconOnlyDockTabBar(const QWidget* widgetOrNull, const QStyle& style)
+{
+    const QTabBar* tabBar = qobject_cast<const QTabBar*>(widgetOrNull);
+    if (tabBar == nullptr || qobject_cast<const QMainWindow*>(tabBar->parentWidget()) == nullptr || tabBar->count() < 2)
+    {
+        return false;
+    }
+    const QFontMetrics metrics(tabBar->font());
+    const int iconSize = style.pixelMetric(QStyle::PM_TabBarIconSize, nullptr, tabBar);
+    const int padding = style.pixelMetric(QStyle::PM_TabBarTabHSpace, nullptr, tabBar);
+    int fullWidth = 0;
+    for (int index = 0; index < tabBar->count(); ++index)
+    {
+        if (tabBar->tabIcon(index).isNull() == true)
+        {
+            return false;
+        }
+        fullWidth += metrics.horizontalAdvance(tabBar->tabText(index)) + iconSize + TAB_ICON_GAP + padding;
+    }
+    return fullWidth > tabBar->width();
+}
+} // namespace
+
 void EditorStyle::drawControl(ControlElement element,
                               const QStyleOption* option,
                               QPainter* painter,
@@ -348,9 +428,12 @@ void EditorStyle::drawControl(ControlElement element,
     {
         case CE_PushButtonLabel: {
             const QStyleOptionButton* button = qstyleoption_cast<const QStyleOptionButton*>(option);
-            const bool isPrimary = isEnabled == true && button != nullptr &&
-                                   (HasProperty(widgetOrNull, VISUAL_ROLE_PROPERTY, "primary") == true ||
-                                    button->features.testFlag(QStyleOptionButton::DefaultButton));
+            const bool isSelectedSegment = isEnabled == true && option->state.testFlag(State_On) == true &&
+                                           HasProperty(widgetOrNull, VISUAL_ROLE_PROPERTY, "segment") == true;
+            const bool isPrimary =
+                isEnabled == true && button != nullptr &&
+                (isSelectedSegment == true || HasProperty(widgetOrNull, VISUAL_ROLE_PROPERTY, "primary") == true ||
+                 button->features.testFlag(QStyleOptionButton::DefaultButton));
             if (isPrimary == true)
             {
                 QStyleOptionButton primary = *button;
@@ -359,6 +442,35 @@ void EditorStyle::drawControl(ControlElement element,
                 return;
             }
             break;
+        }
+        case CE_TabBarTabLabel: {
+            const QStyleOptionTab* tab = qstyleoption_cast<const QStyleOptionTab*>(option);
+            if (tab == nullptr || tab->icon.isNull() == true || IsIconOnlyDockTabBar(widgetOrNull, *this) == false)
+            {
+                break;
+            }
+            const QIcon::Mode mode = isEnabled == true ? QIcon::Normal : QIcon::Disabled;
+            const int iconSize = pixelMetric(PM_TabBarIconSize, tab, widgetOrNull);
+            QRect iconRect(QPoint(0, 0), QSize(iconSize, iconSize));
+            iconRect.moveCenter(tab->rect.center());
+            tab->icon.paint(painter, iconRect, Qt::AlignCenter, mode, QIcon::Off);
+            return;
+        }
+        case CE_ComboBoxLabel: {
+            const QStyleOptionComboBox* combo = qstyleoption_cast<const QStyleOptionComboBox*>(option);
+            if (combo == nullptr || combo->editable == true || combo->currentIcon.isNull() == false)
+            {
+                break;
+            }
+            // Text the field cannot hold is elided from the middle with a folder dimmed and the file
+            // name kept, instead of being cut mid-word.
+            const QRect textRect = subControlRect(CC_ComboBox, combo, SC_ComboBoxEditField, widgetOrNull);
+            const QPalette::ColorGroup group = isEnabled == true ? QPalette::Active : QPalette::Disabled;
+            const QColor nameColour = combo->palette.color(group, QPalette::ButtonText);
+            painter->save();
+            DrawPathText(*painter, textRect, combo->currentText, nameColour, GetFolderColour(nameColour));
+            painter->restore();
+            return;
         }
         case CE_TabBarTabShape: {
             const QStyleOptionTab* tab = qstyleoption_cast<const QStyleOptionTab*>(option);
@@ -552,6 +664,14 @@ QSize EditorStyle::sizeFromContents(ContentsType type,
         case CT_SpinBox:
             return QProxyStyle::sizeFromContents(type, option, contentsSize, widgetOrNull) +
                    QSize(0, 2 * INPUT_PADDING);
+        case CT_TabBarTab:
+            if (IsIconOnlyDockTabBar(widgetOrNull, *this) == true)
+            {
+                const QSize base = QProxyStyle::sizeFromContents(type, option, contentsSize, widgetOrNull);
+                return {pixelMetric(PM_TabBarIconSize, option, widgetOrNull) + 2 * ICON_ONLY_TAB_PADDING,
+                        base.height()};
+            }
+            break;
         case CT_ComboBox:
             return contentsSize +
                    QSize(2 * edgeWidth + INPUT_PADDING + COMBO_ARROW_PADDING, 2 * (INPUT_PADDING + edgeWidth));
