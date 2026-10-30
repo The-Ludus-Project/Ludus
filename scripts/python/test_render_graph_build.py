@@ -765,6 +765,8 @@ class BuildTests(unittest.TestCase):
         with self.assertRaisesRegex(ToolingError, 'source byte limit exceeded') as caught:
             self.run_build()
         self.assertEqual('RenderGraphBuildCapacity', caught.exception.code)
+        self.assertIn(f'more than one build snapshot holds ({build.MAX_BYTES})', str(caught.exception))
+        self.assertIn('Remove Unused Shaders', str(caught.exception))
         self.assertEqual(prior, self.pointer())
         self.assertFalse(self.calls)
 
@@ -774,9 +776,11 @@ class BuildTests(unittest.TestCase):
         self.calls.clear()
         for program in self.value()['programs'][:2]:
             self.add_shader_dependencies(program, build.MAX_FILES // 2)
-        with self.assertRaisesRegex(ToolingError, 'files per build snapshot') as caught:
+        with self.assertRaisesRegex(ToolingError, rf'the most one build snapshot holds \({build.MAX_FILES}\)') as caught:
             self.run_build()
         self.assertEqual('RenderGraphBuildCapacity', caught.exception.code)
+        self.assertIn(f'already reads {build.MAX_FILES} manifest and shader files', str(caught.exception))
+        self.assertIn('Remove Unused Shaders', str(caught.exception))
         self.assertEqual(prior, self.pointer())
         self.assertFalse(self.calls)
 

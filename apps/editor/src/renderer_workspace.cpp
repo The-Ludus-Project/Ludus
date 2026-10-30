@@ -446,7 +446,7 @@ QString DescribeStatus(RenderGraphDocumentStatus status)
         case RenderGraphDocumentStatus::NotFound:
             return QStringLiteral("The source is not part of this render-graph package.");
         case RenderGraphDocumentStatus::Capacity:
-            return QStringLiteral("The package exceeds the bounded source limits (64 files, 128 KiB each, 4 MiB).");
+            return DescribePackageCapacity();
         case RenderGraphDocumentStatus::Malformed:
             return QStringLiteral("The draft graph is not a JSON object; fix it in the Source tab first.");
         case RenderGraphDocumentStatus::InvalidEdit:

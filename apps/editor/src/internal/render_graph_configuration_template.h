@@ -4,6 +4,8 @@
 
 namespace ludus::editor
 {
+/// End a template error with "The draft was preserved." exactly once.
+void AppendDraftPreserved(QString& inoutError);
 /// Upgrade unchanged engine-default manifest budgets to the selected template's budgets.
 /// Custom limits are retained. Returns false when embedded defaults are unavailable; no disk writes.
 [[nodiscard]] bool UpgradeDefaultTemplateBudgets(QJsonObject& inoutManifest, const QJsonObject& source);

@@ -120,12 +120,7 @@ RenderGraphDocumentStatus CopyShaderSources(RenderGraphSnapshot& inoutSnapshot,
                            .arg(destination);
             return RenderGraphDocumentStatus::Conflict;
         }
-        if (inoutSnapshot.Files.contains(destination) == false &&
-            static_cast<usize>(inoutSnapshot.Files.size()) >= RenderGraphDocument::MAX_FILES)
-        {
-            outError = QStringLiteral("ReSTIR shader sources exceed the package file limit. The draft was preserved.");
-            return RenderGraphDocumentStatus::Capacity;
-        }
+        // PrepareConfigurationTemplate checks the package file limit once the whole template is in.
         inoutSnapshot.Files.insert(destination, bytes);
         QRegularExpressionMatchIterator includes = INCLUDE.globalMatch(QString::fromUtf8(bytes));
         while (includes.hasNext() == true)
@@ -352,6 +347,7 @@ RenderGraphDocumentStatus PrepareRestirConfiguration(RenderGraphSnapshot& inoutS
     }
     if (destinationIndex < 0 && configurations.size() >= RenderGraphDocument::MAX_CONFIGURATIONS)
     {
+        outError = DescribeConfigurationCapacity(QStringLiteral("ReSTIR DI"), file);
         return RenderGraphDocumentStatus::Capacity;
     }
     QString manifestFile = rootGraph;
@@ -440,11 +436,16 @@ RenderGraphDocumentStatus PrepareRestirConfiguration(RenderGraphSnapshot& inoutS
     {
         techniques.append(technique);
     }
-    if (techniques.size() >
-        manifest.value(QStringLiteral("budgets")).toObject().value(QStringLiteral("configurations")).toInt())
+    const qsizetype techniqueBudget =
+        manifest.value(QStringLiteral("budgets")).toObject().value(QStringLiteral("configurations")).toInt();
+    if (techniques.size() > techniqueBudget)
     {
-        outError = QStringLiteral(
-            "The ReSTIR technique exceeds the manifest's configuration budget. The draft was preserved.");
+        outError = QStringLiteral("Adding the ReSTIR ray-tracing technique needs %1 techniques, but "
+                                  "budgets.configurations in %2 is %3. Increase budgets.configurations and apply the "
+                                  "template again. The draft was preserved.")
+                       .arg(techniques.size())
+                       .arg(manifestFile)
+                       .arg(techniqueBudget);
         return RenderGraphDocumentStatus::Capacity;
     }
     manifest.insert(QStringLiteral("techniques"), techniques);
@@ -484,17 +485,19 @@ RenderGraphDocumentStatus PrepareRestirConfiguration(RenderGraphSnapshot& inoutS
     outError.clear();
     return RenderGraphDocumentStatus::Ok;
 }
+namespace
+{
 // All paths and configuration identities describe distinct parts of one insertion transaction.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-RenderGraphDocumentStatus PrepareConfigurationTemplate(RenderGraphSnapshot& inoutSnapshot,
-                                                       const QString& rootGraph,
-                                                       const QString& file,
-                                                       const QString& configuration,
-                                                       const QString& parentConfiguration,
-                                                       const QString& packageRoot,
-                                                       const QString& templateIdentity,
-                                                       QString& outError,
-                                                       RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
+RenderGraphDocumentStatus PrepareTemplateContents(RenderGraphSnapshot& inoutSnapshot,
+                                                  const QString& rootGraph,
+                                                  const QString& file,
+                                                  const QString& configuration,
+                                                  const QString& parentConfiguration,
+                                                  const QString& packageRoot,
+                                                  const QString& templateIdentity,
+                                                  QString& outError,
+                                                  RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
 {
     QString targetFile = file;
     if (file == rootGraph)
@@ -543,6 +546,12 @@ RenderGraphDocumentStatus PrepareConfigurationTemplate(RenderGraphSnapshot& inou
         QJsonArray nodes = record.value(QStringLiteral("nodes")).toArray();
         if (nodes.size() >= RenderGraphDocument::MAX_NODES)
         {
+            outError = QStringLiteral("The template cannot add its Subgraph node: configuration %1 of %2 already has "
+                                      "%3 nodes, the most one configuration can hold. Remove nodes you no longer use "
+                                      "(select them and press Delete, or right-click and choose Remove Selected "
+                                      "Nodes) and apply the template again. The draft was preserved.")
+                           .arg(parent, file)
+                           .arg(RenderGraphDocument::MAX_NODES);
             return RenderGraphDocumentStatus::Capacity;
         }
         for (const QJsonValueConstRef node : nodes)
@@ -615,6 +624,48 @@ RenderGraphDocumentStatus PrepareConfigurationTemplate(RenderGraphSnapshot& inou
                                           templateIdentity,
                                           outError,
                                           inoutBudgetOrNull);
+}
+} // namespace
+
+// All paths and configuration identities describe distinct parts of one insertion transaction.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+RenderGraphDocumentStatus PrepareConfigurationTemplate(RenderGraphSnapshot& inoutSnapshot,
+                                                       const QString& rootGraph,
+                                                       const QString& file,
+                                                       const QString& configuration,
+                                                       const QString& parentConfiguration,
+                                                       const QString& packageRoot,
+                                                       const QString& templateIdentity,
+                                                       QString& outError,
+                                                       RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
+{
+    const usize existingFiles = static_cast<usize>(inoutSnapshot.Files.size());
+    const RenderGraphDocumentStatus status = PrepareTemplateContents(inoutSnapshot,
+                                                                     rootGraph,
+                                                                     file,
+                                                                     configuration,
+                                                                     parentConfiguration,
+                                                                     packageRoot,
+                                                                     templateIdentity,
+                                                                     outError,
+                                                                     inoutBudgetOrNull);
+    // One check after the whole template is in counts its library graph and every source it copies.
+    const usize templateFiles = static_cast<usize>(inoutSnapshot.Files.size()) - existingFiles;
+    if (status == RenderGraphDocumentStatus::Ok && existingFiles + templateFiles > RenderGraphDocument::MAX_FILES)
+    {
+        outError = DescribeTemplateFileCapacity(templateIdentity, existingFiles, templateFiles);
+        return RenderGraphDocumentStatus::Capacity;
+    }
+    return status;
+}
+
+void AppendDraftPreserved(QString& inoutError)
+{
+    const QString preserved = QStringLiteral("The draft was preserved.");
+    if (inoutError.endsWith(preserved) == false)
+    {
+        inoutError += QLatin1Char(' ') + preserved;
+    }
 }
 // Paths and configuration identities describe distinct parts of the insertion transaction.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)

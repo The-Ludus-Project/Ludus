@@ -2437,6 +2437,103 @@ TEST_CASE("Veach and Guibas and Salesin and Jarosz configurations apply to one p
     CheckPointLineImport(document, QStringLiteral("PointLineMis.lurender.json"));
 }
 
+namespace
+{
+/// Save the built-in package into project, then add unused shader sources until the package holds
+/// fileCount files. Returns the number of files written by the save.
+qsizetype PadSavedPackage(const QString& project, qsizetype fileCount)
+{
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project, 1);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    REQUIRE(workspace.Save() == true);
+    const QDir root(workspace.GetDocument().GetPackageRoot());
+    const qsizetype savedFiles = workspace.GetDocument().GetFiles().size();
+    REQUIRE(root.mkpath(QStringLiteral("padding")) == true);
+    for (qsizetype index = savedFiles; index < fileCount; ++index)
+    {
+        QFile padding(root.filePath(QStringLiteral("padding/padding_%1.slang").arg(index)));
+        REQUIRE(padding.open(QIODevice::WriteOnly) == true);
+        REQUIRE(padding.write("// Unused padding source.\n") > 0);
+    }
+    return savedFiles;
+}
+} // namespace
+
+TEST_CASE("A template applies to a package with more sources than the editor's former 64-file limit",
+          "[editor][render-graph][point-line-configuration]")
+{
+    // A package that already holds several templates passed 64 files, the old editor-only limit,
+    // although the CLI builds it. The editor now admits what the CLI admits.
+    constexpr qsizetype PACKAGE_FILES = 100;
+    QTemporaryDir project;
+    static_cast<void>(PadSavedPackage(project.path(), PACKAGE_FILES));
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 2);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.IsBuiltIn() == false);
+    REQUIRE(workspace.GetDocument().GetFiles().size() == PACKAGE_FILES);
+    INFO(workspace.GetStatusText().toStdString());
+    REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("PointLineMis"), GetPointLineTemplate()) == true);
+    CheckPointLineImport(workspace.GetDocument(), QStringLiteral("PointLineMis.lurender.json"));
+}
+
+TEST_CASE("A template that does not fit the package names the counts and its repair works",
+          "[editor][render-graph][point-line-configuration]")
+{
+    // Veach and Guibas adds its library graph and four sources; the point-and-line template needs its library
+    // graph and five more. Start eight files below the limit so the second template does not fit until the
+    // first is removed by following the message.
+    constexpr qsizetype ROOM_BELOW_LIMIT = 8;
+    QTemporaryDir project;
+    const qsizetype paddedFiles = static_cast<qsizetype>(RenderGraphDocument::MAX_FILES) - ROOM_BELOW_LIMIT;
+    static_cast<void>(PadSavedPackage(project.path(), paddedFiles));
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 2);
+    workspace.SetLivePreview(false);
+    RenderGraphDocument& document = workspace.GetDocument();
+    REQUIRE(document.GetFiles().size() == paddedFiles);
+    REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("Mis"), QStringLiteral("veach-guibas-mis")) == true);
+    REQUIRE(workspace.Save() == true);
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, QStringLiteral("Default"), QStringLiteral("output")) == true);
+    const QStringList beforeFiles = document.GetFiles();
+    const QByteArray beforeManifest = document.GetDraft(COMPUTE_MANIFEST);
+    CHECK(workspace.ApplyConfigurationTemplate(QStringLiteral("PointLineMis"), GetPointLineTemplate()) == false);
+    const QString status = workspace.GetStatusText();
+    INFO(status.toStdString());
+    CHECK(status.contains(QStringLiteral("Template salesin-jarosz-lines needs")) == true);
+    CHECK(status.contains(QStringLiteral("but this package already has %1 of its %2 files")
+                              .arg(beforeFiles.size())
+                              .arg(RenderGraphDocument::MAX_FILES)) == true);
+    CHECK(status.contains(QStringLiteral("Remove Unused Shaders")) == true);
+    CHECK(status.count(QStringLiteral("The draft was preserved.")) == 1);
+    CHECK(document.GetFiles() == beforeFiles);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST) == beforeManifest);
+
+    // The repair the message names: delete the Subgraph node and save, remove the library graph and the
+    // template folder's shader files (Project Explorer's Remove... deletes the file on disk), then drop the
+    // stale program registrations with Remove Unused Shaders.
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, QStringLiteral("Default"), QStringLiteral("Mis")) == true);
+    workspace.RemoveSelectedNodes();
+    REQUIRE(workspace.Save() == true);
+    const QDir root(document.GetPackageRoot());
+    REQUIRE(QFile::remove(root.filePath(QStringLiteral("Mis.lurender.json"))) == true);
+    const QDir shaders(root.filePath(QStringLiteral("veach_guibas_mis/main_shaders")));
+    for (const QString& source : shaders.entryList({QStringLiteral("*.slang")}, QDir::Files))
+    {
+        REQUIRE(QFile::remove(shaders.filePath(source)) == true);
+    }
+    REQUIRE(workspace.RemoveUnusedShaders() == true);
+    INFO(workspace.GetStatusText().toStdString());
+    // The cleanup may also drop sources that were already unused in the saved package.
+    CHECK(document.GetFiles().size() <= paddedFiles);
+    REQUIRE(workspace.Save() == true);
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, QStringLiteral("Default"), QStringLiteral("output")) == true);
+    REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("PointLineMis"), GetPointLineTemplate()) == true);
+    CheckPointLineImport(document, QStringLiteral("PointLineMis.lurender.json"));
+}
+
 TEST_CASE("Compute ray-tracing import extends a shared ray technique and preserves conflicting edits",
           "[editor][render-graph][compute-configuration]")
 {

@@ -6,6 +6,7 @@
 #include <ludus/foundation/containers/borrowed_view.hpp>
 
 #include "render_graph_layout_policy.h"
+#include "render_graph_package_policy.h"
 
 #include "internal/code_document.h"
 #include "internal/document_history.h"
@@ -97,6 +98,16 @@ enum class RenderGraphDocumentStatus : foundation::uint8
 /// an editor draft therefore produces the same bytes as the shared CLI backend.
 [[nodiscard]] QByteArray EncodeCanonicalJson(const QJsonObject& value);
 
+/// The package source limits and how to free space, for a load or edit that reports Capacity.
+[[nodiscard]] QString DescribePackageCapacity();
+/// Why templateName cannot copy newFiles more sources into a package that already holds
+/// existingFiles, with the limit and the canvas actions that free space.
+[[nodiscard]] QString
+DescribeTemplateFileCapacity(const QString& templateName, foundation::usize existingFiles, foundation::usize newFiles);
+/// Why templateName cannot add a configuration to file, which already holds the most a graph
+/// file can, with the canvas actions that make room.
+[[nodiscard]] QString DescribeConfigurationCapacity(const QString& templateName, const QString& file);
+
 // RG3 render-graph authoring document. It owns one package's saved and draft
 // sources (graph documents, build manifests and shader functions), a bounded
 // undo history and explicit save. Validation, lowering and builds stay in the
@@ -106,9 +117,18 @@ enum class RenderGraphDocumentStatus : foundation::uint8
 class RenderGraphDocument final
 {
 public:
-    static constexpr foundation::usize MAX_FILES = 64;
-    static constexpr qsizetype MAX_FILE_BYTES = qsizetype{128} * 1024;
-    static constexpr qsizetype MAX_TOTAL_BYTES = qsizetype{4} * 1024 * 1024;
+    /// Package limits are what the CLI admits: graph documents (render_graph.py) plus the
+    /// manifest and shader sources of one build snapshot (render_graph_build.py). The editor
+    /// therefore opens every package the CLI can build and never refuses a template the
+    /// builder would accept.
+    static constexpr foundation::usize MAX_FILES =
+        package_policy::MAX_GRAPH_DOCUMENTS + package_policy::MAX_BUILD_SOURCE_FILES;
+    static constexpr qsizetype MAX_FILE_BYTES =
+        static_cast<qsizetype>(package_policy::MAX_GRAPH_DOCUMENT_BYTES > package_policy::MAX_BUILD_SOURCE_FILE_BYTES
+                                   ? package_policy::MAX_GRAPH_DOCUMENT_BYTES
+                                   : package_policy::MAX_BUILD_SOURCE_FILE_BYTES);
+    static constexpr qsizetype MAX_TOTAL_BYTES =
+        static_cast<qsizetype>(package_policy::MAX_GRAPH_BYTES + package_policy::MAX_BUILD_SOURCE_BYTES);
     static constexpr foundation::usize HISTORY_CAPACITY = 64;
     /// Authoring limits mirrored from the shared render_graph.py format validator.
     static constexpr foundation::int32 MAX_CONFIGURATIONS = 8;

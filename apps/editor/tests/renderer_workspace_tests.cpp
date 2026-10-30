@@ -1265,15 +1265,25 @@ TEST_CASE("Subgraph references choose authored graphs and configurations from dr
 
 TEST_CASE("New subgraphs respect the package file limit", "[editor][render-graph][subgraph]")
 {
+    // The file limit exceeds the root configuration's node limit, so fill the package with unused
+    // shader sources and leave room for exactly one more subgraph library.
     QTemporaryDir project;
-    RenderGraphDocument document;
-    REQUIRE(document.Load(MakePackage(project), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
-    while (static_cast<usize>(document.GetFiles().size()) < RenderGraphDocument::MAX_FILES)
+    const QString package = MakePackage(project);
+    RenderGraphDocument probe;
+    REQUIRE(probe.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    for (qsizetype index = probe.GetFiles().size(); static_cast<usize>(index) + 1 < RenderGraphDocument::MAX_FILES;
+         ++index)
     {
-        const QString name = QStringLiteral("Library%1").arg(document.GetFiles().size());
-        REQUIRE(document.CreateSubgraph(ROOT_GRAPH, QStringLiteral("Default"), name, name) ==
-                RenderGraphDocumentStatus::Ok);
+        WriteFile(QDir(package).filePath(QStringLiteral("padding/padding_%1.slang").arg(index)),
+                  QByteArrayLiteral("// Unused padding source.\n"));
     }
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(static_cast<usize>(document.GetFiles().size()) + 1 == RenderGraphDocument::MAX_FILES);
+    REQUIRE(document.CreateSubgraph(ROOT_GRAPH,
+                                    QStringLiteral("Default"),
+                                    QStringLiteral("Library"),
+                                    QStringLiteral("Library")) == RenderGraphDocumentStatus::Ok);
     const QByteArray original = document.GetDraft(ROOT_GRAPH);
     const uint64 revision = document.GetRevision();
     CHECK(document.CreateSubgraph(ROOT_GRAPH,
@@ -1440,7 +1450,10 @@ TEST_CASE("Add Node explains rejected drafts without changing their content or h
         graph.insert(QStringLiteral("padding"), QString(padding, QLatin1Char('x')));
         bytes = EncodeCanonicalJson(graph);
         REQUIRE(bytes.size() == RenderGraphDocument::MAX_FILE_BYTES);
-        expected = QStringLiteral("exceeds the bounded source limits");
+        constexpr qsizetype KIBIBYTE = 1024;
+        expected = QStringLiteral("exceeds the render-graph source limits: %1 files, %2 KiB per file")
+                       .arg(RenderGraphDocument::MAX_FILES)
+                       .arg(RenderGraphDocument::MAX_FILE_BYTES / KIBIBYTE);
     }
     REQUIRE(workspace.GetDocument().SetText(ROOT_GRAPH, bytes) == RenderGraphDocumentStatus::Ok);
     static_cast<void>(workspace.SelectNode(ROOT_GRAPH, {}, {}));

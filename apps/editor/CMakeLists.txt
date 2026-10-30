@@ -171,6 +171,25 @@ configure_file(src/internal/render_graph_layout_policy.h.in
     "${graph_layout_directory}/render_graph_layout_policy.h" @ONLY)
 include_directories("${graph_layout_directory}")
 
+# The CLI validator and package builder own the package source limits; the editor document holds
+# exactly what they admit, so a package the CLI can build always opens and accepts templates.
+set(graph_package_policies
+    "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/render_graph.py"
+    "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/render_graph_build.py")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${graph_package_policies})
+execute_process(COMMAND "${Python3_EXECUTABLE}" -c
+    "import json,sys; sys.path.insert(0,sys.argv[1]); from ludus_tools import render_graph as graph, render_graph_build as build; print(json.dumps({'MAX_ASSETS': graph.MAX_ASSETS, 'MAX_ASSET_BYTES': graph.MAX_ASSET_BYTES, 'MAX_TOTAL_BYTES': graph.MAX_TOTAL_BYTES, 'MAX_FILES': build.MAX_FILES, 'MAX_FILE': build.MAX_FILE, 'MAX_BYTES': build.MAX_BYTES}))"
+    "${PROJECT_SOURCE_DIR}/scripts/python"
+    RESULT_VARIABLE graph_package_status OUTPUT_VARIABLE graph_package_limits ERROR_VARIABLE graph_package_error)
+if(NOT graph_package_status EQUAL 0)
+    message(FATAL_ERROR "Cannot read render-graph package limits: ${graph_package_error}")
+endif()
+foreach(limit MAX_ASSETS MAX_ASSET_BYTES MAX_TOTAL_BYTES MAX_FILES MAX_FILE MAX_BYTES)
+    string(JSON ${limit} GET "${graph_package_limits}" "${limit}")
+endforeach()
+configure_file(src/internal/render_graph_package_policy.h.in
+    "${graph_layout_directory}/render_graph_package_policy.h" @ONLY)
+
 # One colour and spacing token file shared with the init window and the browser editor.
 include(DesignTokens.cmake)
 
