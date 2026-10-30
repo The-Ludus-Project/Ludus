@@ -4741,9 +4741,11 @@ actions work on it right away. Use **File → New Render Graph...**, as describe
 
 ![The Render Graph document at 1280×800: source tree and node canvas in the centre, the node inspector in Properties on the right](images/editor-render-graph-document-1280.png)
 
-The document is the package's source tree beside three views, switched by the tabs
-below them: **Canvas**, **Source** and **Plan**. A bar above them shows the open
-graph's path and the root **Configuration** to validate and cook. The document has
+The document is the package's source tree beside three views, switched by the
+segmented control in the document header: **Canvas**, **Source**, **Plan** (and
+**Textures** on native builds). The header's first row has the **Outline** button,
+that control and the open graph's path; its second row has the root **Configuration**
+to validate and cook. The document has
 no command buttons of its own; its commands are in the **File** and **Build** menus
 and on the Render Graph toolbar (see the
 [editor workspace layout](editor-workspace.md#workspace-layout)).

@@ -57,6 +57,7 @@ constexpr qreal HALF = 0.5;
 constexpr int DARK_LIGHTNESS_LIMIT = 128;
 const char* const STYLE_OBJECT_NAME = "LudusEditorStyle";
 const char* const VISUAL_ROLE_PROPERTY = "visualRole";
+const char* const SEGMENT_POSITION_PROPERTY = "segmentPosition";
 const char* const DENSITY_PROPERTY = "density";
 const char* const SECONDARY_LABEL_MARKER = "ludusSecondaryLabel";
 
@@ -86,6 +87,28 @@ void DrawControlBody(QPainter* painter, const QRect& rect, const QColor& fill, c
     painter->drawRoundedRect(QRectF(rect).adjusted(inset, inset, -inset, -inset),
                              design::RADIUS_CONTROL,
                              design::RADIUS_CONTROL);
+    painter->restore();
+}
+
+/// One button of a segmented control: the rounded outline belongs to the whole row, so only the outer
+/// corners of the first and last segments are rounded and neighbours share a divider.
+void DrawSegmentBody(QPainter* painter,
+                     const QRect& rect,
+                     const QColor& fill,
+                     const QColor& edge,
+                     int edgeWidth,
+                     bool isFirst,
+                     bool isLast)
+{
+    painter->save();
+    painter->setClipRect(rect);
+    const int overhang = static_cast<int>(design::RADIUS_CONTROL) * 2;
+    const QRect body = rect.adjusted(isFirst == true ? 0 : -overhang, 0, isLast == true ? 0 : overhang, 0);
+    DrawControlBody(painter, body, fill, edge, edgeWidth);
+    if (isFirst == false)
+    {
+        painter->fillRect(QRect(rect.left(), rect.top(), edgeWidth, rect.height()), edge);
+    }
     painter->restore();
 }
 } // namespace
@@ -240,6 +263,25 @@ void EditorStyle::drawPrimitive(PrimitiveElement element,
     {
         case PE_PanelButtonCommand: {
             const QStyleOptionButton* button = qstyleoption_cast<const QStyleOptionButton*>(option);
+            if (HasProperty(widgetOrNull, VISUAL_ROLE_PROPERTY, "segment") == true)
+            {
+                const bool isSelected = option->state.testFlag(State_On);
+                const QColor fill = isEnabled == false   ? mColours.Workspace
+                                    : isSelected == true ? mColours.Accent
+                                    : isHovered == true  ? mColours.Selected
+                                                         : mColours.Raised;
+                const QColor edge = isFocused == true && isEnabled == true ? mColours.Accent : mColours.Border;
+                DrawSegmentBody(painter,
+                                option->rect,
+                                fill,
+                                edge,
+                                isFocused == true && isEnabled == true ? ringWidth : edgeWidth,
+                                HasProperty(widgetOrNull, SEGMENT_POSITION_PROPERTY, "middle") == false &&
+                                    HasProperty(widgetOrNull, SEGMENT_POSITION_PROPERTY, "last") == false,
+                                HasProperty(widgetOrNull, SEGMENT_POSITION_PROPERTY, "middle") == false &&
+                                    HasProperty(widgetOrNull, SEGMENT_POSITION_PROPERTY, "first") == false);
+                return;
+            }
             const bool isPrimary =
                 isEnabled == true &&
                 (HasProperty(widgetOrNull, VISUAL_ROLE_PROPERTY, "primary") == true ||
@@ -381,9 +423,12 @@ void EditorStyle::drawControl(ControlElement element,
     {
         case CE_PushButtonLabel: {
             const QStyleOptionButton* button = qstyleoption_cast<const QStyleOptionButton*>(option);
-            const bool isPrimary = isEnabled == true && button != nullptr &&
-                                   (HasProperty(widgetOrNull, VISUAL_ROLE_PROPERTY, "primary") == true ||
-                                    button->features.testFlag(QStyleOptionButton::DefaultButton));
+            const bool isSelectedSegment = isEnabled == true && option->state.testFlag(State_On) == true &&
+                                           HasProperty(widgetOrNull, VISUAL_ROLE_PROPERTY, "segment") == true;
+            const bool isPrimary =
+                isEnabled == true && button != nullptr &&
+                (isSelectedSegment == true || HasProperty(widgetOrNull, VISUAL_ROLE_PROPERTY, "primary") == true ||
+                 button->features.testFlag(QStyleOptionButton::DefaultButton));
             if (isPrimary == true)
             {
                 QStyleOptionButton primary = *button;
