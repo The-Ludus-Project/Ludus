@@ -2657,27 +2657,77 @@ Measured on Intel Sponza's glTF triangles with Metal on October 29, 2026:
 | CPU fingerprint stream | 228 | Serialized triangle identity, checked against the scratch remaining after the scene |
 
 The first 999,981 triangles pack to 321,543,168 bytes; 1,999,967 pack to
-644,522,080 bytes. Three byte ceilings bound one prepared scene:
+644,522,080 bytes. Independent byte ceilings bound scene preparation:
 
 | Ceiling | Owner | Scene limit |
 | --- | --- | --- |
-| `GRAPH_RAY_CPU_BYTES`, 2 GiB | Renderer (`render_graph_ray.h`) | Scene estimate plus fingerprint or packing scratch: about 3.1 million triangles |
-| `GRAPH_RAY_GPU_BYTES`, 2 GiB | Renderer (`render_graph_ray.h`) | Holds the current and the replacement scene until the old producers retire: about 3.3 million triangles under replacement |
-| `rhi::StorageLimits::ResourceBytes` | The device creator | All logical RHI buffers and textures on the device. The 512 MiB default holds about 1.6 million triangles; the Editor viewport sets 2 GiB |
+| `CACHE_IDENTITY_BYTES`, 1 GiB on 64-bit hosts | Raster renderer (`render_graph_scene_resources.cpp`) | Current/pending/idle mesh and texture identity copies; 32-bit hosts retain 128 MiB |
+| `RENDER_GRAPH_RAY_CPU_BYTES`, 4 GiB on 64-bit hosts | Renderer (`render_graph.hpp`) | Scene estimate plus fingerprint, packing and native-input scratch |
+| `RENDER_GRAPH_RAY_GPU_BYTES`, 6 GiB on 64-bit hosts | Renderer (`render_graph.hpp`) | Current and replacement scenes, images, native structures and pending GPU holds |
+| `rhi::StorageLimits::ResourceBytes` | The device creator | All logical RHI buffers and textures on the device. The 512 MiB default holds about 1.6 million triangles; the Editor viewport adds a separate 1 GiB raster/target allowance to the graph-ray GPU budget (7 GiB on 64-bit hosts) |
 
-The full 3,747,018-triangle Sponza therefore fails on its first pass:
-`CpuScratch` needs 854,313,156 bytes with 783,538,976 left after the
-1,363,925,720-byte scene estimate. Raising that ceiling is a budget decision
-for the renderer, and the GPU and device budgets would also need to hold two
-1.2 GB copies during replacement. A rejected update reports the exceeded
-ceiling, its required bytes and the bytes available in
-`RenderGraphReport::SceneDiagnostics`.
+The former 2 GiB CPU ceiling rejected the full 3,747,018-triangle Sponza on
+its first pass: `CpuScratch` needed 854,313,156 bytes with 783,538,976 left after
+the 1,363,925,720-byte scene estimate. The 64-bit policy now admits that setup
+and reserves GPU headroom for two complete scenes during replacement. On M5
+Metal, one complete diagnostic scene charges 2,147,831,068 GPU bytes; two
+exceed even 4 GiB before adding larger per-pass images or material texels. These
+are ceilings, not eager allocations or measurements of free RAM/VRAM. 32-bit
+hosts retain the 2 GiB CPU/GPU ceilings; device storage-buffer ranges and
+physical allocation failures still apply independently. The viewport's shared
+and offscreen devices use the same policy in `MakeViewportDeviceDescription`.
+Native ray scenes also admit aligned opacity/UV tables up to 256 MiB, subject
+to the device buffer range and byte budget. Float32 offsets remain exact because
+UV offsets count float4 words and alpha scalar offsets are four-aligned. The
+former 64 MiB scalar ceiling rejected full Sponza's 114 MiB UV table. The
+viewport allows 512 MiB of RHI host metadata, including overlapping native UV
+records and temporary opacity arrays during replacement. The raster identity
+cache likewise needs more than its former 128 MiB for the complete mesh/texture
+set; its independent 1 GiB native ceiling admits retained asset versions. The
+raster emitter-record ceiling is 8,192: Sponza authors 8,098 emissive light-bulb
+triangles, exceeding the former 4,096-record bound. Admission retains the
+authored emitters and their existing diffuse/LTC evaluation.
+Renderer ray scene/scratch/preview byte rejections report the exceeded ceiling,
+required bytes and available bytes in `RenderGraphReport::SceneDiagnostics`.
+Native/RHI and raster cache failures can report only their status.
 
 The `[scene-capacity]` regression in `render_graph_ray_tests.cpp` prepares a
 generated 102,400-triangle scene through the three-pass `ComputeBvh`
 line-sampling template. It checks that the graph's logical RHI bytes grow by
 less than two packed copies. The hidden `[.line-traversal-performance]`
-measurement runs with the Editor's 2 GiB device budget.
+measurement selects an explicit device budget; full-scene viewport acceptance
+uses the Editor's device policy.
+
+
+The optional editor tests prepare the supplied glTF through the production
+import/catalog path and require all 3,747,018 triangles. Use a **new**, isolated
+output project, leaving supplied resources and existing projects unchanged:
+
+```sh
+QT_QPA_PLATFORM=offscreen \
+LUDUS_FULL_SPONZA_PROJECT="$PWD/out/full-sponza" \
+LUDUS_FULL_SPONZA_ENTRY=/absolute/path/to/main_sponza/NewSponza_Main_glTF_003.gltf \
+  out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.prepare-full-sponza]'
+
+QT_QPA_PLATFORM=offscreen \
+LUDUS_SPONZA_TEST_PROJECT="$PWD/out/full-sponza" \
+LUDUS_SPONZA_TEST_RUNTIME=/absolute/path/to/authored-ray-graph.lurgrt \
+  out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.sponza-ray-project]'
+
+LUDUS_SPONZA_TEST_PROJECT="$PWD/out/full-sponza" \
+LUDUS_SPONZA_NATIVE_IMAGE="$PWD/out/sponza-native.png" \
+  out/build/macos-clang-development/apps/editor/ludus_editor_tests '[.full-sponza-native]'
+```
+
+The authored-graph test checks camera navigation, a content replacement above
+2 GiB of logical RHI resources, and preservation of the last frame while pending.
+The native test requires a shared-device Qt presentation host. It presents the
+ordinary raster profile first, then the declared flat-color diagnostic ray
+profile, navigates and resizes, checks image variation/error pixels and verifies
+that graph presentation performs no CPU image readback. The diagnostic ray
+profile displays authored base-color averages; it adds no lights to compensate
+for the supplied glTF's zero-intensity punctual sources. This is viewport and
+capacity acceptance, not lighting fidelity or steady-state frame-rate evidence.
 
 
 ## Material and lighting fidelity

@@ -118,8 +118,8 @@ TEST_CASE("Native RT0 filters opacity, traces offscreen instances and retains de
         // The capability case above covers the unsupported report and the raster frame.
         SKIP("Native adapter does not implement the optional ray profile; raster remains usable");
     }
-    REQUIRE(capabilities.InlineQueries);
-    CHECK_FALSE(capabilities.RayPipelines);
+    REQUIRE(capabilities.InlineQueries == true);
+    // Inline queries also run on devices that expose optional native ray pipelines.
     CHECK_FALSE(capabilities.Updates);
     CHECK(sizeof(rhi::RayInput) == 48);
     CHECK(sizeof(rhi::RayResult) == 32);
@@ -474,4 +474,102 @@ TEST_CASE("Native ray geometry uses the device buffer range beyond the legacy 64
     REQUIRE(rhi::GetRayAllocation(device, geometry, allocation) == rhi::RasterStatus::Ready);
     CHECK(allocation.ResidentBytes >= VERTEX_BYTES);
     REQUIRE(rhi::Destroy(device, geometry) == rhi::RasterStatus::Ready);
+}
+
+TEST_CASE("Native ray opacity queries preserve aligned offsets beyond 64 MiB", "[rhi][gpu][ray][capacity]")
+{
+    rhi::Shutdown();
+    struct DeviceGuard final
+    {
+        ~DeviceGuard() noexcept
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceDescription description;
+    description.Required.PortableRaster = true;
+    description.Preferred.RayQueries = true;
+    description.Storage.HostBytes = usize{768} * 1024 * 1024;
+    description.Storage.ResourceBytes = uint64{1} * 1024 * 1024 * 1024;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    const rhi::DeviceStatus started = rhi::CreateDevice({}, { .Width = 1, .Height = 1 }, description, device, surface);
+    if (started != rhi::DeviceStatus::Ready && rhi::GetStartup().Error == rhi::StartupError::AdapterUnavailable)
+    {
+        SKIP("No GPU adapter");
+    }
+    REQUIRE(started == rhi::DeviceStatus::Ready);
+    rhi::RayCapabilities capabilities;
+    if (rhi::GetRayCapabilities(device, capabilities) == rhi::RasterStatus::Unsupported)
+    {
+        SKIP("Native ray queries are unavailable");
+    }
+    constexpr usize BYTE_BUDGET = usize{512} * 1024 * 1024;
+    constexpr uint32 ALPHA_EXTENT = 2048;
+    constexpr usize ALPHA_TEXELS = usize{ALPHA_EXTENT} * ALPHA_EXTENT;
+    constexpr usize ACCEPTED_INSTANCE_COUNT = 9;
+    constexpr usize OVERFLOW_INSTANCE_COUNT = 16;
+    if (capabilities.MaxBufferBytes < ALPHA_TEXELS * sizeof(float32) * OVERFLOW_INSTANCE_COUNT)
+    {
+        SKIP("The device buffer range cannot exercise the complete aligned opacity-table bound");
+    }
+    constexpr usize COMPONENT_COUNT = 9;
+    constexpr usize CORNER_COUNT = 3;
+    const StaticArray<float32, COMPONENT_COUNT> positionsMesh{{-1, -1, 0, 1, -1, 0, 0, 1, 0}};
+    const StaticArray<uint32, CORNER_COUNT> indices{{0, 1, 2}};
+    rhi::RayGeometryHandle geometry;
+    REQUIRE(rhi::CreateRayGeometry(
+                device,
+                {positionsMesh.GetData(), CORNER_COUNT, indices.GetData(), indices.GetSize(), nullptr, BYTE_BUDGET},
+                geometry) == rhi::RasterStatus::Pending);
+    REQUIRE(Poll(device, geometry) == rhi::RasterStatus::Ready);
+    Array<float32> alpha;
+    REQUIRE(alpha.TryResize(ALPHA_TEXELS) == true);
+    for (float32& value : alpha)
+    {
+        value = 0;
+    }
+    // All earlier instances reject; only the final instance accepts the query.
+    // Its alpha offset exceeds 2^25 scalars, where exact float32 addresses need
+    // the four-scalar alignment guaranteed by the table layout.
+    StaticArray<rhi::RayInstanceDescription, OVERFLOW_INSTANCE_COUNT> instances{};
+    for (rhi::RayInstanceDescription& instance : instances)
+    {
+        instance.Geometry = geometry;
+        instance.AlphaMasked = true;
+        instance.Alpha = alpha.GetData();
+        instance.Width = ALPHA_EXTENT;
+        instance.Height = ALPHA_EXTENT;
+    }
+    rhi::RaySceneHandle rejected;
+    CHECK(rhi::CreateRayScene(device, {instances.GetData(), instances.GetSize(), BYTE_BUDGET}, rejected) ==
+          rhi::RasterStatus::CapacityExceeded);
+    CHECK(rhi::GetStatus(device, rejected) == rhi::RasterStatus::InvalidHandle);
+    // Keep a real alpha table after the old ceiling, rather than accepting a constant.
+    Array<float32> opaqueAlpha;
+    REQUIRE(opaqueAlpha.TryResize(ALPHA_TEXELS) == true);
+    for (float32& value : opaqueAlpha)
+    {
+        value = 1;
+    }
+    instances[ACCEPTED_INSTANCE_COUNT - 1].Alpha = opaqueAlpha.GetData();
+    instances[ACCEPTED_INSTANCE_COUNT - 1].Width = ALPHA_EXTENT;
+    instances[ACCEPTED_INSTANCE_COUNT - 1].Height = ALPHA_EXTENT;
+    rhi::RaySceneHandle scene;
+    REQUIRE(rhi::CreateRayScene(device, {instances.GetData(), ACCEPTED_INSTANCE_COUNT, BYTE_BUDGET}, scene) ==
+            rhi::RasterStatus::Pending);
+    REQUIRE(Poll(device, scene) == rhi::RasterStatus::Ready);
+    rhi::RayQueryProgram program;
+    REQUIRE(rhi::CreateRayQueryProgram(device, ludus::shaders::ray_query::Query(), program) ==
+            rhi::RasterStatus::Ready);
+    rhi::RayInput ray;
+    ray.Origin[2] = 1;
+    rhi::RayQueryBatch batch;
+    REQUIRE(rhi::SubmitRayQueries(device, program, scene, &ray, 1, batch) == rhi::RasterStatus::Pending);
+    REQUIRE(Poll(device, batch) == rhi::RasterStatus::Ready);
+    rhi::RayResult result;
+    REQUIRE(rhi::ReadRayResults(device, batch, &result, 1) == rhi::RasterStatus::Ready);
+    CHECK(result.Hit == 1);
+    CHECK(result.Instance == ACCEPTED_INSTANCE_COUNT - 1);
+    CHECK(result.Distance == 1);
 }

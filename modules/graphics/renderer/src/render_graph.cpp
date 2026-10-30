@@ -2458,8 +2458,8 @@ Status RenderGraph::Poll() noexcept
                     state.Programs.RayCompute,
                     state.Programs.RayImageVertex,
                     state.Programs.RayImageFragment,
-                    {internal::GRAPH_RAY_CPU_BYTES,
-                     internal::GRAPH_RAY_GPU_BYTES,
+                    {RENDER_GRAPH_RAY_CPU_BYTES,
+                     RENDER_GRAPH_RAY_GPU_BYTES,
                      1,
                      {state.StorageBuffers.GetData(), state.StorageBufferCount},
                      state.Programs.NativeRayStages.Artifact.HasNativeRayStages == true

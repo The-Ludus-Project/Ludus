@@ -1035,8 +1035,8 @@ mesh/item limits. Multiple invocations or persistent buffers require the scene c
 any-hit/intersection/callable stages, resources beyond the two persistent buffer slots and optional visibility/depth pair, masked/transparent or
 deformed geometry, reverse-Z and infinite-far cameras. Color is the only produced
 aspect; no ray depth output is inferred. Ray preparation has renderer-owned
-2 GiB CPU and 2 GiB GPU limits across retained jobs; device storage limits can
-be tighter. The existing static opaque setup technique remains in the manifest
+4 GiB CPU and 6 GiB GPU limits on 64-bit hosts (2 GiB each on 32-bit hosts)
+across retained jobs; device storage limits can be tighter. The existing static opaque setup technique remains in the manifest
 for shared mesh/snapshot ownership and is never used to rasterize ray scene
 geometry. A complete source example is the
 [SDK ray fixture](../../tests/sdk_consumer/rg2/raytracing/main.lurender.json) and its
@@ -3953,7 +3953,7 @@ cost still grows with shaded pixels and with the admitted records' corners.
 
 There is no mesh-light visibility test yet: area lights can illuminate through
 walls. Every admitted emitter record is evaluated, independently of the analytic
-light clusters, with no finite-distance cutoff. At most 4096 nonzero-emission
+light clusters, with no finite-distance cutoff. At most 8192 nonzero-emission
 polygon records are admitted per scene; excess geometry rejects preparation and
 retains the last drawable generation. The immutable scene upload stores each record
 as two Float4 header words (normal and sidedness, emission and corner count)
@@ -6059,14 +6059,17 @@ straight tint with alpha below one is declared `Transparent`, and the editor's
 hiding them. Textures, lights and other materials are outside the current static
 profile. An authored surface's flat tint is its schema tint.
 
-Triangle-ray graphs admit up to **2 GiB of CPU preparation** and **2 GiB of GPU
-preview resources**. These are ceilings, not allocations made when a graph opens.
+Triangle-ray graphs on 64-bit hosts admit up to **4 GiB of CPU preparation** and
+**6 GiB of GPU preview resources**; 32-bit hosts retain 2 GiB ceilings. These are ceilings, not allocations made when a graph opens.
 CPU preparation includes frozen triangles, BVH construction, material and texture
 data, fingerprints and upload scratch. The GPU ceiling includes current and
 replacement previews until retained GPU uses retire. The device-wide RHI resource
 budget and each device's storage-buffer binding range apply independently; a
 larger graph ceiling cannot override either one. The supplied imported Sponza
-World's two million triangles require more than the previous 256 MiB ceilings.
+World's complete 3,747,018 triangles require more than the former 2 GiB CPU
+preparation ceiling. The editor device separately admits the ray GPU budget plus
+1 GiB for raster geometry, material textures and graph targets, so replacement
+can retain the last drawable scene while the next complete scene prepares.
 Native ray geometry and acceleration-structure build scratch use the backend's
 enabled allocation range, rather than the former fixed 64 MiB ceiling. Each
 creation still checks its explicit byte budget. Packed opacity metadata retains
