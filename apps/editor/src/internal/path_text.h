@@ -42,7 +42,7 @@ public:
 [[nodiscard]] QColor GetFolderColour(const QColor& nameColour);
 
 /// Draw text in textRect with its folder dimmed and elided as ElidePathText says.
-void DrawPathText(QPainter& painter,
+void DrawPathText(QPainter& inoutPainter,
                   const QRect& textRect,
                   const QString& text,
                   const QColor& nameColour,

@@ -75,13 +75,13 @@ QString ElidePathText(const QString& text, const QFontMetrics& metrics, int widt
     return metrics.elidedText(name, Qt::ElideMiddle, width);
 }
 
-void DrawPathText(QPainter& painter,
+void DrawPathText(QPainter& inoutPainter,
                   const QRect& textRect,
                   const QString& text,
                   const QColor& nameColour,
                   const QColor& folderColour)
 {
-    const QFontMetrics metrics(painter.font());
+    const QFontMetrics metrics(inoutPainter.font());
     QString folder;
     QString name;
     SplitPathText(text, folder, name);
@@ -92,17 +92,17 @@ void DrawPathText(QPainter& painter,
     const QString shownFolder = isNameWhole == true ? shown.left(shown.size() - name.size()) : QString();
     int x = textRect.left();
     const int baseline = textRect.top() + (textRect.height() - metrics.height()) / 2 + metrics.ascent();
-    painter.save();
-    painter.setClipRect(textRect);
+    inoutPainter.save();
+    inoutPainter.setClipRect(textRect);
     if (shownFolder.isEmpty() == false)
     {
-        painter.setPen(folderColour);
-        painter.drawText(QPoint(x, baseline), shownFolder);
+        inoutPainter.setPen(folderColour);
+        inoutPainter.drawText(QPoint(x, baseline), shownFolder);
         x += metrics.horizontalAdvance(shownFolder);
     }
-    painter.setPen(nameColour);
-    painter.drawText(QPoint(x, baseline), shownName);
-    painter.restore();
+    inoutPainter.setPen(nameColour);
+    inoutPainter.drawText(QPoint(x, baseline), shownName);
+    inoutPainter.restore();
 }
 
 QColor GetFolderColour(const QColor& colour)
