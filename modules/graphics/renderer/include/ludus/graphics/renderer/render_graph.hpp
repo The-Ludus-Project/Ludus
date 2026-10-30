@@ -168,6 +168,12 @@ void SetRenderGraphForwardInterface(rhi::RasterShaderDescription& inoutDescripti
 inline constexpr foundation::uint32 RAY_PATH_INVALID_INDEX = 0xffffffffU;
 /// Default number of progressive samples a ray path capture records.
 inline constexpr foundation::uint32 DEFAULT_RAY_PATH_SAMPLES = 16;
+/// Largest Accumulate sample limit a frame capture may set with RenderGraph::SetAccumulationLimitOverride.
+/// Interactive graphs keep RenderGraphFormat::MAX_ACCUMULATION_SAMPLES.
+inline constexpr foundation::uint32 MAX_RENDER_GRAPH_CAPTURE_SAMPLES = 65536;
+/// float4 values per pixel in a ray pass's accumulation buffer: the running sum with the committed
+/// count's uint32 bits in W, then the compensation with the history tag in W (odd after a latched failure).
+inline constexpr foundation::uint32 RENDER_GRAPH_ACCUMULATION_WORDS = 2;
 /// Largest number of progressive samples one ray path capture records.
 inline constexpr foundation::uint32 MAX_RAY_PATH_SAMPLES = 256;
 /// Default event record capacity of one ray path capture.
@@ -659,6 +665,24 @@ public:
     /// without a request or during an open/unconfirmed frame; a device or readback failure otherwise,
     /// which keeps the previously decoded capture.
     [[nodiscard]] rhi::RasterStatus PollRayPathCapture(RayPathCaptureReport& outReport) noexcept;
+    /// Replace every positive authored Accumulate sample limit with samples, for a graph instance that
+    /// captures a frame rather than drawing the viewport. Passes that output individual samples keep doing so.
+    /// Call between frames after Initialize reaches Ready and before the first Update; the override applies to
+    /// every later scene of this instance. See docs/architecture/render-graph-frame-capture.md.
+    /// @param samples New limit, from one to MAX_RENDER_GRAPH_CAPTURE_SAMPLES.
+    /// @return Ready when set; InvalidDescription for samples out of range; InvalidState when uninitialized,
+    /// not Ready, in a frame or after a scene was accepted. Failure leaves the graph unchanged.
+    [[nodiscard]] rhi::RasterStatus SetAccumulationLimitOverride(foundation::uint32 samples) noexcept;
+    /// Borrow the accumulation buffer of a ray pass after its producer completed, for a read-only consumer
+    /// such as a frame capture's readback. The buffer holds RENDER_GRAPH_ACCUMULATION_WORDS float4 values per
+    /// pixel of the pass's colour resource, in row-major order. The graph owns it; finish every use, including
+    /// readbacks, before the next Render, Update or Reset, and never write to it.
+    /// @param pass Plan pass index of a ray pass.
+    /// @param outBuffer Receives the borrowed buffer; unchanged on failure.
+    /// @return Ready after producer completion; NotReady while no completed output exists;
+    /// InvalidDescription for a pass that is not a ray pass. Outputs are preserved on failure.
+    [[nodiscard]] rhi::RasterStatus GetAccumulation(foundation::uint32 pass,
+                                                    rhi::BufferHandle& outBuffer) const noexcept;
     /// Borrow the events of the last Ready PollRayPathCapture until the next poll, request or Reset.
     [[nodiscard]] foundation::BorrowedView<const RayPathEvent> GetRayPathEvents() const noexcept;
     /// Borrow the summaries of the last Ready PollRayPathCapture, sorted by pixel, sample and pass,

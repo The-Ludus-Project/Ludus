@@ -1,6 +1,9 @@
 # Render graph frame capture
 
-Status: proposed October 29, 2026. Nothing in this document is implemented yet.
+Status: proposed October 29, 2026. Phase 1, the engine capture and its file, is
+implemented as of October 30, 2026, with the departures listed under
+[Phase 1 implementation notes](#phase-1-implementation-notes). Phases 2 and 3 are
+not implemented.
 
 A render graph is the project's rendering scheme. Today it runs in only two ways:
 as the World viewport's interactive renderer, or for one frame as the raster side
@@ -247,6 +250,52 @@ difference statistics keep their meaning.
 3. **Capture budgets.** Decide among the [budget options](#budgets-the-polygonal-light-case),
    measure tiled dispatch against the GPU watchdog, and revise the scene interface
    contract if that decision requires it.
+
+## Phase 1 implementation notes
+
+Phase 1 delivers `graphics::renderer::RenderGraphCapture`
+(`modules/graphics/renderer/include/ludus/graphics/renderer/render_graph_capture.hpp`),
+two `RenderGraph` operations it uses, the `.lurgcap` layout
+(`modules/content/render_graph_format/include/ludus/content/render_graph_format/capture.h`)
+and `scripts/reference-hdr` support. Acceptance items 1–7 are tests tagged
+`[render-graph-capture]` in `render_graph_ray_tests.cpp`, using the
+polygonal-light-sampling template on the Cornell and many-emitter rooms, and the
+`GraphCaptureExportTests` in `scripts/python/test_ray_reference.py`.
+
+**Graph operations.**
+- `RenderGraph::SetAccumulationLimitOverride` replaces every positive authored
+  Accumulate limit for one graph instance, up to `MAX_RENDER_GRAPH_CAPTURE_SAMPLES`
+  (65,536). Like a ray path capture request, it is called after initialization and
+  before the first scene. Interactive graphs keep `MAX_ACCUMULATION_SAMPLES` (4096).
+- `RenderGraph::GetAccumulation` borrows a ray pass's FP32 accumulation buffer after
+  its producer completes. This promotes the test-only accessor to a supported
+  operation.
+
+**Departures from the design above.**
+- **Raster routes are rejected, not captured as one frame.** A raster writer stores
+  display-encoded 8-bit colour, which is not linear radiance. The capture reports
+  `RasterRoute`.
+- **The scene is submitted separately.** `RenderGraph::Update` needs an initialized
+  graph and borrows its inputs only for the call, so `Start` resolves the route and
+  initializes, and `SubmitScene` follows once the phase is `AwaitingScene`. The
+  scene and camera are frozen from then on.
+- **`Service()` takes no time budget.** It submits at most one frame per call and
+  never waits. The graph cannot render again before its previous producer finishes,
+  so a budget could not admit more frames.
+- **Read-back happens only at the end.** The accumulation is copied when the target
+  is reached or after `Stop`. Reading it mid-capture would stall the next frame, so
+  progress previews belong to phase 2.
+- **The override is always set.** The capture sets it to the target even below the
+  authored limit, so the number of submitted frames equals the committed count. The
+  file sets `LimitOverride` when the target differs from the authored limit.
+- **The file carries identities instead of names.** The configuration is bound by the
+  caller's package identity (the SHA-256 of the cooked bytes), and the scene by an
+  optional caller-supplied scene identity. The header has no configuration name or
+  scene digest. Latched pixels are counted from the accumulation's odd history tag,
+  and the count is stored with the `Failed` flag.
+- **The surface is the caller's.** Frames are submitted to it as with
+  `RenderGraph::Render`. Phase 2 must give the editor's capture a surface that does
+  not present over the viewport.
 
 ## Open questions
 

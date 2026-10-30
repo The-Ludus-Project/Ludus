@@ -102,5 +102,52 @@ class ReferenceExportTests(unittest.TestCase):
         with self.assertRaises(ValueError): hdr.decode(self.capture()[:-1])
 
 
+
+class GraphCaptureExportTests(unittest.TestCase):
+    """LURGCAP files from RenderGraphCapture::Encode (render_graph_format/capture.h)."""
+
+    def capture(self, flags=0, counts=(4, 4), failed=0, submitted=4):
+        data = bytearray(256)
+        data[:8] = b'LURGCAP\0'
+        # version, header, pixel bytes, flags, width, height, target, submitted, failed, output, pass, authored limit
+        struct.pack_into('<12I', data, 8, 1, 256, 16, flags, 2, 1, 4, submitted, failed, 3, 1, 4096)
+        struct.pack_into('<Q', data, 56, 7)
+        data[64:96] = bytes(range(32))
+        struct.pack_into('<16f', data, 128, *range(16))
+        struct.pack_into('<3f', data, 192, 1, 2, 3)
+        return data + struct.pack('<fffIfffI', 1, 2, 3, counts[0], .5, 0, 0, counts[1])
+
+    def test_identity_route_and_camera_are_reported(self):
+        metadata, pixels = hdr.decode(self.capture(flags=4))
+        self.assertEqual(metadata['kind'], 'render_graph')
+        self.assertEqual((metadata['output_resource'], metadata['accumulation_pass'], metadata['authored_limit']), (3, 1, 4096))
+        self.assertTrue(metadata['limit_override'])
+        self.assertFalse(metadata['partial'])
+        self.assertEqual(metadata['scene_revision'], 7)
+        self.assertEqual(metadata['package_identity'], bytes(range(32)).hex())
+        self.assertEqual(metadata['camera_position'], [1, 2, 3])
+        self.assertEqual(pixels[1], (.5, 0, 0, 4))
+
+    def test_partial_and_failed_captures_keep_exact_counts(self):
+        metadata, _ = hdr.decode(self.capture(flags=1, counts=(2, 2), submitted=2))
+        self.assertTrue(metadata['partial'])
+        self.assertEqual(metadata['minimum_samples'], 2)
+        metadata, _ = hdr.decode(self.capture(flags=2, counts=(4, 1), failed=1))
+        self.assertTrue(metadata['failed'])
+        self.assertEqual(metadata['failed_pixels'], 1)
+
+    def test_inconsistent_graph_captures_reject(self):
+        with self.assertRaises(ValueError):
+            hdr.decode(self.capture(counts=(4, 3)))
+        with self.assertRaises(ValueError):
+            hdr.decode(self.capture(failed=1))
+        with self.assertRaises(ValueError):
+            hdr.decode(self.capture(counts=(5, 4)))
+        with self.assertRaises(ValueError):
+            hdr.decode(self.capture(flags=64))
+        with self.assertRaises(ValueError):
+            hdr.decode(self.capture()[:-1])
+
+
 if __name__ == '__main__':
     unittest.main()

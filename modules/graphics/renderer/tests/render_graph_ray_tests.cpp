@@ -47,6 +47,7 @@
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/renderer/reference.hpp>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
+#include <ludus/graphics/renderer/render_graph_capture.hpp>
 #include <ludus/graphics/rhi/gpu_scope.h>
 #include <ludus/graphics/rhi/lifetime.h>
 #include <ludus/graphics/rhi/measurement.h>
@@ -6739,4 +6740,294 @@ TEST_CASE("A render graph kernel reads the renderer-bound LTC table like the CPU
         }
     }
     CHECK(fixture.Pixels[GetPixel(LTC_LOOKUP_CASE_COUNT, row)] == 0);
+}
+
+namespace
+{
+/// Time allowed for one capture to finish, including its private graph's preparation.
+constexpr uint64 CAPTURE_TIMEOUT = 60 * time::NANOSECONDS_PER_SECOND;
+/// A small target keeps the GPU captures quick; it still exceeds the reduced authored limit below.
+constexpr uint32 CAPTURE_TARGET_SAMPLES = 6;
+/// An authored Accumulate limit below CAPTURE_TARGET_SAMPLES, so reaching the target needs the override.
+constexpr uint32 REDUCED_AUTHORED_LIMIT = 2;
+
+/// The polygonal-light template's clamped optimal MIS output: the first pass's colour.
+uint32 GetClampedMisOutput(const renderer::RenderGraphPlan& plan)
+{
+    REQUIRE(plan.Passes.IsEmpty() == false);
+    return plan.Passes[0].Color;
+}
+
+/// Service a capture until it ends, submitting the room when it waits for a scene.
+// The scene revision and the frame count that triggers Stop are distinct quantities.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+template <typename Room>
+renderer::RenderGraphCapturePhase
+FinishCapture(renderer::RenderGraphCapture& inoutCapture, const Room& room, uint64 revision, uint32 stopAfterOrZero = 0)
+// NOLINTEND(bugprone-easily-swappable-parameters)
+{
+    const uint64 beginning = time::NowTicks();
+    renderer::RenderGraphCapturePhase phase = inoutCapture.GetPhase();
+    while (time::NowTicks() - beginning < CAPTURE_TIMEOUT)
+    {
+        phase = inoutCapture.Service();
+        if (phase == renderer::RenderGraphCapturePhase::AwaitingScene)
+        {
+            const rhi::RasterStatus submitted =
+                inoutCapture.SubmitScene({room.Meshes.GetData(), room.Meshes.GetSize()},
+                                         {room.Items.GetData(), room.Items.GetSize()},
+                                         {room.Cameras.GetData(), room.Cameras.GetSize()},
+                                         revision,
+                                         &room.Inputs);
+            REQUIRE((submitted == rhi::RasterStatus::Ready || submitted == rhi::RasterStatus::Pending));
+        }
+        if (stopAfterOrZero != 0 && inoutCapture.GetInfo().SubmittedSamples >= stopAfterOrZero)
+        {
+            inoutCapture.Stop();
+        }
+        if (phase == renderer::RenderGraphCapturePhase::Complete ||
+            phase == renderer::RenderGraphCapturePhase::Stopped || phase == renderer::RenderGraphCapturePhase::Failed)
+        {
+            return phase;
+        }
+    }
+    FAIL("The capture did not finish");
+    return phase;
+}
+
+/// Read a ray pass's accumulation records after the graph's last producer completed.
+void ReadAccumulation(const renderer::RenderGraph& graph,
+                      const GraphGpuFixture& fixture,
+                      uint32 pass,
+                      Array<math::Vector4>& outRecords)
+{
+    rhi::BufferHandle buffer;
+    REQUIRE(graph.GetAccumulation(pass, buffer) == rhi::RasterStatus::Ready);
+    REQUIRE(outRecords.TryResize(usize{WIDTH} * HEIGHT * renderer::RENDER_GRAPH_ACCUMULATION_WORDS) == true);
+    rhi::LifetimeCapabilities capabilities;
+    REQUIRE(rhi::GetLifetimeCapabilities(fixture.Device, capabilities) == rhi::RasterStatus::Ready);
+    const usize totalBytes = outRecords.GetSize() * sizeof(math::Vector4);
+    for (usize offset = 0; offset < totalBytes; offset += capabilities.TransferBytes)
+    {
+        const usize bytes = math::Min(capabilities.TransferBytes, totalBytes - offset);
+        rhi::ReadbackTicket ticket;
+        rhi::RasterStatus status = rhi::RequestBufferReadback(fixture.Device, buffer, offset, bytes, ticket);
+        const uint64 beginning = time::NowTicks();
+        while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TRAVERSAL_TIMEOUT)
+        {
+            status = rhi::GetStatus(fixture.Device, ticket);
+        }
+        REQUIRE(status == rhi::RasterStatus::Ready);
+        REQUIRE(
+            rhi::CopyReadback(fixture.Device, ticket, reinterpret_cast<uint8*>(outRecords.GetData()) + offset, bytes) ==
+            rhi::RasterStatus::Ready);
+        REQUIRE(rhi::Release(fixture.Device, ticket) == rhi::RasterStatus::Ready);
+    }
+}
+
+uint32 ReadFileUint32(const Array<uint8>& bytes, usize offset)
+{
+    uint32 value = 0;
+    REQUIRE(TryReadLittleEndian(std::span<const uint8>{bytes.GetData() + offset, sizeof(uint32)}, value) == true);
+    return value;
+}
+} // namespace
+
+TEST_CASE("A render graph capture reaches its target past the authored limit and saves the graph's own mean",
+          "[render-graph][gpu][render-graph-capture]")
+{
+    GraphGpuFixture fixture(false, false);
+    CornellBox room;
+    MakeRoomGlossyWithoutSky(room);
+    constexpr uint64 REVISION = 3;
+    PreparedGraph live(fixture, POLYGONAL_LIGHT_SAMPLING_TEMPLATE, room, REVISION);
+    // Reduce the authored limit of every pass, so the capture's target is above it.
+    StaticArray<format::Pass, format::MAX_PASSES> passes{};
+    for (usize pass = 0; pass < live.Plan.Passes.GetSize(); ++pass)
+    {
+        passes[pass] = live.Plan.Passes[pass];
+        passes[pass].AccumulationSamples = REDUCED_AUTHORED_LIMIT;
+    }
+    renderer::RenderGraphPlan plan = live.Plan;
+    plan.Passes = {passes.GetData(), live.Plan.Passes.GetSize()};
+    renderer::RenderGraphCaptureSettings settings;
+    settings.Output = GetClampedMisOutput(plan);
+    settings.TargetSamples = CAPTURE_TARGET_SAMPLES;
+    settings.PackageIdentity[0] = 1;
+    StaticArray<Array<uint8>, 2> files;
+    for (Array<uint8>& file : files)
+    {
+        renderer::RenderGraphCapture capture;
+        const rhi::RasterStatus started =
+            capture.Start(fixture.Device, fixture.Surface, plan, live.Programs, WIDTH, HEIGHT, settings);
+        REQUIRE((started == rhi::RasterStatus::Ready || started == rhi::RasterStatus::Pending));
+        REQUIRE(FinishCapture(capture, room, REVISION) == renderer::RenderGraphCapturePhase::Complete);
+        const renderer::RenderGraphCaptureInfo info = capture.GetInfo();
+        CHECK(info.SubmittedSamples == CAPTURE_TARGET_SAMPLES);
+        CHECK(info.MinimumSamples == CAPTURE_TARGET_SAMPLES);
+        CHECK(info.AuthoredLimit == REDUCED_AUTHORED_LIMIT);
+        CHECK(info.FailedPixels == 0);
+        CHECK((info.Width == WIDTH && info.Height == HEIGHT));
+        REQUIRE(capture.Encode(file) == rhi::RasterStatus::Ready);
+        // The live graph with the authored package averages the same estimator from the same revision: its first
+        // pass after CAPTURE_TARGET_SAMPLES frames is the captured mean.
+        if (&file == &files[0])
+        {
+            for (uint32 frame = 0; frame < CAPTURE_TARGET_SAMPLES; ++frame)
+            {
+                RenderFrame(live.Graph, fixture);
+            }
+            Array<math::Vector4> records;
+            ReadAccumulation(live.Graph, fixture, 0, records);
+            const BorrowedView<const renderer::RenderGraphCapturePixel> pixels = capture.GetPixels();
+            REQUIRE(pixels.GetSize() == usize{WIDTH} * HEIGHT);
+            usize differing = 0;
+            for (usize pixel = 0; pixel < pixels.GetSize(); ++pixel)
+            {
+                const math::Vector4& sum = records[pixel * renderer::RENDER_GRAPH_ACCUMULATION_WORDS];
+                const float32 scale = 1.0F / static_cast<float32>(CAPTURE_TARGET_SAMPLES);
+                const math::Vector3 expected{sum.X * scale, sum.Y * scale, sum.Z * scale};
+                differing += expected == pixels[pixel].Mean ? 0 : 1;
+            }
+            CHECK(differing == 0);
+        }
+    }
+    // Equal inputs reproduce the file bit for bit.
+    CHECK(files[0] == files[1]);
+    const Array<uint8>& file = files[0];
+    REQUIRE(file.GetSize() == format::CAPTURE_HEADER_BYTES + usize{WIDTH} * HEIGHT * format::CAPTURE_PIXEL_BYTES);
+    CHECK(std::memcmp(file.GetData(), format::CAPTURE_MAGIC, format::CAPTURE_MAGIC_BYTES) == 0);
+    CHECK(ReadFileUint32(file, format::CAPTURE_TARGET_SAMPLES_OFFSET) == CAPTURE_TARGET_SAMPLES);
+    CHECK(ReadFileUint32(file, format::CAPTURE_SUBMITTED_SAMPLES_OFFSET) == CAPTURE_TARGET_SAMPLES);
+    CHECK(ReadFileUint32(file, format::CAPTURE_AUTHORED_LIMIT_OFFSET) == REDUCED_AUTHORED_LIMIT);
+    CHECK(ReadFileUint32(file, format::CAPTURE_OUTPUT_RESOURCE_OFFSET) == settings.Output);
+    CHECK(ReadFileUint32(file, format::CAPTURE_FLAGS_OFFSET) ==
+          static_cast<uint32>(format::CaptureFlag::LimitOverride));
+    CHECK(file[format::CAPTURE_PACKAGE_IDENTITY_OFFSET] == 1);
+}
+
+TEST_CASE("A stopped render graph capture keeps exact counts and leaves the live graph unchanged",
+          "[render-graph][gpu][render-graph-capture]")
+{
+    GraphGpuFixture fixture(false, false);
+    CornellBox room;
+    MakeRoomGlossyWithoutSky(room);
+    constexpr uint64 REVISION = 5;
+    PreparedGraph live(fixture, POLYGONAL_LIGHT_SAMPLING_TEMPLATE, room, REVISION);
+    constexpr uint32 LIVE_FRAMES = 2;
+    for (uint32 frame = 0; frame < LIVE_FRAMES; ++frame)
+    {
+        RenderFrame(live.Graph, fixture);
+    }
+    Array<math::Vector4> before;
+    ReadAccumulation(live.Graph, fixture, 0, before);
+    const bool wasPending = live.Graph.HasPendingSamples();
+    const uint64 drawableRevision = live.Graph.GetDrawableSceneRevision();
+
+    renderer::RenderGraphCaptureSettings settings;
+    settings.Output = GetClampedMisOutput(live.Plan);
+    settings.TargetSamples = CAPTURE_TARGET_SAMPLES * 2;
+    constexpr uint32 STOP_AFTER = 3;
+    renderer::RenderGraphCapture capture;
+    const rhi::RasterStatus started =
+        capture.Start(fixture.Device, fixture.Surface, live.Plan, live.Programs, WIDTH, HEIGHT, settings);
+    REQUIRE((started == rhi::RasterStatus::Ready || started == rhi::RasterStatus::Pending));
+    // A different revision reseeds the capture; the live graph must not notice it either way.
+    REQUIRE(FinishCapture(capture, room, REVISION + 1, STOP_AFTER) == renderer::RenderGraphCapturePhase::Stopped);
+    const renderer::RenderGraphCaptureInfo info = capture.GetInfo();
+    CHECK(info.SubmittedSamples == STOP_AFTER);
+    CHECK(info.MinimumSamples == STOP_AFTER);
+    Array<uint8> file;
+    REQUIRE(capture.Encode(file) == rhi::RasterStatus::Ready);
+    CHECK(
+        ReadFileUint32(file, format::CAPTURE_FLAGS_OFFSET) ==
+        (static_cast<uint32>(format::CaptureFlag::Partial) | static_cast<uint32>(format::CaptureFlag::LimitOverride)));
+    const BorrowedView<const renderer::RenderGraphCapturePixel> pixels = capture.GetPixels();
+    REQUIRE(pixels.GetSize() == usize{WIDTH} * HEIGHT);
+    for (usize pixel = 0; pixel < pixels.GetSize(); ++pixel)
+    {
+        REQUIRE(pixels[pixel].Samples == STOP_AFTER);
+    }
+    capture.Release();
+
+    Array<math::Vector4> after;
+    ReadAccumulation(live.Graph, fixture, 0, after);
+    CHECK(after == before);
+    CHECK(live.Graph.HasPendingSamples() == wasPending);
+    CHECK(live.Graph.GetDrawableSceneRevision() == drawableRevision);
+}
+
+TEST_CASE("A render graph capture fails with the latched pixel count beyond the template's emitter budget",
+          "[render-graph][gpu][render-graph-capture][polygonal-light-sampling]")
+{
+    GraphGpuFixture fixture(false, false);
+    const ManyEmitterRoom room;
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(POLYGONAL_LIGHT_SAMPLING_TEMPLATE);
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    renderer::RenderGraphCaptureSettings settings;
+    settings.Output = GetClampedMisOutput(plan);
+    settings.TargetSamples = 1;
+    renderer::RenderGraphCapture capture;
+    const rhi::RasterStatus started =
+        capture.Start(fixture.Device, fixture.Surface, plan, programs, WIDTH, HEIGHT, settings);
+    REQUIRE((started == rhi::RasterStatus::Ready || started == rhi::RasterStatus::Pending));
+    REQUIRE(FinishCapture(capture, room, 1) == renderer::RenderGraphCapturePhase::Failed);
+    CHECK(capture.GetProblem() == renderer::RenderGraphCaptureProblem::LatchedPixels);
+    // As in the template's own budget test, the room fills most of the view.
+    CHECK(capture.GetInfo().FailedPixels > WIDTH * HEIGHT / 2);
+    Array<uint8> file;
+    REQUIRE(capture.Encode(file) == rhi::RasterStatus::Ready);
+    CHECK((ReadFileUint32(file, format::CAPTURE_FLAGS_OFFSET) & static_cast<uint32>(format::CaptureFlag::Failed)) != 0);
+    CHECK(ReadFileUint32(file, format::CAPTURE_FAILED_PIXELS_OFFSET) == capture.GetInfo().FailedPixels);
+}
+
+TEST_CASE("A render graph capture rejects routes and settings it cannot capture without changing anything",
+          "[render-graph][gpu][render-graph-capture]")
+{
+    GraphGpuFixture fixture(false, false);
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(POLYGONAL_LIGHT_SAMPLING_TEMPLATE);
+    const renderer::RenderGraphPlan authored = package->GetPlan();
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    StaticArray<format::Pass, format::MAX_PASSES> passes{};
+    for (usize pass = 0; pass < authored.Passes.GetSize(); ++pass)
+    {
+        passes[pass] = authored.Passes[pass];
+    }
+    renderer::RenderGraphPlan plan = authored;
+    plan.Passes = {passes.GetData(), authored.Passes.GetSize()};
+    renderer::RenderGraphCaptureSettings settings;
+    settings.Output = GetClampedMisOutput(authored);
+    renderer::RenderGraphCaptureProblem expected = renderer::RenderGraphCaptureProblem::None;
+    SECTION("several exports and no chosen output")
+    {
+        settings.Output = format::ABSENT;
+        expected = renderer::RenderGraphCaptureProblem::NoOutput;
+    }
+    SECTION("a ray pass without an Accumulate")
+    {
+        passes[0].AccumulationSamples = 0;
+        expected = renderer::RenderGraphCaptureProblem::NoAccumulation;
+    }
+    SECTION("a raster writer")
+    {
+        passes[0].Program = format::Technique::ColorAndDepth;
+        expected = renderer::RenderGraphCaptureProblem::RasterRoute;
+    }
+    SECTION("a target above the capture maximum")
+    {
+        settings.TargetSamples = renderer::MAX_RENDER_GRAPH_CAPTURE_SAMPLES + 1;
+        expected = renderer::RenderGraphCaptureProblem::InvalidSettings;
+    }
+    renderer::RenderGraphCapture capture;
+    CHECK(capture.Start(fixture.Device, fixture.Surface, plan, programs, WIDTH, HEIGHT, settings) ==
+          rhi::RasterStatus::InvalidDescription);
+    CHECK(capture.GetPhase() == renderer::RenderGraphCapturePhase::Failed);
+    CHECK(capture.GetProblem() == expected);
+    CHECK(capture.GetPixels().IsEmpty() == true);
+    Array<uint8> file;
+    CHECK(capture.Encode(file) == rhi::RasterStatus::NotReady);
+    CHECK(file.IsEmpty() == true);
 }
