@@ -623,12 +623,13 @@ Apple M5 on Metal (macOS 26.6), `macos-clang-development`, on `develop`
       --clang-format` and `--tidy-changed --base 3c60f713`. `check-docs`, strict
       MkDocs and `check-wiki --documentation-only` pass, as do the
       `test_docs.py`/`test_wiki.py` suites. The merged Metal stage of the
-      `ComputeBvh` variant is 1,686,273 bytes, under the 2 MiB limit. Building
-      needed a local, uncommitted workaround for a `develop` regression: since
-      #756, `render_graph_build.py`'s `build_package` reads an undefined
-      `ray_profiles`, so every ray package cook raises `NameError`. It is
-      reported, not fixed here. The full CTest suites, `install-sdk` and Ruff
-      were not run. Vulkan was not run.*
+      `ComputeBvh` variant is 1,686,273 bytes, under the 2 MiB limit. On
+      `3c60f713`, building needed a local, uncommitted workaround: since #756,
+      `render_graph_build.py`'s `build_package` read an undefined `ray_profiles`.
+      `develop` fixed it in #767. After merging `develop` `cb7bd1c7`, the whole
+      non-hidden `ludus_render_graph_ray_tests` suite passes on
+      `macos-clang-development` (46 cases, 203,231 assertions). The other CTest
+      suites, `install-sdk` and Ruff were not run. Vulkan was not run.*
 
 ## PL4 Deferred (not scheduled)
 
