@@ -156,6 +156,8 @@ struct RenderGraphPackage::State final
     bool HasPassNames = false;
     /// Decoded by DecodeRayPathCapture: the ray kernel is the diagnostic capture variant.
     bool IsRayPathCapture = false;
+    /// Decoded by DecodeCaptureProfile: the ray kernels carry the capture shadow-query budget.
+    bool IsCaptureProfile = false;
     StaticArray<format::StorageBuffer, format::MAX_STORAGE_BUFFERS> StorageBuffers{};
     usize StorageBufferCount = 0;
     bool HasRelativeSizes = false;
@@ -757,6 +759,10 @@ RenderGraphPackageStatus RenderGraphPackage::DecodeRayPathCapture(BorrowedView<c
 {
     return decode(bytes, format::RAY_PATH_CAPTURE_PACKAGE_MAGIC);
 }
+RenderGraphPackageStatus RenderGraphPackage::DecodeCaptureProfile(BorrowedView<const uint8> bytes) noexcept
+{
+    return decode(bytes, format::CAPTURE_PROFILE_PACKAGE_MAGIC);
+}
 RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> bytes, uint32 expectedMagic) noexcept
 {
     if (mState.Get() != nullptr)
@@ -805,6 +811,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
         return RenderGraphPackageStatus::UnsupportedVersion;
     }
     candidate->IsRayPathCapture = expectedMagic == format::RAY_PATH_CAPTURE_PACKAGE_MAGIC;
+    candidate->IsCaptureProfile = expectedMagic == format::CAPTURE_PROFILE_PACKAGE_MAGIC;
     candidate->HasRelativeSizes = version >= format::VIEW_PACKAGE_VERSION;
     candidate->HasSceneData = version >= format::SCENE_PACKAGE_VERSION;
     candidate->HasPersistentBuffers = version >= format::ORDERED_PACKAGE_VERSION;
@@ -1056,6 +1063,10 @@ bool RenderGraphPackage::IsLoaded() const noexcept
 bool RenderGraphPackage::IsRayPathCapture() const noexcept
 {
     return mState.Get() != nullptr && mState->IsRayPathCapture == true;
+}
+bool RenderGraphPackage::IsCaptureProfile() const noexcept
+{
+    return mState.Get() != nullptr && mState->IsCaptureProfile == true;
 }
 void RenderGraphPackage::BypassDenoising() noexcept
 {
@@ -1485,8 +1496,9 @@ Status RenderGraphActivation::Stage(core::UniquePtr<RenderGraphPackage> package)
         return Status::InvalidState;
     }
     State& state = *mState;
-    // A diagnostic capture generation runs only in its own RenderGraph, never as drawing output.
-    if (package.Get() == nullptr || package->IsLoaded() == false || package->IsRayPathCapture() == true)
+    // Diagnostic and capture profile generations run only in their own RenderGraph, never as drawing output.
+    if (package.Get() == nullptr || package->IsLoaded() == false || package->IsRayPathCapture() == true ||
+        package->IsCaptureProfile() == true)
     {
         return Status::InvalidDescription;
     }

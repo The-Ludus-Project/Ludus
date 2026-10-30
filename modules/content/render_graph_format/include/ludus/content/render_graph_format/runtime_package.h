@@ -68,6 +68,11 @@ inline constexpr foundation::uint32 PACKAGE_MAGIC = 0x4752554CU;
 /// compiled from the same source snapshot. Runtime decoding rejects this magic, so a shipping host
 /// never loads it; see docs/architecture/render-graph-authoring.md, "Ray path inspection".
 inline constexpr foundation::uint32 RAY_PATH_CAPTURE_PACKAGE_MAGIC = 0x5052554CU;
+/// "LURC" read as a little-endian uint32: a frame capture profile generation. Its layout is a runtime
+/// package's, but its ray kernels link scene_interface.capture_visibility_queries in place of
+/// visibility_queries. Runtime decoding rejects this magic, so the larger shadow-query budget never
+/// reaches an interactive graph; see docs/architecture/render-graph-frame-capture.md.
+inline constexpr foundation::uint32 CAPTURE_PROFILE_PACKAGE_MAGIC = 0x4352554CU;
 /// First generation admitting MetalFX Spatial roles; version 16's pass layout is unchanged.
 inline constexpr foundation::uint32 METALFX_SPATIAL_PACKAGE_VERSION = 17;
 /// First generation carrying software/native ray traversal requirements per pass.

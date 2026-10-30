@@ -182,6 +182,7 @@
         "version": 1,
         "surface_queries": 1,
         "visibility_queries": 16,
+        "capture_visibility_queries": 256,
         "polygonal_light_sampling": true
       }
     }

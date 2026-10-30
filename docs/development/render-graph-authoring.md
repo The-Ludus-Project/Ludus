@@ -167,6 +167,19 @@ The optional [line visibility](#find-the-visible-parts-of-a-segment) budget,
 `line_queries` (0–8), has no Properties control yet: set it in the manifest's
 `scene_interface`. Editing the other two budgets keeps it.
 
+The optional `capture_visibility_queries` (from `visibility_queries` up to 256)
+is the shadow-query budget of a frame capture. It also has no Properties control
+yet. Interactive kernels keep `visibility_queries`. Only a capture profile build
+links the larger budget:
+- the CLI or CMake builds it with `ludus_compile_render_graph(... CAPTURE_PROFILE_PACKAGE)`;
+- the result is a `.lurgcp` package that only `RenderGraphPackage::DecodeCaptureProfile`
+  admits, so viewports and runtime hosts refuse it;
+- `RenderGraphCapture` runs it.
+
+Raising **Visibility queries** above a declared capture budget raises the capture
+budget with it. The measurements behind the 256 limit are in the
+[frame capture design](../architecture/render-graph-frame-capture.md#phase-3-capture-budget-decision).
+
 These budgets belong to the package's shared ray technique, so changing them
 affects every scene-aware ray pipeline using it, including imported subgraphs.
 Completed edits update the existing manifest interface as one undoable change;
@@ -2117,24 +2130,21 @@ LTC sample at `4 + 4k` and `5 + 4k`. The single-technique outputs therefore reus
 the MIS outputs' samples.
 
 Each emissive triangle costs two shadow rays in the MIS passes and one in each
-single-technique pass. The technique declares `surface_queries: 1` and the scene
-interface's maximum of `visibility_queries: 16`, so a scene may have at most **eight
-emissive triangles**. A larger scene fails explicitly with the failure color rather
-than dropping lights; use the RIS template for many lights.
+single-technique pass. The technique declares `surface_queries: 1`,
+`visibility_queries: 16` and `capture_visibility_queries: 256`.
+- **Interactive limit:** the viewport may shade at most **eight emissive triangles**.
+- **Capture limit:** a frame capture with the template's capture profile may shade
+  up to **128**.
+- **Beyond the limit:** a larger scene fails explicitly with the failure color rather
+  than dropping lights. The shader checks the light count against whichever budget
+  was linked.
 
-The limit cannot be lifted without changing the scene-interface contract.
-`TestVisibility` counts the budget per invocation of each pass, and it is the
-contract's only shadow-ray query, so a loop of shadow rays inside the shader spends
-the same budget. Calling the traversal directly (`Trace`) would bypass the budget and
-tie the template to the compute BVH, which the contract keeps behind
-`TestVisibility`. The options, none of them implemented:
-
-| Option | What it changes |
-| --- | --- |
-| Raise `MAX_VISIBILITY_QUERIES` in `scripts/python/ludus_tools/render_graph_ray.py` | The contract's limit, which the build admission, the editor's **Visibility queries** control (0–16) and every ray technique share. Each extra pair of queries admits one more triangle; the limit still exists |
-| Add a scene-interface query that tests many shadow rays at once, or one that is not budgeted | A new contract operation with its own budget, implemented for every traversal |
-| Split the triangles across more shade passes and add a pass that sums them | Eight more triangles per pass, still a fixed number, and a different graph from Peters' one pass per estimator |
-| Shade a randomly selected subset of triangles | Leaves Peters' protocol of shading every light; the RIS template already does this |
+Cost is linear in the number of lights. Each emissive triangle adds about 15 ns
+per pixel per MIS sample on an Apple M5, so a capture near the 128-triangle limit
+is slow at high resolution. For many lights, use the RIS template. The capture's
+tiled submission, which keeps a long capture under the GPU timeout, is not
+implemented yet; see the
+[frame capture design](../architecture/render-graph-frame-capture.md#phase-4a-implementation-notes).
 
 New shader programs have `PolygonalLight`-prefixed IDs and sources under
 `polygonal_light_sampling/main_shaders/`. The setting joins the manifest's Graph

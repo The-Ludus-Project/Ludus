@@ -1021,9 +1021,13 @@ class PolygonalLightSamplingTemplateTests(unittest.TestCase):
         build.validate_manifest(manifest)
         technique = next(technique for technique in manifest['techniques'] if technique['id'] == ray.TECHNIQUE)
         self.assertFalse(any(stage in technique for stage in ray.STAGES))
-        # One camera ray; two shadow rays for each of up to eight emissive triangles.
+        # One camera ray; two shadow rays for each of up to eight emissive triangles interactively, and up to 128
+        # in a frame capture's capture profile.
         self.assertEqual(technique['scene_interface'], {'version': 1, 'surface_queries': 1, 'visibility_queries': 16,
+                                                        'capture_visibility_queries': 256,
                                                         'polygonal_light_sampling': True})
+        self.assertEqual(technique['scene_interface']['capture_visibility_queries'],
+                         ray.SCENE_QUERY_LIMITS['MAX_CAPTURE_VISIBILITY_QUERIES'])
         self.assertEqual(technique['scene_interface']['visibility_queries'],
                          ray.SCENE_QUERY_LIMITS['MAX_VISIBILITY_QUERIES'])
         compute = [program for program in manifest['programs'] if program['stage'] == 'compute']
@@ -1079,12 +1083,15 @@ class PolygonalLightSamplingTemplateTests(unittest.TestCase):
                                                       'POLYGONAL_LIGHT_DIMENSIONS_PER_LIGHT',
                                                       'PROJECTED_SOLID_ANGLE_SAMPLE_DIMENSION_OFFSET',
                                                       'LTC_SAMPLE_DIMENSION_OFFSET', 'MAX_POLYGONAL_LIGHT_COUNT')],
-                         [0, 2, 2, 4, 0, 2, 8])
-        # Both MIS passes trace two shadow rays per triangle within the technique's visibility budget.
+                         [0, 2, 2, 4, 0, 2, 128])
+        # Both MIS passes trace two shadow rays per triangle: the random layout covers the capture budget, and the
+        # shader checks the count against whichever budget was linked.
         manifest = json.loads(root.with_name('main.lushader.json').read_text())
         technique = next(technique for technique in manifest['techniques'] if technique['id'] == ray.TECHNIQUE)
-        self.assertEqual(2 * evaluate('MAX_POLYGONAL_LIGHT_COUNT'),
-                         technique['scene_interface']['visibility_queries'])
+        self.assertEqual(evaluate('SHADOW_QUERIES_PER_MIS_LIGHT') * evaluate('MAX_POLYGONAL_LIGHT_COUNT'),
+                         technique['scene_interface']['capture_visibility_queries'])
+        self.assertIn('lightCount * SHADOW_QUERIES_PER_MIS_LIGHT > queries.MaximumVisibilityQueries',
+                      shaders.joinpath('shade.slang').read_text())
         # Every pass reads explicit addresses, never the automatic stream.
         for kernel in ('shade', 'hit_record', 'polygonal_light'):
             source = shaders.joinpath(f'{kernel}.slang').read_text()

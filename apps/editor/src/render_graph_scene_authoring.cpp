@@ -115,6 +115,12 @@ RenderGraphDocumentStatus RenderGraphDocument::SetSceneQueryBudgets(const Render
     }
     interface.insert(QStringLiteral("surface_queries"), budgets.SurfaceQueries);
     interface.insert(QStringLiteral("visibility_queries"), budgets.VisibilityQueries);
+    // A capture budget never falls below the interactive one; keep a declared one admissible.
+    const QString capture = QStringLiteral("capture_visibility_queries");
+    if (interface.contains(capture) == true && interface.value(capture).toInt() < budgets.VisibilityQueries)
+    {
+        interface.insert(capture, budgets.VisibilityQueries);
+    }
     technique.insert(QStringLiteral("scene_interface"), interface);
     techniques.replace(index, technique);
     manifest.insert(QStringLiteral("techniques"), techniques);

@@ -176,10 +176,12 @@ MergeComputeRayTechnique(QJsonObject& inoutManifest, const QJsonObject& source, 
             return RenderGraphDocumentStatus::Conflict;
         }
         interface.insert(QStringLiteral("version"), defaultInterface.value(QStringLiteral("version")));
-        // Budgets are per-invocation maxima shared by every ray pass of the package. The optional line
-        // budget is raised only by templates that declare it, so other imports keep their manifests.
-        for (const QString& field :
-             {QStringLiteral("surface_queries"), QStringLiteral("visibility_queries"), QStringLiteral("line_queries")})
+        // Budgets are per-invocation maxima shared by every ray pass of the package. The optional line and
+        // capture budgets are raised only by templates that declare them, so other imports keep their manifests.
+        for (const QString& field : {QStringLiteral("surface_queries"),
+                                     QStringLiteral("visibility_queries"),
+                                     QStringLiteral("line_queries"),
+                                     QStringLiteral("capture_visibility_queries")})
         {
             if (defaultInterface.contains(field) == true &&
                 (interface.contains(field) == false ||
@@ -187,6 +189,13 @@ MergeComputeRayTechnique(QJsonObject& inoutManifest, const QJsonObject& source, 
             {
                 interface.insert(field, defaultInterface.value(field));
             }
+        }
+        // A capture budget never falls below the interactive one the loop above may have raised.
+        const QString capture = QStringLiteral("capture_visibility_queries");
+        if (interface.contains(capture) == true &&
+            interface.value(capture).toInt() < interface.value(QStringLiteral("visibility_queries")).toInt())
+        {
+            interface.insert(capture, interface.value(QStringLiteral("visibility_queries")));
         }
         // Helper requirements are additive: a template that needs the polygonal-light helpers enables them,
         // and a technique that already has them keeps them.

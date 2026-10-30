@@ -35,10 +35,12 @@ static const uint HIT_RECORD_FLAG_FAILED = 2;
 static const uint PRIMARY_RANDOM_DIMENSION_FIRST = 0;
 static const uint PRIMARY_RANDOM_DIMENSION_COUNT = 2;
 // Every pass shades each emissive triangle of the scene. Both MIS outputs trace two shadow rays per triangle, so the
-// technique's visibility budget (16, the scene interface's maximum) bounds the scene to this many emissive triangles;
-// a larger scene fails explicitly instead of dropping lights. TestVisibility counts the budget per invocation, so a
-// loop of shadow rays inside the shader cannot lift it; docs/development/render-graph-authoring.md lists the options.
-static const uint MAX_POLYGONAL_LIGHT_COUNT = 8;
+// linked visibility budget bounds the scene to half that many emissive triangles: 8 with the interactive budget of
+// 16, and 128 with the capture profile's 256 (scene_interface.capture_visibility_queries). A larger scene fails
+// explicitly instead of dropping lights; ShadePolygonalLights checks the linked budget. This constant bounds the
+// random dimension layout below to the capture profile's maximum.
+static const uint SHADOW_QUERIES_PER_MIS_LIGHT = 2;
+static const uint MAX_POLYGONAL_LIGHT_COUNT = 128;
 static const uint POLYGONAL_LIGHT_DIMENSION_FIRST = PRIMARY_RANDOM_DIMENSION_FIRST + PRIMARY_RANDOM_DIMENSION_COUNT;
 static const uint POLYGONAL_LIGHT_DIMENSIONS_PER_LIGHT = 4;
 // Offsets within one light's four dimensions.
