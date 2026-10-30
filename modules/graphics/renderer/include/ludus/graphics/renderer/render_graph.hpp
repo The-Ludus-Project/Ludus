@@ -139,6 +139,18 @@ struct RenderGraphPrograms final
     /// renderer uploads and binds that buffer; RayCompute.Bindings must name the slot exactly when
     /// this is true. See docs/development/ltc-table.md.
     bool HasLtcTable = false;
+    /// RayCompute offsets its dispatch by the ray uniform's tile region (runtime package version 28 and later,
+    /// and every generated header), so RenderGraph::SetRayTileCount may split a sample into row bands. Older
+    /// kernels cover the whole image on every dispatch and therefore cannot be tiled.
+    bool HasRayTiles = false;
+};
+/// Ray work of one sample of a RenderGraph's current scene, from which a frame capture sizes its tiles.
+struct RenderGraphRayWorkload final
+{
+    /// Pixels shaded per sample, summed over every ray pass.
+    foundation::uint64 Pixels = 0;
+    /// Emissive triangles plus analytic lights of the largest ray pass scene; an environment is not counted.
+    foundation::uint32 Lights = 0;
 };
 /// Attach the frozen triangle-ray compute/image interface metadata to a cooked stage.
 /// Does not compile, allocate or change artifact bytes. Used by generated headers and
@@ -171,6 +183,10 @@ inline constexpr foundation::uint32 DEFAULT_RAY_PATH_SAMPLES = 16;
 /// Largest Accumulate sample limit a frame capture may set with RenderGraph::SetAccumulationLimitOverride.
 /// Interactive graphs keep RenderGraphFormat::MAX_ACCUMULATION_SAMPLES.
 inline constexpr foundation::uint32 MAX_RENDER_GRAPH_CAPTURE_SAMPLES = 65536;
+/// Most row bands RenderGraph::SetRayTileCount may split one ray sample into. Each band is a separate
+/// submission, so a long frame-capture sample stays under the GPU watchdog; see
+/// docs/architecture/render-graph-frame-capture.md.
+inline constexpr foundation::uint32 MAX_RENDER_GRAPH_RAY_TILES = 128;
 /// float4 values per pixel in a ray pass's accumulation buffer: the running sum with the committed
 /// count's uint32 bits in W, then the compensation with the history tag in W (odd after a latched failure).
 inline constexpr foundation::uint32 RENDER_GRAPH_ACCUMULATION_WORDS = 2;
@@ -683,6 +699,23 @@ public:
     /// InvalidDescription for a pass that is not a ray pass. Outputs are preserved on failure.
     [[nodiscard]] rhi::RasterStatus GetAccumulation(foundation::uint32 pass,
                                                     rhi::BufferHandle& outBuffer) const noexcept;
+    /// Split every ray sample into tileCount row bands, rendering one band per Render, for a graph instance
+    /// that captures a frame. Each band dispatches every ray pass over the same rows, with the pixel indices,
+    /// sample streams and accumulation of an untiled sample, so only the submission boundaries change.
+    /// HasPendingSamples and GetSubmittedRaySamples count a sample once its last band was submitted. Call
+    /// between frames at a sample boundary; the count applies to later scenes of this instance too.
+    /// @param tileCount Bands per sample, from one (whole-image dispatches) to MAX_RENDER_GRAPH_RAY_TILES.
+    /// @return Ready when set; InvalidDescription for a count out of range; Unsupported for more than one band
+    /// when RenderGraphPrograms::HasRayTiles is false; InvalidState when uninitialized, not Ready, in a frame or
+    /// between the bands of a sample. Failure leaves the graph unchanged.
+    [[nodiscard]] rhi::RasterStatus SetRayTileCount(foundation::uint32 tileCount) noexcept;
+    /// Ray samples submitted for every pixel of the drawable scene: whole frames, or complete rounds of bands
+    /// after SetRayTileCount. Zero without a scene; a replaced scene or camera starts again from zero.
+    [[nodiscard]] foundation::uint32 GetSubmittedRaySamples() const noexcept;
+    /// Describe the ray work of one sample of the drawable scene, for sizing tiles.
+    /// @param outWorkload Receives the pixels and lights; unchanged on failure.
+    /// @return Ready; NotReady without a drawable scene or before its ray passes are prepared.
+    [[nodiscard]] rhi::RasterStatus GetRayWorkload(RenderGraphRayWorkload& outWorkload) const noexcept;
     /// Borrow the events of the last Ready PollRayPathCapture until the next poll, request or Reset.
     [[nodiscard]] foundation::BorrowedView<const RayPathEvent> GetRayPathEvents() const noexcept;
     /// Borrow the summaries of the last Ready PollRayPathCapture, sorted by pixel, sample and pass,

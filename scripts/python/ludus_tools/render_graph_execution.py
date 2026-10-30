@@ -311,7 +311,8 @@ PACKAGE_MAGIC = 0x4752554C
 RAY_PATH_CAPTURE_PACKAGE_MAGIC = 0x5052554C
 # Frame capture profile generation ("LURC"); same layout, admitted only by RenderGraphPackage::DecodeCaptureProfile.
 CAPTURE_PROFILE_PACKAGE_MAGIC = 0x4352554C
-PACKAGE_VERSION = 27
+# Version 28: ray kernels dispatch the ray uniform's tile region (a 240-byte uniform), so captures may tile.
+PACKAGE_VERSION = 28
 # Version 25 scene resource word: the linked ray kernel reads the renderer's LTC table.
 SCENE_RESOURCE_LTC_TABLE = 1
 RESOURCE_FIELD_COUNT = 9
@@ -695,6 +696,9 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
         lines.append('    result.HasRayPathCapture = true;')
     if contents.get('ltc_table', False):
         lines.append('    result.HasLtcTable = true;')
+    # Generated headers always link the current ray kernel, which dispatches the uniform's tile region.
+    if any(operation['kind'] == 'RayTracing' for operation in contents['plan']['passes']):
+        lines.append('    result.HasRayTiles = true;')
     for program_name in (*PROGRAM_CODES, *forward.SUPPORT, 'NativeRayStages'):
         stages_for_program = (forward.SUPPORT[program_name][1] if program_name in forward.SUPPORT else
                               ('compute',) if program_name == 'NativeRayStages' else

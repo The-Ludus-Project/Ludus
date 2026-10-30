@@ -183,6 +183,8 @@ struct RenderGraphPackage::State final
     bool HasDenoising = false;
     /// The version 25 scene resource word names the LTC table: AppendLtcTableBindings adds its slot.
     bool HasLtcTable = false;
+    /// Version 28 and later ray kernels dispatch the uniform's tile region.
+    bool HasRayTiles = false;
     // DecodeUniforms validates and writes every active stage before any binding is published.
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     StaticArray<format::UniformBinding, format::MAX_UNIFORM_BINDINGS> UniformBindings{};
@@ -793,7 +795,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
-        (version != format::RASTER_MESH_LIGHT_POLYGON_PACKAGE_VERSION &&
+        (version != format::TILED_RAY_PACKAGE_VERSION && version != format::RASTER_MESH_LIGHT_POLYGON_PACKAGE_VERSION &&
          version != format::RASTER_MESH_LIGHT_PACKAGE_VERSION && version != format::LTC_TABLE_PACKAGE_VERSION &&
          version != format::CLUSTERED_DEFERRED_PACKAGE_VERSION &&
          version != format::CLUSTERED_FORWARD_PACKAGE_VERSION && version != format::COMPUTE_BVH_PACKAGE_VERSION &&
@@ -818,6 +820,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     candidate->HasPixelBuffers = version >= format::PIXEL_BUFFER_PACKAGE_VERSION;
     candidate->HasForwardStages = version >= format::FORWARD_PACKAGE_VERSION;
     candidate->CanHaveClusteredDeferred = version >= format::RASTER_MESH_LIGHT_POLYGON_PACKAGE_VERSION;
+    candidate->HasRayTiles = version >= format::TILED_RAY_PACKAGE_VERSION;
     candidate->CanHaveClusteredForward = version >= format::CLUSTERED_FORWARD_PACKAGE_VERSION;
     candidate->HasExplicitAccumulation = version >= format::ACCUMULATION_PACKAGE_VERSION;
     candidate->HasExplicitToneMapping = version >= format::TONE_MAPPING_PACKAGE_VERSION;
@@ -1114,6 +1117,7 @@ RenderGraphPrograms RenderGraphPackage::GetPrograms(const rhi::RasterShaderDescr
     const State& state = *mState;
     result.HasRayPathCapture = state.IsRayPathCapture;
     result.HasLtcTable = state.HasLtcTable;
+    result.HasRayTiles = state.HasRayTiles;
     for (const State::StageView& view : state.Stages[format::CLUSTERED_FORWARD_FRAGMENT_ROLE])
     {
         result.HasClusteredForward = result.HasClusteredForward == true || view.IsPresent == true;

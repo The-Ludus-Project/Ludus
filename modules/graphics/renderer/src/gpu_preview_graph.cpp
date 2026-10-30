@@ -193,8 +193,11 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
 {
     constexpr usize COLOR_BUFFER_INDEX = 3;
     Status status = Status::Ready;
+    // A tiled job reads the uniform copy whose Tile selects its prepared band, through that copy's bindings.
+    const GpuPreviewTiles* tilesOrNull = job.TilesOrNull.Get();
+    const rhi::BufferHandle parameters = tilesOrNull != nullptr ? tilesOrNull->Parameters : job.Parameters;
     const StaticArray<rhi::BufferHandle, JOB_BUFFER_COUNT> buffers{{job.Data,
-                                                                    job.Parameters,
+                                                                    parameters,
                                                                     job.Accumulation,
                                                                     job.Colors,
                                                                     state.Quad,
@@ -333,10 +336,18 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
                                           sizeof(LTC_TABLE),
                                           rhi::RasterVisibility::Compute};
     }
+    GpuPreviewUniform region{};
+    region.Dimensions[0] = job.Width;
+    region.Dimensions[1] = job.Height;
+    SetGpuPreviewTile(region,
+                      tilesOrNull != nullptr ? tilesOrNull->Tile : 0,
+                      tilesOrNull != nullptr ? tilesOrNull->Count : 1);
+    // An empty band, when bands outnumber rows, still dispatches one group row whose threads all return.
+    const uint32 rows = region.Tile[GPU_PREVIEW_TILE_END_Y] - region.Tile[GPU_PREVIEW_TILE_ORIGIN_Y];
     const rhi::ComputeDispatch dispatch{
         job.HasNativeRayInvocation == true ? state.NativeRayPipeline : state.ComputePipeline,
-        job.ComputeBindings,
-        {(job.Width - 1) / state.WorkgroupWidth + 1, (job.Height - 1) / state.WorkgroupHeight + 1, 1}};
+        tilesOrNull != nullptr ? tilesOrNull->Bindings : job.ComputeBindings,
+        {(job.Width - 1) / state.WorkgroupWidth + 1, rows == 0 ? 1 : (rows - 1) / state.WorkgroupHeight + 1, 1}};
     rhi::GraphPassDescription compute;
     compute.Name = job.HasNativeRayInvocation == true ? "Native Metal ray stages" : "GPU preview transport";
     compute.Uses = computeUses.GetData();

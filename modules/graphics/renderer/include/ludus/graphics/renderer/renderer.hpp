@@ -833,6 +833,21 @@ private:
     [[nodiscard]] rhi::RasterStatus pollGpuPreviewCamera(GpuPreview handle) noexcept;
     void commitGpuPreviewCamera(GpuPreview handle) noexcept;
     void discardGpuPreviewCamera(GpuPreview handle) noexcept;
+    // Band `tile` of `count` of a tiled capture (RenderGraph::SetRayTileCount): create, or keep, its uniform copy
+    // and binding set from the committed camera, replacing another band's. Count one releases them. Ready once
+    // the band is bound.
+    [[nodiscard]] rhi::RasterStatus
+    prepareGpuPreviewTiles(GpuPreview handle, foundation::uint32 count, foundation::uint32 tile) noexcept;
+    // Emissive triangles plus analytic lights of a ready job's scene.
+    [[nodiscard]] foundation::uint32 getGpuPreviewLightCount(GpuPreview handle) const noexcept;
+    // PrepareGpuPreviewGraphSequence for band `tile` of jobs prepared with prepareGpuPreviewTiles; untiled jobs
+    // dispatch their whole image.
+    [[nodiscard]] rhi::RasterStatus
+    prepareGpuPreviewGraphSequence(foundation::BorrowedView<const GpuPreview> jobs,
+                                   foundation::BorrowedView<const rhi::TextureHandle> targets,
+                                   foundation::uint32 tile,
+                                   rhi::OrderedGraph& outGraph,
+                                   const VisibilityRasterPass* visibilityOrNull) noexcept;
     struct State;
     ludus::foundation::core::UniquePtr<State> mState;
 };

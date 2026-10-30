@@ -35,6 +35,7 @@ LUDUS_SHADER_BINDING(0) cbuffer Parameters
     float4 BoundsMaximumWorld;
     uint4 SurfaceLayout; // surface stride, analytic offset, private kernel ABI, see renderer_gpu_preview_layout.h,
                          // reserved
+    uint4 Tile;          // dispatched pixel region: origin x, y, then exclusive end x, y within Dimensions.xy
 };
 LUDUS_SHADER_BINDING(1) StructuredBuffer<uint4> sceneWords;
 float4 SceneValue(uint index)
@@ -1130,9 +1131,12 @@ float3 Integrate(uint pixel, uint sample)
 #    define LUDUS_GPU_PREVIEW_COMPUTE_ENTRY                                                                            \
         [numthreads(LUDUS_GPU_PREVIEW_TRANSPORT_GROUP_WIDTH, LUDUS_GPU_PREVIEW_TRANSPORT_GROUP_HEIGHT, 1)]
 #endif
-LUDUS_GPU_PREVIEW_COMPUTE_ENTRY void ComputeMain(uint3 positionPixel : SV_DispatchThreadID)
+// A tiled capture dispatches one row band per submission; Tile places the band in the full image, so pixel
+// indices, sample streams and accumulation are those of an untiled dispatch.
+LUDUS_GPU_PREVIEW_COMPUTE_ENTRY void ComputeMain(uint3 dispatchPixel : SV_DispatchThreadID)
 {
-    if (positionPixel.x >= Dimensions.x || positionPixel.y >= Dimensions.y)
+    uint3 positionPixel = uint3(dispatchPixel.xy + Tile.xy, dispatchPixel.z);
+    if (positionPixel.x >= Tile.z || positionPixel.y >= Tile.w)
         return;
     uint pixel = positionPixel.y * Dimensions.x + positionPixel.x;
     float4 sum = accumulation[pixel * 2];

@@ -52,6 +52,10 @@ QString DescribeProblem(renderer::RenderGraphCaptureProblem problem, graphics::r
         case renderer::RenderGraphCaptureProblem::LatchedPixels:
             return QStringLiteral("Some pixels show the graph's failure colour: a shader failed there, for example "
                                   "by exceeding its query budget. Their counts stop at the failure.");
+        case renderer::RenderGraphCaptureProblem::UntiledPackage:
+            return QStringLiteral("This capture needs to render each sample in several submissions to stay under "
+                                  "the GPU timeout, but the graph's package was cooked before tiled capture. "
+                                  "Rebuild the graph and capture again.");
     }
     return {};
 }

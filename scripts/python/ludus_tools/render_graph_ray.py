@@ -127,6 +127,8 @@ def select_callbacks(programs, variant):
 # retains that contract, but uses shader-local ScenePayload rather than a DXR payload.
 STATE = {'max_recursion': 1, 'payload_bytes': 0, 'attribute_bytes': 8}
 VISIBILITY_SLOT = buffers.FIRST_SLOT + buffers.MAX_BUFFERS
+# Ray uniform bytes (LUDUS_GPU_PREVIEW_PARAMETERS_BYTES), including the version 28 tile region.
+PARAMETERS_BYTES = 240
 # Diagnostic ray path capture buffer (LUDUS_RAY_PATH_CAPTURE_BINDING); uint32 words.
 RAY_PATH_CAPTURE_SLOT = 10
 RAY_PATH_CAPTURE_STRIDE = 4
@@ -499,7 +501,7 @@ def check_interface(program, result, build):
     interface = result['interface']
     entries = sorted(interface['entries'], key=lambda value: value['binding'])
     if program['id'] in COMPUTE_IDS or program.get('native_ray_pipeline'):
-        expected = [(0, 'UniformBuffer', 224), (1, 'StorageRead', 16), (2, 'StorageReadWrite', 16),
+        expected = [(0, 'UniformBuffer', PARAMETERS_BYTES), (1, 'StorageRead', 16), (2, 'StorageReadWrite', 16),
                     (3, 'StorageReadWrite', 16), (4, 'StorageRead', 16), (5, 'RayScene', 0)]
         if not program.get('native_ray_queries', True):
             expected = [entry for entry in expected if entry[1] != 'RayScene']

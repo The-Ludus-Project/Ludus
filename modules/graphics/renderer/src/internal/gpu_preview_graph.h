@@ -12,6 +12,8 @@ namespace ludus::graphics::renderer::internal
                                               rhi::OrderedGraph& outGraph,
                                               const rhi::TextureHandle* targetOrNull = nullptr,
                                               const VisibilityRasterPass* visibilityOrNull = nullptr) noexcept;
+/// Record every job's ray dispatch, in order, and present each to its target. A job holding a prepared row band
+/// (GpuPreviewTiles) dispatches that band only; other jobs dispatch their whole image.
 [[nodiscard]] rhi::RasterStatus BuildGpuGraphSequence(rhi::DeviceHandle device,
                                                       const GpuPreviewState& state,
                                                       foundation::BorrowedView<const GpuPreviewRecord*> jobs,

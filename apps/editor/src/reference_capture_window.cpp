@@ -875,7 +875,9 @@ QString ReferenceCaptureWindow::GetStatusText() const
                 return QStringLiteral("%1\n%2").arg(mMessage, mGraphCapture.GetError());
             case renderer::RenderGraphCapturePhase::Rendering:
             case renderer::RenderGraphCapturePhase::ReadingBack:
-                graphPhase = QStringLiteral("Rendering");
+                // Each sample of a long capture is split into row bands submitted one at a time.
+                graphPhase = info.TileCount > 1 ? QStringLiteral("Rendering in %1 bands").arg(info.TileCount)
+                                                : QStringLiteral("Rendering");
                 break;
             default:
                 graphPhase = QStringLiteral("Preparing the render graph");
