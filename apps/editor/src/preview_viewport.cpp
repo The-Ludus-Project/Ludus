@@ -751,6 +751,8 @@ struct PreviewViewport::State final
     FrameCanvas* CanvasOrNull = nullptr;
     WorldGraphView* GraphViewOrNull = nullptr;
     QPointer<RenderGraphPreview> ProjectGraph;
+    /// Renderer that owns ProjectGraph and the toolbar's configuration choice.
+    QPointer<RendererWorkspace> ProjectWorkspace;
     ViewportPaintTrace PaintTrace;
     QSGTexture* CpuWrapperOrNull = nullptr;
     int64 PresentedCpuImageKey = 0;
@@ -1646,7 +1648,7 @@ PreviewViewport::PreviewViewport(RenderPreview* preview,
         }
 #    if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
         // The project graph may have been adopted after the window was created.
-        mState->ReferenceWindow->SetProjectGraph(mState->ProjectGraph.data());
+        mState->ReferenceWindow->SetProjectGraph(mState->ProjectWorkspace.data());
 #    endif
         mState->ReferenceWindow->show();
         mState->ReferenceWindow->raise();
@@ -1886,6 +1888,7 @@ void PreviewViewport::UseProjectGraph(RendererWorkspace& inoutWorkspace)
             Qt::QueuedConnection);
     synchronizeProblem();
     mState->ProjectGraph = inoutWorkspace.GetPreviewOrNull();
+    mState->ProjectWorkspace = &inoutWorkspace;
     mState->GraphViewOrNull = new WorldGraphView(inoutWorkspace, this);
     mState->GraphViewOrNull->SetObjectInteraction(*mObjectInteraction);
     mState->GraphViewOrNull->setVisible(Preview_->Scene().Identity.isEmpty() == false);

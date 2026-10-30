@@ -5,7 +5,9 @@
 #include "internal/texture_inspection.h"
 #include "internal/viewport_reference_capture.h"
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "internal/render_graph_document.h"
 #    include "internal/render_graph_preview.h"
+#    include "internal/renderer_workspace.h"
 #    include "internal/viewport_graph_capture.h"
 #    include "internal/viewport_raster_capture.h"
 #endif
@@ -37,6 +39,7 @@
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStandardItemModel>
+#include <QStringList>
 #include <QTabWidget>
 #include <QVBoxLayout>
 
@@ -118,7 +121,7 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
       mSaveButton(new QPushButton(QStringLiteral("Save…"), this)), mProgress(new QProgressBar(this)),
       mStatus(new QLabel(this)), mComparisonText(new QLabel(this)), mImages(new QTabWidget(this)),
       mImageLabel(new QLabel(this)), mRasterLabel(new QLabel(this)), mDifferenceLabel(new QLabel(this)),
-      mSource(new QComboBox(this))
+      mSource(new QComboBox(this)), mGraph(new QLabel(this))
 {
     setObjectName(QStringLiteral("referenceCaptureWindow"));
     setWindowTitle(QStringLiteral("Reference capture"));
@@ -158,7 +161,13 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
                                        "viewport's graph, output and package to the sample count and saves the "
                                        "linear mean of its Accumulate."));
     QFormLayout* form = new QFormLayout;
+    mGraph->setObjectName(QStringLiteral("referenceGraph"));
+    mGraph->setWordWrap(true);
+    mGraph->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    mGraph->setToolTip(QStringLiteral("The Render graph source and the comparison use the graph, configuration and "
+                                      "output selected in the viewport's toolbar. Change them there."));
     form->addRow(QStringLiteral("Source"), mSource);
+    form->addRow(QStringLiteral("Graph"), mGraph);
     form->addRow(QStringLiteral("Long side"), mLongSide);
     form->addRow(QStringLiteral("Samples"), mSamples);
     form->addRow(QStringLiteral("Max depth"), mMaxDepth);
@@ -236,6 +245,7 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     mMessage = QStringLiteral("Captures the viewport's current camera with the RT1 progressive path tracer.");
     updateTraversalAvailability();
     updateComparisonAvailability();
+    updateGraphDescription();
     updateControls();
     updateStatus();
 }
@@ -246,14 +256,82 @@ ReferenceCaptureWindow::~ReferenceCaptureWindow()
     releaseCaptures();
 }
 
-void ReferenceCaptureWindow::SetProjectGraph(RenderGraphPreview* graphOrNull)
+void ReferenceCaptureWindow::SetProjectGraph(RendererWorkspace* workspaceOrNull)
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-    mProjectGraph = graphOrNull;
+    RenderGraphPreview* graphOrNull = workspaceOrNull != nullptr ? workspaceOrNull->GetPreviewOrNull() : nullptr;
+    if (mProjectWorkspace.data() != workspaceOrNull || mProjectGraph.data() != graphOrNull)
+    {
+        if (mProjectWorkspace.isNull() == false)
+        {
+            disconnect(mProjectWorkspace, nullptr, this, nullptr);
+        }
+        if (mProjectGraph.isNull() == false)
+        {
+            disconnect(mProjectGraph, nullptr, this, nullptr);
+        }
+        mProjectWorkspace = workspaceOrNull;
+        mProjectGraph = graphOrNull;
+        // The configuration, output and Force raster choice live in the viewport toolbar and can change while
+        // this window is open; keep naming what a capture would use now.
+        if (mProjectWorkspace.isNull() == false)
+        {
+            connect(mProjectWorkspace,
+                    &RendererWorkspace::DocumentChanged,
+                    this,
+                    &ReferenceCaptureWindow::updateGraphDescription);
+        }
+        if (mProjectGraph.isNull() == false)
+        {
+            connect(mProjectGraph, &RenderGraphPreview::Changed, this, &ReferenceCaptureWindow::updateGraphDescription);
+        }
+    }
 #else
-    static_cast<void>(graphOrNull);
+    static_cast<void>(workspaceOrNull);
 #endif
     updateComparisonAvailability();
+    updateGraphDescription();
+}
+
+QString ReferenceCaptureWindow::GetGraphText() const
+{
+    return mGraph->text();
+}
+
+void ReferenceCaptureWindow::updateGraphDescription()
+{
+    QString text = QStringLiteral("None. This viewport has no project render graph, so only the RT1 reference can "
+                                  "be captured.");
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mProjectWorkspace.isNull() == false && mProjectGraph.isNull() == false &&
+        mProjectGraph->GetRequestedPackagePath().isEmpty() == false)
+    {
+        QStringList parts;
+        if (mProjectWorkspace->IsUsingDefaultRenderer() == true)
+        {
+            // The engine default is one prebuilt generation; the configuration selector does not change it.
+            parts.append(QStringLiteral("Engine default renderer"));
+        }
+        else
+        {
+            parts.append(QStringLiteral("Project graph %1").arg(mProjectWorkspace->GetDocument().GetRootGraph()));
+            const QString configuration = mProjectWorkspace->GetConfiguration();
+            if (configuration.isEmpty() == false)
+            {
+                parts.append(QStringLiteral("configuration %1").arg(configuration));
+            }
+        }
+        const QString& output = mProjectGraph->GetOutputTarget();
+        parts.append(output.isEmpty() == true ? QStringLiteral("Final output")
+                                              : QStringLiteral("output %1").arg(output));
+        if (mProjectGraph->ShouldForceRaster() == true)
+        {
+            parts.append(QStringLiteral("Force raster"));
+        }
+        text = parts.join(QStringLiteral(" · "));
+    }
+#endif
+    mGraph->setText(text);
 }
 
 void ReferenceCaptureWindow::releaseCaptures() noexcept
