@@ -2491,42 +2491,53 @@ TEST_CASE("Full Intel Sponza presents through the native editor viewport", "[.fu
                 return graph.GetPresentedRevision() > rasterRevision &&
                        viewport.PresentedFrames() > beforeRasterNavigation;
             }) == true);
-    const uint64 rasterFrames = viewport.PresentedFrames();
-    // The declared diagnostic ray graph shows authored base-color averages without
-    // inventing illumination for Sponza's zero-intensity punctual lights.
-    REQUIRE(graph.Load(QStringLiteral(LUDUS_EDITOR_RAY_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
-    const uint64 rayGeneration = graph.GetReport().CandidateGeneration;
-    REQUIRE(waitFor([&]() {
-                return graph.GetPresentedGeneration() == rayGeneration && viewport.PresentedFrames() > rasterFrames;
-            }) == true);
-    const QImage first = windowOrNull->grabWindow();
-    REQUIRE(first.isNull() == false);
-    bool hasVariation = false;
-    usize errorPixels = 0;
-    const QRgb firstPixel = first.pixel(0, 0);
-    for (int32 y = 0; y < first.height(); ++y)
+    // The legacy triangle-loop ray fixture is optional for this raster/material
+    // acceptance. Its full-scene navigation is not reference-path parity evidence;
+    // dedicated opacity tests exercise CPU, compute-BVH and native-query coverage.
+    if (qEnvironmentVariableIsSet("LUDUS_SPONZA_TEST_LEGACY_RAY") == true)
     {
-        for (int32 x = 0; x < first.width(); ++x)
+        const uint64 rasterFrames = viewport.PresentedFrames();
+        // The declared diagnostic ray graph shows authored base-color averages without
+        // inventing illumination for Sponza's zero-intensity punctual lights.
+        const uint64 beforeRayGeneration = graph.GetPresentedGeneration();
+        REQUIRE(graph.Load(QStringLiteral(LUDUS_EDITOR_RAY_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
+        REQUIRE(waitFor([&]() {
+                    return graph.GetPresentedGeneration() > beforeRayGeneration &&
+                           viewport.PresentedFrames() > rasterFrames;
+                }) == true);
+        const QImage first = windowOrNull->grabWindow();
+        REQUIRE(first.isNull() == false);
+        bool hasVariation = false;
+        usize errorPixels = 0;
+        const QRgb firstPixel = first.pixel(0, 0);
+        for (int32 y = 0; y < first.height(); ++y)
         {
-            const QRgb pixel = first.pixel(x, y);
-            hasVariation = hasVariation == true || pixel != firstPixel;
-            errorPixels += qRed(pixel) == 255 && qGreen(pixel) == 0 && qBlue(pixel) == 255 ? 1 : 0;
+            for (int32 x = 0; x < first.width(); ++x)
+            {
+                const QRgb pixel = first.pixel(x, y);
+                hasVariation = hasVariation == true || pixel != firstPixel;
+                errorPixels += qRed(pixel) == 255 && qGreen(pixel) == 0 && qBlue(pixel) == 255 ? 1 : 0;
+            }
         }
+        CHECK(hasVariation == true);
+        CHECK(errorPixels == 0);
+        const uint64 initialRevision = graph.GetPresentedRevision();
+        const uint64 initialFrame = viewport.PresentedFrames();
+        source.Look(20, 0);
+        REQUIRE(waitFor([&]() {
+                    return graph.GetPresentedRevision() > initialRevision && viewport.PresentedFrames() > initialFrame;
+                }) == true);
+        const QImage navigated = windowOrNull->grabWindow();
+        CHECK(navigated != first);
     }
-    CHECK(hasVariation == true);
-    CHECK(errorPixels == 0);
-    const uint64 initialRevision = graph.GetPresentedRevision();
-    const uint64 initialFrame = viewport.PresentedFrames();
-    source.Look(20, 0);
-    REQUIRE(waitFor([&]() {
-                return graph.GetPresentedRevision() > initialRevision && viewport.PresentedFrames() > initialFrame;
-            }) == true);
-    const QImage navigated = windowOrNull->grabWindow();
-    CHECK(navigated != first);
     const uint64 beforeResize = viewport.PresentedFrames();
+    const QSize beforeResizeSize = windowOrNull->grabWindow().size();
     viewport.resize(800, 550);
     REQUIRE(waitFor([&]() {
-                return viewport.PresentedFrames() > beforeResize && windowOrNull->grabWindow().size() != first.size();
+                // Drive the native capture before checking its consumer counter;
+                // a static raster view need not schedule another continuous frame.
+                const QImage resized = windowOrNull->grabWindow();
+                return viewport.PresentedFrames() > beforeResize && resized.size() != beforeResizeSize;
             }) == true);
     CHECK(graph.GetStatistics().GetReadbackMilliseconds().GetAverage() == 0);
     if (capture.isEmpty() == false)
@@ -2572,18 +2583,47 @@ TEST_CASE("Full Intel Sponza presents through the native editor viewport", "[.fu
     navigation.insert(QStringLiteral("distance"), 7);
     source.RestoreNavigation(navigation);
     const uint64 beforeChart = viewport.PresentedFrames();
+    const uint64 beforeChartGeneration = graph.GetPresentedGeneration();
     REQUIRE(graph.Load(GetDefaultRenderGraphRuntime()) == RenderGraphPreviewLoad::Staged);
-    const uint64 chartGeneration = graph.GetReport().CandidateGeneration;
     REQUIRE(waitFor([&]() {
-                return graph.GetPresentedGeneration() == chartGeneration &&
+                return graph.GetPresentedGeneration() > beforeChartGeneration &&
                        graph.GetPresentedRevision() > beforeChartRevision && viewport.PresentedFrames() > beforeChart;
             }) == true);
     const uint64 chartSerial = graph.GetDisplayFrames().GetLatestSerial();
-    REQUIRE(waitFor([&]() { return viewport.GetPresentedGraphFrameSerial() >= chartSerial; }) == true);
+    REQUIRE(waitFor([&]() {
+                static_cast<void>(windowOrNull->grabWindow());
+                return viewport.GetPresentedGraphFrameSerial() >= chartSerial;
+            }) == true);
+    const QImage chartImage = windowOrNull->grabWindow();
+    // Flat material averages have only tile-boundary transitions. Texture detail
+    // must occupy a substantial part of the chart, away from the corner overlays.
+    usize textureTransitions = 0;
+    constexpr int32 CHART_CENTRAL_DIVISOR = 4;
+    constexpr usize MINIMUM_TEXTURE_TRANSITION_DIVISOR = 20;
+    for (int32 y = 0; y < chartImage.height(); ++y)
+    {
+        for (int32 x = chartImage.width() / CHART_CENTRAL_DIVISOR;
+             x < chartImage.width() - chartImage.width() / CHART_CENTRAL_DIVISOR;
+             ++x)
+        {
+            textureTransitions += chartImage.pixel(x, y) != chartImage.pixel(x - 1, y) ? 1 : 0;
+        }
+    }
+    CHECK(textureTransitions > static_cast<usize>(chartImage.width()) * static_cast<usize>(chartImage.height()) /
+                                   MINIMUM_TEXTURE_TRANSITION_DIVISOR);
     if (capture.isEmpty() == false)
     {
-        REQUIRE(windowOrNull->grabWindow().save(capture + QStringLiteral(".materials.png")) == true);
+        REQUIRE(chartImage.save(capture + QStringLiteral(".materials.png")) == true);
     }
+    QFile chartRuntime(GetDefaultRenderGraphRuntime());
+    REQUIRE(chartRuntime.open(QIODevice::ReadOnly) == true);
+    const QByteArray chartBytes = chartRuntime.readAll();
+    renderer::RenderGraphPackage chartPackage;
+    REQUIRE(chartPackage.Decode({reinterpret_cast<const uint8*>(chartBytes.constData()),
+                                 static_cast<usize>(chartBytes.size())}) == renderer::RenderGraphPackageStatus::Ready);
+    const renderer::RenderGraphPrograms chartPrograms = chartPackage.GetPrograms({}, {});
+    CHECK(chartPrograms.ForwardVertex.Inputs.empty() == false);
+    CHECK(graph.GetRequestedPackagePath() == GetDefaultRenderGraphRuntime());
     source.Stop();
     workspace.SetPreviewSource(nullptr);
 }
