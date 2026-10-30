@@ -12,6 +12,7 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
+#include <ludus/foundation/parsing/json.hpp>
 #include <ludus/foundation/strings/string.hpp>
 
 #include <bit>
@@ -58,6 +59,7 @@ constexpr usize MAX_ARTIFACT_DEPENDENCIES =
 constexpr usize MAX_CLOSURE_RESOURCES = usize{format::IMPORT_LIMITS.Meshes} + format::IMPORT_LIMITS.Materials +
                                         format::IMPORT_LIMITS.Textures + 2 * MAX_LEVEL_IMPORTS + 1;
 static_assert(MAX_ASSET_BYTES >= format::IMPORT_LIMITS.BundleBytes, "an artifact holds any admitted bundle");
+static_assert(MAX_RESIDENT_CLOSURE_BYTES > MAX_ASSET_BYTES, "closures also carry encoded asset metadata");
 constexpr usize MAX_LOCK_IDENTITY_BYTES = 4096;
 constexpr usize HEX_DIGEST_BYTES = 64;
 constexpr usize MATERIAL_RECORD_BYTES = 24;
@@ -999,7 +1001,7 @@ public:
         return true;
     }
 
-    /// dict(sorted(selected.items())) after the MAX_ASSET_BYTES resident check.
+    /// dict(sorted(selected.items())) after the encoded dependency closure byte check.
     [[nodiscard]] bool Finish(Document& outClosure) noexcept
     {
         PythonSum total;
@@ -1012,9 +1014,9 @@ public:
             }
             total.Add(bytes);
         }
-        if (IsLessPython(MakeNumber(static_cast<int64>(MAX_ASSET_BYTES)), total.GetResult()) == true)
+        if (IsLessPython(MakeNumber(static_cast<int64>(MAX_RESIDENT_CLOSURE_BYTES)), total.GetResult()) == true)
         {
-            return mFailure.FailInvalid("Resident closure exceeds 384 MiB");
+            return mFailure.FailInvalid("Resident closure exceeds its encoded byte limit");
         }
         Array<usize> order;
         if (order.TryResize(mSelectedIds.GetSize()) == false)
@@ -1356,6 +1358,217 @@ void AppendSourceId(ByteWriter& inoutWriter, uint64 id) noexcept
     return true;
 }
 
+struct SourceMaterialRecord final
+{
+    uint32 Identity = 0;
+    std::string_view Name;
+    math::Vector3 Reflectance{1, 1, 1};
+    format::MaterialScattering Scattering;
+};
+[[nodiscard]] bool DecodeSourceMaterial(foundation::BorrowedView<const uint8> bytes,
+                                        SourceMaterialRecord& outRecord,
+                                        Failure& inoutFailure) noexcept
+{
+    if (bytes.IsValid() == false || bytes.GetSize() != format::MATERIAL_EXTENSION_V7_BYTES)
+    {
+        return inoutFailure.FailInvalid("truncated source material");
+    }
+    outRecord.Identity = DecodeUint32(bytes.GetDataOrNull());
+    const uint32 nameBytes = DecodeUint32(bytes.GetDataOrNull() + offsetof(format::MaterialExtensionV7, NameBytes));
+    if (nameBytes > format::MAX_MATERIAL_NAME_BYTES)
+    {
+        return inoutFailure.FailInvalid("invalid material name length");
+    }
+    const uint8* name = bytes.GetDataOrNull() + offsetof(format::MaterialExtensionV7, Name);
+    outRecord.Name = {reinterpret_cast<const char*>(name), nameBytes};
+    foundation::parsing::ParseError utf8;
+    if (foundation::parsing::ValidateUtf8(outRecord.Name, utf8) != foundation::parsing::ParseStatus::Ok)
+    {
+        return inoutFailure.FailInvalid("invalid source material UTF-8");
+    }
+    for (usize byte = nameBytes; byte < format::MAX_MATERIAL_NAME_BYTES; ++byte)
+    {
+        if (name[byte] != 0)
+        {
+            return inoutFailure.FailInvalid("invalid source material name padding");
+        }
+    }
+    const uint32 model = DecodeUint32(bytes.GetDataOrNull() + offsetof(format::MaterialExtensionV7, Model));
+    outRecord.Scattering.Model = static_cast<format::MaterialModel>(model);
+    const uint8* floats = bytes.GetDataOrNull() + offsetof(format::MaterialExtensionV7, Reflectance);
+    usize offset = 0;
+    const auto read = [&floats, &offset]() noexcept {
+        const float32 value = static_cast<float32>(DecodeFloat(floats + offset));
+        offset += sizeof(float32);
+        return value;
+    };
+    outRecord.Reflectance = {read(), read(), read()};
+    for (float32& value : outRecord.Scattering.Eta)
+    {
+        value = read();
+    }
+    for (float32& value : outRecord.Scattering.K)
+    {
+        value = read();
+    }
+    outRecord.Scattering.AlphaU = read();
+    outRecord.Scattering.AlphaV = read();
+    outRecord.Scattering.CoatingEta = read();
+    outRecord.Scattering.CoatingThickness = read();
+    if (format::IsMaterialScatteringValid(outRecord.Scattering) == false ||
+        math::IsFinite(outRecord.Reflectance) == false || outRecord.Reflectance.X < 0 || outRecord.Reflectance.X > 1 ||
+        outRecord.Reflectance.Y < 0 || outRecord.Reflectance.Y > 1 || outRecord.Reflectance.Z < 0 ||
+        outRecord.Reflectance.Z > 1)
+    {
+        return inoutFailure.FailInvalid("invalid source material parameters");
+    }
+    return true;
+}
+JsonIndex AddSourceMaterial(JsonTree& inoutTree, const SourceMaterialRecord& record) noexcept
+{
+    const JsonIndex result = inoutTree.AddObject();
+    inoutTree.SetMember(result, "identity", inoutTree.AddInteger(record.Identity));
+    inoutTree.SetMember(result, "name", inoutTree.AddString(record.Name));
+    inoutTree.SetMember(result, "model", inoutTree.AddInteger(static_cast<uint32>(record.Scattering.Model)));
+    const JsonIndex reflectance = inoutTree.AddArray();
+    for (const float32 value : {record.Reflectance.X, record.Reflectance.Y, record.Reflectance.Z})
+    {
+        inoutTree.Append(reflectance, inoutTree.AddFloat(static_cast<float64>(value)));
+    }
+    inoutTree.SetMember(result, "reflectance", reflectance);
+    const JsonIndex eta = inoutTree.AddArray();
+    const JsonIndex extinction = inoutTree.AddArray();
+    for (const float32 value : record.Scattering.Eta)
+    {
+        inoutTree.Append(eta, inoutTree.AddFloat(static_cast<float64>(value)));
+    }
+    for (const float32 value : record.Scattering.K)
+    {
+        inoutTree.Append(extinction, inoutTree.AddFloat(static_cast<float64>(value)));
+    }
+    inoutTree.SetMember(result, "eta", eta);
+    inoutTree.SetMember(result, "k", extinction);
+    inoutTree.SetMember(result, "alpha_u", inoutTree.AddFloat(static_cast<float64>(record.Scattering.AlphaU)));
+    inoutTree.SetMember(result, "alpha_v", inoutTree.AddFloat(static_cast<float64>(record.Scattering.AlphaV)));
+    inoutTree.SetMember(result, "coating_eta", inoutTree.AddFloat(static_cast<float64>(record.Scattering.CoatingEta)));
+    inoutTree.SetMember(result,
+                        "coating_thickness",
+                        inoutTree.AddFloat(static_cast<float64>(record.Scattering.CoatingThickness)));
+    return result;
+}
+[[nodiscard]] bool ReadSourceMaterial(const JsonTree& tree,
+                                      JsonIndex source,
+                                      SourceMaterialRecord& outRecord,
+                                      Failure& inoutFailure) noexcept
+{
+    static constexpr std::string_view KEYS[] = {"identity",
+                                                "name",
+                                                "model",
+                                                "reflectance",
+                                                "eta",
+                                                "k",
+                                                "alpha_u",
+                                                "alpha_v",
+                                                "coating_eta",
+                                                "coating_thickness"};
+    if (tree.HasExactKeys(source, KEYS) == false)
+    {
+        return inoutFailure.FailInvalid("invalid source material fields");
+    }
+    const JsonNode& identity = tree.GetNode(tree.GetMember(source, "identity"));
+    const JsonNode& model = tree.GetNode(tree.GetMember(source, "model"));
+    const JsonIndex name = tree.GetMember(source, "name");
+    if (identity.Kind != JsonKind::Integer || identity.Integer < 0 ||
+        identity.Integer > static_cast<int64>(~uint32{0}) || model.Kind != JsonKind::Integer || model.Integer < 0 ||
+        model.Integer > static_cast<int64>(format::MaterialModel::CoatedDiffuse) ||
+        tree.GetKind(name) != JsonKind::String || tree.GetText(name).size() > format::MAX_MATERIAL_NAME_BYTES)
+    {
+        return inoutFailure.FailInvalid("invalid source material identity or model");
+    }
+    outRecord.Identity = static_cast<uint32>(identity.Integer);
+    outRecord.Name = tree.GetText(name);
+    outRecord.Scattering.Model = static_cast<format::MaterialModel>(model.Integer);
+    for (const std::string_view key : {"reflectance", "eta", "k"})
+    {
+        const JsonIndex values = tree.GetMember(source, key);
+        if (AreAuthoredNumbers(tree, values, format::MATERIAL_RGB_CHANNELS) == false)
+        {
+            return inoutFailure.FailInvalid("invalid source material RGB parameters");
+        }
+        for (usize channel = 0; channel < format::MATERIAL_RGB_CHANNELS; ++channel)
+        {
+            const float32 value = static_cast<float32>(GetNumberItem(tree, values, channel).ToFloat());
+            if (key == "eta")
+            {
+                outRecord.Scattering.Eta[channel] = value;
+            }
+            else if (key == "k")
+            {
+                outRecord.Scattering.K[channel] = value;
+            }
+            else if (channel == 0)
+            {
+                outRecord.Reflectance.X = value;
+            }
+            else if (channel == 1)
+            {
+                outRecord.Reflectance.Y = value;
+            }
+            else
+            {
+                outRecord.Reflectance.Z = value;
+            }
+        }
+    }
+    const auto readScalar = [&tree, source](std::string_view key, float32& outValue) noexcept {
+        PythonNumber number;
+        if (IsAuthoredNumber(tree, tree.GetMember(source, key), number) == false)
+        {
+            return false;
+        }
+        outValue = static_cast<float32>(number.ToFloat());
+        return true;
+    };
+    if (readScalar("alpha_u", outRecord.Scattering.AlphaU) == false ||
+        readScalar("alpha_v", outRecord.Scattering.AlphaV) == false ||
+        readScalar("coating_eta", outRecord.Scattering.CoatingEta) == false ||
+        readScalar("coating_thickness", outRecord.Scattering.CoatingThickness) == false ||
+        format::IsMaterialScatteringValid(outRecord.Scattering) == false ||
+        math::IsFinite(outRecord.Reflectance) == false || outRecord.Reflectance.X < 0 || outRecord.Reflectance.X > 1 ||
+        outRecord.Reflectance.Y < 0 || outRecord.Reflectance.Y > 1 || outRecord.Reflectance.Z < 0 ||
+        outRecord.Reflectance.Z > 1)
+    {
+        return inoutFailure.FailInvalid("invalid source material optical parameters");
+    }
+    return true;
+}
+void AppendSourceMaterial(ByteWriter& inoutWriter, const SourceMaterialRecord& record) noexcept
+{
+    inoutWriter.AppendUint32(record.Identity);
+    inoutWriter.AppendUint32(static_cast<uint32>(record.Name.size()));
+    inoutWriter.Append(record.Name);
+    for (usize byte = record.Name.size(); byte < format::MAX_MATERIAL_NAME_BYTES; ++byte)
+    {
+        inoutWriter.Append(char{0});
+    }
+    inoutWriter.AppendUint32(static_cast<uint32>(record.Scattering.Model));
+    for (const float32 value : {record.Reflectance.X, record.Reflectance.Y, record.Reflectance.Z})
+    {
+        inoutWriter.AppendFloat32(static_cast<float64>(value));
+    }
+    for (const float32 value : record.Scattering.Eta)
+    {
+        inoutWriter.AppendFloat32(static_cast<float64>(value));
+    }
+    for (const float32 value : record.Scattering.K)
+    {
+        inoutWriter.AppendFloat32(static_cast<float64>(value));
+    }
+    inoutWriter.AppendFloat32(static_cast<float64>(record.Scattering.AlphaU));
+    inoutWriter.AppendFloat32(static_cast<float64>(record.Scattering.AlphaV));
+    inoutWriter.AppendFloat32(static_cast<float64>(record.Scattering.CoatingEta));
+    inoutWriter.AppendFloat32(static_cast<float64>(record.Scattering.CoatingThickness));
+}
 struct BundleMaterial final
 {
     std::span<const uint8> Bytes;
@@ -1523,6 +1736,16 @@ struct BundleParts final
                 {
                     return inoutFailure.FailInvalid("Invalid cooked material maps");
                 }
+            }
+        }
+        if (version >= format::VERSION_7)
+        {
+            std::span<const uint8> extension;
+            SourceMaterialRecord source;
+            if (inoutReader.Take(format::MATERIAL_EXTENSION_V7_BYTES, extension, inoutFailure) == false ||
+                DecodeSourceMaterial({extension.data(), extension.size()}, source, inoutFailure) == false)
+            {
+                return false;
             }
         }
         BundleMaterial material;
@@ -1936,13 +2159,37 @@ void ComposeWorld(const JsonTree& tree, JsonIndex objects, JsonIndex item, Trans
     const bool hasLighting = tree.GetMember(root, "emission_flags") != NO_JSON_NODE;
     const bool hasAlpha = tree.GetMember(root, "alpha_mode") != NO_JSON_NODE;
     const bool hasSurfaceMaps = tree.GetMember(root, "surface_texture") != NO_JSON_NODE;
-    const bool hasExactKeys = hasSurfaceMaps == true ? tree.HasExactKeys(root, SURFACE_KEYS)
-                              : hasAlpha == true     ? tree.HasExactKeys(root, ALPHA_KEYS)
-                              : hasLighting == true  ? tree.HasExactKeys(root, LIGHTING_KEYS)
-                                                     : tree.HasExactKeys(root, KEYS);
+    static constexpr std::string_view SOURCE_KEYS[] = {"texture",
+                                                       "metallic",
+                                                       "roughness",
+                                                       "emission",
+                                                       "address",
+                                                       "emission_flags",
+                                                       "area_source_id",
+                                                       "emission_power",
+                                                       "alpha_mode",
+                                                       "alpha_cutoff",
+                                                       "surface_texture",
+                                                       "emission_texture",
+                                                       "normal_scale",
+                                                       "source_material"};
+    const bool hasSourceMaterial = tree.GetMember(root, "source_material") != NO_JSON_NODE;
+    const bool hasExactKeys = hasSourceMaterial == true ? tree.HasExactKeys(root, SOURCE_KEYS)
+                              : hasSurfaceMaps == true  ? tree.HasExactKeys(root, SURFACE_KEYS)
+                              : hasAlpha == true        ? tree.HasExactKeys(root, ALPHA_KEYS)
+                              : hasLighting == true     ? tree.HasExactKeys(root, LIGHTING_KEYS)
+                                                        : tree.HasExactKeys(root, KEYS);
     if (hasExactKeys == false)
     {
         return inoutFailure.FailInvalid("Invalid cooked material fields");
+    }
+    if (hasSourceMaterial == true)
+    {
+        SourceMaterialRecord source;
+        if (ReadSourceMaterial(tree, tree.GetMember(root, "source_material"), source, inoutFailure) == false)
+        {
+            return false;
+        }
     }
     if (hasAlpha == true)
     {
@@ -2375,7 +2622,13 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
     }
     // Version 6 assembles tangent-framed mesh parts or materials with surface/emission
     // maps; older mesh parts then gain absent (zero) tangents.
-    bool isVersion6 = false;
+    bool isVersion7 = false;
+    for (const Document& description : descriptions)
+    {
+        isVersion7 =
+            isVersion7 == true || description.Tree.GetMember(description.Root, "source_material") != NO_JSON_NODE;
+    }
+    bool isVersion6 = isVersion7;
     for (const std::string_view identity : meshes)
     {
         isVersion6 = isVersion6 == true || GetPartLayout(closure, identity) == PartLayout::Tangents;
@@ -2431,7 +2684,9 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
     }
     uint64 bundleBytes =
         sizeof(format::Header) +
-        materials.GetSize() * (isVersion6 == true   ? sizeof(format::MaterialRecordV6)
+        materials.GetSize() * (isVersion7 == true
+                                   ? sizeof(format::MaterialRecordV6) + format::MATERIAL_EXTENSION_V7_BYTES
+                               : isVersion6 == true ? sizeof(format::MaterialRecordV6)
                                : isVersion5 == true ? sizeof(format::MaterialRecordV5)
                                : isVersion3 == true ? sizeof(format::MaterialRecordV3)
                                                     : sizeof(format::MaterialRecordV2)) +
@@ -2494,7 +2749,8 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
     }
     ByteWriter writer(outBundle);
     writer.Append(format::MAGIC);
-    const uint32 version = isVersion6 == true   ? format::VERSION_6
+    const uint32 version = isVersion7 == true   ? format::VERSION_7
+                           : isVersion6 == true ? format::VERSION_6
                            : isVersion5 == true ? format::VERSION_5
                            : isVersion4 == true ? format::VERSION_4
                            : isVersion3 == true ? format::VERSION_3
@@ -2594,6 +2850,23 @@ AssembleLighting(std::string_view root, const Document& closure, Array<uint8>& o
             {
                 writer.AppendUint32(0);
             }
+        }
+        if (isVersion7 == true)
+        {
+            SourceMaterialRecord source;
+            const JsonIndex sourceNode = tree.GetMember(description.Root, "source_material");
+            if (sourceNode != NO_JSON_NODE)
+            {
+                if (ReadSourceMaterial(tree, sourceNode, source, inoutFailure) == false)
+                {
+                    return false;
+                }
+            }
+            else if (texture.empty() == true)
+            {
+                source.Reflectance = {};
+            }
+            AppendSourceMaterial(writer, source);
         }
     }
     for (const std::string_view identity : meshes)
@@ -3182,7 +3455,8 @@ struct PreparedImport final
 {
     // Version 1 records (24 bytes) imply the sampler address; version 2 records
     // (pbrt-best-effort-v1) carry it explicitly after the texture index.
-    const bool isVersion6 = material.Bytes.size() == MATERIAL_RECORD_V6_BYTES;
+    const bool isVersion7 = material.Bytes.size() == MATERIAL_RECORD_V6_BYTES + format::MATERIAL_EXTENSION_V7_BYTES;
+    const bool isVersion6 = material.Bytes.size() == MATERIAL_RECORD_V6_BYTES || isVersion7 == true;
     const bool isVersion5 = material.Bytes.size() == MATERIAL_RECORD_V5_BYTES || isVersion6 == true;
     const bool isVersion3 = material.Bytes.size() == MATERIAL_RECORD_V3_BYTES || isVersion5 == true;
     const bool isVersion2 = material.Bytes.size() == MATERIAL_RECORD_V2_BYTES || isVersion3 == true;
@@ -3238,6 +3512,18 @@ struct PreparedImport final
             root,
             "normal_scale",
             tree.AddFloat(DecodeFloat(material.Bytes.data() + offsetof(format::MaterialRecordV6, NormalScale))));
+    }
+    if (isVersion7 == true)
+    {
+        SourceMaterialRecord source;
+        if (DecodeSourceMaterial(
+                {material.Bytes.data() + MATERIAL_RECORD_V6_BYTES, material.Bytes.size() - MATERIAL_RECORD_V6_BYTES},
+                source,
+                inoutFailure) == false)
+        {
+            return false;
+        }
+        tree.SetMember(root, "source_material", AddSourceMaterial(tree, source));
     }
     return WriteCanonical(tree, root, outBytes, inoutFailure);
 }
@@ -3296,7 +3582,46 @@ struct StoredParts final
         {
             return false;
         }
-        if (MakeLogicalId(space, "material", i, identity) == false)
+        bool hasSourceIdentity = false;
+        if (parts.Materials[i].Bytes.size() == MATERIAL_RECORD_V6_BYTES + format::MATERIAL_EXTENSION_V7_BYTES)
+        {
+            SourceMaterialRecord source;
+            if (DecodeSourceMaterial({parts.Materials[i].Bytes.data() + MATERIAL_RECORD_V6_BYTES,
+                                      parts.Materials[i].Bytes.size() - MATERIAL_RECORD_V6_BYTES},
+                                     source,
+                                     inoutFailure) == false)
+            {
+                return false;
+            }
+            Array<uint8> name;
+            ByteWriter writer(name);
+            writer.Append(source.Name.empty() == false ? "material/named/" : "material/inline/");
+            if (source.Name.empty() == false)
+            {
+                writer.Append(source.Name);
+            }
+            else
+            {
+                AppendInteger(writer, source.Identity);
+            }
+            const uint8* emitterBytes =
+                parts.Materials[i].Bytes.data() + offsetof(format::MaterialRecordV6, AreaSourceId);
+            const uint64 emitterIdentity =
+                uint64{DecodeUint32(emitterBytes)} | (uint64{DecodeUint32(emitterBytes + sizeof(uint32))} << 32);
+            if (emitterIdentity != 0)
+            {
+                writer.Append("/emitter/");
+                AppendInteger(writer, static_cast<int64>(emitterIdentity));
+            }
+            Uuid value;
+            if (writer.IsOk() == false || MakeNameUuid(space, GetView(name), value) == false ||
+                FormatUuid(value, "material/", identity) == false)
+            {
+                return inoutFailure.FailOutOfMemory();
+            }
+            hasSourceIdentity = true;
+        }
+        if (hasSourceIdentity == false && MakeLogicalId(space, "material", i, identity) == false)
         {
             return inoutFailure.FailOutOfMemory();
         }
@@ -3329,7 +3654,63 @@ struct StoredParts final
     for (usize i = 0; i < parts.Meshes.GetSize(); ++i)
     {
         String identity;
-        if (MakeLogicalId(space, "mesh", i, identity) == false)
+        const bool hasTypedSourceGroups =
+            build.Tree.IsString(build.Tree.GetMember(build.Root, "importer"), MATERIAL_PROFILE);
+        if (hasTypedSourceGroups == true)
+        {
+            // The source-preserving profile owns one room mesh per source material,
+            // followed by its shared rectangle and disk. Names keep room resources
+            // stable when source definitions are reordered or another material is added.
+            constexpr usize SHARED_EMITTER_MESHES = 2;
+            Array<uint8> name;
+            ByteWriter writer(name);
+            if (i + SHARED_EMITTER_MESHES >= parts.Meshes.GetSize())
+            {
+                writer.Append(i + 1 == parts.Meshes.GetSize() ? "mesh/shared-disk" : "mesh/shared-rectangle");
+            }
+            else
+            {
+                bool hasMaterial = false;
+                for (const BundleObject& object : parts.Objects)
+                {
+                    if (object.Mesh != i)
+                    {
+                        continue;
+                    }
+                    SourceMaterialRecord source;
+                    const BundleMaterial& material = parts.Materials[object.Material];
+                    if (DecodeSourceMaterial({material.Bytes.data() + MATERIAL_RECORD_V6_BYTES,
+                                              material.Bytes.size() - MATERIAL_RECORD_V6_BYTES},
+                                             source,
+                                             inoutFailure) == false)
+                    {
+                        return false;
+                    }
+                    writer.Append(source.Name.empty() == false ? "mesh/material/named/" : "mesh/material/inline/");
+                    if (source.Name.empty() == false)
+                    {
+                        writer.Append(source.Name);
+                    }
+                    else
+                    {
+                        AppendInteger(writer, source.Identity);
+                    }
+                    hasMaterial = true;
+                    break;
+                }
+                if (hasMaterial == false)
+                {
+                    return inoutFailure.FailInvalid("typed room mesh has no source material");
+                }
+            }
+            Uuid value;
+            if (writer.IsOk() == false || MakeNameUuid(space, GetView(name), value) == false ||
+                FormatUuid(value, "mesh/", identity) == false)
+            {
+                return inoutFailure.FailOutOfMemory();
+            }
+        }
+        else if (MakeLogicalId(space, "mesh", i, identity) == false)
         {
             return inoutFailure.FailOutOfMemory();
         }
@@ -3633,9 +4014,15 @@ struct RoutedCook final
         CookError cookError;
         const bool isCooked = options.CookOrNull != nullptr
                                   ? options.CookOrNull(source, outCook.Cooked, cookError, options.CancelOrNull)
+                              : options.ShouldPreserveReferenceMaterials == true
+                                  ? CookMaterials(source, outCook.Cooked, cookError, options.CancelOrNull)
                                   : Cook(source, outCook.Cooked, cookError, options.CancelOrNull);
         if (isCooked == true)
         {
+            if (options.CookOrNull == nullptr && options.ShouldPreserveReferenceMaterials == true)
+            {
+                outCook.Profile = MATERIAL_PROFILE;
+            }
             return true;
         }
         // Only a profile rejection of scene-v4.pbrt falls back; cancellation, I/O
@@ -3740,7 +4127,7 @@ ComputeSourceDigest(const JsonTree& manifest, JsonIndex root, HexDigest& outHex,
     buildTree.SetMember(build.Root, "schema", buildTree.AddInteger(1));
     buildTree.SetMember(build.Root,
                         "target",
-                        buildTree.AddString(parts.Version == format::VERSION_6   ? SURFACE_MAP_BUILD_TARGET
+                        buildTree.AddString(parts.Version >= format::VERSION_6   ? SURFACE_MAP_BUILD_TARGET
                                             : parts.Version == format::VERSION_5 ? IMPORT_PROFILE_BUILD_TARGET
                                             : parts.Version == format::VERSION_4 ? INDEXED_LIGHTING_BUILD_TARGET
                                             : parts.Version == format::VERSION_3 ? LIGHTING_BUILD_TARGET

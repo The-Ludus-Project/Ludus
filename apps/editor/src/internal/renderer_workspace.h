@@ -117,6 +117,16 @@ public:
     /// Create/select an empty configuration in the selected graph file. One undo step;
     /// Save publishes it. Invalid/duplicate names or external source conflicts preserve the draft.
     [[nodiscard]] bool CreateConfiguration(const QString& name);
+    /// Copy the selected configuration, with its interface, nodes, edges and layout, as name in
+    /// the same graph file and select the copy. One undo step; Save publishes. Invalid or
+    /// duplicate names, a full file or external source conflicts preserve the draft and report
+    /// the repair in the status line. GUI thread only.
+    [[nodiscard]] bool DuplicateSelectedConfiguration(const QString& name);
+    /// Copy the selected graph file, with every configuration, as a new `<name>.lurender.json`
+    /// in this package and open its default configuration. Quick Add then lists it for Subgraph
+    /// nodes. One undo step; Save publishes. Name or file conflicts, package limits or external
+    /// source conflicts preserve the draft and report the repair. GUI thread only.
+    [[nodiscard]] bool DuplicateSelectedGraph(const QString& name);
     /// Add or fill an empty reusable ReSTIR DI configuration in the selected graph file.
     /// Includes settings, shaders and automatically sized reservoirs in one undoable draft;
     /// Save publishes. Failures preserve sources and display a repair. GUI thread only.
@@ -433,6 +443,8 @@ private:
     void syncTreeSelection();
     void syncCanvasSelection(const QStringList& nodes);
     void promptCreateConfiguration();
+    void promptDuplicateConfiguration();
+    void promptDuplicateGraph();
     void promptConfigurationTemplate(const QString& templateIdentity = {});
     /// Add one catalog node to the canvas configuration, optionally at a layout position.
     /// With from and input, the node's input is connected from `from` in the same edit, and

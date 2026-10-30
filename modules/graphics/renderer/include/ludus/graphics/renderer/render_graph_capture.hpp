@@ -20,6 +20,27 @@ namespace ludus::graphics::renderer
 inline constexpr foundation::uint32 MIN_RENDER_GRAPH_CAPTURE_SAMPLES = 1;
 /// Default capture target, in samples per pixel; enough to judge an estimator, not to remove its noise.
 inline constexpr foundation::uint32 DEFAULT_RENDER_GRAPH_CAPTURE_SAMPLES = 64;
+/// Largest shadow-query budget a capture profile links, per pixel and sample; mirrors
+/// MAX_CAPTURE_VISIBILITY_QUERIES in scripts/python/ludus_tools/render_graph_ray.py.
+inline constexpr foundation::uint32 MAX_RENDER_GRAPH_CAPTURE_VISIBILITY_QUERIES = 256;
+/// Estimated GPU nanoseconds of one query per pixel: the shadow-query cost measured on an Apple M5 in the
+/// capture budget decision of docs/architecture/render-graph-frame-capture.md.
+inline constexpr foundation::uint32 RENDER_GRAPH_CAPTURE_QUERY_NANOSECONDS = 8;
+/// Shadow queries charged per light: a two-technique MIS estimator tests each light twice.
+inline constexpr foundation::uint32 RENDER_GRAPH_CAPTURE_QUERIES_PER_LIGHT = 2;
+/// Estimated GPU time each band of a capture targets: a quarter second, eight times below the two-second
+/// Windows TDR default, which also leaves a margin for GPUs slower than the measured one.
+inline constexpr foundation::uint64 RENDER_GRAPH_CAPTURE_TILE_NANOSECONDS = 250'000'000;
+
+/// Choose the bands per sample (RenderGraph::SetRayTileCount) that keep each band of a capture under
+/// RENDER_GRAPH_CAPTURE_TILE_NANOSECONDS. Each pixel is charged one camera query plus
+/// RENDER_GRAPH_CAPTURE_QUERIES_PER_LIGHT shadow queries per light, at most
+/// MAX_RENDER_GRAPH_CAPTURE_VISIBILITY_QUERIES, since a kernel cannot exceed its linked budget, each at
+/// RENDER_GRAPH_CAPTURE_QUERY_NANOSECONDS. The model is linear in lights, as the polygonal-light estimators
+/// are, so it overestimates estimators that sample a fixed number of lights.
+/// @param workload Pixels and lights of one sample, from RenderGraph::GetRayWorkload.
+/// @return From one to MAX_RENDER_GRAPH_RAY_TILES; MAX_RENDER_GRAPH_RAY_TILES when the estimate needs more.
+[[nodiscard]] foundation::uint32 ComputeRenderGraphCaptureTileCount(const RenderGraphRayWorkload& workload) noexcept;
 
 /// Opaque identity bytes recorded in a capture file, normally a SHA-256 digest.
 using RenderGraphCaptureIdentity =
@@ -35,6 +56,10 @@ struct RenderGraphCaptureSettings final
     /// Samples between progress read-backs, after the first sample and then every interval; zero reads back only
     /// at the end. Each progress read-back pauses rendering until it completes, then GetPixels shows it.
     foundation::uint32 PreviewInterval = 0;
+    /// Bands per sample, from one to MAX_RENDER_GRAPH_RAY_TILES, each rendered by its own submission; zero
+    /// chooses ComputeRenderGraphCaptureTileCount of the scene's workload. More than one band needs
+    /// RenderGraphPrograms::HasRayTiles.
+    foundation::uint32 TileCount = 0;
     /// Identity of the runtime package, recorded in the file; zero when unknown.
     RenderGraphCaptureIdentity PackageIdentity{};
     /// Identity of the caller's scene inputs, recorded in the file; zero when unknown.
@@ -66,6 +91,9 @@ enum class RenderGraphCaptureProblem : foundation::uint8
     GraphFailure,    ///< The private graph rejected initialization, the scene or a frame; see GetStatus.
     ReadbackFailure, ///< Copying the accumulation to the CPU failed; see GetStatus.
     LatchedPixels,   ///< Some pixels latched a shader failure (the graph's failure colour).
+    /// The sample needs more than one band, but the package's ray kernels predate tiled dispatch (package
+    /// version 28); recook the graph.
+    UntiledPackage,
 };
 
 /// Progress and provenance of one capture.
@@ -76,13 +104,16 @@ struct RenderGraphCaptureInfo final
     foundation::uint32 Height = 0;                                              ///< Captured image height in pixels.
     foundation::uint32 Output = content::render_graph_format::ABSENT;           ///< Captured logical resource.
     foundation::uint32 AccumulationPass = content::render_graph_format::ABSENT; ///< Plan pass whose mean is read.
-    foundation::uint32 AuthoredLimit = 0;    ///< Accumulate limit authored on that pass.
-    foundation::uint32 TargetSamples = 0;    ///< Requested samples per pixel.
-    foundation::uint32 SubmittedSamples = 0; ///< Frames submitted so far; each adds one sample per live pixel.
-    foundation::uint32 FailedPixels = 0;     ///< Pixels with a latched shader failure, known after read-back.
-    foundation::uint32 MinimumSamples = 0;   ///< Smallest committed count across pixels, known after read-back.
-    foundation::uint32 ReadbackSamples = 0;  ///< Submitted samples covered by the pixels last read back.
-    foundation::uint64 SceneRevision = 0;    ///< Revision submitted with the scene; it also seeds sampling.
+    foundation::uint32 AuthoredLimit = 0; ///< Accumulate limit authored on that pass.
+    foundation::uint32 TargetSamples = 0; ///< Requested samples per pixel.
+    /// Samples submitted for every pixel so far: frames, or complete rounds of bands.
+    foundation::uint32 SubmittedSamples = 0;
+    /// Bands per sample, each submitted alone; zero until the scene is ready.
+    foundation::uint32 TileCount = 0;
+    foundation::uint32 FailedPixels = 0;    ///< Pixels with a latched shader failure, known after read-back.
+    foundation::uint32 MinimumSamples = 0;  ///< Smallest committed count across pixels, known after read-back.
+    foundation::uint32 ReadbackSamples = 0; ///< Submitted samples covered by the pixels last read back.
+    foundation::uint64 SceneRevision = 0;   ///< Revision submitted with the scene; it also seeds sampling.
 };
 
 /// One captured pixel: the Accumulate's linear mean radiance and its committed sample count.

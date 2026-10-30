@@ -11,8 +11,13 @@ constexpr usize RAY_TRIANGLE_CORNER_COUNT = 3;
 constexpr usize RAY_OPACITY_WORD_SCALARS = 4;
 constexpr usize RAY_TRIANGLE_UV_SCALARS = RAY_TRIANGLE_CORNER_COUNT * 2;
 constexpr usize RAY_TRIANGLE_UV_PADDED_SCALARS = 8;
-/// Opacity-table offsets are encoded as float32; preserve exact integer addressing.
-constexpr usize MAX_RAY_OPACITY_SCALARS = 1U << 24;
+/// UV offsets count float4 words; alpha scalar offsets are aligned to four scalars.
+/// Both stay exact in float32 through 2^24 words, or 2^26 aligned scalars.
+constexpr usize MAX_RAY_OPACITY_WORDS = 1U << 24;
+constexpr usize MAX_RAY_OPACITY_SCALARS = MAX_RAY_OPACITY_WORDS * RAY_OPACITY_WORD_SCALARS;
+static_assert(RAY_TRIANGLE_UV_PADDED_SCALARS % RAY_OPACITY_WORD_SCALARS == 0);
+static_assert(static_cast<usize>(static_cast<float32>(MAX_RAY_OPACITY_SCALARS - RAY_OPACITY_WORD_SCALARS)) ==
+              MAX_RAY_OPACITY_SCALARS - RAY_OPACITY_WORD_SCALARS);
 /// Ray visibility masks use the low eight bits.
 constexpr uint32 MAX_RAY_INSTANCE_MASK = 255;
 float32 RayScalar(const void* data, usize index) noexcept
@@ -270,6 +275,8 @@ CreateRayScene(DeviceHandle device, const RaySceneDescription& description, RayS
     const usize maxScalars = availableScalars < MAX_RAY_OPACITY_SCALARS ? availableScalars : MAX_RAY_OPACITY_SCALARS;
     constexpr usize EMPTY_SCENE_OPACITY_SCALARS = 4;
     constexpr usize INSTANCE_OPACITY_SCALARS = 12;
+    static_assert(EMPTY_SCENE_OPACITY_SCALARS % RAY_OPACITY_WORD_SCALARS == 0);
+    static_assert(INSTANCE_OPACITY_SCALARS % RAY_OPACITY_WORD_SCALARS == 0);
     if ((description.Count == 0 ? EMPTY_SCENE_OPACITY_SCALARS : description.Count * INSTANCE_OPACITY_SCALARS) >
         maxScalars)
     {

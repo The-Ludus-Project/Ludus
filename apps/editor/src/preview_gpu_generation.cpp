@@ -511,6 +511,7 @@ bool PreviewGpuGeneration::prepareAssets(QString& outError) noexcept
             surface.Repeat == true ? rhi::RasterAddress::Repeat : rhi::RasterAddress::Clamp;
         lit.Metallic = surface.Metallic;
         lit.Roughness = surface.Roughness;
+        lit.Scattering = surface.Scattering;
         lit.Emission = surface.Emission;
         renderer::DirectLight previewLight;
         if (Shading == PreviewShading::Solid)
@@ -521,6 +522,7 @@ bool PreviewGpuGeneration::prepareAssets(QString& outError) noexcept
             previewLight.Direction = {.4F, -.8F, -.5F};
             lit.Lights = &previewLight;
             lit.LightCount = 1;
+            lit.Scattering = {};
             lit.Metallic = 0;
             lit.Roughness = 1;
             lit.Emission = {};
@@ -654,6 +656,7 @@ rhi::RasterStatus PreviewGpuGeneration::CreateLightingMaterial(usize objectIndex
         surface.ShouldRepeatTexture == true ? rhi::RasterAddress::Repeat : rhi::RasterAddress::Clamp;
     material.Metallic = surface.Metallic;
     material.Roughness = surface.Roughness;
+    material.Scattering = surface.Scattering;
     material.Emission = surface.Emission;
     material.IsEmissionTwoSided = surface.IsEmissionTwoSided;
     // Cooked v6 maps share the base texture's coordinates and sampler.

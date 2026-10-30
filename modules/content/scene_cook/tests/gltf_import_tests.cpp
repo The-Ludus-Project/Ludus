@@ -524,8 +524,8 @@ TEST_CASE("glTF preserves complete geometry beyond both former count ceilings", 
     constexpr usize INDEX_BYTES = INDEX_COUNT * sizeof(uint32);
     ludus::foundation::Array<uint8> bytes;
     REQUIRE(bytes.TryResize(ATTRIBUTE_BYTES + INDEX_BYTES) == true);
-    // Repeated triangles with distinct vertex identities. Authored normals keep
-    // vertices shared across the three repetitions of the complete index list.
+    // Triangles in distinct parallel planes cannot be compacted into one triangle.
+    // Authored normals keep vertices shared across repetitions of the index list.
     const auto writeFloat = [&bytes](usize offset, float32 value) {
         uint32 bits = 0;
         std::memcpy(&bits, &value, sizeof(bits));
@@ -537,9 +537,10 @@ TEST_CASE("glTF preserves complete geometry beyond both former count ceilings", 
     };
     for (usize vertex = 0; vertex < VERTEX_COUNT; ++vertex)
     {
+        const usize triangleIndex = vertex / 3;
         writeFloat(vertex * VECTOR_BYTES, vertex % 3 == 1 ? 1.0F : 0.0F);
         writeFloat(vertex * VECTOR_BYTES + sizeof(float32), vertex % 3 == 2 ? 1.0F : 0.0F);
-        writeFloat(vertex * VECTOR_BYTES + 2 * sizeof(float32), 0.0F);
+        writeFloat(vertex * VECTOR_BYTES + 2 * sizeof(float32), static_cast<float32>(triangleIndex));
         writeFloat(POSITION_BYTES + vertex * VECTOR_BYTES, 0.0F);
         writeFloat(POSITION_BYTES + vertex * VECTOR_BYTES + sizeof(float32), 0.0F);
         writeFloat(POSITION_BYTES + vertex * VECTOR_BYTES + 2 * sizeof(float32), 1.0F);

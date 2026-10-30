@@ -10,7 +10,9 @@
 #include "internal/code_editor.h"
 #include "internal/code_editor_panel.h"
 #include "internal/code_formatter.h"
+#include "internal/error_list.h"
 #include "internal/item_selection.h"
+#include "internal/path_text.h"
 #include "internal/render_graph_comments.h"
 #include "internal/render_graph_diagnostics.h"
 #include "internal/render_graph_execution_plan.h"
@@ -504,6 +506,25 @@ QString DescribeLocation(const QJsonObject& location)
     return parts.join(QLatin1Char(' '));
 }
 
+/// "1 error" or "2 errors, 1 warning": the Error List's rows for a failed job, so the count
+/// matches what the list shows.
+QString DescribeProblemCount(const RenderGraphJobResult& result)
+{
+    int32 errorCount = 0;
+    int32 warningCount = 0;
+    for (const ErrorListEntry& entry : MakeRenderGraphErrorEntries(result))
+    {
+        errorCount += entry.Severity == ErrorListSeverity::Error ? 1 : 0;
+        warningCount += entry.Severity == ErrorListSeverity::Warning ? 1 : 0;
+    }
+    QString text = errorCount == 1 ? QStringLiteral("1 error") : QStringLiteral("%1 errors").arg(errorCount);
+    if (warningCount > 0)
+    {
+        text += warningCount == 1 ? QStringLiteral(", 1 warning") : QStringLiteral(", %1 warnings").arg(warningCount);
+    }
+    return text;
+}
+
 QString DescribePackageOutsideProject()
 {
     return QStringLiteral("The render graph's package lies outside the project folder, so it has no build tree there.");
@@ -531,7 +552,7 @@ QString DescribeSceneComputeConversion()
 
 RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* parentOrNull)
     : QWidget(parentOrNull), mTooling(tooling), mSourceDocument(mDocument),
-      mPath(new QLabel(QStringLiteral("No render graph is open."), this)), mContent(new QStackedWidget(this)),
+      mPath(new PathLabel(QStringLiteral("No render graph is open."), this)), mContent(new QStackedWidget(this)),
       mEmptyMessage(new QLabel(this)), mCreateFirst(new QPushButton(QStringLiteral("Create Render Graph..."), this)),
       mConfiguration(new QComboBox(this)), mTree(new QTreeWidget(this)), mNavigation(new QWidget(this)),
       mStatusPanel(new QScrollArea(this)), mSourcesToggle(new QPushButton(QStringLiteral("Outline"), this)),
@@ -592,6 +613,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mTree->setObjectName(QStringLiteral("renderGraphTree"));
     ConfigureItemSelection(*mTree);
     mTree->setHeaderLabel(QStringLiteral("Outline"));
+    mTree->setItemDelegate(new PathItemDelegate(mTree));
     mTree->setContextMenuPolicy(Qt::CustomContextMenu);
 
     // Inspector: fields of the selected node, its layout position, node creation and the
@@ -689,6 +711,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     QWidget* sourcePage = new QWidget(this);
     QVBoxLayout* sourceLayout = new QVBoxLayout(sourcePage);
     mSourceFile->setObjectName(QStringLiteral("renderGraphSourceFile"));
+    mSourceFile->setItemDelegate(new PathItemDelegate(mSourceFile));
     mSource->setObjectName(QStringLiteral("renderGraphSource"));
     mSource->setAccessibleName(QStringLiteral("Shader and render graph source"));
     mSourceFocusToggle = new QPushButton(QStringLiteral("Focus Source"), sourcePage);
@@ -2451,14 +2474,19 @@ void RendererWorkspace::AcceptResult(const RenderGraphJobResult& result)
     renderStatus();
     if (result.IsSuccessful == false)
     {
-        // The Error List shows every row; the status line names the first.
-        mStatus->setText(
-            QStringLiteral("%1 failed - %2: %3 [%4]. Preview unchanged.")
-                .arg(result.Request.Action, result.Code, result.Message, DescribeLocation(result.Location)));
+        // The Error List has the text of every problem; this line only says how many and where to look.
+        mStatus->setText(QStringLiteral("%1 failed - %2: %3, listed in the Error List [%4]. Preview unchanged.")
+                             .arg(result.Request.Action,
+                                  result.Code,
+                                  DescribeProblemCount(result),
+                                  DescribeLocation(result.Location)));
         if (result.Request.ShouldPreview == true &&
             result.Request.InputIdentity == getBuildIdentity(result.Request.Source))
         {
-            setProblem(mBuildProblem, mStatus->text());
+            // The preview's own problem line keeps the compiler's words, since it replaces the picture.
+            setProblem(mBuildProblem,
+                       QStringLiteral("%1 failed - %2: %3 [%4]. Preview unchanged.")
+                           .arg(result.Request.Action, result.Code, result.Message, DescribeLocation(result.Location)));
         }
     }
     Q_EMIT JobFinished();
@@ -3963,6 +3991,10 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition, bool i
         createConfiguration->setObjectName(QStringLiteral("renderGraphAddConfiguration"));
         createConfiguration->setEnabled(mDocument.IsLoaded() == true);
         connect(createConfiguration, &QAction::triggered, this, &RendererWorkspace::promptCreateConfiguration);
+        QAction* duplicateConfiguration = configurations->addAction(QStringLiteral("Duplicate Configuration..."));
+        duplicateConfiguration->setObjectName(QStringLiteral("renderGraphDuplicateConfiguration"));
+        duplicateConfiguration->setEnabled(CanCreateSubgraph() == true && selectedConfiguration().isEmpty() == false);
+        connect(duplicateConfiguration, &QAction::triggered, this, &RendererWorkspace::promptDuplicateConfiguration);
         QAction* configurationTemplate = configurations->addAction(QStringLiteral("Apply Configuration Template..."));
         configurationTemplate->setObjectName(QStringLiteral("renderGraphApplyConfigurationTemplate"));
         configurationTemplate->setEnabled(CanCreateSubgraph());
@@ -3973,6 +4005,14 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition, bool i
         connect(removeConfiguration, &QAction::triggered, this, [this]() {
             static_cast<void>(RemoveSelectedConfiguration());
         });
+        QJsonObject selectedGraph;
+        QAction* duplicateGraph = menu.addAction(QStringLiteral("Duplicate Graph..."));
+        duplicateGraph->setObjectName(QStringLiteral("renderGraphDuplicateGraph"));
+        duplicateGraph->setToolTip(QStringLiteral("Copy this graph file and all its configurations as a new graph in "
+                                                  "the package."));
+        duplicateGraph->setEnabled(CanCreateSubgraph() == true &&
+                                   mDocument.GetGraph(mSelectedFile, selectedGraph) == true);
+        connect(duplicateGraph, &QAction::triggered, this, &RendererWorkspace::promptDuplicateGraph);
         menu.addSeparator();
     }
     if (isNodeContext == true)

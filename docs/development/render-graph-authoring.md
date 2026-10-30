@@ -1035,8 +1035,8 @@ mesh/item limits. Multiple invocations or persistent buffers require the scene c
 any-hit/intersection/callable stages, resources beyond the two persistent buffer slots and optional visibility/depth pair, masked/transparent or
 deformed geometry, reverse-Z and infinite-far cameras. Color is the only produced
 aspect; no ray depth output is inferred. Ray preparation has renderer-owned
-2 GiB CPU and 2 GiB GPU limits across retained jobs; device storage limits can
-be tighter. The existing static opaque setup technique remains in the manifest
+4 GiB CPU and 6 GiB GPU limits on 64-bit hosts (2 GiB each on 32-bit hosts)
+across retained jobs; device storage limits can be tighter. The existing static opaque setup technique remains in the manifest
 for shared mesh/snapshot ownership and is never used to rasterize ray scene
 geometry. A complete source example is the
 [SDK ray fixture](../../tests/sdk_consumer/rg2/raytracing/main.lurender.json) and its
@@ -1180,6 +1180,13 @@ Runtime package version 21 stores reflected X/Y/Z dimensions after the six fixed
 fields of every ray compute stage. All target artifacts for a role must agree.
 Earlier packages retain their implicit 64×1×1 grouping. Cooked headers and runtime
 packages dispatch the same reflected dimensions; device limits still apply.
+
+Runtime package version 28 links ray kernels against a 240-byte ray uniform. Its
+last 16 bytes name the dispatched tile region. A frame capture can then submit
+each sample as row bands, below the GPU timeout; see
+[tiled submission](../architecture/render-graph-frame-capture.md#phase-4b-implementation-notes).
+Authored callbacks see the same `RayLaunch` pixel and extent either way. Rebuild an
+older graph to capture it in bands; it still runs interactively unchanged.
 
 ```json
 {
@@ -2732,6 +2739,14 @@ geometry rejects or uses the graph's explicit diagnostic coverage policy; it
 does not acquire transparent transport by connecting Scene. Material evaluation
 uses the supplied fixed mip and UV0; derivative mip selection is not inferred.
 
+Typed source materials also expose `MaterialSample.Model`, `Eta`, `K`, `AlphaU`
+and `AlphaV`. `EvaluateStandardBsdf`/`SampleStandardBsdf` select pure diffuse or
+isotropic conductor reflection when those models are bound. A custom shader using
+its own metallic/roughness formulas must handle the type explicitly to preserve
+source semantics. Coated diffuse still uses the declared approximation. See
+[typed reference materials](../architecture/renderer-systems.md#typed-diffuse-and-conductor-reference-materials)
+and the [source-preserving importer](../examples/reference-scene.md#material-preserving-project-imports).
+
 ### Read surfaces, sample sources and trace visibility
 
 The public logical Slang helper is installed as `scene_shader.slang`; generated
@@ -3938,7 +3953,7 @@ cost still grows with shaded pixels and with the admitted records' corners.
 
 There is no mesh-light visibility test yet: area lights can illuminate through
 walls. Every admitted emitter record is evaluated, independently of the analytic
-light clusters, with no finite-distance cutoff. At most 4096 nonzero-emission
+light clusters, with no finite-distance cutoff. At most 8192 nonzero-emission
 polygon records are admitted per scene; excess geometry rejects preparation and
 retains the last drawable generation. The immutable scene upload stores each record
 as two Float4 header words (normal and sidedness, emission and corner count)
@@ -5914,6 +5929,26 @@ Deleting the asset default makes the first remaining configuration its default.
 If a surviving Subgraph node in the loaded package references the configuration,
 deletion is rejected with the caller's location: remove or rebind that node first.
 
+Choose **Configurations > Duplicate Configuration...** to copy the selected
+configuration under a new name in the same file. The copy keeps its inputs,
+outputs, nodes, connections, options, comment frames and layout, opens
+immediately, and does not change the asset default. The dialog suggests an
+unused `<name>Copy`; the naming rules and eight-configuration limit above apply.
+
+Choose **Duplicate Graph...** to copy the selected `.lurender.json` file, with every
+configuration, as a new `<name>.lurender.json` in the package root whose graph `id`
+is the new name. The name follows the same identifier rules and must not match an
+existing graph `id` or file, including one differing only in case. Subgraph nodes
+that call another configuration of the copied file are retargeted to the copy;
+calls into other graph files keep their targets. Nothing references the new graph
+until you insert it with **Quick Add** or rebind a Subgraph node, so the World
+output does not change. The copy opens on its default configuration.
+
+Both duplications are one undo step that never modifies the original; Undo removes
+the copy, and Save publishes it. Invalid names, a full file, package source
+limits or an unresolved external source conflict preserve the draft and show the
+repair in the status line.
+
 Left-drag empty canvas space to box-select nodes. Shift-drag adds to the selection;
 Shift-click adds a node and Ctrl-click toggles one. **Select All** and **Escape**
 select or clear the group. Pan with middle-drag, hold Space while left-dragging,
@@ -6047,14 +6082,17 @@ straight tint with alpha below one is declared `Transparent`, and the editor's
 hiding them. Textures, lights and other materials are outside the current static
 profile. An authored surface's flat tint is its schema tint.
 
-Triangle-ray graphs admit up to **2 GiB of CPU preparation** and **2 GiB of GPU
-preview resources**. These are ceilings, not allocations made when a graph opens.
+Triangle-ray graphs on 64-bit hosts admit up to **4 GiB of CPU preparation** and
+**6 GiB of GPU preview resources**; 32-bit hosts retain 2 GiB ceilings. These are ceilings, not allocations made when a graph opens.
 CPU preparation includes frozen triangles, BVH construction, material and texture
 data, fingerprints and upload scratch. The GPU ceiling includes current and
 replacement previews until retained GPU uses retire. The device-wide RHI resource
 budget and each device's storage-buffer binding range apply independently; a
 larger graph ceiling cannot override either one. The supplied imported Sponza
-World's two million triangles require more than the previous 256 MiB ceilings.
+World's complete 3,747,018 triangles require more than the former 2 GiB CPU
+preparation ceiling. The editor device separately admits the ray GPU budget plus
+1 GiB for raster geometry, material textures and graph targets, so replacement
+can retain the last drawable scene while the next complete scene prepares.
 Native ray geometry and acceleration-structure build scratch use the backend's
 enabled allocation range, rather than the former fixed 64 MiB ceiling. Each
 creation still checks its explicit byte budget. Packed opacity metadata retains

@@ -10,10 +10,6 @@ class RenderGraph;
 
 namespace ludus::graphics::renderer::internal
 {
-/// Bounded setup ceiling for imported multi-million-triangle scenes, including packing scratch.
-inline constexpr foundation::usize GRAPH_RAY_CPU_BYTES = foundation::usize{2} * 1024 * 1024 * 1024;
-/// Logical preview ceiling includes current and replacement GPU scenes until producer retirement.
-inline constexpr foundation::usize GRAPH_RAY_GPU_BYTES = foundation::usize{2} * 1024 * 1024 * 1024;
 /// One immutable ray invocation's scene inputs and owned GPU job.
 /// The borrowed renderer context outlives this owner. All calls use the RHI owner
 /// thread between frames. Sequence command ownership belongs to the graph Scene.
@@ -48,6 +44,11 @@ public:
                                                                           foundation::uint32 pass,
                                                                           rhi::BufferHandle& outBuffer) noexcept;
     [[nodiscard]] rhi::RasterStatus Poll() noexcept;
+    // Prepare band `tile` of `count` row bands of a tiled capture from the committed camera; a count of one
+    // releases the band. Ready once it is bound, Pending while its uniform or bindings are created.
+    [[nodiscard]] rhi::RasterStatus PrepareTiles(foundation::uint32 count, foundation::uint32 tile) noexcept;
+    // Emissive triangles plus analytic lights of the ready job's scene.
+    [[nodiscard]] foundation::uint32 GetLightCount() const noexcept;
     [[nodiscard]] rhi::RasterStatus PrepareCamera(const ViewDescription& camera, foundation::uint64 revision) noexcept;
     [[nodiscard]] rhi::RasterStatus PollCamera() noexcept;
     void CommitCamera() noexcept;

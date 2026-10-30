@@ -1356,8 +1356,9 @@ void MainWindow::RenderStatus()
         mDismissedSetupProblem.clear();
     }
     // Dismissed and Focus Viewport keep the notice hidden; the status bar still reports setup state.
-    mSetupNoticeOrNull->setVisible(hasSetupProblem == true && state.SetupProblem != mDismissedSetupProblem &&
-                                   mIsViewportFocused == false);
+    const bool isSetupNoticeShown =
+        hasSetupProblem == true && state.SetupProblem != mDismissedSetupProblem && mIsViewportFocused == false;
+    mSetupNoticeOrNull->setVisible(isSetupNoticeShown);
     mSetupNoticeTextOrNull->setToolTip(
         QStringLiteral("%1\n\nRepair now, or keep editing and repair later. Repair updates local build settings "
                        "and verifies a build and tests.")
@@ -1441,11 +1442,13 @@ void MainWindow::RenderStatus()
             break;
     }
 
+    // Each problem is said once: the banner and Error List carry the full text, so this line keeps
+    // the short reason (the result code and a pointer to the repair) and nothing that repeats it.
     QString status = phase;
     if (state.Result.Kind != Outcome::None)
     {
         status += QStringLiteral("  —  last result: %1").arg(QString::fromLatin1(ResultCodeName(state.Result.Code)));
-        if (state.Result.Message.isEmpty() == false)
+        if (hasSetupProblem == false && state.Result.Message.isEmpty() == false)
         {
             status += QStringLiteral(" (%1)").arg(state.Result.Message.section(QLatin1Char('\n'), 0, 0));
         }
@@ -1454,9 +1457,18 @@ void MainWindow::RenderStatus()
     {
         status += QStringLiteral("  —  operator recovery required; see Copy Job Details");
     }
-    // One status line: setup state is appended unless the last result already said it.
     const QString setupSummary = state.SetupStatus.section(QLatin1Char('\n'), 0, 0);
-    if (setupSummary.isEmpty() == false && setupSummary != state.Result.Message.section(QLatin1Char('\n'), 0, 0))
+    const QString resultSummary = state.Result.Message.section(QLatin1Char('\n'), 0, 0);
+    if (hasSetupProblem == true)
+    {
+        // The banner already shows the problem with its Repair button; only a hidden banner
+        // leaves this line to say what is wrong.
+        status += QStringLiteral("  —  ") + (isSetupNoticeShown == true
+                                                 ? QStringLiteral("Setup needs repair")
+                                                 : state.SetupProblem.section(QLatin1Char('\n'), 0, 0));
+    }
+    else if (setupSummary.isEmpty() == false &&
+             (resultSummary.isEmpty() == true || setupSummary.contains(resultSummary) == false))
     {
         status += QStringLiteral("  —  ") + setupSummary;
     }

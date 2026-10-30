@@ -1403,6 +1403,31 @@ RenderGraphDocument::ApplyConfigurationTemplate(const QString& file,
     return status;
 }
 
+RenderGraphDocumentStatus RenderGraphDocument::checkNewGraphAsset(const QString& name) const
+{
+    const QString asset = name + QStringLiteral(".lurender.json");
+    const QFileInfo destination(QDir(mPackageRoot).filePath(asset));
+    if (mDraft.Files.contains(asset) == true || mSaved.Files.contains(asset) == true || destination.exists() == true ||
+        destination.isSymLink() == true)
+    {
+        return RenderGraphDocumentStatus::Conflict;
+    }
+    for (const QString& source : GetFiles())
+    {
+        // Keep draft filenames portable to case-insensitive project filesystems too.
+        if (source.compare(asset, Qt::CaseInsensitive) == 0)
+        {
+            return RenderGraphDocumentStatus::Conflict;
+        }
+        QJsonObject existing;
+        if (GetGraph(source, existing) == true && existing.value(QStringLiteral("id")).toString() == name)
+        {
+            return RenderGraphDocumentStatus::InvalidEdit;
+        }
+    }
+    return RenderGraphDocumentStatus::Ok;
+}
+
 RenderGraphDocumentStatus RenderGraphDocument::CreateSubgraph(const QString& file,
                                                               const QString& configuration,
                                                               const QString& node,
@@ -1431,26 +1456,12 @@ RenderGraphDocumentStatus RenderGraphDocument::CreateSubgraph(const QString& fil
     {
         return RenderGraphDocumentStatus::InvalidEdit;
     }
+    const RenderGraphDocumentStatus available = checkNewGraphAsset(name);
+    if (available != RenderGraphDocumentStatus::Ok)
+    {
+        return available;
+    }
     const QString asset = name + QStringLiteral(".lurender.json");
-    const QFileInfo destination(QDir(mPackageRoot).filePath(asset));
-    if (mDraft.Files.contains(asset) == true || mSaved.Files.contains(asset) == true || destination.exists() == true ||
-        destination.isSymLink() == true)
-    {
-        return RenderGraphDocumentStatus::Conflict;
-    }
-    for (const QString& source : GetFiles())
-    {
-        // Keep draft filenames portable to case-insensitive project filesystems too.
-        if (source.compare(asset, Qt::CaseInsensitive) == 0)
-        {
-            return RenderGraphDocumentStatus::Conflict;
-        }
-        QJsonObject existing;
-        if (GetGraph(source, existing) == true && existing.value(QStringLiteral("id")).toString() == name)
-        {
-            return RenderGraphDocumentStatus::InvalidEdit;
-        }
-    }
     QJsonObject graph;
     if (GetGraph(file, graph) == false)
     {

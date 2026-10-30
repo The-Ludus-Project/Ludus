@@ -40,10 +40,15 @@ enum class EditorIcon : foundation::uint8
     Error,
     Warning,
     Information,
+    Output,
+    Timing,
+    Profiling,
+    LiveInspector,
+    RayPaths,
 };
 
 /// Number of icons in EditorIcon.
-inline constexpr foundation::usize EDITOR_ICON_COUNT = 17;
+inline constexpr foundation::usize EDITOR_ICON_COUNT = 22;
 
 /// Side of the grid every icon is drawn on, in SVG units.
 inline constexpr qreal EDITOR_ICON_GRID = 24.0;

@@ -45,7 +45,7 @@ static const LightingLayoutValue MAX_MESH_LIGHT_POLYGON_WORDS =
     MESH_LIGHT_POLYGON_HEADER_WORDS + MAX_MESH_LIGHT_POLYGON_CORNERS;
 /// Maximum retained emitter polygon records: merged convex polygons, unmerged triangles and four subtriangles per
 /// textured source triangle. Exceeding this admission limit rejects the candidate without truncating lights.
-static const LightingLayoutValue MAX_RASTER_MESH_LIGHT_POLYGONS = 4096;
+static const LightingLayoutValue MAX_RASTER_MESH_LIGHT_POLYGONS = 8192;
 /// Largest finite half-float value; emission is nonnegative and saturates before G-buffer storage.
 static const LightingLayoutValue DEFERRED_MAX_HALF = 65504;
 #ifdef __cplusplus

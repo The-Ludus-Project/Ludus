@@ -1657,7 +1657,14 @@ Accumulate's own 32-bit mean and per-pixel sample counts, not the displayed or
 
 The window explains which applies. Pixels that show the graph's failure colour,
 for example where a shader exceeded its query budget, fail the capture and are
-counted. `scripts/reference-hdr` converts the file to PFM with a JSON manifest,
+counted.
+
+A long sample is split into row bands, each submitted to the GPU on its own, so no
+submission runs into the GPU timeout. The capture sizes the bands from the image
+and the scene's lights; the status line then reads **Rendering in N bands**. The
+image and its sample counts are the same as an unbanded capture's. A graph
+package cooked before banded capture fails with a request to rebuild the graph
+when its capture needs bands. `scripts/reference-hdr` converts the file to PFM with a JSON manifest,
 as it does reference captures. See the
 [frame capture design](../architecture/render-graph-frame-capture.md).
 
@@ -2111,9 +2118,28 @@ See [architecture](../architecture/editor-architecture.md),
 [interaction design](../architecture/editor-interaction-design.md), and
 [post-design reference review](../architecture/editor-design-review.md).
 
+## Truncation
+
+Text that does not fit is cut where it costs the least, and never silently:
+
+- **Paths** (Project Explorer, Graph Sources, the Error List's File column, the
+  render-graph document header and the source file selector) keep the file name
+  whole. The folder is dimmed and elided from the middle first; only a file name
+  wider than the field is elided itself, also from the middle. Text with no folder
+  part elides from the middle.
+- **Combo boxes** draw their current text with the same elision, never a cut
+  mid-word, and ask for a width that holds their longest item.
+- **Tool window tab bars** show each window's icon and title while they fit. When
+  the dock is too narrow for every title, the tab bar switches to icons only; every
+  tab keeps its full title as its tooltip.
+- Anything that is cut shows its full text as a tooltip.
+
+`PathItemDelegate`, `PathLabel` and `ElidePathText` in `apps/editor/src/path_text.cpp`
+implement the path rules.
+
 ## Editor icons
 
-The outline icons for the toolbars, Project Explorer and Error List are taken
+The outline icons for the toolbars, Project Explorer, Error List and tool window tabs are taken
 unchanged from [Lucide](https://lucide.dev) 1.62.0, commit
 `2ca268e74888d3506b3319fb8f94aaaaf70ceca9` of
 [lucide-icons/lucide](https://github.com/lucide-icons/lucide).
@@ -2129,7 +2155,8 @@ Stop are filled to identify live-state actions. No SVG is parsed while painting,
 and no Qt SVG module is needed. One bounded pixmap cache keys entries by icon,
 size, device pixel ratio, mode and colour. The parser supports `path`, `circle`
 and `rect` elements and the M, L, H, V, C, S, Q, T, A and Z path commands; a new
-icon that needs anything else fails the icon tests.
+icon that needs anything else fails the icon tests. The one drawing that used
+`line` elements (`timer`) has them written as equivalent two-point paths.
 
 To add an icon:
 
