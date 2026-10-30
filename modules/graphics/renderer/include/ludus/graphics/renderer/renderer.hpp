@@ -36,7 +36,8 @@ struct GpuPreviewGraphInvocation final
     /// Non-null storage remains owned by the caller through job release and submitted completion.
     foundation::BorrowedView<const GpuPreviewGraphBuffer> Buffers;
     /// Zero outputs individual samples; a positive value up to RenderGraphFormat::MAX_ACCUMULATION_SAMPLES
-    /// averages linear radiance before display conversion. Camera/scene replacement restarts the mean.
+    /// averages linear radiance before display conversion. Camera/scene replacement restarts the mean. A frame
+    /// capture's graph may use up to MAX_RENDER_GRAPH_CAPTURE_SAMPLES (RenderGraph::SetAccumulationLimitOverride).
     foundation::uint32 AccumulationSamples = 0;
     /// Graph-owned display conversion: zero bypasses it; a finite multiplier in the RenderGraphFormat
     /// tone-mapping exposure range applies Reinhard and sRGB after optional accumulation.

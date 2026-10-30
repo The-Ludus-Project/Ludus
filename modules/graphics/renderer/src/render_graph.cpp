@@ -877,6 +877,8 @@ struct RenderGraph::State final
     StaticArray<rhi::RasterBinding, RAY_COMPUTE_BINDING_CAPACITY>
         RayComputeBindings{}; // NOLINT(bugprone-invalid-enum-default-initialization)
     internal::RenderGraphRayPathCapture RayPathCapture;
+    /// Capture-only replacement for every positive authored Accumulate limit; zero keeps the authored limits.
+    uint32 AccumulationLimitOverride = 0;
     StaticArray<internal::RenderGraphUpscaleProgram, UPSCALE_TARGET_COUNT> UpscalePrograms{};
     StaticArray<bool, UPSCALE_TARGET_COUNT> HasUpscalePrograms{};
     /// Packed bytes of the distinct value sets of the technique being prepared; reused per Update.
@@ -889,6 +891,18 @@ struct RenderGraph::State final
     bool HasForwardLighting = false;
     bool HasForwardProgram = false;
     bool HasForwardResources = false;
+    /// The sample limit an Accumulate on operation averages to: the authored limit, or the capture override
+    /// when one is set and the pass accumulates at all. Zero outputs individual samples.
+    [[nodiscard]] LUDUS_INLINE uint32 GetAccumulationSamples(const format::Pass& operation) const noexcept
+    {
+        return operation.AccumulationSamples != 0 && AccumulationLimitOverride != 0 ? AccumulationLimitOverride
+                                                                                    : operation.AccumulationSamples;
+    }
+    /// The largest accumulation limit of this graph, which bounds the submitted-sample counter.
+    [[nodiscard]] LUDUS_INLINE uint32 GetMaximumAccumulationSamples() const noexcept
+    {
+        return AccumulationLimitOverride != 0 ? AccumulationLimitOverride : format::MAX_ACCUMULATION_SAMPLES;
+    }
     [[nodiscard]] LUDUS_INLINE Renderer& GetContext(format::Technique technique) noexcept
     {
         const format::Technique context =
@@ -1384,7 +1398,7 @@ struct RenderGraph::State final
                 {
                     const GpuPreviewGraphInvocation invocation{0,
                                                                {},
-                                                               Passes[i].AccumulationSamples,
+                                                               GetAccumulationSamples(Passes[i]),
                                                                Passes[i].ToneMappingExposure,
                                                                Passes[i].DenoisingQuality,
                                                                {},
@@ -1575,7 +1589,7 @@ struct RenderGraph::State final
             HasValidOutput = submitted == Status::Ready && RecordingStatus == Status::Ready;
             OutputRevision = HasValidOutput == true ? RecordingRevision : 0;
             if (HasValidOutput == true && HasRaySetup == true &&
-                Current->SubmittedRaySamples < format::MAX_ACCUMULATION_SAMPLES)
+                Current->SubmittedRaySamples < GetMaximumAccumulationSamples())
             {
                 ++Current->SubmittedRaySamples;
             }
@@ -1613,6 +1627,47 @@ RenderGraph::~RenderGraph() noexcept = default;
 void RenderGraph::Reset() noexcept
 {
     mState.Reset();
+}
+Status RenderGraph::SetAccumulationLimitOverride(uint32 samples) noexcept
+{
+    if (mState.Get() == nullptr)
+    {
+        return Status::InvalidState;
+    }
+    State& state = *mState;
+    if (samples == 0 || samples > MAX_RENDER_GRAPH_CAPTURE_SAMPLES)
+    {
+        return Status::InvalidDescription;
+    }
+    if (state.IsReady == false || state.HasOpenFrame == true || state.HasExternalRecording == true ||
+        state.Current.Get() != nullptr || state.Pending.Get() != nullptr)
+    {
+        return Status::InvalidState;
+    }
+    state.AccumulationLimitOverride = samples;
+    return Status::Ready;
+}
+Status RenderGraph::GetAccumulation(uint32 pass, rhi::BufferHandle& outBuffer) const noexcept
+{
+    if (mState.Get() == nullptr || mState->Current.Get() == nullptr)
+    {
+        return Status::NotReady;
+    }
+    const State& state = *mState;
+    if (pass >= state.Header.PassCount || state.Passes[pass].Program != format::Technique::RayTracing)
+    {
+        return Status::InvalidDescription;
+    }
+    if (state.HasValidOutput == false || state.Producer.IsNull() == true ||
+        rhi::GetStatus(state.Device, state.Producer) != Status::Ready)
+    {
+        return Status::NotReady;
+    }
+    // The lookup reads the context's job table without changing it; the internal bridge takes a mutable context.
+    return internal::RenderGraphRayPass::GetAccumulation(
+        const_cast<Renderer&>(state.Contexts[static_cast<usize>(format::Technique::RayTracing)]),
+        state.Current->RayPasses[pass].GetJob(),
+        outBuffer);
 }
 Status RenderGraph::RequestRayPathCapture(const RayPathCaptureDescription& description) noexcept
 {
@@ -2943,7 +2998,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             state.Programs.HasPersistentRayBuffers == true
                 ? BorrowedView<const GpuPreviewGraphBuffer>{buffers.GetData(), buffers.GetSize()}
                 : BorrowedView<const GpuPreviewGraphBuffer>{},
-            operation.AccumulationSamples,
+            state.GetAccumulationSamples(operation),
             operation.ToneMappingExposure,
             operation.DenoisingQuality,
             state.RayPathCapture.GetBuffer(),
@@ -3038,8 +3093,9 @@ bool RenderGraph::HasPendingSamples() const noexcept
             hasLaterWriter = hasLaterWriter == true || (state.Passes[next].Program == format::Technique::RayTracing &&
                                                         state.Passes[next].Color == operation.Color);
         }
+        const uint32 limit = state.GetAccumulationSamples(operation);
         if (hasLaterWriter == false && operation.Program == format::Technique::RayTracing &&
-            (operation.AccumulationSamples == 0 || state.Current->SubmittedRaySamples < operation.AccumulationSamples))
+            (limit == 0 || state.Current->SubmittedRaySamples < limit))
         {
             return true;
         }

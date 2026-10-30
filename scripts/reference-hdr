@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate a LUHDR01 capture; export linear PFM and a JSON manifest (no tonemapping)."""
+"""Validate a LUHDR01 reference or LURGCAP render graph capture; export linear PFM and a JSON manifest (no tonemapping)."""
 import argparse
 import hashlib
 import json
@@ -8,7 +8,43 @@ from pathlib import Path
 import struct
 
 
+# Render graph capture flags (modules/content/render_graph_format/include/ludus/content/render_graph_format/capture.h).
+GRAPH_FLAGS = {'partial': 1, 'failed': 2, 'limit_override': 4, 'orthographic': 8, 'reverse_depth': 16, 'infinite_far': 32}
+GRAPH_MAXIMUM_SAMPLES = 65536
+
+
+def decode_graph_capture(data):
+    """Decode a LURGCAP file: the RT1 pixel record behind a header that identifies the graph and its route."""
+    version, header, pixel_bytes, flags, width, height, target, submitted, failed, output, accumulation_pass, authored = \
+        struct.unpack_from('<12I', data, 8)
+    if (version, header, pixel_bytes) != (1, 256, 16) or flags & ~63 or not width or not height:
+        raise ValueError('Unsupported render graph capture version/header')
+    if len(data) != 256 + width * height * 16 or not 1 <= target <= GRAPH_MAXIMUM_SAMPLES or submitted > target:
+        raise ValueError('Invalid capture extent or sample counts')
+    pixels = list(struct.iter_unpack('<fffI', data[256:]))
+    if any(not all(math.isfinite(c) and c >= 0 for c in pixel[:3]) or pixel[3] > submitted for pixel in pixels):
+        raise ValueError('Nonfinite/negative radiance or invalid count')
+    counts = [pixel[3] for pixel in pixels]
+    if not flags & (GRAPH_FLAGS['partial'] | GRAPH_FLAGS['failed']) and min(counts) < target:
+        raise ValueError('Complete capture has uncommitted pixels')
+    if bool(flags & GRAPH_FLAGS['failed']) != bool(failed):
+        raise ValueError('Failure flag disagrees with the failed pixel count')
+    revision, = struct.unpack_from('<Q', data, 56)
+    metadata = dict(kind='render_graph', schema=version, width=width, height=height, target_samples=target,
+                    submitted_samples=submitted, failed_pixels=failed, output_resource=output,
+                    accumulation_pass=accumulation_pass, authored_limit=authored, flags=flags,
+                    **{name: bool(flags & bit) for name, bit in GRAPH_FLAGS.items()},
+                    scene_revision=revision, package_identity=data[64:96].hex(), scene_identity=data[96:128].hex(),
+                    minimum_samples=min(counts), maximum_samples=max(counts),
+                    world_to_clip=list(struct.unpack_from('<16f', data, 128)),
+                    camera_position=list(struct.unpack_from('<3f', data, 192)),
+                    sha256=hashlib.sha256(data).hexdigest())
+    return metadata, pixels
+
+
 def decode(data):
+    if len(data) >= 256 and data[:8] == b'LURGCAP\0':
+        return decode_graph_capture(data)
     if len(data) < 256 or data[:8] != b'LUHDR01\0':
         raise ValueError('Not a LUHDR01 capture')
     schema, profile, sampler, header, width, height, target, depth, roulette, flags = struct.unpack_from('<10I', data, 8)

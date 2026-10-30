@@ -35,8 +35,11 @@ public:
     {
         return mJob;
     }
-    // Test-only borrowed accumulation handle. Keep the completed preview/frame alive
-    // through the readback; this never becomes part of the installed renderer API.
+    // Borrowed accumulation handle of a completed preview job; backs RenderGraph::GetAccumulation for frame
+    // captures. Keep the completed preview/frame alive through the readback.
+    [[nodiscard]] static rhi::RasterStatus
+    GetAccumulation(Renderer& inoutRenderer, GpuPreview preview, rhi::BufferHandle& outBuffer) noexcept;
+    // Test-only alias of GetAccumulation for fixtures that drive a Renderer preview directly.
     [[nodiscard]] static rhi::RasterStatus
     GetAccumulationForTesting(Renderer& inoutRenderer, GpuPreview preview, rhi::BufferHandle& outBuffer) noexcept;
     // Borrow a completed graph pass's raw history for parity checks. The graph and

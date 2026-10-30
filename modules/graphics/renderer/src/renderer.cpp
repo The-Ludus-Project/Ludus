@@ -5288,12 +5288,10 @@ void Renderer::discardGpuPreviewCamera(GpuPreview handle) noexcept
 }
 } // namespace ludus::graphics::renderer
 
-#if defined(LUDUS_RENDERER_TEST_READBACK)
 namespace ludus::graphics::renderer::internal
 {
-rhi::RasterStatus RenderGraphRayPass::GetAccumulationForTesting(Renderer& inoutRenderer,
-                                                                GpuPreview preview,
-                                                                rhi::BufferHandle& outBuffer) noexcept
+rhi::RasterStatus
+RenderGraphRayPass::GetAccumulation(Renderer& inoutRenderer, GpuPreview preview, rhi::BufferHandle& outBuffer) noexcept
 {
     if (inoutRenderer.mState.Get() == nullptr || inoutRenderer.mState->GpuPreview.Get() == nullptr)
     {
@@ -5312,5 +5310,12 @@ rhi::RasterStatus RenderGraphRayPass::GetAccumulationForTesting(Renderer& inoutR
     outBuffer = recordOrNull->Accumulation;
     return rhi::RasterStatus::Ready;
 }
-} // namespace ludus::graphics::renderer::internal
+#if defined(LUDUS_RENDERER_TEST_READBACK)
+rhi::RasterStatus RenderGraphRayPass::GetAccumulationForTesting(Renderer& inoutRenderer,
+                                                                GpuPreview preview,
+                                                                rhi::BufferHandle& outBuffer) noexcept
+{
+    return GetAccumulation(inoutRenderer, preview, outBuffer);
+}
 #endif
+} // namespace ludus::graphics::renderer::internal
