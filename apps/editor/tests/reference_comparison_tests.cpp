@@ -234,6 +234,52 @@ TEST_CASE("Pixels without reference samples are excluded and shown grey", "[edit
     CHECK(comparison.ComparedPixels == previous.ComparedPixels);
 }
 
+TEST_CASE("A graph capture compares its linear means with the reference and skips unsampled pixels",
+          "[editor][reference-comparison][render-graph-capture]")
+{
+    const QVector<renderer::ReferencePixel> reference = MakeReference(1);
+    renderer::ReferenceCaptureInfo information;
+    information.Width = IMAGE_WIDTH;
+    information.Height = IMAGE_HEIGHT;
+    information.TargetSamples = TEST_SAMPLES;
+    constexpr float32 BRIGHTER = 1.5F;
+    QVector<renderer::RenderGraphCapturePixel> capture(IMAGE_WIDTH * IMAGE_HEIGHT,
+                                                       {{BRIGHTER, BRIGHTER, BRIGHTER}, TEST_SAMPLES});
+    // A pixel that latched a failure before its first sample has nothing to compare.
+    capture[0].Samples = 0;
+    ReferenceComparison comparison;
+    QImage difference;
+    QString error;
+    REQUIRE(CompareGraphCaptureWithReference({reference.constData(), static_cast<usize>(reference.size())},
+                                             information,
+                                             false,
+                                             {capture.constData(), static_cast<usize>(capture.size())},
+                                             IMAGE_WIDTH,
+                                             IMAGE_HEIGHT,
+                                             comparison,
+                                             difference,
+                                             error) == true);
+    CHECK(comparison.Space == ReferenceComparisonSpace::Linear);
+    CHECK(comparison.ComparedPixels == IMAGE_WIDTH * IMAGE_HEIGHT - 1);
+    CHECK(comparison.MeanAbsoluteError == Catch::Approx(BRIGHTER - 1));
+    CHECK(comparison.MeanSignedLuminanceError > 0);
+    CHECK(qRed(difference.pixel(0, 0)) == qBlue(difference.pixel(0, 0)));
+    CHECK(qRed(difference.pixel(1, 1)) > 0);
+    // A capture of another extent is rejected without touching the outputs.
+    const ReferenceComparison before = comparison;
+    CHECK(CompareGraphCaptureWithReference({reference.constData(), static_cast<usize>(reference.size())},
+                                           information,
+                                           false,
+                                           {capture.constData(), static_cast<usize>(capture.size())},
+                                           IMAGE_WIDTH + 1,
+                                           IMAGE_HEIGHT,
+                                           comparison,
+                                           difference,
+                                           error) == false);
+    CHECK(error.contains(QStringLiteral("graph capture")) == true);
+    CHECK(comparison.MeanAbsoluteError == before.MeanAbsoluteError);
+}
+
 TEST_CASE("Comparison rejects mismatched extents and depth outputs", "[editor][reference-comparison]")
 {
     const QVector<renderer::ReferencePixel> reference = MakeReference(1);

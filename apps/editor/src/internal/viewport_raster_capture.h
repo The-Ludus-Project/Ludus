@@ -5,6 +5,8 @@
 
 #include <ludus/foundation/base/pointer.hpp>
 
+#include <ludus/content/render_graph_format/plan.h>
+
 #include <ludus/graphics/rhi/device.h>
 
 #include <ludus/graphics/renderer/renderer.hpp>
@@ -32,6 +34,9 @@ struct ViewportRasterSource final
     QString FallbackPath;
     /// Display attachment; empty selects the exported output.
     QString OutputTarget;
+    /// Logical resource of OutputTarget in the live generation's catalogue; ABSENT selects the first exported
+    /// colour resource, as the viewport does.
+    foundation::uint32 OutputResource = content::render_graph_format::ABSENT;
     /// Use raster even when the package and device support hardware ray tracing.
     bool ShouldForceRaster = false;
 };

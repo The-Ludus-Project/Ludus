@@ -54,35 +54,26 @@ QString GetSpaceName(ReferenceComparisonSpace space)
 }
 } // namespace
 
-bool CompareRasterWithReference(BorrowedView<const renderer::ReferencePixel> reference,
-                                const renderer::ReferenceCaptureInfo& information,
-                                bool hasReferenceFailed,
-                                const InspectedTexture& raster,
-                                ReferenceComparison& outComparison,
-                                QImage& outDifference,
-                                QString& outError)
+namespace
+{
+/// Compare reference means with another image of the same extent. readColor(x, y, outColor) supplies the other
+/// image's stored colour: display values in [0, 1] for ReferenceComparisonSpace::Display, linear radiance for
+/// Linear. It returns false for a pixel that has no value to compare.
+template <typename ReadColor>
+bool CompareWithReference(BorrowedView<const renderer::ReferencePixel> reference,
+                          const renderer::ReferenceCaptureInfo& information,
+                          bool hasReferenceFailed,
+                          ReferenceComparisonSpace space,
+                          const ReadColor& readColor,
+                          ReferenceComparison& outComparison,
+                          QImage& outDifference,
+                          QString& outError)
 {
     const uint32 width = information.Width;
     const uint32 height = information.Height;
     const usize count = static_cast<usize>(width) * height;
-    if (width == 0 || height == 0 || reference.GetSize() != count || raster.IsValid() == false ||
-        raster.Width != width || raster.Height != height)
-    {
-        outError = QStringLiteral("The raster image (%1 × %2) does not match the reference extent (%3 × %4).")
-                       .arg(raster.Width)
-                       .arg(raster.Height)
-                       .arg(width)
-                       .arg(height);
-        return false;
-    }
-    if (raster.Encoding == TexelEncoding::Depth32Float)
-    {
-        outError = QStringLiteral("The viewport output is a depth texture; choose a colour output to compare.");
-        return false;
-    }
     ReferenceComparison comparison;
-    comparison.Space = raster.Encoding == TexelEncoding::Rgba16Float ? ReferenceComparisonSpace::Linear
-                                                                     : ReferenceComparisonSpace::Display;
+    comparison.Space = space;
     comparison.Width = width;
     comparison.Height = height;
     comparison.TargetReferenceSamples = information.TargetSamples;
@@ -105,8 +96,8 @@ bool CompareRasterWithReference(BorrowedView<const renderer::ReferencePixel> ref
         for (uint32 x = 0; x < width; ++x)
         {
             const renderer::ReferencePixel& pixel = reference[static_cast<usize>(y) * width + x];
-            TexelValue texel;
-            if (pixel.Samples == 0 || ReadTexel(raster, x, y, texel) == false)
+            math::Vector3 storedColor{};
+            if (pixel.Samples == 0 || readColor(x, y, storedColor) == false)
             {
                 row[x] = qRgb(UNCOMPARED_GREY, UNCOMPARED_GREY, UNCOMPARED_GREY);
                 continue;
@@ -116,12 +107,11 @@ bool CompareRasterWithReference(BorrowedView<const renderer::ReferencePixel> ref
             RgbValue referenceValue{};
             RgbValue rasterDisplay{};
             RgbValue referenceDisplay{};
-            const math::Vector3 storedColor{texel.Channels[0], texel.Channels[1], texel.Channels[2]};
             const math::Vector3 referenceEncoded = EncodeReferenceDisplayColor(pixel.Radiance);
             const math::Vector3 rasterEncoded = EncodeReferenceDisplayColor(storedColor);
             for (usize channel = 0; channel < RGB_CHANNELS; ++channel)
             {
-                const float32 stored = texel.Channels[channel];
+                const float32 stored = channel == 0 ? storedColor.X : channel == 1 ? storedColor.Y : storedColor.Z;
                 referenceDisplay[channel] = channel == 0   ? referenceEncoded.X
                                             : channel == 1 ? referenceEncoded.Y
                                                            : referenceEncoded.Z;
@@ -190,8 +180,94 @@ bool CompareRasterWithReference(BorrowedView<const renderer::ReferencePixel> ref
         comparison.RelativeMeanSquareError = relativeSum / channels;
     }
     outComparison = comparison;
-    outDifference = difference;
+    outDifference = Move(difference);
     return true;
+}
+} // namespace
+
+bool CompareRasterWithReference(BorrowedView<const renderer::ReferencePixel> reference,
+                                const renderer::ReferenceCaptureInfo& information,
+                                bool hasReferenceFailed,
+                                const InspectedTexture& raster,
+                                ReferenceComparison& outComparison,
+                                QImage& outDifference,
+                                QString& outError)
+{
+    const uint32 width = information.Width;
+    const uint32 height = information.Height;
+    const usize count = static_cast<usize>(width) * height;
+    if (width == 0 || height == 0 || reference.GetSize() != count || raster.IsValid() == false ||
+        raster.Width != width || raster.Height != height)
+    {
+        outError = QStringLiteral("The raster image (%1 × %2) does not match the reference extent (%3 × %4).")
+                       .arg(raster.Width)
+                       .arg(raster.Height)
+                       .arg(width)
+                       .arg(height);
+        return false;
+    }
+    if (raster.Encoding == TexelEncoding::Depth32Float)
+    {
+        outError = QStringLiteral("The viewport output is a depth texture; choose a colour output to compare.");
+        return false;
+    }
+    const auto readTexel = [&raster](uint32 x, uint32 y, math::Vector3& outColor) {
+        TexelValue texel;
+        if (ReadTexel(raster, x, y, texel) == false)
+        {
+            return false;
+        }
+        outColor = {texel.Channels[0], texel.Channels[1], texel.Channels[2]};
+        return true;
+    };
+    return CompareWithReference(reference,
+                                information,
+                                hasReferenceFailed,
+                                raster.Encoding == TexelEncoding::Rgba16Float ? ReferenceComparisonSpace::Linear
+                                                                              : ReferenceComparisonSpace::Display,
+                                readTexel,
+                                outComparison,
+                                outDifference,
+                                outError);
+}
+
+bool CompareGraphCaptureWithReference(BorrowedView<const renderer::ReferencePixel> reference,
+                                      const renderer::ReferenceCaptureInfo& information,
+                                      bool hasReferenceFailed,
+                                      BorrowedView<const renderer::RenderGraphCapturePixel> capture,
+                                      uint32 captureWidth,
+                                      uint32 captureHeight,
+                                      ReferenceComparison& outComparison,
+                                      QImage& outDifference,
+                                      QString& outError)
+{
+    const uint32 width = information.Width;
+    const uint32 height = information.Height;
+    const usize count = static_cast<usize>(width) * height;
+    if (width == 0 || height == 0 || reference.GetSize() != count || capture.GetSize() != count ||
+        captureWidth != width || captureHeight != height)
+    {
+        outError = QStringLiteral("The graph capture (%1 × %2) does not match the reference extent (%3 × %4).")
+                       .arg(captureWidth)
+                       .arg(captureHeight)
+                       .arg(width)
+                       .arg(height);
+        return false;
+    }
+    // Linear means compare with the reference's means directly; a pixel without graph samples is uncompared.
+    const auto readMean = [&capture, width](uint32 x, uint32 y, math::Vector3& outColor) {
+        const renderer::RenderGraphCapturePixel& pixel = capture[static_cast<usize>(y) * width + x];
+        outColor = pixel.Mean;
+        return pixel.Samples != 0;
+    };
+    return CompareWithReference(reference,
+                                information,
+                                hasReferenceFailed,
+                                ReferenceComparisonSpace::Linear,
+                                readMean,
+                                outComparison,
+                                outDifference,
+                                outError);
 }
 
 QJsonObject MakeReferenceComparisonJson(const ReferenceComparison& comparison)

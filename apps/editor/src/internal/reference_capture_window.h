@@ -6,6 +6,7 @@
 #include "internal/reference_comparison.h"
 #include "internal/viewport_reference_capture.h"
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "internal/viewport_graph_capture.h"
 #    include "internal/viewport_raster_capture.h"
 #endif
 
@@ -34,8 +35,15 @@ inline constexpr foundation::uint64 REFERENCE_SERVICE_BUDGET_NANOSECONDS = 8'000
 /// Shortest interval between progressive display refreshes while tracing.
 inline constexpr foundation::int32 REFERENCE_DISPLAY_REFRESH_MILLISECONDS = 250;
 
-/// Non-modal window that renders an RT1 reference image of one viewport's current camera and,
-/// optionally, compares it with the viewport's project-graph output at the same camera and extent.
+/// Source index of the RT1 progressive reference in the window's Source choice.
+inline constexpr foundation::int32 CAPTURE_SOURCE_REFERENCE_INDEX = 0;
+/// Source index of the viewport's render graph in the window's Source choice.
+inline constexpr foundation::int32 CAPTURE_SOURCE_GRAPH_INDEX = 1;
+
+/// Non-modal window that captures one viewport's current camera, either as an RT1 reference image or as the
+/// viewport's render graph run to a target sample count. A reference can be compared with the viewport's
+/// project-graph output at the same camera and extent: a converged graph capture when the output accumulates
+/// ray samples, otherwise one raster frame. See docs/architecture/render-graph-frame-capture.md.
 ///
 /// Capture freezes the viewport's scene and camera at the click; later navigation or edits do
 /// not change the running capture. Work runs on the GUI thread in short service ticks. The
@@ -55,13 +63,26 @@ public:
     bool StartCapture();
     /// Cancel the running captures, keeping nothing.
     void StopCapture();
-    /// Write the current capture to hdrPath and a display PNG beside it. With a comparison, also
-    /// write `<base>.raster.png`, `<base>.difference.png` and `<base>.comparison.json`.
+    /// Write the current capture to hdrPath and a display PNG beside it: a LUHDR01 reference, or a `.lurgcap`
+    /// graph capture for the Render graph source. With a comparison, also write `<base>.raster.png`,
+    /// `<base>.difference.png` and `<base>.comparison.json`, and for a graph comparison `<base>.graph.lurgcap`.
     [[nodiscard]] bool SaveCapture(const QString& hdrPath, QString& outError) const;
     [[nodiscard]] LUDUS_INLINE const ViewportReferenceCapture& GetCapture() const noexcept
     {
         return mCapture;
     }
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    /// The render graph capture: the Render graph source, or the converged side of a comparison.
+    [[nodiscard]] LUDUS_INLINE const ViewportGraphCapture& GetGraphCapture() const noexcept
+    {
+        return mGraphCapture;
+    }
+    /// True when the running or last comparison compares a converged graph capture, not one raster frame.
+    [[nodiscard]] LUDUS_INLINE bool IsGraphComparison() const noexcept
+    {
+        return mIsGraphComparison;
+    }
+#endif
     /// Most recent progressive display image; null before the first samples.
     [[nodiscard]] LUDUS_INLINE const QImage& GetImage() const noexcept
     {
@@ -110,7 +131,10 @@ private:
     void saveWithDialog();
     void showScaledImages();
     [[nodiscard]] bool isRasterRendering() const noexcept;
+    [[nodiscard]] bool isGraphSource() const noexcept;
     [[nodiscard]] bool startRasterCapture(const QSize& requestedSize, QSize& outExtent, QString& outError);
+    [[nodiscard]] bool startGraphCapture(const QSize& requestedSize, QSize& outExtent, QString& outError);
+    [[nodiscard]] bool startGraphSource();
     [[nodiscard]] QString describeRaster() const;
     [[nodiscard]] bool saveComparison(const QString& hdrPath, QString& outError) const;
     QPointer<RenderPreview> mPreview;
@@ -118,9 +142,16 @@ private:
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     QPointer<RenderGraphPreview> mProjectGraph;
     ViewportRasterCapture mRasterCapture;
+    ViewportGraphCapture mGraphCapture;
     /// Package the current raster capture loaded, recorded with a saved comparison.
     ViewportRasterSource mRasterSource;
+    /// The comparison side is a converged graph capture rather than one raster frame.
+    bool mIsGraphComparison = false;
+    /// Why a comparison fell back to one raster frame; empty for a graph comparison.
+    QString mGraphFallbackReason;
 #endif
+    /// The running or last capture used the Render graph source.
+    bool mIsCapturingGraph = false;
     QTimer mServiceTimer;
     QElapsedTimer mRefreshTimer;
     QElapsedTimer mCaptureTimer;
@@ -149,5 +180,6 @@ private:
     QLabel* const mImageLabel;
     QLabel* const mRasterLabel;
     QLabel* const mDifferenceLabel;
+    QComboBox* const mSource;
 };
 } // namespace ludus::editor

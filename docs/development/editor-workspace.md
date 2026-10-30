@@ -1590,11 +1590,14 @@ conversion/visual limitations and higher-quality offline capture evidence.
 
 ### Reference capture of the viewport
 
-**Reference…** in a World viewport's toolbar opens a window that path-traces the
-viewport's current camera with the renderer's RT1 progressive reference integrator.
+**Reference…** in a World viewport's toolbar opens a window that captures the
+viewport's current camera. Its **Source** is **RT1 reference** by default, which
+path-traces the camera with the renderer's RT1 progressive reference integrator.
 Use the result as ground truth for the raster image. Set the image's long side
 (the short side follows the viewport's aspect), the samples per pixel, the maximum
-scattering depth and the traversal, then choose **Capture viewport**.
+scattering depth and the traversal, then choose **Capture viewport**. The
+**Render graph** source captures the viewport's own graph instead; see
+[Capture the render graph](#capture-the-render-graph).
 
 The capture uses the scene and camera as they were when you clicked. Later
 navigation or edits do not change it; capture again to include them. The window
@@ -1635,13 +1638,40 @@ transmission or volumes, a fixed texture mip and a truncated depth. See the
 [reference workflow and frozen profile](../architecture/renderer-systems.md#reference-workflow-and-frozen-profile).
 Stopping the viewport's device cancels a running capture.
 
+#### Capture the render graph
+
+In the native editor, the **Render graph** source runs the World viewport's
+render graph, with its package and output, to the requested samples per pixel at
+the frozen camera, and saves the linear mean as a `.lurgcap` file with a PNG
+beside it. It needs a project graph in the viewport; otherwise the source is
+unavailable. Maximum depth, traversal and comparison describe RT1 and are disabled.
+
+The capture runs a private copy of the graph on the viewport's device. The
+viewport keeps drawing, and its image and accumulation are unchanged. The image
+fills in after the first sample and every 16 samples. The saved values are the
+Accumulate's own 32-bit mean and per-pixel sample counts, not the displayed or
+16-bit output. Only a ray-traced output with an **Accumulate** can be captured:
+- a raster output stores display colour, not linear radiance;
+- a ray output without an Accumulate shows individual samples;
+- **Force raster** draws the raster fallback.
+
+The window explains which applies. Pixels that show the graph's failure colour,
+for example where a shader exceeded its query budget, fail the capture and are
+counted. `scripts/reference-hdr` converts the file to PFM with a JSON manifest,
+as it does reference captures. See the
+[frame capture design](../architecture/render-graph-frame-capture.md).
+
 #### Compare with the viewport's render graph
 
 In the native editor, **Compare with the viewport's render graph output** is on
 by default. Each capture then also renders the World viewport's current render
 graph: the same package, raster fallback, output target and **Force raster**
 choice the viewport shows. It uses a private producer on the same device, with
-the same frozen camera. The reference covers exactly the graph's output pixels.
+the same frozen camera. When the output can be
+[captured](#capture-the-render-graph), the graph side runs to the same samples per
+pixel as the reference and is compared in linear space, and **Save…** also writes
+`<base>.graph.lurgcap`. Otherwise one raster frame is compared, waiting up to 64
+frames for an accumulating graph, and the summary says why. The reference covers exactly the graph's output pixels.
 A graph that renders at a scaled resolution sets the extent, which can differ
 from **Long side**. The comparison measures the scheme the viewport actually
 uses. It is not the built-in Lit renderer. The editor's default graph draws

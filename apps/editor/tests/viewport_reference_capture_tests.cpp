@@ -24,12 +24,16 @@
 #include <ludus/graphics/renderer/renderer.hpp>
 
 #include <QByteArray>
+#include <QCheckBox>
+#include <QComboBox>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QImage>
 #include <QJsonDocument>
 #include <QPushButton>
 #include <QSize>
+#include <QSpinBox>
+#include <QStandardItemModel>
 #include <QString>
 #include <QTemporaryDir>
 
@@ -420,6 +424,27 @@ TEST_CASE("Reference capture window explains a missing viewport device without s
     QPushButton* stop = window.findChild<QPushButton*>(QStringLiteral("referenceStop"));
     REQUIRE(stop != nullptr);
     CHECK(stop->isEnabled() == false);
+}
+
+TEST_CASE("Reference capture window offers the render graph source only with a project graph",
+          "[editor][reference-capture][render-graph-capture]")
+{
+    ReferenceCaptureWindow window(nullptr);
+    QComboBox* source = window.findChild<QComboBox*>(QStringLiteral("referenceSource"));
+    REQUIRE(source != nullptr);
+    CHECK(source->currentIndex() == CAPTURE_SOURCE_REFERENCE_INDEX);
+    const QStandardItemModel* model = qobject_cast<const QStandardItemModel*>(source->model());
+    REQUIRE(model != nullptr);
+    // Without a viewport project graph there is nothing to capture but the RT1 reference.
+    CHECK(model->item(CAPTURE_SOURCE_GRAPH_INDEX)->isEnabled() == false);
+    QSpinBox* depth = window.findChild<QSpinBox*>(QStringLiteral("referenceMaxDepth"));
+    REQUIRE(depth != nullptr);
+    CHECK(depth->isEnabled() == true);
+    // Depth and traversal describe RT1; the render graph source runs the graph as authored.
+    source->setCurrentIndex(CAPTURE_SOURCE_GRAPH_INDEX);
+    CHECK(depth->isEnabled() == false);
+    CHECK(window.findChild<QComboBox*>(QStringLiteral("referenceTraversal"))->isEnabled() == false);
+    CHECK(window.findChild<QCheckBox*>(QStringLiteral("referenceCompare"))->isEnabled() == false);
 }
 
 TEST_CASE("Supplied World completes reference capture with all reference modes", "[.supplied-reference-capture]")

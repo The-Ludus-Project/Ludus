@@ -6996,11 +6996,22 @@ TEST_CASE("A render graph capture rejects routes and settings it cannot capture 
     {
         passes[pass] = authored.Passes[pass];
     }
+    StaticArray<format::Resource, format::MAX_RESOURCES> resources{};
+    for (usize resource = 0; resource < authored.Resources.GetSize(); ++resource)
+    {
+        resources[resource] = authored.Resources[resource];
+    }
     renderer::RenderGraphPlan plan = authored;
     plan.Passes = {passes.GetData(), authored.Passes.GetSize()};
+    plan.Resources = {resources.GetData(), authored.Resources.GetSize()};
     renderer::RenderGraphCaptureSettings settings;
     settings.Output = GetClampedMisOutput(authored);
     renderer::RenderGraphCaptureProblem expected = renderer::RenderGraphCaptureProblem::None;
+    SECTION("a surface-backed output, which would present the capture's frames")
+    {
+        resources[settings.Output].IsSurface = 1;
+        expected = renderer::RenderGraphCaptureProblem::NoOutput;
+    }
     SECTION("several exports and no chosen output")
     {
         settings.Output = format::ABSENT;
@@ -7030,4 +7041,59 @@ TEST_CASE("A render graph capture rejects routes and settings it cannot capture 
     Array<uint8> file;
     CHECK(capture.Encode(file) == rhi::RasterStatus::NotReady);
     CHECK(file.IsEmpty() == true);
+}
+
+TEST_CASE("Render graph capture progress read-backs show exact partial counts and then resume",
+          "[render-graph][gpu][render-graph-capture]")
+{
+    GraphGpuFixture fixture(false, false);
+    CornellBox room;
+    MakeRoomGlossyWithoutSky(room);
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(POLYGONAL_LIGHT_SAMPLING_TEMPLATE);
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    renderer::RenderGraphCaptureSettings settings;
+    settings.Output = GetClampedMisOutput(plan);
+    settings.TargetSamples = CAPTURE_TARGET_SAMPLES;
+    constexpr uint32 PREVIEW_INTERVAL = 2;
+    settings.PreviewInterval = PREVIEW_INTERVAL;
+    renderer::RenderGraphCapture capture;
+    const rhi::RasterStatus started =
+        capture.Start(fixture.Device, fixture.Surface, plan, programs, WIDTH, HEIGHT, settings);
+    REQUIRE((started == rhi::RasterStatus::Ready || started == rhi::RasterStatus::Pending));
+    // Progress read-backs follow the first sample and then every PREVIEW_INTERVAL samples.
+    Array<uint32> previews;
+    uint32 lastReadback = 0;
+    const uint64 beginning = time::NowTicks();
+    renderer::RenderGraphCapturePhase phase = capture.GetPhase();
+    while (phase != renderer::RenderGraphCapturePhase::Complete && phase != renderer::RenderGraphCapturePhase::Failed &&
+           time::NowTicks() - beginning < CAPTURE_TIMEOUT)
+    {
+        phase = capture.Service();
+        if (phase == renderer::RenderGraphCapturePhase::AwaitingScene)
+        {
+            const rhi::RasterStatus submitted = capture.SubmitScene({room.Meshes.GetData(), room.Meshes.GetSize()},
+                                                                    {room.Items.GetData(), room.Items.GetSize()},
+                                                                    {room.Cameras.GetData(), room.Cameras.GetSize()},
+                                                                    1,
+                                                                    &room.Inputs);
+            REQUIRE((submitted == rhi::RasterStatus::Ready || submitted == rhi::RasterStatus::Pending));
+        }
+        const renderer::RenderGraphCaptureInfo info = capture.GetInfo();
+        if (phase == renderer::RenderGraphCapturePhase::Rendering && info.ReadbackSamples != lastReadback)
+        {
+            lastReadback = info.ReadbackSamples;
+            REQUIRE(previews.TryAdd(lastReadback) == true);
+            const BorrowedView<const renderer::RenderGraphCapturePixel> pixels = capture.GetPixels();
+            REQUIRE(pixels.GetSize() == usize{WIDTH} * HEIGHT);
+            CHECK(pixels[0].Samples == lastReadback);
+            CHECK(info.MinimumSamples == lastReadback);
+        }
+    }
+    REQUIRE(phase == renderer::RenderGraphCapturePhase::Complete);
+    const Array<uint32> expected{1, 2, 4};
+    CHECK(previews == expected);
+    CHECK(capture.GetInfo().MinimumSamples == CAPTURE_TARGET_SAMPLES);
+    CHECK(capture.GetInfo().ReadbackSamples == CAPTURE_TARGET_SAMPLES);
 }
