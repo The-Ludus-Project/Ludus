@@ -1058,6 +1058,7 @@ TEST_CASE("runtime packages preserve relative policies and decode fixed legacy v
                                  format::RAY_WORKGROUP_PACKAGE_VERSION,
                                  format::COMPUTE_BVH_PACKAGE_VERSION,
                                  format::CLUSTERED_FORWARD_PACKAGE_VERSION,
+                                 format::RASTER_MESH_LIGHT_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         PackageOptions options;
@@ -1270,6 +1271,7 @@ TEST_CASE("runtime independent shader pairs decode with their own stage and bind
                                  format::CUSTOM_RAY_PACKAGE_VERSION,
                                  format::NATIVE_RAY_PIPELINE_PACKAGE_VERSION,
                                  format::CLUSTERED_FORWARD_PACKAGE_VERSION,
+                                 format::RASTER_MESH_LIGHT_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         constexpr format::Technique GBUFFER_PROGRAM = static_cast<format::Technique>(format::LEGACY_TECHNIQUE_COUNT);
@@ -1387,6 +1389,7 @@ TEST_CASE("legacy scene-ray packages preserve implicit tone mapping independentl
                                  format::CUSTOM_RAY_PACKAGE_VERSION,
                                  format::NATIVE_RAY_PIPELINE_PACKAGE_VERSION,
                                  format::CLUSTERED_FORWARD_PACKAGE_VERSION,
+                                 format::RASTER_MESH_LIGHT_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         for (const format::StageRole compute : {format::StageRole::RayCompute,
@@ -1750,6 +1753,7 @@ TEST_CASE("deferred runtime roles are complete per target and require the mesh-l
     for (const uint32 version : {format::CLUSTERED_FORWARD_PACKAGE_VERSION,
                                  format::CLUSTERED_DEFERRED_PACKAGE_VERSION,
                                  format::LTC_TABLE_PACKAGE_VERSION,
+                                 format::RASTER_MESH_LIGHT_PACKAGE_VERSION,
                                  format::PACKAGE_VERSION})
     {
         const Array<uint8> bytes = makeDeferred(version, format::ABSENT);

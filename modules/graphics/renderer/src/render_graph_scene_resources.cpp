@@ -705,7 +705,11 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
             }
             if (owner.HasMeshLights == true)
             {
-                status = AppendRasterMeshLights(geometry, item.MeshToWorld, material, candidate.MeshLightWords);
+                status = AppendRasterMeshLights(geometry,
+                                                item.MeshToWorld,
+                                                material,
+                                                candidate.MeshLightWords,
+                                                candidate.MeshLightCount);
                 if (status != Status::Ready)
                 {
                     return status;
@@ -758,9 +762,9 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
     }
     if (owner.HasMeshLights == true)
     {
-        candidate.MeshLightCount = static_cast<uint32>(candidate.MeshLightWords.GetSize() / MESH_LIGHT_TRIANGLE_WORDS);
+        // An empty light set uploads one zero header, which the resolve never reads.
         if (candidate.MeshLightWords.IsEmpty() == true &&
-            candidate.MeshLightWords.TryResize(MESH_LIGHT_TRIANGLE_WORDS) == false)
+            candidate.MeshLightWords.TryResize(MESH_LIGHT_POLYGON_HEADER_WORDS) == false)
         {
             return Status::OutOfMemory;
         }
@@ -777,7 +781,7 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
     }
     if (owner.HasMeshLights == true)
     {
-        owner.Report.MeshLightTriangles = candidate.MeshLightCount;
+        owner.Report.MeshLightPolygons = candidate.MeshLightCount;
         owner.Report.MeshLightBytes = uint64{candidate.MeshLightWords.GetSize()} * sizeof(math::Vector4);
     }
     if (owner.IsClustered == true && math::IsEmpty(candidate.BoundsWorld) == false)

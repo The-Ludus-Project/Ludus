@@ -305,7 +305,7 @@ and WGSL first run in batch CI.
 
 The [default clustered deferred graph](render-graph-authoring.md#default-clustered-deferred-lighting)
 also uses this table for unshadowed direct mesh area lighting. It clips real emitter
-triangles against the receiver horizon before integrating the fitted specular lobe.
+polygons (merged coplanar triangles) against the receiver horizon before integrating the fitted specular lobe.
 The table is uploaded once per graph program; scene and camera replacements retain
 independent immutable resource bindings. This raster approximation does not change
 the CPU/GPU reference path estimators or establish shadow/indirect-light support.

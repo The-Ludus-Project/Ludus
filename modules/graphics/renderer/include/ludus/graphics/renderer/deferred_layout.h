@@ -34,11 +34,18 @@ static const LightingLayoutValue DEFERRED_BINDING_COUNT = DEFERRED_VIEW_BINDING 
 static const LightingLayoutValue DEFERRED_MESH_LIGHT_BINDING = LUDUS_DEFERRED_MESH_LIGHT_BINDING;
 /// Resolve-only LTC table storage replaces the unused shadow texture at slot four.
 static const LightingLayoutValue DEFERRED_LTC_BINDING = LUDUS_DEFERRED_LTC_BINDING;
-/// Float4 words per emitter triangle: three positions with normal components, then emission/sidedness.
-static const LightingLayoutValue MESH_LIGHT_TRIANGLE_WORDS = 4;
-/// Maximum retained emitter triangles, including four subtriangles per textured source triangle.
-/// Exceeding this admission limit rejects the candidate without truncating lights.
-static const LightingLayoutValue MAX_RASTER_MESH_LIGHT_TRIANGLES = 4096;
+/// Most corners of one convex emitter polygon record; covers a 64-segment pbrt disk outline. Larger convex
+/// outlines are fanned into records of at most this many corners.
+static const LightingLayoutValue MAX_MESH_LIGHT_POLYGON_CORNERS = 64;
+/// Float4 words before an emitter polygon's corners: unit normal/sidedness, then emission/corner count.
+static const LightingLayoutValue MESH_LIGHT_POLYGON_HEADER_WORDS = 2;
+/// Float4 words of the largest record. A record is its header followed by exactly its corner count of world
+/// positions (w zero), so records have variable length and are read in order.
+static const LightingLayoutValue MAX_MESH_LIGHT_POLYGON_WORDS =
+    MESH_LIGHT_POLYGON_HEADER_WORDS + MAX_MESH_LIGHT_POLYGON_CORNERS;
+/// Maximum retained emitter polygon records: merged convex polygons, unmerged triangles and four subtriangles per
+/// textured source triangle. Exceeding this admission limit rejects the candidate without truncating lights.
+static const LightingLayoutValue MAX_RASTER_MESH_LIGHT_POLYGONS = 4096;
 /// Largest finite half-float value; emission is nonnegative and saturates before G-buffer storage.
 static const LightingLayoutValue DEFERRED_MAX_HALF = 65504;
 #ifdef __cplusplus
