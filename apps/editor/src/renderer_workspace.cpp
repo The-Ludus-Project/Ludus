@@ -10,6 +10,7 @@
 #include "internal/code_editor.h"
 #include "internal/code_editor_panel.h"
 #include "internal/code_formatter.h"
+#include "internal/error_list.h"
 #include "internal/item_selection.h"
 #include "internal/render_graph_comments.h"
 #include "internal/render_graph_diagnostics.h"
@@ -502,6 +503,25 @@ QString DescribeLocation(const QJsonObject& location)
         parts.append(QStringLiteral("node ") + location.value(QStringLiteral("node")).toString());
     }
     return parts.join(QLatin1Char(' '));
+}
+
+/// "1 error" or "2 errors, 1 warning": the Error List's rows for a failed job, so the count
+/// matches what the list shows.
+QString DescribeProblemCount(const RenderGraphJobResult& result)
+{
+    int32 errorCount = 0;
+    int32 warningCount = 0;
+    for (const ErrorListEntry& entry : MakeRenderGraphErrorEntries(result))
+    {
+        errorCount += entry.Severity == ErrorListSeverity::Error ? 1 : 0;
+        warningCount += entry.Severity == ErrorListSeverity::Warning ? 1 : 0;
+    }
+    QString text = errorCount == 1 ? QStringLiteral("1 error") : QStringLiteral("%1 errors").arg(errorCount);
+    if (warningCount > 0)
+    {
+        text += warningCount == 1 ? QStringLiteral(", 1 warning") : QStringLiteral(", %1 warnings").arg(warningCount);
+    }
+    return text;
 }
 
 QString DescribePackageOutsideProject()
@@ -2409,10 +2429,12 @@ void RendererWorkspace::AcceptResult(const RenderGraphJobResult& result)
     renderStatus();
     if (result.IsSuccessful == false)
     {
-        // The Error List shows every row; the status line names the first.
-        mStatus->setText(
-            QStringLiteral("%1 failed - %2: %3 [%4]. Preview unchanged.")
-                .arg(result.Request.Action, result.Code, result.Message, DescribeLocation(result.Location)));
+        // The Error List has the text of every problem; this line only says how many and where to look.
+        mStatus->setText(QStringLiteral("%1 failed - %2: %3, listed in the Error List [%4]. Preview unchanged.")
+                             .arg(result.Request.Action,
+                                  result.Code,
+                                  DescribeProblemCount(result),
+                                  DescribeLocation(result.Location)));
         if (result.Request.ShouldPreview == true &&
             result.Request.InputIdentity == getBuildIdentity(result.Request.Source))
         {
