@@ -42,6 +42,22 @@ compiler cache shared between checkouts (see
 [building](building.md#compiler-cache-across-checkouts)) can otherwise reuse a
 translation unit whose embedded MSL literal has another length. An included
 file outside those directories fails the build; add its directory to `INCLUDE`.
+
+Slang 2026.1.2's Metal backend drops `[noinline]`, and the Metal compiler then
+inlines every helper into the entry point. The shader helpers (fullscreen,
+raster/compute and render-graph stages) restore it: an emitted function whose
+`#line` source line, or the line above it, applies `[noinline]` to that name is
+defined with `__attribute__((noinline))`. Without that, the reference path
+tracer's resampled light sampling made its pipeline take 34–54 s to build on an
+Apple M5. On the macOS 15.7 CI runner the build failed with a bare "Compilation
+failed", and every later pipeline in the process failed too. With it, the
+pipeline builds in about 6 s. The rule matches by name, so keep `[noinline]` on
+the line of the function name or the line just above it. Methods, whose emitted
+names carry their type, are not matched. Code without `#line` directives is not
+matched either. That includes render-graph packages compiled through the in-process
+shader worker (`ludus-shader-worker`), whose Metal stages the Metal compiler may still
+inline.
+
 The macOS header supplies `Msl` and `MslEntry`. Source is compiled as MSL 2.3
 during `CreateShader`; entries and stages are checked against the actual library.
 Pipeline reflection rejects used textures/samplers/storage or buffers outside

@@ -193,6 +193,64 @@ def relative_line_directives(code, roots):
     return code
 
 
+METAL_NOINLINE = '__attribute__((noinline)) '
+METAL_LINE_DIRECTIVE = re.compile(r'^[ \t]*#line\s+(\d+)(?:\s+"([^"]+)")?\s*$')
+METAL_FUNCTION_DEFINITION = re.compile(r'^(?!struct\b|return\b|typedef\b|\[\[)[A-Za-z_][\w:<>, ]*?[\s*&]([A-Za-z_]\w*)\s*\(')
+
+
+def restore_metal_noinline(code, roots):
+    """Mark the emitted Metal definitions of Slang ``[noinline]`` functions noinline.
+
+    Slang 2026.1.2's Metal backend drops ``[noinline]``. The Metal compiler then
+    inlines every helper into the kernel, and the GPU backend of a large kernel
+    can take tens of seconds: the reference path tracer's resampled light
+    sampling took 54 s to build its pipeline on an Apple M5, and failed with a
+    bare "Compilation failed" on the macOS 15.7 CI runner. Metal honours clang's
+    ``__attribute__((noinline))``. Slang's ``#line`` directives give each
+    emitted definition its source line, so a definition is marked when that
+    line (or the line above it) applies ``[noinline]`` to the same name. Specialised copies (``Name_0``, ``Name_1``) share the source line and
+    are all marked. Call this before ``relative_line_directives``, or with the
+    roots that resolve its relative names.
+    """
+    sources = {}
+
+    def source_lines(name):
+        if name not in sources:
+            sources[name] = None
+            candidates = [Path(name)] if Path(name).is_absolute() else [Path(root) / name for root in roots]
+            for candidate in candidates:
+                if candidate.is_file():
+                    sources[name] = candidate.read_text(errors='replace').splitlines()
+                    break
+        return sources[name]
+
+    lines = code.split('\n')
+    current_file = None
+    number = None
+    for index, line in enumerate(lines):
+        # Preprocessor numbering: a directive names the next line, and Slang
+        # omits a directive where counting already gives the right number.
+        directive = METAL_LINE_DIRECTIVE.match(line)
+        if directive is not None:
+            number = int(directive[1])
+            if directive[2] is not None:
+                current_file = directive[2]
+            continue
+        line_number = number
+        number = None if number is None else number + 1
+        if current_file is None or line_number is None or index + 1 >= len(lines) or lines[index + 1].strip() != '{':
+            continue
+        definition = METAL_FUNCTION_DEFINITION.match(line)
+        source = source_lines(current_file)
+        if definition is None or source is None or not 1 <= line_number <= len(source):
+            continue
+        base = re.sub(r'_\d+$', '', definition[1])
+        declaration = '\n'.join(source[max(line_number - 2, 0):line_number])
+        if re.search(r'\[noinline\][^;{}()]*\b' + re.escape(base) + r'\s*\(', declaration):
+            lines[index] = METAL_NOINLINE + line
+    return '\n'.join(lines)
+
+
 def compile_metal(args, lock):
     # Thanks to the Slang team, "Metal-Specific Functionalities", User Guide:
     # https://docs.shader-slang.org/en/latest/external/slang/docs/user-guide/a2-02-metal-target-specific.html
@@ -215,7 +273,7 @@ def compile_metal(args, lock):
         run(command)
         dependencies.append(depfile.read_text().split(':', 1)[1].strip())
         reflected = json.loads(reflection.read_text())['entryPoints']
-        code = relative_line_directives(artifact.read_text(), roots)
+        code = relative_line_directives(restore_metal_noinline(artifact.read_text(), roots), roots)
         artifact.write_text(code)
         emitted = re.findall(r'\[\[' + stage + r'\]\]\s+\w+\s+(\w+)\s*\(', code)
         if len(reflected) != 1 or reflected[0]['stage'] != stage or len(emitted) != 1:
