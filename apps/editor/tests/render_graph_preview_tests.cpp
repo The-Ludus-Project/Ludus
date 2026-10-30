@@ -21,6 +21,7 @@
 #include "internal/renderer_workspace.h"
 #include "internal/texture_inspection.h"
 #include "internal/texture_viewer.h"
+#include "internal/viewport_device_description.h"
 #include "internal/viewport_graph_capture.h"
 #include "internal/world_demo_adapter.h"
 #include "internal/world_graph_view.h"
@@ -33,8 +34,10 @@
 #include <ludus/content/scene_cook/scene_assets.h>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
+#include <ludus/foundation/identity/uuid.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
+#include <ludus/foundation/threading/jobs.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
 #include <ludus/graphics/rhi/device.h>
@@ -42,6 +45,8 @@
 #include <ludus/graphics/rhi/lifetime.h>
 #include <ludus/graphics/rhi/profile.h>
 #include <ludus/graphics/rhi/raster.h>
+#include <ludus/platform/entropy.h>
+#include <ludus/runtime/resources/scene.h>
 
 #include <cstddef>
 #include <cstring>
@@ -2072,33 +2077,11 @@ TEST_CASE("Selected project World edits reach the delegated graph viewport", "[e
     rhi::Shutdown();
 }
 
-TEST_CASE("Supplied World replaces a drawable frame through its authored ray graph",
-          "[.sponza-ray-project][.supplied-ray-project]")
+namespace
 {
-    const QString root =
-        qEnvironmentVariable("LUDUS_RAY_TEST_PROJECT", qEnvironmentVariable("LUDUS_SPONZA_TEST_PROJECT"));
-    const QString runtime =
-        qEnvironmentVariable("LUDUS_RAY_TEST_RUNTIME", qEnvironmentVariable("LUDUS_SPONZA_TEST_RUNTIME"));
-    if (root.isEmpty() == true || runtime.isEmpty() == true)
-    {
-        SKIP("Set LUDUS_SPONZA_TEST_PROJECT to an isolated project copy and LUDUS_SPONZA_TEST_RUNTIME to its ray "
-             "package.");
-    }
-    const QString worldPath = qEnvironmentVariable("LUDUS_RAY_TEST_WORLD", QStringLiteral("assets/sponza.world.json"));
-    rhi::StorageLimits storage;
-    storage.ResourcesPerGraph = renderer::VISIBILITY_GRAPH_RESOURCE_CAPACITY;
-    storage.ResourcesPerKind = 4096;
-    storage.BindingDescriptors = 32768;
-    storage.HostBytes = usize{256} * 1024 * 1024;
-    storage.ResourceBytes = uint64{2} * 1024 * 1024 * 1024;
-    DeviceFixture device(storage, true);
-    REQUIRE(device.IsAvailable == true);
-    RenderGraphPreview preview = MakePreview();
-    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
-    preview.SetExtraction(MakeExtraction({0, 1, 0, 1}, 1));
-    REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
-    REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedRevision() == 1; }) == true);
-    const QImage previous = preview.GetImage();
+/// Assemble the selected World's actual catalog closure and keep its immutable geometry alive.
+RenderScene LoadSuppliedWorldScene(const QString& root, const QString& worldPath)
+{
     WorldDocument world;
     QString error;
     REQUIRE(world.LoadSchema(QByteArrayLiteral("{\"version\":1,\"id\":\"ludus.world.default.v1\","
@@ -2127,16 +2110,104 @@ TEST_CASE("Supplied World replaces a drawable frame through its authored ray gra
     REQUIRE(hasScene == true);
     if (worldPath == QStringLiteral("assets/sponza.world.json"))
     {
-        REQUIRE(scene.Objects.size() == 26);
+        REQUIRE(scene.Objects.size() == 28);
     }
+    return scene;
+}
+} // namespace
+
+TEST_CASE("Prepare the complete supplied Intel Sponza World", "[.prepare-full-sponza]")
+{
+    namespace cook = ludus::content::scene_cook;
+    const QString root = qEnvironmentVariable("LUDUS_FULL_SPONZA_PROJECT");
+    const QFileInfo entry(qEnvironmentVariable("LUDUS_FULL_SPONZA_ENTRY"));
+    if (root.isEmpty() == true || entry.isFile() == false)
+    {
+        SKIP("Set LUDUS_FULL_SPONZA_PROJECT to a new isolated project directory and LUDUS_FULL_SPONZA_ENTRY to the "
+             "supplied glTF.");
+    }
+    REQUIRE(QFileInfo::exists(QDir(root).filePath(QStringLiteral("assets/catalog.json"))) == false);
+    REQUIRE(QDir().mkpath(root) == true);
+    const QByteArray rootBytes = root.toUtf8();
+    const QByteArray sourceBytes = entry.absolutePath().toUtf8();
+    const QByteArray entryBytes = entry.fileName().toUtf8();
+    const identity::EntropySource entropy = ludus::platform::GetSystemEntropySource();
+    threading::JobSystem jobs;
+    REQUIRE(jobs.Initialize({ .WorkerCount = 4 }) == threading::JobStatus::Ok);
+    cook::AssetOptions options;
+    options.EntropyOrNull = &entropy;
+    options.JobsOrNull = &jobs;
+    options.SourceEntry = {entryBytes.constData(), static_cast<usize>(entryBytes.size())};
+    cook::AssetError assetError;
+    Array<uint8> created;
+    REQUIRE(cook::CreateLevel("Intel Sponza", options, created, assetError) == true);
+    cook::EditorSceneRequest request;
+    request.Root = {rootBytes.constData(), static_cast<usize>(rootBytes.size())};
+    request.Source = {sourceBytes.constData(), static_cast<usize>(sourceBytes.size())};
+    request.Level = {created.GetData(), created.GetSize()};
+    request.Operation = cook::EditorSceneOperation::Import;
+    cook::EditorSceneResult imported;
+    const bool isImported = cook::OperateEditorScene(request, options, imported, assetError);
+    INFO(assetError.Message.View());
+    REQUIRE(isImported == true);
+    const QJsonObject response =
+        QJsonDocument::fromJson(QByteArray(reinterpret_cast<const char*>(imported.Response.GetData()),
+                                           static_cast<qsizetype>(imported.Response.GetSize())))
+            .object();
+    const QJsonObject level = response.value(QStringLiteral("level")).toObject();
+    const QByteArray levelBytes = QJsonDocument(level).toJson(QJsonDocument::Compact);
+    request.Operation = cook::EditorSceneOperation::CommitImport;
+    request.Level = {reinterpret_cast<const uint8*>(levelBytes.constData()), static_cast<usize>(levelBytes.size())};
+    request.Catalog = {imported.Catalog.GetData(), imported.Catalog.GetSize()};
+    cook::EditorSceneResult committed;
+    REQUIRE(cook::OperateEditorScene(request, options, committed, assetError) == true);
+    WorldDocument world;
+    QString error;
+    REQUIRE(world.LoadSchema(QByteArrayLiteral("{\"version\":1,\"id\":\"ludus.world.default.v1\",\"label\":\"World\","
+                                               "\"components\":[],\"assets\":[]}"),
+                             error) == true);
+    REQUIRE(world.Load(QByteArrayLiteral("{\"version\":1,\"schema\":\"ludus.world.default.v1\",\"entities\":[]}"),
+                       error) == true);
+    REQUIRE(world.ImportScene(level, error) == true);
+    QSaveFile file(QDir(root).filePath(QStringLiteral("assets/sponza.world.json")));
+    REQUIRE(file.open(QIODevice::WriteOnly) == true);
+    REQUIRE(file.write(world.Encode()) > 0);
+    REQUIRE(file.commit() == true);
+}
+
+TEST_CASE("Supplied World replaces a drawable frame through its authored ray graph",
+          "[.sponza-ray-project][.supplied-ray-project]")
+{
+    const QString root =
+        qEnvironmentVariable("LUDUS_RAY_TEST_PROJECT", qEnvironmentVariable("LUDUS_SPONZA_TEST_PROJECT"));
+    const QString runtime =
+        qEnvironmentVariable("LUDUS_RAY_TEST_RUNTIME", qEnvironmentVariable("LUDUS_SPONZA_TEST_RUNTIME"));
+    if (root.isEmpty() == true || runtime.isEmpty() == true)
+    {
+        SKIP("Set LUDUS_SPONZA_TEST_PROJECT to an isolated project copy and LUDUS_SPONZA_TEST_RUNTIME to its ray "
+             "package.");
+    }
+    const QString worldPath = qEnvironmentVariable("LUDUS_RAY_TEST_WORLD", QStringLiteral("assets/sponza.world.json"));
+    DeviceFixture device(MakeViewportDeviceDescription().Storage, true);
+    REQUIRE(device.IsAvailable == true);
+    RenderGraphPreview preview = MakePreview();
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    preview.SetExtraction(MakeExtraction({0, 1, 0, 1}, 1));
+    REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
+    REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedRevision() == 1; }) == true);
+    const QImage previous = preview.GetImage();
+    const RenderScene scene = LoadSuppliedWorldScene(root, worldPath);
     RenderPreview viewport;
     REQUIRE(viewport.SetScene(scene) == true);
     constexpr uint32 TARGET_WIDTH = 640;
     constexpr uint32 TARGET_HEIGHT = 480;
+    preview.SetReferenceSize(QSize(TARGET_WIDTH, TARGET_HEIGHT));
+    QString error;
     renderer::ViewDescription view;
     REQUIRE(viewport.DescribeConventionalView(TARGET_WIDTH, TARGET_HEIGHT, view, error) == true);
     RenderGraphExtraction extraction;
     REQUIRE(MakeRenderGraphExtraction(scene, view, 2, extraction, error) == true);
+    extraction.ContentRevision = 2;
     usize triangleCount = 0;
     constexpr usize CORNERS_PER_TRIANGLE = 3;
     for (const renderer::RenderGraphMesh& mesh : extraction.Meshes)
@@ -2146,7 +2217,7 @@ TEST_CASE("Supplied World replaces a drawable frame through its authored ray gra
     REQUIRE(triangleCount != 0);
     if (worldPath == QStringLiteral("assets/sponza.world.json"))
     {
-        REQUIRE(triangleCount == 2000000);
+        REQUIRE(triangleCount == 3747018);
     }
     QFile runtimeFile(runtime);
     REQUIRE(runtimeFile.open(QIODevice::ReadOnly) == true);
@@ -2155,22 +2226,26 @@ TEST_CASE("Supplied World replaces a drawable frame through its authored ray gra
     REQUIRE(package.Decode({reinterpret_cast<const uint8*>(runtimeBytes.constData()),
                             static_cast<usize>(runtimeBytes.size())}) == renderer::RenderGraphPackageStatus::Ready);
     bool hasRayPass = false;
+    usize rayPassCount = 0;
     const renderer::RenderGraphPlan plan = package.GetPlan();
     for (usize passIndex = 0; passIndex < plan.Passes.GetSize(); ++passIndex)
     {
         hasRayPass = hasRayPass == true || plan.Passes[passIndex].Program == format::Technique::RayTracing;
+        rayPassCount += plan.Passes[passIndex].Program == format::Technique::RayTracing ? 1 : 0;
     }
     REQUIRE(hasRayPass == true);
+    WARN("Supplied graph ray passes: " << rayPassCount);
     REQUIRE(preview.Load(runtime) == RenderGraphPreviewLoad::Staged);
     const uint64 rayGeneration = preview.GetReport().CandidateGeneration;
     preview.SetExtraction(extraction);
     CHECK(preview.GetImage() == previous);
-    constexpr int32 TIMEOUT_MILLISECONDS = 180000;
+    constexpr int32 TIMEOUT_MILLISECONDS = 600000;
     QElapsedTimer timer;
     timer.start();
     while ((preview.GetPresentedRevision() != 2 || preview.GetPresentedGeneration() != rayGeneration) &&
            timer.elapsed() < TIMEOUT_MILLISECONDS &&
-           preview.GetReport().Candidate != renderer::RenderGraphCandidateState::Failed)
+           preview.GetReport().Candidate != renderer::RenderGraphCandidateState::Failed &&
+           preview.GetStatus().contains(QStringLiteral("CapacityExceeded")) == false)
     {
         preview.Tick();
         QTest::qWait(1);
@@ -2188,7 +2263,8 @@ TEST_CASE("Supplied World replaces a drawable frame through its authored ray gra
     CHECK(preview.GetImage() == firstRayFrame);
     timer.restart();
     while (preview.GetPresentedRevision() != 3 && timer.elapsed() < TIMEOUT_MILLISECONDS &&
-           preview.GetReport().Candidate != renderer::RenderGraphCandidateState::Failed)
+           preview.GetReport().Candidate != renderer::RenderGraphCandidateState::Failed &&
+           preview.GetStatus().contains(QStringLiteral("CapacityExceeded")) == false)
     {
         preview.Tick();
         QTest::qWait(1);
@@ -2196,13 +2272,173 @@ TEST_CASE("Supplied World replaces a drawable frame through its authored ray gra
     INFO(preview.GetStatus().toStdString());
     REQUIRE(preview.GetPresentedRevision() == 3);
     CHECK(preview.GetPresentedGeneration() == rayGeneration);
-    CHECK(preview.GetImage() != firstRayFrame);
+    // A physically lit authored graph can remain black when the World has no lights.
+    // The declared diagnostic graph must visibly follow the camera.
+    if (runtime == QStringLiteral(LUDUS_EDITOR_RAY_GRAPH_FIXTURE))
+    {
+        CHECK(preview.GetImage() != firstRayFrame);
+    }
+    // A content edit retains two complete GPU scenes until the replacement is ready.
+    // Camera-only navigation above reuses the uploaded scene and cannot prove this peak.
+    const QImage navigated = preview.GetImage();
+    extraction.Items[0].MeshToWorld.Translation.X += .5F;
+    extraction.ContentRevision += 1;
+    extraction.Revision = 4;
+    preview.SetExtraction(extraction);
+    CHECK(preview.GetImage() == navigated);
+    uint64 peakResourceBytes = 0;
+    bool hasPreservedPendingFrame = true;
+    timer.restart();
+    while (preview.GetPresentedRevision() != 4 && timer.elapsed() < TIMEOUT_MILLISECONDS &&
+           preview.GetReport().Candidate != renderer::RenderGraphCandidateState::Failed &&
+           preview.GetStatus().contains(QStringLiteral("CapacityExceeded")) == false)
+    {
+        preview.Tick();
+        rhi::StorageUsage usage;
+        REQUIRE(rhi::GetStorageUsage(device.Device, usage) == rhi::RasterStatus::Ready);
+        peakResourceBytes = math::Max(peakResourceBytes, usage.PeakResourceBytes);
+        if (preview.GetPresentedRevision() != 4)
+        {
+            // Progressive authored graphs can keep refining the old view while the
+            // replacement prepares. Its presented identity and drawable image must survive.
+            hasPreservedPendingFrame = hasPreservedPendingFrame == true && preview.GetPresentedRevision() == 3 &&
+                                       preview.GetImage().isNull() == false;
+        }
+        QTest::qWait(1);
+    }
+    INFO(preview.GetStatus().toStdString());
+    REQUIRE(preview.GetPresentedRevision() == 4);
+    CHECK(hasPreservedPendingFrame == true);
+    rhi::StorageUsage finalUsage;
+    REQUIRE(rhi::GetStorageUsage(device.Device, finalUsage) == rhi::RasterStatus::Ready);
+    WARN("Full scene replacement peak logical RHI bytes: " << peakResourceBytes << "; peak host metadata/index bytes: "
+                                                           << finalUsage.PeakHostBytes);
+    if (worldPath == QStringLiteral("assets/sponza.world.json"))
+    {
+        constexpr uint64 PREVIOUS_DEVICE_BYTES = uint64{2} * 1024 * 1024 * 1024;
+        CHECK(peakResourceBytes > PREVIOUS_DEVICE_BYTES);
+    }
     const QString capture =
         qEnvironmentVariable("LUDUS_RAY_TEST_IMAGE", qEnvironmentVariable("LUDUS_SPONZA_TEST_IMAGE"));
     if (capture.isEmpty() == false)
     {
         REQUIRE(preview.GetImage().save(capture) == true);
     }
+}
+
+TEST_CASE("Full Intel Sponza presents through the native editor viewport", "[.full-sponza-native]")
+{
+    const QString root = qEnvironmentVariable("LUDUS_SPONZA_TEST_PROJECT");
+    if (root.isEmpty() == true)
+    {
+        SKIP("Set LUDUS_SPONZA_TEST_PROJECT to an isolated full-scene project prepared with [.prepare-full-sponza].");
+    }
+    REQUIRE(PreviewViewport::GetPresentation() == ViewportPresentation::SharedDevice);
+    rhi::Shutdown();
+    const RenderScene scene = LoadSuppliedWorldScene(root, QStringLiteral("assets/sponza.world.json"));
+    usize triangles = 0;
+    REQUIRE(scene.Definition.Get() != nullptr);
+    for (const ludus::resources::SceneMesh& mesh : scene.Definition->Meshes)
+    {
+        triangles += mesh.Indices.GetSize() / 3;
+    }
+    REQUIRE(triangles == 3747018);
+    RendererWorkspace workspace({});
+    workspace.SetProject(root, 1);
+    RenderPreview source;
+    PreviewViewport viewport(&source);
+    viewport.UseProjectGraph(workspace);
+    workspace.SetPreviewSource(&source);
+    REQUIRE(workspace.PreviewRuntime() == true);
+    RenderGraphPreview& graph = *workspace.GetPreviewOrNull();
+    viewport.resize(640, 480);
+    viewport.show();
+    REQUIRE(source.SetScene(scene) == true);
+    REQUIRE(source.Start() == true);
+    QQuickWindow* windowOrNull = nullptr;
+    for (QWindow* window : QGuiApplication::allWindows())
+    {
+        if (window->objectName() == QStringLiteral("LudusGpuViewport") && window->isVisible() == true)
+        {
+            windowOrNull = static_cast<QQuickWindow*>(window);
+        }
+    }
+    REQUIRE(windowOrNull != nullptr);
+    REQUIRE(QTest::qWaitForWindowExposed(windowOrNull) == true);
+    const auto waitFor = [&graph](auto predicate) {
+        QElapsedTimer timer;
+        timer.start();
+        constexpr int32 TIMEOUT_MILLISECONDS = 600000;
+        while (predicate() == false && timer.elapsed() < TIMEOUT_MILLISECONDS &&
+               graph.GetReport().Candidate != renderer::RenderGraphCandidateState::Failed &&
+               graph.GetStatus().contains(QStringLiteral("CapacityExceeded")) == false)
+        {
+            QTest::qWait(1);
+        }
+        return predicate();
+    };
+    const bool hasPresented = waitFor([&]() { return viewport.PresentedFrames() > 0; });
+    INFO(source.Status().toStdString());
+    INFO(graph.GetStatus().toStdString());
+    REQUIRE(hasPresented == true);
+    REQUIRE(graph.HasGpuFrame() == true);
+    CHECK(graph.GetImage().isNull() == true);
+    CHECK(viewport.HasRetainedGraphFrame() == true);
+    // Ordinary raster navigation admits the complete World independently of ray setup.
+    const QImage raster = windowOrNull->grabWindow();
+    REQUIRE(raster.isNull() == false);
+    const uint64 rasterRevision = graph.GetPresentedRevision();
+    const uint64 beforeRasterNavigation = viewport.PresentedFrames();
+    source.Look(10, 0);
+    REQUIRE(waitFor([&]() {
+                return graph.GetPresentedRevision() > rasterRevision &&
+                       viewport.PresentedFrames() > beforeRasterNavigation;
+            }) == true);
+    const uint64 rasterFrames = viewport.PresentedFrames();
+    // The declared diagnostic ray graph shows authored base-color averages without
+    // inventing illumination for Sponza's zero-intensity punctual lights.
+    REQUIRE(graph.Load(QStringLiteral(LUDUS_EDITOR_RAY_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
+    const uint64 rayGeneration = graph.GetReport().CandidateGeneration;
+    REQUIRE(waitFor([&]() {
+                return graph.GetPresentedGeneration() == rayGeneration && viewport.PresentedFrames() > rasterFrames;
+            }) == true);
+    const QImage first = windowOrNull->grabWindow();
+    REQUIRE(first.isNull() == false);
+    bool hasVariation = false;
+    usize errorPixels = 0;
+    const QRgb firstPixel = first.pixel(0, 0);
+    for (int32 y = 0; y < first.height(); ++y)
+    {
+        for (int32 x = 0; x < first.width(); ++x)
+        {
+            const QRgb pixel = first.pixel(x, y);
+            hasVariation = hasVariation == true || pixel != firstPixel;
+            errorPixels += qRed(pixel) == 255 && qGreen(pixel) == 0 && qBlue(pixel) == 255 ? 1 : 0;
+        }
+    }
+    CHECK(hasVariation == true);
+    CHECK(errorPixels == 0);
+    const uint64 initialRevision = graph.GetPresentedRevision();
+    const uint64 initialFrame = viewport.PresentedFrames();
+    source.Look(20, 0);
+    REQUIRE(waitFor([&]() {
+                return graph.GetPresentedRevision() > initialRevision && viewport.PresentedFrames() > initialFrame;
+            }) == true);
+    const QImage navigated = windowOrNull->grabWindow();
+    CHECK(navigated != first);
+    const uint64 beforeResize = viewport.PresentedFrames();
+    viewport.resize(800, 550);
+    REQUIRE(waitFor([&]() {
+                return viewport.PresentedFrames() > beforeResize && windowOrNull->grabWindow().size() != first.size();
+            }) == true);
+    CHECK(graph.GetStatistics().GetReadbackMilliseconds().GetAverage() == 0);
+    const QString capture = qEnvironmentVariable("LUDUS_SPONZA_NATIVE_IMAGE");
+    if (capture.isEmpty() == false)
+    {
+        REQUIRE(windowOrNull->grabWindow().save(capture) == true);
+    }
+    source.Stop();
+    workspace.SetPreviewSource(nullptr);
 }
 
 TEST_CASE("Supplied staircase2 World stays drawable through the engine default fallback", "[.staircase2-project]")

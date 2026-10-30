@@ -25,6 +25,19 @@ inline constexpr foundation::uint32 VISIBILITY_GRAPH_RESOURCE_CAPACITY =
     static_cast<foundation::uint32>(content::render_graph_format::MAX_STORAGE_BUFFERS) +
     2 * static_cast<foundation::uint32>(content::render_graph_format::MAX_MESHES);
 
+/// CPU preparation ceiling for graph ray scenes, including the frozen scene, BVH,
+/// fingerprint and packing/native-geometry scratch. Four GiB on 64-bit hosts; two
+/// GiB on 32-bit hosts. This is an admission ceiling, not an initial allocation.
+/// A device's storage-buffer range and physical allocation failures remain independent.
+inline constexpr foundation::usize RENDER_GRAPH_RAY_CPU_BYTES =
+    foundation::usize{2} * 1024 * 1024 * 1024 * (sizeof(foundation::usize) > sizeof(foundation::uint32) ? 2 : 1);
+/// Logical GPU ceiling across current/replacement graph ray scenes, per-pass images,
+/// native acceleration structures and pending producer/consumer holds. Six GiB on
+/// 64-bit hosts; two GiB on 32-bit hosts. Device creators must separately budget RHI
+/// resources, including raster geometry, textures and graph targets sharing the device.
+inline constexpr foundation::usize RENDER_GRAPH_RAY_GPU_BYTES =
+    foundation::usize{2} * 1024 * 1024 * 1024 * (sizeof(foundation::usize) > sizeof(foundation::uint32) ? 3 : 1);
+
 /// Numeric offline plan; all records are copied at initialization. Borrowed views
 /// must be valid for the call only. This is not a runtime graph/source parser.
 struct RenderGraphPlan final

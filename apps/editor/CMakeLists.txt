@@ -194,6 +194,8 @@ configure_file(src/internal/render_graph_package_policy.h.in
 include(DesignTokens.cmake)
 
 set(editor_viewport_sources
+    src/internal/viewport_device_description.h
+    src/viewport_device_description.cpp
     src/internal/viewport_frame_pump.h
     src/viewport_frame_pump.cpp
     src/internal/viewport_frame_source.h
