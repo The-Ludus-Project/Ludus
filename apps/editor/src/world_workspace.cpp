@@ -1742,7 +1742,10 @@ void WorldWorkspace::RestoreSession(const QJsonObject& state)
     const auto bytes = QByteArray::fromBase64(encoded);
     if (bytes.size() <= 4096 && bytes.toBase64() == encoded)
     {
-        (void)Split_->restoreState(bytes);
+        if (Split_->restoreState(bytes) == true && mIsChromeVisible == false)
+        {
+            mSplitterStateBeforeChromeHidden = bytes;
+        }
     }
     const QString selected = state.value(QStringLiteral("selection")).toString();
     mSelectedEntities.clear();

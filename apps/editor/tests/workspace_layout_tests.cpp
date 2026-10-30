@@ -816,3 +816,26 @@ TEST_CASE("A project's paired Source selection and divider restore together", "[
     CHECK(difference >= -savedTotal);
     CHECK(difference <= savedTotal);
 }
+
+TEST_CASE("World session restoration retains the normal splitter while companion chrome is hidden",
+          "[editor][layout][code-viewport]")
+{
+    WorldWorkspace world(ToolingPaths{}, nullptr);
+    world.resize(1200, 800);
+    world.show();
+    QApplication::processEvents();
+    QSplitter* splitterOrNull = world.findChild<QSplitter*>(QStringLiteral("worldSplitter"));
+    REQUIRE(splitterOrNull != nullptr);
+    splitterOrNull->setSizes({200, 600, 200});
+    const QJsonObject first = world.Session();
+    splitterOrNull->setSizes({350, 500, 300});
+    REQUIRE(world.Session().value(QStringLiteral("splitter")) != first.value(QStringLiteral("splitter")));
+    world.SetChromeVisible(false);
+    world.RestoreSession(first);
+    CHECK(world.IsChromeVisible() == false);
+    CHECK(world.Session().value(QStringLiteral("splitter")) == first.value(QStringLiteral("splitter")));
+    world.SetChromeVisible(true);
+    CHECK(world.IsChromeVisible() == true);
+    CHECK(world.Session().value(QStringLiteral("boundCamera")) == first.value(QStringLiteral("boundCamera")));
+    CHECK(world.Session().value(QStringLiteral("sceneCamera")) == first.value(QStringLiteral("sceneCamera")));
+}
