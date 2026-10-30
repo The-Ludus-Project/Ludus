@@ -407,12 +407,14 @@ TEST_CASE("diagnostics follow edits and go out of date only when text changes", 
     CHECK(editor.GetDiagnosticRange(0).block().blockNumber() == 1);
     CHECK(editor.DescribeLineDiagnostics(1).startsWith(QStringLiteral("Out of date:")) == true);
     FinishHighlighting();
-    bool hasDottedUnderline = false;
+    // An out-of-date report keeps its squiggle, fainter, so the error can still be found.
+    bool hasFaintSquiggle = false;
     for (const QTextEdit::ExtraSelection& selection : editor.extraSelections())
     {
-        hasDottedUnderline = hasDottedUnderline || selection.format.underlineStyle() == QTextCharFormat::DotLine;
+        hasFaintSquiggle = hasFaintSquiggle || (selection.format.underlineStyle() == QTextCharFormat::WaveUnderline &&
+                                                selection.format.underlineColor().alpha() < 255);
     }
-    CHECK(hasDottedUnderline == true);
+    CHECK(hasFaintSquiggle == true);
 
     SECTION("a same-length replacement is an edit")
     {
@@ -436,6 +438,50 @@ TEST_CASE("diagnostics follow edits and go out of date only when text changes", 
         CHECK(editor.GetDiagnosticCount() == 0);
         CHECK(editor.DescribeLineDiagnostics(0).isEmpty() == true);
     }
+}
+
+TEST_CASE("the caret line's diagnostic message is drawn under the line until that text is edited",
+          "[editor][text][diagnostics]")
+{
+    CodeEditor editor;
+    editor.SetLanguage(CodeLanguage::Slang);
+    editor.setPlainText(QStringLiteral("float a;\nfloat b = bad;\nfloat c;\nfloat d;"));
+    editor.resize(480, 260);
+    editor.show();
+    editor.SetDiagnostics(
+        {{ .Line = 2, .Column = 11, .Length = 3, .Message = QStringLiteral("undefined identifier 'bad'.") }},
+        true);
+    editor.GoToLine(2, 11);
+    FinishHighlighting();
+    const QTextCursor nextLine(editor.document()->findBlockByNumber(2));
+    const QRect nextLineCursor = editor.cursorRect(nextLine);
+    const QRect below(0, nextLineCursor.top(), editor.viewport()->width(), nextLineCursor.height());
+    const auto grabBelow = [&editor, &below]() { return editor.viewport()->grab(below).toImage(); };
+    const QImage withCallout = grabBelow();
+    // The same text with no marker is the reference for what the line below normally looks like.
+    editor.SetDiagnostics({}, true);
+    FinishHighlighting();
+    const QImage plain = grabBelow();
+    CHECK(withCallout != plain);
+    // A report that is already out of date still explains itself.
+    editor.SetDiagnostics(
+        {{ .Line = 2, .Column = 11, .Length = 3, .Message = QStringLiteral("undefined identifier 'bad'.") }},
+        false);
+    FinishHighlighting();
+    CHECK(grabBelow() != plain);
+    // Typing on that line makes way: the message describes text that is being replaced.
+    editor.GoToLine(2, 11);
+    QTextCursor cursor = editor.textCursor();
+    cursor.insertText(QStringLiteral("x"));
+    FinishHighlighting();
+    CHECK(grabBelow() == plain);
+    // Another line has no message to show.
+    editor.SetDiagnostics(
+        {{ .Line = 2, .Column = 11, .Length = 3, .Message = QStringLiteral("undefined identifier 'bad'.") }},
+        true);
+    editor.GoToLine(4, 1);
+    FinishHighlighting();
+    CHECK(editor.viewport()->grab(below).toImage() == plain);
 }
 
 TEST_CASE("diagnostic hover shows escaped messages over text and gutter", "[editor][text][diagnostics]")

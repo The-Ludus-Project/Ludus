@@ -12,6 +12,7 @@
 #include <QPlainTextEdit>
 #include <QSignalSpy>
 #include <QTableWidget>
+#include <QToolButton>
 
 using namespace ludus::editor;
 
@@ -84,15 +85,26 @@ TEST_CASE("structured validation batches produce one actionable Error List row p
     list.resize(800, 160);
     list.show();
     QCoreApplication::processEvents();
+    // The repair hint reads in the row itself; the full text waits behind Details.
+    QToolButton* toggle = list.findChild<QToolButton*>(QStringLiteral("errorListDetailsToggle"));
+    REQUIRE(toggle != nullptr);
+    CHECK(details->isVisible() == false);
+    CHECK(toggle->isEnabled() == true);
+    toggle->click();
+    QCoreApplication::processEvents();
     CHECK(details->isVisible() == true);
     CHECK(details->height() > 0);
     CHECK(details->isReadOnly() == true);
     CHECK(details->toPlainText() == entries.first().Description);
     QTableWidget* table = list.findChild<QTableWidget*>();
     REQUIRE(table != nullptr);
+    CHECK(table->item(0, 2)->text().contains(QStringLiteral("repair: Connect a depth target.")) == true);
+    CHECK(table->item(0, 2)->text().contains(QLatin1Char('\n')) == false);
     CHECK(table->viewport()->height() >= 2 * table->verticalHeader()->defaultSectionSize());
+    // A one-line row has nothing more to show.
     table->setCurrentCell(1, 0);
-    CHECK(details->toPlainText() == entries.last().Description);
+    CHECK(details->toPlainText().isEmpty() == true);
+    CHECK(toggle->isEnabled() == false);
     CHECK(entries.first().SourceIndex == 0);
     CHECK(entries.last().SourceIndex == 1);
     CHECK(entries.first().Code == result.Code);
@@ -104,56 +116,112 @@ TEST_CASE("structured validation batches produce one actionable Error List row p
     CHECK(result.GetDiagnostic(2).isEmpty() == true);
 }
 
-TEST_CASE("Error List shows details only for descriptions its row cannot show", "[editor][diagnostics]")
+TEST_CASE("Error List keeps details collapsed until Details is opened for a row that has some", "[editor][diagnostics]")
 {
     ErrorList list;
     list.resize(800, 200);
     list.show();
     const QPlainTextEdit* details = list.findChild<QPlainTextEdit*>(QStringLiteral("errorListDetails"));
+    QToolButton* toggle = list.findChild<QToolButton*>(QStringLiteral("errorListDetailsToggle"));
+    QTableWidget* table = list.findChild<QTableWidget*>();
     REQUIRE(details != nullptr);
-    list.ReplaceEntries(ErrorListProducer::RenderGraph,
-                        {
-                        {
-                            .Severity = ErrorListSeverity::Message,
-                            .Producer = ErrorListProducer::RenderGraph,
-                            .Code = {},
-                            .Description = QStringLiteral("build succeeded for draft revision 2."),
-                            .File = {},
-                            .Location = {},
-                            .Origin = QStringLiteral("Render graph"),
-                            .SourceIndex = 0,
-                        }});
+    REQUIRE(toggle != nullptr);
+    REQUIRE(table != nullptr);
+    const ErrorListEntry plain
+    {
+        .Severity = ErrorListSeverity::Message,
+        .Producer = ErrorListProducer::RenderGraph,
+        .Code = {},
+        .Description = QStringLiteral("build succeeded for draft revision 2."),
+        .File = {},
+        .Location = {},
+        .Origin = QStringLiteral("Render graph"),
+        .SourceIndex = 0,
+        .Details = {},
+        .Backends = {},
+        .Count = 1,
+    };
+    list.ReplaceEntries(ErrorListProducer::RenderGraph, {plain});
+    QCoreApplication::processEvents();
+    CHECK(toggle->isEnabled() == false);
+    CHECK(details->isVisible() == false);
+    // Raw compiler output backs a row without being a row: it stays under it, collapsed.
+    ErrorListEntry compiled = plain;
+    compiled.Severity = ErrorListSeverity::Error;
+    compiled.Description = QStringLiteral("Shader: #error: \"Implement Me!\"");
+    compiled.Details = QStringLiteral("shader helper: Ludus shader build:\nshader.slang(75): error 15900: #error");
+    list.ReplaceEntries(ErrorListProducer::RenderGraph, {compiled});
+    QCoreApplication::processEvents();
+    CHECK(table->rowCount() == 1);
+    CHECK(details->isVisible() == false);
+    REQUIRE(toggle->isEnabled() == true);
+    toggle->click();
+    QCoreApplication::processEvents();
+    CHECK(details->isVisible() == true);
+    CHECK(details->toPlainText().contains(QStringLiteral("shader.slang(75): error 15900")) == true);
+    toggle->click();
     QCoreApplication::processEvents();
     CHECK(details->isVisible() == false);
-    list.ReplaceEntries(ErrorListProducer::RenderGraph,
-                        {
-                        {
-                            .Severity = ErrorListSeverity::Error,
-                            .Producer = ErrorListProducer::RenderGraph,
-                            .Code = QStringLiteral("RenderGraphTypeMismatch"),
-                            .Description = QStringLiteral("wrong input type\nrepair: Connect a depth target."),
-                            .File = {},
-                            .Location = {},
-                            .Origin = QStringLiteral("Render graph"),
-                            .SourceIndex = 0,
-                        }});
+    // A long single line is elided in its row; its tooltip keeps all of it.
+    ErrorListEntry wide = plain;
+    wide.Severity = ErrorListSeverity::Warning;
+    wide.Description = QString(400, QLatin1Char('w'));
+    list.ReplaceEntries(ErrorListProducer::RenderGraph, {wide});
     QCoreApplication::processEvents();
-    CHECK(details->isVisible() == true);
-    // A single line wider than its column is elided in the row, so the pane shows all of it.
-    list.ReplaceEntries(ErrorListProducer::RenderGraph,
-                        {
-                        {
-                            .Severity = ErrorListSeverity::Warning,
-                            .Producer = ErrorListProducer::RenderGraph,
-                            .Code = {},
-                            .Description = QString(400, QLatin1Char('w')),
-                            .File = {},
-                            .Location = {},
-                            .Origin = QStringLiteral("Shader"),
-                            .SourceIndex = 0,
-                        }});
-    QCoreApplication::processEvents();
-    CHECK(details->isVisible() == true);
+    CHECK(table->item(0, 2)->toolTip() == wide.Description);
+}
+
+TEST_CASE("a shader failure says each problem once: the log folds under one row and backends merge",
+          "[editor][render-graph][diagnostics]")
+{
+    const QJsonObject location{{QStringLiteral("source"), QStringLiteral("shaders/closest_hit.slang")},
+                               {QStringLiteral("line"), 75},
+                               {QStringLiteral("column"), 12}};
+    const auto mapped = [&location](const QString& target) {
+        return QJsonObject{{QStringLiteral("severity"), QStringLiteral("error")},
+                           {QStringLiteral("message"), QStringLiteral("#error: \"Implement Me!\"")},
+                           {QStringLiteral("program"), QStringLiteral("GraphRayCompute")},
+                           {QStringLiteral("target"), target},
+                           {QStringLiteral("location"), location}};
+    };
+    RenderGraphJobResult result;
+    result.Request.Action = QStringLiteral("build");
+    result.Code = QStringLiteral("RenderGraphBuildShader");
+    result.Message = QStringLiteral("shader helper: Ludus shader build:\nshader.slang(75): error 15900: #error");
+    result.Location = location;
+    result.Diagnostics = QJsonArray{mapped(QStringLiteral("metal")), mapped(QStringLiteral("spirv"))};
+    REQUIRE(result.GetDiagnosticCount() == 3);
+    const QList<ErrorListEntry> entries = MakeRenderGraphErrorEntries(result);
+    REQUIRE(entries.size() == 1);
+    CHECK(entries.first().Count == 2);
+    CHECK(entries.first().Backends == QStringList{QStringLiteral("metal"), QStringLiteral("spirv")});
+    CHECK(entries.first().Details == result.Message);
+    CHECK(entries.first().Location == QStringLiteral("75:12"));
+    CHECK(entries.first().Description == QStringLiteral("GraphRayCompute: #error: \"Implement Me!\""));
+    // The first mapped diagnostic is the row ActivateDiagnostic maps back to the source.
+    CHECK(entries.first().SourceIndex == 1);
+    ErrorList list;
+    list.ReplaceEntries(ErrorListProducer::RenderGraph, entries);
+    CHECK(list.GetCount(ErrorListSeverity::Error) == 1);
+    QTableWidget* table = list.findChild<QTableWidget*>();
+    REQUIRE(table != nullptr);
+    CHECK(table->rowCount() == 1);
+    CHECK(table->item(0, 2)->text().startsWith(QStringLiteral("\u00d72")) == true);
+    CHECK(table->item(0, 4)->text() == QStringLiteral("75:12"));
+    CHECK(table->item(0, 5)->text() == QStringLiteral("Shader \u00b7 metal, spirv"));
+    // Without mapped diagnostics the summary stays as the row, so nothing is lost.
+    RenderGraphJobResult unmapped = result;
+    unmapped.Diagnostics = {};
+    CHECK(MakeRenderGraphErrorEntries(unmapped).size() == 1);
+}
+
+TEST_CASE("build diagnostics show a compact line and column", "[editor][diagnostics]")
+{
+    const QList<ErrorListEntry> entries =
+        ParseBuildErrorEntries(QStringLiteral("game.cpp:42:7: error: expected ';'\nother.cpp:9: warning: unused\n"));
+    REQUIRE(entries.size() == 2);
+    CHECK(entries.at(0).Location == QStringLiteral("42:7"));
+    CHECK(entries.at(1).Location == QStringLiteral("9"));
 }
 
 TEST_CASE("Error List reports new errors and warnings once per changed result", "[editor][diagnostics]")
@@ -170,6 +238,9 @@ TEST_CASE("Error List reports new errors and warnings once per changed result", 
         .Location = {},
         .Origin = QStringLiteral("Render graph"),
         .SourceIndex = 0,
+        .Details = {},
+        .Backends = {},
+        .Count = 1,
     };
     ErrorListEntry warning = message;
     warning.Severity = ErrorListSeverity::Warning;

@@ -159,7 +159,12 @@ bool ReferenceFingerprint(ReferenceJob& inoutJob, usize budget, SceneShaderDiagn
                   (inoutJob.EnvironmentOrNull != nullptr ? 2 * sizeof(uint64) + 2 * sizeof(uint32) : 0);
     for (usize i = 0; i < inoutJob.Scene.InstanceCount; ++i)
     {
-        if (inoutJob.Scene.Instances[i].Surface->HasSurfaceMap)
+        if (inoutJob.Scene.Instances[i].Surface->Bsdf.Scattering.Model !=
+            content::scene_format::MaterialModel::MetallicRoughness)
+        {
+            bytes += sizeof(uint32) + content::scene_format::MATERIAL_SCATTERING_FLOATS * sizeof(float32);
+        }
+        if (inoutJob.Scene.Instances[i].Surface->HasSurfaceMap == true)
         {
             bytes += FINGERPRINT_SURFACE_MAP_BYTES;
         }
@@ -225,6 +230,23 @@ bool ReferenceFingerprint(ReferenceJob& inoutJob, usize budget, SceneShaderDiagn
         vector(surface.Bsdf.BaseColor);
         scalar(surface.Bsdf.Metallic);
         scalar(surface.Bsdf.Roughness);
+        // Legacy fingerprints stay stable; typed models extend the declared integral.
+        if (surface.Bsdf.Scattering.Model != content::scene_format::MaterialModel::MetallicRoughness)
+        {
+            word(static_cast<uint32>(surface.Bsdf.Scattering.Model));
+            for (const float32 value : surface.Bsdf.Scattering.Eta)
+            {
+                scalar(value);
+            }
+            for (const float32 value : surface.Bsdf.Scattering.K)
+            {
+                scalar(value);
+            }
+            scalar(surface.Bsdf.Scattering.AlphaU);
+            scalar(surface.Bsdf.Scattering.AlphaV);
+            scalar(surface.Bsdf.Scattering.CoatingEta);
+            scalar(surface.Bsdf.Scattering.CoatingThickness);
+        }
         vector(surface.Emission);
         scalar(surface.Tint.W);
         scalar(surface.UvTransform.X);
@@ -437,6 +459,7 @@ Status Renderer::State::PrepareReferenceSurface(const MaterialDescription& surfa
         return Status::OutOfMemory;
     }
     data->Bsdf = {{surface.Tint.X, surface.Tint.Y, surface.Tint.Z}, lighting->Metallic, lighting->Roughness};
+    data->Bsdf.Scattering = lighting->Scattering;
     data->Tint = surface.Tint;
     data->UvTransform = surface.UvTransform;
     data->Sampler = surface.Sampler;
@@ -674,6 +697,7 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
     usize instances = 0;
     usize emitters = 0;
     usize surfaceMaps = 0;
+    usize typedMaterials = 0;
     uint64 alphaScalars = 0;
     for (usize i = 0; i < snapshot.Count; ++i)
     {
@@ -740,7 +764,11 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
                 alphaScalars += uint64(texture.Width) * texture.Height;
             }
         }
-        if (material.Reference->HasSurfaceMap)
+        if (material.Reference->Bsdf.Scattering.Model != content::scene_format::MaterialModel::MetallicRoughness)
+        {
+            ++typedMaterials;
+        }
+        if (material.Reference->HasSurfaceMap == true)
         {
             ++surfaceMaps;
             rhi::TextureCpuContent texture;
@@ -783,6 +811,8 @@ Status Renderer::State::BuildReferenceJob(usize snapshotSlot,
         uint64(triangles) * sizeof(ReferenceTriangle) + bvhBytes + uint64(emitters) * 2 * sizeof(uint32);
     const uint64 signatureBytes =
         uint64(triangles) * FINGERPRINT_TRIANGLE_BYTES + uint64(instances) * FINGERPRINT_INSTANCE_BYTES +
+        uint64(typedMaterials) *
+            (sizeof(uint32) + content::scene_format::MATERIAL_SCATTERING_FLOATS * sizeof(float32)) +
         uint64(surfaceMaps) * FINGERPRINT_SURFACE_MAP_BYTES + uint64(lights.Count) * FINGERPRINT_LIGHT_BYTES +
         FINGERPRINT_ENVIRONMENT_BYTES + (environmentOrNull != nullptr ? 2 * sizeof(uint64) + 2 * sizeof(uint32) : 0);
     const uint64 nativeSetup =

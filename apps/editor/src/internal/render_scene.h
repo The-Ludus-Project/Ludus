@@ -63,6 +63,7 @@ struct PreviewSurface final
     bool Repeat = false;
     foundation::float32 Metallic = 0;
     foundation::float32 Roughness = .5F;
+    content::scene_format::MaterialScattering Scattering{};
     foundation::math::Vector3 Emission{};
     bool IsEmissionTwoSided = false;
     bool HasEmissionPower = false;

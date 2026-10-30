@@ -77,8 +77,12 @@ struct ImportSummary final
     uint32 SourceFiles = 0;
     /// Shape placements after instance expansion.
     uint32 SourcePlacements = 0;
-    /// Vertices across all placements before budgeting.
+    /// Vertex records across all placements before exact compaction and budgeting;
+    /// counts above the uint32 range saturate at its maximum.
     uint32 SourceVertices = 0;
+    /// Triangle indices across all placements before budgeting (three per triangle);
+    /// counts above the uint32 range saturate at its maximum.
+    uint32 SourceIndices = 0;
     /// Materials defined by the source (named and anonymous Material directives).
     uint32 SourceMaterials = 0;
     /// Image and spectrum textures defined by the source.
@@ -96,6 +100,8 @@ struct ImportSummary final
     uint32 CookedObjects = 0;
     /// Vertices across all cooked meshes.
     uint32 CookedVertices = 0;
+    /// Triangle indices across all cooked meshes (three per retained triangle).
+    uint32 CookedIndices = 0;
     /// Placements omitted from the cooked scene. Geometry budgeting never drops
     /// placements: a scene that cannot fit the bundle byte budget fails the import.
     uint32 DroppedPlacements = 0;

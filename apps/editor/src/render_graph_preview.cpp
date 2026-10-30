@@ -225,6 +225,7 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
         material.BaseColor = {source.Tint.X, source.Tint.Y, source.Tint.Z};
         material.Metallic = source.Metallic;
         material.Roughness = source.Roughness;
+        material.Scattering = source.Scattering;
         material.Emission = source.Emission;
         material.IsEmissionTwoSided = source.IsEmissionTwoSided;
         material.NormalScale = source.NormalScale;

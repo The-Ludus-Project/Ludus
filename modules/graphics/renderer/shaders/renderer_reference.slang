@@ -1,3 +1,4 @@
+#include "material_scattering.slang"
 #include "math.slang"
 #include "raster_bindings.slang"
 #include "renderer_gpu_preview_layout.h"
@@ -41,6 +42,7 @@ LUDUS_SHADER_BINDING(LUDUS_REFERENCE_PARAMETERS_BINDING) cbuffer Parameters
     float4 BoundsMinimumWorld;
     float4 BoundsMaximumWorld;
     uint4 SurfaceLayout; // surface stride, analytic light offset, profile version, environment offset + 1
+    uint4 Tile;          // shared preview layout only; the reference kernel always covers Dimensions.xy
 };
 LUDUS_SHADER_BINDING(LUDUS_REFERENCE_SCENE_BINDING) StructuredBuffer<uint4> sceneWords;
 LUDUS_SHADER_BINDING(LUDUS_REFERENCE_ACCUMULATION_BINDING) RWStructuredBuffer<float4> accumulation;
@@ -625,6 +627,10 @@ struct Bsdf
     float3 BaseColor;
     float Metallic;
     float Roughness;
+    uint Model;
+    float3 Eta;
+    float3 K;
+    float Alpha;
 };
 bool IsValidBsdf(Bsdf bsdf)
 {
@@ -634,7 +640,7 @@ bool IsValidBsdf(Bsdf bsdf)
 }
 float GetSpecularProbability(Bsdf bsdf)
 {
-    return bsdf.Metallic == 1 ? 1 : .5;
+    return ComputeMaterialSpecularProbability(bsdf.Model, bsdf.Metallic);
 }
 // Value and full mixture density, without the cosine.
 float4 EvaluateBsdf(Bsdf bsdf, float3 normalWorld, float3 viewWorld, float3 lightWorld)
@@ -643,10 +649,12 @@ float4 EvaluateBsdf(Bsdf bsdf, float3 normalWorld, float3 viewWorld, float3 ligh
     float nl = dot(normalWorld, lightWorld);
     if (nv <= 0 || nl <= 0)
         return 0;
+    if (bsdf.Model == LUDUS_MATERIAL_MODEL_DIFFUSE)
+        return float4(bsdf.BaseColor / PI, nl / PI);
     float3 halfWorld = NormalizeOrZero(viewWorld + lightWorld);
     float nh = clamp(dot(normalWorld, halfWorld), 0, 1);
     float vh = clamp(dot(viewWorld, halfWorld), 0, 1);
-    float alpha = bsdf.Roughness * bsdf.Roughness;
+    float alpha = ComputeMaterialAlpha(bsdf.Model, bsdf.Roughness, bsdf.Alpha);
     float alphaSquared = alpha * alpha;
     // This stable equivalent avoids cancellation at low roughness and nh~=1.
     float denominator = (1 - nh * nh) + nh * nh * alphaSquared;
@@ -658,8 +666,12 @@ float4 EvaluateBsdf(Bsdf bsdf, float3 normalWorld, float3 viewWorld, float3 ligh
     float oneMinus = 1 - vh;
     float square = oneMinus * oneMinus;
     float3 fresnel = reflectance + (float3(1) - reflectance) * (square * square * oneMinus);
+    bool isConductor = bsdf.Model == LUDUS_MATERIAL_MODEL_CONDUCTOR;
+    if (isConductor == true)
+        fresnel = ComputeConductorFresnelRgb(vh, bsdf.Eta, bsdf.K);
+    float diffuseFraction = isConductor == true ? 0 : 1 - bsdf.Metallic;
     float3 value =
-        fresnel * (distribution * visibility) + bsdf.BaseColor * (float3(1) - fresnel) * ((1 - bsdf.Metallic) / PI);
+        fresnel * (distribution * visibility) + bsdf.BaseColor * (float3(1) - fresnel) * (diffuseFraction / PI);
     float specularPdf = distribution / (2 * (nv + lambdaView));
     float probability = GetSpecularProbability(bsdf);
     return float4(value, probability * specularPdf + (1 - probability) * nl / PI);
@@ -683,7 +695,7 @@ float3 SampleBsdfDirection(Bsdf bsdf, float3 normalWorld, float3 viewWorld, floa
     {
         float3 viewTangent =
             float3(dot(viewWorld, axisXWorld), dot(viewWorld, axisYWorld), dot(viewWorld, normalWorld));
-        float alpha = bsdf.Roughness * bsdf.Roughness;
+        float alpha = ComputeMaterialAlpha(bsdf.Model, bsdf.Roughness, bsdf.Alpha);
         float3 stretchedTangent = NormalizeOrZero(float3(alpha * viewTangent.x, alpha * viewTangent.y, viewTangent.z));
         float tangentLength = stretchedTangent.x * stretchedTangent.x + stretchedTangent.y * stretchedTangent.y;
         float3 firstTangent = tangentLength > 0
@@ -1523,6 +1535,12 @@ PathSample TracePath(uint pixel, uint sample)
         bsdf.BaseColor = texel.xyz * baseAndMetallic.xyz;
         bsdf.Metallic = baseAndMetallic.w;
         bsdf.Roughness = SurfaceValue(instance, 1).x;
+        float4 etaAndModel = SurfaceValue(instance, LUDUS_GPU_PREVIEW_SCATTERING_ETA_WORD);
+        float4 extinctionAndAlpha = SurfaceValue(instance, LUDUS_GPU_PREVIEW_SCATTERING_K_WORD);
+        bsdf.Model = asuint(etaAndModel.w);
+        bsdf.Eta = etaAndModel.xyz;
+        bsdf.K = extinctionAndAlpha.xyz;
+        bsdf.Alpha = extinctionAndAlpha.w;
         float4 surfaceMap = SurfaceValue(instance, 6);
         if (asuint(surfaceMap.w) != 0)
         {

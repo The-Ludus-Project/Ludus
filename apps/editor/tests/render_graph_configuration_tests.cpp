@@ -139,15 +139,15 @@ TEST_CASE("multiline shader failures preserve the render graph editing area", "[
         QTest::keyClicks(source, QStringLiteral("// fix shader here"));
         CHECK(source->toPlainText() == QStringLiteral("// fix shader here"));
     }
-    CHECK(workspace.GetStatusText().contains(failure.Message) == true);
+    // The log lives in the Error List; the status line only counts the problems and says where they are.
+    CHECK(workspace.GetStatusText().contains(failure.Message) == false);
+    CHECK(workspace.GetStatusText().contains(QStringLiteral("RenderGraphBuildShader: 1 error")) == true);
+    CHECK(workspace.GetStatusText().contains(QLatin1Char('\n')) == false);
     CHECK(status->textFormat() == Qt::PlainText);
     CHECK(status->textInteractionFlags().testFlag(Qt::TextSelectableByMouse) == true);
     QScrollArea* statusPanel = workspace.findChild<QScrollArea*>(QStringLiteral("renderGraphStatusPanel"));
     REQUIRE(statusPanel != nullptr);
     CHECK(statusPanel->height() <= statusHeightAllowance);
-    REQUIRE(statusPanel->verticalScrollBar()->maximum() > 0);
-    statusPanel->verticalScrollBar()->setValue(statusPanel->verticalScrollBar()->maximum());
-    CHECK(status->geometry().bottom() <= statusPanel->viewport()->rect().bottom());
 
     // A shorter result releases the scroll range and leaves editing usable after resizing.
     failure.Message = QStringLiteral("one shader error");

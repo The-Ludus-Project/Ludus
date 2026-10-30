@@ -66,6 +66,8 @@ constexpr float64 NANOSECONDS_PER_MILLISECOND = 1e6;
 constexpr float64 RAYS_PER_MEGARAY_MILLISECOND = 1e3;
 constexpr usize RGBA8_BYTES = 4;
 constexpr usize TRIANGLE_CORNERS = 3;
+// A lit material retains several texture views, in addition to its parameter buffer.
+constexpr uint32 REFERENCE_RESOURCES_PER_KIND = 256;
 constexpr uint64 FNV_OFFSET = 0xcbf29ce484222325;
 constexpr uint64 FNV_PRIME = 0x100000001b3;
 // Positional arguments after the scene directory.
@@ -134,6 +136,7 @@ template <typename Handle>
                                {{source.Pixels.GetData(), source.Pixels.GetSize()}, usize(source.Width) * RGBA8_BYTES},
                                textures[i]) != Status::Ready)
         {
+            std::fprintf(stderr, "texture installation failed at %zu\n", i);
             return false;
         }
     }
@@ -143,6 +146,11 @@ template <typename Handle>
         rr::LitMaterialDescription description;
         description.Metallic = source.Metallic;
         description.Roughness = source.Roughness;
+        description.Scattering = source.Scattering;
+        if (source.HasSourceMaterial == true)
+        {
+            description.Surface.Tint = {source.Reflectance.X, source.Reflectance.Y, source.Reflectance.Z, 1};
+        }
         description.Emission = source.Emission;
         description.IsEmissionTwoSided = source.IsEmissionTwoSided;
         if (source.Texture != ~uint32{0})
@@ -159,7 +167,10 @@ template <typename Handle>
         }
         else
         {
-            description.Surface.Tint = {0, 0, 0, 1};
+            if (source.HasSourceMaterial == false)
+            {
+                description.Surface.Tint = {0, 0, 0, 1};
+            }
         }
         if (source.SurfaceTexture != ~uint32{0})
         {
@@ -171,10 +182,18 @@ template <typename Handle>
             description.EmissionMap = textures[source.EmissionTexture];
         }
         rr::LightSelection selection;
-        if (Wait(inoutRenderer,
+        const Status materialStatus =
+            Wait(inoutRenderer,
                  materials[i],
-                 inoutRenderer.CreateLitMaterial(program, description, materials[i], selection)) != Status::Ready)
+                 inoutRenderer.CreateLitMaterial(program, description, materials[i], selection));
+        if (materialStatus != Status::Ready)
         {
+            std::fprintf(stderr,
+                         "material installation failed at %zu (%.*s): status %u\n",
+                         i,
+                         static_cast<int>(source.Name.View().size()),
+                         source.Name.View().data(),
+                         static_cast<uint32>(materialStatus));
             return false;
         }
     }
@@ -193,6 +212,7 @@ template <typename Handle>
         }
         if (Wait(inoutRenderer, meshes[i], inoutRenderer.CreateMesh(description, meshes[i])) != Status::Ready)
         {
+            std::fprintf(stderr, "mesh installation failed at %zu\n", i);
             return false;
         }
     }
@@ -373,6 +393,7 @@ int main(int argc, char** argv)
     description.Environment = scene.Environment.Width == 0 ? scene.Environment.Rgb : math::Vector3{};
 
     rhi::DeviceDescription request;
+    request.Storage.ResourcesPerKind = REFERENCE_RESOURCES_PER_KIND;
     request.Required.PortableRaster = true;
     request.Required.Compute = isCpu == false;
     request.EnableGpuTiming = isCpu == false;
@@ -401,9 +422,13 @@ int main(int argc, char** argv)
                                                     isCpu == true ? usize{0} : GPU_BUDGET};
         rr::MaterialProgram program;
         rr::Snapshot snapshot;
+        rr::Limits limits;
+        limits.Meshes = static_cast<uint32>(scene.Meshes.GetSize());
+        limits.Materials = static_cast<uint32>(scene.Materials.GetSize());
+        limits.Objects = static_cast<uint32>(scene.Objects.GetSize());
         usize triangles = 0;
         const char* failureOrNull = nullptr;
-        if (renderer.Initialize(device, shaders::renderer_flat::Vertex(), shaders::renderer_flat::Fragment()) !=
+        if (renderer.Initialize(device, shaders::renderer_flat::Vertex(), shaders::renderer_flat::Fragment(), limits) !=
             Status::Ready)
         {
             failureOrNull = "renderer initialization";

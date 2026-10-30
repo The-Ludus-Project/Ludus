@@ -11,6 +11,7 @@ namespace ludus::content::scene_cook::importers
 namespace
 {
 namespace format = content::scene_format;
+constexpr uint32 MAX_REPORTED_COUNT = ~uint32{0};
 
 [[nodiscard]] bool IsCancelled(const Cancellation* cancelOrNull) noexcept
 {
@@ -205,6 +206,7 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
         return Status::Invalid;
     }
     uint64 sourceVertices = 0;
+    uint64 sourceIndices = 0;
     for (Placement& placement : plan.Placements)
     {
         if (IsCancelled(cancelOrNull) == true)
@@ -213,9 +215,12 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
         }
         const IrMesh& mesh = scene.Meshes[scene.Shapes[placement.Shape].Mesh];
         placement.Area = ComputeWorldArea(mesh, placement.Transform);
-        sourceVertices += mesh.GetVertexCount();
+        sourceVertices += mesh.SourceVertexCount == 0 ? mesh.GetVertexCount() : mesh.SourceVertexCount;
+        sourceIndices += mesh.Indices.GetSize();
     }
-    plan.SourceVertices = sourceVertices > 0xffffffffULL ? 0xffffffffU : static_cast<uint32>(sourceVertices);
+    plan.SourceVertices =
+        sourceVertices > MAX_REPORTED_COUNT ? MAX_REPORTED_COUNT : static_cast<uint32>(sourceVertices);
+    plan.SourceIndices = sourceIndices > MAX_REPORTED_COUNT ? MAX_REPORTED_COUNT : static_cast<uint32>(sourceIndices);
 
     // 2. Rank placements by area (ties by order) for deterministic material selection.
     Array<uint32> order;

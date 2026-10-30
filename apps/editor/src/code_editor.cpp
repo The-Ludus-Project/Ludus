@@ -14,6 +14,7 @@
 #include <QFont>
 #include <QFontDatabase>
 #include <QFontInfo>
+#include <QFontMetrics>
 #include <QHelpEvent>
 #include <QInputMethodEvent>
 #include <QKeyEvent>
@@ -24,6 +25,7 @@
 #include <QMimeData>
 #include <QPaintEvent>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPalette>
 #include <QPen>
 #include <QPointF>
@@ -71,6 +73,17 @@ constexpr uint32 LIGHT_WARNING = 0x9A6700;
 constexpr uint32 DARK_WARNING = 0xE3B341;
 /// Marker diameter as a divisor of the line height.
 constexpr int32 DIAGNOSTIC_MARKER_DIVISOR = 2;
+/// An out-of-date report keeps its squiggle, drawn this much more faintly (alpha, 0-255).
+constexpr int32 STALE_UNDERLINE_ALPHA = 140;
+/// Message callout under the caret's line: spacing, shape and how much of the message it shows.
+constexpr int32 CALLOUT_MARGIN = 6;
+constexpr int32 CALLOUT_PADDING = 6;
+constexpr int32 CALLOUT_ARROW_SIZE = 5;
+constexpr int32 CALLOUT_CORNER_RADIUS = 4;
+constexpr int32 CALLOUT_MAX_LINES = 3;
+constexpr int32 CALLOUT_FILL_PERCENT = 16;
+constexpr int32 CALLOUT_BORDER_ALPHA = 170;
+constexpr int32 PERCENT = 100;
 
 int32 GetIndentLength(const QString& text)
 {
@@ -326,10 +339,15 @@ void CodeEditor::GoToDiagnostic(bool shouldGoBackward)
 void CodeEditor::paintEvent(QPaintEvent* event)
 {
     QPlainTextEdit::paintEvent(event);
-    if (mShouldShowIndentGuides == false)
+    if (mShouldShowIndentGuides == true)
     {
-        return;
+        paintIndentGuides(event);
     }
+    paintDiagnosticCallout();
+}
+
+void CodeEditor::paintIndentGuides(const QPaintEvent* event)
+{
     QPainter painter(viewport());
     QColor color = palette().color(QPalette::Text);
     color.setAlpha(INDENT_GUIDE_ALPHA);
@@ -371,6 +389,88 @@ void CodeEditor::paintEvent(QPaintEvent* event)
         }
         block = block.next();
     }
+}
+
+/// The message of the diagnostics on the caret's line, under that line and pointing at the error.
+/// Painted over the lines below instead of shifting them, so the text never jumps; it goes away
+/// when the caret moves off the line or the line is edited.
+void CodeEditor::paintDiagnosticCallout()
+{
+    if (mDiagnostics.isEmpty() == true || mHasEditedSinceReport == true)
+    {
+        return;
+    }
+    const QTextBlock block = textCursor().block();
+    QStringList messages;
+    QTextCursor anchor;
+    CodeDiagnosticSeverity severity = CodeDiagnosticSeverity::Warning;
+    for (const DiagnosticMarker& marker : mDiagnostics)
+    {
+        if (document()->findBlock(marker.Range.selectionStart()) != block || marker.Message.isEmpty() == true)
+        {
+            continue;
+        }
+        if (messages.contains(marker.Message) == false)
+        {
+            messages.append(marker.Message);
+        }
+        if (anchor.isNull() == true)
+        {
+            anchor = marker.Range;
+            anchor.setPosition(marker.Range.selectionStart());
+        }
+        severity = marker.Severity == CodeDiagnosticSeverity::Error ? CodeDiagnosticSeverity::Error : severity;
+    }
+    if (messages.isEmpty() == true)
+    {
+        return;
+    }
+    const QFontMetrics metrics(font());
+    const int32 viewportWidth = viewport()->width();
+    const int32 textWidthLimit = viewportWidth - 2 * (CALLOUT_MARGIN + CALLOUT_PADDING);
+    if (textWidthLimit <= 0)
+    {
+        return;
+    }
+    const QString text = messages.join(QLatin1Char('\n'));
+    QRect textRect = metrics.boundingRect(QRect(0, 0, textWidthLimit, 0), Qt::TextWordWrap | Qt::AlignLeft, text);
+    textRect.setHeight(qMin(textRect.height(), metrics.lineSpacing() * CALLOUT_MAX_LINES));
+    const int32 boxWidth = textRect.width() + 2 * CALLOUT_PADDING;
+    const int32 boxHeight = textRect.height() + 2 * CALLOUT_PADDING;
+    const QRectF blockRect = blockBoundingGeometry(block).translated(contentOffset());
+    const int32 errorX = cursorRect(anchor).left();
+    const int32 boxLeft = qBound(CALLOUT_MARGIN,
+                                 errorX - CALLOUT_PADDING,
+                                 qMax(viewportWidth - boxWidth - CALLOUT_MARGIN, CALLOUT_MARGIN));
+    const int32 boxTop = static_cast<int32>(blockRect.bottom()) + CALLOUT_ARROW_SIZE;
+    const QRect box(boxLeft, boxTop, boxWidth, boxHeight);
+    const QColor accent = getDiagnosticColor(severity);
+    QColor fill = palette().color(QPalette::Base);
+    fill = QColor::fromRgb(
+        (fill.red() * (PERCENT - CALLOUT_FILL_PERCENT) + accent.red() * CALLOUT_FILL_PERCENT) / PERCENT,
+        (fill.green() * (PERCENT - CALLOUT_FILL_PERCENT) + accent.green() * CALLOUT_FILL_PERCENT) / PERCENT,
+        (fill.blue() * (PERCENT - CALLOUT_FILL_PERCENT) + accent.blue() * CALLOUT_FILL_PERCENT) / PERCENT);
+    QColor border = accent;
+    border.setAlpha(CALLOUT_BORDER_ALPHA);
+    QPainter painter(viewport());
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(QPen(border, 1, mAreDiagnosticsCurrent == true ? Qt::SolidLine : Qt::DashLine));
+    painter.setBrush(fill);
+    QPainterPath shape;
+    shape.addRoundedRect(QRectF(box), CALLOUT_CORNER_RADIUS, CALLOUT_CORNER_RADIUS);
+    const int32 arrowX = qBound(box.left() + CALLOUT_CORNER_RADIUS + CALLOUT_ARROW_SIZE,
+                                errorX,
+                                box.right() - CALLOUT_CORNER_RADIUS - CALLOUT_ARROW_SIZE);
+    QPainterPath arrow;
+    arrow.moveTo(arrowX - CALLOUT_ARROW_SIZE, box.top());
+    arrow.lineTo(arrowX, box.top() - CALLOUT_ARROW_SIZE);
+    arrow.lineTo(arrowX + CALLOUT_ARROW_SIZE, box.top());
+    arrow.closeSubpath();
+    painter.drawPath(shape.united(arrow));
+    painter.setPen(palette().color(QPalette::Text));
+    painter.drawText(box.adjusted(CALLOUT_PADDING, CALLOUT_PADDING, -CALLOUT_PADDING, -CALLOUT_PADDING),
+                     Qt::TextWordWrap | Qt::AlignLeft | Qt::AlignTop,
+                     text);
 }
 
 void CodeEditor::SetLanguage(CodeLanguage language)
@@ -553,9 +653,10 @@ void CodeEditor::SetDiagnostics(const QList<CodeDiagnostic>& diagnostics, bool i
         mDiagnostics.append(marker);
     }
     mAreDiagnosticsCurrent = isCurrent;
+    mHasEditedSinceReport = false;
     Q_EMIT DiagnosticsChanged();
     // Snapshot for telling highlighter reformatting apart from same-length edits.
-    mDiagnosticText = isCurrent == true && mDiagnostics.isEmpty() == false ? document()->toRawText() : QString();
+    mDiagnosticText = mDiagnostics.isEmpty() == false ? document()->toRawText() : QString();
     mGutter->update();
     mSelectionUpdate.start(0);
 }
@@ -616,7 +717,7 @@ void CodeEditor::markDiagnosticsOutOfDate(int32 position, int32 removed, int32 a
         SetDiagnostics({}, true);
         return;
     }
-    if (mAreDiagnosticsCurrent == false)
+    if (mHasEditedSinceReport == true)
     {
         return;
     }
@@ -628,8 +729,14 @@ void CodeEditor::markDiagnosticsOutOfDate(int32 position, int32 removed, int32 a
     }
     if (isChanged == true)
     {
+        // A report that was already out of date stays so; either way the callout makes way for typing.
+        const bool wasCurrent = mAreDiagnosticsCurrent;
+        mHasEditedSinceReport = true;
         mAreDiagnosticsCurrent = false;
-        Q_EMIT DiagnosticsChanged();
+        if (wasCurrent == true)
+        {
+            Q_EMIT DiagnosticsChanged();
+        }
         mDiagnosticText.clear();
         mGutter->update();
         mSelectionUpdate.start(0);
@@ -675,9 +782,14 @@ void CodeEditor::appendDiagnosticSelections(QList<QTextEdit::ExtraSelection>& in
             {
                 continue;
             }
-            selection.format.setUnderlineStyle(mAreDiagnosticsCurrent == true ? QTextCharFormat::WaveUnderline
-                                                                              : QTextCharFormat::DotLine);
-            selection.format.setUnderlineColor(getDiagnosticColor(severity));
+            // An out-of-date report keeps its squiggle, fainter, so the error stays findable.
+            QColor underline = getDiagnosticColor(severity);
+            if (mAreDiagnosticsCurrent == false)
+            {
+                underline.setAlpha(STALE_UNDERLINE_ALPHA);
+            }
+            selection.format.setUnderlineStyle(QTextCharFormat::WaveUnderline);
+            selection.format.setUnderlineColor(underline);
             inoutSelections.append(selection);
         }
     }

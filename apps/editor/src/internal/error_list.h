@@ -15,6 +15,7 @@
 
 #include <QList>
 #include <QString>
+#include <QStringList>
 #include <QWidget>
 
 QT_BEGIN_NAMESPACE
@@ -52,21 +53,29 @@ struct ErrorListEntry final
     QString Description;
     /// File as the producer reports it: package-relative for render graphs, as printed for builds.
     QString File;
-    /// Human-readable position: a line number, or a configuration/node path.
+    /// Compact position: `line:column` (e.g. `75:12`), a bare line, or a configuration/node path.
     QString Location;
     /// "Render graph", "Shader", "Renderer preview" or "Build".
     QString Origin;
     /// Producer-owned index used for navigation: the RendererWorkspace diagnostic row
     /// for render graphs, or the zero-based Output line for builds. Preview rows open Render Preview.
     foundation::int32 SourceIndex = 0;
+    /// Raw tool output that backs the row (a compiler log). It stays collapsed under the row
+    /// until the user opens Details; empty when the description already says everything.
+    QString Details;
+    /// Backends or targets that reported this same diagnostic, in first-seen order, e.g. "metal".
+    QStringList Backends;
+    /// How many identical diagnostics the row stands for; always at least one.
+    foundation::int32 Count = 1;
 };
 
 /// Most build diagnostics parsed from one output text.
 inline constexpr foundation::int32 MAX_BUILD_DIAGNOSTICS = 1000;
 
-/// Rows for one render-graph job result, in RendererWorkspace's diagnostic row order:
-/// structured graph batches appear once; shader failures retain their build summary.
-/// SourceIndex is the producer's row.
+/// Rows for one render-graph job result. Each problem appears once: a shader failure's build
+/// summary folds into its first mapped diagnostic as collapsed Details, and the same diagnostic
+/// reported by several backends is one row listing them. SourceIndex is the producer's row
+/// (RendererWorkspace's diagnostic row order) of the first diagnostic a row stands for.
 [[nodiscard]] QList<ErrorListEntry> MakeRenderGraphErrorEntries(const RenderGraphJobResult& result);
 /// Current preview failure, independently owned from compiler and project-build results.
 /// Empty problem clears the preview producer's rows; file names the authored root graph.
@@ -108,11 +117,12 @@ Q_SIGNALS:
 
 protected:
     /// Reserve visible table rows before giving the selected diagnostic remaining height.
-    /// The details pane appears only when the row cannot show the whole description.
+    /// The details pane stays collapsed until the user opens Details for a row that has any.
     void resizeEvent(QResizeEvent* event) override;
 
 private:
     void updateDetailsHeight();
+    void updateDetailsToggle();
     void render();
     [[nodiscard]] bool isShown(ErrorListSeverity severity) const;
 
@@ -120,6 +130,7 @@ private:
     QToolButton* mErrors;
     QToolButton* mWarnings;
     QToolButton* mMessages;
+    QToolButton* mDetailsToggle;
     QTableWidget* mTable;
     QPlainTextEdit* mDetails;
 };

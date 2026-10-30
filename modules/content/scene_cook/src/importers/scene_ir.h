@@ -172,6 +172,9 @@ struct IrMaterial final
 /// Indexed triangle mesh in object space.
 struct IrMesh final
 {
+    /// Vertex records before exact compaction, or zero when not compacted. Used
+    /// only for source statistics; Positions owns the vertices used by geometry.
+    uint32 SourceVertexCount = 0;
     /// xyz triples.
     Array<float32> Positions;
     /// xyz triples, or empty when the source has none (computed by the planner).

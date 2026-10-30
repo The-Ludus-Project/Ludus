@@ -3,7 +3,8 @@ add_library(Ludus::Resources ALIAS ludus_resources)
 set_target_properties(ludus_resources PROPERTIES EXPORT_NAME Resources)
 target_sources(ludus_resources PUBLIC FILE_SET public_headers TYPE HEADERS BASE_DIRS include
     FILES include/ludus/runtime/resources/manager.h include/ludus/runtime/resources/mesh.h include/ludus/runtime/resources/scene.h)
-target_link_libraries(ludus_resources PUBLIC Ludus::Content Ludus::FoundationMath Ludus::FoundationContainers Ludus::SceneFormat)
+target_link_libraries(ludus_resources PUBLIC Ludus::Content Ludus::FoundationMath Ludus::FoundationContainers Ludus::SceneFormat
+    PRIVATE Ludus::FoundationParsingJson)
 ludus_apply_project_defaults(ludus_resources)
 if(EMSCRIPTEN)
     # Leave room for callers and bounded DAG recursion in the default 64 KiB stack.

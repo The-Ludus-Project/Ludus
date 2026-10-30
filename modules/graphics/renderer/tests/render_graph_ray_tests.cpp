@@ -7215,3 +7215,153 @@ TEST_CASE("A capture profile lets a frame capture shade the 32-emitter room that
     constexpr usize MINIMUM_LIT_DIVISOR = 4;
     CHECK(lit > pixels.GetSize() / MINIMUM_LIT_DIVISOR);
 }
+
+namespace
+{
+/// Render one frame of a graph, retrying while it prepares row bands, and wait for its producer.
+void RenderPreparedFrame(renderer::RenderGraph& inoutGraph, const GraphGpuFixture& fixture)
+{
+    constexpr uint64 TIMEOUT = 10 * time::NANOSECONDS_PER_SECOND;
+    const uint64 beginning = time::NowTicks();
+    rhi::SubmissionToken completion;
+    rhi::RasterStatus rendered = inoutGraph.Render(fixture.Surface, WIDTH, HEIGHT, completion);
+    while (rendered == rhi::RasterStatus::NotReady && time::NowTicks() - beginning < TIMEOUT)
+    {
+        rendered = inoutGraph.Render(fixture.Surface, WIDTH, HEIGHT, completion);
+    }
+    REQUIRE(rendered == rhi::RasterStatus::Ready);
+    rhi::RasterStatus result = rhi::GetStatus(fixture.Device, completion);
+    while (result == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TIMEOUT)
+    {
+        result = rhi::GetStatus(fixture.Device, completion);
+    }
+    REQUIRE(result == rhi::RasterStatus::Ready);
+}
+} // namespace
+
+TEST_CASE("A tiled render graph capture accumulates exactly the pixels of an untiled one",
+          "[render-graph][gpu][render-graph-capture][render-graph-tiles]")
+{
+    // Bands change only the submission boundaries: pixel indices, sample streams and accumulation stay those of a
+    // whole-image dispatch, so the means must match bit for bit. The polygonal-light template's four passes share
+    // a hit record indexed by the full extent, so every pass must dispatch the same band. Five bands split the 64
+    // rows unevenly; MAX_RENDER_GRAPH_RAY_TILES bands outnumber the rows and leave empty bands.
+    GraphGpuFixture fixture(false, false);
+    CornellBox room;
+    MakeRoomGlossyWithoutSky(room);
+    constexpr uint64 REVISION = 7;
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(POLYGONAL_LIGHT_SAMPLING_TEMPLATE);
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    REQUIRE(programs.HasRayTiles == true);
+    constexpr uint32 UNEVEN_TILES = 5;
+    const StaticArray<uint32, 3> tileCounts{{1, UNEVEN_TILES, renderer::MAX_RENDER_GRAPH_RAY_TILES}};
+    StaticArray<Array<renderer::RenderGraphCapturePixel>, 3> captured;
+    for (usize run = 0; run < tileCounts.GetSize(); ++run)
+    {
+        renderer::RenderGraphCaptureSettings settings;
+        settings.Output = GetClampedMisOutput(plan);
+        settings.TargetSamples = CAPTURE_TARGET_SAMPLES;
+        settings.TileCount = tileCounts[run];
+        renderer::RenderGraphCapture capture;
+        const rhi::RasterStatus started =
+            capture.Start(fixture.Device, fixture.Surface, plan, programs, WIDTH, HEIGHT, settings);
+        REQUIRE((started == rhi::RasterStatus::Ready || started == rhi::RasterStatus::Pending));
+        const renderer::RenderGraphCapturePhase phase = FinishCapture(capture, room, REVISION);
+        CAPTURE(tileCounts[run], capture.GetProblem(), capture.GetStatus(), capture.GetInfo().SubmittedSamples);
+        REQUIRE(phase == renderer::RenderGraphCapturePhase::Complete);
+        const renderer::RenderGraphCaptureInfo info = capture.GetInfo();
+        CHECK(info.TileCount == tileCounts[run]);
+        CHECK(info.SubmittedSamples == CAPTURE_TARGET_SAMPLES);
+        CHECK(info.MinimumSamples == CAPTURE_TARGET_SAMPLES);
+        CHECK(info.FailedPixels == 0);
+        const BorrowedView<const renderer::RenderGraphCapturePixel> pixels = capture.GetPixels();
+        REQUIRE(pixels.GetSize() == usize{WIDTH} * HEIGHT);
+        REQUIRE(captured[run].TryResize(pixels.GetSize()) == true);
+        for (usize pixel = 0; pixel < pixels.GetSize(); ++pixel)
+        {
+            captured[run][pixel] = pixels[pixel];
+        }
+    }
+    for (usize run = 1; run < captured.GetSize(); ++run)
+    {
+        CAPTURE(tileCounts[run]);
+        usize differing = 0;
+        for (usize pixel = 0; pixel < captured[0].GetSize(); ++pixel)
+        {
+            differing += captured[run][pixel].Mean == captured[0][pixel].Mean &&
+                                 captured[run][pixel].Samples == captured[0][pixel].Samples
+                             ? 0
+                             : 1;
+        }
+        CHECK(differing == 0);
+    }
+}
+
+TEST_CASE("A tiled render graph counts a sample once every band was submitted",
+          "[render-graph][gpu][render-graph-tiles]")
+{
+    GraphGpuFixture fixture(false, false);
+    CornellBox room;
+    MakeRoomGlossyWithoutSky(room);
+    PreparedGraph live(fixture, POLYGONAL_LIGHT_SAMPLING_TEMPLATE, room, 1);
+    CHECK(live.Graph.SetRayTileCount(0) == rhi::RasterStatus::InvalidDescription);
+    CHECK(live.Graph.SetRayTileCount(renderer::MAX_RENDER_GRAPH_RAY_TILES + 1) ==
+          rhi::RasterStatus::InvalidDescription);
+    renderer::RenderGraphRayWorkload workload;
+    REQUIRE(live.Graph.GetRayWorkload(workload) == rhi::RasterStatus::Ready);
+    // Every pass renders at the drawable extent; the room's ceiling light is emissive geometry.
+    CHECK(workload.Pixels == uint64{WIDTH} * HEIGHT * live.Plan.Passes.GetSize());
+    CHECK(workload.Lights > 0);
+    constexpr uint32 TILES = 3;
+    REQUIRE(live.Graph.SetRayTileCount(TILES) == rhi::RasterStatus::Ready);
+    for (uint32 band = 0; band + 1 < TILES; ++band)
+    {
+        RenderPreparedFrame(live.Graph, fixture);
+        CHECK(live.Graph.GetSubmittedRaySamples() == 0);
+        CHECK(live.Graph.HasPendingSamples() == true);
+        // The band layout changes only at a sample boundary.
+        CHECK(live.Graph.SetRayTileCount(1) == rhi::RasterStatus::InvalidState);
+    }
+    RenderPreparedFrame(live.Graph, fixture);
+    CHECK(live.Graph.GetSubmittedRaySamples() == 1);
+    // Every pixel committed exactly one sample, in whichever band it was dispatched.
+    Array<math::Vector4> records;
+    ReadAccumulation(live.Graph, fixture, 0, records);
+    usize wrong = 0;
+    for (usize pixel = 0; pixel < usize{WIDTH} * HEIGHT; ++pixel)
+    {
+        uint32 count = 0;
+        std::memcpy(&count, &records[pixel * renderer::RENDER_GRAPH_ACCUMULATION_WORDS].W, sizeof(count));
+        wrong += count == 1 ? 0 : 1;
+    }
+    CHECK(wrong == 0);
+    CHECK(live.Graph.SetRayTileCount(1) == rhi::RasterStatus::Ready);
+    RenderPreparedFrame(live.Graph, fixture);
+    CHECK(live.Graph.GetSubmittedRaySamples() == 2);
+}
+
+TEST_CASE("A render graph capture refuses bands that its package's ray kernels cannot dispatch",
+          "[render-graph][gpu][render-graph-capture][render-graph-tiles]")
+{
+    GraphGpuFixture fixture(false, false);
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(POLYGONAL_LIGHT_SAMPLING_TEMPLATE);
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    // Kernels cooked before package version 28 cover the whole image on every dispatch.
+    programs.HasRayTiles = false;
+    renderer::RenderGraphCaptureSettings settings;
+    settings.Output = GetClampedMisOutput(plan);
+    settings.TileCount = 2;
+    renderer::RenderGraphCapture capture;
+    CHECK(capture.Start(fixture.Device, fixture.Surface, plan, programs, WIDTH, HEIGHT, settings) ==
+          rhi::RasterStatus::Unsupported);
+    CHECK(capture.GetPhase() == renderer::RenderGraphCapturePhase::Failed);
+    CHECK(capture.GetProblem() == renderer::RenderGraphCaptureProblem::UntiledPackage);
+    settings.TileCount = renderer::MAX_RENDER_GRAPH_RAY_TILES + 1;
+    CHECK(capture.Start(fixture.Device, fixture.Surface, plan, programs, WIDTH, HEIGHT, settings) ==
+          rhi::RasterStatus::InvalidDescription);
+    CHECK(capture.GetProblem() == renderer::RenderGraphCaptureProblem::InvalidSettings);
+}

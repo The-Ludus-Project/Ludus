@@ -4,6 +4,7 @@
 #include "internal/content_browser.h"
 #include "internal/document_well.h"
 #include "internal/editor_commands.h"
+#include "internal/editor_icons.h"
 #include "internal/editor_style.h"
 #include "internal/error_list.h"
 #include "internal/item_selection.h"
@@ -56,6 +57,7 @@
 #include <QStackedWidget>
 #include <QStandardPaths>
 #include <QStatusBar>
+#include <QTabBar>
 #include <QTableWidget>
 #include <QTimer>
 #include <QToolBar>
@@ -278,6 +280,7 @@ void MainWindow::BuildUi()
     Content_ = new ContentWorkspace(contentScroll);
     contentScroll->setWidget(Content_);
     mContentDock->setObjectName(QStringLiteral("contentDock"));
+    mContentDock->setWindowIcon(GetEditorIcon(EditorIcon::Content));
     mContentDock->setWidget(contentScroll);
     QScrollArea* audioScroll = mAudioDocument;
     audioScroll->setObjectName(QStringLiteral("audioWorkspaceScroll"));
@@ -306,6 +309,7 @@ void MainWindow::BuildUi()
     // Properties follows the active document: the World's entity inspector, the render
     // graph's node inspector, or a hint. Page order matches PropertiesPage.
     mPropertiesDock->setObjectName(QStringLiteral("propertiesDock"));
+    mPropertiesDock->setWindowIcon(GetEditorIcon(EditorIcon::Configuration));
     mProperties->setObjectName(QStringLiteral("propertiesStack"));
     mNoProperties->setObjectName(QStringLiteral("propertiesEmpty"));
     mNoProperties->setWordWrap(true);
@@ -319,17 +323,21 @@ void MainWindow::BuildUi()
     mPropertiesDock->setWidget(mProperties);
     // The render-graph preview shows the World viewport through the open graph.
     mRenderPreviewDock->setObjectName(QStringLiteral("renderPreviewDock"));
+    mRenderPreviewDock->setWindowIcon(GetEditorIcon(EditorIcon::RenderGraph));
     QWidget* renderPreview = Renderer_->TakePreviewPanel(mRenderPreviewDock);
     renderPreview->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     mRenderPreviewDock->setWidget(renderPreview);
 
     mProjectExplorerDock->setObjectName(QStringLiteral("projectExplorerDock"));
+    mProjectExplorerDock->setWindowIcon(GetEditorIcon(EditorIcon::Folder));
     mProjectExplorerDock->setWidget(mProjectExplorer);
     mErrorListDock->setObjectName(QStringLiteral("errorListDock"));
+    mErrorListDock->setWindowIcon(GetEditorIcon(EditorIcon::Error));
     mErrorListDock->setWidget(mErrorList);
 
     InspectorDock_ = new QDockWidget(QStringLiteral("Live Inspector"), this);
     InspectorDock_->setObjectName(QStringLiteral("liveInspectorDock"));
+    InspectorDock_->setWindowIcon(GetEditorIcon(EditorIcon::LiveInspector));
     auto* inspectorScroll = new QScrollArea(InspectorDock_);
     inspectorScroll->setObjectName(QStringLiteral("liveInspectorScroll"));
     inspectorScroll->setWidgetResizable(true);
@@ -377,11 +385,13 @@ void MainWindow::BuildUi()
     InspectorDock_->setWidget(inspectorScroll);
 
     TimingDock_->setObjectName(QStringLiteral("timingDock"));
+    TimingDock_->setWindowIcon(GetEditorIcon(EditorIcon::Timing));
     Timing_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     TimingDock_->setWidget(Timing_);
 
     OutputDock_ = new QDockWidget(QStringLiteral("Output"), this);
     OutputDock_->setObjectName(QStringLiteral("outputDock"));
+    OutputDock_->setWindowIcon(GetEditorIcon(EditorIcon::Output));
     QWidget* output = new QWidget(OutputDock_);
     QVBoxLayout* outputLayout = new QVBoxLayout(output);
     outputLayout->setContentsMargins(0, 0, 0, 0);
@@ -561,6 +571,37 @@ void MainWindow::InitializeWorkspace()
     }
     hideIdleRayPaths();
     mShouldSizeDefaultDocks = false;
+}
+
+bool MainWindow::event(QEvent* event)
+{
+    const bool wasHandled = QMainWindow::event(event);
+    // Dock tab bars are created and refilled by the layout, so follow its changes.
+    if (event->type() == QEvent::LayoutRequest || event->type() == QEvent::ChildAdded ||
+        event->type() == QEvent::Polish)
+    {
+        syncDockTabIcons();
+    }
+    return wasHandled;
+}
+
+void MainWindow::syncDockTabIcons()
+{
+    const QList<QDockWidget*> docks = findChildren<QDockWidget*>(Qt::FindDirectChildrenOnly);
+    for (QTabBar* tabBar : findChildren<QTabBar*>(Qt::FindDirectChildrenOnly))
+    {
+        for (int index = 0; index < tabBar->count(); ++index)
+        {
+            for (const QDockWidget* dock : docks)
+            {
+                if (dock->windowTitle() == tabBar->tabText(index) &&
+                    tabBar->tabIcon(index).cacheKey() != dock->windowIcon().cacheKey())
+                {
+                    tabBar->setTabIcon(index, dock->windowIcon());
+                }
+            }
+        }
+    }
 }
 
 void MainWindow::showEvent(QShowEvent* event)

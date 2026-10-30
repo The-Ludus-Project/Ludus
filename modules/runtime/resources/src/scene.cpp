@@ -6,6 +6,7 @@
 #include <ludus/foundation/math/projection.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
+#include <ludus/foundation/parsing/json.hpp>
 
 #include <atomic>
 #include <cstring>
@@ -317,6 +318,59 @@ Status SceneDefinition::Decode(const uint8* bytesOrNull, usize count, SceneDefin
             {
                 return Status::Failed;
             }
+        }
+        if (version >= format::VERSION_7)
+        {
+            uint32 nameBytes = 0;
+            uint32 model = 0;
+            if (reader.Read(material.SourceIdentity) == false || reader.Read(nameBytes) == false ||
+                nameBytes > format::MAX_MATERIAL_NAME_BYTES)
+            {
+                return Status::Failed;
+            }
+            const uint8* nameOrNull = reader.Take(format::MAX_MATERIAL_NAME_BYTES);
+            if (nameOrNull == nullptr || reader.Read(model) == false ||
+                model > static_cast<uint32>(format::MaterialModel::CoatedDiffuse) ||
+                material.Name.Set({reinterpret_cast<const char*>(nameOrNull), nameBytes}) == false ||
+                reader.Read(material.Reflectance) == false || IsNonnegative(material.Reflectance, 1) == false)
+            {
+                return Status::Failed;
+            }
+            for (usize byte = nameBytes; byte < format::MAX_MATERIAL_NAME_BYTES; ++byte)
+            {
+                if (nameOrNull[byte] != 0)
+                {
+                    return Status::Failed;
+                }
+            }
+            foundation::parsing::ParseError utf8;
+            if (foundation::parsing::ValidateUtf8(material.Name.View(), utf8) != foundation::parsing::ParseStatus::Ok)
+            {
+                return Status::Failed;
+            }
+            material.Scattering.Model = static_cast<format::MaterialModel>(model);
+            for (float32& value : material.Scattering.Eta)
+            {
+                if (reader.Read(value) == false)
+                {
+                    return Status::Failed;
+                }
+            }
+            for (float32& value : material.Scattering.K)
+            {
+                if (reader.Read(value) == false)
+                {
+                    return Status::Failed;
+                }
+            }
+            if (reader.Read(material.Scattering.AlphaU) == false || reader.Read(material.Scattering.AlphaV) == false ||
+                reader.Read(material.Scattering.CoatingEta) == false ||
+                reader.Read(material.Scattering.CoatingThickness) == false ||
+                format::IsMaterialScatteringValid(material.Scattering) == false)
+            {
+                return Status::Failed;
+            }
+            material.HasSourceMaterial = true;
         }
     }
     // Surface maps are linear data; a texture cannot also be sampled as sRGB colour.

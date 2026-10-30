@@ -224,4 +224,12 @@ void RenderGraphRayPass::DiscardCamera() noexcept
 {
     mContextOrNull->discardGpuPreviewCamera(mJob);
 }
+rhi::RasterStatus RenderGraphRayPass::PrepareTiles(foundation::uint32 count, foundation::uint32 tile) noexcept
+{
+    return mContextOrNull->prepareGpuPreviewTiles(mJob, count, tile);
+}
+foundation::uint32 RenderGraphRayPass::GetLightCount() const noexcept
+{
+    return mContextOrNull->getGpuPreviewLightCount(mJob);
+}
 } // namespace ludus::graphics::renderer::internal
