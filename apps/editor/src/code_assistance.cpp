@@ -196,6 +196,7 @@ void CodeAssistance::Request(bool isSignature)
         return;
     }
 #if defined(Q_OS_WASM)
+    static_cast<void>(isSignature);
     Q_EMIT StatusChanged(QStringLiteral("Shader assistance needs native Slang; unavailable in the browser editor."));
 #else
     mShouldTrackSignature = isSignature;
