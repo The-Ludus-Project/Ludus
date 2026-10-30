@@ -2743,7 +2743,12 @@ Typed source materials also expose `MaterialSample.Model`, `Eta`, `K`, `AlphaU`
 and `AlphaV`. `EvaluateStandardBsdf`/`SampleStandardBsdf` select pure diffuse or
 isotropic conductor reflection when those models are bound. A custom shader using
 its own metallic/roughness formulas must handle the type explicitly to preserve
-source semantics. Coated diffuse still uses the declared approximation. See
+source semantics. `MaterialSample.CoatingEta` and `CoatingThickness` expose the
+layer parameters. For layered coatings use the `EvaluateStandardBsdf` overload
+with an explicit `CoatingRandomContext` and `SampleStandardBsdfTransport`; the
+sample contains a complete throughput weight and a separate external MIS density.
+The original direction-only helpers retain their coating approximation. See
+[the layered reference contract](../architecture/renderer-systems.md#non-scattering-coated-diffuse-reference),
 [typed reference materials](../architecture/renderer-systems.md#typed-diffuse-and-conductor-reference-materials)
 and the [source-preserving importer](../examples/reference-scene.md#material-preserving-project-imports).
 

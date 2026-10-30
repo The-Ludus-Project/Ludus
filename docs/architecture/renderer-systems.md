@@ -2861,9 +2861,10 @@ storage binding and does not require a descriptor array of constant buffers or
 bindless textures. Existing resource retention and producer/consumer completion
 rules continue to protect the complete accepted snapshot.
 
-The initial source-preserving profile is an RGB proxy. Coated diffuse retains its
-parameters while continuing the old approximation; raster lit shaders also retain
-their current approximation. No layered or spectral PBRT equivalence is claimed.
+The source-preserving profile is an RGB proxy. Profile 5 retained coating parameters
+with approximate shading; profile 6 adds the bounded non-scattering layered model
+below. Raster lit shaders retain their approximation. Spectral PBRT equivalence is
+not claimed.
 References: thanks to Matt Pharr, Wenzel Jakob and Greg Humphreys,
 [*Physically Based Rendering*, fourth edition, §9.3](https://pbr-book.org/4ed/Reflection_Models/Specular_Reflection_and_Transmission),
 for complex-IOR Fresnel, and the existing Heitz visible-GGX sampling reference.
@@ -2873,6 +2874,93 @@ throughput identities, invalid-input output preservation, source-material asset
 round trips and a mixed diffuse/conductor scene comparing raw CPU/GPU reference
 AOVs. Full staircase2 source-PBRT fidelity and the previously recorded dense
 native-query qualification gap remain separate acceptance items.
+
+### Non-scattering coated-diffuse reference
+
+Reference profile 6 evaluates staircase2's `Wood` and `FloorTiles` as an isotropic
+rough dielectric interface above a textured Lambertian base. Their direct GGX alpha
+values are 0.1 and 0.01 (`remaproughness=false`), with default coating IOR 1.5 and
+optical thickness 0.01. The intervening medium has zero scattering albedo and unit
+extinction in optical-depth coordinates: zero albedo still absorbs light. Every
+internal crossing applies `exp(-thickness / abs(directionTangent.z))`.
+
+CPU and GPU implement Fresnel reflection/refraction, total internal reflection,
+correlated Smith GGX, visible-normal sampling, internal interface/base reflections
+and absorption. The interfaces remain colocated at the shading point, as in PBRT's
+layered BSDF approximation; this does not add geometric refraction or transmission
+through the opaque base. The internal random walk has PBRT's default ten-event
+limit and compensated roulette after event three. It does not consume scene path
+depth or trace scene intersections. This finite limit is part of the declared
+profile, not a claim of an infinite-depth layer solution.
+
+The sampler returns a complete continuation `Weight` and a separate directional
+`MisPdf`. A layered sample's proportional `Evaluation` retains a valid `f*cos/pdf`
+ratio but its PDF must not drive external MIS. Direct-light evaluation estimates
+the layered BSDF, with an independently addressed approximate directional PDF for
+MIS. Both light-sampled and BSDF-hit contributions use those same semantics.
+Legacy/diffuse/conductor sampling and their exact proposal PDFs remain available.
+
+`ReferenceBsdfRandomContext` uses the caller's Philox key and logical receiver/path
+address. `Scope` identifies the path, `Event` its sample and `Dimension` the scene
+bounce/material event (0 through 255). Each event reserves 256 internal dimensions;
+evaluation, PDF estimation and continuation use distinct key domains from
+`coated_diffuse_layout.h`. The reference tracer supplies its pixel, committed sample
+and scene bounce. Internal branching cannot shift the outer sampler's dimensions.
+Null proposals, absorption and depth/roulette termination retain their probability
+mass; there is no retry, energy clamp or roughness remapping.
+
+LUSCN v7 and its existing indexed GPU table already carry alpha, IOR and thickness;
+no format extension is needed for this restricted medium. The cooker resolves
+explicit scalar `eta`/`thickness` and rejects scattering albedo, scattering textures,
+anisotropy, smooth interfaces, IOR below one, and nondefault `maxdepth`/`nsamples`.
+An explicit RGB zero albedo and default controls are admitted. Storage may retain
+parameters outside the renderer's supported profile; reference material admission
+rejects those inputs. Shader packages must be rebuilt for scene-kernel ABI 11 and
+reference kernel ABI 5. Capture profile 6 separates these results from older
+coating approximations and restarts accumulation under the new integral.
+
+The authored shader interface exposes `CoatingEta` and `CoatingThickness`.
+Use `EvaluateStandardBsdf` with `CoatingRandomContext` and
+`SampleStandardBsdfTransport` together for layered reference transport. The latter
+returns direction, complete throughput weight and the external MIS density.
+The original direction-only helpers retain their compatibility approximation for
+coatings; re-evaluating a sampled layered direction cannot reconstruct its internal
+path weight. Ordinary raster and GPU preview shading remain approximate.
+
+Thanks to Matt Pharr, Wenzel Jakob and Greg Humphreys,
+[*Physically Based Rendering*, fourth edition, §9.7 and §14.3](https://pbr-book.org/4ed/Light_Transport_II_Volume_Rendering/Scattering_from_Layered_Materials),
+and pbrt-v4 revision `b0bdf461ba5dd6504b70ebf0932acc0fe7aa744f`, for the adapted
+dielectric and layered estimators. The implementation specializes their two-sided
+layer model to a rough isotropic top interface, opaque diffuse base and zero
+medium scattering, using RGB channels and Ludus Philox streams. The Apache-2.0
+license is retained in `third_party/pbrt/LICENSE.txt` and installed with the SDK.
+
+Validation includes independent black-base Fresnel and no-IOR-contrast absorption
+limits, internal-path replay, output preservation, source-parameter round trips,
+PBRT BSDF/continuation measurements, and matched raw CPU/GPU captures containing
+textured coatings at both staircase2 alpha values. Full scene geometry/traversal
+parity, spectral textures and texture footprint filtering remain separate limits.
+The frozen PBRT fixture uses 131072 samples per alpha/reflectance pair; the Ludus
+regression uses 32768 independent samples and accepts each BSDF, continuation and
+MIS-density mean within six combined standard errors plus an absolute `1e-5`
+rounding allowance. It also checks accepted-sample probability, mean reciprocity
+and energy no greater than one within sampling error. The mixed textured scene
+retains the existing raw linear CPU/GPU RMS tolerance of `1e-3`.
+
+The independent measurement harness uses PBRT's own build/toolchain outside the
+engine dependency graph. To reproduce the fixture in
+`modules/graphics/renderer/tests/reference_material_tests.cpp`, construct
+`CoatedDiffuseBxDF` with eta 1.5, alpha 0.1 or 0.01 on both axes, scalar base
+reflectance 0.2, 0.6 or 0.9, thickness 0.01, albedo/g zero, maxDepth 10 and nSamples
+one. Evaluate in radiance mode at `wo=(0.6,0,0.8)` and
+`wi=(-0.4,0,sqrt(0.84))`. For each pair, vary `GetOptions().seed` from zero through
+131071 and measure `f`, `PDF`, and `Sample_f`'s `f*abs(wi.z)/pdf` ratio. One external
+PBRT `RNG(871)` stream supplies three uniforms per continuation sample and advances
+across all six pairs in the fixture's order. Null proposals contribute zero to the
+mean; divide by the total sample count. Record each mean and its standard error
+`sqrt((mean(square)-square(mean))/count)`, plus the accepted-sample fraction.
+CPU/GPU branch replay is checked separately from agreement of independent sample
+means; numerical/statistical acceptance never uses tone mapping or denoising.
 
 ## Implementation phases and acceptance
 
