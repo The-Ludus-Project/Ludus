@@ -1297,6 +1297,51 @@ TEST_CASE("Template program budget approval is bounded and transactional", "[edi
     }
 }
 
+TEST_CASE("Template program budget approval also covers the per-profile artifact budget",
+          "[editor][render-graph][template-budget]")
+{
+    // The build admits programs times target profiles against budgets.artifacts, so a larger program
+    // budget alone does not admit the template.
+    const QString identity = GENERATE(QStringLiteral("restir-di"), QStringLiteral("polygonal-light-sampling"));
+    constexpr int32 GENEROUS_PROGRAMS = 64;
+    constexpr int32 ADMITTED_PROGRAMS = 2;
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QString manifestFile = QStringLiteral("main.lushader.json");
+    QJsonObject manifest = QJsonDocument::fromJson(document.GetDraft(manifestFile)).object();
+    const int32 profileCount = static_cast<int32>(manifest.value(QStringLiteral("profiles")).toArray().size());
+    REQUIRE(profileCount > 0);
+    QJsonObject budgets = manifest.value(QStringLiteral("budgets")).toObject();
+    budgets.insert(QStringLiteral("programs"), GENEROUS_PROGRAMS);
+    budgets.insert(QStringLiteral("artifacts"), ADMITTED_PROGRAMS * profileCount);
+    manifest.insert(QStringLiteral("budgets"), budgets);
+    REQUIRE(document.SetText(manifestFile, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
+    const QByteArray beforeManifest = document.GetDraft(manifestFile);
+    QString error;
+    RenderGraphTemplateBudgetIncrease budget;
+    CHECK(document.ApplyConfigurationTemplate(ROOT_GRAPH, QStringLiteral("Lighting"), identity, error, {}, &budget) !=
+          RenderGraphDocumentStatus::Ok);
+    CHECK(budget.CurrentPrograms == ADMITTED_PROGRAMS);
+    REQUIRE(budget.RequiredPrograms > ADMITTED_PROGRAMS);
+    CHECK(error.contains(QStringLiteral("budgets.artifacts is %1").arg(ADMITTED_PROGRAMS * profileCount)) == true);
+    CHECK(document.GetDraft(manifestFile) == beforeManifest);
+    const int32 requiredPrograms = budget.RequiredPrograms;
+    budget.ApprovedPrograms = requiredPrograms;
+    REQUIRE(document.ApplyConfigurationTemplate(ROOT_GRAPH, QStringLiteral("Lighting"), identity, error, {}, &budget) ==
+            RenderGraphDocumentStatus::Ok);
+    const QJsonObject after = QJsonDocument::fromJson(document.GetDraft(manifestFile)).object();
+    const QJsonObject afterBudgets = after.value(QStringLiteral("budgets")).toObject();
+    CHECK(afterBudgets.value(QStringLiteral("programs")).toInt() == GENEROUS_PROGRAMS);
+    CHECK(afterBudgets.value(QStringLiteral("artifacts")).toInt() == requiredPrograms * profileCount);
+    CHECK(after.value(QStringLiteral("programs")).toArray().size() * profileCount <=
+          afterBudgets.value(QStringLiteral("artifacts")).toInt());
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetDraft(manifestFile) == beforeManifest);
+}
+
 TEST_CASE("Canvas template picker confirms a shader program budget increase", "[editor][render-graph][template-budget]")
 {
     const bool shouldApprove = GENERATE(false, true);

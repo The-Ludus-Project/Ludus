@@ -778,7 +778,7 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
     if (owner.HasMeshLights == true)
     {
         owner.Report.MeshLightTriangles = candidate.MeshLightCount;
-        owner.Report.MeshLightBytes = candidate.MeshLightWords.GetSize() * sizeof(math::Vector4);
+        owner.Report.MeshLightBytes = uint64{candidate.MeshLightWords.GetSize()} * sizeof(math::Vector4);
     }
     if (owner.IsClustered == true && math::IsEmpty(candidate.BoundsWorld) == false)
     {

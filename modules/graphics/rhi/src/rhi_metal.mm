@@ -140,10 +140,28 @@ uint32 gToken = 0;
 bool gConnected = false;
 bool gRendering = false;
 
-void LogError(NSError* error) noexcept
+// A compiler service failure reports only "Compilation failed", unlike a source error, whose description carries
+// the program_source log. The domain, code and underlying error tell the two apart in CI logs.
+void LogError(NSError* errorOrNull) noexcept
 {
-    const char* message = error.localizedDescription.UTF8String;
-    LUDUS_LOG_ERROR(LOG_RHI, "Metal: {}", message != nullptr ? message : "operation failed");
+    if (errorOrNull == nil)
+    {
+        LUDUS_LOG_ERROR(LOG_RHI, "Metal: operation failed without an error");
+        return;
+    }
+    const char* messageOrNull = errorOrNull.localizedDescription.UTF8String;
+    const char* domainOrNull = errorOrNull.domain.UTF8String;
+    LUDUS_LOG_ERROR(LOG_RHI,
+                    "Metal: {} [{} {}]",
+                    messageOrNull != nullptr ? messageOrNull : "operation failed",
+                    domainOrNull != nullptr ? domainOrNull : "unknown domain",
+                    static_cast<int64>(errorOrNull.code));
+    NSError* underlyingOrNull = errorOrNull.userInfo[NSUnderlyingErrorKey];
+    const char* underlyingMessageOrNull = underlyingOrNull != nil ? underlyingOrNull.description.UTF8String : nullptr;
+    if (underlyingMessageOrNull != nullptr)
+    {
+        LUDUS_LOG_ERROR(LOG_RHI, "Metal: caused by {}", underlyingMessageOrNull);
+    }
 }
 bool CheckCommand(id<MTLCommandBuffer> command) noexcept
 {
