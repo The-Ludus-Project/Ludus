@@ -2111,9 +2111,28 @@ See [architecture](../architecture/editor-architecture.md),
 [interaction design](../architecture/editor-interaction-design.md), and
 [post-design reference review](../architecture/editor-design-review.md).
 
+## Truncation
+
+Text that does not fit is cut where it costs the least, and never silently:
+
+- **Paths** (Project Explorer, Graph Sources, the Error List's File column, the
+  render-graph document header and the source file selector) keep the file name
+  whole. The folder is dimmed and elided from the middle first; only a file name
+  wider than the field is elided itself, also from the middle. Text with no folder
+  part elides from the middle.
+- **Combo boxes** draw their current text with the same elision, never a cut
+  mid-word, and ask for a width that holds their longest item.
+- **Tool window tab bars** show each window's icon and title while they fit. When
+  the dock is too narrow for every title, the tab bar switches to icons only; every
+  tab keeps its full title as its tooltip.
+- Anything that is cut shows its full text as a tooltip.
+
+`PathItemDelegate`, `PathLabel` and `ElidePathText` in `apps/editor/src/path_text.cpp`
+implement the path rules.
+
 ## Editor icons
 
-The outline icons for the toolbars, Project Explorer and Error List are taken
+The outline icons for the toolbars, Project Explorer, Error List and tool window tabs are taken
 unchanged from [Lucide](https://lucide.dev) 1.62.0, commit
 `2ca268e74888d3506b3319fb8f94aaaaf70ceca9` of
 [lucide-icons/lucide](https://github.com/lucide-icons/lucide).

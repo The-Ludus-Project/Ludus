@@ -11,6 +11,7 @@
 #include "internal/code_editor_panel.h"
 #include "internal/code_formatter.h"
 #include "internal/item_selection.h"
+#include "internal/path_text.h"
 #include "internal/render_graph_comments.h"
 #include "internal/render_graph_diagnostics.h"
 #include "internal/render_graph_execution_plan.h"
@@ -531,7 +532,7 @@ QString DescribeSceneComputeConversion()
 
 RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* parentOrNull)
     : QWidget(parentOrNull), mTooling(tooling), mSourceDocument(mDocument),
-      mPath(new QLabel(QStringLiteral("No render graph is open."), this)), mContent(new QStackedWidget(this)),
+      mPath(new PathLabel(QStringLiteral("No render graph is open."), this)), mContent(new QStackedWidget(this)),
       mEmptyMessage(new QLabel(this)), mCreateFirst(new QPushButton(QStringLiteral("Create Render Graph..."), this)),
       mConfiguration(new QComboBox(this)), mTree(new QTreeWidget(this)), mNavigation(new QWidget(this)),
       mStatusPanel(new QScrollArea(this)), mSourcesToggle(new QPushButton(QStringLiteral("Graph Sources"), this)),
@@ -591,6 +592,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mTree->setObjectName(QStringLiteral("renderGraphTree"));
     ConfigureItemSelection(*mTree);
     mTree->setHeaderLabel(QStringLiteral("Graph sources"));
+    mTree->setItemDelegate(new PathItemDelegate(mTree));
     mTree->setContextMenuPolicy(Qt::CustomContextMenu);
 
     // Inspector: fields of the selected node, its layout position, node creation and the
@@ -688,6 +690,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     QWidget* sourcePage = new QWidget(this);
     QVBoxLayout* sourceLayout = new QVBoxLayout(sourcePage);
     mSourceFile->setObjectName(QStringLiteral("renderGraphSourceFile"));
+    mSourceFile->setItemDelegate(new PathItemDelegate(mSourceFile));
     mSource->setObjectName(QStringLiteral("renderGraphSource"));
     mSource->setAccessibleName(QStringLiteral("Shader and render graph source"));
     mSourceFocusToggle = new QPushButton(QStringLiteral("Focus Source"), sourcePage);

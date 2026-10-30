@@ -617,6 +617,8 @@ qt_add_executable(ludus_editor
     src/internal/render_graph_build_settings.h
     src/internal/error_list.h
     src/error_list.cpp
+    src/internal/path_text.h
+    src/path_text.cpp
     src/internal/project_explorer.h
     src/project_explorer.cpp
     src/internal/project_files.h src/project_files.cpp
@@ -853,7 +855,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     set_tests_properties(ludus_editor_browser_content_tests PROPERTIES
         LABELS "unit;editor;browser" TIMEOUT 60 ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(ludus_project_explorer_tests tests/main.cpp tests/project_explorer_tests.cpp
-        src/internal/project_explorer.h src/project_explorer.cpp src/project_files.cpp
+        src/internal/project_explorer.h src/project_explorer.cpp src/internal/path_text.h src/path_text.cpp src/project_files.cpp
         src/internal/editor_icons.h src/editor_icons.cpp)
     set_target_properties(ludus_project_explorer_tests PROPERTIES AUTOMOC ON)
     ludus_editor_add_icons(ludus_project_explorer_tests)
@@ -922,6 +924,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         tests/theme_preference_tests.cpp
         tests/viewport_legibility_tests.cpp
         tests/editor_icons_tests.cpp
+        tests/path_text_tests.cpp
         tests/state_view_tests.cpp
         tests/activity_chip_tests.cpp
         tests/viewport_frame_pump_tests.cpp
@@ -1075,6 +1078,8 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/internal/render_graph_build_settings.h
         src/internal/error_list.h
         src/error_list.cpp
+        src/internal/path_text.h
+        src/path_text.cpp
         src/internal/project_explorer.h
         src/project_explorer.cpp
         src/internal/project_files.h src/project_files.cpp
@@ -1367,7 +1372,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/internal/render_graph_view_state.h src/internal/render_graph_history.h src/render_graph_history.cpp
         src/internal/render_graph_pipeline.h src/render_graph_pipeline.cpp
         src/internal/render_graph_job.h src/render_graph_job.cpp
-        src/internal/error_list.h src/error_list.cpp src/internal/editor_icons.h src/editor_icons.cpp
+        src/internal/error_list.h src/error_list.cpp src/internal/path_text.h src/path_text.cpp src/internal/editor_icons.h src/editor_icons.cpp
         src/internal/render_graph_creation.h src/render_graph_creation.cpp
         src/internal/render_graph_template_registry.h src/render_graph_template_registry.cpp
         src/internal/render_graph_quick_add.h src/render_graph_quick_add.cpp

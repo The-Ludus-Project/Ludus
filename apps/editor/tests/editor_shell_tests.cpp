@@ -48,6 +48,7 @@
 #include <QSpinBox>
 #include <QStackedWidget>
 #include <QStringList>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTemporaryDir>
@@ -395,6 +396,46 @@ TEST_CASE("Shell puts documents in the centre and tool windows around them", "[e
         CHECK(preview->isAncestorOf(window.findChild<QWidget*>(QStringLiteral("renderGraphPreviewPanel"))) == true);
         CheckButtonsUnclipped(*preview);
         Capture(window, QStringLiteral("render-preview-%1").arg(size.width()));
+    }
+}
+
+TEST_CASE("Tool window tabs keep their icons and drop their text when the dock is too narrow",
+          "[editor][layout][shell][truncation]")
+{
+    QTemporaryDir settings;
+    EditorController controller(ToolingPaths{}, nullptr, QDir(settings.path()).filePath(QStringLiteral("recent.json")));
+    MainWindow window(&controller, nullptr, QDir(settings.path()).filePath(QStringLiteral("workspace.json")));
+    window.show();
+    Settle();
+    QDockWidget* explorer = Dock(window, QStringLiteral("projectExplorerDock"));
+    REQUIRE(explorer->windowIcon().isNull() == false);
+    REQUIRE(Dock(window, QStringLiteral("contentDock"))->windowIcon().isNull() == false);
+    REQUIRE(Dock(window, QStringLiteral("renderPreviewDock"))->windowIcon().isNull() == false);
+    QTabBar* tabBarOrNull = nullptr;
+    for (QTabBar* candidate : window.findChildren<QTabBar*>())
+    {
+        if (candidate->parentWidget() == &window && candidate->count() >= 3 &&
+            candidate->tabText(0).isEmpty() == false && candidate->tabIcon(0).isNull() == false)
+        {
+            tabBarOrNull = candidate;
+        }
+    }
+    REQUIRE(tabBarOrNull != nullptr);
+    const int iconTabWidth = tabBarOrNull->iconSize().width() + 2 * 8;
+
+    window.resizeDocks({explorer}, {1200}, Qt::Horizontal);
+    Settle();
+    const int wideTabWidth = tabBarOrNull->tabRect(0).width();
+    CHECK(wideTabWidth > iconTabWidth);
+
+    window.resizeDocks({explorer}, {1}, Qt::Horizontal);
+    Settle();
+    CHECK(tabBarOrNull->width() < 3 * wideTabWidth);
+    CHECK(tabBarOrNull->tabRect(0).width() <= iconTabWidth + tabBarOrNull->iconSize().width());
+    // Every tab still has its full title as a tooltip, so nothing needs the text to be identified.
+    for (int index = 0; index < tabBarOrNull->count(); ++index)
+    {
+        CHECK(tabBarOrNull->tabToolTip(index) == tabBarOrNull->tabText(index));
     }
 }
 
