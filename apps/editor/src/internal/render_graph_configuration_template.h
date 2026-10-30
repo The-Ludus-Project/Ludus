@@ -8,7 +8,9 @@ namespace ludus::editor
 /// Custom limits are retained. Returns false when embedded defaults are unavailable; no disk writes.
 [[nodiscard]] bool UpgradeDefaultTemplateBudgets(QJsonObject& inoutManifest, const QJsonObject& source);
 /// Check the merged program count and report a blocked increase through the optional request.
-/// Only explicit approval raises budgets.programs to the exact required count; no disk writes.
+/// Only explicit approval raises budgets.programs to the exact required count. Programs times target
+/// profiles beyond the supported artifact ceiling fail without a request, since no approval admits them.
+/// On success the legacy budgets.artifacts and budgets.pipelines fields are removed; no disk writes.
 [[nodiscard]] bool EnsureTemplateProgramBudget(QJsonObject& inoutManifest,
                                                foundation::int32 requiredPrograms,
                                                const QString& templateName,
@@ -118,7 +120,7 @@ PrepareLineSamplingConfiguration(RenderGraphSnapshot& inoutSnapshot,
 /// Prepare the salesin-jarosz-lines template (point-line design D8b) in an absent/empty library: a
 /// primary-hits pass and the ShadeMultipleImportance, ShadeLineSampling and ShadePointSampling
 /// triangle-loop passes sharing one render-size hit Buffer, imported under salesin_jarosz_lines/ with
-/// PointLine-prefixed program IDs and the MIS_HEURISTIC and MIS_POWER_EXPONENT Graph settings;
+/// PointLine-prefixed program IDs and the POINT_LINE_MIS_HEURISTIC and POINT_LINE_MIS_POWER_EXPONENT Graph settings;
 /// lineSampling and pointSampling are optional library outputs. The ray technique's scene_interface
 /// gains the template's visibility and line_queries budgets. Requires a Metal or Vulkan profile but no
 /// native ray tracing. Same transaction contract as PrepareComputeRayTracingConfiguration.

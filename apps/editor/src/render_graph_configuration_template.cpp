@@ -1,4 +1,5 @@
 #include "internal/render_graph_configuration_template.h"
+#include "internal/render_graph_build_limits.h"
 
 #include <ludus/foundation/base/types.h>
 
@@ -242,29 +243,43 @@ bool EnsureTemplateProgramBudget(QJsonObject& inoutManifest,
                                  QString& outError,
                                  RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
 {
+    // Target artifacts are programs times profiles and have no authored budget; only the supported
+    // ceiling bounds them, and no approval can raise it.
+    const qsizetype profileCount = inoutManifest.value(QStringLiteral("profiles")).toArray().size();
+    if (profileCount > 0 && requiredPrograms > MAX_SHADER_ARTIFACTS / profileCount)
+    {
+        outError = QStringLiteral("%1 needs %2 shader programs, which across %3 target profiles exceed the supported "
+                                  "limit of %4 target artifacts. Reuse existing programs, remove unused shaders or "
+                                  "reduce target profiles. The draft was preserved.")
+                       .arg(templateName)
+                       .arg(requiredPrograms)
+                       .arg(profileCount)
+                       .arg(MAX_SHADER_ARTIFACTS);
+        return false;
+    }
     QJsonObject budgets = inoutManifest.value(QStringLiteral("budgets")).toObject();
     const int32 currentPrograms = budgets.value(QStringLiteral("programs")).toInt();
-    if (requiredPrograms <= currentPrograms)
+    if (requiredPrograms > currentPrograms)
     {
-        return true;
-    }
-    if (inoutBudgetOrNull != nullptr && inoutBudgetOrNull->ApprovedPrograms >= requiredPrograms)
-    {
+        if (inoutBudgetOrNull == nullptr || inoutBudgetOrNull->ApprovedPrograms < requiredPrograms)
+        {
+            if (inoutBudgetOrNull != nullptr)
+            {
+                inoutBudgetOrNull->CurrentPrograms = currentPrograms;
+                inoutBudgetOrNull->RequiredPrograms = requiredPrograms;
+            }
+            outError = QStringLiteral("%1 needs %2 shader programs, but budgets.programs is %3. Increase "
+                                      "budgets.programs in the shader manifest and retry. The draft was preserved.")
+                           .arg(templateName)
+                           .arg(requiredPrograms)
+                           .arg(currentPrograms);
+            return false;
+        }
         budgets.insert(QStringLiteral("programs"), requiredPrograms);
-        inoutManifest.insert(QStringLiteral("budgets"), budgets);
-        return true;
     }
-    if (inoutBudgetOrNull != nullptr)
-    {
-        inoutBudgetOrNull->CurrentPrograms = currentPrograms;
-        inoutBudgetOrNull->RequiredPrograms = requiredPrograms;
-    }
-    outError = QStringLiteral("%1 needs %2 shader programs, but budgets.programs is %3. "
-                              "Increase budgets.programs in the shader manifest and retry. The draft was preserved.")
-                   .arg(templateName)
-                   .arg(requiredPrograms)
-                   .arg(currentPrograms);
-    return false;
+    RemoveDerivedBudgets(budgets);
+    inoutManifest.insert(QStringLiteral("budgets"), budgets);
+    return true;
 }
 
 bool UpgradeDefaultTemplateBudgets(QJsonObject& inoutManifest, const QJsonObject& source)

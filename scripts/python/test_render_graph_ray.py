@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from ludus_tools import render_graph as graph, render_graph_build as build, render_graph_ray as ray
 from ludus_tools.errors import ToolingError
@@ -18,6 +19,33 @@ from ludus_tools import render_graph_reload as reload
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / 'tests/sdk_consumer/rg2/raytracing'
+# The source-tree owners of the flat SDK shaders directory, in _ludus_stage_render_graph_helpers order.
+HELPER_ROOTS = ('cmake/shaders', 'modules/graphics/renderer/shaders',
+                'modules/content/render_graph_format/include/ludus/content/render_graph_format',
+                'modules/foundation/math/shaders', 'modules/graphics/rhi/shaders',
+                'modules/graphics/renderer/include/ludus/graphics/renderer',
+                'modules/graphics/renderer/include/ludus/graphics/renderer/detail', 'config')
+
+
+def stage_helper(destination):
+    """Stage the installed helper layout without CMake; each name keeps its first owner."""
+    destination.mkdir()
+    for owner in HELPER_ROOTS:
+        for path in sorted((ROOT / owner).iterdir()):
+            if path.is_file() and not (destination / path.name).exists():
+                shutil.copy(path, destination / path.name)
+    return destination
+
+
+def compile_without_tools(program, schemas, closure, snapshot, work, helper, tools, target, cancel, *_):
+    """Stand in for the pinned compiler with a stage result that has no bindings."""
+    output = work / 'artifact'
+    output.mkdir()
+    (output / 'artifact.txt').write_text(program['id'] + ' ' + target + '\n')
+    result = {'version': 1, 'target': target, 'stage': program['stage'], 'source_entry': 'rgEntry', 'entry': 'rgEntry',
+              'artifact': 'artifact.txt', 'interface': {'entries': [], 'inputs': []}, 'links': [], 'layouts': {},
+              'sha256': build.digest((output / 'artifact.txt').read_bytes())}
+    return output, result
 
 
 def make_legacy_scene_bridge(root):
@@ -746,6 +774,28 @@ class RayPipelineTests(unittest.TestCase):
             ray.validate_payload(b'struct ScenePayload { Texture2D<float4> Texture; };', 1024, build)
         with self.assertRaises(ToolingError):
             ray.validate_payload(b'struct ScenePayload { float Values[9999999999999999]; };', 1024, build)
+
+    def test_package_build_cooks_one_ray_recipe_per_prepared_profile(self):
+        # build_package must cook the ray profiles that prepare_sources grouped and linked.
+        root = Path(self.temporary.name)
+        source = root / 'source'
+        shutil.copytree(FIXTURE, source)
+        manifest = source / 'main.lushader.json'
+        manifest.write_text((source / 'main.lushader.json.in').read_text().replace('@RG2_TEST_PROFILES@', '["metal"]'))
+        helper = stage_helper(root / 'sdk')
+        tool = root / 'tool'
+        tool.write_text('test tool identity')
+        tool.with_name('tool.build.json').write_text('{}')
+        *_, ray_profiles = build.prepare_sources(manifest, helper)
+        self.assertTrue(ray_profiles)
+        with patch.object(build, 'compile_program', compile_without_tools):
+            result = build.build_package(manifest, root / 'build', helper=helper, compiler=tool, spirv_cross=tool)
+        descriptor = json.loads((Path(result['package']) / 'package.json').read_text())
+        recipes = [recipe for recipe in descriptor['recipes'] if recipe['technique'] == ray.TECHNIQUE]
+        self.assertEqual([[list(variant) for variant in profile['variants']] for profile in ray_profiles],
+                         [recipe['ray_programs'] for recipe in recipes])
+        keys = {program['key'] for program in descriptor['programs']}
+        self.assertTrue(all(recipe['compute'] in keys for recipe in recipes))
 
 
 @unittest.skipUnless(os.environ.get('LUDUS_RG1_SLANG') and os.environ.get('LUDUS_RG1_HELPER') and os.environ.get('LUDUS_RG1_CROSS'),

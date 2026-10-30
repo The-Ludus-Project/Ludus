@@ -43,7 +43,8 @@ RenderTargetReadStatus RenderTargetReader::Begin(rhi::DeviceHandle device,
                                                  rhi::TextureHandle texture,
                                                  rhi::TextureAspect aspect,
                                                  uint32 width,
-                                                 uint32 height)
+                                                 uint32 height,
+                                                 bool shouldSnapshotSource)
 {
     Cancel();
     mDevice = device;
@@ -62,25 +63,44 @@ RenderTargetReadStatus RenderTargetReader::Begin(rhi::DeviceHandle device,
     mEncoding = isDepth == true ? TexelEncoding::Depth32Float : TexelEncoding::Rgba8Unorm;
     mWidth = width;
     mHeight = height;
-    rhi::TextureHandle source = texture;
+
     if (isDepth == true)
     {
         if (preparePacking(width, height) == false || encodePacking(surface, texture) == false)
         {
             return RenderTargetReadStatus::Failed;
         }
-        source = mPacked;
     }
-    if (mReader.Begin(device, source, width, height) == false)
+    else if (shouldSnapshotSource == true)
     {
-        return RenderTargetReadStatus::Failed;
+        rhi::TextureDescription description;
+        description.Width = width;
+        description.Height = height;
+        description.DeferredInitialization = true;
+        const rhi::TextureRegion region{ .Width = width, .Height = height };
+        if (rhi::CreateTexture(device, description, {}, mSnapshot) != rhi::RasterStatus::Ready ||
+            rhi::RequestTextureCopy(device, texture, region, mSnapshot, region, mSnapshotCopy) !=
+                rhi::RasterStatus::Pending)
+        {
+            Cancel();
+            return RenderTargetReadStatus::Failed;
+        }
     }
+    else
+    {
+        if (mReader.Begin(device, texture, width, height) == false)
+        {
+            return RenderTargetReadStatus::Failed;
+        }
+        mIsBorrowingSource = true;
+    }
+    mIsSnapshotPending = isDepth == true || shouldSnapshotSource == true;
     mIsBusy = true;
     mIsComplete = false;
     return RenderTargetReadStatus::Pending;
 }
 
-RenderTargetReadStatus RenderTargetReader::Poll() noexcept
+RenderTargetReadStatus RenderTargetReader::Poll(bool shouldRequestBands) noexcept
 {
     if (mIsBusy == false)
     {
@@ -90,7 +110,28 @@ RenderTargetReadStatus RenderTargetReader::Poll() noexcept
     {
         return RenderTargetReadStatus::Complete;
     }
-    const OffscreenReadStatus status = mReader.Poll();
+    if (mIsSnapshotPending == true)
+    {
+        const rhi::RasterStatus captured = mEncoding == TexelEncoding::Depth32Float
+                                               ? rhi::GetStatus(mDevice, mPackingProducer)
+                                               : rhi::GetStatus(mDevice, mSnapshotCopy);
+        if (captured == rhi::RasterStatus::Pending)
+        {
+            ++mPendingPolls;
+            return RenderTargetReadStatus::Pending;
+        }
+        if (mEncoding != TexelEncoding::Depth32Float)
+        {
+            static_cast<void>(rhi::Release(mDevice, mSnapshotCopy));
+        }
+        mIsSnapshotPending = false;
+        if (captured != rhi::RasterStatus::Ready || mReader.Begin(mDevice, mSnapshot, mWidth, mHeight) == false)
+        {
+            Cancel();
+            return RenderTargetReadStatus::Failed;
+        }
+    }
+    const OffscreenReadStatus status = mReader.Poll(shouldRequestBands);
     if (status == OffscreenReadStatus::Pending)
     {
         ++mPendingPolls;
@@ -137,6 +178,17 @@ InspectedTexture RenderTargetReader::TakeTexture() noexcept
 void RenderTargetReader::Cancel() noexcept
 {
     mReader.Cancel();
+    if (mHasDevice == true)
+    {
+        static_cast<void>(rhi::Release(mDevice, mSnapshotCopy));
+        mSnapshotCopy = {};
+        DestroyHandle(mDevice, mSnapshot);
+    }
+    mPackingProducer = {};
+    mIsSnapshotPending = false;
+    mIsBorrowingSource = false;
+    mSnapshotWidth = 0;
+    mSnapshotHeight = 0;
     mTexture = {};
     mIsBusy = false;
     mIsComplete = false;
@@ -149,15 +201,14 @@ void RenderTargetReader::Release() noexcept
     {
         return;
     }
-    DestroyHandle(mDevice, mPacked);
     DestroyHandle(mDevice, mPipeline);
     DestroyHandle(mDevice, mLayout);
     DestroyHandle(mDevice, mFragment);
     DestroyHandle(mDevice, mVertex);
     DestroyHandle(mDevice, mVertices);
     DestroyHandle(mDevice, mIndices);
-    mPackedWidth = 0;
-    mPackedHeight = 0;
+    mSnapshotWidth = 0;
+    mSnapshotHeight = 0;
     mIsPackingReady = false;
     mHasDevice = false;
     mDevice = {};
@@ -203,21 +254,21 @@ bool RenderTargetReader::preparePacking(uint32 width, uint32 height) noexcept
         }
         mIsPackingReady = true;
     }
-    if (mPackedWidth != width || mPackedHeight != height)
+    if (mSnapshotWidth != width || mSnapshotHeight != height)
     {
-        DestroyHandle(mDevice, mPacked);
-        mPackedWidth = 0;
-        mPackedHeight = 0;
+        DestroyHandle(mDevice, mSnapshot);
+        mSnapshotWidth = 0;
+        mSnapshotHeight = 0;
         rhi::TextureDescription description;
         description.Width = width;
         description.Height = height;
         description.Attachment = true;
-        if (rhi::CreateTexture(mDevice, description, {}, mPacked) != rhi::RasterStatus::Ready)
+        if (rhi::CreateTexture(mDevice, description, {}, mSnapshot) != rhi::RasterStatus::Ready)
         {
             return false;
         }
-        mPackedWidth = width;
-        mPackedHeight = height;
+        mSnapshotWidth = width;
+        mSnapshotHeight = height;
     }
     return true;
 }
@@ -246,15 +297,14 @@ bool RenderTargetReader::encodePacking(rhi::SurfaceHandle surface, rhi::TextureH
     drawing.IndexCount = VERTEX_COUNT;
     drawing.VertexCount = VERTEX_COUNT;
     rhi::RasterPassDescription pass;
-    pass.Color = mPacked;
+    pass.Color = mSnapshot;
     bool isEncoded = rhi::BeginFrame(mDevice, surface) == rhi::DeviceStatus::Ready;
     if (isEncoded == true)
     {
         isEncoded = rhi::BeginRasterPass(mDevice, pass) == rhi::RasterStatus::Ready &&
                     rhi::DrawIndexed(mDevice, drawing) == rhi::RasterStatus::Ready;
         // The frame always closes, even after a rejected draw; nothing waits for its completion.
-        rhi::SubmissionToken completion;
-        isEncoded = rhi::EndFrame(mDevice, completion) == rhi::RasterStatus::Ready && isEncoded == true;
+        isEncoded = rhi::EndFrame(mDevice, mPackingProducer) == rhi::RasterStatus::Ready && isEncoded == true;
     }
     // Submitted frames retain their bindings until GPU completion.
     DestroyHandle(mDevice, set);

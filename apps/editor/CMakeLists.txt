@@ -103,19 +103,24 @@ endforeach()
 set_source_files_properties(src/render_graph_settings_editor.cpp src/render_graph_configuration_template.cpp
     PROPERTIES COMPILE_DEFINITIONS "${graph_settings_definitions}")
 
-# Shader authoring shares the build service's target-artifact ceiling.
+# Shader authoring shares the build service's target-artifact and pipeline ceilings
+# (render_graph_build_limits.h). Both counts follow from the manifest; no authored budget bounds them.
 set(shader_build_policy "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/render_graph_build.py")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${shader_build_policy}")
 execute_process(COMMAND "${Python3_EXECUTABLE}" -c
-    "import sys; sys.path.insert(0,sys.argv[1]); from ludus_tools.render_graph_build import LIMITS; print(LIMITS['artifacts'])"
+    "import sys; sys.path.insert(0,sys.argv[1]); from ludus_tools.render_graph_build import LIMITS; print(LIMITS['artifacts'], LIMITS['pipelines'])"
     "${PROJECT_SOURCE_DIR}/scripts/python"
-    RESULT_VARIABLE shader_build_status OUTPUT_VARIABLE shader_artifact_limit ERROR_VARIABLE shader_build_error
+    RESULT_VARIABLE shader_build_status OUTPUT_VARIABLE shader_build_limits ERROR_VARIABLE shader_build_error
     OUTPUT_STRIP_TRAILING_WHITESPACE)
 if(NOT shader_build_status EQUAL 0)
-    message(FATAL_ERROR "Cannot read shader artifact limit: ${shader_build_error}")
+    message(FATAL_ERROR "Cannot read shader build limits: ${shader_build_error}")
 endif()
-set_source_files_properties(src/render_graph_shader_creation.cpp PROPERTIES
-    COMPILE_DEFINITIONS "LUDUS_EDITOR_MAX_SHADER_ARTIFACTS=${shader_artifact_limit}")
+separate_arguments(shader_build_limits)
+list(GET shader_build_limits 0 shader_artifact_limit)
+list(GET shader_build_limits 1 shader_pipeline_limit)
+set_property(SOURCE src/render_graph_shader_creation.cpp src/render_graph_configuration_template.cpp
+    src/render_graph_techniques.cpp tests/render_graph_template_tests.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+    "LUDUS_EDITOR_MAX_SHADER_ARTIFACTS=${shader_artifact_limit}" "LUDUS_EDITOR_MAX_SHADER_PIPELINES=${shader_pipeline_limit}")
 
 # Native snapshot transport uses the backend owner's encoded admission policy.
 set(shader_context_policy "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/shader_context.py")
@@ -217,7 +222,8 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     list(APPEND editor_viewport_sources
         src/internal/render_graph_targets.h src/render_graph_targets.cpp
         src/internal/render_target_reader.h src/render_target_reader.cpp
-        src/internal/texture_viewer.h src/texture_viewer.cpp)
+        src/internal/texture_viewer.h src/texture_viewer.cpp
+        src/internal/texture_display_conversion.h src/texture_display_conversion.cpp)
     # Play in the viewport: the game's hosted window and its imported frames as a frame source.
     list(APPEND editor_viewport_sources src/internal/play_viewport_source.h src/play_viewport_source.cpp)
     if(APPLE)
@@ -1257,6 +1263,24 @@ if(EMSCRIPTEN)
 endif()
 
 if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
+    # Keep CPU conversion ownership/cancellation testable without the renderer or shader build.
+    add_executable(ludus_texture_display_conversion_tests tests/main.cpp
+        tests/texture_display_conversion_tests.cpp tests/texture_inspection_tests.cpp
+        tests/viewport_frame_pump_tests.cpp
+        src/internal/texture_display_conversion.h src/texture_display_conversion.cpp
+        src/internal/texture_inspection.h src/texture_inspection.cpp
+        src/internal/viewport_frame_pump.h src/viewport_frame_pump.cpp)
+    set_target_properties(ludus_texture_display_conversion_tests PROPERTIES AUTOMOC ON)
+    target_include_directories(ludus_texture_display_conversion_tests PRIVATE src)
+    target_compile_definitions(ludus_texture_display_conversion_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
+    target_link_libraries(ludus_texture_display_conversion_tests PRIVATE Qt6::Widgets Qt6::Test
+        Ludus::FoundationContainers Ludus::FoundationMath Ludus::FoundationProfiling Catch2::Catch2)
+    ludus_apply_project_defaults(ludus_texture_display_conversion_tests)
+    ludus_enable_test_exceptions(ludus_texture_display_conversion_tests)
+    add_test(NAME ludus_texture_display_conversion_tests COMMAND ludus_texture_display_conversion_tests)
+    set_tests_properties(ludus_texture_display_conversion_tests PROPERTIES LABELS "unit;editor" TIMEOUT 30
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
     add_executable(ludus_render_graph_pipeline_tests tests/main.cpp tests/render_graph_pipeline_tests.cpp tests/render_graph_shader_cleanup_tests.cpp
         src/internal/render_graph_pipeline.h src/render_graph_pipeline.cpp
         src/render_graph_document.cpp src/render_graph_node_ports.cpp src/render_graph_configuration_template.cpp src/render_graph_visibility_template.cpp src/render_graph_compute_template.cpp src/render_graph_line_sampling_template.cpp src/render_graph_point_line_template.cpp src/render_graph_node_transfer.cpp src/render_graph_shader_cleanup.cpp src/render_graph_shader_creation.cpp src/render_graph_scene_authoring.cpp src/render_graph_scene_bundle.cpp src/render_graph_techniques.cpp src/internal/render_graph_pipeline_node.h src/render_graph_pipeline_node.cpp src/render_graph_upscale_node.cpp
@@ -1392,7 +1416,7 @@ if(TARGET ludus_editor_tests)
     foreach(target IN ITEMS ludus_editor_accessibility_tests ludus_code_editor_tests
             ludus_project_explorer_tests ludus_editor_browser_content_tests ludus_render_graph_pipeline_tests
             ludus_shader_interface_tests ludus_render_graph_configuration_tests
-            ludus_render_graph_live_build_tests)
+            ludus_render_graph_live_build_tests ludus_texture_display_conversion_tests)
         if(TARGET ${target})
             add_dependencies(ludus_editor_tests ${target})
         endif()
@@ -1440,6 +1464,7 @@ ludus_editor_apply_precompiled_headers(
     ludus_shader_interface_tests
     ludus_render_graph_configuration_tests
     ludus_render_graph_live_build_tests
+    ludus_texture_display_conversion_tests
 )
 
 # Finite choices are shared by document validation, Properties and canvas details.

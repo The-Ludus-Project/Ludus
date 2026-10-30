@@ -105,9 +105,8 @@ select the desired program IDs. To share one source with different entry points,
 register separate programs in the manifest with the same `source` and different
 `function` values, then select those programs on the nodes. The compiler preserves
 these choices in both compiled headers and runtime packages. Adding a new shader
-program automatically grows `budgets.programs` and `budgets.artifacts` to the
-required counts, including every target profile. You do not need to edit the
-manifest first. Larger authored budgets are retained. Budget changes, source
+program automatically grows `budgets.programs` to the required count. You do not
+need to edit the manifest first. A larger authored budget is retained. Budget changes, source
 creation and node assignments share the same undo step and **Save** operation;
 undo restores the previous budgets too. Reusing an existing compatible program
 creates no additional program or budget change. Direct manifest edits and CLI
@@ -117,7 +116,7 @@ apply. Exceeding the artifact ceiling names the manifest, program/profile counts
 and supported limit, and preserves the complete draft. Reuse compatible programs,
 remove unused shaders or reduce target profiles before retrying.
 A new triangle ray pipeline needs three programs (`ray_generation`, `miss` and
-`closest_hit`); each addition grows the relevant budgets as needed. Ray callbacks
+`closest_hit`); each addition grows `budgets.programs` as needed. Ray callbacks
 still share the single bounded ray technique.
 To clean up the open package, choose **Edit → Remove Unused Shaders**, or
 **Remove Unused Shaders** in the canvas context menu. The command checks every
@@ -177,7 +176,7 @@ The builder adapts the original shaders without rewriting their sources or addin
 project helper files. New stages use scene-aware callbacks; replace a legacy stage
 when its shading needs `EvaluateMaterial(scene, hit)` and the full material properties.
 The conversion reuses the existing program records, IDs and profile artifact slots.
-It works with full program/artifact budgets and preserves those authored limits;
+It works with a full program budget and preserves the authored limits;
 you do not need to edit the manifest before converting. **Save** publishes the manifest change.
 Projects converted by older editors may retain a generated `scene_legacy_callbacks.slang`
 helper that includes the original callbacks. The builder recognizes that generated
@@ -1354,8 +1353,8 @@ application fails with its path instead of publishing a manifest that cannot bui
 Explicit **Build Graph** includes these new files in its immutable draft snapshot
 before Save; building does not publish them to the project. Existing callbacks remain unchanged; a shared custom payload
 keeps its fields and gains `RayLaunch Launch`. Importing upgrades unchanged Raster
-admission defaults to the ReSTIR template capacities (16 programs and 64 artifacts),
-so an existing ray pipeline can coexist with the five imported programs. Custom
+admission defaults to the ReSTIR template capacity of 16 programs, so an existing
+ray pipeline can coexist with the five imported programs. Custom
 admission limits are retained unless you approve a program-budget increase. If the
 merged programs exceed `budgets.programs`, the template picker shows the current
 and required counts and offers **Increase and apply** or **Cancel**. Approval raises
@@ -2378,7 +2377,7 @@ those points in `color`.
 
 **Weights.** `ComputeMisWeight(sampledDensity, otherDensity0, otherDensity1)` in
 `main_shaders/multiple_importance.slang` is `p_s^β / (p_s^β + p_0^β + p_1^β)`, with
-β = 1 for the balance heuristic and `MIS_POWER_EXPONENT` for the power heuristic. A
+β = 1 for the balance heuristic and `POINT_LINE_MIS_POWER_EXPONENT` for the power heuristic. A
 zero other density drops that strategy: `shadeLines` and `shadePoints` pass zero for
 the strategy they omit, and a line strategy has zero density at a point that its
 chord query finds occluded. For finite positive densities the three weights sum to
@@ -2393,8 +2392,14 @@ confirmed with `TestVisibility`, as in the line-sampling template.
 
 | Graph setting | Default | Range | Meaning |
 | --- | --- | --- | --- |
-| `MIS_HEURISTIC` | `0` (balance) | `0`–`1` | `0` balance, `1` power |
-| `MIS_POWER_EXPONENT` | `2` | `1`–`16` | Exponent β of the power heuristic |
+| `POINT_LINE_MIS_HEURISTIC` | `0` (balance) | `0`–`1` | `0` balance, `1` power |
+| `POINT_LINE_MIS_POWER_EXPONENT` | `2` | `1`–`16` | Exponent β of the power heuristic |
+
+Graph settings are shared by every configuration in a package, so these names carry the
+template's prefix. The Veach & Guibas template's `MIS_HEURISTIC` has a different range
+(`0`–`3`), and Apply Configuration Template rejects two definitions of one setting, so
+both templates can be applied to the same package. Packages that imported this template
+before the rename keep their copied sources and settings and build unchanged.
 
 Balance is the paper's choice. Change the settings in Properties or with the
 canvas's **Edit Graph Settings...** action. A value outside its range is rejected
@@ -2494,7 +2499,7 @@ A full **Scene → RayTracing** connection selects Geometry, Materials and Light
 from one immutable scene generation. New ray shaders use the scene-aware callback
 interface automatically. Connecting a complete legacy ray pipeline upgrades its
 callbacks through adapters in the same undo step, preserving the authored shader
-behavior and existing manifest program/artifact budgets. Source and manifest
+behavior and the existing manifest program budget. Source and manifest
 changes remain drafts until **Save**.
 
 Right-click the **Scene** or **RayTracing** node and choose **Expand Scene Bundle**
@@ -2852,8 +2857,9 @@ expand to the template's budgets; custom limits remain authoritative. If a custo
 program limit is too small, the picker offers **Increase and apply**, showing the
 current and required counts. Approval raises `budgets.programs` to the required
 count together with the template; **Cancel** preserves the draft. Undo/Redo restores
-both changes, and **Save** publishes them together. Other capacity failures still
-report the required repair.
+both changes, and **Save** publishes them together. Programs times target profiles
+beyond the supported 128 target artifacts cannot be approved; that error names the
+counts to reduce. Other capacity failures still report the required repair.
 Secondary rays require a native profile. Existing ordinary ray configurations can
 share the package: their callbacks, payload source and query limits are retained.
 The shared `ScenePayload` needs a `float3 Radiance` field; comments, whitespace and
@@ -3750,16 +3756,35 @@ time measurements average the last 30 completed samples:
   It shows zero before two images arrive and after one second without a new image;
   a new interaction after that idle gap starts a fresh rate window.
 - **CPU** sums active owner-thread World/camera extraction, graph preparation,
-  submission, polling and output conversion work per delivered image. It excludes
-  the wall-clock gaps between asynchronous service calls and other editor work.
+  submission, polling, texture inspection setup/readback, output conversion and image
+  publication work per delivered image. It excludes worker conversion, wall-clock
+  gaps between asynchronous service calls and other editor work.
 - **GPU** uses the existing asynchronous device timestamp probe for graph frame
   execution. It excludes CPU conversion and is not input-to-display latency.
   `…` means no sample has completed; `n/a` means timestamps are unavailable.
   The overlay and profiling recorder share the device's timing owner.
-- **Readback** measures elapsed time from requesting the output copy until its
+- **Output readback** measures elapsed time from requesting the output copy until its
   CPU display image is ready, including asynchronous copy waits, polling cadence
   and image conversion. It excludes the earlier graph render and final Qt paint.
-  Shared-device GPU snapshots report zero because they perform no CPU readback.
+  Shared-device GPU output snapshots report zero because output presentation performs no CPU readback.
+- **Inspection CPU** sums active GUI-thread GPU snapshot setup, band readback and
+  polling per completed inspection attempt. It is also included in CPU service
+  work; these series have different sample counts and should not be added together.
+  Worker conversion is excluded from both GUI CPU series.
+- **Inspection readback** measures elapsed time from starting the diagnostic
+  snapshot through raw CPU bytes being ready, including asynchronous waits.
+  Inspection series update independently of output delivery, so GPU output cannot
+  overwrite diagnostic readback measurements with zero. The overlay shows
+  **Inspection: paused** while the viewer is hidden. The last 30 completed attempts
+  are retained for resuming; cancelled inspections do not add samples.
+- **Conversion worker** measures the active worker call for each current, completed
+  conversion. It includes range scanning and display image creation, under the
+  `EditorTextureInspectionDisplayConversion` profiling scope on the worker thread.
+- **Conversion elapsed** measures conversion request through GUI completion delivery,
+  including time waiting for an older cancelled conversion to retire. These two
+  series update independently of raw readback and output frames. Superseded or
+  cancelled conversions add no samples; their profiling scopes still expose work
+  that ran. Only short GUI publication work contributes to the frame CPU series.
 
 Pending or failed output copies do not publish successful frame samples or erase
 last-completed time averages. Device replacement clears the graph series. These
@@ -4258,15 +4283,19 @@ to the graph plan, rather than the shader program. Recipe keys compare complete
 canonical state, stage identities, vertex schema and target binding layouts;
 recipe/node names and camera/extent values do not create extra shader programs.
 
+A manifest authors two budgets, `budgets.configurations` and `budgets.programs`.
 Program counts have no separate fixed engine ceiling: `budgets.programs` is a
 positive integer chosen by the author. Adding programs beyond 32 is supported
 when that authored budget admits them; editor shader creation grows it as needed.
-Independent ceilings remain 8
-configurations, 128 target artifacts and 64 target pipeline recipes; source and
-package byte/file limits also apply. Target artifacts count registered programs
-multiplied by target profiles, so increasing the program budget does not bypass
-the artifact budget. The author may choose smaller bounds. The
-configuration bound counts authored techniques and the root graph's own
+The configuration budget is at most 8. Target artifacts (registered programs
+multiplied by target profiles) and target pipelines (raster recipes multiplied by
+target profiles) follow from the manifest itself, so they have no authored budget:
+only the supported ceilings of 128 target artifacts and 64 target pipelines bound
+them, and the error names the counts to reduce. Source and package byte/file limits
+also apply. Manifests written by older tools may still carry `budgets.artifacts` and
+`budgets.pipelines`; the builder accepts and ignores them, and the editor removes them
+when it next changes the budgets, so a stale value can no longer fail a build after
+programs are added. The configuration bound counts authored techniques and the root graph's own
 configurations. Imported configurations that Subgraph nodes reach do not spend
 it: they expand into the root plans, whose techniques, programs, ray variants,
 expanded nodes, passes, files and depth keep their own bounds. The package
@@ -6116,21 +6145,39 @@ the Preview page.
   `colour attachment of Main/raster/draw (Clear → Store)`. It also notes
   `exported by …`, the shared allocation for a depth texture, or `transient`.
 
-Readback never stalls the GUI thread:
+Inspection is visibility-aware and uses independent snapshots:
 
-- The preview reads the selected texture after each presented frame. This happens
-  only between frames, once the export copy finishes and before the next Poll or
-  Render. While the read is outstanding, the graph's attachments are not
-  rewritten or released.
-- Colour textures use the same banded RGBA8 copy as the preview image.
-- RHI readback is RGBA8 only. So an editor shader
-  (`apps/editor/shaders/texture_depth_pack.slang`) first draws the depth aspect
-  into an RGBA8 attachment, packing each texel's IEEE bits into its four bytes.
-  The editor then copies that attachment and rebuilds the depth bit-exactly.
-- Every step is a request polled on later ticks. Nothing waits on a fence.
-- The textures come from `RenderGraph::GetResourceAllocation`. It hands out a
-  graph's non-surface allocation once the producer has completed, under the same
-  rules as an export lease, and it is meant for diagnostics only.
+- Hiding the Textures page (including switching tabs or hiding its dock) cancels
+  pending inspection and stops new reads and CPU image conversion. Selection and
+  the last completed image survive. Showing it requests a fresh snapshot.
+- Selecting or reselecting a texture requests a snapshot of the presented frame.
+  While visible, subsequent frames refresh it at most four times per second.
+  A pending refresh does not delay rendering during that interval.
+- Between frames, colour textures receive an exact-format GPU copy into an owned
+  texture. RHI readback is RGBA8 only, so the editor's
+  `apps/editor/shaders/texture_depth_pack.slang` packs depth IEEE bits into an
+  owned RGBA8 attachment instead. Both preserve the captured frame's pixels.
+- Only GPU snapshot completion gates reuse of the source attachment. Subsequent
+  band reads use the owned texture while the live graph renders newer frames or
+  activates another generation. Nothing waits on a fence inside a service call.
+- Diagnostic bands yield shared readback capacity to viewport output. Inspection
+  images can arrive later during heavy output readback.
+- Range scanning, channel remapping and display image creation run on a native
+  worker using immutable CPU snapshots. The GUI only schedules work and publishes
+  completed images; it never joins or helps execute conversion. Visible readback
+  refreshes remain capped at four per second; control edits queue conversion directly.
+- Each viewer admits one active conversion and one replaceable latest request.
+  New snapshots or controls cancel superseded work, checked between rows in both
+  range scanning and pixel conversion. Hidden viewers drop queued work and cancel
+  the active conversion. Destruction disconnects completion without waiting; the
+  retiring worker owns its inputs until it exits.
+- Only the latest request may publish. Selection, preview/device replacement and
+  generation changes invalidate pending conversion. Image, probe bytes, applied
+  range and displayed generation/revision publish together, preserving the last
+  completed image on cancellation or failure. Worker completion uses the GUI event
+  loop and does not require another rendered frame.
+- Textures come from `RenderGraph::GetResourceAllocation`, which exposes the
+  non-surface allocation after its producer completes, for diagnostics only.
 
 What the viewer shows is the allocation's contents at the end of the frame:
 
@@ -6143,9 +6190,8 @@ What the viewer shows is the allocation's contents at the end of the frame:
 
 With **Live Preview**, the selection is kept by name:
 
-- Every new World revision re-reads it.
-- Every rebuilt generation re-reads it as soon as that generation's first frame
-  is presented.
+- New World revisions request a refresh at the bounded rate while visible.
+- Rebuilt generations request a refresh after their first presented frame.
 - If a rebuild removes the texture, the viewer reports that it is not part of
   the active generation.
 

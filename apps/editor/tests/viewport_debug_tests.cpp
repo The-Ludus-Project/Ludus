@@ -225,7 +225,8 @@ TEST_CASE("Graph statistics measure delivered updates and separate active CPU fr
     GraphViewportStatistics statistics;
     ViewportStatistics device;
     CHECK(FormatGraphViewportStatistics(statistics, device, 0) ==
-          QStringLiteral("FPS (updates): 0.0\nCPU: …\nGPU: …\nReadback: …"));
+          QStringLiteral("FPS (updates): 0.0\nCPU: …\nGPU: …\nOutput readback: …\nInspection CPU: …\nInspection "
+                         "readback: …\nConversion worker: …\nConversion elapsed: …"));
     statistics.AddCpuWork(1.5);
     statistics.AddCpuWork(2.5);
     statistics.AddCpuWork(-1);
@@ -240,11 +241,32 @@ TEST_CASE("Graph statistics measure delivered updates and separate active CPU fr
     device.GpuMilliseconds.Add(0.25);
     device.GpuState = ViewportGpuTimeState::Available;
     CHECK(FormatGraphViewportStatistics(statistics, device, 50'000'000) ==
-          QStringLiteral("FPS (updates): 20.0\nCPU: 3.00 ms\nGPU: 0.25 ms\nReadback: 25.00 ms"));
+          QStringLiteral("FPS (updates): 20.0\nCPU: 3.00 ms\nGPU: 0.25 ms\nOutput readback: 25.00 ms\nInspection CPU: "
+                         "…\nInspection readback: …\nConversion worker: …\nConversion elapsed: …"));
+    // GPU output delivery must not replace the separately measured diagnostic readback with zero.
+    statistics.AddInspection(6, 40);
+    statistics.AddInspectionConversion(12, 45);
+    statistics.CompleteFrame(100'000'000, 0);
+    CHECK(statistics.GetInspectionCpuMilliseconds().GetAverage() == 6);
+    CHECK(statistics.GetInspectionReadbackMilliseconds().GetAverage() == 40);
+    CHECK(statistics.GetConversionWorkMilliseconds().GetAverage() == 12);
+    CHECK(statistics.GetConversionElapsedMilliseconds().GetAverage() == 45);
+    CHECK(statistics.GetCpuMilliseconds().GetAverage() == 2); // Worker work is excluded from GUI service CPU.
+    CHECK(FormatGraphViewportStatistics(statistics, device, 100'000'000)
+              .contains(QStringLiteral("Conversion worker: 12.00 ms\nConversion elapsed: 45.00 ms")) == true);
+    CHECK(FormatGraphViewportStatistics(statistics, device, 100'000'000)
+              .contains(QStringLiteral("Inspection CPU: 6.00 ms\nInspection readback: 40.00 ms")) == true);
+    statistics.SetInspectionEnabled(false);
+    CHECK(
+        FormatGraphViewportStatistics(statistics, device, 100'000'000).contains(QStringLiteral("Inspection: paused")) ==
+        true);
+    CHECK(FormatGraphViewportStatistics(statistics, device, 100'000'000).contains(QStringLiteral("Inspection CPU:")) ==
+          false);
+    CHECK(statistics.GetInspectionCpuMilliseconds().GetAverage() == 6);
     device.GpuState = ViewportGpuTimeState::Unavailable;
     CHECK(FormatGraphViewportStatistics(statistics, device, 50'000'000).contains(QStringLiteral("GPU: n/a")));
     // No new output is produced while an unchanged graph is idle. Its former rate must expire.
-    CHECK(statistics.GetFramesPerSecond(50'000'000 + GraphViewportStatistics::IDLE_NANOSECONDS) == 0);
+    CHECK(statistics.GetFramesPerSecond(100'000'000 + GraphViewportStatistics::IDLE_NANOSECONDS) == 0);
     statistics.CompleteFrame(2'000'000'000, 1);
     CHECK(statistics.GetFramesPerSecond(2'000'000'000) == 0);
     statistics.CompleteFrame(2'100'000'000, 1);
@@ -253,6 +275,10 @@ TEST_CASE("Graph statistics measure delivered updates and separate active CPU fr
     statistics.Reset();
     CHECK(statistics.GetCpuMilliseconds().GetCount() == 0);
     CHECK(statistics.GetReadbackMilliseconds().GetCount() == 0);
+    CHECK(statistics.GetInspectionCpuMilliseconds().GetCount() == 0);
+    CHECK(statistics.GetInspectionReadbackMilliseconds().GetCount() == 0);
+    CHECK(statistics.GetConversionWorkMilliseconds().GetCount() == 0);
+    CHECK(statistics.GetConversionElapsedMilliseconds().GetCount() == 0);
     CHECK(statistics.GetFramesPerSecond(2'100'000'000) == 0);
 }
 

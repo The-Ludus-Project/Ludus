@@ -235,12 +235,12 @@ is left to batch CI.
 
 - [x] `render_graphs/salesin_jarosz_lines/`: library and main graphs, manifest
       and `main_shaders/` (D8b), all passes `TriangleLoop`, Graph settings
-      `MIS_HEURISTIC` and `MIS_POWER_EXPONENT`.
+      `POINT_LINE_MIS_HEURISTIC` and `POINT_LINE_MIS_POWER_EXPONENT`.
       *Library configuration `PointLineMis` with `primary`, `shade`,
       `shadeLines` and `shadePoints` over one 32-byte hit Buffer; outputs
       `color`, `lineSampling` and `pointSampling`, each with its own Accumulate,
-      ToneMap and Export. `MIS_HEURISTIC` defaults to `0` (balance) with range
-      `0`-`1`; `MIS_POWER_EXPONENT` defaults to 2.*
+      ToneMap and Export. `POINT_LINE_MIS_HEURISTIC` defaults to `0` (balance) with range
+      `0`-`1`; `POINT_LINE_MIS_POWER_EXPONENT` defaults to 2.*
 - [x] `main_shaders/line_sampling.slang`: PL1's single-direction strategy
       extended to both directions, plus the D7 density evaluation at a given
       point.
@@ -334,9 +334,9 @@ is left to batch CI.
       Properties hidden, as well as through Properties.
       *Four tests in `render_graph_template_tests.cpp`, all passing. With
       Properties hidden, the picker creates the graph and the canvas
-      **Edit Graph Settings...** dialog sets `MIS_HEURISTIC` to 1, with undo,
+      **Edit Graph Settings...** dialog sets `POINT_LINE_MIS_HEURISTIC` to 1, with undo,
       redo, save, validation and a reload from disk. Through Properties,
-      `MIS_HEURISTIC` and `MIS_POWER_EXPONENT` are edited and saved. Quick Add
+      `POINT_LINE_MIS_HEURISTIC` and `POINT_LINE_MIS_POWER_EXPONENT` are edited and saved. Quick Add
       and the canvas **Configurations → Apply Configuration Template...**
       import `PointLineMis` with Properties hidden.
       `ludus_render_graph_configuration_tests` passes all 214 test cases.*

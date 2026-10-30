@@ -11,13 +11,16 @@
 
 class QComboBox;
 class QDoubleSpinBox;
+class QHideEvent;
 class QLabel;
 class QListWidget;
+class QShowEvent;
 
 namespace ludus::editor
 {
 class RenderGraphPreview;
 class TextureCanvas;
+class TextureDisplayConversion;
 
 // Renderer tab texture viewer: lists every texture of the previewed generation (targets,
 // depth and intermediate attachments, not only exports), reads the selected one back through
@@ -29,6 +32,7 @@ class TextureViewer final : public QWidget
     Q_OBJECT
 public:
     explicit TextureViewer(QWidget* parentOrNull = nullptr);
+    ~TextureViewer() override;
 
     /// Follow a preview's generations and readbacks; null detaches.
     void SetPreview(RenderGraphPreview* previewOrNull);
@@ -55,11 +59,24 @@ public:
     [[nodiscard]] QString GetInfoText() const;
     [[nodiscard]] QString GetProbeText() const;
     [[nodiscard]] QString GetStatusText() const;
+    /// Identity of the snapshot actually displayed, independent of newer raw readbacks.
+    [[nodiscard]] foundation::uint64 GetDisplayedGeneration() const noexcept;
+    [[nodiscard]] foundation::uint64 GetDisplayedRevision() const noexcept;
+
+Q_SIGNALS:
+    /// Image, probe bytes and displayed identity have published together on the GUI thread.
+    void DisplayUpdated();
+
+protected:
+    void showEvent(QShowEvent* event) override;
+    void hideEvent(QHideEvent* event) override;
 
 private:
     void refreshTargets();
     void refreshTexture();
     void refreshDisplay();
+    void finishDisplay();
+    void cancelDisplay() noexcept;
     void refreshControls();
     void showProbe(foundation::uint32 x, foundation::uint32 y, bool isPinned);
 
@@ -76,6 +93,13 @@ private:
     QLabel* mStatus;
     TextureCanvas* mCanvas;
     QString mSelected;
+    TextureDisplayConversion* mConversion;
+    InspectedTexture mSourceTexture;
+    foundation::uint64 mSourceGeneration = 0;
+    foundation::uint64 mSourceRevision = 0;
+    foundation::uint64 mDisplayedGeneration = 0;
+    foundation::uint64 mDisplayedRevision = 0;
+    /// Bytes of the accepted image; probes never read a newer unconverted snapshot.
     InspectedTexture mTexture;
     QImage mDisplay;
     TextureValueRange mAppliedRange;

@@ -76,7 +76,7 @@ bool OffscreenFrameReader::requestBand(Band& outBand) noexcept
     mNextRow += rows;
     return true;
 }
-OffscreenReadStatus OffscreenFrameReader::Poll() noexcept
+OffscreenReadStatus OffscreenFrameReader::Poll(bool shouldRequestBands) noexcept
 {
     LUDUS_PROFILE_SCOPE(EditorReadbackPoll);
     if (mIsBusy == false)
@@ -116,7 +116,7 @@ OffscreenReadStatus OffscreenFrameReader::Poll() noexcept
             mRowsReceived += rowsCopied;
         }
     }
-    for (uint32 i = 0; i < mBandsAllowed && mNextRow < height; ++i)
+    for (uint32 i = 0; shouldRequestBands == true && i < mBandsAllowed && mNextRow < height; ++i)
     {
         if (mBands[i].IsInFlight == false && requestBand(mBands[i]) == false)
         {

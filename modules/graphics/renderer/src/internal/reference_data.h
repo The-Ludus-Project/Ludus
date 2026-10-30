@@ -345,15 +345,20 @@ inline constexpr uint32 REFERENCE_RESAMPLED_FORM_FACTOR_SAMPLER_VERSION = 3;
 /// M, the frozen RIS candidate count of a resampled mode's sampler version.
 [[nodiscard]] inline constexpr uint32 GetReferenceRisCandidateCount(ReferenceLightSampling sampling) noexcept
 {
+    // Each sampler version freezes its own counts; they are equal today, which is not a cloned branch.
+    // NOLINTNEXTLINE(bugprone-branch-clone)
     return sampling == ReferenceLightSampling::ResampledFormFactor ? LUDUS_REFERENCE_FORM_FACTOR_RIS_CANDIDATE_COUNT
                                                                    : LUDUS_REFERENCE_RIS_CANDIDATE_COUNT;
 }
 /// K, the frozen normalization candidate count of a resampled mode's sampler version.
 [[nodiscard]] inline constexpr uint32 GetReferenceRisNormalizationCount(ReferenceLightSampling sampling) noexcept
 {
+    // Each sampler version freezes its own counts; they are equal today, which is not a cloned branch.
+    // NOLINTBEGIN(bugprone-branch-clone)
     return sampling == ReferenceLightSampling::ResampledFormFactor
                ? LUDUS_REFERENCE_FORM_FACTOR_RIS_NORMALIZATION_CANDIDATE_COUNT
                : LUDUS_REFERENCE_RIS_NORMALIZATION_CANDIDATE_COUNT;
+    // NOLINTEND(bugprone-branch-clone)
 }
 static_assert(LUDUS_REFERENCE_FORM_FACTOR_RIS_CANDIDATE_COUNT >= 1 &&
                   LUDUS_REFERENCE_FORM_FACTOR_RIS_CANDIDATE_COUNT <= LUDUS_REFERENCE_RIS_CANDIDATE_COUNT &&

@@ -3,16 +3,20 @@
 
 #include "internal/render_graph_preview.h"
 #include "internal/render_graph_targets.h"
+#include "internal/texture_display_conversion.h"
 
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QElapsedTimer>
 #include <QFontDatabase>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QHideEvent>
 #include <QLabel>
 #include <QListWidget>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QShowEvent>
 #include <QSplitter>
 #include <QVBoxLayout>
 #include <QWheelEvent>
@@ -40,6 +44,7 @@ constexpr int32 LIST_WIDTH = 220;
 constexpr float64 CLICK_SLOP = 3.0;
 constexpr QRgb BACKGROUND_COLOUR = design::GetThemeArgb(design::ThemeColour::SurfaceViewport, true);
 constexpr QRgb FRAME_COLOUR = qRgb(80, 88, 96);
+constexpr float64 NANOSECONDS_PER_MILLISECOND = 1'000'000.0;
 
 struct ChannelChoice final
 {
@@ -60,7 +65,8 @@ TextureViewer::TextureViewer(QWidget* parentOrNull)
     : QWidget(parentOrNull), mTargets(new QListWidget(this)), mChannel(new QComboBox(this)),
       mRange(new QComboBox(this)), mMinimum(new QDoubleSpinBox(this)), mMaximum(new QDoubleSpinBox(this)),
       mExposure(new QDoubleSpinBox(this)), mExposureLabel(new QLabel(QStringLiteral("Exposure (stops)"), this)),
-      mInfo(new QLabel(this)), mProbe(new QLabel(this)), mStatus(new QLabel(this)), mCanvas(new TextureCanvas(this))
+      mInfo(new QLabel(this)), mProbe(new QLabel(this)), mStatus(new QLabel(this)), mCanvas(new TextureCanvas(this)),
+      mConversion(new TextureDisplayConversion(this))
 {
     setObjectName(QStringLiteral("renderGraphTextureViewer"));
     mTargets->setObjectName(QStringLiteral("textureViewerTargets"));
@@ -143,20 +149,57 @@ TextureViewer::TextureViewer(QWidget* parentOrNull)
         }
     });
     connect(mCanvas, &TextureCanvas::TexelClicked, this, &TextureViewer::ProbeTexel);
+    connect(mConversion, &TextureDisplayConversion::Completed, this, &TextureViewer::finishDisplay);
     refreshTargets();
+}
+
+TextureViewer::~TextureViewer()
+{
+    SetPreview(nullptr);
+}
+
+void TextureViewer::showEvent(QShowEvent* event)
+{
+    QWidget::showEvent(event);
+    if (mPreview != nullptr)
+    {
+        mPreview->SetInspectionEnabled(true);
+    }
+}
+
+void TextureViewer::hideEvent(QHideEvent* event)
+{
+    cancelDisplay();
+    if (mPreview != nullptr)
+    {
+        mPreview->SetInspectionEnabled(false);
+    }
+    QWidget::hideEvent(event);
 }
 
 void TextureViewer::SetPreview(RenderGraphPreview* previewOrNull)
 {
+    cancelDisplay();
     if (mPreview != nullptr)
     {
+        mPreview->SetInspectionEnabled(false);
         disconnect(mPreview, nullptr, this, nullptr);
     }
     mPreview = previewOrNull;
     if (mPreview != nullptr)
     {
-        connect(mPreview, &RenderGraphPreview::TargetsChanged, this, &TextureViewer::refreshTargets);
+        connect(mPreview, &RenderGraphPreview::TargetsChanged, this, [this]() {
+            cancelDisplay();
+            refreshTargets();
+        });
+        connect(mPreview, &RenderGraphPreview::Changed, this, [this]() {
+            if (mPreview->IsAttached() == false)
+            {
+                cancelDisplay();
+            }
+        });
         connect(mPreview, &RenderGraphPreview::TargetInspected, this, &TextureViewer::refreshTexture);
+        mPreview->SetInspectionEnabled(isVisible());
         mPreview->SetInspectedTarget(mSelected);
     }
     refreshTargets();
@@ -164,11 +207,13 @@ void TextureViewer::SetPreview(RenderGraphPreview* previewOrNull)
 
 void TextureViewer::SelectTarget(const QString& name)
 {
+    cancelDisplay();
     if (name != mSelected)
     {
         mHasPinnedProbe = false;
     }
     mSelected = name;
+    mStatus->setText(name.isEmpty() == true ? QString() : QStringLiteral("Waiting for %1…").arg(name));
     if (mPreview != nullptr)
     {
         mPreview->SetInspectedTarget(name);
@@ -245,6 +290,16 @@ QString TextureViewer::GetStatusText() const
     return mStatus->text();
 }
 
+uint64 TextureViewer::GetDisplayedGeneration() const noexcept
+{
+    return mDisplayedGeneration;
+}
+
+uint64 TextureViewer::GetDisplayedRevision() const noexcept
+{
+    return mDisplayedRevision;
+}
+
 void TextureViewer::refreshTargets()
 {
     mIsUpdatingControls = true;
@@ -301,25 +356,30 @@ void TextureViewer::refreshTexture()
     {
         return;
     }
+    if (isVisible() == false || mPreview->GetInspectedTexture().IsValid() == false)
+    {
+        cancelDisplay();
+        mStatus->setText(mPreview->GetInspectionStatus());
+        return;
+    }
+    const InspectedTexture& previous = mSourceTexture.IsValid() == true ? mSourceTexture : mTexture;
     const bool hasEncodingChanged =
-        mTexture.IsValid() == false || mPreview->GetInspectedTexture().Encoding != mTexture.Encoding;
-    mTexture = mPreview->GetInspectedTexture();
-    mStatus->setText(mPreview->GetInspectionStatus().isEmpty() == false
-                         ? mPreview->GetInspectionStatus()
-                         : (mTexture.IsValid() == true ? QStringLiteral("Generation %1, World revision %2.")
-                                                             .arg(mPreview->GetInspectedGeneration())
-                                                             .arg(mPreview->GetInspectedRevision())
-                                                       : QString()));
-    if (hasEncodingChanged == true && mTexture.IsValid() == true)
+        previous.IsValid() == false || mPreview->GetInspectedTexture().Encoding != previous.Encoding;
+    mSourceTexture = mPreview->GetInspectedTexture();
+    mSourceGeneration = mPreview->GetInspectedGeneration();
+    mSourceRevision = mPreview->GetInspectedRevision();
+    mStatus->setText(
+        QStringLiteral("Converting generation %1, World revision %2…").arg(mSourceGeneration).arg(mSourceRevision));
+    if (hasEncodingChanged == true)
     {
         // Depth and float data are rarely in [0, 1]; start them on the automatic range.
         TextureDisplaySettings settings = GetDisplaySettings();
-        settings.Range =
-            mTexture.Encoding == TexelEncoding::Rgba8Unorm ? TextureRangeMode::Manual : TextureRangeMode::Automatic;
+        settings.Range = mSourceTexture.Encoding == TexelEncoding::Rgba8Unorm ? TextureRangeMode::Manual
+                                                                              : TextureRangeMode::Automatic;
         // Normalized colour starts on its full [0, 1] range, not the previous texture's measurement.
         settings.Minimum = 0;
         settings.Maximum = 1;
-        if (IsChannelAvailable(mTexture.Encoding, settings.Channel) == false)
+        if (IsChannelAvailable(mSourceTexture.Encoding, settings.Channel) == false)
         {
             settings.Channel = TextureChannel::Rgba;
         }
@@ -331,11 +391,44 @@ void TextureViewer::refreshTexture()
 
 void TextureViewer::refreshDisplay()
 {
+    if (isVisible() == false || mSourceTexture.IsValid() == false)
+    {
+        return;
+    }
     refreshControls();
-    const TextureDisplaySettings settings = GetDisplaySettings();
-    mDisplay = MakeDisplayImage(mTexture, settings, mAppliedRange);
+    mConversion->Request(mSourceTexture, GetDisplaySettings());
+}
+
+void TextureViewer::cancelDisplay() noexcept
+{
+    mConversion->Cancel();
+    mSourceTexture = {};
+}
+
+void TextureViewer::finishDisplay()
+{
+    if (isVisible() == false || mPreview == nullptr || mPreview->IsAttached() == false)
+    {
+        return;
+    }
+    QElapsedTimer publicationTimer;
+    publicationTimer.start();
+    const TextureDisplayConversionResult& result = mConversion->GetResult();
+    if (result.Image.isNull() == true)
+    {
+        mStatus->setText(QStringLiteral("Texture conversion failed; the last image is kept."));
+        mPreview->RecordInspectionConversion(result.WorkMilliseconds, result.ElapsedMilliseconds, 0);
+        return;
+    }
+    mTexture = result.Texture;
+    mDisplay = result.Image;
+    mAppliedRange = result.Range;
+    mDisplayedGeneration = mSourceGeneration;
+    mDisplayedRevision = mSourceRevision;
+    mStatus->setText(
+        QStringLiteral("Generation %1, World revision %2.").arg(mDisplayedGeneration).arg(mDisplayedRevision));
     mCanvas->SetImage(mDisplay);
-    if (settings.Range == TextureRangeMode::Automatic && mAppliedRange.HasValues == true)
+    if (result.Settings.Range == TextureRangeMode::Automatic && mAppliedRange.HasValues == true)
     {
         // Show the measured range so switching to Manual starts from it.
         mIsUpdatingControls = true;
@@ -347,23 +440,28 @@ void TextureViewer::refreshDisplay()
     {
         showProbe(mPinnedX, mPinnedY, true);
     }
+    mPreview->RecordInspectionConversion(result.WorkMilliseconds,
+                                         result.ElapsedMilliseconds,
+                                         static_cast<float64>(publicationTimer.nsecsElapsed()) /
+                                             NANOSECONDS_PER_MILLISECOND);
+    Q_EMIT DisplayUpdated();
 }
 
 void TextureViewer::refreshControls()
 {
-    const bool isValid = mTexture.IsValid();
+    const bool isValid = mSourceTexture.IsValid();
     for (int32 i = 0; i < mChannel->count(); ++i)
     {
         const bool isAvailable =
-            isValid == false ||
-            IsChannelAvailable(mTexture.Encoding, static_cast<TextureChannel>(mChannel->itemData(i).toInt())) == true;
+            isValid == false || IsChannelAvailable(mSourceTexture.Encoding,
+                                                   static_cast<TextureChannel>(mChannel->itemData(i).toInt())) == true;
         mChannel->setItemData(i, isAvailable == true ? QVariant() : QVariant(0), Qt::UserRole - 1);
     }
     const bool isManual = static_cast<TextureRangeMode>(mRange->currentData().toInt()) == TextureRangeMode::Manual;
     mMinimum->setEnabled(isManual);
     mMaximum->setEnabled(isManual);
     // Exposure scales HDR values only; LDR and depth targets hide it.
-    const bool hasExposure = isValid == true && IsHighDynamicRange(mTexture.Encoding) == true;
+    const bool hasExposure = isValid == true && IsHighDynamicRange(mSourceTexture.Encoding) == true;
     mExposure->setVisible(hasExposure);
     mExposureLabel->setVisible(hasExposure);
 }

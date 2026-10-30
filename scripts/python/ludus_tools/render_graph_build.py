@@ -43,6 +43,11 @@ HELPERS = ('compile_shader.py', 'compile_raster.py', 'compile_graph_stage.py', '
 # Program counts are governed by the authored budget, not a second fixed ceiling.
 # Artifact, source-byte and package bounds independently constrain admitted work.
 LIMITS = {'configurations': 8, 'programs': None, 'artifacts': 128, 'pipelines': 64}
+# The author chooses these counts. Artifacts (programs x profiles) and pipelines
+# (raster recipes x profiles) follow from the manifest, so they have no authored
+# budget that could drift from it; only the engine ceilings above bound them.
+AUTHORED_BUDGETS = ('configurations', 'programs')
+DERIVED_BUDGETS = ('artifacts', 'pipelines')
 MAX_FILE = 128 * 1024
 MAX_BYTES = 4 * 1024 * 1024
 # A package combines independent stage closures, graph metadata and SDK helpers.
@@ -199,8 +204,12 @@ def validate_manifest(value):
     for target in value['profiles']:
         enum(target, TARGETS, 'profile')
     require(value['profiles'] and len(set(value['profiles'])) == len(value['profiles']), 'Schema', 'profiles', 'nonempty unique targets required')
-    keys(value['budgets'], LIMITS, 'budgets')
+    # Manifests written before the derived counts accepted their own budgets; those
+    # legacy values are validated for type and otherwise ignored.
+    keys(value['budgets'], AUTHORED_BUDGETS, 'budgets', DERIVED_BUDGETS)
     for key, maximum in LIMITS.items():
+        if key not in value['budgets']:
+            continue
         if maximum is None:
             require(type(value['budgets'][key]) is int and value['budgets'][key] >= 1,
                     'Capacity', 'budget ' + key, 'positive integer required')
@@ -382,11 +391,19 @@ def validate_manifest(value):
     masked_depth = techniques.get('DefaultStaticMasked.DepthOnly')
     require(opaque_depth is None or masked_depth is None or opaque_depth['fragment'] != masked_depth['fragment'],
             'Schema', 'DefaultStaticMasked.DepthOnly', 'masked coverage requires a separately authored depth function')
+    profile_count = len(value['profiles'])
+    recipe_count = sum(len(t['recipes']) for t in techniques.values())
     counts = {'configurations': len(techniques), 'programs': len(programs),
-              'artifacts': len(programs) * len(value['profiles']),
-              'pipelines': sum(len(t['recipes']) for t in techniques.values()) * len(value['profiles'])}
-    for key, count in counts.items():
-        require(count <= value['budgets'][key], 'Capacity', key, f'{count} exceeds authored budget {value["budgets"][key]}')
+              'artifacts': len(programs) * profile_count, 'pipelines': recipe_count * profile_count}
+    for key in AUTHORED_BUDGETS:
+        require(counts[key] <= value['budgets'][key], 'Capacity', key,
+                f'{counts[key]} exceeds authored budget {value["budgets"][key]}; increase budgets.{key} to at least {counts[key]}')
+    require(counts['artifacts'] <= LIMITS['artifacts'], 'Capacity', 'artifacts',
+            f'{len(programs)} programs across {profile_count} target profiles make {counts["artifacts"]} artifacts, '
+            f'over the supported {LIMITS["artifacts"]}; reuse compatible programs, remove unused shaders or reduce target profiles')
+    require(counts['pipelines'] <= LIMITS['pipelines'], 'Capacity', 'pipelines',
+            f'{recipe_count} raster recipes across {profile_count} target profiles make {counts["pipelines"]} pipelines, '
+            f'over the supported {LIMITS["pipelines"]}; reuse recipes or reduce target profiles')
     return schemas, programs, techniques, counts
 
 
@@ -824,7 +841,8 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False):
     """Capture and lower the same immutable shader contexts for compilation and editing.
 
     No compiler execution or output publication. Returns package metadata, exact
-    generated wrappers and their captured include closures. All normal graph,
+    generated wrappers, their captured include closures and the grouped ray profiles
+    (empty without a ray technique) that select linked ray kernels. All normal graph,
     schema and capacity validation remains authoritative here.
     """
     manifest = Path(manifest).resolve()
@@ -918,6 +936,7 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False):
     programs = {identity: program for identity, program in programs.items() if identity in selected_programs}
     require(not ray_path_capture or ray.TECHNIQUE in techniques, 'Capability', 'ray path capture',
             'ray path capture requires a RayTracingPipeline or scene ComputePipeline node')
+    ray_profiles = []
     if ray.TECHNIQUE in techniques:
         require(any(target in ('metal', 'spirv') for target in value['profiles']), 'Capability', 'profiles',
                 'Hardware raytracing requires native Metal or Vulkan; select an authored raster configuration on unsupported APIs')
@@ -958,7 +977,7 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False):
     counts['graph_configurations'] = sum(len(identities) for identities in reachable.values())
     require(len(plans) <= value['budgets']['configurations'], 'Capacity', 'root configurations',
             f'{len(plans)} root configurations exceed budgets.configurations {value["budgets"]["configurations"]}')
-    return snapshot, value, schemas, programs, techniques, counts, closures, plans, library, graph_path
+    return snapshot, value, schemas, programs, techniques, counts, closures, plans, library, graph_path, ray_profiles
 
 
 def build_package(manifest, output, *, helper, compiler, validator=None, spirv_cross=None, root=None, cancel=None, worker_socket=None,
@@ -978,7 +997,7 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     started = time.monotonic()
     manifest = Path(manifest).resolve()
     helper = Path(helper).resolve()
-    snapshot, value, schemas, programs, techniques, counts, closures, plans, library, graph_path = prepare_sources(
+    snapshot, value, schemas, programs, techniques, counts, closures, plans, library, graph_path, ray_profiles = prepare_sources(
         manifest, helper, root=root, ray_path_capture=ray_path_capture)
     manifest_label = manifest.relative_to(snapshot.root).as_posix()
     worker_socket = worker_socket or os.environ.get('LUDUS_SHADER_WORKER_SOCKET')
@@ -1245,7 +1264,7 @@ def new_build_sources(path, *, profiles=('metal',), root=None, renderer_static=F
                                         'depth_write': True, 'blend': 'Opaque'}]})
     value = {'version': VERSION, 'id': 'DefaultRasterBuild', 'profiles': list(profiles),
              'schemas': [vertex, varying, material], 'programs': programs, 'techniques': techniques,
-             'budgets': {'configurations': 8, 'programs': 8, 'artifacts': 32, 'pipelines': 16}}
+             'budgets': {'configurations': 8, 'programs': 8}}
     validate_manifest(value)
     sources = {'geometry.slang': 'RasterVarying VSMain(RendererStatic value)\n{\n    RasterVarying result;\n    result.position = float4(value.position, 1);\n    return result;\n}\n',
                'color.slang': 'float4 PSMain(RasterVarying value)\n{\n    return float4(material.tint * material.gain, 1);\n}\n',

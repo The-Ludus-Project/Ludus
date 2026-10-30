@@ -193,7 +193,7 @@ public:
                                                        QString& outError);
     /// Apply a pipeline and create missing shader programs and source templates as one
     /// undoable draft edit, including the selected technique and recipe. Program placeholders receive generated names.
-    /// New programs grow program/artifact budgets to fit within supported build limits; larger values are retained.
+    /// New programs grow budgets.programs to fit within supported build limits; a larger value is retained.
     /// Existing programs must match stage and source. Failure preserves all draft files; Save publishes new files
     /// without replacement.
     [[nodiscard]] RenderGraphDocumentStatus ApplyPipeline(const QString& file,
@@ -265,7 +265,8 @@ public:
     /// to a library configuration, inserting a new library/Subgraph when file is the root. One undo step; no disk
     /// writes. Existing nonempty configurations, shader sources and incompatible ABIs are preserved on failure. An
     /// optional budget request reports a blocked program increase. Explicitly approved increases change only
-    /// budgets.programs to the required count, in the same undo step as the template.
+    /// budgets.programs to the required count, in the same undo step as the template; target artifacts are
+    /// derived from programs and profiles, and the legacy budgets.artifacts/pipelines fields are removed.
     [[nodiscard]] RenderGraphDocumentStatus
     ApplyConfigurationTemplate(const QString& file,
                                const QString& configuration,

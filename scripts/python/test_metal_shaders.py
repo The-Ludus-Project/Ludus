@@ -153,5 +153,88 @@ class LineDirectiveTests(unittest.TestCase):
         self.assertEqual(results[0], results[1])
 
 
+NOINLINE_SOURCE = '''RWStructuredBuffer<float> values;
+[noinline] float Heavy(float x) { return sin(x) + cos(x); }
+[noinline] bool
+TryHeavy(float x, out float y) { y = x * 2; return y > 0; }
+float Light(float x) { return x + 1; }
+[shader("compute")] [numthreads(64, 1, 1)] void Main(uint3 id : SV_DispatchThreadID)
+{
+    float y;
+    values[id.x] = Heavy(values[id.x]) + Light(values[id.x]) + (TryHeavy(values[id.x], y) == true ? y : 0);
+}
+'''
+
+
+class NoinlineTests(unittest.TestCase):
+    """Slang's Metal backend drops [noinline]; the helpers restore it in MSL.
+
+    Without it the Metal compiler inlined the reference path tracer's resampled
+    light sampling and its pipeline took tens of seconds to build (a bare
+    "Compilation failed" on the macOS 15.7 CI runner).
+    """
+
+    def restore(self, source, code, name="shader.slang"):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            (root / name).write_text(source)
+            return DRIVER.restore_metal_noinline(code.replace("@ROOT@", str(root)), [root])
+
+    def test_definitions_of_noinline_functions_are_marked_wherever_the_attribute_is(self):
+        source = "\n".join(["[noinline] float Heavy(float x)", "[noinline] bool", "TryHeavy(float x)",
+                            "float Light(float x)"]) + "\n"
+        code = ('#line 1 "@ROOT@/shader.slang"\nfloat Heavy_0(float x_0)\n{\n    return x_0;\n}\n'
+                '#line 1\nfloat Heavy_1(float x_1)\n{\n    return x_1;\n}\n'
+                '#line 3\nbool TryHeavy_0(float x_2, float thread* y_0)\n{\n    return true;\n}\n'
+                '#line 4\nfloat Light_0(float x_3)\n{\n    return x_3;\n}\n')
+        restored = self.restore(source, code)
+        self.assertIn("\n__attribute__((noinline)) float Heavy_0(float x_0)\n", restored)
+        self.assertIn("\n__attribute__((noinline)) float Heavy_1(float x_1)\n", restored)
+        self.assertIn("\n__attribute__((noinline)) bool TryHeavy_0(float x_2, float thread* y_0)\n", restored)
+        self.assertIn("\nfloat Light_0(float x_3)\n", restored)
+        self.assertEqual(restored.count("noinline"), 3)
+
+    def test_definitions_without_their_own_directive_use_preprocessor_numbering(self):
+        source = "float Light(float x) { return x; }\n\n\n[noinline] float Heavy(float x)\n"
+        code = ('#line 1 "@ROOT@/shader.slang"\nfloat Light_0(float x_0)\n{\n\n#line 1\n    return x_0;\n}\n\n'
+                'float Heavy_0(float x_1)\n{\n    return x_1;\n}\n')
+        restored = self.restore(source, code)
+        self.assertIn("\n\n__attribute__((noinline)) float Heavy_0(float x_1)\n", restored)
+        self.assertEqual(restored.count("noinline"), 1)
+
+    def test_relative_names_resolve_against_the_roots(self):
+        restored = self.restore("[noinline] float Heavy(float x)\n",
+                                '#line 1 "shader.slang"\nfloat Heavy_0(float x_0)\n{\n    return x_0;\n}\n')
+        self.assertTrue(restored.startswith('#line 1 "shader.slang"\n__attribute__((noinline)) float Heavy_0('))
+
+    def test_prototypes_structs_other_names_and_unknown_files_are_left_alone(self):
+        source = "[noinline] float Heavy(float x)\nfloat Other(float x)\n[noinline] struct Heavy\n"
+        code = ('#line 1 "@ROOT@/shader.slang"\nfloat Heavy_0(float x_0);\n'
+                '#line 2\nfloat Other_0(float x_0)\n{\n    return x_0;\n}\n'
+                '#line 3\nstruct Heavy_1\n{\n    float x_0;\n};\n'
+                '#line 1 "@ROOT@/missing.slang"\nfloat Heavy_2(float x_0)\n{\n    return x_0;\n}\n')
+        restored = self.restore(source, code)
+        self.assertNotIn("noinline", restored)
+
+    def test_pinned_slang_metal_output_is_marked(self):
+        compiler = ROOT / "out/shader-tools/slang/bin/slangc"
+        if compiler.is_file() is False:
+            self.skipTest("the pinned slangc is not installed in this checkout")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source = root / "helpers.slang"
+            source.write_text(NOINLINE_SOURCE)
+            artifact = root / "helpers.metal"
+            DRIVER.run([str(compiler), str(source), "-target", "metal", "-profile", "sm_6_0", "-entry", "Main",
+                        "-stage", "compute", "-o", str(artifact)])
+            emitted = artifact.read_text()
+            self.assertNotIn("noinline", emitted)
+            restored = DRIVER.restore_metal_noinline(emitted, [root])
+        self.assertRegex(restored, r"\n__attribute__\(\(noinline\)\) float Heavy_\d+\(")
+        self.assertRegex(restored, r"\n__attribute__\(\(noinline\)\) bool TryHeavy_\d+\(")
+        self.assertRegex(restored, r"\nfloat Light_\d+\(")
+        self.assertEqual(restored.count("__attribute__((noinline))"), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
