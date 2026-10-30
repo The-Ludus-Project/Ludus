@@ -535,16 +535,30 @@ void MainWindow::BuildMenus()
     // The Render Graph toolbar is the context strip: it shows only while a render graph is the active document
     // (updateContextStrip), so a World tab keeps one row of commands about the project and the game.
     mRenderGraphToolbar->setObjectName(QStringLiteral("renderGraphToolbar"));
-    mRenderGraphToolbar->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    mRenderGraphToolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    mRenderGraphToolbar->setIconSize(QSize(EDITOR_ICON_SIZE, EDITOR_ICON_SIZE));
+    mValidateGraphAction->setIcon(GetEditorIcon(EditorIcon::Validate));
+    mBuildGraphAction->setIcon(GetEditorIcon(EditorIcon::Build));
+    mBuildPreviewGraphAction->setIcon(GetEditorIcon(EditorIcon::Preview));
+    mLivePreviewGraphAction->setIcon(GetEditorIcon(EditorIcon::LivePreview));
+    mCancelGraphAction->setIcon(GetEditorIcon(EditorIcon::Cancel));
     addToolBar(mRenderGraphToolbar);
-    for (QAction* action : {mValidateGraphAction,
-                            mBuildGraphAction,
-                            mBuildPreviewGraphAction,
-                            mLivePreviewGraphAction,
-                            mCancelGraphAction})
-    {
-        mRenderGraphToolbar->addAction(action);
-    }
+    mRenderGraphToolbar->addAction(mValidateGraphAction);
+    // Build Graph and Build & Preview are one split button: the button runs Build Graph and its arrow offers
+    // Build & Preview. Live Preview is a separate toggle that shows its state.
+    QToolButton* buildButton = new QToolButton(mRenderGraphToolbar);
+    buildButton->setObjectName(QStringLiteral("renderGraphBuildButton"));
+    buildButton->setDefaultAction(mBuildGraphAction);
+    buildButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    buildButton->setPopupMode(QToolButton::MenuButtonPopup);
+    QMenu* buildMenu = new QMenu(buildButton);
+    buildMenu->setObjectName(QStringLiteral("renderGraphBuildMenu"));
+    buildMenu->addAction(mBuildGraphAction);
+    buildMenu->addAction(mBuildPreviewGraphAction);
+    buildButton->setMenu(buildMenu);
+    mRenderGraphToolbar->addWidget(buildButton);
+    mRenderGraphToolbar->addAction(mLivePreviewGraphAction);
+    mRenderGraphToolbar->addAction(mCancelGraphAction);
 
     // Icons plus labels for the primary actions, labels only elsewhere (docs/architecture/editor-art-direction.md).
     // The action keeps its icon for menus; only its toolbar button changes style.

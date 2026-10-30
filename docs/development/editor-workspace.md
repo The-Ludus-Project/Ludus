@@ -502,12 +502,13 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   holds File (Open, Save) and History (Undo, Redo); Game holds Run (Play, Build, Stop),
   Launch (Run, Debug) and Session (Pause, Step, Resume, Reload Code). The Session group
   is shown only while a game is running or paused. The Render Graph toolbar is the
-  context strip: it appears only while a render graph is the active document (Validate,
-  Build Graph, Build & Preview, Live Preview, Cancel), so a World tab keeps one row of
-  commands. Toolbar buttons use short labels
+  context strip: it appears only while a render graph is the active document, so a World
+  tab keeps one row of commands. Its buttons show an icon beside the label: Validate,
+  a **Build Graph** split button whose arrow offers Build & Preview, a **Live Preview**
+  toggle that keeps an accent edge while it is on, and Cancel. Toolbar buttons use short labels
   so a 1280-pixel window shows them all; tooltips give the full name and
-  shortcut. The primary commands (Open, Save, Build, Run, Play, Stop) also show an
-  icon beside the label; every other button stays text only. Project Explorer
+  shortcut. The primary commands (Open, Save, Build, Run, Play, Stop) and the Render Graph
+  strip also show an icon beside the label; every other button stays text only. Project Explorer
   rows and the Error List severities carry icons too. The icons are Lucide
   drawings (ISC), drawn in the palette's button text colour; see
   [Editor icons](#editor-icons) for attribution and contribution instructions.

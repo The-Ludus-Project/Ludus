@@ -320,7 +320,12 @@ void EditorStyle::drawPrimitive(PrimitiveElement element,
             }
             break;
         case PE_PanelButtonTool: {
-            if (isHovered == true || option->state.testFlag(State_On) == true)
+            // A checked toggle (Live Preview) keeps an accent edge so its state reads without hovering.
+            if (option->state.testFlag(State_On) == true)
+            {
+                DrawControlBody(painter, option->rect, mColours.Raised, mColours.Accent, CONTROL_EDGE_WIDTH);
+            }
+            else if (isHovered == true)
             {
                 DrawControlBody(painter, option->rect, mColours.Raised, Qt::transparent, 0);
             }

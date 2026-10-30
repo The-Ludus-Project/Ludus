@@ -1707,6 +1707,29 @@ TEST_CASE("Toolbars group commands, hide session commands until a game runs and 
     REQUIRE(Well(window).OpenDocument(renderer) == true);
     Settle();
     CHECK(strip->isHidden() == false);
+    // Every strip command carries an icon beside its label; Build Graph and Build & Preview are one split
+    // button, and Live Preview is a checkable toggle of its own.
+    QAction* validate = Action(window, QStringLiteral("renderGraph.validate"));
+    QAction* build = Action(window, QStringLiteral("renderGraph.build"));
+    QAction* buildPreview = Action(window, QStringLiteral("renderGraph.buildPreview"));
+    QAction* livePreview = Action(window, QStringLiteral("renderGraph.livePreview"));
+    QAction* cancelGraph = Action(window, QStringLiteral("renderGraph.cancel"));
+    for (const QAction* action : {validate, build, buildPreview, livePreview, cancelGraph})
+    {
+        CHECK(action->icon().isNull() == false);
+    }
+    QToolButton* buildButton = strip->findChild<QToolButton*>(QStringLiteral("renderGraphBuildButton"));
+    REQUIRE(buildButton != nullptr);
+    CHECK(buildButton->defaultAction() == build);
+    CHECK(buildButton->popupMode() == QToolButton::MenuButtonPopup);
+    REQUIRE(buildButton->menu() != nullptr);
+    CHECK(buildButton->menu()->actions() == QList<QAction*>{build, buildPreview});
+    CHECK(strip->actions().contains(buildPreview) == false);
+    CHECK(strip->widgetForAction(validate) != nullptr);
+    CHECK(strip->actions().contains(livePreview) == true);
+    CHECK(livePreview->isCheckable() == true);
+    CHECK(qobject_cast<QToolButton*>(strip->widgetForAction(livePreview))->toolButtonStyle() ==
+          Qt::ToolButtonTextBesideIcon);
     REQUIRE(Well(window).OpenDocument(world) == true);
     Settle();
     CHECK(strip->isHidden() == true);

@@ -48,17 +48,19 @@ struct IconDescriptor final
 };
 
 constexpr IconDescriptor ICON_DESCRIPTORS[EDITOR_ICON_COUNT] = {
-    {"folder-open", false}, {"save", false},
-    {"play", true},         {"hammer", false},
-    {"rocket", false},      {"square", true},
-    {"folder", false},      {"settings", false},
-    {"box", false},         {"workflow", false},
-    {"code", false},        {"volume-2", false},
-    {"image", false},       {"sliders-horizontal", false},
-    {"circle-x", false},    {"triangle-alert", false},
-    {"info", false},        {"terminal", false},
-    {"timer", false},       {"gauge", false},
-    {"scan-search", false}, {"waypoints", false},
+    {"folder-open", false},  {"save", false},
+    {"play", true},          {"hammer", false},
+    {"rocket", false},       {"square", true},
+    {"folder", false},       {"settings", false},
+    {"box", false},          {"workflow", false},
+    {"code", false},         {"volume-2", false},
+    {"image", false},        {"sliders-horizontal", false},
+    {"circle-x", false},     {"triangle-alert", false},
+    {"info", false},         {"terminal", false},
+    {"timer", false},        {"gauge", false},
+    {"scan-search", false},  {"waypoints", false},
+    {"circle-check", false}, {"eye", false},
+    {"radio", false},        {"x", false},
 };
 
 /// Cursor over SVG path data.
