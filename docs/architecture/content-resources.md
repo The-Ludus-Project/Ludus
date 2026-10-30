@@ -403,7 +403,11 @@ its original texels and multiplier, including zero-energy channels. Different HD
 map dimensions reject explicitly: this storage codec does not choose a resampling
 policy. The combined light list remains bounded at 128 and the assembled packet
 remains bounded by its version's byte limit (64 MiB, or 384 MiB for version 5); the
-artifact closure shares the 384 MiB `MAX_ASSET_BYTES` ceiling. No environment or
+individual artifacts retain the 384 MiB `MAX_ASSET_BYTES` ceiling. Encoded logical
+dependency closures have a separate 512 MiB `MAX_RESIDENT_CLOSURE_BYTES` ceiling
+because they also carry material JSON, scene manifests and licenses. Shared files
+are charged once per selected logical resource. This is not a decoded or peak-memory
+budget, and assembly still enforces the version's bundle limit. No environment or
 light is silently dropped.
 
 When legacy and v3 resources coexist, assembly expands legacy vertices with zero
@@ -474,6 +478,9 @@ and rejects an oversized scene rather than dropping placements. Textures and
 lighting share the remaining bytes. This changes admission policy without
 changing the v5/v6 wire layout; old binaries retain their older admission limits.
 Renderer preparation, GPU allocation and bake-atlas limits are separate contracts.
+The best-effort cooker shares byte-identical vertex records before budgeting;
+see the [Bistro geometry acceptance](../development/best-effort-scene-import.md#pbrt-bistro-geometry-acceptance)
+for retained triangle counts and remaining material approximations.
 
 `MaterialRecordV5` (56 bytes) stores `AlphaMode` in the version 3 reserved word,
 then `AlphaCutoff` and a new reserved word. `ALPHA_OPAQUE` ignores texture alpha

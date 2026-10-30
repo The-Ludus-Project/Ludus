@@ -657,6 +657,65 @@ TEST_CASE("local smoke test: licensed staircase imports with readable limits", "
     }
 }
 
+TEST_CASE("PBRT compaction retains every triangle through runtime decoding", "[scene_cook][pbrt][compaction]")
+{
+    ScratchDirectory scratch;
+    const fs::path entry = scratch.Path / "scene.pbrt";
+    WriteFile(entry,
+              "WorldBegin\nMaterial \"diffuse\"\n"
+              "Shape \"trianglemesh\" \"point3 P\" [0 0 0 1 0 0 1 1 0 0 0 0 1 1 0 0 1 0]\n"
+              "\"normal3 N\" [0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1]\n"
+              "\"integer indices\" [0 1 2 3 4 5]\n");
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportPbrtBestEffort(entry.string(), {}, result, error) == true);
+    CHECK(result.Summary.SourceVertices == 6);
+    CHECK(result.Summary.CookedVertices == 4);
+    CHECK(result.Summary.SourceIndices == 6);
+    CHECK(result.Summary.CookedIndices == result.Summary.SourceIndices);
+    CHECK(result.Summary.DroppedPlacements == 0);
+    CHECK(ReportHasCode(result, codes::VERTICES_COMPACTED) == true);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(DecodesAtRuntime(result, decoded) == true);
+    REQUIRE(decoded.Meshes.GetSize() == 1);
+    CHECK(decoded.Meshes[0].Positions.GetSize() == 4);
+    CHECK(decoded.Meshes[0].Indices.GetSize() == 6);
+}
+
+TEST_CASE("local Bistro import retains full geometry and decodes at runtime", "[scene_cook][pbrt][licensed][bistro]")
+{
+    const char* directoryOrNull = std::getenv("LUDUS_PBRT_SCENES_DIR");
+    if (directoryOrNull == nullptr || fs::exists(fs::path(directoryOrNull) / "bistro/bistro_cafe.pbrt") == false)
+    {
+        SKIP("set LUDUS_PBRT_SCENES_DIR to a directory containing bistro/bistro_cafe.pbrt");
+    }
+    const fs::path entry = fs::path(directoryOrNull) / "bistro/bistro_cafe.pbrt";
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportPbrtBestEffort(entry.string(), {}, result, error) == true);
+    CHECK(result.Summary.Errors == 0);
+    CHECK(result.Summary.SourcePlacements == 1606);
+    CHECK(result.Summary.SourceVertices == 8514702);
+    CHECK(result.Summary.SourceIndices == 8516880);
+    CHECK(result.Summary.CookedIndices == result.Summary.SourceIndices);
+    CHECK(result.Summary.DroppedPlacements == 0);
+    CHECK(ReportHasCode(result, codes::GEOMETRY_DROPPED) == false);
+    CHECK(ReportHasCode(result, codes::SHAPE_FAILED) == false);
+    CHECK(ReportHasCode(result, codes::SHAPE_SKIPPED) == false);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(DecodesAtRuntime(result, decoded) == true);
+    usize vertices = 0;
+    usize indices = 0;
+    for (const ludus::resources::SceneMesh& mesh : decoded.Meshes)
+    {
+        vertices += mesh.Positions.GetSize();
+        indices += mesh.Indices.GetSize();
+    }
+    CHECK(vertices == result.Summary.CookedVertices);
+    CHECK(indices == result.Summary.SourceIndices);
+    CHECK(result.Bundle.GetSize() <= ludus::content::scene_format::IMPORT_LIMITS.BundleBytes);
+}
+
 TEST_CASE("sphere and disk tessellation honour zmin, zmax and phimax", "[scene_cook][pbrt]")
 {
     ShapeArguments arguments;

@@ -73,6 +73,7 @@ struct CookPlan final
     Array<Placement> Placements;
     Array<PlannedMaterial> Materials;
     uint32 SourceVertices = 0;
+    uint32 SourceIndices = 0;
     uint32 DroppedPlacements = 0;
     uint32 DroppedVertices = 0;
 };

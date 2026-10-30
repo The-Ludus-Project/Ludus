@@ -58,6 +58,7 @@ constexpr usize MAX_ARTIFACT_DEPENDENCIES =
 constexpr usize MAX_CLOSURE_RESOURCES = usize{format::IMPORT_LIMITS.Meshes} + format::IMPORT_LIMITS.Materials +
                                         format::IMPORT_LIMITS.Textures + 2 * MAX_LEVEL_IMPORTS + 1;
 static_assert(MAX_ASSET_BYTES >= format::IMPORT_LIMITS.BundleBytes, "an artifact holds any admitted bundle");
+static_assert(MAX_RESIDENT_CLOSURE_BYTES > MAX_ASSET_BYTES, "closures also carry encoded asset metadata");
 constexpr usize MAX_LOCK_IDENTITY_BYTES = 4096;
 constexpr usize HEX_DIGEST_BYTES = 64;
 constexpr usize MATERIAL_RECORD_BYTES = 24;
@@ -999,7 +1000,7 @@ public:
         return true;
     }
 
-    /// dict(sorted(selected.items())) after the MAX_ASSET_BYTES resident check.
+    /// dict(sorted(selected.items())) after the encoded dependency closure byte check.
     [[nodiscard]] bool Finish(Document& outClosure) noexcept
     {
         PythonSum total;
@@ -1012,9 +1013,9 @@ public:
             }
             total.Add(bytes);
         }
-        if (IsLessPython(MakeNumber(static_cast<int64>(MAX_ASSET_BYTES)), total.GetResult()) == true)
+        if (IsLessPython(MakeNumber(static_cast<int64>(MAX_RESIDENT_CLOSURE_BYTES)), total.GetResult()) == true)
         {
-            return mFailure.FailInvalid("Resident closure exceeds 384 MiB");
+            return mFailure.FailInvalid("Resident closure exceeds its encoded byte limit");
         }
         Array<usize> order;
         if (order.TryResize(mSelectedIds.GetSize()) == false)
