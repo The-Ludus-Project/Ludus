@@ -469,7 +469,10 @@ float inputs to stage reflection and explicitly normalizes their locations;
 inter-stage outputs and builtins are not rewritten. GLSL ES varyings are named
 from their independently verified SPIR-V location map so ES 3.00 can link stages
 by identifier. Mismatched interfaces reject generation. A texture paired with
-multiple samplers in one stage is outside this first GLSL profile.
+multiple samplers in one stage is outside this first GLSL profile. SPIRV-Cross
+gives a separate texture's `Load` and `GetDimensions` a dummy sampler; when the
+stage also samples that texture with exactly one sampler, generation routes its
+`texelFetch` and `textureSize` calls through that sampler, which they ignore.
 
 Create a binding layout covering both shader stages, using the union of their
 requirements and visibility. `CreateBindingSet` requires exactly one entry per
