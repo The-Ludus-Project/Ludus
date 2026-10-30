@@ -27,6 +27,7 @@ class QTabWidget;
 
 namespace ludus::editor
 {
+class RenderGraphCaptureProfile;
 class RenderGraphPreview;
 class RenderPreview;
 class RendererWorkspace;
@@ -60,6 +61,9 @@ public:
     /// Borrow the viewport's project renderer, whose live graph producer supplies the package, output and
     /// renderer choice that the Render graph source and the comparison render. The window names that graph,
     /// configuration and output, and follows changes to them. Null (and browser builds) disables both.
+    /// While the window is shown with a graph capture or comparison selected, it also requests the workspace's
+    /// capture profile of the current generation (RendererWorkspace::GetCaptureProfileOrNull), so a graph
+    /// capture links the graph's capture budget; Capture waits while the profile builds.
     void SetProjectGraph(RendererWorkspace* workspaceOrNull);
     /// Start a capture with the settings shown in the window. False reports why in the status.
     bool StartCapture();
@@ -122,6 +126,7 @@ Q_SIGNALS:
 
 protected:
     void resizeEvent(QResizeEvent* event) override;
+    void showEvent(QShowEvent* event) override;
 
 private:
     void service();
@@ -137,6 +142,12 @@ private:
     void showScaledImages();
     [[nodiscard]] bool isRasterRendering() const noexcept;
     [[nodiscard]] bool isGraphSource() const noexcept;
+    /// Request the capture profile of the viewport's drawing generation when a graph capture is selected.
+    void requestCaptureProfile();
+    /// True while a selected graph capture waits for its capture profile to build.
+    [[nodiscard]] bool isAwaitingCaptureProfile() const noexcept;
+    /// One line on the capture profile of a selected graph capture; empty when none applies.
+    [[nodiscard]] QString describeCaptureProfile() const;
     [[nodiscard]] bool startRasterCapture(const QSize& requestedSize, QSize& outExtent, QString& outError);
     [[nodiscard]] bool startGraphCapture(const QSize& requestedSize, QSize& outExtent, QString& outError);
     [[nodiscard]] bool startGraphSource();
@@ -147,6 +158,11 @@ private:
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     QPointer<RendererWorkspace> mProjectWorkspace;
     QPointer<RenderGraphPreview> mProjectGraph;
+    QPointer<RenderGraphCaptureProfile> mCaptureProfile;
+    /// Path, size and modification time of the runtime package whose generation identity was last read, so
+    /// frequent preview changes decode an unchanged package only once.
+    QString mCaptureProfileSourceKey;
+    QByteArray mCaptureProfileSourceIdentity;
     ViewportRasterCapture mRasterCapture;
     ViewportGraphCapture mGraphCapture;
     /// Package the current raster capture loaded, recorded with a saved comparison.

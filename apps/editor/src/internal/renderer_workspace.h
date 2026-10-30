@@ -54,6 +54,7 @@ class CodeDocumentController;
 class CodeFormatter;
 class RenderGraphShaderAssistance;
 class RayPathInspection;
+class RenderGraphCaptureProfile;
 class RenderGraphPreview;
 class RenderGraphWorker;
 class RenderPreview;
@@ -378,6 +379,12 @@ public:
     {
         return mRayPathsOrNull;
     }
+    /// Frame capture profile of the World viewport's drawing generation, which the Reference window
+    /// requests before a graph capture; the workspace compiles it. Null without the native GPU preview.
+    [[nodiscard]] RenderGraphCaptureProfile* GetCaptureProfileOrNull() noexcept
+    {
+        return mCaptureProfileOrNull;
+    }
     /// Capture the rays a canvas node traces: a RayTracingPipeline or scene ComputePipeline node of
     /// the canvas document, or every ray pass of the drawing configuration for an empty node. The
     /// next click on the World viewport's graph output picks the pixel; the capture variant of the
@@ -589,8 +596,19 @@ private:
     RayPathInspection* mRayPathsOrNull = nullptr;
     /// Diagnostic package the running ray-path-capture job writes.
     QString mRayPathPackage;
+    /// Capture profile of mPreviewOrNull's drawing generation; null without the native GPU preview.
+    RenderGraphCaptureProfile* mCaptureProfileOrNull = nullptr;
+    /// Generation and `.lurgcp` destination of the running capture-profile job.
+    QByteArray mCaptureProfileIdentity;
+    QString mCaptureProfilePackage;
     /// Compile the capture variant of the frozen generation from its saved source snapshot.
     void startRayPathBuild();
+    /// Compile, or reuse, the capture profile of a generation from its saved source snapshot.
+    void startCaptureProfileBuild(const QByteArray& generationIdentity);
+    /// Report the capture-profile job's outcome to mCaptureProfileOrNull and drop superseded profiles.
+    void finishCaptureProfileBuild(const RenderGraphJobResult& result);
+    /// Append the shader worker endpoint a capture build shares with graph builds, when one is available.
+    void appendWorkerSocketArgument(QStringList& inoutArguments);
     /// Shader tool selection shared by graph builds and capture builds.
     void appendBuildToolArguments(QStringList& inoutArguments) const;
     QTimer mSourceEditDebounce;

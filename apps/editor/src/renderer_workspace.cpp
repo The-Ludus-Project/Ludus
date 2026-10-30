@@ -40,6 +40,7 @@
 #    include "editor_default_graph.h"
 #    include "editor_renderer_static.h"
 #    include "internal/ray_path_inspection.h"
+#    include "internal/render_graph_capture_profile.h"
 #    include "internal/render_graph_preview.h"
 #    include "internal/texture_viewer.h"
 #    include "renderer_composite.h"
@@ -55,6 +56,7 @@
 #include <QDir>
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFontDatabase>
@@ -1241,6 +1243,11 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mRayPathsOrNull = new RayPathInspection(this);
     mRayPathsOrNull->SetPreview(mPreviewOrNull);
     connect(mRayPathsOrNull, &RayPathInspection::BuildRequested, this, &RendererWorkspace::startRayPathBuild);
+    mCaptureProfileOrNull = new RenderGraphCaptureProfile(this);
+    connect(mCaptureProfileOrNull,
+            &RenderGraphCaptureProfile::BuildRequested,
+            this,
+            &RendererWorkspace::startCaptureProfileBuild);
     connect(mPreviewOrNull, &RenderGraphPreview::RayPathCaptureChanged, &mPreviewPump, &ViewportFramePump::Wake);
     connect(&mPreviewPump, &ViewportFramePump::WorkRequested, this, &RendererWorkspace::ServicePreview);
     connect(mPreviewOrNull, &RenderGraphPreview::FramePresented, &mPreviewPump, &ViewportFramePump::Wake);
@@ -2440,6 +2447,17 @@ void RendererWorkspace::startRayPathBuild()
                           QStringLiteral("--configuration"),
                           configuration};
     appendBuildToolArguments(arguments);
+    appendWorkerSocketArgument(arguments);
+    if (startJob(QStringLiteral("ray-path-capture"), arguments, false) == false)
+    {
+        mRayPathsOrNull->RejectBuild(mStatus->text());
+    }
+#endif
+}
+
+void RendererWorkspace::appendWorkerSocketArgument(QStringList& inoutArguments)
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     QString endpoint = mBuildSettings.WorkerSocket;
     if (endpoint.isEmpty() == true)
     {
@@ -2452,12 +2470,98 @@ void RendererWorkspace::startRayPathBuild()
     }
     if (endpoint.isEmpty() == false)
     {
-        arguments += {QStringLiteral("--worker-socket"), endpoint};
+        inoutArguments += {QStringLiteral("--worker-socket"), endpoint};
     }
-    if (startJob(QStringLiteral("ray-path-capture"), arguments, false) == false)
+#else
+    static_cast<void>(inoutArguments);
+#endif
+}
+
+void RendererWorkspace::startCaptureProfileBuild(const QByteArray& generationIdentity)
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    const QString hexIdentity = QString::fromLatin1(generationIdentity.toHex());
+    const QString build = buildDirectory();
+    const QString generation =
+        build.isEmpty() == true ? QString{} : QDir(build).filePath(QStringLiteral("generations/") + hexIdentity);
+    // Without saved sources, as for the prebuilt engine default, the runtime package is what can be captured.
+    if (generationIdentity.isEmpty() == true || generation.isEmpty() == true || QFileInfo(generation).isDir() == false)
     {
-        mRayPathsOrNull->RejectBuild(mStatus->text());
+        mCaptureProfileOrNull->AcceptBuild(generationIdentity, {});
+        return;
     }
+    // A generation's profile is deterministic, so one compiled for this generation is reused.
+    const QString profiles = QDir::cleanPath(QDir(build).filePath(QStringLiteral("../capture-profiles")));
+    const QString destination = QDir(profiles).filePath(hexIdentity + QStringLiteral(".lurgcp"));
+    if (QFileInfo(destination).isFile() == true)
+    {
+        mCaptureProfileOrNull->AcceptBuild(generationIdentity, destination);
+        return;
+    }
+    if (IsJobActive() == true)
+    {
+        mCaptureProfileOrNull->RejectBuild(generationIdentity,
+                                           QStringLiteral("Another render-graph job is running; capture again once "
+                                                          "it finishes to build the capture profile."));
+        return;
+    }
+    if (QDir().mkpath(profiles) == false)
+    {
+        mCaptureProfileOrNull->RejectBuild(
+            generationIdentity,
+            QStringLiteral("The capture profile folder %1 cannot be created.").arg(QDir::toNativeSeparators(profiles)));
+        return;
+    }
+    const QString configuration = mConfiguration->currentText() == DEFAULT_CONFIGURATION
+                                      ? QStringLiteral("Default")
+                                      : mConfiguration->currentText();
+    QStringList arguments{generation,
+                          QDir::cleanPath(QDir(build).filePath(QStringLiteral("../capture-profile"))),
+                          destination,
+                          QStringLiteral("--configuration"),
+                          configuration};
+    appendBuildToolArguments(arguments);
+    appendWorkerSocketArgument(arguments);
+    mCaptureProfileIdentity = generationIdentity;
+    mCaptureProfilePackage = destination;
+    if (startJob(QStringLiteral("capture-profile"), arguments, false) == false)
+    {
+        mCaptureProfileOrNull->RejectBuild(generationIdentity, mStatus->text());
+    }
+#else
+    static_cast<void>(generationIdentity);
+#endif
+}
+
+void RendererWorkspace::finishCaptureProfileBuild(const RenderGraphJobResult& result)
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (result.IsSuccessful == false)
+    {
+        mCaptureProfileOrNull->RejectBuild(mCaptureProfileIdentity,
+                                           result.IsCancelled == true
+                                               ? QStringLiteral("The capture profile build was cancelled.")
+                                               : QStringLiteral("%1: %2").arg(result.Code, result.Message));
+        return;
+    }
+    // A null profile means the graph declares no larger capture budget: the runtime package captures it.
+    if (result.Payload.value(QStringLiteral("capture_profile")).isNull() == true)
+    {
+        mCaptureProfileOrNull->AcceptBuild(mCaptureProfileIdentity, {});
+        return;
+    }
+    // Profiles of earlier generations are never drawn again; keep only this one and its resource names.
+    const QFileInfo profile(mCaptureProfilePackage);
+    for (const QFileInfo& entry : profile.dir().entryInfoList(QDir::Files))
+    {
+        if (entry.fileName().startsWith(profile.completeBaseName()) == false)
+        {
+            QFile::remove(entry.filePath());
+        }
+    }
+    mCaptureProfileOrNull->AcceptBuild(mCaptureProfileIdentity, mCaptureProfilePackage);
+#else
+    static_cast<void>(result);
 #endif
 }
 
@@ -2554,6 +2658,12 @@ void RendererWorkspace::AcceptResult(const RenderGraphJobResult& result)
             mRayPathsOrNull->RejectBuild(QStringLiteral("The project or graph changed while the capture variant "
                                                         "compiled; capture again."));
         }
+        if (result.Request.Action == QStringLiteral("capture-profile") && mCaptureProfileOrNull != nullptr)
+        {
+            mCaptureProfileOrNull->RejectBuild(mCaptureProfileIdentity,
+                                               QStringLiteral("The project or graph changed while the capture "
+                                                              "profile compiled; capture again."));
+        }
 #endif
         Q_EMIT JobFinished();
         return;
@@ -2607,6 +2717,10 @@ void RendererWorkspace::AcceptResult(const RenderGraphJobResult& result)
         static_cast<void>(PreviewRuntime(result.Request.Source));
     }
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (result.Request.Action == QStringLiteral("capture-profile") && mCaptureProfileOrNull != nullptr)
+    {
+        finishCaptureProfileBuild(result);
+    }
     if (result.Request.Action == QStringLiteral("ray-path-capture") && mRayPathsOrNull != nullptr)
     {
         if (result.IsSuccessful == true)

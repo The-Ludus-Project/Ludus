@@ -3253,8 +3253,9 @@ TEST_CASE("A viewport graph capture converges an accumulating ray output and sav
     ViewportGraphCapture capture;
     QSize extent;
     QString error;
-    REQUIRE(capture.Load(device.Device, device.Surface, source, requested, SAMPLES, extent, error) == true);
+    REQUIRE(capture.Load(device.Device, device.Surface, source, {}, requested, SAMPLES, extent, error) == true);
     CHECK(extent.isEmpty() == false);
+    CHECK(capture.IsCaptureProfile() == false);
     REQUIRE(capture.Begin(scene, view, error) == true);
     constexpr int64 CAPTURE_TIMEOUT_MILLISECONDS = 30000;
     QElapsedTimer timer;
@@ -3292,12 +3293,82 @@ TEST_CASE("A viewport graph capture converges an accumulating ray output and sav
     CHECK(capture.GetPhase() == renderer::RenderGraphCapturePhase::Idle);
 }
 
+TEST_CASE("A viewport graph capture decodes its generation's capture profile in place of the runtime package",
+          "[editor][render-graph][render-graph-capture]")
+{
+    DeviceFixture device({}, true);
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    renderer::RenderGraphRenderer automatic;
+    REQUIRE(renderer::SelectRenderGraphRenderer(device.Device, renderer::RenderGraphPreference::Automatic, automatic) ==
+            rhi::RasterStatus::Ready);
+    if (automatic != renderer::RenderGraphRenderer::HardwareRayTracing)
+    {
+        SKIP("The progressive ray fixture needs native ray queries");
+    }
+    RenderScene scene = MakeScene({1, 0, 0, 1});
+    scene.Lit = true;
+    renderer::ViewDescription view{};
+    view.OrthographicCamera = true;
+    ViewportRasterSource source;
+    source.PackagePath = QStringLiteral(LUDUS_EDITOR_PROGRESSIVE_RAY_FIXTURE);
+    // The Reference window requests the profile of this identity from the workspace.
+    QByteArray identity;
+    QString error;
+    REQUIRE(ViewportGraphCapture::ReadGenerationIdentity(source, identity, error) == true);
+    CHECK(identity.isEmpty() == false);
+    constexpr uint32 SAMPLES = 2;
+    const QString profilePath = QStringLiteral(LUDUS_EDITOR_PROGRESSIVE_CAPTURE_PROFILE_FIXTURE);
+    ViewportGraphCapture capture;
+    QSize extent;
+    REQUIRE(capture.Load(device.Device, device.Surface, source, profilePath, QSize(32, 32), SAMPLES, extent, error) ==
+            true);
+    CHECK(capture.IsCaptureProfile() == true);
+    REQUIRE(capture.Begin(scene, view, error) == true);
+    constexpr int64 CAPTURE_TIMEOUT_MILLISECONDS = 30000;
+    QElapsedTimer timer;
+    timer.start();
+    while (capture.IsRunning() == true && timer.elapsed() < CAPTURE_TIMEOUT_MILLISECONDS)
+    {
+        static_cast<void>(capture.Service());
+    }
+    INFO(capture.GetError().toStdString());
+    REQUIRE(capture.GetPhase() == renderer::RenderGraphCapturePhase::Complete);
+    CHECK(capture.GetInfo().MinimumSamples == SAMPLES);
+    // The saved provenance names the profile's bytes, which the capture decoded.
+    QTemporaryDir directory;
+    const QString path = QDir(directory.path()).filePath(QStringLiteral("profile.lurgcap"));
+    REQUIRE(capture.Save(path, error) == true);
+    QFile saved(path);
+    REQUIRE(saved.open(QIODevice::ReadOnly) == true);
+    QFile profile(profilePath);
+    REQUIRE(profile.open(QIODevice::ReadOnly) == true);
+    CHECK(saved.readAll().mid(format::CAPTURE_PACKAGE_IDENTITY_OFFSET, format::CAPTURE_IDENTITY_BYTES) ==
+          QCryptographicHash::hash(profile.readAll(), QCryptographicHash::Sha256));
+    capture.Release();
+    CHECK(capture.IsCaptureProfile() == false);
+}
+
 TEST_CASE("A viewport graph capture explains outputs it cannot capture before using the device",
           "[editor][render-graph][render-graph-capture]")
 {
     ViewportRasterSource source;
     source.PackagePath = QStringLiteral(LUDUS_EDITOR_PROGRESSIVE_RAY_FIXTURE);
+    QString profilePath;
     QString expected;
+    SECTION("a runtime package named as the capture profile")
+    {
+        // Only RenderGraphPackage::DecodeCaptureProfile admits the profile's magic, and it refuses a runtime package.
+        profilePath = source.PackagePath;
+        expected = QStringLiteral("capture profile");
+    }
+    SECTION("a missing capture profile")
+    {
+        profilePath = QStringLiteral("missing.lurgcp");
+        expected = QStringLiteral("capture again to rebuild it");
+    }
     SECTION("Force raster")
     {
         source.ShouldForceRaster = true;
@@ -3316,7 +3387,7 @@ TEST_CASE("A viewport graph capture explains outputs it cannot capture before us
     ViewportGraphCapture capture;
     QSize extent;
     QString error;
-    CHECK(capture.Load({}, {}, source, QSize(16, 16), 1, extent, error) == false);
+    CHECK(capture.Load({}, {}, source, profilePath, QSize(16, 16), 1, extent, error) == false);
     INFO(error.toStdString());
     CHECK(error.contains(expected) == true);
     CHECK(capture.GetPhase() == renderer::RenderGraphCapturePhase::Idle);
