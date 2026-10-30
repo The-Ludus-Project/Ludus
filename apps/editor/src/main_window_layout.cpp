@@ -569,6 +569,7 @@ void MainWindow::InitializeWorkspace()
                                  10000);
         return;
     }
+    hideIdleRayPaths();
     mShouldSizeDefaultDocks = false;
 }
 
@@ -1002,6 +1003,7 @@ void MainWindow::SetProjectWorkspace(const QString& root, bool restore)
     {
         (void)restoreState(previous, LAYOUT_VERSION);
     }
+    hideIdleRayPaths();
     World_->RestoreSession(object.value(QStringLiteral("world")).toObject());
     static_cast<void>(Renderer_->RestoreSourceViewState(object.value(QStringLiteral("renderer")).toObject()));
     // Malformed or stale arrangements leave the project's default World document open.

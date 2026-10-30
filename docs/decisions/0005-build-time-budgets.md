@@ -39,9 +39,9 @@ through include hygiene.
   gate divides measured times by a runner-speed factor: the per-include parse
   time of unchanged libstdc++ headers (`<string>`, `<span>`, `<string_view>`,
   `<array>`) relative to their averages in the reference run
-  (`runner_speed_reference` in `config/build_budget.json`). When those headers are
-  absent from the report or the factor is implausible, the gate compares raw
-  timings and says so.
+  (`runner_speed_reference` in `config/build_budget.json`), using those the report
+  lists. When fewer than two are listed or the factor is implausible, the gate
+  compares raw timings and says so.
 
 `misc-include-cleaner` and IWYU remain available as **advisory, non-gating**
 tools (`./scripts/check --include-cleaner`) for pruning includes on demand.

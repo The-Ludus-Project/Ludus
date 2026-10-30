@@ -938,27 +938,23 @@ class BuildBudgetRunnerSpeedTests(unittest.TestCase):
     PRESET = "linux-clang-development"
 
     @staticmethod
-    def analysis(root: Path, frontend_s: float, standard: tuple[int, int, int, int], header_ms: int) -> str:
-        # Include counts and frontend totals from CI runs 40639240762 and 40735340923.
+    def analysis(root: Path, frontend_s: float, standard: tuple[int | None, ...], header_ms: int) -> str:
+        # Include counts and frontend totals from CI runs 40639240762 and 40735340923; a None
+        # average leaves that header out, as when it falls out of the top-ten list.
         string_ms, span_ms, view_ms, array_ms = standard
-        return "\n".join((
-            "**** Time summary:",
-            "Compilation (576 times):",
-            f"  Parsing (frontend):          {frontend_s:.1f} s",
-            "",
-            "**** Expensive headers:",
-            f"{string_ms * 348} ms: /usr/include/c++/14/string (included 348 times, avg {string_ms} ms), included via:",
-            f"{span_ms * 424} ms: /usr/include/c++/14/span (included 424 times, avg {span_ms} ms), included via:",
-            f"{header_ms * 46} ms: {root}/modules/graphics/renderer/include/ludus/graphics/renderer/environment.hpp "
-            f"(included 46 times, avg {header_ms} ms), included via:",
-            f"{array_ms * 425} ms: /usr/include/c++/14/array (included 425 times, avg {array_ms} ms), included via:",
-            f"{view_ms * 455} ms: /usr/include/c++/14/string_view (included 455 times, avg {view_ms} ms), included via:",
-            "",
-            "**** Done",
-            "",
-        ))
+        lines = ["**** Time summary:", "Compilation (576 times):", f"  Parsing (frontend):          {frontend_s:.1f} s",
+                 "", "**** Expensive headers:"]
+        for name, count, avg_ms in (("string", 348, string_ms), ("span", 424, span_ms), ("array", 425, array_ms),
+                                    ("string_view", 455, view_ms)):
+            if avg_ms is not None:
+                lines.append(f"{avg_ms * count} ms: /usr/include/c++/14/{name} (included {count} times, avg {avg_ms} ms), "
+                             "included via:")
+        lines.append(f"{header_ms * 46} ms: {root}/modules/graphics/renderer/include/ludus/graphics/renderer/environment.hpp "
+                     f"(included 46 times, avg {header_ms} ms), included via:")
+        lines += ["", "**** Done", ""]
+        return "\n".join(lines)
 
-    def check(self, frontend_s: float, standard: tuple[int, int, int, int], header_ms: int = 600) -> str:
+    def check(self, frontend_s: float, standard: tuple[int | None, ...], header_ms: int = 600) -> str:
         committed = engine.load_build_budget(engine.repo_root())
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -995,15 +991,28 @@ class BuildBudgetRunnerSpeedTests(unittest.TestCase):
         self.assertTrue(result.startswith("FAILED"), result)
         self.assertIn("[OVER] modules/graphics/renderer/include/ludus/graphics/renderer/environment.hpp", result)
 
+    def test_a_slow_runner_passes_when_a_cheap_reference_header_drops_out(self):
+        # Run 41110487152: 505.3 s on a runner about 2.05x slower; <string_view> fell out of the top ten.
+        result = self.check(505.3, (213, 89, None, 60))
+        self.assertTrue(result.startswith("PASSED"), result)
+        self.assertIn("3 reference headers parsed 2.0", result)
+        self.assertRegex(result, r"\[OK\] total frontend parsing: 505\.3 s, 24\d\.\d s normalized")
+
     def test_missing_or_implausible_reference_uses_raw_timings(self):
         reference = engine.load_build_budget(engine.repo_root())["runner_speed_reference"]
         headers = engine.parse_expensive_headers(
             self.analysis(Path("/work"), 240.0, (111, 40, 25, 26), 300))
         factor, _note = engine.measure_runner_speed(headers, reference)
         self.assertAlmostEqual(factor, 1.0, delta=0.01)
-        without_array = [entry for entry in headers if not entry[0].endswith("/array")]
-        factor, note = engine.measure_runner_speed(without_array, reference)
+        # A cheap reference header can drop out of the top-ten list; the rest still measure speed.
+        without_view = [entry for entry in headers if not entry[0].endswith("/string_view")]
+        factor, note = engine.measure_runner_speed(without_view, reference)
+        self.assertAlmostEqual(factor, 1.0, delta=0.01)
+        self.assertIn("3 reference headers", note)
+        only_string = [entry for entry in headers if entry[0].endswith("/string") or "/c++/" not in entry[0]]
+        factor, note = engine.measure_runner_speed(only_string, reference)
         self.assertIsNone(factor)
+        self.assertIn("at least 2 required", note)
         self.assertIn("/usr/include/c++/14/array", note)
         implausible = engine.parse_expensive_headers(self.analysis(Path("/work"), 240.0, (999, 400, 250, 260), 300))
         factor, note = engine.measure_runner_speed(implausible, reference)

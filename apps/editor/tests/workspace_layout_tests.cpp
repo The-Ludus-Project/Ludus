@@ -694,6 +694,9 @@ TEST_CASE("Code and Viewport reuses the World and keeps both surfaces stable whi
     REQUIRE(rendererOrNull != nullptr);
     REQUIRE(worldOrNull != nullptr);
     rendererOrNull->SetLivePreview(false);
+    QPushButton* outlineOrNull = rendererOrNull->findChild<QPushButton*>(QStringLiteral("renderGraphToggleSources"));
+    REQUIRE(outlineOrNull != nullptr);
+    outlineOrNull->setChecked(true);
     QWidget* worldParent = worldOrNull->parentWidget();
     REQUIRE(worldParent != nullptr);
     const RenderPreview* preview = &worldOrNull->GetRenderPreview();
@@ -742,6 +745,12 @@ TEST_CASE("Code and Viewport reuses the World and keeps both surfaces stable whi
     {
         REQUIRE(window.grab().save(capture + QStringLiteral("-code-viewport.png")) == true);
     }
+    viewsOrNull->setCurrentIndex(0);
+    CHECK(treeOrNull->isHidden() == false);
+    CHECK(outlineOrNull->isChecked() == true);
+    viewsOrNull->setCurrentIndex(1);
+    CHECK(treeOrNull->isHidden() == true);
+    CHECK(outlineOrNull->isChecked() == false);
     well.MergeGroups();
     REQUIRE(well.OpenDocument(worldOrNull) == true);
     QApplication::processEvents();

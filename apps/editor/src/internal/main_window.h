@@ -160,6 +160,9 @@ private:
     void setupProfiling();
     /// Native GPU preview only: the Ray Paths panel of the renderer's ray path inspection.
     void setupRayPaths();
+    /// Close the Ray Paths tool window when no capture is under way. A saved layout can bring it back
+    /// open; it belongs on screen only while a capture is picked, built or inspected.
+    void hideIdleRayPaths();
     void renderBuildErrors();
     void SaveWorkspaceLayout() const;
     [[nodiscard]] bool ConfirmProjectChange(const QString& action);

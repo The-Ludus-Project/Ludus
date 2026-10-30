@@ -29,6 +29,7 @@ namespace ludus::editor
 {
 class RenderGraphPreview;
 class RenderPreview;
+class RendererWorkspace;
 
 /// Wall time one service tick may spend preparing or tracing before yielding to the event loop.
 inline constexpr foundation::uint64 REFERENCE_SERVICE_BUDGET_NANOSECONDS = 8'000'000;
@@ -56,9 +57,10 @@ public:
     explicit ReferenceCaptureWindow(RenderPreview* preview, QWidget* parentOrNull = nullptr);
     ~ReferenceCaptureWindow() override;
 
-    /// Borrow the viewport's live project-graph producer, whose package, output and renderer
-    /// choice the comparison renders. Null (and browser builds) disables comparison.
-    void SetProjectGraph(RenderGraphPreview* graphOrNull);
+    /// Borrow the viewport's project renderer, whose live graph producer supplies the package, output and
+    /// renderer choice that the Render graph source and the comparison render. The window names that graph,
+    /// configuration and output, and follows changes to them. Null (and browser builds) disables both.
+    void SetProjectGraph(RendererWorkspace* workspaceOrNull);
     /// Start a capture with the settings shown in the window. False reports why in the status.
     bool StartCapture();
     /// Cancel the running captures, keeping nothing.
@@ -109,6 +111,8 @@ public:
         return mDifferenceImage;
     }
     [[nodiscard]] QString GetStatusText() const;
+    /// The graph, configuration and output that the Render graph source and the comparison would use now.
+    [[nodiscard]] QString GetGraphText() const;
     /// Path Save writes beside hdrPath for one comparison artefact, such as "raster.png".
     [[nodiscard]] static QString GetComparisonPath(const QString& hdrPath, const QString& suffix);
 
@@ -127,6 +131,7 @@ private:
     void updateStatus();
     void updateTraversalAvailability();
     void updateComparisonAvailability();
+    void updateGraphDescription();
     void releaseCaptures() noexcept;
     void saveWithDialog();
     void showScaledImages();
@@ -140,6 +145,7 @@ private:
     QPointer<RenderPreview> mPreview;
     ViewportReferenceCapture mCapture;
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    QPointer<RendererWorkspace> mProjectWorkspace;
     QPointer<RenderGraphPreview> mProjectGraph;
     ViewportRasterCapture mRasterCapture;
     ViewportGraphCapture mGraphCapture;
@@ -181,5 +187,6 @@ private:
     QLabel* const mRasterLabel;
     QLabel* const mDifferenceLabel;
     QComboBox* const mSource;
+    QLabel* const mGraph;
 };
 } // namespace ludus::editor
