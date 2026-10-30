@@ -373,6 +373,121 @@ RenderGraphDocument::RemoveConfiguration(const QString& file, const QString& con
     return status;
 }
 
+RenderGraphDocumentStatus RenderGraphDocument::DuplicateConfiguration(const QString& file,
+                                                                      const QString& configuration,
+                                                                      const QString& name,
+                                                                      QString& outError)
+{
+    outError = QStringLiteral("Select an existing configuration before duplicating it.");
+    QJsonObject graph;
+    if (GetGraph(file, graph) == false)
+    {
+        return RenderGraphDocumentStatus::NotFound;
+    }
+    QJsonArray configurations = graph.value(QStringLiteral("configurations")).toArray();
+    const qsizetype index = FindConfiguration(configurations, configuration);
+    if (index < 0)
+    {
+        return RenderGraphDocumentStatus::NotFound;
+    }
+    if (IsIdentifier(name) == false || FindConfiguration(configurations, name) >= 0)
+    {
+        outError = QStringLiteral("Cannot duplicate %1#%2: use a unique name beginning with a letter, up to %3 ASCII "
+                                  "letters, digits, '_' or '-'.")
+                       .arg(file, configuration)
+                       .arg(MAX_IDENTIFIER_LENGTH);
+        return RenderGraphDocumentStatus::InvalidEdit;
+    }
+    if (configurations.size() >= MAX_CONFIGURATIONS)
+    {
+        outError = QStringLiteral("Cannot duplicate %1#%2: a graph file holds at most %3 configurations. "
+                                  "Delete one first.")
+                       .arg(file, configuration)
+                       .arg(MAX_CONFIGURATIONS);
+        return RenderGraphDocumentStatus::Capacity;
+    }
+    QJsonObject copy = configurations.at(index).toObject();
+    copy.insert(QStringLiteral("id"), name);
+    configurations.insert(index + 1, copy);
+    graph.insert(QStringLiteral("configurations"), configurations);
+    RenderGraphSnapshot candidate = mDraft;
+    candidate.Files.insert(file, EncodeCanonicalJson(graph));
+    const RenderGraphDocumentStatus status =
+        commit(candidate, false, {}, {}, {file, configuration, {}}, {file, name, {}});
+    if (status == RenderGraphDocumentStatus::Ok)
+    {
+        mLastMove.clear();
+        outError.clear();
+    }
+    else
+    {
+        outError = QStringLiteral("The duplicate exceeds the source or package limits. The draft was preserved.");
+    }
+    return status;
+}
+
+// Named source file, new name and outputs.
+// NOLINTBEGIN(bugprone-easily-swappable-parameters)
+RenderGraphDocumentStatus
+RenderGraphDocument::DuplicateGraph(const QString& file, const QString& name, QString& outAsset, QString& outError)
+// NOLINTEND(bugprone-easily-swappable-parameters)
+{
+    outError = QStringLiteral("Select an existing graph file before duplicating it.");
+    QJsonObject graph;
+    if (GetGraph(file, graph) == false)
+    {
+        return RenderGraphDocumentStatus::NotFound;
+    }
+    const QString asset = name + QStringLiteral(".lurender.json");
+    const RenderGraphDocumentStatus available =
+        IsIdentifier(name) == true ? checkNewGraphAsset(name) : RenderGraphDocumentStatus::InvalidEdit;
+    if (available != RenderGraphDocumentStatus::Ok)
+    {
+        outError = QStringLiteral("Cannot duplicate %1 as %2: use a name beginning with a letter, up to %3 ASCII "
+                                  "letters, digits, '_' or '-', that no graph id or file in the package uses.")
+                       .arg(file, asset)
+                       .arg(MAX_IDENTIFIER_LENGTH);
+        return available;
+    }
+    QJsonArray configurations = graph.value(QStringLiteral("configurations")).toArray();
+    for (qsizetype index = 0; index < configurations.size(); ++index)
+    {
+        QJsonObject record = configurations.at(index).toObject();
+        QJsonArray nodes = record.value(QStringLiteral("nodes")).toArray();
+        for (qsizetype nodeIndex = 0; nodeIndex < nodes.size(); ++nodeIndex)
+        {
+            QJsonObject node = nodes.at(nodeIndex).toObject();
+            // Same-file Subgraph calls stay inside the copy instead of reaching back to the original.
+            if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Subgraph") &&
+                node.value(QStringLiteral("asset")).toString() == file)
+            {
+                node.insert(QStringLiteral("asset"), asset);
+                nodes.replace(nodeIndex, node);
+            }
+        }
+        record.insert(QStringLiteral("nodes"), nodes);
+        configurations.replace(index, record);
+    }
+    graph.insert(QStringLiteral("configurations"), configurations);
+    graph.insert(QStringLiteral("id"), name);
+    RenderGraphSnapshot candidate = mDraft;
+    candidate.Files.insert(asset, EncodeCanonicalJson(graph));
+    const QString selected = graph.value(QStringLiteral("default")).toString();
+    const RenderGraphDocumentStatus status =
+        commit(candidate, false, {}, {}, {file, selected, {}}, {asset, selected, {}});
+    if (status == RenderGraphDocumentStatus::Ok)
+    {
+        mLastMove.clear();
+        outAsset = asset;
+        outError.clear();
+    }
+    else
+    {
+        outError = DescribePackageCapacity();
+    }
+    return status;
+}
+
 RenderGraphDocumentStatus RenderGraphDocument::CopyNodes(const QString& file,
                                                          const QString& configuration,
                                                          const QStringList& nodes,

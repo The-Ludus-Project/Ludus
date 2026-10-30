@@ -3933,6 +3933,10 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition, bool i
         createConfiguration->setObjectName(QStringLiteral("renderGraphAddConfiguration"));
         createConfiguration->setEnabled(mDocument.IsLoaded() == true);
         connect(createConfiguration, &QAction::triggered, this, &RendererWorkspace::promptCreateConfiguration);
+        QAction* duplicateConfiguration = configurations->addAction(QStringLiteral("Duplicate Configuration..."));
+        duplicateConfiguration->setObjectName(QStringLiteral("renderGraphDuplicateConfiguration"));
+        duplicateConfiguration->setEnabled(CanCreateSubgraph() == true && selectedConfiguration().isEmpty() == false);
+        connect(duplicateConfiguration, &QAction::triggered, this, &RendererWorkspace::promptDuplicateConfiguration);
         QAction* configurationTemplate = configurations->addAction(QStringLiteral("Apply Configuration Template..."));
         configurationTemplate->setObjectName(QStringLiteral("renderGraphApplyConfigurationTemplate"));
         configurationTemplate->setEnabled(CanCreateSubgraph());
@@ -3943,6 +3947,14 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition, bool i
         connect(removeConfiguration, &QAction::triggered, this, [this]() {
             static_cast<void>(RemoveSelectedConfiguration());
         });
+        QJsonObject selectedGraph;
+        QAction* duplicateGraph = menu.addAction(QStringLiteral("Duplicate Graph..."));
+        duplicateGraph->setObjectName(QStringLiteral("renderGraphDuplicateGraph"));
+        duplicateGraph->setToolTip(QStringLiteral("Copy this graph file and all its configurations as a new graph in "
+                                                  "the package."));
+        duplicateGraph->setEnabled(CanCreateSubgraph() == true &&
+                                   mDocument.GetGraph(mSelectedFile, selectedGraph) == true);
+        connect(duplicateGraph, &QAction::triggered, this, &RendererWorkspace::promptDuplicateGraph);
         menu.addSeparator();
     }
     if (isNodeContext == true)
