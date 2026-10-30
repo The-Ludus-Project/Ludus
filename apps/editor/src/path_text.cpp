@@ -17,6 +17,8 @@ namespace
 /// The dimmed folder keeps this share of the text colour's opacity (percent).
 constexpr int FOLDER_OPACITY_PERCENT = 62;
 constexpr int PERCENT = 100;
+/// A stem is kept beside its extension only when it can show this many ellipsis widths of text.
+constexpr int MINIMUM_STEM_ELLIPSIS_WIDTHS = 3;
 /// A path label asks for no more than this many average characters of width.
 constexpr int MINIMUM_LABEL_CHARACTERS = 8;
 
@@ -58,6 +60,17 @@ QString ElidePathText(const QString& text, const QFontMetrics& metrics, int widt
     if (folder.isEmpty() == false && nameWidth <= width)
     {
         return name;
+    }
+    // Keep the extension: it says what the file is.
+    const qsizetype dot = name.lastIndexOf(QLatin1Char('.'));
+    if (dot > 0)
+    {
+        const QString extension = name.mid(dot);
+        const int stemWidth = width - metrics.horizontalAdvance(extension);
+        if (stemWidth >= metrics.horizontalAdvance(QStringLiteral("\u2026")) * MINIMUM_STEM_ELLIPSIS_WIDTHS)
+        {
+            return metrics.elidedText(name.left(dot), Qt::ElideMiddle, stemWidth) + extension;
+        }
     }
     return metrics.elidedText(name, Qt::ElideMiddle, width);
 }

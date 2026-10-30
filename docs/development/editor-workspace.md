@@ -2148,7 +2148,8 @@ Stop are filled to identify live-state actions. No SVG is parsed while painting,
 and no Qt SVG module is needed. One bounded pixmap cache keys entries by icon,
 size, device pixel ratio, mode and colour. The parser supports `path`, `circle`
 and `rect` elements and the M, L, H, V, C, S, Q, T, A and Z path commands; a new
-icon that needs anything else fails the icon tests.
+icon that needs anything else fails the icon tests. The one drawing that used
+`line` elements (`timer`) has them written as equivalent two-point paths.
 
 To add an icon:
 
