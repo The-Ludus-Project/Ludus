@@ -662,6 +662,13 @@ QList<QDockWidget*> MainWindow::getToolWindows() const
     return docks;
 }
 
+#if !defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+void MainWindow::hideIdleRayPaths()
+{
+    // Builds without native preview do not create a Ray Paths dock.
+}
+#endif
+
 void MainWindow::showCodeAndViewport()
 {
     setViewportFocused(false);
