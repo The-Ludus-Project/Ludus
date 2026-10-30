@@ -158,7 +158,10 @@ For a selected mesh light, a line strategy SHALL:
    `SampleIncidentLight` proposal (triangle by area, then barycentric);
 2. form the chord of that point's triangle through the point, in the strategy's
    direction: `U` along the triangle's first edge, `V` perpendicular to it in
-   the triangle's plane;
+   the triangle's plane. A chord shorter than the scene unit tolerance, such as
+   the zero-length chord through a vertex whose angle excludes the direction,
+   SHALL contribute zero without a line query and without failing (design D6,
+   section 5.1);
 3. find the chord's visible intervals with `FindVisibleLineIntervals`;
 4. draw a point uniformly by length over the visible intervals, or contribute
    zero when none remain;
@@ -177,8 +180,9 @@ importance sampled.
 Evaluating a line strategy's density at a point `l` on emitter triangle `T`
 SHALL form the chord of `T` through `l` in that strategy's direction, run the
 line query and apply PL08 step 5. If `l` lies in no visible interval of that
-chord, the density SHALL be zero. Each evaluation is one line query and counts
-against the budget.
+chord, or the chord is shorter than the scene unit tolerance (PL08 step 2), the
+density SHALL be zero. Each evaluation with a line query counts it against the
+budget.
 
 ## PL10 Templates
 

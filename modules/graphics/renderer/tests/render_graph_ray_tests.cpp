@@ -5578,6 +5578,13 @@ constexpr usize POINT_LINE_DENSITY_COUNT = 8;
 constexpr usize POINT_LINE_WEIGHT_ROW_COUNT = 8;
 constexpr usize POINT_LINE_SINGLE_WEIGHT_ROW = 8;
 constexpr usize POINT_LINE_DENSITY_FIRST_ROW = 16;
+constexpr usize POINT_LINE_VERTEX_CHORD_ROW = 9;
+constexpr usize POINT_LINE_VERTEX_CHORD_CASES = 6;
+constexpr float64 POINT_LINE_QUERYABLE_CHORD = .25;
+constexpr float64 POINT_LINE_DEGENERATE_CHORD = .5;
+constexpr float64 POINT_LINE_POSITIVE_DENSITY = .75;
+/// The vertex chord case along the first edge through vertex 2, whose chord always has zero length.
+constexpr usize POINT_LINE_U_VERTEX_2_CHORD = 4;
 constexpr float64 POINT_LINE_ERROR_SCALE = 1000;
 constexpr float64 POINT_LINE_SKIPPED = 1;
 
@@ -5796,6 +5803,30 @@ TEST_CASE("Point-and-line MIS weights sum to one and an unoccluded line density 
     CHECK(evaluatedPixels[1] > minimumEvaluated);
     CHECK(largestDensityError[0] <= DENSITY_RELATIVE_TOLERANCE);
     CHECK(largestDensityError[1] <= DENSITY_RELATIVE_TOLERANCE);
+
+    // Chords through a light triangle's vertices (design D6, section 5.1). IsEmitterChordQueryable rejects
+    // the zero-length chord along the first edge through vertex 2, and any other vertex chord that
+    // rounding leaves shorter than SCENE_UNIT_TOLERANCE. Such a chord latched a shader failure,
+    // which the failure-pixel check above would now catch. On Sponza, the area point at vertex 0
+    // did this across an acute angle. A rejected chord's density is zero.
+    constexpr float64 CHORD_FLAG_TOLERANCE = 1e-6;
+    usize degenerateChords = 0;
+    for (usize chordCase = 0; chordCase < POINT_LINE_VERTEX_CHORD_CASES; ++chordCase)
+    {
+        const float64 flag = DecodeLineFixed(pixels, chordCase * 2, POINT_LINE_VERTEX_CHORD_ROW);
+        const float64 density = DecodeLineFixed(pixels, chordCase * 2 + 1, POINT_LINE_VERTEX_CHORD_ROW);
+        const bool isDegenerate = math::Abs(flag - POINT_LINE_DEGENERATE_CHORD) <= CHORD_FLAG_TOLERANCE;
+        INFO("vertex chord case " << chordCase << ": flag " << flag << ", density flag " << density);
+        CHECK((isDegenerate == true || math::Abs(flag - POINT_LINE_QUERYABLE_CHORD) <= CHORD_FLAG_TOLERANCE));
+        CHECK((density == 0 || math::Abs(density - POINT_LINE_POSITIVE_DENSITY) <= CHORD_FLAG_TOLERANCE));
+        if (isDegenerate == true)
+        {
+            CHECK(density == 0);
+        }
+        CHECK((chordCase != POINT_LINE_U_VERTEX_2_CHORD || isDegenerate == true));
+        degenerateChords += isDegenerate == true ? 1 : 0;
+    }
+    WARN(degenerateChords << " of " << POINT_LINE_VERTEX_CHORD_CASES << " vertex chords rejected");
 }
 
 TEST_CASE("The point-and-line MIS template's three outputs estimate one integral under both heuristics",

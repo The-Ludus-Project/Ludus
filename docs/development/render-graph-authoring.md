@@ -2261,7 +2261,10 @@ needed. With no occluder the density equals `EvaluateLightPdfSolidAngle` for the
 same point. If the result reports masked occluders, the drawn point is confirmed
 with `TestVisibility`. A directional, point, spot or environment light keeps the
 ordinary point proposal and its shadow ray. A receiver in an emitter's own plane
-receives nothing from it. Emission is evaluated at the drawn point, so textured
+receives nothing from it. A chord shorter than `SCENE_UNIT_TOLERANCE`, which the
+line query rejects, is not queried and contributes nothing either. An example is
+the zero-length chord through a vertex where the line leaves the triangle at once.
+Emission is evaluated at the drawn point, so textured
 emission is integrated but not importance sampled. There is no indirect bounce.
 
 The scene interface declares `surface_queries: 1` (the primary hit),
@@ -2366,7 +2369,11 @@ strategy: it builds the chord through that point in its own direction, runs a li
 query, and returns the joint density if the point lies in a visible interval and
 zero otherwise. A sample therefore costs a line query for each other line strategy
 that weights it. With no occluder both densities equal `EvaluateLightPdfSolidAngle`
-for the same point.
+for the same point. A chord shorter than `SCENE_UNIT_TOLERANCE` is never queried.
+Its strategy proposes nothing there, and its density there is zero. An example
+is the zero-length `V` chord through a vertex with an acute angle, which an area
+point reaches when its radial draw is exactly zero. BSDF sampling still covers
+those points in `color`.
 
 **Weights.** `ComputeMisWeight(sampledDensity, otherDensity0, otherDensity1)` in
 `main_shaders/multiple_importance.slang` is `p_s^β / (p_s^β + p_0^β + p_1^β)`, with
@@ -2441,7 +2448,9 @@ each pass's `invocation.traversal` to `ComputeBvh`. There is no indirect bounce.
   densities from zero to 1e12, under both heuristics, including a delta light
   shared by the two line strategies. With no occluder, each line strategy's density
   at an area point equals `EvaluateLightPdfSolidAngle` within the test's 1e-5
-  relative tolerance (largest measured difference 9.6e-7).
+  relative tolerance (largest measured difference 9.6e-7). Chords through the
+  light triangle's vertices raise no failure, and a rejected chord has zero
+  density.
 - In the Cornell-box-style room, where the block casts a penumbra from the
   two-triangle quad light, `color`, `lineSampling` and `pointSampling` converge to
   one mean within 2% at 256 samples per pixel under both heuristics, and match the
