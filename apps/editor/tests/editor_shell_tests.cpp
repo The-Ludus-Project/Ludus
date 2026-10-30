@@ -1174,7 +1174,9 @@ TEST_CASE("The setup notice is one dismissible line and the status bar keeps one
     CHECK(noticeOrNull->height() <=
           2 * window.findChild<QPushButton*>(QStringLiteral("projectSetupNoticeRepair"))->sizeHint().height());
     CHECK(statusOrNull->text().contains(QLatin1Char('\n')) == false);
-    CHECK(statusOrNull->text().count(QStringLiteral("Rendering tools need preparation.")) == 1);
+    // The banner says what is wrong; the status line only says that setup needs repair.
+    CHECK(statusOrNull->text().count(QStringLiteral("Rendering tools need preparation.")) == 0);
+    CHECK(statusOrNull->text().contains(QStringLiteral("Setup needs repair")) == true);
 
     dismissOrNull->click();
     CHECK(noticeOrNull->isVisible() == false);
@@ -1453,6 +1455,9 @@ TEST_CASE("graph focus restores the active document and panel choices and resolv
         .Location = {},
         .Origin = QStringLiteral("Build"),
         .SourceIndex = 0,
+        .Details = {},
+        .Backends = {},
+        .Count = 1,
     };
     errors->ReplaceEntries(ErrorListProducer::Build, {problem});
     REQUIRE(Well(window).OpenDocument(renderer) == true);

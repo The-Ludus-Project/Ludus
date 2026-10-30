@@ -40,15 +40,20 @@ constexpr foundation::int32 ENTRY_ROLE = Qt::UserRole;
 // Output lines longer than this are not compiler diagnostics worth matching.
 constexpr qsizetype MAX_DIAGNOSTIC_LINE_CHARACTERS = 4096;
 constexpr foundation::int32 MAX_DETAILS_HEIGHT = 100;
+// Starting column widths in pixels: room for `Error`, an error code, a file name, `75:12` and `Shader · metal, spirv`.
+constexpr foundation::int32 SEVERITY_COLUMN_WIDTH = 84;
+constexpr foundation::int32 CODE_COLUMN_WIDTH = 150;
+constexpr foundation::int32 FILE_COLUMN_WIDTH = 170;
+constexpr foundation::int32 LOCATION_COLUMN_WIDTH = 64;
+constexpr foundation::int32 ORIGIN_COLUMN_WIDTH = 150;
 constexpr foundation::int32 MINIMUM_TABLE_ROWS = 2;
-// Horizontal space a table cell keeps around its text; wider descriptions are elided.
-constexpr foundation::int32 DESCRIPTION_CELL_PADDING_PIXELS = 8;
 
 [[nodiscard]] bool AreEntriesEqual(const ErrorListEntry& left, const ErrorListEntry& right)
 {
     return left.Severity == right.Severity && left.Producer == right.Producer && left.Code == right.Code &&
            left.Description == right.Description && left.File == right.File && left.Location == right.Location &&
-           left.Origin == right.Origin && left.SourceIndex == right.SourceIndex;
+           left.Origin == right.Origin && left.SourceIndex == right.SourceIndex && left.Details == right.Details &&
+           left.Backends == right.Backends && left.Count == right.Count;
 }
 
 [[nodiscard]] ErrorListSeverity ParseSeverity(const QString& text)
@@ -65,17 +70,21 @@ constexpr foundation::int32 DESCRIPTION_CELL_PADDING_PIXELS = 8;
     return ErrorListSeverity::Message;
 }
 
-/// Location column text for a render-graph location object: a line or a configuration/node path.
+/// Compact position text: `line:column`, or a bare line when the column is unknown.
+[[nodiscard]] QString DescribePosition(foundation::int32 line, foundation::int32 column)
+{
+    return column > 0 ? QStringLiteral("%1:%2").arg(line).arg(column) : QString::number(line);
+}
+
+/// Location column text for a render-graph location object: `line:column`, or a
+/// configuration/node path.
 [[nodiscard]] QString DescribeRenderGraphLocation(const QJsonObject& location)
 {
     QStringList parts;
     if (location.contains(QStringLiteral("line")) == true)
     {
-        parts.append(location.contains(QStringLiteral("column")) == true
-                         ? QStringLiteral("line %1, column %2")
-                               .arg(location.value(QStringLiteral("line")).toInt())
-                               .arg(location.value(QStringLiteral("column")).toInt())
-                         : QStringLiteral("line %1").arg(location.value(QStringLiteral("line")).toInt()));
+        parts.append(DescribePosition(location.value(QStringLiteral("line")).toInt(),
+                                      location.value(QStringLiteral("column")).toInt()));
     }
     if (location.contains(QStringLiteral("generated")) == true)
     {
@@ -98,6 +107,27 @@ constexpr foundation::int32 DESCRIPTION_CELL_PADDING_PIXELS = 8;
         }
     }
     return parts.join(QStringLiteral(", "));
+}
+
+/// The row text of a description: its lines on one line, so a repair hint stays readable in the row.
+[[nodiscard]] QString DescribeRow(const QString& description)
+{
+    QStringList lines = description.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    for (QString& line : lines)
+    {
+        line = line.trimmed();
+    }
+    return lines.join(QStringLiteral(" \u2014 "));
+}
+
+/// Full text for the collapsed Details pane; empty when the row says everything it knows.
+[[nodiscard]] QString DescribeDetails(const ErrorListEntry& entry)
+{
+    if (entry.Details.isEmpty() == false)
+    {
+        return entry.Description + QStringLiteral("\n\n") + entry.Details;
+    }
+    return entry.Description.contains(QLatin1Char('\n')) == true ? entry.Description : QString();
 }
 
 [[nodiscard]] QString GetSeverityName(ErrorListSeverity severity)
@@ -145,13 +175,17 @@ QList<ErrorListEntry> MakeRenderPreviewErrorEntries(const QString& problem, cons
         .Location = {},
         .Origin = QStringLiteral("Renderer preview"),
         .SourceIndex = 0,
+        .Details = {},
+        .Backends = {},
+        .Count = 1,
     }};
 }
 
 QList<ErrorListEntry> MakeRenderGraphErrorEntries(const RenderGraphJobResult& result)
 {
-    // Row order mirrors RendererWorkspace::AcceptResult so SourceIndex can be passed to
-    // RendererWorkspace::ActivateDiagnostic, which owns the authored-location mapping.
+    // SourceIndex stays the RendererWorkspace diagnostic row (the first one a merged row stands
+    // for), so it can be passed to RendererWorkspace::ActivateDiagnostic, which owns the
+    // authored-location mapping.
     QList<ErrorListEntry> entries;
     if (result.IsSuccessful == true)
     {
@@ -167,21 +201,37 @@ QList<ErrorListEntry> MakeRenderGraphErrorEntries(const RenderGraphJobResult& re
             .Location = {},
             .Origin = QStringLiteral("Render graph"),
             .SourceIndex = 0,
+            .Details = {},
+            .Backends = {},
+            .Count = 1,
         });
         return entries;
     }
-    for (foundation::int32 row = 0; row < result.GetDiagnosticCount(); ++row)
+    const foundation::int32 diagnosticCount = result.GetDiagnosticCount();
+    // Row zero is the job's own summary unless the tool reported the whole batch itself.
+    const bool hasSummaryRow = diagnosticCount > result.Diagnostics.size();
+    // A shader failure's summary is the compiler's raw log, which the mapped diagnostics already
+    // say in one line each. It is kept collapsed under the first of them rather than as a second row.
+    const bool isSummaryFolded =
+        hasSummaryRow == true && diagnosticCount > 1 && result.Code == QStringLiteral("RenderGraphBuildShader");
+    QString foldedLog;
+    for (foundation::int32 row = 0; row < diagnosticCount; ++row)
     {
         const QJsonObject diagnostic = result.GetDiagnostic(row);
         const QJsonObject location = diagnostic.value(QStringLiteral("location")).toObject();
         const QString program = diagnostic.value(QStringLiteral("program")).toString();
         const QString target = diagnostic.value(QStringLiteral("target")).toString();
         QString description = DescribeRenderGraphDiagnostic(diagnostic);
+        if (row == 0 && isSummaryFolded == true)
+        {
+            foldedLog = description;
+            continue;
+        }
         if (program.isEmpty() == false)
         {
-            description = QStringLiteral("%1 (%2): %3").arg(program, target, description);
+            description = QStringLiteral("%1: %2").arg(program, description);
         }
-        entries.append(
+        ErrorListEntry entry =
         {
             .Severity = ParseSeverity(diagnostic.value(QStringLiteral("severity")).toString()),
             .Producer = ErrorListProducer::RenderGraph,
@@ -198,7 +248,39 @@ QList<ErrorListEntry> MakeRenderGraphErrorEntries(const RenderGraphJobResult& re
                     ? QStringLiteral("Shader")
                     : QStringLiteral("Render graph"),
             .SourceIndex = row,
-        });
+            .Details = {},
+            .Backends = target.isEmpty() == true ? QStringList{} : QStringList{target},
+            .Count = 1,
+        };
+        // The same problem reported again, usually by another backend, is one row.
+        bool isDuplicate = false;
+        for (ErrorListEntry& existing : entries)
+        {
+            if (existing.Severity != entry.Severity || existing.Code != entry.Code ||
+                existing.Description != entry.Description || existing.File != entry.File ||
+                existing.Location != entry.Location || existing.Origin != entry.Origin)
+            {
+                continue;
+            }
+            ++existing.Count;
+            for (const QString& backend : entry.Backends)
+            {
+                if (existing.Backends.contains(backend) == false)
+                {
+                    existing.Backends.append(backend);
+                }
+            }
+            isDuplicate = true;
+            break;
+        }
+        if (isDuplicate == false)
+        {
+            entries.append(foundation::Move(entry));
+        }
+    }
+    if (foldedLog.isEmpty() == false && entries.isEmpty() == false)
+    {
+        entries.first().Details = foldedLog;
     }
     return entries;
 }
@@ -207,7 +289,7 @@ QList<ErrorListEntry> ParseBuildErrorEntries(const QString& output)
 {
     // Clang/GCC: `path:line[:column]: error|warning|note: message`.
     static const QRegularExpression COMPILER_DIAGNOSTIC(QStringLiteral(
-        R"(^(?<file>[^:\s][^:]*?):(?<line>\d+)(?::\d+)?:\s*(?<severity>fatal error|error|warning|note):\s*(?<message>.*)$)"));
+        R"(^(?<file>[^:\s][^:]*?):(?<line>\d+)(?::(?<column>\d+))?:\s*(?<severity>fatal error|error|warning|note):\s*(?<message>.*)$)"));
     // CMake: `CMake Error at path:line (command):`; the message follows on later lines.
     static const QRegularExpression CMAKE_DIAGNOSTIC(
         QStringLiteral(R"(^CMake (?<severity>Error|Warning)(?: \(dev\))? at (?<file>.+?):(?<line>\d+))"));
@@ -241,9 +323,13 @@ QList<ErrorListEntry> ParseBuildErrorEntries(const QString& output)
             .Code = {},
             .Description = message,
             .File = match.captured(QStringLiteral("file")),
-            .Location = QStringLiteral("line %1").arg(match.captured(QStringLiteral("line"))),
+            .Location = DescribePosition(match.captured(QStringLiteral("line")).toInt(),
+                                         match.captured(QStringLiteral("column")).toInt()),
             .Origin = QStringLiteral("Build"),
             .SourceIndex = static_cast<foundation::int32>(index),
+            .Details = {},
+            .Backends = {},
+            .Count = 1,
         });
     }
     return entries;
@@ -251,7 +337,7 @@ QList<ErrorListEntry> ParseBuildErrorEntries(const QString& output)
 
 ErrorList::ErrorList(QWidget* parentOrNull)
     : QWidget(parentOrNull), mErrors(new QToolButton(this)), mWarnings(new QToolButton(this)),
-      mMessages(new QToolButton(this)), mTable(new QTableWidget(this))
+      mMessages(new QToolButton(this)), mDetailsToggle(new QToolButton(this)), mTable(new QTableWidget(this))
 {
     setObjectName(QStringLiteral("errorList"));
     QVBoxLayout* layout = new QVBoxLayout(this);
@@ -277,6 +363,15 @@ ErrorList::ErrorList(QWidget* parentOrNull)
         connect(filter, &QToolButton::toggled, this, &ErrorList::render);
     }
     filters->addStretch();
+    // The raw compiler log and any long text stay folded until asked for.
+    mDetailsToggle->setObjectName(QStringLiteral("errorListDetailsToggle"));
+    mDetailsToggle->setText(QStringLiteral("Details"));
+    mDetailsToggle->setCheckable(true);
+    mDetailsToggle->setAutoRaise(true);
+    mDetailsToggle->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    mDetailsToggle->setToolTip(QStringLiteral("Show or hide the full text and raw tool output of the selected row."));
+    mDetailsToggle->setEnabled(false);
+    filters->addWidget(mDetailsToggle);
     layout->addLayout(filters);
     mTable->setObjectName(QStringLiteral("errorListTable"));
     mTable->setAccessibleName(QStringLiteral("Diagnostics"));
@@ -289,6 +384,11 @@ ErrorList::ErrorList(QWidget* parentOrNull)
                                        QStringLiteral("Origin")});
     mTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     mTable->horizontalHeader()->setSectionResizeMode(DESCRIPTION_COLUMN, QHeaderView::Stretch);
+    mTable->setColumnWidth(SEVERITY_COLUMN, SEVERITY_COLUMN_WIDTH);
+    mTable->setColumnWidth(CODE_COLUMN, CODE_COLUMN_WIDTH);
+    mTable->setColumnWidth(FILE_COLUMN, FILE_COLUMN_WIDTH);
+    mTable->setColumnWidth(LOCATION_COLUMN, LOCATION_COLUMN_WIDTH);
+    mTable->setColumnWidth(ORIGIN_COLUMN, ORIGIN_COLUMN_WIDTH);
     mTable->verticalHeader()->hide();
     mTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     mTable->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -306,9 +406,11 @@ ErrorList::ErrorList(QWidget* parentOrNull)
     connect(mTable, &QTableWidget::currentCellChanged, this, [this](foundation::int32 row) {
         const QTableWidgetItem* itemOrNull = row >= 0 ? mTable->item(row, SEVERITY_COLUMN) : nullptr;
         const foundation::int32 index = itemOrNull == nullptr ? -1 : itemOrNull->data(ENTRY_ROLE).toInt();
-        mDetails->setPlainText(index >= 0 && index < mEntries.size() ? mEntries.at(index).Description : QString());
+        mDetails->setPlainText(index >= 0 && index < mEntries.size() ? DescribeDetails(mEntries.at(index)) : QString());
+        updateDetailsToggle();
         updateDetailsHeight();
     });
+    connect(mDetailsToggle, &QToolButton::toggled, this, &ErrorList::updateDetailsHeight);
     connect(mTable->horizontalHeader(), &QHeaderView::sectionResized, this, &ErrorList::updateDetailsHeight);
     connect(mTable, &QTableWidget::itemActivated, this, [this](QTableWidgetItem* item) {
         static_cast<void>(ActivateVisibleRow(item->row()));
@@ -322,6 +424,11 @@ void ErrorList::resizeEvent(QResizeEvent* event)
     updateDetailsHeight();
 }
 
+void ErrorList::updateDetailsToggle()
+{
+    mDetailsToggle->setEnabled(mDetails->toPlainText().isEmpty() == false);
+}
+
 void ErrorList::updateDetailsHeight()
 {
     const foundation::int32 reservedHeight =
@@ -332,13 +439,8 @@ void ErrorList::updateDetailsHeight()
     const foundation::int32 detailsHeight =
         availableHeight < 0 ? 0 : (availableHeight > MAX_DETAILS_HEIGHT ? MAX_DETAILS_HEIGHT : availableHeight);
     mDetails->setMaximumHeight(detailsHeight);
-    // A description that fits its row would only be shown twice.
-    const QString description = mDetails->toPlainText();
-    const bool isDescriptionTruncated =
-        description.contains(QLatin1Char('\n')) == true ||
-        mTable->fontMetrics().horizontalAdvance(description) + DESCRIPTION_CELL_PADDING_PIXELS >
-            mTable->horizontalHeader()->sectionSize(DESCRIPTION_COLUMN);
-    mDetails->setVisible(mTable->currentRow() >= 0 && detailsHeight > 0 && isDescriptionTruncated == true);
+    mDetails->setVisible(mTable->currentRow() >= 0 && detailsHeight > 0 && mDetailsToggle->isChecked() == true &&
+                         mDetails->toPlainText().isEmpty() == false);
 }
 
 void ErrorList::ReplaceEntries(ErrorListProducer producer, const QList<ErrorListEntry>& entries)
@@ -436,12 +538,27 @@ void ErrorList::render()
         severity->setData(ENTRY_ROLE, static_cast<foundation::int32>(index));
         mTable->setItem(row, SEVERITY_COLUMN, severity);
         mTable->setItem(row, CODE_COLUMN, new QTableWidgetItem(entry.Code));
-        QTableWidgetItem* description = new QTableWidgetItem(entry.Description);
+        // Identical diagnostics are one row; a leading count says how many it stands for.
+        QTableWidgetItem* description =
+            new QTableWidgetItem((entry.Count > 1 ? QStringLiteral("\u00d7%1  ").arg(entry.Count) : QString()) +
+                                 DescribeRow(entry.Description));
         description->setToolTip(entry.Description);
         mTable->setItem(row, DESCRIPTION_COLUMN, description);
-        mTable->setItem(row, FILE_COLUMN, new QTableWidgetItem(entry.File));
-        mTable->setItem(row, LOCATION_COLUMN, new QTableWidgetItem(entry.Location));
-        mTable->setItem(row, ORIGIN_COLUMN, new QTableWidgetItem(entry.Origin));
+        QTableWidgetItem* file = new QTableWidgetItem(entry.File);
+        file->setToolTip(entry.File);
+        mTable->setItem(row, FILE_COLUMN, file);
+        QTableWidgetItem* location = new QTableWidgetItem(entry.Location);
+        location->setToolTip(entry.Location.contains(QLatin1Char(':')) == true
+                                 ? QStringLiteral("Line and column %1").arg(entry.Location)
+                                 : entry.Location);
+        mTable->setItem(row, LOCATION_COLUMN, location);
+        const QString origin =
+            entry.Backends.isEmpty() == true
+                ? entry.Origin
+                : QStringLiteral("%1 \u00b7 %2").arg(entry.Origin, entry.Backends.join(QStringLiteral(", ")));
+        QTableWidgetItem* originItem = new QTableWidgetItem(origin);
+        originItem->setToolTip(origin);
+        mTable->setItem(row, ORIGIN_COLUMN, originItem);
     }
     if (mTable->rowCount() > 0)
     {
