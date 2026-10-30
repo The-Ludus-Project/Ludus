@@ -67,6 +67,17 @@ inline QByteArray MakeKey(const RenderScene& scene)
     for (const PreviewSurface& surface : scene.Surfaces)
     {
         stream << surface.Texture << surface.Repeat << surface.Metallic << surface.Roughness;
+        stream << static_cast<uint32>(surface.Scattering.Model);
+        for (const float32 value : surface.Scattering.Eta)
+        {
+            stream << value;
+        }
+        for (const float32 value : surface.Scattering.K)
+        {
+            stream << value;
+        }
+        stream << surface.Scattering.AlphaU << surface.Scattering.AlphaV << surface.Scattering.CoatingEta
+               << surface.Scattering.CoatingThickness;
         stream << surface.Tint.X << surface.Tint.Y << surface.Tint.Z << surface.Tint.W;
         stream << surface.Emission.X << surface.Emission.Y << surface.Emission.Z;
         stream << surface.IsAlphaMasked << surface.AlphaCutoff;
@@ -211,6 +222,7 @@ BuildInputs(const RenderScene& scene, const QByteArray& key, Inputs& outInputs, 
                                 surface.Tint.W * object.Tint.W};
         overrideSurface.Metallic = surface.Metallic;
         overrideSurface.Roughness = surface.Roughness;
+        overrideSurface.Scattering = surface.Scattering;
         overrideSurface.Emission = surface.Emission;
         overrideSurface.IsEmissionTwoSided = material.IsEmissionTwoSided;
         overrideSurface.ShouldRepeatTexture = surface.Repeat;

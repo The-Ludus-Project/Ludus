@@ -370,10 +370,11 @@ or `.zip` containing one). glTF and OBJ entries are routed to their best-effort
 importers by content. For pbrt, Ludus::SceneCook picks the importer from the
 file name:
 
-- `scene-v4.pbrt` is cooked with `pbrt-reference-v1` first, so staircase2 keeps
-  its byte-identical reference path. Only when the reference profile rejects
-  the scene does the import fall back to `pbrt-best-effort-v1`; the preview
-  says why.
+- `scene-v4.pbrt` first uses `pbrt-reference-materials-v2`, preserving staircase2's
+  source material identities and optical parameters. Only when that bounded
+  profile rejects the scene does import fall back to `pbrt-best-effort-v1`; the
+  preview says why. `AssetOptions::ShouldPreserveReferenceMaterials = false`
+  explicitly selects the frozen `pbrt-reference-v1` compatibility profile.
 - Any other `.pbrt` file uses `pbrt-best-effort-v1`.
 - A source directory (the older flow and its tests) stays on the reference
   profile with no fallback.

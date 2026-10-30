@@ -86,6 +86,7 @@ int PrintUsage() noexcept
 {
     WriteAll(2,
              "usage: ludus-cook cook SOURCE OUTPUT\n"
+             "       ludus-cook cook-materials SOURCE OUTPUT\n"
              "       ludus-cook pbrt ENTRY.pbrt {OUTPUT|--dry-run} [--workers N]\n"
              "       ludus-cook gltf ENTRY.{gltf,glb} {OUTPUT|--dry-run} [--workers N]\n"
              "       ludus-cook obj ENTRY.obj {OUTPUT|--dry-run} [--workers N]\n"
@@ -152,13 +153,17 @@ int ReportFailure(const AssetError& error, bool isJson) noexcept
 
 int RunCook(int argc, char** argv) noexcept
 {
+    constexpr usize OUTPUT_ARGUMENT = 3;
     if (argc != 4)
     {
         return PrintUsage();
     }
     CookResult result;
     CookError error;
-    if (Cook(argv[2], result, error) == false || WriteCook(argv[3], result, error) == false)
+    const bool shouldPreserveMaterials = std::string_view(argv[1]) == "cook-materials";
+    const bool isCooked =
+        shouldPreserveMaterials == true ? CookMaterials(argv[2], result, error) : Cook(argv[2], result, error);
+    if (isCooked == false || WriteCook(argv[OUTPUT_ARGUMENT], result, error) == false)
     {
         WriteAll(2, "conversion failed: ");
         WriteAll(2, error.Message.View());
@@ -513,7 +518,7 @@ int RunIdentity(int argc, char** argv) noexcept
 
 int main(int argc, char** argv)
 {
-    if (argc >= 2 && std::string_view(argv[1]) == "cook")
+    if (argc >= 2 && (std::string_view(argv[1]) == "cook" || std::string_view(argv[1]) == "cook-materials"))
     {
         return RunCook(argc, argv);
     }

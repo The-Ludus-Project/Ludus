@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ludus/content/scene_format/material.h>
+
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/foundation/math/matrix.hpp>
@@ -9,17 +11,21 @@
 
 namespace ludus::graphics::renderer
 {
-/// Frozen RT1 RGB metallic/roughness reflection model. The L4 single-scattering
-/// GGX/correlated Smith/Schlick and Fresnel-weighted Lambert evaluation is shared;
-/// transmission, volumes, spectral transport and energy compensation are absent.
+/// RT1 RGB reflection input. Scattering selects legacy metallic/roughness,
+/// Lambertian diffuse or isotropic rough conductor with complex-IOR Fresnel.
+/// CoatedDiffuse retains parameters but uses the legacy approximation. Conductor
+/// alpha is read directly from Scattering; anisotropic and perfect-specular inputs
+/// reject. Transmission, volumes, spectral transport and energy compensation are absent.
 struct ReferenceBsdf final
 {
-    /// Linear RGB reflectance, each channel in [0,1].
+    /// Linear RGB reflectance, each channel in [0,1]; conductor evaluation uses Eta/K instead.
     ludus::foundation::math::Vector3 BaseColor{1, 1, 1};
     /// Metallic fraction in [0,1]; dielectric normal-incidence reflectance is 0.04.
     ludus::foundation::float32 Metallic = 0;
-    /// Perceptual roughness in [0.045,1]; microfacet alpha is its square.
+    /// Legacy/coating perceptual roughness in [0.045,1]; conductor reference alpha comes from Scattering.
     ludus::foundation::float32 Roughness = 0.5F;
+    /// Typed optical parameters; default preserves the legacy metallic/roughness model.
+    content::scene_format::MaterialScattering Scattering{};
 };
 /// BSDF value and full mixture density in inverse steradians, without the cosine.
 struct ReferenceBsdfEvaluation final
@@ -49,8 +55,9 @@ struct ReferenceBsdfSample final
                                                       ludus::foundation::math::Vector3 light,
                                                       ReferenceBsdfEvaluation&) noexcept;
 /// Sample the matching mixture with three independent values in [0,1): X selects
-/// the lobe, Y/Z sample it. Pure metals use only visible-GGX reflection; other
-/// materials mix equal-probability cosine diffuse and GGX. Failure preserves output.
+/// the lobe, Y/Z sample it. Diffuse uses cosine sampling; conductors and legacy
+/// pure metals use visible-GGX reflection; legacy mixed surfaces and approximated
+/// coatings mix cosine diffuse and GGX equally. Failure preserves output.
 /// No allocation, retries, mutable RNG, energy clamp or hidden roughness change.
 [[nodiscard]] rhi::RasterStatus SampleReferenceBsdf(const ReferenceBsdf&,
                                                     ludus::foundation::math::Vector3 normal,

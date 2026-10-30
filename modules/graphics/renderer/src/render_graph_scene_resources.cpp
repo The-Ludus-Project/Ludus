@@ -726,6 +726,7 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
             description.Surface.Lod = 0;
             description.Metallic = material.Metallic;
             description.Roughness = material.Roughness;
+            description.Scattering = material.Scattering;
             description.NormalScale = material.NormalScale;
             description.Emission = material.Emission;
             description.IsEmissionTwoSided = material.IsEmissionTwoSided;

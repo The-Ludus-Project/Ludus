@@ -310,7 +310,7 @@ TEST_CASE("staircase2 imports, saves and renders from a moved project without it
     Drain(workspace);
     REQUIRE(workspace.Dirty());
     const auto original = workspace.Document();
-    REQUIRE(original.value(QStringLiteral("objects")).toArray().size() == 17);
+    REQUIRE(original.value(QStringLiteral("objects")).toArray().size() == 21);
     REQUIRE(workspace.Save());
     Drain(workspace);
     REQUIRE_FALSE(workspace.Dirty());

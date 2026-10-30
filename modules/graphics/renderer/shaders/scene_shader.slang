@@ -84,6 +84,11 @@ struct SurfaceHit
 };
 struct MaterialSample
 {
+    uint Model;
+    float3 Eta;
+    float3 K;
+    float AlphaU;
+    float AlphaV;
     float3 BaseColor;
     float Metallic;
     float Roughness;
@@ -239,6 +244,13 @@ MaterialSample GetMaterial(SceneContext scene, uint materialIndex)
     if (result.IsValid == false)
         return result;
     uint base = Offsets.w + materialIndex * SurfaceLayout.x;
+    float4 etaAndModel = SceneValue(base + LUDUS_GPU_PREVIEW_SCATTERING_ETA_WORD);
+    float4 extinctionAndAlpha = SceneValue(base + LUDUS_GPU_PREVIEW_SCATTERING_K_WORD);
+    result.Model = asuint(etaAndModel.w);
+    result.Eta = etaAndModel.xyz;
+    result.K = extinctionAndAlpha.xyz;
+    result.AlphaU = extinctionAndAlpha.w;
+    result.AlphaV = SceneValue(base + LUDUS_GPU_PREVIEW_SCATTERING_ALPHA_WORD).x;
     result.BaseColor = SceneValue(base).xyz;
     result.Metallic = SceneValue(base).w;
     result.Roughness = SceneValue(base + 1).x;
@@ -833,22 +845,26 @@ void EvaluateStandardBsdf(MaterialSample material,
                           out float3 outValue,
                           out float outPdf)
 {
-    Evaluate(material.BaseColor,
-             material.Metallic,
-             material.Roughness,
-             material.ShadingNormalWorld,
-             viewDirectionWorld,
-             lightDirectionWorld,
-             outValue,
-             outPdf);
+    EvaluateScattering(material.BaseColor,
+                       material.Metallic,
+                       material.Roughness,
+                       material.Model,
+                       material.Eta,
+                       material.K,
+                       material.AlphaU,
+                       material.ShadingNormalWorld,
+                       viewDirectionWorld,
+                       lightDirectionWorld,
+                       outValue,
+                       outPdf);
 }
 float3 SampleStandardBsdf(MaterialSample material, float3 viewDirectionWorld, float3 samples)
 {
-    return SampleBsdf(material.ShadingNormalWorld,
-                      viewDirectionWorld,
-                      material.Roughness,
-                      material.Metallic == 1 ? 1 : 0.5,
-                      samples);
+    return SampleScatteringBsdf(material.ShadingNormalWorld,
+                                viewDirectionWorld,
+                                ComputeMaterialAlpha(material.Model, material.Roughness, material.AlphaU),
+                                ComputeMaterialSpecularProbability(material.Model, material.Metallic),
+                                samples);
 }
 
 // Construct a surface endpoint without issuing a ray. IncomingRay/Distance are zero.

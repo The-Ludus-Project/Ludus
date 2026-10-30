@@ -323,7 +323,7 @@ Status StaticLightingBake::State::Prepare(const resources::SceneDefinition& scen
         }
         const bool hasOverride = description.Surfaces.IsEmpty() == false;
         const uint32 textureIndex = hasOverride == true ? description.Surfaces[objectIndex].Texture : material.Texture;
-        surface.Bsdf = {{1, 1, 1}, material.Metallic, material.Roughness};
+        surface.Bsdf = {material.Reflectance, material.Metallic, material.Roughness, material.Scattering};
         surface.Emission = material.Emission;
         surface.IsEmissionTwoSided = material.IsEmissionTwoSided;
         surface.Sampler.Filter = rhi::RasterFilter::Linear;
@@ -349,7 +349,10 @@ Status StaticLightingBake::State::Prepare(const resources::SceneDefinition& scen
             {
                 return Status::Unsupported;
             }
-            surface.Bsdf = {{override.Tint.X, override.Tint.Y, override.Tint.Z}, override.Metallic, override.Roughness};
+            surface.Bsdf = {{override.Tint.X, override.Tint.Y, override.Tint.Z},
+                            override.Metallic,
+                            override.Roughness,
+                            override.Scattering};
             surface.Tint = override.Tint;
             surface.UvTransform = override.UvTransform;
             surface.Emission = override.Emission;
@@ -376,7 +379,10 @@ Status StaticLightingBake::State::Prepare(const resources::SceneDefinition& scen
         }
         else if (hasOverride == false)
         {
-            surface.Bsdf.BaseColor = {};
+            if (material.HasSourceMaterial == false)
+            {
+                surface.Bsdf.BaseColor = {};
+            }
         }
         math::Matrix3 normalMeshToWorld;
         if (math::TryNormalMatrix(object.Transform, {}, normalMeshToWorld) != math::MathStatus::Success)

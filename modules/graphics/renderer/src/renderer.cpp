@@ -4532,6 +4532,12 @@ Status Renderer::CreateLitMaterial(MaterialProgram program,
         return math::IsFinite(value) && value.X >= 0 && value.Y >= 0 && value.Z >= 0 && value.X <= 10000 &&
                value.Y <= 10000 && value.Z <= 10000;
     };
+    if (content::scene_format::IsMaterialScatteringValid(description.Scattering) == false ||
+        (description.Scattering.Model == content::scene_format::MaterialModel::Conductor &&
+         description.Scattering.AlphaU != description.Scattering.AlphaV))
+    {
+        return Status::InvalidDescription;
+    }
     const auto& bake = description.Bake;
     if (math::IsFinite(description.Metallic) == false || description.Metallic < 0 || description.Metallic > 1 ||
         math::IsFinite(description.Roughness) == false || description.Roughness < MIN_ROUGHNESS ||

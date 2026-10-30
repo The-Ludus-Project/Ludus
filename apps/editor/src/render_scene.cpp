@@ -1112,6 +1112,34 @@ bool RenderScene::View(const PreviewViewOptions& options, rr::ViewDescription& o
     outError.clear();
     return true;
 }
+namespace
+{
+void WriteSourceMaterialExtension(QDataStream& inoutStream, const resources::SceneMaterial& material)
+{
+    inoutStream << material.SourceIdentity << static_cast<uint32>(material.Name.View().size());
+    inoutStream.writeRawData(material.Name.View().data(), static_cast<int32>(material.Name.View().size()));
+    for (usize byte = material.Name.View().size(); byte < content::scene_format::MAX_MATERIAL_NAME_BYTES; ++byte)
+    {
+        inoutStream << uint8{0};
+    }
+    inoutStream << static_cast<uint32>(material.Scattering.Model);
+    const math::Vector3 reflectance = material.HasSourceMaterial == true                      ? material.Reflectance
+                                      : material.Texture == content::scene_format::NO_TEXTURE ? math::Vector3{}
+                                                                                              : math::Vector3{1, 1, 1};
+    inoutStream << reflectance.X << reflectance.Y << reflectance.Z;
+    for (const float32 value : material.Scattering.Eta)
+    {
+        inoutStream << value;
+    }
+    for (const float32 value : material.Scattering.K)
+    {
+        inoutStream << value;
+    }
+    inoutStream << material.Scattering.AlphaU << material.Scattering.AlphaV << material.Scattering.CoatingEta
+                << material.Scattering.CoatingThickness;
+}
+} // namespace
+
 bool RenderScene::Merge(const RenderScene& authored,
                         const QByteArray& cooked,
                         const QJsonObject& level,
@@ -1156,7 +1184,7 @@ bool RenderScene::Merge(const RenderScene& authored,
     stream.setByteOrder(QDataStream::LittleEndian);
     stream.setFloatingPointPrecision(QDataStream::SinglePrecision);
     stream.writeRawData(format::MAGIC.data(), static_cast<int32>(format::MAGIC.size()));
-    stream << format::VERSION_6 << static_cast<uint32>(meshCount) << static_cast<uint32>(materialCount)
+    stream << format::VERSION_7 << static_cast<uint32>(meshCount) << static_cast<uint32>(materialCount)
            << static_cast<uint32>(textureCount) << static_cast<uint32>(objectCount);
     const auto camera = level.value(QStringLiteral("camera")).toObject();
     for (const auto& key : {QStringLiteral("eye"), QStringLiteral("target"), QStringLiteral("up")})
@@ -1221,6 +1249,7 @@ bool RenderScene::Merge(const RenderScene& authored,
                << (material.IsAlphaMasked == true ? format::ALPHA_MASKED : format::ALPHA_OPAQUE)
                << (material.IsAlphaMasked == true ? material.AlphaCutoff : float32{0}) << material.SurfaceTexture
                << material.EmissionTexture << material.NormalScale;
+        WriteSourceMaterialExtension(stream, material);
     }
     for (int32 i = 0; i < authored.Objects.size(); ++i)
     {
@@ -1229,6 +1258,10 @@ bool RenderScene::Merge(const RenderScene& authored,
         WriteLittleEndianUint64(stream, 0);
         stream << float32{0} << format::ALPHA_OPAQUE << float32{0} << format::NO_TEXTURE << format::NO_TEXTURE
                << float32{0};
+        resources::SceneMaterial material;
+        material.HasSourceMaterial = true;
+        material.Reflectance = {1, 1, 1};
+        WriteSourceMaterialExtension(stream, material);
     }
     usize vertexCount = 0;
     usize indexCount = 0;
@@ -1398,6 +1431,10 @@ bool RenderScene::LoadCooked(const QByteArray& bytes,
         PreviewSurface surface;
         surface.Texture = source.Texture == ~uint32{0} ? -1 : static_cast<int32>(source.Texture);
         surface.Tint = surface.Texture < 0 ? math::Vector4{0, 0, 0, 1} : math::Vector4{1, 1, 1, 1};
+        if (source.HasSourceMaterial == true)
+        {
+            surface.Tint = {source.Reflectance.X, source.Reflectance.Y, source.Reflectance.Z, 1};
+        }
         surface.FlatTint = surface.Tint;
         if (surface.Texture >= 0)
         {
@@ -1411,6 +1448,7 @@ bool RenderScene::LoadCooked(const QByteArray& bytes,
         surface.Repeat = source.Repeat;
         surface.Metallic = source.Metallic;
         surface.Roughness = source.Roughness;
+        surface.Scattering = source.Scattering;
         surface.Emission = source.Emission;
         surface.IsEmissionTwoSided = source.IsEmissionTwoSided;
         surface.HasEmissionPower = source.HasEmissionPower;

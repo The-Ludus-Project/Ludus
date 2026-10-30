@@ -102,7 +102,7 @@ struct AssetOptions final
     /// identities on reimport; empty selects realpath(source).
     std::string_view SourceOrigin;
     /// Scene entry file name inside the source directory. Empty keeps the
-    /// pbrt-reference-v1 cooker on scene-v4.pbrt. `scene-v4.pbrt` tries the reference
+    /// bounded reference cooker on scene-v4.pbrt (CookMaterials by default). `scene-v4.pbrt` tries the reference
     /// profile first and falls back to pbrt-best-effort-v1 when the profile rejects
     /// the scene; any other name uses the best-effort importer that
     /// ImportSceneBestEffort detects from the file's content (pbrt-v4, glTF 2.0/GLB
@@ -119,12 +119,16 @@ struct AssetOptions final
     /// match the serial check. nullptr decodes and re-hashes serially. The
     /// pbrt-reference-v1 cooker does not decode on it. Not owned.
     foundation::threading::JobSystem* JobsOrNull = nullptr;
-    /// Optional replacement for Cook, for tests that need a synthetic source;
-    /// nullptr selects the pbrt-reference-v1 cooker.
+    /// Optional replacement cooker, for tests that need a synthetic source;
+    /// nullptr selects CookMaterials (pbrt-reference-materials-v2).
     bool (*CookOrNull)(std::string_view source,
                        CookResult& outResult,
                        CookError& outError,
                        const Cancellation* cancelOrNull) noexcept = nullptr;
+    /// Preserve typed source materials for the bounded PBRT reference route.
+    /// True selects CookMaterials; false explicitly selects the frozen Cook profile.
+    /// Other source formats and an explicit CookOrNull override are unaffected.
+    bool ShouldPreserveReferenceMaterials = true;
 };
 
 /// @brief Result of PrepareImport: a complete candidate that is not yet published.

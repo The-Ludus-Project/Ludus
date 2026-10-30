@@ -1,3 +1,4 @@
+#include "material_scattering.slang"
 #include "math.slang"
 #include "raster_bindings.slang"
 #include "renderer_gpu_preview_layout.h"
@@ -178,6 +179,33 @@ Hit TraceCustomWorld(float3 originWorld,
                      float farDistanceWorld,
                      bool isVisibility);
 #endif
+// Legacy authored shaders retain their existing metallic/roughness helper signatures.
+void Evaluate(float3 color,
+              float metallic,
+              float roughness,
+              float3 normalWorld,
+              float3 viewWorld,
+              float3 lightWorld,
+              out float3 outValue,
+              out float outPdf)
+{
+    EvaluateScattering(color,
+                       metallic,
+                       roughness,
+                       LUDUS_MATERIAL_MODEL_METALLIC_ROUGHNESS,
+                       float3(1),
+                       float3(0),
+                       1,
+                       normalWorld,
+                       viewWorld,
+                       lightWorld,
+                       outValue,
+                       outPdf);
+}
+float3 SampleBsdf(float3 normalWorld, float3 viewWorld, float roughness, float probability, float3 samples)
+{
+    return SampleScatteringBsdf(normalWorld, viewWorld, roughness * roughness, probability, samples);
+}
 float4 InterpolateTriangle(uint triangle, uint first, in float2 barycentric);
 float4 InterpolateTriangleColor(uint triangle, in float2 barycentric);
 #ifdef LUDUS_RAY_PATH_CAPTURE
@@ -645,14 +673,18 @@ float HitEmitterSelection(uint t, uint lightCount)
     uint emitter;
     return FindEmitter(t, emitter) == true ? EmitterSelection(emitter, lightCount) : 0;
 }
-void Evaluate(float3 color,
-              float metallic,
-              float roughness,
-              float3 normalWorld,
-              float3 v,
-              float3 l,
-              out float3 outValue,
-              out float outPdf)
+void EvaluateScattering(float3 color,
+                        float metallic,
+                        float roughness,
+                        uint model,
+                        float3 eta,
+                        float3 extinction,
+                        float conductorAlpha,
+                        float3 normalWorld,
+                        float3 v,
+                        float3 l,
+                        out float3 outValue,
+                        out float outPdf)
 {
     outValue = 0;
     outPdf = 0;
@@ -660,10 +692,16 @@ void Evaluate(float3 color,
     float nl = dot(normalWorld, l);
     if (nv <= 0 || nl <= 0)
         return;
+    if (model == LUDUS_MATERIAL_MODEL_DIFFUSE)
+    {
+        outValue = color / PI;
+        outPdf = nl / PI;
+        return;
+    }
     float3 h = NormalizeOrZero(v + l);
     float nh = saturate(dot(normalWorld, h));
     float vh = saturate(dot(v, h));
-    float alpha = roughness * roughness;
+    float alpha = ComputeMaterialAlpha(model, roughness, conductorAlpha);
     float a2 = alpha * alpha;
     float denominator = (1 - nh * nh) + nh * nh * a2;
     float distribution = a2 / (PI * denominator * denominator);
@@ -673,11 +711,15 @@ void Evaluate(float3 color,
     float3 f0 = .04 * (1 - metallic) + color * metallic;
     float term = 1 - vh;
     float3 fresnel = f0 + (1 - f0) * term * term * term * term * term;
-    outValue = fresnel * (distribution * visibility) + color * (1 - fresnel) * ((1 - metallic) / PI);
-    float probability = metallic == 1 ? 1 : .5;
+    bool isConductor = model == LUDUS_MATERIAL_MODEL_CONDUCTOR;
+    if (isConductor == true)
+        fresnel = ComputeConductorFresnelRgb(vh, eta, extinction);
+    float diffuseFraction = isConductor == true ? 0 : 1 - metallic;
+    outValue = fresnel * (distribution * visibility) + color * (1 - fresnel) * (diffuseFraction / PI);
+    float probability = ComputeMaterialSpecularProbability(model, metallic);
     outPdf = probability * distribution / (2 * (nv + gv)) + (1 - probability) * nl / PI;
 }
-float3 SampleBsdf(float3 normalWorld, float3 viewDirectionWorld, float roughness, float probability, float3 u)
+float3 SampleScatteringBsdf(float3 normalWorld, float3 viewDirectionWorld, float alpha, float probability, float3 u)
 {
     if (dot(normalWorld, viewDirectionWorld) <= 0)
         return float3(0);
@@ -694,7 +736,7 @@ float3 SampleBsdf(float3 normalWorld, float3 viewDirectionWorld, float roughness
     {
         float3 lv =
             float3(dot(viewDirectionWorld, x), dot(viewDirectionWorld, y), dot(viewDirectionWorld, normalWorld));
-        float a = roughness * roughness;
+        float a = alpha;
         float3 stretch = NormalizeOrZero(float3(a * lv.xy, lv.z));
         float len = dot(stretch.xy, stretch.xy);
         float3 tangent = len > 0 ? float3(-stretch.y, stretch.x, 0) / sqrt(len) : float3(1, 0, 0);
@@ -858,6 +900,9 @@ float3 Integrate(uint pixel, uint sample)
             color *= InterpolateTriangleColor(t, hit.Barycentric).xyz;
         float metallic = ReadHitSurface(material, LUDUS_GPU_PREVIEW_BASE_COLOR_WORD).w;
         float roughness = ReadHitSurface(material, LUDUS_GPU_PREVIEW_ROUGHNESS_WORD).x;
+        float4 etaAndModel = ReadHitSurface(material, LUDUS_GPU_PREVIEW_SCATTERING_ETA_WORD);
+        float4 extinctionAndAlpha = ReadHitSurface(material, LUDUS_GPU_PREVIEW_SCATTERING_K_WORD);
+        uint model = asuint(etaAndModel.w);
         if (asuint(ReadHitSurface(material, LUDUS_GPU_PREVIEW_SURFACE_MAP_WORD).w) != 0)
         {
             SurfaceParameters parameters =
@@ -990,7 +1035,18 @@ float3 Integrate(uint pixel, uint sample)
             }
             float3 value;
             float bsdfPdf;
-            Evaluate(color, metallic, roughness, normalWorld, viewDirectionWorld, lightDirectionWorld, value, bsdfPdf);
+            EvaluateScattering(color,
+                               metallic,
+                               roughness,
+                               model,
+                               etaAndModel.xyz,
+                               extinctionAndAlpha.xyz,
+                               extinctionAndAlpha.w,
+                               normalWorld,
+                               viewDirectionWorld,
+                               lightDirectionWorld,
+                               value,
+                               bsdfPdf);
             if (pdf > 0 && HasPositiveComponent(lightColor) && dot(normalWorld, lightDirectionWorld) > 0 &&
                 dot(geometricNormalWorld, lightDirectionWorld) > 0)
             {
@@ -1021,18 +1077,30 @@ float3 Integrate(uint pixel, uint sample)
                         (dot(normalWorld, lightDirectionWorld) * (isDelta ? 1 : PowerWeight(pdf, bsdfPdf)) / pdf);
             }
         }
-        float3 outgoingDirectionWorld = SampleBsdf(normalWorld,
-                                                   viewDirectionWorld,
-                                                   roughness,
-                                                   metallic == 1 ? 1 : .5,
-                                                   float3(Random01(pixel, sample, dimension + 3),
-                                                          Random01(pixel, sample, dimension + 4),
-                                                          Random01(pixel, sample, dimension + 5)));
+        float3 outgoingDirectionWorld =
+            SampleScatteringBsdf(normalWorld,
+                                 viewDirectionWorld,
+                                 ComputeMaterialAlpha(model, roughness, extinctionAndAlpha.w),
+                                 ComputeMaterialSpecularProbability(model, metallic),
+                                 float3(Random01(pixel, sample, dimension + 3),
+                                        Random01(pixel, sample, dimension + 4),
+                                        Random01(pixel, sample, dimension + 5)));
         if (dot(normalWorld, outgoingDirectionWorld) <= 0 || dot(geometricNormalWorld, outgoingDirectionWorld) <= 0)
             break;
         float3 value;
         float pdf;
-        Evaluate(color, metallic, roughness, normalWorld, viewDirectionWorld, outgoingDirectionWorld, value, pdf);
+        EvaluateScattering(color,
+                           metallic,
+                           roughness,
+                           model,
+                           etaAndModel.xyz,
+                           extinctionAndAlpha.xyz,
+                           extinctionAndAlpha.w,
+                           normalWorld,
+                           viewDirectionWorld,
+                           outgoingDirectionWorld,
+                           value,
+                           pdf);
         if (pdf <= 0)
             break;
         throughput *= value * (dot(normalWorld, outgoingDirectionWorld) / pdf);

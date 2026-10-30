@@ -1,17 +1,19 @@
 #pragma once
 
 #ifdef __cplusplus
+#    include <ludus/content/scene_format/material.h>
 #    include <ludus/graphics/renderer/lighting_layout.h>
 #else
 #    include "lighting_layout.h"
+#    include "material.h"
 #endif
 
 // Private packed-scene ABI, shared verbatim by host packing and Slang admission.
 // Strides count float4 words, not bytes. Update the version when changing layout.
-#define LUDUS_GPU_PREVIEW_SURFACE_WORDS 9
+#define LUDUS_GPU_PREVIEW_SURFACE_WORDS 12
 #define LUDUS_GPU_PREVIEW_LIGHT_WORDS 4
 // 9: emitter bounds after the emitter records; 8: BVH leaf order in order word Z, beside native opacity ranges in X.
-#define LUDUS_GPU_PREVIEW_KERNEL_VERSION 9
+#define LUDUS_GPU_PREVIEW_KERNEL_VERSION 10
 // Words per mesh emitter in the bounds records that follow the emitter records:
 // sphere centre/radius, normal-cone axis/cosine, then flag bits in word 2 X.
 #define LUDUS_GPU_PREVIEW_EMITTER_BOUNDS_WORDS 3
@@ -99,6 +101,9 @@
 #define LUDUS_GPU_PREVIEW_SURFACE_MAP_WORD 6
 #define LUDUS_GPU_PREVIEW_SURFACE_OPTIONS_WORD 7
 #define LUDUS_GPU_PREVIEW_EMISSION_MAP_WORD 8
+#define LUDUS_GPU_PREVIEW_SCATTERING_ETA_WORD 9
+#define LUDUS_GPU_PREVIEW_SCATTERING_K_WORD 10
+#define LUDUS_GPU_PREVIEW_SCATTERING_ALPHA_WORD 11
 
 #define LUDUS_GPU_PREVIEW_TEXTURE_LINEAR_FLAG 1
 #define LUDUS_GPU_PREVIEW_TEXTURE_REPEAT_U_FLAG 2
