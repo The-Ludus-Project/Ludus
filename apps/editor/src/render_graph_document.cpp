@@ -731,6 +731,53 @@ QByteArray EncodeCanonicalJson(const QJsonObject& value)
 
 namespace
 {
+constexpr qsizetype BYTES_PER_KIBIBYTE = 1024;
+
+/// The canvas actions that free package sources, named as the menus show them.
+QString GetFreeSourcesRepair()
+{
+    return QStringLiteral("To make room, remove a template or library you no longer use: select its Subgraph node on "
+                          "the root canvas, press Delete and save. In Project Explorer, remove its library graph "
+                          "(.lurender.json) and the shader files in its template folder, such as "
+                          "veach_guibas_mis/main_shaders/ (right-click each file and choose Remove...). Then "
+                          "right-click the canvas and choose Remove Unused Shaders to drop their program "
+                          "registrations.");
+}
+} // namespace
+
+QString DescribePackageCapacity()
+{
+    return QStringLiteral("The package exceeds the render-graph source limits: %1 files, %2 KiB per file and %3 KiB "
+                          "in total. %4")
+        .arg(RenderGraphDocument::MAX_FILES)
+        .arg(RenderGraphDocument::MAX_FILE_BYTES / BYTES_PER_KIBIBYTE)
+        .arg(RenderGraphDocument::MAX_TOTAL_BYTES / BYTES_PER_KIBIBYTE)
+        .arg(GetFreeSourcesRepair());
+}
+
+QString DescribeTemplateFileCapacity(const QString& templateName, usize existingFiles, usize newFiles)
+{
+    return QStringLiteral("Template %1 needs %2 new files (its library graph and shader sources), but this package "
+                          "already has %3 of its %4 files. %5 Then apply the template again. The draft was preserved.")
+        .arg(templateName)
+        .arg(newFiles)
+        .arg(existingFiles)
+        .arg(RenderGraphDocument::MAX_FILES)
+        .arg(GetFreeSourcesRepair());
+}
+
+QString DescribeConfigurationCapacity(const QString& templateName, const QString& file)
+{
+    return QStringLiteral("%1 cannot add a configuration: %2 already has %3, the most one graph file can hold. "
+                          "Open the root graph and apply the template there to give it its own library file, or "
+                          "delete a configuration you no longer use (right-click the canvas and choose "
+                          "Configurations > Delete Configuration). The draft was preserved.")
+        .arg(templateName, file)
+        .arg(RenderGraphDocument::MAX_CONFIGURATIONS);
+}
+
+namespace
+{
 /// Read every authored source below root into outSnapshot (bounded, no symlinks, no hidden or
 /// `out` directories). root may be a Qt resource directory. outSnapshot is unchanged on failure.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters) — named package directory and root-graph identities.

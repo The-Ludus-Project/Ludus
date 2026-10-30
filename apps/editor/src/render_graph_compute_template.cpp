@@ -77,12 +77,7 @@ RenderGraphDocumentStatus CopyComputeSources(RenderGraphSnapshot& inoutSnapshot,
                            .arg(destination);
             return RenderGraphDocumentStatus::Conflict;
         }
-        if (inoutSnapshot.Files.contains(destination) == false &&
-            static_cast<usize>(inoutSnapshot.Files.size()) >= RenderGraphDocument::MAX_FILES)
-        {
-            outError = QStringLiteral("Compute ray-tracing shader sources exceed the package file limit.");
-            return RenderGraphDocumentStatus::Capacity;
-        }
+        // PrepareConfigurationTemplate checks the package file limit once the whole template is in.
         inoutSnapshot.Files.insert(destination, bytes);
         QRegularExpressionMatchIterator includes = INCLUDE.globalMatch(QString::fromUtf8(bytes));
         while (includes.hasNext() == true)
@@ -208,10 +203,15 @@ MergeComputeRayTechnique(QJsonObject& inoutManifest, const QJsonObject& source, 
     // No ray technique yet: the template's has no default callbacks, because node-owned passes
     // select their own programs.
     techniques.append(defaults);
-    if (techniques.size() >
-        inoutManifest.value(QStringLiteral("budgets")).toObject().value(QStringLiteral("configurations")).toInt())
+    const qsizetype techniqueBudget =
+        inoutManifest.value(QStringLiteral("budgets")).toObject().value(QStringLiteral("configurations")).toInt();
+    if (techniques.size() > techniqueBudget)
     {
-        outError = QStringLiteral("The compute ray-tracing technique exceeds the manifest's configuration budget.");
+        outError = QStringLiteral("Adding the shared ray-tracing technique needs %1 techniques, but "
+                                  "budgets.configurations in the shader manifest is %2. Increase "
+                                  "budgets.configurations and apply the template again. The draft was preserved.")
+                       .arg(techniques.size())
+                       .arg(techniqueBudget);
         return RenderGraphDocumentStatus::Capacity;
     }
     inoutManifest.insert(QStringLiteral("techniques"), techniques);
@@ -271,7 +271,7 @@ RenderGraphDocumentStatus PrepareSceneComputeTemplateConfiguration(
     }
     if (destinationIndex < 0 && configurations.size() >= RenderGraphDocument::MAX_CONFIGURATIONS)
     {
-        outError = QStringLiteral("The graph has reached its configuration capacity. The draft was preserved.");
+        outError = DescribeConfigurationCapacity(name, file);
         return RenderGraphDocumentStatus::Capacity;
     }
     const QString manifestFile =
@@ -307,7 +307,7 @@ RenderGraphDocumentStatus PrepareSceneComputeTemplateConfiguration(
     }
     if (status != RenderGraphDocumentStatus::Ok)
     {
-        outError += QStringLiteral(" The draft was preserved.");
+        AppendDraftPreserved(outError);
         return status;
     }
     // The settings error already says that the draft was preserved.

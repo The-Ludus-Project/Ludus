@@ -56,6 +56,9 @@ MAX_FILES = 128
 MAX_SHADER_INCLUDE_DEPTH = 16
 MAX_PACKAGE_FILES = 1024
 MAX_PACKAGE_BYTES = 64 * 1024 * 1024
+SOURCE_LIMIT_REPAIR = ('Remove shader programs and sources that the package no longer uses (in the editor, delete '
+                       'the Subgraph node and library graph of a template you no longer need, then right-click the '
+                       'canvas and choose Remove Unused Shaders) and build again.')
 
 
 def fail(code, where, message):
@@ -146,10 +149,13 @@ class Snapshot:
     def load(self, relative):
         if relative not in self.files:
             require(len(self.files) < MAX_FILES, 'Capacity', relative,
-                    f'source file limit exceeded ({MAX_FILES} files per build snapshot)')
+                    f'source file limit exceeded: the build already reads {len(self.files)} manifest and shader '
+                    f'files, the most one build snapshot holds ({MAX_FILES}). {SOURCE_LIMIT_REPAIR}')
             self.files[relative] = read(self.path(relative))
             self.total += len(self.files[relative])
-            require(self.total <= MAX_BYTES, 'Capacity', relative, 'source byte limit exceeded')
+            require(self.total <= MAX_BYTES, 'Capacity', relative,
+                    f'source byte limit exceeded: the build reads {self.total} bytes of manifest and shader sources, '
+                    f'more than one build snapshot holds ({MAX_BYTES}). {SOURCE_LIMIT_REPAIR}')
         return self.files[relative]
 
     def shader_closure(self, relative, active=(), visited=None):

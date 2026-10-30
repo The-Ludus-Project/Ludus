@@ -4635,9 +4635,27 @@ Open a project and open the **Render Graph** document. It shows the project's
 **File → Open Render Graph...** and select a root `.lurender.json` inside the
 project, or double-click a render graph or shader in Project Explorer. Its
 directory is the package root. The document
-loads every `.lurender.json`, `.lushader.json` and `.slang` file below it (at
-most 64 files, 128 KiB each and 4 MiB in total; hidden and `out` directories and
-symlinks are skipped).
+loads every `.lurender.json`, `.lushader.json` and `.slang` file below it; hidden
+and `out` directories and symlinks are skipped. Its limits are what the CLI accepts:
+the 32 graph documents of `ludus_tools.render_graph` plus the 128 manifest and shader
+files of one `ludus_tools.render_graph_build` snapshot, so 160 files of at most
+128 KiB each and 6 MiB in total. The editor reads these numbers from the two modules
+when it is configured, so a package the CLI can build always opens.
+
+When a template or an edit would exceed a limit, the message names the limit, the
+package's current count and what the change needs, and the draft is preserved. To
+make room, remove a template or library you no longer use:
+
+1. Select its Subgraph node on the root canvas, press Delete and save.
+2. In Project Explorer, remove its library graph (`.lurender.json`) and the shader
+   files in its template folder, such as `veach_guibas_mis/main_shaders/`
+   (**Remove...** on each file).
+3. Right-click the canvas and choose **Remove Unused Shaders** to drop their program
+   registrations.
+
+Remove Unused Shaders alone does not free a template's files. It keeps every program
+that any graph file names, and it keeps a source that another source mentions or
+that several programs share, which is true of every built-in template's sources.
 
 For a project without graph sources, the document shows the engine default, and build
 actions work on it right away. Use **File → New Render Graph...**, as described in
