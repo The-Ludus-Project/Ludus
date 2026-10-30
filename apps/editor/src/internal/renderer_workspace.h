@@ -146,6 +146,11 @@ public:
     /// Remove unused shader registrations and exclusive sources in one undoable draft edit.
     /// Checks the whole loaded package; reports counts or repair details. Save publishes deletions.
     [[nodiscard]] bool RemoveUnusedShaders();
+    /// Delete the selected Subgraph node with its library graph, the programs only that library
+    /// names and the sources they free, in one undoable draft edit (RenderGraphDocument::
+    /// RemoveSubgraphLibrary). Reports what was removed, or why nothing was, in the status line.
+    /// Requires one selected Subgraph node, no job and no external source conflict. GUI thread only.
+    [[nodiscard]] bool RemoveSelectedSubgraphLibrary();
     /// Shader sources mapped by the root manifest to the selected pipeline's program references
     /// or a legacy Raster's technique.
     /// Empty for resource/scene nodes or missing mappings. Never guesses from filenames.

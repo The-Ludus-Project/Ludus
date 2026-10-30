@@ -81,6 +81,19 @@ struct RenderGraphTemplateBudgetIncrease final
     foundation::int32 RequiredPrograms = 0;
 };
 
+/// What RemoveSubgraphLibrary removed from the draft. Paths are package-relative.
+struct RenderGraphLibraryRemoval final
+{
+    /// Library graph files removed: the node's library and any library only it imported.
+    QStringList Graphs;
+    /// Removed program registrations as manifest#program identities.
+    QStringList Programs;
+    /// Removed shader sources: the programs' sources and the helpers only they include.
+    QStringList Sources;
+    /// The graph file that still names the node's library when Graphs is empty.
+    QString RetainedBy;
+};
+
 enum class RenderGraphDocumentStatus : foundation::uint8
 {
     Ok,
@@ -97,6 +110,10 @@ enum class RenderGraphDocumentStatus : foundation::uint8
 /// sorted keys, two-space indentation, ASCII escapes and a trailing newline. Saving
 /// an editor draft therefore produces the same bytes as the shared CLI backend.
 [[nodiscard]] QByteArray EncodeCanonicalJson(const QJsonObject& value);
+
+/// Remove node from one configuration record together with its edges, configuration-output
+/// sources (cleared, declarations kept) and layout position. False when node is absent.
+[[nodiscard]] bool RemoveRenderGraphNodeRecord(QJsonObject& inoutConfiguration, const QString& node);
 
 /// The package source limits and how to free space, for a load or edit that reports Capacity.
 [[nodiscard]] QString DescribePackageCapacity();
@@ -242,14 +259,30 @@ public:
     /// Repairs older packages without changing shaders. Conflict/capacity failures preserve the draft.
     [[nodiscard]] RenderGraphDocumentStatus PrepareTechniques(QString& outError);
     /// Remove programs unused by every loaded graph/configuration/subgraph and manifest technique.
-    /// Removes only their exclusive, unmentioned package-owned sources; shared files and
-    /// conservative include/import matches survive. Unregistered files and techniques are retained.
+    /// Removes their sources that no retained program uses, and the helpers that only removed
+    /// sources include. A source survives while a retained program, a remaining JSON field or a
+    /// surviving source could reach it (literal includes, and conservative filename/module-name
+    /// mentions in the surviving source's directory tree), checked to a fixed point. Loose files
+    /// and techniques are retained; an untracked or computed include in a survivor retains all files.
     /// One undo step; Save publishes removals with disk conflict checks. Malformed reference
     /// documents or missing subgraphs preserve draft/history and output lists; outError explains why.
     /// Success reports manifest#program identities and package-relative removed sources; no-op
     /// success creates no history entry. GUI thread only; no disk writes.
     [[nodiscard]] RenderGraphDocumentStatus
     RemoveUnusedShaders(QStringList& outPrograms, QStringList& outSources, QString& outError);
+    /// Remove a Subgraph node and what only it used, as one undoable draft edit: its edges and
+    /// output sources, its library graph unless another graph still names it, libraries only that
+    /// library imported, their programs that no remaining graph or technique names, and the
+    /// sources those programs free (see RemoveUnusedShaders; helpers only removed sources include
+    /// are removed with them, files a remaining source could include survive). The root graph,
+    /// loose graphs and loose sources are never removed. Unknown or non-Subgraph nodes, malformed
+    /// reference documents or missing subgraphs preserve draft/history and outRemoval; outError
+    /// says why. Save publishes the removals with disk conflict checks. GUI thread; no disk writes.
+    [[nodiscard]] RenderGraphDocumentStatus RemoveSubgraphLibrary(const QString& file,
+                                                                  const QString& configuration,
+                                                                  const QString& node,
+                                                                  RenderGraphLibraryRemoval& outRemoval,
+                                                                  QString& outError);
     /// Add one node. With a position, also record its canvas layout position, clamped to
     /// ±MAX_COORDINATE, in the same undoable edit. With a connection, also add that edge in the
     /// same edit; its To must be an input of node. Like Connect, the caller checks the edge first

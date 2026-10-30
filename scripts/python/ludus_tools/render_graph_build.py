@@ -56,9 +56,9 @@ MAX_FILES = 128
 MAX_SHADER_INCLUDE_DEPTH = 16
 MAX_PACKAGE_FILES = 1024
 MAX_PACKAGE_BYTES = 64 * 1024 * 1024
-SOURCE_LIMIT_REPAIR = ('Remove shader programs and sources that the package no longer uses (in the editor, delete '
-                       'the Subgraph node and library graph of a template you no longer need, then right-click the '
-                       'canvas and choose Remove Unused Shaders) and build again.')
+SOURCE_LIMIT_REPAIR = ('Remove shader programs and sources that the package no longer uses (in the editor, '
+                       'right-click the Subgraph node of a template you no longer need and choose Delete Subgraph '
+                       'and Library, or right-click the canvas and choose Remove Unused Shaders) and build again.')
 
 
 def fail(code, where, message):

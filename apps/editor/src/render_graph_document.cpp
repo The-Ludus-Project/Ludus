@@ -736,12 +736,10 @@ constexpr qsizetype BYTES_PER_KIBIBYTE = 1024;
 /// The canvas actions that free package sources, named as the menus show them.
 QString GetFreeSourcesRepair()
 {
-    return QStringLiteral("To make room, remove a template or library you no longer use: select its Subgraph node on "
-                          "the root canvas, press Delete and save. In Project Explorer, remove its library graph "
-                          "(.lurender.json) and the shader files in its template folder, such as "
-                          "veach_guibas_mis/main_shaders/ (right-click each file and choose Remove...). Then "
-                          "right-click the canvas and choose Remove Unused Shaders to drop their program "
-                          "registrations.");
+    return QStringLiteral("To make room, remove a template or library you no longer use: right-click its Subgraph "
+                          "node on the root canvas and choose Delete Subgraph and Library. That deletes its library "
+                          "graph and the shader programs and sources only it uses, in one undoable edit. "
+                          "Remove Unused Shaders (right-click the canvas) also drops programs no graph uses.");
 }
 } // namespace
 
@@ -764,6 +762,11 @@ QString DescribeTemplateFileCapacity(const QString& templateName, usize existing
         .arg(existingFiles)
         .arg(RenderGraphDocument::MAX_FILES)
         .arg(GetFreeSourcesRepair());
+}
+
+bool RemoveRenderGraphNodeRecord(QJsonObject& inoutConfiguration, const QString& node)
+{
+    return RemoveNodeEdit(inoutConfiguration, {node});
 }
 
 QString DescribeConfigurationCapacity(const QString& templateName, const QString& file)
