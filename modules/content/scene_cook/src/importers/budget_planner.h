@@ -34,6 +34,8 @@ struct PlannedMaterial final
     bool IsAlphaMasked = false;
     /// Mask threshold in [0, 1]; zero for opaque slots.
     float64 AlphaCutoff = 0.0;
+    /// Cooked base image index, assigned after sharing identical untextured swatches.
+    uint32 CookedBaseTexture = IR_NONE;
     /// Cooked texture indices of the slot's LUSCN v6 linear surface map and sRGB emission
     /// map, or IR_NONE; set by the texture cook, not the planner.
     uint32 CookedSurfaceTexture = IR_NONE;
