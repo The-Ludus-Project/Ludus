@@ -186,6 +186,8 @@ Status GenerateTangents(IrMesh& inoutMesh) noexcept
         return Status::Invalid;
     }
     IrMesh candidate;
+    candidate.SourceVertexCount =
+        inoutMesh.SourceVertexCount != 0 ? inoutMesh.SourceVertexCount : static_cast<uint32>(vertexCount);
     if (candidate.Positions.TryAddRange(inoutMesh.Positions.AsSpan()) == false ||
         candidate.Uvs.TryAddRange(inoutMesh.Uvs.AsSpan()) == false ||
         candidate.Indices.TryAddRange(inoutMesh.Indices.AsSpan()) == false)

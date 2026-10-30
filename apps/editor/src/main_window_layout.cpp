@@ -662,6 +662,25 @@ QList<QDockWidget*> MainWindow::getToolWindows() const
     return docks;
 }
 
+#if !defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+void MainWindow::hideIdleRayPaths()
+{
+    // Builds without native preview do not create a Ray Paths dock.
+}
+#endif
+
+void MainWindow::showCodeAndViewport()
+{
+    setViewportFocused(false);
+    if (Renderer_->ShowSourceView() == false || mDocuments->ShowDocumentsSideBySide(Renderer_, World_) == false)
+    {
+        statusBar()->showMessage(QStringLiteral("Open a project render graph with sources to use Code and Viewport."));
+        return;
+    }
+    Renderer_->FocusActiveView();
+    updateContextStrip();
+}
+
 void MainWindow::setViewportFocused(bool isFocused)
 {
     {
@@ -932,7 +951,8 @@ void MainWindow::SaveProjectWorkspace() const
                        {QStringLiteral("root"), ProjectLayoutRoot_},
                        {QStringLiteral("state"), QString::fromLatin1(getPersistentLayoutState().toBase64())},
                        {QStringLiteral("documents"), mDocuments->SaveState()},
-                       {QStringLiteral("world"), World_->Session()}};
+                       {QStringLiteral("world"), World_->Session()},
+                       {QStringLiteral("renderer"), Renderer_->GetSourceViewState()}};
     const auto bytes = QJsonDocument(object).toJson(QJsonDocument::Compact);
     QSaveFile file(path);
     file.setDirectWriteFallback(false);
@@ -992,6 +1012,7 @@ void MainWindow::SetProjectWorkspace(const QString& root, bool restore)
     }
     hideIdleRayPaths();
     World_->RestoreSession(object.value(QStringLiteral("world")).toObject());
+    static_cast<void>(Renderer_->RestoreSourceViewState(object.value(QStringLiteral("renderer")).toObject()));
     // Malformed or stale arrangements leave the project's default World document open.
     static_cast<void>(mDocuments->RestoreState(object.value(QStringLiteral("documents")).toObject()));
     if (mDocuments->GetActiveDocumentOrNull() == nullptr)

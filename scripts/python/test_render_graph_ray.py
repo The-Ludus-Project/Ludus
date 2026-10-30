@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / 'tests/sdk_consumer/rg2/raytracing'
 # The source-tree owners of the flat SDK shaders directory, in _ludus_stage_render_graph_helpers order.
 HELPER_ROOTS = ('cmake/shaders', 'modules/graphics/renderer/shaders',
+                'modules/content/scene_format/include/ludus/content/scene_format',
                 'modules/content/render_graph_format/include/ludus/content/render_graph_format',
                 'modules/foundation/math/shaders', 'modules/graphics/rhi/shaders',
                 'modules/graphics/renderer/include/ludus/graphics/renderer',

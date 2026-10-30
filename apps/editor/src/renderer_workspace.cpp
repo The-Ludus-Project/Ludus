@@ -47,6 +47,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
@@ -80,6 +81,7 @@
 #include <QSpinBox>
 #include <QSplitter>
 #include <QStackedWidget>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTextBlock>
@@ -100,6 +102,7 @@ constexpr int32 MINIMUM_CANVAS_WIDTH = 360;
 constexpr int32 MINIMUM_SOURCE_TREE_WIDTH = 200;
 constexpr int32 STATUS_VISIBLE_LINES = 1;
 constexpr int32 STATUS_PADDING_PIXELS = 4;
+constexpr int32 SOURCE_VIEW_STATE_VERSION = 1;
 
 // Initial share of the document's width: source tree, then the Canvas/Source/Plan/Textures views.
 constexpr int32 SOURCE_TREE_SHARE = 1;
@@ -583,8 +586,15 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mConfiguration->setObjectName(QStringLiteral("renderGraphConfiguration"));
     mConfiguration->setToolTip(QStringLiteral("Root configuration to validate and cook; choices are authored."));
     mConfiguration->setSizeAdjustPolicy(QComboBox::AdjustToContents);
-    QHBoxLayout* header = new QHBoxLayout(mNavigation);
+    // Two rows: what is open and which view shows it, then the configuration it builds and its commands.
+    QVBoxLayout* navigation = new QVBoxLayout(mNavigation);
+    navigation->setContentsMargins(0, 0, 0, 0);
+    QHBoxLayout* header = new QHBoxLayout;
     header->setContentsMargins(0, 0, 0, 0);
+    navigation->addLayout(header);
+    QHBoxLayout* configurationRow = new QHBoxLayout;
+    configurationRow->setContentsMargins(0, 0, 0, 0);
+    navigation->addLayout(configurationRow);
     mSourcesToggle->setObjectName(QStringLiteral("renderGraphToggleSources"));
     mSourcesToggle->setCheckable(true);
     mSourcesToggle->setChecked(QSettings().value(SOURCES_VISIBLE_KEY, true).toBool());
@@ -592,19 +602,27 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         QStringLiteral("Show or hide the graph outline: its files, configurations and nodes. The Source view hides it "
                        "to give the code room. View > Focus Viewport maximizes the graph."));
     header->addWidget(mSourcesToggle);
+    // Which view of the graph is shown: a segmented control beside what is open, filled in once the views exist.
+    QWidget* modes = new QWidget(this);
+    modes->setObjectName(QStringLiteral("renderGraphModes"));
+    QHBoxLayout* modesLayout = new QHBoxLayout(modes);
+    modesLayout->setContentsMargins(0, 0, 0, 0);
+    modesLayout->setSpacing(0);
+    header->addWidget(modes);
     header->addWidget(mPath, 1);
-    header->addWidget(new QLabel(QStringLiteral("Configuration"), this));
-    header->addWidget(mConfiguration);
+    configurationRow->addWidget(new QLabel(QStringLiteral("Configuration"), this));
+    configurationRow->addWidget(mConfiguration);
+    configurationRow->addStretch(1);
     QPushButton* editInterface = new QPushButton(QStringLiteral("Edit Inputs / Outputs..."), this);
     editInterface->setObjectName(QStringLiteral("renderGraphEditInterface"));
-    header->addWidget(editInterface);
+    configurationRow->addWidget(editInterface);
     connect(editInterface, &QPushButton::clicked, this, &RendererWorkspace::editConfigurationInterface);
     connect(this, &RendererWorkspace::CommandsChanged, editInterface, [this, editInterface]() {
         editInterface->setEnabled(CanCreateSubgraph());
     });
     QPushButton* createSubgraph = new QPushButton(QStringLiteral("Create Subgraph..."), this);
     createSubgraph->setObjectName(QStringLiteral("renderGraphCreateSubgraph"));
-    header->addWidget(createSubgraph);
+    configurationRow->addWidget(createSubgraph);
     connect(createSubgraph, &QPushButton::clicked, this, [this]() { static_cast<void>(PromptCreateSubgraph()); });
     connect(this, &RendererWorkspace::CommandsChanged, createSubgraph, [this, createSubgraph]() {
         createSubgraph->setEnabled(CanCreateSubgraph());
@@ -740,6 +758,9 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     sourceActions->setObjectName(QStringLiteral("renderGraphSourceActions"));
     sourceActions->setPopupMode(QToolButton::InstantPopup);
     QMenu* sourceMenu = new QMenu(sourceActions);
+    QAction* codeViewport = sourceMenu->addAction(QStringLiteral("Code and Viewport"));
+    connect(codeViewport, &QAction::triggered, this, &RendererWorkspace::CodeViewportRequested);
+    sourceMenu->addSeparator();
     for (QPushButton* button : {openCodeEditor, chooseCodeEditor, reloadSources})
     {
         button->hide();
@@ -825,6 +846,40 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mTextureViewerOrNull = new TextureViewer(this);
     mViews->insertTab(TEXTURES_VIEW, mTextureViewerOrNull, QStringLiteral("Textures"));
 #endif
+    // The views are chosen from the header's segmented control, not from a tab bar under the document.
+    if (QTabBar* tabBarOrNull = mViews->findChild<QTabBar*>(QString(), Qt::FindDirectChildrenOnly))
+    {
+        tabBarOrNull->hide();
+    }
+    QButtonGroup* modeGroup = new QButtonGroup(modes);
+    modeGroup->setExclusive(true);
+    for (int index = 0; index < mViews->count(); ++index)
+    {
+        QPushButton* mode = new QPushButton(mViews->tabText(index), modes);
+        mode->setObjectName(QStringLiteral("renderGraphMode%1").arg(mViews->tabText(index)));
+        mode->setCheckable(true);
+        mode->setChecked(index == mViews->currentIndex());
+        mode->setProperty("visualRole", QStringLiteral("segment"));
+        const bool isFirst = index == 0;
+        const bool isLast = index == mViews->count() - 1;
+        mode->setProperty("segmentPosition",
+                          isFirst == true && isLast == true ? QStringLiteral("only")
+                          : isFirst == true                 ? QStringLiteral("first")
+                          : isLast == true                  ? QStringLiteral("last")
+                                                            : QStringLiteral("middle"));
+        mode->setToolTip(QStringLiteral("Show the %1 view").arg(mViews->tabText(index)));
+        mode->setAccessibleDescription(QStringLiteral("View of the render graph"));
+        modesLayout->addWidget(mode);
+        modeGroup->addButton(mode, index);
+    }
+    connect(modeGroup, &QButtonGroup::idClicked, mViews, &QTabWidget::setCurrentIndex);
+    connect(mViews, &QTabWidget::currentChanged, modeGroup, [modeGroup](int index) {
+        QAbstractButton* buttonOrNull = modeGroup->button(index);
+        if (buttonOrNull != nullptr)
+        {
+            buttonOrNull->setChecked(true);
+        }
+    });
 
     mStatus->setObjectName(QStringLiteral("renderGraphStatus"));
     mStatus->setTextFormat(Qt::PlainText);
@@ -859,9 +914,9 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         {
             QSettings().setValue(SPLITTER_STATE_KEY, horizontal->saveState());
         }
-        mTree->setVisible(isVisible);
         // Choosing in the Source view is the user's own answer, so leaving it changes nothing.
         mIsOutlineRestoredAfterSource = false;
+        updateChromeVisibility();
         if (isVisible == true)
         {
             static_cast<void>(horizontal->restoreState(QSettings().value(SPLITTER_STATE_KEY).toByteArray()));
@@ -1323,6 +1378,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
             Q_EMIT DocumentChanged();
         }
     });
+    connect(mViews, &QTabWidget::currentChanged, this, [this]() { updateChromeVisibility(); });
     renderStatus();
     renderPreview();
 }
@@ -1347,10 +1403,26 @@ void RendererWorkspace::SetChromeVisible(bool isVisible)
         mViews->setCurrentIndex(mFocusRestoreView);
     }
     mSourceFocusToggle->setText(isVisible == true ? QStringLiteral("Focus Source") : QStringLiteral("Restore Layout"));
+    updateChromeVisibility();
+}
+
+void RendererWorkspace::SetSourceCompanionLayout(bool shouldUseCompactSource)
+{
+    if (mShouldUseCompactSource != shouldUseCompactSource)
+    {
+        mShouldUseCompactSource = shouldUseCompactSource;
+        updateChromeVisibility();
+    }
+}
+
+void RendererWorkspace::updateChromeVisibility()
+{
+    const bool shouldShowNavigation =
+        mIsChromeVisible == true && (mShouldUseCompactSource == false || mViews->currentIndex() != SOURCE_VIEW);
     updateSourceInterfaceVisibility();
-    mNavigation->setVisible(isVisible);
-    mStatusPanel->setVisible(isVisible);
-    mTree->setVisible(isVisible == true && mSourcesToggle->isChecked() == true);
+    mNavigation->setVisible(shouldShowNavigation);
+    mStatusPanel->setVisible(shouldShowNavigation);
+    mTree->setVisible(shouldShowNavigation == true && mSourcesToggle->isChecked() == true);
 }
 
 void RendererWorkspace::FocusActiveView()
@@ -1363,6 +1435,84 @@ void RendererWorkspace::FocusActiveView()
     {
         mCanvas->setFocus(Qt::ShortcutFocusReason);
     }
+}
+
+bool RendererWorkspace::ShowSourceView()
+{
+    if (mDocument.IsLoaded() == false || mSourceFile->count() == 0)
+    {
+        return false;
+    }
+    if (mViews->currentIndex() != SOURCE_VIEW)
+    {
+        const QStringList shaders = GetSelectedShaderSources();
+        if (shaders.isEmpty() == false)
+        {
+            mSourceFile->setCurrentText(shaders.first());
+        }
+        else if (mSourceFile->currentText().endsWith(QStringLiteral(".slang")) == false)
+        {
+            for (int32 index = 0; index < mSourceFile->count(); ++index)
+            {
+                if (mSourceFile->itemText(index).endsWith(QStringLiteral(".slang")) == true)
+                {
+                    mSourceFile->setCurrentIndex(index);
+                    break;
+                }
+            }
+        }
+    }
+    mViews->setCurrentIndex(SOURCE_VIEW);
+    FocusActiveView();
+    return true;
+}
+
+QJsonObject RendererWorkspace::GetSourceViewState() const
+{
+    if (mProjectRoot.isEmpty() == true || mDocument.IsLoaded() == false)
+    {
+        return {};
+    }
+    const QString graph =
+        QDir(mProjectRoot).relativeFilePath(QDir(mDocument.GetPackageRoot()).filePath(mDocument.GetRootGraph()));
+    return {{QStringLiteral("version"), SOURCE_VIEW_STATE_VERSION},
+            {QStringLiteral("graph"), graph},
+            {QStringLiteral("builtIn"), mDocument.IsBuiltIn()},
+            {QStringLiteral("source"), mSourceFile->currentText()},
+            {QStringLiteral("view"), mViews->currentIndex()}};
+}
+
+bool RendererWorkspace::RestoreSourceViewState(const QJsonObject& state)
+{
+    const QString graph = state.value(QStringLiteral("graph")).toString();
+    const int32 view = state.value(QStringLiteral("view")).toInt(-1);
+    if (mProjectRoot.isEmpty() == true || state.value(QStringLiteral("version")).toInt() != SOURCE_VIEW_STATE_VERSION ||
+        state.value(QStringLiteral("builtIn")).isBool() == false ||
+        state.value(QStringLiteral("source")).isString() == false || graph.isEmpty() == true ||
+        QDir::isAbsolutePath(graph) == true || QDir::cleanPath(graph) != graph || graph == QStringLiteral("..") ||
+        graph.startsWith(QStringLiteral("../")) == true || view < 0 || view >= mViews->count())
+    {
+        return false;
+    }
+    const QJsonObject current = GetSourceViewState();
+    if (current.value(QStringLiteral("graph")) != state.value(QStringLiteral("graph")) ||
+        current.value(QStringLiteral("builtIn")) != state.value(QStringLiteral("builtIn")))
+    {
+        // Preferences cannot discard an accepted draft. OpenGraph validates the canonical
+        // project boundary (including symlinks) and publishes a loaded candidate atomically.
+        if (mDocument.IsDirty() == true || state.value(QStringLiteral("builtIn")).toBool() == true ||
+            OpenGraph(QDir(mProjectRoot).filePath(graph)) == false)
+        {
+            return false;
+        }
+    }
+    const int32 sourceIndex = mSourceFile->findText(state.value(QStringLiteral("source")).toString());
+    if (sourceIndex >= 0)
+    {
+        mSourceFile->setCurrentIndex(sourceIndex);
+    }
+    mViews->setCurrentIndex(view);
+    return true;
 }
 
 RendererWorkspace::~RendererWorkspace()

@@ -445,6 +445,23 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   **New Horizontal Tab Group** puts it below. **Move to Next/Previous Tab
   Group**, **Merge All Tab Groups** and the tab context menu move documents
   between groups. Groups share one direction at a time, up to four groups.
+- **View → Code and Viewport** (Ctrl+Alt+V; Command+Option+V on macOS), also in
+  the Source pane's **Source** menu, opens the Source editor beside the existing
+  interactive World document. It reuses the World's viewport, camera and render
+  device; it does not open the Render Preview image panel or create another viewport.
+  Graph navigation temporarily collapses in Source to leave room for code; switch
+  to Canvas to show it again. The Sources visibility preference is preserved.
+  The World's header and hierarchy also collapse so its viewport fills the pane;
+  returning to a single World restores them and their splitter preference.
+  Drag the divider to size the two panes. Existing horizontal group sizes are
+  preserved when invoking the command again, and other open tabs and drafts stay
+  open. The project remembers the groups, divider, graph, source file and selected
+  Source view when the editor closes normally or switches projects. These are
+  view preferences, not a recovery copy of unsaved source text. Missing or invalid
+  saved graphs leave the current graph intact. Live Preview keeps its existing
+  saved-source policy; compilation progress remains in the status-bar activity
+  chip. The Render Graph toolbar stays visible while the graph is shown in either
+  group, so moving between code and viewport does not resize the document area.
 - **Tool windows** dock around the documents. The calm default keeps the documents
   as large as the window allows: Project Explorer (tabbed with Content and Render
   Preview) is on the left, Properties (tabbed with Live Inspector, and Ray Paths
@@ -502,8 +519,8 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   holds File (Open, Save) and History (Undo, Redo); Game holds Run (Play, Build, Stop),
   Launch (Run, Debug) and Session (Pause, Step, Resume, Reload Code). The Session group
   is shown only while a game is running or paused. The Render Graph toolbar is the
-  context strip: it appears only while a render graph is the active document, so a World
-  tab keeps one row of commands. Its buttons show an icon beside the label: Validate,
+  context strip: it appears while a render graph is shown in any document group, so a World
+  shown alone keeps one row of commands. Its buttons show an icon beside the label: Validate,
   a **Build Graph** split button whose arrow offers Build & Preview, a **Live Preview**
   toggle that keeps an accent edge while it is on, and Cancel. Toolbar buttons use short labels
   so a 1280-pixel window shows them all; tooltips give the full name and

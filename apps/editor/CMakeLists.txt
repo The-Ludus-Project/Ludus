@@ -804,6 +804,18 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     endif()
     find_package(Catch2 3 REQUIRED)
     find_package(Qt6 6.4 REQUIRED COMPONENTS Test)
+    add_executable(ludus_document_well_tests tests/main.cpp tests/document_pair_tests.cpp
+        src/internal/document_well.h src/document_well.cpp)
+    set_target_properties(ludus_document_well_tests PROPERTIES AUTOMOC ON)
+    target_include_directories(ludus_document_well_tests PRIVATE src)
+    target_compile_definitions(ludus_document_well_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
+    target_link_libraries(ludus_document_well_tests PRIVATE Qt6::Widgets Qt6::Test
+        Ludus::FoundationBase Catch2::Catch2)
+    ludus_apply_project_defaults(ludus_document_well_tests)
+    ludus_enable_test_exceptions(ludus_document_well_tests)
+    add_test(NAME ludus_document_well_tests COMMAND ludus_document_well_tests)
+    set_tests_properties(ludus_document_well_tests PROPERTIES LABELS "unit;editor;layout" TIMEOUT 30
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     if(APPLE)
         add_executable(ludus_editor_accessibility_tests tests/main.cpp tests/accessibility_tests.mm
             src/qt_accessibility_macos.mm)
@@ -1385,7 +1397,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/internal/viewport_frame_pump.h src/viewport_frame_pump.cpp
         src/render_graph_defaults.cpp src/render_graph_shader_interface.cpp src/external_code_editor.cpp
         src/internal/render_graph_shader_assistance.h src/render_graph_shader_assistance.cpp
-        tests/render_graph_shader_assistance_tests.cpp)
+        tests/render_graph_shader_assistance_tests.cpp tests/render_graph_source_view_tests.cpp)
     set_target_properties(ludus_render_graph_configuration_tests PROPERTIES AUTOMOC ON)
     target_include_directories(ludus_render_graph_configuration_tests PRIVATE src)
     target_compile_definitions(ludus_render_graph_configuration_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII
@@ -1441,7 +1453,7 @@ endif()
 # separate executables. Trusted batch workflows build this target before running
 # the editor CTest label, including during the promotion of newer workflow code.
 if(TARGET ludus_editor_tests)
-    foreach(target IN ITEMS ludus_editor_accessibility_tests ludus_code_editor_tests
+    foreach(target IN ITEMS ludus_editor_accessibility_tests ludus_code_editor_tests ludus_document_well_tests
             ludus_project_explorer_tests ludus_editor_browser_content_tests ludus_render_graph_pipeline_tests
             ludus_shader_interface_tests ludus_render_graph_configuration_tests
             ludus_render_graph_live_build_tests ludus_texture_display_conversion_tests)

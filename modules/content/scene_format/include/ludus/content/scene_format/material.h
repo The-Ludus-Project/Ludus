@@ -30,6 +30,7 @@ static const MaterialScalar LUDUS_COATING_MIN_ALPHA = 0.001F;
 
 #ifdef __cplusplus
 /// Scattering identity retained by scene assets; evaluators declare their supported profile.
+// NOLINTNEXTLINE(performance-enum-size): material wire tags retain their explicit 32-bit width.
 enum class MaterialModel : foundation::uint32
 {
     MetallicRoughness =

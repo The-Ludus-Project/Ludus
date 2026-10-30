@@ -107,7 +107,8 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
       mRunInContextAction(CreateEditorCommand(TOOLS_RUN_IN_CONTEXT_COMMAND, this)),
       mProjectSettingsAction(CreateEditorCommand(PROJECT_SETTINGS_COMMAND, this)),
       mResetLayoutAction(CreateEditorCommand(WINDOW_RESET_LAYOUT_COMMAND, this)),
-      mFocusViewportAction(CreateEditorCommand(VIEW_FOCUS_VIEWPORT_COMMAND, this))
+      mFocusViewportAction(CreateEditorCommand(VIEW_FOCUS_VIEWPORT_COMMAND, this)),
+      mCodeViewportAction(CreateEditorCommand(VIEW_CODE_VIEWPORT_COMMAND, this))
 {
     setWindowTitle(QStringLiteral("Ludus Editor"));
     setWindowIcon(MakeApplicationIcon());
@@ -121,8 +122,9 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
     BuildMenus();
     InitializeWorkspace();
     connect(mDocuments, &DocumentWell::ActiveDocumentChanged, this, &MainWindow::renderActiveDocument);
+    connect(mDocuments, &DocumentWell::LayoutChanged, this, &MainWindow::updateContextStrip);
     // Restoring a saved layout, resetting it or leaving Focus Viewport can show or hide the strip; the queued
-    // check puts it back to what the active document asks for.
+    // check follows the documents currently shown in the tab groups.
     connect(mRenderGraphToolbar,
             &QToolBar::visibilityChanged,
             this,
@@ -148,6 +150,7 @@ MainWindow::MainWindow(EditorController* controller, QWidget* parent, const QStr
         }
     });
     connect(Renderer_, &RendererWorkspace::FocusViewRequested, mFocusViewportAction, &QAction::toggle);
+    connect(Renderer_, &RendererWorkspace::CodeViewportRequested, this, &MainWindow::showCodeAndViewport);
     connect(mErrorList, &ErrorList::EntryActivated, this, &MainWindow::activateErrorEntry);
     connect(mErrorList, &ErrorList::ProblemsReported, this, &MainWindow::revealErrorList);
     mBuildErrorsTimer.setSingleShot(true);
@@ -615,6 +618,8 @@ void MainWindow::BuildMenus()
         toolbars->addAction(toolbar->toggleViewAction());
     }
     viewMenu->addSeparator();
+    viewMenu->addAction(mCodeViewportAction);
+    connect(mCodeViewportAction, &QAction::triggered, this, &MainWindow::showCodeAndViewport);
     viewMenu->addAction(mFocusViewportAction);
     connect(mFocusViewportAction, &QAction::toggled, this, &MainWindow::setViewportFocused);
 
@@ -1007,12 +1012,12 @@ void MainWindow::OnStateChanged()
         ProjectLayoutEpoch_ = state.ProjectEpoch;
         SetProjectWorkspace(root, false);
         World_->SetProject(root, state.ProjectEpoch);
+        Renderer_->SetProject(QFileInfo(state.DescriptorPath).absolutePath(), state.ProjectEpoch);
         if (restore)
         {
             SetProjectWorkspace(root, true);
         }
         Scripts_->SetProject(QFileInfo(state.DescriptorPath).absolutePath(), root, state.Saved.Preset);
-        Renderer_->SetProject(QFileInfo(state.DescriptorPath).absolutePath(), state.ProjectEpoch);
         if (restore == true)
         {
             // A new project identity retires the previous project's render-graph rows.

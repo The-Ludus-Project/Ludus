@@ -186,12 +186,21 @@ struct NamedTransform final
     math::Matrix4d Transform;
 };
 
-/// A declared float texture; only constants are evaluated.
+/// A declared scalar texture: an evaluated constant or an image in SceneIr.
 struct FloatTexture final
 {
     String Name;
     bool IsConstant = false;
     float64 Value = .5;
+    uint32 Image = IR_NONE;
+};
+
+struct AlphaMaterial final
+{
+    uint32 Source = IR_NONE;
+    uint32 Texture = IR_NONE;
+    float64 Opacity = 1.0;
+    uint32 Material = IR_NONE;
 };
 
 struct PlyCacheEntry final
@@ -275,6 +284,8 @@ private:
     defineMaterial(Directive& inoutDirective, std::string_view type, std::string_view name) noexcept;
     [[nodiscard]] Status applyNamedMaterial(Directive& inoutDirective) noexcept;
     [[nodiscard]] Status addShape(Directive& inoutDirective) noexcept;
+    [[nodiscard]] Status readShapeAlpha(Directive& inoutDirective, uint32& inoutMaterial) noexcept;
+    [[nodiscard]] Status readNormalMap(Directive& inoutDirective, IrMaterial& inoutMaterial) noexcept;
     [[nodiscard]] Status addLight(Directive& inoutDirective) noexcept;
     [[nodiscard]] Status applyAreaLight(Directive& inoutDirective) noexcept;
     [[nodiscard]] Status applyCamera(Directive& inoutDirective) noexcept;
@@ -298,6 +309,7 @@ private:
     Array<SavedState> mStack;
     Array<NamedTransform> mCoordinateSystems;
     Array<FloatTexture> mFloatTextures;
+    Array<AlphaMaterial> mAlphaMaterials;
     Array<PlyCacheEntry> mPlyCache;
     /// Resolved native paths of the files currently being read (cycle detection).
     Array<String> mIncludeStack;
@@ -1082,7 +1094,7 @@ uint32 SceneReader::findSpectrumTexture(std::string_view name) const noexcept
 {
     for (usize i = mScene.Textures.GetSize(); i > 0; --i)
     {
-        if (mScene.Textures[i - 1].Name.GetView() == name)
+        if (mScene.Textures[i - 1].Name.GetView() == name && mScene.Textures[i - 1].IsScalar == false)
         {
             return static_cast<uint32>(i - 1);
         }
@@ -1115,7 +1127,7 @@ Status SceneReader::defineTexture(Directive& inoutDirective) noexcept
     const std::string_view textureClass = inoutDirective.Positional[2].GetView();
     float64 scale = 1.0;
     (void)findFloat(inoutDirective, "scale", scale);
-    if (type == "float")
+    if (type == "float" && textureClass != "imagemap")
     {
         if (findFloatTexture(name) != nullptr)
         {
@@ -1125,6 +1137,7 @@ Status SceneReader::defineTexture(Directive& inoutDirective) noexcept
         texture.IsConstant = textureClass == "constant";
         if (texture.IsConstant == true)
         {
+            texture.Value = 1.0;
             (void)findFloat(inoutDirective, "value", texture.Value);
         }
         else
@@ -1140,17 +1153,19 @@ Status SceneReader::defineTexture(Directive& inoutDirective) noexcept
         }
         return Status::Ok;
     }
-    if (type != "spectrum" && type != "color")
+    if (type != "spectrum" && type != "color" && type != "float")
     {
         warn(codes::TEXTURE_APPROXIMATED, inoutDirective.Line, "unknown texture type");
         markAllUsed(inoutDirective);
         return Status::Ok;
     }
-    if (findSpectrumTexture(name) != IR_NONE)
+    if ((type == "float" && findFloatTexture(name) != nullptr) ||
+        (type != "float" && findSpectrumTexture(name) != IR_NONE))
     {
         inform(codes::NAME_REDEFINED, inoutDirective.Line, name);
     }
     IrTexture texture;
+    texture.IsScalar = type == "float";
     texture.SourceFile = mCurrentFile;
     texture.Line = inoutDirective.Line;
     if (texture.Name.TryAssign(name) != StringStatus::Ok)
@@ -1171,12 +1186,21 @@ Status SceneReader::defineTexture(Directive& inoutDirective) noexcept
         {
             texture.File = static_cast<String&&>(resolved.Relative);
         }
+        // PBRT float imagemaps default to sRGB for PNG, linear otherwise.
+        if (type == "float" && file.ends_with(".png") == false && file.ends_with(".PNG") == false)
+        {
+            texture.Encoding = TextureEncoding::Linear;
+        }
         std::string_view text;
         if (findString(inoutDirective, "encoding", text) == true)
         {
             if (text == "linear")
             {
                 texture.Encoding = TextureEncoding::Linear;
+            }
+            else if (text == "sRGB" || text == "srgb")
+            {
+                texture.Encoding = TextureEncoding::Srgb;
             }
             else if (text.substr(0, 6) == "gamma ")
             {
@@ -1257,6 +1281,16 @@ Status SceneReader::defineTexture(Directive& inoutDirective) noexcept
         warn(codes::TEXTURE_APPROXIMATED, inoutDirective.Line, textureClass);
         texture.Scale[0] = texture.Scale[1] = texture.Scale[2] = .5;
         markAllUsed(inoutDirective);
+    }
+    if (type == "float")
+    {
+        FloatTexture scalar;
+        scalar.Image = static_cast<uint32>(mScene.Textures.GetSize());
+        if (scalar.Name.TryAssign(name) != StringStatus::Ok ||
+            mFloatTextures.TryAdd(static_cast<FloatTexture&&>(scalar)) == false)
+        {
+            return Status::OutOfMemory;
+        }
     }
     return mScene.Textures.TryAdd(static_cast<IrTexture&&>(texture)) == true ? Status::Ok : Status::OutOfMemory;
 }
@@ -1346,9 +1380,10 @@ Status SceneReader::defineMaterial(Directive& inoutDirective, std::string_view t
     {
         warn(codes::DISPLACEMENT_IGNORED, inoutDirective.Line, label);
     }
-    if (findParameter(inoutDirective, "normalmap") != nullptr)
+    const Status normalStatus = readNormalMap(inoutDirective, material);
+    if (normalStatus != Status::Ok)
     {
-        warn(codes::NORMALMAP_DROPPED, inoutDirective.Line, label);
+        return normalStatus;
     }
     if (type == "diffuse" || type == "diffusetransmission")
     {
@@ -1777,6 +1812,127 @@ Status SceneReader::loadPly(Directive& inoutDirective, uint32& outMesh) noexcept
     return Status::Ok;
 }
 
+// Thanks to Matt Pharr, Wenzel Jakob and Greg Humphreys, pbrt-v4 Input File
+// Format, Materials and Shapes (https://www.pbrt.org/fileformat-v4): normalmap
+// names a linear tangent-space image; alpha belongs to each shape. We use the
+// existing MikkTSpace surface-map path and approximate fractional alpha at 0.5.
+Status SceneReader::readNormalMap(Directive& inoutDirective, IrMaterial& inoutMaterial) noexcept
+{
+    std::string_view file;
+    if (findString(inoutDirective, "normalmap", file) == false)
+    {
+        return Status::Ok;
+    }
+    ResolvedSourcePath resolved;
+    if (resolveSourcePath(file, resolved) == false)
+    {
+        warn(codes::NORMALMAP_DROPPED, inoutDirective.Line, "normal image path is outside the import root");
+        return Status::Ok;
+    }
+    for (usize i = 0; i < mScene.Textures.GetSize(); ++i)
+    {
+        const IrTexture& existing = mScene.Textures[i];
+        if (existing.File.GetView() == resolved.Relative.GetView() && existing.Name.IsEmpty() == true &&
+            existing.Encoding == TextureEncoding::Linear)
+        {
+            inoutMaterial.NormalTexture = static_cast<uint32>(i);
+            return Status::Ok;
+        }
+    }
+    IrTexture texture;
+    texture.File = static_cast<String&&>(resolved.Relative);
+    texture.Encoding = TextureEncoding::Linear;
+    texture.SourceFile = mCurrentFile;
+    texture.Line = inoutDirective.Line;
+    inoutMaterial.NormalTexture = static_cast<uint32>(mScene.Textures.GetSize());
+    return mScene.Textures.TryAdd(static_cast<IrTexture&&>(texture)) == true ? Status::Ok : Status::OutOfMemory;
+}
+
+Status SceneReader::readShapeAlpha(Directive& inoutDirective, uint32& inoutMaterial) noexcept
+{
+    const Parameter* parameterOrNull = findParameter(inoutDirective, "alpha");
+    if (parameterOrNull == nullptr)
+    {
+        return Status::Ok;
+    }
+    uint32 textureIndex = IR_NONE;
+    float64 opacity = 1.0;
+    if (parameterOrNull->Type.GetView() == "texture" && parameterOrNull->Value.Strings.IsEmpty() == false)
+    {
+        const FloatTexture* textureOrNull = findFloatTexture(parameterOrNull->Value.Strings[0].GetView());
+        if (textureOrNull == nullptr)
+        {
+            warn(codes::NAME_UNDEFINED, inoutDirective.Line, parameterOrNull->Value.Strings[0].GetView());
+            warn(codes::ALPHA_APPROXIMATED, inoutDirective.Line, "undefined alpha texture cooked as opaque");
+            return Status::Ok;
+        }
+        textureIndex = textureOrNull->Image;
+        if (textureIndex != IR_NONE && mScene.Textures[textureIndex].File.IsEmpty() == true)
+        {
+            warn(codes::ALPHA_APPROXIMATED, inoutDirective.Line, "invalid alpha image path cooked as opaque");
+            return Status::Ok;
+        }
+        opacity = textureIndex != IR_NONE ? 1.0 : textureOrNull->Value;
+    }
+    else if (findFloat(inoutDirective, "alpha", opacity) == false)
+    {
+        warn(codes::ALPHA_APPROXIMATED, inoutDirective.Line, "invalid alpha cooked as opaque");
+        return Status::Ok;
+    }
+    opacity = math::Clamp(opacity, 0.0, 1.0);
+    if (textureIndex == IR_NONE && opacity == 1.0)
+    {
+        return Status::Ok;
+    }
+    inform(codes::ALPHA_APPROXIMATED, inoutDirective.Line, "shape alpha retained as a mask at cutoff 0.5");
+    for (const AlphaMaterial& existing : mAlphaMaterials)
+    {
+        if (existing.Source == inoutMaterial && existing.Texture == textureIndex && existing.Opacity == opacity)
+        {
+            inoutMaterial = existing.Material;
+            return Status::Ok;
+        }
+    }
+    IrMaterial material;
+    if (inoutMaterial != IR_NONE)
+    {
+        // Copy the surface terms this PBRT front-end produces; the variant has no
+        // declared name, so subsequent NamedMaterial lookups still find the original.
+        const IrMaterial& source = mScene.Materials[inoutMaterial];
+        if (material.SourceType.TryAssign(source.SourceType.GetView()) != StringStatus::Ok)
+        {
+            return Status::OutOfMemory;
+        }
+        for (usize k = 0; k < IR_RGB_CHANNEL_COUNT; ++k)
+        {
+            material.BaseColour[k] = source.BaseColour[k];
+        }
+        material.BaseColourTexture = source.BaseColourTexture;
+        material.Metallic = source.Metallic;
+        material.Roughness = source.Roughness;
+        material.NormalTexture = source.NormalTexture;
+        material.IsApproximated = source.IsApproximated;
+    }
+    material.SourceFile = mCurrentFile;
+    material.Line = inoutDirective.Line;
+    material.IsShapeVariant = true;
+    material.VariantSource = inoutMaterial;
+    material.Opacity = opacity;
+    material.OpacityTexture = textureIndex;
+    material.IsOpacityFloatImage = textureIndex != IR_NONE;
+    material.IsBaseAlphaIgnored = true;
+    material.AlphaMode = IrAlphaMode::Mask;
+    const uint32 variant = static_cast<uint32>(mScene.Materials.GetSize());
+    if (mAlphaMaterials.TryAdd(
+            { .Source = inoutMaterial, .Texture = textureIndex, .Opacity = opacity, .Material = variant }) == false ||
+        mScene.Materials.TryAdd(static_cast<IrMaterial&&>(material)) == false)
+    {
+        return Status::OutOfMemory;
+    }
+    inoutMaterial = variant;
+    return Status::Ok;
+}
+
 Status SceneReader::addShape(Directive& inoutDirective) noexcept
 {
     const std::string_view type =
@@ -1786,9 +1942,11 @@ Status SceneReader::addShape(Directive& inoutDirective) noexcept
         inform(codes::DISPLACEMENT_IGNORED, inoutDirective.Line, type);
     }
     (void)findParameter(inoutDirective, "edgelength");
-    if (findParameter(inoutDirective, "alpha") != nullptr)
+    uint32 materialIndex = mState.Material;
+    const Status alphaStatus = readShapeAlpha(inoutDirective, materialIndex);
+    if (alphaStatus != Status::Ok)
     {
-        warn(codes::ALPHA_APPROXIMATED, inoutDirective.Line, "alpha cut-out cooked as opaque");
+        return alphaStatus;
     }
     uint32 meshIndex = IR_NONE;
     if (type == "plymesh")
@@ -1859,9 +2017,24 @@ Status SceneReader::addShape(Directive& inoutDirective) noexcept
     {
         return Status::Ok;
     }
+    if (materialIndex != IR_NONE && (type == "plymesh" || type == "trianglemesh" || type == "loopsubdiv"))
+    {
+        const IrMaterial& material = mScene.Materials[materialIndex];
+        const bool hasImageMapping = material.NormalTexture != IR_NONE || material.OpacityTexture != IR_NONE ||
+                                     (material.BaseColourTexture != IR_NONE &&
+                                      mScene.Textures[material.BaseColourTexture].File.IsEmpty() == false);
+        if (hasImageMapping == true)
+        {
+            const Status mapped = ApplyDefaultTriangleUvs(mScene.Meshes[meshIndex]);
+            if (mapped != Status::Ok)
+            {
+                return mapped;
+            }
+        }
+    }
     IrShape shape;
     shape.Mesh = meshIndex;
-    shape.Material = mState.Material;
+    shape.Material = materialIndex;
     shape.Transform = mState.Transform;
     shape.IsOrientationReversed = mState.IsReversed;
     shape.SourceFile = mCurrentFile;
