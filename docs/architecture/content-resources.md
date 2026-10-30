@@ -403,7 +403,11 @@ its original texels and multiplier, including zero-energy channels. Different HD
 map dimensions reject explicitly: this storage codec does not choose a resampling
 policy. The combined light list remains bounded at 128 and the assembled packet
 remains bounded by its version's byte limit (64 MiB, or 384 MiB for version 5); the
-artifact closure shares the 384 MiB `MAX_ASSET_BYTES` ceiling. No environment or
+individual artifacts retain the 384 MiB `MAX_ASSET_BYTES` ceiling. Encoded logical
+dependency closures have a separate 512 MiB `MAX_RESIDENT_CLOSURE_BYTES` ceiling
+because they also carry material JSON, scene manifests and licenses. Shared files
+are charged once per selected logical resource. This is not a decoded or peak-memory
+budget, and assembly still enforces the version's bundle limit. No environment or
 light is silently dropped.
 
 When legacy and v3 resources coexist, assembly expands legacy vertices with zero
@@ -457,12 +461,18 @@ the Resources decoder, the scene asset pipeline and the Editor read them there.
 | --- | --- | --- |
 | Meshes / materials / textures | 6 / 8 / 8 | 256 / 256 / 256 |
 | Placed objects | 128 | 1,024 |
-| Unique vertices (combined) | 500,000 | 2,000,000 |
-| Indices (combined; versions 4 and 5) | 1,500,000 | 6,000,000 |
+| Unique vertices (combined) | 500,000 | 4,000,000 |
+| Indices (combined; versions 4 and 5) | 1,500,000 | 12,000,000 |
 | Combined RGBA8 texture bytes | 32 MiB | 256 MiB |
 | Bundle bytes | 64 MiB | 384 MiB |
 
 Per-texture limits (4096 texels per side, 16 MiB) are unchanged.
+Versions 5 and 6 share these limits. The October 30 geometry admission increase
+changes no record layout or bundle/texture byte ceiling; older consumers can
+reject counts beyond their compiled profile. The best-effort cooker now shares
+byte-identical vertex records before budgeting; see the
+[Bistro geometry acceptance](../development/best-effort-scene-import.md#pbrt-bistro-geometry-acceptance)
+for retained triangle counts and remaining material approximations.
 
 `MaterialRecordV5` (56 bytes) stores `AlphaMode` in the version 3 reserved word,
 then `AlphaCutoff` and a new reserved word. `ALPHA_OPAQUE` ignores texture alpha

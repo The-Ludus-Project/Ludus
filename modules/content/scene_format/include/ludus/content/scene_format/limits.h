@@ -49,9 +49,9 @@ inline constexpr uint32 MAX_IMPORT_OBJECTS = 1024;
 /// mips, enough for Sponza-scale scenes' base-colour textures at full resolution.
 inline constexpr usize MAX_IMPORT_TOTAL_TEXTURE_BYTES = usize{256} * 1024 * 1024;
 /// Most vertices combined across a version 5 or 6 bundle's meshes.
-inline constexpr uint32 MAX_IMPORT_VERTICES = 2000000;
+inline constexpr uint32 MAX_IMPORT_VERTICES = 4000000;
 /// Most indices combined across a version 5 or 6 bundle's meshes (expanded bake corners).
-inline constexpr uint32 MAX_IMPORT_TOTAL_INDICES = 6000000;
+inline constexpr uint32 MAX_IMPORT_TOTAL_INDICES = 12000000;
 /// Largest version 5 or 6 bundle: the texture budget plus the geometry and lighting
 /// records above it.
 inline constexpr usize MAX_IMPORT_BUNDLE_BYTES = usize{384} * 1024 * 1024;

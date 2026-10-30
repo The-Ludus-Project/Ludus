@@ -3,7 +3,8 @@
 Status: glTF 2.0/GLB and Wavefront OBJ/MTL front-ends, October 18, 2026, on top
 of the authored-lighting pbrt import of October 13, 2026. Importer ids
 `pbrt-best-effort-v1`, `gltf-best-effort-v1` and `obj-best-effort-v1`; report
-schema `1`.
+schema `1`. October 30, 2026: exact vertex compaction and the larger geometry
+admission profile retain the supplied PBRT Bistro's complete triangle geometry.
 
 `Ludus::SceneCook` has two pbrt paths. `pbrt-reference-v1` is the frozen,
 byte-identical cooker for the recorded goldens; it rejects anything it does
@@ -226,7 +227,7 @@ texture coordinates are reported instead.
 ## What LUSCN v6 cannot carry yet
 
 The planner fits the IR into the LUSCN v6 import profile (256 meshes, materials
-and textures, 1,024 objects, 2M unique vertices, 6M indices, 256 MiB of textures,
+and textures, 1,024 objects, 4M unique vertices, 12M indices, 256 MiB of textures,
 flattened instancing; see
 [the import profile](../architecture/content-resources.md#import-profile-and-alpha-masks-luscn-v5)
 and [surface maps](../architecture/content-resources.md#surface-maps-emission-maps-and-tangents-luscn-v6)).
@@ -313,8 +314,24 @@ area-light, shadow and indirect-transport limits.
 ## Budget planner
 
 The cooked scene must fit the LUSCN v6 import profile: 256 meshes, materials and
-textures, 2M unique vertices, 6M indices in total, 256 MiB of textures and a
-384 MiB bundle. Each cooked mesh carries one material, so the planner:
+textures, 4M unique vertices, 12M indices in total, 256 MiB of textures and a
+384 MiB bundle. Before planning, the shared cook compacts byte-identical
+position/normal/UV/tangent records within each mesh, after tangent generation.
+First-occurrence vertex order, every triangle, winding and attribute seams are
+preserved; signed zeros remain distinct. Meshes without normals keep their
+original topology so later generated smoothing does not change. The temporary
+index/remap arrays use eight bytes per source vertex, with one mesh processed at
+a time; this is separate from encoded file, cooked bundle and runtime budgets.
+
+The schema-1 report adds `source.indices` and `cooked.indices` (three indices per
+triangle). `source.vertices` remains the count before compaction, including
+expanded placements; `dropped_vertices` counts the source records belonging to
+discarded placements. Reduced cooked vertex counts accompanied by
+`VERTICES_COMPACTED` are exact sharing, while `GEOMETRY_DROPPED` and
+`dropped_placements` describe geometry loss. These source counts saturate at the
+uint32 maximum. The frozen reference cooker is unchanged.
+
+Each cooked mesh carries one material, so the planner:
 
 1. reserves one slot per distinct emitter radiance, sidedness and power-normalization
    group; groups record their source shapes and area-light directives in the report.
@@ -449,6 +466,59 @@ or fail with a report that explains why:
 LUDUS_GLTF_SCENES_DIR=~/glTF-Sample-Assets/Models LUDUS_OBJ_SCENES_DIR=~/mcguire \
   out/build/linux-clang-development/modules/content/scene_cook/ludus_scene_import_tests "[licensed]"
 ```
+
+### PBRT Bistro geometry acceptance
+
+The supplied `bistro/bistro_cafe.pbrt` uses 865 PLY meshes and 741 inline triangle
+meshes, with 1,606 placements and 2,838,960 triangles. Thanks to Amazon Lumberyard
+for the Bistro assets; retain the supplied `LICENSE.txt`. Assets and generated
+reports stay outside source control. With that licensed input available:
+
+```sh
+ludus-cook pbrt references/resources/scenes/bistro/bistro_cafe.pbrt out/bistro --workers 4
+LUDUS_PBRT_SCENES_DIR=references/resources/scenes \
+  out/build/macos-clang-development/modules/content/scene_cook/ludus_best_effort_import_tests '[bistro]'
+LUDUS_EDITOR_IMPORT_ENTRY=references/resources/scenes/bistro/bistro_cafe.pbrt \
+  out/build/macos-clang-development/modules/content/scene_cook/ludus_scene_assets_tests '[scene_assets][licensed]' -s
+```
+
+Use the equivalent native build directory on Linux. The optional test skips when
+the input is absent; when present it checks the supplied version's source counts,
+zero geometry drops, preservation of all indices and decoding through the runtime
+Resources consumer. Ordinary generated regressions independently compare every
+triangle corner's attribute bytes before/after compaction, including normal/UV/
+tangent seams, signed zeros, missing normals, malformed input and cancellation.
+The catalog test exercises Editor import, commit and assembly, then checks the
+same complete geometry through Resources decoding.
+
+Measured on October 30, 2026 with native macOS arm64 Clang 23.1.3, Development,
+warnings as errors, and four texture workers:
+
+| Quantity | Previous 2M-vertex / 6M-index profile | Compaction + 4M-vertex / 12M-index profile |
+| --- | ---: | ---: |
+| Source vertex records | 8,514,702 | 8,514,702 |
+| Retained triangles | 667,392 | 2,838,960 |
+| Cooked vertices | 1,999,998 | 2,892,578 |
+| Dropped placements | 1,432 | 0 |
+| Bundle bytes | 368,253,580 | 402,583,744 |
+| Textures reported downscaled | 3 | 99 |
+
+The current report has `source.indices == cooked.indices == 8,516,880` and no
+shape failures or geometry drops. Bundle and texture byte ceilings remain
+384 MiB and 256 MiB; retained geometry takes priority over texture resolution.
+The initial Editor-path run rejected its dependency closure even though this
+bundle fit: material JSON, the scene manifest and license add encoded bytes that
+are absent from the bundle. `MAX_RESIDENT_CLOSURE_BYTES` now owns a separate
+512 MiB logical-closure ceiling, while single artifacts and assembled bundles
+retain their existing ceilings. Logical aliases are charged independently even
+when they share a physical artifact file. This admission limit does not describe
+peak import memory or decoded renderer residency.
+The source still reports normal-map drops, opaque alpha cutouts and dropped
+dielectric transmission. Required PBRT emitters still use the declared white,
+untextured approximation. Full geometry import/runtime decoding does not qualify
+interactive viewport performance, GPU memory use or PBRT material/lighting parity.
+Earlier SDKs can reject the larger geometry counts even though the LUSCN v6 wire
+layout is unchanged.
 
 ## Third-party code
 

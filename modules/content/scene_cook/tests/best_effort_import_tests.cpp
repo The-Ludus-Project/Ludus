@@ -506,11 +506,13 @@ TEST_CASE("budget planner drops the smallest placements beyond the vertex budget
 {
     SceneIr scene;
     // Three placements exceed the vertex budget, two fit (a multiple of three for whole triangles).
-    constexpr usize VERTICES = ludus::content::scene_format::IMPORT_LIMITS.Vertices / 3 + 3;
+    constexpr usize VERTICES = usize{ludus::content::scene_format::IMPORT_LIMITS.Vertices} / 9 * 3 + 3;
     static_assert(VERTICES % 3 == 0);
     for (usize m = 0; m < 3; ++m)
     {
         IrMesh mesh;
+        // Model a compacted placement whose original records contained duplicates.
+        mesh.SourceVertexCount = static_cast<uint32>(VERTICES * 2);
         REQUIRE(mesh.Positions.TryResize(VERTICES * 3) == true);
         for (usize v = 0; v < VERTICES; ++v)
         {
@@ -534,6 +536,8 @@ TEST_CASE("budget planner drops the smallest placements beyond the vertex budget
     CookPlan plan;
     REQUIRE(PlanBudget(scene, log, plan, nullptr) == ludus::content::Status::Ok);
     CHECK(plan.DroppedPlacements == 1);
+    CHECK(plan.SourceVertices == VERTICES * 2 * 3);
+    CHECK(plan.DroppedVertices == VERTICES * 2);
     CHECK(plan.Placements[0].IsKept == false); // Smallest area (scale 1) goes first.
     CHECK(plan.Placements[2].IsKept == true);
     CHECK(log.CountOccurrences(codes::GEOMETRY_DROPPED) == 1);
@@ -576,7 +580,7 @@ TEST_CASE("budget planner counts shared vertices once and bounds the combined in
     {
         SceneIr scene;
         constexpr usize VERTICES = 100002;
-        constexpr usize INDICES = 2400000;
+        constexpr usize INDICES = (usize{ludus::content::scene_format::IMPORT_LIMITS.Vertices} / 3 + 1) * 3;
         static_assert(INDICES > ludus::content::scene_format::IMPORT_LIMITS.Vertices);
         addMesh(scene, { .VertexCount = VERTICES, .IndexCount = INDICES });
         DiagnosticLog log;
@@ -588,7 +592,7 @@ TEST_CASE("budget planner counts shared vertices once and bounds the combined in
     SECTION("the smallest placement leaves when the combined index count would overflow")
     {
         SceneIr scene;
-        constexpr usize INDICES = 2100000;
+        constexpr usize INDICES = usize{ludus::content::scene_format::IMPORT_LIMITS.TotalIndices} / 9 * 3 + 3;
         static_assert(3 * INDICES > ludus::content::scene_format::IMPORT_LIMITS.TotalIndices);
         static_assert(2 * INDICES <= ludus::content::scene_format::IMPORT_LIMITS.TotalIndices);
         for (usize m = 0; m < 3; ++m)
@@ -631,6 +635,65 @@ TEST_CASE("local smoke test: licensed staircase imports with readable limits", "
     {
         REQUIRE(WriteBestEffortImport(output, result, error) == true);
     }
+}
+
+TEST_CASE("PBRT compaction retains every triangle through runtime decoding", "[scene_cook][pbrt][compaction]")
+{
+    ScratchDirectory scratch;
+    const fs::path entry = scratch.Path / "scene.pbrt";
+    WriteFile(entry,
+              "WorldBegin\nMaterial \"diffuse\"\n"
+              "Shape \"trianglemesh\" \"point3 P\" [0 0 0 1 0 0 1 1 0 0 0 0 1 1 0 0 1 0]\n"
+              "\"normal3 N\" [0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1]\n"
+              "\"integer indices\" [0 1 2 3 4 5]\n");
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportPbrtBestEffort(entry.string(), {}, result, error) == true);
+    CHECK(result.Summary.SourceVertices == 6);
+    CHECK(result.Summary.CookedVertices == 4);
+    CHECK(result.Summary.SourceIndices == 6);
+    CHECK(result.Summary.CookedIndices == result.Summary.SourceIndices);
+    CHECK(result.Summary.DroppedPlacements == 0);
+    CHECK(ReportHasCode(result, codes::VERTICES_COMPACTED) == true);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(DecodesAtRuntime(result, decoded) == true);
+    REQUIRE(decoded.Meshes.GetSize() == 1);
+    CHECK(decoded.Meshes[0].Positions.GetSize() == 4);
+    CHECK(decoded.Meshes[0].Indices.GetSize() == 6);
+}
+
+TEST_CASE("local Bistro import retains full geometry and decodes at runtime", "[scene_cook][pbrt][licensed][bistro]")
+{
+    const char* directoryOrNull = std::getenv("LUDUS_PBRT_SCENES_DIR");
+    if (directoryOrNull == nullptr || fs::exists(fs::path(directoryOrNull) / "bistro/bistro_cafe.pbrt") == false)
+    {
+        SKIP("set LUDUS_PBRT_SCENES_DIR to a directory containing bistro/bistro_cafe.pbrt");
+    }
+    const fs::path entry = fs::path(directoryOrNull) / "bistro/bistro_cafe.pbrt";
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportPbrtBestEffort(entry.string(), {}, result, error) == true);
+    CHECK(result.Summary.Errors == 0);
+    CHECK(result.Summary.SourcePlacements == 1606);
+    CHECK(result.Summary.SourceVertices == 8514702);
+    CHECK(result.Summary.SourceIndices == 8516880);
+    CHECK(result.Summary.CookedIndices == result.Summary.SourceIndices);
+    CHECK(result.Summary.DroppedPlacements == 0);
+    CHECK(ReportHasCode(result, codes::GEOMETRY_DROPPED) == false);
+    CHECK(ReportHasCode(result, codes::SHAPE_FAILED) == false);
+    CHECK(ReportHasCode(result, codes::SHAPE_SKIPPED) == false);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(DecodesAtRuntime(result, decoded) == true);
+    usize vertices = 0;
+    usize indices = 0;
+    for (const ludus::resources::SceneMesh& mesh : decoded.Meshes)
+    {
+        vertices += mesh.Positions.GetSize();
+        indices += mesh.Indices.GetSize();
+    }
+    CHECK(vertices == result.Summary.CookedVertices);
+    CHECK(indices == result.Summary.SourceIndices);
+    CHECK(result.Bundle.GetSize() <= ludus::content::scene_format::IMPORT_LIMITS.BundleBytes);
 }
 
 TEST_CASE("sphere and disk tessellation honour zmin, zmax and phimax", "[scene_cook][pbrt]")

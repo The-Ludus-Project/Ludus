@@ -20,9 +20,14 @@ inline constexpr usize MAX_SOURCE_IMAGE_BYTES = usize{256} * 1024 * 1024;
 inline constexpr usize MAX_REFERENCE_DOCUMENT_BYTES = usize{1024} * 1024;
 /// Inclusive source byte ceiling for the strict reference profile's license text.
 inline constexpr usize MAX_LICENSE_BYTES = usize{1024} * 1024;
-/// Largest artifact, bundle or resident closure in bytes: the largest cooked scene
-/// bundle (scene_format::IMPORT_LIMITS.BundleBytes, LUSCN version 5).
+/// Largest single artifact in bytes; also holds the largest cooked scene bundle
+/// (scene_format::IMPORT_LIMITS.BundleBytes). Dependency closure admission is separate.
 inline constexpr usize MAX_ASSET_BYTES = usize{384} * 1024 * 1024;
+/// Largest logical dependency closure in encoded bytes, including material JSON,
+/// scene manifests and licenses in addition to geometry/texture payloads. Each
+/// selected logical resource is charged once, even when artifact files are shared.
+/// This does not enlarge the assembled bundle or establish a decoded/peak-memory budget.
+inline constexpr usize MAX_RESIDENT_CLOSURE_BYTES = usize{512} * 1024 * 1024;
 /// Largest level or metadata document in bytes.
 inline constexpr usize MAX_METADATA_BYTES = usize{1024} * 1024;
 /// Largest project catalog (assets/catalog.json) in bytes. Every artifact's build

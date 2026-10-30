@@ -13,6 +13,7 @@
 #include "front_end_support.h"
 #include "gltf/gltf_reader.h"
 #include "image/image_reader.h"
+#include "mesh_compaction.h"
 #include "obj/obj_reader.h"
 #include "parallel_tasks.h"
 #include "pbrt/pbrt_parser.h"
@@ -1487,6 +1488,7 @@ void WriteReport(const SceneIr& scene,
     writeCount("instances", scene.Instances.GetSize());
     writeCount("placements", summary.SourcePlacements);
     writeCount("vertices", summary.SourceVertices);
+    writeCount("indices", summary.SourceIndices);
     writeCount("materials", summary.SourceMaterials);
     writeCount("textures", summary.SourceTextures);
     json.WriteKey("lights");
@@ -1514,6 +1516,7 @@ void WriteReport(const SceneIr& scene,
     writeCount("textures", summary.CookedTextures);
     writeCount("objects", summary.CookedObjects);
     writeCount("vertices", summary.CookedVertices);
+    writeCount("indices", summary.CookedIndices);
     writeCount("bundle_bytes", summary.BundleBytes);
     writeCount("scene_format_version", format::VERSION_6);
     writeCount("analytic_lights", facts.LightingOrNull != nullptr ? facts.LightingOrNull->Lights.GetSize() : 0);
@@ -1868,12 +1871,41 @@ void ResetResult(BestEffortResult& outResult) noexcept
     }
     if (status == Status::Ok)
     {
+        for (IrMesh& mesh : scene.Meshes)
+        {
+            const usize originalCount = mesh.GetVertexCount();
+            status = CompactMesh(mesh, cancelOrNull);
+            if (status != Status::Ok)
+            {
+                if (status == Status::Invalid)
+                {
+                    (void)log.Add(DiagnosticSeverity::Error,
+                                  codes::MALFORMED_INPUT,
+                                  {},
+                                  0,
+                                  "mesh attributes or indices are inconsistent before vertex compaction");
+                }
+                break;
+            }
+            if (mesh.GetVertexCount() < originalCount)
+            {
+                (void)log.Add(DiagnosticSeverity::Info,
+                              codes::VERTICES_COMPACTED,
+                              {},
+                              0,
+                              "byte-identical vertex records shared; all triangle indices retained");
+            }
+        }
+    }
+    if (status == Status::Ok)
+    {
         status = PlanBudget(scene, log, plan, cancelOrNull);
     }
     ImportSummary& summary = outResult.Summary;
     summary.SourceFiles = static_cast<uint32>(scene.SourceFiles.GetSize());
     summary.SourcePlacements = static_cast<uint32>(plan.Placements.GetSize());
     summary.SourceVertices = plan.SourceVertices;
+    summary.SourceIndices = plan.SourceIndices;
     summary.SourceMaterials = static_cast<uint32>(scene.Materials.GetSize());
     summary.SourceTextures = static_cast<uint32>(scene.Textures.GetSize());
     summary.SourceAreaLights = scene.Lights.Area;
@@ -1956,6 +1988,7 @@ void ResetResult(BestEffortResult& outResult) noexcept
         for (const CookedMesh& mesh : meshes)
         {
             summary.CookedVertices += static_cast<uint32>(mesh.Vertices.GetSize() / VERTEX_FLOATS);
+            summary.CookedIndices += static_cast<uint32>(mesh.Indices.GetSize());
         }
     }
     if (status == Status::Ok && options.IsDryRun == false)

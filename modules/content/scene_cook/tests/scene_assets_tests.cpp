@@ -938,6 +938,12 @@ TEST_CASE("local smoke test: a licensed scene imports through the editor catalog
     UNSCOPED_INFO("assembled " << decoded.Meshes.GetSize() << " meshes, " << vertices << " vertices, " << indices
                                << " indices, " << assembled.Scene.GetSize() << " bytes");
     CHECK(vertices > 0);
+    if (entryName == "bistro_cafe.pbrt")
+    {
+        CHECK(vertices == 2892578);
+        CHECK(indices == 8516880);
+        CHECK(assembled.Scene.GetSize() <= MAX_ASSET_BYTES);
+    }
     std::error_code ignored;
     std::filesystem::remove_all(work, ignored);
 }
