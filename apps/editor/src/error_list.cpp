@@ -40,6 +40,12 @@ constexpr foundation::int32 ENTRY_ROLE = Qt::UserRole;
 // Output lines longer than this are not compiler diagnostics worth matching.
 constexpr qsizetype MAX_DIAGNOSTIC_LINE_CHARACTERS = 4096;
 constexpr foundation::int32 MAX_DETAILS_HEIGHT = 100;
+// Starting column widths in pixels: room for `Error`, an error code, a file name, `75:12` and `Shader · metal, spirv`.
+constexpr foundation::int32 SEVERITY_COLUMN_WIDTH = 84;
+constexpr foundation::int32 CODE_COLUMN_WIDTH = 150;
+constexpr foundation::int32 FILE_COLUMN_WIDTH = 170;
+constexpr foundation::int32 LOCATION_COLUMN_WIDTH = 64;
+constexpr foundation::int32 ORIGIN_COLUMN_WIDTH = 150;
 constexpr foundation::int32 MINIMUM_TABLE_ROWS = 2;
 
 [[nodiscard]] bool AreEntriesEqual(const ErrorListEntry& left, const ErrorListEntry& right)
@@ -378,6 +384,11 @@ ErrorList::ErrorList(QWidget* parentOrNull)
                                        QStringLiteral("Origin")});
     mTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     mTable->horizontalHeader()->setSectionResizeMode(DESCRIPTION_COLUMN, QHeaderView::Stretch);
+    mTable->setColumnWidth(SEVERITY_COLUMN, SEVERITY_COLUMN_WIDTH);
+    mTable->setColumnWidth(CODE_COLUMN, CODE_COLUMN_WIDTH);
+    mTable->setColumnWidth(FILE_COLUMN, FILE_COLUMN_WIDTH);
+    mTable->setColumnWidth(LOCATION_COLUMN, LOCATION_COLUMN_WIDTH);
+    mTable->setColumnWidth(ORIGIN_COLUMN, ORIGIN_COLUMN_WIDTH);
     mTable->verticalHeader()->hide();
     mTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     mTable->setSelectionBehavior(QAbstractItemView::SelectRows);
