@@ -5911,6 +5911,26 @@ Deleting the asset default makes the first remaining configuration its default.
 If a surviving Subgraph node in the loaded package references the configuration,
 deletion is rejected with the caller's location: remove or rebind that node first.
 
+Choose **Configurations > Duplicate Configuration...** to copy the selected
+configuration under a new name in the same file. The copy keeps its inputs,
+outputs, nodes, connections, options, comment frames and layout, opens
+immediately, and does not change the asset default. The dialog suggests an
+unused `<name>Copy`; the naming rules and eight-configuration limit above apply.
+
+Choose **Duplicate Graph...** to copy the selected `.lurender.json` file, with every
+configuration, as a new `<name>.lurender.json` in the package root whose graph `id`
+is the new name. The name follows the same identifier rules and must not match an
+existing graph `id` or file, including one differing only in case. Subgraph nodes
+that call another configuration of the copied file are retargeted to the copy;
+calls into other graph files keep their targets. Nothing references the new graph
+until you insert it with **Quick Add** or rebind a Subgraph node, so the World
+output does not change. The copy opens on its default configuration.
+
+Both duplications are one undo step that never modifies the original; Undo removes
+the copy, and Save publishes it. Invalid names, a full file, package source
+limits or an unresolved external source conflict preserve the draft and show the
+repair in the status line.
+
 Left-drag empty canvas space to box-select nodes. Shift-drag adds to the selection;
 Shift-click adds a node and Ctrl-click toggles one. **Select All** and **Escape**
 select or clear the group. Pan with middle-drag, hold Space while left-dragging,
