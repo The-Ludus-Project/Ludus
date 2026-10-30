@@ -585,8 +585,15 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mConfiguration->setObjectName(QStringLiteral("renderGraphConfiguration"));
     mConfiguration->setToolTip(QStringLiteral("Root configuration to validate and cook; choices are authored."));
     mConfiguration->setSizeAdjustPolicy(QComboBox::AdjustToContents);
-    QHBoxLayout* header = new QHBoxLayout(mNavigation);
+    // Two rows: what is open and which view shows it, then the configuration it builds and its commands.
+    QVBoxLayout* navigation = new QVBoxLayout(mNavigation);
+    navigation->setContentsMargins(0, 0, 0, 0);
+    QHBoxLayout* header = new QHBoxLayout;
     header->setContentsMargins(0, 0, 0, 0);
+    navigation->addLayout(header);
+    QHBoxLayout* configurationRow = new QHBoxLayout;
+    configurationRow->setContentsMargins(0, 0, 0, 0);
+    navigation->addLayout(configurationRow);
     mSourcesToggle->setObjectName(QStringLiteral("renderGraphToggleSources"));
     mSourcesToggle->setCheckable(true);
     mSourcesToggle->setChecked(QSettings().value(SOURCES_VISIBLE_KEY, true).toBool());
@@ -601,18 +608,19 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     modesLayout->setSpacing(0);
     header->addWidget(modes);
     header->addWidget(mPath, 1);
-    header->addWidget(new QLabel(QStringLiteral("Configuration"), this));
-    header->addWidget(mConfiguration);
+    configurationRow->addWidget(new QLabel(QStringLiteral("Configuration"), this));
+    configurationRow->addWidget(mConfiguration);
+    configurationRow->addStretch(1);
     QPushButton* editInterface = new QPushButton(QStringLiteral("Edit Inputs / Outputs..."), this);
     editInterface->setObjectName(QStringLiteral("renderGraphEditInterface"));
-    header->addWidget(editInterface);
+    configurationRow->addWidget(editInterface);
     connect(editInterface, &QPushButton::clicked, this, &RendererWorkspace::editConfigurationInterface);
     connect(this, &RendererWorkspace::CommandsChanged, editInterface, [this, editInterface]() {
         editInterface->setEnabled(CanCreateSubgraph());
     });
     QPushButton* createSubgraph = new QPushButton(QStringLiteral("Create Subgraph..."), this);
     createSubgraph->setObjectName(QStringLiteral("renderGraphCreateSubgraph"));
-    header->addWidget(createSubgraph);
+    configurationRow->addWidget(createSubgraph);
     connect(createSubgraph, &QPushButton::clicked, this, [this]() { static_cast<void>(PromptCreateSubgraph()); });
     connect(this, &RendererWorkspace::CommandsChanged, createSubgraph, [this, createSubgraph]() {
         createSubgraph->setEnabled(CanCreateSubgraph());
