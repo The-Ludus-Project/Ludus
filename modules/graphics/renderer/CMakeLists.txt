@@ -360,6 +360,14 @@ if(TARGET ludus_renderer_render_tests)
         target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
             "LUDUS_RG3_${template_definition}_TEMPLATE_DIRECTORY=\"${template_package_directory}\"")
     endforeach()
+    # The polygonal-light template's frame capture profile: its ray kernels link the template's
+    # scene_interface.capture_visibility_queries, which only RenderGraphPackage::DecodeCaptureProfile admits.
+    ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_polygonal_light_sampling_capture
+        MANIFEST "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/polygonal_light_sampling_template/main.lushader.json"
+        CAPTURE_PROFILE_PACKAGE)
+    cmake_path(GET rg2_polygonal_light_sampling_capture_CAPTURE_PROFILE_PACKAGE PARENT_PATH polygonal_capture_directory)
+    target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+        "LUDUS_RG3_POLYGONAL_LIGHT_SAMPLING_CAPTURE_DIRECTORY=\"${polygonal_capture_directory}\"")
     set(shared_ray_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/shared_ray")
     set(shared_ray_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/shared_ray")
     ludus_stage_render_graph_fixture("${shared_ray_source}" "${shared_ray_staged}")

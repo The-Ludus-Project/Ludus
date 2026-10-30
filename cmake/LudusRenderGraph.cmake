@@ -60,8 +60,11 @@ endfunction()
 # capture builds are never cooked into runtime packages. RAY_PATH_CAPTURE_PACKAGE (with
 # RAY_PATH_CAPTURE) also cooks the editor-only diagnostic <NAME>.lurgrd and sets
 # <NAME>_RAY_PATH_CAPTURE_PACKAGE in the caller's scope; runtime activation refuses it.
+# CAPTURE_PROFILE_PACKAGE links the ray kernels with scene_interface.capture_visibility_queries and
+# cooks the frame-capture-only <NAME>.lurgcp, setting <NAME>_CAPTURE_PROFILE_PACKAGE in the caller's
+# scope; only RenderGraphPackage::DecodeCaptureProfile admits it.
 function(ludus_compile_render_graph)
-    cmake_parse_arguments(PARSE_ARGV 0 GRAPH "RUNTIME_PACKAGE;RAY_PATH_CAPTURE;RAY_PATH_CAPTURE_PACKAGE"
+    cmake_parse_arguments(PARSE_ARGV 0 GRAPH "RUNTIME_PACKAGE;RAY_PATH_CAPTURE;RAY_PATH_CAPTURE_PACKAGE;CAPTURE_PROFILE_PACKAGE"
         "TARGET;NAME;MANIFEST;ROOT;CONFIGURATION" "")
     if(GRAPH_UNPARSED_ARGUMENTS OR NOT TARGET "${GRAPH_TARGET}" OR
        NOT GRAPH_NAME MATCHES "^[A-Za-z][A-Za-z0-9_]*$" OR NOT GRAPH_MANIFEST)
@@ -72,6 +75,10 @@ function(ludus_compile_render_graph)
     endif()
     if(GRAPH_RAY_PATH_CAPTURE_PACKAGE AND NOT GRAPH_RAY_PATH_CAPTURE)
         message(FATAL_ERROR "ludus_compile_render_graph: RAY_PATH_CAPTURE_PACKAGE requires RAY_PATH_CAPTURE")
+    endif()
+    if(GRAPH_CAPTURE_PROFILE_PACKAGE AND (GRAPH_RUNTIME_PACKAGE OR GRAPH_RAY_PATH_CAPTURE))
+        message(FATAL_ERROR "ludus_compile_render_graph: CAPTURE_PROFILE_PACKAGE is its own build, without "
+                            "RUNTIME_PACKAGE or RAY_PATH_CAPTURE")
     endif()
     get_filename_component(manifest "${GRAPH_MANIFEST}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
     if(NOT GRAPH_ROOT)
@@ -134,6 +141,11 @@ function(ludus_compile_render_graph)
         list(APPEND arguments --ray-path-capture-package "${output}/${GRAPH_NAME}.lurgrd")
         list(APPEND outputs "${output}/${GRAPH_NAME}.lurgrd" "${output}/${GRAPH_NAME}.lurgrd.resources.json")
         set(${GRAPH_NAME}_RAY_PATH_CAPTURE_PACKAGE "${output}/${GRAPH_NAME}.lurgrd" PARENT_SCOPE)
+    endif()
+    if(GRAPH_CAPTURE_PROFILE_PACKAGE)
+        list(APPEND arguments --capture-profile --capture-profile-package "${output}/${GRAPH_NAME}.lurgcp")
+        list(APPEND outputs "${output}/${GRAPH_NAME}.lurgcp" "${output}/${GRAPH_NAME}.lurgcp.resources.json")
+        set(${GRAPH_NAME}_CAPTURE_PROFILE_PACKAGE "${output}/${GRAPH_NAME}.lurgcp" PARENT_SCOPE)
     endif()
     if(GRAPH_RUNTIME_PACKAGE)
         list(APPEND arguments --runtime-package "${output}/${GRAPH_NAME}.lurgrt")

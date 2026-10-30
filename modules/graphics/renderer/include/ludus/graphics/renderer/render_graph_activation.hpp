@@ -49,10 +49,21 @@ public:
     /// otherwise Decode's failures. Any failure leaves the package empty.
     [[nodiscard]] RenderGraphPackageStatus
     DecodeRayPathCapture(foundation::BorrowedView<const foundation::uint8> bytes) noexcept;
+    /// Decode a frame capture profile generation (content::render_graph_format::CAPTURE_PROFILE_PACKAGE_MAGIC),
+    /// whose ray kernels carry the technique's capture shadow-query budget. The layout and copy semantics are
+    /// Decode's; only a frame capture's private graph (RenderGraphCapture) should run its programs, and
+    /// RenderGraphActivation refuses such a package. A runtime package's magic is rejected here.
+    /// @param bytes Complete file image; need only be valid during the call.
+    /// @return Ready on success; UnsupportedVersion for another magic or an unknown layout version;
+    /// otherwise Decode's failures. Any failure leaves the package empty.
+    [[nodiscard]] RenderGraphPackageStatus
+    DecodeCaptureProfile(foundation::BorrowedView<const foundation::uint8> bytes) noexcept;
     /// Whether a decoded generation is held.
     [[nodiscard]] bool IsLoaded() const noexcept;
     /// Whether the held generation was decoded by DecodeRayPathCapture; false when empty.
     [[nodiscard]] bool IsRayPathCapture() const noexcept;
+    /// Whether the held generation was decoded by DecodeCaptureProfile; false when empty.
+    [[nodiscard]] bool IsCaptureProfile() const noexcept;
     /// Borrow the numeric plan; empty when no generation is held. Valid until Reset.
     [[nodiscard]] RenderGraphPlan GetPlan() const noexcept;
     /// Bypass every Denoise operation exactly as a disabled Denoise node cooks: each ray pass
@@ -190,8 +201,9 @@ public:
     /// An earlier unactivated candidate is discarded. A CPU interface mismatch
     /// returns Unsupported with RestartRequired; setup failure returns its status
     /// with Failed. Neither changes the active generation. Pending/Ready is accepted.
-    /// A diagnostic ray path capture package (RenderGraphPackage::IsRayPathCapture) returns
-    /// InvalidDescription without staging: it never becomes a drawing generation.
+    /// A diagnostic ray path capture package (RenderGraphPackage::IsRayPathCapture) or a frame capture profile
+    /// (RenderGraphPackage::IsCaptureProfile) returns InvalidDescription without staging: it never becomes a
+    /// drawing generation.
     [[nodiscard]] rhi::RasterStatus Stage(foundation::core::UniquePtr<RenderGraphPackage> package) noexcept;
     /// Select and stage an authored renderer, taking ownership of both packages.
     /// @param rasterPackage Loaded raster-only graph; mandatory on every device.

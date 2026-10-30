@@ -6,8 +6,10 @@ implemented as of October 30, 2026, with the departures listed under
 source and comparison, is implemented as of October 30, 2026; see
 [Phase 2 implementation notes](#phase-2-implementation-notes). Phase 3, the capture
 budget decision, was measured and decided the same day; see
-[Phase 3: capture budget decision](#phase-3-capture-budget-decision). The contract
-change it recommends is not implemented.
+[Phase 3: capture budget decision](#phase-3-capture-budget-decision). Phase 4a, the
+capture budget and its package, is implemented as of October 30, 2026; see
+[Phase 4a implementation notes](#phase-4a-implementation-notes). Phase 4b, the tiled
+submission and the editor's use of the capture profile, is not implemented.
 
 A render graph is the project's rendering scheme. Today it runs in only two ways:
 as the World viewport's interactive renderer, or for one frame as the raster side
@@ -263,6 +265,9 @@ difference statistics keep their meaning.
    - the polygonal-light template's capture budget.
 
    Show it on a scene with more than eight and at most 128 emissive triangles.
+   Delivered in two parts:
+   - **4a:** the budget, the capture profile package and the template;
+   - **4b:** tiled submission and the editor's use of the profile.
 
 ## Phase 1 implementation notes
 
@@ -425,6 +430,58 @@ between runs, so compare within a run.
   interactive graph exceed the GPU timeout with one authored number.
 - **Many-light scenes** such as the staircase remain impractical for Peters' protocol
   under any option, by its own linear cost. The RIS template is their estimator.
+
+## Phase 4a implementation notes
+
+**The contract.** `scene_interface.capture_visibility_queries` is optional, and
+admitted from `visibility_queries` up to `MAX_CAPTURE_VISIBILITY_QUERIES` (256,
+`render_graph_ray.py`).
+- `build_package(capture_profile=True)` replaces `visibility_queries` with it in a
+  copy of the ray technique, so every ray wrapper of that build, plain and
+  persistent, links the larger budget.
+- The recipe carries `capture_profile`. `cook_runtime` refuses such a build, and
+  `cook_capture_profile` writes it under `CAPTURE_PROFILE_PACKAGE_MAGIC` ("LURC").
+
+**Packages and entry points.**
+- CMake: `ludus_compile_render_graph(... CAPTURE_PROFILE_PACKAGE)` cooks
+  `<NAME>.lurgcp`. It cannot be combined with `RUNTIME_PACKAGE` or
+  `RAY_PATH_CAPTURE`.
+- `RenderGraphPackage::DecodeCaptureProfile` is the only entry point that admits the
+  magic. `RenderGraphActivation::Stage` refuses a capture profile, as it refuses a
+  ray path capture.
+
+**The template.**
+- The polygonal-light template declares `capture_visibility_queries: 256`.
+- Its shader now checks the light count against the linked
+  `MaximumVisibilityQueries`, two per triangle, instead of a fixed 8. Its random
+  layout bound rises to 128 triangles, which is 2 + 4 × 128 dimensions, inside the
+  addressed-random range.
+- Interactive behaviour is unchanged: eight triangles, then the failure colour.
+
+**The editor.**
+- The compute-template merge raises `capture_visibility_queries` like the other
+  budgets.
+- Editing **Visibility queries** keeps a declared capture budget at least as large.
+
+**Evidence.** "A capture profile lets a frame capture shade the 32-emitter room that
+the interactive budget rejects" (`render_graph_ray_tests.cpp`):
+- `Decode` refuses the cooked `.lurgcp`, and `DecodeCaptureProfile` admits it;
+- `RenderGraphCapture` completes two samples of the 32-emitter room with no latched
+  pixel, which the interactive package fails.
+
+Python tests cover the field's admission and the build, cook and refusal paths.
+
+**Phase 4b.**
+- **Tiled submission.** Tiles inside one frame would share one command buffer, and
+  Metal's timeout applies per command buffer. Tiles must therefore be separate
+  submissions, so the counters that today assume one sample per frame
+  (`SubmittedRaySamples`, `HasPendingSamples`, the capture's `SubmittedSamples`) must
+  count completed tiles. The ray uniform has no spare word for a tile origin, so the
+  dispatch needs a dynamic uniform offset (`rhi::ComputeDispatch::BindingOffsets`) or
+  a layout change.
+- **Editor.** A CLI `render-graph capture-profile` rebuild from a generation's saved
+  sources, like `ray-path-capture`, so the editor's graph capture can load the
+  `.lurgcp` automatically.
 
 ## Open questions
 

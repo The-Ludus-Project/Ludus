@@ -143,6 +143,10 @@ SCENE_QUERY_LIMITS = {
     'MAX_SURFACE_QUERIES': 8,
     'MIN_VISIBILITY_QUERIES': 0,
     'MAX_VISIBILITY_QUERIES': 16,
+    # A capture profile (scene_interface.capture_visibility_queries) may grant a frame capture's private
+    # graph more shadow queries per invocation than interactive graphs; see
+    # docs/architecture/render-graph-frame-capture.md#phase-3-capture-budget-decision.
+    'MAX_CAPTURE_VISIBILITY_QUERIES': 256,
     'MIN_LINE_QUERIES': 0,
     'MAX_LINE_QUERIES': 8,
 }

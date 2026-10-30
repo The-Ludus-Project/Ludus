@@ -308,7 +308,7 @@ def validate_manifest(value):
             if scene_interface is not None:
                 keys(scene_interface, ('version', 'surface_queries', 'visibility_queries'), 'scene interface',
                      ('payload', 'local_payload_bytes', 'visibility_buffer', 'line_queries', 'line_traversal',
-                      'polygonal_light_sampling'))
+                      'polygonal_light_sampling', 'capture_visibility_queries'))
                 if 'visibility_buffer' in scene_interface:
                     require(type(scene_interface['visibility_buffer']) is bool, 'Schema', 'visibility_buffer', 'Boolean required')
                 # Optional and additive: stages the projected-solid-angle, LTC, reservoir and LTC-table helpers.
@@ -323,6 +323,11 @@ def validate_manifest(value):
                         ray.SCENE_QUERY_LIMITS['MAX_SURFACE_QUERIES'], 'surface query budget')
                 integer(scene_interface['visibility_queries'], ray.SCENE_QUERY_LIMITS['MIN_VISIBILITY_QUERIES'],
                         ray.SCENE_QUERY_LIMITS['MAX_VISIBILITY_QUERIES'], 'visibility query budget')
+                # Optional: a frame capture's budget, never below the interactive one. Only a capture profile
+                # build (build_package(capture_profile=True)) links it; interactive kernels keep visibility_queries.
+                if 'capture_visibility_queries' in scene_interface:
+                    integer(scene_interface['capture_visibility_queries'], scene_interface['visibility_queries'],
+                            ray.SCENE_QUERY_LIMITS['MAX_CAPTURE_VISIBILITY_QUERIES'], 'capture visibility query budget')
                 # Optional and additive: an absent line budget means 0 (no FindVisibleLineIntervals calls).
                 if 'line_queries' in scene_interface:
                     integer(scene_interface['line_queries'], ray.SCENE_QUERY_LIMITS['MIN_LINE_QUERIES'],
@@ -843,7 +848,7 @@ def compile_program(program, schemas, closure, snapshot, work, helper, tools, ta
     return output, result
 
 
-def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False):
+def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False, capture_profile=False):
     """Capture and lower the same immutable shader contexts for compilation and editing.
 
     No compiler execution or output publication. Returns package metadata, exact
@@ -942,6 +947,10 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False):
     programs = {identity: program for identity, program in programs.items() if identity in selected_programs}
     require(not ray_path_capture or ray.TECHNIQUE in techniques, 'Capability', 'ray path capture',
             'ray path capture requires a RayTracingPipeline or scene ComputePipeline node')
+    require(not capture_profile or ray.TECHNIQUE in techniques, 'Capability', 'capture profile',
+            'a capture profile requires a RayTracingPipeline or scene ComputePipeline node')
+    require(not (capture_profile and ray_path_capture), 'Capability', 'capture profile',
+            'a capture profile and a ray path capture are separate builds')
     ray_profiles = []
     if ray.TECHNIQUE in techniques:
         require(any(target in ('metal', 'spirv') for target in value['profiles']), 'Capability', 'profiles',
@@ -953,6 +962,11 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False):
             technique = deepcopy(techniques[ray.TECHNIQUE])
             if 'scene_interface' in technique:
                 technique['scene_interface']['visibility_buffer'] = profile['visibility_buffer']
+                # The capture profile links the larger capture budget into every wrapper of this build.
+                if capture_profile:
+                    interface = technique['scene_interface']
+                    interface['visibility_queries'] = interface.get('capture_visibility_queries',
+                                                                    interface['visibility_queries'])
             expanded = ray.expand_programs(authored_programs, technique, snapshot, helper, sys.modules[__name__],
                                           profile['variants'], profile['persistent'], schemas, profile['compute'],
                                           profile['native_ray_queries'], ray_path_capture, workgroup=profile['workgroup'])
@@ -987,7 +1001,7 @@ def prepare_sources(manifest, helper, *, root=None, ray_path_capture=False):
 
 
 def build_package(manifest, output, *, helper, compiler, validator=None, spirv_cross=None, root=None, cancel=None, worker_socket=None,
-                  ray_path_capture=False):
+                  ray_path_capture=False, capture_profile=False):
     """Build every authored technique/profile and atomically publish current.json.
 
     Sources/tools must remain identical to their captured snapshot at publication.
@@ -999,12 +1013,15 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
     ray_path_capture links every ray kernel as the diagnostic LUDUS_RAY_PATH_CAPTURE
     variant from the same snapshot. Its stages have their own cache identities, and the
     result is never cooked into a runtime package.
+    capture_profile links every ray kernel with scene_interface.capture_visibility_queries
+    in place of visibility_queries, for a frame capture's private graph; cook it with
+    cook_capture_profile, never cook_runtime.
     """
     started = time.monotonic()
     manifest = Path(manifest).resolve()
     helper = Path(helper).resolve()
     snapshot, value, schemas, programs, techniques, counts, closures, plans, library, graph_path, ray_profiles = prepare_sources(
-        manifest, helper, root=root, ray_path_capture=ray_path_capture)
+        manifest, helper, root=root, ray_path_capture=ray_path_capture, capture_profile=capture_profile)
     manifest_label = manifest.relative_to(snapshot.root).as_posix()
     worker_socket = worker_socket or os.environ.get('LUDUS_SHADER_WORKER_SOCKET')
     hash_file = ToolFileHashes()
@@ -1106,6 +1123,8 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
                             record['visibility_buffer'] = profile['visibility_buffer']
                             if ray_path_capture:
                                 record['ray_path_capture'] = True
+                            if capture_profile:
+                                record['capture_profile'] = True
                             record['canonical'] = deepcopy(record)
                             record['key'] = identity(record['canonical'])
                             recipes.append(record)

@@ -17,8 +17,8 @@
 // Analytic lights and the environment do not light surfaces here: the paper's techniques sample polygons. The emission
 // at the sampled point (including emission maps and sidedness) and its occlusion come from the scene; light samples do
 // not apply the emitter's alpha cutoff, as in the other templates. Each triangle costs up to two visibility queries in
-// the MIS passes and one in the single-technique passes; a scene with more than MAX_POLYGONAL_LIGHT_COUNT emissive
-// triangles fails explicitly (hit_record.slang).
+// the MIS passes and one in the single-technique passes; a scene whose triangles need more shadow queries than the
+// linked budget fails explicitly (hit_record.slang).
 
 // Thanks to the Slang authors, core module noinline attribute reference:
 // https://docs.shader-slang.org/en/latest/external/core-module-reference/attributes/noinline.html
@@ -149,8 +149,8 @@ struct ShadingPoint
 }
 
 /// The estimator's direct lighting from every emissive triangle. Triangle k of the GetEmitter/GetEmitterTriangle order
-/// reads its own random dimensions (hit_record.slang). Fails explicitly for more than MAX_POLYGONAL_LIGHT_COUNT
-/// triangles or an invalid triangle, material or polygon.
+/// reads its own random dimensions (hit_record.slang). Fails explicitly when the triangles need more shadow queries
+/// than the linked visibility budget grants both MIS outputs, or for an invalid triangle, material or polygon.
 [noinline] float3 ShadePolygonalLights(SceneContext scene,
                                        RayLaunch launch,
                                        ShadingPoint shadingPoint,
@@ -160,7 +160,9 @@ struct ShadingPoint
     uint lightCount = 0;
     for (uint emitter = 0; emitter < emitterCount; ++emitter)
         lightCount += uint(GetEmitter(scene, emitter).y);
-    if (lightCount > MAX_POLYGONAL_LIGHT_COUNT)
+    // Every output fails together: the MIS outputs bound the light count by the linked budget.
+    if (lightCount > MAX_POLYGONAL_LIGHT_COUNT ||
+        lightCount * SHADOW_QUERIES_PER_MIS_LIGHT > queries.MaximumVisibilityQueries)
     {
         queries.HasFailed = true;
         return float3(0);

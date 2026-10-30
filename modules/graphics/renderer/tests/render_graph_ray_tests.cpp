@@ -135,7 +135,8 @@ struct PackageLocation final
     std::string_view Directory; ///< Absolute output directory of the graph.
     std::string_view File;      ///< `<NAME>.lurgrt` inside Directory.
 };
-core::UniquePtr<renderer::RenderGraphPackage> LoadPackage(const PackageLocation& location)
+/// Read a cooked package file whole.
+Array<uint8> ReadPackageBytes(const PackageLocation& location)
 {
     filesystem::Directory directory;
     REQUIRE(directory.Open(location.Directory).Succeeded() == true);
@@ -146,6 +147,11 @@ core::UniquePtr<renderer::RenderGraphPackage> LoadPackage(const PackageLocation&
     const filesystem::ReadResult read = file.ReadAt(0, bytes.AsSpan());
     REQUIRE(read.Outcome.Succeeded() == true);
     REQUIRE(read.BytesRead == bytes.GetSize());
+    return bytes;
+}
+core::UniquePtr<renderer::RenderGraphPackage> LoadPackage(const PackageLocation& location)
+{
+    const Array<uint8> bytes = ReadPackageBytes(location);
     renderer::RenderGraphPackage* allocationOrNull = new (std::nothrow) renderer::RenderGraphPackage;
     core::UniquePtr<renderer::RenderGraphPackage> package{allocationOrNull};
     REQUIRE(package.Get() != nullptr);
@@ -7162,4 +7168,50 @@ TEST_CASE("Measure the GPU cost of polygonal-light shadow queries per emissive t
         }
     }
     WARN(report);
+}
+
+TEST_CASE("A capture profile lets a frame capture shade the 32-emitter room that the interactive budget rejects",
+          "[render-graph][gpu][render-graph-capture][polygonal-light-sampling]")
+{
+    // The many-emitter room has 32 emissive triangles: 64 shadow queries per MIS invocation. The interactive
+    // package's budget of 16 fails explicitly; the capture profile links the template's
+    // capture_visibility_queries (256) and shades every triangle, as Peters' protocol requires.
+    GraphGpuFixture fixture(false, false);
+    const ManyEmitterRoom room;
+    const Array<uint8> bytes = ReadPackageBytes(
+        {LUDUS_RG3_POLYGONAL_LIGHT_SAMPLING_CAPTURE_DIRECTORY, "rg2_polygonal_light_sampling_capture.lurgcp"});
+    renderer::RenderGraphPackage refused;
+    // Runtime decoding refuses a capture profile, so its budget never reaches an interactive graph.
+    CHECK(refused.Decode({bytes.GetData(), bytes.GetSize()}) != renderer::RenderGraphPackageStatus::Ready);
+    CHECK(refused.IsLoaded() == false);
+    renderer::RenderGraphPackage* allocationOrNull = new (std::nothrow) renderer::RenderGraphPackage;
+    const core::UniquePtr<renderer::RenderGraphPackage> package{allocationOrNull};
+    REQUIRE(package.Get() != nullptr);
+    REQUIRE(package->DecodeCaptureProfile({bytes.GetData(), bytes.GetSize()}) ==
+            renderer::RenderGraphPackageStatus::Ready);
+    CHECK(package->IsCaptureProfile() == true);
+    const renderer::RenderGraphPlan plan = package->GetPlan();
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    renderer::RenderGraphCaptureSettings settings;
+    settings.Output = GetClampedMisOutput(plan);
+    settings.TargetSamples = 2;
+    renderer::RenderGraphCapture capture;
+    const rhi::RasterStatus started =
+        capture.Start(fixture.Device, fixture.Surface, plan, programs, WIDTH, HEIGHT, settings);
+    REQUIRE((started == rhi::RasterStatus::Ready || started == rhi::RasterStatus::Pending));
+    REQUIRE(FinishCapture(capture, room, 1) == renderer::RenderGraphCapturePhase::Complete);
+    const renderer::RenderGraphCaptureInfo info = capture.GetInfo();
+    CHECK(info.FailedPixels == 0);
+    CHECK(info.MinimumSamples == settings.TargetSamples);
+    // The tiles light the room. After two samples, surfaces the shadow rays found occluded and the open front's
+    // environment stay black; about half of the image receives radiance on Metal.
+    const BorrowedView<const renderer::RenderGraphCapturePixel> pixels = capture.GetPixels();
+    usize lit = 0;
+    for (usize pixel = 0; pixel < pixels.GetSize(); ++pixel)
+    {
+        lit += pixels[pixel].Mean.X + pixels[pixel].Mean.Y + pixels[pixel].Mean.Z > 0 ? 1 : 0;
+    }
+    constexpr usize MINIMUM_LIT_DIVISOR = 4;
+    CHECK(lit > pixels.GetSize() / MINIMUM_LIT_DIVISOR);
 }
