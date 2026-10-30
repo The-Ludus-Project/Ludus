@@ -102,6 +102,7 @@ constexpr int32 MINIMUM_CANVAS_WIDTH = 360;
 constexpr int32 MINIMUM_SOURCE_TREE_WIDTH = 200;
 constexpr int32 STATUS_VISIBLE_LINES = 1;
 constexpr int32 STATUS_PADDING_PIXELS = 4;
+constexpr int32 SOURCE_VIEW_STATE_VERSION = 1;
 
 // Initial share of the document's width: source tree, then the Canvas/Source/Plan/Textures views.
 constexpr int32 SOURCE_TREE_SHARE = 1;
@@ -757,6 +758,9 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     sourceActions->setObjectName(QStringLiteral("renderGraphSourceActions"));
     sourceActions->setPopupMode(QToolButton::InstantPopup);
     QMenu* sourceMenu = new QMenu(sourceActions);
+    QAction* codeViewport = sourceMenu->addAction(QStringLiteral("Code and Viewport"));
+    connect(codeViewport, &QAction::triggered, this, &RendererWorkspace::CodeViewportRequested);
+    sourceMenu->addSeparator();
     for (QPushButton* button : {openCodeEditor, chooseCodeEditor, reloadSources})
     {
         button->hide();
@@ -910,9 +914,9 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         {
             QSettings().setValue(SPLITTER_STATE_KEY, horizontal->saveState());
         }
-        mTree->setVisible(isVisible);
         // Choosing in the Source view is the user's own answer, so leaving it changes nothing.
         mIsOutlineRestoredAfterSource = false;
+        updateChromeVisibility();
         if (isVisible == true)
         {
             static_cast<void>(horizontal->restoreState(QSettings().value(SPLITTER_STATE_KEY).toByteArray()));
@@ -1374,6 +1378,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
             Q_EMIT DocumentChanged();
         }
     });
+    connect(mViews, &QTabWidget::currentChanged, this, [this]() { updateChromeVisibility(); });
     renderStatus();
     renderPreview();
 }
@@ -1398,10 +1403,26 @@ void RendererWorkspace::SetChromeVisible(bool isVisible)
         mViews->setCurrentIndex(mFocusRestoreView);
     }
     mSourceFocusToggle->setText(isVisible == true ? QStringLiteral("Focus Source") : QStringLiteral("Restore Layout"));
+    updateChromeVisibility();
+}
+
+void RendererWorkspace::SetSourceCompanionLayout(bool shouldUseCompactSource)
+{
+    if (mShouldUseCompactSource != shouldUseCompactSource)
+    {
+        mShouldUseCompactSource = shouldUseCompactSource;
+        updateChromeVisibility();
+    }
+}
+
+void RendererWorkspace::updateChromeVisibility()
+{
+    const bool shouldShowNavigation =
+        mIsChromeVisible == true && (mShouldUseCompactSource == false || mViews->currentIndex() != SOURCE_VIEW);
     updateSourceInterfaceVisibility();
-    mNavigation->setVisible(isVisible);
-    mStatusPanel->setVisible(isVisible);
-    mTree->setVisible(isVisible == true && mSourcesToggle->isChecked() == true);
+    mNavigation->setVisible(shouldShowNavigation);
+    mStatusPanel->setVisible(shouldShowNavigation);
+    mTree->setVisible(shouldShowNavigation == true && mSourcesToggle->isChecked() == true);
 }
 
 void RendererWorkspace::FocusActiveView()
@@ -1414,6 +1435,84 @@ void RendererWorkspace::FocusActiveView()
     {
         mCanvas->setFocus(Qt::ShortcutFocusReason);
     }
+}
+
+bool RendererWorkspace::ShowSourceView()
+{
+    if (mDocument.IsLoaded() == false || mSourceFile->count() == 0)
+    {
+        return false;
+    }
+    if (mViews->currentIndex() != SOURCE_VIEW)
+    {
+        const QStringList shaders = GetSelectedShaderSources();
+        if (shaders.isEmpty() == false)
+        {
+            mSourceFile->setCurrentText(shaders.first());
+        }
+        else if (mSourceFile->currentText().endsWith(QStringLiteral(".slang")) == false)
+        {
+            for (int32 index = 0; index < mSourceFile->count(); ++index)
+            {
+                if (mSourceFile->itemText(index).endsWith(QStringLiteral(".slang")) == true)
+                {
+                    mSourceFile->setCurrentIndex(index);
+                    break;
+                }
+            }
+        }
+    }
+    mViews->setCurrentIndex(SOURCE_VIEW);
+    FocusActiveView();
+    return true;
+}
+
+QJsonObject RendererWorkspace::GetSourceViewState() const
+{
+    if (mProjectRoot.isEmpty() == true || mDocument.IsLoaded() == false)
+    {
+        return {};
+    }
+    const QString graph =
+        QDir(mProjectRoot).relativeFilePath(QDir(mDocument.GetPackageRoot()).filePath(mDocument.GetRootGraph()));
+    return {{QStringLiteral("version"), SOURCE_VIEW_STATE_VERSION},
+            {QStringLiteral("graph"), graph},
+            {QStringLiteral("builtIn"), mDocument.IsBuiltIn()},
+            {QStringLiteral("source"), mSourceFile->currentText()},
+            {QStringLiteral("view"), mViews->currentIndex()}};
+}
+
+bool RendererWorkspace::RestoreSourceViewState(const QJsonObject& state)
+{
+    const QString graph = state.value(QStringLiteral("graph")).toString();
+    const int32 view = state.value(QStringLiteral("view")).toInt(-1);
+    if (mProjectRoot.isEmpty() == true || state.value(QStringLiteral("version")).toInt() != SOURCE_VIEW_STATE_VERSION ||
+        state.value(QStringLiteral("builtIn")).isBool() == false ||
+        state.value(QStringLiteral("source")).isString() == false || graph.isEmpty() == true ||
+        QDir::isAbsolutePath(graph) == true || QDir::cleanPath(graph) != graph || graph == QStringLiteral("..") ||
+        graph.startsWith(QStringLiteral("../")) == true || view < 0 || view >= mViews->count())
+    {
+        return false;
+    }
+    const QJsonObject current = GetSourceViewState();
+    if (current.value(QStringLiteral("graph")) != state.value(QStringLiteral("graph")) ||
+        current.value(QStringLiteral("builtIn")) != state.value(QStringLiteral("builtIn")))
+    {
+        // Preferences cannot discard an accepted draft. OpenGraph validates the canonical
+        // project boundary (including symlinks) and publishes a loaded candidate atomically.
+        if (mDocument.IsDirty() == true || state.value(QStringLiteral("builtIn")).toBool() == true ||
+            OpenGraph(QDir(mProjectRoot).filePath(graph)) == false)
+        {
+            return false;
+        }
+    }
+    const int32 sourceIndex = mSourceFile->findText(state.value(QStringLiteral("source")).toString());
+    if (sourceIndex >= 0)
+    {
+        mSourceFile->setCurrentIndex(sourceIndex);
+    }
+    mViews->setCurrentIndex(view);
+    return true;
 }
 
 RendererWorkspace::~RendererWorkspace()

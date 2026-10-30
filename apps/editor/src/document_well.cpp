@@ -492,6 +492,49 @@ bool DocumentWell::MoveActiveDocument(foundation::int32 offset)
     return true;
 }
 
+bool DocumentWell::IsDocumentCurrent(const QWidget* document) const
+{
+    LUDUS_REQUIRE(document != nullptr);
+    const QTabWidget* groupOrNull = groupOfOrNull(document);
+    return groupOrNull != nullptr && groupOrNull->currentWidget() == document;
+}
+
+bool DocumentWell::ShowDocumentsSideBySide(QWidget* firstDocument, QWidget* secondDocument)
+{
+    LUDUS_REQUIRE(firstDocument != nullptr && secondDocument != nullptr);
+    if (firstDocument == secondDocument || IsDocumentAvailable(firstDocument) == false ||
+        IsDocumentAvailable(secondDocument) == false)
+    {
+        return false;
+    }
+    static_cast<void>(OpenDocument(secondDocument));
+    static_cast<void>(OpenDocument(firstDocument));
+    QTabWidget* firstGroupOrNull = groupOfOrNull(firstDocument);
+    QTabWidget* secondGroupOrNull = groupOfOrNull(secondDocument);
+    LUDUS_REQUIRE(firstGroupOrNull != nullptr && secondGroupOrNull != nullptr);
+    const bool shouldBalance = GetGroupCount() == 1;
+    if (firstGroupOrNull == secondGroupOrNull)
+    {
+        QTabWidget* destination =
+            shouldBalance == true
+                ? createGroup(0)
+                : mGroups.at(mGroups.indexOf(secondGroupOrNull) == 0 ? 1 : mGroups.indexOf(secondGroupOrNull) - 1);
+        // The second view (the World in the shader layout) stays in its existing parent.
+        detach(firstDocument);
+        insertInto(destination, firstDocument, destination->count());
+    }
+    mSplitter->setOrientation(Qt::Horizontal);
+    if (shouldBalance == true)
+    {
+        const foundation::int32 half = qMax(1, mSplitter->width() / 2);
+        mSplitter->setSizes({half, half});
+    }
+    static_cast<void>(OpenDocument(secondDocument));
+    static_cast<void>(OpenDocument(firstDocument));
+    Q_EMIT LayoutChanged();
+    return true;
+}
+
 void DocumentWell::MergeGroups()
 {
     if (mGroups.size() < 2)
