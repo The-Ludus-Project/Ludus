@@ -112,8 +112,6 @@
   ],
   "budgets": {
     "configurations": 8,
-    "programs": 8,
-    "artifacts": 32,
-    "pipelines": 16
+    "programs": 8
   }
 }

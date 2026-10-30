@@ -493,26 +493,36 @@ class BuildTests(unittest.TestCase):
                 with self.assertRaisesRegex(ToolingError, 'budget programs: positive integer required'):
                     build.validate_manifest(value)
 
-    def test_program_growth_still_checks_authored_and_artifact_budgets_before_compilation(self):
+    def test_program_growth_checks_the_authored_program_budget_before_compilation(self):
         self.run_build()
         previous = self.pointer()
         value = self.value()
         template = value['programs'][0]
         while len(value['programs']) < 33:
             value['programs'].append({**template, 'id': f'Additional{len(value["programs"])}'})
-        value['budgets'].update(programs=32, artifacts=128)
+        value['budgets'].update(programs=32)
         self.manifest.write_text(json.dumps(value))
         self.calls.clear()
         with self.assertRaisesRegex(ToolingError, '33 exceeds authored budget 32; increase budgets.programs to at least 33'):
             self.run_build()
         self.assertFalse(self.calls)
         self.assertEqual(previous, self.pointer())
-        value['budgets'].update(programs=33, artifacts=64)
-        self.manifest.write_text(json.dumps(value))
-        with self.assertRaisesRegex(ToolingError, 'artifacts: 66 exceeds authored budget 64'):
-            self.run_build()
-        self.assertFalse(self.calls)
-        self.assertEqual(previous, self.pointer())
+
+    def test_target_artifacts_and_pipelines_are_derived_not_authored(self):
+        # Programs x profiles and recipes x profiles follow from the manifest. A legacy authored value
+        # below either product is ignored instead of failing the build after programs were added.
+        value = self.value()
+        artifacts = len(value['programs']) * len(value['profiles'])
+        value['budgets'].update(artifacts=max(1, artifacts - 1), pipelines=1)
+        build.validate_manifest(value)
+        del value['budgets']['artifacts'], value['budgets']['pipelines']
+        build.validate_manifest(value)
+        template = value['programs'][0]
+        value['budgets']['programs'] = build.LIMITS['artifacts']
+        while len(value['programs']) * len(value['profiles']) <= build.LIMITS['artifacts']:
+            value['programs'].append({**template, 'id': f'Additional{len(value["programs"])}'})
+        with self.assertRaisesRegex(ToolingError, f'over the supported {build.LIMITS["artifacts"]}; reuse compatible programs'):
+            build.validate_manifest(value)
 
     def test_capacity_and_configuration_budgets_fail_before_compilation(self):
         for key in build.LIMITS:
@@ -520,7 +530,12 @@ class BuildTests(unittest.TestCase):
             value['budgets'][key] = 0
             with self.assertRaises(ToolingError):
                 build.validate_manifest(value)
-        self.edit(lambda v: v['budgets'].update(artifacts=1))
+        for key in build.AUTHORED_BUDGETS:
+            value = self.value()
+            del value['budgets'][key]
+            with self.assertRaises(ToolingError):
+                build.validate_manifest(value)
+        self.edit(lambda v: v['budgets'].update(programs=1))
         with self.assertRaisesRegex(ToolingError, 'authored budget'):
             self.run_build()
         self.assertFalse(self.calls)

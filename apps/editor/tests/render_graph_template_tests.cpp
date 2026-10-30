@@ -1,5 +1,6 @@
 // Built-in creation and canvas settings use the real shared backend and document history.
 #include "internal/controller.h"
+#include "internal/render_graph_build_limits.h"
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_configuration_template.h"
 #include "internal/render_graph_document.h"
@@ -492,7 +493,7 @@ TEST_CASE("ReSTIR import upgrades default budgets beside an existing ray pipelin
     const QJsonObject after = QJsonDocument::fromJson(afterManifest).object();
     CHECK(after.value(QStringLiteral("programs")).toArray().size() == 12);
     CHECK(after.value(QStringLiteral("budgets")).toObject().value(QStringLiteral("programs")).toInt() == 16);
-    CHECK(after.value(QStringLiteral("budgets")).toObject().value(QStringLiteral("artifacts")).toInt() == 64);
+    CHECK(after.value(QStringLiteral("budgets")).toObject().contains(QStringLiteral("artifacts")) == false);
     for (const QJsonValueConstRef program : previousPrograms)
     {
         CHECK(after.value(QStringLiteral("programs")).toArray().contains(program) == true);
@@ -505,7 +506,8 @@ TEST_CASE("ReSTIR import upgrades default budgets beside an existing ray pipelin
     CHECK(document.GetDraft(manifestFile) == afterManifest);
 }
 
-TEST_CASE("ReSTIR import preserves custom admission budgets", "[editor][render-graph][restir-library]")
+TEST_CASE("ReSTIR import preserves custom admission budgets and drops derived legacy fields",
+          "[editor][render-graph][restir-library]")
 {
     QTemporaryDir project;
     RendererWorkspace workspace({});
@@ -523,8 +525,9 @@ TEST_CASE("ReSTIR import preserves custom admission budgets", "[editor][render-g
     QString error;
     REQUIRE(document.ApplyRestirTemplate(ROOT_GRAPH, QStringLiteral("Lighting"), error) ==
             RenderGraphDocumentStatus::Ok);
+    const QJsonObject authored{{QStringLiteral("configurations"), 4}, {QStringLiteral("programs"), 24}};
     CHECK(QJsonDocument::fromJson(document.GetDraft(manifestFile)).object().value(QStringLiteral("budgets")) ==
-          budgets);
+          authored);
 }
 
 TEST_CASE("ReSTIR import identifies conflicting authored inputs without changing the draft",
@@ -1297,14 +1300,14 @@ TEST_CASE("Template program budget approval is bounded and transactional", "[edi
     }
 }
 
-TEST_CASE("Template program budget approval also covers the per-profile artifact budget",
+TEST_CASE("Template imports derive target artifacts instead of reading a legacy artifact budget",
           "[editor][render-graph][template-budget]")
 {
-    // The build admits programs times target profiles against budgets.artifacts, so a larger program
-    // budget alone does not admit the template.
+    // budgets.artifacts used to duplicate programs times profiles; a stale value below that product failed
+    // the build after a template import. Import now ignores and removes it.
     const QString identity = GENERATE(QStringLiteral("restir-di"), QStringLiteral("polygonal-light-sampling"));
     constexpr int32 GENEROUS_PROGRAMS = 64;
-    constexpr int32 ADMITTED_PROGRAMS = 2;
+    constexpr int32 STALE_ARTIFACTS = 2;
     QTemporaryDir project;
     RendererWorkspace workspace({});
     workspace.SetProject(project.path(), 1);
@@ -1312,34 +1315,44 @@ TEST_CASE("Template program budget approval also covers the per-profile artifact
     RenderGraphDocument& document = workspace.GetDocument();
     const QString manifestFile = QStringLiteral("main.lushader.json");
     QJsonObject manifest = QJsonDocument::fromJson(document.GetDraft(manifestFile)).object();
-    const int32 profileCount = static_cast<int32>(manifest.value(QStringLiteral("profiles")).toArray().size());
-    REQUIRE(profileCount > 0);
     QJsonObject budgets = manifest.value(QStringLiteral("budgets")).toObject();
     budgets.insert(QStringLiteral("programs"), GENEROUS_PROGRAMS);
-    budgets.insert(QStringLiteral("artifacts"), ADMITTED_PROGRAMS * profileCount);
+    budgets.insert(QStringLiteral("artifacts"), STALE_ARTIFACTS);
+    budgets.insert(QStringLiteral("pipelines"), STALE_ARTIFACTS);
     manifest.insert(QStringLiteral("budgets"), budgets);
     REQUIRE(document.SetText(manifestFile, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
     const QByteArray beforeManifest = document.GetDraft(manifestFile);
     QString error;
     RenderGraphTemplateBudgetIncrease budget;
-    CHECK(document.ApplyConfigurationTemplate(ROOT_GRAPH, QStringLiteral("Lighting"), identity, error, {}, &budget) !=
-          RenderGraphDocumentStatus::Ok);
-    CHECK(budget.CurrentPrograms == ADMITTED_PROGRAMS);
-    REQUIRE(budget.RequiredPrograms > ADMITTED_PROGRAMS);
-    CHECK(error.contains(QStringLiteral("budgets.artifacts is %1").arg(ADMITTED_PROGRAMS * profileCount)) == true);
-    CHECK(document.GetDraft(manifestFile) == beforeManifest);
-    const int32 requiredPrograms = budget.RequiredPrograms;
-    budget.ApprovedPrograms = requiredPrograms;
     REQUIRE(document.ApplyConfigurationTemplate(ROOT_GRAPH, QStringLiteral("Lighting"), identity, error, {}, &budget) ==
             RenderGraphDocumentStatus::Ok);
-    const QJsonObject after = QJsonDocument::fromJson(document.GetDraft(manifestFile)).object();
-    const QJsonObject afterBudgets = after.value(QStringLiteral("budgets")).toObject();
+    CHECK(error.isEmpty() == true);
+    CHECK(budget.RequiredPrograms == 0);
+    const QJsonObject afterBudgets =
+        QJsonDocument::fromJson(document.GetDraft(manifestFile)).object().value(QStringLiteral("budgets")).toObject();
     CHECK(afterBudgets.value(QStringLiteral("programs")).toInt() == GENEROUS_PROGRAMS);
-    CHECK(afterBudgets.value(QStringLiteral("artifacts")).toInt() == requiredPrograms * profileCount);
-    CHECK(after.value(QStringLiteral("programs")).toArray().size() * profileCount <=
-          afterBudgets.value(QStringLiteral("artifacts")).toInt());
+    CHECK(afterBudgets.contains(QStringLiteral("artifacts")) == false);
+    CHECK(afterBudgets.contains(QStringLiteral("pipelines")) == false);
     REQUIRE(document.Undo() == true);
     CHECK(document.GetDraft(manifestFile) == beforeManifest);
+}
+
+TEST_CASE("Template program budgets cannot approve past the supported artifact ceiling",
+          "[editor][render-graph][template-budget]")
+{
+    constexpr int32 PROFILE_COUNT = 2;
+    const int32 requiredPrograms = static_cast<int32>(MAX_SHADER_ARTIFACTS / PROFILE_COUNT) + 1;
+    QJsonObject manifest{{QStringLiteral("profiles"), QJsonArray{QStringLiteral("metal"), QStringLiteral("wgsl")}},
+                         {QStringLiteral("budgets"),
+                          QJsonObject{{QStringLiteral("configurations"), 8}, {QStringLiteral("programs"), 8}}}};
+    const QJsonObject before = manifest;
+    RenderGraphTemplateBudgetIncrease budget;
+    budget.ApprovedPrograms = requiredPrograms;
+    QString error;
+    CHECK(EnsureTemplateProgramBudget(manifest, requiredPrograms, QStringLiteral("Large"), error, &budget) == false);
+    CHECK(error.contains(QStringLiteral("supported limit of %1 target artifacts").arg(MAX_SHADER_ARTIFACTS)) == true);
+    CHECK(budget.RequiredPrograms == 0);
+    CHECK(manifest == before);
 }
 
 TEST_CASE("Canvas template picker confirms a shader program budget increase", "[editor][render-graph][template-budget]")

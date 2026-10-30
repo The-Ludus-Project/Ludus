@@ -7,10 +7,10 @@ namespace ludus::editor
 /// Upgrade unchanged engine-default manifest budgets to the selected template's budgets.
 /// Custom limits are retained. Returns false when embedded defaults are unavailable; no disk writes.
 [[nodiscard]] bool UpgradeDefaultTemplateBudgets(QJsonObject& inoutManifest, const QJsonObject& source);
-/// Check the merged program count against the effective limit, the smaller of budgets.programs and
-/// budgets.artifacts per target profile, and report a blocked increase through the optional request.
-/// Only explicit approval raises budgets.programs and budgets.artifacts to the exact required counts;
-/// larger authored values are retained. No disk writes.
+/// Check the merged program count and report a blocked increase through the optional request.
+/// Only explicit approval raises budgets.programs to the exact required count. Programs times target
+/// profiles beyond the supported artifact ceiling fail without a request, since no approval admits them.
+/// On success the legacy budgets.artifacts and budgets.pipelines fields are removed; no disk writes.
 [[nodiscard]] bool EnsureTemplateProgramBudget(QJsonObject& inoutManifest,
                                                foundation::int32 requiredPrograms,
                                                const QString& templateName,

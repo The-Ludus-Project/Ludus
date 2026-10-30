@@ -2930,8 +2930,10 @@ TEST_CASE("Add Shader grows exhausted budgets with sources as one undoable edit"
     manifest.insert(QStringLiteral("programs"), programs);
     QJsonObject budgets = manifest.value(QStringLiteral("budgets")).toObject();
     budgets.insert(QStringLiteral("programs"), existingProgramCount);
-    constexpr qsizetype INITIAL_ARTIFACT_BUDGET = 64;
-    budgets.insert(QStringLiteral("artifacts"), INITIAL_ARTIFACT_BUDGET);
+    // A legacy artifact budget below the grown programs times profiles neither blocks creation nor survives it:
+    // target artifacts are derived from programs and profiles.
+    constexpr qsizetype LEGACY_ARTIFACT_BUDGET = 64;
+    budgets.insert(QStringLiteral("artifacts"), LEGACY_ARTIFACT_BUDGET);
     manifest.insert(QStringLiteral("budgets"), budgets);
     REQUIRE(document.SetText(manifestFile, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
     const QJsonObject node = MakePipelineNode(QStringLiteral("RayTracingPipeline"), QStringLiteral("trace"));
@@ -2975,8 +2977,8 @@ TEST_CASE("Add Shader grows exhausted budgets with sources as one undoable edit"
     CHECK(createdManifest.value(QStringLiteral("programs")).toArray().size() == requiredPrograms);
     const QJsonObject createdBudgets = createdManifest.value(QStringLiteral("budgets")).toObject();
     CHECK(createdBudgets.value(QStringLiteral("programs")).toInteger() == requiredPrograms);
-    CHECK(createdBudgets.value(QStringLiteral("artifacts")).toInteger() == requiredPrograms * 2);
-    CHECK(createdBudgets.value(QStringLiteral("pipelines")) == budgets.value(QStringLiteral("pipelines")));
+    CHECK(createdBudgets.contains(QStringLiteral("artifacts")) == false);
+    CHECK(createdBudgets.contains(QStringLiteral("pipelines")) == false);
     CHECK(createdBudgets.value(QStringLiteral("configurations")) == budgets.value(QStringLiteral("configurations")));
     const QByteArray createdManifestBytes = document.GetDraft(manifestFile);
     QStringList saved;
@@ -3013,7 +3015,6 @@ TEST_CASE("shader authoring preserves larger budgets and assignments at capacity
     {
         constexpr uint64 LARGE_PROGRAM_BUDGET = uint64{1} << 40;
         budgets.insert(QStringLiteral("programs"), static_cast<float64>(LARGE_PROGRAM_BUDGET));
-        budgets.insert(QStringLiteral("artifacts"), 128);
     }
     SECTION("assignment at the artifact ceiling creates no program or budget edit")
     {
@@ -3041,7 +3042,14 @@ TEST_CASE("shader authoring preserves larger budgets and assignments at capacity
     REQUIRE(document.ApplyPipeline(ROOT_GRAPH, DEFAULT_CONFIGURATION, node, &error) == RenderGraphDocumentStatus::Ok);
     CHECK(error.isEmpty() == true);
     const QJsonObject after = QJsonDocument::fromJson(document.GetDraft(manifestFile)).object();
-    CHECK(after.value(QStringLiteral("budgets")).toObject() == budgets);
+    QJsonObject expectedBudgets = budgets;
+    if (program != QStringLiteral("Geometry"))
+    {
+        // Creation rewrites the budgets and drops the legacy derived fields; authored values are kept.
+        expectedBudgets.remove(QStringLiteral("artifacts"));
+        expectedBudgets.remove(QStringLiteral("pipelines"));
+    }
+    CHECK(after.value(QStringLiteral("budgets")).toObject() == expectedBudgets);
     if (program == QStringLiteral("Geometry"))
     {
         CHECK(after == manifest);
