@@ -7097,3 +7097,69 @@ TEST_CASE("Render graph capture progress read-backs show exact partial counts an
     CHECK(capture.GetInfo().MinimumSamples == CAPTURE_TARGET_SAMPLES);
     CHECK(capture.GetInfo().ReadbackSamples == CAPTURE_TARGET_SAMPLES);
 }
+
+TEST_CASE("Measure the GPU cost of polygonal-light shadow queries per emissive triangle",
+          "[.capture-budget-measurement]")
+{
+    // Phase 3 evidence for docs/architecture/render-graph-frame-capture.md: GPU time of the polygonal-light
+    // template's four shade passes as the number of emissive triangles grows. The many-emitter room keeps its
+    // geometry; only the first tiles emit, so the emitter loop is the variable. Clamped MIS and balance cost
+    // two shadow queries per triangle, projected solid angle and LTC one.
+    GraphGpuFixture fixture(true, false);
+    constexpr usize MEASURED_TILE_COUNTS = 4;
+    constexpr usize SHADE_KERNELS = 4;
+    const usize pixels = usize{BENCHMARK_EXTENT.Width} * BENCHMARK_EXTENT.Height;
+    std::string report = "pixels " + std::to_string(pixels) + "; per triangle count, median ms of the four passes:";
+    for (usize tiles = 1; tiles <= MEASURED_TILE_COUNTS; ++tiles)
+    {
+        ManyEmitterRoom room;
+        for (usize tile = tiles; tile < MANY_EMITTER_COUNT; ++tile)
+        {
+            room.Materials[MANY_EMITTER_FIRST_LIGHT + tile].Emission = {};
+        }
+        PreparedGraph graph(fixture, POLYGONAL_LIGHT_SAMPLING_TEMPLATE, room, 1, BENCHMARK_EXTENT);
+        StaticArray<Array<float64>, SHADE_KERNELS> durations;
+        for (Array<float64>& values : durations)
+        {
+            REQUIRE(values.TryEnsureCapacity(BENCHMARK_TIMED_FRAMES) == true);
+        }
+        for (usize frame = 0; frame < BENCHMARK_WARMUP_FRAMES + BENCHMARK_TIMED_FRAMES; ++frame)
+        {
+            const rhi::RasterStatus armed = rhi::ArmGpuPassTimings(fixture.Device);
+            if (armed == rhi::RasterStatus::Unsupported)
+            {
+                SKIP("Per-pass GPU timestamps are required for this measurement");
+            }
+            REQUIRE(armed == rhi::RasterStatus::Ready);
+            RenderFrame(graph.Graph, fixture);
+            rhi::GpuPassTimings timings;
+            REQUIRE(rhi::GetGpuPassTimings(fixture.Device, timings) == rhi::RasterStatus::Ready);
+            REQUIRE(timings.State == rhi::GpuTimingState::Available);
+            if (frame < BENCHMARK_WARMUP_FRAMES)
+            {
+                continue;
+            }
+            // The k-th compute operation of the ordered ray sequence is its k-th pass.
+            usize kernel = 0;
+            for (usize index = 0; index < timings.Count && kernel < SHADE_KERNELS; ++index)
+            {
+                const rhi::GpuPassTiming& pass = timings.Passes[index];
+                if (pass.Kind != rhi::GpuPassKind::Compute)
+                {
+                    continue;
+                }
+                REQUIRE(pass.Timing.State == rhi::GpuTimingState::Available);
+                REQUIRE(durations[kernel].TryAdd(static_cast<float64>(pass.Timing.DurationNanoseconds) /
+                                                 BENCHMARK_NANOSECONDS_PER_MILLISECOND) == true);
+                ++kernel;
+            }
+            REQUIRE(kernel == SHADE_KERNELS);
+        }
+        report += "\n  " + std::to_string(tiles * 2) + " triangles:";
+        for (Array<float64>& values : durations)
+        {
+            report += ' ' + std::to_string(ComputeMedian(values));
+        }
+    }
+    WARN(report);
+}

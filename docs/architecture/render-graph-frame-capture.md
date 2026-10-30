@@ -4,8 +4,10 @@ Status: proposed October 29, 2026. Phase 1, the engine capture and its file, is
 implemented as of October 30, 2026, with the departures listed under
 [Phase 1 implementation notes](#phase-1-implementation-notes). Phase 2, the editor
 source and comparison, is implemented as of October 30, 2026; see
-[Phase 2 implementation notes](#phase-2-implementation-notes). Phase 3 is not
-implemented.
+[Phase 2 implementation notes](#phase-2-implementation-notes). Phase 3, the capture
+budget decision, was measured and decided the same day; see
+[Phase 3: capture budget decision](#phase-3-capture-budget-decision). The contract
+change it recommends is not implemented.
 
 A render graph is the project's rendering scheme. Today it runs in only two ways:
 as the World viewport's interactive renderer, or for one frame as the raster side
@@ -251,7 +253,16 @@ difference statistics keep their meaning.
    as the comparison's raster side.
 3. **Capture budgets.** Decide among the [budget options](#budgets-the-polygonal-light-case),
    measure tiled dispatch against the GPU watchdog, and revise the scene interface
-   contract if that decision requires it.
+   contract if that decision requires it. Decided:
+   [Phase 3: capture budget decision](#phase-3-capture-budget-decision).
+4. **Capture profile.** Implement the decision. This covers:
+   - `capture_visibility_queries` in the scene interface, with the build admission
+     and the editor control;
+   - the cooked capture variant of the ray stages;
+   - tiled dispatch for the capture's graph, sized from the measured cost per light;
+   - the polygonal-light template's capture budget.
+
+   Show it on a scene with more than eight and at most 128 emissive triangles.
 
 ## Phase 1 implementation notes
 
@@ -329,11 +340,97 @@ Phase 2 adds `ViewportGraphCapture`
     the preview does.
   - It rejects incomplete scene coverage instead of drawing the diagnostic colour.
 
+## Phase 3: capture budget decision
+
+### What the budget bounds
+
+`visibility_queries` is a count and nothing more. The generated wrapper stores the
+technique's value in `RayQueryContext::MaximumVisibilityQueries`
+(`scripts/python/ludus_tools/render_graph_ray.py`). `TestVisibility` in
+`scene_shader.slang` compares a per-invocation counter with it and latches failure
+when the count is reached. No storage, register or record size scales with the
+budget, so raising the maximum costs nothing until a shader issues more queries.
+The maximum of 16 arrived with the shared scene contract (`3f1ecd53`, October 20,
+2026), and neither that commit nor the contract records a reason. What the bound
+does in practice is cap the work one pixel can do in one dispatch.
+
+### Measurement
+
+The hidden test "Measure the GPU cost of polygonal-light shadow queries per
+emissive triangle" (`[.capture-budget-measurement]` in
+`render_graph_ray_tests.cpp`) measures this. It renders the polygonal-light
+template at 288 × 192 (55,296 pixels) in the many-emitter room with 2, 4, 6 and 8
+emissive triangles: same geometry, only the first tiles emit. It reports the
+median per-pass GPU time over 64 frames after 8 warm-up frames, from
+`rhi::GpuPassTimings`. Apple M5, Metal, two runs:
+
+| Emissive triangles | Clamped MIS (ms) | Balance (ms) | Projected solid angle (ms) | LTC (ms) |
+| --- | --- | --- | --- | --- |
+| 2 | 1.59 / 1.56 | 1.50 / 1.51 | 0.81 / 0.81 | 0.94 / 0.93 |
+| 4 | 3.03 / 3.18 | 2.94 / 3.18 | 1.68 / 1.73 | 1.88 / 1.92 |
+| 6 | 5.06 / 4.72 | 5.27 / 4.59 | 2.90 / 3.22 | 3.03 / 3.26 |
+| 8 | 6.93 / 6.38 | 6.86 / 6.27 | 3.63 / 3.38 | 4.09 / 3.79 |
+
+The cost is linear in the number of lights.
+- **Two-sample passes:** each emissive triangle adds about 0.8 ms, about 15 ns per
+  pixel. This covers both samples and both shadow queries.
+- **Single-sample passes:** about 0.45 ms, or 8 ns per pixel.
+
+**Caveat.** These are lower bounds. The room's BVH is tiny, and deeper geometry
+makes every shadow query more expensive. GPU clocks on this machine also vary
+between runs, so compare within a run.
+
+### What the numbers imply
+
+- **Per-sample cost.** At 1920 × 1080, one clamped-MIS sample costs about 31 ms per
+  emissive triangle:
+  - at today's maximum (8 triangles), about 0.25 s;
+  - for the staircase's thousands of emissive triangles, about a minute for one sample
+    per pixel of one pass.
+- **Budget cost.** Raising the budget costs nothing in itself. The time an author
+  actually spends is pixels × lights × about 8 ns per shadow-sampled light per
+  technique.
+- **Dispatch time.** That time is bounded per dispatch by the platform's GPU timeout.
+  Windows resets the display driver after two seconds by default (TDR). Metal ends a
+  command buffer that runs too long with `MTLCommandBufferError.timeout`, but
+  documents no fixed limit.
+- **Interactive graphs.** For an interactive viewport the bound protects frame time
+  and the watchdog. A viewport of 2.6 megapixels with 64 triangles would already take
+  about 2.5 s per frame. So the interactive maximum should stay low.
+
+### Decision
+
+**Adopt option 1, a capture profile in the scene interface.** Phase 4 implements it.
+
+- **Manifest.** A technique's `scene_interface` may declare
+  `capture_visibility_queries`, defaulting to `visibility_queries`, up to a separate
+  capture maximum. 256 is proposed: 128 triangles for two-sample estimators.
+- **Cook.** It produces a capture variant of the ray stages with that budget, as the
+  ray path capture already cooks a capture variant. Only `RenderGraphCapture` loads
+  the variant; the viewport keeps the interactive budget.
+- **Tiled dispatch.** The capture's graph renders the image in tiles. Each tile's
+  estimated time, at the measured cost per light per pixel times its pixels, stays
+  under a dispatch target of about 0.25 s, well under the two-second TDR default. This
+  needs a renderer extension: a pass dispatched over a pixel sub-rectangle with
+  accumulation unchanged.
+- **Polygonal-light template.** It declares `capture_visibility_queries: 256`. Peters'
+  protocol then covers up to 128 emissive triangles in a capture. At 512 × 512 and 64
+  triangles, one clamped-MIS sample is about 0.25 s, and 1024 samples of the four
+  passes about 10 minutes.
+
+**Why not the other options.**
+- **Option 2**, a batched or emitter-scaled query, removes the count but not the
+  linear time. It is a contract change for every traversal, interactive included.
+- **Option 3**, raising `MAX_VISIBILITY_QUERIES` for every technique, would let an
+  interactive graph exceed the GPU timeout with one authored number.
+- **Many-light scenes** such as the staircase remain impractical for Peters' protocol
+  under any option, by its own linear cost. The RIS template is their estimator.
+
 ## Open questions
 
-- **Why 16?** The scene interface's maximum of 16 visibility queries has no
-  recorded reason. The capture-budget decision should establish one by measurement
-  before choosing an option.
+- **Why 16?** No reason is recorded; see [what the budget bounds](#what-the-budget-bounds).
+  The capture profile above leaves 16 as the interactive maximum. A future change
+  could derive both maxima from a frame-time target instead.
 - **Seed control.** Should a capture accept an explicit seed, as RT1 does, beyond
   the camera and scene revision that already determine graph sampling?
 - **Several outputs.** Should one capture save every output of a configuration,
