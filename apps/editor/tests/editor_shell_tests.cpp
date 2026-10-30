@@ -9,6 +9,7 @@
 #include "internal/options_dialog.h"
 #include "internal/project_explorer.h"
 #include "internal/render_graph_canvas.h"
+#include "internal/render_preview.h"
 #include "internal/renderer_workspace.h"
 #include "internal/world_workspace.h"
 
@@ -593,6 +594,51 @@ TEST_CASE("Save and Undo follow the active document tab", "[editor][layout][shel
     CHECK(entities->count() == before);
     save->trigger();
     CHECK(world->Dirty() == false);
+}
+
+TEST_CASE("Destroying the window stops World previews before deleting the Render Graph they borrow",
+          "[editor][layout][shell][document]")
+{
+    QTemporaryDir directory;
+    QTemporaryDir settings;
+    EditorController controller(ToolingPaths{}, nullptr, QDir(settings.path()).filePath(QStringLiteral("recent.json")));
+    QStringList destroyed;
+    {
+        MainWindow window(&controller, nullptr, QDir(settings.path()).filePath(QStringLiteral("workspace.json")));
+        window.show();
+        window.activateWindow();
+        controller.OpenProject(WriteProject(directory));
+        Settle();
+        DocumentWell& well = Well(window);
+        WorldWorkspace* world = window.findChild<WorldWorkspace*>();
+        RendererWorkspace* renderer = window.findChild<RendererWorkspace*>();
+        REQUIRE(world != nullptr);
+        REQUIRE(renderer != nullptr);
+        const QString path = QFileInfo(directory.path()).canonicalFilePath() + QStringLiteral("/teardown.world.json");
+        REQUIRE(world->Create(path) == true);
+        REQUIRE(well.OpenDocument(world) == true);
+        REQUIRE(well.OpenDocument(renderer) == true);
+        REQUIRE(well.SplitActiveDocument(Qt::Horizontal) == true);
+        REQUIRE(well.OpenDocument(world) == true);
+        QPushButton* add = world->findChild<QPushButton*>(QStringLiteral("worldAdd"));
+        REQUIRE(add != nullptr);
+        add->click();
+        Settle();
+        Action(window, QStringLiteral("document.save"))->trigger();
+        REQUIRE(world->Dirty() == false);
+        // Only an admitted device resets its frames, which notifies the graph views, on stop.
+        constexpr int32 DEVICE_TIMEOUT_MILLISECONDS = 30000;
+        REQUIRE(QTest::qWaitFor([world]() { return world->GetRenderPreview().HasDevice(); },
+                                DEVICE_TIMEOUT_MILLISECONDS) == true);
+        // The World's viewport graph views read the Renderer while their device stops. Record
+        // which document the well deletes first; the order exercised is the one that faulted.
+        QObject::connect(renderer, &QObject::destroyed, [&destroyed]() {
+            destroyed.append(QStringLiteral("renderer"));
+        });
+        QObject::connect(world, &QObject::destroyed, [&destroyed]() { destroyed.append(QStringLiteral("world")); });
+        // No close event: closeEvent stops the previews itself, so only destruction is exercised.
+    }
+    CHECK(destroyed == QStringList{QStringLiteral("renderer"), QStringLiteral("world")});
 }
 
 TEST_CASE("Project Explorer opens documents and Error List navigates to graph nodes and lines",
