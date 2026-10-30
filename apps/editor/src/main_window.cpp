@@ -551,11 +551,11 @@ void MainWindow::BuildMenus()
     buildButton->setDefaultAction(mBuildGraphAction);
     buildButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     buildButton->setPopupMode(QToolButton::MenuButtonPopup);
-    QMenu* buildMenu = new QMenu(buildButton);
-    buildMenu->setObjectName(QStringLiteral("renderGraphBuildMenu"));
-    buildMenu->addAction(mBuildGraphAction);
-    buildMenu->addAction(mBuildPreviewGraphAction);
-    buildButton->setMenu(buildMenu);
+    QMenu* buildSplitMenu = new QMenu(buildButton);
+    buildSplitMenu->setObjectName(QStringLiteral("renderGraphBuildMenu"));
+    buildSplitMenu->addAction(mBuildGraphAction);
+    buildSplitMenu->addAction(mBuildPreviewGraphAction);
+    buildButton->setMenu(buildSplitMenu);
     mRenderGraphToolbar->addWidget(buildButton);
     mRenderGraphToolbar->addAction(mLivePreviewGraphAction);
     mRenderGraphToolbar->addAction(mCancelGraphAction);
