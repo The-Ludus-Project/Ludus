@@ -2438,7 +2438,10 @@ void RendererWorkspace::AcceptResult(const RenderGraphJobResult& result)
         if (result.Request.ShouldPreview == true &&
             result.Request.InputIdentity == getBuildIdentity(result.Request.Source))
         {
-            setProblem(mBuildProblem, mStatus->text());
+            // The preview's own problem line keeps the compiler's words, since it replaces the picture.
+            setProblem(mBuildProblem,
+                       QStringLiteral("%1 failed - %2: %3 [%4]. Preview unchanged.")
+                           .arg(result.Request.Action, result.Code, result.Message, DescribeLocation(result.Location)));
         }
     }
     Q_EMIT JobFinished();
