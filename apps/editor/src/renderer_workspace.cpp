@@ -98,6 +98,7 @@ constexpr int32 MINIMUM_CANVAS_WIDTH = 360;
 constexpr int32 MINIMUM_SOURCE_TREE_WIDTH = 200;
 constexpr int32 STATUS_VISIBLE_LINES = 1;
 constexpr int32 STATUS_PADDING_PIXELS = 4;
+
 // Initial share of the document's width: source tree, then the Canvas/Source/Plan/Textures views.
 constexpr int32 SOURCE_TREE_SHARE = 1;
 constexpr int32 VIEWS_SHARE = 4;
@@ -115,6 +116,15 @@ const QString DEFAULT_CONFIGURATION = QStringLiteral("(asset default)");
 const QString WORKER_SOCKET_KEY = QStringLiteral("renderGraph/workerSocket");
 const QString SOURCES_VISIBLE_KEY = QStringLiteral("renderGraph/sourcesVisible");
 const QString SPLITTER_STATE_KEY = QStringLiteral("renderGraph/splitterState");
+
+void SetSourceStatus(QLabel& inoutLabel, const QString& status, const QString& problem = {})
+{
+    inoutLabel.setText(status);
+    inoutLabel.setToolTip(
+        QStringLiteral("<p>%1</p>%2")
+            .arg(status.toHtmlEscaped(),
+                 problem.isEmpty() == true ? QString() : QStringLiteral("<pre>%1</pre>").arg(problem.toHtmlEscaped())));
+}
 
 /// Paints the last presented preview frame, letterboxed to its aspect ratio.
 class PreviewImage final : public QWidget
@@ -720,8 +730,9 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mSourceStatus = new QLabel(sourcePage);
     mSourceStatus->setObjectName(QStringLiteral("renderGraphSourceStatus"));
     mSourceStatus->setTextFormat(Qt::PlainText);
-    mSourceStatus->setWordWrap(true);
-    mSourceStatus->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    // Status changes must not resize the editor; the tooltip retains the full message.
+    mSourceStatus->setWordWrap(false);
+    mSourceStatus->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     sourceLayout->addWidget(mSourceStatus);
 #if defined(Q_OS_WASM)
     openCodeEditor->setEnabled(false);
@@ -1201,8 +1212,9 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     connect(mSourceController, &CodeDocumentController::TextAccepted, this, [this]() {
         // History is immediate. Expensive tree/interface/watch refresh stays coalesced.
         mSourceEditDebounce.start();
-        mSourceStatus->setText(QStringLiteral("Draft r%1 · Unsaved · Save publishes files. Preview retained.")
-                                   .arg(mDocument.GetRevision()));
+        SetSourceStatus(*mSourceStatus,
+                        QStringLiteral("Draft r%1 · Unsaved · Save publishes files. Preview retained.")
+                            .arg(mDocument.GetRevision()));
         Q_EMIT CommandsChanged();
     });
     connect(&mSourceEditDebounce, &QTimer::timeout, this, &RendererWorkspace::applySourceEdit);
@@ -3181,8 +3193,7 @@ void RendererWorkspace::renderSourceStatus()
 {
     if (mDocument.IsLoaded() == false)
     {
-        mSourceStatus->setText(QStringLiteral("Open a render graph to edit its sources."));
-        mSourceStatus->setToolTip({});
+        SetSourceStatus(*mSourceStatus, QStringLiteral("Open a render graph to edit its sources."));
         return;
     }
     QString state =
@@ -3249,10 +3260,9 @@ void RendererWorkspace::renderSourceStatus()
 #else
     state += QStringLiteral(" GPU preview unavailable in this editor build.");
 #endif
-    mSourceStatus->setText(QStringLiteral("Draft r%1 · %2").arg(mDocument.GetRevision()).arg(state));
-    const QString problem = GetRenderProblem();
-    mSourceStatus->setToolTip(problem.isEmpty() == true ? QString()
-                                                        : QStringLiteral("<pre>%1</pre>").arg(problem.toHtmlEscaped()));
+    SetSourceStatus(*mSourceStatus,
+                    QStringLiteral("Draft r%1 · %2").arg(mDocument.GetRevision()).arg(state),
+                    GetRenderProblem());
 }
 
 void RendererWorkspace::renderSource()
