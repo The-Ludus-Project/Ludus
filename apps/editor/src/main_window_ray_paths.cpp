@@ -46,4 +46,17 @@ void MainWindow::setupRayPaths()
         static_cast<void>(World_->SelectEntity(object));
     });
 }
+
+void MainWindow::hideIdleRayPaths()
+{
+    const RayPathInspection* rayPathsOrNull = Renderer_->GetRayPathInspectionOrNull();
+    if (mRayPathsDockOrNull == nullptr || rayPathsOrNull == nullptr ||
+        rayPathsOrNull->GetStage() != RayPathInspectionStage::Inactive)
+    {
+        return;
+    }
+    mRayPathsDockOrNull->hide();
+    // The next capture opens it again.
+    mHasShownRayPaths = false;
+}
 } // namespace ludus::editor
