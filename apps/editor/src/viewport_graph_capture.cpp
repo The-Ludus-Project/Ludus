@@ -59,7 +59,41 @@ QString DescribeProblem(renderer::RenderGraphCaptureProblem problem, graphics::r
     }
     return {};
 }
+
+QString DescribeForceRaster()
+{
+    return QStringLiteral("Force raster draws the raster fallback, whose output is display colour. Turn it off to "
+                          "capture the render graph.");
+}
+
+QString DescribeAbsentOutput(const QString& outputTarget)
+{
+    return QStringLiteral("The selected output %1 is not part of the active graph generation.").arg(outputTarget);
+}
 } // namespace
+
+QString FindViewportGraphCaptureProblem(const RenderGraphPreview& liveGraph)
+{
+    const ViewportRasterSource source = GetViewportRasterSource(liveGraph);
+    if (source.PackagePath.isEmpty() == true)
+    {
+        return {};
+    }
+    if (source.ShouldForceRaster == true)
+    {
+        return DescribeForceRaster();
+    }
+    if (source.OutputTarget.isEmpty() == false && source.OutputResource == format::ABSENT)
+    {
+        return DescribeAbsentOutput(source.OutputTarget);
+    }
+    renderer::RenderGraphCaptureProblem problem = renderer::RenderGraphCaptureProblem::None;
+    if (liveGraph.FindActiveCaptureProblem(source.OutputResource, problem) == false)
+    {
+        return {};
+    }
+    return DescribeProblem(problem, graphics::rhi::RasterStatus::Ready);
+}
 
 ViewportGraphCapture::ViewportGraphCapture() noexcept = default;
 ViewportGraphCapture::~ViewportGraphCapture() noexcept
@@ -84,14 +118,12 @@ bool ViewportGraphCapture::Load(graphics::rhi::DeviceHandle device,
     }
     if (source.ShouldForceRaster == true)
     {
-        outError = QStringLiteral("Force raster draws the raster fallback, whose output is display colour. Turn it "
-                                  "off to capture the render graph.");
+        outError = DescribeForceRaster();
         return false;
     }
     if (source.OutputTarget.isEmpty() == false && source.OutputResource == format::ABSENT)
     {
-        outError = QStringLiteral("The selected output %1 is not part of the active graph generation.")
-                       .arg(source.OutputTarget);
+        outError = DescribeAbsentOutput(source.OutputTarget);
         return false;
     }
     QFile file(source.PackagePath);

@@ -2134,6 +2134,27 @@ TEST_CASE("Reference capture window names the viewport's render graph and follow
     const QStandardItemModel* sources = qobject_cast<const QStandardItemModel*>(source->model());
     REQUIRE(sources != nullptr);
     CHECK(sources->item(CAPTURE_SOURCE_GRAPH_INDEX)->isEnabled() == true);
+    // The engine default draws its output with raster passes. The window says so before any click and keeps
+    // Capture disabled for the Render graph source, while the RT1 reference stays available.
+    CHECK(window->GetGraphCaptureProblem().contains(QStringLiteral("raster passes")) == true);
+    QPushButton* capture = window->findChild<QPushButton*>(QStringLiteral("referenceCapture"));
+    REQUIRE(capture != nullptr);
+    QLabel* problem = window->findChild<QLabel*>(QStringLiteral("referenceGraphProblem"));
+    REQUIRE(problem != nullptr);
+    CHECK(capture->isEnabled() == true);
+    CHECK(problem->isVisible() == false);
+    source->setCurrentIndex(CAPTURE_SOURCE_GRAPH_INDEX);
+    CHECK(capture->isEnabled() == false);
+    CHECK(problem->isVisible() == true);
+    CHECK(problem->text().contains(window->GetGraphCaptureProblem()) == true);
+    // Force raster is explained the same way and clears again when it is turned off.
+    workspace.GetPreviewOrNull()->SetForceRaster(true);
+    CHECK(window->GetGraphCaptureProblem().startsWith(QStringLiteral("Force raster")) == true);
+    workspace.GetPreviewOrNull()->SetForceRaster(false);
+    CHECK(window->GetGraphCaptureProblem().contains(QStringLiteral("raster passes")) == true);
+    source->setCurrentIndex(CAPTURE_SOURCE_REFERENCE_INDEX);
+    CHECK(capture->isEnabled() == true);
+    CHECK(problem->isVisible() == false);
     // Choosing another attachment in the viewport toolbar renames the output while the window stays open.
     QComboBox* targets = viewport->findChild<QComboBox*>(QStringLiteral("worldGraphTargets"));
     REQUIRE(targets != nullptr);

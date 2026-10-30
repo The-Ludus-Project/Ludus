@@ -113,6 +113,12 @@ public:
     [[nodiscard]] QString GetStatusText() const;
     /// The graph, configuration and output that the Render graph source and the comparison would use now.
     [[nodiscard]] QString GetGraphText() const;
+    /// Why the Render graph source cannot capture that output, known before Capture from the active generation;
+    /// empty when it can or before the generation is active. Capture is disabled for that source meanwhile.
+    [[nodiscard]] LUDUS_INLINE const QString& GetGraphCaptureProblem() const noexcept
+    {
+        return mGraphCaptureProblem;
+    }
     /// Path Save writes beside hdrPath for one comparison artefact, such as "raster.png".
     [[nodiscard]] static QString GetComparisonPath(const QString& hdrPath, const QString& suffix);
 
@@ -158,6 +164,8 @@ private:
 #endif
     /// The running or last capture used the Render graph source.
     bool mIsCapturingGraph = false;
+    /// FindViewportGraphCaptureProblem of the viewport's current output; empty when capturable or unknown.
+    QString mGraphCaptureProblem;
     QTimer mServiceTimer;
     QElapsedTimer mRefreshTimer;
     QElapsedTimer mCaptureTimer;
@@ -188,5 +196,6 @@ private:
     QLabel* const mDifferenceLabel;
     QComboBox* const mSource;
     QLabel* const mGraph;
+    QLabel* const mGraphProblem;
 };
 } // namespace ludus::editor

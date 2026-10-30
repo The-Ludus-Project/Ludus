@@ -1680,7 +1680,12 @@ Accumulate's own 32-bit mean and per-pixel sample counts, not the displayed or
 - a ray output without an Accumulate shows individual samples;
 - **Force raster** draws the raster fallback.
 
-The window explains which applies. Pixels that show the graph's failure colour,
+The window explains which applies before you capture. Under **Graph** it says
+why the selected output cannot be captured, and **Capture viewport** stays
+disabled for the **Render graph** source until you change the configuration or
+output in the viewport toolbar, or turn **Force raster** off. The check uses the
+graph the viewport has finished loading, so it says nothing while a configuration
+is still preparing. Capture then reports any problem itself. Pixels that show the graph's failure colour,
 for example where a shader exceeded its query budget, fail the capture and are
 counted.
 

@@ -121,7 +121,7 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
       mSaveButton(new QPushButton(QStringLiteral("Save…"), this)), mProgress(new QProgressBar(this)),
       mStatus(new QLabel(this)), mComparisonText(new QLabel(this)), mImages(new QTabWidget(this)),
       mImageLabel(new QLabel(this)), mRasterLabel(new QLabel(this)), mDifferenceLabel(new QLabel(this)),
-      mSource(new QComboBox(this)), mGraph(new QLabel(this))
+      mSource(new QComboBox(this)), mGraph(new QLabel(this)), mGraphProblem(new QLabel(this))
 {
     setObjectName(QStringLiteral("referenceCaptureWindow"));
     setWindowTitle(QStringLiteral("Reference capture"));
@@ -167,7 +167,12 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     mGraph->setToolTip(QStringLiteral("The Render graph source and the comparison use the graph, configuration and "
                                       "output selected in the viewport's toolbar. Change them there."));
     form->addRow(QStringLiteral("Source"), mSource);
+    mGraphProblem->setObjectName(QStringLiteral("referenceGraphProblem"));
+    mGraphProblem->setWordWrap(true);
+    mGraphProblem->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    mGraphProblem->hide();
     form->addRow(QStringLiteral("Graph"), mGraph);
+    form->addRow(QString(), mGraphProblem);
     form->addRow(QStringLiteral("Long side"), mLongSide);
     form->addRow(QStringLiteral("Samples"), mSamples);
     form->addRow(QStringLiteral("Max depth"), mMaxDepth);
@@ -284,6 +289,11 @@ void ReferenceCaptureWindow::SetProjectGraph(RendererWorkspace* workspaceOrNull)
         if (mProjectGraph.isNull() == false)
         {
             connect(mProjectGraph, &RenderGraphPreview::Changed, this, &ReferenceCaptureWindow::updateGraphDescription);
+            // A new active generation can change whether its output accumulates.
+            connect(mProjectGraph,
+                    &RenderGraphPreview::TargetsChanged,
+                    this,
+                    &ReferenceCaptureWindow::updateGraphDescription);
         }
     }
 #else
@@ -332,6 +342,19 @@ void ReferenceCaptureWindow::updateGraphDescription()
     }
 #endif
     mGraph->setText(text);
+    QString problem;
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    if (mProjectGraph.isNull() == false)
+    {
+        problem = FindViewportGraphCaptureProblem(*mProjectGraph);
+    }
+#endif
+    if (problem != mGraphCaptureProblem)
+    {
+        mGraphCaptureProblem = problem;
+        mGraphProblem->setText(QStringLiteral("Cannot capture this output: %1").arg(problem));
+        updateControls();
+    }
 }
 
 void ReferenceCaptureWindow::releaseCaptures() noexcept
@@ -880,7 +903,10 @@ void ReferenceCaptureWindow::updateControls()
                      : hasSamples;
 #endif
     const bool isReference = isGraphSource() == false;
-    mCaptureButton->setEnabled(isRunning == false);
+    // The Render graph source explains a route it cannot capture before the click rather than after it.
+    const bool canCaptureGraph = mGraphCaptureProblem.isEmpty() == true;
+    mCaptureButton->setEnabled(isRunning == false && (isReference == true || canCaptureGraph == true));
+    mGraphProblem->setVisible(isReference == false && canCaptureGraph == false);
     mStopButton->setEnabled(isRunning == true);
     mSaveButton->setEnabled(hasSamples == true);
     for (QWidget* setting :

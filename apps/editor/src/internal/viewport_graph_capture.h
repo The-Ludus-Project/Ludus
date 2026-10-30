@@ -22,6 +22,13 @@ namespace ludus::editor
 /// Samples between the progress read-backs a viewport graph capture shows while it renders.
 inline constexpr foundation::uint32 VIEWPORT_GRAPH_CAPTURE_PREVIEW_INTERVAL = 16;
 
+/// Why ViewportGraphCapture::Load would reject the live graph's current output, judged before a capture starts
+/// from the active generation's route (RenderGraphPreview::FindActiveCaptureProblem), the selected output and
+/// **Force raster**. Package reads, settings and GPU failures are found only by Load and later.
+/// @return The explanation Load would give; empty when the output can be captured or while no generation of the
+/// requested package is active yet.
+[[nodiscard]] QString FindViewportGraphCaptureProblem(const RenderGraphPreview& liveGraph);
+
 /// One World viewport render graph captured to a target sample count at a frozen camera, as linear radiance.
 ///
 /// A RenderGraphCapture on the viewport's device decodes the same cooked package the viewport shows and reads

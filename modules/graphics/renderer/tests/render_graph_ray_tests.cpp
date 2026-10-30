@@ -7038,6 +7038,11 @@ TEST_CASE("A render graph capture rejects routes and settings it cannot capture 
         settings.TargetSamples = renderer::MAX_RENDER_GRAPH_CAPTURE_SAMPLES + 1;
         expected = renderer::RenderGraphCaptureProblem::InvalidSettings;
     }
+    // The device-free route check reports the same route problems before anything is created; settings are
+    // judged by Start alone.
+    CHECK(renderer::FindRenderGraphCaptureProblem(plan, settings.Output) ==
+          (expected == renderer::RenderGraphCaptureProblem::InvalidSettings ? renderer::RenderGraphCaptureProblem::None
+                                                                            : expected));
     renderer::RenderGraphCapture capture;
     CHECK(capture.Start(fixture.Device, fixture.Surface, plan, programs, WIDTH, HEIGHT, settings) ==
           rhi::RasterStatus::InvalidDescription);
