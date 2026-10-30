@@ -60,7 +60,9 @@ struct CaptureRoute final
             }
         }
     }
-    if (output >= plan.Resources.GetSize() || plan.Resources[output].Kind != format::Aspect::Color)
+    // A surface-backed output would present the capture's frames; captures read offscreen exports only.
+    if (output >= plan.Resources.GetSize() || plan.Resources[output].Kind != format::Aspect::Color ||
+        plan.Resources[output].IsSurface == 1)
     {
         route.Problem = RenderGraphCaptureProblem::NoOutput;
         return route;
@@ -147,6 +149,8 @@ struct RenderGraphCapture::State final
     rhi::BufferHandle Accumulation{};
     bool HasReadback = false;
     bool ShouldStop = false;
+    /// Whether the read-back in progress ends the capture rather than refreshing its progress.
+    bool IsFinalReadback = false;
     usize ReadOffset = 0;
     usize SliceBytes = 0;
     foundation::Array<math::Vector4> Records;
@@ -186,8 +190,9 @@ struct RenderGraphCapture::State final
         }
         return true;
     }
-    void BeginReadback() noexcept
+    void BeginReadback(bool isFinal) noexcept
     {
+        IsFinalReadback = isFinal;
         const usize pixelCount = usize{Info.Width} * Info.Height;
         const Status borrowed = Graph.GetAccumulation(Info.AccumulationPass, Accumulation);
         if (borrowed != Status::Ready)
@@ -273,9 +278,16 @@ struct RenderGraphCapture::State final
         Records.Clear();
         Info.FailedPixels = failed;
         Info.MinimumSamples = minimum;
+        Info.ReadbackSamples = Info.SubmittedSamples;
+        // A latched pixel never recovers, so a progress read-back that finds one ends the capture too.
         if (failed != 0)
         {
             Fail(RenderGraphCaptureProblem::LatchedPixels, Status::Ready);
+            return;
+        }
+        if (IsFinalReadback == false)
+        {
+            Info.Phase = RenderGraphCapturePhase::Rendering;
             return;
         }
         Info.Phase = ShouldStop == true && Info.SubmittedSamples < Info.TargetSamples
@@ -435,9 +447,14 @@ RenderGraphCapturePhase RenderGraphCapture::Service() noexcept
             {
                 break;
             }
-            if (state.ShouldStop == true || state.Info.SubmittedSamples >= state.Info.TargetSamples)
+            const uint32 submitted = state.Info.SubmittedSamples;
+            const bool isFinished = state.ShouldStop == true || submitted >= state.Info.TargetSamples;
+            const uint32 interval = state.Settings.PreviewInterval;
+            const bool isPreviewDue = interval != 0 && submitted != 0 && submitted != state.Info.ReadbackSamples &&
+                                      (submitted == 1 || submitted % interval == 0);
+            if (isFinished == true || isPreviewDue == true)
             {
-                state.BeginReadback();
+                state.BeginReadback(isFinished);
                 break;
             }
             rhi::SubmissionToken completion;

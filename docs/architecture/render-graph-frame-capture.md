@@ -2,8 +2,10 @@
 
 Status: proposed October 29, 2026. Phase 1, the engine capture and its file, is
 implemented as of October 30, 2026, with the departures listed under
-[Phase 1 implementation notes](#phase-1-implementation-notes). Phases 2 and 3 are
-not implemented.
+[Phase 1 implementation notes](#phase-1-implementation-notes). Phase 2, the editor
+source and comparison, is implemented as of October 30, 2026; see
+[Phase 2 implementation notes](#phase-2-implementation-notes). Phase 3 is not
+implemented.
 
 A render graph is the project's rendering scheme. Today it runs in only two ways:
 as the World viewport's interactive renderer, or for one frame as the raster side
@@ -296,6 +298,36 @@ polygonal-light-sampling template on the Cornell and many-emitter rooms, and the
 - **The surface is the caller's.** Frames are submitted to it as with
   `RenderGraph::Render`. Phase 2 must give the editor's capture a surface that does
   not present over the viewport.
+
+## Phase 2 implementation notes
+
+Phase 2 adds `ViewportGraphCapture`
+(`apps/editor/src/internal/viewport_graph_capture.h`) and the reference window's
+**Source** choice, documented in
+[Capture the render graph](../development/editor-workspace.md#capture-the-render-graph).
+
+- **Engine additions.**
+  - `RenderGraphCaptureSettings::PreviewInterval` adds progress read-backs after the
+    first sample and every interval; the editor uses 16. Each one pauses rendering
+    until the slices are copied, then resumes. A latched pixel found by a progress
+    read-back ends the capture.
+  - The capture now rejects a surface-backed output, since rendering it would present
+    the capture's frames.
+- **Surface.** The capture submits through the viewport's surface, as the existing
+  raster comparison does. The editor previews only exported offscreen colour, so no
+  frame reaches the viewport.
+- **Comparison.** With **Compare** on, the window first tries a graph capture at the
+  reference's sample count. If the output cannot be captured, it falls back to the
+  frame-capped raster capture and states the reason.
+  `CompareGraphCaptureWithReference` shares one per-pixel core with the raster
+  comparison and compares in linear space.
+- **Departures.**
+  - The toolbar keeps **Reference…** rather than becoming **Capture…**, which keeps
+    the toolbar within its width budget.
+  - **Stop** discards a graph capture like a reference capture.
+  - A graph capture inherits the viewport's single camera for every plan camera, as
+    the preview does.
+  - It rejects incomplete scene coverage instead of drawing the diagnostic colour.
 
 ## Open questions
 

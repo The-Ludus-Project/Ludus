@@ -21,6 +21,7 @@
 #include "internal/renderer_workspace.h"
 #include "internal/texture_inspection.h"
 #include "internal/texture_viewer.h"
+#include "internal/viewport_graph_capture.h"
 #include "internal/world_demo_adapter.h"
 #include "internal/world_graph_view.h"
 #include "internal/world_workspace.h"
@@ -2913,4 +2914,101 @@ TEST_CASE("Forward-lit template follows World materials camera and viewport exte
     CHECK(preview.GetPresentedRevision() == 4);
     CHECK(preview.GetImage() == retained);
     preview.Detach();
+}
+
+TEST_CASE("A viewport graph capture converges an accumulating ray output and saves the linear mean",
+          "[editor][render-graph][render-graph-capture]")
+{
+    DeviceFixture device({}, true);
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    renderer::RenderGraphRenderer automatic;
+    REQUIRE(renderer::SelectRenderGraphRenderer(device.Device, renderer::RenderGraphPreference::Automatic, automatic) ==
+            rhi::RasterStatus::Ready);
+    if (automatic != renderer::RenderGraphRenderer::HardwareRayTracing)
+    {
+        SKIP("The progressive ray fixture needs native ray queries");
+    }
+    // A lit World, so the fixture's material scatters stochastic samples.
+    RenderScene scene = MakeScene({1, 0, 0, 1});
+    scene.Lit = true;
+    renderer::ViewDescription view{};
+    view.OrthographicCamera = true;
+    ViewportRasterSource source;
+    source.PackagePath = QStringLiteral(LUDUS_EDITOR_PROGRESSIVE_RAY_FIXTURE);
+    constexpr uint32 SAMPLES = 4;
+    const QSize requested(32, 32);
+    ViewportGraphCapture capture;
+    QSize extent;
+    QString error;
+    REQUIRE(capture.Load(device.Device, device.Surface, source, requested, SAMPLES, extent, error) == true);
+    CHECK(extent.isEmpty() == false);
+    REQUIRE(capture.Begin(scene, view, error) == true);
+    constexpr int64 CAPTURE_TIMEOUT_MILLISECONDS = 30000;
+    QElapsedTimer timer;
+    timer.start();
+    while (capture.IsRunning() == true && timer.elapsed() < CAPTURE_TIMEOUT_MILLISECONDS)
+    {
+        static_cast<void>(capture.Service());
+    }
+    INFO(capture.GetError().toStdString());
+    REQUIRE(capture.GetPhase() == renderer::RenderGraphCapturePhase::Complete);
+    const renderer::RenderGraphCaptureInfo info = capture.GetInfo();
+    CHECK(info.SubmittedSamples == SAMPLES);
+    CHECK(info.MinimumSamples == SAMPLES);
+    REQUIRE(capture.GetPixels().GetSize() == static_cast<usize>(extent.width()) * extent.height());
+    const QImage image = capture.MakeDisplayImage();
+    CHECK(image.size() == extent);
+
+    QTemporaryDir directory;
+    const QString path = QDir(directory.path()).filePath(QStringLiteral("capture.lurgcap"));
+    REQUIRE(capture.Save(path, error) == true);
+    QFile saved(path);
+    REQUIRE(saved.open(QIODevice::ReadOnly) == true);
+    const QByteArray bytes = saved.readAll();
+    CHECK(bytes.startsWith(QByteArray("LURGCAP\0", 8)) == true);
+    CHECK(static_cast<usize>(bytes.size()) == format::CAPTURE_HEADER_BYTES + static_cast<usize>(extent.width()) *
+                                                                                 extent.height() *
+                                                                                 format::CAPTURE_PIXEL_BYTES);
+    // The package identity is the SHA-256 of the cooked bytes the capture decoded.
+    QFile package(source.PackagePath);
+    REQUIRE(package.open(QIODevice::ReadOnly) == true);
+    CHECK(bytes.mid(format::CAPTURE_PACKAGE_IDENTITY_OFFSET, format::CAPTURE_IDENTITY_BYTES) ==
+          QCryptographicHash::hash(package.readAll(), QCryptographicHash::Sha256));
+    CHECK(QImage(ViewportGraphCapture::GetDisplayImagePath(path)).size() == extent);
+    capture.Release();
+    CHECK(capture.GetPhase() == renderer::RenderGraphCapturePhase::Idle);
+}
+
+TEST_CASE("A viewport graph capture explains outputs it cannot capture before using the device",
+          "[editor][render-graph][render-graph-capture]")
+{
+    ViewportRasterSource source;
+    source.PackagePath = QStringLiteral(LUDUS_EDITOR_PROGRESSIVE_RAY_FIXTURE);
+    QString expected;
+    SECTION("Force raster")
+    {
+        source.ShouldForceRaster = true;
+        expected = QStringLiteral("Force raster");
+    }
+    SECTION("an output name the active generation does not have")
+    {
+        source.OutputTarget = QStringLiteral("missing");
+        expected = QStringLiteral("not part of the active graph generation");
+    }
+    SECTION("a raster graph")
+    {
+        source.PackagePath = QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE);
+        expected = QStringLiteral("raster passes");
+    }
+    ViewportGraphCapture capture;
+    QSize extent;
+    QString error;
+    CHECK(capture.Load({}, {}, source, QSize(16, 16), 1, extent, error) == false);
+    INFO(error.toStdString());
+    CHECK(error.contains(expected) == true);
+    CHECK(capture.GetPhase() == renderer::RenderGraphCapturePhase::Idle);
+    CHECK(extent.isEmpty() == true);
 }

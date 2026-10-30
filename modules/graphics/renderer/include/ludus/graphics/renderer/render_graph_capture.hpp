@@ -32,6 +32,9 @@ struct RenderGraphCaptureSettings final
     foundation::uint32 Output = content::render_graph_format::ABSENT;
     /// Samples per pixel at completion, from MIN_RENDER_GRAPH_CAPTURE_SAMPLES to MAX_RENDER_GRAPH_CAPTURE_SAMPLES.
     foundation::uint32 TargetSamples = DEFAULT_RENDER_GRAPH_CAPTURE_SAMPLES;
+    /// Samples between progress read-backs, after the first sample and then every interval; zero reads back only
+    /// at the end. Each progress read-back pauses rendering until it completes, then GetPixels shows it.
+    foundation::uint32 PreviewInterval = 0;
     /// Identity of the runtime package, recorded in the file; zero when unknown.
     RenderGraphCaptureIdentity PackageIdentity{};
     /// Identity of the caller's scene inputs, recorded in the file; zero when unknown.
@@ -46,7 +49,7 @@ enum class RenderGraphCapturePhase : foundation::uint8
     AwaitingScene,  ///< Ready for SubmitScene.
     PreparingScene, ///< The submitted scene is preparing.
     Rendering,      ///< Frames are accumulating toward the target.
-    ReadingBack,    ///< Copying the Accumulate mean and counts to the CPU.
+    ReadingBack,    ///< Copying the Accumulate mean and counts to the CPU, for progress or at the end.
     Complete,       ///< Every frame of the target was submitted and read back without a latched failure.
     Stopped,        ///< Stop ended the capture early; the committed samples were read back.
     Failed,         ///< The capture failed; GetProblem and GetStatus say why. Read-back pixels stay readable.
@@ -56,7 +59,7 @@ enum class RenderGraphCapturePhase : foundation::uint8
 enum class RenderGraphCaptureProblem : foundation::uint8
 {
     None,            ///< No problem.
-    NoOutput,        ///< The output is not a colour resource, or the plan has no single exported one.
+    NoOutput,        ///< The output is not an offscreen colour resource, or the plan has no single exported one.
     RasterRoute,     ///< No ray pass with an Accumulate writes the output; raster outputs are display-encoded.
     NoAccumulation,  ///< The ray pass that writes the output outputs individual samples; add an Accumulate.
     InvalidSettings, ///< The sample target, camera or scene arguments are out of range.
@@ -78,6 +81,7 @@ struct RenderGraphCaptureInfo final
     foundation::uint32 SubmittedSamples = 0; ///< Frames submitted so far; each adds one sample per live pixel.
     foundation::uint32 FailedPixels = 0;     ///< Pixels with a latched shader failure, known after read-back.
     foundation::uint32 MinimumSamples = 0;   ///< Smallest committed count across pixels, known after read-back.
+    foundation::uint32 ReadbackSamples = 0;  ///< Submitted samples covered by the pixels last read back.
     foundation::uint64 SceneRevision = 0;    ///< Revision submitted with the scene; it also seeds sampling.
 };
 
