@@ -337,6 +337,20 @@ public:
     /// GUI thread only. History restores the removed/surviving configuration selection.
     [[nodiscard]] RenderGraphDocumentStatus
     RemoveConfiguration(const QString& file, const QString& configuration, QString& outError);
+    /// Copy an existing configuration, including its interface, nodes, edges, options and layout,
+    /// as a new configuration named name in the same file. The default is unchanged. Unique ASCII
+    /// identifiers and the per-file configuration limit apply; outError names the repair. One undo
+    /// step; failure preserves the draft and history. GUI thread only; Save publishes.
+    [[nodiscard]] RenderGraphDocumentStatus
+    DuplicateConfiguration(const QString& file, const QString& configuration, const QString& name, QString& outError);
+    /// Copy a whole graph file, with every configuration, as a new package-root `<name>.lurender.json`
+    /// whose graph id is name. Subgraph references to the copied file itself are retargeted to the
+    /// copy; references to other files are kept. Existing files are never replaced, and the copy
+    /// is not referenced until a Subgraph node uses it. One undo step; failure preserves the draft
+    /// and history and outError names the repair. outAsset receives the new path only on success.
+    /// GUI thread only; Save publishes.
+    [[nodiscard]] RenderGraphDocumentStatus
+    DuplicateGraph(const QString& file, const QString& name, QString& outAsset, QString& outError);
     /// Copy authored nodes, their internal edges and displayed layout into a bounded payload.
     /// External connections and configuration interfaces are excluded. outPayload survives failure;
     /// outError describes a failure. GUI thread only.
@@ -489,6 +503,9 @@ public:
     [[nodiscard]] RenderGraphDocumentStatus RefreshFromDisk(bool& outHasChanged);
 
 private:
+    /// Check that name can create a new package-root `<name>.lurender.json` graph whose id is
+    /// unused and whose path is unused in the draft, saved sources, disk and case-insensitively.
+    [[nodiscard]] RenderGraphDocumentStatus checkNewGraphAsset(const QString& name) const;
     /// Replace a Subgraph and repair its direct uses in an unpublished snapshot; no disk writes.
     [[nodiscard]] RenderGraphDocumentStatus prepareSubgraphReplacement(RenderGraphSnapshot& inoutSnapshot,
                                                                        const QString& file,

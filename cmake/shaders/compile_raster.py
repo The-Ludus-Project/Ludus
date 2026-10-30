@@ -33,6 +33,11 @@ def uniform_shape(value):
     return 'Opaque'
 
 
+# C++ only guarantees string literals of 65,536 characters; longer text (FXAA's GLSL ES fragment
+# reached 76,764) moves to the companion source. The margin covers the raw-string delimiter.
+MAX_INLINE_TEXT_BYTES = 60000
+
+
 def external_text_source(namespace, label, data):
     """Store exact UTF-8 shader bytes in one compiled file, without giant literals."""
     encoded = data.encode("utf-8") + b"\0"
@@ -43,6 +48,20 @@ def external_text_source(namespace, label, data):
                   f"extern const char {label}[{len(encoded)}] = {{\n" +
                   ",\n".join(rows) + "\n};\n}\n")
     return declaration, definition
+
+
+def emit_text_artifact(namespace, label, data):
+    """Return (header, companion) text for one raster or compute shader source.
+
+    Short text stays an inline raw string literal; text of MAX_INLINE_TEXT_BYTES or more is
+    declared in the header and defined in the stage's companion source.
+    """
+    if len(data.encode("utf-8")) >= MAX_INLINE_TEXT_BYTES:
+        return external_text_source(namespace, label, data)
+    delimiter = 'R_' + label
+    if f'){delimiter}"' in data:
+        raise RuntimeError('Raster source conflicts with raw string delimiter')
+    return f'inline constexpr char {label}[] = R"{delimiter}(' + data + f'){delimiter}";\n', ''
 
 
 def verify_storage_record_strides(binary, interface):
@@ -852,15 +871,9 @@ def compile_raster(args, lock):
             words = struct.unpack('<' + 'I' * (len(data) // 4), data)
             header += f'inline constexpr foundation::uint32 {label}[] = {{' + ','.join(f'0x{x:08x}U' for x in words) + '};\n'
         else:
-            delimiter = 'R_' + label
-            if f'){delimiter}"' in data:
-                raise RuntimeError('Raster source conflicts with raw string delimiter')
-            if compute and len(data.encode("utf-8")) >= 60000:
-                declaration, definition = external_text_source(args.name, label, data)
-                header += declaration
-                companion += definition
-            else:
-                header += f'inline constexpr char {label}[] = R"{delimiter}(' + data + f'){delimiter}";\n'
+            declaration, definition = emit_text_artifact(args.name, label, data)
+            header += declaration
+            companion += definition
         if interface['entries']:
             header += f'inline constexpr graphics::rhi::RasterBinding {label}_BINDINGS[] = {{\n'
             for binding in interface['entries']:
@@ -926,5 +939,4 @@ def compile_raster(args, lock):
     escaped = str(dest).replace(' ', '\\ ').replace('#', '\\#')
     (output / 'shader.d').write_text(escaped + ': ' + ' '.join(dependencies) + '\n')
     dest.write_text(header)
-    if compute:
-        (output / f"{args.name}.cpp").write_text(companion or "// No external text artifacts in this profile.\n")
+    (output / f"{args.name}.cpp").write_text(companion or "// No external text artifacts in this profile.\n")

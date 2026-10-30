@@ -7,8 +7,11 @@ namespace ludus::content::scene_format
 {
 /// Integer representation of material-model wire tags, also consumed by Slang.
 using MaterialModelTag = foundation::uint32;
+/// Binary32 scalar representation shared with Slang material policy constants.
+using MaterialScalar = foundation::float32;
 #else
 typedef uint MaterialModelTag;
+typedef float MaterialScalar;
 #endif
 /// Legacy metallic/roughness scattering wire tag, shared with shader code.
 static const MaterialModelTag LUDUS_MATERIAL_MODEL_METALLIC_ROUGHNESS = 0;
@@ -18,9 +21,15 @@ static const MaterialModelTag LUDUS_MATERIAL_MODEL_DIFFUSE = 1;
 static const MaterialModelTag LUDUS_MATERIAL_MODEL_CONDUCTOR = 2;
 /// Preserved coated-diffuse scattering wire tag, shared with shader code.
 static const MaterialModelTag LUDUS_MATERIAL_MODEL_COATED_DIFFUSE = 3;
+/// PBRT default bounded internal layer events; independent of scene path depth.
+static const MaterialModelTag LUDUS_COATING_MAX_DEPTH = 10;
+/// PBRT default number of independent layered evaluation/PDF estimates.
+static const MaterialModelTag LUDUS_COATING_SAMPLES = 1;
+/// Smallest rough coating alpha; smaller values require a delta dielectric interface.
+static const MaterialScalar LUDUS_COATING_MIN_ALPHA = 0.001F;
 
 #ifdef __cplusplus
-/// Scattering identity retained by scene assets; coating evaluation remains approximate.
+/// Scattering identity retained by scene assets; evaluators declare their supported profile.
 // NOLINTNEXTLINE(performance-enum-size): material wire tags retain their explicit 32-bit width.
 enum class MaterialModel : foundation::uint32
 {
@@ -28,8 +37,8 @@ enum class MaterialModel : foundation::uint32
         LUDUS_MATERIAL_MODEL_METALLIC_ROUGHNESS,         ///< Legacy RGB GGX/Schlick and Fresnel-weighted diffuse.
     Diffuse = LUDUS_MATERIAL_MODEL_DIFFUSE,              ///< Ideal Lambertian reflection without a specular lobe.
     Conductor = LUDUS_MATERIAL_MODEL_CONDUCTOR,          ///< Isotropic GGX with complex-IOR Fresnel; no diffuse lobe.
-    CoatedDiffuse = LUDUS_MATERIAL_MODEL_COATED_DIFFUSE, ///< Preserved PBRT coating parameters; legacy approximation in
-                                                         ///< this milestone.
+    CoatedDiffuse = LUDUS_MATERIAL_MODEL_COATED_DIFFUSE, ///< Rough dielectric coating over a diffuse base;
+                                                         ///< non-scattering reference profile.
 };
 /// RGB channels in serialized optical constants.
 inline constexpr foundation::usize MATERIAL_RGB_CHANNELS = 3;
@@ -45,8 +54,9 @@ inline constexpr foundation::float32 DEFAULT_COATING_ETA = 1.5F;
 inline constexpr foundation::float32 DEFAULT_COATING_THICKNESS = 0.01F;
 /// Source material parameters, shared by tools and runtime without renderer dependencies.
 /// AlphaU/V are the resolved GGX distribution widths, not perceptual roughness.
-/// The initial reference profile admits isotropic conductors only. Coated diffuse
-/// retains the source/default coating parameters without claiming layered transport.
+/// Reference conductors and coatings currently admit isotropic alpha only. The
+/// coating reference profile models absorption without medium scattering; omitted
+/// source coating controls resolve to the shared PBRT default policy constants.
 struct MaterialScattering final
 {
     MaterialModel Model = MaterialModel::MetallicRoughness; ///< Evaluation model.

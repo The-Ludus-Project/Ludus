@@ -11,6 +11,7 @@
 #include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QInputDialog>
@@ -32,7 +33,19 @@ using namespace foundation;
 namespace
 {
 const QString NODE_MIME = QStringLiteral("application/x-ludus-render-graph-nodes");
+
+/// First of `<base>Copy`, `<base>Copy2`, ... that is not in taken (compared case-insensitively).
+QString SuggestCopyName(const QString& base, const QStringList& taken)
+{
+    const QString stem = base + QStringLiteral("Copy");
+    QString candidate = stem;
+    for (int32 i = 2; taken.contains(candidate, Qt::CaseInsensitive) == true; ++i)
+    {
+        candidate = stem + QString::number(i);
+    }
+    return candidate;
 }
+} // namespace
 
 void RendererWorkspace::populateNodeNameFields(QFormLayout& outFields,
                                                QWidget& inoutParent,
@@ -241,6 +254,64 @@ bool RendererWorkspace::CreateConfiguration(const QString& name)
     return true;
 }
 
+bool RendererWorkspace::DuplicateSelectedConfiguration(const QString& name)
+{
+    if (CanCreateSubgraph() == false || selectedConfiguration().isEmpty() == true)
+    {
+        mStatus->setText(
+            QStringLiteral("Select a configuration and resolve external source conflicts before duplicating it."));
+        return false;
+    }
+    const QString file = mSelectedFile;
+    const QString configuration = mSelectedConfiguration;
+    QString error;
+    const RenderGraphDocumentStatus status = mDocument.DuplicateConfiguration(file, configuration, name, error);
+    if (status != RenderGraphDocumentStatus::Ok)
+    {
+        mStatus->setText(error);
+        return false;
+    }
+    mSelectedConfiguration = name;
+    mSelectedNode.clear();
+    mSelectedNodes.clear();
+    documentEdited(status);
+    mViews->setCurrentWidget(mCanvas);
+    mStatus->setText(QStringLiteral("Duplicated %1#%2 as %1#%3. Undo removes the copy; Save publishes it.")
+                         .arg(file, configuration, name));
+    return true;
+}
+
+bool RendererWorkspace::DuplicateSelectedGraph(const QString& name)
+{
+    QJsonObject graph;
+    if (CanCreateSubgraph() == false || mDocument.GetGraph(mSelectedFile, graph) == false)
+    {
+        mStatus->setText(
+            QStringLiteral("Select a graph file and resolve external source conflicts before duplicating it."));
+        return false;
+    }
+    const QString file = mSelectedFile;
+    QString asset;
+    QString error;
+    const RenderGraphDocumentStatus status = mDocument.DuplicateGraph(file, name, asset, error);
+    if (status != RenderGraphDocumentStatus::Ok)
+    {
+        mStatus->setText(error);
+        return false;
+    }
+    mSelectedFile = asset;
+    mSelectedConfiguration = graph.value(QStringLiteral("default")).toString();
+    mSelectedNode.clear();
+    mSelectedNodes.clear();
+    documentEdited(status);
+    mSourceFile->setCurrentText(asset);
+    mViews->setCurrentWidget(mCanvas);
+    mStatus->setText(QStringLiteral("Duplicated %1 as %2. Quick Add inserts it as a Subgraph; Undo removes the copy "
+                                    "and Save publishes it.")
+                         .arg(file, asset));
+    return true;
+}
+
 bool RendererWorkspace::ApplyRestirTemplate(const QString& configuration)
 {
     return ApplyConfigurationTemplate(configuration, QStringLiteral("restir-di"));
@@ -436,6 +507,72 @@ void RendererWorkspace::promptCreateConfiguration()
     if (isAccepted == true)
     {
         static_cast<void>(CreateConfiguration(name));
+    }
+}
+
+void RendererWorkspace::promptDuplicateConfiguration()
+{
+    QStringList taken;
+    QJsonObject graph;
+    if (mDocument.GetGraph(mSelectedFile, graph) == true)
+    {
+        for (const QJsonValueConstRef value : graph.value(QStringLiteral("configurations")).toArray())
+        {
+            taken.append(value.toObject().value(QStringLiteral("id")).toString());
+        }
+    }
+    bool isAccepted = false;
+    const QString name =
+        QInputDialog::getText(this,
+                              QStringLiteral("Duplicate Configuration"),
+                              QStringLiteral("Copy %1#%2 as:").arg(mSelectedFile, mSelectedConfiguration),
+                              QLineEdit::Normal,
+                              SuggestCopyName(mSelectedConfiguration, taken),
+                              &isAccepted)
+            .trimmed();
+    if (isAccepted == true)
+    {
+        static_cast<void>(DuplicateSelectedConfiguration(name));
+    }
+}
+
+void RendererWorkspace::promptDuplicateGraph()
+{
+    const QString suffix = QStringLiteral(".lurender.json");
+    QStringList taken;
+    for (const QString& source : mDocument.GetFiles())
+    {
+        if (source.endsWith(suffix) == false)
+        {
+            continue;
+        }
+        taken.append(source.chopped(suffix.size()));
+        QJsonObject existing;
+        if (mDocument.GetGraph(source, existing) == true)
+        {
+            taken.append(existing.value(QStringLiteral("id")).toString());
+        }
+    }
+    QJsonObject graph;
+    static_cast<void>(mDocument.GetGraph(mSelectedFile, graph));
+    QString base = graph.value(QStringLiteral("id")).toString();
+    if (base.isEmpty() == true)
+    {
+        base = QFileInfo(mSelectedFile).fileName().chopped(suffix.size());
+    }
+    bool isAccepted = false;
+    const QString name =
+        QInputDialog::getText(this,
+                              QStringLiteral("Duplicate Graph"),
+                              QStringLiteral("Copy %1 with every configuration.\nName (creates <name>.lurender.json):")
+                                  .arg(mSelectedFile),
+                              QLineEdit::Normal,
+                              SuggestCopyName(base, taken),
+                              &isAccepted)
+            .trimmed();
+    if (isAccepted == true)
+    {
+        static_cast<void>(DuplicateSelectedGraph(name));
     }
 }
 

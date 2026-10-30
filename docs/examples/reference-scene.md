@@ -45,13 +45,17 @@ shaders that implement their own metallic/roughness BRDF must explicitly consume
 the new model fields to adopt these semantics. Ordinary raster material shaders
 continue to use the metallic/roughness approximation in this milestone.
 
-Coated diffuse remains an explicit shading approximation despite retaining its
-source identity and parameters. Spectral transport, coating multiple scattering,
-perfect-specular/anisotropic conductors, remapped source roughness and texture
-footprint filtering are outside this initial typed profile. The source's
+Reference profile 6 also evaluates the wood and tile coatings as a rough dielectric
+layer over textured diffuse, with internal reflections and absorption but zero
+medium scattering. It uses the retained IOR/thickness and PBRT's default bounded
+internal depth, separately from scene bounce depth. See the
+[layered reference contract](../architecture/renderer-systems.md#non-scattering-coated-diffuse-reference).
+Spectral transport, scattering coating media, smooth/anisotropic typed interfaces,
+remapped source roughness and texture footprint filtering remain outside this
+profile. The source's
 `remaproughness=false` values are stored directly as GGX alpha; the legacy raster
 roughness approximation does not replace those parameters. All new captures use
-reference profile 5; historical reports below retain their original versions.
+reference profile 6; historical reports below retain their original versions.
 Full-scene PBRT fidelity and the existing dense native-query parity gap remain
 unqualified. Synthetic tests cover preserved source parameters and moved-project
 reopen, independent complex Fresnel evaluation and matched CPU/GPU raw radiance.

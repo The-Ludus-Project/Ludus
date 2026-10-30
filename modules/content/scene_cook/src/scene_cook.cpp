@@ -517,8 +517,20 @@ struct AllowedParams final
 };
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-[[nodiscard]] bool IsParameterAllowed(std::string_view command, std::string_view key) noexcept
+[[nodiscard]] bool
+IsParameterAllowed(std::string_view command, std::string_view key, bool shouldAdmitCoatingParameters) noexcept
 {
+    if (shouldAdmitCoatingParameters == true && command == "MakeNamedMaterial")
+    {
+        for (const std::string_view allowed :
+             {"float eta", "float thickness", "rgb albedo", "float g", "integer maxdepth", "integer nsamples"})
+        {
+            if (key == allowed)
+            {
+                return true;
+            }
+        }
+    }
     static const AllowedParams TABLE[] = {
         {"Integrator", {"integer maxdepth", "string lightsampler", "float trainingBudgetRatio"}},
         {"Sampler", {"integer pixelsamples"}},
@@ -565,8 +577,10 @@ struct AllowedParams final
     return inoutValues.TryAdd(static_cast<String&&>(value)) == true || inoutContext.Errors.FailOutOfMemory() == true;
 }
 
-[[nodiscard]] bool
-ParseCommands(CookContext& inoutContext, std::span<const std::string_view> tokens, Scene& inoutScene) noexcept
+[[nodiscard]] bool ParseCommands(CookContext& inoutContext,
+                                 std::span<const std::string_view> tokens,
+                                 Scene& inoutScene,
+                                 bool shouldAdmitCoatingParameters) noexcept
 {
     Failure& errors = inoutContext.Errors;
     usize i = 0;
@@ -674,9 +688,13 @@ ParseCommands(CookContext& inoutContext, std::span<const std::string_view> token
                 return errors.FailOutOfMemory();
             }
         }
+        const bool canAdmitCoatingParameters =
+            shouldAdmitCoatingParameters == true &&
+            HasSingleValue(FindParameter(command, "string type"), "coateddiffuse") == true;
         for (const Parameter& parameter : command.Params)
         {
-            if (parameter.IsAssigned == false || IsParameterAllowed(name, parameter.Key.GetView()) == false)
+            if (parameter.IsAssigned == false ||
+                IsParameterAllowed(name, parameter.Key.GetView(), canAdmitCoatingParameters) == false)
             {
                 return errors.FailInvalid("unsupported or missing parameter for ", name);
             }
@@ -928,7 +946,7 @@ ApplyCamera(CookContext& inoutContext, const Command& command, SceneState& inout
     return true;
 }
 
-[[nodiscard]] bool ParseScene(CookContext& inoutContext, Scene& inoutScene) noexcept
+[[nodiscard]] bool ParseScene(CookContext& inoutContext, Scene& inoutScene, bool shouldAdmitCoatingParameters) noexcept
 {
     Failure& errors = inoutContext.Errors;
     Bytes raw;
@@ -947,7 +965,7 @@ ApplyCamera(CookContext& inoutContext, const Command& command, SceneState& inout
     {
         return errors.FailOutOfMemory();
     }
-    if (ParseCommands(inoutContext, tokens.AsSpan(), inoutScene) == false)
+    if (ParseCommands(inoutContext, tokens.AsSpan(), inoutScene, shouldAdmitCoatingParameters) == false)
     {
         return false;
     }
@@ -2766,8 +2784,7 @@ void WriteHexString(PythonJsonWriter& inoutJson, const Digest& digest) noexcept
     if (facts.HasTypedMaterials == true)
     {
         for (const std::string_view text :
-             {"PBRT coated diffuse parameters retained; shading remains RGB GGX/Lambert without layer multiple "
-              "scattering",
+             {"PBRT coated diffuse uses an RGB non-scattering layer with the default bounded internal depth",
               "conductor Fresnel uses retained RGB eta/k; spectral transport is not implemented",
               "single retained texture mip; no PBRT footprint/trilinear filtering",
               "disk tessellation: 64 segments; emissive planar grids represented by equivalent quads",
@@ -2872,11 +2889,79 @@ void WriteHexString(PythonJsonWriter& inoutJson, const Digest& digest) noexcept
         return true;
     }
     Array<float64> values;
-    if (inoutCooker.Context.ParseFiniteParameter(parameterOrNull, values, key) == false || values.GetSize() != 1)
+    if (inoutCooker.Context.ParseFiniteParameter(parameterOrNull, values, key) == false)
+    {
+        return false;
+    }
+    if (values.GetSize() != 1)
     {
         return inoutCooker.Context.Errors.FailInvalid("invalid material scalar ", key);
     }
     outValue = values[0];
+    return true;
+}
+[[nodiscard]] bool
+ResolveCoatingParameters(Cooker& inoutCooker, const MaterialReference& source, Material& inoutMaterial) noexcept
+{
+    const Command& command = inoutCooker.Source.Commands[source.CommandIndex];
+    for (const Parameter& parameter : command.Params)
+    {
+        const std::string_view key = parameter.Key.GetView();
+        if (key != "string type" && key != "bool remaproughness" && key != "float uroughness" &&
+            key != "float vroughness" && key != "texture reflectance" && key != "rgb reflectance" &&
+            key != "float eta" && key != "float thickness" && key != "rgb albedo" && key != "float g" &&
+            key != "integer maxdepth" && key != "integer nsamples")
+        {
+            return inoutCooker.Context.Errors.FailInvalid("unsupported coating parameter ", key);
+        }
+    }
+    float64 eta = 0;
+    float64 thickness = 0;
+    float64 asymmetry = 0;
+    float64 depth = 0;
+    float64 samples = 0;
+    if (ReadMaterialScalar(inoutCooker, source, "float eta", static_cast<float64>(format::DEFAULT_COATING_ETA), eta) ==
+            false ||
+        ReadMaterialScalar(inoutCooker,
+                           source,
+                           "float thickness",
+                           static_cast<float64>(format::DEFAULT_COATING_THICKNESS),
+                           thickness) == false ||
+        ReadMaterialScalar(inoutCooker, source, "float g", 0, asymmetry) == false ||
+        ReadMaterialScalar(inoutCooker, source, "integer maxdepth", format::LUDUS_COATING_MAX_DEPTH, depth) == false ||
+        ReadMaterialScalar(inoutCooker, source, "integer nsamples", format::LUDUS_COATING_SAMPLES, samples) == false)
+    {
+        return false;
+    }
+    if (eta < 1 || eta > static_cast<float64>(format::MAX_MATERIAL_OPTICAL_CONSTANT) || thickness < 0 ||
+        thickness > static_cast<float64>(format::MAX_MATERIAL_OPTICAL_CONSTANT) || asymmetry != 0 ||
+        depth != format::LUDUS_COATING_MAX_DEPTH || samples != format::LUDUS_COATING_SAMPLES ||
+        inoutMaterial.Scattering.AlphaU < format::LUDUS_COATING_MIN_ALPHA)
+    {
+        return inoutCooker.Context.Errors.FailInvalid("unsupported non-scattering rough coating profile");
+    }
+    const Parameter* albedoOrNull = inoutCooker.FindMaterialParameter(source, "rgb albedo");
+    if (albedoOrNull != nullptr)
+    {
+        Array<float64> albedo;
+        if (inoutCooker.Context.ParseFiniteParameter(albedoOrNull, albedo, "rgb albedo") == false)
+        {
+            return false;
+        }
+        if (albedo.GetSize() != format::MATERIAL_RGB_CHANNELS)
+        {
+            return inoutCooker.Context.Errors.FailInvalid("invalid coating albedo");
+        }
+        for (const float64 value : albedo)
+        {
+            if (value != 0)
+            {
+                return inoutCooker.Context.Errors.FailInvalid("coating medium scattering is not supported");
+            }
+        }
+    }
+    inoutMaterial.Scattering.CoatingEta = static_cast<float32>(eta);
+    inoutMaterial.Scattering.CoatingThickness = static_cast<float32>(thickness);
     return true;
 }
 [[nodiscard]] bool PrepareTypedMaterials(Cooker& inoutCooker) noexcept
@@ -2934,6 +3019,10 @@ void WriteHexString(PythonJsonWriter& inoutJson, const Digest& digest) noexcept
                 return inoutCooker.Context.Errors.FailInvalid(
                     "typed reference profile requires positive isotropic GGX alpha");
             }
+        }
+        if (type == "coateddiffuse" && ResolveCoatingParameters(inoutCooker, source, material) == false)
+        {
+            return false;
         }
         const Parameter* textureOrNull = inoutCooker.FindMaterialParameter(source, "texture reflectance");
         const Parameter* reflectanceOrNull = inoutCooker.FindMaterialParameter(source, "rgb reflectance");
@@ -3319,7 +3408,7 @@ void WriteMaterialExtension(ByteWriter& inoutWriter, const Material& material) n
 {
     Failure& errors = inoutContext.Errors;
     Scene scene;
-    if (ParseScene(inoutContext, scene) == false)
+    if (ParseScene(inoutContext, scene, false) == false)
     {
         return false;
     }
@@ -3473,7 +3562,7 @@ bool CookMaterials(std::string_view source,
     }
     Scene scene;
     CookResult candidate;
-    if (ParseScene(context, scene) == false || CookTypedScene(context, scene, candidate) == false)
+    if (ParseScene(context, scene, true) == false || CookTypedScene(context, scene, candidate) == false)
     {
         return false;
     }

@@ -7,7 +7,7 @@ import struct
 import unittest
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'cmake/shaders'))
-from compile_raster import spirv_array_indexing, verify_native_metal_arrays, raster_interface, wgsl_contract, glsl_interface, share_glsl_fetch_samplers, glsl_varyings, verify_varyings, uniform_shape, wgsl_uniform_type, external_text_source
+from compile_raster import spirv_array_indexing, verify_native_metal_arrays, raster_interface, wgsl_contract, glsl_interface, share_glsl_fetch_samplers, glsl_varyings, verify_varyings, uniform_shape, wgsl_uniform_type, external_text_source, emit_text_artifact, MAX_INLINE_TEXT_BYTES
 
 class RasterReflectionTests(unittest.TestCase):
     def test_metal_fragment_readonly_storage_ignores_unoccupied_resource_category(self):
@@ -65,6 +65,21 @@ class RasterReflectionTests(unittest.TestCase):
         self.assertEqual(bytes(values), text.encode("utf-8") + b"\0")
         self.assertIn(f"[{len(values)}]", declaration)
         self.assertNotIn('R"', definition)
+
+    def test_long_raster_text_moves_to_the_companion_source(self):
+        # FXAA's GLSL ES fragment reached 76,764 bytes; C++ only guarantees 65,536-character literals.
+        self.assertLess(MAX_INLINE_TEXT_BYTES, 65536)
+        short = "void main() {}\n"
+        header, companion = emit_text_artifact("renderer_output", "GLSL_FRAGMENT", short)
+        self.assertEqual(header, 'inline constexpr char GLSL_FRAGMENT[] = R"R_GLSL_FRAGMENT(' + short + ')R_GLSL_FRAGMENT";\n')
+        self.assertEqual(companion, "")
+        long = "float x = 0.0;\n" * (MAX_INLINE_TEXT_BYTES // 15 + 1)
+        header, companion = emit_text_artifact("renderer_output", "GLSL_FRAGMENT", long)
+        self.assertNotIn('R"', header + companion)
+        self.assertEqual(header, f"extern const char GLSL_FRAGMENT[{len(long) + 1}];\n")
+        self.assertIn("namespace ludus::shaders::renderer_output {", companion)
+        with self.assertRaisesRegex(RuntimeError, 'raw string delimiter'):
+            emit_text_artifact("renderer_output", "GLSL_FRAGMENT", short + ')R_GLSL_FRAGMENT"')
 
     def test_native_arrays_require_bounded_counts_and_preserve_target_identity(self):
         texture = {'kind': 'resource', 'baseShape': 'texture2D', 'resultType': {'kind': 'vector', 'elementType': {'scalarType': 'float32'}}}

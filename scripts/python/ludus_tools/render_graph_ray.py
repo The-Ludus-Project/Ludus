@@ -166,7 +166,7 @@ IMAGE_VERTEX_ID = 'GraphRayImageVertex'
 IMAGE_INPUTS = [{'location': 0, 'format': 'Float2'}]
 IMAGE_FRAGMENT_ID = 'GraphRayImageFragment'
 # Files are installed by their owning renderer/math/RHI targets beside the helper.
-HELPERS = ('scene_data.h', 'renderer_gpu_preview_layout.h', 'renderer_surface_functions.slang', 'recipes.json',
+HELPERS = ('scene_data.h', 'renderer_gpu_preview_layout.h', 'renderer_surface_functions.slang', 'material_scattering.slang', 'material.h', 'recipes.json',
            'native_metal_ray.slang', 'metal_ray_pipeline_layout.h',
            'ray_triangle_loop.slang', 'ray_line_visibility.slang', 'ray_bvh_nodes.slang', 'ray_bvh_traversal.slang', 'renderer_reference_layout.h', 'lighting_layout.h', 'math.slang', 'raster_bindings.slang', 'scene_shader.slang', 'scene_payload.slang', 'scene_shader_layout.h', 'ray_shader.slang', 'visibility_buffer.slang')
 # Staged and included only for scene_interface.polygonal_light_sampling: FoundationMath's projected-solid-angle,

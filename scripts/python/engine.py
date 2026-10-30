@@ -2902,24 +2902,29 @@ def measure_runner_speed(
     """Return (factor, explanation) comparing this host with the budget's reference run.
 
     The factor is the summed per-include parse time of the reference standard
-    headers divided by their summed baseline averages: 2.0 means this host parsed
-    the same unchanged headers twice as slowly. A None factor means the report
-    cannot be compared (a header is missing, or the ratio is implausible), and the
-    caller must use raw timings.
+    headers present in the report divided by the same headers' summed baseline
+    averages: 2.0 means this host parsed the same unchanged headers twice as
+    slowly. ClangBuildAnalyzer lists only its most expensive headers, so a cheap
+    reference header can drop out; the factor uses the ones listed. A None factor
+    means the report cannot be compared (fewer than minimum_headers listed, or an
+    implausible ratio), and the caller must use raw timings.
     """
     baseline = {str(path): float(avg) for path, avg in dict(reference.get("header_avg_ms", {})).items()}
     if not baseline:
         return None, "no runner speed reference configured"
     measured = {path: total_ms / count for path, total_ms, count, _avg in headers if count > 0}
-    missing = sorted(path for path in baseline if path not in measured)
-    if missing:
-        return None, f"runner speed reference header(s) absent from the report: {', '.join(missing)}"
-    factor = sum(measured[path] for path in baseline) / sum(baseline.values())
+    present = [path for path in baseline if path in measured]
+    required = max(1, int(reference.get("minimum_headers", len(baseline))))
+    if len(present) < required:
+        missing = sorted(path for path in baseline if path not in measured)
+        return None, (f"only {len(present)} of {len(baseline)} runner speed reference headers are in the report "
+                      f"(at least {required} required); absent: {', '.join(missing)}")
+    factor = sum(measured[path] for path in present) / sum(baseline[path] for path in present)
     minimum = float(reference.get("minimum_factor", 0.0))
     maximum = float(reference.get("maximum_factor", float("inf")))
     if factor < minimum or factor > maximum:
         return None, f"runner speed factor {factor:.2f} is outside [{minimum:g}, {maximum:g}]"
-    return factor, f"reference headers parsed {factor:.2f}x as long as the baseline run"
+    return factor, f"{len(present)} reference headers parsed {factor:.2f}x as long as the baseline run"
 
 
 def command_check_build_budget(args: argparse.Namespace) -> int:

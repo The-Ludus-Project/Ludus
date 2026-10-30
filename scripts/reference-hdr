@@ -50,7 +50,7 @@ def decode(data):
     schema, profile, sampler, header, width, height, target, depth, roulette, flags = struct.unpack_from('<10I', data, 8)
     # Sampler 1 is UniformArea light sampling; flag 128 marks the resampled samplers, 2 for
     # ResampledProjectedSolidAngle and 3 for ResampledFormFactor.
-    if (schema, header) != (1, 256) or profile not in (1, 2, 3, 4, 5) or not width or not height or flags & ~255 or (flags & 1 and flags & 64):
+    if (schema, header) != (1, 256) or profile not in (1, 2, 3, 4, 5, 6) or not width or not height or flags & ~255 or (flags & 1 and flags & 64):
         raise ValueError('Unsupported capture profile/header')
     if (sampler, bool(flags & 128)) not in ((1, False), (2, True), (3, True)):
         raise ValueError('Unsupported sampler version or light-sampling flag')

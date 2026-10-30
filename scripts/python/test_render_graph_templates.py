@@ -776,6 +776,30 @@ class RisProjectedSolidAngleTemplateTests(unittest.TestCase):
         self.assertEqual(set(ray.POLYGONAL_LIGHT_HELPERS) - set(ray.POLYGONAL_LIGHT_INCLUDES), {'ltc_table_layout.h'})
         self.assertFalse(set(ray.POLYGONAL_LIGHT_HELPERS) & set(ray.HELPERS))
 
+    def test_ray_helpers_capture_their_whole_include_closure(self):
+        # Graph builds snapshot exactly ray.HELPERS into _ludus_ray/; a quoted include outside the
+        # list (material_scattering.slang and material.h once) fails every ray graph cook.
+        import re
+        repository = Path(__file__).resolve().parents[2]
+        owners = {}
+        for pattern in ('modules/**/shaders/*', 'modules/**/include/**/*.h', 'modules/**/include/**/*.inc'):
+            for path in repository.glob(pattern):
+                owners.setdefault(path.name, []).append(path)
+        pending = [name for name in ray.HELPERS if name.endswith(('.slang', '.h', '.inc'))]
+        visited = set()
+        while pending:
+            name = pending.pop()
+            if name in visited:
+                continue
+            visited.add(name)
+            self.assertIn(name, owners, f'{name} has no source owner')
+            self.assertEqual(len(owners[name]), 1, f'{name} has several source owners')
+            text = owners[name][0].read_text(encoding='utf-8')
+            for include in re.findall(r'^\s*#\s*include\s+"([^"]+)"', text, re.M):
+                included = Path(include).name
+                self.assertIn(included, ray.HELPERS, f'{name} includes {included}, which the ray snapshot omits')
+                pending.append(included)
+
     def test_the_polygonal_light_requirement_is_a_boolean(self):
         root = self.create()
         manifest = json.loads(root.with_name('main.lushader.json').read_text())

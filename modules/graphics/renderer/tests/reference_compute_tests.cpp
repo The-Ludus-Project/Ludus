@@ -7,6 +7,7 @@
 #include "renderer_reference.h"
 #include "renderer_reference_reduce.h"
 #include "renderer_shadow.h"
+#include <catch2/generators/catch_generators.hpp>
 
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
@@ -80,7 +81,8 @@ S BuildSphereSnapshot(rhi::DeviceHandle device,
                       rr::Renderer& inoutRenderer,
                       rr::MaterialProgram program,
                       rr::Snapshot& outSnapshot,
-                      bool shouldUseTypedMaterials = false)
+                      bool shouldUseTypedMaterials = false,
+                      bool shouldUseCoating = false)
 {
     constexpr uint32 LONGITUDES = 96;
     constexpr uint32 LATITUDES = 48;
@@ -183,6 +185,18 @@ S BuildSphereSnapshot(rhi::DeviceHandle device,
             material.Scattering.K[0] = 9.223869F;
             material.Scattering.K[1] = 6.269523F;
             material.Scattering.K[2] = 4.837001F;
+        }
+        if (shouldUseCoating == true && i != 2)
+        {
+            namespace format = ludus::content::scene_format;
+            material.Scattering.Model = format::MaterialModel::CoatedDiffuse;
+            material.Scattering.AlphaU = i == 1 ? 0.01F : 0.1F;
+            material.Scattering.AlphaV = material.Scattering.AlphaU;
+            if (i == 3)
+            {
+                material.Scattering.CoatingEta = 1.33F;
+                material.Scattering.CoatingThickness = 0.03F;
+            }
         }
         if (i == 2)
         {
@@ -1405,9 +1419,11 @@ TEST_CASE("GPU-compute light-sampling mode is part of the integral and the raw c
     REQUIRE(gpu.Renderer.Release(handle) == S::Ready);
 }
 
-TEST_CASE("Typed diffuse and conductor match between CPU and GPU reference transport",
+TEST_CASE("Typed diffuse conductor and coated diffuse match between CPU and GPU reference transport",
           "[renderer][gpu][reference-compute]")
 {
+    const bool shouldUseCoating = GENERATE(false, true);
+    CAPTURE(shouldUseCoating);
     rhi::Shutdown();
     struct Guard final
     {
@@ -1439,8 +1455,8 @@ TEST_CASE("Typed diffuse and conductor match between CPU and GPU reference trans
     Session cpu;
     REQUIRE(Prepare(device, rr::ReferenceTraversal::CpuOracle, cpu) == S::Ready);
     rr::Snapshot spheres[2];
-    REQUIRE(BuildSphereSnapshot(device, cpu.Renderer, cpu.Program, spheres[0], true) == S::Ready);
-    REQUIRE(BuildSphereSnapshot(device, gpu.Renderer, gpu.Program, spheres[1], true) == S::Ready);
+    REQUIRE(BuildSphereSnapshot(device, cpu.Renderer, cpu.Program, spheres[0], true, shouldUseCoating) == S::Ready);
+    REQUIRE(BuildSphereSnapshot(device, gpu.Renderer, gpu.Program, spheres[1], true, shouldUseCoating) == S::Ready);
     REQUIRE(cpu.Renderer.Release(cpu.Snapshot) == S::Ready);
     REQUIRE(gpu.Renderer.Release(gpu.Snapshot) == S::Ready);
     cpu.Snapshot = spheres[0];
