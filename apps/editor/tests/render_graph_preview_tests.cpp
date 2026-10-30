@@ -8,6 +8,7 @@
 #include "editor_renderer_static.h"
 #include "internal/controller.h"
 #include "internal/error_list.h"
+#include "internal/graph_display_frames.h"
 #include "internal/main_window.h"
 #include "internal/offscreen_frame_reader.h"
 #include "internal/preview_viewport.h"
@@ -432,6 +433,8 @@ TEST_CASE("Unlit World objects reach the lit default as emission over a black ba
     PreviewSurface surface;
     surface.Texture = 0;
     surface.Tint = {1, .5F, 1, 1};
+    surface.IsAlphaMasked = true;
+    surface.AlphaCutoff = .5F;
     scene.Surfaces.append(surface);
     PreviewObject textured = scene.Objects[0];
     textured.Texture = 0;
@@ -456,6 +459,9 @@ TEST_CASE("Unlit World objects reach the lit default as emission over a black ba
     CHECK(sprite.Emission == math::Vector3{.25F, .25F, .75F});
     CHECK(sprite.EmissionTexture.Bytes == extraction.ShaderInputs.Materials[0].ColorTexture.Bytes);
     CHECK(sprite.EmissionTexture.Bytes != nullptr);
+    CHECK(sprite.IsAlphaMasked == true);
+    CHECK(sprite.AlphaCutoff == .5F);
+    CHECK(sprite.ColorTexture.Bytes == sprite.EmissionTexture.Bytes);
 }
 
 TEST_CASE("RG3b World-demo Worlds feed the render-graph preview like any other World",
@@ -2526,6 +2532,57 @@ TEST_CASE("Full Intel Sponza presents through the native editor viewport", "[.fu
     if (capture.isEmpty() == false)
     {
         REQUIRE(windowOrNull->grabWindow().save(capture) == true);
+    }
+    // Inspect all imported base maps through textured raster shading independently of
+    // the source's illumination. This chart is a diagnostic World, not a relit Sponza.
+    RenderScene chart = MakeScene({1, 1, 1, 1});
+    chart.Identity = QByteArrayLiteral("sponza-material-chart");
+    chart.Textures = scene.Textures;
+    chart.Surfaces = scene.Surfaces;
+    PreviewMesh& tile = chart.Meshes[0];
+    tile.Positions = {{-.5F, -.5F, 0}, {.5F, -.5F, 0}, {.5F, .5F, 0}, {-.5F, .5F, 0}};
+    tile.Uvs = {{0, 1}, {1, 1}, {1, 0}, {0, 0}};
+    tile.Normals = {{0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1}};
+    tile.Indices = {0, 1, 2, 0, 2, 3};
+    chart.Objects.clear();
+    constexpr int32 CHART_COLUMNS = 5;
+    constexpr float32 TILE_SPACING = 1.2F;
+    for (int32 surface = 0; surface < chart.Surfaces.size(); ++surface)
+    {
+        PreviewObject object;
+        object.Id = QString::number(surface);
+        object.Surface = surface;
+        object.Texture = chart.Surfaces[surface].Texture;
+        object.Transform.Translation = {static_cast<float32>(surface % CHART_COLUMNS - 2) * TILE_SPACING,
+                                        (2.5F - static_cast<float32>(surface / CHART_COLUMNS)) * TILE_SPACING,
+                                        0};
+        chart.Objects.append(object);
+    }
+    const uint64 beforeChartRevision = graph.GetPresentedRevision();
+    REQUIRE(source.SetScene(chart) == true);
+    QJsonObject navigation = source.Navigation();
+    navigation.insert(QStringLiteral("camera"), QString{});
+    navigation.insert(QStringLiteral("eyeX"), 0);
+    navigation.insert(QStringLiteral("eyeY"), 0);
+    navigation.insert(QStringLiteral("eyeZ"), 7);
+    navigation.insert(QStringLiteral("rotationX"), 0);
+    navigation.insert(QStringLiteral("rotationY"), 0);
+    navigation.insert(QStringLiteral("rotationZ"), 0);
+    navigation.insert(QStringLiteral("rotationW"), 1);
+    navigation.insert(QStringLiteral("distance"), 7);
+    source.RestoreNavigation(navigation);
+    const uint64 beforeChart = viewport.PresentedFrames();
+    REQUIRE(graph.Load(GetDefaultRenderGraphRuntime()) == RenderGraphPreviewLoad::Staged);
+    const uint64 chartGeneration = graph.GetReport().CandidateGeneration;
+    REQUIRE(waitFor([&]() {
+                return graph.GetPresentedGeneration() == chartGeneration &&
+                       graph.GetPresentedRevision() > beforeChartRevision && viewport.PresentedFrames() > beforeChart;
+            }) == true);
+    const uint64 chartSerial = graph.GetDisplayFrames().GetLatestSerial();
+    REQUIRE(waitFor([&]() { return viewport.GetPresentedGraphFrameSerial() >= chartSerial; }) == true);
+    if (capture.isEmpty() == false)
+    {
+        REQUIRE(windowOrNull->grabWindow().save(capture + QStringLiteral(".materials.png")) == true);
     }
     source.Stop();
     workspace.SetPreviewSource(nullptr);

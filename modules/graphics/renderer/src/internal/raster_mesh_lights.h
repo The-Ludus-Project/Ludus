@@ -7,8 +7,9 @@ namespace ludus::graphics::renderer::internal
 {
 /// Append variable-length emitter polygon records (deferred_layout.h) for positive-area authored emitter triangles,
 /// adding the number appended to inoutRecordCount. Constant-emission coplanar regions merge into convex polygons
-/// (TryPartitionRasterEmitterRegions); other triangles stay three-corner records, and textured ones split into four
-/// fixed-mip centroid patches. Both outputs are preserved on failure.
+/// (TryPartitionRasterEmitterRegions); other triangles stay three-corner records, and textured or masked ones split
+/// into four fixed-mip centroid patches. Masked patches test texture and interpolated vertex coverage before emitting
+/// a record; subpatch variation is approximated. Both outputs are preserved on failure.
 [[nodiscard]] rhi::RasterStatus AppendRasterMeshLights(const MeshDescription& mesh,
                                                        const foundation::math::Affine3& meshToWorld,
                                                        const SceneShaderMaterial& material,

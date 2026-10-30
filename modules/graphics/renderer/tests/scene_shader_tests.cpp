@@ -79,6 +79,13 @@ TEST_CASE("Shared scene alpha masks reach oracle coverage and GPU opacity partit
     CHECK(internal::ReferenceOpacity(job->Scene.Instances[0], {}) == true);
     CHECK(internal::ReferenceOpacity(job->Scene.Instances[0], {}, .25F) == false);
     job.Reset();
+    fixture.Scene.SceneData = ::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY;
+    REQUIRE(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
+            rhi::RasterStatus::Ready);
+    CHECK(job->Scene.Instances[0].Surface->Alpha == renderer::MaterialAlpha::Opaque);
+    CHECK(internal::ReferenceOpacity(job->Scene.Instances[0], {}, .25F) == true);
+    job.Reset();
+    fixture.Scene.SceneData = ::ludus::content::render_graph_format::SCENE_DATA_ALL;
     fixture.Materials[0].AlphaCutoff = 2;
     CHECK(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
           rhi::RasterStatus::InvalidDescription);

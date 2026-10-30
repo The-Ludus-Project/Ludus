@@ -3,6 +3,7 @@
 #include "internal/ltc_table.h"
 #include "internal/raster_mesh_light_polygons.h"
 #include "internal/reference_data.h"
+#include "internal/scene_material_validation.h"
 
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/linearly_transformed_cosine.hpp>
@@ -15,7 +16,7 @@
 // Actual transformed polygons are integrated, with a view-Fresnel Lambert term
 // and the renderer's fitted specular LTC. Both integrals are additive over a
 // partition of the emitter, so coplanar constant-emission triangles merge into
-// convex polygon records (raster_mesh_light_polygons.h). Textured emission is
+// convex polygon records (raster_mesh_light_polygons.h). Textured or masked emission is
 // piecewise constant over unmerged triangle patches.
 namespace ludus::graphics::renderer::internal
 {
@@ -75,6 +76,10 @@ rhi::RasterStatus AppendRasterMeshLights(const MeshDescription& mesh,
     {
         return Status::Ready;
     }
+    if (material.IsAlphaMasked == true && IsSceneShaderMaterialValid(material) == false)
+    {
+        return Status::InvalidDescription;
+    }
     if (mesh.Positions == nullptr || mesh.Indices == nullptr || mesh.IndexCount % CORNER_COUNT != 0)
     {
         return Status::InvalidDescription;
@@ -130,18 +135,28 @@ rhi::RasterStatus AppendRasterMeshLights(const MeshDescription& mesh,
     ReferenceSurfaceData sampling;
     sampling.UvTransform = material.UvTransform;
     sampling.Sampler = material.Sampler;
+    sampling.Alpha = material.IsAlphaMasked == true ? MaterialAlpha::Masked : MaterialAlpha::Opaque;
+    sampling.AlphaCutoff = material.AlphaCutoff;
     const bool hasEmissionMap = material.EmissionTexture.Bytes != nullptr;
     sampling.Emission = material.Emission;
     sampling.HasEmissionMap = hasEmissionMap;
     ReferenceInstance samplingInstance;
     samplingInstance.Surface = &sampling;
     samplingInstance.EmissionMap = material.EmissionTexture;
-    // Constant emission is the same over a whole mesh, so its coplanar regions merge exactly.
+    samplingInstance.Texture = material.ColorTexture;
+    const bool hasVaryingEmission = hasEmissionMap == true || material.IsAlphaMasked == true;
+    if (material.IsAlphaMasked == true &&
+        (mesh.Colors.IsValid() == false ||
+         (mesh.Colors.IsEmpty() == false && mesh.Colors.GetSize() != mesh.VertexCount)))
+    {
+        return Status::InvalidDescription;
+    }
+    // Constant unmasked emission is the same over a whole mesh, so its coplanar regions merge exactly.
     RasterEmitterPartition partition;
-    if (hasEmissionMap == false && TryPartitionRasterEmitterRegions(mesh.Positions,
-                                                                    mesh.Indices,
-                                                                    {emitters.GetData(), emitters.GetSize()},
-                                                                    partition) == false)
+    if (hasVaryingEmission == false && TryPartitionRasterEmitterRegions(mesh.Positions,
+                                                                        mesh.Indices,
+                                                                        {emitters.GetData(), emitters.GetSize()},
+                                                                        partition) == false)
     {
         return Status::OutOfMemory;
     }
@@ -160,7 +175,7 @@ rhi::RasterStatus AppendRasterMeshLights(const MeshDescription& mesh,
         ++recordCount;
         return Status::Ready;
     };
-    const usize patchCount = hasEmissionMap == true ? TEXTURED_PATCH_COUNT : 1;
+    const usize patchCount = hasVaryingEmission == true ? TEXTURED_PATCH_COUNT : 1;
     usize nextPolygon = 0;
     for (usize emitter = 0; emitter < emitters.GetSize(); ++emitter)
     {
@@ -197,12 +212,22 @@ rhi::RasterStatus AppendRasterMeshLights(const MeshDescription& mesh,
         StaticArray<math::Vector3, CORNER_COUNT> positionsWorld{};
         StaticArray<math::Vector3, CORNER_COUNT> positionsMesh{};
         StaticArray<math::Vector2, CORNER_COUNT> coordinatesUv{};
+        StaticArray<float32, CORNER_COUNT> vertexAlphas{{1, 1, 1}};
         for (usize corner = 0; corner < CORNER_COUNT; ++corner)
         {
             const uint32 vertex = mesh.Indices[triangle * CORNER_COUNT + corner];
             positionsMesh[corner] = mesh.Positions[vertex];
             positionsWorld[corner] = math::TransformPoint(meshToWorld, positionsMesh[corner]);
             coordinatesUv[corner] = mesh.Texcoords == nullptr ? math::Vector2{} : mesh.Texcoords[vertex];
+            if (material.IsAlphaMasked == true && mesh.Colors.IsEmpty() == false)
+            {
+                vertexAlphas[corner] = mesh.Colors[vertex].W;
+                if (math::IsFinite(vertexAlphas[corner]) == false || vertexAlphas[corner] < 0 ||
+                    vertexAlphas[corner] > 1)
+                {
+                    return Status::InvalidDescription;
+                }
+            }
         }
         math::Vector3 normalWorld;
         if (math::TryNormalize(
@@ -216,7 +241,8 @@ rhi::RasterStatus AppendRasterMeshLights(const MeshDescription& mesh,
             StaticArray<math::Vector3, CORNER_COUNT> positionsPatchWorld = positionsWorld;
             math::Vector2 centroidUv =
                 (coordinatesUv[0] + coordinatesUv[1] + coordinatesUv[2]) * TRIANGLE_CENTROID_WEIGHT;
-            if (hasEmissionMap == true)
+            float32 centroidAlpha = (vertexAlphas[0] + vertexAlphas[1] + vertexAlphas[2]) * TRIANGLE_CENTROID_WEIGHT;
+            if (hasVaryingEmission == true)
             {
                 // Three corner patches and the central patch partition the source exactly.
                 if (patch < CORNER_COUNT)
@@ -228,6 +254,8 @@ rhi::RasterStatus AppendRasterMeshLights(const MeshDescription& mesh,
                     positionsPatchWorld[2] = (positionsWorld[patch] + positionsWorld[previous]) * 0.5F;
                     centroidUv = (coordinatesUv[patch] * 2 + (coordinatesUv[next] + coordinatesUv[previous]) * 0.5F) *
                                  TRIANGLE_CENTROID_WEIGHT;
+                    centroidAlpha = (vertexAlphas[patch] * 2 + (vertexAlphas[next] + vertexAlphas[previous]) * 0.5F) *
+                                    TRIANGLE_CENTROID_WEIGHT;
                 }
                 else
                 {
@@ -237,6 +265,10 @@ rhi::RasterStatus AppendRasterMeshLights(const MeshDescription& mesh,
                             (positionsWorld[corner] + positionsWorld[(corner + 1) % CORNER_COUNT]) * 0.5F;
                     }
                 }
+            }
+            if (ReferenceOpacity(samplingInstance, centroidUv, math::Clamp(centroidAlpha, 0.0F, 1.0F)) == false)
+            {
+                continue;
             }
             const math::Vector3 emission = SampleReferenceEmission(samplingInstance, centroidUv);
             if (math::IsFinite(emission) == false)

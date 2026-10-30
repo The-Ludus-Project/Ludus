@@ -1283,6 +1283,11 @@ TEST_CASE("default clustered deferred matches forward material shading and prese
         }
         // Mask state must affect material/depth coverage together. The optional
         // opaque-only prepass rejects this table before it can publish solid holes.
+        CAPTURE(profile);
+        lights[LIGHT_COUNT - 1].SourceId = LIGHT_COUNT;
+        lights[LIGHT_COUNT - 1].Color = {0, 0, 1};
+        REQUIRE(update() == rhi::RasterStatus::Ready);
+        render();
         const StaticArray<uint8, PIXEL_BYTES> retained = fixture.Pixels;
         const uint64 retainedRevision = fixture.Graph.GetDrawableSceneRevision();
         StaticArray<uint8, TEXEL_BYTES> coverage{{255, 255, 255, 0}};

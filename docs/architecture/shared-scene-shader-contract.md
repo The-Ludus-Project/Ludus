@@ -127,6 +127,11 @@ texture bindings; a material table containing masks rejects that profile with
 deferred graph works without that prepass. The editor reconstructs its retained mip bilinearly;
 the material API still permits an explicit nearest sampler.
 
+Deferred raster mesh lighting evaluates masked emission with the existing bounded
+four-patch centroid rule for textured emitters, including base-texture and vertex
+coverage at each sample. Subpatch cut-outs can be missed by that approximation;
+the CPU oracle and GPU reference continue to test coverage at each actual query.
+
 Raw material values remain inspectable even when the shader uses its own BRDF.
 Optional EvaluateStandardBsdf/SampleStandardBsdf use the existing Renderer
 reflection model and return f without cosine, the full mixture directional PDF

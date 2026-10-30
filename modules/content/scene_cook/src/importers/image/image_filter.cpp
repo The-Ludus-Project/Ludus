@@ -12,6 +12,7 @@ namespace
 {
 constexpr usize FILTER_SAMPLE_COUNT = 4;
 constexpr usize COLOR_CHANNEL_COUNT = 3;
+constexpr usize CHANNEL_VALUE_COUNT = static_cast<usize>(DECODED_IMAGE_CHANNEL_MAXIMUM) + 1;
 constexpr float32 CHANNEL_MAXIMUM = static_cast<float32>(DECODED_IMAGE_CHANNEL_MAXIMUM);
 constexpr float32 FILTER_WEIGHT = 1.0F / static_cast<float32>(FILTER_SAMPLE_COUNT);
 
@@ -39,18 +40,26 @@ bool TryHalveImage(DecodedImage& inoutImage, ImageReductionProfile profile) noex
     {
         return false;
     }
+    foundation::StaticArray<float32, CHANNEL_VALUE_COUNT> linearChannels{};
+    if (profile == ImageReductionProfile::SrgbColor)
+    {
+        for (usize value = 0; value < CHANNEL_VALUE_COUNT; ++value)
+        {
+            linearChannels[value] = math::DecodeSrgb(static_cast<float32>(value) / CHANNEL_MAXIMUM);
+        }
+    }
     // Thanks to Khronos, glTF 2.0 Specification, sections 3.9.2 and 3.9.3:
     // https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html
     // Color arithmetic uses linear RGB, while tangent-normal components are linear
     // directions. The packed surface profile reconstructs positive Z before reduction.
     for (uint32 y = 0; y < height; ++y)
     {
-        const uint8* top = inoutImage.Texels.GetData() + usize{y * 2} * inoutImage.Width * DECODED_IMAGE_CHANNEL_COUNT;
+        const uint8* top = inoutImage.Texels.GetData() + usize{y} * 2 * inoutImage.Width * DECODED_IMAGE_CHANNEL_COUNT;
         const uint8* bottom = inoutImage.Texels.GetData() + usize{math::Min(y * 2 + 1, inoutImage.Height - 1)} *
                                                                 inoutImage.Width * DECODED_IMAGE_CHANNEL_COUNT;
         for (uint32 x = 0; x < width; ++x)
         {
-            const usize left = usize{x * 2} * DECODED_IMAGE_CHANNEL_COUNT;
+            const usize left = usize{x} * 2 * DECODED_IMAGE_CHANNEL_COUNT;
             const usize right = usize{math::Min(x * 2 + 1, inoutImage.Width - 1)} * DECODED_IMAGE_CHANNEL_COUNT;
             const foundation::StaticArray<const uint8*, FILTER_SAMPLE_COUNT> samples{
                 {top + left, top + right, bottom + left, bottom + right}};
@@ -62,7 +71,7 @@ bool TryHalveImage(DecodedImage& inoutImage, ImageReductionProfile profile) noex
                     float32 linear = 0;
                     for (const uint8* sample : samples)
                     {
-                        linear += math::DecodeSrgb(static_cast<float32>(sample[channel]) / CHANNEL_MAXIMUM);
+                        linear += linearChannels[sample[channel]];
                     }
                     destination[channel] = EncodeUnitChannel(math::EncodeSrgb(linear * FILTER_WEIGHT));
                 }

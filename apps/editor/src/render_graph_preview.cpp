@@ -287,6 +287,12 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
                                   unlit.Emission.Z * source.Tint.Z};
                 unlit.Sampler = surfaceMaterial.Sampler;
                 unlit.EmissionTexture = surfaceMaterial.ColorTexture;
+                unlit.IsAlphaMasked = surfaceMaterial.IsAlphaMasked;
+                unlit.AlphaCutoff = surfaceMaterial.AlphaCutoff;
+                if (unlit.IsAlphaMasked == true)
+                {
+                    unlit.ColorTexture = surfaceMaterial.ColorTexture;
+                }
                 unlit.HasError = surfaceMaterial.HasError;
             }
             resolvedMaterial = static_cast<uint32>(extraction.Materials.size());

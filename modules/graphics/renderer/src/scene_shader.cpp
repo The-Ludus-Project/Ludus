@@ -78,6 +78,7 @@ SceneShaderMaterial SelectSceneMaterial(const SceneShaderMaterial& source, uint3
         material.Roughness = 1;
         material.ColorTexture = {};
         material.SurfaceTexture = {};
+        material.IsAlphaMasked = false;
     }
     return material;
 }

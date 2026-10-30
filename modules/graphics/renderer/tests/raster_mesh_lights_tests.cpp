@@ -78,6 +78,54 @@ TEST_CASE("raster mesh emitters retain area geometry and independent placed inst
     // Reflection preserves the authored outward normal via inverse transpose, not winding.
     CHECK(words[TRIANGLE_RECORD_WORDS].Z == -1);
 }
+TEST_CASE("masked raster emitters apply texture and vertex coverage to patch radiance", "[mesh-area][opacity]")
+{
+    constexpr usize TEXEL_BYTES = 4;
+    StaticArray<uint8, TEXEL_BYTES> texel{{255, 255, 255, 0}};
+    renderer::SceneShaderMaterial material;
+    material.Emission = {1, 2, 0};
+    material.IsAlphaMasked = true;
+    material.AlphaCutoff = .5F;
+    material.ColorTexture = {texel.GetData(), texel.GetSize(), texel.GetSize(), 1, 1, rhi::RasterFormat::Rgba8Srgb};
+    Array<math::Vector4> words;
+    REQUIRE(AppendLights(MakeMesh(), {}, material, words) == rhi::RasterStatus::Ready);
+    CHECK(words.IsEmpty() == true);
+    texel[3] = 255;
+    REQUIRE(AppendLights(MakeMesh(), {}, material, words) == rhi::RasterStatus::Ready);
+    REQUIRE(CountRecords(words) == 4);
+    const math::Vector3 receiverNormalWorld{0, 0, 1};
+    const math::Vector3 baseColor{.5F, .5F, .5F};
+    math::Vector3 actual{};
+    for (usize offset = 0; offset < words.GetSize(); offset += TRIANGLE_RECORD_WORDS)
+    {
+        actual = actual + internal::EvaluateRasterMeshLight({words.GetData() + offset, TRIANGLE_RECORD_WORDS},
+                                                            {},
+                                                            receiverNormalWorld,
+                                                            receiverNormalWorld,
+                                                            baseColor,
+                                                            0,
+                                                            1);
+    }
+    material.IsAlphaMasked = false;
+    Array<math::Vector4> whole;
+    REQUIRE(AppendLights(MakeMesh(), {}, material, whole) == rhi::RasterStatus::Ready);
+    const math::Vector3 expected = internal::EvaluateRasterMeshLight({whole.GetData(), whole.GetSize()},
+                                                                     {},
+                                                                     receiverNormalWorld,
+                                                                     receiverNormalWorld,
+                                                                     baseColor,
+                                                                     0,
+                                                                     1);
+    CHECK(math::Length(actual - expected) < 1e-5F);
+    words.Clear();
+    material.IsAlphaMasked = true;
+    renderer::MeshDescription mesh = MakeMesh();
+    const StaticArray<math::Vector4, CORNER_COUNT> colors{{{1, 1, 1, .25F}, {1, 1, 1, .25F}, {1, 1, 1, .25F}}};
+    mesh.Colors = {colors.GetData(), colors.GetSize()};
+    REQUIRE(AppendLights(mesh, {}, material, words) == rhi::RasterStatus::Ready);
+    CHECK(words.IsEmpty() == true);
+}
+
 TEST_CASE("raster emitter sidedness receiver horizon and degeneracy are explicit", "[mesh-area]")
 {
     Array<math::Vector4> words;

@@ -1860,7 +1860,8 @@ Status Renderer::drawView(PreparedView handle, const rhi::RasterPassDescription&
     {
         const auto slot = view.Packets[i].MaterialSlot;
         if (isGBuffer == true && view.Packets[i].Pass == Layer::Opaque &&
-            (slot == NO_MATERIAL || s.Materials[slot].Alpha != MaterialAlpha::Opaque ||
+            (slot == NO_MATERIAL ||
+             (s.Materials[slot].Alpha != MaterialAlpha::Opaque && s.Materials[slot].Alpha != MaterialAlpha::Masked) ||
              s.Programs[s.Materials[slot].ProgramSlot].HasGBuffer == false))
         {
             return Status::Unsupported;
