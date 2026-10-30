@@ -255,6 +255,9 @@ MainWindow::~MainWindow()
     // The preview panel is reparented into a dock and may die before its workspace.
     // Retire the graph consumer while its UI and the World producer are still alive.
     Renderer_->SetPreviewSource(nullptr);
+    // The World's graph views borrow the Renderer, and the document well may delete the
+    // Renderer first. Stop the World devices now so their frame reset reaches a live Renderer.
+    World_->StopPreview();
 }
 
 void MainWindow::BuildMenus()
