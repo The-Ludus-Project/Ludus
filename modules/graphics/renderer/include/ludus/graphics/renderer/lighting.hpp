@@ -1,5 +1,7 @@
 #pragma once
 
+#include <ludus/content/scene_format/material.h>
+
 #include <ludus/foundation/base/types.h>
 
 #include <ludus/foundation/containers/array.hpp>
@@ -218,13 +220,15 @@ struct LitMaterialDescription final
 {
     /// Base texture, tint, alpha and sampler retain the L3 contracts.
     MaterialDescription Surface{};
-    /// Metallic fraction in [0,1]; dielectric F0 is fixed at 0.04.
+    /// Legacy metallic fraction in [0,1]; ignored by typed diffuse/conductor reference evaluation.
     ludus::foundation::float32 Metallic = 0;
-    /// Perceptual roughness in [0.045,1]; alpha is its square.
+    /// Legacy/raster perceptual roughness in [0.045,1]; typed conductor reference uses Scattering alpha.
     ludus::foundation::float32 Roughness = 0.5F;
     /// Optional ready sampled Rgba8Unorm surface map: RG encodes tangent normal XY
     /// as 2*channel-1; positive Z is reconstructed. B multiplies perceptual roughness
-    /// (floored at 0.045), A multiplies metallic. It shares Surface UV/sampler/LOD.
+    /// (floored at 0.045), A multiplies metallic. Typed conductor reference keeps its constant
+    /// Scattering alpha and ignores these two multipliers; normal mapping still applies.
+    /// It shares Surface UV/sampler/LOD.
     /// Requires renderer_surface.slang or renderer_clustered_surface.slang; other
     /// programs return Unsupported. Null preserves the constant surface model.
     /// Creation retains the exact view; the caller may destroy its texture owner.
@@ -274,6 +278,8 @@ struct LitMaterialDescription final
     /// Diagnostic output for debug-view programs; ignored by ordinary lit programs.
     /// Values outside the enumeration are rejected.
     MaterialDebugView DebugView = MaterialDebugView::None;
+    /// Typed optical parameters; default preserves the legacy metallic/roughness model.
+    content::scene_format::MaterialScattering Scattering{};
 };
 /// Decoded linear surface-map parameters, with a unit positive-hemisphere tangent normal.
 struct SurfaceParameters final

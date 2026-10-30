@@ -49,7 +49,7 @@ class ReferenceExportTests(unittest.TestCase):
         self.assertEqual(pixels[0],(1,2,3,4))
 
     def test_surface_profile_version_is_preserved(self):
-        for profile in (1, 2, 3, 4):
+        for profile in (1, 2, 3, 4, 5):
             with self.subTest(profile=profile):
                 data = self.capture()
                 struct.pack_into('<I', data, 12, profile)
@@ -97,7 +97,7 @@ class ReferenceExportTests(unittest.TestCase):
         struct.pack_into('<f',data,256,float('nan'))
         with self.assertRaises(ValueError): hdr.decode(data)
         data = self.capture()
-        struct.pack_into('<I',data,12,5)
+        struct.pack_into('<I',data,12,6)
         with self.assertRaises(ValueError): hdr.decode(data)
         with self.assertRaises(ValueError): hdr.decode(self.capture()[:-1])
 

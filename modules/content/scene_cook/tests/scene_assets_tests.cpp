@@ -207,6 +207,7 @@ struct GoldenProject
 
     GoldenProject()
     {
+        Options.ShouldPreserveReferenceMaterials = false;
         Options.UuidsOrNull = &Uuids;
         Options.SourceOrigin = VIRTUAL_ORIGIN;
         std::filesystem::create_directories(Project);
@@ -588,6 +589,7 @@ TEST_CASE("In-process Editor operations match scene_editor.py responses", "[scen
     SequentialUuids counter;
     UuidSource uuids{&SequentialUuids::Generate, &counter};
     AssetOptions options;
+    options.ShouldPreserveReferenceMaterials = false;
     options.UuidsOrNull = &uuids;
     options.SourceOrigin = VIRTUAL_ORIGIN;
     AssetError error;
@@ -1123,7 +1125,7 @@ TEST_CASE("Two pbrt entries in one directory keep separate origins", "[scene_ass
     std::filesystem::remove_all(work, ignored);
 }
 
-TEST_CASE("scene-v4.pbrt keeps pbrt-reference-v1 and falls back only on profile rejection", "[scene_assets]")
+TEST_CASE("scene-v4.pbrt preserves materials and falls back only on profile rejection", "[scene_assets]")
 {
     const std::filesystem::path work = MakeWorkDirectory();
     const std::filesystem::path project = work / "project";
@@ -1141,7 +1143,7 @@ TEST_CASE("scene-v4.pbrt keeps pbrt-reference-v1 and falls back only on profile 
     EditorSceneResult kept;
     INFO(Describe(error));
     REQUIRE(OperateEditorScene(request, options, kept, error));
-    CHECK(GetResponseMember(kept.Response, "profile") == "pbrt-reference-v1");
+    CHECK(GetResponseMember(kept.Response, "profile") == MATERIAL_PROFILE);
     CHECK(ToText(kept.Response).find("reference_rejection") == std::string::npos);
 
     const std::filesystem::path general = work / "general";
@@ -1988,4 +1990,179 @@ TEST_CASE("Source input rechecks report the serial result for every worker count
             CHECK(parallel.StaleMessage == serial.StaleMessage);
         }
     }
+}
+
+TEST_CASE("Source-preserving PBRT materials survive project publication and moved reopen", "[scene_assets][materials]")
+{
+    namespace format = ludus::content::scene_format;
+    GoldenProject project;
+    AssetOptions options = project.Options;
+    options.ShouldPreserveReferenceMaterials = true; // Exercise the production default route.
+    Array<uint8> empty;
+    AssetError error;
+    REQUIRE(CreateLevel("Materials", options, empty, error) == true);
+    Array<uint8> imported;
+    REQUIRE(ImportScene(project.Project.string(), project.Source, ToSpan(empty), options, imported, error) == true);
+    Array<uint8> bundle;
+    REQUIRE(AssembleLevel(project.Project.string(), ToSpan(imported), {}, bundle, error) == true);
+    ludus::resources::SceneDefinition scene;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(bundle.GetData(), bundle.GetSize(), scene) ==
+            ludus::resources::Status::Ok);
+    bool hasPaint = false;
+    bool hasBrass = false;
+    bool hasCoating = false;
+    usize emitterCount = 0;
+    std::map<float32, bool> emissions;
+    for (const ludus::resources::SceneMaterial& material : scene.Materials)
+    {
+        REQUIRE(material.HasSourceMaterial == true);
+        CHECK(material.SourceIdentity != 0);
+        if (material.Name.View() == "Paint")
+        {
+            hasPaint = true;
+            CHECK(material.Scattering.Model == format::MaterialModel::Diffuse);
+            CHECK(material.Reflectance.X == 0.2F);
+            CHECK(material.Reflectance.Y == 0.4F);
+            CHECK(material.Reflectance.Z == 0.6F);
+            CHECK(material.Texture == format::NO_TEXTURE);
+        }
+        if (material.Name.View() == "Brass")
+        {
+            hasBrass = true;
+            CHECK(material.Scattering.Model == format::MaterialModel::Conductor);
+            CHECK(material.Scattering.Eta[0] == 0.444F);
+            CHECK(material.Scattering.K[2] == 1.829F);
+            CHECK(material.Scattering.AlphaU == 0.1F);
+            CHECK(material.Scattering.AlphaV == 0.1F);
+        }
+        if (material.Name.View() == "Tiles")
+        {
+            hasCoating = true;
+            CHECK(material.Scattering.Model == format::MaterialModel::CoatedDiffuse);
+            CHECK(material.Scattering.AlphaU == 0.01F);
+        }
+        if (material.Emission.X > 0)
+        {
+            ++emitterCount;
+            emissions[material.Emission.X] = true;
+            CHECK(material.IsEmissionTwoSided == false);
+        }
+    }
+    REQUIRE(hasPaint == true);
+    REQUIRE(hasBrass == true);
+    REQUIRE(hasCoating == true);
+    CHECK(emitterCount == 4);
+    CHECK(emissions.count(10.0F) == 1);
+    CHECK(emissions.count(3.0F) == 1);
+    CHECK(emissions.count(20.0F) == 1);
+    CHECK(emissions.count(0.5F) == 1);
+    usize extensionOffset = sizeof(format::Header);
+    for (const ludus::resources::SceneTexture& texture : scene.Textures)
+    {
+        extensionOffset += sizeof(format::TextureRecord) + texture.Pixels.GetSize();
+    }
+    extensionOffset += sizeof(format::MaterialRecordV6);
+    Array<uint8> malformed;
+    REQUIRE(malformed.TryAddRange(bundle.AsSpan()) == true);
+    REQUIRE(TryWriteLittleEndian(~uint32{0},
+                                 {malformed.GetData() + extensionOffset + offsetof(format::MaterialExtensionV7, Model),
+                                  sizeof(uint32)}) == true);
+    const usize preservedCount = scene.Materials.GetSize();
+    CHECK(ludus::resources::SceneDefinition::Decode(malformed.GetData(), malformed.GetSize(), scene) !=
+          ludus::resources::Status::Ok);
+    CHECK(scene.Materials.GetSize() == preservedCount);
+    REQUIRE(TryWriteLittleEndian(uint32{0},
+                                 {malformed.GetData() + extensionOffset + offsetof(format::MaterialExtensionV7, Model),
+                                  sizeof(uint32)}) == true);
+    REQUIRE(
+        TryWriteLittleEndian(static_cast<uint32>(format::MAX_MATERIAL_NAME_BYTES + 1),
+                             {malformed.GetData() + extensionOffset + offsetof(format::MaterialExtensionV7, NameBytes),
+                              sizeof(uint32)}) == true);
+    CHECK(ludus::resources::SceneDefinition::Decode(malformed.GetData(), malformed.GetSize(), scene) !=
+          ludus::resources::Status::Ok);
+    CHECK(scene.Materials.GetSize() == preservedCount);
+    Array<uint8> saved;
+    REQUIRE(SaveLevel(project.Project.string(), "scenes/materials.lulevel", ToSpan(imported), nullptr, saved, error) ==
+            true);
+    const std::filesystem::path moved = project.Work / "moved-materials";
+    std::filesystem::copy(project.Project, moved, std::filesystem::copy_options::recursive);
+    Array<uint8> reopened;
+    REQUIRE(OpenLevel(moved.string(), "scenes/materials.lulevel", reopened, error) == true);
+    Array<uint8> assembled;
+    REQUIRE(AssembleLevel(moved.string(), ToSpan(reopened), {}, assembled, error) == true);
+    CHECK(ToText(bundle) == ToText(assembled));
+    // One truncated extension must not publish a replacement definition.
+    const usize oldMaterials = scene.Materials.GetSize();
+    CHECK(ludus::resources::SceneDefinition::Decode(bundle.GetData(), bundle.GetSize() - 1, scene) !=
+          ludus::resources::Status::Ok);
+    CHECK(scene.Materials.GetSize() == oldMaterials);
+}
+
+TEST_CASE("Named material and grouped mesh resources survive reordered PBRT declarations", "[scene_assets][materials]")
+{
+    GoldenProject project;
+    const std::filesystem::path source = project.Work / "reordered-source";
+    std::filesystem::copy(project.Source, source, std::filesystem::copy_options::recursive);
+    AssetOptions options = project.Options;
+    options.ShouldPreserveReferenceMaterials = true;
+    Array<uint8> empty;
+    Array<uint8> first;
+    AssetError error;
+    REQUIRE(CreateLevel("Identities", options, empty, error) == true);
+    REQUIRE(ImportScene(project.Project.string(), source.string(), ToSpan(empty), options, first, error) == true);
+    const auto collect = [&project]() {
+        std::map<std::string, std::string> result;
+        detail::JsonTree catalog;
+        detail::JsonIndex root = detail::NO_JSON_NODE;
+        content::MessageText message;
+        const std::string bytes = ReadWhole(project.Project / "assets/catalog.json");
+        REQUIRE(detail::ParsePythonJson(ToSpan(bytes), catalog, root, message) == true);
+        const detail::JsonIndex resources = catalog.GetMember(root, "resources");
+        for (usize index = 0; index < catalog.GetCount(resources); ++index)
+        {
+            const std::string identity(catalog.GetKey(resources, index));
+            const detail::JsonIndex record = catalog.GetValue(resources, index);
+            if (catalog.IsString(catalog.GetMember(record, "kind"), "mesh") == true)
+            {
+                result["mesh/" + identity] = std::string(catalog.GetText(catalog.GetMember(record, "sha256")));
+            }
+            if (catalog.IsString(catalog.GetMember(record, "kind"), "material") == false)
+            {
+                continue;
+            }
+            const std::string path(catalog.GetText(catalog.GetMember(record, "path")));
+            const std::string materialBytes = ReadWhole(project.Project / path);
+            detail::JsonTree material;
+            detail::JsonIndex materialRoot = detail::NO_JSON_NODE;
+            REQUIRE(detail::ParsePythonJson(ToSpan(materialBytes), material, materialRoot, message) == true);
+            const detail::JsonIndex sourceMaterial = material.GetMember(materialRoot, "source_material");
+            if (sourceMaterial == detail::NO_JSON_NODE)
+            {
+                continue;
+            }
+            const std::string name(material.GetText(material.GetMember(sourceMaterial, "name")));
+            if (name.empty() == false)
+            {
+                result["material/" + name] = identity;
+            }
+        }
+        return result;
+    };
+    const std::map<std::string, std::string> before = collect();
+    REQUIRE(before.empty() == false);
+    const std::filesystem::path entry = source / "scene-v4.pbrt";
+    std::string text = ReadWhole(entry);
+    const usize begin = text.find("MakeNamedMaterial \"Brass\"");
+    const usize end = text.find("MakeNamedMaterial \"Paint\"", begin);
+    REQUIRE(begin != std::string::npos);
+    REQUIRE(end != std::string::npos);
+    const std::string brass = text.substr(begin, end - begin);
+    text.erase(begin, end - begin);
+    const usize destination = text.find("MakeNamedMaterial \"WallPaper\"");
+    REQUIRE(destination != std::string::npos);
+    text.insert(destination, brass);
+    std::ofstream(entry, std::ios::binary) << text;
+    Array<uint8> second;
+    REQUIRE(ImportScene(project.Project.string(), source.string(), ToSpan(first), options, second, error) == true);
+    CHECK(collect() == before);
 }

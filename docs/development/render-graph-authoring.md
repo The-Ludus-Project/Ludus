@@ -2732,6 +2732,14 @@ geometry rejects or uses the graph's explicit diagnostic coverage policy; it
 does not acquire transparent transport by connecting Scene. Material evaluation
 uses the supplied fixed mip and UV0; derivative mip selection is not inferred.
 
+Typed source materials also expose `MaterialSample.Model`, `Eta`, `K`, `AlphaU`
+and `AlphaV`. `EvaluateStandardBsdf`/`SampleStandardBsdf` select pure diffuse or
+isotropic conductor reflection when those models are bound. A custom shader using
+its own metallic/roughness formulas must handle the type explicitly to preserve
+source semantics. Coated diffuse still uses the declared approximation. See
+[typed reference materials](../architecture/renderer-systems.md#typed-diffuse-and-conductor-reference-materials)
+and the [source-preserving importer](../examples/reference-scene.md#material-preserving-project-imports).
+
 ### Read surfaces, sample sources and trace visibility
 
 The public logical Slang helper is installed as `scene_shader.slang`; generated

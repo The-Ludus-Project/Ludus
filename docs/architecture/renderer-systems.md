@@ -2787,6 +2787,43 @@ reflection/photometric conventions and tangent-normal surface-detail model. The
 packed layout, UV-derived frame and bounded immutable admission are Ludus choices.
 
 
+### Typed diffuse and conductor reference materials
+
+Reference profile 5 extends `ReferenceBsdf`, `LitMaterialDescription` and
+`SceneShaderMaterial` with format-owned `MaterialScattering` parameters. The
+legacy default retains GGX/Schlick plus Fresnel-weighted diffuse. `Diffuse`
+evaluates Lambertian reflectance without an added dielectric specular lobe and
+samples the cosine hemisphere. `Conductor` uses retained RGB complex-IOR Fresnel,
+GGX with directly supplied alpha, correlated Smith masking and visible-normal
+sampling with its matching PDF. Below-surface proposals remain null events;
+there is no retry, energy clamp or hidden change to conductor alpha. Storage
+preserves `AlphaU` and `AlphaV`; reference admission currently requires them to
+match, and requires positive alpha rather than implementing delta transport.
+
+CPU/native-query reference transport evaluates the CPU implementation;
+GPU-compute reference transport evaluates the corresponding Slang implementation.
+The authored graph's standard BSDF helpers use the same model selection. Existing
+custom BRDFs remain author-owned. The GPU material records extend the existing
+indexed read-only scene storage table, selected by each triangle's resolved
+material binding. Eta/model, K/alpha and coating metadata have shared named word
+addresses; the private scene-kernel ABI advances to 10. The table requires one
+storage binding and does not require a descriptor array of constant buffers or
+bindless textures. Existing resource retention and producer/consumer completion
+rules continue to protect the complete accepted snapshot.
+
+The initial source-preserving profile is an RGB proxy. Coated diffuse retains its
+parameters while continuing the old approximation; raster lit shaders also retain
+their current approximation. No layered or spectral PBRT equivalence is claimed.
+References: thanks to Matt Pharr, Wenzel Jakob and Greg Humphreys,
+[*Physically Based Rendering*, fourth edition, §9.3](https://pbr-book.org/4ed/Reflection_Models/Specular_Reflection_and_Transmission),
+for complex-IOR Fresnel, and the existing Heitz visible-GGX sampling reference.
+
+Acceptance uses independent complex-amplitude Fresnel calculations, Lambertian
+throughput identities, invalid-input output preservation, source-material asset
+round trips and a mixed diffuse/conductor scene comparing raw CPU/GPU reference
+AOVs. Full staircase2 source-PBRT fidelity and the previously recorded dense
+native-query qualification gap remain separate acceptance items.
+
 ## Implementation phases and acceptance
 
 Complete prepared-scene acceptance uses the existing installed-SDK reference

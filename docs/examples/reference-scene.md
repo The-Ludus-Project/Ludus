@@ -19,6 +19,43 @@ the native Editor viewport; see the
 The standalone commands below are prototype evidence; they do not provide the
 project → scene → import → viewport → save/reopen product workflow.
 
+## Material-preserving project imports
+
+New native project imports of this PBRT subset use `pbrt-reference-materials-v2`.
+They retain named material identities and assignments, linear reflectance factors,
+original texture UVs and texture references, GGX alpha, conductor RGB `eta`/`k`, and
+coated-diffuse IOR/thickness defaults. Named material UUIDs derive from the import
+namespace and source name; reordering named definitions does not rename those
+material assets. Inline definitions retain their source command identity. Per-shape
+emission variants reference that source material and keep distinct emission values.
+The cooker still combines room geometry with the same source material; it does not
+restore every PLY boundary as an editable object.
+
+`ludus-cook cook-materials SOURCE OUTPUT` writes the same new LUSCN v7 profile
+without a project. The `cook` command and `Cook` API below remain the frozen
+`pbrt-reference-v1` compatibility path, including its historical atlas and captures.
+Existing project assets are not silently recooked: explicitly reimport to opt into
+changed material identities, grouping, source UVs and one-sided area emission.
+
+The CPU oracle, native-query reference transport and GPU-compute reference support
+pure Lambertian diffuse and isotropic rough conductors with complex-IOR Fresnel.
+Render-graph `GetMaterial` exposes the type and optical parameters;
+`EvaluateStandardBsdf` and `SampleStandardBsdf` evaluate the selected model. Custom
+shaders that implement their own metallic/roughness BRDF must explicitly consume
+the new model fields to adopt these semantics. Ordinary raster material shaders
+continue to use the metallic/roughness approximation in this milestone.
+
+Coated diffuse remains an explicit shading approximation despite retaining its
+source identity and parameters. Spectral transport, coating multiple scattering,
+perfect-specular/anisotropic conductors, remapped source roughness and texture
+footprint filtering are outside this initial typed profile. The source's
+`remaproughness=false` values are stored directly as GGX alpha; the legacy raster
+roughness approximation does not replace those parameters. All new captures use
+reference profile 5; historical reports below retain their original versions.
+Full-scene PBRT fidelity and the existing dense native-query parity gap remain
+unqualified. Synthetic tests cover preserved source parameters and moved-project
+reopen, independent complex Fresnel evaluation and matched CPU/GPU raw radiance.
+
 ## Prepare the SDK and tools
 
 Use the [supported native toolchain and SDK workflow](../development/building.md)

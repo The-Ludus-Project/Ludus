@@ -546,3 +546,39 @@ The scene asset pipeline splits version 6 bundles with build target
 base, surface and emission textures in that order. Assembly selects version 6 when
 any mesh part is version 6 or any material description has maps; older mesh parts
 then gain absent tangents, version 3 parts dropping their stored bake UVs.
+
+
+### Typed source materials (LUSCN v7)
+
+Version 7 keeps all version 6 records and appends a `MaterialExtensionV7` after
+**each** material. Its width is derived from the explicit wire fields in
+`ludus/content/scene_format/luscn.h`; never serialize host padding. The extension
+stores a source command identity, a counted UTF-8 name with zero padding, a
+`MaterialModel` tag, linear RGB reflectance, RGB complex-IOR `Eta` and `K`, resolved
+GGX `AlphaU`/`AlphaV`, and coating IOR/optical thickness. Invalid tags, names,
+padding, finite ranges or truncation reject without replacing the decoded scene.
+Version 7 retains the import profile's geometry/texture/aggregate limits.
+
+The source-material object in a project's immutable material artifact owns the
+same fields, independently of texture catalog IDs. Split and assembly preserve it;
+assembly chooses v7 when any referenced material has that object. Materials from
+older bundles keep their original metallic/roughness model and untextured-black
+contract. When mixed with v7 assets, assembly resolves that legacy base explicitly.
+World composition also preserves these fields when combining imported and authored
+geometry. Texture dependencies continue to refer to immutable catalog revisions.
+
+The typed PBRT importer resolves its declared defaults at import. The current
+subset admits diffuse, conductor and coated-diffuse definitions; its coating's
+unexposed layer settings retain PBRT's defaults (zero medium scattering albedo,
+zero phase anisotropy, ten internal events and one evaluation sample). It requires
+explicit `remaproughness=false` and positive isotropic alpha for rough source
+models. Unsupported profiles reject; no anonymous conversion to a different
+material type is implied. `CoatedDiffuse` stores intent but still shades through
+the documented legacy approximation. See the [scene guide](../examples/reference-scene.md#material-preserving-project-imports).
+
+Named material logical UUIDs derive from the import namespace and exact source
+name, with a separate per-emitter suffix for emission variants. Inline materials
+use the source command identity. Runtime table indices remain transient: saved
+Worlds reference logical material IDs, and each extracted triangle resolves its
+accepted material binding. Changing optical parameters creates a new immutable
+artifact revision and resets reference accumulation.

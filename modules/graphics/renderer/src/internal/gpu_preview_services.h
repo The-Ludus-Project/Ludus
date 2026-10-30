@@ -266,6 +266,19 @@ Status PackGpuScene(const ReferenceJob& job,
         const internal::ReferenceInstance& instance = scene.Instances[i];
         const internal::ReferenceSurfaceData& surface = *instance.Surface;
         math::Vector4* surfaceWords = data.GetData() + surfaces + i * LUDUS_GPU_PREVIEW_SURFACE_WORDS;
+        const content::scene_format::MaterialScattering& scattering = surface.Bsdf.Scattering;
+        surfaceWords[LUDUS_GPU_PREVIEW_SCATTERING_ETA_WORD] = {scattering.Eta[0],
+                                                               scattering.Eta[1],
+                                                               scattering.Eta[2],
+                                                               GpuBits(static_cast<uint32>(scattering.Model))};
+        surfaceWords[LUDUS_GPU_PREVIEW_SCATTERING_K_WORD] = {scattering.K[0],
+                                                             scattering.K[1],
+                                                             scattering.K[2],
+                                                             scattering.AlphaU};
+        surfaceWords[LUDUS_GPU_PREVIEW_SCATTERING_ALPHA_WORD] = {scattering.AlphaV,
+                                                                 scattering.CoatingEta,
+                                                                 scattering.CoatingThickness,
+                                                                 0};
         surfaceWords[LUDUS_GPU_PREVIEW_BASE_COLOR_WORD] = GpuVector(surface.Bsdf.BaseColor, surface.Bsdf.Metallic);
         surfaceWords[LUDUS_GPU_PREVIEW_ROUGHNESS_WORD] =
         {

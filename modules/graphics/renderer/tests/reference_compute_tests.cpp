@@ -79,7 +79,8 @@ S Prepare(rhi::DeviceHandle device, rr::ReferenceTraversal traversal, Session& o
 S BuildSphereSnapshot(rhi::DeviceHandle device,
                       rr::Renderer& inoutRenderer,
                       rr::MaterialProgram program,
-                      rr::Snapshot& outSnapshot)
+                      rr::Snapshot& outSnapshot,
+                      bool shouldUseTypedMaterials = false)
 {
     constexpr uint32 LONGITUDES = 96;
     constexpr uint32 LATITUDES = 48;
@@ -170,6 +171,19 @@ S BuildSphereSnapshot(rhi::DeviceHandle device,
         material.Surface.Tint = i == 0 ? math::Vector4{.9F, .7F, .3F, 1} : math::Vector4{.6F, .6F, .6F, 1};
         material.Metallic = i == 0 ? 1.F : 0.F;
         material.Roughness = i == 0 ? .3F : 1.F;
+        if (shouldUseTypedMaterials == true)
+        {
+            namespace format = ludus::content::scene_format;
+            material.Scattering.Model = i == 0 ? format::MaterialModel::Conductor : format::MaterialModel::Diffuse;
+            material.Scattering.AlphaU = 0.1F;
+            material.Scattering.AlphaV = 0.1F;
+            material.Scattering.Eta[0] = 1.65746F;
+            material.Scattering.Eta[1] = 0.880369F;
+            material.Scattering.Eta[2] = 0.521229F;
+            material.Scattering.K[0] = 9.223869F;
+            material.Scattering.K[1] = 6.269523F;
+            material.Scattering.K[2] = 4.837001F;
+        }
         if (i == 2)
         {
             material.Emission = {6, 5, 4};
@@ -1389,4 +1403,90 @@ TEST_CASE("GPU-compute light-sampling mode is part of the integral and the raw c
     const uint32 approximatedFlags = uint32(bytes[FLAGS_OFFSET]) | (uint32(bytes[FLAGS_OFFSET + 1]) << 8);
     CHECK((approximatedFlags & RESAMPLED_LIGHT_FLAG) != 0);
     REQUIRE(gpu.Renderer.Release(handle) == S::Ready);
+}
+
+TEST_CASE("Typed diffuse and conductor match between CPU and GPU reference transport",
+          "[renderer][gpu][reference-compute]")
+{
+    rhi::Shutdown();
+    struct Guard final
+    {
+        ~Guard()
+        {
+            rhi::Shutdown();
+        }
+    } guard;
+    rhi::DeviceHandle device;
+    rhi::SurfaceHandle surface;
+    rhi::DeviceDescription description;
+    description.Required.PortableRaster = true;
+    description.Required.Compute = true;
+    const rhi::DeviceStatus started = rhi::CreateDevice({}, { .Width = 8, .Height = 8 }, description, device, surface);
+#if defined(LUDUS_TEST_METAL)
+    if (started != rhi::DeviceStatus::Ready && rhi::GetStartup().Error == rhi::StartupError::AdapterUnavailable)
+    {
+        SKIP("No Metal adapter");
+    }
+#endif
+    REQUIRE(started == rhi::DeviceStatus::Ready);
+    Session gpu;
+    const S enabled = Prepare(device, rr::ReferenceTraversal::GpuCompute, gpu);
+    if (enabled == S::Unsupported)
+    {
+        SKIP("Compute storage is unavailable on this device");
+    }
+    REQUIRE(enabled == S::Ready);
+    Session cpu;
+    REQUIRE(Prepare(device, rr::ReferenceTraversal::CpuOracle, cpu) == S::Ready);
+    rr::Snapshot spheres[2];
+    REQUIRE(BuildSphereSnapshot(device, cpu.Renderer, cpu.Program, spheres[0], true) == S::Ready);
+    REQUIRE(BuildSphereSnapshot(device, gpu.Renderer, gpu.Program, spheres[1], true) == S::Ready);
+    REQUIRE(cpu.Renderer.Release(cpu.Snapshot) == S::Ready);
+    REQUIRE(gpu.Renderer.Release(gpu.Snapshot) == S::Ready);
+    cpu.Snapshot = spheres[0];
+    gpu.Snapshot = spheres[1];
+    rr::DirectLight sun;
+    sun.SourceId = 7;
+    sun.Direction = math::Vector3{-.3F, -.4F, 1} / math::Length(math::Vector3{-.3F, -.4F, 1});
+    sun.Intensity = .8F;
+    rr::ReferenceCaptureDescription capture;
+    capture.Width = 32;
+    capture.Height = 24;
+    capture.TargetSamples = 16;
+    capture.MaxDepth = 6;
+    capture.Seed = 99;
+    capture.Environment = {.2F, .25F, .3F};
+    capture.Lights = &sun;
+    capture.LightCount = 1;
+    math::Matrix4 view;
+    math::Matrix4 projection;
+    capture.CameraPosition = {.3F, .2F, -2};
+    REQUIRE(math::TryLookAt(capture.CameraPosition, {0, 0, 0}, {0, 1, 0}, view) == math::MathStatus::Success);
+    REQUIRE(math::TryPerspectiveReverseZ(.9F, float32(capture.Width) / float32(capture.Height), .1F, 20, projection) ==
+            math::MathStatus::Success);
+    capture.WorldToClip = projection * view;
+    capture.ReverseZ = true;
+    Array<rr::ReferencePixel> oracle;
+    Array<rr::ReferencePixel> compute;
+    rr::ReferenceCaptureInfo oracleInfo;
+    rr::ReferenceCaptureInfo computeInfo;
+    const uint64 cpuStart = time::NowTicks();
+    Capture(cpu, capture, surface, oracle, oracleInfo);
+    const uint64 gpuStart = time::NowTicks();
+    Capture(gpu, capture, surface, compute, computeInfo);
+    const uint64 gpuEnd = time::NowTicks();
+    const Comparison comparison = Compare(oracle, compute, capture.TargetSamples);
+    CAPTURE(comparison.MaximumRadiance,
+            math::Sqrt(comparison.SquaredRadiance),
+            oracleInfo.ClosestQueries,
+            computeInfo.ClosestQueries,
+            oracleInfo.VisibilityQueries,
+            computeInfo.VisibilityQueries,
+            (gpuStart - cpuStart) / NANOSECONDS_PER_MILLISECOND,
+            (gpuEnd - gpuStart) / NANOSECONDS_PER_MILLISECOND);
+    CHECK(computeInfo.InvalidContributions == 0);
+    CHECK(computeInfo.CommittedSamples == oracleInfo.CommittedSamples);
+    // A rare near-edge hit can send one path elsewhere; the image mean stays matched.
+    CHECK(math::Sqrt(comparison.SquaredRadiance) <= 1e-3F);
+    CHECK(math::Distance(comparison.CpuMean, comparison.GpuMean) <= 1e-3F * float32(oracle.GetSize()));
 }
