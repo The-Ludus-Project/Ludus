@@ -120,7 +120,7 @@ PrepareLineSamplingConfiguration(RenderGraphSnapshot& inoutSnapshot,
 /// Prepare the salesin-jarosz-lines template (point-line design D8b) in an absent/empty library: a
 /// primary-hits pass and the ShadeMultipleImportance, ShadeLineSampling and ShadePointSampling
 /// triangle-loop passes sharing one render-size hit Buffer, imported under salesin_jarosz_lines/ with
-/// PointLine-prefixed program IDs and the MIS_HEURISTIC and MIS_POWER_EXPONENT Graph settings;
+/// PointLine-prefixed program IDs and the POINT_LINE_MIS_HEURISTIC and POINT_LINE_MIS_POWER_EXPONENT Graph settings;
 /// lineSampling and pointSampling are optional library outputs. The ray technique's scene_interface
 /// gains the template's visibility and line_queries budgets. Requires a Metal or Vulkan profile but no
 /// native ray tracing. Same transaction contract as PrepareComputeRayTracingConfiguration.

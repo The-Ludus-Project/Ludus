@@ -495,8 +495,8 @@ strategies, `ComputeMisWeight(float sampledDensity, float otherDensity0, float
 otherDensity1)`, for the balance and power heuristics only. A zero other density
 drops that strategy. For finite positive densities the three weights sum to one,
 which a GPU test checks numerically. `shadeLines` and `shadePoints` pass zero
-for the absent strategy. Graph settings: `MIS_HEURISTIC` (`0` balance, `1`
-power, default `0`, the paper's choice) and `MIS_POWER_EXPONENT`.
+for the absent strategy. Graph settings: `POINT_LINE_MIS_HEURISTIC` (`0` balance, `1`
+power, default `0`, the paper's choice) and `POINT_LINE_MIS_POWER_EXPONENT`.
 
 Budgets. Passes in one sequence share a scene interface (compute ray-tracing
 C06), so it declares the maximum over passes:

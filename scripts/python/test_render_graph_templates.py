@@ -871,11 +871,11 @@ class SalesinJaroszLinesTemplateTests(unittest.TestCase):
                          [('Primary', 'TracePrimaryHit'), ('ShadeMultipleImportance', 'ShadeMultipleImportance'),
                           ('ShadeLineSampling', 'ShadeLineSampling'), ('ShadePointSampling', 'ShadePointSampling')])
         values = {setting['id']: setting for setting in manifest['settings']}
-        self.assertEqual(sorted(values), ['MIS_HEURISTIC', 'MIS_POWER_EXPONENT'])
+        self.assertEqual(sorted(values), ['POINT_LINE_MIS_HEURISTIC', 'POINT_LINE_MIS_POWER_EXPONENT'])
         # Balance is the default, as in Salesin and Jarosz; only balance and power are offered.
-        self.assertEqual(values['MIS_HEURISTIC']['value'], 0)
-        self.assertEqual((values['MIS_HEURISTIC']['minimum'], values['MIS_HEURISTIC']['maximum']), (0, 1))
-        self.assertEqual(values['MIS_POWER_EXPONENT']['value'], 2)
+        self.assertEqual(values['POINT_LINE_MIS_HEURISTIC']['value'], 0)
+        self.assertEqual((values['POINT_LINE_MIS_HEURISTIC']['minimum'], values['POINT_LINE_MIS_HEURISTIC']['maximum']), (0, 1))
+        self.assertEqual(values['POINT_LINE_MIS_POWER_EXPONENT']['value'], 2)
         shaders = root.with_name('main_shaders')
         header = shaders.joinpath('hit_record.slang').read_text()
         constant = lambda name: int(re.search(rf'static const uint {name} = (\d+);', header).group(1))
@@ -924,7 +924,7 @@ class SalesinJaroszLinesTemplateTests(unittest.TestCase):
     def test_heuristic_outside_balance_and_power_is_rejected(self):
         root = self.create()
         original = json.loads(root.with_name('main.lushader.json').read_text())
-        index = next(index for index, setting in enumerate(original['settings']) if setting['id'] == 'MIS_HEURISTIC')
+        index = next(index for index, setting in enumerate(original['settings']) if setting['id'] == 'POINT_LINE_MIS_HEURISTIC')
         for value in (-1, 2, 3, 0.5, True, None):
             with self.subTest(value=value):
                 manifest = copy.deepcopy(original)
@@ -1301,6 +1301,20 @@ class EditorTemplateCatalogTests(unittest.TestCase):
         for identity in graphs:
             arguments = build_parser().parse_args(['render-graph', 'new', 'Main', '--template', identity])
             self.assertEqual(arguments.template, identity)
+
+    def test_shared_graph_settings_have_one_definition(self):
+        # Graph settings are package-wide, and Apply Configuration Template rejects a setting whose
+        # definition other than its value differs from the package's (MergeTemplateSettings). Any two
+        # built-in templates must therefore be importable into one package.
+        from ludus_tools import render_graph_templates as templates
+        definitions = {}
+        for identity in templates.TEMPLATES:
+            files = templates.template_files(identity, ('metal',), graph)
+            for setting in json.loads(files['main.lushader.json']).get('settings', ()):
+                definition = {key: value for key, value in setting.items() if key != 'value'}
+                owner, existing = definitions.setdefault(setting['id'], (identity, definition))
+                with self.subTest(setting=setting['id'], first=owner, second=identity):
+                    self.assertEqual(definition, existing)
 
     def test_ray_requirements_match_the_tooling_capability_check(self):
         from ludus_tools.render_graph_templates import REQUIREMENT_REPAIRS, TEMPLATES

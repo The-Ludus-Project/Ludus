@@ -2126,8 +2126,8 @@ void CheckPointLineImport(const RenderGraphDocument& document, const QString& li
         CHECK(document.GetDraft(source).isEmpty() == false);
     }
     const QByteArray manifest = document.GetDraft(COMPUTE_MANIFEST);
-    CHECK(GetGraphSetting(manifest, QStringLiteral("MIS_HEURISTIC")) == 0);
-    CHECK(GetGraphSetting(manifest, QStringLiteral("MIS_POWER_EXPONENT")) == 2);
+    CHECK(GetGraphSetting(manifest, QStringLiteral("POINT_LINE_MIS_HEURISTIC")) == 0);
+    CHECK(GetGraphSetting(manifest, QStringLiteral("POINT_LINE_MIS_POWER_EXPONENT")) == 2);
     const QJsonObject interface = FindRayTechnique(manifest).value(QStringLiteral("scene_interface")).toObject();
     CHECK(interface.value(QStringLiteral("version")).toInt() == 1);
     CHECK(interface.value(QStringLiteral("surface_queries")).toInt() >= 1);
@@ -2177,7 +2177,7 @@ TEST_CASE("Salesin and Jarosz template settings edit and save from the canvas wi
     CHECK(interface.value(QStringLiteral("visibility_queries")).toInt() == 2);
     CHECK(interface.value(QStringLiteral("line_queries")).toInt() == 6);
     const QByteArray original = document.GetDraft(COMPUTE_MANIFEST);
-    REQUIRE(GetGraphSetting(original, QStringLiteral("MIS_HEURISTIC")) == 0);
+    REQUIRE(GetGraphSetting(original, QStringLiteral("POINT_LINE_MIS_HEURISTIC")) == 0);
 
     // Background menu -> Edit Graph Settings...: choose the power heuristic and commit with Return.
     bool hasOpenedSettings = false;
@@ -2192,7 +2192,7 @@ TEST_CASE("Salesin and Jarosz template settings edit and save from the canvas wi
             QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
             REQUIRE(dialogOrNull != nullptr);
             QSpinBox* heuristicOrNull =
-                dialogOrNull->findChild<QSpinBox*>(QStringLiteral("renderGraphSetting_MIS_HEURISTIC"));
+                dialogOrNull->findChild<QSpinBox*>(QStringLiteral("renderGraphSetting_POINT_LINE_MIS_HEURISTIC"));
             REQUIRE(heuristicOrNull != nullptr);
             // Only balance (0) and power (1) are offered.
             CHECK(heuristicOrNull->maximum() == 1);
@@ -2215,19 +2215,19 @@ TEST_CASE("Salesin and Jarosz template settings edit and save from the canvas wi
     QCoreApplication::sendEvent(canvas.viewport(), &context);
     REQUIRE(hasOpenedSettings == true);
     CHECK(inspector->isVisible() == false);
-    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("MIS_HEURISTIC")) == 1);
+    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("POINT_LINE_MIS_HEURISTIC")) == 1);
     CHECK(document.GetSaved(COMPUTE_MANIFEST) == original);
     REQUIRE(workspace.CanUndo() == true);
     workspace.Undo();
-    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("MIS_HEURISTIC")) == 0);
+    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("POINT_LINE_MIS_HEURISTIC")) == 0);
     workspace.Redo();
-    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("MIS_HEURISTIC")) == 1);
+    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("POINT_LINE_MIS_HEURISTIC")) == 1);
     REQUIRE(workspace.Save() == true);
     RequireValidation(workspace);
     RenderGraphDocument reloaded;
     const QString path = QDir(project.path()).filePath(QStringLiteral("graphs/Main/main.lurender.json"));
     REQUIRE(reloaded.Load(QFileInfo(path).absolutePath(), ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
-    CHECK(GetGraphSetting(reloaded.GetDraft(COMPUTE_MANIFEST), QStringLiteral("MIS_HEURISTIC")) == 1);
+    CHECK(GetGraphSetting(reloaded.GetDraft(COMPUTE_MANIFEST), QStringLiteral("POINT_LINE_MIS_HEURISTIC")) == 1);
 }
 
 TEST_CASE("Salesin and Jarosz template settings edit and save through Properties",
@@ -2257,9 +2257,10 @@ TEST_CASE("Salesin and Jarosz template settings edit and save through Properties
         sectionOrNull->click();
     }
     QApplication::processEvents();
-    QSpinBox* heuristicOrNull = inspector->findChild<QSpinBox*>(QStringLiteral("renderGraphSetting_MIS_HEURISTIC"));
+    QSpinBox* heuristicOrNull =
+        inspector->findChild<QSpinBox*>(QStringLiteral("renderGraphSetting_POINT_LINE_MIS_HEURISTIC"));
     QDoubleSpinBox* exponentOrNull =
-        inspector->findChild<QDoubleSpinBox*>(QStringLiteral("renderGraphSetting_MIS_POWER_EXPONENT"));
+        inspector->findChild<QDoubleSpinBox*>(QStringLiteral("renderGraphSetting_POINT_LINE_MIS_POWER_EXPONENT"));
     REQUIRE(heuristicOrNull != nullptr);
     REQUIRE(exponentOrNull != nullptr);
     CHECK(heuristicOrNull->isVisible() == true);
@@ -2270,16 +2271,18 @@ TEST_CASE("Salesin and Jarosz template settings edit and save through Properties
     constexpr float64 POWER_EXPONENT = 3;
     exponentOrNull->setValue(POWER_EXPONENT);
     Q_EMIT exponentOrNull->editingFinished();
-    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("MIS_HEURISTIC")) == 1);
-    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("MIS_POWER_EXPONENT")) == POWER_EXPONENT);
+    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("POINT_LINE_MIS_HEURISTIC")) == 1);
+    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("POINT_LINE_MIS_POWER_EXPONENT")) ==
+          POWER_EXPONENT);
     CHECK(document.GetSaved(COMPUTE_MANIFEST) == original);
     REQUIRE(workspace.CanUndo() == true);
     workspace.Undo();
-    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("MIS_POWER_EXPONENT")) == 2);
+    CHECK(GetGraphSetting(document.GetDraft(COMPUTE_MANIFEST), QStringLiteral("POINT_LINE_MIS_POWER_EXPONENT")) == 2);
     workspace.Redo();
     REQUIRE(workspace.Save() == true);
-    CHECK(GetGraphSetting(document.GetSaved(COMPUTE_MANIFEST), QStringLiteral("MIS_HEURISTIC")) == 1);
-    CHECK(GetGraphSetting(document.GetSaved(COMPUTE_MANIFEST), QStringLiteral("MIS_POWER_EXPONENT")) == POWER_EXPONENT);
+    CHECK(GetGraphSetting(document.GetSaved(COMPUTE_MANIFEST), QStringLiteral("POINT_LINE_MIS_HEURISTIC")) == 1);
+    CHECK(GetGraphSetting(document.GetSaved(COMPUTE_MANIFEST), QStringLiteral("POINT_LINE_MIS_POWER_EXPONENT")) ==
+          POWER_EXPONENT);
     RequireValidation(workspace);
 }
 
@@ -2408,6 +2411,30 @@ TEST_CASE("Salesin and Jarosz configuration applies from the canvas Configuratio
     ReplaceRasterSubgraph(document, QStringLiteral("PointLineMis"));
     REQUIRE(workspace.Save() == true);
     RequireValidation(workspace);
+}
+
+TEST_CASE("Veach and Guibas and Salesin and Jarosz configurations apply to one package",
+          "[editor][render-graph][point-line-configuration]")
+{
+    // Graph settings are package-wide. Both MIS templates once declared MIS_HEURISTIC with
+    // different ranges, so the second import was rejected as a conflicting definition.
+    QTemporaryDir project;
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    RenderGraphDocument& document = workspace.GetDocument();
+    REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("Mis"), QStringLiteral("veach-guibas-mis")) == true);
+    // Return to the root canvas, as the user does, so the second import makes its own library.
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, QStringLiteral("Default"), QStringLiteral("output")) == true);
+    REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("PointLineMis"), GetPointLineTemplate()) == true);
+    const QByteArray manifest = document.GetDraft(COMPUTE_MANIFEST);
+    CHECK(GetGraphSetting(manifest, QStringLiteral("MIS_HEURISTIC")) == 1);
+    CHECK(GetGraphSetting(manifest, QStringLiteral("POINT_LINE_MIS_HEURISTIC")) == 0);
+    CHECK(GetGraphSetting(manifest, QStringLiteral("MIS_POWER_EXPONENT")) == 2);
+    CHECK(GetGraphSetting(manifest, QStringLiteral("POINT_LINE_MIS_POWER_EXPONENT")) == 2);
+    CHECK(document.GetDraft(QStringLiteral("Mis.lurender.json")).isEmpty() == false);
+    CheckPointLineImport(document, QStringLiteral("PointLineMis.lurender.json"));
 }
 
 TEST_CASE("Compute ray-tracing import extends a shared ray technique and preserves conflicting edits",
