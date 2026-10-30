@@ -102,7 +102,8 @@ struct ImportSummary final
     uint32 CookedVertices = 0;
     /// Triangle indices across all cooked meshes (three per retained triangle).
     uint32 CookedIndices = 0;
-    /// Placements left out by the vertex/index budget.
+    /// Placements omitted from the cooked scene. Geometry budgeting never drops
+    /// placements: a scene that cannot fit the bundle byte budget fails the import.
     uint32 DroppedPlacements = 0;
     /// Bundle size in bytes (zero for a dry run).
     usize BundleBytes = 0;

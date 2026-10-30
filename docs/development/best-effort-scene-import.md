@@ -3,8 +3,8 @@
 Status: glTF 2.0/GLB and Wavefront OBJ/MTL front-ends, October 18, 2026, on top
 of the authored-lighting pbrt import of October 13, 2026. Importer ids
 `pbrt-best-effort-v1`, `gltf-best-effort-v1` and `obj-best-effort-v1`; report
-schema `1`. October 30, 2026: exact vertex compaction and the larger geometry
-admission profile retain the supplied PBRT Bistro's complete triangle geometry.
+schema `1`. October 30, 2026: exact vertex compaction retains the supplied PBRT
+Bistro's complete triangle geometry within the encoded bundle budget.
 
 `Ludus::SceneCook` has two pbrt paths. `pbrt-reference-v1` is the frozen,
 byte-identical cooker for the recorded goldens; it rejects anything it does
@@ -227,7 +227,7 @@ texture coordinates are reported instead.
 ## What LUSCN v6 cannot carry yet
 
 The planner fits the IR into the LUSCN v6 import profile (256 meshes, materials
-and textures, 1,024 objects, 4M unique vertices, 12M indices, 256 MiB of textures,
+and textures, 1,024 objects, 256 MiB of textures and a 384 MiB bundle,
 flattened instancing; see
 [the import profile](../architecture/content-resources.md#import-profile-and-alpha-masks-luscn-v5)
 and [surface maps](../architecture/content-resources.md#surface-maps-emission-maps-and-tangents-luscn-v6)).
@@ -314,8 +314,14 @@ area-light, shadow and indirect-transport limits.
 ## Budget planner
 
 The cooked scene must fit the LUSCN v6 import profile: 256 meshes, materials and
-textures, 4M unique vertices, 12M indices in total, 256 MiB of textures and a
-384 MiB bundle. Before planning, the shared cook compacts byte-identical
+textures, 256 MiB of textures and a 384 MiB bundle. The former independent
+2M-vertex and 6M-index ceilings are removed: geometry is admitted by its actual
+encoded bytes, including 48 bytes per v6 vertex and four per index. Every
+placement is retained, or the import fails explicitly before baking when its
+complete geometry cannot fit. Texture and lighting storage share the remaining
+bundle allowance; renderer CPU/GPU budgets still apply independently.
+
+Before planning, the shared cook compacts byte-identical
 position/normal/UV/tangent records within each mesh, after tangent generation.
 First-occurrence vertex order, every triangle, winding and attribute seams are
 preserved; signed zeros remain distinct. Meshes without normals keep their
@@ -325,11 +331,10 @@ a time; this is separate from encoded file, cooked bundle and runtime budgets.
 
 The schema-1 report adds `source.indices` and `cooked.indices` (three indices per
 triangle). `source.vertices` remains the count before compaction, including
-expanded placements; `dropped_vertices` counts the source records belonging to
-discarded placements. Reduced cooked vertex counts accompanied by
-`VERTICES_COMPACTED` are exact sharing, while `GEOMETRY_DROPPED` and
-`dropped_placements` describe geometry loss. These source counts saturate at the
-uint32 maximum. The frozen reference cooker is unchanged.
+expanded placements. Reduced cooked vertex counts accompanied by
+`VERTICES_COMPACTED` are exact sharing. Geometry admission retains every placement
+or rejects the import; the legacy dropped-placement counters remain zero. Source
+vertex/index counts saturate at the uint32 maximum. The frozen reference cooker is unchanged.
 
 Each cooked mesh carries one material, so the planner:
 
@@ -344,9 +349,9 @@ Each cooked mesh carries one material, so the planner:
    (`MATERIALS_MERGED`); a merged material takes its slot's alpha mask;
 4. merges all geometry of a slot into one world-space mesh;
 5. keeps each placement's vertices shared (consumers derive the guttered
-   per-triangle bake charts from the indices), then drops the smallest ordinary
-   placements if the vertex or index budget is exceeded (`GEOMETRY_DROPPED`);
-   required emitter geometry is never silently dropped;
+   per-triangle bake charts from the indices), and checks the complete geometry
+   against the bundle byte budget. An over-budget scene reports `LIMIT_EXCEEDED`
+   and produces no bundle; ordinary and emitter placements are never dropped;
 6. writes each masked slot's coverage into its cooked base texture's alpha:
    the texture's own alpha (glTF), or the MTL opacity map sampled nearest at the
    base resolution, times the constant opacity. An untextured masked slot takes
@@ -491,10 +496,15 @@ tangent seams, signed zeros, missing normals, malformed input and cancellation.
 The catalog test exercises Editor import, commit and assembly, then checks the
 same complete geometry through Resources decoding.
 
+The unshared input represents 442,773,216 bytes of v6 vertex/index records before
+headers or textures, already above 384 MiB. Exact sharing makes the complete
+geometry fit the byte-based admission policy without introducing another fixed
+vertex or triangle ceiling.
+
 Measured on October 30, 2026 with native macOS arm64 Clang 23.1.3, Development,
 warnings as errors, and four texture workers:
 
-| Quantity | Previous 2M-vertex / 6M-index profile | Compaction + 4M-vertex / 12M-index profile |
+| Quantity | Previous 2M-vertex / 6M-index profile | Compaction + complete-geometry byte admission |
 | --- | ---: | ---: |
 | Source vertex records | 8,514,702 | 8,514,702 |
 | Retained triangles | 667,392 | 2,838,960 |

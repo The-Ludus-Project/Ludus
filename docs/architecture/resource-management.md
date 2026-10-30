@@ -875,8 +875,8 @@ owns GPU resources/retirement independently of the CPU lease. The initial
 (LUSCN versions 1 to 4) profile admits six meshes, eight materials, eight textures
 and 128 instances; combined geometry is limited to 500000 vertices, each mesh to
 1500000 indices, and textures to 16 MiB each/32 MiB combined. Version 5 admits the
-larger import profile (256 meshes, materials and textures, 1,024 instances, 4M
-vertices, 12M indices, 256 MiB of textures; see
+larger import profile (256 meshes, materials and textures, 1,024 instances,
+geometry bounded by encoded bundle bytes and 256 MiB of textures; see
 [the import profile](content-resources.md#import-profile-and-alpha-masks-luscn-v5)).
 Encoded logical dependency closures admit 512 MiB through SceneCook's
 `MAX_RESIDENT_CLOSURE_BYTES`, allowing manifests, material JSON and licenses

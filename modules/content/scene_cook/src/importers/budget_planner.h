@@ -1,10 +1,11 @@
 #pragma once
 
-// Budget planner: fits a SceneIR to the LUSCN version 5 import profile of
+// Budget planner: fits a SceneIR to the LUSCN version 6 import profile of
 // Ludus::SceneFormat (format::IMPORT_LIMITS).
 //
 // Placements (world shapes plus expanded instances) are ranked by world-space
-// area and kept until the vertex/index budget is spent. Each source material
+// area for material selection; all geometry is retained or the import fails its
+// encoded bundle byte budget. Each source material
 // keeps its own slot, and each group of identical emitters gets one, while they
 // fit the mesh/material count; beyond it the largest source materials by area
 // keep their slot and the rest merge into their nearest kept material. Each slot
@@ -78,7 +79,8 @@ struct CookPlan final
 };
 
 /// Plan scene against the format limits; diagnostics go to inoutLog.
-/// @return Ok, Invalid when nothing drawable remains, Cancelled or OutOfMemory.
+/// @return Ok, Invalid when no drawable geometry exists or the complete scene
+/// exceeds the bundle budget, Cancelled or OutOfMemory. Failure preserves outPlan.
 [[nodiscard]] Status
 PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, const Cancellation* cancelOrNull) noexcept;
 } // namespace ludus::content::scene_cook::importers

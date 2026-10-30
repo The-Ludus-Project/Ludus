@@ -222,7 +222,7 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
         sourceVertices > MAX_REPORTED_COUNT ? MAX_REPORTED_COUNT : static_cast<uint32>(sourceVertices);
     plan.SourceIndices = sourceIndices > MAX_REPORTED_COUNT ? MAX_REPORTED_COUNT : static_cast<uint32>(sourceIndices);
 
-    // 2. Rank placements by area (ties by order) and keep them within the vertex budget.
+    // 2. Rank placements by area (ties by order) for deterministic material selection.
     Array<uint32> order;
     if (order.TryResize(plan.Placements.GetSize()) == false)
     {
@@ -535,7 +535,12 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
         (void)inoutLog.Add(DiagnosticSeverity::Warning, codes::MATERIALS_MERGED, {}, 0, std::string_view(text, length));
     }
 
-    // 4. Assign placements to slots within the vertex and index budgets, largest first.
+    // 4. Keep every placement. Geometry shares the encoded bundle budget with the
+    // remaining records; reject an oversized scene before baking rather than dropping shapes.
+    uint64 geometryBytes = sizeof(format::Header) + sizeof(format::LightingRecord) +
+                           scene.AnalyticLights.GetSize() * sizeof(format::LightRecord) +
+                           plan.Materials.GetSize() * (sizeof(format::MeshRecord) + sizeof(format::MaterialRecordV6) +
+                                                       sizeof(format::ObjectRecordV3));
     uint32 totalVertices = 0;
     uint32 totalIndices = 0;
     for (const uint32 index : order)
@@ -557,34 +562,27 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
             }
         }
         PlannedMaterial& planned = plan.Materials[slot];
-        // LUSCN v6 meshes stay indexed; consumers expand corners for bake charts,
-        // which the import profile's TotalIndices bounds across the bundle.
         const usize vertices = mesh.GetVertexCount();
         const usize indices = mesh.Indices.GetSize();
-        if (totalVertices + vertices > format::IMPORT_LIMITS.Vertices ||
-            totalIndices + indices > format::IMPORT_LIMITS.TotalIndices)
+        if (vertices > format::IMPORT_LIMITS.Vertices - totalVertices ||
+            indices > format::IMPORT_LIMITS.TotalIndices - totalIndices)
         {
-            if (isEmitting == true && shape.IsEmissionOptional == false)
-            {
-                (void)inoutLog.Add(DiagnosticSeverity::Error,
-                                   codes::LIMIT_EXCEEDED,
-                                   {},
-                                   shape.Line,
-                                   "emitter geometry exceeds the vertex/index budget; lighting cannot be preserved");
-                return Status::Invalid;
-            }
-            ++plan.DroppedPlacements;
-            const uint64 droppedVertices =
-                uint64{plan.DroppedVertices} +
-                (mesh.SourceVertexCount == 0 ? mesh.GetVertexCount() : mesh.SourceVertexCount);
-            plan.DroppedVertices =
-                droppedVertices > MAX_REPORTED_COUNT ? MAX_REPORTED_COUNT : static_cast<uint32>(droppedVertices);
-            (void)inoutLog.Add(DiagnosticSeverity::Warning,
-                               placement.IsInstanced == true ? codes::INSTANCES_DROPPED : codes::GEOMETRY_DROPPED,
+            (void)inoutLog.Add(DiagnosticSeverity::Error,
+                               codes::LIMIT_EXCEEDED,
                                {},
-                               0,
-                               "placement left out by the vertex/index budget (smallest area first)");
-            continue;
+                               shape.Line,
+                               "complete scene geometry exceeds the bundle byte budget; no placements were dropped");
+            return Status::Invalid;
+        }
+        geometryBytes += uint64{vertices} * sizeof(format::VertexRecordV6) + uint64{indices} * sizeof(uint32);
+        if (geometryBytes > format::IMPORT_LIMITS.BundleBytes)
+        {
+            (void)inoutLog.Add(DiagnosticSeverity::Error,
+                               codes::LIMIT_EXCEEDED,
+                               {},
+                               shape.Line,
+                               "complete scene geometry exceeds the bundle byte budget; no placements were dropped");
+            return Status::Invalid;
         }
         placement.IsKept = true;
         totalVertices += static_cast<uint32>(vertices);

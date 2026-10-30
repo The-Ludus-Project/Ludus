@@ -48,13 +48,19 @@ inline constexpr uint32 MAX_IMPORT_OBJECTS = 1024;
 /// Largest combined texture bytes in a version 5 or 6 bundle: uncompressed RGBA8 without
 /// mips, enough for Sponza-scale scenes' base-colour textures at full resolution.
 inline constexpr usize MAX_IMPORT_TOTAL_TEXTURE_BYTES = usize{256} * 1024 * 1024;
-/// Most vertices combined across a version 5 or 6 bundle's meshes.
-inline constexpr uint32 MAX_IMPORT_VERTICES = 4000000;
-/// Most indices combined across a version 5 or 6 bundle's meshes (expanded bake corners).
-inline constexpr uint32 MAX_IMPORT_TOTAL_INDICES = 12000000;
-/// Largest version 5 or 6 bundle: the texture budget plus the geometry and lighting
-/// records above it.
+/// Largest version 5 or 6 bundle. Geometry is admitted by its encoded bytes,
+/// with textures sharing the remaining allowance; there is no independent vertex or triangle cap.
 inline constexpr usize MAX_IMPORT_BUNDLE_BYTES = usize{384} * 1024 * 1024;
+/// Number of float32 components in a VertexRecord: position XYZ, normal XYZ and UV.
+inline constexpr usize VERTEX_COMPONENTS = 8;
+/// Conservative vertex-count bound implied by the bundle byte ceiling and the
+/// smallest import vertex record (version 5). Version 6's tangents consume more
+/// bytes; producers and decoders also validate the actual encoded payload.
+inline constexpr uint32 MAX_IMPORT_VERTICES =
+    static_cast<uint32>(MAX_IMPORT_BUNDLE_BYTES / (VERTEX_COMPONENTS * sizeof(foundation::float32)));
+/// Conservative index-count bound implied by the bundle byte ceiling. This is
+/// not a separate triangle budget; vertices and all other records share those bytes.
+inline constexpr uint32 MAX_IMPORT_TOTAL_INDICES = static_cast<uint32>(MAX_IMPORT_BUNDLE_BYTES / sizeof(uint32));
 
 /// Admission ceilings of one bundle version (see GetBundleLimits).
 struct BundleLimits final
