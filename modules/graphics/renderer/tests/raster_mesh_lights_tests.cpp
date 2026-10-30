@@ -45,7 +45,7 @@ TEST_CASE("raster mesh emitters retain area geometry and independent placed inst
     placement.Columns[1].Y = .5F;
     placement.Translation = {1, 0, 0};
     REQUIRE(internal::AppendRasterMeshLights(MakeMesh(), placement, material, words) == rhi::RasterStatus::Ready);
-    REQUIRE(words.GetSize() == 2 * renderer::MESH_LIGHT_TRIANGLE_WORDS);
+    REQUIRE(words.GetSize() == usize{2} * renderer::MESH_LIGHT_TRIANGLE_WORDS);
     CHECK(words[renderer::MESH_LIGHT_TRIANGLE_WORDS].X == 3);
     // Reflection preserves the authored outward normal via inverse transpose, not winding.
     CHECK(words[renderer::MESH_LIGHT_TRIANGLE_WORDS + 2].W == -1);
@@ -127,7 +127,8 @@ TEST_CASE("textured raster emitters use decoded fixed-mip patch radiance and bou
                                                                         0,
                                                                         1);
     CHECK(math::Length(patchSum - wholeResult) < 1e-5F);
-    REQUIRE(words.TryResize(renderer::MAX_RASTER_MESH_LIGHT_TRIANGLES * renderer::MESH_LIGHT_TRIANGLE_WORDS) == true);
+    REQUIRE(words.TryResize(usize{renderer::MAX_RASTER_MESH_LIGHT_TRIANGLES} * renderer::MESH_LIGHT_TRIANGLE_WORDS) ==
+            true);
     CHECK(internal::AppendRasterMeshLights(MakeMesh(), {}, material, words) == rhi::RasterStatus::CapacityExceeded);
-    CHECK(words.GetSize() == renderer::MAX_RASTER_MESH_LIGHT_TRIANGLES * renderer::MESH_LIGHT_TRIANGLE_WORDS);
+    CHECK(words.GetSize() == usize{renderer::MAX_RASTER_MESH_LIGHT_TRIANGLES} * renderer::MESH_LIGHT_TRIANGLE_WORDS);
 }

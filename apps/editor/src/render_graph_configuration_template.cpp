@@ -243,14 +243,29 @@ bool EnsureTemplateProgramBudget(QJsonObject& inoutManifest,
                                  RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
 {
     QJsonObject budgets = inoutManifest.value(QStringLiteral("budgets")).toObject();
-    const int32 currentPrograms = budgets.value(QStringLiteral("programs")).toInt();
+    const int32 programBudget = budgets.value(QStringLiteral("programs")).toInt();
+    // The build admits every program once per target profile against budgets.artifacts, so the effective
+    // program limit is the smaller of budgets.programs and the artifact budget per profile.
+    const int32 profileCount = static_cast<int32>(inoutManifest.value(QStringLiteral("profiles")).toArray().size());
+    const int32 artifactBudget = budgets.value(QStringLiteral("artifacts")).toInt();
+    const int32 artifactPrograms = profileCount > 0 ? artifactBudget / profileCount : programBudget;
+    const bool isArtifactLimited = artifactPrograms < programBudget;
+    const int32 currentPrograms = isArtifactLimited == true ? artifactPrograms : programBudget;
     if (requiredPrograms <= currentPrograms)
     {
         return true;
     }
     if (inoutBudgetOrNull != nullptr && inoutBudgetOrNull->ApprovedPrograms >= requiredPrograms)
     {
-        budgets.insert(QStringLiteral("programs"), requiredPrograms);
+        if (programBudget < requiredPrograms)
+        {
+            budgets.insert(QStringLiteral("programs"), requiredPrograms);
+        }
+        const int32 requiredArtifacts = requiredPrograms * profileCount;
+        if (artifactBudget < requiredArtifacts)
+        {
+            budgets.insert(QStringLiteral("artifacts"), requiredArtifacts);
+        }
         inoutManifest.insert(QStringLiteral("budgets"), budgets);
         return true;
     }
@@ -258,6 +273,18 @@ bool EnsureTemplateProgramBudget(QJsonObject& inoutManifest,
     {
         inoutBudgetOrNull->CurrentPrograms = currentPrograms;
         inoutBudgetOrNull->RequiredPrograms = requiredPrograms;
+    }
+    if (isArtifactLimited == true)
+    {
+        outError = QStringLiteral("%1 needs %2 shader programs, but budgets.artifacts is %3, which admits %4 programs "
+                                  "across %5 target profiles. Increase budgets.artifacts in the shader manifest and "
+                                  "retry. The draft was preserved.")
+                       .arg(templateName)
+                       .arg(requiredPrograms)
+                       .arg(artifactBudget)
+                       .arg(currentPrograms)
+                       .arg(profileCount);
+        return false;
     }
     outError = QStringLiteral("%1 needs %2 shader programs, but budgets.programs is %3. "
                               "Increase budgets.programs in the shader manifest and retry. The draft was preserved.")

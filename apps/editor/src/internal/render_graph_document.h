@@ -74,7 +74,8 @@ struct RenderGraphTemplateBudgetIncrease final
 {
     /// Maximum program count approved by the caller; zero retains the authored limit.
     foundation::int32 ApprovedPrograms = 0;
-    /// Effective manifest limit when an unapproved increase blocks application.
+    /// Effective manifest limit when an unapproved increase blocks application: the smaller of
+    /// budgets.programs and budgets.artifacts per target profile.
     foundation::int32 CurrentPrograms = 0;
     /// Required merged program count; zero when no increase was requested.
     foundation::int32 RequiredPrograms = 0;
@@ -265,7 +266,8 @@ public:
     /// to a library configuration, inserting a new library/Subgraph when file is the root. One undo step; no disk
     /// writes. Existing nonempty configurations, shader sources and incompatible ABIs are preserved on failure. An
     /// optional budget request reports a blocked program increase. Explicitly approved increases change only
-    /// budgets.programs to the required count, in the same undo step as the template.
+    /// budgets.programs and budgets.artifacts (programs times target profiles) to the required counts, in the
+    /// same undo step as the template.
     [[nodiscard]] RenderGraphDocumentStatus
     ApplyConfigurationTemplate(const QString& file,
                                const QString& configuration,

@@ -752,7 +752,7 @@ struct Renderer::State final
     StaticArray<bool, WORLD_GRID_PIPELINE_COUNT> HasAnalyticGridPipelines{};
     Status PrepareGridPipelines() noexcept;
     Status PrepareAnalyticGridPipelines() noexcept;
-    Status GetAnalyticGridShaderStatus() const noexcept;
+    [[nodiscard]] Status GetAnalyticGridShaderStatus() const noexcept;
     Limits Capacities;
     usize HostBytes = 0;
     Status ReserveStorage(const Limits&) noexcept;
