@@ -2494,6 +2494,7 @@ TEST_CASE("A template that does not fit the package names the counts and its rep
     workspace.SetLivePreview(false);
     RenderGraphDocument& document = workspace.GetDocument();
     REQUIRE(document.GetFiles().size() == paddedFiles);
+    const QStringList packageFiles = document.GetFiles();
     REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("Mis"), QStringLiteral("veach-guibas-mis")) == true);
     REQUIRE(workspace.Save() == true);
     REQUIRE(workspace.SelectNode(ROOT_GRAPH, QStringLiteral("Default"), QStringLiteral("output")) == true);
@@ -2506,32 +2507,83 @@ TEST_CASE("A template that does not fit the package names the counts and its rep
     CHECK(status.contains(QStringLiteral("but this package already has %1 of its %2 files")
                               .arg(beforeFiles.size())
                               .arg(RenderGraphDocument::MAX_FILES)) == true);
-    CHECK(status.contains(QStringLiteral("Remove Unused Shaders")) == true);
+    CHECK(status.contains(QStringLiteral("choose Delete Subgraph and Library")) == true);
+    CHECK(status.contains(QStringLiteral("Project Explorer")) == false);
     CHECK(status.count(QStringLiteral("The draft was preserved.")) == 1);
     CHECK(document.GetFiles() == beforeFiles);
     CHECK(document.GetDraft(COMPUTE_MANIFEST) == beforeManifest);
 
-    // The repair the message names: delete the Subgraph node and save, remove the library graph and the
-    // template folder's shader files (Project Explorer's Remove... deletes the file on disk), then drop the
-    // stale program registrations with Remove Unused Shaders.
+    // The repair the message names is one action on the template's Subgraph node: it deletes the node, the
+    // library graph and every file the template added, and nothing that the package had before.
     REQUIRE(workspace.SelectNode(ROOT_GRAPH, QStringLiteral("Default"), QStringLiteral("Mis")) == true);
-    workspace.RemoveSelectedNodes();
-    REQUIRE(workspace.Save() == true);
-    const QDir root(document.GetPackageRoot());
-    REQUIRE(QFile::remove(root.filePath(QStringLiteral("Mis.lurender.json"))) == true);
-    const QDir shaders(root.filePath(QStringLiteral("veach_guibas_mis/main_shaders")));
-    for (const QString& source : shaders.entryList({QStringLiteral("*.slang")}, QDir::Files))
-    {
-        REQUIRE(QFile::remove(shaders.filePath(source)) == true);
-    }
-    REQUIRE(workspace.RemoveUnusedShaders() == true);
+    REQUIRE(workspace.RemoveSelectedSubgraphLibrary() == true);
     INFO(workspace.GetStatusText().toStdString());
-    // The cleanup may also drop sources that were already unused in the saved package.
-    CHECK(document.GetFiles().size() <= paddedFiles);
-    REQUIRE(workspace.Save() == true);
+    CHECK(workspace.GetStatusText().contains(QStringLiteral("Deleted Subgraph Mis with Mis.lurender.json, 4 shader "
+                                                            "programs and 4 source files")) == true);
+    CHECK(document.GetFiles() == packageFiles);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST).contains("VeachMis") == false);
+    // Undo restores the template; Redo removes it again.
+    REQUIRE(document.Undo() == true);
+    CHECK(document.GetFiles() == beforeFiles);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST) == beforeManifest);
+    REQUIRE(document.Redo() == true);
+    CHECK(document.GetFiles() == packageFiles);
     REQUIRE(workspace.SelectNode(ROOT_GRAPH, QStringLiteral("Default"), QStringLiteral("output")) == true);
     REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("PointLineMis"), GetPointLineTemplate()) == true);
     CheckPointLineImport(document, QStringLiteral("PointLineMis.lurender.json"));
+    REQUIRE(workspace.Save() == true);
+    CHECK(QFileInfo::exists(QDir(document.GetPackageRoot()).filePath(QStringLiteral("Mis.lurender.json"))) == false);
+    CHECK(QDir(document.GetPackageRoot()).exists(QStringLiteral("veach_guibas_mis/main_shaders/shade.slang")) == false);
+}
+
+TEST_CASE("Delete Subgraph and Library is on a Subgraph node's canvas menu with Properties hidden",
+          "[editor][render-graph][point-line-configuration][library-removal]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QStringList files = document.GetFiles();
+    REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("Mis"), QStringLiteral("veach-guibas-mis")) == true);
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, QStringLiteral("Default"), QStringLiteral("Mis")) == true);
+    workspace.resize(TEMPLATE_WORKSPACE_WIDTH, TEMPLATE_WORKSPACE_HEIGHT);
+    workspace.show();
+    QWidget* propertiesOrNull = workspace.findChild<QWidget*>(QStringLiteral("renderGraphProperties"));
+    REQUIRE(propertiesOrNull != nullptr);
+    propertiesOrNull->hide();
+    QCoreApplication::processEvents();
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    REQUIRE(canvas.GetFile() == ROOT_GRAPH);
+    REQUIRE(canvas.HasNode(QStringLiteral("Mis")) == true);
+    bool isEnabled = false;
+    QTimer::singleShot(0, &canvas, [&isEnabled]() {
+        QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        REQUIRE(menuOrNull != nullptr);
+        QAction* removeOrNull =
+            menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphRemoveSubgraphLibraryAction"));
+        REQUIRE(removeOrNull != nullptr);
+        isEnabled = removeOrNull->isEnabled();
+        menuOrNull->close();
+        removeOrNull->trigger();
+    });
+    const QPoint point = canvas.mapFromScene(canvas.GetNodePosition(QStringLiteral("Mis")) + QPointF(20, 10));
+    QContextMenuEvent context(QContextMenuEvent::Mouse, point, canvas.viewport()->mapToGlobal(point));
+    QApplication::sendEvent(canvas.viewport(), &context);
+    INFO(workspace.GetStatusText().toStdString());
+    CHECK(isEnabled == true);
+    CHECK(canvas.HasNode(QStringLiteral("Mis")) == false);
+    CHECK(document.GetFiles() == files);
+    CHECK(workspace.GetStatusText().contains(QStringLiteral("Deleted Subgraph Mis")) == true);
+    workspace.Undo();
+    CHECK(canvas.HasNode(QStringLiteral("Mis")) == true);
+    CHECK(document.GetFiles().contains(QStringLiteral("Mis.lurender.json")) == true);
+    // Any other node reports why it has no library where the user acted.
+    REQUIRE(workspace.SelectNode(ROOT_GRAPH, QStringLiteral("Default"), QStringLiteral("output")) == true);
+    CHECK(workspace.RemoveSelectedSubgraphLibrary() == false);
+    CHECK(workspace.GetStatusText().contains(QStringLiteral("Select one Subgraph node")) == true);
+    CHECK(document.GetFiles().contains(QStringLiteral("Mis.lurender.json")) == true);
 }
 
 TEST_CASE("Compute ray-tracing import extends a shared ray technique and preserves conflicting edits",

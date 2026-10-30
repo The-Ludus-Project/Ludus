@@ -125,13 +125,19 @@ subgraphs), and every technique in every loaded shader manifest. Techniques rema
 authored build roots even when no node currently selects them; their programs survive.
 Remove an unwanted technique explicitly in **Source** before running cleanup.
 
-Unused program registrations are removed in one undoable draft edit. Their `.slang`
-files are removed only when exclusive to one registration and unmentioned by other
-loaded shader sources. Shared sources, includes, transitive includes, Slang imports
-and loose unregistered files are retained. Include/import protection is conservative:
-filename or module-name mentions, including comments, can retain an otherwise unused
-source. A computed include or an include outside the tracked snapshot retains all
-source files while still removing unused registrations. Programs with the same ID in different manifests are conservatively retained
+Unused program registrations are removed in one undoable draft edit, with the
+`.slang` sources that no remaining program uses and the helpers that only those
+sources include (for example a template's `hit_record.slang`). A file survives when
+a remaining program registers it, a remaining graph or manifest field names it (a
+traversal source or ray payload, for example), or a surviving source could include
+it, directly or through other survivors. Builds resolve literal includes relative to
+the including file and never through `..`, so besides its literal includes a source
+can only reach files in its own directory tree; there, any file-name or module-name
+mention, even in a comment, conservatively keeps the file. Sources removed in the
+same edit cannot keep each other. Loose files that no removed source includes are
+never removed. A computed include or an include outside the tracked snapshot in a
+surviving source retains all source files while still removing unused registrations.
+Programs with the same ID in different manifests are conservatively retained
 if that ID is referenced anywhere in the loaded package. References outside the open
 package are outside this scan; keep cross-package shared code outside package-owned
 shader files. Malformed graphs/manifests or missing subgraphs stop cleanup without
@@ -235,6 +241,30 @@ and the complete authored interface are checked before activation. Missing requi
 produce IncompletePipeline; an invalid/pending candidate leaves the current
 viewport generation intact. Blending/rasterization remain fields inside the
 node; separate state blocks and stream output are deferred.
+
+### Remove a template or library
+
+Every graph file counts as a user of the programs it names, even a library that no
+Subgraph node imports any more, so deleting only a template's Subgraph node frees
+none of its files. To remove a template or any other library in one step,
+right-click its Subgraph node on the canvas (or in the source tree) and choose
+**Delete Subgraph and Library**; Properties need not be open. The one undoable edit:
+
+- removes the node with its connections, layout position and configuration-output
+  sources, like **Remove Node**;
+- deletes the node's library graph, unless another graph file still names it, and
+  any library that only deleted libraries imported. The root graph and graphs that
+  nothing imports are never deleted;
+- removes the programs that only the deleted libraries named, and frees their
+  sources and helpers as **Remove Unused Shaders** does (above). Programs that
+  other graphs or techniques name, settings, and other unused programs are left
+  alone.
+
+When another Subgraph node still uses the library, only the node is removed and the
+status line names the graph that keeps the library. Failures, such as a malformed
+graph elsewhere in the package, leave the draft unchanged and are reported in the
+status line. **Undo** restores every file; **Save** deletes them on disk after the
+usual external-change check.
 
 ## Upscaling presets
 
@@ -4668,18 +4698,12 @@ when it is configured, so a package the CLI can build always opens.
 
 When a template or an edit would exceed a limit, the message names the limit, the
 package's current count and what the change needs, and the draft is preserved. To
-make room, remove a template or library you no longer use:
-
-1. Select its Subgraph node on the root canvas, press Delete and save.
-2. In Project Explorer, remove its library graph (`.lurender.json`) and the shader
-   files in its template folder, such as `veach_guibas_mis/main_shaders/`
-   (**Remove...** on each file).
-3. Right-click the canvas and choose **Remove Unused Shaders** to drop their program
-   registrations.
-
-Remove Unused Shaders alone does not free a template's files. It keeps every program
-that any graph file names, and it keeps a source that another source mentions or
-that several programs share, which is true of every built-in template's sources.
+make room, remove a template or library you no longer use: right-click its Subgraph
+node on the root canvas and choose **Delete Subgraph and Library**. That one undoable
+edit deletes the node, its library graph and the shader programs and sources that only
+that library uses, such as a template's `veach_guibas_mis/main_shaders/` files; **Save**
+publishes the deletions. See [remove a template or library](#remove-a-template-or-library)
+for what it keeps.
 
 For a project without graph sources, the document shows the engine default, and build
 actions work on it right away. Use **File → New Render Graph...**, as described in
@@ -5375,6 +5399,7 @@ releasing on a port connects or rejects as usual.
 | Right-click a node → Edit Node... | Edit the same authored fields, pipeline controls and layout coordinates as Properties, without opening that panel. |
 | Right-click Accumulate, Denoise or ToneMap → Disable Node | Toggle its `enabled` field as one undoable edit; the compiler [forwards its input](#disable-a-node) |
 | Select a node and press Delete | `RemoveNode` (also drops its links and layout position) |
+| Right-click a Subgraph node → Delete Subgraph and Library | `RemoveSubgraphLibrary`: also deletes its library graph and the shader files only that library uses ([details](#remove-a-template-or-library)) |
 | Double-click a Subgraph node | Opens its asset's configuration on the canvas, in the tree and in the Source view; not an edit |
 | Double-click an ordinary node | Opens Details; pipeline parts share their controls with Properties |
 | Pinch apart/together on a supported trackpad | Zoom in/out around the gesture position; does not edit the draft |

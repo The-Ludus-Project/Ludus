@@ -3596,6 +3596,56 @@ bool RendererWorkspace::RemoveUnusedShaders()
     return status == RenderGraphDocumentStatus::Ok;
 }
 
+bool RendererWorkspace::RemoveSelectedSubgraphLibrary()
+{
+    if (CanRemoveUnusedShaders() == false || ReloadSourcesFromDisk() == false)
+    {
+        mStatus->setText(QStringLiteral("Wait for the running job and resolve external source conflicts before "
+                                        "deleting a Subgraph and its library."));
+        return false;
+    }
+    const QString node = mSelectedNode;
+    if (mSelectedNodes.size() > 1 ||
+        selectedNode().value(QStringLiteral("kind")).toString() != QStringLiteral("Subgraph"))
+    {
+        mStatus->setText(QStringLiteral("Select one Subgraph node on the canvas to delete it with its library."));
+        return false;
+    }
+    mSourceEditDebounce.stop();
+    mSourceController->BreakUndoGroup();
+    RenderGraphLibraryRemoval removal;
+    QString error;
+    const RenderGraphDocumentStatus status =
+        mDocument.RemoveSubgraphLibrary(mSelectedFile, mCanvas->GetConfiguration(), node, removal, error);
+    if (status == RenderGraphDocumentStatus::Ok)
+    {
+        mSelectedNode.clear();
+        mSelectedNodes.clear();
+    }
+    documentEdited(status);
+    if (status != RenderGraphDocumentStatus::Ok)
+    {
+        mStatus->setText(error);
+    }
+    else if (removal.Graphs.isEmpty() == true)
+    {
+        mStatus->setText(
+            QStringLiteral("Deleted Subgraph %1. Its library is still used by %2, so the library and its "
+                           "shaders were kept. Save to publish; Undo to restore.")
+                .arg(node, removal.RetainedBy.isEmpty() == true ? QStringLiteral("the package") : removal.RetainedBy));
+    }
+    else
+    {
+        mStatus->setText(QStringLiteral("Deleted Subgraph %1 with %2, %3 shader programs and %4 source files from the "
+                                        "draft. Sources other shaders include were kept. Save to publish; Undo to "
+                                        "restore.")
+                             .arg(node, removal.Graphs.join(QStringLiteral(", ")))
+                             .arg(removal.Programs.size())
+                             .arg(removal.Sources.size()));
+    }
+    return status == RenderGraphDocumentStatus::Ok;
+}
+
 bool RendererWorkspace::CanCreateSubgraph() const
 {
     return mDocument.IsLoaded() == true && mCanvas->GetConfiguration().isEmpty() == false && IsJobActive() == false &&
@@ -4034,6 +4084,19 @@ void RendererWorkspace::showNodeContextMenu(const QPoint& globalPosition, bool i
         remove->setObjectName(QStringLiteral("renderGraphRemoveNodeAction"));
         remove->setEnabled(true);
         connect(remove, &QAction::triggered, this, &RendererWorkspace::RemoveSelectedNodes);
+        if (node.value(QStringLiteral("kind")).toString() == QStringLiteral("Subgraph"))
+        {
+            QAction* removeLibrary = menu.addAction(QStringLiteral("Delete Subgraph and Library"));
+            removeLibrary->setObjectName(QStringLiteral("renderGraphRemoveSubgraphLibraryAction"));
+            removeLibrary->setEnabled(CanRemoveUnusedShaders());
+            removeLibrary->setToolTip(
+                QStringLiteral("Delete this node, its library graph unless another graph uses it, and the shader "
+                               "programs and sources only that library uses, such as an applied template's files. "
+                               "One undoable edit; Save publishes the deletions."));
+            connect(removeLibrary, &QAction::triggered, this, [this]() {
+                static_cast<void>(RemoveSelectedSubgraphLibrary());
+            });
+        }
     }
     if (isNodeContext == false && mCustomize->isVisible() == true)
     {

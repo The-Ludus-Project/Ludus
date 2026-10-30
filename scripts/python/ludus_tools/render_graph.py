@@ -39,7 +39,8 @@ MAX_ASSET_BYTES = 128 * 1024
 MAX_TOTAL_BYTES = 2 * 1024 * 1024
 MAX_ASSETS = 32
 GRAPH_SOURCE_REPAIR = ("Remove Subgraph nodes whose library graphs the package no longer needs (in the editor, "
-                       "select them on the canvas and press Delete) and try again.")
+                       "right-click each one on the canvas and choose Delete Subgraph and Library, which also "
+                       "deletes the library and the shaders only it uses) and try again.")
 MAX_DEPTH = 8
 MAX_CONFIGURATIONS = 8
 MAX_NODES = 128
