@@ -159,6 +159,11 @@ public:
     [[nodiscard]] ViewportFrameTrace& GetFrameTrace() noexcept;
     /// Completed output statistics; retained while preparation is pending or fails, reset on Detach.
     [[nodiscard]] const GraphViewportStatistics& GetStatistics() const noexcept;
+    /// GUI-thread delivery of an accepted conversion. Worker execution is a separate series;
+    /// only publicationMilliseconds contributes to owner-thread CPU work. Ignored after Detach.
+    void RecordInspectionConversion(foundation::float64 workMilliseconds,
+                                    foundation::float64 elapsedMilliseconds,
+                                    foundation::float64 publicationMilliseconds) noexcept;
 
     /// Select shared-device GPU snapshots; CPU readback remains the explicit offscreen fallback.
     void SetDirectPresentation(bool shouldPresentDirectly) noexcept;

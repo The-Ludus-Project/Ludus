@@ -2,6 +2,7 @@
 
 #include <ludus/foundation/math/scalar.hpp>
 
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <limits>
@@ -220,8 +221,25 @@ float32 Remap(float32 value, float32 minimum, float32 maximum) noexcept
     return std::isnan(mapped) == true ? 0.0F : math::Clamp(mapped, 0.0F, 1.0F);
 }
 
-TextureValueRange
-FindValueRange(const InspectedTexture& texture, TextureChannel channel, bool shouldIgnoreDepthBackground) noexcept
+void TextureConversionCancellation::Cancel() noexcept
+{
+    mIsCancelled.store(true, std::memory_order_relaxed);
+}
+
+bool TextureConversionCancellation::IsCancelled() const noexcept
+{
+    return mIsCancelled.load(std::memory_order_relaxed);
+}
+
+void TextureConversionCancellation::Reset() noexcept
+{
+    mIsCancelled.store(false, std::memory_order_relaxed);
+}
+
+TextureValueRange FindValueRange(const InspectedTexture& texture,
+                                 TextureChannel channel,
+                                 bool shouldIgnoreDepthBackground,
+                                 const TextureConversionCancellation* cancellationOrNull) noexcept
 {
     TextureValueRange range;
     if (texture.IsValid() == false)
@@ -233,6 +251,10 @@ FindValueRange(const InspectedTexture& texture, TextureChannel channel, bool sho
     const uint32 colorChannels = MAX_TEXEL_CHANNELS - 1;
     for (uint32 y = 0; y < texture.Height; ++y)
     {
+        if (cancellationOrNull != nullptr && cancellationOrNull->IsCancelled() == true)
+        {
+            return {};
+        }
         for (uint32 x = 0; x < texture.Width; ++x)
         {
             TexelValue value;
@@ -295,10 +317,12 @@ QString DescribeTexel(const InspectedTexture& texture, uint32 x, uint32 y)
     return text;
 }
 
-QImage
-MakeDisplayImage(const InspectedTexture& texture, const TextureDisplaySettings& settings, TextureValueRange& outRange)
+QImage MakeDisplayImage(const InspectedTexture& texture,
+                        const TextureDisplaySettings& settings,
+                        TextureValueRange& outRange,
+                        const TextureConversionCancellation* cancellationOrNull)
 {
-    if (texture.IsValid() == false)
+    if (texture.IsValid() == false || (cancellationOrNull != nullptr && cancellationOrNull->IsCancelled() == true))
     {
         return {};
     }
@@ -307,13 +331,16 @@ MakeDisplayImage(const InspectedTexture& texture, const TextureDisplaySettings& 
     TextureValueRange range;
     if (settings.Range == TextureRangeMode::Automatic)
     {
-        range = FindValueRange(texture, channel, settings.ShouldIgnoreDepthBackground);
+        range = FindValueRange(texture, channel, settings.ShouldIgnoreDepthBackground, cancellationOrNull);
     }
     else
     {
         range = {settings.Minimum, settings.Maximum, true};
     }
-    outRange = range;
+    if (cancellationOrNull != nullptr && cancellationOrNull->IsCancelled() == true)
+    {
+        return {};
+    }
     // Exposure scales colour values before the remap; the automatic range is measured before it.
     const float32 scale = IsHighDynamicRange(texture.Encoding) == true ? std::exp2(settings.ExposureStops) : 1.0F;
     const bool isColor = channel == TextureChannel::Rgba && GetChannelCount(texture.Encoding) == MAX_TEXEL_CHANNELS;
@@ -324,6 +351,10 @@ MakeDisplayImage(const InspectedTexture& texture, const TextureDisplaySettings& 
     }
     for (uint32 y = 0; y < texture.Height; ++y)
     {
+        if (cancellationOrNull != nullptr && cancellationOrNull->IsCancelled() == true)
+        {
+            return {};
+        }
         uint8* row = image.scanLine(static_cast<int32>(y));
         for (uint32 x = 0; x < texture.Width; ++x)
         {
@@ -359,6 +390,7 @@ MakeDisplayImage(const InspectedTexture& texture, const TextureDisplaySettings& 
             pixel[2] = grey;
         }
     }
+    outRange = range;
     return image;
 }
 

@@ -8,6 +8,8 @@
 #include <QImage>
 #include <QString>
 
+#include <atomic>
+
 // CPU half of the render-graph texture viewer: decodes one read-back subresource, describes
 // probed texels in their storage format and maps channels, ranges and exposure to a display
 // image. Pure functions of their inputs, so every rule here is unit tested without a GPU.
@@ -86,6 +88,20 @@ struct TextureValueRange final
     bool HasValues = false;
 };
 
+/// Cooperative cancellation, owned until a conversion has finished.
+/// Cancel may run on the GUI thread while the worker polls between rows.
+class TextureConversionCancellation final
+{
+public:
+    void Cancel() noexcept;
+    /// Begin another conversion. Must not overlap any previous conversion's token reads.
+    void Reset() noexcept;
+    [[nodiscard]] bool IsCancelled() const noexcept;
+
+private:
+    std::atomic<bool> mIsCancelled{false};
+};
+
 /// Bytes per texel of an encoding.
 [[nodiscard]] foundation::uint32 GetTexelBytes(TexelEncoding encoding) noexcept;
 /// Channels stored per texel: MAX_TEXEL_CHANNELS for colour encodings, 1 for depth.
@@ -116,16 +132,23 @@ ReadTexel(const InspectedTexture& texture, foundation::uint32 x, foundation::uin
 [[nodiscard]] foundation::float32
 Remap(foundation::float32 value, foundation::float32 minimum, foundation::float32 maximum) noexcept;
 /// Range of the shown channel over the finite values of the texture (all colour channels for Rgba).
+/// Cancellation returns the default empty range; the optional token must outlive this call.
 [[nodiscard]] TextureValueRange
-FindValueRange(const InspectedTexture& texture, TextureChannel channel, bool shouldIgnoreDepthBackground) noexcept;
+FindValueRange(const InspectedTexture& texture,
+               TextureChannel channel,
+               bool shouldIgnoreDepthBackground,
+               const TextureConversionCancellation* cancellationOrNull = nullptr) noexcept;
 /// Probe text for one texel: coordinates, decoded values and stored bits in the texture's format.
 /// @return An empty string outside the texture.
 [[nodiscard]] QString DescribeTexel(const InspectedTexture& texture, foundation::uint32 x, foundation::uint32 y);
 /// Build the RGBA8 display image. Non-finite values show magenta so they cannot hide in the range.
 /// @param outRange Receives the range actually applied (the automatic one when requested).
-/// @return A null image when the texture is invalid.
-[[nodiscard]] QImage
-MakeDisplayImage(const InspectedTexture& texture, const TextureDisplaySettings& settings, TextureValueRange& outRange);
+/// @param cancellationOrNull Optional thread-safe cancellation polled between rows in both passes.
+/// @return A null image on invalid input, allocation failure or cancellation; preserves outRange then.
+[[nodiscard]] QImage MakeDisplayImage(const InspectedTexture& texture,
+                                      const TextureDisplaySettings& settings,
+                                      TextureValueRange& outRange,
+                                      const TextureConversionCancellation* cancellationOrNull = nullptr);
 
 /// Nearest-neighbour view of a texture in a widget: texel (u, v) covers widget pixels
 /// [Offset + u * Zoom, Offset + (u + 1) * Zoom).

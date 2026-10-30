@@ -217,7 +217,8 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     list(APPEND editor_viewport_sources
         src/internal/render_graph_targets.h src/render_graph_targets.cpp
         src/internal/render_target_reader.h src/render_target_reader.cpp
-        src/internal/texture_viewer.h src/texture_viewer.cpp)
+        src/internal/texture_viewer.h src/texture_viewer.cpp
+        src/internal/texture_display_conversion.h src/texture_display_conversion.cpp)
     # Play in the viewport: the game's hosted window and its imported frames as a frame source.
     list(APPEND editor_viewport_sources src/internal/play_viewport_source.h src/play_viewport_source.cpp)
     if(APPLE)
@@ -1257,6 +1258,24 @@ if(EMSCRIPTEN)
 endif()
 
 if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
+    # Keep CPU conversion ownership/cancellation testable without the renderer or shader build.
+    add_executable(ludus_texture_display_conversion_tests tests/main.cpp
+        tests/texture_display_conversion_tests.cpp tests/texture_inspection_tests.cpp
+        tests/viewport_frame_pump_tests.cpp
+        src/internal/texture_display_conversion.h src/texture_display_conversion.cpp
+        src/internal/texture_inspection.h src/texture_inspection.cpp
+        src/internal/viewport_frame_pump.h src/viewport_frame_pump.cpp)
+    set_target_properties(ludus_texture_display_conversion_tests PROPERTIES AUTOMOC ON)
+    target_include_directories(ludus_texture_display_conversion_tests PRIVATE src)
+    target_compile_definitions(ludus_texture_display_conversion_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
+    target_link_libraries(ludus_texture_display_conversion_tests PRIVATE Qt6::Widgets Qt6::Test
+        Ludus::FoundationContainers Ludus::FoundationMath Ludus::FoundationProfiling Catch2::Catch2)
+    ludus_apply_project_defaults(ludus_texture_display_conversion_tests)
+    ludus_enable_test_exceptions(ludus_texture_display_conversion_tests)
+    add_test(NAME ludus_texture_display_conversion_tests COMMAND ludus_texture_display_conversion_tests)
+    set_tests_properties(ludus_texture_display_conversion_tests PROPERTIES LABELS "unit;editor" TIMEOUT 30
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
     add_executable(ludus_render_graph_pipeline_tests tests/main.cpp tests/render_graph_pipeline_tests.cpp tests/render_graph_shader_cleanup_tests.cpp
         src/internal/render_graph_pipeline.h src/render_graph_pipeline.cpp
         src/render_graph_document.cpp src/render_graph_node_ports.cpp src/render_graph_configuration_template.cpp src/render_graph_visibility_template.cpp src/render_graph_compute_template.cpp src/render_graph_line_sampling_template.cpp src/render_graph_point_line_template.cpp src/render_graph_node_transfer.cpp src/render_graph_shader_cleanup.cpp src/render_graph_shader_creation.cpp src/render_graph_scene_authoring.cpp src/render_graph_scene_bundle.cpp src/render_graph_techniques.cpp src/internal/render_graph_pipeline_node.h src/render_graph_pipeline_node.cpp src/render_graph_upscale_node.cpp
@@ -1392,7 +1411,7 @@ if(TARGET ludus_editor_tests)
     foreach(target IN ITEMS ludus_editor_accessibility_tests ludus_code_editor_tests
             ludus_project_explorer_tests ludus_editor_browser_content_tests ludus_render_graph_pipeline_tests
             ludus_shader_interface_tests ludus_render_graph_configuration_tests
-            ludus_render_graph_live_build_tests)
+            ludus_render_graph_live_build_tests ludus_texture_display_conversion_tests)
         if(TARGET ${target})
             add_dependencies(ludus_editor_tests ${target})
         endif()
@@ -1440,6 +1459,7 @@ ludus_editor_apply_precompiled_headers(
     ludus_shader_interface_tests
     ludus_render_graph_configuration_tests
     ludus_render_graph_live_build_tests
+    ludus_texture_display_conversion_tests
 )
 
 # Finite choices are shared by document validation, Properties and canvas details.

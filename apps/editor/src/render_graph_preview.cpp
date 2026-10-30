@@ -861,6 +861,17 @@ const GraphViewportStatistics& RenderGraphPreview::GetStatistics() const noexcep
 {
     return mState->Statistics;
 }
+
+void RenderGraphPreview::RecordInspectionConversion(float64 workMilliseconds,
+                                                    float64 elapsedMilliseconds,
+                                                    float64 publicationMilliseconds) noexcept
+{
+    if (mState->IsAttached == true)
+    {
+        mState->Statistics.AddInspectionConversion(workMilliseconds, elapsedMilliseconds);
+        mState->Statistics.AddCpuWork(publicationMilliseconds);
+    }
+}
 ViewportFrameTrace& RenderGraphPreview::GetFrameTrace() noexcept
 {
     return mState->Trace;
