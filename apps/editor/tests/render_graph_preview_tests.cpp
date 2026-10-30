@@ -11,6 +11,7 @@
 #include "internal/main_window.h"
 #include "internal/offscreen_frame_reader.h"
 #include "internal/preview_viewport.h"
+#include "internal/reference_capture_window.h"
 #include "internal/render_graph_defaults.h"
 #include "internal/render_graph_navigation.h"
 #include "internal/render_graph_preview.h"
@@ -78,6 +79,7 @@
 #include <QQuickWindow>
 #include <QSaveFile>
 #include <QSignalSpy>
+#include <QStandardItemModel>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
@@ -2072,6 +2074,78 @@ TEST_CASE("Selected project World edits reach the delegated graph viewport", "[e
     {
         REQUIRE(world.grab().save(capture) == true);
     }
+    world.StopPreview();
+    workspace.SetPreviewSource(nullptr);
+    rhi::Shutdown();
+}
+
+TEST_CASE("Reference capture window names the viewport's render graph and follows its toolbar",
+          "[editor][render-graph][world-graph][reference-capture]")
+{
+    constexpr int32 TIMEOUT_MILLISECONDS = 30000;
+    rhi::Shutdown();
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const std::string_view level = ludus::world_demo::ExampleLevel();
+    const QString path = QFileInfo(WriteBytes(project,
+                                              QStringLiteral("room.world.json"),
+                                              QByteArray(level.data(), static_cast<qsizetype>(level.size()))))
+                             .canonicalFilePath();
+    RendererWorkspace workspace({});
+    WorldWorkspace world;
+    world.UseProjectGraph(workspace);
+    workspace.SetPreviewSource(&world.GetRenderPreview());
+    QObject::connect(&world, &WorldWorkspace::RenderPreviewChanged, &workspace, [&]() {
+        workspace.SetPreviewSource(&world.GetRenderPreview());
+    });
+    workspace.EnableWorldRendering();
+    workspace.SetProject(project.path(), 1);
+    world.SetProject(project.path(), 1);
+    world.resize(1000, 700);
+    world.show();
+    REQUIRE(world.Open(path) == true);
+    world.ResumePreview();
+    QWidget* viewport = world.findChild<QWidget*>(QStringLiteral("worldViewport"));
+    REQUIRE(viewport != nullptr);
+    WorldGraphView* graphView = viewport->findChild<WorldGraphView*>();
+    REQUIRE(graphView != nullptr);
+    const auto waitFor = [&](const auto& isReady) {
+        QElapsedTimer timer;
+        timer.start();
+        while (isReady() == false && timer.elapsed() < TIMEOUT_MILLISECONDS)
+        {
+            QTest::qWait(1);
+            workspace.ServicePreview();
+        }
+        return isReady();
+    };
+    REQUIRE(waitFor([&]() { return graphView->GetImage().isNull() == false; }) == true);
+    // A project without graphs draws the engine default; the capture window must say so instead of leaving the
+    // Render graph source's graph implicit.
+    REQUIRE(workspace.IsUsingDefaultRenderer() == true);
+    QToolButton* open = viewport->findChild<QToolButton*>(QStringLiteral("viewportReference"));
+    REQUIRE(open != nullptr);
+    open->click();
+    ReferenceCaptureWindow* window = world.findChild<ReferenceCaptureWindow*>();
+    REQUIRE(window != nullptr);
+    CHECK(window->GetGraphText() == QStringLiteral("Engine default renderer · Final output"));
+    QComboBox* source = window->findChild<QComboBox*>(QStringLiteral("referenceSource"));
+    REQUIRE(source != nullptr);
+    const QStandardItemModel* sources = qobject_cast<const QStandardItemModel*>(source->model());
+    REQUIRE(sources != nullptr);
+    CHECK(sources->item(CAPTURE_SOURCE_GRAPH_INDEX)->isEnabled() == true);
+    // Choosing another attachment in the viewport toolbar renames the output while the window stays open.
+    QComboBox* targets = viewport->findChild<QComboBox*>(QStringLiteral("worldGraphTargets"));
+    REQUIRE(targets != nullptr);
+    REQUIRE(targets->count() >= 2);
+    targets->setCurrentIndex(1);
+    CHECK(window->GetGraphText() ==
+          QStringLiteral("Engine default renderer · output %1").arg(targets->currentData().toString()));
+    // Reopening reuses the window and keeps describing the current choice.
+    open->click();
+    CHECK(world.findChildren<ReferenceCaptureWindow*>().size() == 1);
+    CHECK(window->GetGraphText().endsWith(targets->currentData().toString()) == true);
+    window->close();
     world.StopPreview();
     workspace.SetPreviewSource(nullptr);
     rhi::Shutdown();
