@@ -45,10 +45,14 @@ enum class EditorIcon : foundation::uint8
     Profiling,
     LiveInspector,
     RayPaths,
+    Validate,
+    Preview,
+    LivePreview,
+    Cancel,
 };
 
 /// Number of icons in EditorIcon.
-inline constexpr foundation::usize EDITOR_ICON_COUNT = 22;
+inline constexpr foundation::usize EDITOR_ICON_COUNT = 26;
 
 /// Side of the grid every icon is drawn on, in SVG units.
 inline constexpr qreal EDITOR_ICON_GRID = 24.0;
