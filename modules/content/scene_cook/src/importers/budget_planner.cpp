@@ -537,10 +537,11 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
 
     // 4. Keep every placement. Geometry shares the encoded bundle budget with the
     // remaining records; reject an oversized scene before baking rather than dropping shapes.
-    uint64 geometryBytes = sizeof(format::Header) + sizeof(format::LightingRecord) +
-                           scene.AnalyticLights.GetSize() * sizeof(format::LightRecord) +
-                           plan.Materials.GetSize() * (sizeof(format::MeshRecord) + sizeof(format::MaterialRecordV6) +
-                                                       sizeof(format::ObjectRecordV3));
+    uint64 geometryBytes =
+        sizeof(format::Header) + sizeof(format::LightingRecord) +
+        scene.AnalyticLights.GetSize() * sizeof(format::LightRecord) +
+        plan.Materials.GetSize() * (sizeof(format::MeshRecord) + sizeof(format::MaterialRecordV6) +
+                                    format::MATERIAL_EXTENSION_V7_BYTES + sizeof(format::ObjectRecordV3));
     uint32 totalVertices = 0;
     uint32 totalIndices = 0;
     for (const uint32 index : order)

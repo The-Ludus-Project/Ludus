@@ -72,6 +72,44 @@ float64 GetDeterminant(const ludus::foundation::math::Matrix4d& matrix)
 }
 } // namespace
 
+TEST_CASE("glTF base colour factors apply once to sampled and constant textures", "[scene_cook][gltf]")
+{
+    ScratchDirectory scratch;
+    const std::string material = R"(,"materials":[{"pbrMetallicRoughness":{"baseColorFactor":[0.25,0.5,0.75,1])";
+    const std::string image =
+        R"(,"textures":[{"source":0}],"images":[{"uri":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEUlEQVR4nGP4z8Dwn4GB4T8ADfsC/qkyT+AAAAAASUVORK5CYII="}])";
+    for (const bool hasTexture : {false, true})
+    {
+        const std::string extra = material + (hasTexture == true ? R"(,"baseColorTexture":{"index":0})" : "") + "}}]" +
+                                  (hasTexture == true ? image : "");
+        WriteFile(scratch.Path / "scene.gltf", MakeTriangle(extra, {}, ",\"material\":0"));
+        BestEffortResult result;
+        CookError error;
+        REQUIRE(ImportGltfBestEffort((scratch.Path / "scene.gltf").string(), {}, result, error) == true);
+        ludus::resources::SceneDefinition decoded;
+        REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+                ludus::resources::Status::Ok);
+        REQUIRE(decoded.Materials.GetSize() == 1);
+        const ludus::resources::SceneMaterial& cooked = decoded.Materials[0];
+        CHECK(cooked.HasSourceMaterial == true);
+        const ludus::resources::SceneTexture& texture = decoded.Textures[cooked.Texture];
+        if (hasTexture == true)
+        {
+            CHECK(cooked.Reflectance == ludus::foundation::math::Vector3{.25F, .5F, .75F});
+            CHECK(texture.Pixels[0] == 255); // Red source remains untinted sRGB, not multiplied twice.
+            CHECK(texture.Pixels[1] == 0);
+            CHECK(texture.Pixels[2] == 0);
+        }
+        else
+        {
+            CHECK(cooked.Reflectance == ludus::foundation::math::Vector3{1, 1, 1});
+            CHECK(texture.Pixels[0] == 137); // The constant's linear factor is already in its sRGB swatch.
+            CHECK(texture.Pixels[1] == 188);
+            CHECK(texture.Pixels[2] == 225);
+        }
+    }
+}
+
 TEST_CASE("glTF alphaMode MASK cooks a LUSCN v5 mask; BLEND stays opaque", "[scene_cook][gltf]")
 {
     namespace format = ludus::content::scene_format;

@@ -12,6 +12,7 @@
 #include "budget_planner.h"
 #include "front_end_support.h"
 #include "gltf/gltf_reader.h"
+#include "image/image_filter.h"
 #include "image/image_reader.h"
 #include "mesh_compaction.h"
 #include "obj/obj_reader.h"
@@ -72,44 +73,6 @@ bool FailWith(CookError& outError, Status status, std::string_view message) noex
             break;
     }
     return static_cast<float64>(math::DecodeSrgb(static_cast<float32>(unit)));
-}
-
-/// Halve an RGBA8 image with a 2x2 box filter (odd edges clamp).
-[[nodiscard]] bool HalveImage(DecodedImage& inoutImage) noexcept
-{
-    constexpr usize CHANNELS = DECODED_IMAGE_CHANNEL_COUNT;
-    constexpr uint32 BOX_TEXELS = 4;
-    const uint32 sourceWidth = inoutImage.Width;
-    const uint32 sourceHeight = inoutImage.Height;
-    const uint32 width = sourceWidth > 1 ? sourceWidth / 2 : 1;
-    const uint32 height = sourceHeight > 1 ? sourceHeight / 2 : 1;
-    Array<uint8> texels;
-    if (texels.TryResize(usize{width} * height * CHANNELS) == false)
-    {
-        return false;
-    }
-    const uint8* source = inoutImage.Texels.GetData();
-    for (uint32 y = 0; y < height; ++y)
-    {
-        // The clamps select the same 2x2 box as clamping each texel coordinate.
-        const uint8* top = source + usize{math::Min(y * 2, sourceHeight - 1)} * sourceWidth * CHANNELS;
-        const uint8* bottom = source + usize{math::Min(y * 2 + 1, sourceHeight - 1)} * sourceWidth * CHANNELS;
-        uint8* destination = texels.GetData() + usize{y} * width * CHANNELS;
-        for (uint32 x = 0; x < width; ++x)
-        {
-            const usize left = usize{math::Min(x * 2, sourceWidth - 1)} * CHANNELS;
-            const usize right = usize{math::Min(x * 2 + 1, sourceWidth - 1)} * CHANNELS;
-            for (usize k = 0; k < CHANNELS; ++k)
-            {
-                const uint32 sum = uint32{top[left + k]} + top[right + k] + bottom[left + k] + bottom[right + k];
-                destination[usize{x} * CHANNELS + k] = static_cast<uint8>((sum + BOX_TEXELS / 2) / BOX_TEXELS);
-            }
-        }
-    }
-    inoutImage.Texels = static_cast<Array<uint8>&&>(texels);
-    inoutImage.Width = width;
-    inoutImage.Height = height;
-    return true;
 }
 
 [[nodiscard]] bool MakeSwatch(const float64 (&linear)[3], DecodedImage& outImage) noexcept
@@ -173,6 +136,7 @@ struct CookedTexture final
     bool IsFallback = false;
     /// Linear data (a LUSCN v6 surface map) rather than sRGB colour.
     bool IsLinear = false;
+    bool HasNormalMap = false;
 };
 
 /// One cooked world-space mesh.
@@ -585,6 +549,7 @@ void RepackSurfaceBand(void* context, usize band) noexcept
     cookedOrNull->SourceWidth = image.Width;
     cookedOrNull->SourceHeight = image.Height;
     cookedOrNull->IsLinear = true;
+    cookedOrNull->HasNormalMap = normal.IsPresent;
     inoutPlanned.CookedSurfaceTexture = static_cast<uint32>(inoutTextures.GetSize() - 1);
     inoutPlanned.NormalScale =
         normal.IsPresent == true
@@ -918,7 +883,11 @@ void HalveTextureTask(void* context, usize task) noexcept
     const usize texture = run.Tasks[task];
     for (uint32 i = 0; i < run.Halvings[texture]; ++i)
     {
-        if (HalveImage(run.Textures[texture].Image) == false)
+        CookedTexture& cooked = run.Textures[texture];
+        const ImageReductionProfile profile = cooked.IsLinear == false      ? ImageReductionProfile::SrgbColor
+                                              : cooked.HasNormalMap == true ? ImageReductionProfile::TangentNormal
+                                                                            : ImageReductionProfile::LinearData;
+        if (TryHalveImage(cooked.Image, profile) == false)
         {
             run.HasTaskFailed[task] = true;
             return;
@@ -1019,6 +988,13 @@ void HalveTextureTask(void* context, usize task) noexcept
             if (decoded == ImageResult::Ok)
             {
                 ConvertTexels(texture, cooked->Image);
+                // Thanks to Khronos, glTF 2.0 Specification, section 3.9.2:
+                // https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html
+                // The linear material factor multiplies the decoded texture at shading
+                // time. Keeping it separate also avoids quantizing tinted textures.
+                planned.Reflectance = {math::Clamp(planned.BaseColour[0], 0.0, 1.0),
+                                       math::Clamp(planned.BaseColour[1], 0.0, 1.0),
+                                       math::Clamp(planned.BaseColour[2], 0.0, 1.0)};
                 cooked->Source = planned.Texture;
                 isDecoded = true;
             }
@@ -1324,7 +1300,7 @@ void PackBundle(const IrCamera& camera,
                 detail::ByteWriter& inoutBlob) noexcept
 {
     inoutBlob.Append(format::MAGIC);
-    inoutBlob.AppendUint32(format::VERSION_6);
+    inoutBlob.AppendUint32(format::VERSION_7);
     const uint32 count = static_cast<uint32>(plan.Materials.GetSize());
     inoutBlob.AppendUint32(count); // Meshes.
     inoutBlob.AppendUint32(count); // Materials.
@@ -1367,6 +1343,30 @@ void PackBundle(const IrCamera& camera,
         inoutBlob.AppendUint32(planned.CookedEmissionTexture == IR_NONE ? format::NO_TEXTURE
                                                                         : planned.CookedEmissionTexture);
         inoutBlob.AppendFloat32(planned.CookedSurfaceTexture == IR_NONE ? 0.0 : planned.NormalScale);
+        inoutBlob.AppendUint32(planned.Representative == IR_NONE ? 0 : planned.Representative + 1);
+        inoutBlob.AppendUint32(0); // No counted source name in the best-effort profile.
+        for (usize byte = 0; byte < format::MAX_MATERIAL_NAME_BYTES; ++byte)
+        {
+            inoutBlob.Append(char{0});
+        }
+        const format::MaterialScattering scattering;
+        inoutBlob.AppendUint32(static_cast<uint32>(scattering.Model));
+        for (const float64 value : {planned.Reflectance.X, planned.Reflectance.Y, planned.Reflectance.Z})
+        {
+            inoutBlob.AppendFloat32(value);
+        }
+        for (const float32 value : scattering.Eta)
+        {
+            inoutBlob.AppendFloat32(static_cast<float64>(value));
+        }
+        for (const float32 value : scattering.K)
+        {
+            inoutBlob.AppendFloat32(static_cast<float64>(value));
+        }
+        inoutBlob.AppendFloat32(static_cast<float64>(scattering.AlphaU));
+        inoutBlob.AppendFloat32(static_cast<float64>(scattering.AlphaV));
+        inoutBlob.AppendFloat32(static_cast<float64>(scattering.CoatingEta));
+        inoutBlob.AppendFloat32(static_cast<float64>(scattering.CoatingThickness));
     }
     for (const CookedMesh& mesh : meshes)
     {
@@ -1518,7 +1518,7 @@ void WriteReport(const SceneIr& scene,
     writeCount("vertices", summary.CookedVertices);
     writeCount("indices", summary.CookedIndices);
     writeCount("bundle_bytes", summary.BundleBytes);
-    writeCount("scene_format_version", format::VERSION_6);
+    writeCount("scene_format_version", format::VERSION_7);
     writeCount("analytic_lights", facts.LightingOrNull != nullptr ? facts.LightingOrNull->Lights.GetSize() : 0);
     writeCount("dropped_placements", plan.DroppedPlacements);
     writeCount("dropped_vertices", plan.DroppedVertices);
@@ -1938,8 +1938,9 @@ void ResetResult(BestEffortResult& outResult) noexcept
     constexpr usize MAX_TEXTURES_PER_SLOT = 3;
     const usize recordBytes =
         sizeof(format::Header) +
-        plan.Materials.GetSize() * (MAX_TEXTURES_PER_SLOT * sizeof(format::TextureRecord) +
-                                    sizeof(format::MaterialRecordV6) + sizeof(format::ObjectRecordV3));
+        plan.Materials.GetSize() *
+            (MAX_TEXTURES_PER_SLOT * sizeof(format::TextureRecord) + sizeof(format::MaterialRecordV6) +
+             format::MATERIAL_EXTENSION_V7_BYTES + sizeof(format::ObjectRecordV3));
     const usize bundleLimit = format::IMPORT_LIMITS.BundleBytes;
     const usize fixedBytes = geometryBytes + recordBytes + lightingRecords;
     const usize lightingBudget = bundleLimit > fixedBytes ? bundleLimit - fixedBytes : 0;

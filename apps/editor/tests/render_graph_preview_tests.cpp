@@ -376,6 +376,8 @@ TEST_CASE("RG3b World extraction maps objects to static opaque graph items", "[e
     surface.FlatTint = {.5F, 1, 1, 1};
     surface.Emission = {2, 1, 0};
     surface.Roughness = .3F;
+    surface.IsAlphaMasked = true;
+    surface.AlphaCutoff = .25F;
     scene.AuthoredLights.Count = 1;
     scene.AuthoredLights.Lights[0].Kind = renderer::LightKind::Point;
     scene.AuthoredLights.Lights[0].SourceId = 17;
@@ -402,6 +404,10 @@ TEST_CASE("RG3b World extraction maps objects to static opaque graph items", "[e
     CHECK(extraction.ShaderInputs.Materials[0].BaseColor.X == .25F);
     CHECK(extraction.ShaderInputs.Materials[0].Emission.X == 2);
     CHECK(extraction.ShaderInputs.Materials[0].Roughness == .3F);
+    CHECK(extraction.ShaderInputs.Materials[0].IsAlphaMasked == true);
+    CHECK(extraction.ShaderInputs.Materials[0].AlphaCutoff == .25F);
+    CHECK(extraction.ShaderInputs.Materials[0].Sampler.Filter == rhi::RasterFilter::Linear);
+    CHECK(extraction.ShaderInputs.Materials[0].HasError == false);
     REQUIRE(extraction.Items[0].MaterialOverrides.GetSize() == 1);
     CHECK(extraction.Items[0].MaterialOverrides[0] == 0);
     CHECK(extraction.Items[1].MaterialOverrides[0] == renderer::DEFAULT_SCENE_MATERIAL);
@@ -2417,6 +2423,12 @@ TEST_CASE("Full Intel Sponza presents through the native editor viewport", "[.fu
         triangles += mesh.Indices.GetSize() / 3;
     }
     REQUIRE(triangles == 3747018);
+    for (const ludus::resources::SceneMaterial& material : scene.Definition->Materials)
+    {
+        // Material acceptance uses a newly imported v7 project, rather than an old
+        // v6 fixture whose texture reductions and factors cannot exercise this path.
+        REQUIRE(material.HasSourceMaterial == true);
+    }
     RendererWorkspace workspace({});
     workspace.SetProject(root, 1);
     RenderPreview source;
@@ -2461,6 +2473,11 @@ TEST_CASE("Full Intel Sponza presents through the native editor viewport", "[.fu
     // Ordinary raster navigation admits the complete World independently of ray setup.
     const QImage raster = windowOrNull->grabWindow();
     REQUIRE(raster.isNull() == false);
+    const QString capture = qEnvironmentVariable("LUDUS_SPONZA_NATIVE_IMAGE");
+    if (capture.isEmpty() == false)
+    {
+        REQUIRE(raster.save(capture + QStringLiteral(".raster.png")) == true);
+    }
     const uint64 rasterRevision = graph.GetPresentedRevision();
     const uint64 beforeRasterNavigation = viewport.PresentedFrames();
     source.Look(10, 0);
@@ -2506,7 +2523,6 @@ TEST_CASE("Full Intel Sponza presents through the native editor viewport", "[.fu
                 return viewport.PresentedFrames() > beforeResize && windowOrNull->grabWindow().size() != first.size();
             }) == true);
     CHECK(graph.GetStatistics().GetReadbackMilliseconds().GetAverage() == 0);
-    const QString capture = qEnvironmentVariable("LUDUS_SPONZA_NATIVE_IMAGE");
     if (capture.isEmpty() == false)
     {
         REQUIRE(windowOrNull->grabWindow().save(capture) == true);

@@ -532,13 +532,15 @@ detail the renderer's authored lit programs already sample:
   vertex's frame from its texture coordinates. The decoder exposes them as
   `SceneMesh::Tangents`, laid out like `MeshDescription::Tangents`.
 
-The best-effort importers write version 6 (see
+The best-effort importers write version 7, retaining the v6 mesh/map layout and
+adding the linear base-color multiplier in the v7 material extension (see
 [best-effort scene import](../development/best-effort-scene-import.md#budget-planner)).
 The Editor uploads surface maps as `Rgba8Unorm`, passes mesh tangents to
 `CreateMesh` and the maps to `LitMaterialDescription::SurfaceMap`, `NormalScale`
 and `EmissionMap` in Lit and the debug views; area-light proxies of
 texture-modulated emitters use the emission map's mean. Composed Worlds are
-version 6; authored schema meshes carry absent tangents.
+version 7 when source material extensions are present; authored schema meshes
+carry absent tangents.
 
 The scene asset pipeline splits version 6 bundles with build target
 `portable-rgba8-f32-le-v6`. Material descriptions add `surface_texture`,

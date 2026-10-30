@@ -2839,12 +2839,32 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
         policy == RenderGraphCoveragePolicy::DiagnosticColor && state.HasDiagnosticContext() == true;
     if (state.HasForwardProfile() == true)
     {
+        bool hasMaskedMaterials = false;
+        if (sceneInputsOrNull != nullptr)
+        {
+            if (sceneInputsOrNull->Materials.IsValid() == false ||
+                sceneInputsOrNull->Materials.GetSize() > format::MAX_ITEMS)
+            {
+                return Status::InvalidDescription;
+            }
+            for (usize materialIndex = 0; materialIndex < sceneInputsOrNull->Materials.GetSize(); ++materialIndex)
+            {
+                hasMaskedMaterials =
+                    hasMaskedMaterials == true || sceneInputsOrNull->Materials[materialIndex].IsAlphaMasked == true;
+            }
+        }
         for (usize pass = 0; pass < state.Header.PassCount; ++pass)
         {
             if ((state.Passes[pass].Program != format::Technique::ColorAndDepth &&
                  (state.Programs.HasClusteredForward == false ||
                   state.Passes[pass].Program != format::Technique::DepthOnly)) ||
                 state.Passes[pass].SceneData != format::SCENE_DATA_ALL)
+            {
+                return Status::Unsupported;
+            }
+            // The authored opaque void prepass has no texture bindings. Reject its
+            // mask combination before publication instead of sealing cut-out holes.
+            if (state.Passes[pass].Program == format::Technique::DepthOnly && hasMaskedMaterials == true)
             {
                 return Status::Unsupported;
             }

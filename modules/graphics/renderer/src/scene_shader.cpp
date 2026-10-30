@@ -103,6 +103,7 @@ bool IsMaterialValid(const SceneShaderMaterial& material) noexcept
            material.Metallic >= 0 && material.Metallic <= 1 && math::IsFinite(material.Roughness) &&
            material.Roughness >= MIN_ROUGHNESS && material.Roughness <= 1 && math::IsFinite(material.NormalScale) &&
            material.NormalScale >= 0 && material.NormalScale <= MAX_NORMAL_SCALE &&
+           math::IsFinite(material.AlphaCutoff) == true && material.AlphaCutoff >= 0 && material.AlphaCutoff <= 1 &&
            (material.Sampler.Filter == rhi::RasterFilter::Nearest ||
             material.Sampler.Filter == rhi::RasterFilter::Linear) &&
            (material.Sampler.U == rhi::RasterAddress::Clamp || material.Sampler.U == rhi::RasterAddress::Repeat) &&
@@ -435,6 +436,8 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& source,
             surface.IsEmissionTwoSided = material.IsEmissionTwoSided;
             surface.UvTransform = material.UvTransform;
             surface.NormalScale = material.NormalScale;
+            surface.Alpha = material.IsAlphaMasked == true ? MaterialAlpha::Masked : MaterialAlpha::Opaque;
+            surface.AlphaCutoff = material.AlphaCutoff;
             surface.Sampler = material.Sampler;
             surface.HasTexture = material.ColorTexture.Bytes != nullptr;
             surface.HasSurfaceMap = material.SurfaceTexture.Bytes != nullptr;
