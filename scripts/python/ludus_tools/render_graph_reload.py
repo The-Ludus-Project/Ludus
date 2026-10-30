@@ -8,7 +8,7 @@ import hashlib
 import os
 import time
 
-from . import render_graph_build as build, render_graph_execution as execution
+from . import render_graph_build as build, render_graph_execution as execution, render_graph_ray as ray
 from .buildlock import BuildTreeLock
 from .errors import ToolingError
 
@@ -68,6 +68,41 @@ def ray_path_capture_sources(generation):
     build.require(manifest.resolve().is_relative_to(sources.resolve()) and manifest.is_file(), 'Package',
                   str(generation), 'the generation carries no saved build manifest')
     return generation, sources, manifest
+
+
+def declares_capture_budget(manifest, sources):
+    """Return whether the saved build declares a capture shadow-query budget above its interactive one.
+
+    Only scene_interface.capture_visibility_queries distinguishes a capture profile from the
+    runtime package, so a graph without a larger budget needs no capture build. Reads the saved
+    manifest only; no shader tools run.
+    """
+    snapshot = build.Snapshot(sources)
+    label = Path(manifest).resolve().relative_to(snapshot.root).as_posix()
+    _, _, techniques, _ = build.validate_manifest(build.document(snapshot.load(label), label))
+    interface = techniques.get(ray.TECHNIQUE, {}).get('scene_interface', {})
+    return interface.get('capture_visibility_queries', interface.get('visibility_queries')) != interface.get(
+        'visibility_queries')
+
+
+def rebuild_capture_profile(generation, output, destination, *, configuration='Default', **options):
+    """Compile and cook the frame capture profile of one published generation.
+
+    Like rebuild_ray_path_capture, the profile is linked from the generation's own saved
+    sources, never the live project sources, so a capture renders exactly what the viewport's
+    generation renders, with scene_interface.capture_visibility_queries in place of
+    visibility_queries. A generation without a larger capture budget compiles nothing and
+    reports a null capture_profile: its runtime package is the capture package. destination
+    receives the `.lurgcp` (cook_capture_profile); a failure preserves the previous file.
+    """
+    generation, sources, manifest = ray_path_capture_sources(generation)
+    if not declares_capture_budget(manifest, sources):
+        return {'capture_profile': None, 'source_generation': generation.name}
+    options = {key: value for key, value in options.items() if key != 'root'}
+    report = build.build_package(manifest, output, root=sources, capture_profile=True, **options)
+    build.checkpoint(options.get('cancel'))
+    cooked = execution.cook_capture_profile(report['package'], destination, configuration=configuration)
+    return {'build': report, 'capture_profile': cooked, 'source_generation': generation.name}
 
 
 def rebuild_ray_path_capture(generation, output, destination, *, configuration='Default', **options):

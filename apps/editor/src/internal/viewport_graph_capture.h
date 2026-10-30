@@ -13,6 +13,7 @@
 #include "internal/render_graph_preview.h"
 #include "internal/viewport_raster_capture.h"
 
+#include <QByteArray>
 #include <QImage>
 #include <QSize>
 #include <QString>
@@ -46,6 +47,9 @@ public:
 
     /// Decode the source's package, resolve the captured route and begin initializing the private graph. Any
     /// earlier capture is released first.
+    /// @param captureProfilePath The `.lurgcp` capture profile of the source package's generation
+    /// (RenderGraphCaptureProfile), decoded in its place so the capture links the graph's capture budget;
+    /// empty captures the source package itself.
     /// @param requestedSize Drawable extent for view-relative resources.
     /// @param samples Target samples per pixel, at most MAX_RENDER_GRAPH_CAPTURE_SAMPLES.
     /// @param outExtent Receives the captured output's extent, which differs from requestedSize when the graph
@@ -54,6 +58,7 @@ public:
     [[nodiscard]] bool Load(graphics::rhi::DeviceHandle device,
                             graphics::rhi::SurfaceHandle surface,
                             const ViewportRasterSource& source,
+                            const QString& captureProfilePath,
                             const QSize& requestedSize,
                             foundation::uint32 samples,
                             QSize& outExtent,
@@ -89,6 +94,15 @@ public:
     [[nodiscard]] bool Save(const QString& capturePath, QString& outError) const;
     /// PNG path written beside a `.lurgcap` path by Save.
     [[nodiscard]] static QString GetDisplayImagePath(const QString& capturePath);
+    /// Read the generation identity of the runtime package a capture of source would decode.
+    /// @return False with outError when the package cannot be read or decoded; outIdentity is unchanged then.
+    [[nodiscard]] static bool
+    ReadGenerationIdentity(const ViewportRasterSource& source, QByteArray& outIdentity, QString& outError);
+    /// True when the loaded capture decodes a capture profile rather than the runtime package.
+    [[nodiscard]] LUDUS_INLINE bool IsCaptureProfile() const noexcept
+    {
+        return mIsCaptureProfile;
+    }
 
 private:
     void fail(const QString& message) noexcept;
@@ -98,5 +112,6 @@ private:
     /// Frozen World converted to graph records; kept until the private graph accepts it.
     foundation::core::UniquePtr<RenderGraphExtraction> mExtractionOrNull;
     QString mError;
+    bool mIsCaptureProfile = false;
 };
 } // namespace ludus::editor

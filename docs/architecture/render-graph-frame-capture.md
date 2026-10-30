@@ -11,8 +11,9 @@ capture budget and its package, is implemented as of October 30, 2026; see
 [Phase 4a implementation notes](#phase-4a-implementation-notes). Phase 4b, the tiled
 submission, is implemented as of October 30, 2026; see
 [Phase 4b implementation notes](#phase-4b-implementation-notes). The editor's
-automatic use of the capture profile, split out of phase 4b as phase 4c, is not
-implemented.
+automatic use of the capture profile, split out of phase 4b as phase 4c, is
+implemented as of October 30, 2026; see
+[Phase 4c implementation notes](#phase-4c-implementation-notes).
 
 A render graph is the project's rendering scheme. Today it runs in only two ways:
 as the World viewport's interactive renderer, or for one frame as the raster side
@@ -539,11 +540,48 @@ submission: one `RenderGraph::Render`, one command buffer.
 - Further cases cover the refusal of bands from an untiled package, and the band
   estimate.
 
-**Phase 4c, the editor.** A CLI `render-graph capture-profile` rebuild from a
-generation's saved sources, like `ray-path-capture`, so the editor's graph capture
-can cook and load the `.lurgcp` automatically. Until then the editor captures
-with the viewport's runtime package and its interactive budget. Bands already
-apply to it.
+**Phase 4c**, the editor's use of the capture profile, follows.
+
+## Phase 4c implementation notes
+
+**The rebuild.**
+- `render-graph capture-profile <generation> <profile-build> <destination>` compiles
+  a published generation's capture profile, in `render_graph_reload.rebuild_capture_profile`.
+  Like `ray-path-capture`, it uses the generation's saved `sources/`, never newer
+  edits, so the profile renders what the viewport's generation renders.
+- A graph whose `capture_visibility_queries` equals its interactive budget, or is
+  absent, compiles nothing. The rebuild reports `"capture_profile": null`, because
+  the runtime package already is the capture package.
+
+**The editor.**
+- `RenderGraphCaptureProfile` holds the profile of one generation: Building, Ready
+  (with a path, or empty for the runtime package) or Failed. A newer generation
+  supersedes a build, and a later request retries a failure.
+- `RendererWorkspace` answers its requests with the `capture-profile` job.
+  - Profiles live in `out/render-graph/<graph>/capture-profiles/<generation>.lurgcp`
+    and are reused per generation. A new profile removes earlier ones.
+  - A generation without saved sources, such as the prebuilt engine default, is
+    Ready with the runtime package.
+  - The workspace runs one job at a time, so a request during another job fails
+    with that reason, and the next request retries it.
+- The Reference window requests the profile while it is shown with **Render graph**
+  or a comparison selected, and again when the viewport's generation changes.
+  - It reads the generation identity from the runtime package, decoding it again
+    only when the file changes.
+  - **Capture viewport** waits while the profile builds, so the frozen camera is
+    the one current when the capture starts, not one from before a long compile.
+  - `ViewportGraphCapture::Load` decodes the ready profile with
+    `DecodeCaptureProfile` in place of the runtime package. The profile shares the
+    package's plan, so the output resource and pass indices carry over. The
+    capture file's package identity names the profile's bytes.
+
+**Evidence.**
+- Python: "test_capture_profile_rebuilds_a_generation_only_when_it_declares_a_larger_budget"
+  covers both the compile-nothing case and the saved-sources rebuild.
+- Editor: "A viewport graph capture decodes its generation's capture profile in
+  place of the runtime package" completes a capture from a cooked profile fixture.
+- Further editor cases cover the request state machine and the refusal of a
+  missing profile or a runtime package named as one.
 
 ## Open questions
 

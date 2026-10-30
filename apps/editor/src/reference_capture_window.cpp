@@ -2,6 +2,10 @@
 
 #include "internal/reference_comparison.h"
 #include "internal/render_preview.h"
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+#    include "internal/render_graph_capture_profile.h"
+#    include "internal/render_graph_preview.h"
+#endif
 #include "internal/texture_inspection.h"
 #include "internal/viewport_reference_capture.h"
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
@@ -23,6 +27,7 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDateTime>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -36,6 +41,7 @@
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QSaveFile>
+#include <QShowEvent>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QStandardItemModel>
@@ -229,6 +235,12 @@ ReferenceCaptureWindow::ReferenceCaptureWindow(RenderPreview* preview, QWidget* 
     connect(mSaveButton, &QPushButton::clicked, this, &ReferenceCaptureWindow::saveWithDialog);
     connect(mImages, &QTabWidget::currentChanged, this, [this]() { showScaledImages(); });
     connect(mSource, &QComboBox::currentIndexChanged, this, [this]() {
+        requestCaptureProfile();
+        updateControls();
+        updateStatus();
+    });
+    connect(mCompare, &QCheckBox::toggled, this, [this]() {
+        requestCaptureProfile();
         updateControls();
         updateStatus();
     });
@@ -275,8 +287,13 @@ void ReferenceCaptureWindow::SetProjectGraph(RendererWorkspace* workspaceOrNull)
         {
             disconnect(mProjectGraph, nullptr, this, nullptr);
         }
+        if (mCaptureProfile.isNull() == false)
+        {
+            disconnect(mCaptureProfile, nullptr, this, nullptr);
+        }
         mProjectWorkspace = workspaceOrNull;
         mProjectGraph = graphOrNull;
+        mCaptureProfile = workspaceOrNull != nullptr ? workspaceOrNull->GetCaptureProfileOrNull() : nullptr;
         // The configuration, output and Force raster choice live in the viewport toolbar and can change while
         // this window is open; keep naming what a capture would use now.
         if (mProjectWorkspace.isNull() == false)
@@ -294,6 +311,16 @@ void ReferenceCaptureWindow::SetProjectGraph(RendererWorkspace* workspaceOrNull)
                     &RenderGraphPreview::TargetsChanged,
                     this,
                     &ReferenceCaptureWindow::updateGraphDescription);
+            // A new generation needs its own capture profile.
+            connect(mProjectGraph, &RenderGraphPreview::Changed, this, &ReferenceCaptureWindow::requestCaptureProfile);
+        }
+        // The profile's progress decides whether Capture may start and what the status line says.
+        if (mCaptureProfile.isNull() == false)
+        {
+            connect(mCaptureProfile, &RenderGraphCaptureProfile::Changed, this, [this]() {
+                updateControls();
+                updateStatus();
+            });
         }
     }
 #else
@@ -301,6 +328,7 @@ void ReferenceCaptureWindow::SetProjectGraph(RendererWorkspace* workspaceOrNull)
 #endif
     updateComparisonAvailability();
     updateGraphDescription();
+    requestCaptureProfile();
 }
 
 QString ReferenceCaptureWindow::GetGraphText() const
@@ -355,6 +383,85 @@ void ReferenceCaptureWindow::updateGraphDescription()
         mGraphProblem->setText(QStringLiteral("Cannot capture this output: %1").arg(problem));
         updateControls();
     }
+}
+
+void ReferenceCaptureWindow::showEvent(QShowEvent* event)
+{
+    QWidget::showEvent(event);
+    requestCaptureProfile();
+}
+
+void ReferenceCaptureWindow::requestCaptureProfile()
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    const bool isGraphSelected =
+        isGraphSource() == true || (mIsComparisonAvailable == true && mCompare->isChecked() == true);
+    if (isVisible() == false || isGraphSelected == false || mCaptureProfile.isNull() == true ||
+        mProjectGraph.isNull() == true || isRasterRendering() == true)
+    {
+        return;
+    }
+    const ViewportRasterSource source = GetViewportRasterSource(*mProjectGraph);
+    const QFileInfo package(source.PackagePath);
+    const QString key = QStringLiteral("%1|%2|%3")
+                            .arg(source.PackagePath)
+                            .arg(package.size())
+                            .arg(package.lastModified().toMSecsSinceEpoch());
+    if (key != mCaptureProfileSourceKey)
+    {
+        QByteArray identity;
+        QString error;
+        // Without a readable generation there is nothing to compile yet; the capture itself reports why.
+        if (ViewportGraphCapture::ReadGenerationIdentity(source, identity, error) == false)
+        {
+            return;
+        }
+        mCaptureProfileSourceKey = key;
+        mCaptureProfileSourceIdentity = identity;
+    }
+    mCaptureProfile->Request(mCaptureProfileSourceIdentity);
+#endif
+}
+
+bool ReferenceCaptureWindow::isAwaitingCaptureProfile() const noexcept
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    const bool isGraphSelected =
+        isGraphSource() == true || (mIsComparisonAvailable == true && mCompare->isChecked() == true);
+    return isGraphSelected == true && mCaptureProfile.isNull() == false &&
+           mCaptureProfile->GetState() == CaptureProfileState::Building;
+#else
+    return false;
+#endif
+}
+
+QString ReferenceCaptureWindow::describeCaptureProfile() const
+{
+#if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
+    const bool isGraphSelected =
+        isGraphSource() == true || (mIsComparisonAvailable == true && mCompare->isChecked() == true);
+    if (isGraphSelected == false || mCaptureProfile.isNull() == true)
+    {
+        return {};
+    }
+    switch (mCaptureProfile->GetState())
+    {
+        case CaptureProfileState::Idle:
+            return {};
+        case CaptureProfileState::Building:
+            return QStringLiteral("Building the graph's capture profile, which links its capture shadow-query "
+                                  "budget; Capture is available when it is ready.");
+        case CaptureProfileState::Ready:
+            return mCaptureProfile->GetPackagePath().isEmpty() == true
+                       ? QStringLiteral("The graph declares no larger capture budget; captures use its runtime "
+                                        "package.")
+                       : QStringLiteral("Graph captures use the capture profile %1.")
+                             .arg(QFileInfo(mCaptureProfile->GetPackagePath()).fileName());
+        case CaptureProfileState::Failed:
+            return QStringLiteral("The capture profile could not be built: %1").arg(mCaptureProfile->GetError());
+    }
+#endif
+    return {};
 }
 
 void ReferenceCaptureWindow::releaseCaptures() noexcept
@@ -479,10 +586,32 @@ bool ReferenceCaptureWindow::startGraphCapture(const QSize& requestedSize, QSize
 {
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
     mRasterSource = GetViewportRasterSource(*mProjectGraph);
+    // The profile must belong to the generation this capture decodes; a newer generation needs its own.
+    QString profilePath;
+    if (mCaptureProfile.isNull() == false)
+    {
+        QByteArray identity;
+        if (ViewportGraphCapture::ReadGenerationIdentity(mRasterSource, identity, outError) == false)
+        {
+            return false;
+        }
+        mCaptureProfile->Request(identity);
+        if (mCaptureProfile->IsReadyFor(identity) == false)
+        {
+            outError =
+                mCaptureProfile->GetState() == CaptureProfileState::Failed
+                    ? QStringLiteral("The capture profile could not be built: %1").arg(mCaptureProfile->GetError())
+                    : QStringLiteral("The graph's capture profile is still building; capture again when it "
+                                     "is ready.");
+            return false;
+        }
+        profilePath = mCaptureProfile->GetPackagePath();
+    }
     QSize extent;
     if (mGraphCapture.Load(mPreview->GetDevice(),
                            mPreview->GetSurface(),
                            mRasterSource,
+                           profilePath,
                            requestedSize,
                            static_cast<uint32>(mSamples->value()),
                            extent,
@@ -905,7 +1034,8 @@ void ReferenceCaptureWindow::updateControls()
     const bool isReference = isGraphSource() == false;
     // The Render graph source explains a route it cannot capture before the click rather than after it.
     const bool canCaptureGraph = mGraphCaptureProblem.isEmpty() == true;
-    mCaptureButton->setEnabled(isRunning == false && (isReference == true || canCaptureGraph == true));
+    mCaptureButton->setEnabled(isRunning == false && isAwaitingCaptureProfile() == false &&
+                               (isReference == true || canCaptureGraph == true));
     mGraphProblem->setVisible(isReference == false && canCaptureGraph == false);
     mStopButton->setEnabled(isRunning == true);
     mSaveButton->setEnabled(hasSamples == true);
@@ -1026,7 +1156,9 @@ QString ReferenceCaptureWindow::GetStatusText() const
 
 void ReferenceCaptureWindow::updateStatus()
 {
-    mStatus->setText(GetStatusText());
+    const QString profile = isRasterRendering() == true ? QString{} : describeCaptureProfile();
+    mStatus->setText(profile.isEmpty() == true ? GetStatusText()
+                                               : QStringLiteral("%1\n%2").arg(GetStatusText(), profile));
     const QString comparison = describeRaster();
     mComparisonText->setText(comparison);
     mComparisonText->setVisible(comparison.isEmpty() == false);
