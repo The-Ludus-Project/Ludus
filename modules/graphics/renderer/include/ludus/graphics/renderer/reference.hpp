@@ -4,6 +4,7 @@
 
 #include <ludus/foundation/base/types.h>
 
+#include <ludus/foundation/math/addressed_random.hpp>
 #include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/lighting.hpp>
@@ -11,28 +12,39 @@
 
 namespace ludus::graphics::renderer
 {
+/// Caller-owned random address for layered material estimates; no mutable/global RNG.
+/// Scope identifies the receiver/path, Event its sample, and Dimension the material
+/// event (0..255, typically the scene bounce). Each event reserves 256 local dimensions
+/// in separate evaluation, PDF and continuation key domains. Equal inputs replay.
+struct ReferenceBsdfRandomContext final
+{
+    foundation::math::RandomKey Key{};         ///< Explicit root key, copied; no lifetime requirement.
+    foundation::math::RandomAddress Address{}; ///< Logical material event; invalid dimensions reject.
+};
 /// RT1 RGB reflection input. Scattering selects legacy metallic/roughness,
 /// Lambertian diffuse or isotropic rough conductor with complex-IOR Fresnel.
-/// CoatedDiffuse retains parameters but uses the legacy approximation. Conductor
-/// alpha is read directly from Scattering; anisotropic and perfect-specular inputs
-/// reject. Transmission, volumes, spectral transport and energy compensation are absent.
+/// CoatedDiffuse is a rough dielectric layer over Lambertian reflection with
+/// absorption and zero medium scattering. Both typed rough models use Scattering
+/// alpha directly. Coatings require isotropy, alpha >= LUDUS_COATING_MIN_ALPHA,
+/// and IOR >= 1. Their internal depth is LUDUS_COATING_MAX_DEPTH; it does not consume
+/// scene bounces. External transmission, scattering media and spectral transport are absent.
 struct ReferenceBsdf final
 {
     /// Linear RGB reflectance, each channel in [0,1]; conductor evaluation uses Eta/K instead.
     ludus::foundation::math::Vector3 BaseColor{1, 1, 1};
     /// Metallic fraction in [0,1]; dielectric normal-incidence reflectance is 0.04.
     ludus::foundation::float32 Metallic = 0;
-    /// Legacy/coating perceptual roughness in [0.045,1]; conductor reference alpha comes from Scattering.
+    /// Legacy perceptual roughness in [0.045,1]; typed conductor/coating alpha comes from Scattering.
     ludus::foundation::float32 Roughness = 0.5F;
     /// Typed optical parameters; default preserves the legacy metallic/roughness model.
     content::scene_format::MaterialScattering Scattering{};
 };
-/// BSDF value and full mixture density in inverse steradians, without the cosine.
+/// BSDF value and directional density in inverse steradians, without the cosine.
 struct ReferenceBsdfEvaluation final
 {
     /// Nonnegative linear RGB f; zero outside the shading-normal upper hemisphere.
     ludus::foundation::math::Vector3 Value{};
-    /// Full cosine-diffuse/visible-GGX reflection mixture PDF, not a selected-lobe PDF.
+    /// Exact proposal density for legacy/diffuse/conductor; separate layered directional PDF estimate for coatings.
     ludus::foundation::float32 Pdf = 0;
 };
 /// One continuation proposal. Below-surface GGX proposals are explicit null events;
@@ -41,29 +53,44 @@ struct ReferenceBsdfSample final
 {
     /// Unit outgoing world direction when Accepted, otherwise zero.
     ludus::foundation::math::Vector3 Direction{};
-    /// Matching full-mixture evaluation and density when Accepted.
+    /// Evaluation/density when Accepted. A coating may return a proportional internal-path representation; see
+    /// HasProportionalPdf.
     ReferenceBsdfEvaluation Evaluation{};
     /// False is an ordinary zero-contribution sample, distinct from invalid input.
     bool Accepted = false;
+    /// Complete continuation throughput multiplier, including the outgoing cosine.
+    /// Layered samples use their internal-path weight, independently of the MIS density.
+    foundation::math::Vector3 Weight{};
+    /// Directional density estimate used for external light/BSDF MIS, in inverse steradians.
+    foundation::float32 MisPdf = 0;
+    /// True when Evaluation is a proportional path representation: its f*cos/pdf
+    /// ratio remains valid, but Evaluation.Pdf must not be used for external MIS.
+    bool HasProportionalPdf = false;
 };
-/// Evaluate the frozen reflection profile. Normal, outgoing view and incoming light
+/// Evaluate the selected reflection profile. Normal, outgoing view and incoming light
 /// must be finite unit vectors within 1e-5 squared-length tolerance. Directions
-/// point away from the surface. Invalid input preserves output; no allocation.
+/// point away from the surface. Coatings use one stochastic layered estimate and
+/// an independently addressed MIS density estimate. Advance random.Address.Event
+/// between estimates to converge. Invalid input preserves output; no allocation.
 [[nodiscard]] rhi::RasterStatus EvaluateReferenceBsdf(const ReferenceBsdf&,
                                                       ludus::foundation::math::Vector3 normal,
                                                       ludus::foundation::math::Vector3 view,
                                                       ludus::foundation::math::Vector3 light,
-                                                      ReferenceBsdfEvaluation&) noexcept;
+                                                      ReferenceBsdfEvaluation&,
+                                                      ReferenceBsdfRandomContext random = {}) noexcept;
 /// Sample the matching mixture with three independent values in [0,1): X selects
 /// the lobe, Y/Z sample it. Diffuse uses cosine sampling; conductors and legacy
-/// pure metals use visible-GGX reflection; legacy mixed surfaces and approximated
-/// coatings mix cosine diffuse and GGX equally. Failure preserves output.
-/// No allocation, retries, mutable RNG, energy clamp or hidden roughness change.
+/// pure metals use visible-GGX reflection; legacy mixed surfaces mix cosine diffuse
+/// and GGX equally. Coatings sample an internal layered path using the supplied
+/// random context; Weight and MisPdf have distinct contracts. Internal depth and
+/// roulette termination are ordinary null samples. Failure preserves output.
+/// No allocation, retries, global RNG, energy clamp or hidden roughness change.
 [[nodiscard]] rhi::RasterStatus SampleReferenceBsdf(const ReferenceBsdf&,
                                                     ludus::foundation::math::Vector3 normal,
                                                     ludus::foundation::math::Vector3 view,
                                                     ludus::foundation::math::Vector3 samples,
-                                                    ReferenceBsdfSample&) noexcept;
+                                                    ReferenceBsdfSample&,
+                                                    ReferenceBsdfRandomContext random = {}) noexcept;
 /// Selected traversal implementation, recorded in capture metadata.
 enum class ReferenceTraversal : ludus::foundation::uint8
 {
