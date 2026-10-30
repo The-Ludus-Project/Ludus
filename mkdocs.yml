@@ -102,6 +102,7 @@ nav:
       - Save, validate and build render graphs: development/render-graph-authoring.md
       - Render graph authoring proposal: architecture/render-graph-authoring.md
       - Shared scene shader contract proposal: architecture/shared-scene-shader-contract.md
+      - Render graph frame capture proposal: architecture/render-graph-frame-capture.md
       - Benchmark scenes and suites: development/benchmark-scenes.md
       - Runtime profiling: development/runtime-profiling.md
       - Best-effort scene import: development/best-effort-scene-import.md
