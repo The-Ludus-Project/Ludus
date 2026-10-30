@@ -453,16 +453,27 @@ profile*. `content::scene_format::GetBundleLimits(version)` returns the limits o
 version (`RESIDENT_REFERENCE_LIMITS` or `IMPORT_LIMITS` in `limits.h`); producers,
 the Resources decoder, the scene asset pipeline and the Editor read them there.
 
-| Limit | Versions 1-4 | Version 5 |
+| Limit | Versions 1-4 | Versions 5-6 |
 | --- | --- | --- |
 | Meshes / materials / textures | 6 / 8 / 8 | 256 / 256 / 256 |
 | Placed objects | 128 | 1,024 |
-| Unique vertices (combined) | 500,000 | 2,000,000 |
-| Indices (combined; versions 4 and 5) | 1,500,000 | 6,000,000 |
+| Unique vertices (combined) | 500,000 | Bounded by encoded bundle bytes |
+| Indices (combined; versions 4-6) | 1,500,000 | Bounded by encoded bundle bytes |
 | Combined RGBA8 texture bytes | 32 MiB | 256 MiB |
 | Bundle bytes | 64 MiB | 384 MiB |
 
 Per-texture limits (4096 texels per side, 16 MiB) are unchanged.
+
+The import profile no longer imposes separate 2,000,000-vertex and
+6,000,000-index scene ceilings. Its conservative count guards are derived from
+`MAX_IMPORT_BUNDLE_BYTES` and the wire component widths, so any geometry that
+fits the actual bundle passes those guards. The decoder validates each mesh's
+encoded extent before allocating. The best-effort planner reserves the complete
+geometry (32 bytes per v5 vertex, 48 per v6 vertex, four per index, plus records)
+and rejects an oversized scene rather than dropping placements. Textures and
+lighting share the remaining bytes. This changes admission policy without
+changing the v5/v6 wire layout; old binaries retain their older admission limits.
+Renderer preparation, GPU allocation and bake-atlas limits are separate contracts.
 
 `MaterialRecordV5` (56 bytes) stores `AlphaMode` in the version 3 reserved word,
 then `AlphaCutoff` and a new reserved word. `ALPHA_OPAQUE` ignores texture alpha

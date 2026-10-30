@@ -938,6 +938,16 @@ TEST_CASE("local smoke test: a licensed scene imports through the editor catalog
     UNSCOPED_INFO("assembled " << decoded.Meshes.GetSize() << " meshes, " << vertices << " vertices, " << indices
                                << " indices, " << assembled.Scene.GetSize() << " bytes");
     CHECK(vertices > 0);
+    if (entry.filename() == "NewSponza_Main_glTF_003.gltf")
+    {
+        // Full supplied Intel Main Sponza, through the production import/catalog/
+        // assembly path. Neither the former vertex nor triangle ceiling may trim it.
+        CHECK(vertices == 2049137);
+        CHECK(indices == 11241054);
+        const std::string reports = GetResponseMember(assembled.Response, "import_reports");
+        CHECK(reports.find("GEOMETRY_DROPPED") == std::string::npos);
+        CHECK(reports.find("INSTANCES_DROPPED") == std::string::npos);
+    }
     std::error_code ignored;
     std::filesystem::remove_all(work, ignored);
 }

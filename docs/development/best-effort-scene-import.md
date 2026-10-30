@@ -226,7 +226,7 @@ texture coordinates are reported instead.
 ## What LUSCN v6 cannot carry yet
 
 The planner fits the IR into the LUSCN v6 import profile (256 meshes, materials
-and textures, 1,024 objects, 2M unique vertices, 6M indices, 256 MiB of textures,
+and textures, 1,024 objects, 256 MiB of textures and a 384 MiB bundle,
 flattened instancing; see
 [the import profile](../architecture/content-resources.md#import-profile-and-alpha-masks-luscn-v5)
 and [surface maps](../architecture/content-resources.md#surface-maps-emission-maps-and-tangents-luscn-v6)).
@@ -313,8 +313,13 @@ area-light, shadow and indirect-transport limits.
 ## Budget planner
 
 The cooked scene must fit the LUSCN v6 import profile: 256 meshes, materials and
-textures, 2M unique vertices, 6M indices in total, 256 MiB of textures and a
-384 MiB bundle. Each cooked mesh carries one material, so the planner:
+textures, 256 MiB of textures and a 384 MiB bundle. The former independent
+2M-vertex and 6M-index ceilings are removed: geometry is admitted by its actual
+encoded bytes, including 48 bytes per v6 vertex and four per index. Every
+placement is retained, or the import fails explicitly before baking when its
+complete geometry cannot fit. Texture and lighting storage share the remaining
+bundle allowance; renderer CPU/GPU budgets still apply independently. Each
+cooked mesh carries one material, so the planner:
 
 1. reserves one slot per distinct emitter radiance, sidedness and power-normalization
    group; groups record their source shapes and area-light directives in the report.
@@ -327,9 +332,9 @@ textures, 2M unique vertices, 6M indices in total, 256 MiB of textures and a
    (`MATERIALS_MERGED`); a merged material takes its slot's alpha mask;
 4. merges all geometry of a slot into one world-space mesh;
 5. keeps each placement's vertices shared (consumers derive the guttered
-   per-triangle bake charts from the indices), then drops the smallest ordinary
-   placements if the vertex or index budget is exceeded (`GEOMETRY_DROPPED`);
-   required emitter geometry is never silently dropped;
+   per-triangle bake charts from the indices), and checks the complete geometry
+   against the bundle byte budget. An over-budget scene reports `LIMIT_EXCEEDED`
+   and produces no bundle; ordinary and emitter placements are never dropped;
 6. writes each masked slot's coverage into its cooked base texture's alpha:
    the texture's own alpha (glTF), or the MTL opacity map sampled nearest at the
    base resolution, times the constant opacity. An untextured masked slot takes

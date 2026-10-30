@@ -69,9 +69,11 @@ constexpr foundation::int64 UNRECORDED_SCENE_FORMAT_VERSION = format::VERSION_4;
                           QString::number(limits.Textures),
                           FormatCount(cooked, QStringLiteral("objects"))));
     const bool isDryRun = report.value(QStringLiteral("dry_run")).toBool();
-    lines.append(QStringLiteral("Budget: %1 of %2 vertices; %3; %4 placements dropped")
-                     .arg(QString::number(vertices),
-                          QString::number(limits.Vertices),
+    const QString geometryBudget = version >= format::VERSION_5
+                                       ? QStringLiteral("%1 vertices (bundle byte budget)").arg(vertices)
+                                       : QStringLiteral("%1 of %2 vertices").arg(vertices).arg(limits.Vertices);
+    lines.append(QStringLiteral("Budget: %1; %2; %3 placements dropped")
+                     .arg(geometryBudget,
                           isDryRun == true
                               ? QStringLiteral("bundle size measured on import")
                               : QStringLiteral("%1 of %2")
