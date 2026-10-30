@@ -367,9 +367,8 @@ void RendererWorkspace::promptConfigurationTemplate(const QString& templateIdent
                     QMessageBox confirmation(QMessageBox::Question,
                                              QStringLiteral("Increase shader program budget?"),
                                              QStringLiteral("This template needs %1 shader programs, but the current "
-                                                            "limit is %2. Increase the program budget from %2 to %1 "
-                                                            "(budgets.programs, and budgets.artifacts for each target "
-                                                            "profile) and apply the template?\n\n"
+                                                            "limit is %2. Increase budgets.programs from %2 to %1 "
+                                                            "and apply the template?\n\n"
                                                             "The increase and template can be undone together. "
                                                             "Save publishes both changes.")
                                                  .arg(budget.RequiredPrograms)

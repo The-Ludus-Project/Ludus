@@ -105,9 +105,8 @@ select the desired program IDs. To share one source with different entry points,
 register separate programs in the manifest with the same `source` and different
 `function` values, then select those programs on the nodes. The compiler preserves
 these choices in both compiled headers and runtime packages. Adding a new shader
-program automatically grows `budgets.programs` and `budgets.artifacts` to the
-required counts, including every target profile. You do not need to edit the
-manifest first. Larger authored budgets are retained. Budget changes, source
+program automatically grows `budgets.programs` to the required count. You do not
+need to edit the manifest first. A larger authored budget is retained. Budget changes, source
 creation and node assignments share the same undo step and **Save** operation;
 undo restores the previous budgets too. Reusing an existing compatible program
 creates no additional program or budget change. Direct manifest edits and CLI
@@ -117,7 +116,7 @@ apply. Exceeding the artifact ceiling names the manifest, program/profile counts
 and supported limit, and preserves the complete draft. Reuse compatible programs,
 remove unused shaders or reduce target profiles before retrying.
 A new triangle ray pipeline needs three programs (`ray_generation`, `miss` and
-`closest_hit`); each addition grows the relevant budgets as needed. Ray callbacks
+`closest_hit`); each addition grows `budgets.programs` as needed. Ray callbacks
 still share the single bounded ray technique.
 To clean up the open package, choose **Edit → Remove Unused Shaders**, or
 **Remove Unused Shaders** in the canvas context menu. The command checks every
@@ -177,7 +176,7 @@ The builder adapts the original shaders without rewriting their sources or addin
 project helper files. New stages use scene-aware callbacks; replace a legacy stage
 when its shading needs `EvaluateMaterial(scene, hit)` and the full material properties.
 The conversion reuses the existing program records, IDs and profile artifact slots.
-It works with full program/artifact budgets and preserves those authored limits;
+It works with a full program budget and preserves the authored limits;
 you do not need to edit the manifest before converting. **Save** publishes the manifest change.
 Projects converted by older editors may retain a generated `scene_legacy_callbacks.slang`
 helper that includes the original callbacks. The builder recognizes that generated
@@ -1354,8 +1353,8 @@ application fails with its path instead of publishing a manifest that cannot bui
 Explicit **Build Graph** includes these new files in its immutable draft snapshot
 before Save; building does not publish them to the project. Existing callbacks remain unchanged; a shared custom payload
 keeps its fields and gains `RayLaunch Launch`. Importing upgrades unchanged Raster
-admission defaults to the ReSTIR template capacities (16 programs and 64 artifacts),
-so an existing ray pipeline can coexist with the five imported programs. Custom
+admission defaults to the ReSTIR template capacity of 16 programs, so an existing
+ray pipeline can coexist with the five imported programs. Custom
 admission limits are retained unless you approve a program-budget increase. If the
 merged programs exceed `budgets.programs`, the template picker shows the current
 and required counts and offers **Increase and apply** or **Cancel**. Approval raises
@@ -2485,7 +2484,7 @@ A full **Scene → RayTracing** connection selects Geometry, Materials and Light
 from one immutable scene generation. New ray shaders use the scene-aware callback
 interface automatically. Connecting a complete legacy ray pipeline upgrades its
 callbacks through adapters in the same undo step, preserving the authored shader
-behavior and existing manifest program/artifact budgets. Source and manifest
+behavior and the existing manifest program budget. Source and manifest
 changes remain drafts until **Save**.
 
 Right-click the **Scene** or **RayTracing** node and choose **Expand Scene Bundle**
@@ -2843,8 +2842,9 @@ expand to the template's budgets; custom limits remain authoritative. If a custo
 program limit is too small, the picker offers **Increase and apply**, showing the
 current and required counts. Approval raises `budgets.programs` to the required
 count together with the template; **Cancel** preserves the draft. Undo/Redo restores
-both changes, and **Save** publishes them together. Other capacity failures still
-report the required repair.
+both changes, and **Save** publishes them together. Programs times target profiles
+beyond the supported 128 target artifacts cannot be approved; that error names the
+counts to reduce. Other capacity failures still report the required repair.
 Secondary rays require a native profile. Existing ordinary ray configurations can
 share the package: their callbacks, payload source and query limits are retained.
 The shared `ScenePayload` needs a `float3 Radiance` field; comments, whitespace and
@@ -4268,15 +4268,19 @@ to the graph plan, rather than the shader program. Recipe keys compare complete
 canonical state, stage identities, vertex schema and target binding layouts;
 recipe/node names and camera/extent values do not create extra shader programs.
 
+A manifest authors two budgets, `budgets.configurations` and `budgets.programs`.
 Program counts have no separate fixed engine ceiling: `budgets.programs` is a
 positive integer chosen by the author. Adding programs beyond 32 is supported
 when that authored budget admits them; editor shader creation grows it as needed.
-Independent ceilings remain 8
-configurations, 128 target artifacts and 64 target pipeline recipes; source and
-package byte/file limits also apply. Target artifacts count registered programs
-multiplied by target profiles, so increasing the program budget does not bypass
-the artifact budget. The author may choose smaller bounds. The
-configuration bound counts authored techniques and the root graph's own
+The configuration budget is at most 8. Target artifacts (registered programs
+multiplied by target profiles) and target pipelines (raster recipes multiplied by
+target profiles) follow from the manifest itself, so they have no authored budget:
+only the supported ceilings of 128 target artifacts and 64 target pipelines bound
+them, and the error names the counts to reduce. Source and package byte/file limits
+also apply. Manifests written by older tools may still carry `budgets.artifacts` and
+`budgets.pipelines`; the builder accepts and ignores them, and the editor removes them
+when it next changes the budgets, so a stale value can no longer fail a build after
+programs are added. The configuration bound counts authored techniques and the root graph's own
 configurations. Imported configurations that Subgraph nodes reach do not spend
 it: they expand into the root plans, whose techniques, programs, ray variants,
 expanded nodes, passes, files and depth keep their own bounds. The package

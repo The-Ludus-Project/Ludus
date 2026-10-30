@@ -1,3 +1,4 @@
+#include "internal/render_graph_build_limits.h"
 #include "internal/render_graph_pipeline_node.h"
 #include "internal/render_graph_shader_creation.h"
 
@@ -346,14 +347,30 @@ PrepareRenderGraphTechniques(RenderGraphSnapshot& inoutSnapshot, const QString& 
         recipeCount += technique.toObject().value(QStringLiteral("recipes")).toArray().size();
     }
     const QJsonObject budgets = manifest.value(QStringLiteral("budgets")).toObject();
-    if (techniques.size() > budgets.value(QStringLiteral("configurations")).toInt() ||
-        recipeCount * manifest.value(QStringLiteral("profiles")).toArray().size() >
-            budgets.value(QStringLiteral("pipelines")).toInt())
+    const qsizetype configurationBudget = budgets.value(QStringLiteral("configurations")).toInt();
+    if (techniques.size() > configurationBudget)
+    {
+        outError = QStringLiteral("Pipeline registration needs %1 techniques, but budgets.configurations in %2 is %3. "
+                                  "Increase budgets.configurations before adding this technique. The draft was "
+                                  "preserved.")
+                       .arg(techniques.size())
+                       .arg(manifestFile)
+                       .arg(configurationBudget);
+        return RenderGraphDocumentStatus::Capacity;
+    }
+    // Target pipelines are recipes times profiles and have no authored budget; only the supported ceiling bounds
+    // them.
+    const qsizetype profileCount = manifest.value(QStringLiteral("profiles")).toArray().size();
+    if (recipeCount * profileCount > MAX_SHADER_PIPELINES)
     {
         outError =
-            QStringLiteral("Pipeline registration exceeds the configurations or pipelines budget in %1. Increase the "
-                           "authoring budget before adding this technique. The draft was preserved.")
-                .arg(manifestFile);
+            QStringLiteral("Pipeline registration needs %1 raster recipes, which across %2 target profiles in %3 "
+                           "exceed the supported limit of %4 target pipelines. Reuse recipes or reduce target "
+                           "profiles. The draft was preserved.")
+                .arg(recipeCount)
+                .arg(profileCount)
+                .arg(manifestFile)
+                .arg(MAX_SHADER_PIPELINES);
         return RenderGraphDocumentStatus::Capacity;
     }
     manifest.insert(QStringLiteral("techniques"), techniques);

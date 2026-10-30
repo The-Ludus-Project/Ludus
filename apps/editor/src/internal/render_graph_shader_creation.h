@@ -10,8 +10,9 @@ namespace ludus::editor
 /// Generated creation/row renames avoid package-wide program IDs and source paths;
 /// unreferenced untouched generated drafts are removed.
 /// The document commits all files together. No disk writes occur here.
-/// Creating programs grows program/artifact budgets to fit, retaining larger authored values.
-/// Supported artifact limits still reject; outErrorOrNull receives the repair diagnostic when supplied.
+/// Creating programs grows budgets.programs to fit, retaining a larger authored value. Target artifacts
+/// (programs times profiles) have no authored budget; the supported ceiling still rejects, and outErrorOrNull
+/// receives the repair diagnostic when supplied.
 [[nodiscard]] RenderGraphDocumentStatus PreparePipelineShaders(RenderGraphSnapshot& inoutSnapshot,
                                                                QJsonObject& inoutNode,
                                                                const QJsonObject& previousNode,

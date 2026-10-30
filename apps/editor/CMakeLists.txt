@@ -103,19 +103,24 @@ endforeach()
 set_source_files_properties(src/render_graph_settings_editor.cpp src/render_graph_configuration_template.cpp
     PROPERTIES COMPILE_DEFINITIONS "${graph_settings_definitions}")
 
-# Shader authoring shares the build service's target-artifact ceiling.
+# Shader authoring shares the build service's target-artifact and pipeline ceilings
+# (render_graph_build_limits.h). Both counts follow from the manifest; no authored budget bounds them.
 set(shader_build_policy "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/render_graph_build.py")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${shader_build_policy}")
 execute_process(COMMAND "${Python3_EXECUTABLE}" -c
-    "import sys; sys.path.insert(0,sys.argv[1]); from ludus_tools.render_graph_build import LIMITS; print(LIMITS['artifacts'])"
+    "import sys; sys.path.insert(0,sys.argv[1]); from ludus_tools.render_graph_build import LIMITS; print(LIMITS['artifacts'], LIMITS['pipelines'])"
     "${PROJECT_SOURCE_DIR}/scripts/python"
-    RESULT_VARIABLE shader_build_status OUTPUT_VARIABLE shader_artifact_limit ERROR_VARIABLE shader_build_error
+    RESULT_VARIABLE shader_build_status OUTPUT_VARIABLE shader_build_limits ERROR_VARIABLE shader_build_error
     OUTPUT_STRIP_TRAILING_WHITESPACE)
 if(NOT shader_build_status EQUAL 0)
-    message(FATAL_ERROR "Cannot read shader artifact limit: ${shader_build_error}")
+    message(FATAL_ERROR "Cannot read shader build limits: ${shader_build_error}")
 endif()
-set_source_files_properties(src/render_graph_shader_creation.cpp PROPERTIES
-    COMPILE_DEFINITIONS "LUDUS_EDITOR_MAX_SHADER_ARTIFACTS=${shader_artifact_limit}")
+separate_arguments(shader_build_limits)
+list(GET shader_build_limits 0 shader_artifact_limit)
+list(GET shader_build_limits 1 shader_pipeline_limit)
+set_property(SOURCE src/render_graph_shader_creation.cpp src/render_graph_configuration_template.cpp
+    src/render_graph_techniques.cpp tests/render_graph_template_tests.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+    "LUDUS_EDITOR_MAX_SHADER_ARTIFACTS=${shader_artifact_limit}" "LUDUS_EDITOR_MAX_SHADER_PIPELINES=${shader_pipeline_limit}")
 
 # Native snapshot transport uses the backend owner's encoded admission policy.
 set(shader_context_policy "${PROJECT_SOURCE_DIR}/scripts/python/ludus_tools/shader_context.py")
