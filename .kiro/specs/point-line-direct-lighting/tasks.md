@@ -561,10 +561,10 @@ from an Apple M5 on Metal (macOS 26.6), `macos-clang-development`, measured on
       MSE ratios 0.068-0.088, with the reference and `color` errors bit-identical. At equal samples
       `color` has 0.55-0.58 times `pointSampling`'s penumbra MSE. Across eight
       timed runs that day, the primary pass varied 2.7× and the cost ratio ranged
-      from 17.7 to 30.2. Line queries failed on 12 `color` and 12 `lineSampling`
-      pixels, summed over the eight 4,096-sample references; the cause was not
-      traced. Those pixels leave the masks. One scene on one device; no general
-      claim.*
+      from 17.7 to 30.2. 12 `color` and 12 `lineSampling` pixels failed,
+      summed over the eight 4,096-sample references. Those pixels leave the
+      masks. They were traced afterward to zero-length `V` chords (below). One
+      scene on one device; no general claim.*
 - [x] Gates for a change to a test, its CMake staging and documentation.
       *On `develop` `f3bdd943` merged: `macos-clang-development` and
       `macos-clang-asan-ubsan` build `ludus_render_graph_ray_tests` with no
@@ -576,6 +576,59 @@ from an Apple M5 on Metal (macOS 26.6), `macos-clang-development`, measured on
       `test_docs.py`/`test_wiki.py` suites pass. The full CTest suites,
       `install-sdk` and Ruff were not run: no product, SDK or shader source
       changed, and Ruff is not installed locally. Vulkan was not run.*
+
+## Large-scene failure pixels (after the equal-time measurement)
+
+Trace the failure pixels of the equal-time measurement. Record the cause in
+[design section 5.1](design.md#51-failure-pixels-traced). Evidence is from an
+Apple M5 on Metal (macOS 26.6), `macos-clang-development`, on `develop`
+`3c60f713`. Vulkan was not run: no Linux or Vulkan host was available.
+
+- [x] Record which failure status each failing pixel hits, with a debug readout.
+      *A local diagnostic build, not committed, kept the first failed sample's
+      code and call site in each latched pixel. Over the eight references
+      (revisions 2-9), every one of the 24 failure pixels showed the same
+      status: `TryMakeEmitterChord` failing in the `V` proposal, before any line
+      query. These were 12 `color` and 12 `lineSampling` pixels, at the same 12
+      (revision, pixel) pairs. None showed interval overflow, BVH stack
+      exhaustion, a degenerate segment or receiver, budget exhaustion or a
+      nonfinite value.*
+- [x] Decide whether it is a bug, a capacity overflow or a rare degenerate case.
+      *A bug. A radial draw of exactly 0 (probability `2^-24` with 24-bit draws)
+      places the area point on vertex `P0`. Across that vertex's acute angle,
+      the `V` chord has zero length, and the template latched a failure. The
+      expected count, `32,768 × 6,144 × 2^-24`, is 12.0. No interval capacity
+      change is needed: no query overflowed.*
+- [x] Fix it, with a regression. *In both templates, `TryMakeEmitterChord`
+      returns a zero-length chord in place of failing. A chord rejected by
+      `IsEmitterChordQueryable` (shorter than `SCENE_UNIT_TOLERANCE`, the line
+      query's minimum) proposes nothing and has zero D7 density (design D6,
+      "Degenerate chords"; PL08, PL09). The point-line densities fixture gained
+      a row of vertex chords. It renders with no failure pixel and rejects the
+      first-edge chord through vertex 2. Every rejected chord has zero density.
+      With the fix, the diagnostic readout showed each of the 24 pixels
+      proposing a rejected `V` chord from barycentric `(0, 0)`.
+      `[.point-line-large-scene-performance]` then reported no failure pixel in
+      any output (eight references and a 1,960-sample estimate). Its masks kept
+      all 1,278 and 1,794 pixels, and the `color` MSE moved by less than 0.5%.
+      With the fixture's `FindLineDensity` guard removed, the densities test
+      fails on its failure-pixel check, so it catches the bug.*
+- [x] Gates for a template shader, test fixture and documentation change.
+      *On `develop` `3c60f713`: `macos-clang-development` and
+      `macos-clang-asan-ubsan` build `ludus_render_graph_ray_tests` with no
+      compiler warnings. The `[point-line]`, `[line-sampling]`,
+      `[line-visibility]` and `[line-bvh]` cases (11 cases, 18,366 assertions)
+      pass under both, with no sanitizer report. `test_render_graph_templates`
+      passes. So do `--format`, `source_policy.py --base 3c60f713
+      --clang-format` and `--tidy-changed --base 3c60f713`. `check-docs`, strict
+      MkDocs and `check-wiki --documentation-only` pass, as do the
+      `test_docs.py`/`test_wiki.py` suites. The merged Metal stage of the
+      `ComputeBvh` variant is 1,686,273 bytes, under the 2 MiB limit. Building
+      needed a local, uncommitted workaround for a `develop` regression: since
+      #756, `render_graph_build.py`'s `build_package` reads an undefined
+      `ray_profiles`, so every ray package cook raises `NameError`. It is
+      reported, not fixed here. The full CTest suites, `install-sdk` and Ruff
+      were not run. Vulkan was not run.*
 
 ## PL4 Deferred (not scheduled)
 

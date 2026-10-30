@@ -405,6 +405,27 @@ For a selected mesh light with total emitting area `A_light` (emitter `.z`):
 Emission is evaluated at `l`, so textured emission is integrated but not
 importance sampled, which matches the paper's figure 11 discussion.
 
+Degenerate chords (added after section 5.1). Where the line through `l0` leaves
+`T` at once, the chord has zero length: at a vertex whose interior angle excludes
+the direction, or, through rounding, at a point on an edge whose chord runs
+along that edge. `FindVisibleLineIntervals` rejects a segment shorter than
+`SCENE_UNIT_TOLERANCE` (PL12). The template therefore does not query such a
+chord. `IsEmitterChordQueryable` compares the chord's length, computed as the
+query computes it, with that tolerance. Below it the strategy proposes nothing
+and its D7 density is zero, as for a receiver in the emitter's plane. The
+rejected points have zero area in exact arithmetic, so the strategy's density
+elsewhere is unchanged. `color` stays unbiased, because BSDF sampling covers
+them. `lineSampling` loses only points that both line directions reject, and
+`line-sampling`'s `color` the points that `U` rejects. Those points lie within
+`SCENE_UNIT_TOLERANCE` of a vertex, or on an edge parallel to the line, so the
+lost fraction of a triangle's area is about `(1e-5 m)^2 / A_T`, apart from the
+discrete draws below. With 24-bit draws the area point lands exactly on `P0`
+when its radial draw is zero, a probability of `2^-24`. `U` from `P0` runs along
+the first edge, but `V` there has zero length whenever the angle at `P0` is
+acute. A `V` sample therefore proposes nothing with probability `2^-24` on such
+a triangle. `TryMakeEmitterChord` still fails for a degenerate triangle or
+nonfinite bounds.
+
 A selected non-mesh light (directional, point, spot, environment) uses the
 existing point proposal and its density, with `TestVisibility`. Two line
 strategies then propose the same density for such a source, so under balance or
@@ -863,9 +884,11 @@ includes #745's shared scene upload.
 **Failure pixels.** Across the 8 references, 12 `color` and 12 `lineSampling`
 pixels showed the failure color, summed over the references. No `pointSampling`
 pixel did. The estimate graph, at up to 1,906 samples, had none. Failures appear
-only in outputs that make line queries. Their cause was not traced. A pixel that
-fails in any reference or estimate leaves both masks. That removed 2 penumbra
-and 8 outside pixels, leaving 1,276 and 1,786.
+only in outputs that make line queries. A pixel that fails in any reference or
+estimate leaves both masks. That removed 2 penumbra and 8 outside pixels,
+leaving 1,276 and 1,786. Section 5.1 traces them to zero-length `V` chords,
+which the template no longer treats as failures. The measurements above
+predate that fix.
 
 **GPU time per frame** in ms, the mean over 64 frames for each run:
 
@@ -904,6 +927,79 @@ penumbra MSE at 16 and 64 samples. Outside the penumbra the ratios are 0.45 and
 `pointSampling` reached 7-9% of `color`'s MSE in the penumbra and 7-10% outside
 it. The measurement covers one scene, one light, one camera and one device. It
 supports no claim about other scenes or GPUs.
+
+### 5.1 Failure pixels traced
+
+Recorded 2026-10-29 on `origin/develop` `3c60f713`, on the same device and scene as
+section 5, with the same 8 reference graphs (scene revisions 2-9, 4,096 samples
+each). Vulkan was not run.
+
+**Readout.** A local diagnostic build, not part of the change, gave
+`RayQueryContext` a failure code and a call site. Every failure path of
+`FindVisibleLineIntervals` and of the template's shading passes set it, with
+distinct codes for an exhausted budget, an invalid triangle, a short or
+nonfinite segment, a receiver in the segment's line, interval overflow, a
+nonfinite interval, an exhausted BVH stack and a pack without nodes. Call sites
+distinguished the `U` and `V` proposals, the other direction's density and the
+two BSDF densities. The latching accumulation kept the code of the first failed
+sample in the pixel's blue channel instead of magenta.
+
+**Result.** Each of the 24 failure pixels hit the same status: the `V` proposal's
+`TryMakeEmitterChord` failed (`maximum <= minimum`) before any line query ran.
+No pixel hit a line-query status. That rules out interval overflow, BVH stack
+exhaustion, a short segment, a receiver in the segment's line, budget exhaustion
+and a nonfinite interval. `color` and `lineSampling` failed at the same pixels
+in the same graphs, because `shade` and `shadeLines` read the same `V` draws
+(D8b). `shadePoints` builds no chord.
+
+| Revision | Pixels (x, y) |
+| --- | --- |
+| 2 | (58, 53), (30, 59) |
+| 3 | (88, 39) |
+| 4 | (84, 44) |
+| 5 | (84, 13), (94, 44) |
+| 6 | (42, 44) |
+| 7 | (67, 56) |
+| 8 | (95, 10), (12, 40), (27, 57) |
+| 9 | (64, 32) |
+
+**Cause.** `SampleRandomFloat01` returns the top 24 bits of a Philox word times
+`2^-24`, so it returns exactly 0 with probability `2^-24`. `SampleIncidentLight`
+maps the radial draw `y` to the barycentric `sqrt(y) * (1 - z, z)`, so `y = 0`
+places the area point on vertex `P0`. Both triangles of the square light have
+acute (45°) angles at `P0`. The `V` line, perpendicular to the first edge,
+leaves the triangle there at once, and the chord has zero length. `U` from `P0`
+is the first edge itself. With 6,144 pixels, one `V` proposal per pixel and
+sample, and 32,768 samples per pixel, the expected count is
+`32,768 × 6,144 × 2^-24 = 12.0`, which matches the 12 measured. At 1,906 samples
+the estimate graph expected 0.70 and had none. With the fix in place, the same
+readout marked each rejected chord's point. All 24 pixels again proposed a
+degenerate `V` chord, and each one's area point was exactly `(0, 0)`.
+
+This is a template bug, not a documented line-query failure. A zero-length chord
+has no visible length to estimate, but the template latched `HasFailed`, as for a
+degenerate emitter triangle. The fix (D6, "Degenerate chords") makes it propose
+nothing and gives it zero density, without a line query. The same applies to any
+chord shorter than the query's minimum segment. The point-line densities fixture
+gained a row of vertex chords. It renders with no failure pixel, rejects the
+first-edge chord through vertex 2, which always has zero length, and gives every
+rejected chord zero density. After the fix, `[.point-line-large-scene-performance]`
+reported no failure pixel in any output, in the eight references or in the
+estimate graph. The masks then kept all 1,278 penumbra and 1,794 outside pixels.
+The `color` MSE at 16 and 64 samples became 2.72e-3 and 6.61e-4 in the penumbra
+and 2.85e-4 and 6.43e-5 outside. Before, it was 2.73e-3, 6.62e-4, 2.86e-4 and
+6.45e-5. The section 5 tables keep the earlier measurements. The `color` and
+`lineSampling` images change only where a failed `V` sample had latched them.
+The merged Metal stage of the `ComputeBvh` variant is 1,686,273 bytes, under
+the 2 MiB artifact limit.
+
+**Not covered.** The query still fails, as designed (PL12), for a receiver whose
+apex angle to a queryable chord has sine at most `1e-6`. A chord just longer
+than `SCENE_UNIT_TOLERANCE`, seen from 10 m or more, reaches that bound, so a
+small emitter seen from far could still fail near a vertex. On Sponza's 6 m
+light the nearest nonzero draw, `y = 2^-24`, gives a `V` chord of 1.5 mm, with a
+sine of about 1e-4 from 10 m. A small-emitter scene would need its own
+measurement.
 
 ## 6. Risks
 
