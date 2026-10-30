@@ -1372,7 +1372,7 @@ per-tile and per-cell light work this template adapts to one exact emitter CDF p
 
 ### Use the built-in ReSTIR DI template
 
-In an open graph, right-click the canvas or a configuration in **Graph sources**
+In an open graph, right-click the canvas or a configuration in **Outline**
 and choose **Apply Configuration Template... → ReSTIR DI — mesh emitter lighting**.
 In a library such as `raytracing.lurender.json`, enter `RestirDi` to add that
 configuration or populate an existing empty `#RestirDi`. Existing nonempty
@@ -2743,7 +2743,12 @@ Typed source materials also expose `MaterialSample.Model`, `Eta`, `K`, `AlphaU`
 and `AlphaV`. `EvaluateStandardBsdf`/`SampleStandardBsdf` select pure diffuse or
 isotropic conductor reflection when those models are bound. A custom shader using
 its own metallic/roughness formulas must handle the type explicitly to preserve
-source semantics. Coated diffuse still uses the declared approximation. See
+source semantics. `MaterialSample.CoatingEta` and `CoatingThickness` expose the
+layer parameters. For layered coatings use the `EvaluateStandardBsdf` overload
+with an explicit `CoatingRandomContext` and `SampleStandardBsdfTransport`; the
+sample contains a complete throughput weight and a separate external MIS density.
+The original direction-only helpers retain their coating approximation. See
+[the layered reference contract](../architecture/renderer-systems.md#non-scattering-coated-diffuse-reference),
 [typed reference materials](../architecture/renderer-systems.md#typed-diffuse-and-conductor-reference-materials)
 and the [source-preserving importer](../examples/reference-scene.md#material-preserving-project-imports).
 
@@ -2876,7 +2881,7 @@ Depth32Float aspect are sufficient. This follows the indirection in Christopher 
 Burns and Warren A. Hunt, [*The Visibility Buffer: A Cache-Friendly Approach to
 Deferred Shading*, JCGT 2(2), 2013](https://jcgt.org/published/0002/02/04/).
 
-In an open graph, right-click the canvas or a configuration in **Graph sources**
+In an open graph, right-click the canvas or a configuration in **Outline**
 and choose **Apply Configuration Template...**, then **Visibility buffer + depth**,
 **Visibility + secondary rays** or [**Tiled vbuffer NEE**](#select-emitters-per-screen-tile).
 Enter a new configuration name or select an
@@ -5259,7 +5264,7 @@ the editable source, preserving saved bytes and compiler diagnostic line numbers
 
 ### Create a subgraph without leaving the editor
 
-Select the containing configuration in **Graph sources**, then choose **Create
+Select the containing configuration in **Outline**, then choose **Create
 Subgraph...** above the canvas or from the source-tree/canvas right-click menu.
 Enter a unique name starting with an ASCII letter, followed by letters, digits,
 `_` or `-` (up to 63 characters). The action creates `<name>.lurender.json` in
@@ -5281,11 +5286,11 @@ authored. It does not add ray-tracing or compute
 support; the supported node kinds above still apply. The original root remains
 the execution root when editing the library.
 
-Right-click a node in **Graph sources** or on the **Canvas** to use its menu:
+Right-click a node in **Outline** or on the **Canvas** to use its menu:
 
 - **Create Node** lists Scene, Camera, Target, Raster, Subgraph Reference, Export
   and Present. It is also available on empty canvas space and configuration/file
-  rows in Graph sources. Choose a type to add it to the displayed configuration
+  rows in the Outline. Choose a type to add it to the displayed configuration
   with a unique ID, selected and scrolled into view. This uses the same undoable
   operation as Properties' **Add Node**. Creation is disabled while a job runs or
   Source text needs applying/reverting. **Subgraph Reference** adds a reference
@@ -5324,7 +5329,10 @@ node. It is another view of the same typed draft: every canvas edit is a
 `RenderGraphDocument` operation, so undo, explicit save, validation and Properties
 stay in step.
 
-Use **Graph Sources** in the document header to hide or restore the source tree.
+Use **Outline** in the document header to hide or restore the graph outline. It lists each
+file's configurations and shows the nodes of the displayed configuration; other
+configurations stay collapsed until you open them. The Source view hides the outline to give
+the code room, and the next view brings it back if it was open.
 Its visibility and splitter width are remembered between sessions. The status
 strip reserves one line; longer reports remain scrollable. **View → Focus
 Viewport** (Shift+Alt+Enter; Shift+Option+Return on macOS), while the graph is
@@ -5739,7 +5747,7 @@ search lists every authored node. Configuration interface boxes are not search
 results because they are not authored-node selections.
 
 Use Up/Down to choose a result and Enter or a double-click to select and frame
-it. The selection also updates Graph sources and Properties. Search does not
+it. The selection also updates the Outline and Properties. Search does not
 preview selection as you type: Escape or clicking outside closes the popup and
 keeps the previous view and selection. No matches leaves the popup open on Enter.
 Edits, rebuilds and configuration switches close stale results. Text editing in
@@ -5779,16 +5787,16 @@ Long paths remain accessible through the toolbar's overflow menu.
 Use **Back** and **Forward**, or the platform navigation shortcuts shown in their
 tooltips while the canvas has focus, to return through visited configurations.
 Returning restores the saved node selection, magnification, scene centre and
-upstream/downstream trace mode. Graph sources, Properties and the Source file also
+upstream/downstream trace mode. The Outline, Properties and the Source file also
 follow the restored location. The scene centre remains the reference point if the
 window size changed while you were away. Scrollable background space may expand
 to keep that point reachable; node positions and port geometry do not change.
-The breadcrumb bar stays available in Focus Viewport mode with Graph sources and
+The breadcrumb bar stays available in Focus Viewport mode with the Outline and
 Properties hidden.
 
 Click an ancestor breadcrumb to return to its saved view. This is a new visit and
 discards Forward history, as does entering another Subgraph or jumping to another
-configuration through Graph sources. Selection changes and ordinary rebuilds in
+configuration through the Outline. Selection changes and ordinary rebuilds in
 the current configuration do not add visits. Navigation is separate from document
 undo: it always shows the current draft, preserves draft bytes/revisions and does
 not undo edits made since the previous visit.

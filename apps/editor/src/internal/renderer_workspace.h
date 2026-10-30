@@ -487,6 +487,8 @@ private:
     bool mIsRendering = false;
     bool mIsGraphSettingsSectionExpanded = false;
     bool mIsChromeVisible = true;
+    /// The outline was open when the Source view hid it, and comes back with the next view.
+    bool mIsOutlineRestoredAfterSource = false;
     foundation::int32 mFocusRestoreView = 0;
     bool mHasResult = false;
     bool mIsLivePreviewEnabled = false;

@@ -399,6 +399,51 @@ TEST_CASE("Shell puts documents in the centre and tool windows around them", "[e
     }
 }
 
+TEST_CASE("A saved layout does not bring back the Ray Paths window while no capture is under way",
+          "[editor][layout][shell][ray-paths]")
+{
+    QTemporaryDir directory;
+    QTemporaryDir settings;
+    const QString preferences = QDir(settings.path()).filePath(QStringLiteral("workspace.json"));
+    const QString descriptor = WriteProject(directory);
+    const auto rayPathsDock = [](const MainWindow& window) {
+        return window.findChild<QDockWidget*>(QStringLiteral("rayPathsDock"));
+    };
+    {
+        EditorController controller(ToolingPaths{},
+                                    nullptr,
+                                    QDir(settings.path()).filePath(QStringLiteral("recent.json")));
+        MainWindow window(&controller, nullptr, preferences);
+        window.show();
+        controller.OpenProject(descriptor);
+        Settle();
+        QDockWidget* dock = rayPathsDock(window);
+        if (dock == nullptr)
+        {
+            SKIP("This build has no Ray Paths window.");
+        }
+        CHECK(dock->isVisible() == false);
+        // A session that ended with the window open saves it open.
+        window.tabifyDockWidget(Dock(window, QStringLiteral("propertiesDock")), dock);
+        dock->show();
+        Settle();
+        REQUIRE(dock->isVisible() == true);
+        CloseWindow(window);
+    }
+    {
+        EditorController controller(ToolingPaths{},
+                                    nullptr,
+                                    QDir(settings.path()).filePath(QStringLiteral("recent.json")));
+        MainWindow window(&controller, nullptr, preferences);
+        window.show();
+        controller.OpenProject(descriptor);
+        Settle();
+        REQUIRE(rayPathsDock(window) != nullptr);
+        CHECK(rayPathsDock(window)->isVisible() == false);
+        CloseWindow(window);
+    }
+}
+
 TEST_CASE("Tool window tabs keep their icons and drop their text when the dock is too narrow",
           "[editor][layout][shell][truncation]")
 {

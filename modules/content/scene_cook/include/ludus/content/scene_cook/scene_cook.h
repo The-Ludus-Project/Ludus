@@ -66,7 +66,8 @@ struct CookResult final
 
 /// Cook the staircase2 PBRT subset with named materials, original texture UVs,
 /// exact linear reflectance and retained GGX/complex-IOR parameters into LUSCN v7.
-/// Diffuse/conductor are reference models; coated diffuse remains explicitly approximate.
+/// Coated diffuse resolves scalar eta/thickness and admits zero medium albedo,
+/// isotropic rough interfaces and the shared default internal depth/sample policy.
 /// @param source Native source directory; synchronous bounded file reads, no symlinks.
 /// @param outResult Replaced only on success; preserved on failure or cancellation.
 /// @param outError Failure status and diagnostic; cleared on entry.

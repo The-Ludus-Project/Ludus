@@ -1,5 +1,7 @@
 #include <ludus/graphics/renderer/reference.hpp>
 
+#include "internal/reference_coating.h"
+
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/status.hpp>
 
@@ -30,6 +32,7 @@ bool Unit(math::Vector3 v) noexcept
 bool Valid(const ReferenceBsdf& b) noexcept
 {
     return format::IsMaterialScatteringValid(b.Scattering) == true &&
+           internal::IsReferenceCoatingSupported(b.Scattering) == true &&
            (b.Scattering.Model != format::MaterialModel::Conductor || b.Scattering.AlphaU == b.Scattering.AlphaV) &&
            math::IsFinite(b.BaseColor) && b.BaseColor.X >= 0 && b.BaseColor.X <= 1 && b.BaseColor.Y >= 0 &&
            b.BaseColor.Y <= 1 && b.BaseColor.Z >= 0 && b.BaseColor.Z <= 1 && math::IsFinite(b.Metallic) &&
@@ -144,35 +147,54 @@ rhi::RasterStatus EvaluateReferenceBsdf(const ReferenceBsdf& b,
                                         math::Vector3 normal,
                                         math::Vector3 view,
                                         math::Vector3 light,
-                                        ReferenceBsdfEvaluation& output) noexcept
+                                        ReferenceBsdfEvaluation& outEvaluation,
+                                        ReferenceBsdfRandomContext random) noexcept
 {
-    if (Valid(b) == false || Unit(normal) == false || Unit(view) == false || Unit(light) == false)
+    if (Valid(b) == false || Unit(normal) == false || Unit(view) == false || Unit(light) == false ||
+        (b.Scattering.Model == format::MaterialModel::CoatedDiffuse &&
+         internal::IsCoatingRandomContextValid(random) == false))
     {
         return rhi::RasterStatus::InvalidDescription;
     }
-    const ReferenceBsdfEvaluation result = Evaluate(b, normal, view, light);
+    const ReferenceBsdfEvaluation result = b.Scattering.Model == format::MaterialModel::CoatedDiffuse
+                                               ? internal::EvaluateCoatedDiffuse(b, normal, view, light, random)
+                                               : Evaluate(b, normal, view, light);
     if (math::IsFinite(result.Value) == false || math::IsFinite(result.Pdf) == false || result.Pdf < 0)
     {
         return rhi::RasterStatus::Failed;
     }
-    output = result;
+    outEvaluation = result;
     return rhi::RasterStatus::Ready;
 }
 rhi::RasterStatus SampleReferenceBsdf(const ReferenceBsdf& b,
                                       math::Vector3 normal,
                                       math::Vector3 view,
                                       math::Vector3 sample,
-                                      ReferenceBsdfSample& output) noexcept
+                                      ReferenceBsdfSample& outSample,
+                                      ReferenceBsdfRandomContext random) noexcept
 {
     if (Valid(b) == false || Unit(normal) == false || Unit(view) == false || math::IsFinite(sample) == false ||
-        sample.X < 0 || sample.X >= 1 || sample.Y < 0 || sample.Y >= 1 || sample.Z < 0 || sample.Z >= 1)
+        sample.X < 0 || sample.X >= 1 || sample.Y < 0 || sample.Y >= 1 || sample.Z < 0 || sample.Z >= 1 ||
+        (b.Scattering.Model == format::MaterialModel::CoatedDiffuse &&
+         internal::IsCoatingRandomContextValid(random) == false))
     {
         return rhi::RasterStatus::InvalidDescription;
+    }
+    if (b.Scattering.Model == format::MaterialModel::CoatedDiffuse)
+    {
+        const ReferenceBsdfSample result = internal::SampleCoatedDiffuse(b, normal, view, sample, random);
+        if (math::IsFinite(result.Weight) == false || math::IsFinite(result.MisPdf) == false || result.MisPdf < 0 ||
+            math::IsFinite(result.Evaluation.Value) == false)
+        {
+            return rhi::RasterStatus::Failed;
+        }
+        outSample = result;
+        return rhi::RasterStatus::Ready;
     }
     ReferenceBsdfSample result;
     if (math::Dot(normal, view) <= 0)
     {
-        output = result;
+        outSample = result;
         return rhi::RasterStatus::Ready;
     }
     const Basis frame(normal);
@@ -213,9 +235,11 @@ rhi::RasterStatus SampleReferenceBsdf(const ReferenceBsdf& b,
         {
             return rhi::RasterStatus::Failed;
         }
+        result.Weight = result.Evaluation.Value * (math::Dot(normal, direction) / result.Evaluation.Pdf);
+        result.MisPdf = result.Evaluation.Pdf;
         result.Accepted = true;
     }
-    output = result;
+    outSample = result;
     return rhi::RasterStatus::Ready;
 }
 } // namespace ludus::graphics::renderer

@@ -26,6 +26,7 @@
 #include <QSettings>
 #include <QSignalSpy>
 #include <QSplitter>
+#include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
@@ -1081,6 +1082,67 @@ TEST_CASE("The view modes are a segmented control in the document header and fol
     canvas->click();
     CHECK(views->currentIndex() == 0);
     CHECK(canvas->isChecked() == true);
+}
+
+TEST_CASE("The outline lists configurations and opens only the displayed one, and steps aside in the Source view",
+          "[editor][render-graph][usability]")
+{
+    QSettings().remove(QStringLiteral("renderGraph/splitterState"));
+    QSettings().remove(QStringLiteral("renderGraph/sourcesVisible"));
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    OpenSelectionPackage(workspace, project);
+    QPushButton* sources = workspace.findChild<QPushButton*>(QStringLiteral("renderGraphToggleSources"));
+    QTreeWidget* tree = workspace.findChild<QTreeWidget*>(QStringLiteral("renderGraphTree"));
+    QTabWidget* views = workspace.findChild<QTabWidget*>(QStringLiteral("renderGraphViews"));
+    REQUIRE(sources != nullptr);
+    REQUIRE(tree != nullptr);
+    REQUIRE(views != nullptr);
+    REQUIRE(workspace.SelectNode(ROOT, DEFAULT, QStringLiteral("output")) == true);
+    QApplication::processEvents();
+    CHECK(sources->text() == QStringLiteral("Outline"));
+    CHECK(tree->headerItem()->text(0) == QStringLiteral("Outline"));
+    // Every file lists its configurations; only the displayed configuration of the displayed file is open.
+    int displayedCount = 0;
+    for (int fileIndex = 0; fileIndex < tree->topLevelItemCount(); ++fileIndex)
+    {
+        QTreeWidgetItem* file = tree->topLevelItem(fileIndex);
+        CHECK(file->isExpanded() == true);
+        const bool isDisplayedFile = file->text(0) == ROOT;
+        for (int index = 0; index < file->childCount(); ++index)
+        {
+            QTreeWidgetItem* configuration = file->child(index);
+            const bool isDisplayed = isDisplayedFile == true && configuration->text(0) == QLatin1Char('#') + DEFAULT;
+            INFO(configuration->text(0).toStdString());
+            CHECK(configuration->isExpanded() == isDisplayed);
+            displayedCount += isDisplayed == true ? 1 : 0;
+        }
+    }
+    CHECK(displayedCount == 1);
+
+    // The Source view hides the outline without changing the saved choice, and the Canvas brings it back.
+    REQUIRE(tree->isVisible() == true);
+    views->setCurrentIndex(1);
+    QApplication::processEvents();
+    CHECK(tree->isVisible() == false);
+    CHECK(sources->isChecked() == false);
+    CHECK(QSettings().value(QStringLiteral("renderGraph/sourcesVisible"), true).toBool() == true);
+    views->setCurrentIndex(0);
+    QApplication::processEvents();
+    CHECK(tree->isVisible() == true);
+    CHECK(sources->isChecked() == true);
+
+    // Opening it by hand in the Source view is the user's answer: leaving that view changes nothing.
+    views->setCurrentIndex(1);
+    QApplication::processEvents();
+    sources->click();
+    QApplication::processEvents();
+    CHECK(tree->isVisible() == true);
+    views->setCurrentIndex(0);
+    QApplication::processEvents();
+    CHECK(tree->isVisible() == true);
+    QSettings().remove(QStringLiteral("renderGraph/splitterState"));
+    QSettings().remove(QStringLiteral("renderGraph/sourcesVisible"));
 }
 
 TEST_CASE("Properties keeps selected fields and long graph settings within narrow panels",
