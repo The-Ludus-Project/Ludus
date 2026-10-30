@@ -6,6 +6,7 @@
 
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
+#include <ludus/graphics/renderer/render_graph_capture.hpp>
 #include <ludus/graphics/rhi/device.h>
 
 #include <catch2/catch_test_macros.hpp>
@@ -1402,4 +1403,31 @@ TEST_CASE("bilinear numeric plans reject aliasing and uninitialized reads before
     CHECK(fixture.Graph.Initialize(fixture.Device, plan, fixture.MakePrograms()) ==
           rhi::RasterStatus::InvalidDescription);
     CHECK(rhi::reference::Creates[static_cast<usize>(rhi::internal::RasterKind::Shader)] == shaders);
+}
+
+TEST_CASE("A capture's band count keeps each band's estimated GPU time under the dispatch target",
+          "[render-graph][render-graph-tiles]")
+{
+    using ludus::foundation::uint32;
+    using ludus::foundation::uint64;
+    using ludus::graphics::renderer::ComputeRenderGraphCaptureTileCount;
+    using ludus::graphics::renderer::MAX_RENDER_GRAPH_RAY_TILES;
+    using ludus::graphics::renderer::RenderGraphRayWorkload;
+    constexpr uint64 FULL_HD_PIXELS = uint64{1920} * 1080;
+    // No work and a small image need no bands.
+    CHECK(ComputeRenderGraphCaptureTileCount({}) == 1);
+    CHECK(ComputeRenderGraphCaptureTileCount({ .Pixels = uint64{96} * 64, .Lights = 2 }) == 1);
+    // 1920 x 1080 x (1 + 2 x 32) queries x 8 ns is about 1.08 s: five quarter-second bands.
+    constexpr uint32 FULL_HD_LIGHTS = 32;
+    constexpr uint32 FULL_HD_TILES = 5;
+    CHECK(ComputeRenderGraphCaptureTileCount({ .Pixels = FULL_HD_PIXELS, .Lights = FULL_HD_LIGHTS }) == FULL_HD_TILES);
+    // A kernel cannot exceed its linked budget, so lights beyond 128 cost no more.
+    constexpr uint32 BUDGET_LIGHTS = 128;
+    constexpr uint32 MANY_LIGHTS = 3200;
+    CHECK(ComputeRenderGraphCaptureTileCount({ .Pixels = FULL_HD_PIXELS, .Lights = MANY_LIGHTS }) ==
+          ComputeRenderGraphCaptureTileCount({ .Pixels = FULL_HD_PIXELS, .Lights = BUDGET_LIGHTS }));
+    // Beyond MAX_RENDER_GRAPH_RAY_TILES bands the estimate saturates.
+    constexpr uint64 HUGE_PIXELS = uint64{1} << 40U;
+    CHECK(ComputeRenderGraphCaptureTileCount({ .Pixels = HUGE_PIXELS, .Lights = MANY_LIGHTS }) ==
+          MAX_RENDER_GRAPH_RAY_TILES);
 }

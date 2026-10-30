@@ -97,8 +97,11 @@ inline constexpr foundation::uint32 SCENE_RESOURCE_LTC_TABLE = 1U;
 inline constexpr foundation::uint32 RASTER_MESH_LIGHT_PACKAGE_VERSION = 26;
 /// First generation whose deferred resolve reads convex emitter polygon records instead of triangles.
 inline constexpr foundation::uint32 RASTER_MESH_LIGHT_POLYGON_PACKAGE_VERSION = 27;
+/// First generation whose ray kernels dispatch the ray uniform's tile region, so a frame capture may split a
+/// sample into row bands (RenderGraph::SetRayTileCount); the record layout is unchanged.
+inline constexpr foundation::uint32 TILED_RAY_PACKAGE_VERSION = 28;
 /// Current runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = RASTER_MESH_LIGHT_POLYGON_PACKAGE_VERSION;
+inline constexpr foundation::uint32 PACKAGE_VERSION = TILED_RAY_PACKAGE_VERSION;
 /// First package carrying explicit OIDN denoising quality per ray pass.
 inline constexpr foundation::uint32 DENOISING_PACKAGE_VERSION = 16;
 /// First package carrying the renderer-owned bilinear image operation.

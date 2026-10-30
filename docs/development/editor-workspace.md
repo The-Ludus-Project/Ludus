@@ -1657,7 +1657,14 @@ Accumulate's own 32-bit mean and per-pixel sample counts, not the displayed or
 
 The window explains which applies. Pixels that show the graph's failure colour,
 for example where a shader exceeded its query budget, fail the capture and are
-counted. `scripts/reference-hdr` converts the file to PFM with a JSON manifest,
+counted.
+
+A long sample is split into row bands, each submitted to the GPU on its own, so no
+submission runs into the GPU timeout. The capture sizes the bands from the image
+and the scene's lights; the status line then reads **Rendering in N bands**. The
+image and its sample counts are the same as an unbanded capture's. A graph
+package cooked before banded capture fails with a request to rebuild the graph
+when its capture needs bands. `scripts/reference-hdr` converts the file to PFM with a JSON manifest,
 as it does reference captures. See the
 [frame capture design](../architecture/render-graph-frame-capture.md).
 

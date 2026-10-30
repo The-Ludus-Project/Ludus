@@ -1181,6 +1181,13 @@ fields of every ray compute stage. All target artifacts for a role must agree.
 Earlier packages retain their implicit 64×1×1 grouping. Cooked headers and runtime
 packages dispatch the same reflected dimensions; device limits still apply.
 
+Runtime package version 28 links ray kernels against a 240-byte ray uniform. Its
+last 16 bytes name the dispatched tile region. A frame capture can then submit
+each sample as row bands, below the GPU timeout; see
+[tiled submission](../architecture/render-graph-frame-capture.md#phase-4b-implementation-notes).
+Authored callbacks see the same `RayLaunch` pixel and extent either way. Rebuild an
+older graph to capture it in bands; it still runs interactively unchanged.
+
 ```json
 {
   "id": "info", "kind": "ComputePipeline",

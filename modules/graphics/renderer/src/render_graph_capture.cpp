@@ -130,6 +130,17 @@ void WriteUint64(std::span<uint8> bytes, usize offset, uint64 value) noexcept
 }
 } // namespace
 
+foundation::uint32 ComputeRenderGraphCaptureTileCount(const RenderGraphRayWorkload& workload) noexcept
+{
+    const uint64 shadowQueries = math::Min(uint64{workload.Lights} * RENDER_GRAPH_CAPTURE_QUERIES_PER_LIGHT,
+                                           uint64{MAX_RENDER_GRAPH_CAPTURE_VISIBILITY_QUERIES});
+    // At most 4 x 2048^2 pixels x 257 queries x 8 ns, far inside uint64.
+    const uint64 nanoseconds = workload.Pixels * (1 + shadowQueries) * RENDER_GRAPH_CAPTURE_QUERY_NANOSECONDS;
+    const uint64 tiles =
+        (nanoseconds + RENDER_GRAPH_CAPTURE_TILE_NANOSECONDS - 1) / RENDER_GRAPH_CAPTURE_TILE_NANOSECONDS;
+    return static_cast<uint32>(math::Clamp(tiles, uint64{1}, uint64{MAX_RENDER_GRAPH_RAY_TILES}));
+}
+
 struct RenderGraphCapture::State final
 {
     rhi::DeviceHandle Device{};
@@ -147,6 +158,8 @@ struct RenderGraphCapture::State final
     rhi::SubmissionToken Producer{};
     rhi::ReadbackTicket Readback{};
     rhi::BufferHandle Accumulation{};
+    /// The package's ray kernels dispatch tile regions (RenderGraphPrograms::HasRayTiles).
+    bool HasRayTiles = false;
     bool HasReadback = false;
     bool ShouldStop = false;
     /// Whether the read-back in progress ends the capture rather than refreshing its progress.
@@ -189,6 +202,34 @@ struct RenderGraphCapture::State final
             return false;
         }
         return true;
+    }
+    /// Split each sample into the settings' bands, or into bands sized from the scene's workload.
+    void ChooseTiles() noexcept
+    {
+        uint32 count = Settings.TileCount;
+        if (count == 0)
+        {
+            RenderGraphRayWorkload workload;
+            const Status described = Graph.GetRayWorkload(workload);
+            if (described != Status::Ready)
+            {
+                Fail(RenderGraphCaptureProblem::GraphFailure, described);
+                return;
+            }
+            count = ComputeRenderGraphCaptureTileCount(workload);
+        }
+        if (count > 1 && HasRayTiles == false)
+        {
+            Fail(RenderGraphCaptureProblem::UntiledPackage, Status::Unsupported);
+            return;
+        }
+        const Status tiled = Graph.SetRayTileCount(count);
+        if (tiled != Status::Ready)
+        {
+            Fail(RenderGraphCaptureProblem::GraphFailure, tiled);
+            return;
+        }
+        Info.TileCount = count;
     }
     void BeginReadback(bool isFinal) noexcept
     {
@@ -325,11 +366,18 @@ Status RenderGraphCapture::Start(rhi::DeviceHandle device,
     state.ReferenceWidth = referenceWidth;
     state.ReferenceHeight = referenceHeight;
     state.Info.TargetSamples = settings.TargetSamples;
+    state.HasRayTiles = programs.HasRayTiles;
     if (settings.TargetSamples < MIN_RENDER_GRAPH_CAPTURE_SAMPLES ||
-        settings.TargetSamples > MAX_RENDER_GRAPH_CAPTURE_SAMPLES || referenceWidth == 0 || referenceHeight == 0)
+        settings.TargetSamples > MAX_RENDER_GRAPH_CAPTURE_SAMPLES || settings.TileCount > MAX_RENDER_GRAPH_RAY_TILES ||
+        referenceWidth == 0 || referenceHeight == 0)
     {
         state.Fail(RenderGraphCaptureProblem::InvalidSettings, Status::InvalidDescription);
         return Status::InvalidDescription;
+    }
+    if (settings.TileCount > 1 && state.HasRayTiles == false)
+    {
+        state.Fail(RenderGraphCaptureProblem::UntiledPackage, Status::Unsupported);
+        return Status::Unsupported;
     }
     const CaptureRoute route = ResolveRoute(plan, settings.Output);
     if (route.Problem != RenderGraphCaptureProblem::None)
@@ -447,6 +495,11 @@ RenderGraphCapturePhase RenderGraphCapture::Service() noexcept
             {
                 break;
             }
+            if (state.Info.TileCount == 0)
+            {
+                state.ChooseTiles();
+                break;
+            }
             const uint32 submitted = state.Info.SubmittedSamples;
             const bool isFinished = state.ShouldStop == true || submitted >= state.Info.TargetSamples;
             const uint32 interval = state.Settings.PreviewInterval;
@@ -470,7 +523,8 @@ RenderGraphCapturePhase RenderGraphCapture::Service() noexcept
                 break;
             }
             state.Producer = completion;
-            ++state.Info.SubmittedSamples;
+            // A sample counts once its last band was submitted.
+            state.Info.SubmittedSamples = state.Graph.GetSubmittedRaySamples();
             break;
         }
         case RenderGraphCapturePhase::ReadingBack:

@@ -386,6 +386,7 @@ Status PackGpuScene(const ReferenceJob& job,
     constexpr usize RANDOM_KEY_WORD_BITS = 32;
     constexpr uint32 CENTER_RAYS_FLAG = 4;
     outUniform.Dimensions[FOURTH_COMPONENT] = job.Description.RouletteDepth;
+    internal::SetGpuPreviewTile(outUniform, 0, 1);
     outUniform.Offsets[0] = static_cast<uint32>(nodes);
     outUniform.Offsets[1] = static_cast<uint32>(order);
     outUniform.Offsets[2] = static_cast<uint32>(emitters);
@@ -713,10 +714,34 @@ Status PrepareVisibilityInput(rhi::DeviceHandle device,
     return PollGpuJob(device, inoutState, inoutJob);
 }
 } // namespace
+} // namespace ludus::graphics::renderer
+
+namespace ludus::graphics::renderer::internal
+{
+/// Destroy a job's row bands, if any, and return their uniform bytes to the preview budget.
+inline void
+ReleaseGpuPreviewTiles(rhi::DeviceHandle device, GpuPreviewState& inoutState, GpuPreviewRecord& inoutJob) noexcept
+{
+    if (inoutJob.TilesOrNull.Get() == nullptr)
+    {
+        return;
+    }
+    GpuPreviewTiles& tiles = *inoutJob.TilesOrNull;
+    static_cast<void>(rhi::Destroy(device, tiles.Bindings));
+    static_cast<void>(rhi::Destroy(device, tiles.Parameters));
+    inoutJob.GpuBytes -= sizeof(GpuPreviewUniform);
+    inoutState.GpuBytes -= sizeof(GpuPreviewUniform);
+    inoutJob.TilesOrNull.Reset();
+}
+} // namespace ludus::graphics::renderer::internal
+
+namespace ludus::graphics::renderer
+{
 void Renderer::State::DropGpuPreview(usize slot) noexcept
 {
     GpuPreviewRecord& job = GpuPreview->Jobs[slot];
     job.CameraUpdate.Reset();
+    internal::ReleaseGpuPreviewTiles(Device, *GpuPreview, job);
     job.Denoiser.Reset();
     job.DenoisingQuality = 0;
     job.HasPendingCamera = false;
@@ -1821,6 +1846,14 @@ Status Renderer::PrepareGpuPreviewGraphSequence(BorrowedView<const renderer::Gpu
                                                 rhi::OrderedGraph& outGraph,
                                                 const VisibilityRasterPass* visibilityOrNull) noexcept
 {
+    return prepareGpuPreviewGraphSequence(jobs, targets, 0, outGraph, visibilityOrNull);
+}
+Status Renderer::prepareGpuPreviewGraphSequence(BorrowedView<const renderer::GpuPreview> jobs,
+                                                BorrowedView<const rhi::TextureHandle> targets,
+                                                uint32 tile,
+                                                rhi::OrderedGraph& outGraph,
+                                                const VisibilityRasterPass* visibilityOrNull) noexcept
+{
     if (mState.Get() == nullptr || mState->GpuPreview.Get() == nullptr)
     {
         return Status::InvalidState;
@@ -1876,6 +1909,12 @@ Status Renderer::PrepareGpuPreviewGraphSequence(BorrowedView<const renderer::Gpu
             (visibilityOrNull != nullptr && targets[index] == visibilityOrNull->Attachment.Color))
         {
             return Status::InvalidDescription;
+        }
+        // A tiled job dispatches only the band it prepared; whole-image jobs ignore the band.
+        const internal::GpuPreviewTiles* tilesOrNull = jobOrNull->TilesOrNull.Get();
+        if (tilesOrNull != nullptr && (tile != tilesOrNull->Tile || tilesOrNull->HasBindings == false))
+        {
+            return Status::InvalidState;
         }
         records[index] = jobOrNull;
     }

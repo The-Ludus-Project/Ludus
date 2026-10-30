@@ -53,7 +53,7 @@
 #ifndef LUDUS_GPU_PREVIEW_TRANSPORT_GROUP_HEIGHT
 #    define LUDUS_GPU_PREVIEW_TRANSPORT_GROUP_HEIGHT 8
 #endif
-#define LUDUS_GPU_PREVIEW_PARAMETERS_BYTES 224
+#define LUDUS_GPU_PREVIEW_PARAMETERS_BYTES 240
 
 // Scene interface metadata in otherwise unused packed triangle components.
 #define LUDUS_GRAPH_INSTANCE_WORD 3

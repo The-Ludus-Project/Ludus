@@ -9,7 +9,10 @@ budget decision, was measured and decided the same day; see
 [Phase 3: capture budget decision](#phase-3-capture-budget-decision). Phase 4a, the
 capture budget and its package, is implemented as of October 30, 2026; see
 [Phase 4a implementation notes](#phase-4a-implementation-notes). Phase 4b, the tiled
-submission and the editor's use of the capture profile, is not implemented.
+submission, is implemented as of October 30, 2026; see
+[Phase 4b implementation notes](#phase-4b-implementation-notes). The editor's
+automatic use of the capture profile, split out of phase 4b as phase 4c, is not
+implemented.
 
 A render graph is the project's rendering scheme. Today it runs in only two ways:
 as the World viewport's interactive renderer, or for one frame as the raster side
@@ -471,17 +474,72 @@ the interactive budget rejects" (`render_graph_ray_tests.cpp`):
 
 Python tests cover the field's admission and the build, cook and refusal paths.
 
-**Phase 4b.**
-- **Tiled submission.** Tiles inside one frame would share one command buffer, and
-  Metal's timeout applies per command buffer. Tiles must therefore be separate
-  submissions, so the counters that today assume one sample per frame
-  (`SubmittedRaySamples`, `HasPendingSamples`, the capture's `SubmittedSamples`) must
-  count completed tiles. The ray uniform has no spare word for a tile origin, so the
-  dispatch needs a dynamic uniform offset (`rhi::ComputeDispatch::BindingOffsets`) or
-  a layout change.
-- **Editor.** A CLI `render-graph capture-profile` rebuild from a generation's saved
-  sources, like `ray-path-capture`, so the editor's graph capture can load the
-  `.lurgcp` automatically.
+**Phase 4b** tiles the submission; see the next section.
+
+## Phase 4b implementation notes
+
+**Why separate submissions.** Tiles inside one frame would share one command buffer,
+and Metal's timeout applies per command buffer. So each band of a sample is its own
+submission: one `RenderGraph::Render`, one command buffer.
+
+**The ABI.**
+- The ray uniform grows from 224 to 240 bytes with a named `Tile` region: origin x
+  and y, then the exclusive end x and y. The C++ `GpuPreviewUniform`, both Slang
+  `Parameters` blocks and the cook's reflection check (`PARAMETERS_BYTES`) agree.
+- `ComputeMain` adds the origin to the dispatch thread and returns outside the
+  region. Pixel indices, sample streams and accumulation are therefore those of a
+  whole-image dispatch. The polygonal-light template's hit record, indexed by the
+  full extent, keeps working, because every pass of a frame dispatches the same band.
+- **Package version 28.** It marks kernels that read the region.
+  - Older packages still load for interactive use. Their kernels read only the first
+    224 bytes and cover the whole image on every dispatch.
+  - `RenderGraphPrograms::HasRayTiles` is true for version 28 packages and for every
+    generated header. `RenderGraph::SetRayTileCount` refuses more than one band
+    without it.
+
+**The graph.**
+- `RenderGraph::SetRayTileCount` splits every sample into up to
+  `MAX_RENDER_GRAPH_RAY_TILES` (128) row bands. Band edges are
+  `floor(band × height / count)`. When bands outnumber rows, an empty band
+  dispatches one group row whose threads all return.
+- Before each frame, the renderer prepares for every ray pass one uniform copy
+  whose region selects the cursor's band, and its binding set. It builds them from
+  the committed camera and replaces the previous band's pair, which retires with
+  its completed producer. One pair per band would not scale to 128 bands: the RHI
+  bounds live buffers and binding descriptors per kind, by default 64 records and
+  512 descriptors. A camera commit releases the pair.
+- A sample counts once its last band is submitted. This applies to
+  `GetSubmittedRaySamples`, `HasPendingSamples` and the capture's
+  `SubmittedSamples`. The band layout changes only at a sample boundary.
+- `GetRayWorkload` reports the pixels of one sample, summed over ray passes, and
+  the largest pass scene's emissive triangles plus analytic lights.
+
+**The capture.**
+- `RenderGraphCaptureSettings::TileCount` defaults to zero, which means
+  `ComputeRenderGraphCaptureTileCount` of the scene's workload.
+- That estimate charges each pixel one camera query plus two shadow queries per
+  light. The shadow queries are capped at the capture maximum of 256, since a
+  kernel cannot exceed its linked budget. Each query costs the measured 8 ns, and
+  each band targets 0.25 s.
+- At 1920 × 1080 with 32 triangles that is five bands per pass.
+- A sample that needs bands from a pre-28 package fails with `UntiledPackage`.
+- **Stop** between bands keeps exact per-pixel counts. Rows of the finished bands
+  then hold one more sample than `SubmittedSamples`.
+
+**Evidence** (`render_graph_ray_tests.cpp`, `render_graph_tests.cpp`):
+- "A tiled render graph capture accumulates exactly the pixels of an untiled one"
+  compares the polygonal-light template's four-pass capture at 1, 5 and 128 bands
+  of 64 rows, bit for bit.
+- "A tiled render graph counts a sample once every band was submitted" checks the
+  counters and the per-pixel counts after one round.
+- Further cases cover the refusal of bands from an untiled package, and the band
+  estimate.
+
+**Phase 4c, the editor.** A CLI `render-graph capture-profile` rebuild from a
+generation's saved sources, like `ray-path-capture`, so the editor's graph capture
+can cook and load the `.lurgcp` automatically. Until then the editor captures
+with the viewport's runtime package and its interactive budget. Bands already
+apply to it.
 
 ## Open questions
 

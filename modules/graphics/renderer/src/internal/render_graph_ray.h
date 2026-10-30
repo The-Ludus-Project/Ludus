@@ -48,6 +48,11 @@ public:
                                                                           foundation::uint32 pass,
                                                                           rhi::BufferHandle& outBuffer) noexcept;
     [[nodiscard]] rhi::RasterStatus Poll() noexcept;
+    // Prepare band `tile` of `count` row bands of a tiled capture from the committed camera; a count of one
+    // releases the band. Ready once it is bound, Pending while its uniform or bindings are created.
+    [[nodiscard]] rhi::RasterStatus PrepareTiles(foundation::uint32 count, foundation::uint32 tile) noexcept;
+    // Emissive triangles plus analytic lights of the ready job's scene.
+    [[nodiscard]] foundation::uint32 GetLightCount() const noexcept;
     [[nodiscard]] rhi::RasterStatus PrepareCamera(const ViewDescription& camera, foundation::uint64 revision) noexcept;
     [[nodiscard]] rhi::RasterStatus PollCamera() noexcept;
     void CommitCamera() noexcept;
