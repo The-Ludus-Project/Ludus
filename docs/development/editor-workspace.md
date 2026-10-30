@@ -1646,6 +1646,14 @@ the frozen camera, and saves the linear mean as a `.lurgcap` file with a PNG
 beside it. It needs a project graph in the viewport; otherwise the source is
 unavailable. Maximum depth, traversal and comparison describe RT1 and are disabled.
 
+The window has no graph selector of its own. Its **Graph** row names what the
+viewport currently draws, for example
+`Project graph main.lurender.json · configuration raytracing · Final output`, or
+**Engine default renderer** when the project has no render graph. It also shows
+**Force raster** when that is on. The row follows the viewport toolbar while the
+window is open, so choose a different configuration or output there. The
+comparison uses the same graph.
+
 The capture runs a private copy of the graph on the viewport's device. The
 viewport keeps drawing, and its image and accumulation are unchanged. The image
 fills in after the first sample and every 16 samples. The saved values are the

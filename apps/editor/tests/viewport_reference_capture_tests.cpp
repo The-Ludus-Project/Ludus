@@ -437,6 +437,7 @@ TEST_CASE("Reference capture window offers the render graph source only with a p
     REQUIRE(model != nullptr);
     // Without a viewport project graph there is nothing to capture but the RT1 reference.
     CHECK(model->item(CAPTURE_SOURCE_GRAPH_INDEX)->isEnabled() == false);
+    CHECK(window.GetGraphText().startsWith(QStringLiteral("None.")) == true);
     QSpinBox* depth = window.findChild<QSpinBox*>(QStringLiteral("referenceMaxDepth"));
     REQUIRE(depth != nullptr);
     CHECK(depth->isEnabled() == true);
