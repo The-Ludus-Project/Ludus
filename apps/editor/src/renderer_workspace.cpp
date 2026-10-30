@@ -534,7 +534,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
       mPath(new QLabel(QStringLiteral("No render graph is open."), this)), mContent(new QStackedWidget(this)),
       mEmptyMessage(new QLabel(this)), mCreateFirst(new QPushButton(QStringLiteral("Create Render Graph..."), this)),
       mConfiguration(new QComboBox(this)), mTree(new QTreeWidget(this)), mNavigation(new QWidget(this)),
-      mStatusPanel(new QScrollArea(this)), mSourcesToggle(new QPushButton(QStringLiteral("Graph Sources"), this)),
+      mStatusPanel(new QScrollArea(this)), mSourcesToggle(new QPushButton(QStringLiteral("Outline"), this)),
       mViews(new QTabWidget(this)), mInspectorPanel(new QScrollArea(this)), mInspector(new QWidget(mInspectorPanel)),
       mFields(new QFormLayout), mLayoutX(new QSpinBox(mInspector)), mLayoutY(new QSpinBox(mInspector)),
       mNewKind(new QComboBox(mInspector)), mNodeCreationMessage(new QLabel(mInspector)),
@@ -568,7 +568,8 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mSourcesToggle->setCheckable(true);
     mSourcesToggle->setChecked(QSettings().value(SOURCES_VISIBLE_KEY, true).toBool());
     mSourcesToggle->setToolTip(
-        QStringLiteral("Show or hide graph sources. View > Focus Viewport maximizes the graph."));
+        QStringLiteral("Show or hide the graph outline: its files, configurations and nodes. The Source view hides it "
+                       "to give the code room. View > Focus Viewport maximizes the graph."));
     header->addWidget(mSourcesToggle);
     header->addWidget(mPath, 1);
     header->addWidget(new QLabel(QStringLiteral("Configuration"), this));
@@ -590,7 +591,7 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
 
     mTree->setObjectName(QStringLiteral("renderGraphTree"));
     ConfigureItemSelection(*mTree);
-    mTree->setHeaderLabel(QStringLiteral("Graph sources"));
+    mTree->setHeaderLabel(QStringLiteral("Outline"));
     mTree->setContextMenuPolicy(Qt::CustomContextMenu);
 
     // Inspector: fields of the selected node, its layout position, node creation and the
@@ -836,6 +837,8 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
             QSettings().setValue(SPLITTER_STATE_KEY, horizontal->saveState());
         }
         mTree->setVisible(isVisible);
+        // Choosing in the Source view is the user's own answer, so leaving it changes nothing.
+        mIsOutlineRestoredAfterSource = false;
         if (isVisible == true)
         {
             static_cast<void>(horizontal->restoreState(QSettings().value(SPLITTER_STATE_KEY).toByteArray()));
@@ -854,6 +857,26 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         if (isVisible == true)
         {
             QSettings().setValue(SPLITTER_STATE_KEY, horizontal->saveState());
+        }
+    });
+    // The Source view is for reading code: the outline steps aside there and returns with the next view.
+    connect(mViews, &QTabWidget::currentChanged, this, [this](int index) {
+        if (index == SOURCE_VIEW)
+        {
+            if (mSourcesToggle->isChecked() == true && mTree->isVisibleTo(this) == true)
+            {
+                mIsOutlineRestoredAfterSource = true;
+                const QSignalBlocker blocker(mSourcesToggle);
+                mSourcesToggle->setChecked(false);
+                mTree->setVisible(false);
+            }
+        }
+        else if (mIsOutlineRestoredAfterSource == true)
+        {
+            mIsOutlineRestoredAfterSource = false;
+            const QSignalBlocker blocker(mSourcesToggle);
+            mSourcesToggle->setChecked(true);
+            mTree->setVisible(mIsChromeVisible);
         }
     });
     QWidget* emptyPage = new QWidget(this);
@@ -927,6 +950,25 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         static_cast<void>(buildAndPreview(RenderGraphSource::Saved));
     });
     connect(mTree, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem* current, QTreeWidgetItem*) {
+        if (current != nullptr)
+        {
+            // The outline opens the displayed configuration and closes its siblings, wherever the
+            // selection came from.
+            QTreeWidgetItem* configurationItem = current;
+            while (configurationItem->parent() != nullptr && configurationItem->parent()->parent() != nullptr)
+            {
+                configurationItem = configurationItem->parent();
+            }
+            if (configurationItem->parent() != nullptr)
+            {
+                QTreeWidgetItem* fileItem = configurationItem->parent();
+                fileItem->setExpanded(true);
+                for (int index = 0; index < fileItem->childCount(); ++index)
+                {
+                    fileItem->child(index)->setExpanded(fileItem->child(index) == configurationItem);
+                }
+            }
+        }
         if (mIsRendering == true || current == nullptr)
         {
             return;
@@ -2556,7 +2598,23 @@ void RendererWorkspace::renderTree(bool shouldRefreshInspector, QWidget* editOri
             }
         }
     }
-    mTree->expandAll();
+    // An outline, not a second file browser: files show their configurations, and only the displayed
+    // configuration shows its nodes.
+    mTree->expandToDepth(0);
+    if (currentOrNull != nullptr)
+    {
+        // Outermost first: a row opened inside a closed parent is forgotten when the parent opens.
+        QList<QTreeWidgetItem*> path;
+        for (QTreeWidgetItem* ancestor = currentOrNull; ancestor != nullptr; ancestor = ancestor->parent())
+        {
+            path.prepend(ancestor);
+        }
+        for (QTreeWidgetItem* item : path)
+        {
+            mTree->expandItem(item);
+        }
+        mTree->scrollToItem(currentOrNull);
+    }
     const int32 configurationIndex = mConfiguration->findText(selectedConfiguration);
     mConfiguration->setCurrentIndex(configurationIndex >= 0 ? configurationIndex : 0);
     if (currentOrNull != nullptr)
