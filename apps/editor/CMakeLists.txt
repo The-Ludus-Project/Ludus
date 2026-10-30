@@ -231,6 +231,7 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     list(APPEND editor_viewport_sources src/internal/render_graph_preview.h src/render_graph_preview.cpp
         src/internal/viewport_raster_capture.h src/viewport_raster_capture.cpp
         src/internal/viewport_graph_capture.h src/viewport_graph_capture.cpp
+        src/internal/render_graph_capture_profile.h src/render_graph_capture_profile.cpp
         src/internal/graph_display_frames.h src/graph_display_frames.cpp
         src/internal/world_graph_view.h src/world_graph_view.cpp
         src/internal/render_graph_worker.h src/render_graph_worker.cpp)
@@ -1167,7 +1168,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         target_sources(ludus_editor_tests PRIVATE tests/viewport_reference_capture_tests.cpp
             tests/reference_comparison_tests.cpp)
         target_sources(ludus_editor_tests PRIVATE tests/render_graph_preview_tests.cpp tests/restir_benchmark_tests.cpp
-            tests/raster_mesh_light_benchmark_tests.cpp)
+            tests/raster_mesh_light_benchmark_tests.cpp tests/render_graph_capture_profile_tests.cpp)
         target_compile_definitions(ludus_editor_tests PRIVATE
             "LUDUS_EDITOR_RENDER_GRAPH_FIXTURE=\"${editor_renderer_static_RUNTIME_PACKAGE}\"")
         set(editor_ray_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/raytracing")
@@ -1215,6 +1216,11 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             MANIFEST "${progressive_staged}/main.lushader.json" RUNTIME_PACKAGE)
         target_compile_definitions(ludus_editor_tests PRIVATE
             "LUDUS_EDITOR_PROGRESSIVE_RAY_FIXTURE=\"${editor_progressive_ray_RUNTIME_PACKAGE}\"")
+        # The same sources' frame capture profile, as `render-graph capture-profile` cooks it.
+        ludus_compile_render_graph(TARGET ludus_editor_tests NAME editor_progressive_ray_capture
+            MANIFEST "${progressive_staged}/main.lushader.json" CAPTURE_PROFILE_PACKAGE)
+        target_compile_definitions(ludus_editor_tests PRIVATE
+            "LUDUS_EDITOR_PROGRESSIVE_CAPTURE_PROFILE_FIXTURE=\"${editor_progressive_ray_capture_CAPTURE_PROFILE_PACKAGE}\"")
     endif()
     if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT APPLE)
         target_sources(ludus_editor_tests PRIVATE tests/offscreen_viewport_tests.cpp tests/vulkan_viewport_tests.cpp)

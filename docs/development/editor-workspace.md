@@ -1684,6 +1684,15 @@ The window explains which applies. Pixels that show the graph's failure colour,
 for example where a shader exceeded its query budget, fail the capture and are
 counted.
 
+When the graph declares a larger
+[capture budget](render-graph-authoring.md#author-pipeline-nodes)
+(`capture_visibility_queries`), the capture uses the graph's capture profile. The
+window builds it while it is open with **Render graph** or a comparison selected,
+from the drawing generation's saved sources, and reuses it until the graph is
+rebuilt. **Capture viewport** waits while it builds, and the status line says
+which package the capture uses. Without saved sources, as for the engine's
+prebuilt default, the capture uses the viewport's runtime package.
+
 A long sample is split into row bands, each submitted to the GPU on its own, so no
 submission runs into the GPU timeout. The capture sizes the bands from the image
 and the scene's lights; the status line then reads **Rendering in N bands**. The

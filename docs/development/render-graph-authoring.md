@@ -171,7 +171,18 @@ The optional `capture_visibility_queries` (from `visibility_queries` up to 256)
 is the shadow-query budget of a frame capture. It also has no Properties control
 yet. Interactive kernels keep `visibility_queries`. Only a capture profile build
 links the larger budget:
-- the CLI or CMake builds it with `ludus_compile_render_graph(... CAPTURE_PROFILE_PACKAGE)`;
+- CMake builds it with `ludus_compile_render_graph(... CAPTURE_PROFILE_PACKAGE)`;
+- the CLI rebuilds it from a published generation's saved sources, never newer
+  edits, as the editor does before a graph capture:
+
+  ```bash
+  python -m ludus_tools --json render-graph capture-profile <build>/generations/<generation> <profile-build> <graph>.lurgcp --configuration <name> --project <project>
+  ```
+
+  A graph whose `capture_visibility_queries` equals `visibility_queries` (or is
+  absent) compiles nothing and reports `"capture_profile": null`; its runtime
+  package is then the capture package. The same tool options as `build` select the
+  shader tools, including `--worker-socket`;
 - the result is a `.lurgcp` package that only `RenderGraphPackage::DecodeCaptureProfile`
   admits, so viewports and runtime hosts refuse it;
 - `RenderGraphCapture` runs it.

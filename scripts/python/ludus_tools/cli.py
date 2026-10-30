@@ -504,7 +504,8 @@ def cmd_render_graph(args) -> int:
                 options['cancel']()  # Recheck the SDK selection after context generation too.
             payload['server'] = str(Path(compiler).with_name('slangd.exe' if os.name == 'nt' else 'slangd'))
             human = _json.dumps(payload, indent=2)
-    elif args.graph_action in ("new-build", "build", "verify-package", "emit-runtime", "cook-runtime", "ray-path-capture"):
+    elif args.graph_action in ("new-build", "build", "verify-package", "emit-runtime", "cook-runtime", "ray-path-capture",
+                               "capture-profile"):
         from . import render_graph_build
         if args.graph_action == "cook-runtime":
             from . import render_graph_execution
@@ -523,8 +524,9 @@ def cmd_render_graph(args) -> int:
             options = dict(helper=args.helper, compiler=args.compiler, validator=args.validator,
                            spirv_cross=args.spirv_cross, root=args.root, worker_socket=args.worker_socket)
             toolchain = None
-            manifest = args.manifest if args.graph_action != "ray-path-capture" else None
-            if args.graph_action == "ray-path-capture":
+            is_generation_rebuild = args.graph_action in ("ray-path-capture", "capture-profile")
+            manifest = None if is_generation_rebuild else args.manifest
+            if is_generation_rebuild:
                 from . import render_graph_reload
                 manifest = render_graph_reload.ray_path_capture_sources(args.generation)[2]
             if args.project:
@@ -539,6 +541,10 @@ def cmd_render_graph(args) -> int:
             if args.graph_action == "ray-path-capture":
                 from . import render_graph_reload
                 payload = render_graph_reload.rebuild_ray_path_capture(args.generation, args.output, args.destination,
+                            configuration=args.configuration, **options)
+            elif args.graph_action == "capture-profile":
+                from . import render_graph_reload
+                payload = render_graph_reload.rebuild_capture_profile(args.generation, args.output, args.destination,
                             configuration=args.configuration, **options)
             elif args.runtime_package:
                 from . import render_graph_reload
@@ -675,6 +681,22 @@ def build_parser() -> argparse.ArgumentParser:
     capture_graph.add_argument("--spirv-cross", help="verified SPIRV-Cross; required for glsl")
     capture_graph.add_argument("--worker-socket", help="existing headless native shader worker endpoint")
     capture_graph.set_defaults(func=cmd_render_graph, root=None)
+    profile_graph = graphs.add_parser("capture-profile",
+        help="compile the frame capture profile of a published generation from its saved sources; "
+             "reports a null capture_profile when the graph declares no larger capture budget")
+    profile_graph.add_argument("generation", help="immutable generation or build tree with current.json")
+    profile_graph.add_argument("output", help="owned build tree for the capture profile, outside the generation")
+    profile_graph.add_argument("destination", help="frame capture profile package (.lurgcp) destination")
+    profile_graph.add_argument("--configuration", default="Default")
+    profile_graph.add_argument("--helper", help="installed SDK shader helper override")
+    profile_graph.add_argument("--compiler", help="pinned Slang executable override")
+    profile_graph.add_argument("--project", help="resolve the SDK and shader tools selected by this project")
+    profile_graph.add_argument("--tooling-root", help="trusted checkout with prepared shader tools")
+    profile_graph.add_argument("--store", help="SDK store (default: LUDUS_SDK_STORE or user data directory)")
+    profile_graph.add_argument("--validator", help="pinned spirv-val; required for spirv/glsl")
+    profile_graph.add_argument("--spirv-cross", help="verified SPIRV-Cross; required for glsl")
+    profile_graph.add_argument("--worker-socket", help="existing headless native shader worker endpoint")
+    profile_graph.set_defaults(func=cmd_render_graph, root=None)
     verify_graph = graphs.add_parser("verify-package", help="verify complete generation inventory without shader tools")
     verify_graph.add_argument("package")
     verify_graph.set_defaults(func=cmd_render_graph)
