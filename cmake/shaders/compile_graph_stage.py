@@ -12,7 +12,7 @@ import re
 
 from compile_raster import (glsl_interface, glsl_varyings, raster_interface,
                             uniform_shape, wgsl_contract)
-from compile_shader import entry, relative_line_directives, run
+from compile_shader import entry, relative_line_directives, restore_metal_noinline, run
 
 
 def varying_interface(point, stage):
@@ -198,7 +198,7 @@ def compile_graph_stage(args, lock):
         names = re.findall(r'\[\[' + native_stage + r'\]\]\s+\w+\s+(\w+)\s*\(', artifact.read_text())
         if len(names) != 1:
             raise RuntimeError('RG1 requires exactly one emitted Metal stage entry')
-        code = artifact.read_text()
+        code = restore_metal_noinline(artifact.read_text(), [Path(args.source).parent])
         if stage in ('compute', 'fragment'):
             from compile_raster import normalize_metal_storage
             code = normalize_metal_storage(code, interface)

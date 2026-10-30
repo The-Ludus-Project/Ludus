@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import struct
 
-from compile_shader import relative_line_directives
+from compile_shader import relative_line_directives, restore_metal_noinline
 
 # Thanks to the Slang team, "Using the Reflection API", User Guide,
 # https://docs.shader-slang.org/en/latest/external/slang/docs/user-guide/09-reflection.html
@@ -751,7 +751,7 @@ def compile_raster(args, lock):
             artifacts[('metal', stage)] = (code, names[0])
             interfaces[('metal', stage)] = interface
         elif args.metal:
-            code = relative_line_directives(artifact.read_text(), roots)
+            code = relative_line_directives(restore_metal_noinline(artifact.read_text(), roots), roots)
             for binding in interfaces[(target, stage)]['entries']:
                 if binding['kind'] in ('TextureDepth2D', 'TextureStencil2D'):
                     variable = re.escape(binding['name']) + r'(?:_\d+)?'
