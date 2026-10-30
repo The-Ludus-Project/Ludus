@@ -2371,7 +2371,7 @@ for the same point.
 
 **Weights.** `ComputeMisWeight(sampledDensity, otherDensity0, otherDensity1)` in
 `main_shaders/multiple_importance.slang` is `p_s^β / (p_s^β + p_0^β + p_1^β)`, with
-β = 1 for the balance heuristic and `MIS_POWER_EXPONENT` for the power heuristic. A
+β = 1 for the balance heuristic and `POINT_LINE_MIS_POWER_EXPONENT` for the power heuristic. A
 zero other density drops that strategy: `shadeLines` and `shadePoints` pass zero for
 the strategy they omit, and a line strategy has zero density at a point that its
 chord query finds occluded. For finite positive densities the three weights sum to
@@ -2386,8 +2386,14 @@ confirmed with `TestVisibility`, as in the line-sampling template.
 
 | Graph setting | Default | Range | Meaning |
 | --- | --- | --- | --- |
-| `MIS_HEURISTIC` | `0` (balance) | `0`–`1` | `0` balance, `1` power |
-| `MIS_POWER_EXPONENT` | `2` | `1`–`16` | Exponent β of the power heuristic |
+| `POINT_LINE_MIS_HEURISTIC` | `0` (balance) | `0`–`1` | `0` balance, `1` power |
+| `POINT_LINE_MIS_POWER_EXPONENT` | `2` | `1`–`16` | Exponent β of the power heuristic |
+
+Graph settings are shared by every configuration in a package, so these names carry the
+template's prefix. The Veach & Guibas template's `MIS_HEURISTIC` has a different range
+(`0`–`3`), and Apply Configuration Template rejects two definitions of one setting, so
+both templates can be applied to the same package. Packages that imported this template
+before the rename keep their copied sources and settings and build unchanged.
 
 Balance is the paper's choice. Change the settings in Properties or with the
 canvas's **Edit Graph Settings...** action. A value outside its range is rejected

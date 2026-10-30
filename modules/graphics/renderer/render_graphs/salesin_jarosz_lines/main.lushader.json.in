@@ -194,7 +194,7 @@
   },
   "settings": [
     {
-      "id": "MIS_HEURISTIC",
+      "id": "POINT_LINE_MIS_HEURISTIC",
       "label": "MIS heuristic (0 balance, 1 power)",
       "type": "UInt32",
       "value": 0,
@@ -202,7 +202,7 @@
       "maximum": 1
     },
     {
-      "id": "MIS_POWER_EXPONENT",
+      "id": "POINT_LINE_MIS_POWER_EXPONENT",
       "label": "MIS power exponent",
       "type": "Float32",
       "value": 2,

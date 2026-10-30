@@ -15,8 +15,8 @@
 //
 // Each strategy draws one sample (n_i = 1), so a density is also its strategy's effective sample
 // density n_i p_i. All densities must use one measure: the shade passes use solid angle at the
-// receiver, or the discrete selection probability for a delta light. MIS_HEURISTIC and
-// MIS_POWER_EXPONENT are Graph settings (main.lushader.json); the builder declares them before this
+// receiver, or the discrete selection probability for a delta light. POINT_LINE_MIS_HEURISTIC and
+// POINT_LINE_MIS_POWER_EXPONENT are Graph settings (main.lushader.json); the builder declares them before this
 // source and validates their ranges.
 
 static const uint MIS_HEURISTIC_BALANCE = 0;
@@ -42,12 +42,12 @@ float ComputeMisWeight(float sampledDensity, float otherDensity0, float otherDen
     float sampled = sampledDensity / largestDensity;
     float other0 = other0Density / largestDensity;
     float other1 = other1Density / largestDensity;
-    if (MIS_HEURISTIC == MIS_HEURISTIC_POWER)
+    if (POINT_LINE_MIS_HEURISTIC == MIS_HEURISTIC_POWER)
     {
         // A dropped strategy stays dropped without pow(0, beta), which fast math need not keep exact.
-        sampled = pow(sampled, MIS_POWER_EXPONENT);
-        other0 = other0 > 0 ? pow(other0, MIS_POWER_EXPONENT) : 0;
-        other1 = other1 > 0 ? pow(other1, MIS_POWER_EXPONENT) : 0;
+        sampled = pow(sampled, POINT_LINE_MIS_POWER_EXPONENT);
+        other0 = other0 > 0 ? pow(other0, POINT_LINE_MIS_POWER_EXPONENT) : 0;
+        other1 = other1 > 0 ? pow(other1, POINT_LINE_MIS_POWER_EXPONENT) : 0;
     }
     return sampled / (sampled + other0 + other1);
 }
