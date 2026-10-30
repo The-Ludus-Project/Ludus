@@ -86,6 +86,39 @@ void ShadeClosest(SceneContext scene, SurfaceHit hit, inout RayQueryContext quer
     return helper
 
 
+class RayHelperStagingTests(unittest.TestCase):
+    def test_staged_helpers_carry_every_helper_file_they_include(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            helper = Path(temporary) / 'helper'
+            helper.mkdir()
+            # An engine include added later, as material_scattering.slang was, needs no HELPERS entry.
+            (helper / 'root.slang').write_text('#include "added.slang"\n#if 0\n#    include "branch.h"\n#endif\n'
+                                               '#include <ludus/system.h>\n#include "missing.slang"\n')
+            (helper / 'added.slang').write_text('#include "root.slang"\n#include "nested.h"\n')
+            (helper / 'nested.h').write_text('// leaf\n')
+            (helper / 'branch.h').write_text('// leaf\n')
+            (helper / 'unused.slang').write_text('// never included\n')
+            snapshot = build.Snapshot(Path(temporary) / 'sources')
+            ray.stage_helpers(snapshot, helper, ('root.slang',), build)
+            self.assertEqual(sorted(snapshot.files), ['_ludus_ray/added.slang', '_ludus_ray/branch.h',
+                                                      '_ludus_ray/nested.h', '_ludus_ray/root.slang'])
+            self.assertEqual(snapshot.external['_ludus_ray/nested.h'], helper / 'nested.h')
+
+    @unittest.skipUnless(os.environ.get('LUDUS_RG1_HELPER'), 'requires a staged SDK shader helper')
+    def test_engine_ray_helpers_include_only_staged_or_external_files(self):
+        helper = Path(os.environ['LUDUS_RG1_HELPER'])
+        recipes = json.loads((helper / 'recipes.json').read_text())
+        roots = (*ray.HELPERS, *ray.POLYGONAL_LIGHT_HELPERS, recipes['renderer_gpu_preview']['source'],
+                 recipes['renderer_gpu_preview_image']['source'])
+        with tempfile.TemporaryDirectory() as temporary:
+            snapshot = build.Snapshot(Path(temporary))
+            ray.stage_helpers(snapshot, helper, roots, build)
+            for relative, data in snapshot.files.items():
+                for name in ray.HELPER_INCLUDE.findall(data.decode('utf-8', 'replace')):
+                    if (helper / name).is_file():
+                        self.assertIn('_ludus_ray/' + name, snapshot.files, relative)
+
+
 class RayPipelineTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
