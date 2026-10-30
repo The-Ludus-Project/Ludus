@@ -206,8 +206,8 @@ inline constexpr uint32 TRIANGLE_CORNERS = 3;
 /// Per-mesh header, followed by its vertices and uint32 triangle-list indices.
 struct MeshRecord final
 {
-    uint32 VertexCount; ///< 1..MAX_VERTICES.
-    uint32 IndexCount;  ///< 1..MAX_INDICES, a multiple of three.
+    uint32 VertexCount; ///< Positive; bounded by the version's BundleLimits and encoded payload.
+    uint32 IndexCount;  ///< Positive multiple of TRIANGLE_CORNERS; bounded by the version's BundleLimits.
 };
 /// Interleaved mesh vertex (versions 1, 2, 4 and 5).
 struct VertexRecord final
@@ -225,8 +225,6 @@ struct VertexRecordV3 final
     float32 Uv[2];       ///< Mip-zero surface texture coordinate.
     float32 BakeUv[2];   ///< Independent normalized bake chart coordinate.
 };
-/// Number of float32 components in a VertexRecord.
-inline constexpr usize VERTEX_COMPONENTS = 8;
 /// Components of a position, normal or direction (X, Y, Z).
 inline constexpr usize SPATIAL_COMPONENTS = 3;
 /// Tangent components of a VertexRecordV6: direction XYZ and handedness W.

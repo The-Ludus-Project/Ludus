@@ -96,7 +96,8 @@ struct ImportSummary final
     uint32 CookedObjects = 0;
     /// Vertices across all cooked meshes.
     uint32 CookedVertices = 0;
-    /// Placements left out by the vertex/index budget.
+    /// Placements omitted from the cooked scene. Geometry budgeting never drops
+    /// placements: a scene that cannot fit the bundle byte budget fails the import.
     uint32 DroppedPlacements = 0;
     /// Bundle size in bytes (zero for a dry run).
     usize BundleBytes = 0;

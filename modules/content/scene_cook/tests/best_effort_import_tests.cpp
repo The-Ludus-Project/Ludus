@@ -502,11 +502,11 @@ TEST_CASE("budget planner keeps one slot per material within the import profile"
     CHECK(decoded.Materials.GetLast().Emission.X > 0.0F); // Emissive slot kept last.
 }
 
-TEST_CASE("budget planner drops the smallest placements beyond the vertex budget", "[scene_cook][pbrt]")
+TEST_CASE("budget planner retains all placements beyond the former vertex budget", "[scene_cook][pbrt]")
 {
     SceneIr scene;
-    // Three placements exceed the vertex budget, two fit (a multiple of three for whole triangles).
-    constexpr usize VERTICES = ludus::content::scene_format::IMPORT_LIMITS.Vertices / 3 + 3;
+    // Together these exceed the former two-million-vertex ceiling.
+    constexpr usize VERTICES = 700002;
     static_assert(VERTICES % 3 == 0);
     for (usize m = 0; m < 3; ++m)
     {
@@ -533,13 +533,15 @@ TEST_CASE("budget planner drops the smallest placements beyond the vertex budget
     DiagnosticLog log;
     CookPlan plan;
     REQUIRE(PlanBudget(scene, log, plan, nullptr) == ludus::content::Status::Ok);
-    CHECK(plan.DroppedPlacements == 1);
-    CHECK(plan.Placements[0].IsKept == false); // Smallest area (scale 1) goes first.
+    CHECK(plan.DroppedPlacements == 0);
+    CHECK(plan.Placements[0].IsKept == true);
     CHECK(plan.Placements[2].IsKept == true);
-    CHECK(log.CountOccurrences(codes::GEOMETRY_DROPPED) == 1);
+    CHECK(log.CountOccurrences(codes::GEOMETRY_DROPPED) == 0);
+    REQUIRE(plan.Materials.GetSize() == 1);
+    CHECK(plan.Materials[0].VertexCount == 3 * VERTICES);
 }
 
-TEST_CASE("budget planner counts shared vertices once and bounds the combined index count", "[scene_cook][pbrt]")
+TEST_CASE("budget planner admits complete geometry by encoded bytes", "[scene_cook][pbrt]")
 {
     // A mesh of VertexCount positions whose IndexCount / 3 triangles reuse them.
     struct SharedMesh final
@@ -572,12 +574,12 @@ TEST_CASE("budget planner counts shared vertices once and bounds the combined in
         REQUIRE(inoutScene.Shapes.TryAdd(shape) == true);
         REQUIRE(inoutScene.WorldShapes.TryAdd(index) == true);
     };
-    SECTION("more triangle corners than the vertex budget fit when vertices are shared")
+    SECTION("shared vertices retain their indexed representation")
     {
         SceneIr scene;
         constexpr usize VERTICES = 100002;
         constexpr usize INDICES = 2400000;
-        static_assert(INDICES > ludus::content::scene_format::IMPORT_LIMITS.Vertices);
+        static_assert(INDICES > VERTICES);
         addMesh(scene, { .VertexCount = VERTICES, .IndexCount = INDICES });
         DiagnosticLog log;
         CookPlan plan;
@@ -585,12 +587,11 @@ TEST_CASE("budget planner counts shared vertices once and bounds the combined in
         CHECK(plan.DroppedPlacements == 0);
         CHECK(plan.Placements[0].IsKept == true);
     }
-    SECTION("the smallest placement leaves when the combined index count would overflow")
+    SECTION("all placements beyond the former six-million-index ceiling remain")
     {
         SceneIr scene;
         constexpr usize INDICES = 2100000;
-        static_assert(3 * INDICES > ludus::content::scene_format::IMPORT_LIMITS.TotalIndices);
-        static_assert(2 * INDICES <= ludus::content::scene_format::IMPORT_LIMITS.TotalIndices);
+        static_assert(3 * INDICES > 6000000);
         for (usize m = 0; m < 3; ++m)
         {
             addMesh(scene, { .VertexCount = 3, .IndexCount = INDICES, .Scale = static_cast<float32>(m + 1) });
@@ -598,10 +599,33 @@ TEST_CASE("budget planner counts shared vertices once and bounds the combined in
         DiagnosticLog log;
         CookPlan plan;
         REQUIRE(PlanBudget(scene, log, plan, nullptr) == ludus::content::Status::Ok);
-        CHECK(plan.DroppedPlacements == 1);
-        CHECK(plan.Placements[0].IsKept == false); // Smallest area goes first.
+        CHECK(plan.DroppedPlacements == 0);
+        CHECK(plan.Placements[0].IsKept == true);
         CHECK(plan.Placements[2].IsKept == true);
-        CHECK(log.CountOccurrences(codes::GEOMETRY_DROPPED) == 1);
+        CHECK(log.CountOccurrences(codes::GEOMETRY_DROPPED) == 0);
+        REQUIRE(plan.Materials.GetSize() == 1);
+        CHECK(plan.Materials[0].IndexCount == 3 * INDICES);
+    }
+
+    SECTION("a scene exceeding encoded bytes rejects without changing the accepted plan")
+    {
+        SceneIr scene;
+        addMesh(scene, { .VertexCount = 100002, .IndexCount = 3 });
+        // Reuse one small source mesh so the test exceeds the encoded bundle's
+        // bytes without allocating a bundle-sized source or cooked buffer.
+        for (usize i = 1; i < 100; ++i)
+        {
+            REQUIRE(scene.WorldShapes.TryAdd(0) == true);
+        }
+        DiagnosticLog log;
+        CookPlan plan;
+        plan.SourceVertices = 1;
+        REQUIRE(PlanBudget(scene, log, plan, nullptr) == ludus::content::Status::Invalid);
+        CHECK(plan.SourceVertices == 1);
+        CHECK(plan.DroppedPlacements == 0);
+        CHECK(log.CountOccurrences(codes::LIMIT_EXCEEDED) == 1);
+        CHECK(log.CountOccurrences(codes::GEOMETRY_DROPPED) == 0);
+        CHECK(log.CountOccurrences(codes::INSTANCES_DROPPED) == 0);
     }
 }
 
