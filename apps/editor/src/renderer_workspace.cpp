@@ -47,6 +47,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
@@ -80,6 +81,7 @@
 #include <QSpinBox>
 #include <QSplitter>
 #include <QStackedWidget>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTextBlock>
@@ -591,6 +593,13 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mSourcesToggle->setToolTip(
         QStringLiteral("Show or hide graph sources. View > Focus Viewport maximizes the graph."));
     header->addWidget(mSourcesToggle);
+    // Which view of the graph is shown: a segmented control beside what is open, filled in once the views exist.
+    QWidget* modes = new QWidget(this);
+    modes->setObjectName(QStringLiteral("renderGraphModes"));
+    QHBoxLayout* modesLayout = new QHBoxLayout(modes);
+    modesLayout->setContentsMargins(0, 0, 0, 0);
+    modesLayout->setSpacing(0);
+    header->addWidget(modes);
     header->addWidget(mPath, 1);
     header->addWidget(new QLabel(QStringLiteral("Configuration"), this));
     header->addWidget(mConfiguration);
@@ -824,6 +833,40 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mTextureViewerOrNull = new TextureViewer(this);
     mViews->insertTab(TEXTURES_VIEW, mTextureViewerOrNull, QStringLiteral("Textures"));
 #endif
+    // The views are chosen from the header's segmented control, not from a tab bar under the document.
+    if (QTabBar* tabBarOrNull = mViews->findChild<QTabBar*>(QString(), Qt::FindDirectChildrenOnly))
+    {
+        tabBarOrNull->hide();
+    }
+    QButtonGroup* modeGroup = new QButtonGroup(modes);
+    modeGroup->setExclusive(true);
+    for (int index = 0; index < mViews->count(); ++index)
+    {
+        QPushButton* mode = new QPushButton(mViews->tabText(index), modes);
+        mode->setObjectName(QStringLiteral("renderGraphMode%1").arg(mViews->tabText(index)));
+        mode->setCheckable(true);
+        mode->setChecked(index == mViews->currentIndex());
+        mode->setProperty("visualRole", QStringLiteral("segment"));
+        const bool isFirst = index == 0;
+        const bool isLast = index == mViews->count() - 1;
+        mode->setProperty("segmentPosition",
+                          isFirst == true && isLast == true ? QStringLiteral("only")
+                          : isFirst == true                 ? QStringLiteral("first")
+                          : isLast == true                  ? QStringLiteral("last")
+                                                            : QStringLiteral("middle"));
+        mode->setToolTip(QStringLiteral("Show the %1 view").arg(mViews->tabText(index)));
+        mode->setAccessibleDescription(QStringLiteral("View of the render graph"));
+        modesLayout->addWidget(mode);
+        modeGroup->addButton(mode, index);
+    }
+    connect(modeGroup, &QButtonGroup::idClicked, mViews, &QTabWidget::setCurrentIndex);
+    connect(mViews, &QTabWidget::currentChanged, modeGroup, [modeGroup](int index) {
+        QAbstractButton* buttonOrNull = modeGroup->button(index);
+        if (buttonOrNull != nullptr)
+        {
+            buttonOrNull->setChecked(true);
+        }
+    });
 
     mStatus->setObjectName(QStringLiteral("renderGraphStatus"));
     mStatus->setTextFormat(Qt::PlainText);

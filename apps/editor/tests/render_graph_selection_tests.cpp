@@ -1040,6 +1040,49 @@ TEST_CASE("graph sources collapse and restore width without changing selection",
     QSettings().remove(QStringLiteral("renderGraph/sourcesVisible"));
 }
 
+TEST_CASE("The view modes are a segmented control in the document header and follow the views",
+          "[editor][render-graph][usability]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    OpenSelectionPackage(workspace, project);
+    QTabWidget* views = workspace.findChild<QTabWidget*>(QStringLiteral("renderGraphViews"));
+    QWidget* modes = workspace.findChild<QWidget*>(QStringLiteral("renderGraphModes"));
+    REQUIRE(views != nullptr);
+    REQUIRE(modes != nullptr);
+    CHECK(modes->isVisible() == true);
+    // The small bar under the document is gone; the header carries one button per view.
+    const QList<QTabBar*> tabBars = views->findChildren<QTabBar*>(QString(), Qt::FindDirectChildrenOnly);
+    REQUIRE(tabBars.size() == 1);
+    CHECK(tabBars.first()->isVisible() == false);
+    const QList<QPushButton*> buttons = modes->findChildren<QPushButton*>();
+    REQUIRE(buttons.size() == views->count());
+    for (int index = 0; index < views->count(); ++index)
+    {
+        CHECK(modes->findChild<QPushButton*>(QStringLiteral("renderGraphMode%1").arg(views->tabText(index))) !=
+              nullptr);
+    }
+    QPushButton* canvas = modes->findChild<QPushButton*>(QStringLiteral("renderGraphModeCanvas"));
+    QPushButton* source = modes->findChild<QPushButton*>(QStringLiteral("renderGraphModeSource"));
+    REQUIRE(canvas != nullptr);
+    REQUIRE(source != nullptr);
+    CHECK(canvas->isChecked() == true);
+    CHECK(source->isChecked() == false);
+    source->click();
+    CHECK(views->currentWidget() == views->widget(1));
+    CHECK(views->currentIndex() == 1);
+    CHECK(source->isChecked() == true);
+    CHECK(canvas->isChecked() == false);
+    // A view changed by the program, such as jumping to a diagnostic's source, moves the highlight too.
+    views->setCurrentIndex(0);
+    CHECK(canvas->isChecked() == true);
+    CHECK(source->isChecked() == false);
+    // Clicking the shown view keeps it shown.
+    canvas->click();
+    CHECK(views->currentIndex() == 0);
+    CHECK(canvas->isChecked() == true);
+}
+
 TEST_CASE("Properties keeps selected fields and long graph settings within narrow panels",
           "[editor][render-graph][usability]")
 {
