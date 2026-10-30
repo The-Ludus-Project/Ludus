@@ -1,5 +1,6 @@
 #include "shape_tessellation.h"
 
+#include <ludus/foundation/base/checked_integer.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 
 namespace ludus::content::scene_cook::importers
@@ -241,6 +242,64 @@ BuildSphere(const ShapeArguments& arguments, IrMesh& outMesh, std::string_view& 
     return ShapeResult::Ok;
 }
 } // namespace
+
+Status ApplyDefaultTriangleUvs(IrMesh& inoutMesh) noexcept
+{
+    if (inoutMesh.Uvs.IsEmpty() == false)
+    {
+        return Status::Ok;
+    }
+    const usize cornerCount = inoutMesh.Indices.GetSize();
+    const usize vertexCount = inoutMesh.GetVertexCount();
+    usize vectorComponents = 0;
+    usize uvComponents = 0;
+    uint32 sourceVertices = 0;
+    if (cornerCount == 0 || cornerCount % IR_TRIANGLE_CORNER_COUNT != 0 || cornerCount > IR_NONE ||
+        inoutMesh.Positions.GetSize() % IR_VECTOR_COMPONENT_COUNT != 0 ||
+        (inoutMesh.Normals.IsEmpty() == false && inoutMesh.Normals.GetSize() != inoutMesh.Positions.GetSize()) ||
+        inoutMesh.Tangents.IsEmpty() == false || foundation::TryIntegerCast(vertexCount, sourceVertices) == false ||
+        foundation::TryMultiply(cornerCount, IR_VECTOR_COMPONENT_COUNT, vectorComponents) == false ||
+        foundation::TryMultiply(cornerCount, usize{2}, uvComponents) == false)
+    {
+        return Status::Invalid;
+    }
+    IrMesh candidate;
+    candidate.SourceVertexCount = inoutMesh.SourceVertexCount != 0 ? inoutMesh.SourceVertexCount : sourceVertices;
+    const bool hasNormals = inoutMesh.Normals.IsEmpty() == false;
+    if (candidate.Positions.TryResize(vectorComponents) == false || candidate.Uvs.TryResize(uvComponents) == false ||
+        candidate.Indices.TryResize(cornerCount) == false ||
+        (hasNormals == true && candidate.Normals.TryResize(vectorComponents) == false))
+    {
+        return Status::OutOfMemory;
+    }
+    // Thanks to Pharr, Jakob and Humphreys, pbrt-v4 Triangle::InteractionFromIntersection
+    // (https://github.com/mmp/pbrt-v4/blob/master/src/pbrt/shapes.h): absent mesh UVs
+    // mean (0,0), (1,0), (1,1) per triangle. IR image coordinates run top-down.
+    for (usize corner = 0; corner < cornerCount; ++corner)
+    {
+        const usize vertex = inoutMesh.Indices[corner];
+        if (vertex >= vertexCount)
+        {
+            return Status::Invalid;
+        }
+        for (usize k = 0; k < IR_VECTOR_COMPONENT_COUNT; ++k)
+        {
+            candidate.Positions[corner * IR_VECTOR_COMPONENT_COUNT + k] =
+                inoutMesh.Positions[vertex * IR_VECTOR_COMPONENT_COUNT + k];
+            if (hasNormals == true)
+            {
+                candidate.Normals[corner * IR_VECTOR_COMPONENT_COUNT + k] =
+                    inoutMesh.Normals[vertex * IR_VECTOR_COMPONENT_COUNT + k];
+            }
+        }
+        const usize localCorner = corner % IR_TRIANGLE_CORNER_COUNT;
+        candidate.Uvs[corner * 2] = localCorner == 0 ? 0.0F : 1.0F;
+        candidate.Uvs[corner * 2 + 1] = localCorner == IR_TRIANGLE_CORNER_COUNT - 1 ? 0.0F : 1.0F;
+        candidate.Indices[corner] = static_cast<uint32>(corner);
+    }
+    inoutMesh = static_cast<IrMesh&&>(candidate);
+    return Status::Ok;
+}
 
 ShapeResult TessellateShape(std::string_view type,
                             const ShapeArguments& arguments,

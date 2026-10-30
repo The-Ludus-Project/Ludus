@@ -905,6 +905,10 @@ TEST_CASE("local smoke test: a licensed scene imports through the editor catalog
     options.UuidsOrNull = &uuids;
     options.SourceOrigin = VIRTUAL_ORIGIN;
     options.SourceEntry = entryName;
+    // Match the Editor's bounded four-worker import and source-verification path.
+    ludus::foundation::threading::JobSystem importJobs;
+    REQUIRE(importJobs.Initialize({ .WorkerCount = 4 }) == ludus::foundation::threading::JobStatus::Ok);
+    options.JobsOrNull = &importJobs;
     AssetError error;
     Array<uint8> level;
     REQUIRE(CreateLevel("Licensed", options, level, error));
@@ -942,7 +946,16 @@ TEST_CASE("local smoke test: a licensed scene imports through the editor catalog
     CHECK(vertices > 0);
     if (entryName == "bistro_cafe.pbrt")
     {
-        CHECK(vertices == 2892578);
+        CHECK(vertices == 2922810);
+        usize normalMapped = 0;
+        usize masked = 0;
+        for (const ludus::resources::SceneMaterial& material : decoded.Materials)
+        {
+            normalMapped += material.NormalScale > 0.0F ? 1 : 0;
+            masked += material.IsAlphaMasked == true ? 1 : 0;
+        }
+        CHECK(normalMapped == 135);
+        CHECK(masked == 17);
         CHECK(indices == 8516880);
         CHECK(assembled.Scene.GetSize() <= MAX_ASSET_BYTES);
     }

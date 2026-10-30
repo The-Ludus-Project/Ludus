@@ -16,6 +16,7 @@
 #include "importers/pbrt/shape_tessellation.h"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <cstdlib>
@@ -325,6 +326,260 @@ TEST_CASE("PLY reader handles ascii and both binary byte orders", "[scene_cook][
     std::string badIndex = MakeAsciiTriangle();
     badIndex.replace(badIndex.size() - 2, 1, "7");
     CHECK(ReadPly(AsBytes(badIndex), mesh, summary, message) == false);
+}
+
+TEST_CASE("PBRT shape masks preserve shared materials, instances and emitter coverage", "[scene_cook][pbrt][surface]")
+{
+    ScratchDirectory scratch;
+    WriteFile(scratch.Path / "quad.ply", MakeBinaryQuad(false, 0.0F));
+    // Top-down RGBA TGA: asymmetric normal and alpha values expose colour conversion,
+    // channel selection and row flips. Red deliberately disagrees with alpha.
+    std::string image(18, '\0');
+    image[2] = 2;
+    image[12] = 2;
+    image[14] = 2;
+    image[16] = 32;
+    image[17] = static_cast<char>(0x28);
+    image += std::string("\xff\x40\xc0\x00\xff\xc0\x40\xff\xff\x80\x80\xff\xff\x80\x80\x00", 16);
+    WriteFile(scratch.Path / "detail.tga", image);
+    WriteFile(scratch.Path / "scene.pbrt", R"(WorldBegin
+Texture "coverage" "float" "imagemap" "string filename" "detail.tga"
+Texture "coverage" "spectrum" "imagemap" "string filename" "detail.tga"
+MakeNamedMaterial "shared" "string type" "diffuse" "texture reflectance" "coverage" "string normalmap" "detail.tga"
+NamedMaterial "shared"
+Shape "plymesh" "string filename" "quad.ply"
+ObjectBegin "leaf"
+Shape "plymesh" "string filename" "quad.ply" "texture alpha" "coverage"
+ObjectEnd
+ObjectInstance "leaf"
+Translate 2 0 0
+ObjectInstance "leaf"
+NamedMaterial "shared"
+AreaLightSource "diffuse" "rgb L" [1 1 1]
+Shape "plymesh" "string filename" "quad.ply" "texture alpha" "coverage"
+)");
+    SceneIr scene;
+    DiagnosticLog log;
+    ludus::foundation::String root;
+    REQUIRE(pbrt::ReadScene((scratch.Path / "scene.pbrt").string(), scene, log, root) == ludus::content::Status::Ok);
+    REQUIRE(scene.Materials.GetSize() == 2);
+    CHECK(scene.Materials[0].AlphaMode == IrAlphaMode::Opaque);
+    CHECK(scene.Materials[0].BaseColourTexture != scene.Materials[1].OpacityTexture);
+    CHECK(scene.Materials[1].AlphaMode == IrAlphaMode::Mask);
+    CHECK(scene.Shapes[0].Material == 0);
+    CHECK(scene.Shapes[1].Material == 1);
+    CHECK(scene.Shapes[2].Material == 1);
+    CHECK(scene.Materials[0].NormalTexture == scene.Materials[1].NormalTexture);
+    CHECK(scene.Textures[scene.Materials[0].NormalTexture].Encoding == TextureEncoding::Linear);
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportPbrtBestEffort((scratch.Path / "scene.pbrt").string(), {}, result, error) == true);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    CHECK(result.Summary.DroppedPlacements == 0);
+    REQUIRE(decoded.Materials.GetSize() == 3);
+    CHECK(decoded.Textures.GetSize() == 4); // Three different bases and one shared normal map.
+    usize masked = 0;
+    usize maskedEmitters = 0;
+    for (const ludus::resources::SceneMaterial& material : decoded.Materials)
+    {
+        REQUIRE(material.SurfaceTexture != ludus::content::scene_format::NO_TEXTURE);
+        CHECK(material.NormalScale == 1.0F);
+        const ludus::resources::SceneTexture& normal = decoded.Textures[material.SurfaceTexture];
+        CHECK(normal.IsLinear == true);
+        CHECK(normal.Pixels[0] == 192);
+        CHECK(normal.Pixels[1] == 64);
+        CHECK(normal.Pixels[4] == 64);
+        CHECK(normal.Pixels[5] == 192);
+        if (material.IsAlphaMasked == true)
+        {
+            ++masked;
+            maskedEmitters += material.Emission.X > 0.0F ? 1 : 0;
+            const ludus::resources::SceneTexture& coverage = decoded.Textures[material.Texture];
+            REQUIRE(coverage.Width == 2);
+            CHECK(coverage.Pixels[3] == 0);
+            CHECK(coverage.Pixels[7] == 255);
+            CHECK(coverage.Pixels[11] == 255);
+            CHECK(coverage.Pixels[15] == 0);
+        }
+    }
+    CHECK(masked == 2);
+    CHECK(maskedEmitters == 1);
+    for (const ludus::resources::SceneMesh& mesh : decoded.Meshes)
+    {
+        CHECK(mesh.Tangents[0].X == 1.0F);
+        CHECK(mesh.Tangents[0].W == 1.0F);
+    }
+    CHECK(ReportHasCode(result, codes::NORMALMAP_DROPPED) == false);
+    CHECK(ReportHasCode(result, codes::TEXTURE_UNREADABLE) == false);
+}
+
+TEST_CASE("PBRT scalar image masks decode RGB, scale and invert without borrowing base alpha",
+          "[scene_cook][pbrt][surface]")
+{
+    ScratchDirectory scratch;
+    WriteFile(scratch.Path / "quad.ply", MakeBinaryQuad(false, 0.0F));
+    std::string image(18, '\0');
+    image[2] = 2;
+    image[12] = 2;
+    image[14] = 1;
+    image[16] = 32;
+    image[17] = static_cast<char>(0x28);
+    // Opaque red followed by opaque grey: RGB mean must beat red-channel sampling.
+    image += std::string("\x00\x00\xff\xff\x80\x80\x80\xff", 8);
+    WriteFile(scratch.Path / "coverage.tga", image);
+    const std::string parameters =
+        GENERATE(std::string("\"string encoding\" \"linear\""),
+                 std::string("\"string encoding\" \"gamma 2\""),
+                 std::string("\"string encoding\" \"sRGB\""),
+                 std::string("\"string encoding\" \"linear\" \"float scale\" 2 \"bool invert\" true"));
+    WriteFile(scratch.Path / "scene.pbrt",
+              "WorldBegin\nTexture \"coverage\" \"float\" \"imagemap\" \"string filename\" \"coverage.tga\" " +
+                  parameters +
+                  "\nMaterial \"diffuse\"\nShape \"plymesh\" \"string filename\" \"quad.ply\" \"texture alpha\" "
+                  "\"coverage\"\n");
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportPbrtBestEffort((scratch.Path / "scene.pbrt").string(), {}, result, error) == true);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    REQUIRE(decoded.Materials.GetSize() == 1);
+    const ludus::resources::SceneMaterial& material = decoded.Materials[0];
+    CHECK(material.IsAlphaMasked == true);
+    const ludus::resources::SceneTexture& coverage = decoded.Textures[material.Texture];
+    CHECK(coverage.Pixels[3] == 85);
+    const uint8 expected = parameters.find("invert") != std::string::npos  ? 0
+                           : parameters.find("gamma") != std::string::npos ? 64
+                           : parameters.find("sRGB") != std::string::npos  ? 55
+                                                                           : 128;
+    CHECK(coverage.Pixels[7] == expected);
+}
+
+TEST_CASE("PBRT implicit triangle UVs preserve corner seams and enable normal maps", "[scene_cook][pbrt][surface]")
+{
+    ScratchDirectory scratch;
+    WriteFile(scratch.Path / "bare.ply",
+              "ply\nformat ascii 1.0\nelement vertex 4\nproperty float x\nproperty float y\nproperty float z\n"
+              "property float nx\nproperty float ny\nproperty float nz\nelement face 2\nproperty list uchar uint "
+              "vertex_indices\nend_header\n"
+              "0 0 0 0 0 1\n1 0 0 0 0 1\n1 1 0 0 0 1\n0 1 0 0 0 1\n3 0 1 2\n3 0 2 3\n");
+    std::string normal(18, '\0');
+    normal[2] = 2;
+    normal[12] = 1;
+    normal[14] = 1;
+    normal[16] = 24;
+    normal += std::string("\xff\x80\x80", 3);
+    WriteFile(scratch.Path / "normal.tga", normal);
+    WriteFile(scratch.Path / "scene.pbrt", R"(LookAt 0 0 -3 0 0 0 0 1 0
+Camera "perspective" "float fov" 45
+WorldBegin
+Material "diffuse" "string normalmap" "normal.tga"
+Shape "plymesh" "string filename" "bare.ply"
+)");
+    SceneIr scene;
+    DiagnosticLog log;
+    ludus::foundation::String root;
+    REQUIRE(pbrt::ReadScene((scratch.Path / "scene.pbrt").string(), scene, log, root) == ludus::content::Status::Ok);
+    REQUIRE(scene.Meshes.GetSize() == 1);
+    const IrMesh& mesh = scene.Meshes[0];
+    CHECK(mesh.SourceVertexCount == 4);
+    CHECK(mesh.GetVertexCount() == 6);
+    REQUIRE(mesh.Uvs.GetSize() == 12);
+    for (usize corner = 0; corner < mesh.Indices.GetSize(); ++corner)
+    {
+        CHECK(mesh.Indices[corner] == corner);
+        CHECK(mesh.Uvs[corner * 2] == (corner % 3 == 0 ? 0.0F : 1.0F));
+        CHECK(mesh.Uvs[corner * 2 + 1] == (corner % 3 == 2 ? 0.0F : 1.0F));
+    }
+    // Shared source corner 2 must split: its second triangle has a different UV.
+    CHECK(mesh.Positions[2 * 3] == mesh.Positions[4 * 3]);
+    CHECK(mesh.Uvs[2 * 2 + 1] != mesh.Uvs[4 * 2 + 1]);
+    IrMesh invalid = mesh;
+    invalid.Uvs.Clear();
+    invalid.Indices[0] = IR_NONE;
+    CHECK(ApplyDefaultTriangleUvs(invalid) == ludus::content::Status::Invalid);
+    CHECK(invalid.GetVertexCount() == 6);
+    CHECK(invalid.Uvs.IsEmpty() == true);
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportPbrtBestEffort((scratch.Path / "scene.pbrt").string(), {}, result, error) == true);
+    CHECK(result.Summary.SourceVertices == 4);
+    CHECK(result.Summary.CookedIndices == 6);
+    CHECK(result.Summary.Warnings == 0);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(DecodesAtRuntime(result, decoded) == true);
+    CHECK(decoded.Materials[0].NormalScale == 1.0F);
+    REQUIRE(decoded.Meshes[0].Tangents.IsEmpty() == false);
+    CHECK(decoded.Meshes[0].Tangents[0].W != 0.0F);
+}
+
+TEST_CASE("PBRT scalar PNG alpha uses the declared image encoding", "[scene_cook][pbrt][surface]")
+{
+    ScratchDirectory scratch;
+    WriteFile(scratch.Path / "quad.ply", MakeBinaryQuad(false, 0.0F));
+    // Generated 2x1 RGBA8 PNG: red/alpha 128, green/alpha 255.
+    WriteFile(scratch.Path / "coverage.png",
+              std::string(
+                  "\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x02\x00\x00\x00\x01\x08"
+                  "\x06\x00\x00\x00\xf4\x22\x7f\x8a\x00\x00\x00\x11\x49\x44\x41\x54\x78\x9c\x63\xf8\xcf\xc0\xd0\xc0\xf0"
+                  "\x9f\xe1\x3f\x00\x0e\x7d\x03\x7e\xea\xf6\x93\xc0\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82",
+                  74));
+    const std::string encoding = GENERATE(std::string("linear"), std::string("gamma 2"), std::string("sRGB"));
+    WriteFile(scratch.Path / "scene.pbrt",
+              "WorldBegin\nTexture \"coverage\" \"float\" \"imagemap\" \"string filename\" \"coverage.png\" \"string "
+              "encoding\" \"" +
+                  encoding +
+                  "\"\nMaterial \"diffuse\"\nShape \"plymesh\" \"string filename\" \"quad.ply\" \"texture alpha\" "
+                  "\"coverage\"\n");
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportPbrtBestEffort((scratch.Path / "scene.pbrt").string(), {}, result, error) == true);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    const ludus::resources::SceneMaterial& material = decoded.Materials[0];
+    const ludus::resources::SceneTexture& coverage = decoded.Textures[material.Texture];
+    const uint8 expected = encoding == "linear" ? 128 : encoding == "gamma 2" ? 64 : 55;
+    CHECK(coverage.Pixels[3] == expected);
+    CHECK(coverage.Pixels[7] == 255);
+    CHECK(material.IsAlphaMasked == (encoding != "linear"));
+}
+
+TEST_CASE("PBRT constant shape alpha and missing maps have explicit fallback behavior", "[scene_cook][pbrt][surface]")
+{
+    ScratchDirectory scratch;
+    WriteFile(scratch.Path / "quad.ply", MakeBinaryQuad(false, 0.0F));
+    const std::string alpha = GENERATE(std::string("0"), std::string("0.25"), std::string("0.75"), std::string("1"));
+    WriteFile(scratch.Path / "scene.pbrt",
+              "WorldBegin\nMaterial \"diffuse\"\nShape \"plymesh\" \"string filename\" \"quad.ply\" \"float alpha\" " +
+                  alpha + "\n");
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportPbrtBestEffort((scratch.Path / "scene.pbrt").string(), {}, result, error) == true);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    CHECK(decoded.Materials[0].IsAlphaMasked == (alpha == "0" || alpha == "0.25"));
+    WriteFile(scratch.Path / "scene.pbrt", R"(WorldBegin
+Texture "missing" "float" "imagemap" "string filename" "missing.png"
+Texture "escape" "float" "imagemap" "string filename" "../escape.png"
+Material "diffuse" "string normalmap" "../escape.png"
+Shape "plymesh" "string filename" "quad.ply" "texture alpha" "missing"
+Shape "plymesh" "string filename" "quad.ply" "texture alpha" "undefined"
+Shape "plymesh" "string filename" "quad.ply" "texture alpha" "escape"
+)");
+    REQUIRE(ImportPbrtBestEffort((scratch.Path / "scene.pbrt").string(), {}, result, error) == true);
+    REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    CHECK(ReportHasCode(result, codes::TEXTURE_UNREADABLE) == true);
+    CHECK(ReportHasCode(result, codes::NORMALMAP_DROPPED) == true);
+    CHECK(ReportHasCode(result, codes::NAME_UNDEFINED) == true);
+    for (const ludus::resources::SceneMaterial& material : decoded.Materials)
+    {
+        CHECK(material.IsAlphaMasked == false);
+    }
 }
 
 TEST_CASE("image decoders cover TGA RLE and PFM, with unknown containers unsupported", "[scene_cook][pbrt]")
@@ -702,6 +957,9 @@ TEST_CASE("local Bistro import retains full geometry and decodes at runtime", "[
     CHECK(ReportHasCode(result, codes::GEOMETRY_DROPPED) == false);
     CHECK(ReportHasCode(result, codes::SHAPE_FAILED) == false);
     CHECK(ReportHasCode(result, codes::SHAPE_SKIPPED) == false);
+    CHECK(ReportHasCode(result, codes::NORMALMAP_DROPPED) == false);
+    CHECK(ReportHasCode(result, codes::TEXTURE_UNREADABLE) == false);
+    CHECK(result.Summary.SourceMaterials == 132);
     ludus::resources::SceneDefinition decoded;
     REQUIRE(DecodesAtRuntime(result, decoded) == true);
     usize vertices = 0;
@@ -711,6 +969,15 @@ TEST_CASE("local Bistro import retains full geometry and decodes at runtime", "[
         vertices += mesh.Positions.GetSize();
         indices += mesh.Indices.GetSize();
     }
+    usize normalMapped = 0;
+    usize masked = 0;
+    for (const ludus::resources::SceneMaterial& material : decoded.Materials)
+    {
+        normalMapped += material.NormalScale > 0.0F ? 1 : 0;
+        masked += material.IsAlphaMasked == true ? 1 : 0;
+    }
+    CHECK(normalMapped == 135);
+    CHECK(masked == 17);
     CHECK(vertices == result.Summary.CookedVertices);
     CHECK(indices == result.Summary.SourceIndices);
     CHECK(result.Bundle.GetSize() <= ludus::content::scene_format::IMPORT_LIMITS.BundleBytes);

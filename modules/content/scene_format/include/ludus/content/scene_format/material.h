@@ -21,6 +21,7 @@ static const MaterialModelTag LUDUS_MATERIAL_MODEL_COATED_DIFFUSE = 3;
 
 #ifdef __cplusplus
 /// Scattering identity retained by scene assets; coating evaluation remains approximate.
+// NOLINTNEXTLINE(performance-enum-size): material wire tags retain their explicit 32-bit width.
 enum class MaterialModel : foundation::uint32
 {
     MetallicRoughness =
