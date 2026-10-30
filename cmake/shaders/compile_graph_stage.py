@@ -11,7 +11,7 @@ from pathlib import Path
 import re
 
 from compile_raster import (glsl_interface, glsl_varyings, raster_interface,
-                            uniform_shape, wgsl_contract)
+                            share_glsl_fetch_samplers, uniform_shape, wgsl_contract)
 from compile_shader import entry, relative_line_directives, restore_metal_noinline, run
 
 
@@ -211,6 +211,7 @@ def compile_graph_stage(args, lock):
         run([args.spirv_cross, str(intermediate), '--version', '300', '--es', '--fixup-clipspace', '--output', str(artifact)])
         cross = json.loads(run([args.spirv_cross, str(intermediate), '--reflect']))
         code, varyings = glsl_varyings(artifact.read_text(), cross, stage)
+        code = share_glsl_fetch_samplers(code, cross)
         interface['blocks'], interface['textures'] = glsl_interface(code, interface, cross)
         cross_links = [{'location': loc, 'type': {'float': 'Float32', 'vec2': 'Float2', 'vec3': 'Float3', 'vec4': 'Float4'}[ty]} for loc, ty in varyings]
         links = verify_glsl_links(links, cross_links, stage)
