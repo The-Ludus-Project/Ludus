@@ -10,6 +10,7 @@
 #include "internal/code_editor.h"
 #include "internal/code_editor_panel.h"
 #include "internal/code_formatter.h"
+#include "internal/code_navigation.h"
 #include "internal/error_list.h"
 #include "internal/item_selection.h"
 #include "internal/path_text.h"
@@ -1300,6 +1301,12 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
         mSourceController->BreakUndoGroup();
         renderSource();
     });
+    connect(&mSource->GetNavigation(), &CodeNavigation::FileRequested, this, [this](const QString& file) {
+        if (mDocument.GetFiles().contains(file) == true && mSourceFile->findText(file) >= 0)
+        {
+            mSourceFile->setCurrentText(file);
+        }
+    });
     connect(mSource, &CodeEditor::UndoRequested, this, &RendererWorkspace::Undo);
     connect(mSource, &CodeEditor::RedoRequested, this, &RendererWorkspace::Redo);
     connect(mSourceController, &CodeDocumentController::Failed, mStatus, &QLabel::setText);
@@ -1769,6 +1776,7 @@ bool RendererWorkspace::OpenGraph(const QString& path)
 
 void RendererWorkspace::showDocument(const RenderGraphDocument& document)
 {
+    mSource->GetNavigation().Clear();
     mRecovery->Leave();
     CancelJob();
     mSourceEditDebounce.stop();
@@ -3639,6 +3647,9 @@ void RendererWorkspace::renderSourceStatus()
 void RendererWorkspace::renderSource()
 {
     const QString file = mSourceFile->currentText();
+    const QString navigationScope =
+        mDocument.GetPackageRoot() + QChar::Null + mDocument.GetRootGraph() + QChar::Null + QString::number(mEpoch);
+    mSource->GetNavigation().BeginSource(navigationScope, file, mDocument.GetFiles());
     mSourceAssistance->Update(mProjectRoot, mEpoch, manifestFile(), file, mBuildSettings);
     mSourceDocument.Bind(file, mEpoch);
     mSourceController->Bind(file.isEmpty() == false && mDocument.IsLoaded() == true ? &mSourceDocument : nullptr);
@@ -3648,6 +3659,7 @@ void RendererWorkspace::renderSource()
     }
     mSource->SetLanguage(file.endsWith(QStringLiteral(".slang")) == true ? CodeLanguage::Slang
                                                                          : CodeLanguage::PlainText);
+    mSource->GetNavigation().EndSource();
     mSource->setEnabled(file.isEmpty() == false);
     mSource->SetCanFormat(CodeFormatter::IsAvailable() == true && mSourceFormatter->IsRunning() == false &&
                           mSource->GetLanguage() == CodeLanguage::Slang);

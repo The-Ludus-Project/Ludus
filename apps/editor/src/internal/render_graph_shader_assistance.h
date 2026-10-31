@@ -35,6 +35,7 @@ public:
                 const RenderGraphBuildSettings& settings);
 
 private:
+    void setStatus(const QString& message);
     void prepare();
     void accept(const RenderGraphJobResult& result);
     void publish();

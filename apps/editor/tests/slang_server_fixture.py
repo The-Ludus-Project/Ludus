@@ -7,6 +7,7 @@ import time
 
 text = ''
 held = None
+uri = ''
 
 def send(value):
     body = json.dumps(dict(jsonrpc='2.0', **value)).encode()
@@ -29,9 +30,11 @@ while True:
     if method == 'initialize':
         send({'id': message['id'], 'result': {'capabilities': {
             'positionEncoding': 'utf-16', 'textDocumentSync': {'change': 2},
+            'definitionProvider': True, 'documentSymbolProvider': True, 'referencesProvider': True,
             'completionProvider': {}, 'signatureHelpProvider': {}}}})
     elif method == 'textDocument/didOpen':
         text = message['params']['textDocument']['text']
+        uri = message['params']['textDocument']['uri']
     elif method == 'textDocument/didChange':
         # This fixture's changes replace arbitrary UTF-16 spans, including emoji.
         for change in message['params']['contentChanges']:
@@ -43,6 +46,30 @@ while True:
             start = offset(change['range']['start'])
             end = offset(change['range']['end'])
             text = text[:start] + change['text'] + text[end:]
+    elif method in ('textDocument/documentSymbol', 'textDocument/definition', 'textDocument/references'):
+        # UTF-16 offsets come from the same captured virtual unit as completion.
+        match = re.search(r'float\s+(Value)\(', text)
+        offset = match.start(1) if match else 0
+        before = text[:offset]
+        position = {'line': before.count('\n'), 'character': len(before.rsplit('\n', 1)[-1].encode('utf-16-le')) // 2}
+        end = dict(position, character=position['character'] + (5 if match else 0))
+        target = {'start': position, 'end': end}
+        if method == 'textDocument/documentSymbol':
+            assert 'position' not in message['params']
+            result = [{'name': 'Value', 'kind': 12, 'range': target, 'selectionRange': target}]
+        elif method == 'textDocument/definition':
+            result = [{'targetUri': uri, 'targetRange': target, 'targetSelectionRange': target}]
+        else:
+            assert message['params']['context']['includeDeclaration']
+            result = [{'uri': uri, 'range': target}]
+        response = {'id': message['id'], 'result': result}
+        if held is not None:
+            send(held)
+            held = None
+        if 'hold-navigation' in text:
+            held = response
+        else:
+            send(response)
     elif method == 'textDocument/completion':
         position = message['params']['position']
         end = dict(position)

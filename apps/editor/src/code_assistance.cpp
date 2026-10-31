@@ -6,6 +6,7 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QTextDocument>
+#include <QUrl>
 
 namespace ludus::editor
 {
@@ -40,44 +41,15 @@ bool IsWordCharacter(QChar character)
     return character.isLetterOrNumber() == true || character == QLatin1Char('_');
 }
 
-bool GetOffset(const QString& text, const QJsonObject& position, int32& outOffset)
-{
-    const int32 line = position.value(QStringLiteral("line")).toInt(-1);
-    const int32 column = position.value(QStringLiteral("character")).toInt(-1);
-    if (line < 0 || column < 0)
-    {
-        return false;
-    }
-    isize start = 0;
-    for (int32 index = 0; index < line; ++index)
-    {
-        const isize end = text.indexOf(QLatin1Char('\n'), start);
-        if (end < 0)
-        {
-            return false;
-        }
-        start = end + 1;
-    }
-    const isize newline = text.indexOf(QLatin1Char('\n'), start);
-    const isize end = newline < 0 ? text.size() : newline;
-    if (column > end - start)
-    {
-        return false;
-    }
-    const isize offset = start + column;
-    if (offset > 0 && offset < text.size() && text.at(offset).isLowSurrogate() == true)
-    {
-        return false;
-    }
-    outOffset = static_cast<int32>(offset);
-    return true;
-}
 } // namespace
 
 CodeAssistance::CodeAssistance(CodeEditor& inoutEditor, CodeDocumentController& inoutDocument, QObject* parentOrNull)
     : QObject(parentOrNull), mEditor(inoutEditor), mDocument(inoutDocument), mService(this)
 {
     connect(&mEditor, &CodeEditor::AssistanceRequested, this, &CodeAssistance::Request);
+    connect(&mEditor.GetNavigation(), &CodeNavigation::Requested, this, &CodeAssistance::RequestNavigation);
+    connect(&mEditor.GetNavigation(), &CodeNavigation::ResultChosen, this, &CodeAssistance::acceptNavigation);
+    connect(&mEditor.GetNavigation(), &CodeNavigation::Dismissed, this, &CodeAssistance::Cancel);
     connect(&mEditor, &CodeEditor::CompletionChosen, this, &CodeAssistance::acceptCompletion);
     connect(&mEditor, &CodeEditor::SignatureOverloadRequested, this, [this](int32 direction) {
         if (isCurrent() == true && mSignatures.isEmpty() == false)
@@ -118,7 +90,14 @@ CodeAssistance::CodeAssistance(CodeEditor& inoutEditor, CodeDocumentController& 
     connect(&mDocument, &CodeDocumentController::BindingChanged, this, &CodeAssistance::ClearContext);
     connect(&mEditor, &QPlainTextEdit::cursorPositionChanged, this, invalidate);
     connect(&mService, &SlangLanguageService::Replied, this, &CodeAssistance::receive);
-    connect(&mService, &SlangLanguageService::Ready, this, &CodeAssistance::requestCurrent);
+    connect(&mService, &SlangLanguageService::Ready, this, [this]() {
+        mEditor.GetNavigation().SetReferencesAvailable(mService.CanRequest(QStringLiteral("textDocument/references")));
+        requestCurrent();
+    });
+    connect(&mService, &SlangLanguageService::RequestUnavailable, this, [this](const QString& message) {
+        Cancel();
+        Q_EMIT StatusChanged(message);
+    });
     connect(&mService, &SlangLanguageService::Failed, this, [this](const QString& message) {
         Cancel();
         mServer.clear();
@@ -142,11 +121,14 @@ void CodeAssistance::cancelPending()
     mRequest = 0;
     mCompletions.clear();
     mSignatures = {};
+    mNavigationTargets.clear();
+    mEditor.GetNavigation().Dismiss();
     mEditor.HideAssistance();
 }
 
 void CodeAssistance::ClearContext()
 {
+    mEditor.GetNavigation().SetReferencesAvailable(true);
     mShouldTrackSignature = false;
     mShouldTrackCompletion = false;
     Cancel();
@@ -154,6 +136,7 @@ void CodeAssistance::ClearContext()
     mUri.clear();
     mPrefix.clear();
     mSuffix.clear();
+    mNavigationSources.clear();
 }
 
 void CodeAssistance::SetContext(const QString& server,
@@ -161,15 +144,20 @@ void CodeAssistance::SetContext(const QString& server,
                                 const QString& uri,
                                 const QString& prefix,
                                 const QString& suffix,
-                                const QStringList& serverArguments)
+                                const QStringList& serverArguments,
+                                const CodeNavigationSources& navigationSources)
 {
     if (isCurrent() == false)
     {
         return;
     }
-    mUri = uri;
+    const QUrl documentUri(uri);
+    const QString canonical =
+        documentUri.isLocalFile() == true ? QFileInfo(documentUri.toLocalFile()).canonicalFilePath() : QString{};
+    mUri = canonical.isEmpty() == true ? uri : QUrl::fromLocalFile(canonical).toString();
     mPrefix = prefix;
     mSuffix = suffix;
+    mNavigationSources = navigationSources;
     ++mContext;
     mRequestedContext = mContext;
     const QFileInfo executable(server);
@@ -183,6 +171,7 @@ void CodeAssistance::SetContext(const QString& server,
         mServerArguments = serverArguments;
         mService.Start(server, workspace, serverArguments);
     }
+    mEditor.GetNavigation().SetReferencesAvailable(mService.CanRequest(QStringLiteral("textDocument/references")));
     requestCurrent();
 }
 
@@ -199,23 +188,48 @@ void CodeAssistance::Request(bool isSignature)
     static_cast<void>(isSignature);
     Q_EMIT StatusChanged(QStringLiteral("Shader assistance needs native Slang; unavailable in the browser editor."));
 #else
+    mIsNavigation = false;
     mShouldTrackSignature = isSignature;
     mShouldTrackCompletion = isSignature == false;
+    mIsSignature = isSignature;
+    beginRequest();
+#endif
+}
+
+void CodeAssistance::RequestNavigation(CodeNavigationKind kind)
+{
+    Cancel();
+    if (mEditor.GetLanguage() != CodeLanguage::Slang || mDocument.IsBound() == false)
+    {
+        return;
+    }
+#if defined(Q_OS_WASM)
+    static_cast<void>(kind);
+    Q_EMIT StatusChanged(QStringLiteral(
+        "Semantic navigation needs native Slang. Quick Open, line navigation and history remain available."));
+#else
+    mIsNavigation = true;
+    mNavigationKind = kind;
+    beginRequest();
+#endif
+}
+
+void CodeAssistance::beginRequest()
+{
     mCapture = mDocument.Capture();
     mCaret = mEditor.textCursor().position();
-    mIsSignature = isSignature;
+    mAnchor = mEditor.textCursor().anchor();
     mHasIntent = true;
     mRequestedContext = mContext;
     // The workspace revalidates its package/manifest/tool context on every intent;
     // ordinary text changes can reuse a prepared context with incremental sync.
     Q_EMIT ContextRequested();
-#endif
 }
 
 bool CodeAssistance::isCurrent() const
 {
     return mHasIntent == true && mRequestedContext == mContext && mCapture.Identity == mDocument.Capture().Identity &&
-           mEditor.textCursor().position() == mCaret && mEditor.textCursor().hasSelection() == false &&
+           mEditor.textCursor().position() == mCaret && mEditor.textCursor().anchor() == mAnchor &&
            mEditor.GetLanguage() == CodeLanguage::Slang;
 }
 
@@ -247,10 +261,16 @@ void CodeAssistance::requestCurrent()
         {QStringLiteral("line"), static_cast<int32>(mUnit.left(position).count(QLatin1Char('\n')))},
         {QStringLiteral("character"), position - previous - 1}};
     mService.SetDocument(mUri, mUnit);
-    mRequest = mService.Request(mIsSignature == true ? QStringLiteral("textDocument/signatureHelp")
-                                                     : QStringLiteral("textDocument/completion"),
-                                location);
-    if (mRequest == 0)
+    QString method =
+        mIsSignature == true ? QStringLiteral("textDocument/signatureHelp") : QStringLiteral("textDocument/completion");
+    if (mIsNavigation == true)
+    {
+        method = mNavigationKind == CodeNavigationKind::Symbols      ? QStringLiteral("textDocument/documentSymbol")
+                 : mNavigationKind == CodeNavigationKind::Definition ? QStringLiteral("textDocument/definition")
+                                                                     : QStringLiteral("textDocument/references");
+    }
+    mRequest = mService.Request(method, location);
+    if (mRequest == 0 && mHasIntent == true)
     {
         Q_EMIT StatusChanged(QStringLiteral("Starting Slang shader assistance…"));
     }
@@ -260,7 +280,7 @@ bool CodeAssistance::mapPosition(const QJsonObject& position, usize& outBytes) c
 {
     int32 offset = 0;
     int32 sourceLength = 0;
-    if (GetOffset(mUnit, position, offset) == false ||
+    if (GetCodeProtocolOffset(mUnit, position, offset) == false ||
         GetCodeCursorPosition(mCapture.Text, static_cast<usize>(mCapture.Text.size()), sourceLength) == false)
     {
         return false;
@@ -273,6 +293,34 @@ void CodeAssistance::receive(int32 request, const QJsonValue& value)
 {
     if (request != mRequest || isCurrent() == false)
     {
+        return;
+    }
+    if (mIsNavigation == true)
+    {
+        QString source;
+        if (DecodeCodeText(mCapture.Text, source) == false)
+        {
+            return;
+        }
+        QString message;
+        mNavigationTargets = ReadCodeNavigationResults(mNavigationKind,
+                                                       value,
+                                                       mUri,
+                                                       mUnit,
+                                                       mPrefix,
+                                                       source,
+                                                       mEditor.GetNavigation().GetSource(),
+                                                       mNavigationSources,
+                                                       message);
+        Q_EMIT StatusChanged(message);
+        if (mNavigationKind == CodeNavigationKind::Definition && mNavigationTargets.size() == 1)
+        {
+            acceptNavigation(0);
+        }
+        else
+        {
+            mEditor.GetNavigation().ShowResults(mNavigationTargets, message);
+        }
         return;
     }
     if (mIsSignature == true)
@@ -347,6 +395,18 @@ void CodeAssistance::receive(int32 request, const QJsonValue& value)
         : mCompletions.size() == MAX_COMPLETIONS
             ? QStringLiteral("Showing the first %1 symbols. Type a prefix and complete again.").arg(MAX_COMPLETIONS)
             : QString());
+}
+
+void CodeAssistance::acceptNavigation(int32 row)
+{
+    if (isCurrent() == false || row < 0 || row >= mNavigationTargets.size())
+    {
+        mEditor.GetNavigation().ReportFailure(
+            QStringLiteral("The source or shader context changed. Request navigation again; current view retained."));
+        return;
+    }
+    const CodeNavigationTarget target = mNavigationTargets.at(row);
+    static_cast<void>(mEditor.GetNavigation().Navigate(target));
 }
 
 void CodeAssistance::acceptCompletion(int32 row)

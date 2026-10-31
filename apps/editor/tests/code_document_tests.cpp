@@ -3,23 +3,28 @@
 #include "internal/code_edit_scope.h"
 #include "internal/code_editor_panel.h"
 #include "internal/code_formatter.h"
+#include "internal/code_navigation.h"
 #include "internal/code_text.h"
 #include "internal/document_history.h"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <QAction>
 #include <QApplication>
 #include <QClipboard>
+#include <QDialog>
 #include <QDir>
 #include <QFile>
 #include <QInputMethodEvent>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QScrollBar>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTextDocument>
+#include <QTimer>
 #include <QUrl>
 
 using namespace ludus::editor;
@@ -809,4 +814,194 @@ TEST_CASE("Native Slang completion and signature help share the versioned editin
     }
 }
 
+#endif
+
+#if !defined(Q_OS_WASM)
+TEST_CASE("Semantic navigation uses current draft context and does not create document edits",
+          "[editor][code-navigation][assistance]")
+{
+    MemoryCodeDocument host("// 😀\nfloat Value() { return 1; }\nfloat Main() { return Value(); }\n");
+    CodeEditor editor;
+    CodeDocumentController document(editor);
+    document.Bind(&host);
+    editor.SetLanguage(CodeLanguage::Slang);
+    CodeAssistance assistance(editor, document);
+    QTemporaryDir temporary;
+    QObject::connect(&assistance, &CodeAssistance::ContextRequested, &editor, [&]() {
+        assistance.SetContext(QString::fromUtf8(LUDUS_TEST_PYTHON),
+                              temporary.path(),
+                              QUrl::fromLocalFile(temporary.filePath(QStringLiteral("unit.slang"))).toString(),
+                              QStringLiteral("// generated\n"),
+                              {},
+                              {QString::fromUtf8(LUDUS_SLANG_FIXTURE)});
+    });
+    editor.show();
+    editor.setFocus();
+    editor.moveCursor(QTextCursor::End);
+    const CodeDocumentIdentity identity = host.GetSnapshot().Identity;
+    assistance.RequestNavigation(CodeNavigationKind::Definition);
+    REQUIRE(QTest::qWaitFor([&]() { return editor.textCursor().selectedText() == QStringLiteral("Value"); }));
+    CHECK(host.GetSnapshot().Identity == identity);
+    CHECK(host.CanUndo() == false);
+    editor.GetNavigation().Back();
+    CHECK(editor.textCursor().position() == editor.toPlainText().size());
+    assistance.RequestNavigation(CodeNavigationKind::Symbols);
+    REQUIRE(QTest::qWaitFor([&]() { return editor.GetNavigation().IsChoosing(); }));
+    QLineEdit* filterOrNull = editor.findChild<QLineEdit*>(QStringLiteral("codeNavigationFilter"));
+    REQUIRE(filterOrNull != nullptr);
+    QTest::keyClick(filterOrNull, Qt::Key_Return);
+    REQUIRE(editor.textCursor().selectedText() == QStringLiteral("Value"));
+    CHECK(host.GetSnapshot().Identity == identity);
+    assistance.RequestNavigation(CodeNavigationKind::References);
+    REQUIRE(QTest::qWaitFor([&]() { return editor.GetNavigation().IsChoosing(); }));
+    QTest::keyClick(filterOrNull, Qt::Key_Escape);
+    CHECK(host.GetSnapshot().Identity == identity);
+}
+
+TEST_CASE("Pending navigation cannot publish after caret binding context or text changes",
+          "[editor][code-navigation][assistance]")
+{
+    MemoryCodeDocument host("// hold-navigation\nfloat Value() { return 1; }\n");
+    CodeEditor editor;
+    CodeDocumentController document(editor);
+    document.Bind(&host);
+    editor.SetLanguage(CodeLanguage::Slang);
+    CodeAssistance assistance(editor, document);
+    QTemporaryDir temporary;
+    QObject::connect(&assistance, &CodeAssistance::ContextRequested, &editor, [&]() {
+        assistance.SetContext(QString::fromUtf8(LUDUS_TEST_PYTHON),
+                              temporary.path(),
+                              QUrl::fromLocalFile(temporary.filePath(QStringLiteral("unit.slang"))).toString(),
+                              {},
+                              {},
+                              {QString::fromUtf8(LUDUS_SLANG_FIXTURE)});
+    });
+    editor.show();
+    editor.setFocus();
+    editor.moveCursor(QTextCursor::End);
+    assistance.RequestNavigation(CodeNavigationKind::Definition);
+    QTest::qWait(150);
+    SECTION("Caret changed")
+    {
+        editor.moveCursor(QTextCursor::Start);
+    }
+    SECTION("Binding changed")
+    {
+        ++host.Session;
+        document.Synchronize();
+    }
+    SECTION("Context changed")
+    {
+        assistance.ClearContext();
+    }
+    SECTION("Text changed")
+    {
+        editor.insertPlainText(QStringLiteral("// changed"));
+    }
+    const int32 position = editor.textCursor().position();
+    assistance.RequestNavigation(CodeNavigationKind::References); // peer releases obsolete definition first
+    QTest::qWait(150);
+    CHECK(editor.textCursor().position() == position);
+    CHECK(editor.GetNavigation().IsChoosing() == false);
+    CHECK(editor.textCursor().selectedText() != QStringLiteral("Value"));
+}
+#endif
+
+#if !defined(Q_OS_WASM)
+TEST_CASE("Native Slang resolves authored symbols references and generated API definitions",
+          "[editor][code-navigation][slang-native]")
+{
+    const QString server = qEnvironmentVariable("LUDUS_TEST_SLANGD");
+    if (server.isEmpty() == true)
+    {
+        SKIP("Set LUDUS_TEST_SLANGD for compiler-backed navigation acceptance.");
+    }
+    const QString prefix = QStringLiteral("struct SceneContext { float Exposure; };\n");
+    const QString source = QStringLiteral(
+        "// Unicode: \U0001f600\nfloat Value() { return 1; }\nfloat Main(SceneContext scene) { return Value(); }\n");
+    MemoryCodeDocument host(source.toUtf8());
+    CodeEditor editor;
+    CodeDocumentController document(editor);
+    document.Bind(&host);
+    editor.SetLanguage(CodeLanguage::Slang);
+    CodeAssistance assistance(editor, document);
+    QTemporaryDir temporary;
+    QFile unit(temporary.filePath(QStringLiteral("unit.slang")));
+    REQUIRE(unit.open(QIODevice::WriteOnly) == true);
+    REQUIRE(unit.write((prefix + source).toUtf8()) > 0);
+    unit.close();
+    QObject::connect(&assistance, &CodeAssistance::ContextRequested, &editor, [&]() {
+        assistance.SetContext(server, temporary.path(), QUrl::fromLocalFile(unit.fileName()).toString(), prefix, {});
+    });
+    editor.resize(900, 480);
+    editor.show();
+    editor.setFocus();
+    QTextCursor cursor(editor.document());
+    cursor.setPosition(static_cast<int32>(source.lastIndexOf(QStringLiteral("Value"))) + 2);
+    editor.setTextCursor(cursor);
+    assistance.RequestNavigation(CodeNavigationKind::Definition);
+    REQUIRE(
+        QTest::qWaitFor([&]() { return editor.textCursor().selectedText().contains(QStringLiteral("Value")); }, 15000));
+    CHECK(editor.textCursor().blockNumber() == 1);
+    CHECK(host.CanUndo() == false);
+    assistance.RequestNavigation(CodeNavigationKind::Symbols);
+    REQUIRE(QTest::qWaitFor([&]() { return editor.GetNavigation().IsChoosing(); }, 15000));
+    QListWidget* resultsOrNull = editor.findChild<QListWidget*>(QStringLiteral("codeNavigationResults"));
+    REQUIRE(resultsOrNull != nullptr);
+    REQUIRE(resultsOrNull->count() >= 2);
+    const QString capture = qEnvironmentVariable("LUDUS_NAVIGATION_CAPTURE_DIR");
+    if (capture.isEmpty() == false)
+    {
+        REQUIRE(QDir().mkpath(capture) == true);
+        REQUIRE(editor.grab().save(QDir(capture).filePath(QStringLiteral("source.png"))) == true);
+        REQUIRE(resultsOrNull->parentWidget()->grab().save(QDir(capture).filePath(QStringLiteral("symbols.png"))) ==
+                true);
+    }
+    editor.GetNavigation().Dismiss();
+    editor.setFocus();
+    cursor.setPosition(static_cast<int32>(source.lastIndexOf(QStringLiteral("Value"))) + 2);
+    editor.setTextCursor(cursor);
+    QSignalSpy referenceStatus(&assistance, &CodeAssistance::StatusChanged);
+    assistance.RequestNavigation(CodeNavigationKind::References);
+    REQUIRE(QTest::qWaitFor(
+        [&]() {
+            return editor.GetNavigation().IsChoosing() == true ||
+                   (referenceStatus.isEmpty() == false &&
+                    referenceStatus.last().first().toString().contains(QStringLiteral("does not support")) == true);
+        },
+        15000));
+    if (editor.GetNavigation().IsChoosing() == true)
+    {
+        CHECK(resultsOrNull->count() >= 1);
+        editor.GetNavigation().Dismiss();
+    }
+    else
+    {
+        for (QAction* action : editor.GetNavigation().GetActions())
+        {
+            if (action->text() == QStringLiteral("Find References"))
+            {
+                CHECK(action->isEnabled() == false);
+            }
+        }
+    }
+    editor.setFocus();
+    cursor.setPosition(static_cast<int32>(source.indexOf(QStringLiteral("SceneContext"))) + 2);
+    editor.setTextCursor(cursor);
+    bool hasInspected = false;
+    QTimer inspector;
+    QObject::connect(&inspector, &QTimer::timeout, &editor, [&]() {
+        QPlainTextEdit* readOnlyOrNull = editor.findChild<QPlainTextEdit*>(QStringLiteral("codeNavigationReadOnly"));
+        if (readOnlyOrNull != nullptr)
+        {
+            hasInspected = readOnlyOrNull->isReadOnly() == true && readOnlyOrNull->toPlainText().contains(prefix);
+            static_cast<QDialog*>(readOnlyOrNull->parentWidget())->reject();
+        }
+    });
+    inspector.start(20);
+    assistance.RequestNavigation(CodeNavigationKind::Definition);
+    REQUIRE(QTest::qWaitFor([&]() { return hasInspected; }, 15000));
+    CHECK(host.GetState().Text == source.toUtf8());
+    CHECK(host.CanUndo() == false);
+}
 #endif

@@ -456,6 +456,8 @@ set(editor_profiling_sources
 
 # Reusable private text presentation and async native assistance; no renderer link.
 add_library(ludus_editor_code STATIC
+    src/internal/code_navigation.h src/code_navigation.cpp
+    src/internal/code_navigation_results.h src/code_navigation_results.cpp
     src/internal/code_editor.h src/code_editor.cpp
     src/internal/code_editor_panel.h src/code_editor_panel.cpp
     src/internal/code_syntax_highlighter.h src/code_syntax_highlighter.cpp
@@ -830,7 +832,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         set_tests_properties(ludus_editor_accessibility_tests PROPERTIES LABELS "unit;editor;native;accessibility"
             TIMEOUT 30 ENVIRONMENT "QT_QPA_PLATFORM=cocoa")
     endif()
-    add_executable(ludus_code_editor_tests tests/main.cpp tests/code_editor_tests.cpp tests/code_document_tests.cpp)
+    add_executable(ludus_code_editor_tests tests/main.cpp tests/code_editor_tests.cpp tests/code_document_tests.cpp tests/code_navigation_tests.cpp)
     target_include_directories(ludus_code_editor_tests PRIVATE src)
     target_compile_definitions(ludus_code_editor_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
     configure_file(tests/formatter_fixture.py generated/formatter_fixture.py COPYONLY)

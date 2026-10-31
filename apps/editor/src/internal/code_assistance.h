@@ -1,6 +1,7 @@
 #pragma once
 
 #include "internal/code_document_controller.h"
+#include "internal/code_navigation_results.h"
 #include "internal/slang_language_service.h"
 
 #include <QJsonArray>
@@ -27,8 +28,11 @@ public:
                     const QString& uri,
                     const QString& prefix,
                     const QString& suffix,
-                    const QStringList& serverArguments = {});
+                    const QStringList& serverArguments = {},
+                    const CodeNavigationSources& navigationSources = {});
     void Request(bool isSignature);
+    /// Read-only semantic navigation through the same versioned compiler context.
+    void RequestNavigation(CodeNavigationKind kind);
     void Cancel();
 
 Q_SIGNALS:
@@ -48,6 +52,8 @@ private:
     void receive(foundation::int32 request, const QJsonValue& value);
     void showSignatures();
     void acceptCompletion(foundation::int32 row);
+    void acceptNavigation(foundation::int32 row);
+    void beginRequest();
     [[nodiscard]] bool isCurrent() const;
     [[nodiscard]] bool mapPosition(const QJsonObject& position, foundation::usize& outBytes) const;
     CodeEditor& mEditor;
@@ -62,17 +68,22 @@ private:
     QString mPrefix;
     QString mSuffix;
     QString mUnit;
+    CodeNavigationSources mNavigationSources;
+    QList<CodeNavigationTarget> mNavigationTargets;
     QList<Completion> mCompletions;
     QJsonArray mSignatures;
     foundation::uint64 mContext = 0;
     foundation::uint64 mRequestedContext = 0;
     foundation::int32 mCaret = 0;
+    foundation::int32 mAnchor = 0;
     foundation::int32 mRequest = 0;
     foundation::int32 mWordStart = 0;
     foundation::int32 mWordEnd = 0;
     foundation::int32 mActiveSignature = 0;
     foundation::int32 mActiveParameter = 0;
     bool mIsSignature = false;
+    bool mIsNavigation = false;
+    CodeNavigationKind mNavigationKind = CodeNavigationKind::Symbols;
     bool mHasIntent = false;
     bool mShouldTrackSignature = false;
     bool mShouldTrackCompletion = false;
