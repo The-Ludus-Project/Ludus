@@ -20,13 +20,16 @@
 // "About Sessions" and "Load Modules", https://docs.shader-slang.org/en/latest/compilation-api.html.
 // Reuse the global compiler and an unchanged snapshot, but replace the session on
 // any source edit. A closed in-memory filesystem prevents uncaptured disk inputs.
+// Each request compiles its source as one translation unit with one entry point, the
+// route slangc uses. Loading the same source with ISession::loadModule made Slang
+// 2026.1.2 spin forever in its entry-point parameter transform for render-graph
+// wrappers (TransformParamsToConstRefContext), while slangc finished in seconds.
 namespace ludus::tooling::shader_compiler
 {
 using namespace foundation;
 namespace
 {
 constexpr usize TARGET_COUNT = 3;
-constexpr usize COMPONENT_COUNT = 2;
 using PathText = StaticString<filesystem::MAX_PATH_BYTES>;
 using EntryText = StaticString<MAX_ENTRY_BYTES>;
 std::string_view GetText(BorrowedView<const char> value) noexcept
@@ -263,7 +266,6 @@ struct Compiler::State final
     Slang::ComPtr<slang::IGlobalSession> Global;
     Slang::ComPtr<SnapshotFilesystem> Filesystem;
     Slang::ComPtr<slang::ISession> Session;
-    Slang::ComPtr<slang::IModule> Module;
     PathText Source;
     bool HasNativeRayQueries = false;
 
@@ -275,7 +277,6 @@ struct Compiler::State final
         {
             return Status::Ready;
         }
-        Module.setNull();
         Session.setNull();
         Filesystem.setNull();
         Filesystem.attach(new (std::nothrow) SnapshotFilesystem);
@@ -384,37 +385,29 @@ Status Compiler::Compile(const Request& request, Result& outResult) noexcept
             diagnostics.setNull();
         }
     };
-    if (state.Module.get() == nullptr)
-    {
-        state.Module =
-            Slang::ComPtr<slang::IModule>(state.Session->loadModule(state.Source.GetData(), diagnostics.writeRef()));
-        captureDiagnostics();
-    }
     outResult.Outcome = Status::CompileFailed;
-    if (state.Module.get() == nullptr)
-    {
-        return outResult.Outcome;
-    }
     EntryText entry;
     static_cast<void>(entry.TryAssign(GetText(request.Entry)));
     const SlangStage stage = request.EntryStage == Stage::Vertex     ? SLANG_STAGE_VERTEX
                              : request.EntryStage == Stage::Fragment ? SLANG_STAGE_FRAGMENT
                                                                      : SLANG_STAGE_COMPUTE;
-    Slang::ComPtr<slang::IEntryPoint> point;
-    SlangResult outcome =
-        state.Module->findAndCheckEntryPoint(entry.GetData(), stage, point.writeRef(), diagnostics.writeRef());
+    Slang::ComPtr<slang::ICompileRequest> compilation;
+    if (SLANG_FAILED(state.Session->createCompileRequest(compilation.writeRef())))
+    {
+        return outResult.Outcome;
+    }
+    const int32 unit = compilation->addTranslationUnit(SLANG_SOURCE_LANGUAGE_SLANG, nullptr);
+    compilation->addTranslationUnitSourceFile(unit, state.Source.GetData());
+    static_cast<void>(compilation->addEntryPoint(unit, entry.GetData(), stage));
+    SlangResult outcome = compilation->compile();
+    static_cast<void>(compilation->getDiagnosticOutputBlob(diagnostics.writeRef()));
     captureDiagnostics();
     if (SLANG_FAILED(outcome))
     {
         return outResult.Outcome;
     }
-    StaticArray<slang::IComponentType*, COMPONENT_COUNT> components{state.Module.get(), point.get()};
     Slang::ComPtr<slang::IComponentType> composite;
-    outcome = state.Session->createCompositeComponentType(components.GetData(),
-                                                          static_cast<SlangInt>(COMPONENT_COUNT),
-                                                          composite.writeRef(),
-                                                          diagnostics.writeRef());
-    captureDiagnostics();
+    outcome = compilation->getProgramWithEntryPoints(composite.writeRef());
     if (SLANG_FAILED(outcome))
     {
         return outResult.Outcome;
