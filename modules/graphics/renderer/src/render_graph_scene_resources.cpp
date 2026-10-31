@@ -52,7 +52,9 @@ constexpr usize NO_RESOURCE = ~usize{0};
 // Separate CPU identity-copy budget, covering current/pending/idle assets together.
 // RHI independently admits GPU allocations and upload staging against its device budgets.
 constexpr usize CACHE_IDENTITY_BYTES = usize{128} * 1024 * 1024 * (sizeof(usize) > sizeof(uint32) ? 8 : 1);
-constexpr usize ENVIRONMENT_CPU_BYTES = usize{64} * 1024 * 1024;
+// A 4096x2048 source retains RGBA32F and its sampling distribution, with a
+// temporary RGB32F encoding during preparation. Keep this peak separate from texel upload bytes.
+constexpr usize ENVIRONMENT_CPU_BYTES = usize{384} * 1024 * 1024;
 constexpr uint32 ENVIRONMENT_FILTER_WIDTH = 32;
 constexpr uint32 ENVIRONMENT_FILTER_SAMPLES = 16;
 bool IsAccepted(Status status) noexcept

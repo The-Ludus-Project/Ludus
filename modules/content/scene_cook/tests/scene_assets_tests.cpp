@@ -1042,6 +1042,80 @@ TEST_CASE("Catalogs larger than the 1 MiB metadata limit still import", "[scene_
     std::filesystem::remove_all(work, ignored);
 }
 
+TEST_CASE("Explicit environment selection survives World assembly and guards approved imports",
+          "[scene_assets][environment]")
+{
+    const std::filesystem::path work = MakeWorkDirectory();
+    const std::filesystem::path project = work / "project";
+    const std::filesystem::path source = work / "source";
+    std::filesystem::create_directories(project);
+    std::filesystem::copy(std::filesystem::path(LUDUS_SCENE_IMPORT_FIXTURES_DIR) / "gltf/instanced",
+                          source,
+                          std::filesystem::copy_options::recursive);
+    constexpr usize SAMPLE_COUNT = 3;
+    const StaticArray<float32, SAMPLE_COUNT> samples{{125952, 16, 32}};
+    const auto writeEnvironment = [&]() {
+        std::ofstream stream(source / "sky.pfm", std::ios::binary);
+        stream << "PF\n1 1\n-1\n";
+        stream.write(reinterpret_cast<const char*>(samples.GetData()), samples.GetSize() * sizeof(samples[0]));
+    };
+    writeEnvironment();
+    const std::string root = project.string();
+    const std::string sourceText = source.string();
+    SequentialUuids counter;
+    UuidSource uuids{&SequentialUuids::Generate, &counter};
+    AssetOptions options;
+    options.UuidsOrNull = &uuids;
+    options.SourceEntry = "scene.gltf";
+    options.EnvironmentFile = "sky.pfm";
+    AssetError error;
+    Array<uint8> level;
+    REQUIRE(CreateLevel("Environment", options, level, error) == true);
+    EditorSceneRequest request;
+    request.Root = root;
+    request.Source = sourceText;
+    request.Level = ToSpan(level);
+    request.Operation = EditorSceneOperation::PreviewImport;
+    EditorSceneResult preview;
+    REQUIRE(OperateEditorScene(request, options, preview, error) == true);
+    const std::string digest = GetResponseMember(preview.Response, "source_digest");
+    options.ExpectedSourceDigest = digest;
+    options.EnvironmentFile = {};
+    request.Operation = EditorSceneOperation::Import;
+    EditorSceneResult imported;
+    CHECK(OperateEditorScene(request, options, imported, error) == false);
+    CHECK(error.Code == AssetErrorCode::Conflict);
+    options.EnvironmentFile = "sky.pfm";
+    const bool isImported = OperateEditorScene(request, options, imported, error);
+    INFO(Describe(error));
+    REQUIRE(isImported == true);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(imported.Scene.GetData(), imported.Scene.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    REQUIRE(decoded.Environment.Pixels.GetSize() == 1);
+    CHECK(decoded.Environment.Pixels[0] * decoded.Environment.Rgb.X == math::Vector3{125952, 16, 32});
+    const std::string candidate = GetResponseMember(imported.Response, "level");
+    request.Operation = EditorSceneOperation::CommitImport;
+    request.Level = ToSpan(candidate);
+    request.Catalog = ToSpan(imported.Catalog);
+    // A map changed after preparation must not publish a different source snapshot.
+    std::ofstream(source / "sky.pfm", std::ios::app) << "changed";
+    EditorSceneResult committed;
+    CHECK(OperateEditorScene(request, options, committed, error) == false);
+    CHECK(error.Code == AssetErrorCode::Conflict);
+    writeEnvironment();
+    REQUIRE(OperateEditorScene(request, options, committed, error) == true);
+    request.Operation = EditorSceneOperation::Assemble;
+    request.Catalog = {};
+    EditorSceneResult assembled;
+    REQUIRE(OperateEditorScene(request, {}, assembled, error) == true);
+    REQUIRE(ludus::resources::SceneDefinition::Decode(assembled.Scene.GetData(), assembled.Scene.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    CHECK(decoded.Environment.Pixels[0] * decoded.Environment.Rgb.X == math::Vector3{125952, 16, 32});
+    std::error_code ignored;
+    std::filesystem::remove_all(work, ignored);
+}
+
 TEST_CASE("A confirmed import must match the approved preview", "[scene_assets]")
 {
     const std::filesystem::path work = MakeWorkDirectory();

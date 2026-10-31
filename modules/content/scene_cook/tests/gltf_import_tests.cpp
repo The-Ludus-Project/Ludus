@@ -8,6 +8,7 @@
 #include <ludus/content/scene_format/luscn.h>
 #include <ludus/foundation/base/byte_order.hpp>
 #include <ludus/foundation/containers/array.hpp>
+#include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/runtime/resources/scene.h>
 
 #include "importers/gltf/gltf_reader.h"
@@ -71,6 +72,58 @@ float64 GetDeterminant(const ludus::foundation::math::Matrix4d& matrix)
     return ComputeLinearDeterminant(matrix);
 }
 } // namespace
+
+TEST_CASE("Explicit glTF environment retains latitude longitude HDR energy and provenance",
+          "[scene_cook][gltf][environment]")
+{
+    ScratchDirectory scratch;
+    WriteFile(scratch.Path / "scene.gltf", MakeTriangle());
+    // PFM rows are bottom-up. Distinct poles and longitudes catch accidental PBRT
+    // equal-area reprojection, orientation changes and display tone mapping.
+    constexpr usize SAMPLE_COUNT = 12;
+    const ludus::foundation::StaticArray<float32, SAMPLE_COUNT> samples{{2, 3, 4, 5, 6, 7, 125952, 16, 32, 8, 9, 10}};
+    std::string image = "PF\n2 2\n-1\n";
+    image.append(reinterpret_cast<const char*>(samples.GetData()), samples.GetSize() * sizeof(samples[0]));
+    WriteFile(scratch.Path / "sky.pfm", image);
+    BestEffortOptions options;
+    options.EnvironmentFile = "sky.pfm";
+    BestEffortResult result;
+    CookError error;
+    REQUIRE(ImportGltfBestEffort((scratch.Path / "scene.gltf").string(), options, result, error) == true);
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    REQUIRE(decoded.Environment.Width == 2);
+    REQUIRE(decoded.Environment.Height == 2);
+    REQUIRE(decoded.Environment.Pixels.GetSize() == 4);
+    CHECK(decoded.Environment.Rgb == math::Vector3{16, 16, 16});
+    CHECK(decoded.Environment.Pixels[0] * decoded.Environment.Rgb.X == math::Vector3{125952, 16, 32});
+    CHECK(decoded.Environment.Pixels[1] * decoded.Environment.Rgb.X == math::Vector3{8, 9, 10});
+    CHECK(decoded.Environment.Pixels[2] * decoded.Environment.Rgb.X == math::Vector3{2, 3, 4});
+    bool hasEnvironmentInput = false;
+    for (const ludus::foundation::String& input : result.Inputs)
+    {
+        hasEnvironmentInput |= input.GetView() == "sky.pfm";
+    }
+    CHECK(hasEnvironmentInput == true);
+    const ludus::content::Digest expected = ludus::content::Hash(AsBytes(image));
+    for (usize i = 0; i < result.Inputs.GetSize(); ++i)
+    {
+        if (result.Inputs[i].GetView() == "sky.pfm")
+        {
+            CHECK(result.InputDigests[i] == expected);
+        }
+    }
+    options.IsDryRun = true;
+    REQUIRE(ImportGltfBestEffort((scratch.Path / "scene.gltf").string(), options, result, error) == true);
+    CHECK(result.Bundle.IsEmpty() == true);
+    CHECK(result.Inputs.GetSize() == 2);
+    CHECK(result.InputDigests[1] == expected);
+    options.EnvironmentFile = "../outside.pfm";
+    CHECK(ImportGltfBestEffort((scratch.Path / "scene.gltf").string(), options, result, error) == false);
+    options.EnvironmentFile = "missing.pfm";
+    CHECK(ImportGltfBestEffort((scratch.Path / "scene.gltf").string(), options, result, error) == false);
+}
 
 TEST_CASE("glTF base colour factors apply once to sampled and constant textures", "[scene_cook][gltf]")
 {

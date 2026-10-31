@@ -440,9 +440,21 @@ bool LevelWorkspace::ImportPreviewedInto(const QJsonObject& level, const QString
     Level_ = level;
     return ImportPreviewed(source);
 }
+bool LevelWorkspace::SetImportEnvironmentFile(const QString& file)
+{
+    if (Busy_ == true || isOperationActive() == true)
+    {
+        return false;
+    }
+    mImportEnvironmentFile = file;
+    ExpectedSourceDigest_.clear();
+    ImportPreview_ = {};
+    return true;
+}
 void LevelWorkspace::ClearImportState()
 {
     PreviewSource_.clear();
+    mImportEnvironmentFile.clear();
     ImportPreview_ = {};
     ImportReports_ = {};
     PendingImportReports_ = {};
@@ -568,7 +580,12 @@ bool LevelWorkspace::Run(const SceneOperationRequest& request)
     QByteArray root = Root_.toUtf8();
     QByteArray relative = path.toUtf8();
     QByteArray from = source.toUtf8();
-    QByteArray entry = SourceEntry_.toUtf8();
+    struct SceneImportInputs final
+    {
+        QByteArray Entry;
+        QByteArray Environment;
+    };
+    const SceneImportInputs files{SourceEntry_.toUtf8(), mImportEnvironmentFile.toUtf8()};
     QByteArray expectedSource = kind == EditorSceneOperation::Import ? ExpectedSourceDigest_.toUtf8() : QByteArray();
     QByteArray digest = expected.isString() ? expected.toString().toUtf8() : QByteArray();
     QByteArray catalog = kind == EditorSceneOperation::CommitImport ? CandidateCatalog_ : QByteArray();
@@ -581,7 +598,7 @@ bool LevelWorkspace::Run(const SceneOperationRequest& request)
         CandidateCatalog_.clear();
     }
     CancelRequested_.store(false);
-    const auto work = [this, kind, hasExpected, level, root, relative, from, entry, expectedSource, digest, catalog]() {
+    const auto work = [this, kind, hasExpected, level, root, relative, from, files, expectedSource, digest, catalog]() {
         EditorSceneProgress progress;
         progress.ContextOrNull = this;
         progress.Report = [](void* context, std::string_view stage) noexcept {
@@ -608,7 +625,8 @@ bool LevelWorkspace::Run(const SceneOperationRequest& request)
         AssetOptions options;
         options.CancelOrNull = &cancel;
         options.EntropyOrNull = &entropy;
-        options.SourceEntry = ToView(entry);
+        options.SourceEntry = ToView(files.Entry);
+        options.EnvironmentFile = ToView(files.Environment);
         options.ExpectedSourceDigest = ToView(expectedSource);
         options.JobsOrNull = mHasImportJobs == true ? &mImportJobs : nullptr;
         EditorSceneRequest request;

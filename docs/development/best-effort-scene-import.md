@@ -343,6 +343,45 @@ transmission and textured area emission remain unsupported. See the
 [renderer lighting contract](../architecture/renderer-systems.md) for viewport
 area-light, shadow and indirect-transport limits.
 
+## Selecting a companion lighting environment
+
+A glTF can contain geometry and materials without usable lighting. The full Intel
+Sponza main glTF declares 24 punctual lights with zero intensity and does not
+reference its bundled `textures/kloppenheim_05_4k.hdr`. Importing that glTF alone
+therefore preserves a dark scene; the importer does not enable those lights.
+
+In the World's import preview, choose **Choose environment…**, then select the
+bundled HDR inside the scene source folder. Review the updated preview and choose
+**Import previewed scene**. **Use source lighting** removes the selection and
+rebuilds the preview. Make the same explicit selection when reimporting. When composing several scene imports, select the environment on one of them; their lighting assets add during assembly. The
+chosen environment is stored in the cooked lighting asset, so reopening the World
+and assembling it at runtime use that lighting without needing the original file.
+
+Native callers pass the root-relative image name in
+`BestEffortOptions::EnvironmentFile` or `AssetOptions::EnvironmentFile`; empty
+preserves source lighting. This option adds one latitude/longitude environment to
+a scene that has none. It rejects a conflicting authored environment, unreadable
+image or path that escapes the source directory, including through a symlink.
+Analytic lights and material emission remain as authored. It applies to
+best-effort entries, not the frozen reference cooker or a custom cooker.
+
+The image uses engine coordinates: +Y is north, longitude zero is +X, increasing
+longitude turns toward +Z, and the top row borders the north pole. HDR stays
+linear. Bright peaks are factored into bounded texels and a power-of-two radiance
+multiplier within the existing lighting representation; their product preserves
+source energy within binary32 precision. No exposure or clipping is baked into
+this choice. The image is hashed during preview and import, and the choice itself
+participates in the approval token. Changed bytes invalidate pending publication.
+The report records the image, dimensions and retained radiance multiplier.
+
+The ordinary raster viewport uses cosine-convolved diffuse SH and roughness-filtered
+specular environment lighting. It remains interactive without reference path tracing.
+This profile has no environment visibility, local occlusion or indirect bounce
+transport; interior lighting can leak through walls. It does not reproduce the
+scene's offline reference renders. CPU and GPU reference paths use the same
+retained lighting with their existing transport and visibility rules. Environment
+storage shares the declared import byte budget with geometry and material maps.
+
 ## Budget planner
 
 The cooked scene must fit the LUSCN v7 import profile: 256 meshes, materials and

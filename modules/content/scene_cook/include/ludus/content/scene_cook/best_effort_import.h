@@ -60,6 +60,13 @@ struct BestEffortOptions final
     /// Parse and plan only: no image decoding and no bundle. The report is complete
     /// except for texture sizes, and BestEffortResult::Bundle stays empty.
     bool IsDryRun = false;
+    /// Optional latitude/longitude lighting image relative to the scene source directory.
+    /// Empty preserves source lighting. An existing authored environment rejects this
+    /// addition; analytic lights and emission are retained. The image must resolve
+    /// inside the source root, including symlinks, and participates in source digests.
+    /// Linear HDR energy is retained with a bounded texture and radiance multiplier;
+    /// +Y is north, longitude zero is +X, increasing longitude turns toward +Z.
+    std::string_view EnvironmentFile;
     /// Optional caller-owned job system on which texture images are decoded in parallel;
     /// nullptr decodes them one at a time on the calling thread.
     ///
@@ -143,7 +150,7 @@ struct BestEffortResult final
 /// Import a pbrt-v4 entry file with the best-effort profile.
 /// @param entryFile Native path of the .pbrt file. Its directory is the import root;
 /// Include/Import, PLY and image paths must resolve inside it.
-/// @param options Dry-run selection.
+/// @param options Dry-run selection, companion environment and decoder job system.
 /// @param outResult Replaced on success. On a parse failure with diagnostics,
 /// outResult.Report still holds the report so the caller can show why.
 /// @param outError Set on failure: Invalid (syntax errors or nothing drawable),
@@ -164,7 +171,7 @@ struct BestEffortResult final
 /// is reported. A file that requires an unsupported extension fails with Invalid.
 /// @param entryFile Native path of the entry file. Its directory is the import root;
 /// external buffers and images must resolve inside it. Data URIs are decoded in memory.
-/// @param options Dry-run selection.
+/// @param options Dry-run selection, companion environment and decoder job system.
 /// @param outResult Replaced. On a failure with diagnostics, outResult.Report still holds
 /// the report so the caller can show why.
 /// @param outError Set on failure: Invalid (malformed input, unsupported required
@@ -183,7 +190,7 @@ struct BestEffortResult final
 /// metallic-roughness with the documented conversion, and the result is fitted to LUSCN.
 /// @param entryFile Native path of the .obj file; its directory is the import root and
 /// material libraries and textures must resolve inside it.
-/// @param options Dry-run selection.
+/// @param options Dry-run selection, companion environment and decoder job system.
 /// @param outResult Replaced; on a failure with diagnostics the report is kept.
 /// @param outError Set on failure: Invalid (malformed records, zero or out-of-range
 /// indices, limits, nothing drawable), NotFound/IoError (entry file), Cancelled, OutOfMemory.

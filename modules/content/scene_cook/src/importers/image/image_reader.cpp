@@ -578,13 +578,17 @@ ImageResult DecodeImage(std::string_view fileName,
 ImageResult DecodeLightingImage(std::string_view fileName,
                                 foundation::BorrowedView<const uint8> data,
                                 DecodedLightingImage& outImage,
-                                std::string_view& outMessage) noexcept
+                                std::string_view& outMessage,
+                                bool shouldFactorRadiance) noexcept
 {
     if (data.IsValid() == false || data.IsEmpty() == true)
     {
         outMessage = "invalid lighting image bytes";
         return ImageResult::Invalid;
     }
+    const float32 maximumRadiance = content::scene_format::MAX_EMISSION;
+    const float64 maximumInput =
+        static_cast<float64>(shouldFactorRadiance == true ? maximumRadiance * maximumRadiance : maximumRadiance);
     DecodedLightingImage candidate;
     const std::span<const uint8> bytes(data.GetDataOrNull(), data.GetSize());
     if (HasExrMagic(bytes) == true || HasRadianceSignature(bytes) == true)
@@ -609,8 +613,7 @@ ImageResult DecodeLightingImage(std::string_view fileName,
         for (const float32 sample : candidate.Rgb)
         {
             const float64 value = static_cast<float64>(sample);
-            if (math::IsFinite(value) == false || value < 0 ||
-                value > static_cast<float64>(content::scene_format::MAX_EMISSION))
+            if (math::IsFinite(value) == false || value < 0 || value > maximumInput)
             {
                 outMessage = "HDR lighting contains unsupported negative/nonfinite or over-range energy";
                 return ImageResult::Invalid;
@@ -728,7 +731,7 @@ ImageResult DecodeLightingImage(std::string_view fileName,
                     float32 sample = 0;
                     std::memcpy(&sample, &bits, sizeof(sample));
                     const float64 value = static_cast<float64>(sample) * math::Abs(scale);
-                    if (math::IsFinite(value) == false || value < 0 || value > 10000)
+                    if (math::IsFinite(value) == false || value < 0 || value > maximumInput)
                     {
                         outMessage = "PFM lighting contains unsupported negative/nonfinite or over-range energy";
                         return ImageResult::Invalid;
@@ -737,6 +740,29 @@ ImageResult DecodeLightingImage(std::string_view fileName,
                         static_cast<float32>(value);
                 }
             }
+        }
+    }
+    if (shouldFactorRadiance == true)
+    {
+        float32 peak = 0;
+        for (const float32 value : candidate.Rgb)
+        {
+            peak = math::Max(peak, value);
+        }
+        // Power-of-two factoring avoids extra rounding for normal binary32 samples without clipping
+        // the sun. Both factors must fit the existing LUSCN lighting representation.
+        while (peak / candidate.RadianceScale > maximumRadiance)
+        {
+            candidate.RadianceScale *= 2;
+        }
+        if (candidate.RadianceScale > maximumRadiance)
+        {
+            outMessage = "HDR radiance multiplier exceeds the lighting profile";
+            return ImageResult::Invalid;
+        }
+        for (float32& value : candidate.Rgb)
+        {
+            value /= candidate.RadianceScale;
         }
     }
     outImage = static_cast<DecodedLightingImage&&>(candidate);

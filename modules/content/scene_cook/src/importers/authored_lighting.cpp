@@ -1,6 +1,7 @@
 #include "authored_lighting.h"
 
 #include "../native_files.h"
+#include "source_resolver.h"
 #include "transform_utilities.h"
 
 #include <ludus/content/content.h>
@@ -180,12 +181,25 @@ struct TexelCoordinate final
     inoutLighting.HasEnvironmentSourceDigest = true;
     DecodedLightingImage image;
     std::string_view message;
-    const ImageResult decoded =
-        DecodeLightingImage(source.File.GetView(), {bytes.GetData(), bytes.GetSize()}, image, message);
+    const ImageResult decoded = DecodeLightingImage(source.File.GetView(),
+                                                    {bytes.GetData(), bytes.GetSize()},
+                                                    image,
+                                                    message,
+                                                    source.IsEquirectangular);
     if (decoded != ImageResult::Ok)
     {
         (void)inoutLog.Add(DiagnosticSeverity::Error, codes::TEXTURE_UNREADABLE, source.File.GetView(), 0, message);
         return decoded == ImageResult::OutOfMemory ? Status::OutOfMemory : Status::Invalid;
+    }
+    if (source.IsEquirectangular == true)
+    {
+        if (image.Rgb.GetSize() > byteBudget / sizeof(float32))
+        {
+            return Status::Invalid;
+        }
+        inoutLighting.EnvironmentRgb = {image.RadianceScale, image.RadianceScale, image.RadianceScale};
+        inoutLighting.Environment = static_cast<DecodedLightingImage&&>(image);
+        return Status::Ok;
     }
     math::Matrix4d worldToLight;
     if (TryInvertAffine(source.LightToWorld, worldToLight) == false)
@@ -246,6 +260,33 @@ struct TexelCoordinate final
     return Status::Ok;
 }
 } // namespace
+Status ApplyCompanionEnvironment(std::string_view file,
+                                 std::string_view root,
+                                 SceneIr& inoutScene,
+                                 DiagnosticLog& inoutLog) noexcept
+{
+    NativeSourceResolver resolver(root);
+    ResolvedSource environment;
+    if (inoutScene.Environment.IsPresent == true || resolver.Resolve(file, environment) == false)
+    {
+        (void)inoutLog.Add(
+            DiagnosticSeverity::Error,
+            codes::MALFORMED_INPUT,
+            file,
+            0,
+            "Choose an environment inside the source directory for a scene without an authored environment");
+        return Status::Invalid;
+    }
+    inoutScene.Environment.File = static_cast<String&&>(environment.Relative);
+    inoutScene.Environment.IsPresent = true;
+    inoutScene.Environment.IsEquirectangular = true;
+    for (float64& channel : inoutScene.Environment.Radiance)
+    {
+        channel = 1;
+    }
+    ++inoutScene.Lights.Infinite;
+    return Status::Ok;
+}
 Status CookAuthoredLighting(const SceneIr& scene,
                             std::string_view root,
                             const LightingCookDescription& description,

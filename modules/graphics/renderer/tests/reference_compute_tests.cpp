@@ -15,6 +15,7 @@
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/foundation/time/time.hpp>
+#include <ludus/graphics/renderer/environment.hpp>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/rhi/device.h>
 
@@ -383,6 +384,31 @@ TEST_CASE("GPU-compute reference matches the CPU oracle's raw AOVs", "[renderer]
     Session cpu;
     REQUIRE(Prepare(device, rr::ReferenceTraversal::CpuOracle, cpu) == S::Ready);
 
+    constexpr usize ENVIRONMENT_PIXEL_COUNT = 4;
+    // Reconstruct a factored import's radiance before either reference implementation
+    // sees it. A nonuniform map exercises its raw lookup and solid-angle CDF.
+    StaticArray<math::Vector4, ENVIRONMENT_PIXEL_COUNT> environmentPixels{
+        {{.125F, .25F, .0625F, 0}, {.0625F, .125F, .25F, 0}, {.25F, .0625F, .125F, 0}, {.03125F, .0625F, .125F, 0}}};
+    for (math::Vector4& pixel : environmentPixels)
+    {
+        pixel = pixel * 16;
+    }
+    rr::EnvironmentMap environment;
+    rr::EnvironmentDescription environmentDescription;
+    environmentDescription.PixelsOrNull = environmentPixels.GetData();
+    environmentDescription.Width = 2;
+    environmentDescription.Height = 2;
+    environmentDescription.FilterWidth = 16;
+    environmentDescription.FilterSamples = 16;
+    environmentDescription.CpuByteBudget = CPU_BUDGET;
+    S environmentStatus = environment.Initialize(device, environmentDescription);
+    const uint64 environmentStarted = time::NowTicks();
+    while (environmentStatus == S::Pending && time::NowTicks() - environmentStarted < TIMEOUT)
+    {
+        environmentStatus = environment.GetStatus();
+    }
+    REQUIRE(environmentStatus == S::Ready);
+
     rr::DirectLight lights[4];
     lights[0].SourceId = 41;
     lights[0].Direction = math::Vector3{.2F, -.3F, 1} / math::Length(math::Vector3{.2F, -.3F, 1});
@@ -416,11 +442,13 @@ TEST_CASE("GPU-compute reference matches the CPU oracle's raw AOVs", "[renderer]
         uint32 RouletteDepth = 3;
         uint64 Seed = 871;
         usize LightCount = 1;
+        bool HasEnvironmentMap = false;
     };
     const Case cases[]{
         {"orthographic emitter and environment", false, 4, 3, 871, 1},
         {"perspective analytic lights and roulette", true, 8, 2, 1729, 4},
         {"single bounce", true, 1, 1, 5, 4},
+        {"perspective textured environment", true, 4, 3, 314159, 1, true},
     };
     for (const Case& test : cases)
     {
@@ -434,6 +462,7 @@ TEST_CASE("GPU-compute reference matches the CPU oracle's raw AOVs", "[renderer]
             capture.RouletteDepth = test.RouletteDepth;
             capture.Seed = test.Seed;
             capture.Environment = {.3F, .4F, .5F};
+            capture.EnvironmentTextureOrNull = test.HasEnvironmentMap == true ? &environment : nullptr;
             capture.Lights = lights;
             capture.LightCount = test.LightCount;
             if (test.IsPerspective == true)

@@ -1051,6 +1051,7 @@ TEST_CASE("default clustered deferred matches forward material shading and prese
           "[render-graph][clustered-deferred][gpu]")
 {
     constexpr usize LIGHT_COUNT = 40;
+    constexpr usize ENVIRONMENT_TEXEL_COUNT = 2;
     constexpr usize LIGHTING_CASE_COUNT = 4;
     constexpr usize PROFILE_COUNT = 3;
     StaticArray<StaticArray<uint8, PIXEL_BYTES>, LIGHTING_CASE_COUNT> forwardPixels{};
@@ -1112,6 +1113,8 @@ TEST_CASE("default clustered deferred matches forward material shading and prese
         renderer::SceneShaderInputs inputs;
         inputs.Materials = {materials.GetData(), materials.GetSize()};
         inputs.Environment = {.02F, .03F, .01F};
+        const StaticArray<math::Vector3, ENVIRONMENT_TEXEL_COUNT> environmentPixels{
+            {{.01F, .04F, .02F}, {.04F, .01F, .03F}}};
         StaticArray<renderer::DirectLight, LIGHT_COUNT> lights{};
         inputs.Lights = {lights.GetData(), lights.GetSize()};
         uint64 revision = 0;
@@ -1170,6 +1173,15 @@ TEST_CASE("default clustered deferred matches forward material shading and prese
         };
         for (usize lightingCase = 0; lightingCase < LIGHTING_CASE_COUNT; ++lightingCase)
         {
+            const bool hasEnvironmentMap = lightingCase + 1 == LIGHTING_CASE_COUNT;
+            inputs.Environment =
+                hasEnvironmentMap == true ? math::Vector3{16, 16, 16} : math::Vector3{.02F, .03F, .01F};
+            inputs.EnvironmentWidth = hasEnvironmentMap == true ? 2 : 0;
+            inputs.EnvironmentHeight = hasEnvironmentMap == true ? 1 : 0;
+            inputs.EnvironmentPixels =
+                hasEnvironmentMap == true
+                    ? BorrowedView<const math::Vector3>{environmentPixels.GetData(), environmentPixels.GetSize()}
+                    : BorrowedView<const math::Vector3>{};
             const bool areDirectional = lightingCase % 2 == 0;
             fixture.Cameras[0].OrthographicCamera = lightingCase >= 2;
             fixture.Cameras[0].WorldToClip.Columns[2].W = lightingCase >= 2 ? 0 : .2F;

@@ -2305,6 +2305,8 @@ TEST_CASE("Prepare the complete supplied Intel Sponza World", "[.prepare-full-sp
     options.EntropyOrNull = &entropy;
     options.JobsOrNull = &jobs;
     options.SourceEntry = {entryBytes.constData(), static_cast<usize>(entryBytes.size())};
+    const QByteArray environment = qEnvironmentVariable("LUDUS_FULL_SPONZA_ENVIRONMENT").toUtf8();
+    options.EnvironmentFile = {environment.constData(), static_cast<usize>(environment.size())};
     cook::AssetError assetError;
     Array<uint8> created;
     REQUIRE(cook::CreateLevel("Intel Sponza", options, created, assetError) == true);
@@ -2503,6 +2505,23 @@ TEST_CASE("Full Intel Sponza presents through the native editor viewport", "[.fu
     REQUIRE(PreviewViewport::GetPresentation() == ViewportPresentation::SharedDevice);
     rhi::Shutdown();
     const RenderScene scene = LoadSuppliedWorldScene(root, QStringLiteral("assets/sponza.world.json"));
+    const bool shouldExpectEnvironment = qEnvironmentVariableIntValue("LUDUS_SPONZA_TEST_EXPECT_ENVIRONMENT") == 1;
+    if (shouldExpectEnvironment == true)
+    {
+        REQUIRE(scene.Definition.Get() != nullptr);
+        CHECK(scene.Definition->Environment.Width == 4096);
+        CHECK(scene.Definition->Environment.Height == 2048);
+        float32 peakRadiance = 0;
+        for (const math::Vector3 pixel : scene.Definition->Environment.Pixels)
+        {
+            peakRadiance = math::Max(peakRadiance, pixel.X * scene.Definition->Environment.Rgb.X);
+        }
+        CHECK(peakRadiance > 10000);
+        for (uint32 light = 0; light < scene.AuthoredLights.Count; ++light)
+        {
+            CHECK(scene.AuthoredLights.Lights[light].Intensity == 0);
+        }
+    }
     usize triangles = 0;
     REQUIRE(scene.Definition.Get() != nullptr);
     for (const ludus::resources::SceneMesh& mesh : scene.Definition->Meshes)
@@ -2562,6 +2581,21 @@ TEST_CASE("Full Intel Sponza presents through the native editor viewport", "[.fu
     // Ordinary raster navigation admits the complete World independently of ray setup.
     const QImage raster = windowOrNull->grabWindow();
     REQUIRE(raster.isNull() == false);
+    if (shouldExpectEnvironment == true)
+    {
+        usize litPixels = 0;
+        for (int32 y = raster.height() / 4; y < raster.height() * 3 / 4; ++y)
+        {
+            for (int32 x = raster.width() / 4; x < raster.width() * 3 / 4; ++x)
+            {
+                const QRgb pixel = raster.pixel(x, y);
+                litPixels += qRed(pixel) + qGreen(pixel) + qBlue(pixel) > 48 ? 1 : 0;
+            }
+        }
+        // Exclude the corner overlays; a grid over the dark source cannot pass.
+        CHECK(litPixels > static_cast<usize>(raster.width()) * static_cast<usize>(raster.height()) / 40);
+    }
+
     const QString capture = qEnvironmentVariable("LUDUS_SPONZA_NATIVE_IMAGE");
     if (capture.isEmpty() == false)
     {

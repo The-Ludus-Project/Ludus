@@ -268,6 +268,8 @@ struct IrCamera final
 /// Environment fallback for infinite lights.
 struct IrEnvironment final
 {
+    /// Explicit import selection uses engine latitude/longitude coordinates, not PBRT equal-area.
+    bool IsEquirectangular = false;
     bool IsPresent = false;
     /// Mean linear RGB radiance (L x scale; image maps are averaged when decodable).
     float64 Radiance[IR_RGB_CHANNEL_COUNT] = {0.0, 0.0, 0.0};

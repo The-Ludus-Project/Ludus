@@ -115,6 +115,9 @@ public:
     [[nodiscard]] bool ImportInto(const QJsonObject& level, const QString& source);
     /// ImportInto with the approved-preview check of ImportPreviewed.
     [[nodiscard]] bool ImportPreviewedInto(const QJsonObject& level, const QString& source);
+    /// Select a source-root-relative latitude/longitude environment for subsequent imports.
+    /// Refuses changes while a worker runs; selecting a new map invalidates the preview token.
+    [[nodiscard]] bool SetImportEnvironmentFile(const QString& file);
     /// Forget the previewed import and the shown import reports (document replaced).
     void ClearImportState();
     [[nodiscard]] QString StatusText() const;
@@ -185,6 +188,7 @@ private:
     QString Source_;
     /// Scene entry file (.pbrt, .gltf, .glb or .obj) inside Source_; empty keeps the reference profile.
     QString SourceEntry_;
+    QString mImportEnvironmentFile;
     /// source_digest of the approved preview for the next import; empty skips the check.
     QString ExpectedSourceDigest_;
     /// File picked by the Import button while its preview runs.

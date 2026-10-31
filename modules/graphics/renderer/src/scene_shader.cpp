@@ -6,6 +6,7 @@
 #include <ludus/foundation/base/checked_integer.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/addressed_random.hpp>
+#include <ludus/graphics/renderer/environment.hpp>
 
 #include <new>
 
@@ -305,7 +306,7 @@ Status BuildMaterialGraphRayScene(const RenderGraphSceneDescription& source,
         for (usize pixel = 0; pixel < environment.Pixels.GetSize(); ++pixel)
         {
             const math::Vector3 value = math::Hadamard(input.Inputs.EnvironmentPixels[pixel], input.Inputs.Environment);
-            if (ReferenceColor(value, MAX_EMISSION) == false)
+            if (ReferenceColor(value, MAX_ENVIRONMENT_RADIANCE) == false)
             {
                 return Status::InvalidDescription;
             }

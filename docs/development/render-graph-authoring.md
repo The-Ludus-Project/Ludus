@@ -7096,7 +7096,10 @@ and RHI retain outstanding submitted uses after logical release. The cache admit
 128 MiB of CPU identity-copy payload across current, pending and idle assets;
 one preparation key can additionally use up to 128 MiB of scratch. Metadata,
 material preparation and HDR preprocessing are separate allocations. HDR preparation
-has a 64 MiB CPU budget per retained generation. Device GPU/upload limits remain
+has a 384 MiB CPU budget per retained generation, enough for a 4096×2048
+latitude/longitude source, its sampling distribution and temporary encoding.
+The caller's borrowed/copy-in pixel array and pending/retained generations are
+additional storage. Device GPU/upload limits remain
 independently enforced by RHI. Count/byte exhaustion rejects replacement.
 
 For camera-only updates, retain the existing `contentRevision` promise, or provide

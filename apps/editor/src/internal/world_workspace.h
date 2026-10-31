@@ -58,7 +58,8 @@ public:
     [[nodiscard]] bool ImportScene(const QString& source);
     /// Dry-run source (a .pbrt, .gltf, .glb or .obj file, or a reference directory) and show the
     /// preview panel; ConfirmImportPreview then imports the previewed source.
-    [[nodiscard]] bool PreviewImportScene(const QString& source);
+    /// environmentFile optionally selects a latitude/longitude image inside that source folder.
+    [[nodiscard]] bool PreviewImportScene(const QString& source, const QString& environmentFile = {});
     /// Import the source shown in the preview panel.
     [[nodiscard]] bool ConfirmImportPreview();
     [[nodiscard]] QString Path() const
@@ -230,6 +231,8 @@ private:
     QPushButton* CancelScene_ = nullptr;
     /// Dry-run preview of a pending import, with confirm and discard actions.
     QPlainTextEdit* ImportPreview_ = nullptr;
+    QPushButton* mChooseImportEnvironmentOrNull = nullptr;
+    QPushButton* mClearImportEnvironmentOrNull = nullptr;
     QPushButton* ConfirmImport_ = nullptr;
     QPushButton* DiscardImport_ = nullptr;
     QString PreviewedSource_;

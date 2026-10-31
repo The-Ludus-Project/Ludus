@@ -66,7 +66,10 @@ struct SceneShaderInputs final
     foundation::math::Vector3 Environment{};  ///< Constant RGB, or HDR pixel multiplier, [0,10000].
     foundation::uint32 EnvironmentWidth = 0;  ///< Equirectangular width, zero for a constant.
     foundation::uint32 EnvironmentHeight = 0; ///< Equirectangular height, zero for a constant.
-    foundation::BorrowedView<const foundation::math::Vector3> EnvironmentPixels; ///< North-to-south HDR texels.
+    /// North-to-south finite nonnegative HDR texels. After multiplication by
+    /// Environment, each channel must fit MAX_ENVIRONMENT_RADIANCE, the same
+    /// source-radiance bound as EnvironmentMap. Preparation copies these samples.
+    foundation::BorrowedView<const foundation::math::Vector3> EnvironmentPixels;
 };
 /// Ray preparation byte ceiling that rejected a candidate; independent of allocator failure.
 enum class SceneMemoryBudget : foundation::uint8

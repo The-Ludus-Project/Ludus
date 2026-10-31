@@ -263,6 +263,32 @@ WorldWorkspace::WorldWorkspace(const ToolingPaths& tooling, QWidget* parent) : Q
     DiscardImport_->setObjectName(QStringLiteral("worldImportDiscard"));
     DiscardImport_->hide();
     QVBoxLayout* previewActions = new QVBoxLayout;
+    mChooseImportEnvironmentOrNull = new QPushButton(QStringLiteral("Choose environment…"), this);
+    mChooseImportEnvironmentOrNull->setObjectName(QStringLiteral("worldImportEnvironment"));
+    mChooseImportEnvironmentOrNull->setToolTip(
+        QStringLiteral("Use a latitude/longitude lighting image inside the scene's source folder."));
+    mChooseImportEnvironmentOrNull->hide();
+    mClearImportEnvironmentOrNull = new QPushButton(QStringLiteral("Use source lighting"), this);
+    mClearImportEnvironmentOrNull->setObjectName(QStringLiteral("worldImportSourceLighting"));
+    mClearImportEnvironmentOrNull->hide();
+    connect(mChooseImportEnvironmentOrNull, &QPushButton::clicked, this, [this]() {
+        const QString source = PreviewedSource_;
+        const QString environment = QFileDialog::getOpenFileName(
+            this,
+            QStringLiteral("Choose lighting environment"),
+            QFileInfo(source).absolutePath(),
+            QStringLiteral("Lighting images (*.hdr *.exr *.pfm *.png *.jpg *.jpeg *.tga)"));
+        if (environment.isEmpty() == false)
+        {
+            (void)PreviewImportScene(source, environment);
+        }
+    });
+    connect(mClearImportEnvironmentOrNull, &QPushButton::clicked, this, [this]() {
+        const QString source = PreviewedSource_;
+        (void)PreviewImportScene(source);
+    });
+    previewActions->addWidget(mChooseImportEnvironmentOrNull);
+    previewActions->addWidget(mClearImportEnvironmentOrNull);
     previewActions->addWidget(ConfirmImport_);
     previewActions->addWidget(DiscardImport_);
     previewActions->addStretch();
@@ -884,6 +910,10 @@ bool WorldWorkspace::SceneBusy() const noexcept
 }
 bool WorldWorkspace::ImportScene(const QString& source)
 {
+    if (Scene_->SetImportEnvironmentFile({}) == false)
+    {
+        return false;
+    }
     return StartSceneImport(source, false);
 }
 bool WorldWorkspace::StartSceneImport(const QString& source, bool isPreviewed)
@@ -944,7 +974,7 @@ bool WorldWorkspace::StartSceneImport(const QString& source, bool isPreviewed)
     Changed(QStringLiteral("Importing scene assets into World…"));
     return true;
 }
-bool WorldWorkspace::PreviewImportScene(const QString& source)
+bool WorldWorkspace::PreviewImportScene(const QString& source, const QString& environmentFile)
 {
     if (Document_.Loaded() == false)
     {
@@ -959,6 +989,15 @@ bool WorldWorkspace::PreviewImportScene(const QString& source)
     if (SceneBusy() == true)
     {
         Changed(QStringLiteral("A scene operation is still running; wait for it or cancel it before importing."));
+        return false;
+    }
+    const QFileInfo sourceInfo(source);
+    const QDir directory(sourceInfo.isDir() == true ? source : sourceInfo.absolutePath());
+    const QString relativeEnvironment =
+        environmentFile.isEmpty() == true ? QString{} : directory.relativeFilePath(environmentFile);
+    if (Scene_->SetImportEnvironmentFile(relativeEnvironment) == false)
+    {
+        Changed(QStringLiteral("Wait for the current scene operation before choosing its environment."));
         return false;
     }
     PreviewedSource_.clear();
@@ -1005,6 +1044,8 @@ void WorldWorkspace::ShowImportPreview(bool isAccepted)
     ImportPreview_->setPlainText(isShown == true ? DescribeImportPreview(Scene_->ImportPreview()) : QString());
     ImportPreview_->setVisible(isShown);
     ConfirmImport_->setVisible(isShown);
+    mChooseImportEnvironmentOrNull->setVisible(isShown);
+    mClearImportEnvironmentOrNull->setVisible(isShown);
     DiscardImport_->setVisible(isShown);
     if (isShown == true)
     {

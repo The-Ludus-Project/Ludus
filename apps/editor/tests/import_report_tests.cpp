@@ -22,6 +22,8 @@
 #include <QTest>
 #include <QToolButton>
 
+#include <ludus/foundation/containers/static_array.hpp>
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <functional>
@@ -188,6 +190,59 @@ TEST_CASE("A failed Level preview leaves no preview", "[editor][import]")
     REQUIRE(workspace.PreviewImport(QDir(directory.path()).filePath(QStringLiteral("missing.pbrt"))) == true);
     REQUIRE(WaitUntil([&workspace]() { return workspace.Busy() == false; }) == true);
     CHECK(workspace.ImportPreview().isEmpty() == true);
+}
+
+TEST_CASE("World import preview selects an environment and can restore source lighting",
+          "[editor][import][environment]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const QString root = QFileInfo(directory.path()).canonicalFilePath();
+    const QString source = QDir(root).filePath(QStringLiteral("external"));
+    WriteGeneralScene(source, QStringLiteral("room.pbrt"));
+    const QString entry = QDir(source).filePath(QStringLiteral("room.pbrt"));
+    QFile scene(entry);
+    REQUIRE(scene.open(QIODevice::ReadOnly) == true);
+    QByteArray bytes = scene.readAll();
+    scene.close();
+    bytes.replace("LightSource \"infinite\" \"rgb L\" [ .2 .2 .2 ]\n", "");
+    REQUIRE(scene.open(QIODevice::WriteOnly | QIODevice::Truncate) == true);
+    REQUIRE(scene.write(bytes) == bytes.size());
+    scene.close();
+    const QString environment = QDir(source).filePath(QStringLiteral("sky.pfm"));
+    QFile map(environment);
+    REQUIRE(map.open(QIODevice::WriteOnly) == true);
+    constexpr ludus::foundation::usize SAMPLE_COUNT = 3;
+    const ludus::foundation::StaticArray<ludus::foundation::float32, SAMPLE_COUNT> samples{{2, 3, 4}};
+    map.write("PF\n1 1\n-1\n");
+    map.write(reinterpret_cast<const char*>(samples.GetData()), samples.GetSize() * sizeof(samples[0]));
+    map.close();
+    WorldWorkspace workspace(MakeSceneTools(), nullptr);
+    workspace.SetProject(root, 1);
+    REQUIRE(workspace.Create(QDir(root).filePath(QStringLiteral("main.world.json"))) == true);
+    QPlainTextEdit* preview = workspace.findChild<QPlainTextEdit*>(QStringLiteral("worldImportPreview"));
+    QPushButton* sourceLighting = workspace.findChild<QPushButton*>(QStringLiteral("worldImportSourceLighting"));
+    QPushButton* environmentButton = workspace.findChild<QPushButton*>(QStringLiteral("worldImportEnvironment"));
+    REQUIRE(preview != nullptr);
+    REQUIRE(sourceLighting != nullptr);
+    REQUIRE(environmentButton != nullptr);
+    REQUIRE(workspace.PreviewImportScene(entry, environment) == true);
+    REQUIRE(WaitUntil([preview]() { return preview->isHidden() == false; }) == true);
+    CHECK(preview->toPlainText().contains(QStringLiteral("sky.pfm")) == true);
+    CHECK(environmentButton->isHidden() == false);
+    sourceLighting->click();
+    REQUIRE(WaitUntil([preview]() { return preview->isHidden() == false; }) == true);
+    CHECK(preview->toPlainText().contains(QStringLiteral("sky.pfm")) == false);
+    REQUIRE(workspace.PreviewImportScene(entry, environment) == true);
+    REQUIRE(WaitUntil([preview]() { return preview->isHidden() == false; }) == true);
+    REQUIRE(workspace.ConfirmImportPreview() == true);
+    QPushButton* cancel = workspace.findChild<QPushButton*>(QStringLiteral("worldCancelScene"));
+    REQUIRE(cancel != nullptr);
+    REQUIRE(WaitUntil([cancel]() { return cancel->isHidden() == true; }) == true);
+    QPlainTextEdit* report = workspace.findChild<QPlainTextEdit*>(QStringLiteral("worldImportReport"));
+    REQUIRE(report != nullptr);
+    CHECK(report->toPlainText().contains(QStringLiteral("sky.pfm")) == true);
+    CHECK(QFileInfo::exists(QDir(root).filePath(QStringLiteral("assets/catalog.json"))) == true);
 }
 
 TEST_CASE("World shows the import preview, imports on confirmation and shows the stored report",
