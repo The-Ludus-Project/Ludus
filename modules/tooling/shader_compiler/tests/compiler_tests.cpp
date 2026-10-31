@@ -110,6 +110,27 @@ TEST_CASE("Native shader compiler emits each portable target from one snapshot",
         CHECK(result.Reflection.IsEmpty() == false);
     }
 }
+TEST_CASE("Native shader compiler compiles an entry that calls another stage entry", "[shader][compiler]")
+{
+    // Render-graph wrappers call renderer recipe entries. Loaded as a module, this source made
+    // Slang 2026.1.2 spin forever in its entry-point parameter transform; slangc compiled it.
+    compiler::Compiler worker;
+    REQUIRE(worker.Initialize() == compiler::Status::Ready);
+    Fixture fixture;
+    fixture.Files[0].Text = View(R"(
+struct Varying { float4 PositionClip : SV_Position; };
+[shader("fragment")] float4 ColorMain(in Varying value) { return value.PositionClip; }
+[shader("fragment")] float4 FragmentMain(Varying value) : SV_Target { return ColorMain(value); }
+)");
+    for (const compiler::Target target : {compiler::Target::Spirv, compiler::Target::Wgsl, compiler::Target::Metal})
+    {
+        fixture.Request.OutputTarget = target;
+        compiler::Result result;
+        REQUIRE(worker.Compile(fixture.Request, result) == compiler::Status::Ready);
+        CHECK(result.Artifact.IsEmpty() == false);
+        CHECK(result.Reflection.IsEmpty() == false);
+    }
+}
 TEST_CASE("Native shader compiler supports ray queries and invalidates macro edits", "[shader][compiler]")
 {
     compiler::Compiler worker;
