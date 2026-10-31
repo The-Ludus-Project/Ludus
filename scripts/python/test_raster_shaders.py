@@ -7,7 +7,56 @@ import struct
 import unittest
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/'cmake/shaders'))
+from native_worker import capture_include_closure, MAX_SOURCE_FILES
 from compile_raster import spirv_array_indexing, verify_native_metal_arrays, raster_interface, wgsl_contract, glsl_interface, share_glsl_fetch_samplers, glsl_varyings, verify_varyings, uniform_shape, wgsl_uniform_type, external_text_source, emit_text_artifact, MAX_INLINE_TEXT_BYTES
+
+class NativeWorkerSnapshotTests(unittest.TestCase):
+    """The worker receives the source's include closure, not every file under its roots."""
+
+    def write(self, root, name, text):
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding='utf-8')
+
+    def test_only_the_include_closure_is_captured(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as temporary:
+            shaders, shared = Path(temporary, 'shaders'), Path(temporary, 'shared')
+            self.write(shaders, 'root.slang', '#include "local.slang"\n#include "detail/near.h"\n')
+            self.write(shaders, 'local.slang', '#include "shared.slang"\n#if 0\n#include "guarded.h"\n#endif\n')
+            self.write(shaders, 'detail/near.h', '#include "sibling.h"\n')
+            self.write(shaders, 'detail/sibling.h', '// beside its includer\n')
+            self.write(shared, 'shared.slang', '// from the second root\n')
+            self.write(shared, 'guarded.h', '// inactive branches are still captured\n')
+            for index in range(MAX_SOURCE_FILES):
+                self.write(shared, f'unrelated_{index}.slang', '// never included\n')
+            files, origins = capture_include_closure('root.slang', [shaders, shared])
+            self.assertEqual(set(files), {'root.slang', 'local.slang', 'shared.slang', 'guarded.h',
+                                          'detail/near.h', 'detail/sibling.h'})
+            self.assertEqual(origins['shared.slang'], shared / 'shared.slang')
+
+    def test_ambiguity_and_bounds_apply_to_the_closure(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as temporary:
+            first, second = Path(temporary, 'first'), Path(temporary, 'second')
+            self.write(first, 'root.slang', '#include "common.h"\n')
+            self.write(first, 'common.h', '// first\n')
+            self.write(second, 'common.h', '// second\n')
+            self.write(first, 'other.h', '// first\n')
+            self.write(second, 'other.h', '// differs but is never included\n')
+            with self.assertRaisesRegex(RuntimeError, 'Ambiguous native shader include: common.h'):
+                capture_include_closure('root.slang', [first, second])
+            self.write(second, 'common.h', '// first\n')
+            files, _ = capture_include_closure('root.slang', [first, second])
+            self.assertEqual(set(files), {'root.slang', 'common.h'})
+            chain = Path(temporary, 'chain')
+            for index in range(MAX_SOURCE_FILES):
+                self.write(chain, f'part_{index}.slang', f'#include "part_{index + 1}.slang"\n')
+            with self.assertRaisesRegex(RuntimeError, 'exceeds the worker request bounds'):
+                capture_include_closure('part_0.slang', [chain])
+            with self.assertRaisesRegex(RuntimeError, 'missing or uses a reserved filename'):
+                capture_include_closure('absent.slang', [chain])
+
 
 class RasterReflectionTests(unittest.TestCase):
     def test_metal_fragment_readonly_storage_ignores_unoccupied_resource_category(self):

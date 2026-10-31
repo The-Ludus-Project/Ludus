@@ -113,6 +113,7 @@ ludus_compile_renderer_shaders(TARGET recipe SHADERS renderer_flat renderer_comp
             for relative in ('modules/graphics/renderer/shaders', 'modules/foundation/math/shaders',
                              'modules/graphics/rhi/shaders',
                              'modules/content/render_graph_format/include/ludus/content/render_graph_format',
+                             'modules/content/scene_format/include/ludus/content/scene_format',
                              'modules/graphics/renderer/include/ludus/graphics/renderer'):
                 for source_file in (ROOT / relative).iterdir():
                     if source_file.suffix in ('.slang', '.h') or source_file.name == 'recipes.json':

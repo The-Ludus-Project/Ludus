@@ -1,11 +1,18 @@
 """Bounded client of the headless native Slang worker; no engine/editor startup."""
 import json
 import hashlib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+import re
 import socket
 import struct
 
 MAX_MESSAGE_BYTES = 16 * 1024 * 1024
+# The worker's request limits (MAX_SOURCE_FILES and MAX_SOURCE_BYTES in
+# ludus/tooling/shader_compiler/compiler.hpp); one file is reserved for the generated defines root.
+MAX_SOURCE_FILES = 64
+MAX_SOURCE_BYTES = 4 * 1024 * 1024
+DEFINES_ROOT = '__ludus_defines.slang'
+INCLUDE_PATTERN = re.compile(r'^\s*#\s*include\s+"([^"\n]+)"', re.M)
 
 
 def receive(stream, count):
@@ -69,16 +76,17 @@ def exchange(endpoint, request):
     return result
 
 
-def compile_raster_stage(endpoint, args, lock, stage, entry, target, artifact, reflection, depfile, extra):
-    """Capture bounded renderer/custom include roots, then use the same native API.
+def capture_include_closure(source, roots):
+    """Return (files, origins) for source and every quoted include it reaches.
 
-    Explicit roots retain their relative names; ambiguous names are rejected.
-    No caller working directory or uncaptured include can enter the worker.
+    Includes resolve against the including file's directory, then the roots, as Slang
+    resolves them. Every quoted include is followed, including ones inside inactive
+    preprocessor branches, so the snapshot is a superset of what the compiler reads.
+    Unrelated files under the roots are not captured, so renderer growth does not reach
+    the worker's file limit. Names keep their root-relative spelling; a name with
+    different contents under two roots is rejected when the closure reaches it.
     """
-    roots = [Path(args.source).resolve().parent, *(Path(p).resolve() for p in args.include)]
-    files = {}
-    origins = {}
-    total = 0
+    candidates = {}
     for root in roots:
         for path in sorted(root.rglob('*')):
             if path.suffix not in ('.slang', '.h') or not path.is_file():
@@ -86,22 +94,47 @@ def compile_raster_stage(endpoint, args, lock, stage, entry, target, artifact, r
             relative = path.relative_to(root)
             if any(part.startswith('.') or part == 'out' for part in relative.parts):
                 continue
-            if path.is_symlink():
-                raise RuntimeError('Native shader include roots cannot contain symlinks')
-            text = path.read_text(encoding='utf-8')
-            name = relative.as_posix()
-            if name in files:
-                if files[name] != text:
-                    raise RuntimeError('Ambiguous native shader include: ' + name)
-                continue
-            total += len(text.encode('utf-8'))
-            if len(files) >= 63 or total > 4 * 1024 * 1024:
-                raise RuntimeError('Native shader include snapshot exceeds bounds; use dedicated include roots')
-            files[name] = text
-            origins[name] = path
-    source = Path(args.source).name
-    if source not in files or '__ludus_defines.slang' in files:
+            candidates.setdefault(relative.as_posix(), []).append(path)
+    if source not in candidates or DEFINES_ROOT in candidates:
         raise RuntimeError('Native shader root is missing or uses a reserved filename')
+    files = {}
+    origins = {}
+    total = 0
+    pending = [source]
+    while pending:
+        name = pending.pop(0)
+        if name in files:
+            continue
+        paths = candidates[name]
+        if any(path.is_symlink() for path in paths):
+            raise RuntimeError('Native shader include roots cannot contain symlinks')
+        texts = {path.read_text(encoding='utf-8') for path in paths}
+        if len(texts) != 1:
+            raise RuntimeError('Ambiguous native shader include: ' + name)
+        text = texts.pop()
+        total += len(text.encode('utf-8'))
+        if len(files) + 1 >= MAX_SOURCE_FILES or total > MAX_SOURCE_BYTES:
+            raise RuntimeError('Native shader include closure exceeds the worker request bounds')
+        files[name] = text
+        origins[name] = paths[0]
+        for include in INCLUDE_PATTERN.findall(text):
+            beside = (PurePosixPath(name).parent / include).as_posix()
+            if beside in candidates:
+                pending.append(beside)
+            elif include in candidates:
+                pending.append(include)
+    return files, origins
+
+
+def compile_raster_stage(endpoint, args, lock, stage, entry, target, artifact, reflection, depfile, extra):
+    """Capture the source's include closure from its renderer/custom roots, then use the same native API.
+
+    Explicit roots retain their relative names; ambiguous names are rejected when reached.
+    No caller working directory or uncaptured include can enter the worker.
+    """
+    roots = [Path(args.source).resolve().parent, *(Path(p).resolve() for p in args.include)]
+    source = Path(args.source).name
+    files, origins = capture_include_closure(source, roots)
     defines = []
     for argument in extra:
         if argument.startswith('-D'):
@@ -109,8 +142,8 @@ def compile_raster_stage(endpoint, args, lock, stage, entry, target, artifact, r
             if not name or any(c in name + value for c in '\n\r\0'):
                 raise RuntimeError('Invalid native shader preprocessor definition')
             defines.append('#define ' + name + ' ' + (value if separator else '1'))
-    files['__ludus_defines.slang'] = '\n'.join(defines) + '\n#include "' + source + '"\n'
-    request = {'version': 1, 'identity': 1, 'source': '__ludus_defines.slang', 'entry': entry,
+    files[DEFINES_ROOT] = '\n'.join(defines) + '\n#include "' + source + '"\n'
+    request = {'version': 1, 'identity': 1, 'source': DEFINES_ROOT, 'entry': entry,
                'stage': {'vertex': 0, 'fragment': 1, 'compute': 2}[stage],
                'target': {'spirv': 0, 'wgsl': 1, 'metal': 2}[target], 'files': files}
     result = exchange(endpoint, request)
