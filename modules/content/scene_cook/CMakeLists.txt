@@ -48,7 +48,7 @@ if(LUDUS_BUILD_TESTS)
     add_test(NAME ludus_scene_cook_tests COMMAND ludus_scene_cook_tests)
     set_tests_properties(ludus_scene_cook_tests PROPERTIES LABELS "unit;content;goldens")
 
-    add_executable(ludus_scene_assets_tests tests/scene_assets_tests.cpp)
+    add_executable(ludus_scene_assets_tests tests/scene_assets_tests.cpp tests/reference_emitter_tests.cpp)
     target_include_directories(ludus_scene_assets_tests PRIVATE src)
     target_compile_definitions(ludus_scene_assets_tests PRIVATE
         LUDUS_SCENE_GOLDENS_DIR="${PROJECT_SOURCE_DIR}/tests/goldens/scene_pipeline"

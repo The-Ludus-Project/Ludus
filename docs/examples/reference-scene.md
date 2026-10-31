@@ -37,6 +37,17 @@ without a project. The `cook` command and `Cook` API below remain the frozen
 Existing project assets are not silently recooked: explicitly reimport to opt into
 changed material identities, grouping, source UVs and one-sided area emission.
 
+Triangle/PLY area-light rectangle proxies preserve PBRT's emitting side: authored vertex normals
+orient the geometric normal, including when they oppose the index winding.
+Normals use the inverse-transpose of the source transform. Without authored
+normals, the source face orientation is retained. A rectangle whose normals cross
+hemispheres or are tangent to its plane is rejected without replacing previous
+outputs. This preserves emitter count, position, area and radiance; it does not
+make the sources two-sided. The current import action appends objects: import
+into a fresh World to regenerate corrected transforms for existing imports,
+including staircase2's corridor-end window. The frozen compatibility `cook` path
+remains unchanged.
+
 The CPU oracle, native-query reference transport and GPU-compute reference support
 pure Lambertian diffuse and isotropic rough conductors with complex-IOR Fresnel.
 Render-graph `GetMaterial` exposes the type and optical parameters;

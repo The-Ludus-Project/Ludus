@@ -19,6 +19,7 @@
 #include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/summation.hpp>
+#include <ludus/foundation/math/transform.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/foundation/parsing/parsing.hpp>
 #include <ludus/foundation/strings/string.hpp>
@@ -2136,6 +2137,91 @@ struct Cooker final
         return isOk == true && (EmitterItems.TryAdd(item) == true || errors.FailOutOfMemory() == true);
     }
 
+    [[nodiscard]] bool PreserveEmitterOrientation(const Shape& shape,
+                                                  const Array<Point>& points,
+                                                  const Array<Triangle>& triangles,
+                                                  SceneItem& inoutItem) noexcept
+    {
+        // Thanks to Matt Pharr, Wenzel Jakob and Greg Humphreys, Physically Based
+        // Rendering, 4th edition, section 6.5 (Triangle Meshes), and pbrt-v4's
+        // Triangle::Sample/InteractionFromIntersection: authored normals determine
+        // the geometric normal's hemisphere, including the emitting side.
+        // https://pbr-book.org/4ed/Shapes/Triangle_Meshes
+        // The rectangle proxy must preserve that side, not just its area/bounds.
+        constexpr usize MATRIX_COLUMN_COMPONENTS = format::SPATIAL_COMPONENTS + 1;
+        constexpr usize NORMAL_COLUMN_OFFSET = 2 * format::SPATIAL_COMPONENTS;
+        constexpr float32 MIN_NORMAL_ALIGNMENT = 1e-6F; // Dimensionless; reject ambiguous tangent normals.
+        math::Affine3 meshToWorld;
+        for (usize column = 0; column < format::SPATIAL_COMPONENTS; ++column)
+        {
+            const usize offset = column * MATRIX_COLUMN_COMPONENTS;
+            meshToWorld.Columns[column] = {static_cast<float32>(shape.Graphics.Transform.Elements[offset]),
+                                           static_cast<float32>(shape.Graphics.Transform.Elements[offset + 1]),
+                                           static_cast<float32>(shape.Graphics.Transform.Elements[offset + 2])};
+        }
+        const math::Vector3 proxyNormalWorld{static_cast<float32>(inoutItem.Transform[NORMAL_COLUMN_OFFSET]),
+                                             static_cast<float32>(inoutItem.Transform[NORMAL_COLUMN_OFFSET + 1]),
+                                             static_cast<float32>(inoutItem.Transform[NORMAL_COLUMN_OFFSET + 2])};
+        math::Matrix3 normalMeshToWorld;
+        if (math::TryNormalMatrix(meshToWorld, {}, normalMeshToWorld) != math::MathStatus::Success)
+        {
+            return Context.Errors.FailInvalid("invalid emitter normal transform");
+        }
+        bool hasOrientation = false;
+        bool shouldFlip = false;
+        for (const Triangle& triangle : triangles)
+        {
+            if (Context.CheckCancellation() == false)
+            {
+                return false;
+            }
+            Vertex vertices[format::TRIANGLE_CORNERS]; // Existing GetTriangleVertices array-reference ABI.
+            bool isDegenerate = false;
+            if (GetTriangleVertices(points, triangle, vertices, isDegenerate) == false)
+            {
+                return false;
+            }
+            if (isDegenerate == true)
+            {
+                continue;
+            }
+            for (const Vertex& vertex : vertices)
+            {
+                const math::Vector3 normalMesh{static_cast<float32>(vertex.Normal.X),
+                                               static_cast<float32>(vertex.Normal.Y),
+                                               static_cast<float32>(vertex.Normal.Z)};
+                math::Vector3 normalWorld;
+                if (math::TryNormalize(normalMeshToWorld * normalMesh, normalWorld) != math::MathStatus::Success)
+                {
+                    return Context.Errors.FailInvalid("invalid emitter normal transform");
+                }
+                const float32 alignment = math::Dot(proxyNormalWorld, normalWorld);
+                const bool shouldFlipVertex = alignment < 0;
+                if (math::Abs(alignment) < MIN_NORMAL_ALIGNMENT ||
+                    (hasOrientation == true && shouldFlipVertex != shouldFlip))
+                {
+                    return Context.Errors.FailInvalid("emitter normals do not define a consistent emitting side");
+                }
+                hasOrientation = true;
+                shouldFlip = shouldFlipVertex;
+            }
+        }
+        if (hasOrientation == false)
+        {
+            return Context.Errors.FailInvalid("emitter has no nondegenerate faces");
+        }
+        if (shouldFlip == true)
+        {
+            for (usize component = 0; component < format::SPATIAL_COMPONENTS; ++component)
+            {
+                inoutItem.Transform[component] = -inoutItem.Transform[component];
+                inoutItem.Transform[NORMAL_COLUMN_OFFSET + component] =
+                    -inoutItem.Transform[NORMAL_COLUMN_OFFSET + component];
+            }
+        }
+        return true;
+    }
+
     // Material classification: group index plus an optional fixed solid-colour UV.
     // NOLINTBEGIN(bugprone-easily-swappable-parameters)
     [[nodiscard]] bool ClassifyMaterial(const MaterialReference& material,
@@ -3173,6 +3259,10 @@ void WriteMaterialExtension(ByteWriter& inoutWriter, const Material& material) n
                 return false;
             }
             SceneItem& emitter = cooker.EmitterItems[cooker.EmitterItems.GetSize() - 1];
+            if (kind != "disk" && cooker.PreserveEmitterOrientation(shape, points, triangles, emitter) == false)
+            {
+                return false;
+            }
             Material material = sourceMaterial;
             material.EmissionSourceIdentity = shape.CommandIndex + 1;
             emitter.Material = static_cast<uint32>(cooker.Materials.GetSize());
