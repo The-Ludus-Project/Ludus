@@ -289,8 +289,15 @@ public:
     [[nodiscard]] const QString& GetRayPathStaleReason() const noexcept;
     /// Human-readable state, distinguishing the shown frame from a pending or failed candidate.
     [[nodiscard]] QString GetStatus() const;
-    /// World-facing progress or error text; empty after a successful frame.
+    /// World-facing progress or error text; empty after a successful frame. When pixels of a ray pass latched the
+    /// graph's failure colour, it names the pass, the pixel count and the main failure reason, after any progress
+    /// text (the active graph keeps drawing while its first frame is presented or a replacement prepares).
     [[nodiscard]] QString GetDisplayStatus() const;
+    /// Pixels and main reason of the latched failure colour, or empty; part of GetDisplayStatus.
+    [[nodiscard]] LUDUS_INLINE const QString& GetFailureText() const noexcept
+    {
+        return mFailureText;
+    }
 
 Q_SIGNALS:
     void PreparingSubmission();
@@ -310,6 +317,8 @@ private:
     struct State;
     [[nodiscard]] RenderGraphPreviewLoad stage();
     void tick();
+    /// Read the failure summaries of the active generation's ray passes in turn and name the main reason.
+    void pollFailures();
     void advance();
     void finishCopy();
     void finishDisplayCopy();
@@ -326,6 +335,8 @@ private:
     foundation::uint64 mPresentedRevision = 0;
     foundation::uint64 mPresentedSession = 0;
     QString mStatus;
+    /// GetFailureText: the main latched failure of the active generation, or empty.
+    QString mFailureText;
     InspectedTexture mInspected;
     QString mInspectionStatus;
     foundation::uint64 mInspectedGeneration = 0;

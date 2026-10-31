@@ -6775,9 +6775,13 @@ TEST_CASE("A render graph kernel reads the renderer-bound LTC table like the CPU
                                               shaders::renderer_composite::Fragment());
     REQUIRE(decoded.HasLtcTable == true);
     REQUIRE(compiled.HasLtcTable == true);
-    // The version 25 package rebuilds the reflected binding list of the generated header, table slot last.
+    // The package rebuilds the reflected binding list of the generated header: the table slot, then the failure
+    // summary last.
     CheckSameStage(decoded.RayCompute, compiled.RayCompute);
-    REQUIRE(decoded.RayCompute.Bindings.back().Binding == LUDUS_GRAPH_LTC_TABLE_BINDING);
+    const usize bindingCount = decoded.RayCompute.Bindings.size();
+    REQUIRE(bindingCount >= 2);
+    CHECK(decoded.RayCompute.Bindings[bindingCount - 2].Binding == LUDUS_GRAPH_LTC_TABLE_BINDING);
+    CHECK(decoded.RayCompute.Bindings.back().Binding == LUDUS_GRAPH_FAILURE_BINDING);
     renderer::RenderGraphPlan plan = package->GetPlan();
     constexpr usize PASS_COUNT = 1;
     REQUIRE(plan.Passes.GetSize() == PASS_COUNT);
@@ -7459,4 +7463,74 @@ TEST_CASE("A render graph capture refuses bands that its package's ray kernels c
     CHECK(capture.Start(fixture.Device, fixture.Surface, plan, programs, WIDTH, HEIGHT, settings) ==
           rhi::RasterStatus::InvalidDescription);
     CHECK(capture.GetProblem() == renderer::RenderGraphCaptureProblem::InvalidSettings);
+}
+
+namespace
+{
+/// Poll a graph's failure summary of one ray pass until its read-back completes.
+renderer::RenderGraphRayFailures ReadRayFailures(renderer::RenderGraph& inoutGraph, uint32 pass)
+{
+    renderer::RenderGraphRayFailures failures;
+    const uint64 beginning = time::NowTicks();
+    rhi::RasterStatus status = inoutGraph.PollRayFailures(pass, failures);
+    while (status == rhi::RasterStatus::Pending && time::NowTicks() - beginning < TRAVERSAL_TIMEOUT)
+    {
+        status = inoutGraph.PollRayFailures(pass, failures);
+    }
+    REQUIRE(status == rhi::RasterStatus::Ready);
+    return failures;
+}
+
+/// Pixels of a ray pass whose accumulation latched the failure colour (an odd history tag).
+usize CountLatchedPixels(const renderer::RenderGraph& graph, const GraphGpuFixture& fixture, uint32 pass)
+{
+    Array<math::Vector4> records;
+    ReadAccumulation(graph, fixture, pass, records);
+    usize latched = 0;
+    for (usize pixel = 0; pixel < usize{WIDTH} * HEIGHT; ++pixel)
+    {
+        latched +=
+            static_cast<uint32>(records[pixel * renderer::RENDER_GRAPH_ACCUMULATION_WORDS + 1].W) % 2 == 1 ? 1 : 0;
+    }
+    return latched;
+}
+} // namespace
+
+TEST_CASE("Latched graph pixels name the check that failed them",
+          "[render-graph][gpu][render-graph-failures][polygonal-light-sampling]")
+{
+    GraphGpuFixture fixture(false, false);
+    SECTION("the polygonal-light template beyond its visibility budget")
+    {
+        // 32 emissive triangles need 64 shadow queries per MIS invocation; the interactive budget is 16.
+        const ManyEmitterRoom room;
+        PreparedGraph live(fixture, POLYGONAL_LIGHT_SAMPLING_TEMPLATE, room, 1);
+        RenderFrame(live.Graph, fixture);
+        const renderer::RenderGraphRayFailures failures = ReadRayFailures(live.Graph, 0);
+        const usize latched = CountLatchedPixels(live.Graph, fixture, 0);
+        constexpr uint32 BUDGET = static_cast<uint32>(renderer::RenderGraphFailureReason::VisibilityBudget);
+        REQUIRE(latched > 0);
+        // Every latched pixel is counted once, under the reason its shader recorded.
+        CHECK(failures.TotalPixels == latched);
+        CHECK(failures.Pixels[BUDGET] == latched);
+        CHECK(failures.MainReason == BUDGET);
+        // A latched pixel never samples again: a later frame counts only the pixels that latch in it.
+        RenderFrame(live.Graph, fixture);
+        const renderer::RenderGraphRayFailures later = ReadRayFailures(live.Graph, 0);
+        CHECK(later.TotalPixels == CountLatchedPixels(live.Graph, fixture, 0));
+        CHECK(later.TotalPixels >= latched);
+    }
+    SECTION("a lit room within every budget")
+    {
+        CornellBox room;
+        MakeRoomGlossyWithoutSky(room);
+        PreparedGraph live(fixture, POLYGONAL_LIGHT_SAMPLING_TEMPLATE, room, 1);
+        constexpr uint32 FRAMES = 2;
+        for (uint32 frame = 0; frame < FRAMES; ++frame)
+        {
+            RenderFrame(live.Graph, fixture);
+        }
+        CHECK(CountLatchedPixels(live.Graph, fixture, 0) == 0);
+        CHECK(ReadRayFailures(live.Graph, 0).TotalPixels == 0);
+    }
 }

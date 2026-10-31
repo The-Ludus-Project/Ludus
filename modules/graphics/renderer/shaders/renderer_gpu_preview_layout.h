@@ -188,3 +188,9 @@
 // last binding of a job, after the ray path capture buffer.
 #define LUDUS_GRAPH_LTC_TABLE_BINDING 13
 #define LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT 1
+// Per-job failure summary of a graph ray kernel: one uint per LUDUS_SCENE_FAILURE_* reason (scene_shader_layout.h),
+// counting the pixels that latched that reason since the job's camera or scene last changed. Every graph ray kernel
+// binds it as its last binding, after the LTC table; the native preview and reference kernels do not.
+#define LUDUS_GRAPH_FAILURE_BINDING 14
+#define LUDUS_GRAPH_FAILURE_BINDING_COUNT 1
+#define LUDUS_GRAPH_FAILURE_BYTES 256

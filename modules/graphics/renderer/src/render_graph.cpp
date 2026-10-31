@@ -48,8 +48,8 @@ constexpr usize BOX_INDEX_COUNT = 36;
 constexpr usize FLAT_INPUT_COUNT = 6;
 constexpr usize MAX_RETAINED_SCENES = 3;
 /// Frozen ray compute ABI, visibility textures, structured storage and the diagnostic capture slot.
-constexpr usize RAY_COMPUTE_BINDING_CAPACITY =
-    LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + format::MAX_STORAGE_BUFFERS + 1 + LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT;
+constexpr usize RAY_COMPUTE_BINDING_CAPACITY = LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + format::MAX_STORAGE_BUFFERS + 1 +
+                                               LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT + LUDUS_GRAPH_FAILURE_BINDING_COUNT;
 constexpr usize MAX_COMPONENTS = 4;
 /// Largest packed uniform bytes of one technique: every slot at its largest block.
 constexpr usize MAX_TECHNIQUE_UNIFORM_BYTES = format::UNIFORM_SLOT_COUNT * format::MAX_UNIFORM_BLOCK_BYTES;
@@ -885,6 +885,18 @@ struct RenderGraph::State final
     uint32 AccumulationLimitOverride = 0;
     /// Capture-only row bands per ray sample (SetRayTileCount), each rendered by its own submission.
     uint32 RayTileCount = 1;
+    /// Failure summary read-back of PollRayFailures, in flight while HasFailureReadback.
+    rhi::ReadbackTicket FailureReadback{};
+    bool HasFailureReadback = false;
+    uint32 FailurePass = format::ABSENT;
+    void ReleaseFailureReadback() noexcept
+    {
+        if (HasFailureReadback == true)
+        {
+            static_cast<void>(rhi::Release(Device, FailureReadback));
+            HasFailureReadback = false;
+        }
+    }
     StaticArray<internal::RenderGraphUpscaleProgram, UPSCALE_TARGET_COUNT> UpscalePrograms{};
     StaticArray<bool, UPSCALE_TARGET_COUNT> HasUpscalePrograms{};
     /// Packed bytes of the distinct value sets of the technique being prepared; reused per Update.
@@ -1625,6 +1637,7 @@ struct RenderGraph::State final
     }
     ~State() noexcept
     {
+        ReleaseFailureReadback();
         MetalFxResources.Reset();
         PendingCamera.Reset();
         Pending.Reset();
@@ -1705,6 +1718,74 @@ Status RenderGraph::SetRayTileCount(uint32 tileCount) noexcept
 uint32 RenderGraph::GetSubmittedRaySamples() const noexcept
 {
     return mState.Get() == nullptr || mState->Current.Get() == nullptr ? 0 : mState->Current->SubmittedRaySamples;
+}
+Status RenderGraph::PollRayFailures(uint32 pass, RenderGraphRayFailures& outFailures) noexcept
+{
+    if (mState.Get() == nullptr || mState->Current.Get() == nullptr || mState->HasRaySetup == false)
+    {
+        return Status::NotReady;
+    }
+    State& state = *mState;
+    if (pass >= state.Header.PassCount || state.Passes[pass].Program != format::Technique::RayTracing)
+    {
+        return Status::InvalidDescription;
+    }
+    if (state.HasFailureReadback == true && state.FailurePass != pass)
+    {
+        state.ReleaseFailureReadback();
+    }
+    if (state.HasFailureReadback == true)
+    {
+        const Status status = rhi::GetStatus(state.Device, state.FailureReadback);
+        if (status == Status::Pending)
+        {
+            return Status::Pending;
+        }
+        StaticArray<uint32, MAX_RENDER_GRAPH_FAILURE_REASONS> pixels{};
+        const Status copied = status == Status::Ready ? rhi::CopyReadback(state.Device,
+                                                                          state.FailureReadback,
+                                                                          reinterpret_cast<uint8*>(pixels.GetData()),
+                                                                          sizeof(pixels))
+                                                      : status;
+        state.ReleaseFailureReadback();
+        if (copied != Status::Ready)
+        {
+            return copied;
+        }
+        RenderGraphRayFailures result;
+        result.Pixels = pixels;
+        for (uint32 reason = 0; reason < MAX_RENDER_GRAPH_FAILURE_REASONS; ++reason)
+        {
+            result.TotalPixels += pixels[reason];
+            result.MainReason = pixels[reason] > pixels[result.MainReason] ? reason : result.MainReason;
+        }
+        outFailures = result;
+        return Status::Ready;
+    }
+    // Read the counts after the frames that wrote them.
+    if (state.Producer.IsNull() == false)
+    {
+        const Status completed = rhi::GetStatus(state.Device, state.Producer);
+        if (completed != Status::Ready)
+        {
+            return completed;
+        }
+    }
+    rhi::BufferHandle failures;
+    const Status found = state.Current->RayPasses[pass].GetFailures(failures);
+    if (found != Status::Ready)
+    {
+        return found;
+    }
+    const Status requested =
+        rhi::RequestBufferReadback(state.Device, failures, 0, LUDUS_GRAPH_FAILURE_BYTES, state.FailureReadback);
+    if (requested != Status::Pending && requested != Status::Ready)
+    {
+        return requested;
+    }
+    state.HasFailureReadback = true;
+    state.FailurePass = pass;
+    return Status::Pending;
 }
 Status RenderGraph::GetRayWorkload(RenderGraphRayWorkload& outWorkload) const noexcept
 {
@@ -2133,8 +2214,18 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     {
         return Status::InvalidDescription;
     }
-    // The LTC table is the last ray compute binding exactly when the programs declare it.
-    const std::span<const rhi::RasterBinding> rayBindings = programs.RayCompute.Bindings;
+    // A graph ray kernel's failure summary is its last binding; the LTC table, when the programs declare it,
+    // precedes it.
+    const std::span<const rhi::RasterBinding> allRayBindings = programs.RayCompute.Bindings;
+    const bool hasFailureBinding =
+        allRayBindings.empty() == false && allRayBindings.back().Binding == LUDUS_GRAPH_FAILURE_BINDING;
+    if (hasFailureBinding == true && (allRayBindings.back().Kind != rhi::RasterBindingKind::StorageReadWrite ||
+                                      allRayBindings.back().MinSize != sizeof(uint32)))
+    {
+        return Status::InvalidDescription;
+    }
+    const std::span<const rhi::RasterBinding> rayBindings = allRayBindings.first(
+        allRayBindings.size() - (hasFailureBinding == true ? LUDUS_GRAPH_FAILURE_BINDING_COUNT : 0));
     const bool hasLtcBinding =
         rayBindings.empty() == false && rayBindings.back().Binding == LUDUS_GRAPH_LTC_TABLE_BINDING;
     if (hasLtcBinding != programs.HasLtcTable ||
@@ -2157,9 +2248,10 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
     if (programs.HasRayPathCapture == true)
     {
         // Runtime-package stage metadata never names the diagnostic slot; generated headers reflect it.
-        // The capture slot precedes a trailing LTC table binding, keeping slot order.
+        // The capture slot precedes the trailing LTC table and failure summary bindings, keeping slot order.
         const std::span<const rhi::RasterBinding> bindings = programs.RayCompute.Bindings;
-        const usize kernelCount = bindings.size() - (hasLtcBinding == true ? LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT : 0);
+        const usize kernelCount = bindings.size() - (hasLtcBinding == true ? LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT : 0) -
+                                  (hasFailureBinding == true ? LUDUS_GRAPH_FAILURE_BINDING_COUNT : 0);
         const bool hasCaptureBinding =
             kernelCount != 0 && bindings[kernelCount - 1].Binding == LUDUS_RAY_PATH_CAPTURE_BINDING;
         const usize count = bindings.size() + (hasCaptureBinding == true ? 0 : 1);

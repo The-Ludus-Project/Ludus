@@ -49,6 +49,8 @@ public:
     [[nodiscard]] rhi::RasterStatus PrepareTiles(foundation::uint32 count, foundation::uint32 tile) noexcept;
     // Emissive triangles plus analytic lights of the ready job's scene.
     [[nodiscard]] foundation::uint32 GetLightCount() const noexcept;
+    // Borrow the job's failure summary for the current camera history. Unsupported when the kernel declares none.
+    [[nodiscard]] rhi::RasterStatus GetFailures(rhi::BufferHandle& outBuffer) const noexcept;
     [[nodiscard]] rhi::RasterStatus PrepareCamera(const ViewDescription& camera, foundation::uint64 revision) noexcept;
     [[nodiscard]] rhi::RasterStatus PollCamera() noexcept;
     void CommitCamera() noexcept;

@@ -323,6 +323,8 @@ PACKAGE_VERSION = 29
 DISPLAY_CURVE_CODES = ('Reinhard', 'PbrNeutral')
 # Version 25 scene resource word: the linked ray kernel reads the renderer's LTC table.
 SCENE_RESOURCE_LTC_TABLE = 1
+# Scene resource bit: the linked ray kernels count latched pixels by failure reason (LUDUS_GRAPH_FAILURE_BINDING).
+SCENE_RESOURCE_FAILURE_SUMMARY = 2
 RESOURCE_FIELD_COUNT = 9
 RESOURCE_RECORD_BYTES = RESOURCE_FIELD_COUNT * 4
 MAX_PASS_NAME_BYTES = 127
@@ -558,7 +560,11 @@ def _runtime_contents(path, configuration):
                     for key, item in artifacts.items() if key[0] == 'RayTracing' and key[1] == 'compute'}
     build.require(len(ltc_profiles) <= 1, 'ShaderInterface', 'ltc_table',
                   'targets of the linked ray kernel disagree whether they read the LTC table')
-    return {'ltc_table': ltc_profiles == {True}, 'clustered_deferred': any(recipe.get('clustered_deferred', False) for recipe in package['recipes'] if recipe['technique'] in selected_techniques), 'clustered_forward': is_clustered_forward, 'forward_lit': has_forward, 'persistent_buffers': persistent, 'ray_path_capture': ray_path_capture, 'capture_profile': capture_profile, 'visibility_buffer': has_visibility, 'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
+    failure_profiles = {any(entry['binding'] == ray.FAILURE_SLOT for entry in item['descriptor']['interface']['entries'])
+                        for key, item in artifacts.items() if key[0] == 'RayTracing' and key[1] == 'compute'}
+    build.require(len(failure_profiles) <= 1, 'ShaderInterface', 'failure_summary',
+                  'targets of the linked ray kernel disagree whether they count failure reasons')
+    return {'ltc_table': ltc_profiles == {True}, 'failure_summary': failure_profiles == {True}, 'clustered_deferred': any(recipe.get('clustered_deferred', False) for recipe in package['recipes'] if recipe['technique'] in selected_techniques), 'clustered_forward': is_clustered_forward, 'forward_lit': has_forward, 'persistent_buffers': persistent, 'ray_path_capture': ray_path_capture, 'capture_profile': capture_profile, 'visibility_buffer': has_visibility, 'scene_interface': scene_versions == {1}, 'path': path, 'package': package, 'plan': plan, 'resources': resources, 'passes': passes,
             'cameras': cameras, 'camera_targets': camera_targets, 'artifacts': artifacts,
             'uniform_values': value_count, 'bindings': bindings, 'blocks': blocks, 'fields': fields,
             'storage_buffers': storage_buffers, 'uniform_interface': uniform_interface,
@@ -843,7 +849,8 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
     data += u32(len(storage))
     for buffer in storage:
         data += u32(buffer['Slot'], buffer['Stride'], buffer['Count'], buffer['IsReadOnly'])
-    data += u32(SCENE_RESOURCE_LTC_TABLE if contents.get('ltc_table', False) else 0)
+    data += u32((SCENE_RESOURCE_LTC_TABLE if contents.get('ltc_table', False) else 0) |
+                (SCENE_RESOURCE_FAILURE_SUMMARY if contents.get('failure_summary', False) else 0))
     for operation in contents['plan']['passes']:
         if operation['kind'] not in ('Raster', 'RayTracing', 'Upscale'):
             continue

@@ -164,7 +164,8 @@ struct ShadingPoint
     if (lightCount > MAX_POLYGONAL_LIGHT_COUNT ||
         lightCount * SHADOW_QUERIES_PER_MIS_LIGHT > queries.MaximumVisibilityQueries)
     {
-        queries.HasFailed = true;
+        // Two shadow queries per emissive triangle: the editor reports the exhausted visibility budget.
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_VISIBILITY_BUDGET);
         return float3(0);
     }
     float3 radiance = float3(0);

@@ -185,6 +185,8 @@ struct RenderGraphPackage::State final
     bool HasToneMappingCurve = false;
     /// The version 25 scene resource word names the LTC table: AppendLtcTableBindings adds its slot.
     bool HasLtcTable = false;
+    /// The scene resource word names the failure summary: AppendSceneResourceBindings adds its slot last.
+    bool HasFailureSummary = false;
     /// Version 28 and later ray kernels dispatch the uniform's tile region.
     bool HasRayTiles = false;
     // DecodeUniforms validates and writes every active stage before any binding is published.
@@ -193,8 +195,9 @@ struct RenderGraphPackage::State final
     StaticArray<format::UniformBlock, format::MAX_UNIFORM_BLOCKS> UniformBlocks{};
     StaticArray<format::UniformField, format::MAX_UNIFORM_FIELDS> UniformFields{};
     /// Stage binding requirements derived from the uniform records, one table per role.
-    static constexpr usize STAGE_BINDING_CAPACITY =
-        LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + format::MAX_STORAGE_BUFFERS + LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT;
+    static constexpr usize STAGE_BINDING_CAPACITY = LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + format::MAX_STORAGE_BUFFERS +
+                                                    LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT +
+                                                    LUDUS_GRAPH_FAILURE_BINDING_COUNT;
     // RasterBinding initializes Visibility to Both, including every nested array element.
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization)
     StaticArray<StaticArray<rhi::RasterBinding, STAGE_BINDING_CAPACITY>, format::STAGE_ROLE_COUNT> Bindings{};
@@ -206,7 +209,7 @@ struct RenderGraphPackage::State final
     RenderGraphPackageStatus DecodeRecords(ByteReader& inoutReader) noexcept;
     RenderGraphPackageStatus DecodeUniforms(ByteReader& inoutReader) noexcept;
     void DeriveBindings() noexcept;
-    [[nodiscard]] RenderGraphPackageStatus AppendLtcTableBindings() noexcept;
+    [[nodiscard]] RenderGraphPackageStatus AppendSceneResourceBindings() noexcept;
     RenderGraphPackageStatus DecodeStages(ByteReader& inoutReader, uint32 stageCount) noexcept;
 };
 RenderGraphPackageStatus RenderGraphPackage::State::DecodeStages(ByteReader& inoutReader, uint32 stageCount) noexcept
@@ -593,36 +596,47 @@ void RenderGraphPackage::State::DeriveBindings() noexcept
         }
     }
 }
-RenderGraphPackageStatus RenderGraphPackage::State::AppendLtcTableBindings() noexcept
+RenderGraphPackageStatus RenderGraphPackage::State::AppendSceneResourceBindings() noexcept
 {
-    // The generated header's reflected compute bindings end with the table slot; a package carries
-    // the frozen ABI, so the decoder appends that slot to each scene compute role it carries.
+    // The generated header's reflected compute bindings end with the LTC table slot and then the failure summary;
+    // a package carries the frozen ABI, so the decoder appends the slots its scene resource word names to each
+    // compute role it carries, in slot order.
     bool hasVisibilityBuffer = false;
     for (usize i = 0; i < Header.PassCount; ++i)
     {
         hasVisibilityBuffer = hasVisibilityBuffer == true || Passes[i].Visibility != format::ABSENT;
     }
-    bool hasComputeRole = false;
-    for (const format::StageRole stageRole :
-         {format::StageRole::RayCompute, format::StageRole::SceneRayCompute, format::StageRole::PersistentRayCompute})
-    {
-        const usize role = static_cast<usize>(stageRole);
-        bool hasArtifact = false;
+    const auto hasArtifact = [this](usize role) noexcept {
+        bool isPresent = false;
         for (const StageView& view : Stages[role])
         {
-            hasArtifact = hasArtifact == true || view.IsPresent == true;
+            isPresent = isPresent == true || view.IsPresent == true;
         }
-        if (hasArtifact == false)
+        return isPresent;
+    };
+    const usize persistentRole = static_cast<usize>(format::StageRole::PersistentRayCompute);
+    bool hasComputeRole = false;
+    // The native Metal ray pipeline's stages are linked from the same kernel, so they count failures too; the LTC
+    // table is never bound to them.
+    for (const usize role : {static_cast<usize>(format::StageRole::RayCompute),
+                             static_cast<usize>(format::StageRole::SceneRayCompute),
+                             persistentRole,
+                             format::NATIVE_RAY_STAGE_ROLE})
+    {
+        const bool isNativeStages = role == format::NATIVE_RAY_STAGE_ROLE;
+        if (hasArtifact(role) == false || (isNativeStages == true && HasFailureSummary == false))
         {
             continue;
         }
         hasComputeRole = true;
         if (BindingCounts[role] == 0)
         {
+            // GetPrograms describes the native stages with the persistent layout when the generation has one.
             rhi::RasterShaderDescription description;
             SetRenderGraphRayInterface(description,
                                        rhi::ShaderStage::Compute,
-                                       stageRole == format::StageRole::PersistentRayCompute,
+                                       role == persistentRole ||
+                                           (isNativeStages == true && hasArtifact(persistentRole)),
                                        hasVisibilityBuffer,
                                        HasNativeRayQueries);
             for (const rhi::RasterBinding& binding : description.Bindings)
@@ -630,14 +644,27 @@ RenderGraphPackageStatus RenderGraphPackage::State::AppendLtcTableBindings() noe
                 Bindings[role][BindingCounts[role]++] = binding;
             }
         }
-        if (BindingCounts[role] == Bindings[role].GetSize())
+        const usize appended =
+            (HasLtcTable == true && isNativeStages == false ? LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT : 0) +
+            (HasFailureSummary == true ? LUDUS_GRAPH_FAILURE_BINDING_COUNT : 0);
+        if (Bindings[role].GetSize() - BindingCounts[role] < appended)
         {
             return RenderGraphPackageStatus::CapacityExceeded;
         }
-        Bindings[role][BindingCounts[role]++] = {LUDUS_GRAPH_LTC_TABLE_BINDING,
-                                                 rhi::RasterBindingKind::StorageRead,
-                                                 rhi::RasterVisibility::Compute,
-                                                 LUDUS_GPU_PREVIEW_VECTOR_BYTES};
+        if (HasLtcTable == true && isNativeStages == false)
+        {
+            Bindings[role][BindingCounts[role]++] = {LUDUS_GRAPH_LTC_TABLE_BINDING,
+                                                     rhi::RasterBindingKind::StorageRead,
+                                                     rhi::RasterVisibility::Compute,
+                                                     LUDUS_GPU_PREVIEW_VECTOR_BYTES};
+        }
+        if (HasFailureSummary == true)
+        {
+            Bindings[role][BindingCounts[role]++] = {LUDUS_GRAPH_FAILURE_BINDING,
+                                                     rhi::RasterBindingKind::StorageReadWrite,
+                                                     rhi::RasterVisibility::Compute,
+                                                     sizeof(uint32)};
+        }
     }
     return hasComputeRole == true ? RenderGraphPackageStatus::Ready : RenderGraphPackageStatus::Malformed;
 }
@@ -979,11 +1006,13 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     if (version >= format::LTC_TABLE_PACKAGE_VERSION)
     {
         const uint32 sceneResources = reader.ReadWord();
-        if (reader.IsOk() == false || (sceneResources & ~format::SCENE_RESOURCE_LTC_TABLE) != 0)
+        if (reader.IsOk() == false ||
+            (sceneResources & ~(format::SCENE_RESOURCE_LTC_TABLE | format::SCENE_RESOURCE_FAILURE_SUMMARY)) != 0)
         {
             return RenderGraphPackageStatus::Malformed;
         }
         candidate->HasLtcTable = (sceneResources & format::SCENE_RESOURCE_LTC_TABLE) != 0;
+        candidate->HasFailureSummary = (sceneResources & format::SCENE_RESOURCE_FAILURE_SUMMARY) != 0;
     }
     if (version >= format::NAMED_PACKAGE_VERSION)
     {
@@ -1061,9 +1090,9 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
         }
     }
     candidate->DeriveBindings();
-    if (candidate->HasLtcTable == true)
+    if (candidate->HasLtcTable == true || candidate->HasFailureSummary == true)
     {
-        status = candidate->AppendLtcTableBindings();
+        status = candidate->AppendSceneResourceBindings();
         if (status != RenderGraphPackageStatus::Ready)
         {
             return status;

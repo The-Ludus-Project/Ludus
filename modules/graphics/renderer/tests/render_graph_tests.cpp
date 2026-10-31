@@ -13,6 +13,7 @@
 #include <catch2/generators/catch_generators.hpp>
 
 #include <limits>
+#include <string_view>
 
 using namespace ludus::foundation;
 namespace renderer = ludus::graphics::renderer;
@@ -1430,4 +1431,22 @@ TEST_CASE("A capture's band count keeps each band's estimated GPU time under the
     constexpr uint64 HUGE_PIXELS = uint64{1} << 40U;
     CHECK(ComputeRenderGraphCaptureTileCount({ .Pixels = HUGE_PIXELS, .Lights = MANY_LIGHTS }) ==
           MAX_RENDER_GRAPH_RAY_TILES);
+}
+
+TEST_CASE("Every graph failure reason has a description for the author", "[render-graph][render-graph-failures]")
+{
+    using ludus::graphics::renderer::DescribeRenderGraphFailureReason;
+    using ludus::graphics::renderer::MAX_RENDER_GRAPH_FAILURE_REASONS;
+    using ludus::graphics::renderer::RENDER_GRAPH_FAILURE_AUTHORED_FIRST;
+    using ludus::graphics::renderer::RenderGraphFailureReason;
+    for (ludus::foundation::uint32 reason = 0; reason < MAX_RENDER_GRAPH_FAILURE_REASONS; ++reason)
+    {
+        CAPTURE(reason);
+        CHECK(std::string_view(DescribeRenderGraphFailureReason(reason)).empty() == false);
+    }
+    CHECK(std::string_view(DescribeRenderGraphFailureReason(MAX_RENDER_GRAPH_FAILURE_REASONS)).empty() == true);
+    // The engine's reasons are distinct from the authored range's generic sentence.
+    CHECK(std::string_view(DescribeRenderGraphFailureReason(
+              static_cast<ludus::foundation::uint32>(RenderGraphFailureReason::VisibilityBudget))) !=
+          std::string_view(DescribeRenderGraphFailureReason(RENDER_GRAPH_FAILURE_AUTHORED_FIRST)));
 }

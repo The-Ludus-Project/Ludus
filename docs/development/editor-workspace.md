@@ -1043,6 +1043,17 @@ Browser builds and native builds without `LUDUS_EDITOR_RENDER_PREVIEW` explain
 why rendering is unavailable. The game adapter chooses the trusted preview for
 the open World; it does not introduce another authoring workspace.
 
+### Why pixels turn magenta
+
+When the World viewport draws a project render graph, magenta pixels are the
+graph's failure colour: a sample failed one of its checks, and the pixel keeps the
+colour until the camera or scene changes. The viewport's status line names the
+check, how many pixels latched it and what to change, for example a shadow-ray
+budget that the scene's emissive triangles exceed. Graphs cooked before failure
+reasons name nothing; rebuild them. See
+[Explain failed pixels](render-graph-authoring.md#explain-failed-pixels) for the
+reasons and how a shader names its own.
+
 ### Select and transform objects in the World viewport
 
 Click a visible object's triangles to select it. The hierarchy and Properties

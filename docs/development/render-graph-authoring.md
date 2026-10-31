@@ -3227,6 +3227,47 @@ the RGBA8 output clamps linear RGB to [0, 1]. Holding the camera still does not 
 these colors. ReSTIR reservoir reuse remains an independent, shader-authored
 operation that can also reduce noise.
 
+### Explain failed pixels
+
+A pixel shows the failure colour (magenta) once one of its samples fails: a query
+over its budget, an invalid ray, non-finite radiance, or a shader that set
+`queries.HasFailed`. The World viewport names the check that failed, for example:
+
+> 303,548 pixels of ray pass 0 failed (the failure colour). A shader traced more
+> shadow rays than scene_interface.visibility_queries allows. …
+
+Each graph ray kernel counts the pixels that latch each reason in a small
+renderer-owned summary (binding 14), reset whenever the camera or scene changes.
+The viewport reads it about twice a second; `RenderGraph::PollRayFailures` gives
+the same counts to other hosts, and `DescribeRenderGraphFailureReason` the
+sentence.
+
+| Reason | Recorded when |
+| --- | --- |
+| Visibility budget | A shadow ray exceeds `visibility_queries`, including the polygonal-light template's two queries per emissive triangle. |
+| Surface or line budget | A ray or line query exceeds `surface_queries` or `line_queries`. |
+| Invalid ray | A ray has a non-unit direction or an invalid distance range. |
+| Traversal | The traversal could not finish, such as a full BVH stack. |
+| Random stream exhausted, invalid argument, light sample | A scene function rejected its input or ran out of random dimensions. |
+| Invalid radiance | A sample returned non-finite or negative radiance. |
+| Unspecified | A shader set `queries.HasFailed` directly. |
+
+Name your own checks with `FailSceneQuery(queries, reason)` instead of setting
+`HasFailed`. Use a scene interface reason from `scene_shader_layout.h`
+(`LUDUS_SCENE_FAILURE_*`), or your own from `LUDUS_SCENE_FAILURE_AUTHORED_FIRST`
+(32) to 63. The first reason of an invocation is kept.
+
+```slang
+if (lightCount * 2 > queries.MaximumVisibilityQueries)
+{
+    FailSceneQuery(queries, LUDUS_SCENE_FAILURE_VISIBILITY_BUDGET);
+    return float3(0);
+}
+```
+
+Packages cooked before failure reasons carry no summary and name nothing; rebuild
+the graph to add it.
+
 ### Denoise ray output with OIDN
 
 Add **Denoise** from the canvas's **Add Node** menu or Properties. Connect its

@@ -58,7 +58,8 @@
 /// depth-only fragment. It preserves the version 22 record widths.
 /// Version 25 appends one scene resource word after the storage records. Bit
 /// SCENE_RESOURCE_LTC_TABLE means the linked scene ray kernel reads the renderer's LTC table at
-/// LUDUS_GRAPH_LTC_TABLE_BINDING; other bits must be zero. Earlier packages bind no table.
+/// LUDUS_GRAPH_LTC_TABLE_BINDING; SCENE_RESOURCE_FAILURE_SUMMARY that every ray kernel counts its failed pixels
+/// at LUDUS_GRAPH_FAILURE_BINDING; other bits must be zero. Earlier packages bind neither.
 /// Version 29 appends ToneMappingCurve to every pass and admits ToneMap exposure on clustered deferred
 /// ColorAndDepth raster passes, fused into their lighting resolve. Earlier nonzero exposures imply Reinhard.
 namespace ludus::content::render_graph_format
@@ -95,6 +96,10 @@ inline constexpr foundation::uint32 CLUSTERED_DEFERRED_PACKAGE_VERSION = 24;
 inline constexpr foundation::uint32 LTC_TABLE_PACKAGE_VERSION = 25;
 /// Scene resource bit: the linked scene ray kernel reads the renderer-owned LTC table.
 inline constexpr foundation::uint32 SCENE_RESOURCE_LTC_TABLE = 1U;
+/// Scene resource bit: every ray kernel counts its latched pixels by failure reason in a renderer-owned summary
+/// at LUDUS_GRAPH_FAILURE_BINDING, its last binding (RenderGraph::PollRayFailures). Packages without the bit report
+/// no reasons; rebuilding the graph adds it.
+inline constexpr foundation::uint32 SCENE_RESOURCE_FAILURE_SUMMARY = 2U;
 /// First generation using mesh-triangle and LTC storage in the deferred resolve.
 inline constexpr foundation::uint32 RASTER_MESH_LIGHT_PACKAGE_VERSION = 26;
 /// First generation whose deferred resolve reads convex emitter polygon records instead of triangles.

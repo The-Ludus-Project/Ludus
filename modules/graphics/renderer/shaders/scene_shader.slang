@@ -59,7 +59,20 @@ struct RayQueryContext
     uint RandomPixel;         ///< Renderer-initialized linear pixel identity.
     uint RandomSampleIndex;   ///< Renderer-initialized progressive sample identity.
     uint NextRandomDimension; ///< Next automatic draw; shared across callbacks for this invocation.
+    /// Why HasFailed was set, a LUDUS_SCENE_FAILURE_* reason; the first FailSceneQuery wins. Zero when a shader set
+    /// HasFailed directly.
+    uint FailureReason;
 };
+/// Fail the invocation with a reason, a LUDUS_SCENE_FAILURE_* value or an authored reason in
+/// [LUDUS_SCENE_FAILURE_AUTHORED_FIRST, LUDUS_SCENE_FAILURE_REASON_COUNT). The renderer counts the pixels that latch
+/// each reason, so the editor names the failing check instead of only drawing the failure colour. The first reason
+/// of an invocation is kept.
+void FailSceneQuery(inout RayQueryContext queries, uint reason)
+{
+    if (queries.HasFailed == false)
+        queries.FailureReason = reason < LUDUS_SCENE_FAILURE_REASON_COUNT ? reason : LUDUS_SCENE_FAILURE_UNSPECIFIED;
+    queries.HasFailed = true;
+}
 struct SurfaceHit
 {
     Ray IncomingRay;
@@ -339,17 +352,28 @@ bool IsSceneRayValid(Ray ray)
 uint TraceClosest(SceneContext scene, inout RayQueryContext queries, Ray ray, out SurfaceHit outHit)
 {
     outHit = (SurfaceHit)0;
-    if (queries.HasFailed == true || scene.Version != SCENE_INTERFACE_VERSION ||
-        queries.SurfaceQueries >= queries.MaximumSurfaceQueries || IsSceneRayValid(ray) == false)
+    if (queries.HasFailed == true)
+        return SCENE_QUERY_FAILURE;
+    if (scene.Version != SCENE_INTERFACE_VERSION)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INTERFACE_VERSION);
+        return SCENE_QUERY_FAILURE;
+    }
+    if (queries.SurfaceQueries >= queries.MaximumSurfaceQueries)
+    {
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SURFACE_BUDGET);
+        return SCENE_QUERY_FAILURE;
+    }
+    if (IsSceneRayValid(ray) == false)
+    {
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_RAY);
         return SCENE_QUERY_FAILURE;
     }
     queries.SurfaceQueries += 1;
     Hit hit = Trace(ray.OriginWorld, ray.DirectionWorld, ray.MinDistanceWorld, ray.MaxDistanceWorld);
     if (hit.Triangle == LUDUS_GPU_PREVIEW_FAILED_TRIANGLE)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_TRAVERSAL);
         return SCENE_QUERY_FAILURE;
     }
     if (hit.Triangle == SCENE_INVALID_INDEX)
@@ -403,7 +427,7 @@ static bool TryAdvanceSceneRandomDimension(inout RayQueryContext queries, out ui
         return false;
     if (queries.NextRandomDimension > RANDOM_MAX_DIMENSION)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_RANDOM_EXHAUSTED);
         return false;
     }
     outDimension = queries.NextRandomDimension++;
@@ -427,7 +451,7 @@ SelectedLight SelectLight(SceneContext scene, inout RayQueryContext queries)
                                count,
                                result.LightIndex);
     if (result.HasSample == false)
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_LIGHT_SAMPLE);
     result.SelectionPmf = result.HasSample == true ? 1.0 / float(count) : 0;
     return result;
 }
@@ -589,10 +613,16 @@ LightSample SampleIncidentLight(SceneContext scene, SelectedLight selected, Surf
 }
 uint TestVisibility(SceneContext scene, inout RayQueryContext queries, SurfaceHit receiver, LightSample light)
 {
-    if (queries.HasFailed == true || light.HasSample == false ||
-        queries.VisibilityQueries >= queries.MaximumVisibilityQueries)
+    if (queries.HasFailed == true)
+        return SCENE_QUERY_FAILURE;
+    if (light.HasSample == false)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_LIGHT_SAMPLE);
+        return SCENE_QUERY_FAILURE;
+    }
+    if (queries.VisibilityQueries >= queries.MaximumVisibilityQueries)
+    {
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_VISIBILITY_BUDGET);
         return SCENE_QUERY_FAILURE;
     }
     queries.VisibilityQueries += 1;
@@ -621,13 +651,13 @@ uint TestVisibility(SceneContext scene, inout RayQueryContext queries, SurfaceHi
     }
     if (IsSceneRayValid(shadow) == false)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_RAY);
         return SCENE_QUERY_FAILURE;
     }
     Hit hit = Trace(shadow.OriginWorld, shadow.DirectionWorld, 0, shadow.MaxDistanceWorld, true);
     if (hit.Triangle == LUDUS_GPU_PREVIEW_FAILED_TRIANGLE)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_TRAVERSAL);
         return SCENE_QUERY_FAILURE;
     }
     return hit.Triangle == SCENE_INVALID_INDEX ? SCENE_QUERY_MISS : SCENE_QUERY_SURFACE;
@@ -687,11 +717,22 @@ uint FindVisibleLineIntervals(SceneContext scene,
                               out LineVisibility outVisibility)
 {
     ClearLineVisibility(outVisibility);
-    if (queries.HasFailed == true || scene.Version != SCENE_INTERFACE_VERSION ||
-        queries.LineQueries >= queries.MaximumLineQueries || receiver.IsValid == false ||
+    if (queries.HasFailed == true)
+        return SCENE_QUERY_FAILURE;
+    if (scene.Version != SCENE_INTERFACE_VERSION)
+    {
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INTERFACE_VERSION);
+        return SCENE_QUERY_FAILURE;
+    }
+    if (queries.LineQueries >= queries.MaximumLineQueries)
+    {
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_LINE_BUDGET);
+        return SCENE_QUERY_FAILURE;
+    }
+    if (receiver.IsValid == false ||
         (segment.TriangleIndex != SCENE_INVALID_INDEX && segment.TriangleIndex >= Counts.x))
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_ARGUMENT);
         return SCENE_QUERY_FAILURE;
     }
     queries.LineQueries += 1;
@@ -701,7 +742,7 @@ uint FindVisibleLineIntervals(SceneContext scene,
         all(isfinite(segment.EndWorld)) == false || isfinite(segmentLengthWorld) == false ||
         segmentLengthWorld < SCENE_UNIT_TOLERANCE)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_ARGUMENT);
         return SCENE_QUERY_FAILURE;
     }
     float3 middleWorld = (segment.StartWorld + segment.EndWorld) * 0.5;
@@ -725,7 +766,7 @@ uint FindVisibleLineIntervals(SceneContext scene,
     if (isfinite(normalLength) == false ||
         normalLength <= TRIANGLE_PARALLEL_COSINE_TOLERANCE * length(edgeAWorld) * length(edgeBWorld))
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_ARGUMENT);
         return SCENE_QUERY_FAILURE;
     }
     uint receiverTriangle = receiver.TriangleIndex < Counts.x ? receiver.TriangleIndex : SCENE_INVALID_INDEX;
@@ -739,7 +780,8 @@ uint FindVisibleLineIntervals(SceneContext scene,
                             isOccluded) == false)
     {
         ClearLineVisibility(outVisibility);
-        queries.HasFailed = true;
+        // The traversal's interval set or stack could not hold the segment's occluders.
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_TRAVERSAL);
         return SCENE_QUERY_FAILURE;
     }
     float visibleParameter = 0;
@@ -827,7 +869,7 @@ uint SampleSceneRandom(inout RayQueryContext queries, uint minimumInclusive, uin
 {
     if (minimumInclusive >= maximumExclusive)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_ARGUMENT);
         return 0;
     }
     uint dimension;
@@ -839,7 +881,7 @@ uint SampleSceneRandom(inout RayQueryContext queries, uint minimumInclusive, uin
                                maximumExclusive - minimumInclusive,
                                offset) == false)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_RANDOM_EXHAUSTED);
         return 0;
     }
     return minimumInclusive + offset;

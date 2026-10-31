@@ -458,6 +458,89 @@ Status PackGpuScene(const ReferenceJob& job,
                   GpuBits(static_cast<uint32>(job.SourceGeneration >> LUDUS_GRAPH_SOURCE_HIGH_SHIFT)));
     return Status::Ready;
 }
+// The compute bindings of a job, one per binding of the job's layout (GpuPreviewState::ComputeBindings), each chosen
+// by its slot: the layout's order and optional slots (storage, visibility, ray path capture, LTC table, failure
+// summary) then need no position arithmetic. parameters is the job's uniform or one row band's copy; failures is the
+// failure summary of the camera history the bindings serve. Returns the binding count, or zero for a slot this
+// renderer does not own.
+usize MakeGpuComputeBindings(
+    const GpuPreviewState& state,
+    const GpuPreviewRecord& job,
+    rhi::BufferHandle parameters,
+    rhi::BufferHandle failures,
+    StaticArray<rhi::RasterBindingResource, internal::GPU_PREVIEW_COMPUTE_BINDING_CAPACITY>& outBindings) noexcept
+{
+    const usize pixels = usize(job.Width) * job.Height;
+    outBindings = {};
+    for (usize index = 0; index < state.ComputeBindingCount; ++index)
+    {
+        const uint32 slot = state.ComputeBindings[index].Binding;
+        rhi::RasterBindingResource& binding = outBindings[index];
+        binding.Binding = slot;
+        switch (slot)
+        {
+            case 0:
+                binding = {slot, parameters, 0, sizeof(internal::GpuPreviewUniform)};
+                break;
+            case 1:
+                binding = {slot, job.Data, 0, job.DataBytes};
+                break;
+            case 2:
+                binding = {slot, job.Accumulation, 0, pixels * LUDUS_GPU_PREVIEW_ACCUMULATION_BYTES};
+                break;
+            case LUDUS_GPU_PREVIEW_COLORS_BINDING:
+                binding = {slot, job.Colors, 0, pixels * LUDUS_GPU_PREVIEW_VECTOR_BYTES};
+                break;
+            case LUDUS_GPU_PREVIEW_TEXELS_BINDING:
+                binding = {slot, job.Texels, 0, job.TexelBytes};
+                break;
+            case LUDUS_GPU_PREVIEW_RAY_SCENE_BINDING:
+                binding.Scene = job.NativeScene;
+                break;
+            case LUDUS_GRAPH_BUFFER0_BINDING:
+            case LUDUS_GRAPH_BUFFER1_BINDING: {
+                if (state.HasPersistentBuffers == true)
+                {
+                    const GpuPreviewGraphBuffer& buffer = job.GraphBuffers[slot - LUDUS_GRAPH_BUFFER0_BINDING];
+                    binding = {slot, buffer.Buffer, 0, buffer.Size};
+                    break;
+                }
+                bool isFound = false;
+                for (usize storage = 0; storage < job.Storage.GetCount(); ++storage)
+                {
+                    if (job.Storage.GetBinding(storage).Binding == slot)
+                    {
+                        binding = job.Storage.GetBinding(storage);
+                        isFound = true;
+                    }
+                }
+                if (isFound == false)
+                {
+                    return 0;
+                }
+                break;
+            }
+            case LUDUS_GRAPH_VISIBILITY_BINDING:
+                binding.Texture = job.VisibilityView;
+                break;
+            case LUDUS_GRAPH_VISIBILITY_DEPTH_BINDING:
+                binding.Texture = job.VisibilityDepthView;
+                break;
+            case LUDUS_RAY_PATH_CAPTURE_BINDING:
+                binding = {slot, job.RayPathCapture.Buffer, 0, job.RayPathCapture.Size};
+                break;
+            case LUDUS_GRAPH_LTC_TABLE_BINDING:
+                binding = {slot, state.LtcTable, 0, sizeof(internal::LTC_TABLE)};
+                break;
+            case LUDUS_GRAPH_FAILURE_BINDING:
+                binding = {slot, failures, 0, LUDUS_GRAPH_FAILURE_BYTES};
+                break;
+            default:
+                return 0;
+        }
+    }
+    return state.ComputeBindingCount;
+}
 Status PollGpuJob(rhi::DeviceHandle device, GpuPreviewState& inoutState, GpuPreviewRecord& inoutJob) noexcept
 {
     if (inoutJob.Setup == Status::Pending)
@@ -471,6 +554,14 @@ Status PollGpuJob(rhi::DeviceHandle device, GpuPreviewState& inoutState, GpuPrev
         for (rhi::BufferHandle buffer : buffers)
         {
             const Status status = rhi::GetStatus(device, buffer);
+            if (status != Status::Ready)
+            {
+                return Accepted(status) ? Status::Pending : (inoutJob.Setup = status);
+            }
+        }
+        if (inoutState.HasFailureSummary == true)
+        {
+            const Status status = rhi::GetStatus(device, inoutJob.Failures);
             if (status != Status::Ready)
             {
                 return Accepted(status) ? Status::Pending : (inoutJob.Setup = status);
@@ -529,50 +620,16 @@ Status PollGpuJob(rhi::DeviceHandle device, GpuPreviewState& inoutState, GpuPrev
         if (inoutJob.ComputeBindingsCreated == false &&
             (inoutState.HasVisibilityBuffer == false || rhi::IsNull(inoutJob.VisibilityTexture) == false))
         {
-            const usize pixels = usize(inoutJob.Width) * inoutJob.Height;
-            StaticArray<rhi::RasterBindingResource, internal::GPU_PREVIEW_COMPUTE_BINDING_CAPACITY> bindings{
-                {{0, inoutJob.Parameters, 0, sizeof(internal::GpuPreviewUniform)},
-                 {1, inoutJob.Data, 0, inoutJob.DataBytes},
-                 {2, inoutJob.Accumulation, 0, pixels * LUDUS_GPU_PREVIEW_ACCUMULATION_BYTES},
-                 {LUDUS_GPU_PREVIEW_COLORS_BINDING, inoutJob.Colors, 0, pixels * LUDUS_GPU_PREVIEW_VECTOR_BYTES},
-                 {LUDUS_GPU_PREVIEW_TEXELS_BINDING, inoutJob.Texels, 0, inoutJob.TexelBytes},
-                 { .Binding = LUDUS_GPU_PREVIEW_RAY_SCENE_BINDING, .Scene = inoutJob.NativeScene }}};
             const Status created = [&]() noexcept {
-                const usize baseBindingCount =
-                    LUDUS_GPU_PREVIEW_BINDING_COUNT - (inoutState.HasNativeRayQueries == true ? 0 : 1);
-                usize count =
-                    baseBindingCount + (inoutState.HasPersistentBuffers == true ? internal::GPU_GRAPH_BUFFER_COUNT
-                                                                                : inoutJob.Storage.GetCount());
-                for (usize index = 0; index < inoutJob.Storage.GetCount(); ++index)
-                {
-                    bindings[baseBindingCount + index] = inoutJob.Storage.GetBinding(index);
-                }
+                // Caller-owned buffers bound by the job must be ready before its bindings snapshot them.
                 for (usize slot = 0; inoutState.HasPersistentBuffers == true && slot < internal::GPU_GRAPH_BUFFER_COUNT;
                      ++slot)
                 {
-                    const GpuPreviewGraphBuffer& buffer = inoutJob.GraphBuffers[slot];
-                    const Status ready = rhi::GetStatus(device, buffer.Buffer);
+                    const Status ready = rhi::GetStatus(device, inoutJob.GraphBuffers[slot].Buffer);
                     if (ready != Status::Ready)
                     {
                         return ready;
                     }
-                    bindings[baseBindingCount + slot] = {static_cast<uint32>(LUDUS_GRAPH_BUFFER0_BINDING + slot),
-                                                         buffer.Buffer,
-                                                         0,
-                                                         buffer.Size};
-                }
-                if (inoutState.HasVisibilityBuffer == true)
-                {
-                    bindings[count++] =
-                    {
-                        .Binding = LUDUS_GRAPH_VISIBILITY_BINDING,
-                        .Texture = inoutJob.VisibilityView,
-                    };
-                    bindings[count++] =
-                    {
-                        .Binding = LUDUS_GRAPH_VISIBILITY_DEPTH_BINDING,
-                        .Texture = inoutJob.VisibilityDepthView,
-                    };
                 }
                 if (inoutState.HasRayPathCapture == true)
                 {
@@ -581,17 +638,13 @@ Status PollGpuJob(rhi::DeviceHandle device, GpuPreviewState& inoutState, GpuPrev
                     {
                         return ready;
                     }
-                    bindings[count++] = {LUDUS_RAY_PATH_CAPTURE_BINDING,
-                                         inoutJob.RayPathCapture.Buffer,
-                                         0,
-                                         inoutJob.RayPathCapture.Size};
                 }
-                if (inoutState.HasLtcTable == true)
+                StaticArray<rhi::RasterBindingResource, internal::GPU_PREVIEW_COMPUTE_BINDING_CAPACITY> bindings{};
+                const usize count =
+                    MakeGpuComputeBindings(inoutState, inoutJob, inoutJob.Parameters, inoutJob.Failures, bindings);
+                if (count == 0)
                 {
-                    bindings[count++] = {LUDUS_GRAPH_LTC_TABLE_BINDING,
-                                         inoutState.LtcTable,
-                                         0,
-                                         sizeof(internal::LTC_TABLE)};
+                    return Status::InvalidDescription;
                 }
                 return rhi::CreateBindingSet(device,
                                              inoutState.ComputeLayout,
@@ -797,6 +850,7 @@ void Renderer::State::DropGpuPreview(usize slot) noexcept
     job.IsNativeSceneCreated = false;
     static_cast<void>(rhi::Destroy(Device, job.Parameters));
     static_cast<void>(rhi::Destroy(Device, job.Accumulation));
+    static_cast<void>(rhi::Destroy(Device, job.Failures));
     static_cast<void>(rhi::Destroy(Device, job.Colors));
     static_cast<void>(rhi::Destroy(Device, job.ImageParameters));
     for (internal::GpuFrameRecord& frame : job.Frames)
@@ -891,10 +945,27 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     {
         return status;
     }
-    // A kernel reading the renderer's LTC table declares it last, after every other slot.
-    const rhi::RasterBinding* ltcTableBindingOrNull =
-        compute.Bindings.empty() == false && compute.Bindings.back().Binding == LUDUS_GRAPH_LTC_TABLE_BINDING
+    // A graph ray kernel declares its failure summary last, after every other slot.
+    const rhi::RasterBinding* failureBindingOrNull =
+        compute.Bindings.empty() == false && compute.Bindings.back().Binding == LUDUS_GRAPH_FAILURE_BINDING
             ? &compute.Bindings.back()
+            : nullptr;
+    if (failureBindingOrNull != nullptr &&
+        (failureBindingOrNull->Kind != rhi::RasterBindingKind::StorageReadWrite ||
+         failureBindingOrNull->Visibility != rhi::RasterVisibility::Compute ||
+         failureBindingOrNull->MinSize != sizeof(uint32) || failureBindingOrNull->HasDynamicOffset == true ||
+         failureBindingOrNull->Count != 1 || failureBindingOrNull->IsRuntimeSized == true ||
+         failureBindingOrNull->HasPartialBinding == true ||
+         failureBindingOrNull->Indexing != rhi::RasterBindingIndexing::Constant))
+    {
+        return Status::InvalidDescription;
+    }
+    const std::span<const rhi::RasterBinding> summaryBindings = compute.Bindings.first(
+        compute.Bindings.size() - (failureBindingOrNull != nullptr ? LUDUS_GRAPH_FAILURE_BINDING_COUNT : 0));
+    // A kernel reading the renderer's LTC table declares it next, after every remaining slot.
+    const rhi::RasterBinding* ltcTableBindingOrNull =
+        summaryBindings.empty() == false && summaryBindings.back().Binding == LUDUS_GRAPH_LTC_TABLE_BINDING
+            ? &summaryBindings.back()
             : nullptr;
     if (ltcTableBindingOrNull != nullptr &&
         (ltcTableBindingOrNull->Kind != rhi::RasterBindingKind::StorageRead ||
@@ -906,8 +977,8 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     {
         return Status::InvalidDescription;
     }
-    const std::span<const rhi::RasterBinding> leadingBindings = compute.Bindings.first(
-        compute.Bindings.size() - (ltcTableBindingOrNull != nullptr ? LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT : 0));
+    const std::span<const rhi::RasterBinding> leadingBindings = summaryBindings.first(
+        summaryBindings.size() - (ltcTableBindingOrNull != nullptr ? LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT : 0));
     // A diagnostic capture-variant kernel declares its capture buffer after every frozen ABI slot.
     const rhi::RasterBinding* captureBindingOrNull =
         leadingBindings.empty() == false && leadingBindings.back().Binding == LUDUS_RAY_PATH_CAPTURE_BINDING
@@ -1058,6 +1129,7 @@ Status Renderer::EnableGpuPreview(const rhi::RasterShaderDescription& compute,
     state->HasVisibilityBuffer = hasVisibilityBuffer;
     state->HasRayPathCapture = captureBindingOrNull != nullptr;
     state->HasLtcTable = ltcTableBindingOrNull != nullptr;
+    state->HasFailureSummary = failureBindingOrNull != nullptr;
     if (state->HasLtcTable == true &&
         options.GpuByteBudget - internal::GPU_PREVIEW_QUAD_BYTES < sizeof(internal::LTC_TABLE))
     {
@@ -1702,6 +1774,10 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
                                    {rhi::BufferRole::Storage, pixels * LUDUS_GPU_PREVIEW_ACCUMULATION_BYTES},
                                    {zeros.GetData(), pixels * LUDUS_GPU_PREVIEW_ACCUMULATION_BYTES},
                                    job.Accumulation);
+    }
+    if (Accepted(status) && state.HasFailureSummary == true)
+    {
+        status = internal::CreateGpuFailureSummary(mState->Device, job.Failures);
     }
     if (Accepted(status))
     {
