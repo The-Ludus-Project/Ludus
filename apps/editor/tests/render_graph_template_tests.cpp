@@ -1737,6 +1737,82 @@ TEST_CASE("Veach and Guibas MIS configuration imports its shade passes and setti
     RequireValidation(workspace);
 }
 
+TEST_CASE("Steinberg and Yan template is created from the editor picker with wave, geometric and coherence outputs",
+          "[editor][render-graph][steinberg-yan-template]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    workspace.show();
+    CreateGraphFromPicker(workspace, QStringLiteral("steinberg-yan-plt"));
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QByteArray library = document.GetDraft(QStringLiteral("library.lurender.json"));
+    for (const char* program : {"ShadeWave", "ShadeGeometricOptics", "MeasureCoherence"})
+    {
+        INFO(program);
+        CHECK(library.contains(program) == true);
+    }
+    const QByteArray root = document.GetDraft(ROOT_GRAPH);
+    // The wave-optics image is exported first, so the viewport shows it by default. The coherence radius is a
+    // linear measurement: it accumulates but is not tone mapped.
+    CHECK(root.indexOf("\"output\"") < root.indexOf("\"geometricOutput\""));
+    CHECK(root.count("\"Accumulate\"") == 3);
+    CHECK(root.count("\"ToneMap\"") == 2);
+    CHECK(root.count("\"Export\"") == 3);
+    CHECK(document.GetDraft(QStringLiteral("main_shaders/grating.slang")).contains("EvaluateBesselJ") == true);
+    CHECK(document.GetDraft(COMPUTE_MANIFEST).contains("PLT_GRATING_PERIOD_NANOMETERS") == true);
+    RequireValidation(workspace);
+}
+
+TEST_CASE("Steinberg and Yan configuration imports its passes, shader closure and settings on the root canvas",
+          "[editor][render-graph][steinberg-yan-configuration]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    RenderGraphDocument& document = workspace.GetDocument();
+    REQUIRE(workspace.ApplyConfigurationTemplate(QStringLiteral("Plt"), QStringLiteral("steinberg-yan-plt")) == true);
+    const QByteArray library = document.GetDraft(QStringLiteral("Plt.lurender.json"));
+    for (const char* program : {"SteinbergYanPrimary",
+                                "SteinbergYanShadeWave",
+                                "SteinbergYanShadeGeometricOptics",
+                                "SteinbergYanMeasureCoherence"})
+    {
+        INFO(program);
+        CHECK(library.contains(program) == true);
+    }
+    // shade.slang's include closure arrives with it.
+    for (const QString& source : {QStringLiteral("steinberg_yan_plt/main_shaders/primary.slang"),
+                                  QStringLiteral("steinberg_yan_plt/main_shaders/shade.slang"),
+                                  QStringLiteral("steinberg_yan_plt/main_shaders/hit_record.slang"),
+                                  QStringLiteral("steinberg_yan_plt/main_shaders/grating.slang"),
+                                  QStringLiteral("steinberg_yan_plt/main_shaders/spectrum.slang"),
+                                  QStringLiteral("steinberg_yan_plt/main_shaders/natural_light.slang")})
+    {
+        INFO(source.toStdString());
+        CHECK(document.GetDraft(source).isEmpty() == false);
+    }
+    const QByteArray manifest = document.GetDraft(COMPUTE_MANIFEST);
+    for (const char* setting : {"PLT_GRATING_PERIOD_NANOMETERS",
+                                "PLT_GRATING_AMPLITUDE_NANOMETERS",
+                                "PLT_GRATING_ROUGHNESS_MAXIMUM",
+                                "PLT_POINT_SOURCE_RADIUS_MILLIMETERS",
+                                "PLT_DIRECTIONAL_SOURCE_ANGULAR_RADIUS",
+                                "PLT_COHERENCE_WAVELENGTH_NANOMETERS",
+                                "PLT_COHERENCE_DISPLAY_MICROMETERS"})
+    {
+        INFO(setting);
+        CHECK(manifest.contains(setting) == true);
+    }
+    ReplaceRasterSubgraph(document, QStringLiteral("Plt"));
+    REQUIRE(workspace.Save() == true);
+    RequireValidation(workspace);
+}
+
 TEST_CASE("Line-sampling template is created from the editor picker with Properties hidden",
           "[editor][render-graph][line-sampling-template]")
 {

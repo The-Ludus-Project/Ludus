@@ -384,7 +384,7 @@ if(TARGET ludus_renderer_render_tests)
         LUDUS_RG3_VISIBILITY_ORDINARY_DIRECTORY="${visibility_ordinary_package_directory}")
     foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing
             simple_compute_ray_tracing veach_guibas_mis line_sampling ris_projected_solid_angle salesin_jarosz_lines
-            polygonal_light_sampling slice_sampling_luminaire)
+            polygonal_light_sampling slice_sampling_luminaire steinberg_yan_plt)
         set(template_source "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/${template_directory}")
         set(template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${template_directory}_template")
         ludus_stage_render_graph_fixture("${template_source}" "${template_staged}")
@@ -610,6 +610,46 @@ if(TARGET ludus_renderer_render_tests)
         string(TOUPPER "${mis_name}" mis_definition)
         target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
             "LUDUS_RG3_VEACH_GUIBAS_MIS_${mis_definition}_DIRECTORY=\"${mis_package_directory}\"")
+    endforeach()
+    # The steinberg-yan-plt template with Graph settings replaced, each variant a name followed by setting/value
+    # pairs: 20 mm and 200 mm natural point sources, whose spectra the tests compare, and a flat grating with the
+    # 20 mm source, whose wave and geometric images must agree. Sources of a few millimetres make sub-pixel glints
+    # at the tests' 96 x 64 resolution.
+    set(plt_template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/steinberg_yan_plt_template")
+    file(READ "${plt_template_staged}/main.lushader.json" plt_manifest)
+    string(JSON plt_setting_count LENGTH "${plt_manifest}" settings)
+    math(EXPR plt_setting_last "${plt_setting_count} - 1")
+    foreach(plt_variant IN ITEMS "small_source;PLT_POINT_SOURCE_RADIUS_MILLIMETERS;20"
+            "large_source;PLT_POINT_SOURCE_RADIUS_MILLIMETERS;200"
+            "flat;PLT_POINT_SOURCE_RADIUS_MILLIMETERS;20;PLT_GRATING_AMPLITUDE_NANOMETERS;0")
+        list(POP_FRONT plt_variant plt_name)
+        set(plt_variant_manifest "${plt_manifest}")
+        while(plt_variant)
+            list(POP_FRONT plt_variant plt_setting plt_value)
+            set(plt_setting_index -1)
+            foreach(setting_index RANGE ${plt_setting_last})
+                string(JSON setting_id GET "${plt_manifest}" settings ${setting_index} id)
+                if(setting_id STREQUAL plt_setting)
+                    set(plt_setting_index ${setting_index})
+                endif()
+            endforeach()
+            if(plt_setting_index LESS 0)
+                message(FATAL_ERROR "The steinberg-yan-plt template manifest has no ${plt_setting} setting.")
+            endif()
+            string(JSON plt_variant_manifest SET "${plt_variant_manifest}" settings ${plt_setting_index} value
+                ${plt_value})
+        endwhile()
+        set(plt_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/steinberg_yan_plt_${plt_name}")
+        ludus_stage_render_graph_inputs("${plt_template_staged}" "${plt_staged}" main.lushader.json)
+        # Rewrite the staged manifest only when it changes, so reconfiguring does not rebuild the package.
+        file(WRITE "${plt_staged}.lushader.json" "${plt_variant_manifest}\n")
+        file(COPY_FILE "${plt_staged}.lushader.json" "${plt_staged}/main.lushader.json" ONLY_IF_DIFFERENT)
+        ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME "rg2_steinberg_yan_plt_${plt_name}"
+            MANIFEST "${plt_staged}/main.lushader.json" RUNTIME_PACKAGE)
+        cmake_path(GET "rg2_steinberg_yan_plt_${plt_name}_RUNTIME_PACKAGE" PARENT_PATH plt_package_directory)
+        string(TOUPPER "${plt_name}" plt_definition)
+        target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+            "LUDUS_RG3_STEINBERG_YAN_PLT_${plt_definition}_DIRECTORY=\"${plt_package_directory}\"")
     endforeach()
     # The Veach and Guibas template with every scene compute pass on the triangle loop, so the
     # line-sampling comparison with its lightSampling output needs no native ray profile.

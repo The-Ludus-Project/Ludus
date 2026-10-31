@@ -518,6 +518,96 @@ class VeachGuibasMisTemplateTests(unittest.TestCase):
         self.assertEqual(arguments.template, 'veach-guibas-mis')
 
 
+class SteinbergYanPltTemplateTests(unittest.TestCase):
+    """Steinberg and Yan's partially coherent diffraction beside geometric optics and the coherence radius."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+
+    def create(self, profiles=('metal', 'wgsl'), name='Plt'):
+        return graph.new_workspace(Path(self.directory.name) / name, output='offscreen', renderer_static=True,
+                                   profiles=profiles, template='steinberg-yan-plt')
+
+    def test_three_passes_share_the_hit_buffer_and_the_coherence_image_is_not_tone_mapped(self):
+        root = self.create()
+        plan = graph.compile_graph(root)
+        rays = [operation for operation in plan['passes'] if operation['kind'] == 'RayTracing']
+        self.assertEqual([operation['id'].rsplit('/', 1)[-1] for operation in rays],
+                         ['primary', 'shadeWave', 'shadeGeometric', 'measureCoherence'])
+        for operation in rays:
+            self.assertEqual(operation['pipeline']['kind'], 'ComputePipeline')
+        buffers = [resource for resource in plan['resources'].values() if resource['type'] == 'Buffer']
+        self.assertEqual(len(buffers), 1)
+        self.assertEqual(buffers[0]['bytes_per_pixel'], 32)
+        self.assertNotIn('accumulation', rays[0])
+        for operation in rays[1:]:
+            self.assertEqual(4096, operation['accumulation']['samples'])
+        for operation in rays[1:3]:
+            self.assertEqual(1, operation['tone_mapping']['exposure'])
+        # The coherence radius is a linear measurement: averaged, then written without display conversion.
+        self.assertNotIn('tone_mapping', rays[3])
+        exports = [operation['id'].rsplit('/', 1)[-1] for operation in plan['passes'] if operation['kind'] == 'Export']
+        self.assertEqual(exports, ['output', 'geometricOutput', 'coherenceOutput'])
+        manifest = json.loads(root.with_name('main.lushader.json').read_text())
+        build.validate_manifest(manifest)
+        technique = next(technique for technique in manifest['techniques'] if technique['id'] == ray.TECHNIQUE)
+        # One traced ray and one shadow ray per invocation.
+        self.assertEqual(technique['scene_interface'], {'version': 1, 'surface_queries': 1, 'visibility_queries': 1})
+        compute = [program for program in manifest['programs'] if program['stage'] == 'compute']
+        self.assertEqual([(program['id'], program['function']) for program in compute],
+                         [('Primary', 'TracePrimaryHit'), ('ShadeWave', 'ShadeWave'),
+                          ('ShadeGeometricOptics', 'ShadeGeometricOptics'), ('MeasureCoherence', 'MeasureCoherence')])
+
+    def test_settings_and_shaders_cite_the_framework(self):
+        import re
+        root = self.create()
+        shaders = root.with_name('main_shaders')
+        manifest = json.loads(root.with_name('main.lushader.json').read_text())
+        settings = {setting['id']: setting for setting in manifest['settings']}
+        self.assertEqual(settings['PLT_GRATING_PERIOD_NANOMETERS']['value'], 740)
+        self.assertEqual(settings['PLT_GRATING_AMPLITUDE_NANOMETERS']['minimum'], 0)
+        self.assertEqual(settings['PLT_POINT_SOURCE_RADIUS_MILLIMETERS']['value'], 5)
+        # The sun's angular radius, which reproduces the paper's coherence radius of sunlight.
+        self.assertEqual(settings['PLT_DIRECTIONAL_SOURCE_ANGULAR_RADIUS']['value'], 0.004653)
+        self.assertGreater(settings['PLT_POINT_SOURCE_RADIUS_MILLIMETERS']['minimum'], 0)
+        for source in ('shade.slang', 'grating.slang', 'natural_light.slang'):
+            text = shaders.joinpath(source).read_text()
+            for name in ('Steinberg', 'Yan', '10.1145/3450626.3459791'):
+                self.assertIn(name, text)
+        self.assertIn('Wyman', shaders.joinpath('spectrum.slang').read_text())
+        header = shaders.joinpath('hit_record.slang').read_text()
+        constant = lambda name: int(re.search(rf'static const uint {name} = (\d+);', header).group(1))
+        self.assertEqual(constant('PRIMARY_RANDOM_DIMENSION_COUNT'), 2)
+        self.assertEqual(constant('SHADE_RANDOM_DIMENSION_COUNT'), 7)
+        self.assertIn('SHADE_FACET_QUADRATURE_DIMENSION = SHADE_TRACED_DIRECTION_DIMENSION + 1;', header)
+        for kernel in ('primary', 'shade'):
+            source = shaders.joinpath(f'{kernel}.slang').read_text()
+            self.assertNotIn('SampleSceneRandom(queries', source)
+            self.assertNotIn('SelectLight(scene, queries', source)
+
+    def test_native_ray_tracing_is_required(self):
+        with self.assertRaises(ToolingError):
+            self.create(('wgsl',), name='Browser')
+        self.assertFalse((Path(self.directory.name) / 'Browser').exists())
+
+    def test_relocated_sdk_and_cli_expose_the_template(self):
+        from ludus_tools import render_graph_templates
+        from ludus_tools.cli import build_parser
+        installed = Path(self.directory.name) / 'sdk/lib/cmake/Ludus/render_graph'
+        module = installed / 'ludus_tools/render_graph_templates.py'
+        module.parent.mkdir(parents=True)
+        source = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs/steinberg_yan_plt'
+        shutil.copytree(source, installed / 'templates/steinberg_yan_plt')
+        with patch.object(render_graph_templates, '__file__', str(module)):
+            files = render_graph_templates.template_files('steinberg-yan-plt', ('spirv',), graph)
+        build.validate_manifest(json.loads(files['main.lushader.json']))
+        self.assertIn('EvaluateBesselJ', files['main_shaders/grating.slang'])
+        arguments = build_parser().parse_args(['render-graph', 'new', 'graphs/Plt', '--template', 'steinberg-yan-plt',
+                                               '--output', 'offscreen', '--renderer-static', '--profiles', 'metal'])
+        self.assertEqual(arguments.template, 'steinberg-yan-plt')
+
+
 class LineSamplingTemplateTests(unittest.TestCase):
     """Billen and Dutre's surface-area line estimator in one direction, beside its visible fraction."""
 

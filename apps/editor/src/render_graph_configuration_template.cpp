@@ -608,7 +608,8 @@ RenderGraphDocumentStatus PrepareTemplateContents(RenderGraphSnapshot& inoutSnap
         templateIdentity == QStringLiteral("veach-guibas-mis") ||
         templateIdentity == QStringLiteral("ris-projected-solid-angle") ||
         templateIdentity == QStringLiteral("polygonal-light-sampling") ||
-        templateIdentity == QStringLiteral("slice-sampling-luminaire"))
+        templateIdentity == QStringLiteral("slice-sampling-luminaire") ||
+        templateIdentity == QStringLiteral("steinberg-yan-plt"))
     {
         return PrepareComputeRayTracingConfiguration(inoutSnapshot,
                                                      rootGraph,

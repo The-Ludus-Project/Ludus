@@ -406,6 +406,11 @@ RenderGraphDocumentStatus PrepareComputeRayTracingConfiguration(
         selected.ProgramPrefix = QStringLiteral("SliceSampling");
         selected.Name = QStringLiteral("Slice sampling luminaire");
     }
+    else if (templateIdentity == QStringLiteral("steinberg-yan-plt"))
+    {
+        selected.ProgramPrefix = QStringLiteral("SteinbergYan");
+        selected.Name = QStringLiteral("Steinberg and Yan physical light transport");
+    }
     else
     {
         outError = QStringLiteral("Choose a built-in scene compute template.");
