@@ -1,12 +1,15 @@
 #include "internal/render_graph_shader_assistance.h"
 
+#include "internal/code_text.h"
 #include "internal/render_graph_document.h"
 
 #include <QByteArrayView>
 #include <QComboBox>
 #include <QCryptographicHash>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
+#include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -60,10 +63,12 @@ RenderGraphShaderAssistance::RenderGraphShaderAssistance(RenderGraphDocument& in
     layout->addLayout(row);
     mStatus->setObjectName(QStringLiteral("shaderAssistanceStatus"));
     mStatus->setTextFormat(Qt::PlainText);
-    mStatus->setWordWrap(true);
+    mStatus->setWordWrap(false);
+    mStatus->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    mStatus->setFixedHeight(mStatus->fontMetrics().height());
     mStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
     layout->addWidget(mStatus);
-    connect(&mAssistance, &CodeAssistance::StatusChanged, mStatus, &QLabel::setText);
+    connect(&mAssistance, &CodeAssistance::StatusChanged, this, &RenderGraphShaderAssistance::setStatus);
     connect(&mAssistance, &CodeAssistance::ContextRequested, this, &RenderGraphShaderAssistance::prepare);
     connect(&mAssistance, &CodeAssistance::ContextCancelled, this, [this]() {
         ++mNextRequest;
@@ -74,7 +79,7 @@ RenderGraphShaderAssistance::RenderGraphShaderAssistance(RenderGraphDocument& in
     connect(mContexts, &QComboBox::activated, this, [this](int32 index) {
         mSelectedContext = mContexts->itemData(index).toString();
         mAssistance.ClearContext();
-        mStatus->setText(QStringLiteral("Program context changed. Complete a symbol to prepare it."));
+        setStatus(QStringLiteral("Program context changed. Complete a symbol to prepare it."));
     });
     connect(retry, &QPushButton::clicked, this, [this, &inoutEditor]() {
         mSelectedContext.clear();
@@ -89,14 +94,19 @@ RenderGraphShaderAssistance::RenderGraphShaderAssistance(RenderGraphDocument& in
         mHasPending = false;
         mJob.Cancel();
         mAssistance.Cancel();
-        mStatus->setText(QStringLiteral("Shader context preparation timed out. Check the graph and Retry assistance."));
+        setStatus(QStringLiteral("Shader context preparation timed out. Check the graph and Retry assistance."));
     });
 #if defined(Q_OS_WASM)
     retry->setEnabled(false);
     mContexts->setEnabled(false);
-    mStatus->setText(
-        QStringLiteral("Native Slang completion and signature help are unavailable in the browser editor."));
+    setStatus(QStringLiteral("Native Slang completion and signature help are unavailable in the browser editor."));
 #endif
+}
+
+void RenderGraphShaderAssistance::setStatus(const QString& message)
+{
+    mStatus->setText(message.simplified());
+    mStatus->setToolTip(message);
 }
 
 QByteArray RenderGraphShaderAssistance::getIdentity() const
@@ -141,10 +151,9 @@ void RenderGraphShaderAssistance::Update(const QString& project,
         mFile = file;
         mSettings = settings;
 #if defined(Q_OS_WASM)
-        mStatus->setText(
-            QStringLiteral("Native Slang completion and signature help are unavailable in the browser editor."));
+        setStatus(QStringLiteral("Native Slang completion and signature help are unavailable in the browser editor."));
 #else
-        mStatus->clear();
+        setStatus({});
 #endif
     }
     setVisible(file.endsWith(QStringLiteral(".slang")));
@@ -166,7 +175,7 @@ void RenderGraphShaderAssistance::prepare()
     if (mTemporary.isValid() == false)
     {
         mAssistance.Cancel();
-        mStatus->setText(QStringLiteral("Cannot capture the shader draft. Check temporary storage and retry."));
+        setStatus(QStringLiteral("Cannot capture the shader draft. Check temporary storage and retry."));
         return;
     }
     RenderGraphJobRequest request;
@@ -192,8 +201,8 @@ void RenderGraphShaderAssistance::prepare()
         if (estimatedBytes > MAX_DRAFT_INPUT_BYTES)
         {
             mAssistance.Cancel();
-            mStatus->setText(QStringLiteral("The captured shader package exceeds assistance's input limit. Reduce its "
-                                            "size or path lengths and retry."));
+            setStatus(QStringLiteral("The captured shader package exceeds assistance's input limit. Reduce its "
+                                     "size or path lengths and retry."));
             return;
         }
         isFirst = false;
@@ -204,7 +213,7 @@ void RenderGraphShaderAssistance::prepare()
     if (request.StandardInput.size() > MAX_DRAFT_INPUT_BYTES)
     {
         mAssistance.Cancel();
-        mStatus->setText(
+        setStatus(
             QStringLiteral("The captured shader package exceeds assistance's input limit. Reduce its size and retry."));
         return;
     }
@@ -232,11 +241,11 @@ void RenderGraphShaderAssistance::prepare()
         request.Arguments +=
             {QStringLiteral("--project"), mProject, QStringLiteral("--tooling-root"), mTooling.ToolingRoot};
     }
-    mStatus->setText(QStringLiteral("Preparing shader context from this draft…"));
+    setStatus(QStringLiteral("Preparing shader context from this draft…"));
     if (mJob.Start(mTooling, request) == false)
     {
         mAssistance.Cancel();
-        mStatus->setText(QStringLiteral("Cannot run shader context tooling. Repair project setup and retry."));
+        setStatus(QStringLiteral("Cannot run shader context tooling. Repair project setup and retry."));
         return;
     }
     mDeadline.start();
@@ -258,15 +267,15 @@ void RenderGraphShaderAssistance::accept(const RenderGraphJobResult& result)
     }
     if (result.Request.Revision != mDocument.GetRevision() || result.Request.InputIdentity != getIdentity())
     {
-        mStatus->setText(QStringLiteral(
+        setStatus(QStringLiteral(
             "Shader inputs changed while preparing assistance. Request completion or signature help again."));
         return;
     }
     if (result.IsSuccessful == false)
     {
         mAssistance.Cancel();
-        mStatus->setText(result.Message +
-                         QStringLiteral(" Repair the graph/shader inputs or tool selection, then Retry assistance."));
+        setStatus(result.Message +
+                  QStringLiteral(" Repair the graph/shader inputs or tool selection, then Retry assistance."));
         return;
     }
     mResult = result.Payload;
@@ -311,7 +320,7 @@ void RenderGraphShaderAssistance::publish()
         path.startsWith(temporary) == false)
     {
         mAssistance.Cancel();
-        mStatus->setText(
+        setStatus(
             QStringLiteral("Shader assistance needs a readable generated context and executable slangd beside the "
                            "selected slangc. Repair project tools or the compiler override, then retry."));
         return;
@@ -319,9 +328,8 @@ void RenderGraphShaderAssistance::publish()
     if (QFileInfo(server).isExecutable() == false)
     {
         mAssistance.Cancel();
-        mStatus->setText(
-            QStringLiteral("Missing executable slangd beside the selected slangc. Repair project shader tools "
-                           "or the compiler override, then Retry assistance."));
+        setStatus(QStringLiteral("Missing executable slangd beside the selected slangc. Repair project shader tools "
+                                 "or the compiler override, then Retry assistance."));
         return;
     }
     QString prefix = mResult.value(QStringLiteral("prefix")).toString();
@@ -330,6 +338,52 @@ void RenderGraphShaderAssistance::publish()
     prefix.replace(QLatin1Char('\r'), QLatin1Char('\n'));
     suffix.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
     suffix.replace(QLatin1Char('\r'), QLatin1Char('\n'));
-    mAssistance.SetContext(server, mTemporary.filePath(QStringLiteral("language")), uri.toString(), prefix, suffix);
+    QMap<QString, CodeNavigationSource> navigationSources;
+    qsizetype totalBytes = 0;
+    for (const QJsonValue& value : mResult.value(QStringLiteral("navigation_sources")).toArray())
+    {
+        const QJsonObject entry = value.toObject();
+        const QUrl sourceUri(entry.value(QStringLiteral("uri")).toString());
+        const QFileInfo information(sourceUri.toLocalFile());
+        const QString capturedPath = information.canonicalFilePath();
+        if (sourceUri.isLocalFile() == false || information.isSymLink() == true ||
+            capturedPath.startsWith(temporary) == false || information.size() > RenderGraphDocument::MAX_FILE_BYTES)
+        {
+            continue;
+        }
+        QFile input(capturedPath);
+        if (input.open(QIODevice::ReadOnly) == false)
+        {
+            continue;
+        }
+        const QByteArray bytes = input.read(RenderGraphDocument::MAX_FILE_BYTES + 1);
+        totalBytes += bytes.size();
+        if (input.error() != QFileDevice::NoError || bytes.size() > RenderGraphDocument::MAX_FILE_BYTES ||
+            totalBytes > RenderGraphDocument::MAX_TOTAL_BYTES)
+        {
+            break;
+        }
+        if (QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex() !=
+            entry.value(QStringLiteral("sha256")).toString().toLatin1())
+        {
+            continue;
+        }
+        const QString authored = entry.value(QStringLiteral("file")).toString();
+        const bool isAuthored =
+            mDocument.GetFiles().contains(authored) == true && mDocument.GetDraft(authored) == bytes;
+        QString text;
+        if (DecodeCodeText(bytes, text) == false)
+        {
+            continue;
+        }
+        navigationSources.insert(sourceUri.toString(), {isAuthored == true ? authored : QString{}, text});
+    }
+    mAssistance.SetContext(server,
+                           mTemporary.filePath(QStringLiteral("language")),
+                           uri.toString(),
+                           prefix,
+                           suffix,
+                           {},
+                           navigationSources);
 }
 } // namespace ludus::editor

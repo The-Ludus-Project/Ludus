@@ -49,6 +49,11 @@ struct SceneShaderMaterial final
     bool HasError = false; ///< Import diagnostic: error material in preview; reject strict admission.
     /// Typed optical parameters; default preserves the legacy metallic/roughness model.
     content::scene_format::MaterialScattering Scattering{};
+    /// Test base-texture and vertex coverage against AlphaCutoff. Supported by the
+    /// ray scene, raster color/G-buffer and shadow passes; the clustered opaque Z
+    /// prepass rejects material tables containing masks before publication.
+    bool IsAlphaMasked = false;
+    foundation::float32 AlphaCutoff = 0.5F; ///< Inclusive coverage threshold in [0,1], used only for masks.
 };
 /// Optional shared scene inputs. Empty material assignments use the neutral default;
 /// malformed references use diagnostic magenta only under DiagnosticColor admission.

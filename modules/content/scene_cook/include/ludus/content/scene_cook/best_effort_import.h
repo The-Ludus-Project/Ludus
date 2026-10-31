@@ -15,8 +15,11 @@
 /// Unlike the frozen pbrt-reference-v1 staircase2 cooker, these importers accept
 /// general scenes with reported approximations: unsupported features become
 /// documented fallbacks, and the scene is fitted to the LUSCN limits in
-/// Ludus::SceneFormat (6 meshes, 8 materials, 8 textures, 500 k vertices, 128
-/// objects, 64 MiB). Every compromise is recorded in a deterministic, versioned
+/// Ludus::SceneFormat's import profile (256 meshes/materials/textures, 1024
+/// objects, 256 MiB texels and 384 MiB encoded bundle). Complete geometry is
+/// retained or rejected against the byte budget. Version 7 retains linear
+/// base-color factors independently of decoded textures; constant swatches
+/// already include their factor. Every compromise is recorded in a deterministic, versioned
 /// JSON import report. Authored pbrt lighting that cannot fit without losing
 /// sources or energy rejects explicitly; decorative glTF/OBJ emission is dropped
 /// with a diagnostic instead. All front-ends share one format-neutral

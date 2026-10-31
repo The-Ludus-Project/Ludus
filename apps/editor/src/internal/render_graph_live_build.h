@@ -10,7 +10,8 @@
 namespace ludus::editor
 {
 class RenderGraphDocument;
-/// Stable source/configuration digest; layout-only graph edits are excluded.
+/// Stable source/configuration digest; layout-only graph edits are excluded. The package location
+/// and built-in state are included, so identical sources in another package still build.
 [[nodiscard]] QByteArray ComputeRenderGraphBuildIdentity(const RenderGraphDocument& document,
                                                          const QString& configuration,
                                                          RenderGraphSource source = RenderGraphSource::Draft);

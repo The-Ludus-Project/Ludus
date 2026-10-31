@@ -1,6 +1,6 @@
 #pragma once
 
-// Budget planner: fits a SceneIR to the LUSCN version 6 import profile of
+// Budget planner: fits a SceneIR to the LUSCN version 7 import profile of
 // Ludus::SceneFormat (format::IMPORT_LIMITS).
 //
 // Placements (world shapes plus expanded instances) are ranked by world-space
@@ -26,6 +26,8 @@ struct PlannedMaterial final
     /// Source material whose terms the slot uses.
     uint32 Representative = IR_NONE;
     float64 BaseColour[3] = {.5, .5, .5};
+    /// Linear multiplier retained separately when a base image decoded successfully.
+    math::Vector3d Reflectance{1, 1, 1};
     uint32 Texture = IR_NONE;
     bool IsTextureRepeated = true;
     float64 Metallic = 0.0;

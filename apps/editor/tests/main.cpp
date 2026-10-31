@@ -17,6 +17,7 @@ int main(int argc, char* argv[])
         return 1;
     }
     qputenv("XDG_CONFIG_HOME", config.path().toUtf8());
+    qputenv("LUDUS_EDITOR_RECOVERY_DIRECTORY", config.filePath(QStringLiteral("source-recovery")).toUtf8());
     QApplication application(argc, argv);
     const ludus::foundation::int32 result = Catch::Session().run(argc, argv);
 #if !defined(Q_OS_WASM)

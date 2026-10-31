@@ -6,6 +6,7 @@
 #include "internal/render_graph_defaults.h"
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_job.h"
+#include "internal/render_graph_live_build.h"
 #include "internal/renderer_workspace.h"
 #include "render_graph_helper_fixture.h"
 
@@ -18,6 +19,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QSignalSpy>
@@ -253,6 +255,36 @@ TEST_CASE("Customize copies the default once and never replaces project files", 
     RendererWorkspace closed({});
     CHECK(closed.IsBuiltIn() == false);
     CHECK(closed.CustomizeBuiltIn() == false);
+}
+
+TEST_CASE("A project copy of the default has its own build identity", "[editor][render-graph]")
+{
+    // New Graph's starter is byte-identical to the default; the live build must still cook it.
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    RenderGraphDocument& document = workspace.GetDocument();
+    REQUIRE(document.IsBuiltIn() == true);
+    const QString configuration = QStringLiteral("Default");
+    QHash<QString, QByteArray> builtInSources;
+    for (const QString& file : document.GetFiles(RenderGraphSource::Saved))
+    {
+        builtInSources.insert(file, document.GetSaved(file));
+    }
+    const QByteArray builtIn = ComputeRenderGraphBuildIdentity(document, configuration, RenderGraphSource::Saved);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    REQUIRE(document.IsBuiltIn() == false);
+    for (const QString& file : document.GetFiles(RenderGraphSource::Saved))
+    {
+        if (builtInSources.contains(file) == true)
+        {
+            CHECK(document.GetSaved(file) == builtInSources.value(file));
+        }
+    }
+    const QByteArray copy = ComputeRenderGraphBuildIdentity(document, configuration, RenderGraphSource::Saved);
+    CHECK(copy != builtIn);
+    // The identity stays stable for unchanged sources at the same location.
+    CHECK(ComputeRenderGraphBuildIdentity(document, configuration, RenderGraphSource::Saved) == copy);
 }
 
 TEST_CASE("An unreadable project graph reports failure without substituting the default", "[editor][render-graph]")

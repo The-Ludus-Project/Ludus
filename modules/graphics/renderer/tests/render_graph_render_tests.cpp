@@ -1281,6 +1281,47 @@ TEST_CASE("default clustered deferred matches forward material shading and prese
             CHECK(fixture.Pixels[GetPixel(WIDTH / 2, HEIGHT / 2) + 2] > 10);
             CHECK(fixture.Graph.GetAllocationReport().DeferredAttachmentBytes == uint64{WIDTH / 2} * (HEIGHT / 2) * 36);
         }
+        // Mask state must affect material/depth coverage together. The optional
+        // opaque-only prepass rejects this table before it can publish solid holes.
+        CAPTURE(profile);
+        lights[LIGHT_COUNT - 1].SourceId = LIGHT_COUNT;
+        lights[LIGHT_COUNT - 1].Color = {0, 0, 1};
+        REQUIRE(update() == rhi::RasterStatus::Ready);
+        render();
+        const StaticArray<uint8, PIXEL_BYTES> retained = fixture.Pixels;
+        const uint64 retainedRevision = fixture.Graph.GetDrawableSceneRevision();
+        StaticArray<uint8, TEXEL_BYTES> coverage{{255, 255, 255, 0}};
+        for (renderer::SceneShaderMaterial& material : materials)
+        {
+            material.IsAlphaMasked = true;
+            material.AlphaCutoff = .5F;
+            material.ColorTexture =
+                {coverage.GetData(), coverage.GetSize(), coverage.GetSize(), 1, 1, rhi::RasterFormat::Rgba8Srgb};
+        }
+        if (shouldUsePrepass == true)
+        {
+            CHECK(update() == rhi::RasterStatus::Unsupported);
+            CHECK(fixture.Graph.GetDrawableSceneRevision() == retainedRevision);
+            render();
+            CHECK(fixture.Pixels == retained);
+        }
+        else
+        {
+            REQUIRE(update() == rhi::RasterStatus::Ready);
+            render();
+            for (usize channel = 0; channel < 3; ++channel)
+            {
+                CHECK(fixture.Pixels[GetPixel(WIDTH / 2, HEIGHT / 2) + channel] == fixture.Pixels[channel]);
+            }
+        }
+        coverage[3] = 255;
+        for (renderer::SceneShaderMaterial& material : materials)
+        {
+            material.IsAlphaMasked = false;
+        }
+        REQUIRE(update() == rhi::RasterStatus::Ready);
+        render();
+        CHECK(fixture.Pixels[GetPixel(WIDTH / 2, HEIGHT / 2) + 2] > 0);
     }
 }
 

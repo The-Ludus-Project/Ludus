@@ -27,6 +27,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QGroupBox>
 #include <QItemSelectionModel>
 #include <QJsonDocument>
 #include <QKeySequence>
@@ -1001,6 +1002,12 @@ TEST_CASE("Converted cooked levels edit placement and gameplay in World and surv
     REQUIRE(entities->count() == 1);
     entities->setCurrentRow(0, QItemSelectionModel::ClearAndSelect);
     CHECK(workspace.findChild<QLineEdit*>(QStringLiteral("worldField:scene/position0")) == nullptr);
+    // The selected instance shows the decoded material the viewport renders, read-only.
+    REQUIRE(workspace.findChild<QGroupBox*>(QStringLiteral("worldMaterial")) != nullptr);
+    const QLabel* modelOrNull = workspace.findChild<QLabel*>(QStringLiteral("worldMaterial:Model"));
+    REQUIRE(modelOrNull != nullptr);
+    CHECK(modelOrNull->text().isEmpty() == false);
+    CHECK(workspace.findChild<QLabel*>(QStringLiteral("worldMaterial:Reflectance (linear RGB)")) != nullptr);
     Type(Field(workspace, QStringLiteral("transform/x")), QStringLiteral("0.25"));
     REQUIRE(workspace.Apply());
     drain();

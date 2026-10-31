@@ -1125,8 +1125,9 @@ class RayCompilerAcceptance(unittest.TestCase):
             capture = build.build_package(manifest, root / 'build', ray_path_capture=True, **options)
             package = Path(capture['package'])
             descriptor = json.loads((package / 'package.json').read_text())
-            # Only the linked ray kernel is recompiled; the flag joins its stage cache identity.
-            self.assertEqual(1, capture['cache_misses'])
+            # Only the linked native and software ray kernels are recompiled; the flag joins their
+            # stage cache identity. TriangleLoop and ComputeBvh share the software kernel.
+            self.assertEqual(2, capture['cache_misses'])
             recipe = next(recipe for recipe in descriptor['recipes'] if recipe['technique'] == ray.TECHNIQUE)
             self.assertTrue(recipe['ray_path_capture'])
             self.assertNotIn('ray_path_capture', next(recipe for recipe in plain_descriptor['recipes']
@@ -1149,6 +1150,54 @@ class RayCompilerAcceptance(unittest.TestCase):
             self.assertFalse(destination.exists())
             self.assertEqual(0, build.build_package(manifest, root / 'build', **options)['cache_misses'])
             self.assertEqual(original, {path.relative_to(source): path.read_bytes() for path in source.rglob('*') if path.is_file()})
+
+    def test_ray_path_capture_links_software_traversal_without_native_queries(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'source'
+            shutil.copytree(ROOT / 'tests/sdk_consumer/rg2/ray_path', source)
+            path = source / 'main.lurender.json'
+            document = json.loads(path.read_text())
+            custom = deepcopy(next(item for item in document['configurations'] if item['id'] == 'TriangleLoop'))
+            custom['id'] = 'Custom'
+            node = next(item for item in custom['nodes'] if item['id'] == 'paths')
+            node['invocation'].update(traversal='Custom', traversal_source='query.slang')
+            document['configurations'].append(custom)
+            path.write_bytes(graph.canonical_asset(document))
+            (source / 'query.slang').write_text('''Hit TraceWorld(float3 originWorld, float3 directionWorld, float nearDistanceWorld,
+                                      float farDistanceWorld, bool isVisibility)
+{
+    return TraceTriangleLoop(originWorld, directionWorld, nearDistanceWorld, farDistanceWorld, isVisibility);
+}
+''')
+            manifest = source / 'main.lushader.json'
+            manifest.write_text((source / 'main.lushader.json.in').read_text().replace(
+                '@RG2_TEST_PROFILES@', '["metal"]'))
+            options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
+                           spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+            capture = build.build_package(manifest, root / 'build', ray_path_capture=True, **options)
+            package = Path(capture['package'])
+            descriptor = json.loads((package / 'package.json').read_text())
+            # Software strategies share one capture kernel: the capture slot and no native ray scene.
+            stage = next(item for item in descriptor['programs'] if item['id'] == ray.SOFTWARE_COMPUTE_ID)
+            entries = {entry['binding']: entry for entry in stage['descriptor']['interface']['entries']}
+            self.assertEqual(('StorageReadWrite', ray.RAY_PATH_CAPTURE_STRIDE),
+                             (entries[ray.RAY_PATH_CAPTURE_SLOT]['kind'], entries[ray.RAY_PATH_CAPTURE_SLOT]['size']))
+            self.assertNotIn('RayScene', {entry['kind'] for entry in entries.values()})
+            metal = (package / 'programs' / stage['key'] / stage['descriptor']['artifact']).read_text()
+            self.assertNotIn('intersection_query<', metal)
+            wrapper = (package / 'programs' / stage['key'] / 'wrapper.slang').read_text()
+            self.assertIn('#define LUDUS_RAY_PATH_CAPTURE 1\n', wrapper)
+            self.assertIn('#define LUDUS_SOFTWARE_RAY_TRAVERSAL 1\n', wrapper)
+            for configuration in ('TriangleLoop', 'ComputeBvh', 'Custom'):
+                _, _, passes, _ = execution.lower_plan(descriptor, configuration)
+                self.assertEqual(configuration, next(item['Traversal'] for item in passes
+                                                     if item['Program'] == 'RayTracing'))
+                destination = root / f'{configuration}.lurgrd'
+                cooked = execution.cook_ray_path_capture(package, destination, configuration=configuration)
+                self.assertEqual(struct.unpack('<2I', destination.read_bytes()[:8]),
+                                 (execution.RAY_PATH_CAPTURE_PACKAGE_MAGIC, execution.PACKAGE_VERSION))
+                self.assertEqual(configuration, cooked['configuration'])
 
     def test_capture_profile_links_the_capture_budget_and_cooks_only_as_a_capture_profile(self):
         with tempfile.TemporaryDirectory() as temporary:

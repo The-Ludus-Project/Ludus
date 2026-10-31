@@ -2,6 +2,7 @@
 import json
 import base64
 import io
+import hashlib
 from unittest.mock import patch
 import os
 from pathlib import Path
@@ -74,6 +75,22 @@ class ShaderContextTests(unittest.TestCase):
             export_context(self.manifest, self.output, '../escape.slang', helper=self.helper)
         with self.assertRaisesRegex(ToolingError, 'separate from source snapshot'):
             export_context(self.manifest, self.manifest.parent / 'language', self.source, helper=self.helper)
+
+    def test_navigation_inventory_maps_exact_captured_sources_and_not_project_paths(self):
+        dependency = self.manifest.parent / 'main_shaders/helper.slang'
+        dependency.write_bytes(b'// unicode \xf0\x9f\x98\x80\r\nfloat Helper() { return 1; }\r\n')
+        source = self.manifest.parent / self.source
+        source.write_text('#include "helper.slang"\n' + source.read_text())
+        before = source.read_bytes()
+        result = self.export()
+        entries = {entry['file']: entry for entry in result['navigation_sources']}
+        entry = entries['main_shaders/helper.slang']
+        captured = Path(unquote(urlparse(entry['uri']).path))
+        self.assertTrue(captured.resolve().is_relative_to(self.output.resolve()))
+        self.assertFalse(captured.resolve().is_relative_to(self.manifest.parent.resolve()))
+        self.assertEqual(dependency.read_bytes(), captured.read_bytes())
+        self.assertEqual(hashlib.sha256(captured.read_bytes()).hexdigest(), entry['sha256'])
+        self.assertEqual(before, source.read_bytes())
 
     def test_included_source_retains_its_relative_includes_and_comment_directives(self):
         parent = self.manifest.parent / self.source

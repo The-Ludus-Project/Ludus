@@ -47,6 +47,7 @@ QT_END_NAMESPACE
 namespace ludus::editor
 {
 class RenderGraphQuickAdd;
+class RenderGraphRecovery;
 struct RenderGraphTemplate;
 struct RenderGraphResolutionSelection;
 class CodeEditor;
@@ -517,6 +518,7 @@ private:
     bool mHasResult = false;
     bool mIsLivePreviewEnabled = false;
     RenderGraphDocument mDocument;
+    RenderGraphRecovery* mRecovery;
     RenderGraphCodeDocument mSourceDocument;
     ExternalCodeEditor mCodeEditor;
     RenderGraphJob mJob;

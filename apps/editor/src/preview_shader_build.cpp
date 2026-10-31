@@ -17,6 +17,7 @@
 #include <QJsonObject>
 #include <QProcess>
 #include <QRegularExpression>
+#include <QSet>
 #include <QTemporaryFile>
 #include <QThread>
 
@@ -438,12 +439,13 @@ bool ReadPreviewShaderRecipes(const PreviewShaderSources& sources, PreviewShader
 }
 
 bool CapturePreviewShaderSnapshot(const PreviewShaderSources& sources,
+                                  const PreviewShaderRecipes& recipes,
                                   PreviewShaderSnapshot& outSnapshot,
                                   QString& outError)
 {
-    PreviewShaderSnapshot snapshot;
-    QHash<QString, qsizetype> indices;
-    usize totalBytes = 0;
+    // Absolute paths of each root-relative name, in root order; several roots may hold one name.
+    QHash<QString, QStringList> candidates;
+    QStringList candidatePaths;
     QStringList roots{sources.RecipeDirectory};
     roots.append(sources.IncludeDirectories);
     for (const QString& root : roots)
@@ -482,38 +484,74 @@ bool CapturePreviewShaderSnapshot(const PreviewShaderSources& sources,
                                .arg(QDir::toNativeSeparators(path));
                 return false;
             }
-            QFile file(path);
-            if (file.open(QIODevice::ReadOnly) == false)
-            {
-                outError = QStringLiteral("Cannot read shader source %1.").arg(QDir::toNativeSeparators(path));
-                return false;
-            }
-            const QByteArray text = file.readAll();
-            const QHash<QString, qsizetype>::const_iterator existing = indices.constFind(name);
-            if (existing != indices.constEnd())
-            {
-                if (snapshot.Texts[existing.value()] != text)
-                {
-                    outError = QStringLiteral("Ambiguous shader include %1 differs between source roots.").arg(name);
-                    return false;
-                }
-                continue;
-            }
-            totalBytes += static_cast<usize>(text.size());
-            if (static_cast<usize>(snapshot.Names.size()) >= compiler::MAX_SOURCE_FILES ||
-                totalBytes > compiler::MAX_SOURCE_BYTES)
-            {
-                outError = QStringLiteral("Shader sources exceed the compiler snapshot limit of %1 files.")
-                               .arg(compiler::MAX_SOURCE_FILES);
-                return false;
-            }
-            indices.insert(name, snapshot.Names.size());
-            snapshot.Names.append(name);
-            snapshot.Texts.append(text);
-            snapshot.Paths.append(path);
+            candidates[name].append(path);
+            candidatePaths.append(path);
         }
     }
-    outSnapshot = snapshot;
+    // Capture the recipe sources, then every file their quoted includes reach.
+    static const QRegularExpression INCLUDE(QStringLiteral(R"re(^\s*#\s*include\s*"([^"]+)")re"),
+                                            QRegularExpression::MultilineOption);
+    PreviewShaderSnapshot snapshot;
+    QSet<QString> visited;
+    usize totalBytes = 0;
+    QStringList pending;
+    for (const PreviewShaderRecipe& recipe : recipes)
+    {
+        pending.append(recipe.Source);
+    }
+    for (qsizetype next = 0; next < pending.size(); ++next)
+    {
+        const QString name = pending[next];
+        if (visited.contains(name) == true || candidates.contains(name) == false)
+        {
+            continue;
+        }
+        visited.insert(name);
+        const QStringList paths = candidates.value(name);
+        QByteArray text;
+        for (qsizetype i = 0; i < paths.size(); ++i)
+        {
+            QFile file(paths[i]);
+            if (file.open(QIODevice::ReadOnly) == false)
+            {
+                outError = QStringLiteral("Cannot read shader source %1.").arg(QDir::toNativeSeparators(paths[i]));
+                return false;
+            }
+            const QByteArray copy = file.readAll();
+            if (i == 0)
+            {
+                text = copy;
+            }
+            else if (copy != text)
+            {
+                outError = QStringLiteral("Ambiguous shader include %1 differs between source roots.").arg(name);
+                return false;
+            }
+        }
+        totalBytes += static_cast<usize>(text.size());
+        if (static_cast<usize>(snapshot.Names.size()) >= compiler::MAX_SOURCE_FILES ||
+            totalBytes > compiler::MAX_SOURCE_BYTES)
+        {
+            outError = QStringLiteral("The renderer recipes include more shader sources than the compiler snapshot "
+                                      "limit of %1 files and %2 bytes.")
+                           .arg(compiler::MAX_SOURCE_FILES)
+                           .arg(compiler::MAX_SOURCE_BYTES);
+            return false;
+        }
+        snapshot.Names.append(name);
+        snapshot.Texts.append(text);
+        snapshot.Paths.append(paths.first());
+        const QString includer = QFileInfo(name).path();
+        QRegularExpressionMatchIterator includes = INCLUDE.globalMatch(QString::fromUtf8(text));
+        while (includes.hasNext() == true)
+        {
+            const QString included = includes.next().captured(1);
+            const QString relative = QDir::cleanPath(includer + QLatin1Char('/') + included);
+            pending.append(candidates.contains(relative) == true ? relative : QDir::cleanPath(included));
+        }
+    }
+    snapshot.CandidatePaths = Move(candidatePaths);
+    outSnapshot = Move(snapshot);
     return true;
 }
 
@@ -994,14 +1032,14 @@ PreviewShaderBuildResult PreviewShaderBuilder::Build(PreviewShaderCompiler& inou
     PreviewShaderRecipes recipes{};
     PreviewShaderSnapshot snapshot;
     if (ReadPreviewShaderRecipes(mSources, recipes, result.Message) == false ||
-        CapturePreviewShaderSnapshot(mSources, snapshot, result.Message) == false)
+        CapturePreviewShaderSnapshot(mSources, recipes, snapshot, result.Message) == false)
     {
         result.Status = PreviewShaderBuildStatus::Unavailable;
         result.WatchedPaths = {manifest};
         return result;
     }
-    result.SourceFiles = static_cast<int32>(snapshot.Names.size());
-    result.WatchedPaths = snapshot.Paths;
+    result.SourceFiles = static_cast<int32>(snapshot.CandidatePaths.size());
+    result.WatchedPaths = snapshot.CandidatePaths;
     result.WatchedPaths.append(manifest);
     QHash<QString, QByteArray> hashes;
     for (qsizetype i = 0; i < snapshot.Names.size(); ++i)

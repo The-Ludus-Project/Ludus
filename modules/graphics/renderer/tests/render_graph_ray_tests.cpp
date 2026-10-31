@@ -1,6 +1,7 @@
 #include "../shaders/renderer_gpu_preview_layout.h"
 #include "../src/internal/gpu_denoiser.h"
 #include "../src/internal/ltc_table.h"
+#include "../src/internal/render_graph_ray_scene.h"
 
 #include "ltc_lookup_cases.h"
 #include "renderer_composite.h"
@@ -321,6 +322,95 @@ TEST_CASE("Authored ray graph shades World triangles and preserves the drawable 
     read();
     CHECK(fixture.Pixels[center] == 0);
     CHECK(fixture.Pixels[center + 2] == expected);
+}
+
+TEST_CASE("Shared alpha masks agree between CPU queries and GPU graph traversal", "[render-graph][gpu][scene-mask]")
+{
+    bool shouldUseNativeQueries = false;
+    SECTION("compute BVH") {}
+    SECTION("native queries")
+    {
+        shouldUseNativeQueries = true;
+    }
+    GraphGpuFixture fixture(false, shouldUseNativeQueries);
+    const core::UniquePtr<renderer::RenderGraphPackage> package = LoadPackage(
+        shouldUseNativeQueries == true
+            ? PackageLocation{LUDUS_RG3_SCENE_RAY_DIRECTORY, "rg2_scene_ray.lurgrt"}
+            : PackageLocation{LUDUS_RG3_SHARED_RAY_COMPUTEBVH_DIRECTORY, "rg2_shared_ray_computebvh.lurgrt"});
+    const renderer::RenderGraphPrograms programs =
+        package->GetPrograms(shaders::renderer_composite::Vertex(), shaders::renderer_composite::Fragment());
+    const auto settle = [&fixture](rhi::RasterStatus status) {
+        const uint64 start = time::NowTicks();
+        while (status == rhi::RasterStatus::Pending && time::NowTicks() - start < 10 * time::NANOSECONDS_PER_SECOND)
+        {
+            status = fixture.Graph.Poll();
+        }
+        return status;
+    };
+    REQUIRE(settle(fixture.Graph.Initialize(fixture.Device, package->GetPlan(), programs)) == rhi::RasterStatus::Ready);
+    fixture.Cameras[0].OrthographicCamera = true;
+    constexpr usize TEXEL_BYTES = 4;
+    constexpr usize CPU_SCENE_BYTES = 1024 * 1024;
+    StaticArray<uint8, TEXEL_BYTES> texel{{255, 255, 255, 0}};
+    StaticArray<math::Vector4, VERTEX_COUNT> colors{{{1, 1, 1, 1}, {1, 1, 1, 1}, {1, 1, 1, 1}}};
+    fixture.Meshes[0].Geometry.Colors = {colors.GetData(), colors.GetSize()};
+    const uint32 binding = 0;
+    fixture.Meshes[0].MaterialBindings = {&binding, 1};
+    renderer::SceneShaderMaterial material;
+    material.BaseColor = {1, 0, 0};
+    material.IsAlphaMasked = true;
+    material.AlphaCutoff = .5F;
+    material.ColorTexture = {texel.GetData(), texel.GetSize(), texel.GetSize(), 1, 1, rhi::RasterFormat::Rgba8Srgb};
+    renderer::SceneShaderInputs inputs;
+    inputs.Materials = {&material, 1};
+    inputs.Environment = {0, 0, 1};
+    uint64 revision = 0;
+    for (const uint8 alpha : {uint8{0}, uint8{64}, uint8{128}, uint8{255}})
+    {
+        for (const float32 vertexAlpha : {1.0F, .25F})
+        {
+            texel[3] = alpha;
+            for (math::Vector4& color : colors)
+            {
+                color.W = vertexAlpha;
+            }
+            const bool hasCoverage = static_cast<float32>(alpha) / 255 * vertexAlpha >= material.AlphaCutoff;
+            renderer::RenderGraphSceneDescription scene;
+            scene.Meshes = {fixture.Meshes.GetData(), fixture.Meshes.GetSize()};
+            scene.Items = {fixture.Items.GetData(), fixture.Items.GetSize()};
+            scene.Inputs = inputs;
+            scene.HasMaterialInterface = true;
+            renderer::ReferenceCaptureDescription camera;
+            camera.OrthographicCamera = true;
+            core::UniquePtr<renderer::internal::ReferenceJob> oracle;
+            REQUIRE(renderer::internal::BuildMaterialGraphRayScene(scene, camera, CPU_SCENE_BYTES, oracle) ==
+                    rhi::RasterStatus::Ready);
+            rhi::RayInput ray;
+            ray.Origin[2] = 1;
+            ray.MaxDistance = 1;
+            for (const uint32 visibility : {uint32{0}, uint32{1}})
+            {
+                ray.VisibilityOnly = visibility;
+                rhi::RayResult hit;
+                REQUIRE(renderer::internal::TraceReferenceOracle(oracle->Scene, ray, hit) == rhi::RasterStatus::Ready);
+                CHECK((hit.Hit != 0) == hasCoverage);
+            }
+            renderer::RenderGraphReport report;
+            REQUIRE(settle(fixture.Graph.Update({fixture.Meshes.GetData(), fixture.Meshes.GetSize()},
+                                                {fixture.Items.GetData(), fixture.Items.GetSize()},
+                                                {fixture.Cameras.GetData(), fixture.Cameras.GetSize()},
+                                                ++revision,
+                                                renderer::RenderGraphCoveragePolicy::RejectIncomplete,
+                                                report,
+                                                &inputs)) == rhi::RasterStatus::Ready);
+            ReadGraphFrame(fixture);
+            const usize center = GetPixel(WIDTH / 2, HEIGHT / 2);
+            CAPTURE(alpha, vertexAlpha, shouldUseNativeQueries);
+            CHECK(fixture.Pixels[center] == (hasCoverage == true ? 188 : 0));
+            CHECK(fixture.Pixels[center + 1] == 0);
+            CHECK(fixture.Pixels[center + 2] == (hasCoverage == true ? 0 : 188));
+        }
+    }
 }
 
 TEST_CASE("Scene callbacks preserve material and scene generation through native GPU rendering",

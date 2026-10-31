@@ -249,9 +249,10 @@ public:
         return mInspectedRevision;
     }
     /// Why the drawing generation's ray paths cannot be captured here; empty when they can.
-    /// Capture needs an attached device, a drawn generation and the hardware raytracing renderer:
-    /// a raster selection (no native ray queries, or Force raster) or software traversal reports
-    /// unavailable, while that renderer keeps drawing and navigating normally.
+    /// Capture needs an attached device, a drawn generation and a ray renderer, with native ray
+    /// queries or software (compute) traversal: a raster selection (no ray pass, a GPU/API without
+    /// the native queries the graph requires, or Force raster) reports unavailable, while that
+    /// renderer keeps drawing and navigating normally.
     [[nodiscard]] QString DescribeRayPathCaptureProblem() const;
     /// Freeze the live graph for ray path inspection. Copies the graph camera, World revision,
     /// content revision (the capture graph's sampling seed), reference and output sizes, generation

@@ -729,6 +729,8 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
                                         1};
             description.Surface.UvTransform = material.UvTransform;
             description.Surface.Sampler = material.Sampler;
+            description.Surface.Alpha = material.IsAlphaMasked == true ? MaterialAlpha::Masked : MaterialAlpha::Opaque;
+            description.Surface.AlphaCutoff = material.AlphaCutoff;
             description.Surface.Lod = 0;
             description.Metallic = material.Metallic;
             description.Roughness = material.Roughness;

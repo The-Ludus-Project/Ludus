@@ -42,18 +42,27 @@ using PreviewShaderRecipes = foundation::StaticArray<PreviewShaderRecipe, PREVIE
 [[nodiscard]] bool
 ReadPreviewShaderRecipes(const PreviewShaderSources& sources, PreviewShaderRecipes& outRecipes, QString& outError);
 
-/// Immutable copy of every .slang/.h file under the source roots, as the build captures them:
-/// names are relative to their root, hidden and out/ directories are skipped, and identical
-/// duplicates across roots collapse to one file.
+/// Immutable copy of the recipe sources and every file their quoted `#include` directives reach,
+/// among the .slang/.h files under the source roots. Names are relative to their root, hidden and
+/// out/ directories are skipped, and identical duplicates across roots collapse to one file.
+/// Files no recipe includes stay out of the compiler's snapshot, so unrelated renderer helpers
+/// do not count against its file and byte limits.
 struct PreviewShaderSnapshot final
 {
     QStringList Names;       ///< Root-relative names given to the compiler.
     QList<QByteArray> Texts; ///< UTF-8 text of each name.
     QStringList Paths;       ///< Absolute path of each name, for diagnostics.
+    /// Absolute path of every .slang/.h file under the roots, captured or not, so watching them
+    /// notices an edit that adds an include or creates a missing one.
+    QStringList CandidatePaths;
 };
-/// Read the snapshot of sources; bounded by the compiler's file and byte limits.
-/// Failure preserves outSnapshot and explains why in outError.
+/// Read the snapshot of the recipes' sources. An include resolves relative to the including file,
+/// then as a root-relative name, as the compiler resolves it; one found in no root is left for
+/// the compiler to report. Every preprocessor branch is followed. The captured files are bounded
+/// by the compiler's file and byte limits. Failure preserves outSnapshot and explains why in
+/// outError.
 [[nodiscard]] bool CapturePreviewShaderSnapshot(const PreviewShaderSources& sources,
+                                                const PreviewShaderRecipes& recipes,
                                                 PreviewShaderSnapshot& outSnapshot,
                                                 QString& outError);
 
@@ -131,9 +140,9 @@ struct PreviewShaderBuildResult final
     QString Message;
     /// Stage compilations this build ran; stages whose read files are unchanged are reused.
     foundation::int32 CompiledStages = 0;
-    /// Number of files in the captured snapshot.
+    /// Number of shader files watched under the source roots, captured or not.
     foundation::int32 SourceFiles = 0;
-    /// Absolute paths of every captured file and manifest, for change notifications.
+    /// Absolute paths of every candidate source file and the manifest, for change notifications.
     QStringList WatchedPaths;
 };
 /// Rebuild the viewport shaders from a fresh snapshot, recompiling only stages whose read files

@@ -3,6 +3,7 @@
 #include <ludus/foundation/base/core.h>
 
 #include "internal/code_edit_scope.h"
+#include "internal/code_navigation.h"
 #include "internal/code_syntax_highlighter.h"
 
 #include <QAction>
@@ -277,6 +278,7 @@ CodeEditor::CodeEditor(QWidget* parentOrNull)
     connect(mFormatAction, &QAction::triggered, this, &CodeEditor::FormatRequested);
     connect(mChooseFormatterAction, &QAction::triggered, this, &CodeEditor::ChooseFormatterRequested);
     updateGutterWidth();
+    mNavigation = new CodeNavigation(*this);
 }
 
 void CodeEditor::SetFontPointSize(int32 points)
@@ -331,6 +333,7 @@ void CodeEditor::GoToDiagnostic(bool shouldGoBackward)
             }
         }
     }
+    mNavigation->RememberCurrent();
     setTextCursor(mDiagnostics.at(selected < 0 ? boundary : selected).Range);
     ensureCursorVisible();
     setFocus();
@@ -485,6 +488,7 @@ void CodeEditor::SetLanguage(CodeLanguage language)
         }
     }
     mHighlighter->SetLanguage(language);
+    mNavigation->RefreshActions();
     mSelectionUpdate.start(0);
 }
 
@@ -570,6 +574,7 @@ void CodeEditor::contextMenuEvent(QContextMenuEvent* event)
     if (mShouldUseDocumentHistory == false)
     {
         QMenu* menu = createStandardContextMenu();
+        menu->setToolTipsVisible(true);
         menu->addSeparator();
         menu->addActions(actions());
         menu->exec(event->globalPos());
@@ -577,6 +582,7 @@ void CodeEditor::contextMenuEvent(QContextMenuEvent* event)
         return;
     }
     QMenu menu(this);
+    menu.setToolTipsVisible(true);
     const auto addCommand =
         [&menu, this](const QString& label, QKeySequence::StandardKey key, bool isEnabled, const auto& operation) {
             QAction* action = menu.addAction(label);
@@ -617,7 +623,10 @@ void CodeEditor::insertFromMimeData(const QMimeData* source)
 
 void CodeEditor::focusOutEvent(QFocusEvent* event)
 {
-    Q_EMIT AssistanceDismissed();
+    if (mNavigation->IsChoosing() == false)
+    {
+        Q_EMIT AssistanceDismissed();
+    }
     HideAssistance();
     QPlainTextEdit::focusOutEvent(event);
     Q_EMIT EditBoundary();
@@ -1256,6 +1265,10 @@ void CodeEditor::GoToLine(int32 line, int32 column)
     if (column > 1)
     {
         cursor.setPosition(block.position() + GetScalarOffset(block.text(), column - 1));
+    }
+    if (cursor != textCursor())
+    {
+        mNavigation->RememberCurrent();
     }
     setTextCursor(cursor);
     ensureCursorVisible();

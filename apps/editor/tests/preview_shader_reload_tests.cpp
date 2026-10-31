@@ -483,6 +483,75 @@ TEST_CASE("Live shader interfaces may drop resources but not add or reshape them
           false);
 }
 
+TEST_CASE("Live shader snapshots of the renderer recipes fit the compiler limit", "[editor][shader-reload]")
+{
+    // The renderer shader roots hold more helpers than one compiler snapshot admits; only the
+    // files the viewport recipes include count against it.
+    const PreviewShaderSources sources = tests::GetCheckoutSources();
+    PreviewShaderRecipes recipes{};
+    QString error;
+    REQUIRE(ReadPreviewShaderRecipes(sources, recipes, error) == true);
+    PreviewShaderSnapshot snapshot;
+    const bool isCaptured = CapturePreviewShaderSnapshot(sources, recipes, snapshot, error);
+    INFO(error.toStdString());
+    REQUIRE(isCaptured == true);
+    INFO(snapshot.Names.join(QLatin1Char(' ')).toStdString());
+    CHECK(static_cast<usize>(snapshot.Names.size()) <= compiler::MAX_SOURCE_FILES);
+    for (const PreviewShaderRecipe& recipe : recipes)
+    {
+        CHECK(snapshot.Names.contains(recipe.Source) == true);
+    }
+    CHECK(snapshot.CandidatePaths.size() >= snapshot.Names.size());
+    for (const QString& path : snapshot.Paths)
+    {
+        CHECK(snapshot.CandidatePaths.contains(path) == true);
+    }
+}
+
+TEST_CASE("Live shader snapshots capture only the recipes' include closure", "[editor][shader-reload]")
+{
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid() == true);
+    const PreviewShaderSources sources = tests::CopySources(tests::GetCheckoutSources(), directory.path());
+    REQUIRE(sources.IncludeDirectories.isEmpty() == false);
+    PreviewShaderRecipes recipes{};
+    QString error;
+    REQUIRE(ReadPreviewShaderRecipes(sources, recipes, error) == true);
+    // More unrelated helpers than a snapshot admits do not stop the build.
+    const QDir root(sources.IncludeDirectories.first());
+    QByteArray includes;
+    for (usize i = 0; i <= compiler::MAX_SOURCE_FILES; ++i)
+    {
+        const QString name = QStringLiteral("unused_%1.slang").arg(i);
+        tests::WriteText(root.filePath(name), QByteArrayLiteral("// Included by no recipe.\n"));
+        includes += "#include \"" + name.toUtf8() + "\"\n";
+    }
+    // An include resolves next to its including file before the root-relative name.
+    REQUIRE(root.mkpath(QStringLiteral("nested")) == true);
+    tests::WriteText(root.filePath(QStringLiteral("nested/inner.slang")),
+                     QByteArrayLiteral("#include \"sibling.h\"\n"));
+    tests::WriteText(root.filePath(QStringLiteral("nested/sibling.h")), QByteArrayLiteral("// Nested.\n"));
+    tests::WriteText(root.filePath(QStringLiteral("sibling.h")), QByteArrayLiteral("// Root.\n"));
+    const QString lit = QDir(sources.RecipeDirectory).filePath(QStringLiteral("renderer_lit.slang"));
+    const QByteArray original = tests::ReadText(lit);
+    tests::WriteText(lit, QByteArrayLiteral("#include \"nested/inner.slang\"\n") + original);
+    PreviewShaderSnapshot snapshot;
+    const bool isCaptured = CapturePreviewShaderSnapshot(sources, recipes, snapshot, error);
+    INFO(error.toStdString());
+    REQUIRE(isCaptured == true);
+    CHECK(snapshot.Names.contains(QStringLiteral("unused_0.slang")) == false);
+    CHECK(snapshot.CandidatePaths.contains(root.filePath(QStringLiteral("unused_0.slang"))) == true);
+    CHECK(snapshot.Names.contains(QStringLiteral("nested/inner.slang")) == true);
+    CHECK(snapshot.Names.contains(QStringLiteral("nested/sibling.h")) == true);
+    CHECK(snapshot.Names.contains(QStringLiteral("sibling.h")) == false);
+    // A closure beyond the limit still fails and keeps the previous snapshot.
+    tests::WriteText(lit, includes + original);
+    const QStringList names = snapshot.Names;
+    CHECK(CapturePreviewShaderSnapshot(sources, recipes, snapshot, error) == false);
+    CHECK(error.contains(QStringLiteral("snapshot limit of %1 files").arg(compiler::MAX_SOURCE_FILES)) == true);
+    CHECK(snapshot.Names == names);
+}
+
 TEST_CASE("Shader builder reuses unchanged stages and keeps the last good output", "[editor][shader-reload]")
 {
     QTemporaryDir directory;

@@ -4,7 +4,7 @@ add_library(ludus_scene_cook STATIC
     src/importers/pbrt/pbrt_tokenizer.cpp src/importers/pbrt/ply_reader.cpp
     src/importers/pbrt/pbrt_parser.cpp src/importers/pbrt/shape_tessellation.cpp src/importers/pbrt/spectrum_tables.cpp
     src/importers/budget_planner.cpp src/importers/best_effort_import.cpp src/importers/authored_lighting.cpp
-    src/importers/image/image_reader.cpp src/importers/image/exr_reader.cpp src/importers/source_resolver.cpp
+    src/importers/image/image_reader.cpp src/importers/image/image_filter.cpp src/importers/image/exr_reader.cpp src/importers/source_resolver.cpp
     src/importers/front_end_support.cpp src/importers/obj/obj_reader.cpp src/importers/tangent_generation.cpp
     src/importers/name_index.cpp src/importers/mesh_compaction.cpp src/importers/gltf/gltf_reader.cpp src/importers/texture_decode_queue.cpp
     src/importers/parallel_tasks.cpp src/file_digests.cpp)
@@ -48,7 +48,7 @@ if(LUDUS_BUILD_TESTS)
     add_test(NAME ludus_scene_cook_tests COMMAND ludus_scene_cook_tests)
     set_tests_properties(ludus_scene_cook_tests PROPERTIES LABELS "unit;content;goldens")
 
-    add_executable(ludus_scene_assets_tests tests/scene_assets_tests.cpp)
+    add_executable(ludus_scene_assets_tests tests/scene_assets_tests.cpp tests/reference_emitter_tests.cpp)
     target_include_directories(ludus_scene_assets_tests PRIVATE src)
     target_compile_definitions(ludus_scene_assets_tests PRIVATE
         LUDUS_SCENE_GOLDENS_DIR="${PROJECT_SOURCE_DIR}/tests/goldens/scene_pipeline"

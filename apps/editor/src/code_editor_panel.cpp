@@ -4,6 +4,7 @@
 
 #include "internal/code_edit_scope.h"
 #include "internal/code_editor.h"
+#include "internal/code_navigation.h"
 
 #include <QCheckBox>
 #include <QFont>
@@ -41,9 +42,10 @@ CodeEditorPanel::CodeEditorPanel(CodeEditor* editor, QWidget* parentOrNull)
     commands->setText(QStringLiteral("Edit"));
     commands->setToolButtonStyle(Qt::ToolButtonTextOnly);
     commands->setObjectName(QStringLiteral("codeEditorCommands"));
-    commands->setAccessibleName(QStringLiteral("Editing commands and keyboard shortcuts"));
+    commands->setAccessibleName(QStringLiteral("Editing, source navigation and keyboard shortcuts"));
     commands->setPopupMode(QToolButton::InstantPopup);
     QMenu* commandMenu = new QMenu(commands);
+    commandMenu->setToolTipsVisible(true);
     commandMenu->addActions(editor->actions());
     commands->setMenu(commandMenu);
     tools->addWidget(commands);
@@ -224,6 +226,7 @@ void CodeEditorPanel::findText(bool shouldSearchBackward)
     }
     else
     {
+        mEditor->GetNavigation().RememberCurrent();
         mEditor->setTextCursor(found);
         mEditor->ensureCursorVisible();
         mStatus->clear();

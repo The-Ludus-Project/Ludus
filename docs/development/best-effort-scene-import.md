@@ -10,7 +10,7 @@ Bistro's complete triangle geometry within the encoded bundle budget.
 byte-identical cooker for the recorded goldens; it rejects anything it does
 not model exactly. The best-effort importers accept general pbrt-v4, glTF 2.0
 (JSON or GLB) and Wavefront OBJ scenes, approximate what the runtime cannot
-represent, fit the result into the LUSCN01 v6 import profile and explain every
+represent, fit the result into the LUSCN01 v7 import profile and explain every
 compromise in a versioned JSON report. All of them are native C++; neither the
 cook nor its tests run Python.
 
@@ -20,7 +20,7 @@ format-neutral intermediate representation (SceneIR,
 shared budget planner, texture cook, bake and report writer. The IR keeps the
 complete source data a front-end can express, not the LUSCN capacities, so a
 later cooked-format revision can lift the limits without touching the parsers
-(see [what LUSCN v6 cannot carry](#what-luscn-v6-cannot-carry-yet)).
+(see [what the import profile cannot carry](#what-the-import-profile-cannot-carry-yet)).
 
 ## Running it
 
@@ -254,14 +254,16 @@ texture coordinates are reported instead.
 <a id="what-luscn-v4-cannot-carry-yet"></a>
 <a id="what-luscn-v5-cannot-carry-yet"></a>
 
-## What LUSCN v6 cannot carry yet
+<a id="what-luscn-v6-cannot-carry-yet"></a>
 
-The planner fits the IR into the LUSCN v6 import profile (256 meshes, materials
+## What the import profile cannot carry yet
+
+The planner fits the IR into the LUSCN v7 import profile (256 meshes, materials
 and textures, 1,024 objects, 256 MiB of textures and a 384 MiB bundle,
 flattened instancing; see
 [the import profile](../architecture/content-resources.md#import-profile-and-alpha-masks-luscn-v5)
 and [surface maps](../architecture/content-resources.md#surface-maps-emission-maps-and-tangents-luscn-v6)).
-Materials carry a base colour texture with an alpha mask, a linear surface map
+Materials carry a linear base-color multiplier, a base colour texture with an alpha mask, a linear surface map
 (tangent-space normal, roughness and metallic) and an emission map; vertices carry
 tangents. Every source material keeps its slot, so Khronos Sponza (262k triangles,
 25 materials) cooks whole with full-resolution base-colour textures, normal maps
@@ -343,7 +345,7 @@ area-light, shadow and indirect-transport limits.
 
 ## Budget planner
 
-The cooked scene must fit the LUSCN v6 import profile: 256 meshes, materials and
+The cooked scene must fit the LUSCN v7 import profile: 256 meshes, materials and
 textures, 256 MiB of textures and a 384 MiB bundle. The former independent
 2M-vertex and 6M-index ceilings are removed: geometry is admitted by its actual
 encoded bytes, including 48 bytes per v6 vertex and four per index. Every
@@ -400,8 +402,30 @@ Each cooked mesh carries one material, so the planner:
 8. halves the largest texture, oversized ones first, until every texture fits
    4096 texels and 16 MiB and all fit the byte budget (`TEXTURE_DOWNSCALED`).
    Geometry and authored lighting bytes are reserved first.
-   Untextured slots get a 4×4 sRGB swatch. Halving averages alpha too, which
-   slightly erodes thin cut-outs.
+   RGB color and emission are decoded to linear light before box filtering and
+   encoded back to sRGB. Packed normal RG reconstructs positive Z, averages unit
+   directions and renormalizes; roughness, metallic and coverage remain linear
+   scalar channels. Untextured slots get a 4×4 sRGB swatch. Halving averages
+   coverage too, which slightly erodes thin cut-outs.
+
+The v7 material extension retains the linear base-color factor separately when
+the base image decodes. Shading multiplies it after sRGB decoding, including
+after asset splitting and World assembly. A constant or fallback swatch already
+contains its factor, so its retained multiplier is white. Best-effort extensions
+record the representative source index but currently have no counted source name.
+Re-import existing scenes to apply the corrected texture reductions and retained
+v7 material factors to their cooked assets.
+
+The editor's material graph uses bilinear reconstruction of the retained mip
+and carries alpha-mask thresholds into raster, closest-hit and shadow coverage.
+It does not retain per-map sampler differences or mip chains. This does not remove
+texture admission budgets: Intel Sponza's 72 source 4K PNGs decode to 4.5 GiB of
+RGBA8 before geometry, so the import still reduces resolution to fit its declared
+budget. Its single `BLEND` dirt-decal material still receives the explicit opaque
+approximation diagnostic; correct translucent composition and material reflection
+sidedness remain separate viewport limitations. Source vertex colors in the
+supplied main glTF are uniformly white; general nonwhite vertex-color import
+remains unsupported.
 
 A scene rejects when distinct emitter groups cannot fit the 256 mesh slots,
 required emitter geometry exceeds capacity, lighting exceeds 128 analytic lights,

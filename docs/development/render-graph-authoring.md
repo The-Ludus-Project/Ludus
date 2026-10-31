@@ -3582,7 +3582,8 @@ checks alternating writes, persistence and replacement reset.
 
 Ray path capture records the rays that `RayTracingPipeline` nodes (triangle and
 scene callback profiles, with or without a visibility buffer) and scene
-`ComputePipeline` nodes trace for one pixel. The
+`ComputePipeline` nodes trace for one pixel. It works with every traversal
+strategy: `NativeQuery`, `TriangleLoop`, `ComputeBvh` and `Custom`. The
 [design](../architecture/render-graph-authoring.md#ray-path-inspection-proposed)
 explains what the kernel can observe. The editor freezes the World viewport's
 graph, traces the pixel and draws the frozen paths over the scene, which you then
@@ -3591,9 +3592,11 @@ explore with the free camera. It is not a GPU frame debugger.
 **Inspect a pixel in the editor.**
 
 1. Show the World with the project's ray graph in the World viewport. Capture needs
-   the hardware raytracing renderer: a GPU or API without native ray queries, **Force
-   raster**, or a software-traversal graph reports capture as unavailable in the
-   **Ray Paths** panel. The viewport keeps rendering and navigating normally.
+   a ray renderer, either hardware raytracing or software (compute) traversal. A
+   software-traversal graph captures on any GPU, including one without native ray
+   queries. **Force raster**, or a native-query graph falling back to raster on a GPU
+   or API without native ray queries, reports capture as unavailable in the **Ray
+   Paths** panel. The viewport keeps rendering and navigating normally.
 2. On the Renderer canvas, right-click a `RayTracingPipeline` or scene
    `ComputePipeline` node and choose **Capture Ray Paths**. To capture every ray
    pass of the configuration, right-click the canvas background and choose
@@ -3735,13 +3738,21 @@ Current limits:
 - One pixel per capture. The buffer layout already stores a rectangle.
 - Two ray passes that share one cooked callback set cannot be told apart, so the
   request returns `Unsupported`.
-- Driver BVH traversal (box tests, node visits and order) is not observable.
-  The built-in GPU preview integrator is not instrumented.
+- Box tests, node visits and traversal order are not recorded for any strategy;
+  each event is one submitted ray and its committed result. With native queries
+  the driver owns that traversal. The built-in GPU preview integrator is not
+  instrumented.
+- Rejected-candidate counts come from the engine's alpha test. `TriangleLoop`
+  counts only rejected candidates that were nearer than the hit so far, and
+  `ComputeBvh` counts those in the leaves it visits. A `Custom` traversal reports
+  zero, because its authored code owns candidate acceptance.
 - RenderGraph scene inputs have no masked materials yet, so no graph produces
   alpha-rejected candidates today. The counter is decoded and tested, but no
   scene can exercise it end to end yet.
-- Native ray queries are required. Without them, `Initialize` of the capture
-  variant fails like any native ray kernel; raster navigation is unaffected.
+- A `NativeQuery` graph needs native ray queries. Without them, `Initialize` of
+  the capture variant fails like any native ray kernel; raster navigation is
+  unaffected. `TriangleLoop`, `ComputeBvh` and `Custom` graphs capture on any
+  device that runs their compute kernel.
 - The editor captures one pixel at 16 samples and draws at most 512 segments.
   Larger rectangles need a world-space line pass, which is a separate change.
 
@@ -5167,6 +5178,10 @@ Ctrl is shown below (Qt's native shortcut mapping):
 | --- | --- |
 | Find / replace | Platform Find / Replace shortcuts, also in the context menu |
 | Go to line | Ctrl+G |
+| Quick Open source in this package | Ctrl+P |
+| Go to shader symbol in the current source | Ctrl+Shift+O |
+| Go to definition / find references | F12 / Shift+F12 |
+| Navigate Back / Forward | Ctrl+Alt+Left / Ctrl+Alt+Right |
 | Indent / outdent selected lines | Tab / Shift+Tab |
 | Toggle Slang line comments | Ctrl+/ |
 | Duplicate selected lines, or current line | Ctrl+D |
@@ -5189,6 +5204,47 @@ Find supports forward/backward wrapping, case matching, and replacement; Escape
 closes its controls and returns focus to the source. Go to line uses one-based
 line numbers. Ordinary text and JSON sources share the commands, with Slang
 coloring/comment toggling enabled only for `.slang` files.
+
+#### Source navigation
+
+The **Edit** and context menus expose source navigation alongside editing commands.
+**Quick Open Source** searches the current package's source paths, including unsaved
+added files. Type words to filter, use Up/Down and Enter to choose, or Escape to
+cancel. Filtering never previews a jump or changes a draft.
+
+**Go to Symbol** searches Slang's symbols in the current authored source, including
+functions, types and members. **Go to Definition** jumps directly when the compiler
+returns one mapped location; multiple definitions and **Find References** open the
+same filterable chooser. References cover the selected captured compiler context,
+including its declaration, rather than a project-wide text search. These commands
+share completion's native Slang process and selected program context, use the
+current unsaved draft and reject replies/selections after source, caret, binding,
+revision or context changes. Fix the reported syntax/tool/context problem and
+request the command again if a result is unavailable.
+Reference search is enabled only when the selected `slangd` advertises support;
+otherwise its menu entry explains the limitation. Use **Find** for text matches.
+An unsupported operation preserves the ready server, current source and selection.
+
+Exact unchanged package includes map back to editable drafts. Generated interfaces,
+rewritten compatibility dependencies and inlined surrounding context open in a
+separate **read-only captured context** window. You can inspect and copy there;
+closing it preserves the source view. Unknown server URIs and invalid UTF-16 ranges
+are omitted, never opened as arbitrary files. The context owner supplies exact
+snapshot URI/file/hash records; navigation does not parse shader declarations or
+guess source paths. Go to Symbol excludes generated surroundings.
+
+**Navigate Back / Forward** returns through explicit source, symbol, line, Find and
+diagnostic jumps, including source-file changes within a package. It retains up to
+64 locations in each direction and clears Forward on a new jump. Positions follow
+edits while their buffer is open; after a source rebind they use clamped line/column
+positions. Replacing a graph or project/epoch clears this view history. It does not
+edit source, add an Undo step, save files or start a build. Ordinary arrow-key
+movement remains native Qt navigation; the history shortcuts add Ctrl+Alt to avoid
+taking over word movement. Use Command for Ctrl on macOS as in the table above.
+
+Semantic symbol/definition/reference navigation requires native Slang and the same
+mapping limits as completion below. Quick Open, line/diagnostic jumps and history
+also work without Slang, including in the session-only browser editor.
 
 #### Shader completion and signature help
 

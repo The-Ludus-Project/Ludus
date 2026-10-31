@@ -456,6 +456,8 @@ set(editor_profiling_sources
 
 # Reusable private text presentation and async native assistance; no renderer link.
 add_library(ludus_editor_code STATIC
+    src/internal/code_navigation.h src/code_navigation.cpp
+    src/internal/code_navigation_results.h src/code_navigation_results.cpp
     src/internal/code_editor.h src/code_editor.cpp
     src/internal/code_editor_panel.h src/code_editor_panel.cpp
     src/internal/code_syntax_highlighter.h src/code_syntax_highlighter.cpp
@@ -536,6 +538,8 @@ qt_add_executable(ludus_editor
     src/builtin_world.cpp
     src/world_document.cpp
     src/world_demo_adapter.cpp
+    src/internal/material_inspection.h
+    src/material_inspection.cpp
     src/world_workspace.cpp
     src/world_viewport_editing.cpp
     src/internal/controller.h
@@ -830,7 +834,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         set_tests_properties(ludus_editor_accessibility_tests PROPERTIES LABELS "unit;editor;native;accessibility"
             TIMEOUT 30 ENVIRONMENT "QT_QPA_PLATFORM=cocoa")
     endif()
-    add_executable(ludus_code_editor_tests tests/main.cpp tests/code_editor_tests.cpp tests/code_document_tests.cpp)
+    add_executable(ludus_code_editor_tests tests/main.cpp tests/code_editor_tests.cpp tests/code_document_tests.cpp tests/code_navigation_tests.cpp)
     target_include_directories(ludus_code_editor_tests PRIVATE src)
     target_compile_definitions(ludus_code_editor_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
     configure_file(tests/formatter_fixture.py generated/formatter_fixture.py COPYONLY)
@@ -923,9 +927,12 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/builtin_world.cpp
         src/world_document.cpp
         src/world_demo_adapter.cpp
+        src/internal/material_inspection.h
+        src/material_inspection.cpp
         src/world_workspace.cpp
     src/world_viewport_editing.cpp
             tests/world_workspace_tests.cpp
+        tests/material_inspection_tests.cpp
         tests/level_workspace_tests.cpp
         tests/render_authoring_tests.cpp
         tests/world_lighting_switch_tests.cpp
@@ -1208,6 +1215,18 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             MANIFEST "${editor_ray_staged}/main.lushader.json" RAY_PATH_CAPTURE RAY_PATH_CAPTURE_PACKAGE)
         target_compile_definitions(ludus_editor_tests PRIVATE
             "LUDUS_EDITOR_RAY_CAPTURE_FIXTURE=\"${editor_renderer_ray_capture_RAY_PATH_CAPTURE_PACKAGE}\"")
+        # A software TriangleLoop graph and its capture variant: capture without native ray queries.
+        set(editor_software_ray_staged "${CMAKE_CURRENT_BINARY_DIR}/software-ray-inputs")
+        ludus_stage_render_graph_fixture("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/traversal_parity"
+            "${editor_software_ray_staged}")
+        ludus_compile_render_graph(TARGET ludus_editor_tests NAME editor_software_ray
+            MANIFEST "${editor_software_ray_staged}/main.lushader.json" CONFIGURATION TriangleLoop RUNTIME_PACKAGE)
+        ludus_compile_render_graph(TARGET ludus_editor_tests NAME editor_software_ray_capture
+            MANIFEST "${editor_software_ray_staged}/main.lushader.json" CONFIGURATION TriangleLoop
+            RAY_PATH_CAPTURE RAY_PATH_CAPTURE_PACKAGE)
+        target_compile_definitions(ludus_editor_tests PRIVATE
+            "LUDUS_EDITOR_SOFTWARE_RAY_GRAPH_FIXTURE=\"${editor_software_ray_RUNTIME_PACKAGE}\""
+            "LUDUS_EDITOR_SOFTWARE_RAY_CAPTURE_FIXTURE=\"${editor_software_ray_capture_RAY_PATH_CAPTURE_PACKAGE}\"")
         target_sources(ludus_editor_tests PRIVATE tests/ray_path_inspection_tests.cpp)
         ludus_stage_render_graph_fixture("${progressive_source}" "${progressive_staged}")
         configure_file("${progressive_source}/main_shaders/progressive_closest.slang"
@@ -1538,3 +1557,15 @@ foreach(target IN ITEMS ludus_editor ludus_editor_tests ludus_render_graph_confi
         target_sources(${target} PRIVATE src/renderer_workspace_resources.cpp)
     endif()
 endforeach()
+
+# Recovery follows the same document owner in the app and both workspace test executables.
+foreach(target IN ITEMS ludus_editor ludus_editor_tests ludus_render_graph_configuration_tests)
+    if(TARGET ${target})
+        target_sources(${target} PRIVATE
+            src/internal/render_graph_recovery_store.h src/render_graph_recovery_store.cpp
+            src/internal/render_graph_recovery.h src/render_graph_recovery.cpp)
+    endif()
+endforeach()
+if(TARGET ludus_render_graph_configuration_tests)
+    target_sources(ludus_render_graph_configuration_tests PRIVATE tests/render_graph_recovery_tests.cpp)
+endif()

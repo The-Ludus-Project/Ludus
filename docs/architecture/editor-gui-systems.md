@@ -166,6 +166,20 @@ unsolicited snippets and out-of-capacity results are rejected without publicatio
 The provider explicitly rejects legacy rewrites, repeated editable occurrences
 and cycles that cannot preserve this single-span mapping.
 
+Source symbol, definition and reference requests share that adapter and its exact
+draft/context identity. The compiler context exports a bounded URI/file/hash
+inventory; unchanged captured package includes map to editable drafts, while
+generated or rewritten locations are read-only inspections. Unknown URIs never
+trigger file access. Symbol lookup excludes generated surrounding declarations.
+Navigation retains at most 256 results from 8192 examined entries, validates UTF-16
+ranges and indexes each captured source's lines once per result set. The chooser
+filters copied labels without previewing selection; accepting revalidates the
+request identity. Source Back/Forward history is separate presentation state, with
+64 locations per direction, active-buffer cursor anchors and clamped line/column
+locations after rebinding. Quick Open uses the document owner's existing file
+inventory. Graph/project replacement clears it; Save and authored Undo stay with
+their existing owner.
+
 The native adapter keeps one assistance request and one JSON decode in flight.
 It parses protocol bodies off the input/paint thread, with a 4 MiB wire/buffer
 limit, 8 KiB header and diagnostic limits and a ten-second request deadline.
