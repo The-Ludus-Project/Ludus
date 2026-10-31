@@ -9,6 +9,7 @@
 #include "internal/editor_icons.h"
 #include "internal/editor_identity.h"
 #include "internal/level_workspace.h"
+#include "internal/material_inspection.h"
 #include "internal/render_panel.h"
 #include "internal/state_view.h"
 #include "internal/world_demo_adapter.h"
@@ -48,6 +49,7 @@
 #include <QSplitter>
 #include <QToolButton>
 #include <QVBoxLayout>
+#include <QVector>
 
 namespace ludus::editor
 {
@@ -1199,6 +1201,32 @@ void WorldWorkspace::updateShownRenderPreview(bool isSceneShown)
         Q_EMIT RenderPreviewChanged();
     }
 }
+void WorldWorkspace::addMaterialGroup()
+{
+    QGroupBox* group = new QGroupBox(QStringLiteral("Material"));
+    group->setObjectName(QStringLiteral("worldMaterial"));
+    QFormLayout* rows = new QFormLayout(group);
+    QVector<MaterialPropertyRow> properties;
+    if (DescribeSceneObjectMaterial(Scene_->PreviewScene(), Selected_, properties) == false)
+    {
+        QLabel* pending =
+            new QLabel(QStringLiteral("Material values appear once the viewport has loaded the scene."), group);
+        pending->setWordWrap(true);
+        rows->addRow(pending);
+        Inspector_->addWidget(group);
+        return;
+    }
+    for (const MaterialPropertyRow& property : properties)
+    {
+        QLabel* value = new QLabel(property.Value, group);
+        value->setObjectName(QStringLiteral("worldMaterial:") + property.Label);
+        value->setTextFormat(Qt::PlainText);
+        value->setWordWrap(true);
+        value->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        rows->addRow(property.Label, value);
+    }
+    Inspector_->addWidget(group);
+}
 void WorldWorkspace::RenderInspector()
 {
     Scene_->SetSelection(Selected_);
@@ -1296,6 +1324,7 @@ void WorldWorkspace::RenderInspector()
         assets->setTextFormat(Qt::PlainText);
         rows->addRow(assets);
         Inspector_->addWidget(group);
+        addMaterialGroup();
     }
     const auto attached = entity.value(QStringLiteral("components")).toObject();
     for (const auto definition : Document_.Schema().value(QStringLiteral("components")).toArray())

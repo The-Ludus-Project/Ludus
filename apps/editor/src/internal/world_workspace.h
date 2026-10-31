@@ -186,6 +186,9 @@ private:
     void SceneVerified(bool accepted);
     void Render();
     void RenderInspector();
+    /// Append the read-only Material group of the selected scene instance, read from the
+    /// presented viewport scene; a placeholder until that scene has loaded.
+    void addMaterialGroup();
     void bindViewportInteraction();
     void updateViewportInteraction();
     void commitViewportPlacement(const QString& id, const QJsonObject& placement);

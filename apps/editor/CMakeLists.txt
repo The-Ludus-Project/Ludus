@@ -538,6 +538,8 @@ qt_add_executable(ludus_editor
     src/builtin_world.cpp
     src/world_document.cpp
     src/world_demo_adapter.cpp
+    src/internal/material_inspection.h
+    src/material_inspection.cpp
     src/world_workspace.cpp
     src/world_viewport_editing.cpp
     src/internal/controller.h
@@ -925,9 +927,12 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/builtin_world.cpp
         src/world_document.cpp
         src/world_demo_adapter.cpp
+        src/internal/material_inspection.h
+        src/material_inspection.cpp
         src/world_workspace.cpp
     src/world_viewport_editing.cpp
             tests/world_workspace_tests.cpp
+        tests/material_inspection_tests.cpp
         tests/level_workspace_tests.cpp
         tests/render_authoring_tests.cpp
         tests/world_lighting_switch_tests.cpp
