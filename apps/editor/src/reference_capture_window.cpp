@@ -341,8 +341,15 @@ void ReferenceCaptureWindow::updateGraphDescription()
     QString text = QStringLiteral("None. This viewport has no project render graph, so only the RT1 reference can "
                                   "be captured.");
 #if defined(LUDUS_EDITOR_NATIVE_PREVIEW)
-    if (mProjectWorkspace.isNull() == false && mProjectGraph.isNull() == false &&
-        mProjectGraph->GetRequestedPackagePath().isEmpty() == false)
+    const bool hasRequestedGraph =
+        mProjectGraph.isNull() == false && mProjectGraph->GetRequestedPackagePath().isEmpty() == false;
+    // The viewport may request its graph after this window opened; offer the Render graph source and the
+    // comparison as soon as it does, not only when Reference… is clicked again.
+    if (hasRequestedGraph != mIsComparisonAvailable)
+    {
+        updateComparisonAvailability();
+    }
+    if (mProjectWorkspace.isNull() == false && hasRequestedGraph == true)
     {
         QStringList parts;
         if (mProjectWorkspace->IsUsingDefaultRenderer() == true)
