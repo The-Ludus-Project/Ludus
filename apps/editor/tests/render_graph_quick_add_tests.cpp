@@ -352,7 +352,7 @@ TEST_CASE("Quick Add discovers unused graphs and searches their interfaces and c
 {
     QTemporaryDir project;
     const QString package = MakeQuickAddTestPackage(project);
-    const QString asset = QStringLiteral("sampling/SliceSampling.lurender.json");
+    const QString asset = QStringLiteral("sampling/StratumSampling.lurender.json");
     REQUIRE(QDir(package).mkpath(QStringLiteral("sampling")) == true);
     REQUIRE(QFile::copy(QDir(package).filePath(QStringLiteral("rasterize.lurender.json")),
                         QDir(package).filePath(asset)) == true);
@@ -360,7 +360,7 @@ TEST_CASE("Quick Add discovers unused graphs and searches their interfaces and c
     REQUIRE(document.Load(package, GetRoot()) == RenderGraphDocumentStatus::Ok);
     QJsonObject graph;
     REQUIRE(document.GetGraph(asset, graph) == true);
-    graph.insert(QStringLiteral("id"), QStringLiteral("SliceSampling"));
+    graph.insert(QStringLiteral("id"), QStringLiteral("StratumSampling"));
     graph.insert(QStringLiteral("default"), QStringLiteral("DepthOnly"));
     REQUIRE(document.SetText(asset, EncodeCanonicalJson(graph)) == RenderGraphDocumentStatus::Ok);
 
@@ -370,18 +370,18 @@ TEST_CASE("Quick Add discovers unused graphs and searches their interfaces and c
     QLineEdit* searchOrNull = palette.findChild<QLineEdit*>(QStringLiteral("renderGraphQuickAddSearch"));
     REQUIRE(searchOrNull != nullptr);
     const QString key = QStringLiteral("graph:") + asset;
-    searchOrNull->setText(QStringLiteral("slicesampl"));
+    searchOrNull->setText(QStringLiteral("stratumsampl"));
     CHECK(palette.GetListedKeys() == QStringList{key});
     palette.SetKind(RenderGraphQuickAddKind::Graphs);
     for (const QString& query : {QStringLiteral("DepthOnly"),
                                  QStringLiteral("Scene"),
                                  QStringLiteral("reference"),
-                                 QStringLiteral("sampling/SliceSampling")})
+                                 QStringLiteral("sampling/StratumSampling")})
     {
         searchOrNull->setText(query);
         CHECK(palette.GetListedKeys().contains(key) == true);
     }
-    searchOrNull->setText(QStringLiteral("slicesampl"));
+    searchOrNull->setText(QStringLiteral("stratumsampl"));
     QLabel* portsOrNull = palette.findChild<QLabel*>(QStringLiteral("renderGraphQuickAddPorts"));
     REQUIRE(portsOrNull != nullptr);
     CHECK(portsOrNull->text().contains(asset) == true);

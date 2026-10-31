@@ -136,7 +136,7 @@ if(LUDUS_BUILD_THREADING_BENCHMARK AND NOT EMSCRIPTEN)
     ludus_apply_project_defaults(ludus_static_lighting_benchmark)
 endif()
 if(TARGET ludus_rhi_render_tests)
-    add_executable(ludus_renderer_render_tests tests/render_tests.cpp tests/denoising_tests.cpp tests/gpu_preview_tests.cpp tests/ray_opacity_tests.cpp tests/visibility_tests.cpp tests/reference_compute_tests.cpp tests/reference_light_sampling_benchmark.cpp tests/gpu_random_tests.cpp tests/projected_solid_angle_parity_tests.cpp src/ltc_table.cpp "${ludus_ltc_table_source}" tests/power_cdf_parity_tests.cpp tests/ris_projected_solid_angle_weight_tests.cpp tests/reference_light_sampling_parity_tests.cpp tests/polygonal_light_sampling_oracle.cpp tests/polygonal_light_sampling_parity_tests.cpp tests/restir_selection_tests.cpp tests/authored_tests.cpp tests/render_graph_render_tests.cpp tests/render_graph_pool_render_tests.cpp)
+    add_executable(ludus_renderer_render_tests tests/render_tests.cpp tests/denoising_tests.cpp tests/gpu_preview_tests.cpp tests/ray_opacity_tests.cpp tests/visibility_tests.cpp tests/reference_compute_tests.cpp tests/reference_light_sampling_benchmark.cpp tests/gpu_random_tests.cpp tests/projected_solid_angle_parity_tests.cpp src/ltc_table.cpp "${ludus_ltc_table_source}" tests/power_cdf_parity_tests.cpp tests/ris_projected_solid_angle_weight_tests.cpp tests/reference_light_sampling_parity_tests.cpp tests/polygonal_light_sampling_oracle.cpp tests/polygonal_light_sampling_parity_tests.cpp tests/slice_sampling_luminaire_estimator_tests.cpp tests/restir_selection_tests.cpp tests/authored_tests.cpp tests/render_graph_render_tests.cpp tests/render_graph_pool_render_tests.cpp)
     target_include_directories(ludus_renderer_render_tests PRIVATE ../rhi/src "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
     target_link_libraries(ludus_renderer_render_tests PRIVATE Ludus::GraphicsText Ludus::FoundationMath Ludus::FoundationTime Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_renderer_render_tests)
@@ -206,6 +206,14 @@ if(TARGET ludus_rhi_render_tests)
                 "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders/shading_normal.slang"
                 "${renderer_shader_directory}/renderer_gpu_preview.slang" "${renderer_shader_directory}/scene_shader.slang"
                 "${renderer_shader_directory}/ltc_table.slang" "${renderer_shader_directory}/ltc_table_layout.h")
+    # Test-only kernel running the slice-sampling-luminaire template's proposals at fixed receivers.
+    set(slice_sampling_luminaire_shaders "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/slice_sampling_luminaire/main_shaders")
+    ludus_compile_shader(TARGET ludus_renderer_render_tests NAME slice_sampling_luminaire_estimators
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/slice_sampling_luminaire_estimators.slang" COMPUTE SliceSamplingEstimatorsMain
+        INCLUDES "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders" "${slice_sampling_luminaire_shaders}"
+        DEPENDS "${slice_sampling_luminaire_shaders}/slice_sampling.slang" "${slice_sampling_luminaire_shaders}/luminaire.slang"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/slice_sampling_luminaire_estimators_layout.h"
+                "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders/math.slang")
     ludus_compile_shader(TARGET ludus_renderer_render_tests NAME restir_selection
         SOURCE "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/tests/restir_selection.slang" COMPUTE ComputeMain
         INCLUDES "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders"
@@ -376,7 +384,7 @@ if(TARGET ludus_renderer_render_tests)
         LUDUS_RG3_VISIBILITY_ORDINARY_DIRECTORY="${visibility_ordinary_package_directory}")
     foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing
             simple_compute_ray_tracing veach_guibas_mis line_sampling ris_projected_solid_angle salesin_jarosz_lines
-            polygonal_light_sampling)
+            polygonal_light_sampling slice_sampling_luminaire)
         set(template_source "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/${template_directory}")
         set(template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${template_directory}_template")
         ludus_stage_render_graph_fixture("${template_source}" "${template_staged}")
@@ -981,7 +989,8 @@ if(TARGET ludus_renderer_render_tests)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_STORAGE_RAY_DIRECTORY="${storage_ray_package_directory}")
     add_test(NAME ludus_render_graph_ray_pixels
-        COMMAND ludus_render_graph_ray_tests "~[ris-projected-solid-angle]~[polygonal-light-sampling]")
+        COMMAND ludus_render_graph_ray_tests
+            "~[ris-projected-solid-angle]~[polygonal-light-sampling]~[slice-sampling-luminaire]")
     set_tests_properties(ludus_render_graph_ray_pixels PROPERTIES LABELS "renderer;gpu;ray" TIMEOUT 60)
     # The ris-projected-solid-angle template's convergence and error checks render about 3100 frames and
     # need no native ray tracing, so they also run on software Vulkan adapters; they get their own timeout.
@@ -994,6 +1003,12 @@ if(TARGET ludus_renderer_render_tests)
     add_test(NAME ludus_render_graph_polygonal_light_sampling_pixels
         COMMAND ludus_render_graph_ray_tests "[polygonal-light-sampling]")
     set_tests_properties(ludus_render_graph_polygonal_light_sampling_pixels PROPERTIES
+        LABELS "renderer;gpu;ray" TIMEOUT 600)
+    # The slice-sampling-luminaire template's checks render about 1300 compute-BVH frames and need no native ray
+    # tracing, so they also run on software Vulkan adapters.
+    add_test(NAME ludus_render_graph_slice_sampling_luminaire_pixels
+        COMMAND ludus_render_graph_ray_tests "[slice-sampling-luminaire]")
+    set_tests_properties(ludus_render_graph_slice_sampling_luminaire_pixels PROPERTIES
         LABELS "renderer;gpu;ray" TIMEOUT 600)
     add_executable(ludus_graph_workgroup_tests tests/graph_workgroup_tests.cpp)
     target_link_libraries(ludus_graph_workgroup_tests PRIVATE Ludus::GraphicsRenderer

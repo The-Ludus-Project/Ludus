@@ -20,6 +20,7 @@ TEMPLATES = {
     'ris-projected-solid-angle': ('ris_projected_solid_angle', 'RIS and projected solid angle', 'compute-ray-tracing'),
     'salesin-jarosz-lines': ('salesin_jarosz_lines', 'Salesin and Jarosz point and line MIS', 'compute-ray-tracing'),
     'polygonal-light-sampling': ('polygonal_light_sampling', 'Polygonal light sampling', 'compute-ray-tracing'),
+    'slice-sampling-luminaire': ('slice_sampling_luminaire', 'Slice sampling luminaire', 'compute-ray-tracing'),
 }
 # What each requirement needs, as the capability repair names it.
 REQUIREMENT_REPAIRS = {

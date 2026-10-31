@@ -1153,6 +1153,136 @@ class PolygonalLightSamplingTemplateTests(unittest.TestCase):
             self.assertEqual(arguments.template, 'polygonal-light-sampling')
 
 
+class SliceSamplingLuminaireTemplateTests(unittest.TestCase):
+    """Steinberg's slice sampling of a directional luminaire beside slice sampling alone and uniform panel area."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+
+    def create(self, profiles=('metal', 'wgsl'), name='Luminaire'):
+        return graph.new_workspace(Path(self.directory.name) / name, output='offscreen', renderer_static=True,
+                                   profiles=profiles, template='slice-sampling-luminaire')
+
+    def test_three_compute_bvh_shade_passes_share_the_hit_buffer_and_accumulate_separately(self):
+        for profile in ('metal', 'spirv'):
+            with self.subTest(profile=profile):
+                root = self.create((profile,), name=profile)
+                plan = graph.compile_graph(root)
+                rays = [operation for operation in plan['passes'] if operation['kind'] == 'RayTracing']
+                # The first pass records the primary hits and shades the defensive mixture.
+                self.assertEqual([operation['id'].rsplit('/', 1)[-1] for operation in rays],
+                                 ['shade', 'shadeSliceSampling', 'shadeUniformArea'])
+                for operation in rays:
+                    self.assertEqual(operation['pipeline']['kind'], 'ComputePipeline')
+                    self.assertEqual(ray.program_tuple(operation['pipeline'])[-1], ray.COMPUTE_BVH_TAG)
+                    self.assertEqual(4096, operation['accumulation']['samples'])
+                    self.assertEqual(1, operation['tone_mapping']['exposure'])
+                self.assertFalse(ray.requires_native_queries(plan))
+                buffers = [resource for resource in plan['resources'].values() if resource['type'] == 'Buffer']
+                self.assertEqual([resource['bytes_per_pixel'] for resource in buffers], [32])
+                for target in ('sliceSampling', 'uniformArea'):
+                    self.assertEqual(plan['resources'][f'SliceSamplingLuminaire/transport/{target}']['type'],
+                                     'ColorTexture')
+                exports = [operation['id'].rsplit('/', 1)[-1] for operation in plan['passes']
+                           if operation['kind'] == 'Export']
+                # The defensive mixture is the first export, which the editor viewport shows by default.
+                self.assertEqual(exports, ['output', 'sliceSamplingOutput', 'uniformAreaOutput'])
+
+    def test_manifest_declares_one_shadow_ray_and_the_luminaire_settings(self):
+        root = self.create()
+        manifest = json.loads(root.with_name('main.lushader.json').read_text())
+        build.validate_manifest(manifest)
+        technique = next(technique for technique in manifest['techniques'] if technique['id'] == ray.TECHNIQUE)
+        self.assertFalse(any(stage in technique for stage in ray.STAGES))
+        # One camera ray and one shadow ray per pass; no polygonal-light helpers.
+        self.assertEqual(technique['scene_interface'], {'version': 1, 'surface_queries': 1, 'visibility_queries': 1})
+        compute = [program for program in manifest['programs'] if program['stage'] == 'compute']
+        self.assertEqual([(program['id'], program['function']) for program in compute],
+                         [('ShadeDefensiveSliceSampling', 'ShadeDefensiveSliceSampling'),
+                          ('ShadeSliceSampling', 'ShadeSliceSampling'), ('ShadeUniformArea', 'ShadeUniformArea')])
+        values = {setting['id']: (setting['type'], setting['value'], setting['minimum'], setting['maximum'])
+                  for setting in manifest['settings']}
+        self.assertEqual(values, {'SLICE_DEFENSIVE_FRACTION': ('Float32', 0.1, 0, 1),
+                                  'LUMINAIRE_RADIANCE_SCALE': ('Float32', 6, 0, 1000),
+                                  'LUMINAIRE_BEAM_WIDTH': ('Float32', 0.02, 0.001, 1),
+                                  'LUMINAIRE_BEAM_STEERING': ('Float32', 0.12, 0, 2),
+                                  'LUMINAIRE_BEAM_SPREAD': ('Float32', 0.08, 0, 2),
+                                  'LUMINAIRE_BEAM_TWIST': ('Float32', 0.04, 0, 2)})
+
+    def test_shaders_use_the_shared_primitives_and_credit_the_paper_by_section(self):
+        root = self.create()
+        shaders = root.with_name('main_shaders')
+        shade = shaders.joinpath('shade.slang').read_text()
+        sampling = shaders.joinpath('slice_sampling.slang').read_text()
+        luminaire = shaders.joinpath('luminaire.slang').read_text()
+        for call in ('GetSurfaceHit', 'EvaluateMaterial', 'EvaluateEmission', 'EvaluateStandardBsdf', 'TestVisibility',
+                     'TraceAndStoreHitRecord', 'TryLoadHitRecord'):
+            self.assertIn(call, shade)
+        # The slice transport's quantile is FoundationMath's, staged with the wrapper, not a package copy.
+        self.assertIn('ComputeStandardNormalQuantile', sampling)
+        self.assertNotIn('float ComputeStandardNormalQuantile', sampling)
+        self.assertEqual(sorted(path.name for path in shaders.iterdir()),
+                         ['color.slang', 'depth.slang', 'geometry.slang', 'hit_record.slang', 'luminaire.slang',
+                          'shade.slang', 'slice_sampling.slang'])
+        for citation in ('Steinberg', 'Eq. (9)', 'Eq. 13', 'Eq. (15)', 'Eq. (20)', 'section 6.2', 'Departures'):
+            self.assertIn(citation, sampling)
+        for citation in ('Steinberg', '6.2', '6.4'):
+            self.assertIn(citation, luminaire)
+        # One pass per estimator, in output order.
+        for estimator in ('DEFENSIVE_SLICE_SAMPLING_ESTIMATOR', 'SLICE_SAMPLING_ESTIMATOR', 'UNIFORM_AREA_ESTIMATOR'):
+            self.assertIn(f'ShadeEstimator(scene, launch, {estimator}, queries)', shade)
+
+    def test_random_dimensions_follow_the_documented_table(self):
+        import re
+        root = self.create()
+        shaders = root.with_name('main_shaders')
+        header = shaders.joinpath('hit_record.slang').read_text()
+        definitions = dict(re.findall(r'static const uint ([A-Z0-9_]+) =\s*([^;]+);', header))
+
+        def evaluate(name):
+            expression = definitions[name]
+            for other in sorted(definitions, key=len, reverse=True):
+                if other in expression:
+                    expression = expression.replace(other, str(evaluate(other)))
+            return eval(expression, {'__builtins__': {}})
+
+        self.assertEqual([evaluate(name) for name in ('PRIMARY_RANDOM_DIMENSION_FIRST', 'PRIMARY_RANDOM_DIMENSION_COUNT',
+                                                      'MIXTURE_COMPONENT_DIMENSION', 'SLICE_SEED_DIMENSION_FIRST',
+                                                      'SLICE_BRANCH_DIMENSION', 'PANEL_AREA_DIMENSION_FIRST')],
+                         [0, 2, 2, 3, 5, 6])
+        # Every pass reads explicit addresses, never the automatic stream.
+        for kernel in ('shade', 'hit_record', 'slice_sampling', 'luminaire'):
+            source = shaders.joinpath(f'{kernel}.slang').read_text()
+            self.assertNotIn('SampleSceneRandom(queries', source)
+
+    def test_browser_only_profiles_name_metal_or_vulkan_compute(self):
+        with self.assertRaises(ToolingError) as caught:
+            self.create(('wgsl',), name='Browser')
+        self.assertEqual(caught.exception.code, 'RenderGraphCapability')
+        self.assertIn('Metal or Vulkan compute', caught.exception.message)
+        self.assertFalse((Path(self.directory.name) / 'Browser').exists())
+
+    def test_relocated_sdk_and_cli_expose_the_template(self):
+        from ludus_tools import render_graph_templates
+        from ludus_tools.cli import build_parser
+        installed = Path(self.directory.name) / 'sdk/lib/cmake/Ludus/render_graph'
+        module = installed / 'ludus_tools/render_graph_templates.py'
+        module.parent.mkdir(parents=True)
+        source = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs/slice_sampling_luminaire'
+        shutil.copytree(source, installed / 'templates/slice_sampling_luminaire')
+        with patch.object(render_graph_templates, '__file__', str(module)):
+            files = render_graph_templates.template_files('slice-sampling-luminaire', ('spirv',), graph)
+        build.validate_manifest(json.loads(files['main.lushader.json']))
+        self.assertIn('TrySolveSeedEquation', files['main_shaders/slice_sampling.slang'])
+        self.assertEqual(render_graph_templates.TEMPLATES['slice-sampling-luminaire'][2], 'compute-ray-tracing')
+        for profile in ('metal', 'spirv'):
+            arguments = build_parser().parse_args(['render-graph', 'new', 'graphs/Luminaire', '--template',
+                                                   'slice-sampling-luminaire', '--output', 'offscreen',
+                                                   '--renderer-static', '--profiles', profile])
+            self.assertEqual(arguments.template, 'slice-sampling-luminaire')
+
+
 class SimpleComputeRayTracingTemplateTests(unittest.TestCase):
     def test_single_compute_pass_has_no_hit_buffer_or_accumulation(self):
         with tempfile.TemporaryDirectory() as directory:

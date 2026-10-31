@@ -46,6 +46,117 @@ float ComputeArctangent(float x)
     float result = offset + (polynomial * square * reduced + reduced);
     return x < 0 ? -result : result;
 }
+// Standard normal quantile. Thanks to Michael J. Wichura, "Algorithm AS 241: The Percentage Points of the Normal
+// Distribution", Journal of the Royal Statistical Society, Series C (Applied Statistics) 37(3), 1988, pp. 477-484,
+// https://doi.org/10.2307/2347330 : PPND16's three degree-7 rational approximations, with the published coefficients.
+// The GPU counterpart of ComputeStandardNormalQuantile(float32) in ludus/foundation/math/scalar.hpp, which evaluates
+// the same polynomials in the same Horner order; scalar_tests.cpp checks that overload against the float64 one and
+// the normal CDF. Each helper lists its coefficients from the highest degree to the constant term.
+float EvaluateQuantileCentralNumerator(float x)
+{
+    float result = 2.5090809287301226727e+3;
+    result = result * x + 3.3430575583588128105e+4;
+    result = result * x + 6.7265770927008700853e+4;
+    result = result * x + 4.5921953931549871457e+4;
+    result = result * x + 1.3731693765509461125e+4;
+    result = result * x + 1.9715909503065514427e+3;
+    result = result * x + 1.3314166789178437745e+2;
+    result = result * x + 3.3871328727963666080e+0;
+    return result;
+}
+float EvaluateQuantileCentralDenominator(float x)
+{
+    float result = 5.2264952788528545610e+3;
+    result = result * x + 2.8729085735721942674e+4;
+    result = result * x + 3.9307895800092710610e+4;
+    result = result * x + 2.1213794301586595867e+4;
+    result = result * x + 5.3941960214247511077e+3;
+    result = result * x + 6.8718700749205790830e+2;
+    result = result * x + 4.2313330701600911252e+1;
+    result = result * x + 1.0;
+    return result;
+}
+float EvaluateQuantileIntermediateNumerator(float x)
+{
+    float result = 7.74545014278341407640e-4;
+    result = result * x + 2.27238449892691845833e-2;
+    result = result * x + 2.41780725177450611770e-1;
+    result = result * x + 1.27045825245236838258e+0;
+    result = result * x + 3.64784832476320460504e+0;
+    result = result * x + 5.76949722146069140550e+0;
+    result = result * x + 4.63033784615654529590e+0;
+    result = result * x + 1.42343711074968357734e+0;
+    return result;
+}
+float EvaluateQuantileIntermediateDenominator(float x)
+{
+    float result = 1.05075007164441684324e-9;
+    result = result * x + 5.47593808499534494600e-4;
+    result = result * x + 1.51986665636164571966e-2;
+    result = result * x + 1.48103976427480074590e-1;
+    result = result * x + 6.89767334985100004550e-1;
+    result = result * x + 1.67638483018380384940e+0;
+    result = result * x + 2.05319162663775882187e+0;
+    result = result * x + 1.0;
+    return result;
+}
+float EvaluateQuantileTailNumerator(float x)
+{
+    float result = 2.01033439929228813265e-7;
+    result = result * x + 2.71155556874348757815e-5;
+    result = result * x + 1.24266094738807843860e-3;
+    result = result * x + 2.65321895265761230930e-2;
+    result = result * x + 2.96560571828504891230e-1;
+    result = result * x + 1.78482653991729133580e+0;
+    result = result * x + 5.46378491116411436990e+0;
+    result = result * x + 6.65790464350110377720e+0;
+    return result;
+}
+float EvaluateQuantileTailDenominator(float x)
+{
+    float result = 2.04426310338993978564e-15;
+    result = result * x + 1.42151175831644588870e-7;
+    result = result * x + 1.84631831751005468180e-5;
+    result = result * x + 7.86869131145613259100e-4;
+    result = result * x + 1.48753612908506148525e-2;
+    result = result * x + 1.36929880922735805310e-1;
+    result = result * x + 5.99832206555887937690e-1;
+    result = result * x + 1.0;
+    return result;
+}
+/// Inverse standard normal CDF: the x with Phi(x) = probability, for probability in the open interval (0, 1). Metal
+/// compiles with fast math, so there is no NaN sentinel: 0, 1 and values outside the interval return 0. A caller
+/// mapping a [0, 1) random number moves it into the open interval first.
+float ComputeStandardNormalQuantile(float probability)
+{
+    static const float CENTRAL_LIMIT = 0.425;
+    static const float CENTRAL_OFFSET = 0.180625; // 0.425^2
+    static const float INTERMEDIATE_LIMIT = 5;
+    static const float INTERMEDIATE_OFFSET = 1.6;
+    if (probability <= 0 || probability >= 1)
+        return 0;
+    float q = probability - 0.5;
+    if (abs(q) <= CENTRAL_LIMIT)
+    {
+        float r = CENTRAL_OFFSET - q * q;
+        return q * EvaluateQuantileCentralNumerator(r) / EvaluateQuantileCentralDenominator(r);
+    }
+    // The smaller tail probability, so that 1 - probability does not cancel below the median.
+    float tail = q < 0 ? probability : 1 - probability;
+    float r = sqrt(-log(tail));
+    float magnitude;
+    if (r <= INTERMEDIATE_LIMIT)
+    {
+        r -= INTERMEDIATE_OFFSET;
+        magnitude = EvaluateQuantileIntermediateNumerator(r) / EvaluateQuantileIntermediateDenominator(r);
+    }
+    else
+    {
+        r -= INTERMEDIATE_LIMIT;
+        magnitude = EvaluateQuantileTailNumerator(r) / EvaluateQuantileTailDenominator(r);
+    }
+    return q < 0 ? -magnitude : magnitude;
+}
 // Matches DecodeSrgb's bounded CPU contract. Thanks to W3C, "CSS Color Module
 // Level 4", section 10.2, https://www.w3.org/TR/css-color-4/#predefined-sRGB,
 // for the piecewise transfer. GPU pow/division can round encoded white above one;

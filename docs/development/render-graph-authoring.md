@@ -2255,6 +2255,182 @@ Evidence:
 See the canonical
 [package](../../modules/graphics/renderer/render_graphs/polygonal_light_sampling/main.lurender.json).
 
+### Sample a directional luminaire with slice sampling
+
+The **Steinberg — slice sampling a directional luminaire** template
+(`slice-sampling-luminaire`) implements the direct-lighting application of Shlomi
+Steinberg, *Slice Sampling: Importance sampling with an auxiliary map* (draft,
+University of Waterloo), section 6. Some luminaires send different directions from
+different parts of their exit surface, for example a steered LED panel or an
+automotive lamp. Uniform area sampling then rarely finds the small panel regions
+whose beams reach a given receiver.
+
+Slice sampling turns the panel's own emission sampler, which is conditioned on a
+panel point, into a direct-light proposal at an arbitrary receiver. No second,
+receiver-conditioned sampler is trained. Create the template from
+**New Render Graph → Template**, or with the CLI:
+
+```bash
+ludus render-graph new graphs/Luminaire --template slice-sampling-luminaire --output offscreen \
+  --renderer-static --profiles metal wgsl
+```
+
+Use `spirv wgsl` for Vulkan. A `wgsl`-only package is rejected with a `Capability`
+diagnostic that names Metal or Vulkan compute. **Apply Configuration Template...**
+and Quick Add also offer the `SliceSamplingLuminaire` configuration, with `scene`,
+`view` and `color` inputs, a required `color` output and optional `sliceSampling`
+and `uniformArea` outputs. Every pass selects the `ComputeBvh` traversal, so the
+package needs Metal or Vulkan compute but no hardware ray tracing. Its registry
+requirement is `compute-ray-tracing`.
+
+**The luminaire.** `main_shaders/luminaire.slang` defines the analytic panel of the
+draft's section 6.2:
+
+- **Shape.** A square exit surface split into 3 × 3 tiles.
+- **Emission.** On tile *j* the radiance that leaves panel point *a* with
+  emitted-direction slope *z* is a Gaussian per unit slope area,
+  `L_o = scale · c_j · tint_j · N(z; M a + b_j, L_j L_jᵀ)`, as in the controlled
+  experiment of section 6.4.
+- **Per-tile tables.** Each tile has its own steering direction, width factors
+  (0.8 to 1.2 times the beam width), strength `c_j` and RGB tint. The tints make
+  each tile's footprint, and so each inverse branch of the seed map, visible on the
+  receivers.
+- **Placement.** The panel is not scene geometry. Camera rays do not see it and it
+  does not occlude, but scene geometry between a receiver and the panel does.
+  Graph settings must be nonnegative, so the placement is a set of constants in
+  the project-owned `luminaire.slang`: `LUMINAIRE_CENTER_WORLD`,
+  `LUMINAIRE_HALF_EXTENT_WORLD` and the tangent, bitangent and emitting normal.
+  The default is a 0.7 × 0.7 panel facing down at `y = 0.97`, just below the
+  ceiling light of a 2 × 2 × 2 room. Edit these constants for another scene.
+
+| Graph setting | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `SLICE_DEFENSIVE_FRACTION` | `0.1` | `0`–`1` | Probability ε of the uniform-area component in the color output's defensive mixture (Eq. 15). `0` gives slice sampling alone; `1` gives uniform area |
+| `LUMINAIRE_RADIANCE_SCALE` | `6` | `0`–`1000` | Multiplies every tile's radiance. It does not change the sampling densities |
+| `LUMINAIRE_BEAM_WIDTH` | `0.02` | `0.001`–`1` | Gaussian width scale in slope units; the tiles' widths span 0.016–0.024 by default, as in section 6.4 |
+| `LUMINAIRE_BEAM_STEERING` | `0.12` | `0`–`2` | Slope offset of each tile's beams along its steering direction, a pinwheel around the panel center |
+| `LUMINAIRE_BEAM_SPREAD` | `0.08` | `0`–`2` | Diagonal of `M`: the slope change per panel half extent |
+| `LUMINAIRE_BEAM_TWIST` | `0.04` | `0`–`2` | Off-diagonal of `M`: a rotational slope change per panel half extent |
+
+Nonnegative spread and twist keep `det(I + hM) ≥ 1` at every receiver height
+`h`, so no tile's beams focus into a caustic. An edit to these settings is the
+draft's "edit" of section 6.4: slice sampling adapts at once, because it reads the
+emission profile itself rather than a table fitted to it.
+
+Three compute passes share a 32-byte hit record, each with its own
+**Accumulate → ToneMap → Export** chain. The first pass traces the camera ray and
+records the hit for the other two.
+
+| Pipeline node | Function in `main_shaders/shade.slang` | Estimate | Output |
+| --- | --- | --- | --- |
+| `shade` | `ShadeDefensiveSliceSampling` | Slice sampling with probability 1 − ε, uniform panel area otherwise, divided by the mixture density (Eq. 15) | `color` → `output` export |
+| `shadeSliceSampling` | `ShadeSliceSampling` | Uniform-seed slice sampling alone (Algorithm 1) | `sliceSampling` → `sliceSamplingOutput` |
+| `shadeUniformArea` | `ShadeUniformArea` | Uniform panel-area sampling, the baseline of section 6.4 | `uniformArea` → `uniformAreaOutput` |
+
+`main_shaders/slice_sampling.slang` follows the draft. At a receiver of height
+`h` and tangential position `s`, measured in panel half extents:
+
+1. A uniform seed `u` is moved into the open interval (0, 1) and mapped to
+   `η = Φ⁻¹(u)` with FoundationMath's
+   [standard normal quantile](../modules/foundation/math.md#standard-normal-quantile).
+   This is the slice transport of section 2.1.
+2. On every tile `TrySolveSeedEquation` solves the 2 × 2 seed equation of
+   Eq. (20), `(I + hM) z = M s + b_j + L_j η`. The solution is a regular root only
+   if its panel point `a = s − hz` lies on tile *j*. Enumerating the nine tiles
+   therefore finds every root, with no iterative solve and no missed branch
+   (section 6.2).
+3. Each root has the branch weight `ω_j = c_j / |det(I + hM)|` (Eq. 9).
+   `ComputeSeedWeight` sums the weights into `W(u)`. A seed with no root is a null
+   outcome that contributes zero; it is kept, not retried (section 4.1).
+4. One root is chosen with probability `ω_j / W`. Its density per unit slope area
+   is `q = f / W` (Eq. 13), and solid angle at the receiver is
+   `(1 + |z|²)^(−3/2)` per unit slope area. The guide `f` equals the radiance up to
+   the tile's tint, so every root of a seed has the same weight and the estimate
+   is `scale · tint_j · (1 + |z|²)^(−3/2) · W`.
+5. `shade.slang` multiplies by the BSDF and the receiver cosine and traces one
+   shadow ray to the exact panel point with `TestVisibility`.
+
+Uniform-area sampling is evaluated in the area measure (`L_o cos A / d²`), not
+through the slope Jacobian, so its agreement with slice sampling checks that
+Jacobian. The defensive mixture evaluates the slice density of an area sample by
+replaying its seed: `η = L_j⁻¹(z − M a − b_j)`, then `W` over the tiles
+(section 5). Uniform seeds cannot reach receivers that only far Gaussian tails
+light, the support failure of section 6.4. Those receivers stay unlit in the
+`sliceSampling` output, and the mixture restores them.
+
+The random layout is in `main_shaders/hit_record.slang`:
+
+- dimensions 0 and 1 jitter the camera ray;
+- 2 chooses the mixture component;
+- 3 and 4 are the slice seed, and 5 chooses its root;
+- 6 and 7 are the panel-area sample.
+
+The single-strategy outputs read only their own dimensions, so they share samples
+with the mixture. The technique declares `surface_queries: 1` and
+`visibility_queries: 1`.
+
+New shader programs have `SliceSampling`-prefixed IDs and sources under
+`slice_sampling_luminaire/main_shaders/`. The settings join the manifest's Graph
+settings, and existing values are kept.
+
+Departures from the draft, also listed in `slice_sampling.slang`:
+
+- The luminaire is the analytic panel of section 6.2, not a measured or learned
+  fixture. It has no internal optics, and each tile's radiance is the guide
+  itself, tinted.
+- The tile tables are this template's own. The draft does not publish section
+  6.4's parameters.
+- Scene lights, mesh emitters and the environment do not light surfaces. A camera
+  ray that misses the scene shows the environment.
+
+Evidence:
+
+- **Estimators.** `ludus_renderer_render_tests` (`[slice-sampling-luminaire]`)
+  runs `slice_sampling.slang` in a test kernel at eight unoccluded receivers under
+  two emission profiles. One is the default; the other has no spread or twist,
+  which gives a piecewise-constant auxiliary map with jumps, as in the draft's
+  running example. Each case draws 262,144 samples of every proposal.
+  The checks:
+  - **Unbiasedness.** Slice sampling and the defensive mixture estimate the same
+    unoccluded irradiance as uniform panel area within five combined standard
+    errors (Proposition 1, Eq. 15). Uniform panel area is evaluated in the area
+    measure, without the slope Jacobian.
+  - **Normalizer.** The seed weight `W` and `f / b` under uniform area estimate
+    the same normalizer `Z` (Eq. 14).
+  - **Replay.** Replaying a slice sample's seed from its slope reproduces its
+    `W` (section 5).
+  - **Variance.** Uniform panel area's relative variance must be at least 10
+    times the mixture's. It must be at least 50 times slice sampling's for
+    receivers inside a footprint, and 10 times near an edge, where null seeds
+    add variance.
+
+  On Apple M5, all 16 cases agree and no replay differs. Lit receivers inside a
+  footprint have a relative variance of 0.005–0.28 for slice sampling and
+  0.11–0.41 for the mixture, against 23–96 for uniform area. Near a footprint's
+  edge in the second profile, 57% and 82% of seeds have no root, and slice
+  sampling's relative variance rises to 1.3 and 4.8, against 58 and 131. The
+  test takes under a second.
+- **Template.** `ludus_render_graph_ray_tests` runs as its own CTest entry,
+  `ludus_render_graph_slice_sampling_luminaire_pixels`, in the Cornell room.
+  It checks that the template's three passes are compute-BVH ray passes with
+  their own accumulation, and that no pixel shows the failure color.
+  - **Means.** At 256 samples per pixel, the slice-sampling output must agree
+    with the defensive mixture within 2%. Uniform area must agree within 15%,
+    because tone mapping its still-noisy running means is biased. On Apple M5
+    they agree within 0.05% and 0.4%.
+  - **Error.** At 16 samples, against a 1024-sample image with an independent
+    seed, the tone-mapped mean squared error is 3.8·10⁻⁴ for the mixture,
+    3.4·10⁻⁴ for slice sampling and 6.2·10⁻³ for uniform area. The test
+    requires both slice-sampling outputs to be at least four times lower.
+- **Not covered.** Vulkan has not been run; it first runs in batch CI. There is no
+  equal-time comparison and no comparison with tabulated or learned
+  receiver-conditioned samplers, the draft's section 6.5. The exact mixture of
+  tile-truncated Gaussians that section 6.4 prefers for this panel is not
+  implemented. The path-space application of section 7 is not implemented.
+
+See the canonical
+[package](../../modules/graphics/renderer/render_graphs/slice_sampling_luminaire/main.lurender.json).
+
 ### Sample lights along lines
 
 The **Line sampling — visible chords of area lights** template (`line-sampling`)
