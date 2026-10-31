@@ -3946,7 +3946,12 @@ The logical color/depth node runs an opaque material pass followed by a fullscre
 clustered lighting resolve. Its three single-sample RGBA16F targets store world
 normal/roughness, linear base color/metallic, and emission/coverage. The resolve
 reconstructs world position from sampled depth and the inverse camera transform,
-then shares the forward renderer's GGX and environment evaluation. It writes both
+then shares the forward renderer's GGX and environment evaluation. The host inverts
+the camera transform about the camera position rather than the world origin: with a
+1 cm near plane, a camera about 100 m or more from the origin makes the world-to-clip
+matrix itself too ill-conditioned for the checked inverse, which used to reject
+preparation (the Sample project's Bistro camera), while the camera-relative matrix
+inverts accurately. It writes both
 the linear RGBA8 color output and the logical scene depth. Grid/overlay rendering
 loads that output afterward. Background coverage remains clear. Half-float material
 storage and reconstructed positions introduce numerical differences; native tests
@@ -4019,16 +4024,22 @@ This replaces the earlier evaluation of every record at every pixel. On an Apple
 records) took about 214 ms of resolve time per frame that way; with the grid the whole
 frame takes about 8 ms (about 6 ms of resolve), measured with the
 `[.raster-mesh-light-benchmark]` editor test (`LUDUS_RASTER_BENCHMARK_WORLD` selects the
-World). Dim, small emitters now reach a few decimetres, and a bright large emitter
+World). The Sample project's Bistro, 17,571 emitter records (from about 21,000 emissive
+triangles in its pbrt source), prepares in about 0.5 to 1.6 s on the loaded test machine and
+renders in about 14 ms (about 3 ms of G-buffer and 12 ms of resolve), with a 1.8 MB
+mesh-light upload of 67,269 grid entries. Dim, small emitters now reach a few decimetres, and a bright large emitter
 still reaches the whole scene, so the cost grows with the records near each pixel
 rather than with all of them. Staircase2's large disk lights still reach every pixel.
 A scene whose lists would exceed 1,048,576 entries uploads no grid and evaluates
 every record as before.
 
 There is no mesh-light visibility test yet: area lights can illuminate through
-walls. At most 8192 nonzero-emission
+walls. At most 32,768 nonzero-emission
 polygon records are admitted per scene; excess geometry rejects preparation and
-retains the last drawable generation. The immutable scene upload stores each record
+retains the last drawable generation. Because the culling grid bounds the per-pixel
+cost by the records near each pixel, this limit bounds the upload instead: at most 66
+words per record keeps the records and a full grid under 40 MB, and every word offset
+exact in float32. The former limit of 8,192 rejected Bistro. The immutable scene upload stores each record
 as two Float4 header words (normal and sidedness, emission and corner count)
 followed by its corners, plus a zero header for an empty light set, then the
 culling grid: three header words, a cell table of (first entry, count) pairs and the

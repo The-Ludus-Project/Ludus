@@ -20,6 +20,7 @@
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/filesystem/filesystem.hpp>
 #include <ludus/foundation/filesystem/persistence.hpp>
+#include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/renderer/deferred_layout.h>
@@ -1769,6 +1770,66 @@ TEST_CASE("default deferred mesh area lights illuminate a receiver with CPU chec
         CHECK(fixture.Graph.GetReport().Resources.CreatedMeshes == beforeCamera.CreatedMeshes);
         CHECK(fixture.Graph.GetReport().Resources.MeshLightBytes == beforeCamera.MeshLightBytes);
         fixture.Cameras[0].CameraForward = {0, 0, -1};
+        // A perspective camera hundreds of metres from the origin with a centimetre near plane makes WorldToClip
+        // itself ill-conditioned, as in the Sample project's Bistro. The resolve must still reconstruct the receiver.
+        constexpr float32 FAR_OFFSET_METERS = 300;
+        constexpr float32 NEAR_PLANE_METERS = .01F;
+        constexpr float32 FAR_PLANE_METERS = 100;
+        // One metre above the receiver plane at z = 0.5, looking down -z.
+        constexpr float32 EYE_HEIGHT_METERS = 1.5F;
+        const math::Vector3 offsetWorld{FAR_OFFSET_METERS, 0, FAR_OFFSET_METERS};
+        const renderer::ViewDescription originCamera = fixture.Cameras[0];
+        const StaticArray<renderer::RenderGraphItem, SCENE_COUNT> originItems = items;
+        // A brighter emitter keeps the checked signal well above the comparison tolerance.
+        constexpr float32 FAR_EMISSION_SCALE = 8;
+        const math::Vector3 originEmission = materials[1].Emission;
+        materials[1].Emission = originEmission * FAR_EMISSION_SCALE;
+        for (renderer::RenderGraphItem& item : items)
+        {
+            item.MeshToWorld.Translation = item.MeshToWorld.Translation + offsetWorld;
+        }
+        const math::Vector3 eyeWorld = offsetWorld + math::Vector3{0, 0, EYE_HEIGHT_METERS};
+        // Unit x/y scale; w is the distance below the eye, and conventional depth maps near/far to 0/1.
+        const float32 depthScale = FAR_PLANE_METERS / (FAR_PLANE_METERS - NEAR_PLANE_METERS);
+        renderer::ViewDescription& farCamera = fixture.Cameras[0];
+        farCamera.OrthographicCamera = false;
+        farCamera.Depth = renderer::DepthConvention::Conventional;
+        farCamera.CameraPosition = eyeWorld;
+        farCamera.WorldToClip.Columns[0] = {1, 0, 0, 0};
+        farCamera.WorldToClip.Columns[1] = {0, 1, 0, 0};
+        farCamera.WorldToClip.Columns[2] = {0, 0, -depthScale, -1};
+        farCamera.WorldToClip.Columns[3] = {-eyeWorld.X,
+                                            -eyeWorld.Y,
+                                            depthScale * (eyeWorld.Z - NEAR_PLANE_METERS),
+                                            eyeWorld.Z};
+        math::Matrix4 directInverse;
+        CHECK(math::TryInverse(farCamera.WorldToClip, directInverse) == math::MathStatus::IllConditioned);
+        REQUIRE(update() == rhi::RasterStatus::Ready);
+        render();
+        Array<math::Vector4> farWords;
+        uint32 farRecords = 0;
+        REQUIRE(renderer::internal::AppendRasterMeshLights(meshes[1].Geometry,
+                                                           items[1].MeshToWorld,
+                                                           materials[1],
+                                                           farWords,
+                                                           farRecords) == rhi::RasterStatus::Ready);
+        const math::Vector3 farPositionWorld = offsetWorld + positionWorld;
+        math::Vector3 farViewWorld;
+        REQUIRE(math::TryNormalize(eyeWorld - farPositionWorld, farViewWorld) == math::MathStatus::Success);
+        const math::Vector3 farExpected =
+            renderer::internal::EvaluateRasterMeshLight({farWords.GetData(), farWords.GetSize()},
+                                                        farPositionWorld,
+                                                        {0, 0, 1},
+                                                        farViewWorld,
+                                                        {.5F, .5F, .5F},
+                                                        0,
+                                                        1);
+        CHECK(farExpected.X * 255 > 16);
+        CHECK(math::Abs(float32(fixture.Pixels[center]) - farExpected.X * 255) <= 2);
+        CHECK(math::Abs(float32(fixture.Pixels[center + 1]) - farExpected.Y * 255) <= 2);
+        materials[1].Emission = originEmission;
+        items = originItems;
+        fixture.Cameras[0] = originCamera;
         // A fanned 64-segment disk merges into one 64-corner record. The resolve streams its edges and must match
         // the CPU check, which fans the record into clip-safe pieces, on rough dielectrics and glossy metals.
         constexpr usize DISK_SEGMENTS = 64;

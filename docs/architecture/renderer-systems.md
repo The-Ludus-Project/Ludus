@@ -2687,8 +2687,10 @@ viewport allows 512 MiB of RHI host metadata, including overlapping native UV
 records and temporary opacity arrays during replacement. The raster identity
 cache likewise needs more than its former 128 MiB for the complete mesh/texture
 set; its independent 1 GiB native ceiling admits retained asset versions. The
-raster emitter-record ceiling is 8,192: Sponza authors 8,098 emissive light-bulb
-triangles, exceeding the former 4,096-record bound. Admission retains the
+raster emitter-record ceiling is 32,768: Sponza authors 8,098 emissive light-bulb
+triangles, exceeding the former 4,096-record bound, and the Sample project's Bistro
+needs 17,571 records, exceeding the later 8,192-record bound once the mesh-light
+culling grid made that many affordable to shade. Admission retains the
 authored emitters and their existing diffuse/LTC evaluation.
 Renderer ray scene/scratch/preview byte rejections report the exceeded ceiling,
 required bytes and available bytes in `RenderGraphReport::SceneDiagnostics`.

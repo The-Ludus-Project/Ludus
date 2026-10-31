@@ -196,16 +196,18 @@ TEST_CASE("Supplied World times the default raster graph's passes", "[.raster-me
             }
             passFrames.append(passMilliseconds);
         }
-        result = {{QStringLiteral("adapter"), QString::fromUtf8(adapter.Name)},
-                  {QStringLiteral("world"), worldName},
-                  {QStringLiteral("runtime"), runtime},
-                  {QStringLiteral("width"), static_cast<int32>(BENCHMARK_WIDTH)},
-                  {QStringLiteral("height"), static_cast<int32>(BENCHMARK_HEIGHT)},
-                  {QStringLiteral("mesh_light_bytes"), static_cast<qint64>(graph.GetReport().Resources.MeshLightBytes)},
-                  {QStringLiteral("preparation_ms"), preparationMilliseconds},
-                  {QStringLiteral("gpu_frame_ms"), frames},
-                  {QStringLiteral("pass_names"), passNames},
-                  {QStringLiteral("pass_ms"), passFrames}};
+        result = {
+            {QStringLiteral("adapter"), QString::fromUtf8(adapter.Name)},
+            {QStringLiteral("world"), worldName},
+            {QStringLiteral("runtime"), runtime},
+            {QStringLiteral("width"), static_cast<int32>(BENCHMARK_WIDTH)},
+            {QStringLiteral("height"), static_cast<int32>(BENCHMARK_HEIGHT)},
+            {QStringLiteral("mesh_light_polygons"), static_cast<qint64>(graph.GetReport().Resources.MeshLightPolygons)},
+            {QStringLiteral("mesh_light_bytes"), static_cast<qint64>(graph.GetReport().Resources.MeshLightBytes)},
+            {QStringLiteral("preparation_ms"), preparationMilliseconds},
+            {QStringLiteral("gpu_frame_ms"), frames},
+            {QStringLiteral("pass_names"), passNames},
+            {QStringLiteral("pass_ms"), passFrames}};
     }
     static_cast<void>(rhi::DestroyDevice(device));
     rhi::Shutdown();
