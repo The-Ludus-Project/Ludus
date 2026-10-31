@@ -1453,7 +1453,12 @@ recipes in `modules/graphics/renderer/shaders/recipes.json`, their sources and
 their include roots, as returned by `ludus_get_renderer_shader_roots`. Saving a
 file starts a background build after 250 ms without further changes. The build
 runs `ludus-shader-worker` for each recipe stage whose files changed; other
-stages reuse their last output. The UI thread never compiles. Once every stage
+stages reuse their last output. Each build sends the worker only the recipe
+sources and the files their quoted `#include` directives reach, in any
+preprocessor branch. Other helpers under the roots are watched but not sent, so
+they don't count against the compiler's snapshot limit (`MAX_SOURCE_FILES` and
+`MAX_SOURCE_BYTES` in `ludus/tooling/shader_compiler/compiler.hpp`). The UI
+thread never compiles. Once every stage
 succeeds, validates with `spirv-val` and keeps its interface, the preview
 prepares a new resource generation. It swaps at a frame boundary, after the old
 generation's GPU work has retired. Every shading mode, debug views included,
