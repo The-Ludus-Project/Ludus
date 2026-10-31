@@ -2478,7 +2478,7 @@ TEST_CASE("Full Intel Sponza presents through the native editor viewport", "[.fu
     }
     REQUIRE(windowOrNull != nullptr);
     REQUIRE(QTest::qWaitForWindowExposed(windowOrNull) == true);
-    const auto waitFor = [&graph](auto predicate) {
+    const auto waitFor = [&graph, windowOrNull](auto predicate) {
         QElapsedTimer timer;
         timer.start();
         constexpr int32 TIMEOUT_MILLISECONDS = 600000;
@@ -2487,6 +2487,8 @@ TEST_CASE("Full Intel Sponza presents through the native editor viewport", "[.fu
                graph.GetStatus().contains(QStringLiteral("CapacityExceeded")) == false)
         {
             QTest::qWait(1);
+            // Drive the native consumer even when the test window is occluded.
+            static_cast<void>(windowOrNull->grabWindow());
         }
         return predicate();
     };
