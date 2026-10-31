@@ -290,7 +290,8 @@ public:
     /// Human-readable state, distinguishing the shown frame from a pending or failed candidate.
     [[nodiscard]] QString GetStatus() const;
     /// World-facing progress or error text; empty after a successful frame. When pixels of a ray pass latched the
-    /// graph's failure colour, it names the pass, the pixel count and the main failure reason.
+    /// graph's failure colour, it names the pass, the pixel count and the main failure reason, after any progress
+    /// text (the active graph keeps drawing while its first frame is presented or a replacement prepares).
     [[nodiscard]] QString GetDisplayStatus() const;
     /// Pixels and main reason of the latched failure colour, or empty; part of GetDisplayStatus.
     [[nodiscard]] LUDUS_INLINE const QString& GetFailureText() const noexcept

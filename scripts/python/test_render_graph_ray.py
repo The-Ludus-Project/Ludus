@@ -20,6 +20,8 @@ from ludus_tools import render_graph_reload as reload
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / 'tests/sdk_consumer/rg2/raytracing'
+# Index of the traversal word in a parsed version 18+ pass record (runtime_package.h, Pass).
+PASS_TRAVERSAL_FIELD = 19
 # The source-tree owners of the flat SDK shaders directory, in _ludus_stage_render_graph_helpers order.
 HELPER_ROOTS = ('cmake/shaders', 'modules/graphics/renderer/shaders',
                 'modules/content/scene_format/include/ludus/content/scene_format',
@@ -886,7 +888,9 @@ class RayCompilerAcceptance(unittest.TestCase):
                 self.assertIn('[[visible]] void ' + stage, code)
             self.assertIn('intersector.intersect(ray, scene', code)
             self.assertIn('functions[stage](packet, context)', code)
-            self.assertEqual(set(range(8)), {entry['binding'] for entry in native['descriptor']['interface']['entries']})
+            # The fixed stage slots, then the failure summary the generation kernel counts latched pixels into.
+            self.assertEqual(set(range(8)) | {ray.FAILURE_SLOT},
+                             {entry['binding'] for entry in native['descriptor']['interface']['entries']})
             hardware_contents = execution._runtime_contents(str(package), 'Hardware')
             self.assertEqual('HardwarePipeline', hardware_contents['passes'][0]['Traversal'])
             self.assertIn(('NativeRayStages', 'compute', 'metal'), hardware_contents['artifacts'])
@@ -934,7 +938,11 @@ class RayCompilerAcceptance(unittest.TestCase):
                     self.assertIn(b'[[buffer(13)]]', compute['bytes'])
                 execution.cook_runtime(str(package), root / 'graph.lurgrt', configuration='Default')
                 parsed = parse_runtime((root / 'graph.lurgrt').read_bytes())
-                self.assertEqual(execution.SCENE_RESOURCE_LTC_TABLE if reads_table else 0, parsed['scene_resources'])
+                # Every scene ray kernel also counts its failed pixels; only the table bit depends on the callbacks.
+                expected_resources = execution.SCENE_RESOURCE_FAILURE_SUMMARY
+                if reads_table:
+                    expected_resources |= execution.SCENE_RESOURCE_LTC_TABLE
+                self.assertEqual(expected_resources, parsed['scene_resources'])
                 execution.emit_runtime(str(package), root / 'graph.h', name='Graph', configuration='Default')
                 self.assertEqual(reads_table, 'result.HasLtcTable = true;' in (root / 'graph.h').read_text())
 
@@ -1097,7 +1105,9 @@ class RayCompilerAcceptance(unittest.TestCase):
                 self.assertEqual((index, strategy), (operation['RayProgram'], operation['Traversal']))
             destination = root / 'bvh.lurgrt'
             execution.cook_runtime(str(package), destination, configuration='ComputeBvh')
-            self.assertEqual(ray.TRAVERSAL_CODES.index('ComputeBvh'), parse_runtime(destination.read_bytes())['passes'][0][-1])
+            # Version 29 appends the tone-mapping curve after the traversal word.
+            self.assertEqual(ray.TRAVERSAL_CODES.index('ComputeBvh'),
+                             parse_runtime(destination.read_bytes())['passes'][0][PASS_TRAVERSAL_FIELD])
             # The graph profile emits no browser ray recipe, but the same linked kernel already
             # compiles to WGSL with the pinned compiler: it uses no native ray-query constructs.
             tree = root / 'wgsl'

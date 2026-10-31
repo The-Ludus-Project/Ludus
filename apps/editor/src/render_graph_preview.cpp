@@ -1738,17 +1738,23 @@ QString RenderGraphPreview::GetDisplayStatus() const
         return mImage.isNull() == true ? QStringLiteral("Open a World to render it here.")
                                        : QStringLiteral("Viewport paused.");
     }
+    // Failures are read from the active graph, which keeps drawing while its first frame is presented or a
+    // candidate prepares, so the explanation follows any progress text.
+    const auto withFailures = [this](const QString& progress) {
+        return mFailureText.isEmpty() == true ? progress : QStringLiteral("%1 %2").arg(progress, mFailureText);
+    };
     switch (mState->Activation.GetReport().Candidate)
     {
         case renderer::RenderGraphCandidateState::Preparing:
         case renderer::RenderGraphCandidateState::NeedsUpdate:
-            return QStringLiteral("Updating renderer…");
+            return withFailures(QStringLiteral("Updating renderer…"));
         case renderer::RenderGraphCandidateState::Failed:
         case renderer::RenderGraphCandidateState::RestartRequired:
             break;
         case renderer::RenderGraphCandidateState::None:
-            return mImage.isNull() == true && mState->HasGpuFrame == false ? QStringLiteral("Preparing renderer…")
-                                                                           : mFailureText;
+            return mImage.isNull() == true && mState->HasGpuFrame == false
+                       ? withFailures(QStringLiteral("Preparing renderer…"))
+                       : mFailureText;
     }
     return mFailureText;
 }

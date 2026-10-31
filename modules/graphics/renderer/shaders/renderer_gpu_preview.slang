@@ -215,15 +215,15 @@ float4 InterpolateTriangleColor(uint triangle, in float2 barycentric);
 // Pixels that latched each failure reason; the renderer reads it to name the failing check. Its native register keeps
 // slot 14 on Metal whatever the declaration order (Slang otherwise numbers Metal buffers by declaration).
 LUDUS_SHADER_BINDING(LUDUS_GRAPH_FAILURE_BINDING)
-RWStructuredBuffer<uint> graphFailures LUDUS_SHADER_STORAGE_REGISTER(LUDUS_GRAPH_FAILURE_BINDING);
+RWStructuredBuffer<Atomic<uint>> graphFailures LUDUS_SHADER_STORAGE_REGISTER(LUDUS_GRAPH_FAILURE_BINDING);
 // Reason of the invocation EvaluateGraphRay just returned; a returned value that is not finite or is negative, without
 // a recorded reason, is invalid radiance.
 static uint graphFailureReason = LUDUS_SCENE_FAILURE_INVALID_RADIANCE;
-// Count one pixel latching reason; called only when the pixel's history turns failed.
+// Count one pixel latching reason; called only when the pixel's history turns failed. Atomic<uint> elements, unlike
+// InterlockedAdd on plain uints, also lower to WGSL, so a software-traversal kernel stays browser-compilable.
 void CountGraphFailure(uint reason)
 {
-    uint previous;
-    InterlockedAdd(graphFailures[min(reason, uint(LUDUS_SCENE_FAILURE_REASON_COUNT - 1))], 1u, previous);
+    graphFailures[min(reason, uint(LUDUS_SCENE_FAILURE_REASON_COUNT - 1))].add(1u);
 }
 #    define LUDUS_COUNT_GRAPH_FAILURE(reason) CountGraphFailure(reason)
 #else

@@ -3612,7 +3612,9 @@ TEST_CASE("The viewport names the check that turned graph pixels magenta",
     INFO(preview.GetStatus().toStdString());
     REQUIRE(preview.GetFailureText().isEmpty() == false);
     CHECK(preview.GetFailureText().contains(QStringLiteral("visibility_queries")) == true);
-    CHECK(preview.GetDisplayStatus() == preview.GetFailureText());
+    // A replacement candidate may be preparing meanwhile; the active graph's explanation stays in the status.
+    INFO(preview.GetDisplayStatus().toStdString());
+    CHECK(preview.GetDisplayStatus().endsWith(preview.GetFailureText()) == true);
     preview.Detach();
 }
 
