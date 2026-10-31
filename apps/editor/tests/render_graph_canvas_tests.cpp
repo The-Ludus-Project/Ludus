@@ -5,6 +5,7 @@
 #include "internal/render_graph_document.h"
 #include "internal/render_graph_pipeline.h"
 #include "internal/renderer_workspace.h"
+#include "internal/theme_colour.h"
 
 #include <ludus/foundation/base/types.h>
 
@@ -344,6 +345,40 @@ TEST_CASE("RG3b canvas shows a configuration by domain with typed ports", "[edit
     CHECK(canvas.HasNode(QStringLiteral("input")) == true);
     CHECK(canvas.GetNodeDomain(QStringLiteral("input")) == RenderGraphDomain::Interface);
     CHECK(canvas.GetPortPosition(QStringLiteral("input.scene"), true).isNull() == false);
+}
+
+TEST_CASE("Graph canvas colours come from the tokens and share the selection amber",
+          "[editor][render-graph][canvas][design-tokens]")
+{
+    QTemporaryDir project;
+    const QString package = MakePackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, ROOT_GRAPH) == RenderGraphDocumentStatus::Ok);
+    RenderGraphCanvas canvas(document);
+    canvas.ShowConfiguration(ROOT_GRAPH, DEFAULT_CONFIGURATION);
+    const QColor amber = GetCanvasColour(design::ThemeColour::SelectionAmber);
+    CHECK(canvas.backgroundBrush().color() == GetCanvasColour(design::ThemeColour::SurfaceViewport));
+    CHECK(amber == GetViewportArgb(design::ThemeColour::SelectionAmber));
+    const auto countItems = [&canvas](const QColor& pen, const QColor& brush) {
+        int32 count = 0;
+        for (const QGraphicsItem* item : canvas.scene()->items())
+        {
+            const QAbstractGraphicsShapeItem* shape = qgraphicsitem_cast<const QGraphicsRectItem*>(item);
+            if (shape == nullptr)
+            {
+                continue;
+            }
+            const bool isPenMatch = pen.isValid() == false || shape->pen().color() == pen;
+            const bool isBrushMatch = brush.isValid() == false || shape->brush().color() == brush;
+            count += isPenMatch == true && isBrushMatch == true ? 1 : 0;
+        }
+        return count;
+    };
+    const QColor cardFill = GetCanvasColour(design::ThemeColour::SurfaceRaised);
+    CHECK(countItems(QColor(), cardFill) >= canvas.GetNodeCount());
+    CHECK(countItems(amber, QColor()) == 0);
+    canvas.SelectNode(QStringLiteral("scene"));
+    CHECK(countItems(amber, QColor()) >= 1);
 }
 
 TEST_CASE("Graph framing controls preserve authored state and frame only node bounds",

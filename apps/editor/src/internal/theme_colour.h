@@ -29,6 +29,12 @@ inline constexpr QRgb COLOUR_CHANNEL_MASK = 0x00FFFFFFU;
     return design::GetThemeArgb(role, true);
 }
 
+/// A token for the graph canvas. Like the viewport it is dark in both appearances, and it follows high contrast.
+[[nodiscard]] inline QColor GetCanvasColour(design::ThemeColour role)
+{
+    return QColor::fromRgb(design::GetThemeArgb(role, true, GetThemePreferences().IsHighContrast));
+}
+
 /// The colour with the given 0 to 255 opacity in place of its own.
 [[nodiscard]] constexpr QRgb WithAlpha(QRgb colour, int alpha) noexcept
 {
