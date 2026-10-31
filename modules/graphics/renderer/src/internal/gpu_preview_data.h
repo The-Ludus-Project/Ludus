@@ -21,10 +21,10 @@ namespace ludus::graphics::renderer::internal
 inline constexpr usize GPU_PREVIEW_JOB_COUNT = 16; // Four passes, three retained scenes and retiring work.
 inline constexpr usize GPU_GRAPH_BUFFER_COUNT = 2;
 /// Every compute binding of one job: the frozen ABI, visibility textures, structured storage, the
-/// ray path capture buffer of a diagnostic capture-variant kernel and, last, the LTC table.
-inline constexpr usize GPU_PREVIEW_COMPUTE_BINDING_CAPACITY = LUDUS_GRAPH_VISIBILITY_BINDING_COUNT +
-                                                              content::render_graph_format::MAX_STORAGE_BUFFERS + 1 +
-                                                              LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT;
+/// ray path capture buffer of a diagnostic capture-variant kernel, the LTC table and, last, the failure summary.
+inline constexpr usize GPU_PREVIEW_COMPUTE_BINDING_CAPACITY =
+    LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + content::render_graph_format::MAX_STORAGE_BUFFERS + 1 +
+    LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT + LUDUS_GRAPH_FAILURE_BINDING_COUNT;
 /// The presentation quad's four float2 corners and six uint16 indices.
 inline constexpr usize GPU_PREVIEW_QUAD_BYTES = 44;
 /// Components of GpuPreviewUniform::Tile: origin x, y, then exclusive end x, y.
@@ -125,6 +125,9 @@ struct GpuPreviewRecord final
     rhi::BufferHandle Texels{};
     rhi::BufferHandle Parameters{};
     rhi::BufferHandle Accumulation{};
+    /// Pixels that latched each failure reason in the current camera history (LUDUS_GRAPH_FAILURE_BINDING); null
+    /// when the kernel declares no failure summary. A camera commit replaces it with a zeroed buffer.
+    rhi::BufferHandle Failures{};
     rhi::BufferHandle Colors{};
     rhi::BufferHandle ImageParameters{};
     rhi::TextureHandle VisibilityTexture{};
@@ -171,6 +174,8 @@ struct GpuPreviewState final
     bool HasRayPathCapture = false;
     /// The kernel reads the renderer's LTC table; LtcTable holds the uploaded copy.
     bool HasLtcTable = false;
+    /// The kernel counts latched pixels by failure reason in each job's Failures buffer.
+    bool HasFailureSummary = false;
     bool IsGraphRayScene = false;
     bool HasNativeRayQueries = true;
     bool HasVisibilityBuffer = false;

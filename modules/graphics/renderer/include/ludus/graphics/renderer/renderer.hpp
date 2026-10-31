@@ -840,6 +840,9 @@ private:
     prepareGpuPreviewTiles(GpuPreview handle, foundation::uint32 count, foundation::uint32 tile) noexcept;
     // Emissive triangles plus analytic lights of a ready job's scene.
     [[nodiscard]] foundation::uint32 getGpuPreviewLightCount(GpuPreview handle) const noexcept;
+    // Borrow a job's failure summary of its current camera history; Unsupported when its kernel declares none.
+    [[nodiscard]] rhi::RasterStatus getGpuPreviewFailures(GpuPreview handle,
+                                                          rhi::BufferHandle& outBuffer) const noexcept;
     // PrepareGpuPreviewGraphSequence for band `tile` of jobs prepared with prepareGpuPreviewTiles; untiled jobs
     // dispatch their whole image.
     [[nodiscard]] rhi::RasterStatus

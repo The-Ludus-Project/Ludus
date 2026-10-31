@@ -21,6 +21,7 @@ struct GpuPreviewCameraUpdate::State final
     rhi::DeviceHandle Device{};
     GpuPreviewUniform Uniform{};
     rhi::BufferHandle Parameters{};
+    rhi::BufferHandle Failures{};
     rhi::BindingSetHandle Bindings{};
     rhi::BindingLayoutHandle Layout{};
     StaticArray<rhi::RasterBindingResource, GPU_PREVIEW_COMPUTE_BINDING_CAPACITY> Resources{};
@@ -30,8 +31,17 @@ struct GpuPreviewCameraUpdate::State final
     {
         static_cast<void>(rhi::Destroy(Device, Bindings));
         static_cast<void>(rhi::Destroy(Device, Parameters));
+        static_cast<void>(rhi::Destroy(Device, Failures));
     }
 };
+Status CreateGpuFailureSummary(rhi::DeviceHandle device, rhi::BufferHandle& outBuffer) noexcept
+{
+    static constexpr StaticArray<uint8, LUDUS_GRAPH_FAILURE_BYTES> ZEROS{};
+    return rhi::CreateBuffer(device,
+                             {rhi::BufferRole::Storage, LUDUS_GRAPH_FAILURE_BYTES},
+                             {ZEROS.GetData(), ZEROS.GetSize()},
+                             outBuffer);
+}
 GpuPreviewCameraUpdate::GpuPreviewCameraUpdate() noexcept = default;
 GpuPreviewCameraUpdate::~GpuPreviewCameraUpdate() noexcept = default;
 Status GpuPreviewCameraUpdate::Prepare(rhi::DeviceHandle device,
@@ -43,7 +53,7 @@ Status GpuPreviewCameraUpdate::Prepare(rhi::DeviceHandle device,
 {
     if (camera.Depth != DepthConvention::Conventional || camera.InfiniteFar == true || bindings.IsValid() == false ||
         bindings.GetSize() < LUDUS_GPU_PREVIEW_BINDING_COUNT - 1 ||
-        bindings.GetSize() > LUDUS_GRAPH_VISIBILITY_BINDING_COUNT + content::render_graph_format::MAX_STORAGE_BUFFERS)
+        bindings.GetSize() > GPU_PREVIEW_COMPUTE_BINDING_CAPACITY)
     {
         return Status::InvalidDescription;
     }
@@ -106,6 +116,19 @@ Status GpuPreviewCameraUpdate::Prepare(rhi::DeviceHandle device,
         return created;
     }
     candidate->Resources[0].Buffer = candidate->Parameters;
+    for (usize i = 0; i < candidate->BindingCount; ++i)
+    {
+        if (candidate->Resources[i].Binding != LUDUS_GRAPH_FAILURE_BINDING)
+        {
+            continue;
+        }
+        const Status summary = CreateGpuFailureSummary(device, candidate->Failures);
+        if (summary != Status::Ready && summary != Status::Pending)
+        {
+            return summary;
+        }
+        candidate->Resources[i].Buffer = candidate->Failures;
+    }
     mState.Swap(candidate);
     return Poll();
 }
@@ -117,6 +140,10 @@ Status GpuPreviewCameraUpdate::Poll() noexcept
     }
     State& state = *mState;
     Status status = rhi::GetStatus(state.Device, state.Parameters);
+    if (status == Status::Ready && state.Failures != rhi::BufferHandle{})
+    {
+        status = rhi::GetStatus(state.Device, state.Failures);
+    }
     if (status == Status::Ready && state.HasBindings == false)
     {
         status = rhi::CreateBindingSet(state.Device,
@@ -129,14 +156,17 @@ Status GpuPreviewCameraUpdate::Poll() noexcept
 }
 void GpuPreviewCameraUpdate::Commit(GpuPreviewUniform& outUniform,
                                     rhi::BufferHandle& outParameters,
-                                    rhi::BindingSetHandle& outBindings) noexcept
+                                    rhi::BindingSetHandle& outBindings,
+                                    rhi::BufferHandle& outFailures) noexcept
 {
     LUDUS_REQUIRE(mState.Get() != nullptr && mState->HasBindings == true);
     outUniform = mState->Uniform;
     outParameters = mState->Parameters;
     outBindings = mState->Bindings;
+    outFailures = mState->Failures;
     mState->Parameters = {};
     mState->Bindings = {};
+    mState->Failures = {};
     mState.Reset();
 }
 void GpuPreviewCameraUpdate::Reset() noexcept

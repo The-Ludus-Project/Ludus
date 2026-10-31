@@ -135,6 +135,9 @@ RAY_PATH_CAPTURE_STRIDE = 4
 # Renderer-owned LTC table (LUDUS_GRAPH_LTC_TABLE_BINDING); float4 entries. See docs/development/ltc-table.md.
 LTC_TABLE_SLOT = 13
 LTC_TABLE_STRIDE = 16
+# Per-job failure summary (LUDUS_GRAPH_FAILURE_BINDING); one uint count per LUDUS_SCENE_FAILURE_* reason.
+FAILURE_SLOT = 14
+FAILURE_STRIDE = 4
 MAX_LOCAL_PAYLOAD_BYTES = 4096
 PAYLOAD_FIELD_ALIGNMENT_BYTES = 16
 DEFAULT_PAYLOAD = '_ludus_ray/scene_payload.slang'
@@ -404,10 +407,16 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
         isfinite(ray.MinDistanceWorld) == false || isfinite(ray.MaxDistanceWorld) == false ||
         ray.MinDistanceWorld < 0 || ray.MaxDistanceWorld < ray.MinDistanceWorld ||
         abs(dot(ray.DirectionWorld, ray.DirectionWorld) - 1) > RAY_DIRECTION_SQUARED_TOLERANCE)
+    {
+        graphFailureReason = LUDUS_SCENE_FAILURE_INVALID_RAY;
         return float3(-1);
+    }
     Hit hit = Trace(ray.OriginWorld, ray.DirectionWorld, ray.MinDistanceWorld, ray.MaxDistanceWorld);
     if (hit.Triangle == LUDUS_GPU_PREVIEW_FAILED_TRIANGLE)
+    {
+        graphFailureReason = LUDUS_SCENE_FAILURE_TRAVERSAL;
         return float3(-1);
+    }
     if (hit.Triangle == LUDUS_GPU_PREVIEW_INVALID_TRIANGLE)
         return RAY_MISS(ray);
     RayHit input;
@@ -534,7 +543,9 @@ def check_interface(program, result, build):
                       ([(RAY_PATH_CAPTURE_SLOT, 'StorageReadWrite', RAY_PATH_CAPTURE_STRIDE)] if program.get('ray_path_capture', False) else []) +
                       # Reflection drops the table when no callback reads it; the renderer then binds nothing.
                       ([(LTC_TABLE_SLOT, 'StorageRead', LTC_TABLE_STRIDE)] if program.get('ltc_table', False) and
-                       any(entry['binding'] == LTC_TABLE_SLOT for entry in entries) else []),
+                       any(entry['binding'] == LTC_TABLE_SLOT for entry in entries) else []) +
+                      # Every graph ray kernel counts its latched pixels by failure reason.
+                      [(FAILURE_SLOT, 'StorageReadWrite', FAILURE_STRIDE)],
                       'ShaderInterface', program['id'], 'ray compute reflection differs from the selected renderer ABI')
         declared = program.get('storage_bindings', [])
         extra = [entry for entry in entries if buffers.FIRST_SLOT <= entry['binding'] < VISIBILITY_SLOT and not program.get('persistent_ray_profile')]
@@ -657,7 +668,13 @@ float3 EvaluateGraphRay(uint pixel)
     launch.CameraRay.MinDistanceWorld = CameraPositionWorld.w != 0 ? 0 : dot(nearPositionWorld.xyz - launch.CameraRay.OriginWorld, launch.CameraRay.DirectionWorld);
     launch.CameraRay.MaxDistanceWorld = dot(farPositionWorld.xyz - launch.CameraRay.OriginWorld, launch.CameraRay.DirectionWorld);
     float3 radiance = RAY_GENERATION(scene, launch, queries);
-    return queries.HasFailed ? float3(-1) : radiance;
+    if (queries.HasFailed == true)
+    {
+        // The renderer counts the latched pixel under the scene interface's recorded reason.
+        graphFailureReason = queries.FailureReason;
+        return float3(-1);
+    }
+    return radiance;
 }
 [numthreads(LUDUS_GPU_PREVIEW_GROUP_WIDTH, 1, 1)] void rgEntry(uint3 positionPixel : SV_DispatchThreadID)
 {
@@ -830,7 +847,8 @@ def persistent_wrapper(programs, technique, variants, snapshot, build, recipe, c
             function = variant_callbacks[index][stage]
             result += f'case {index}: ' + ('return ' if returns else '') + function + '(' + arguments + ');'
             result += ('\n' if returns else ' break;\n')
-        return result + ('default: return float3(-1); }' if returns else 'default: queries.HasFailed = true; break; }')
+        return result + ('default: graphFailureReason = LUDUS_SCENE_FAILURE_INVALID_ARGUMENT; return float3(-1); }' if returns
+                         else 'default: FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_ARGUMENT); break; }')
     body = body.replace(first_callbacks['closest_hit'] + '(scene, hit, queries, payload);',
                         '{ ' + dispatch('closest_hit', 'scene, hit, queries, payload') + ' }')
     body = body.replace(first_callbacks['miss'] + '(scene, ray, queries, payload);',

@@ -67,7 +67,7 @@ def legalize(code, document, layout, storage_bindings=None):
     abi = _abi(layout)
     slots = {'Parameters': 0, 'sceneWords': 1, 'accumulation': 2, 'colors': 3, 'textureWords': 4,
              'rayScene': 5, 'GraphBuffer0': 6, 'GraphBuffer1': 7,
-             'GraphVisibility': 8, 'GraphVisibilityDepth': 9, 'rayPathCapture': 10,
+             'GraphVisibility': 8, 'GraphVisibilityDepth': 9, 'rayPathCapture': 10, 'graphFailures': 14,
              'NativeRayFunctions': abi['LUDUS_METAL_RAY_FUNCTION_TABLE_BINDING'],
              'NativeRayIntersections': abi['LUDUS_METAL_RAY_INTERSECTION_TABLE_BINDING']}
     storage_bindings = storage_bindings or {}
@@ -208,10 +208,11 @@ bool {abi['LUDUS_METAL_RAY_INTERSECTION']}(uint primitive [[primitive_id]], uint
     for value in [*normalized['parameters'], *normalized['entryPoints'][0].get('bindings', [])]:
         name = value['name']
         if name not in private:
-            original = value.get('binding', {})
-            value.pop('bindings', None)
+            # A resource pinned to a native register reflects a list of bindings; any of them carries its usage.
+            originals = value.pop('bindings', None) or [value.get('binding', {})]
+            usage = [entry['used'] for entry in originals if 'used' in entry]
             value['binding'] = {'kind': 'descriptorTableSlot', 'index': slots[name],
-                                **({'used': original['used']} if 'used' in original else {})}
+                                **({'used': int(any(usage))} if usage else {})}
     normalized['entryPoints'][0]['bindings'] = [item for item in normalized['entryPoints'][0].get('bindings', [])
                                                if item['name'] not in private]
     _require('intersection_query<' not in code and 'LUDUS_NATIVE_CONTEXT' not in code,

@@ -1235,6 +1235,15 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             MANIFEST "${progressive_staged}/main.lushader.json" RUNTIME_PACKAGE)
         target_compile_definitions(ludus_editor_tests PRIVATE
             "LUDUS_EDITOR_PROGRESSIVE_RAY_FIXTURE=\"${editor_progressive_ray_RUNTIME_PACKAGE}\"")
+        # The polygonal-light template: a scene with more emissive triangles than its interactive budget makes the
+        # viewport name the visibility budget as the failure reason.
+        set(polygonal_light_source "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/render_graphs/polygonal_light_sampling")
+        set(polygonal_light_staged "${CMAKE_CURRENT_BINARY_DIR}/polygonal-light-inputs")
+        ludus_stage_render_graph_fixture("${polygonal_light_source}" "${polygonal_light_staged}")
+        ludus_compile_render_graph(TARGET ludus_editor_tests NAME editor_polygonal_light
+            MANIFEST "${polygonal_light_staged}/main.lushader.json" RUNTIME_PACKAGE)
+        target_compile_definitions(ludus_editor_tests PRIVATE
+            "LUDUS_EDITOR_POLYGONAL_LIGHT_FIXTURE=\"${editor_polygonal_light_RUNTIME_PACKAGE}\"")
         # The same sources' frame capture profile, as `render-graph capture-profile` cooks it.
         ludus_compile_render_graph(TARGET ludus_editor_tests NAME editor_progressive_ray_capture
             MANIFEST "${progressive_staged}/main.lushader.json" CAPTURE_PROFILE_PACKAGE)

@@ -1660,9 +1660,25 @@ TEST_CASE("RG3 version 25 packages append the LTC table binding to each scene co
         CHECK(last.Kind == rhi::RasterBindingKind::StorageRead);
         CHECK(last.Visibility == rhi::RasterVisibility::Compute);
         CHECK(last.MinSize == LUDUS_GPU_PREVIEW_VECTOR_BYTES);
+
+        // The failure summary follows the table, as its slot orders it in a reflected header.
+        renderer::RenderGraphPackage summarized;
+        const Array<uint8> summarizedBytes =
+            MakeRayPackageBytes(compute, format::SCENE_RESOURCE_LTC_TABLE | format::SCENE_RESOURCE_FAILURE_SUMMARY);
+        REQUIRE(summarized.Decode({summarizedBytes.GetData(), summarizedBytes.GetSize()}) ==
+                renderer::RenderGraphPackageStatus::Ready);
+        const renderer::RenderGraphPrograms counted = summarized.GetPrograms({}, {});
+        REQUIRE(counted.RayCompute.Bindings.size() ==
+                table.RayCompute.Bindings.size() + LUDUS_GRAPH_FAILURE_BINDING_COUNT);
+        CHECK(counted.RayCompute.Bindings[table.RayCompute.Bindings.size() - 1].Binding ==
+              LUDUS_GRAPH_LTC_TABLE_BINDING);
+        const rhi::RasterBinding& failures = counted.RayCompute.Bindings.back();
+        CHECK(failures.Binding == LUDUS_GRAPH_FAILURE_BINDING);
+        CHECK(failures.Kind == rhi::RasterBindingKind::StorageReadWrite);
+        CHECK(failures.Visibility == rhi::RasterVisibility::Compute);
     }
     // Undefined scene resource bits, and a table without a ray kernel to read it, are malformed.
-    constexpr uint32 UNDEFINED_SCENE_RESOURCE = 2;
+    constexpr uint32 UNDEFINED_SCENE_RESOURCE = 4;
     CHECK(DecodeBytes(MakeRayPackageBytes(format::StageRole::SceneRayCompute, UNDEFINED_SCENE_RESOURCE)) ==
           renderer::RenderGraphPackageStatus::Malformed);
     PackageWriter raster;
