@@ -1,4 +1,5 @@
 #include "internal/code_editor.h"
+#include "internal/code_navigation.h"
 #include "internal/renderer_workspace.h"
 
 #include <catch2/catch_test_macros.hpp>
@@ -150,4 +151,39 @@ TEST_CASE("Source preferences reject missing and escaping graphs before replacin
         CHECK(workspace.GetDocument().GetDraft(file) == source);
         CHECK(workspace.IsDirty() == false);
     }
+}
+
+TEST_CASE("Workspace source navigation crosses package drafts and resets on document replacement",
+          "[editor][code-navigation][source-navigation]")
+{
+    QTemporaryDir project;
+    const QString graph = MakeSourcePackage(project, QStringLiteral("A"));
+    RendererWorkspace workspace(ToolingPaths{});
+    workspace.SetProject(project.path(), 1);
+    REQUIRE(workspace.OpenGraph(graph) == true);
+    REQUIRE(workspace.ShowSourceView() == true);
+    QComboBox* filesOrNull = workspace.findChild<QComboBox*>(QStringLiteral("renderGraphSourceFile"));
+    CodeEditor* sourceOrNull = workspace.findChild<CodeEditor*>(QStringLiteral("renderGraphSource"));
+    REQUIRE(filesOrNull != nullptr);
+    REQUIRE(sourceOrNull != nullptr);
+    const QString first = QStringLiteral("main_shaders/color.slang");
+    const QString second = QStringLiteral("main_shaders/depth.slang");
+    filesOrNull->setCurrentText(first);
+    QTest::keyClicks(sourceOrNull, QStringLiteral("// unsaved navigation marker"));
+    QTest::keyClick(sourceOrNull, Qt::Key_Return);
+    sourceOrNull->GoToLine(3);
+    const QByteArray accepted = workspace.GetDocument().GetDraft(first);
+    const ludus::foundation::uint64 revision = workspace.GetDocument().GetRevision();
+    REQUIRE(sourceOrNull->GetNavigation().Navigate({second, second, {}, 0, 0, false}) == true);
+    CHECK(filesOrNull->currentText() == second);
+    sourceOrNull->GetNavigation().Back();
+    CHECK(filesOrNull->currentText() == first);
+    CHECK(sourceOrNull->textCursor().blockNumber() == 2);
+    CHECK(workspace.GetDocument().GetDraft(first) == accepted);
+    CHECK(workspace.GetDocument().GetRevision() == revision);
+    workspace.SetProject(project.path(), 2);
+    const QString current = filesOrNull->currentText();
+    sourceOrNull->GetNavigation().Back();
+    CHECK(filesOrNull->currentText() == current);
+    CHECK(workspace.GetDocument().GetDraft(first) == accepted);
 }

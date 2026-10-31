@@ -35,12 +35,16 @@ public:
     void SetDocument(const QString& uri, const QString& text);
     /// Returns 0 while unavailable/initializing. At most one assistance call at a time.
     [[nodiscard]] foundation::int32 Request(const QString& method, const QJsonObject& position);
+    /// Whether the ready server advertises this operation; false during initialization.
+    [[nodiscard]] bool CanRequest(const QString& method) const;
     void Cancel();
 
 Q_SIGNALS:
     void Ready();
     void Replied(foundation::int32 request, const QJsonValue& result);
     void Failed(const QString& message);
+    /// Unsupported operation; preserves the ready process and current virtual document.
+    void RequestUnavailable(const QString& message);
 
 private:
     void send(const QJsonObject& message);
@@ -63,6 +67,7 @@ private:
     QString mText;
     QString mSentUri;
     QString mSentText;
+    QJsonObject mCapabilities;
     foundation::int32 mNextRequest = 1;
     foundation::int32 mInitializeRequest = 0;
     foundation::int32 mPendingRequest = 0;

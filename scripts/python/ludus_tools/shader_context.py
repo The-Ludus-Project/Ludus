@@ -169,4 +169,10 @@ def export_context(manifest, output, source, *, helper, context=None, root=None)
             shutil.rmtree(previous, ignore_errors=True)
     return {'version': 1, 'contexts': candidates, 'context': selected, 'profiles': value['profiles'],
             'manifest': Path(manifest).resolve().relative_to(snapshot.root).as_posix(),
-            'uri': unit_path.as_uri(), 'prefix': prefix, 'suffix': '\n' + suffix}
+            'uri': unit_path.as_uri(), 'prefix': prefix, 'suffix': '\n' + suffix,
+            # Exact compiler snapshot locations, never symbol parsing or path guessing.
+            # Rewritten compatibility sources can be inspected but never map to editable bytes.
+            'navigation_sources': [{'uri': (directory / relative).as_uri(),
+                                    'file': relative if data == snapshot.files[relative] else '',
+                                    'sha256': build.digest(data)}
+                                   for relative, data in sorted(compiled.items())]}

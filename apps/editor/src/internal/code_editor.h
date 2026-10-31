@@ -30,6 +30,7 @@ namespace ludus::editor
 {
 class CodeEditorGutter;
 class CodeSyntaxHighlighter;
+class CodeNavigation;
 
 /// Lexical profile only; semantic intelligence belongs to a language service.
 enum class CodeLanguage : foundation::uint8
@@ -100,6 +101,11 @@ public:
     /// the document and reveal that position. Column 0 selects the line start.
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): line then column is the universal order.
     void GoToLine(foundation::int32 line, foundation::int32 column = 0);
+    /// View-only source history and semantic navigation presentation; owned by this editor.
+    [[nodiscard]] LUDUS_INLINE CodeNavigation& GetNavigation() const noexcept
+    {
+        return *mNavigation;
+    }
     /// Replace the marked diagnostics: gutter markers, underlines, hover text, and the message
     /// callout under the caret's line until that text is edited.
     /// Markers are anchored in the current text and move with later edits; the
@@ -210,5 +216,6 @@ private:
     bool mCanRedo = false;
     QAction* mFormatAction;
     QAction* mChooseFormatterAction;
+    CodeNavigation* mNavigation;
 };
 } // namespace ludus::editor

@@ -30,6 +30,7 @@ constexpr isize MAX_ERROR_BYTES = 8192;
 constexpr int32 SHUTDOWN_WAIT_MILLISECONDS = 1000;
 #endif
 constexpr int32 INCREMENTAL_SYNC_KIND = 2;
+constexpr int32 METHOD_NOT_FOUND = -32601;
 
 QJsonObject GetPosition(const QString& text, int32 offset)
 {
@@ -74,6 +75,7 @@ void SlangLanguageService::Stop()
     ++mGeneration;
     mDeadline.stop();
     mIsReady = false;
+    mCapabilities = {};
     mPendingRequest = 0;
     mInitializeRequest = 0;
     mInput.clear();
@@ -138,6 +140,9 @@ void SlangLanguageService::Start(const QString& program, const QString& workspac
         const QJsonObject signatureInformation{{QStringLiteral("parameterInformation"), parameterInformation}};
         const QJsonObject signatureHelp{{QStringLiteral("signatureInformation"), signatureInformation}};
         const QJsonObject textDocument{
+            {QStringLiteral("documentSymbol"),
+             QJsonObject{{QStringLiteral("hierarchicalDocumentSymbolSupport"), true}}},
+            {QStringLiteral("definition"), QJsonObject{{QStringLiteral("linkSupport"), true}}},
             {QStringLiteral("completion"), QJsonObject{{QStringLiteral("completionItem"), completionItem}}},
             {QStringLiteral("signatureHelp"), signatureHelp}};
         const QJsonObject capabilities{
@@ -264,6 +269,25 @@ void SlangLanguageService::synchronize()
     mSentText = mText;
 }
 
+bool SlangLanguageService::CanRequest(const QString& method) const
+{
+    if (mIsReady == false)
+    {
+        return false;
+    }
+    const QString capability =
+        method == QStringLiteral("textDocument/references")       ? QStringLiteral("referencesProvider")
+        : method == QStringLiteral("textDocument/definition")     ? QStringLiteral("definitionProvider")
+        : method == QStringLiteral("textDocument/documentSymbol") ? QStringLiteral("documentSymbolProvider")
+                                                                  : QString{};
+    if (capability.isEmpty() == true)
+    {
+        return true;
+    }
+    const QJsonValue value = mCapabilities.value(capability);
+    return value.isObject() == true || value.toBool(false) == true;
+}
+
 int32 SlangLanguageService::Request(const QString& method, const QJsonObject& position)
 {
     Cancel();
@@ -271,12 +295,26 @@ int32 SlangLanguageService::Request(const QString& method, const QJsonObject& po
     {
         return 0;
     }
+    if (CanRequest(method) == false)
+    {
+        Q_EMIT RequestUnavailable(QStringLiteral("The selected slangd does not support %1. Use Find for text matches; "
+                                                 "current source and selection were retained.")
+                                      .arg(method.section(QLatin1Char('/'), -1)));
+        return 0;
+    }
     mPendingRequest = ++mNextRequest;
+    QJsonObject parameters{{QStringLiteral("textDocument"), QJsonObject{{QStringLiteral("uri"), mUri}}}};
+    if (method != QStringLiteral("textDocument/documentSymbol"))
+    {
+        parameters.insert(QStringLiteral("position"), position);
+    }
+    if (method == QStringLiteral("textDocument/references"))
+    {
+        parameters.insert(QStringLiteral("context"), QJsonObject{{QStringLiteral("includeDeclaration"), true}});
+    }
     send({{QStringLiteral("id"), mPendingRequest},
           {QStringLiteral("method"), method},
-          {QStringLiteral("params"),
-           QJsonObject{{QStringLiteral("textDocument"), QJsonObject{{QStringLiteral("uri"), mUri}}},
-                       {QStringLiteral("position"), position}}}});
+          {QStringLiteral("params"), parameters}});
     mDeadline.start();
     return mPendingRequest;
 }
@@ -398,6 +436,7 @@ void SlangLanguageService::receive(const QJsonObject& message)
             return;
         }
         mInitializeRequest = 0;
+        mCapabilities = capabilities;
         mDeadline.stop();
         mIsReady = true;
         notify(QStringLiteral("initialized"), {});
@@ -413,7 +452,18 @@ void SlangLanguageService::receive(const QJsonObject& message)
         mDeadline.stop();
         if (message.contains(QStringLiteral("error")) == true)
         {
-            Q_EMIT Failed(QStringLiteral("Slang could not answer this request. Repair the shader syntax and retry."));
+            if (message.value(QStringLiteral("error")).toObject().value(QStringLiteral("code")).toInt() ==
+                METHOD_NOT_FOUND)
+            {
+                Q_EMIT RequestUnavailable(
+                    QStringLiteral("The selected slangd does not implement that operation. Use Find for text matches; "
+                                   "current source and selection were retained."));
+            }
+            else
+            {
+                Q_EMIT Failed(
+                    QStringLiteral("Slang could not answer this request. Repair the shader syntax and retry."));
+            }
         }
         else
         {

@@ -5118,6 +5118,10 @@ Ctrl is shown below (Qt's native shortcut mapping):
 | --- | --- |
 | Find / replace | Platform Find / Replace shortcuts, also in the context menu |
 | Go to line | Ctrl+G |
+| Quick Open source in this package | Ctrl+P |
+| Go to shader symbol in the current source | Ctrl+Shift+O |
+| Go to definition / find references | F12 / Shift+F12 |
+| Navigate Back / Forward | Ctrl+Alt+Left / Ctrl+Alt+Right |
 | Indent / outdent selected lines | Tab / Shift+Tab |
 | Toggle Slang line comments | Ctrl+/ |
 | Duplicate selected lines, or current line | Ctrl+D |
@@ -5140,6 +5144,47 @@ Find supports forward/backward wrapping, case matching, and replacement; Escape
 closes its controls and returns focus to the source. Go to line uses one-based
 line numbers. Ordinary text and JSON sources share the commands, with Slang
 coloring/comment toggling enabled only for `.slang` files.
+
+#### Source navigation
+
+The **Edit** and context menus expose source navigation alongside editing commands.
+**Quick Open Source** searches the current package's source paths, including unsaved
+added files. Type words to filter, use Up/Down and Enter to choose, or Escape to
+cancel. Filtering never previews a jump or changes a draft.
+
+**Go to Symbol** searches Slang's symbols in the current authored source, including
+functions, types and members. **Go to Definition** jumps directly when the compiler
+returns one mapped location; multiple definitions and **Find References** open the
+same filterable chooser. References cover the selected captured compiler context,
+including its declaration, rather than a project-wide text search. These commands
+share completion's native Slang process and selected program context, use the
+current unsaved draft and reject replies/selections after source, caret, binding,
+revision or context changes. Fix the reported syntax/tool/context problem and
+request the command again if a result is unavailable.
+Reference search is enabled only when the selected `slangd` advertises support;
+otherwise its menu entry explains the limitation. Use **Find** for text matches.
+An unsupported operation preserves the ready server, current source and selection.
+
+Exact unchanged package includes map back to editable drafts. Generated interfaces,
+rewritten compatibility dependencies and inlined surrounding context open in a
+separate **read-only captured context** window. You can inspect and copy there;
+closing it preserves the source view. Unknown server URIs and invalid UTF-16 ranges
+are omitted, never opened as arbitrary files. The context owner supplies exact
+snapshot URI/file/hash records; navigation does not parse shader declarations or
+guess source paths. Go to Symbol excludes generated surroundings.
+
+**Navigate Back / Forward** returns through explicit source, symbol, line, Find and
+diagnostic jumps, including source-file changes within a package. It retains up to
+64 locations in each direction and clears Forward on a new jump. Positions follow
+edits while their buffer is open; after a source rebind they use clamped line/column
+positions. Replacing a graph or project/epoch clears this view history. It does not
+edit source, add an Undo step, save files or start a build. Ordinary arrow-key
+movement remains native Qt navigation; the history shortcuts add Ctrl+Alt to avoid
+taking over word movement. Use Command for Ctrl on macOS as in the table above.
+
+Semantic symbol/definition/reference navigation requires native Slang and the same
+mapping limits as completion below. Quick Open, line/diagnostic jumps and history
+also work without Slang, including in the session-only browser editor.
 
 #### Shader completion and signature help
 
