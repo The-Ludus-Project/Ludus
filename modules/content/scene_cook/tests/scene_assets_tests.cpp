@@ -829,14 +829,14 @@ TEST_CASE("Editor import routes glTF, GLB and OBJ entries to their best-effort p
         EditorSceneResult assembled;
         REQUIRE(OperateEditorScene(request, options, assembled, error));
         REQUIRE(assembled.Scene.IsEmpty() == false);
-        // Best-effort imports are LUSCN v6: indexed tangent-framed meshes with implicit bake
+        // Best-effort imports are LUSCN v7: indexed tangent-framed meshes with implicit bake
         // charts, and material alpha masks and maps that survive the catalog's descriptions.
         uint32 version = 0;
         REQUIRE(assembled.Scene.GetSize() > ludus::content::scene_format::MAGIC.size() + sizeof(uint32));
         REQUIRE(core::TryReadLittleEndian<uint32>(
                     {assembled.Scene.GetData() + ludus::content::scene_format::MAGIC.size(), sizeof(uint32)},
                     version) == true);
-        CHECK(version == ludus::content::scene_format::VERSION_6);
+        CHECK(version == ludus::content::scene_format::VERSION_7);
         ludus::resources::SceneDefinition decoded;
         REQUIRE(ludus::resources::SceneDefinition::Decode(assembled.Scene.GetData(),
                                                           assembled.Scene.GetSize(),

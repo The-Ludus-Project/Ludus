@@ -1234,7 +1234,7 @@ TEST_CASE("Cooked v3 lighting preserves photometric lights, HDR environment and 
     const std::string_view report(reinterpret_cast<const char*>(result.Report.GetData()), result.Report.GetSize());
     CHECK(report.find("not cooked") == std::string_view::npos);
     CHECK(report.find("\"analytic_lights\": 2") != std::string_view::npos);
-    CHECK(report.find("\"scene_format_version\": 6") != std::string_view::npos);
+    CHECK(report.find("\"scene_format_version\": 7") != std::string_view::npos);
     BestEffortResult repeat;
     REQUIRE(ImportPbrtBestEffort((scratch.Path / "lighting.pbrt").string(), {}, repeat, error) == true);
     REQUIRE(result.Bundle.GetSize() == repeat.Bundle.GetSize());

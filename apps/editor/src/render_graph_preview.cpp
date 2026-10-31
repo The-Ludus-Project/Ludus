@@ -229,13 +229,17 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
         material.Emission = source.Emission;
         material.IsEmissionTwoSided = source.IsEmissionTwoSided;
         material.NormalScale = source.NormalScale;
+        material.IsAlphaMasked = source.IsAlphaMasked;
+        material.AlphaCutoff = source.AlphaCutoff;
+        // The editor samples the retained import mip with bilinear reconstruction.
+        // Minification mip chains and per-map source samplers are not retained by LUSCN.
+        material.Sampler.Filter = rhi::RasterFilter::Linear;
         material.Sampler.U = source.Repeat ? rhi::RasterAddress::Repeat : rhi::RasterAddress::Clamp;
         material.Sampler.V = material.Sampler.U;
         material.ColorTexture = getTexture(source.Texture);
         material.SurfaceTexture = getTexture(source.SurfaceTexture);
         material.EmissionTexture = getTexture(source.EmissionTexture);
-        material.HasError = source.IsAlphaMasked || source.Tint.W != 1 ||
-                            source.Texture >= extraction.Scene.Textures.size() ||
+        material.HasError = source.Tint.W != 1 || source.Texture >= extraction.Scene.Textures.size() ||
                             source.SurfaceTexture >= extraction.Scene.Textures.size() ||
                             source.EmissionTexture >= extraction.Scene.Textures.size();
         extraction.Materials.append(material);
@@ -283,6 +287,12 @@ bool MakeRenderGraphExtraction(const RenderScene& scene,
                                   unlit.Emission.Z * source.Tint.Z};
                 unlit.Sampler = surfaceMaterial.Sampler;
                 unlit.EmissionTexture = surfaceMaterial.ColorTexture;
+                unlit.IsAlphaMasked = surfaceMaterial.IsAlphaMasked;
+                unlit.AlphaCutoff = surfaceMaterial.AlphaCutoff;
+                if (unlit.IsAlphaMasked == true)
+                {
+                    unlit.ColorTexture = surfaceMaterial.ColorTexture;
+                }
                 unlit.HasError = surfaceMaterial.HasError;
             }
             resolvedMaterial = static_cast<uint32>(extraction.Materials.size());

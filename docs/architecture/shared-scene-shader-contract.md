@@ -113,11 +113,24 @@ two-sided emission does not imply two-sided reflection.
 
 Material evaluation decodes color/emission maps to the renderer's linear RGB
 space, retains data maps as linear data and performs normal mapping consistently.
-The initial traversal profile supports static opaque triangles, reflection-only
+The traversal profile supports static opaque and alpha-masked triangles, reflection-only
 metallic/roughness materials and explicit fixed texture mip evaluation. Missing
 optional maps use their documented neutral factors; missing required attributes
-or unsupported alpha/transmission/deformation rejects the scene profile. Masked
-coverage is a later capability that must agree across closest and shadow queries.
+or unsupported blended alpha/transmission/deformation rejects the scene profile.
+`SceneShaderMaterial::IsAlphaMasked` and `AlphaCutoff` select the existing mask
+domain in both the CPU oracle and GPU reference scene. Coverage multiplies base
+texture alpha by interpolated vertex alpha before the inclusive cutoff test;
+closest-hit and shadow queries use the same test. Raster color, G-buffer and shadow
+passes receive the same mask state. The optional clustered opaque Z prepass has no
+texture bindings; a material table containing masks rejects that profile with
+`Unsupported` before publication, retaining the last drawable view. The default
+deferred graph works without that prepass. The editor reconstructs its retained mip bilinearly;
+the material API still permits an explicit nearest sampler.
+
+Deferred raster mesh lighting evaluates masked emission with the existing bounded
+four-patch centroid rule for textured emitters, including base-texture and vertex
+coverage at each sample. Subpatch cut-outs can be missed by that approximation;
+the CPU oracle and GPU reference continue to test coverage at each actual query.
 
 Raw material values remain inspectable even when the shader uses its own BRDF.
 Optional EvaluateStandardBsdf/SampleStandardBsdf use the existing Renderer

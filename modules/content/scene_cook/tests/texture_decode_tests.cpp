@@ -10,9 +10,11 @@
 #include <ludus/content/scene_format/luscn.h>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
+#include <ludus/foundation/math/vector.hpp>
 #include <ludus/foundation/threading/jobs.hpp>
 #include <ludus/runtime/resources/scene.h>
 
+#include "importers/image/image_filter.h"
 #include "importers/import_diagnostics.h"
 #include "importers/scene_ir.h"
 #include "importers/texture_decode_queue.h"
@@ -209,7 +211,8 @@ ReferenceImage MakeTgaReference(uint32 width, uint32 height)
 }
 
 /// The 2x2 box halving of the import profile, clamping each texel coordinate at odd edges.
-ReferenceImage HalveReference(const ReferenceImage& source)
+ReferenceImage HalveReference(const ReferenceImage& source,
+                              ImageReductionProfile profile = ImageReductionProfile::SrgbColor)
 {
     ReferenceImage image
     {
@@ -225,17 +228,63 @@ ReferenceImage HalveReference(const ReferenceImage& source)
             for (usize k = 0; k < TEXEL_CHANNELS; ++k)
             {
                 uint32 sum = 0;
+                ludus::foundation::float64 linearSum = 0;
                 for (uint32 dy = 0; dy < 2; ++dy)
                 {
                     for (uint32 dx = 0; dx < 2; ++dx)
                     {
                         const uint32 sx = ludus::foundation::math::Min(x * 2 + dx, source.Width - 1);
                         const uint32 sy = ludus::foundation::math::Min(y * 2 + dy, source.Height - 1);
-                        sum += source.Texels[(usize{sy} * source.Width + sx) * TEXEL_CHANNELS + k];
+                        const ludus::foundation::uint8 value =
+                            source.Texels[(usize{sy} * source.Width + sx) * TEXEL_CHANNELS + k];
+                        sum += value;
+                        const ludus::foundation::float64 encoded = ludus::foundation::float64(value) / 255;
+                        linearSum += encoded <= .04045 ? encoded / 12.92
+                                                       : ludus::foundation::math::Pow((encoded + .055) / 1.055, 2.4);
                     }
                 }
+                ludus::foundation::float64 filtered = ludus::foundation::float64(sum) / 4;
+                if (profile == ImageReductionProfile::SrgbColor && k < 3)
+                {
+                    const ludus::foundation::float64 linear = linearSum / 4;
+                    filtered =
+                        255 * (linear <= .0031308 ? linear * 12.92
+                                                  : 1.055 * ludus::foundation::math::Pow(linear, 1.0 / 2.4) - .055);
+                }
                 image.Texels[(usize{y} * image.Width + x) * TEXEL_CHANNELS + k] =
-                    static_cast<ludus::foundation::core::uint8>((sum + 2) / 4);
+                    static_cast<ludus::foundation::uint8>(ludus::foundation::math::Floor(filtered + .5));
+            }
+            if (profile == ImageReductionProfile::TangentNormal)
+            {
+                namespace math = ludus::foundation::math;
+                math::Vector3d sumNormalTangent{};
+                for (uint32 dy = 0; dy < 2; ++dy)
+                {
+                    for (uint32 dx = 0; dx < 2; ++dx)
+                    {
+                        const uint32 sx = math::Min(x * 2 + dx, source.Width - 1);
+                        const uint32 sy = math::Min(y * 2 + dy, source.Height - 1);
+                        const usize index = (usize{sy} * source.Width + sx) * TEXEL_CHANNELS;
+                        const ludus::foundation::float64 xTangent = 2.0 * source.Texels[index] / 255 - 1;
+                        const ludus::foundation::float64 yTangent = 2.0 * source.Texels[index + 1] / 255 - 1;
+                        const math::Vector3d normalTangent{
+                            xTangent,
+                            yTangent,
+                            math::Sqrt(math::Max(0.0, 1 - xTangent * xTangent - yTangent * yTangent))};
+                        sumNormalTangent = sumNormalTangent + normalTangent * (1.0 / math::Length(normalTangent));
+                    }
+                }
+                math::Vector3d normalTangent{0, 0, 1};
+                const ludus::foundation::float64 normalLength = math::Length(sumNormalTangent);
+                if (normalLength > 0)
+                {
+                    normalTangent = sumNormalTangent * (1.0 / normalLength);
+                }
+                const usize index = (usize{y} * image.Width + x) * TEXEL_CHANNELS;
+                image.Texels[index] =
+                    static_cast<ludus::foundation::uint8>(math::Floor((normalTangent.X * .5 + .5) * 255 + .5));
+                image.Texels[index + 1] =
+                    static_cast<ludus::foundation::uint8>(math::Floor((normalTangent.Y * .5 + .5) * 255 + .5));
             }
         }
     }
@@ -279,7 +328,10 @@ MakeSurfaceReference(uint32 width,
 }
 
 /// True when the scene holds a texture equal to expected (colour textures in RGB only).
-bool HasTexture(const ludus::resources::SceneDefinition& scene, const ReferenceImage& expected, bool isLinear)
+bool HasTexture(const ludus::resources::SceneDefinition& scene,
+                const ReferenceImage& expected,
+                bool isLinear,
+                ludus::foundation::uint8 maximumError = 0)
 {
     for (const ludus::resources::SceneTexture& texture : scene.Textures)
     {
@@ -290,8 +342,10 @@ bool HasTexture(const ludus::resources::SceneDefinition& scene, const ReferenceI
         bool isEqual = true;
         for (usize i = 0; i < expected.Texels.GetSize() && isEqual == true; ++i)
         {
+            const int32 difference = static_cast<int32>(texture.Pixels[i]) - static_cast<int32>(expected.Texels[i]);
+            const int32 tolerance = static_cast<int32>(maximumError);
             isEqual = (isLinear == false && i % TEXEL_CHANNELS == TEXEL_CHANNELS - 1) ||
-                      texture.Pixels[i] == expected.Texels[i];
+                      (difference >= -tolerance && difference <= tolerance);
         }
         if (isEqual == true)
         {
@@ -478,9 +532,9 @@ TEST_CASE("Texture halving and surface repacking cook identical outputs for ever
     const uint32 wideWidth = format::MAX_TEXTURE_DIMENSION * 2 + 3;
     const uint32 tallHeight = format::MAX_TEXTURE_DIMENSION + 7;
     const uint32 normalWidth = format::MAX_TEXTURE_DIMENSION + 5;
-    CHECK(HasTexture(decoded, HalveReference(HalveReference(MakeTgaReference(wideWidth, 5))), false) == true);
-    CHECK(HasTexture(decoded, HalveReference(MakeTgaReference(3, tallHeight)), false) == true);
-    CHECK(HasTexture(decoded, HalveReference(MakeTgaReference(2049, 2051)), false) == true);
+    CHECK(HasTexture(decoded, HalveReference(HalveReference(MakeTgaReference(wideWidth, 5))), false, 1) == true);
+    CHECK(HasTexture(decoded, HalveReference(MakeTgaReference(3, tallHeight)), false, 1) == true);
+    CHECK(HasTexture(decoded, HalveReference(MakeTgaReference(2049, 2051)), false, 1) == true);
     CHECK(HasTexture(decoded, MakeTgaReference(17, 41), false) == true);
     constexpr ludus::foundation::core::uint8 FLAT = 128;
     constexpr ludus::foundation::core::uint8 UNIT = 255;
@@ -494,8 +548,10 @@ TEST_CASE("Texture halving and surface repacking cook identical outputs for ever
                                                          {normalRed,
                                                           normalGreen,
                                                           { .Width = 17, .Height = 41, .Channel = 1, .Constant = 0 },
-                                                          { .Width = 29, .Height = 7, .Channel = 2, .Constant = 0 }})),
-                     true) == true);
+                                                          { .Width = 29, .Height = 7, .Channel = 2, .Constant = 0 }}),
+                                    ImageReductionProfile::TangentNormal),
+                     true,
+                     1) == true);
     CHECK(HasTexture(decoded,
                      MakeSurfaceReference(17,
                                           41,
@@ -518,8 +574,10 @@ TEST_CASE("Texture halving and surface repacking cook identical outputs for ever
                                            }}),
                      true) == true);
     CHECK(HasTexture(decoded,
-                     HalveReference(MakeSurfaceReference(normalWidth, 33, {normalRed, normalGreen, unit, unit})),
-                     true) == true);
+                     HalveReference(MakeSurfaceReference(normalWidth, 33, {normalRed, normalGreen, unit, unit}),
+                                    ImageReductionProfile::TangentNormal),
+                     true,
+                     1) == true);
 }
 
 TEST_CASE("PBRT normal maps and shape masks are identical across worker counts", "[scene_cook][pbrt][threading]")
@@ -718,4 +776,64 @@ TEST_CASE("Texture decoding honours cancellation before reading images", "[scene
         CHECK(error.Result == Status::Cancelled);
         CHECK(cancelled.Bundle.IsEmpty() == true);
     }
+}
+
+TEST_CASE("Texture reduction filters colour energy and coverage in their own domains", "[scene_cook][texture]")
+{
+    constexpr usize IMAGE_BYTES = 16;
+    const ludus::foundation::StaticArray<ludus::foundation::uint8, IMAGE_BYTES> pixels{
+        {0, 0, 0, 0, 255, 255, 255, 255, 0, 0, 0, 0, 255, 255, 255, 255}};
+    DecodedImage image;
+    image.Width = 2;
+    image.Height = 2;
+    REQUIRE(image.Texels.TryAddRange(pixels.AsSpan()) == true);
+    REQUIRE(TryHalveImage(image, ImageReductionProfile::SrgbColor) == true);
+    CHECK(image.Width == 1);
+    CHECK(image.Height == 1);
+    // Linear 50% grey encodes to sRGB 188, while 50% coverage encodes to 128.
+    CHECK(image.Texels[0] == 188);
+    CHECK(image.Texels[1] == 188);
+    CHECK(image.Texels[2] == 188);
+    CHECK(image.Texels[3] == 128);
+    image.Width = 2;
+    image.Height = 2;
+    image.Texels.Clear();
+    REQUIRE(image.Texels.TryAddRange(pixels.AsSpan()) == true);
+    REQUIRE(TryHalveImage(image, ImageReductionProfile::LinearData) == true);
+    for (const ludus::foundation::uint8 value : image.Texels)
+    {
+        CHECK(value == 128);
+    }
+}
+
+TEST_CASE("Texture reduction averages reconstructed normal directions before encoding", "[scene_cook][texture]")
+{
+    constexpr usize IMAGE_BYTES = 16;
+    const ludus::foundation::StaticArray<ludus::foundation::uint8, IMAGE_BYTES> pixels{
+        {255, 128, 0, 255, 128, 128, 255, 0, 255, 128, 0, 255, 128, 128, 255, 0}};
+    DecodedImage image;
+    image.Width = 2;
+    image.Height = 2;
+    REQUIRE(image.Texels.TryAddRange(pixels.AsSpan()) == true);
+    REQUIRE(TryHalveImage(image, ImageReductionProfile::TangentNormal) == true);
+    // Equal +X and +Z directions produce a 45-degree normal, not averaged RG slopes.
+    CHECK(image.Texels[0] == 218);
+    CHECK(image.Texels[1] == 128);
+    CHECK(image.Texels[2] == 128);
+    CHECK(image.Texels[3] == 128);
+}
+
+TEST_CASE("Malformed texture reduction preserves the source", "[scene_cook][texture]")
+{
+    DecodedImage image;
+    image.Width = 2;
+    image.Height = 2;
+    image.WasHighDynamicRange = true;
+    REQUIRE(image.Texels.TryAdd(1) == true);
+    CHECK(TryHalveImage(image, ImageReductionProfile::SrgbColor) == false);
+    CHECK(image.Width == 2);
+    CHECK(image.Height == 2);
+    CHECK(image.WasHighDynamicRange == true);
+    REQUIRE(image.Texels.GetSize() == 1);
+    CHECK(image.Texels[0] == 1);
 }

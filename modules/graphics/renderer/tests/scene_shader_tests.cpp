@@ -49,6 +49,49 @@ struct SceneFixture final
     }
 };
 } // namespace
+TEST_CASE("Shared scene alpha masks reach oracle coverage and GPU opacity partitioning", "[scene-shader][opacity]")
+{
+    SceneFixture fixture;
+    constexpr usize TEXEL_BYTES = 4;
+    StaticArray<uint8, TEXEL_BYTES> texel{{255, 255, 255, 64}};
+    fixture.Materials[0].IsAlphaMasked = true;
+    fixture.Materials[0].AlphaCutoff = .5F;
+    fixture.Materials[0]
+        .ColorTexture = {texel.GetData(), texel.GetSize(), texel.GetSize(), 1, 1, rhi::RasterFormat::Rgba8Srgb};
+    core::UniquePtr<internal::ReferenceJob> job;
+    REQUIRE(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
+            rhi::RasterStatus::Ready);
+    REQUIRE(job->Scene.Instances.GetSize() == MATERIALS);
+    const internal::ReferenceInstance& instance = job->Scene.Instances[0];
+    CHECK(instance.Surface->Alpha == renderer::MaterialAlpha::Masked);
+    CHECK(instance.Surface->AlphaCutoff == .5F);
+    CHECK(internal::ReferenceOpacity(instance, {}) == false);
+    CHECK(job->Scene.Instances[1].Surface->Alpha == renderer::MaterialAlpha::Opaque);
+    StaticArray<math::Vector4, MATERIALS> order{};
+    internal::PackGpuPreviewRayOrder(job->Scene, true, order.GetData());
+    uint32 opaqueCount = 0;
+    std::memcpy(&opaqueCount, &order[0].Y, sizeof(opaqueCount));
+    CHECK(opaqueCount == 1);
+    job.Reset();
+    texel[3] = 255;
+    REQUIRE(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
+            rhi::RasterStatus::Ready);
+    CHECK(internal::ReferenceOpacity(job->Scene.Instances[0], {}) == true);
+    CHECK(internal::ReferenceOpacity(job->Scene.Instances[0], {}, .25F) == false);
+    job.Reset();
+    fixture.Scene.SceneData = ::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY;
+    REQUIRE(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
+            rhi::RasterStatus::Ready);
+    CHECK(job->Scene.Instances[0].Surface->Alpha == renderer::MaterialAlpha::Opaque);
+    CHECK(internal::ReferenceOpacity(job->Scene.Instances[0], {}, .25F) == true);
+    job.Reset();
+    fixture.Scene.SceneData = ::ludus::content::render_graph_format::SCENE_DATA_ALL;
+    fixture.Materials[0].AlphaCutoff = 2;
+    CHECK(internal::BuildMaterialGraphRayScene(fixture.Scene, fixture.Camera, BUDGET, job) ==
+          rhi::RasterStatus::InvalidDescription);
+    CHECK(job.Get() == nullptr);
+}
+
 TEST_CASE("Graph ray jobs initialize their random key from the requested seed", "[scene-shader][random]")
 {
     SceneFixture fixture;
