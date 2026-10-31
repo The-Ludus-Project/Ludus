@@ -21,6 +21,7 @@
 #include "internal/render_graph_pipeline.h"
 #include "internal/render_graph_quick_add.h"
 #include "internal/render_graph_quick_add_graphs.h"
+#include "internal/render_graph_recovery.h"
 #include "internal/render_graph_reroutes.h"
 #include "internal/render_graph_resource_inspection.h"
 #include "internal/render_graph_resources.h"
@@ -974,6 +975,15 @@ RendererWorkspace::RendererWorkspace(const ToolingPaths& tooling, QWidget* paren
     mContent->addWidget(horizontal);
     QVBoxLayout* layout = new QVBoxLayout(this);
     layout->addWidget(mNavigation);
+    mRecovery = new RenderGraphRecovery(mDocument, this);
+    layout->addWidget(mRecovery);
+    connect(mRecovery, &RenderGraphRecovery::Restored, this, [this]() {
+        documentEdited(RenderGraphDocumentStatus::Ok);
+    });
+    connect(this, &RendererWorkspace::DocumentChanged, mRecovery, &RenderGraphRecovery::Update);
+    connect(this, &RendererWorkspace::CommandsChanged, mRecovery, [this]() {
+        mRecovery->SetCanRestore(IsJobActive() == false);
+    });
     layout->addWidget(mContent, 1);
     layout->addWidget(mStatusPanel);
 
@@ -1529,6 +1539,8 @@ RendererWorkspace::~RendererWorkspace()
     delete mSourceAssistance;
     delete mSourceFormatter;
     delete mSourceController;
+    mRecovery->Leave();
+    delete mRecovery;
 }
 
 void RendererWorkspace::SetProject(const QString& root, uint64 epoch)
@@ -1537,6 +1549,7 @@ void RendererWorkspace::SetProject(const QString& root, uint64 epoch)
     const QString canonicalRoot = root.isEmpty() == true ? QString() : QFileInfo(root).canonicalFilePath();
     if (canonicalRoot != mProjectRoot || epoch != mEpoch)
     {
+        mRecovery->Leave();
         mCreation.Cancel();
         mSourceFormatter->Cancel();
     }
@@ -1756,6 +1769,7 @@ bool RendererWorkspace::OpenGraph(const QString& path)
 
 void RendererWorkspace::showDocument(const RenderGraphDocument& document)
 {
+    mRecovery->Leave();
     CancelJob();
     mSourceEditDebounce.stop();
     mSourceDocument.ResetBinding();
@@ -1802,7 +1816,12 @@ bool RendererWorkspace::ConfirmDiscard()
     {
         return Save();
     }
-    return answer == QMessageBox::Discard;
+    if (answer == QMessageBox::Discard)
+    {
+        mRecovery->DiscardCurrent();
+        return true;
+    }
+    return false;
 }
 
 bool RendererWorkspace::IsDirty() const
@@ -1935,6 +1954,8 @@ bool RendererWorkspace::writeDocument()
     const RenderGraphDocumentStatus status = mDocument.Save(saved);
     if (status != RenderGraphDocumentStatus::Ok)
     {
+        // A partial Save can update saved bytes without changing the draft revision.
+        static_cast<void>(mRecovery->CheckpointNow(true));
         mStatus->setText(wasBuiltIn == true && status == RenderGraphDocumentStatus::Conflict
                              ? QStringLiteral("%1/ already holds render-graph files; nothing was written. Open "
                                               "its graph with Open Graph... instead.")

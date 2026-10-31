@@ -2022,6 +2022,53 @@ One UTF-8 JSON file, conventionally `ludus.project.json`
 Size limits: file ≤ 64 KiB, name ≤ 128 bytes, paths ≤ 4096 bytes, target ≤ 256
 bytes, ≤ 64 args each ≤ 4096 bytes and ≤ 32 KiB total.
 
+## Source draft recovery
+
+Render Graph keeps a local recovery checkpoint for its whole accepted draft: graph
+JSON, shader manifests, shader text, and added/removed source files. The first
+checkpoint is scheduled within three seconds of editing; continued typing does
+not restart that timer. Replacing a graph/project or destroying the workspace
+flushes pending accepted edits. Closing a tab only hides its existing draft.
+Checkpoints never Save project files, repair setup, compile, or publish a preview.
+Incomplete JSON and shaders are recovered as bytes, so finishing an edit does not
+require successful validation first. Uncommitted IME composition and text still
+inside a property delegate are outside the checkpoint until accepted by its owner.
+
+The recovery row distinguishes pending edits, a completed local checkpoint, and
+write/cleanup failures. **Save** remains the way to publish project sources.
+**Review Recovery…** opens earlier checkpoints with recovered and current text
+side by side. It also offers **Current draft (copy only)**, even if checkpoint
+storage failed, so you can Save Copy while a disk conflict blocks ordinary Save.
+Changed, added and removed files are identified. **Restore Draft**
+requires a clean current draft and the exact saved baseline (including current disk
+bytes); it applies the entire checkpoint as one Undo step. Save or Undo back to the
+saved baseline clears that restored checkpoint. If files changed externally or the
+engine default changed after an update, recovery is retained for review. **Save
+Copy…** preserves selected recovered bytes in a new file without overwriting an
+existing file. **Discard Checkpoint** removes only the version actually reviewed;
+a concurrent replacement is retained and reported in the dialog.
+
+Native checkpoints use the application's local data directory under
+`source-recovery`; the recovery status tooltip shows the exact path. Optional
+`LUDUS_EDITOR_RECOVERY_DIRECTORY` selects another local directory. Every editor
+session/binding has its own atomic checkpoint slot, so editors do not overwrite
+one another's unsaved work. While a draft remains dirty, the timer also checks
+that its own checkpoint still exists and replaces a removed one; unchanged
+checkpoints are not rewritten. Earlier sessions are retained until explicitly
+reviewed/discarded; the chooser displays up to 64 per package, newest first.
+Checkpoints are checksummed, bounded by package byte/file limits plus a separate
+encoded-envelope budget, and reject links, traversal and foreign package identities.
+A failed write retains the previous completed checkpoint and reports that Save is
+required. Recovery covers the last completed checkpoint, rather than every
+keystroke or a filesystem durability guarantee. An explicit draft Discard clears
+its owned recovery; if another document cancels the close, the still-live draft
+resumes checkpointing.
+
+The browser editor's filesystem is session-only: its recovery row explicitly asks
+you to download/export before closing or reloading. Saving to that virtual filesystem
+alone does not survive reload. Native crash recovery is not a claim of durable browser storage. **Save Copy** downloads recovered bytes there.
+World recovery remains with the existing [World recovery owner](#save-recovery-and-scope).
+
 ## Save, conflict and recovery
 
 Save validates the whole draft, takes a short cooperative lock in an ignored

@@ -106,6 +106,10 @@ enum class RenderGraphDocumentStatus : foundation::uint8
     WriteFailed,
 };
 
+/// Recovery source paths use the authored package namespace: portable relative names,
+/// no hidden/output directories, traversal or drive prefixes. Does not access disk.
+[[nodiscard]] bool IsRecoverySourcePath(const QString& path);
+
 /// Serialize a JSON object exactly like ludus_tools.render_graph.canonical_asset:
 /// sorted keys, two-space indentation, ASCII escapes and a trailing newline. Saving
 /// an editor draft therefore produces the same bytes as the shared CLI backend.
@@ -501,6 +505,14 @@ public:
     /// adopted only when the draft is clean, as one undoable revision. Conflict, read
     /// failure or capacity failure preserves the draft/history. Built-ins are unchanged.
     [[nodiscard]] RenderGraphDocumentStatus RefreshFromDisk(bool& outHasChanged);
+    /// Copy the selected package snapshot for a bounded local recovery checkpoint. No disk writes.
+    [[nodiscard]] RenderGraphSnapshot CaptureRecoverySnapshot(RenderGraphSource source) const;
+    /// Restore a checkpoint against the exact saved baseline as one undoable source edit.
+    /// Invalid paths, capacity, changed disk/baseline or an already dirty draft preserve all
+    /// document/history state. Incomplete JSON/shader text is retained verbatim. GUI thread only.
+    [[nodiscard]] RenderGraphDocumentStatus RestoreRecoverySnapshot(const RenderGraphSnapshot& snapshot,
+                                                                    const QMap<QString, QByteArray>& savedHashes,
+                                                                    bool isBuiltIn);
 
 private:
     /// Check that name can create a new package-root `<name>.lurender.json` graph whose id is
