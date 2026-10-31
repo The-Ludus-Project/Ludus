@@ -60,14 +60,6 @@ struct BestEffortOptions final
     /// Parse and plan only: no image decoding and no bundle. The report is complete
     /// except for texture sizes, and BestEffortResult::Bundle stays empty.
     bool IsDryRun = false;
-    /// Optional latitude/longitude lighting image relative to the scene source directory.
-    /// Empty preserves source lighting. An existing authored environment rejects this
-    /// addition; analytic lights and emission are retained. The image must resolve
-    /// inside the source root, including symlinks, and participates in source digests.
-    /// The caller keeps this borrowed view alive for the duration of the call.
-    /// Linear HDR energy is retained with a bounded texture and radiance multiplier;
-    /// +Y is north, longitude zero is +X, increasing longitude turns toward +Z.
-    std::string_view EnvironmentFile;
     /// Optional caller-owned job system on which texture images are decoded in parallel;
     /// nullptr decodes them one at a time on the calling thread.
     ///
@@ -79,6 +71,14 @@ struct BestEffortOptions final
     /// the import (a busy system makes the import decode serially), and is used from the
     /// calling thread only. Browser builds pass a zero-worker system or nullptr. Not owned.
     foundation::threading::JobSystem* JobsOrNull = nullptr;
+    /// Optional latitude/longitude lighting image relative to the scene source directory.
+    /// Empty preserves source lighting. An existing authored environment rejects this
+    /// addition; analytic lights and emission are retained. The image must resolve
+    /// inside the source root, including symlinks, and participates in source digests.
+    /// The caller keeps this borrowed view alive for the duration of the call.
+    /// Linear HDR energy is retained with a bounded texture and radiance multiplier;
+    /// +Y is north, longitude zero is +X, increasing longitude turns toward +Z.
+    std::string_view EnvironmentFile;
 };
 
 /// @brief Headline numbers of one import, also present in the report.
