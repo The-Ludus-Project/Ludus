@@ -69,7 +69,8 @@ QString RenderGraphWorker::Prepare()
     mEndpoint = mDirectory.filePath(QStringLiteral("compiler.sock"));
     mPolls = 0;
     mState = RenderGraphWorkerState::Starting;
-    mProcess.start(executable, {QStringLiteral("--serve"), mEndpoint});
+    // The worker exits with the editor, even when the editor itself is killed mid-compile.
+    mProcess.start(executable, {QStringLiteral("--serve"), mEndpoint, QStringLiteral("--stop-with-parent")});
     mPoll.start();
     return {};
 }

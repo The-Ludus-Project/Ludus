@@ -2077,6 +2077,87 @@ TEST_CASE("Polygonal-light-sampling import prefixes its programs and raises the 
     CHECK(interface.value(QStringLiteral("polygonal_light_sampling")).toBool() == true);
 }
 
+TEST_CASE("Slice-sampling-luminaire template is created from the editor picker with three compared outputs",
+          "[editor][render-graph][slice-sampling-luminaire-template]")
+{
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    workspace.show();
+    CreateGraphFromPicker(workspace, QStringLiteral("slice-sampling-luminaire"));
+    RenderGraphDocument& document = workspace.GetDocument();
+    const QByteArray library = document.GetDraft(QStringLiteral("library.lurender.json"));
+    for (const char* program : {"ShadeDefensiveSliceSampling", "ShadeSliceSampling", "ShadeUniformArea"})
+    {
+        INFO(program);
+        CHECK(library.contains(program) == true);
+    }
+    // Every pass walks the compute BVH, so the package needs no ray hardware.
+    CHECK(library.count("\"ComputeBvh\"") == 3);
+    CHECK(library.contains("NativeQuery") == false);
+    const QByteArray root = document.GetDraft(ROOT_GRAPH);
+    // The defensive mixture is exported first, so the viewport shows it by default.
+    CHECK(root.indexOf("\"output\"") < root.indexOf("\"sliceSamplingOutput\""));
+    CHECK(root.count("\"Accumulate\"") == 3);
+    CHECK(root.count("\"Export\"") == 3);
+    // The luminaire and its seed equation arrive as project-owned sources the author can edit.
+    CHECK(document.GetDraft(QStringLiteral("main_shaders/luminaire.slang")).contains("LUMINAIRE_CENTER_WORLD") == true);
+    CHECK(document.GetDraft(QStringLiteral("main_shaders/slice_sampling.slang")).contains("TrySolveSeedEquation") ==
+          true);
+    const QByteArray manifest = document.GetDraft(COMPUTE_MANIFEST);
+    for (const char* setting : {"SLICE_DEFENSIVE_FRACTION",
+                                "LUMINAIRE_RADIANCE_SCALE",
+                                "LUMINAIRE_BEAM_WIDTH",
+                                "LUMINAIRE_BEAM_STEERING",
+                                "LUMINAIRE_BEAM_SPREAD",
+                                "LUMINAIRE_BEAM_TWIST"})
+    {
+        INFO(setting);
+        CHECK(manifest.contains(setting) == true);
+    }
+    const QJsonObject interface = FindRayTechnique(manifest).value(QStringLiteral("scene_interface")).toObject();
+    CHECK(interface.value(QStringLiteral("visibility_queries")).toInt() >= 1);
+    CHECK(interface.contains(QStringLiteral("polygonal_light_sampling")) == false);
+    RequireValidation(workspace);
+}
+
+TEST_CASE("Slice-sampling-luminaire import prefixes its programs and copies its luminaire sources",
+          "[editor][render-graph][slice-sampling-luminaire-configuration]")
+{
+    QTemporaryDir project;
+    RendererWorkspace workspace({});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    RenderGraphDocument& document = workspace.GetDocument();
+    QString error;
+    REQUIRE(document.ApplyConfigurationTemplate(ROOT_GRAPH,
+                                                QStringLiteral("Luminaire"),
+                                                QStringLiteral("slice-sampling-luminaire"),
+                                                error) == RenderGraphDocumentStatus::Ok);
+    const QByteArray library = document.GetDraft(QStringLiteral("Luminaire.lurender.json"));
+    for (const char* program : {"SliceSamplingShadeDefensiveSliceSampling",
+                                "SliceSamplingShadeSliceSampling",
+                                "SliceSamplingShadeUniformArea"})
+    {
+        INFO(program);
+        CHECK(library.contains(program) == true);
+    }
+    for (const QString& source : {QStringLiteral("slice_sampling_luminaire/main_shaders/shade.slang"),
+                                  QStringLiteral("slice_sampling_luminaire/main_shaders/hit_record.slang"),
+                                  QStringLiteral("slice_sampling_luminaire/main_shaders/slice_sampling.slang"),
+                                  QStringLiteral("slice_sampling_luminaire/main_shaders/luminaire.slang")})
+    {
+        INFO(source.toStdString());
+        CHECK(document.GetDraft(source).isEmpty() == false);
+    }
+    const QByteArray manifest = document.GetDraft(COMPUTE_MANIFEST);
+    CHECK(manifest.contains("SLICE_DEFENSIVE_FRACTION") == true);
+    const QJsonObject interface = FindRayTechnique(manifest).value(QStringLiteral("scene_interface")).toObject();
+    CHECK(interface.value(QStringLiteral("visibility_queries")).toInt() >= 1);
+}
+
 namespace
 {
 /// The point-and-line MIS template's registry identity.

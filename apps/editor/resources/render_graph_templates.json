@@ -116,6 +116,15 @@
       "description": "Peters' (2021) comparison of BRDF importance sampling for polygonal lights: four shading passes light every emissive triangle (up to eight) with one projected-solid-angle and one LTC sample combined by clamped optimal MIS (the image shown first), the same two samples with the balance heuristic, the projected-solid-angle sample alone and the LTC sample alone, each with shadow rays. The first pass also records the primary hits for the others. Every pass uses the compute BVH, so it needs Metal or Vulkan compute but no hardware ray tracing."
     },
     {
+      "kind": "graph",
+      "identity": "slice-sampling-luminaire",
+      "label": "Steinberg — slice sampling a directional luminaire",
+      "category": "ray-traced",
+      "requirements": ["compute-ray-tracing"],
+      "keywords": ["slice sampling", "steinberg", "directional luminaire", "led panel", "near field", "auxiliary map", "inverse branches", "defensive mixture", "light field", "direct lighting"],
+      "description": "Steinberg's slice sampling for direct light from a near-field directional luminaire: an analytic LED panel of nine tiles with position-dependent Gaussian beams lights the scene. Three shading passes each draw one panel sample with a shadow ray: slice sampling, which turns the panel's emission sampler into a direct-light proposal by solving its seed equation on every tile, in a defensive mixture with uniform panel area (the image shown first); slice sampling alone; and uniform panel-area sampling. The first pass also records the primary hits for the others. Every pass uses the compute BVH, so it needs Metal or Vulkan compute but no hardware ray tracing."
+    },
+    {
       "kind": "snippet",
       "identity": "restir-di",
       "label": "ReSTIR DI — mesh emitter lighting",
@@ -204,6 +213,16 @@
       "requirements": ["compute-ray-tracing"],
       "keywords": ["polygonal light", "projected solid angle", "ltc", "linearly transformed cosines", "peters", "clamped optimal mis", "balance heuristic", "mis", "area light", "emissive", "direct lighting"],
       "description": "Four compute-BVH shading passes that share one automatically sized hit buffer and light every emissive triangle (up to eight) with Peters' projected-solid-angle and LTC samples: clamped optimal MIS, the balance heuristic, and each technique alone. Connect scene, view and color; outputs color plus optional balanceHeuristic, projectedSolidAngle and ltc images. Needs Metal or Vulkan compute."
+    },
+    {
+      "kind": "snippet",
+      "identity": "slice-sampling-luminaire",
+      "label": "Steinberg — slice sampling a directional luminaire",
+      "category": "lighting",
+      "defaultConfiguration": "SliceSamplingLuminaire",
+      "requirements": ["compute-ray-tracing"],
+      "keywords": ["slice sampling", "steinberg", "directional luminaire", "led panel", "near field", "auxiliary map", "inverse branches", "defensive mixture", "light field", "direct lighting"],
+      "description": "Three compute-BVH shading passes that share one automatically sized hit buffer and light the scene with an analytic directional LED panel: defensive slice sampling, slice sampling alone and uniform panel-area sampling, each with one shadow ray. Connect scene, view and color; outputs color plus optional sliceSampling and uniformArea images. Needs Metal or Vulkan compute."
     },
     {
       "kind": "snippet",

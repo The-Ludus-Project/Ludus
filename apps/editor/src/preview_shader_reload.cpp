@@ -240,7 +240,8 @@ bool PreviewShaderReload::prepareCompiler(QString& outError)
         endpoint = mWorkerDirectoryOrNull->filePath(QStringLiteral("compiler.sock"));
         mWorkerOrNull = new QProcess(this);
         mWorkerOrNull->setProcessChannelMode(QProcess::ForwardedErrorChannel);
-        mWorkerOrNull->start(executable, {QStringLiteral("--serve"), endpoint});
+        // The worker exits with the editor, even when the editor itself is killed mid-compile.
+        mWorkerOrNull->start(executable, {QStringLiteral("--serve"), endpoint, QStringLiteral("--stop-with-parent")});
         if (mWorkerOrNull->waitForStarted() == false)
         {
             outError = QStringLiteral("Cannot start %1: %2")

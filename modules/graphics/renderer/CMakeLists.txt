@@ -136,7 +136,7 @@ if(LUDUS_BUILD_THREADING_BENCHMARK AND NOT EMSCRIPTEN)
     ludus_apply_project_defaults(ludus_static_lighting_benchmark)
 endif()
 if(TARGET ludus_rhi_render_tests)
-    add_executable(ludus_renderer_render_tests tests/render_tests.cpp tests/denoising_tests.cpp tests/gpu_preview_tests.cpp tests/ray_opacity_tests.cpp tests/visibility_tests.cpp tests/reference_compute_tests.cpp tests/reference_light_sampling_benchmark.cpp tests/gpu_random_tests.cpp tests/projected_solid_angle_parity_tests.cpp src/ltc_table.cpp "${ludus_ltc_table_source}" tests/power_cdf_parity_tests.cpp tests/ris_projected_solid_angle_weight_tests.cpp tests/reference_light_sampling_parity_tests.cpp tests/polygonal_light_sampling_oracle.cpp tests/polygonal_light_sampling_parity_tests.cpp tests/restir_selection_tests.cpp tests/authored_tests.cpp tests/render_graph_render_tests.cpp tests/render_graph_pool_render_tests.cpp)
+    add_executable(ludus_renderer_render_tests tests/render_tests.cpp tests/denoising_tests.cpp tests/gpu_preview_tests.cpp tests/ray_opacity_tests.cpp tests/visibility_tests.cpp tests/reference_compute_tests.cpp tests/reference_light_sampling_benchmark.cpp tests/gpu_random_tests.cpp tests/projected_solid_angle_parity_tests.cpp src/ltc_table.cpp "${ludus_ltc_table_source}" tests/power_cdf_parity_tests.cpp tests/ris_projected_solid_angle_weight_tests.cpp tests/reference_light_sampling_parity_tests.cpp tests/polygonal_light_sampling_oracle.cpp tests/polygonal_light_sampling_parity_tests.cpp tests/slice_sampling_luminaire_estimator_tests.cpp tests/restir_selection_tests.cpp tests/authored_tests.cpp tests/render_graph_render_tests.cpp tests/render_graph_pool_render_tests.cpp)
     target_include_directories(ludus_renderer_render_tests PRIVATE ../rhi/src "${PROJECT_SOURCE_DIR}/tests/sdk_consumer")
     target_link_libraries(ludus_renderer_render_tests PRIVATE Ludus::GraphicsText Ludus::FoundationMath Ludus::FoundationTime Catch2::Catch2WithMain)
     ludus_apply_project_defaults(ludus_renderer_render_tests)
@@ -206,6 +206,14 @@ if(TARGET ludus_rhi_render_tests)
                 "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders/shading_normal.slang"
                 "${renderer_shader_directory}/renderer_gpu_preview.slang" "${renderer_shader_directory}/scene_shader.slang"
                 "${renderer_shader_directory}/ltc_table.slang" "${renderer_shader_directory}/ltc_table_layout.h")
+    # Test-only kernel running the slice-sampling-luminaire template's proposals at fixed receivers.
+    set(slice_sampling_luminaire_shaders "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/slice_sampling_luminaire/main_shaders")
+    ludus_compile_shader(TARGET ludus_renderer_render_tests NAME slice_sampling_luminaire_estimators
+        SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/tests/slice_sampling_luminaire_estimators.slang" COMPUTE SliceSamplingEstimatorsMain
+        INCLUDES "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders" "${slice_sampling_luminaire_shaders}"
+        DEPENDS "${slice_sampling_luminaire_shaders}/slice_sampling.slang" "${slice_sampling_luminaire_shaders}/luminaire.slang"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/slice_sampling_luminaire_estimators_layout.h"
+                "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders/math.slang")
     ludus_compile_shader(TARGET ludus_renderer_render_tests NAME restir_selection
         SOURCE "${PROJECT_SOURCE_DIR}/modules/graphics/renderer/tests/restir_selection.slang" COMPUTE ComputeMain
         INCLUDES "${PROJECT_SOURCE_DIR}/modules/foundation/math/shaders"
@@ -276,60 +284,31 @@ if(TARGET ludus_renderer_render_tests)
     configure_file("${forward_source}/main.lushader.json.in" "${forward_staged}/main.lushader.json" @ONLY)
     ludus_compile_render_graph(TARGET ludus_renderer_render_tests NAME rg2_forward_lit
         MANIFEST "${forward_staged}/main.lushader.json" RUNTIME_PACKAGE)
-    # The render tests compare raster pixels with clustered forward shading and CPU-evaluated radiance, so they
-    # cook the default graph without its display ToneMap: the raster colour goes straight to the export. The
-    # ToneMap is fused into the clustered deferred lighting resolve, which the forward control does not have.
-    set(scene_linear_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/default_scene_linear")
-    foreach(file IN LISTS default_render_graph_files)
-        configure_file("${default_render_graph}/${file}" "${scene_linear_staged}/${file}" COPYONLY)
-    endforeach()
-    file(READ "${default_render_graph}/main.lurender.json" scene_linear_graph)
-    string(JSON scene_linear_configuration_count LENGTH "${scene_linear_graph}" configurations)
-    math(EXPR scene_linear_last_configuration "${scene_linear_configuration_count} - 1")
-    foreach(configuration RANGE ${scene_linear_last_configuration})
-        string(JSON node_count LENGTH "${scene_linear_graph}" configurations ${configuration} nodes)
-        math(EXPR last_node "${node_count} - 1")
-        set(tone_map_id "")
-        foreach(node RANGE ${last_node})
-            string(JSON node_kind GET "${scene_linear_graph}" configurations ${configuration} nodes ${node} kind)
-            if(node_kind STREQUAL "ToneMap")
-                string(JSON tone_map_id GET "${scene_linear_graph}" configurations ${configuration} nodes ${node} id)
-                string(JSON scene_linear_graph REMOVE "${scene_linear_graph}" configurations ${configuration} nodes ${node})
-                break()
-            endif()
+    # The default graph ends in a ToneMap that only a clustered deferred resolve can apply. The parity tests compare
+    # linear radiance, so their copies of the default graph disable it, which exports clamped linear colour.
+    function(ludus_stage_linear_default_render_graph staged)
+        foreach(file IN LISTS default_render_graph_files)
+            configure_file("${default_render_graph}/${file}" "${staged}/${file}" COPYONLY)
         endforeach()
-        # Splice the ToneMap's input edge onto its output edge, so the Export reads the raster colour.
-        string(JSON edge_count LENGTH "${scene_linear_graph}" configurations ${configuration} edges)
-        math(EXPR last_edge "${edge_count} - 1")
-        set(tone_map_source "")
-        foreach(edge RANGE ${last_edge})
-            string(JSON edge_target GET "${scene_linear_graph}" configurations ${configuration} edges ${edge} to)
-            if(NOT tone_map_id STREQUAL "" AND edge_target STREQUAL "${tone_map_id}.color")
-                string(JSON tone_map_source GET "${scene_linear_graph}" configurations ${configuration} edges ${edge} from)
-                string(JSON scene_linear_graph REMOVE "${scene_linear_graph}" configurations ${configuration} edges ${edge})
-                break()
-            endif()
+        file(READ "${staged}/main.lurender.json" graph)
+        string(JSON configuration_count LENGTH "${graph}" configurations)
+        math(EXPR last_configuration "${configuration_count} - 1")
+        foreach(configuration RANGE ${last_configuration})
+            string(JSON node_count LENGTH "${graph}" configurations ${configuration} nodes)
+            math(EXPR last_node "${node_count} - 1")
+            foreach(node RANGE ${last_node})
+                string(JSON kind GET "${graph}" configurations ${configuration} nodes ${node} kind)
+                if(kind STREQUAL "ToneMap")
+                    string(JSON graph SET "${graph}" configurations ${configuration} nodes ${node} enabled false)
+                endif()
+            endforeach()
         endforeach()
-        if(tone_map_source STREQUAL "")
-            message(FATAL_ERROR "The default render graph configuration ${configuration} no longer feeds a ToneMap; "
-                                "update the scene-linear render test fixture")
-        endif()
-        math(EXPR last_edge "${edge_count} - 2")
-        foreach(edge RANGE ${last_edge})
-            string(JSON edge_source GET "${scene_linear_graph}" configurations ${configuration} edges ${edge} from)
-            if(edge_source STREQUAL "${tone_map_id}.color")
-                string(JSON scene_linear_graph SET "${scene_linear_graph}" configurations ${configuration} edges ${edge}
-                       from "\"${tone_map_source}\"")
-            endif()
-        endforeach()
-    endforeach()
-    file(WRITE "${scene_linear_staged}/main.lurender.json" "${scene_linear_graph}\n")
+        file(WRITE "${staged}/main.lurender.json" "${graph}\n")
+    endfunction()
     # A cooked clustered-forward control shares the exact default material and geometry callbacks.
     set(clustered_forward_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/clustered_forward")
-    foreach(file IN LISTS default_render_graph_files)
-        configure_file("${scene_linear_staged}/${file}" "${clustered_forward_staged}/${file}" COPYONLY)
-    endforeach()
-    file(READ "${scene_linear_staged}/main.lushader.json" clustered_forward_manifest)
+    ludus_stage_linear_default_render_graph("${clustered_forward_staged}")
+    file(READ "${default_render_graph}/main.lushader.json" clustered_forward_manifest)
     string(JSON clustered_forward_manifest SET "${clustered_forward_manifest}" techniques 0 scene_interface profile "\"ClusteredForward\"")
     string(JSON clustered_forward_manifest SET "${clustered_forward_manifest}" programs 1 function "\"ForwardMain\"")
     string(JSON clustered_forward_manifest REMOVE "${clustered_forward_manifest}" programs 3)
@@ -339,9 +318,11 @@ if(TARGET ludus_renderer_render_tests)
     cmake_path(GET rg2_clustered_forward_control_RUNTIME_PACKAGE PARENT_PATH clustered_forward_package_directory)
     target_compile_definitions(ludus_renderer_render_tests PRIVATE
         LUDUS_RG3_CLUSTERED_FORWARD_DIRECTORY="${clustered_forward_package_directory}")
+    set(clustered_deferred_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/clustered_deferred")
+    ludus_stage_linear_default_render_graph("${clustered_deferred_staged}")
     foreach(configuration Default ZPrepass)
         ludus_compile_render_graph(TARGET ludus_renderer_render_tests NAME rg2_clustered_${configuration}
-            MANIFEST "${scene_linear_staged}/main.lushader.json" CONFIGURATION "${configuration}" RUNTIME_PACKAGE)
+            MANIFEST "${clustered_deferred_staged}/main.lushader.json" CONFIGURATION "${configuration}" RUNTIME_PACKAGE)
         cmake_path(GET rg2_clustered_${configuration}_RUNTIME_PACKAGE PARENT_PATH clustered_package_directory)
         string(TOUPPER "${configuration}" configuration_constant)
         target_compile_definitions(ludus_renderer_render_tests PRIVATE
@@ -403,7 +384,7 @@ if(TARGET ludus_renderer_render_tests)
         LUDUS_RG3_VISIBILITY_ORDINARY_DIRECTORY="${visibility_ordinary_package_directory}")
     foreach(template_directory IN ITEMS visibility_buffer visibility_secondary_rays tiled_vbuffer_nee compute_ray_tracing
             simple_compute_ray_tracing veach_guibas_mis line_sampling ris_projected_solid_angle salesin_jarosz_lines
-            polygonal_light_sampling)
+            polygonal_light_sampling slice_sampling_luminaire)
         set(template_source "${CMAKE_CURRENT_SOURCE_DIR}/render_graphs/${template_directory}")
         set(template_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/${template_directory}_template")
         ludus_stage_render_graph_fixture("${template_source}" "${template_staged}")
@@ -1008,7 +989,8 @@ if(TARGET ludus_renderer_render_tests)
     target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
         LUDUS_RG3_STORAGE_RAY_DIRECTORY="${storage_ray_package_directory}")
     add_test(NAME ludus_render_graph_ray_pixels
-        COMMAND ludus_render_graph_ray_tests "~[ris-projected-solid-angle]~[polygonal-light-sampling]")
+        COMMAND ludus_render_graph_ray_tests
+            "~[ris-projected-solid-angle]~[polygonal-light-sampling]~[slice-sampling-luminaire]")
     set_tests_properties(ludus_render_graph_ray_pixels PROPERTIES LABELS "renderer;gpu;ray" TIMEOUT 60)
     # The ris-projected-solid-angle template's convergence and error checks render about 3100 frames and
     # need no native ray tracing, so they also run on software Vulkan adapters; they get their own timeout.
@@ -1021,6 +1003,12 @@ if(TARGET ludus_renderer_render_tests)
     add_test(NAME ludus_render_graph_polygonal_light_sampling_pixels
         COMMAND ludus_render_graph_ray_tests "[polygonal-light-sampling]")
     set_tests_properties(ludus_render_graph_polygonal_light_sampling_pixels PROPERTIES
+        LABELS "renderer;gpu;ray" TIMEOUT 600)
+    # The slice-sampling-luminaire template's checks render about 1300 compute-BVH frames and need no native ray
+    # tracing, so they also run on software Vulkan adapters.
+    add_test(NAME ludus_render_graph_slice_sampling_luminaire_pixels
+        COMMAND ludus_render_graph_ray_tests "[slice-sampling-luminaire]")
+    set_tests_properties(ludus_render_graph_slice_sampling_luminaire_pixels PROPERTIES
         LABELS "renderer;gpu;ray" TIMEOUT 600)
     add_executable(ludus_graph_workgroup_tests tests/graph_workgroup_tests.cpp)
     target_link_libraries(ludus_graph_workgroup_tests PRIVATE Ludus::GraphicsRenderer

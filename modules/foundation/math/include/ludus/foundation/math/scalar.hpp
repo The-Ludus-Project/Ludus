@@ -151,6 +151,17 @@ template <typename ScalarType>
 /// retain interval/domain obligations when excluding a visibility endpoint.
 [[nodiscard]] float32 NextFloatDown(float32 value) noexcept;
 
+/// @brief Inverse cumulative distribution function (quantile) of the standard normal distribution.
+///
+/// Returns the x with Phi(x) = probability, where Phi is the standard normal CDF, by Wichura's rational
+/// approximation (Algorithm AS241, PPND16; about 1e-16 relative error in float64). The float32 overload evaluates
+/// the same coefficients in float32 arithmetic, as FoundationMath's shader ComputeStandardNormalQuantile does, and is
+/// accurate to a few float32 ulp. The domain is the open interval (0, 1): 0, 1, values outside it and NaN return
+/// NaN, so a caller that maps a [0, 1) random number must first move it into the open interval. Pure, allocation free.
+[[nodiscard]] float64 ComputeStandardNormalQuantile(float64 probability) noexcept;
+/// @copydoc ludus::foundation::math::ComputeStandardNormalQuantile(float64)
+[[nodiscard]] float32 ComputeStandardNormalQuantile(float32 probability) noexcept;
+
 // --- Interpolation ----------------------------------------------------------
 /// @brief Lerp is UNCLAMPED and preserves exactly a at t=0 and b at t=1 for finite inputs (it is not the naive a +
 /// t*(b-a), which loses the b endpoint). t outside [0,1] extrapolates and may overflow.
