@@ -109,6 +109,228 @@
           "to": "output.texture"
         }
       ]
+    },
+    {
+      "id": "TriangleLoop",
+      "inputs": [],
+      "outputs": [],
+      "nodes": [
+        {
+          "id": "scene",
+          "kind": "Scene"
+        },
+        {
+          "active": true,
+          "id": "camera",
+          "kind": "Camera",
+          "role": "Offscreen",
+          "target_type": "ColorTexture"
+        },
+        {
+          "extent": [
+            96,
+            64
+          ],
+          "format": "RGBA8Unorm",
+          "id": "color",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "id": "output",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "paths",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "RayPathFixture"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "TriangleLoop"
+          }
+        },
+        {
+          "id": "accumulate",
+          "kind": "Accumulate",
+          "samples": 8
+        }
+      ],
+      "edges": [
+        {
+          "from": "color.texture",
+          "to": "camera.target"
+        },
+        {
+          "from": "scene.scene",
+          "to": "paths.scene"
+        },
+        {
+          "from": "camera.view",
+          "to": "paths.view"
+        },
+        {
+          "from": "color.texture",
+          "to": "paths.color"
+        },
+        {
+          "from": "paths.color",
+          "to": "accumulate.color"
+        },
+        {
+          "from": "accumulate.color",
+          "to": "output.texture"
+        }
+      ]
+    },
+    {
+      "id": "ComputeBvh",
+      "inputs": [],
+      "outputs": [],
+      "nodes": [
+        {
+          "id": "scene",
+          "kind": "Scene"
+        },
+        {
+          "active": true,
+          "id": "camera",
+          "kind": "Camera",
+          "role": "Offscreen",
+          "target_type": "ColorTexture"
+        },
+        {
+          "extent": [
+            96,
+            64
+          ],
+          "format": "RGBA8Unorm",
+          "id": "color",
+          "imported": false,
+          "initialized": false,
+          "kind": "Target",
+          "presentation": false,
+          "samples": 1,
+          "type": "ColorTexture"
+        },
+        {
+          "id": "output",
+          "kind": "Export",
+          "type": "ColorTexture"
+        },
+        {
+          "id": "paths",
+          "kind": "ComputePipeline",
+          "inputs": [
+            {
+              "id": "scene",
+              "type": "Scene",
+              "required": true
+            },
+            {
+              "id": "view",
+              "type": "View",
+              "required": true
+            },
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "required": true
+            }
+          ],
+          "outputs": [
+            {
+              "id": "color",
+              "type": "ColorTexture",
+              "target": "color",
+              "format": "RGBA8Unorm",
+              "load": "Clear",
+              "store": "Store"
+            }
+          ],
+          "shaders": [
+            {
+              "id": "compute",
+              "stage": "compute",
+              "program": "RayPathFixture"
+            }
+          ],
+          "state": {},
+          "invocation": {
+            "dimensions": "ColorTarget",
+            "traversal": "ComputeBvh"
+          }
+        },
+        {
+          "id": "accumulate",
+          "kind": "Accumulate",
+          "samples": 8
+        }
+      ],
+      "edges": [
+        {
+          "from": "color.texture",
+          "to": "camera.target"
+        },
+        {
+          "from": "scene.scene",
+          "to": "paths.scene"
+        },
+        {
+          "from": "camera.view",
+          "to": "paths.view"
+        },
+        {
+          "from": "color.texture",
+          "to": "paths.color"
+        },
+        {
+          "from": "paths.color",
+          "to": "accumulate.color"
+        },
+        {
+          "from": "accumulate.color",
+          "to": "output.texture"
+        }
+      ]
     }
   ],
   "default": "Default",

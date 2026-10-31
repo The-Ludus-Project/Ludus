@@ -1262,13 +1262,19 @@ raster first hit and performs no traversal. Capture records that raster first hi
 as its own event, so paths starting from a visibility buffer still begin at the
 camera.
 
-Traversal uses inline `RayQuery`. The driver owns the acceleration structure, so
+`Trace()` dispatches to the pass's traversal strategy. With `NativeQuery`,
+traversal uses inline `RayQuery`. The driver owns the acceleration structure, so
 box tests, node visits and traversal order are not observable. The kernel does see
 each non-opaque candidate triangle in the `Proceed()` loop, its alpha-test
 decision, and the committed result; see Khronos,
 [Vulkan Ray Traversal](https://docs.vulkan.org/spec/latest/chapters/raytraversal.html).
-Capture records exactly those events. It adds no software traversal to recover
-node visits. The built-in GPU preview integrator (`Integrate`) shares `Trace()`
+The software strategies (`TriangleLoop`, `ComputeBvh` and an authored `Custom`
+traversal) run in the same kernel and return through the same `Trace()`, so the
+capture variant records their rays and committed results identically. Their
+engine alpha tests count rejected candidates as the native loop does. A `Custom`
+traversal owns its own acceptance and reports none. Capture records one event per
+submitted ray for every strategy. It does not record node visits, even where
+software traversal could observe them. The built-in GPU preview integrator (`Integrate`) shares `Trace()`
 and could adopt the same capture later; it is out of scope here.
 
 ### Capture records
@@ -1364,8 +1370,10 @@ packages never contain the variant.
 
 The inspection view is rasterized because the free camera must move
 independently of the frozen trace camera. Raster navigation must also never
-depend on ray hardware. Without a native ray profile, raster navigation still
-works and capture reports that it is unavailable.
+depend on ray hardware. Software-traversal graphs capture on any GPU that runs
+their compute kernel. When a native-query graph falls back to raster on a device
+without a native ray profile, raster navigation still works and capture reports
+that it is unavailable.
 
 ### Drawing and inspection
 

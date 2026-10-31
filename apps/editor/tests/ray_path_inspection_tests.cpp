@@ -2,8 +2,9 @@
 // "Acceptance evidence"): navigation keeps the frozen paths, a World edit marks the capture stale,
 // leaving inspection restores the live graph, and a device without native rays reports capture as
 // unavailable while raster navigation keeps working. The capture fixture is the diagnostic
-// `LUDUS_RAY_PATH_CAPTURE` package of the same sources as LUDUS_EDITOR_RAY_GRAPH_FIXTURE.
-// Hosts without a GPU adapter, or without native ray queries, skip the GPU cases.
+// `LUDUS_RAY_PATH_CAPTURE` package of the same sources as LUDUS_EDITOR_RAY_GRAPH_FIXTURE; the
+// software TriangleLoop fixture and its capture variant cover capture without native ray queries.
+// Hosts without a GPU adapter, or without native ray queries, skip the native-query GPU cases.
 #include "editor_default_graph.h"
 #include "internal/ray_path_capture.h"
 #include "internal/ray_path_inspection.h"
@@ -616,6 +617,54 @@ TEST_CASE("Ray path capture is unavailable without native rays while raster navi
     moved.WorldToClip.Columns[3].X = .25F;
     preview.SetCamera(moved, 2);
     REQUIRE(TickUntil(preview, [&]() { return preview.GetPresentedRevision() == 2; }) == true);
+    preview.Detach();
+}
+
+TEST_CASE("A software traversal graph captures ray paths on a device without native ray queries",
+          "[editor][ray-paths][gpu]")
+{
+    DeviceFixture device(false);
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    RenderGraphPreview preview = MakePreview();
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    preview.SetExtraction(MakeExtraction({1, 0, 0, 1}, 1));
+    REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_SOFTWARE_RAY_GRAPH_FIXTURE), GetDefaultRenderGraphRuntime()) ==
+            RenderGraphPreviewLoad::Staged);
+    const bool hasFrame = TickUntil(preview, [&]() { return preview.GetPresentedGeneration() == 1; });
+    INFO(preview.GetStatus().toStdString());
+    REQUIRE(hasFrame == true);
+    REQUIRE(preview.GetReport().ActiveRenderer == renderer::RenderGraphRenderer::ComputeRayTracing);
+    CHECK(preview.DescribeRayPathCaptureProblem().isEmpty() == true);
+    RayPathInspection inspection;
+    inspection.SetPreview(&preview);
+    REQUIRE(inspection.Begin(GetTraceTarget()) == true);
+    REQUIRE(inspection.PickPixel({.5F, .5F}) == true);
+    REQUIRE(preview.IsRayPathFrozen() == true);
+    inspection.AcceptBuild(QStringLiteral(LUDUS_EDITOR_SOFTWARE_RAY_CAPTURE_FIXTURE));
+    const bool isSettled = TickUntil(preview, [&]() { return IsSettled(preview.GetRayPathCapture().GetState()); });
+    INFO(preview.GetRayPathCapture().GetMessage().toStdString());
+    REQUIRE(isSettled == true);
+    REQUIRE(preview.GetRayPathCapture().GetState() == RayPathCaptureState::Ready);
+    const RayPathCapture& capture = preview.GetRayPathCapture();
+    CHECK(capture.GetPassNames().value(capture.GetTargetPass()) == QStringLiteral("Main/trace"));
+    // traversal_parity: the camera hit, then a secondary closest query and a visibility query.
+    REQUIRE(capture.GetEvents().isEmpty() == false);
+    const renderer::RayPathEvent first = capture.GetEvents().first();
+    CHECK(first.Kind == renderer::RayPathEventKind::Closest);
+    REQUIRE(first.Outcome == renderer::RayPathOutcome::Hit);
+    CHECK(capture.GetObjectId(first.SourceId) == QStringLiteral("object"));
+    bool hasVisibility = false;
+    for (const renderer::RayPathEvent& event : capture.GetEvents())
+    {
+        hasVisibility = hasVisibility == true || event.Kind == renderer::RayPathEventKind::Visibility;
+    }
+    CHECK(hasVisibility == true);
+    CHECK(capture.GetSummaries().isEmpty() == false);
+    inspection.Leave();
+    CHECK(preview.IsRayPathFrozen() == false);
     preview.Detach();
 }
 

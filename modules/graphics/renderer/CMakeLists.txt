@@ -1022,11 +1022,21 @@ if(TARGET ludus_renderer_render_tests)
         ludus_compile_render_graph(TARGET ludus_render_graph_ray_path_tests NAME rg2_${ray_path_form}_capture
             MANIFEST "${${ray_path_form}_staged}/main.lushader.json" RAY_PATH_CAPTURE)
     endforeach()
+    # The scene compute fixture's software traversal configurations capture without native rays.
+    foreach(configuration IN ITEMS TriangleLoop ComputeBvh)
+        string(TOLOWER "${configuration}" configuration_suffix)
+        ludus_compile_render_graph(TARGET ludus_render_graph_ray_path_tests
+            NAME rg2_ray_path_${configuration_suffix}_plain
+            MANIFEST "${ray_path_staged}/main.lushader.json" CONFIGURATION "${configuration}")
+        ludus_compile_render_graph(TARGET ludus_render_graph_ray_path_tests
+            NAME rg2_ray_path_${configuration_suffix}_capture
+            MANIFEST "${ray_path_staged}/main.lushader.json" CONFIGURATION "${configuration}" RAY_PATH_CAPTURE)
+    endforeach()
     add_test(NAME ludus_render_graph_ray_path_capture COMMAND ludus_render_graph_ray_path_tests)
-    # Every case skips on a device without hardware ray queries, and Catch2 3.4 then
-    # returns 4. Thanks to Catch2, Session::runInternal (v3.4.0
-    # src/catch2/catch_session.cpp), and CMake 3.29 SKIP_RETURN_CODE for reporting
-    # that as Skipped rather than Failed:
+    # Native-query cases skip on a device without hardware ray queries; the software
+    # traversal cases still run there. Catch2 3.4 returns 4 only when every case skipped.
+    # Thanks to Catch2, Session::runInternal (v3.4.0 src/catch2/catch_session.cpp), and
+    # CMake 3.29 SKIP_RETURN_CODE for reporting that as Skipped rather than Failed:
     # https://cmake.org/cmake/help/v3.29/prop_test/SKIP_RETURN_CODE.html
     set_tests_properties(ludus_render_graph_ray_path_capture PROPERTIES
         LABELS "renderer;gpu;ray" TIMEOUT 60 SKIP_RETURN_CODE 4)

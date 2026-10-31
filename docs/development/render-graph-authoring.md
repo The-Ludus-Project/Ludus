@@ -3568,7 +3568,8 @@ checks alternating writes, persistence and replacement reset.
 
 Ray path capture records the rays that `RayTracingPipeline` nodes (triangle and
 scene callback profiles, with or without a visibility buffer) and scene
-`ComputePipeline` nodes trace for one pixel. The
+`ComputePipeline` nodes trace for one pixel. It works with every traversal
+strategy: `NativeQuery`, `TriangleLoop`, `ComputeBvh` and `Custom`. The
 [design](../architecture/render-graph-authoring.md#ray-path-inspection-proposed)
 explains what the kernel can observe. The editor freezes the World viewport's
 graph, traces the pixel and draws the frozen paths over the scene, which you then
@@ -3577,9 +3578,11 @@ explore with the free camera. It is not a GPU frame debugger.
 **Inspect a pixel in the editor.**
 
 1. Show the World with the project's ray graph in the World viewport. Capture needs
-   the hardware raytracing renderer: a GPU or API without native ray queries, **Force
-   raster**, or a software-traversal graph reports capture as unavailable in the
-   **Ray Paths** panel. The viewport keeps rendering and navigating normally.
+   a ray renderer, either hardware raytracing or software (compute) traversal. A
+   software-traversal graph captures on any GPU, including one without native ray
+   queries. **Force raster**, or a native-query graph falling back to raster on a GPU
+   or API without native ray queries, reports capture as unavailable in the **Ray
+   Paths** panel. The viewport keeps rendering and navigating normally.
 2. On the Renderer canvas, right-click a `RayTracingPipeline` or scene
    `ComputePipeline` node and choose **Capture Ray Paths**. To capture every ray
    pass of the configuration, right-click the canvas background and choose
@@ -3721,13 +3724,21 @@ Current limits:
 - One pixel per capture. The buffer layout already stores a rectangle.
 - Two ray passes that share one cooked callback set cannot be told apart, so the
   request returns `Unsupported`.
-- Driver BVH traversal (box tests, node visits and order) is not observable.
-  The built-in GPU preview integrator is not instrumented.
+- Box tests, node visits and traversal order are not recorded for any strategy;
+  each event is one submitted ray and its committed result. With native queries
+  the driver owns that traversal. The built-in GPU preview integrator is not
+  instrumented.
+- Rejected-candidate counts come from the engine's alpha test. `TriangleLoop`
+  counts only rejected candidates that were nearer than the hit so far, and
+  `ComputeBvh` counts those in the leaves it visits. A `Custom` traversal reports
+  zero, because its authored code owns candidate acceptance.
 - RenderGraph scene inputs have no masked materials yet, so no graph produces
   alpha-rejected candidates today. The counter is decoded and tested, but no
   scene can exercise it end to end yet.
-- Native ray queries are required. Without them, `Initialize` of the capture
-  variant fails like any native ray kernel; raster navigation is unaffected.
+- A `NativeQuery` graph needs native ray queries. Without them, `Initialize` of
+  the capture variant fails like any native ray kernel; raster navigation is
+  unaffected. `TriangleLoop`, `ComputeBvh` and `Custom` graphs capture on any
+  device that runs their compute kernel.
 - The editor captures one pixel at 16 samples and draws at most 512 segments.
   Larger rectangles need a world-space line pass, which is a separate change.
 

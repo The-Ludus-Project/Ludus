@@ -2,7 +2,11 @@
 #include "rg2_ordered_ray_capture.h"
 #include "rg2_ordered_ray_plain.h"
 #include "rg2_ray_path_capture.h"
+#include "rg2_ray_path_computebvh_capture.h"
+#include "rg2_ray_path_computebvh_plain.h"
 #include "rg2_ray_path_plain.h"
+#include "rg2_ray_path_triangleloop_capture.h"
+#include "rg2_ray_path_triangleloop_plain.h"
 #include "rg2_raytracing_capture.h"
 #include "rg2_raytracing_plain.h"
 #include "rg2_scene_ray_capture.h"
@@ -17,12 +21,14 @@
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/time/time.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
+#include <ludus/graphics/renderer/render_graph_activation.hpp>
 #include <ludus/graphics/rhi/lifetime.h>
 
 #include <catch2/catch_test_macros.hpp>
 
 // Ray path capture acceptance (docs/architecture/render-graph-authoring.md#ray-path-inspection-proposed):
 // every node form's LUDUS_RAY_PATH_CAPTURE variant keeps the plain kernel's output and records known rays.
+// Native-query forms skip without hardware raytracing; software traversal forms run on any GPU.
 using namespace ludus::foundation;
 namespace renderer = ludus::graphics::renderer;
 namespace rhi = ludus::graphics::rhi;
@@ -80,12 +86,14 @@ struct CaptureFixture final
     renderer::SceneShaderInputs Inputs{};
     StaticArray<uint8, PIXEL_BYTES> PlainPixels{};
     StaticArray<uint8, PIXEL_BYTES> CapturePixels{};
-    CaptureFixture()
+    /// @param shouldUseNativeRays Request native ray queries and skip without them; software
+    /// traversal kernels pass false and run on a device that enables no ray features.
+    explicit CaptureFixture(bool shouldUseNativeRays = true)
     {
         rhi::DeviceDescription description;
         description.Required.PortableRaster = true;
         description.Storage.ResourcesPerGraph = renderer::VISIBILITY_GRAPH_RESOURCE_CAPACITY;
-        description.Preferred.RayQueries = true;
+        description.Preferred.RayQueries = shouldUseNativeRays;
         rhi::StartupInfo failure;
         const rhi::DeviceStatus started =
             rhi::CreateDevice({}, { .Width = WIDTH, .Height = HEIGHT }, description, Device, Surface, &failure);
@@ -95,7 +103,8 @@ struct CaptureFixture final
         }
         REQUIRE(started == rhi::DeviceStatus::Ready);
         rhi::RayCapabilities capabilities;
-        if (rhi::GetRayCapabilities(Device, capabilities) == rhi::RasterStatus::Unsupported)
+        if (shouldUseNativeRays == true &&
+            rhi::GetRayCapabilities(Device, capabilities) == rhi::RasterStatus::Unsupported)
         {
             SKIP("Hardware raytracing is unavailable; capture reports that it is unavailable");
         }
@@ -304,6 +313,75 @@ void CheckCompleteSummaries(const CaptureResult& result, uint32 expectedSamples)
     CHECK(result.Report.DroppedRecords == 0);
     CHECK(result.Report.TruncatedSummaries == 0);
 }
+/// Check the ray_path fixture's four events per sample: a camera hit, then occluded, unoccluded and
+/// preview visibility rays. Every traversal strategy of the fixture records the same paths.
+void CheckVisibilityFixturePaths(const CaptureResult& result, uint32 samples)
+{
+    CheckCompleteSummaries(result, samples);
+    REQUIRE(result.Events.GetSize() == usize{samples} * FIXTURE_EVENTS_PER_HIT);
+    for (uint32 sample = 0; sample < samples; ++sample)
+    {
+        const renderer::RayPathSummary& summary = result.Summaries[sample];
+        CHECK(summary.EventCount == FIXTURE_EVENTS_PER_HIT);
+        CHECK(summary.Radiance.X == static_cast<float32>(sample + 1) * SAMPLE_COLOR_SCALE);
+        CHECK(summary.Radiance.Y == 1);
+        CHECK(summary.Radiance.Z == 1);
+        const renderer::RayPathEvent& camera = result.Events[usize{sample} * FIXTURE_EVENTS_PER_HIT];
+        const renderer::RayPathEvent& occluded = result.Events[usize{sample} * FIXTURE_EVENTS_PER_HIT + 1];
+        const renderer::RayPathEvent& unoccluded = result.Events[usize{sample} * FIXTURE_EVENTS_PER_HIT + 2];
+        constexpr usize PREVIEW_VISIBILITY_EVENT = 3;
+        const renderer::RayPathEvent& preview =
+            result.Events[usize{sample} * FIXTURE_EVENTS_PER_HIT + PREVIEW_VISIBILITY_EVENT];
+        CHECK(camera.Sample == sample);
+        CHECK(camera.Sequence == 0);
+        CHECK(camera.Kind == renderer::RayPathEventKind::Closest);
+        CHECK(camera.Outcome == renderer::RayPathOutcome::Hit);
+        CheckCameraRay(camera, CENTER_X, CENTER_Y);
+        CHECK(IsNear(camera.HitDistanceWorld, TRIANGLE_DEPTH_WORLD) == true);
+        CHECK(camera.SourceId == 1);
+        CHECK(occluded.Sequence == 1);
+        CHECK(occluded.Kind == renderer::RayPathEventKind::Visibility);
+        CHECK(occluded.Outcome == renderer::RayPathOutcome::Hit);
+        CHECK(occluded.SourceId == 2);
+        CHECK(occluded.Instance == 1);
+        CHECK(IsNear(occluded.DirectionWorld.Z, 1) == true);
+        CHECK(IsNear(occluded.OriginWorld.Z, TRIANGLE_DEPTH_WORLD) == true);
+        CHECK(IsNear(occluded.HitDistanceWorld, OCCLUDER_DEPTH_WORLD - TRIANGLE_DEPTH_WORLD) == true);
+        CHECK(unoccluded.Sequence == 2);
+        CHECK(unoccluded.Kind == renderer::RayPathEventKind::Visibility);
+        CHECK(unoccluded.Outcome == renderer::RayPathOutcome::Miss);
+        CHECK(unoccluded.SourceId == 0);
+        CHECK(IsNear(unoccluded.DirectionWorld.Z, -1) == true);
+        CHECK(IsNear(unoccluded.HitDistanceWorld, unoccluded.MaxDistanceWorld) == true);
+        CHECK(preview.Sample == sample);
+        CHECK(preview.Sequence == PREVIEW_VISIBILITY_EVENT);
+        CHECK(preview.Kind == renderer::RayPathEventKind::Visibility);
+        CHECK(preview.Outcome == renderer::RayPathOutcome::Hit);
+        CHECK(preview.SourceId == 2);
+        CHECK(preview.Instance == 1);
+        CHECK(IsNear(preview.DirectionWorld.Z, 1) == true);
+        CHECK(IsNear(preview.HitDistanceWorld, OCCLUDER_DEPTH_WORLD - preview.OriginWorld.Z) == true);
+    }
+}
+/// Capture the ray_path fixture's center pixel for three samples and check its known paths.
+void CaptureVisibilityFixture(const renderer::RenderGraphPlan& plan,
+                              const renderer::RenderGraphPrograms& plain,
+                              const renderer::RenderGraphPrograms& capture,
+                              bool shouldUseNativeRays)
+{
+    CaptureFixture fixture(shouldUseNativeRays);
+    fixture.ItemCount = 2;
+    constexpr uint32 SAMPLES = 3;
+    CaptureResult result;
+    RunCapture(fixture,
+               plan,
+               plain,
+               capture,
+               { .PixelX = CENTER_X, .PixelY = CENTER_Y, .SampleCount = SAMPLES },
+               SAMPLES + 1,
+               result);
+    CheckVisibilityFixturePaths(result, SAMPLES);
+}
 } // namespace
 
 TEST_CASE("Triangle-profile capture records a camera hit and a miss without changing the image",
@@ -364,68 +442,42 @@ TEST_CASE("Triangle-profile capture records a camera hit and a miss without chan
 TEST_CASE("Scene compute capture records occluded and unoccluded visibility rays",
           "[render-graph][gpu][ray-path][compute-ray-tracing]")
 {
-    CaptureFixture fixture;
-    fixture.ItemCount = 2;
-    const renderer::RenderGraphPlan plan = packages::rg2_ray_path_plain::MakePlan();
-    const renderer::RenderGraphPrograms plain =
-        packages::rg2_ray_path_plain::MakePrograms(shaders::renderer_composite::Vertex(),
-                                                   shaders::renderer_composite::Fragment());
-    const renderer::RenderGraphPrograms capture =
-        packages::rg2_ray_path_capture::MakePrograms(shaders::renderer_composite::Vertex(),
-                                                     shaders::renderer_composite::Fragment());
-    constexpr uint32 SAMPLES = 3;
-    CaptureResult result;
-    RunCapture(fixture,
-               plan,
-               plain,
-               capture,
-               { .PixelX = CENTER_X, .PixelY = CENTER_Y, .SampleCount = SAMPLES },
-               SAMPLES + 1,
-               result);
-    CheckCompleteSummaries(result, SAMPLES);
-    REQUIRE(result.Events.GetSize() == usize{SAMPLES} * FIXTURE_EVENTS_PER_HIT);
-    for (uint32 sample = 0; sample < SAMPLES; ++sample)
+    CaptureVisibilityFixture(packages::rg2_ray_path_plain::MakePlan(),
+                             packages::rg2_ray_path_plain::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                                        shaders::renderer_composite::Fragment()),
+                             packages::rg2_ray_path_capture::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                                          shaders::renderer_composite::Fragment()),
+                             true);
+}
+
+TEST_CASE("Software traversal capture records the same paths without native ray queries",
+          "[render-graph][gpu][ray-path][compute-ray-tracing]")
+{
+    SECTION("TriangleLoop")
     {
-        const renderer::RayPathSummary& summary = result.Summaries[sample];
-        CHECK(summary.EventCount == FIXTURE_EVENTS_PER_HIT);
-        CHECK(summary.Radiance.X == static_cast<float32>(sample + 1) * SAMPLE_COLOR_SCALE);
-        CHECK(summary.Radiance.Y == 1);
-        CHECK(summary.Radiance.Z == 1);
-        const renderer::RayPathEvent& camera = result.Events[usize{sample} * FIXTURE_EVENTS_PER_HIT];
-        const renderer::RayPathEvent& occluded = result.Events[usize{sample} * FIXTURE_EVENTS_PER_HIT + 1];
-        const renderer::RayPathEvent& unoccluded = result.Events[usize{sample} * FIXTURE_EVENTS_PER_HIT + 2];
-        constexpr usize PREVIEW_VISIBILITY_EVENT = 3;
-        const renderer::RayPathEvent& preview =
-            result.Events[usize{sample} * FIXTURE_EVENTS_PER_HIT + PREVIEW_VISIBILITY_EVENT];
-        CHECK(camera.Sample == sample);
-        CHECK(camera.Sequence == 0);
-        CHECK(camera.Kind == renderer::RayPathEventKind::Closest);
-        CHECK(camera.Outcome == renderer::RayPathOutcome::Hit);
-        CheckCameraRay(camera, CENTER_X, CENTER_Y);
-        CHECK(IsNear(camera.HitDistanceWorld, TRIANGLE_DEPTH_WORLD) == true);
-        CHECK(camera.SourceId == 1);
-        CHECK(occluded.Sequence == 1);
-        CHECK(occluded.Kind == renderer::RayPathEventKind::Visibility);
-        CHECK(occluded.Outcome == renderer::RayPathOutcome::Hit);
-        CHECK(occluded.SourceId == 2);
-        CHECK(occluded.Instance == 1);
-        CHECK(IsNear(occluded.DirectionWorld.Z, 1) == true);
-        CHECK(IsNear(occluded.OriginWorld.Z, TRIANGLE_DEPTH_WORLD) == true);
-        CHECK(IsNear(occluded.HitDistanceWorld, OCCLUDER_DEPTH_WORLD - TRIANGLE_DEPTH_WORLD) == true);
-        CHECK(unoccluded.Sequence == 2);
-        CHECK(unoccluded.Kind == renderer::RayPathEventKind::Visibility);
-        CHECK(unoccluded.Outcome == renderer::RayPathOutcome::Miss);
-        CHECK(unoccluded.SourceId == 0);
-        CHECK(IsNear(unoccluded.DirectionWorld.Z, -1) == true);
-        CHECK(IsNear(unoccluded.HitDistanceWorld, unoccluded.MaxDistanceWorld) == true);
-        CHECK(preview.Sample == sample);
-        CHECK(preview.Sequence == PREVIEW_VISIBILITY_EVENT);
-        CHECK(preview.Kind == renderer::RayPathEventKind::Visibility);
-        CHECK(preview.Outcome == renderer::RayPathOutcome::Hit);
-        CHECK(preview.SourceId == 2);
-        CHECK(preview.Instance == 1);
-        CHECK(IsNear(preview.DirectionWorld.Z, 1) == true);
-        CHECK(IsNear(preview.HitDistanceWorld, OCCLUDER_DEPTH_WORLD - preview.OriginWorld.Z) == true);
+        const renderer::RenderGraphPlan plan = packages::rg2_ray_path_triangleloop_plain::MakePlan();
+        REQUIRE(renderer::UsesRayTracing(plan) == true);
+        REQUIRE(renderer::RequiresHardwareRayTracing(plan) == false);
+        CaptureVisibilityFixture(
+            plan,
+            packages::rg2_ray_path_triangleloop_plain::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                                    shaders::renderer_composite::Fragment()),
+            packages::rg2_ray_path_triangleloop_capture::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                                      shaders::renderer_composite::Fragment()),
+            false);
+    }
+    SECTION("ComputeBvh")
+    {
+        const renderer::RenderGraphPlan plan = packages::rg2_ray_path_computebvh_plain::MakePlan();
+        REQUIRE(renderer::UsesRayTracing(plan) == true);
+        REQUIRE(renderer::RequiresHardwareRayTracing(plan) == false);
+        CaptureVisibilityFixture(
+            plan,
+            packages::rg2_ray_path_computebvh_plain::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                                  shaders::renderer_composite::Fragment()),
+            packages::rg2_ray_path_computebvh_capture::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                                    shaders::renderer_composite::Fragment()),
+            false);
     }
 }
 

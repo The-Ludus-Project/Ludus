@@ -1525,10 +1525,8 @@ QString RenderGraphPreview::DescribeRayPathCaptureProblem() const
     switch (report.ActiveRenderer)
     {
         case renderer::RenderGraphRenderer::HardwareRayTracing:
-            return {};
         case renderer::RenderGraphRenderer::ComputeRayTracing:
-            return QStringLiteral("Ray path capture is unavailable: this graph traces with software traversal, and "
-                                  "capture records native ray queries.");
+            return {};
         case renderer::RenderGraphRenderer::Raster:
             break;
     }
