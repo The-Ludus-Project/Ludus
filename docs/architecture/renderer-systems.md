@@ -534,7 +534,9 @@ exposure. It precreates both output encoding choices and selects one using the
 acquired `FrameInfo.Encoding`. Apply exposure and the selected `ToneCurve` once: guarded per-channel
 Reinhard by default, or Khronos PBR Neutral (`LightingOutput::Curve`, `RasterViewport::Initialize`'s
 `toneCurve`), which keeps hue and saturation below 0.76 and compresses highlights toward white.
-The Editor viewport uses PBR Neutral; the engine, the SDK and the graph `ToneMap` node stay on Reinhard.
+The Editor viewport uses PBR Neutral; the engine and the SDK stay on Reinhard. The graph `ToneMap` node defaults
+to Reinhard and also offers PBR Neutral, which the engine default graph selects; graph conversion shares
+`display_tone_mapping.slang` with this presentation.
 For UI composition, tone-map scene into a **linear RGBA8 display intermediate** with
 `Encode=false`, blend linear UI there, then present with `ToneMap=false`, exposure
 one and `Encode=true`. Hardware sRGB attachments encode automatically; unorm surfaces
@@ -2089,7 +2091,8 @@ Renderer/device; RHI interop leases independently retain external backing.
 
 Raster mode uses authored materials, direct lights, environment and admitted
 bakes/shadows. The default clustered deferred graph evaluates unshadowed direct mesh area lighting
-from emissive triangles, merged into convex polygons where coplanar, using polygon integrals and fitted LTC specular. Other
+from emissive triangles, merged into convex polygons where coplanar, using polygon integrals and fitted LTC specular,
+for the records a conservative world-space culling grid lists at each pixel. Other
 raster profiles retain their existing emission behavior. Emissive indirect transport
 is still a separate lighting capability; see the [default raster contract](../development/render-graph-authoring.md#default-clustered-deferred-lighting).
 No editor lights or fake environment are added to hide that limitation. Choose

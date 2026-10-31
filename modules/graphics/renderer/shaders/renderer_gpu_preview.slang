@@ -1,3 +1,4 @@
+#include "display_tone_mapping.slang"
 #include "material_scattering.slang"
 #include "math.slang"
 #include "raster_bindings.slang"
@@ -1215,7 +1216,11 @@ LUDUS_GPU_PREVIEW_COMPUTE_ENTRY void ComputeMain(uint3 dispatchPixel : SV_Dispat
     static const float SRGB_POWER_OFFSET = .055;
     static const float SRGB_LINEAR_SCALE = 12.92;
     float3 displayColor = mean;
-    if (Options.y > 0)
+    if (Options.y > 0 && (Sampling.z & LUDUS_GPU_PREVIEW_PBR_NEUTRAL_FLAG) != 0)
+    {
+        displayColor = MapSceneToDisplay(mean, Options.y, DISPLAY_CURVE_PBR_NEUTRAL);
+    }
+    else if (Options.y > 0)
     {
         float3 linear = mean * Options.y;
         for (uint channel = 0; channel < TONE_MAPPING_CHANNEL_COUNT; ++channel)

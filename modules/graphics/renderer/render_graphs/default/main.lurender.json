@@ -24,6 +24,10 @@
         },
         {
           "from": "raster.color",
+          "to": "tonemap.color"
+        },
+        {
+          "from": "tonemap.color",
           "to": "output.texture"
         },
         {
@@ -82,6 +86,12 @@
           "kind": "Subgraph"
         },
         {
+          "curve": "PbrNeutral",
+          "exposure": 1,
+          "id": "tonemap",
+          "kind": "ToneMap"
+        },
+        {
           "id": "output",
           "kind": "Export",
           "type": "ColorTexture"
@@ -127,6 +137,10 @@
         },
         {
           "from": "raster.color",
+          "to": "tonemap.color"
+        },
+        {
+          "from": "tonemap.color",
           "to": "output.texture"
         },
         {
@@ -183,6 +197,12 @@
           "configuration": "ColorAndDepthWithPrepass",
           "id": "raster",
           "kind": "Subgraph"
+        },
+        {
+          "curve": "PbrNeutral",
+          "exposure": 1,
+          "id": "tonemap",
+          "kind": "ToneMap"
         },
         {
           "id": "output",

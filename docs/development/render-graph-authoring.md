@@ -3345,24 +3345,33 @@ history reconstruction.
 ### Tone map ray output explicitly
 
 Add **ToneMap** from the canvas's **Add Node** menu or Properties. Connect its
-required `color: ColorTexture` input to a ray pipeline's color output, or to an
-Accumulate output, then connect its `color: ColorTexture` output to Export,
-Present or the containing subgraph's output:
+required `color: ColorTexture` input to a ray pipeline's color output, to an
+Accumulate output, or to the color output of a clustered deferred raster pass
+(the [engine default](#default-clustered-deferred-lighting) does this), then
+connect its `color: ColorTexture` output to Export, Present or the containing
+subgraph's output:
 
 ```text
 RayTracingPipeline → Accumulate → ToneMap → Export / Present
+RasterizeGraph (ClusteredDeferred) → ToneMap → Export / Present
 ```
 
 ```json
-{"id": "tonemap", "kind": "ToneMap", "exposure": 1}
+{"id": "tonemap", "kind": "ToneMap", "exposure": 1, "curve": "PbrNeutral"}
 ```
+
+**Curve** selects the display curve: `Reinhard` (per-channel `x / (1 + x)`, the
+default when the field is absent) or `PbrNeutral` ([Khronos PBR Neutral](https://github.com/KhronosGroup/ToneMapping),
+which keeps hue and saturation, leaves colours below about 0.76 almost unchanged
+and compresses highlights toward white). PbrNeutral matches the Editor's raster
+viewport and reference comparison. Both curves apply to ray and raster output,
+including after OIDN denoising.
 
 **Exposure multiplier** is a finite linear multiplier from 0.01 to 64; one leaves
 exposure unchanged, two doubles it, and 0.5 halves it. Edit it in Properties or
 through the canvas's **Edit Node** action. Both use the same validation, undo,
-redo and Save operations. The canvas displays the exposure and Reinhard operator.
-The conversion applies exposure to linear RGB, compresses each channel with
-`x / (1 + x)`, then encodes sRGB. Connect Accumulate before ToneMap so averaging
+redo and Save operations. The canvas displays the exposure and curve.
+The conversion applies exposure to linear RGB, then the curve, then encodes sRGB. Connect Accumulate before ToneMap so averaging
 uses linear radiance. Accumulating already mapped colors is rejected.
 
 Bypass ToneMap without rewiring by [disabling it](#disable-a-node), or by
@@ -3375,9 +3384,14 @@ exposure. Existing source graphs need this node added when recooked to retain
 historical scene-ray display conversion. Cooked packages before version 14 keep
 their historical display behavior until recooked.
 
-This initial operation accepts ray output (including subgraphs and persistent
-sequences), optionally through one Accumulate. Raster and already tone-mapped
-inputs are rejected. The offline plan retains the node, exposure, ordering and
+The operation accepts ray output (including subgraphs and persistent
+sequences), optionally through one Accumulate, or the color output of a
+ColorAndDepth raster pass. Already tone-mapped inputs are rejected. A raster
+producer must use the `ClusteredDeferred` scene profile; the package build reports
+a Capability error otherwise. Its conversion runs inside the deferred lighting
+resolve, before the RGBA8 write, so it also adds no pass or texture. Overlays that
+the renderer draws after the resolve (the World grid and diagnostic markers) keep
+their colours and blend onto the display-encoded image. The offline plan retains the node, exposure, ordering and
 resource version; the GPU backend fuses conversion into the producing ray
 dispatch, after optional accumulation and before quantizing RGBA8. It does not
 allocate another texture or GPU pass. Route other consumers through its output;
@@ -3757,7 +3771,9 @@ the editor uses it for any project that has no graph of its own.
    from the **Window** menu (or a render graph in Project Explorer). If the project has
    no `graphs/Main/main.lurender.json`, the document shows the **Engine default
    renderer**. This is the static opaque `RendererStatic` graph: Scene and Camera feed
-   `RasterizeGraph` into color and depth targets, and the color target is exported.
+   `RasterizeGraph` into color and depth targets, and its color output passes through a
+   PBR Neutral **ToneMap** (see [Default clustered deferred lighting](#default-clustered-deferred-lighting))
+   before it is exported.
    Both targets follow an **OutputSize → Viewport pixels** provider through a
    **RenderSize** at 1/1, so the default renders at the drawable's physical pixel
    size and resizes with it. Change the output or render scale in
@@ -3920,7 +3936,11 @@ colour is black.
 They require static opaque triangles with normals. Masked/transparent materials
 and invalid inputs reject preparation and retain the last drawable generation.
 Emissive meshes also provide unshadowed direct area lighting. No proxy lights, ray tracing, shadow maps or indirect illumination are added.
-The color target remains linear RGBA8, so radiance above one clips.
+The graph's ToneMap node (PBR Neutral at unit exposure) is fused into the lighting
+resolve: exposure, the curve and sRGB encoding run before the RGBA8 write, so radiance
+above one compresses toward white instead of clipping, and the exported image holds
+display-encoded values. Remove or [disable](#disable-a-node) the ToneMap to export
+clamped linear radiance instead, or change its exposure and curve in Properties.
 
 The logical color/depth node runs an opaque material pass followed by a fullscreen
 clustered lighting resolve. Its three single-sample RGBA16F targets store world
@@ -3975,22 +3995,51 @@ check fans each record into clip-safe pieces of at most six corners and retains 
 sampling preparation; both integrals are additive over the fan.
 Polygons entirely below the receiver horizon contribute zero; crossing polygons
 are clipped before the LTC transform. This preserves emitter geometry and the
-lighting integral, without sampling lights or imposing a distance cutoff. The
-cost still grows with shaded pixels and with the admitted records' corners.
+lighting integral without sampling lights.
+
+### Mesh-light culling
+
+Each shaded pixel evaluates only the emitter records of its cell in a world-space
+culling grid, independently of the analytic light clusters. The grid covers the
+scene's transformed geometry bounds (padded by 1 cm plus 0.01% of the coordinate
+magnitude) with cubic cells, 32 along the longest axis. When the scene is prepared, each
+record is listed in every cell its influence sphere reaches, unless the cell lies
+wholly behind a one-sided emitter. The sphere encloses the polygon plus a reach
+`sqrt(L * A / (pi * epsilon))`, where `L` is the record's largest emission channel,
+`A` its area and `epsilon = 2^-12`. A polygon's projected solid angle never exceeds
+`A / d^2` at nearest distance `d`, so every record a cell omits contributes a
+Lambert term below 2^-12 there: less than one 8-bit sRGB step at unit exposure, even
+next to black. The resolve applies the same bound per pixel with the distance to the
+emitter's plane, which never exceeds the distance to the polygon, and skips a listed
+record whose bound is already below 2^-12 there. The specular LTC term has no such bound; a mirror-like reflection of
+an emitter beyond its reach is omitted. Pixels outside the grid evaluate every record.
+
+This replaces the earlier evaluation of every record at every pixel. On an Apple M5 at
+1600 x 1080, the Intel Sponza light bulbs (8,098 radiance-1 triangles in about 5,000
+records) took about 214 ms of resolve time per frame that way; with the grid the whole
+frame takes about 8 ms (about 6 ms of resolve), measured with the
+`[.raster-mesh-light-benchmark]` editor test (`LUDUS_RASTER_BENCHMARK_WORLD` selects the
+World). Dim, small emitters now reach a few decimetres, and a bright large emitter
+still reaches the whole scene, so the cost grows with the records near each pixel
+rather than with all of them. Staircase2's large disk lights still reach every pixel.
+A scene whose lists would exceed 1,048,576 entries uploads no grid and evaluates
+every record as before.
 
 There is no mesh-light visibility test yet: area lights can illuminate through
-walls. Every admitted emitter record is evaluated, independently of the analytic
-light clusters, with no finite-distance cutoff. At most 8192 nonzero-emission
+walls. At most 8192 nonzero-emission
 polygon records are admitted per scene; excess geometry rejects preparation and
 retains the last drawable generation. The immutable scene upload stores each record
 as two Float4 header words (normal and sidedness, emission and corner count)
-followed by its corners, read in order, plus a zero header for an empty light set. Camera-only updates
-reuse it. Fragment read-only storage is required for this upload and the shared
+followed by its corners, plus a zero header for an empty light set, then the
+culling grid: three header words, a cell table of (first entry, count) pairs and the
+cell lists of record word offsets. The first corner's `w` holds the record's area ([`deferred_layout.h`](../../modules/graphics/renderer/include/ludus/graphics/renderer/deferred_layout.h)).
+Camera-only updates reuse it. Fragment read-only storage is required for this upload and the shared
 LTC table; the resolve repurposes unused bake/shadow slots three and four, keeping
 sixteen total slots. Forward-only profiles retain their existing behavior. Runtime
 package version 26 changed these two deferred binding kinds, and version 27 changes
 the mesh-light record layout its resolve reads; older deferred packages must be
-cooked again. Linear RGBA8 output still clips bright radiance.
+cooked again. Version 29 appends each pass's ToneMap curve and admits ToneMap on
+this raster output; earlier packages read as Reinhard and keep clamped linear output.
 
 Select **ZPrepass** in the preview configuration
 selector to enable a separate depth-only pass. That pass clears and stores depth;

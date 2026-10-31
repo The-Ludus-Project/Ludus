@@ -5,6 +5,7 @@
 
 #include <ludus/foundation/math/matrix.hpp>
 #include <ludus/foundation/math/vector.hpp>
+#include <ludus/graphics/renderer/tone_mapping.hpp>
 
 namespace ludus::graphics::renderer::internal
 {
@@ -25,7 +26,7 @@ struct ViewParameters final
 {
     StaticArray<math::Vector4, DEFERRED_VIEW_ROWS> ClipToWorldRows;
     math::Vector4 EyeWorld;
-    math::Vector4 TargetSizePixel; // XY: dimensions in pixels. Z: mesh-light triangle count. W: reserved.
+    math::Vector4 TargetSizePixel; // XY: dimensions in pixels. Z: mesh-light record count. W: culling grid word.
     math::Vector4 Options;
 };
 static_assert(sizeof(ViewParameters) == VIEW_BYTES);
@@ -301,7 +302,9 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
                                            PreparedView view,
                                            const ViewDescription& camera,
                                            rhi::RasterBindingResource meshLights,
-                                           uint32 meshLightCount) noexcept
+                                           uint32 meshLightCount,
+                                           uint32 meshLightGridWord,
+                                           const content::render_graph_format::Pass& operation) noexcept
 {
     if (mTargetsOrNull != nullptr || inoutTargets.mStatus != Status::Ready)
     {
@@ -339,8 +342,14 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
     parameters.TargetSizePixel = {static_cast<float32>(inoutTargets.mWidth),
                                   static_cast<float32>(inoutTargets.mHeight),
                                   static_cast<float32>(meshLightCount),
-                                  0};
-    parameters.Options = {camera.Reference == true || camera.DirectLighting == true ? 1.0F : 0.0F, mClearDepth, 0, 0};
+                                  static_cast<float32>(meshLightGridWord)};
+    parameters.Options = {
+        camera.Reference == true || camera.DirectLighting == true ? 1.0F : 0.0F,
+        mClearDepth,
+        operation.ToneMappingExposure,
+        static_cast<float32>(operation.ToneMappingCurve == content::render_graph_format::DisplayCurve::PbrNeutral
+                                 ? ToneCurve::PbrNeutral
+                                 : ToneCurve::Reinhard)};
     status = rhi::CreateBuffer(inoutTargets.mProgramOrNull->mDevice,
                                {rhi::BufferRole::Uniform, VIEW_BYTES},
                                {reinterpret_cast<const uint8*>(&parameters), VIEW_BYTES},
