@@ -29,6 +29,7 @@
 #endif
 #include "rg2_shared_ray_default.h"
 #include "rg2_simple_compute_ray_tracing_template.h"
+#include "rg2_slice_sampling_luminaire_template.h"
 #include "rg2_storage_ray.h"
 #include "rg2_tiled_vbuffer_nee_template.h"
 #include "rg2_veach_guibas_mis_template.h"
@@ -7459,4 +7460,124 @@ TEST_CASE("A render graph capture refuses bands that its package's ray kernels c
     CHECK(capture.Start(fixture.Device, fixture.Surface, plan, programs, WIDTH, HEIGHT, settings) ==
           rhi::RasterStatus::InvalidDescription);
     CHECK(capture.GetProblem() == renderer::RenderGraphCaptureProblem::InvalidSettings);
+}
+
+namespace
+{
+// slice-sampling-luminaire template tests. Thanks to Shlomi Steinberg, "Slice Sampling: Importance sampling with an
+// auxiliary map" (draft, University of Waterloo), section 6: the template lights the room with an analytic directional
+// LED panel and exports a defensive slice-sampling mixture (Eq. 15), slice sampling alone and uniform panel-area
+// sampling. Every pass is a shade pass; the first also records the primary hit. The proposals' unbiasedness on raw
+// linear irradiance is checked in slice_sampling_luminaire_estimator_tests.cpp.
+constexpr usize SLICE_SAMPLING_OUTPUT_COUNT = 3;
+constexpr usize SLICE_SAMPLING_DEFENSIVE = 0;
+constexpr usize SLICE_SAMPLING_ALONE = 1;
+constexpr usize SLICE_SAMPLING_UNIFORM_AREA = 2;
+const PackageLocation SLICE_SAMPLING_LUMINAIRE_TEMPLATE{LUDUS_RG3_SLICE_SAMPLING_LUMINAIRE_TEMPLATE_DIRECTORY,
+                                                        "rg2_slice_sampling_luminaire_template.lurgrt"};
+
+/// Render frameCount frames of the template and read each output's running mean after the last one. The template's
+/// three passes write its three outputs in output order.
+void RenderSliceSamplingOutputs(PreparedGraph& inoutTemplate,
+                                const GraphGpuFixture& fixture,
+                                usize frameCount,
+                                StaticArray<Array<uint8>, SLICE_SAMPLING_OUTPUT_COUNT>& outPixels)
+{
+    REQUIRE(inoutTemplate.Plan.Passes.GetSize() == SLICE_SAMPLING_OUTPUT_COUNT);
+    StaticArray<uint32, SLICE_SAMPLING_OUTPUT_COUNT> exports{};
+    for (usize output = 0; output < SLICE_SAMPLING_OUTPUT_COUNT; ++output)
+    {
+        exports[output] = inoutTemplate.Plan.Passes[output].Color;
+        REQUIRE(exports[output] < inoutTemplate.Plan.Resources.GetSize());
+        REQUIRE(inoutTemplate.Plan.Resources[exports[output]].IsExported == 1);
+    }
+    for (usize frame = 0; frame < frameCount; ++frame)
+    {
+        RenderFrame(inoutTemplate.Graph, fixture);
+    }
+    for (usize output = 0; output < SLICE_SAMPLING_OUTPUT_COUNT; ++output)
+    {
+        ReadExport(inoutTemplate.Graph, fixture, exports[output], {}, outPixels[output]);
+        // Invalid hit records, exhausted budgets and failed queries would show magenta.
+        REQUIRE(CountFailurePixels(outPixels[output]) == 0);
+    }
+}
+} // namespace
+
+TEST_CASE("The slice-sampling-luminaire template lights the room with its panel through three compute-BVH passes",
+          "[render-graph][gpu][slice-sampling-luminaire][template]")
+{
+    GraphGpuFixture fixture(false, false);
+    const CornellBox room;
+    PreparedGraph luminaire(fixture, SLICE_SAMPLING_LUMINAIRE_TEMPLATE, room, 1);
+    CheckSameStage(
+        luminaire.Programs.RayCompute,
+        packages::rg2_slice_sampling_luminaire_template::MakePrograms(shaders::renderer_composite::Vertex(),
+                                                                      shaders::renderer_composite::Fragment())
+            .RayCompute);
+    REQUIRE(luminaire.Programs.HasPersistentRayBuffers == true);
+    // Every pass walks the compute BVH and accumulates its own output.
+    REQUIRE(renderer::RequiresHardwareRayTracing(luminaire.Plan) == false);
+    REQUIRE(renderer::UsesRayTracing(luminaire.Plan) == true);
+    for (usize pass = 0; pass < luminaire.Plan.Passes.GetSize(); ++pass)
+    {
+        INFO("pass " << pass);
+        CHECK(luminaire.Plan.Passes[pass].Program == format::Technique::RayTracing);
+        CHECK(luminaire.Plan.Passes[pass].Traversal == format::RayTraversal::ComputeBvh);
+        CHECK(luminaire.Plan.Passes[pass].AccumulationSamples > 0);
+    }
+    constexpr usize FRAME_COUNT = 256;
+    StaticArray<Array<uint8>, SLICE_SAMPLING_OUTPUT_COUNT> pixels;
+    RenderSliceSamplingOutputs(luminaire, fixture, FRAME_COUNT, pixels);
+    const math::Vector3 defensive = ComputeMeanRadiance(pixels[SLICE_SAMPLING_DEFENSIVE]);
+    const math::Vector3 slice = ComputeMeanRadiance(pixels[SLICE_SAMPLING_ALONE]);
+    const math::Vector3 area = ComputeMeanRadiance(pixels[SLICE_SAMPLING_UNIFORM_AREA]);
+    INFO("defensive mean=" << defensive.X << ',' << defensive.Y << ',' << defensive.Z << ", slice mean=" << slice.X
+                           << ',' << slice.Y << ',' << slice.Z << ", uniform area mean=" << area.X << ',' << area.Y
+                           << ',' << area.Z);
+    // The panel's footprints light the floor and the block; the ceiling light is only seen directly.
+    constexpr float32 MINIMUM_MEAN_RADIANCE = .01F;
+    REQUIRE(defensive.X > MINIMUM_MEAN_RADIANCE);
+    // Both low-variance proposals estimate the same image after 256 samples per pixel. The mixture differs from slice
+    // sampling alone only through the far tails that uniform seeds miss, which are below a display step here.
+    constexpr float32 RELATIVE_MEAN_TOLERANCE = .02F;
+    CheckMeansAgree(slice, defensive, RELATIVE_MEAN_TOLERANCE);
+    // Uniform area sampling is unbiased too, but at 256 samples most pixels' running means are still noisy, and the
+    // tone mapping of a noisy mean is biased; the raw estimators' agreement is checked in linear float elsewhere.
+    constexpr float32 NOISY_RELATIVE_MEAN_TOLERANCE = .15F;
+    CheckMeansAgree(area, defensive, NOISY_RELATIVE_MEAN_TOLERANCE);
+}
+
+TEST_CASE("Slice sampling the template's luminaire has far less error than uniform panel-area sampling",
+          "[render-graph][gpu][slice-sampling-luminaire][template]")
+{
+    // Steinberg's section 6.4: a narrow, position-dependent beam profile lights each receiver from small panel regions
+    // that uniform area sampling rarely hits, while slice sampling proposes them directly. Compare low-sample images
+    // of each output with an independent converged defensive image, whose scene revision reseeds sampling.
+    GraphGpuFixture fixture(false, false);
+    const CornellBox room;
+    constexpr usize LOW_FRAME_COUNT = 16;
+    StaticArray<Array<uint8>, SLICE_SAMPLING_OUTPUT_COUNT> pixels;
+    {
+        PreparedGraph luminaire(fixture, SLICE_SAMPLING_LUMINAIRE_TEMPLATE, room, 1);
+        RenderSliceSamplingOutputs(luminaire, fixture, LOW_FRAME_COUNT, pixels);
+    }
+    constexpr uint64 CONVERGED_REVISION = 2;
+    constexpr usize CONVERGED_FRAME_COUNT = 1024;
+    StaticArray<Array<uint8>, SLICE_SAMPLING_OUTPUT_COUNT> converged;
+    {
+        PreparedGraph convergedGraph(fixture, SLICE_SAMPLING_LUMINAIRE_TEMPLATE, room, CONVERGED_REVISION);
+        RenderSliceSamplingOutputs(convergedGraph, fixture, CONVERGED_FRAME_COUNT, converged);
+    }
+    const Array<uint8>& reference = converged[SLICE_SAMPLING_DEFENSIVE];
+    const float64 defensive = ComputeDisplayMeanSquaredError(pixels[SLICE_SAMPLING_DEFENSIVE], reference);
+    const float64 slice = ComputeDisplayMeanSquaredError(pixels[SLICE_SAMPLING_ALONE], reference);
+    const float64 area = ComputeDisplayMeanSquaredError(pixels[SLICE_SAMPLING_UNIFORM_AREA], reference);
+    INFO("mean squared error at " << LOW_FRAME_COUNT << " samples, tone-mapped: defensive slice sampling=" << defensive
+                                  << ", slice sampling=" << slice << ", uniform area=" << area);
+    // Pixel jitter and shadow edges add noise that every output shares, so the image error ratio is far smaller than
+    // the per-sample variance ratio of the raw estimators.
+    constexpr float64 ERROR_REDUCTION = 4;
+    CHECK(defensive * ERROR_REDUCTION < area);
+    CHECK(slice * ERROR_REDUCTION < area);
 }

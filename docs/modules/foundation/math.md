@@ -564,6 +564,40 @@ rounding. The clipped cosine equals `m / √(1 + m² − c²)`, which is smalles
 the RIS weight kernel on 4096 views below the shading horizon within 10⁻⁵ per
 component, and the polygonal-light estimators kernel through its CPU oracle.
 
+## Standard normal quantile
+
+`ComputeStandardNormalQuantile` in `scalar.hpp` is the inverse CDF of the standard
+normal distribution, `Φ⁻¹`. A sampler uses it to map a uniform number to a Gaussian
+one. It implements Michael J. Wichura, "Algorithm AS 241: The Percentage Points of
+the Normal Distribution", Applied Statistics 37(3), 1988
+([DOI](https://doi.org/10.2307/2347330)): PPND16's three rational approximations of
+degree 7, with the published coefficients.
+
+```cpp
+#include <ludus/foundation/math/scalar.hpp>
+
+// u in the open interval (0, 1); 0, 1, values outside it and NaN return NaN.
+const float64 x = ComputeStandardNormalQuantile(u);
+```
+
+- **Accuracy.** The float64 overload is accurate to about 10⁻¹⁶ relative. The
+  float32 overload evaluates the same polynomials in float32 and is accurate to a
+  few float32 ulp.
+- **Domain.** It is the open interval (0, 1). Move a `[0, 1)` random number inside
+  it first, for example by adding half its 2⁻²⁴ spacing.
+- **Shader port.** `math.slang` has `ComputeStandardNormalQuantile(float)`, with the
+  same Horner order as the float32 overload. Metal compiles with fast math, so the
+  shader has no NaN sentinel: it returns 0 outside the open interval.
+
+**Evidence.** `scalar_tests.cpp` inverts `Φ(x) = erfc(−x/√2)/2` to within
+10⁻¹³ relative for probabilities from 10⁻³⁰⁰ to 0.99, which covers all three
+branches. It also checks symmetry about 0.5, the float32 overload against the
+float64 one at 4095 probabilities, and the rejected inputs. The shader port runs
+inside the
+[slice-sampling-luminaire template](../../development/render-graph-authoring.md#sample-a-directional-luminaire-with-slice-sampling).
+Its GPU estimator test checks the port only end to end, through the agreement of
+slice sampling with uniform area sampling.
+
 ## GPU transfer
 
 CPU value layout is **not** a shader ABI. Use explicit flat-column export helpers

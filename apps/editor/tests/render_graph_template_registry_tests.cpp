@@ -92,7 +92,8 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                                                QStringLiteral("line-sampling"),
                                                QStringLiteral("ris-projected-solid-angle"),
                                                QStringLiteral("salesin-jarosz-lines"),
-                                               QStringLiteral("polygonal-light-sampling")});
+                                               QStringLiteral("polygonal-light-sampling"),
+                                               QStringLiteral("slice-sampling-luminaire")});
     CHECK(graphs.at(0).Label == QStringLiteral("Raster"));
     CHECK(graphs.at(4).Label == QStringLiteral("ReSTIR DI — mesh emitter lighting"));
     CHECK(graphs.at(6).Category == QStringLiteral("ray-traced"));
@@ -113,7 +114,8 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
               (graph.Identity == QStringLiteral("line-sampling") ||
                graph.Identity == QStringLiteral("ris-projected-solid-angle") ||
                graph.Identity == QStringLiteral("salesin-jarosz-lines") ||
-               graph.Identity == QStringLiteral("polygonal-light-sampling")));
+               graph.Identity == QStringLiteral("polygonal-light-sampling") ||
+               graph.Identity == QStringLiteral("slice-sampling-luminaire")));
     }
     CHECK(GetRenderGraphTemplateRequirementLabel(QStringLiteral("compute-ray-tracing")) ==
           QStringLiteral("Metal or Vulkan compute"));
@@ -130,6 +132,7 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                                                  QStringLiteral("ris-projected-solid-angle"),
                                                  QStringLiteral("salesin-jarosz-lines"),
                                                  QStringLiteral("polygonal-light-sampling"),
+                                                 QStringLiteral("slice-sampling-luminaire"),
                                                  QStringLiteral("visibility-buffer"),
                                                  QStringLiteral("visibility-secondary-rays")});
     QStringList defaults;
@@ -146,6 +149,7 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                                   QStringLiteral("RisProjectedSolidAngle"),
                                   QStringLiteral("PointLineMis"),
                                   QStringLiteral("PolygonalLightSampling"),
+                                  QStringLiteral("SliceSamplingLuminaire"),
                                   QStringLiteral("VisibilityBuffer"),
                                   QStringLiteral("VisibilitySecondaryRays")});
     CHECK(registry.HasTemplate(RenderGraphTemplateKind::Snippet, QStringLiteral("raster")) == false);
