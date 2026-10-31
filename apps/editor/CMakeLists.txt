@@ -1538,3 +1538,15 @@ foreach(target IN ITEMS ludus_editor ludus_editor_tests ludus_render_graph_confi
         target_sources(${target} PRIVATE src/renderer_workspace_resources.cpp)
     endif()
 endforeach()
+
+# Recovery follows the same document owner in the app and both workspace test executables.
+foreach(target IN ITEMS ludus_editor ludus_editor_tests ludus_render_graph_configuration_tests)
+    if(TARGET ${target})
+        target_sources(${target} PRIVATE
+            src/internal/render_graph_recovery_store.h src/render_graph_recovery_store.cpp
+            src/internal/render_graph_recovery.h src/render_graph_recovery.cpp)
+    endif()
+endforeach()
+if(TARGET ludus_render_graph_configuration_tests)
+    target_sources(ludus_render_graph_configuration_tests PRIVATE tests/render_graph_recovery_tests.cpp)
+endif()

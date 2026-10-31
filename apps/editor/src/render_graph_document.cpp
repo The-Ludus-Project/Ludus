@@ -10,6 +10,7 @@
 
 #include <ludus/foundation/strings/utf8.hpp>
 
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -1804,6 +1805,76 @@ RenderGraphDocumentStatus RenderGraphDocument::RefreshFromDisk(bool& outHasChang
         outHasChanged = true;
     }
     return committed;
+}
+
+bool IsRecoverySourcePath(const QString& path)
+{
+    if (path.isEmpty() == true || QDir::isAbsolutePath(path) == true || QDir::cleanPath(path) != path ||
+        path.contains(QLatin1Char('\\')) == true || path.contains(QLatin1Char(':')) == true ||
+        path.contains(QChar::Null) == true || IsAuthoredSource(path) == false)
+    {
+        return false;
+    }
+    const QStringList components = path.split(QLatin1Char('/'));
+    for (const QString& component : components)
+    {
+        if (component.startsWith(QLatin1Char('.')) == true || component == QStringLiteral("out"))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+RenderGraphSnapshot RenderGraphDocument::CaptureRecoverySnapshot(RenderGraphSource source) const
+{
+    return source == RenderGraphSource::Saved ? mSaved : mDraft;
+}
+
+RenderGraphDocumentStatus RenderGraphDocument::RestoreRecoverySnapshot(const RenderGraphSnapshot& snapshot,
+                                                                       const QMap<QString, QByteArray>& savedHashes,
+                                                                       bool isBuiltIn)
+{
+    if (IsLoaded() == false || IsDirty() == true || isBuiltIn != mIsBuiltIn ||
+        savedHashes.size() != mSaved.Files.size())
+    {
+        return RenderGraphDocumentStatus::Conflict;
+    }
+    for (QMap<QString, QByteArray>::const_iterator file = mSaved.Files.constBegin(); file != mSaved.Files.constEnd();
+         ++file)
+    {
+        if (savedHashes.contains(file.key()) == false ||
+            savedHashes.value(file.key()) != QCryptographicHash::hash(file.value(), QCryptographicHash::Sha256).toHex())
+        {
+            return RenderGraphDocumentStatus::Conflict;
+        }
+    }
+    if (mIsBuiltIn == false)
+    {
+        RenderGraphSnapshot disk;
+        if (QFileInfo(mPackageRoot).canonicalFilePath() != mPackageRoot ||
+            ReadPackage(mPackageRoot, mRootGraph, disk) != RenderGraphDocumentStatus::Ok || disk != mSaved)
+        {
+            return RenderGraphDocumentStatus::Conflict;
+        }
+    }
+    if (static_cast<usize>(snapshot.Files.size()) > MAX_FILES)
+    {
+        return RenderGraphDocumentStatus::Capacity;
+    }
+    if (snapshot.Files.contains(mRootGraph) == false)
+    {
+        return RenderGraphDocumentStatus::InvalidEdit;
+    }
+    for (const QString& file : snapshot.Files.keys())
+    {
+        if (IsRecoverySourcePath(file) == false)
+        {
+            return RenderGraphDocumentStatus::InvalidEdit;
+        }
+    }
+    BreakTextGroup();
+    return commit(snapshot, false, {}, {}, {}, {}, CommitKind::Source);
 }
 
 RenderGraphDocumentStatus RenderGraphDocument::Save(QStringList& outSavedFiles)
