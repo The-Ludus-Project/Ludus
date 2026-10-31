@@ -2184,6 +2184,62 @@ TEST_CASE("Reference capture window names the viewport's render graph and follow
     rhi::Shutdown();
 }
 
+TEST_CASE("Reference capture window offers the render graph source once the viewport requests its graph",
+          "[editor][render-graph][world-graph][reference-capture]")
+{
+    constexpr int32 TIMEOUT_MILLISECONDS = 30000;
+    rhi::Shutdown();
+    QTemporaryDir project;
+    REQUIRE(project.isValid() == true);
+    const std::string_view level = ludus::world_demo::ExampleLevel();
+    const QString path = QFileInfo(WriteBytes(project,
+                                              QStringLiteral("room.world.json"),
+                                              QByteArray(level.data(), static_cast<qsizetype>(level.size()))))
+                             .canonicalFilePath();
+    RendererWorkspace workspace({});
+    WorldWorkspace world;
+    world.UseProjectGraph(workspace);
+    workspace.SetPreviewSource(&world.GetRenderPreview());
+    QObject::connect(&world, &WorldWorkspace::RenderPreviewChanged, &workspace, [&]() {
+        workspace.SetPreviewSource(&world.GetRenderPreview());
+    });
+    // Open the window before the viewport has requested any graph, as when Reference… is clicked early.
+    ReferenceCaptureWindow window(&world.GetRenderPreview());
+    window.SetProjectGraph(&workspace);
+    REQUIRE(workspace.GetPreviewOrNull()->GetRequestedPackagePath().isEmpty() == true);
+    QComboBox* source = window.findChild<QComboBox*>(QStringLiteral("referenceSource"));
+    REQUIRE(source != nullptr);
+    const QStandardItemModel* sources = qobject_cast<const QStandardItemModel*>(source->model());
+    REQUIRE(sources != nullptr);
+    CHECK(sources->item(CAPTURE_SOURCE_GRAPH_INDEX)->isEnabled() == false);
+    CHECK(window.GetGraphText().startsWith(QStringLiteral("None.")) == true);
+    workspace.EnableWorldRendering();
+    workspace.SetProject(project.path(), 1);
+    world.SetProject(project.path(), 1);
+    world.resize(1000, 700);
+    world.show();
+    REQUIRE(world.Open(path) == true);
+    world.ResumePreview();
+    QWidget* viewport = world.findChild<QWidget*>(QStringLiteral("worldViewport"));
+    REQUIRE(viewport != nullptr);
+    WorldGraphView* graphView = viewport->findChild<WorldGraphView*>();
+    REQUIRE(graphView != nullptr);
+    QElapsedTimer timer;
+    timer.start();
+    while (graphView->GetImage().isNull() == true && timer.elapsed() < TIMEOUT_MILLISECONDS)
+    {
+        QTest::qWait(1);
+        workspace.ServicePreview();
+    }
+    REQUIRE(graphView->GetImage().isNull() == false);
+    // The open window followed the viewport without SetProjectGraph being called again.
+    CHECK(sources->item(CAPTURE_SOURCE_GRAPH_INDEX)->isEnabled() == true);
+    CHECK(window.GetGraphText() == QStringLiteral("Engine default renderer · Final output"));
+    world.StopPreview();
+    workspace.SetPreviewSource(nullptr);
+    rhi::Shutdown();
+}
+
 namespace
 {
 /// Assemble the selected World's actual catalog closure and keep its immutable geometry alive.

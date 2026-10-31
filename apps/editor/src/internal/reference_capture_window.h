@@ -60,7 +60,8 @@ public:
 
     /// Borrow the viewport's project renderer, whose live graph producer supplies the package, output and
     /// renderer choice that the Render graph source and the comparison render. The window names that graph,
-    /// configuration and output, and follows changes to them. Null (and browser builds) disables both.
+    /// configuration and output, and follows changes to them, including a graph the viewport requests only after
+    /// the window opened. Null (and browser builds) disables both.
     /// While the window is shown with a graph capture or comparison selected, it also requests the workspace's
     /// capture profile of the current generation (RendererWorkspace::GetCaptureProfileOrNull), so a graph
     /// capture links the graph's capture budget; Capture waits while the profile builds.
