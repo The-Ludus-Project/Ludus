@@ -42,6 +42,7 @@
 #include <ludus/foundation/threading/jobs.hpp>
 #include <ludus/graphics/renderer/render_graph.hpp>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
+#include <ludus/graphics/renderer/tone_mapping.hpp>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/graphics/rhi/lifetime.h>
@@ -1085,9 +1086,12 @@ TEST_CASE("The editor's prebuilt engine default previews with no project files",
     const QImage image = preview.GetImage();
     REQUIRE(image.size() == extent);
     const QColor center = image.pixelColor(extent.width() / 2, extent.height() / 2);
-    CHECK(qAbs(center.red() - 64) <= COLOR_TOLERANCE);
-    CHECK(qAbs(center.green() - 128) <= COLOR_TOLERANCE);
-    CHECK(qAbs(center.blue() - 191) <= COLOR_TOLERANCE);
+    // The default graph's ToneMap applies PBR Neutral and sRGB encoding to the unlit tint's emission.
+    const math::Vector3 display = renderer::ApplyPbrNeutral({.25F, .5F, .75F});
+    constexpr float32 CODE_SCALE = 255;
+    CHECK(qAbs(center.red() - qRound(math::EncodeSrgb(display.X) * CODE_SCALE)) <= COLOR_TOLERANCE);
+    CHECK(qAbs(center.green() - qRound(math::EncodeSrgb(display.Y) * CODE_SCALE)) <= COLOR_TOLERANCE);
+    CHECK(qAbs(center.blue() - qRound(math::EncodeSrgb(display.Z) * CODE_SCALE)) <= COLOR_TOLERANCE);
     // The fixture's generation shares the host interface, so either previews in one editor.
     REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
     preview.Detach();

@@ -1,3 +1,4 @@
+#include "display_tone_mapping.slang"
 #include "raster_bindings.slang"
 // Explicit scene-linear -> display-linear tone curve (Reinhard or Khronos PBR Neutral) -> optional sRGB encoding.
 // Parameters.Output: exposure, curve (0 none, 1 Reinhard, 2 PBR Neutral; ToneCurve in tone_mapping.hpp),
@@ -38,31 +39,6 @@ struct Varying
     float4 PositionClip : SV_Position;
     float2 TexcoordUv : TEXCOORD0;
 };
-// Khronos PBR Neutral (https://github.com/KhronosGroup/ToneMapping); mirrors ApplyPbrNeutral in tone_mapping.hpp.
-static const float PBR_NEUTRAL_FRESNEL = 0.04;
-static const float PBR_NEUTRAL_START = 0.8 - PBR_NEUTRAL_FRESNEL;
-static const float PBR_NEUTRAL_DESATURATION = 0.15;
-float3 ApplyPbrNeutral(float3 color)
-{
-    // Infinite radiance would produce infinity * 0; it maps to white like the Reinhard path's guard.
-    if (all(isfinite(color)) == false)
-    {
-        return float3(1);
-    }
-    float smallest = min(color.x, min(color.y, color.z));
-    float offset = smallest <= 2 * PBR_NEUTRAL_FRESNEL ? smallest - smallest * smallest / (4 * PBR_NEUTRAL_FRESNEL)
-                                                       : PBR_NEUTRAL_FRESNEL;
-    color -= offset;
-    float peak = max(color.x, max(color.y, color.z));
-    if (peak <= PBR_NEUTRAL_START)
-    {
-        return color;
-    }
-    float headroom = 1 - PBR_NEUTRAL_START;
-    float newPeak = 1 - headroom * headroom / (peak + 1 - 2 * PBR_NEUTRAL_START);
-    float mixAmount = 1 / (PBR_NEUTRAL_DESATURATION * (peak - newPeak) + 1);
-    return color * (newPeak / peak) * mixAmount + newPeak * (1 - mixAmount);
-}
 static const float3 LUMA_WEIGHTS = float3(0.299, 0.587, 0.114);
 static const int ANTIALIASING_FAST = 1;
 static const int ANTIALIASING_BALANCED = 2;
@@ -85,26 +61,12 @@ static const float GRADIENT_SCALE = 0.25;
 // Exposure and tone curve of a scene colour; saturated when the output encodes to sRGB.
 float3 ToneMapColor(float3 sceneColor)
 {
-    float3 color = max(sceneColor, float3(0)) * parameters.Output.x;
-    if (parameters.Output.y > 1.5)
-    {
-        color = ApplyPbrNeutral(color);
-    }
-    else if (parameters.Output.y > 0.5)
-    {
-        color = color / (1 + color);
-    }
+    float3 color = ApplyDisplayCurve(sceneColor, parameters.Output.x, uint(parameters.Output.y + FLAG_ROUNDING));
     return parameters.Output.z > 0.5 ? saturate(color) : color;
 }
 float3 EncodeColor(float3 color)
 {
-    if (parameters.Output.z > 0.5)
-    {
-        color = float3(color.x <= 0.0031308 ? 12.92 * color.x : 1.055 * pow(color.x, 1.0 / 2.4) - 0.055,
-                       color.y <= 0.0031308 ? 12.92 * color.y : 1.055 * pow(color.y, 1.0 / 2.4) - 0.055,
-                       color.z <= 0.0031308 ? 12.92 * color.z : 1.055 * pow(color.z, 1.0 / 2.4) - 0.055);
-    }
-    return color;
+    return parameters.Output.z > 0.5 ? EncodeSrgb(color) : color;
 }
 float3 GetBackdrop(float uvY)
 {

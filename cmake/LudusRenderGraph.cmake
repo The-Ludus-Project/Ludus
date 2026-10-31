@@ -12,7 +12,7 @@ function(_ludus_render_graph_helper_files out)
         renderer_surface_functions.slang material_scattering.slang coated_diffuse.slang coated_diffuse_layout.h material.h scene_shader.slang scene_payload.slang visibility_buffer.slang ray_shader.slang
         ray_triangle_loop.slang ray_line_visibility.slang ray_bvh_nodes.slang ray_bvh_traversal.slang renderer_reference_layout.h scene_data.h
         scene_shader_layout.h lighting_layout.h deferred_layout.h deferred_binding_slots.inc
-        renderer_deferred_fullscreen.slang renderer_mesh_lights.slang math.slang raster_bindings.slang metal_ray_pipeline_layout.h
+        renderer_deferred_fullscreen.slang renderer_mesh_lights.slang display_tone_mapping.slang math.slang raster_bindings.slang metal_ray_pipeline_layout.h
         projected_solid_angle.slang linearly_transformed_cosine.slang weighted_reservoir.slang shading_normal.slang ltc_table.slang
         ltc_table_layout.h
         shader_toolchain.json spirv_cross_toolchain.json)

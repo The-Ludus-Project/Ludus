@@ -11,6 +11,7 @@
 #include <ludus/graphics/renderer/lighting.hpp>
 #include <ludus/graphics/renderer/materials.hpp>
 #include <ludus/graphics/renderer/reference.hpp>
+#include <ludus/graphics/renderer/tone_mapping.hpp>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/graph.h>
 #include <ludus/graphics/rhi/lifetime.h>
@@ -40,7 +41,7 @@ struct GpuPreviewGraphInvocation final
     /// capture's graph may use up to MAX_RENDER_GRAPH_CAPTURE_SAMPLES (RenderGraph::SetAccumulationLimitOverride).
     foundation::uint32 AccumulationSamples = 0;
     /// Graph-owned display conversion: zero bypasses it; a finite multiplier in the RenderGraphFormat
-    /// tone-mapping exposure range applies Reinhard and sRGB after optional accumulation.
+    /// tone-mapping exposure range applies ToneMappingCurve and sRGB after optional accumulation.
     foundation::float32 ToneMappingExposure = 0;
     /// Zero bypasses OIDN. Otherwise RenderGraphFormat::ProcessingQuality selects RT HDR
     /// filtering before display conversion. Metal GPU only; unavailable builds reject explicitly.
@@ -60,6 +61,8 @@ struct GpuPreviewGraphInvocation final
     /// source returns InvalidHandle; a scene that packs differently returns InvalidDescription.
     /// Null uploads this job's own scene.
     const GpuPreview* SceneSourceOrNull = nullptr;
+    /// Curve of a nonzero ToneMappingExposure: Reinhard or PbrNeutral. Ignored when exposure is zero.
+    ToneCurve ToneMappingCurve = ToneCurve::Reinhard;
 };
 namespace internal
 {

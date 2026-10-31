@@ -48,10 +48,15 @@ QByteArray ReadBenchmarkFile(const QString& path)
 }
 } // namespace
 
-TEST_CASE("Supplied Staircase2 World times the default raster graph's mesh-light resolve",
-          "[.raster-mesh-light-benchmark]")
+TEST_CASE("Supplied World times the default raster graph's passes", "[.raster-mesh-light-benchmark]")
 {
     const QString root = qEnvironmentVariable("LUDUS_RASTER_BENCHMARK_PROJECT");
+    // A World under the project's assets folder; the reported Staircase2 capture by default.
+    QString worldName = qEnvironmentVariable("LUDUS_RASTER_BENCHMARK_WORLD");
+    if (worldName.isEmpty() == true)
+    {
+        worldName = QStringLiteral("staircase2.world.json");
+    }
     const QString output = qEnvironmentVariable("LUDUS_RASTER_BENCHMARK_OUTPUT");
     QString runtime = qEnvironmentVariable("LUDUS_RASTER_BENCHMARK_RUNTIME");
     if (runtime.isEmpty() == true)
@@ -61,15 +66,15 @@ TEST_CASE("Supplied Staircase2 World times the default raster graph's mesh-light
     if (root.isEmpty() == true || output.isEmpty() == true || runtime.isEmpty() == true)
     {
         SKIP("Provide the project and report destination through LUDUS_RASTER_BENCHMARK_PROJECT/OUTPUT; "
-             "LUDUS_RASTER_BENCHMARK_RUNTIME overrides the build's default graph.");
+             "LUDUS_RASTER_BENCHMARK_RUNTIME overrides the build's default graph and LUDUS_RASTER_BENCHMARK_WORLD "
+             "selects another World under the project's assets folder.");
     }
     WorldDocument world;
     QString error;
     REQUIRE(world.LoadSchema(QByteArrayLiteral("{\"version\":1,\"id\":\"ludus.world.default.v1\",\"label\":\"World\","
                                                "\"components\":[],\"assets\":[]}"),
                              error) == true);
-    REQUIRE(world.Load(ReadBenchmarkFile(QDir(root).filePath(QStringLiteral("assets/staircase2.world.json"))), error) ==
-            true);
+    REQUIRE(world.Load(ReadBenchmarkFile(QDir(root).filePath(QStringLiteral("assets/") + worldName)), error) == true);
     const QJsonObject level = world.SceneLevel();
     const QByteArray levelBytes = QJsonDocument(level).toJson(QJsonDocument::Compact);
     const QByteArray rootBytes = root.toUtf8();
@@ -148,6 +153,7 @@ TEST_CASE("Supplied Staircase2 World times the default raster graph's mesh-light
             static_cast<float64>(timer.nsecsElapsed()) / NANOSECONDS_PER_MILLISECOND;
         QJsonArray frames;
         QJsonArray passFrames;
+        QJsonArray passNames;
         for (uint32 frame = 0; frame < WARMUP_FRAMES + MEASURED_FRAMES; ++frame)
         {
             REQUIRE(rhi::ArmGpuTiming(device) == rhi::RasterStatus::Ready);
@@ -173,6 +179,13 @@ TEST_CASE("Supplied Staircase2 World times the default raster graph's mesh-light
                 continue;
             }
             frames.append(static_cast<float64>(timing.DurationNanoseconds) / NANOSECONDS_PER_MILLISECOND);
+            if (passNames.isEmpty() == true)
+            {
+                for (usize pass = 0; pass < passes.Count; ++pass)
+                {
+                    passNames.append(QString::fromUtf8(passes.Passes[pass].Scope.Name.GetData()));
+                }
+            }
             QJsonArray passMilliseconds;
             for (usize pass = 0; pass < passes.Count; ++pass)
             {
@@ -184,12 +197,14 @@ TEST_CASE("Supplied Staircase2 World times the default raster graph's mesh-light
             passFrames.append(passMilliseconds);
         }
         result = {{QStringLiteral("adapter"), QString::fromUtf8(adapter.Name)},
+                  {QStringLiteral("world"), worldName},
                   {QStringLiteral("runtime"), runtime},
                   {QStringLiteral("width"), static_cast<int32>(BENCHMARK_WIDTH)},
                   {QStringLiteral("height"), static_cast<int32>(BENCHMARK_HEIGHT)},
                   {QStringLiteral("mesh_light_bytes"), static_cast<qint64>(graph.GetReport().Resources.MeshLightBytes)},
                   {QStringLiteral("preparation_ms"), preparationMilliseconds},
                   {QStringLiteral("gpu_frame_ms"), frames},
+                  {QStringLiteral("pass_names"), passNames},
                   {QStringLiteral("pass_ms"), passFrames}};
     }
     static_cast<void>(rhi::DestroyDevice(device));

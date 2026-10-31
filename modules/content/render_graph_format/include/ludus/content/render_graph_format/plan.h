@@ -72,7 +72,7 @@ inline constexpr foundation::usize MAX_UNIFORM_BLOCK_BYTES = 1024;
 /// Largest number of distinct per-draw uniform value sets one technique prepares per extraction.
 inline constexpr foundation::usize MAX_UNIFORM_SETS = 16;
 /// Number of explicitly serialized four-byte fields in a current pass record (uint32 or float32).
-inline constexpr foundation::usize PASS_FIELD_COUNT = 20;
+inline constexpr foundation::usize PASS_FIELD_COUNT = 21;
 /// Serialized four-byte field index of Pass::DenoisingQuality, stable since it was appended in
 /// runtime package version 16; later versions append fields after it.
 inline constexpr foundation::usize PASS_DENOISING_QUALITY_FIELD = 18;
@@ -83,6 +83,15 @@ inline constexpr foundation::uint32 MAX_ACCUMULATION_SAMPLES = 4096;
 inline constexpr foundation::float32 MIN_TONE_MAPPING_EXPOSURE = .01F;
 /// Largest admitted linear exposure multiplier; zero bypasses tone mapping and display encoding.
 inline constexpr foundation::float32 MAX_TONE_MAPPING_EXPOSURE = 64;
+/// Display curve an authored ToneMap applies after exposure and before sRGB encoding. Serialized values are
+/// stable. Zero is Reinhard, the curve every earlier generation applied, and the value a pass without a
+/// ToneMap (zero exposure) carries.
+// NOLINTNEXTLINE(performance-enum-size): serialized fields use explicit 32-bit widths.
+enum class DisplayCurve : foundation::uint32
+{
+    Reinhard = 0,   ///< Per-channel x / (1 + x); admitted for ray and clustered deferred raster output.
+    PbrNeutral = 1, ///< Khronos PBR Neutral; admitted for ray and clustered deferred raster output.
+};
 /// Quality/cost preference for image processing. Serialized values are stable; zero is reserved.
 // NOLINTNEXTLINE(performance-enum-size): serialized fields use explicit 32-bit widths.
 enum class ProcessingQuality : foundation::uint32
@@ -246,8 +255,9 @@ struct Pass final
     /// conversion and reset on accepted camera, scene, extent or shader replacement.
     foundation::uint32 AccumulationSamples = 0;
     /// Zero bypasses display conversion. Otherwise a finite multiplier within
-    /// [MIN_TONE_MAPPING_EXPOSURE, MAX_TONE_MAPPING_EXPOSURE] applies exposure, per-channel
-    /// Reinhard compression and sRGB encoding after the optional linear RGB mean. Ray passes only.
+    /// [MIN_TONE_MAPPING_EXPOSURE, MAX_TONE_MAPPING_EXPOSURE] applies exposure, ToneMappingCurve and
+    /// sRGB encoding: after the optional linear RGB mean of a ray pass, or inside the lighting resolve
+    /// of a clustered deferred ColorAndDepth pass. Other techniques require zero.
     foundation::float32 ToneMappingExposure = 0;
     /// Offscreen initialized RGBA8 source for image operations; ABSENT for scene techniques.
     /// Color is a distinct output allocation; Program selects reconstruction and color interpretation.
@@ -257,7 +267,28 @@ struct Pass final
     foundation::uint32 DenoisingQuality = 0;
     /// Ray-pass traversal requirement; ignored for raster/image passes, which retain NativeQuery (zero).
     RayTraversal Traversal = RayTraversal::NativeQuery;
+    /// Curve of the ToneMap described by ToneMappingExposure; Reinhard when that exposure is zero.
+    /// Packages before RASTER_TONE_MAPPING_PACKAGE_VERSION imply Reinhard.
+    DisplayCurve ToneMappingCurve = DisplayCurve::Reinhard;
 };
+/// Whether a pass's ToneMap fields form an admitted pair: a zero exposure with the Reinhard (zero) code, or an exposure
+/// in [MIN_TONE_MAPPING_EXPOSURE, MAX_TONE_MAPPING_EXPOSURE] with either curve on a RayTracing or ColorAndDepth pass.
+/// A raster pass additionally needs the clustered deferred profile, whose lighting resolve applies it; that program
+/// check belongs to its consumer.
+[[nodiscard]] LUDUS_INLINE constexpr bool IsToneMappingAdmitted(const Pass& pass) noexcept
+{
+    if (pass.ToneMappingExposure == 0)
+    {
+        return pass.ToneMappingCurve == DisplayCurve::Reinhard;
+    }
+    if ((pass.ToneMappingExposure >= MIN_TONE_MAPPING_EXPOSURE &&
+         pass.ToneMappingExposure <= MAX_TONE_MAPPING_EXPOSURE) == false)
+    {
+        return false;
+    }
+    return (pass.Program == Technique::RayTracing || pass.Program == Technique::ColorAndDepth) &&
+           (pass.ToneMappingCurve == DisplayCurve::Reinhard || pass.ToneMappingCurve == DisplayCurve::PbrNeutral);
+}
 /// One read-only uniform binding of a technique, filled per draw from logical values.
 /// Its values occupy [ValueOffset, ValueOffset + ValueCount) of each item's float32
 /// table; bindings of different techniques that use one schema share that span.
