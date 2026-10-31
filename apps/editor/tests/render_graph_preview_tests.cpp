@@ -306,6 +306,23 @@ void CheckCenter(const QImage& image, int32 red, int32 green, int32 blue)
     CHECK(qAbs(center.blue() - blue) <= COLOR_TOLERANCE);
 }
 
+/// RGBA8 display codes of a scene-linear colour after the engine default graph's ToneMap node:
+/// PBR Neutral at exposure 1, then sRGB encoding (render_graphs/default/main.lurender.json).
+QColor MapDefaultGraphColor(math::Vector3 sceneColor)
+{
+    const math::Vector3 display = renderer::ApplyPbrNeutral(sceneColor);
+    return QColor(qRound(math::EncodeSrgb(display.X) * MAX_CHANNEL_CODE),
+                  qRound(math::EncodeSrgb(display.Y) * MAX_CHANNEL_CODE),
+                  qRound(math::EncodeSrgb(display.Z) * MAX_CHANNEL_CODE));
+}
+
+void CheckColor(const QColor& actual, const QColor& expected)
+{
+    CHECK(qAbs(actual.red() - expected.red()) <= COLOR_TOLERANCE);
+    CHECK(qAbs(actual.green() - expected.green()) <= COLOR_TOLERANCE);
+    CHECK(qAbs(actual.blue() - expected.blue()) <= COLOR_TOLERANCE);
+}
+
 /// The live runtime path: the host's compiled header, a directly owned RenderGraph and
 /// independently written inputs, rendered and copied exactly once.
 QImage RenderLive(const DeviceFixture& device, math::Vector4 tint)
@@ -1087,11 +1104,7 @@ TEST_CASE("The editor's prebuilt engine default previews with no project files",
     REQUIRE(image.size() == extent);
     const QColor center = image.pixelColor(extent.width() / 2, extent.height() / 2);
     // The default graph's ToneMap applies PBR Neutral and sRGB encoding to the unlit tint's emission.
-    const math::Vector3 display = renderer::ApplyPbrNeutral({.25F, .5F, .75F});
-    constexpr float32 CODE_SCALE = 255;
-    CHECK(qAbs(center.red() - qRound(math::EncodeSrgb(display.X) * CODE_SCALE)) <= COLOR_TOLERANCE);
-    CHECK(qAbs(center.green() - qRound(math::EncodeSrgb(display.Y) * CODE_SCALE)) <= COLOR_TOLERANCE);
-    CHECK(qAbs(center.blue() - qRound(math::EncodeSrgb(display.Z) * CODE_SCALE)) <= COLOR_TOLERANCE);
+    CheckColor(center, MapDefaultGraphColor({.25F, .5F, .75F}));
     // The fixture's generation shares the host interface, so either previews in one editor.
     REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_RENDER_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
     preview.Detach();
@@ -1810,8 +1823,10 @@ TEST_CASE("World viewport follows project shaders and keeps drawable output afte
 {
     // Each edit recooks the whole deferred default, as render_graph_default_tests.cpp's build does.
     constexpr int32 TIMEOUT_MILLISECONDS = 120000;
-    constexpr int32 GREEN_MINIMUM = 200;
-    constexpr int32 DARK_MAXIMUM = 10;
+    // Display codes a sample may lose to grid blending and lighting below the mapped primary emission,
+    // or gain above the mapped other channels.
+    constexpr int32 PRIMARY_MARGIN = 55;
+    constexpr int32 DARK_MARGIN = 10;
     constexpr int32 SAMPLE_STRIDE = 4;
     constexpr usize COLORED_SAMPLE_MINIMUM = 100;
     const QString compiler = QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT "/out/shader-tools/slang/bin/slangc");
@@ -1821,8 +1836,11 @@ TEST_CASE("World viewport follows project shaders and keeps drawable output afte
         SKIP("pinned shader tools are required for the real project reload test");
     }
     // The World grid draws over part of the triangle, so count an area of the edited primary colour
-    // instead of reading one pixel a grid line may cross.
+    // instead of reading one pixel a grid line may cross. The default graph's ToneMap desaturates the
+    // emission, so its red channel is lifted above zero.
     const auto countPrimarySamples = [](const QImage& image, bool isBlue) {
+        const QColor expected = MapDefaultGraphColor(isBlue == true ? math::Vector3{0, 0, 1} : math::Vector3{0, 1, 0});
+        const int32 expectedPrimary = isBlue == true ? expected.blue() : expected.green();
         usize count = 0;
         for (int32 y = 0; y < image.height(); y += SAMPLE_STRIDE)
         {
@@ -1830,7 +1848,7 @@ TEST_CASE("World viewport follows project shaders and keeps drawable output afte
             {
                 const QColor pixel = image.pixelColor(x, y);
                 const int32 primary = isBlue == true ? pixel.blue() : pixel.green();
-                if (primary > GREEN_MINIMUM && pixel.red() < DARK_MAXIMUM)
+                if (primary > expectedPrimary - PRIMARY_MARGIN && pixel.red() < expected.red() + DARK_MARGIN)
                 {
                     ++count;
                 }
@@ -3066,9 +3084,8 @@ TEST_CASE("Viewport forces authored raster before attaching a device", "[editor]
     CHECK(preview.GetStatus().contains(QStringLiteral("Force raster")) == true);
     const QColor center =
         preview.GetImage().pixelColor(preview.GetImage().width() / 2, preview.GetImage().height() / 2);
-    CHECK(qAbs(center.red() - 64) <= COLOR_TOLERANCE);
-    CHECK(qAbs(center.green() - 128) <= COLOR_TOLERANCE);
-    CHECK(qAbs(center.blue() - 191) <= COLOR_TOLERANCE);
+    // The forced raster fallback is the engine default graph, whose ToneMap maps the unlit tint's emission.
+    CheckColor(center, MapDefaultGraphColor({.25F, .5F, .75F}));
     const QImage last = preview.GetImage();
     CHECK(preview.Load(ray, ray) == RenderGraphPreviewLoad::Unsupported);
     CHECK(preview.GetImage().cacheKey() == last.cacheKey());
