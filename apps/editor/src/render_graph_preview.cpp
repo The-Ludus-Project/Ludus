@@ -14,6 +14,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QLocale>
 #include <QSize>
 
 #include <new>
@@ -28,6 +29,8 @@ namespace
 {
 /// Wall-clock producer deadline, independent of the completion polling cadence.
 constexpr int32 MAX_PRODUCER_MILLISECONDS = 10'000;
+/// Interval between failure summary read-backs; each reads 256 bytes of one ray pass.
+constexpr int64 FAILURE_POLL_MILLISECONDS = 500;
 constexpr float64 NANOSECONDS_PER_MILLISECOND = 1'000'000.0;
 /// Straight alpha below one cannot use the opaque static profile.
 constexpr float32 OPAQUE_ALPHA = 1.0F;
@@ -382,7 +385,16 @@ struct RenderGraphPreview::State final
         StaticArray<format::Resource, format::MAX_RESOURCES> Descriptions{};
         /// FindRenderGraphCaptureProblem of every logical resource, for the reference capture window.
         StaticArray<renderer::RenderGraphCaptureProblem, format::MAX_RESOURCES> CaptureProblems{};
+        /// Plan indices of the ray passes, whose failure summaries the viewport explains.
+        StaticArray<uint32, format::MAX_RAY_PASSES> RayPasses{};
+        usize RayPassCount = 0;
     };
+    /// Latest failure summary of each ray pass of the active generation, polled in turn (pollFailures).
+    StaticArray<renderer::RenderGraphRayFailures, format::MAX_RAY_PASSES> Failures{};
+    usize FailureCursor = 0;
+    uint64 FailureGeneration = 0;
+    bool IsFailureRequested = false;
+    QElapsedTimer FailureTimer;
     StaticArray<uint8, format::IDENTITY_BYTES> Interface{};
     rhi::RasterShaderDescription CompositeVertex{};
     rhi::RasterShaderDescription CompositeFragment{};
@@ -734,6 +746,13 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
         target.CaptureProblems[resource] = renderer::FindRenderGraphCaptureProblem(plan, resource);
     }
     target.Cameras = static_cast<uint32>(plan.Description.CameraCount);
+    for (uint32 pass = 0; pass < plan.Passes.GetSize() && target.RayPassCount < target.RayPasses.GetSize(); ++pass)
+    {
+        if (plan.Passes[pass].Program == format::Technique::RayTracing)
+        {
+            target.RayPasses[target.RayPassCount++] = pass;
+        }
+    }
     // Names are optional: a missing or stale sidecar only leaves numeric texture names.
     QFile names(GetTargetNamesPath(selectedPath));
     const QByteArray namesDocument =
@@ -950,6 +969,7 @@ void RenderGraphPreview::Tick(float64 preparationMilliseconds)
     {
         return;
     }
+    pollFailures();
     if (hasActiveWork == true || state.HasCompletedStatisticsFrame == true)
     {
         state.Statistics.AddCpuWork(preparationMilliseconds +
@@ -1718,19 +1738,84 @@ QString RenderGraphPreview::GetDisplayStatus() const
         return mImage.isNull() == true ? QStringLiteral("Open a World to render it here.")
                                        : QStringLiteral("Viewport paused.");
     }
+    // Failures are read from the active graph, which keeps drawing while its first frame is presented or a
+    // candidate prepares, so the explanation follows any progress text.
+    const auto withFailures = [this](const QString& progress) {
+        return mFailureText.isEmpty() == true ? progress : QStringLiteral("%1 %2").arg(progress, mFailureText);
+    };
     switch (mState->Activation.GetReport().Candidate)
     {
         case renderer::RenderGraphCandidateState::Preparing:
         case renderer::RenderGraphCandidateState::NeedsUpdate:
-            return QStringLiteral("Updating renderer…");
+            return withFailures(QStringLiteral("Updating renderer…"));
         case renderer::RenderGraphCandidateState::Failed:
         case renderer::RenderGraphCandidateState::RestartRequired:
             break;
         case renderer::RenderGraphCandidateState::None:
-            return mImage.isNull() == true && mState->HasGpuFrame == false ? QStringLiteral("Preparing renderer…")
-                                                                           : QString();
+            return mImage.isNull() == true && mState->HasGpuFrame == false
+                       ? withFailures(QStringLiteral("Preparing renderer…"))
+                       : mFailureText;
     }
-    return {};
+    return mFailureText;
+}
+
+void RenderGraphPreview::pollFailures()
+{
+    State& state = *mState;
+    renderer::RenderGraph* activeOrNull = state.Activation.GetActiveOrNull();
+    if (activeOrNull == nullptr || state.Active.RayPassCount == 0 || state.FailureGeneration != state.Active.Serial)
+    {
+        state.Failures = {};
+        state.FailureCursor = 0;
+        state.IsFailureRequested = false;
+        state.FailureGeneration = activeOrNull != nullptr ? state.Active.Serial : 0;
+        if (mFailureText.isEmpty() == false)
+        {
+            mFailureText.clear();
+            Q_EMIT Changed();
+        }
+        if (activeOrNull == nullptr || state.Active.RayPassCount == 0)
+        {
+            return;
+        }
+    }
+    // A read-back in flight is collected on every tick; a new one starts at most every poll interval.
+    if (state.IsFailureRequested == false && state.FailureTimer.isValid() == true &&
+        state.FailureTimer.elapsed() < FAILURE_POLL_MILLISECONDS)
+    {
+        return;
+    }
+    const usize cursor = state.FailureCursor % state.Active.RayPassCount;
+    renderer::RenderGraphRayFailures failures;
+    const rhi::RasterStatus status = activeOrNull->PollRayFailures(state.Active.RayPasses[cursor], failures);
+    if (status == rhi::RasterStatus::Pending)
+    {
+        state.IsFailureRequested = true;
+        return;
+    }
+    state.IsFailureRequested = false;
+    state.FailureTimer.restart();
+    // Packages cooked before failure reasons (Unsupported) and passes not yet drawn report nothing.
+    state.Failures[cursor] = status == rhi::RasterStatus::Ready ? failures : renderer::RenderGraphRayFailures{};
+    state.FailureCursor = cursor + 1;
+    usize worst = 0;
+    for (usize index = 1; index < state.Active.RayPassCount; ++index)
+    {
+        worst = state.Failures[index].TotalPixels > state.Failures[worst].TotalPixels ? index : worst;
+    }
+    const renderer::RenderGraphRayFailures& summary = state.Failures[worst];
+    const QString text =
+        summary.TotalPixels == 0
+            ? QString{}
+            : QStringLiteral("%1 pixels of ray pass %2 failed (the failure colour). %3")
+                  .arg(QLocale().toString(static_cast<qulonglong>(summary.TotalPixels)))
+                  .arg(state.Active.RayPasses[worst])
+                  .arg(QString::fromUtf8(renderer::DescribeRenderGraphFailureReason(summary.MainReason)));
+    if (text != mFailureText)
+    {
+        mFailureText = text;
+        Q_EMIT Changed();
+    }
 }
 
 QString RenderGraphPreview::GetStatus() const

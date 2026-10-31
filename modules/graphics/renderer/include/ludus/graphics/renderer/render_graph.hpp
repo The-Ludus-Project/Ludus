@@ -157,6 +157,42 @@ struct RenderGraphPrograms final
     /// kernels cover the whole image on every dispatch and therefore cannot be tiled.
     bool HasRayTiles = false;
 };
+/// Why a graph ray invocation failed: the scene interface's reasons, recorded by the shader function
+/// FailSceneQuery (scene_shader_layout.h, LUDUS_SCENE_FAILURE_*). Authored shaders may report their own reasons from
+/// RENDER_GRAPH_FAILURE_AUTHORED_FIRST. See docs/development/render-graph-authoring.md, "Explain failed pixels".
+enum class RenderGraphFailureReason : foundation::uint8
+{
+    Unspecified,      ///< A shader set queries.HasFailed without a reason.
+    InvalidRadiance,  ///< A sample returned non-finite or negative radiance.
+    InterfaceVersion, ///< The scene interface version does not match the renderer.
+    SurfaceBudget,    ///< More surface queries than scene_interface.surface_queries.
+    VisibilityBudget, ///< More visibility queries than scene_interface.visibility_queries.
+    LineBudget,       ///< More line queries than scene_interface.line_queries.
+    InvalidRay,       ///< A ray with a non-unit direction or an invalid distance range.
+    Traversal,        ///< The traversal could not finish, such as a full BVH stack.
+    RandomExhausted,  ///< The invocation's random stream ran out of dimensions.
+    InvalidArgument,  ///< A scene function received an out-of-range or degenerate input.
+    LightSample,      ///< No light could be selected or sampled.
+};
+/// First failure reason an authored shader may report with FailSceneQuery.
+inline constexpr foundation::uint32 RENDER_GRAPH_FAILURE_AUTHORED_FIRST = 32;
+/// Failure reasons a graph ray kernel counts: the scene interface's and the authored ones.
+inline constexpr foundation::uint32 MAX_RENDER_GRAPH_FAILURE_REASONS = 64;
+/// Describe a failure reason in one sentence for an author, with what to change. Authored reasons get a generic
+/// sentence naming the reason number.
+/// @param reason A RenderGraphFailureReason value or an authored reason below MAX_RENDER_GRAPH_FAILURE_REASONS.
+/// @return Static UTF-8 text; an empty string for a reason outside the range.
+[[nodiscard]] const char* DescribeRenderGraphFailureReason(foundation::uint32 reason) noexcept;
+/// Pixels of one ray pass that latched each failure reason since its camera or scene last changed.
+struct RenderGraphRayFailures final
+{
+    /// Pixels by reason; index with a RenderGraphFailureReason value or an authored reason.
+    foundation::StaticArray<foundation::uint32, MAX_RENDER_GRAPH_FAILURE_REASONS> Pixels{};
+    /// Sum of Pixels.
+    foundation::uint64 TotalPixels = 0;
+    /// The reason with the most pixels; meaningful when TotalPixels is nonzero.
+    foundation::uint32 MainReason = 0;
+};
 /// Ray work of one sample of a RenderGraph's current scene, from which a frame capture sizes its tiles.
 struct RenderGraphRayWorkload final
 {
@@ -729,6 +765,17 @@ public:
     /// @param outWorkload Receives the pixels and lights; unchanged on failure.
     /// @return Ready; NotReady without a drawable scene or before its ray passes are prepared.
     [[nodiscard]] rhi::RasterStatus GetRayWorkload(RenderGraphRayWorkload& outWorkload) const noexcept;
+    /// Read back, without waiting, how many pixels of a ray pass latched each failure reason (the graph's failure
+    /// colour) since its camera or scene last changed. The first call requests a small read-back; a later call
+    /// returns it, and the call after that requests a fresh one. Owner thread, between frames; never changes output.
+    /// @param pass Plan pass index of a ray pass.
+    /// @param outFailures Receives the counts on Ready; unchanged otherwise.
+    /// @return Ready with counts; Pending while the read-back or the producer is outstanding; NotReady without a
+    /// drawable scene; Unsupported when the pass's kernel declares no failure summary (it was cooked before failure
+    /// reasons; rebuild the graph); InvalidDescription for a pass that is not a ray pass; a read-back failure
+    /// otherwise.
+    [[nodiscard]] rhi::RasterStatus PollRayFailures(foundation::uint32 pass,
+                                                    RenderGraphRayFailures& outFailures) noexcept;
     /// Borrow the events of the last Ready PollRayPathCapture until the next poll, request or Reset.
     [[nodiscard]] foundation::BorrowedView<const RayPathEvent> GetRayPathEvents() const noexcept;
     /// Borrow the summaries of the last Ready PollRayPathCapture, sorted by pixel, sample and pass,

@@ -232,4 +232,9 @@ foundation::uint32 RenderGraphRayPass::GetLightCount() const noexcept
 {
     return mContextOrNull->getGpuPreviewLightCount(mJob);
 }
+rhi::RasterStatus RenderGraphRayPass::GetFailures(rhi::BufferHandle& outBuffer) const noexcept
+{
+    return mContextOrNull == nullptr ? rhi::RasterStatus::NotReady
+                                     : mContextOrNull->getGpuPreviewFailures(mJob, outBuffer);
+}
 } // namespace ludus::graphics::renderer::internal

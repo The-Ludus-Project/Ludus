@@ -210,6 +210,25 @@ float3 SampleBsdf(float3 normalWorld, float3 viewWorld, float roughness, float p
 }
 float4 InterpolateTriangle(uint triangle, uint first, in float2 barycentric);
 float4 InterpolateTriangleColor(uint triangle, in float2 barycentric);
+#if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE)
+#    include "scene_shader_layout.h"
+// Pixels that latched each failure reason; the renderer reads it to name the failing check. Its native register keeps
+// slot 14 on Metal whatever the declaration order (Slang otherwise numbers Metal buffers by declaration).
+LUDUS_SHADER_BINDING(LUDUS_GRAPH_FAILURE_BINDING)
+RWStructuredBuffer<Atomic<uint>> graphFailures LUDUS_SHADER_STORAGE_REGISTER(LUDUS_GRAPH_FAILURE_BINDING);
+// Reason of the invocation EvaluateGraphRay just returned; a returned value that is not finite or is negative, without
+// a recorded reason, is invalid radiance.
+static uint graphFailureReason = LUDUS_SCENE_FAILURE_INVALID_RADIANCE;
+// Count one pixel latching reason; called only when the pixel's history turns failed. Atomic<uint> elements, unlike
+// InterlockedAdd on plain uints, also lower to WGSL, so a software-traversal kernel stays browser-compilable.
+void CountGraphFailure(uint reason)
+{
+    graphFailures[min(reason, uint(LUDUS_SCENE_FAILURE_REASON_COUNT - 1))].add(1u);
+}
+#    define LUDUS_COUNT_GRAPH_FAILURE(reason) CountGraphFailure(reason)
+#else
+#    define LUDUS_COUNT_GRAPH_FAILURE(reason)
+#endif
 #ifdef LUDUS_RAY_PATH_CAPTURE
 // Diagnostic ray path capture; see render-graph-authoring.md#ray-path-inspection-proposed.
 // Selected invocations append each Trace() call to this buffer. Capture writes only the
@@ -1163,6 +1182,7 @@ LUDUS_GPU_PREVIEW_COMPUTE_ENTRY void ComputeMain(uint3 dispatchPixel : SV_Dispat
         BeginRayPathCapture(positionPixel.xy, sampleCount);
 #endif
 #if defined(LUDUS_RENDER_GRAPH_RAY_PIPELINE)
+        graphFailureReason = LUDUS_SCENE_FAILURE_INVALID_RADIANCE;
         // Keep one callback invocation: duplicating it for raw/mean output expands large estimators twice.
         float3 sample = EvaluateGraphRay(pixel);
 #else
@@ -1171,21 +1191,32 @@ LUDUS_GPU_PREVIEW_COMPUTE_ENTRY void ComputeMain(uint3 dispatchPixel : SV_Dispat
 #ifdef LUDUS_RAY_PATH_CAPTURE
         EndRayPathCapture(sample);
 #endif
+        bool isInvalid = any(isfinite(sample) == false) || any(sample < 0);
         if (hasAccumulation == false)
         {
             sum.xyz = sample;
             sampleCount += 1;
-            compensation.w = any(isfinite(sample) == false) || any(sample < 0) ? historyTag + 1 : historyTag;
+            // A sample-only pass counts a pixel when it turns failed, not on every failing frame.
+            if (isInvalid == true && compensation.w == historyTag)
+                LUDUS_COUNT_GRAPH_FAILURE(graphFailureReason);
+            compensation.w = isInvalid == true ? historyTag + 1 : historyTag;
         }
-        else if (any(isfinite(sample) == false) || any(sample < 0))
+        else if (isInvalid == true)
+        {
+            // Sampling requires an unlatched history, so this is the pixel's only latch.
+            LUDUS_COUNT_GRAPH_FAILURE(graphFailureReason);
             compensation.w = historyTag + 1;
+        }
         else
         {
             float3 adjusted = sample - compensation.xyz;
             float3 next = sum.xyz + adjusted;
             compensation.xyz = (next - sum.xyz) - adjusted;
             if (any(isfinite(next) == false) || any(isfinite(compensation.xyz) == false))
+            {
+                LUDUS_COUNT_GRAPH_FAILURE(LUDUS_SCENE_FAILURE_INVALID_RADIANCE);
                 compensation.w = historyTag + 1;
+            }
             else
             {
                 sum.xyz = next;

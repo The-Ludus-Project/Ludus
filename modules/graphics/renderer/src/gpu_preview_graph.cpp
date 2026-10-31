@@ -239,29 +239,32 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
     // GraphUse::Visibility defaults to RasterVisibility::Both; LLVM 23 overlooks that
     // member initializer for the value-initialized tail of this array (.clang-tidy).
     // NOLINTBEGIN(bugprone-invalid-enum-default-initialization)
-    // Beyond the frozen ABI's bindings: a capture-variant kernel's ray path buffer and the LTC table.
-    StaticArray<rhi::GraphUse, LUDUS_GRAPH_COMPUTE_BINDING_COUNT + 1 + LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT> computeUses{
-        {{versions[0], rhi::GraphAccessMode::StorageRead, 0, job.DataBytes, rhi::RasterVisibility::Compute},
-         {versions[1],
-          rhi::GraphAccessMode::Uniform,
-          0,
-          sizeof(internal::GpuPreviewUniform),
-          rhi::RasterVisibility::Compute},
-         {accumulation,
-          rhi::GraphAccessMode::StorageReadWrite,
-          0,
-          pixels * LUDUS_GPU_PREVIEW_ACCUMULATION_BYTES,
-          rhi::RasterVisibility::Compute},
-         {colors,
-          rhi::GraphAccessMode::StorageReadWrite,
-          0,
-          pixels * LUDUS_GPU_PREVIEW_VECTOR_BYTES,
-          rhi::RasterVisibility::Compute},
-         {versions[TEXEL_BUFFER_INDEX],
-          rhi::GraphAccessMode::StorageRead,
-          0,
-          job.TexelBytes,
-          rhi::RasterVisibility::Compute}}};
+    // Beyond the frozen ABI's bindings: a capture-variant kernel's ray path buffer, the LTC table and the failure
+    // summary.
+    StaticArray<rhi::GraphUse,
+                LUDUS_GRAPH_COMPUTE_BINDING_COUNT + 1 + LUDUS_GRAPH_LTC_TABLE_BINDING_COUNT +
+                    LUDUS_GRAPH_FAILURE_BINDING_COUNT>
+        computeUses{{{versions[0], rhi::GraphAccessMode::StorageRead, 0, job.DataBytes, rhi::RasterVisibility::Compute},
+                     {versions[1],
+                      rhi::GraphAccessMode::Uniform,
+                      0,
+                      sizeof(internal::GpuPreviewUniform),
+                      rhi::RasterVisibility::Compute},
+                     {accumulation,
+                      rhi::GraphAccessMode::StorageReadWrite,
+                      0,
+                      pixels * LUDUS_GPU_PREVIEW_ACCUMULATION_BYTES,
+                      rhi::RasterVisibility::Compute},
+                     {colors,
+                      rhi::GraphAccessMode::StorageReadWrite,
+                      0,
+                      pixels * LUDUS_GPU_PREVIEW_VECTOR_BYTES,
+                      rhi::RasterVisibility::Compute},
+                     {versions[TEXEL_BUFFER_INDEX],
+                      rhi::GraphAccessMode::StorageRead,
+                      0,
+                      job.TexelBytes,
+                      rhi::RasterVisibility::Compute}}};
     // NOLINTEND(bugprone-invalid-enum-default-initialization)
     usize computeUseCount = BASE_COMPUTE_USE_COUNT;
     for (usize slot = 0; state.HasPersistentBuffers == true && slot < GPU_GRAPH_BUFFER_COUNT; ++slot)
@@ -344,6 +347,27 @@ Status AppendGpuGraph(rhi::DeviceHandle device,
                       tilesOrNull != nullptr ? tilesOrNull->Count : 1);
     // An empty band, when bands outnumber rows, still dispatches one group row whose threads all return.
     const uint32 rows = region.Tile[GPU_PREVIEW_TILE_END_Y] - region.Tile[GPU_PREVIEW_TILE_ORIGIN_Y];
+    if (state.HasFailureSummary == true)
+    {
+        // Each pass adds the pixels that latch a failure, so every pass writes a new version.
+        rhi::GraphVersion previous;
+        rhi::GraphVersion next;
+        status = inoutResources.ImportBuffer(device, graph, job.Failures, previous);
+        if (status == Status::Ready)
+        {
+            status = rhi::NextGraphVersion(device, graph, previous, next);
+        }
+        if (status != Status::Ready)
+        {
+            return status;
+        }
+        inoutResources.SetBufferVersion(job.Failures, next);
+        computeUses[computeUseCount++] = {next,
+                                          rhi::GraphAccessMode::StorageReadWrite,
+                                          0,
+                                          LUDUS_GRAPH_FAILURE_BYTES,
+                                          rhi::RasterVisibility::Compute};
+    }
     const rhi::ComputeDispatch dispatch{
         job.HasNativeRayInvocation == true ? state.NativeRayPipeline : state.ComputePipeline,
         tilesOrNull != nullptr ? tilesOrNull->Bindings : job.ComputeBindings,

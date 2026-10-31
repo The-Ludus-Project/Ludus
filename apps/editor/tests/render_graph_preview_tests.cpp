@@ -3552,6 +3552,72 @@ TEST_CASE("A viewport graph capture decodes its generation's capture profile in 
     CHECK(capture.IsCaptureProfile() == false);
 }
 
+TEST_CASE("The viewport names the check that turned graph pixels magenta",
+          "[editor][render-graph][render-graph-failures]")
+{
+    DeviceFixture device;
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    // A lit receiver and ten small emissive triangles: the polygonal-light template's interactive budget covers
+    // eight, so every shaded pixel latches the visibility budget.
+    RenderScene scene = MakeScene({1, 1, 1, 1});
+    scene.Lit = true;
+    PreviewSurface receiver;
+    PreviewSurface lamp;
+    constexpr float32 LAMP_RADIANCE = 4;
+    lamp.Emission = {LAMP_RADIANCE, LAMP_RADIANCE, LAMP_RADIANCE};
+    scene.Surfaces = {receiver, lamp};
+    scene.Objects[0].Surface = 0;
+    PreviewMesh lamps;
+    lamps.Id = QStringLiteral("lamps");
+    constexpr uint32 LAMP_COUNT = 10;
+    constexpr float32 LAMP_SPACING = .08F;
+    constexpr float32 LAMP_SIZE = .05F;
+    constexpr float32 LAMP_DEPTH = .2F;
+    for (uint32 index = 0; index < LAMP_COUNT; ++index)
+    {
+        const float32 x = -.4F + LAMP_SPACING * static_cast<float32>(index);
+        const uint32 first = static_cast<uint32>(lamps.Positions.size());
+        lamps.Positions.append(
+            {{x, .4F, LAMP_DEPTH}, {x + LAMP_SIZE, .4F, LAMP_DEPTH}, {x, .4F + LAMP_SIZE, LAMP_DEPTH}});
+        lamps.Normals.append({{0, 0, 1}, {0, 0, 1}, {0, 0, 1}});
+        lamps.Indices.append({first, first + 1, first + 2});
+    }
+    scene.Meshes.append(lamps);
+    PreviewObject lampObject;
+    lampObject.Id = QStringLiteral("lamps");
+    lampObject.Mesh = 1;
+    lampObject.Surface = 1;
+    scene.Objects.append(lampObject);
+    RenderGraphExtraction extraction;
+    QString error;
+    REQUIRE(MakeRenderGraphExtraction(scene, {}, 1, extraction, error) == true);
+    extraction.View.OrthographicCamera = true;
+    RenderGraphPreview preview = MakePreview();
+    REQUIRE(preview.Attach(device.Device, device.Surface) == true);
+    preview.SetExtraction(extraction);
+    REQUIRE(preview.Load(QStringLiteral(LUDUS_EDITOR_POLYGONAL_LIGHT_FIXTURE)) == RenderGraphPreviewLoad::Staged);
+    // The preview reads the failure summaries about twice a second, one ray pass at a time.
+    constexpr int64 FAILURE_TIMEOUT_MILLISECONDS = 30000;
+    QElapsedTimer timer;
+    timer.start();
+    while (preview.GetFailureText().isEmpty() == true && timer.elapsed() < FAILURE_TIMEOUT_MILLISECONDS)
+    {
+        preview.Tick();
+        QApplication::processEvents();
+        QThread::msleep(1);
+    }
+    INFO(preview.GetStatus().toStdString());
+    REQUIRE(preview.GetFailureText().isEmpty() == false);
+    CHECK(preview.GetFailureText().contains(QStringLiteral("visibility_queries")) == true);
+    // A replacement candidate may be preparing meanwhile; the active graph's explanation stays in the status.
+    INFO(preview.GetDisplayStatus().toStdString());
+    CHECK(preview.GetDisplayStatus().endsWith(preview.GetFailureText()) == true);
+    preview.Detach();
+}
+
 TEST_CASE("A viewport graph capture explains outputs it cannot capture before using the device",
           "[editor][render-graph][render-graph-capture]")
 {
