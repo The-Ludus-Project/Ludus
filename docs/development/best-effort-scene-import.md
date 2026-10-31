@@ -362,14 +362,16 @@ Native callers pass the root-relative image name in
 preserves source lighting. This option adds one latitude/longitude environment to
 a scene that has none. It rejects a conflicting authored environment, unreadable
 image or path that escapes the source directory, including through a symlink.
-Analytic lights and material emission remain as authored. It applies to
+Analytic lights and material emission remain as authored. The cooked scene's enabled
+punctual lights feed the same preview snapshot for raster graphs and the legacy
+lighting path; disabled sources remain in the stored definition. It applies to
 best-effort entries, not the frozen reference cooker or a custom cooker.
 
 The image uses engine coordinates: +Y is north, longitude zero is +X, increasing
 longitude turns toward +Z, and the top row borders the north pole. HDR stays
 linear. Bright peaks are factored into bounded texels and a power-of-two radiance
 multiplier within the existing lighting representation; their product preserves
-source energy within binary32 precision. No exposure or clipping is baked into
+the retained texels' radiance within binary32 precision. No exposure or clipping is baked into
 this choice. The image is hashed during preview and import, and the choice itself
 participates in the approval token. Changed bytes invalidate pending publication.
 The report records the image, dimensions and retained radiance multiplier.

@@ -181,11 +181,13 @@ struct TexelCoordinate final
     inoutLighting.HasEnvironmentSourceDigest = true;
     DecodedLightingImage image;
     std::string_view message;
-    const ImageResult decoded = DecodeLightingImage(source.File.GetView(),
-                                                    {bytes.GetData(), bytes.GetSize()},
-                                                    image,
-                                                    message,
-                                                    source.IsEquirectangular);
+    const ImageResult decoded =
+        DecodeLightingImage(source.File.GetView(),
+                            {bytes.GetData(), bytes.GetSize()},
+                            image,
+                            message,
+                            source.IsEquirectangular,
+                            source.IsEquirectangular == true ? byteBudget : format::MAX_BUNDLE_BYTES);
     if (decoded != ImageResult::Ok)
     {
         (void)inoutLog.Add(DiagnosticSeverity::Error, codes::TEXTURE_UNREADABLE, source.File.GetView(), 0, message);

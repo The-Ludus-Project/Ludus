@@ -1,5 +1,6 @@
 #include "internal/level_workspace.h"
 #include "internal/preview_lighting.h"
+#include "internal/render_graph_preview.h"
 #include "internal/world_workspace.h"
 
 #include <ludus/foundation/base/types.h>
@@ -115,6 +116,21 @@ TEST_CASE("Switching imported Worlds replaces every direct light and preserves f
         REQUIRE(scene.Definition != nullptr);
         const uint32 expectedLights = path == firstPath ? 1 : 2;
         REQUIRE(scene.Definition->Lights.GetSize() == expectedLights);
+        RenderGraphExtraction extraction;
+        QString extractionError;
+        REQUIRE(MakeRenderGraphExtraction(scene, {}, 1, extraction, extractionError) == true);
+        REQUIRE(extraction.ShaderInputs.Lights.GetSize() == expectedLights);
+        REQUIRE(scene.AuthoredLights.Count == expectedLights);
+        for (uint32 index = 0; index < expectedLights; ++index)
+        {
+            const renderer::DirectLight& extracted = extraction.ShaderInputs.Lights[index];
+            const ludus::resources::SceneLight& stored = scene.Definition->Lights[index];
+            CHECK(extracted.SourceId == stored.SourceId);
+            CHECK(extracted.Color * extracted.Intensity == stored.IntensityRgb);
+            CHECK(extracted.Position == stored.PositionWorld);
+            CHECK(extracted.Direction == stored.DirectionWorld);
+            CHECK(extracted.Range == stored.Range);
+        }
         REQUIRE(preview_lighting::BuildInputs(scene, key, direct, false) == rhi::RasterStatus::Ready);
         REQUIRE(preview_lighting::BuildInputs(scene, key, shadowed) == rhi::RasterStatus::Ready);
         REQUIRE(direct.Lights.Count == expectedLights);

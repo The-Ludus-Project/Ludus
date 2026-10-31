@@ -7,6 +7,7 @@
 // (HDR sources are clamped and sRGB-encoded). EXIF orientation and embedded ICC
 // profiles are ignored. Lighting output keeps linear float RGB.
 
+#include <ludus/content/scene_format/limits.h>
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/borrowed_view.hpp>
@@ -77,7 +78,9 @@ enum class ImageResult : uint8
                                       std::string_view& outMessage) noexcept;
 /// PFM lighting preserves finite nonnegative float RGB and file scale, north row first.
 /// Radiance and OpenEXR lighting keep linear float RGB and are box-halved until they fit
-/// MAX_ENVIRONMENT_DIMENSION and the bundle byte budget. When shouldFactorRadiance
+/// MAX_ENVIRONMENT_DIMENSION and byteBudget retained RGB bytes. The default
+/// preserves the legacy reference-profile budget. Budgets smaller than one RGB
+/// texel reject without replacing outImage. When shouldFactorRadiance
 /// is true, high peaks use RadianceScale and bounded texels instead of clipping;
 /// their product preserves linear radiance within binary32 precision. Both factors
 /// must fit the existing scene profile. False retains the frozen rejection policy.
@@ -87,5 +90,6 @@ enum class ImageResult : uint8
                                               foundation::BorrowedView<const uint8> data,
                                               DecodedLightingImage& outImage,
                                               std::string_view& outMessage,
-                                              bool shouldFactorRadiance = false) noexcept;
+                                              bool shouldFactorRadiance = false,
+                                              usize byteBudget = scene_format::MAX_BUNDLE_BYTES) noexcept;
 } // namespace ludus::content::scene_cook::importers

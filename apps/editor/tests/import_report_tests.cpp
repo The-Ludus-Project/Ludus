@@ -105,7 +105,7 @@ TEST_CASE("import previews list source and cooked counts, budget and fallbacks",
     const QString text = DescribeImportPreview(response);
     CHECK(text.contains(QStringLiteral("Importer: pbrt-best-effort-v1 (room.pbrt)")) == true);
     CHECK(text.contains(QStringLiteral("40 placements, 1200 vertices, 12 materials, 3 textures")) == true);
-    CHECK(text.contains(QStringLiteral("2 area (emissive), 1 infinite (environment fallback), 4 skipped")) == true);
+    CHECK(text.contains(QStringLiteral("2 area (emissive), 1 environment, 4 punctual/other")) == true);
     CHECK(text.contains(QStringLiteral("Cooked: 6/6 meshes, 6/8 materials, 6/8 textures, 6 objects")) == true);
     CHECK(text.contains(QStringLiteral("bundle size measured on import")) == true);
     CHECK(text.contains(QStringLiteral("MATERIALS_MERGED ×6: merged into slot 0")) == true);

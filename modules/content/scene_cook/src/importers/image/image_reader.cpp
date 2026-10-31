@@ -579,11 +579,13 @@ ImageResult DecodeLightingImage(std::string_view fileName,
                                 foundation::BorrowedView<const uint8> data,
                                 DecodedLightingImage& outImage,
                                 std::string_view& outMessage,
-                                bool shouldFactorRadiance) noexcept
+                                bool shouldFactorRadiance,
+                                usize byteBudget) noexcept
 {
-    if (data.IsValid() == false || data.IsEmpty() == true)
+    if (data.IsValid() == false || data.IsEmpty() == true ||
+        byteBudget < LIGHTING_IMAGE_CHANNEL_COUNT * sizeof(float32))
     {
-        outMessage = "invalid lighting image bytes";
+        outMessage = "invalid lighting image bytes or retained byte budget";
         return ImageResult::Invalid;
     }
     const float32 maximumRadiance = content::scene_format::MAX_EMISSION;
@@ -603,7 +605,7 @@ ImageResult DecodeLightingImage(std::string_view fileName,
         while (candidate.Width > content::scene_format::MAX_ENVIRONMENT_DIMENSION ||
                candidate.Height > content::scene_format::MAX_ENVIRONMENT_DIMENSION ||
                usize{candidate.Width} * candidate.Height >
-                   content::scene_format::MAX_BUNDLE_BYTES / (LIGHTING_IMAGE_CHANNEL_COUNT * sizeof(float32)))
+                   byteBudget / (LIGHTING_IMAGE_CHANNEL_COUNT * sizeof(float32)))
         {
             if (HalveLightingImage(candidate) == false)
             {
@@ -632,7 +634,7 @@ ImageResult DecodeLightingImage(std::string_view fileName,
         candidate.Height = encoded.Height;
         if (candidate.Width > content::scene_format::MAX_ENVIRONMENT_DIMENSION ||
             candidate.Height > content::scene_format::MAX_ENVIRONMENT_DIMENSION ||
-            usize{candidate.Width} * candidate.Height > content::scene_format::MAX_BUNDLE_BYTES / (3 * sizeof(float32)))
+            usize{candidate.Width} * candidate.Height > byteBudget / (LIGHTING_IMAGE_CHANNEL_COUNT * sizeof(float32)))
         {
             outMessage = "lighting image exceeds the bounded scene profile";
             return ImageResult::Invalid;
@@ -700,7 +702,7 @@ ImageResult DecodeLightingImage(std::string_view fileName,
         candidate.Height = static_cast<uint32>(height);
         const usize channels = isColour == true ? 3 : 1;
         const usize count = usize{candidate.Width} * candidate.Height;
-        if (count > content::scene_format::MAX_BUNDLE_BYTES / (3 * sizeof(float32)))
+        if (count > byteBudget / (LIGHTING_IMAGE_CHANNEL_COUNT * sizeof(float32)))
         {
             outMessage = "lighting image exceeds the bounded scene byte budget";
             return ImageResult::Invalid;

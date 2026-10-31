@@ -37,6 +37,7 @@
 #include <ludus/foundation/containers/array.hpp>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/identity/uuid.hpp>
+#include <ludus/foundation/math/quaternion.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/foundation/threading/jobs.hpp>
@@ -2517,10 +2518,13 @@ TEST_CASE("Full Intel Sponza presents through the native editor viewport", "[.fu
             peakRadiance = math::Max(peakRadiance, pixel.X * scene.Definition->Environment.Rgb.X);
         }
         CHECK(peakRadiance > 10000);
-        for (uint32 light = 0; light < scene.AuthoredLights.Count; ++light)
+        REQUIRE(scene.Definition->Lights.GetSize() == 24);
+        for (const ludus::resources::SceneLight& light : scene.Definition->Lights)
         {
-            CHECK(scene.AuthoredLights.Lights[light].Intensity == 0);
+            CHECK(light.IsEnabled == false);
+            CHECK(light.IntensityRgb == math::Vector3{});
         }
+        CHECK(scene.AuthoredLights.Count == 0);
     }
     usize triangles = 0;
     REQUIRE(scene.Definition.Get() != nullptr);
@@ -2546,6 +2550,41 @@ TEST_CASE("Full Intel Sponza presents through the native editor viewport", "[.fu
     viewport.resize(640, 480);
     viewport.show();
     REQUIRE(source.SetScene(scene) == true);
+    if (shouldExpectEnvironment == true)
+    {
+        // Inspect the imported World from its stored courtyard camera, through the
+        // same editor navigation restore operation that the viewport persists.
+        const ludus::resources::SceneDefinition& definition = *scene.Definition;
+        math::Vector3 forwardWorld;
+        REQUIRE(math::TryNormalize(definition.Target - definition.Eye, forwardWorld) == math::MathStatus::Success);
+        math::Quaternion forwardOrientationWorld;
+        REQUIRE(math::TryRotationBetween({0, 0, -1}, forwardWorld, forwardOrientationWorld) ==
+                math::MathStatus::Success);
+        const math::Vector3 cameraUpWorld = math::Rotate(forwardOrientationWorld, {0, 1, 0});
+        math::Vector3 upWorld;
+        REQUIRE(math::TryNormalize(definition.Up - forwardWorld * math::Dot(definition.Up, forwardWorld), upWorld) ==
+                math::MathStatus::Success);
+        math::Quaternion rollWorld;
+        REQUIRE(math::TryFromAxisAngle(forwardWorld,
+                                       math::Atan2(math::Dot(forwardWorld, math::Cross(cameraUpWorld, upWorld)),
+                                                   math::Dot(cameraUpWorld, upWorld)),
+                                       rollWorld) == math::MathStatus::Success);
+        math::Quaternion orientationWorld;
+        REQUIRE(math::TryNormalize(rollWorld * forwardOrientationWorld, orientationWorld) == math::MathStatus::Success);
+        QJsonObject navigation = source.Navigation();
+        navigation.insert(QStringLiteral("eyeX"), static_cast<float64>(definition.Eye.X));
+        navigation.insert(QStringLiteral("eyeY"), static_cast<float64>(definition.Eye.Y));
+        navigation.insert(QStringLiteral("eyeZ"), static_cast<float64>(definition.Eye.Z));
+        navigation.insert(QStringLiteral("rotationX"), static_cast<float64>(orientationWorld.X));
+        navigation.insert(QStringLiteral("rotationY"), static_cast<float64>(orientationWorld.Y));
+        navigation.insert(QStringLiteral("rotationZ"), static_cast<float64>(orientationWorld.Z));
+        navigation.insert(QStringLiteral("rotationW"), static_cast<float64>(orientationWorld.W));
+        navigation.insert(QStringLiteral("fov"), static_cast<float64>(definition.VerticalFov));
+        navigation.insert(QStringLiteral("distance"),
+                          static_cast<float64>(math::Length(definition.Target - definition.Eye)));
+        source.RestoreNavigation(navigation);
+        CHECK(source.GetVisibleCameraSample().Pose.Position.X == static_cast<float64>(definition.Eye.X));
+    }
     REQUIRE(source.Start() == true);
     QQuickWindow* windowOrNull = nullptr;
     for (QWindow* window : QGuiApplication::allWindows())
