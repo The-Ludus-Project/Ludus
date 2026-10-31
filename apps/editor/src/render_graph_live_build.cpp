@@ -19,6 +19,14 @@ QByteArray ComputeRenderGraphBuildIdentity(const RenderGraphDocument& document,
                                            RenderGraphSource source)
 {
     QCryptographicHash identity(QCryptographicHash::Sha256);
+    // Where the sources live is part of the build: a project copy of the engine default has the
+    // same bytes as the prebuilt default but must still be cooked into its own package.
+    const QByteArray location =
+        (document.IsBuiltIn() == true ? QByteArrayLiteral("built-in:") : QByteArrayLiteral("project:")) +
+        document.GetPackageRoot().toUtf8() + QByteArrayLiteral("/") + document.GetRootGraph().toUtf8();
+    identity.addData(QByteArray::number(location.size()));
+    identity.addData(QByteArrayLiteral(":"));
+    identity.addData(location);
     const QByteArray configurationText = configuration.toUtf8();
     identity.addData(QByteArray::number(configurationText.size()));
     identity.addData(QByteArrayLiteral(":"));
