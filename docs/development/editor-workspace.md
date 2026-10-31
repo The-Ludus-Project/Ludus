@@ -1297,7 +1297,12 @@ World; they do not expose another object hierarchy or authoring document.
    and **Add Component** are in that same inspector. **Apply Changes** validates
    placement, name and component values together. Valid draft fields update the
    embedded viewport before Apply; invalid buffers retain its last valid image.
-   Camera and material data retain the imported scene profile.
+   Camera and material data retain the imported scene profile. A read-only
+   **Material** group lists the decoded material the viewport renders: its
+   source name, scattering model, linear reflectance, metallic and perceptual
+   roughness, the conductor IOR/extinction or coating IOR/thickness and GGX
+   alpha of those models, texture maps, alpha mask and emission. Values appear
+   once the viewport has loaded the scene; materials are not editable there.
 5. Duplicate/Delete and World Undo/Redo act on the complete entity, including its
    scene binding and gameplay components. Parent removal is refused while its
    children remain. Invalid fields preserve the previous applied document.
