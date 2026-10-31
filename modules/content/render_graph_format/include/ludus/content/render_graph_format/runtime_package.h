@@ -59,6 +59,8 @@
 /// Version 25 appends one scene resource word after the storage records. Bit
 /// SCENE_RESOURCE_LTC_TABLE means the linked scene ray kernel reads the renderer's LTC table at
 /// LUDUS_GRAPH_LTC_TABLE_BINDING; other bits must be zero. Earlier packages bind no table.
+/// Version 29 appends ToneMappingCurve to every pass and admits ToneMap exposure on clustered deferred
+/// ColorAndDepth raster passes, fused into their lighting resolve. Earlier nonzero exposures imply Reinhard.
 namespace ludus::content::render_graph_format
 {
 /// "LURG" read as a little-endian uint32.
@@ -100,8 +102,10 @@ inline constexpr foundation::uint32 RASTER_MESH_LIGHT_POLYGON_PACKAGE_VERSION = 
 /// First generation whose ray kernels dispatch the ray uniform's tile region, so a frame capture may split a
 /// sample into row bands (RenderGraph::SetRayTileCount); the record layout is unchanged.
 inline constexpr foundation::uint32 TILED_RAY_PACKAGE_VERSION = 28;
+/// First generation carrying a display curve per pass and admitting ToneMap on clustered deferred raster output.
+inline constexpr foundation::uint32 RASTER_TONE_MAPPING_PACKAGE_VERSION = 29;
 /// Current runtime generation layout version.
-inline constexpr foundation::uint32 PACKAGE_VERSION = TILED_RAY_PACKAGE_VERSION;
+inline constexpr foundation::uint32 PACKAGE_VERSION = RASTER_TONE_MAPPING_PACKAGE_VERSION;
 /// First package carrying explicit OIDN denoising quality per ray pass.
 inline constexpr foundation::uint32 DENOISING_PACKAGE_VERSION = 16;
 /// First package carrying the renderer-owned bilinear image operation.

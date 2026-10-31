@@ -1,4 +1,5 @@
 #include "internal/render_graph_scene_resources.h"
+#include "internal/raster_mesh_light_grid.h"
 #include "internal/raster_mesh_lights.h"
 #include "internal/scene_material_validation.h"
 #include <ludus/graphics/renderer/deferred_layout.h>
@@ -336,6 +337,7 @@ struct ForwardSceneGeneration::State final
     Array<math::Vector4> MeshLightWords;
     rhi::BufferHandle MeshLightBuffer{};
     uint32 MeshLightCount = 0;
+    uint32 MeshLightGridWord = 0;
     LightClusterDescription Clusters;
     math::Aabb3 BoundsWorld = math::EmptyAabb3();
     EnvironmentMap Environment;
@@ -421,6 +423,10 @@ rhi::RasterBindingResource ForwardSceneGeneration::GetMeshLights() const noexcep
 uint32 ForwardSceneGeneration::GetMeshLightCount() const noexcept
 {
     return mState.Get() == nullptr ? 0 : mState->MeshLightCount;
+}
+uint32 ForwardSceneGeneration::GetMeshLightGridWord() const noexcept
+{
+    return mState.Get() == nullptr ? 0 : mState->MeshLightGridWord;
 }
 Status ForwardSceneGeneration::Poll() noexcept
 {
@@ -768,6 +774,18 @@ Status ForwardSceneResources::Prepare(const RenderGraphSceneDescription& scene,
             candidate.MeshLightWords.TryResize(MESH_LIGHT_POLYGON_HEADER_WORDS) == false)
         {
             return Status::OutOfMemory;
+        }
+        // Clustered profiles bound every shaded surface; the resolve then reads only its cell's emitters.
+        if (owner.IsClustered == true)
+        {
+            const Status grid = AppendRasterMeshLightGrid(candidate.MeshLightWords,
+                                                          candidate.MeshLightCount,
+                                                          candidate.BoundsWorld,
+                                                          candidate.MeshLightGridWord);
+            if (grid != Status::Ready)
+            {
+                return grid;
+            }
         }
         const usize byteCount = candidate.MeshLightWords.GetSize() * sizeof(math::Vector4);
         const Status status =

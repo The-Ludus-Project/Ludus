@@ -72,6 +72,8 @@
 #define LUDUS_GPU_PREVIEW_DENOISING_FLAG 16
 // Mixed ranges permit native opaque visibility and direct opaque candidate acceptance.
 #define LUDUS_GPU_PREVIEW_MIXED_OPACITY_FLAG 32
+// The graph ToneMap applies Khronos PBR Neutral instead of Reinhard (display_tone_mapping.slang).
+#define LUDUS_GPU_PREVIEW_PBR_NEUTRAL_FLAG 64
 #define LUDUS_GPU_PREVIEW_FLAGS_MASK 0x3ff
 #define LUDUS_GPU_PREVIEW_HISTORY_SHIFT 10
 #define LUDUS_GPU_PREVIEW_MAX_HISTORY_EPOCH 0x1fffff

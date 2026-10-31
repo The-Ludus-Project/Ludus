@@ -1,5 +1,6 @@
 #define LUDUS_DEFERRED_MESH_LIGHTS 1
 #include "deferred_layout.h"
+#include "display_tone_mapping.slang"
 #include "renderer_clustered_authored.slang"
 #include "renderer_deferred_fullscreen.slang"
 #include "renderer_mesh_lights.slang"
@@ -8,7 +9,9 @@ struct DeferredViewParameters
 {
     float4 ClipToWorldRows[DEFERRED_VIEW_ROWS];
     float4 EyeWorld;
-    float4 TargetSizePixel; // XY: dimensions in pixels. Z: mesh-light triangle count. W: reserved.
+    float4 TargetSizePixel; // XY: dimensions in pixels. Z: mesh-light record count. W: culling grid word.
+    // X: direct-reference flag. Y: clear depth. Z: graph ToneMap exposure; zero writes clamped linear colour.
+    // W: its ToneCurve code (tone_mapping.hpp).
     float4 Options;
 };
 LUDUS_SHADER_BINDING(LUDUS_DEFERRED_NORMAL_BINDING)
@@ -64,7 +67,16 @@ DeferredLightingOutput ResolveDeferredLighting(in DeferredVarying value)
     surface.Alpha = 1;
     input.NormalWorld = surface.NormalWorld;
     output.Color = ShadeMaterial(surface, input);
-    output.Color.rgb += EvaluateRasterMeshLights(surface, input.PositionWorld, uint(deferredView.TargetSizePixel.z));
+    output.Color.rgb += EvaluateRasterMeshLights(surface,
+                                                 input.PositionWorld,
+                                                 uint(deferredView.TargetSizePixel.z),
+                                                 uint(deferredView.TargetSizePixel.w));
+    // An authored ToneMap after this pass is fused here, before the RGBA8 target quantizes the radiance.
+    if (deferredView.Options.z > 0)
+    {
+        output.Color.rgb =
+            MapSceneToDisplay(output.Color.rgb, deferredView.Options.z, uint(deferredView.Options.w + 0.5));
+    }
     output.Depth = depth;
     return output;
 }

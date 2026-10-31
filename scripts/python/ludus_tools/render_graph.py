@@ -51,6 +51,8 @@ MAX_TARGET_EXTENT = 16384
 MAX_ACCUMULATION_SAMPLES = 4096
 MIN_TONE_MAPPING_EXPOSURE = 0.01
 MAX_TONE_MAPPING_EXPOSURE = 64
+# ToneMap display curves; mirrors render_graph_format::DisplayCurve. Absent selects Reinhard.
+TONE_MAPPING_CURVES = ("Reinhard", "PbrNeutral")
 TYPES = ("Scene", "View", "ColorTexture", "DepthTexture")
 TEXTURES = TYPES[2:]
 MODES = ("ColorAndDepth", "DepthOnly")
@@ -176,6 +178,8 @@ def _validate_node(node, where):
         fields.add("samples")
     elif kind == "ToneMap":
         fields.add("exposure")
+        if "curve" in node:
+            fields.add("curve")
     elif kind == "Camera":
         fields |= {"active", "role", "target_type"}
     elif kind == "Buffer":
@@ -203,6 +207,8 @@ def _validate_node(node, where):
         exposure = node["exposure"]
         _require(type(exposure) in (int, float) and MIN_TONE_MAPPING_EXPOSURE <= exposure <= MAX_TONE_MAPPING_EXPOSURE,
                  "Capacity", where, f"exposure must be a finite multiplier in [{MIN_TONE_MAPPING_EXPOSURE}, {MAX_TONE_MAPPING_EXPOSURE}]")
+        if "curve" in node:
+            _enum(node["curve"], TONE_MAPPING_CURVES, where + "/curve")
     elif kind == "Camera":
         _boolean(node["active"], where)
         _enum(node["role"], ("Presentation", "Offscreen"), where)
@@ -1061,13 +1067,20 @@ class _Compiler:
                 producer = next((operation for operation in self.passes if operation['id'] == source.producer), None)
                 while producer is not None and producer['kind'] in ('Accumulate', 'Denoise'):
                     producer = next(operation for operation in self.passes if operation['id'] == producer['dependencies'][0])
-                _require(producer is not None and producer['kind'] == 'RayTracing', 'Capability', where,
-                         'ToneMap requires a ray color output from a RayTracingPipeline or scene compute pass, optionally through Accumulate. Raster and already tone-mapped images are unsupported.')
+                curve = node.get('curve', 'Reinhard')
+                # A raster producer is admitted when its color attachment is this exact version; the package build
+                # then requires the clustered deferred profile, whose lighting resolve applies the conversion.
+                is_raster = (producer is not None and producer['kind'] == 'Raster' and
+                             producer['configuration'] == 'ColorAndDepth' and
+                             producer['attachments'].get('color', {}).get('output_version') == source.version and
+                             producer['attachments']['color']['resource'] == source.resource)
+                _require(producer is not None and (producer['kind'] == 'RayTracing' or is_raster), 'Capability', where,
+                         'ToneMap requires a ray color output from a RayTracingPipeline or scene compute pass, optionally through Accumulate, or the color output of a ColorAndDepth raster pass; already tone-mapped images are unsupported.')
                 _require('tone_mapping' not in producer, 'MultipleWriters', where,
-                         'A ray output can feed only one ToneMap node. Chain consumers after its color output.')
+                         'A ray or raster output can feed only one ToneMap node. Chain consumers after its color output.')
                 value = self.write(source, {'color_load': 'Load', 'color_store': 'Store'}, 'color', where, source.cameras)
-                producer['tone_mapping'] = {'id': where, 'exposure': node['exposure']}
-                self.add_pass({'id': where, 'kind': 'ToneMap', 'exposure': node['exposure'],
+                producer['tone_mapping'] = {'id': where, 'exposure': node['exposure'], 'curve': curve}
+                self.add_pass({'id': where, 'kind': 'ToneMap', 'exposure': node['exposure'], 'curve': curve,
                     'source': self.library.label(path), 'asset': self.library.assets[path]['id'],
                     'asset_configuration': config['id'], 'dependencies': [source.producer],
                     'attachments': {'color': {'resource': value.resource, 'input_version': source.version,
@@ -1159,7 +1172,7 @@ class _Compiler:
                 _require(not any(read['resource'] == source['resource'] and
                                  read['input_version'] == source['input_version'] for read in reads),
                          'Capability', average['id'],
-                         f"{average['kind']} owns the ray color version. Connect other readers after its output, or use a separate ray target for raw output.")
+                         f"{average['kind']} owns its producer's color version. Connect other readers after its output, or use a separate target for raw output.")
         for root in self.roots:
             _require(root["version"] == self.latest[root["resource"]], "StaleVersion", root["id"],
                      "export/presentation must consume the final physical resource version")
@@ -1284,7 +1297,7 @@ def dump_plan(plan):
         if entry['kind'] == 'Denoise':
             lines.append(f"    OIDN RT HDR; quality: {entry['quality']}; before display conversion")
         if entry['kind'] == 'ToneMap':
-            lines.append(f"    Reinhard + sRGB; exposure multiplier: {entry['exposure']}")
+            lines.append(f"    {entry.get('curve', 'Reinhard')} + sRGB; exposure multiplier: {entry['exposure']}")
         if entry['kind'] == 'RayTracing':
             lines.append(f"    launch: {entry['dimensions']}; color target: {entry['attachments']['color']['resource']}")
             if 'source_kind' in entry:

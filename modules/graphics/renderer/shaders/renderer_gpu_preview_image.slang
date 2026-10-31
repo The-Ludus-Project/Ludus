@@ -1,9 +1,10 @@
+#include "display_tone_mapping.slang"
 #include "raster_bindings.slang"
 
 // Read the GPU color buffer in one fullscreen pass, independent of the pixel count.
 LUDUS_SHADER_BINDING(0) cbuffer ImageParameters
 {
-    float4 ExtentPixel;
+    float4 ExtentPixel; // width, height, ToneMap exposure (zero bypasses it), one for PBR Neutral else Reinhard
 };
 LUDUS_SHADER_BINDING(1) StructuredBuffer<float4> DisplayColors;
 struct VertexInput
@@ -26,7 +27,11 @@ float4 FragmentMain(VertexOutput input) : SV_Target0
     float4 color = DisplayColors[pixel];
     if (color.w < 0)
         return float4(1, 0, 1, 1);
-    if (ExtentPixel.z > 0)
+    if (ExtentPixel.z > 0 && ExtentPixel.w > 0.5)
+    {
+        color.xyz = MapSceneToDisplay(color.xyz, ExtentPixel.z, DISPLAY_CURVE_PBR_NEUTRAL);
+    }
+    else if (ExtentPixel.z > 0)
     {
         static const uint CHANNEL_COUNT = 3;
         static const float SRGB_LINEAR_THRESHOLD = .0031308;

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <ludus/foundation/containers/static_array.hpp>
+
+#include <ludus/content/render_graph_format/plan.h>
 #include <ludus/graphics/renderer/deferred_layout.h>
 #include <ludus/graphics/renderer/renderer.hpp>
 #include <ludus/graphics/rhi/gpu_scope.h>
@@ -80,7 +82,8 @@ private:
     bool mHasBindings = false;
     rhi::RasterStatus mStatus = rhi::RasterStatus::NotReady;
 };
-/// Per-view camera uniform and common light bindings; owns no mutable scene data.
+/// Per-view camera uniform and common light bindings; owns no mutable scene data. The operation's
+/// ToneMap exposure and curve, when nonzero, are applied by the lighting resolve before RGBA8 output.
 class RenderGraphDeferredPass final
 {
 public:
@@ -93,7 +96,9 @@ public:
                                                PreparedView view,
                                                const ViewDescription& camera,
                                                rhi::RasterBindingResource meshLights,
-                                               foundation::uint32 meshLightCount) noexcept;
+                                               foundation::uint32 meshLightCount,
+                                               foundation::uint32 meshLightGridWord,
+                                               const content::render_graph_format::Pass& operation) noexcept;
     [[nodiscard]] rhi::RasterStatus Poll() noexcept;
     [[nodiscard]] rhi::RasterStatus
     Draw(Renderer& inoutRenderer, PreparedView view, const rhi::RasterPassDescription& description) noexcept;

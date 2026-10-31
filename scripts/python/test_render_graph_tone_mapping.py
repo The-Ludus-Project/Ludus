@@ -37,12 +37,13 @@ class ToneMappingTests(unittest.TestCase):
         plan = self.compile()
         ray, average, display = (next(operation for operation in plan['passes'] if operation['kind'] == kind)
                                  for kind in ('RayTracing', 'Accumulate', 'ToneMap'))
-        self.assertEqual({'id': 'Main/display', 'exposure': 2.25}, ray['tone_mapping'])
+        self.assertEqual({'id': 'Main/display', 'exposure': 2.25, 'curve': 'Reinhard'}, ray['tone_mapping'])
         self.assertEqual([average['id']], display['dependencies'])
         self.assertEqual(plan['roots'][0]['version'], display['attachments']['color']['output_version'])
         lowered = execution.lower_plan({'plans': [plan]}, 'Default')[2]
         self.assertEqual(1, len(lowered))  # Apply the mean and mapping before the one RGBA8 write.
-        self.assertEqual((8, 2.25), (lowered[0]['AccumulationSamples'], lowered[0]['ToneMappingExposure']))
+        self.assertEqual((8, 2.25, 'Reinhard'), (lowered[0]['AccumulationSamples'], lowered[0]['ToneMappingExposure'],
+                                                 lowered[0]['ToneMappingCurve']))
         self.assertIn('Reinhard + sRGB; exposure multiplier: 2.25', graph.dump_plan(plan))
         names = json.loads(execution.encode_resource_names({'plan': plan, 'generation': 'a' * 64}))
         self.assertTrue(any(operation['kind'] == 'ToneMap' for operation in names['operations']))
@@ -52,6 +53,8 @@ class ToneMappingTests(unittest.TestCase):
         # encode_runtime uses the same production pass writer as real shader packages.
         runtime = execution.encode_runtime_package(contents)
         self.assertEqual(2.25, struct.unpack_from('<f', runtime, 104 + 16 * 4)[0])
+        # Version 29 appends the curve code after Traversal: Reinhard is zero.
+        self.assertEqual(0, struct.unpack_from('<I', runtime, 104 + 20 * 4)[0])
 
     def test_unused_draft_and_disconnection_bypass_mapping(self):
         self.insert_before_output({'id': 'display', 'kind': 'ToneMap', 'exposure': 1})
@@ -82,19 +85,52 @@ class ToneMappingTests(unittest.TestCase):
         with self.assertRaisesRegex(ToolingError, 'already tone-mapped'):
             self.compile()
 
-    def test_raster_input_rejects_before_execution(self):
-        root = graph.new_workspace(self.path.parent / 'raster', output='offscreen', renderer_static=True,
+    def test_ray_output_lowers_the_selected_curve(self):
+        self.insert_before_output({'id': 'display', 'kind': 'ToneMap', 'exposure': 1, 'curve': 'PbrNeutral'})
+        lowered = execution.lower_plan({'plans': [self.compile()]}, 'Default')[2]
+        self.assertEqual((1.0, 'PbrNeutral'), (lowered[0]['ToneMappingExposure'], lowered[0]['ToneMappingCurve']))
+
+    def test_curve_is_a_closed_choice(self):
+        self.insert_before_output({'id': 'display', 'kind': 'ToneMap', 'exposure': 1, 'curve': 'Filmic'})
+        with self.assertRaises(ToolingError):
+            self.compile()
+
+    def raster_tone_mapped_plan(self, curve):
+        root = graph.new_workspace(self.path.parent / ('raster-' + curve), output='offscreen', renderer_static=True,
                                    profiles=('metal',))
         document = json.loads(root.read_text())
         configuration = document['configurations'][0]
-        configuration['nodes'].append({'id': 'display', 'kind': 'ToneMap', 'exposure': 1})
-        sink = next(edge for edge in configuration['edges'] if edge['to'] == 'output.texture')
-        source = sink['from']
-        sink['from'] = 'display.color'
-        configuration['edges'].append({'from': source, 'to': 'display.color'})
+        # The Raster starter copies the engine default, whose raster output already feeds a ToneMap.
+        node = next(node for node in configuration['nodes'] if node['kind'] == 'ToneMap')
+        node.update({'exposure': 1.5, 'curve': curve})
         root.write_bytes(graph.canonical_asset(document))
-        with self.assertRaisesRegex(ToolingError, 'Raster and already tone-mapped images are unsupported'):
-            graph.compile_graph(root)
+        return graph.compile_graph(root)
+
+    def test_raster_color_output_owns_fused_conversion(self):
+        plan = self.raster_tone_mapped_plan('PbrNeutral')
+        raster = next(operation for operation in plan['passes']
+                      if operation['kind'] == 'Raster' and operation['configuration'] == 'ColorAndDepth')
+        self.assertEqual({'id': 'Main/tonemap', 'exposure': 1.5, 'curve': 'PbrNeutral'}, raster['tone_mapping'])
+        self.assertIn('PbrNeutral + sRGB; exposure multiplier: 1.5', graph.dump_plan(plan))
+
+    def test_raster_conversion_requires_the_clustered_deferred_profile(self):
+        plan = self.raster_tone_mapped_plan('Reinhard')
+        raster = next(operation for operation in plan['passes'] if operation['kind'] == 'Raster')
+        # A clustered forward recipe of the same state: everything but the deferred lighting resolve.
+        state = {'color': 'RGBA8Unorm', 'depth': 'Depth32Float', **raster['pipeline']['state']}
+        package = {'plans': [plan],
+                   'recipes': [{'technique': raster['technique'], 'state': state, 'clustered_forward': True}]}
+        with self.assertRaisesRegex(ToolingError, 'requires the ClusteredDeferred scene profile'):
+            execution.lower_plan(package, plan['configuration'])
+
+    def test_shipped_default_raster_maps_with_pbr_neutral(self):
+        root = ROOT / 'modules/graphics/renderer/render_graphs/default/main.lurender.json'
+        for configuration in ('Default', 'ZPrepass'):
+            with self.subTest(configuration=configuration):
+                plan = graph.compile_graph(root, configuration=configuration)
+                raster = next(operation for operation in plan['passes']
+                              if operation['kind'] == 'Raster' and operation['configuration'] == 'ColorAndDepth')
+                self.assertEqual(('PbrNeutral', 1), (raster['tone_mapping']['curve'], raster['tone_mapping']['exposure']))
 
     def test_shipped_ray_templates_expose_display_conversion(self):
         for template in ('restir-di', 'visibility-secondary-rays', 'tiled-vbuffer-nee', 'compute-ray-tracing'):

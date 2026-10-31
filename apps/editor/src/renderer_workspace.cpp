@@ -209,6 +209,11 @@ QStringList GetChoices(const QString& field)
     {
         return GetUpscaleAlgorithms();
     }
+    if (field == QStringLiteral("curve"))
+    {
+        // ToneMap display curves.
+        return {QStringLiteral("Reinhard"), QStringLiteral("PbrNeutral")};
+    }
     if (field == QStringLiteral("color_processing"))
     {
         return {QStringLiteral("Linear"), QStringLiteral("Perceptual")};
@@ -341,6 +346,7 @@ QJsonObject MakeNode(const QString& kind, const QString& identity)
     else if (kind == QStringLiteral("ToneMap"))
     {
         node.insert(QStringLiteral("exposure"), 1);
+        node.insert(QStringLiteral("curve"), QStringLiteral("Reinhard"));
     }
     else if (kind == QStringLiteral("Accumulate"))
     {
@@ -3206,8 +3212,9 @@ void RendererWorkspace::populateNodeFields(QFormLayout& outFields, QWidget& inou
                                static_cast<float64>(content::render_graph_format::MAX_TONE_MAPPING_EXPOSURE));
             exposure->setValue(field.value().toDouble());
             exposure->setToolTip(
-                QStringLiteral("Linear exposure multiplier, then Reinhard compression and sRGB "
-                               "encoding. Connect after Accumulate; disable to clamp raw linear RGB."));
+                QStringLiteral("Linear exposure multiplier, then the selected curve and sRGB encoding. "
+                               "Connect after Accumulate or a clustered deferred raster pass; disable to "
+                               "clamp raw linear RGB."));
             connect(exposure, &QDoubleSpinBox::editingFinished, this, [this, exposure]() {
                 replaceSelectedField(QStringLiteral("exposure"), exposure->value());
             });

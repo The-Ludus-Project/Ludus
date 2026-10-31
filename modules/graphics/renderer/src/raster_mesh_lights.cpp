@@ -25,6 +25,8 @@ namespace
 constexpr usize CORNER_COUNT = 3;
 constexpr usize TEXTURED_PATCH_COUNT = 4;
 constexpr float32 TRIANGLE_CENTROID_WEIGHT = 1.0F / CORNER_COUNT;
+// A convex polygon's area is half the length of its fan's summed edge cross products.
+constexpr float32 POLYGON_AREA_FROM_CROSS = 0.5F;
 constexpr float32 DIELECTRIC_F0 = 0.04F;
 constexpr float32 FRAME_AXIS_THRESHOLD = 0.9F;
 constexpr float32 PLANE_EPSILON_METERS = static_cast<float32>(LUDUS_MESH_LIGHT_PLANE_EPSILON_METERS);
@@ -42,7 +44,8 @@ math::Vector3 GetPosition(math::Vector4 word) noexcept
 {
     return {word.X, word.Y, word.Z};
 }
-// One record: unit normal and sidedness, emission and corner count, then exactly that many world corners.
+// One record: unit normal and sidedness, emission and corner count, then exactly that many world corners. The first
+// corner's w holds the convex polygon's area in square metres, for the culling bound; the other corners' w are zero.
 [[nodiscard]] bool TryAppendRecord(BorrowedView<const math::Vector3> cornersWorld,
                                    math::Vector3 normalWorld,
                                    math::Vector3 emission,
@@ -54,9 +57,18 @@ math::Vector3 GetPosition(math::Vector4 word) noexcept
     {
         return false;
     }
+    math::Vector3 doubleAreaWorld{};
+    for (usize corner = 1; corner + 1 < cornersWorld.GetSize(); ++corner)
+    {
+        doubleAreaWorld = doubleAreaWorld + math::Cross(cornersWorld[corner] - cornersWorld[0],
+                                                        cornersWorld[corner + 1] - cornersWorld[0]);
+    }
+    const float32 area = math::Length(doubleAreaWorld) * POLYGON_AREA_FROM_CROSS;
     for (usize corner = 0; corner < cornersWorld.GetSize(); ++corner)
     {
-        if (inoutWords.TryAdd({cornersWorld[corner].X, cornersWorld[corner].Y, cornersWorld[corner].Z, 0}) == false)
+        if (inoutWords.TryAdd(
+                {cornersWorld[corner].X, cornersWorld[corner].Y, cornersWorld[corner].Z, corner == 0 ? area : 0.0F}) ==
+            false)
         {
             return false;
         }
