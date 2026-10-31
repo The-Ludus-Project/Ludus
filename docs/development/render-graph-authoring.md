@@ -6845,7 +6845,13 @@ The native executable also accepts `--stdio`: each request/reply has a four-byte
 little-endian byte length followed by versioned UTF-8 JSON, bounded to 16 MiB.
 It supports multiple requests until EOF and needs no Unix socket in this mode.
 `--version` reports the pinned Slang version. An occupied socket is refused;
-normal termination removes the worker's socket. After a crash, use a new private
+normal termination removes the worker's socket. SIGTERM or SIGINT stops the
+worker at once, even during a compile, and the client sees a failed request.
+Add `--stop-with-parent` as the last argument (after `--stdio` or the socket path)
+to also stop the worker when the process that launched it exits, including a
+crash or SIGKILL. The editor launches its workers this way. On Linux the kernel
+tracks the launching thread, so start such a worker from a thread that lives as
+long as its owner. After a crash, use a new private
 endpoint or explicitly remove the abandoned socket after confirming no worker
 owns it. Clients never silently switch to an offline compiler after worker failure.
 
