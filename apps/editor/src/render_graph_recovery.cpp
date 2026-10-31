@@ -1,5 +1,6 @@
 #include "internal/render_graph_recovery.h"
 
+#include <QApplication>
 #include <QComboBox>
 #include <QCryptographicHash>
 #include <QDateTime>
@@ -55,6 +56,11 @@ RenderGraphRecovery::RenderGraphRecovery(RenderGraphDocument& inoutDocument, QWi
     mTimer.setSingleShot(false);
     mTimer.setInterval(CHECKPOINT_INTERVAL_MILLISECONDS);
     connect(&mTimer, &QTimer::timeout, this, [this]() {
+        if (mIsDiscardPending == true &&
+            (QApplication::activeModalWidget() != nullptr || window()->isVisible() == false))
+        {
+            return;
+        }
         mIsDiscardPending = false;
         static_cast<void>(CheckpointNow());
     });
@@ -157,8 +163,8 @@ void RenderGraphRecovery::DiscardCurrent()
 {
     removeOwned();
     mIsDiscardPending = true;
-    // An accepted close destroys/rebinds this owner before the timer can run. A
-    // cancelled multi-document close keeps its unsaved buffer protected instead.
+    // Wait out other owners' close prompts. An accepted close hides/destroys or
+    // rebinds this owner; a cancelled close resumes protection in the visible window.
     mTimer.start();
     refreshStatus();
 }
@@ -364,8 +370,8 @@ void RenderGraphRecovery::Review()
     const auto load = [&]() {
         QString error;
         const bool isCurrent = checkpoints->currentData().toString() == QStringLiteral("current-draft");
-        const bool isValid =
-            isCurrent == true || mStore.Read(checkpoints->currentData().toString(), mDocument, checkpoint, error);
+        const bool isValid = isCurrent == true ||
+                             mStore.Read(checkpoints->currentData().toString(), mDocument, checkpoint, error) == true;
         if (isCurrent == true)
         {
             checkpoint = currentDraft;

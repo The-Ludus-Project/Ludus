@@ -472,3 +472,44 @@ TEST_CASE("Review can copy the in-memory draft without a checkpoint or overwriti
     CHECK(canCopyCurrent == true);
     CHECK(document.CaptureRecoverySnapshot(RenderGraphSource::Draft) == accepted);
 }
+
+TEST_CASE("Discard waits for the remaining close prompts and resumes only after cancellation",
+          "[editor][source-recovery][recovery-close]")
+{
+    QTemporaryDir project;
+    const QString package = MakeRecoveryPackage(project);
+    RenderGraphDocument document;
+    REQUIRE(document.Load(package, QStringLiteral("main.lurender.json")) == RenderGraphDocumentStatus::Ok);
+    REQUIRE(document.SetText(QStringLiteral("main_shaders/color.slang"), "// unsaved\n") ==
+            RenderGraphDocumentStatus::Ok);
+    QWidget host;
+    RenderGraphRecovery recovery(document, &host);
+    host.show();
+    REQUIRE(recovery.CheckpointNow() == true);
+    RenderGraphRecoveryStore observer(qEnvironmentVariable("LUDUS_EDITOR_RECOVERY_DIRECTORY"));
+    const QStringList checkpoints = observer.Find(document);
+    REQUIRE(checkpoints.size() == 1);
+    const QString path = checkpoints.first();
+    recovery.DiscardCurrent();
+    QDialog otherOwnerPrompt(&host);
+    bool hasKeptDiscard = false;
+    QTimer::singleShot(3300, &otherOwnerPrompt, [&]() {
+        hasKeptDiscard = QFileInfo::exists(path) == false;
+        otherOwnerPrompt.reject();
+    });
+    static_cast<void>(otherOwnerPrompt.exec());
+    REQUIRE(hasKeptDiscard == true);
+    SECTION("The close was accepted")
+    {
+        host.hide();
+        QTest::qWait(3100);
+        CHECK(QFileInfo::exists(path) == false);
+        recovery.Leave();
+        CHECK(QFileInfo::exists(path) == false);
+    }
+    SECTION("Another owner cancelled the close")
+    {
+        REQUIRE(QTest::qWaitFor([&]() { return QFileInfo::exists(path); }, 5000) == true);
+        CHECK(document.IsDirty() == true);
+    }
+}
