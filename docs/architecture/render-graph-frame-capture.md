@@ -297,6 +297,10 @@ polygonal-light-sampling template on the Cornell and many-emitter rooms, and the
 - **Raster routes are rejected, not captured as one frame.** A raster writer stores
   display-encoded 8-bit colour, which is not linear radiance. The capture reports
   `RasterRoute`.
+- **The route can be checked without a device.** `FindRenderGraphCaptureProblem`
+  applies `Start`'s route check to a plan alone. The editor records it for every
+  resource when it loads a generation, so the reference window can explain a
+  rejected output, and disable capturing it, before anything is created.
 - **The scene is submitted separately.** `RenderGraph::Update` needs an initialized
   graph and borrows its inputs only for the call, so `Start` resolves the route and
   initializes, and `SubmitScene` follows once the phase is `AwaitingScene`. The

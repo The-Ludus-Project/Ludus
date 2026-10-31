@@ -130,6 +130,11 @@ void WriteUint64(std::span<uint8> bytes, usize offset, uint64 value) noexcept
 }
 } // namespace
 
+RenderGraphCaptureProblem FindRenderGraphCaptureProblem(const RenderGraphPlan& plan, foundation::uint32 output) noexcept
+{
+    return ResolveRoute(plan, output).Problem;
+}
+
 foundation::uint32 ComputeRenderGraphCaptureTileCount(const RenderGraphRayWorkload& workload) noexcept
 {
     const uint64 shadowQueries = math::Min(uint64{workload.Lights} * RENDER_GRAPH_CAPTURE_QUERIES_PER_LIGHT,

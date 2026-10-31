@@ -165,8 +165,9 @@ COMPUTE_IDS = (COMPUTE_ID, VISIBILITY_COMPUTE_ID, SOFTWARE_COMPUTE_ID, SOFTWARE_
 IMAGE_VERTEX_ID = 'GraphRayImageVertex'
 IMAGE_INPUTS = [{'location': 0, 'format': 'Float2'}]
 IMAGE_FRAGMENT_ID = 'GraphRayImageFragment'
-# Files are installed by their owning renderer/math/RHI targets beside the helper.
-HELPERS = ('scene_data.h', 'renderer_gpu_preview_layout.h', 'renderer_surface_functions.slang', 'material_scattering.slang', 'material.h', 'recipes.json',
+# Files are installed by their owning renderer/math/RHI targets beside the helper. These are the staged roots;
+# stage_helpers adds every helper file they include, so a new engine include needs no entry here.
+HELPERS = ('scene_data.h', 'renderer_gpu_preview_layout.h', 'renderer_surface_functions.slang', 'recipes.json',
            'native_metal_ray.slang', 'metal_ray_pipeline_layout.h',
            'ray_triangle_loop.slang', 'ray_line_visibility.slang', 'ray_bvh_nodes.slang', 'ray_bvh_traversal.slang', 'renderer_reference_layout.h', 'lighting_layout.h', 'math.slang', 'raster_bindings.slang', 'scene_shader.slang', 'scene_payload.slang', 'scene_shader_layout.h', 'ray_shader.slang', 'visibility_buffer.slang')
 # Staged and included only for scene_interface.polygonal_light_sampling: FoundationMath's projected-solid-angle,
@@ -373,16 +374,8 @@ def expand_programs(programs, technique, snapshot, helper, build, variants=None,
     image_recipe = recipes['renderer_gpu_preview_image']
     polygonal_light_helpers = POLYGONAL_LIGHT_HELPERS if technique.get('scene_interface', {}).get(
         'polygonal_light_sampling', False) else ()
-    for filename in (*HELPERS, *polygonal_light_helpers, compute_recipe['source'], image_recipe['source']):
-        data = build.read(helper / filename)
-        relative = '_ludus_ray/' + filename
-        if relative in snapshot.files:
-            build.require(snapshot.external.get(relative) == helper / filename and snapshot.files[relative] == data,
-                          'Source', relative, 'reserved engine ray helper path')
-            continue
-        snapshot.files[relative] = data
-        snapshot.external[relative] = helper / filename
-        snapshot.total += len(data)
+    stage_helpers(snapshot, helper, (*HELPERS, *polygonal_light_helpers, compute_recipe['source'], image_recipe['source']),
+                  build)
     wrapper = '''float3 EvaluateGraphRay(uint pixel);
 #define LUDUS_RENDER_GRAPH_RAY_PIPELINE 1
 #include "_ludus_ray/renderer_gpu_preview.slang"
@@ -479,6 +472,34 @@ static const float RAY_DIRECTION_SQUARED_TOLERANCE = 0.00001;
     build.require(not set(result) & {program['id'] for program in selected.values()}, 'Schema', 'ray programs', 'reserved linked program identity')
     build.require(snapshot.total <= build.MAX_BYTES and len(snapshot.files) <= build.MAX_FILES, 'Capacity', 'ray sources', 'source snapshot limits exceeded')
     return result
+
+
+HELPER_INCLUDE = re.compile(r'^\s*#\s*include\s+"([^"/\\\n]+)"', re.M)
+
+
+def stage_helpers(snapshot, helper, roots, build):
+    """Stage engine ray helpers under _ludus_ray/ with every helper file they include.
+
+    The closure follows quoted includes of plain file names that exist in the helper
+    directory, in every preprocessor branch, so an engine shader that gains an include
+    cannot leave the snapshot short of it. Names absent from the helper directory are
+    left to the compiler, which reports them; authored sources are never followed here.
+    """
+    pending = list(roots)
+    while pending:
+        filename = pending.pop(0)
+        data = build.read(helper / filename)
+        relative = '_ludus_ray/' + filename
+        if relative in snapshot.files:
+            build.require(snapshot.external.get(relative) == helper / filename and snapshot.files[relative] == data,
+                          'Source', relative, 'reserved engine ray helper path')
+            continue
+        snapshot.files[relative] = data
+        snapshot.external[relative] = helper / filename
+        snapshot.total += len(data)
+        text = data.decode('utf-8', 'replace') if isinstance(data, bytes) else data
+        pending += [name for name in HELPER_INCLUDE.findall(text)
+                    if '_ludus_ray/' + name not in snapshot.files and (helper / name).is_file()]
 
 
 def capture_program_closure(program, snapshot, build):

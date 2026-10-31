@@ -777,10 +777,15 @@ class RisProjectedSolidAngleTemplateTests(unittest.TestCase):
         self.assertFalse(set(ray.POLYGONAL_LIGHT_HELPERS) & set(ray.HELPERS))
 
     def test_ray_helpers_capture_their_whole_include_closure(self):
-        # Graph builds snapshot exactly ray.HELPERS into _ludus_ray/; a quoted include outside the
-        # list (material_scattering.slang and material.h once) fails every ray graph cook.
+        # Graph builds stage the include closure of ray.HELPERS into _ludus_ray/ (ray.stage_helpers), but only
+        # from files CMake stages beside the helper. A quoted include missing from that list
+        # (material_scattering.slang and material.h once) fails every ray graph cook.
         import re
         repository = Path(__file__).resolve().parents[2]
+        cmake = (repository / 'cmake/LudusRenderGraph.cmake').read_text(encoding='utf-8')
+        staged = set(re.search(r'set\(helper_files (.*?)\)', cmake, re.S).group(1).split())
+        recipes = json.loads((repository / 'modules/graphics/renderer/shaders/recipes.json').read_text())
+        staged |= {recipe['source'] for recipe in recipes.values() if isinstance(recipe, dict) and 'source' in recipe}
         owners = {}
         for pattern in ('modules/**/shaders/*', 'modules/**/include/**/*.h', 'modules/**/include/**/*.inc'):
             for path in repository.glob(pattern):
@@ -797,7 +802,7 @@ class RisProjectedSolidAngleTemplateTests(unittest.TestCase):
             text = owners[name][0].read_text(encoding='utf-8')
             for include in re.findall(r'^\s*#\s*include\s+"([^"]+)"', text, re.M):
                 included = Path(include).name
-                self.assertIn(included, ray.HELPERS, f'{name} includes {included}, which the ray snapshot omits')
+                self.assertIn(included, staged, f'{name} includes {included}, which CMake does not stage beside the helper')
                 pending.append(included)
 
     def test_the_polygonal_light_requirement_is_a_boolean(self):
