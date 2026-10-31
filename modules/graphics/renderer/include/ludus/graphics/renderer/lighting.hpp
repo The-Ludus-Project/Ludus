@@ -222,11 +222,11 @@ struct LitMaterialDescription final
     MaterialDescription Surface{};
     /// Legacy metallic fraction in [0,1]; ignored by typed diffuse/conductor reference evaluation.
     ludus::foundation::float32 Metallic = 0;
-    /// Legacy/raster perceptual roughness in [0.045,1]; typed conductor reference uses Scattering alpha.
+    /// Legacy/raster perceptual roughness in [0.045,1]; typed conductor/coating reference uses Scattering alpha.
     ludus::foundation::float32 Roughness = 0.5F;
     /// Optional ready sampled Rgba8Unorm surface map: RG encodes tangent normal XY
     /// as 2*channel-1; positive Z is reconstructed. B multiplies perceptual roughness
-    /// (floored at 0.045), A multiplies metallic. Typed conductor reference keeps its constant
+    /// (floored at 0.045), A multiplies metallic. Typed conductor/coating reference keeps its constant
     /// Scattering alpha and ignores these two multipliers; normal mapping still applies.
     /// It shares Surface UV/sampler/LOD.
     /// Requires renderer_surface.slang or renderer_clustered_surface.slang; other

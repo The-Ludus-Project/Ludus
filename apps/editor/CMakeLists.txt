@@ -231,6 +231,7 @@ if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT EMSCRIPTEN)
     list(APPEND editor_viewport_sources src/internal/render_graph_preview.h src/render_graph_preview.cpp
         src/internal/viewport_raster_capture.h src/viewport_raster_capture.cpp
         src/internal/viewport_graph_capture.h src/viewport_graph_capture.cpp
+        src/internal/render_graph_capture_profile.h src/render_graph_capture_profile.cpp
         src/internal/graph_display_frames.h src/graph_display_frames.cpp
         src/internal/world_graph_view.h src/world_graph_view.cpp
         src/internal/render_graph_worker.h src/render_graph_worker.cpp)
@@ -804,6 +805,18 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     endif()
     find_package(Catch2 3 REQUIRED)
     find_package(Qt6 6.4 REQUIRED COMPONENTS Test)
+    add_executable(ludus_document_well_tests tests/main.cpp tests/document_pair_tests.cpp
+        src/internal/document_well.h src/document_well.cpp)
+    set_target_properties(ludus_document_well_tests PROPERTIES AUTOMOC ON)
+    target_include_directories(ludus_document_well_tests PRIVATE src)
+    target_compile_definitions(ludus_document_well_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII)
+    target_link_libraries(ludus_document_well_tests PRIVATE Qt6::Widgets Qt6::Test
+        Ludus::FoundationBase Catch2::Catch2)
+    ludus_apply_project_defaults(ludus_document_well_tests)
+    ludus_enable_test_exceptions(ludus_document_well_tests)
+    add_test(NAME ludus_document_well_tests COMMAND ludus_document_well_tests)
+    set_tests_properties(ludus_document_well_tests PROPERTIES LABELS "unit;editor;layout" TIMEOUT 30
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     if(APPLE)
         add_executable(ludus_editor_accessibility_tests tests/main.cpp tests/accessibility_tests.mm
             src/qt_accessibility_macos.mm)
@@ -1155,7 +1168,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         target_sources(ludus_editor_tests PRIVATE tests/viewport_reference_capture_tests.cpp
             tests/reference_comparison_tests.cpp)
         target_sources(ludus_editor_tests PRIVATE tests/render_graph_preview_tests.cpp tests/restir_benchmark_tests.cpp
-            tests/raster_mesh_light_benchmark_tests.cpp)
+            tests/raster_mesh_light_benchmark_tests.cpp tests/render_graph_capture_profile_tests.cpp)
         target_compile_definitions(ludus_editor_tests PRIVATE
             "LUDUS_EDITOR_RENDER_GRAPH_FIXTURE=\"${editor_renderer_static_RUNTIME_PACKAGE}\"")
         set(editor_ray_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/raytracing")
@@ -1203,6 +1216,11 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             MANIFEST "${progressive_staged}/main.lushader.json" RUNTIME_PACKAGE)
         target_compile_definitions(ludus_editor_tests PRIVATE
             "LUDUS_EDITOR_PROGRESSIVE_RAY_FIXTURE=\"${editor_progressive_ray_RUNTIME_PACKAGE}\"")
+        # The same sources' frame capture profile, as `render-graph capture-profile` cooks it.
+        ludus_compile_render_graph(TARGET ludus_editor_tests NAME editor_progressive_ray_capture
+            MANIFEST "${progressive_staged}/main.lushader.json" CAPTURE_PROFILE_PACKAGE)
+        target_compile_definitions(ludus_editor_tests PRIVATE
+            "LUDUS_EDITOR_PROGRESSIVE_CAPTURE_PROFILE_FIXTURE=\"${editor_progressive_ray_capture_CAPTURE_PROFILE_PACKAGE}\"")
     endif()
     if(LUDUS_EDITOR_RENDER_PREVIEW AND NOT APPLE)
         target_sources(ludus_editor_tests PRIVATE tests/offscreen_viewport_tests.cpp tests/vulkan_viewport_tests.cpp)
@@ -1385,7 +1403,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/internal/viewport_frame_pump.h src/viewport_frame_pump.cpp
         src/render_graph_defaults.cpp src/render_graph_shader_interface.cpp src/external_code_editor.cpp
         src/internal/render_graph_shader_assistance.h src/render_graph_shader_assistance.cpp
-        tests/render_graph_shader_assistance_tests.cpp)
+        tests/render_graph_shader_assistance_tests.cpp tests/render_graph_source_view_tests.cpp)
     set_target_properties(ludus_render_graph_configuration_tests PROPERTIES AUTOMOC ON)
     target_include_directories(ludus_render_graph_configuration_tests PRIVATE src)
     target_compile_definitions(ludus_render_graph_configuration_tests PRIVATE QT_NO_KEYWORDS QT_NO_CAST_FROM_ASCII
@@ -1441,7 +1459,7 @@ endif()
 # separate executables. Trusted batch workflows build this target before running
 # the editor CTest label, including during the promotion of newer workflow code.
 if(TARGET ludus_editor_tests)
-    foreach(target IN ITEMS ludus_editor_accessibility_tests ludus_code_editor_tests
+    foreach(target IN ITEMS ludus_editor_accessibility_tests ludus_code_editor_tests ludus_document_well_tests
             ludus_project_explorer_tests ludus_editor_browser_content_tests ludus_render_graph_pipeline_tests
             ludus_shader_interface_tests ludus_render_graph_configuration_tests
             ludus_render_graph_live_build_tests ludus_texture_display_conversion_tests)

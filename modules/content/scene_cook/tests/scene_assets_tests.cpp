@@ -905,6 +905,10 @@ TEST_CASE("local smoke test: a licensed scene imports through the editor catalog
     options.UuidsOrNull = &uuids;
     options.SourceOrigin = VIRTUAL_ORIGIN;
     options.SourceEntry = entryName;
+    // Match the Editor's bounded four-worker import and source-verification path.
+    ludus::foundation::threading::JobSystem importJobs;
+    REQUIRE(importJobs.Initialize({ .WorkerCount = 4 }) == ludus::foundation::threading::JobStatus::Ok);
+    options.JobsOrNull = &importJobs;
     AssetError error;
     Array<uint8> level;
     REQUIRE(CreateLevel("Licensed", options, level, error));
@@ -942,7 +946,16 @@ TEST_CASE("local smoke test: a licensed scene imports through the editor catalog
     CHECK(vertices > 0);
     if (entryName == "bistro_cafe.pbrt")
     {
-        CHECK(vertices == 2892578);
+        CHECK(vertices == 2922810);
+        usize normalMapped = 0;
+        usize masked = 0;
+        for (const ludus::resources::SceneMaterial& material : decoded.Materials)
+        {
+            normalMapped += material.NormalScale > 0.0F ? 1 : 0;
+            masked += material.IsAlphaMasked == true ? 1 : 0;
+        }
+        CHECK(normalMapped == 135);
+        CHECK(masked == 17);
         CHECK(indices == 8516880);
         CHECK(assembled.Scene.GetSize() <= MAX_ASSET_BYTES);
     }
@@ -2165,4 +2178,67 @@ TEST_CASE("Named material and grouped mesh resources survive reordered PBRT decl
     Array<uint8> second;
     REQUIRE(ImportScene(project.Project.string(), source.string(), ToSpan(first), options, second, error) == true);
     CHECK(collect() == before);
+}
+
+TEST_CASE("Coating parameters round trip and unsupported layer overrides preserve cook outputs",
+          "[scene_assets][coating]")
+{
+    namespace format = ludus::content::scene_format;
+    GoldenProject project;
+    const std::filesystem::path source = project.Work / "coating-source";
+    std::filesystem::copy(project.Source, source, std::filesystem::copy_options::recursive);
+    const std::filesystem::path entry = source / "scene-v4.pbrt";
+    const std::string original = ReadWhole(entry);
+    constexpr std::string_view MARKER = "\"string type\" [ \"coateddiffuse\" ]";
+    const usize markerBegin = original.find(MARKER);
+    REQUIRE(markerBegin != std::string::npos);
+    const usize insertion = markerBegin + MARKER.size();
+    std::string text = original;
+    text.insert(insertion,
+                " \"float eta\" [ 1.33 ] \"float thickness\" [ 0.03 ] \"rgb albedo\" [ 0 0 0 ]"
+                " \"float g\" [ 0 ] \"integer maxdepth\" [ 10 ] \"integer nsamples\" [ 1 ] ");
+    std::ofstream(entry, std::ios::binary) << text;
+    CookResult result;
+    CookError error;
+    CookResult legacy;
+    CHECK(Cook(source.string(), legacy, error) == false);
+    CHECK(error.Result == ludus::content::Status::Invalid);
+    const bool isCooked = CookMaterials(source.string(), result, error);
+    INFO(error.Message.View());
+    REQUIRE(isCooked == true);
+    ludus::resources::SceneDefinition scene;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(result.Bundle.GetData(), result.Bundle.GetSize(), scene) ==
+            ludus::resources::Status::Ok);
+    bool hasCoating = false;
+    for (const ludus::resources::SceneMaterial& material : scene.Materials)
+    {
+        if (material.Name.View() == "Floor")
+        {
+            hasCoating = true;
+            CHECK(material.Scattering.Model == format::MaterialModel::CoatedDiffuse);
+            CHECK(material.Scattering.CoatingEta == 1.33F);
+            CHECK(material.Scattering.CoatingThickness == 0.03F);
+        }
+    }
+    REQUIRE(hasCoating == true);
+    const std::string preserved = ToText(result.Bundle);
+    for (const std::string_view unsupported : {
+             " \"rgb albedo\" [ 0.1 0 0 ] ",
+             " \"texture albedo\" [ \"Wood\" ] ",
+             " \"float eta\" [ 0.5 ] ",
+             " \"float thickness\" [ -1 ] ",
+             " \"float g\" [ 0.2 ] ",
+             " \"integer maxdepth\" [ 2 ] ",
+             " \"integer nsamples\" [ 2 ] ",
+             " \"spectrum eta\" [ 1.5 ] ",
+         })
+    {
+        CAPTURE(unsupported);
+        text = original;
+        text.insert(insertion, unsupported);
+        std::ofstream(entry, std::ios::binary) << text;
+        CHECK(CookMaterials(source.string(), result, error) == false);
+        CHECK(error.Result == ludus::content::Status::Invalid);
+        CHECK(ToText(result.Bundle) == preserved);
+    }
 }

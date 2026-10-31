@@ -384,7 +384,8 @@ TEST_CASE("OBJ reading honours cancellation", "[scene_cook][obj]")
 TEST_CASE("OBJ surface maps beyond the texture count are averaged into scalar terms", "[scene_cook][obj]")
 {
     namespace format = ludus::content::scene_format;
-    // One base texture per slot leaves room for one surface map; the rest are averaged.
+    // Image bases and distinct surface sources cannot share swatches or packed maps;
+    // one base texture per slot leaves room for one surface map, the rest are averaged.
     constexpr int32 MATERIAL_COUNT = static_cast<int32>(format::IMPORT_LIMITS.Textures) - 1;
     ScratchDirectory scratch;
     std::filesystem::create_directories(scratch.Path / "textures");
@@ -393,7 +394,11 @@ TEST_CASE("OBJ surface maps beyond the texture count are averaged into scalar te
     std::string mtl;
     for (int32 i = 0; i < MATERIAL_COUNT; ++i)
     {
-        mtl += "newmtl M" + std::to_string(i) + "\nKd 0.5 0.5 0.5\nPr 0.5\nmap_Pr -imfchan g textures/rough.png\n";
+        const std::string roughnessName = "rough" + std::to_string(i) + ".png";
+        std::filesystem::copy_file(scratch.Path / "textures/rough.png", scratch.Path / "textures" / roughnessName);
+        mtl += "newmtl M" + std::to_string(i) +
+               "\nKd 0.5 0.5 0.5\nmap_Kd textures/rough.png\nPr 0.5\nmap_Pr -imfchan g textures/" + roughnessName +
+               "\n";
         const std::string x = std::to_string(i * 2);
         for (const char* const vertex : {" 0 0\n", ".5 0 0\n", " 1 0\n"})
         {

@@ -100,8 +100,8 @@ struct EmitterUse final
     /// Every member is decorative (IrShape::IsEmissionOptional); the group may be demoted.
     bool IsOptional = false;
     bool IsDemoted = false;
-    /// Source material of a decorative group, whose surface terms and maps the slot keeps;
-    /// IR_NONE for required (pbrt area-light) groups, which cook as white untextured emitters.
+    /// Source material retained for decorative surfaces or required emitters with
+    /// normal detail/coverage; IR_NONE for required emitters without surface detail.
     uint32 Material = IR_NONE;
     float64 PowerLumens = 0.0;
     float64 Area = 0.0;
@@ -274,7 +274,11 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
                                    "area-light normalization exceeds the finite RGB-nits profile");
                 return Status::Invalid;
             }
-            const uint32 emitterMaterial = shape.IsEmissionOptional == true ? shape.Material : IR_NONE;
+            const bool hasSurfaceDetail =
+                shape.Material != IR_NONE && (scene.Materials[shape.Material].NormalTexture != IR_NONE ||
+                                              scene.Materials[shape.Material].AlphaMode == IrAlphaMode::Mask);
+            const uint32 emitterMaterial =
+                shape.IsEmissionOptional == true || hasSurfaceDetail == true ? shape.Material : IR_NONE;
             for (usize i = 0; i < emitters.GetSize(); ++i)
             {
                 if (emitters[i].Emission == emission && emitters[i].IsTwoSided == shape.IsEmissionTwoSided &&
@@ -501,8 +505,16 @@ PlanBudget(const SceneIr& scene, DiagnosticLog& inoutLog, CookPlan& outPlan, con
         plannedOrNull->IsTextureRepeated = false;
         if (emitter.Material != IR_NONE)
         {
-            // A decorative group keeps its material's surface, alpha and maps.
             ApplyMaterialTerms(scene, emitter.Material, *plannedOrNull);
+            if (emitter.IsOptional == false)
+            {
+                // Required PBRT emission keeps its white surface approximation,
+                // with the authored shape coverage and normal detail intact.
+                plannedOrNull->BaseColour[0] = plannedOrNull->BaseColour[1] = plannedOrNull->BaseColour[2] = 1.0;
+                plannedOrNull->Texture = IR_NONE;
+                plannedOrNull->Metallic = 0.0;
+                plannedOrNull->Roughness = 1.0;
+            }
         }
         plannedOrNull->Area = emitter.Area;
         plannedOrNull->Emission[0] = static_cast<float64>(emitter.Emission.X);

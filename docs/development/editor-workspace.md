@@ -445,6 +445,23 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   **New Horizontal Tab Group** puts it below. **Move to Next/Previous Tab
   Group**, **Merge All Tab Groups** and the tab context menu move documents
   between groups. Groups share one direction at a time, up to four groups.
+- **View → Code and Viewport** (Ctrl+Alt+V; Command+Option+V on macOS), also in
+  the Source pane's **Source** menu, opens the Source editor beside the existing
+  interactive World document. It reuses the World's viewport, camera and render
+  device; it does not open the Render Preview image panel or create another viewport.
+  Graph navigation temporarily collapses in Source to leave room for code; switch
+  to Canvas to show it again. The Sources visibility preference is preserved.
+  The World's header and hierarchy also collapse so its viewport fills the pane;
+  returning to a single World restores them and their splitter preference.
+  Drag the divider to size the two panes. Existing horizontal group sizes are
+  preserved when invoking the command again, and other open tabs and drafts stay
+  open. The project remembers the groups, divider, graph, source file and selected
+  Source view when the editor closes normally or switches projects. These are
+  view preferences, not a recovery copy of unsaved source text. Missing or invalid
+  saved graphs leave the current graph intact. Live Preview keeps its existing
+  saved-source policy; compilation progress remains in the status-bar activity
+  chip. The Render Graph toolbar stays visible while the graph is shown in either
+  group, so moving between code and viewport does not resize the document area.
 - **Tool windows** dock around the documents. The calm default keeps the documents
   as large as the window allows: Project Explorer (tabbed with Content and Render
   Preview) is on the left, Properties (tabbed with Live Inspector, and Ray Paths
@@ -502,12 +519,13 @@ The layout follows Visual Studio, built on Qt Widgets' own docking:
   holds File (Open, Save) and History (Undo, Redo); Game holds Run (Play, Build, Stop),
   Launch (Run, Debug) and Session (Pause, Step, Resume, Reload Code). The Session group
   is shown only while a game is running or paused. The Render Graph toolbar is the
-  context strip: it appears only while a render graph is the active document (Validate,
-  Build Graph, Build & Preview, Live Preview, Cancel), so a World tab keeps one row of
-  commands. Toolbar buttons use short labels
+  context strip: it appears while a render graph is shown in any document group, so a World
+  shown alone keeps one row of commands. Its buttons show an icon beside the label: Validate,
+  a **Build Graph** split button whose arrow offers Build & Preview, a **Live Preview**
+  toggle that keeps an accent edge while it is on, and Cancel. Toolbar buttons use short labels
   so a 1280-pixel window shows them all; tooltips give the full name and
-  shortcut. The primary commands (Open, Save, Build, Run, Play, Stop) also show an
-  icon beside the label; every other button stays text only. Project Explorer
+  shortcut. The primary commands (Open, Save, Build, Run, Play, Stop) and the Render Graph
+  strip also show an icon beside the label; every other button stays text only. Project Explorer
   rows and the Error List severities carry icons too. The icons are Lucide
   drawings (ISC), drawn in the palette's button text colour; see
   [Editor icons](#editor-icons) for attribution and contribution instructions.
@@ -1666,6 +1684,15 @@ Accumulate's own 32-bit mean and per-pixel sample counts, not the displayed or
 The window explains which applies. Pixels that show the graph's failure colour,
 for example where a shader exceeded its query budget, fail the capture and are
 counted.
+
+When the graph declares a larger
+[capture budget](render-graph-authoring.md#author-pipeline-nodes)
+(`capture_visibility_queries`), the capture uses the graph's capture profile. The
+window builds it while it is open with **Render graph** or a comparison selected,
+from the drawing generation's saved sources, and reuses it until the graph is
+rebuilt. **Capture viewport** waits while it builds, and the status line says
+which package the capture uses. Without saved sources, as for the engine's
+prebuilt default, the capture uses the viewport's runtime package.
 
 A long sample is split into row bands, each submitted to the GPU on its own, so no
 submission runs into the GPU timeout. The capture sizes the bands from the image

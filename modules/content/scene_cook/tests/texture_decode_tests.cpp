@@ -7,6 +7,7 @@
 
 #include <ludus/content/scene_cook/best_effort_import.h>
 #include <ludus/content/scene_format/limits.h>
+#include <ludus/content/scene_format/luscn.h>
 #include <ludus/foundation/containers/static_array.hpp>
 #include <ludus/foundation/math/scalar.hpp>
 #include <ludus/foundation/math/vector.hpp>
@@ -433,7 +434,20 @@ TEST_CASE("Texture decoding cooks identical outputs for every worker count", "[s
     BestEffortResult serial;
     RequireWorkerCountIndependence((scratch.Path / "scene.obj").string(), serial);
     CHECK(HasReportCode(serial, codes::TEXTURE_UNREADABLE) == true);
-    CHECK(serial.Summary.CookedTextures > serial.Summary.CookedMaterials); // Surface and emission maps.
+    // Shared swatches/maps can make the image count smaller than the material count;
+    // verify that both detail-map roles survived instead of assuming one image per slot.
+    ludus::resources::SceneDefinition decoded;
+    REQUIRE(ludus::resources::SceneDefinition::Decode(serial.Bundle.GetData(), serial.Bundle.GetSize(), decoded) ==
+            ludus::resources::Status::Ok);
+    bool hasSurfaceMap = false;
+    bool hasEmissionMap = false;
+    for (const ludus::resources::SceneMaterial& material : decoded.Materials)
+    {
+        hasSurfaceMap = hasSurfaceMap == true || material.SurfaceTexture != ludus::content::scene_format::NO_TEXTURE;
+        hasEmissionMap = hasEmissionMap == true || material.EmissionTexture != ludus::content::scene_format::NO_TEXTURE;
+    }
+    CHECK(hasSurfaceMap == true);
+    CHECK(hasEmissionMap == true);
 }
 
 TEST_CASE("Texture decoding stays serial-identical where decode failures shift the texture limit",
@@ -454,12 +468,13 @@ TEST_CASE("Texture decoding stays serial-identical where decode failures shift t
     std::string mtl;
     for (int32 i = 0; i < MATERIAL_COUNT; ++i)
     {
-        AddMaterial(wavefront,
-                    mtl,
-                    i,
-                    i < FAILING_SLOTS ? "Kd 0.5 0.5 0.5\nnorm textures/broken.png\n"
-                                      : "Kd 0.5 0.5 0.5\nnorm textures/normal.png\nPr 0.5\n"
-                                        "map_Pr -imfchan g textures/rough.png\nPm 1\nmap_Pm textures/rough.png\n");
+        const std::string normalName = "normal" + std::to_string(i) + ".png";
+        std::filesystem::copy_file(scratch.Path / "textures/normal.png", scratch.Path / "textures" / normalName);
+        const std::string terms =
+            i < FAILING_SLOTS ? "Kd 0.5 0.5 0.5\nmap_Kd textures/rough.png\nnorm textures/broken.png\n"
+                              : "Kd 0.5 0.5 0.5\nmap_Kd textures/rough.png\nnorm textures/" + normalName +
+                                    "\nPr 0.5\nmap_Pr -imfchan g textures/rough.png\nPm 1\nmap_Pm textures/rough.png\n";
+        AddMaterial(wavefront, mtl, i, terms);
     }
     WriteFile(scratch.Path / "scene.obj", wavefront);
     WriteFile(scratch.Path / "m.mtl", mtl);
@@ -565,6 +580,30 @@ TEST_CASE("Texture halving and surface repacking cook identical outputs for ever
                      1) == true);
 }
 
+TEST_CASE("PBRT normal maps and shape masks are identical across worker counts", "[scene_cook][pbrt][threading]")
+{
+    ScratchDirectory scratch;
+    std::filesystem::create_directories(scratch.Path / "textures");
+    CopyTexture(scratch, "obj/room/textures/normal.png", "normal.png");
+    CopyTexture(scratch, "obj/cutout/textures/leaf.png", "base.png");
+    CopyTexture(scratch, "obj/cutout/textures/leaf_mask.png", "mask.png");
+    WriteFile(scratch.Path / "scene.pbrt", R"(WorldBegin
+Texture "base" "spectrum" "imagemap" "string filename" "textures/base.png"
+Texture "coverage" "float" "imagemap" "string filename" "textures/mask.png" "string encoding" "linear"
+MakeNamedMaterial "leaf" "string type" "diffuse" "texture reflectance" "base" "string normalmap" "textures/normal.png"
+NamedMaterial "leaf"
+Shape "trianglemesh" "point3 P" [0 0 0 1 0 0 0 1 0] "point2 uv" [0 0 1 0 0 1] "integer indices" [0 1 2]
+Shape "trianglemesh" "point3 P" [2 0 0 3 0 0 2 1 0] "point2 uv" [0 0 1 0 0 1] "integer indices" [0 1 2] "texture alpha" "coverage"
+AreaLightSource "diffuse" "rgb L" [1 1 1]
+Shape "trianglemesh" "point3 P" [4 0 0 5 0 0 4 1 0] "point2 uv" [0 0 1 0 0 1] "integer indices" [0 1 2] "texture alpha" "coverage"
+)");
+    BestEffortResult serial;
+    RequireWorkerCountIndependence((scratch.Path / "scene.pbrt").string(), serial);
+    CHECK(serial.Summary.CookedTextures == 4);
+    CHECK(HasReportCode(serial, codes::NORMALMAP_DROPPED) == false);
+    CHECK(HasReportCode(serial, codes::TEXTURE_UNREADABLE) == false);
+}
+
 TEST_CASE("A shared roughness and metallic texture is reported for each term", "[scene_cook][gltf][threading]")
 {
     ScratchDirectory scratch;
@@ -592,7 +631,7 @@ TEST_CASE("A shared roughness and metallic texture is reported for each term", "
     const std::string_view unreadable = GetReportDiagnostic(serial, codes::TEXTURE_UNREADABLE);
     CHECK(unreadable.find(R"("file": "textures/missing.png")") != std::string_view::npos);
     CHECK(unreadable.find(R"("count": 2,)") != std::string_view::npos);
-    CHECK(serial.Summary.CookedTextures == 4); // Two swatches and two surface maps.
+    CHECK(serial.Summary.CookedTextures == 3); // One shared white swatch and two different surface maps.
 }
 
 TEST_CASE("Texture decode queue matches inline decoding in and out of planned order", "[scene_cook][threading]")

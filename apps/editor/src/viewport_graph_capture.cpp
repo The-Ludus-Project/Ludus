@@ -59,6 +59,19 @@ QString DescribeProblem(renderer::RenderGraphCaptureProblem problem, graphics::r
     }
     return {};
 }
+
+/// Read a cooked package of at most RenderGraphPreview::MAX_PACKAGE_BYTES.
+bool ReadPackageBytes(const QString& path, QByteArray& outBytes)
+{
+    QFile file(path);
+    if (QFileInfo(path).isFile() == false || QFileInfo(path).size() > RenderGraphPreview::MAX_PACKAGE_BYTES ||
+        file.open(QIODevice::ReadOnly) == false)
+    {
+        return false;
+    }
+    outBytes = file.read(RenderGraphPreview::MAX_PACKAGE_BYTES);
+    return true;
+}
 } // namespace
 
 ViewportGraphCapture::ViewportGraphCapture() noexcept = default;
@@ -70,6 +83,7 @@ ViewportGraphCapture::~ViewportGraphCapture() noexcept
 bool ViewportGraphCapture::Load(graphics::rhi::DeviceHandle device,
                                 graphics::rhi::SurfaceHandle surface,
                                 const ViewportRasterSource& source,
+                                const QString& captureProfilePath,
                                 const QSize& requestedSize,
                                 uint32 samples,
                                 QSize& outExtent,
@@ -94,25 +108,34 @@ bool ViewportGraphCapture::Load(graphics::rhi::DeviceHandle device,
                        .arg(source.OutputTarget);
         return false;
     }
-    QFile file(source.PackagePath);
-    if (QFileInfo(source.PackagePath).isFile() == false ||
-        QFileInfo(source.PackagePath).size() > RenderGraphPreview::MAX_PACKAGE_BYTES ||
-        file.open(QIODevice::ReadOnly) == false)
+    // A capture profile is cooked from the runtime package's generation with the same plan, so the source's
+    // output resource and pass indices apply to it unchanged.
+    mIsCaptureProfile = captureProfilePath.isEmpty() == false;
+    const QString path = mIsCaptureProfile == true ? captureProfilePath : source.PackagePath;
+    QByteArray bytes;
+    if (ReadPackageBytes(path, bytes) == false)
     {
-        outError = QStringLiteral("No readable runtime generation at %1; cook the runtime first.")
-                       .arg(QFileInfo(source.PackagePath).fileName());
+        outError = mIsCaptureProfile == true
+                       ? QStringLiteral("No readable capture profile at %1; capture again to rebuild it.")
+                             .arg(QFileInfo(path).fileName())
+                       : QStringLiteral("No readable runtime generation at %1; cook the runtime first.")
+                             .arg(QFileInfo(path).fileName());
         return false;
     }
-    const QByteArray bytes = file.read(RenderGraphPreview::MAX_PACKAGE_BYTES);
     renderer::RenderGraphPackage* packageOrNull = new (std::nothrow) renderer::RenderGraphPackage;
     mPackage.Reset(packageOrNull);
+    const BorrowedView<const uint8> view{reinterpret_cast<const uint8*>(bytes.constData()),
+                                         static_cast<usize>(bytes.size())};
     if (mPackage.Get() == nullptr ||
-        mPackage->Decode({reinterpret_cast<const uint8*>(bytes.constData()), static_cast<usize>(bytes.size())}) !=
+        (mIsCaptureProfile == true ? mPackage->DecodeCaptureProfile(view) : mPackage->Decode(view)) !=
             renderer::RenderGraphPackageStatus::Ready)
     {
+        // Name the package before Release forgets which kind was decoded.
+        outError = QStringLiteral("The %1 %2 could not be decoded for capture.")
+                       .arg(mIsCaptureProfile == true ? QStringLiteral("capture profile")
+                                                      : QStringLiteral("runtime generation"),
+                            QFileInfo(path).fileName());
         Release();
-        outError = QStringLiteral("The runtime generation %1 could not be decoded for capture.")
-                       .arg(QFileInfo(source.PackagePath).fileName());
         return false;
     }
     // The programs record is tens of KiB; keep it off the stack. Its artifacts stay borrowed from the package.
@@ -235,6 +258,33 @@ void ViewportGraphCapture::Release() noexcept
     mExtractionOrNull.Reset();
     mProgramsOrNull.Reset();
     mPackage.Reset();
+    mIsCaptureProfile = false;
+}
+
+bool ViewportGraphCapture::ReadGenerationIdentity(const ViewportRasterSource& source,
+                                                  QByteArray& outIdentity,
+                                                  QString& outError)
+{
+    QByteArray bytes;
+    if (source.PackagePath.isEmpty() == true || ReadPackageBytes(source.PackagePath, bytes) == false)
+    {
+        outError = QStringLiteral("The viewport has no readable runtime generation to capture yet.");
+        return false;
+    }
+    renderer::RenderGraphPackage* packageOrNull = new (std::nothrow) renderer::RenderGraphPackage;
+    const core::UniquePtr<renderer::RenderGraphPackage> package{packageOrNull};
+    if (package.Get() == nullptr ||
+        package->Decode({reinterpret_cast<const uint8*>(bytes.constData()), static_cast<usize>(bytes.size())}) !=
+            renderer::RenderGraphPackageStatus::Ready)
+    {
+        outError = QStringLiteral("The runtime generation %1 could not be decoded for capture.")
+                       .arg(QFileInfo(source.PackagePath).fileName());
+        return false;
+    }
+    const BorrowedView<const uint8> identity = package->GetGenerationIdentity();
+    outIdentity =
+        QByteArray(reinterpret_cast<const char*>(identity.GetDataOrNull()), static_cast<qsizetype>(identity.GetSize()));
+    return true;
 }
 
 renderer::RenderGraphCapturePhase ViewportGraphCapture::GetPhase() const noexcept

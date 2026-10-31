@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / 'tests/sdk_consumer/rg2/raytracing'
 # The source-tree owners of the flat SDK shaders directory, in _ludus_stage_render_graph_helpers order.
 HELPER_ROOTS = ('cmake/shaders', 'modules/graphics/renderer/shaders',
+                'modules/content/scene_format/include/ludus/content/scene_format',
                 'modules/content/render_graph_format/include/ludus/content/render_graph_format',
                 'modules/foundation/math/shaders', 'modules/graphics/rhi/shaders',
                 'modules/graphics/renderer/include/ludus/graphics/renderer',
@@ -1159,6 +1160,40 @@ class RayCompilerAcceptance(unittest.TestCase):
             self.assertEqual(cooked['interface_identity'], runtime['interface_identity'])
             with self.assertRaises(ToolingError):
                 build.build_package(manifest, root / 'both', capture_profile=True, ray_path_capture=True, **options)
+
+    def test_capture_profile_rebuilds_a_generation_only_when_it_declares_a_larger_budget(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'source'
+            shutil.copytree(ROOT / 'tests/sdk_consumer/rg2/scene_ray', source)
+            manifest = source / 'main.lushader.json'
+            value = json.loads((source / 'main.lushader.json.in').read_text().replace('@RG2_TEST_PROFILES@', '["metal"]'))
+            manifest.write_text(json.dumps(value))
+            options = dict(helper=os.environ['LUDUS_RG1_HELPER'], compiler=os.environ['LUDUS_RG1_SLANG'],
+                           spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+            # Without a larger capture budget the runtime package is the capture package: nothing compiles.
+            plain = build.build_package(manifest, root / 'plain', **options)
+            skipped = reload.rebuild_capture_profile(root / 'plain', root / 'plain-capture', root / 'plain.lurgcp',
+                                                     **options)
+            self.assertEqual(skipped, {'capture_profile': None, 'source_generation': plain['generation']})
+            self.assertFalse((root / 'plain-capture').exists())
+            self.assertFalse((root / 'plain.lurgcp').exists())
+
+            interface = next(item for item in value['techniques'] if item['id'] == ray.TECHNIQUE)['scene_interface']
+            interface['capture_visibility_queries'] = 64
+            manifest.write_text(json.dumps(value))
+            budgeted = build.build_package(manifest, root / 'build', **options)
+            runtime = execution.cook_runtime(budgeted['package'], root / 'scene.lurgrt')
+            # Later edits to the live sources must not reach the profile of the published generation.
+            interface['capture_visibility_queries'] = interface['visibility_queries']
+            manifest.write_text(json.dumps(value))
+            destination = root / 'scene.lurgcp'
+            result = reload.rebuild_capture_profile(root / 'build', root / 'capture', destination, **options)
+            self.assertEqual(result['source_generation'], budgeted['generation'])
+            self.assertEqual(destination.read_bytes()[:4], b'LURC')
+            self.assertEqual(result['capture_profile']['interface_identity'], runtime['interface_identity'])
+            self.assertTrue(any('    queries.MaximumVisibilityQueries = 64;' in path.read_text()
+                                for path in (Path(result['build']['package']) / 'programs').glob('*/wrapper.slang')))
 
     def test_ray_path_capture_rebuilds_a_generation_from_its_saved_sources(self):
         with tempfile.TemporaryDirectory() as temporary:

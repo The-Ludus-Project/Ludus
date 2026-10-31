@@ -2,6 +2,7 @@
 // OBJ/MTL) builds SceneIR -> budget plan -> LUSCN v6 bundle and a deterministic
 // import report. See docs/development/best-effort-scene-import.md.
 
+#include <ludus/content/content.h>
 #include <ludus/content/scene_cook/best_effort_import.h>
 #include <ludus/content/scene_cook/limits.h>
 #include <ludus/content/scene_format/luscn.h>
@@ -136,7 +137,10 @@ struct CookedTexture final
     bool IsFallback = false;
     /// Linear data (a LUSCN v6 surface map) rather than sRGB colour.
     bool IsLinear = false;
+    /// The packed RG channels came from a readable normal image.
     bool HasNormalMap = false;
+    /// Hash used to reject unequal swatches before the collision-safe byte comparison.
+    Digest SwatchDigest;
 };
 
 /// One cooked world-space mesh.
@@ -558,6 +562,65 @@ void RepackSurfaceBand(void* context, usize band) noexcept
     return Status::Ok;
 }
 
+/// Reuse a surface image only when every packed source channel matches. Normal
+/// strength and scalar roughness/metallic factors remain per-material multipliers.
+[[nodiscard]] bool AreSurfaceSourcesEqual(const IrMaterial& left, const IrMaterial& right) noexcept
+{
+    return left.NormalTexture == right.NormalTexture && left.NormalTextureKind == right.NormalTextureKind &&
+           left.RoughnessTexture == right.RoughnessTexture && left.RoughnessChannel == right.RoughnessChannel &&
+           left.MetallicTexture == right.MetallicTexture && left.MetallicChannel == right.MetallicChannel;
+}
+
+/// Share byte-identical base swatches after shape masks have been applied. Image
+/// textures keep their individual slots; mask differences must never alias.
+[[nodiscard]] bool ShareBaseSwatches(CookPlan& inoutPlan, Array<CookedTexture>& inoutTextures) noexcept
+{
+    Array<CookedTexture> unique;
+    for (usize slot = 0; slot < inoutPlan.Materials.GetSize(); ++slot)
+    {
+        CookedTexture& texture = inoutTextures[slot];
+        uint32 shared = IR_NONE;
+        if (texture.Source == IR_NONE)
+        {
+            texture.SwatchDigest = Hash(texture.Image.Texels.AsSpan());
+            for (usize i = 0; i < unique.GetSize(); ++i)
+            {
+                const CookedTexture& candidate = unique[i];
+                if (candidate.Source != IR_NONE || candidate.Image.Width != texture.Image.Width ||
+                    candidate.Image.Height != texture.Image.Height || candidate.SwatchDigest != texture.SwatchDigest)
+                {
+                    continue;
+                }
+                bool isEqual = true;
+                for (usize k = 0; k < texture.Image.Texels.GetSize(); ++k)
+                {
+                    if (candidate.Image.Texels[k] != texture.Image.Texels[k])
+                    {
+                        isEqual = false;
+                        break;
+                    }
+                }
+                if (isEqual == true)
+                {
+                    shared = static_cast<uint32>(i);
+                    break;
+                }
+            }
+        }
+        if (shared == IR_NONE)
+        {
+            shared = static_cast<uint32>(unique.GetSize());
+            if (unique.TryAdd(static_cast<CookedTexture&&>(texture)) == false)
+            {
+                return false;
+            }
+        }
+        inoutPlan.Materials[slot].CookedBaseTexture = shared;
+    }
+    inoutTextures = static_cast<Array<CookedTexture>&&>(unique);
+    return true;
+}
+
 /// Cook an emissive slot's emission colour texture (glTF emissiveTexture, MTL map_Ke)
 /// as an sRGB LUSCN v6 emission map multiplying its emission.
 [[nodiscard]] Status CookEmissionMap(const SceneIr& scene,
@@ -690,15 +753,50 @@ void RepackSurfaceBand(void* context, usize band) noexcept
             return Status::Ok;
         }
         usize channel = material.OpacityChannel;
-        if (channel == IR_DETECT_OPACITY_CHANNEL)
+        const bool hasPartialAlpha = HasPartialChannel(opacity, ALPHA_CHANNEL);
+        if (material.IsOpacityFloatImage == true)
         {
-            channel = HasPartialChannel(opacity, ALPHA_CHANNEL) == true ? ALPHA_CHANNEL : 0;
+            // Thanks to Pharr, Jakob and Humphreys, pbrt-v4 MIPMap::Bilerp<Float>
+            // and CreateFromFile (https://github.com/mmp/pbrt-v4/blob/master/src/pbrt/util/mipmap.cpp):
+            // a non-opaque alpha channel wins, otherwise average decoded RGB.
+            // Image::GetChannel applies the declared encoding to alpha too:
+            // https://github.com/mmp/pbrt-v4/blob/master/src/pbrt/util/image.h
+            // We quantize coverage to RGBA8 before the engine's fixed mask test.
+            for (usize i = 0; i < opacity.Texels.GetSize(); i += DECODED_IMAGE_CHANNEL_COUNT)
+            {
+                float64 value = DecodeChannel(opacity.Texels[i + ALPHA_CHANNEL], texture.Encoding, texture.Gamma);
+                if (hasPartialAlpha == false)
+                {
+                    value = 0.0;
+                    for (usize k = 0; k < IR_RGB_CHANNEL_COUNT; ++k)
+                    {
+                        value += DecodeChannel(opacity.Texels[i + k], texture.Encoding, texture.Gamma);
+                    }
+                    value /= static_cast<float64>(IR_RGB_CHANNEL_COUNT);
+                }
+                value *= texture.Scale[0];
+                if (texture.IsInverted == true)
+                {
+                    value = 1.0 - value;
+                }
+                opacity.Texels[i + ALPHA_CHANNEL] =
+                    static_cast<uint8>(math::Floor(math::Clamp(value, 0.0, 1.0) * DECODED_IMAGE_CHANNEL_MAXIMUM + 0.5));
+            }
+            channel = ALPHA_CHANNEL;
+        }
+        else if (channel == IR_DETECT_OPACITY_CHANNEL)
+        {
+            channel = hasPartialAlpha == true ? ALPHA_CHANNEL : 0;
         }
         channel = math::Min(channel, ALPHA_CHANNEL);
         // An untextured slot takes the opacity map's resolution so the mask survives.
         if (inoutTexture.Source == IR_NONE && ResizeSwatch(opacity.Width, opacity.Height, image) == false)
         {
             return Status::OutOfMemory;
+        }
+        if (inoutTexture.Source == IR_NONE)
+        {
+            inoutPlanned.IsTextureRepeated = texture.IsRepeated;
         }
         for (uint32 y = 0; y < image.Height; ++y)
         {
@@ -714,7 +812,10 @@ void RepackSurfaceBand(void* context, usize band) noexcept
     bool isClipped = false;
     for (usize i = ALPHA_CHANNEL; i < image.Texels.GetSize(); i += DECODED_IMAGE_CHANNEL_COUNT)
     {
-        const float64 alpha = static_cast<float64>(image.Texels[i]) * math::Clamp(material.Opacity, 0.0, 1.0);
+        const bool shouldUseBaseAlpha = material.IsBaseAlphaIgnored == false || material.OpacityTexture != IR_NONE;
+        const float64 coverage =
+            shouldUseBaseAlpha == true ? static_cast<float64>(image.Texels[i]) : DECODED_IMAGE_CHANNEL_MAXIMUM;
+        const float64 alpha = coverage * math::Clamp(material.Opacity, 0.0, 1.0);
         image.Texels[i] = static_cast<uint8>(math::Floor(alpha + .5));
         isClipped = isClipped == true ||
                     static_cast<float64>(image.Texels[i]) < inoutPlanned.AlphaCutoff * DECODED_IMAGE_CHANNEL_MAXIMUM;
@@ -857,7 +958,7 @@ PlanTextureHalvings(const Array<CookedTexture>& textures, usize textureBudget, A
         {
             return true;
         }
-        // HalveImage's output extent.
+        // TryHalveImage's output extent.
         extent.Width = extent.Width > 1 ? extent.Width / 2 : 1;
         extent.Height = extent.Height > 1 ? extent.Height / 2 : 1;
         extent.Bytes = usize{extent.Width} * extent.Height * DECODED_IMAGE_CHANNEL_COUNT;
@@ -1030,6 +1131,14 @@ void HalveTextureTask(void* context, usize task) noexcept
                 return Status::OutOfMemory;
             }
             planned.IsTextureRepeated = false;
+            if (planned.Representative != IR_NONE)
+            {
+                const uint32 normal = scene.Materials[planned.Representative].NormalTexture;
+                if (normal != IR_NONE)
+                {
+                    planned.IsTextureRepeated = scene.Textures[normal].IsRepeated;
+                }
+            }
         }
         const Status masked = ApplyAlphaMask(scene, decodes, planned, *cooked, inoutLog);
         if (masked != Status::Ok)
@@ -1039,11 +1148,39 @@ void HalveTextureTask(void* context, usize task) noexcept
         cooked->SourceWidth = cooked->Image.Width;
         cooked->SourceHeight = cooked->Image.Height;
     }
-    // Surface and emission maps follow the base textures, slot by slot, while the
-    // bundle's texture count allows.
-    for (PlannedMaterial& planned : inoutPlan.Materials)
+    if (ShareBaseSwatches(inoutPlan, outTextures) == false)
     {
-        Status status = CookSurfaceMap(scene, decodes, jobsOrNull, tasks, planned, inoutLog, outTextures);
+        return Status::OutOfMemory;
+    }
+    // Detail maps follow the base images, sharing identical channel sources before
+    // applying the count limit. A shape-alpha variant need not duplicate its normal map.
+    for (usize slot = 0; slot < inoutPlan.Materials.GetSize(); ++slot)
+    {
+        PlannedMaterial& planned = inoutPlan.Materials[slot];
+        bool isShared = false;
+        if (planned.Representative != IR_NONE)
+        {
+            for (usize previous = 0; previous < slot; ++previous)
+            {
+                const PlannedMaterial& candidate = inoutPlan.Materials[previous];
+                if (candidate.CookedSurfaceTexture != IR_NONE && candidate.Representative != IR_NONE &&
+                    AreSurfaceSourcesEqual(scene.Materials[planned.Representative],
+                                           scene.Materials[candidate.Representative]) == true)
+                {
+                    planned.CookedSurfaceTexture = candidate.CookedSurfaceTexture;
+                    planned.NormalScale = outTextures[candidate.CookedSurfaceTexture].HasNormalMap == true
+                                              ? math::Clamp(scene.Materials[planned.Representative].NormalScale,
+                                                            0.0,
+                                                            static_cast<float64>(format::MAX_NORMAL_SCALE))
+                                              : 0.0;
+                    isShared = true;
+                    break;
+                }
+            }
+        }
+        Status status = isShared == true
+                            ? Status::Ok
+                            : CookSurfaceMap(scene, decodes, jobsOrNull, tasks, planned, inoutLog, outTextures);
         if (status == Status::Ok)
         {
             status = CookEmissionMap(scene, decodes, planned, inoutLog, outTextures);
@@ -1323,7 +1460,7 @@ void PackBundle(const IrCamera& camera,
     for (usize slot = 0; slot < plan.Materials.GetSize(); ++slot)
     {
         const PlannedMaterial& planned = plan.Materials[slot];
-        inoutBlob.AppendUint32(static_cast<uint32>(slot));
+        inoutBlob.AppendUint32(planned.CookedBaseTexture);
         inoutBlob.AppendUint32(planned.IsTextureRepeated == true ? format::ADDRESS_REPEAT : format::ADDRESS_CLAMP);
         inoutBlob.AppendFloat32(planned.Metallic);
         inoutBlob.AppendFloat32(planned.Roughness);
@@ -1582,13 +1719,16 @@ void WriteReport(const SceneIr& scene,
         json.BeginArray();
         for (const uint32 source : planned.Sources)
         {
-            if (source == IR_NONE)
+            const uint32 original = source != IR_NONE && scene.Materials[source].IsShapeVariant == true
+                                        ? scene.Materials[source].VariantSource
+                                        : source;
+            if (original == IR_NONE)
             {
                 json.WriteString("(default)");
             }
             else
             {
-                const IrMaterial& material = scene.Materials[source];
+                const IrMaterial& material = scene.Materials[original];
                 json.WriteString(material.Name.IsEmpty() == false ? material.Name.GetView()
                                                                   : material.SourceType.GetView());
             }
@@ -1641,12 +1781,28 @@ void WriteReport(const SceneIr& scene,
             json.EndObject();
         }
         json.EndArray();
+        json.WriteKey("alpha_masked");
+        json.WriteBoolean(planned.IsAlphaMasked);
+        json.WriteKey("alpha_cutoff");
+        json.WriteFloat(planned.IsAlphaMasked == true ? planned.AlphaCutoff : 0.0);
+        json.WriteKey("normal_texture");
+        const IrMaterial* representativeOrNull =
+            planned.Representative != IR_NONE ? &scene.Materials[planned.Representative] : nullptr;
+        if (planned.CookedSurfaceTexture != IR_NONE && planned.NormalScale > 0.0 && representativeOrNull != nullptr &&
+            representativeOrNull->NormalTexture != IR_NONE)
+        {
+            json.WriteString(GetImageName(scene, scene.Textures[representativeOrNull->NormalTexture]));
+        }
+        else
+        {
+            json.WriteNull();
+        }
         writeCount("placements", planned.Placements.GetSize());
         writeCount("vertices", planned.VertexCount);
         writeCount("indices", planned.IndexCount);
-        if (facts.TexturesOrNull != nullptr && slot < facts.TexturesOrNull->GetSize())
+        if (facts.TexturesOrNull != nullptr && planned.CookedBaseTexture < facts.TexturesOrNull->GetSize())
         {
-            const CookedTexture& texture = (*facts.TexturesOrNull)[slot];
+            const CookedTexture& texture = (*facts.TexturesOrNull)[planned.CookedBaseTexture];
             writeCount("texture_width", texture.Image.Width);
             writeCount("texture_height", texture.Image.Height);
             writeCount("texture_source_width", texture.SourceWidth);
@@ -1906,7 +2062,10 @@ void ResetResult(BestEffortResult& outResult) noexcept
     summary.SourcePlacements = static_cast<uint32>(plan.Placements.GetSize());
     summary.SourceVertices = plan.SourceVertices;
     summary.SourceIndices = plan.SourceIndices;
-    summary.SourceMaterials = static_cast<uint32>(scene.Materials.GetSize());
+    for (const IrMaterial& material : scene.Materials)
+    {
+        summary.SourceMaterials += material.IsShapeVariant == true ? 0 : 1;
+    }
     summary.SourceTextures = static_cast<uint32>(scene.Textures.GetSize());
     summary.SourceAreaLights = scene.Lights.Area;
     summary.DroppedPlacements = plan.DroppedPlacements;

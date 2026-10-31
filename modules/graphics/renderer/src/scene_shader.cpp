@@ -1,3 +1,4 @@
+#include "internal/reference_coating.h"
 #include "internal/render_graph_ray_scene.h"
 #include "internal/scene_material_validation.h"
 #include "internal/scene_memory.h"
@@ -97,6 +98,7 @@ bool IsTextureValid(const rhi::TextureCpuContent& texture, bool isData) noexcept
 bool IsMaterialValid(const SceneShaderMaterial& material) noexcept
 {
     return content::scene_format::IsMaterialScatteringValid(material.Scattering) == true &&
+           internal::IsReferenceCoatingSupported(material.Scattering) == true &&
            (material.Scattering.Model != content::scene_format::MaterialModel::Conductor ||
             material.Scattering.AlphaU == material.Scattering.AlphaV) &&
            material.HasError == false && ReferenceColor(material.BaseColor, 1) &&

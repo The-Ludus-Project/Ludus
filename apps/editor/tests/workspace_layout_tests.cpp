@@ -4,6 +4,7 @@
 #include "internal/document_well.h"
 #include "internal/error_list.h"
 #include "internal/main_window.h"
+#include "internal/render_preview.h"
 #include "internal/renderer_workspace.h"
 #include "internal/world_workspace.h"
 
@@ -16,19 +17,23 @@
 #include <QDockWidget>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QKeySequence>
 #include <QPixmap>
 #include <QPushButton>
+#include <QRect>
 #include <QScrollArea>
 #include <QSize>
+#include <QSplitter>
 #include <QStatusBar>
 #include <QTabWidget>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QToolBar>
+#include <QTreeWidget>
 
 using namespace ludus::editor;
 
@@ -666,4 +671,180 @@ TEST_CASE("Source focus uses shell layout restoration without switching to the g
     CHECK(focus->isChecked() == false);
     CHECK(views->currentIndex() == 1);
     CHECK(window.saveState() == before);
+}
+
+TEST_CASE("Code and Viewport reuses the World and keeps both surfaces stable while focus changes",
+          "[editor][layout][code-viewport]")
+{
+    QTemporaryDir directory;
+    EditorController controller(ToolingPaths{}, nullptr, directory.filePath(QStringLiteral("recent.json")));
+    QFile descriptor(directory.filePath(QStringLiteral("ludus.project.json")));
+    REQUIRE(descriptor.open(QIODevice::WriteOnly) == true);
+    descriptor.write(QByteArrayLiteral(R"json({"version":1,"name":"demo","provider":"cmake",
+"source_dir":".","preset":"linux-clang-debug","target":"app","run":{"cwd":".","args":[]}})json"));
+    descriptor.close();
+    MainWindow window(&controller, nullptr, directory.filePath(QStringLiteral("workspace.json")));
+    QAction* actionOrNull = window.findChild<QAction*>(QStringLiteral("view.codeAndViewport"));
+    REQUIRE(actionOrNull != nullptr);
+    CHECK(actionOrNull->isEnabled() == false);
+    controller.OpenProject(descriptor.fileName());
+    REQUIRE(controller.State().Document == DocumentState::ProjectLoaded);
+    RendererWorkspace* rendererOrNull = window.findChild<RendererWorkspace*>();
+    WorldWorkspace* worldOrNull = window.findChild<WorldWorkspace*>();
+    REQUIRE(rendererOrNull != nullptr);
+    REQUIRE(worldOrNull != nullptr);
+    rendererOrNull->SetLivePreview(false);
+    QPushButton* outlineOrNull = rendererOrNull->findChild<QPushButton*>(QStringLiteral("renderGraphToggleSources"));
+    REQUIRE(outlineOrNull != nullptr);
+    outlineOrNull->setChecked(true);
+    QWidget* worldParent = worldOrNull->parentWidget();
+    REQUIRE(worldParent != nullptr);
+    const RenderPreview* preview = &worldOrNull->GetRenderPreview();
+    window.resize(1470, 920);
+    window.show();
+    REQUIRE(actionOrNull->isEnabled() == true);
+    actionOrNull->trigger();
+    QApplication::processEvents();
+    DocumentWell& well = window.GetDocumentWell();
+    CHECK(well.GetGroupCount() == 2);
+    CHECK(well.IsDocumentCurrent(rendererOrNull) == true);
+    CHECK(well.IsDocumentCurrent(worldOrNull) == true);
+    CHECK(worldOrNull->parentWidget() == worldParent);
+    CHECK(worldOrNull->IsChromeVisible() == false);
+    CHECK(&worldOrNull->GetRenderPreview() == preview);
+    QTabWidget* viewsOrNull = rendererOrNull->findChild<QTabWidget*>(QStringLiteral("renderGraphViews"));
+    CodeEditor* sourceOrNull = rendererOrNull->findChild<CodeEditor*>(QStringLiteral("renderGraphSource"));
+    REQUIRE(viewsOrNull != nullptr);
+    REQUIRE(sourceOrNull != nullptr);
+    CHECK(viewsOrNull->currentIndex() == 1);
+    REQUIRE(sourceOrNull->isVisible() == true);
+    REQUIRE(worldOrNull->isVisible() == true);
+    CHECK(window.statusBar()->isVisible() == true);
+    QToolBar* stripOrNull = window.findChild<QToolBar*>(QStringLiteral("renderGraphToolbar"));
+    QTreeWidget* treeOrNull = rendererOrNull->findChild<QTreeWidget*>(QStringLiteral("renderGraphTree"));
+    REQUIRE(stripOrNull != nullptr);
+    REQUIRE(treeOrNull != nullptr);
+    CHECK(stripOrNull->isHidden() == false);
+    CHECK(treeOrNull->isHidden() == true);
+    const QRect bounds = well.geometry();
+    const QSize sourceSize = sourceOrNull->size();
+    REQUIRE(well.OpenDocument(worldOrNull) == true);
+    QApplication::processEvents();
+    CHECK(well.geometry() == bounds);
+    CHECK(sourceOrNull->size() == sourceSize);
+    CHECK(stripOrNull->isHidden() == false);
+    REQUIRE(well.OpenDocument(rendererOrNull) == true);
+    QApplication::processEvents();
+    CHECK(well.geometry() == bounds);
+    const QJsonObject arrangement = well.SaveState();
+    actionOrNull->trigger();
+    QApplication::processEvents();
+    CHECK(well.SaveState() == arrangement);
+    const QString capture = qEnvironmentVariable("LUDUS_EDITOR_LAYOUT_CAPTURE");
+    if (capture.isEmpty() == false)
+    {
+        REQUIRE(window.grab().save(capture + QStringLiteral("-code-viewport.png")) == true);
+    }
+    viewsOrNull->setCurrentIndex(0);
+    CHECK(treeOrNull->isHidden() == false);
+    CHECK(outlineOrNull->isChecked() == true);
+    viewsOrNull->setCurrentIndex(1);
+    CHECK(treeOrNull->isHidden() == true);
+    CHECK(outlineOrNull->isChecked() == false);
+    well.MergeGroups();
+    REQUIRE(well.OpenDocument(worldOrNull) == true);
+    QApplication::processEvents();
+    CHECK(worldOrNull->IsChromeVisible() == true);
+    CHECK(&worldOrNull->GetRenderPreview() == preview);
+}
+
+TEST_CASE("A project's paired Source selection and divider restore together", "[editor][layout][code-viewport]")
+{
+    QTemporaryDir directory;
+    EditorController controller(ToolingPaths{}, nullptr, directory.filePath(QStringLiteral("recent.json")));
+    QFile descriptor(directory.filePath(QStringLiteral("ludus.project.json")));
+    REQUIRE(descriptor.open(QIODevice::WriteOnly) == true);
+    descriptor.write(QByteArrayLiteral(R"json({"version":1,"name":"demo","provider":"cmake",
+"source_dir":".","preset":"linux-clang-debug","target":"app","run":{"cwd":".","args":[]}})json"));
+    descriptor.close();
+    const QString settings = directory.filePath(QStringLiteral("workspace.json"));
+    QJsonObject sourceState;
+    QJsonObject documents;
+    {
+        MainWindow window(&controller, nullptr, settings);
+        controller.OpenProject(descriptor.fileName());
+        RendererWorkspace* rendererOrNull = window.findChild<RendererWorkspace*>();
+        REQUIRE(rendererOrNull != nullptr);
+        rendererOrNull->SetLivePreview(false);
+        window.resize(1470, 920);
+        window.show();
+        QAction* actionOrNull = window.findChild<QAction*>(QStringLiteral("view.codeAndViewport"));
+        REQUIRE(actionOrNull != nullptr);
+        actionOrNull->trigger();
+        QComboBox* filesOrNull = rendererOrNull->findChild<QComboBox*>(QStringLiteral("renderGraphSourceFile"));
+        REQUIRE(filesOrNull != nullptr);
+        for (const QString& file : rendererOrNull->GetDocument().GetFiles())
+        {
+            if (file.endsWith(QStringLiteral(".slang")) == true)
+            {
+                filesOrNull->setCurrentText(file);
+            }
+        }
+        QSplitter* splitterOrNull =
+            window.GetDocumentWell().findChild<QSplitter*>(QStringLiteral("documentGroupSplitter"));
+        REQUIRE(splitterOrNull != nullptr);
+        splitterOrNull->setSizes({450, 900});
+        QApplication::processEvents();
+        sourceState = rendererOrNull->GetSourceViewState();
+        documents = window.GetDocumentWell().SaveState();
+        REQUIRE(window.close() == true);
+    }
+    MainWindow reopened(&controller, nullptr, settings);
+    reopened.show();
+    QApplication::processEvents();
+    RendererWorkspace* rendererOrNull = reopened.findChild<RendererWorkspace*>();
+    WorldWorkspace* worldOrNull = reopened.findChild<WorldWorkspace*>();
+    REQUIRE(rendererOrNull != nullptr);
+    REQUIRE(worldOrNull != nullptr);
+    rendererOrNull->SetLivePreview(false);
+    CHECK(rendererOrNull->GetSourceViewState() == sourceState);
+    CHECK(reopened.GetDocumentWell().IsDocumentCurrent(rendererOrNull) == true);
+    CHECK(reopened.GetDocumentWell().IsDocumentCurrent(worldOrNull) == true);
+    CHECK(reopened.GetDocumentWell().SaveState().value(QStringLiteral("groups")) ==
+          documents.value(QStringLiteral("groups")));
+    const QJsonArray savedSizes = documents.value(QStringLiteral("sizes")).toArray();
+    const QJsonArray restoredSizes = reopened.GetDocumentWell().SaveState().value(QStringLiteral("sizes")).toArray();
+    REQUIRE(savedSizes.size() == 2);
+    REQUIRE(restoredSizes.size() == 2);
+    const ludus::foundation::int32 savedTotal = savedSizes.at(0).toInt() + savedSizes.at(1).toInt();
+    const ludus::foundation::int32 restoredTotal = restoredSizes.at(0).toInt() + restoredSizes.at(1).toInt();
+    // Qt clamps a reopened window to its screen. Preserve the ratio within one pixel
+    // at the restored width rather than requiring the previous window's pixel counts.
+    const ludus::foundation::int32 difference =
+        restoredSizes.at(0).toInt() * savedTotal - savedSizes.at(0).toInt() * restoredTotal;
+    CHECK(difference >= -savedTotal);
+    CHECK(difference <= savedTotal);
+}
+
+TEST_CASE("World session restoration retains the normal splitter while companion chrome is hidden",
+          "[editor][layout][code-viewport]")
+{
+    WorldWorkspace world(ToolingPaths{}, nullptr);
+    world.resize(1200, 800);
+    world.show();
+    QApplication::processEvents();
+    QSplitter* splitterOrNull = world.findChild<QSplitter*>(QStringLiteral("worldSplitter"));
+    REQUIRE(splitterOrNull != nullptr);
+    splitterOrNull->setSizes({200, 600, 200});
+    const QJsonObject first = world.Session();
+    splitterOrNull->setSizes({350, 500, 300});
+    REQUIRE(world.Session().value(QStringLiteral("splitter")) != first.value(QStringLiteral("splitter")));
+    world.SetChromeVisible(false);
+    world.RestoreSession(first);
+    CHECK(world.IsChromeVisible() == false);
+    CHECK(world.Session().value(QStringLiteral("splitter")) == first.value(QStringLiteral("splitter")));
+    world.SetChromeVisible(true);
+    CHECK(world.IsChromeVisible() == true);
+    CHECK(world.Session().value(QStringLiteral("boundCamera")) == first.value(QStringLiteral("boundCamera")));
+    CHECK(world.Session().value(QStringLiteral("sceneCamera")) == first.value(QStringLiteral("sceneCamera")));
 }

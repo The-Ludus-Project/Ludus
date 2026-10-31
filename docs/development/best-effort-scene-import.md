@@ -70,6 +70,36 @@ never perform file or network I/O themselves. Remote URIs are not fetched.
   while an unreadable lighting environment rejects the import rather than
   discarding illumination.
 
+PBRT material `string normalmap` images use linear RGB data, the engine's
+MikkTSpace tangent frames and the existing v6 surface-map packing. Image rows
+and green values are preserved; the mesh UV conversion supplies the image's
+vertical orientation. This retains the authored detail under the engine's tangent
+convention, rather than establishing pixel parity with PBRT's shading frames.
+Triangle meshes and PLY triangles without stored UVs receive PBRT's per-triangle
+(0,0), (1,0), (1,1) defaults before tangent generation; corners split where the
+implicit coordinates differ. Other unavailable mappings are reported with
+`TANGENTS_GENERATED`.
+Normal image paths must remain inside the import root and join the input digest
+closure, including when declared in an included material file.
+
+Shape `float alpha` and `texture alpha` use independent material variants, cached
+per source material and coverage source. They do not mutate named materials or
+other instances. Constants and float `constant` textures are retained; float
+`imagemap` sources follow PBRT's scalar selection: non-opaque image alpha wins,
+otherwise the decoded RGB mean is used. PNG defaults to sRGB decoding, other
+containers to linear, with explicit `encoding`, `scale` and `invert` honored.
+The declared encoding also decodes alpha, matching PBRT's image-channel access.
+The resulting linear coverage is quantized to RGBA8 and tested
+at 0.5; fractional/stochastic transparency is approximated by this binary mask
+(`ALPHA_APPROXIMATED`, informational). The base image's alpha does not multiply
+PBRT shape coverage. Undefined or unreadable masks fall back to opaque with a
+diagnostic. Procedural float textures retain their reported constant fallback.
+
+These conventions follow Matt Pharr, Wenzel Jakob and Greg Humphreys's
+[pbrt-v4 input format](https://www.pbrt.org/fileformat-v4),
+[normal-image loading](https://github.com/mmp/pbrt-v4/blob/master/src/pbrt/scene.cpp)
+and [scalar image selection](https://github.com/mmp/pbrt-v4/blob/master/src/pbrt/util/mipmap.cpp).
+
 ## glTF 2.0 / GLB profile (`gltf-best-effort-v1`)
 
 The static triangle-mesh subset of the
@@ -332,8 +362,8 @@ index/remap arrays use eight bytes per source vertex, with one mesh processed at
 a time; this is separate from encoded file, cooked bundle and runtime budgets.
 
 The schema-1 report adds `source.indices` and `cooked.indices` (three indices per
-triangle). `source.vertices` remains the count before compaction, including
-expanded placements. Reduced cooked vertex counts accompanied by
+triangle). `source.vertices` counts authored records before tangent splitting and
+compaction, including expanded placements. Reduced cooked vertex counts accompanied by
 `VERTICES_COMPACTED` are exact sharing. Geometry admission retains every placement
 or rejects the import; the legacy dropped-placement counters remain zero. Source
 vertex/index counts saturate at the uint32 maximum. The frozen reference cooker is unchanged.
@@ -342,8 +372,9 @@ Each cooked mesh carries one material, so the planner:
 
 1. reserves one slot per distinct emitter radiance, sidedness and power-normalization
    group; groups record their source shapes and area-light directives in the report.
-   Decorative groups are also split per source material and keep that material's
-   textures and maps; required (pbrt) emitters cook white and untextured;
+   Decorative groups keep their source material's textures and maps. Required PBRT
+   emitters retain the white base-colour approximation, split per source material
+   when normal detail or shape coverage differs, and retain those normal maps and masks;
 2. gives every other source material its own slot while they fit; beyond 256
    slots it ranks ordinary placements by world-space area and keeps the largest
    material groups;
@@ -355,7 +386,7 @@ Each cooked mesh carries one material, so the planner:
    against the bundle byte budget. An over-budget scene reports `LIMIT_EXCEEDED`
    and produces no bundle; ordinary and emitter placements are never dropped;
 6. writes each masked slot's coverage into its cooked base texture's alpha:
-   the texture's own alpha (glTF), or the MTL opacity map sampled nearest at the
+   the texture's own alpha (glTF), or the MTL/PBRT opacity map sampled nearest at the
    base resolution, times the constant opacity. An untextured masked slot takes
    the opacity map's resolution. A mask that keeps every texel cooks opaque, and an
    unreadable opacity map leaves the slot opaque (`TEXTURE_UNREADABLE`);
@@ -363,8 +394,10 @@ Each cooked mesh carries one material, so the planner:
    metallic channel (A) into one linear surface map at the normal map's resolution
    (otherwise the larger data texture's), sampling the others nearest; an absent
    normal is flat (0.5) and an absent multiplier one. Emissive slots cook their
-   emission texture as an sRGB emission map. These maps follow the base textures
-   while the bundle's 256 textures allow; beyond that a slot's roughness/metallic
+   emission texture as an sRGB emission map. Byte-identical base swatches are shared
+   after mask application; surface maps with identical source/channel selections
+   are shared with independent per-material strengths and scalar factors. These
+   maps follow the base textures while the bundle's 256 textures allow; beyond that a slot's roughness/metallic
    textures are averaged into its scalars;
 8. halves the largest texture, oversized ones first, until every texture fits
    4096 texels and 16 MiB and all fit the byte budget (`TEXTURE_DOWNSCALED`).
@@ -380,6 +413,8 @@ the base image decodes. Shading multiplies it after sRGB decoding, including
 after asset splitting and World assembly. A constant or fallback swatch already
 contains its factor, so its retained multiplier is white. Best-effort extensions
 record the representative source index but currently have no counted source name.
+Re-import existing scenes to apply the corrected texture reductions and retained
+v7 material factors to their cooked assets.
 
 The editor's material graph uses bilinear reconstruction of the retained mip
 and carries alpha-mask thresholds into raster, closest-hit and shadow coverage.
@@ -546,9 +581,19 @@ are absent from the bundle. `MAX_RESIDENT_CLOSURE_BYTES` now owns a separate
 retain their existing ceilings. Logical aliases are charged independently even
 when they share a physical artifact file. This admission limit does not describe
 peak import memory or decoded renderer residency.
-The source still reports normal-map drops, opaque alpha cutouts and dropped
-dielectric transmission. Required PBRT emitters still use the declared white,
-untextured approximation. Full geometry import/runtime decoding does not qualify
+With PBRT normal maps and shape coverage enabled, the same scene keeps all
+1,606 placements and 8,516,880 indices, with 2,922,810 cooked vertices (MikkTSpace
+frames keep additional seams), 136 material/mesh slots and 252 texture images.
+All 131 used normal images survive, serving 135 material slots, and 17 material
+slots retain cutout masks, including emissive surfaces. No normal maps are dropped
+for texture capacity, and no texture reads fail. The bundle is 401,941,792 bytes;
+210 images are downscaled to preserve geometry under the existing byte limits.
+Eight light meshes omit UVs; retaining PBRT's implicit per-triangle coordinates
+lets them carry normal detail as well. The six dielectric transmission drops remain.
+The report now includes each slot's `normal_texture`, `alpha_masked` and
+`alpha_cutoff`; material declaration counts and labels exclude the synthetic
+shape-mask variants. Required PBRT emitters retain white base reflectance with
+their authored normal detail and shape masks. Full geometry import/runtime decoding does not qualify
 interactive viewport performance, GPU memory use or PBRT material/lighting parity.
 Earlier SDKs can reject the larger geometry counts even though the LUSCN v6 wire
 layout is unchanged.

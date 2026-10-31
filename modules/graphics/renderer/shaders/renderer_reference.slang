@@ -1,3 +1,4 @@
+#include "coated_diffuse.slang"
 #include "material_scattering.slang"
 #include "math.slang"
 #include "raster_bindings.slang"
@@ -631,7 +632,25 @@ struct Bsdf
     float3 Eta;
     float3 K;
     float Alpha;
+    float CoatingEta;
+    float CoatingThickness;
 };
+CoatingMaterial MakeCoatingMaterial(Bsdf bsdf)
+{
+    CoatingMaterial material;
+    material.BaseColor = bsdf.BaseColor;
+    material.Alpha = bsdf.Alpha;
+    material.Eta = bsdf.CoatingEta;
+    material.Thickness = bsdf.CoatingThickness;
+    return material;
+}
+CoatingRandomContext MakeMaterialRandomContext(uint pixel, uint sample, uint depth)
+{
+    CoatingRandomContext random;
+    random.Key = Sampling.xy;
+    random.Address = MakeRandomAddress(uint2(pixel, 0), sample, depth);
+    return random;
+}
 bool IsValidBsdf(Bsdf bsdf)
 {
     return IsFiniteVector(bsdf.BaseColor) && all(bsdf.BaseColor >= 0) && all(bsdf.BaseColor <= 1) &&
@@ -643,8 +662,15 @@ float GetSpecularProbability(Bsdf bsdf)
     return ComputeMaterialSpecularProbability(bsdf.Model, bsdf.Metallic);
 }
 // Value and full mixture density, without the cosine.
-float4 EvaluateBsdf(Bsdf bsdf, float3 normalWorld, float3 viewWorld, float3 lightWorld)
+float4 EvaluateBsdf(Bsdf bsdf, float3 normalWorld, float3 viewWorld, float3 lightWorld, CoatingRandomContext random)
 {
+    if (bsdf.Model == LUDUS_MATERIAL_MODEL_COATED_DIFFUSE)
+    {
+        CoatingEvaluation evaluated =
+            EvaluateCoatedDiffuse(MakeCoatingMaterial(bsdf), normalWorld, viewWorld, lightWorld, random);
+        return float4(evaluated.Value, evaluated.Pdf);
+    }
+
     float nv = dot(normalWorld, viewWorld);
     float nl = dot(normalWorld, lightWorld);
     if (nv <= 0 || nl <= 0)
@@ -1354,7 +1380,11 @@ bool SampleResampledEmitter(inout PathSample inoutPath,
             MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_INVALID_BSDF_EVALUATION);
             return false;
         }
-        float4 evaluation = EvaluateBsdf(bsdf, normalWorld, viewWorld, light.DirectionWorld);
+        float4 evaluation = EvaluateBsdf(bsdf,
+                                         normalWorld,
+                                         viewWorld,
+                                         light.DirectionWorld,
+                                         MakeMaterialRandomContext(pixel, sample, depth));
         if (IsFiniteVector(evaluation.xyz) == false || isfinite(evaluation.w) == false || evaluation.w < 0)
         {
             MarkInvalid(inoutPath, depth, LUDUS_REFERENCE_FAILURE_INVALID_BSDF_EVALUATION);
@@ -1541,6 +1571,9 @@ PathSample TracePath(uint pixel, uint sample)
         bsdf.Eta = etaAndModel.xyz;
         bsdf.K = extinctionAndAlpha.xyz;
         bsdf.Alpha = extinctionAndAlpha.w;
+        float4 coatingParameters = SurfaceValue(instance, LUDUS_GPU_PREVIEW_SCATTERING_ALPHA_WORD);
+        bsdf.CoatingEta = coatingParameters.y;
+        bsdf.CoatingThickness = coatingParameters.z;
         float4 surfaceMap = SurfaceValue(instance, 6);
         if (asuint(surfaceMap.w) != 0)
         {
@@ -1599,7 +1632,11 @@ PathSample TracePath(uint pixel, uint sample)
                 MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_BSDF_EVALUATION);
                 return path;
             }
-            float4 evaluation = EvaluateBsdf(bsdf, normalWorld, viewWorld, proposal.DirectionWorld);
+            float4 evaluation = EvaluateBsdf(bsdf,
+                                             normalWorld,
+                                             viewWorld,
+                                             proposal.DirectionWorld,
+                                             MakeMaterialRandomContext(pixel, sample, depth));
             if (IsFiniteVector(evaluation.xyz) == false || isfinite(evaluation.w) == false || evaluation.w < 0)
             {
                 MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_BSDF_EVALUATION);
@@ -1623,12 +1660,30 @@ PathSample TracePath(uint pixel, uint sample)
             MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_BSDF_SAMPLE);
             return path;
         }
-        float3 outgoingWorld = SampleBsdfDirection(bsdf, normalWorld, viewWorld, samples);
+        bool hasCoating = bsdf.Model == LUDUS_MATERIAL_MODEL_COATED_DIFFUSE;
+        CoatingSample coating = (CoatingSample)0;
+        float3 outgoingWorld;
+        if (hasCoating == true)
+        {
+            coating = SampleCoatedDiffuse(MakeCoatingMaterial(bsdf),
+                                          normalWorld,
+                                          viewWorld,
+                                          samples,
+                                          MakeMaterialRandomContext(pixel, sample, depth));
+            outgoingWorld = coating.Accepted == true ? coating.DirectionWorld : float3(0);
+        }
+        else
+            outgoingWorld = SampleBsdfDirection(bsdf, normalWorld, viewWorld, samples);
         bool isAccepted = all(outgoingWorld == 0) == false;
         float4 evaluation = 0;
         if (isAccepted == true)
         {
-            evaluation = EvaluateBsdf(bsdf, normalWorld, viewWorld, outgoingWorld);
+            evaluation = hasCoating == true ? float4(coating.Weight, coating.MisPdf)
+                                            : EvaluateBsdf(bsdf,
+                                                           normalWorld,
+                                                           viewWorld,
+                                                           outgoingWorld,
+                                                           MakeMaterialRandomContext(pixel, sample, depth));
             if (IsFiniteVector(evaluation.xyz) == false || isfinite(evaluation.w) == false || evaluation.w <= 0)
             {
                 MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_BSDF_SAMPLE);
@@ -1640,7 +1695,8 @@ PathSample TracePath(uint pixel, uint sample)
             path.Status |= LUDUS_REFERENCE_NULL_FLAG;
         else
         {
-            throughput *= evaluation.xyz * (dot(normalWorld, outgoingWorld) / evaluation.w);
+            throughput *=
+                hasCoating == true ? coating.Weight : evaluation.xyz * (dot(normalWorld, outgoingWorld) / evaluation.w);
             if (IsValidContribution(throughput) == false)
             {
                 MarkInvalid(path, depth, LUDUS_REFERENCE_FAILURE_INVALID_THROUGHPUT);

@@ -31,6 +31,8 @@ inline constexpr foundation::uint32 INHERIT_SCENE_MATERIAL = DEFAULT_SCENE_MATER
 /// surface data is unorm RG normal, B roughness and A metallic. Omitted maps are white.
 /// Typed conductor evaluation uses constant Scattering alpha/Eta/K instead of the
 /// base colour and roughness/metallic multipliers; surface normals still apply.
+/// Layered coatings use the base colour for their diffuse substrate and keep the
+/// constant Scattering alpha/IOR/thickness; normal mapping still applies.
 struct SceneShaderMaterial final
 {
     foundation::math::Vector3 BaseColor{0.5F, 0.5F, 0.5F}; ///< Linear reflectance in [0,1].

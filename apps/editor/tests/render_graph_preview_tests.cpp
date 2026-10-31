@@ -2491,7 +2491,7 @@ TEST_CASE("Full Intel Sponza presents through the native editor viewport", "[.fu
                 return graph.GetPresentedRevision() > rasterRevision &&
                        viewport.PresentedFrames() > beforeRasterNavigation;
             }) == true);
-    // The legacy triangle-loop ray fixture is optional for this raster/material
+    // The legacy material-average ray fixture is optional for this raster/material
     // acceptance. Its full-scene navigation is not reference-path parity evidence;
     // dedicated opacity tests exercise CPU, compute-BVH and native-query coverage.
     if (qEnvironmentVariableIsSet("LUDUS_SPONZA_TEST_LEGACY_RAY") == true)
@@ -2502,6 +2502,7 @@ TEST_CASE("Full Intel Sponza presents through the native editor viewport", "[.fu
         const uint64 beforeRayGeneration = graph.GetPresentedGeneration();
         REQUIRE(graph.Load(QStringLiteral(LUDUS_EDITOR_RAY_GRAPH_FIXTURE)) == RenderGraphPreviewLoad::Staged);
         REQUIRE(waitFor([&]() {
+                    static_cast<void>(windowOrNull->grabWindow());
                     return graph.GetPresentedGeneration() > beforeRayGeneration &&
                            viewport.PresentedFrames() > rasterFrames;
                 }) == true);
@@ -2525,6 +2526,7 @@ TEST_CASE("Full Intel Sponza presents through the native editor viewport", "[.fu
         const uint64 initialFrame = viewport.PresentedFrames();
         source.Look(20, 0);
         REQUIRE(waitFor([&]() {
+                    static_cast<void>(windowOrNull->grabWindow());
                     return graph.GetPresentedRevision() > initialRevision && viewport.PresentedFrames() > initialFrame;
                 }) == true);
         const QImage navigated = windowOrNull->grabWindow();
@@ -2558,6 +2560,8 @@ TEST_CASE("Full Intel Sponza presents through the native editor viewport", "[.fu
     chart.Objects.clear();
     constexpr int32 CHART_COLUMNS = 5;
     constexpr float32 TILE_SPACING = 1.2F;
+    constexpr float32 CHART_TOP_ROW_CENTER = 2.5F;
+    constexpr int32 CHART_EYE_DISTANCE_WORLD = 7;
     for (int32 surface = 0; surface < chart.Surfaces.size(); ++surface)
     {
         PreviewObject object;
@@ -2565,7 +2569,8 @@ TEST_CASE("Full Intel Sponza presents through the native editor viewport", "[.fu
         object.Surface = surface;
         object.Texture = chart.Surfaces[surface].Texture;
         object.Transform.Translation = {static_cast<float32>(surface % CHART_COLUMNS - 2) * TILE_SPACING,
-                                        (2.5F - static_cast<float32>(surface / CHART_COLUMNS)) * TILE_SPACING,
+                                        (CHART_TOP_ROW_CENTER - static_cast<float32>(surface / CHART_COLUMNS)) *
+                                            TILE_SPACING,
                                         0};
         chart.Objects.append(object);
     }
@@ -2575,12 +2580,12 @@ TEST_CASE("Full Intel Sponza presents through the native editor viewport", "[.fu
     navigation.insert(QStringLiteral("camera"), QString{});
     navigation.insert(QStringLiteral("eyeX"), 0);
     navigation.insert(QStringLiteral("eyeY"), 0);
-    navigation.insert(QStringLiteral("eyeZ"), 7);
+    navigation.insert(QStringLiteral("eyeZ"), CHART_EYE_DISTANCE_WORLD);
     navigation.insert(QStringLiteral("rotationX"), 0);
     navigation.insert(QStringLiteral("rotationY"), 0);
     navigation.insert(QStringLiteral("rotationZ"), 0);
     navigation.insert(QStringLiteral("rotationW"), 1);
-    navigation.insert(QStringLiteral("distance"), 7);
+    navigation.insert(QStringLiteral("distance"), CHART_EYE_DISTANCE_WORLD);
     source.RestoreNavigation(navigation);
     const uint64 beforeChart = viewport.PresentedFrames();
     const uint64 beforeChartGeneration = graph.GetPresentedGeneration();
@@ -3366,8 +3371,9 @@ TEST_CASE("A viewport graph capture converges an accumulating ray output and sav
     ViewportGraphCapture capture;
     QSize extent;
     QString error;
-    REQUIRE(capture.Load(device.Device, device.Surface, source, requested, SAMPLES, extent, error) == true);
+    REQUIRE(capture.Load(device.Device, device.Surface, source, {}, requested, SAMPLES, extent, error) == true);
     CHECK(extent.isEmpty() == false);
+    CHECK(capture.IsCaptureProfile() == false);
     REQUIRE(capture.Begin(scene, view, error) == true);
     constexpr int64 CAPTURE_TIMEOUT_MILLISECONDS = 30000;
     QElapsedTimer timer;
@@ -3405,12 +3411,82 @@ TEST_CASE("A viewport graph capture converges an accumulating ray output and sav
     CHECK(capture.GetPhase() == renderer::RenderGraphCapturePhase::Idle);
 }
 
+TEST_CASE("A viewport graph capture decodes its generation's capture profile in place of the runtime package",
+          "[editor][render-graph][render-graph-capture]")
+{
+    DeviceFixture device({}, true);
+    if (device.IsAvailable == false)
+    {
+        SKIP("No GPU adapter on this host");
+    }
+    renderer::RenderGraphRenderer automatic;
+    REQUIRE(renderer::SelectRenderGraphRenderer(device.Device, renderer::RenderGraphPreference::Automatic, automatic) ==
+            rhi::RasterStatus::Ready);
+    if (automatic != renderer::RenderGraphRenderer::HardwareRayTracing)
+    {
+        SKIP("The progressive ray fixture needs native ray queries");
+    }
+    RenderScene scene = MakeScene({1, 0, 0, 1});
+    scene.Lit = true;
+    renderer::ViewDescription view{};
+    view.OrthographicCamera = true;
+    ViewportRasterSource source;
+    source.PackagePath = QStringLiteral(LUDUS_EDITOR_PROGRESSIVE_RAY_FIXTURE);
+    // The Reference window requests the profile of this identity from the workspace.
+    QByteArray identity;
+    QString error;
+    REQUIRE(ViewportGraphCapture::ReadGenerationIdentity(source, identity, error) == true);
+    CHECK(identity.isEmpty() == false);
+    constexpr uint32 SAMPLES = 2;
+    const QString profilePath = QStringLiteral(LUDUS_EDITOR_PROGRESSIVE_CAPTURE_PROFILE_FIXTURE);
+    ViewportGraphCapture capture;
+    QSize extent;
+    REQUIRE(capture.Load(device.Device, device.Surface, source, profilePath, QSize(32, 32), SAMPLES, extent, error) ==
+            true);
+    CHECK(capture.IsCaptureProfile() == true);
+    REQUIRE(capture.Begin(scene, view, error) == true);
+    constexpr int64 CAPTURE_TIMEOUT_MILLISECONDS = 30000;
+    QElapsedTimer timer;
+    timer.start();
+    while (capture.IsRunning() == true && timer.elapsed() < CAPTURE_TIMEOUT_MILLISECONDS)
+    {
+        static_cast<void>(capture.Service());
+    }
+    INFO(capture.GetError().toStdString());
+    REQUIRE(capture.GetPhase() == renderer::RenderGraphCapturePhase::Complete);
+    CHECK(capture.GetInfo().MinimumSamples == SAMPLES);
+    // The saved provenance names the profile's bytes, which the capture decoded.
+    QTemporaryDir directory;
+    const QString path = QDir(directory.path()).filePath(QStringLiteral("profile.lurgcap"));
+    REQUIRE(capture.Save(path, error) == true);
+    QFile saved(path);
+    REQUIRE(saved.open(QIODevice::ReadOnly) == true);
+    QFile profile(profilePath);
+    REQUIRE(profile.open(QIODevice::ReadOnly) == true);
+    CHECK(saved.readAll().mid(format::CAPTURE_PACKAGE_IDENTITY_OFFSET, format::CAPTURE_IDENTITY_BYTES) ==
+          QCryptographicHash::hash(profile.readAll(), QCryptographicHash::Sha256));
+    capture.Release();
+    CHECK(capture.IsCaptureProfile() == false);
+}
+
 TEST_CASE("A viewport graph capture explains outputs it cannot capture before using the device",
           "[editor][render-graph][render-graph-capture]")
 {
     ViewportRasterSource source;
     source.PackagePath = QStringLiteral(LUDUS_EDITOR_PROGRESSIVE_RAY_FIXTURE);
+    QString profilePath;
     QString expected;
+    SECTION("a runtime package named as the capture profile")
+    {
+        // Only RenderGraphPackage::DecodeCaptureProfile admits the profile's magic, and it refuses a runtime package.
+        profilePath = source.PackagePath;
+        expected = QStringLiteral("capture profile");
+    }
+    SECTION("a missing capture profile")
+    {
+        profilePath = QStringLiteral("missing.lurgcp");
+        expected = QStringLiteral("capture again to rebuild it");
+    }
     SECTION("Force raster")
     {
         source.ShouldForceRaster = true;
@@ -3429,7 +3505,7 @@ TEST_CASE("A viewport graph capture explains outputs it cannot capture before us
     ViewportGraphCapture capture;
     QSize extent;
     QString error;
-    CHECK(capture.Load({}, {}, source, QSize(16, 16), 1, extent, error) == false);
+    CHECK(capture.Load({}, {}, source, profilePath, QSize(16, 16), 1, extent, error) == false);
     INFO(error.toStdString());
     CHECK(error.contains(expected) == true);
     CHECK(capture.GetPhase() == renderer::RenderGraphCapturePhase::Idle);

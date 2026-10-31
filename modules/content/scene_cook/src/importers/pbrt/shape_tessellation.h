@@ -5,6 +5,8 @@
 
 #include "../scene_ir.h"
 
+#include <ludus/content/content.h>
+
 #include <string_view>
 
 namespace ludus::content::scene_cook::importers
@@ -43,6 +45,12 @@ enum class ShapeResult : uint8
     Invalid,
     OutOfMemory,
 };
+
+/// Supply PBRT's implicit per-triangle UVs when none were authored, splitting
+/// corners so shared vertices can have different UVs. Preserves triangle order,
+/// positions, normals and authored vertex statistics; failure preserves the mesh.
+/// @return Ok, Invalid for malformed/non-triangle input, or OutOfMemory.
+[[nodiscard]] Status ApplyDefaultTriangleUvs(IrMesh& inoutMesh) noexcept;
 
 /// Build outMesh for shape type with arguments; uv v is flipped to top-down.
 [[nodiscard]] ShapeResult TessellateShape(std::string_view type,
