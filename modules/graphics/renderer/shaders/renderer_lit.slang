@@ -307,10 +307,8 @@ float2 EvaluateEnvironmentDfg(float roughness, float cosineView)
 #ifdef LUDUS_DEBUG_VIEW
 // Largest display-linear value the inverse reproduces (about 0.998 sRGB); mirrors PBR_NEUTRAL_INVERSE_LIMIT.
 static const float DEBUG_DISPLAY_LINEAR_LIMIT = 0.995;
-// Khronos PBR Neutral constants, as in renderer_output.slang.
-static const float PBR_NEUTRAL_FRESNEL = 0.04;
-static const float PBR_NEUTRAL_START = 0.8 - PBR_NEUTRAL_FRESNEL;
-static const float PBR_NEUTRAL_DESATURATION = 0.15;
+// Khronos PBR Neutral constants, shared with renderer_output.slang.
+#    include "display_tone_mapping.slang"
 // Scene-linear colour that renderer_output.slang's PBR Neutral curve maps to a wanted display-linear colour;
 // mirrors InvertPbrNeutral in tone_mapping.hpp.
 float3 InvertPbrNeutral(float3 display)

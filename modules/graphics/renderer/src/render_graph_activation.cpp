@@ -181,6 +181,8 @@ struct RenderGraphPackage::State final
     bool HasBilinearUpscale = false;
     bool HasMetalFxSpatialUpscale = false;
     bool HasDenoising = false;
+    /// Version 29 and later carry each pass's display curve and admit raster ToneMap.
+    bool HasToneMappingCurve = false;
     /// The version 25 scene resource word names the LTC table: AppendLtcTableBindings adds its slot.
     bool HasLtcTable = false;
     /// The scene resource word names the failure summary: AppendSceneResourceBindings adds its slot last.
@@ -747,6 +749,13 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeRecords(ByteReader& in
             return RenderGraphPackageStatus::Malformed;
         }
         pass.Traversal = static_cast<format::RayTraversal>(traversal);
+        // Earlier generations imply Reinhard, the zero code.
+        const uint32 curve = HasToneMappingCurve == true ? inoutReader.ReadWord() : 0;
+        if (curve > static_cast<uint32>(format::DisplayCurve::PbrNeutral))
+        {
+            return RenderGraphPackageStatus::Malformed;
+        }
+        pass.ToneMappingCurve = static_cast<format::DisplayCurve>(curve);
         HasNativeRayQueries =
             HasNativeRayQueries == true || (program == static_cast<uint32>(format::Technique::RayTracing) &&
                                             (pass.Traversal == format::RayTraversal::NativeQuery ||
@@ -759,11 +768,9 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeRecords(ByteReader& in
             (HasIndependentPrograms == false && program >= format::LEGACY_TECHNIQUE_COUNT) || colorLoad > MAX_LOAD ||
             depthLoad > MAX_LOAD || colorStore > MAX_STORE || depthStore > MAX_STORE ||
             pass.AccumulationSamples > format::MAX_ACCUMULATION_SAMPLES ||
-            (pass.ToneMappingExposure != 0 &&
-             (pass.ToneMappingExposure >= format::MIN_TONE_MAPPING_EXPOSURE &&
-              pass.ToneMappingExposure <= format::MAX_TONE_MAPPING_EXPOSURE) == false) ||
             (program != static_cast<uint32>(format::Technique::RayTracing) &&
-             (pass.AccumulationSamples != 0 || pass.ToneMappingExposure != 0 || pass.DenoisingQuality != 0)) ||
+             (pass.AccumulationSamples != 0 || pass.DenoisingQuality != 0 ||
+              (HasToneMappingCurve == false && pass.ToneMappingExposure != 0))) ||
             (pass.SceneData & ~::ludus::content::render_graph_format::SCENE_DATA_ALL) != 0 ||
             (isUpscale == false && (pass.SceneData & ::ludus::content::render_graph_format::SCENE_DATA_GEOMETRY) == 0))
         {
@@ -774,6 +781,10 @@ RenderGraphPackageStatus RenderGraphPackage::State::DecodeRecords(ByteReader& in
         pass.ColorStore = static_cast<format::Store>(colorStore);
         pass.DepthLoad = static_cast<format::Load>(depthLoad);
         pass.DepthStore = static_cast<format::Store>(depthStore);
+        if (format::IsToneMappingAdmitted(pass) == false)
+        {
+            return RenderGraphPackageStatus::Malformed;
+        }
     }
     return inoutReader.IsOk() == true ? RenderGraphPackageStatus::Ready : RenderGraphPackageStatus::Malformed;
 }
@@ -822,7 +833,8 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     const uint32 magic = reader.ReadWord();
     const uint32 version = reader.ReadWord();
     if (magic != expectedMagic ||
-        (version != format::TILED_RAY_PACKAGE_VERSION && version != format::RASTER_MESH_LIGHT_POLYGON_PACKAGE_VERSION &&
+        (version != format::RASTER_TONE_MAPPING_PACKAGE_VERSION && version != format::TILED_RAY_PACKAGE_VERSION &&
+         version != format::RASTER_MESH_LIGHT_POLYGON_PACKAGE_VERSION &&
          version != format::RASTER_MESH_LIGHT_PACKAGE_VERSION && version != format::LTC_TABLE_PACKAGE_VERSION &&
          version != format::CLUSTERED_DEFERRED_PACKAGE_VERSION &&
          version != format::CLUSTERED_FORWARD_PACKAGE_VERSION && version != format::COMPUTE_BVH_PACKAGE_VERSION &&
@@ -854,6 +866,7 @@ RenderGraphPackageStatus RenderGraphPackage::decode(BorrowedView<const uint8> by
     candidate->HasBilinearUpscale = version >= format::BILINEAR_PACKAGE_VERSION;
     candidate->HasMetalFxSpatialUpscale = version >= format::METALFX_SPATIAL_PACKAGE_VERSION;
     candidate->HasDenoising = version >= format::DENOISING_PACKAGE_VERSION;
+    candidate->HasToneMappingCurve = version >= format::RASTER_TONE_MAPPING_PACKAGE_VERSION;
     candidate->HasExplicitRayWorkgroup = version >= format::RAY_WORKGROUP_PACKAGE_VERSION;
     candidate->HasExplicitRayTraversal = version >= format::SOFTWARE_RAY_PACKAGE_VERSION;
     candidate->HasCustomRayTraversal = version >= format::CUSTOM_RAY_PACKAGE_VERSION;

@@ -257,6 +257,11 @@ GetStage(const RenderGraphPrograms& programs, format::Technique technique, rhi::
     }
     return isVertex == true ? programs.MaskedDepthVertex : programs.MaskedDepthFragment;
 }
+/// The display curve a pass's fused ToneMap applies.
+ToneCurve GetToneCurve(const format::Pass& pass) noexcept
+{
+    return pass.ToneMappingCurve == format::DisplayCurve::PbrNeutral ? ToneCurve::PbrNeutral : ToneCurve::Reinhard;
+}
 /// Editor overlays belong to display color, never the visibility codec's triangle/instance IDs.
 ViewDescription MakeRasterPassView(const ViewDescription& source,
                                    const RenderGraphPrograms& programs,
@@ -475,7 +480,8 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
                 pass.AllowsRepeatedCoverage != 0 || pass.SceneData != 0 || pass.RayProgram != 0 ||
                 pass.Buffer0 != format::ABSENT || pass.Buffer1 != format::ABSENT || pass.Visibility != format::ABSENT ||
                 pass.VisibilityDepth != format::ABSENT || pass.AccumulationSamples != 0 ||
-                pass.ToneMappingExposure != 0 || pass.DenoisingQuality != 0)
+                pass.ToneMappingExposure != 0 || pass.ToneMappingCurve != format::DisplayCurve::Reinhard ||
+                pass.DenoisingQuality != 0)
             {
                 return Status::InvalidDescription;
             }
@@ -517,11 +523,9 @@ Status ValidatePlan(const RenderGraphPlan& plan) noexcept
         }
         if (pass.DenoisingQuality > static_cast<uint32>(format::ProcessingQuality::High) ||
             pass.AccumulationSamples > format::MAX_ACCUMULATION_SAMPLES ||
-            (pass.ToneMappingExposure != 0 &&
-             (pass.ToneMappingExposure >= format::MIN_TONE_MAPPING_EXPOSURE &&
-              pass.ToneMappingExposure <= format::MAX_TONE_MAPPING_EXPOSURE) == false) ||
             (pass.Program != format::Technique::RayTracing &&
-             (pass.AccumulationSamples != 0 || pass.ToneMappingExposure != 0 || pass.DenoisingQuality != 0)))
+             (pass.AccumulationSamples != 0 || pass.DenoisingQuality != 0)) ||
+            format::IsToneMappingAdmitted(pass) == false)
         {
             return Status::InvalidDescription;
         }
@@ -1035,7 +1039,8 @@ struct RenderGraph::State final
                                internal::RenderGraphDeferredTargets& inoutTargets,
                                PreparedView view,
                                const ViewDescription& camera,
-                               const internal::ForwardSceneGeneration& lighting) noexcept
+                               const internal::ForwardSceneGeneration& lighting,
+                               const format::Pass& operation) noexcept
     {
         if (inoutPass.Get() == nullptr)
         {
@@ -1050,7 +1055,9 @@ struct RenderGraph::State final
                                                         view,
                                                         camera,
                                                         lighting.GetMeshLights(),
-                                                        lighting.GetMeshLightCount());
+                                                        lighting.GetMeshLightCount(),
+                                                        lighting.GetMeshLightGridWord(),
+                                                        operation);
             if (IsAccepted(status) == false)
             {
                 return status;
@@ -1129,7 +1136,8 @@ struct RenderGraph::State final
                                              *Current->DeferredTargets[i],
                                              update.Views[i],
                                              update.Cameras[Passes[i].Camera],
-                                             *Current->ForwardGeneration);
+                                             *Current->ForwardGeneration,
+                                             Passes[i]);
             }
             if (status != Status::Ready)
             {
@@ -1427,14 +1435,14 @@ struct RenderGraph::State final
             {
                 if (inoutScene.HasViews[i] == false)
                 {
-                    const GpuPreviewGraphInvocation invocation{0,
-                                                               {},
-                                                               GetAccumulationSamples(Passes[i]),
-                                                               Passes[i].ToneMappingExposure,
-                                                               Passes[i].DenoisingQuality,
-                                                               {},
-                                                               Passes[i].Traversal ==
-                                                                   format::RayTraversal::HardwarePipeline};
+                    GpuPreviewGraphInvocation invocation{0,
+                                                         {},
+                                                         GetAccumulationSamples(Passes[i]),
+                                                         Passes[i].ToneMappingExposure,
+                                                         Passes[i].DenoisingQuality,
+                                                         {},
+                                                         Passes[i].Traversal == format::RayTraversal::HardwarePipeline};
+                    invocation.ToneMappingCurve = GetToneCurve(Passes[i]);
                     const Status created =
                         inoutScene.RayPasses[i].Initialize(context,
                                                            inoutScene.Snapshots[i],
@@ -1512,7 +1520,8 @@ struct RenderGraph::State final
                                                             *inoutScene.DeferredTargets[i],
                                                             inoutScene.Views[i],
                                                             inoutScene.Cameras[Passes[i].Camera],
-                                                            *inoutScene.ForwardGeneration);
+                                                            *inoutScene.ForwardGeneration,
+                                                            Passes[i]);
                 if (deferred != Status::Ready)
                 {
                     return deferred;
@@ -2008,6 +2017,17 @@ Status RenderGraph::Initialize(rhi::DeviceHandle device,
         if (hasArtifact != programs.HasClusteredDeferred)
         {
             return Status::InvalidDescription;
+        }
+    }
+    for (usize index = 0; index < plan.Passes.GetSize(); ++index)
+    {
+        const format::Pass& pass = plan.Passes[index];
+        // Raster display conversion is fused into the clustered deferred lighting resolve; no other raster
+        // profile has a stage that could apply it.
+        if (pass.Program != format::Technique::RayTracing && pass.ToneMappingExposure != 0 &&
+            programs.HasClusteredDeferred == false)
+        {
+            return Status::Unsupported;
         }
     }
     if (programs.HasClusteredDeferred == true)
@@ -3176,7 +3196,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
                 hasSceneSource = true;
             }
         }
-        const GpuPreviewGraphInvocation invocation{
+        GpuPreviewGraphInvocation invocation{
             operation.RayProgram,
             state.Programs.HasPersistentRayBuffers == true
                 ? BorrowedView<const GpuPreviewGraphBuffer>{buffers.GetData(), buffers.GetSize()}
@@ -3187,6 +3207,7 @@ Status RenderGraph::Update(BorrowedView<const RenderGraphMesh> meshes,
             state.RayPathCapture.GetBuffer(),
             operation.Traversal == format::RayTraversal::HardwarePipeline,
             hasSceneSource == true ? &sceneSource : nullptr};
+        invocation.ToneMappingCurve = GetToneCurve(operation);
         const Status created = candidate->RayPasses[pass].Initialize(state.GetContext(operation.Program),
                                                                      {},
                                                                      cameras[operation.Camera],

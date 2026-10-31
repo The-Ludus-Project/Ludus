@@ -1427,6 +1427,8 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
         (state.IsGraphRayScene == false ||
          (state.HasPersistentBuffers == false &&
           (invocationOrNull->Program != 0 || invocationOrNull->Buffers.IsEmpty() == false)) ||
+         (invocationOrNull->ToneMappingCurve != ToneCurve::Reinhard &&
+          invocationOrNull->ToneMappingCurve != ToneCurve::PbrNeutral) ||
          (invocationOrNull->ToneMappingExposure != 0 &&
           (invocationOrNull->ToneMappingExposure >= content::render_graph_format::MIN_TONE_MAPPING_EXPOSURE &&
            invocationOrNull->ToneMappingExposure <= content::render_graph_format::MAX_TONE_MAPPING_EXPOSURE) ==
@@ -1734,11 +1736,14 @@ Status Renderer::BeginGpuPreview(Snapshot snapshot,
     job.DenoisingQuality = invocationOrNull != nullptr ? invocationOrNull->DenoisingQuality : 0;
     job.RayPathCapture = hasRayPathCapture == true ? invocationOrNull->RayPathCapture : GpuPreviewGraphBuffer{};
     uniform.Sampling[2] |= job.DenoisingQuality != 0 ? LUDUS_GPU_PREVIEW_DENOISING_FLAG : 0;
+    const bool isPbrNeutral =
+        invocationOrNull != nullptr && invocationOrNull->ToneMappingCurve == ToneCurve::PbrNeutral;
+    uniform.Sampling[2] |= isPbrNeutral == true ? LUDUS_GPU_PREVIEW_PBR_NEUTRAL_FLAG : 0;
     job.Uniform = uniform;
     const math::Vector4 dimensions{float32(job.Width),
                                    float32(job.Height),
                                    job.DenoisingQuality != 0 ? uniform.Options.Y : 0,
-                                   0};
+                                   isPbrNeutral == true ? 1.0F : 0.0F};
     if (isSceneShared == false)
     {
         internal::GpuPreviewSceneRecord& record = state.Scenes[job.Scene];

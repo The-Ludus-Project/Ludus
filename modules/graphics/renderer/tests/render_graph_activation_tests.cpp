@@ -109,6 +109,7 @@ struct PackageOptions final
     float32 ToneMappingExposure = 0;
     uint32 DenoisingQuality = 0;
     format::RayTraversal Traversal = format::RayTraversal::NativeQuery;
+    format::DisplayCurve ToneMappingCurve = format::DisplayCurve::Reinhard;
     format::Technique Program = format::Technique::ColorAndDepth;
     std::string_view PassName = "Scene/Opaque";
     bool HasDepthStages = true;
@@ -234,6 +235,10 @@ void WritePlan(PackageWriter& inoutWriter, const PackageOptions& options, uint32
     if (options.Version >= format::SOFTWARE_RAY_PACKAGE_VERSION)
     {
         inoutWriter.WriteWord(static_cast<uint32>(options.Traversal));
+    }
+    if (options.Version >= format::RASTER_TONE_MAPPING_PACKAGE_VERSION)
+    {
+        inoutWriter.WriteWord(static_cast<uint32>(options.ToneMappingCurve));
     }
     if (options.HasUniforms == false)
     {
@@ -1285,14 +1290,15 @@ TEST_CASE("runtime independent shader pairs decode with their own stage and bind
         // WritePlan's uniform fixture starts with the legacy color program. Retarget
         // that serialized binding explicitly; the rest of its layout is unchanged.
         constexpr usize LEGACY_PASS_FIELDS = 10;
-        const usize passBytes = (version >= format::SOFTWARE_RAY_PACKAGE_VERSION   ? format::PASS_FIELD_COUNT
-                                 : version >= format::DENOISING_PACKAGE_VERSION    ? format::PASS_FIELD_COUNT - 1
-                                 : version >= format::BILINEAR_PACKAGE_VERSION     ? format::PASS_FIELD_COUNT - 2
-                                 : version >= format::TONE_MAPPING_PACKAGE_VERSION ? format::PASS_FIELD_COUNT - 3
-                                 : version >= format::ACCUMULATION_PACKAGE_VERSION ? format::PASS_FIELD_COUNT - 4
-                                 : version >= format::VISIBILITY_PACKAGE_VERSION   ? format::PASS_FIELD_COUNT - 5
-                                 : version >= format::ORDERED_PACKAGE_VERSION      ? format::PASS_FIELD_COUNT - 7
-                                                                                   : LEGACY_PASS_FIELDS) *
+        const usize passBytes = (version >= format::RASTER_TONE_MAPPING_PACKAGE_VERSION ? format::PASS_FIELD_COUNT
+                                 : version >= format::SOFTWARE_RAY_PACKAGE_VERSION      ? format::PASS_FIELD_COUNT - 1
+                                 : version >= format::DENOISING_PACKAGE_VERSION         ? format::PASS_FIELD_COUNT - 2
+                                 : version >= format::BILINEAR_PACKAGE_VERSION          ? format::PASS_FIELD_COUNT - 3
+                                 : version >= format::TONE_MAPPING_PACKAGE_VERSION      ? format::PASS_FIELD_COUNT - 4
+                                 : version >= format::ACCUMULATION_PACKAGE_VERSION      ? format::PASS_FIELD_COUNT - 5
+                                 : version >= format::VISIBILITY_PACKAGE_VERSION        ? format::PASS_FIELD_COUNT - 6
+                                 : version >= format::ORDERED_PACKAGE_VERSION           ? format::PASS_FIELD_COUNT - 8
+                                                                                        : LEGACY_PASS_FIELDS) *
                                 sizeof(uint32);
         const usize bindingOffset =
             format::HEADER_BYTES +
@@ -1351,7 +1357,10 @@ TEST_CASE("runtime packages validate explicit tone mapping and retain the versio
 {
     PackageOptions options;
     options.ToneMappingExposure = 2;
+    // A raster ToneMap needs version 29's fused deferred resolve.
+    options.Version = format::TILED_RAY_PACKAGE_VERSION;
     CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
+    options.Version = format::PACKAGE_VERSION;
     options.Program = format::Technique::RayTracing;
     options.HasDepthStages = false;
     CHECK(MakePackage(options)->GetPlan().Passes[0].ToneMappingExposure == 2);
@@ -1374,6 +1383,32 @@ TEST_CASE("runtime packages validate explicit tone mapping and retain the versio
     const core::UniquePtr<renderer::RenderGraphPackage> legacy = MakePackage(options);
     CHECK(legacy->GetPlan().Passes[0].AccumulationSamples == 2);
     CHECK(legacy->GetPlan().Passes[0].ToneMappingExposure == 0);
+}
+
+TEST_CASE("runtime packages admit a ToneMap curve on ray and raster color passes",
+          "[render-graph][activation][tone-mapping]")
+{
+    PackageOptions options;
+    options.ToneMappingExposure = 1.5F;
+    options.ToneMappingCurve = format::DisplayCurve::PbrNeutral;
+    const core::UniquePtr<renderer::RenderGraphPackage> raster = MakePackage(options);
+    CHECK(raster->GetPlan().Passes[0].ToneMappingExposure == 1.5F);
+    CHECK(raster->GetPlan().Passes[0].ToneMappingCurve == format::DisplayCurve::PbrNeutral);
+    options.Program = format::Technique::RayTracing;
+    options.HasDepthStages = false;
+    CHECK(MakePackage(options)->GetPlan().Passes[0].ToneMappingCurve == format::DisplayCurve::PbrNeutral);
+    // A depth-only pass writes no color to convert.
+    options.Program = format::Technique::DepthOnly;
+    CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
+    options.Program = format::Technique::ColorAndDepth;
+    // Without a ToneMap the curve word keeps its zero code.
+    options.HasDepthStages = true;
+    options.ToneMappingExposure = 0;
+    options.ToneMappingCurve = format::DisplayCurve::PbrNeutral;
+    CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
+    options.ToneMappingExposure = 1;
+    options.ToneMappingCurve = static_cast<format::DisplayCurve>(2);
+    CHECK(DecodeBytes(MakePackageBytes(options)) == renderer::RenderGraphPackageStatus::Malformed);
 }
 
 TEST_CASE("legacy scene-ray packages preserve implicit tone mapping independently of accumulation",

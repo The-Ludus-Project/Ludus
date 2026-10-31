@@ -1217,7 +1217,9 @@ class RasterTemplateTests(unittest.TestCase):
                 build.validate_manifest(manifest)
                 plan = graph.compile_graph(root)
                 self.assertEqual(plan['techniques'], ['DefaultStaticOpaque.ColorAndDepth'])
-                self.assertEqual([operation['kind'] for operation in plan['passes']], ['Raster', 'Export'])
+                # The ToneMap is fused into the raster pass's deferred lighting resolve.
+                self.assertEqual([operation['kind'] for operation in plan['passes']], ['Raster', 'ToneMap', 'Export'])
+                self.assertEqual(plan['passes'][0]['tone_mapping']['curve'], 'PbrNeutral')
                 for identity in ('color', 'depth'):
                     self.assertEqual(plan['resources']['Main/' + identity]['view_scale'], [1, 1])
 
@@ -1257,10 +1259,14 @@ class RasterTemplateTests(unittest.TestCase):
             self.assertEqual(loaded_depth['load'], 'Load')
             self.assertEqual(ordinary['resources'], prepass['resources'])
             from ludus_tools import render_graph_execution as execution
-            recipes = [{'technique': item['id'], 'state': item['recipes'][0], 'clustered_forward': True}
+            recipes = [{'technique': item['id'], 'state': item['recipes'][0], 'clustered_forward': True,
+                        'clustered_deferred': item.get('scene_interface', {}).get('profile') == 'ClusteredDeferred'}
                        for item in manifest['techniques']]
             lowered = execution.lower_plan({'plans': [prepass], 'recipes': recipes}, 'ZPrepass')[2]
             self.assertEqual([item['AllowsRepeatedCoverage'] for item in lowered], [1, 1])
+            # Only the color pass carries the default ToneMap; the depth prepass writes no color.
+            self.assertEqual([(item['ToneMappingExposure'], item['ToneMappingCurve']) for item in lowered],
+                             [(0.0, 'Reinhard'), (1.0, 'PbrNeutral')])
 
 
     def test_relocated_sdk_copies_the_default_without_a_source_checkout(self):

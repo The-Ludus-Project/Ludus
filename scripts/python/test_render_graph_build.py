@@ -830,8 +830,11 @@ class CompilerAcceptance(unittest.TestCase):
             color.write_text(broken)
             with self.assertRaises(ToolingError) as caught:
                 build.build_package(manifest, temp / 'broken', **options)
-            line = next(i for i, text in enumerate(broken.splitlines(), 1) if 'undefinedTint' in text)
-            self.assertEqual({'source': 'main_shaders/color.slang', 'line': line}, caught.exception.location)
+            line, text = next((i, text) for i, text in enumerate(broken.splitlines(), 1) if 'undefinedTint' in text)
+            # The helper maps Slang's caret to the token's one-based column and length.
+            self.assertEqual({'source': 'main_shaders/color.slang', 'line': line,
+                              'column': text.index('undefinedTint') + 1, 'length': len('undefinedTint')},
+                             caught.exception.location)
             self.assertNotIn(str(temp.resolve()), caught.exception.message)
             self.assertNotIn(str(temp), caught.exception.message)
             color.write_text(broken.replace('undefinedTint', 'material.tint'))

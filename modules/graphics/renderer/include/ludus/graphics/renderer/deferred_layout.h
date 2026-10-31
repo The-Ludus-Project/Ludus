@@ -40,12 +40,30 @@ static const LightingLayoutValue MAX_MESH_LIGHT_POLYGON_CORNERS = 64;
 /// Float4 words before an emitter polygon's corners: unit normal/sidedness, then emission/corner count.
 static const LightingLayoutValue MESH_LIGHT_POLYGON_HEADER_WORDS = 2;
 /// Float4 words of the largest record. A record is its header followed by exactly its corner count of world
-/// positions (w zero), so records have variable length and are read in order.
+/// positions, so records have variable length. The first corner's w holds the polygon's area in square metres, which
+/// bounds its contribution for culling; the other corners' w are zero.
 static const LightingLayoutValue MAX_MESH_LIGHT_POLYGON_WORDS =
     MESH_LIGHT_POLYGON_HEADER_WORDS + MAX_MESH_LIGHT_POLYGON_CORNERS;
 /// Maximum retained emitter polygon records: merged convex polygons, unmerged triangles and four subtriangles per
 /// textured source triangle. Exceeding this admission limit rejects the candidate without truncating lights.
 static const LightingLayoutValue MAX_RASTER_MESH_LIGHT_POLYGONS = 8192;
+/// Mesh-light culling grid, appended after the polygon records of the same storage buffer when the scene has
+/// emitters (render-graph-authoring.md, "Mesh-light culling"). Its first word is
+/// passed to the resolve; zero means no grid, and every record is evaluated. The grid holds three header words,
+/// (origin xyz in metres, cubic cell size), (cells along x, y, z, word of the first list entry) and (cull radiance,
+/// zero, zero, zero), then the cell table, then the cell lists. Counts, offsets and indices are exact nonnegative
+/// integers stored as float32.
+static const LightingLayoutValue MESH_LIGHT_GRID_HEADER_WORDS = 3;
+/// Header word whose x is the radiance below which a record's bounded Lambert term is omitted.
+static const LightingLayoutValue MESH_LIGHT_GRID_CULL_WORD = 2;
+/// Cells along the receivers' longest axis; the other axes use as many cubic cells as cover them.
+static const LightingLayoutValue MESH_LIGHT_GRID_CELLS_PER_AXIS = 32;
+/// Cell table entries per Float4 word, each a (first list entry, entry count) pair, in x-fastest cell order.
+static const LightingLayoutValue MESH_LIGHT_GRID_CELLS_PER_WORD = 2;
+/// List entries per Float4 word. An entry is the word offset of a listed record's header.
+static const LightingLayoutValue MESH_LIGHT_GRID_ENTRIES_PER_WORD = 4;
+/// Most list entries over all cells. A scene needing more uploads no grid and evaluates every record.
+static const LightingLayoutValue MAX_MESH_LIGHT_GRID_ASSIGNMENTS = 1048576;
 /// Largest finite half-float value; emission is nonnegative and saturates before G-buffer storage.
 static const LightingLayoutValue DEFERRED_MAX_HALF = 65504;
 #ifdef __cplusplus

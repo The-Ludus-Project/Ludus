@@ -1530,10 +1530,13 @@ void RenderGraphCanvas::refreshFeedback()
         if (view->Kind == QStringLiteral("ToneMap"))
         {
             const QJsonObject node = FindNode(configuration(), view->Id);
+            const QString curve = node.value(QStringLiteral("curve")).toString(QStringLiteral("Reinhard"));
             sizeLabel =
-                QStringLiteral("Reinhard · %1× exposure").arg(node.value(QStringLiteral("exposure")).toDouble());
-            resources.append(QStringLiteral("Exposure, Reinhard compression and sRGB encoding after optional "
-                                            "linear accumulation. Disable for clamped linear RGB."));
+                QStringLiteral("%1 · %2× exposure").arg(curve).arg(node.value(QStringLiteral("exposure")).toDouble());
+            resources.append(QStringLiteral("Exposure, %1 compression and sRGB encoding after optional linear "
+                                            "accumulation, or inside a clustered deferred lighting resolve. "
+                                            "Disable for clamped linear RGB.")
+                                 .arg(curve));
         }
         view->Frame->setToolTip(view->Id + QStringLiteral(" : ") + view->Kind + QStringLiteral("\n") + explanation +
                                 QLatin1Char('\n') + resources.join(QLatin1Char('\n')));

@@ -187,6 +187,14 @@ jobs:
             --cli "$PWD/out/project-tooling-venv/bin/ludus" --sdk "$PWD/out/install/macos-clang-development" \
             --slang "$PWD/out/shader-tools/slang/bin/slangc" --cxx "$PWD/out/host-tools/bin/clang++" \
             --cmake "$PWD/out/host-tools/venv/bin/cmake" --profiles metal wgsl --output out/rg2-macos
+      - name: Compile render-graph ray, compute and build fixtures with the installed helper
+        # Links the engine ray kernels (software and native) against the SDK's staged helper files,
+        # so an engine include that the helper does not stage fails here, not in user projects.
+        env:
+          LUDUS_RG1_SLANG: ${{ github.workspace }}/out/shader-tools/slang/bin/slangc
+          LUDUS_RG1_CROSS: ${{ github.workspace }}/out/shader-tools/spirv-cross/bin/spirv-cross
+          LUDUS_RG1_HELPER: ${{ github.workspace }}/out/install/macos-clang-development/lib/cmake/Ludus/shaders
+        run: PYTHONPATH=scripts/python out/host-tools/venv/bin/python -m unittest test_render_graph_ray test_render_graph_compute test_render_graph_build -v
       - name: Verify signed macOS game release packages
         env:
           QT_QPA_PLATFORM: cocoa
@@ -513,6 +521,9 @@ jobs:
         run: ./scripts/setup-quality-tools
       - name: Test tooling checks and editor preset boundaries
         run: PYTHONPATH=scripts/python python3 -m unittest test_quality_tools test_editor_setup -v
+      - name: Test render-graph build, staging and template tooling
+        # Every suite, so new ones join; compiler cases skip here and run in the macOS batch job.
+        run: PYTHONPATH=scripts/python python3 -m unittest discover -s scripts/python -p 'test_render_graph*.py' -v
       - name: Validate workflow syntax before admitting a candidate
         run: out/host-tools/bin/actionlint -shellcheck= -pyflakes=
       - name: Review Python and workflow correctness baseline

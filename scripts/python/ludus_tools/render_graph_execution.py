@@ -229,7 +229,11 @@ def lower_plan(package, configuration):
                              'DepthLoad': attachment['depth']['load'], 'DepthStore': attachment['depth']['store'],
                              'AllowsRepeatedCoverage': 0, 'SceneData': operation.get('scene_data', graph.scene_bundle.ALL_DATA),
                              'RayProgram': 0, 'Buffer0': ABSENT, 'Buffer1': ABSENT,
-                             'Visibility': ABSENT, 'VisibilityDepth': ABSENT, 'AccumulationSamples': 0, 'ToneMappingExposure': 0.0})
+                             'Visibility': ABSENT, 'VisibilityDepth': ABSENT, 'AccumulationSamples': 0,
+                             'ToneMappingExposure': float(operation.get('tone_mapping', {}).get('exposure', 0))})
+        if 'tone_mapping' in operation:
+            build.require(any(recipe.get('clustered_deferred', False) for recipe in choices), 'Capability', operation['id'],
+                          'ToneMap after raster output requires the ClusteredDeferred scene profile; its lighting resolve applies the conversion')
     # Distinct explicitly authored shader pairs represent deliberate passes (for
     # example GBuffer and beauty), rather than an accidental duplicate scene route.
     for operation, record in zip(operations, pass_records):
@@ -261,6 +265,7 @@ def lower_plan(package, configuration):
         record['DenoisingQuality'] = quality.QUALITY_CODES[operation['denoising']['quality']] if 'denoising' in operation else 0
         record['Traversal'] = (ray.get_traversal(ray.program_tuple(operation['pipeline']))
                                if operation['kind'] == 'RayTracing' else 'NativeQuery')
+        record['ToneMappingCurve'] = operation.get('tone_mapping', {}).get('curve', 'Reinhard')
     return plan, resource_records, pass_records, cameras
 
 
@@ -311,8 +316,11 @@ PACKAGE_MAGIC = 0x4752554C
 RAY_PATH_CAPTURE_PACKAGE_MAGIC = 0x5052554C
 # Frame capture profile generation ("LURC"); same layout, admitted only by RenderGraphPackage::DecodeCaptureProfile.
 CAPTURE_PROFILE_PACKAGE_MAGIC = 0x4352554C
+# Version 29 appends each pass's ToneMappingCurve and admits ToneMap on clustered deferred raster output.
 # Version 28: ray kernels dispatch the ray uniform's tile region (a 240-byte uniform), so captures may tile.
-PACKAGE_VERSION = 28
+PACKAGE_VERSION = 29
+# render_graph_format::DisplayCurve codes, by index; zero (Reinhard) also marks a pass without a ToneMap.
+DISPLAY_CURVE_CODES = ('Reinhard', 'PbrNeutral')
 # Version 25 scene resource word: the linked ray kernel reads the renderer's LTC table.
 SCENE_RESOURCE_LTC_TABLE = 1
 # Scene resource bit: the linked ray kernels count latched pixels by failure reason (LUDUS_GRAPH_FAILURE_BINDING).
@@ -614,7 +622,8 @@ def _emit_runtime(path, destination, *, configuration='Default', name='DefaultGr
     lines += [f'inline constexpr foundation::usize STORAGE_BUFFER_COUNT = {len(contents["storage_buffers"])};']
     lines += _uniform_constants(contents)
     kinds = {'Kind': 'Aspect', 'Program': 'Technique', 'ColorLoad': 'Load', 'DepthLoad': 'Load', 'ColorStore': 'Store',
-             'DepthStore': 'Store', 'Stages': 'Visibility', 'Target': 'ShaderTarget', 'Traversal': 'RayTraversal'}
+             'DepthStore': 'Store', 'Stages': 'Visibility', 'Target': 'ShaderTarget', 'Traversal': 'RayTraversal',
+             'ToneMappingCurve': 'DisplayCurve'}
     tables = [('STORAGE_BUFFERS', contents['storage_buffers'], 'StorageBuffer', 'STORAGE_BUFFER_COUNT'), ('RESOURCES', resources, 'Resource', 'RESOURCE_COUNT'), ('PASSES', passes, 'Pass', 'PASS_COUNT'),
               ('UNIFORM_BINDINGS', contents['bindings'], 'UniformBinding', 'UNIFORM_BINDING_COUNT'),
               ('UNIFORM_BLOCKS', contents['blocks'], 'UniformBlock', 'UNIFORM_BLOCK_COUNT'),
@@ -801,6 +810,7 @@ def encode_runtime_package(contents, *, magic=PACKAGE_MAGIC):
         data += u32(p.get('SourceColor', ABSENT))
         data += u32(p.get('DenoisingQuality', 0))
         data += u32(ray.TRAVERSAL_CODES.index(p.get('Traversal', 'NativeQuery')))
+        data += u32(DISPLAY_CURVE_CODES.index(p.get('ToneMappingCurve', 'Reinhard')))
     for b in contents['bindings']:
         data += u32(PROGRAM_CODES[b['Program']], b['Slot'], VISIBILITY[b['Stages']], b['ValueOffset'], b['ValueCount'])
     for b in contents['blocks']:
