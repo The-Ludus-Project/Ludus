@@ -96,6 +96,16 @@ enum class RenderGraphCaptureProblem : foundation::uint8
     UntiledPackage,
 };
 
+/// Check whether a plan's output can be captured, without a device: the route check RenderGraphCapture::Start
+/// applies before it creates anything. The output must be an offscreen colour resource whose writers lead, through
+/// processing passes that read a SourceColor, to a ray pass with an Accumulate.
+/// @param plan Numeric plan; borrowed for the call.
+/// @param output Logical resource to capture; ABSENT selects the plan's only exported colour resource.
+/// @return None when Start would accept the route; NoOutput, RasterRoute or NoAccumulation otherwise. Settings,
+/// device and scene problems are found only by Start and later.
+[[nodiscard]] RenderGraphCaptureProblem FindRenderGraphCaptureProblem(const RenderGraphPlan& plan,
+                                                                      foundation::uint32 output) noexcept;
+
 /// Progress and provenance of one capture.
 struct RenderGraphCaptureInfo final
 {

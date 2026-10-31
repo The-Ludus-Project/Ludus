@@ -2,6 +2,7 @@
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_diagnostics.h"
 #include "internal/render_graph_execution_plan.h"
+#include "internal/theme_colour.h"
 
 #include <ludus/foundation/base/core.h>
 #include <ludus/foundation/math/scalar.hpp>
@@ -45,7 +46,6 @@ constexpr int32 STAGE_METADATA_ROWS = 3;
 constexpr float64 STAGE_PORT_RADIUS = 5;
 constexpr float64 STAGE_PORT_HIT_RADIUS = 12;
 constexpr float64 STAGE_DIMMED_OPACITY = 0.25;
-constexpr QRgb STAGE_HIGHLIGHT_COLOUR = 0xffffcc55;
 
 QString GetNode(const QString& endpoint)
 {
@@ -366,7 +366,7 @@ void RenderGraphComments::RefreshHighlights(const RenderGraphCommentHighlights& 
             isSelected = isSelected == true || highlights.Selection.contains(node) == true;
             isTraced = isTraced == true || highlights.TracedNodes.contains(node) == true;
         }
-        QPen pen(isSelected == true || isTraced == true ? QColor::fromRgba(STAGE_HIGHLIGHT_COLOUR)
+        QPen pen(isSelected == true || isTraced == true ? GetCanvasColour(design::ThemeColour::SelectionAmber)
                                                         : QColor(frame.value(QStringLiteral("colour")).toString()),
                  2);
         pen.setCosmetic(true);
@@ -381,7 +381,8 @@ void RenderGraphComments::RefreshHighlights(const RenderGraphCommentHighlights& 
     {
         const bool isHighlighted =
             (port.IsOutput == true ? highlights.Outputs : highlights.Inputs).contains(port.Endpoint);
-        QPen pen(isHighlighted == true ? QColor::fromRgba(STAGE_HIGHLIGHT_COLOUR) : QColor(Qt::white),
+        QPen pen(isHighlighted == true ? GetCanvasColour(design::ThemeColour::SelectionAmber)
+                                       : GetCanvasColour(design::ThemeColour::TextHud),
                  isHighlighted == true ? 2 : 1);
         pen.setCosmetic(true);
         port.Item->setPen(pen);
@@ -496,8 +497,8 @@ void RenderGraphComments::renderFrames()
                                                                                2 * STAGE_PORT_RADIUS,
                                                                                item);
                     connector->setPos(position);
-                    connector->setBrush(QColor(QStringLiteral("#76c49b")));
-                    connector->setPen(QPen(Qt::white));
+                    connector->setBrush(GetCanvasColour(design::ThemeColour::StatusSuccess));
+                    connector->setPen(QPen(GetCanvasColour(design::ThemeColour::TextHud)));
                     const QString description =
                         endpoint + QStringLiteral(" · ") + mCanvas.GetPortType(endpoint, isOutput);
                     connector->setToolTip(description.toHtmlEscaped());

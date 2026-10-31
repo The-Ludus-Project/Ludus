@@ -6,6 +6,7 @@
 #include <ludus/foundation/containers/borrowed_view.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/render_graph_activation.hpp>
+#include <ludus/graphics/renderer/render_graph_capture.hpp>
 #include <ludus/graphics/rhi/device.h>
 #include <ludus/graphics/rhi/raster.h>
 
@@ -188,6 +189,15 @@ public:
     [[nodiscard]] const QString& GetRasterFallbackPath() const noexcept;
     /// Display attachment chosen by SetOutputTarget; empty selects the exported output.
     [[nodiscard]] const QString& GetOutputTarget() const noexcept;
+    /// Whether a frame capture could capture one output of the active generation, judged without a device by
+    /// FindRenderGraphCaptureProblem when the generation was loaded.
+    /// @param resource Logical resource; ABSENT selects the generation's exported output, as the viewport does.
+    /// @param outProblem Receives None when the route can be captured, otherwise why not; unchanged on false.
+    /// @return False when no generation of GetRequestedPackagePath is active, for example while its first
+    /// generation prepares or while the raster fallback is shown instead.
+    [[nodiscard]] bool
+    FindActiveCaptureProblem(foundation::uint32 resource,
+                             graphics::renderer::RenderGraphCaptureProblem& outProblem) const noexcept;
     /// Activation serial whose frame is shown; 0 when nothing was presented.
     [[nodiscard]] foundation::uint64 GetPresentedGeneration() const noexcept
     {

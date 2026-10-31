@@ -380,6 +380,8 @@ struct RenderGraphPreview::State final
         QByteArray GenerationIdentity;
         RenderGraphPreviewSource Source;
         StaticArray<format::Resource, format::MAX_RESOURCES> Descriptions{};
+        /// FindRenderGraphCaptureProblem of every logical resource, for the reference capture window.
+        StaticArray<renderer::RenderGraphCaptureProblem, format::MAX_RESOURCES> CaptureProblems{};
     };
     StaticArray<uint8, format::IDENTITY_BYTES> Interface{};
     rhi::RasterShaderDescription CompositeVertex{};
@@ -727,6 +729,10 @@ RenderGraphPreviewLoad RenderGraphPreview::Load(const QString& runtimePackagePat
         setStatus(QStringLiteral("This configuration exports no color texture for the preview to show."));
         return RenderGraphPreviewLoad::Unsupported;
     }
+    for (uint32 resource = 0; resource < target.CaptureProblems.GetSize(); ++resource)
+    {
+        target.CaptureProblems[resource] = renderer::FindRenderGraphCaptureProblem(plan, resource);
+    }
     target.Cameras = static_cast<uint32>(plan.Description.CameraCount);
     // Names are optional: a missing or stale sidecar only leaves numeric texture names.
     QFile names(GetTargetNamesPath(selectedPath));
@@ -805,6 +811,22 @@ const QString& RenderGraphPreview::GetRasterFallbackPath() const noexcept
 const QString& RenderGraphPreview::GetOutputTarget() const noexcept
 {
     return mState->OutputName;
+}
+bool RenderGraphPreview::FindActiveCaptureProblem(uint32 resource,
+                                                  renderer::RenderGraphCaptureProblem& outProblem) const noexcept
+{
+    const State& state = *mState;
+    if (state.Active.Serial == 0 || state.Active.PackagePath != state.RequestedPath)
+    {
+        return false;
+    }
+    const uint32 output = resource == format::ABSENT ? state.Active.Resource : resource;
+    if (output >= state.Active.CaptureProblems.GetSize())
+    {
+        return false;
+    }
+    outProblem = state.Active.CaptureProblems[output];
+    return true;
 }
 bool RenderGraphPreview::IsCopyingOutput() const noexcept
 {
