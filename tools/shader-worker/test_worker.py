@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import signal
 import socket
 import shutil
 import struct
@@ -22,6 +23,88 @@ from ludus_tools.errors import ToolingError
 
 # Worker builds hash and load the native client beside the ordinary helper bundle.
 WORKER_HELPERS = render_graph_build.HELPERS + (render_graph_build.NATIVE_WORKER_HELPER,)
+# A forced unroll that keeps Slang busy for tens of seconds, so a stop request lands mid-compile.
+SLOW_SOURCE = '''[shader("compute")] [numthreads(1, 1, 1)]
+void ComputeMain(uint3 id : SV_DispatchThreadID, RWStructuredBuffer<float> values)
+{
+    float value = values[id.x];
+    [ForceUnroll] for (int i = 0; i < 2000; ++i) { value = sin(value * 1.0001 + float(i)); }
+    values[id.x] = value;
+}
+'''
+STOP_SECONDS = 5
+
+
+def wait_for_endpoint(process, endpoint):
+    deadline = time.monotonic() + 10
+    while not endpoint.exists():
+        if process.poll() is not None or time.monotonic() >= deadline:
+            raise RuntimeError('Native worker failed to start')
+        time.sleep(0.01)
+
+
+def send_slow_request(endpoint):
+    """Start a long compile and return the open connection without waiting for its reply."""
+    payload = json.dumps({'version': 1, 'identity': 1, 'source': 'slow.slang', 'entry': 'ComputeMain',
+                          'stage': 2, 'target': 2, 'files': {'slow.slang': SLOW_SOURCE}}).encode('utf-8')
+    peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    peer.connect(str(endpoint))
+    peer.sendall(struct.pack('<I', len(payload)) + payload)
+    time.sleep(1)
+    return peer
+
+
+def is_running(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def check_stops_during_compile(worker, root):
+    """SIGTERM and the death of an owner each stop a worker inside a compile that would not finish soon."""
+    endpoint = root / 'terminated.sock'
+    process = subprocess.Popen([str(worker), '--serve', str(endpoint)])
+    try:
+        wait_for_endpoint(process, endpoint)
+        with send_slow_request(endpoint):
+            assert process.poll() is None
+            process.terminate()
+            process.wait(timeout=STOP_SECONDS)
+        assert not endpoint.exists()
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+    # The owner is killed outright, so nothing forwards SIGTERM to its worker.
+    endpoint = root / 'orphaned.sock'
+    launcher = 'import subprocess, sys, time; print(subprocess.Popen(sys.argv[1:]).pid, flush=True); time.sleep(600)'
+    owner = subprocess.Popen([sys.executable, '-c', launcher, str(worker), '--serve', str(endpoint), '--stop-with-parent'],
+                             stdout=subprocess.PIPE, text=True)
+    pid = int(owner.stdout.readline())
+    try:
+        deadline = time.monotonic() + 10
+        while not endpoint.exists():
+            if not is_running(pid) or time.monotonic() >= deadline:
+                raise RuntimeError('Owned native worker failed to start')
+            time.sleep(0.01)
+        with send_slow_request(endpoint):
+            assert is_running(pid)
+            owner.kill()
+            owner.wait()
+            deadline = time.monotonic() + STOP_SECONDS
+            while is_running(pid) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert not is_running(pid), 'Worker outlived its killed owner'
+        assert not endpoint.exists()
+    finally:
+        owner.stdout.close()
+        if owner.poll() is None:
+            owner.kill()
+            owner.wait()
+        if is_running(pid):
+            os.kill(pid, signal.SIGKILL)
 
 
 def main():
@@ -55,6 +138,7 @@ def main():
             assert len(reply['implementation']) == 64
             duplicate = subprocess.run([str(args.worker.resolve()), '--serve', str(endpoint)], timeout=10)
             assert duplicate.returncode != 0
+            check_stops_during_compile(args.worker.resolve(), root)
             # Truncated/oversized frames and abandoned clients cannot poison the worker.
             for data in (struct.pack('<I', 17 * 1024 * 1024), struct.pack('<I', 20) + b'{'):
                 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
