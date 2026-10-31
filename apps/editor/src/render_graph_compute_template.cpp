@@ -401,6 +401,11 @@ RenderGraphDocumentStatus PrepareComputeRayTracingConfiguration(
         selected.ProgramPrefix = QStringLiteral("PolygonalLight");
         selected.Name = QStringLiteral("Polygonal light sampling");
     }
+    else if (templateIdentity == QStringLiteral("slice-sampling-luminaire"))
+    {
+        selected.ProgramPrefix = QStringLiteral("SliceSampling");
+        selected.Name = QStringLiteral("Slice sampling luminaire");
+    }
     else
     {
         outError = QStringLiteral("Choose a built-in scene compute template.");

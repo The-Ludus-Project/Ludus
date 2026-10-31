@@ -1561,7 +1561,15 @@ TEST_CASE("graph focus restores the active document and panel choices and resolv
     const int32 height = renderer->GetCanvas().height();
     QTabWidget* views = renderer->findChild<QTabWidget*>(QStringLiteral("renderGraphViews"));
     REQUIRE(views != nullptr);
-    views->setCurrentIndex(1);
+    // Focus from a non-Source view maximizes the canvas; Focus Source keeps the Source view instead
+    // (workspace_layout_tests.cpp, "Source focus uses shell layout restoration ...").
+    int32 plan = -1;
+    for (int32 index = 0; index < views->count(); ++index)
+    {
+        plan = views->tabText(index) == QStringLiteral("Plan") ? index : plan;
+    }
+    REQUIRE(plan >= 0);
+    views->setCurrentIndex(plan);
     QAction* focus = Action(window, QStringLiteral("view.focusViewport"));
     focus->trigger();
     Settle();
@@ -1572,7 +1580,7 @@ TEST_CASE("graph focus restores the active document and panel choices and resolv
     CHECK(Dock(window, QStringLiteral("propertiesDock"))->isVisible() == false);
     focus->trigger();
     Settle();
-    CHECK(views->currentIndex() == 1);
+    CHECK(views->currentIndex() == plan);
     views->setCurrentWidget(&renderer->GetCanvas());
     CHECK(Well(window).GetActiveDocumentOrNull() == renderer);
     CHECK(Dock(window, QStringLiteral("propertiesDock"))->isVisible() == true);

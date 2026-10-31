@@ -17,6 +17,12 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#if defined(__APPLE__)
+#    include <dispatch/dispatch.h>
+#elif defined(__linux__)
+#    include <sys/prctl.h>
+#endif
+
 namespace
 {
 using namespace ludus::foundation;
@@ -24,15 +30,68 @@ namespace compiler = ludus::tooling::shader_compiler;
 constexpr usize FRAME_BYTES = sizeof(uint32);
 constexpr int32 CONNECTION_BACKLOG = 16;
 constexpr int32 IO_TIMEOUT_MILLISECONDS = 30000;
-volatile sig_atomic_t gShouldStop = 0;
+// The bound endpoint, kept where a signal handler can remove it without allocating.
+sockaddr_un gAddress{};
+volatile sig_atomic_t gHasEndpoint = 0;
+// Stops at once, even inside a Slang call: a compile has no safe interruption point, and one
+// that never returns must not outlive its owner. Only async-signal-safe calls are used;
+// clients treat the closed connection as a worker failure.
+[[noreturn]] void StopNow() noexcept
+{
+    if (gHasEndpoint == 1)
+    {
+        static_cast<void>(::unlink(gAddress.sun_path));
+    }
+    ::_exit(0);
+}
 void HandleStop(int32) noexcept
 {
-    gShouldStop = 1;
+    StopNow();
+}
+#if defined(__APPLE__)
+void HandleParentExit(void*) noexcept
+{
+    StopNow();
+}
+#endif
+// A worker launched with --stop-with-parent stops when the process that started it exits,
+// including a crash or SIGKILL that never forwards SIGTERM. Otherwise an orphaned worker
+// with a long compile would keep a CPU busy indefinitely.
+bool WatchParent() noexcept
+{
+    const pid_t parent = ::getppid();
+    if (parent <= 1)
+    {
+        return false;
+    }
+#if defined(__APPLE__)
+    // The process-exit source runs its handler on a dispatch thread, so it fires during a compile.
+    dispatch_source_t source = dispatch_source_create(DISPATCH_SOURCE_TYPE_PROC,
+                                                      static_cast<uintptr_t>(parent),
+                                                      DISPATCH_PROC_EXIT,
+                                                      dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
+    if (source == nullptr)
+    {
+        return false;
+    }
+    dispatch_source_set_event_handler_f(source, HandleParentExit);
+    dispatch_resume(source);
+#elif defined(__linux__)
+    // prctl(2): the kernel sends the signal when the thread that created this process exits.
+    if (::prctl(PR_SET_PDEATHSIG, SIGTERM) != 0)
+    {
+        return false;
+    }
+#else
+    return false;
+#endif
+    // A parent that exited before the watch was armed has already reparented this process.
+    return ::getppid() == parent;
 }
 bool Transfer(int32 descriptor, uint8* bytes, usize size, bool isWrite, bool isSocket) noexcept
 {
     usize offset = 0;
-    while (offset < size && gShouldStop == 0)
+    while (offset < size)
     {
         pollfd pending{descriptor, static_cast<short>(isWrite == true ? POLLOUT : POLLIN), 0};
         const int32 ready = ::poll(&pending, 1, IO_TIMEOUT_MILLISECONDS);
@@ -114,8 +173,10 @@ int main(int argc, char** argv)
         constexpr usize VERSION_BYTES = sizeof(LUDUS_SLANG_VERSION "\n") - 1;
         return ::write(STDOUT_FILENO, VERSION, VERSION_BYTES) == static_cast<ssize_t>(VERSION_BYTES) ? 0 : 1;
     }
-    const bool isStdio = argc == 2 && std::string_view(argv[1]) == "--stdio";
-    const bool isServer = argc == 3 && std::string_view(argv[1]) == "--serve";
+    const bool shouldStopWithParent = argc >= 3 && std::string_view(argv[argc - 1]) == "--stop-with-parent";
+    const int32 modeArgumentCount = shouldStopWithParent == true ? argc - 1 : argc;
+    const bool isStdio = modeArgumentCount == 2 && std::string_view(argv[1]) == "--stdio";
+    const bool isServer = modeArgumentCount == 3 && std::string_view(argv[1]) == "--serve";
     if (isStdio == false && isServer == false)
     {
         return 2;
@@ -132,14 +193,18 @@ int main(int argc, char** argv)
     {
         return 1;
     }
+    if (shouldStopWithParent == true && WatchParent() == false)
+    {
+        return 1;
+    }
     if (isStdio == true)
     {
-        while (gShouldStop == 0 && ProcessConnection(shaderCompiler, STDIN_FILENO, STDOUT_FILENO, false) == true)
+        while (ProcessConnection(shaderCompiler, STDIN_FILENO, STDOUT_FILENO, false) == true)
         {
         }
         return 0;
     }
-    sockaddr_un address{};
+    sockaddr_un& address = gAddress;
     const std::string_view endpoint = argv[2];
     if (endpoint.empty() == true || endpoint.size() >= sizeof(address.sun_path))
     {
@@ -158,13 +223,14 @@ int main(int argc, char** argv)
         static_cast<void>(::close(listener));
         return 1;
     }
+    gHasEndpoint = 1;
     if (::chmod(address.sun_path, S_IRUSR | S_IWUSR) != 0 || ::listen(listener, CONNECTION_BACKLOG) != 0)
     {
         static_cast<void>(::close(listener));
         static_cast<void>(::unlink(address.sun_path));
         return 1;
     }
-    while (gShouldStop == 0)
+    while (true)
     {
         const int32 peer = ::accept(listener, nullptr, nullptr);
         if (peer < 0)

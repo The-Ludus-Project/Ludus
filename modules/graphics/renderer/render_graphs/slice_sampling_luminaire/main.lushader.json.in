@@ -1,0 +1,233 @@
+{
+  "version": 1,
+  "id": "RendererStaticBuild",
+  "profiles": @LUDUS_DEFAULT_RENDER_GRAPH_PROFILES@,
+  "schemas": [
+    {
+      "id": "RendererStatic",
+      "role": "Vertex",
+      "fields": [
+        {
+          "id": "PositionMesh",
+          "type": "Float3",
+          "semantic": "POSITION",
+          "location": 0
+        },
+        {
+          "id": "MeshToClipRow0",
+          "type": "Float4",
+          "semantic": "TEXCOORD0",
+          "location": 1
+        },
+        {
+          "id": "MeshToClipRow1",
+          "type": "Float4",
+          "semantic": "TEXCOORD1",
+          "location": 2
+        },
+        {
+          "id": "MeshToClipRow2",
+          "type": "Float4",
+          "semantic": "TEXCOORD2",
+          "location": 3
+        },
+        {
+          "id": "MeshToClipRow3",
+          "type": "Float4",
+          "semantic": "TEXCOORD3",
+          "location": 4
+        },
+        {
+          "id": "Color",
+          "type": "Float4",
+          "semantic": "COLOR0",
+          "location": 5
+        }
+      ]
+    },
+    {
+      "id": "RasterVarying",
+      "role": "Varying",
+      "fields": [
+        {
+          "id": "PositionClip",
+          "type": "Float4",
+          "semantic": "SV_Position",
+          "location": 0
+        },
+        {
+          "id": "Color",
+          "type": "Float4",
+          "semantic": "COLOR0",
+          "location": 0
+        }
+      ]
+    }
+  ],
+  "programs": [
+    {
+      "id": "Geometry",
+      "stage": "vertex",
+      "source": "main_shaders/geometry.slang",
+      "function": "TransformGeometry",
+      "input": "RendererStatic",
+      "output": "RasterVarying",
+      "bindings": []
+    },
+    {
+      "id": "Color",
+      "stage": "fragment",
+      "source": "main_shaders/color.slang",
+      "function": "ShadeColor",
+      "input": "RasterVarying",
+      "output": "Color",
+      "bindings": []
+    },
+    {
+      "id": "Depth",
+      "stage": "fragment",
+      "source": "main_shaders/depth.slang",
+      "function": "WriteDepth",
+      "input": "RasterVarying",
+      "output": "Depth",
+      "bindings": []
+    },
+    {
+      "id": "ShadeDefensiveSliceSampling",
+      "stage": "compute",
+      "source": "main_shaders/shade.slang",
+      "function": "ShadeDefensiveSliceSampling",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "ShadeSliceSampling",
+      "stage": "compute",
+      "source": "main_shaders/shade.slang",
+      "function": "ShadeSliceSampling",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    },
+    {
+      "id": "ShadeUniformArea",
+      "stage": "compute",
+      "source": "main_shaders/shade.slang",
+      "function": "ShadeUniformArea",
+      "input": "RayLaunch",
+      "output": "Radiance",
+      "bindings": []
+    }
+  ],
+  "techniques": [
+    {
+      "id": "DefaultStaticOpaque.ColorAndDepth",
+      "configuration": "ColorAndDepth",
+      "vertex": "Geometry",
+      "fragment": "Color",
+      "recipes": [
+        {
+          "id": "Default",
+          "color": "RGBA8Unorm",
+          "depth": "Depth32Float",
+          "samples": 1,
+          "topology": "TriangleList",
+          "cull": "None",
+          "front": "CounterClockwise",
+          "depth_compare": "Less",
+          "depth_write": true,
+          "blend": "Opaque"
+        }
+      ]
+    },
+    {
+      "id": "DefaultStaticOpaque.DepthOnly",
+      "configuration": "DepthOnly",
+      "vertex": "Geometry",
+      "fragment": "Depth",
+      "recipes": [
+        {
+          "id": "Default",
+          "color": "None",
+          "depth": "Depth32Float",
+          "samples": 1,
+          "topology": "TriangleList",
+          "cull": "None",
+          "front": "CounterClockwise",
+          "depth_compare": "Less",
+          "depth_write": true,
+          "blend": "Opaque"
+        }
+      ]
+    },
+    {
+      "id": "RendererTriangles.RayTracing",
+      "configuration": "RayTracing",
+      "recipes": [
+        {
+          "id": "Triangles"
+        }
+      ],
+      "scene_interface": {
+        "version": 1,
+        "surface_queries": 1,
+        "visibility_queries": 1
+      }
+    }
+  ],
+  "budgets": {
+    "configurations": 8,
+    "programs": 16
+  },
+  "settings": [
+    {
+      "id": "SLICE_DEFENSIVE_FRACTION",
+      "label": "Defensive uniform-area fraction of the slice-sampling mixture (Steinberg, Eq. 15)",
+      "type": "Float32",
+      "value": 0.1,
+      "minimum": 0,
+      "maximum": 1
+    },
+    {
+      "id": "LUMINAIRE_RADIANCE_SCALE",
+      "label": "Luminaire radiance scale",
+      "type": "Float32",
+      "value": 6,
+      "minimum": 0,
+      "maximum": 1000
+    },
+    {
+      "id": "LUMINAIRE_BEAM_WIDTH",
+      "label": "Luminaire beam width (slope units)",
+      "type": "Float32",
+      "value": 0.02,
+      "minimum": 0.001,
+      "maximum": 1
+    },
+    {
+      "id": "LUMINAIRE_BEAM_STEERING",
+      "label": "Luminaire beam steering (slope units)",
+      "type": "Float32",
+      "value": 0.12,
+      "minimum": 0,
+      "maximum": 2
+    },
+    {
+      "id": "LUMINAIRE_BEAM_SPREAD",
+      "label": "Luminaire beam spread (slope per panel half extent)",
+      "type": "Float32",
+      "value": 0.08,
+      "minimum": 0,
+      "maximum": 2
+    },
+    {
+      "id": "LUMINAIRE_BEAM_TWIST",
+      "label": "Luminaire beam twist (slope per panel half extent)",
+      "type": "Float32",
+      "value": 0.04,
+      "minimum": 0,
+      "maximum": 2
+    }
+  ]
+}

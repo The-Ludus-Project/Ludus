@@ -99,3 +99,44 @@ TEST_CASE("sRGB transfer and FP32 predecessor honor their bounded domains", "[ma
     CHECK(NextFloatDown(1) < 1);
     CHECK(NextFloatDown(0) < 0);
 }
+
+TEST_CASE("Standard normal quantile inverts the normal CDF across both tails", "[math][scalar]")
+{
+    using ludus::foundation::float32;
+    using ludus::foundation::float64;
+    CHECK(ComputeStandardNormalQuantile(0.5) == 0.0);
+    CHECK(std::abs(ComputeStandardNormalQuantile(0.975) - 1.959963984540054) < 1e-14);
+    CHECK(std::abs(ComputeStandardNormalQuantile(0.025) + 1.959963984540054) < 1e-14);
+    // Each branch of AS241: the central region, the intermediate tail and the far tail beyond sqrt(-log p) = 5.
+    for (const float64 probability : {1e-300, 1e-100, 1e-20, 1e-12, 1e-6, 1e-3, .02, .1, .3, .45, .5, .55, .8, .99})
+    {
+        INFO("probability " << probability);
+        const float64 x = ComputeStandardNormalQuantile(probability);
+        REQUIRE(IsFinite(x) == true);
+        // Phi(x) = erfc(-x / sqrt(2)) / 2 keeps full relative precision in the lower tail. A relative error e in x
+        // becomes about x^2 e in Phi, which is 1.4e3 e at 1e-300.
+        const float64 recovered = .5 * std::erfc(-x / std::sqrt(2.0));
+        CHECK(std::abs(recovered - probability) <= 1e-12 * probability);
+    }
+    // Symmetry about the median, at probabilities whose complements are exact in float64.
+    for (const float64 probability : {.5 - .0625, .25, .125, 1.0 / 1024, 1.0 / 1048576, 1.0 / 1099511627776.0})
+    {
+        INFO("probability " << probability);
+        CHECK(std::abs(ComputeStandardNormalQuantile(1 - probability) + ComputeStandardNormalQuantile(probability)) <=
+              1e-14);
+    }
+    // The float32 overload evaluates the same polynomials in float32, as the shader does.
+    for (ludus::foundation::usize i = 1; i < 4096; ++i)
+    {
+        const float32 probability = static_cast<float32>(i) / 4096;
+        const float64 expected = ComputeStandardNormalQuantile(static_cast<float64>(probability));
+        CHECK(std::abs(static_cast<float64>(ComputeStandardNormalQuantile(probability)) - expected) <=
+              1e-6 * (1 + std::abs(expected)));
+    }
+    CHECK(std::abs(ComputeStandardNormalQuantile(std::numeric_limits<float32>::min()) + 13.0) < .1F);
+    for (const float64 outside : {0.0, 1.0, -.25, 1.25, std::numeric_limits<float64>::quiet_NaN()})
+    {
+        CHECK(IsNaN(ComputeStandardNormalQuantile(outside)) == true);
+        CHECK(IsNaN(ComputeStandardNormalQuantile(static_cast<float32>(outside))) == true);
+    }
+}
