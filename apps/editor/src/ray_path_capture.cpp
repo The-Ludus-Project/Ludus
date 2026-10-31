@@ -191,10 +191,9 @@ bool RayPathCapture::Start(rhi::DeviceHandle device,
         return false;
     }
     const renderer::RenderGraphPlan plan = state.PackageOrNull->GetPlan();
-    if (renderer::RequiresHardwareRayTracing(plan) == false)
+    if (renderer::UsesRayTracing(plan) == false)
     {
-        SetUnavailable(QStringLiteral("Ray path capture needs native ray queries; this generation's ray passes use "
-                                      "software traversal or none."));
+        SetUnavailable(QStringLiteral("Ray path capture needs a ray pass; this generation traces no rays."));
         return false;
     }
     if (renderer::RequiresDenoising(plan) == true && renderer::IsDenoisingAvailable() == false)
@@ -241,7 +240,9 @@ bool RayPathCapture::Start(rhi::DeviceHandle device,
                                                                  static_cast<uint32>(freeze.ReferenceSize.height()));
     if (initialized == rhi::RasterStatus::Unsupported)
     {
-        SetUnavailable(QStringLiteral("This device cannot run the capture variant's native ray queries."));
+        SetUnavailable(renderer::RequiresHardwareRayTracing(plan) == true
+                           ? QStringLiteral("This device cannot run the capture variant's native ray queries.")
+                           : QStringLiteral("This device cannot run the capture variant's compute traversal."));
         return false;
     }
     if (IsAccepted(initialized) == false)

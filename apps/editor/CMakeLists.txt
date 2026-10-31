@@ -1215,6 +1215,18 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
             MANIFEST "${editor_ray_staged}/main.lushader.json" RAY_PATH_CAPTURE RAY_PATH_CAPTURE_PACKAGE)
         target_compile_definitions(ludus_editor_tests PRIVATE
             "LUDUS_EDITOR_RAY_CAPTURE_FIXTURE=\"${editor_renderer_ray_capture_RAY_PATH_CAPTURE_PACKAGE}\"")
+        # A software TriangleLoop graph and its capture variant: capture without native ray queries.
+        set(editor_software_ray_staged "${CMAKE_CURRENT_BINARY_DIR}/software-ray-inputs")
+        ludus_stage_render_graph_fixture("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/traversal_parity"
+            "${editor_software_ray_staged}")
+        ludus_compile_render_graph(TARGET ludus_editor_tests NAME editor_software_ray
+            MANIFEST "${editor_software_ray_staged}/main.lushader.json" CONFIGURATION TriangleLoop RUNTIME_PACKAGE)
+        ludus_compile_render_graph(TARGET ludus_editor_tests NAME editor_software_ray_capture
+            MANIFEST "${editor_software_ray_staged}/main.lushader.json" CONFIGURATION TriangleLoop
+            RAY_PATH_CAPTURE RAY_PATH_CAPTURE_PACKAGE)
+        target_compile_definitions(ludus_editor_tests PRIVATE
+            "LUDUS_EDITOR_SOFTWARE_RAY_GRAPH_FIXTURE=\"${editor_software_ray_RUNTIME_PACKAGE}\""
+            "LUDUS_EDITOR_SOFTWARE_RAY_CAPTURE_FIXTURE=\"${editor_software_ray_capture_RAY_PATH_CAPTURE_PACKAGE}\"")
         target_sources(ludus_editor_tests PRIVATE tests/ray_path_inspection_tests.cpp)
         ludus_stage_render_graph_fixture("${progressive_source}" "${progressive_staged}")
         configure_file("${progressive_source}/main_shaders/progressive_closest.slang"
