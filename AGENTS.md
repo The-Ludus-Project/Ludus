@@ -334,6 +334,20 @@ rejects the explicit `== true`/`== false` style.
   Distinguish an accepted candidate's diagnostic report from the last presented
   image; verify pending, failure and successful publication with regression tests.
 
+### Errors offer solutions
+
+- A user-facing failure must lead to a fix, not only a description. When the
+  repair is safe and loses no authored data, the engine or editor applies it
+  automatically. When it changes or removes authored data or raises an authored
+  limit, offer it in a confirmation dialog that names exactly what changes, has
+  an explicit action button (for example **Remove and apply**) and Cancel as the
+  default, and applies the repair in the same undoable edit as the original
+  action. When no repair is possible, the message names the counts or inputs and
+  the concrete next step.
+- An engine-shipped limit or default that its own built-in content cannot
+  satisfy is an engine defect: fix the owner and add a regression that checks
+  the built-in content against it, rather than asking users to work around it.
+
 ### Public SDK documentation
 
 - Treat documentation as part of every new feature. Include appropriate Doxygen

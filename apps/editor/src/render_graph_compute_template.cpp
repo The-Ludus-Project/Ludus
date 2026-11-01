@@ -320,8 +320,12 @@ RenderGraphDocumentStatus PrepareSceneComputeTemplateConfiguration(
         return status;
     }
     // The settings error already says that the draft was preserved.
-    status =
-        MergeTemplateSettings(manifest, source.value(QStringLiteral("settings")).toArray(), selected.Name, outError);
+    status = MergeTemplateSettings(inoutSnapshot,
+                                   manifest,
+                                   source.value(QStringLiteral("settings")).toArray(),
+                                   selected.Name,
+                                   outError,
+                                   inoutBudgetOrNull);
     if (status != RenderGraphDocumentStatus::Ok)
     {
         return status;

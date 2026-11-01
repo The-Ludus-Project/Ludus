@@ -69,8 +69,10 @@ struct RenderGraphNodeConnection final
     QString To;
 };
 
-/// Per-attempt program-budget request and explicit approval for a template import.
-/// Document application clears the reported counts; approval covers at most ApprovedPrograms.
+/// Per-attempt capacity request and explicit approval for a template import: a program-budget
+/// increase, or removal of authored settings that no shader references when the merged settings
+/// exceed the editor limit. Document application clears the reported fields; approval covers at
+/// most ApprovedPrograms and only the settings named in ApprovedSettingRemovals.
 struct RenderGraphTemplateBudgetIncrease final
 {
     /// Maximum program count approved by the caller; zero retains the authored limit.
@@ -79,6 +81,13 @@ struct RenderGraphTemplateBudgetIncrease final
     foundation::int32 CurrentPrograms = 0;
     /// Required merged program count; zero when no increase was requested.
     foundation::int32 RequiredPrograms = 0;
+    /// Setting identities the caller approved for removal; other settings are always kept.
+    QStringList ApprovedSettingRemovals;
+    /// Merged setting count when it exceeds the editor limit; zero otherwise.
+    foundation::int32 RequiredSettings = 0;
+    /// Unreferenced settings whose removal lets the template's settings fit; empty when removal
+    /// was not requested or cannot make them fit.
+    QStringList UnusedSettings;
 };
 
 /// What RemoveSubgraphLibrary removed from the draft. Paths are package-relative.

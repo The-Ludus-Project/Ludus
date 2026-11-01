@@ -2820,3 +2820,191 @@ TEST_CASE("Compute ray-tracing import extends a shared ray technique and preserv
     CHECK(document.GetDraft(COMPUTE_MANIFEST) == beforeManifest);
     CHECK(document.GetFiles() == beforeFiles);
 }
+
+namespace
+{
+QJsonObject MakeBoolSetting(const QString& identity)
+{
+    return QJsonObject{{QStringLiteral("id"), identity},
+                       {QStringLiteral("label"), identity},
+                       {QStringLiteral("type"), QStringLiteral("Bool")},
+                       {QStringLiteral("value"), true}};
+}
+
+QStringList GetSettingIdentities(const QJsonObject& manifest)
+{
+    QStringList identities;
+    for (const QJsonValueConstRef value : manifest.value(QStringLiteral("settings")).toArray())
+    {
+        identities.append(value.toObject().value(QStringLiteral("id")).toString());
+    }
+    return identities;
+}
+} // namespace
+
+TEST_CASE("Template settings beyond the editor limit offer removal of settings no shader uses",
+          "[editor][render-graph][template-settings]")
+{
+    // The manifest is full: one authored setting is named by a shader, every other one is unused.
+    QJsonArray authored;
+    for (int32 index = 0; index < LUDUS_EDITOR_MAX_SETTINGS; ++index)
+    {
+        authored.append(MakeBoolSetting(QStringLiteral("AUTHORED_%1").arg(index)));
+    }
+    QJsonObject manifest{{QStringLiteral("settings"), authored}};
+    const QJsonObject before = manifest;
+    const QJsonArray additions{MakeBoolSetting(QStringLiteral("TEMPLATE_A")),
+                               MakeBoolSetting(QStringLiteral("TEMPLATE_B"))};
+    RenderGraphSnapshot snapshot;
+    // Only whole identifiers in shader sources are uses: AUTHORED_1x, AUTHORED_10 and graph text are not.
+    snapshot.Files.insert(QStringLiteral("shaders/shade.slang"),
+                          "bool Shade() { return AUTHORED_0 && TEMPLATE_A; } // AUTHORED_1x");
+    snapshot.Files.insert(QStringLiteral("main.lurender.json"), "{\"note\": \"AUTHORED_2\"}");
+    QString error;
+
+    // Without a request, the message names the settings to remove and the draft is unchanged.
+    CHECK(MergeTemplateSettings(snapshot, manifest, additions, QStringLiteral("Large"), error, nullptr) ==
+          RenderGraphDocumentStatus::Capacity);
+    CHECK(error.contains(QStringLiteral("No shader uses AUTHORED_1, AUTHORED_2,")) == true);
+    CHECK(error.contains(QStringLiteral("AUTHORED_0,")) == false);
+    CHECK(error.count(QStringLiteral("The draft was preserved.")) == 1);
+    CHECK(manifest == before);
+
+    // A request reports the removable settings without removing any of them.
+    RenderGraphTemplateBudgetIncrease request;
+    CHECK(MergeTemplateSettings(snapshot, manifest, additions, QStringLiteral("Large"), error, &request) ==
+          RenderGraphDocumentStatus::Capacity);
+    CHECK(request.RequiredSettings == LUDUS_EDITOR_MAX_SETTINGS + 2);
+    CHECK(request.UnusedSettings.size() == LUDUS_EDITOR_MAX_SETTINGS - 1);
+    CHECK(request.UnusedSettings.contains(QStringLiteral("AUTHORED_0")) == false);
+    CHECK(request.UnusedSettings.contains(QStringLiteral("TEMPLATE_B")) == false);
+    CHECK(manifest == before);
+
+    // A partial approval removes nothing and asks again.
+    request.ApprovedSettingRemovals = request.UnusedSettings.mid(0, 1);
+    CHECK(MergeTemplateSettings(snapshot, manifest, additions, QStringLiteral("Large"), error, &request) ==
+          RenderGraphDocumentStatus::Capacity);
+    CHECK(manifest == before);
+
+    // Approval removes exactly the reported settings; used and template settings stay.
+    request.ApprovedSettingRemovals = request.UnusedSettings;
+    REQUIRE(MergeTemplateSettings(snapshot, manifest, additions, QStringLiteral("Large"), error, &request) ==
+            RenderGraphDocumentStatus::Ok);
+    CHECK(GetSettingIdentities(manifest) ==
+          QStringList{QStringLiteral("AUTHORED_0"), QStringLiteral("TEMPLATE_A"), QStringLiteral("TEMPLATE_B")});
+
+    // When every authored setting is used, no removal can help and the message says what to do instead.
+    QString uses;
+    for (int32 index = 0; index < LUDUS_EDITOR_MAX_SETTINGS; ++index)
+    {
+        uses += QStringLiteral("AUTHORED_%1;\n").arg(index);
+    }
+    snapshot.Files.insert(QStringLiteral("shaders/uses.slang"), uses.toUtf8());
+    manifest = before;
+    RenderGraphTemplateBudgetIncrease blocked;
+    CHECK(MergeTemplateSettings(snapshot, manifest, additions, QStringLiteral("Large"), error, &blocked) ==
+          RenderGraphDocumentStatus::Capacity);
+    CHECK(blocked.UnusedSettings.isEmpty() == true);
+    CHECK(error.contains(QStringLiteral("only 0 of them are unused")) == true);
+    CHECK(error.contains(QStringLiteral("Delete settings or configurations")) == true);
+    CHECK(manifest == before);
+}
+
+TEST_CASE("Canvas template picker offers to remove unused settings that block a template",
+          "[editor][render-graph][template-settings]")
+{
+    const bool shouldApprove = GENERATE(false, true);
+    QTemporaryDir project;
+    QWidget properties;
+    RendererWorkspace workspace({FindTemplatePython(), {}, QStringLiteral(LUDUS_EDITOR_PROJECT_ROOT)});
+    workspace.SetProject(project.path(), 1);
+    workspace.SetLivePreview(false);
+    REQUIRE(workspace.CustomizeBuiltIn() == true);
+    QWidget* inspector = workspace.TakeInspectorPanel(&properties);
+    inspector->hide();
+    properties.hide();
+    workspace.show();
+    RenderGraphDocument& document = workspace.GetDocument();
+    QJsonObject manifest = QJsonDocument::fromJson(document.GetDraft(COMPUTE_MANIFEST)).object();
+    QJsonArray settings = manifest.value(QStringLiteral("settings")).toArray();
+    while (settings.size() < LUDUS_EDITOR_MAX_SETTINGS)
+    {
+        settings.append(MakeBoolSetting(QStringLiteral("STALE_%1").arg(settings.size())));
+    }
+    manifest.insert(QStringLiteral("settings"), settings);
+    REQUIRE(document.SetText(COMPUTE_MANIFEST, EncodeCanonicalJson(manifest)) == RenderGraphDocumentStatus::Ok);
+    const QByteArray beforeManifest = document.GetDraft(COMPUTE_MANIFEST);
+    const QByteArray beforeRoot = document.GetDraft(ROOT_GRAPH);
+    const QStringList beforeFiles = document.GetFiles();
+    QTimer::singleShot(0, &workspace, [&workspace, shouldApprove]() {
+        QMenu* menuOrNull = qobject_cast<QMenu*>(QApplication::activePopupWidget());
+        REQUIRE(menuOrNull != nullptr);
+        QAction* actionOrNull =
+            menuOrNull->findChild<QAction*>(QStringLiteral("renderGraphApplyConfigurationTemplate"));
+        REQUIRE(actionOrNull != nullptr);
+        menuOrNull->close();
+        QTimer::singleShot(0, &workspace, [&workspace, shouldApprove]() {
+            QDialog* dialogOrNull = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            REQUIRE(dialogOrNull != nullptr);
+            QComboBox* choiceOrNull =
+                dialogOrNull->findChild<QComboBox*>(QStringLiteral("renderGraphConfigurationTemplate"));
+            REQUIRE(choiceOrNull != nullptr);
+            choiceOrNull->setCurrentIndex(choiceOrNull->findData(QStringLiteral("veach-guibas-mis")));
+            QTimer::singleShot(0, &workspace, [shouldApprove]() {
+                QMessageBox* confirmationOrNull = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+                REQUIRE(confirmationOrNull != nullptr);
+                CHECK(confirmationOrNull->objectName() == QStringLiteral("renderGraphTemplateSettingsConfirmation"));
+                CHECK(confirmationOrNull->text().contains(QStringLiteral("STALE_0")) == true);
+                CHECK(confirmationOrNull->defaultButton() == confirmationOrNull->button(QMessageBox::Cancel));
+                if (shouldApprove == true)
+                {
+                    for (QAbstractButton* button : confirmationOrNull->buttons())
+                    {
+                        if (confirmationOrNull->buttonRole(button) == QMessageBox::AcceptRole)
+                        {
+                            button->click();
+                            return;
+                        }
+                    }
+                    FAIL("Remove and apply button is missing");
+                }
+                else
+                {
+                    confirmationOrNull->button(QMessageBox::Cancel)->click();
+                }
+            });
+            QDialogButtonBox* buttonsOrNull = dialogOrNull->findChild<QDialogButtonBox*>();
+            REQUIRE(buttonsOrNull != nullptr);
+            buttonsOrNull->button(QDialogButtonBox::Apply)->click();
+            CHECK(dialogOrNull->isVisible() == (shouldApprove == false));
+            dialogOrNull->reject();
+        });
+        actionOrNull->trigger();
+    });
+    RenderGraphCanvas& canvas = workspace.GetCanvas();
+    canvas.centerOn(canvas.scene()->itemsBoundingRect().bottomRight() + QPointF(100, 100));
+    QContextMenuEvent context(QContextMenuEvent::Mouse,
+                              canvas.viewport()->rect().center(),
+                              canvas.viewport()->mapToGlobal(canvas.viewport()->rect().center()));
+    QApplication::sendEvent(canvas.viewport(), &context);
+    if (shouldApprove == true)
+    {
+        const QByteArray afterManifest = document.GetDraft(COMPUTE_MANIFEST);
+        const QStringList identities = GetSettingIdentities(QJsonDocument::fromJson(afterManifest).object());
+        CHECK(identities.filter(QStringLiteral("STALE_")).isEmpty() == true);
+        CHECK(identities.contains(QStringLiteral("MIS_HEURISTIC")) == true);
+        CHECK(identities.size() <= LUDUS_EDITOR_MAX_SETTINGS);
+        workspace.Undo();
+        CHECK(document.GetDraft(COMPUTE_MANIFEST) == beforeManifest);
+        CHECK(document.GetDraft(ROOT_GRAPH) == beforeRoot);
+        CHECK(document.GetFiles() == beforeFiles);
+        workspace.Redo();
+        CHECK(document.GetDraft(COMPUTE_MANIFEST) == afterManifest);
+    }
+    else
+    {
+        CHECK(document.GetDraft(COMPUTE_MANIFEST) == beforeManifest);
+        CHECK(document.GetDraft(ROOT_GRAPH) == beforeRoot);
+        CHECK(document.GetFiles() == beforeFiles);
+    }
+}

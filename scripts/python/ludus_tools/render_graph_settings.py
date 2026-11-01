@@ -2,7 +2,9 @@
 
 import math
 
-MAX_SETTINGS = 16
+# Settings become one static constant per manifest setting in each program's source. The bound
+# admits every built-in template in one manifest (28 settings today) with room for authored ones.
+MAX_SETTINGS = 64
 MAX_NUMERIC_VALUE = 1000000
 MAX_SETTING_LABEL_LENGTH = 128
 

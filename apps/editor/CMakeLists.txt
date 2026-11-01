@@ -101,6 +101,7 @@ foreach(limit MAX_SETTINGS MAX_NUMERIC_VALUE MAX_SETTING_LABEL_LENGTH)
     list(APPEND graph_settings_definitions "LUDUS_EDITOR_${limit}=${graph_settings_limit}")
 endforeach()
 set_source_files_properties(src/render_graph_settings_editor.cpp src/render_graph_configuration_template.cpp
+    tests/render_graph_template_tests.cpp
     PROPERTIES COMPILE_DEFINITIONS "${graph_settings_definitions}")
 
 # Shader authoring shares the build service's target-artifact and pipeline ceilings
