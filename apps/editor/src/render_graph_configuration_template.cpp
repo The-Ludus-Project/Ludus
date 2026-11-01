@@ -185,12 +185,52 @@ RenderGraphDocumentStatus MergePrograms(RenderGraphSnapshot& inoutSnapshot,
     return CopyShaderSources(inoutSnapshot, sources, templateRoot, outError);
 }
 
+// Settings reach shaders only as generated constants, so a setting that no authored shader names as a
+// whole identifier changes no build output. Comments count as uses, which keeps a documented setting.
+QStringList
+GetUnusedSettings(const RenderGraphSnapshot& snapshot, const QJsonArray& settings, const QJsonArray& additions)
+{
+    QStringList sources;
+    for (QMap<QString, QByteArray>::const_iterator file = snapshot.Files.constBegin();
+         file != snapshot.Files.constEnd();
+         ++file)
+    {
+        if (file.key().endsWith(QStringLiteral(".slang")) == true)
+        {
+            sources.append(QString::fromUtf8(file.value()));
+        }
+    }
+    QStringList unused;
+    for (const QJsonValueConstRef value : settings)
+    {
+        const QString identity = value.toObject().value(QStringLiteral("id")).toString();
+        bool isTemplateSetting = false;
+        for (const QJsonValueConstRef addition : additions)
+        {
+            isTemplateSetting = isTemplateSetting || addition.toObject().value(QStringLiteral("id")) == identity;
+        }
+        const QRegularExpression use(QStringLiteral("\\b%1\\b").arg(QRegularExpression::escape(identity)));
+        bool isUsed = isTemplateSetting;
+        for (const QString& source : sources)
+        {
+            isUsed = isUsed || use.match(source).hasMatch();
+        }
+        if (isUsed == false)
+        {
+            unused.append(identity);
+        }
+    }
+    return unused;
+}
+
 } // namespace
 
-RenderGraphDocumentStatus MergeTemplateSettings(QJsonObject& inoutManifest,
+RenderGraphDocumentStatus MergeTemplateSettings(const RenderGraphSnapshot& snapshot,
+                                                QJsonObject& inoutManifest,
                                                 const QJsonArray& additions,
                                                 const QString& templateName,
-                                                QString& outError)
+                                                QString& outError,
+                                                RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull)
 {
     QJsonArray settings = inoutManifest.value(QStringLiteral("settings")).toArray();
     for (const QJsonValueConstRef value : additions)
@@ -219,16 +259,50 @@ RenderGraphDocumentStatus MergeTemplateSettings(QJsonObject& inoutManifest,
             settings.append(value);
         }
     }
-    if (settings.size() > LUDUS_EDITOR_MAX_SETTINGS)
+    if (settings.size() <= LUDUS_EDITOR_MAX_SETTINGS)
     {
-        outError = QStringLiteral("%1 needs %2 settings, exceeding the editor limit of %3. "
-                                  "Remove unused settings before importing. The draft was preserved.")
+        inoutManifest.insert(QStringLiteral("settings"), settings);
+        return RenderGraphDocumentStatus::Ok;
+    }
+    const qsizetype requiredSettings = settings.size();
+    const QStringList unused = GetUnusedSettings(snapshot, settings, additions);
+    if (requiredSettings - unused.size() > LUDUS_EDITOR_MAX_SETTINGS)
+    {
+        outError = QStringLiteral("%1 needs %2 settings, exceeding the editor limit of %3, and only %4 of them are "
+                                  "unused by every shader. Delete settings or configurations this package no longer "
+                                  "needs from the shader manifest, then retry. The draft was preserved.")
                        .arg(templateName)
-                       .arg(settings.size())
-                       .arg(LUDUS_EDITOR_MAX_SETTINGS);
+                       .arg(requiredSettings)
+                       .arg(LUDUS_EDITOR_MAX_SETTINGS)
+                       .arg(unused.size());
         return RenderGraphDocumentStatus::Capacity;
     }
-    inoutManifest.insert(QStringLiteral("settings"), settings);
+    QJsonArray kept;
+    for (const QJsonValueConstRef value : settings)
+    {
+        const QString identity = value.toObject().value(QStringLiteral("id")).toString();
+        if (unused.contains(identity) == false || inoutBudgetOrNull == nullptr ||
+            inoutBudgetOrNull->ApprovedSettingRemovals.contains(identity) == false)
+        {
+            kept.append(value);
+        }
+    }
+    if (kept.size() > LUDUS_EDITOR_MAX_SETTINGS)
+    {
+        if (inoutBudgetOrNull != nullptr)
+        {
+            inoutBudgetOrNull->RequiredSettings = static_cast<int32>(requiredSettings);
+            inoutBudgetOrNull->UnusedSettings = unused;
+        }
+        outError = QStringLiteral("%1 needs %2 settings, exceeding the editor limit of %3. No shader uses %4; "
+                                  "remove them and apply the template again. The draft was preserved.")
+                       .arg(templateName)
+                       .arg(requiredSettings)
+                       .arg(LUDUS_EDITOR_MAX_SETTINGS)
+                       .arg(unused.join(QStringLiteral(", ")));
+        return RenderGraphDocumentStatus::Capacity;
+    }
+    inoutManifest.insert(QStringLiteral("settings"), kept);
     return RenderGraphDocumentStatus::Ok;
 }
 
@@ -383,10 +457,12 @@ RenderGraphDocumentStatus PrepareRestirConfiguration(RenderGraphSnapshot& inoutS
         return programStatus;
     }
     const RenderGraphDocumentStatus settingsStatus =
-        MergeTemplateSettings(manifest,
+        MergeTemplateSettings(inoutSnapshot,
+                              manifest,
                               source.value(QStringLiteral("settings")).toArray(),
                               QStringLiteral("ReSTIR DI"),
-                              outError);
+                              outError,
+                              inoutBudgetOrNull);
     if (settingsStatus != RenderGraphDocumentStatus::Ok)
     {
         return settingsStatus;

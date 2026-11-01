@@ -1426,7 +1426,14 @@ and preserves the draft. Program, source and setting conflicts name the conflict
 input; a program capacity error gives the required count and `budgets.programs` limit.
 Undo restores the previous budgets along with the graph and shader edits.
 Settings are shared by this package's ReSTIR
-configurations. Keep explicit payload byte caps large enough for the extended
+configurations. A manifest holds up to 64 settings, enough for every built-in
+template together. If a template's settings would exceed that limit and removing
+authored settings that no `.slang` source names would make room, the picker lists
+those settings and offers **Remove and apply** or **Cancel**. Approval removes only
+the listed settings in the same undoable edit as the template; a template's own
+settings and every setting a shader names, even in a comment, are kept. When no
+removal can make room, the error gives the counts and the draft is preserved.
+Keep explicit payload byte caps large enough for the extended
 payload; the compiler remains authoritative for that admission check.
 
 To start a whole package instead, choose **New Render Graph → Template → ReSTIR DI**.
@@ -4771,7 +4778,7 @@ The closed version-1 `.lushader.json` source has these fields:
 | `programs` | Named stage/function/source records; input/output schemas and explicit uniform bindings |
 | `techniques` | Explicit `DefaultStaticOpaque.ColorAndDepth`/`.DepthOnly` and/or `DefaultStaticMasked.ColorAndDepth`/`.DepthOnly` mappings and legal pipeline recipes |
 | `budgets` | Author bounds for configurations, programs, emitted artifacts and pipeline recipes |
-| `settings` (optional) | Up to 16 typed shader constants exposed in Properties and the canvas Graph Settings dialog |
+| `settings` (optional) | Up to 64 typed shader constants exposed in Properties and the canvas Graph Settings dialog |
 
 Each setting declares `id`, `label`, `type`, and `value`. Types are `UInt32`,
 `Float32`, or `Bool`; numeric settings also require `minimum` and `maximum` with

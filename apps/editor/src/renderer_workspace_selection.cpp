@@ -433,29 +433,16 @@ void RendererWorkspace::promptConfigurationTemplate(const QString& templateIdent
                 const QString templateIdentity = choice->currentData().toString();
                 RenderGraphTemplateBudgetIncrease budget;
                 bool isApplied = ApplyConfigurationTemplate(configuration, templateIdentity, &budget);
-                if (isApplied == false && budget.RequiredPrograms > budget.CurrentPrograms)
+                // An attempt reports at most one repair, so a program increase can reveal a settings
+                // removal on the retry. Each repair is offered once.
+                constexpr int32 MAX_TEMPLATE_REPAIRS = 2;
+                for (int32 repair = 0; repair < MAX_TEMPLATE_REPAIRS && isApplied == false; ++repair)
                 {
-                    QMessageBox confirmation(QMessageBox::Question,
-                                             QStringLiteral("Increase shader program budget?"),
-                                             QStringLiteral("This template needs %1 shader programs, but the current "
-                                                            "limit is %2. Increase budgets.programs from %2 to %1 "
-                                                            "and apply the template?\n\n"
-                                                            "The increase and template can be undone together. "
-                                                            "Save publishes both changes.")
-                                                 .arg(budget.RequiredPrograms)
-                                                 .arg(budget.CurrentPrograms),
-                                             QMessageBox::Cancel,
-                                             &dialog);
-                    confirmation.setObjectName(QStringLiteral("renderGraphTemplateBudgetConfirmation"));
-                    QPushButton* increase =
-                        confirmation.addButton(QStringLiteral("Increase and apply"), QMessageBox::AcceptRole);
-                    confirmation.setDefaultButton(QMessageBox::Cancel);
-                    confirmation.exec();
-                    if (confirmation.clickedButton() == increase)
+                    if (confirmTemplateRepair(budget, &dialog) == false)
                     {
-                        budget.ApprovedPrograms = budget.RequiredPrograms;
-                        isApplied = ApplyConfigurationTemplate(configuration, templateIdentity, &budget);
+                        break;
                     }
+                    isApplied = ApplyConfigurationTemplate(configuration, templateIdentity, &budget);
                 }
                 if (isApplied == true)
                 {
@@ -468,6 +455,64 @@ void RendererWorkspace::promptConfigurationTemplate(const QString& templateIdent
                 }
             });
     dialog.exec();
+}
+
+bool RendererWorkspace::confirmTemplateRepair(RenderGraphTemplateBudgetIncrease& inoutBudget, QWidget* parent)
+{
+    const bool shouldIncreasePrograms = inoutBudget.RequiredPrograms > inoutBudget.CurrentPrograms &&
+                                        inoutBudget.ApprovedPrograms < inoutBudget.RequiredPrograms;
+    bool shouldRemoveSettings = false;
+    for (const QString& setting : inoutBudget.UnusedSettings)
+    {
+        shouldRemoveSettings = shouldRemoveSettings || inoutBudget.ApprovedSettingRemovals.contains(setting) == false;
+    }
+    if (shouldIncreasePrograms == false && shouldRemoveSettings == false)
+    {
+        return false;
+    }
+    QMessageBox confirmation(QMessageBox::Question, QString{}, QString{}, QMessageBox::Cancel, parent);
+    QPushButton* accept = confirmation.addButton(shouldIncreasePrograms == true ? QStringLiteral("Increase and apply")
+                                                                                : QStringLiteral("Remove and apply"),
+                                                 QMessageBox::AcceptRole);
+    if (shouldIncreasePrograms == true)
+    {
+        confirmation.setWindowTitle(QStringLiteral("Increase shader program budget?"));
+        confirmation.setText(QStringLiteral("This template needs %1 shader programs, but the current limit is %2. "
+                                            "Increase budgets.programs from %2 to %1 and apply the template?\n\n"
+                                            "The increase and template can be undone together. "
+                                            "Save publishes both changes.")
+                                 .arg(inoutBudget.RequiredPrograms)
+                                 .arg(inoutBudget.CurrentPrograms));
+        confirmation.setObjectName(QStringLiteral("renderGraphTemplateBudgetConfirmation"));
+    }
+    else
+    {
+        confirmation.setWindowTitle(QStringLiteral("Remove unused settings?"));
+        confirmation.setText(QStringLiteral("This template needs %1 settings, more than the editor supports. "
+                                            "No shader in this package uses these %2 settings:\n\n%3\n\n"
+                                            "Remove them and apply the template?\n\n"
+                                            "The removal and template can be undone together. "
+                                            "Save publishes both changes.")
+                                 .arg(inoutBudget.RequiredSettings)
+                                 .arg(inoutBudget.UnusedSettings.size())
+                                 .arg(inoutBudget.UnusedSettings.join(QStringLiteral(", "))));
+        confirmation.setObjectName(QStringLiteral("renderGraphTemplateSettingsConfirmation"));
+    }
+    confirmation.setDefaultButton(QMessageBox::Cancel);
+    confirmation.exec();
+    if (confirmation.clickedButton() != accept)
+    {
+        return false;
+    }
+    if (shouldIncreasePrograms == true)
+    {
+        inoutBudget.ApprovedPrograms = inoutBudget.RequiredPrograms;
+    }
+    else
+    {
+        inoutBudget.ApprovedSettingRemovals = inoutBudget.UnusedSettings;
+    }
+    return true;
 }
 
 bool RendererWorkspace::RemoveSelectedConfiguration()

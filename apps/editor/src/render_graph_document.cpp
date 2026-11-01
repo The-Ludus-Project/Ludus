@@ -1379,6 +1379,8 @@ RenderGraphDocument::ApplyConfigurationTemplate(const QString& file,
     {
         inoutBudgetOrNull->CurrentPrograms = 0;
         inoutBudgetOrNull->RequiredPrograms = 0;
+        inoutBudgetOrNull->RequiredSettings = 0;
+        inoutBudgetOrNull->UnusedSettings.clear();
     }
     RenderGraphSnapshot candidate = mDraft;
     const RenderGraphDocumentStatus prepared = PrepareConfigurationTemplate(candidate,
