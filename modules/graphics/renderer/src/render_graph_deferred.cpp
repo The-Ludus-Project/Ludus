@@ -4,6 +4,7 @@
 #include <ludus/content/render_graph_format/plan.h>
 
 #include <ludus/foundation/math/matrix.hpp>
+#include <ludus/foundation/math/transform.hpp>
 #include <ludus/foundation/math/vector.hpp>
 #include <ludus/graphics/renderer/tone_mapping.hpp>
 
@@ -20,6 +21,8 @@ constexpr usize QUAD_VERTEX_BYTES = QUAD_VERTEX_COUNT * sizeof(math::Vector4);
 constexpr usize QUAD_INDEX_BYTES = QUAD_INDEX_COUNT * sizeof(uint32);
 constexpr usize VIEW_BYTES = static_cast<usize>(DEFERRED_VIEW_WORDS) * sizeof(math::Vector4);
 constexpr usize ALPHA_CHANNEL = 3;
+/// Column of a homogeneous transform that holds its translation.
+constexpr usize TRANSLATION_COLUMN = 3;
 constexpr float32 ORTHOGRAPHIC_EYE_FLAGS =
     3; // Valid eye plus direction-vector encoding, matching Renderer::PrepareView.
 struct ViewParameters final
@@ -29,6 +32,66 @@ struct ViewParameters final
     math::Vector4 TargetSizePixel; // XY: dimensions in pixels. Z: mesh-light record count. W: culling grid word.
     math::Vector4 Options;
 };
+math::Matrix4 MakeTranslation(math::Vector3 offsetWorld) noexcept
+{
+    math::Affine3 translation;
+    translation.Translation = offsetWorld;
+    return math::ToMatrix4(translation);
+}
+// One component of a homogeneous transform applied to a point: the dot product of the transform's row with (point, 1).
+float32 TransformPointComponent(float32 rowX,
+                                float32 rowY,
+                                float32 rowZ,
+                                float32 rowTranslation,
+                                math::Vector3 pointWorld) noexcept
+{
+    return static_cast<float32>(static_cast<float64>(rowX) * pointWorld.X + static_cast<float64>(rowY) * pointWorld.Y +
+                                static_cast<float64>(rowZ) * pointWorld.Z + static_cast<float64>(rowTranslation));
+}
+// Inverts the view about the camera rather than the world origin. A camera hundreds of metres from the origin with a
+// centimetre near plane makes WorldToClip itself ill-conditioned (Bistro's reciprocal condition is about 6e-8), so
+// the checked inverse rejects it, although the eye-relative projection WorldToClip * T(eye) is well-conditioned
+// (about 2e-3 there). Translating its inverse back gives the same clip-to-world matrix the resolve reads.
+[[nodiscard]] bool TryMakeClipToWorld(const ViewDescription& camera, math::Matrix4& outClipToWorld) noexcept
+{
+    const math::Vector3 eyeWorld = camera.CameraPosition;
+    if (math::IsFinite(eyeWorld) == false)
+    {
+        return false;
+    }
+    // Only the translation column changes. It cancels to about zero in w, so it is accumulated in float64.
+    const math::Matrix4& worldToClip = camera.WorldToClip;
+    math::Matrix4 eyeRelativeToClip = worldToClip;
+    eyeRelativeToClip.Columns[TRANSLATION_COLUMN] = {
+        TransformPointComponent(worldToClip.Columns[0].X,
+                                worldToClip.Columns[1].X,
+                                worldToClip.Columns[2].X,
+                                worldToClip.Columns[TRANSLATION_COLUMN].X,
+                                eyeWorld),
+        TransformPointComponent(worldToClip.Columns[0].Y,
+                                worldToClip.Columns[1].Y,
+                                worldToClip.Columns[2].Y,
+                                worldToClip.Columns[TRANSLATION_COLUMN].Y,
+                                eyeWorld),
+        TransformPointComponent(worldToClip.Columns[0].Z,
+                                worldToClip.Columns[1].Z,
+                                worldToClip.Columns[2].Z,
+                                worldToClip.Columns[TRANSLATION_COLUMN].Z,
+                                eyeWorld),
+        TransformPointComponent(worldToClip.Columns[0].W,
+                                worldToClip.Columns[1].W,
+                                worldToClip.Columns[2].W,
+                                worldToClip.Columns[TRANSLATION_COLUMN].W,
+                                eyeWorld),
+    };
+    math::Matrix4 clipToEyeRelative;
+    if (math::TryInverse(eyeRelativeToClip, clipToEyeRelative) != math::MathStatus::Success)
+    {
+        return false;
+    }
+    outClipToWorld = MakeTranslation(eyeWorld) * clipToEyeRelative;
+    return true;
+}
 static_assert(sizeof(ViewParameters) == VIEW_BYTES);
 bool IsAccepted(Status status) noexcept
 {
@@ -311,7 +374,7 @@ Status RenderGraphDeferredPass::Initialize(RenderGraphDeferredTargets& inoutTarg
         return Status::InvalidState;
     }
     math::Matrix4 clipToWorld;
-    if (math::TryInverse(camera.WorldToClip, clipToWorld) != math::MathStatus::Success)
+    if (TryMakeClipToWorld(camera, clipToWorld) == false)
     {
         return Status::InvalidDescription;
     }

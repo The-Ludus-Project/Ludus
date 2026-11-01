@@ -45,8 +45,11 @@ static const LightingLayoutValue MESH_LIGHT_POLYGON_HEADER_WORDS = 2;
 static const LightingLayoutValue MAX_MESH_LIGHT_POLYGON_WORDS =
     MESH_LIGHT_POLYGON_HEADER_WORDS + MAX_MESH_LIGHT_POLYGON_CORNERS;
 /// Maximum retained emitter polygon records: merged convex polygons, unmerged triangles and four subtriangles per
-/// textured source triangle. Exceeding this admission limit rejects the candidate without truncating lights.
-static const LightingLayoutValue MAX_RASTER_MESH_LIGHT_POLYGONS = 8192;
+/// textured source triangle. Exceeding this admission limit rejects the candidate without truncating lights. The
+/// culling grid bounds per-pixel cost by the records near each pixel, so the limit bounds the upload: at most 66 words
+/// per record keeps records and grid under 40 MB and every word offset exact in float32. The Sample project's Bistro
+/// needs 17,571 records.
+static const LightingLayoutValue MAX_RASTER_MESH_LIGHT_POLYGONS = 32768;
 /// Mesh-light culling grid, appended after the polygon records of the same storage buffer when the scene has
 /// emitters (render-graph-authoring.md, "Mesh-light culling"). Its first word is
 /// passed to the resolve; zero means no grid, and every record is evaluated. The grid holds three header words,
