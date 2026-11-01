@@ -57,6 +57,7 @@ class RenderGraphShaderAssistance;
 class RayPathInspection;
 class RenderGraphCaptureProfile;
 class RenderGraphPreview;
+struct RenderScene;
 class RenderGraphWorker;
 class RenderPreview;
 class TextureViewer;
@@ -334,6 +335,13 @@ public:
     /// Failure that prevents scene preparation. Source/build errors are nonfatal while the
     /// prebuilt default prepares or a previously accepted graph remains active.
     [[nodiscard]] QString GetScenePreparationProblem() const;
+    /// Advisory about how the displayed route lights the viewport's World, such as a slice-sampling luminaire panel
+    /// placed for another scene. It never blocks preparation or rendering and is empty without one. Refreshed while
+    /// the viewport is serviced, when the World, draft or configuration changes; RenderProblemChanged reports it.
+    [[nodiscard]] LUDUS_INLINE const QString& GetRenderWarning() const noexcept
+    {
+        return mRenderWarning;
+    }
     /// True while the viewport requests the engine default, including its pending first frame.
     [[nodiscard]] LUDUS_INLINE bool IsUsingDefaultRenderer() const noexcept
     {
@@ -434,6 +442,7 @@ private:
     void expandSceneBundle(bool isExpanded);
     void applySourceEdit();
     void setProblem(QString& inoutProblem, const QString& text);
+    void refreshRenderWarning(const RenderScene& scene);
     void prepareDefaultPreview();
     void renderTree(bool shouldRefreshInspector = true, QWidget* editOriginOrNull = nullptr);
     void renderInspector();
@@ -582,6 +591,9 @@ private:
     QString mSourceProblem;
     QString mExtractionProblem;
     QString mActivationProblem;
+    QString mRenderWarning;
+    /// World, document and configuration the warning was computed for.
+    QByteArray mRenderWarningIdentity;
     QLabel* mStatus;
     RenderGraphCanvas* mCanvas;
     RenderGraphResourceInspector* mResourceInspectorOrNull = nullptr;

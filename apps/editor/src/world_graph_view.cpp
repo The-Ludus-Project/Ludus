@@ -210,6 +210,14 @@ void WorldGraphView::refreshStatus()
     {
         text = mPreview.GetDisplayStatus();
     }
+    if (mWorkspace.GetRenderProblem().isEmpty() == true && mWorkspace.GetRenderWarning().isEmpty() == false)
+    {
+        if (text.isEmpty() == false)
+        {
+            text += QLatin1Char('\n');
+        }
+        text += mWorkspace.GetRenderWarning();
+    }
     if (mWorkspace.IsUsingDefaultRenderer() == true && mWorkspace.IsBuiltIn() == false)
     {
         if (text.isEmpty() == false)
