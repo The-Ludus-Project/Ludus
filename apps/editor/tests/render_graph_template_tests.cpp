@@ -4,6 +4,7 @@
 #include "internal/render_graph_canvas.h"
 #include "internal/render_graph_configuration_template.h"
 #include "internal/render_graph_document.h"
+#include "internal/render_graph_luminaire_coverage.h"
 #include "internal/render_graph_pipeline_node.h"
 #include "internal/render_graph_quick_add.h"
 #include "internal/renderer_workspace.h"
@@ -2196,6 +2197,14 @@ TEST_CASE("Slice-sampling-luminaire template is created from the editor picker w
     const QJsonObject interface = FindRayTechnique(manifest).value(QStringLiteral("scene_interface")).toObject();
     CHECK(interface.value(QStringLiteral("visibility_queries")).toInt() >= 1);
     CHECK(interface.contains(QStringLiteral("polygonal_light_sampling")) == false);
+    // The created graph routes the luminaire to its output, so the viewport's panel check finds its placement.
+    RenderGraphLuminairePanel panel;
+    REQUIRE(FindRenderGraphLuminairePanel(
+                document,
+                QJsonDocument::fromJson(root).object().value(QStringLiteral("default")).toString(),
+                panel) == true);
+    CHECK(panel.Source == QStringLiteral("main_shaders/luminaire.slang"));
+    CHECK(panel.IsPlacementKnown == true);
     RequireValidation(workspace);
 }
 

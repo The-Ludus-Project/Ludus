@@ -29,7 +29,9 @@
 // spread and twist keep det(I + h M) = (1 + h spread)^2 + (h twist)^2 >= 1 at every receiver height h > 0, so a
 // tile's beams never focus into a caustic.
 
-// Placement: the default fits the 2 x 2 x 2 Cornell box of the renderer's tests, just below its ceiling light.
+// Placement: the default fits the 2 x 2 x 2 Cornell box of the renderer's tests, just below its ceiling light. The
+// editor reads the center, half extent and normal to warn when the panel cannot light the viewport's World; keep them
+// plain literals so it can.
 static const float3 LUMINAIRE_CENTER_WORLD = float3(0, 0.97, 0);
 static const float LUMINAIRE_HALF_EXTENT_WORLD = 0.35;
 // A right-handed orthonormal frame: LUMINAIRE_NORMAL_WORLD = cross(tangent, bitangent) points into the lit room.
