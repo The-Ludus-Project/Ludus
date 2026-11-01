@@ -2599,6 +2599,198 @@ Vulkan has not been run for this template.
 See the canonical
 [package](../../modules/graphics/renderer/render_graphs/steinberg_plt/main.lurender.json).
 
+### Render practical physical optics
+
+The **Steinberg — practical physical optics** template
+(`steinberg-physical-optics`) path traces with the beams of Shlomi Steinberg,
+Pradeep Sen and Ling-Qi Yan,
+[*Towards Practical Physical-Optics Rendering*, ACM TOG 41(4), article 132, SIGGRAPH 2022](https://doi.org/10.1145/3528223.3530119).
+Each beam carries a Stokes vector (its radiance and polarization) and the
+anisotropic Gaussian spatial coherence of each transverse component
+(Definition 3.1). Surfaces scatter beams with the paper's wave BSDF, which
+diffracts light by the surface's power spectral density, blurred by the light's
+coherence. Unlike the [`steinberg-plt` template](#render-partially-coherent-diffraction),
+every surface is a coherence-aware material and light is followed over several
+bounces. Create it from **New Render Graph → Template**, or with the CLI:
+
+```bash
+ludus render-graph new graphs/Optics --template steinberg-physical-optics \
+  --output offscreen --renderer-static --profiles metal wgsl
+```
+
+Use `spirv wgsl` for Vulkan. Every pass traverses the compute BVH, so the template
+needs Metal or Vulkan compute but no hardware ray tracing; a `wgsl`-only package is
+rejected with a `Capability` diagnostic. **Apply Configuration Template...** and
+Quick Add also offer the `SteinbergPhysicalOptics` configuration. It has `scene`,
+`view` and `color` inputs, a required `color` output and optional `radiometric` and
+`coherence` outputs.
+
+A primary-hits pass records each pixel's surface in a 32-byte hit record, as in the
+[MIS template](#compare-light-and-bsdf-sampling-with-mis). Three passes then trace
+the same camera paths with the same random numbers:
+
+| Pipeline node | Function in `main_shaders/shade.slang` | Image | Output |
+| --- | --- | --- | --- |
+| `shadeWave` | `ShadeWave` | Paths evaluated with beams: coherence, polarization and the wave BSDF | `color` → `output` (Accumulate, ToneMap) |
+| `shadeRadiometric` | `ShadeRadiometric` | The same paths evaluated classically: unpolarized, with D in its coherent limit | `radiometric` → `radiometricOutput` (Accumulate, ToneMap) |
+| `measureCoherence` | `MeasureCoherence` | Characteristic coherence length of the light at the first surface | `coherence` → `coherenceOutput` (Accumulate only) |
+
+The viewport shows the wave-optics image first. Compare it with
+`radiometricOutput`, as the paper's Fig. 13 compares its renderer with a
+radiometric one.
+
+#### Materials, lights and coherence
+
+The template maps the scene's materials onto the paper's (§4.1):
+
+- **Rough surfaces** are the Gaussian surfaces of §4.1.1, with a direct
+  (specular) lobe and a scattered lobe whose D is Eq. (28). Conductors use the
+  material's complex index. A metallic-roughness metal's index comes from its base
+  color through Ole Gulbrandsen's
+  [artist-friendly metallic Fresnel](https://jcgt.org/published/0003/04/03/), with
+  the edge tint equal to the base color. Dielectrics use `PO_DIELECTRIC_ETA`, or
+  the coating index of a coated-diffuse material.
+- **Diffuse bases.** A dielectric's base is the perfectly diffuse surface of
+  §4.1.2, weighted by the interface's transmittance. The diffuse material model has
+  no interface.
+- **Gratings.** Metals at or below `PO_GRATING_ROUGHNESS_MAXIMUM` are the
+  sinusoidal gratings of §4.1.3, with orders `|n| ≤ PO_GRATING_ORDER_MAXIMUM`. The
+  grooves follow the mesh tangent, as in the `steinberg-plt` template.
+- **Roughness.** The paper parametrizes a Gaussian surface by its rms height `q`
+  and correlation length `σ_s`; the scene gives a GGX alpha `α`. The template
+  chooses `σ_s` so that the coherent lobe's half-vector spread is `2α` at 550 nm,
+  and `q = √α · PO_RMS_HEIGHT_AT_FULL_ROUGHNESS_NANOMETERS`. Smooth surfaces keep
+  most of their direct lobe; rough ones scatter it (Eq. (22)).
+
+Light sources emit natural, unpolarized light (§4):
+
+- **Radiators.** Mesh emitters, point and spot lights are small radiators of area
+  `A` emitting into a solid angle `Ω`. By Eq. (25) their light's coherence length
+  is `(r / k) √(2πΩ / A)` after a distance `r`. With the paper's `A = 1 mm²` and
+  `Ω = 1 µsr`, that is about 0.2 µm per metre at 500 nm: artificial light is weakly
+  coherent, and a grating's orders blur (the paper's Fig. 10).
+- **Directional lights** are sunlight, coherent over `PO_SUN_COHERENCE_MICROMETERS`
+  at 550 nm, about 50 µm (§4).
+- **The environment** arrives with the coherence of the least coherent light the
+  template renders: a radiator after `PO_ENVELOPE_DISTANCE_CENTIMETERS` at 380 nm.
+
+| Graph setting | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `PO_RADIATOR_AREA_SQUARE_MILLIMETERS` | `1` | `0.001`–`1000` | Radiator area `A` of mesh emitters, point and spot lights |
+| `PO_BEAM_SOLID_ANGLE_MICROSTERADIANS` | `1` | `0.001`–`1000000` | Beam solid angle `Ω` |
+| `PO_SUN_COHERENCE_MICROMETERS` | `50` | `0.1`–`10000` | Coherence length of directional light at 550 nm |
+| `PO_LONGITUDINAL_COHERENCE_MILLIMETERS` | `1` | `0.001`–`1000` | `σ_zz`, the coherence length along the beam |
+| `PO_ENVELOPE_DISTANCE_CENTIMETERS` | `10` | `0.1`–`100000` | Distance that defines `σ_min`, the least coherent light (sampling envelope and environment) |
+| `PO_RMS_HEIGHT_AT_FULL_ROUGHNESS_NANOMETERS` | `250` | `0`–`10000` | Rms height `q` of a surface with roughness 1 |
+| `PO_DIELECTRIC_ETA` | `1.5` | `1`–`4` | Refractive index of dielectrics |
+| `PO_GRATING_ROUGHNESS_MAXIMUM` | `0.05` | `0`–`1` | Roughest metal shaded as a grating |
+| `PO_GRATING_PERIOD_NANOMETERS` | `740` | `400`–`8000` | Grating pitch `Λ` |
+| `PO_GRATING_HEIGHT_NANOMETERS` | `160` | `0`–`1000` | Grating height `b` (Eq. (33)) |
+| `PO_GRATING_ORDER_MAXIMUM` | `3` | `0`–`8` | Highest rendered order `N`; the paper renders orders up to ±3 |
+| `PO_PATH_VERTICES` | `3` | `1`–`3` | Scattering events per camera path |
+| `PO_CAMERA_POLARIZER` | `false` | | Put a linear polarizer in front of the camera |
+| `PO_CAMERA_POLARIZER_ANGLE_DEGREES` | `0` | `0`–`180` | Polarizer axis, from the image's right towards its up |
+| `PO_COHERENCE_WAVELENGTH_NANOMETERS` | `550` | `380`–`780` | Wavelength of the coherence output |
+| `PO_COHERENCE_DISPLAY_MICROMETERS` | `100` | `0.001`–`1000000` | Coherence length that the coherence output shows as white |
+
+World units are metres. Radiators give coherence lengths below a micrometre, so
+lower `PO_COHERENCE_DISPLAY_MICROMETERS` to about `1` to see them in the coherence
+output; at the default, only sunlight shows.
+
+#### What the passes compute
+
+The sources in `main_shaders/` cite the paper's equations at each step;
+`wave_optics.slang` holds the scene-free formalism.
+
+- **Paths** (§4). Each pixel traces one camera path of up to `PO_PATH_VERTICES`
+  scattering events. Every vertex draws one lobe of its material, connects to one
+  light and continues along a direction from that lobe. Light found by the
+  continuation is weighted against the connection by the power heuristic.
+  Directions come from the maximally incoherent envelope of Eqs. (23), (24) and
+  (31): two Gaussians in the half-vector analogue `h`, independent of the light's
+  coherence. Only when a light-to-camera path is complete is it evaluated with
+  beams, from the light towards the camera, as the paper does.
+- **Beams** (Definition 3.1, Eq. (25)). A beam's shape matrices are
+  `(r / k)² θ` across it and `σ_zz²` along it; `θ` stays constant on
+  propagation, so only the distance `r` grows.
+- **Scattering** (Eqs. (16), (20), (22), (29)). Each transverse component is
+  diffracted by D with its own shape matrix, rotated to the surface and restricted
+  to its plane. The Fresnel Mueller matrix then acts in the s/p frame. The scattered
+  shapes are rotated and deformed by `U`, whose Hessians come from five extra
+  Fresnel evaluations, as in the paper. A grating's D sums its orders' Gaussians,
+  each weighted by `J_n(υ)²` (Eq. (34)).
+- **Spectrum.** Four hero wavelengths per path, with the `steinberg-plt` camera and
+  RGB uplift. A grating lit directly by a point, spot or directional light is
+  integrated over each order's wavelength window instead, because a coherent order
+  lights a pixel over only about a nanometre of wavelengths.
+
+Each invocation makes at most three surface queries and three visibility queries.
+New shader programs have `SteinbergPhysicalOptics`-prefixed IDs and sources under
+`steinberg_physical_optics/main_shaders/`.
+
+Departures from the paper, also listed in the sources:
+
+- Camera paths with next-event estimation replace the paper's bidirectional
+  tracer. Birefringent slabs (§4.1.4) and transmission are not rendered. Four hero
+  wavelengths replace the paper's 16 spectral samples.
+- The paper's D scales with `q²` and its pBSDF with `1/λ²`, which do not combine
+  into a dimensionless BRDF. D is normalized to a unit-integral Gaussian in `h / k`,
+  so the scattered lobe carries `1 − α_direct` of the light (Fig. 5 requires energy
+  to be conserved). The same normalization makes Eq. (32) the Lambertian BRDF.
+- Eqs. (29), (30) and (57) give the frame's `x` component `|f_pp|²`, so `x` is the
+  p axis; §4.1.1's text names the axes the other way round.
+- Eq. (18) normalizes `U` by `|Ũ⁻¹|`; the template normalizes it to unit
+  determinant, as the text says. Where binary32 cannot resolve the Fresnel
+  intensity's curvature, the Hessian's eigenvalues are raised to the resolvable
+  bound, and their ratio is capped at 100.
+- Eq. (16) scales `S₂` and `S₃` by D of the ½ component, which can leave a degree
+  of polarization above one. The template enforces Eq. (9) after every interaction.
+- The roughness mapping, the dielectric's diffuse base, the metallic-roughness
+  index and the sunlight coherence at 550 nm are the template's choices; the paper
+  does not define them for these inputs.
+- Point and spot lights are radiators for coherence and points for visibility.
+
+`D` and the sampling envelope are evaluated in a basis aligned with the beam's
+projected direction, where the `10⁸` longitudinal variance adds to one matrix
+element only. In the surface's own axes, binary32 loses the lobe's narrow
+direction to cancellation.
+
+Expect noise. With the paper's settings, `σ_min` makes the envelope almost
+uniform over the hemisphere, so glossy lobes and gratings reached by continuations
+converge slowly, as the paper notes for its gratings (§5). Raise
+`PO_ENVELOPE_DISTANCE_CENTIMETERS` for a narrower envelope; any value is unbiased.
+
+Evidence, on an Apple M5 GPU with Metal:
+
+- **Scattering core.** The CPU oracle (`steinberg_physical_optics_oracle.cpp`)
+  checks Eq. (29) at Brewster's angle, the coherence of sunlight and of radiators,
+  the energy of D at two coherences (within 0.1%), the conserved coherence area
+  under Eq. (20), Eq. (34)'s Bessel weights and the envelope's unbiasedness. The
+  template's `wave_optics.slang` matches the oracle on 64 random cases on the GPU
+  (`[steinberg-physical-optics][parity]`), with radiances within 0.2%.
+- **Diffuse room.** In the Cornell room with every material perfectly diffuse,
+  the wave and radiometric images are byte-identical after 64 samples, as Eq. (32)
+  predicts.
+- **Sunlight.** The coherence output reads 127 of the expected 127.5 for 50 µm
+  shown per 100 µm; a floor parallel to the light reads zero.
+- **Coherence blurs a grating.** With the back wall a white-metal grating and a
+  point light 1.9 m away, a radiator of 0.001 mm² (coherent over about 13 µm)
+  shows the first order as a spectrum on the centre columns, violet above red,
+  with only 4 bright pixels elsewhere on the wall. The paper's 1 mm² radiator
+  (about 0.4 µm) spreads the orders over 88. The radiometric image shows no
+  spectrum.
+- **Polarization.** In a glossy room, the mean radiances behind polarizers at 0°
+  and 90°, 0.129 and 0.126, add up to the unpolarized 0.252 within 1.3%. The
+  radiometric images are unpolarized.
+
+Vulkan has not been run for this template. The native ray-query traversal was not
+used: on Metal, paths with several surface and visibility queries per invocation
+returned non-finite radiance in many pixels, varying between identical runs, while
+the compute BVH returns the same paths deterministically.
+
+See the canonical
+[package](../../modules/graphics/renderer/render_graphs/steinberg_physical_optics/main.lurender.json).
+
 ### Sample lights along lines
 
 The **Line sampling — visible chords of area lights** template (`line-sampling`)

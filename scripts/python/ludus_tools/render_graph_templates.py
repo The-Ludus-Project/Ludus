@@ -22,6 +22,8 @@ TEMPLATES = {
     'polygonal-light-sampling': ('polygonal_light_sampling', 'Polygonal light sampling', 'compute-ray-tracing'),
     'slice-sampling-luminaire': ('slice_sampling_luminaire', 'Slice sampling luminaire', 'compute-ray-tracing'),
     'steinberg-plt': ('steinberg_plt', 'Steinberg physical light transport', 'native-ray-tracing'),
+    'steinberg-physical-optics': ('steinberg_physical_optics', 'Steinberg practical physical optics',
+                                  'compute-ray-tracing'),
 }
 # What each requirement needs, as the capability repair names it.
 REQUIREMENT_REPAIRS = {

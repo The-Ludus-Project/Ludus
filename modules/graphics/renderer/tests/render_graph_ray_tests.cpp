@@ -3865,6 +3865,252 @@ TEST_CASE("The Steinberg PLT template's coherence output reproduces the coherenc
 
 namespace
 {
+// steinberg-physical-optics template tests. Thanks to Shlomi Steinberg, Pradeep Sen and Ling-Qi Yan, "Towards
+// Practical Physical-Optics Rendering", ACM Transactions on Graphics 41(4), article 132, SIGGRAPH 2022,
+// https://doi.org/10.1145/3528223.3530119 : the template transports beams with anisotropic Gaussian coherence and
+// Stokes vectors through camera paths and scatters them with the wave BSDF. These tests check that a perfectly
+// diffuse room looks the same in wave and radiometric optics (Eq. (32) has no coherence or polarizing action), the
+// sunlight coherence length of section 4, that a grating disperses coherent light into a spectrum that the paper's
+// default 1 mm^2 radiator blurs (its Figs. 8 and 10), and that polarizer images at 0 and 90 degrees add up to the
+// unpolarized image.
+
+/// Shade passes in output order: wave optics (the color output), radiometric, coherence.
+constexpr usize PHYSICAL_OPTICS_OUTPUT_COUNT = 3;
+constexpr usize PHYSICAL_OPTICS_FIRST_SHADE_PASS = 1;
+constexpr usize PHYSICAL_OPTICS_WAVE = 0;
+constexpr usize PHYSICAL_OPTICS_RADIOMETRIC = 1;
+constexpr usize PHYSICAL_OPTICS_COHERENCE = 2;
+
+/// Render frameCount frames of the template and read each output's running mean after the last one.
+void RenderPhysicalOpticsOutputs(PreparedGraph& inoutTemplate,
+                                 const GraphGpuFixture& fixture,
+                                 usize frameCount,
+                                 StaticArray<Array<uint8>, PHYSICAL_OPTICS_OUTPUT_COUNT>& outPixels)
+{
+    REQUIRE(inoutTemplate.Plan.Passes.GetSize() == PHYSICAL_OPTICS_FIRST_SHADE_PASS + PHYSICAL_OPTICS_OUTPUT_COUNT);
+    for (usize frame = 0; frame < frameCount; ++frame)
+    {
+        RenderFrame(inoutTemplate.Graph, fixture);
+    }
+    for (usize output = 0; output < PHYSICAL_OPTICS_OUTPUT_COUNT; ++output)
+    {
+        const uint32 resource = inoutTemplate.Plan.Passes[PHYSICAL_OPTICS_FIRST_SHADE_PASS + output].Color;
+        REQUIRE(resource < inoutTemplate.Plan.Resources.GetSize());
+        REQUIRE(inoutTemplate.Plan.Resources[resource].IsExported == 1);
+        ReadExport(inoutTemplate.Graph, fixture, resource, inoutTemplate.Extent, outPixels[output]);
+        // Invalid hit records, exhausted budgets, failed queries and negative samples would show magenta.
+        REQUIRE(CountFailurePixels(outPixels[output]) == 0);
+    }
+}
+
+/// Back-wall rows above the block, and the columns of the back wall on either side of its centre, where a coherent
+/// first order does not reach: the light and the camera are both at x = 0.
+constexpr usize GRATING_WALL_FIRST_ROW = 16;
+constexpr usize GRATING_WALL_LAST_ROW = 36;
+constexpr usize GRATING_WALL_FIRST_COLUMN = 33;
+constexpr usize GRATING_WALL_LAST_COLUMN = 62;
+constexpr usize GRATING_CENTER_FIRST_COLUMN = WIDTH / 2 - 3;
+constexpr usize GRATING_CENTER_LAST_COLUMN = WIDTH / 2 + 2;
+
+/// Bright back-wall pixels away from its centre columns: how far the grating's orders spread across the wall.
+usize CountOffCenterGratingPixels(const Array<uint8>& pixels)
+{
+    usize count = 0;
+    for (usize row = GRATING_WALL_FIRST_ROW; row <= GRATING_WALL_LAST_ROW; ++row)
+    {
+        for (usize column = GRATING_WALL_FIRST_COLUMN; column <= GRATING_WALL_LAST_COLUMN; ++column)
+        {
+            if (column >= GRATING_CENTER_FIRST_COLUMN && column <= GRATING_CENTER_LAST_COLUMN)
+            {
+                continue;
+            }
+            const usize address = GetPixel(column, row);
+            const uint8 brightest = math::Max(pixels[address], math::Max(pixels[address + 1], pixels[address + 2]));
+            count += brightest >= GRATING_ROOM_BRIGHT_CHANNEL ? 1 : 0;
+        }
+    }
+    return count;
+}
+
+/// Mean linear radiance over a tone-mapped image's pixels and channels.
+float32 ComputeMeanChannelRadiance(const Array<uint8>& pixels)
+{
+    const math::Vector3 mean = ComputeMeanRadiance(pixels);
+    constexpr float32 CHANNELS = 3;
+    return (mean.X + mean.Y + mean.Z) / CHANNELS;
+}
+} // namespace
+
+TEST_CASE("A perfectly diffuse room looks the same in the Steinberg physical-optics template's wave and radiometric "
+          "optics",
+          "[render-graph][gpu][steinberg-physical-optics][template]")
+{
+    // Eq. (32): a perfectly diffuse surface has D = 1 and a Mueller matrix that only rotates the frame, so neither
+    // coherence nor polarization changes what the camera sees. Both passes trace the same paths, lights and
+    // wavelengths; only their beam evaluation differs.
+    GraphGpuFixture fixture;
+    CornellBox room;
+    for (renderer::SceneShaderMaterial& material : room.Materials)
+    {
+        material.Scattering.Model = ludus::content::scene_format::MaterialModel::Diffuse;
+    }
+    PreparedGraph graph(
+        fixture,
+        {LUDUS_RG3_STEINBERG_PHYSICAL_OPTICS_TEMPLATE_DIRECTORY, "rg2_steinberg_physical_optics_template.lurgrt"},
+        room,
+        1);
+    // Every pass traverses the compute BVH: the paths issue several surface and visibility queries per invocation.
+    REQUIRE(renderer::RequiresHardwareRayTracing(graph.Plan) == false);
+    for (usize pass = 0; pass < graph.Plan.Passes.GetSize(); ++pass)
+    {
+        INFO("pass " << pass);
+        CHECK(graph.Plan.Passes[pass].Program == format::Technique::RayTracing);
+        CHECK(graph.Plan.Passes[pass].Traversal == format::RayTraversal::ComputeBvh);
+        CHECK((graph.Plan.Passes[pass].AccumulationSamples > 0) == (pass >= PHYSICAL_OPTICS_FIRST_SHADE_PASS));
+        // The coherence length is written linearly; the two radiance images are tone mapped.
+        const bool isToneMapped = pass >= PHYSICAL_OPTICS_FIRST_SHADE_PASS &&
+                                  pass < PHYSICAL_OPTICS_FIRST_SHADE_PASS + PHYSICAL_OPTICS_COHERENCE;
+        CHECK((graph.Plan.Passes[pass].ToneMappingExposure == 1) == isToneMapped);
+    }
+    constexpr usize FRAME_COUNT = 64;
+    StaticArray<Array<uint8>, PHYSICAL_OPTICS_OUTPUT_COUNT> pixels;
+    RenderPhysicalOpticsOutputs(graph, fixture, FRAME_COUNT, pixels);
+    const math::Vector3 wave = ComputeMeanRadiance(pixels[PHYSICAL_OPTICS_WAVE]);
+    const math::Vector3 radiometric = ComputeMeanRadiance(pixels[PHYSICAL_OPTICS_RADIOMETRIC]);
+    constexpr uint8 CHANNEL_TOLERANCE = 1;
+    const usize differingPixels =
+        CountDifferingPixels(pixels[PHYSICAL_OPTICS_WAVE], pixels[PHYSICAL_OPTICS_RADIOMETRIC], CHANNEL_TOLERANCE);
+    INFO("wave mean=" << wave.X << ',' << wave.Y << ',' << wave.Z << ", radiometric mean=" << radiometric.X << ','
+                      << radiometric.Y << ',' << radiometric.Z << ", differing pixels=" << differingPixels);
+    constexpr float32 LIT_MEAN = .05F;
+    CHECK(wave.Y > LIT_MEAN);
+    CHECK(differingPixels == 0);
+}
+
+TEST_CASE("The Steinberg physical-optics template's coherence output shows the coherence length of sunlight",
+          "[render-graph][gpu][steinberg-physical-optics][template]")
+{
+    // Section 4: sunlight on earth has a characteristic coherence length of about sigma_sun = 50 um, which the
+    // template fixes at 550 nm; the coherence output shows it at 550 nm per 100 um. A radiator's light instead has
+    // (r / k) sqrt(2 pi Omega / A) (Eq. (25)).
+    GraphGpuFixture fixture;
+    GratingRoom room(0);
+    room.AddFrontDirectionalLight();
+    PreparedGraph graph(
+        fixture,
+        {LUDUS_RG3_STEINBERG_PHYSICAL_OPTICS_TEMPLATE_DIRECTORY, "rg2_steinberg_physical_optics_template.lurgrt"},
+        room.Room,
+        1);
+    constexpr usize FRAME_COUNT = 4;
+    StaticArray<Array<uint8>, PHYSICAL_OPTICS_OUTPUT_COUNT> pixels;
+    RenderPhysicalOpticsOutputs(graph, fixture, FRAME_COUNT, pixels);
+    constexpr float64 SUN_COHERENCE_MICROMETERS = 50;
+    constexpr float64 DISPLAY_MICROMETERS = 100;
+    constexpr float64 MAXIMUM_CHANNEL = 255;
+    const float64 expected = SUN_COHERENCE_MICROMETERS / DISPLAY_MICROMETERS * MAXIMUM_CHANNEL;
+    const usize wall = GetPixel(WIDTH / 2, HEIGHT / 2);
+    constexpr usize FLOOR_ROW = 55;
+    const usize floor = GetPixel(WIDTH / 2, FLOOR_ROW);
+    const Array<uint8>& coherence = pixels[PHYSICAL_OPTICS_COHERENCE];
+    INFO("expected byte " << expected << ", wall " << static_cast<uint32>(coherence[wall]) << ", floor "
+                          << static_cast<uint32>(coherence[floor]));
+    constexpr float64 BYTE_TOLERANCE = 1;
+    CHECK(math::Abs(static_cast<float64>(coherence[wall]) - expected) <= BYTE_TOLERANCE);
+    CHECK(coherence[wall + 1] == coherence[wall]);
+    CHECK(coherence[floor] == 0);
+}
+
+TEST_CASE("Less coherent light blurs the Steinberg physical-optics template's grating orders",
+          "[render-graph][gpu][steinberg-physical-optics][template]")
+{
+    // Section 4.1.3 and Fig. 5: a grating's orders are Gaussians whose spread is the inverse of the incident light's
+    // coherence, an angular blur of the wave BSDF. A radiator a thousand times smaller than the paper's 1 mm^2 makes
+    // the point light 1.9 m away coherent over about 13 um: the first order is a thin spectrum on the back wall's
+    // centre columns, violet above red. The paper's default radiator is coherent over about 0.4 um, which spreads each
+    // order across the wall. The radiometric image renders the grating as a smooth conductor, which disperses nothing.
+    GraphGpuFixture fixture;
+    const StaticArray<PackageLocation, 2> locations{{
+        {LUDUS_RG3_STEINBERG_PHYSICAL_OPTICS_COHERENT_DIRECTORY, "rg2_steinberg_physical_optics_coherent.lurgrt"},
+        {LUDUS_RG3_STEINBERG_PHYSICAL_OPTICS_TEMPLATE_DIRECTORY, "rg2_steinberg_physical_optics_template.lurgrt"},
+    }};
+    StaticArray<GratingSpectrum, 2> spectra{};
+    StaticArray<usize, 2> spread{};
+    GratingSpectrum radiometric;
+    for (usize source = 0; source < locations.GetSize(); ++source)
+    {
+        GratingRoom room(0);
+        room.AddPointLight(GRATING_ROOM_SMALL_SOURCE_INTENSITY);
+        PreparedGraph graph(fixture, locations[source], room.Room, 1);
+        constexpr usize FRAME_COUNT = 128;
+        StaticArray<Array<uint8>, PHYSICAL_OPTICS_OUTPUT_COUNT> pixels;
+        RenderPhysicalOpticsOutputs(graph, fixture, FRAME_COUNT, pixels);
+        spectra[source] = MeasureGratingSpectrum(pixels[PHYSICAL_OPTICS_WAVE]);
+        spread[source] = CountOffCenterGratingPixels(pixels[PHYSICAL_OPTICS_WAVE]);
+        if (source == 0)
+        {
+            radiometric = MeasureGratingSpectrum(pixels[PHYSICAL_OPTICS_RADIOMETRIC]);
+        }
+    }
+    INFO("coherent: saturation " << spectra[0].MaximumSaturation << ", brightest "
+                                 << static_cast<uint32>(spectra[0].BrightestChannel) << ", bluest row "
+                                 << spectra[0].BluestRow << ", reddest row " << spectra[0].ReddestRow
+                                 << ", off-centre pixels " << spread[0] << "; default: off-centre pixels " << spread[1]
+                                 << "; radiometric: saturation " << radiometric.MaximumSaturation << " mean "
+                                 << radiometric.MeanSaturation);
+    constexpr uint8 LIT_CHANNEL = 128;
+    REQUIRE(spectra[0].BrightestChannel >= LIT_CHANNEL);
+    constexpr float32 SPECTRAL_SATURATION = .6F;
+    CHECK(spectra[0].MaximumSaturation > SPECTRAL_SATURATION);
+    CHECK(spectra[0].BluestRow < spectra[0].ReddestRow);
+    constexpr usize COHERENT_SPREAD_MAXIMUM = 10;
+    constexpr usize BLURRED_SPREAD_MINIMUM = 40;
+    CHECK(spread[0] <= COHERENT_SPREAD_MAXIMUM);
+    CHECK(spread[1] >= BLURRED_SPREAD_MINIMUM);
+    CHECK(radiometric.MaximumSaturation < SPECTRAL_SATURATION);
+}
+
+TEST_CASE("The Steinberg physical-optics template's polarizer images add up to its unpolarized image",
+          "[render-graph][gpu][steinberg-physical-optics][template]")
+{
+    // Behind ideal linear polarizers at 0 and 90 degrees the intensities are (S0 + S1) / 2 and (S0 - S1) / 2: their
+    // sum is S0, the unpolarized image. Glossy dielectric surfaces reflect partially polarized light (Eq. (29)), so the
+    // two images differ. The radiometric image is unpolarized: half its intensity passes either polarizer.
+    GraphGpuFixture fixture;
+    CornellBox room;
+    constexpr float32 GLOSSY_ROUGHNESS = .3F;
+    room.Materials[CORNELL_WHITE].Roughness = GLOSSY_ROUGHNESS;
+    const StaticArray<PackageLocation, 3> locations{{
+        {LUDUS_RG3_STEINBERG_PHYSICAL_OPTICS_TEMPLATE_DIRECTORY, "rg2_steinberg_physical_optics_template.lurgrt"},
+        {LUDUS_RG3_STEINBERG_PHYSICAL_OPTICS_POLARIZER_HORIZONTAL_DIRECTORY,
+         "rg2_steinberg_physical_optics_polarizer_horizontal.lurgrt"},
+        {LUDUS_RG3_STEINBERG_PHYSICAL_OPTICS_POLARIZER_VERTICAL_DIRECTORY,
+         "rg2_steinberg_physical_optics_polarizer_vertical.lurgrt"},
+    }};
+    StaticArray<float32, 3> wave{};
+    StaticArray<float32, 3> radiometric{};
+    for (usize variant = 0; variant < locations.GetSize(); ++variant)
+    {
+        PreparedGraph graph(fixture, locations[variant], room, 1);
+        constexpr usize FRAME_COUNT = 64;
+        StaticArray<Array<uint8>, PHYSICAL_OPTICS_OUTPUT_COUNT> pixels;
+        RenderPhysicalOpticsOutputs(graph, fixture, FRAME_COUNT, pixels);
+        wave[variant] = ComputeMeanChannelRadiance(pixels[PHYSICAL_OPTICS_WAVE]);
+        radiometric[variant] = ComputeMeanChannelRadiance(pixels[PHYSICAL_OPTICS_RADIOMETRIC]);
+    }
+    INFO("wave: unpolarized " << wave[0] << ", 0 degrees " << wave[1] << ", 90 degrees " << wave[2]
+                              << "; radiometric: unpolarized " << radiometric[0] << ", 0 degrees " << radiometric[1]
+                              << ", 90 degrees " << radiometric[2]);
+    // Tone mapping is per pixel, so the decoded means add up only to the quantization of the 8-bit images.
+    constexpr float32 RELATIVE_TOLERANCE = .03F;
+    CHECK(math::Abs(wave[1] + wave[2] - wave[0]) <= RELATIVE_TOLERANCE * wave[0]);
+    CHECK(math::Abs(radiometric[1] + radiometric[2] - radiometric[0]) <= RELATIVE_TOLERANCE * radiometric[0]);
+    CHECK(math::Abs(radiometric[1] - radiometric[2]) <= RELATIVE_TOLERANCE * radiometric[0]);
+    constexpr float32 POLARIZATION_CONTRAST = .01F;
+    CHECK(math::Abs(wave[1] - wave[2]) > POLARIZATION_CONTRAST * wave[0]);
+}
+
+namespace
+{
 // ris-projected-solid-angle template tests. Thanks to Ishaan Shah, Aakash KT and P. J. Narayanan, "Combining Resampled
 // Importance and Projected Solid Angle Samplings for Many Area Light Rendering", SIGGRAPH Asia 2023 Technical
 // Communications, https://doi.org/10.1145/3610543.3626165 : the template resamples emissive triangles by their

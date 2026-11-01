@@ -415,6 +415,11 @@ RenderGraphDocumentStatus PrepareComputeRayTracingConfiguration(
         selected.ProgramPrefix = QStringLiteral("SteinbergPlt");
         selected.Name = QStringLiteral("Steinberg physical light transport");
     }
+    else if (templateIdentity == QStringLiteral("steinberg-physical-optics"))
+    {
+        selected.ProgramPrefix = QStringLiteral("SteinbergPhysicalOptics");
+        selected.Name = QStringLiteral("Steinberg practical physical optics");
+    }
     else
     {
         outError = QStringLiteral("Choose a built-in scene compute template.");

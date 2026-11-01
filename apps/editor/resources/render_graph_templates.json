@@ -134,6 +134,15 @@
       "description": "Physical light transport from Steinberg and Yan (2021): smooth metals become sinusoidal gratings lit by natural light sources whose finite size sets the light's spatial coherence. After a primary-hits pass, one shading pass renders the gratings' diffraction spectrally (the image shown first), one renders the same gratings in geometric optics, and one shows the coherence radius of the incident light. Other surfaces are shaded classically. Requires native ray tracing."
     },
     {
+      "kind": "graph",
+      "identity": "steinberg-physical-optics",
+      "label": "Steinberg — practical physical optics",
+      "category": "ray-traced",
+      "requirements": ["compute-ray-tracing"],
+      "keywords": ["steinberg", "physical light transport", "physical optics", "wave optics", "wave bsdf", "coherence", "polarization", "stokes", "mueller", "diffraction", "grating", "spectral", "path tracing"],
+      "description": "Practical physical-optics rendering from Steinberg, Sen and Yan (2022): camera paths of up to three scattering events carry beams with Stokes vectors and anisotropic Gaussian spatial coherence, scattered by the wave BSDF. Rough surfaces are Gaussian surfaces, dielectrics have a diffuse base and smooth metals are gratings. After a primary-hits pass, one pass renders wave optics (the image shown first), one the same paths radiometrically, and one the coherence length of the incident light. An optional camera polarizer shows polarization. Every pass uses the compute BVH, so it needs Metal or Vulkan compute but no hardware ray tracing."
+    },
+    {
       "kind": "snippet",
       "identity": "restir-di",
       "label": "ReSTIR DI — mesh emitter lighting",
@@ -242,6 +251,16 @@
       "requirements": ["native-ray-tracing"],
       "keywords": ["steinberg", "physical light transport", "wave optics", "diffraction", "grating", "coherence", "natural light", "spectral", "iridescence"],
       "description": "A primary-hits scene compute pass and three shading passes that share one automatically sized hit buffer: spectral diffraction by smooth-metal gratings under natural light (Steinberg and Yan), the same gratings in geometric optics, and the incident light's coherence radius. Connect scene, view and color; outputs color plus optional geometric and coherence images. Requires native ray tracing."
+    },
+    {
+      "kind": "snippet",
+      "identity": "steinberg-physical-optics",
+      "label": "Steinberg — practical physical optics",
+      "category": "lighting",
+      "defaultConfiguration": "SteinbergPhysicalOptics",
+      "requirements": ["compute-ray-tracing"],
+      "keywords": ["steinberg", "physical light transport", "physical optics", "wave optics", "wave bsdf", "coherence", "polarization", "stokes", "mueller", "diffraction", "grating", "spectral", "path tracing"],
+      "description": "A primary-hits scene compute pass and three shading passes that share one automatically sized hit buffer: physical-optics path tracing with coherence and polarization (Steinberg, Sen and Yan), the same paths radiometrically, and the incident light's coherence length. Connect scene, view and color; outputs color plus optional radiometric and coherence images. Needs Metal or Vulkan compute."
     },
     {
       "kind": "snippet",

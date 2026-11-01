@@ -625,6 +625,104 @@ class SteinbergPltTemplateTests(unittest.TestCase):
         self.assertEqual(arguments.template, 'steinberg-plt')
 
 
+class SteinbergPhysicalOpticsTemplateTests(unittest.TestCase):
+    """The steinberg-physical-optics template's wave-optics paths beside radiometric ones and the coherence length."""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+
+    def create(self, profiles=('metal', 'wgsl'), name='Optics'):
+        return graph.new_workspace(Path(self.directory.name) / name, output='offscreen', renderer_static=True,
+                                   profiles=profiles, template='steinberg-physical-optics')
+
+    def test_three_passes_share_the_hit_buffer_and_the_coherence_image_is_not_tone_mapped(self):
+        root = self.create()
+        plan = graph.compile_graph(root)
+        rays = [operation for operation in plan['passes'] if operation['kind'] == 'RayTracing']
+        self.assertEqual([operation['id'].rsplit('/', 1)[-1] for operation in rays],
+                         ['primary', 'shadeWave', 'shadeRadiometric', 'measureCoherence'])
+        # Every pass traverses the compute BVH: the paths issue several surface and visibility queries per invocation.
+        for operation in rays:
+            self.assertEqual(operation['pipeline']['kind'], 'ComputePipeline')
+            self.assertEqual(ray.program_tuple(operation['pipeline'])[-1], ray.COMPUTE_BVH_TAG)
+        self.assertFalse(ray.requires_native_queries(plan))
+        buffers = [resource for resource in plan['resources'].values() if resource['type'] == 'Buffer']
+        self.assertEqual(len(buffers), 1)
+        self.assertEqual(buffers[0]['bytes_per_pixel'], 32)
+        self.assertNotIn('accumulation', rays[0])
+        for operation in rays[1:]:
+            self.assertEqual(4096, operation['accumulation']['samples'])
+        for operation in rays[1:3]:
+            self.assertEqual(1, operation['tone_mapping']['exposure'])
+        self.assertNotIn('tone_mapping', rays[3])
+        exports = [operation['id'].rsplit('/', 1)[-1] for operation in plan['passes'] if operation['kind'] == 'Export']
+        self.assertEqual(exports, ['output', 'radiometricOutput', 'coherenceOutput'])
+        manifest = json.loads(root.with_name('main.lushader.json').read_text())
+        build.validate_manifest(manifest)
+        technique = next(technique for technique in manifest['techniques'] if technique['id'] == ray.TECHNIQUE)
+        # One continuation and one connection per path vertex, three vertices at most.
+        self.assertEqual(technique['scene_interface'], {'version': 1, 'surface_queries': 3, 'visibility_queries': 3})
+        compute = [program for program in manifest['programs'] if program['stage'] == 'compute']
+        self.assertEqual([(program['id'], program['function']) for program in compute],
+                         [('Primary', 'TracePrimaryHit'), ('ShadeWave', 'ShadeWave'),
+                          ('ShadeRadiometric', 'ShadeRadiometric'), ('MeasureCoherence', 'MeasureCoherence')])
+
+    def test_settings_use_the_paper_defaults_and_shaders_cite_it(self):
+        import re
+        root = self.create()
+        shaders = root.with_name('main_shaders')
+        manifest = json.loads(root.with_name('main.lushader.json').read_text())
+        settings = {setting['id']: setting for setting in manifest['settings']}
+        # Section 4: A = 1 mm^2, Omega = 1e-6 sr, sigma_zz = 1 mm, sigma_min after 10 cm, sunlight about 50 um, and
+        # gratings with orders |n| <= 3.
+        self.assertEqual(settings['PO_RADIATOR_AREA_SQUARE_MILLIMETERS']['value'], 1)
+        self.assertEqual(settings['PO_BEAM_SOLID_ANGLE_MICROSTERADIANS']['value'], 1)
+        self.assertEqual(settings['PO_LONGITUDINAL_COHERENCE_MILLIMETERS']['value'], 1)
+        self.assertEqual(settings['PO_ENVELOPE_DISTANCE_CENTIMETERS']['value'], 10)
+        self.assertEqual(settings['PO_SUN_COHERENCE_MICROMETERS']['value'], 50)
+        self.assertEqual(settings['PO_GRATING_ORDER_MAXIMUM']['value'], 3)
+        self.assertEqual(settings['PO_PATH_VERTICES']['maximum'], 3)
+        self.assertIs(settings['PO_CAMERA_POLARIZER']['value'], False)
+        for source in ('shade.slang', 'wave_optics.slang'):
+            text = shaders.joinpath(source).read_text()
+            for name in ('Shlomi Steinberg', 'Pradeep Sen', 'Ling-Qi Yan', '10.1145/3528223.3530119'):
+                self.assertIn(name, text)
+        header = shaders.joinpath('hit_record.slang').read_text()
+        constant = lambda name: int(re.search(rf'static const uint {name} = (\d+);', header).group(1))
+        self.assertEqual(constant('PRIMARY_RANDOM_DIMENSION_COUNT'), 2)
+        self.assertIn('SHADE_VERTEX_DIMENSION_COUNT = SHADE_VERTEX_WINDOW_DIMENSION + 1;', header)
+        for kernel in ('primary', 'shade'):
+            source = shaders.joinpath(f'{kernel}.slang').read_text()
+            self.assertNotIn('SampleSceneRandom(queries', source)
+            self.assertNotIn('SelectLight(scene, queries', source)
+
+    def test_metal_or_vulkan_compute_is_required(self):
+        for profile in ('metal', 'spirv'):
+            with self.subTest(profile=profile):
+                graph.compile_graph(self.create((profile,), name=profile))
+        with self.assertRaises(ToolingError):
+            self.create(('wgsl',), name='Browser')
+        self.assertFalse((Path(self.directory.name) / 'Browser').exists())
+
+    def test_relocated_sdk_and_cli_expose_the_template(self):
+        from ludus_tools import render_graph_templates
+        from ludus_tools.cli import build_parser
+        installed = Path(self.directory.name) / 'sdk/lib/cmake/Ludus/render_graph'
+        module = installed / 'ludus_tools/render_graph_templates.py'
+        module.parent.mkdir(parents=True)
+        source = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs/steinberg_physical_optics'
+        shutil.copytree(source, installed / 'templates/steinberg_physical_optics')
+        with patch.object(render_graph_templates, '__file__', str(module)):
+            files = render_graph_templates.template_files('steinberg-physical-optics', ('spirv',), graph)
+        build.validate_manifest(json.loads(files['main.lushader.json']))
+        self.assertIn('ScatterBeam', files['main_shaders/wave_optics.slang'])
+        arguments = build_parser().parse_args(['render-graph', 'new', 'graphs/Optics', '--template',
+                                               'steinberg-physical-optics', '--output', 'offscreen',
+                                               '--renderer-static', '--profiles', 'metal'])
+        self.assertEqual(arguments.template, 'steinberg-physical-optics')
+
+
 class LineSamplingTemplateTests(unittest.TestCase):
     """Billen and Dutre's surface-area line estimator in one direction, beside its visible fraction."""
 
