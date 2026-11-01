@@ -544,6 +544,15 @@ if(TARGET ludus_renderer_render_tests)
     ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_scene_compute_raster
         MANIFEST "${scene_compute_staged}/main.lushader.json" CONFIGURATION Raster RUNTIME_PACKAGE)
     cmake_path(GET rg2_scene_compute_raster_RUNTIME_PACKAGE PARENT_PATH scene_compute_raster_package_directory)
+    # Native ray queries in a merged Metal kernel: paths with several closest and visibility queries per invocation.
+    set(native_multi_query_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/native_multi_query")
+    ludus_stage_render_graph_fixture("${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/native_multi_query"
+        "${native_multi_query_staged}")
+    ludus_compile_render_graph(TARGET ludus_render_graph_ray_tests NAME rg2_native_multi_query
+        MANIFEST "${native_multi_query_staged}/main.lushader.json" RUNTIME_PACKAGE)
+    cmake_path(GET rg2_native_multi_query_RUNTIME_PACKAGE PARENT_PATH native_multi_query_package_directory)
+    target_compile_definitions(ludus_render_graph_ray_tests PRIVATE
+        LUDUS_RG3_NATIVE_MULTI_QUERY_DIRECTORY="${native_multi_query_package_directory}")
     # GetEmitterBounds: a compute pass compares the packed emitter bounds with their triangles.
     set(emitter_bounds_source "${PROJECT_SOURCE_DIR}/tests/sdk_consumer/rg2/emitter_bounds")
     set(emitter_bounds_staged "${CMAKE_CURRENT_BINARY_DIR}/rg2-inputs/emitter_bounds")

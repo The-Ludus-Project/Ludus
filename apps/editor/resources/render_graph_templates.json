@@ -138,9 +138,9 @@
       "identity": "steinberg-physical-optics",
       "label": "Steinberg — practical physical optics",
       "category": "ray-traced",
-      "requirements": ["compute-ray-tracing"],
+      "requirements": ["native-ray-tracing"],
       "keywords": ["steinberg", "physical light transport", "physical optics", "wave optics", "wave bsdf", "coherence", "polarization", "stokes", "mueller", "diffraction", "grating", "spectral", "path tracing"],
-      "description": "Practical physical-optics rendering from Steinberg, Sen and Yan (2022): camera paths of up to three scattering events carry beams with Stokes vectors and anisotropic Gaussian spatial coherence, scattered by the wave BSDF. Rough surfaces are Gaussian surfaces, dielectrics have a diffuse base and smooth metals are gratings. After a primary-hits pass, one pass renders wave optics (the image shown first), one the same paths radiometrically, and one the coherence length of the incident light. An optional camera polarizer shows polarization. Every pass uses the compute BVH, so it needs Metal or Vulkan compute but no hardware ray tracing."
+      "description": "Practical physical-optics rendering from Steinberg, Sen and Yan (2022): camera paths of up to three scattering events carry beams with Stokes vectors and anisotropic Gaussian spatial coherence, scattered by the wave BSDF. Rough surfaces are Gaussian surfaces, dielectrics have a diffuse base and smooth metals are gratings. After a primary-hits pass, one pass renders wave optics (the image shown first), one the same paths radiometrically, and one the coherence length of the incident light. An optional camera polarizer shows polarization. Requires native ray tracing."
     },
     {
       "kind": "snippet",
@@ -258,9 +258,9 @@
       "label": "Steinberg — practical physical optics",
       "category": "lighting",
       "defaultConfiguration": "SteinbergPhysicalOptics",
-      "requirements": ["compute-ray-tracing"],
+      "requirements": ["native-ray-tracing"],
       "keywords": ["steinberg", "physical light transport", "physical optics", "wave optics", "wave bsdf", "coherence", "polarization", "stokes", "mueller", "diffraction", "grating", "spectral", "path tracing"],
-      "description": "A primary-hits scene compute pass and three shading passes that share one automatically sized hit buffer: physical-optics path tracing with coherence and polarization (Steinberg, Sen and Yan), the same paths radiometrically, and the incident light's coherence length. Connect scene, view and color; outputs color plus optional radiometric and coherence images. Needs Metal or Vulkan compute."
+      "description": "A primary-hits scene compute pass and three shading passes that share one automatically sized hit buffer: physical-optics path tracing with coherence and polarization (Steinberg, Sen and Yan), the same paths radiometrically, and the incident light's coherence length. Connect scene, view and color; outputs color plus optional radiometric and coherence images. Requires native ray tracing."
     },
     {
       "kind": "snippet",

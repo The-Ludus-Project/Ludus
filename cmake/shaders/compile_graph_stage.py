@@ -113,6 +113,49 @@ def verify_ray_compute_metal(code, interface, requires_native_queries=True):
     return names[0]
 
 
+# SPIRV-Cross 1.4.313 emits every helper function behind this line, dropping Slang's [noinline].
+METAL_FORCE_INLINE = 'static inline __attribute__((always_inline))'
+METAL_NOINLINE = '__attribute__((noinline))'
+METAL_RAY_QUERY = 'raytracing::intersection_query<'
+
+
+def isolate_metal_ray_queries(code):
+    """Emit every translated function that declares a Metal intersection query out of line.
+
+    Inlined into a large merged kernel, native ray queries corrupted live state on an Apple M5:
+    paths with several surface and visibility queries per invocation returned infinite radiance
+    and failure flags without a reason, in pixels that varied between identical runs. The same
+    MSL with the query in a noinline function is clean. The renderer's TraceNative and
+    TraceNativeVisibility are Slang [noinline] and own each query, so SPIRV-Cross keeps them as
+    functions; this restores their noinline. A query declared in the kernel body itself, or in a
+    function this cannot recognize, is rejected rather than left inline.
+    """
+    lines = code.split('\n')
+    isolated = 0
+    index = 0
+    while index < len(lines):
+        header = lines[index]
+        if header != METAL_FORCE_INLINE and not header.startswith('kernel '):
+            if METAL_RAY_QUERY in header:
+                raise RuntimeError('Native ray query outside a translated function body')
+            index += 1
+            continue
+        # SPIRV-Cross opens and closes each function body with a brace in the first column.
+        opening = next((line for line in range(index + 1, len(lines)) if lines[line] == '{'), None)
+        closing = next((line for line in range(opening + 1, len(lines)) if lines[line] == '}'), None) if opening else None
+        if closing is None:
+            raise RuntimeError('Translated Metal function body is not delimited')
+        if any(METAL_RAY_QUERY in line for line in lines[opening + 1:closing]):
+            if header != METAL_FORCE_INLINE:
+                raise RuntimeError('Native ray query inlined into the Metal kernel; keep TraceNative out of line')
+            lines[index] = METAL_NOINLINE
+            isolated += 1
+        index = closing + 1
+    if METAL_RAY_QUERY in code and isolated == 0:
+        raise RuntimeError('Native ray Metal artifact has no out-of-line ray query function')
+    return '\n'.join(lines)
+
+
 def verify_native_ray_metal(code, interface):
     return verify_ray_compute_metal(code, interface)
 
@@ -191,6 +234,8 @@ def compile_graph_stage(args, lock):
     elif metal and translated_compute:
         run([args.spirv_cross, str(intermediate), '--msl', '--msl-version', '20400', '--msl-decoration-binding', '--output', str(artifact)])
         code = relative_line_directives(artifact.read_text(), [Path(args.source).parent])
+        if native_rays:
+            code = isolate_metal_ray_queries(code)
         emitted = verify_ray_compute_metal(code, interface, native_rays)
         artifact.write_text(code)
     elif metal:

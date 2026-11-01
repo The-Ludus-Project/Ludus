@@ -34,8 +34,8 @@
 // area PO_RADIATOR_AREA_SQUARE_MILLIMETERS for coherence and points for visibility; the environment arrives with the
 // envelope's coherence sigma_min, the least coherent light the paper renders.
 // At most PO_PATH_VERTICES surface queries (continuations) and as many visibility queries (connections) per invocation.
-// Every pass traverses the compute BVH (library.lurender.json): with native Metal ray queries, these paths returned
-// non-finite radiance in many pixels, differing between identical runs.
+// Every pass uses native ray queries, which the renderer keeps out of line on Metal (TraceNative in
+// renderer_gpu_preview.slang): inlined into this merged kernel, they corrupted the paths' live state.
 
 static const float SHADE_MAXIMUM_TRACE_DISTANCE_WORLD = 3.402823466e38f;
 /// Scene interface budgets: one continuation and one connection per vertex.

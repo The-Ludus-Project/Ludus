@@ -642,11 +642,11 @@ class SteinbergPhysicalOpticsTemplateTests(unittest.TestCase):
         rays = [operation for operation in plan['passes'] if operation['kind'] == 'RayTracing']
         self.assertEqual([operation['id'].rsplit('/', 1)[-1] for operation in rays],
                          ['primary', 'shadeWave', 'shadeRadiometric', 'measureCoherence'])
-        # Every pass traverses the compute BVH: the paths issue several surface and visibility queries per invocation.
+        # Every pass issues native ray queries, several surface and visibility queries per invocation in the shade passes.
         for operation in rays:
             self.assertEqual(operation['pipeline']['kind'], 'ComputePipeline')
-            self.assertEqual(ray.program_tuple(operation['pipeline'])[-1], ray.COMPUTE_BVH_TAG)
-        self.assertFalse(ray.requires_native_queries(plan))
+            self.assertFalse(ray.program_tuple(operation['pipeline'])[-1].startswith('@'))
+        self.assertTrue(ray.requires_native_queries(plan))
         buffers = [resource for resource in plan['resources'].values() if resource['type'] == 'Buffer']
         self.assertEqual(len(buffers), 1)
         self.assertEqual(buffers[0]['bytes_per_pixel'], 32)
@@ -697,7 +697,7 @@ class SteinbergPhysicalOpticsTemplateTests(unittest.TestCase):
             self.assertNotIn('SampleSceneRandom(queries', source)
             self.assertNotIn('SelectLight(scene, queries', source)
 
-    def test_metal_or_vulkan_compute_is_required(self):
+    def test_metal_or_vulkan_ray_tracing_is_required(self):
         for profile in ('metal', 'spirv'):
             with self.subTest(profile=profile):
                 graph.compile_graph(self.create((profile,), name=profile))

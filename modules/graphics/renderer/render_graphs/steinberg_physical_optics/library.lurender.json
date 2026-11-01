@@ -98,8 +98,7 @@
           ],
           "state": {},
           "invocation": {
-            "dimensions": "ColorTarget",
-            "traversal": "ComputeBvh"
+            "dimensions": "ColorTarget"
           }
         },
         {
@@ -154,8 +153,7 @@
           ],
           "state": {},
           "invocation": {
-            "dimensions": "ColorTarget",
-            "traversal": "ComputeBvh"
+            "dimensions": "ColorTarget"
           }
         },
         {
@@ -221,8 +219,7 @@
           ],
           "state": {},
           "invocation": {
-            "dimensions": "ColorTarget",
-            "traversal": "ComputeBvh"
+            "dimensions": "ColorTarget"
           }
         },
         {
@@ -288,8 +285,7 @@
           ],
           "state": {},
           "invocation": {
-            "dimensions": "ColorTarget",
-            "traversal": "ComputeBvh"
+            "dimensions": "ColorTarget"
           }
         },
         {

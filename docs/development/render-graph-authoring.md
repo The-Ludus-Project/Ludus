@@ -772,7 +772,7 @@ Use **Invocation → Ray traversal** to choose the compute intersection strategy
 | Automatic | An explicit Compute invocation uses `TriangleLoop`. Legacy documents without an invocation type retain their defaults: shared callbacks in a ComputePipeline use `TriangleLoop`; a RayTracingPipeline and existing single-kernel compute passes use `NativeQuery`. |
 | Triangle loop (`TriangleLoop`) | Renderer-owned two-sided ray/triangle intersections scan the selected World's packed triangles. Closest queries retain the nearest accepted hit; visibility queries stop at the first accepted hit. |
 | Compute BVH (`ComputeBvh`) | Ordinary GPU compute walks the renderer's packed binned-SAH BVH with watertight triangle tests. Closest queries retain the nearest accepted hit; visibility queries stop at the first accepted hit. |
-| Native ray query (`NativeQuery`) | Inline native acceleration-structure queries perform triangle traversal. |
+| Native ray query (`NativeQuery`) | Inline native acceleration-structure queries perform triangle traversal. On Metal, each query runs in an out-of-line renderer function rather than in the merged kernel (see below). |
 | Custom traversal (`Custom`) | The package-relative **Traversal source** implements closest and visibility queries in compute. No native acceleration structure is created or bound. |
 
 The optional JSON field is `invocation.traversal`:
@@ -787,6 +787,14 @@ the same authored callbacks and preserves payload, query budgets and failure
 status. Passes sharing the same callbacks can select different strategies in one
 package; the cooked variant includes the strategy so one pass cannot overwrite
 another's selection. Changing it rebuilds the wrapper without rewriting shaders.
+
+On Metal, a graph's passes compile into one merged kernel, and inlining native queries into it
+corrupted live state on an Apple M5. In the `steinberg-physical-optics` template, camera paths with
+several surface and visibility queries per invocation returned infinite radiance, or failed without a
+reason, in pixels that varied between identical runs. Every native query therefore runs in the renderer's
+`TraceNative` or `TraceNativeVisibility` function, which the Metal translation keeps out of line. The
+build rejects a native-query kernel that would inline a query. Callbacks reach these functions through
+`TraceClosest`, `TestVisibility` and `TraceAndShade`; they need no change.
 
 For custom compute queries, supply a source implementing this function:
 
@@ -2628,9 +2636,9 @@ ludus render-graph new graphs/Optics --template steinberg-physical-optics \
   --output offscreen --renderer-static --profiles metal wgsl
 ```
 
-Use `spirv wgsl` for Vulkan. Every pass traverses the compute BVH, so the template
-needs Metal or Vulkan compute but no hardware ray tracing; a `wgsl`-only package is
-rejected with a `Capability` diagnostic. **Apply Configuration Template...** and
+Use `spirv wgsl` for Vulkan. Every pass issues native ray queries, so the template
+requires native ray tracing; a `wgsl`-only package is rejected with a `Capability`
+diagnostic. **Apply Configuration Template...** and
 Quick Add also offer the `SteinbergPhysicalOptics` configuration. It has `scene`,
 `view` and `color` inputs, a required `color` output and optional `radiometric` and
 `coherence` outputs.

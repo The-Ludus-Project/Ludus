@@ -110,7 +110,8 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                                  graph.Identity == QStringLiteral("compute-ray-tracing") ||
                                  graph.Identity == QStringLiteral("simple-compute-ray-tracing") ||
                                  graph.Identity == QStringLiteral("veach-guibas-mis") ||
-                                 graph.Identity == QStringLiteral("steinberg-plt");
+                                 graph.Identity == QStringLiteral("steinberg-plt") ||
+                                 graph.Identity == QStringLiteral("steinberg-physical-optics");
         CHECK(graph.Requirements.contains(QStringLiteral("native-ray-tracing")) == isRayTraced);
         // Triangle-loop and compute-BVH templates run on Metal or Vulkan compute and must not claim ray hardware.
         CHECK(graph.Requirements.contains(QStringLiteral("compute-ray-tracing")) ==
@@ -118,8 +119,7 @@ TEST_CASE("the built-in template catalog keeps the editor's existing template li
                graph.Identity == QStringLiteral("ris-projected-solid-angle") ||
                graph.Identity == QStringLiteral("salesin-jarosz-lines") ||
                graph.Identity == QStringLiteral("polygonal-light-sampling") ||
-               graph.Identity == QStringLiteral("slice-sampling-luminaire") ||
-               graph.Identity == QStringLiteral("steinberg-physical-optics")));
+               graph.Identity == QStringLiteral("slice-sampling-luminaire")));
     }
     CHECK(GetRenderGraphTemplateRequirementLabel(QStringLiteral("compute-ray-tracing")) ==
           QStringLiteral("Metal or Vulkan compute"));

@@ -701,6 +701,30 @@ class BuildTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'must not require native'):
             verify_ray_compute_metal(code, interface, False)
 
+    def test_native_ray_metal_keeps_every_query_out_of_line(self):
+        import sys
+        sys.path.insert(0, str(ROOT / 'cmake/shaders'))
+        from compile_graph_stage import isolate_metal_ray_queries
+        # SPIRV-Cross's shape: every helper behind a force-inline line, bodies braced in the first column.
+        helper = ('static inline __attribute__((always_inline))\n'
+                  'uint Shade(uint value)\n{\n    return value * 2u;\n}\n\n'
+                  'static inline __attribute__((always_inline))\n'
+                  'uint TraceNative(float3 origin)\n{\n'
+                  '    raytracing::intersection_query<raytracing::instancing, raytracing::triangle_data> query;\n'
+                  '    return 0u;\n}\n\n')
+        kernel = 'kernel void main0(uint3 id [[thread_position_in_grid]])\n{\n    uint hit = TraceNative(float3(0));\n}\n'
+        isolated = isolate_metal_ray_queries(helper + kernel)
+        self.assertEqual(isolated.count('__attribute__((noinline))\nuint TraceNative('), 1)
+        self.assertEqual(isolated.count('static inline __attribute__((always_inline))\nuint Shade('), 1)
+        self.assertEqual(isolate_metal_ray_queries(kernel), kernel)
+        inlined = kernel.replace('    uint hit', '    raytracing::intersection_query<raytracing::instancing> query;\n    uint hit')
+        with self.assertRaisesRegex(RuntimeError, 'inlined into the Metal kernel'):
+            isolate_metal_ray_queries(helper + inlined)
+        with self.assertRaisesRegex(RuntimeError, 'outside a translated function'):
+            isolate_metal_ray_queries('raytracing::intersection_query<raytracing::instancing> query;\n' + kernel)
+        with self.assertRaisesRegex(RuntimeError, 'not delimited'):
+            isolate_metal_ray_queries(helper[:helper.rindex('}')])
+
     def test_forward_metal_arrays_are_opt_in_and_independently_sized(self):
         import sys
         sys.path.insert(0, str(ROOT / 'cmake/shaders'))
