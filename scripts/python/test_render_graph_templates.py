@@ -110,6 +110,23 @@ class RestirTemplateTests(unittest.TestCase):
             build.validate_manifest(manifest)
 
 
+class BuiltInTemplateSettingsTests(unittest.TestCase):
+    def test_every_built_in_template_imports_into_one_manifest(self):
+        # The editor merges each imported template's settings into one shared manifest. The engine
+        # must never ship templates that its own setting limit or definitions cannot combine.
+        from ludus_tools import render_graph_templates as templates
+        root = Path(__file__).resolve().parents[2] / 'modules/graphics/renderer/render_graphs'
+        merged = {}
+        for identity, (directory, _, _) in templates.TEMPLATES.items():
+            text = (root / directory / 'main.lushader.json.in').read_text()
+            text = text.replace('@LUDUS_DEFAULT_RENDER_GRAPH_PROFILES@', json.dumps(['metal']))
+            for setting in json.loads(text).get('settings', []):
+                definition = {key: value for key, value in setting.items() if key != 'value'}
+                with self.subTest(template=identity, setting=setting['id']):
+                    self.assertEqual(merged.setdefault(setting['id'], definition), definition)
+        self.assertLessEqual(len(merged), settings.MAX_SETTINGS)
+
+
 class VisibilityTemplateTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()

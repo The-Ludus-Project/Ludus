@@ -469,6 +469,10 @@ private:
     void promptDuplicateConfiguration();
     void promptDuplicateGraph();
     void promptConfigurationTemplate(const QString& templateIdentity = {});
+    /// Ask in a message box over parent whether to apply the repair a failed template attempt
+    /// requested: a program-budget increase or removal of unused settings. Returns true and records
+    /// the approval in inoutBudget when accepted; false when declined or nothing new was requested.
+    [[nodiscard]] bool confirmTemplateRepair(RenderGraphTemplateBudgetIncrease& inoutBudget, QWidget* parent);
     /// Add one catalog node to the canvas configuration, optionally at a layout position.
     /// With from and input, the node's input is connected from `from` in the same edit, and
     /// positionOrNull is where that input's connector goes instead of the node's corner.

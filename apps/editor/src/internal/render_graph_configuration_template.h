@@ -19,13 +19,18 @@ void AppendDraftPreserved(QString& inoutError);
                                                QString& outError,
                                                RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull);
 /// Merge a template's typed Graph settings into a manifest draft. A setting already present with the
-/// same definition keeps its authored value; a different definition reports Conflict and more than
-/// LUDUS_EDITOR_MAX_SETTINGS settings report Capacity, naming templateName. inoutManifest changes only
-/// on Ok. GUI thread; no disk writes.
-[[nodiscard]] RenderGraphDocumentStatus MergeTemplateSettings(QJsonObject& inoutManifest,
+/// same definition keeps its authored value; a different definition reports Conflict, naming
+/// templateName. More than LUDUS_EDITOR_MAX_SETTINGS merged settings report Capacity unless removing
+/// authored settings that no `.slang` file in snapshot names makes them fit: the optional request
+/// then receives those settings, and only the ones it approved are removed. The template's own
+/// settings are never removed. inoutManifest changes only on Ok. GUI thread; no disk writes.
+/// @param snapshot Candidate package, including the template's copied shader sources.
+[[nodiscard]] RenderGraphDocumentStatus MergeTemplateSettings(const RenderGraphSnapshot& snapshot,
+                                                              QJsonObject& inoutManifest,
                                                               const QJsonArray& additions,
                                                               const QString& templateName,
-                                                              QString& outError);
+                                                              QString& outError,
+                                                              RenderGraphTemplateBudgetIncrease* inoutBudgetOrNull);
 /// Prepare a reusable ReSTIR configuration and its shader/manifest closure in an unpublished snapshot.
 /// templateRoot selects a bounded source directory; empty uses the embedded renderer assets.
 /// The destination must be absent or empty. Existing shader bytes, configurations and setting values
