@@ -681,6 +681,8 @@ def map_shader_diagnostics(output, program, target, closure, sources=None):
     return diagnostics
 
 
+# Snapshot paths of engine helper files staged beside the authored sources (render_graph_ray.py).
+STAGED_HELPER_PREFIX = '_ludus'
 REASONLESS_FAILURE = re.compile(r'\bHasFailed\s*=(?!=)\s*true\b')
 SHADER_COMMENT = re.compile(r'/\*.*?\*/|//[^\n]*', re.S)
 REASONLESS_FAILURE_MESSAGE = (
@@ -694,6 +696,8 @@ def reasonless_failure_diagnostics(programs, closures, snapshot):
 
     Such a write latches the failure colour without a reason (scene_shader.slang,
     FailSceneQuery), so the viewport can say only that the reason is unspecified.
+    Engine helpers staged into the snapshot (`_ludus_ray/...`, `_ludus_visibility.slang`)
+    are not authored and are skipped; FailSceneQuery itself sets the flag.
     The scan is lexical over comment-free captured sources: macros or aliases that
     hide the write are not found. Each line is reported once, for the first program
     (by id) whose closure reaches it. Bounded to MAX_SHADER_DIAGNOSTICS records.
@@ -701,7 +705,7 @@ def reasonless_failure_diagnostics(programs, closures, snapshot):
     owners = {}
     for pid in sorted(programs):
         for relative in closures.get(pid, ()):
-            if relative in snapshot.files:
+            if relative in snapshot.files and not relative.split('/', 1)[0].startswith(STAGED_HELPER_PREFIX):
                 owners.setdefault(relative, pid)
     diagnostics = []
     for relative in sorted(owners):

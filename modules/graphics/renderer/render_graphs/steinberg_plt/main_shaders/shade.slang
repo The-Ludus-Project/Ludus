@@ -66,7 +66,9 @@ bool TryLoadShadingPoint(SceneContext scene,
     HitRecord record;
     if (HasHitRecordCapacity(launch) == false || TryLoadHitRecord(scene, launch, record) == false)
     {
-        FailSceneQuery(queries, HasHitRecordCapacity(launch) == false ? LUDUS_SCENE_FAILURE_STORAGE_CAPACITY : LUDUS_SCENE_FAILURE_STORED_RECORD);
+        FailSceneQuery(queries,
+                       HasHitRecordCapacity(launch) == false ? LUDUS_SCENE_FAILURE_STORAGE_CAPACITY
+                                                             : LUDUS_SCENE_FAILURE_STORED_RECORD);
         return false;
     }
     // The primary pass traced this exact ray: same launch, camera and stored jitter.

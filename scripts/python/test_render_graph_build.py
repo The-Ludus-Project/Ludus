@@ -76,6 +76,16 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(report['diagnostics'],
                          json.loads((self.output / 'build-report.json').read_text())['diagnostics'])
 
+    def test_staged_engine_helpers_are_not_reported_as_reasonless_failures(self):
+        snapshot = build.Snapshot(self.manifest.parent)
+        failing = b'void FailSceneQuery(inout RayQueryContext queries, uint reason)\n{\n    queries.HasFailed = true;\n}\n'
+        snapshot.files = {'_ludus_ray/scene_shader.slang': failing, '_ludus_visibility.slang': failing,
+                          'main_shaders/shade.slang': failing}
+        programs = {'Shade': {}}
+        closures = {'Shade': list(snapshot.files)}
+        found = build.reasonless_failure_diagnostics(programs, closures, snapshot)
+        self.assertEqual(['main_shaders/shade.slang'], [record['location']['source'] for record in found])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)

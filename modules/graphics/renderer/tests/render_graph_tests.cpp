@@ -1446,7 +1446,8 @@ TEST_CASE("Every graph failure reason has a description for the author", "[rende
     }
     CHECK(std::string_view(DescribeRenderGraphFailureReason(MAX_RENDER_GRAPH_FAILURE_REASONS)).empty() == true);
     // Every named reason has its own sentence, not the one for codes no enumerator names yet.
-    constexpr auto LAST_NAMED = static_cast<ludus::foundation::uint32>(RenderGraphFailureReason::InvalidWeight);
+    constexpr ludus::foundation::uint32 LAST_NAMED =
+        static_cast<ludus::foundation::uint32>(RenderGraphFailureReason::InvalidWeight);
     const std::string_view unnamed = DescribeRenderGraphFailureReason(LAST_NAMED + 1);
     for (ludus::foundation::uint32 reason = 0; reason <= LAST_NAMED; ++reason)
     {

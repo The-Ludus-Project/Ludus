@@ -48,7 +48,9 @@ float3 ShadeRecordedHit(SceneContext scene, RayLaunch launch, inout RayQueryCont
     HitRecord record;
     if (HasHitRecordCapacity(launch) == false || TryLoadHitRecord(scene, launch, record) == false)
     {
-        FailSceneQuery(queries, HasHitRecordCapacity(launch) == false ? LUDUS_SCENE_FAILURE_STORAGE_CAPACITY : LUDUS_SCENE_FAILURE_STORED_RECORD);
+        FailSceneQuery(queries,
+                       HasHitRecordCapacity(launch) == false ? LUDUS_SCENE_FAILURE_STORAGE_CAPACITY
+                                                             : LUDUS_SCENE_FAILURE_STORED_RECORD);
         return float3(0);
     }
     // The primary pass traced this exact ray: same launch, camera and stored jitter.

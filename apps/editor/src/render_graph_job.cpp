@@ -17,10 +17,13 @@ using namespace foundation;
 
 int32 RenderGraphJobResult::GetDiagnosticCount() const
 {
+    if (IsSuccessful == true)
+    {
+        return static_cast<int32>(Warnings.size()) + 1;
+    }
     const bool hasBatch = Diagnostics.isEmpty() == false && Code.isEmpty() == false &&
                           Diagnostics.first().toObject().value(QStringLiteral("code")).toString() == Code;
-    return IsSuccessful == true || hasBatch == false ? static_cast<int32>(Diagnostics.size()) + 1
-                                                     : static_cast<int32>(Diagnostics.size());
+    return static_cast<int32>(Diagnostics.size()) + (hasBatch == true ? 0 : 1);
 }
 
 QJsonObject RenderGraphJobResult::GetDiagnostic(int32 row) const
@@ -31,7 +34,7 @@ QJsonObject RenderGraphJobResult::GetDiagnostic(int32 row) const
     }
     if (IsSuccessful == true)
     {
-        return row == 0 ? QJsonObject{} : Diagnostics.at(row - 1).toObject();
+        return row == 0 ? QJsonObject{} : Warnings.at(row - 1).toObject();
     }
     const bool hasBatch = Diagnostics.isEmpty() == false && Code.isEmpty() == false &&
                           Diagnostics.first().toObject().value(QStringLiteral("code")).toString() == Code;
@@ -222,8 +225,7 @@ RenderGraphJob::ParseOutput(const RenderGraphJobRequest& request, const QByteArr
     result.Payload = object;
     result.IsSuccessful = exitCode == 0;
     // Warnings of a successful build, such as RenderGraphBuildReasonlessFailure, follow its summary row.
-    result.Diagnostics =
-        object.value(QStringLiteral("build")).toObject().value(QStringLiteral("diagnostics")).toArray();
+    result.Warnings = object.value(QStringLiteral("build")).toObject().value(QStringLiteral("diagnostics")).toArray();
     if (result.IsSuccessful == false)
     {
         result.Code = QStringLiteral("RenderGraphRejected");
