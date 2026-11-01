@@ -1050,7 +1050,9 @@ graph's failure colour: a sample failed one of its checks, and the pixel keeps t
 colour until the camera or scene changes. The viewport's status line names the
 check, how many pixels latched it and what to change, for example a shadow-ray
 budget that the scene's emissive triangles exceed. Graphs cooked before failure
-reasons name nothing; rebuild them. See
+reasons name nothing; rebuild them. When the status says the reason is
+unspecified, a shader set `queries.HasFailed` directly: build the graph, and the
+Error List shows a warning at each such line. See
 [Explain failed pixels](render-graph-authoring.md#explain-failed-pixels) for the
 reasons and how a shader names its own.
 

@@ -80,6 +80,9 @@ inline constexpr foundation::int32 MAX_BUILD_DIAGNOSTICS = 1000;
 /// Current preview failure, independently owned from compiler and project-build results.
 /// Empty problem clears the preview producer's rows; file names the authored root graph.
 [[nodiscard]] QList<ErrorListEntry> MakeRenderPreviewErrorEntries(const QString& problem, const QString& file);
+/// Current preview advisory (RendererWorkspace::GetRenderWarning) as one Warning row of the preview producer,
+/// to append to its error rows. Empty warning yields no row; file names the input the warning asks to edit.
+[[nodiscard]] QList<ErrorListEntry> MakeRenderPreviewWarningEntries(const QString& warning, const QString& file);
 /// Compiler (`file:line[:column]: error|warning|note: text`) and CMake
 /// (`CMake Error|Warning at file:line`) diagnostics in build output, at most
 /// MAX_BUILD_DIAGNOSTICS. SourceIndex is the zero-based output line.

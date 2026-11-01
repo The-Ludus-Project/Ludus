@@ -48,7 +48,7 @@ struct ShadingPoint
     outRadiance = float3(0);
     if (HasHitRecordCapacity(launch) == false)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_STORAGE_CAPACITY);
         return false;
     }
     if (isPrimary == true && TraceAndStoreHitRecord(scene, launch, queries) == SCENE_QUERY_FAILURE)
@@ -56,7 +56,7 @@ struct ShadingPoint
     HitRecord record;
     if (TryLoadHitRecord(scene, launch, record) == false)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_STORED_RECORD);
         return false;
     }
     // The first pass traced this exact ray: same launch, camera and stored jitter.
@@ -69,7 +69,7 @@ struct ShadingPoint
     outPoint.Hit = GetSurfaceHit(scene, record.TriangleIndex, record.Barycentric);
     if (outPoint.Hit.IsValid == false)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SCENE_DATA);
         return false;
     }
     // GetSurfaceHit issues no ray; restore what TraceClosest reported, as LoadVisibilitySurface does.
@@ -81,7 +81,7 @@ struct ShadingPoint
     float normalLengthSquared = dot(outPoint.Material.ShadingNormalWorld, outPoint.Material.ShadingNormalWorld);
     if (outPoint.Material.IsValid == false || normalLengthSquared <= 0)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SCENE_DATA);
         return false;
     }
     outPoint.Material.ShadingNormalWorld *= rsqrt(normalLengthSquared);
@@ -128,7 +128,7 @@ struct ShadingPoint
     SurfaceHit emitterHit = GetSurfaceHit(scene, triangle.TriangleIndex, lightSample.Barycentric);
     if (emitterHit.IsValid == false)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SCENE_DATA);
         return float3(0);
     }
     float3 emission = EvaluateEmission(scene, emitterHit, -lightSample.DirectionWorld);
@@ -188,7 +188,7 @@ struct ShadingPoint
                                          emitterMaterial.IsEmissionTwoSided,
                                          polygonalLight) == false)
             {
-                queries.HasFailed = true;
+                FailSceneQuery(queries, LUDUS_SCENE_FAILURE_LIGHT_SAMPLE);
                 return float3(0);
             }
             // A triangle below the horizon or a one-sided emitter seen from behind needs no shadow ray.
@@ -229,7 +229,7 @@ float3 ShadeEstimator(SceneContext scene, RayLaunch launch, uint estimator, inou
         radiance += ShadePolygonalLights(scene, launch, shadingPoint, estimator, passQueries);
         if (IsFiniteBits(radiance) == false || any(radiance < 0) == true)
         {
-            passQueries.HasFailed = true;
+            FailSceneQuery(passQueries, LUDUS_SCENE_FAILURE_INVALID_RADIANCE);
             radiance = float3(0);
         }
     }

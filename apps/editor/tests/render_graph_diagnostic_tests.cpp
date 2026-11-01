@@ -47,6 +47,29 @@ TEST_CASE("preview diagnostics replace independently and reveal a changed activa
     CHECK(list.GetCount(ErrorListSeverity::Message) == 1);
 }
 
+TEST_CASE("a preview advisory is one warning row beside the preview's errors", "[editor][render-graph][diagnostics]")
+{
+    ErrorList list;
+    const QString file = QStringLiteral("graphs/Main/main.lurender.json");
+    const QString warning = QStringLiteral("The slice-sampling luminaire panel cannot light this World.");
+    const QList<ErrorListEntry> advisory = MakeRenderPreviewWarningEntries(warning, file);
+    REQUIRE(advisory.size() == 1);
+    CHECK(advisory.first().Severity == ErrorListSeverity::Warning);
+    CHECK(advisory.first().Producer == ErrorListProducer::RenderPreview);
+    CHECK(advisory.first().Code == QStringLiteral("RenderGraphPreviewWarning"));
+    CHECK(advisory.first().Description == warning);
+    CHECK(MakeRenderPreviewWarningEntries({}, file).isEmpty() == true);
+    list.ReplaceEntries(ErrorListProducer::RenderPreview,
+                        MakeRenderPreviewErrorEntries(QStringLiteral("Activation failed."), file) + advisory);
+    CHECK(list.GetCount(ErrorListSeverity::Error) == 1);
+    CHECK(list.GetCount(ErrorListSeverity::Warning) == 1);
+    // Clearing the advisory keeps the preview's error.
+    list.ReplaceEntries(ErrorListProducer::RenderPreview,
+                        MakeRenderPreviewErrorEntries(QStringLiteral("Activation failed."), file));
+    CHECK(list.GetCount(ErrorListSeverity::Warning) == 0);
+    CHECK(list.GetCount(ErrorListSeverity::Error) == 1);
+}
+
 TEST_CASE("structured validation batches produce one actionable Error List row per issue",
           "[editor][render-graph][diagnostics]")
 {
@@ -260,4 +283,45 @@ TEST_CASE("Error List reports new errors and warnings once per changed result", 
     list.ReplaceEntries(ErrorListProducer::Build, {});
     CHECK(reported.count() == 2);
     CHECK(list.GetEntries().size() == 1);
+}
+
+TEST_CASE("A successful build lists its reasonless-failure warnings after its summary",
+          "[editor][render-graph][diagnostics][render-graph-failures]")
+{
+    const QJsonObject warning{{QStringLiteral("severity"), QStringLiteral("warning")},
+                              {QStringLiteral("code"), QStringLiteral("RenderGraphBuildReasonlessFailure")},
+                              {QStringLiteral("message"), QStringLiteral("sets queries.HasFailed without a reason")},
+                              {QStringLiteral("program"), QStringLiteral("Shade")},
+                              {QStringLiteral("location"),
+                               QJsonObject{{QStringLiteral("source"), QStringLiteral("main_shaders/shade.slang")},
+                                           {QStringLiteral("line"), 113},
+                                           {QStringLiteral("column"), 15},
+                                           {QStringLiteral("length"), 16}}}};
+    const QJsonObject response{{QStringLiteral("schema"), 1},
+                               {QStringLiteral("build"),
+                                QJsonObject{{QStringLiteral("generation"), QStringLiteral("g")},
+                                            {QStringLiteral("diagnostics"), QJsonArray{warning}}}}};
+    RenderGraphJobRequest request;
+    request.Action = QStringLiteral("build");
+    const RenderGraphJobResult parsed = RenderGraphJob::ParseOutput(request, QJsonDocument(response).toJson(), 0);
+    REQUIRE(parsed.IsSuccessful == true);
+    // Row 0 is the success summary; the warning follows it and keeps its authored location.
+    REQUIRE(parsed.GetDiagnosticCount() == 2);
+    CHECK(parsed.GetDiagnostic(0).isEmpty() == true);
+    CHECK(parsed.GetDiagnostic(1) == warning);
+    const QList<ErrorListEntry> entries = MakeRenderGraphErrorEntries(parsed);
+    REQUIRE(entries.size() == 2);
+    CHECK(entries.first().Severity == ErrorListSeverity::Message);
+    CHECK(entries.last().Severity == ErrorListSeverity::Warning);
+    CHECK(entries.last().Code == QStringLiteral("RenderGraphBuildReasonlessFailure"));
+    CHECK(entries.last().File == QStringLiteral("main_shaders/shade.slang"));
+    CHECK(entries.last().Location.startsWith(QStringLiteral("113:15")) == true);
+    CHECK(entries.last().SourceIndex == 1);
+    // A build without warnings keeps its single informational row.
+    const RenderGraphJobResult clean = RenderGraphJob::ParseOutput(
+        request,
+        QJsonDocument(QJsonObject{{QStringLiteral("schema"), 1}, {QStringLiteral("build"), QJsonObject{}}}).toJson(),
+        0);
+    CHECK(clean.GetDiagnosticCount() == 1);
+    CHECK(MakeRenderGraphErrorEntries(clean).size() == 1);
 }

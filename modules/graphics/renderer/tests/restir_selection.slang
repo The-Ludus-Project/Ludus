@@ -1,5 +1,6 @@
 #include "math.slang"
 #include "raster_bindings.slang"
+#include "scene_shader_layout.h"
 
 static const uint RESTIR_INITIAL_CANDIDATE_COUNT = 8;
 static const uint SELECTION_RECORD_COUNT = RESTIR_INITIAL_CANDIDATE_COUNT + 1;
@@ -25,6 +26,11 @@ struct RayQueryContext
     uint Invocation;
     uint Dimension;
 };
+// Mirrors scene_shader.slang's FailSceneQuery; the test reads only HasFailed.
+void FailSceneQuery(inout RayQueryContext queries, uint reason)
+{
+    queries.HasFailed = true;
+}
 uint GetEmitterCount(SceneContext scene)
 {
     return scene.EmitterCount;

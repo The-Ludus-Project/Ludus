@@ -314,7 +314,8 @@ void MainWindow::renderGraphErrors()
     const QString file =
         document.IsLoaded() == true ? QDir(document.GetPackageRoot()).filePath(document.GetRootGraph()) : QString{};
     mErrorList->ReplaceEntries(ErrorListProducer::RenderPreview,
-                               MakeRenderPreviewErrorEntries(Renderer_->GetActivationProblem(), file));
+                               MakeRenderPreviewErrorEntries(Renderer_->GetActivationProblem(), file) +
+                                   MakeRenderPreviewWarningEntries(Renderer_->GetRenderWarning(), file));
     // A successful compile does not establish that the viewport accepted its generation.
     mErrorList->ReplaceEntries(ErrorListProducer::RenderGraph,
                                Renderer_->GetDiagnosticCount() == 0 ||

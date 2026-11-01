@@ -59,7 +59,7 @@ bool TryLoadShadingPoint(SceneContext scene,
     outRadiance = float3(0);
     if (HasHitRecordCapacity(launch) == false)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_STORAGE_CAPACITY);
         return false;
     }
     if (isPrimary == true && TraceAndStoreHitRecord(scene, launch, queries) == SCENE_QUERY_FAILURE)
@@ -67,7 +67,7 @@ bool TryLoadShadingPoint(SceneContext scene,
     HitRecord record;
     if (TryLoadHitRecord(scene, launch, record) == false)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_STORED_RECORD);
         return false;
     }
     // The first pass traced this exact ray: same launch, camera and stored jitter.
@@ -80,7 +80,7 @@ bool TryLoadShadingPoint(SceneContext scene,
     outPoint.Hit = GetSurfaceHit(scene, record.TriangleIndex, record.Barycentric);
     if (outPoint.Hit.IsValid == false)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SCENE_DATA);
         return false;
     }
     // GetSurfaceHit issues no ray; restore what TraceClosest reported, as LoadVisibilitySurface does.
@@ -92,7 +92,7 @@ bool TryLoadShadingPoint(SceneContext scene,
     float normalLengthSquared = dot(outPoint.Material.ShadingNormalWorld, outPoint.Material.ShadingNormalWorld);
     if (outPoint.Material.IsValid == false || normalLengthSquared <= 0)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SCENE_DATA);
         return false;
     }
     outPoint.ShadingNormalWorld = outPoint.Material.ShadingNormalWorld * rsqrt(normalLengthSquared);
@@ -175,7 +175,7 @@ float3 ShadeEstimator(SceneContext scene, RayLaunch launch, uint estimator, inou
         radiance += SampleLuminaire(scene, launch, shadingPoint, estimator, passQueries);
         if (IsRadianceFinite(radiance) == false || any(radiance < 0) == true)
         {
-            passQueries.HasFailed = true;
+            FailSceneQuery(passQueries, LUDUS_SCENE_FAILURE_INVALID_RADIANCE);
             radiance = float3(0);
         }
     }

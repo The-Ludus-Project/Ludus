@@ -89,11 +89,11 @@ float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext q
     ScenePayload payload = (ScenePayload)0;
     if (ValidateSceneRandomLimits(scene, launch, queries) == false ||
         ValidateSceneIntegerSampling(launch, queries) == false)
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
     // Check automatic initialization against the independently addressed public API.
     float first = SampleSceneRandom(queries);
     if (first != SampleSceneRandom(launch, 0))
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
     payload.ExpectedMissRandom = SampleSceneRandom(launch, 1);
     payload.ExpectedLightIndex = SelectLight(scene, launch, 1).LightIndex;
     uint shapeDimension = GetLightCount(scene) > 0 ? 2 : 1;
@@ -111,7 +111,7 @@ float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext q
         INTEGER_RANGE_WIDTH,
         expectedIntegerOffset);
     if (hasIntegerSample == false)
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
     payload.ExpectedInteger = INTEGER_RANGE_MINIMUM + expectedIntegerOffset;
     TraceAndShade(scene, queries, launch.CameraRay, payload);
     return payload.Radiance;

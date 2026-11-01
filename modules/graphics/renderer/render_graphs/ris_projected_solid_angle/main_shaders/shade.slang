@@ -78,7 +78,9 @@ ResampledLightContext MakeResampledLightContext(SceneContext scene)
     HitRecord record;
     if (HasHitRecordCapacity(launch) == false || TryLoadHitRecord(scene, launch, record) == false)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries,
+                       HasHitRecordCapacity(launch) == false ? LUDUS_SCENE_FAILURE_STORAGE_CAPACITY
+                                                             : LUDUS_SCENE_FAILURE_STORED_RECORD);
         return false;
     }
     // The primary pass traced this exact ray: same launch, camera and stored jitter.
@@ -91,7 +93,7 @@ ResampledLightContext MakeResampledLightContext(SceneContext scene)
     outPoint.Hit = GetSurfaceHit(scene, record.TriangleIndex, record.Barycentric);
     if (outPoint.Hit.IsValid == false)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SCENE_DATA);
         return false;
     }
     // GetSurfaceHit issues no ray; restore what TraceClosest reported, as LoadVisibilitySurface does.
@@ -103,7 +105,7 @@ ResampledLightContext MakeResampledLightContext(SceneContext scene)
     float normalLengthSquared = dot(outPoint.Material.ShadingNormalWorld, outPoint.Material.ShadingNormalWorld);
     if (outPoint.Material.IsValid == false || normalLengthSquared <= 0)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SCENE_DATA);
         return false;
     }
     outPoint.ShadingNormalWorld = outPoint.Material.ShadingNormalWorld * rsqrt(normalLengthSquared);
@@ -238,7 +240,7 @@ float3 SampleResampledEmissiveLight(SceneContext scene,
     ResampledTriangle selection;
     if (TryResampleEmissiveTriangle(scene, launch, shadingPoint.Frame, selection) == false)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_LIGHT_SAMPLE);
         return float3(0);
     }
     if (selection.HasSelection == false || (selection.ContributionWeight > 0) == false)
@@ -250,7 +252,7 @@ float3 SampleResampledEmissiveLight(SceneContext scene,
          TryEvaluateSurrogateProbability(scene, launch, shadingPoint, target, inoutContext, surrogateProbability) ==
              false))
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_WEIGHT);
         return float3(0);
     }
     // One diffuse sample omega_0 and, unless the LTC-space clip is empty, one LTC sample omega_1.
@@ -388,7 +390,7 @@ bool TryEvaluateResampledLightDensity(SceneContext scene,
                                              inoutContext,
                                              lightDensity) == false)
         {
-            queries.HasFailed = true;
+            FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_WEIGHT);
             return float3(0);
         }
     }
@@ -404,7 +406,7 @@ float3 FinishRadiance(float3 radiance, inout RayQueryContext queries)
 {
     if (all(isfinite(radiance)) == false || any(radiance < 0) == true)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_RADIANCE);
         return float3(0);
     }
     return radiance;

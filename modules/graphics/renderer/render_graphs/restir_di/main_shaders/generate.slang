@@ -4,7 +4,7 @@ float3 GenerateRay(SceneContext scene, RayLaunch launch, inout RayQueryContext q
 {
     if (HasReservoirCapacity(launch) == false)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_STORAGE_CAPACITY);
         return float3(0);
     }
     ScenePayload payload = (ScenePayload)0;

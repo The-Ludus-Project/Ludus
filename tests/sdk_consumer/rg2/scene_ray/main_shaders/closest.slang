@@ -9,12 +9,12 @@ void ShadeClosest(SceneContext scene, SurfaceHit hit, inout RayQueryContext quer
     float v = SampleSceneRandom(queries);
     if (any(float3(triangleChoice, u, v) != payload.ExpectedRandom) ||
         (selected.HasSample == true && selected.LightIndex != payload.ExpectedLightIndex))
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
     const uint INTEGER_RANGE_MINIMUM = 5;
     const uint INTEGER_RANGE_MAXIMUM = 12;
     uint integerSample = SampleSceneRandom(queries, INTEGER_RANGE_MINIMUM, INTEGER_RANGE_MAXIMUM);
     if (integerSample != payload.ExpectedInteger)
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
     LightSample light = SampleIncidentLight(scene, selected, hit, float3(triangleChoice, u, v));
     if (light.HasSample == true)
     {
@@ -35,10 +35,10 @@ void ShadeClosest(SceneContext scene, SurfaceHit hit, inout RayQueryContext quer
             const float PDF_RELATIVE_TOLERANCE = 0.0001;
             float samplePdf = light.SelectionPmf * light.ConditionalPdf;
             if (abs(evaluatedPdf - samplePdf) > PDF_RELATIVE_TOLERANCE * max(evaluatedPdf, samplePdf))
-                queries.HasFailed = true;
+                FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
         }
         uint visibility = TestVisibility(scene, queries, hit, light);
         if (visibility == SCENE_QUERY_FAILURE || light.SelectionPmf <= 0 || light.ConditionalPdf <= 0)
-            queries.HasFailed = true;
+            FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);
     }
 }

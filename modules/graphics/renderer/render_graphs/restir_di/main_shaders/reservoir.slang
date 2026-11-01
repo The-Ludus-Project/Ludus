@@ -188,7 +188,7 @@ void StreamReservoir(uint triangleIndex,
     inoutReservoir.CandidateCount += candidateCount;
     if (isfinite(weight) == false || weight < 0)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_WEIGHT);
         return;
     }
     if (weight == 0)
@@ -198,7 +198,7 @@ void StreamReservoir(uint triangleIndex,
     inoutWeightSum += weight;
     if (isfinite(inoutWeightSum) == false)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_WEIGHT);
         return;
     }
     if (randomValue < weight / inoutWeightSum)
@@ -225,7 +225,7 @@ void FinalizeReservoir(SceneContext scene,
     inoutReservoir.CandidateCount = min(inoutReservoir.CandidateCount, RESTIR_HISTORY_CANDIDATES);
     if (isfinite(inoutReservoir.Weight) == false || inoutReservoir.Weight < 0)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_INVALID_WEIGHT);
     }
 }
 
@@ -275,7 +275,7 @@ float3 ShadeReservoir(SceneContext scene, SurfaceHit receiver, Reservoir reservo
     SurfaceHit endpoint = GetSurfaceHit(scene, reservoir.TriangleIndex, reservoir.Barycentric);
     if (endpoint.IsValid == false)
     {
-        queries.HasFailed = true;
+        FailSceneQuery(queries, LUDUS_SCENE_FAILURE_SCENE_DATA);
         return float3(0);
     }
     float3 offsetWorld = endpoint.PositionWorld - receiver.PositionWorld;

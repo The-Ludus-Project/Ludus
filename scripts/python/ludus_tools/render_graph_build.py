@@ -681,6 +681,58 @@ def map_shader_diagnostics(output, program, target, closure, sources=None):
     return diagnostics
 
 
+# Snapshot paths of engine helper files staged beside the authored sources (render_graph_ray.py).
+STAGED_HELPER_PREFIX = '_ludus'
+REASONLESS_FAILURE = re.compile(r'\bHasFailed\s*=(?!=)\s*true\b')
+SHADER_COMMENT = re.compile(r'/\*.*?\*/|//[^\n]*', re.S)
+REASONLESS_FAILURE_MESSAGE = (
+    'sets queries.HasFailed without a reason, so a failed pixel can only be reported as unspecified. '
+    'Call FailSceneQuery(queries, reason) with a LUDUS_SCENE_FAILURE_* code, or an authored code from '
+    'LUDUS_SCENE_FAILURE_AUTHORED_FIRST, to name the failing check.')
+
+
+def reasonless_failure_diagnostics(closures, snapshot):
+    """Warn at each authored `HasFailed = true`, located in its captured source.
+
+    Such a write latches the failure colour without a reason (scene_shader.slang,
+    FailSceneQuery), so the viewport can say only that the reason is unspecified.
+    Engine helpers staged into the snapshot (`_ludus_ray/...`, `_ludus_visibility.slang`)
+    are not authored and are skipped; FailSceneQuery itself sets the flag.
+    The scan is lexical over comment-free captured sources: macros or aliases that
+    hide the write are not found. closures maps every captured program, authored ray
+    callbacks included, to its sources; linked ray kernels replace the callbacks in the
+    build's program set, so the scan reads closures rather than that set. Each line is
+    reported once, for the first program (by id) whose closure reaches it. Bounded to
+    MAX_SHADER_DIAGNOSTICS records; past that, the last record counts the lines it omits.
+    """
+    owners = {}
+    for pid in sorted(closures):
+        for relative in closures[pid]:
+            if relative in snapshot.files and not relative.split('/', 1)[0].startswith(STAGED_HELPER_PREFIX):
+                owners.setdefault(relative, pid)
+    diagnostics = []
+    for relative in sorted(owners):
+        try:
+            text = snapshot.files[relative].decode('utf-8')
+        except UnicodeDecodeError:
+            continue
+        code = SHADER_COMMENT.sub(lambda match: re.sub(r'[^\n]', ' ', match[0]), text)
+        for match in REASONLESS_FAILURE.finditer(code):
+            line_start = code.rfind('\n', 0, match.start()) + 1
+            diagnostics.append({
+                'severity': 'warning', 'code': 'RenderGraphBuildReasonlessFailure',
+                'message': REASONLESS_FAILURE_MESSAGE, 'program': owners[relative],
+                'location': {'source': relative, 'line': code.count('\n', 0, match.start()) + 1,
+                             'column': match.start() - line_start + 1, 'length': match.end() - match.start()}})
+    if len(diagnostics) > MAX_SHADER_DIAGNOSTICS:
+        omitted = len(diagnostics) - (MAX_SHADER_DIAGNOSTICS - 1)
+        diagnostics = diagnostics[:MAX_SHADER_DIAGNOSTICS - 1] + [{
+            'severity': 'warning', 'code': 'RenderGraphBuildReasonlessFailure',
+            'message': f'{omitted} more lines set queries.HasFailed without a reason; fix the lines above and '
+                       'build again to list them.'}]
+    return diagnostics
+
+
 def checked_cache(path, expected):
     """A cache hit compares full identity and hashes every retained artifact."""
     try:
@@ -1216,6 +1268,10 @@ def build_package(manifest, output, *, helper, compiler, validator=None, spirv_c
             checkpoint(cancel)
             report = {'package': str(generation), 'generation': generation_key, 'cache_hits': hits, 'cache_misses': misses,
                       'elapsed_seconds': time.monotonic() - started, 'counts': counts}
+            # Warnings that do not reject the build; recomputed from sources, so cache hits report them too.
+            warnings = reasonless_failure_diagnostics(closures, snapshot)
+            if warnings:
+                report['diagnostics'] = warnings
             atomic(output / 'build-report.json', encoded(report))
             # The activation pointer is the sole last write. Failure to write
             # diagnostics cannot publish a partially successful build.

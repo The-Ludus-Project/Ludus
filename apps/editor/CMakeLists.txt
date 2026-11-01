@@ -581,7 +581,8 @@ qt_add_executable(ludus_editor
     src/render_graph_configuration_editor.cpp
     src/render_graph_configuration_interface.cpp
     src/internal/render_graph_canvas.h
-    src/render_graph_canvas.cpp src/render_graph_resources.cpp src/render_graph_canvas_feedback.cpp
+    src/internal/render_graph_luminaire_coverage.h
+    src/render_graph_canvas.cpp src/render_graph_resources.cpp src/render_graph_canvas_feedback.cpp src/render_graph_luminaire_coverage.cpp
     src/internal/render_graph_navigation.h src/render_graph_navigation.cpp
     src/internal/render_graph_diagnostics.h src/render_graph_diagnostics.cpp
         src/internal/render_graph_execution_plan.h src/render_graph_execution_plan.cpp
@@ -991,7 +992,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
         src/render_graph_configuration_editor.cpp
         src/render_graph_configuration_interface.cpp
         src/internal/render_graph_canvas.h
-        src/render_graph_canvas.cpp src/render_graph_resources.cpp src/render_graph_canvas_feedback.cpp
+        src/render_graph_canvas.cpp src/render_graph_resources.cpp src/render_graph_canvas_feedback.cpp src/render_graph_luminaire_coverage.cpp
         src/internal/render_graph_navigation.h src/render_graph_navigation.cpp
         src/internal/render_graph_diagnostics.h src/render_graph_diagnostics.cpp
         src/internal/render_graph_execution_plan.h src/render_graph_execution_plan.cpp
@@ -1359,7 +1360,7 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
     add_executable(ludus_render_graph_pipeline_tests tests/main.cpp tests/render_graph_pipeline_tests.cpp tests/render_graph_shader_cleanup_tests.cpp
         src/internal/render_graph_pipeline.h src/render_graph_pipeline.cpp
         src/render_graph_document.cpp src/render_graph_node_ports.cpp src/render_graph_configuration_template.cpp src/render_graph_visibility_template.cpp src/render_graph_compute_template.cpp src/render_graph_line_sampling_template.cpp src/render_graph_point_line_template.cpp src/render_graph_node_transfer.cpp src/render_graph_shader_cleanup.cpp src/render_graph_shader_creation.cpp src/render_graph_scene_authoring.cpp src/render_graph_scene_bundle.cpp src/render_graph_techniques.cpp src/internal/render_graph_pipeline_node.h src/render_graph_pipeline_node.cpp src/render_graph_upscale_node.cpp
-        src/internal/render_graph_canvas.h src/render_graph_canvas.cpp src/theme_preferences.cpp src/render_graph_resources.cpp src/render_graph_canvas_feedback.cpp
+        src/internal/render_graph_canvas.h src/render_graph_canvas.cpp src/theme_preferences.cpp src/render_graph_resources.cpp src/render_graph_canvas_feedback.cpp src/render_graph_luminaire_coverage.cpp
         src/internal/render_graph_navigation.h src/render_graph_navigation.cpp
         src/internal/render_graph_diagnostics.h src/render_graph_diagnostics.cpp
         src/internal/render_graph_execution_plan.h src/render_graph_execution_plan.cpp
@@ -1402,13 +1403,13 @@ if(LUDUS_BUILD_TESTS AND NOT EMSCRIPTEN)
 
     # Authoring uses the real workspace/document without requiring a viewport device.
     add_executable(ludus_render_graph_configuration_tests
-        tests/main.cpp tests/render_graph_upscale_tests.cpp tests/render_graph_configuration_tests.cpp tests/render_graph_template_tests.cpp tests/render_graph_template_registry_tests.cpp tests/render_graph_quick_add_tests.cpp tests/render_graph_rename_tests.cpp tests/render_graph_selection_tests.cpp tests/render_graph_canvas_tests.cpp tests/render_graph_navigation_tests.cpp tests/render_graph_history_tests.cpp tests/render_graph_layout_tests.cpp tests/render_graph_execution_plan_tests.cpp tests/render_graph_comment_tests.cpp tests/render_graph_reroute_tests.cpp tests/render_graph_resource_inspection_tests.cpp tests/render_graph_canvas_feedback_tests.cpp tests/render_graph_diagnostic_tests.cpp tests/render_graph_diagnostic_navigation_tests.cpp
+        tests/main.cpp tests/render_graph_upscale_tests.cpp tests/render_graph_configuration_tests.cpp tests/render_graph_template_tests.cpp tests/render_graph_luminaire_coverage_tests.cpp tests/render_graph_template_registry_tests.cpp tests/render_graph_quick_add_tests.cpp tests/render_graph_rename_tests.cpp tests/render_graph_selection_tests.cpp tests/render_graph_canvas_tests.cpp tests/render_graph_navigation_tests.cpp tests/render_graph_history_tests.cpp tests/render_graph_layout_tests.cpp tests/render_graph_execution_plan_tests.cpp tests/render_graph_comment_tests.cpp tests/render_graph_reroute_tests.cpp tests/render_graph_resource_inspection_tests.cpp tests/render_graph_canvas_feedback_tests.cpp tests/render_graph_diagnostic_tests.cpp tests/render_graph_diagnostic_navigation_tests.cpp
         src/internal/renderer_workspace.h src/renderer_workspace.cpp src/renderer_workspace_selection.cpp
         src/internal/viewport_frame_pump.h src/viewport_frame_pump.cpp
         src/render_graph_document.cpp src/render_graph_node_ports.cpp src/render_graph_configuration_template.cpp src/render_graph_visibility_template.cpp src/render_graph_compute_template.cpp src/render_graph_line_sampling_template.cpp src/render_graph_point_line_template.cpp src/render_graph_node_transfer.cpp src/render_graph_shader_cleanup.cpp src/render_graph_shader_creation.cpp src/render_graph_scene_authoring.cpp src/render_graph_scene_bundle.cpp src/render_graph_techniques.cpp src/render_graph_pipeline_node.cpp src/render_graph_upscale_node.cpp
         src/internal/render_graph_configuration_editor.h src/render_graph_configuration_editor.cpp
         src/render_graph_configuration_interface.cpp
-        src/internal/render_graph_canvas.h src/render_graph_canvas.cpp src/theme_preferences.cpp src/render_graph_resources.cpp src/render_graph_canvas_feedback.cpp
+        src/internal/render_graph_canvas.h src/render_graph_canvas.cpp src/theme_preferences.cpp src/render_graph_resources.cpp src/render_graph_canvas_feedback.cpp src/render_graph_luminaire_coverage.cpp
         src/internal/render_graph_navigation.h src/render_graph_navigation.cpp
         src/internal/render_graph_diagnostics.h src/render_graph_diagnostics.cpp
         src/internal/render_graph_execution_plan.h src/render_graph_execution_plan.cpp
