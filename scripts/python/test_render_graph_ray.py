@@ -905,6 +905,27 @@ class RayCompilerAcceptance(unittest.TestCase):
             execution.emit_runtime(str(package), root / 'hardware.h', name='Hardware', configuration='Hardware')
             self.assertIn('result.NativeRayStages.Artifact.HasNativeRayStages = true', (root / 'hardware.h').read_text())
 
+    def test_reasonless_failures_in_ray_callbacks_are_located_warnings(self):
+        # Linked ray kernels replace the authored callbacks in the build's program set; the scan
+        # must still read the callbacks' own sources.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'source'
+            shutil.copytree(ROOT / 'tests/sdk_consumer/rg2/scene_ray', source)
+            manifest = source / 'main.lushader.json'
+            manifest.write_text((source / 'main.lushader.json.in').read_text().replace('@RG2_TEST_PROFILES@', '["metal"]'))
+            closest = source / 'main_shaders/closest.slang'
+            original = closest.read_text()
+            first = original.index('FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);')
+            closest.write_text(original[:first] + 'queries.HasFailed = true;' +
+                               original[first + len('FailSceneQuery(queries, LUDUS_SCENE_FAILURE_AUTHORED_FIRST);'):])
+            line = original.count('\n', 0, first) + 1
+            result = build.build_package(manifest, root / 'build', helper=os.environ['LUDUS_RG1_HELPER'],
+                                         compiler=os.environ['LUDUS_RG1_SLANG'], spirv_cross=os.environ['LUDUS_RG1_CROSS'])
+            located = [(record['program'], record['location']['source'], record['location']['line'])
+                       for record in result.get('diagnostics', [])]
+            self.assertEqual([('Closest', 'main_shaders/closest.slang', line)], located)
+
     def test_ltc_table_reads_reach_slot_13_and_the_runtime_scene_resource_word(self):
         from test_render_graph_authoring import parse_runtime
         for reads_table in (True, False):

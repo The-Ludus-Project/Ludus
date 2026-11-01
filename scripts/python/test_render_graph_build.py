@@ -81,10 +81,19 @@ class BuildTests(unittest.TestCase):
         failing = b'void FailSceneQuery(inout RayQueryContext queries, uint reason)\n{\n    queries.HasFailed = true;\n}\n'
         snapshot.files = {'_ludus_ray/scene_shader.slang': failing, '_ludus_visibility.slang': failing,
                           'main_shaders/shade.slang': failing}
-        programs = {'Shade': {}}
         closures = {'Shade': list(snapshot.files)}
-        found = build.reasonless_failure_diagnostics(programs, closures, snapshot)
+        found = build.reasonless_failure_diagnostics(closures, snapshot)
         self.assertEqual(['main_shaders/shade.slang'], [record['location']['source'] for record in found])
+
+    def test_reasonless_failures_past_the_bound_are_counted(self):
+        snapshot = build.Snapshot(self.manifest.parent)
+        count = build.MAX_SHADER_DIAGNOSTICS + 3
+        snapshot.files = {'main_shaders/shade.slang': b'queries.HasFailed = true;\n' * count}
+        found = build.reasonless_failure_diagnostics({'Shade': ['main_shaders/shade.slang']}, snapshot)
+        self.assertEqual(build.MAX_SHADER_DIAGNOSTICS, len(found))
+        self.assertEqual(build.MAX_SHADER_DIAGNOSTICS - 1, found[-2]['location']['line'])
+        self.assertNotIn('location', found[-1])
+        self.assertTrue(found[-1]['message'].startswith(f'{count - (build.MAX_SHADER_DIAGNOSTICS - 1)} more lines'))
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
